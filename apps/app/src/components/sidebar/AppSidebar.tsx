@@ -29,7 +29,7 @@ import {
   usePluginSidebarFooterDisclosure,
 } from "@/components/plugin/PluginSidebarFooterItems";
 import { SidebarPluginAttentionGlyph } from "./SidebarPluginAttentionGlyph";
-import { SidebarUpdatesBadge } from "./SidebarUpdatesBadge";
+import { defineSplit } from "@/lib/define-split";
 import { SidebarResizeHandle, SidebarTopReserveRow } from "./SidebarChrome";
 import { SIDEBAR_FOOTER_ACTION_CLASS } from "@bb/shared-ui/sidebar-row-classes";
 import { getRootComposeRoutePath, getThreadRoutePath } from "@/lib/route-paths";
@@ -85,6 +85,14 @@ interface AppSidebarProps {
   isSettingsActive: boolean;
   alternateBody: ReactNode;
 }
+
+const SidebarUpdatesBadge = defineSplit<{ onNavigate?: () => void }>({
+  id: "sidebar-updates-badge",
+  load: () =>
+    import("./SidebarUpdatesBadge").then((module) => module.SidebarUpdatesBadge),
+  loading: () => null,
+  tier: "preload",
+});
 
 export function AppSidebar({
   onResizeMouseDown,

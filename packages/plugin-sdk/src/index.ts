@@ -28,3 +28,8 @@ export type {
 } from "@bb/sdk";
 
 export type * from "./machine-bootstrap.js";
+
+export {
+  claudeLocalPlanLabel as internal_DO_NOT_USE_claudeLocalPlanLabel,
+  claudeProfilePlanLabel as internal_DO_NOT_USE_claudeProfilePlanLabel,
+} from "./claude-plan-label.js";

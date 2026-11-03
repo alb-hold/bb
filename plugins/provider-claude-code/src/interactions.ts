@@ -180,6 +180,7 @@ export function buildClaudeUserQuestionPayload(
           description: option.description,
         })),
         allowFreeText: true,
+        required: true,
       };
     }),
   };

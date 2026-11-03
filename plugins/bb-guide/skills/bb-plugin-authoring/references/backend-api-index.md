@@ -1,11 +1,8 @@
 # Backend API symbol index
 
-Use this index to check backend, host, AI-service, and test imports.
-Read the detailed backend references for behavior, fields, and examples.
-Read the installed declarations for exact current signatures.
+Use this index to check backend, host, AI-service, and test imports. Read the detailed backend references for behavior, fields, and examples. Read the installed declarations for exact current signatures.
 
 ## `@get-bb/plugin-sdk`
-
 - `PLUGIN_CLI_OUTPUT_MAX_BYTES`
 - `defineRpcContract`
 - `experimental_defineHostEntry`
@@ -29,12 +26,12 @@ Read the installed declarations for exact current signatures.
 - `ExperimentalTabRegistration`
 - `ExperimentalTabContext`
 - `ExperimentalTabReference`
-- `ExperimentalTabOpenOptions`
+- `ExperimentalOpenTabOptions`
 - `ExperimentalTabTargetReference`
 - `ExperimentalThreadActionTabProps`
+- `ExperimentalThreadTabProps`
 - `ExperimentalThreadTabActionContext`
-- `ExperimentalAppPanel`
-- `ExperimentalAppPanelSurface`
+- `ExperimentalPanelController`
 - `ExperimentalDesktopBrowserAcquireInput`
 - `ExperimentalDesktopBrowserCreateInput`
 - `ExperimentalDesktopBrowserLease`
@@ -67,7 +64,6 @@ Read the installed declarations for exact current signatures.
 - `ExperimentalSignInWindow`
 - `ExperimentalSignInWindowOptions`
 - `ExperimentalSignInWindowResult`
-- `ExperimentalOpenFixedTabOptions`
 - `ExperimentalPermissionModePickerProps`
 - `ExperimentalPluginFixedTabReference`
 - `ExperimentalPluginRpcCaller`
@@ -247,6 +243,10 @@ Read the installed declarations for exact current signatures.
 - `PluginMentionTrigger`
 - `PluginMessageActionContext`
 - `PluginMessageActionRegistration`
+- `ExperimentalMessageMetadataContext`
+- `ExperimentalMessageMetadataPlacement`
+- `ExperimentalMessageMetadataProps`
+- `ExperimentalMessageMetadataRegistration`
 - `PluginMessageDirectiveMessage`
 - `PluginMessageDirectiveOpenWorkspaceFile`
 - `PluginMessageDirectiveProps`
@@ -262,7 +262,6 @@ Read the installed declarations for exact current signatures.
 - `PluginNewThreadPanelActionContext`
 - `PluginNewThreadPanelActionRegistration`
 - `PluginNewThreadPanelProps`
-- `PluginPanelActionOpenOptions`
 - `PluginPendingInteractionProps`
 - `PluginPendingInteractionRegistration`
 - `PluginPendingInteractionView`
@@ -331,15 +330,16 @@ Read the installed declarations for exact current signatures.
 - `PluginSourceCodeRendererRegistration`
 - `PluginStatusApi`
 - `PluginStorage`
-- `PluginTargetedPanelActionOpenOptions`
 - `PluginThreadEventHandler`
 - `PluginThreadEventName`
 - `PluginThreadEventPayloads`
-- `PluginThreadHeaderActionProps`
-- `PluginThreadHeaderActionRegistration`
 - `ExperimentalThreadInfoProps`
 - `ExperimentalThreadInfoRowRegistration`
 - `ExperimentalThreadInfoSectionRegistration`
+- `ExperimentalThreadContextCardRowRegistration`
+- `ExperimentalThreadContextCardSectionRegistration`
+- `ExperimentalThreadContextCardProps`
+- `ExperimentalThreadContextCardRowProps`
 - `ExperimentalInfoSectionProps`
 - `ExperimentalDetailRowProps`
 - `ExperimentalInfoListProps`
@@ -435,6 +435,7 @@ Read the installed declarations for exact current signatures.
 - `ExperimentalNativeRootsResolveInput`
 - `ExperimentalNativeRootsResolveOutput`
 - `ExperimentalProcessIdentity`
+- `ExperimentalQuestionFormAction`
 - `ExperimentalQuestionFormHost`
 - `ExperimentalQuestionShortcut`
 - `ExperimentalSanitizeInheritedChildProcessEnvArgs`
@@ -452,6 +453,7 @@ Read the installed declarations for exact current signatures.
 - `createFakePluginHost`
 - `createFakeSdk`
 - `experimental_scanPublicSdkOnly`
+- `experimental_makePanelController`
 - `makeHostResponse`
 - `makeMessageDispatchHookContext`
 - `makePluginAgentConfigurationContext`

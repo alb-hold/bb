@@ -188,6 +188,9 @@ export {
   listRunningThreads,
   listThreadsWithPendingInteractionState,
   listThreadsWithPendingInteractionStateForProjects,
+  buildThreadListEnrichmentScope,
+  buildProjectThreadListEnrichmentScope,
+  buildPinnedRootThreadListEnrichmentScope,
   pinThread,
   reorderPinnedThread,
   updateThread,
@@ -218,8 +221,11 @@ export type {
 } from "./threads.js";
 
 export {
+  deletePluginRecommendationId,
   forgetPluginProviders,
   getAiServiceSelections,
+  getPluginRecommendationId,
+  setPluginRecommendationId,
   getAppKeybindingOverrides,
   claimInstallTurnNumber,
   getAppSettings,
@@ -233,6 +239,18 @@ export {
   setDisabledProviderIds,
   setPluginSafeMode,
 } from "./app-settings.js";
+export {
+  addWritingUsage,
+  editWritingAssistanceVocabulary,
+  reserveWritingUsage,
+  emptyWritingUsage,
+  getWritingAssistanceSettings,
+  getWritingUsage,
+  openWritingReservation,
+  updateWritingAssistanceSettings,
+  type WritingUsageReservation,
+  type WritingVocabularyEditResult,
+} from "./writing-assistance.js";
 export { getStoredThreadTabs, replaceStoredThreadTabs } from "./thread-tabs.js";
 export {
   getStoredUiPreferenceDefault,
@@ -398,6 +416,7 @@ export {
   findStoredEventRow,
   getActiveStoredTurnId,
   isStoredTurnMainRunIdle,
+  isStoredTurnProviderCompactionRunning,
   hasRootStoredTurnStarted,
   hasStoredSpawnAgentToolCall,
   hasStoredTerminalClientTurnRequestEvent,
@@ -407,6 +426,9 @@ export {
   getLastStoredProviderThreadId,
   getStoredProviderSession,
   getLastStoredTurnRequestEvent,
+  listStoredTaskTurnRequestEvents,
+  listLatestTurnFinalAgentMessageEventRows,
+  getTurnFinalAgentMessageEventRow,
   getStoredTurnRequestEventForTurn,
   getLatestThreadOutputEventRow,
   getLatestThreadErrorEventRow,
@@ -416,6 +438,7 @@ export {
   getLatestThreadSequence,
   insertEvents,
   listActiveBackgroundTaskCountsByThreadIds,
+  listActiveBackgroundTaskCountsByScope,
   listContextWindowUsageRows,
   listCompletedTurnsByThreadIds,
   getLatestTokenUsageRow,
@@ -458,10 +481,12 @@ export {
   getLatestStoredRateLimitsEvent,
   getLatestStoredThreadEventOfTypes,
   listLatestThreadStateEventRowsByThreadIds,
+  listLatestThreadStateEventRowsByScope,
   listLatestBackgroundTaskStateRowsByItemIds,
   listLatestOpenBackgroundTaskStateRowsForThread,
   listTodoSnapshotEventRowsForThread,
   listOpenTurnInputAcceptedRowsByThreadIds,
+  listOpenTurnInputAcceptedRowsByScope,
   listOpenBackgroundTaskItemRowsForHost,
   listOpenBackgroundTaskItemRowsForThread,
   listThreadEventSuffixBackgroundSettlementRows,
@@ -520,11 +545,13 @@ export type {
 } from "./terminal-sessions.js";
 
 export {
+  createInterruptedProviderPendingInteraction,
   createPendingInteraction,
   getActivePendingInteractionForThread,
   hasTurnBoundActivePendingInteractionForThread,
   getPendingInteraction,
   getPendingInteractionByProviderRequest,
+  retagInterruptedPendingInteraction,
   reviveInterruptedProviderInteraction,
   interruptPendingInteractionsForThreadIds,
   interruptPendingInteractionsForThreads,
@@ -557,7 +584,9 @@ export {
   deleteClaimedQueuedThreadMessageBatchInTransaction,
   deleteQueuedThreadMessage,
   getQueuedThreadMessage,
+  getQueuedRetryOfTurnRequest,
   getQueuedThreadStartMessage,
+  getFirstUnclaimedQueuedRetry,
   hasQueuedRetryOfTurnRequest,
   hasClaimedQueuedThreadMessages,
   holdQueuedThreadMessageForEdit,
@@ -566,6 +595,7 @@ export {
   listDueScheduledQueuedThreadMessages,
   listIdleThreadsWithQueuedMessages,
   listQueuedThreadMessageCountsByThreadIds,
+  listQueuedThreadMessageCountsByScope,
   listQueuedThreadMessagePluginWaitRefs,
   listQueuedThreadMessages,
   listQueuedThreadMessagesForApi,
@@ -585,6 +615,7 @@ export {
 } from "./queued-thread-messages.js";
 export type {
   ClaimedQueuedThreadMessageRow,
+  QueuedThreadMessageExecution,
   QueuedThreadMessageGroupClaimPolicy,
   QueuedThreadMessageGroupEligibility,
   QueuedThreadMessageRow,
@@ -626,7 +657,6 @@ export {
   DATABASE_COMPACTION_MIN_RECLAIMABLE_BYTES,
   DATABASE_COMPACTION_MIN_RECLAIMABLE_RATIO,
   DATABASE_INCREMENTAL_VACUUM_MIN_FREELIST_PAGES,
-  DATABASE_INCREMENTAL_VACUUM_MAX_PAGES,
   DATABASE_MAINTENANCE_BUSY_TIMEOUT_MS,
   getDatabaseCompactionStats,
   getDatabaseFreelistStats,
@@ -639,6 +669,7 @@ export {
 export * from "./machines.js";
 export {
   advanceThreadPruning,
+  advanceThreadPruningStep,
   getNextThreadPruningPolicy,
   THREAD_EVENT_KEEP_RECENT_BY_MODE,
   THREAD_PRUNING_POLICIES,

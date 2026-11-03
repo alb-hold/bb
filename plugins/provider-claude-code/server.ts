@@ -1,4 +1,5 @@
 import { registerUsageSource } from "./src/usage-source.js";
+import { registerClaudeAiService } from "./src/ai-service.js";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { CLAUDE_NATIVE_ROOTS_DECLARATION } from "./src/native-roots.js";
 import {
@@ -9,6 +10,7 @@ import {
 
 export default function plugin(bb: BbPluginApi) {
   registerUsageSource(bb);
+  registerClaudeAiService(bb);
   bb.settings.define({
     memoryEnabled: {
       type: "boolean",
@@ -21,7 +23,7 @@ export default function plugin(bb: BbPluginApi) {
       type: "boolean",
       label: "Disable provider subagents",
       description:
-        "Hide Claude Code's native Task tool so agents use bb for delegation.",
+        "Hide Claude Code's native subagent tools so agents use bb for delegation. Changes restart Claude before the next turn, preserving the conversation.",
       default: false,
     },
     workflowsDisabled: {
@@ -57,6 +59,13 @@ export default function plugin(bb: BbPluginApi) {
       description:
         "Run Bash commands in Claude Code's sandbox in Accept Edits and Approve for me modes. Turn off to use Claude Code's own command approvals and sandbox settings instead.",
       default: true,
+    },
+    fullAccessApprovalsEnabled: {
+      type: "boolean",
+      label: "Approvals in Full Access",
+      description:
+        "Show Claude Code's own approval prompts in Full Access: permissions.ask rules, PreToolUse hooks that answer ask, and Claude Code's built-in safety checks. Off approves every request, so unattended threads never wait. Applies on the next turn.",
+      default: false,
     },
   });
 
@@ -109,6 +118,18 @@ export default function plugin(bb: BbPluginApi) {
           turnId: "prompt_id",
         },
         transcript: {
+          reply: [
+            {
+              match: {
+                equals: {
+                  type: "assistant",
+                  isSidechain: false,
+                  "message.role": "assistant",
+                },
+              },
+              text: "message.content",
+            },
+          ],
           identity: {
             recordId: "uuid",
             parentId: "parentUuid",
@@ -193,6 +214,10 @@ export default function plugin(bb: BbPluginApi) {
             },
           ],
           prompt: [],
+          continuation: {
+            match: { equals: { type: "continued-in" } },
+            nextSessionId: "continuedInSessionId",
+          },
         },
       },
     },
@@ -255,6 +280,8 @@ export default function plugin(bb: BbPluginApi) {
         disable1MContext: context.settings.disable1MContext === true,
         artifactsEnabled: context.settings.artifactsEnabled === true,
         sandboxEnabled: context.settings.sandboxEnabled !== false,
+        fullAccessApprovalsEnabled:
+          context.settings.fullAccessApprovalsEnabled === true,
         ...(context.promptMode === "plan"
           ? { claudeCodePermissionMode: "plan" }
           : {}),

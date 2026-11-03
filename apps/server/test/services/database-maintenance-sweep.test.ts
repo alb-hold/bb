@@ -21,10 +21,16 @@ import {
 } from "@bb/db";
 import { createMigratedConnection } from "@bb/db/testing";
 import type { ServerLogger } from "../../src/types.js";
-import { runDatabaseMaintenanceSweep } from "../../src/services/system/periodic-sweeps.js";
+import {
+  DATABASE_INCREMENTAL_VACUUM_CHUNK_PAGES,
+  runChunkedIncrementalVacuum,
+  runDatabaseMaintenanceSweep,
+} from "../../src/services/system/periodic-sweeps.js";
 import { testLogger } from "../helpers/test-app.js";
 
 const FREELIST_ROW_COUNT = 1_200;
+const PREVIOUS_ONE_RUN_VACUUM_PAGE_CAP = 20_000;
+const LARGE_FREELIST_ROW_COUNT = 12_000;
 const SQLITE_BUSY_HEADROOM_MS = 1_000;
 const TEST_DEFERRED_LEGACY_TABLE_NAMES = [
   "client_turn_requests",
@@ -120,7 +126,10 @@ function markDatabaseBusy(db: DbConnection): void {
   });
 }
 
-function buildFreelist(db: DbConnection): void {
+function buildFreelist(
+  db: DbConnection,
+  rowCount: number = FREELIST_ROW_COUNT,
+): void {
   db.$client.exec(
     "CREATE TABLE scratch_blobs (id INTEGER PRIMARY KEY, blob TEXT)",
   );
@@ -133,7 +142,7 @@ function buildFreelist(db: DbConnection): void {
       insert.run(blob);
     }
   });
-  insertMany(FREELIST_ROW_COUNT);
+  insertMany(rowCount);
   db.$client.exec("DELETE FROM scratch_blobs");
 }
 
@@ -227,6 +236,49 @@ describe("runDatabaseMaintenanceSweep", () => {
     expect(getDatabaseFreelistStats(db).freelistCount).toBeLessThan(
       before.freelistCount - 256,
     );
+  });
+
+  it("reclaims more than the previous one-run page cap in a single maintenance pass", async () => {
+    const tempDatabase = createTempDatabasePath();
+    try {
+      const db = createConnection(tempDatabase.dbPath);
+      try {
+        migrate(db);
+        buildFreelist(db, LARGE_FREELIST_ROW_COUNT);
+        const before = getDatabaseFreelistStats(db);
+        expect(before.freelistCount).toBeGreaterThan(
+          PREVIOUS_ONE_RUN_VACUUM_PAGE_CAP,
+        );
+
+        await runDatabaseMaintenanceSweep({ db, logger: testLogger });
+
+        const after = getDatabaseFreelistStats(db);
+        expect(before.freelistCount - after.freelistCount).toBeGreaterThan(
+          PREVIOUS_ONE_RUN_VACUUM_PAGE_CAP,
+        );
+        expect(after.freelistCount).toBe(0);
+      } finally {
+        db.$client.close();
+      }
+    } finally {
+      tempDatabase.cleanup();
+    }
+  });
+
+  it("stops chunked vacuum once the elapsed budget is spent", async () => {
+    const { db } = setupBusyDatabaseWithFreelist();
+    const before = getDatabaseFreelistStats(db);
+
+    const spent = await runChunkedIncrementalVacuum(db, { elapsedBudgetMs: 0 });
+
+    expect(spent.after.freelistCount).toBeGreaterThan(0);
+    expect(
+      before.freelistCount - spent.after.freelistCount,
+    ).toBeLessThanOrEqual(DATABASE_INCREMENTAL_VACUUM_CHUNK_PAGES);
+    const unbounded = await runChunkedIncrementalVacuum(db, {
+      elapsedBudgetMs: Number.POSITIVE_INFINITY,
+    });
+    expect(unbounded.after.freelistCount).toBe(0);
   });
 
   it("does not wait on a WAL reader during incremental maintenance", async () => {

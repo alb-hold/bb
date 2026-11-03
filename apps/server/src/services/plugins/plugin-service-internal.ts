@@ -48,10 +48,15 @@ export interface ServiceRuntime {
 }
 
 export interface LoadedPlugin {
+  pluginId: string;
   manifest: PluginManifest;
   handle: PluginApiHandle;
   services: ServiceRuntime[];
   moduleRootUrls: Set<string>;
+  hostArtifact: PluginHostArtifactSnapshot | null;
+  stopping: AbortController;
+  released: AbortController;
+  invocations: Set<Promise<void>>;
 }
 
 export interface PluginHostArtifactSnapshot {
@@ -110,6 +115,7 @@ export interface PluginServiceDeps {
     import("../interactions/pending-interactions.js").PendingInteractionLifecycle,
     | "requestPluginInteraction"
     | "interruptPluginInteractions"
+    | "interruptOwnedPluginInteractions"
     | "setPluginDirectory"
   >;
   getAppUrl?: () => string | null;
@@ -255,7 +261,7 @@ export interface PluginThreadEventEmitter {
    * Takes the id alone: the payload is read from the failed turn's own records,
    * and only when a plugin is listening.
    */
-  emitTurnFailed(threadId: string): void;
+  emitTurnFailed(threadId: string): void | Promise<void>;
 }
 
 export type PluginWireLookup<T> =
@@ -266,7 +272,7 @@ export type PluginWireLookup<T> =
       detail: string | null;
     }
   | { outcome: "not-found" }
-  | { outcome: "found"; value: T };
+  | { outcome: "found"; value: T; owner: LoadedPlugin };
 
 export type PluginApplyUpdateOutcome =
   | { ok: true; result: PluginApplyUpdateResult }

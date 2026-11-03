@@ -15,8 +15,8 @@ describe("file-change row body", () => {
   it("shows a failed change's error instead of the empty-diff message", () => {
     render(
       <WorkRowBody
-        row={fileChangeRow({ status: "error", diff: "", stderr: EDIT_ERROR })}
         workspaceRootPath={undefined}
+        row={fileChangeRow({ status: "error", diff: "", stderr: EDIT_ERROR })}
       />,
     );
 
@@ -27,8 +27,8 @@ describe("file-change row body", () => {
   it("shows a failed change's error before its proposed diff", async () => {
     const view = render(
       <WorkRowBody
-        row={fileChangeRow({ status: "error", stderr: EDIT_ERROR })}
         workspaceRootPath={undefined}
+        row={fileChangeRow({ status: "error", stderr: EDIT_ERROR })}
       />,
     );
 
@@ -46,8 +46,8 @@ describe("file-change row body", () => {
   it("keeps the empty-diff message when no error explains the missing diff", async () => {
     render(
       <WorkRowBody
-        row={fileChangeRow({ status: "completed", diff: "" })}
         workspaceRootPath={undefined}
+        row={fileChangeRow({ status: "completed", diff: "" })}
       />,
     );
 

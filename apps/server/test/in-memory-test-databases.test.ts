@@ -8,6 +8,7 @@ const FRESH_SCHEMA_EXCEPTIONS = new Set([
   "src/services/hosts/host-environment.test.ts",
   "test/legacy-automations-export.test.ts",
   "test/services/plugins/plugin-native-server-loading.test.ts",
+  "test/services/threads/native-question-reattach.test.ts",
 ]);
 
 function listTestSources(): string[] {

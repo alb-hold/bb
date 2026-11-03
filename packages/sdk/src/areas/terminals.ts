@@ -1,4 +1,5 @@
 import type {
+  CloseTerminalRequest,
   CreateTerminalRequest,
   TerminalInputRequest,
   TerminalListQuery,
@@ -15,7 +16,12 @@ import type {
   UpdateTerminalRequest,
 } from "@bb/server-contract";
 import { BbHttpError } from "../response.js";
-import { signalRequestArgs, type CreateSdkAreaArgs } from "./common.js";
+import {
+  signalRequestArgs,
+  threadOpenDeliveryScopeBody,
+  type CreateSdkAreaArgs,
+  type ThreadOpenDeliveryScope,
+} from "./common.js";
 
 const TERMINAL_SCREEN_READ_DEADLINE_MS = 30_000;
 
@@ -102,6 +108,7 @@ export interface TerminalRenameArgs extends TerminalTargetArgs {
 
 export interface TerminalCloseArgs extends TerminalTargetArgs {
   mode: "force" | "if-clean";
+  reason?: CloseTerminalRequest["reason"];
 }
 
 export interface TerminalInputArgs extends TerminalTargetArgs {
@@ -123,6 +130,7 @@ export interface TerminalOutputArgs extends TerminalTargetArgs {
 
 export interface TerminalScreenArgs extends TerminalTargetArgs {
   lines?: TerminalScreenQuery["lines"];
+  threadId?: TerminalScreenQuery["threadId"];
   signal?: AbortSignal;
 }
 
@@ -160,24 +168,32 @@ export interface ExperimentalTerminalSurfacesArea {
   list(args: { threadId: string }): Promise<ExperimentalTerminalSurface[]>;
 }
 
-export interface ExperimentalTerminalFocusArgs {
+export type ExperimentalTerminalDeliveryScope = ThreadOpenDeliveryScope;
+
+export interface ExperimentalTerminalFocusArgs
+  extends ThreadOpenDeliveryScope {
   terminalId: string;
 }
 
-export interface ExperimentalTerminalOpenBrowserArgs {
+export interface ExperimentalTerminalOpenBrowserArgs
+  extends ThreadOpenDeliveryScope {
   terminalId: string;
   url: string;
 }
 
 export interface ExperimentalTerminalLayoutArea {
-  move(args: {
-    targetTerminalId: string;
-    terminalId: string;
-  }): Promise<ThreadOpenResponse>;
-  split(args: {
-    side: "right" | "left" | "up" | "down";
-    terminalId: string;
-  }): Promise<ThreadOpenResponse>;
+  move(
+    args: ThreadOpenDeliveryScope & {
+      targetTerminalId: string;
+      terminalId: string;
+    },
+  ): Promise<ThreadOpenResponse>;
+  split(
+    args: ThreadOpenDeliveryScope & {
+      side: "right" | "left" | "up" | "down";
+      terminalId: string;
+    },
+  ): Promise<ThreadOpenResponse>;
 }
 
 export interface TerminalsArea {
@@ -376,6 +392,7 @@ export function createTerminalsArea(args: CreateSdkAreaArgs): TerminalsArea {
           json: {
             file: null,
             terminalAction: { action: "focus", terminalId: session.id },
+            ...threadOpenDeliveryScopeBody(input),
           },
         }),
       );
@@ -395,6 +412,7 @@ export function createTerminalsArea(args: CreateSdkAreaArgs): TerminalsArea {
               terminalId: session.id,
               url: input.url,
             },
+            ...threadOpenDeliveryScopeBody(input),
           },
         }),
       );
@@ -416,7 +434,7 @@ export function createTerminalsArea(args: CreateSdkAreaArgs): TerminalsArea {
       return transport.readJson(
         transport.api.v1.terminals[":terminalId"].close.$post({
           param: { terminalId: input.terminalId },
-          json: { mode: input.mode, reason: "user" },
+          json: { mode: input.mode, reason: input.reason ?? "user" },
         }),
       );
     },
@@ -467,7 +485,12 @@ export function createTerminalsArea(args: CreateSdkAreaArgs): TerminalsArea {
             transport.api.v1.terminals[":terminalId"].screen.$get(
               {
                 param: { terminalId: input.terminalId },
-                query: input.lines === undefined ? {} : { lines: input.lines },
+                query: {
+                  ...(input.lines === undefined ? {} : { lines: input.lines }),
+                  ...(input.threadId === undefined
+                    ? {}
+                    : { threadId: input.threadId }),
+                },
               },
               ...signalRequestArgs(signal),
             ),
@@ -563,6 +586,7 @@ export function createTerminalsArea(args: CreateSdkAreaArgs): TerminalsArea {
                 terminalId: session.id,
                 side: input.side,
               },
+              ...threadOpenDeliveryScopeBody(input),
             },
           }),
         );
@@ -585,6 +609,7 @@ export function createTerminalsArea(args: CreateSdkAreaArgs): TerminalsArea {
                 terminalId: session.id,
                 targetTerminalId: target.id,
               },
+              ...threadOpenDeliveryScopeBody(input),
             },
           }),
         );

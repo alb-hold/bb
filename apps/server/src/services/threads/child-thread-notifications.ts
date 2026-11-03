@@ -4,7 +4,11 @@ import type {
   ThreadEventTurnStatus,
   ChildThreadOutcome,
 } from "@bb/domain";
-import { listActiveBackgroundTaskCountsByThreadIds } from "@bb/db";
+import {
+  isNativeTerminalThread,
+  getNativeTerminalThread,
+  listActiveBackgroundTaskCountsByThreadIds,
+} from "@bb/db";
 import { renderTemplate } from "@bb/templates";
 import type { LoggedPendingInteractionWorkSessionDeps } from "../../types.js";
 import {
@@ -21,7 +25,11 @@ import {
   childOutcomeSystemMessageKind,
   systemMessageKindForTemplate,
 } from "./system-message-kind.js";
-import { getLastThreadOutput } from "./thread-data.js";
+import { enqueueNativeParentNotice } from "./native-parent-notices.js";
+import {
+  getLastThreadErrorMessage,
+  getTurnFinalOutput,
+} from "./thread-data.js";
 
 export type ChildThreadNotificationSource = ParentSystemThreadMentionSource;
 
@@ -32,6 +40,7 @@ export interface ChildThreadTurnNotificationBatchItem {
   turnStatus: ThreadEventTurnStatus;
   failureContext?: string;
   interruption?: ChildThreadOutcome["interruption"];
+  retryScheduledAt?: number;
 }
 
 interface ChildThreadTurnNotificationBatch {
@@ -62,11 +71,14 @@ interface BuildChildThreadNeedsAttentionInputArgs {
 }
 
 interface QueueChildThreadTurnNotificationArgs {
+  lastAssistantText?: string;
   childThread: ChildThreadNotificationSource;
   parentThreadId: string;
   turnStatus: ThreadEventTurnStatus;
+  turnId: string | null;
   failureContext?: string;
   interruption?: ChildThreadOutcome["interruption"];
+  retryScheduledAt?: number;
 }
 
 interface QueueChildThreadNeedsAttentionNotificationArgs {
@@ -80,6 +92,7 @@ const CHILD_THREAD_OUTCOME_BATCH_UPDATES_SLOT =
   "__BB_CHILD_THREAD_OUTCOME_BATCH_UPDATES__";
 const CHILD_THREAD_MENTION_SLOT = "__BB_CHILD_THREAD_MENTION__";
 const CHILD_THREAD_TERMINAL_OUTPUT_EXCERPT_CHAR_LIMIT = 4_000;
+const CHILD_THREAD_ERROR_DETAIL_CHAR_LIMIT = 500;
 const CHILD_THREAD_OUTPUT_TRUNCATION_MARKER = "\n\n[... output truncated ...]";
 const CHILD_THREAD_INSPECTION_GUIDANCE =
   "Review the thread before deciding next steps.";
@@ -98,6 +111,9 @@ function childThreadTurnStatusLabel(
   item: ChildThreadTurnNotificationBatchItem,
 ): string {
   if (item.failureContext) return item.failureContext;
+  if (item.retryScheduledAt !== undefined) {
+    return `failed; an automatic retry is scheduled for ${new Date(item.retryScheduledAt).toISOString()}`;
+  }
   const { turnStatus } = item;
   switch (turnStatus) {
     case "completed":
@@ -200,6 +216,15 @@ function buildSingleChildThreadTurnStatusSegments(
       ];
     }
     case "failed":
+      if (line.item.retryScheduledAt !== undefined) {
+        return [
+          { kind: "mention", mention: line.mention },
+          {
+            kind: "text",
+            text: ` failed; an automatic retry is scheduled for ${new Date(line.item.retryScheduledAt).toISOString()}.`,
+          },
+        ];
+      }
       return [
         { kind: "mention", mention: line.mention },
         {
@@ -233,19 +258,102 @@ function buildChildThreadBatchStatusLineSegments(
     { kind: "mention", mention: line.mention },
     {
       kind: "text",
-      text: ` ${childThreadTurnStatusLabel(line.item)}${workflowClause}.`,
+      text: ` ${childThreadTurnStatusLabel(line.item)}${workflowClause}.${line.item.turnStatus === "completed" && line.item.terminalOutput ? `\n${formatChildThreadCompletionOutputExcerpt(line.item.terminalOutput)}` : ""}`,
     },
   ];
 }
 
-function getChildThreadCompletionOutput(
+function completionExcerpt(text: string): string | null {
+  const excerpt = text
+    .split("\n")
+    .map((row) => row.trim().slice(0, 240))
+    .filter(Boolean)
+    .slice(-6)
+    .join("\n");
+  return excerpt || null;
+}
+
+export function nativeCompletionScreenExcerpt(rows: string[]): string | null {
+  const lines = rows.map((row) => row.trim());
+  const rule = (line: string) => /^[─━═╌╍\-_=]{3,}$/u.test(line);
+  const prompt = (line: string) => /^[❯›>❱](?:\s|$)/u.test(line);
+  let end = lines.length;
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    if (/^Resume .*session.*:/iu.test(lines[index] ?? "")) {
+      end = index;
+      break;
+    }
+  }
+  if (end === lines.length) {
+    for (let index = end - 1; index >= 0; index -= 1) {
+      if (prompt(lines[index] ?? "")) {
+        end = index;
+        break;
+      }
+    }
+  }
+  while (end > 0) {
+    const line = lines[end - 1] ?? "";
+    if (
+      !line ||
+      rule(line) ||
+      prompt(line) ||
+      /[│]|^Resume .*session.*:|^[✻✽✶·].*(?:done|tokens|\d+s)|^.*(?:shift\+tab|ctrl\+|paste again to expand)/iu.test(
+        line,
+      )
+    ) {
+      end -= 1;
+    } else break;
+  }
+  let start = end;
+  while (start > 0 && lines[start - 1]) start -= 1;
+  return completionExcerpt(lines.slice(start, end).join("\n"));
+}
+
+async function getChildThreadCompletionOutput(
   deps: LoggedPendingInteractionWorkSessionDeps,
   args: QueueChildThreadTurnNotificationArgs,
-): string | null {
+): Promise<string | null> {
   if (args.turnStatus !== "completed") {
     return null;
   }
-  return getLastThreadOutput(deps.db, args.childThread.id);
+  const native = getNativeTerminalThread(deps.db, args.childThread.id);
+  if (native === null)
+    return args.turnId === null
+      ? null
+      : getTurnFinalOutput(deps.db, {
+          threadId: args.childThread.id,
+          turnId: args.turnId,
+        });
+  if (args.lastAssistantText) {
+    const reply = completionExcerpt(args.lastAssistantText);
+    if (reply !== null) return reply;
+  }
+  if (native.terminalSessionId !== null) {
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const screen = await Promise.race([
+        deps.terminalSessions.readTerminalScreen({
+          terminalId: native.terminalSessionId,
+          query: { threadId: args.childThread.id },
+        }),
+        new Promise<null>((resolve) => {
+          deadline = setTimeout(() => resolve(null), 1_000);
+        }),
+      ]);
+      const excerpt =
+        screen === null ? null : nativeCompletionScreenExcerpt(screen.rows);
+      if (excerpt && excerpt.length > 0) return excerpt;
+    } catch (error) {
+      deps.logger.debug(
+        { err: error, threadId: args.childThread.id },
+        "Native child completion screen was unavailable",
+      );
+    } finally {
+      if (deadline !== undefined) clearTimeout(deadline);
+    }
+  }
+  return `${args.childThread.title ?? "Child thread"} turn ended.`;
 }
 
 function getChildThreadActiveWorkflowCount(
@@ -386,6 +494,28 @@ function childThreadTurnNotificationLogMessage(
   }
 }
 
+function failedChildErrorDetail(
+  deps: LoggedPendingInteractionWorkSessionDeps,
+  items: readonly ChildThreadTurnNotificationBatchItem[],
+): string | undefined {
+  const lines = items.flatMap((item) => {
+    if (item.turnStatus !== "failed" || item.retryScheduledAt !== undefined) {
+      return [];
+    }
+    const message = getLastThreadErrorMessage(
+      deps.db,
+      item.childThread.id,
+    )?.trim();
+    if (!message) return [];
+    const bounded =
+      message.length > CHILD_THREAD_ERROR_DETAIL_CHAR_LIMIT
+        ? `${message.slice(0, CHILD_THREAD_ERROR_DETAIL_CHAR_LIMIT).trimEnd()}...`
+        : message;
+    return [`- @thread:${item.childThread.id}: ${bounded}`];
+  });
+  return lines.length === 0 ? undefined : `Error details:\n${lines.join("\n")}`;
+}
+
 async function flushChildThreadTurnNotificationBatch(
   deps: LoggedPendingInteractionWorkSessionDeps,
   parentThreadId: string,
@@ -397,10 +527,20 @@ async function flushChildThreadTurnNotificationBatch(
   childThreadTurnNotificationBatches.delete(parentThreadId);
 
   try {
+    const input = buildChildThreadTurnStatusBatchInput({
+      items: batch.items,
+    });
+    if (isNativeTerminalThread(deps.db, parentThreadId)) {
+      const detail = failedChildErrorDetail(deps, batch.items);
+      enqueueNativeParentNotice(deps, {
+        input,
+        parentThreadId,
+        ...(detail === undefined ? {} : { detail }),
+      });
+      return;
+    }
     await queueParentSystemMessage(deps, {
-      input: buildChildThreadTurnStatusBatchInput({
-        items: batch.items,
-      }),
+      input,
       parentThreadId,
       ...childThreadTurnStatusBatchTaxonomy(batch.items),
     });
@@ -428,17 +568,20 @@ function scheduleChildThreadTurnNotificationBatchFlush(
   }, CHILD_THREAD_TURN_NOTIFICATION_BATCH_DELAY_MS);
 }
 
-function queueChildThreadTurnNotificationBatchItem(
+async function queueChildThreadTurnNotificationBatchItem(
   deps: LoggedPendingInteractionWorkSessionDeps,
   args: QueueChildThreadTurnNotificationArgs,
-): void {
+): Promise<void> {
   const item: ChildThreadTurnNotificationBatchItem = {
     activeWorkflowCount: getChildThreadActiveWorkflowCount(deps, args),
     childThread: args.childThread,
-    terminalOutput: getChildThreadCompletionOutput(deps, args),
+    terminalOutput: await getChildThreadCompletionOutput(deps, args),
     turnStatus: args.turnStatus,
     ...(args.failureContext ? { failureContext: args.failureContext } : {}),
     ...(args.interruption ? { interruption: args.interruption } : {}),
+    ...(args.retryScheduledAt !== undefined
+      ? { retryScheduledAt: args.retryScheduledAt }
+      : {}),
   };
   const existingBatch = childThreadTurnNotificationBatches.get(
     args.parentThreadId,
@@ -483,7 +626,7 @@ export async function queueChildThreadTurnNotificationBestEffort(
   args: QueueChildThreadTurnNotificationArgs,
 ): Promise<void> {
   try {
-    queueChildThreadTurnNotificationBatchItem(deps, args);
+    await queueChildThreadTurnNotificationBatchItem(deps, args);
   } catch (error) {
     deps.logger.error(
       {
@@ -502,11 +645,19 @@ export async function queueChildThreadNeedsAttentionNotificationBestEffort(
   args: QueueChildThreadNeedsAttentionNotificationArgs,
 ): Promise<void> {
   try {
+    const input = buildChildThreadNeedsAttentionInput({
+      blockerSummary: args.blockerSummary,
+      childThread: args.childThread,
+    });
+    if (isNativeTerminalThread(deps.db, args.parentThreadId)) {
+      enqueueNativeParentNotice(deps, {
+        input,
+        parentThreadId: args.parentThreadId,
+      });
+      return;
+    }
     await queueParentSystemMessage(deps, {
-      input: buildChildThreadNeedsAttentionInput({
-        blockerSummary: args.blockerSummary,
-        childThread: args.childThread,
-      }),
+      input,
       parentThreadId: args.parentThreadId,
       systemMessageKind: systemMessageKindForTemplate(
         "systemMessageChildThreadNeedsAttention",

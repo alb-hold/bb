@@ -15,10 +15,12 @@
     "generate:terminal-screen-worker": "node scripts/generate-terminal-screen-worker.mjs"
   },
   "dependencies": {
+    "@bb/async-cache": "workspace:*",
     "@bb/config": "workspace:*",
     "@bb/core-ui": "workspace:*",
     "@bb/db": "workspace:*",
     "@bb/domain": "workspace:*",
+    "@bb/file-transfer": "workspace:*",
     "@bb/host-daemon-contract": "workspace:*",
     "@bb/logger": "workspace:*",
     "@bb/plugin-build": "workspace:*",
@@ -39,6 +41,7 @@
     "@opentelemetry/api": "1.9.1",
     "@xterm/addon-unicode11": "^0.9.0",
     "@xterm/headless": "6.1.0-beta.292",
+    "bb-plugin-bb--git": "workspace:*",
     "better-auth": "^1.6.23",
     "better-sqlite3": "12.10.0",
     "cron-parser": "^5.5.0",

@@ -23,7 +23,7 @@ concurrency:
 jobs:
   checks:
     name: Checks (ubuntu-latest, Node 22.x)
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 30
 
     # `actions: read` is what lets the cache-usage check call the Actions API;
@@ -102,7 +102,7 @@ jobs:
   # the same 4 vCPUs, which made tests the critical path of every run.
   tests:
     name: Tests (${{ matrix.shard }}, ubuntu-latest, Node 22.x)
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 30
 
     strategy:
@@ -165,7 +165,7 @@ jobs:
   # TODO: cover the npm build, macOS, and the full `test:integration` suite.
   plugin-forks:
     name: Plugin Fork Check (ubuntu-latest, Node 22.x)
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 20
 
     steps:
@@ -189,7 +189,7 @@ jobs:
 
   provider-model-listing:
     name: Provider Model Listing
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 20
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/ours' }}
 

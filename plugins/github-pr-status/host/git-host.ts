@@ -901,15 +901,24 @@ function unconfiguredHostMessage(host: string): string {
   return `GitHub host ${host} is not configured in GitHub CLI`;
 }
 
+export async function prepareCurrentBranchRead(
+  args: GetPullRequestForCurrentBranchArgs,
+): Promise<PreparedRead> {
+  const target = await getPullRequestTarget(args);
+  if (target.outcome === "unavailable") return preparedResult(target);
+  const branchTarget = await resolveBranchReadTarget(args, target);
+  if (branchTarget === null)
+    return preparedResult({
+      outcome: "unavailable",
+      message: UNRESOLVED_REPOSITORY_MESSAGE,
+    });
+  return prepareRead(branchTarget, args.cwd, args.refresh);
+}
+
 export async function getPullRequestForCurrentBranch(
   args: GetPullRequestForCurrentBranchArgs,
 ): Promise<HostPullRequestLookup> {
-  const target = await getPullRequestTarget(args);
-  if (target.outcome === "unavailable") return target;
-  const branchTarget = await resolveBranchReadTarget(args, target);
-  if (branchTarget === null)
-    return { outcome: "unavailable", message: UNRESOLVED_REPOSITORY_MESSAGE };
-  return enqueueRead(branchTarget, args.cwd, args.refresh);
+  return startRead(await prepareCurrentBranchRead(args));
 }
 
 export async function runPullRequestActionForCurrentBranch(
@@ -1045,6 +1054,30 @@ type QueuedRead = {
   host: AdmittedGitHubHost;
   resolve(result: HostPullRequestLookup): void;
 };
+export type PreparedRead =
+  | {
+      kind: "batched";
+      target: ReadTarget;
+      cwd: string;
+      host: AdmittedGitHubHost;
+      group: string;
+      refresh: boolean;
+    }
+  | { kind: "direct"; run(): Promise<HostPullRequestLookup> };
+
+export function preparedResult(result: HostPullRequestLookup): PreparedRead {
+  return { kind: "direct", run: async () => result };
+}
+
+const MAX_DOCUMENT_READS = 25;
+const MAX_DOCUMENT_NODES = 500_000;
+
+function readNodes(target: ReadTarget): number {
+  return target.kind === "branch"
+    ? BRANCH_PULL_REQUESTS_PAGE * (1 + PULL_REQUEST_NODES)
+    : PULL_REQUEST_NODES;
+}
+
 const batches = new Map<string, QueuedRead[]>();
 const pendingReads = new Map<string, Promise<HostPullRequestLookup>>();
 const discovered = new Map<
@@ -1077,11 +1110,16 @@ async function credentialKey(admitted: AdmittedGitHubHost): Promise<string> {
     .digest("hex");
 }
 
+const REVIEW_REQUESTS_PAGE = 100;
+const CHECK_CONTEXTS_PAGE = 100;
+const BRANCH_PULL_REQUESTS_PAGE = 100;
+const PULL_REQUEST_NODES = REVIEW_REQUESTS_PAGE + 1 + CHECK_CONTEXTS_PAGE;
+
 function fields(cursor: string | null, mergeQueue: boolean): string {
   return `number title state url isDraft autoMergeRequest { enabledAt }${mergeQueue ? " isInMergeQueue" : ""}
-    baseRefName headRefName headRefOid updatedAt reviewDecision reviewRequests(first: 100) { totalCount }
+    baseRefName headRefName headRefOid updatedAt reviewDecision reviewRequests(first: ${REVIEW_REQUESTS_PAGE}) { totalCount }
     mergeStateStatus mergeable isCrossRepository headRepositoryOwner { login }
-    commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100${cursor === null ? "" : `, after: ${JSON.stringify(cursor)}`}) {
+    commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: ${CHECK_CONTEXTS_PAGE}${cursor === null ? "" : `, after: ${JSON.stringify(cursor)}`}) {
       nodes { ... on CheckRun { name status conclusion detailsUrl startedAt }
         ... on StatusContext { context state targetUrl createdAt } }
       pageInfo { hasNextPage endCursor }
@@ -1097,7 +1135,7 @@ function selection(
     return `${alias}: resource(url: ${JSON.stringify(target.url)}) { ... on PullRequest { ${fields(target.cursor, mergeQueue)} } }`;
   return `${alias}: repository(owner: ${JSON.stringify(target.owner)}, name: ${JSON.stringify(target.repository)}) {
     defaultBranchRef { name }
-    pullRequests(headRefName: ${JSON.stringify(target.branch)}, first: 100, orderBy: {field: CREATED_AT, direction: DESC}) {
+    pullRequests(headRefName: ${JSON.stringify(target.branch)}, first: ${BRANCH_PULL_REQUESTS_PAGE}, orderBy: {field: CREATED_AT, direction: DESC}) {
       nodes { ${fields(null, mergeQueue)} }
     }
   }`;
@@ -1254,8 +1292,24 @@ async function flushBatch(group: string): Promise<void> {
   const queued = batches.get(group);
   if (queued === undefined) return;
   batches.delete(group);
-  for (let offset = 0; offset < queued.length; offset += 25) {
-    const entries = queued.slice(offset, offset + 25);
+  const chunks: QueuedRead[][] = [];
+  let nodes = 0;
+  for (const entry of queued) {
+    const entryNodes = readNodes(entry.target);
+    const current = chunks.at(-1);
+    if (
+      current === undefined ||
+      current.length === MAX_DOCUMENT_READS ||
+      nodes + entryNodes > MAX_DOCUMENT_NODES
+    ) {
+      chunks.push([entry]);
+      nodes = entryNodes;
+      continue;
+    }
+    current.push(entry);
+    nodes += entryNodes;
+  }
+  for (const entries of chunks) {
     const paused = pausedUntil.get(group) ?? 0;
     if (paused > Date.now()) {
       for (const entry of entries)
@@ -1321,19 +1375,27 @@ async function flushBatch(group: string): Promise<void> {
   }
 }
 
-async function enqueueRead(
+async function prepareRead(
   target: ReadTarget,
   cwd: string,
   refresh = false,
-): Promise<HostPullRequestLookup> {
+): Promise<PreparedRead> {
   const host = await AdmittedGitHubHost.admit(target.host, cwd);
   if (host === null) {
-    return {
+    return preparedResult({
       outcome: "unavailable",
       message: admissionRefusal(target.host),
-    };
+    });
   }
   const group = await credentialKey(host);
+  return { kind: "batched", target, cwd, host, group, refresh };
+}
+
+export function startRead(
+  prepared: PreparedRead,
+): Promise<HostPullRequestLookup> {
+  if (prepared.kind === "direct") return prepared.run();
+  const { target, cwd, host, group, refresh } = prepared;
   const key = `${group}:${JSON.stringify(target)}`;
   if (refresh) discovered.delete(key);
   const cached = discovered.get(key);
@@ -1368,12 +1430,34 @@ async function enqueueRead(
   return result;
 }
 
-export function getPullRequestByUrl(
+export async function readPullRequests(
+  preparations: readonly Promise<PreparedRead>[],
+): Promise<HostPullRequestLookup[]> {
+  const prepared = await Promise.all(preparations);
+  return Promise.all(prepared.map(startRead));
+}
+
+async function enqueueRead(
+  target: ReadTarget,
+  cwd: string,
+  refresh = false,
+): Promise<HostPullRequestLookup> {
+  return startRead(await prepareRead(target, cwd, refresh));
+}
+
+export function prepareUrlRead(
   url: string,
   cwd: string,
-): Promise<HostPullRequestLookup> {
-  return enqueueRead(
+): Promise<PreparedRead> {
+  return prepareRead(
     { kind: "url", host: new URL(url).host, url, cursor: null },
     cwd,
   );
+}
+
+export async function getPullRequestByUrl(
+  url: string,
+  cwd: string,
+): Promise<HostPullRequestLookup> {
+  return startRead(await prepareUrlRead(url, cwd));
 }

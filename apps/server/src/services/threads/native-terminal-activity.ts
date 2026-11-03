@@ -1,14 +1,20 @@
 import {
+  clearNativeTerminalThreadActivityEvidence,
+  createInterruptedProviderPendingInteraction,
   getNativeTerminalThread,
+  getPendingInteractionByProviderRequest,
   getThread,
-  clearThreadRowState,
+  clearThreadRowStateAtOutputSeqs,
+  retagInterruptedPendingInteraction,
   stampNativeTerminalThreadActivity,
+  stampNativeTerminalThreadToolCall,
   type TerminalSessionRow,
 } from "@bb/db";
 import {
   isNativeTerminalQuestion,
   NATIVE_TERMINAL_ACTIVITY_HEARTBEAT_INTERVAL_MS,
   NATIVE_TERMINAL_QUESTION_REQUEST_PREFIX,
+  truncateNativeAssistantText,
   type Thread,
 } from "@bb/domain";
 import type {
@@ -16,6 +22,7 @@ import type {
   ReportNativeTerminalActivityRequest,
 } from "@bb/server-contract";
 import { ApiError } from "../../errors.js";
+import { DAEMON_RESTARTED_PENDING_INTERACTION_REASON } from "../interactions/pending-interactions.js";
 import {
   buildChildThreadBlockerSummary,
   requestChildThreadNeedsAttentionNotification,
@@ -27,11 +34,25 @@ import type {
 import { requirePublicThread } from "../lib/entity-lookup.js";
 import { applyLoggedThreadLifecycleEvent } from "./lifecycle-outcome.js";
 import {
+  describeRefusedNativeTerminalCredential,
+  isNativeTerminalRebindInFlight,
+  nativeTerminalAwaitsReattach,
   readRecordTerminal,
   requireLiveNativeTerminalToolThread,
   requireNativeTerminalToolCredential,
 } from "./native-terminal-threads.js";
+import {
+  interruptNativeTerminalQuestions,
+  NATIVE_QUESTION_ANSWERED_REASON,
+  rejectedQuestions,
+} from "./native-terminal-questions.js";
+import { flushNativeParentNotices } from "./native-parent-notices.js";
+import { queueChildThreadTurnNotificationBestEffort } from "./child-thread-notifications.js";
+import { isParentNotifiableChildThread } from "./thread-parent.js";
+import { reconcileNativeThreadStatus } from "./native-thread-status.js";
 import { buildThreadStatusChangeMetadata } from "./thread-runtime-display.js";
+
+export { interruptNativeTerminalQuestions };
 import { generateAndApplyThreadTitle } from "./title-generation.js";
 
 type NativeTerminalActivityDeps = LoggedPendingInteractionWorkSessionDeps &
@@ -41,14 +62,24 @@ type NativeTerminalActivityDeps = LoggedPendingInteractionWorkSessionDeps &
   >;
 
 const activeNativeThreads = new WeakMap<AppDeps["hub"], Set<string>>();
-const rejectedNativeQuestions = new WeakMap<
-  AppDeps["hub"],
-  Map<string, Set<string>>
->();
 const nativeActivityReports = new WeakMap<
   AppDeps["hub"],
   Map<string, { signature: string; lastNotifiedAt: number }>
 >();
+
+const nativeToolCallNotifications = new WeakMap<
+  AppDeps["hub"],
+  Map<string, number>
+>();
+
+function toolCallNotifications(deps: Pick<AppDeps, "hub">) {
+  let notified = nativeToolCallNotifications.get(deps.hub);
+  if (notified === undefined) {
+    notified = new Map();
+    nativeToolCallNotifications.set(deps.hub, notified);
+  }
+  return notified;
+}
 
 function reportStates(deps: Pick<AppDeps, "hub">) {
   let states = nativeActivityReports.get(deps.hub);
@@ -59,22 +90,106 @@ function reportStates(deps: Pick<AppDeps, "hub">) {
   return states;
 }
 
-function hasCurrentLiveTerminalCredential(
+const REFUSED_HOLDER_LOG_INTERVAL_MS = 10 * 60_000;
+const nativeReplies = new WeakMap<
+  NativeTerminalActivityDeps["db"],
+  Map<string, string>
+>();
+
+export function getNativeTerminalLastAssistantText(
+  deps: Pick<NativeTerminalActivityDeps, "db">,
+  threadId: string,
+): string | null {
+  return nativeReplies.get(deps.db)?.get(threadId) ?? null;
+}
+
+export function clearNativeTerminalLastAssistantText(
+  deps: Pick<NativeTerminalActivityDeps, "db">,
+  threadId: string,
+): void {
+  nativeReplies.get(deps.db)?.delete(threadId);
+}
+const REFUSED_HOLDER_STATE_LIMIT = 512;
+
+interface RefusedHolderState {
+  loggedAt: number | null;
+  reconciledAt: number | null;
+  refusedSinceLog: number;
+}
+
+const refusedHolders = new WeakMap<
+  AppDeps["hub"],
+  Map<string, RefusedHolderState>
+>();
+
+function refusedHolderStates(deps: Pick<AppDeps, "hub">) {
+  let states = refusedHolders.get(deps.hub);
+  if (states === undefined) {
+    states = new Map();
+    refusedHolders.set(deps.hub, states);
+  }
+  return states;
+}
+
+function handleRefusedHolderReport(
+  deps: NativeTerminalActivityDeps,
+  args: { authorization: string | undefined; threadId: string },
+): void {
+  const now = Date.now();
+  const states = refusedHolderStates(deps);
+  let state = states.get(args.threadId);
+  if (state === undefined) {
+    if (states.size >= REFUSED_HOLDER_STATE_LIMIT) {
+      const oldest = states.keys().next().value;
+      if (oldest !== undefined) states.delete(oldest);
+    }
+    state = { loggedAt: null, reconciledAt: null, refusedSinceLog: 0 };
+    states.set(args.threadId, state);
+  }
+  state.refusedSinceLog += 1;
+  if (
+    state.loggedAt === null ||
+    now - state.loggedAt >= REFUSED_HOLDER_LOG_INTERVAL_MS
+  ) {
+    deps.logger.warn(
+      {
+        ...describeRefusedNativeTerminalCredential(deps, args),
+        refusedSinceLastLog: state.refusedSinceLog,
+        threadId: args.threadId,
+      },
+      "A native terminal activity report without the current holder credential was rejected",
+    );
+    state.loggedAt = now;
+    state.refusedSinceLog = 0;
+  }
+  if (
+    state.reconciledAt === null ||
+    now - state.reconciledAt >= NATIVE_TERMINAL_ACTIVITY_HEARTBEAT_INTERVAL_MS
+  ) {
+    state.reconciledAt = now;
+    void reconcileNativeThreadStatus(deps, args.threadId).catch(
+      (error: unknown) => {
+        deps.logger.debug(
+          { err: error, threadId: args.threadId },
+          "Native status reconciliation after a refused holder report failed",
+        );
+      },
+    );
+  }
+}
+
+function hasCurrentTerminalCredential(
   deps: Pick<AppDeps, "db" | "terminalSessions">,
   args: { authorization: string | undefined; threadId: string },
 ): boolean {
   if (args.authorization === undefined) return false;
   try {
     requireNativeTerminalToolCredential(deps, args);
-    requireLiveNativeTerminalToolThread(deps, args.threadId);
     return true;
   } catch (error) {
     if (
       error instanceof ApiError &&
-      (error.body.code === "native_terminal_credential_invalid" ||
-        error.body.code === "native_terminal_not_live" ||
-        error.body.code === "thread_environment_unavailable" ||
-        error.body.code === "environment_not_found")
+      error.body.code === "native_terminal_credential_invalid"
     ) {
       return false;
     }
@@ -82,18 +197,32 @@ function hasCurrentLiveTerminalCredential(
   }
 }
 
-function rejectedQuestions(deps: Pick<AppDeps, "hub">, threadId: string) {
-  let byThread = rejectedNativeQuestions.get(deps.hub);
-  if (byThread === undefined) {
-    byThread = new Map();
-    rejectedNativeQuestions.set(deps.hub, byThread);
+type CurrentTerminalState = "live" | "awaiting-reattach" | "unavailable";
+
+function currentTerminalState(
+  deps: Pick<AppDeps, "db" | "terminalSessions">,
+  threadId: string,
+): CurrentTerminalState {
+  try {
+    requireLiveNativeTerminalToolThread(deps, threadId);
+    return "live";
+  } catch (error) {
+    if (error instanceof ApiError) {
+      if (error.body.code === "native_terminal_not_live") {
+        if (nativeTerminalAwaitsReattach(deps, threadId)) {
+          return "awaiting-reattach";
+        }
+        throw error;
+      }
+      if (
+        error.body.code === "thread_environment_unavailable" ||
+        error.body.code === "environment_not_found"
+      ) {
+        return "unavailable";
+      }
+    }
+    throw error;
   }
-  let questions = byThread.get(threadId);
-  if (questions === undefined) {
-    questions = new Set();
-    byThread.set(threadId, questions);
-  }
-  return questions;
 }
 
 function activeThreads(deps: Pick<AppDeps, "hub">): Set<string> {
@@ -122,31 +251,57 @@ function requireNativeRecord(deps: Pick<AppDeps, "db">, threadId: string) {
 
 const NATIVE_QUESTION_REQUEST_PREFIX = NATIVE_TERMINAL_QUESTION_REQUEST_PREFIX;
 const NATIVE_QUESTION_TURN_ID = "native-terminal-turn";
-const NATIVE_QUESTION_ANSWERED_REASON = "native-terminal-question-answered";
 
 export function recordNativeTerminalActivity(
   deps: NativeTerminalActivityDeps,
   args: {
     authorization?: string;
+    confirms: boolean;
     threadId: string;
-  } & ReportNativeTerminalActivityRequest,
+  } & Omit<ReportNativeTerminalActivityRequest, "confirms">,
 ): void {
+  requireNativeRecord(deps, args.threadId);
+  const credentialIsCurrent = hasCurrentTerminalCredential(deps, {
+    authorization: args.authorization,
+    threadId: args.threadId,
+  });
+  if (args.authorization !== undefined && !credentialIsCurrent) {
+    handleRefusedHolderReport(deps, {
+      authorization: args.authorization,
+      threadId: args.threadId,
+    });
+    throw new ApiError(
+      401,
+      "native_terminal_credential_invalid",
+      "A valid credential for this thread's current native terminal is required",
+    );
+  }
   const active = activeThreads(deps);
   const repeatedWorkingSignal =
     args.state === "working" &&
     args.prompt === undefined &&
+    (args.closes?.length ?? 0) === 0 &&
     active.has(args.threadId);
-  if (repeatedWorkingSignal && args.authorization === undefined) return;
+  if (args.authorization === undefined && repeatedWorkingSignal) return;
+  let currentTerminalIsLive: boolean;
+  try {
+    currentTerminalIsLive =
+      currentTerminalState(deps, args.threadId) === "live";
+  } catch (error) {
+    deps.logger.warn(
+      { threadId: args.threadId },
+      "A native terminal activity report for a terminal that is not running was rejected",
+    );
+    throw error;
+  }
   const now = Date.now();
   let notifyReceipt = false;
-  const currentTerminalIsLive = hasCurrentLiveTerminalCredential(deps, {
-    authorization: args.authorization,
-    threadId: args.threadId,
-  });
-  const currentNativeRecord = currentTerminalIsLive
-    ? getNativeTerminalThread(deps.db, args.threadId)
-    : null;
+  const currentNativeRecord =
+    currentTerminalIsLive && !isNativeTerminalRebindInFlight(args.threadId)
+      ? getNativeTerminalThread(deps.db, args.threadId)
+      : null;
   if (
+    args.confirms &&
     currentNativeRecord !== null &&
     currentNativeRecord.terminalSessionId !== null
   ) {
@@ -158,6 +313,7 @@ export function recordNativeTerminalActivity(
     if (stamp.updated) {
       const states = reportStates(deps);
       const signature = JSON.stringify({
+        closes: args.closes ?? [],
         prompt: args.prompt ?? null,
         questions: args.questions ?? [],
         state: args.state,
@@ -211,29 +367,113 @@ export function recordNativeTerminalActivity(
     });
     working = outcome.applied && outcome.thread.status === "active";
   }
+  let replies = nativeReplies.get(deps.db);
+  if (replies === undefined) {
+    replies = new Map();
+    nativeReplies.set(deps.db, replies);
+  }
+  if (args.state !== "idle") replies.delete(thread.id);
+  const lastAssistantText =
+    args.lastAssistantText === undefined
+      ? undefined
+      : truncateNativeAssistantText(args.lastAssistantText);
+  if (lastAssistantText !== undefined) {
+    if (replies.size >= 512) {
+      const oldest = replies.keys().next().value;
+      if (oldest !== undefined) replies.delete(oldest);
+    }
+    replies.set(thread.id, lastAssistantText);
+  }
   if (args.state === "idle") settleNativeTerminalTurn(deps, thread.id);
-  reconcileNativeQuestions(deps, {
+  const resolvedQuestions = reconcileNativeQuestions(deps, {
+    closes: args.closes,
     nativeSessionId: record.nativeSessionId,
     questions: args.questions ?? [],
     thread,
   });
+  if (
+    !args.confirms &&
+    resolvedQuestions > 0 &&
+    currentNativeRecord !== null &&
+    currentNativeRecord.terminalSessionId !== null
+  ) {
+    const cleared = clearNativeTerminalThreadActivityEvidence(deps.db, {
+      at: now,
+      terminalSessionId: currentNativeRecord.terminalSessionId,
+      threadId: args.threadId,
+    });
+    if (cleared.cleared) {
+      reportStates(deps).delete(args.threadId);
+      deps.hub.notifyThread(
+        args.threadId,
+        ["status-changed"],
+        buildThreadStatusChangeMetadata(
+          deps,
+          requirePublicThread(deps.db, args.threadId),
+        ),
+      );
+    }
+  }
   if (args.prompt !== undefined) {
     titleNativeThreadFromPrompt(deps, thread.id, args.prompt);
   }
   if (args.state === "working" && working) active.add(thread.id);
 }
 
-export function interruptNativeTerminalQuestions(
-  deps: Pick<AppDeps, "pendingInteractions">,
-  threadId: string,
-  keep: ReadonlySet<string> = new Set(),
+export function recordNativeTerminalToolCallEvidence(
+  deps: AppDeps,
+  args: { terminalSessionId: string; threadId: string },
 ): void {
+  try {
+    if (isNativeTerminalRebindInFlight(args.threadId)) return;
+    const now = Date.now();
+    const stamp = stampNativeTerminalThreadToolCall(deps.db, {
+      at: now,
+      terminalSessionId: args.terminalSessionId,
+      threadId: args.threadId,
+    });
+    if (!stamp.updated) return;
+    const notified = toolCallNotifications(deps);
+    const lastNotifiedAt = notified.get(args.threadId);
+    const notifiedRecently =
+      stamp.previousLastToolCallAt !== null &&
+      lastNotifiedAt !== undefined &&
+      now >= lastNotifiedAt &&
+      now - lastNotifiedAt < NATIVE_TERMINAL_ACTIVITY_HEARTBEAT_INTERVAL_MS;
+    if (notifiedRecently) return;
+    notified.set(args.threadId, now);
+    const thread = requirePublicThread(deps.db, args.threadId);
+    deps.hub.notifyThread(
+      args.threadId,
+      ["status-changed"],
+      buildThreadStatusChangeMetadata(deps, thread),
+    );
+  } catch (error) {
+    deps.logger.warn(
+      { err: error, threadId: args.threadId },
+      "Native terminal tool-call evidence was not recorded",
+    );
+  }
+}
+
+function closeNamedNativeQuestions(
+  deps: Pick<AppDeps, "db" | "pendingInteractions">,
+  args: {
+    nativeSessionId: string | null;
+    questionIds: readonly string[];
+    thread: Thread;
+  },
+): number {
+  const remaining = new Set(
+    args.questionIds.map((id) => `${NATIVE_QUESTION_REQUEST_PREFIX}${id}`),
+  );
+  let closed = 0;
   for (const interaction of deps.pendingInteractions.listPendingThreadInteractions(
-    threadId,
+    args.thread.id,
   )) {
     if (
       !isNativeTerminalQuestion(interaction) ||
-      keep.has(interaction.providerRequestId)
+      !remaining.has(interaction.providerRequestId)
     ) {
       continue;
     }
@@ -241,17 +481,61 @@ export function interruptNativeTerminalQuestions(
       interactionId: interaction.id,
       reason: NATIVE_QUESTION_ANSWERED_REASON,
     });
+    remaining.delete(interaction.providerRequestId);
+    closed += 1;
   }
+  const providerThreadId = args.nativeSessionId ?? args.thread.id;
+  for (const providerRequestId of remaining) {
+    const identity = {
+      providerId: args.thread.providerId,
+      providerRequestId,
+      providerThreadId,
+    };
+    const existing = getPendingInteractionByProviderRequest(deps.db, identity);
+    if (existing === null) {
+      createInterruptedProviderPendingInteraction(deps.db, {
+        ...identity,
+        payload: JSON.stringify({
+          kind: "user_question",
+          questions: [
+            {
+              id: providerRequestId,
+              prompt: "Closed before it was reported",
+              multiSelect: false,
+              allowFreeText: true,
+              required: true,
+            },
+          ],
+        }),
+        statusReason: NATIVE_QUESTION_ANSWERED_REASON,
+        threadId: args.thread.id,
+        turnId: NATIVE_QUESTION_TURN_ID,
+      });
+    } else if (
+      existing.threadId === args.thread.id &&
+      existing.status === "interrupted" &&
+      existing.statusReason === DAEMON_RESTARTED_PENDING_INTERACTION_REASON
+    ) {
+      retagInterruptedPendingInteraction(deps.db, {
+        fromStatusReason: DAEMON_RESTARTED_PENDING_INTERACTION_REASON,
+        id: existing.id,
+        threadId: args.thread.id,
+        toStatusReason: NATIVE_QUESTION_ANSWERED_REASON,
+      });
+    }
+  }
+  return closed;
 }
 
 function reconcileNativeQuestions(
   deps: NativeTerminalActivityDeps,
   args: {
+    closes: readonly string[] | undefined;
     nativeSessionId: string | null;
     questions: readonly NativeTerminalOpenQuestion[];
     thread: Thread;
   },
-): void {
+): number {
   const wanted = new Map(
     args.questions
       .map(
@@ -266,11 +550,20 @@ function reconcileNativeQuestions(
           !rejectedQuestions(deps, args.thread.id).has(providerRequestId),
       ),
   );
-  interruptNativeTerminalQuestions(
-    deps,
-    args.thread.id,
-    new Set(wanted.keys()),
-  );
+  const interrupted =
+    args.closes === undefined
+      ? interruptNativeTerminalQuestions(
+          deps,
+          args.thread.id,
+          new Set(wanted.keys()),
+        )
+      : closeNamedNativeQuestions(deps, {
+          nativeSessionId: args.nativeSessionId,
+          questionIds: args.closes.filter(
+            (id) => !wanted.has(`${NATIVE_QUESTION_REQUEST_PREFIX}${id}`),
+          ),
+          thread: args.thread,
+        });
   for (const [providerRequestId, question] of wanted) {
     const registered = deps.pendingInteractions.registerPendingInteraction({
       interaction: {
@@ -287,6 +580,7 @@ function reconcileNativeQuestions(
               prompt: question.prompt,
               multiSelect: false,
               allowFreeText: true,
+              required: true,
             },
           ],
         },
@@ -307,13 +601,11 @@ function reconcileNativeQuestions(
       });
     }
   }
+  return interrupted;
 }
 
 export function clearNativeTerminalStateOnExit(
-  deps: Pick<
-    AppDeps,
-    "db" | "hub" | "logger" | "pendingInteractions" | "providerRegistry"
-  >,
+  deps: LoggedPendingInteractionWorkSessionDeps,
   session: Pick<TerminalSessionRow, "closeReason" | "id" | "threadId">,
 ): void {
   if (
@@ -325,7 +617,7 @@ export function clearNativeTerminalStateOnExit(
   const record = getNativeTerminalThread(deps.db, session.threadId);
   if (record === null || record.terminalSessionId !== session.id) return;
   interruptNativeTerminalQuestions(deps, session.threadId);
-  clearThreadRowState(deps.db, session.threadId);
+  clearThreadRowStateAtOutputSeqs(deps.db, session.threadId);
   deps.hub.notifyThread(session.threadId, ["status-changed"]);
   if (session.closeReason === "process-exit") {
     settleNativeTerminalTurn(deps, session.threadId);
@@ -333,14 +625,28 @@ export function clearNativeTerminalStateOnExit(
 }
 
 export function settleNativeTerminalTurn(
-  deps: Pick<AppDeps, "db" | "hub" | "logger" | "providerRegistry">,
+  deps: LoggedPendingInteractionWorkSessionDeps,
   threadId: string,
 ): void {
-  if (getThread(deps.db, threadId)?.status !== "active") return;
-  applyLoggedThreadLifecycleEvent(deps, {
-    event: { type: "run.succeeded" },
-    threadId,
-  });
+  const thread = getThread(deps.db, threadId);
+  if (thread?.status === "active") {
+    const outcome = applyLoggedThreadLifecycleEvent(deps, {
+      event: { type: "run.succeeded" },
+      threadId,
+    });
+    if (outcome.applied && isParentNotifiableChildThread(thread, "completed")) {
+      void queueChildThreadTurnNotificationBestEffort(deps, {
+        childThread: thread,
+        parentThreadId: thread.parentThreadId,
+        turnStatus: "completed",
+        turnId: null,
+        ...(nativeReplies.get(deps.db)?.get(threadId) === undefined
+          ? {}
+          : { lastAssistantText: nativeReplies.get(deps.db)?.get(threadId) }),
+      });
+    }
+  }
+  flushNativeParentNotices(deps, threadId);
 }
 
 function titleNativeThreadFromPrompt(

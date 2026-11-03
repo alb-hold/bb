@@ -25,6 +25,43 @@ describe("bb thread list command output", () => {
     return { ...makeThreadListEntry(thread), ...thread };
   };
 
+  it.each(
+    [false, true].flatMap((clean) =>
+      [false, true].map((json) => ({ clean, json })),
+    ),
+  )(
+    "uses non-error display for clean=$clean in list json=$json",
+    async ({ clean, json }) => {
+      const thread = makeThreadListFixture({
+        id: "thr-exit-list",
+        projectId: "project-exit",
+        providerId: "codex",
+        status: "error",
+      });
+      const runtime = {
+        displayStatus: "error",
+        ...(clean ? { nativeSessionExit: "clean" } : {}),
+      };
+      stubServerApi({
+        "v1.threads.$get": async () => [{ ...thread, runtime }],
+        "v1.projects.$get": async () => [],
+      });
+      await runCommand(
+        ["thread", "list", ...(json ? ["--json"] : [])],
+        register,
+      );
+      const output = collectLogPayloads(vi.mocked(console.log)).join("\n");
+      if (json) {
+        const [row] = JSON.parse(output);
+        expect(row.status).toBe(clean ? "idle" : "error");
+        expect(row.runtime.nativeSessionExit).toBe(clean ? "clean" : undefined);
+      } else {
+        expect(output).toContain(clean ? "idle" : "error");
+        if (clean) expect(output).not.toContain("error");
+      }
+    },
+  );
+
   it("bb thread list supports parent-thread filtering", async () => {
     const list = vi.fn(async () => []);
     stubServerApi({ "v1.threads.$get": list });
@@ -309,6 +346,7 @@ describe("bb thread list command output", () => {
             lastEvidenceAt: null,
             freshForMs: 90_000,
             confirmation: "unconfirmed" as const,
+            evidenceKind: "unknown" as const,
           },
         },
         activity: {
@@ -328,7 +366,7 @@ describe("bb thread list command output", () => {
     await runCommand(["thread", "list"], register);
 
     const table = collectLogPayloads(vi.mocked(console.log)).join("\n");
-    expect(table).toContain("active (activity unconfirmed)");
+    expect(table).toContain("active (activity not reported)");
     expect(table).not.toContain("Working");
   });
 
@@ -357,6 +395,7 @@ describe("bb thread list command output", () => {
           lastEvidenceAt: null,
           freshForMs: 90_000,
           confirmation: "unconfirmed" as const,
+          evidenceKind: "unknown" as const,
         },
       },
       activity: {
@@ -383,7 +422,7 @@ describe("bb thread list command output", () => {
     await runCommand(["thread", "list"], register);
 
     const table = collectLogPayloads(vi.mocked(console.log)).join("\n");
-    expect(table).toContain("active (activity unconfirmed)");
+    expect(table).toContain("active (activity not reported)");
     expect(table).toContain("Needs input");
     expect(table).toContain("Working");
   });

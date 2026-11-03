@@ -103,22 +103,6 @@ function autoDiscoveryExplicitlyDisabled(env) {
     env.CSC_IDENTITY_AUTO_DISCOVERY.trim() === "false"
   );
 }
-
-/**
- * Resolves one of three signing modes:
- *
- * - "environment": all CI signing/notarization secrets are set — sign with the
- *   provided certificate and notarize (the published-release path).
- * - "keychain": no secrets — sign with an auto-discovered keychain identity and
- *   skip notarization. Locally built apps never get the quarantine xattr, so
- *   notarization is unnecessary, but a valid signature is not optional: an
- *   unsigned bundle is provenance-tracked by macOS, which forces syspolicyd to
- *   evaluate every exec in the app's process tree and can stall execs
- *   system-wide. Machines without a signing identity fall back to unsigned
- *   artifacts inside electron-builder.
- * - "disabled": no secrets and CSC_IDENTITY_AUTO_DISCOVERY=false — explicitly
- *   unsigned (the CI path for workflow-artifact-only builds).
- */
 function createSigningPlan(env) {
   const presentSigningKeys = presentEnvironmentKeys(
     requiredSigningEnvironmentKeys,
@@ -174,7 +158,6 @@ function resolveElectronBuilderConfig(baseConfig, env, electronBuilderArgs) {
   } else if (signingPlan.identityName) {
     mac.identity = signingPlan.identityName;
   } else {
-    // Let electron-builder resolve the identity (CSC_LINK or keychain).
     delete mac.identity;
   }
 

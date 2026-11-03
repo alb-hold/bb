@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   chmodSync,
@@ -14,7 +14,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { createServer as createNetServer } from "node:net";
-import { delimiter, dirname, join } from "node:path";
+import { basename, delimiter, dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 const SCRIPT_PATH = new URL(
@@ -22,11 +22,37 @@ const SCRIPT_PATH = new URL(
   import.meta.url,
 );
 const createdDirectories: string[] = [];
+let fixtureDaemonPort: number | undefined;
 const FIXTURE_ARTIFACT_DIGEST = createHash("sha256")
   .update("fixture-tarball")
   .digest("hex");
 
-function createFixture(): { binDir: string; dataDir: string; homeDir: string } {
+function reserveFreePort(): number {
+  const probe = spawnSync(
+    process.execPath,
+    [
+      "-e",
+      'const server = require("node:net").createServer(); server.listen(0, "127.0.0.1", () => { process.stdout.write(String(server.address().port)); server.close(); });',
+    ],
+    { encoding: "utf8" },
+  );
+  const port = Number(probe.stdout);
+  if (!Number.isInteger(port) || port <= 0) {
+    throw new Error(`could not reserve a free port: ${probe.stderr}`);
+  }
+  return port;
+}
+
+function getFixtureDaemonPort(): number {
+  fixtureDaemonPort ??= reserveFreePort();
+  return fixtureDaemonPort;
+}
+
+function createFixture(options: { privatePort?: boolean } = {}): {
+  binDir: string;
+  dataDir: string;
+  homeDir: string;
+} {
   const root = mkdtempSync(join(tmpdir(), "bb-install-script-test-"));
   createdDirectories.push(root);
   const binDir = join(root, "bin");
@@ -41,6 +67,9 @@ function createFixture(): { binDir: string; dataDir: string; homeDir: string } {
     join(binDir, "sleep"),
     '#!/bin/sh\ncase "$1" in 1) exec /bin/sleep 0.1 ;; *) exec /bin/sleep "$@" ;; esac\n',
   );
+  if (options.privatePort !== false) {
+    writeFileSync(join(dataDir, "host-daemon-port"), `${reserveFreePort()}\n`);
+  }
   return { binDir, dataDir, homeDir };
 }
 
@@ -308,16 +337,108 @@ function writeUnreachableUserBus(fixture: Fixture, init: string): void {
   writeExecutable(join(fixture.binDir, "loginctl"), "#!/bin/sh\nexit 1\n");
 }
 
-afterEach(() => {
-  for (const directory of createdDirectories.splice(0)) {
-    try {
-      const servicePid = Number(
-        readFileSync(join(directory, "data/service-daemon.pid"), "utf8"),
-      );
-      process.kill(servicePid, "SIGTERM");
-    } catch {}
-    rmSync(directory, { force: true, recursive: true });
+const DAEMON_EXIT_TIMEOUT_MS = 3_000;
+const DAEMON_PID_FILES = ["install-daemon.pid", "service-daemon.pid"];
+
+function isRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
   }
+}
+
+function isFixtureStub(pid: number, root: string, ps = "ps"): boolean {
+  const command = spawnSync(ps, ["-p", String(pid), "-o", "command="], {
+    encoding: "utf8",
+  }).stdout.trim();
+  const [launcher, script] = command.split(/\s+/u);
+  return (
+    launcher !== undefined &&
+    basename(launcher) === "node" &&
+    (script === join(root, "bin", "bb-app") ||
+      script === join(root, "data", "npm", "bin", "bb-app"))
+  );
+}
+
+function signalFixtureStub(
+  pid: number,
+  root: string,
+  signal: "SIGTERM" | "SIGKILL",
+  ps = "ps",
+): boolean {
+  if (!isFixtureStub(pid, root, ps)) return false;
+  try {
+    process.kill(pid, signal);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function recordedDaemons(root: string): number[] {
+  const pids: number[] = [];
+  for (const name of DAEMON_PID_FILES) {
+    try {
+      const pid = Number.parseInt(
+        readFileSync(join(root, "data", name), "utf8").trim(),
+        10,
+      );
+      if (Number.isInteger(pid) && pid > 1) pids.push(pid);
+    } catch {}
+  }
+  return pids;
+}
+
+function remainingFixtureProcesses(roots: string[]): number[] {
+  const listing = spawnSync("ps", ["-axo", "pid=,command="], {
+    encoding: "utf8",
+  }).stdout;
+  const pids: number[] = [];
+  for (const line of listing.split("\n")) {
+    const match = /^\s*(\d+)\s(.*)$/u.exec(line);
+    if (match === null || Number(match[1]) === process.pid) continue;
+    if (roots.some((root) => match[2]?.includes(root))) {
+      pids.push(Number(match[1]));
+    }
+  }
+  return pids;
+}
+
+async function stopFixtureDaemons(
+  roots: string[],
+  options: { afterTerm?: () => void; ps?: string } = {},
+): Promise<number[]> {
+  const recorded = roots.flatMap((root) =>
+    recordedDaemons(root).map((pid) => ({ pid, root })),
+  );
+  const stopped = recorded
+    .filter(({ pid, root }) =>
+      signalFixtureStub(pid, root, "SIGTERM", options.ps),
+    )
+    .map(({ pid }) => pid);
+  const deadline = Date.now() + DAEMON_EXIT_TIMEOUT_MS;
+  while (stopped.some((pid) => isRunning(pid)) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  options.afterTerm?.();
+  for (const { pid, root } of recorded) {
+    if (isRunning(pid)) {
+      signalFixtureStub(pid, root, "SIGKILL", options.ps);
+    }
+  }
+  return stopped;
+}
+
+afterEach(async () => {
+  const roots = createdDirectories.splice(0);
+  await stopFixtureDaemons(roots);
+  const remaining = remainingFixtureProcesses(roots);
+  for (const root of roots) {
+    rmSync(root, { force: true, recursive: true });
+  }
+  expect(remaining).toEqual([]);
 });
 
 const describeOnPosix = process.platform === "win32" ? describe.skip : describe;
@@ -347,6 +468,7 @@ exec '${process.execPath}' "$@"
       );
       writeExecutable(join(fixture.binDir, "id"), `#!/bin/sh\necho ${uid}\n`);
       writeCurlArtifactMock(fixture, 404);
+      writeExecutable(join(fixture.binDir, "npm"), "#!/bin/sh\nexit 19\n");
       const result = runScript(BOOTSTRAP_ARGS, fixture, {
         HOME: unset ? undefined : fixture.homeDir,
       });
@@ -377,7 +499,10 @@ exec '${process.execPath}' "$@"
       join(fixture.homeDir, ".bb-machines", "owned"),
     );
     writeJoinedState({ ...fixture, dataDir });
-    writeFileSync(join(dataDir, "host-daemon-port"), "40000\n");
+    writeFileSync(
+      join(dataDir, "host-daemon-port"),
+      `${getFixtureDaemonPort()}\n`,
+    );
     const invocationPath = join(dataDir, "invocation");
     mkdirSync(join(dataDir, "npm", "bin"), { recursive: true });
     writeExecutable(
@@ -398,7 +523,7 @@ exec '${process.execPath}' "$@"
         "--auto-update",
         "--supervise",
         "--host-daemon-port",
-        "40000",
+        String(getFixtureDaemonPort()),
         "--server-url",
         "https://machine.getbb.app",
       ]);
@@ -418,7 +543,10 @@ exec '${process.execPath}' "$@"
       join(fixture.homeDir, ".bb-machines", "owned"),
     );
     writeJoinedState({ ...fixture, dataDir });
-    writeFileSync(join(dataDir, "host-daemon-port"), "40000\n");
+    writeFileSync(
+      join(dataDir, "host-daemon-port"),
+      `${getFixtureDaemonPort()}\n`,
+    );
     const serviceDir = join(fixture.homeDir, ".config", "systemd", "user");
     const serviceName = "bb-host-daemon-machine-getbb-app-host-test.service";
     const servicePath = join(serviceDir, serviceName);
@@ -468,7 +596,10 @@ exec '${process.execPath}' "$@"
       { ...fixture, dataDir },
       "https://desk.tailnet.example:38886",
     );
-    writeFileSync(join(dataDir, "host-daemon-port"), "40000\n");
+    writeFileSync(
+      join(dataDir, "host-daemon-port"),
+      `${getFixtureDaemonPort()}\n`,
+    );
     const serviceDir = join(fixture.homeDir, ".config", "systemd", "user");
     const serviceName = "bb-host-daemon-machine-getbb-app-host-test.service";
     const servicePath = join(serviceDir, serviceName);
@@ -523,7 +654,10 @@ exec '${process.execPath}' "$@"
       join(fixture.homeDir, ".bb-machines", "machine.getbb.app"),
     );
     writeJoinedState({ ...fixture, dataDir }, "https://desk.tailnet.example");
-    writeFileSync(join(dataDir, "host-daemon-port"), "40000\n");
+    writeFileSync(
+      join(dataDir, "host-daemon-port"),
+      `${getFixtureDaemonPort()}\n`,
+    );
     const agentDir = join(fixture.homeDir, "Library", "LaunchAgents");
     const agentPath = join(
       agentDir,
@@ -561,7 +695,10 @@ exec '${process.execPath}' "$@"
       join(fixture.homeDir, ".bb-machines", "machine.getbb.app"),
     );
     writeJoinedState({ ...fixture, dataDir }, "https://desk.tailnet.example");
-    writeFileSync(join(dataDir, "host-daemon-port"), "40000\n");
+    writeFileSync(
+      join(dataDir, "host-daemon-port"),
+      `${getFixtureDaemonPort()}\n`,
+    );
     const serviceDir = join(fixture.homeDir, ".config", "systemd", "user");
     mkdirSync(serviceDir, { recursive: true });
     for (const serviceName of [
@@ -594,6 +731,155 @@ exec '${process.execPath}' "$@"
     );
     expect(existsSync(dataDir)).toBe(true);
     expect(existsSync(systemctlLog)).toBe(false);
+  });
+
+  describe("fixture daemon cleanup", () => {
+    it("does not signal a recorded pid that is not a fixture stub", async () => {
+      const fixture = createFixture();
+      const root = dirname(fixture.binDir);
+      const bystander = spawn("sleep", ["30"], { stdio: "ignore" });
+      try {
+        for (const name of DAEMON_PID_FILES) {
+          writeFileSync(join(fixture.dataDir, name), `${bystander.pid}\n`);
+        }
+        const stopped = await stopFixtureDaemons([root]);
+        expect(stopped).toEqual([]);
+        expect(bystander.pid !== undefined && isRunning(bystander.pid)).toBe(
+          true,
+        );
+      } finally {
+        bystander.kill("SIGKILL");
+      }
+    });
+
+    it("skips a recorded pid that exited before the signal", async () => {
+      const fixture = createFixture();
+      const root = dirname(fixture.binDir);
+      const exited = spawn(process.execPath, ["-e", "0"], { stdio: "ignore" });
+      await new Promise((resolve) => exited.once("exit", resolve));
+      const pid = exited.pid ?? 0;
+      writeFileSync(join(fixture.dataDir, "install-daemon.pid"), `${pid}\n`);
+      expect(signalFixtureStub(pid, root, "SIGTERM")).toBe(false);
+      expect(signalFixtureStub(pid, root, "SIGKILL")).toBe(false);
+      expect(await stopFixtureDaemons([root])).toEqual([]);
+    });
+
+    it("signals a recorded fixture stub, re-reading its command right before each signal", async () => {
+      const fixture = createFixture();
+      const root = dirname(fixture.binDir);
+      const script = join(root, "bin", "bb-app");
+      mkdirSync(dirname(script), { recursive: true });
+      writeFileSync(script, "setInterval(() => {}, 1000);\n");
+      const stub = spawn(process.execPath, [script], { stdio: "ignore" });
+      try {
+        const pid = stub.pid ?? 0;
+        writeFileSync(join(fixture.dataDir, "install-daemon.pid"), `${pid}\n`);
+        expect(isFixtureStub(pid, root)).toBe(true);
+        expect(await stopFixtureDaemons([root])).toEqual([pid]);
+        expect(isRunning(pid)).toBe(false);
+      } finally {
+        stub.kill("SIGKILL");
+      }
+    });
+
+    describe("when the stub ignores SIGTERM", () => {
+      async function startTermIgnoringStub(root: string) {
+        const script = join(root, "bin", "bb-app");
+        mkdirSync(dirname(script), { recursive: true });
+        writeFileSync(
+          script,
+          'process.on("SIGTERM", () => {});\nprocess.stdout.write("ready\\n");\nsetInterval(() => {}, 1000);\n',
+        );
+        const stub = spawn(process.execPath, [script], {
+          stdio: ["ignore", "pipe", "ignore"],
+        });
+        await new Promise<void>((resolve) =>
+          stub.stdout?.once("data", () => resolve()),
+        );
+        return stub;
+      }
+
+      function exited(stub: ReturnType<typeof spawn>): Promise<void> {
+        if (stub.exitCode !== null || stub.signalCode !== null) {
+          return Promise.resolve();
+        }
+        return new Promise((resolve) => stub.once("exit", () => resolve()));
+      }
+
+      function fakePsReporting(root: string, flag: string): string {
+        const realPs = (process.env.PATH ?? "")
+          .split(delimiter)
+          .map((entry) => join(entry, "ps"))
+          .find((candidate) => existsSync(candidate));
+        const directory = join(root, "fakeps");
+        mkdirSync(directory, { recursive: true });
+        const fakePs = join(directory, "ps");
+        writeExecutable(
+          fakePs,
+          `#!/bin/sh\nif [ -e "${flag}" ]; then echo "sleep 30"; else exec "${realPs}" "$@"; fi\n`,
+        );
+        return fakePs;
+      }
+
+      it("escalates to SIGKILL and ends a stub whose command still matches", async () => {
+        const fixture = createFixture();
+        const root = dirname(fixture.binDir);
+        const stub = await startTermIgnoringStub(root);
+        const pid = stub.pid ?? 0;
+        try {
+          writeFileSync(
+            join(fixture.dataDir, "install-daemon.pid"),
+            `${pid}\n`,
+          );
+          let aliveAtEscalation = false;
+          const stopped = await stopFixtureDaemons([root], {
+            afterTerm: () => {
+              aliveAtEscalation = isRunning(pid);
+            },
+          });
+          await exited(stub);
+          expect(stopped).toEqual([pid]);
+          expect(aliveAtEscalation).toBe(true);
+          expect(stub.signalCode).toBe("SIGKILL");
+          expect(isRunning(pid)).toBe(false);
+        } finally {
+          stub.kill("SIGKILL");
+        }
+      });
+
+      it("does not send SIGKILL once the recorded pid no longer reads as the stub", async () => {
+        const fixture = createFixture();
+        const root = dirname(fixture.binDir);
+        const stub = await startTermIgnoringStub(root);
+        const pid = stub.pid ?? 0;
+        const flag = join(root, "identity-changed");
+        try {
+          writeFileSync(
+            join(fixture.dataDir, "install-daemon.pid"),
+            `${pid}\n`,
+          );
+          const fakePs = fakePsReporting(root, flag);
+          expect(isFixtureStub(pid, root, fakePs)).toBe(true);
+          const stopped = await stopFixtureDaemons([root], {
+            afterTerm: () => {
+              writeFileSync(flag, "");
+            },
+            ps: fakePs,
+          });
+          await Promise.race([
+            exited(stub),
+            new Promise((resolve) => setTimeout(resolve, 500)),
+          ]);
+          expect(stopped).toEqual([pid]);
+          expect(stub.signalCode).toBeNull();
+          expect(stub.exitCode).toBeNull();
+          expect(isRunning(pid)).toBe(true);
+        } finally {
+          stub.kill("SIGKILL");
+          await exited(stub);
+        }
+      });
+    });
   });
 
   it("rejects an invalid explicit host-daemon port", () => {
@@ -1118,6 +1404,13 @@ fs.writeFileSync(path.join(process.env.BB_DATA_DIR, "config.json"), JSON.stringi
   it("defaults the data dir to a per-server directory under ~/.bb-machines", () => {
     const fixture = createFixture();
     writeServerInstallTools(fixture, 200);
+    mkdirSync(join(fixture.homeDir, ".bb-machines/machine.getbb.app"), {
+      recursive: true,
+    });
+    writeFileSync(
+      join(fixture.homeDir, ".bb-machines/machine.getbb.app/host-daemon-port"),
+      `${getFixtureDaemonPort()}\n`,
+    );
     const result = runScript(BOOTSTRAP_ARGS, fixture, {
       BB_DATA_DIR: "",
       BB_INSTALL_SKIP_SERVICE: "1",
@@ -1322,7 +1615,7 @@ fi
         resolve();
       });
     });
-    const fixture = createFixture();
+    const fixture = createFixture({ privatePort: false });
     const invocationPath = join(fixture.dataDir, "invocation");
     writeCurlArtifactMock(fixture, 404);
     writeEnrollingBbApp(fixture, invocationPath);
@@ -1365,6 +1658,20 @@ setInterval(() => {}, 1000);
     );
     writeEnrollingBb(fixture);
     writeExecutable(join(fixture.binDir, "sleep"), "#!/bin/sh\nexit 0\n");
+    const daemonPort = readFileSync(
+      join(fixture.dataDir, "host-daemon-port"),
+      "utf8",
+    ).trim();
+    rmSync(join(fixture.binDir, "node"));
+    writeExecutable(
+      join(fixture.binDir, "node"),
+      `#!/bin/sh
+if [ "$#" -eq 6 ] && [ "$1" = -e ] && [ "$3" = '${daemonPort}' ] && [ "$4" = host-test ] && [ "$5" = https://machine.getbb.app ]; then
+  case "$6" in yes|no) exit 1 ;; esac
+fi
+exec '${process.execPath}' "$@"
+`,
+    );
 
     const result = runScript(BOOTSTRAP_ARGS, fixture, {
       BB_INSTALL_SKIP_SERVICE: "1",
@@ -1488,7 +1795,10 @@ fi
       serviceDir,
       "app.getbb.host-daemon.other-getbb-app.plist",
     );
-    writeFileSync(join(fixture.dataDir, "host-daemon-port"), "45123\n");
+    writeFileSync(
+      join(fixture.dataDir, "host-daemon-port"),
+      `${getFixtureDaemonPort()}\n`,
+    );
     writeFileSync(
       unrelatedServiceFile,
       "<plist><dict><key>BB_DATA_DIR</key><string>/other/machine</string></dict></plist>\n",
@@ -1497,7 +1807,7 @@ fi
       legacyServiceFile,
       `<plist><dict>
 <key>Label</key><string>app.getbb.host-daemon.machine-getbb-app</string>
-<key>ProgramArguments</key><array><string>host-daemon</string><string>--host-daemon-port</string><string>45122</string></array>
+<key>ProgramArguments</key><array><string>host-daemon</string><string>--host-daemon-port</string><string>${getFixtureDaemonPort() + 1}</string></array>
 <key>EnvironmentVariables</key><dict><key>BB_DATA_DIR</key><string>${fixture.dataDir}</string></dict>
 </dict></plist>
 `,
@@ -1508,7 +1818,7 @@ fi
 printf '%s\n' "$*" >>"${join(fixture.dataDir, "launchctl.log")}"
 if [ "$1" = print ]; then exit 1; fi
 if [ "$1" = bootstrap ]; then
-  BB_DATA_DIR="${fixture.dataDir}" "${join(fixture.dataDir, "npm/bin/bb-app")}" host-daemon --host-daemon-port 45123 --server-url https://machine.getbb.app >/dev/null 2>&1 &
+  BB_DATA_DIR="${fixture.dataDir}" "${join(fixture.dataDir, "npm/bin/bb-app")}" host-daemon --host-daemon-port ${getFixtureDaemonPort()} --server-url https://machine.getbb.app >/dev/null 2>&1 &
   echo $! >"${join(fixture.dataDir, "service-daemon.pid")}"
 fi
 `,
@@ -1875,11 +2185,14 @@ fi
       serviceDir,
       "bb-host-daemon-machine-getbb-app.service",
     );
-    writeFileSync(join(fixture.dataDir, "host-daemon-port"), "45123\n");
+    writeFileSync(
+      join(fixture.dataDir, "host-daemon-port"),
+      `${getFixtureDaemonPort()}\n`,
+    );
     writeFileSync(
       legacyServiceFile,
       `[Service]
-ExecStart="node" "bb-app" host-daemon --auto-update --host-daemon-port "45123" --server-url "https://machine.getbb.app"
+ExecStart="node" "bb-app" host-daemon --auto-update --host-daemon-port "${getFixtureDaemonPort()}" --server-url "https://machine.getbb.app"
 Environment="BB_DATA_DIR=${fixture.dataDir}"
 `,
     );
@@ -1888,7 +2201,7 @@ Environment="BB_DATA_DIR=${fixture.dataDir}"
       `#!/bin/sh
 printf '%s\n' "$*" >>"${join(fixture.dataDir, "systemctl.log")}"
 if [ "$*" = "--user restart bb-host-daemon-machine-getbb-app-host-test.service" ]; then
-  BB_DATA_DIR="${fixture.dataDir}" "${join(fixture.dataDir, "npm/bin/bb-app")}" host-daemon --host-daemon-port 45123 --server-url https://machine.getbb.app >/dev/null 2>&1 &
+  BB_DATA_DIR="${fixture.dataDir}" "${join(fixture.dataDir, "npm/bin/bb-app")}" host-daemon --host-daemon-port ${getFixtureDaemonPort()} --server-url https://machine.getbb.app >/dev/null 2>&1 &
   echo $! >"${join(fixture.dataDir, "service-daemon.pid")}"
 fi
 `,

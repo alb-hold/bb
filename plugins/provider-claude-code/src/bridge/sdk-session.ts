@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { experimental_spawnHostProcess as spawn } from "@get-bb/plugin-sdk/process";
 import { isDeepStrictEqual } from "node:util";
 import {
   query,
@@ -24,6 +24,7 @@ import {
   missingClaudeCliGuidance,
   translateMissingClaudeCliError,
 } from "./missing-cli-error.js";
+import { applyPinnedSettings } from "./pinned-settings.js";
 
 export interface SdkSessionOptions {
   cwd: string;
@@ -38,6 +39,7 @@ export interface SdkSessionOptions {
   hooks?: Options["hooks"];
   mcpServers?: Record<string, McpServerConfig>;
   allowedTools?: string[];
+  disallowedTools?: string[];
   canUseTool?: CanUseTool;
   onElicitation?: Options["onElicitation"];
   env?: NodeJS.ProcessEnv;
@@ -197,6 +199,7 @@ export class SdkSession {
   private mcpReconciliationPending = false;
   private complete: (() => void) | null = null;
   private stderrTail = "";
+  private releasePinnedSettings: (() => void) | undefined;
 
   constructor(
     private readonly options: SdkSessionOptions,
@@ -409,6 +412,9 @@ export class SdkSession {
       ...(this.options.allowedTools
         ? { allowedTools: this.options.allowedTools }
         : {}),
+      ...(this.options.disallowedTools
+        ? { disallowedTools: this.options.disallowedTools }
+        : {}),
       ...(this.options.canUseTool
         ? { canUseTool: this.options.canUseTool }
         : {}),
@@ -440,12 +446,17 @@ export class SdkSession {
       },
     };
 
+    const pinned = applyPinnedSettings(sdkOptions);
+    this.releasePinnedSettings?.();
+    this.releasePinnedSettings = pinned.release;
     try {
       this.query = query({
         prompt: this.createInputIterable(),
-        options: sdkOptions,
+        options: pinned.options,
       });
     } catch (error) {
+      this.releasePinnedSettings();
+      this.releasePinnedSettings = undefined;
       throw translateMissingClaudeCliError(error);
     }
 
@@ -632,6 +643,8 @@ export class SdkSession {
       this.rejectQueuedInputs("Claude SDK stream ended before input consumed");
       this.resolveInputDone();
       this.query = undefined;
+      this.releasePinnedSettings?.();
+      this.releasePinnedSettings = undefined;
       if (this.complete) {
         this.complete();
         this.complete = null;

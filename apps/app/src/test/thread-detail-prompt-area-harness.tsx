@@ -19,9 +19,9 @@ import type { TypeaheadConfig } from "@/components/promptbox/ComposerBox";
 import type { PluginComposerHost } from "@/components/plugin/plugin-composer-host";
 
 export const promptAreaMocks = {
+  unknownReasoning: false,
   cancelThreadPlanMutate: vi.fn(),
   clearThreadGoalMutate: vi.fn(),
-  createQueuedMessageMutateAsync: vi.fn(),
   createThreadMutateAsync: vi.fn(),
   defaultExecutionOptions: null as ResolvedThreadExecutionOptions | null,
   executionInputSources: {} as ExistingThreadExecutionInputSources,
@@ -168,7 +168,7 @@ vi.mock("@/components/promptbox/FollowUpPromptBox", async () => {
       };
       executionReadOnly?: boolean;
       pendingInteraction?: ReactNode;
-      permission: { value?: string };
+      permission: { value?: string; onChange?: (value: "full") => void };
       permissionReadOnly?: boolean;
       pluginComposerHost?: PluginComposerHost | null;
       sessionOptionsControl?: ReactNode;
@@ -224,6 +224,19 @@ vi.mock("@/components/promptbox/FollowUpPromptBox", async () => {
           {`${typeahead.command.source.providerId}:${typeahead.command.source.commandScope}`}
         </div>
         <div data-testid="selected-model">{execution.model.active?.model}</div>
+        {execution.model.onChange ? (
+          <button
+            type="button"
+            onClick={() => execution.model.onChange?.("gpt-5-mini")}
+          >
+            Choose model gpt-5-mini
+          </button>
+        ) : null}
+        {permission.onChange ? (
+          <button type="button" onClick={() => permission.onChange?.("full")}>
+            Choose permission full
+          </button>
+        ) : null}
         <div data-testid="selected-reasoning">{execution.reasoning.value}</div>
         <button
           type="button"
@@ -640,7 +653,13 @@ vi.mock("@/hooks/useThreadCreationOptions", async () => {
           { value: "claude-code", label: "Claude Code" },
         ],
         reasoningLevel: "medium",
-        reasoningOptions: [],
+        reasoningOptions: promptAreaMocks.unknownReasoning
+          ? []
+          : [{ value: "medium", label: "Medium" }],
+        resolveReasoningForModel: (_model: string, reasoningLevel: string) => ({
+          reasoningLevel,
+          reasoningOptions: [{ value: reasoningLevel, label: reasoningLevel }],
+        }),
         selectedModel: explicitModel ?? (isClaude ? "claude-opus-5" : "gpt-5"),
         selectedProviderComposerActions: [],
         selectedProviderDisplayName: isClaude ? "Claude Code" : "Codex",
@@ -694,10 +713,6 @@ vi.mock("@/hooks/mutations/thread-runtime-mutations", () => ({
   useCreateThread: () => ({
     isPending: false,
     mutateAsync: promptAreaMocks.createThreadMutateAsync,
-  }),
-  useCreateThreadQueuedMessage: () => ({
-    isPending: false,
-    mutateAsync: promptAreaMocks.createQueuedMessageMutateAsync,
   }),
   useDeleteThreadQueuedMessage: () => ({
     isPending: false,

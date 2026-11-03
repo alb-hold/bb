@@ -284,21 +284,25 @@ describe("sidebar navigation providers", () => {
     ],
   ])(
     "preserves legacy activation for %s at %s with openInSplit=%s",
-    (label, path, openInSplit) => {
+    async (label, path, openInSplit) => {
       const open = vi.spyOn(window, "open").mockReturnValue(null);
       function LegacyNavigation() {
         const { items, actions } = useNavigation();
-        return items.map((item) => (
-          <button
-            key={item.id}
-            onClick={() => {
-              // @ts-expect-error Legacy bundles still send the removed activation field.
-              actions.activate(item.id, { openInSplit });
-            }}
-          >
-            {item.label}
-          </button>
-        ));
+        return (
+          <div data-testid="legacy-navigation">
+            {items.map((item) => (
+              <button
+                key={item.id}
+                onClick={() => {
+                  // @ts-expect-error Legacy bundles still send the removed activation field.
+                  actions.activate(item.id, { openInSplit });
+                }}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+        );
       }
       registerPlugin((app) =>
         app.slots.experimental_sidebarNavigation({
@@ -309,6 +313,7 @@ describe("sidebar navigation providers", () => {
       );
       renderHost();
 
+      await screen.findByTestId("legacy-navigation");
       fireEvent.click(screen.getByRole("button", { name: label }));
 
       if (openInSplit) {
@@ -383,7 +388,13 @@ describe("sidebar navigation providers", () => {
         label: "Docs",
         result: "focus",
       },
-    ])("handles $reason", ({ enabled, compact, panes, label, result }) => {
+    ])("handles $reason", async ({
+      enabled,
+      compact,
+      panes,
+      label,
+      result,
+    }) => {
       const store = createStore();
       const docs = {
         kind: "plugin-panel" as const,
@@ -421,21 +432,25 @@ describe("sidebar navigation providers", () => {
       store.set(splitLayoutAtom, layout);
       function SplitNavigation() {
         const { items, actions } = useNavigation();
-        return items.map((item) => (
-          <button
-            key={item.id}
-            onClick={() => {
-              if (api === "explicit")
-                actions.activate(item.id, { target: "split" });
-              else {
-                // @ts-expect-error Legacy bundles still send the removed activation field.
-                actions.activate(item.id, { openInSplit: true });
-              }
-            }}
-          >
-            {item.label}
-          </button>
-        ));
+        return (
+          <div data-testid="split-navigation">
+            {items.map((item) => (
+              <button
+                key={item.id}
+                onClick={() => {
+                  if (api === "explicit")
+                    actions.activate(item.id, { target: "split" });
+                  else {
+                    // @ts-expect-error Legacy bundles still send the removed activation field.
+                    actions.activate(item.id, { openInSplit: true });
+                  }
+                }}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+        );
       }
       registerPlugin((app) =>
         app.slots.experimental_sidebarNavigation({
@@ -446,6 +461,7 @@ describe("sidebar navigation providers", () => {
       );
       const open = vi.spyOn(window, "open").mockReturnValue(null);
       renderHost("__automatic__", { store, splitEnabled: enabled, compact });
+      await screen.findByTestId("split-navigation");
       fireEvent.click(screen.getByRole("button", { name: label }));
       const path =
         label === "Plugins"

@@ -2,7 +2,7 @@ import type { DatabaseSync } from "node:sqlite";
 import {
   BrowserImportError,
   cookieScope,
-  withCookieDatabaseSnapshot,
+  readCookieDatabaseSnapshot,
   type ImportedCookie,
 } from "./cookie-database.js";
 
@@ -88,7 +88,7 @@ export async function readFirefoxCookies(
   cookieDatabasePath: string,
 ): Promise<ImportedCookie[]> {
   try {
-    return await withCookieDatabaseSnapshot(
+    return await readCookieDatabaseSnapshot(
       cookieDatabasePath,
       readFirefoxCookieDatabase,
     );

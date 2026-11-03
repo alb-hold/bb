@@ -27,7 +27,7 @@ Listing:
   Needs input, Working, automation Woke, or unread Done when applicable. Woke
   is omitted when the Automations plugin RPC is unavailable. An active native
   thread with no recent authenticated terminal activity report shows
-  `activity unconfirmed` in Status and does not show runtime-only Working.
+  `activity not reported` in Status and does not show runtime-only Working.
   This reports holder activity, not model or tool progress. JSON rows include
   `listIndicator` and optional runtime `nativeActivity` diagnostics. Title uses
   the thread title, then the fallback title from the first prompt, then "-". Long
@@ -140,10 +140,16 @@ Opening threads and files in the app:
   bb thread open <thread-id> [path]        Open a thread, optionally with a panel file
     --line <number>                        Line number to focus
     --split <placement>                    right, down, left, top, or replace (default)
+    --all                                  Send to every open app client instead of only clients viewing this thread
   bb thread pane <action> [thread-id]      Maximize, restore, toggle, spotlight, or clear spotlight
 
   Inside a BB thread, BB_THREAD_ID selects the current thread automatically and
-  the thread ID argument is omitted for file-only opens. Outside a BB thread,
+  the thread ID argument is omitted for file-only opens. Without --all the
+  request reaches only app clients viewing the calling thread (also when it
+  opens a different thread); outside a thread, or with no such client, nothing
+  is sent and the command exits non-zero with no_caller_thread or
+  no_client_viewing_caller_thread (SDK: threads.open({ threadId, file, callerThreadId? | all? })).
+ Outside a BB thread,
   pass the thread ID as the first argument. A thread already open in a pane is focused instead of
   duplicated. Edge placement creates panes through the eighth pane; at eight
   panes, it replaces the focused pane.
@@ -165,7 +171,7 @@ Persisted panel tabs:
   bb thread tabs show <thread-id>
   bb thread tabs set <thread-id> --expected-revision <n> --tabs-json '<json>'
 
-Core Info and Diff use plugin id `core` and tab ids `info` and `diff`. Legacy `thread-info` and `git-diff` entries convert automatically without changing their order.
+Core Info uses plugin id `core` and tab id `info`; Diff belongs to the Git plugin, plugin id `bb--git` and tab id `diff`. Legacy `thread-info`, `git-diff` and `core` `diff` entries convert automatically without changing their order.
 
 Pinned plugin tabs use `{ "id": "plugin-fixed:<plugin-id>:<tab-id>", "kind": "plugin-fixed", "pluginId": "<plugin-id>", "tabId": "<tab-id>" }`.
 The id encodes each plugin/tab id with percent escapes. The app shows registered,

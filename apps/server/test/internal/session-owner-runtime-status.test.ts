@@ -1,6 +1,7 @@
 import { changedMessageSchema, type ThreadChangedMessage } from "@bb/domain";
 import {
   createNativeTerminalThread,
+  getNativeTerminalThread,
   getThread,
   markThreadDeleted,
 } from "@bb/db";
@@ -339,8 +340,9 @@ describe("host thread runtime status notifications", () => {
           lastStatusChange(largeMessages, threadId).metadata?.statusChange
             ?.runtime.nativeActivity,
         ).toMatchObject({
-          lastEvidenceAt: null,
-          confirmation: "unconfirmed",
+          lastEvidenceAt: getNativeTerminalThread(harness.db, threadId)
+            ?.updatedAt,
+          confirmation: "confirmed",
         });
       }
       expect(

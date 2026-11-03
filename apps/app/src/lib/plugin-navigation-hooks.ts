@@ -1,9 +1,12 @@
 import { useCallback, useContext, useMemo } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { matchPath, useLocation, useNavigate } from "react-router-dom";
-import type { BbNavigate, PluginBrowserBbSdk } from "@get-bb/plugin-sdk";
+import type {
+  BbNavigate,
+  ExperimentalLiveFileTarget,
+  PluginBrowserBbSdk,
+} from "@get-bb/plugin-sdk";
 import { usePluginId } from "@/components/plugin/plugin-context";
-import { usePluginThreadPanelOpenHandler } from "@/components/plugin/plugin-thread-panel-navigation";
 import { BbHttpError, sdk } from "@/lib/sdk";
 import { getPluginBoundSdk } from "@/lib/plugin-bound-sdk";
 import {
@@ -22,7 +25,15 @@ import { lookupCachedThread } from "@/lib/cached-thread";
 import { useSetRootComposeProjectId } from "@/lib/root-compose-selection";
 import { openThreadInSplit } from "@/lib/split-layout/openThreadInSplit";
 import { useAppNavigationHost } from "@/lib/app-navigation-host";
-import { normalizeExperimentalFileOpenOptions } from "@/lib/live-file-navigation";
+import {
+  normalizeExperimentalFileOpenOptions,
+  normalizeExperimentalLiveFileTarget,
+} from "@/lib/live-file-navigation";
+import {
+  createPluginPanelController,
+  createRetiredOpenPanel,
+} from "@/lib/plugin-panel-controller";
+import { useLiveFileOpenTargets } from "@/hooks/useLiveFileOpenTargets";
 
 export function isAutomationEditRoutePath(pathname: string): boolean {
   return (
@@ -37,11 +48,17 @@ export function useSdk(): PluginBrowserBbSdk {
   return getPluginBoundSdk(sdk, pluginId, queryClient);
 }
 
+export function usePluginCanOpenFileExternally(
+  target: ExperimentalLiveFileTarget,
+): boolean {
+  return useLiveFileOpenTargets(normalizeExperimentalLiveFileTarget(target))
+    .canOpenExternally;
+}
+
 export function useBbNavigate(): BbNavigate {
   const pluginId = usePluginId();
   const onNavigate = useContext(RouteNavigationCallbackContext);
   const location = useLocation();
-  const openThreadPanelHandler = usePluginThreadPanelOpenHandler();
   const navigate = useNavigate();
   const appNavigation = useAppNavigationHost();
   const store = useStore();
@@ -132,9 +149,12 @@ export function useBbNavigate(): BbNavigate {
       setRootComposeProjectId,
     ],
   );
-  const openThreadPanel = useCallback<BbNavigate["openThreadPanel"]>(
-    (options) => openThreadPanelHandler?.({ ...options, pluginId }) ?? false,
-    [openThreadPanelHandler, pluginId],
+  const openThreadPanel = useMemo(
+    () =>
+      createRetiredOpenPanel(
+        createPluginPanelController(pluginId, () => appNavigation.panel),
+      ),
+    [appNavigation.panel, pluginId],
   );
   const experimental_openSignInWindow = useCallback<
     BbNavigate["experimental_openSignInWindow"]
@@ -177,7 +197,7 @@ export function useBbNavigate(): BbNavigate {
     },
     [appNavigation],
   );
-  return useMemo<BbNavigate>(
+  return useMemo<BbNavigate & { openThreadPanel: typeof openThreadPanel }>(
     () => ({
       toThread,
       toProject,

@@ -4,6 +4,7 @@ import { and, desc, eq, gt, lt, sql } from "drizzle-orm";
 import {
   appendDaemonEventsInTransaction,
   deriveStoredEventItemFields,
+  getQueuedRetryOfTurnRequest,
   getThread,
   getEnvironment,
   getLatestThreadSequence,
@@ -34,6 +35,7 @@ import {
   getThreadEventScopeTurnId,
   maskResolvedProviderEnvironment,
   THREAD_SESSION_OPTIONS_STATE_KIND,
+  THREAD_PROVIDER_MODEL_CATALOG_STATE_KIND,
   requireThreadEventScopeTurnId,
   systemThreadInterruptedEventDataSchema,
   type ChildThreadOutcome,
@@ -50,6 +52,7 @@ import type {
 import {
   isActivePruneTriggerThreadEventType,
   maybePruneActiveThreadEventHistory,
+  type ActiveThreadEventPruneRuntimeOptions,
 } from "../services/system/event-pruning.js";
 import {
   recordSpendForInsertedEvents,
@@ -72,12 +75,12 @@ import {
   runtimeErrorLogFields,
 } from "../services/lib/error-log-fields.js";
 import { applyLoggedThreadLifecycleEvent } from "../services/threads/lifecycle-outcome.js";
+import { waitForPluginTurnFailed } from "../services/plugins/plugin-thread-events.js";
+import { loadFailedTurn, retryChain } from "../services/threads/turn-failed.js";
 import { dropSettledThreadSessionOptionSelections } from "../services/threads/thread-session-options.js";
+import { rememberSessionModelCatalog } from "../services/providers/session-model-catalog.js";
 import { applyTurnCompletedEvent } from "./turn-completed-events.js";
-import {
-  applyGeneratedThreadTitle,
-  sanitizeGeneratedTitle,
-} from "../services/threads/title-generation.js";
+import { generateFromProviderThreadName } from "../services/threads/title-generation.js";
 import {
   getInactiveSessionLogFields,
   requireAuthenticatedDaemonSession,
@@ -256,8 +259,23 @@ interface AddParentTurnNotificationFollowUpArgs {
   followUps: EventEffectFollowUp[] | ParentTurnNotificationFollowUp[];
   thread: NonNullable<ReturnType<typeof getThread>>;
   turnStatus: ThreadEventTurnStatus;
+  retry?: ParentTurnRetryContext;
+  turnId: string | null;
   interruption?: ChildThreadOutcome["interruption"];
 }
+
+interface ParentTurnRetryContext {
+  failedRequestId: string;
+  originalRequestId: string;
+}
+
+type RetryAfterFailure =
+  | { kind: "queued"; sendAt: number | null }
+  | { kind: "dispatched" }
+  | null;
+
+const PARENT_FAILURE_RETRY_DECISION_TIMEOUT_MS = 10_000;
+const PARENT_RETRY_SCHEDULE_NOTICE_THRESHOLD_MS = 2 * 60 * 1_000;
 
 interface ParentTurnNotificationFollowUp {
   kind: "parent-turn-notification";
@@ -266,6 +284,8 @@ interface ParentTurnNotificationFollowUp {
   parentThreadId: string;
   title: string | null;
   turnStatus: ThreadEventTurnStatus;
+  retry?: ParentTurnRetryContext;
+  turnId: string | null;
   interruption?: ChildThreadOutcome["interruption"];
 }
 
@@ -423,8 +443,42 @@ function addParentTurnNotificationFollowUp(
     parentThreadId: args.thread.parentThreadId,
     title: args.thread.title,
     turnStatus: args.turnStatus,
+    ...(args.retry ? { retry: args.retry } : {}),
+    turnId: args.turnId,
     ...(args.interruption ? { interruption: args.interruption } : {}),
   });
+}
+
+function parentTurnRetryContext(
+  db: AppDeps["db"],
+  threadId: string,
+): ParentTurnRetryContext | undefined {
+  const failed = loadFailedTurn(db, threadId);
+  if (failed === null) return undefined;
+  return {
+    failedRequestId: failed.request.requestId,
+    originalRequestId: retryChain(failed.request).originalRequestId,
+  };
+}
+
+function retryAfterFailure(
+  deps: Pick<LoggedPendingInteractionWorkSessionDeps, "db">,
+  args: { threadId: string; retry: ParentTurnRetryContext },
+): RetryAfterFailure {
+  const queuedRetry = getQueuedRetryOfTurnRequest(deps.db, {
+    threadId: args.threadId,
+    retryOfTurnRequestId: args.retry.originalRequestId,
+  });
+  if (queuedRetry !== null) {
+    return { kind: "queued", sendAt: queuedRetry.sendAt };
+  }
+  const latest = loadFailedTurn(deps.db, args.threadId);
+  return latest !== null &&
+    latest.request.requestId !== args.retry.failedRequestId &&
+    retryChain(latest.request).originalRequestId ===
+      args.retry.originalRequestId
+    ? { kind: "dispatched" }
+    : null;
 }
 
 async function applyEventEffects(
@@ -503,18 +557,18 @@ async function applyEventEffects(
 
       if (event.type === "thread/name/updated") {
         if (event.source === "agent") {
-          const title = sanitizeGeneratedTitle(event.threadName);
-          if (title !== null) {
-            applyGeneratedThreadTitle(deps, {
-              threadId: entry.threadId,
-              title,
-            });
-          }
+          void generateFromProviderThreadName(deps, {
+            threadId: entry.threadId,
+            title: event.threadName,
+          });
         }
         continue;
       }
 
       if (event.type === "thread/extensionState/updated") {
+        if (event.kind === THREAD_PROVIDER_MODEL_CATALOG_STATE_KIND) {
+          await rememberSessionModelCatalog(deps, entry);
+        }
         if (event.kind === THREAD_SESSION_OPTIONS_STATE_KIND) {
           dropSettledThreadSessionOptionSelections(deps, {
             threadId: entry.threadId,
@@ -567,6 +621,7 @@ async function applyEventEffects(
           [];
         if (
           turnCompleted.thread &&
+          !turnCompleted.suppressFailureNotice &&
           turnCompleted.isRootTurnCompletion &&
           isParentNotifiableChildThread(turnCompleted.thread, event.status)
         ) {
@@ -591,11 +646,17 @@ async function applyEventEffects(
                 turnId,
               }));
           if (!alreadyHandledByCommandFailure && !manuallyStopped) {
+            const retry =
+              event.status === "failed"
+                ? parentTurnRetryContext(deps.db, turnCompleted.thread.id)
+                : undefined;
             addParentTurnNotificationFollowUp({
               failedParentNotificationThreadIds,
               followUps: continuation ? deferredParentNotifications : followUps,
               thread: turnCompleted.thread,
               turnStatus: event.status,
+              ...(retry ? { retry } : {}),
+              turnId,
               ...(interruption ? { interruption } : {}),
             });
           }
@@ -639,11 +700,14 @@ async function applyEventEffects(
           threadId: entry.threadId,
         });
         if (outcome.applied) {
+          const retry = parentTurnRetryContext(deps.db, thread.id);
           addParentTurnNotificationFollowUp({
             failedParentNotificationThreadIds,
             followUps,
             thread,
             turnStatus: "failed",
+            ...(retry ? { retry } : {}),
+            turnId: null,
           });
         }
         continue;
@@ -669,6 +733,36 @@ async function executeEventFollowUpBestEffort(
   try {
     switch (followUp.kind) {
       case "parent-turn-notification":
+        if (followUp.turnStatus === "failed" && followUp.retry) {
+          await waitForPluginTurnFailed(
+            followUp.childThreadId,
+            PARENT_FAILURE_RETRY_DECISION_TIMEOUT_MS,
+          );
+          const retry = retryAfterFailure(deps, {
+            threadId: followUp.childThreadId,
+            retry: followUp.retry,
+          });
+          if (retry?.kind === "dispatched") return;
+          if (retry?.kind === "queued") {
+            const noticeThreshold =
+              Date.now() + PARENT_RETRY_SCHEDULE_NOTICE_THRESHOLD_MS;
+            if (retry.sendAt === null || retry.sendAt <= noticeThreshold) {
+              return;
+            }
+            await queueChildThreadTurnNotificationBestEffort(deps, {
+              childThread: {
+                id: followUp.childThreadId,
+                projectId: followUp.projectId,
+                title: followUp.title,
+              },
+              parentThreadId: followUp.parentThreadId,
+              turnId: null,
+              turnStatus: followUp.turnStatus,
+              retryScheduledAt: retry.sendAt,
+            });
+            return;
+          }
+        }
         await queueChildThreadTurnNotificationBestEffort(deps, {
           childThread: {
             id: followUp.childThreadId,
@@ -677,6 +771,7 @@ async function executeEventFollowUpBestEffort(
           },
           parentThreadId: followUp.parentThreadId,
           turnStatus: followUp.turnStatus,
+          turnId: followUp.turnId,
           ...(followUp.interruption
             ? { interruption: followUp.interruption }
             : {}),
@@ -1262,7 +1357,11 @@ function dropReplayedEntries(
   );
 }
 
-export function registerInternalEventRoutes(app: Hono, deps: AppDeps): void {
+export function registerInternalEventRoutes(
+  app: Hono,
+  deps: AppDeps,
+  activeThreadPruneRuntime?: ActiveThreadEventPruneRuntimeOptions,
+): void {
   const { post } = typedRoutes<HostDaemonInternalSchema>(app, {
     onValidationError: (msg) => new ApiError(400, "invalid_request", msg),
   });
@@ -1464,13 +1563,11 @@ export function registerInternalEventRoutes(app: Hono, deps: AppDeps): void {
           insertedEventIndexes: appendResult.insertedInputIndexes,
         }),
       );
-      for (const candidate of resolveActivePruneCandidates({
+      const activePruneCandidates = resolveActivePruneCandidates({
         acceptedEvents: appendResult.acceptedEvents,
         events: postableEvents,
         insertedEventIndexes: appendResult.insertedInputIndexes,
-      })) {
-        maybePruneActiveThreadEventHistory(deps, candidate);
-      }
+      });
 
       deferEventFollowUpBatch(deps, followUps);
       const responseBody = {
@@ -1500,6 +1597,19 @@ export function registerInternalEventRoutes(app: Hono, deps: AppDeps): void {
         "content-length",
         String(Buffer.byteLength(JSON.stringify(responseBody))),
       );
+      deferAfterResponse({
+        config: deps.config,
+        logger: deps.logger,
+        name: "Active thread event pruning",
+        work: async () => {
+          for (const candidate of activePruneCandidates) {
+            maybePruneActiveThreadEventHistory(deps, {
+              ...candidate,
+              schedule: activeThreadPruneRuntime?.schedule,
+            });
+          }
+        },
+      });
       return response;
     },
   );

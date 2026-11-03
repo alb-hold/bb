@@ -2,6 +2,7 @@ import type { IncomingMessage, Server } from "node:http";
 import type { Duplex } from "node:stream";
 import type { Socket } from "node:net";
 import { terminalWebSocketQuerySchema } from "@bb/server-contract";
+import { TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL } from "@bb/server-contract";
 import {
   browserRequestProblem,
   requestHostProblem,
@@ -109,6 +110,9 @@ export function handOffTerminalUpgrade(
     return false;
   }
   const handoffOwnerToken = query.data.handoffOwnerToken;
+  const resizeSeqEcho = (headerValue(request, "sec-websocket-protocol") ?? "")
+    .split(",")
+    .some((protocol) => protocol.trim() === TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL);
   url.searchParams.delete("handoffOwnerToken");
   const attachId = options.attach({
     daemonSessionId: target.daemonSessionId,
@@ -116,6 +120,7 @@ export function handOffTerminalUpgrade(
     handoffOwnerToken,
     outputAcks: query.data.outputAcks,
     resizeAcks: query.data.resizeAcks,
+    resizeSeqEcho,
     request: {
       url: `${url.pathname}${url.search}`,
       headers: rawHeaderPairs(request),

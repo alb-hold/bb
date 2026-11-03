@@ -4,6 +4,10 @@ import { registerUsageSource } from "./src/usage-source.js";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { codexExtensionKinds } from "./src/extension-kinds.js";
 import { CODEX_NATIVE_ROOTS_DECLARATION } from "./src/native-roots.js";
+import {
+  CODEX_NATIVE_ACTIVITY,
+  CODEX_NATIVE_SESSION,
+} from "./src/native-session.js";
 import { CODEX_POOL_LAUNCH_ENV_ARGS } from "./src/pool-launch.js";
 
 export default function plugin(bb: BbPluginApi) {
@@ -103,72 +107,8 @@ export default function plugin(bb: BbPluginApi) {
       imageArgs: ["--image", "{image}"],
       pastePlaceholders: ["[Pasted Content ", "[Image #"],
       sessionRoot: { env: "CODEX_HOME", home: ".codex" },
-      session: {
-        kind: "discovered",
-        resumeArgs: ["resume", "{sessionId}"],
-        transcripts: "sessions/{yyyy}/{mm}/{dd}/rollout-*.jsonl",
-        header: {
-          match: { type: "session_meta" },
-          id: "payload.id",
-          cwd: "payload.cwd",
-          startedAt: "payload.timestamp",
-        },
-      },
-      activity: {
-        transcript: {
-          questions: {
-            open: [
-              {
-                match: {
-                  equals: {
-                    type: "response_item",
-                    "payload.type": "function_call",
-                    "payload.name": "request_user_input",
-                  },
-                },
-                id: "payload.call_id",
-                label: "Codex is asking a question",
-              },
-            ],
-            close: [
-              {
-                match: {
-                  equals: {
-                    type: "response_item",
-                    "payload.type": "function_call_output",
-                  },
-                },
-                id: "payload.call_id",
-              },
-            ],
-          },
-          working: [
-            { equals: { type: "event_msg", "payload.type": "task_started" } },
-          ],
-          idle: [
-            { equals: { type: "event_msg", "payload.type": "task_complete" } },
-            { equals: { type: "event_msg", "payload.type": "turn_aborted" } },
-          ],
-          prompt: [
-            {
-              match: {
-                equals: { type: "event_msg", "payload.type": "user_message" },
-              },
-              text: "payload.message",
-            },
-            {
-              match: {
-                equals: {
-                  type: "event_msg",
-                  "payload.type": "item_completed",
-                  "payload.item.type": "UserMessage",
-                },
-              },
-              text: "payload.item.content.0.text",
-            },
-          ],
-        },
-      },
+      session: CODEX_NATIVE_SESSION,
+      activity: CODEX_NATIVE_ACTIVITY,
     },
     deriveProviderOptions(context) {
       return {

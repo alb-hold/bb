@@ -120,7 +120,6 @@ describe("daemon socket message queue", () => {
   });
 
   it("decodes each frame once and passes heartbeat priority to the queue", () => {
-    const socket = { close: vi.fn(), send: vi.fn() };
     const decode = vi.fn(() => ({ type: "heartbeat" }) as never);
     const order: string[] = [];
     const queue = createDaemonSocketMessageQueue({
@@ -140,9 +139,9 @@ describe("daemon socket message queue", () => {
         order.push(`queued:${priority}`);
         queue.enqueue(message, priority);
       },
+      onInvalid: vi.fn(),
       raw: "frame",
       recordActivity: () => order.push("activity"),
-      socket,
     });
     expect(decode).toHaveBeenCalledTimes(1);
     expect(order).toEqual([
@@ -154,7 +153,6 @@ describe("daemon socket message queue", () => {
   });
 
   it("does not record activity or enqueue a rejected arrival", () => {
-    const socket = { close: vi.fn(), send: vi.fn() };
     const decode = vi.fn(() => ({ type: "heartbeat" }) as never);
     const enqueue = vi.fn();
     const recordActivity = vi.fn();
@@ -163,9 +161,9 @@ describe("daemon socket message queue", () => {
       authorize: () => false,
       decode,
       enqueue,
+      onInvalid: vi.fn(),
       raw: "frame",
       recordActivity,
-      socket,
     });
 
     expect(decode).toHaveBeenCalledTimes(1);

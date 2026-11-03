@@ -24,6 +24,7 @@ export interface ConnectNextConfig {
     frpBind: number;
     vhost: number;
     hooks: number;
+    frpAdmin: number;
     frpTcp: number | null;
   };
   frps: string;
@@ -138,6 +139,7 @@ export function configFromEnv(env: Env): ConnectNextConfig {
       frpBind: port(env, "FRP_BIND_PORT", "7001"),
       vhost: port(env, "FRP_VHOST_PORT", "7080"),
       hooks: port(env, "FRP_HOOKS_PORT", "7090"),
+      frpAdmin: port(env, "FRP_ADMIN_PORT", "7091"),
       frpTcp: frpTcp ? port(env, "FRP_TCP_PORT", frpTcp) : null,
     },
     frps: read(env, "FRPS", "frps"),

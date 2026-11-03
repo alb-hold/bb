@@ -479,6 +479,7 @@ export function createCodexAdapter(options: {
       });
     },
     async refreshSecret(context) {
+      context.signal?.throwIfAborted();
       const secret = oauthSecretDueForRefresh(context);
       if (secret === null) return { secret: context.secret, refreshed: false };
       const parsed = parseOAuthRefreshResponse(
@@ -498,16 +499,28 @@ export function createCodexAdapter(options: {
           : { idToken: parsed.id_token ?? secret.idToken }),
         expiresAt: codexAccessTokenExpiresAt(parsed.access_token),
       };
-      await context.accounts.writeSecret(context.account.id, refreshed);
+      context.signal?.throwIfAborted();
+      await context.accounts.writeSecret(
+        context.account.id,
+        refreshed,
+        context.signal,
+      );
       return { secret: refreshed, refreshed: true };
     },
     async refreshUsage(context) {
-      const secret = await context.freshSecret();
+      context.signal?.throwIfAborted();
+      const secret = await context.freshSecret(context.signal);
+      context.signal?.throwIfAborted();
       if (
         secret.kind !== "oauth" ||
         context.account.codexAccountId === undefined
       )
         return;
+      const signal = AbortSignal.any([
+        AbortSignal.timeout(USAGE_REQUEST_TIMEOUT_MS),
+        ...(context.signal === undefined ? [] : [context.signal]),
+      ]);
+      signal.throwIfAborted();
       const response = await context.fetch(options.usageUrl, {
         headers: {
           authorization: `Bearer ${secret.accessToken}`,
@@ -515,8 +528,9 @@ export function createCodexAdapter(options: {
           originator: "bb",
           accept: "application/json",
         },
-        signal: AbortSignal.timeout(USAGE_REQUEST_TIMEOUT_MS),
+        signal,
       });
+      signal.throwIfAborted();
       if (!response.ok) {
         await response.body?.cancel();
         throw new Error("Usage refresh failed.");
@@ -524,13 +538,16 @@ export function createCodexAdapter(options: {
       const parsed = usageResponseSchema.safeParse(
         await response.json().catch(() => null),
       );
+      signal.throwIfAborted();
       if (!parsed.success)
         throw new Error("Usage refresh returned unreadable data.");
       if (parsed.data.plan_type != null) {
         await context.accounts.setSubscriptionType(
           context.account.id,
           parsed.data.plan_type,
+          signal,
         );
+        signal.throwIfAborted();
       }
       const quota = codexQuotaFromUsage(
         context.account.id,
@@ -540,6 +557,7 @@ export function createCodexAdapter(options: {
       );
       if (quota === null)
         throw new Error("Usage refresh returned unreadable data.");
+      signal.throwIfAborted();
       context.quotas.put(quota);
     },
     errorResponse(status, message, headers) {

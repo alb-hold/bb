@@ -88,7 +88,7 @@ it("snap-syncs the timeline height when older rows are prepended", () => {
           threadId="thr_main"
           timelineRows={rows}
           threadRuntimeDisplayStatus="idle"
-          workspaceRootPath={undefined}
+
           threadIsActive={false}
         />
       </QueryClientProvider>
@@ -120,7 +120,7 @@ it("snaps active timeline growth on fine-pointer browsers", () => {
           threadId="thr_main"
           timelineRows={rows}
           threadRuntimeDisplayStatus={active ? "active" : "idle"}
-          workspaceRootPath={undefined}
+
           threadIsActive={false}
         />
       </QueryClientProvider>
@@ -148,6 +148,7 @@ it("keeps the reading row in place through eased growth frames", () => {
     bottomThresholdPx: 4,
     deferWritesWhileScrolling: false,
     getContentElement: () => contentWrapper,
+    getFloorElement: () => null,
     getFooterElement: () => null,
     getScrollElement: () => scrollArea,
     getTopLevelRows: () => (readingRow === null ? [] : [readingRow]),
@@ -158,7 +159,6 @@ it("keeps the reading row in place through eased growth frames", () => {
     isAtBottom: false,
     scrollToBottom: () => undefined,
     scrollElementIntoView: () => undefined,
-    scrollElementIntoViewClampedToMaxScroll: () => undefined,
     captureScrollAnchor: () => undefined,
     holdContentPosition: () => undefined,
     positionKeeper,

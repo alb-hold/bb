@@ -1,5 +1,11 @@
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -18,6 +24,7 @@ import {
   projectAttachmentThreads,
   queuedThreadMessages,
   setNativeTerminalThreadTerminal,
+  setQueuedThreadMessageFailureReason,
   terminalSessions,
   threads,
   unarchiveThread,
@@ -40,16 +47,19 @@ import {
   threadResponseSchema,
 } from "@bb/server-contract";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 import { queueParentSystemMessage } from "../../src/services/threads/parent-system-messages.js";
 import { sendThreadMessage } from "../../src/services/threads/thread-send.js";
 import {
   NATIVE_TERMINAL_ENDED_MESSAGE,
+  NATIVE_TOOL_CREDENTIAL_ENV,
   nativeTerminalLaunchCommand,
   reopenNativeTerminalsAfterDaemonReconnect,
   resumeNativeTerminalAfterUnarchive,
 } from "../../src/services/threads/native-terminal-threads.js";
 import { handleDaemonSocketClosed } from "../../src/internal/session-owner-side-effects.js";
 import { applyLoggedThreadLifecycleEvent } from "../../src/services/threads/lifecycle-outcome.js";
+import { terminalScreenInputBoxHoldsText } from "../../src/services/threads/native-terminal-echo.js";
 import { internalAuthHeaders } from "../helpers/commands.js";
 import { createProviderRegistryService } from "../../src/services/providers/provider-registry.js";
 import { createTestProviderRegistry } from "../helpers/provider-registry.js";
@@ -65,6 +75,7 @@ import {
   seedHostSession,
   seedPrimaryHost,
   seedProjectWithSource,
+  seedQueuedMessage,
   seedSession,
   seedThread,
 } from "../helpers/seed.js";
@@ -170,10 +181,14 @@ async function postJson(
   fixture: Fixture,
   path: string,
   body: unknown,
+  authorization?: string,
 ): Promise<Response> {
   return fixture.harness.app.request(`/api/v1${path}`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+      ...(authorization === undefined ? {} : { authorization }),
+    },
     body: JSON.stringify(body),
   });
 }
@@ -271,6 +286,33 @@ async function waitForThreadStatus(
   throw new Error(`Thread ${threadId} never reached ${status}`);
 }
 
+async function waitForTerminalInputBox(
+  fixture: Fixture,
+  terminalId: string,
+  text: string,
+): Promise<void> {
+  for (let attempt = 0; attempt < 600; attempt += 1) {
+    const screen =
+      await fixture.harness.deps.terminalSessions.readTerminalScreen({
+        terminalId,
+        query: {},
+      });
+    if (
+      terminalScreenInputBoxHoldsText({
+        cols: screen.cols,
+        cursor: screen.cursor,
+        requestText: text,
+        rows: screen.rows,
+        text,
+      })
+    ) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error("Recorded terminal input did not reach the input box");
+}
+
 async function openRunningNativeThread(
   fixture: Fixture,
   args: { providerId: string; prompt?: string; input?: PromptInput[] },
@@ -355,9 +397,139 @@ function scrolledPastScreen(line: string): string {
   return `${line}\r\n${"• Ran a step\r\n".repeat(120)}› `;
 }
 
+function claudeComposerScreen(pasted: string): string {
+  const words = pasted.split(" ");
+  return `\u001b[2K\u001b[1G\u276f ${words.join("\u001b[1C")}\u001b[0m`;
+}
+
 function composerScreen(pasted: string): string {
   const words = pasted.split(" ");
   return `\u001b[2K\u001b[1G\u203a ${words.join("\u001b[1C")}\u001b[0m`;
+}
+
+const recordedChunksSchema = z.object({
+  chunks: z.array(z.object({ seq: z.number(), dataBase64: z.string() })),
+});
+
+interface RecordedChunk {
+  seq: number;
+  dataBase64: string;
+}
+
+function recordedClaudeSession(): RecordedChunk[] {
+  return recordedChunksSchema.parse(
+    JSON.parse(
+      readFileSync(
+        new URL(
+          "../fixtures/native-terminal/claude-fullscreen-after-clear.json",
+          import.meta.url,
+        ),
+        "utf8",
+      ),
+    ),
+  ).chunks;
+}
+
+function syntheticTypedInput(text: string): string {
+  return `\u001b[?2026h\u001b[?25l\u001b[2J\u001b[22;1H\u001b[2K❯ ${text}\u001b[?25h\u001b[?2026l`;
+}
+
+function syntheticInputBoxBorder(): string {
+  return `\u001b[?2026h\u001b[?25l\u001b[23;1H─\u001b[22;9H\u001b[?25h\u001b[?2026l`;
+}
+
+function recordedClaudeSessionWithUnsentText(text: string): RecordedChunk[] {
+  return recordedClaudeSession().map((chunk) =>
+    chunk.seq === 430 || chunk.seq === 431
+      ? {
+          ...chunk,
+          dataBase64: Buffer.from(
+            chunk.seq === 430
+              ? syntheticTypedInput(text)
+              : syntheticInputBoxBorder(),
+            "utf8",
+          ).toString("base64"),
+        }
+      : chunk,
+  );
+}
+
+interface RecordedCli {
+  inputs(): string[];
+  stop(): void;
+}
+
+function startRecordedCli(
+  fixture: Fixture,
+  terminalId: string,
+  history: readonly RecordedChunk[],
+  react: {
+    paste(pasted: string): readonly string[];
+    enter(): readonly string[];
+  },
+): RecordedCli {
+  const output: RecordedChunk[] = [];
+  let nextSeq = (history.at(-1)?.seq ?? -1) + 1;
+  let handled = 0;
+  const emit = (chunk: RecordedChunk) => {
+    output.push(chunk);
+    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.hostId,
+      sessionId: fixture.sessionId,
+      message: { type: "terminal.output", terminalId, chunk },
+    });
+  };
+  const draw = (texts: readonly string[]) => {
+    for (const text of texts) {
+      emit({
+        seq: nextSeq,
+        dataBase64: Buffer.from(text, "utf8").toString("base64"),
+      });
+      nextSeq += 1;
+    }
+  };
+  for (const chunk of history) emit(chunk);
+  const timer = setInterval(() => {
+    const messages = daemonMessages(fixture.socket);
+    for (const message of messages.slice(handled)) {
+      if (
+        message.type === "terminal.input" &&
+        message.terminalId === terminalId
+      ) {
+        const text = Buffer.from(message.dataBase64, "base64").toString("utf8");
+        const pasted = /^\u001b\[200~([\s\S]*)\u001b\[201~$/u.exec(text);
+        if (pasted !== null) draw(react.paste(pasted[1] ?? ""));
+        else if (text === "\r") draw(react.enter());
+      }
+      if (
+        message.type === "terminal.attach" &&
+        message.terminalId === terminalId
+      ) {
+        fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+          hostId: fixture.hostId,
+          sessionId: fixture.sessionId,
+          message: {
+            type: "terminal.replay",
+            requestId: message.requestId,
+            terminalId,
+            chunks: output.filter((chunk) => chunk.seq >= message.sinceSeq),
+            replayStartSeq: message.sinceSeq,
+            nextSeq,
+          },
+        });
+      }
+    }
+    handled = messages.length;
+  }, 5);
+  return {
+    inputs: () =>
+      daemonMessages(fixture.socket).flatMap((message) =>
+        message.type === "terminal.input" && message.terminalId === terminalId
+          ? [Buffer.from(message.dataBase64, "base64").toString("utf8")]
+          : [],
+      ),
+    stop: () => clearInterval(timer),
+  };
 }
 
 describe("native terminal threads", () => {
@@ -1195,7 +1367,7 @@ describe("native terminal threads", () => {
     await new Promise((resolve) => setTimeout(resolve, 300));
   });
 
-  it("reattaches an unarchived thread whose terminal exited during daemon disconnect", async () => {
+  it("reattaches a native CLI after client cleanup preserves its daemon disconnect", async () => {
     const fixture = await createMigratedMemoryFixture();
     const { thread } = await openRunningNativeThread(fixture, {
       providerId: "claude-code",
@@ -1215,6 +1387,18 @@ describe("native terminal threads", () => {
       .set({ status: "exited", closeReason: "daemon-disconnect" })
       .where(eq(terminalSessions.id, record.terminalSessionId))
       .run();
+    const cleanup = await postJson(
+      fixture,
+      `/terminals/${record.terminalSessionId}/close`,
+      { mode: "force", reason: "client-cleanup" },
+    );
+    expect(cleanup.status).toBe(200);
+    expect(
+      getTerminalSession(fixture.harness.db, {
+        kind: "terminal",
+        terminalId: record.terminalSessionId,
+      }),
+    ).toMatchObject({ status: "exited", closeReason: "daemon-disconnect" });
     fixture.socket.sentMessages.length = 0;
 
     const reopening = reopenNativeTerminalsAfterDaemonReconnect(
@@ -2024,8 +2208,7 @@ describe("native terminal threads", () => {
     const cli = startFakeCli(
       fixture,
       open.terminalId,
-      () =>
-        "\u001b[2;1H\u2022 You could say: run the tests\u001b[6;1H\u001b[2K\u203a [Image #1]",
+      () => "\u001b[6;1H\u001b[2K\u203a [Image #1] run the tests",
     );
     try {
       const response = await postJson(fixture, `/threads/${thread.id}/send`, {
@@ -2136,7 +2319,7 @@ describe("native terminal threads", () => {
     10_000,
   );
 
-  it("sends nothing when the CLI redraws the same text from its history", async () => {
+  it("sends nothing when the CLI redraws the same text unsent in its input box", async () => {
     const fixture = await createFixture();
     const { open, thread } = await openRunningNativeThread(fixture, {
       providerId: "codex",
@@ -2145,7 +2328,7 @@ describe("native terminal threads", () => {
       fixture,
       open.terminalId,
       composerScreen,
-      "\u001b[H\u001b[2J\u203a run the tests\r\n\u2022 Ran pnpm test\r\n\u203a ",
+      "\u001b[H\u001b[2J\u2022 Ran pnpm test\r\n\u203a run the tests",
     );
     try {
       const response = await postJson(fixture, `/threads/${thread.id}/send`, {
@@ -2161,6 +2344,98 @@ describe("native terminal threads", () => {
     } finally {
       cli.stop();
     }
+  });
+
+  describe("an idle Claude Code session", () => {
+    const rule = "\u2500".repeat(60);
+    const idleScreen = (input: string) =>
+      [
+        "> Reply with exactly: repeat-probe",
+        "",
+        "\u23fa repeat-probe",
+        "",
+        "\u273b Cooked for 3s \u00b7 done 7:12 AM",
+        rule,
+        `\u276f\u00a0${input}`,
+        rule,
+      ].join("\r\n");
+    const clearedScreen = [
+      "> /clear",
+      "",
+      "\u23bf (no content)",
+      rule,
+      "\u276f\u00a0",
+      rule,
+    ].join("\r\n");
+
+    it.each([
+      [
+        "history above an empty prompt",
+        "Reply with exactly: repeat-probe",
+        idleScreen(""),
+      ],
+      ["history above an empty prompt", "/clear", clearedScreen],
+      [
+        "a faint suggestion",
+        "Reply with exactly: repeat-probe",
+        idleScreen("\u001b[2mReply with exactly: repeat-probe\u001b[22m"),
+      ],
+    ])(
+      "accepts a message when only %s shows it: %s",
+      async (_label, message, screen) => {
+        const fixture = await createFixture();
+        const { open, thread } = await openRunningNativeThread(fixture, {
+          providerId: "claude-code",
+        });
+        const cli = startFakeCli(
+          fixture,
+          open.terminalId,
+          claudeComposerScreen,
+          screen,
+        );
+        try {
+          const response = await postJson(
+            fixture,
+            `/threads/${thread.id}/send`,
+            { input: textInput(message), mode: "auto" },
+          );
+          expect(response.status).toBe(200);
+          expect(cli.inputs()).toEqual([
+            `\u001b[200~${message}\u001b[201~`,
+            "\r",
+          ]);
+        } finally {
+          cli.stop();
+        }
+      },
+    );
+
+    it("refuses the text when it sits unsent behind other typed text", async () => {
+      const fixture = await createFixture();
+      const { open, thread } = await openRunningNativeThread(fixture, {
+        providerId: "claude-code",
+      });
+      const cli = startFakeCli(
+        fixture,
+        open.terminalId,
+        claudeComposerScreen,
+        idleScreen("draft Reply with exactly: repeat-probe"),
+      );
+      try {
+        const response = await postJson(fixture, `/threads/${thread.id}/send`, {
+          input: textInput("Reply with exactly: repeat-probe"),
+          mode: "auto",
+        });
+        expect(response.status).toBe(409);
+        expect(apiErrorSchema.parse(await readJson(response)).code).toBe(
+          "native_terminal_input_ambiguous",
+        );
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        expect(cli.inputs()).toEqual([]);
+      } finally {
+        cli.stop();
+      }
+    });
   });
 
   it("does not take a redrawn earlier placeholder for the echo", async () => {
@@ -2259,6 +2534,7 @@ describe("native terminal threads", () => {
     if (row === null) throw new Error("thread missing");
     await expect(
       sendThreadMessage(fixture.harness.deps, {
+        originPluginId: null,
         environment: fixture.environment,
         payload: { input: textInput("hi"), mode: "auto" },
         thread: row,
@@ -2282,6 +2558,49 @@ describe("native terminal threads", () => {
     expect(apiErrorSchema.parse(await readJson(fork)).code).toBe(
       "native_terminal_thread",
     );
+  });
+
+  it("rejects a queued message for a native thread at enqueue and leaves existing queue rows untouched", async () => {
+    const fixture = await createFixture();
+    const { thread } = await openRunningNativeThread(fixture, {
+      providerId: "claude-code",
+    });
+    const existing = seedQueuedMessage(fixture.harness.deps, {
+      content: textInput("queued before the guard"),
+      threadId: thread.id,
+    });
+    setQueuedThreadMessageFailureReason(fixture.harness.db, noopNotifier, {
+      id: existing.id,
+      threadId: thread.id,
+      failureReason: "This thread runs its agent in a native terminal",
+      now: Date.now(),
+      retryDelaysMs: [],
+    });
+    const rowsBefore = fixture.harness.db
+      .select()
+      .from(queuedThreadMessages)
+      .where(eq(queuedThreadMessages.threadId, thread.id))
+      .all();
+
+    const response = await postJson(
+      fixture,
+      `/threads/${thread.id}/queued-messages`,
+      { input: textInput("will never deliver") },
+    );
+    expect(response.status).toBe(409);
+    expect(apiErrorSchema.parse(await readJson(response))).toEqual({
+      code: "native_terminal_thread",
+      message:
+        "This thread runs its agent in a native terminal; send input through the terminal",
+    });
+
+    const rowsAfter = fixture.harness.db
+      .select()
+      .from(queuedThreadMessages)
+      .where(eq(queuedThreadMessages.threadId, thread.id))
+      .all();
+    expect(rowsAfter).toEqual(rowsBefore);
+    expect(rowsAfter).toHaveLength(1);
   });
 
   it("rejects providers without a native harness", async () => {
@@ -2377,13 +2696,37 @@ describe("native terminal threads", () => {
     const first = await openRunningNativeThread(fixture, {
       providerId: "codex",
     });
-    const second = await createNativeThread(fixture, { providerId: "codex" });
+    const secondThread = await createNativeThread(fixture, {
+      providerId: "codex",
+    });
+    const secondOpen = await waitForTerminalOpen(fixture.socket, 1);
+    acknowledgeOpen(fixture, secondOpen);
+    for (let attempt = 0; attempt < 600; attempt += 1) {
+      const record = getNativeTerminalThread(
+        fixture.harness.db,
+        secondThread.id,
+      );
+      if (record?.terminalSessionId === secondOpen.terminalId) break;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    const second = { thread: secondThread };
+    const credentialOf = (threadId: string) => {
+      const open = daemonMessages(fixture.socket).find(
+        (message): message is TerminalOpenMessage =>
+          message.type === "terminal.open" && message.threadId === threadId,
+      );
+      const entry = open?.contributedEnv.find(
+        (candidate) => candidate.name === NATIVE_TOOL_CREDENTIAL_ENV,
+      );
+      return `Bearer ${entry?.value}`;
+    };
     const sessionId = "01a1246a-b896-7b71-9895-ce5345f5f623";
 
     const recorded = await postJson(
       fixture,
       `/threads/${first.thread.id}/native-terminal/session`,
       { nativeSessionId: sessionId },
+      credentialOf(first.thread.id),
     );
     expect(recorded.status).toBe(200);
     expect(
@@ -2393,8 +2736,9 @@ describe("native terminal threads", () => {
 
     const stolen = await postJson(
       fixture,
-      `/threads/${second.id}/native-terminal/session`,
+      `/threads/${second.thread.id}/native-terminal/session`,
       { nativeSessionId: sessionId },
+      credentialOf(second.thread.id),
     );
     expect(stolen.status).toBe(409);
 
@@ -2402,6 +2746,7 @@ describe("native terminal threads", () => {
       fixture,
       `/threads/${first.thread.id}/native-terminal/session`,
       { nativeSessionId: "11111111-2222-3333-4444-555555555555" },
+      credentialOf(first.thread.id),
     );
     expect(rebound.status).toBe(409);
   });
@@ -2550,9 +2895,6 @@ describe("native terminal threads", () => {
     const lateProviders = options.deferProviders
       ? createProviderRegistryService({ deferRegistrationsSettled: true })
       : null;
-    if (lateProviders !== null) {
-      fixture.harness.deps.providerRegistry = lateProviders;
-    }
     const opened = await fixture.harness.app.request("/internal/session/open", {
       method: "POST",
       headers: internalAuthHeaders(fixture.harness, {
@@ -2573,6 +2915,9 @@ describe("native terminal threads", () => {
     });
     expect(opened.status).toBe(201);
     const { sessionId } = (await readJson(opened)) as { sessionId: string };
+    if (lateProviders !== null) {
+      fixture.harness.deps.providerRegistry = lateProviders;
+    }
     const socket = createFakeDaemonSocket();
     onDaemonSocketOpen(fixture.harness.deps, {
       hostId: fixture.hostId,
@@ -2778,6 +3123,7 @@ describe("native terminal threads", () => {
       sessionId: fixture.sessionId,
     });
     await fixture.harness.deps.terminalSessions.closeTerminal({
+      caller: "native-terminal-threads.test",
       terminalId: closed.terminalId,
       payload: { mode: "force", reason: "user" },
     });
@@ -3641,7 +3987,12 @@ describe("native terminal threads", () => {
               ?.terminalSessionId,
         )
         .toBe(reopen.terminalId);
+      const reopenedCredential = reopen.contributedEnv.find(
+        (entry) => entry.name === NATIVE_TOOL_CREDENTIAL_ENV,
+      )?.value;
       recordNativeTerminalActivity(fixture.harness.deps, {
+        confirms: true,
+        authorization: `Bearer ${reopenedCredential}`,
         threadId: running.thread.id,
         state: "working",
       });
@@ -4638,5 +4989,419 @@ describe("native terminal threads", () => {
         terminalId: open.terminalId,
       })?.status,
     ).toBe("running");
+  });
+  describe("a fullscreen Claude Code session recorded after /clear", () => {
+    const sendSayOk = (fixture: Fixture, threadId: string) =>
+      postJson(fixture, `/threads/${threadId}/send`, {
+        input: textInput("say ok"),
+        mode: "auto",
+      });
+    const inputBoxScreen = (
+      cols: number,
+      boxRows: readonly string[],
+      cursor: { col: number; row: number },
+    ) => {
+      const rule = "\u2500".repeat(cols);
+      const rows = [
+        "• Previous work",
+        rule,
+        ...boxRows,
+        rule,
+        "  Sonnet 5.5 | ctx 64K",
+      ];
+      const drawn = rows
+        .map((row, index) => `\u001b[${index + 1};1H\u001b[2K${row}`)
+        .join("");
+      return `\u001b[?7l\u001b[2J${drawn}\u001b[?7h\u001b[${cursor.row + 1};${cursor.col + 1}H`;
+    };
+    const inputBoxHistory = (
+      cols: number,
+      boxRows: readonly string[],
+      cursor: { col: number; row: number },
+    ): RecordedChunk[] => [
+      {
+        seq: 0,
+        dataBase64: Buffer.from(
+          inputBoxScreen(cols, boxRows, cursor),
+          "utf8",
+        ).toString("base64"),
+      },
+    ];
+    const split = () => {
+      const chunks = recordedClaudeSession();
+      return {
+        idle: chunks.filter((chunk) => chunk.seq < 429),
+        typed: chunks.filter((chunk) => chunk.seq >= 429),
+      };
+    };
+
+    it("submits a repeated message the screen already shows in its history", async () => {
+      const fixture = await createFixture();
+      const { open, thread } = await openRunningNativeThread(fixture, {
+        providerId: "claude-code",
+      });
+      const { idle } = split();
+      const cli = startRecordedCli(fixture, open.terminalId, idle, {
+        paste: (pasted) => [syntheticTypedInput(pasted)],
+        enter: () => [],
+      });
+      try {
+        const response = await sendSayOk(fixture, thread.id);
+        expect(response.status).toBe(200);
+        expect(cli.inputs()).toEqual(["\u001b[200~say ok\u001b[201~", "\r"]);
+      } finally {
+        cli.stop();
+      }
+    });
+
+    it("reads only the output since the requested sequence while earlier output is retained", async () => {
+      const fixture = await createFixture();
+      const { open } = await openRunningNativeThread(fixture, {
+        providerId: "claude-code",
+      });
+      const { typed } = split();
+      const cli = startRecordedCli(
+        fixture,
+        open.terminalId,
+        recordedClaudeSessionWithUnsentText("say ok"),
+        { paste: () => [], enter: () => [] },
+      );
+      try {
+        const delta =
+          await fixture.harness.deps.terminalSessions.readTerminalOutput({
+            terminalId: open.terminalId,
+            query: { sinceSeq: typed[0]!.seq },
+          });
+        expect(delta.chunks.map((chunk) => chunk.seq)).toEqual(
+          typed.map((chunk) => chunk.seq),
+        );
+      } finally {
+        cli.stop();
+      }
+    });
+
+    it("presses Enter when exactly the requested text sits unsent in the input box", async () => {
+      const fixture = await createFixture();
+      const { open, thread } = await openRunningNativeThread(fixture, {
+        providerId: "claude-code",
+      });
+      const cli = startRecordedCli(
+        fixture,
+        open.terminalId,
+        recordedClaudeSessionWithUnsentText("say ok"),
+        { paste: () => [], enter: () => [] },
+      );
+      try {
+        await waitForTerminalInputBox(fixture, open.terminalId, "say ok");
+        const response = await sendSayOk(fixture, thread.id);
+        expect(response.status).toBe(200);
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        expect(cli.inputs()).toEqual(["\r"]);
+      } finally {
+        cli.stop();
+      }
+    });
+
+    it("presses Enter once when the exact long message wraps across three input rows", async () => {
+      const fixture = await createFixture();
+      const { open, thread } = await openRunningNativeThread(fixture, {
+        providerId: "claude-code",
+      });
+      const text = `${"a".repeat(open.cols * 2 - 4)}b`;
+      const cli = startRecordedCli(
+        fixture,
+        open.terminalId,
+        inputBoxHistory(
+          open.cols,
+          [
+            `\u276f\u00a0${"a".repeat(open.cols - 2)}`,
+            `  ${"a".repeat(open.cols - 2)}`,
+            "  b",
+          ],
+          { col: 3, row: 4 },
+        ),
+        { paste: () => [], enter: () => [] },
+      );
+      try {
+        const response = await postJson(fixture, `/threads/${thread.id}/send`, {
+          input: textInput(text),
+          mode: "auto",
+        });
+        expect(response.status).toBe(200);
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        expect(cli.inputs()).toEqual(["\r"]);
+      } finally {
+        cli.stop();
+      }
+    });
+
+    it("refuses an ASCII prompt with a typed leading space and never calls the input writer", async () => {
+      const fixture = await createFixture();
+      const { open, thread } = await openRunningNativeThread(fixture, {
+        providerId: "claude-code",
+      });
+      const inputWriter = vi.spyOn(
+        fixture.harness.deps.terminalSessions,
+        "sendTerminalInput",
+      );
+      const cli = startRecordedCli(
+        fixture,
+        open.terminalId,
+        inputBoxHistory(open.cols, ["\u276f say ok"], { col: 8, row: 2 }),
+        { paste: () => [], enter: () => [] },
+      );
+      try {
+        const response = await postJson(fixture, `/threads/${thread.id}/send`, {
+          input: textInput(" say ok"),
+          mode: "auto",
+        });
+        expect(inputWriter).not.toHaveBeenCalled();
+        expect(response.status).toBe(409);
+        expect(apiErrorSchema.parse(await readJson(response)).code).toBe(
+          "native_terminal_input_ambiguous",
+        );
+        expect(cli.inputs()).toEqual([]);
+      } finally {
+        cli.stop();
+      }
+    });
+
+    it("refuses an ASCII-padded prompt with a typed leading space", async () => {
+      const fixture = await createFixture();
+      const { open, thread } = await openRunningNativeThread(fixture, {
+        providerId: "claude-code",
+      });
+      const inputWriter = vi.spyOn(
+        fixture.harness.deps.terminalSessions,
+        "sendTerminalInput",
+      );
+      const cli = startRecordedCli(
+        fixture,
+        open.terminalId,
+        inputBoxHistory(open.cols, ["\u276f  say ok"], { col: 9, row: 2 }),
+        { paste: () => [], enter: () => [] },
+      );
+      try {
+        const response = await postJson(fixture, `/threads/${thread.id}/send`, {
+          input: textInput("say ok"),
+          mode: "auto",
+        });
+        expect(response.status).toBe(409);
+        expect(apiErrorSchema.parse(await readJson(response)).code).toBe(
+          "native_terminal_input_ambiguous",
+        );
+        expect(inputWriter).not.toHaveBeenCalled();
+        expect(cli.inputs()).toEqual([]);
+      } finally {
+        cli.stop();
+      }
+    });
+
+    it("presses Enter once for an NBSP-padded prompt", async () => {
+      const fixture = await createFixture();
+      const { open, thread } = await openRunningNativeThread(fixture, {
+        providerId: "claude-code",
+      });
+      const inputWriter = vi.spyOn(
+        fixture.harness.deps.terminalSessions,
+        "sendTerminalInput",
+      );
+      const cli = startRecordedCli(
+        fixture,
+        open.terminalId,
+        inputBoxHistory(open.cols, ["\u276f\u00a0say ok"], { col: 8, row: 2 }),
+        { paste: () => [], enter: () => [] },
+      );
+      try {
+        const response = await postJson(fixture, `/threads/${thread.id}/send`, {
+          input: textInput("say ok"),
+          mode: "auto",
+        });
+        expect(response.status).toBe(200);
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        expect(inputWriter).toHaveBeenCalledTimes(1);
+        expect(cli.inputs()).toEqual(["\r"]);
+      } finally {
+        cli.stop();
+      }
+    });
+
+    it("presses Enter once when a trailing request newline was trimmed before typing", async () => {
+      const fixture = await createFixture();
+      const { open, thread } = await openRunningNativeThread(fixture, {
+        providerId: "claude-code",
+      });
+      const inputWriter = vi.spyOn(
+        fixture.harness.deps.terminalSessions,
+        "sendTerminalInput",
+      );
+      const cli = startRecordedCli(
+        fixture,
+        open.terminalId,
+        inputBoxHistory(open.cols, ["\u276f\u00a0say ok"], { col: 8, row: 2 }),
+        { paste: () => [], enter: () => [] },
+      );
+      try {
+        const response = await postJson(fixture, `/threads/${thread.id}/send`, {
+          input: textInput("say ok\n"),
+          mode: "auto",
+        });
+        expect(response.status).toBe(200);
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        expect(inputWriter).toHaveBeenCalledTimes(1);
+        expect(cli.inputs()).toEqual(["\r"]);
+      } finally {
+        cli.stop();
+      }
+    });
+
+    it("refuses a typed leading space after NBSP prompt padding", async () => {
+      const fixture = await createFixture();
+      const { open, thread } = await openRunningNativeThread(fixture, {
+        providerId: "claude-code",
+      });
+      const inputWriter = vi.spyOn(
+        fixture.harness.deps.terminalSessions,
+        "sendTerminalInput",
+      );
+      const cli = startRecordedCli(
+        fixture,
+        open.terminalId,
+        inputBoxHistory(open.cols, ["\u276f\u00a0 say ok"], { col: 9, row: 2 }),
+        { paste: () => [], enter: () => [] },
+      );
+      try {
+        const response = await postJson(fixture, `/threads/${thread.id}/send`, {
+          input: textInput("say ok"),
+          mode: "auto",
+        });
+        expect(response.status).toBe(409);
+        expect(apiErrorSchema.parse(await readJson(response)).code).toBe(
+          "native_terminal_input_ambiguous",
+        );
+        expect(inputWriter).not.toHaveBeenCalled();
+        expect(cli.inputs()).toEqual([]);
+      } finally {
+        cli.stop();
+      }
+    });
+
+    it.each([
+      {
+        name: "a draft with an extra space",
+        text: "say ok",
+        boxRows: ["\u276f\u00a0say  ok"],
+        cursor: { col: 9, row: 2 },
+        wrapDifference: false,
+      },
+      {
+        name: "a request with an extra space",
+        text: "say  ok",
+        boxRows: ["\u276f\u00a0say ok"],
+        cursor: { col: 8, row: 2 },
+        wrapDifference: false,
+      },
+      {
+        name: "a draft with a space hidden at the wrap point",
+        text: "",
+        boxRows: [],
+        wrapDifference: true,
+        cursor: { col: 3, row: 3 },
+      },
+    ])(
+      "refuses Enter for $name",
+      async ({ text, boxRows, wrapDifference, cursor }) => {
+        const fixture = await createFixture();
+        const { open, thread } = await openRunningNativeThread(fixture, {
+          providerId: "claude-code",
+        });
+        const width = open.cols - 2;
+        const request = wrapDifference ? `${"a".repeat(width)}b` : text;
+        const draftRows = wrapDifference
+          ? [`\u276f\u00a0${"a".repeat(width - 1)} `, "  b"]
+          : boxRows;
+        const cli = startRecordedCli(
+          fixture,
+          open.terminalId,
+          inputBoxHistory(open.cols, draftRows, cursor),
+          { paste: () => [], enter: () => [] },
+        );
+        try {
+          const response = await postJson(
+            fixture,
+            `/threads/${thread.id}/send`,
+            {
+              input: textInput(request),
+              mode: "auto",
+            },
+          );
+          expect(response.status).toBe(409);
+          expect(apiErrorSchema.parse(await readJson(response)).code).toBe(
+            "native_terminal_input_ambiguous",
+          );
+          await new Promise((resolve) => setTimeout(resolve, 200));
+          expect(cli.inputs()).toEqual([]);
+        } finally {
+          cli.stop();
+        }
+      },
+    );
+
+    it("refuses when the requested text is only part of what the input box holds", async () => {
+      const fixture = await createFixture();
+      const { open, thread } = await openRunningNativeThread(fixture, {
+        providerId: "claude-code",
+      });
+      const cli = startRecordedCli(
+        fixture,
+        open.terminalId,
+        recordedClaudeSessionWithUnsentText("say ok"),
+        { paste: () => [], enter: () => [] },
+      );
+      try {
+        const response = await postJson(fixture, `/threads/${thread.id}/send`, {
+          input: textInput("say"),
+          mode: "auto",
+        });
+        expect(response.status).toBe(409);
+        expect(apiErrorSchema.parse(await readJson(response)).code).toBe(
+          "native_terminal_input_ambiguous",
+        );
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        expect(cli.inputs()).toEqual([]);
+      } finally {
+        cli.stop();
+      }
+    });
+
+    it("submits each of several identical tells exactly once while a faint suggestion repeats the text", async () => {
+      const fixture = await createFixture();
+      const { open, thread } = await openRunningNativeThread(fixture, {
+        providerId: "claude-code",
+      });
+      const { idle } = split();
+      const faintSuggestion =
+        "\u001b[?2026h\u001b[?25l\u001b[2J\u001b[19;1H\u001b[2msay ok\u001b[22m\u001b[22;1H❯ \u001b[23;1H─\u001b[?25h\u001b[?2026l";
+      const cli = startRecordedCli(fixture, open.terminalId, idle, {
+        paste: (pasted) => [syntheticTypedInput(pasted)],
+        enter: () => [faintSuggestion],
+      });
+      const tells = 6;
+      try {
+        for (let tell = 0; tell < tells; tell += 1) {
+          const response = await sendSayOk(fixture, thread.id);
+          if (response.status !== 200)
+            throw new Error(`tell ${tell}: ${await response.text()}`);
+        }
+        expect(cli.inputs()).toEqual(
+          Array.from({ length: tells }, () => [
+            "\u001b[200~say ok\u001b[201~",
+            "\r",
+          ]).flat(),
+        );
+      } finally {
+        cli.stop();
+      }
+    }, 20_000);
   });
 });

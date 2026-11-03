@@ -1,4 +1,5 @@
 import { createBbSdk } from "@bb/sdk/core";
+import type { HostDaemonOnlineRpcResult } from "@bb/host-daemon-contract";
 import { createHttpTransport } from "@bb/sdk/node";
 import { appendThreadProvisioningEvent } from "../../../src/services/threads/thread-events.js";
 import { requestThreadStopForCurrentState } from "../../../src/services/threads/thread-lifecycle.js";
@@ -231,6 +232,7 @@ function saveProviderStartup(
   fixture: ReturnType<typeof setup>,
 ) {
   const context = createThreadStartup({
+    initiator: "user",
     clientRequestId: encodeClientTurnRequestIdNumber({ value: 1 }),
     environmentIntent: {
       type: "provider",
@@ -679,6 +681,7 @@ describe("core environment orchestration", () => {
           ).resolves.toMatchObject({ id: target.id });
         } else {
           const context = createThreadStartup({
+            initiator: "user",
             clientRequestId: encodeClientTurnRequestIdNumber({ value: 1 }),
             environmentIntent: { type: "reuse", environmentId: target.id },
             execution: {
@@ -2089,7 +2092,7 @@ it("skips environments blocked on a foreign plugin owner until that plugin provi
         return id === record.provider.id ? record : undefined;
       },
       invokeProvider: async <T>(
-        _id: string,
+        _record: typeof record,
         _label: string,
         run: () => Promise<T>,
       ) => ({ ok: true as const, value: await run() }),
@@ -2932,16 +2935,62 @@ it.each([false, true])(
       }
       harness.db
         .update(hostDaemonSessions)
-        .set({ protocolVersion: fixture.session.protocolVersion })
+        .set({ protocolVersion: 259 })
         .where(eq(hostDaemonSessions.id, fixture.session.id))
         .run();
-      for (const inspection of [
-        { supported: true, active: false, pids: [123], unreadablePids: [] },
-        { supported: true, active: false, pids: [], unreadablePids: [456] },
-        { supported: true, active: true, pids: [], unreadablePids: [] },
-        { supported: false, active: false, pids: [], unreadablePids: [] },
-        { supported: true, active: false, pids: [], unreadablePids: [] },
-      ]) {
+      const inspections: HostDaemonOnlineRpcResult<"environment.inspect_cleanup">[] =
+        [
+          {
+            supported: true,
+            active: false,
+            pids: [501],
+            unreadablePids: [],
+            processCommands: { "501": "cwd-holder" },
+          },
+          {
+            supported: true,
+            active: false,
+            pids: [502],
+            unreadablePids: [],
+            processCommands: { "502": "file-holder" },
+          },
+          {
+            supported: true,
+            active: false,
+            pids: [503, 501, 502, 501],
+            unreadablePids: [502, 456, 456],
+            processCommands: {
+              "501": "cwd-holder",
+              "502": "file-holder",
+              "456": "python3",
+            },
+          },
+          { supported: true, active: false, pids: [123], unreadablePids: [] },
+          {
+            supported: true,
+            active: false,
+            pids: [],
+            unreadablePids: [456],
+            processCommands: { "456": "python3" },
+          },
+          {
+            supported: true,
+            active: false,
+            pids: [],
+            unreadablePids: [456, 457, 458],
+            processCommands: { "456": "python3", "457": "node" },
+          },
+          {
+            supported: true,
+            active: false,
+            pids: [],
+            unreadablePids: [536],
+          },
+          { supported: true, active: true, pids: [], unreadablePids: [] },
+          { supported: false, active: false, pids: [], unreadablePids: [] },
+          { supported: true, active: false, pids: [], unreadablePids: [] },
+        ];
+      for (const inspection of inspections) {
         let teardownRan = false;
         registerHostRpcResponder(harness, {
           hostId: fixture.host.id,
@@ -2966,6 +3015,36 @@ it.each([false, true])(
           inspection.pids.length === 0 &&
           inspection.unreadablePids.length === 0;
         expect(response.status).toBe(clear ? 200 : 409);
+        if (
+          inspection.pids.length > 0 &&
+          inspection.unreadablePids.length > 0
+        ) {
+          expect.soft(await response.json()).toMatchObject({
+            message:
+              "Recovery refused: process 456 (python3), 501 (cwd-holder), 502 (file-holder), 503 may be using this workspace; stop it and retry",
+          });
+        } else if (inspection.pids.length > 0) {
+          const expectedProcesses: Record<string, string> = {
+            "123": "123",
+            "501": "501 (cwd-holder)",
+            "502": "502 (file-holder)",
+            "503": "503",
+          };
+          expect
+            .soft(await response.text())
+            .toContain(
+              `Recovery refused: process ${inspection.pids.map((pid) => expectedProcesses[pid]).join(", ")} may be using this workspace; stop it and retry`,
+            );
+        } else if (inspection.unreadablePids.length > 0) {
+          const processes = inspection.unreadablePids.map((pid) => {
+            if (pid === 456) return "456 (python3)";
+            if (pid === 457) return "457 (node)";
+            return String(pid);
+          });
+          expect(await response.text()).toContain(
+            `Recovery refused: process ${processes.join(", ")} may be using this workspace; stop it and retry`,
+          );
+        }
         const hook = harness.db
           .select()
           .from(environmentHookOperations)

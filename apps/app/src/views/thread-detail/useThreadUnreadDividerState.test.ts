@@ -10,13 +10,27 @@ interface DividerThread {
   latestAttentionAt: number;
 }
 
-function renderDividerState(initialThread: DividerThread) {
+interface DividerQuery {
+  isFetchedAfterMount: boolean;
+  isPlaceholderData: boolean;
+}
+
+const SETTLED_QUERY: DividerQuery = {
+  isFetchedAfterMount: true,
+  isPlaceholderData: false,
+};
+
+function renderDividerState(
+  initialThread: DividerThread,
+  initialQuery: DividerQuery = SETTLED_QUERY,
+) {
   const renders: ReturnType<typeof useThreadUnreadDividerState>[] = [];
   const view = renderHook(
-    ({ thread }: { thread: DividerThread }) => {
+    ({ query, thread }: { query: DividerQuery; thread: DividerThread }) => {
       const state = useThreadUnreadDividerState({
+        anchor: "first-unread-row",
         bootstrapQuery: { dataUpdatedAt: 0, isFetchedAfterMount: false, isSuccess: false },
-        threadQuery: { isFetchedAfterMount: true, isError: false, isPlaceholderData: false },
+        threadQuery: { ...query, isError: false },
         hasUnseenTimelineEvents: false,
         routeThreadId: thread.id,
         thread,
@@ -24,14 +38,14 @@ function renderDividerState(initialThread: DividerThread) {
       renders.push(state);
       return state;
     },
-    { initialProps: { thread: initialThread } },
+    { initialProps: { query: initialQuery, thread: initialThread } },
   );
   return {
     renders,
     result: view.result,
-    show: (thread: DividerThread) => {
+    show: (thread: DividerThread, query: DividerQuery = SETTLED_QUERY) => {
       renders.length = 0;
-      view.rerender({ thread });
+      view.rerender({ query, thread });
     },
   };
 }
@@ -49,9 +63,11 @@ describe("useThreadUnreadDividerState", () => {
     });
 
     expect(renders[0]).toEqual({
+      ready: false,
       autoScroll: true,
       hasUnseenTimelineEvents: true,
-      placement: { kind: "after-cutoff", cutoffAt: 100 },
+      landOnDivider: false,
+      placement: { anchor: "first-unread-row", cutoffAt: 100 },
     });
   });
 
@@ -65,9 +81,11 @@ describe("useThreadUnreadDividerState", () => {
     show({ id: "thr_b", lastReadAt: null, latestAttentionAt: 300 });
 
     expect(renders[0]).toEqual({
+      ready: false,
       autoScroll: true,
       hasUnseenTimelineEvents: true,
-      placement: { kind: "before-first" },
+      landOnDivider: false,
+      placement: null,
     });
   });
 
@@ -80,15 +98,19 @@ describe("useThreadUnreadDividerState", () => {
 
     show({ id: "thr_a", lastReadAt: 250, latestAttentionAt: 200 });
     expect(result.current).toEqual({
+      ready: true,
       autoScroll: true,
       hasUnseenTimelineEvents: true,
-      placement: { kind: "after-cutoff", cutoffAt: 100 },
+      landOnDivider: true,
+      placement: { anchor: "first-unread-row", cutoffAt: 100 },
     });
 
     show({ id: "thr_a", lastReadAt: 400, latestAttentionAt: 300 });
     expect(result.current).toEqual({
+      ready: true,
       autoScroll: true,
       hasUnseenTimelineEvents: true,
+      landOnDivider: false,
       placement: null,
     });
   });
@@ -101,9 +123,63 @@ describe("useThreadUnreadDividerState", () => {
     });
 
     expect(renders[0]).toEqual({
+      ready: false,
       autoScroll: false,
       hasUnseenTimelineEvents: false,
+      landOnDivider: false,
       placement: null,
     });
+  });
+
+  it("opens a never-read thread without a divider, and adds none when it is marked unread while open", () => {
+    const { result, show } = renderDividerState({
+      id: "thr_a",
+      lastReadAt: null,
+      latestAttentionAt: 200,
+    });
+    expect(result.current.placement).toBeNull();
+    expect(result.current.landOnDivider).toBe(false);
+
+    show({ id: "thr_b", lastReadAt: 300, latestAttentionAt: 200 });
+    show({ id: "thr_b", lastReadAt: null, latestAttentionAt: 200 });
+    expect(result.current.placement).toBeNull();
+    expect(result.current.landOnDivider).toBe(false);
+  });
+
+  it("lands on a divider that arrives with the fresh fetch after reopening on cached read state", () => {
+    const cached: DividerQuery = {
+      isFetchedAfterMount: false,
+      isPlaceholderData: true,
+    };
+    const { result, show } = renderDividerState(
+      { id: "thr_a", lastReadAt: 300, latestAttentionAt: 200 },
+      cached,
+    );
+    expect(result.current.ready).toBe(false);
+    expect(result.current.placement).toBeNull();
+    expect(result.current.landOnDivider).toBe(false);
+
+    show({ id: "thr_a", lastReadAt: 300, latestAttentionAt: 400 });
+    expect(result.current.ready).toBe(true);
+    expect(result.current.placement).toEqual({
+      anchor: "first-unread-row",
+      cutoffAt: 300,
+    });
+    expect(result.current.landOnDivider).toBe(true);
+  });
+
+  it("places but does not land on a divider from a reply that arrives after the thread settled", () => {
+    const { result, show } = renderDividerState({
+      id: "thr_a",
+      lastReadAt: 300,
+      latestAttentionAt: 200,
+    });
+
+    show({ id: "thr_a", lastReadAt: 300, latestAttentionAt: 400 });
+    expect(result.current.placement).toEqual({
+      anchor: "first-unread-row",
+      cutoffAt: 300,
+    });
+    expect(result.current.landOnDivider).toBe(false);
   });
 });

@@ -148,7 +148,7 @@ An account enters error only when its OAuth refresh token is rejected (HTTP 400
 or 401 from the token endpoint) or an API key is rejected. A rejected refresh
 token sets `signInExpired` in account JSON and `expired` in the `account list`
 Sign-in column, even while the account is disabled. Repair it with
-`bb pool account sign-in-again <id>` (aliases `reauth`, `reauthorize`): it starts
+`bb pool account sign-in-again <id>` (aliases `login`, `relogin`, `reauth`, `reauthorize`): it starts
 the same Claude or Codex login as `add --login`, and the matching
 `login-complete` or `login-poll` replaces that account's credential in place,
 keeping its ID, label, priority, enabled state, and conversation choices. bb
@@ -365,8 +365,42 @@ Proxied traffic authenticates with the nested token of the launching thread and
 is attributed to that thread's machine, so `bb pool status` on the parent
 attributes it to the parent host rather than to the nested instance.
 
+## Claude Artifacts
+
+Claude Code offers `Artifact` only in a claude.ai account session, and it refuses every call while `ANTHROPIC_AUTH_TOKEN` is set. A pooled Claude thread on a pool with at least one subscription account therefore signs in with its pool token as `CLAUDE_CODE_OAUTH_TOKEN` and gets `HTTPS_PROXY`, `NODE_EXTRA_CA_CERTS` and `CLAUDE_CODE_ARTIFACT=1`. It sets no `NO_PROXY`, so a value already in the thread keeps working. Inference keeps using the hub base URL.
+
+Claude Code sends Artifact, policy and feature-flag requests straight to `https://api.anthropic.com` and ignores `ANTHROPIC_BASE_URL` for them, so the plugin's `bb.host` entry runs a proxy on `127.0.0.1` of each thread's host:
+
+- Every `CONNECT` must carry the thread's proxy credential (`Proxy-Authorization`), an HMAC the server derives from the pool token with a per-server secret; it buys tunnel use only and is never accepted by the hub. Anything else gets 407. The server sends each host the complete set of active credentials whenever a thread token is issued, archived, deleted or dropped and once a minute; the host replaces its set and closes the tunnels of any removed credential, so a revoked thread's credential gets 407 on its next `CONNECT`. Each successful send also renews a 3-minute lease on the host: if no send succeeds for 3 minutes, the host answers 407 to every credential and closes its tunnels until the next send restores the active ones. A failed send is retried once after 2 seconds. Other hosts are tunnelled directly from that host.
+- `api.anthropic.com:443` is terminated with a 7-day leaf certificate. Only `/api/frame/*`, the Artifact MCP endpoint `/api/artifacts/mcp` (GET and POST, no query), the policy lookup, feature flags and bootstrap are relayed to the hub route `POST /claude-oauth`; `settings` answers 404 and telemetry 204 locally; everything else is 403. The hub re-checks host, method and path against the same allowlist, swaps the pool token for the selected subscription account's access token (refreshing it, and retrying once on 401), and never forwards the pool token.
+- The certificate authority lives on the server in `secrets/proxy-ca` (key mode 0600) and is limited to `api.anthropic.com` by a critical name constraint. Hosts receive only the CA certificate (written to the plugin data directory) and their own leaf certificate and key, which the host worker keeps in memory only and the server resends when the worker restarts. Minting needs the system `openssl` command; without it, or when the host proxy cannot start, threads keep the plain pool credentials and `Artifact` stays unavailable.
+- Pools with only API keys, nested servers that proxy to a parent pool, and Codex are unchanged. Any thread on the pool can PATCH or DELETE `/api/frame/*` artifacts of the shared account, which is accepted for a single-owner pool. Artifacts belong to the account that published them, so a conversation moved to another account cannot see the earlier ones.
+- The hub logs one info line per relayed request, `Account Pooler relayed <method> <route> -> upstream <status> in <n>ms`, or `-> upstream=error <ErrorClass> in <n>ms` when the upstream fetch threw and no status was received (the client gets a pool-generated 502; the line carries the error class name only, never its message), where `<route>` is the matched allowlist pattern (`/api/frame/*`, `/api/eval/sdk-*` or the exact endpoint), never the requested path: no path segments, query values, headers or bodies. A refused request (403 above) is not relayed and logs no such line.
+
+Known upstream limitation: the `claude-artifacts` MCP server that Claude Code 2.1.311 and 2.1.312 starts for `https://api.anthropic.com/api/artifacts/mcp` fails with `Connection failed (404): Error POSTing to endpoint: not found`, in direct unpooled sessions (`HTTP_PROXY`/`HTTPS_PROXY` unset) as well as pooled ones. The 404 comes from Anthropic, not from the pool: the hub relays the upstream status and body unchanged. Publish Claude documents through the built-in `Artifact` tool, which is unaffected and works through the pool; do not rely on the `claude-artifacts` MCP server.
+
 ## Automatic retries
 
 Provider Retry discovers Account Pooler’s `provider-retry.v1.availability` RPC. It accepts `{ threadId, requestId }` and reports `not-routed`, `ready`, `blocked` with `retryAt` in epoch milliseconds, or `unavailable` with a reason. Pool routing must have been recorded when the provider environment was prepared. The request must still be the thread’s latest request; its recorded model determines which quota windows apply. The pool uses the same recovery calculation for its HTTP 429 response and this RPC. Parent pools expose the authenticated `/retry-availability?provider=claude|codex&family=<family>` endpoint.
 
 The retry plugin remains responsible for queueing, maximum waits, and attempt limits. Inspect a skipped decision with `bb provider-retry explain <thread-id>` and pending work with `bb provider-retry status <thread-id>`.
+
+## Plan and model labels
+
+Claude plan badges and the CLI Plan column prefer Anthropic's
+`organization.plan_display_name` (for example Ultra) over legacy Max flags and
+rate-limit tier identifiers. Missing names are backfilled in the background at startup and on display reads.
+Refreshes are single-flight per account, use the profile request timeout, and
+retry after at least five minutes on failure. Account names remain unchanged.
+Without a provider display name, legacy Max records show Claude subscription.
+Max multipliers appear only when the stored provider name says Max.
+The additive `display.get` RPC returns display names in `plans`, keyed by account
+ID. Legacy account records and `status.get` retain their existing shape.
+
+The `weekly` map in `display.get` preserves each API-reported model display name
+and weekly quota, keyed by account ID and model name. Usage details, the usage
+card and CLI show one weekly row per reported name, including future models.
+Servers without this method fall back to the legacy family rows. Model display
+quotas use an additive SQLite table; existing routing-family quotas and stored
+account records remain readable. An empty model map means the latest usage
+response reported no scoped limits; an absent map uses legacy observations.

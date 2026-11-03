@@ -1,7 +1,10 @@
 import { registerInternalForkAdoptionRoutes } from "./internal/fork-adoption.js";
 import { createPluginUpdateJobs } from "./services/plugins/plugin-update-jobs.js";
 import { registerPluginUpdateJobRoutes } from "./routes/plugin-update-jobs.js";
-import { recheckEnvironmentProvisioning } from "./services/threads/thread-environment-providers.js";
+import {
+  recheckEnvironmentProvisioning,
+  recheckEnvironmentProviderCreations,
+} from "./services/threads/thread-environment-providers.js";
 import { clearNativeTerminalStateOnExit } from "./services/threads/native-terminal-activity.js";
 import {
   enrolledInstallerScript,
@@ -16,13 +19,20 @@ import {
   INSTALL_MACHINE_SCRIPT_PATH,
   INSTALL_MACHINE_WINDOWS_SCRIPT_PATH,
 } from "./install-machine-asset.js";
+import { getExperiments } from "@bb/db";
 import { createNodeWebSocket } from "@hono/node-ws";
+import { TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL } from "@bb/server-contract";
+import {
+  declineWebSocketCompression,
+  WEB_SOCKET_COMPRESSION,
+} from "./ws/compression.js";
 import { createGateKeyStore } from "./services/connect-next/gate-keys.js";
 import {
   createTunnelIngressManager,
   type TunnelIngressManager,
 } from "./services/connect-next/tunnel-ingress.js";
 import { createHash, randomUUID } from "node:crypto";
+import type { IncomingMessage } from "node:http";
 import { readFile, stat } from "node:fs/promises";
 import { performance } from "node:perf_hooks";
 import { extname, join, resolve } from "node:path";
@@ -32,11 +42,6 @@ import { compress } from "hono/compress";
 import { cors } from "hono/cors";
 import type { ServerAppDeps } from "./types.js";
 import { ApiError, createServerErrorHandler } from "./errors.js";
-import {
-  getInactiveSessionLogFields,
-  requireAuthorizedOpenSession,
-} from "./internal/session-state.js";
-import { runtimeErrorLogFields } from "./services/lib/error-log-fields.js";
 import { registerEnvironmentRoutes } from "./routes/environments.js";
 import { registerFileRoutes } from "./routes/files.js";
 import { registerHostRoutes } from "./routes/hosts.js";
@@ -49,6 +54,7 @@ import { registerDeviceHandoffRoutes } from "./routes/device-handoff.js";
 import { registerThreadRoutes } from "./routes/threads/index.js";
 import { registerQueueRoutes } from "./routes/queue.js";
 import { registerSpendRoutes } from "./routes/spend.js";
+import { registerWritingAssistanceRoutes } from "./routes/writing-assistance.js";
 import { registerNativeTerminalThreadRoutes } from "./routes/native-terminal-threads.js";
 import { registerPluginRoutes } from "./routes/plugins.js";
 import { registerPluginCatalogRoutes } from "./routes/plugin-catalog.js";
@@ -68,7 +74,6 @@ import {
   setEnvironmentProvisioningRecheckHandler,
   setPluginEnvironmentProviderBridge,
 } from "./services/plugins/plugin-environment-provider-registry.js";
-import { recheckEnvironmentProviderCreations } from "./services/threads/thread-environment-providers.js";
 import {
   setServerAccessBridge,
   setServerAccessRecheckHandler,
@@ -77,8 +82,10 @@ import { setPluginMachineProviderBridge } from "./services/plugins/plugin-machin
 import { invalidateEnvironmentProviderMachineAvailability } from "./services/environments/provider-machine-availability.js";
 import { requestQueuedMessageDispatch } from "./services/threads/queued-message-dispatch.js";
 import { registerInternalEventRoutes } from "./internal/events.js";
+import type { ActiveThreadEventPruneRuntimeOptions } from "./services/system/event-pruning.js";
 import { registerInternalHostRoutes } from "./internal/hosts.js";
 import { registerInternalInteractiveRequestRoutes } from "./internal/interactive-requests.js";
+import { hostArtifactFileResponse } from "./internal/host-artifact-response.js";
 import { registerInternalPluginHostArtifactRoutes } from "./internal/plugin-host-artifacts.js";
 import { registerInternalSessionRoutes } from "./internal/session.js";
 import { registerInternalSkillRoutes } from "./internal/skills.js";
@@ -89,19 +96,22 @@ import {
 } from "./internal/auth.js";
 import {
   captureTrustedRemoteAddress,
+  resolveRequestAccessRoute,
   resolveRequestAppSurface,
 } from "./request-context.js";
 import { runEventLoopWork } from "./services/system/event-loop-work.js";
 import { setTurnTelemetryDeps } from "./services/system/turn-telemetry.js";
-import { runWithTelemetryAppSurface } from "./services/system/telemetry.js";
+import { runWithTelemetryRequest } from "./services/system/telemetry.js";
 import {
   onClientSocketClose,
   onClientSocketMessage,
   onClientSocketOpen,
 } from "./ws/client-protocol.js";
 import {
+  authorizeDaemonArrival,
   createDaemonSocketMessageQueue,
   enqueueDaemonSocketFrame,
+  logDroppedDaemonFrame,
   onDaemonSocketClose,
   onDaemonSocketMessage,
   onDaemonSocketOpen,
@@ -137,9 +147,7 @@ import {
 const PLUGIN_WIRE_HTTP_PATH = /^\/api\/v1\/plugins\/[^/]+\/http(?:\/|$)/u;
 import { rankAcceptedAssetEncodings } from "./asset-content-encoding.js";
 import { apiJsonCompression } from "./api-response-compression.js";
-import { planUnclaimedAnswerDelivery } from "./services/interactions/deliver-unclaimed-answer.js";
-import { createQueuedMessageForThread } from "./services/threads/queued-messages.js";
-import { getThread } from "@bb/db";
+import { handleUnclaimedPluginAnswer } from "./services/interactions/deliver-unclaimed-answer.js";
 import { APP_SURFACE_WEB, type AppSurface } from "@bb/config/app-surface";
 import type { ServerBindHost } from "@bb/config/server";
 import { registerServerMoveRoutes } from "./routes/server-move.js";
@@ -166,7 +174,27 @@ import {
 
 type CloseWebSockets = () => Promise<void>;
 type NodeWebSocketServer = ReturnType<typeof createNodeWebSocket>["wss"];
+type WebSocketProtocolOptions = {
+  options: {
+    handleProtocols?: (
+      protocols: Set<string>,
+      request: IncomingMessage,
+    ) => string | false;
+  };
+};
 type WebSocketCloseError = Error | undefined;
+
+function assertWebSocketProtocolOptions(
+  wss: NodeWebSocketServer,
+): asserts wss is NodeWebSocketServer & WebSocketProtocolOptions {
+  if (
+    !("options" in wss) ||
+    typeof wss.options !== "object" ||
+    wss.options === null
+  ) {
+    throw new Error("WebSocket server does not expose protocol options");
+  }
+}
 
 interface ServerApp {
   app: Hono;
@@ -211,6 +239,7 @@ export interface ServerMoveAppOptions {
 }
 
 interface CreateAppOptions {
+  activeThreadPruneRuntime?: ActiveThreadEventPruneRuntimeOptions;
   bbAppArtifactService?: BbAppArtifactService;
   serverMove?: ServerMoveAppOptions;
   slowApiRequestLogThresholdMs?: number;
@@ -498,6 +527,15 @@ export function createApp(
   const { injectWebSocket, upgradeWebSocket, wss } = createNodeWebSocket({
     app,
   });
+  assertWebSocketProtocolOptions(wss);
+  wss.options.handleProtocols = (
+    protocols: Set<string>,
+    _request: IncomingMessage,
+  ): string | false =>
+    protocols.has(TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL)
+      ? TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL
+      : (protocols.values().next().value ?? false);
+  wss.options.perMessageDeflate = WEB_SOCKET_COMPRESSION;
   const tunnelIngressNow = options?.tunnelIngressNow ?? Date.now;
   const tunnelIngress = createTunnelIngressManager({
     app,
@@ -547,7 +585,13 @@ export function createApp(
   });
   app.use("*", async (context, next) => {
     captureTrustedRemoteAddress(context);
-    return runWithTelemetryAppSurface(resolveRequestAppSurface(context), next);
+    return runWithTelemetryRequest(
+      {
+        appSurface: resolveRequestAppSurface(context),
+        accessRoute: resolveRequestAccessRoute(context),
+      },
+      next,
+    );
   });
   app.use("*", async (context, next) => {
     const path = context.req.path;
@@ -716,10 +760,15 @@ export function createApp(
       if (context.req.header("if-none-match") === etag) {
         return new Response(null, { headers, status: 304 });
       }
-      const tarball = await readFile(artifact.path);
-      return new Response(tarball, {
-        headers: { ...headers, "content-length": String(artifact.size) },
+      const response = await hostArtifactFileResponse({
+        path: artifact.path,
+        byteLength: artifact.size,
+        headers,
       });
+      if (response === null) {
+        throw new Error(`Host package ${artifact.path} is missing or changed`);
+      }
+      return response;
     } catch (error) {
       const diagnosticId = randomUUID();
       const code =
@@ -847,31 +896,8 @@ export function createApp(
       threadId,
     });
   });
-  deps.pendingInteractions.setUnclaimedPluginAnswerListener(
-    ({ interaction, value }) => {
-      const delivery = planUnclaimedAnswerDelivery({ interaction, value });
-      if (delivery === null) return;
-      const thread = getThread(deps.db, delivery.threadId);
-      if (!thread) return;
-      void createQueuedMessageForThread(deps, {
-        payload: {
-          input: [{ type: "text", text: delivery.text, mentions: [] }],
-        } as never,
-        thread,
-      })
-        .then(() => {
-          requestQueuedMessageDispatch(deps, {
-            kind: "interaction-settled",
-            threadId: delivery.threadId,
-          });
-        })
-        .catch((error: unknown) => {
-          deps.logger.warn(
-            { err: error, threadId: interaction.threadId },
-            "Could not queue an answer that arrived after its tool call ended",
-          );
-        });
-    },
+  deps.pendingInteractions.setUnclaimedPluginAnswerListener((answer) =>
+    handleUnclaimedPluginAnswer(deps, answer),
   );
   setTurnTelemetryDeps(deps);
   setPluginThreadEventEmitter(pluginService.events);
@@ -957,10 +983,11 @@ export function createApp(
   registerDesktopBrowserRoutes(publicApi, deps);
   registerTerminalRoutes(publicApi, deps);
   registerDeviceHandoffRoutes(publicApi, deps);
-  registerEnvironmentRoutes(publicApi, deps);
+  registerEnvironmentRoutes(publicApi, deps, pluginService);
   registerThreadRoutes(publicApi, deps, pluginService);
   registerQueueRoutes(publicApi, deps);
   registerSpendRoutes(publicApi, deps);
+  registerWritingAssistanceRoutes(publicApi, deps);
   registerNativeTerminalThreadRoutes(publicApi, deps);
   registerSystemRoutes(publicApi, deps, pluginService);
   registerUiPreferenceRoutes(publicApi, deps);
@@ -1008,7 +1035,11 @@ export function createApp(
   });
   registerInternalSkillRoutes(internalApi, deps);
   registerInternalPluginHostArtifactRoutes(internalApi, deps);
-  registerInternalEventRoutes(internalApi, deps);
+  registerInternalEventRoutes(
+    internalApi,
+    deps,
+    options?.activeThreadPruneRuntime,
+  );
   registerInternalToolCallRoutes(internalApi, deps);
   registerInternalInteractiveRequestRoutes(internalApi, deps);
   registerInternalForkAdoptionRoutes(internalApi, deps);
@@ -1032,6 +1063,9 @@ export function createApp(
     "/ws",
     upgradeWebSocket((context) => {
       assertBrowserWebSocketAllowed(context);
+      if (!getExperiments(deps.db).websocketCompression) {
+        declineWebSocketCompression(context);
+      }
       const origin = context.req.header("origin");
       const isAppClient = origin !== undefined;
       return {
@@ -1048,6 +1082,7 @@ export function createApp(
     "/ws/terminals/:terminalId",
     upgradeWebSocket((context) => {
       assertBrowserWebSocketAllowed(context);
+      declineWebSocketCompression(context);
       const terminalId = context.req.param("terminalId");
       const query = terminalWebSocketQuerySchema.safeParse({
         outputAcks: context.req.query("outputAcks"),
@@ -1068,6 +1103,8 @@ export function createApp(
             outputAcks: query.data.outputAcks,
             handoffOwnerToken: query.data.handoffOwnerToken,
             resizeAcks: query.data.resizeAcks,
+            resizeSeqEcho:
+              socket.protocol === TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL,
             socket,
             sinceSeq: query.data.sinceSeq,
             terminalId,
@@ -1090,6 +1127,7 @@ export function createApp(
   app.get(
     "/internal/ws",
     upgradeWebSocket(async (context) => {
+      declineWebSocketCompression(context);
       const websocketContext = await validateDaemonWebSocket(deps, {
         authorizationHeader: context.req.header("authorization"),
         protocolHeader: context.req.header("sec-websocket-protocol"),
@@ -1125,53 +1163,13 @@ export function createApp(
         },
         onMessage: (event, socket) =>
           enqueueDaemonSocketFrame({
-            authorize: (messageType) => {
-              try {
-                requireAuthorizedOpenSession(deps.db, {
-                  hostId: websocketContext.hostId,
-                  sessionId: websocketContext.sessionId,
-                });
-                return true;
-              } catch (error) {
-                if (
-                  error instanceof ApiError &&
-                  error.body.code === "inactive_session"
-                ) {
-                  deps.logger.info(
-                    getInactiveSessionLogFields(deps.db, {
-                      authenticatedHostId: websocketContext.hostId,
-                      now: Date.now(),
-                      sessionId: websocketContext.sessionId,
-                    }),
-                    "Daemon heartbeat for inactive session, closing socket",
-                  );
-                } else if (error instanceof ApiError && error.status === 403) {
-                  deps.logger.warn(
-                    {
-                      sessionId: websocketContext.sessionId,
-                      ...runtimeErrorLogFields(deps.config, error),
-                    },
-                    "Daemon heartbeat for unauthorized session, closing socket",
-                  );
-                } else {
-                  deps.logger.warn(
-                    {
-                      sessionId: websocketContext.sessionId,
-                      messageType,
-                      ...runtimeErrorLogFields(deps.config, error),
-                    },
-                    "Daemon message rejected, closing socket",
-                  );
-                }
-                socket.close(
-                  1008,
-                  error instanceof ApiError && error.status === 403
-                    ? "unauthorized-session"
-                    : "inactive-session",
-                );
-                return false;
-              }
-            },
+            authorize: (messageType) =>
+              authorizeDaemonArrival(deps, {
+                hostId: websocketContext.hostId,
+                messageType,
+                sessionId: websocketContext.sessionId,
+                socket,
+              }),
             enqueue: (message, priority, acceptedAtArrival) =>
               daemonMessageQueue.enqueue(
                 () =>
@@ -1190,10 +1188,18 @@ export function createApp(
                   ),
                 priority,
               ),
+            onInvalid: (rejection) =>
+              logDroppedDaemonFrame(
+                deps.logger,
+                {
+                  hostId: websocketContext.hostId,
+                  sessionId: websocketContext.sessionId,
+                },
+                rejection,
+              ),
             raw: event.data,
             recordActivity: () =>
               deps.hub.recordDaemonActivity(websocketContext.sessionId),
-            socket,
           }),
         onClose: () => {
           daemonMessageQueue.close();

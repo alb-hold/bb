@@ -1,4 +1,5 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawnHostProcess as spawn } from "@bb/process-utils";
+import type { ChildProcess } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
 import { posix as posixPath } from "node:path";
 import { DESKTOP_OWNED_RUNTIME_SHUTDOWN_GRACE_MS } from "@bb/config/full-stack-shutdown";

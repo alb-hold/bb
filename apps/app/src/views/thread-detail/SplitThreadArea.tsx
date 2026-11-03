@@ -692,17 +692,18 @@ function SplitThreadAreaContent({ routeContent }: SplitThreadAreaProps) {
 
   if (layout === null || currentContent === null) return null;
   const firstPane = panes[0];
-  if (
-    !splitWorkspaceActive &&
-    (currentContent.kind !== "thread" ||
-      panes.length !== 1 ||
-      firstPane?.content.kind !== "thread")
-  ) {
+  const singlePane =
+    panes.length === 1 && firstPane !== undefined ? firstPane : null;
+  const keepsSinglePane =
+    singlePane !== null &&
+    (currentContent.kind === "thread" || currentContent.kind === "new-thread");
+  if (!splitWorkspaceActive && !keepsSinglePane) {
     return (
       <StandalonePaneContent
         content={currentContent}
         paneId={layout.focusedPaneId}
         onRequestClose={
+          currentContent.kind === "thread" ||
           currentContent.kind === "new-thread"
             ? null
             : () => closePane(layout.focusedPaneId)
@@ -712,7 +713,7 @@ function SplitThreadAreaContent({ routeContent }: SplitThreadAreaProps) {
     );
   }
 
-  const commandHandlers = (
+  const commandHandlers = splitWorkspaceActive ? (
     <SplitPaneCommandHandlers
       closePane={closePane}
       focusPane={(paneId) => {
@@ -725,22 +726,28 @@ function SplitThreadAreaContent({ routeContent }: SplitThreadAreaProps) {
       panes={panes}
       toggleMaximizePane={toggleMaximizePane}
     />
-  );
+  ) : null;
 
-  if (panes.length === 1 && firstPane !== undefined) {
+  if (singlePane !== null) {
+    const singlePaneContent = splitWorkspaceActive
+      ? singlePane.content
+      : currentContent;
     return (
       <>
         {commandHandlers}
         <WorkspacePaneContent
-          content={firstPane.content}
-          paneId={firstPane.paneId}
+          content={singlePaneContent}
+          paneId={singlePane.paneId}
           isFocused
           isSplitPane={false}
           timelineEnabled
           secondaryPanelRegistry={null}
           reservesWindowPanelToggle={false}
           onClosePane={
-            firstPane.content.kind === "new-thread" ? null : closePane
+            singlePaneContent.kind === "thread" ||
+            singlePaneContent.kind === "new-thread"
+              ? null
+              : closePane
           }
           isMaximized={false}
           onToggleMaximizePane={null}
@@ -769,6 +776,7 @@ function SplitThreadAreaContent({ routeContent }: SplitThreadAreaProps) {
             node={layout.root}
             path={EMPTY_PATH}
             isTopRow
+            isBottomRow
             isLeftEdge
             isRightEdge
             dimsInactiveSplits={dimsInactiveSplits}
@@ -872,6 +880,7 @@ interface SplitTreeProps {
   path: SplitPath;
   dimsInactiveSplits: boolean;
   isTopRow: boolean;
+  isBottomRow: boolean;
   isLeftEdge: boolean;
   isRightEdge: boolean;
   focusedPaneId: string;
@@ -892,8 +901,15 @@ interface SplitTreeProps {
 }
 
 function SplitTree(props: SplitTreeProps) {
-  const { node, path, isTopRow, isLeftEdge, isRightEdge, focusedPaneId } =
-    props;
+  const {
+    node,
+    path,
+    isTopRow,
+    isBottomRow,
+    isLeftEdge,
+    isRightEdge,
+    focusedPaneId,
+  } = props;
   const isSidebarFramed = useIsSidebarFramed();
 
   if (node.type === "pane") {
@@ -909,6 +925,7 @@ function SplitTree(props: SplitTreeProps) {
           "relative flex min-h-0 min-w-0 flex-1 overflow-hidden",
           isHiddenByMaximize && "invisible pointer-events-none",
           isMaximized && "absolute inset-0 z-30",
+          !isMaximized && !isBottomRow && "[--bb-content-bottom-inset:0px]",
         )}
         tabIndex={-1}
         data-split-pane-id={node.paneId}
@@ -989,6 +1006,10 @@ function SplitTree(props: SplitTreeProps) {
               node={child}
               path={[...path, index]}
               isTopRow={isTopRow && (node.dir === "row" || index === 0)}
+              isBottomRow={
+                isBottomRow &&
+                (node.dir === "row" || index === node.children.length - 1)
+              }
               isLeftEdge={isLeftEdge && (node.dir === "col" || index === 0)}
               isRightEdge={
                 isRightEdge &&
@@ -1158,6 +1179,7 @@ function StandalonePaneContent({
   if (content.kind === "thread" || content.kind === "new-thread") {
     return (
       <DefaultPaneContextProvider
+        paneId={paneId}
         onRequestClose={onRequestClose}
         navigateInPane={navigateInPane}
       >

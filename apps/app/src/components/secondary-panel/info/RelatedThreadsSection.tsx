@@ -10,7 +10,9 @@ import { useChildThreads, useThreads } from "@/hooks/queries/thread-queries";
 import { getThreadRoutePath } from "@/lib/route-paths";
 import { getThreadDisplayTitle } from "@/lib/thread-title";
 import { useSecondTick } from "@/hooks/useSecondTick";
-import { InfoList, InfoListRow, InfoRowTime, InfoSection } from "./info-list";
+import { InfoListRow, InfoRowTime } from "@bb/shared-ui/info-list-row";
+import { Link } from "react-router-dom";
+import { InfoList, InfoSection } from "./info-list";
 
 interface RelatedThreadsSectionProps {
   label: string;
@@ -44,18 +46,32 @@ export function RelatedThreadsSection({
                   {idleIcon !== undefined && indicator === "none" ? (
                     <Icon name={idleIcon} aria-hidden="true" />
                   ) : (
-                    <ThreadStatusGlyph indicator={indicator} size="compact" />
+                    <ThreadStatusGlyph
+                      indicator={indicator}
+                      experimental_queuedFailedCount={
+                        relatedThread.queuedFailedCount
+                      }
+                      size="compact"
+                    />
                   )}
                 </span>
               }
               name={<ThreadTitle title={title} />}
               title={title}
               target={{
-                kind: "link",
-                to: getThreadRoutePath({
-                  projectId: relatedThread.projectId,
-                  threadId: relatedThread.id,
-                }),
+                kind: "custom",
+                render: (primary) => (
+                  <Link
+                    to={getThreadRoutePath({
+                      projectId: relatedThread.projectId,
+                      threadId: relatedThread.id,
+                    })}
+                    title={primary.title}
+                    className={primary.className}
+                  >
+                    {primary.children}
+                  </Link>
+                ),
               }}
               trailing={<InfoRowTime timestamp={relatedThread.updatedAt} />}
             />

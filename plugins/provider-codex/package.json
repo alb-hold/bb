@@ -4,12 +4,13 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./native-session": "./src/native-session.ts",
     "./pool-launch": "./src/pool-launch.ts"
   },
   "description": "Run bb threads with Codex.",
   "engines": {
     "bb": ">=0.0",
-    "bbPluginSdk": ">=0.6.57"
+    "bbPluginSdk": ">=0.6.86"
   },
   "bb": {
     "name": "Codex provider",

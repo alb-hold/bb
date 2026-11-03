@@ -14,8 +14,8 @@ export interface ThreadPruningSweepLimits {
 }
 
 export const THREAD_PRUNING_SWEEP_LIMITS: ThreadPruningSweepLimits = {
-  elapsedBudgetMs: 50,
-  maxAdvances: 64,
+  elapsedBudgetMs: 500,
+  maxAdvances: 512,
 };
 
 export async function runThreadPruningSweep(

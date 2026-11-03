@@ -1,11 +1,57 @@
 import { lookup as dnsLookup } from "node:dns";
-import type { LookupFunction } from "node:net";
-import { EnvHttpProxyAgent } from "undici";
+import { Socket, type LookupFunction } from "node:net";
+import {
+  buildConnector,
+  Client,
+  EnvHttpProxyAgent,
+  errors,
+  Pool,
+} from "undici";
 
 export const CONNECT_TIMEOUT_MS = 9_000;
 export const CONNECT_SURFACE_LIMIT_MS = 10_000;
 export const CONNECT_MAX_ADDRESSES = 4;
 export const CONNECT_ATTEMPT_TIMEOUT_MS = 2_400;
+
+function withConnectDeadline(
+  connect: buildConnector.connector,
+): buildConnector.connector {
+  return (options, callback) => {
+    let settled = false;
+    let socket: unknown;
+    const timer = setTimeout(() => {
+      settled = true;
+      const error = new errors.ConnectTimeoutError();
+      if (socket instanceof Socket) socket.destroy(error);
+      callback(error, null);
+    }, CONNECT_TIMEOUT_MS);
+    timer.unref();
+    try {
+      socket = connect(options, (...result) => {
+        clearTimeout(timer);
+        if (settled) {
+          result[1]?.destroy();
+          return;
+        }
+        settled = true;
+        callback(...result);
+      });
+      if (socket instanceof Socket)
+        socket.once("close", () => clearTimeout(timer));
+    } catch (error) {
+      clearTimeout(timer);
+      throw error;
+    }
+  };
+}
+
+function connectionOptions(options: Pool.Options) {
+  const connect =
+    typeof options.connect === "function"
+      ? options.connect
+      : buildConnector(options.connect);
+  return { ...options, connect: withConnectDeadline(connect) };
+}
 
 export function createUpstreamTransport(
   connect: { lookup?: LookupFunction } = {},
@@ -24,6 +70,12 @@ export function createUpstreamTransport(
   };
   const dispatcher = new EnvHttpProxyAgent({
     allowH2: false,
+    factory: (origin, options: Pool.Options) =>
+      options.connections === 1
+        ? new Client(origin, connectionOptions(options))
+        : new Pool(origin, connectionOptions(options)),
+    clientFactory: (origin, options) =>
+      new Client(origin, connectionOptions(options)),
     connect: {
       timeout: CONNECT_TIMEOUT_MS,
       autoSelectFamilyAttemptTimeout: CONNECT_ATTEMPT_TIMEOUT_MS,

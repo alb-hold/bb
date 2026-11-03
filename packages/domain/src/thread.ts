@@ -1,7 +1,6 @@
 import { z } from "zod";
 import { threadCreateOriginSchema } from "./thread-create-origin.js";
 import { environmentWorkspaceDisplayKindSchema } from "./environment.js";
-import { gitCheckoutRefSchema } from "./git-checkout.js";
 import {
   queuedMessageFailureReasonSchema,
   queuedMessagePayloadSchema,
@@ -50,10 +49,21 @@ export const nativeActivityConfirmationSchema = z.enum([
   "confirmed",
   "unconfirmed",
 ]);
+export const nativeActivityEvidenceKindSchema = z.enum([
+  "holder-report",
+  "transcript",
+  "tool-call",
+  "unknown",
+]);
+export type NativeActivityEvidenceKind = z.infer<
+  typeof nativeActivityEvidenceKindSchema
+>;
 export const nativeActivityDiagnosticSchema = z.object({
   lastEvidenceAt: z.number().int().nullable(),
+  lastToolCallAt: z.number().int().optional(),
   freshForMs: z.literal(NATIVE_TERMINAL_ACTIVITY_FRESH_FOR_MS),
   confirmation: nativeActivityConfirmationSchema,
+  evidenceKind: nativeActivityEvidenceKindSchema.default("unknown"),
 });
 export type NativeActivityDiagnostic = z.infer<
   typeof nativeActivityDiagnosticSchema
@@ -61,92 +71,48 @@ export type NativeActivityDiagnostic = z.infer<
 export const threadRuntimeStateSchema = upstreamThreadRuntimeStateSchema.extend(
   {
     nativeActivity: nativeActivityDiagnosticSchema.optional(),
+    nativeSessionExit: z.literal("clean").optional(),
   },
 );
 export type ThreadRuntimeState = z.infer<typeof threadRuntimeStateSchema>;
 
+export function effectiveDisplayStatus<
+  TStatus extends ThreadRuntimeDisplayStatus,
+>(
+  thread: { status: TStatus },
+  runtime?: Pick<ThreadRuntimeState, "nativeSessionExit">,
+): TStatus | "idle" {
+  return thread.status === "error" && runtime?.nativeSessionExit === "clean"
+    ? "idle"
+    : thread.status;
+}
+
+export function withEffectiveDisplayStatus<
+  TThread extends {
+    status: z.infer<typeof threadStatusSchema>;
+    runtime?: ThreadRuntimeState;
+  },
+>(thread: TThread): TThread {
+  const status = effectiveDisplayStatus(thread, thread.runtime);
+  if (status === thread.status) return thread;
+  return {
+    ...thread,
+    status,
+    ...(thread.runtime === undefined
+      ? {}
+      : {
+          runtime: {
+            ...thread.runtime,
+            displayStatus: effectiveDisplayStatus(
+              { status: thread.runtime.displayStatus },
+              thread.runtime,
+            ),
+          },
+        }),
+  };
+}
+
 export type ThreadActivityState = z.infer<typeof threadActivityStateSchema>;
-
-const workspaceStateValues = [
-  "clean",
-  "untracked",
-  "dirty_uncommitted",
-  "committed_unmerged",
-  "dirty_and_committed_unmerged",
-] as const;
-const workspaceStateSchema = z.enum(workspaceStateValues);
-
-const workspaceFileStatusKindSchema = z.enum([
-  "M",
-  "A",
-  "D",
-  "R",
-  "C",
-  "U",
-  "??",
-  "?",
-]);
-export type WorkspaceFileStatusKind = z.infer<
-  typeof workspaceFileStatusKindSchema
->;
-
-const workspaceFileStatusSchema = z.object({
-  path: z.string(),
-  status: workspaceFileStatusKindSchema,
-  insertions: z.number().nullable(),
-  deletions: z.number().nullable(),
-});
-export type WorkspaceFileStatus = z.infer<typeof workspaceFileStatusSchema>;
-
-const workspaceCommitSummarySchema = z.object({
-  sha: z.string(),
-  shortSha: z.string(),
-  subject: z.string(),
-  authorName: z.string(),
-  authoredAt: z.number(),
-});
-export type WorkspaceCommitSummary = z.infer<
-  typeof workspaceCommitSummarySchema
->;
-
-const workspaceChangeStatsSchema = z.object({
-  insertions: z.number(),
-  deletions: z.number(),
-  lineStatsComplete: z.boolean(),
-  fileCount: z.number().int().nonnegative(),
-  files: z.array(workspaceFileStatusSchema),
-});
-export type WorkspaceChangeStats = z.infer<typeof workspaceChangeStatsSchema>;
-
-const workspaceWorkingTreeSchema = workspaceChangeStatsSchema.extend({
-  hasUncommittedChanges: z.boolean(),
-  state: workspaceStateSchema,
-});
-export type WorkspaceWorkingTree = z.infer<typeof workspaceWorkingTreeSchema>;
-
-const workspaceBranchSchema = z.object({
-  currentBranch: z.string().nullable(),
-  defaultBranch: z.string(),
-});
-
-const workspaceMergeBaseSchema = workspaceChangeStatsSchema.extend({
-  mergeBaseBranch: z.string(),
-  baseRef: z.string().nullable(),
-  aheadCount: z.number(),
-  behindCount: z.number(),
-  squashMergeCheckComplete: z.boolean(),
-  hasCommittedUnmergedChanges: z.boolean(),
-  commits: z.array(workspaceCommitSummarySchema),
-});
-export type WorkspaceMergeBase = z.infer<typeof workspaceMergeBaseSchema>;
-
-export const workspaceStatusSchema = z.object({
-  workingTree: workspaceWorkingTreeSchema,
-  checkout: gitCheckoutRefSchema,
-  branch: workspaceBranchSchema,
-  mergeBase: workspaceMergeBaseSchema.nullable(),
-});
-export type WorkspaceStatus = z.infer<typeof workspaceStatusSchema>;
 
 export const threadQueuedMessageSchema = z.object({
   id: z.string(),
@@ -266,6 +232,7 @@ export const threadListIndicatorSchema = z.enum([
   "runtime",
   "queued-failed",
   "queued-waiting",
+  "activity-unreported",
   "draft",
   "unread-success",
   "none",
@@ -276,6 +243,7 @@ export const threadListEntrySchema = threadWithRuntimeSchema.extend({
   nativeTerminal: z.boolean().optional(),
   activity: threadActivityStateSchema,
   queuedWork: threadQueuedWorkSchema,
+  queuedFailedCount: z.number().int().nonnegative().default(0),
   pinSortKey: z.string().nullable(),
   hasPendingInteraction: z.boolean(),
   listIndicator: threadListIndicatorSchema,

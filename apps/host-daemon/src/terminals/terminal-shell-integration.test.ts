@@ -109,7 +109,12 @@ async function runShell(
       fixture.fishConfig ?? "printf 'BB_USER_RC_LOADED\\n'\n",
     );
   }
-  const shellEnv: NodeJS.ProcessEnv = { ...process.env, HOME: home };
+  const shellEnv: NodeJS.ProcessEnv = {
+    ...process.env,
+    HOME: home,
+    TERM: "xterm-256color",
+    XDG_CONFIG_HOME: path.join(home, ".config"),
+  };
   if (fixture.userZdotdir === null) delete shellEnv.ZDOTDIR;
   else shellEnv.ZDOTDIR = home;
   if (fixture.xdgDataDirs) shellEnv.XDG_DATA_DIRS = fixture.xdgDataDirs;
@@ -197,10 +202,8 @@ async function runShell(
         commandState === 1 &&
         completion.output.includes("\u001b]133;D;1\u0007") &&
         (shellName !== "fish" ||
-          (completion.output.match(
-            /\u001b\]133;A(?:;[^\u0007]*)?\u0007/g,
-          )?.length ?? 0) >=
-            2)
+          (completion.output.match(/\u001b\]133;A(?:;[^\u0007]*)?\u0007/g)
+            ?.length ?? 0) >= 2)
       ) {
         commandState = 2;
         outputAtCommandEnd = completion.output;

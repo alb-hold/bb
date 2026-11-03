@@ -649,3 +649,33 @@ it("keeps authentication and plans without limits distinct from loading and erro
   ).toBeTruthy();
   expect(slot.queryByText("0% used")).toBeNull();
 });
+
+it("keeps the Ultra badge whole beside a long pooled account title", async () => {
+  const app = await loadPluginApp(pluginApp);
+  const provider = account("long", "claude-code");
+  provider.accountLabel =
+    "Alexandre with a very long account title that must truncate";
+  provider.accountPool = {
+    active: true,
+    enabled: true,
+    status: "ready",
+    heldUntil: null,
+    error: null,
+    extraUsage: null,
+  };
+  if (provider.usage?.status === "ok") provider.usage.planLabel = "Ultra";
+  const slot = renderSlot(
+    app.settingsSections[0]!,
+    {},
+    { rpc: { getUsage: () => ({ machines: [machine("host", [provider])] }) } },
+  );
+  const badge = await slot.findByText("Ultra");
+  expect(badge.classList.contains("shrink-0")).toBe(true);
+  expect(badge.classList.contains("whitespace-nowrap")).toBe(true);
+  expect(badge.classList.contains("truncate")).toBe(false);
+  expect(
+    slot
+      .getByRole("heading", { name: provider.accountLabel })
+      .classList.contains("truncate"),
+  ).toBe(true);
+});

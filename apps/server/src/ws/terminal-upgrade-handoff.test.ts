@@ -88,17 +88,34 @@ describe("installTerminalUpgradeHandoff", () => {
     await upgrade(
       port,
       "/ws/terminals/term_1?outputAcks=1&sinceSeq=5&handoffOwnerToken=0123456789abcdefghij_-",
+      {
+        "Sec-WebSocket-Protocol":
+          "bb.terminal.v1, bb.terminal.resize-echo.v1",
+      },
     );
     expect(attach).toHaveBeenCalledTimes(1);
     expect(attach.mock.calls[0]?.[0]).toMatchObject({
       daemonSessionId: "ds_1",
       handoffOwnerToken: "0123456789abcdefghij_-",
       outputAcks: true,
+      resizeSeqEcho: true,
       sinceSeq: 5,
       terminalId: "term_1",
       request: { url: "/ws/terminals/term_1?outputAcks=1&sinceSeq=5" },
     });
     expect(fallback).not.toHaveBeenCalled();
+  });
+
+  it("does not enable resize echo tags for legacy WebSocket clients", async () => {
+    const { attach, port } = await createFixture();
+    await upgrade(port, "/ws/terminals/term_1?resizeAcks=1", {
+      "Sec-WebSocket-Protocol": "bb.terminal.v1",
+    });
+
+    expect(attach.mock.calls[0]?.[0]).toMatchObject({
+      resizeAcks: true,
+      resizeSeqEcho: false,
+    });
   });
 
   it("leaves forbidden origins, bad queries, unknown terminals and other paths to the in-process path", async () => {

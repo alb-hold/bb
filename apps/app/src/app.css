@@ -2,6 +2,7 @@
 @import "@fontsource-variable/geist";
 @import "@fontsource-variable/geist-mono";
 @import "@/components/ui/theme.css";
+@import "@bb/plugin-build/host-tailwind.css";
 
 @layer base {
   /*

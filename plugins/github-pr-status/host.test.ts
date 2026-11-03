@@ -1,10 +1,20 @@
 import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { tmpdir } from "node:os";
 import { promisify } from "node:util";
+import { experimental_hostToolchain as hostToolchain } from "@get-bb/plugin-sdk/process";
 import { experimental_createHostEntryHarness } from "@get-bb/plugin-sdk/testing/host";
 import { runGit } from "bb-environment-provider-host/git";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import hostEntry from "./host.js";
 import { installFakeGh, makeTempDir } from "./test/fake-gh.js";
 
@@ -36,8 +46,11 @@ function pullRequestJson(): string {
   });
 }
 
-async function createRepository(prefix: string): Promise<string> {
-  const workspacePath = await makeTempDir(prefix);
+let repositoryTemplate: string;
+
+beforeAll(async () => {
+  repositoryTemplate = await fs.mkdtemp(path.join(tmpdir(), "bb-pr-template-"));
+  const workspacePath = repositoryTemplate;
   await runGit(["init", "-b", localBranch], { cwd: workspacePath });
   await runGit(["config", "user.name", "BB Tests"], { cwd: workspacePath });
   await runGit(["config", "user.email", "bb@example.com"], {
@@ -49,6 +62,17 @@ async function createRepository(prefix: string): Promise<string> {
   await runGit(["remote", "add", "origin", "git@github.com:acme/bb.git"], {
     cwd: workspacePath,
   });
+});
+
+afterAll(async () => {
+  if (repositoryTemplate) {
+    await fs.rm(repositoryTemplate, { recursive: true, force: true });
+  }
+});
+
+async function createRepository(prefix: string): Promise<string> {
+  const workspacePath = await makeTempDir(prefix);
+  await fs.cp(repositoryTemplate, workspacePath, { recursive: true });
   return workspacePath;
 }
 
@@ -137,6 +161,15 @@ afterEach(() => {
 
 const harness = experimental_createHostEntryHarness(hostEntry);
 
+async function view(read: {
+  path: string;
+  url: string | null;
+  refresh: boolean;
+}) {
+  const [lookup] = await harness.experimental_call("views", { reads: [read] });
+  return lookup;
+}
+
 describe("pull request lookup for differently named upstream branches", () => {
   it.each(["origin-base", "none"])(
     "uses the managed local branch with %s upstream",
@@ -148,7 +181,7 @@ describe("pull request lookup for differently named upstream branches", () => {
       const gh = await installFakeGh(sameRepository);
 
       await expect(
-        harness.experimental_call("view", {
+        view({
           path: workspacePath,
           url: null,
           refresh: false,
@@ -184,7 +217,7 @@ describe("pull request lookup for differently named upstream branches", () => {
     const gh = await installFakeGh(sameRepository);
 
     await expect(
-      harness.experimental_call("view", {
+      view({
         path: workspacePath,
         url: null,
         refresh: false,
@@ -206,7 +239,7 @@ describe("pull request lookup for differently named upstream branches", () => {
     const gh = await installFakeGh(found);
 
     await expect(
-      harness.experimental_call("view", {
+      view({
         path: workspacePath,
         url: null,
         refresh: false,
@@ -246,7 +279,7 @@ describe("pull request lookup for differently named upstream branches", () => {
     );
 
     await expect(
-      harness.experimental_call("view", {
+      view({
         path: workspacePath,
         url: null,
         refresh: true,
@@ -272,7 +305,7 @@ describe("pull request lookup for differently named upstream branches", () => {
     const gh = await installFakeGh(found);
 
     await expect(
-      harness.experimental_call("view", {
+      view({
         path: workspacePath,
         url: null,
         refresh: true,
@@ -293,7 +326,7 @@ describe("pull request lookup for differently named upstream branches", () => {
     });
     const gh = await installFakeGh(sameRepository);
 
-    await harness.experimental_call("view", {
+    await view({
       path: workspacePath,
       url: null,
       refresh: true,
@@ -311,7 +344,7 @@ describe("pull request lookup for differently named upstream branches", () => {
     vi.stubEnv("GH_ENTERPRISE_TOKEN", "dummy-enterprise-token");
 
     await expect(
-      harness.experimental_call("view", {
+      view({
         path: workspacePath,
         url: null,
         refresh: false,
@@ -328,7 +361,7 @@ describe("pull request lookup for differently named upstream branches", () => {
     const workspacePath = await createTrackedForkWorkspace();
     const gh = await installFakeGh(found);
 
-    const first = await harness.experimental_call("view", {
+    const first = await view({
       path: workspacePath,
       url: null,
       refresh: false,
@@ -337,7 +370,7 @@ describe("pull request lookup for differently named upstream branches", () => {
       ["remote", "set-url", forkRemote, "git@github.com:other-owner/bb.git"],
       { cwd: workspacePath },
     );
-    const second = await harness.experimental_call("view", {
+    const second = await view({
       path: workspacePath,
       url: null,
       refresh: false,
@@ -402,7 +435,7 @@ describe("pull request lookup for differently named upstream branches", () => {
     });
 
     await expect(
-      harness.experimental_call("view", {
+      view({
         path: workspacePath,
         url: null,
         refresh: false,
@@ -425,16 +458,29 @@ describe("pull request lookup for differently named upstream branches", () => {
       vi.stubEnv("PATH", binPath);
     }
 
-    await expect(
-      harness.experimental_call("view", {
-        path: workspacePath,
-        url: null,
-        refresh: false,
-      }),
-    ).resolves.toEqual({
-      outcome: "unavailable",
-      message: "GitHub CLI is not available",
-    });
+    const command = hostToolchain.command.bind(hostToolchain);
+    const missingGh = vi
+      .spyOn(hostToolchain, "command")
+      .mockImplementation((name, args, options) => {
+        const launch = command(name, args, options);
+        return name === "gh"
+          ? { ...launch, command: path.join(binPath, "gh") }
+          : launch;
+      });
+    try {
+      await expect(
+        view({
+          path: workspacePath,
+          url: null,
+          refresh: false,
+        }),
+      ).resolves.toEqual({
+        outcome: "unavailable",
+        message: "GitHub CLI is not available",
+      });
+    } finally {
+      missingGh.mockRestore();
+    }
   });
 });
 
@@ -457,7 +503,7 @@ describe("workspace state", () => {
   it("reports a missing workspace path as unavailable", async () => {
     const missing = path.join(await makeTempDir("bb-pr-missing-"), "gone");
     await expect(
-      harness.experimental_call("view", {
+      view({
         path: missing,
         url: null,
         refresh: false,
@@ -483,7 +529,7 @@ describe("workspace state", () => {
       message: "Cannot update pull request from a detached workspace",
     });
     await expect(
-      harness.experimental_call("view", {
+      view({
         path: workspacePath,
         url: null,
         refresh: false,

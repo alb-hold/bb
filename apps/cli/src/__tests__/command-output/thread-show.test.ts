@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import * as domain from "@bb/domain";
-import type * as serverContract from "@bb/server-contract";
+import type { ThreadGitDiffResponse } from "bb-plugin-bb--git/contract";
 import type {
   EnvironmentPullRequest,
   PullRequest,
@@ -11,8 +11,8 @@ import {
   createClientMock,
   runCommand,
   stubServerApi,
+  type CommandRegistrar,
 } from "../helpers/command-output-harness.js";
-import type { CommandRegistrar } from "../helpers/command-output-harness.js";
 import * as fixtures from "../helpers/command-output-fixtures.js";
 import { registerThreadCommands } from "../../commands/thread/index.js";
 import { printExecutionProfile } from "../../commands/thread/show.js";
@@ -51,6 +51,75 @@ describe("bb thread show command output", () => {
     });
   }
 
+  it.each(
+    [false, true].flatMap((pending) =>
+      [false, true].map((json) => ({ pending, json })),
+    ),
+  )("shows pending input=$pending in json=$json", async ({ pending, json }) => {
+    const thread = {
+        ...fixtures.makeThread({
+          id: "thr-question",
+          projectId: "project-question",
+          providerId: "codex",
+          status: "active",
+        }),
+      hasPendingInteraction: pending,
+      runtime: { displayStatus: "active" },
+    };
+    stubThreadApi({
+      "v1.threads.:id.$get": async () => thread,
+      "v1.threads.:id.timeline.$get": fixtures.makeEmptyTimelineGetMock(),
+    });
+    await runCommand(
+      ["thread", "show", thread.id, ...(json ? ["--json"] : [])],
+      register,
+    );
+    const output = collectLogLines(vi.mocked(console.log)).join("\n");
+    if (json)
+      expect(JSON.parse(output).thread.hasPendingInteraction).toBe(pending);
+    else
+      expect(output).toContain(`Status: ${pending ? "needs-input" : "active"}`);
+  });
+
+  it.each(
+    [false, true].flatMap((clean) =>
+      [false, true].map((json) => ({ clean, json })),
+    ),
+  )(
+    "uses non-error display for clean=$clean in show json=$json",
+    async ({ clean, json }) => {
+      const thread = {
+        ...fixtures.makeThread({
+          id: "thr-exit-show",
+          projectId: "project-exit",
+          providerId: "codex",
+          status: "error",
+        }),
+        runtime: {
+          displayStatus: "error",
+          ...(clean ? { nativeSessionExit: "clean" } : {}),
+        },
+      };
+      const events = vi.fn(async () => []);
+      stubThreadApi({
+        "v1.threads.:id.$get": async () => thread,
+        "v1.threads.:id.events.$get": events,
+        "v1.threads.:id.timeline.$get": fixtures.makeEmptyTimelineGetMock(),
+      });
+      await runCommand(
+        ["thread", "show", thread.id, ...(json ? ["--json"] : [])],
+        register,
+      );
+      const output = collectLogLines(vi.mocked(console.log)).join("\n");
+      if (json) {
+        const row = JSON.parse(output).thread;
+        expect(row.status).toBe(clean ? "idle" : "error");
+        expect(row.runtime.nativeSessionExit).toBe(clean ? "clean" : undefined);
+      } else expect(output).toContain(`Status: ${clean ? "idle" : "error"}`);
+      expect(events).toHaveBeenCalledTimes(clean ? 0 : 1);
+    },
+  );
+
   it("prints stored and next-turn models when they differ", () => {
     printExecutionProfile({
       lastRequested: null,
@@ -81,6 +150,28 @@ describe("bb thread show command output", () => {
       bodies.push(JSON.parse(String(init?.body)));
       return new Response(
         JSON.stringify({ ok: true, result: { [environmentId]: row } }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    });
+    return { urls, bodies };
+  }
+
+  function stubGitRpc(result: unknown): { urls: string[]; bodies: unknown[] } {
+    const urls: string[] = [];
+    const bodies: unknown[] = [];
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const url = String(input);
+      const body: unknown = JSON.parse(String(init?.body));
+      if (url.includes("/plugins/bb--git/")) {
+        urls.push(url);
+        bodies.push(body);
+        return new Response(JSON.stringify({ ok: true, result }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response(
+        JSON.stringify({ ok: true, result: { "": { outcome: "absent" } } }),
         { status: 200, headers: { "Content-Type": "application/json" } },
       );
     });
@@ -329,15 +420,14 @@ describe("bb thread show command output", () => {
     });
     const get = vi.fn(async () => thread);
     const environmentGet = vi.fn(async () => environment);
-    const statusGet = vi.fn(async () => ({
+    const rpc = stubGitRpc({
       outcome: "not_applicable",
       reason: "non_git_environment",
       message: "Workspace is not a Git repository.",
-    }));
+    });
     const timelineGet = fixtures.makeEmptyTimelineGetMock();
     stubThreadApi({
       "v1.environments.:id.$get": environmentGet,
-      "v1.environments.:id.status.$get": statusGet,
       "v1.threads.:id.$get": get,
       "v1.threads.:id.timeline.$get": timelineGet,
     });
@@ -347,10 +437,12 @@ describe("bb thread show command output", () => {
       register,
     );
 
-    expect(statusGet).toHaveBeenCalledWith({
-      param: { id: "env-work-status" },
-      query: { mergeBaseBranch: "main" },
-    });
+    expect(rpc.urls).toEqual([
+      "http://server/api/v1/plugins/bb--git/rpc/workspaceStatus",
+    ]);
+    expect(rpc.bodies).toEqual([
+      { environmentId: "env-work-status", mergeBaseBranch: "main" },
+    ]);
     expect(collectLogLines(vi.mocked(console.log))).toContain(
       "Work status: Workspace is not a Git repository.",
     );
@@ -389,7 +481,7 @@ describe("bb thread show command output", () => {
       createdAt: 1,
       updatedAt: 2,
     });
-    const gitDiff: domain.ThreadGitDiffResponse = {
+    const gitDiff: ThreadGitDiffResponse = {
       diff: "",
       files: "M\tsrc/file.ts\n",
       mergeBaseRef: "abc1234",
@@ -398,15 +490,10 @@ describe("bb thread show command output", () => {
     };
     const get = vi.fn(async () => thread);
     const environmentGet = vi.fn(async () => environment);
-    const diffResponse: serverContract.EnvironmentDiffResponse = {
-      outcome: "available",
-      diff: gitDiff,
-    };
-    const diffGet = vi.fn(async () => diffResponse);
+    const rpc = stubGitRpc({ outcome: "available", diff: gitDiff });
     const timelineGet = fixtures.makeEmptyTimelineGetMock();
     stubThreadApi({
       "v1.environments.:id.$get": environmentGet,
-      "v1.environments.:id.diff.$get": diffGet,
       "v1.threads.:id.$get": get,
       "v1.threads.:id.timeline.$get": timelineGet,
     });
@@ -416,13 +503,12 @@ describe("bb thread show command output", () => {
       register,
     );
 
-    expect(diffGet).toHaveBeenCalledWith({
-      param: { id: "env-diff-base" },
-      query: {
-        mergeBaseBranch: "release",
-        target: "all",
+    expect(rpc.bodies).toEqual([
+      {
+        environmentId: "env-diff-base",
+        target: { type: "all", mergeBaseBranch: "release" },
       },
-    });
+    ]);
   });
 
   it("bb thread show --git-diff renders an available uncommitted diff response", async () => {
@@ -442,7 +528,7 @@ describe("bb thread show command output", () => {
       createdAt: 1,
       updatedAt: 2,
     });
-    const diffResponse: serverContract.EnvironmentDiffResponse = {
+    const rpc = stubGitRpc({
       outcome: "available",
       diff: {
         diff: "diff --git a/smoke.txt b/smoke.txt\nnew file mode 100644\n",
@@ -451,14 +537,12 @@ describe("bb thread show command output", () => {
         shortstat: "1 file changed\n",
         truncated: false,
       },
-    };
+    });
     const get = vi.fn(async () => thread);
     const environmentGet = vi.fn(async () => environment);
-    const diffGet = vi.fn(async () => diffResponse);
     const timelineGet = fixtures.makeEmptyTimelineGetMock();
     stubThreadApi({
       "v1.environments.:id.$get": environmentGet,
-      "v1.environments.:id.diff.$get": diffGet,
       "v1.threads.:id.$get": get,
       "v1.threads.:id.timeline.$get": timelineGet,
     });
@@ -475,12 +559,12 @@ describe("bb thread show command output", () => {
       register,
     );
 
-    expect(diffGet).toHaveBeenCalledWith({
-      param: { id: "env-uncommitted-diff" },
-      query: {
-        target: "uncommitted",
+    expect(rpc.bodies).toEqual([
+      {
+        environmentId: "env-uncommitted-diff",
+        target: { type: "uncommitted" },
       },
-    });
+    ]);
     const output = collectLogLines(vi.mocked(console.log)).join("\n");
     expect(output).toContain("Git diff:");
     expect(output).toContain("A\tsmoke.txt");

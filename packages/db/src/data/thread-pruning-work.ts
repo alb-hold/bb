@@ -27,6 +27,18 @@ export function markThreadPruningPolicyWork(
   }
 }
 
+export function markEveryThreadPruningPolicyWork(
+  db: DbQueryConnection,
+  threadIds: Iterable<string>,
+): void {
+  for (const threadId of new Set(threadIds)) {
+    db.run(sql`INSERT INTO thread_pruning_work (policy, thread_id)
+      VALUES ('rate-limits', ${threadId}), ('usage', ${threadId}),
+        ('turn-diffs', ${threadId}), ('resolved-items', ${threadId})
+      ON CONFLICT (policy, thread_id) DO UPDATE SET revision = revision + 1`);
+  }
+}
+
 export function drainPendingThreadPruningWork(
   db: DbQueryConnection,
   threadId?: string,
@@ -46,10 +58,7 @@ export function drainPendingThreadPruningWork(
     .limit(32)
     .all();
   for (const { threadId } of pending) {
-    db.run(sql`INSERT INTO thread_pruning_work (policy, thread_id)
-      VALUES ('rate-limits', ${threadId}), ('usage', ${threadId}),
-        ('turn-diffs', ${threadId}), ('resolved-items', ${threadId})
-      ON CONFLICT (policy, thread_id) DO UPDATE SET revision = revision + 1`);
+    markEveryThreadPruningPolicyWork(db, [threadId]);
     db.run(sql`DELETE FROM thread_pruning_work
       WHERE policy = ${THREAD_PRUNING_PENDING_POLICY} AND thread_id = ${threadId}`);
   }

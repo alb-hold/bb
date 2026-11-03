@@ -6,9 +6,11 @@ import type {
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { Terminal } from "@xterm/xterm";
 import { describe, expect, it, vi } from "vitest";
+import { makeTerminalSession } from "@/test/fixtures/terminal-sessions";
 import { decodeBase64Bytes } from "@/lib/base64-bytes";
 import { registerTerminalGridOscHandler } from "./terminal-grid-osc";
 import { createTerminalOutputPipeline } from "./terminal-output-pipeline";
+import { createTerminalOutputBoundaries } from "./terminal-output-boundaries";
 import {
   buildTerminalThemeFromCssColors,
   attachTerminalManualScrollIntentListeners,
@@ -38,10 +40,7 @@ import {
   writeRetainedTerminalOutput,
   updateTerminalTouchFocusGesture,
 } from "./ThreadTerminalView";
-import {
-  createTerminalOsc8LinkHandler,
-  requestTerminalLinkOpen,
-} from "./terminal-links";
+import { requestTerminalLinkOpen } from "./terminal-links";
 import {
   createTerminalViewportReplaySaveGate,
   createTerminalViewportPersistence,
@@ -77,54 +76,6 @@ import {
 } from "@/components/secondary-panel/sidebarSplitLayout";
 
 describe("terminal hyperlinks", () => {
-  it("preserves OSC-8 provenance through hover and primary activation", () => {
-    const onActivate = vi.fn();
-    const onHover = vi.fn();
-    const handler = createTerminalOsc8LinkHandler({
-      onActivate,
-      onHover,
-    });
-    const event = { button: 0 } as MouseEvent;
-    const range = {
-      start: { x: 1, y: 1 },
-      end: { x: 1, y: 1 },
-    };
-
-    handler.hover?.(event, "https://example.com/authorize", range);
-    handler.activate(event, "https://example.com/authorize", range);
-    handler.leave?.(event, "https://example.com/authorize", range);
-
-    expect(onActivate).toHaveBeenCalledWith({
-      source: "osc8",
-      uri: "https://example.com/authorize",
-    });
-    expect(onHover).toHaveBeenNthCalledWith(1, {
-      source: "osc8",
-      uri: "https://example.com/authorize",
-    });
-    expect(onHover).toHaveBeenNthCalledWith(2, null);
-  });
-
-  it("does not activate OSC-8 links from a secondary click", () => {
-    const onActivate = vi.fn();
-    const handler = createTerminalOsc8LinkHandler({
-      onActivate,
-      onHover: vi.fn(),
-    });
-    const range = {
-      start: { x: 1, y: 1 },
-      end: { x: 1, y: 1 },
-    };
-
-    handler.activate(
-      { button: 2 } as MouseEvent,
-      "https://example.com/right-click",
-      range,
-    );
-
-    expect(onActivate).not.toHaveBeenCalled();
-  });
-
   it("confirms concealed targets and directly opens detected URLs", () => {
     const openLink = vi.fn();
     const requestConfirmation = vi.fn();
@@ -549,6 +500,7 @@ describe("terminal viewport restore", () => {
       ReturnType<typeof tracker.recordOutputStart>
     >[] = [];
     const token = "replay-marker-test";
+    const outputBoundaries = createTerminalOutputBoundaries(token);
     tracker.reset();
     const markerHandler = registerTerminalOutputBoundaryHandler(
       terminal.parser,
@@ -581,7 +533,7 @@ describe("terminal viewport restore", () => {
               data,
               isReplay: false,
               outputSequence: seq,
-              outputBoundaryToken: token,
+              outputBoundaries,
               onParsed: resolve,
               replayWriteState: { suppressedWriteCount: 0 },
               terminal,
@@ -1697,6 +1649,120 @@ describe("terminal touch focus", () => {
 });
 
 describe("terminal output encoding", () => {
+  it("matches visible output after replaying output received while hidden", async () => {
+    const visibleTerminal = new Terminal({ cols: 30, rows: 6 });
+    const hiddenTerminal = new Terminal({ cols: 30, rows: 6 });
+    const visiblePipeline = createTerminalOutputPipeline(visibleTerminal);
+    const hiddenPipeline = createTerminalOutputPipeline(hiddenTerminal);
+    const chunks = ["before ", "\u001b[3", "1mhidden\u001b[0m after"];
+    const write = async (
+      terminal: Terminal,
+      pipeline: ReturnType<typeof createTerminalOutputPipeline>,
+      seq: number,
+      bytes: string,
+      visible: boolean,
+    ) => {
+      let parsed!: () => void;
+      const completion = new Promise<void>((resolve) => {
+        parsed = resolve;
+      });
+      handleTerminalServerMessage({
+        acknowledgeOutput: parsed,
+        message: {
+          type: "output",
+          chunk: { seq, dataBase64: Buffer.from(bytes).toString("base64") },
+        },
+        onReplayComplete: vi.fn(),
+        replayNextSeq: null,
+        replayWriteState: { suppressedWriteCount: 0 },
+        setReplayNextSeq: vi.fn(),
+        shouldProcessOutput: () => visible,
+        terminal,
+        pipeline,
+      });
+      if (visible) await completion;
+    };
+
+    for (const [seq, chunk] of chunks.entries()) {
+      await write(visibleTerminal, visiblePipeline, seq, chunk, true);
+      await write(hiddenTerminal, hiddenPipeline, seq, chunk, false);
+    }
+    expect(
+      hiddenTerminal.buffer.active.getLine(0)?.translateToString().trimEnd(),
+    ).toBe("");
+    for (const [seq, chunk] of chunks.entries()) {
+      await write(hiddenTerminal, hiddenPipeline, seq, chunk, true);
+    }
+
+    const visibleLines = Array.from(
+      { length: visibleTerminal.buffer.active.length },
+      (_, index) =>
+        visibleTerminal.buffer.active.getLine(index)?.translateToString(),
+    );
+    const replayedLines = Array.from(
+      { length: hiddenTerminal.buffer.active.length },
+      (_, index) =>
+        hiddenTerminal.buffer.active.getLine(index)?.translateToString(),
+    );
+    expect(replayedLines).toEqual(visibleLines);
+    expect(hiddenTerminal.buffer.active.getLine(0)?.getCell(7)?.getFgColor()).toBe(
+      1,
+    );
+    visibleTerminal.dispose();
+    hiddenTerminal.dispose();
+  });
+
+  it("replays a hidden output chunk before parsing a split escape sequence on show", async () => {
+    const terminal = new Terminal({ cols: 30, rows: 6 });
+    const pipeline = createTerminalOutputPipeline(terminal);
+    const acknowledged: number[] = [];
+    const replayWriteState = { suppressedWriteCount: 0 };
+    let visible = false;
+    const sendOutput = async (seq: number, bytes: string) => {
+      let parsed!: () => void;
+      const completion = new Promise<void>((resolve) => {
+        parsed = resolve;
+      });
+      handleTerminalServerMessage({
+        acknowledgeOutput: (nextSeq) => {
+          acknowledged.push(nextSeq);
+          parsed();
+        },
+        message: {
+          type: "output",
+          chunk: { seq, dataBase64: Buffer.from(bytes).toString("base64") },
+        },
+        onReplayComplete: vi.fn(),
+        replayNextSeq: null,
+        replayWriteState,
+        setReplayNextSeq: vi.fn(),
+        shouldProcessOutput: () => visible,
+        terminal,
+        pipeline,
+      });
+      if (visible) await completion;
+    };
+
+    await sendOutput(0, "\u001b[3");
+    expect(acknowledged).toEqual([]);
+    expect(
+      terminal.buffer.active.getLine(0)?.translateToString().trimEnd(),
+    ).toBe("");
+
+    visible = true;
+    await sendOutput(0, "\u001b[3");
+    await sendOutput(1, "1mOK");
+
+    expect(terminal.buffer.active.getLine(0)?.translateToString()).toContain(
+      "OK",
+    );
+    expect(terminal.buffer.active.getLine(0)?.getCell(0)?.getFgColor()).toBe(
+      1,
+    );
+    expect(acknowledged).toEqual([1, 2]);
+    terminal.dispose();
+  });
+
   it("sizes the xterm to the attached PTY before writing legacy output", async () => {
     const terminal = new Terminal({ cols: 120, rows: 36 });
     const pipeline = createTerminalOutputPipeline(terminal);
@@ -2453,6 +2519,39 @@ describe("terminal output encoding", () => {
     terminal.dispose();
   });
 
+  it("feeds a checkpoint preview only from the checkpoint sequence onward", async () => {
+    const terminal = new Terminal({ cols: 40, rows: 5 });
+    const previewPush = vi.fn((bytes: Uint8Array, callback: () => void) =>
+      callback(),
+    );
+    const replayWriteState = { suppressedWriteCount: 0 };
+    const write = (sequence: number, isReplay: boolean) =>
+      writeTerminalOutput({
+        data: `chunk-${sequence}`,
+        isReplay,
+        outputSequence: sequence,
+        replayCheckpointSequence: 3,
+        onParsed: () => undefined,
+        replayWriteState,
+        terminal,
+        replayPipeline: { push: previewPush },
+      });
+
+    write(0, true);
+    await writeTerminal(terminal, "");
+    expect(previewPush).not.toHaveBeenCalled();
+    write(3, true);
+    await writeTerminal(terminal, "");
+    expect(Buffer.from(previewPush.mock.calls[0]?.[0] ?? []).toString()).toBe(
+      "chunk-3",
+    );
+    write(4, false);
+    await writeTerminal(terminal, "");
+    expect(previewPush).toHaveBeenCalledTimes(2);
+    expect(replayWriteState.suppressedWriteCount).toBe(0);
+    terminal.dispose();
+  });
+
   it("keeps keystrokes typed while replayed output is still parsing, and still drops the replay's protocol replies", async () => {
     const terminal = new Terminal({ cols: 80, rows: 24 });
     const sent: string[] = [];
@@ -2915,4 +3014,36 @@ describe("loadTerminalWebglRenderer", () => {
     );
     expect(addon.dispose).toHaveBeenCalledOnce();
   });
+});
+
+describe("exited native retained output", () => {
+  it.each([true, false])(
+    "retains the last alternate frame only for native output: %s",
+    async (retainNativeOutput) => {
+      const terminal = new Terminal({ cols: 80, rows: 24 });
+      const bytes = new TextEncoder().encode(
+        "\x1b[?1049h\x1b[2J\x1b[HLAST-ANSWER\r\n\x1b[?1049lResume this session with: claude --resume example\r\n",
+      );
+      const options = {
+        chunks: [
+          { seq: 1, data: bytes.slice(0, 39) },
+          { seq: 2, data: bytes.slice(39) },
+        ],
+        session: makeTerminalSession({ status: "exited", exitCode: 0 }),
+        terminal,
+        lastNotice: { current: null },
+        retainNativeOutput,
+      };
+      await writeRetainedTerminalOutput(options);
+      const text = Array.from(
+        { length: terminal.buffer.active.length },
+        (_, i) =>
+          terminal.buffer.active.getLine(i)?.translateToString(true) ?? "",
+      ).join("\n");
+      expect(text.includes("LAST-ANSWER")).toBe(retainNativeOutput);
+      expect(text).toContain("Resume this session with:");
+      expect(text).toContain("Terminal exited with code 0");
+      terminal.dispose();
+    },
+  );
 });

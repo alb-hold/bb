@@ -1,3 +1,8 @@
+import type { ImportedProviderAccount } from "./provider-adapter.js";
+import type {
+  ImportedClaudeCredentials,
+  ImportedCodexCredentials,
+} from "./credentials.js";
 import {
   retryAvailabilitySchema,
   type RetryAvailability,
@@ -22,16 +27,11 @@ import {
   DEFAULT_CODEX_USAGE_URL,
 } from "./codex-adapter.js";
 import type { ProviderAdapter } from "./provider-adapter.js";
-import type { ImportedProviderAccount } from "./provider-adapter.js";
 import {
   isSignInRejection,
   OAuthRefreshError,
   TransientOAuthRefreshError,
 } from "./provider-adapter.js";
-import type {
-  ImportedClaudeCredentials,
-  ImportedCodexCredentials,
-} from "./credentials.js";
 import {
   accountStatus,
   blockingResetAt,
@@ -52,6 +52,14 @@ import type {
 } from "./store.js";
 import type { ThreadTokenStore, ThreadRoute } from "./thread-tokens.js";
 import { parentRequestHeaders, type ParentPool } from "./parent-pool.js";
+import {
+  OAUTH_PROXY_HOST,
+  TARGET_HOST_HEADER,
+  TARGET_METHOD_HEADER,
+  TARGET_PATH_HEADER,
+  classifyOAuthProxyRequest,
+  oauthProxyRouteLabel,
+} from "./oauth-proxy-policy.js";
 
 const ROUTE = "/api/v1/plugins/account-pool/http";
 const DEFAULT_REFRESH_URL = "https://platform.claude.com/v1/oauth/token";
@@ -67,6 +75,18 @@ const MAX_FAILURE_DETAIL_BYTES = 1_024;
 const FAILURE_DISPOSAL_TIMEOUT_MS = 250;
 const AFFINITY_IDLE_TTL_MS = 65 * 60 * 1_000;
 const MAX_AFFINITY_BINDINGS = 4_096;
+const OAUTH_PROXY_MAX_BODY_BYTES = 32 * 1_024 * 1_024;
+const OAUTH_PROXY_REQUEST_HEADERS = new Set([
+  "accept",
+  "content-type",
+  "content-encoding",
+  "user-agent",
+  "anthropic-beta",
+  "x-app",
+  "mcp-session-id",
+  "mcp-protocol-version",
+]);
+const OAUTH_BETA_FLAG = "oauth-2025-04-20";
 const DROPPED_RESPONSE_HEADERS = new Set([
   "content-encoding",
   "content-length",
@@ -93,6 +113,9 @@ interface HubOptions {
   fetch: typeof fetch;
   now: () => number;
   drainTimeoutMs: number;
+  mutationDrainTimeoutMs: number;
+  onMutationDrainTimeout: (accountIds: string[]) => void;
+  onPlanBackfillError: () => void;
   getParentRoute: () => ParentPool | null;
   onAccountsChanged: () => void;
   onUpstreamError: (provider: PoolProvider, error: unknown) => void;
@@ -102,6 +125,16 @@ interface HubOptions {
     outcome: "succeeded" | "failed",
     message: string,
   ) => void;
+  onOAuthRelay: (relay: OAuthRelay) => void;
+}
+
+export interface OAuthRelay {
+  method: string;
+  route: string;
+  upstream:
+    | { kind: "status"; status: number }
+    | { kind: "error"; errorClass: string };
+  durationMs: number;
 }
 
 interface SelectedAccount {
@@ -162,7 +195,7 @@ type SecretUse = { kind: "normal" } | { kind: "rejected"; accessToken: string };
 
 type SecretFlight =
   | { kind: "refresh"; use: SecretUse; result: Promise<AccountSecret> }
-  | { kind: "rejection-check"; result: Promise<void> };
+  | { kind: "rejection-check" | "replacement"; result: Promise<void> };
 
 interface FailureSummary {
   status: number;
@@ -172,8 +205,36 @@ interface FailureSummary {
 
 class UpstreamConnectionError extends Error {}
 
+async function readBoundedBody(
+  request: Request,
+  limit: number,
+): Promise<Uint8Array | "too-large"> {
+  if (request.body === null) return new Uint8Array(0);
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > limit) {
+      await reader.cancel().catch(() => undefined);
+      return "too-large";
+    }
+    chunks.push(value);
+  }
+  const body = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return body;
+}
+
 export class AccountPoolHub {
   private accepting = false;
+  private mutationDrainWarned = false;
   private stopped = new AbortController();
   private readonly inFlightByAccount = new Map<string, number>();
   private readonly activeControllers = new Set<AbortController>();
@@ -195,13 +256,29 @@ export class AccountPoolHub {
     );
     this.activeAccounts = this.options.affinity.loadActiveAccounts();
     this.pacingByAccount.clear();
-    this.stopped = new AbortController();
+    this.stopped.abort();
+    const lifecycle = new AbortController();
+    this.stopped = lifecycle;
+    this.planBackfill = null;
+    this.mutationDrainWarned = false;
+    const stop = () => lifecycle.abort(signal.reason);
+    signal.addEventListener("abort", stop, { once: true });
+    if (signal.aborted) stop();
     this.accepting = true;
-    while (!signal.aborted) {
-      await this.refreshUsage();
-      await waitForDelay(DEFAULT_USAGE_REFRESH_INTERVAL_MS, signal);
+    void this.backfillPlanNames();
+    try {
+      while (!lifecycle.signal.aborted) {
+        await abortable(this.refreshUsage(), lifecycle.signal).catch(
+          (error: unknown) => {
+            if (!lifecycle.signal.aborted) throw error;
+          },
+        );
+        await waitForDelay(DEFAULT_USAGE_REFRESH_INTERVAL_MS, lifecycle.signal);
+      }
+    } finally {
+      signal.removeEventListener("abort", stop);
+      if (this.stopped === lifecycle) await this.stop();
     }
-    await this.stop();
   }
 
   async authenticateProvider(
@@ -253,6 +330,39 @@ export class AccountPoolHub {
     provider: PoolProvider,
   ): Promise<ImportedProviderAccount> {
     return this.adapter(provider).importAccount();
+  }
+
+  async replaceSecret(
+    accountId: string,
+    secret: AccountSecret,
+    writeSecret: () => Promise<void> = () =>
+      this.options.accounts.writeSecret(accountId, secret),
+  ): Promise<void> {
+    while (true) {
+      const existing = this.refreshes.get(accountId);
+      if (existing !== undefined) {
+        await existing.result.then(
+          () => undefined,
+          () => undefined,
+        );
+        continue;
+      }
+      const flight: SecretFlight = {
+        kind: "replacement",
+        result: writeSecret()
+          .then(() => {
+            this.refreshBackoffs.delete(accountId);
+            const quota = this.options.quotas.get(accountId);
+            this.options.quotas.put({ ...quota, error: null });
+          })
+          .finally(() => {
+            if (this.refreshes.get(accountId) === flight)
+              this.refreshes.delete(accountId);
+          }),
+      };
+      this.refreshes.set(accountId, flight);
+      return flight.result;
+    }
   }
 
   localLogin(
@@ -312,6 +422,203 @@ export class AccountPoolHub {
       hostId,
       threadRoute,
     );
+  }
+
+  async handleOAuthProxy(request: Request): Promise<Response> {
+    const adapter = this.adapter("claude");
+    const { threadRoute, hostId } = await this.authenticateRoute(
+      request,
+      "claude",
+    );
+    if (hostId === null)
+      return adapter.errorResponse(401, "Invalid Account Pooler bearer token.");
+    if (!this.accepting)
+      return adapter.errorResponse(
+        503,
+        "Account Pooler is not accepting requests.",
+      );
+    const method = request.headers.get(TARGET_METHOD_HEADER) ?? "";
+    const target = request.headers.get(TARGET_PATH_HEADER) ?? "";
+    if (
+      threadRoute === null ||
+      this.options.getParentRoute() !== null ||
+      request.headers.get(TARGET_HOST_HEADER) !== OAUTH_PROXY_HOST ||
+      classifyOAuthProxyRequest(method, target).kind !== "forward"
+    )
+      return adapter.errorResponse(
+        403,
+        "This Artifact request is not allowed through the Account Pooler.",
+      );
+    const declared = request.headers.get("content-length");
+    if (declared !== null && !/^\d+$/u.test(declared.trim()))
+      return adapter.errorResponse(400, "Invalid Content-Length.");
+    if (declared !== null && Number(declared) > OAUTH_PROXY_MAX_BODY_BYTES)
+      return adapter.errorResponse(413, "The Artifact request is too large.");
+    const account = await this.oauthAccountForThread(threadRoute, hostId);
+    if (account === null)
+      return adapter.errorResponse(
+        403,
+        "Artifacts need a subscription account in the Account Pooler.",
+      );
+    const body =
+      method === "GET" || method === "DELETE"
+        ? null
+        : await readBoundedBody(request, OAUTH_PROXY_MAX_BODY_BYTES);
+    if (body === "too-large")
+      return adapter.errorResponse(413, "The Artifact request is too large.");
+    const url =
+      this.options.getSettings().anthropicUpstreamBaseUrl.replace(/\/+$/u, "") +
+      target;
+    const startedAt = this.options.now();
+    const relayed = (upstream: OAuthRelay["upstream"]) =>
+      this.options.onOAuthRelay({
+        method,
+        route: oauthProxyRouteLabel(target),
+        upstream,
+        durationMs: this.options.now() - startedAt,
+      });
+    const { controller, release } = this.trackRequest(request);
+    let handedOff = false;
+    try {
+      let secret = await abortable(
+        this.freshSecret(account, adapter, { kind: "normal" }),
+        controller.signal,
+      );
+      for (let attempt = 0; ; attempt += 1) {
+        if (secret.kind !== "oauth")
+          return adapter.errorResponse(
+            403,
+            "Artifacts need a subscription account in the Account Pooler.",
+          );
+        const headers = new Headers();
+        for (const [name, value] of request.headers) {
+          if (
+            OAUTH_PROXY_REQUEST_HEADERS.has(name) ||
+            name.startsWith("x-frame-")
+          )
+            headers.set(name, value);
+        }
+        const beta = headers.get("anthropic-beta");
+        if (beta === null) headers.set("anthropic-beta", OAUTH_BETA_FLAG);
+        else if (
+          !beta.split(",").some((flag) => flag.trim() === OAUTH_BETA_FLAG)
+        )
+          headers.set("anthropic-beta", `${beta},${OAUTH_BETA_FLAG}`);
+        headers.set("authorization", `Bearer ${secret.accessToken}`);
+        let response: Response;
+        try {
+          response = await this.options.fetch(url, {
+            method,
+            headers,
+            ...(body === null ? {} : { body: body as BodyInit }),
+            redirect: "manual",
+            signal: controller.signal,
+          });
+        } catch (cause) {
+          if (!controller.signal.aborted)
+            this.options.onUpstreamError("claude", cause);
+          relayed({
+            kind: "error",
+            errorClass:
+              cause instanceof Error &&
+              /^[A-Za-z0-9_$]{1,64}$/u.test(cause.name)
+                ? cause.name
+                : "Error",
+          });
+          return adapter.errorResponse(
+            502,
+            "Account Pooler could not reach Anthropic.",
+          );
+        }
+        if (response.status === 401 && attempt === 0) {
+          await response.body?.cancel().catch(() => undefined);
+          try {
+            secret = await abortable(
+              this.freshSecret(account, adapter, {
+                kind: "rejected",
+                accessToken: secret.accessToken,
+              }),
+              controller.signal,
+            );
+          } catch (error) {
+            if (error instanceof TransientOAuthRefreshError)
+              return adapter.errorResponse(503, error.message);
+            return adapter.errorResponse(
+              401,
+              "Anthropic rejected the pooled account's sign-in.",
+            );
+          }
+          continue;
+        }
+        const forwarded = new Headers(response.headers);
+        forwarded.delete("set-cookie");
+        relayed({ kind: "status", status: response.status });
+        handedOff = true;
+        return this.clientResponse({
+          response: new Response(response.body, {
+            status: response.status,
+            statusText: response.statusText,
+            headers: forwarded,
+          }),
+          controller,
+          release,
+        });
+      }
+    } catch (error) {
+      if (request.signal.aborted)
+        return adapter.errorResponse(
+          499,
+          "Account Pooler request was canceled.",
+        );
+      throw error;
+    } finally {
+      if (!handedOff) release();
+    }
+  }
+
+  private async oauthAccountForThread(
+    threadRoute: ThreadRoute,
+    hostId: string,
+  ): Promise<Account | null> {
+    const claudeAccounts = (await this.options.accounts.list()).filter(
+      (account) => account.provider === "claude" && account.enabled,
+    );
+    if (threadRoute.accountId !== null && threadRoute.accountId !== undefined) {
+      const pinned = claudeAccounts.find(
+        (account) => account.id === threadRoute.accountId,
+      );
+      return pinned?.kind === "oauth" ? pinned : null;
+    }
+    const oauth = claudeAccounts.filter((account) => account.kind === "oauth");
+    const byId = new Map(oauth.map((account) => [account.id, account]));
+    let bound: Account | null = null;
+    let boundAt = -1;
+    for (const [key, binding] of this.affinityBindings) {
+      const account = byId.get(binding.accountId);
+      if (account === undefined || binding.lastUsedAt <= boundAt) continue;
+      let parts: unknown;
+      try {
+        parts = JSON.parse(key);
+      } catch {
+        continue;
+      }
+      if (
+        Array.isArray(parts) &&
+        parts[0] === "claude" &&
+        parts[1] === hostId &&
+        parts[2] === threadRoute.threadId
+      ) {
+        bound = account;
+        boundAt = binding.lastUsedAt;
+      }
+    }
+    if (bound !== null) return bound;
+    const active = this.activeAccounts.get("claude");
+    const activeAccount =
+      active === undefined ? undefined : byId.get(active.accountId);
+    if (activeAccount !== undefined) return activeAccount;
+    const next = (await this.previewAccountChoice("claude")).nextAccountId;
+    return (next === null ? undefined : byId.get(next)) ?? oauth[0] ?? null;
   }
 
   private trackRequest(
@@ -383,19 +690,26 @@ export class AccountPoolHub {
     }
   }
 
-  async refreshUsage(accountId?: string, force = false): Promise<boolean> {
-    const accounts = (await this.options.accounts.list()).filter(
+  async refreshUsage(
+    accountId?: string,
+    force = false,
+    signal?: AbortSignal,
+  ): Promise<boolean> {
+    signal?.throwIfAborted();
+    const accounts = (await this.options.accounts.list(signal)).filter(
       (account) =>
         account.enabled &&
         account.kind === "oauth" &&
         (accountId === undefined || account.id === accountId),
     );
+    signal?.throwIfAborted();
     const refreshed = await Promise.all(
       accounts.map((account) =>
         this.refreshAccountUsage(
           account,
           force ? 0 : DEFAULT_USAGE_REFRESH_INTERVAL_MS,
           force,
+          signal,
         ),
       ),
     );
@@ -433,7 +747,13 @@ export class AccountPoolHub {
     account: Account,
     minIntervalMs: number,
     recoverError = false,
+    callerSignal?: AbortSignal,
   ): Promise<boolean> {
+    const signal = AbortSignal.any([
+      this.stopped.signal,
+      ...(callerSignal === undefined ? [] : [callerSignal]),
+    ]);
+    signal.throwIfAborted();
     const adapter = this.adapter(account.provider);
     if ((this.inFlightByAccount.get(account.id) ?? 0) > 0) return true;
     const running = this.usageRefreshes.get(account.id);
@@ -446,15 +766,24 @@ export class AccountPoolHub {
       recoverError && this.options.quotas.get(account.id).error !== null;
     const refresh = adapter
       .refreshUsage({
+        signal,
         account,
-        freshSecret: () =>
-          this.freshSecret(account, adapter, { kind: "normal" }, recover).catch(
-            (error: unknown) => {
-              if (recover && !(error instanceof TransientOAuthRefreshError))
-                this.markError(account.id, errorMessage(error));
-              throw error;
-            },
-          ),
+        freshSecret: (profileSignal = signal) =>
+          this.freshSecret(
+            account,
+            adapter,
+            { kind: "normal" },
+            recover,
+            profileSignal,
+          ).catch((error: unknown) => {
+            if (
+              !profileSignal.aborted &&
+              recover &&
+              !(error instanceof TransientOAuthRefreshError)
+            )
+              this.markError(account.id, errorMessage(error));
+            throw error;
+          }),
         accounts: this.options.accounts,
         quotas: this.options.quotas,
         fetch: this.options.fetch,
@@ -472,39 +801,143 @@ export class AccountPoolHub {
   async stop(): Promise<void> {
     this.accepting = false;
     this.stopped.abort(new Error("Account Pooler stopped accepting requests."));
-    if (this.inFlightCount() === 0) return;
-    let timeout: ReturnType<typeof setTimeout> | null = null;
-    await Promise.race([
-      new Promise<void>((resolve) => this.drainWaiters.add(resolve)),
-      new Promise<void>((resolve) => {
-        timeout = setTimeout(resolve, this.options.drainTimeoutMs);
+    const backfill = this.planBackfill;
+    if (this.inFlightCount() > 0 || backfill !== null) {
+      let timeout: ReturnType<typeof setTimeout> | null = null;
+      await Promise.race([
+        Promise.all([
+          backfill?.catch(() => {}),
+          this.inFlightCount() === 0
+            ? Promise.resolve()
+            : new Promise<void>((resolve) => this.drainWaiters.add(resolve)),
+        ]),
+        new Promise<void>((resolve) => {
+          timeout = setTimeout(resolve, this.options.drainTimeoutMs);
+        }),
+      ]);
+      if (timeout !== null) clearTimeout(timeout);
+      if (this.inFlightCount() > 0) {
+        for (const controller of this.activeControllers) {
+          controller.abort(
+            new Error(
+              "Account Pooler stopped before the upstream response completed.",
+            ),
+          );
+        }
+      }
+    }
+    let mutationTimer: ReturnType<typeof setTimeout> | null = null;
+    const drained = await Promise.race([
+      this.options.accounts.drainMutations().then(() => true),
+      new Promise<false>((resolve) => {
+        mutationTimer = setTimeout(
+          () => resolve(false),
+          this.options.mutationDrainTimeoutMs,
+        );
       }),
     ]);
-    if (timeout !== null) clearTimeout(timeout);
-    if (this.inFlightCount() === 0) return;
-    for (const controller of this.activeControllers) {
-      controller.abort(
-        new Error(
-          "Account Pooler stopped before the upstream response completed.",
-        ),
+    if (mutationTimer !== null) clearTimeout(mutationTimer);
+    if (!drained && !this.mutationDrainWarned) {
+      this.mutationDrainWarned = true;
+      this.options.onMutationDrainTimeout(
+        this.options.accounts.pendingPlanWrites(),
       );
     }
   }
 
-  async status(): Promise<Omit<PoolStatus, "routing" | "parent">> {
+  private planBackfill: Promise<void> | null = null;
+
+  backfillPlanNames(): Promise<void> {
+    if (this.stopped.signal.aborted) return Promise.resolve();
+    if (this.planBackfill !== null) return this.planBackfill;
+    const pass = this.fillPlanNames(this.stopped.signal)
+      .catch(() => {
+        this.options.onPlanBackfillError();
+      })
+      .finally(() => {
+        if (this.planBackfill === pass) this.planBackfill = null;
+      });
+    this.planBackfill = pass;
+    return pass;
+  }
+
+  private async fillPlanNames(signal: AbortSignal): Promise<void> {
+    const plans = await this.options.accounts.planDisplayNames();
+    const accounts = (await this.options.accounts.list()).sort(
+      (left, right) =>
+        left.priority - right.priority || left.id.localeCompare(right.id),
+    );
+    for (const account of accounts) {
+      if (signal.aborted) return;
+      if (
+        account.provider !== "claude" ||
+        account.kind !== "oauth" ||
+        plans[account.id] !== undefined
+      )
+        continue;
+      const adapter = this.adapter(account.provider);
+      await adapter
+        .refreshProfile?.({
+          account,
+          signal,
+          background: true,
+          freshSecret: (profileSignal = signal) =>
+            this.options.accounts.readSecret(account.id, profileSignal),
+          accounts: this.options.accounts,
+          quotas: this.options.quotas,
+          fetch: this.options.fetch,
+          now: this.options.now,
+        })
+        .catch(() => {});
+    }
+  }
+
+  async display(signal?: AbortSignal) {
+    signal?.throwIfAborted();
+    if (signal === undefined) void this.backfillPlanNames();
+    const accounts = await this.options.accounts.list(signal);
+    signal?.throwIfAborted();
+    const plans = await this.options.accounts.displayPlanNames(
+      new Set(accounts.map(({ id }) => id)),
+      signal,
+    );
+    signal?.throwIfAborted();
+    return {
+      plans: Object.fromEntries(
+        accounts.flatMap(({ id }) =>
+          plans[id] === undefined ? [] : [[id, plans[id]]],
+        ),
+      ),
+      weekly: Object.fromEntries(
+        accounts.flatMap(({ id }) => {
+          const windows = this.options.quotas.modelWeekly(id);
+          return windows === undefined ? [] : [[id, windows]];
+        }),
+      ),
+    };
+  }
+
+  async status(
+    signal?: AbortSignal,
+  ): Promise<Omit<PoolStatus, "routing" | "parent">> {
+    signal?.throwIfAborted();
     const settings = this.options.getSettings();
     const now = this.options.now();
     const automaticChoices = this.options.affinity.loadAutomaticChoices();
-    const accounts = (await this.options.accounts.list()).sort(
+    const accounts = (await this.options.accounts.list(signal)).sort(
       (left, right) => left.priority - right.priority,
     );
-    const organizations = await this.options.accounts.organizations();
+    signal?.throwIfAborted();
+    const organizations = await this.options.accounts.organizations(signal);
+    signal?.throwIfAborted();
+    const hosts = await this.options.hubTokens.list();
+    signal?.throwIfAborted();
     return {
       route: ROUTE,
       enabledAccountCount: accounts.filter((account) => account.enabled).length,
       inFlight: this.inFlightCount(),
       accepting: this.accepting,
-      hosts: await this.options.hubTokens.list(),
+      hosts,
       accounts: accounts.map((account) => {
         const quota = this.options.quotas.get(account.id);
         const { accountId: _accountId, ...quotaFields } = quota;
@@ -1319,18 +1752,23 @@ export class AccountPoolHub {
     adapter: ProviderAdapter,
     use: SecretUse,
     recover = false,
+    signal?: AbortSignal,
   ): Promise<AccountSecret> {
     while (true) {
+      signal?.throwIfAborted();
       const existing = this.refreshes.get(account.id);
       if (existing !== undefined) {
-        if (existing.kind === "rejection-check") {
+        if (existing.kind !== "refresh") {
           await existing.result;
+          signal?.throwIfAborted();
           continue;
         }
         let secret: AccountSecret;
         try {
           secret = await existing.result;
+          signal?.throwIfAborted();
         } catch (error) {
+          signal?.throwIfAborted();
           const current = this.refreshes.get(account.id);
           if (current !== undefined && current !== existing) continue;
           throw error;
@@ -1359,8 +1797,9 @@ export class AccountPoolHub {
         kind: "refresh",
         use,
         result: this.options.accounts
-          .readSecret(account.id)
+          .readSecret(account.id, signal)
           .then(async (secret) => {
+            signal?.throwIfAborted();
             let backoff = this.refreshBackoffs.get(account.id);
             if (
               secret.kind !== "oauth" ||
@@ -1401,7 +1840,9 @@ export class AccountPoolHub {
               throw backoff.error;
             }
             try {
+              signal?.throwIfAborted();
               const result = await adapter.refreshSecret({
+                signal,
                 account,
                 secret,
                 accounts: this.options.accounts,
@@ -1410,6 +1851,7 @@ export class AccountPoolHub {
                 now: this.options.now,
                 forceRefresh,
               });
+              signal?.throwIfAborted();
               this.refreshBackoffs.delete(account.id);
               if (result.refreshed) {
                 this.options.onOAuthRefresh(
@@ -1423,6 +1865,7 @@ export class AccountPoolHub {
               }
               return result.secret;
             } catch (error) {
+              signal?.throwIfAborted();
               this.options.onOAuthRefresh(
                 account.provider,
                 account.id,
@@ -1745,28 +2188,32 @@ export function createHub(options: {
   usageUrl?: string;
   profileUrl?: string;
   drainTimeoutMs?: number;
+  mutationDrainTimeoutMs?: number;
+  onMutationDrainTimeout?: (accountIds: string[]) => void;
+  onPlanBackfillError?: () => void;
   maxAffinityBindings?: number;
   getParentRoute?: () => ParentPool | null;
   onAccountsChanged?: () => void;
   onUpstreamError?: (provider: PoolProvider, error: unknown) => void;
   onOAuthRefresh?: HubOptions["onOAuthRefresh"];
+  onOAuthRelay?: HubOptions["onOAuthRelay"];
 }): AccountPoolHub {
   const adapters: ReadonlyMap<PoolProvider, ProviderAdapter> = new Map([
     [
       "claude",
       createClaudeAdapter({
         refreshUrl: options.refreshUrl ?? DEFAULT_REFRESH_URL,
+        importCredentials: options.importClaudeCredentials,
         usageUrl: options.usageUrl ?? DEFAULT_USAGE_URL,
         profileUrl: options.profileUrl ?? DEFAULT_PROFILE_URL,
-        importCredentials: options.importClaudeCredentials,
       }),
     ],
     [
       "codex",
       createCodexAdapter({
         refreshUrl: options.codexRefreshUrl ?? DEFAULT_CODEX_REFRESH_URL,
-        usageUrl: options.codexUsageUrl ?? DEFAULT_CODEX_USAGE_URL,
         importCredentials: options.importCodexCredentials,
+        usageUrl: options.codexUsageUrl ?? DEFAULT_CODEX_USAGE_URL,
       }),
     ],
   ]);
@@ -1783,10 +2230,14 @@ export function createHub(options: {
     fetch: options.fetch ?? fetch,
     now: options.now ?? Date.now,
     drainTimeoutMs: options.drainTimeoutMs ?? 60_000,
+    mutationDrainTimeoutMs: options.mutationDrainTimeoutMs ?? 3_000,
+    onMutationDrainTimeout: options.onMutationDrainTimeout ?? (() => {}),
+    onPlanBackfillError: options.onPlanBackfillError ?? (() => {}),
     getParentRoute: options.getParentRoute ?? (() => null),
     onAccountsChanged: options.onAccountsChanged ?? (() => {}),
     onUpstreamError: options.onUpstreamError ?? (() => {}),
     onOAuthRefresh: options.onOAuthRefresh ?? (() => {}),
+    onOAuthRelay: options.onOAuthRelay ?? (() => {}),
   });
 }
 

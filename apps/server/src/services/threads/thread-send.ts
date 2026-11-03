@@ -4,6 +4,7 @@ import {
   getThreadSpawner,
   requireThreadLifecycleEventApplied,
 } from "@bb/db";
+import { describeMissingWorkspace } from "./missing-workspace.js";
 import { assertNotNativeTerminalThread } from "./native-terminal-guard.js";
 import type { DbConnection, DbTransaction, EnvironmentRow } from "@bb/db";
 import type {
@@ -106,6 +107,7 @@ interface SendThreadMessageArgs {
     forkSourceProviderThreadId: string | null;
     onCommandSettled?: () => void | Promise<void>;
   };
+  originPluginId: string | null;
   payload: SendThreadMessagePayload;
   thread: Thread;
   trigger: SendThreadMessageTrigger;
@@ -129,7 +131,7 @@ interface DispatchedThreadSend {
 const NO_REFUSAL: DispatchedThreadSend = { acceptance: Promise.resolve(null) };
 
 interface TurnAcceptanceWatch {
-  refuse: (error: Error) => void;
+  refuse: (error: Error, message?: string) => void;
   settle: () => void;
   result: Promise<ThreadSendRefusal | null>;
 }
@@ -149,11 +151,11 @@ function watchTurnAcceptance(graceMs: number): TurnAcceptanceWatch {
   const timer = setTimeout(() => resolve(null), graceMs);
   timer.unref?.();
   return {
-    refuse: (error) => {
+    refuse: (error, message) => {
       clearTimeout(timer);
       resolve({
         code: error instanceof ApiError ? error.body.code : "turn_refused",
-        message: error.message,
+        message: message ?? error.message,
       });
     },
     settle: () => {
@@ -162,6 +164,24 @@ function watchTurnAcceptance(graceMs: number): TurnAcceptanceWatch {
     },
     result,
   };
+}
+
+interface DescribeMissingWorkspaceRefusalArgs {
+  environmentId: string;
+  error: Error;
+}
+
+function describeMissingWorkspaceRefusal(
+  deps: Pick<AppDeps, "db">,
+  args: DescribeMissingWorkspaceRefusalArgs,
+): string | undefined {
+  return (
+    describeMissingWorkspace(deps.db, {
+      environmentId: args.environmentId,
+      errorCode: args.error instanceof ApiError ? args.error.body.code : "",
+      errorMessage: args.error.message,
+    }) ?? undefined
+  );
 }
 
 interface ResolveMessageSenderArgs {
@@ -211,6 +231,7 @@ interface AppendAndQueueSendThreadMessageArgs {
   initiator: ThreadTurnInitiator;
   input: PromptInput[];
   inputGroups?: PromptInput[][];
+  originPluginId: string | null;
   queueInTransaction: SendThreadMessageQueueRequest;
   requestId: ClientTurnRequestId;
   senderThreadId: string | null;
@@ -465,6 +486,7 @@ function appendAndQueueSendThreadMessageInTransaction({
   initiator,
   input,
   inputGroups,
+  originPluginId,
   queueInTransaction,
   requestId,
   senderThreadId,
@@ -488,6 +510,7 @@ function appendAndQueueSendThreadMessageInTransaction({
             ...(inputGroups !== undefined ? { inputGroups } : {}),
             execution,
             initiator,
+            originPluginId,
             senderThreadId,
             requestMethod: "turn/start",
             source: "tell",
@@ -527,6 +550,9 @@ export async function sendThreadMessage(
   assertNotNativeTerminalThread(deps.db, args.thread.id);
   if (isStandaloneBuiltinClearCommand(args.payload.input)) {
     await clearThreadContext(deps, {
+      ...(args.beforeAppendInTransaction !== undefined
+        ? { beforeCommitInTransaction: args.beforeAppendInTransaction }
+        : {}),
       environment: args.environment,
       thread: args.thread,
       beforeClearInTransaction: (tx) => {
@@ -534,7 +560,6 @@ export async function sendThreadMessage(
         if (!current) {
           throw new ApiError(404, "thread_not_found", "Thread not found");
         }
-        args.beforeAppendInTransaction?.({ tx });
       },
     });
     return { refusal: null };
@@ -688,6 +713,7 @@ async function sendThreadMessageWithoutContextClear(
       initiator,
       input,
       inputGroups,
+      originPluginId: args.originPluginId,
       senderThreadId,
       thread,
     })
@@ -726,7 +752,6 @@ async function sendThreadMessageWithoutContextClear(
   if (mode === "start") {
     const commandArgs = {
       thread,
-      fork: null,
       input,
       ...(inputGroups !== undefined ? { inputGroups } : {}),
       requestId,
@@ -770,6 +795,7 @@ async function sendThreadMessageWithoutContextClear(
       initiator,
       input,
       inputGroups,
+      originPluginId: args.originPluginId,
       queueInTransaction: ({ tx }) => {
         const dispatchKind = command.mode;
         const currentThread = getThread(tx, thread.id);
@@ -827,7 +853,13 @@ async function sendThreadMessageWithoutContextClear(
           { err: error, threadId: thread.id },
           "Live ready turn command failed",
         );
-        acceptance?.refuse(error);
+        acceptance?.refuse(
+          error,
+          describeMissingWorkspaceRefusal(deps, {
+            environmentId: readyEnvironment.id,
+            error,
+          }),
+        );
       },
     });
     if (queuedRequest.activeThread) {
@@ -886,6 +918,7 @@ async function sendThreadMessageWithoutContextClear(
     initiator,
     input,
     inputGroups,
+    originPluginId: args.originPluginId,
     queueInTransaction: () => {
       return { activeThread: null };
     },
@@ -916,7 +949,13 @@ async function sendThreadMessageWithoutContextClear(
         { err: error, threadId: thread.id },
         "Live turn submit command failed",
       );
-      acceptance.refuse(error);
+      acceptance.refuse(
+        error,
+        describeMissingWorkspaceRefusal(deps, {
+          environmentId: readyEnvironment.id,
+          error,
+        }),
+      );
     },
   });
   if (shouldCaptureUserMessageSent) {

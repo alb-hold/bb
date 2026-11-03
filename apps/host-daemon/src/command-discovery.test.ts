@@ -1,8 +1,10 @@
 import {
   chmod,
+  lstat,
   mkdir,
   mkdtemp,
   readdir,
+  realpath,
   rm,
   symlink,
   writeFile,
@@ -145,7 +147,21 @@ function skillFile(name: string, description = name): string {
 }
 
 beforeEach(async () => {
-  tempRoot = await mkdtemp(path.join(tmpdir(), "bb-command-discovery-"));
+  for (const candidate of new Set([tmpdir(), "/var/tmp"])) {
+    const directory = await realpath(candidate);
+    let ancestor = directory;
+    while (!(await lstat(path.join(ancestor, ".git")).catch(() => null))) {
+      const parent = path.dirname(ancestor);
+      if (parent === ancestor) {
+        tempRoot = await mkdtemp(path.join(directory, "bb-command-discovery-"));
+        return;
+      }
+      ancestor = parent;
+    }
+  }
+  throw new Error(
+    "Command discovery fixtures need a temp directory without a .git ancestor",
+  );
 });
 
 afterEach(async () => {

@@ -328,7 +328,7 @@ describe("internal environment change websocket hints", () => {
     });
   });
 
-  it("closes the daemon websocket for invalid environment change kinds", async () => {
+  it("drops invalid environment change kinds and keeps the daemon websocket open", async () => {
     await withTestHarness(async (harness) => {
       const { host, session } = seedHostSession(harness.deps, {
         id: "host-env-change-invalid",
@@ -347,7 +347,7 @@ describe("internal environment change websocket hints", () => {
         }),
       });
 
-      expect(socket.close).toHaveBeenCalledWith(1008, "invalid-message");
+      expect(socket.close).not.toHaveBeenCalled();
       expect(notifyEnvironmentSpy).not.toHaveBeenCalled();
     });
   });
