@@ -16,8 +16,12 @@ async function git(cwd: string, ...args: string[]): Promise<string> {
   return result.stdout;
 }
 
-async function makeWorktree(): Promise<{ path: string; root: string }> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "bb-preserve-worktree-"));
+async function makeWorktree(
+  existingRoot?: string,
+): Promise<{ path: string; root: string }> {
+  const root =
+    existingRoot ??
+    (await mkdtemp(path.join(os.tmpdir(), "bb-preserve-worktree-")));
   roots.push(root);
   const source = path.join(root, "source");
   const managed = path.join(root, "managed");
@@ -129,9 +133,9 @@ describe("real worktree teardown preservation", () => {
   it.skipIf(
     process.platform !== "linux" ||
       (typeof process.getuid === "function" && process.getuid() === 0),
-  )("keeps a worktree held by a non-dumpable process with a session-helper name", async ({ skip }) => {
-    const worktree = await makeWorktree();
-    const signalMarker = path.join(worktree.root, "signalled-helper");
+  )("keeps a worktree held by a non-dumpable process that predates it and spoofs an agent name", async ({ skip }) => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "bb-preserve-worktree-"));
+    const signalMarker = path.join(root, "signalled-agent");
     skip(spawnSync("python3", ["--version"]).status !== 0, "python3 is not available");
     const worker = spawn(
       "python3",
@@ -140,15 +144,24 @@ describe("real worktree teardown preservation", () => {
         `import ctypes, signal, sys, time
 libc = ctypes.CDLL(None)
 libc.prctl(4, 0, 0, 0, 0)
-libc.prctl(15, b"sshd-session", 0, 0, 0)
+libc.prctl(15, b"ssh-agent", 0, 0, 0)
 signal.signal(signal.SIGTERM, lambda *_: (open(sys.argv[1], "w").write("signal"), sys.exit(0)))
 print("ready", flush=True)
+while not __import__("os").path.isdir(sys.argv[2]): time.sleep(0.01)
+__import__("os").chdir(sys.argv[2])
+print("entered", flush=True)
 time.sleep(120)`,
         signalMarker,
+        path.join(root, "managed", "repo"),
       ],
-      { cwd: worktree.path, argv0: "sshd-session", stdio: ["ignore", "pipe", "ignore"] },
+      { cwd: root, argv0: "ssh-agent", stdio: ["ignore", "pipe", "ignore"] },
     );
     workers.push(worker);
+    await new Promise<void>((resolve, reject) => {
+      worker.stdout?.once("data", () => resolve());
+      worker.once("error", reject);
+    });
+    const worktree = await makeWorktree(root);
     await new Promise<void>((resolve, reject) => {
       worker.stdout?.once("data", () => resolve());
       worker.once("error", reject);
