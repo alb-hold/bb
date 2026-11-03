@@ -86,24 +86,63 @@ async function runChildTurns(
   const { parent, child, environment, session } = seedParentAndChild(harness);
   vi.useFakeTimers();
   for (const turn of turns) {
-    seedTurnStarted(harness.deps, {
-      environmentId: environment.id,
-      threadId: child.id,
-      turnId: turn.turnId,
-      providerThreadId: "provider-child",
+    const request = harness.hub.requestHostOnlineRpc.bind(harness.hub);
+    const notify = harness.hub.notifyThread.bind(harness.hub);
+    const queuedBefore = listQueuedThreadMessages(harness.db, parent.id).length;
+    let stopObserving = () => {};
+    const parentNotified = new Promise<void>((resolve) => {
+      const dispatchObserver = vi
+        .spyOn(harness.hub, "requestHostOnlineRpc")
+        .mockImplementation((args) => {
+          const response = request(args);
+          if (
+            args.message.command.type === "turn.submit" &&
+            args.message.command.threadId === parent.id
+          ) {
+            resolve();
+          }
+          return response;
+        });
+      const queueObserver = vi
+        .spyOn(harness.hub, "notifyThread")
+        .mockImplementation((...args) => {
+          notify(...args);
+          if (
+            args[0] === parent.id &&
+            args[1].includes("queue-changed") &&
+            listQueuedThreadMessages(harness.db, parent.id).length >
+              queuedBefore
+          ) {
+            resolve();
+          }
+        });
+      stopObserving = () => {
+        dispatchObserver.mockRestore();
+        queueObserver.mockRestore();
+      };
     });
-    const response = await harness.app.request("/internal/session/events", {
-      method: "POST",
-      headers: internalAuthHeaders(harness),
-      body: JSON.stringify({
-        sessionId: session.id,
-        eventGroups: groupHostDaemonEvents(childTurnEvents(child.id, turn)),
-      }),
-    });
-    expect(response.status, await response.clone().text()).toBe(200);
-    await vi.advanceTimersByTimeAsync(2_000);
+    try {
+      seedTurnStarted(harness.deps, {
+        environmentId: environment.id,
+        threadId: child.id,
+        turnId: turn.turnId,
+        providerThreadId: "provider-child",
+      });
+      const response = await harness.app.request("/internal/session/events", {
+        method: "POST",
+        headers: internalAuthHeaders(harness),
+        body: JSON.stringify({
+          sessionId: session.id,
+          eventGroups: groupHostDaemonEvents(childTurnEvents(child.id, turn)),
+        }),
+      });
+      expect(response.status, await response.clone().text()).toBe(200);
+      await vi.advanceTimersByTimeAsync(2_000);
+      await parentNotified;
+    } finally {
+      stopObserving();
+    }
   }
-  await vi.advanceTimersByTimeAsync(2_000);
   const delivered = listEvents(harness.db, { threadId: parent.id })
     .filter((row) => row.type === "client/turn/requested")
     .map((row) => turnRequestEventDataSchema.parse(JSON.parse(row.data)))
