@@ -2,17 +2,13 @@ import { Buffer } from "node:buffer";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { Command, Option } from "commander";
+import { TerminalWebSocketTransport } from "@bb/client-core";
 import {
   createTerminalGridByteMarkerScanner,
   TERMINAL_DATA_MAX_BYTES,
 } from "@bb/domain";
 import type { TerminalCreateScope, TerminalListScope } from "@bb/sdk";
-import { createNodeWebsocketFactory } from "@bb/sdk/node-websocket";
-import {
-  terminalServerMessageSchema,
-  type TerminalSession,
-  type ThreadOpenSkipReason,
-} from "@bb/server-contract";
+import type { TerminalSession, ThreadOpenSkipReason } from "@bb/server-contract";
 import { action, CliExitError, CliUsageError } from "../action.js";
 import { createCliBbSdk } from "../client.js";
 import {
@@ -38,7 +34,6 @@ import { resolveMachineHostId, resolveMachineTargetOption } from "./machine.js";
 
 const DEFAULT_COLS = 80;
 const DEFAULT_ROWS = 24;
-const TERMINAL_ATTACH_HEARTBEAT_MS = 15_000;
 const TERMINAL_WAIT_TIMEOUT_EXIT_CODE = 124;
 const NO_APP_CLIENT_MESSAGE = "No bb app is open to apply this; open bb and retry";
 
@@ -1081,81 +1076,81 @@ export async function attachTerminal(args: {
     throw new Error("Attach requires an interactive terminal");
   }
 
-  const socket = createNodeWebsocketFactory()(
-    terminalWebsocketUrl({
-      baseUrl: args.baseUrl,
-      terminalId: args.terminalId,
-    }),
-  );
-  let detachPrefix = false;
   const previousRawMode = process.stdin.isRaw;
-  const onInput = (chunk: Buffer) => {
-    if (chunk.length === 1 && chunk[0] === 0x02) {
-      detachPrefix = true;
-      return;
-    }
-    if (detachPrefix) {
-      detachPrefix = false;
-      if (chunk.length === 1 && chunk[0] === 0x64) {
-        socket.close();
+  let cleanup = () => {};
+  await new Promise<void>((resolve, reject) => {
+    const transport = new TerminalWebSocketTransport({
+      url: terminalWebsocketUrl(args),
+      terminalId: args.terminalId,
+      createSocket: (url, protocols) => {
+        const socket = new WebSocket(url, protocols);
+        socket.addEventListener("open", () => {
+          process.stdin.setRawMode(true);
+          process.stdin.resume();
+        });
+        socket.addEventListener("error", () =>
+          reject(new Error("Terminal websocket failed")),
+        );
+        return socket;
+      },
+      shouldReconnect: () => false,
+      onConnectionState: (state) => {
+        if (state === "closed") resolve();
+      },
+      onMessage: (message) => {
+        switch (message.type) {
+          case "output":
+            process.stdout.write(
+              Buffer.from(message.chunk.dataBase64, "base64"),
+            );
+            transport.acknowledgeOutput(message.chunk.seq + 1);
+            return;
+          case "exited":
+            transport.dispose();
+            return;
+          case "error":
+            reject(new Error(message.message));
+            return;
+        }
+      },
+    });
+    let detachPrefix = false;
+    const onInput = (chunk: Buffer) => {
+      if (chunk.length === 1 && chunk[0] === 0x02) {
+        detachPrefix = true;
         return;
       }
-      sendTerminalInput(socket, Buffer.from([0x02]));
-    }
-    sendTerminalInput(socket, chunk);
-  };
-  const onResize = () => {
-    socket.send(
-      JSON.stringify({
-        type: "resize",
-        cols: process.stdout.columns || DEFAULT_COLS,
-        rows: process.stdout.rows || DEFAULT_ROWS,
-        claim: true,
-      }),
-    );
-  };
-  let heartbeat: ReturnType<typeof setInterval> | null = null;
-  await new Promise<void>((resolve, reject) => {
-    socket.onopen = () => {
-      process.stdin.setRawMode(true);
-      process.stdin.resume();
-      socket.send(JSON.stringify({ type: "visibility", visible: true }));
-      onResize();
-      heartbeat = setInterval(() => {
-        socket.send(JSON.stringify({ type: "ping" }));
-      }, TERMINAL_ATTACH_HEARTBEAT_MS);
-    };
-    socket.onerror = () => reject(new Error("Terminal websocket failed"));
-    socket.onclose = () => resolve();
-    socket.onmessage = (event) => {
-      const message = terminalServerMessageSchema.parse(
-        JSON.parse(String(event.data)),
-      );
-      switch (message.type) {
-        case "attached":
-        case "pong":
-        case "session-updated":
+      if (detachPrefix) {
+        detachPrefix = false;
+        if (chunk.length === 1 && chunk[0] === 0x64) {
+          transport.dispose();
           return;
-        case "output":
-          process.stdout.write(Buffer.from(message.chunk.dataBase64, "base64"));
-          return;
-        case "exited":
-          socket.close();
-          return;
-        case "error":
-          reject(new Error(message.message));
-          return;
+        }
+        sendTerminalInput(transport, Buffer.from([0x02]));
       }
+      sendTerminalInput(transport, chunk);
+    };
+    const onResize = () => {
+      transport.sendResize(
+        process.stdout.columns || DEFAULT_COLS,
+        process.stdout.rows || DEFAULT_ROWS,
+      );
+      transport.claimSize();
+    };
+    cleanup = () => {
+      transport.dispose();
+      process.stdin.off("data", onInput);
+      process.stdout.off("resize", onResize);
+      process.stdin.setRawMode(previousRawMode);
+      process.stdin.pause();
     };
     process.stdin.on("data", onInput);
     process.stdout.on("resize", onResize);
-  }).finally(() => {
-    if (heartbeat !== null) clearInterval(heartbeat);
-    process.stdin.off("data", onInput);
-    process.stdout.off("resize", onResize);
-    process.stdin.setRawMode(previousRawMode);
-    process.stdin.pause();
-  });
+    transport.setVisible(true);
+    onResize();
+    transport.markLayoutSettled();
+    transport.start();
+  }).finally(() => cleanup());
 }
 
 function chunkTerminalInput(data: Buffer): Buffer[] {
@@ -1175,14 +1170,13 @@ function chunkTerminalInput(data: Buffer): Buffer[] {
   return chunks;
 }
 
-function sendTerminalInput(socket: { send(data: string): void }, data: Buffer) {
+function sendTerminalInput(
+  transport: TerminalWebSocketTransport,
+  data: Buffer,
+) {
+  transport.claimSize();
   for (const chunk of chunkTerminalInput(data)) {
-    socket.send(
-      JSON.stringify({
-        type: "input",
-        dataBase64: chunk.toString("base64"),
-      }),
-    );
+    transport.sendInput(chunk.toString("base64"));
   }
 }
 
