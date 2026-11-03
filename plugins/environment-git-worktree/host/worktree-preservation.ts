@@ -82,8 +82,17 @@ export async function entryExists(target: string): Promise<boolean | null> {
   }
 }
 
-export function gitEnvironment(worktreePath: string): NodeJS.ProcessEnv {
-  return { GIT_CEILING_DIRECTORIES: path.dirname(worktreePath) };
+export function gitEnvironment(
+  worktreePath: string,
+  gitDir?: string,
+  commonDir?: string,
+): NodeJS.ProcessEnv {
+  return {
+    GIT_CEILING_DIRECTORIES: path.dirname(worktreePath),
+    ...(gitDir !== undefined ? { GIT_DIR: gitDir } : {}),
+    ...(commonDir !== undefined ? { GIT_COMMON_DIR: commonDir } : {}),
+    ...(gitDir !== undefined ? { GIT_WORK_TREE: worktreePath } : {}),
+  };
 }
 
 export async function identifyWorktree(args: {
@@ -332,9 +341,7 @@ function hasPreservableStatus(stdout: string): boolean {
     if (entry === "") return false;
     const status = entry.slice(0, 2);
     const entryPath = entry.slice(3);
-    return (
-      status !== "!!" || !GENERATED_DEPENDENCY_PATH.test(entryPath)
-    );
+    return status !== "!!" || !GENERATED_DEPENDENCY_PATH.test(entryPath);
   });
 }
 
@@ -380,12 +387,13 @@ export async function findPreservationReasons(
     fetchRemotes?: boolean;
     fetchTimeoutMs?: number;
     fetchMemoMs?: number;
+    gitDir?: string;
   } = {},
 ): Promise<string[]> {
   const reasons = await findStructuralReasons(identity);
   const gitOptions = {
     cwd: identity.path,
-    env: gitEnvironment(identity.path),
+    env: gitEnvironment(identity.path, options.gitDir, identity.commonDir),
     allowFailure: true,
     ...signalOptions(signal),
   };

@@ -13,6 +13,7 @@ import {
   type GitWorktreeEntry,
 } from "./worktree-list.js";
 import fs from "node:fs/promises";
+import { removeDirectoryTree } from "./remove-directory-tree.js";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import {
@@ -99,6 +100,18 @@ interface RemoveWorktreeArgs {
   signal?: AbortSignal | undefined;
   fetchTimeoutMs?: number | undefined;
   force?: boolean | undefined;
+  testHooks?:
+    | {
+        afterFinalCheck?: (
+          worktreePath: string,
+          gitDir: string,
+        ) => Promise<void>;
+        afterDirectoryListed?: (
+          directory: string,
+          entries: readonly string[],
+        ) => Promise<void>;
+      }
+    | undefined;
 }
 
 interface RetentionState {
@@ -913,43 +926,67 @@ async function removeRegisteredWorktree(
       parentPath,
       `.${path.basename(identity.path)}.removing-${randomUUID()}`,
     );
+    const severedGitDir = path.join(
+      identity.commonDir,
+      `.bb-removing-${randomUUID()}`,
+    );
     await fs.rename(identity.path, quarantinedPath);
-    let unregistered = false;
+    let metadataSevered = false;
+    let workspaceRemoved = false;
     try {
-      const quarantineIdentity = { ...identity, path: quarantinedPath };
+      try {
+        await fs.rename(identity.gitDir, severedGitDir);
+        metadataSevered = true;
+      } catch (error) {
+        throw worktreePreservedError(identity.path, [
+          `could not isolate its Git metadata for final inspection (${error instanceof Error ? error.message : String(error)})`,
+        ]);
+      }
+      const quarantineIdentity = {
+        ...identity,
+        path: quarantinedPath,
+        gitDir: severedGitDir,
+      };
+      const finalCheckStartedAt = Date.now();
       const reasons = await findPreservationReasons(
         quarantineIdentity,
         args.signal,
+        { gitDir: severedGitDir },
       );
       if (reasons.length > 0) {
         throw worktreePreservedError(identity.path, reasons);
       }
-      const removal = await runGit(
-        [
-          "--git-dir",
-          identity.commonDir,
-          "worktree",
-          "remove",
-          ...(args.force === true ? ["--force"] : []),
-          identity.path,
-        ],
-        {
-          cwd: parentPath,
-          ...(args.signal !== undefined ? { signal: args.signal } : {}),
-          allowFailure: true,
+      const removed = await removeDirectoryTree(quarantinedPath, {
+        startedAt: finalCheckStartedAt,
+        afterStart: async () => {
+          await args.testHooks?.afterFinalCheck?.(
+            quarantinedPath,
+            severedGitDir,
+          );
         },
-      );
-      if (removal.exitCode !== 0) {
+        afterDirectoryListed: args.testHooks?.afterDirectoryListed,
+      });
+      if (removed === "retained") {
         throw worktreePreservedError(identity.path, [
-          `Git declined to remove it${removal.stderr.trim() ? ` (${removal.stderr.trim()})` : ""}`,
+          "new or changed data was found during directory removal",
           ...keptNote,
         ]);
       }
-      unregistered = true;
-      await fs.rm(quarantinedPath, { recursive: true });
+      workspaceRemoved = true;
+      await fs.rm(severedGitDir, { recursive: true });
       return { retained };
     } catch (error) {
-      if (!unregistered) {
+      if (!workspaceRemoved) {
+        if (metadataSevered) {
+          try {
+            await fs.rename(severedGitDir, identity.gitDir);
+          } catch (restoreError) {
+            throw worktreePreservedError(identity.path, [
+              `could not restore its Git metadata at ${identity.gitDir} (${restoreError instanceof Error ? restoreError.message : String(restoreError)})`,
+              ...keptNote,
+            ]);
+          }
+        }
         try {
           await fs.rename(quarantinedPath, identity.path);
         } catch (restoreError) {
@@ -959,8 +996,8 @@ async function removeRegisteredWorktree(
           ]);
         }
       } else {
-        throw worktreePreservedError(quarantinedPath, [
-          `Git released the worktree but its clean directory could not be removed (${error instanceof Error ? error.message : String(error)})`,
+        throw worktreePreservedError(severedGitDir, [
+          `the worktree directory was removed but its severed Git metadata could not be removed (${error instanceof Error ? error.message : String(error)})`,
           ...keptNote,
         ]);
       }

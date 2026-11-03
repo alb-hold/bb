@@ -1,7 +1,10 @@
 import fs from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   mkdirHostPath,
   moveHostPath,
@@ -61,6 +64,123 @@ describe("confined host path mutations", () => {
     await expect(fs.stat(destination)).rejects.toMatchObject({
       code: "ENOENT",
     });
+  });
+
+  it("refuses Windows path removal and moves without touching either path", async () => {
+    const root = await makeRoot();
+    const source = path.join(root, "source.txt");
+    const destination = path.join(root, "destination.txt");
+    await fs.writeFile(source, "preserve");
+    const platform = process.platform;
+    Object.defineProperty(process, "platform", { value: "win32" });
+    try {
+      await expect(
+        removeHostPath({
+          type: "host.remove_path",
+          path: source,
+          rootPath: root,
+          recursive: false,
+        }),
+      ).rejects.toMatchObject({ code: "invalid_path" });
+      await expect(
+        moveHostPath({
+          type: "host.move_path",
+          sourcePath: source,
+          destinationPath: destination,
+          rootPath: root,
+        }),
+      ).rejects.toMatchObject({ code: "invalid_path" });
+      await expect(fs.readFile(source, "utf8")).resolves.toBe("preserve");
+      await expect(fs.stat(destination)).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+    } finally {
+      Object.defineProperty(process, "platform", { value: platform });
+    }
+  });
+
+  it("rechecks a recursive removal after quarantining and restores a held path", async ({
+    skip,
+  }) => {
+    skip(process.platform === "win32", "Windows path removals are refused");
+    const root = await makeRoot();
+    const target = path.join(root, "busy");
+    await fs.mkdir(target);
+    await fs.writeFile(path.join(target, "note.txt"), "kept");
+    const originalRename = fs.rename.bind(fs);
+    const workers: ReturnType<typeof spawn>[] = [];
+    vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
+      await originalRename(from, to);
+      if (String(from) !== target || workers.length > 0) return;
+      const worker = spawn(
+        process.execPath,
+        ["-e", "setInterval(() => {}, 1000); process.send('ready')"],
+        {
+          cwd: String(to),
+          stdio: ["ignore", "ignore", "ignore", "ipc"],
+        },
+      );
+      workers.push(worker);
+      await once(worker, "message");
+    });
+    try {
+      await expect(
+        removeHostPath({
+          type: "host.remove_path",
+          path: target,
+          rootPath: root,
+          recursive: true,
+        }),
+      ).rejects.toMatchObject({ code: "path_in_use" });
+      await expect(
+        fs.readFile(path.join(target, "note.txt"), "utf8"),
+      ).resolves.toBe("kept");
+      expect(workers[0]?.exitCode).toBeNull();
+      expect(workers[0]?.signalCode).toBeNull();
+    } finally {
+      vi.restoreAllMocks();
+      const worker = workers[0];
+      if (
+        worker !== undefined &&
+        worker.exitCode === null &&
+        worker.signalCode === null
+      ) {
+        const exited = once(worker, "exit");
+        worker.kill("SIGKILL");
+        await exited;
+      }
+    }
+  });
+
+  it("retains data created after a recursive directory is quarantined", async () => {
+    const root = await makeRoot();
+    const target = path.join(root, "late-data");
+    await fs.mkdir(target);
+    await fs.writeFile(path.join(target, "old.txt"), "old");
+    const originalRename = fs.rename.bind(fs);
+    let injected = false;
+    vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
+      await originalRename(from, to);
+      if (String(from) !== target || injected) return;
+      await fs.writeFile(path.join(String(to), "late.txt"), "keep");
+      injected = true;
+    });
+    try {
+      await expect(
+        removeHostPath({
+          type: "host.remove_path",
+          path: target,
+          rootPath: root,
+          recursive: true,
+        }),
+      ).rejects.toMatchObject({ code: "path_in_use" });
+      expect(injected).toBe(true);
+      await expect(
+        fs.readFile(path.join(target, "late.txt"), "utf8"),
+      ).resolves.toBe("keep");
+    } finally {
+      vi.restoreAllMocks();
+    }
   });
 
   it("creates missing parent directories when recursive is enabled", async () => {
@@ -202,9 +322,9 @@ describe("confined host path mutations", () => {
         }),
       ).rejects.toMatchObject({ code: "invalid_path" });
       expect((await fs.lstat(link)).isSymbolicLink()).toBe(true);
-      await expect(fs.lstat(path.join(root, `${name}-moved`))).rejects.toMatchObject(
-        { code: "ENOENT" },
-      );
+      await expect(
+        fs.lstat(path.join(root, `${name}-moved`)),
+      ).rejects.toMatchObject({ code: "ENOENT" });
     }
     await expect(fs.readFile(target, "utf8")).resolves.toBe("real");
   });
@@ -296,42 +416,53 @@ describe("confined host path mutations", () => {
   });
 
   it.each([
-    ["a folder", async (source: string) => {
-      await fs.rename(source, `${source}.orig`);
-      await fs.mkdir(source);
-      await fs.writeFile(path.join(source, "inside.txt"), "workspace");
-    }],
-    ["a symbolic link", async (source: string) => {
-      await fs.rename(source, `${source}.orig`);
-      await fs.symlink(`${source}.orig`, source);
-    }],
-  ])("never moves %s swapped in after the link back, leaves it under its holding name and says so", async (_label, swap) => {
-    const root = await makeRoot();
-    const source = path.join(root, "a.txt");
-    const destination = path.join(root, "b.txt");
-    await fs.writeFile(source, "original");
-    const before = await fs.stat(source);
-
-    const failure = await moveHostPath(
-      {
-        type: "host.move_path",
-        sourcePath: source,
-        destinationPath: destination,
-        rootPath: root,
+    [
+      "a folder",
+      async (source: string) => {
+        await fs.rename(source, `${source}.orig`);
+        await fs.mkdir(source);
+        await fs.writeFile(path.join(source, "inside.txt"), "workspace");
       },
-      { afterLink: () => swap(source) },
-    ).catch((error: unknown) => error);
+    ],
+    [
+      "a symbolic link",
+      async (source: string) => {
+        await fs.rename(source, `${source}.orig`);
+        await fs.symlink(`${source}.orig`, source);
+      },
+    ],
+  ])(
+    "never moves %s swapped in after the link back, leaves it under its holding name and says so",
+    async (_label, swap) => {
+      const root = await makeRoot();
+      const source = path.join(root, "a.txt");
+      const destination = path.join(root, "b.txt");
+      await fs.writeFile(source, "original");
+      const before = await fs.stat(source);
 
-    expect(failure).toMatchObject({
-      code: "invalid_path",
-      message: expect.stringContaining(".bb-moving-"),
-    });
-    expect((await fs.stat(destination)).ino).toBe(before.ino);
-    await expect(fs.lstat(source)).rejects.toMatchObject({ code: "ENOENT" });
-    expect(
-      (await fs.readdir(root)).filter((name) => name.startsWith(".bb-moving-")),
-    ).toHaveLength(1);
-  });
+      const failure = await moveHostPath(
+        {
+          type: "host.move_path",
+          sourcePath: source,
+          destinationPath: destination,
+          rootPath: root,
+        },
+        { afterLink: () => swap(source) },
+      ).catch((error: unknown) => error);
+
+      expect(failure).toMatchObject({
+        code: "invalid_path",
+        message: expect.stringContaining(".bb-moving-"),
+      });
+      expect((await fs.stat(destination)).ino).toBe(before.ino);
+      await expect(fs.lstat(source)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(
+        (await fs.readdir(root)).filter((name) =>
+          name.startsWith(".bb-moving-"),
+        ),
+      ).toHaveLength(1);
+    },
+  );
 
   it("never overwrites something that lands at the source while a swapped-in file is being put back: the occupant survives and the moved file stays under its holding name", async () => {
     const root = await makeRoot();
@@ -403,8 +534,8 @@ describe("confined host path mutations", () => {
         recursive: false,
       }),
     ).rejects.toMatchObject({ code: "invalid_path" });
-    await expect(
-      fs.readFile(path.join(real, "a.txt"), "utf8"),
-    ).resolves.toBe("keep");
+    await expect(fs.readFile(path.join(real, "a.txt"), "utf8")).resolves.toBe(
+      "keep",
+    );
   });
 });

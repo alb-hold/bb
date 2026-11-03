@@ -7,6 +7,7 @@ import { isPathWithinDirectory } from "@bb/process-utils";
 import { CommandDispatchError } from "../command-dispatch-support.js";
 import type { CommandOf } from "../command-dispatch-support.js";
 import { refuseWhileHeld } from "./refuse-while-held.js";
+import { removeDirectoryAfterHolderRecheck } from "./remove-held-directory.js";
 import { resolveNonSymlinkDirectoryPath } from "./root-path.js";
 import { resolveWriteTarget } from "./file-write.js";
 
@@ -245,11 +246,12 @@ export async function removeHostPath(
     );
   }
   const targetInfo = await fs.lstat(target);
-  if (targetInfo.isDirectory() && command.recursive) {
-    await refuseWhileHeld({ directory: target, action: "remove" });
-  }
-  if (targetInfo.isDirectory() && !command.recursive) {
-    await fs.rmdir(target);
+  if (targetInfo.isDirectory()) {
+    await removeDirectoryAfterHolderRecheck({
+      directory: target,
+      action: "remove",
+      recursive: command.recursive,
+    });
   } else {
     await fs.rm(target, { recursive: command.recursive, force: false });
   }

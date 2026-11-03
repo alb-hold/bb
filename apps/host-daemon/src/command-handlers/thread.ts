@@ -6,7 +6,7 @@ import {
   COMPETING_TURN_ERROR_CODE,
   type HostDaemonCommandResult,
 } from "@bb/host-daemon-contract";
-import { refuseWhileHeld } from "./refuse-while-held.js";
+import { removeDirectoryAfterHolderRecheck } from "./remove-held-directory.js";
 import type { RuntimeEntry } from "../runtime-manager.js";
 import {
   CommandDispatchError,
@@ -65,11 +65,12 @@ export async function deleteThreadStorage(
     path.join(options.threadStorageRootPath, command.threadId),
     "Thread storage path escapes the storage root",
   );
-  await refuseWhileHeld({
+  await removeDirectoryAfterHolderRecheck({
     directory: storagePath,
     action: "delete thread storage",
+    force: true,
+    recursive: true,
   });
-  await fs.rm(storagePath, { recursive: true, force: true });
 }
 
 type ThreadStartRuntimeCommand =

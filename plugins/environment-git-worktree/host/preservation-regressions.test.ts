@@ -1,15 +1,24 @@
-import { execFile as execFileCallback, spawn, spawnSync } from "node:child_process";
+import {
+  execFile as execFileCallback,
+  spawn,
+  spawnSync,
+} from "node:child_process";
 import fs from "node:fs/promises";
-import { access, mkdir, mkdtemp, readFile, readlink, rm, writeFile } from "node:fs/promises";
+import {
+  access,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readlink,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  hostProc,
-  useProcReaderForTests,
-  type ProcReader,
-} from "./holders.js";
+import * as gitModule from "bb-environment-provider-host/git";
+import { hostProc, useProcReaderForTests, type ProcReader } from "./holders.js";
 import { descendantsOnly } from "./descendants-only.js";
 import { removeWorktree } from "./worktree.js";
 
@@ -66,17 +75,86 @@ async function makeWorktree(
   await git(source, "remote", "add", "origin", bare);
   await git(source, "push", "--set-upstream", "origin", "main");
   await git(source, "worktree", "add", "-b", "feature", workspace);
-  await git(source, "-C", workspace, "push", "--set-upstream", "origin", "feature");
+  await git(
+    source,
+    "-C",
+    workspace,
+    "push",
+    "--set-upstream",
+    "origin",
+    "feature",
+  );
   return { path: workspace, root: managed };
 }
 
 async function remove(
   worktree: { path: string; root: string },
   force = true,
+  testHooks?: {
+    afterFinalCheck?: (worktreePath: string, gitDir: string) => Promise<void>;
+    afterDirectoryListed?: (
+      directory: string,
+      entries: readonly string[],
+    ) => Promise<void>;
+  },
 ): Promise<void> {
   await Reflect.apply(removeWorktree, undefined, [
-    { path: worktree.path, rootPath: worktree.root, force },
+    { path: worktree.path, rootPath: worktree.root, force, testHooks },
   ]);
+}
+
+async function gitAt(
+  worktreePath: string,
+  gitDir: string,
+  commonDir: string,
+  ...args: string[]
+): Promise<string> {
+  const result = await execFile(
+    "git",
+    ["--git-dir", gitDir, "--work-tree", worktreePath, ...args],
+    { cwd: worktreePath, env: { GIT_COMMON_DIR: commonDir } },
+  );
+  return result.stdout;
+}
+
+async function injectAtBaselineRemoval(
+  worktreePath: string,
+  inject: (
+    worktreePath: string,
+    gitDir: string,
+    commonDir: string,
+  ) => Promise<void>,
+): Promise<() => void> {
+  const originalRunGit = gitModule.runGit;
+  let injected = false;
+  const commonDir = (
+    await git(
+      worktreePath,
+      "rev-parse",
+      "--path-format=absolute",
+      "--git-common-dir",
+    )
+  ).trim();
+  const spy = vi
+    .spyOn(gitModule, "runGit")
+    .mockImplementation(async (args, options) => {
+      if (!injected && args.includes("worktree") && args.includes("remove")) {
+        injected = true;
+        const parent = path.dirname(worktreePath);
+        const quarantine = (await fs.readdir(parent)).find((name) =>
+          name.startsWith(`.${path.basename(worktreePath)}.removing-`),
+        );
+        if (quarantine === undefined)
+          throw new Error("quarantine path was not created");
+        const target = path.join(parent, quarantine);
+        const gitDir = (
+          await git(target, "rev-parse", "--absolute-git-dir")
+        ).trim();
+        await inject(target, gitDir, commonDir);
+      }
+      return originalRunGit(args, options);
+    });
+  return () => spy.mockRestore();
 }
 
 afterEach(async () => {
@@ -84,7 +162,9 @@ afterEach(async () => {
   await Promise.all(
     workers.splice(0).map(async (worker) => {
       if (worker.exitCode !== null || worker.signalCode !== null) return;
-      const exited = new Promise<void>((resolve) => worker.once("exit", () => resolve()));
+      const exited = new Promise<void>((resolve) =>
+        worker.once("exit", () => resolve()),
+      );
       worker.kill("SIGKILL");
       await exited;
     }),
@@ -97,19 +177,33 @@ afterEach(async () => {
 
 describe("real worktree teardown preservation", () => {
   it.each([
-    ["modified", async (workspace: string) => writeFile(path.join(workspace, "README.md"), "edited\n")],
-    ["staged", async (workspace: string) => {
-      await writeFile(path.join(workspace, "staged.txt"), "staged\n");
-      await git(workspace, "add", "staged.txt");
-    }],
-    ["untracked", async (workspace: string) => writeFile(path.join(workspace, "draft.txt"), "draft\n")],
-  ])("keeps a %s worktree despite forced git removal", async (_kind, change) => {
-    const worktree = await makeWorktree();
-    await change(worktree.path);
-    await remove(worktree, true).catch(() => undefined);
-    await expect(access(worktree.path)).resolves.toBeUndefined();
-    expect(await git(worktree.path, "status", "--porcelain")).not.toBe("");
-  });
+    [
+      "modified",
+      async (workspace: string) =>
+        writeFile(path.join(workspace, "README.md"), "edited\n"),
+    ],
+    [
+      "staged",
+      async (workspace: string) => {
+        await writeFile(path.join(workspace, "staged.txt"), "staged\n");
+        await git(workspace, "add", "staged.txt");
+      },
+    ],
+    [
+      "untracked",
+      async (workspace: string) =>
+        writeFile(path.join(workspace, "draft.txt"), "draft\n"),
+    ],
+  ])(
+    "keeps a %s worktree despite forced git removal",
+    async (_kind, change) => {
+      const worktree = await makeWorktree();
+      await change(worktree.path);
+      await remove(worktree, true).catch(() => undefined);
+      await expect(access(worktree.path)).resolves.toBeUndefined();
+      expect(await git(worktree.path, "status", "--porcelain")).not.toBe("");
+    },
+  );
 
   it("keeps ignored local data when force removal is requested", async () => {
     const worktree = await makeWorktree();
@@ -189,12 +283,139 @@ describe("real worktree teardown preservation", () => {
     await expect(access(worktree.path)).resolves.toBeUndefined();
   });
 
+  it("retains an untracked file created after the final check", async () => {
+    const worktree = await makeWorktree();
+    useProcReaderForTests(descendantsOnly(hostProc, -1));
+    let injected = false;
+    const restore = await injectAtBaselineRemoval(
+      worktree.path,
+      async (target) => {
+        await writeFile(path.join(target, "late-untracked.txt"), "late\n");
+        injected = true;
+      },
+    );
+    try {
+      await expect(
+        remove(worktree, true, {
+          afterFinalCheck: async (target) => {
+            await writeFile(path.join(target, "late-untracked.txt"), "late\n");
+            injected = true;
+          },
+        }),
+      ).rejects.toMatchObject({ code: "worktree_preserved" });
+    } finally {
+      restore();
+    }
+    expect(injected).toBe(true);
+    await expect(
+      readFile(path.join(worktree.path, "late-untracked.txt"), "utf8"),
+    ).resolves.toBe("late\n");
+  });
+
+  it("retains a detached commit created after the final check", async () => {
+    const worktree = await makeWorktree();
+    useProcReaderForTests(descendantsOnly(hostProc, -1));
+    let injected = false;
+    const inject = async (
+      target: string,
+      gitDir: string,
+      commonDir: string,
+    ) => {
+      await gitAt(target, gitDir, commonDir, "checkout", "--detach", "HEAD");
+      await writeFile(path.join(target, "late-commit.txt"), "late commit\n");
+      await gitAt(target, gitDir, commonDir, "add", "late-commit.txt");
+      await gitAt(
+        target,
+        gitDir,
+        commonDir,
+        "-c",
+        "user.name=Worktree Test",
+        "-c",
+        "user.email=worktree-test@example.invalid",
+        "commit",
+        "-m",
+        "late detached commit",
+      );
+      injected = true;
+    };
+    const restore = await injectAtBaselineRemoval(worktree.path, inject);
+    try {
+      await expect(
+        remove(worktree, true, {
+          afterFinalCheck: inject,
+        }),
+      ).rejects.toMatchObject({ code: "worktree_preserved" });
+    } finally {
+      restore();
+    }
+    expect(injected).toBe(true);
+    await expect(
+      readFile(path.join(worktree.path, "late-commit.txt"), "utf8"),
+    ).resolves.toBe("late commit\n");
+    expect(await git(worktree.path, "rev-parse", "--abbrev-ref", "HEAD")).toBe(
+      "",
+    );
+    expect(await git(worktree.path, "log", "-1", "--format=%s")).toContain(
+      "late detached commit",
+    );
+  });
+
+  it("stops directory removal when a file appears in a directory already listed", async () => {
+    const worktree = await makeWorktree();
+    useProcReaderForTests(descendantsOnly(hostProc, -1));
+    await mkdir(path.join(worktree.path, "late-dir"));
+    await writeFile(path.join(worktree.path, "late-dir", "old.txt"), "old\n");
+    let injected = false;
+    const restore = await injectAtBaselineRemoval(
+      worktree.path,
+      async (target) => {
+        await writeFile(
+          path.join(target, "late-dir", "during-delete.txt"),
+          "during\n",
+        );
+        injected = true;
+      },
+    );
+    try {
+      await expect(
+        remove(worktree, true, {
+          afterDirectoryListed: async (directory, entries) => {
+            if (
+              !directory.endsWith("late-dir") ||
+              injected ||
+              !entries.includes("old.txt")
+            )
+              return;
+            await writeFile(
+              path.join(directory, "during-delete.txt"),
+              "during\n",
+            );
+            injected = true;
+          },
+        }),
+      ).rejects.toMatchObject({ code: "worktree_preserved" });
+    } finally {
+      restore();
+    }
+    expect(injected).toBe(true);
+    await expect(
+      readFile(
+        path.join(worktree.path, "late-dir", "during-delete.txt"),
+        "utf8",
+      ),
+    ).resolves.toBe("during\n");
+  });
+
   it("keeps a worktree used as another live process's cwd without signalling it", async () => {
     const worktree = await makeWorktree();
     const signalMarker = path.join(worktree.root, "signalled");
     const worker = spawn(
       process.execPath,
-      ["-e", "const fs=require('node:fs');process.on('SIGTERM',()=>{fs.writeFileSync(process.argv[1],'signal');process.exit(0)});setInterval(()=>{},1000);process.send('ready')", signalMarker],
+      [
+        "-e",
+        "const fs=require('node:fs');process.on('SIGTERM',()=>{fs.writeFileSync(process.argv[1],'signal');process.exit(0)});setInterval(()=>{},1000);process.send('ready')",
+        signalMarker,
+      ],
       { cwd: worktree.path, stdio: ["ignore", "ignore", "ignore", "ipc"] },
     );
     workers.push(worker);
@@ -204,9 +425,13 @@ describe("real worktree teardown preservation", () => {
     });
     await remove(worktree).catch(() => undefined);
     expect(() => process.kill(worker.pid!, 0)).not.toThrow();
-    await expect(access(signalMarker)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(access(signalMarker)).rejects.toMatchObject({
+      code: "ENOENT",
+    });
     await expect(access(worktree.path)).resolves.toBeUndefined();
-    expect(await readFile(path.join(worktree.path, "README.md"), "utf8")).toBe("published\n");
+    expect(await readFile(path.join(worktree.path, "README.md"), "utf8")).toBe(
+      "published\n",
+    );
   });
 
   it.skipIf(process.platform !== "linux")(
@@ -232,16 +457,23 @@ describe("real worktree teardown preservation", () => {
   it.skipIf(
     process.platform !== "linux" ||
       (typeof process.getuid === "function" && process.getuid() === 0),
-  )("keeps a worktree held by a non-dumpable process that predates it and spoofs an agent name", async ({ skip }) => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "bb-preserve-worktree-"));
-    roots.push(root);
-    const signalMarker = path.join(root, "signalled-agent");
-    skip(spawnSync("python3", ["--version"]).status !== 0, "python3 is not available");
-    const worker = spawn(
-      "python3",
-      [
-        "-c",
-        `import ctypes, signal, sys, time
+  )(
+    "keeps a worktree held by a non-dumpable process that predates it and spoofs an agent name",
+    async ({ skip }) => {
+      const root = await mkdtemp(
+        path.join(os.tmpdir(), "bb-preserve-worktree-"),
+      );
+      roots.push(root);
+      const signalMarker = path.join(root, "signalled-agent");
+      skip(
+        spawnSync("python3", ["--version"]).status !== 0,
+        "python3 is not available",
+      );
+      const worker = spawn(
+        "python3",
+        [
+          "-c",
+          `import ctypes, signal, sys, time
 libc = ctypes.CDLL(None)
 libc.prctl(4, 0, 0, 0, 0)
 libc.prctl(15, b"ssh-agent", 0, 0, 0)
@@ -251,56 +483,66 @@ while not __import__("os").path.isdir(sys.argv[2]): time.sleep(0.01)
 __import__("os").chdir(sys.argv[2])
 print("entered", flush=True)
 time.sleep(120)`,
-        signalMarker,
-        path.join(root, "managed", "repo"),
-      ],
-      { cwd: root, argv0: "ssh-agent", stdio: ["ignore", "pipe", "ignore"] },
-    );
-    workers.push(worker);
-    const output = { value: "" };
-    worker.stdout?.on("data", (chunk) => {
-      output.value += chunk.toString();
-    });
-    const waitForOutput = async (expected: string) => {
-      while (!output.value.includes(expected)) {
-        await new Promise<void>((resolve, reject) => {
-          worker.stdout?.once("data", () => resolve());
-          worker.once("error", reject);
-        });
+          signalMarker,
+          path.join(root, "managed", "repo"),
+        ],
+        { cwd: root, argv0: "ssh-agent", stdio: ["ignore", "pipe", "ignore"] },
+      );
+      workers.push(worker);
+      const output = { value: "" };
+      worker.stdout?.on("data", (chunk) => {
+        output.value += chunk.toString();
+      });
+      const waitForOutput = async (expected: string) => {
+        while (!output.value.includes(expected)) {
+          await new Promise<void>((resolve, reject) => {
+            worker.stdout?.once("data", () => resolve());
+            worker.once("error", reject);
+          });
+        }
+      };
+      await waitForOutput("ready\n");
+      const worktree = await makeWorktree(root);
+      await waitForOutput("entered\n");
+      const readdir = hostProc.readdir.bind(hostProc);
+      useProcReaderForTests({
+        ...hostProc,
+        readdir: async (target) =>
+          target === "/proc" ? [String(worker.pid)] : await readdir(target),
+      });
+      expect((await readFile(`/proc/${worker.pid}/comm`, "utf8")).trim()).toBe(
+        "ssh-agent",
+      );
+      try {
+        await readlink(`/proc/${worker.pid}/task/${worker.pid}/cwd`);
+        skip(true, "the kernel lets this user read the non-dumpable process");
+      } catch (error) {
+        skip(
+          (error as NodeJS.ErrnoException).code !== "EACCES",
+          "the process cwd was not unreadable",
+        );
       }
-    };
-    await waitForOutput("ready\n");
-    const worktree = await makeWorktree(root);
-    await waitForOutput("entered\n");
-    const readdir = hostProc.readdir.bind(hostProc);
-    useProcReaderForTests({
-      ...hostProc,
-      readdir: async (target) =>
-        target === "/proc" ? [String(worker.pid)] : await readdir(target),
-    });
-    expect((await readFile(`/proc/${worker.pid}/comm`, "utf8")).trim()).toBe(
-      "ssh-agent",
-    );
-    try {
-      await readlink(`/proc/${worker.pid}/task/${worker.pid}/cwd`);
-      skip(true, "the kernel lets this user read the non-dumpable process");
-    } catch (error) {
-      skip((error as NodeJS.ErrnoException).code !== "EACCES", "the process cwd was not unreadable");
-    }
-    const removalError = await remove(worktree, true).then(
-      () => null,
-      (error: unknown) => error,
-    );
-    expect(removalError).toMatchObject({ code: "worktree_preserved" });
-    expect(removalError).toMatchObject({
-      message: expect.stringContaining("could not check which programs are using it"),
-    });
-    expect(removalError).toMatchObject({
-      message: expect.stringContaining(`process ${worker.pid}`),
-    });
-    expect(() => process.kill(worker.pid!, 0)).not.toThrow();
-    await expect(access(signalMarker)).rejects.toMatchObject({ code: "ENOENT" });
-    await expect(access(worktree.path)).resolves.toBeUndefined();
-    expect(await readFile(path.join(worktree.path, "README.md"), "utf8")).toBe("published\n");
-  });
+      const removalError = await remove(worktree, true).then(
+        () => null,
+        (error: unknown) => error,
+      );
+      expect(removalError).toMatchObject({ code: "worktree_preserved" });
+      expect(removalError).toMatchObject({
+        message: expect.stringContaining(
+          "could not check which programs are using it",
+        ),
+      });
+      expect(removalError).toMatchObject({
+        message: expect.stringContaining(`process ${worker.pid}`),
+      });
+      expect(() => process.kill(worker.pid!, 0)).not.toThrow();
+      await expect(access(signalMarker)).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+      await expect(access(worktree.path)).resolves.toBeUndefined();
+      expect(
+        await readFile(path.join(worktree.path, "README.md"), "utf8"),
+      ).toBe("published\n");
+    },
+  );
 });

@@ -222,16 +222,30 @@ async function scanLinuxProcess(
     const foreignUid = uids[0];
     if (foreignUid === undefined || foreignUid < 1000)
       return { otherUser: true };
-    const gids = [
-      ...(parseStatusNumbers(status.value, "Gid") ?? []),
-      ...(parseStatusNumbers(status.value, "Groups") ?? []),
-    ];
     const cwd = await readOptional(() => proc.readlink(`${base}/cwd`));
     if ("value" in cwd)
       return isUnder(cwd.value, directory)
         ? { pid, command: null, through: "working folder" }
         : { otherUser: true };
-    if (!("failed" in cwd) || cwd.failed !== "EACCES") return null;
+    if (!("failed" in cwd)) return null;
+    if (cwd.failed !== "EACCES" && cwd.failed !== "EPERM") {
+      return {
+        uncertain: `process ${pid} cwd is unreadable (${cwd.failed})`,
+      };
+    }
+    const capabilities = /^CapEff:\s*([0-9a-f]+)/imu.exec(status.value)?.[1];
+    if (capabilities === undefined) {
+      return {
+        uncertain: `process ${pid} cwd capabilities could not be read`,
+      };
+    }
+    const effectiveCapabilities = BigInt(`0x${capabilities}`);
+    const dacCapabilities = (1n << 1n) | (1n << 2n);
+    if ((effectiveCapabilities & dacCapabilities) !== 0n) {
+      return {
+        uncertain: `process ${pid} has a DAC override capability and its cwd is unreadable`,
+      };
+    }
     let cursor = path.resolve(directory);
     while (true) {
       const access = await readOptional(() => proc.statAccess(cursor));
@@ -243,9 +257,7 @@ async function scanLinuxProcess(
       const canSearch =
         access.value.uid === foreignUid
           ? (permissions & 0o100) !== 0
-          : gids.includes(access.value.gid)
-            ? (permissions & 0o010) !== 0
-            : (permissions & 0o001) !== 0;
+          : (permissions & 0o011) !== 0;
       if (!canSearch) return { otherUser: true };
       const parent = path.dirname(cursor);
       if (parent === cursor) break;

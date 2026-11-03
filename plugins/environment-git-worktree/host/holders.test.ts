@@ -139,6 +139,7 @@ interface FakeProcess {
   name?: string;
   argv0?: string | null;
   startTicks?: number;
+  capEff?: string;
 }
 
 const TREE_DIRECTORIES: Record<string, string> = {
@@ -208,7 +209,7 @@ function fakeProc(options: {
     const base = `/proc/${key}`;
     files.set(
       `${base}/status`,
-      `Name:\t${process.name ?? "x"}\nState:\t${process.state ?? "S (sleeping)"}\nUid:\t${process.uid ?? 1000}\t${process.uid ?? 1000}\t${process.uid ?? 1000}\t${process.uid ?? 1000}\n`,
+      `Name:\t${process.name ?? "x"}\nState:\t${process.state ?? "S (sleeping)"}\nUid:\t${process.uid ?? 1000}\t${process.uid ?? 1000}\t${process.uid ?? 1000}\t${process.uid ?? 1000}\nCapEff:\t${process.capEff ?? "0000000000000000"}\n`,
     );
     files.set(`${base}/comm`, `${process.comm ?? "node"}\n`);
     files.set(
@@ -370,6 +371,37 @@ describe("the Linux process-list visibility rule", () => {
     });
   });
 
+  it.each([
+    ["group execute", 0o710],
+    ["other execute", 0o711],
+  ])(
+    "is uncertain for a foreign UID with %s despite group exclusion",
+    async (_name, mode) => {
+      const proc = fakeProc({
+        worktreeMode: mode,
+        self: { groups: [1000] },
+        processes: { 101: { uid: 1001, cwdDenied: true } },
+      });
+      expect(await scanLinux("/work/tree", proc, 4242)).toMatchObject({
+        status: "uncertain",
+      });
+    },
+  );
+
+  it.each(["0000000000000002", "0000000000000004"])(
+    "treats DAC capability %s as reachable despite restrictive mode bits",
+    async (capEff) => {
+      const proc = fakeProc({
+        worktreeMode: 0o700,
+        processes: { 101: { uid: 1001, cwdDenied: true, capEff } },
+      });
+      expect(await scanLinux("/work/tree", proc, 4242)).toMatchObject({
+        status: "uncertain",
+        reason: expect.stringContaining("DAC override capability"),
+      });
+    },
+  );
+
   it("is clear when an unreadable foreign cwd cannot reach the worktree and skips root and system UIDs", async () => {
     const inaccessible = fakeProc({
       worktreeMode: 0o700,
@@ -402,7 +434,9 @@ describe("the Linux process-list visibility rule", () => {
     });
     expect(await scanLinux("/work/tree", helper, 4242)).toMatchObject({
       status: "unknown",
-      reason: expect.stringContaining("process identity could not be established"),
+      reason: expect.stringContaining(
+        "process identity could not be established",
+      ),
     });
     const stranger = fakeProc({
       processes: { 300: { uid: 1000, denied: true, comm: "node" } },

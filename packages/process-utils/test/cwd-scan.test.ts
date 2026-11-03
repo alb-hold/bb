@@ -20,25 +20,34 @@ function fakeLinux(
   cwds: Record<number, string | NodeJS.ErrnoException>,
   owners: Record<number, number> = {},
   comms: Record<number, string> = {},
-): CwdScanIo {
-  return {
-    platform: "linux",
-    uid: 1000,
-    selfPid: 1,
-    listProcessIds: async () => Object.keys(cwds),
-    readCwd: async (pid) => {
-      const value = cwds[pid];
-      if (value === undefined)
-        throw Object.assign(new Error("gone"), { code: "ENOENT" });
-      if (typeof value !== "string") throw value;
-      return value;
+): CwdScanIo & {
+  effectiveCapabilities(pid: number): Promise<bigint>;
+  statAccess(path: string): Promise<{ uid: number; mode: number }>;
+} {
+  return Object.assign(
+    {
+      platform: "linux",
+      uid: 1000,
+      selfPid: 1,
+      listProcessIds: async () => Object.keys(cwds),
+      readCwd: async (pid) => {
+        const value = cwds[pid];
+        if (value === undefined)
+          throw Object.assign(new Error("gone"), { code: "ENOENT" });
+        if (typeof value !== "string") throw value;
+        return value;
+      },
+      effectiveUid: async (pid) => owners[pid] ?? 1000,
+      readComm: async (pid) => comms[pid] ?? "node",
+      runLsof: async () => {
+        throw new Error("unused");
+      },
     },
-    effectiveUid: async (pid) => owners[pid] ?? 1000,
-    readComm: async (pid) => comms[pid] ?? "node",
-    runLsof: async () => {
-      throw new Error("unused");
+    {
+      effectiveCapabilities: async () => 0n,
+      statAccess: async () => ({ uid: 0, mode: 0o711 }),
     },
-  };
+  );
 }
 
 const denied = () => Object.assign(new Error("denied"), { code: "EACCES" });
@@ -114,6 +123,43 @@ describe("scanProcessesWithCwdUnder", () => {
     expect(scan.status).toBe("unknown");
   });
 
+  it.each([
+    ["group execute outside the group", 0o710, 0],
+    ["other execute", 0o711, 0],
+    ["DAC override capability", 0o700, 2],
+    ["DAC read-search capability", 0o700, 4],
+  ])(
+    "returns unknown for a foreign process with %s and unreadable cwd",
+    async (_name, mode, capability) => {
+      const base = await dir();
+      const scan = await scanProcessesWithCwdUnder(
+        { directories: [base] },
+        {
+          ...fakeLinux({ 10: denied() }, { 10: 1001 }),
+          effectiveCapabilities: async () => BigInt(capability),
+          statAccess: async () => ({ uid: 1000, mode }),
+        },
+      );
+      expect(scan).toMatchObject({ status: "unknown" });
+    },
+  );
+
+  it("clears a foreign process whose cwd is unreadable and no path component grants traversal", async () => {
+    const base = await dir();
+    const scan = await scanProcessesWithCwdUnder(
+      { directories: [base] },
+      {
+        ...fakeLinux({ 10: denied() }, { 10: 1001 }),
+        effectiveCapabilities: async () => 0n,
+        statAccess: async (target) => ({
+          uid: target === base ? 1000 : 0,
+          mode: target === base ? 0o700 : 0o711,
+        }),
+      },
+    );
+    expect(scan).toMatchObject({ status: "clear", excludedOtherUsers: 1 });
+  });
+
   it("does not block on another user's unreadable process and says it was excluded", async () => {
     const base = await dir();
     const scan = await scanProcessesWithCwdUnder(
@@ -128,7 +174,7 @@ describe("scanProcessesWithCwdUnder", () => {
     });
   });
 
-  it("records every skipped other-user process with its pid, uid and errno, whatever the read error", async () => {
+  it("records skipped system-user processes with their pid, uid and errno", async () => {
     const base = await dir();
     const scan = await scanProcessesWithCwdUnder(
       { directories: [base] },
@@ -139,7 +185,7 @@ describe("scanProcessesWithCwdUnder", () => {
           12: Object.assign(new Error("io"), { code: "EIO" }),
           13: "/elsewhere",
         },
-        { 10: 0, 11: 33, 12: 1234 },
+        { 10: 0, 11: 33, 12: 999 },
       ),
     );
     expect(scan).toEqual({
@@ -149,9 +195,21 @@ describe("scanProcessesWithCwdUnder", () => {
       skippedOtherUsers: [
         { pid: 10, uid: 0, errno: "EACCES" },
         { pid: 11, uid: 33, errno: "EPERM" },
-        { pid: 12, uid: 1234, errno: "EIO" },
+        { pid: 12, uid: 999, errno: "EIO" },
       ],
     });
+  });
+
+  it("does not clear an unreadable foreign regular-user cwd even when the error is not EACCES", async () => {
+    const base = await dir();
+    const scan = await scanProcessesWithCwdUnder(
+      { directories: [base] },
+      fakeLinux(
+        { 10: Object.assign(new Error("io"), { code: "EIO" }) },
+        { 10: 1234 },
+      ),
+    );
+    expect(scan).toMatchObject({ status: "unknown" });
   });
 
   it("is unknown for a same-user process whose working directory fails to read for any other reason", async () => {
@@ -442,7 +500,7 @@ describe("scanProcessesWithCwdUnder", () => {
       expect(scan).toMatchObject({ status: "clear" });
     });
 
-  it("looks again and stays unknown when an unreadable process uses a session-helper name", async () => {
+    it("looks again and stays unknown when an unreadable process uses a session-helper name", async () => {
       const base = await dir();
       const io = fakeMac({
         ps: [psLine(50, 501, "/usr/bin/ssh-agent")],

@@ -1,4 +1,5 @@
-import { readdir, readFile, readlink } from "node:fs/promises";
+import { readdir, readFile, readlink, stat } from "node:fs/promises";
+import path from "node:path";
 import { resolveSweepDirectory } from "./cwd-processes.js";
 import { spawnPortableOutputProcess } from "./spawn.js";
 
@@ -36,6 +37,8 @@ export interface CwdScanIo {
   listProcessIds(): Promise<string[]>;
   readCwd(pid: number): Promise<string>;
   effectiveUid(pid: number): Promise<number>;
+  effectiveCapabilities?(pid: number): Promise<bigint>;
+  statAccess?(path: string): Promise<{ uid: number; mode: number }>;
   readComm(pid: number): Promise<string>;
   runLsof(
     timeoutMs: number,
@@ -112,6 +115,17 @@ export const hostCwdScanIo: CwdScanIo = {
   readCwd: (pid) => readlink(`/proc/${pid}/cwd`),
   effectiveUid: async (pid) =>
     parseEffectiveUid(await readFile(`/proc/${pid}/status`, "utf8")),
+  effectiveCapabilities: async (pid) => {
+    const status = await readFile(`/proc/${pid}/status`, "utf8");
+    const capabilities = /^CapEff:\s*([0-9a-f]+)/imu.exec(status)?.[1];
+    if (capabilities === undefined)
+      throw Object.assign(new Error("no CapEff line"), { code: "EINVAL" });
+    return BigInt(`0x${capabilities}`);
+  },
+  statAccess: async (path) => {
+    const info = await stat(path);
+    return { uid: info.uid, mode: info.mode };
+  },
   readComm: async (pid) => {
     const text = await readFile(`/proc/${pid}/stat`, "utf8");
     const open = text.indexOf("(");
@@ -197,6 +211,48 @@ export function cwdScanIoDescendantsOnly(
   };
 }
 
+async function foreignUidCanReachTarget(args: {
+  pid: number;
+  uid: number;
+  directories: readonly string[];
+  io: CwdScanIo;
+}): Promise<boolean | null> {
+  if (
+    args.io.effectiveCapabilities === undefined ||
+    args.io.statAccess === undefined
+  )
+    return null;
+  let capabilities: bigint;
+  try {
+    capabilities = await args.io.effectiveCapabilities(args.pid);
+  } catch (error) {
+    return GONE.has(codeOf(error)) ? false : null;
+  }
+  if ((capabilities & ((1n << 1n) | (1n << 2n))) !== 0n) return true;
+  for (const directory of args.directories) {
+    let cursor = directory;
+    while (true) {
+      let access: { uid: number; mode: number };
+      try {
+        access = await args.io.statAccess(cursor);
+      } catch (error) {
+        if (GONE.has(codeOf(error))) break;
+        return null;
+      }
+      const permissions = access.mode & 0o777;
+      const canSearch =
+        access.uid === args.uid
+          ? (permissions & 0o100) !== 0
+          : (permissions & 0o011) !== 0;
+      if (!canSearch) break;
+      const parent = path.dirname(cursor);
+      if (parent === cursor) return true;
+      cursor = parent;
+    }
+  }
+  return false;
+}
+
 export async function scanProcessesWithCwdUnder(
   args: { directories: readonly string[]; timeoutMs?: number },
   io: CwdScanIo = activeIo,
@@ -241,7 +297,7 @@ export async function scanProcessesWithCwdUnder(
       } catch (error) {
         const code = codeOf(error);
         if (GONE.has(code)) continue;
-        if (code === "EACCES" || code === "EPERM") {
+        if (io.uid !== null) {
           let owner: number;
           try {
             owner = await io.effectiveUid(pid);
@@ -252,12 +308,43 @@ export async function scanProcessesWithCwdUnder(
               reason: `the owner of process ${pid} could not be read`,
             };
           }
-          if (io.uid !== null && owner !== io.uid) {
-            excluded += 1;
-            skippedOtherUsers.push({ pid, uid: owner, errno: code });
-            continue;
+          if (owner !== io.uid) {
+            if (owner < 1000) {
+              excluded += 1;
+              skippedOtherUsers.push({
+                pid,
+                uid: owner,
+                errno: code || "error",
+              });
+              continue;
+            }
+            const reachable = await foreignUidCanReachTarget({
+              pid,
+              uid: owner,
+              directories,
+              io,
+            });
+            if (reachable === null) {
+              return {
+                status: "unknown",
+                reason: `the reachability of foreign process ${pid} could not be determined`,
+              };
+            }
+            if (!reachable) {
+              excluded += 1;
+              skippedOtherUsers.push({
+                pid,
+                uid: owner,
+                errno: code || "error",
+              });
+              continue;
+            }
+            return {
+              status: "unknown",
+              reason: `foreign process ${pid} cwd is unreadable and may be inside a target directory`,
+            };
           }
-          if (io.uid !== null) {
+          if (code === "EACCES" || code === "EPERM") {
             let comm: string;
             try {
               comm = await io.readComm(pid);
@@ -272,19 +359,6 @@ export async function scanProcessesWithCwdUnder(
               status: "unknown",
               reason: `the working directory of process ${pid} (${comm}) could not be read and cannot be verified`,
             };
-          }
-        }
-        if (io.uid !== null) {
-          let owner: number | null = null;
-          try {
-            owner = await io.effectiveUid(pid);
-          } catch (ownerError) {
-            if (GONE.has(codeOf(ownerError))) continue;
-          }
-          if (owner !== null && owner !== io.uid) {
-            excluded += 1;
-            skippedOtherUsers.push({ pid, uid: owner, errno: code || "error" });
-            continue;
           }
         }
         return {
