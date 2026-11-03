@@ -24,7 +24,6 @@ export type WorktreeHolderScan =
   | {
       status: "clear";
       clearances?: FallbackClearance[];
-      agentClearances?: AgentClearance[];
     }
   | { status: "held"; holders: WorktreeHolder[] }
   | { status: "unknown"; reason: string };
@@ -59,26 +58,6 @@ async function readOptional<T>(read: () => Promise<T>): Promise<Read<T>> {
       ? { gone: true }
       : { failed: code ?? "unreadable" };
   }
-}
-
-export const CREDENTIAL_AGENTS: readonly {
-  kernelName: string;
-  argv0: string;
-}[] = [
-  { kernelName: "ssh-agent", argv0: "ssh-agent" },
-  { kernelName: "gpg-agent", argv0: "gpg-agent" },
-  { kernelName: "gnome-keyring-d", argv0: "gnome-keyring-daemon" },
-  { kernelName: "keepassxc-proxy", argv0: "keepassxc-proxy" },
-];
-
-export const AGENT_START_MARGIN_MS = 1000;
-const CLOCK_TICK_MS = 10;
-
-export interface AgentClearance {
-  pid: number;
-  name: string;
-  startedMs: number;
-  worktreeCreatedMs: number;
 }
 
 export interface ProcReader {
@@ -131,8 +110,6 @@ type TreeIdsReader = () => Promise<TreeIds>;
 
 interface ScanContext {
   tree: TreeIdsReader;
-  creationMs: () => Promise<Read<number | null>>;
-  bootMs: () => Promise<Read<number>>;
 }
 
 async function listTreeIds(
@@ -167,7 +144,6 @@ type ProcessResult =
   | ProcessResultUnknown
   | { otherUser: true }
   | { cleared: FallbackClearance[] }
-  | { agent: AgentClearance }
   | null;
 
 function unreadable(what: string, failed: string): ProcessResultUnknown {
@@ -269,57 +245,9 @@ async function scanLinuxProcess(
   }
   if (result === null || !("unknown" in result) || !result.vouchable)
     return result;
-  const verdict = await credentialAgentVerdict(
-    proc,
-    pid,
-    base,
-    status.value,
-    context,
-  );
-  if ("agent" in verdict) return verdict;
   return {
-    unknown: `${result.unknown}, named ${verdict.name === null ? "unknown" : `"${verdict.name}"`} (${verdict.why})`,
+    unknown: `${result.unknown}, process identity could not be established`,
     vouchable: false,
-  };
-}
-
-function statusName(status: string): string | null {
-  return /^Name:\t(.*)$/mu.exec(status)?.[1] ?? null;
-}
-
-async function credentialAgentVerdict(
-  proc: ProcReader,
-  pid: number,
-  base: string,
-  status: string,
-  context: ScanContext,
-): Promise<{ agent: AgentClearance } | { name: string | null; why: string }> {
-  const name = statusName(status);
-  const agent = CREDENTIAL_AGENTS.find((entry) => entry.kernelName === name);
-  if (agent === undefined || name === null)
-    return { name, why: "not a known credential agent" };
-  const cmdline = await readOptional(() => proc.readFile(`${base}/cmdline`));
-  if ("value" in cmdline) {
-    const argv0 = cmdline.value.split("\0")[0] ?? "";
-    if (path.posix.basename(argv0) !== agent.argv0)
-      return { name, why: "its command line does not name the agent" };
-  }
-  const stat = await readOptional(() => proc.readFile(`${base}/stat`));
-  if (!("value" in stat)) return { name, why: "its start time cannot be read" };
-  const fields = stat.value.slice(stat.value.lastIndexOf(")") + 2).split(" ");
-  const ticks = Number(fields[19]);
-  if (!/^\d+$/u.test(fields[19] ?? "") || !Number.isSafeInteger(ticks))
-    return { name, why: "its start time cannot be read" };
-  const boot = await context.bootMs();
-  if (!("value" in boot)) return { name, why: "the boot time cannot be read" };
-  const created = await context.creationMs();
-  if (!("value" in created) || created.value === null)
-    return { name, why: "the creation time of the worktree is unknown" };
-  const startedMs = boot.value + ticks * CLOCK_TICK_MS;
-  if (startedMs + AGENT_START_MARGIN_MS >= created.value)
-    return { name, why: "it started after the worktree was created" };
-  return {
-    agent: { pid, name, startedMs, worktreeCreatedMs: created.value },
   };
 }
 interface ForeignTarget {
@@ -755,30 +683,12 @@ export async function scanLinux(
   const holders: WorktreeHolder[] = [];
   const unknown: string[] = [];
   const clearances: FallbackClearance[] = [];
-  const agentClearances: AgentClearance[] = [];
   let listed: Promise<TreeIds> | null = null;
   const tree: TreeIdsReader = () => {
     listed ??= listTreeIds(proc, directory, limits.maxDirectories);
     return listed;
   };
-  let created: Promise<Read<number | null>> | null = null;
-  let booted: Promise<Read<number>> | null = null;
-  const context: ScanContext = {
-    tree,
-    creationMs: () => {
-      created ??= readOptional(() => proc.creationMs(directory));
-      return created;
-    },
-    bootMs: () => {
-      booted ??= readOptional(async () => {
-        const stat = await proc.readFile("/proc/stat");
-        const boot = /^btime (\d+)$/mu.exec(stat)?.[1];
-        if (boot === undefined) throw new Error("no btime");
-        return Number(boot) * 1000;
-      });
-      return booted;
-    },
-  };
+  const context: ScanContext = { tree };
   for (let offset = 0; offset < pids.length; offset += LINUX_SCAN_CONCURRENCY) {
     const batch = pids.slice(offset, offset + LINUX_SCAN_CONCURRENCY);
     const results = await Promise.all(
@@ -795,10 +705,6 @@ export async function scanLinux(
     );
     for (const result of results) {
       if (result === null) continue;
-      if ("agent" in result) {
-        agentClearances.push(result.agent);
-        continue;
-      }
       if ("cleared" in result) {
         clearances.push(...result.cleared);
         continue;
@@ -815,11 +721,10 @@ export async function scanLinux(
       reason: `${unknown.length} processes could not be inspected, such as ${unknown[0]}`,
     };
   }
-  return clearances.length > 0 || agentClearances.length > 0
+  return clearances.length > 0
     ? {
         status: "clear",
         ...(clearances.length > 0 ? { clearances } : {}),
-        ...(agentClearances.length > 0 ? { agentClearances } : {}),
       }
     : { status: "clear" };
 }

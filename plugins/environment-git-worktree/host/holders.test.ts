@@ -893,143 +893,33 @@ describe("the Linux process-list visibility rule", () => {
 });
 
 describe("a same-user process that cannot be read because it is non-dumpable", () => {
-  const agent = (
-    process: FakeProcess,
-    options: { createdMs?: number | null } = {},
-  ) =>
-    fakeProc({
-      createdMs: options.createdMs,
-      processes: { 300: { uid: 1000, denied: true, ...process } },
-    });
-
   it.each([
+    ["sshd-session", "sshd-session"],
     ["ssh-agent", "/usr/bin/ssh-agent"],
     ["gpg-agent", "gpg-agent"],
     ["gnome-keyring-d", "/usr/bin/gnome-keyring-daemon"],
     ["keepassxc-proxy", "/usr/bin/keepassxc-proxy"],
   ])(
-    "clears a credential agent named %s that started before the worktree, and records it",
+    "does not clear an unreadable same-user process named %s, even when its command looks trusted",
     async (name, argv0) => {
-      const proc = agent({ name, comm: name, argv0, startTicks: 100 });
-      expect(await scanLinux("/work/tree", proc, 4242)).toEqual({
-        status: "clear",
-        agentClearances: [
-          {
-            pid: 300,
+      const proc = fakeProc({
+        createdMs: 1_000_060_000,
+        processes: {
+          300: {
+            uid: 1000,
+            denied: true,
             name,
-            startedMs: 1_000_001_000,
-            worktreeCreatedMs: 1_000_060_000,
+            comm: name,
+            argv0,
+            startTicks: 100,
           },
-        ],
+        },
+      });
+      expect(await scanLinux("/work/tree", proc, 4242)).toMatchObject({
+        status: "unknown",
       });
     },
   );
-
-  it("keeps the worktree, naming the process, when the agent started after the worktree or within the margin before it", async () => {
-    for (const startTicks of [6001, 5950]) {
-      const proc = agent({
-        name: "ssh-agent",
-        comm: "ssh-agent",
-        argv0: "ssh-agent",
-        startTicks,
-      });
-      expect(await scanLinux("/work/tree", proc, 4242)).toMatchObject({
-        status: "unknown",
-        reason: expect.stringContaining(
-          'process 300 mount namespace (EACCES), named "ssh-agent" (it started after the worktree was created)',
-        ),
-      });
-    }
-  });
-
-  it("keeps the worktree for any other name, even with an agent's command line", async () => {
-    const proc = agent({
-      name: "node",
-      comm: "node",
-      argv0: "ssh-agent",
-      startTicks: 100,
-    });
-    expect(await scanLinux("/work/tree", proc, 4242)).toMatchObject({
-      status: "unknown",
-      reason: expect.stringContaining(
-        'named "node" (not a known credential agent)',
-      ),
-    });
-  });
-
-  it("requires the exact kernel name, which is cut to 15 characters, and the agent's own command line", async () => {
-    for (const process of [
-      { name: "gnome-keyring-daemon", argv0: "gnome-keyring-daemon" },
-      { name: "ssh-agent2", argv0: "ssh-agent" },
-      { name: "ssh-agent", argv0: "/usr/bin/python3" },
-      { name: "ssh-agent", argv0: "" },
-    ]) {
-      const proc = agent({ ...process, comm: process.name, startTicks: 100 });
-      expect(await scanLinux("/work/tree", proc, 4242)).toMatchObject({
-        status: "unknown",
-      });
-    }
-  });
-
-  it("accepts an agent whose command line cannot be read", async () => {
-    const proc = agent({
-      name: "ssh-agent",
-      comm: "ssh-agent",
-      argv0: null,
-      startTicks: 100,
-    });
-    expect(await scanLinux("/work/tree", proc, 4242)).toMatchObject({
-      status: "clear",
-      agentClearances: [{ pid: 300, name: "ssh-agent" }],
-    });
-  });
-
-  it("keeps the worktree when the creation time of the worktree or the boot time is unknown or the start time does not parse", async () => {
-    const base = {
-      name: "ssh-agent",
-      comm: "ssh-agent",
-      argv0: "ssh-agent",
-      startTicks: 100,
-    };
-    expect(
-      await scanLinux("/work/tree", agent(base, { createdMs: null }), 4242),
-    ).toMatchObject({
-      status: "unknown",
-      reason: expect.stringContaining("creation time of the worktree"),
-    });
-    expect(
-      await scanLinux(
-        "/work/tree",
-        fakeProc({
-          noBoot: true,
-          processes: { 300: { uid: 1000, denied: true, ...base } },
-        }),
-        4242,
-      ),
-    ).toMatchObject({
-      status: "unknown",
-      reason: expect.stringContaining("boot time"),
-    });
-    expect(
-      await scanLinux(
-        "/work/tree",
-        agent({ ...base, startTicks: "x" as unknown as number }),
-        4242,
-      ),
-    ).toMatchObject({
-      status: "unknown",
-      reason: expect.stringContaining("start time cannot be read"),
-    });
-  });
-
-  it("no longer clears ssh-agent or gpg-agent by name alone", async () => {
-    for (const name of ["ssh-agent", "gpg-agent"]) {
-      const proc = agent({ name, comm: name, argv0: name, startTicks: 9000 });
-      expect(await scanLinux("/work/tree", proc, 4242)).toMatchObject({
-        status: "unknown",
-      });
-    }
-  });
 });
 
 describe.skipIf(
@@ -1093,7 +983,7 @@ time.sleep(120)`,
   const sleepMs = (ms: number) =>
     new Promise((resolve) => setTimeout(resolve, ms));
 
-  it("named ssh-agent and started before the worktree: the worktree is not held", async ({
+  it("named ssh-agent and started before the worktree: uncertainty still keeps it", async ({
     skip,
   }) => {
     skip(python.status !== 0, "python3 is not available");
@@ -1105,10 +995,7 @@ time.sleep(120)`,
     await sleepMs(1500);
     const dir = await worktree();
     const scan = await scanOnly(dir, child.pid ?? 0);
-    expect(scan).toMatchObject({
-      status: "clear",
-      agentClearances: [{ pid: child.pid, name: "ssh-agent" }],
-    });
+    expect(scan).toMatchObject({ status: "unknown" });
   });
 
   it("named ssh-agent and started after the worktree: the worktree is kept", async ({

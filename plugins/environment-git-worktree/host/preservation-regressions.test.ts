@@ -1,12 +1,11 @@
-import { execFile as execFileCallback, spawn } from "node:child_process";
+import { execFile as execFileCallback, spawn, spawnSync } from "node:child_process";
 import fs from "node:fs/promises";
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, readlink, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { removeWorktree } from "./worktree.js";
-import { hostProc, useProcReaderForTests } from "./holders.js";
 
 const execFile = promisify(execFileCallback);
 const roots: string[] = [];
@@ -52,7 +51,6 @@ async function remove(
 
 afterEach(async () => {
   vi.restoreAllMocks();
-  useProcReaderForTests(null);
   await Promise.all(
     workers.splice(0).map(async (worker) => {
       if (worker.exitCode !== null || worker.signalCode !== null) return;
@@ -128,33 +126,39 @@ describe("real worktree teardown preservation", () => {
     expect(await readFile(path.join(worktree.path, "README.md"), "utf8")).toBe("published\n");
   });
 
-  it("keeps a worktree when a live unreadable process uses a session-helper name", async () => {
+  it.skipIf(
+    process.platform !== "linux" ||
+      (typeof process.getuid === "function" && process.getuid() === 0),
+  )("keeps a worktree held by a non-dumpable process with a session-helper name", async ({ skip }) => {
     const worktree = await makeWorktree();
     const signalMarker = path.join(worktree.root, "signalled-helper");
+    skip(spawnSync("python3", ["--version"]).status !== 0, "python3 is not available");
     const worker = spawn(
-      process.execPath,
+      "python3",
       [
-        "-e",
-        "process.title='sshd-session';const fs=require('node:fs');process.on('SIGTERM',()=>{fs.writeFileSync(process.argv[1],'signal');process.exit(0)});setInterval(()=>{},1000);process.send('ready')",
+        "-c",
+        `import ctypes, signal, sys, time
+libc = ctypes.CDLL(None)
+libc.prctl(4, 0, 0, 0, 0)
+libc.prctl(15, b"sshd-session", 0, 0, 0)
+signal.signal(signal.SIGTERM, lambda *_: (open(sys.argv[1], "w").write("signal"), sys.exit(0)))
+print("ready", flush=True)
+time.sleep(120)`,
         signalMarker,
       ],
-      { cwd: worktree.path, stdio: ["ignore", "ignore", "ignore", "ipc"] },
+      { cwd: worktree.path, argv0: "sshd-session", stdio: ["ignore", "pipe", "ignore"] },
     );
     workers.push(worker);
     await new Promise<void>((resolve, reject) => {
-      worker.once("message", () => resolve());
+      worker.stdout?.once("data", () => resolve());
       worker.once("error", reject);
     });
-    const processPath = `/proc/${worker.pid}`;
-    useProcReaderForTests({
-      ...hostProc,
-      readlink: async (link) => {
-        if (link.startsWith(`${processPath}/task/`) && link.endsWith("/cwd")) {
-          throw Object.assign(new Error("denied"), { code: "EACCES" });
-        }
-        return hostProc.readlink(link);
-      },
-    });
+    try {
+      await readlink(`/proc/${worker.pid}/task/${worker.pid}/cwd`);
+      skip(true, "the kernel lets this user read the non-dumpable process");
+    } catch (error) {
+      skip((error as NodeJS.ErrnoException).code !== "EACCES", "the process cwd was not unreadable");
+    }
     await remove(worktree, true).catch(() => undefined);
     expect(() => process.kill(worker.pid!, 0)).not.toThrow();
     await expect(access(signalMarker)).rejects.toMatchObject({ code: "ENOENT" });
