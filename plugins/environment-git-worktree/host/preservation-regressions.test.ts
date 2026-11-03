@@ -176,7 +176,7 @@ describe("real worktree teardown preservation", () => {
     vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
       await originalRename(from, to);
       if (String(from) !== worktree.path) return;
-      await writeFile(path.join(String(to), "late-stash.txt"), "local\n");
+      await writeFile(path.join(String(to), "README.md"), "late stash\n");
       await git(String(to), "stash", "push", "-m", "late stash");
       injected = true;
     });
@@ -214,6 +214,7 @@ describe("real worktree teardown preservation", () => {
     async () => {
       const worktree = await makeWorktree();
       await fs.chmod(path.dirname(worktree.root), 0o755);
+      await fs.chmod(worktree.root, 0o755);
       useProcReaderForTests(foreignUnreadableCwdProc());
       const signal = vi.spyOn(process, "kill");
 

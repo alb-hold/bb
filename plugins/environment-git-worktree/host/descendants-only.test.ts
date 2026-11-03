@@ -17,6 +17,7 @@ function table(parents: Record<string, number>): ProcReader {
     readdir: async () => [...Object.keys(parents), "self", "stat"],
     lstatId: reject,
     statId: reject,
+    statAccess: reject,
     creationMs: reject,
     subdirectories: reject,
   };

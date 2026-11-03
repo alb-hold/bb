@@ -844,10 +844,12 @@ describe("the Linux process-list visibility rule", () => {
   it("inspects every user's processes when it runs as root", async () => {
     const proc = fakeProc({
       self: { uid: 0 },
-      processes: { 100: { uid: 1001, denied: true, comm: "node" } },
+      processes: {
+        100: { uid: 1001, denied: true, cwdDenied: true, comm: "node" },
+      },
     });
     expect(await scanLinux("/work/tree", proc, 4242)).toMatchObject({
-      status: "unknown",
+      status: "uncertain",
     });
   });
 
