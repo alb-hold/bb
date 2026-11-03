@@ -189,8 +189,11 @@ describe("GitHub PR Status server", () => {
             throw hostFailure;
           return call.method === "upstream"
             ? { oid: null, branchName: "bb/pr" }
-            : call.method === "view"
-              ? { outcome: "found", pullRequest: view() }
+            : call.method === "views"
+              ? (call.input as { reads: unknown[] }).reads.map(() => ({
+                  outcome: "found",
+                  pullRequest: view(),
+                }))
               : { ok: true };
         },
         debug: (message) => {
@@ -813,8 +816,11 @@ describe("GitHub PR Status server", () => {
       callHost: (call) =>
         call.method === "upstream"
           ? { oid: null, branchName: "bb/pr" }
-          : call.method === "view"
-            ? { outcome: "found", pullRequest: view() }
+          : call.method === "views"
+            ? (call.input as { reads: unknown[] }).reads.map(() => ({
+                outcome: "found",
+                pullRequest: view(),
+              }))
             : {
                 ok: false,
                 message:

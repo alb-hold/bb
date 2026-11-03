@@ -228,7 +228,7 @@ describe("thread context segments", () => {
     renderBanner({
       core: {
         ...EMPTY_CORE,
-        git: { ...git, workspaceSharingThreadCount: 3 },
+        workspaceSharingThreadCount: 3,
       },
     });
 
