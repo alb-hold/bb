@@ -1,12 +1,27 @@
 import { createContext, useContext, type ReactNode } from "react";
 import {
   useInlineRename,
+  useRenameSessionValue,
   type InlineRenameArgs,
   type InlineRenameEditorProps,
   type RenameController,
 } from "@bb/shared-ui/inline-rename";
-import { RenameSessionDialog } from "@bb/shared-ui/rename-session-dialog";
 import { defineSplit } from "@/lib/define-split";
+
+const RenameSessionDialog = defineSplit<{
+  controller: RenameController;
+  active: boolean;
+}>({
+  id: "sidebar-rename-dialog",
+  load: () =>
+    import("@bb/shared-ui/rename-session-dialog").then(
+      (module) => module.RenameSessionDialog,
+    ),
+  loading: () => null,
+  tier: "intent",
+  mountWhen: ({ active }) => active,
+  keepMounted: true,
+});
 
 const InlineRenameEditor = defineSplit<InlineRenameEditorProps>({
   id: "sidebar-rename-editor",
@@ -31,10 +46,15 @@ export function RenameControllerProvider({
   controller: RenameController;
   children: ReactNode;
 }) {
+  const dialogActive =
+    useRenameSessionValue(
+      controller,
+      (session) => session.presentation === "dialog",
+    ) === true;
   return (
     <RenameControllerContext.Provider value={controller}>
       {children}
-      <RenameSessionDialog controller={controller} />
+      <RenameSessionDialog controller={controller} active={dialogActive} />
     </RenameControllerContext.Provider>
   );
 }

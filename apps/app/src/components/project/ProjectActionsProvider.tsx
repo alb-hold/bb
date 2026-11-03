@@ -24,10 +24,8 @@ import {
   ProjectDeleteDialog,
   type ProjectDeleteDialogTarget,
 } from "@/components/dialogs/ProjectDeleteDialog";
-import {
-  ProjectRenameDialog,
-  type ProjectRenameDialogTarget,
-} from "@/components/dialogs/ProjectRenameDialog";
+import type { ProjectRenameDialogTarget } from "@/components/dialogs/ProjectRenameDialog";
+import { defineSplit } from "@/lib/define-split";
 import { getRootComposeRoutePath } from "@/lib/route-paths";
 
 const ProjectPathDialog = lazy(() =>
@@ -35,6 +33,22 @@ const ProjectPathDialog = lazy(() =>
     default: module.ProjectPathDialog,
   })),
 );
+
+const ProjectRenameDialog = defineSplit<
+  Parameters<
+    typeof import("@/components/dialogs/ProjectRenameDialog").ProjectRenameDialog
+  >[0]
+>({
+  id: "project-rename-dialog",
+  load: () =>
+    import("@/components/dialogs/ProjectRenameDialog").then(
+      (module) => module.ProjectRenameDialog,
+    ),
+  loading: () => null,
+  tier: "intent",
+  mountWhen: ({ target }) => target !== null,
+  keepMounted: true,
+});
 
 interface ProjectActionsContextValue {
   requestRename: (project: ProjectResponse) => void;
@@ -128,12 +142,7 @@ export function ProjectActionsProvider({
         },
       });
     },
-    [
-      closeDeleteDialog,
-      deleteProjectMutate,
-      navigate,
-      routeProjectId,
-    ],
+    [closeDeleteDialog, deleteProjectMutate, navigate, routeProjectId],
   );
 
   const requestAddLocalPath = useCallback(
