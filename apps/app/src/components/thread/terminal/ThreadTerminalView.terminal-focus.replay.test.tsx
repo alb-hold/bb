@@ -1527,7 +1527,6 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
     });
   }
 
-
   it("keeps the replay hidden and shows the reconnecting badge when a replay fails without a prior screen", async () => {
     shortenReplayHoldTimeout(600);
     const { preview, socket } = await mountReplayWithUnusableSnapshot();
