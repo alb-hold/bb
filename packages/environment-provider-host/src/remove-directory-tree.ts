@@ -136,6 +136,7 @@ export async function removeDirectoryTree(
 ): Promise<RemoveDirectoryTreeResult> {
   const startedAt = hooks.startedAt ?? Date.now();
   await hooks.afterStart?.(startedAt);
+  if (path.basename(root).startsWith(".bb-removing-")) return "retained";
   const rootName = path.basename(root);
   const parent = await openDirectory(path.dirname(root));
   if (parent === null || rootName === "") {
@@ -249,6 +250,8 @@ export async function removeDirectoryTree(
       } catch (error) {
         return errorCode(error) === "ENOENT" ? "removed" : "retained";
       }
+      if (listed.some((childName) => childName.startsWith(".bb-removing-")))
+        return "retained";
       await hooks.afterDirectoryListed?.(entry, listed);
       try {
         currentInfo = await lstat(anchoredEntry);

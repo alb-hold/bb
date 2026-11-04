@@ -458,6 +458,20 @@ describe("real worktree teardown preservation", () => {
     await expect(readFile(saved, "utf8")).resolves.toBe("published\n");
   });
 
+  it("retains an entry left in quarantine by an interrupted removal", async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), "bb-removal-quarantine-"),
+    );
+    roots.push(root);
+    const quarantined = path.join(root, ".bb-removing-interrupted");
+    await writeFile(quarantined, "recoverable\n");
+    const result = await removeDirectoryTree(root, {
+      startedAt: Date.now() + 10_000,
+    });
+    expect(result).toBe("retained");
+    await expect(readFile(quarantined, "utf8")).resolves.toBe("recoverable\n");
+  });
+
   it("keeps the worktree root marker and siblings after partial removal meets late data", async () => {
     const worktree = await makeWorktree();
     useProcReaderForTests(descendantsOnly(hostProc, -1));
