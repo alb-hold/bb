@@ -168,8 +168,8 @@
     "394,500 Brotli bytes. Code that moved between the entry chunk and the",
     "thread route in the sync was not individually attributed."
   ],
-  "maxBootBytes": 1609643,
-  "maxBootBrotliBytes": 394364,
+  "maxBootBytes": 1609298,
+  "maxBootBrotliBytes": 394185,
   "forbiddenBootPackages": [
     "@dnd-kit/accessibility",
     "@dnd-kit/core",
