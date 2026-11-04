@@ -8,6 +8,7 @@ interface PendingRpcEntry<TKey, TResult> {
   reject: (error: Error) => void;
   resolve: (result: TResult) => void;
   timeout: ReturnType<typeof setTimeout> | null;
+  startedAt: number;
 }
 
 type PendingRpcRegistryOptions<TKey, TResult> = (
@@ -16,6 +17,7 @@ type PendingRpcRegistryOptions<TKey, TResult> = (
 ) & {
   onFail?: (key: TKey, error: Error) => void;
   onSettle?: (key: TKey, result: TResult) => void;
+  lateTimeoutRetryMs?: number;
 };
 
 interface PendingRpcClaim<TResult> {
@@ -37,6 +39,7 @@ export class PendingRpcRegistry<TKey extends PendingRpcKey, TResult> {
     }
     let resolveResult: (result: TResult) => void = () => undefined;
     let rejectResult: (error: Error) => void = () => undefined;
+    const startedAt = Date.now();
     const promise = new Promise<TResult>((resolve, reject) => {
       resolveResult = resolve;
       rejectResult = reject;
@@ -47,15 +50,26 @@ export class PendingRpcRegistry<TKey extends PendingRpcKey, TResult> {
       reject: rejectResult,
       resolve: resolveResult,
       timeout: null,
+      startedAt,
     };
     const timeout = this.options;
     if (timeout.timeoutMs !== null) {
       entry.timeout = setTimeout(() => {
         if (this.entries.get(key.rpcKey) !== entry) return;
-        this.entries.delete(key.rpcKey);
-        const error = timeout.timeoutError(key);
-        this.options.onFail?.(key, error);
-        entry.reject(error);
+        const retryThreshold = this.options.lateTimeoutRetryMs;
+        const elapsedMs = Date.now() - entry.startedAt;
+        if (
+          retryThreshold !== undefined &&
+          elapsedMs - timeout.timeoutMs >= retryThreshold &&
+          elapsedMs < timeout.timeoutMs * 3
+        ) {
+          entry.timeout = setTimeout(
+            () => this.expire(entry),
+            Math.min(timeout.timeoutMs, timeout.timeoutMs * 3 - elapsedMs),
+          );
+          return;
+        }
+        this.expire(entry);
       }, timeout.timeoutMs);
     }
     this.entries.set(key.rpcKey, entry);
@@ -107,6 +121,16 @@ export class PendingRpcRegistry<TKey extends PendingRpcKey, TResult> {
     if (!entry) return null;
     this.clear(entry);
     return entry;
+  }
+
+  private expire(entry: PendingRpcEntry<TKey, TResult>): void {
+    if (this.entries.get(entry.key.rpcKey) !== entry) return;
+    this.entries.delete(entry.key.rpcKey);
+    const timeout = this.options;
+    if (timeout.timeoutMs === null) return;
+    const error = timeout.timeoutError(entry.key);
+    this.options.onFail?.(entry.key, error);
+    entry.reject(error);
   }
 
   private clear(entry: PendingRpcEntry<TKey, TResult>): void {
