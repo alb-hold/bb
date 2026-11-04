@@ -1811,6 +1811,7 @@ export function ThreadTerminalView({
     };
     let paintedScreenKept = false;
     let processExitedSeen = false;
+    let retryStalledReplay: () => void = () => undefined;
     const releaseReplayPreview = () => {
       paintedScreenKept = false;
       replayPreview?.release();
@@ -2629,8 +2630,7 @@ export function ThreadTerminalView({
             ) {
               abandonReplayPreview();
             } else {
-              keepPaintedScreen();
-              activeTransport.retry();
+              retryStalledReplay();
             }
           }
           if (message.type === "exited") handleReplayPreviewExit();
@@ -2711,6 +2711,7 @@ export function ThreadTerminalView({
             },
             onReplayComplete: () => {
               replayCompleted = true;
+              activeTransport.resetRetryBackoff();
               for (const text of pendingExitNotices.splice(0)) {
                 routeQueuedExitNotice(text);
               }
@@ -2785,7 +2786,7 @@ export function ThreadTerminalView({
                 replayPreview = mountTerminalReplayPreview({
                   container: containerElement,
                   holdUntilReleased: true,
-                  onHoldExpired: keepPaintedScreen,
+                  onHoldExpired: () => retryStalledReplay(),
                   initialFitGrid: localFitGrid,
                   isOwner: () =>
                     terminalInputClaimed &&
@@ -2837,6 +2838,14 @@ export function ThreadTerminalView({
         }),
       });
       transport = activeTransport;
+      retryStalledReplay = () => {
+        if (processExitedSeen || exitedBeforeReplayCompleted) {
+          abandonReplayPreview();
+          return;
+        }
+        keepPaintedScreen();
+        activeTransport.retry();
+      };
       fitTerminal();
       reportDocumentVisibility();
       sizeClaims = listenForTerminalSizeClaims({

@@ -525,7 +525,7 @@ describe("TerminalWebSocketTransport", () => {
     harness.transport.dispose();
   });
 
-  it("retries a failed replay at once, backs off up to 8 seconds without stopping, and starts fast again after attaching", () => {
+  it("retries a failed replay at once, backs off up to 8 seconds without stopping, and starts fast again after the backoff is reset", () => {
     vi.useFakeTimers();
     const harness = createHarness({ reconnectDelaysMs: undefined });
     const attach = (index: number) => {
@@ -559,6 +559,40 @@ describe("TerminalWebSocketTransport", () => {
     }
 
     attach(created - 1);
+    harness.transport.resetRetryBackoff();
+    harness.transport.retry();
+    vi.advanceTimersByTime(100);
+    expect(harness.sockets).toHaveLength(created + 1);
+    harness.transport.dispose();
+  });
+
+  it("keeps backing off across retries that attach but never settle, and starts fast again after the backoff is reset", () => {
+    vi.useFakeTimers();
+    const harness = createHarness({ reconnectDelaysMs: undefined });
+    const attach = (index: number) => {
+      harness.sockets[index]?.open();
+      harness.sockets[index]?.receive({
+        type: "attached",
+        session: terminalSession(),
+        replayStartSeq: 0,
+        nextSeq: 0,
+      });
+    };
+
+    harness.transport.start();
+    attach(0);
+    let created = 1;
+    for (const delay of [100, 250, 500, 1_000, 2_000, 4_000, 8_000, 8_000]) {
+      harness.transport.retry();
+      vi.advanceTimersByTime(delay - 1);
+      expect(harness.sockets).toHaveLength(created);
+      vi.advanceTimersByTime(1);
+      created += 1;
+      expect(harness.sockets).toHaveLength(created);
+      attach(created - 1);
+    }
+
+    harness.transport.resetRetryBackoff();
     harness.transport.retry();
     vi.advanceTimersByTime(100);
     expect(harness.sockets).toHaveLength(created + 1);

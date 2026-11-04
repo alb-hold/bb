@@ -142,6 +142,7 @@ export class TerminalWebSocketTransport {
   private pendingInputBytes = 0;
   private readonly pendingInputs: PendingTerminalInput[] = [];
   private reconnectAttempt = 0;
+  private retryStreak = 0;
   private reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
   private layoutSettled = false;
   private resizeReportedAfterLayoutSettle = false;
@@ -215,12 +216,18 @@ export class TerminalWebSocketTransport {
     ) {
       return;
     }
+    this.reconnectAttempt = Math.max(this.reconnectAttempt, this.retryStreak);
+    this.retryStreak += 1;
     const socket = this.socket;
     if (socket === null) {
       this.scheduleReconnect();
       return;
     }
     socket.close(1011, "terminal replay retry");
+  }
+
+  resetRetryBackoff(): void {
+    this.retryStreak = 0;
   }
 
   sendInput(dataBase64: string, inputEventAt?: number): boolean {
