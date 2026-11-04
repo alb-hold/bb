@@ -9,6 +9,7 @@ interface PendingRpcEntry<TKey, TResult> {
   resolve: (result: TResult) => void;
   timeout: ReturnType<typeof setTimeout> | null;
   startedAt: number;
+  dueAt: number | null;
 }
 
 type PendingRpcRegistryOptions<TKey, TResult> = (
@@ -51,6 +52,7 @@ export class PendingRpcRegistry<TKey extends PendingRpcKey, TResult> {
       resolve: resolveResult,
       timeout: null,
       startedAt,
+      dueAt: null,
     };
     const timeout = this.options;
     if (timeout.timeoutMs !== null) {
@@ -118,12 +120,13 @@ export class PendingRpcRegistry<TKey extends PendingRpcKey, TResult> {
   }
 
   private armDeadline(entry: PendingRpcEntry<TKey, TResult>, delayMs: number): void {
+    entry.dueAt = Date.now() + delayMs;
     entry.timeout = setTimeout(() => {
       if (this.entries.get(entry.key.rpcKey) !== entry) return;
       const timeout = this.options;
       if (timeout.timeoutMs === null) return;
       const elapsedMs = Date.now() - entry.startedAt;
-      const latenessMs = elapsedMs - timeout.timeoutMs;
+      const latenessMs = Date.now() - (entry.dueAt ?? Date.now());
       if (
         timeout.lateTimeoutRetryMs !== undefined &&
         latenessMs >= timeout.lateTimeoutRetryMs &&
