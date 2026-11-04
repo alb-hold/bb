@@ -301,6 +301,12 @@ export function createWorktreeHostEntry() {
           if (outcome.kept.length === 0 && outcome.unknown.length === 0) {
             return { status: "removed" } as const;
           }
+          if (outcome.kept.length > 0 && outcome.unknown.length === 0) {
+            return {
+              status: "retained",
+              message: describeRemovalOutcome(outcome),
+            } as const;
+          }
           return {
             status: "failed",
             message: describeRemovalOutcome(outcome),
