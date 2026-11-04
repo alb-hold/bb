@@ -8,6 +8,26 @@ interface PluginFrontendBootScheduleDeps {
 
 export const PLUGIN_FRONTEND_BOOT_TIMEOUT_MS = 1_500;
 
+export function whenHomeComposerMounted(): Promise<void> {
+  if (
+    window.location.pathname !== "/" ||
+    document.querySelector("textarea, [contenteditable=true]")
+  )
+    return Promise.resolve();
+  return new Promise((resolve) => {
+    const finish = () => {
+      observer.disconnect();
+      window.clearTimeout(timeout);
+      resolve();
+    };
+    const observer = new MutationObserver(() => {
+      if (document.querySelector("textarea, [contenteditable=true]")) finish();
+    });
+    const timeout = window.setTimeout(finish, PLUGIN_FRONTEND_BOOT_TIMEOUT_MS);
+    observer.observe(document, { childList: true, subtree: true });
+  });
+}
+
 export function scheduleDeferredPluginFrontendBoot(
   boot: () => void,
   deps: PluginFrontendBootScheduleDeps,

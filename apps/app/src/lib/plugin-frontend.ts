@@ -55,7 +55,10 @@ import {
 import { setPluginAssetIcons } from "@bb/shared-ui/icon-registry";
 import { setPluginLogoUrls, type PluginLogoUrls } from "./plugin-logos";
 import { createRetryingModuleLoader } from "./plugin-frontend-lazy";
-import { requestBrowserIdle } from "./plugin-frontend-boot-schedule";
+import {
+  requestBrowserIdle,
+  whenHomeComposerMounted,
+} from "./plugin-frontend-boot-schedule";
 import { whenRouteContentPainted } from "./route-content-paint";
 import {
   pluginSdkAppImplementation,
@@ -1099,6 +1102,10 @@ const browserReconcileDeps: PluginFrontendReconcileDeps = {
   priorityPluginIds: () => frontendPriorityPluginIds(window.location.pathname),
   waitForDeferredLoad: async () => {
     await whenRouteContentPainted();
+    await whenHomeComposerMounted();
+    await new Promise<void>((resolve) =>
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+    );
     await new Promise<void>((resolve) => requestBrowserIdle(resolve));
   },
   resetCrashedSlots: resetCrashedPluginSlots,
