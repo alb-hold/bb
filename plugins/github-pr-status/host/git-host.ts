@@ -975,10 +975,11 @@ export async function runPullRequestActionForCurrentBranch(
   let mergeHeadOid: string | null = null;
   {
     const mismatchedIdentity =
-      args.action.expectedHost !== branchTarget.host
+      args.action.expectedHost?.toLowerCase() !==
+      branchTarget.host.toLowerCase()
         ? "host"
-        : args.action.expectedRepository !==
-            `${branchTarget.owner}/${branchTarget.repository}`
+        : args.action.expectedRepository?.toLowerCase() !==
+            `${branchTarget.owner}/${branchTarget.repository}`.toLowerCase()
           ? "owner/repo"
           : args.action.expectedNumber !== lookup.pullRequest.number
             ? "number"
@@ -991,11 +992,11 @@ export async function runPullRequestActionForCurrentBranch(
         message: `Pull request ${mismatchedIdentity} changed since it was shown; refusing to ${verb}`,
       };
     }
-    const readOid = lookup.pullRequest.headRefOid;
+    const readOid = lookup.pullRequest.headRefOid?.toLowerCase() ?? null;
     if (
       args.action.expectedHeadOid === null ||
       readOid === null ||
-      args.action.expectedHeadOid !== readOid
+      args.action.expectedHeadOid.toLowerCase() !== readOid
     ) {
       return {
         ok: false,

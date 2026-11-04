@@ -1117,6 +1117,81 @@ describe("action selector and routing edge cases", () => {
   );
 
   describe.each([
+    ["ready", { operation: "ready" }, ["pr", "ready"]],
+    ["draft", { operation: "draft" }, ["pr", "ready", "--undo"]],
+    [
+      "merge",
+      { operation: "merge", method: "merge" },
+      ["pr", "merge", "--merge", "--match-head-commit", HEAD_OID],
+    ],
+  ] as const)(
+    "identity case-insensitivity for %s",
+    (_label, base, ghPrefix) => {
+      it("accepts a UI identity that differs only in case from the remote", async () => {
+        const gh = await actionGh();
+        const cwd = await makeGitRepository({
+          origin: "git@github.com:Acme/BB.git",
+        });
+
+        await expect(
+          runAction(cwd, {
+            ...base,
+            expectedHeadOid: HEAD_OID.toUpperCase(),
+            expectedHost: "GitHub.com",
+            expectedRepository: "acme/bb",
+            expectedNumber: 42,
+            expectedBaseRef: "main",
+          }),
+        ).resolves.toEqual({ ok: true });
+        expect(await actionCalls(gh)).toEqual([
+          [...ghPrefix, "--repo", "github.com/Acme/BB", "--", "42"],
+        ]);
+      });
+
+      it("still refuses a genuinely different repository and starts no gh action", async () => {
+        const gh = await actionGh();
+        const cwd = await makeGitRepository({
+          origin: "git@github.com:Acme/BB.git",
+        });
+
+        await expect(
+          runAction(cwd, {
+            ...base,
+            expectedHeadOid: HEAD_OID,
+            expectedHost: "github.com",
+            expectedRepository: "acme/bb2",
+            expectedNumber: 42,
+            expectedBaseRef: "main",
+          }),
+        ).resolves.toEqual({
+          ok: false,
+          message: `Pull request owner/repo changed since it was shown; refusing to ${base.operation === "merge" ? "merge" : "update"}`,
+        });
+        expect(await actionCalls(gh)).toEqual([]);
+      });
+
+      it("keeps the base ref case-sensitive", async () => {
+        const gh = await actionGh();
+        const cwd = await makeGitRepository({
+          origin: "git@github.com:Acme/BB.git",
+        });
+
+        await expect(
+          runAction(cwd, {
+            ...base,
+            expectedHeadOid: HEAD_OID,
+            expectedHost: "github.com",
+            expectedRepository: "acme/bb",
+            expectedNumber: 42,
+            expectedBaseRef: "Main",
+          }),
+        ).resolves.toMatchObject({ ok: false });
+        expect(await actionCalls(gh)).toEqual([]);
+      });
+    },
+  );
+
+  describe.each([
     ["ready", ["pr", "ready"]],
     ["draft", ["pr", "ready", "--undo"]],
   ] as const)("displayed identity for %s", (operation, ghPrefix) => {
