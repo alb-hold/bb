@@ -80,8 +80,10 @@ class TestTerminalSocket {
     this.resolveOpened();
   }
 
-  close(): void {
+  close(code = 1000, reason = ""): void {
+    if (this.readyState === TestTerminalSocket.CLOSED) return;
     this.readyState = TestTerminalSocket.CLOSED;
+    queueMicrotask(() => this.onclose?.({ code, reason } as CloseEvent));
   }
 
   disconnect(): void {
@@ -697,7 +699,9 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
               type?: string;
             },
         )
-        .filter((message) => message.type === "resize" && message.claim !== true);
+        .filter(
+          (message) => message.type === "resize" && message.claim !== true,
+        );
     expect(resizeMessages()).toEqual([{ type: "resize", cols: 51, rows: 47 }]);
 
     const session = makeTerminalSession({
@@ -826,7 +830,8 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
       expect(preview()?.dataset.terminalReplayHoldExpired).toBeDefined();
       expect(preview()?.dataset.terminalReplayHeld).toBeDefined();
       expect(preview()?.style.visibility).toBe("hidden");
-      expect(pageText()).toContain("Still loading terminal");
+      expect(pageText()).toContain("Reconnecting");
+      expect(pageText()).not.toContain("Still loading terminal");
       current = reconnectSocket;
     }
   });
@@ -1060,6 +1065,18 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
     expect(replaySinceSeq).toBe("0");
   });
 
+  function paintedScreen() {
+    const previewElement = document.querySelector<HTMLElement>(
+      "[data-terminal-replay-preview]",
+    );
+    return Array.from(previewElement?.parentElement?.children ?? []).find(
+      (element): element is HTMLElement =>
+        element instanceof HTMLElement &&
+        element !== previewElement &&
+        element.querySelector(".xterm") !== null,
+    );
+  }
+
   async function mountReplayWithUnusableSnapshot() {
     prepareMobileTerminal();
     testState.screen.mockResolvedValue({
@@ -1268,7 +1285,7 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
     );
   });
 
-  it("keeps a stalled replay hidden behind a loading state and reveals it only on completion", async () => {
+  it("keeps the painted screen visible and partial output hidden after a stalled replay hold expires", async () => {
     shortenReplayHoldTimeout(600);
     const { bufferText, preview, socket } =
       await mountReplayWithUnusableSnapshot();
@@ -1278,7 +1295,8 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
     );
     expect(preview()?.dataset.terminalReplayHeld).toBeDefined();
     expect(preview()?.style.visibility).toBe("hidden");
-    expect(pageText()).toContain("Still loading terminal");
+    expect(pageText()).toContain("Reconnecting");
+    expect(pageText()).not.toContain("Still loading terminal");
 
     socket.receive({
       type: "output",
@@ -1293,16 +1311,16 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
       "replay preview stayed held after the replay completed",
     );
     expect(preview()?.dataset.terminalReplayHoldExpired).toBeUndefined();
-    expect(pageText()).not.toContain("Still loading terminal");
+    expect(pageText()).not.toContain("Reconnecting");
   });
 
-  it("shows the transport closed state for a stalled replay and never reveals partial output", async () => {
+  it("keeps the painted screen visible and the partial output hidden when the transport closes during a stalled replay", async () => {
     shortenReplayHoldTimeout(600);
     const { preview, session, socket } =
       await mountReplayWithUnusableSnapshot();
     await waitForReadinessCondition(
-      () => expect(pageText()).toContain("Still loading terminal"),
-      "loading state was not shown for the stalled replay",
+      () => expect(pageText()).toContain("Reconnecting"),
+      "reconnecting badge was not shown for the stalled replay",
     );
     rerenderMobileTerminal({ ...session, status: "disconnected" });
     socket.disconnect();
@@ -1498,28 +1516,39 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
     expect(processExited.spy).toHaveBeenCalledOnce();
   });
 
-  it("shows an unavailable state for a terminal error mid-replay and never reveals partial output", async () => {
-    shortenReplayHoldTimeout(600);
-    const { preview, socket } = await mountReplayWithUnusableSnapshot();
-    await waitForReadinessCondition(
-      () => expect(pageText()).toContain("Still loading terminal"),
-      "loading state was not shown for the stalled replay",
-    );
+  async function failReplay(socket: { receive: (message: never) => void }) {
     await act(async () => {
       socket.receive({
         type: "error",
         code: "replay_failed",
         message: "replay failed",
-      });
+      } as never);
       await Promise.resolve();
     });
-    await waitForReadinessCondition(
-      () => expect(pageText()).toContain("Terminal output unavailable"),
-      "unavailable state was not shown after a terminal error",
-    );
-    expect(pageText()).not.toContain("Still loading terminal");
-    expect(preview()?.dataset.terminalReplayHeld).toBeDefined();
+  }
+
+  async function failReplay(socket: { receive: (message: never) => void }) {
+    await act(async () => {
+      socket.receive({
+        type: "error",
+        code: "replay_failed",
+        message: "replay failed",
+      } as never);
+      await Promise.resolve();
+    });
+  }
+
+  it("keeps the replay hidden and shows the reconnecting badge when a replay fails without a prior screen", async () => {
+    shortenReplayHoldTimeout(600);
+    const { preview, socket } = await mountReplayWithUnusableSnapshot();
+    await failReplay(socket);
+    expect(pageText()).toContain("Reconnecting");
+    expect(pageText()).not.toContain("Terminal output unavailable");
     expect(preview()?.style.visibility).toBe("hidden");
+    await waitForReadinessCondition(
+      () => expect(testState.sockets).toHaveLength(2),
+      "transport did not retry after replay failure",
+    );
   });
 
   async function mountReplayAfterCheckpointedOpen() {
@@ -1596,24 +1625,87 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
     return { preview, reconnectSocket, session };
   }
 
-  it("keeps a checkpoint-backed replay hidden and shows the unavailable state on a terminal error before completion", async () => {
-    const { preview, reconnectSocket } =
-      await mountReplayAfterCheckpointedOpen();
-    await act(async () => {
-      reconnectSocket.receive({
-        type: "error",
-        code: "replay_failed",
-        message: "replay failed",
-      });
-      await Promise.resolve();
-    });
-    await waitForReadinessCondition(
-      () => expect(pageText()).toContain("Terminal output unavailable"),
-      "unavailable state was not shown after a terminal error",
-    );
+  function expectPaintedScreenKept(preview: () => HTMLElement | null) {
     expect(preview()?.dataset.terminalReplayHeld).toBeDefined();
     expect(preview()?.style.visibility).toBe("hidden");
+    expect(paintedScreen()?.style.opacity).not.toBe("0");
+  }
+
+  it("keeps the painted screen visible and partial output hidden after a checkpoint-backed replay hold expires", async () => {
+    shortenReplayHoldTimeout(600);
+    const { preview } = await mountReplayAfterCheckpointedOpen();
+    await waitForReadinessCondition(
+      () => expect(preview()?.dataset.terminalReplayHoldExpired).toBeDefined(),
+      "hold backstop did not fire for the stalled replay",
+    );
+    expectPaintedScreenKept(preview);
+    expect(pageText()).toContain("Reconnecting");
+    expect(pageText()).not.toContain("Still loading terminal");
   });
+
+  it("retries after a checkpoint-backed replay error, keeps the painted screen, and recovers without manual action", async () => {
+    const { preview, reconnectSocket, session } =
+      await mountReplayAfterCheckpointedOpen();
+    await failReplay(reconnectSocket);
+    expect(pageText()).toContain("Reconnecting");
+    expect(pageText()).not.toContain("Terminal output unavailable");
+    expectPaintedScreenKept(preview);
+    await waitForReadinessCondition(
+      () => expect(testState.sockets).toHaveLength(3),
+      "transport did not retry after the replay failure",
+    );
+    const retrySocket = testState.sockets[2];
+    if (!retrySocket) throw new Error("retry socket is missing");
+    await waitForReadiness(retrySocket.opened, "retry socket did not open");
+    retrySocket.receive({
+      type: "attached",
+      session,
+      replayStartSeq: 4,
+      nextSeq: 6,
+    });
+    for (const seq of [4, 5]) {
+      retrySocket.receive({
+        type: "output",
+        chunk: { seq, dataBase64: btoa(`recovered frame ${seq}\r\n`) },
+      });
+    }
+    await waitForReadinessCondition(
+      () => expect(preview()).toBeNull(),
+      "preview was not disposed after the retried replay completed",
+    );
+    expect(pageText()).not.toContain("Reconnecting");
+    expect(pageText()).not.toContain("Terminal output unavailable");
+  });
+
+  it("keeps retrying after repeated replay errors and never reaches an unavailable state", async () => {
+    const { preview, reconnectSocket, session } =
+      await mountReplayAfterCheckpointedOpen();
+    let current = reconnectSocket;
+    for (const attempt of [1, 2, 3]) {
+      await failReplay(current);
+      await waitForReadinessCondition(
+        () => expect(testState.sockets).toHaveLength(attempt + 2),
+        `transport did not retry after replay failure ${attempt}`,
+      );
+      const next = testState.sockets[attempt + 1];
+      if (!next) throw new Error("retry socket is missing");
+      await waitForReadiness(next.opened, "retry socket did not open");
+      next.receive({
+        type: "attached",
+        session,
+        replayStartSeq: 4,
+        nextSeq: 6,
+      });
+      next.receive({
+        type: "output",
+        chunk: { seq: 4, dataBase64: btoa("partial replay\r\n") },
+      });
+      expect(pageText()).toContain("Reconnecting");
+      expect(pageText()).not.toContain("Terminal output unavailable");
+      expectPaintedScreenKept(preview);
+      current = next;
+    }
+  }, 30_000);
 
   it("keeps a checkpoint-backed replay hidden and shows the closed state when the transport closes before completion", async () => {
     const { preview, reconnectSocket, session } =

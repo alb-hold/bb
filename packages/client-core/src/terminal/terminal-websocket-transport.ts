@@ -15,7 +15,7 @@ const DEFAULT_HEARTBEAT_TIMEOUT_MS = 45_000;
 export const REPAINT_RESTORE_DELAY_MS = 400;
 const REPAINT_RESTORE_RETRY_DELAY_MS = 1_000;
 const ATTACH_RESIZE_SETTLE_CEILING_MS = 5_000;
-const DEFAULT_RECONNECT_DELAYS_MS = [100, 250, 500, 1_000, 2_000] as const;
+const DEFAULT_RECONNECT_DELAYS_MS = [500, 1_000, 2_000, 4_000, 8_000] as const;
 
 export type TerminalSocketConnectionState =
   | "connecting"
@@ -150,7 +150,8 @@ export class TerminalWebSocketTransport {
   private resizeEchoSeqConfirmed = false;
   private repaintNudgeInFlight: RepaintNudgeInFlight | null = null;
   private repaintTimeout: ReturnType<typeof setTimeout> | null = null;
-  private repaintRestoreRetryTimeout: ReturnType<typeof setTimeout> | null = null;
+  private repaintRestoreRetryTimeout: ReturnType<typeof setTimeout> | null =
+    null;
   private settleTimeout: ReturnType<typeof setTimeout> | null = null;
   private socket: TerminalBrowserSocket | null = null;
   private terminalEnded = false;
@@ -159,7 +160,8 @@ export class TerminalWebSocketTransport {
 
   constructor(private readonly options: TerminalWebSocketTransportOptions) {
     this.createSocket =
-      options.createSocket ?? ((url, protocols) => new WebSocket(url, protocols));
+      options.createSocket ??
+      ((url, protocols) => new WebSocket(url, protocols));
     this.drainPollMs = options.drainPollMs ?? DEFAULT_DRAIN_POLL_MS;
     this.heartbeatIntervalMs =
       options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
@@ -201,6 +203,22 @@ export class TerminalWebSocketTransport {
       socket.close();
     }
     this.options.onConnectionState?.("closed");
+  }
+
+  retry(): void {
+    if (
+      this.disposed ||
+      this.terminalEnded ||
+      !this.options.shouldReconnect()
+    ) {
+      return;
+    }
+    const socket = this.socket;
+    if (socket === null) {
+      this.scheduleReconnect();
+      return;
+    }
+    socket.close(1011, "terminal replay retry");
   }
 
   sendInput(dataBase64: string, inputEventAt?: number): boolean {
@@ -520,10 +538,7 @@ export class TerminalWebSocketTransport {
     if (this.ackedResizeSeq >= inFlight.nudgeSeq) {
       inFlight.echoTaken = true;
     }
-    if (
-      inFlight.restoreRequested &&
-      this.ackedResizeSeq >= inFlight.nudgeSeq
-    ) {
+    if (inFlight.restoreRequested && this.ackedResizeSeq >= inFlight.nudgeSeq) {
       this.clearRepaintRestoreRetryTimeout();
       inFlight.restoreRequested = false;
       if (inFlight.finalSeq === null) {
