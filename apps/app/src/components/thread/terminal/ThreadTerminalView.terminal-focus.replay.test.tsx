@@ -82,6 +82,19 @@ class TestTerminalSocket {
   }
 
   close(code = 1000, reason = ""): void {
+    if (
+      code !== undefined &&
+      code !== 1000 &&
+      !(code >= 3000 && code <= 4999)
+    ) {
+      throw new DOMException(
+        `The close code must be 1000 or in the range 3000-4999: ${code}`,
+        "InvalidAccessError",
+      );
+    }
+    if (new TextEncoder().encode(reason ?? "").byteLength > 123) {
+      throw new DOMException("The close reason is too long", "SyntaxError");
+    }
     this.closeCalls.push({ code });
     if (this.readyState === TestTerminalSocket.CLOSED) return;
     this.readyState = TestTerminalSocket.CLOSED;
@@ -831,7 +844,7 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
         vi.useRealTimers();
       }
       expect(
-        reconnectSocket.closeCalls.some(({ code }) => code === 1011),
+        reconnectSocket.closeCalls.some(({ code }) => code === 4001),
         `attempt ${attempt} was not retried`,
       ).toBe(true);
       expect(testState.sockets).toHaveLength(socketsBefore + 2);
@@ -1652,8 +1665,13 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
     shortenReplayHoldTimeout(600);
     const { preview } = await mountReplayAfterCheckpointedOpen();
     await waitForReadinessCondition(
-      () => expect(preview()?.dataset.terminalReplayHoldExpired).toBeDefined(),
-      "hold backstop did not fire for the stalled replay",
+      () =>
+        expect(
+          testState.sockets.some((candidate) =>
+            candidate.closeCalls.some(({ code }) => code === 4001),
+          ),
+        ).toBe(true),
+      "stalled replay was not retried after the hold expired",
     );
     expectPaintedScreenKept(preview);
     expect(pageText()).toContain("Reconnecting");

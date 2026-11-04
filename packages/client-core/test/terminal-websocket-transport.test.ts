@@ -22,6 +22,19 @@ class FakeTerminalBrowserSocket implements TerminalBrowserSocket {
   throwOnSend = false;
 
   close(code?: number, reason?: string): void {
+    if (
+      code !== undefined &&
+      code !== 1000 &&
+      !(code >= 3000 && code <= 4999)
+    ) {
+      throw new DOMException(
+        `The close code must be 1000 or in the range 3000-4999: ${code}`,
+        "InvalidAccessError",
+      );
+    }
+    if (new TextEncoder().encode(reason ?? "").byteLength > 123) {
+      throw new DOMException("The close reason is too long", "SyntaxError");
+    }
     this.closeCalls.push({ code, reason });
     if (this.readyState === 3) {
       return;
@@ -563,6 +576,35 @@ describe("TerminalWebSocketTransport", () => {
     harness.transport.retry();
     vi.advanceTimersByTime(100);
     expect(harness.sockets).toHaveLength(created + 1);
+    harness.transport.dispose();
+  });
+
+  it("closes with browser-valid codes when retrying a replay and when a send fails, and opens a replacement socket", () => {
+    vi.useFakeTimers();
+    const harness = createHarness({ reconnectDelaysMs: undefined });
+    harness.transport.start();
+    harness.sockets[0]?.open();
+    harness.sockets[0]?.receive({
+      type: "attached",
+      session: terminalSession(),
+      replayStartSeq: 0,
+      nextSeq: 0,
+    });
+
+    expect(() => harness.transport.retry()).not.toThrow();
+    expect(harness.sockets[0]?.closeCalls).toEqual([
+      { code: 4001, reason: "terminal replay retry" },
+    ]);
+    vi.advanceTimersByTime(100);
+    expect(harness.sockets).toHaveLength(2);
+
+    const second = harness.sockets[1]!;
+    second.open();
+    second.throwOnSend = true;
+    expect(harness.transport.sendInput(btoa("x"))).toBe(true);
+    expect(second.closeCalls).toEqual([{ code: 4002, reason: "send-failed" }]);
+    vi.advanceTimersByTime(8_000);
+    expect(harness.sockets.length).toBeGreaterThanOrEqual(3);
     harness.transport.dispose();
   });
 

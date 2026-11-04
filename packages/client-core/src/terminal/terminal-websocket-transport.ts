@@ -7,6 +7,8 @@ import {
 } from "@bb/server-contract";
 
 const SOCKET_OPEN = 1;
+const REPLAY_RETRY_CLOSE_CODE = 4001;
+const SEND_FAILED_CLOSE_CODE = 4002;
 const DEFAULT_INPUT_QUEUE_MAX_BYTES = 1024 * 1024;
 const DEFAULT_SOCKET_HIGH_WATER_BYTES = 1024 * 1024;
 const DEFAULT_DRAIN_POLL_MS = 10;
@@ -223,7 +225,7 @@ export class TerminalWebSocketTransport {
       this.scheduleReconnect();
       return;
     }
-    socket.close(1011, "terminal replay retry");
+    socket.close(REPLAY_RETRY_CLOSE_CODE, "terminal replay retry");
   }
 
   resetRetryBackoff(): void {
@@ -876,7 +878,7 @@ export class TerminalWebSocketTransport {
       return true;
     } catch {
       try {
-        socket.close(1011, "send-failed");
+        socket.close(SEND_FAILED_CLOSE_CODE, "send-failed");
       } catch {
         this.handleClose(socket);
       }
