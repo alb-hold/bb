@@ -17,6 +17,7 @@ describe("PendingRpcRegistry", () => {
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 40);
     };
     await stall();
+    await new Promise<void>((resolve) => setImmediate(resolve));
     await stall();
     const settled = new Promise<boolean>((resolve) => {
       setImmediate(() => resolve(registry.settle("attach", { value: "replayed" })));
@@ -52,5 +53,22 @@ describe("PendingRpcRegistry", () => {
     });
     const pending = registry.claim({ rpcKey: "attach" });
     await expect(pending.promise).rejects.toThrow("timeout");
+  });
+
+  it("expires after a late firing followed by an on-time firing", async () => {
+    const registry = new PendingRpcRegistry<{ rpcKey: string }, string>({
+      lateTimeoutRetryMs: 5,
+      timeoutError: () => new Error("timeout"),
+      timeoutMs: 100,
+    });
+    const startedAt = Date.now();
+    const pending = registry.claim({ rpcKey: "attach" });
+    const result = expect(pending.promise).rejects.toThrow("timeout");
+    await new Promise((resolve) => setTimeout(resolve, 70));
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 40);
+    await result;
+    const elapsedMs = Date.now() - startedAt;
+    expect(elapsedMs).toBeGreaterThanOrEqual(190);
+    expect(elapsedMs).toBeLessThan(300);
   });
 });
