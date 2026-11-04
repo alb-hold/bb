@@ -2040,23 +2040,12 @@ function TimelineExpandableRowView({
   const searchExpandedRowIds = useContext(TimelineSearchExpansionContext);
   const renderBody = useCallback(
     () => (
-      <>
-        {row.kind === "turn" && row.status !== "pending" ? (
-          <TooltipProvider>
-            <ThreadTurnTokenSummary
-              openAnalysisOnClick={false}
-              threadId={row.threadId}
-              turnId={row.turnId}
-            />
-          </TooltipProvider>
-        ) : null}
-        <TimelineExpandableBody
-          activeLatestBundleId={activeLatestBundleId}
-          row={row}
-          compactActivityIntents={compactActivityIntents}
-          showAssistantMessageActions={showAssistantMessageActions}
-        />
-      </>
+      <TimelineExpandableBody
+        activeLatestBundleId={activeLatestBundleId}
+        row={row}
+        compactActivityIntents={compactActivityIntents}
+        showAssistantMessageActions={showAssistantMessageActions}
+      />
     ),
     [
       activeLatestBundleId,
@@ -2100,6 +2089,17 @@ function TimelineExpandableRowView({
       }
       forceExpanded={searchExpandedRowIds.has(row.id)}
       terminalAutoExpanded={terminalAutoExpandedRowIds.has(row.id)}
+      collapsedPreview={
+        row.kind === "turn" && row.status !== "pending" ? (
+          <TooltipProvider>
+            <ThreadTurnTokenSummary
+              openAnalysisOnClick={false}
+              threadId={row.threadId}
+              turnId={row.turnId}
+            />
+          </TooltipProvider>
+        ) : undefined
+      }
       onTitleAction={onTitleAction}
       onIntent={preloadBody}
       renderBody={renderBody}
