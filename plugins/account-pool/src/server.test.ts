@@ -15348,23 +15348,28 @@ describe("Actor route issuer", () => {
   });
 
   it("refuses issue and 409s requests for an automatic route when the thread is bypassed or the provider is disabled", async () => {
-    const { fixture, issue, send, tokenOf } = await actorFixture();
+    const { fixture, seen, issue, send, tokenOf } = await actorFixture();
     const routingSet = (enabled: boolean) =>
       fixture.host.harness.behavior.callRpc("routing.set", { provider: "claude", enabled });
     const bypass = (bypassed: boolean) =>
       fixture.host.harness.behavior.callRpc("bypass.set", { threadId: "thread-x", bypassed });
     const token = tokenOf(await issue("thread-x", "actor-a"));
     expect(await send(token)).toBe(200);
+    expect(seen).toHaveLength(1);
     await bypass(true);
     expect(await send(token)).toBe(409);
+    expect(seen).toHaveLength(1);
     expect((await issue("thread-x", "actor-b")).exitCode).not.toBe(0);
     await bypass(false);
     expect(await send(token)).toBe(200);
+    expect(seen).toHaveLength(2);
     await routingSet(false);
     expect(await send(token)).toBe(409);
+    expect(seen).toHaveLength(2);
     expect((await issue("thread-x", "actor-b")).exitCode).not.toBe(0);
     await routingSet(true);
     expect(await send(token)).toBe(200);
+    expect(seen).toHaveLength(3);
   });
 
   it("keeps every captured stream except the issue stdout free of the token", async () => {

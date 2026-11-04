@@ -436,7 +436,7 @@ authorizes issuing; only the proof does. A caller that already holds a thread's
 pool token could use the pool directly, so issuing grants nothing beyond what
 that token already allows. The launcher reads the proof from
 `ANTHROPIC_AUTH_TOKEN` by default (`--proof-env` names another variable), pipes
-it to the CLI, and never exports it to the child.
+it to the CLI, and never exports it to the child or to the bb CLI environment. The issued route token is different: the launcher passes it to the child as `ANTHROPIC_AUTH_TOKEN`, since that is how the child routes.
 
 `issue` prints the token as the only stdout line. With `--json` it returns
 `token`, `generation`, `hubUrl`, route metadata and `launchEnv`. `generation` is
