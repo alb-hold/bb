@@ -1527,16 +1527,6 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
     });
   }
 
-  async function failReplay(socket: { receive: (message: never) => void }) {
-    await act(async () => {
-      socket.receive({
-        type: "error",
-        code: "replay_failed",
-        message: "replay failed",
-      } as never);
-      await Promise.resolve();
-    });
-  }
 
   it("keeps the replay hidden and shows the reconnecting badge when a replay fails without a prior screen", async () => {
     shortenReplayHoldTimeout(600);
