@@ -1,3 +1,4 @@
+import { CONTENT_MEASURE_MAX_WIDTH_CLASS } from "@/lib/content-measure";
 import {
   useCallback,
   useEffect,
@@ -503,7 +504,10 @@ export function NativeTerminalPromptBar({
 
   return (
     <form
-      className="flex shrink-0 flex-col gap-1.5 border-t border-border/50 bg-sidebar px-2 pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]"
+      className={cn(
+        "mx-auto flex w-full shrink-0 flex-col gap-1.5 bg-sidebar px-4 pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]",
+        CONTENT_MEASURE_MAX_WIDTH_CLASS,
+      )}
       data-native-terminal-prompt=""
       onSubmit={submit}
     >
@@ -597,7 +601,7 @@ export function NativeTerminalPromptBar({
           }}
           onKeyDown={onKeyDown}
           onPaste={onPaste}
-          className="max-h-48 min-h-10 w-full resize-none bg-transparent px-2 py-2 text-base text-foreground field-sizing-content placeholder:text-muted-foreground focus-visible:outline-none"
+          className="max-h-48 min-h-8 w-full resize-none bg-transparent px-2 py-1 text-sm text-foreground field-sizing-content placeholder:text-muted-foreground focus-visible:outline-none"
         />
         <AssistStrip
           suggestions={assist.suggestions}
@@ -632,7 +636,7 @@ export function NativeTerminalPromptBar({
             aria-label="Attach image"
             onClick={() => fileInputRef.current?.click()}
           >
-            <Icon name="Paperclip" className="size-4" />
+            <Icon name="Plus" className="size-4" />
           </Button>
           <div className="flex-1" />
           {voiceAvailable ? (

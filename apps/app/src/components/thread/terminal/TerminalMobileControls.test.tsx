@@ -46,6 +46,14 @@ describe("TerminalMobileControls", () => {
     expect(buttons[0]?.parentElement?.className.split(/\s+/u)).not.toContain(
       "flex-wrap",
     );
+    for (const label of ["Enter", "More terminal keys"]) {
+      expect(
+        screen
+          .getByRole("button", { name: label })
+          .closest("[data-terminal-key-scroller]"),
+      ).toBeNull();
+    }
+    expect(buttons[0]?.closest("[data-terminal-key-scroller]")).not.toBeNull();
     for (const button of buttons) {
       expect(button.className.split(/\s+/u)).toContain("min-w-11");
       expect(button.className.split(/\s+/u)).toContain("flex-none");

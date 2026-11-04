@@ -409,3 +409,23 @@ export function fillNativeTerminalTemplate(
     Object.hasOwn(values, name) ? (values[name] ?? whole) : whole,
   );
 }
+
+export const NATIVE_TERMINAL_SETUP_DELAY_MS = 12_000;
+
+export function nativeTerminalMayNeedSetup(args: {
+  nativeSessionId: string | null;
+  terminal: {
+    status: string;
+    createdAt: number;
+    lastUserInputAt: number | null;
+  } | null;
+  now: number;
+}): boolean {
+  return (
+    args.nativeSessionId === null &&
+    args.terminal !== null &&
+    args.terminal.status === "running" &&
+    args.terminal.lastUserInputAt === null &&
+    args.now - args.terminal.createdAt >= NATIVE_TERMINAL_SETUP_DELAY_MS
+  );
+}

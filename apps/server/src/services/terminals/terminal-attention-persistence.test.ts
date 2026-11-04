@@ -2,6 +2,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createMigratedConnection } from "@bb/db/testing";
 import {
   createConnection,
+  createNativeTerminalThread,
+  setNativeTerminalThreadTerminal,
+  recordNativeTerminalThreadSessionId,
   createTerminalSession,
   getDeviceHandoffAttentionMarker,
   getTerminalAttention,
@@ -29,6 +32,53 @@ afterEach(async () => {
 });
 
 describe("terminal attention persistence", () => {
+  it("marks an untouched unbound CLI waiting after the delay and clears on input or binding", async () => {
+    const harness = await createTestAppHarness({
+      db: createMigratedConnection(),
+    });
+    harnesses.push(harness);
+    const { terminalId, threadId } = createAttentionTerminal(harness);
+    const thread = getThread(harness.db, threadId)!;
+    createNativeTerminalThread(harness.db, {
+      threadId,
+      providerId: thread.providerId,
+      nativeSessionId: null,
+      initialPrompt: null,
+      initialImages: [],
+      model: null,
+    });
+    setNativeTerminalThreadTerminal(harness.db, {
+      threadId,
+      terminalSessionId: terminalId,
+    });
+    const waiting = async () => {
+      const response = await harness.app.request(`/api/v1/threads/${threadId}`);
+      expect(response.status).toBe(200);
+      return (await response.json()).hasPendingInteraction;
+    };
+    expect(await waiting()).toBe(false);
+    harness.db.$client
+      .prepare("UPDATE terminal_sessions SET created_at = ? WHERE id = ?")
+      .run(Date.now() - 13000, terminalId);
+    expect(await waiting()).toBe(true);
+    harness.db.$client
+      .prepare(
+        "UPDATE terminal_sessions SET last_user_input_at = ? WHERE id = ?",
+      )
+      .run(Date.now(), terminalId);
+    expect(await waiting()).toBe(false);
+    harness.db.$client
+      .prepare(
+        "UPDATE terminal_sessions SET last_user_input_at = NULL WHERE id = ?",
+      )
+      .run(terminalId);
+    expect(await waiting()).toBe(true);
+    recordNativeTerminalThreadSessionId(harness.db, {
+      threadId,
+      nativeSessionId: "bound-session",
+    });
+    expect(await waiting()).toBe(false);
+  });
   it("uses the public API host guard and rejects unknown clear targets", async () => {
     const harness = await createTestAppHarness();
     harnesses.push(harness);

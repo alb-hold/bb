@@ -133,7 +133,7 @@ export const ExecutionControls = memo(function ExecutionControls({
     handoff !== undefined;
 
   return (
-    <div className="flex min-w-0 max-w-full flex-wrap items-center gap-x-1 gap-y-2">
+    <div className="flex min-w-0 max-w-full flex-wrap max-md:flex-nowrap items-center gap-x-1 gap-y-2">
       {showModelPicker ? (
         <ModelReasoningPicker
           providerOptions={provider.options ?? []}
@@ -163,7 +163,7 @@ export const ExecutionControls = memo(function ExecutionControls({
           agentSections={agentOptions?.sections}
           onAgentOptionChange={agentOptions?.onChange}
           muted
-          className="overflow-hidden"
+          className="min-w-0 overflow-hidden"
           disabled={disabled}
           handoff={handoff}
         />
@@ -180,7 +180,7 @@ export const ExecutionControls = memo(function ExecutionControls({
             }
           }}
           disabled={disabled}
-          className="h-7 shrink-0 gap-0.5 rounded-md border border-border p-0.5 max-md:pointer-coarse:h-10"
+          className="h-7 shrink-0 gap-0.5 rounded-md border border-border p-0.5 max-md:h-auto"
         >
           {NATIVE_TERMINAL_CHOICES.map((choice) => (
             <ToggleGroupItem
@@ -188,14 +188,15 @@ export const ExecutionControls = memo(function ExecutionControls({
               value={choice.value}
               title={choice.title}
               aria-description={choice.title}
+              aria-label={choice.label}
               className={cn(
                 "h-6 min-w-0 gap-1 whitespace-nowrap rounded-sm px-1.5 text-xs font-normal text-muted-foreground shadow-none hover:bg-state-hover hover:text-foreground data-[state=on]:bg-foreground data-[state=on]:text-background data-[state=on]:font-medium data-[state=on]:hover:bg-foreground",
-                "max-md:pointer-coarse:h-9 max-md:pointer-coarse:text-sm",
+                "max-md:h-11 max-md:min-w-11 max-md:text-sm",
                 LIST_HOVER_TRANSITION,
               )}
             >
               <Icon name={choice.icon} className="size-3.5" />
-              {choice.label}
+              <span className="max-md:hidden">{choice.label}</span>
             </ToggleGroupItem>
           ))}
         </ToggleGroup>

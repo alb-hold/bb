@@ -55,7 +55,11 @@ vi.mock("@/components/secondary-panel/lazySecondaryPanelComponents", () => ({
   ),
 }));
 vi.mock("./NativeTerminalPromptBar", () => ({
-  NativeTerminalPromptBar: ({ executionLabel }: { executionLabel: string }) => (
+  NativeTerminalPromptBar: ({
+    executionLabel = "Codex",
+  }: {
+    executionLabel?: string;
+  }) => (
     <form data-native-terminal-prompt="">
       <span aria-label="Terminal execution">{executionLabel}</span>
       <textarea aria-label="Message" />
@@ -105,7 +109,7 @@ describe("NativeThreadTerminalMain focus", () => {
   it("uses the composer labels for the stored model, reasoning and permission", () => {
     renderMain();
     expect(screen.getByLabelText("Terminal execution").textContent).toBe(
-      "Codex · GPT-5 · Medium · Full Access",
+      "Default: GPT-5 · Medium · Full Access",
     );
   });
 
@@ -115,7 +119,7 @@ describe("NativeThreadTerminalMain focus", () => {
       execution.data = data;
       renderMain();
       expect(screen.getByLabelText("Terminal execution").textContent).toBe(
-        data?.model ? "Codex · GPT-5" : "Codex",
+        data?.model ? "Default: GPT-5" : "Codex",
       );
     },
   );

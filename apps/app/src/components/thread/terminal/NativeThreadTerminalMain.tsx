@@ -1,3 +1,7 @@
+import {
+  NATIVE_TERMINAL_SETUP_DELAY_MS,
+  nativeTerminalMayNeedSetup,
+} from "@bb/domain";
 import { useEffect, useState, type FocusEvent } from "react";
 import { isRunningThreadRuntimeDisplayStatus } from "@bb/client-core";
 import { Button } from "@bb/shared-ui/button";
@@ -65,7 +69,6 @@ export function NativeThreadTerminalMain({
   });
   const providerLabel = view.displayName;
   const executionLabel = [
-    providerLabel,
     thread?.model ? formatModelLabel(thread.model) : null,
     thread?.reasoningLevel
       ? reasoningLevelLabel(thread.reasoningLevel, undefined)
@@ -76,6 +79,34 @@ export function NativeThreadTerminalMain({
   ]
     .filter(Boolean)
     .join(" · ");
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (
+      view.nativeSessionId !== null ||
+      session?.status !== "running" ||
+      session.lastUserInputAt !== null
+    )
+      return;
+    const timer = window.setTimeout(
+      () => setNow(Date.now()),
+      Math.max(
+        0,
+        session.createdAt + NATIVE_TERMINAL_SETUP_DELAY_MS - Date.now(),
+      ),
+    );
+    return () => window.clearTimeout(timer);
+  }, [
+    view.nativeSessionId,
+    session?.id,
+    session?.status,
+    session?.createdAt,
+    session?.lastUserInputAt,
+  ]);
+  const setupWaiting = nativeTerminalMayNeedSetup({
+    nativeSessionId: view.nativeSessionId,
+    terminal: session,
+    now,
+  });
   const waitingPrompts = nativeTerminalWaitingPrompts(
     interactionsQuery.data ?? [],
   );
@@ -114,12 +145,14 @@ export function NativeThreadTerminalMain({
         data-no-sidebar-swipe=""
         onFocus={onFocusWithin}
       >
-        {session?.attention ? (
+        {setupWaiting || session?.attention ? (
           <div
             role="status"
             className="shrink-0 px-3 py-1 text-xs text-attention"
           >
-            Terminal needs attention
+            {setupWaiting
+              ? `Check the terminal: ${providerLabel} may be waiting for setup`
+              : "Terminal needs attention"}
           </div>
         ) : null}
         <NativeTerminalWaitingBanner
@@ -144,7 +177,9 @@ export function NativeThreadTerminalMain({
         />
         <NativeTerminalPromptBar
           projectId={projectId}
-          executionLabel={executionLabel}
+          executionLabel={
+            executionLabel ? `Default: ${executionLabel}` : undefined
+          }
           providerLabel={providerLabel}
           threadId={threadId}
         />
