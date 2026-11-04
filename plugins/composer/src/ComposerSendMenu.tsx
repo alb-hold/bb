@@ -98,7 +98,7 @@ export function ComposerSendMenu({
     <div
       data-promptbox-send-menu=""
       className={cn(
-        "group/send ml-1 inline-flex items-center rounded-md [&_[data-promptbox-submit-action]]:ml-0",
+        "group/send ml-1 inline-flex items-center rounded-full overflow-hidden [&_[data-promptbox-submit-action]]:ml-0",
         CONTROL_HOVER_TRANSITION,
         "bg-foreground text-background [&_button]:!bg-transparent [&_button]:!text-inherit [&_button]:!opacity-100",
         hasInput && "[&_[data-promptbox-submit-action]]:rounded-r-none",

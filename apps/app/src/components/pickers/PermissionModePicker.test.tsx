@@ -16,6 +16,20 @@ afterEach(() => {
 });
 
 describe("PermissionModePicker", () => {
+  it("uses the same approve vocabulary for compact and wide labels", () => {
+    render(
+      <PermissionModePicker
+        value="auto"
+        options={permissionOptions}
+        onChange={() => {}}
+        supported
+      />,
+    );
+    const trigger = screen.getByRole("button", { name: "Permission mode" });
+    expect(trigger.textContent).toContain("Approve for me");
+    expect(trigger.textContent).toContain("Approve");
+    expect(trigger.textContent).not.toContain("Auto");
+  });
   it("can show an effective display override without changing the selected value", () => {
     const onChange = vi.fn();
     render(

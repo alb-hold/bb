@@ -13,7 +13,7 @@ import {
 const COMPACT_HOME_CHROME_OFFSET_PX = 56;
 const COMPACT_HOME_COLUMN_CLASS = `mx-auto w-full ${CONTENT_MEASURE_MAX_WIDTH_CLASS} px-4`;
 const ROOT_COMPOSE_MAX_WIDTH_CLASS = CONTENT_MEASURE_MAX_WIDTH_CLASS;
-const COMPACT_HOME_REST_VISIBLE_ROWS = 4.5;
+const COMPACT_HOME_REST_VISIBLE_ROWS = 7.5;
 const COMPACT_HOME_REST_BAND_PX =
   COMPACT_HOME_REST_VISIBLE_ROWS * MOBILE_RECENT_ROW_HEIGHT_PX +
   MOBILE_RECENT_LABEL_HEIGHT_PX;
@@ -136,7 +136,7 @@ export function RootComposeHome({
       className={
         isCompact
           ? "@container/page flex min-h-0 flex-1 flex-col"
-          : "@container/page min-h-0 flex-1 overflow-y-auto"
+          : "@container/page flex min-h-0 flex-1 flex-col overflow-y-auto"
       }
       style={isCompact ? PAGE_SHELL_CONTENT_STYLE : undefined}
     >
@@ -147,7 +147,7 @@ export function RootComposeHome({
           isCompact
             ? "relative min-h-0 flex-1"
             : cn(
-                "mx-auto flex w-full flex-col px-4 pb-4 pt-2",
+                "mx-auto my-auto flex w-full shrink-0 flex-col px-4 py-8",
                 ROOT_COMPOSE_MAX_WIDTH_CLASS,
                 wideContentClassName,
               )

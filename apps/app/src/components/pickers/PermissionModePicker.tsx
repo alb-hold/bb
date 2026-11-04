@@ -13,7 +13,7 @@ function getPermissionModeCompactLabel(value: PermissionMode): string {
     case "accept-edits":
       return "Edits";
     case "auto":
-      return "Auto";
+      return "Approve";
   }
 }
 

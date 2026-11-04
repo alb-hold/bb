@@ -1074,6 +1074,18 @@ describe("ModelReasoningPicker", () => {
     expect(onModelChange).toHaveBeenCalledWith(apiModel);
   });
 
+  it("formats catalog and fallback model labels through the same formatter", () => {
+    renderPicker({
+      modelValue: "gpt-5.2-codex",
+      pickerProviderOptions: [{ value: "codex", label: "Codex" }],
+      modelOptions: [{ value: "gpt-5.2-codex", label: "gpt-5.2-codex" }],
+    });
+    expect(
+      screen.getByRole("button", { name: "Provider, model and reasoning" })
+        .textContent,
+    ).toContain("5.2-Codex");
+  });
+
   it("uses picker search policy and selects the match by keyboard", () => {
     const { onModelChange } = renderPicker({ modelOptions: manyCodexModels });
 
