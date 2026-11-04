@@ -980,7 +980,9 @@ describe("ThreadTerminalView terminal viewport and focus", () => {
               type?: string;
             },
         )
-        .filter((message) => message.type === "resize" && message.claim !== true);
+        .filter(
+          (message) => message.type === "resize" && message.claim !== true,
+        );
 
     await waitForReadinessCondition(
       () => expect(resizeMessages()).toHaveLength(1),
@@ -1014,6 +1016,10 @@ describe("ThreadTerminalView terminal viewport and focus", () => {
     );
     await waitFor(() => expect(resizeMessages()).toHaveLength(3));
     expect(resizeMessages().at(-1)).toEqual(originalGrid);
+    dispatchTouches("touchstart", 100);
+    dispatchTouches("touchmove", 50);
+    dispatchTouches("touchend", 50, true);
+    expect(fontSizeNode?.getAttribute("data-terminal-font-size")).toBe("12");
   });
 
   it("preserves the open terminal and its scrollback when pointer mode changes", async () => {

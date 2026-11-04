@@ -207,7 +207,7 @@ describe("terminal attention persistence", () => {
     });
   });
 
-  it("keeps daemon attention cleared while the terminal is visible", async () => {
+  it("keeps daemon attention pending while the terminal is visible", async () => {
     const harness = await createTestAppHarness();
     harnesses.push(harness);
     const { daemonSessionId, hostId, terminalId, threadId } =
@@ -235,18 +235,16 @@ describe("terminal attention persistence", () => {
       },
     });
 
-    expect(
-      getTerminalAttention(harness.db, terminalId)?.clearedAt,
-    ).not.toBeNull();
+    expect(getTerminalAttention(harness.db, terminalId)?.clearedAt).toBeNull();
     expect(
       await getTerminalApiAttention(harness, threadId, terminalId),
-    ).toBeNull();
-    expect(getThread(harness.db, threadId)?.latestAttentionAt).toBe(
-      latestAttentionAt,
+    ).not.toBeNull();
+    expect(getThread(harness.db, threadId)?.latestAttentionAt).toBeGreaterThan(
+      latestAttentionAt ?? 0,
     );
   });
 
-  it("publishes the cleared attention on the visible client session update", async () => {
+  it("keeps attention when a client becomes visible", async () => {
     const db = createMigratedConnection();
     const harness = await createTestAppHarness({ db });
     harnesses.push(harness);
@@ -270,14 +268,12 @@ describe("terminal attention persistence", () => {
       message: { type: "visibility", visible: true },
     });
 
-    expect(
-      getTerminalAttention(harness.db, terminalId)?.clearedAt,
-    ).not.toBeNull();
+    expect(getTerminalAttention(harness.db, terminalId)?.clearedAt).toBeNull();
     expect(
       sent
-        .map((data) => JSON.parse(data) as Record<string, unknown>)
-        .find((message) => message.type === "session-updated")?.session,
-    ).toMatchObject({ attention: null, id: terminalId });
+        .map((data) => JSON.parse(data))
+        .filter((message) => message.type === "session-updated"),
+    ).toEqual([]);
   });
 
   it("keeps pending attention when a second client attaches hidden", async () => {
@@ -304,7 +300,7 @@ describe("terminal attention persistence", () => {
     });
   });
 
-  it("keeps API attention cleared while the terminal is visible", async () => {
+  it("keeps API attention pending while the terminal is visible", async () => {
     const harness = await createTestAppHarness();
     harnesses.push(harness);
     const { terminalId, threadId } = createAttentionTerminal(harness);
@@ -323,14 +319,12 @@ describe("terminal attention persistence", () => {
       payload: { title: "visible API signal" },
     });
 
-    expect(
-      getTerminalAttention(harness.db, terminalId)?.clearedAt,
-    ).not.toBeNull();
+    expect(getTerminalAttention(harness.db, terminalId)?.clearedAt).toBeNull();
     expect(
       await getTerminalApiAttention(harness, threadId, terminalId),
-    ).toBeNull();
-    expect(getThread(harness.db, threadId)?.latestAttentionAt).toBe(
-      latestAttentionAt,
+    ).not.toBeNull();
+    expect(getThread(harness.db, threadId)?.latestAttentionAt).toBeGreaterThan(
+      latestAttentionAt ?? 0,
     );
   });
 
@@ -477,11 +471,7 @@ describe("terminal attention persistence", () => {
       seq: 1,
       clearedAt: null,
     });
-    original.deps.terminalSessions.handleBrowserTerminalMessage({
-      terminalId,
-      socket: { close() {}, send() {} },
-      message: { type: "visibility", visible: true },
-    });
+    original.deps.terminalSessions.recordDirectTerminalInput(terminalId);
     expect(getTerminalAttention(original.db, terminalId)).toMatchObject({
       seq: 1,
       clearedAt: expect.any(Number),

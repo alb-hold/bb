@@ -13,6 +13,9 @@ import {
 import { useThreadPendingInteractions } from "@/hooks/queries/thread-queries";
 import { useThreadTerminals } from "@/hooks/queries/thread-terminal-queries";
 import { useOptionalPaneContext } from "@/views/thread-detail/PaneContext";
+import { useThreadDefaultExecutionOptions } from "@/hooks/queries/thread-default-execution-options-query";
+import { formatModelLabel } from "@/hooks/useThreadCreationOptions";
+import { PERMISSION_MODE_OPTIONS } from "@/lib/permission-mode-options";
 import { NativeActivityNotice } from "./NativeActivityNotice";
 import { NativeTerminalPromptBar } from "./NativeTerminalPromptBar";
 import { useNativeActivityNotice } from "@/hooks/useNativeActivityUnconfirmed";
@@ -42,6 +45,7 @@ export function NativeThreadTerminalMain({
   threadIsProvisioning,
   view,
 }: NativeThreadTerminalMainProps) {
+  const thread = useThreadDefaultExecutionOptions(threadId).data;
   const activityNotice = useNativeActivityNotice(runtime);
   const terminalsQuery = useThreadTerminals(threadId);
   const interactionsQuery = useThreadPendingInteractions(threadId);
@@ -59,6 +63,15 @@ export function NativeThreadTerminalMain({
     threadIsRunning: isRunningThreadRuntimeDisplayStatus(runtime.displayStatus),
   });
   const providerLabel = view.displayName;
+  const executionLabel = [
+    providerLabel,
+    thread?.model ? formatModelLabel(thread.model) : "Model unknown",
+    PERMISSION_MODE_OPTIONS.find(
+      (option) => option.value === thread?.permissionMode,
+    )?.label ?? "Permissions unknown",
+  ]
+    .filter(Boolean)
+    .join(" · ");
   const waitingPrompts = nativeTerminalWaitingPrompts(
     interactionsQuery.data ?? [],
   );
@@ -97,6 +110,14 @@ export function NativeThreadTerminalMain({
         data-no-sidebar-swipe=""
         onFocus={onFocusWithin}
       >
+        {session?.attention ? (
+          <div
+            role="status"
+            className="shrink-0 px-3 py-1 text-xs text-attention"
+          >
+            Terminal needs attention
+          </div>
+        ) : null}
         <NativeTerminalWaitingBanner
           prompts={waitingPrompts}
           providerLabel={providerLabel}
@@ -119,6 +140,7 @@ export function NativeThreadTerminalMain({
         />
         <NativeTerminalPromptBar
           projectId={projectId}
+          executionLabel={executionLabel}
           providerLabel={providerLabel}
           threadId={threadId}
         />

@@ -65,14 +65,13 @@ const NATIVE_TERMINAL_CHOICES = [
     value: "chat",
     label: "Chat",
     icon: "MessageSquare",
-    title: "bb runs the agent and shows its turns in the chat view",
+    title: "bb renders the conversation",
   },
   {
     value: "terminal",
     label: "Terminal",
     icon: "Terminal",
-    title:
-      "Run the provider's own claude or codex TUI in this thread's terminal",
+    title: "Runs the provider's own CLI",
   },
 ] as const;
 
@@ -134,7 +133,7 @@ export const ExecutionControls = memo(function ExecutionControls({
     handoff !== undefined;
 
   return (
-    <div className="flex min-w-0 max-w-full flex-wrap items-center gap-1">
+    <div className="flex min-w-0 max-w-full flex-wrap items-center gap-x-1 gap-y-2">
       {showModelPicker ? (
         <ModelReasoningPicker
           providerOptions={provider.options ?? []}
@@ -188,8 +187,9 @@ export const ExecutionControls = memo(function ExecutionControls({
               key={choice.value}
               value={choice.value}
               title={choice.title}
+              aria-description={choice.title}
               className={cn(
-                "h-6 min-w-0 gap-1 whitespace-nowrap rounded-sm px-1.5 text-xs font-normal text-muted-foreground shadow-none hover:bg-state-hover hover:text-foreground data-[state=on]:bg-state-active data-[state=on]:text-foreground data-[state=on]:hover:bg-state-active",
+                "h-6 min-w-0 gap-1 whitespace-nowrap rounded-sm px-1.5 text-xs font-normal text-muted-foreground shadow-none hover:bg-state-hover hover:text-foreground data-[state=on]:bg-foreground data-[state=on]:text-background data-[state=on]:font-medium data-[state=on]:hover:bg-foreground",
                 "max-md:pointer-coarse:h-9 max-md:pointer-coarse:text-sm",
                 LIST_HOVER_TRANSITION,
               )}

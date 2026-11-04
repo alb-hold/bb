@@ -1331,10 +1331,6 @@ export class TerminalSessionLifecycle {
     if (!session || session.status !== "running") return null;
     const now = attention.at ?? Date.now();
     const source = attention.source;
-    const alreadyVisible = this.options.hub.hasVisibleTerminalClient(
-      attention.terminalId,
-      now,
-    );
     const daemonSeq = source === "daemon" ? attention.seq : null;
     const { deviceHandoff, terminalId, ...value } = attention;
     const previous = getTerminalAttention(this.options.db, terminalId);
@@ -1365,25 +1361,20 @@ export class TerminalSessionLifecycle {
       }
     });
     persistAttention();
-    if (alreadyVisible) {
-      clearTerminalAttention(this.options.db, terminalId, now);
-      if (deviceHandoff) {
-        deleteDeviceHandoffAttentionMarker(this.options.db, terminalId, seq);
-      }
-    }
     if (session.threadId !== null) {
-      if (!alreadyVisible) {
-        const previous = this.lastThreadAttentionAt.get(session.threadId) ?? 0;
-        if (now - previous >= TERMINAL_THREAD_ATTENTION_DEBOUNCE_MS) {
-          updateThread(this.options.db, this.options.hub, session.threadId, {
-            latestAttentionAt: now,
-          });
-          this.lastThreadAttentionAt.set(session.threadId, now);
-        }
+      const previous = this.lastThreadAttentionAt.get(session.threadId) ?? 0;
+      if (now - previous >= TERMINAL_THREAD_ATTENTION_DEBOUNCE_MS) {
+        updateThread(this.options.db, this.options.hub, session.threadId, {
+          latestAttentionAt: now,
+        });
+        this.lastThreadAttentionAt.set(session.threadId, now);
       }
-      this.options.hub.notifyThread(session.threadId, ["terminals-changed"]);
+      this.options.hub.notifyThread(session.threadId, [
+        "terminals-changed",
+        "status-changed",
+      ]);
     }
-    return alreadyVisible ? null : seq;
+    return seq;
   }
 
   private clearTerminalAttention(terminalId: string): void {
@@ -1399,7 +1390,10 @@ export class TerminalSessionLifecycle {
       });
     }
     if (session?.threadId !== null && session?.threadId !== undefined) {
-      this.options.hub.notifyThread(session.threadId, ["terminals-changed"]);
+      this.options.hub.notifyThread(session.threadId, [
+        "terminals-changed",
+        "status-changed",
+      ]);
     }
   }
 
@@ -2016,8 +2010,10 @@ export class TerminalSessionLifecycle {
         throw new ApiError(502, "host_disconnected", "Host is not connected");
       }
     }
-    if (args.payload.dataBase64.length > 0)
+    if (args.payload.dataBase64.length > 0) {
+      this.clearTerminalAttention(current.id);
       emitPluginTerminalInput(this.toTerminalSession(session));
+    }
     return this.toTerminalSession(session);
   }
 
@@ -3150,6 +3146,7 @@ export class TerminalSessionLifecycle {
         session: this.toTerminalSession(markedInput),
       });
     }
+    this.clearTerminalAttention(current.id);
     emitPluginTerminalInput(this.toTerminalSession(markedInput ?? current));
   }
 
@@ -3326,9 +3323,6 @@ export class TerminalSessionLifecycle {
         );
         return;
       case "visibility":
-        if (args.message.visible) {
-          this.clearTerminalAttention(args.terminalId);
-        }
         if (this.outputAckSocketVisibility.has(args.socket)) {
           this.outputAckSocketVisibility.set(args.socket, args.message.visible);
         }

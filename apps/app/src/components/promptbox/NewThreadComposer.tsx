@@ -269,7 +269,7 @@ export interface NewThreadComposerState {
 
 const nativeTerminalPreferenceAtom = atomWithStorage<boolean>(
   "bb.composer.nativeTerminal",
-  false,
+  true,
   createJsonLocalStorage<boolean>(
     (value): value is boolean => typeof value === "boolean",
   ),

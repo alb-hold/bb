@@ -93,9 +93,18 @@ describe("ExecutionControls", () => {
       nativeTerminal: { enabled: false, onChange },
     });
 
-    const group = screen.getByRole("radiogroup", { name: "Run this thread in" });
+    const group = screen.getByRole("radiogroup", {
+      name: "Run this thread in",
+    });
     const chat = within(group).getByRole("radio", { name: "Chat" });
     const terminal = within(group).getByRole("radio", { name: "Terminal" });
+    expect(chat.getAttribute("aria-description")).toBe(
+      "bb renders the conversation",
+    );
+    expect(terminal.getAttribute("aria-description")).toBe(
+      "Runs the provider's own CLI",
+    );
+    expect(terminal.className).toContain("data-[state=on]:bg-foreground");
     expect(chat.getAttribute("aria-checked")).toBe("true");
     expect(terminal.getAttribute("aria-checked")).toBe("false");
     fireEvent.click(chat);

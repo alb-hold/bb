@@ -44,6 +44,11 @@ vi.mock("@/hooks/queries/native-terminal-queries", () => ({
   useOpenNativeTerminal: () => ({ isPending: false, mutate: hooks.openNative }),
 }));
 
+vi.mock("@/hooks/queries/thread-default-execution-options-query", () => ({
+  useThreadDefaultExecutionOptions: () => ({
+    data: { model: "gpt-5", permissionMode: "full" },
+  }),
+}));
 vi.mock("@/hooks/queries/thread-queries", () => ({
   useThreadPendingInteractions: () => ({ data: [] }),
 }));

@@ -43,6 +43,7 @@ interface NativeTerminalPromptBarProps {
   projectId: string;
   providerLabel: string;
   threadId: string;
+  executionLabel?: string;
 }
 
 const PUSH_TO_TALK_HOLD_MS = 350;
@@ -93,6 +94,7 @@ function pastedFiles(clipboard: Pick<DataTransfer, "files" | "items">): File[] {
 export function NativeTerminalPromptBar({
   projectId,
   providerLabel,
+  executionLabel,
   threadId,
 }: NativeTerminalPromptBarProps) {
   const inputId = useId();
@@ -559,8 +561,15 @@ export function NativeTerminalPromptBar({
             onDiscard={dictation.discardFailed}
           />
         )}
+        <div
+          aria-label="Terminal execution"
+          className="truncate px-2 text-xs text-muted-foreground"
+          title={executionLabel ?? providerLabel}
+        >
+          {executionLabel ?? providerLabel}
+        </div>
         <label className="sr-only" htmlFor={inputId}>
-          Message {providerLabel}
+          Send to {providerLabel} terminal
         </label>
         <textarea
           ref={textareaRef}
@@ -575,7 +584,7 @@ export function NativeTerminalPromptBar({
               ? "Starting microphone…"
               : recording
                 ? "Listening…"
-                : `Message ${providerLabel}`
+                : `Send to ${providerLabel} terminal`
           }
           onChange={(event) => {
             applyValue(event.target.value, programmaticRef.current);

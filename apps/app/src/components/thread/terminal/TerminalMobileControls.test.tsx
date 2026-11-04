@@ -41,7 +41,7 @@ describe("TerminalMobileControls", () => {
 
     expect(buttons.length).toBeGreaterThan(0);
     for (const button of buttons) {
-      expect(button.className.split(/\s+/u)).toContain("min-w-8");
+      expect(button.className.split(/\s+/u)).toContain("min-w-11");
       expect(button.className.split(/\s+/u)).toContain("flex-none");
     }
   });
