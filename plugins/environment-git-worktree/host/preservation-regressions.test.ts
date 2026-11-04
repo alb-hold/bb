@@ -344,7 +344,8 @@ describe("real worktree teardown preservation", () => {
     let removalError: unknown;
     try {
       await remove(worktree, true, {
-        afterFinalCheck: inject,
+        afterFinalCheck: (target, gitDir) =>
+          inject(target, gitDir, path.dirname(path.dirname(gitDir))),
       });
     } catch (error) {
       removalError = error;
