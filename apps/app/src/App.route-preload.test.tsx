@@ -23,20 +23,30 @@ import {
 import { afterEach, expect, it, vi } from "vitest";
 import { MemoryRouter, useNavigate } from "react-router-dom";
 import { AppRoutes } from "./App";
+import { startSplitPreloading } from "./lib/split-prefetch";
 
 const downloads = await vi.hoisted(async () => {
   const { createDeferredPromise } = await import("@bb/test-helpers");
   return {
     workspace: createDeferredPromise<void>(),
+    workspaceStarted: vi.fn(),
     compose: vi.fn(),
     thread: vi.fn(),
+    prefetch: vi.fn(),
   };
 });
+vi.mock("./lib/thread-open-prefetch", () => ({
+  prefetchThreadOpen: downloads.prefetch,
+}));
+vi.mock("./views/SettingsView", () => ({
+  SettingsView: () => <p>Settings ready</p>,
+}));
 
 vi.mock("./components/layout/AppLayout", () => ({
   AppLayout: ({ children }: { children: ReactNode }) => <>{children}</>,
 }));
 vi.mock("./views/SplitWorkspaceRoute", async () => {
+  downloads.workspaceStarted();
   await downloads.workspace.promise;
   return { default: () => <p>Workspace ready</p> };
 });
@@ -53,6 +63,16 @@ afterEach(() => {
   cleanup();
   appQueryClient.clear();
   vi.restoreAllMocks();
+});
+
+it("keeps the workspace chunk off routes that do not use it", async () => {
+  render(
+    <MemoryRouter initialEntries={["/settings"]}>
+      <AppRoutes />
+    </MemoryRouter>,
+  );
+  await screen.findByText("Settings ready");
+  expect(downloads.workspaceStarted).not.toHaveBeenCalled();
 });
 
 it("starts destination code before the workspace settles and keeps thread code off new-thread startup", async () => {
@@ -86,6 +106,10 @@ it("starts destination code before the workspace settles and keeps thread code o
     </MemoryRouter>,
   );
   await waitFor(() => expect(downloads.compose).toHaveBeenCalledTimes(1));
+  startSplitPreloading();
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+  });
   expect(downloads.thread).not.toHaveBeenCalled();
   await waitFor(() => expect(environments).toHaveBeenCalledTimes(1));
   expect(machines).toHaveBeenCalledTimes(1);
@@ -110,6 +134,9 @@ it("starts destination code before the workspace settles and keeps thread code o
 
   fireEvent.click(screen.getByRole("button", { name: "Open personal thread" }));
   await waitFor(() => expect(downloads.thread).toHaveBeenCalledTimes(1));
+  await waitFor(() =>
+    expect(downloads.prefetch).toHaveBeenCalledWith("thr_example"),
+  );
 
   fireEvent.click(screen.getByRole("button", { name: "Open project thread" }));
   expect(downloads.thread).toHaveBeenCalledTimes(1);

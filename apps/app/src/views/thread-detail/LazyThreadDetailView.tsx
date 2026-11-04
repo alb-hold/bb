@@ -18,7 +18,7 @@ export const LazyThreadDetailView = defineSplit<
   ComponentProps<typeof ThreadDetailView>
 >({
   id: "thread-detail",
-  tier: "preload",
+  tier: "intent",
   load: () =>
     import("./ThreadDetailView").then((module) => module.ThreadDetailView),
   loading: ThreadDetailViewLoading,

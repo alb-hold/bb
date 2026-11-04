@@ -16,15 +16,23 @@ export function useCodeRendererPreloads(): void {
   useEffect(() => {
     if (!bootComplete || (!warmDiff && !warmSource)) return;
     let cancelled = false;
-    queueSplitPreload(async () => {
-      if (cancelled) return;
-      await Promise.all([
-        warmDiff ? BbDiffSplit.preload() : undefined,
-        warmSource ? BbSourceCodeSplit.preload() : undefined,
-      ]).catch(() => undefined);
-    });
+    const onIntent = (event: Event) => {
+      if (!(event.target instanceof Element)) return;
+      if (!event.target.closest("[data-sidebar-thread-id]")) return;
+      queueSplitPreload(async () => {
+        if (cancelled) return;
+        await Promise.all([
+          warmDiff ? BbDiffSplit.preload() : undefined,
+          warmSource ? BbSourceCodeSplit.preload() : undefined,
+        ]).catch(() => undefined);
+      });
+    };
+    document.addEventListener("pointerover", onIntent);
+    document.addEventListener("focusin", onIntent);
     return () => {
       cancelled = true;
+      document.removeEventListener("pointerover", onIntent);
+      document.removeEventListener("focusin", onIntent);
     };
   }, [bootComplete, warmDiff, warmSource]);
 }

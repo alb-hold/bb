@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import { definePluginApp } from "./plugin-app-definition";
 import {
+  getPluginSlotSnapshot,
+  resetPluginSlotStoreForTest,
+  setPluginSlotRegistrations,
+} from "./plugin-slots";
+import {
   createPluginFrontendReconcileState,
   orderPluginFrontendCandidates,
   reconcilePluginFrontends,
@@ -25,7 +30,15 @@ function candidate(pluginId: string, jsBytes: number): PluginFrontendCandidate {
 }
 
 function pluginModule(): Record<string, unknown> {
-  return { default: definePluginApp(() => {}) };
+  return {
+    default: definePluginApp((app) => {
+      app.slots.homepageSection({
+        id: "section",
+        title: "Section",
+        component: () => null,
+      });
+    }),
+  };
 }
 
 function makeDeferredImports() {
@@ -101,6 +114,51 @@ describe("orderPluginFrontendCandidates", () => {
 });
 
 describe("reconcilePluginFrontends load scheduling", () => {
+  it("defers invisible bundles until paint and idle, then publishes their slots", async () => {
+    let resume = () => {};
+    const idle = new Promise<void>((resolve) => {
+      resume = resolve;
+    });
+    const imports = makeDeferredImports();
+    resetPluginSlotStoreForTest();
+    const registrations = vi.fn(setPluginSlotRegistrations);
+    const waitForDeferredLoad = vi.fn(() => idle);
+    const done = reconcilePluginFrontends(
+      createPluginFrontendReconcileState(),
+      makeDeps([candidate("panel", 100), candidate("composer", 900)], {
+        importModule: imports.importModule,
+        priorityPluginIds: () => ["composer"],
+        waitForDeferredLoad,
+        setRegistrations: registrations,
+      }),
+    );
+    for (let i = 0; i < 10; i += 1) await Promise.resolve();
+    expect(imports.started).toEqual([
+      "/api/v1/plugins/composer/assets/app.js?h=h",
+    ]);
+    expect(waitForDeferredLoad).not.toHaveBeenCalled();
+    await imports.resolveNext();
+    expect(waitForDeferredLoad).toHaveBeenCalledOnce();
+    expect(registrations.mock.calls.map(([id]) => id)).toEqual(["composer"]);
+    expect(imports.started).toHaveLength(1);
+    expect(
+      getPluginSlotSnapshot().homepageSections.map((slot) => slot.pluginId),
+    ).toEqual(["composer"]);
+    resume();
+    for (let i = 0; i < 10; i += 1) await Promise.resolve();
+    await imports.resolveNext();
+    await done;
+    expect(registrations.mock.calls.map(([id]) => id)).toEqual([
+      "composer",
+      "panel",
+    ]);
+    expect(
+      getPluginSlotSnapshot()
+        .homepageSections.map((slot) => slot.pluginId)
+        .sort(),
+    ).toEqual(["composer", "panel"]);
+    resetPluginSlotStoreForTest();
+  });
   it("imports at most PLUGIN_FRONTEND_LOAD_CONCURRENCY bundles at once, in priority order", async () => {
     const imports = makeDeferredImports();
     const state = createPluginFrontendReconcileState();
