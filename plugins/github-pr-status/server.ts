@@ -58,7 +58,11 @@ type Environment = Awaited<
 >;
 
 function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  try {
+    return error instanceof Error ? error.message : String(error);
+  } catch {
+    return "unprintable error";
+  }
 }
 
 function httpStatusOf(error: unknown): number | null {
@@ -68,6 +72,89 @@ function httpStatusOf(error: unknown): number | null {
     typeof error.status === "number"
     ? error.status
     : null;
+}
+
+const IDENTITY_OPTIONS = {
+  "expected-head-oid": {
+    type: "string",
+    placeholder: "oid",
+    aliases: ["expectedHeadOid"],
+    description:
+      "Head commit shown by `bb pull-request`; the action is refused if the pull request changed since",
+  },
+  "expected-host": {
+    type: "string",
+    placeholder: "host",
+    description: "Host shown by `bb pull-request show`",
+  },
+  "expected-repository": {
+    type: "string",
+    placeholder: "owner/repository",
+    description: "Owner and repository shown by `bb pull-request show`",
+  },
+  "expected-number": {
+    type: "string",
+    placeholder: "number",
+    description: "Pull request number shown by `bb pull-request show`",
+  },
+  "expected-base-ref": {
+    type: "string",
+    placeholder: "branch",
+    description: "Base ref shown by `bb pull-request show`",
+  },
+} as const;
+
+type DisplayedPullRequestIdentity = {
+  expectedHeadOid: string | null;
+  expectedHost: string | null;
+  expectedRepository: string | null;
+  expectedNumber: number | null;
+  expectedBaseRef: string | null;
+};
+
+function requireIdentity(
+  options: {
+    "expected-head-oid"?: string;
+    "expected-host"?: string;
+    "expected-repository"?: string;
+    "expected-number"?: string;
+    "expected-base-ref"?: string;
+  },
+  verb: "Ready" | "Draft" | "Merge",
+): DisplayedPullRequestIdentity {
+  const expectedHeadOid = options["expected-head-oid"];
+  if (expectedHeadOid === undefined)
+    refuse(
+      `${verb} needs the head commit you reviewed: pass --expected-head-oid <oid> (shown as 'Head commit' by \`bb pull-request\`)`,
+    );
+  const expectedHost = options["expected-host"];
+  if (expectedHost === undefined)
+    refuse(`${verb} needs --expected-host (shown by \`bb pull-request show\`)`);
+  const expectedRepository = options["expected-repository"];
+  if (expectedRepository === undefined)
+    refuse(
+      `${verb} needs --expected-repository (shown by \`bb pull-request show\`)`,
+    );
+  const expectedNumber = options["expected-number"];
+  if (expectedNumber === undefined)
+    refuse(
+      `${verb} needs --expected-number (shown by \`bb pull-request show\`)`,
+    );
+  const parsedExpectedNumber = Number(expectedNumber);
+  if (!Number.isInteger(parsedExpectedNumber) || parsedExpectedNumber < 1)
+    refuse(`${verb} needs a positive integer --expected-number`);
+  const expectedBaseRef = options["expected-base-ref"];
+  if (expectedBaseRef === undefined)
+    refuse(
+      `${verb} needs --expected-base-ref (shown by \`bb pull-request show\`)`,
+    );
+  return {
+    expectedHeadOid,
+    expectedHost,
+    expectedRepository,
+    expectedNumber: parsedExpectedNumber,
+    expectedBaseRef,
+  };
 }
 
 function refuse(message: string): never {
@@ -96,10 +183,17 @@ async function runCliAction(
 }
 
 function describePullRequest(pr: PullRequest): string {
+  const displayedUrl = new URL(pr.url);
+  const [owner, repository] = displayedUrl.pathname.split("/").slice(1, 3);
   return [
     `Pull request: #${pr.number} ${pr.state} - ${pr.title}`,
     `URL: ${pr.url}`,
+    `Host: ${displayedUrl.host}`,
+    `Repository: ${owner}/${repository?.replace(/\.git$/u, "") ?? ""}`,
+    `Number: ${pr.number}`,
+    `Base ref: ${pr.baseRefName}`,
     `Branch: ${pr.headRefName} -> ${pr.baseRefName}`,
+    `Head commit: ${pr.headRefOid ?? "unknown"}`,
     `Attention: ${pr.attention}`,
     `Auto-merge: ${pr.autoMerge ? "on" : "off"}`,
     `Merge queue: ${pr.inMergeQueue === null ? "unknown" : pr.inMergeQueue ? "queued" : "not queued"}`,
@@ -149,6 +243,16 @@ export default function githubPrStatusPlugin(bb: BbPluginApi): void {
     }
   }
 
+  const logDebug = (message: string) => {
+    try {
+      bb.log.debug(message);
+    } catch {}
+  };
+
+  function ignoreRejection(promise: Promise<unknown>): void {
+    void promise.catch(() => {});
+  }
+
   const persistence = createPullRequestPersistence(bb.storage);
   const savedLinks = persistence.links();
   const lookedUpBranches = new Map<string, string | null>(
@@ -183,7 +287,7 @@ export default function githubPrStatusPlugin(bb: BbPluginApi): void {
       )
         store.pushed(environmentId);
     } catch (error) {
-      bb.log.debug(
+      logDebug(
         `Failed to inspect refs for ${environmentId}: ${errorMessage(error)}`,
       );
     }
@@ -385,7 +489,7 @@ export default function githubPrStatusPlugin(bb: BbPluginApi): void {
       );
     },
     onCheckFailed: (environmentId, error) => {
-      bb.log.debug(
+      logDebug(
         `Failed to check watched pull request for ${environmentId}: ${errorMessage(error)}`,
       );
     },
@@ -407,7 +511,7 @@ export default function githubPrStatusPlugin(bb: BbPluginApi): void {
         if (environment === null) store.remove(environmentId);
       })
       .catch((error) =>
-        bb.log.debug(
+        logDebug(
           `Failed to check saved environment ${environmentId}: ${errorMessage(error)}`,
         ),
       );
@@ -428,13 +532,15 @@ export default function githubPrStatusPlugin(bb: BbPluginApi): void {
             store.refresh(environmentId);
             return;
           case "branch":
-            void inspectRefs(
-              environmentId,
-              event.changes.includes("git-refs-changed"),
+            ignoreRejection(
+              inspectRefs(
+                environmentId,
+                event.changes.includes("git-refs-changed"),
+              ),
             );
             return;
           case "invalidate":
-            void inspectRefs(environmentId, true);
+            ignoreRejection(inspectRefs(environmentId, true));
             return;
           case null:
             return;
@@ -505,27 +611,43 @@ export default function githubPrStatusPlugin(bb: BbPluginApi): void {
     }
   }
 
-  async function markReady(environmentId: string) {
-    await runAction(environmentId, { operation: "ready" }, (pullRequest) => {
-      if (pullRequest.state !== "draft") refuse("Pull request is not a draft");
-    });
+  async function markReady(
+    environmentId: string,
+    identity: DisplayedPullRequestIdentity,
+  ) {
+    await runAction(
+      environmentId,
+      { operation: "ready", ...identity },
+      (pullRequest) => {
+        if (pullRequest.state !== "draft")
+          refuse("Pull request is not a draft");
+      },
+    );
     return { message: "Pull request marked ready" };
   }
 
-  async function markDraft(environmentId: string) {
-    await runAction(environmentId, { operation: "draft" }, (pullRequest) => {
-      if (pullRequest.state !== "open") refuse("Pull request is not open");
-    });
+  async function markDraft(
+    environmentId: string,
+    identity: DisplayedPullRequestIdentity,
+  ) {
+    await runAction(
+      environmentId,
+      { operation: "draft", ...identity },
+      (pullRequest) => {
+        if (pullRequest.state !== "open") refuse("Pull request is not open");
+      },
+    );
     return { message: "Pull request converted to draft" };
   }
 
   async function merge(
     environmentId: string,
     method: "merge" | "squash" | "rebase",
+    identity: DisplayedPullRequestIdentity,
   ) {
     await runAction(
       environmentId,
-      { operation: "merge", method },
+      { operation: "merge", method, ...identity },
       (pullRequest) => {
         if (
           pullRequest.state !== "open" ||
@@ -551,9 +673,12 @@ export default function githubPrStatusPlugin(bb: BbPluginApi): void {
         await store.reread(environmentId);
         return { ok: true } as const;
       },
-      markReady: ({ environmentId }) => markReady(environmentId),
-      markDraft: ({ environmentId }) => markDraft(environmentId),
-      merge: ({ environmentId, method }) => merge(environmentId, method),
+      markReady: ({ environmentId, ...identity }) =>
+        markReady(environmentId, identity),
+      markDraft: ({ environmentId, ...identity }) =>
+        markDraft(environmentId, identity),
+      merge: ({ environmentId, method, ...identity }) =>
+        merge(environmentId, method, identity),
     },
     {
       experimental_discoverable: true,
@@ -643,20 +768,28 @@ export default function githubPrStatusPlugin(bb: BbPluginApi): void {
         ready: cliCommand({
           summary: "Mark a pull request ready for review",
           positionals: ENVIRONMENT_POSITIONAL,
-          options: { json: JSON_OPTION },
+          options: { ...IDENTITY_OPTIONS, json: JSON_OPTION },
           run: (input) =>
             runCliAction(
-              () => markReady(input.positionals["environment-id"]),
+              () =>
+                markReady(
+                  input.positionals["environment-id"],
+                  requireIdentity(input.options, "Ready"),
+                ),
               input.options.json,
             ),
         }),
         draft: cliCommand({
           summary: "Convert a pull request to draft",
           positionals: ENVIRONMENT_POSITIONAL,
-          options: { json: JSON_OPTION },
+          options: { ...IDENTITY_OPTIONS, json: JSON_OPTION },
           run: (input) =>
             runCliAction(
-              () => markDraft(input.positionals["environment-id"]),
+              () =>
+                markDraft(
+                  input.positionals["environment-id"],
+                  requireIdentity(input.options, "Draft"),
+                ),
               input.options.json,
             ),
         }),
@@ -670,6 +803,7 @@ export default function githubPrStatusPlugin(bb: BbPluginApi): void {
               default: "merge",
               description: "Merge method",
             },
+            ...IDENTITY_OPTIONS,
             json: JSON_OPTION,
           },
           run: (input) =>
@@ -678,6 +812,7 @@ export default function githubPrStatusPlugin(bb: BbPluginApi): void {
                 merge(
                   input.positionals["environment-id"],
                   input.options.method,
+                  requireIdentity(input.options, "Merge"),
                 ),
               input.options.json,
             ),

@@ -186,6 +186,7 @@ describe("bb thread show command output", () => {
       url: "https://github.com/example/bb/pull/42",
       baseRefName: "main",
       headRefName: "bb/thread-show-pr",
+      headRefOid: "a".repeat(40),
       updatedAt: "2026-06-24T12:00:00.000Z",
       autoMerge: false,
       inMergeQueue: false,

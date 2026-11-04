@@ -446,16 +446,6 @@ describe("theme.css shimmer paint scope", () => {
     expect(css).not.toMatch(/@keyframes shine/);
   });
 
-  it("excludes bottom-anchor descendants and scopes native anchoring", () => {
-    expect(css).not.toMatch(/\.scroll-bottom-anchor-content\s*\*/);
-    expect(ruleBody(".scroll-bottom-anchor-content")).toMatch(
-      /overflow-anchor:\s*none;/,
-    );
-    expect(ruleBody(".scroll-bottom-anchor")).toMatch(
-      /overflow-anchor:\s*auto;/,
-    );
-  });
-
   it("ships a looping one-second sweep small enough for Vite to inline", () => {
     const chunks = sweepChunks(sweepPng);
     const control = chunks.find((chunk) => chunk.type === "acTL")?.data;

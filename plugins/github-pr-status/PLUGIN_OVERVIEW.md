@@ -14,8 +14,8 @@ The plugin batches GitHub reads through `gh api graphql` in the environment's wo
 Use the CLI from any thread:
 
 - `bb pull-request show <environment-id>` prints the pull request.
-- `bb pull-request ready|draft <environment-id>` changes draft state.
-- `bb pull-request merge <environment-id> --method squash` merges it.
+- `bb pull-request ready|draft <environment-id> --expected-head-oid <oid> --expected-host <host> --expected-repository <owner/repo> --expected-number <number> --expected-base-ref <branch>` changes draft state only when the displayed identity and head still match the fresh pull request.
+- `bb pull-request merge <environment-id> --method squash --expected-head-oid <oid> --expected-host <host> --expected-repository <owner/repo> --expected-number <number> --expected-base-ref <branch>` merges only when the displayed identity and head still match the fresh pull request. `bb pull-request show` prints each source value.
 
 Turn off Show pull request above the composer on this page to hide the composer segment; the Info panel keeps its Pull request row.
 
