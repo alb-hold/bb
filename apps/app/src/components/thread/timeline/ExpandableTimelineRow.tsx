@@ -5,7 +5,6 @@ import {
   useRef,
   useState,
   type CSSProperties,
-  type FocusEvent,
   type KeyboardEvent,
   type MouseEvent,
   type ReactNode,
@@ -54,7 +53,6 @@ interface ExpandableTimelineRowProps {
 }
 
 type CollapsedPreviewClickEvent = MouseEvent<HTMLDivElement>;
-type CollapsedPreviewFocusEvent = FocusEvent<HTMLDivElement>;
 type CollapsedPreviewKeyboardEvent = KeyboardEvent<HTMLDivElement>;
 
 interface InteractivePreviewTargetArgs {
@@ -146,7 +144,6 @@ function ExpandableTimelineRowComponent({
     useTimelineReasoningExpansion(reasoningExpansionKey);
   const [terminalAutoExpandedLatch, setTerminalAutoExpandedLatch] =
     useState(terminalAutoExpanded);
-  const [collapsedPreviewActive, setCollapsedPreviewActive] = useState(false);
   useEffect(() => {
     if (terminalAutoExpanded) {
       setTerminalAutoExpandedLatch(true);
@@ -157,11 +154,6 @@ function ExpandableTimelineRowComponent({
     (forceExpanded ||
       (manualExpansionOverride ??
         (autoExpanded || terminalAutoExpanded || terminalAutoExpandedLatch)));
-  useEffect(() => {
-    if (isExpanded) {
-      setCollapsedPreviewActive(false);
-    }
-  }, [isExpanded]);
   const intentHandlers = useRowIntentHandlers(onIntent);
   const horizontalPaddingClass =
     timelineRowHorizontalPaddingClassName(horizontalPadding);
@@ -195,18 +187,6 @@ function ExpandableTimelineRowComponent({
     },
     [handleToggle],
   );
-  const handleCollapsedPreviewBlur = useCallback(
-    (event: CollapsedPreviewFocusEvent): void => {
-      if (
-        event.relatedTarget instanceof Node &&
-        event.currentTarget.contains(event.relatedTarget)
-      ) {
-        return;
-      }
-      setCollapsedPreviewActive(false);
-    },
-    [],
-  );
 
   return (
     <ExpandablePanel
@@ -231,16 +211,6 @@ function ExpandableTimelineRowComponent({
             tabIndex={expandable ? 0 : undefined}
             aria-expanded={expandable ? isExpanded : undefined}
             onClick={expandable ? handleCollapsedPreviewClick : undefined}
-            onMouseEnter={
-              expandable ? () => setCollapsedPreviewActive(true) : undefined
-            }
-            onMouseLeave={
-              expandable ? () => setCollapsedPreviewActive(false) : undefined
-            }
-            onFocus={
-              expandable ? () => setCollapsedPreviewActive(true) : undefined
-            }
-            onBlur={expandable ? handleCollapsedPreviewBlur : undefined}
             onKeyDown={expandable ? handleCollapsedPreviewKeyDown : undefined}
           >
             {collapsedPreview}
