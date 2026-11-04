@@ -967,7 +967,7 @@ describe("a same-user process that cannot be read because it is non-dumpable", (
     ["gnome-keyring-d", "/usr/bin/gnome-keyring-daemon"],
     ["keepassxc-proxy", "/usr/bin/keepassxc-proxy"],
   ])(
-    "does not clear an unreadable same-user process named %s, even when its command looks trusted",
+    "does not block on an unreadable unrelated same-user process named %s",
     async (name, argv0) => {
       const proc = fakeProc({
         createdMs: 1_000_060_000,
@@ -983,7 +983,7 @@ describe("a same-user process that cannot be read because it is non-dumpable", (
         },
       });
       expect(await scanLinux("/work/tree", proc, 4242)).toMatchObject({
-        status: "unknown",
+        status: "clear",
       });
     },
   );
@@ -1050,7 +1050,7 @@ time.sleep(120)`,
   const sleepMs = (ms: number) =>
     new Promise((resolve) => setTimeout(resolve, ms));
 
-  it("named ssh-agent and started before the worktree: uncertainty still keeps it", async ({
+  it("ignores an unreadable same-user process with no evidence that it holds the worktree", async ({
     skip,
   }) => {
     skip(python.status !== 0, "python3 is not available");
@@ -1062,10 +1062,10 @@ time.sleep(120)`,
     await sleepMs(1500);
     const dir = await worktree();
     const scan = await scanOnly(dir, child.pid ?? 0);
-    expect(scan).toMatchObject({ status: "unknown" });
+    expect(scan).toMatchObject({ status: "clear" });
   });
 
-  it("named ssh-agent and started after the worktree: the worktree is kept", async ({
+  it("does not block on an unreadable same-user process started after the worktree", async ({
     skip,
   }) => {
     skip(python.status !== 0, "python3 is not available");
@@ -1076,15 +1076,10 @@ time.sleep(120)`,
       "the kernel lets this user read it",
     );
     const scan = await scanOnly(dir, child.pid ?? 0);
-    expect(scan).toMatchObject({
-      status: "unknown",
-      reason: expect.stringContaining(
-        `process ${child.pid} mount namespace (EACCES), process identity could not be established`,
-      ),
-    });
+    expect(scan).toMatchObject({ status: "clear" });
   });
 
-  it("with any other name, even started before the worktree: the worktree is kept, naming the process", async ({
+  it("does not block on an unreadable same-user process with an unknown name", async ({
     skip,
   }) => {
     skip(python.status !== 0, "python3 is not available");
@@ -1096,11 +1091,6 @@ time.sleep(120)`,
     await sleepMs(1500);
     const dir = await worktree();
     const scan = await scanOnly(dir, child.pid ?? 0);
-    expect(scan).toMatchObject({
-      status: "unknown",
-      reason: expect.stringContaining(
-        `process ${child.pid} mount namespace (EACCES), process identity could not be established`,
-      ),
-    });
+    expect(scan).toMatchObject({ status: "clear" });
   });
 });

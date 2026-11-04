@@ -170,11 +170,6 @@ export default async function worktreePlugin(bb: BbPluginApi): Promise<void> {
         return {
           status: "failed",
           message: result.message,
-          ...(result.kept?.kind === "kept"
-            ? { experimental_retained: { path: result.kept.path } }
-            : result.kept?.kind === "nothing"
-              ? { experimental_retained: null }
-              : {}),
         };
       }
       return {

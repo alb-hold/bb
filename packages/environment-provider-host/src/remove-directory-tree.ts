@@ -1,6 +1,16 @@
 import { constants } from "node:fs";
-import { lstat, open, readdir, rmdir, stat, unlink } from "node:fs/promises";
+import {
+  link,
+  lstat,
+  open,
+  readdir,
+  rename,
+  rmdir,
+  stat,
+  unlink,
+} from "node:fs/promises";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 
 export interface RemoveDirectoryTreeHooks {
   startedAt?: number;
@@ -10,6 +20,7 @@ export interface RemoveDirectoryTreeHooks {
     directory: string,
     entries: readonly string[],
   ) => Promise<void>;
+  beforeEntryRemoval?: (entry: string) => Promise<void>;
 }
 
 export type RemoveDirectoryTreeResult = "removed" | "retained";
@@ -162,10 +173,47 @@ export async function removeDirectoryTree(
     )
       return "retained";
     if (!info.isDirectory()) {
+      let beforeRemovalInfo;
       try {
-        await unlink(anchoredEntry);
+        beforeRemovalInfo = await lstat(anchoredEntry);
+      } catch {
+        return "retained";
+      }
+      if (
+        beforeRemovalInfo.dev !== info.dev ||
+        beforeRemovalInfo.ino !== info.ino ||
+        changedSince(beforeRemovalInfo, startedAt)
+      )
+        return "retained";
+      await hooks.beforeEntryRemoval?.(entry);
+      const quarantined = path.join(
+        parentDirectory,
+        `.bb-removing-${randomUUID()}`,
+      );
+      const restoreQuarantine = async (): Promise<boolean> => {
+        try {
+          await link(quarantined, anchoredEntry);
+          await unlink(quarantined);
+          return true;
+        } catch {
+          return false;
+        }
+      };
+      try {
+        await rename(anchoredEntry, quarantined);
+        const movedInfo = await lstat(quarantined);
+        if (
+          movedInfo.dev !== info.dev ||
+          movedInfo.ino !== info.ino ||
+          movedInfo.mtimeMs >= startedAt
+        ) {
+          await restoreQuarantine();
+          return "retained";
+        }
+        await unlink(quarantined);
         return "removed";
       } catch (error) {
+        await restoreQuarantine();
         return errorCode(error) === "ENOENT" ? "removed" : "retained";
       }
     }
@@ -208,7 +256,27 @@ export async function removeDirectoryTree(
         return "retained";
       }
       if (!sameDirectory(openedInfo, currentInfo)) return "retained";
-      for (const childName of listed) {
+      const changedDuringListing =
+        rootEntry && hooks.rootMetadataBaseline !== undefined
+          ? currentInfo.ctimeMs > hooks.rootMetadataBaseline.ctimeMs ||
+            currentInfo.mtimeMs > hooks.rootMetadataBaseline.mtimeMs
+          : changedSince(currentInfo, startedAt);
+      if (changedDuringListing) return "retained";
+      let afterHook: string[];
+      try {
+        afterHook = await readdir(directoryPath);
+      } catch {
+        return "retained";
+      }
+      if (
+        afterHook.length !== listed.length ||
+        afterHook.some((childName) => !listed.includes(childName))
+      )
+        return "retained";
+      const removalOrder = [...listed].sort((left, right) =>
+        left === ".git" ? 1 : right === ".git" ? -1 : 0,
+      );
+      for (const childName of removalOrder) {
         if (
           (await removeEntry(
             directoryPath,

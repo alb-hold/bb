@@ -7,6 +7,13 @@ const LINUX_SCAN_CONCURRENCY = 32;
 const PERMISSION_RETRIES = 3;
 const PERMISSION_RETRY_MS = 40;
 
+export type LsofResult = {
+  code: number | null;
+  stdout: string;
+  stderr: string;
+  spawnFailed: boolean;
+};
+
 export interface WorktreeHolder {
   pid: number;
   command: string | null;
@@ -215,12 +222,12 @@ async function scanLinuxProcess(
   if ("failed" in status)
     return unreadable(`process ${pid} status`, status.failed);
   const uids = parseStatusNumbers(status.value, "Uid");
-  if (uids === null || uids[0] === undefined)
+  if (uids === null || uids[3] === undefined)
     return notVouchable(`process ${pid} owner could not be read`);
   if (/^State:\s+Z/mu.test(status.value)) return null;
-  if (uids[0] !== self.uid) {
-    const foreignUid = uids[0];
-    if (foreignUid === undefined || foreignUid < 1000)
+  if (uids[3] !== self.uid) {
+    const foreignUid = uids[3];
+    if (foreignUid === undefined || (foreignUid < 1000 && self.uid !== 0))
       return { otherUser: true };
     const cwd = await readOptional(() => proc.readlink(`${base}/cwd`));
     if ("value" in cwd)
@@ -300,10 +307,7 @@ async function scanLinuxProcess(
   }
   if (result === null || !("unknown" in result) || !result.vouchable)
     return result;
-  return {
-    unknown: `${result.unknown}, process identity could not be established`,
-    vouchable: false,
-  };
+  return null;
 }
 interface ForeignTarget {
   what: string;
@@ -655,7 +659,7 @@ export async function linuxVisibilityProblem(
   const gids = parseStatusNumbers(status.value, "Groups") ?? [];
   const gid = parseStatusNumbers(status.value, "Gid");
   const self: ProcessIdentity = {
-    uid: uids?.[0] ?? -1,
+    uid: uids?.[3] ?? -1,
     gids: [...gids, ...(gid ?? [])],
   };
   if (nspid === null || self.uid < 0) {
@@ -798,12 +802,7 @@ export async function scanLinux(
     : { status: "clear" };
 }
 
-function runLsof(directory: string): Promise<{
-  code: number | null;
-  stdout: string;
-  stderr: string;
-  spawnFailed: boolean;
-}> {
+function runLsof(directory: string): Promise<LsofResult> {
   return new Promise((resolve) => {
     execFile(
       "lsof",
@@ -826,8 +825,16 @@ function runLsof(directory: string): Promise<{
   });
 }
 
+let activeLsof: (directory: string) => Promise<LsofResult> = runLsof;
+
+export function useLsofRunnerForTests(
+  runner: ((directory: string) => Promise<LsofResult>) | null,
+): void {
+  activeLsof = runner ?? runLsof;
+}
+
 async function scanWithLsof(directory: string): Promise<WorktreeHolderScan> {
-  const result = await runLsof(directory);
+  const result = await activeLsof(directory);
   if (result.spawnFailed) {
     return { status: "unknown", reason: "lsof could not be run" };
   }
@@ -854,9 +861,11 @@ async function scanWithLsof(directory: string): Promise<WorktreeHolderScan> {
   }
   if (holders.size > 0)
     return { status: "held", holders: [...holders.values()] };
+  if ((result.code === 0 || result.code === 1) && result.stderr.trim() === "")
+    return { status: "clear" };
   return {
     status: "unknown",
-    reason: "lsof cannot prove it sees every process",
+    reason: `lsof exited with ${result.code ?? "a signal"}`,
   };
 }
 

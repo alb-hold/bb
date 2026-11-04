@@ -418,6 +418,20 @@ export async function findPreservationReasons(
     reasons.push("has uncommitted changes or untracked files");
   }
 
+  const flaggedFiles = await runGit(
+    ["--no-optional-locks", "ls-files", "-v", "-z"],
+    gitOptions,
+  );
+  if (flaggedFiles.exitCode !== 0) {
+    reasons.push(
+      `could not check for files hidden from Git status${flaggedFiles.stderr.trim() ? ` (${flaggedFiles.stderr.trim()})` : ""}`,
+    );
+  } else if (
+    flaggedFiles.stdout.split("\0").some((entry) => /^[a-z]|^S/u.test(entry))
+  ) {
+    reasons.push("has files marked assume-unchanged or skip-worktree");
+  }
+
   const head = await runGit(
     ["--no-optional-locks", "symbolic-ref", "--short", "-q", "HEAD"],
     gitOptions,
@@ -546,6 +560,49 @@ export async function findPreservationReasons(
           ? `its branch ${branchName} has no upstream and has commits that are not reachable from any remote-tracking branch`
           : "has commits that are not reachable from any remote-tracking branch",
       );
+    }
+  }
+  const worktreeRefs = await runGit(
+    [
+      "--no-optional-locks",
+      "for-each-ref",
+      "--format=%(objectname)",
+      "refs/worktree",
+      "refs/bisect",
+    ],
+    gitOptions,
+  );
+  const reflogHead = await runGit(
+    ["--no-optional-locks", "reflog", "show", "--format=%H", "HEAD"],
+    gitOptions,
+  );
+  if (worktreeRefs.exitCode !== 0 || reflogHead.exitCode !== 0) {
+    reasons.push(
+      "could not verify commits held by this worktree's refs or reflog",
+    );
+  } else {
+    const localCommits = [
+      ...worktreeRefs.stdout.split("\n"),
+      ...reflogHead.stdout.split("\n"),
+    ].filter((commit) => commit !== "");
+    for (const commit of localCommits) {
+      const retained = await runGit(
+        [
+          "--no-optional-locks",
+          "rev-list",
+          "--max-count=1",
+          commit,
+          "--not",
+          "--remotes",
+        ],
+        gitOptions,
+      );
+      if (retained.exitCode !== 0 || retained.stdout.trim() !== "") {
+        reasons.push(
+          "has unpublished commits held only by this worktree's refs or reflog",
+        );
+        break;
+      }
     }
   }
   const holderReason = describeHolderScan(

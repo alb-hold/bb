@@ -36,7 +36,8 @@ export interface CwdScanIo {
   selfPid: number;
   listProcessIds(): Promise<string[]>;
   readCwd(pid: number): Promise<string>;
-  effectiveUid(pid: number): Promise<number>;
+  filesystemUid(pid: number): Promise<number>;
+  filesystemGid?(pid: number): Promise<number>;
   effectiveCapabilities?(pid: number): Promise<bigint>;
   statAccess?(path: string): Promise<{ uid: number; mode: number }>;
   readComm(pid: number): Promise<string>;
@@ -52,11 +53,18 @@ export interface CwdScanIo {
 export const PS_ARGS: readonly string[] = ["-A", "-o", "pid=,uid=,comm="];
 const MAC_RETRY_MS = 200;
 
-export function parseEffectiveUid(status: string): number {
-  const line = /^Uid:\t(\d+)\t(\d+)\t/mu.exec(status);
+export function parseFilesystemUid(status: string): number {
+  const line = /^Uid:\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)/mu.exec(status);
   if (line === null)
     throw Object.assign(new Error("no Uid line"), { code: "EINVAL" });
-  return Number(line[2]);
+  return Number(line[4]);
+}
+
+export function parseFilesystemGid(status: string): number {
+  const line = /^Gid:\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)/mu.exec(status);
+  if (line === null)
+    throw Object.assign(new Error("no Gid line"), { code: "EINVAL" });
+  return Number(line[4]);
 }
 
 const GONE = new Set(["ENOENT", "ESRCH", "ENOTDIR"]);
@@ -113,8 +121,10 @@ export const hostCwdScanIo: CwdScanIo = {
   selfPid: process.pid,
   listProcessIds: () => readdir("/proc"),
   readCwd: (pid) => readlink(`/proc/${pid}/cwd`),
-  effectiveUid: async (pid) =>
-    parseEffectiveUid(await readFile(`/proc/${pid}/status`, "utf8")),
+  filesystemUid: async (pid) =>
+    parseFilesystemUid(await readFile(`/proc/${pid}/status`, "utf8")),
+  filesystemGid: async (pid) =>
+    parseFilesystemGid(await readFile(`/proc/${pid}/status`, "utf8")),
   effectiveCapabilities: async (pid) => {
     const status = await readFile(`/proc/${pid}/status`, "utf8");
     const capabilities = /^CapEff:\s*([0-9a-f]+)/imu.exec(status)?.[1];
@@ -276,6 +286,18 @@ export async function scanProcessesWithCwdUnder(
   }
   const holders: CwdHolder[] = [];
   if (io.platform === "linux") {
+    let filesystemUid = io.uid;
+    if (io.uid !== null) {
+      try {
+        filesystemUid = await io.filesystemUid(io.selfPid);
+      } catch (error) {
+        if (!GONE.has(codeOf(error)))
+          return {
+            status: "unknown",
+            reason: "the filesystem owner of this process could not be read",
+          };
+      }
+    }
     let entries: string[];
     try {
       entries = await io.listProcessIds();
@@ -297,10 +319,10 @@ export async function scanProcessesWithCwdUnder(
       } catch (error) {
         const code = codeOf(error);
         if (GONE.has(code)) continue;
-        if (io.uid !== null) {
+        if (filesystemUid !== null) {
           let owner: number;
           try {
-            owner = await io.effectiveUid(pid);
+            owner = await io.filesystemUid(pid);
           } catch (ownerError) {
             if (GONE.has(codeOf(ownerError))) continue;
             return {
@@ -308,8 +330,8 @@ export async function scanProcessesWithCwdUnder(
               reason: `the owner of process ${pid} could not be read`,
             };
           }
-          if (owner !== io.uid) {
-            if (owner < 1000) {
+          if (owner !== filesystemUid) {
+            if (owner < 1000 && filesystemUid !== 0) {
               excluded += 1;
               skippedOtherUsers.push({
                 pid,
@@ -345,20 +367,7 @@ export async function scanProcessesWithCwdUnder(
             };
           }
           if (code === "EACCES" || code === "EPERM") {
-            let comm: string;
-            try {
-              comm = await io.readComm(pid);
-            } catch (commError) {
-              if (GONE.has(codeOf(commError))) continue;
-              return {
-                status: "unknown",
-                reason: `the working directory of process ${pid} could not be read and its name could not be read either`,
-              };
-            }
-            return {
-              status: "unknown",
-              reason: `the working directory of process ${pid} (${comm}) could not be read and cannot be verified`,
-            };
+            continue;
           }
         }
         return {

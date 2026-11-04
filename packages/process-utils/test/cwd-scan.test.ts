@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   hostCwdScanIo,
-  parseEffectiveUid,
+  parseFilesystemGid,
+  parseFilesystemUid,
   PS_ARGS,
   scanProcessesWithCwdUnder,
   type CwdScanIo,
@@ -36,7 +37,7 @@ function fakeLinux(
       if (typeof value !== "string") throw value;
       return value;
     },
-    effectiveUid: async (pid) => owners[pid] ?? 1000,
+    filesystemUid: async (pid) => owners[pid] ?? 1000,
     readComm: async (pid) => comms[pid] ?? "node",
     runLsof: async () => {
       throw new Error("unused");
@@ -82,34 +83,30 @@ describe("scanProcessesWithCwdUnder", () => {
     "gpg-agent",
     "dbus-daemon",
   ])(
-    "is unknown when an unreadable same-user process uses the helper name %s",
+    "does not block on an unreadable unrelated same-user process named %s",
     async (comm) => {
       const base = await dir();
       const scan = await scanProcessesWithCwdUnder(
         { directories: [base] },
         fakeLinux({ 10: denied() }, {}, { 10: comm }),
       );
-      expect(scan).toMatchObject({
-        status: "unknown",
-        reason: expect.stringContaining(comm),
-      });
+      expect(scan.status).toBe("clear");
     },
   );
 
   it.each(["node", "bash", "ssh-agent-fake", "sshd-sessionx", "SSHD"])(
-    "is unknown when the unreadable same-user process is named %s",
+    "does not block on an unreadable same-user process named %s",
     async (comm) => {
       const base = await dir();
       const scan = await scanProcessesWithCwdUnder(
         { directories: [base] },
         fakeLinux({ 10: denied() }, {}, { 10: comm }),
       );
-      expect(scan.status).toBe("unknown");
-      expect(scan.status === "unknown" ? scan.reason : "").toContain("10");
+      expect(scan.status).toBe("clear");
     },
   );
 
-  it("is unknown when the name of an unreadable same-user process cannot be read", async () => {
+  it("clears an unreadable same-user process when no path ties it to the target", async () => {
     const base = await dir();
     const io = fakeLinux({ 10: denied() });
     const scan = await scanProcessesWithCwdUnder(
@@ -121,7 +118,7 @@ describe("scanProcessesWithCwdUnder", () => {
         },
       },
     );
-    expect(scan.status).toBe("unknown");
+    expect(scan.status).toBe("clear");
   });
 
   it.each([
@@ -368,39 +365,40 @@ describe("scanProcessesWithCwdUnder", () => {
     },
   );
 
-  describe("effective uid", () => {
-    it("reads the second value of the Uid: line of /proc/<pid>/status, not the real uid", () => {
+  describe("filesystem uid", () => {
+    it("reads the fourth value of the Uid: line of /proc/<pid>/status", () => {
       expect(
-        parseEffectiveUid(
+        parseFilesystemUid(
           "Name:\tlogin\nUid:\t501\t0\t0\t0\nGid:\t20\t20\t20\t20\n",
         ),
       ).toBe(0);
-      expect(parseEffectiveUid("Uid:\t0\t1000\t1000\t1000\n")).toBe(1000);
-      expect(() => parseEffectiveUid("Name:\tx\n")).toThrow();
+      expect(parseFilesystemUid("Uid:\t1000\t1001\t1002\t1003\n")).toBe(1003);
+      expect(parseFilesystemUid("Uid:\t0\t1000\t1001\t1002\n")).toBe(1002);
+      expect(parseFilesystemGid("Gid:\t1000\t1001\t1002\t1003\n")).toBe(1003);
+      expect(parseFilesystemGid("Gid:\t0\t1000\t1001\t1002\n")).toBe(1002);
+      expect(() => parseFilesystemUid("Name:\tx\n")).toThrow();
     });
 
     it.skipIf(process.platform !== "linux")(
       "the host io reads the effective uid of a real process through that line",
       async () => {
-        expect(await hostCwdScanIo.effectiveUid(process.pid)).toBe(
+        expect(await hostCwdScanIo.filesystemUid(process.pid)).toBe(
           process.geteuid?.(),
         );
         expect(hostCwdScanIo.uid).toBe(process.geteuid?.() ?? null);
       },
     );
 
-    it("skips and records an unreadable process whose effective uid differs, even when its real uid is ours", async () => {
+    it("uses the filesystem uid when deciding whether an unreadable process may reach the target", async () => {
       const base = await dir();
       const scan = await scanProcessesWithCwdUnder(
         { directories: [base] },
-        fakeLinux({ 10: denied() }, { 10: 0 }, { 10: "login" }),
+        {
+          ...fakeLinux({ 10: denied() }, { 10: 1001 }, { 10: "login" }),
+          statAccess: async () => ({ uid: 1000, mode: 0o711 }),
+        },
       );
-      expect(scan).toEqual({
-        status: "clear",
-        excludedOtherUsers: 1,
-        unvouchedHelpers: [],
-        skippedOtherUsers: [{ pid: 10, uid: 0, errno: "EACCES" }],
-      });
+      expect(scan.status).toBe("unknown");
     });
   });
 

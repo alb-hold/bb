@@ -102,7 +102,6 @@ interface RemoveWorktreeArgs {
   onProgress?: ProgressCallback | undefined;
   signal?: AbortSignal | undefined;
   fetchTimeoutMs?: number | undefined;
-  force?: boolean | undefined;
   testHooks?:
     | {
         afterFinalCheck?: (
@@ -113,6 +112,7 @@ interface RemoveWorktreeArgs {
           directory: string,
           entries: readonly string[],
         ) => Promise<void>;
+        beforeEntryRemoval?: (entry: string) => Promise<void>;
       }
     | undefined;
 }
@@ -977,6 +977,7 @@ async function removeRegisteredWorktree(
       const removed = await removeDirectoryTree(quarantinedPath, {
         startedAt: finalCheckStartedAt,
         afterDirectoryListed: args.testHooks?.afterDirectoryListed,
+        beforeEntryRemoval: args.testHooks?.beforeEntryRemoval,
       });
       if (removed === "retained") {
         throw worktreePreservedError(identity.path, [
@@ -988,6 +989,7 @@ async function removeRegisteredWorktree(
       const removedGitDir = await removeDirectoryTree(severedGitDir, {
         startedAt: finalCheckStartedAt,
         afterDirectoryListed: args.testHooks?.afterDirectoryListed,
+        beforeEntryRemoval: args.testHooks?.beforeEntryRemoval,
       });
       if (removedGitDir === "retained") {
         throw worktreePreservedError(severedGitDir, [
@@ -1031,6 +1033,20 @@ async function removeRegisteredWorktree(
   });
 }
 
+async function findQuarantinedWorktree(
+  workspacePath: string,
+): Promise<string | null> {
+  const parent = path.dirname(workspacePath);
+  const prefix = `.${path.basename(workspacePath)}.removing-`;
+  try {
+    const entries = await fs.readdir(parent);
+    const match = entries.find((entry) => entry.startsWith(prefix));
+    return match === undefined ? null : path.join(parent, match);
+  } catch {
+    return null;
+  }
+}
+
 export async function inspectWorktreeRemoval(args: {
   path: string;
   rootPath: string;
@@ -1039,6 +1055,15 @@ export async function inspectWorktreeRemoval(args: {
   { status: "removable" } | { status: "protected"; message: string }
 > {
   const workspacePath = path.resolve(args.path);
+  const quarantine = await findQuarantinedWorktree(workspacePath);
+  if (quarantine !== null) {
+    return {
+      status: "protected",
+      message: worktreePreservedError(workspacePath, [
+        `a prior removal attempt left recoverable data at ${quarantine}`,
+      ]).message,
+    };
+  }
   const identified = await identifyWorktree({
     path: workspacePath,
     rootPath: args.rootPath,
@@ -1067,6 +1092,12 @@ export async function removeWorktree(
     throwIfProvisionAborted(args.signal);
     const workspacePath = path.resolve(args.path);
     const parentPath = path.dirname(workspacePath);
+    const quarantine = await findQuarantinedWorktree(workspacePath);
+    if (quarantine !== null) {
+      throw worktreePreservedError(workspacePath, [
+        `a prior removal attempt left recoverable data at ${quarantine}`,
+      ]);
+    }
     const identified = await identifyWorktree({
       path: workspacePath,
       rootPath: args.rootPath,
