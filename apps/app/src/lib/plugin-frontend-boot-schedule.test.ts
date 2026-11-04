@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { scheduleDeferredPluginFrontendBoot } from "./plugin-frontend-boot-schedule";
+import { requestBrowserIdle, scheduleDeferredPluginFrontendBoot } from "./plugin-frontend-boot-schedule";
 
 function makeHarness() {
   let resolvePainted: () => void = () => {};
@@ -89,5 +89,33 @@ describe("scheduleDeferredPluginFrontendBoot", () => {
     expect(h.idleCallbacks).toHaveLength(0);
     h.fireTimeout();
     expect(h.boot).not.toHaveBeenCalled();
+  });
+});
+
+describe("requestBrowserIdle fallback", () => {
+  it("runs once by timeout when animation frames never fire", () => {
+    let timeout = () => {};
+    const clearTimeout = vi.fn();
+    const cancelAnimationFrame = vi.fn();
+    vi.stubGlobal("window", {
+      requestAnimationFrame: () => 7,
+      cancelAnimationFrame,
+      setTimeout: (callback: () => void) => {
+        timeout = callback;
+        return 3;
+      },
+      clearTimeout,
+    });
+    try {
+      const run = vi.fn();
+      requestBrowserIdle(run);
+      timeout();
+      timeout();
+      expect(run).toHaveBeenCalledOnce();
+      expect(cancelAnimationFrame).toHaveBeenCalledWith(7);
+      expect(clearTimeout).toHaveBeenCalledWith(3);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

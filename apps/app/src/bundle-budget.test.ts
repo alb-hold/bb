@@ -47,13 +47,32 @@ const chunks: BundleStatsChunkInput[] = [
   chunk("assets/route-only.js", {
     moduleIds: [
       "/repo/node_modules/.pnpm/@pierre+diffs@1/node_modules/@pierre/diffs/dist/index.js",
-      resolve(import.meta.dirname, "lib/x.ts").split(sep).join("/"),
+      resolve(import.meta.dirname, "lib/x.ts")
+        .split(sep)
+        .join("/"),
     ],
   }),
   chunk("assets/only-behind-dynamic-import.js", {
     moduleIds: ["/repo/node_modules/katex/dist/katex.js"],
   }),
 ];
+
+it("attributes rendered module bytes in descending order", () => {
+  const stats = computeBundleStats(
+    [
+      chunk("assets/index.js", {
+        isEntry: true,
+        modules: {
+          "/repo/small.ts": { renderedLength: 12 },
+          "/repo/large.ts": { renderedLength: 100 },
+        },
+      }),
+    ],
+    {},
+    vi.fn(),
+  );
+  expect(stats?.chunks[0]?.modules.map((m) => m.bytes)).toEqual([100, 12]);
+});
 
 describe("computeBundleStats", () => {
   it("records a route closure without the boot chunks or lazy-only chunks", () => {
@@ -358,6 +377,7 @@ function statsChunk(
     packages: spec.packages ?? [],
     imports: spec.imports ?? [],
     facade: spec.facade ?? null,
+    modules: [],
     appModules: [],
   };
 }

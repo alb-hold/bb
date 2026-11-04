@@ -193,7 +193,7 @@ function getRail(): HTMLElement {
 }
 
 describe("AppLayoutSidebar", () => {
-  it("holds the body of a closing compact drawer until it has settled, keeping one panel, the rail, and the app sidebar mounted", () => {
+  it("holds the body of a closing compact drawer until it has settled, keeping one panel, the rail, and the app sidebar mounted", async () => {
     vi.useFakeTimers();
     render(
       <CompactViewportOverrideProvider isCompactViewport>
@@ -248,6 +248,7 @@ describe("AppLayoutSidebar", () => {
     );
     settleMobileToggle();
     expect(screen.queryByTestId("settings-sidebar-body")).toBeNull();
+    await act(async () => { await import("@/components/tools/ResourceSidebar"); });
     expect(screen.getByTestId("plugins-sidebar-body")).toBeTruthy();
     expect(screen.queryByTestId("skills-sidebar-body")).toBeNull();
     expect(getAppSidebarBody().hidden).toBe(true);
