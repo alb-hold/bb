@@ -294,19 +294,21 @@ describe("real worktree teardown preservation", () => {
         injected = true;
       },
     );
+    let removalError: unknown;
     try {
-      await expect(
-        remove(worktree, true, {
-          afterFinalCheck: async (target) => {
-            await writeFile(path.join(target, "late-untracked.txt"), "late\n");
-            injected = true;
-          },
-        }),
-      ).rejects.toMatchObject({ code: "worktree_preserved" });
+      await remove(worktree, true, {
+        afterFinalCheck: async (target) => {
+          await writeFile(path.join(target, "late-untracked.txt"), "late\n");
+          injected = true;
+        },
+      });
+    } catch (error) {
+      removalError = error;
     } finally {
       restore();
     }
-    expect(injected).toBe(true);
+    expect(removalError).toMatchObject({ code: "worktree_preserved" });
+    expect(injected, String(removalError)).toBe(true);
     await expect(
       readFile(path.join(worktree.path, "late-untracked.txt"), "utf8"),
     ).resolves.toBe("late\n");
@@ -339,16 +341,18 @@ describe("real worktree teardown preservation", () => {
       injected = true;
     };
     const restore = await injectAtBaselineRemoval(worktree.path, inject);
+    let removalError: unknown;
     try {
-      await expect(
-        remove(worktree, true, {
-          afterFinalCheck: inject,
-        }),
-      ).rejects.toMatchObject({ code: "worktree_preserved" });
+      await remove(worktree, true, {
+        afterFinalCheck: inject,
+      });
+    } catch (error) {
+      removalError = error;
     } finally {
       restore();
     }
-    expect(injected).toBe(true);
+    expect(removalError).toMatchObject({ code: "worktree_preserved" });
+    expect(injected, String(removalError)).toBe(true);
     await expect(
       readFile(path.join(worktree.path, "late-commit.txt"), "utf8"),
     ).resolves.toBe("late commit\n");
@@ -365,6 +369,9 @@ describe("real worktree teardown preservation", () => {
     useProcReaderForTests(descendantsOnly(hostProc, -1));
     await mkdir(path.join(worktree.path, "late-dir"));
     await writeFile(path.join(worktree.path, "late-dir", "old.txt"), "old\n");
+    await git(worktree.path, "add", "late-dir/old.txt");
+    await git(worktree.path, "commit", "-m", "published directory entry");
+    await git(worktree.path, "push", "origin", "feature");
     let injected = false;
     const restore = await injectAtBaselineRemoval(
       worktree.path,
@@ -376,28 +383,30 @@ describe("real worktree teardown preservation", () => {
         injected = true;
       },
     );
+    let removalError: unknown;
     try {
-      await expect(
-        remove(worktree, true, {
-          afterDirectoryListed: async (directory, entries) => {
-            if (
-              !directory.endsWith("late-dir") ||
-              injected ||
-              !entries.includes("old.txt")
-            )
-              return;
-            await writeFile(
-              path.join(directory, "during-delete.txt"),
-              "during\n",
-            );
-            injected = true;
-          },
-        }),
-      ).rejects.toMatchObject({ code: "worktree_preserved" });
+      await remove(worktree, true, {
+        afterDirectoryListed: async (directory, entries) => {
+          if (
+            !directory.endsWith("late-dir") ||
+            injected ||
+            !entries.includes("old.txt")
+          )
+            return;
+          await writeFile(
+            path.join(directory, "during-delete.txt"),
+            "during\n",
+          );
+          injected = true;
+        },
+      });
+    } catch (error) {
+      removalError = error;
     } finally {
       restore();
     }
-    expect(injected).toBe(true);
+    expect(removalError).toMatchObject({ code: "worktree_preserved" });
+    expect(injected, String(removalError)).toBe(true);
     await expect(
       readFile(
         path.join(worktree.path, "late-dir", "during-delete.txt"),

@@ -12,6 +12,42 @@ export interface RemoveDirectoryTreeHooks {
 
 export type RemoveDirectoryTreeResult = "removed" | "retained";
 
+export async function directoryTreeChangedSince(
+  root: string,
+  startedAt: number,
+): Promise<boolean> {
+  const inspect = async (entry: string): Promise<boolean> => {
+    let info;
+    try {
+      info = await lstat(entry);
+    } catch {
+      return true;
+    }
+    if (changedSince(info, startedAt)) return true;
+    if (!info.isDirectory()) return false;
+    let listed: string[];
+    try {
+      listed = await readdir(entry);
+    } catch {
+      return true;
+    }
+    for (const name of listed) {
+      if (await inspect(path.join(entry, name))) return true;
+    }
+    let after: string[];
+    try {
+      after = await readdir(entry);
+    } catch {
+      return true;
+    }
+    return (
+      after.length !== listed.length ||
+      after.some((name) => !listed.includes(name))
+    );
+  };
+  return inspect(root);
+}
+
 function changedSince(
   info: { ctimeMs: number; mtimeMs: number },
   startedAt: number,

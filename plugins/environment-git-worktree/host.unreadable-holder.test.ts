@@ -199,7 +199,9 @@ describe("a program whose /proc entries cannot be read", () => {
       path: fixture.path,
     });
 
-    expect(removed).toMatchObject({ status: "removed" });
+    expect(removed, JSON.stringify(removed)).toMatchObject({
+      status: "removed",
+    });
     expect(existsSync(fixture.path)).toBe(false);
     await fixture.harness.experimental_dispose();
   });

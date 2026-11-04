@@ -13,7 +13,10 @@ import {
   type GitWorktreeEntry,
 } from "./worktree-list.js";
 import fs from "node:fs/promises";
-import { removeDirectoryTree } from "./remove-directory-tree.js";
+import {
+  directoryTreeChangedSince,
+  removeDirectoryTree,
+} from "./remove-directory-tree.js";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import {
@@ -927,8 +930,12 @@ async function removeRegisteredWorktree(
       `.${path.basename(identity.path)}.removing-${randomUUID()}`,
     );
     const severedGitDir = path.join(
-      identity.commonDir,
+      path.dirname(identity.gitDir),
       `.bb-removing-${randomUUID()}`,
+    );
+    const originalGitdir = await fs.readFile(
+      path.join(identity.gitDir, "gitdir"),
+      "utf8",
     );
     await fs.rename(identity.path, quarantinedPath);
     let metadataSevered = false;
@@ -937,6 +944,10 @@ async function removeRegisteredWorktree(
       try {
         await fs.rename(identity.gitDir, severedGitDir);
         metadataSevered = true;
+        await fs.writeFile(
+          path.join(severedGitDir, "gitdir"),
+          `${path.join(quarantinedPath, ".git")}\n`,
+        );
       } catch (error) {
         throw worktreePreservedError(identity.path, [
           `could not isolate its Git metadata for final inspection (${error instanceof Error ? error.message : String(error)})`,
@@ -956,14 +967,15 @@ async function removeRegisteredWorktree(
       if (reasons.length > 0) {
         throw worktreePreservedError(identity.path, reasons);
       }
+      await args.testHooks?.afterFinalCheck?.(quarantinedPath, severedGitDir);
+      if (await directoryTreeChangedSince(severedGitDir, finalCheckStartedAt)) {
+        throw worktreePreservedError(identity.path, [
+          "new or changed Git metadata was found after its final inspection",
+          ...keptNote,
+        ]);
+      }
       const removed = await removeDirectoryTree(quarantinedPath, {
         startedAt: finalCheckStartedAt,
-        afterStart: async () => {
-          await args.testHooks?.afterFinalCheck?.(
-            quarantinedPath,
-            severedGitDir,
-          );
-        },
         afterDirectoryListed: args.testHooks?.afterDirectoryListed,
       });
       if (removed === "retained") {
@@ -979,6 +991,10 @@ async function removeRegisteredWorktree(
       if (!workspaceRemoved) {
         if (metadataSevered) {
           try {
+            await fs.writeFile(
+              path.join(severedGitDir, "gitdir"),
+              originalGitdir,
+            );
             await fs.rename(severedGitDir, identity.gitDir);
           } catch (restoreError) {
             throw worktreePreservedError(identity.path, [
