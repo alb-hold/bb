@@ -113,6 +113,11 @@ interface RemoveWorktreeArgs {
           entries: readonly string[],
         ) => Promise<void>;
         beforeEntryRemoval?: (entry: string) => Promise<void>;
+        afterEntryCheck?: (entry: string) => Promise<void>;
+        afterEntryQuarantined?: (
+          entry: string,
+          quarantined: string,
+        ) => Promise<void>;
       }
     | undefined;
 }
@@ -978,6 +983,8 @@ async function removeRegisteredWorktree(
         startedAt: finalCheckStartedAt,
         afterDirectoryListed: args.testHooks?.afterDirectoryListed,
         beforeEntryRemoval: args.testHooks?.beforeEntryRemoval,
+        afterEntryCheck: args.testHooks?.afterEntryCheck,
+        afterEntryQuarantined: args.testHooks?.afterEntryQuarantined,
       });
       if (removed === "retained") {
         throw worktreePreservedError(identity.path, [
@@ -990,6 +997,8 @@ async function removeRegisteredWorktree(
         startedAt: finalCheckStartedAt,
         afterDirectoryListed: args.testHooks?.afterDirectoryListed,
         beforeEntryRemoval: args.testHooks?.beforeEntryRemoval,
+        afterEntryCheck: args.testHooks?.afterEntryCheck,
+        afterEntryQuarantined: args.testHooks?.afterEntryQuarantined,
       });
       if (removedGitDir === "retained") {
         throw worktreePreservedError(severedGitDir, [

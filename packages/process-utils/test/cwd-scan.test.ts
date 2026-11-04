@@ -433,13 +433,17 @@ describe("scanProcessesWithCwdUnder", () => {
       expect(scan).toMatchObject({ status: "unknown" });
     });
 
-    it("uses the filesystem uid when deciding whether an unreadable process may reach the target", async () => {
+    it("uses the filesystem uid when an unreadable process has differing real and effective UIDs", async () => {
       const base = await dir();
+      const io = fakeLinux({ 10: denied() }, { 10: 1001 }, { 10: "login" });
       const scan = await scanProcessesWithCwdUnder(
         { directories: [base] },
         {
-          ...fakeLinux({ 10: denied() }, { 10: 1001 }, { 10: "login" }),
-          statAccess: async () => ({ uid: 1000, mode: 0o711 }),
+          ...io,
+          filesystemUid: async (pid) => (pid === 10 ? 1000 : 1000),
+          realUid: async (pid) => (pid === 10 ? 1001 : 1000),
+          effectiveUid: async (pid) => (pid === 10 ? 1001 : 1000),
+          statAccess: async () => ({ uid: 1000, mode: 0o700 }),
         },
       );
       expect(scan.status).toBe("unknown");

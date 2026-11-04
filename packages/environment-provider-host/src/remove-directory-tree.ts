@@ -21,6 +21,8 @@ export interface RemoveDirectoryTreeHooks {
     entries: readonly string[],
   ) => Promise<void>;
   beforeEntryRemoval?: (entry: string) => Promise<void>;
+  afterEntryCheck?: (entry: string) => Promise<void>;
+  afterEntryQuarantined?: (entry: string, quarantined: string) => Promise<void>;
 }
 
 export type RemoveDirectoryTreeResult = "removed" | "retained";
@@ -187,6 +189,19 @@ export async function removeDirectoryTree(
       )
         return "retained";
       await hooks.beforeEntryRemoval?.(entry);
+      let checkedInfo;
+      try {
+        checkedInfo = await lstat(anchoredEntry);
+      } catch {
+        return "retained";
+      }
+      if (
+        checkedInfo.dev !== info.dev ||
+        checkedInfo.ino !== info.ino ||
+        changedSince(checkedInfo, startedAt)
+      )
+        return "retained";
+      await hooks.afterEntryCheck?.(entry);
       const quarantined = path.join(
         parentDirectory,
         `.bb-removing-${randomUUID()}`,
@@ -204,9 +219,20 @@ export async function removeDirectoryTree(
         await rename(anchoredEntry, quarantined);
         const movedInfo = await lstat(quarantined);
         if (
-          movedInfo.dev !== info.dev ||
-          movedInfo.ino !== info.ino ||
-          movedInfo.mtimeMs >= startedAt
+          movedInfo.dev !== checkedInfo.dev ||
+          movedInfo.ino !== checkedInfo.ino ||
+          movedInfo.mtimeMs !== checkedInfo.mtimeMs
+        ) {
+          await restoreQuarantine();
+          return "retained";
+        }
+        await hooks.afterEntryQuarantined?.(entry, quarantined);
+        const finalInfo = await lstat(quarantined);
+        if (
+          finalInfo.dev !== movedInfo.dev ||
+          finalInfo.ino !== movedInfo.ino ||
+          finalInfo.ctimeMs !== movedInfo.ctimeMs ||
+          finalInfo.mtimeMs !== movedInfo.mtimeMs
         ) {
           await restoreQuarantine();
           return "retained";
@@ -303,10 +329,48 @@ export async function removeDirectoryTree(
         return "retained";
       }
       if (!sameDirectory(openedInfo, currentInfo)) return "retained";
+      await hooks.beforeEntryRemoval?.(entry);
+      let checkedDirectoryInfo;
       try {
-        await rmdir(anchoredEntry);
+        checkedDirectoryInfo = await lstat(anchoredEntry);
+      } catch {
+        return "retained";
+      }
+      if (!sameDirectory(openedInfo, checkedDirectoryInfo)) return "retained";
+      await hooks.afterEntryCheck?.(entry);
+      const quarantined = path.join(
+        parentDirectory,
+        `.bb-removing-${randomUUID()}`,
+      );
+      const restoreQuarantine = async (): Promise<void> => {
+        try {
+          await rename(quarantined, anchoredEntry);
+        } catch {
+          return;
+        }
+      };
+      try {
+        await rename(anchoredEntry, quarantined);
+        const movedInfo = await lstat(quarantined);
+        let movedEntries: string[];
+        try {
+          movedEntries = await readdir(directoryPath);
+        } catch {
+          await restoreQuarantine();
+          return "retained";
+        }
+        if (
+          !sameDirectory(openedInfo, movedInfo) ||
+          movedInfo.mtimeMs !== checkedDirectoryInfo.mtimeMs ||
+          movedEntries.length > 0
+        ) {
+          await restoreQuarantine();
+          return "retained";
+        }
+        await rmdir(quarantined);
         return "removed";
       } catch (error) {
+        await restoreQuarantine();
         const code = errorCode(error);
         return code === "ENOENT" ? "removed" : "retained";
       }

@@ -123,6 +123,8 @@ describe("scanWorktreeHolders", () => {
 
 interface FakeProcess {
   uid?: number;
+  uidValues?: [number, number, number, number];
+  gidValues?: [number, number, number, number];
   state?: string;
   comm?: string;
   mount?: string;
@@ -209,7 +211,7 @@ function fakeProc(options: {
     const base = `/proc/${key}`;
     files.set(
       `${base}/status`,
-      `Name:\t${process.name ?? "x"}\nState:\t${process.state ?? "S (sleeping)"}\nUid:\t${process.uid ?? 1000}\t${process.uid ?? 1000}\t${process.uid ?? 1000}\t${process.uid ?? 1000}\nCapEff:\t${process.capEff ?? "0000000000000000"}\n`,
+      `Name:\t${process.name ?? "x"}\nState:\t${process.state ?? "S (sleeping)"}\nUid:\t${(process.uidValues ?? [process.uid ?? 1000, process.uid ?? 1000, process.uid ?? 1000, process.uid ?? 1000]).join("\t")}\nGid:\t${(process.gidValues ?? [1000, 1000, 1000, 1000]).join("\t")}\nCapEff:\t${process.capEff ?? "0000000000000000"}\n`,
     );
     files.set(`${base}/comm`, `${process.comm ?? "node"}\n`);
     files.set(
@@ -368,6 +370,29 @@ describe("the Linux process-list visibility rule", () => {
     expect(await scanLinux("/work/tree", proc, 4242)).toMatchObject({
       status: "uncertain",
       reason: expect.stringContaining("foreign uid 1001"),
+    });
+  });
+
+  it("does not clear an unreadable cwd when real and effective IDs differ from filesystem IDs", async () => {
+    const proc = fakeProc({
+      self: { uid: 1000 },
+      worktreeMode: 0o700,
+      processes: {
+        101: {
+          uid: 1001,
+          uidValues: [1001, 1002, 1003, 1000],
+          gidValues: [1001, 1002, 1003, 1000],
+          cwdDenied: true,
+          comm: "sshd-session",
+        },
+      },
+    });
+    const ownerView: ProcReader = {
+      ...proc,
+      statAccess: async () => ({ uid: 1000, gid: 1000, mode: 0o700 }),
+    };
+    expect(await scanLinux("/work/tree", ownerView, 4242)).toMatchObject({
+      status: "unknown",
     });
   });
 
