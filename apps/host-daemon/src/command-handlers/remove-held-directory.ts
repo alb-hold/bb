@@ -15,6 +15,7 @@ export async function removeDirectoryAfterHolderRecheck(args: {
     path.dirname(args.directory),
     `.${path.basename(args.directory)}.removing-${randomUUID()}`,
   );
+  const startedAt = Date.now();
   try {
     await fs.rename(args.directory, quarantine);
   } catch (error) {
@@ -27,12 +28,18 @@ export async function removeDirectoryAfterHolderRecheck(args: {
       return;
     throw error;
   }
-  const checkedAt = Date.now();
   try {
+    const rootInfo = await fs.lstat(quarantine);
     await refuseWhileHeld({ directory: quarantine, action: args.action });
     if (args.recursive === true) {
       if (
-        (await removeDirectoryTree(quarantine, { startedAt: checkedAt })) !==
+        (await removeDirectoryTree(quarantine, {
+          startedAt,
+          rootMetadataBaseline: {
+            ctimeMs: rootInfo.ctimeMs,
+            mtimeMs: rootInfo.mtimeMs,
+          },
+        })) !==
         "removed"
       ) {
         throw new CommandDispatchError(

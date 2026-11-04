@@ -219,6 +219,7 @@ describe("real worktree teardown preservation", () => {
     useProcReaderForTests(descendantsOnly(hostProc, -1));
     let injected = false;
     let lateCommitSha = "";
+    let lateCommitSha = "";
     const originalRename = fs.rename.bind(fs);
     vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
       await originalRename(from, to);
@@ -320,6 +321,7 @@ describe("real worktree teardown preservation", () => {
     const worktree = await makeWorktree();
     useProcReaderForTests(descendantsOnly(hostProc, -1));
     let injected = false;
+    let lateCommitSha = "";
     const inject = async (
       target: string,
       gitDir: string,
@@ -359,6 +361,7 @@ describe("real worktree teardown preservation", () => {
     }
     expect(removalError).toMatchObject({ code: "worktree_preserved" });
     expect(injected, String(removalError)).toBe(true);
+    expect(lateCommitSha).not.toBe("");
     await expect(
       readFile(path.join(worktree.path, "late-commit.txt"), "utf8"),
     ).resolves.toBe("late commit\n");

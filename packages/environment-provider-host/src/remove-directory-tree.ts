@@ -4,6 +4,7 @@ import path from "node:path";
 
 export interface RemoveDirectoryTreeHooks {
   startedAt?: number;
+  rootMetadataBaseline?: { ctimeMs: number; mtimeMs: number };
   afterStart?: (startedAt: number) => Promise<void>;
   afterDirectoryListed?: (
     directory: string,
@@ -139,6 +140,7 @@ export async function removeDirectoryTree(
     parentDirectory: string,
     name: string,
     entry: string,
+    rootEntry = false,
   ): Promise<RemoveDirectoryTreeResult> => {
     const anchoredEntry = path.join(parentDirectory, name);
     let info;
@@ -147,7 +149,18 @@ export async function removeDirectoryTree(
     } catch (error) {
       return errorCode(error) === "ENOENT" ? "removed" : "retained";
     }
-    if (changedSince(info, startedAt)) return "retained";
+    const rootChangedSinceBaseline =
+      hooks.rootMetadataBaseline !== undefined &&
+      (info.ctimeMs > hooks.rootMetadataBaseline.ctimeMs ||
+        info.mtimeMs > hooks.rootMetadataBaseline.mtimeMs);
+    if (
+      rootEntry
+        ? (hooks.rootMetadataBaseline === undefined &&
+            changedSince(info, startedAt)) ||
+          rootChangedSinceBaseline
+        : changedSince(info, startedAt)
+    )
+      return "retained";
     if (!info.isDirectory()) {
       try {
         await unlink(anchoredEntry);
@@ -170,7 +183,18 @@ export async function removeDirectoryTree(
         return "retained";
       }
       if (!sameDirectory(openedInfo, currentInfo)) return "retained";
-      if (changedSince(openedInfo, startedAt)) return "retained";
+      const openedRootChangedSinceBaseline =
+        hooks.rootMetadataBaseline !== undefined &&
+        (openedInfo.ctimeMs > hooks.rootMetadataBaseline.ctimeMs ||
+          openedInfo.mtimeMs > hooks.rootMetadataBaseline.mtimeMs);
+      if (
+        rootEntry
+          ? (hooks.rootMetadataBaseline === undefined &&
+              changedSince(openedInfo, startedAt)) ||
+            openedRootChangedSinceBaseline
+          : changedSince(openedInfo, startedAt)
+      )
+        return "retained";
       let listed: string[];
       try {
         listed = await readdir(directoryPath);
@@ -220,7 +244,7 @@ export async function removeDirectoryTree(
     }
   };
   try {
-    return await removeEntry(parentPath, rootName, root);
+    return await removeEntry(parentPath, rootName, root, true);
   } finally {
     await parent.close();
   }
