@@ -38,6 +38,8 @@ export interface CwdScanIo {
   readCwd(pid: number): Promise<string>;
   realUid(pid: number): Promise<number>;
   effectiveUid(pid: number): Promise<number>;
+  realGid(pid: number): Promise<number>;
+  effectiveGid(pid: number): Promise<number>;
   filesystemUid(pid: number): Promise<number>;
   filesystemGid?(pid: number): Promise<number>;
   effectiveCapabilities?(pid: number): Promise<bigint>;
@@ -81,6 +83,20 @@ export function parseFilesystemGid(status: string): number {
   if (line === null)
     throw Object.assign(new Error("no Gid line"), { code: "EINVAL" });
   return Number(line[4]);
+}
+
+export function parseRealGid(status: string): number {
+  const line = /^Gid:\s*(\d+)/mu.exec(status);
+  if (line === null)
+    throw Object.assign(new Error("no Gid line"), { code: "EINVAL" });
+  return Number(line[1]);
+}
+
+export function parseEffectiveGid(status: string): number {
+  const line = /^Gid:\s*(\d+)\s+(\d+)/mu.exec(status);
+  if (line === null)
+    throw Object.assign(new Error("no Gid line"), { code: "EINVAL" });
+  return Number(line[2]);
 }
 
 const GONE = new Set(["ENOENT", "ESRCH", "ENOTDIR"]);
@@ -141,6 +157,10 @@ export const hostCwdScanIo: CwdScanIo = {
     parseRealUid(await readFile(`/proc/${pid}/status`, "utf8")),
   effectiveUid: async (pid) =>
     parseEffectiveUid(await readFile(`/proc/${pid}/status`, "utf8")),
+  realGid: async (pid) =>
+    parseRealGid(await readFile(`/proc/${pid}/status`, "utf8")),
+  effectiveGid: async (pid) =>
+    parseEffectiveGid(await readFile(`/proc/${pid}/status`, "utf8")),
   filesystemUid: async (pid) =>
     parseFilesystemUid(await readFile(`/proc/${pid}/status`, "utf8")),
   filesystemGid: async (pid) =>
@@ -389,9 +409,19 @@ export async function scanProcessesWithCwdUnder(
           if (code === "EACCES" || code === "EPERM") {
             let realUid: number;
             let effectiveUid: number;
+            let realGid: number;
+            let effectiveGid: number;
+            let processFilesystemGid: number;
             try {
               realUid = await io.realUid(pid);
               effectiveUid = await io.effectiveUid(pid);
+              realGid = await io.realGid(pid);
+              effectiveGid = await io.effectiveGid(pid);
+              if (io.filesystemGid === undefined)
+                throw Object.assign(new Error("no filesystem GID reader"), {
+                  code: "EINVAL",
+                });
+              processFilesystemGid = await io.filesystemGid(pid);
             } catch (identityError) {
               if (GONE.has(codeOf(identityError))) continue;
               return {
@@ -399,7 +429,12 @@ export async function scanProcessesWithCwdUnder(
                 reason: `the effective owner of process ${pid} could not be read`,
               };
             }
-            if (realUid !== filesystemUid || effectiveUid !== filesystemUid) {
+            if (
+              realUid !== filesystemUid ||
+              effectiveUid !== filesystemUid ||
+              realGid !== processFilesystemGid ||
+              effectiveGid !== processFilesystemGid
+            ) {
               return {
                 status: "unknown",
                 reason: `process ${pid} has credentials that differ from its filesystem UID and its cwd is unreadable`,

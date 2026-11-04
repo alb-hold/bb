@@ -222,8 +222,11 @@ async function scanLinuxProcess(
   if ("failed" in status)
     return unreadable(`process ${pid} status`, status.failed);
   const uids = parseStatusNumbers(status.value, "Uid");
+  const gids = parseStatusNumbers(status.value, "Gid");
   if (uids === null || uids[3] === undefined)
     return notVouchable(`process ${pid} owner could not be read`);
+  if (gids === null || gids[3] === undefined)
+    return notVouchable(`process ${pid} group owner could not be read`);
   if (/^State:\s+Z/mu.test(status.value)) return null;
   if (uids[3] !== self.uid) {
     const foreignUid = uids[3];
@@ -307,7 +310,12 @@ async function scanLinuxProcess(
   }
   if (result === null || !("unknown" in result) || !result.vouchable)
     return result;
-  if (uids[0] !== self.uid || uids[1] !== self.uid) {
+  if (
+    uids[0] !== uids[3] ||
+    uids[1] !== uids[3] ||
+    gids[0] !== gids[3] ||
+    gids[1] !== gids[3]
+  ) {
     return {
       unknown: `${result.unknown}, process credentials differ from its filesystem UID`,
       vouchable: false,

@@ -6,8 +6,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   hostCwdScanIo,
   parseEffectiveUid,
+  parseEffectiveGid,
   parseFilesystemGid,
   parseFilesystemUid,
+  parseRealGid,
   parseRealUid,
   PS_ARGS,
   scanProcessesWithCwdUnder,
@@ -41,7 +43,10 @@ function fakeLinux(
     },
     realUid: async (pid) => owners[pid] ?? 1000,
     effectiveUid: async (pid) => owners[pid] ?? 1000,
+    realGid: async () => 1000,
+    effectiveGid: async () => 1000,
     filesystemUid: async (pid) => owners[pid] ?? 1000,
+    filesystemGid: async () => 1000,
     readComm: async (pid) => comms[pid] ?? "node",
     runLsof: async () => {
       throw new Error("unused");
@@ -379,6 +384,8 @@ describe("scanProcessesWithCwdUnder", () => {
       expect(parseFilesystemUid("Uid:\t1000\t1001\t1002\t1003\n")).toBe(1003);
       expect(parseFilesystemUid("Uid:\t0\t1000\t1001\t1002\n")).toBe(1002);
       expect(parseFilesystemGid("Gid:\t1000\t1001\t1002\t1003\n")).toBe(1003);
+      expect(parseEffectiveGid("Gid:\t1000\t1001\t1002\t1003\n")).toBe(1001);
+      expect(parseRealGid("Gid:\t1000\t1001\t1002\t1003\n")).toBe(1000);
       expect(parseEffectiveUid("Uid:\t1000\t1001\t1002\t1003\n")).toBe(1001);
       expect(parseRealUid("Uid:\t1000\t1001\t1002\t1003\n")).toBe(1000);
       expect(parseFilesystemGid("Gid:\t0\t1000\t1001\t1002\n")).toBe(1002);
@@ -406,6 +413,21 @@ describe("scanProcessesWithCwdUnder", () => {
           realUid: async (pid) => (pid === 10 ? 1002 : 1000),
           effectiveUid: async (pid) => (pid === 10 ? 1001 : 1000),
           statAccess: async () => ({ uid: 1000, mode: 0o700 }),
+        },
+      );
+      expect(scan).toMatchObject({ status: "unknown" });
+    });
+
+    it("does not clear an unreadable process whose real and effective GIDs differ from its filesystem GID", async () => {
+      const base = await dir();
+      const io = fakeLinux({ 10: denied() });
+      const scan = await scanProcessesWithCwdUnder(
+        { directories: [base] },
+        {
+          ...io,
+          filesystemGid: async () => 1000,
+          realGid: async (pid) => (pid === 10 ? 1002 : 1000),
+          effectiveGid: async (pid) => (pid === 10 ? 1001 : 1000),
         },
       );
       expect(scan).toMatchObject({ status: "unknown" });
