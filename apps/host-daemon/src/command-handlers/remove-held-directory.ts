@@ -56,7 +56,7 @@ export async function removeDirectoryAfterHolderRecheck(args: {
       ) {
         throw new CommandDispatchError(
           "path_in_use",
-          `Refusing to ${args.action} ${args.directory}: new or changed data was found during removal. Nothing was stopped.`,
+          `Refusing to ${args.action} ${args.directory}: new or changed data was found during removal; the directory may be partially removed. Nothing was stopped.`,
         );
       }
     } else {

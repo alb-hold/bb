@@ -480,7 +480,10 @@ describe("real worktree teardown preservation", () => {
           await writeFile(path.join(directory, "late-file"), "kept\n");
         },
       }),
-    ).rejects.toMatchObject({ code: "worktree_preserved" });
+    ).rejects.toMatchObject({
+      code: "worktree_preserved",
+      message: expect.stringContaining("may be partially removed"),
+    });
     expect(injected).toBe(true);
     await expect(
       access(path.join(worktree.path, ".git")),

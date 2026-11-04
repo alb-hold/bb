@@ -981,7 +981,7 @@ async function removeRegisteredWorktree(
       });
       if (removed === "retained") {
         throw worktreePreservedError(identity.path, [
-          "new or changed data was found during directory removal",
+          "new or changed data was found during directory removal; the directory may be partially removed",
           ...keptNote,
         ]);
       }
