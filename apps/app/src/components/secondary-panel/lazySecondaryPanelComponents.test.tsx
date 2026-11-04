@@ -7,7 +7,21 @@ import { PanelGroup } from "react-resizable-panels";
 import {
   LazyBrowserTabDeck,
   LazyThreadSecondaryPanel,
+  LazyWorkspaceFilePreviewTabContent,
+  LazyHostFilePreviewTabContent,
+  LazyHostScopedFilePreviewTabContent,
+  LazyProjectFilePreviewTabContent,
+  LazyThreadStorageFilePreviewTabContent,
 } from "./lazySecondaryPanelComponents";
+
+const { queueSplitPreload } = vi.hoisted(() => ({
+  queueSplitPreload: vi.fn(),
+}));
+
+vi.mock("@/lib/split-prefetch", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/split-prefetch")>()),
+  queueSplitPreload,
+}));
 
 vi.mock("./ThreadSecondaryPanel", () => new Promise(() => {}));
 vi.mock("./BrowserTabDeck", () => {
@@ -48,6 +62,22 @@ function renderLoadingPanel({
 }
 
 describe("LazyThreadSecondaryPanel", () => {
+  it("does not warm hidden panel chunks when its shared host loads", () => {
+    renderLoadingPanel({ isOpen: false });
+
+    for (const split of [
+      LazyThreadSecondaryPanel,
+      LazyWorkspaceFilePreviewTabContent,
+      LazyHostFilePreviewTabContent,
+      LazyHostScopedFilePreviewTabContent,
+      LazyProjectFilePreviewTabContent,
+      LazyThreadStorageFilePreviewTabContent,
+    ]) {
+      expect(queueSplitPreload).not.toHaveBeenCalledWith(split.preload);
+      expect(split.isLoaded()).toBe(false);
+    }
+  });
+
   it("keeps the panel seam visible while inline content loads", () => {
     renderLoadingPanel();
 
