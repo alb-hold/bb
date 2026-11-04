@@ -168,8 +168,8 @@
     "394,500 Brotli bytes. Code that moved between the entry chunk and the",
     "thread route in the sync was not individually attributed."
   ],
-  "maxBootBytes": 1610000,
-  "maxBootBrotliBytes": 394500,
+  "maxBootBytes": 1609298,
+  "maxBootBrotliBytes": 394185,
   "forbiddenBootPackages": [
     "@dnd-kit/accessibility",
     "@dnd-kit/core",
@@ -204,6 +204,7 @@
     "sonner"
   ],
   "splitBoundaries": {
+    "src/components/tools/ResourceSidebar.tsx": ["boot"],
     "src/components/settings/SettingsSidebar.tsx": ["boot"],
     "src/components/dialogs/RemotePathBrowser.tsx": ["boot"],
     "src/lib/plugin-sdk-hooks.ts": ["boot"],

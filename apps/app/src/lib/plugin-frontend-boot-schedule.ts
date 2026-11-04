@@ -64,8 +64,21 @@ export function requestBrowserIdle(callback: () => void): () => void {
     const id = window.requestIdleCallback(callback, { timeout: 1_000 });
     return () => window.cancelIdleCallback(id);
   }
+  let settled = false;
+  const finish = () => {
+    if (settled) return;
+    settled = true;
+    window.clearTimeout(timeout);
+    window.cancelAnimationFrame(frame);
+    callback();
+  };
+  const timeout = window.setTimeout(finish, 1_000);
   let frame = window.requestAnimationFrame(() => {
-    frame = window.requestAnimationFrame(callback);
+    frame = window.requestAnimationFrame(finish);
   });
-  return () => window.cancelAnimationFrame(frame);
+  return () => {
+    settled = true;
+    window.clearTimeout(timeout);
+    window.cancelAnimationFrame(frame);
+  };
 }

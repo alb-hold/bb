@@ -1099,6 +1099,19 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
     );
   }
 
+  it("requests the screen while terminal modules are still loading", async () => {
+    prepareMobileTerminal();
+    vi.spyOn(terminalModules, "importTerminalModules").mockImplementationOnce(
+      () => new Promise(() => {}),
+    );
+    renderMobileTerminal();
+    await waitForReadinessCondition(
+      () => expect(testState.screen).toHaveBeenCalledOnce(),
+      "screen fetch did not overlap module loading",
+    );
+    expect(testState.sockets).toHaveLength(0);
+  });
+
   async function mountReplayWithUnusableSnapshot() {
     prepareMobileTerminal();
     testState.screen.mockResolvedValue({

@@ -1982,6 +1982,15 @@ export function ThreadTerminalView({
           return;
         }
       };
+      const screenPromise =
+        sessionRef.current.status === "exited" || pendingExitNotices.length > 0
+          ? Promise.resolve(null)
+          : Promise.resolve(
+              sdk.terminals.experimental_screen({
+                terminalId: session.id,
+                threadId: session.threadId ?? undefined,
+              }),
+            ).catch(() => null);
       const requiredModulesPromise = importTerminalModules();
       const [{ Terminal }, { FitAddon: LoadedFitAddon }, { Unicode11Addon }] =
         await requiredModulesPromise;
@@ -2950,12 +2959,10 @@ export function ThreadTerminalView({
         }
       } else {
         try {
-          const snapshot = await sdk.terminals.experimental_screen({
-            terminalId: session.id,
-            threadId: session.threadId ?? undefined,
-          });
+          const snapshot = await screenPromise;
           if (
             !disposed &&
+            snapshot !== null &&
             snapshot.complete &&
             !snapshot.truncated &&
             snapshot.dataBase64 !== undefined &&

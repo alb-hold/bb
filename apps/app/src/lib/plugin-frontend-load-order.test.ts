@@ -114,6 +114,33 @@ describe("orderPluginFrontendCandidates", () => {
 });
 
 describe("reconcilePluginFrontends load scheduling", () => {
+  it("yields before each deferred bundle and never overlaps their evaluations", async () => {
+    const imports = makeDeferredImports();
+    const idle: (() => void)[] = [];
+    const done = reconcilePluginFrontends(
+      createPluginFrontendReconcileState(),
+      makeDeps([candidate("a", 1), candidate("b", 2), candidate("c", 3)], {
+        importModule: imports.importModule,
+        yieldBetweenDeferredLoads: () =>
+          new Promise<void>((resolve) => idle.push(resolve)),
+      }),
+    );
+    for (let i = 0; i < 20; i += 1) await Promise.resolve();
+    expect(imports.started).toHaveLength(0);
+    expect(idle).toHaveLength(1);
+    for (let count = 1; count <= 3; count += 1) {
+      idle.shift()!();
+      for (let i = 0; i < 20; i += 1) await Promise.resolve();
+      expect(imports.started).toHaveLength(count);
+      expect(imports.pending()).toBe(1);
+      expect(idle).toHaveLength(0);
+      await imports.resolveNext();
+      for (let i = 0; i < 20; i += 1) await Promise.resolve();
+      expect(idle).toHaveLength(count < 3 ? 1 : 0);
+    }
+    await done;
+  });
+
   it("defers invisible bundles until paint and idle, then publishes their slots", async () => {
     let resume = () => {};
     const idle = new Promise<void>((resolve) => {

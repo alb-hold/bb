@@ -430,6 +430,7 @@ export interface PluginFrontendReconcileDeps {
   warn: (message: string) => void;
   priorityPluginIds: () => readonly string[];
   waitForDeferredLoad?: () => Promise<void>;
+  yieldBetweenDeferredLoads?: () => Promise<void>;
   mountTimeoutMs?: number;
   cssReadyTimeoutMs?: number;
   diagnosticsChanged?: () => void;
@@ -788,11 +789,32 @@ async function reconcileCandidates(
     priorityLoaded();
     releasePriority();
   }
+  let deferredLane = Promise.resolve();
   await runWithConcurrencyLimit(
     ordered,
     PLUGIN_FRONTEND_LOAD_CONCURRENCY,
     async (candidate, index) => {
-      if (!priorityPluginIds.includes(candidate.pluginId)) await deferredReady;
+      if (!priorityPluginIds.includes(candidate.pluginId)) {
+        await deferredReady;
+        if (deps.yieldBetweenDeferredLoads) {
+          const previous = deferredLane;
+          let release = () => {};
+          deferredLane = new Promise<void>((resolve) => {
+            release = resolve;
+          });
+          await previous;
+          try {
+            if (state.tornDown) return;
+            if (!isCandidateApplied(candidate, state))
+              await deps.yieldBetweenDeferredLoads();
+            if (!state.tornDown)
+              await reconcileCandidate(candidate, state, deps);
+          } finally {
+            release();
+          }
+          return;
+        }
+      }
       untaken = index + 1;
       prefetchAhead();
       try {
@@ -1108,6 +1130,8 @@ const browserReconcileDeps: PluginFrontendReconcileDeps = {
     );
     await new Promise<void>((resolve) => requestBrowserIdle(resolve));
   },
+  yieldBetweenDeferredLoads: () =>
+    new Promise<void>((resolve) => requestBrowserIdle(resolve)),
   resetCrashedSlots: resetCrashedPluginSlots,
   setRegistrations: setPluginSlotRegistrations,
   removeRegistrations: removePluginSlotRegistrations,

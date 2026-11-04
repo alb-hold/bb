@@ -15,6 +15,7 @@ export interface BundleChunk extends BundleBootChunk {
   appModules: string[];
   imports: string[];
   facade: string | null;
+  modules: { id: string; bytes: number }[];
 }
 
 interface BundleRouteClosure {
@@ -48,6 +49,7 @@ export interface BundleStatsChunkInput {
   imports: readonly string[];
   moduleIds: readonly string[];
   code: string;
+  modules?: Record<string, { renderedLength: number }>;
 }
 
 export function computeBundleStats(
@@ -109,6 +111,12 @@ export function computeBundleStats(
   )) {
     allChunks.push({
       ...describeChunk(chunk),
+      modules: Object.entries(chunk.modules ?? {})
+        .map(([id, info]) => ({
+          id: relative(appDir, id).split(sep).join("/"),
+          bytes: info.renderedLength,
+        }))
+        .sort((a, b) => b.bytes - a.bytes),
       imports: [...chunk.imports].sort(),
       appModules: chunk.moduleIds
         .map((id) => relative(appDir, id).split(sep).join("/"))
@@ -177,6 +185,7 @@ export function bundleStats(): Plugin {
           imports: output.imports,
           moduleIds: output.moduleIds ?? [],
           code: output.code,
+          modules: output.modules,
         });
       }
       const stats = computeBundleStats(
