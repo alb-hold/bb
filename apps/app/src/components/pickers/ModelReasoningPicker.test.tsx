@@ -329,6 +329,20 @@ describe("ModelReasoningPicker", () => {
     expect(onReasoningChange).not.toHaveBeenCalled();
   });
 
+  it("keeps the GPT family in the visible trigger and tooltip", () => {
+    renderPicker({
+      modelOptions: [{ value: "gpt-6.1-sol", label: "GPT-6.1-Sol" }],
+      modelValue: "gpt-6.1-sol",
+    });
+    const trigger = screen.getByRole("button", {
+      name: "Provider, model and reasoning",
+    });
+    expect(trigger.textContent).toContain("GPT-6.1-Sol");
+    expect(trigger.querySelector("[title]")?.getAttribute("title")).toContain(
+      "GPT-6.1-Sol",
+    );
+  });
+
   it("adjusts reasoning in an empty search but preserves text navigation", () => {
     const { onReasoningChange, onModelChange } = renderPicker({
       modelOptions: manyCodexModels,
@@ -354,7 +368,7 @@ describe("ModelReasoningPicker", () => {
         name: "Provider, model and reasoning",
       }),
     );
-    const model = screen.getByRole("button", { name: "5.5" });
+    const model = screen.getByRole("button", { name: "GPT-5.5" });
     model.focus();
     fireEvent.keyDown(model, { key: "ArrowRight" });
     expect(onReasoningChange).toHaveBeenCalledExactlyOnceWith("high");
@@ -710,7 +724,7 @@ describe("ModelReasoningPicker", () => {
     fireEvent.click(
       screen.getByRole("button", { name: "Provider, model and reasoning" }),
     );
-    fireEvent.click(screen.getByText("5.2"));
+    fireEvent.click(screen.getByText("GPT-5.2"));
 
     expect(onModelChange).toHaveBeenCalledWith("gpt-5.2");
     expect(screen.getByRole("dialog")).not.toBeNull();
@@ -780,13 +794,13 @@ describe("ModelReasoningPicker", () => {
         name: "Provider, model and reasoning",
       }),
     );
-    expect(screen.getAllByText("5.5")).toHaveLength(2);
+    expect(screen.getAllByText("GPT-5.5")).toHaveLength(2);
 
     fireEvent.click(screen.getByTitle("Claude Code"));
 
     expect(onSelectedProviderChange).toHaveBeenCalledWith("claude-code");
     expect(await screen.findByText("Opus 4.7")).not.toBeNull();
-    expect(screen.getAllByText("5.5")).toHaveLength(1);
+    expect(screen.getAllByText("GPT-5.5")).toHaveLength(1);
     expect(onModelChange).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByText("Opus 4.7"));
@@ -818,7 +832,7 @@ describe("ModelReasoningPicker", () => {
       screen.getByRole("button", { name: "Handoff to new thread" }),
     );
     expect(onStart).toHaveBeenCalledOnce();
-    fireEvent.click(screen.getByRole("button", { name: "5.5" }));
+    fireEvent.click(screen.getByRole("button", { name: "GPT-5.5" }));
     expect(onSelect).toHaveBeenCalledWith(
       expect.objectContaining({ providerId: "codex" }),
     );
@@ -1201,7 +1215,7 @@ describe("ModelReasoningPicker", () => {
     const search = screen.getByPlaceholderText("Search models");
     fireEvent.change(search, { target: { value: "legacy" } });
 
-    expect(screen.getByText("4.1 Legacy")).not.toBeNull();
+    expect(screen.getByText("GPT-4.1 Legacy")).not.toBeNull();
 
     fireEvent.keyDown(search, { key: "ArrowDown" });
     fireEvent.keyDown(search, { key: "Enter" });

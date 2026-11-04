@@ -38,8 +38,13 @@ it("keeps token details inside the Worked for disclosure and preserves secondary
   const label = screen.getByText("Worked for");
   expect(PAST_ROW_DIM_CLASS_NAME).toBe("text-muted-foreground");
   expect(label.className).toContain("text-muted-foreground");
+  const chevron = label.closest("button")?.querySelector("svg:last-child");
+  expect(chevron?.classList.contains("opacity-0")).toBe(false);
+  expect(chevron?.classList.contains("text-muted-foreground")).toBe(true);
   fireEvent.click(label);
   expect(screen.getByText("Token breakdown fixture")).toBeTruthy();
   fireEvent.click(label);
-  expect(screen.getByText("Token breakdown fixture").closest("[aria-hidden=true]")).toBeTruthy();
+  expect(
+    screen.getByText("Token breakdown fixture").closest("[aria-hidden=true]"),
+  ).toBeTruthy();
 });

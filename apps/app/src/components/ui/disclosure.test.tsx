@@ -11,7 +11,7 @@ import { Provider, createStore } from "jotai";
 import { useState, type ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ExpandablePanel } from "./disclosure";
+import { CollapsibleHeader, ExpandablePanel } from "./disclosure";
 import { layoutAnimationInFlightCountAtom } from "./layoutAnimationAtoms.js";
 
 class ResizeObserverStub implements ResizeObserver {
@@ -282,3 +282,33 @@ describe("ExpandablePanel deferred body realization", () => {
     expect(screen.getByText("Expanded body")).toBe(body);
   });
 });
+
+it.each(["Ran 1 command", "Ran 1 tool", "Worked for 1s"])(
+  "shows a secondary-ink chevron at rest for %s and rotates it when opened",
+  (summary) => {
+    const onToggle = vi.fn();
+    const view = render(
+      <CollapsibleHeader
+        summaryContent={summary}
+        toneClassName="text-muted-foreground"
+        onToggle={onToggle}
+      />,
+    );
+    const header = screen.getByRole("button", { name: summary });
+    const chevron = header.querySelector("svg");
+    expect(chevron?.classList.contains("opacity-100")).toBe(true);
+    expect(chevron?.classList.contains("text-muted-foreground")).toBe(true);
+    fireEvent.click(header);
+    expect(onToggle).toHaveBeenCalledOnce();
+    view.rerender(
+      <CollapsibleHeader
+        summaryContent={summary}
+        toneClassName="text-foreground"
+        onToggle={onToggle}
+        isExpanded
+      />,
+    );
+    expect(header.getAttribute("aria-expanded")).toBe("true");
+    expect(chevron?.classList.contains("rotate-90")).toBe(true);
+  },
+);

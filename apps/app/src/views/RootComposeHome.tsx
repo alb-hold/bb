@@ -1,5 +1,4 @@
 import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { OverflowFade } from "@bb/shared-ui/overflow-fade";
 import { cn } from "@bb/shared-ui/lib/utils";
 import { PAGE_SHELL_CONTENT_STYLE } from "@/components/ui/page-shell-content-style.js";
 import { CONTENT_MEASURE_MAX_WIDTH_CLASS } from "@/lib/content-measure";
@@ -13,7 +12,7 @@ import {
 const COMPACT_HOME_CHROME_OFFSET_PX = 56;
 const COMPACT_HOME_COLUMN_CLASS = `mx-auto w-full ${CONTENT_MEASURE_MAX_WIDTH_CLASS} px-4`;
 const ROOT_COMPOSE_MAX_WIDTH_CLASS = CONTENT_MEASURE_MAX_WIDTH_CLASS;
-const COMPACT_HOME_REST_VISIBLE_ROWS = 7.5;
+const COMPACT_HOME_REST_VISIBLE_ROWS = 7;
 const COMPACT_HOME_REST_BAND_PX =
   COMPACT_HOME_REST_VISIBLE_ROWS * MOBILE_RECENT_ROW_HEIGHT_PX +
   MOBILE_RECENT_LABEL_HEIGHT_PX;
@@ -48,8 +47,6 @@ function useCompactHomeMetrics(isCompact: boolean) {
   const scrollViewportRef = useRef<HTMLDivElement>(null);
   const scrollContentRef = useRef<HTMLDivElement>(null);
   const leadingSpacerRef = useRef<HTMLDivElement>(null);
-  const bottomSpacerRef = useRef<HTMLDivElement>(null);
-  const composerFadeRef = useRef<HTMLDivElement>(null);
   const [composerMaxHeight, setComposerMaxHeight] = useState<number>();
 
   useLayoutEffect(() => {
@@ -59,16 +56,12 @@ function useCompactHomeMetrics(isCompact: boolean) {
     const scrollViewport = scrollViewportRef.current;
     const scrollContent = scrollContentRef.current;
     const leadingSpacer = leadingSpacerRef.current;
-    const bottomSpacer = bottomSpacerRef.current;
-    const composerFade = composerFadeRef.current;
     if (
       !region ||
       !composer ||
       !scrollViewport ||
       !scrollContent ||
-      !leadingSpacer ||
-      !bottomSpacer ||
-      !composerFade
+      !leadingSpacer
     ) {
       return;
     }
@@ -88,9 +81,7 @@ function useCompactHomeMetrics(isCompact: boolean) {
         regionHeight: region.offsetHeight,
         composerHeight,
       })}px`;
-      bottomSpacer.style.height = `${composerHeight}px`;
-      composerFade.hidden =
-        scrollViewport.scrollHeight <= scrollViewport.clientHeight;
+      scrollViewport.style.bottom = `${composerHeight}px`;
     };
     measure();
     if (typeof ResizeObserver === "undefined") return;
@@ -107,8 +98,6 @@ function useCompactHomeMetrics(isCompact: boolean) {
     scrollViewportRef,
     scrollContentRef,
     leadingSpacerRef,
-    bottomSpacerRef,
-    composerFadeRef,
     composerMaxHeight,
   };
 }
@@ -126,8 +115,6 @@ export function RootComposeHome({
     scrollViewportRef,
     scrollContentRef,
     leadingSpacerRef,
-    bottomSpacerRef,
-    composerFadeRef,
     composerMaxHeight,
   } = useCompactHomeMetrics(isCompact);
 
@@ -176,11 +163,6 @@ export function RootComposeHome({
                 {compactScrollContent}
                 {homepageSections}
               </div>
-              <div
-                ref={bottomSpacerRef}
-                aria-hidden
-                data-testid="root-compose-compact-bottom-spacer"
-              />
             </div>
           </div>
         ) : null}
@@ -193,11 +175,11 @@ export function RootComposeHome({
               : undefined
           }
         >
-          <div ref={composerFadeRef} data-testid="root-compose-compact-fade">
-            {isCompact ? (
-              <OverflowFade placement="above" tone="background" size="lg" />
-            ) : null}
-          </div>
+          {!isCompact ? (
+            <p className="mb-4 text-center text-sm text-muted-foreground">
+              Start a new thread
+            </p>
+          ) : null}
           <div
             className={
               isCompact

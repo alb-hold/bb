@@ -50,17 +50,21 @@ describe("RootComposeHome", () => {
       />,
     );
     const column = screen.getByTestId("root-compose-compact-home");
+    expect(screen.getByText("Start a new thread").className).toContain(
+      "text-muted-foreground",
+    );
     expect(column.className).toContain("my-auto");
     expect(column.className).toContain("shrink-0");
     expect(column.parentElement?.className).toContain("overflow-y-auto");
   });
-  it("keeps the composer above a scroll viewport that runs behind it", () => {
+  it("keeps mobile recents separate from the composer and desktop anchor", () => {
     renderCompactHome();
 
     const viewport = screen.getByTestId("root-compose-compact-scroll-viewport");
     const composer = screen.getByTestId("root-compose-compact-composer");
 
-    expect(viewport.className).toContain("bottom-0");
+    expect(screen.queryByText("Start a new thread")).toBeNull();
+    expect(viewport.style.bottom).toBe("0px");
     expect(viewport.className).toContain("overflow-y-auto");
     expect(composer.className).toContain("absolute");
     expect(composer.className).toContain("bottom-0");
@@ -85,11 +89,10 @@ describe("RootComposeHome", () => {
     const leadingSpacer = screen.getByTestId(
       "root-compose-compact-leading-spacer",
     );
-    const bottomSpacer = screen.getByTestId(
-      "root-compose-compact-bottom-spacer",
-    );
-    expect(leadingSpacer.style.height).toBe("134px");
-    expect(bottomSpacer.style.height).toBe("188px");
+    expect(leadingSpacer.style.height).toBe("164px");
+    expect(
+      screen.getByTestId("root-compose-compact-scroll-viewport").style.bottom,
+    ).toBe("188px");
   });
 
   it("caps the composer so a tall draft keeps it below the app chrome row", () => {
@@ -135,26 +138,8 @@ describe("RootComposeHome", () => {
     const content = screen.getByTestId("root-compose-compact-scroll-content");
     expect(content.className).toContain("min-h-full");
     expect(content.className).toContain("justify-end");
-    expect(content.lastElementChild).toBe(
-      screen.getByTestId("root-compose-compact-bottom-spacer"),
-    );
-  });
-
-  it("drops the composer fade when nothing scrolls behind it", () => {
-    vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockReturnValue(534);
-    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(534);
-
-    renderCompactHome();
-
-    expect(screen.getByTestId("root-compose-compact-fade").hidden).toBe(true);
-  });
-
-  it("keeps the composer fade while rows overflow behind it", () => {
-    vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockReturnValue(873);
-    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(534);
-
-    renderCompactHome();
-
-    expect(screen.getByTestId("root-compose-compact-fade").hidden).toBe(false);
+    expect(
+      content.lastElementChild?.contains(screen.getByTestId("recents")),
+    ).toBe(true);
   });
 });

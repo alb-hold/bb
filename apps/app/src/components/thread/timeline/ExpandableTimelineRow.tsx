@@ -266,9 +266,7 @@ function ExpandableTimelineRowComponent({
         </span>
       }
       summaryContentClassName={TIMELINE_ROW_HEADER_CONTENT_CLASS_NAME}
-      forceHeaderChevronVisible={
-        expandable && !isExpanded && collapsedPreviewActive
-      }
+      forceHeaderChevronVisible={expandable}
       className="w-full"
       headerClassName={cn(
         timelineRowHeaderClassName(horizontalPadding),

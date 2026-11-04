@@ -10,7 +10,11 @@ export function stripModelBrandPrefix(
   label: string,
   brandPrefix: string | undefined,
 ): string {
-  if (brandPrefix === undefined || brandPrefix.length === 0) {
+  if (
+    brandPrefix === undefined ||
+    brandPrefix.length === 0 ||
+    brandPrefix.toLowerCase() === "gpt-"
+  ) {
     return label;
   }
   return label.toLowerCase().startsWith(brandPrefix.toLowerCase())
