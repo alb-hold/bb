@@ -24,6 +24,14 @@ export function useCodeRendererPreloads(): void {
         await Promise.all([
           warmDiff ? BbDiffSplit.preload() : undefined,
           warmSource ? BbSourceCodeSplit.preload() : undefined,
+          import("@/components/plugin/lazy-plugin-renderers").then(
+            async ({ LazyPluginDiff, LazyPluginSourceCode }) => {
+              await Promise.all([
+                warmDiff ? LazyPluginDiff.preload() : undefined,
+                warmSource ? LazyPluginSourceCode.preload() : undefined,
+              ]);
+            },
+          ),
         ]).catch(() => undefined);
       });
     };
