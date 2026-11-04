@@ -1242,3 +1242,80 @@ describe("environment creation placement", () => {
     },
   );
 });
+
+describe("nested sticky parents with row state", () => {
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
+
+  it("offsets a nested sticky parent by the height of its ancestors' row state", () => {
+    const growingRowHeight = 110;
+    const realRect = HTMLElement.prototype.getBoundingClientRect;
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+      function (this: HTMLElement) {
+        const rect = realRect.call(this);
+        if (
+          !this.hasAttribute("data-sidebar-rename-row") ||
+          this.querySelector("[data-sidebar-thread-row-state]") === null
+        ) {
+          return rect;
+        }
+        return new DOMRect(rect.x, rect.y, rect.width, growingRowHeight);
+      },
+    );
+    const grandparent = makeThread({
+      id: "thr_grandparent",
+      title: "Grandparent",
+      titleFallback: "Grandparent",
+      pinnedAt: 1,
+      experimental_rowState: {
+        statuses: { task: { value: "Running" } },
+        progress: { value: 0.5, label: "Merging" },
+      },
+    });
+    const parent = makeThread({
+      id: "thr_parent",
+      title: "Parent",
+      titleFallback: "Parent",
+      parentThreadId: "thr_grandparent",
+    });
+    const child = makeThread({
+      id: "thr_child",
+      title: "Child",
+      titleFallback: "Child",
+      parentThreadId: "thr_parent",
+    });
+    const node = buildPinnedSidebarState({
+      threads: [grandparent, parent, child],
+    }).rootNodes[0];
+    const { container } = renderTree(
+      <ThreadTreeNodeRow
+        projectId="proj_test"
+        node={node}
+        depthOffset={0}
+        isEnvGrouped={false}
+        collapsedThreadIds={new Set()}
+        collapsedEnvironmentIds={new Set()}
+        onToggleThreadCollapsed={vi.fn()}
+        onToggleEnvironmentCollapsed={vi.fn()}
+        sectionDnd={makeSectionDnd()}
+        sortableRef={() => undefined}
+      />,
+      { threads: [grandparent, parent, child] },
+    );
+
+    const tiers = container.querySelectorAll<HTMLElement>(
+      '[data-sidebar-sticky-tier="parent"]',
+    );
+    expect(tiers).toHaveLength(2);
+    expect(
+      tiers[0]?.style.getPropertyValue("--bb-sidebar-sticky-parent-offset"),
+    ).toBe("0px");
+    expect(
+      tiers[1]?.style.getPropertyValue("--bb-sidebar-sticky-parent-offset"),
+    ).toBe(
+      `calc(${growingRowHeight}px - 1 * var(--bb-sidebar-sticky-row-height))`,
+    );
+  });
+});
