@@ -54,23 +54,7 @@ export class PendingRpcRegistry<TKey extends PendingRpcKey, TResult> {
     };
     const timeout = this.options;
     if (timeout.timeoutMs !== null) {
-      entry.timeout = setTimeout(() => {
-        if (this.entries.get(key.rpcKey) !== entry) return;
-        const retryThreshold = this.options.lateTimeoutRetryMs;
-        const elapsedMs = Date.now() - entry.startedAt;
-        if (
-          retryThreshold !== undefined &&
-          elapsedMs - timeout.timeoutMs >= retryThreshold &&
-          elapsedMs < timeout.timeoutMs * 3
-        ) {
-          entry.timeout = setTimeout(
-            () => this.expire(entry),
-            Math.min(timeout.timeoutMs, timeout.timeoutMs * 3 - elapsedMs),
-          );
-          return;
-        }
-        this.expire(entry);
-      }, timeout.timeoutMs);
+      this.armDeadline(entry, timeout.timeoutMs);
     }
     this.entries.set(key.rpcKey, entry);
     return { created: true, promise };
@@ -131,6 +115,28 @@ export class PendingRpcRegistry<TKey extends PendingRpcKey, TResult> {
     const error = timeout.timeoutError(entry.key);
     this.options.onFail?.(entry.key, error);
     entry.reject(error);
+  }
+
+  private armDeadline(entry: PendingRpcEntry<TKey, TResult>, delayMs: number): void {
+    entry.timeout = setTimeout(() => {
+      if (this.entries.get(entry.key.rpcKey) !== entry) return;
+      const timeout = this.options;
+      if (timeout.timeoutMs === null) return;
+      const elapsedMs = Date.now() - entry.startedAt;
+      const latenessMs = elapsedMs - timeout.timeoutMs;
+      if (
+        timeout.lateTimeoutRetryMs !== undefined &&
+        latenessMs >= timeout.lateTimeoutRetryMs &&
+        elapsedMs < timeout.timeoutMs * 3
+      ) {
+        this.armDeadline(
+          entry,
+          Math.min(timeout.timeoutMs, timeout.timeoutMs * 3 - elapsedMs),
+        );
+        return;
+      }
+      this.expire(entry);
+    }, delayMs);
   }
 
   private clear(entry: PendingRpcEntry<TKey, TResult>): void {
