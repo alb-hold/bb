@@ -217,6 +217,7 @@ describe("real worktree teardown preservation", () => {
     const worktree = await makeWorktree();
     useProcReaderForTests(descendantsOnly(hostProc, -1));
     let injected = false;
+    let lateCommitSha = "";
     const originalRename = fs.rename.bind(fs);
     vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
       await originalRename(from, to);
@@ -338,6 +339,9 @@ describe("real worktree teardown preservation", () => {
         "-m",
         "late detached commit",
       );
+      lateCommitSha = (
+        await gitAt(target, gitDir, commonDir, "rev-parse", "HEAD")
+      ).trim();
       injected = true;
     };
     const restore = await injectAtBaselineRemoval(worktree.path, inject);
@@ -357,9 +361,12 @@ describe("real worktree teardown preservation", () => {
     await expect(
       readFile(path.join(worktree.path, "late-commit.txt"), "utf8"),
     ).resolves.toBe("late commit\n");
-    expect(await git(worktree.path, "rev-parse", "--abbrev-ref", "HEAD")).toBe(
-      "",
+    expect(await git(worktree.path, "rev-parse", "HEAD")).toBe(
+      `${lateCommitSha}\n`,
     );
+    await expect(
+      git(worktree.path, "cat-file", "-e", `${lateCommitSha}^{commit}`),
+    ).resolves.toBe("");
     expect(await git(worktree.path, "log", "-1", "--format=%s")).toContain(
       "late detached commit",
     );
