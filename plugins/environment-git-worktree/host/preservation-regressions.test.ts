@@ -501,6 +501,30 @@ describe("real worktree teardown preservation", () => {
     }
   });
 
+  it("refuses Windows teardown without touching the worktree", async () => {
+    const worktree = await makeWorktree();
+    const platform = Object.getOwnPropertyDescriptor(process, "platform");
+    Object.defineProperty(process, "platform", {
+      configurable: true,
+      value: "win32",
+    });
+    try {
+      await expect(remove(worktree)).rejects.toMatchObject({
+        code: "worktree_preserved",
+      });
+      await expect(access(worktree.path)).resolves.toBeUndefined();
+      await expect(
+        access(path.join(worktree.path, ".git")),
+      ).resolves.toBeUndefined();
+      await expect(
+        readFile(path.join(worktree.path, "README.md"), "utf8"),
+      ).resolves.toBe("published\n");
+    } finally {
+      if (platform !== undefined)
+        Object.defineProperty(process, "platform", platform);
+    }
+  });
+
   removeDirectoryTreeTest(
     "does not follow a directory replaced by a symlink during removal",
     async () => {
