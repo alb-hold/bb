@@ -494,9 +494,6 @@ describe("real worktree teardown preservation", () => {
               times.atimeMs / 1000,
               times.mtimeMs / 1000,
             );
-            await expect(fs.stat(quarantined)).resolves.toMatchObject({
-              mtimeMs: times.mtimeMs,
-            });
           },
         }),
       ).rejects.toMatchObject({ code: "worktree_preserved" });
@@ -506,6 +503,10 @@ describe("real worktree teardown preservation", () => {
     await expect(
       readFile(path.join(worktree.path, "README.md"), "utf8"),
     ).resolves.toBe("late-data\n");
+    if (originalTimes === null) throw new Error("missing file stat");
+    await expect(
+      fs.stat(path.join(worktree.path, "README.md")),
+    ).resolves.toMatchObject({ mtimeMs: originalTimes.mtimeMs });
   });
 
   it("retains a replacement directory created before directory removal", async () => {
