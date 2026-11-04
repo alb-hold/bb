@@ -7,6 +7,8 @@ import {
 } from "@bb/server-contract";
 
 const SOCKET_OPEN = 1;
+const REPLAY_RETRY_CLOSE_CODE = 4001;
+const SEND_FAILED_CLOSE_CODE = 4002;
 const DEFAULT_INPUT_QUEUE_MAX_BYTES = 1024 * 1024;
 const DEFAULT_SOCKET_HIGH_WATER_BYTES = 1024 * 1024;
 const DEFAULT_DRAIN_POLL_MS = 10;
@@ -15,7 +17,9 @@ const DEFAULT_HEARTBEAT_TIMEOUT_MS = 45_000;
 export const REPAINT_RESTORE_DELAY_MS = 400;
 const REPAINT_RESTORE_RETRY_DELAY_MS = 1_000;
 const ATTACH_RESIZE_SETTLE_CEILING_MS = 5_000;
-const DEFAULT_RECONNECT_DELAYS_MS = [100, 250, 500, 1_000, 2_000] as const;
+const DEFAULT_RECONNECT_DELAYS_MS = [
+  100, 250, 500, 1_000, 2_000, 4_000, 8_000,
+] as const;
 
 export type TerminalSocketConnectionState =
   | "connecting"
@@ -140,6 +144,7 @@ export class TerminalWebSocketTransport {
   private pendingInputBytes = 0;
   private readonly pendingInputs: PendingTerminalInput[] = [];
   private reconnectAttempt = 0;
+  private retryStreak = 0;
   private reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
   private layoutSettled = false;
   private resizeReportedAfterLayoutSettle = false;
@@ -150,7 +155,8 @@ export class TerminalWebSocketTransport {
   private resizeEchoSeqConfirmed = false;
   private repaintNudgeInFlight: RepaintNudgeInFlight | null = null;
   private repaintTimeout: ReturnType<typeof setTimeout> | null = null;
-  private repaintRestoreRetryTimeout: ReturnType<typeof setTimeout> | null = null;
+  private repaintRestoreRetryTimeout: ReturnType<typeof setTimeout> | null =
+    null;
   private settleTimeout: ReturnType<typeof setTimeout> | null = null;
   private socket: TerminalBrowserSocket | null = null;
   private terminalEnded = false;
@@ -159,7 +165,8 @@ export class TerminalWebSocketTransport {
 
   constructor(private readonly options: TerminalWebSocketTransportOptions) {
     this.createSocket =
-      options.createSocket ?? ((url, protocols) => new WebSocket(url, protocols));
+      options.createSocket ??
+      ((url, protocols) => new WebSocket(url, protocols));
     this.drainPollMs = options.drainPollMs ?? DEFAULT_DRAIN_POLL_MS;
     this.heartbeatIntervalMs =
       options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
@@ -201,6 +208,28 @@ export class TerminalWebSocketTransport {
       socket.close();
     }
     this.options.onConnectionState?.("closed");
+  }
+
+  retry(): void {
+    if (
+      this.disposed ||
+      this.terminalEnded ||
+      !this.options.shouldReconnect()
+    ) {
+      return;
+    }
+    this.reconnectAttempt = Math.max(this.reconnectAttempt, this.retryStreak);
+    this.retryStreak += 1;
+    const socket = this.socket;
+    if (socket === null) {
+      this.scheduleReconnect();
+      return;
+    }
+    socket.close(REPLAY_RETRY_CLOSE_CODE, "terminal replay retry");
+  }
+
+  resetRetryBackoff(): void {
+    this.retryStreak = 0;
   }
 
   sendInput(dataBase64: string, inputEventAt?: number): boolean {
@@ -520,10 +549,7 @@ export class TerminalWebSocketTransport {
     if (this.ackedResizeSeq >= inFlight.nudgeSeq) {
       inFlight.echoTaken = true;
     }
-    if (
-      inFlight.restoreRequested &&
-      this.ackedResizeSeq >= inFlight.nudgeSeq
-    ) {
+    if (inFlight.restoreRequested && this.ackedResizeSeq >= inFlight.nudgeSeq) {
       this.clearRepaintRestoreRetryTimeout();
       inFlight.restoreRequested = false;
       if (inFlight.finalSeq === null) {
@@ -812,8 +838,9 @@ export class TerminalWebSocketTransport {
       socketBufferedAmount(socket) <= this.socketHighWaterBytes
     ) {
       const pending = this.pendingInputs[0];
+      if (!pending) break;
+      this.claimSize();
       if (
-        !pending ||
         !this.trySend(
           socket,
           pending.payload,
@@ -851,7 +878,7 @@ export class TerminalWebSocketTransport {
       return true;
     } catch {
       try {
-        socket.close(1011, "send-failed");
+        socket.close(SEND_FAILED_CLOSE_CODE, "send-failed");
       } catch {
         this.handleClose(socket);
       }

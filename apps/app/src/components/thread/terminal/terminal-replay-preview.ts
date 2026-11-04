@@ -190,6 +190,7 @@ export function mountTerminalReplayPreview({
   readonly fallback: boolean;
   dispose(): void;
   release(): void;
+  showFallback(): void;
   hold(options: { countdown: boolean }): void;
   resize(cols: number, rows: number): Promise<void>;
   setPtyGrid(cols: number, rows: number): void;
@@ -395,6 +396,11 @@ export function mountTerminalReplayPreview({
     delete preview.dataset.terminalReplayHoldExpired;
     updateVisibility();
   };
+  const showFallback = () => {
+    if (disposed) return;
+    preview.style.visibility = "hidden";
+    container.style.opacity = previousOpacity;
+  };
   const armHoldTimeout = () => {
     clearHoldTimeout();
     holdTimeout = window.setTimeout(
@@ -412,6 +418,7 @@ export function mountTerminalReplayPreview({
   return {
     fallback: holdUntilReleased,
     release,
+    showFallback,
     hold({ countdown }) {
       if (disposed) return;
       held = true;

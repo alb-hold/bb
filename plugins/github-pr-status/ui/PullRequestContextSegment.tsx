@@ -42,7 +42,11 @@ import {
 } from "./display";
 import { PullRequestNextStepLabel } from "./PullRequestNextStepLabel";
 import { PullRequestStatusPill } from "./PullRequestStatusPill";
-import { useEnvironmentPullRequest, usePullRequestActions } from "./queries";
+import {
+  runDisplayedPullRequestAction,
+  useEnvironmentPullRequest,
+  usePullRequestActions,
+} from "./queries";
 
 const CHANGED_FILES_SEGMENT_KEY = "bb--git/changed-files";
 
@@ -324,9 +328,15 @@ function PullRequestAction({
       pullRequest={pullRequest}
       isPending={actions.isPending}
       mergeMethod={actions.mergeMethod}
-      onMarkReady={() => void actions.markReady()}
-      onMerge={(method) => void actions.merge(method)}
-      onConvertToDraft={() => void actions.markDraft()}
+      onMarkReady={() =>
+        runDisplayedPullRequestAction(actions, pullRequest, "ready")
+      }
+      onMerge={(method) =>
+        runDisplayedPullRequestAction(actions, pullRequest, method)
+      }
+      onConvertToDraft={() =>
+        runDisplayedPullRequestAction(actions, pullRequest, "draft")
+      }
     />
   );
 }

@@ -1658,6 +1658,20 @@ setInterval(() => {}, 1000);
     );
     writeEnrollingBb(fixture);
     writeExecutable(join(fixture.binDir, "sleep"), "#!/bin/sh\nexit 0\n");
+    const daemonPort = readFileSync(
+      join(fixture.dataDir, "host-daemon-port"),
+      "utf8",
+    ).trim();
+    rmSync(join(fixture.binDir, "node"));
+    writeExecutable(
+      join(fixture.binDir, "node"),
+      `#!/bin/sh
+if [ "$#" -eq 6 ] && [ "$1" = -e ] && [ "$3" = '${daemonPort}' ] && [ "$4" = host-test ] && [ "$5" = https://machine.getbb.app ]; then
+  case "$6" in yes|no) exit 1 ;; esac
+fi
+exec '${process.execPath}' "$@"
+`,
+    );
 
     const result = runScript(BOOTSTRAP_ARGS, fixture, {
       BB_INSTALL_SKIP_SERVICE: "1",

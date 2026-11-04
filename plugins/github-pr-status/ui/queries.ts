@@ -113,17 +113,20 @@ export function usePullRequestActions(environmentId: string) {
   return {
     isPending: markReady.isPending || markDraft.isPending || merge.isPending,
     mergeMethod,
-    markReady: () =>
+    markReady: (identity: DisplayedPullRequestIdentity) =>
       runWithToast(
         { loading: "Marking pull request ready", ...UPDATE_FAILURE },
-        () => markReady.mutate({ environmentId }),
+        () => markReady.mutate({ environmentId, ...identity }),
       ),
-    markDraft: () =>
+    markDraft: (identity: DisplayedPullRequestIdentity) =>
       runWithToast(
         { loading: "Converting pull request to draft", ...UPDATE_FAILURE },
-        () => markDraft.mutate({ environmentId }),
+        () => markDraft.mutate({ environmentId, ...identity }),
       ),
-    merge: (method: PullRequestMergeMethod) => {
+    merge: (
+      method: PullRequestMergeMethod,
+      identity: DisplayedPullRequestIdentity,
+    ) => {
       window.localStorage.setItem(MERGE_METHOD_STORAGE_KEY, method);
       setMergeMethod(method);
       return runWithToast(
@@ -132,8 +135,49 @@ export function usePullRequestActions(environmentId: string) {
           failure: "Failed to merge pull request",
           fallback: "Pull request was not merged",
         },
-        () => merge.mutate({ environmentId, method }),
+        () => merge.mutate({ environmentId, method, ...identity }),
       );
     },
   };
+}
+
+export interface DisplayedPullRequestIdentity {
+  expectedHeadOid: string | null;
+  expectedHost: string | null;
+  expectedRepository: string | null;
+  expectedNumber: number;
+  expectedBaseRef: string;
+}
+
+export function displayedPullRequestIdentity(
+  pullRequest: PullRequest,
+): DisplayedPullRequestIdentity {
+  const displayedUrl = new URL(pullRequest.url);
+  const [owner, repository] = displayedUrl.pathname.split("/").slice(1, 3);
+  return {
+    expectedHeadOid: pullRequest.headRefOid,
+    expectedHost: displayedUrl.host,
+    expectedRepository:
+      owner && repository
+        ? `${owner}/${repository.replace(/\.git$/u, "")}`
+        : null,
+    expectedNumber: pullRequest.number,
+    expectedBaseRef: pullRequest.baseRefName,
+  };
+}
+
+export type DisplayedPullRequestAction =
+  | "ready"
+  | "draft"
+  | PullRequestMergeMethod;
+
+export function runDisplayedPullRequestAction(
+  actions: ReturnType<typeof usePullRequestActions>,
+  pullRequest: PullRequest,
+  action: DisplayedPullRequestAction,
+): void {
+  const identity = displayedPullRequestIdentity(pullRequest);
+  if (action === "ready") void actions.markReady(identity);
+  else if (action === "draft") void actions.markDraft(identity);
+  else void actions.merge(action, identity);
 }

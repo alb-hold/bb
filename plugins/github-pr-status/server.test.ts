@@ -17,6 +17,14 @@ type Environment = Awaited<
   ReturnType<BbPluginApi["sdk"]["environments"]["get"]>
 >;
 
+type EnvironmentChangedSubscribeArgs = Extract<
+  Parameters<BbPluginApi["sdk"]["subscribe"]>[0],
+  { event: "environment:changed" }
+>;
+type EnvironmentChangedEvent = Parameters<
+  EnvironmentChangedSubscribeArgs["callback"]
+>[0];
+
 function environment(overrides: Partial<Environment> = {}): Environment {
   return {
     id: "env-1",
@@ -41,6 +49,27 @@ function environment(overrides: Partial<Environment> = {}): Environment {
     ...overrides,
   } as Environment;
 }
+
+const DISPLAYED_IDENTITY = {
+  expectedHeadOid: "a".repeat(40),
+  expectedHost: "github.com",
+  expectedRepository: "acme/bb",
+  expectedNumber: 7,
+  expectedBaseRef: "main",
+};
+
+const IDENTITY_FLAGS = [
+  "--expected-head-oid",
+  "a".repeat(40),
+  "--expected-host",
+  "github.com",
+  "--expected-repository",
+  "acme/bb",
+  "--expected-number",
+  "7",
+  "--expected-base-ref",
+  "main",
+];
 
 function view(
   overrides: Partial<GitHubPullRequestView> = {},
@@ -71,6 +100,8 @@ async function setup(options: {
   host?: Parameters<typeof makeHostResponse>[0];
   callHost?: (call: ExperimentalFakeHostRpcCall) => unknown;
   listThreadEvents?: BbPluginApi["sdk"]["threads"]["events"]["list"];
+  getEnvironment?: (environmentId: string) => Promise<Environment>;
+  debug?: (message: string) => void;
 }) {
   const environments = options.environments ?? { "env-1": environment() };
   const sdkCalls: string[] = [];
@@ -78,16 +109,24 @@ async function setup(options: {
     string,
     Parameters<BbPluginApi["rpc"]["experimental_whileWatched"]>[1]
   >();
+  const environmentChangedHandlers: EnvironmentChangedSubscribeArgs["callback"][] =
+    [];
   const fake = createFakePluginHost({
     pluginId: "bb--github-pr-status",
     sdk: {
-      subscribe: () => () => {},
+      subscribe: (args) => {
+        if (args.event === "environment:changed")
+          environmentChangedHandlers.push(args.callback);
+        return () => {};
+      },
       threads: {
         events: { list: options.listThreadEvents ?? (async () => []) },
       },
       environments: {
         get: async ({ environmentId }: { environmentId: string }) => {
           sdkCalls.push(`environments.get ${environmentId}`);
+          if (options.getEnvironment)
+            return options.getEnvironment(environmentId);
           const found = environments[environmentId];
           if (found === undefined) {
             throw Object.assign(new Error("Environment not found"), {
@@ -121,9 +160,21 @@ async function setup(options: {
       whileWatchedHandlers.set(method, handler);
     },
   );
-  await plugin(fake.bb);
+  const loadPlugin = (bb: BbPluginApi) =>
+    plugin(
+      options.debug === undefined
+        ? bb
+        : { ...bb, log: { ...bb.log, debug: options.debug } },
+    );
+  await loadPlugin(fake.bb);
   return Object.assign(fake, {
     sdkCalls,
+    emitEnvironmentChanged(event: EnvironmentChangedEvent) {
+      for (const callback of environmentChangedHandlers) callback(event);
+    },
+    reloadPlugin() {
+      return fake.harness.reload(loadPlugin);
+    },
     async watchPullRequests(environmentId: string) {
       const handler = whileWatchedHandlers.get("pullRequests");
       if (handler === undefined)
@@ -138,6 +189,98 @@ async function setup(options: {
 }
 
 describe("GitHub PR Status server", () => {
+  it.each([
+    ["null-prototype rejection", Object.create(null) as unknown],
+    [
+      "rejection with a throwing toString",
+      {
+        toString: () => {
+          throw new Error("toString failed");
+        },
+      },
+    ],
+  ])(
+    "keeps invalidation rejection handling safe for %s",
+    async (_, failure) => {
+      const debugMessages: string[] = [];
+      let hostFailure: unknown = null;
+      const fake = await setup({
+        callHost: (call) => {
+          if (call.method === "upstream" && hostFailure !== null)
+            throw hostFailure;
+          return call.method === "upstream"
+            ? { oid: null, branchName: "bb/pr" }
+            : call.method === "views"
+              ? (call.input as { reads: unknown[] }).reads.map(() => ({
+                  outcome: "found",
+                  pullRequest: view(),
+                }))
+              : { ok: true };
+        },
+        debug: (message) => {
+          debugMessages.push(message);
+          throw new Error("debug logger failed");
+        },
+      });
+      await fake.harness.callRpc("pullRequests", { keys: ["env-1"] });
+      const stopWatching = await fake.watchPullRequests("env-1");
+      hostFailure = failure;
+      const unhandled: unknown[] = [];
+      const onUnhandled = (reason: unknown) => unhandled.push(reason);
+      process.on("unhandledRejection", onUnhandled);
+      try {
+        fake.emitEnvironmentChanged({
+          entity: "environment",
+          type: "changed",
+          id: "env-1",
+          changes: ["git-refs-changed"],
+        });
+        await new Promise((resolve) => setImmediate(resolve));
+      } finally {
+        process.off("unhandledRejection", onUnhandled);
+        stopWatching();
+      }
+      expect(unhandled).toEqual([]);
+      expect(debugMessages).toContain(
+        "Failed to inspect refs for env-1: unprintable error",
+      );
+    },
+  );
+
+  it("keeps the saved-environment voided check handled when formatting and logging throw", async () => {
+    const debugMessages: string[] = [];
+    let environmentFailure: unknown = null;
+    const fake = await setup({
+      getEnvironment: async () => {
+        if (environmentFailure !== null) throw environmentFailure;
+        return environment();
+      },
+      debug: (message) => {
+        debugMessages.push(message);
+        throw new Error("debug logger failed");
+      },
+    });
+    await fake.harness.callRpc("pullRequests", { keys: ["env-1"] });
+    environmentFailure = {
+      toString: () => {
+        throw new Error("toString failed");
+      },
+    };
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      await fake.reloadPlugin();
+      await new Promise((resolve) => setImmediate(resolve));
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+    expect(unhandled).toEqual([]);
+    expect(debugMessages).toContain(
+      "Failed to check saved environment env-1: unprintable error",
+    );
+  });
+
   it.each([
     ["available", { outcome: "found", pullRequest: view() }],
     ["absent", { outcome: "none" }],
@@ -590,6 +733,11 @@ describe("GitHub PR Status server", () => {
       fake.harness.callRpc("merge", {
         environmentId: "env-1",
         method: "squash",
+        expectedHeadOid: "a".repeat(40),
+        expectedHost: "github.com",
+        expectedRepository: "acme/bb",
+        expectedNumber: 7,
+        expectedBaseRef: "main",
       }),
     ).rejects.toMatchObject({
       code: "conflict",
@@ -602,7 +750,10 @@ describe("GitHub PR Status server", () => {
     const fake = await setup({});
 
     await expect(
-      fake.harness.callRpc("markReady", { environmentId: "env-1" }),
+      fake.harness.callRpc("markReady", {
+        environmentId: "env-1",
+        ...DISPLAYED_IDENTITY,
+      }),
     ).rejects.toMatchObject({
       code: "conflict",
       message: "Pull request is not a draft",
@@ -611,6 +762,11 @@ describe("GitHub PR Status server", () => {
       fake.harness.callRpc("merge", {
         environmentId: "env-1",
         method: "rebase",
+        expectedHeadOid: "a".repeat(40),
+        expectedHost: "github.com",
+        expectedRepository: "acme/bb",
+        expectedNumber: 7,
+        expectedBaseRef: "main",
       }),
     ).resolves.toEqual({ message: "Pull request merge started" });
     expect(
@@ -621,7 +777,11 @@ describe("GitHub PR Status server", () => {
       {
         input: {
           path: "/work/env-1",
-          action: { operation: "merge", method: "rebase" },
+          action: {
+            operation: "merge",
+            method: "rebase",
+            expectedHeadOid: "a".repeat(40),
+          },
         },
         hostId: "host-1",
       },
@@ -644,16 +804,167 @@ describe("GitHub PR Status server", () => {
     });
 
     await expect(
-      fake.harness.callRpc("markReady", { environmentId: "env-1" }),
+      fake.harness.callRpc("markReady", {
+        environmentId: "env-1",
+        ...DISPLAYED_IDENTITY,
+      }),
     ).rejects.toMatchObject({
       code: "conflict",
       message: "gh pr ready failed: HTTP 403",
     });
     await expect(
-      fake.harness.runCli(["ready", "env-1"]),
+      fake.harness.runCli(["ready", "env-1", ...IDENTITY_FLAGS]),
     ).resolves.toMatchObject({
       exitCode: 1,
       stderr: expect.stringContaining("gh pr ready failed: HTTP 403"),
+    });
+  });
+
+  it.each([
+    ["ready", "markReady", "ready"],
+    ["draft", "markDraft", "draft"],
+  ] as const)(
+    "%s passes the displayed identity to the host",
+    async (command, method, operation) => {
+      const fake = await setup({
+        callHost: (call) =>
+          call.method === "upstream"
+            ? { oid: null, branchName: "bb/pr" }
+            : call.method === "views"
+              ? (call.input as { reads: unknown[] }).reads.map(() => ({
+                  outcome: "found",
+                  pullRequest: view({ isDraft: command === "ready" }),
+                }))
+              : { ok: true },
+      });
+
+      await fake.harness.callRpc(method, {
+        environmentId: "env-1",
+        ...DISPLAYED_IDENTITY,
+      });
+      await fake.harness.runCli([command, "env-1", ...IDENTITY_FLAGS]);
+
+      const acts = fake.harness.experimental_hostRpcCalls.filter(
+        (call) => call.method === "act",
+      );
+      expect(acts).toHaveLength(2);
+      for (const act of acts)
+        expect(act.input).toMatchObject({
+          action: { operation, ...DISPLAYED_IDENTITY },
+        });
+    },
+  );
+
+  describe.each(["ready", "draft", "merge"] as const)(
+    "the CLI %s identity flags",
+    (command) => {
+      it.each([
+        ["--expected-head-oid", "needs the head commit you reviewed"],
+        ["--expected-host", "needs --expected-host"],
+        ["--expected-repository", "needs --expected-repository"],
+        ["--expected-number", "needs --expected-number"],
+        ["--expected-base-ref", "needs --expected-base-ref"],
+      ])(
+        "refuses when %s is left out and makes no host call",
+        async (flag, message) => {
+          const fake = await setup({});
+          const flagIndex = IDENTITY_FLAGS.indexOf(flag);
+          const flags = IDENTITY_FLAGS.filter(
+            (_value, index) => index !== flagIndex && index !== flagIndex + 1,
+          );
+
+          await expect(
+            fake.harness.runCli([command, "env-1", ...flags]),
+          ).resolves.toMatchObject({
+            exitCode: 1,
+            stderr: expect.stringContaining(message),
+          });
+          expect(fake.harness.experimental_hostRpcCalls).toEqual([]);
+        },
+      );
+    },
+  );
+
+  it.each(["ready", "draft"])(
+    "the CLI refuses %s without the displayed identity and starts no host action",
+    async (command) => {
+      const fake = await setup({});
+
+      await expect(
+        fake.harness.runCli([command, "env-1"]),
+      ).resolves.toMatchObject({
+        exitCode: 1,
+        stderr: expect.stringContaining("needs the head commit you reviewed"),
+      });
+      await expect(
+        fake.harness.runCli([command, "env-1", ...IDENTITY_FLAGS.slice(0, 2)]),
+      ).resolves.toMatchObject({
+        exitCode: 1,
+        stderr: expect.stringContaining("needs --expected-host"),
+      });
+      expect(
+        fake.harness.experimental_hostRpcCalls.filter(
+          (call) => call.method === "act",
+        ),
+      ).toEqual([]);
+    },
+  );
+
+  it("the CLI refuses a merge without the reviewed head commit and starts no host action", async () => {
+    const fake = await setup({});
+
+    await expect(
+      fake.harness.runCli(["merge", "env-1"]),
+    ).resolves.toMatchObject({
+      exitCode: 1,
+      stderr: expect.stringContaining(
+        "Merge needs the head commit you reviewed: pass --expected-head-oid <oid> (shown as 'Head commit' by `bb pull-request`)",
+      ),
+    });
+    expect(
+      fake.harness.experimental_hostRpcCalls.filter(
+        (call) => call.method === "act",
+      ),
+    ).toEqual([]);
+  });
+
+  it("the CLI prints the host's changed-since-shown refusal for a mismatched head commit", async () => {
+    const fake = await setup({
+      callHost: (call) =>
+        call.method === "upstream"
+          ? { oid: null, branchName: "bb/pr" }
+          : call.method === "views"
+            ? (call.input as { reads: unknown[] }).reads.map(() => ({
+                outcome: "found",
+                pullRequest: view(),
+              }))
+            : {
+                ok: false,
+                message:
+                  "The pull request changed since it was shown. Refresh it and try again",
+              },
+    });
+
+    await expect(
+      fake.harness.runCli([
+        "merge",
+        "env-1",
+        "--expected-head-oid",
+        "b".repeat(40),
+        "--expected-host",
+        "github.com",
+        "--expected-repository",
+        "acme/bb",
+        "--expected-number",
+        "7",
+        "--expected-base-ref",
+        "main",
+      ]),
+    ).resolves.toMatchObject({
+      exitCode: 1,
+      stderr: expect.stringContaining(
+        "The pull request changed since it was shown. Refresh it and try again",
+      ),
     });
   });
 

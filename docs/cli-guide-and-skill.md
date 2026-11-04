@@ -1,5 +1,12 @@
 # CLI, Guide, And Skill
 
+The `github-pr-status` plugin's `bb pull-request ready`, `draft` and `merge
+<environment-id>` commands require `--expected-head-oid`, `--expected-host`,
+`--expected-repository`, `--expected-number`, and `--expected-base-ref`, all
+copied from `bb pull-request show`. The host compares those displayed values
+with a fresh pull request read before starting `gh pr ready` or
+`gh pr merge`.
+
 Thread terminal actions are available through `bb terminal surfaces --thread
 <id> [--json]`, `bb terminal focus <terminalId> [--all] [--json]`, `bb terminal open-link
 <terminalId> <url> [--all] [--json]`, `bb terminal split <terminalId> --side right|left|up|down

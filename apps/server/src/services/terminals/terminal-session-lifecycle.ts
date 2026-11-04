@@ -945,6 +945,7 @@ export class TerminalSessionLifecycle {
       onFail: (key, error) => this.failTerminalAttach(key, error),
       onSettle: (key, message) => this.completePendingAttach(key, message),
       timeoutMs: attachTimeoutMs,
+      lateTimeoutRetryMs: 1_000,
       timeoutError: terminalTimeoutError(
         "terminal_attach_timeout",
         "Timed out attaching terminal session",

@@ -541,7 +541,7 @@ interface ThreadTerminalViewProps {
 type TerminalTitleChangeHandler = (title: string) => void;
 
 type TerminalConnectionNotice = "reconnecting" | "reconnected";
-type TerminalReplayNotice = "loading" | "unavailable";
+type TerminalReplayNotice = "reconnecting" | "unavailable";
 
 const TERMINAL_RECONNECTING_NOTICE_DELAY_MS = 1_000;
 const TERMINAL_RECONNECTED_NOTICE_DURATION_MS = 1_500;
@@ -1292,8 +1292,9 @@ export function ThreadTerminalView({
     useState<TerminalLinkTarget | null>(null);
   const [connectionNotice, setConnectionNotice] =
     useState<TerminalConnectionNotice | null>(null);
-  const [replayNotice, setReplayNotice] =
-    useState<TerminalReplayNotice | null>(null);
+  const [replayNotice, setReplayNotice] = useState<TerminalReplayNotice | null>(
+    null,
+  );
   const [contextMenuState, setContextMenuState] =
     useState<TerminalContextMenuState>({
       link: null,
@@ -1791,8 +1792,9 @@ export function ThreadTerminalView({
     let detachGridVisibilityListeners: (() => void) | null = null;
     let replayPreview: {
       dispose(): void;
-        readonly fallback: boolean;
+      readonly fallback: boolean;
       release(): void;
+      showFallback(): void;
       hold(options: { countdown: boolean }): void;
       resize(cols: number, rows: number): Promise<void>;
       setFitGrid(cols: number, rows: number): void;
@@ -1807,7 +1809,11 @@ export function ThreadTerminalView({
         writeTerminalStatus({ terminal, text });
       }
     };
+    let paintedScreenKept = false;
+    let processExitedSeen = false;
+    let retryStalledReplay: () => void = () => undefined;
     const releaseReplayPreview = () => {
+      paintedScreenKept = false;
       replayPreview?.release();
       setReplayNotice(null);
     };
@@ -1829,6 +1835,11 @@ export function ThreadTerminalView({
       releasePreview: releaseReplayPreview,
       processExited: () => replayPreview?.processExited(),
     });
+    const keepPaintedScreen = () => {
+      paintedScreenKept = true;
+      replayPreview?.showFallback();
+      setReplayNotice("reconnecting");
+    };
     const abandonReplayPreview = () => {
       flushPendingExitNotices();
       if (replayPreview === null || replayCompleted) {
@@ -1836,6 +1847,8 @@ export function ThreadTerminalView({
         return;
       }
       if (replayPreview.fallback) replayPreview.hold({ countdown: false });
+      replayPreview.showFallback();
+      paintedScreenKept = true;
       setReplayNotice("unavailable");
     };
     let outputPipeline: ReturnType<typeof createTerminalOutputPipeline> | null =
@@ -2121,7 +2134,8 @@ export function ThreadTerminalView({
       terminal.loadAddon(new Unicode11Addon());
       terminal.unicode.activeVersion = TERMINAL_UNICODE_VERSION;
       terminal.open(containerElement);
-      const viewport = terminal.element?.querySelector<HTMLElement>(".xterm-viewport");
+      const viewport =
+        terminal.element?.querySelector<HTMLElement>(".xterm-viewport");
       if (retainNativeOutput && viewport) {
         viewport.style.backgroundColor = "inherit";
       }
@@ -2554,7 +2568,7 @@ export function ThreadTerminalView({
             replayPreview?.fallback === true
           ) {
             replayPreview.hold({ countdown: false });
-            setReplayNotice(null);
+            setReplayNotice(paintedScreenKept ? "reconnecting" : null);
           }
           if (state === "reconnecting") {
             repaintAfterReconnect = true;
@@ -2597,7 +2611,28 @@ export function ThreadTerminalView({
           });
         },
         onMessage: (message) => {
-          if (message.type === "error") abandonReplayPreview();
+          if (
+            message.type === "exited" ||
+            ((message.type === "session-updated" ||
+              message.type === "attached") &&
+              message.session.status === "exited")
+          ) {
+            processExitedSeen = true;
+          }
+          if (message.type === "error") {
+            if (
+              processExitedSeen ||
+              replayPreview === null ||
+              replayCompleted ||
+              message.code === "terminal_exited" ||
+              message.code === "terminal_not_found" ||
+              message.code === "terminal_not_running"
+            ) {
+              abandonReplayPreview();
+            } else {
+              retryStalledReplay();
+            }
+          }
           if (message.type === "exited") handleReplayPreviewExit();
           if (message.type === "output") {
             latestOutputSequence = Math.max(
@@ -2656,14 +2691,13 @@ export function ThreadTerminalView({
             }
           }
           handleTerminalServerMessage({
-            acknowledgeOutput: (nextSeq) =>
-              {
-                lastParsedOutputNextSeq = Math.max(
-                  lastParsedOutputNextSeq,
-                  nextSeq,
-                );
-                activeTransport.acknowledgeOutput(nextSeq);
-              },
+            acknowledgeOutput: (nextSeq) => {
+              lastParsedOutputNextSeq = Math.max(
+                lastParsedOutputNextSeq,
+                nextSeq,
+              );
+              activeTransport.acknowledgeOutput(nextSeq);
+            },
             message,
             terminalId: session.id,
             onOutputFrameParsed: () => {
@@ -2677,6 +2711,7 @@ export function ThreadTerminalView({
             },
             onReplayComplete: () => {
               replayCompleted = true;
+              activeTransport.resetRetryBackoff();
               for (const text of pendingExitNotices.splice(0)) {
                 routeQueuedExitNotice(text);
               }
@@ -2731,7 +2766,7 @@ export function ThreadTerminalView({
               viewportReplaySaveGate.beginReplay();
               replayCompleted = false;
               replayPreviewExitApplied = false;
-              setReplayNotice(null);
+              setReplayNotice(paintedScreenKept ? "reconnecting" : null);
               if (replayPreview === null || replayPreview.fallback) {
                 replayPreview?.dispose();
                 replayCheckpointSequence = null;
@@ -2751,7 +2786,7 @@ export function ThreadTerminalView({
                 replayPreview = mountTerminalReplayPreview({
                   container: containerElement,
                   holdUntilReleased: true,
-                  onHoldExpired: () => setReplayNotice("loading"),
+                  onHoldExpired: () => retryStalledReplay(),
                   initialFitGrid: localFitGrid,
                   isOwner: () =>
                     terminalInputClaimed &&
@@ -2760,6 +2795,7 @@ export function ThreadTerminalView({
                       true,
                   terminal: previewTerminal,
                 });
+                if (paintedScreenKept) keepPaintedScreen();
               }
             },
             setReplayNextSeq: (nextSeq) => {
@@ -2802,6 +2838,14 @@ export function ThreadTerminalView({
         }),
       });
       transport = activeTransport;
+      retryStalledReplay = () => {
+        if (processExitedSeen || exitedBeforeReplayCompleted) {
+          abandonReplayPreview();
+          return;
+        }
+        keepPaintedScreen();
+        activeTransport.retry();
+      };
       fitTerminal();
       reportDocumentVisibility();
       sizeClaims = listenForTerminalSizeClaims({
@@ -3235,8 +3279,8 @@ export function ThreadTerminalView({
         ? "Reconnecting…"
         : connectionNotice === "reconnected"
           ? "Reconnected"
-          : replayNotice === "loading"
-            ? "Still loading terminal…"
+          : replayNotice === "reconnecting"
+            ? "Reconnecting…"
             : replayNotice === "unavailable"
               ? "Terminal output unavailable"
               : null;

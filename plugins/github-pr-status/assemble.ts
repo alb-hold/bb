@@ -190,6 +190,7 @@ export function assemblePullRequest(raw: GitHubPullRequestView): PullRequest {
     state,
     baseRefName: raw.baseRefName,
     headRefName: raw.headRefName,
+    headRefOid: raw.headRefOid,
     updatedAt: raw.updatedAt,
     autoMerge: raw.autoMerge,
     inMergeQueue: raw.inMergeQueue,
