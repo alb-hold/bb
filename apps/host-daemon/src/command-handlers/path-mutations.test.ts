@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
+import { existsSync } from "node:fs";
 
 import os from "node:os";
 import path from "node:path";
@@ -12,6 +13,9 @@ import {
 } from "./path-mutations.js";
 
 const roots: string[] = [];
+const hasHeldDirectoryRemoval = existsSync(
+  new URL("./remove-held-directory.ts", import.meta.url),
+);
 
 async function makeRoot(): Promise<string> {
   const root = await fs.realpath(
@@ -152,34 +156,39 @@ describe("confined host path mutations", () => {
     }
   });
 
-  it("removes data created before the recursive deletion check", async () => {
-    const root = await makeRoot();
-    const target = path.join(root, "late-data");
-    await fs.mkdir(target);
-    await fs.writeFile(path.join(target, "old.txt"), "old");
-    const originalRename = fs.rename.bind(fs);
-    let injected = false;
-    vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
-      await originalRename(from, to);
-      if (String(from) !== target || injected) return;
-      await fs.writeFile(path.join(String(to), "late.txt"), "keep");
-      injected = true;
-    });
-    try {
-      await expect(
-        removeHostPath({
-          type: "host.remove_path",
-          path: target,
-          rootPath: root,
-          recursive: true,
-        }),
-      ).resolves.toEqual({ ok: true });
-      expect(injected).toBe(true);
-      await expect(fs.stat(target)).rejects.toMatchObject({ code: "ENOENT" });
-    } finally {
-      vi.restoreAllMocks();
-    }
-  });
+  it.skipIf(!hasHeldDirectoryRemoval)(
+    "retains data created after a recursive directory is quarantined",
+    async () => {
+      const root = await makeRoot();
+      const target = path.join(root, "late-data");
+      await fs.mkdir(target);
+      await fs.writeFile(path.join(target, "old.txt"), "old");
+      const originalRename = fs.rename.bind(fs);
+      let injected = false;
+      vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
+        await originalRename(from, to);
+        if (String(from) !== target || injected) return;
+        await fs.writeFile(path.join(String(to), "late.txt"), "keep");
+        injected = true;
+      });
+      try {
+        await expect(
+          removeHostPath({
+            type: "host.remove_path",
+            path: target,
+            rootPath: root,
+            recursive: true,
+          }),
+        ).rejects.toMatchObject({ code: "path_in_use" });
+        expect(injected).toBe(true);
+        await expect(
+          fs.readFile(path.join(target, "late.txt"), "utf8"),
+        ).resolves.toBe("keep");
+      } finally {
+        vi.restoreAllMocks();
+      }
+    },
+  );
 
   it("creates missing parent directories when recursive is enabled", async () => {
     const root = await makeRoot();

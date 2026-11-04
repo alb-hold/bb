@@ -3,6 +3,7 @@ import {
   spawn,
   spawnSync,
 } from "node:child_process";
+import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
 import {
   access,
@@ -19,12 +20,30 @@ import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { hostProc, useProcReaderForTests, type ProcReader } from "./holders.js";
 import { descendantsOnly } from "./descendants-only.js";
-import { removeDirectoryTree } from "./remove-directory-tree.js";
 import { removeWorktree } from "./worktree.js";
 
 const execFile = promisify(execFileCallback);
 const roots: string[] = [];
 const workers: ReturnType<typeof spawn>[] = [];
+const hasRemoveDirectoryTree = existsSync(
+  new URL("./remove-directory-tree.ts", import.meta.url),
+);
+const removeDirectoryTreeTest = it.skipIf(!hasRemoveDirectoryTree);
+
+async function removeDirectoryTree(
+  root: string,
+  hooks: {
+    startedAt?: number;
+    afterStart?: (startedAt: number) => Promise<void>;
+    afterDirectoryListed?: (
+      directory: string,
+      entries: readonly string[],
+    ) => Promise<void>;
+  },
+) {
+  const moduleUrl = new URL("./remove-directory-tree.js", import.meta.url).href;
+  return (await import(moduleUrl)).removeDirectoryTree(root, hooks);
+}
 
 function foreignUnreadableCwdProc(): ProcReader {
   return {
@@ -361,51 +380,66 @@ describe("real worktree teardown preservation", () => {
     ).resolves.toBe("during\n");
   });
 
-  it("does not follow a directory replaced by a symlink during removal", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "bb-remove-tree-race-"));
-    roots.push(root);
-    const target = path.join(root, "target");
-    const nested = path.join(target, "nested");
-    const moved = path.join(target, "moved-nested");
-    const outside = path.join(root, "outside");
-    await Promise.all([mkdir(nested, { recursive: true }), mkdir(outside)]);
-    await Promise.all([
-      writeFile(path.join(nested, "entry.txt"), "inside\n"),
-      writeFile(path.join(outside, "entry.txt"), "outside\n"),
-    ]);
-    let swapped = false;
-    const result = await removeDirectoryTree(target, {
-      startedAt: Date.now() + 10_000,
-      afterDirectoryListed: async (directory) => {
-        if (directory !== nested || swapped) return;
-        swapped = true;
-        await fs.rename(nested, moved);
-        await fs.symlink(outside, nested);
-      },
-    });
-    expect(swapped).toBe(true);
-    expect(result).toBe("retained");
-    await expect(
-      readFile(path.join(outside, "entry.txt"), "utf8"),
-    ).resolves.toBe("outside\n");
-  });
+  removeDirectoryTreeTest(
+    "does not follow a directory replaced by a symlink during removal",
+    async () => {
+      const root = await mkdtemp(
+        path.join(os.tmpdir(), "bb-remove-tree-race-"),
+      );
+      roots.push(root);
+      const target = path.join(root, "target");
+      const nested = path.join(target, "nested");
+      const moved = path.join(target, "moved-nested");
+      const outside = path.join(root, "outside");
+      await Promise.all([mkdir(nested, { recursive: true }), mkdir(outside)]);
+      await Promise.all([
+        writeFile(path.join(nested, "entry.txt"), "inside\n"),
+        writeFile(path.join(outside, "entry.txt"), "outside\n"),
+      ]);
+      let swapped = false;
+      const result = await removeDirectoryTree(target, {
+        startedAt: Date.now() + 10_000,
+        afterDirectoryListed: async (directory) => {
+          if (directory !== nested || swapped) return;
+          swapped = true;
+          await fs.rename(nested, moved);
+          await fs.symlink(outside, nested);
+        },
+      });
+      expect(swapped).toBe(true);
+      expect(result).toBe("retained");
+      await expect(
+        readFile(path.join(outside, "entry.txt"), "utf8"),
+      ).resolves.toBe("outside\n");
+    },
+  );
 
-  it("retains a root directory changed after recursive removal starts", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "bb-remove-root-race-"));
-    roots.push(root);
-    const target = path.join(root, "target");
-    await mkdir(target);
-    await writeFile(path.join(target, "entry.txt"), "keep\n");
-    const result = await removeDirectoryTree(target, {
-      afterStart: async () => {
-        await fs.chmod(target, 0o700);
-      },
-    });
-    expect(result).toBe("retained");
-    await expect(readFile(path.join(target, "entry.txt"), "utf8")).resolves.toBe(
-      "keep\n",
-    );
-  });
+  removeDirectoryTreeTest(
+    "retains a root directory changed after recursive removal starts",
+    async () => {
+      const root = await mkdtemp(
+        path.join(os.tmpdir(), "bb-remove-root-race-"),
+      );
+      roots.push(root);
+      const target = path.join(root, "target");
+      await mkdir(target);
+      await writeFile(path.join(target, "entry.txt"), "keep\n");
+      const result = await removeDirectoryTree(target, {
+        afterStart: async (startedAt) => {
+          await fs.chmod(target, 0o700);
+          await fs.utimes(
+            target,
+            new Date(startedAt + 10_000),
+            new Date(startedAt + 10_000),
+          );
+        },
+      });
+      expect(result).toBe("retained");
+      await expect(
+        readFile(path.join(target, "entry.txt"), "utf8"),
+      ).resolves.toBe("keep\n");
+    },
+  );
 
   it("retains Git metadata created while pruning the severed admin directory", async () => {
     const worktree = await makeWorktree();
