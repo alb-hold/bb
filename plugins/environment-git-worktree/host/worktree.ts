@@ -985,7 +985,16 @@ async function removeRegisteredWorktree(
         ]);
       }
       workspaceRemoved = true;
-      await fs.rm(severedGitDir, { recursive: true });
+      const removedGitDir = await removeDirectoryTree(severedGitDir, {
+        startedAt: finalCheckStartedAt,
+        afterDirectoryListed: args.testHooks?.afterDirectoryListed,
+      });
+      if (removedGitDir === "retained") {
+        throw worktreePreservedError(severedGitDir, [
+          "new or changed Git metadata was found during admin-directory removal",
+          ...keptNote,
+        ]);
+      }
       return { retained };
     } catch (error) {
       if (!workspaceRemoved) {

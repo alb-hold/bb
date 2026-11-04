@@ -416,6 +416,39 @@ describe("real worktree teardown preservation", () => {
     ).resolves.toBe("during\n");
   });
 
+  it("retains Git metadata created while pruning the severed admin directory", async () => {
+    const worktree = await makeWorktree();
+    useProcReaderForTests(descendantsOnly(hostProc, -1));
+    let injected = false;
+    let severedGitDir: string | null = null;
+    let removalError: unknown;
+    try {
+      await remove(worktree, true, {
+        afterFinalCheck: async (_target, gitDir) => {
+          severedGitDir = gitDir;
+        },
+        afterDirectoryListed: async (directory) => {
+          if (
+            injected ||
+            severedGitDir === null ||
+            directory !== severedGitDir
+          )
+            return;
+          await writeFile(path.join(directory, "late-metadata"), "kept\n");
+          injected = true;
+        },
+      });
+    } catch (error) {
+      removalError = error;
+    }
+    expect(removalError).toMatchObject({ code: "worktree_preserved" });
+    expect(injected, String(removalError)).toBe(true);
+    expect(severedGitDir).not.toBeNull();
+    await expect(
+      readFile(path.join(severedGitDir!, "late-metadata"), "utf8"),
+    ).resolves.toBe("kept\n");
+  });
+
   it("keeps a worktree used as another live process's cwd without signalling it", async () => {
     const worktree = await makeWorktree();
     const signalMarker = path.join(worktree.root, "signalled");
