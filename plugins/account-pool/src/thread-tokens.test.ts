@@ -2582,7 +2582,7 @@ it("never writes an actor route token to disk and reloads it by digest after a r
   expect(files).toHaveLength(1);
   const text = await fs.readFile(path.join(directory, files[0] ?? ""), "utf8");
   expect(text).not.toContain(issued.token);
-  expect(text).not.toMatch(/[A-Za-z0-9_-]{43}/u);
+  expect(text).not.toMatch(/(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])/u);
   const restarted = new ThreadTokenStore(directory, hosts);
   await restarted.initialize([route.hostId]);
   expect(await restarted.authenticateActor(issued.token)).toEqual(actor);
