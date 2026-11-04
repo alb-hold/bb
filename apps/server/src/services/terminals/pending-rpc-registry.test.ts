@@ -17,8 +17,9 @@ describe("PendingRpcRegistry", () => {
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 40);
     };
     await stall();
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
     await stall();
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
     const settled = new Promise<boolean>((resolve) => {
       setImmediate(() => resolve(registry.settle("attach", { value: "replayed" })));
     });
