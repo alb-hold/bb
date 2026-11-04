@@ -66,45 +66,47 @@ function runLookup(cwd: string) {
   });
 }
 
+type IdentityOverrides = {
+  expectedHeadOid?: string | null;
+  expectedHost?: string | null;
+  expectedRepository?: string | null;
+  expectedNumber?: number | null;
+  expectedBaseRef?: string | null;
+};
+
+type TestAction = (
+  | { operation: "ready" | "draft" }
+  | { operation: "merge"; method: "merge" | "squash" | "rebase" }
+) &
+  IdentityOverrides;
+
 function runAction(
   cwd: string,
-  action:
-    | HostPullRequestAction
-    | {
-        operation: "merge";
-        method: "merge" | "squash" | "rebase";
-        expectedHeadOid: string | null;
-        expectedHost?: string;
-        expectedRepository?: string;
-        expectedNumber?: number;
-        expectedBaseRef?: string;
-      } = { operation: "ready" },
+  action: TestAction = { operation: "ready" },
   localBranch = "bb/pr-target",
 ) {
   const hasDisplayedIdentity =
-    action.operation === "merge" &&
-    (action.expectedHost !== undefined ||
-      action.expectedRepository !== undefined ||
-      action.expectedNumber !== undefined ||
-      action.expectedBaseRef !== undefined);
-  const resolvedAction =
-    action.operation === "merge"
-      ? {
-          ...action,
-          expectedHost: hasDisplayedIdentity
-            ? (action.expectedHost ?? null)
-            : "github.com",
-          expectedRepository: hasDisplayedIdentity
-            ? (action.expectedRepository ?? null)
-            : "acme/bb",
-          expectedNumber: hasDisplayedIdentity
-            ? (action.expectedNumber ?? null)
-            : 42,
-          expectedBaseRef: hasDisplayedIdentity
-            ? (action.expectedBaseRef ?? null)
-            : "main",
-        }
-      : action;
+    action.expectedHost !== undefined ||
+    action.expectedRepository !== undefined ||
+    action.expectedNumber !== undefined ||
+    action.expectedBaseRef !== undefined;
+  const resolvedAction = {
+    ...action,
+    expectedHeadOid:
+      action.expectedHeadOid === undefined
+        ? "a".repeat(40)
+        : action.expectedHeadOid,
+    expectedHost: hasDisplayedIdentity
+      ? (action.expectedHost ?? null)
+      : "github.com",
+    expectedRepository: hasDisplayedIdentity
+      ? (action.expectedRepository ?? null)
+      : "acme/bb",
+    expectedNumber: hasDisplayedIdentity ? (action.expectedNumber ?? null) : 42,
+    expectedBaseRef: hasDisplayedIdentity
+      ? (action.expectedBaseRef ?? null)
+      : "main",
+  };
   return runPullRequestActionForCurrentBranch({
     cwd,
     localBranch,
@@ -1077,6 +1079,103 @@ describe("action selector and routing edge cases", () => {
     });
     expect(await actionCalls(gh)).toEqual([]);
     expect(await gh.readCalls()).toEqual([]);
+  });
+
+  describe.each([
+    ["ready", ["pr", "ready"]],
+    ["draft", ["pr", "ready", "--undo"]],
+  ] as const)("displayed identity for %s", (operation, ghPrefix) => {
+    it("runs gh when the displayed identity still matches", async () => {
+      const gh = await actionGh();
+      const cwd = await makeGitRepository({ origin: GITHUB_REMOTE });
+      await expect(
+        runAction(cwd, { operation, expectedHeadOid: HEAD_OID }),
+      ).resolves.toEqual({ ok: true });
+      const [args] = await actionCalls(gh);
+      expect(args?.slice(0, ghPrefix.length)).toEqual([...ghPrefix]);
+    });
+
+    it("refuses a pull request whose number changed after display", async () => {
+      const gh = await installFakeGh({
+        "api graphql": {
+          stdout: branchResponse([
+            branchPr({
+              number: 43,
+              url: "https://github.com/acme/bb/pull/43",
+            }),
+          ]),
+        },
+      });
+      const cwd = await makeGitRepository({ origin: GITHUB_REMOTE });
+      await expect(
+        runAction(cwd, { operation, expectedHeadOid: HEAD_OID }),
+      ).resolves.toEqual({
+        ok: false,
+        message:
+          "Pull request number changed since it was shown; refusing to update",
+      });
+      expect(await actionCalls(gh)).toEqual([]);
+    });
+
+    it("refuses a pull request whose head changed after display", async () => {
+      const gh = await installFakeGh({
+        "api graphql": {
+          stdout: branchResponse([branchPr({ headRefOid: "b".repeat(40) })]),
+        },
+      });
+      const cwd = await makeGitRepository({ origin: GITHUB_REMOTE });
+      await expect(
+        runAction(cwd, { operation, expectedHeadOid: HEAD_OID }),
+      ).resolves.toEqual({
+        ok: false,
+        message:
+          "The pull request changed since it was shown. Refresh it and try again",
+      });
+      expect(await actionCalls(gh)).toEqual([]);
+    });
+
+    it("refuses a call with no displayed head commit", async () => {
+      const gh = await actionGh();
+      const cwd = await makeGitRepository({ origin: GITHUB_REMOTE });
+      await expect(
+        runAction(cwd, { operation, expectedHeadOid: null }),
+      ).resolves.toEqual({
+        ok: false,
+        message:
+          "The pull request changed since it was shown. Refresh it and try again",
+      });
+      expect(await actionCalls(gh)).toEqual([]);
+    });
+
+    it.each([
+      ["host", "expectedHost"],
+      ["owner/repo", "expectedRepository"],
+      ["number", "expectedNumber"],
+      ["base ref", "expectedBaseRef"],
+    ])("refuses a missing displayed %s", async (field, key) => {
+      const gh = await actionGh();
+      const cwd = await makeGitRepository({ origin: GITHUB_REMOTE });
+      const identity = Object.fromEntries(
+        Object.entries({
+          expectedHost: "github.com",
+          expectedRepository: "acme/bb",
+          expectedNumber: 42,
+          expectedBaseRef: "main",
+        }).filter(([name]) => name !== key),
+      );
+      await expect(
+        runAction(cwd, {
+          operation,
+          expectedHeadOid: HEAD_OID,
+          ...identity,
+        }),
+      ).resolves.toEqual({
+        ok: false,
+        message: `Missing displayed pull request ${field}; refusing to update`,
+      });
+      expect(await actionCalls(gh)).toEqual([]);
+      expect(await gh.readCalls()).toEqual([]);
+    });
   });
 
   it("action merges with the displayed head commit when the read still reports it", async () => {

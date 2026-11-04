@@ -183,9 +183,10 @@ Making your repo work with bb:
   Inspect `bb environment show <id>` after recovery to confirm removal.
 
   Pull requests moved to the bundled GitHub PR Status plugin:
-  `bb pull-request show|ready|draft|merge <environment-id>`; merge needs
-  `--expected-head-oid` from `show`. See its
-  github-pr-status skill.
+  `bb pull-request show|ready|draft|merge <environment-id>`; ready, draft and
+  merge each need `--expected-head-oid`, `--expected-host`,
+  `--expected-repository`, `--expected-number` and `--expected-base-ref`, all
+  copied from `show`. See its github-pr-status skill.
 
   Git status, branches, diffs and Viewed marks moved to the bundled Git
   plugin: `bb git status|branches|diff|files|file|patch|viewed

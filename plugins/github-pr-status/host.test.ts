@@ -26,6 +26,13 @@ const upstreamBranch = "per-turn-permission-escalation";
 const forkRemoteUrl = "git@github.com:fork-owner/bb.git";
 const qualifiedUpstream = `fork-owner:${upstreamBranch}`;
 const baseRepository = ["--repo", "github.com/acme/bb"];
+const displayedIdentity = {
+  expectedHeadOid: "a".repeat(40),
+  expectedHost: "github.com",
+  expectedRepository: "acme/bb",
+  expectedNumber: 1236,
+  expectedBaseRef: "main",
+};
 
 function pullRequestJson(): string {
   return JSON.stringify({
@@ -192,7 +199,7 @@ describe("pull request lookup for differently named upstream branches", () => {
       });
       await harness.experimental_call("act", {
         path: workspacePath,
-        action: { operation: "ready" },
+        action: { operation: "ready", ...displayedIdentity },
       });
 
       const calls = await gh.readCalls();
@@ -391,17 +398,9 @@ describe("pull request lookup for differently named upstream branches", () => {
     const gh = await installFakeGh(found);
 
     for (const action of [
-      { operation: "ready" },
-      { operation: "draft" },
-      {
-        operation: "merge",
-        method: "squash",
-        expectedHeadOid: "a".repeat(40),
-        expectedHost: "github.com",
-        expectedRepository: "acme/bb",
-        expectedNumber: 1236,
-        expectedBaseRef: "main",
-      },
+      { operation: "ready", ...displayedIdentity },
+      { operation: "draft", ...displayedIdentity },
+      { operation: "merge", method: "squash", ...displayedIdentity },
     ] as const) {
       await expect(
         harness.experimental_call("act", { path: workspacePath, action }),
@@ -522,7 +521,7 @@ describe("workspace state", () => {
     await expect(
       harness.experimental_call("act", {
         path: workspacePath,
-        action: { operation: "ready" },
+        action: { operation: "ready", ...displayedIdentity },
       }),
     ).resolves.toEqual({
       ok: false,

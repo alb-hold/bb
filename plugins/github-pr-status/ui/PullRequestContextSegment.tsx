@@ -43,7 +43,7 @@ import {
 import { PullRequestNextStepLabel } from "./PullRequestNextStepLabel";
 import { PullRequestStatusPill } from "./PullRequestStatusPill";
 import {
-  mergeDisplayedPullRequest,
+  runDisplayedPullRequestAction,
   useEnvironmentPullRequest,
   usePullRequestActions,
 } from "./queries";
@@ -328,11 +328,15 @@ function PullRequestAction({
       pullRequest={pullRequest}
       isPending={actions.isPending}
       mergeMethod={actions.mergeMethod}
-      onMarkReady={() => void actions.markReady()}
-      onMerge={(method) =>
-        mergeDisplayedPullRequest(actions, method, pullRequest)
+      onMarkReady={() =>
+        runDisplayedPullRequestAction(actions, pullRequest, "ready")
       }
-      onConvertToDraft={() => void actions.markDraft()}
+      onMerge={(method) =>
+        runDisplayedPullRequestAction(actions, pullRequest, method)
+      }
+      onConvertToDraft={() =>
+        runDisplayedPullRequestAction(actions, pullRequest, "draft")
+      }
     />
   );
 }

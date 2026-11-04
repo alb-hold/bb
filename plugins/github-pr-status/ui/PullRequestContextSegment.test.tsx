@@ -300,11 +300,21 @@ describe("pull request context segment", () => {
     show({ ...PULL_REQUEST, state: "draft", attention: "draft" });
     renderPart("action");
     fireEvent.click(screen.getByRole("button", { name: "Mark ready" }));
-    expect(sdk.mutate).toHaveBeenCalledWith({ environmentId: "env_1" });
+    const identity = {
+      expectedHeadOid: PULL_REQUEST.headRefOid,
+      expectedHost: "github.com",
+      expectedRepository: "acme/bb",
+      expectedNumber: PULL_REQUEST.number,
+      expectedBaseRef: PULL_REQUEST.baseRefName,
+    };
+    expect(sdk.mutate).toHaveBeenCalledWith({
+      environmentId: "env_1",
+      ...identity,
+    });
     expect(
       sdk.mutationCalls.filter((call) => call.method !== "refresh"),
     ).toEqual([
-      { method: "markReady", input: { environmentId: "env_1" } },
+      { method: "markReady", input: { environmentId: "env_1", ...identity } },
     ]);
   });
 

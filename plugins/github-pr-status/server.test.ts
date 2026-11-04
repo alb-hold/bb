@@ -50,6 +50,27 @@ function environment(overrides: Partial<Environment> = {}): Environment {
   } as Environment;
 }
 
+const DISPLAYED_IDENTITY = {
+  expectedHeadOid: "a".repeat(40),
+  expectedHost: "github.com",
+  expectedRepository: "acme/bb",
+  expectedNumber: 7,
+  expectedBaseRef: "main",
+};
+
+const IDENTITY_FLAGS = [
+  "--expected-head-oid",
+  "a".repeat(40),
+  "--expected-host",
+  "github.com",
+  "--expected-repository",
+  "acme/bb",
+  "--expected-number",
+  "7",
+  "--expected-base-ref",
+  "main",
+];
+
 function view(
   overrides: Partial<GitHubPullRequestView> = {},
 ): GitHubPullRequestView {
@@ -729,7 +750,10 @@ describe("GitHub PR Status server", () => {
     const fake = await setup({});
 
     await expect(
-      fake.harness.callRpc("markReady", { environmentId: "env-1" }),
+      fake.harness.callRpc("markReady", {
+        environmentId: "env-1",
+        ...DISPLAYED_IDENTITY,
+      }),
     ).rejects.toMatchObject({
       code: "conflict",
       message: "Pull request is not a draft",
@@ -780,18 +804,81 @@ describe("GitHub PR Status server", () => {
     });
 
     await expect(
-      fake.harness.callRpc("markReady", { environmentId: "env-1" }),
+      fake.harness.callRpc("markReady", {
+        environmentId: "env-1",
+        ...DISPLAYED_IDENTITY,
+      }),
     ).rejects.toMatchObject({
       code: "conflict",
       message: "gh pr ready failed: HTTP 403",
     });
     await expect(
-      fake.harness.runCli(["ready", "env-1"]),
+      fake.harness.runCli(["ready", "env-1", ...IDENTITY_FLAGS]),
     ).resolves.toMatchObject({
       exitCode: 1,
       stderr: expect.stringContaining("gh pr ready failed: HTTP 403"),
     });
   });
+
+  it.each([
+    ["ready", "markReady", "ready"],
+    ["draft", "markDraft", "draft"],
+  ] as const)(
+    "%s passes the displayed identity to the host",
+    async (command, method, operation) => {
+      const fake = await setup({
+        callHost: (call) =>
+          call.method === "upstream"
+            ? { oid: null, branchName: "bb/pr" }
+            : call.method === "views"
+              ? (call.input as { reads: unknown[] }).reads.map(() => ({
+                  outcome: "found",
+                  pullRequest: view({ isDraft: command === "ready" }),
+                }))
+              : { ok: true },
+      });
+
+      await fake.harness.callRpc(method, {
+        environmentId: "env-1",
+        ...DISPLAYED_IDENTITY,
+      });
+      await fake.harness.runCli([command, "env-1", ...IDENTITY_FLAGS]);
+
+      const acts = fake.harness.experimental_hostRpcCalls.filter(
+        (call) => call.method === "act",
+      );
+      expect(acts).toHaveLength(2);
+      for (const act of acts)
+        expect(act.input).toMatchObject({
+          action: { operation, ...DISPLAYED_IDENTITY },
+        });
+    },
+  );
+
+  it.each(["ready", "draft"])(
+    "the CLI refuses %s without the displayed identity and starts no host action",
+    async (command) => {
+      const fake = await setup({});
+
+      await expect(
+        fake.harness.runCli([command, "env-1"]),
+      ).resolves.toMatchObject({
+        exitCode: 1,
+        stderr: expect.stringContaining("needs the head commit you reviewed"),
+      });
+      await expect(
+        fake.harness.runCli([command, "env-1", ...IDENTITY_FLAGS.slice(0, 2)]),
+      ).resolves.toMatchObject({
+        exitCode: 1,
+        stderr: expect.stringContaining("needs --expected-host"),
+      });
+      expect(
+        fake.harness.experimental_hostRpcCalls.filter(
+          (call) => call.method === "act",
+        ),
+      ).toEqual([]);
+    },
+  );
 
   it("the CLI refuses a merge without the reviewed head commit and starts no host action", async () => {
     const fake = await setup({});

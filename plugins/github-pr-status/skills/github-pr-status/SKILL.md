@@ -14,8 +14,8 @@ seconds in one batched GitHub request per machine.
 
 ```sh
 bb pull-request show <environment-id> [--json]
-bb pull-request ready <environment-id> [--json]
-bb pull-request draft <environment-id> [--json]
+bb pull-request ready <environment-id> --expected-head-oid <oid> --expected-host <host> --expected-repository <owner/repo> --expected-number <number> --expected-base-ref <branch> [--json]
+bb pull-request draft <environment-id> --expected-head-oid <oid> --expected-host <host> --expected-repository <owner/repo> --expected-number <number> --expected-base-ref <branch> [--json]
 bb pull-request merge <environment-id> --expected-head-oid <oid> --expected-host <host> --expected-repository <owner/repo> --expected-number <number> --expected-base-ref <branch> [--method merge|squash|rebase] [--json]
 ```
 
@@ -24,10 +24,12 @@ bb pull-request merge <environment-id> --expected-head-oid <oid> --expected-host
   `{ "outcome": "absent" }` or `{ "outcome": "unavailable", "message" }`.
 - `ready` needs a draft PR, `draft` needs an open PR and `merge` needs an open
   PR GitHub reports as mergeable. Each re-reads the PR first and fails with
-  the reason otherwise. `merge` also needs `--expected-head-oid`, the
-  `Head commit` that `show` printed (`headRefOid` in `--json`); without it the
-  merge is refused, and if the PR changed since it was shown the merge is
-  refused with a request to refresh. The `merge` RPC takes the same value as
+  the reason otherwise. All three also need `--expected-head-oid`, the
+  `Head commit` that `show` printed (`headRefOid` in `--json`), plus
+  `--expected-host`, `--expected-repository`, `--expected-number` and
+  `--expected-base-ref`; without them the action is refused, and if the PR
+  changed since it was shown the action is refused with a request to refresh.
+  The `markReady`, `markDraft` and `merge` RPCs take the same values as
   `expectedHeadOid` (a string or null; null is refused), `expectedHost`,
   `expectedRepository`, `expectedNumber`, and `expectedBaseRef`. Every identity
   value is required and compared with the fresh host read before `gh` starts.

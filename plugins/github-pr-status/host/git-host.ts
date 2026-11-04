@@ -950,20 +950,19 @@ export async function runPullRequestActionForCurrentBranch(
       message: "Refusing a pull request branch that gh could read as an option",
     };
   }
-  if (args.action.operation === "merge") {
-    const displayedIdentity: Array<[string, string | number | null]> = [
-      ["host", args.action.expectedHost],
-      ["owner/repo", args.action.expectedRepository],
-      ["number", args.action.expectedNumber],
-      ["base ref", args.action.expectedBaseRef],
-    ];
-    for (const [field, value] of displayedIdentity) {
-      if (value === undefined || value === null || value === "") {
-        return {
-          ok: false,
-          message: `Missing displayed pull request ${field}; refusing to merge`,
-        };
-      }
+  const verb = args.action.operation === "merge" ? "merge" : "update";
+  const displayedIdentity: Array<[string, string | number | null]> = [
+    ["host", args.action.expectedHost],
+    ["owner/repo", args.action.expectedRepository],
+    ["number", args.action.expectedNumber],
+    ["base ref", args.action.expectedBaseRef],
+  ];
+  for (const [field, value] of displayedIdentity) {
+    if (value === undefined || value === null || value === "") {
+      return {
+        ok: false,
+        message: `Missing displayed pull request ${field}; refusing to ${verb}`,
+      };
     }
   }
   const lookup = await enqueueRead(branchTarget, args.cwd, true);
@@ -974,7 +973,7 @@ export async function runPullRequestActionForCurrentBranch(
     return { ok: false, message: "No pull request found for this branch" };
   }
   let mergeHeadOid: string | null = null;
-  if (args.action.operation === "merge") {
+  {
     const mismatchedIdentity =
       args.action.expectedHost !== branchTarget.host
         ? "host"
@@ -989,7 +988,7 @@ export async function runPullRequestActionForCurrentBranch(
     if (mismatchedIdentity) {
       return {
         ok: false,
-        message: `Pull request ${mismatchedIdentity} changed since it was shown; refusing to merge`,
+        message: `Pull request ${mismatchedIdentity} changed since it was shown; refusing to ${verb}`,
       };
     }
     const readOid = lookup.pullRequest.headRefOid;
@@ -1007,11 +1006,10 @@ export async function runPullRequestActionForCurrentBranch(
     if (!COMMIT_OID_PATTERN.test(readOid)) {
       return {
         ok: false,
-        message:
-          "Pull request head commit is not a valid commit id; refusing to merge",
+        message: `Pull request head commit is not a valid commit id; refusing to ${verb}`,
       };
     }
-    mergeHeadOid = readOid;
+    mergeHeadOid = args.action.operation === "merge" ? readOid : null;
   }
   const ghArgs = buildPullRequestActionArgs(
     args.action,

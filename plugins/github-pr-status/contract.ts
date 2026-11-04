@@ -210,6 +210,17 @@ const environmentActionInputSchema = z
   .strict();
 const actionOutputSchema = z.object({ message: z.string() }).strict();
 
+const displayedIdentityShape = {
+  expectedHeadOid: z.string().nullable(),
+  expectedHost: z.string().nullable(),
+  expectedRepository: z.string().nullable(),
+  expectedNumber: z.number().int().positive().nullable(),
+  expectedBaseRef: z.string().nullable(),
+};
+const displayedActionInputSchema = environmentActionInputSchema
+  .extend(displayedIdentityShape)
+  .strict();
+
 export const githubPrStatusRpcContract = defineRpcContract({
   pullRequests: {
     experimental_description:
@@ -231,13 +242,13 @@ export const githubPrStatusRpcContract = defineRpcContract({
   markReady: {
     experimental_description:
       "Mark the environment's draft pull request ready for review.",
-    input: environmentActionInputSchema,
+    input: displayedActionInputSchema,
     output: actionOutputSchema,
   },
   markDraft: {
     experimental_description:
       "Convert the environment's open pull request back to a draft.",
-    input: environmentActionInputSchema,
+    input: displayedActionInputSchema,
     output: actionOutputSchema,
   },
   merge: {
@@ -246,11 +257,7 @@ export const githubPrStatusRpcContract = defineRpcContract({
     input: environmentActionInputSchema
       .extend({
         method: pullRequestMergeMethodSchema,
-        expectedHeadOid: z.string().nullable(),
-        expectedHost: z.string().nullable(),
-        expectedRepository: z.string().nullable(),
-        expectedNumber: z.number().int().positive().nullable(),
-        expectedBaseRef: z.string().nullable(),
+        ...displayedIdentityShape,
       })
       .strict(),
     output: actionOutputSchema,
@@ -258,17 +265,17 @@ export const githubPrStatusRpcContract = defineRpcContract({
 });
 
 const hostPullRequestActionSchema = z.discriminatedUnion("operation", [
-  z.object({ operation: z.literal("ready") }).strict(),
-  z.object({ operation: z.literal("draft") }).strict(),
+  z
+    .object({ operation: z.literal("ready"), ...displayedIdentityShape })
+    .strict(),
+  z
+    .object({ operation: z.literal("draft"), ...displayedIdentityShape })
+    .strict(),
   z
     .object({
       operation: z.literal("merge"),
       method: pullRequestMergeMethodSchema,
-      expectedHeadOid: z.string().nullable(),
-      expectedHost: z.string().nullable(),
-      expectedRepository: z.string().nullable(),
-      expectedNumber: z.number().int().positive().nullable(),
-      expectedBaseRef: z.string().nullable(),
+      ...displayedIdentityShape,
     })
     .strict(),
 ]);
