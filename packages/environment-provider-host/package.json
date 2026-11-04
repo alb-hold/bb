@@ -34,6 +34,11 @@
       "types": "./src/progress.ts",
       "default": "./src/progress.ts"
     },
+    "./remove-directory-tree": {
+      "source": "./src/remove-directory-tree.ts",
+      "types": "./src/remove-directory-tree.ts",
+      "default": "./src/remove-directory-tree.ts"
+    },
     "./terminal-output": {
       "source": "./src/terminal-output.ts",
       "types": "./src/terminal-output.ts",

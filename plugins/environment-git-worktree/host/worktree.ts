@@ -16,7 +16,7 @@ import fs from "node:fs/promises";
 import {
   directoryTreeChangedSince,
   removeDirectoryTree,
-} from "./remove-directory-tree.js";
+} from "bb-environment-provider-host/remove-directory-tree";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import {
