@@ -5,6 +5,10 @@ import { PluginUpdateJobsHost } from "./components/plugin/PluginUpdateJobsHost";
 import { LazyThreadDetailView } from "./views/thread-detail/LazyThreadDetailView";
 import { LazyRootComposeView } from "./views/LazyRootComposeView";
 import { useRouteState } from "./hooks/useRouteState";
+import {
+  useThreadOpenIntent,
+  prefetchThreadOpenOnIntent,
+} from "./hooks/useThreadOpenIntent";
 import { lazy, Suspense, useEffect } from "react";
 import {
   matchPath,
@@ -115,11 +119,9 @@ const MachineSettingsView = lazy(() =>
     default: m.MachineSettingsView,
   })),
 );
-const splitWorkspaceRouteModule = trackCriticalLoad(
-  import("./views/SplitWorkspaceRoute"),
+const SplitWorkspaceRoute = lazy(() =>
+  trackCriticalLoad(import("./views/SplitWorkspaceRoute")),
 );
-splitWorkspaceRouteModule.catch(() => {});
-const SplitWorkspaceRoute = lazy(() => splitWorkspaceRouteModule);
 
 function NavigatePreservingLocation({ pathname }: { pathname: string }) {
   const location = useLocation();
@@ -316,7 +318,11 @@ export function HashNavigationScroll() {
 }
 
 export function AppRoutes() {
-  const { isThreadView } = useRouteState();
+  const { isThreadView, threadId } = useRouteState();
+  useThreadOpenIntent();
+  useEffect(() => {
+    if (threadId) prefetchThreadOpenOnIntent(threadId);
+  }, [threadId]);
   const isRootComposeView = useLocation().pathname === APP_ROOT_ROUTE_PATH;
   useEffect(() => {
     if (isThreadView) void trackCriticalLoad(LazyThreadDetailView.preload());

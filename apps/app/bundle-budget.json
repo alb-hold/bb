@@ -385,8 +385,8 @@
       ]
     },
     "NewThreadPage": {
-      "maxBytes": 1466040,
-      "maxBrotliBytes": 431498,
+      "maxBytes": 850000,
+      "maxBrotliBytes": 270000,
       "forbiddenPackages": [
         "@dnd-kit/accessibility",
         "@dnd-kit/core",

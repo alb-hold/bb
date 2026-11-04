@@ -98,9 +98,23 @@ type DraftTarget = Pick<
   "getDraft" | "setDraft" | "isAvailable" | "focus"
 >;
 
+let validationWarmupScheduled = false;
+
+function scheduleValidationWarmup(): void {
+  if (validationWarmupScheduled || typeof window === "undefined") return;
+  validationWarmupScheduled = true;
+  const warm = () => replacementSchema.safeParse({ text: "", mentions: [] });
+  if (typeof window.requestIdleCallback === "function") {
+    window.requestIdleCallback(warm, { timeout: 1000 });
+  } else {
+    window.setTimeout(warm, 1000);
+  }
+}
+
 export function createComposerDraftActions(
   target: () => DraftTarget,
 ): Pick<PluginComposerApi, "draft" | "replace" | "focus"> {
+  scheduleValidationWarmup();
   let cached: {
     content: ComposerDraftSnapshot;
     snapshot: ComposerDraftSnapshot;

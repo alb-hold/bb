@@ -56,6 +56,11 @@ import { setPluginAssetIcons } from "@bb/shared-ui/icon-registry";
 import { setPluginLogoUrls, type PluginLogoUrls } from "./plugin-logos";
 import { createRetryingModuleLoader } from "./plugin-frontend-lazy";
 import {
+  requestBrowserIdle,
+  whenHomeComposerMounted,
+} from "./plugin-frontend-boot-schedule";
+import { whenRouteContentPainted } from "./route-content-paint";
+import {
   pluginSdkAppImplementation,
   retiredPluginSdkAppMembers,
 } from "./plugin-sdk-app-impl";
@@ -424,6 +429,7 @@ export interface PluginFrontendReconcileDeps {
   flushSlotBatch: () => void;
   warn: (message: string) => void;
   priorityPluginIds: () => readonly string[];
+  waitForDeferredLoad?: () => Promise<void>;
   mountTimeoutMs?: number;
   cssReadyTimeoutMs?: number;
   diagnosticsChanged?: () => void;
@@ -753,6 +759,13 @@ async function reconcileCandidates(
     priorityPluginIds.includes(candidate.pluginId),
   ).length;
   let untaken = 0;
+  let releasePriority: () => void = () => {};
+  const priorityReady = new Promise<void>((resolve) => {
+    releasePriority = resolve;
+  });
+  const deferredReady = deps.waitForDeferredLoad
+    ? priorityReady.then(deps.waitForDeferredLoad)
+    : Promise.resolve();
   const prefetched = new Set<string>();
   const prefetchAhead = () => {
     if (pendingPriority > 0) return;
@@ -771,11 +784,15 @@ async function reconcileCandidates(
       deps.prefetchModule(candidate.bundle.jsUrl);
     }
   };
-  if (pendingPriority === 0) priorityLoaded();
+  if (pendingPriority === 0) {
+    priorityLoaded();
+    releasePriority();
+  }
   await runWithConcurrencyLimit(
     ordered,
     PLUGIN_FRONTEND_LOAD_CONCURRENCY,
     async (candidate, index) => {
+      if (!priorityPluginIds.includes(candidate.pluginId)) await deferredReady;
       untaken = index + 1;
       prefetchAhead();
       try {
@@ -783,7 +800,10 @@ async function reconcileCandidates(
       } finally {
         if (priorityPluginIds.includes(candidate.pluginId)) {
           pendingPriority -= 1;
-          if (pendingPriority === 0) priorityLoaded();
+          if (pendingPriority === 0) {
+            priorityLoaded();
+            releasePriority();
+          }
         }
       }
     },
@@ -1080,6 +1100,14 @@ const browserReconcileDeps: PluginFrontendReconcileDeps = {
   prefetchModule: prefetchPluginModule,
   retainCss: retainPluginCss,
   priorityPluginIds: () => frontendPriorityPluginIds(window.location.pathname),
+  waitForDeferredLoad: async () => {
+    await whenRouteContentPainted();
+    await whenHomeComposerMounted();
+    await new Promise<void>((resolve) =>
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+    );
+    await new Promise<void>((resolve) => requestBrowserIdle(resolve));
+  },
   resetCrashedSlots: resetCrashedPluginSlots,
   setRegistrations: setPluginSlotRegistrations,
   removeRegistrations: removePluginSlotRegistrations,
