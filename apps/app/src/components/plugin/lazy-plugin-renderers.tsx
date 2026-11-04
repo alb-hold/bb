@@ -13,7 +13,7 @@ import { DiffLoadingSkeleton } from "@bb/shared-ui/diff-loading-skeleton";
 
 export const LazyPluginMarkdown = defineSplit<MarkdownProps>({
   id: "plugin-markdown",
-  tier: "preload",
+  tier: "intent",
   load: () =>
     import("./PluginMarkdown").then((module) => module.PluginMarkdown),
   loading: ({ className }) => <div className={className} aria-busy="true" />,
@@ -21,14 +21,14 @@ export const LazyPluginMarkdown = defineSplit<MarkdownProps>({
 
 const PluginDiffSplit = defineSplit<DiffProps>({
   id: "plugin-diff",
-  tier: "preload",
+  tier: "intent",
   load: () => import("./PluginDiff").then((module) => module.PluginDiff),
   loading: () => <DiffLoadingSkeleton />,
 });
 
 const PluginSourceCodeSplit = defineSplit<SourceCodeProps>({
   id: "plugin-source-code",
-  tier: "preload",
+  tier: "intent",
   load: () =>
     import("./PluginSourceCode").then((module) => module.PluginSourceCode),
   loading: () => <SourceLoadingSkeleton />,

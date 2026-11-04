@@ -5,6 +5,12 @@ import type { BrowserFixedPanelTab } from "@/lib/fixed-panel-tabs-state";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PanelGroup } from "react-resizable-panels";
 import {
+  LazyPluginMarkdown,
+  LazyPluginDiff,
+  LazyPluginSourceCode,
+} from "@/components/plugin/lazy-plugin-renderers";
+import { LazyRemotePathBrowser } from "@/components/dialogs/LazyRemotePathBrowser";
+import {
   LazyBrowserTabDeck,
   LazyThreadSecondaryPanel,
   LazyWorkspaceFilePreviewTabContent,
@@ -62,7 +68,7 @@ function renderLoadingPanel({
 }
 
 describe("LazyThreadSecondaryPanel", () => {
-  it("does not warm hidden panel chunks when its shared host loads", () => {
+  it("does not warm hidden panel, renderer or folder chunks when their shared hosts load", () => {
     renderLoadingPanel({ isOpen: false });
 
     for (const split of [
@@ -72,6 +78,10 @@ describe("LazyThreadSecondaryPanel", () => {
       LazyHostScopedFilePreviewTabContent,
       LazyProjectFilePreviewTabContent,
       LazyThreadStorageFilePreviewTabContent,
+      LazyPluginMarkdown,
+      LazyPluginDiff,
+      LazyPluginSourceCode,
+      LazyRemotePathBrowser,
     ]) {
       expect(queueSplitPreload).not.toHaveBeenCalledWith(split.preload);
       expect(split.isLoaded()).toBe(false);

@@ -12,6 +12,14 @@ import {
 import SplitWorkspaceRoute from "./SplitWorkspaceRoute";
 
 const workspaceLifecycle = vi.hoisted(() => ({ mounts: 0, unmounts: 0 }));
+const { queueSplitDownload } = vi.hoisted(() => ({
+  queueSplitDownload: vi.fn(),
+}));
+
+vi.mock("@/lib/split-prefetch", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/split-prefetch")>()),
+  queueSplitDownload,
+}));
 
 afterEach(cleanup);
 
@@ -61,6 +69,10 @@ function NavigationControls() {
 }
 
 describe("SplitWorkspaceRoute", () => {
+  it("does not fetch markdown renderer dependencies when home loads", () => {
+    expect(queueSplitDownload).not.toHaveBeenCalledWith("markdown-html");
+  });
+
   beforeEach(() => {
     workspaceLifecycle.mounts = 0;
     workspaceLifecycle.unmounts = 0;
