@@ -1,4 +1,5 @@
-import { lstat, readdir, rmdir, unlink } from "node:fs/promises";
+import { constants } from "node:fs";
+import { lstat, open, readdir, rmdir, unlink } from "node:fs/promises";
 import path from "node:path";
 
 export interface RemoveDirectoryTreeHooks {
@@ -11,6 +12,42 @@ export interface RemoveDirectoryTreeHooks {
 }
 
 export type RemoveDirectoryTreeResult = "removed" | "retained";
+
+function descriptorRoot(): string | null {
+  if (process.platform === "linux") return "/proc/self/fd";
+  if (process.platform === "darwin") return "/dev/fd";
+  return null;
+}
+
+function descriptorPath(fd: number): string | null {
+  const root = descriptorRoot();
+  return root === null ? null : path.join(root, String(fd));
+}
+
+async function openDirectory(directory: string) {
+  if (constants.O_DIRECTORY === undefined || constants.O_NOFOLLOW === undefined)
+    return null;
+  try {
+    return await open(
+      directory,
+      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+    );
+  } catch {
+    return null;
+  }
+}
+
+function sameDirectory(
+  left: { dev: number; ino: number; isDirectory(): boolean },
+  right: { dev: number; ino: number; isDirectory(): boolean },
+): boolean {
+  return (
+    left.isDirectory() &&
+    right.isDirectory() &&
+    left.dev === right.dev &&
+    left.ino === right.ino
+  );
+}
 
 export async function directoryTreeChangedSince(
   root: string,
@@ -70,50 +107,105 @@ export async function removeDirectoryTree(
 ): Promise<RemoveDirectoryTreeResult> {
   const startedAt = hooks.startedAt ?? Date.now();
   await hooks.afterStart?.(startedAt);
+  const rootName = path.basename(root);
+  const parent = await openDirectory(path.dirname(root));
+  if (parent === null || rootName === "") {
+    await parent?.close();
+    return "retained";
+  }
+  const parentPath = descriptorPath(parent.fd);
+  if (parentPath === null) {
+    await parent.close();
+    return "retained";
+  }
   const removeEntry = async (
+    parentDirectory: string,
+    name: string,
     entry: string,
     rootEntry = false,
   ): Promise<RemoveDirectoryTreeResult> => {
+    const anchoredEntry = path.join(parentDirectory, name);
     let info;
     try {
-      info = await lstat(entry);
+      info = await lstat(anchoredEntry);
     } catch (error) {
       return errorCode(error) === "ENOENT" ? "removed" : "retained";
     }
     if (!rootEntry && changedSince(info, startedAt)) return "retained";
     if (!info.isDirectory()) {
       try {
-        await unlink(entry);
+        await unlink(anchoredEntry);
         return "removed";
       } catch (error) {
         return errorCode(error) === "ENOENT" ? "removed" : "retained";
       }
     }
-    let listed: string[];
+    const directory = await openDirectory(anchoredEntry);
+    if (directory === null) return "retained";
     try {
-      listed = await readdir(entry);
-    } catch (error) {
-      return errorCode(error) === "ENOENT" ? "removed" : "retained";
-    }
-    await hooks.afterDirectoryListed?.(entry, listed);
-    for (const name of listed) {
-      if ((await removeEntry(path.join(entry, name))) === "retained")
+      const openedInfo = await directory.stat();
+      if (!sameDirectory(info, openedInfo)) return "retained";
+      const directoryPath = descriptorPath(directory.fd);
+      if (directoryPath === null) return "retained";
+      let currentInfo;
+      try {
+        currentInfo = await lstat(anchoredEntry);
+      } catch {
         return "retained";
-    }
-    let after: string[];
-    try {
-      after = await readdir(entry);
-    } catch (error) {
-      return errorCode(error) === "ENOENT" ? "removed" : "retained";
-    }
-    if (after.some((name) => !listed.includes(name))) return "retained";
-    try {
-      await rmdir(entry);
-      return "removed";
-    } catch (error) {
-      const code = errorCode(error);
-      return code === "ENOENT" ? "removed" : "retained";
+      }
+      if (!sameDirectory(openedInfo, currentInfo)) return "retained";
+      if (!rootEntry && changedSince(openedInfo, startedAt)) return "retained";
+      let listed: string[];
+      try {
+        listed = await readdir(directoryPath);
+      } catch (error) {
+        return errorCode(error) === "ENOENT" ? "removed" : "retained";
+      }
+      await hooks.afterDirectoryListed?.(entry, listed);
+      try {
+        currentInfo = await lstat(anchoredEntry);
+      } catch {
+        return "retained";
+      }
+      if (!sameDirectory(openedInfo, currentInfo)) return "retained";
+      for (const childName of listed) {
+        if (
+          (await removeEntry(
+            directoryPath,
+            childName,
+            path.join(entry, childName),
+          )) === "retained"
+        )
+          return "retained";
+      }
+      let after: string[];
+      try {
+        after = await readdir(directoryPath);
+      } catch (error) {
+        return errorCode(error) === "ENOENT" ? "removed" : "retained";
+      }
+      if (after.some((childName) => !listed.includes(childName)))
+        return "retained";
+      try {
+        currentInfo = await lstat(anchoredEntry);
+      } catch {
+        return "retained";
+      }
+      if (!sameDirectory(openedInfo, currentInfo)) return "retained";
+      try {
+        await rmdir(anchoredEntry);
+        return "removed";
+      } catch (error) {
+        const code = errorCode(error);
+        return code === "ENOENT" ? "removed" : "retained";
+      }
+    } finally {
+      await directory.close();
     }
   };
-  return removeEntry(root, true);
+  try {
+    return await removeEntry(parentPath, rootName, root, true);
+  } finally {
+    await parent.close();
+  }
 }

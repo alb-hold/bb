@@ -20,6 +20,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import * as gitModule from "bb-environment-provider-host/git";
 import { hostProc, useProcReaderForTests, type ProcReader } from "./holders.js";
 import { descendantsOnly } from "./descendants-only.js";
+import { removeDirectoryTree } from "./remove-directory-tree.js";
 import { removeWorktree } from "./worktree.js";
 
 const execFile = promisify(execFileCallback);
@@ -423,6 +424,35 @@ describe("real worktree teardown preservation", () => {
     ).resolves.toBe("during\n");
   });
 
+  it("does not follow a directory replaced by a symlink during removal", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "bb-remove-tree-race-"));
+    roots.push(root);
+    const target = path.join(root, "target");
+    const nested = path.join(target, "nested");
+    const moved = path.join(target, "moved-nested");
+    const outside = path.join(root, "outside");
+    await Promise.all([mkdir(nested, { recursive: true }), mkdir(outside)]);
+    await Promise.all([
+      writeFile(path.join(nested, "entry.txt"), "inside\n"),
+      writeFile(path.join(outside, "entry.txt"), "outside\n"),
+    ]);
+    let swapped = false;
+    const result = await removeDirectoryTree(target, {
+      startedAt: Date.now() + 10_000,
+      afterDirectoryListed: async (directory) => {
+        if (directory !== nested || swapped) return;
+        swapped = true;
+        await fs.rename(nested, moved);
+        await fs.symlink(outside, nested);
+      },
+    });
+    expect(swapped).toBe(true);
+    expect(result).toBe("retained");
+    await expect(
+      readFile(path.join(outside, "entry.txt"), "utf8"),
+    ).resolves.toBe("outside\n");
+  });
+
   it("retains Git metadata created while pruning the severed admin directory", async () => {
     const worktree = await makeWorktree();
     useProcReaderForTests(descendantsOnly(hostProc, -1));
@@ -435,11 +465,7 @@ describe("real worktree teardown preservation", () => {
           severedGitDir = gitDir;
         },
         afterDirectoryListed: async (directory) => {
-          if (
-            injected ||
-            severedGitDir === null ||
-            directory !== severedGitDir
-          )
+          if (injected || severedGitDir === null || directory !== severedGitDir)
             return;
           await writeFile(path.join(directory, "late-metadata"), "kept\n");
           injected = true;
