@@ -1652,6 +1652,66 @@ describe("ThreadRow", () => {
     },
   );
 
+  it.each([
+    { name: "desktop", isCompactViewport: false },
+    { name: "compact", isCompactViewport: true },
+  ])(
+    "opens the row's context menu from a status chip of a sticky parent on $name",
+    async ({ isCompactViewport }) => {
+      renderThreadRow({
+        thread: createThread({
+          experimental_rowState: {
+            statuses: { task: { value: "Running" } },
+            progress: null,
+          },
+        }),
+        isCompactViewport,
+        options: {
+          kind: "parent",
+          depth: 1,
+          isCompact: isCompactViewport,
+          isCollapsed: false,
+          childCount: 1,
+          childActivity: NO_COLLAPSED_CHILD_ACTIVITY,
+          stickyLevel: 0,
+          onToggleCollapsed: vi.fn(),
+        },
+      });
+      const chip = document.querySelector("[data-sidebar-thread-status-chip]");
+      if (chip === null) throw new Error("status chip missing");
+      fireEvent.contextMenu(chip);
+
+      expect(
+        await screen.findByRole("menuitem", { name: "Rename" }),
+      ).toBeTruthy();
+    },
+  );
+
+  it("keeps a sticky parent's row state inside the row node that carries the drag and drop bindings", () => {
+    renderThreadRow({
+      thread: createThread({
+        experimental_rowState: {
+          statuses: { task: { value: "Running" } },
+          progress: { value: 0.5 },
+        },
+      }),
+      options: {
+        kind: "parent",
+        depth: 1,
+        isCompact: false,
+        isCollapsed: false,
+        childCount: 1,
+        childActivity: NO_COLLAPSED_CHILD_ACTIVITY,
+        stickyLevel: 0,
+        onToggleCollapsed: vi.fn(),
+      },
+    });
+
+    const row = document.querySelector("[data-sidebar-rename-row]");
+    const rowState = document.querySelector("[data-sidebar-thread-row-state]");
+    expect(row?.contains(rowState ?? null)).toBe(true);
+  });
+
   it.each(RENAME_PRESENTATION_CASES)(
     "presents rename from the menu, a row action, and double click for compact=$compact coarse=$coarse",
     async ({ compact, coarse, menu, direct, doubleClick }) => {
@@ -2843,6 +2903,7 @@ interface StickyParentLayout {
   tier: { top: number; bottom: number; height: number };
   rowState: { top: number; bottom: number };
   next: { top: number };
+  rowStateHitsRow: boolean;
 }
 
 const STICKY_MEASURE_SCRIPT = `
@@ -2850,10 +2911,17 @@ const box = (element) => {
   const rect = element.getBoundingClientRect();
   return { top: rect.top, bottom: rect.bottom, height: rect.height };
 };
+const rowStateElement = document.querySelector("[data-sidebar-thread-row-state]");
+const rowStateBox = rowStateElement.getBoundingClientRect();
+const hit = document.elementFromPoint(
+  rowStateBox.left + rowStateBox.width / 2,
+  rowStateBox.top + rowStateBox.height / 2,
+);
 document.getElementById("layout").textContent = JSON.stringify({
   tier: box(document.querySelector("[data-sidebar-sticky-tier]")),
-  rowState: box(document.querySelector("[data-sidebar-thread-row-state]")),
+  rowState: box(rowStateElement),
   next: box(document.getElementById("next-row")),
+  rowStateHitsRow: hit !== null && hit.closest("[data-sidebar-rename-row]") !== null,
 });
 `;
 
@@ -2871,6 +2939,7 @@ async function measureStickyParentLayout(
     await writeFile(
       page,
       `<!doctype html><html><head><meta name="viewport" content="width=device-width"><style>
+@layer theme, base, components, utilities;
 :root{--bb-sidebar-row-height:1.75rem;--bb-sidebar-row-height-coarse:2.5rem;--sidebar:#fafafa;--sidebar-accent:#e4e4e7;--timeline-accent:#2563eb}
 *,::before,::after{box-sizing:border-box}
 body{margin:0}
@@ -3023,7 +3092,7 @@ describe.skipIf(
   );
 
   it.each(VIEWPORTS)(
-    "keeps a sticky parent row at one row height with its row state clear of the next row on $name",
+    "keeps a sticky parent row's state inside the row, clear of the next row and under the pointer on $name",
     async (viewport) => {
       const { container } = renderThreadRow({
         thread: createThread({
@@ -3052,11 +3121,12 @@ describe.skipIf(
         viewport.width,
       );
 
-      expect(layout.tier.height).toBeCloseTo(28, 0);
-      expect(layout.rowState.top).toBeGreaterThanOrEqual(
-        layout.tier.bottom - 0.5,
+      expect(layout.rowState.top).toBeGreaterThanOrEqual(layout.tier.top - 0.5);
+      expect(layout.rowState.bottom).toBeLessThanOrEqual(
+        layout.tier.bottom + 0.5,
       );
-      expect(layout.rowState.bottom).toBeLessThanOrEqual(layout.next.top + 0.5);
+      expect(layout.tier.bottom).toBeLessThanOrEqual(layout.next.top + 0.5);
+      expect(layout.rowStateHitsRow).toBe(true);
     },
   );
 
