@@ -2,15 +2,22 @@
 
 import { ThreadRowNavigationProvider } from "../rows/threadRowNavigation.js";
 import {
+  act,
   cleanup,
   fireEvent,
   screen,
   waitFor,
   within,
 } from "@testing-library/react";
+import { execFile } from "node:child_process";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { promisify } from "node:util";
 import type { ReactNode } from "react";
 import type { SidebarThread } from "../model/sidebar-thread.js";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, inject, it, vi } from "vitest";
+import { CompactViewportOverrideProvider } from "@/components/ui/hooks/use-compact-viewport";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { SidebarRenameProvider } from "../rows/SidebarInlineRename.js";
 import { Provider, createStore } from "jotai";
@@ -1319,3 +1326,319 @@ describe("nested sticky parents with row state", () => {
     );
   });
 });
+
+const execFileAsync = promisify(execFile);
+const chromiumPath = inject("threadListChromiumPath");
+const pluginCss = inject("threadListPluginCss");
+
+interface NestedPinMeasurement {
+  tierCount: number;
+  rowHeight: number | null;
+  tier0: { top: number; bottom: number };
+  tier1: { top: number; bottom: number } | null;
+  tier1Visible: boolean;
+}
+
+const NESTED_PIN_MEASURE_SCRIPT = `
+const scroller = document.getElementById("scroller");
+scroller.scrollTop = 400;
+const origin = scroller.getBoundingClientRect().top;
+const tiers = Array.from(document.querySelectorAll('[data-sidebar-sticky-tier="parent"]'));
+const box = (element) => {
+  const rect = element.getBoundingClientRect();
+  return { top: rect.top - origin, bottom: rect.bottom - origin };
+};
+const rowState = tiers[0].querySelector("[data-sidebar-thread-row-state]");
+const growingRow = rowState ? rowState.closest("[data-sidebar-rename-row]") : null;
+let tier1Visible = false;
+if (tiers[1]) {
+  const rect = tiers[1].getBoundingClientRect();
+  const hit = document.elementFromPoint(rect.left + 40, rect.top + rect.height / 2);
+  tier1Visible = hit !== null && tiers[1].contains(hit);
+}
+document.getElementById("layout").textContent = JSON.stringify({
+  tierCount: tiers.length,
+  rowHeight: growingRow ? growingRow.getBoundingClientRect().height : null,
+  tier0: box(tiers[0]),
+  tier1: tiers[1] ? box(tiers[1]) : null,
+  tier1Visible,
+});
+`;
+
+async function measureNestedPins(
+  treeHtml: string,
+  viewportWidth: number,
+): Promise<NestedPinMeasurement> {
+  const dir = await mkdtemp(join(tmpdir(), "bb-nested-dynamic-"));
+  try {
+    const page = join(dir, "nested.html");
+    const themeCss = await readFile(
+      join(process.cwd(), "../../apps/app/src/components/ui/theme.css"),
+      "utf8",
+    );
+    await writeFile(
+      page,
+      `<!doctype html><html><head><meta name="viewport" content="width=device-width"><style>
+@layer theme, base, components, utilities;
+:root{--bb-sidebar-row-height:1.75rem;--bb-sidebar-row-height-coarse:2.5rem;--sidebar:#fafafa;--sidebar-accent:#e4e4e7;--timeline-accent:#2563eb}
+*,::before,::after{box-sizing:border-box}
+body{margin:0}
+${pluginCss ?? ""}
+${themeCss}
+</style></head><body>
+<div data-bb-plugin-root style="width:${viewportWidth}px">
+<div id="scroller" style="height:240px;overflow:auto">
+<div data-sidebar-sticky-stack style="--bb-sidebar-sticky-parent-base-top:0px">${treeHtml}</div>
+</div></div>
+<pre id="layout"></pre>
+<script>${NESTED_PIN_MEASURE_SCRIPT}</script>
+</body></html>`,
+    );
+    const { stdout } = await execFileAsync(chromiumPath ?? "", [
+      "--headless",
+      "--no-sandbox",
+      "--disable-gpu",
+      "--disable-dev-shm-usage",
+      "--disable-extensions",
+      "--disable-background-networking",
+      "--no-first-run",
+      "--hide-scrollbars",
+      `--window-size=${viewportWidth},400`,
+      "--virtual-time-budget=2000",
+      "--dump-dom",
+      `file://${page}`,
+    ]);
+    const match = /<pre id="layout">([^<]*)<\/pre>/.exec(stdout);
+    if (match?.[1] === undefined) throw new Error(stdout.slice(0, 500));
+    return JSON.parse(
+      match[1].replaceAll("&quot;", '"'),
+    ) as NestedPinMeasurement;
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+class ResizeObserverStub {
+  static live = new Set<ResizeObserverStub>();
+  constructor(private readonly callback: () => void) {}
+  observe() {
+    ResizeObserverStub.live.add(this);
+  }
+  unobserve() {}
+  disconnect() {
+    ResizeObserverStub.live.delete(this);
+  }
+  static fireAll() {
+    act(() => {
+      for (const observer of [...ResizeObserverStub.live]) {
+        observer.callback();
+      }
+    });
+  }
+}
+
+describe.skipIf(
+  pluginCss === null || (chromiumPath === null && !process.env.CI),
+)(
+  "nested sticky pins in real Chromium, driven through ThreadTreeNodeRow",
+  () => {
+    const VIEWPORTS = [
+      { name: "desktop", width: 280, isCompact: false },
+      { name: "compact 390px", width: 390, isCompact: true },
+    ];
+    const ONE_STATUS = {
+      task: { value: "WT-GUARD preserve recoverable work" },
+    };
+    const TWO_STATUSES = {
+      ...ONE_STATUS,
+      build: { value: "#138 f49bb0e9 OPEN: chain138.out:unit EXIT=0" },
+    };
+    let layoutRowHeight = 0;
+
+    afterEach(() => {
+      cleanup();
+      vi.unstubAllGlobals();
+      vi.restoreAllMocks();
+      ResizeObserverStub.live.clear();
+      layoutRowHeight = 0;
+    });
+
+    function installLayoutDoubles() {
+      vi.stubGlobal("ResizeObserver", ResizeObserverStub);
+      const realRect = HTMLElement.prototype.getBoundingClientRect;
+      vi.spyOn(
+        HTMLElement.prototype,
+        "getBoundingClientRect",
+      ).mockImplementation(function (this: HTMLElement) {
+        const rect = realRect.call(this);
+        if (
+          !this.hasAttribute("data-sidebar-rename-row") ||
+          this.querySelector("[data-sidebar-thread-row-state]") === null
+        ) {
+          return rect;
+        }
+        return new DOMRect(rect.x, rect.y, rect.width, layoutRowHeight);
+      });
+    }
+
+    function buildNode(statuses: Record<string, { value: string }> | null): {
+      node: ReturnType<typeof buildPinnedSidebarState>["rootNodes"][number];
+      threads: SidebarThread[];
+    } {
+      const grandparent = makeThread({
+        id: "thr_grandparent",
+        title: "Grandparent",
+        titleFallback: "Grandparent",
+        pinnedAt: 1,
+        experimental_rowState:
+          statuses === null
+            ? null
+            : {
+                statuses,
+                progress: { value: 0.6, label: "#138 merge pipeline" },
+              },
+      });
+      const parent = makeThread({
+        id: "thr_parent",
+        title: "Parent",
+        titleFallback: "Parent",
+        parentThreadId: "thr_grandparent",
+      });
+      const children = Array.from({ length: 20 }, (_, index) =>
+        makeThread({
+          id: `thr_child_${index}`,
+          title: `Child ${index}`,
+          titleFallback: `Child ${index}`,
+          parentThreadId: "thr_parent",
+        }),
+      );
+      const threads = [grandparent, parent, ...children];
+      return {
+        node: buildPinnedSidebarState({ threads }).rootNodes[0],
+        threads,
+      };
+    }
+
+    function tree(
+      node: ReturnType<typeof buildNode>["node"],
+      viewport: (typeof VIEWPORTS)[number],
+      collapsed: boolean,
+    ) {
+      return (
+        <CompactViewportOverrideProvider isCompactViewport={viewport.isCompact}>
+          <ThreadTreeNodeRow
+            projectId="proj_test"
+            node={node}
+            depthOffset={0}
+            isEnvGrouped={false}
+            collapsedThreadIds={
+              collapsed ? new Set(["thr_grandparent"]) : new Set()
+            }
+            collapsedEnvironmentIds={new Set()}
+            onToggleThreadCollapsed={vi.fn()}
+            onToggleEnvironmentCollapsed={vi.fn()}
+            sectionDnd={makeSectionDnd()}
+            sortableRef={() => undefined}
+          />
+        </CompactViewportOverrideProvider>
+      );
+    }
+
+    async function settle(
+      container: HTMLElement,
+      viewport: (typeof VIEWPORTS)[number],
+    ): Promise<NestedPinMeasurement> {
+      for (let attempt = 0; attempt < 4; attempt++) {
+        const measured = await measureNestedPins(
+          container.innerHTML,
+          viewport.width,
+        );
+        if (
+          measured.rowHeight === null ||
+          measured.rowHeight === layoutRowHeight
+        ) {
+          return measured;
+        }
+        layoutRowHeight = measured.rowHeight;
+        ResizeObserverStub.fireAll();
+      }
+      throw new Error("row height did not settle");
+    }
+
+    function expectPinnedBelow(measured: NestedPinMeasurement) {
+      expect(measured.tier1).not.toBeNull();
+      const tier1 = measured.tier1 ?? { top: Number.NaN, bottom: Number.NaN };
+      expect(tier1.top).toBeGreaterThanOrEqual(measured.tier0.bottom - 0.5);
+      expect(tier1.top).toBeLessThanOrEqual(measured.tier0.bottom + 4);
+      expect(measured.tier1Visible).toBe(true);
+    }
+
+    it.each(VIEWPORTS)(
+      "keeps level 1 pinned at the bottom of level 0 through first render, growth, removal and collapse on $name",
+      async (viewport) => {
+        installLayoutDoubles();
+        const store = createStore();
+        const initial = buildNode(ONE_STATUS);
+
+        const calibration = renderTree(tree(initial.node, viewport, false), {
+          threads: initial.threads,
+          store,
+        });
+        const calibrated = await measureNestedPins(
+          calibration.container.innerHTML,
+          viewport.width,
+        );
+        expect(calibrated.rowHeight).toBeGreaterThan(40);
+        cleanup();
+
+        layoutRowHeight = calibrated.rowHeight ?? 0;
+        const firstRender = renderTree(tree(initial.node, viewport, false), {
+          threads: initial.threads,
+          store,
+        });
+        const rerenderTree = (
+          node: ReturnType<typeof buildNode>["node"],
+          collapsed: boolean,
+        ) =>
+          firstRender.lifecycle.rerender(
+            <Harness store={store}>{tree(node, viewport, collapsed)}</Harness>,
+          );
+        const first = await measureNestedPins(
+          firstRender.container.innerHTML,
+          viewport.width,
+        );
+        expect(first.rowHeight).toBe(layoutRowHeight);
+        expectPinnedBelow(first);
+        const oneStatusBottom = first.tier0.bottom;
+
+        const grown = buildNode(TWO_STATUSES);
+        rerenderTree(grown.node, false);
+        const afterGrowth = await settle(firstRender.container, viewport);
+        expect(afterGrowth.tier0.bottom).toBeGreaterThan(oneStatusBottom);
+        expectPinnedBelow(afterGrowth);
+
+        const removed = buildNode(null);
+        rerenderTree(removed.node, false);
+        const afterRemoval = await settle(firstRender.container, viewport);
+        expect(afterRemoval.tier0.bottom - afterRemoval.tier0.top).toBeLessThan(
+          45,
+        );
+        expectPinnedBelow(afterRemoval);
+
+        const restored = buildNode(ONE_STATUS);
+        rerenderTree(restored.node, false);
+        expectPinnedBelow(await settle(firstRender.container, viewport));
+
+        rerenderTree(restored.node, true);
+        const collapsed = await measureNestedPins(
+          firstRender.container.innerHTML,
+          viewport.width,
+        );
+        expect(collapsed.tierCount).toBe(1);
+
+        rerenderTree(restored.node, false);
+        expectPinnedBelow(await settle(firstRender.container, viewport));
+      },
+    );
+  },
+);
