@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { UNREADABLE_SESSION_AGENT_COMMS } from "@bb/process-utils/session-agent-comms";
 
 const LSOF_TIMEOUT_MS = 30_000;
 const LINUX_SCAN_CONCURRENCY = 32;
@@ -318,6 +319,12 @@ async function scanLinuxProcess(
   ) {
     return {
       unknown: `${result.unknown}, process credentials differ from its filesystem UID`,
+      vouchable: false,
+    };
+  }
+  if (!UNREADABLE_SESSION_AGENT_COMMS.has(command ?? "")) {
+    return {
+      unknown: `process ${pid} (${command ?? "unknown"}) has an unreadable holder path`,
       vouchable: false,
     };
   }

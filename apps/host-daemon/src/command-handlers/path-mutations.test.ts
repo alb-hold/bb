@@ -213,6 +213,61 @@ describe("confined host path mutations", () => {
     },
   );
 
+  it.skipIf(!hasHeldDirectoryRemoval)(
+    "does not replace a directory created at the original path before restore",
+    async () => {
+      const root = await makeRoot();
+      const target = path.join(root, "restore-race");
+      await fs.mkdir(target);
+      await fs.writeFile(path.join(target, "original.txt"), "original");
+      const originalRename = fs.rename.bind(fs);
+      let replacementInode: number | null = null;
+      vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
+        await originalRename(from, to);
+        if (String(from) !== target || replacementInode !== null) return;
+        await fs.mkdir(target);
+        replacementInode = (await fs.stat(target)).ino;
+        const worker = spawn(
+          process.execPath,
+          ["-e", "setInterval(() => {}, 1000); process.send('ready')"],
+          { cwd: String(to), stdio: ["ignore", "ignore", "ignore", "ipc"] },
+        );
+        await once(worker, "message");
+        workers.push(worker);
+      });
+      const workers: ReturnType<typeof spawn>[] = [];
+      try {
+        await expect(
+          removeHostPath({
+            type: "host.remove_path",
+            path: target,
+            rootPath: root,
+            recursive: true,
+          }),
+        ).rejects.toMatchObject({ code: "path_in_use" });
+        expect(replacementInode).not.toBeNull();
+        expect((await fs.stat(target)).ino).toBe(replacementInode);
+        await expect(fs.readdir(target)).resolves.toEqual([]);
+        const quarantines = (await fs.readdir(root)).filter((name) =>
+          name.startsWith(".restore-race.removing-"),
+        );
+        expect(quarantines).toHaveLength(1);
+        await expect(
+          fs.readFile(path.join(root, quarantines[0]!, "original.txt"), "utf8"),
+        ).resolves.toBe("original");
+      } finally {
+        vi.restoreAllMocks();
+        for (const worker of workers) {
+          if (worker.exitCode === null && worker.signalCode === null) {
+            const exited = once(worker, "exit");
+            worker.kill("SIGKILL");
+            await exited;
+          }
+        }
+      }
+    },
+  );
+
   it("creates missing parent directories when recursive is enabled", async () => {
     const root = await makeRoot();
     const nested = path.join(root, "projects", "archive", "2026");

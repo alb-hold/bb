@@ -64,11 +64,12 @@ export async function removeDirectoryAfterHolderRecheck(args: {
     }
   } catch (error) {
     try {
+      await fs.mkdir(args.directory);
       await fs.rename(quarantine, args.directory);
     } catch (restoreError) {
       throw new CommandDispatchError(
         "path_in_use",
-        `Refusing to ${args.action} ${args.directory}: removal stopped after ${error instanceof Error ? error.message : String(error)}, and its original path could not be restored (${restoreError instanceof Error ? restoreError.message : String(restoreError)}). Nothing was stopped.`,
+        `Refusing to ${args.action} ${args.directory}: removal stopped after ${error instanceof Error ? error.message : String(error)}. Recoverable data remains at ${quarantine}; the original path ${args.directory} was not replaced (${restoreError instanceof Error ? restoreError.message : String(restoreError)}). Nothing was stopped.`,
       );
     }
     throw error;

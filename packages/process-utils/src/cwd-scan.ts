@@ -2,6 +2,7 @@ import { readdir, readFile, readlink, stat } from "node:fs/promises";
 import path from "node:path";
 import { resolveSweepDirectory } from "./cwd-processes.js";
 import { spawnPortableOutputProcess } from "./spawn.js";
+import { UNREADABLE_SESSION_AGENT_COMMS } from "./session-agent-comms.js";
 
 export interface CwdHolder {
   pid: number;
@@ -438,6 +439,22 @@ export async function scanProcessesWithCwdUnder(
               return {
                 status: "unknown",
                 reason: `process ${pid} has credentials that differ from its filesystem UID and its cwd is unreadable`,
+              };
+            }
+            let comm: string;
+            try {
+              comm = (await io.readComm(pid)).trim();
+            } catch (commError) {
+              if (GONE.has(codeOf(commError))) continue;
+              return {
+                status: "unknown",
+                reason: `the command name of unreadable same-user process ${pid} could not be read`,
+              };
+            }
+            if (!UNREADABLE_SESSION_AGENT_COMMS.has(comm)) {
+              return {
+                status: "unknown",
+                reason: `the working directory of process ${pid} (${comm || "unknown"}) could not be read (${code})`,
               };
             }
             continue;

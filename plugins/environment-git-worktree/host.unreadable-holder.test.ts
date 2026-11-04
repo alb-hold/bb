@@ -210,10 +210,11 @@ describe("a program whose /proc entries cannot be read", () => {
   });
 
   it.skipIf(!realUnreadableApplies)(
-    "keeps it when the program is a real non-dumpable process with an unlisted name",
+      "retains it when a live non-dumpable same-user process has cwd inside the worktree",
     async () => {
       const fixture = await createFixture();
       const holder = spawn("python3", ["-c", NON_DUMPABLE], {
+        cwd: fixture.path,
         stdio: ["ignore", "pipe", "ignore"],
       });
       lingering.push(holder);

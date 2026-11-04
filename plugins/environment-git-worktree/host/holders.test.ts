@@ -453,21 +453,19 @@ describe("the Linux process-list visibility rule", () => {
     });
   });
 
-  it("is unknown when an unreadable same-user process uses a session-helper name", async () => {
+  it("clears only unreadable same-user processes with an exact session-agent name", async () => {
     const helper = fakeProc({
       processes: { 300: { uid: 1000, denied: true, comm: "sshd-session" } },
     });
     expect(await scanLinux("/work/tree", helper, 4242)).toMatchObject({
-      status: "unknown",
-      reason: expect.stringContaining(
-        "process identity could not be established",
-      ),
+      status: "clear",
     });
     const stranger = fakeProc({
       processes: { 300: { uid: 1000, denied: true, comm: "node" } },
     });
     expect(await scanLinux("/work/tree", stranger, 4242)).toMatchObject({
       status: "unknown",
+      reason: expect.stringContaining("node"),
     });
   });
 
@@ -1075,11 +1073,11 @@ time.sleep(120)`,
   const sleepMs = (ms: number) =>
     new Promise((resolve) => setTimeout(resolve, ms));
 
-  it("ignores an unreadable same-user process with no evidence that it holds the worktree", async ({
+  it("retains a worktree with a live unreadable same-user process whose cwd is inside it", async ({
     skip,
   }) => {
     skip(python.status !== 0, "python3 is not available");
-    const child = await start("ssh-agent", "ssh-agent");
+    const child = await start("node", "ssh-agent");
     skip(
       !(await nonDumpable(child.pid ?? 0)),
       "the kernel lets this user read it",
@@ -1087,10 +1085,13 @@ time.sleep(120)`,
     await sleepMs(1500);
     const dir = await worktree();
     const scan = await scanOnly(dir, child.pid ?? 0);
-    expect(scan).toMatchObject({ status: "clear" });
+    expect(scan).toMatchObject({
+      status: "unknown",
+      reason: expect.stringContaining("node"),
+    });
   });
 
-  it("does not block on an unreadable same-user process started after the worktree", async ({
+  it("clears an unreadable same-user process with an exact allowlisted comm", async ({
     skip,
   }) => {
     skip(python.status !== 0, "python3 is not available");
@@ -1104,7 +1105,7 @@ time.sleep(120)`,
     expect(scan).toMatchObject({ status: "clear" });
   });
 
-  it("does not block on an unreadable same-user process with an unknown name", async ({
+  it("does not clear a near-miss unreadable same-user comm", async ({
     skip,
   }) => {
     skip(python.status !== 0, "python3 is not available");
@@ -1116,6 +1117,9 @@ time.sleep(120)`,
     await sleepMs(1500);
     const dir = await worktree();
     const scan = await scanOnly(dir, child.pid ?? 0);
-    expect(scan).toMatchObject({ status: "clear" });
+    expect(scan).toMatchObject({
+      status: "unknown",
+      reason: expect.stringContaining("renamed-helper"),
+    });
   });
 });

@@ -91,6 +91,11 @@ describe("scanProcessesWithCwdUnder", () => {
     "sshd-session",
     "gpg-agent",
     "dbus-daemon",
+    "dbus-broker",
+    "gnome-keyring-d",
+    "keepassxc-proxy",
+    "pipewire",
+    "wireplumber",
   ])(
     "does not block on an unreadable unrelated same-user process named %s",
     async (comm) => {
@@ -104,18 +109,21 @@ describe("scanProcessesWithCwdUnder", () => {
   );
 
   it.each(["node", "bash", "ssh-agent-fake", "sshd-sessionx", "SSHD"])(
-    "does not block on an unreadable same-user process named %s",
+    "returns unknown for an unreadable same-user process named %s",
     async (comm) => {
       const base = await dir();
       const scan = await scanProcessesWithCwdUnder(
         { directories: [base] },
         fakeLinux({ 10: denied() }, {}, { 10: comm }),
       );
-      expect(scan.status).toBe("clear");
+      expect(scan).toMatchObject({
+        status: "unknown",
+        reason: expect.stringContaining(comm),
+      });
     },
   );
 
-  it("clears an unreadable same-user process when no path ties it to the target", async () => {
+  it("returns unknown when an unreadable same-user process command cannot be read", async () => {
     const base = await dir();
     const io = fakeLinux({ 10: denied() });
     const scan = await scanProcessesWithCwdUnder(
@@ -127,7 +135,7 @@ describe("scanProcessesWithCwdUnder", () => {
         },
       },
     );
-    expect(scan.status).toBe("clear");
+      expect(scan).toMatchObject({ status: "unknown" });
   });
 
   it.each([
