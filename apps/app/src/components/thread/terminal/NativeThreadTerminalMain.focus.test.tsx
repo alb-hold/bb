@@ -26,6 +26,11 @@ vi.mock("@/hooks/queries/native-terminal-queries", () => ({
   useNativeTerminalThread: () => ({ dataUpdatedAt: 1, refetch: vi.fn() }),
   useOpenNativeTerminal: () => ({ mutate: vi.fn(), isPending: false }),
 }));
+vi.mock("@/hooks/queries/thread-default-execution-options-query", () => ({
+  useThreadDefaultExecutionOptions: () => ({
+    data: { model: "gpt-5", permissionMode: "full" },
+  }),
+}));
 vi.mock("@/hooks/queries/thread-queries", () => ({
   useThreadPendingInteractions: () => ({ data: [] }),
 }));
@@ -117,4 +122,25 @@ describe("NativeThreadTerminalMain focus", () => {
     );
     expect(terminalAutoFocus()).toBe("true");
   });
+});
+
+it("shows uncleared terminal attention without requiring a structured question", () => {
+  render(
+    <NativeThreadTerminalMain
+      projectId="proj_1"
+      threadId="thr_1"
+      threadIsProvisioning={false}
+      view={{
+        ...view,
+        terminal: {
+          ...view.terminal!,
+          attention: { at: 10, kind: "bell", seq: 1 },
+        },
+      }}
+      runtime={{ displayStatus: "idle" }}
+    />,
+  );
+  expect(screen.getByRole("status").textContent).toBe(
+    "Terminal needs attention",
+  );
 });

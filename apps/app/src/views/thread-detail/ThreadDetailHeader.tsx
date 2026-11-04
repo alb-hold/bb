@@ -37,6 +37,7 @@ import {
 import { useSidebarRename } from "@/components/sidebar/SidebarInlineRename";
 import { useThreadActions } from "@/components/thread/ThreadActionsProvider";
 import { ThreadTitle } from "@/components/thread/ThreadTitleMentions";
+import { ThreadStatusGlyph } from "@/components/thread/ThreadStatusGlyph";
 import { ThreadUsageAndAgents } from "@/components/thread/ThreadUsageSummary";
 import { useThreadHeaderActionEntries } from "@/lib/thread-actions/thread-action-registry";
 import { SecondaryPanelHostLayoutContext } from "@/components/secondary-panel/SecondaryPanelHostLayoutContext";
@@ -77,6 +78,7 @@ interface ThreadDetailHeaderProps {
   pluginActions?: ReactNode;
   thread: PluginThreadActionTarget;
   threadTitle: string;
+  needsInput?: boolean;
   workspaceOpenButton?: ReactNode;
 }
 
@@ -88,6 +90,7 @@ export function ThreadDetailHeader({
   pluginActions,
   thread,
   threadTitle,
+  needsInput = false,
   workspaceOpenButton,
   contextCardButton,
 }: ThreadDetailHeaderProps) {
@@ -192,6 +195,9 @@ export function ThreadDetailHeader({
           isSplitPaneHeader && isFocused && CONTEXT_SELECTION_SURFACE_CLASS,
         )}
       >
+        {needsInput ? (
+          <ThreadStatusGlyph indicator="needs-input" size="compact" />
+        ) : null}
         <p
           data-thread-detail-header-title=""
           className={cn(

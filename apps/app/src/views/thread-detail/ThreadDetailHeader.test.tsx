@@ -235,6 +235,27 @@ beforeEach(() => {
 });
 
 describe("ThreadDetailHeader", () => {
+  it.each([true, false])(
+    "shows native pending input in the header: %s",
+    (needsInput) => {
+      const { container } = render(
+        <PaneContext.Provider value={PANE_CONTEXT}>
+          <ThreadDetailHeader
+            actionsMenu={null}
+            isSecondaryPanelOpen={false}
+            onToggleSecondaryPanel={vi.fn()}
+            thread={THREAD_TARGET}
+            threadTitle="Native terminal"
+            needsInput={needsInput}
+          />
+        </PaneContext.Provider>,
+      );
+      expect(
+        container.querySelector('header [aria-label="Needs input"]') !== null,
+      ).toBe(needsInput);
+    },
+  );
+
   it("keeps the title visible and collapses the agent rollup on compact widths", async () => {
     viewportState.isCompactViewport = true;
     vi.spyOn(sdk.threads, "childSummary").mockResolvedValue({

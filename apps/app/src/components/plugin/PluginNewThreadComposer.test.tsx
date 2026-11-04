@@ -1144,6 +1144,7 @@ describe("PluginNewThreadComposer seeding", () => {
   });
 
   it("hides agent options for a native terminal thread and submits none", async () => {
+    window.localStorage.setItem("bb.composer.nativeTerminal", "false");
     mocks.modelSessionOptions = [
       { type: "boolean", id: "daybreak", label: "Daybreak", value: false },
       {
@@ -1197,7 +1198,7 @@ describe("PluginNewThreadComposer seeding", () => {
     });
   });
 
-  it("opens the next composer with the native terminal choice it was left on", async () => {
+  it("defaults to Terminal and preserves an explicit Chat choice", async () => {
     mocks.systemProviders = [
       { id: "codex", capabilities: { supportsNativeTerminal: true } },
     ];
@@ -1214,22 +1215,22 @@ describe("PluginNewThreadComposer seeding", () => {
     const first = renderNativeComposer();
     await waitFor(() => {
       expect(latestPromptBoxProps().execution.nativeTerminal.enabled).toBe(
-        false,
+        true,
       );
     });
     await act(async () => {
-      latestPromptBoxProps().execution.nativeTerminal.onChange(true);
+      latestPromptBoxProps().execution.nativeTerminal.onChange(false);
     });
     first.unmount();
 
     const second = renderNativeComposer();
     await waitFor(() => {
       expect(latestPromptBoxProps().execution.nativeTerminal.enabled).toBe(
-        true,
+        false,
       );
     });
     expect(window.localStorage.getItem("bb.composer.nativeTerminal")).toBe(
-      "true",
+      "false",
     );
     await act(async () => {
       latestPromptBoxProps().execution.nativeTerminal.onChange(false);

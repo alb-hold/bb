@@ -370,7 +370,15 @@ describe("ThreadTerminalView terminal visibility and panel", () => {
     }, "terminal visibility was not reported within 5000 ms");
   });
 
-  it("clears attention when its terminal panel becomes visible", async () => {
+  it("keeps attention on open until a terminal keystroke", async () => {
+    vi.stubGlobal("WebSocket", TestTerminalSocket);
+    vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(108);
+    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(90);
+    vi.spyOn(FitAddon.prototype, "proposeDimensions").mockReturnValue({
+      cols: 12,
+      rows: 5,
+    });
     const session = makeTerminalSession({
       id: "term_attention",
       attention: { at: 10, kind: "bell", seq: 3 },
@@ -408,6 +416,36 @@ describe("ThreadTerminalView terminal visibility and panel", () => {
       </MemoryRouter>,
     );
 
+    expect(testState.clearAttention).not.toHaveBeenCalled();
+    await waitForReadinessCondition(() => {
+      expect(document.querySelector(".xterm-helper-textarea")).not.toBeNull();
+    }, "terminal did not mount");
+    expect(testState.clearAttention).not.toHaveBeenCalled();
+    await waitForReadinessCondition(() => {
+      expect(
+        Array.from(document.querySelectorAll("button")).some(
+          (button) => button.textContent === "Fit to this screen",
+        ),
+      ).toBe(true);
+    }, "fit control did not become ready");
+    const fitControl = Array.from(document.querySelectorAll("button")).find(
+      (button) => button.textContent === "Fit to this screen",
+    );
+    expect(fitControl).toBeDefined();
+    fireEvent.click(fitControl!);
+    expect(testState.clearAttention).not.toHaveBeenCalled();
+    await waitForReadinessCondition(() => {
+      expect(
+        testState.socketMessages.some((raw) => {
+          const message = JSON.parse(raw);
+          return message.type === "resize" && message.claim === true;
+        }),
+      ).toBe(true);
+    }, "fit control did not claim the existing resize path");
+    fireEvent.keyDown(document.querySelector(".xterm-helper-textarea")!, {
+      key: "a",
+      keyCode: 65,
+    });
     await waitForReadinessCondition(() => {
       expect(testState.clearAttention).toHaveBeenCalledWith({
         terminalId: session.id,
@@ -657,7 +695,7 @@ it.each([
     rows: 40,
     renderCols: 80,
     renderRows: 24,
-    scale: "0.95",
+    scale: "1",
   },
 ])(
   "preserves exited native output layout on $device after touch focus and remount",
@@ -666,9 +704,10 @@ it.each([
     const matchMedia = window.matchMedia.bind(window);
     vi.spyOn(window, "matchMedia").mockImplementation((query) => ({
       ...matchMedia(query),
-      matches: query === COMPACT_VIEWPORT_QUERY
-        ? width <= 767
-        : matchMedia(query).matches,
+      matches:
+        query === COMPACT_VIEWPORT_QUERY
+          ? width <= 767
+          : matchMedia(query).matches,
     }));
     const sendResize = vi.spyOn(
       TerminalWebSocketTransport.prototype,

@@ -156,7 +156,7 @@ import {
   attachTerminalScalePointerCoordinates,
   canRevealTerminalSurface,
   readTerminalSurfaceScale,
-  terminalSurfaceScale,
+  terminalSurfacePresentation,
 } from "./terminal-grid-presentation";
 import {
   attachTerminalPromptTracker,
@@ -1251,8 +1251,8 @@ export function ThreadTerminalView({
     setControlActive(active);
   };
 
-  useEffect(() => {
-    if (!isPanelOpen || session.attention == null) return;
+  const clearAttentionOnInput = useCallback(() => {
+    if (session.attention == null) return;
     const requestKey = `${session.id}:${session.attention.seq}`;
     if (attentionClearRequestRef.current === requestKey) return;
     attentionClearRequestRef.current = requestKey;
@@ -1263,7 +1263,11 @@ export function ThreadTerminalView({
         attentionClearRequestRef.current = null;
         appToast.error("Couldn't clear terminal attention.");
       });
-  }, [isPanelOpen, onSessionChange, session.attention, session.id]);
+  }, [onSessionChange, session.attention, session.id]);
+  const clearAttentionOnInputRef = useRef(clearAttentionOnInput);
+  clearAttentionOnInputRef.current = clearAttentionOnInput;
+  const claimSizeRef = useRef<(() => void) | null>(null);
+  const [showFitControl, setShowFitControl] = useState(false);
   const [terminalReady, setTerminalReady] = useState(false);
   const [promptTrackerState, setPromptTrackerState] = useState(
     EMPTY_TERMINAL_PROMPT_TRACKER,
@@ -1932,19 +1936,25 @@ export function ThreadTerminalView({
             rendererGrid: { cols: terminal.cols, rows: terminal.rows },
           });
         containerElement.style.opacity = "0";
+        const presentation = terminalSurfacePresentation({
+          grid: displayGrid,
+          fitGrid: localFitGrid,
+          fontSize: terminalFontSizeRef.current,
+          isOwner: ownsTerminal,
+          running: sessionStatusRef.current === "running",
+        });
+        setShowFitControl(presentation.showFitControl);
         const scrollRetainedOutput =
-          retainedOutputGrid !== null &&
-          getMediaQuerySnapshot(COMPACT_VIEWPORT_QUERY);
+          presentation.panHorizontally ||
+          (retainedOutputGrid !== null &&
+            getMediaQuerySnapshot(COMPACT_VIEWPORT_QUERY));
         containerElement.style.overflowX = scrollRetainedOutput ? "auto" : "";
         containerElement.style.overflowY = scrollRetainedOutput ? "auto" : "";
         containerElement.style.paddingLeft = scrollRetainedOutput ? "0" : "";
         containerElement.style.touchAction = scrollRetainedOutput
           ? "pan-x pan-y"
           : "";
-        const scale =
-          localFitGrid !== null && !scrollRetainedOutput
-            ? terminalSurfaceScale(displayGrid, localFitGrid)
-            : 1;
+        const scale = retainedOutputGrid !== null ? 1 : presentation.scale;
         if (terminal.element) {
           applyTerminalSurfaceScale(
             terminal.element,
@@ -2838,6 +2848,12 @@ export function ThreadTerminalView({
         }),
       });
       transport = activeTransport;
+      claimSizeRef.current = () => {
+        terminalInputClaimed = true;
+        activeTerminal.focus();
+        activeTransport.claimSize();
+        fitTerminal();
+      };
       retryStalledReplay = () => {
         if (processExitedSeen || exitedBeforeReplayCompleted) {
           abandonReplayPreview();
@@ -3076,12 +3092,16 @@ export function ThreadTerminalView({
       });
       terminalKeyDisposable = activeTerminal.onKey(() => {
         terminalInputClaimed = true;
+        clearAttentionOnInputRef.current();
         updateGridVisibility();
       });
       terminalInputForwarding = attachTerminalInputForwarding({
         onData: (data, isUserInput) => {
           const inputEventAt = isUserInput ? performance.now() : undefined;
-          if (isUserInput) lastUserInputAtRef.current = Date.now();
+          if (isUserInput) {
+            lastUserInputAtRef.current = Date.now();
+            clearAttentionOnInputRef.current();
+          }
           if (controlActiveRef.current) {
             data = applyTerminalControl(data);
             controlActiveRef.current = false;
@@ -3315,7 +3335,8 @@ export function ThreadTerminalView({
   const ensurePinchGesture = () => {
     pinchGestureRef.current ??= createTerminalPinchGesture({
       getFontSize: () => terminalFontSizeRef.current,
-      setFontSize: (size) => {
+      setFontSize: (requestedSize) => {
+        const size = Math.max(12, requestedSize);
         if (size === terminalFontSizeRef.current) return;
         terminalFontSizeRef.current = size;
         setTerminalFontSize(size);
@@ -3383,6 +3404,15 @@ export function ThreadTerminalView({
       data-app-terminal=""
       onKeyDownCapture={handleTerminalCommandKeyDown}
     >
+      {terminalReady && showFitControl ? (
+        <button
+          type="button"
+          className="self-end rounded-md px-2 py-1 text-xs text-foreground hover:bg-state-hover"
+          onClick={() => claimSizeRef.current?.()}
+        >
+          Fit to this screen
+        </button>
+      ) : null}
       <ContextMenu
         onOpenChange={(open) => {
           if (!open) {
@@ -3393,7 +3423,7 @@ export function ThreadTerminalView({
         <ContextMenuTrigger asChild>
           <TerminalAttentionPane
             attention={session.attention}
-            className={`group/terminal-pane relative min-h-0 w-full flex-1 overflow-hidden bg-sidebar p-2 ${isTouchDevice ? (retainNativeOutput && session.status === "exited" ? "touch-pan-x touch-pan-y" : "touch-pan-y") : ""}`}
+            className={`group/terminal-pane relative min-h-0 w-full flex-1 overflow-hidden bg-sidebar p-2 ${isTouchDevice ? (showFitControl || (retainNativeOutput && session.status === "exited") ? "touch-pan-x touch-pan-y" : "touch-pan-y") : ""}`}
             onContextMenuCapture={captureTerminalContextMenu}
             onTouchStart={(event) => {
               stopRetainedHistoryTouchPropagation(event);

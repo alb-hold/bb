@@ -19,8 +19,19 @@ const css = readFileSync(
 function themeColor(mode: "light" | "dark", name: string): string {
   const at = css.indexOf(`color-scheme: ${mode};`);
   const block = css.slice(css.lastIndexOf("{", at), css.indexOf("}", at));
-  const value = block.match(new RegExp(`${name}:\\s*([^;]+);`))?.[1].trim();
+  let value = block.match(new RegExp(`${name}:\\s*([^;]+);`))?.[1].trim();
+  if (!value && name === "--muted")
+    value = "color-mix(in oklch, var(--ink) 11%, var(--canvas))";
   if (!value) throw new Error(`Missing ${name}`);
+  const mix = value.match(
+    /^color-mix\(in oklch, var\((--[^)]+)\) ([\d.]+)%, var\((--[^)]+)\)\)$/,
+  );
+  if (mix) {
+    const lightness = (token: string) =>
+      Number(block.match(new RegExp(`${token}: oklch\\(([\\d.]+)`))?.[1]);
+    const weight = Number(mix[2]) / 100;
+    value = `oklch(${lightness(mix[1]) * weight + lightness(mix[3]) * (1 - weight)} 0 0)`;
+  }
   const alias = value.match(/^var\((--[^)]+)\)$/);
   if (alias) return themeColor(mode, alias[1]);
   const neutral = value.match(/^oklch\(([\d.]+) 0 0\)$/);
@@ -102,3 +113,8 @@ it.each(["light", "dark"] as const)(
     }
   },
 );
+
+it("derives dark Codex indexed prompt backgrounds from the muted surface", () => {
+  const dark = css.slice(css.indexOf(".dark {"));
+  expect(dark).toContain("--ansi-8: var(--muted)");
+});

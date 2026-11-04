@@ -11,6 +11,9 @@ import {
   createEnvironment,
   createPendingInteraction,
   createNativeTerminalThread,
+  getNativeTerminalThread,
+  upsertTerminalAttention,
+  clearTerminalAttention,
   createProject,
   createQueuedThreadMessage,
   createTerminalSession,
@@ -1302,3 +1305,31 @@ it.each([false, true])(
     }
   },
 );
+
+it("keeps a native attention signal in both list and header state until input clears it", () => {
+  const { db, hostId, hub } = setup();
+  const { thread } = createLiveNativeReportingThread({ db, hostId });
+  const terminalId = getNativeTerminalThread(db, thread.id)!.terminalSessionId!;
+  upsertTerminalAttention(db, {
+    terminalSessionId: terminalId,
+    seq: 1,
+    daemonSeq: 1,
+    kind: "bell",
+    title: null,
+    body: null,
+    attentionAt: 100_001,
+  });
+  const deps = { db, hub, providerRegistry };
+  const detail = () => toThreadResponseFromThread(deps, { thread });
+  const list = () =>
+    toThreadListEntryResponsesForTest(deps, {
+      threads: [createThreadListEntry({ thread, environmentHostId: hostId })],
+    });
+  expect(detail().hasPendingInteraction).toBe(true);
+  expect(list()[0]?.hasPendingInteraction).toBe(true);
+  expect(list()[0]?.listIndicator).toBe("needs-input");
+  clearTerminalAttention(db, terminalId, 100_002);
+  expect(detail().hasPendingInteraction).toBe(false);
+  expect(list()[0]?.hasPendingInteraction).toBe(false);
+  db.$client.close();
+});

@@ -109,13 +109,16 @@ function renderBar() {
       <NativeTerminalPromptBar
         projectId="proj-n"
         providerLabel="Native CLI"
+        executionLabel="Native CLI · GPT-5 · Full access"
         threadId="thr-n"
       />
     </Wrapper>,
   );
   return {
     queryClient,
-    input: screen.getByLabelText("Message Native CLI") as HTMLTextAreaElement,
+    input: screen.getByLabelText(
+      "Send to Native CLI terminal",
+    ) as HTMLTextAreaElement,
     sendButton: screen.getByRole("button", { name: "Send to Native CLI" }),
   };
 }
@@ -151,6 +154,13 @@ function pasteFiles(target: HTMLElement, files: File[]) {
 afterEach(cleanup);
 
 describe("NativeTerminalPromptBar", () => {
+  it("labels the terminal destination and keeps execution details read-only", () => {
+    const { input } = renderBar();
+    expect(input.placeholder).toBe("Send to Native CLI terminal");
+    expect(
+      screen.getByText("Native CLI · GPT-5 · Full access").className,
+    ).toContain("truncate");
+  });
   it("sends the trimmed message on Enter and clears the field", async () => {
     const { input } = renderBar();
     fireEvent.change(input, { target: { value: "  fix the build  " } });
