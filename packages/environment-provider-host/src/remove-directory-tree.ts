@@ -139,7 +139,6 @@ export async function removeDirectoryTree(
     parentDirectory: string,
     name: string,
     entry: string,
-    rootEntry = false,
   ): Promise<RemoveDirectoryTreeResult> => {
     const anchoredEntry = path.join(parentDirectory, name);
     let info;
@@ -148,7 +147,7 @@ export async function removeDirectoryTree(
     } catch (error) {
       return errorCode(error) === "ENOENT" ? "removed" : "retained";
     }
-    if (!rootEntry && changedSince(info, startedAt)) return "retained";
+    if (changedSince(info, startedAt)) return "retained";
     if (!info.isDirectory()) {
       try {
         await unlink(anchoredEntry);
@@ -171,7 +170,7 @@ export async function removeDirectoryTree(
         return "retained";
       }
       if (!sameDirectory(openedInfo, currentInfo)) return "retained";
-      if (!rootEntry && changedSince(openedInfo, startedAt)) return "retained";
+      if (changedSince(openedInfo, startedAt)) return "retained";
       let listed: string[];
       try {
         listed = await readdir(directoryPath);
@@ -221,7 +220,7 @@ export async function removeDirectoryTree(
     }
   };
   try {
-    return await removeEntry(parentPath, rootName, root, true);
+    return await removeEntry(parentPath, rootName, root);
   } finally {
     await parent.close();
   }

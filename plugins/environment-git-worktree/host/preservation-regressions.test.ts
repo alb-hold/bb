@@ -453,6 +453,23 @@ describe("real worktree teardown preservation", () => {
     ).resolves.toBe("outside\n");
   });
 
+  it("retains a root directory changed after recursive removal starts", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "bb-remove-root-race-"));
+    roots.push(root);
+    const target = path.join(root, "target");
+    await mkdir(target);
+    await writeFile(path.join(target, "entry.txt"), "keep\n");
+    const result = await removeDirectoryTree(target, {
+      afterStart: async () => {
+        await fs.chmod(target, 0o700);
+      },
+    });
+    expect(result).toBe("retained");
+    await expect(readFile(path.join(target, "entry.txt"), "utf8")).resolves.toBe(
+      "keep\n",
+    );
+  });
+
   it("retains Git metadata created while pruning the severed admin directory", async () => {
     const worktree = await makeWorktree();
     useProcReaderForTests(descendantsOnly(hostProc, -1));
