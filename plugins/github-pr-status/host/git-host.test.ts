@@ -80,6 +80,24 @@ type TestAction = (
 ) &
   IdentityOverrides;
 
+const DISPLAYED_IDENTITY = {
+  expectedHeadOid: "a".repeat(40),
+  expectedHost: "github.com",
+  expectedRepository: "acme/bb",
+  expectedNumber: 42,
+  expectedBaseRef: "main",
+};
+
+function readyFor(host: string, repository = "acme/bb", number = 42) {
+  return {
+    operation: "ready" as const,
+    expectedHost: host,
+    expectedRepository: repository,
+    expectedNumber: number,
+    expectedBaseRef: "main",
+  };
+}
+
 function runAction(
   cwd: string,
   action: TestAction = { operation: "ready" },
@@ -435,7 +453,9 @@ describe("runPullRequestActionForCurrentBranch", () => {
         origin: `https://${host}/acme/bb.git`,
       });
 
-      await expect(runAction(cwd)).resolves.toEqual({ ok: true });
+      await expect(runAction(cwd, readyFor(host))).resolves.toEqual({
+        ok: true,
+      });
       expect(await actionCalls(gh)).toEqual([
         ["pr", "ready", "--repo", `${host}/acme/bb`, "--", "42"],
       ]);
@@ -452,7 +472,9 @@ describe("runPullRequestActionForCurrentBranch", () => {
         origin: `https://${host}/acme/bb.git`,
       });
 
-      await expect(runAction(cwd)).resolves.toEqual({ ok: true });
+      await expect(runAction(cwd, readyFor(host))).resolves.toEqual({
+        ok: true,
+      });
       const invocations = await actionInvocations(gh);
       expect(invocations).toHaveLength(1);
       expectTokens(invocations[0]!.env, selected, tokens);
@@ -479,15 +501,21 @@ describe("runPullRequestActionForCurrentBranch", () => {
       { "remote.pushdefault": "origin" },
     );
 
-    await expect(runAction(cwd)).resolves.toEqual({ ok: true });
+    await expect(
+      runAction(cwd, readyFor("github.com", "acme/bb", 9)),
+    ).resolves.toEqual({ ok: true });
     expect(await actionCalls(gh)).toEqual([
       ["pr", "ready", "--repo", ACTION_REPO, "--", "9"],
     ]);
   });
 
   it.each([
-    ["ready", { operation: "ready" }, ["pr", "ready"]],
-    ["draft", { operation: "draft" }, ["pr", "ready", "--undo"]],
+    ["ready", { operation: "ready", ...DISPLAYED_IDENTITY }, ["pr", "ready"]],
+    [
+      "draft",
+      { operation: "draft", ...DISPLAYED_IDENTITY },
+      ["pr", "ready", "--undo"],
+    ],
     [
       "merge",
       {
@@ -756,20 +784,9 @@ function repoFlag(args: string[]): string | undefined {
 }
 
 const ACTIONS: readonly (readonly [string, HostPullRequestAction])[] = [
-  [
-    "merge",
-    {
-      operation: "merge",
-      method: "merge",
-      expectedHeadOid: HEAD_OID,
-      expectedHost: "github.com",
-      expectedRepository: "acme/bb",
-      expectedNumber: 42,
-      expectedBaseRef: "main",
-    },
-  ],
-  ["ready", { operation: "ready" }],
-  ["draft", { operation: "draft" }],
+  ["merge", { operation: "merge", method: "merge", ...DISPLAYED_IDENTITY }],
+  ["ready", { operation: "ready", ...DISPLAYED_IDENTITY }],
+  ["draft", { operation: "draft", ...DISPLAYED_IDENTITY }],
 ];
 
 const TOKEN_EDGES: readonly (readonly [
@@ -1327,7 +1344,9 @@ describe("action selector and routing edge cases", () => {
       origin: "https://ghe.example:8443/acme/bb.git",
     });
 
-    await expect(runAction(cwd)).resolves.toEqual({ ok: true });
+    await expect(runAction(cwd, readyFor("ghe.example:8443"))).resolves.toEqual(
+      { ok: true },
+    );
     const [call] = await actionInvocations(gh);
     expect(repoFlag(call!.args)).toBe("ghe.example:8443/acme/bb");
     expectTokens(call!.env, "GH_ENTERPRISE_TOKEN", tokens);
@@ -1389,7 +1408,9 @@ describe("action selector and routing edge cases", () => {
       origin: "https://GitHub.COM/Acme/BB.git",
     });
 
-    await expect(runAction(cwd)).resolves.toEqual({ ok: true });
+    await expect(
+      runAction(cwd, readyFor("github.com", "Acme/BB")),
+    ).resolves.toEqual({ ok: true });
     const [args] = await actionCalls(gh);
     expect(repoFlag(args!)).toBe("github.com/Acme/BB");
   });
@@ -1437,7 +1458,9 @@ describe("action selector and routing edge cases", () => {
       { "remote.pushdefault": "origin" },
     );
 
-    await expect(runAction(cwd)).resolves.toEqual({ ok: true });
+    await expect(
+      runAction(cwd, readyFor("ghe.example", "acme/bb", 9)),
+    ).resolves.toEqual({ ok: true });
     const [call] = await actionInvocations(gh);
     expect(call!.args.at(-1)).toBe("9");
     expect(repoFlag(call!.args)).toBe("ghe.example/acme/bb");
@@ -1455,7 +1478,9 @@ describe("action selector and routing edge cases", () => {
       origin: "https://corp-b.example/acme/bb.git",
     });
 
-    await expect(runAction(cwd)).resolves.toEqual({ ok: true });
+    await expect(runAction(cwd, readyFor("corp-b.example"))).resolves.toEqual({
+      ok: true,
+    });
     const [call] = await actionInvocations(gh);
     expectTokens(call!.env, null, tokens);
   });
