@@ -36,6 +36,8 @@ export interface CwdScanIo {
   selfPid: number;
   listProcessIds(): Promise<string[]>;
   readCwd(pid: number): Promise<string>;
+  realUid(pid: number): Promise<number>;
+  effectiveUid(pid: number): Promise<number>;
   filesystemUid(pid: number): Promise<number>;
   filesystemGid?(pid: number): Promise<number>;
   effectiveCapabilities?(pid: number): Promise<bigint>;
@@ -58,6 +60,20 @@ export function parseFilesystemUid(status: string): number {
   if (line === null)
     throw Object.assign(new Error("no Uid line"), { code: "EINVAL" });
   return Number(line[4]);
+}
+
+export function parseEffectiveUid(status: string): number {
+  const line = /^Uid:\s*(\d+)\s+(\d+)/mu.exec(status);
+  if (line === null)
+    throw Object.assign(new Error("no Uid line"), { code: "EINVAL" });
+  return Number(line[2]);
+}
+
+export function parseRealUid(status: string): number {
+  const line = /^Uid:\s*(\d+)/mu.exec(status);
+  if (line === null)
+    throw Object.assign(new Error("no Uid line"), { code: "EINVAL" });
+  return Number(line[1]);
 }
 
 export function parseFilesystemGid(status: string): number {
@@ -121,6 +137,10 @@ export const hostCwdScanIo: CwdScanIo = {
   selfPid: process.pid,
   listProcessIds: () => readdir("/proc"),
   readCwd: (pid) => readlink(`/proc/${pid}/cwd`),
+  realUid: async (pid) =>
+    parseRealUid(await readFile(`/proc/${pid}/status`, "utf8")),
+  effectiveUid: async (pid) =>
+    parseEffectiveUid(await readFile(`/proc/${pid}/status`, "utf8")),
   filesystemUid: async (pid) =>
     parseFilesystemUid(await readFile(`/proc/${pid}/status`, "utf8")),
   filesystemGid: async (pid) =>
@@ -367,6 +387,24 @@ export async function scanProcessesWithCwdUnder(
             };
           }
           if (code === "EACCES" || code === "EPERM") {
+            let realUid: number;
+            let effectiveUid: number;
+            try {
+              realUid = await io.realUid(pid);
+              effectiveUid = await io.effectiveUid(pid);
+            } catch (identityError) {
+              if (GONE.has(codeOf(identityError))) continue;
+              return {
+                status: "unknown",
+                reason: `the effective owner of process ${pid} could not be read`,
+              };
+            }
+            if (realUid !== filesystemUid || effectiveUid !== filesystemUid) {
+              return {
+                status: "unknown",
+                reason: `process ${pid} has credentials that differ from its filesystem UID and its cwd is unreadable`,
+              };
+            }
             continue;
           }
         }

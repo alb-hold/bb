@@ -307,6 +307,12 @@ async function scanLinuxProcess(
   }
   if (result === null || !("unknown" in result) || !result.vouchable)
     return result;
+  if (uids[0] !== self.uid || uids[1] !== self.uid) {
+    return {
+      unknown: `${result.unknown}, process credentials differ from its filesystem UID`,
+      vouchable: false,
+    };
+  }
   return null;
 }
 interface ForeignTarget {

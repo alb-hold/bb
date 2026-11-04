@@ -5,8 +5,10 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   hostCwdScanIo,
+  parseEffectiveUid,
   parseFilesystemGid,
   parseFilesystemUid,
+  parseRealUid,
   PS_ARGS,
   scanProcessesWithCwdUnder,
   type CwdScanIo,
@@ -37,6 +39,8 @@ function fakeLinux(
       if (typeof value !== "string") throw value;
       return value;
     },
+    realUid: async (pid) => owners[pid] ?? 1000,
+    effectiveUid: async (pid) => owners[pid] ?? 1000,
     filesystemUid: async (pid) => owners[pid] ?? 1000,
     readComm: async (pid) => comms[pid] ?? "node",
     runLsof: async () => {
@@ -375,6 +379,8 @@ describe("scanProcessesWithCwdUnder", () => {
       expect(parseFilesystemUid("Uid:\t1000\t1001\t1002\t1003\n")).toBe(1003);
       expect(parseFilesystemUid("Uid:\t0\t1000\t1001\t1002\n")).toBe(1002);
       expect(parseFilesystemGid("Gid:\t1000\t1001\t1002\t1003\n")).toBe(1003);
+      expect(parseEffectiveUid("Uid:\t1000\t1001\t1002\t1003\n")).toBe(1001);
+      expect(parseRealUid("Uid:\t1000\t1001\t1002\t1003\n")).toBe(1000);
       expect(parseFilesystemGid("Gid:\t0\t1000\t1001\t1002\n")).toBe(1002);
       expect(() => parseFilesystemUid("Name:\tx\n")).toThrow();
     });
@@ -388,6 +394,22 @@ describe("scanProcessesWithCwdUnder", () => {
         expect(hostCwdScanIo.uid).toBe(process.geteuid?.() ?? null);
       },
     );
+
+    it("does not clear an unreadable process whose real and effective UIDs differ from its filesystem UID", async () => {
+      const base = await dir();
+      const io = fakeLinux({ 10: denied() });
+      const scan = await scanProcessesWithCwdUnder(
+        { directories: [base] },
+        {
+          ...io,
+          filesystemUid: async () => 1000,
+          realUid: async (pid) => (pid === 10 ? 1002 : 1000),
+          effectiveUid: async (pid) => (pid === 10 ? 1001 : 1000),
+          statAccess: async () => ({ uid: 1000, mode: 0o700 }),
+        },
+      );
+      expect(scan).toMatchObject({ status: "unknown" });
+    });
 
     it("uses the filesystem uid when deciding whether an unreadable process may reach the target", async () => {
       const base = await dir();

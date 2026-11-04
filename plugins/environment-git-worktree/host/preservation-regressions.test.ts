@@ -46,21 +46,26 @@ async function removeDirectoryTree(
   return (await import(moduleUrl)).removeDirectoryTree(root, hooks);
 }
 
-function foreignUnreadableCwdProc(): ProcReader {
+function foreignUnreadableCwdProc(pid: number): ProcReader {
+  const realUid = process.getuid?.() ?? process.geteuid?.() ?? 1000;
+  const realGid = process.getgid?.() ?? process.getegid?.() ?? 1000;
   return {
     ...hostProc,
     readlink: async (target) => {
-      if (target === "/proc/100100/cwd")
+      if (
+        target === `/proc/${pid}/cwd` ||
+        (target.startsWith(`/proc/${pid}/task/`) && target.endsWith("/cwd"))
+      )
         throw Object.assign(new Error("Permission denied"), { code: "EACCES" });
       return hostProc.readlink(target);
     },
     readFile: async (target) => {
-      if (target === "/proc/100100/status")
-        return "Name:\tforeign\nState:\tS (sleeping)\nUid:\t1000\t1000\t1000\t1001\nGid:\t1000\t1000\t1000\t1001\nGroups:\t1000\n";
+      if (target === `/proc/${pid}/status`)
+        return `Name:\tforeign\nState:\tS (sleeping)\nUid:\t1001\t1002\t1003\t${realUid}\nGid:\t1001\t1002\t1003\t${realGid}\nGroups:\t${realGid}\nCapEff:\t0000000000000000\n`;
       return hostProc.readFile(target);
     },
     readdir: async (target) => {
-      if (target === "/proc") return [String(process.pid), "100100"];
+      if (target === "/proc") return [String(process.pid), String(pid)];
       return hostProc.readdir(target);
     },
   };
@@ -453,18 +458,30 @@ describe("real worktree teardown preservation", () => {
     await expect(readFile(saved, "utf8")).resolves.toBe("published\n");
   });
 
-  it("keeps the worktree root marker and siblings when late data interrupts partial removal", async () => {
+  it("keeps the worktree root marker and siblings after partial removal meets late data", async () => {
     const worktree = await makeWorktree();
+    useProcReaderForTests(descendantsOnly(hostProc, -1));
+    await mkdir(path.join(worktree.path, "late-dir"));
+    await writeFile(path.join(worktree.path, "late-dir", "old.txt"), "old\n");
+    await git(worktree.path, "add", "late-dir/old.txt");
+    await git(
+      worktree.path,
+      "commit",
+      "-m",
+      "published partial-removal directory",
+    );
+    await git(worktree.path, "push", "origin", "feature");
     let injected = false;
     await expect(
       remove(worktree, {
         afterDirectoryListed: async (directory) => {
-          if (directory !== worktree.path || injected) return;
+          if (!directory.endsWith("late-dir") || injected) return;
           injected = true;
-          await writeFile(path.join(worktree.path, "late-file"), "kept\n");
+          await writeFile(path.join(directory, "late-file"), "kept\n");
         },
       }),
     ).rejects.toMatchObject({ code: "worktree_preserved" });
+    expect(injected).toBe(true);
     await expect(
       access(path.join(worktree.path, ".git")),
     ).resolves.toBeUndefined();
@@ -472,8 +489,11 @@ describe("real worktree teardown preservation", () => {
       readFile(path.join(worktree.path, "README.md"), "utf8"),
     ).resolves.toBe("published\n");
     await expect(
-      readFile(path.join(worktree.path, "late-file"), "utf8"),
+      readFile(path.join(worktree.path, "late-dir", "late-file"), "utf8"),
     ).resolves.toBe("kept\n");
+    await expect(
+      readFile(path.join(worktree.path, "late-dir", "old.txt"), "utf8"),
+    ).resolves.toBe("old\n");
   });
 
   it("removes a clean worktree on macOS when lsof reports no open paths", async () => {
@@ -681,8 +701,21 @@ describe("real worktree teardown preservation", () => {
       const root = await mkdtemp(path.join("/tmp", "bb-preserve-worktree-"));
       const worktree = await makeWorktree(root);
       await fs.chmod(path.dirname(worktree.root), 0o755);
-      await fs.chmod(worktree.root, 0o755);
-      useProcReaderForTests(foreignUnreadableCwdProc());
+      const worker = spawn(
+        process.execPath,
+        ["-e", "setInterval(() => {}, 1000)"],
+        {
+          cwd: worktree.path,
+          stdio: "ignore",
+        },
+      );
+      workers.push(worker);
+      await new Promise<void>((resolve, reject) => {
+        worker.once("spawn", resolve);
+        worker.once("error", reject);
+      });
+      await fs.chmod(worktree.root, 0o700);
+      useProcReaderForTests(foreignUnreadableCwdProc(worker.pid ?? -1));
       const signal = vi.spyOn(process, "kill");
 
       await expect(remove(worktree)).rejects.toMatchObject({
@@ -690,6 +723,7 @@ describe("real worktree teardown preservation", () => {
       });
 
       expect(signal).not.toHaveBeenCalled();
+      expect(() => process.kill(worker.pid!, 0)).not.toThrow();
       await expect(access(worktree.path)).resolves.toBeUndefined();
       expect(await git(worktree.path, "status", "--porcelain")).toBe("");
     },
