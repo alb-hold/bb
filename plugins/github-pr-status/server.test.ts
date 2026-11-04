@@ -855,6 +855,36 @@ describe("GitHub PR Status server", () => {
     },
   );
 
+  describe.each(["ready", "draft", "merge"] as const)(
+    "the CLI %s identity flags",
+    (command) => {
+      it.each([
+        ["--expected-head-oid", "needs the head commit you reviewed"],
+        ["--expected-host", "needs --expected-host"],
+        ["--expected-repository", "needs --expected-repository"],
+        ["--expected-number", "needs --expected-number"],
+        ["--expected-base-ref", "needs --expected-base-ref"],
+      ])(
+        "refuses when %s is left out and makes no host call",
+        async (flag, message) => {
+          const fake = await setup({});
+          const flagIndex = IDENTITY_FLAGS.indexOf(flag);
+          const flags = IDENTITY_FLAGS.filter(
+            (_value, index) => index !== flagIndex && index !== flagIndex + 1,
+          );
+
+          await expect(
+            fake.harness.runCli([command, "env-1", ...flags]),
+          ).resolves.toMatchObject({
+            exitCode: 1,
+            stderr: expect.stringContaining(message),
+          });
+          expect(fake.harness.experimental_hostRpcCalls).toEqual([]);
+        },
+      );
+    },
+  );
+
   it.each(["ready", "draft"])(
     "the CLI refuses %s without the displayed identity and starts no host action",
     async (command) => {

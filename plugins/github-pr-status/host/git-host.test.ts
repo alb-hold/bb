@@ -1098,6 +1098,24 @@ describe("action selector and routing edge cases", () => {
     expect(await gh.readCalls()).toEqual([]);
   });
 
+  it.each([
+    ["ready", ["pr", "ready"]],
+    ["draft", ["pr", "ready", "--undo"]],
+  ] as const)(
+    "%s names the pull request by repository and number, never the current branch",
+    async (operation, ghPrefix) => {
+      const gh = await actionGh();
+      const cwd = await makeGitRepository({ origin: GITHUB_REMOTE });
+
+      await expect(
+        runAction(cwd, { operation, expectedHeadOid: HEAD_OID }),
+      ).resolves.toEqual({ ok: true });
+      expect(await actionCalls(gh)).toEqual([
+        [...ghPrefix, "--repo", "github.com/acme/bb", "--", "42"],
+      ]);
+    },
+  );
+
   describe.each([
     ["ready", ["pr", "ready"]],
     ["draft", ["pr", "ready", "--undo"]],
