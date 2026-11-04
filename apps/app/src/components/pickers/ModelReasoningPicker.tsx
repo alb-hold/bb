@@ -56,9 +56,7 @@ import {
 } from "./model-picker-menu";
 import { ModelReasoningMenu } from "./ModelReasoningMenuSplit";
 import { searchPickerOptions } from "@bb/shared-ui/picker-search";
-import {
-  useResetPickerScroll,
-} from "@bb/shared-ui/hooks/use-reset-picker-scroll";
+import { useResetPickerScroll } from "@bb/shared-ui/hooks/use-reset-picker-scroll";
 import { formatModelLoadErrorText } from "./model-load-error-message";
 import {
   useAppCommandContext,
@@ -116,7 +114,7 @@ export interface ModelReasoningPickerHandoff {
 const FAILED_TO_LOAD_MODELS_LABEL = "Failed to load models";
 const EMPTY_MODEL_OPTIONS: readonly ModelPickerOption[] = [];
 const EMPTY_SERVICE_TIER_OPTIONS: readonly ProviderOptionDescriptor[] = [];
-const preserveModelLabel = (displayName: string): string => displayName;
+
 const MODEL_CYCLE_COMMANDS = [
   "modelPicker.cycleModel",
   "modelPicker.cycleModelBackward",
@@ -152,10 +150,12 @@ export function buildModelNavRows({
   isSearching: boolean;
   showMoreModels: boolean;
 }): ModelNavRow[] {
-  const rows: ModelNavRow[] = modelOptions.map((option): ModelNavRow => ({
-    kind: "model",
-    option,
-  }));
+  const rows: ModelNavRow[] = modelOptions.map(
+    (option): ModelNavRow => ({
+      kind: "model",
+      option,
+    }),
+  );
   if (moreModelOptions.length === 0) return rows;
 
   if (isSearching) {
@@ -293,11 +293,9 @@ export function ModelReasoningPicker({
   );
   const ProviderIcon = selectedProvider?.icon;
   const selectedModelOption = modelOptions.find((m) => m.value === modelValue);
-  const selectedModelLabel =
-    selectedModelOption?.label ??
-    (modelIsLoading
-      ? (formatModelLabel ?? formatFallbackModelLabel)(modelValue)
-      : modelValue);
+  const selectedModelLabel = (formatModelLabel ?? formatFallbackModelLabel)(
+    selectedModelOption?.label ?? modelValue,
+  );
   const hasSelectedModel = selectedModelLabel.trim().length > 0;
   const showLoadingTrigger = modelIsLoading && !hasSelectedModel;
   const selectedProviderLabel = selectedProvider?.label ?? selectedProviderId;
@@ -332,7 +330,11 @@ export function ModelReasoningPicker({
   const triggerModelLabel = showLoadingTrigger
     ? "Loading models..."
     : hasSelectedModel
-      ? stripModelBrandPrefix(selectedModelLabel, selectedProvider?.brandPrefix)
+      ? stripModelBrandPrefix(
+          selectedModelLabel,
+          selectedProvider?.brandPrefix ??
+            (selectedProviderId === "codex" ? "GPT-" : undefined),
+        )
       : selectedModelLoadFailed
         ? hasAlternateSelectionPath
           ? "Select model"
@@ -395,7 +397,7 @@ export function ModelReasoningPicker({
             preferredReasoningLevel: reasoningValue,
             provider: previewProvider,
             catalogIsVerified: previewCatalogIsVerified,
-            formatModelLabel: formatModelLabel ?? preserveModelLabel,
+            formatModelLabel: formatModelLabel ?? formatFallbackModelLabel,
           })
         : null,
     [

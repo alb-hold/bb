@@ -364,6 +364,7 @@ function PromptSubmitButton({
       }}
       className={cn(
         className,
+        "rounded-full",
         label !== undefined && !isCompact && "size-auto h-8 gap-1.5 px-2.5",
       )}
     >

@@ -40,6 +40,20 @@ function renderCompactHome() {
 }
 
 describe("RootComposeHome", () => {
+  it("centres the desktop composer without pinning tall content offscreen", () => {
+    render(
+      <RootComposeHome
+        isCompact={false}
+        composer={<div />}
+        compactScrollContent={null}
+        homepageSections={null}
+      />,
+    );
+    const column = screen.getByTestId("root-compose-compact-home");
+    expect(column.className).toContain("my-auto");
+    expect(column.className).toContain("shrink-0");
+    expect(column.parentElement?.className).toContain("overflow-y-auto");
+  });
   it("keeps the composer above a scroll viewport that runs behind it", () => {
     renderCompactHome();
 
@@ -74,7 +88,7 @@ describe("RootComposeHome", () => {
     const bottomSpacer = screen.getByTestId(
       "root-compose-compact-bottom-spacer",
     );
-    expect(leadingSpacer.style.height).toBe("314px");
+    expect(leadingSpacer.style.height).toBe("134px");
     expect(bottomSpacer.style.height).toBe("188px");
   });
 

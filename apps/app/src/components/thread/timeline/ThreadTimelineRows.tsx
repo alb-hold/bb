@@ -1747,7 +1747,7 @@ function DelegationRowBody({ row }: { row: TimelineViewDelegationWorkRow }) {
   );
 }
 
-export const PAST_ROW_DIM_CLASS_NAME = "opacity-40";
+export const PAST_ROW_DIM_CLASS_NAME = "text-muted-foreground";
 
 export function pastRowDimClassName({
   activeLatestBundleId,
@@ -2040,12 +2040,23 @@ function TimelineExpandableRowView({
   const searchExpandedRowIds = useContext(TimelineSearchExpansionContext);
   const renderBody = useCallback(
     () => (
-      <TimelineExpandableBody
-        activeLatestBundleId={activeLatestBundleId}
-        row={row}
-        compactActivityIntents={compactActivityIntents}
-        showAssistantMessageActions={showAssistantMessageActions}
-      />
+      <>
+        {row.kind === "turn" && row.status !== "pending" ? (
+          <TooltipProvider>
+            <ThreadTurnTokenSummary
+              openAnalysisOnClick={false}
+              threadId={row.threadId}
+              turnId={row.turnId}
+            />
+          </TooltipProvider>
+        ) : null}
+        <TimelineExpandableBody
+          activeLatestBundleId={activeLatestBundleId}
+          row={row}
+          compactActivityIntents={compactActivityIntents}
+          showAssistantMessageActions={showAssistantMessageActions}
+        />
+      </>
     ),
     [
       activeLatestBundleId,
@@ -2089,17 +2100,6 @@ function TimelineExpandableRowView({
       }
       forceExpanded={searchExpandedRowIds.has(row.id)}
       terminalAutoExpanded={terminalAutoExpandedRowIds.has(row.id)}
-      collapsedPreview={
-        row.kind === "turn" && row.status !== "pending" ? (
-          <TooltipProvider>
-            <ThreadTurnTokenSummary
-              openAnalysisOnClick={false}
-              threadId={row.threadId}
-              turnId={row.turnId}
-            />
-          </TooltipProvider>
-        ) : undefined
-      }
       onTitleAction={onTitleAction}
       onIntent={preloadBody}
       renderBody={renderBody}
@@ -2270,7 +2270,7 @@ export function buildTimelineRowsListItems({
     unreadDividerPlacement,
   });
 
-  for (let index = 0; index < rows.length;) {
+  for (let index = 0; index < rows.length; ) {
     if (index === dividerIndex) {
       items.push({ kind: "unread-divider", id: "thread-unread-divider" });
     }

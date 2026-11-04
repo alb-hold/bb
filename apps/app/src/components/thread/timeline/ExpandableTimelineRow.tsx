@@ -64,7 +64,7 @@ interface InteractivePreviewTargetArgs {
 
 function headerToneClass(title: TimelineTitle, isExpanded: boolean): string {
   if (title.tone === "summary") {
-    return "text-subtle-foreground transition-colors hover:text-muted-foreground focus-visible:text-muted-foreground";
+    return "text-muted-foreground transition-colors hover:text-muted-foreground focus-visible:text-muted-foreground";
   }
   return getCollapsibleHeaderToneClass(isExpanded);
 }
