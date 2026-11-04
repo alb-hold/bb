@@ -17,7 +17,6 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import * as gitModule from "bb-environment-provider-host/git";
 import { hostProc, useProcReaderForTests, type ProcReader } from "./holders.js";
 import { descendantsOnly } from "./descendants-only.js";
 import { removeDirectoryTree } from "./remove-directory-tree.js";
