@@ -1,4 +1,4 @@
-import { Socket } from "node:net";
+import { Socket, createConnection, createServer } from "node:net";
 import { once } from "node:events";
 import { performance } from "node:perf_hooks";
 import { setTimeout as delay } from "node:timers/promises";
@@ -150,6 +150,7 @@ function textFrom(chunks: Array<{ dataBase64: string }>): string {
 async function setup(
   args: {
     holdOutputBatches?: boolean;
+    attachTimeoutMs?: number;
     terminalStatus?: "running" | "starting";
     environmentBacked?: boolean;
     threadless?: boolean;
@@ -157,6 +158,7 @@ async function setup(
 ) {
   const harness = await createTestAppHarness({
     db: createMigratedConnection(),
+    terminalAttachTimeoutMs: args.attachTimeoutMs,
   });
   harnesses.push(harness);
   const { host, session } = seedHostSession(harness.deps);
@@ -1283,6 +1285,120 @@ describe("terminal output retained from the data plane", () => {
       expect(row?.expiresAt).toBeGreaterThan(Date.now());
     } finally {
       fixture.child.shutdown();
+    }
+  }, 15_000);
+
+  it("settles a queued daemon replay after an event-loop stall", async () => {
+    const fixture = await setup({ attachTimeoutMs: 1_000 });
+    const attachSocket = new FakeSocket();
+    const replayInfo = vi.spyOn(fixture.harness.deps.logger, "info");
+    const timeline: string[] = [];
+    const daemonServer = createServer((socket) => {
+      let frame = "";
+      socket.on("data", (data) => {
+        timeline.push(`socket-data:${Date.now()}`);
+        frame += data.toString();
+        const request = JSON.parse(frame) as { requestId: string; terminalId: string };
+        timeline.push(`frame-parsed:${Date.now()}`);
+        fixture.terminalSessions.handleDaemonTerminalMessage({
+          hostId: fixture.host.id,
+          sessionId: fixture.session.id,
+          message: {
+            type: "terminal.replay",
+            requestId: request.requestId,
+            terminalId: request.terminalId,
+            replayStartSeq: 0,
+            nextSeq: 1,
+            chunks: [{ seq: 0, dataBase64: Buffer.from("after stall").toString("base64") }],
+          },
+        });
+      });
+    });
+    await new Promise<void>((resolve) => daemonServer.listen(0, "127.0.0.1", resolve));
+    const address = daemonServer.address();
+    if (address === null || typeof address === "string") throw new Error("daemon test socket did not bind");
+    const daemonSocket = createConnection(address.port, "127.0.0.1");
+    await new Promise<void>((resolve) => daemonSocket.once("connect", resolve));
+    fixture.hub.registerDaemon(fixture.session.id, fixture.host.id, {
+      close() {},
+      send(data: string) {
+        const request = JSON.parse(data) as { requestId: string; terminalId: string; type: string };
+        if (request.type !== "terminal.attach") return;
+        daemonSocket.write(JSON.stringify(request), () => {
+          timeline.push(`write-flushed:${Date.now()}`);
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2_600);
+        });
+      },
+    });
+    try {
+      fixture.terminalSessions.attachBrowserTerminal({
+        outputAcks: false,
+        resizeAcks: false,
+        socket: attachSocket,
+        sinceSeq: 0,
+        terminalId: fixture.terminal.id,
+      });
+      await Promise.race([
+        (async () => {
+          while (attachSocket.sent.length === 0) {
+            await new Promise<void>((resolve) => setImmediate(resolve));
+          }
+        })(),
+        delay(5_000).then(() => { throw new Error("stalled lifecycle attach did not settle"); }),
+      ]);
+      const sent = attachSocket.sent.map((data) => JSON.parse(data));
+      timeline.push(`client-settled:${Date.now()}`);
+      process.stdout.write(`${JSON.stringify({ timeline })}\n`);
+      expect(sent).toContainEqual(expect.objectContaining({ type: "attached" }));
+      expect(sent).not.toContainEqual(expect.objectContaining({ type: "error", code: "terminal_attach_timeout" }));
+      const attributions = replayInfo.mock.calls
+        .filter(([, message]) => message === "Terminal replay attributed")
+        .map(([fields]) => fields);
+      expect(attributions).not.toContainEqual(expect.objectContaining({ path: "data-plane/failed" }));
+      expect(attributions).not.toContainEqual(expect.objectContaining({ path: "websocket/failed" }));
+      expect(sent).toContainEqual(expect.objectContaining({
+        type: "output",
+        chunk: { seq: 0, dataBase64: Buffer.from("after stall").toString("base64") },
+      }));
+    } finally {
+      fixture.child.shutdown();
+      fixture.hub.unregisterDaemon(fixture.session.id);
+      daemonSocket.destroy();
+      daemonServer.close();
+    }
+  }, 15_000);
+
+  it("fails an unanswered lifecycle attach within the three-times timeout bound", async () => {
+    const fixture = await setup({ attachTimeoutMs: 40 });
+    const attachSocket = new FakeSocket();
+    fixture.hub.registerDaemon(fixture.session.id, fixture.host.id, {
+      close() {},
+      send() {},
+    });
+    const startedAt = Date.now();
+    try {
+      fixture.terminalSessions.attachBrowserTerminal({
+        outputAcks: false,
+        resizeAcks: false,
+        socket: attachSocket,
+        sinceSeq: 0,
+        terminalId: fixture.terminal.id,
+      });
+      await new Promise<void>((resolve) => {
+        const poll = () => {
+          if (attachSocket.sent.length > 0) resolve();
+          else setTimeout(poll, 1);
+        };
+        poll();
+      });
+      const elapsedMs = Date.now() - startedAt;
+      expect(attachSocket.sent.map((data) => JSON.parse(data))).toContainEqual(
+        expect.objectContaining({ type: "error", code: "terminal_attach_timeout" }),
+      );
+      expect(elapsedMs).toBeLessThan(120);
+    } finally {
+      fixture.child.shutdown();
+      fixture.hub.unregisterDaemon(fixture.session.id);
     }
   }, 15_000);
 
