@@ -1376,7 +1376,9 @@ describe("action selector and routing edge cases", () => {
         origin: `https://${host}/acme/bb.git`,
       });
 
-      await expect(runAction(cwd)).resolves.toEqual({ ok: true });
+      await expect(runAction(cwd, readyFor(host))).resolves.toEqual({
+        ok: true,
+      });
       const [call] = await actionInvocations(gh);
       expectTokens(call!.env, selected, tokens);
     },
