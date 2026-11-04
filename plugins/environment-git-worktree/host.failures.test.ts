@@ -155,7 +155,7 @@ describe("worktree removal when its machinery fails", () => {
     });
 
     expect(result).toMatchObject({
-      status: "failed",
+      status: "retained",
       message: expect.stringContaining("checkout lock could not be resolved"),
     });
     expect(existsSync(join(target.path, "README.md"))).toBe(true);

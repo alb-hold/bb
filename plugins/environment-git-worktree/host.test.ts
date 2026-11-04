@@ -2105,7 +2105,7 @@ setTimeout(() => {}, 300_000);`,
       }
     });
 
-    it("reports a Git refusal as a failure, with the worktree and marker intact", async () => {
+    it("retains a worktree whose Git status cannot be read, with its marker intact", async () => {
       const worktree = await createManagedWorktree({
         pathKey: "thr_submodule",
         prepareSource: async (sourcePath) => {
@@ -2141,8 +2141,8 @@ setTimeout(() => {}, 300_000);`,
 
         const result = await removeFrom(worktree);
 
-        expect(result.status).toBe("failed");
-        const message = result.status === "failed" ? result.message : "";
+        expect(result.status).toBe("retained");
+        const message = result.status === "retained" ? result.message : "";
         expect(message).toContain(`Kept ${worktree.path}`);
         expect(message).toContain("could not read its Git status");
         expect(message).toContain("submodule libs/sub");
