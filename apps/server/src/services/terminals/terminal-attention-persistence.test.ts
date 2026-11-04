@@ -54,7 +54,17 @@ describe("terminal attention persistence", () => {
     const waiting = async () => {
       const response = await harness.app.request(`/api/v1/threads/${threadId}`);
       expect(response.status).toBe(200);
-      return (await response.json()).hasPendingInteraction;
+      const pending = (await response.json()).hasPendingInteraction;
+      const listed = await harness.app.request(
+        `/api/v1/threads?threadIds=${threadId}`,
+      );
+      expect(listed.status).toBe(200);
+      const rows = await listed.json();
+      expect(
+        rows.find((row: { id: string }) => row.id === threadId)
+          ?.hasPendingInteraction,
+      ).toBe(pending);
+      return pending;
     };
     expect(await waiting()).toBe(false);
     harness.db.$client
