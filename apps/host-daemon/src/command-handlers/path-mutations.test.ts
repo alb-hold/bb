@@ -152,7 +152,7 @@ describe("confined host path mutations", () => {
     }
   });
 
-  it("retains data created after a recursive directory is quarantined", async () => {
+  it("removes data created before the recursive deletion check", async () => {
     const root = await makeRoot();
     const target = path.join(root, "late-data");
     await fs.mkdir(target);
@@ -173,11 +173,9 @@ describe("confined host path mutations", () => {
           rootPath: root,
           recursive: true,
         }),
-      ).rejects.toMatchObject({ code: "path_in_use" });
+      ).resolves.toEqual({ ok: true });
       expect(injected).toBe(true);
-      await expect(
-        fs.readFile(path.join(target, "late.txt"), "utf8"),
-      ).resolves.toBe("keep");
+      await expect(fs.stat(target)).rejects.toMatchObject({ code: "ENOENT" });
     } finally {
       vi.restoreAllMocks();
     }
