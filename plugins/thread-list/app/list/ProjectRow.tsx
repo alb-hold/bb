@@ -79,6 +79,12 @@ import {
   SidebarStickyTier,
 } from "../ui/sidebar.js";
 import {
+  addGrowingRow,
+  StickyOffsetProvider,
+  StickyRowStateReportProvider,
+  useStickyOffset,
+} from "../ui/stickyOffset.js";
+import {
   ProjectActionsContextMenu,
   ProjectActionsMenuItems,
 } from "./ProjectActionsMenu.js";
@@ -1469,6 +1475,8 @@ export const ThreadTreeNodeRow = memo(function ThreadTreeNodeRow({
   const isCollapsed = collapsedThreadIds.has(node.thread.id);
   const hasChildren = node.children.length > 0;
   const isParent = hasChildren;
+  const inheritedStickyOffset = useStickyOffset();
+  const [growingRowHeight, setGrowingRowHeight] = useState(0);
   const nestDropEnabled = Boolean(sectionDnd);
   const { setNodeRef: setNestDropNodeRef } = useDroppable({
     id: getSidebarThreadRowDroppableId(node.thread.id),
@@ -1579,60 +1587,66 @@ export const ThreadTreeNodeRow = memo(function ThreadTreeNodeRow({
         afterSubtree && REORDER_PLACEMENT_CLASS.after,
       )}
     >
-      {row}
+      <StickyRowStateReportProvider value={setGrowingRowHeight}>
+        {row}
+      </StickyRowStateReportProvider>
       {showChildren || nestPreviewThread !== null ? (
-        <div className="relative space-y-px">
-          <ThreadTreeGroupLine parentRowDepth={parentRowDepth} />
-          {showChildren ? (
-            <SidebarWindowedItems
-              itemKeys={itemKeys}
-              estimateRows={estimateRows}
-              getNavigationEntries={getNavigationEntries}
-              alwaysMountedKeys={alwaysMountedKeys}
-              renderItem={(index) => {
-                const item = node.children[index];
-                if (!item) {
-                  return null;
-                }
-                const itemKey = getSidebarItemKey(item);
-                return (
-                  <Fragment key={itemKey}>
-                    {nestPreviewThread !== null &&
-                    nestPreviewBeforeKey === itemKey ? (
-                      <NestDropPreviewRow
-                        depth={parentRowDepth + 1}
-                        thread={nestPreviewThread}
+        <StickyOffsetProvider
+          value={addGrowingRow(inheritedStickyOffset, growingRowHeight)}
+        >
+          <div className="relative space-y-px">
+            <ThreadTreeGroupLine parentRowDepth={parentRowDepth} />
+            {showChildren ? (
+              <SidebarWindowedItems
+                itemKeys={itemKeys}
+                estimateRows={estimateRows}
+                getNavigationEntries={getNavigationEntries}
+                alwaysMountedKeys={alwaysMountedKeys}
+                renderItem={(index) => {
+                  const item = node.children[index];
+                  if (!item) {
+                    return null;
+                  }
+                  const itemKey = getSidebarItemKey(item);
+                  return (
+                    <Fragment key={itemKey}>
+                      {nestPreviewThread !== null &&
+                      nestPreviewBeforeKey === itemKey ? (
+                        <NestDropPreviewRow
+                          depth={parentRowDepth + 1}
+                          thread={nestPreviewThread}
+                        />
+                      ) : null}
+                      <SectionDndItemRow
+                        projectId={rowProjectId}
+                        item={item}
+                        depthOffset={depthOffset}
+                        selectedThreadId={selectedThreadIdWithin(
+                          item,
+                          selectedThreadId,
+                        )}
+                        collapsedThreadIds={collapsedThreadIds}
+                        collapsedEnvironmentIds={collapsedEnvironmentIds}
+                        onProjectSelect={onProjectSelect}
+                        onToggleThreadCollapsed={onToggleThreadCollapsed}
+                        onToggleEnvironmentCollapsed={
+                          onToggleEnvironmentCollapsed
+                        }
+                        sectionDnd={sectionDnd ?? undefined}
                       />
-                    ) : null}
-                    <SectionDndItemRow
-                      projectId={rowProjectId}
-                      item={item}
-                      depthOffset={depthOffset}
-                      selectedThreadId={selectedThreadIdWithin(
-                        item,
-                        selectedThreadId,
-                      )}
-                      collapsedThreadIds={collapsedThreadIds}
-                      collapsedEnvironmentIds={collapsedEnvironmentIds}
-                      onProjectSelect={onProjectSelect}
-                      onToggleThreadCollapsed={onToggleThreadCollapsed}
-                      onToggleEnvironmentCollapsed={
-                        onToggleEnvironmentCollapsed
-                      }
-                      sectionDnd={sectionDnd ?? undefined}
-                    />
-                  </Fragment>
-                );
-              }}
-            />
-          ) : null}
-          {nestPreviewThread !== null && nestPreviewBeforeKey === null ? (
-            <NestDropPreviewRow
-              depth={parentRowDepth + 1}
-              thread={nestPreviewThread}
-            />
-          ) : null}
-        </div>
+                    </Fragment>
+                  );
+                }}
+              />
+            ) : null}
+            {nestPreviewThread !== null && nestPreviewBeforeKey === null ? (
+              <NestDropPreviewRow
+                depth={parentRowDepth + 1}
+                thread={nestPreviewThread}
+              />
+            ) : null}
+          </div>
+        </StickyOffsetProvider>
       ) : null}
     </SidebarStickyGroup>
   );
