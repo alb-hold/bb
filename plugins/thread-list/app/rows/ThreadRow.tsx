@@ -222,6 +222,8 @@ export const REORDER_PLACEMENT_CLASS: Record<SidebarReorderPlacement, string> =
 const HOVER_CAPABLE_ACTIONS_OVERLAY_CLASS =
   "[@media(hover:hover)]:absolute [@media(hover:hover)]:inset-y-0 [@media(hover:hover)]:right-1 [@media(hover:hover)]:z-30";
 
+const SIDEBAR_ROW_STATE_INDENT_PX = 24;
+
 const ROW_STATE_ACTIONS_OVERLAY_CLASS =
   "[@media(hover:hover)]:absolute [@media(hover:hover)]:top-0 [@media(hover:hover)]:right-1 [@media(hover:hover)]:z-30";
 
@@ -781,10 +783,18 @@ function ThreadRowComponent({
   const hasRowState =
     rowState !== null &&
     (Object.keys(rowState.statuses).length > 0 || rowProgress !== null);
+  const rowStateBelowRow =
+    hasRowState && parentOptions?.stickyLevel !== undefined;
+  const rowStateInline = hasRowState && !rowStateBelowRow;
+  const rowStateBelowRowStyle: CSSProperties = {
+    paddingLeft:
+      getSidebarThreadRowPaddingLeft(options.depth) +
+      SIDEBAR_ROW_STATE_INDENT_PX,
+  };
   const rowFirstLineHeightClass = options.isCompact
     ? ROW_STATE_COMPACT_ROW_HEIGHT_CLASS
     : ROW_STATE_ROW_HEIGHT_CLASS;
-  const rowActionsOverlayClass = hasRowState
+  const rowActionsOverlayClass = rowStateInline
     ? cn(
         ROW_STATE_ACTIONS_OVERLAY_CLASS,
         options.isCompact
@@ -798,7 +808,7 @@ function ThreadRowComponent({
     SIDEBAR_ROW_BASE_CLASS,
     LIST_HOVER_TRANSITION,
     parentOptions?.stickyLevel === undefined && "relative",
-    hasRowState
+    rowStateInline
       ? "flex-wrap"
       : options.isCompact
         ? COARSE_POINTER_COMPACT_ROW_HEIGHT_CLASS
@@ -868,6 +878,66 @@ function ThreadRowComponent({
     rename.onCloseAutoFocus(event);
   };
 
+  const rowStateBlock =
+    rowState !== null && hasRowState ? (
+      <div
+        data-sidebar-thread-row-state=""
+        className={cn(
+          "pointer-events-none relative z-[1] flex w-full min-w-0 basis-full flex-col gap-1 pr-2 pb-1",
+          rowStateInline && "pl-6",
+        )}
+        style={rowStateInline ? undefined : rowStateBelowRowStyle}
+      >
+        {Object.entries(rowState.statuses)
+          .sort(
+            ([, left], [, right]) =>
+              (right.priority ?? 0) - (left.priority ?? 0),
+          )
+          .slice(0, 2)
+          .map(([key, status]) => (
+            <span
+              key={key}
+              data-sidebar-thread-status-chip={key}
+              title={`${key}: ${status.value}`}
+              className="max-w-full self-start truncate rounded-sm bg-sidebar-accent px-1.5 py-0.5 font-medium text-xs text-sidebar-accent-foreground"
+              style={status.color ? { color: status.color } : undefined}
+            >
+              {status.icon ? `${status.icon} ` : ""}
+              {status.value}
+            </span>
+          ))}
+        {Object.keys(rowState.statuses).length > 2 ? (
+          <span className="text-muted-foreground text-xs">
+            +{Object.keys(rowState.statuses).length - 2} more
+          </span>
+        ) : null}
+        {rowProgress !== null ? (
+          <div className="flex min-w-0 flex-col gap-0.5">
+            {rowProgress.label ? (
+              <span className="truncate text-muted-foreground text-xs">
+                {rowProgress.label}
+              </span>
+            ) : null}
+            <div
+              role="progressbar"
+              aria-label={rowProgress.label ?? "Thread progress"}
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={Math.round(rowProgress.value * 100)}
+              className="h-1 overflow-hidden rounded-full bg-sidebar-accent"
+            >
+              <div
+                className="h-full rounded-full bg-timeline-accent transition-[width]"
+                style={{
+                  width: `${rowProgress.value * 100}%`,
+                }}
+              />
+            </div>
+          </div>
+        ) : null}
+      </div>
+    ) : null;
+
   const rowContent = (
     <>
       {parentOptions?.stickyLevel !== undefined && parentGuideLeft !== null ? (
@@ -880,7 +950,7 @@ function ThreadRowComponent({
       <span
         className={cn(
           "relative flex min-w-0 flex-1 items-center gap-1.5 self-stretch",
-          hasRowState && rowFirstLineHeightClass,
+          rowStateInline && rowFirstLineHeightClass,
           hasVisibleStatus && "gap-1",
           showRowMetadata &&
             "flex-wrap content-center gap-y-0 py-1 has-[[data-thread-row-metadata][data-has-items]]:py-1.25 has-[[data-thread-row-metadata][data-has-items]]:[&_.bb-thread-title]:leading-4",
@@ -942,80 +1012,85 @@ function ThreadRowComponent({
               : "contents"
           }
         >
-        <span
-          className={cn(
-            "pointer-events-none relative flex min-w-0 flex-1 items-center self-stretch",
-          )}
-        >
-          {provider ? (
+          <span
+            className={cn(
+              "pointer-events-none relative flex min-w-0 flex-1 items-center self-stretch",
+            )}
+          >
+            {provider ? (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span
+                    data-sidebar-thread-provider={provider.id}
+                    role="img"
+                    aria-label={provider.displayName}
+                    className="pointer-events-auto relative z-[31] flex size-4 shrink-0 items-center justify-center mr-1.5 text-muted-foreground"
+                    onClick={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      rowLinkRef.current?.click();
+                    }}
+                  >
+                    <ProviderIcon
+                      providerKind="agent"
+                      provider={provider}
+                      className="size-4"
+                    />
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent side="top">
+                  {provider.displayName}
+                </TooltipContent>
+              </Tooltip>
+            ) : null}
+            {isEditing ? (
+              <span className="pointer-events-auto relative z-10 min-w-0 flex-1 overflow-visible">
+                {editor}
+              </span>
+            ) : (
+              <span
+                className={cn("bb-thread-title", "min-w-0 flex-1 truncate")}
+                title={labelTitle}
+                onDoubleClick={startTitleEditing}
+              >
+                <ThreadTitle threadId={thread.id} />
+              </span>
+            )}
+          </span>
+          {crossProjectLabel !== null ? (
             <Tooltip>
               <TooltipTrigger asChild>
                 <span
-                  data-sidebar-thread-provider={provider.id}
+                  data-sidebar-thread-cross-project=""
                   role="img"
-                  aria-label={provider.displayName}
-                  className="pointer-events-auto relative z-[31] flex size-4 shrink-0 items-center justify-center mr-1.5 text-muted-foreground"
+                  aria-label={crossProjectLabel}
+                  className="relative z-[31] flex size-5 shrink-0 items-center justify-center text-muted-foreground"
                   onClick={(event) => {
                     event.preventDefault();
                     event.stopPropagation();
                     rowLinkRef.current?.click();
                   }}
                 >
-                  <ProviderIcon
-                    providerKind="agent"
-                    provider={provider}
-                    className="size-4"
-                  />
+                  <Icon name="FolderExport" className="size-3.5" aria-hidden />
                 </span>
               </TooltipTrigger>
-              <TooltipContent side="top">{provider.displayName}</TooltipContent>
+              <TooltipContent side="top">{crossProjectLabel}</TooltipContent>
             </Tooltip>
           ) : null}
-          {isEditing ? (
-            <span className="pointer-events-auto relative z-10 min-w-0 flex-1 overflow-visible">
-              {editor}
-            </span>
-          ) : (
-            <span
-              className={cn("bb-thread-title", "min-w-0 flex-1 truncate")}
-              title={labelTitle}
-              onDoubleClick={startTitleEditing}
-            >
-              <ThreadTitle threadId={thread.id} />
-            </span>
-          )}
-        </span>
-        {crossProjectLabel !== null ? (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <span
-                data-sidebar-thread-cross-project=""
-                role="img"
-                aria-label={crossProjectLabel}
-                className="relative z-[31] flex size-5 shrink-0 items-center justify-center text-muted-foreground"
-                onClick={(event) => {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  rowLinkRef.current?.click();
-                }}
-              >
-                <Icon name="FolderExport" className="size-3.5" aria-hidden />
-              </span>
-            </TooltipTrigger>
-            <TooltipContent side="top">{crossProjectLabel}</TooltipContent>
-          </Tooltip>
-        ) : null}
-        {parentOptions && hasChildren ? (
-          <SidebarChildToggleChevron
-            disabled={isEditing}
-            className={cn(isEditing && "hidden", hasVisibleStatus && "size-4")}
-            isCollapsed={isParentCollapsed}
-            expandLabel={`Expand ${labelTitle} threads`}
-            collapseLabel={`Collapse ${labelTitle} threads`}
-            onToggle={() => parentOptions.onToggleCollapsed(thread.id)}
-            revealOnHover={!isParentCollapsed}
-          />
-        ) : null}
+          {parentOptions && hasChildren ? (
+            <SidebarChildToggleChevron
+              disabled={isEditing}
+              className={cn(
+                isEditing && "hidden",
+                hasVisibleStatus && "size-4",
+              )}
+              isCollapsed={isParentCollapsed}
+              expandLabel={`Expand ${labelTitle} threads`}
+              collapseLabel={`Collapse ${labelTitle} threads`}
+              onToggle={() => parentOptions.onToggleCollapsed(thread.id)}
+              revealOnHover={!isParentCollapsed}
+            />
+          ) : null}
         </span>
         {!showRowMetadata || isEditing || isCustomizingActions ? null : (
           <span
@@ -1176,60 +1251,7 @@ function ThreadRowComponent({
           </div>
         )}
       </span>
-      {rowState !== null && hasRowState ? (
-        <div
-          data-sidebar-thread-row-state=""
-          className="pointer-events-none relative z-[1] flex w-full min-w-0 basis-full flex-col gap-1 pl-6 pr-2 pb-1"
-        >
-          {Object.entries(rowState.statuses)
-            .sort(
-              ([, left], [, right]) =>
-                (right.priority ?? 0) - (left.priority ?? 0),
-            )
-            .slice(0, 2)
-            .map(([key, status]) => (
-              <span
-                key={key}
-                data-sidebar-thread-status-chip={key}
-                title={`${key}: ${status.value}`}
-                className="max-w-full self-start truncate rounded-sm bg-sidebar-accent px-1.5 py-0.5 font-medium text-xs text-sidebar-accent-foreground"
-                style={status.color ? { color: status.color } : undefined}
-              >
-                {status.icon ? `${status.icon} ` : ""}
-                {status.value}
-              </span>
-            ))}
-          {Object.keys(rowState.statuses).length > 2 ? (
-            <span className="text-muted-foreground text-xs">
-              +{Object.keys(rowState.statuses).length - 2} more
-            </span>
-          ) : null}
-          {rowProgress !== null ? (
-            <div className="flex min-w-0 flex-col gap-0.5">
-              {rowProgress.label ? (
-                <span className="truncate text-muted-foreground text-xs">
-                  {rowProgress.label}
-                </span>
-              ) : null}
-              <div
-                role="progressbar"
-                aria-label={rowProgress.label ?? "Thread progress"}
-                aria-valuemin={0}
-                aria-valuemax={100}
-                aria-valuenow={Math.round(rowProgress.value * 100)}
-                className="h-1 overflow-hidden rounded-full bg-sidebar-accent"
-              >
-                <div
-                  className="h-full rounded-full bg-timeline-accent transition-[width]"
-                  style={{
-                    width: `${rowProgress.value * 100}%`,
-                  }}
-                />
-              </div>
-            </div>
-          ) : null}
-        </div>
-      ) : null}
+      {rowStateInline ? rowStateBlock : null}
       {finishCustomizingActions ? (
         <ThreadRowActionsEditor onDone={finishCustomizingActions} />
       ) : null}
@@ -1265,7 +1287,7 @@ function ThreadRowComponent({
           onEscapeKeyDown: selectionMenu.onEscapeKeyDown,
         };
 
-  return (
+  const rowWithMenu = (
     <ThreadActionsContextMenu
       thread={actionTarget}
       inline={selectionMenu?.inline ?? inlineMenuActions}
@@ -1280,6 +1302,15 @@ function ThreadRowComponent({
     >
       {row}
     </ThreadActionsContextMenu>
+  );
+
+  return rowStateBelowRow ? (
+    <>
+      {rowWithMenu}
+      {rowStateBlock}
+    </>
+  ) : (
+    rowWithMenu
   );
 }
 

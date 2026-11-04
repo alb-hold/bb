@@ -8,7 +8,7 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { execFile } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -2839,6 +2839,71 @@ ${pluginCss ?? ""}
   }
 }
 
+interface StickyParentLayout {
+  tier: { top: number; bottom: number; height: number };
+  rowState: { top: number; bottom: number };
+  next: { top: number };
+}
+
+const STICKY_MEASURE_SCRIPT = `
+const box = (element) => {
+  const rect = element.getBoundingClientRect();
+  return { top: rect.top, bottom: rect.bottom, height: rect.height };
+};
+document.getElementById("layout").textContent = JSON.stringify({
+  tier: box(document.querySelector("[data-sidebar-sticky-tier]")),
+  rowState: box(document.querySelector("[data-sidebar-thread-row-state]")),
+  next: box(document.getElementById("next-row")),
+});
+`;
+
+async function measureStickyParentLayout(
+  rowHtml: string,
+  viewportWidth: number,
+): Promise<StickyParentLayout> {
+  const dir = await mkdtemp(join(tmpdir(), "bb-sticky-layout-"));
+  try {
+    const page = join(dir, "sticky.html");
+    const themeCss = await readFile(
+      join(process.cwd(), "../../apps/app/src/components/ui/theme.css"),
+      "utf8",
+    );
+    await writeFile(
+      page,
+      `<!doctype html><html><head><meta name="viewport" content="width=device-width"><style>
+:root{--bb-sidebar-row-height:1.75rem;--bb-sidebar-row-height-coarse:2.5rem;--sidebar:#fafafa;--sidebar-accent:#e4e4e7;--timeline-accent:#2563eb}
+*,::before,::after{box-sizing:border-box}
+body{margin:0}
+${pluginCss ?? ""}
+${themeCss}
+[data-sidebar-sticky-stack] [data-sidebar-sticky-tier]{top:auto}
+</style></head><body>
+<div data-bb-plugin-root style="width:${viewportWidth}px">
+<div data-sidebar-sticky-stack>${rowHtml}<div id="next-row" style="height:1.75rem">Next row</div></div>
+</div>
+<pre id="layout"></pre>
+<script>${STICKY_MEASURE_SCRIPT}</script>
+</body></html>`,
+    );
+    const { stdout } = await execFileAsync(chromiumPath ?? "", [
+      "--headless",
+      "--no-sandbox",
+      "--disable-gpu",
+      ...CHROMIUM_QUIET_FLAGS,
+      "--hide-scrollbars",
+      `--window-size=${viewportWidth},900`,
+      "--virtual-time-budget=2000",
+      "--dump-dom",
+      `file://${page}`,
+    ]);
+    const match = /<pre id="layout">([^<]*)<\/pre>/.exec(stdout);
+    if (match?.[1] === undefined) throw new Error(stdout.slice(0, 500));
+    return JSON.parse(match[1].replaceAll("&quot;", '"')) as StickyParentLayout;
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
 describe.skipIf(
   pluginCss === null || (chromiumPath === null && !process.env.CI),
 )("ThreadRow row-state layout", () => {
@@ -2954,6 +3019,44 @@ describe.skipIf(
       expect(layout.chip?.width).toBeGreaterThan(layout.row.width / 2);
       expect(layout.chip?.left).toBeGreaterThanOrEqual(layout.row.left);
       expect(layout.chip?.right).toBeLessThanOrEqual(layout.row.right);
+    },
+  );
+
+  it.each(VIEWPORTS)(
+    "keeps a sticky parent row at one row height with its row state clear of the next row on $name",
+    async (viewport) => {
+      const { container } = renderThreadRow({
+        thread: createThread({
+          experimental_rowState: {
+            statuses: {
+              task: { value: "WT-GUARD preserve recoverable work" },
+              build: { value: "#138 f49bb0e9 OPEN: chain138.out:unit EXIT=0" },
+            },
+            progress: { value: 0.6, label: "#138 merge pipeline" },
+          },
+        }),
+        isCompactViewport: viewport.isCompact,
+        options: {
+          kind: "parent",
+          depth: 1,
+          isCompact: viewport.isCompact,
+          isCollapsed: false,
+          childCount: 1,
+          childActivity: NO_COLLAPSED_CHILD_ACTIVITY,
+          stickyLevel: 0,
+          onToggleCollapsed: vi.fn(),
+        },
+      });
+      const layout = await measureStickyParentLayout(
+        container.innerHTML,
+        viewport.width,
+      );
+
+      expect(layout.tier.height).toBeCloseTo(28, 0);
+      expect(layout.rowState.top).toBeGreaterThanOrEqual(
+        layout.tier.bottom - 0.5,
+      );
+      expect(layout.rowState.bottom).toBeLessThanOrEqual(layout.next.top + 0.5);
     },
   );
 
