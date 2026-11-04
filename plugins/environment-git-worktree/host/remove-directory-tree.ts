@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { lstat, open, readdir, rmdir, unlink } from "node:fs/promises";
+import { lstat, open, readdir, rmdir, stat, unlink } from "node:fs/promises";
 import path from "node:path";
 
 export interface RemoveDirectoryTreeHooks {
@@ -19,13 +19,30 @@ function descriptorRoot(): string | null {
   return null;
 }
 
-function descriptorPath(fd: number): string | null {
+async function descriptorPath(directory: {
+  fd: number;
+  stat: () => Promise<{ dev: number; ino: number; isDirectory(): boolean }>;
+}): Promise<string | null> {
   const root = descriptorRoot();
-  return root === null ? null : path.join(root, String(fd));
+  if (root === null) return null;
+  const descriptor = path.join(root, String(directory.fd));
+  try {
+    const [openedInfo, descriptorInfo] = await Promise.all([
+      directory.stat(),
+      stat(descriptor),
+    ]);
+    return sameDirectory(openedInfo, descriptorInfo) ? descriptor : null;
+  } catch {
+    return null;
+  }
 }
 
 async function openDirectory(directory: string) {
-  if (constants.O_DIRECTORY === undefined || constants.O_NOFOLLOW === undefined)
+  if (
+    descriptorRoot() === null ||
+    constants.O_DIRECTORY === undefined ||
+    constants.O_NOFOLLOW === undefined
+  )
     return null;
   try {
     return await open(
@@ -113,7 +130,7 @@ export async function removeDirectoryTree(
     await parent?.close();
     return "retained";
   }
-  const parentPath = descriptorPath(parent.fd);
+  const parentPath = await descriptorPath(parent);
   if (parentPath === null) {
     await parent.close();
     return "retained";
@@ -145,7 +162,7 @@ export async function removeDirectoryTree(
     try {
       const openedInfo = await directory.stat();
       if (!sameDirectory(info, openedInfo)) return "retained";
-      const directoryPath = descriptorPath(directory.fd);
+      const directoryPath = await descriptorPath(directory);
       if (directoryPath === null) return "retained";
       let currentInfo;
       try {
