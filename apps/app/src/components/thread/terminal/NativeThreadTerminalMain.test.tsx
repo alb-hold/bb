@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import type { NativeTerminalThread } from "@bb/server-contract";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { NativeThreadTerminalMain } from "./NativeThreadTerminalMain";
@@ -71,6 +71,16 @@ vi.mock("@/views/thread-detail/PaneContext", () => ({
   useOptionalPaneContext: () => null,
 }));
 
+vi.mock("./NativeTerminalPromptBar", () => ({
+  NativeTerminalPromptBar: ({
+    executionLabel,
+  }: {
+    executionLabel?: string;
+  }) => <div data-testid="execution-defaults">{executionLabel}</div>,
+}));
+
+vi.mock("./NativeActivityNotice", () => ({ NativeActivityNotice: () => null }));
+
 const nativeView: NativeTerminalThread = {
   threadId: "thr_native",
   providerId: "claude-code",
@@ -83,9 +93,54 @@ const nativeView: NativeTerminalThread = {
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  vi.useRealTimers();
 });
 
 describe("NativeThreadTerminalMain", () => {
+  it("cues silent setup after twelve seconds, clearing on first input and binding", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1000);
+    const terminal = {
+      id: "term-live",
+      status: "running",
+      createdAt: 1000,
+      lastUserInputAt: null,
+    } as NonNullable<NativeTerminalThread["terminal"]>;
+    hooks.listTerminals.mockReturnValue({
+      data: { sessions: [terminal] },
+      dataUpdatedAt: 1,
+    });
+    const props = {
+      projectId: "proj_native",
+      runtime: { displayStatus: "idle" as const },
+      threadId: "thr_native",
+      threadIsProvisioning: false,
+      view: { ...nativeView, nativeSessionId: null, terminal },
+    };
+    const { rerender } = render(<NativeThreadTerminalMain {...props} />);
+    expect(screen.queryByText(/may be waiting for setup/)).toBeNull();
+    act(() => vi.advanceTimersByTime(12000));
+    expect(
+      screen.getByText(
+        "Check the terminal: Claude Code may be waiting for setup",
+      ),
+    ).toBeTruthy();
+    expect(screen.getByTestId("execution-defaults").textContent).toMatch(
+      /^Default:/,
+    );
+    terminal.lastUserInputAt = Date.now();
+    rerender(<NativeThreadTerminalMain {...props} />);
+    expect(screen.queryByText(/may be waiting for setup/)).toBeNull();
+    terminal.lastUserInputAt = null;
+    rerender(
+      <NativeThreadTerminalMain
+        {...props}
+        view={{ ...props.view, nativeSessionId: "bound" }}
+      />,
+    );
+    expect(screen.queryByText(/may be waiting for setup/)).toBeNull();
+  });
+
   it("shows the exited terminal panel with an ended bar and Resume", () => {
     hooks.listTerminals.mockReturnValue({
       data: {

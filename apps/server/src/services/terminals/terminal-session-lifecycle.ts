@@ -4937,7 +4937,10 @@ export class TerminalSessionLifecycle {
 
   private notifyTerminalSessionChanged(session: TerminalSessionRow): void {
     if (session.threadId !== null) {
-      this.options.hub.notifyThread(session.threadId, ["terminals-changed"]);
+      this.options.hub.notifyThread(session.threadId, [
+        "terminals-changed",
+        "status-changed",
+      ]);
     }
     if (session.status !== "running") {
       this.cancelTerminalScreenStateRebuild(session.id);

@@ -83,6 +83,12 @@ describe("ExecutionControls", () => {
     expect(wrappingRow?.classList.contains("min-w-0")).toBe(true);
     expect(wrappingRow?.classList.contains("max-w-full")).toBe(true);
     expect(chip.classList.contains("overflow-hidden")).toBe(true);
+    expect(wrappingRow?.classList.contains("max-md:flex-nowrap")).toBe(true);
+    for (const name of ["Chat", "Terminal"]) {
+      const choice = screen.getByRole("radio", { name });
+      expect(choice.textContent).toBe(name);
+      expect(choice.querySelector("span.max-md\\:hidden")).not.toBeNull();
+    }
     expect(chip.textContent).toContain("1M");
   });
 
@@ -176,7 +182,7 @@ describe("ExecutionControls", () => {
       name: "Provider, model and reasoning",
     });
 
-    expect(trigger.textContent).toContain("o4-mini");
+    expect(trigger.textContent).toContain("o4-Mini");
     expect(trigger.textContent).not.toContain("Failed to load models");
   });
 });

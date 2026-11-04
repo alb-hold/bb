@@ -154,6 +154,20 @@ function pasteFiles(target: HTMLElement, files: File[]) {
 afterEach(cleanup);
 
 describe("NativeTerminalPromptBar", () => {
+  it("uses the shared chat width, compact input typography and attachment action", () => {
+    const { input, sendButton } = renderBar();
+    const form = input.closest("form")!;
+    expect(form.className).toContain("max-w-[var(--bb-content-measure,760px)]");
+    expect(form.className).toContain("mx-auto");
+    expect(input.classList.contains("text-sm")).toBe(true);
+    expect(input.classList.contains("min-h-8")).toBe(true);
+    expect(
+      screen.getByRole("button", { name: "Attach image" }).querySelector("svg"),
+    ).not.toBeNull();
+    expect(sendButton.parentElement?.lastElementChild).toBe(sendButton);
+    expect(screen.getByLabelText("Terminal execution")).toBeTruthy();
+  });
+
   it("labels the terminal destination and keeps execution details read-only", () => {
     const { input } = renderBar();
     expect(input.placeholder).toBe("Send to Native CLI terminal");
