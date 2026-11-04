@@ -15,7 +15,9 @@ const DEFAULT_HEARTBEAT_TIMEOUT_MS = 45_000;
 export const REPAINT_RESTORE_DELAY_MS = 400;
 const REPAINT_RESTORE_RETRY_DELAY_MS = 1_000;
 const ATTACH_RESIZE_SETTLE_CEILING_MS = 5_000;
-const DEFAULT_RECONNECT_DELAYS_MS = [500, 1_000, 2_000, 4_000, 8_000] as const;
+const DEFAULT_RECONNECT_DELAYS_MS = [
+  100, 250, 500, 1_000, 2_000, 4_000, 8_000,
+] as const;
 
 export type TerminalSocketConnectionState =
   | "connecting"

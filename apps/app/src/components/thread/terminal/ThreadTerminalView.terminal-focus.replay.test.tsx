@@ -1677,6 +1677,32 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
     expect(pageText()).not.toContain("Terminal output unavailable");
   });
 
+  it("stays live and reconnects after an error that arrives once the replay completed", async () => {
+    const { preview, reconnectSocket } =
+      await mountReplayAfterCheckpointedOpen();
+    for (const seq of [4, 5]) {
+      reconnectSocket.receive({
+        type: "output",
+        chunk: { seq, dataBase64: btoa(`frame ${seq}\r\n`) },
+      });
+    }
+    await waitForReadinessCondition(
+      () => expect(preview()).toBeNull(),
+      "preview was not disposed after the replay completed",
+    );
+    await failReplay(reconnectSocket);
+    expect(pageText()).not.toContain("Terminal output unavailable");
+    expect(pageText()).not.toContain("Reconnecting");
+
+    const socketsBefore = testState.sockets.length;
+    reconnectSocket.disconnect();
+    await waitForReadinessCondition(
+      () => expect(testState.sockets).toHaveLength(socketsBefore + 1),
+      "terminal did not reconnect after the late error",
+    );
+    expect(pageText()).not.toContain("Terminal output unavailable");
+  });
+
   it("keeps retrying after repeated replay errors and never reaches an unavailable state", async () => {
     const { preview, reconnectSocket, session } =
       await mountReplayAfterCheckpointedOpen();

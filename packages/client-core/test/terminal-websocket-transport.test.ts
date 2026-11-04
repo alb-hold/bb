@@ -270,7 +270,10 @@ describe("TerminalWebSocketTransport", () => {
     const socket = harness.sockets[0]!;
     socket.open();
     expect(socket.sent.map((payload) => JSON.parse(payload))).toContainEqual({
-      type: "resize", cols: 120, rows: 40, claim: true,
+      type: "resize",
+      cols: 120,
+      rows: 40,
+      claim: true,
     });
     harness.transport.dispose();
   });
@@ -519,6 +522,46 @@ describe("TerminalWebSocketTransport", () => {
     harness.sockets[2]?.close();
     vi.advanceTimersByTime(100);
     expect(harness.sockets).toHaveLength(4);
+    harness.transport.dispose();
+  });
+
+  it("retries a failed replay at once, backs off up to 8 seconds without stopping, and starts fast again after attaching", () => {
+    vi.useFakeTimers();
+    const harness = createHarness({ reconnectDelaysMs: undefined });
+    const attach = (index: number) => {
+      harness.sockets[index]?.open();
+      harness.sockets[index]?.receive({
+        type: "attached",
+        session: terminalSession(),
+        replayStartSeq: 0,
+        nextSeq: 0,
+      });
+    };
+
+    harness.transport.start();
+    attach(0);
+    harness.transport.retry();
+    expect(harness.sockets[0]?.closeCalls).toHaveLength(1);
+    vi.advanceTimersByTime(99);
+    expect(harness.sockets).toHaveLength(1);
+    vi.advanceTimersByTime(1);
+    expect(harness.sockets).toHaveLength(2);
+
+    let created = 2;
+    for (const delay of [250, 500, 1_000, 2_000, 4_000, 8_000, 8_000, 8_000]) {
+      harness.sockets[created - 1]?.open();
+      harness.sockets[created - 1]?.close();
+      vi.advanceTimersByTime(delay - 1);
+      expect(harness.sockets).toHaveLength(created);
+      vi.advanceTimersByTime(1);
+      created += 1;
+      expect(harness.sockets).toHaveLength(created);
+    }
+
+    attach(created - 1);
+    harness.transport.retry();
+    vi.advanceTimersByTime(100);
+    expect(harness.sockets).toHaveLength(created + 1);
     harness.transport.dispose();
   });
 
@@ -855,12 +898,7 @@ describe("TerminalWebSocketTransport", () => {
     });
 
     it("does not nudge when an old server selects only the legacy websocket protocol", async () => {
-      const { harness, socket } = openHarness(
-        100,
-        30,
-        {},
-        "bb.terminal.v1",
-      );
+      const { harness, socket } = openHarness(100, 30, {}, "bb.terminal.v1");
       socket.receive({ type: "features", resizeAcks: true });
 
       harness.transport.requestRepaint();
