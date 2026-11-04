@@ -219,7 +219,6 @@ describe("real worktree teardown preservation", () => {
     useProcReaderForTests(descendantsOnly(hostProc, -1));
     let injected = false;
     let lateCommitSha = "";
-    let lateCommitSha = "";
     const originalRename = fs.rename.bind(fs);
     vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
       await originalRename(from, to);
