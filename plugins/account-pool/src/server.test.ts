@@ -15542,7 +15542,6 @@ if (process.env.SHIM_FAIL_REVOKE === "1" && args[1] === "revoke") {
   process.stderr.write("shim: revoke unavailable\\n");
   process.exit(1);
 }
-// Like the bb CLI, an --<name>-stdin option is filled from stdin.
 const stdinOption = args.find((arg) => arg.endsWith("-stdin"));
 const readStdin = () => new Promise((resolve) => {
   let data = "";

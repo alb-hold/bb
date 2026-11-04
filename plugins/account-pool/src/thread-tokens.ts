@@ -84,7 +84,9 @@ const legacyRouteSchema = z
   })
   .strict();
 
-const actorRouteSchema = z
+const actorGenerationSchema = z.string().regex(/^[a-f0-9]{16}$/u);
+
+const legacyActorRouteSchema = z
   .object({
     hostId: identifierSchema,
     threadId: identifierSchema,
@@ -96,6 +98,30 @@ const actorRouteSchema = z
   })
   .strict();
 
+const actorRouteSchema = z
+  .object({
+    hostId: identifierSchema,
+    threadId: identifierSchema,
+    actorId: actorIdSchema,
+    provider: providerSchema,
+    accountId: z.string().uuid().nullable(),
+    tokenDigest: digestSchema,
+    generation: actorGenerationSchema,
+    hostTokenDigest: digestSchema,
+  })
+  .strict();
+
+const readableActorRouteSchema = z.union([
+  actorRouteSchema.transform((record) => ({ record, legacy: false })),
+  legacyActorRouteSchema.transform(({ token, ...rest }) => ({
+    record: {
+      ...rest,
+      tokenDigest: digest(token),
+      generation: actorGeneration(token),
+    },
+    legacy: true,
+  })),
+]);
 
 const legacyNestedRouteSchema = z
   .object({
@@ -159,13 +185,16 @@ export type ThreadRoute = Omit<
   RouteRecord,
   "token" | "tokenDigest" | "hostTokenDigest" | "lifetime" | "usedAt" | "priors"
 >;
-export type ActorRoute = Omit<ActorRouteRecord, "token" | "hostTokenDigest">;
+export type ActorRoute = Omit<
+  ActorRouteRecord,
+  "tokenDigest" | "generation" | "hostTokenDigest"
+>;
 export type NestedRoute = Omit<
   NestedRouteRecord,
   "token" | "tokenDigest" | "hostTokenDigest" | "lifetime" | "usedAt" | "priors"
 >;
 
-export const actorGenerationSchema = z.string().regex(/^[a-f0-9]{16}$/u);
+export { actorGenerationSchema };
 
 export type ActorRouteListing = ActorRoute & { generation: string };
 
@@ -544,14 +573,16 @@ export class ThreadTokenStore {
         indexCredential(this.tokenIndex, record);
       } else await fs.rm(file, { force: true });
     } else if (name.startsWith(ACTOR_ROUTE_PREFIX)) {
-      const record = await readRecord(file, actorRouteSchema);
+      const loaded = await readRecord(file, readableActorRouteSchema);
+      const record = loaded === null ? null : loaded.record;
       const archived =
         record === null ? false : await this.isArchived(record.threadId);
       if (
         record !== null &&
         archived &&
         this.hasTransientArchiveReadFailure(record.threadId)
-      ) return;
+      )
+        return;
       if (
         record !== null &&
         !archived &&
@@ -559,11 +590,20 @@ export class ThreadTokenStore {
         name === path.basename(this.actorFile(record)) &&
         (await this.isLive(record, enrolled))
       ) {
+        if (loaded?.legacy === true) {
+          try {
+            await this.persist(file, record);
+          } catch {
+            throw new CredentialScrubError(
+              "Account Pooler could not remove a persisted scoped credential.",
+            );
+          }
+        }
         this.actorRoutes.set(
           this.actorKey(record, record.hostTokenDigest),
           record,
         );
-        this.actorTokenIndex.set(digest(record.token), record);
+        this.actorTokenIndex.set(record.tokenDigest, record);
       } else await fs.rm(file, { force: true });
     } else if (
       name.startsWith(NESTED_ROUTE_PREFIX) ||
@@ -724,10 +764,10 @@ export class ThreadTokenStore {
   async forActor(
     route: ActorRoute,
     hostToken: string,
-    options: { rotate?: boolean; exclusive?: boolean } = {},
+    options: { rotate?: boolean } = {},
   ): Promise<{ token: string; generation: string }> {
     const parsed = actorRouteSchema
-      .omit({ token: true, hostTokenDigest: true })
+      .omit({ tokenDigest: true, generation: true, hostTokenDigest: true })
       .parse(route);
     const hostTokenDigest = digest(hostToken);
     return this.serialize(async () => {
@@ -735,32 +775,24 @@ export class ThreadTokenStore {
         throw new Error("Cannot mint a credential for an archived thread.");
       const key = this.actorKey(parsed, hostTokenDigest);
       const existing = this.actorRoutes.get(key);
-      if (existing !== undefined && options.exclusive === true && options.rotate !== true)
-        throw new ActorRouteExistsError("An actor route for this thread and actor already exists.");
-      if (
-        existing !== undefined &&
-        options.rotate !== true &&
-        existing.accountId === parsed.accountId
-      )
-        return {
-          token: existing.token,
-          generation: actorGeneration(existing.token),
-        };
+      if (existing !== undefined && options.rotate !== true)
+        throw new ActorRouteExistsError(
+          "An actor route for this thread and actor already exists.",
+        );
+      const token = randomBytes(32).toString("base64url");
       const record: ActorRouteRecord = {
         ...parsed,
         hostTokenDigest,
-        token:
-          existing !== undefined && options.rotate !== true
-            ? existing.token
-            : randomBytes(32).toString("base64url"),
+        tokenDigest: digest(token),
+        generation: actorGeneration(token),
       };
       await this.persist(this.actorFile(record), record);
       if (existing !== undefined)
-        this.actorTokenIndex.delete(digest(existing.token));
+        this.actorTokenIndex.delete(existing.tokenDigest);
       this.actorRoutes.set(key, record);
-      this.actorTokenIndex.set(digest(record.token), record);
+      this.actorTokenIndex.set(record.tokenDigest, record);
       await this.reclaimDead(record);
-      return { token: record.token, generation: actorGeneration(record.token) };
+      return { token, generation: record.generation };
     });
   }
 
@@ -795,13 +827,13 @@ export class ThreadTokenStore {
     const order = (route: ActorRoute) =>
       [route.threadId, route.actorId, route.provider].join("|");
     return [...this.actorRoutes.values()]
-      .map(({ hostId, threadId, actorId, provider, accountId, token }) => ({
+      .map(({ hostId, threadId, actorId, provider, accountId, generation }) => ({
         hostId,
         threadId,
         actorId,
         provider,
         accountId,
-        generation: actorGeneration(token),
+        generation,
       }))
       .sort((a, b) => order(a).localeCompare(order(b)));
   }
@@ -822,13 +854,10 @@ export class ThreadTokenStore {
         if (record.actorId !== actorId) continue;
         if (filter.threadId !== undefined && record.threadId !== filter.threadId)
           continue;
-        if (
-          generation !== undefined &&
-          actorGeneration(record.token) !== generation
-        )
+        if (generation !== undefined && record.generation !== generation)
           continue;
         this.actorRoutes.delete(key);
-        this.actorTokenIndex.delete(digest(record.token));
+        this.actorTokenIndex.delete(record.tokenDigest);
         await this.removeCredentialFile(this.actorFile(record));
         revoked += 1;
       }
@@ -999,7 +1028,7 @@ export class ThreadTokenStore {
       for (const [key, record] of this.actorRoutes) {
         if (record.threadId !== threadId) continue;
         this.actorRoutes.delete(key);
-        this.actorTokenIndex.delete(digest(record.token));
+        this.actorTokenIndex.delete(record.tokenDigest);
         await this.removeCredentialFile(
           this.actorFileAtEpoch(record, Math.max(0, nextEpoch - 1)),
         ).catch(() => undefined);
@@ -1768,7 +1797,7 @@ export class ThreadTokenStore {
       if (!stale(record) || (await this.isGenerationLive(record))) continue;
       await this.removeCredentialFile(this.actorFileAtEpoch(record, this.archiveEpoch(record.threadId))).catch(() => undefined);
       this.actorRoutes.delete(key);
-      this.actorTokenIndex.delete(digest(record.token));
+      this.actorTokenIndex.delete(record.tokenDigest);
     }
     for (const [key, record] of this.nestedRoutes) {
       if (!stale(record) || (await this.isGenerationLive(record))) continue;

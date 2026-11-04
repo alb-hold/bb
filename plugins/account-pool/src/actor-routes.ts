@@ -122,7 +122,6 @@ export class ActorRouteIssuer {
     try {
       minted = await this.deps.threadTokens.forActor(route, hostToken, {
         rotate: input.rotate,
-        exclusive: !input.rotate,
       });
     } catch (error) {
       if (error instanceof ActorRouteExistsError)

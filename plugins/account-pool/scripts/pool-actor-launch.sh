@@ -1,9 +1,6 @@
 #!/usr/bin/env bash
 set -uo pipefail
 umask 077
-# The thread proof and the route token live in shell variables. Turn off
-# allexport (inheritable through SHELLOPTS) and drop any inherited variable
-# with an internal name, so no internal variable is ever exported.
 set +a
 unset thread actor rotate proof_env bb_cli proof suffix issue_args issued \
   generation revoked revoke_failed final_status child parse_status token \
@@ -40,10 +37,6 @@ done
 [ -n "$thread" ] && [ "$#" -gt 0 ] || { usage; exit 2; }
 command -v "$bb_cli" >/dev/null 2>&1 || die "bb CLI not found: $bb_cli"
 command -v node >/dev/null 2>&1 || die "node is required to read the issuer response"
-# Issuing and revoking need proof that this caller acts for the thread: the
-# pool token bb contributed to that thread (ANTHROPIC_AUTH_TOKEN inside a bb
-# thread). It reaches the CLI on stdin, never argv. The source variable is
-# unset at once, so neither the bb CLI nor the command inherits it.
 [[ "$proof_env" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || die "--proof-env must name an environment variable"
 proof="${!proof_env:-}"
 unset "$proof_env"
