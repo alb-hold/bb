@@ -118,46 +118,6 @@ async function gitAt(
   return result.stdout;
 }
 
-async function injectAtBaselineRemoval(
-  worktreePath: string,
-  inject: (
-    worktreePath: string,
-    gitDir: string,
-    commonDir: string,
-  ) => Promise<void>,
-): Promise<() => void> {
-  const originalRunGit = gitModule.runGit;
-  let injected = false;
-  const commonDir = (
-    await git(
-      worktreePath,
-      "rev-parse",
-      "--path-format=absolute",
-      "--git-common-dir",
-    )
-  ).trim();
-  const spy = vi
-    .spyOn(gitModule, "runGit")
-    .mockImplementation(async (args, options) => {
-      if (!injected && args.includes("worktree") && args.includes("remove")) {
-        injected = true;
-        const parent = path.dirname(worktreePath);
-        const quarantine = (await fs.readdir(parent)).find((name) =>
-          name.startsWith(`.${path.basename(worktreePath)}.removing-`),
-        );
-        if (quarantine === undefined)
-          throw new Error("quarantine path was not created");
-        const target = path.join(parent, quarantine);
-        const gitDir = (
-          await git(target, "rev-parse", "--absolute-git-dir")
-        ).trim();
-        await inject(target, gitDir, commonDir);
-      }
-      return originalRunGit(args, options);
-    });
-  return () => spy.mockRestore();
-}
-
 afterEach(async () => {
   vi.restoreAllMocks();
   await Promise.all(
@@ -289,13 +249,6 @@ describe("real worktree teardown preservation", () => {
     const worktree = await makeWorktree();
     useProcReaderForTests(descendantsOnly(hostProc, -1));
     let injected = false;
-    const restore = await injectAtBaselineRemoval(
-      worktree.path,
-      async (target) => {
-        await writeFile(path.join(target, "late-untracked.txt"), "late\n");
-        injected = true;
-      },
-    );
     let removalError: unknown;
     try {
       await remove(worktree, true, {
@@ -306,8 +259,6 @@ describe("real worktree teardown preservation", () => {
       });
     } catch (error) {
       removalError = error;
-    } finally {
-      restore();
     }
     expect(removalError).toMatchObject({ code: "worktree_preserved" });
     expect(injected, String(removalError)).toBe(true);
@@ -346,7 +297,6 @@ describe("real worktree teardown preservation", () => {
       ).trim();
       injected = true;
     };
-    const restore = await injectAtBaselineRemoval(worktree.path, inject);
     let removalError: unknown;
     try {
       await remove(worktree, true, {
@@ -355,8 +305,6 @@ describe("real worktree teardown preservation", () => {
       });
     } catch (error) {
       removalError = error;
-    } finally {
-      restore();
     }
     expect(removalError).toMatchObject({ code: "worktree_preserved" });
     expect(injected, String(removalError)).toBe(true);
@@ -384,16 +332,6 @@ describe("real worktree teardown preservation", () => {
     await git(worktree.path, "commit", "-m", "published directory entry");
     await git(worktree.path, "push", "origin", "feature");
     let injected = false;
-    const restore = await injectAtBaselineRemoval(
-      worktree.path,
-      async (target) => {
-        await writeFile(
-          path.join(target, "late-dir", "during-delete.txt"),
-          "during\n",
-        );
-        injected = true;
-      },
-    );
     let removalError: unknown;
     try {
       await remove(worktree, true, {
@@ -413,8 +351,6 @@ describe("real worktree teardown preservation", () => {
       });
     } catch (error) {
       removalError = error;
-    } finally {
-      restore();
     }
     expect(removalError).toMatchObject({ code: "worktree_preserved" });
     expect(injected, String(removalError)).toBe(true);
