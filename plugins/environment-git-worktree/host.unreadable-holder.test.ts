@@ -1,11 +1,13 @@
 import { execFile, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
+import fs from "node:fs/promises";
 import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { experimental_createHostEntryHarness } from "@get-bb/plugin-sdk/testing/host";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createWorktreeHostEntry } from "./host.js";
 import { descendantsOnly } from "./host/descendants-only.js";
 import {
@@ -53,6 +55,7 @@ async function git(cwd: string, ...args: string[]): Promise<string> {
 }
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   useProcReaderForTests(descendantsOnly(hostProc, process.pid));
   for (const child of lingering.splice(0)) child.kill("SIGKILL");
   await Promise.all(
@@ -60,6 +63,42 @@ afterEach(async () => {
       .splice(0)
       .map((root) => rm(root, { recursive: true, force: true })),
   );
+});
+
+it("reports a worktree retained when a holder appears during quarantined removal", async () => {
+  const fixture = await createFixture();
+  useProcReaderForTests(descendantsOnly(hostProc, process.pid));
+  const originalRename = fs.rename.bind(fs);
+  let holder: ReturnType<typeof spawn> | undefined;
+  vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
+    await originalRename(from, to);
+    if (String(from) !== fixture.path || holder !== undefined) return;
+    holder = spawn(
+      process.execPath,
+      ["-e", "process.send('ready'); setInterval(() => {}, 1000)"],
+      {
+        cwd: String(to),
+        stdio: ["ignore", "ignore", "ignore", "ipc"],
+      },
+    );
+    lingering.push(holder);
+    await once(holder, "message");
+  });
+
+  const removed = await fixture.harness.experimental_call("remove", {
+    operationId: "remove-after-quarantine-holder",
+    pathKey: "thr_unreadable",
+    path: fixture.path,
+  });
+
+  expect(removed).toMatchObject({
+    status: "retained",
+    message: expect.stringContaining("in use by"),
+  });
+  expect(isPidAlive(holder?.pid ?? 0)).toBe(true);
+  expect(existsSync(fixture.path)).toBe(true);
+  expect(existsSync(`${fixture.path}.completed`)).toBe(true);
+  expect(existsSync(join(fixture.path, "README.md"))).toBe(true);
 });
 
 async function createFixture() {
