@@ -711,7 +711,7 @@ describe("terminal replay preview", () => {
     parent.remove();
   });
 
-  it("waits for the phone fit before revealing and scaling an attached-grid preview", () => {
+  it("waits for the phone fit before revealing a readable, pannable attached-grid preview", () => {
     const context = new Proxy(
       {
         measureText: (text: string) => ({ width: text.length * 8 }),
@@ -736,7 +736,7 @@ describe("terminal replay preview", () => {
     parent.append(container);
     document.body.append(parent);
 
-    const preview = new Terminal({ cols: 135, rows: 56 });
+    const preview = new Terminal({ cols: 135, rows: 56, fontSize: 12 });
     const cover = mountTerminalReplayPreview({
       container,
       initialFitGrid: null,
@@ -751,22 +751,23 @@ describe("terminal replay preview", () => {
 
     cover.setFitGrid(51, 47);
 
-    const scale = 51 / 135;
     expect({ cols: preview.cols, rows: preview.rows }).toEqual({
       cols: 135,
       rows: 56,
     });
     expect(getComputedStyle(previewElement).visibility).toBe("visible");
-    expect(preview.element?.style.transform).toBe(
-      "scale(min(var(--terminal-grid-scale, 1), calc(100cqw / var(--terminal-natural-width, 1px))))",
-    );
-    expect(135 * scale).toBe(51);
+    expect(preview.element?.style.transform).toBe("scale(1)");
+    expect((previewElement as HTMLElement).style.overflowX).toBe("auto");
+    expect((previewElement as HTMLElement).style.pointerEvents).toBe("auto");
+    expect(preview.options.disableStdin).toBe(true);
+    expect(preview.element?.style.pointerEvents).toBe("none");
+    expect(preview.textarea?.tabIndex).toBe(-1);
 
     cover.dispose();
     parent.remove();
   });
 
-  it("keeps a visible 135-column preview inside the renderer across a desktop-to-phone resize", () => {
+  it("pans a visible 135-column preview across a desktop-to-phone resize", () => {
     const context = new Proxy(
       {
         measureText: (text: string) => ({ width: text.length * 8 }),
@@ -791,7 +792,7 @@ describe("terminal replay preview", () => {
     parent.append(container);
     document.body.append(parent);
     let availableWidth = 964;
-    const preview = new Terminal({ cols: 135, rows: 56 });
+    const preview = new Terminal({ cols: 135, rows: 56, fontSize: 12 });
     const cover = mountTerminalReplayPreview({
       container,
       initialFitGrid: { cols: 135, rows: 56 },
@@ -811,7 +812,10 @@ describe("terminal replay preview", () => {
       configurable: true,
       value: () => {
         const scale = Number(preview.element?.dataset.surfaceScale ?? "1");
-        const widthScale = Math.min(1, availableWidth / 975);
+        const widthScale =
+          preview.element?.style.transform === "scale(1)"
+            ? 1
+            : Math.min(1, availableWidth / 975);
         return new DOMRect(
           0,
           0,
@@ -827,14 +831,14 @@ describe("terminal replay preview", () => {
     expect(paintedWidth()).toBeLessThanOrEqual(availableWidth + 1);
 
     availableWidth = 357;
+    cover.setFitGrid(51, 47);
     window.dispatchEvent(new Event("resize"));
 
     expect(previewElement.style.visibility).toBe("visible");
-    expect(paintedWidth()).toBeLessThanOrEqual(availableWidth + 1);
+    expect(paintedWidth()).toBeGreaterThan(availableWidth);
+    expect(previewElement.style.overflowX).toBe("auto");
     expect(container.style.containerType).toBe("inline-size");
-    expect(preview.element?.style.transform).toBe(
-      "scale(min(var(--terminal-grid-scale, 1), calc(100cqw / var(--terminal-natural-width, 1px))))",
-    );
+    expect(preview.element?.style.transform).toBe("scale(1)");
     expect(
       preview.element?.style.getPropertyValue("--terminal-grid-scale"),
     ).toBe("1");
@@ -1015,9 +1019,7 @@ describe("terminal replay preview", () => {
       cols: 135,
       rows: 56,
     });
-    expect(preview.element?.style.transform).toBe(
-      "scale(min(var(--terminal-grid-scale, 1), calc(100cqw / var(--terminal-natural-width, 1px))))",
-    );
+    expect(preview.element?.style.transform).toBe("scale(0.8)");
     expect(
       Array.from({ length: preview.buffer.active.length }, (_, index) =>
         preview.buffer.active.getLine(index)?.translateToString(),
@@ -1335,14 +1337,10 @@ describe("terminal replay preview", () => {
     harness.parent.remove();
   });
 
-  it("keeps chunks in order while the deadline handoff is pending", async () => {
-    const captured: { frame: FrameRequestCallback | null } = { frame: null };
+  it("finishes replay in order when the non-owner receives no resize or animation frame", async () => {
     const frameRequest = vi
       .spyOn(window, "requestAnimationFrame")
-      .mockImplementation((callback) => {
-        captured.frame = callback;
-        return 1;
-      });
+      .mockImplementation(() => 1);
     const harness = await createPreviewHarness({
       cols: 120,
       rows: 36,
@@ -1350,14 +1348,11 @@ describe("terminal replay preview", () => {
       fitRows: 47,
     });
     frameRequest.mockRestore();
-    if (captured.frame === null) throw new Error("Expected preview frame");
-    vi.useFakeTimers();
     let firstCallbackCount = 0;
     let secondCallbackCount = 0;
     harness.cover.push(Buffer.from("\r\nchunk A"), () => {
       firstCallbackCount += 1;
     });
-    captured.frame(0);
     const terminalResize = harness.terminal.resize.bind(harness.terminal);
     vi.spyOn(harness.terminal, "resize").mockImplementation((cols, rows) => {
       terminalResize(cols, rows);
@@ -1365,10 +1360,13 @@ describe("terminal replay preview", () => {
         secondCallbackCount += 1;
       });
     });
-    vi.advanceTimersByTime(500);
-    await vi.advanceTimersByTimeAsync(0);
-    expect(firstCallbackCount).toBe(1);
-    expect(secondCallbackCount).toBe(1);
+    await vi.waitFor(
+      () => {
+        expect(firstCallbackCount).toBe(1);
+        expect(secondCallbackCount).toBe(1);
+      },
+      { timeout: 1500 },
+    );
     const rendered = Array.from(
       { length: harness.terminal.buffer.active.length },
       (_, index) =>

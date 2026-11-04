@@ -1183,6 +1183,34 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
     );
   });
 
+  it("finishes a non-owner attach using its grid without a later resize or deadline", async () => {
+    const setTimeout = window.setTimeout.bind(window);
+    vi.spyOn(window, "setTimeout").mockImplementation(((
+      handler: TimerHandler,
+      delay?: number,
+      ...args: unknown[]
+    ) => setTimeout(
+      handler,
+      typeof handler === "function" && handler.name === "handoffAtLatestGrid"
+        ? 10_000
+        : delay,
+      ...args,
+    )) as typeof window.setTimeout);
+    const { preview, socket } = await mountReplayWithUnusableSnapshot();
+    socket.receive({
+      type: "output",
+      chunk: { seq: 2, dataBase64: btoa("current frame\r\n") },
+    });
+    await waitForReadinessCondition(() => {
+      expect(socket.sent.map((raw) => JSON.parse(raw))).toContainEqual({
+        type: "ack",
+        nextSeq: 3,
+      });
+    }, "non-owner replay waited for a resize instead of using its attach grid");
+    expect(preview()?.dataset.terminalReplayHeld).toBeUndefined();
+    expect(pageText()).not.toContain("Reconnecting");
+  });
+
   it("keeps the preview hidden while the socket is down and holds it again for the replay a reconnect starts", async () => {
     const { bufferText, preview, session, socket } =
       await mountReplayWithUnusableSnapshot();
@@ -1318,6 +1346,12 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
     expect(preview()?.style.visibility).toBe("hidden");
     expect(pageText()).toContain("Reconnecting");
     expect(pageText()).not.toContain("Still loading terminal");
+    const status = Array.from(
+      document.querySelectorAll('[role="status"]'),
+    ).find((element) => element.textContent?.includes("Reconnecting"));
+    expect(status?.parentElement?.className.split(/\s+/u)).toContain("flex");
+    expect(status?.className.split(/\s+/u)).not.toContain("absolute");
+    expect(status?.closest("[data-terminal-replay-preview]")).toBeNull();
 
     await waitForReadinessCondition(
       () => expect(testState.sockets).toHaveLength(2),

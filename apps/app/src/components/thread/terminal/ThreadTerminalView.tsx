@@ -1914,7 +1914,7 @@ export function ThreadTerminalView({
     ): Promise<void> {
       containerElement.style.opacity = "0";
       const updateGridVisibility = () => {
-        if (terminal === null || (replayPreview !== null && !replayCompleted)) {
+        if (terminal === null) {
           return;
         }
         containerElement.dataset.renderGridCols = String(terminal.cols);
@@ -1935,7 +1935,6 @@ export function ThreadTerminalView({
             ptyGrid: displayGrid,
             rendererGrid: { cols: terminal.cols, rows: terminal.rows },
           });
-        containerElement.style.opacity = "0";
         const presentation = terminalSurfacePresentation({
           grid: displayGrid,
           fitGrid: localFitGrid,
@@ -1944,10 +1943,12 @@ export function ThreadTerminalView({
           running: sessionStatusRef.current === "running",
         });
         setShowFitControl(presentation.showFitControl);
+        if (replayPreview !== null && !replayCompleted) return;
+        containerElement.style.opacity = "0";
         const scrollRetainedOutput =
-          presentation.panHorizontally ||
-          (retainedOutputGrid !== null &&
-            getMediaQuerySnapshot(COMPACT_VIEWPORT_QUERY));
+          retainedOutputGrid !== null
+            ? getMediaQuerySnapshot(COMPACT_VIEWPORT_QUERY)
+            : presentation.panHorizontally;
         containerElement.style.overflowX = scrollRetainedOutput ? "auto" : "";
         containerElement.style.overflowY = scrollRetainedOutput ? "auto" : "";
         containerElement.style.paddingLeft = scrollRetainedOutput ? "0" : "";
@@ -2805,6 +2806,7 @@ export function ThreadTerminalView({
                       true,
                   terminal: previewTerminal,
                 });
+                replayPreview.setPtyGrid(replayGrid.cols, replayGrid.rows);
                 if (paintedScreenKept) keepPaintedScreen();
               }
             },
@@ -3404,14 +3406,23 @@ export function ThreadTerminalView({
       data-app-terminal=""
       onKeyDownCapture={handleTerminalCommandKeyDown}
     >
-      {terminalReady && showFitControl ? (
-        <button
-          type="button"
-          className="self-end rounded-md px-2 py-1 text-xs text-foreground hover:bg-state-hover"
-          onClick={() => claimSizeRef.current?.()}
-        >
-          Fit to this screen
-        </button>
+      {(terminalReady && showFitControl) || connectionNoticeText !== null ? (
+        <div className="flex shrink-0 items-center justify-end gap-2 px-2 py-1 text-xs">
+          {connectionNoticeText !== null ? (
+            <div role="status" className="min-w-0 text-muted-foreground">
+              {connectionNoticeText}
+            </div>
+          ) : null}
+          {terminalReady && showFitControl ? (
+            <button
+              type="button"
+              className="shrink-0 rounded-md px-2 py-1 text-foreground hover:bg-state-hover"
+              onClick={() => claimSizeRef.current?.()}
+            >
+              Fit to this screen
+            </button>
+          ) : null}
+        </div>
       ) : null}
       <ContextMenu
         onOpenChange={(open) => {
@@ -3475,14 +3486,6 @@ export function ThreadTerminalView({
               open={terminalSearchOpen}
               onOpenChange={setTerminalSearchOpen}
             />
-            {connectionNoticeText !== null ? (
-              <div
-                role="status"
-                className="pointer-events-none absolute top-2 right-2 rounded-md border border-border bg-popover px-2 py-1 text-xs text-muted-foreground shadow-sm"
-              >
-                {connectionNoticeText}
-              </div>
-            ) : null}
           </TerminalAttentionPane>
         </ContextMenuTrigger>
         <ContextMenuContent

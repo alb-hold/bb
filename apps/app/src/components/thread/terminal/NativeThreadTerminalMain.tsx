@@ -16,6 +16,7 @@ import { useOptionalPaneContext } from "@/views/thread-detail/PaneContext";
 import { useThreadDefaultExecutionOptions } from "@/hooks/queries/thread-default-execution-options-query";
 import { formatModelLabel } from "@/hooks/useThreadCreationOptions";
 import { PERMISSION_MODE_OPTIONS } from "@/lib/permission-mode-options";
+import { reasoningLevelLabel } from "@/lib/reasoning-labels";
 import { NativeActivityNotice } from "./NativeActivityNotice";
 import { NativeTerminalPromptBar } from "./NativeTerminalPromptBar";
 import { useNativeActivityNotice } from "@/hooks/useNativeActivityUnconfirmed";
@@ -65,10 +66,13 @@ export function NativeThreadTerminalMain({
   const providerLabel = view.displayName;
   const executionLabel = [
     providerLabel,
-    thread?.model ? formatModelLabel(thread.model) : "Model unknown",
+    thread?.model ? formatModelLabel(thread.model) : null,
+    thread?.reasoningLevel
+      ? reasoningLevelLabel(thread.reasoningLevel, undefined)
+      : null,
     PERMISSION_MODE_OPTIONS.find(
       (option) => option.value === thread?.permissionMode,
-    )?.label ?? "Permissions unknown",
+    )?.label,
   ]
     .filter(Boolean)
     .join(" · ");

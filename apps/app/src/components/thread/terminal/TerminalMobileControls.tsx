@@ -198,7 +198,7 @@ export function TerminalMobileControls({
           </Key>
         </div>
       ) : null}
-      <div className="flex flex-wrap gap-1">
+      <div className="flex flex-nowrap gap-1 overflow-x-auto touch-pan-x">
         <Key {...keyProps} label="Escape" onPress={() => onInput("\x1b")}>
           Esc
         </Key>

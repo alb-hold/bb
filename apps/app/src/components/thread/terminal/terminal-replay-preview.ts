@@ -6,7 +6,7 @@ import {
   attachTerminalScalePointerCoordinates,
   canRevealTerminalSurface,
   readTerminalSurfaceScale,
-  terminalSurfaceScale,
+  terminalSurfacePresentation,
 } from "./terminal-grid-presentation";
 
 export const TERMINAL_REPLAY_PREVIEW_HOLD_TIMEOUT_MS = 5_000;
@@ -225,7 +225,10 @@ export function mountTerminalReplayPreview({
   });
   container.style.opacity = "0";
   parent.append(preview);
+  terminal.options.disableStdin = true;
   terminal.open(preview);
+  if (terminal.element) terminal.element.style.pointerEvents = "none";
+  if (terminal.textarea) terminal.textarea.tabIndex = -1;
   if (
     focusedElement instanceof HTMLElement &&
     focusedElement !== document.body &&
@@ -244,11 +247,8 @@ export function mountTerminalReplayPreview({
   let handoffRequested = false;
   let pendingWrites: Array<{ bytes: Uint8Array; callback: () => void }> = [];
   let pendingBytes = 0;
-  let handoffDeadlineFrame: number | null = null;
   let handoffDeadline: number | null = null;
   const pendingBytesLimit = 256 * 1024;
-  let surfaceScale =
-    fitGrid === null ? 1 : terminalSurfaceScale(latestPtyGrid, fitGrid);
   const detachPointerCoordinates = terminal.element
     ? attachTerminalScalePointerCoordinates(terminal.element, () =>
         terminal.element ? readTerminalSurfaceScale(terminal.element) : 1,
@@ -258,19 +258,37 @@ export function mountTerminalReplayPreview({
     if (fitGrid === null) return;
     const wasVisible = preview.style.visibility === "visible";
     preview.style.visibility = "hidden";
-    surfaceScale = terminalSurfaceScale(
-      { cols: terminal.cols, rows: terminal.rows },
+    const presentation = terminalSurfacePresentation({
+      grid: { cols: terminal.cols, rows: terminal.rows },
       fitGrid,
-    );
+      fontSize: terminal.options.fontSize ?? 12,
+      isOwner: isOwner(),
+      running: true,
+    });
+    preview.style.overflowX = presentation.panHorizontally ? "auto" : "hidden";
+    preview.style.pointerEvents = presentation.panHorizontally
+      ? "auto"
+      : "none";
+    preview.style.touchAction = presentation.panHorizontally
+      ? "pan-x pan-y"
+      : "";
     if (terminal.element) {
-      applyTerminalSurfaceScale(terminal.element, surfaceScale);
+      applyTerminalSurfaceScale(
+        terminal.element,
+        presentation.scale,
+        !presentation.panHorizontally,
+      );
     }
     const rendererWidth = container.getBoundingClientRect().width;
     const paintedWidth =
       terminal.element
         ?.querySelector<HTMLElement>(".xterm-screen")
         ?.getBoundingClientRect().width ?? 0;
-    if (wasVisible && rendererWidth > 0 && paintedWidth <= rendererWidth + 1) {
+    if (
+      wasVisible &&
+      rendererWidth > 0 &&
+      (presentation.panHorizontally || paintedWidth <= rendererWidth + 1)
+    ) {
       preview.style.visibility = "visible";
     }
   };
@@ -326,10 +344,6 @@ export function mountTerminalReplayPreview({
     }
   };
   const clearHandoffDeadline = () => {
-    if (handoffDeadlineFrame !== null) {
-      window.cancelAnimationFrame(handoffDeadlineFrame);
-      handoffDeadlineFrame = null;
-    }
     if (handoffDeadline !== null) {
       window.clearTimeout(handoffDeadline);
       handoffDeadline = null;
@@ -357,15 +371,11 @@ export function mountTerminalReplayPreview({
       disposed ||
       authoritativeGridAvailable ||
       handoffRequested ||
-      handoffDeadlineFrame !== null ||
       handoffDeadline !== null
     ) {
       return;
     }
-    handoffDeadlineFrame = window.requestAnimationFrame(() => {
-      handoffDeadlineFrame = null;
-      handoffDeadline = window.setTimeout(handoffAtLatestGrid, 500);
-    });
+    handoffDeadline = window.setTimeout(handoffAtLatestGrid, 500);
   };
   document.addEventListener("focusin", refreshVisibility);
   document.addEventListener("focusout", refreshVisibility);

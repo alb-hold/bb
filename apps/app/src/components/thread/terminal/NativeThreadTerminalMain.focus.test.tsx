@@ -6,6 +6,17 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { NativeThreadTerminalMain } from "./NativeThreadTerminalMain";
 
 const pane = vi.hoisted(() => ({ isFocused: true }));
+const execution = vi.hoisted(() => ({
+  data: {
+    model: "gpt-5",
+    reasoningLevel: "medium",
+    permissionMode: "full",
+  } as {
+    model?: string;
+    reasoningLevel?: string;
+    permissionMode?: string;
+  } | null,
+}));
 
 vi.mock("@/views/thread-detail/PaneContext", () => ({
   useOptionalPaneContext: () => ({ isFocused: pane.isFocused }),
@@ -27,9 +38,7 @@ vi.mock("@/hooks/queries/native-terminal-queries", () => ({
   useOpenNativeTerminal: () => ({ mutate: vi.fn(), isPending: false }),
 }));
 vi.mock("@/hooks/queries/thread-default-execution-options-query", () => ({
-  useThreadDefaultExecutionOptions: () => ({
-    data: { model: "gpt-5", permissionMode: "full" },
-  }),
+  useThreadDefaultExecutionOptions: () => execution,
 }));
 vi.mock("@/hooks/queries/thread-queries", () => ({
   useThreadPendingInteractions: () => ({ data: [] }),
@@ -46,8 +55,9 @@ vi.mock("@/components/secondary-panel/lazySecondaryPanelComponents", () => ({
   ),
 }));
 vi.mock("./NativeTerminalPromptBar", () => ({
-  NativeTerminalPromptBar: () => (
+  NativeTerminalPromptBar: ({ executionLabel }: { executionLabel: string }) => (
     <form data-native-terminal-prompt="">
+      <span aria-label="Terminal execution">{executionLabel}</span>
       <textarea aria-label="Message" />
     </form>
   ),
@@ -63,6 +73,11 @@ vi.mock("./NativeTerminalWaitingBanner", () => ({
 afterEach(() => {
   cleanup();
   pane.isFocused = true;
+  execution.data = {
+    model: "gpt-5",
+    reasoningLevel: "medium",
+    permissionMode: "full",
+  };
 });
 
 const view = {
@@ -87,6 +102,24 @@ const terminalAutoFocus = () =>
   screen.getByTestId("terminal").getAttribute("data-autofocus");
 
 describe("NativeThreadTerminalMain focus", () => {
+  it("uses the composer labels for the stored model, reasoning and permission", () => {
+    renderMain();
+    expect(screen.getByLabelText("Terminal execution").textContent).toBe(
+      "Codex · GPT-5 · Medium · Full Access",
+    );
+  });
+
+  it.each([null, {}, { model: "gpt-5" }])(
+    "omits absent execution fields for %j",
+    (data) => {
+      execution.data = data;
+      renderMain();
+      expect(screen.getByLabelText("Terminal execution").textContent).toBe(
+        data?.model ? "Codex · GPT-5" : "Codex",
+      );
+    },
+  );
+
   it("auto-focuses the terminal on desktop until the user focuses the composer", () => {
     renderMain();
     expect(terminalAutoFocus()).toBe("true");

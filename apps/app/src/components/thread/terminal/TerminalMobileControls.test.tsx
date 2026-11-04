@@ -40,6 +40,12 @@ describe("TerminalMobileControls", () => {
     const buttons = Array.from(controls.querySelectorAll("button"));
 
     expect(buttons.length).toBeGreaterThan(0);
+    expect(buttons[0]?.parentElement?.className.split(/\s+/u)).toEqual(
+      expect.arrayContaining(["flex-nowrap", "overflow-x-auto"]),
+    );
+    expect(buttons[0]?.parentElement?.className.split(/\s+/u)).not.toContain(
+      "flex-wrap",
+    );
     for (const button of buttons) {
       expect(button.className.split(/\s+/u)).toContain("min-w-11");
       expect(button.className.split(/\s+/u)).toContain("flex-none");
