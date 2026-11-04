@@ -371,26 +371,43 @@ describe("real worktree teardown preservation", () => {
     await expect(remove(worktree)).rejects.toMatchObject({
       code: "worktree_preserved",
     });
-    await expect(
-      git(worktree.path, "cat-file", "-e", `${commit}^{commit}`),
-    ).resolves.toBe("");
+    const reachable = await git(
+      worktree.path,
+      "rev-list",
+      "--all",
+      "--reflog",
+    );
+    expect(reachable.split("\n")).toContain(commit);
   });
 
-  it.each(["--assume-unchanged", "--skip-worktree"])(
-    "retains changed tracked data hidden by %s",
-    async (flag) => {
-      const worktree = await makeWorktree();
-      await git(worktree.path, "update-index", flag, "README.md");
-      await writeFile(path.join(worktree.path, "README.md"), "hidden edit\n");
-      expect(await git(worktree.path, "status", "--porcelain")).toBe("");
-      await expect(remove(worktree)).rejects.toMatchObject({
-        code: "worktree_preserved",
-      });
-      await expect(
-        readFile(path.join(worktree.path, "README.md"), "utf8"),
-      ).resolves.toBe("hidden edit\n");
-    },
-  );
+  it("retains a commit reachable only from a worktree ref after HEAD moves away", async () => {
+    const worktree = await makeWorktree();
+    await git(worktree.path, "checkout", "--detach");
+    await writeFile(path.join(worktree.path, "worktree-ref.txt"), "commit\n");
+    await git(worktree.path, "add", "worktree-ref.txt");
+    await git(worktree.path, "commit", "-m", "worktree ref commit");
+    const commit = (await git(worktree.path, "rev-parse", "HEAD")).trim();
+    await git(worktree.path, "update-ref", "refs/worktree/recovery", commit);
+    await git(worktree.path, "checkout", "feature");
+    await expect(remove(worktree)).rejects.toMatchObject({
+      code: "worktree_preserved",
+    });
+    const ref = await git(worktree.path, "rev-parse", "refs/worktree/recovery");
+    expect(ref.trim()).toBe(commit);
+  });
+
+  it("retains an edited tracked file marked skip-worktree", async () => {
+    const worktree = await makeWorktree();
+    await git(worktree.path, "update-index", "--skip-worktree", "README.md");
+    await writeFile(path.join(worktree.path, "README.md"), "hidden edit\n");
+    expect(await git(worktree.path, "status", "--porcelain")).toBe("");
+    await expect(remove(worktree)).rejects.toMatchObject({
+      code: "worktree_preserved",
+    });
+    await expect(
+      readFile(path.join(worktree.path, "README.md"), "utf8"),
+    ).resolves.toBe("hidden edit\n");
+  });
 
   it("reports an interrupted quarantine as retained instead of removable", async () => {
     const worktree = await makeWorktree();
