@@ -1492,7 +1492,7 @@ describe.skipIf(
         pinnedAt: 1,
         experimental_rowState:
           statuses === null
-            ? null
+            ? undefined
             : {
                 statuses,
                 progress: { value: 0.6, label: "#138 merge pipeline" },
