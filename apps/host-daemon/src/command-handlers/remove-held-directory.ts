@@ -11,6 +11,13 @@ export async function removeDirectoryAfterHolderRecheck(args: {
   force?: boolean;
   recursive?: boolean;
 }): Promise<void> {
+  const previousQuarantine = await findPreviousQuarantine(args.directory);
+  if (previousQuarantine !== null) {
+    throw new CommandDispatchError(
+      "path_in_use",
+      `Refusing to ${args.action} ${args.directory}: a prior removal attempt left recoverable data at ${previousQuarantine}.`,
+    );
+  }
   const quarantine = path.join(
     path.dirname(args.directory),
     `.${path.basename(args.directory)}.removing-${randomUUID()}`,
@@ -24,8 +31,14 @@ export async function removeDirectoryAfterHolderRecheck(args: {
       error instanceof Error &&
       "code" in error &&
       error.code === "ENOENT"
-    )
-      return;
+    ) {
+      const leftover = await findPreviousQuarantine(args.directory);
+      if (leftover === null) return;
+      throw new CommandDispatchError(
+        "path_in_use",
+        `Refusing to ${args.action} ${args.directory}: a prior removal attempt left recoverable data at ${leftover}.`,
+      );
+    }
     throw error;
   }
   try {
@@ -39,8 +52,7 @@ export async function removeDirectoryAfterHolderRecheck(args: {
             ctimeMs: rootInfo.ctimeMs,
             mtimeMs: rootInfo.mtimeMs,
           },
-        })) !==
-        "removed"
+        })) !== "removed"
       ) {
         throw new CommandDispatchError(
           "path_in_use",
@@ -59,6 +71,22 @@ export async function removeDirectoryAfterHolderRecheck(args: {
         `Refusing to ${args.action} ${args.directory}: removal stopped after ${error instanceof Error ? error.message : String(error)}, and its original path could not be restored (${restoreError instanceof Error ? restoreError.message : String(restoreError)}). Nothing was stopped.`,
       );
     }
+    throw error;
+  }
+}
+
+async function findPreviousQuarantine(
+  directory: string,
+): Promise<string | null> {
+  const parent = path.dirname(directory);
+  const prefix = `.${path.basename(directory)}.removing-`;
+  try {
+    const entries = await fs.readdir(parent);
+    const match = entries.find((entry) => entry.startsWith(prefix));
+    return match === undefined ? null : path.join(parent, match);
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT")
+      return null;
     throw error;
   }
 }

@@ -552,7 +552,7 @@ export async function inspectDarwinProcesses(
   const rows: Extract<DarwinInspection, { status: "ok" }>["rows"] = [];
   for (const row of listed) {
     if (row.pid === io.selfPid) continue;
-    if (row.uid !== io.uid) {
+    if (row.uid !== io.uid && io.uid !== 0) {
       skipped.push({ pid: row.pid, uid: row.uid, errno: "other-euid" });
       rows.push({ ...row, klass: "skipped-other-uid" });
     } else if (cwds.has(row.pid)) {

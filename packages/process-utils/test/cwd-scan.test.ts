@@ -500,6 +500,19 @@ describe("scanProcessesWithCwdUnder", () => {
       });
     });
 
+    it("does not skip an unreadable foreign process when the daemon runs as root", async () => {
+      const base = await dir();
+      const table = psLine(30, 1001, "worker") + psLine(31, 0, "node");
+      const io = fakeMac({
+        ps: [table, table],
+        lsof: { 31: "/Users/me" },
+        uid: 0,
+      });
+      const scan = await scanProcessesWithCwdUnder({ directories: [base] }, io);
+      expect(scan).toMatchObject({ status: "unknown" });
+      expect(io.delays).toEqual([200]);
+    });
+
     it("ignores a process that has exited by the second look", async () => {
       const base = await dir();
       const first = psLine(40, 501, "short-lived") + psLine(41, 501, "node");

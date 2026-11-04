@@ -11,6 +11,7 @@ import {
   moveHostPath,
   removeHostPath,
 } from "./path-mutations.js";
+import { removeDirectoryAfterHolderRecheck } from "./remove-held-directory.js";
 
 const roots: string[] = [];
 const hasHeldDirectoryRemoval = existsSync(
@@ -34,6 +35,28 @@ afterEach(async () => {
 });
 
 describe("confined host path mutations", () => {
+  it.skipIf(!hasHeldDirectoryRemoval)(
+    "reports a previous removal quarantine when forced deletion finds no source path",
+    async () => {
+      const root = await makeRoot();
+      const target = path.join(root, "recoverable");
+      const quarantine = path.join(root, ".recoverable.removing-crash");
+      await fs.mkdir(quarantine);
+      await fs.writeFile(path.join(quarantine, "note.txt"), "recover me");
+      await expect(
+        removeDirectoryAfterHolderRecheck({
+          directory: target,
+          action: "delete thread storage",
+          force: true,
+          recursive: true,
+        }),
+      ).rejects.toMatchObject({ code: "path_in_use" });
+      await expect(
+        fs.readFile(path.join(quarantine, "note.txt"), "utf8"),
+      ).resolves.toBe("recover me");
+    },
+  );
+
   it("creates, moves, and removes paths beneath the declared root", async () => {
     const root = await makeRoot();
     const folder = path.join(root, "projects");
