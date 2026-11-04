@@ -992,11 +992,11 @@ export async function runPullRequestActionForCurrentBranch(
         message: `Pull request ${mismatchedIdentity} changed since it was shown; refusing to ${verb}`,
       };
     }
-    const readOid = lookup.pullRequest.headRefOid?.toLowerCase() ?? null;
+    const readOid = lookup.pullRequest.headRefOid;
     if (
       args.action.expectedHeadOid === null ||
       readOid === null ||
-      args.action.expectedHeadOid.toLowerCase() !== readOid
+      args.action.expectedHeadOid.toLowerCase() !== readOid.toLowerCase()
     ) {
       return {
         ok: false,
