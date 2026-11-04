@@ -449,7 +449,7 @@ from one shared function, so they cannot drift. Capture the output with
 command substitution; never put the token in argv, a log, a file or a
 transcript. Issuing is exclusive by default: it is refused when the actor id
 already has a live route on the thread, and `--rotate` replaces that route
-(the old token stops working). It is also refused for an unknown, archived or
+(the old token stops working). Only a digest of the token is stored, so it is returned once, at issue. It is also refused for an unknown, archived or
 deleted thread, a thread without an enrolled machine, a bypassed thread, or a
 provider that is disabled or has no usable account. After minting, the thread
 is read again; if its machine changed, it was archived, bypassed, or the
