@@ -274,6 +274,7 @@ describe("ThreadTerminalView terminal visibility and panel", () => {
   it.each([
     {
       name: "phone with a stale live marker",
+      reconnect: false,
       lateRenderer: null,
       fit: { cols: 44, rows: 40 },
       attached: { cols: 125, rows: 44 },
@@ -281,6 +282,7 @@ describe("ThreadTerminalView terminal visibility and panel", () => {
     },
     {
       name: "phone with the current live marker",
+      reconnect: false,
       lateRenderer: null,
       fit: { cols: 44, rows: 40 },
       attached: { cols: 125, rows: 44 },
@@ -288,6 +290,7 @@ describe("ThreadTerminalView terminal visibility and panel", () => {
     },
     {
       name: "desktop after a phone client",
+      reconnect: false,
       lateRenderer: null,
       fit: { cols: 125, rows: 44 },
       attached: { cols: 44, rows: 40 },
@@ -295,14 +298,23 @@ describe("ThreadTerminalView terminal visibility and panel", () => {
     },
     ...(["dom", "webgl"] as const).map((lateRenderer) => ({
       name: `phone late ${lateRenderer} settle`,
+      reconnect: false,
       fit: { cols: 44, rows: 40 },
       attached: { cols: 125, rows: 44 },
       live: { cols: 44, rows: 40 },
       lateRenderer,
     })),
+    {
+      name: "desktop after an empty reconnect with pending replay writes",
+      reconnect: true,
+      fit: { cols: 132, rows: 41 },
+      attached: { cols: 132, rows: 41 },
+      live: { cols: 132, rows: 41 },
+      lateRenderer: null,
+    },
   ])(
-    "applies the accepted grid to $name while replay is held",
-    async ({ fit, attached, live, lateRenderer }) => {
+    "applies the accepted grid to $name before pending replay writes drain",
+    async ({ fit, attached, live, lateRenderer, reconnect }) => {
       const focusGuard = render(<button>Other input</button>);
       focusGuard.getByRole("button").focus();
       vi.stubGlobal("WebSocket", TestTerminalSocket);
@@ -367,8 +379,49 @@ describe("ThreadTerminalView terminal visibility and panel", () => {
         toJSON: () => ({}),
       });
       let fitted = fit;
+      let mountedContainer: HTMLElement | undefined;
+      let fitMeasurements = 0;
+      const notifyContainerResize: Array<() => void> = [];
+      if (reconnect) {
+        vi.stubGlobal(
+          "ResizeObserver",
+          class {
+            constructor(private readonly callback: ResizeObserverCallback) {}
+            observe(target: Element) {
+              if (target.hasAttribute("data-terminal-renderer")) {
+                notifyContainerResize.push(() =>
+                  this.callback(
+                    [
+                      {
+                        target,
+                        contentRect: target.getBoundingClientRect(),
+                      } as ResizeObserverEntry,
+                    ],
+                    this,
+                  ),
+                );
+              }
+            }
+            disconnect() {}
+            unobserve() {}
+          },
+        );
+      }
       vi.spyOn(FitAddon.prototype, "proposeDimensions").mockImplementation(
-        () => fitted,
+        () => {
+          fitMeasurements += 1;
+          const status = mountedContainer?.querySelector("[role=status]");
+          return {
+            cols: fitted.cols,
+            rows:
+              fitted.rows -
+              (reconnect &&
+              status &&
+              getComputedStyle(status).position !== "absolute"
+                ? 2
+                : 0),
+          };
+        },
       );
       const session = makeTerminalSession({
         id: "term_existing_client_grid",
@@ -391,6 +444,7 @@ describe("ThreadTerminalView terminal visibility and panel", () => {
         testState.socketMessages
           .map((raw) => JSON.parse(raw))
           .filter((message) => message.type === "resize");
+      mountedContainer = mounted.container;
       await waitFor(
         () => {
           expect(sizes()).toHaveLength(1);
@@ -398,8 +452,12 @@ describe("ThreadTerminalView terminal visibility and panel", () => {
         },
         { timeout: 10_000 },
       );
-      const socket = testState.sockets[0];
+      let socket = testState.sockets[0];
       if (!socket) throw new Error("terminal socket is missing");
+      const renderer = mounted.container.querySelector<HTMLElement>(
+        "[data-terminal-renderer]",
+      );
+      expect(renderer?.style.opacity).toBe("0");
       socket.receive({
         type: "attached",
         session,
@@ -419,9 +477,6 @@ describe("ThreadTerminalView terminal visibility and panel", () => {
           else callback?.();
         });
       });
-      const renderer = mounted.container.querySelector<HTMLElement>(
-        "[data-terminal-renderer]",
-      );
       try {
         socket.receive({
           type: "output",
@@ -438,6 +493,40 @@ describe("ThreadTerminalView terminal visibility and panel", () => {
           () => expect(pendingWrites.length).toBeGreaterThan(0),
           "historical replay did not reach the deferred parser callback",
         );
+        if (reconnect) {
+          testState.deferSocketOpen = true;
+          socket.disconnect();
+          await waitForReadinessCondition(
+            () => expect(testState.sockets).toHaveLength(2),
+            "reconnect socket was not created",
+          );
+          socket = testState.sockets[1]!;
+          await waitForReadinessCondition(
+            () =>
+              expect(
+                mounted.container.querySelector("[role=status]")?.textContent,
+              ).toBe("Reconnecting…"),
+            "reconnect status was not shown",
+          );
+          const measurements = fitMeasurements;
+          const previousSizes = sizes();
+          for (const notify of notifyContainerResize) notify();
+          await waitForReadinessCondition(
+            () => expect(fitMeasurements).toBeGreaterThan(measurements),
+            "terminal did not remeasure with the reconnect status",
+          );
+          expect(renderer?.dataset.fitGridRows).toBe(String(fit.rows));
+          expect(sizes()).toEqual(previousSizes);
+          socket.open();
+          socket.receive({
+            type: "attached",
+            session: { ...session, rows: fit.rows - 2 },
+            replayStartSeq: 1,
+            nextSeq: 1,
+          });
+          expect(renderer?.dataset.replayHeld).toBe("false");
+          expect(renderer?.dataset.renderGridRows).toBe(String(fit.rows - 2));
+        }
         socket.receive({ type: "features", resizeAcks: true });
         socket.receive({
           type: "session-updated",
@@ -450,7 +539,9 @@ describe("ThreadTerminalView terminal visibility and panel", () => {
             expect(renderer?.dataset.renderGridRows).toBe(String(fit.rows));
             expect(renderer?.dataset.ptyGridCols).toBe(String(fit.cols));
             expect(renderer?.dataset.ptyGridRows).toBe(String(fit.rows));
-            expect(renderer?.dataset.replayHeld).toBe("true");
+            expect(renderer?.dataset.replayHeld).toBe(
+              reconnect ? "false" : "true",
+            );
           },
           { timeout: 1000 },
         );

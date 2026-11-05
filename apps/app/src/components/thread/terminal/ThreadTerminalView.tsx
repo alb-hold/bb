@@ -2774,7 +2774,11 @@ export function ThreadTerminalView({
             if (message.session.status === "exited") {
               handleReplayPreviewExit();
             }
-            if (message.type === "attached" || !replayCompleted) {
+            if (
+              message.type === "attached" ||
+              !replayCompleted ||
+              replayWriteState.suppressedWriteCount > 0
+            ) {
               captureLiveViewportBeforeGridResize();
               activeTerminal.resize(cols, rows);
               updateGridVisibility();
@@ -3536,26 +3540,28 @@ export function ThreadTerminalView({
   return (
     <div
       ref={viewRef}
-      className="flex h-full min-h-0 flex-col"
+      className="relative flex h-full min-h-0 flex-col"
       data-app-terminal=""
       onKeyDownCapture={handleTerminalCommandKeyDown}
     >
-      {(terminalReady && showFitControl) || connectionNoticeText !== null ? (
+      {connectionNoticeText !== null ? (
+        <div
+          role="status"
+          style={{ position: "absolute" }}
+          className="pointer-events-none right-2 top-1 z-10 max-w-full rounded-md bg-sidebar px-2 py-1 text-xs text-foreground shadow-sm"
+        >
+          {connectionNoticeText}
+        </div>
+      ) : null}
+      {terminalReady && showFitControl ? (
         <div className="flex shrink-0 items-center justify-end gap-2 px-2 py-1 text-xs">
-          {connectionNoticeText !== null ? (
-            <div role="status" className="min-w-0 text-muted-foreground">
-              {connectionNoticeText}
-            </div>
-          ) : null}
-          {terminalReady && showFitControl ? (
-            <button
-              type="button"
-              className="shrink-0 rounded-md px-2 py-1 text-foreground hover:bg-state-hover"
-              onClick={() => claimSizeRef.current?.()}
-            >
-              Fit to this screen
-            </button>
-          ) : null}
+          <button
+            type="button"
+            className="shrink-0 rounded-md px-2 py-1 text-foreground hover:bg-state-hover"
+            onClick={() => claimSizeRef.current?.()}
+          >
+            Fit to this screen
+          </button>
         </div>
       ) : null}
       <ContextMenu
