@@ -1,4 +1,5 @@
 import { type RefObject, useLayoutEffect } from "react";
+import { flushSync } from "react-dom";
 import { atom, useAtom, useAtomValue, useSetAtom } from "jotai";
 import {
   usePluginSlots,
@@ -35,9 +36,11 @@ export function useMeasureSidebarFooterCapacity(
         Math.max(0, Math.floor((width + gap) / (controlWidth + gap)) - 1),
       );
     };
-    measure();
-    if (typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(measure);
+    if (typeof ResizeObserver === "undefined") {
+      const frame = requestAnimationFrame(measure);
+      return () => cancelAnimationFrame(frame);
+    }
+    const observer = new ResizeObserver(() => flushSync(measure));
     observer.observe(row);
     observer.observe(more);
     return () => observer.disconnect();

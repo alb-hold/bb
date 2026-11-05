@@ -94,6 +94,12 @@ afterEach(() => {
 });
 
 describe("SidebarNavigationHeader", () => {
+  it("waits for observed geometry instead of forcing layout during the first commit", async () => {
+    const width = vi.spyOn(HTMLElement.prototype, "clientWidth", "get");
+    renderHeader(navigationSlot(HeaderFixture));
+    expect(width).not.toHaveBeenCalled();
+    expect((await screen.findByTestId("header-size")).textContent).toBe("0/28");
+  });
   it("leaves the header to bb when the navigation has no header", () => {
     renderHeader(navigationSlot());
 

@@ -4,9 +4,11 @@ import type {
   PluginThreadActionTarget,
 } from "@get-bb/plugin-sdk/app";
 import type { SidebarThread } from "../model/sidebar-thread.js";
-import { useSidebarData } from "../model/use-sidebar-data.js";
 import { toThreadActionTarget } from "../rows/threadActionTarget.js";
-import { useThreadSelectionStore } from "./threadSelection.js";
+import {
+  useThreadSelectionStore,
+  useThreadSelectionProjects,
+} from "./threadSelection.js";
 
 const SELECTION_GROUP = "5_selection";
 
@@ -21,7 +23,7 @@ export function useThreadSelectionMenu(
   threadIds: readonly string[] | null,
 ): ThreadSelectionMenu | null {
   const store = useThreadSelectionStore();
-  const { projects } = useSidebarData();
+  const projects = useThreadSelectionProjects();
   const dismissedWithEscape = useRef(false);
   const selection = useMemo(() => {
     if (threadIds === null) return null;
