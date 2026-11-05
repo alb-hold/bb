@@ -68,9 +68,9 @@ describe("presentation-driven timeline rows", () => {
       <ThreadTimelineRows
         threadId="thr_main"
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
         timelineRows={[row]}
         initialExpanded={new Set([row.id])}
+        threadIsActive={false}
       />,
     );
     expect(markup).toContain("Wrote receipt");
@@ -85,7 +85,6 @@ describe("presentation-driven timeline rows", () => {
       <ThreadTimelineRows
         threadId="thr_main"
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
         timelineRows={[
           toolRow({
             id: "tool_js",
@@ -101,6 +100,7 @@ describe("presentation-driven timeline rows", () => {
             },
           }),
         ]}
+        threadIsActive={false}
       />,
     );
     expect(markup).toContain("Ran JavaScript");
@@ -125,7 +125,6 @@ describe("presentation-driven timeline rows", () => {
       <ThreadTimelineRows
         threadId="thr_main"
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
         timelineRows={[
           commandRow({
             id: "cmd_escaped",
@@ -147,6 +146,7 @@ describe("presentation-driven timeline rows", () => {
           }),
           commandRow({ id: "cmd_plain", command: "ls -la src" }),
         ]}
+        threadIsActive={false}
       />,
     );
     expect(markup.match(/data-icon="SquareUnlock02"/g) ?? []).toHaveLength(2);
@@ -178,8 +178,8 @@ describe("presentation-driven timeline rows", () => {
       <ThreadTimelineRows
         threadId="thr_main"
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
         timelineRows={[row]}
+        threadIsActive={false}
       />,
     );
     expect(withIcon).toContain(`data-plugin-icon-asset="${iconUrl}"`);
@@ -191,8 +191,8 @@ describe("presentation-driven timeline rows", () => {
       <ThreadTimelineRows
         threadId="thr_main"
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
         timelineRows={[row]}
+        threadIsActive={false}
       />,
     );
     expect(withoutIcon).not.toContain("data-plugin-icon-asset");
@@ -204,7 +204,6 @@ describe("presentation-driven timeline rows", () => {
       <ThreadTimelineRows
         threadId="thr_main"
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
         timelineRows={[
           extensionRow({
             presentation: {
@@ -214,6 +213,7 @@ describe("presentation-driven timeline rows", () => {
             },
           }),
         ]}
+        threadIsActive={false}
       />,
     );
     expect(markup).toContain('data-icon="Puzzle"');
@@ -226,9 +226,9 @@ describe("presentation-driven timeline rows", () => {
       <ThreadTimelineRows
         threadId="thr_main"
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
         timelineRows={[row]}
         initialExpanded={new Set([row.id])}
+        threadIsActive={false}
       />,
     );
     const list = screen.getByTestId("plan-steps-body");
@@ -274,9 +274,9 @@ describe("plugin timeline renderers", () => {
       <ThreadTimelineRows
         threadId="thr_main"
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
         timelineRows={[row]}
         initialExpanded={new Set([row.id])}
+        threadIsActive={false}
       />,
     );
     const rendered = screen.getByTestId("receipt-renderer");
@@ -302,9 +302,9 @@ describe("plugin timeline renderers", () => {
       <ThreadTimelineRows
         threadId="thr_main"
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
         timelineRows={[row]}
         initialExpanded={new Set([row.id])}
+        threadIsActive={false}
       />,
     );
     expect(screen.getByTestId("tool-renderer").textContent).toBe("echo_stamp");
@@ -314,9 +314,9 @@ describe("plugin timeline renderers", () => {
       <ThreadTimelineRows
         threadId="thr_main"
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
         timelineRows={[row]}
         initialExpanded={new Set([row.id])}
+        threadIsActive={false}
       />,
       { providerId: "codex", pluginId: "provider-codex" },
     );
@@ -338,9 +338,9 @@ describe("plugin timeline renderers", () => {
       <ThreadTimelineRows
         threadId="thr_main"
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
         timelineRows={[row]}
         initialExpanded={new Set([row.id])}
+        threadIsActive={false}
       />,
     );
     expect(screen.getByText("Wrote receipt")).toBeTruthy();

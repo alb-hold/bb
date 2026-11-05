@@ -166,6 +166,26 @@ describe("createSideChat rpc", () => {
     expect(fork).toHaveBeenCalledTimes(1);
   });
 
+  it("surfaces an anchor inside a running turn instead of forking an older checkpoint", async () => {
+    const turnIncomplete = Object.assign(
+      new Error(
+        "HTTP 400: Cannot fork at sequence 3: the turn containing it has not completed",
+      ),
+      { code: "fork_source_turn_incomplete" },
+    );
+    const fork = vi.fn().mockRejectedValue(turnIncomplete);
+    const { harness } = await loadPlugin({ fork });
+
+    await expect(
+      harness.callRpc("createSideChat", {
+        sourceThreadId: "thr_src",
+        sourceSeqEnd: 3,
+        anchorText: "progress note",
+      }),
+    ).rejects.toThrow("has not completed");
+    expect(fork).toHaveBeenCalledTimes(1);
+  });
+
   it("does not fall back on message text alone — only the structured code triggers it", async () => {
     const messageOnly = new Error(
       "HTTP 400: Cannot fork: source has no active session to clone",
@@ -347,30 +367,38 @@ describe("empty-fork sweep", () => {
       throw new Error("unavailable");
     });
     const archive = vi.fn(async () => ({ ok: true }));
-    const { harness } = await loadPlugin({
+    const { bb, harness } = await loadPlugin({
       list: async ({ offset = 0, limit = EMPTY_FORK_SWEEP_PAGE_SIZE }) =>
         threads.slice(offset, offset + limit),
       fork,
       timeline,
       archive,
     });
-    await harness.runSchedule("empty-fork-cleanup");
-    for (let i = 0; i <= EMPTY_FORK_SWEEP_PAGE_SIZE; i++) {
-      await harness.callRpc("createSideChat", {
-        sourceThreadId: "thr_source",
-        anchorText: "answer",
-      });
+    const db = bb.storage.database();
+    db.exec("BEGIN");
+    try {
+      await harness.runSchedule("empty-fork-cleanup");
+      for (let i = 0; i <= EMPTY_FORK_SWEEP_PAGE_SIZE; i++) {
+        await harness.callRpc("createSideChat", {
+          sourceThreadId: "thr_source",
+          anchorText: "answer",
+        });
+      }
+      await harness.runSchedule("empty-fork-cleanup");
+      expect(timeline).toHaveBeenCalledTimes(EMPTY_FORK_SWEEP_PAGE_SIZE);
+      await harness.runSchedule("empty-fork-cleanup");
+      expect(timeline).toHaveBeenCalledTimes(EMPTY_FORK_SWEEP_PAGE_SIZE + 1);
+      await harness.runSchedule("empty-fork-cleanup");
+      expect(timeline).toHaveBeenCalledTimes(EMPTY_FORK_SWEEP_PAGE_SIZE + 1);
+      expect(archive).not.toHaveBeenCalled();
+      vi.setSystemTime(now + 3_600_000);
+      await harness.runSchedule("empty-fork-cleanup");
+      expect(timeline).toHaveBeenCalledTimes(
+        2 * EMPTY_FORK_SWEEP_PAGE_SIZE + 1,
+      );
+    } finally {
+      db.exec("ROLLBACK");
     }
-    await harness.runSchedule("empty-fork-cleanup");
-    expect(timeline).toHaveBeenCalledTimes(EMPTY_FORK_SWEEP_PAGE_SIZE);
-    await harness.runSchedule("empty-fork-cleanup");
-    expect(timeline).toHaveBeenCalledTimes(EMPTY_FORK_SWEEP_PAGE_SIZE + 1);
-    await harness.runSchedule("empty-fork-cleanup");
-    expect(timeline).toHaveBeenCalledTimes(EMPTY_FORK_SWEEP_PAGE_SIZE + 1);
-    expect(archive).not.toHaveBeenCalled();
-    vi.setSystemTime(now + 3_600_000);
-    await harness.runSchedule("empty-fork-cleanup");
-    expect(timeline).toHaveBeenCalledTimes(2 * EMPTY_FORK_SWEEP_PAGE_SIZE + 1);
   });
 
   it.each(["thread.archived", "thread.deleted"] as const)(

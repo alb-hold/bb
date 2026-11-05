@@ -16,11 +16,25 @@ class FakeTerminalBrowserSocket implements TerminalBrowserSocket {
   onerror: ((event: Event) => void) | null = null;
   onmessage: ((event: MessageEvent) => void) | null = null;
   onopen: ((event: Event) => void) | null = null;
+  protocol = "bb.terminal.resize-echo.v1";
   readyState = 0;
   readonly sent: string[] = [];
   throwOnSend = false;
 
   close(code?: number, reason?: string): void {
+    if (
+      code !== undefined &&
+      code !== 1000 &&
+      !(code >= 3000 && code <= 4999)
+    ) {
+      throw new DOMException(
+        `The close code must be 1000 or in the range 3000-4999: ${code}`,
+        "InvalidAccessError",
+      );
+    }
+    if (new TextEncoder().encode(reason ?? "").byteLength > 123) {
+      throw new DOMException("The close reason is too long", "SyntaxError");
+    }
     this.closeCalls.push({ code, reason });
     if (this.readyState === 3) {
       return;
@@ -51,6 +65,7 @@ class FakeTerminalBrowserSocket implements TerminalBrowserSocket {
 interface TransportHarness {
   messages: TerminalServerMessage[];
   overflow: ReturnType<typeof vi.fn<(maxBytes: number) => void>>;
+  protocols: string[][];
   sockets: FakeTerminalBrowserSocket[];
   states: TerminalSocketConnectionState[];
   transport: TerminalWebSocketTransport;
@@ -67,10 +82,12 @@ function createHarness(
   const states: TerminalSocketConnectionState[] = [];
   const overflow = vi.fn<(maxBytes: number) => void>();
   const urls: string[] = [];
+  const protocols: string[][] = [];
   const transport = new TerminalWebSocketTransport({
     terminalId: "term_1",
-    createSocket: (url) => {
+    createSocket: (url, offeredProtocols) => {
       urls.push(url);
+      protocols.push(offeredProtocols);
       const socket = new FakeTerminalBrowserSocket();
       sockets.push(socket);
       return socket;
@@ -85,7 +102,7 @@ function createHarness(
     url: "ws://example.test/ws/terminals/term-1",
     ...overrides,
   });
-  return { messages, overflow, sockets, states, transport, urls };
+  return { messages, overflow, protocols, sockets, states, transport, urls };
 }
 
 function terminalSession(): TerminalSession {
@@ -258,6 +275,62 @@ describe("TerminalWebSocketTransport", () => {
     harness.transport.dispose();
   });
 
+  it("delivers a focus claim made before the socket opens", () => {
+    const harness = createHarness();
+    harness.transport.sendResize(120, 40);
+    harness.transport.claimSize();
+    harness.transport.start();
+    const socket = harness.sockets[0]!;
+    socket.open();
+    expect(socket.sent.map((payload) => JSON.parse(payload))).toContainEqual({
+      type: "resize",
+      cols: 120,
+      rows: 40,
+      claim: true,
+    });
+    harness.transport.dispose();
+  });
+
+  it("delivers a focus claim before the first resize on an open socket", () => {
+    const harness = createHarness();
+    harness.transport.start();
+    const socket = harness.sockets[0]!;
+    socket.open();
+    harness.transport.claimSize();
+
+    harness.transport.sendResize(120, 40);
+
+    expect(socket.sent.map((payload) => JSON.parse(payload))).toContainEqual({
+      type: "resize",
+      cols: 120,
+      rows: 40,
+      claim: true,
+    });
+    harness.transport.dispose();
+  });
+
+  it("claims the most recently fitted size when a focused client takes over", () => {
+    const harness = createHarness();
+    harness.transport.start();
+    const socket = harness.sockets[0]!;
+    socket.open();
+    socket.receive({ type: "features", resizeAcks: true });
+    harness.transport.markLayoutSettled();
+    harness.transport.sendResize(55, 41);
+
+    harness.transport.claimSize();
+
+    expect(
+      socket.sent
+        .map((payload) => JSON.parse(payload))
+        .filter((message) => message.type === "resize"),
+    ).toEqual([
+      { type: "resize", cols: 55, rows: 41, seq: 1 },
+      { type: "resize", cols: 55, rows: 41, claim: true },
+    ]);
+    harness.transport.dispose();
+  });
+
   it("queues input before open and preserves it across reconnect", () => {
     vi.useFakeTimers();
     const harness = createHarness();
@@ -310,6 +383,37 @@ describe("TerminalWebSocketTransport", () => {
       "ws://example.test/ws/terminals/term-1?sinceSeq=0&outputAcks=1&resizeAcks=1",
       "ws://example.test/ws/terminals/term-1?sinceSeq=1&outputAcks=1&resizeAcks=1",
     ]);
+    harness.transport.dispose();
+  });
+
+  it("replays output from the last parsed sequence when a hidden terminal returns", () => {
+    const harness = createHarness();
+    harness.transport.start();
+    harness.sockets[0]?.open();
+    harness.sockets[0]?.receive({
+      type: "output",
+      chunk: { seq: 0, dataBase64: Buffer.from("first").toString("base64") },
+    });
+    harness.sockets[0]?.receive({
+      type: "output",
+      chunk: { seq: 1, dataBase64: Buffer.from("hidden").toString("base64") },
+    });
+
+    harness.transport.replayOutputFrom(1);
+
+    expect(harness.sockets[0]?.closeCalls).toHaveLength(1);
+    expect(harness.urls[1]).toContain("sinceSeq=1");
+    harness.sockets[1]?.open();
+    harness.sockets[1]?.receive({
+      type: "output",
+      chunk: { seq: 1, dataBase64: Buffer.from("hidden").toString("base64") },
+    });
+
+    expect(
+      harness.messages
+        .filter((message) => message.type === "output")
+        .map((message) => message.chunk.seq),
+    ).toEqual([0, 1, 1]);
     harness.transport.dispose();
   });
 
@@ -431,6 +535,109 @@ describe("TerminalWebSocketTransport", () => {
     harness.sockets[2]?.close();
     vi.advanceTimersByTime(100);
     expect(harness.sockets).toHaveLength(4);
+    harness.transport.dispose();
+  });
+
+  it("retries a failed replay at once, backs off up to 8 seconds without stopping, and starts fast again after the backoff is reset", () => {
+    vi.useFakeTimers();
+    const harness = createHarness({ reconnectDelaysMs: undefined });
+    const attach = (index: number) => {
+      harness.sockets[index]?.open();
+      harness.sockets[index]?.receive({
+        type: "attached",
+        session: terminalSession(),
+        replayStartSeq: 0,
+        nextSeq: 0,
+      });
+    };
+
+    harness.transport.start();
+    attach(0);
+    harness.transport.retry();
+    expect(harness.sockets[0]?.closeCalls).toHaveLength(1);
+    vi.advanceTimersByTime(99);
+    expect(harness.sockets).toHaveLength(1);
+    vi.advanceTimersByTime(1);
+    expect(harness.sockets).toHaveLength(2);
+
+    let created = 2;
+    for (const delay of [250, 500, 1_000, 2_000, 4_000, 8_000, 8_000, 8_000]) {
+      harness.sockets[created - 1]?.open();
+      harness.sockets[created - 1]?.close();
+      vi.advanceTimersByTime(delay - 1);
+      expect(harness.sockets).toHaveLength(created);
+      vi.advanceTimersByTime(1);
+      created += 1;
+      expect(harness.sockets).toHaveLength(created);
+    }
+
+    attach(created - 1);
+    harness.transport.resetRetryBackoff();
+    harness.transport.retry();
+    vi.advanceTimersByTime(100);
+    expect(harness.sockets).toHaveLength(created + 1);
+    harness.transport.dispose();
+  });
+
+  it("closes with browser-valid codes when retrying a replay and when a send fails, and opens a replacement socket", () => {
+    vi.useFakeTimers();
+    const harness = createHarness({ reconnectDelaysMs: undefined });
+    harness.transport.start();
+    harness.sockets[0]?.open();
+    harness.sockets[0]?.receive({
+      type: "attached",
+      session: terminalSession(),
+      replayStartSeq: 0,
+      nextSeq: 0,
+    });
+
+    expect(() => harness.transport.retry()).not.toThrow();
+    expect(harness.sockets[0]?.closeCalls).toEqual([
+      { code: 4001, reason: "terminal replay retry" },
+    ]);
+    vi.advanceTimersByTime(100);
+    expect(harness.sockets).toHaveLength(2);
+
+    const second = harness.sockets[1]!;
+    second.open();
+    second.throwOnSend = true;
+    expect(harness.transport.sendInput(btoa("x"))).toBe(true);
+    expect(second.closeCalls).toEqual([{ code: 4002, reason: "send-failed" }]);
+    vi.advanceTimersByTime(8_000);
+    expect(harness.sockets.length).toBeGreaterThanOrEqual(3);
+    harness.transport.dispose();
+  });
+
+  it("keeps backing off across retries that attach but never settle, and starts fast again after the backoff is reset", () => {
+    vi.useFakeTimers();
+    const harness = createHarness({ reconnectDelaysMs: undefined });
+    const attach = (index: number) => {
+      harness.sockets[index]?.open();
+      harness.sockets[index]?.receive({
+        type: "attached",
+        session: terminalSession(),
+        replayStartSeq: 0,
+        nextSeq: 0,
+      });
+    };
+
+    harness.transport.start();
+    attach(0);
+    let created = 1;
+    for (const delay of [100, 250, 500, 1_000, 2_000, 4_000, 8_000, 8_000]) {
+      harness.transport.retry();
+      vi.advanceTimersByTime(delay - 1);
+      expect(harness.sockets).toHaveLength(created);
+      vi.advanceTimersByTime(1);
+      created += 1;
+      expect(harness.sockets).toHaveLength(created);
+      attach(created - 1);
+    }
+
+    harness.transport.resetRetryBackoff();
+    harness.transport.retry();
+    vi.advanceTimersByTime(100);
+    expect(harness.sockets).toHaveLength(created + 1);
     harness.transport.dispose();
   });
 
@@ -669,12 +876,14 @@ describe("TerminalWebSocketTransport", () => {
       cols: number,
       rows: number,
       overrides: Parameters<typeof createHarness>[0] = {},
+      protocol = "bb.terminal.resize-echo.v1",
     ) {
       vi.useFakeTimers();
       const harness = createHarness(overrides);
       harness.transport.sendResize(cols, rows);
       harness.transport.start();
       const socket = harness.sockets[0]!;
+      socket.protocol = protocol;
       socket.open();
       harness.transport.markLayoutSettled();
       return { harness, socket };
@@ -742,7 +951,7 @@ describe("TerminalWebSocketTransport", () => {
       const ack = (seq: number) =>
         opened.socket.receive({ type: "resize-applied", seq });
       const echo = (size: { cols: number; rows: number }) =>
-        opened.harness.transport.consumeRepaintNudgeEcho(size);
+        opened.harness.transport.consumeRepaintNudgeEcho(size, 1);
       return { ...opened, ack, echo };
     }
 
@@ -764,6 +973,34 @@ describe("TerminalWebSocketTransport", () => {
       harness.transport.dispose();
     });
 
+    it("does not nudge when an old server selects only the legacy websocket protocol", async () => {
+      const { harness, socket } = openHarness(100, 30, {}, "bb.terminal.v1");
+      socket.receive({ type: "features", resizeAcks: true });
+
+      harness.transport.requestRepaint();
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(socket.sent).toEqual([
+        JSON.stringify({ type: "resize", cols: 100, rows: 30 }),
+      ]);
+      expect(
+        harness.transport.consumeRepaintNudgeEcho({ cols: 99, rows: 30 }),
+      ).toBe(false);
+      harness.transport.dispose();
+    });
+
+    it("offers the resize echo protocol after the legacy protocol for old servers", () => {
+      const harness = createHarness();
+      harness.transport.start();
+
+      expect(harness.urls).toHaveLength(1);
+      expect(harness.protocols[0]).toEqual([
+        "bb.terminal.v1",
+        "bb.terminal.resize-echo.v1",
+      ]);
+      harness.transport.dispose();
+    });
+
     it("asks for resize acks in the socket url", () => {
       const { harness } = openHarness(100, 30);
 
@@ -774,16 +1011,52 @@ describe("TerminalWebSocketTransport", () => {
     });
 
     it("tags the nudge and the restore with increasing seq once the server confirmed resize acks", async () => {
-      const { harness, socket } = openAckedHarness(100, 30);
+      const { harness, socket, ack } = openAckedHarness(100, 30);
 
       harness.transport.requestRepaint();
       await vi.advanceTimersByTimeAsync(0);
+      ack(1);
       vi.advanceTimersByTime(400);
 
       expect(socket.sent.slice(-2)).toEqual([
         resizeFrame(99, 30, 1),
         resizeFrame(100, 30, 2),
       ]);
+      harness.transport.dispose();
+    });
+
+    it("waits for the nudge to be applied before restoring the full size", async () => {
+      const { harness, socket, ack } = openAckedHarness(51, 47);
+
+      harness.transport.requestRepaint();
+      await vi.advanceTimersByTimeAsync(0);
+      vi.advanceTimersByTime(400);
+
+      expect(socket.sent.slice(-1)).toEqual([resizeFrame(50, 47, 1)]);
+      ack(1);
+
+      expect(socket.sent.slice(-1)).toEqual([resizeFrame(51, 47, 2)]);
+      harness.transport.dispose();
+    });
+
+    it("retries the restore while the nudge acknowledgement is missing", async () => {
+      const { harness, socket, ack } = openAckedHarness(51, 47);
+
+      harness.transport.requestRepaint();
+      await vi.advanceTimersByTimeAsync(0);
+      vi.advanceTimersByTime(400);
+      expect(socket.sent.at(-1)).toBe(resizeFrame(50, 47, 1));
+
+      vi.advanceTimersByTime(999);
+      expect(socket.sent.at(-1)).toBe(resizeFrame(50, 47, 1));
+      vi.advanceTimersByTime(1);
+      expect(socket.sent.at(-1)).toBe(resizeFrame(51, 47, 2));
+      vi.advanceTimersByTime(1_000);
+      expect(socket.sent.at(-1)).toBe(resizeFrame(51, 47, 3));
+
+      ack(3);
+      vi.advanceTimersByTime(1_000);
+      expect(socket.sent.at(-1)).toBe(resizeFrame(51, 47, 3));
       harness.transport.dispose();
     });
 
@@ -811,11 +1084,12 @@ describe("TerminalWebSocketTransport", () => {
     });
 
     it("keeps the restore after a peer resized in the window so this client's own size does not stay narrowed", async () => {
-      const { harness, socket, echo } = openAckedHarness(100, 30);
+      const { harness, socket, ack, echo } = openAckedHarness(100, 30);
 
       harness.transport.requestRepaint();
       await vi.advanceTimersByTimeAsync(0);
       expect(echo({ cols: 44, rows: 20 })).toBe(false);
+      ack(1);
       vi.advanceTimersByTime(400);
 
       expect(socket.sent.at(-1)).toBe(resizeFrame(100, 30, 2));
@@ -936,11 +1210,12 @@ describe("TerminalWebSocketTransport", () => {
     });
 
     it("does not send the obsolete restore after the fitted size changed", async () => {
-      const { harness, socket } = openAckedHarness(100, 30);
+      const { harness, socket, ack } = openAckedHarness(100, 30);
 
       harness.transport.requestRepaint();
       await vi.advanceTimersByTimeAsync(0);
       harness.transport.sendResize(80, 24);
+      ack(1);
       const sentBefore = socket.sent.length;
       vi.advanceTimersByTime(5000);
 

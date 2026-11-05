@@ -5,6 +5,7 @@ import {
   terminalColsSchema,
   terminalRowsSchema,
   toolCallResponseSchema,
+  truncateNativeAssistantText,
 } from "@bb/domain";
 import { terminalSessionSchema } from "./terminals.js";
 
@@ -37,6 +38,7 @@ export type NativeTerminalLaunchQuery = z.infer<
 
 export const nativeTerminalLaunchSpecSchema = z.object({
   threadId: z.string().min(1),
+  providerId: z.string().min(1),
   cli: providerNativeTerminalSchema,
   nativeSessionId: z.string().min(1).nullable(),
   initialPrompt: z.string().min(1).nullable(),
@@ -81,10 +83,19 @@ export type NativeTerminalOpenQuestion = z.infer<
 export const reportNativeTerminalActivityRequestSchema = z
   .object({
     state: nativeTerminalActivityStateSchema,
+    lastAssistantText: z.preprocess(
+      (value) => typeof value === "string" ? truncateNativeAssistantText(value) : value,
+      z.string().optional(),
+    ),
     prompt: z.string().trim().min(1).max(4_000).optional(),
     questions: z
       .array(nativeTerminalOpenQuestionSchema)
       .min(1)
+      .max(NATIVE_TERMINAL_MAX_OPEN_QUESTIONS)
+      .optional(),
+    confirms: z.boolean().optional(),
+    closes: z
+      .array(z.string().trim().min(1).max(256))
       .max(NATIVE_TERMINAL_MAX_OPEN_QUESTIONS)
       .optional(),
   })
@@ -107,6 +118,10 @@ export const recordNativeSessionRequestSchema = z
     nativeSessionId: z
       .string()
       .regex(/^[0-9a-f-]{8,64}$/iu, "expected a native session id"),
+    replacesNativeSessionId: z
+      .string()
+      .regex(/^[0-9a-f-]{8,64}$/iu, "expected a native session id")
+      .optional(),
   })
   .strict();
 export type RecordNativeSessionRequest = z.infer<

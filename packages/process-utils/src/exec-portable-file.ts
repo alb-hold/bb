@@ -3,8 +3,8 @@ import {
   runVcsProcess,
   type VcsProcessPriority,
 } from "./vcs-process-scheduler.js";
-import { basename, extname } from "node:path";
-import { whichCommandSync } from "which-command";
+import { basename } from "node:path";
+import { hostToolchain } from "./host-toolchain.js";
 import { createProcessStop } from "./managed-process.js";
 import {
   supportsProcessGroups,
@@ -20,6 +20,13 @@ interface ExecPortableFileOptions {
   signal?: AbortSignal;
   input?: string;
   onStderr?: (chunk: string) => void;
+}
+
+export function resolvePortableCommand(
+  command: string,
+  options: { cwd: string; env: NodeJS.ProcessEnv },
+): string | undefined {
+  return hostToolchain.resolve(command, options) ?? undefined;
 }
 
 export async function execPortableFile(
@@ -50,34 +57,23 @@ async function execPortableFileUnbounded(
   options: ExecPortableFileOptions,
 ): Promise<{ stdout: string; stderr: string }> {
   if (options.signal?.aborted) throw options.signal.reason;
-  if (process.platform === "win32") {
-    const envKeys = Object.keys(options.env).sort();
-    const pathKey = envKeys.find((key) => key.toUpperCase() === "PATH");
-    const pathExtKey = envKeys.find((key) => key.toUpperCase() === "PATHEXT");
-    const commandExtension = extname(command);
-    const pathExt = options.env[pathExtKey ?? "PATHEXT"];
-    if (
-      whichCommandSync(command, {
-        cwd: options.cwd,
-        path: options.env[pathKey ?? "PATH"],
-        pathExt: commandExtension
-          ? `${commandExtension};${pathExt ?? ".EXE;.COM;.CMD;.BAT"}`
-          : pathExt,
-      }) === undefined
-    ) {
-      throw Object.assign(new Error(`spawn ${command} ENOENT`), {
-        code: "ENOENT",
-        syscall: `spawn ${command}`,
-        stdout: "",
-        stderr: "",
-        signal: null,
-        killed: false,
-      });
-    }
+  if (
+    process.platform === "win32" &&
+    resolvePortableCommand(command, options) === undefined
+  ) {
+    throw Object.assign(new Error(`spawn ${command} ENOENT`), {
+      code: "ENOENT",
+      syscall: `spawn ${command}`,
+      stdout: "",
+      stderr: "",
+      signal: null,
+      killed: false,
+    });
   }
-  const subprocess = execa(command, args, {
+  const launch = hostToolchain.command(command, args, options);
+  const subprocess = execa(launch.command, launch.args, {
     cwd: options.cwd,
-    env: options.env,
+    env: launch.env,
     extendEnv: false,
     encoding: "buffer",
     stripFinalNewline: false,
@@ -139,6 +135,7 @@ async function execPortableFileUnbounded(
     stderr: Buffer.from(result.stderr).toString("utf8"),
   };
   if (!result.failed && !canceled && !timedOut) return output;
+  hostToolchain.invalidateFailure(result.code ?? result.exitCode);
   const stopped = canceled || result.isMaxBuffer || timedOut;
   const syscall =
     result.cause instanceof Error &&

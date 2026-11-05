@@ -3,6 +3,7 @@ import {
   createEventId,
   getActiveStoredTurnId,
   isStoredTurnMainRunIdle,
+  isStoredTurnProviderCompactionRunning,
   getLastStoredProviderThreadId,
   getLastStoredTurnRequestEvent,
   getStoredProviderSession,
@@ -85,6 +86,7 @@ interface ClientTurnRequestedEventArgs {
   initiator: ThreadTurnInitiator;
   input: PromptInput[];
   inputGroups?: PromptInput[][];
+  originPluginId: string | null;
   requestMethod: "thread/start" | "turn/start";
   senderThreadId: string | null;
   source: "spawn" | "tell";
@@ -208,6 +210,9 @@ function buildClientTurnRequestedEventData(
         }
       : {}),
     senderThreadId: args.senderThreadId,
+    ...(args.originPluginId !== null
+      ? { originPluginId: args.originPluginId }
+      : {}),
     ...(args.systemMessageKind !== undefined
       ? { systemMessageKind: args.systemMessageKind }
       : {}),
@@ -464,13 +469,42 @@ function assertStoredTurnStartedForEvents(
 export function appendThreadEvent<TType extends ThreadEventType>(
   deps: Pick<AppDeps, "db" | "hub">,
   args: AppendThreadEventArgs<TType>,
+  beforeAppendInTransaction?: (args: { tx: DbTransaction }) => void,
 ): number;
 export function appendThreadEvent(
   deps: Pick<AppDeps, "db" | "hub">,
   args: AppendThreadEventArgs,
+  beforeAppendInTransaction?: (args: { tx: DbTransaction }) => void,
 ): number {
   const result = deps.db.transaction(
-    (tx) => appendThreadEventInTransactionWithAttention(tx, args),
+    (tx) => {
+      beforeAppendInTransaction?.({ tx });
+      return appendThreadEventInTransactionWithAttention(tx, args);
+    },
+    { behavior: "immediate" },
+  );
+  deps.hub.notifyThread(
+    args.threadId,
+    buildAppendThreadEventNotificationChanges(result.readStateUpdate),
+    buildAppendThreadEventNotificationMetadata({
+      sequence: result.sequence,
+      readStateUpdate: result.readStateUpdate,
+      eventType: args.type,
+    }),
+  );
+  return result.sequence;
+}
+
+export function appendThreadEventWithPreflight(
+  deps: Pick<AppDeps, "db" | "hub">,
+  args: AppendThreadEventArgs,
+  preflight: (tx: DbTransaction) => void,
+): number {
+  const result = deps.db.transaction(
+    (tx) => {
+      preflight(tx);
+      return appendThreadEventInTransactionWithAttention(tx, args);
+    },
     { behavior: "immediate" },
   );
   deps.hub.notifyThread(
@@ -871,6 +905,15 @@ export function isManualCompactionActive(
   }
 
   const activeTurnId = getActiveStoredTurnId(deps.db, thread.id);
+  if (
+    activeTurnId !== null &&
+    isStoredTurnProviderCompactionRunning(deps.db, {
+      threadId: thread.id,
+      turnId: activeTurnId,
+    })
+  ) {
+    return true;
+  }
   const requestRow = activeTurnId
     ? (getStoredTurnRequestEventForTurn(deps.db, {
         threadId: thread.id,

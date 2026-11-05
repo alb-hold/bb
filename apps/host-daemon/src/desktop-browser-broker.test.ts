@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -78,13 +79,16 @@ async function connect(
   );
   return socket;
 }
-async function registered(broker: DesktopBrowserBroker) {
-  await vi.waitFor(async () => {
-    expect(
-      (await broker.request({ type: "desktop.browser.list_instances" }))
-        .instances,
-    ).toHaveLength(1);
-  });
+async function registrationProcessed(socket: WebSocket) {
+  const pong = once(socket, "pong");
+  socket.ping();
+  await pong;
+}
+async function registered(broker: DesktopBrowserBroker, socket: WebSocket) {
+  await registrationProcessed(socket);
+  expect(
+    (await broker.request({ type: "desktop.browser.list_instances" })).instances,
+  ).toHaveLength(1);
 }
 
 describe("desktop browser broker", () => {
@@ -152,7 +156,7 @@ describe("desktop browser broker", () => {
   it("routes scoped commands and validates native snapshots", async () => {
     const { broker, onChanged } = await setup();
     const socket = await connect(broker);
-    await registered(broker);
+    await registered(broker, socket);
     socket.on("message", (data) => {
       const request = desktopBrowserBrokerRequestSchema.parse(
         JSON.parse(data.toString()),
@@ -191,7 +195,7 @@ describe("desktop browser broker", () => {
   it("disconnects native clients and rejects outstanding commands on server loss", async () => {
     const { broker } = await setup();
     const socket = await connect(broker);
-    await registered(broker);
+    await registered(broker, socket);
     const response = broker.request({
       type: "desktop.browser.list_tabs",
       ...scope,
@@ -213,7 +217,7 @@ describe("desktop browser broker", () => {
   it("bounds unanswered requests and invalidates the native session", async () => {
     const { broker } = await setup(100);
     const socket = await connect(broker);
-    await registered(broker);
+    await registered(broker, socket);
     const close = once(socket, "close");
     await expect(
       broker.request({ type: "desktop.browser.list_tabs", ...scope }),
@@ -231,7 +235,7 @@ describe("desktop browser broker", () => {
     ]) {
       const { broker } = await setup();
       const socket = await connect(broker);
-      await registered(broker);
+      await registered(broker, socket);
       socket.on("message", (data) => {
         const request = desktopBrowserBrokerRequestSchema.parse(
           JSON.parse(data.toString()),
@@ -253,7 +257,7 @@ describe("desktop browser broker", () => {
   it("uses refreshed instance generations and rejects duplicate instance ownership", async () => {
     const { broker } = await setup();
     const socket = await connect(broker);
-    await registered(broker);
+    await registered(broker, socket);
     const duplicate = await connect(broker);
     await once(duplicate, "close");
     expect(
@@ -274,14 +278,26 @@ describe("desktop browser broker", () => {
         ],
       }),
     );
-    await vi.waitFor(async () =>
-      expect(
-        (await broker.request({ type: "desktop.browser.list_instances" }))
-          .instances[0]?.generation,
-      ).toBe("generation-2"),
-    );
+    await registrationProcessed(socket);
+    expect(
+      (await broker.request({ type: "desktop.browser.list_instances" }))
+        .instances[0]?.generation,
+    ).toBe("generation-2");
     await expect(
       broker.request({ type: "desktop.browser.list_tabs", ...scope }),
     ).rejects.toThrow("stale");
   });
+});
+
+it("proves the active broker without exposing its token and retires proofs on disconnect", async () => {
+  const { broker } = await setup();
+  const challenge = "c".repeat(64);
+  expect(broker.prove(challenge)).toEqual({
+    proof: createHmac("sha256", broker.descriptor.token)
+      .update(`bb-desktop-broker:${challenge}`)
+      .digest("hex"),
+  });
+  expect(broker.prove("d".repeat(64))).not.toEqual(broker.prove(challenge));
+  broker.setConnected(false);
+  expect(() => broker.prove(challenge)).toThrow("disconnected");
 });

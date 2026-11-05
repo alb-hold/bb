@@ -4,6 +4,7 @@ import {
   type StallWindowBatch,
 } from "./stall-windows.js";
 import { parentPort, workerData } from "node:worker_threads";
+import { setImmediate } from "node:timers/promises";
 import { Session } from "node:inspector/promises";
 import type { Profiler } from "node:inspector";
 import { mkdir, readdir, stat, rm, writeFile, rename } from "node:fs/promises";
@@ -33,9 +34,23 @@ async function runProfileWorker(): Promise<void> {
     }
   };
   const session = new Session();
+  const disconnect = async () => {
+    session.disconnect();
+    await new Promise<void>((resolve) => {
+      const onMessage = (value: unknown) => {
+        if (value !== "drained") return;
+        port.off("message", onMessage);
+        resolve();
+      };
+      port.on("message", onMessage);
+      port.postMessage("disconnected");
+    });
+    await setImmediate();
+  };
   let startedAt = "";
   let title = "";
   let finishedProfile: Profiler.Profile | undefined;
+  let acknowledgeFailure: (() => void) | undefined;
   session.on("Profiler.consoleProfileFinished", (event) => {
     if (event.params.title === title) finishedProfile = event.params.profile;
   });
@@ -100,7 +115,11 @@ async function runProfileWorker(): Promise<void> {
       "Server performance diagnostics enabled",
     );
   };
-  const capture = async (restart: boolean, stalls: StallWindowBatch) => {
+  const capture = async (
+    restart: boolean,
+    stalls: StallWindowBatch,
+    beforeComplete?: () => Promise<void>,
+  ) => {
     const beginning = startedAt;
     const nextTitle = `bb-performance-${randomUUID()}`;
     if (restart) {
@@ -123,10 +142,12 @@ async function runProfileWorker(): Promise<void> {
     const bytes = Buffer.byteLength(contents);
     await prune(bytes > maxProfileBytes ? 0 : bytes);
     if (bytes > maxProfileBytes) {
+      await beforeComplete?.();
       respond(
         { bytes, startedAt: beginning, endedAt },
         "CPU profile exceeded size limit; discarded",
         "warn",
+        restart,
       );
       return;
     }
@@ -139,6 +160,7 @@ async function runProfileWorker(): Promise<void> {
     await rename(pendingPath, path);
     profiles.push({ path, bytes, savedAt });
     retainedBytes += bytes;
+    await beforeComplete?.();
     respond(
       {
         path,
@@ -150,9 +172,16 @@ async function runProfileWorker(): Promise<void> {
         nativeFramesMayIncludeWaiting: true,
       },
       "Server CPU profile saved",
+      "info",
+      restart,
     );
   };
   port.on("message", async (command: unknown) => {
+    if (command === "drained") return;
+    if (command === "failure-ack") {
+      acknowledgeFailure?.();
+      return;
+    }
     try {
       if (command === "start") await start();
       else if (
@@ -162,16 +191,38 @@ async function runProfileWorker(): Promise<void> {
         (command.command === "capture" || command.command === "stop") &&
         "stalls" in command
       ) {
+        const stopping = command.command === "stop";
         await capture(
-          command.command === "capture",
+          !stopping,
           parseStallWindowBatch(command.stalls),
+          stopping
+            ? async () => {
+                await session.post("Profiler.disable");
+                await disconnect();
+              }
+            : undefined,
         );
-        if (command.command === "stop") session.disconnect();
+        if (stopping) {
+          respond({}, "CPU profiling worker stopped");
+          port.close();
+        }
       } else throw new Error("Invalid profiling command");
     } catch (error) {
-      session.disconnect();
+      await session.post("Profiler.disable").catch(() => {});
+      await disconnect();
       await rm(pendingPath, { force: true }).catch(() => {});
-      throw error;
+      let failure: Error;
+      try {
+        failure = error instanceof Error ? error : new Error(String(error));
+      } catch {
+        failure = new Error("Non-Error profile failure");
+      }
+      await new Promise<void>((resolve) => {
+        acknowledgeFailure = resolve;
+        port.postMessage({ failure });
+      });
+      acknowledgeFailure = undefined;
+      port.close();
     }
   });
 }

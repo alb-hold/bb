@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "12939974-3ed3-4749-a073-178d9e77f318",
+  "id": "7d0093af-15d4-4b46-819a-49f038d624ae",
   "prevId": "35f1f628-fc77-4e47-9ae7-6fb1b8c2655c",
   "tables": {
     "app_settings": {
@@ -449,6 +449,74 @@
       },
       "foreignKeys": {},
       "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "diff_viewed_files": {
+      "name": "diff_viewed_files",
+      "columns": {
+        "environment_id": {
+          "name": "environment_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "target_key": {
+          "name": "target_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "path": {
+          "name": "path",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "revision": {
+          "name": "revision",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "diff_viewed_files_environment_id_environments_id_fk": {
+          "name": "diff_viewed_files_environment_id_environments_id_fk",
+          "tableFrom": "diff_viewed_files",
+          "tableTo": "environments",
+          "columnsFrom": [
+            "environment_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "diff_viewed_files_environment_id_target_key_path_pk": {
+          "columns": [
+            "environment_id",
+            "target_key",
+            "path"
+          ],
+          "name": "diff_viewed_files_environment_id_target_key_path_pk"
+        }
+      },
       "uniqueConstraints": {},
       "checkConstraints": {}
     },
@@ -1178,260 +1246,6 @@
           "value": "(\n        (\"events\".\"scope_kind\" = 'turn' AND \"events\".\"turn_id\" IS NOT NULL)\n        OR\n        (\"events\".\"scope_kind\" = 'thread' AND \"events\".\"turn_id\" IS NULL)\n      )"
         }
       }
-    },
-    "fork_device_handoff_attention": {
-      "name": "fork_device_handoff_attention",
-      "columns": {
-        "terminal_session_id": {
-          "name": "terminal_session_id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "attention_seq": {
-          "name": "attention_seq",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "fork_device_handoff_attention_terminal_session_id_terminal_sessions_id_fk": {
-          "name": "fork_device_handoff_attention_terminal_session_id_terminal_sessions_id_fk",
-          "tableFrom": "fork_device_handoff_attention",
-          "tableTo": "terminal_sessions",
-          "columnsFrom": [
-            "terminal_session_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "checkConstraints": {}
-    },
-    "fork_terminal_output": {
-      "name": "fork_terminal_output",
-      "columns": {
-        "terminal_session_id": {
-          "name": "terminal_session_id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "host_id": {
-          "name": "host_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "chunks_json": {
-          "name": "chunks_json",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "byte_length": {
-          "name": "byte_length",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "retained_at": {
-          "name": "retained_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "expires_at": {
-          "name": "expires_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        }
-      },
-      "indexes": {
-        "fork_terminal_output_host_retained_idx": {
-          "name": "fork_terminal_output_host_retained_idx",
-          "columns": [
-            "host_id",
-            "retained_at"
-          ],
-          "isUnique": false
-        }
-      },
-      "foreignKeys": {
-        "fork_terminal_output_terminal_session_id_terminal_sessions_id_fk": {
-          "name": "fork_terminal_output_terminal_session_id_terminal_sessions_id_fk",
-          "tableFrom": "fork_terminal_output",
-          "tableTo": "terminal_sessions",
-          "columnsFrom": [
-            "terminal_session_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "fork_terminal_output_host_id_hosts_id_fk": {
-          "name": "fork_terminal_output_host_id_hosts_id_fk",
-          "tableFrom": "fork_terminal_output",
-          "tableTo": "hosts",
-          "columnsFrom": [
-            "host_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "checkConstraints": {}
-    },
-    "fork_terminal_tab_dismissals": {
-      "name": "fork_terminal_tab_dismissals",
-      "columns": {
-        "terminal_session_id": {
-          "name": "terminal_session_id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "host_id": {
-          "name": "host_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "dismissed_at": {
-          "name": "dismissed_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "expires_at": {
-          "name": "expires_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        }
-      },
-      "indexes": {
-        "fork_terminal_tab_dismissals_host_expiry_idx": {
-          "name": "fork_terminal_tab_dismissals_host_expiry_idx",
-          "columns": [
-            "host_id",
-            "expires_at"
-          ],
-          "isUnique": false
-        }
-      },
-      "foreignKeys": {
-        "fork_terminal_tab_dismissals_terminal_session_id_terminal_sessions_id_fk": {
-          "name": "fork_terminal_tab_dismissals_terminal_session_id_terminal_sessions_id_fk",
-          "tableFrom": "fork_terminal_tab_dismissals",
-          "tableTo": "terminal_sessions",
-          "columnsFrom": [
-            "terminal_session_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "fork_terminal_tab_dismissals_host_id_hosts_id_fk": {
-          "name": "fork_terminal_tab_dismissals_host_id_hosts_id_fk",
-          "tableFrom": "fork_terminal_tab_dismissals",
-          "tableTo": "hosts",
-          "columnsFrom": [
-            "host_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "checkConstraints": {}
-    },
-    "fork_thread_row_states": {
-      "name": "fork_thread_row_states",
-      "columns": {
-        "thread_id": {
-          "name": "thread_id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "statuses_json": {
-          "name": "statuses_json",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": "'{}'"
-        },
-        "progress_json": {
-          "name": "progress_json",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": 0
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "fork_thread_row_states_thread_id_threads_id_fk": {
-          "name": "fork_thread_row_states_thread_id_threads_id_fk",
-          "tableFrom": "fork_thread_row_states",
-          "tableTo": "threads",
-          "columnsFrom": [
-            "thread_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "checkConstraints": {}
     },
     "host_daemon_sessions": {
       "name": "host_daemon_sessions",

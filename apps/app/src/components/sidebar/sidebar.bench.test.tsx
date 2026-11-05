@@ -110,13 +110,38 @@ function stubPluginRpcFetch(): void {
             }),
           ),
         };
+      } else if (method === "threadNotifications.keyed") {
+        const { keys } = z
+          .object({ keys: z.array(z.string()) })
+          .parse(JSON.parse(String(init?.body)));
+        notificationListRequests.push(keys);
+        result = Object.fromEntries(
+          keys.map((id) => [
+            id,
+            CONFIGURED_NOTIFICATION_LEVELS.get(id) ?? {
+              own: "inherit",
+              ancestorCap: null,
+            },
+          ]),
+        );
       } else if (method === "setPreference" || method === "resetPreference") {
         result = JSON.parse(String(init?.body ?? "{}"));
       }
-      return new Response(JSON.stringify({ ok: true, result }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      });
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          result,
+          keyTags: Object.fromEntries(
+            notificationListRequests
+              .at(-1)
+              ?.map((id) => [id, [`thread:${id}`]]) ?? [],
+          ),
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        },
+      );
     },
   );
 }
@@ -197,7 +222,6 @@ vi.mock("@/components/project/ProjectActionsProvider", () => ({
 vi.mock("@/components/thread/ThreadActionsProvider", () => ({
   useThreadActions: () => ({
     renameThreadAsync: vi.fn(async () => undefined),
-    requestRename: vi.fn(),
     requestDelete: vi.fn(),
     archiveThreadAndChildren: vi.fn(),
     unarchiveThread: vi.fn(),

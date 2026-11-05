@@ -4,6 +4,8 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -13,6 +15,7 @@ import {
   type ReactNode,
 } from "react";
 import { useComposedRefs } from "@radix-ui/react-compose-refs";
+import { useStickyRowStateReport } from "../ui/stickyOffset.js";
 import { useAtomValue } from "jotai";
 import { Icon } from "@/components/ui/icon";
 import { useIsCompactViewport } from "@/components/ui/hooks/use-compact-viewport";
@@ -30,6 +33,8 @@ import { cn } from "@/lib/utils";
 import { LIST_HOVER_TRANSITION } from "@/components/ui/motion";
 import {
   hasThreadListWorkingActivity,
+  nativeActivityGuidanceText,
+  nativeActivityNoticeText,
   resolveThreadListIndicator,
   resolveThreadStatus,
   threadListIndicatorStateForThread,
@@ -41,8 +46,9 @@ import {
   experimental_ThreadActionsContextMenu as ThreadActionsContextMenu,
   experimental_ThreadActionsMenu as ThreadActionsMenu,
   experimental_ThreadStatusGlyph as ThreadStatusGlyph,
+  experimental_ThreadRowMetadata as ThreadRowMetadata,
   experimental_THREAD_ACTION_GROUPS,
-  experimental_useSidebarThreadPullRequest,
+  experimental_useExperiment,
   experimental_useThreadActions,
   experimental_useSidebarThreadSplit,
   experimental_ProviderIcon as ProviderIcon,
@@ -54,12 +60,15 @@ import {
   useSidebarThreadShortcut,
   useSdk,
   type PluginSidebarSplitPane,
+  type PluginThreadActionsContextMenuProps,
   type PluginThreadActionsInlineItem,
   type PluginThreadActionsTriggerProps,
+  type PluginSidebarThread,
   type PluginSidebarThreadRowStatus,
   type PluginProvidersState,
 } from "@get-bb/plugin-sdk/app";
 import type { SidebarThread } from "../model/sidebar-thread.js";
+import { useThreadListPullRequest } from "./pull-request-query.js";
 import {
   NO_THREAD_IDS,
   useThreadsHaveDraft,
@@ -68,6 +77,8 @@ import { useAutomationWokeAt } from "../model/automation-woke.js";
 import { useSidebarProjectName } from "../model/use-sidebar-data.js";
 import {
   sidebarShowProviderIconsAtom,
+  sidebarShowRowMetadataAtom,
+  THREAD_ROW_METADATA_EXPERIMENT,
   threadRowActionsAtom,
 } from "../preferences/atoms.js";
 import { ShortcutPill } from "@/components/ui/shortcut-pill";
@@ -107,6 +118,13 @@ import { SidebarThreadDragChip } from "../dnd/sidebarThreadDragChip.js";
 import { SplitPaneMiniMap } from "@/components/ui/split-pane-mini-map";
 import { ThreadRowQuickActions } from "./ThreadRowQuickActions.js";
 import { toThreadActionTarget } from "./threadActionTarget.js";
+import {
+  useIsSelectionHidingActiveRow,
+  useIsThreadSelected,
+  useMultiSelectionContaining,
+  useThreadSelectionStore,
+} from "../selection/threadSelection.js";
+import { useThreadSelectionMenu } from "../selection/useThreadSelectionMenu.js";
 import { useOpenThreadInSplit } from "./threadRowNavigation.js";
 import { Button } from "@/components/ui/button";
 import { COARSE_POINTER_ICON_SIZE_CLASS } from "@/components/ui/coarse-pointer-sizing";
@@ -180,6 +198,7 @@ interface ThreadRowContainerArgs {
   dragBindings?: SidebarSortableDragBindings;
   nestTargetState: SidebarNestTargetState | null;
   reorderPlacement: SidebarReorderPlacement | null;
+  selected: boolean;
   onClick?: MouseEventHandler<HTMLDivElement>;
   onClickCapture?: ThreadRowClickCaptureHandler;
   onSplitDragPointerDown?: PointerEventHandler<HTMLElement>;
@@ -205,6 +224,20 @@ export const REORDER_PLACEMENT_CLASS: Record<SidebarReorderPlacement, string> =
 const HOVER_CAPABLE_ACTIONS_OVERLAY_CLASS =
   "[@media(hover:hover)]:absolute [@media(hover:hover)]:inset-y-0 [@media(hover:hover)]:right-1 [@media(hover:hover)]:z-30";
 
+const ROW_STATE_ACTIONS_OVERLAY_CLASS =
+  "[@media(hover:hover)]:absolute [@media(hover:hover)]:top-0 [@media(hover:hover)]:right-1 [@media(hover:hover)]:z-30";
+
+const ROW_STATE_ROW_HEIGHT_CLASS =
+  "min-h-(--bb-sidebar-row-height) max-md:pointer-coarse:min-h-(--bb-sidebar-row-height-coarse)";
+
+const ROW_STATE_COMPACT_ROW_HEIGHT_CLASS =
+  "min-h-7 max-md:pointer-coarse:min-h-9";
+
+const ROW_STATE_ACTIONS_HEIGHT_CLASS =
+  "h-(--bb-sidebar-row-height) max-md:pointer-coarse:h-(--bb-sidebar-row-height-coarse)";
+
+const ROW_STATE_COMPACT_ACTIONS_HEIGHT_CLASS = "h-7 max-md:pointer-coarse:h-9";
+
 function getHoverActionsInsetStyle(actionCount: number): CSSProperties {
   return {
     "--bb-sidebar-hover-actions-inset": `calc(var(--spacing) * ${7.5 * actionCount})`,
@@ -227,6 +260,7 @@ function renderThreadRowContainer({
   onClickCapture,
   onSplitDragPointerDown,
   reorderPlacement,
+  selected,
   stickyLevel,
   style,
 }: ThreadRowContainerArgs) {
@@ -236,6 +270,7 @@ function renderThreadRowContainer({
     style,
     "data-sidebar-nest-target": nestTargetState ?? undefined,
     "data-sidebar-reorder-placement": reorderPlacement ?? undefined,
+    "data-sidebar-thread-selected": selected ? "" : undefined,
     ...dragBindings?.attributes,
     ...(dragBindings?.listeners ?? {}),
     onClick,
@@ -281,6 +316,8 @@ export function CollapsedThreadStatusGlyph({
     isBackgroundAgentActive: activity.backgroundAgent,
     isBackgroundCommandActive: activity.backgroundCommand,
     isGoalActive: activity.goal,
+    isActivityUnreported: false,
+    queuedFailedCount: 0,
     queuedWork: "none",
     isPlanModeActive: activity.planMode,
     isRuntimeActive: activity.runtimeWorking,
@@ -299,6 +336,8 @@ function ThreadTrailingIndicator({
   hideIdleDraftLabel,
   rowStatus,
   nativeActivityUnconfirmed,
+  nativeActivityNotice,
+  nativeActivityGuidance,
   automationStartedAt,
   elapsedMinutes,
 }: {
@@ -306,9 +345,12 @@ function ThreadTrailingIndicator({
   hideIdleDraftLabel: boolean;
   rowStatus: PluginSidebarThreadRowStatus | null;
   nativeActivityUnconfirmed: boolean;
+  nativeActivityNotice: string;
+  nativeActivityGuidance: string | null;
   automationStartedAt: number | null;
   elapsedMinutes: number | null;
 }) {
+  const guidanceId = useId();
   const resolvedState = {
     ...state,
     isAutomationWoken: automationStartedAt !== null,
@@ -335,17 +377,25 @@ function ThreadTrailingIndicator({
           ? `Woke${elapsedMinutes === null ? "" : ` ${elapsedMinutes}m`}`
           : indicatorKind === "done-unread"
             ? "Done"
-            : nativeActivityUnconfirmed
-              ? "Activity unconfirmed"
+            : indicatorKind === "activity-unreported"
+              ? nativeActivityNotice
               : null;
 
+  const activityNoticeApplies =
+    nativeActivityUnconfirmed &&
+    indicatorKind !== "needs-input" &&
+    indicatorKind !== "queued-failed";
+  const hasGuidance =
+    indicatorKind === "activity-unreported" && nativeActivityGuidance !== null;
   const indicator = (
     <span
+      aria-describedby={hasGuidance ? guidanceId : undefined}
       data-sidebar-thread-trailing-indicator=""
       data-sidebar-status-slot={statusText === null ? undefined : ""}
       className={cn(
         "inline-flex h-5 shrink-0 items-center gap-1.5 rounded-full px-1.5 font-medium text-xs",
         statusText !== null && "justify-end gap-1 whitespace-nowrap px-0",
+        statusText === null && "px-0",
         indicatorKind === "needs-input" && "text-destructive-text",
         indicatorKind === "working" && SIDEBAR_WORKING_STATUS_COLOR_CLASS,
         indicatorKind === "woke" && "text-warning",
@@ -355,36 +405,65 @@ function ThreadTrailingIndicator({
       )}
       role={statusText === null ? undefined : "img"}
       aria-label={statusText ?? undefined}
+      title={
+        statusText === null && activityNoticeApplies && !hasGuidance
+          ? nativeActivityNotice
+          : undefined
+      }
     >
       <ThreadStatusGlyph
         indicator={indicatorKind}
         rowStatus={rowStatus}
         hideIdleDraftLabel={hideIdleDraftLabel}
         hideAccessibleLabel={statusText !== null}
+        experimental_queuedFailedCount={state.queuedFailedCount}
       />
       {statusText === null ? null : (
         <span data-sidebar-status-full="" className="text-right">
           {statusText}
         </span>
       )}
-      {nativeActivityUnconfirmed && statusText !== "Activity unconfirmed" ? (
+      {activityNoticeApplies && indicatorKind !== "activity-unreported" ? (
         <span
           data-sidebar-native-activity-warning=""
-          className="text-muted-foreground"
+          className={statusText === null ? "sr-only" : "text-muted-foreground"}
           role="status"
         >
-          Activity unconfirmed
+          {nativeActivityNotice}
+        </span>
+      ) : null}
+      {hasGuidance ? (
+        <span
+          data-sidebar-native-activity-guidance=""
+          id={guidanceId}
+          className="sr-only"
+        >
+          {nativeActivityGuidance}
         </span>
       ) : null}
     </span>
   );
-  if (statusText === null) return indicator;
+  if (statusText === null && !hasGuidance) return indicator;
   return (
     <Tooltip>
       <TooltipTrigger asChild>{indicator}</TooltipTrigger>
-      <TooltipContent side="top">{statusText}</TooltipContent>
+      <TooltipContent side="top">
+        {[
+          statusText ?? nativeActivityNotice,
+          hasGuidance ? nativeActivityGuidance : null,
+        ]
+          .filter((text) => text !== null)
+          .join(". ")}
+      </TooltipContent>
     </Tooltip>
   );
+}
+
+function isNativeActivityNotConfirmed(
+  thread: Pick<PluginSidebarThread, "experimental_nativeActivity">,
+): boolean {
+  const activity = thread.experimental_nativeActivity;
+  return activity !== undefined && activity.confirmation !== "confirmed";
 }
 
 const ARCHIVED_ROW_ACTION_KEYS = ["bb--core/archive"];
@@ -445,8 +524,8 @@ function getPullRequestRepository(url: string): string {
     : parsedUrl.hostname;
 }
 
-function SidebarThreadPullRequestChip({ threadId }: { threadId: string }) {
-  const { pullRequest } = experimental_useSidebarThreadPullRequest(threadId);
+function SidebarThreadPullRequestChip({ thread }: { thread: SidebarThread }) {
+  const pullRequest = useThreadListPullRequest(thread.environment?.id ?? null);
   if (pullRequest === null) return null;
 
   const stateLabel =
@@ -504,7 +583,17 @@ function ThreadRowComponent({
   const [isContextActionsOpen, setIsContextActionsOpen] = useState(false);
   const sdk = useSdk();
   const openThreadInSplit = useOpenThreadInSplit();
+  const selectionStore = useThreadSelectionStore();
+  const isSelected = useIsThreadSelected(thread.id);
+  const selectionHidesActive = useIsSelectionHidingActiveRow(isActive);
+  const multiSelection = useMultiSelectionContaining(thread.id);
+  const selectionMenu = useThreadSelectionMenu(multiSelection);
   const showProviderIcons = useAtomValue(sidebarShowProviderIconsAtom);
+  const rowMetadataEnabled = experimental_useExperiment(
+    THREAD_ROW_METADATA_EXPERIMENT,
+  );
+  const showRowMetadata =
+    useAtomValue(sidebarShowRowMetadataAtom) && rowMetadataEnabled;
   const providers = useContext(SidebarProvidersContext);
   const provider = showProviderIcons
     ? providers.find((candidate) => candidate.id === thread.providerId)
@@ -514,7 +603,7 @@ function ThreadRowComponent({
   const { hasUnsubmittedDraft: hasComposerDraft } = useSidebarThreadDraft(
     thread.id,
   );
-  const showActive = isActive;
+  const showActive = isSelected || (isActive && !selectionHidesActive);
   const threadStatus = threadListIndicatorStateForThread(
     thread,
     hasComposerDraft,
@@ -559,7 +648,10 @@ function ThreadRowComponent({
       miniMap === null && thread.archivedAt === null,
     );
   const isOpenInSplit = miniMap !== null;
-  const split = experimental_useSidebarThreadSplit(thread.id);
+  const split = experimental_useSidebarThreadSplit(
+    thread.id,
+    multiSelection === null ? undefined : { dragThreadIds: multiSelection },
+  );
   const onSplitDragPointerDown = split.splitProps.onPointerDown;
   const splitAvailable = split.isAvailable;
   const openInSplit = useCallback(() => {
@@ -604,6 +696,8 @@ function ThreadRowComponent({
   const childActivity =
     parentOptions?.childActivity ?? NO_COLLAPSED_CHILD_ACTIVITY;
   const hasChildren = childCount > 0;
+  const reserveActionSpace =
+    crossProjectLabel !== null || (isParentRow && hasChildren);
   const hasHiddenChildren = isParentRow && isParentCollapsed && hasChildren;
   const hiddenChildrenHaveDraft = useThreadsHaveDraft(
     hasHiddenChildren ? childActivity.threadIds : NO_THREAD_IDS,
@@ -630,6 +724,8 @@ function ThreadRowComponent({
     isGoalActive:
       threadStatus.isGoalActive || (hasHiddenChildren && childActivity.goal),
     queuedWork: threadStatus.queuedWork,
+    queuedFailedCount: threadStatus.queuedFailedCount,
+    isActivityUnreported: threadStatus.isActivityUnreported,
     isPlanModeActive:
       threadStatus.isPlanModeActive ||
       (hasHiddenChildren && childActivity.planMode),
@@ -655,7 +751,7 @@ function ThreadRowComponent({
   const hasVisibleStatus =
     trailingIndicatorKind !== "none" ||
     trailingIndicatorResolution.rowStatusIsVisible ||
-    thread.experimental_nativeActivity?.confirmation === "unconfirmed" ||
+    isNativeActivityNotConfirmed(thread) ||
     miniMap !== null ||
     automationStartedAt !== null;
   const splitIndicatorIsWorking = hasThreadListWorkingActivity(
@@ -677,15 +773,63 @@ function ThreadRowComponent({
     options.nestDrop?.setNodeRef,
   );
   const isActionsOpen = isDropdownActionsOpen || isContextActionsOpen;
+  const rowState = thread.experimental_rowState ?? null;
+  const rowProgress =
+    rowState !== null &&
+    rowState.progress !== null &&
+    rowState.progress.value > 0
+      ? rowState.progress
+      : null;
+  const hasRowState =
+    rowState !== null &&
+    (Object.keys(rowState.statuses).length > 0 || rowProgress !== null);
+  const reportRowStateHeight = useStickyRowStateReport();
+  const rowStateRef = useRef<HTMLDivElement>(null);
+  const reportsRowState =
+    hasRowState && parentOptions?.stickyLevel !== undefined;
+  useLayoutEffect(() => {
+    const element =
+      rowStateRef.current?.closest<HTMLElement>("[data-sidebar-rename-row]") ??
+      null;
+    if (!reportsRowState || element === null || reportRowStateHeight === null) {
+      return;
+    }
+    const report = () =>
+      reportRowStateHeight(element.getBoundingClientRect().height);
+    report();
+    const observer =
+      typeof ResizeObserver === "undefined" ? null : new ResizeObserver(report);
+    observer?.observe(element);
+    return () => {
+      observer?.disconnect();
+      reportRowStateHeight(0);
+    };
+  }, [reportsRowState, reportRowStateHeight]);
+  const rowFirstLineHeightClass = options.isCompact
+    ? ROW_STATE_COMPACT_ROW_HEIGHT_CLASS
+    : ROW_STATE_ROW_HEIGHT_CLASS;
+  const rowActionsOverlayClass = hasRowState
+    ? cn(
+        ROW_STATE_ACTIONS_OVERLAY_CLASS,
+        options.isCompact
+          ? ROW_STATE_COMPACT_ACTIONS_HEIGHT_CLASS
+          : ROW_STATE_ACTIONS_HEIGHT_CLASS,
+      )
+    : HOVER_CAPABLE_ACTIONS_OVERLAY_CLASS;
   const rowClassName = cn(
     SIDEBAR_HOVER_ACTIONS_ROW_CLASS,
     "group/thread-row cursor-pointer",
     SIDEBAR_ROW_BASE_CLASS,
     LIST_HOVER_TRANSITION,
     parentOptions?.stickyLevel === undefined && "relative",
-    options.isCompact
-      ? COARSE_POINTER_COMPACT_ROW_HEIGHT_CLASS
-      : COARSE_POINTER_ROW_HEIGHT_CLASS,
+    hasRowState
+      ? "flex-wrap"
+      : options.isCompact
+        ? COARSE_POINTER_COMPACT_ROW_HEIGHT_CLASS
+        : COARSE_POINTER_ROW_HEIGHT_CLASS,
+    (showRowMetadata ||
+      (hasRowState && parentOptions?.stickyLevel !== undefined)) &&
+      "h-auto min-h-[var(--bb-sidebar-row-height)] max-md:pointer-coarse:h-auto max-md:pointer-coarse:min-h-[var(--bb-sidebar-row-height-coarse)]",
     showActive
       ? SIDEBAR_ROW_SELECTED_STATE_CLASS
       : SIDEBAR_ROW_INTERACTIVE_STATE_CLASS,
@@ -723,12 +867,20 @@ function ThreadRowComponent({
     (event) => {
       if (event.target !== event.currentTarget) {
         if (!(event.target instanceof Element)) return;
-        if (!event.target.closest("[data-sidebar-thread-trailing]")) return;
+        if (
+          !event.target.closest(
+            "[data-sidebar-thread-trailing], [data-thread-row-metadata]",
+          )
+        )
+          return;
         if (event.target.closest("a, button")) return;
+      }
+      if (selectionStore.handleClick(thread.id, event, event.currentTarget)) {
+        return;
       }
       rowLinkRef.current?.click();
     },
-    [],
+    [selectionStore, thread.id],
   );
   const handleActionsMenuCloseAutoFocus = (event: Event) => {
     const begin = pendingMenuCustomize.current;
@@ -753,12 +905,17 @@ function ThreadRowComponent({
       <span
         className={cn(
           "relative flex min-w-0 flex-1 items-center gap-1.5 self-stretch",
+          hasRowState && rowFirstLineHeightClass,
           hasVisibleStatus && "gap-1",
+          showRowMetadata &&
+            "flex-wrap content-center gap-y-0 py-1 has-[[data-thread-row-metadata][data-has-items]]:py-1.25 has-[[data-thread-row-metadata][data-has-items]]:[&_.bb-thread-title]:leading-4",
           !isActionsOpen &&
             "group-data-[sidebar-touch-armed=true]/thread-row:hidden",
           !isEditing &&
             !isCustomizingActions &&
-            SIDEBAR_HOVER_ACTIONS_INSET_CLASS,
+            (reserveActionSpace
+              ? "pr-(--bb-sidebar-hover-actions-inset) [@media(hover:none)]:pr-0"
+              : SIDEBAR_HOVER_ACTIONS_INSET_CLASS),
         )}
         style={getHoverActionsInsetStyle(quickActions.length + 1)}
       >
@@ -772,6 +929,13 @@ function ThreadRowComponent({
           data-sidebar-rename-anchor=""
           onClick={(event) => {
             if (isEditing) {
+              event.preventDefault();
+              event.stopPropagation();
+              return;
+            }
+            if (
+              selectionStore.handleClick(thread.id, event, event.currentTarget)
+            ) {
               event.preventDefault();
               event.stopPropagation();
               return;
@@ -796,6 +960,13 @@ function ThreadRowComponent({
           aria-keyshortcuts={shortcut?.ariaKeyshortcuts}
           className="absolute inset-0 rounded-md outline-none"
         />
+        <span
+          className={
+            showRowMetadata
+              ? "flex min-w-0 basis-full items-center gap-1.5 self-stretch"
+              : "contents"
+          }
+        >
         <span
           className={cn(
             "pointer-events-none relative flex min-w-0 flex-1 items-center self-stretch",
@@ -870,6 +1041,17 @@ function ThreadRowComponent({
             revealOnHover={!isParentCollapsed}
           />
         ) : null}
+        </span>
+        {!showRowMetadata || isEditing || isCustomizingActions ? null : (
+          <span
+            className={cn(
+              "mt-px flex min-w-0 basis-full",
+              provider !== undefined && "pl-6",
+            )}
+          >
+            <ThreadRowMetadata thread={thread} />
+          </span>
+        )}
       </span>
       {rowDragBindings && !rowDragBindings.disabled && !isActionsOpen ? (
         <SidebarThreadDragChip
@@ -895,7 +1077,7 @@ function ThreadRowComponent({
             "flex min-w-0 shrink-0 items-center gap-0.5 [@media(hover:none)]:opacity-100!",
           )}
         >
-          <SidebarThreadPullRequestChip threadId={thread.id} />
+          <SidebarThreadPullRequestChip thread={thread} />
           {hasVisibleStatus ? (
             <span
               className={cn(
@@ -922,10 +1104,11 @@ function ThreadRowComponent({
               ) : (
                 <ThreadTrailingIndicator
                   state={trailingIndicatorState}
-                  nativeActivityUnconfirmed={
-                    thread.experimental_nativeActivity?.confirmation ===
-                    "unconfirmed"
-                  }
+                  nativeActivityUnconfirmed={isNativeActivityNotConfirmed(
+                    thread,
+                  )}
+                  nativeActivityNotice={nativeActivityNoticeText(thread)}
+                  nativeActivityGuidance={nativeActivityGuidanceText(thread)}
                   automationStartedAt={automationStartedAt}
                   elapsedMinutes={elapsedMinutes}
                   hideIdleDraftLabel={
@@ -990,7 +1173,7 @@ function ThreadRowComponent({
             className={cn(
               SIDEBAR_HOVER_ACTIONS_CLASS,
               "flex shrink-0 items-center justify-end gap-1",
-              HOVER_CAPABLE_ACTIONS_OVERLAY_CLASS,
+              rowActionsOverlayClass,
               isEditing && "invisible pointer-events-none",
             )}
           >
@@ -1018,14 +1201,13 @@ function ThreadRowComponent({
           </div>
         )}
       </span>
-      {thread.experimental_rowState &&
-      (Object.keys(thread.experimental_rowState.statuses).length > 0 ||
-        thread.experimental_rowState.progress !== null) ? (
+      {rowState !== null && hasRowState ? (
         <div
+          ref={rowStateRef}
           data-sidebar-thread-row-state=""
-          className="pointer-events-none relative z-[1] flex min-w-0 flex-col gap-1 pl-6 pr-2 pb-1"
+          className="pointer-events-none relative z-[1] flex w-full min-w-0 basis-full flex-col gap-1 pl-6 pr-2 pb-1"
         >
-          {Object.entries(thread.experimental_rowState.statuses)
+          {Object.entries(rowState.statuses)
             .sort(
               ([, left], [, right]) =>
                 (right.priority ?? 0) - (left.priority ?? 0),
@@ -1036,43 +1218,37 @@ function ThreadRowComponent({
                 key={key}
                 data-sidebar-thread-status-chip={key}
                 title={`${key}: ${status.value}`}
-                className="max-w-full truncate rounded-sm bg-sidebar-accent px-1.5 py-0.5 font-medium text-xs text-sidebar-accent-foreground"
+                className="max-w-full self-start truncate rounded-sm bg-sidebar-accent px-1.5 py-0.5 font-medium text-xs text-sidebar-accent-foreground"
                 style={status.color ? { color: status.color } : undefined}
               >
                 {status.icon ? `${status.icon} ` : ""}
                 {status.value}
               </span>
             ))}
-          {Object.keys(thread.experimental_rowState.statuses).length > 2 ? (
+          {Object.keys(rowState.statuses).length > 2 ? (
             <span className="text-muted-foreground text-xs">
-              +{Object.keys(thread.experimental_rowState.statuses).length - 2}{" "}
-              more
+              +{Object.keys(rowState.statuses).length - 2} more
             </span>
           ) : null}
-          {thread.experimental_rowState.progress ? (
+          {rowProgress !== null ? (
             <div className="flex min-w-0 flex-col gap-0.5">
-              {thread.experimental_rowState.progress.label ? (
+              {rowProgress.label ? (
                 <span className="truncate text-muted-foreground text-xs">
-                  {thread.experimental_rowState.progress.label}
+                  {rowProgress.label}
                 </span>
               ) : null}
               <div
                 role="progressbar"
-                aria-label={
-                  thread.experimental_rowState.progress.label ??
-                  "Thread progress"
-                }
+                aria-label={rowProgress.label ?? "Thread progress"}
                 aria-valuemin={0}
                 aria-valuemax={100}
-                aria-valuenow={Math.round(
-                  thread.experimental_rowState.progress.value * 100,
-                )}
+                aria-valuenow={Math.round(rowProgress.value * 100)}
                 className="h-1 overflow-hidden rounded-full bg-sidebar-accent"
               >
                 <div
-                  className="h-full rounded-full bg-sidebar-primary transition-[width]"
+                  className="h-full rounded-full bg-timeline-accent transition-[width]"
                   style={{
-                    width: `${thread.experimental_rowState.progress.value * 100}%`,
+                    width: `${rowProgress.value * 100}%`,
                   }}
                 />
               </div>
@@ -1093,6 +1269,7 @@ function ThreadRowComponent({
     dragBindings: rowDragBindings,
     nestTargetState,
     reorderPlacement,
+    selected: isSelected,
     onClick: isEditing ? undefined : handleRowClick,
     onClickCapture:
       !isEditing && options.consumeClickSuppression
@@ -1103,15 +1280,29 @@ function ThreadRowComponent({
     style: rowStyle,
   });
 
+  const bulkMenuProps: Pick<
+    PluginThreadActionsContextMenuProps,
+    "experimental_bulkThreads" | "onEscapeKeyDown"
+  > =
+    selectionMenu === null
+      ? {}
+      : {
+          experimental_bulkThreads: selectionMenu.selection,
+          onEscapeKeyDown: selectionMenu.onEscapeKeyDown,
+        };
+
   return (
     <ThreadActionsContextMenu
       thread={actionTarget}
-      inline={inlineMenuActions}
+      inline={selectionMenu?.inline ?? inlineMenuActions}
       requestRename={requestRenameFromMenu}
       onOpenChange={setIsContextActionsOpen}
-      onCloseAutoFocus={handleActionsMenuCloseAutoFocus}
+      onCloseAutoFocus={
+        selectionMenu?.onCloseAutoFocus ?? handleActionsMenuCloseAutoFocus
+      }
       disabled={isEditing}
       dragging={rowDragBindings?.isDragging ?? false}
+      {...bulkMenuProps}
     >
       {row}
     </ThreadActionsContextMenu>

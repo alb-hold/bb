@@ -29,6 +29,7 @@ import { ThreadPendingInteractionBanners } from "./ThreadPendingInteractionBanne
 import { InlinePendingInteractionContext } from "./PendingInteractionShell";
 import { makePluginRegistrationSet as registrationSet } from "@/test/fixtures/plugins";
 import { BottomAnchorContext } from "@/components/ui/bottom-anchored-scroll-body";
+import { createInertScrollPositionKeeper } from "@/test/scroll-position-keeper";
 
 const mocks = vi.hoisted(() => ({
   resolveMutateAsync: vi.fn(async () => ({})),
@@ -457,6 +458,7 @@ describe("ThreadPendingInteractionBanner collapsed strip", () => {
               prompt: "Which path?",
               multiSelect: false,
               allowFreeText: true,
+              required: true,
               options: [],
             },
           ],
@@ -472,6 +474,7 @@ describe("ThreadPendingInteractionBanner collapsed strip", () => {
                 scrollToBottom: () => {},
                 scrollElementIntoView: () => {},
                 captureScrollAnchor: () => {},
+                positionKeeper: createInertScrollPositionKeeper(),
                 holdContentPosition: () => {},
               }}
             >
@@ -695,6 +698,7 @@ describe("ThreadPendingInteractionBanner collapsed strip", () => {
             shortLabel: "Path",
             multiSelect: false,
             allowFreeText: false,
+            required: true,
             options: [{ value: "a", label: "A", description: "Option A" }],
           },
         ],
@@ -757,6 +761,7 @@ describe("ThreadPendingInteractionBanners", () => {
             prompt,
             multiSelect: false,
             allowFreeText: true,
+            required: true,
             options: [],
           },
         ],

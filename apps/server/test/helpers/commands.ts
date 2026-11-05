@@ -66,7 +66,7 @@ export function listQueuedCommands(
 export function listQueuedThreadCommands(
   harness: TestAppHarness,
   type: HostDaemonCommand["type"],
-  threadId: string,
+  threadId?: string,
 ): HostDaemonCommand[] {
   return pendingHostRpcRequests
     .filter(
@@ -74,7 +74,7 @@ export function listQueuedThreadCommands(
         isCapturedRpcForHarness(harness, queued) &&
         queued.command.type === type &&
         "threadId" in queued.command &&
-        queued.command.threadId === threadId,
+        (threadId === undefined || queued.command.threadId === threadId),
     )
     .map((queued) => hostDaemonCommandSchema.parse(queued.command));
 }
@@ -461,12 +461,11 @@ export function registerTestHostRpcCapture(
             requestId: message.requestId,
             commandType: command.type,
             ok: true,
-            result:
-              args.pathsExistResult ?? {
-                existence: Object.fromEntries(
-                  command.paths.map((path) => [path, true]),
-                ),
-              },
+            result: args.pathsExistResult ?? {
+              existence: Object.fromEntries(
+                command.paths.map((path) => [path, true]),
+              ),
+            },
           }),
           sessionId: args.sessionId,
         });

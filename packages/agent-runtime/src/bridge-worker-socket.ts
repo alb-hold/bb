@@ -123,6 +123,7 @@ class AdoptedProcessHandle extends EventEmitter implements WorkerProcessHandle {
   exitCode: number | null = null;
   readonly signalCode: NodeJS.Signals | null = null;
   killed = false;
+  statusUnreadable = false;
   private readonly recordedPid: number;
   private readonly processIdentity: string;
   private identityMatches = true;
@@ -163,8 +164,9 @@ class AdoptedProcessHandle extends EventEmitter implements WorkerProcessHandle {
   markGone(): void {
     if (this.exitCode !== null) return;
     this.stopWatching();
+    this.statusUnreadable = true;
     this.exitCode = -1;
-    this.emit("exit", this.exitCode, null);
+    this.emit("exit", null, null);
   }
 
   stopWatching(): void {
@@ -184,12 +186,22 @@ class AdoptedProcessHandle extends EventEmitter implements WorkerProcessHandle {
     this.polling = true;
     try {
       const identity = await readProcessIdentityAsync(this.recordedPid);
+      if (identity === null && isPidRunning(this.recordedPid)) return;
       this.identityMatches = identity === this.processIdentity;
       this.identityCheckedAt = Date.now();
       if (!this.identityMatches) this.markGone();
     } finally {
       this.polling = false;
     }
+  }
+}
+
+function isPidRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return !(error instanceof Error && Reflect.get(error, "code") === "ESRCH");
   }
 }
 
@@ -668,6 +680,12 @@ export class SocketBridgeWorker
     if (this.unconfirmedResponses.length > 0) {
       this.confirmResponsesOnNextFrame = true;
     }
+  }
+
+  get exitStatusUnreadable(): boolean {
+    return this.child instanceof AdoptedProcessHandle
+      ? this.child.statusUnreadable
+      : false;
   }
 
   get stoppedByDaemon(): boolean {

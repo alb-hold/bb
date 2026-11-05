@@ -47,6 +47,8 @@ import { startTestServer, withTestHarness } from "../helpers/test-app.js";
 import type { TestAppHarness } from "../helpers/test-app.js";
 import { setPluginAgentContributions } from "../../src/services/plugins/plugin-agent-contributions.js";
 import type { PluginAgentToolRecord } from "../../src/services/plugins/plugin-api.js";
+import { runEnvironmentProvisioningSweep } from "../../src/services/system/periodic-sweeps.js";
+import { resumeEnvironmentProvisioningForHost } from "../../src/services/environments/environment-engine.js";
 
 async function postEventBatch(args: {
   acceptEncoding?: string;
@@ -979,9 +981,11 @@ describe("internal event and tool-call routes", () => {
       expect(response.status).toBe(200);
       await flushChildThreadNotifications();
       expect(getThread(harness.db, childThread.id)?.status).toBe("idle");
-      expect(
-        listQueuedThreadCommands(harness, "turn.submit", parentThread.id),
-      ).toHaveLength(1);
+      await vi.waitFor(() => {
+        expect(
+          listQueuedThreadCommands(harness, "turn.submit", parentThread.id),
+        ).toHaveLength(1);
+      });
     });
   });
 
@@ -1363,8 +1367,9 @@ describe("internal event and tool-call routes", () => {
     "starts the follow-up turn in the new directory only when the directory-switch turn completes on its own ($name)",
     async ({ status, manualStop, queuedMessage, continues, submits }) => {
       await withChildThreadNotificationClock(async (harness) => {
-        const { threadId, targetEnvironmentId } =
-          await runDirectorySwitchTurn(harness, {
+        const { threadId, targetEnvironmentId } = await runDirectorySwitchTurn(
+          harness,
+          {
             withParent: false,
             status,
             beforeTurnCompleted: (fixture) => {
@@ -1389,45 +1394,48 @@ describe("internal event and tool-call routes", () => {
                 });
               }
             },
-          });
-
-        const continuationRequests = harness.db
-          .select()
-          .from(events)
-          .where(eq(events.threadId, threadId))
-          .all()
-          .filter(
-            (event) =>
-              event.type === "client/turn/requested" &&
-              event.data.includes('"environment-directory-updated"'),
-          );
-        const submitted = listQueuedThreadCommands(
-          harness,
-          "turn.submit",
-          threadId,
-        );
-        expect(submitted).toHaveLength(submits);
-        if (queuedMessage) {
-          expect(JSON.stringify(submitted[0])).toContain(
-            "Check the README before continuing",
-          );
-        }
-        if (!continues) {
-          expect(continuationRequests).toHaveLength(0);
-          return;
-        }
-        expect(continuationRequests).toHaveLength(1);
-        expect(JSON.parse(continuationRequests[0]!.data)).toMatchObject({
-          initiator: "system",
-          systemMessageKind: "environment-directory-updated",
-          systemMessageSubject: {
-            kind: "directory",
-            path: "/tmp/continue-worktree",
           },
-        });
-        expect(continuationRequests[0]!.environmentId).toBe(
-          targetEnvironmentId,
         );
+
+        await vi.waitFor(() => {
+          const continuationRequests = harness.db
+            .select()
+            .from(events)
+            .where(eq(events.threadId, threadId))
+            .all()
+            .filter(
+              (event) =>
+                event.type === "client/turn/requested" &&
+                event.data.includes('"environment-directory-updated"'),
+            );
+          const submitted = listQueuedThreadCommands(
+            harness,
+            "turn.submit",
+            threadId,
+          );
+          expect(submitted).toHaveLength(submits);
+          if (queuedMessage) {
+            expect(JSON.stringify(submitted[0])).toContain(
+              "Check the README before continuing",
+            );
+          }
+          if (!continues) {
+            expect(continuationRequests).toHaveLength(0);
+            return;
+          }
+          expect(continuationRequests).toHaveLength(1);
+          expect(JSON.parse(continuationRequests[0]!.data)).toMatchObject({
+            initiator: "system",
+            systemMessageKind: "environment-directory-updated",
+            systemMessageSubject: {
+              kind: "directory",
+              path: "/tmp/continue-worktree",
+            },
+          });
+          expect(continuationRequests[0]!.environmentId).toBe(
+            targetEnvironmentId,
+          );
+        });
       });
     },
   );
@@ -1456,120 +1464,133 @@ describe("internal event and tool-call routes", () => {
           },
         );
 
-        expect(
-          listQueuedThreadCommands(harness, "turn.submit", threadId),
-        ).toHaveLength(parentNotified ? 0 : 1);
-        expect(
-          listQueuedThreadCommands(harness, "turn.submit", parentThreadId!),
-        ).toHaveLength(parentNotified ? 1 : 0);
+        await vi.waitFor(() => {
+          expect(
+            listQueuedThreadCommands(harness, "turn.submit", threadId),
+          ).toHaveLength(parentNotified ? 0 : 1);
+          expect(
+            listQueuedThreadCommands(harness, "turn.submit", parentThreadId!),
+          ).toHaveLength(parentNotified ? 1 : 0);
+        });
       });
     },
   );
 
-  it("creates an unmanaged environment for a new requested host path", async () => {
-    await withTestHarness(async (harness) => {
-      const { host, session } = seedHostSession(harness.deps);
-      const { project } = seedProjectWithSource(harness.deps, {
-        hostId: host.id,
-      });
-      const currentEnvironment = seedEnvironment(harness.deps, {
-        hostId: host.id,
-        projectId: project.id,
-        path: "/tmp/current-environment",
-      });
-      const thread = seedThread(harness.deps, {
-        projectId: project.id,
-        environmentId: currentEnvironment.id,
-      });
-      seedEvent(harness.deps, {
-        threadId: thread.id,
-        environmentId: currentEnvironment.id,
-        providerThreadId: "provider-tool-call",
-        sequence: 1,
-        type: "turn/started",
-        scope: turnScope("turn-new-environment"),
-        data: {
+  it.each(["none", "periodic sweep", "host resume"] as const)(
+    "creates an unmanaged environment for a new requested host path during %s",
+    async (recheck) => {
+      await withTestHarness(async (harness) => {
+        const { host, session } = seedHostSession(harness.deps);
+        const { project } = seedProjectWithSource(harness.deps, {
+          hostId: host.id,
+        });
+        const currentEnvironment = seedEnvironment(harness.deps, {
+          hostId: host.id,
+          projectId: project.id,
+          path: "/tmp/current-environment",
+        });
+        const thread = seedThread(harness.deps, {
+          projectId: project.id,
+          environmentId: currentEnvironment.id,
+        });
+        seedEvent(harness.deps, {
+          threadId: thread.id,
+          environmentId: currentEnvironment.id,
           providerThreadId: "provider-tool-call",
-        },
-      });
-
-      const responsePromise = postToolCall({
-        harness,
-        sessionId: session.id,
-        threadId: thread.id,
-        turnId: "turn-new-environment",
-        tool: "update_environment_directory",
-        arguments: { path: "/tmp/new-unmanaged-worktree" },
-      });
-      const provisionCommand = await waitForQueuedCommand(
-        harness,
-        ({ command }) =>
-          command.type === "environment.attach" &&
-          command.path === "/tmp/new-unmanaged-worktree",
-      );
-      if (provisionCommand.command.type !== "environment.attach") {
-        throw new Error("Expected environment.attach command");
-      }
-      expect(provisionCommand.command.initiator).toBeNull();
-
-      await reportQueuedCommandSuccess(harness, provisionCommand, {
-        path: "/tmp/new-unmanaged-worktree",
-        isGitRepo: true,
-        isWorktree: false,
-        branchName: "feature/new-worktree",
-        defaultBranch: "main",
-        transcript: [],
-      });
-      const response = await responsePromise;
-
-      expect(response.status).toBe(200);
-      await expect(readJson(response)).resolves.toMatchObject({
-        success: true,
-        contentItems: [
-          {
-            type: "inputText",
-            text: expect.stringContaining(
-              "Environment directory updated to /tmp/new-unmanaged-worktree",
-            ),
+          sequence: 1,
+          type: "turn/started",
+          scope: turnScope("turn-new-environment"),
+          data: {
+            providerThreadId: "provider-tool-call",
           },
-        ],
+        });
+
+        const responsePromise = postToolCall({
+          harness,
+          sessionId: session.id,
+          threadId: thread.id,
+          turnId: "turn-new-environment",
+          tool: "update_environment_directory",
+          arguments: { path: "/tmp/new-unmanaged-worktree" },
+        });
+        const provisionCommand = await waitForQueuedCommand(
+          harness,
+          ({ command }) =>
+            command.type === "environment.attach" &&
+            command.path === "/tmp/new-unmanaged-worktree",
+        );
+        if (provisionCommand.command.type !== "environment.attach") {
+          throw new Error("Expected environment.attach command");
+        }
+        expect(provisionCommand.command.initiator).toBeNull();
+
+        if (recheck === "periodic sweep") {
+          await runEnvironmentProvisioningSweep(harness.deps);
+        } else if (recheck === "host resume") {
+          await resumeEnvironmentProvisioningForHost(harness.deps, {
+            hostId: host.id,
+          });
+        }
+
+        await reportQueuedCommandSuccess(harness, provisionCommand, {
+          path: "/tmp/new-unmanaged-worktree",
+          isGitRepo: true,
+          isWorktree: false,
+          branchName: "feature/new-worktree",
+          defaultBranch: "main",
+          transcript: [],
+        });
+        const response = await responsePromise;
+
+        expect(response.status).toBe(200);
+        await expect(readJson(response)).resolves.toMatchObject({
+          success: true,
+          contentItems: [
+            {
+              type: "inputText",
+              text: expect.stringContaining(
+                "Environment directory updated to /tmp/new-unmanaged-worktree",
+              ),
+            },
+          ],
+        });
+        const targetEnvironment = listEnvironments(harness.db, {
+          projectId: project.id,
+        }).find(
+          (environment) => environment.path === "/tmp/new-unmanaged-worktree",
+        );
+        expect(targetEnvironment).toMatchObject({
+          hostId: host.id,
+          projectId: project.id,
+          status: "ready",
+        });
+        expect(getThread(harness.db, thread.id)?.environmentId).toBe(
+          targetEnvironment?.id,
+        );
+        expect(
+          targetEnvironment
+            ? getEnvironment(harness.db, targetEnvironment.id)
+            : null,
+        ).toMatchObject({
+          branchName: "feature/new-worktree",
+          isGitRepo: true,
+        });
+        const storedEvents = harness.db
+          .select()
+          .from(events)
+          .where(eq(events.threadId, thread.id))
+          .all();
+        expect(storedEvents.map((event) => event.type)).toEqual([
+          "turn/started",
+          "system/operation",
+        ]);
+        expect(storedEvents[1]).toMatchObject({
+          scopeKind: "turn",
+          turnId: "turn-new-environment",
+        });
       });
-      const targetEnvironment = listEnvironments(harness.db, {
-        projectId: project.id,
-      }).find(
-        (environment) => environment.path === "/tmp/new-unmanaged-worktree",
-      );
-      expect(targetEnvironment).toMatchObject({
-        hostId: host.id,
-        projectId: project.id,
-        status: "ready",
-      });
-      expect(getThread(harness.db, thread.id)?.environmentId).toBe(
-        targetEnvironment?.id,
-      );
-      expect(
-        targetEnvironment
-          ? getEnvironment(harness.db, targetEnvironment.id)
-          : null,
-      ).toMatchObject({
-        branchName: "feature/new-worktree",
-        isGitRepo: true,
-      });
-      const storedEvents = harness.db
-        .select()
-        .from(events)
-        .where(eq(events.threadId, thread.id))
-        .all();
-      expect(storedEvents.map((event) => event.type)).toEqual([
-        "turn/started",
-        "system/operation",
-      ]);
-      expect(storedEvents[1]).toMatchObject({
-        scopeKind: "turn",
-        turnId: "turn-new-environment",
-      });
-    });
-  });
+    },
+  );
 
   it("switches into a directory another project already uses", async () => {
     await withTestHarness(async (harness) => {

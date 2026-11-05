@@ -32,6 +32,7 @@ function threadOnMachine(
     titleFallback: null,
     displayTitle: "Active thread",
     parentThreadId: null,
+    parentNotifications: "auto",
     lifecycleOwnerThreadId: null,
     sourceThreadId: null,
     sectionId: null,
@@ -41,6 +42,7 @@ function threadOnMachine(
     status: "idle",
     runtimeStatus: "idle",
     queuedWork: "none",
+    experimental_queuedFailedCount: 0,
     hasPendingInteraction: false,
     activity: {
       workflows: 0,

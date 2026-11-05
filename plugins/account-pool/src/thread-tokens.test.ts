@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { tmpdir } from "node:os";
+import { setTimeout as waitForIo } from "node:timers/promises";
 import { afterEach, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { HubTokenStore } from "./store.js";
@@ -14,11 +15,59 @@ import {
   type ThreadLookup,
 } from "./thread-tokens.js";
 
+async function actorToken(
+  store: ThreadTokenStore,
+  ...args: Parameters<ThreadTokenStore["forActor"]>
+): Promise<string> {
+  return (await store.forActor(...args)).token;
+}
+
 const directories: string[] = [];
+const sweepClockCleanups: Array<() => void> = [];
 afterEach(async () => {
+  while (sweepClockCleanups.length > 0) sweepClockCleanups.pop()?.();
   for (const directory of directories.splice(0))
     await fs.rm(directory, { recursive: true, force: true });
 });
+
+function controlSweepClock() {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const deadlines: AbortController[] = [];
+  const timeout = vi.spyOn(AbortSignal, "timeout").mockImplementation((ms) => {
+    const deadline = new AbortController();
+    deadlines.push(deadline);
+    setTimeout(
+      () => deadline.abort(new DOMException("timed out", "TimeoutError")),
+      ms,
+    );
+    return deadline.signal;
+  });
+  let restored = false;
+  const restore = () => {
+    if (restored) return;
+    restored = true;
+    for (const deadline of deadlines) deadline.abort();
+    vi.clearAllTimers();
+    timeout.mockRestore();
+    vi.useRealTimers();
+  };
+  sweepClockCleanups.push(restore);
+  return { deadlines, timeout, restore };
+}
+
+async function settledSweep<T>(pending: Promise<T>): Promise<T> {
+  const timeout = new AbortController();
+  try {
+    return await Promise.race([
+      pending,
+      waitForIo(1_000, undefined, { signal: timeout.signal }).then(() => {
+        throw new Error("Sweep did not settle after its deadline");
+      }),
+    ]);
+  } finally {
+    timeout.abort();
+  }
+}
 
 async function fixture() {
   const directory = await fs.mkdtemp(path.join(tmpdir(), "bb-thread-token-"));
@@ -2054,6 +2103,7 @@ it("revokes legacy credentials of an archived thread that never had a marker and
     checked: 2,
     revoked: 1,
     failed: 0,
+    deferred: 0,
   });
   expect(await threads.authenticate(archived.provider)).toBeNull();
   expect(await threads.authenticateNested(archived.nested)).toBeNull();
@@ -2073,13 +2123,13 @@ it("keeps every credential and does not throw when the thread lookup fails", asy
     if (threadId === "thr_a") throw new Error("lookup failed");
     return "live";
   });
-  expect(failed).toEqual({ checked: 2, revoked: 0, failed: 1 });
+  expect(failed).toEqual({ checked: 2, revoked: 0, failed: 1, deferred: 0 });
   expect(await threads.authenticate(tokenOf("thr_a").provider)).not.toBeNull();
   expect(await threads.authenticate(tokenOf("thr_b").provider)).not.toBeNull();
   const allFail = await threads.sweepThreads(async () => {
     throw new Error("lookup failed");
   });
-  expect(allFail).toEqual({ checked: 2, revoked: 0, failed: 2 });
+  expect(allFail).toEqual({ checked: 2, revoked: 0, failed: 2, deferred: 0 });
   expect(await threads.authenticate(tokenOf("thr_a").provider)).not.toBeNull();
   expect(
     await threads.authenticateNested(tokenOf("thr_b").nested),
@@ -2135,11 +2185,45 @@ it("counts a thread archived by its event during the lookup as revoked without a
 
 it("gives up on a lookup that never settles once the sweep deadline passes and keeps the credential", async () => {
   const { threads, tokenOf } = await legacyFixture(["thr_hung"]);
-  const result = await threads.sweepThreads(
-    () => new Promise<never>(() => undefined),
-    { signal: AbortSignal.timeout(30) },
-  );
-  expect(result).toEqual({ checked: 1, revoked: 0, failed: 1 });
+  const clock = controlSweepClock();
+  const { deadlines, timeout } = clock;
+  let signalStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    signalStarted = resolve;
+  });
+  let settled = false;
+  const global = AbortSignal.timeout(60);
+  const pending = threads
+    .sweepThreads(
+      () => {
+        signalStarted();
+        return new Promise<never>(() => undefined);
+      },
+      { signal: global },
+    )
+    .then((result) => {
+      settled = true;
+      return result;
+    });
+  try {
+    await settledSweep(started);
+    expect(timeout.mock.calls).toEqual([[60]]);
+    await vi.advanceTimersByTimeAsync(59);
+    expect(settled).toBe(false);
+    expect(global.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await settledSweep(pending)).toEqual({
+      checked: 1,
+      revoked: 0,
+      failed: 0,
+      deferred: 1,
+    });
+    expect(global.aborted).toBe(true);
+  } finally {
+    for (const deadline of deadlines) deadline.abort();
+    vi.clearAllTimers();
+    clock.restore();
+  }
   expect(
     await threads.authenticate(tokenOf("thr_hung").provider),
   ).not.toBeNull();
@@ -2165,20 +2249,68 @@ it("does not let threads whose lookups hang starve a later archived thread, and 
   const [hangA, hangB, archived] = await loadOrder(directory, names);
   if (hangA === undefined || hangB === undefined || archived === undefined)
     throw new Error("missing thread");
-  const lookup: ThreadLookup = (threadId) =>
-    threadId === archived
-      ? Promise.resolve("gone")
-      : new Promise<never>(() => undefined);
-  const started = Date.now();
-  const sweepOptions = () => ({
-    signal: AbortSignal.timeout(60),
-    lookupTimeoutMs: 50,
-  });
-  const one = await threads.sweepThreads(lookup, sweepOptions());
-  expect(Date.now() - started).toBeLessThan(2_000);
-  expect(one).toEqual({ checked: 3, revoked: 0, failed: 3 });
-  const two = await threads.sweepThreads(lookup, sweepOptions());
-  expect(two).toEqual({ checked: 3, revoked: 1, failed: 2 });
+  const clock = controlSweepClock();
+  const { deadlines, timeout } = clock;
+  const sweep = async (expected: number) => {
+    deadlines.length = 0;
+    timeout.mockClear();
+    let dispatched = 0;
+    let signalStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      signalStarted = resolve;
+    });
+    const lookup: ThreadLookup = (threadId) => {
+      if (++dispatched === expected) signalStarted();
+      return threadId === archived
+        ? Promise.resolve("gone")
+        : new Promise<never>(() => undefined);
+    };
+    let settled = false;
+    const global = AbortSignal.timeout(60);
+    const pending = threads
+      .sweepThreads(lookup, {
+        signal: global,
+        lookupTimeoutMs: 50,
+      })
+      .then((result) => {
+        settled = true;
+        return result;
+      });
+    try {
+      await settledSweep(started);
+      expect(timeout.mock.calls).toEqual([
+        [60],
+        ...Array.from({ length: expected }, () => [50]),
+      ]);
+      await vi.advanceTimersByTimeAsync(49);
+      expect(settled).toBe(false);
+      expect(global.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      const result = await settledSweep(pending);
+      expect(settled).toBe(true);
+      expect(global.aborted).toBe(false);
+      return result;
+    } finally {
+      for (const deadline of deadlines) deadline.abort();
+      vi.clearAllTimers();
+    }
+  };
+  try {
+    expect(await sweep(3)).toEqual({
+      checked: 3,
+      revoked: 1,
+      failed: 2,
+      deferred: 0,
+    });
+    expect(await sweep(2)).toEqual({
+      checked: 2,
+      revoked: 0,
+      failed: 2,
+      deferred: 0,
+    });
+  } finally {
+    clock.restore();
+  }
   expect(await threads.authenticate(tokenOf(archived).provider)).toBeNull();
   expect(await threads.authenticate(tokenOf(hangA).provider)).not.toBeNull();
   expect(await threads.authenticate(tokenOf(hangB).provider)).not.toBeNull();
@@ -2197,7 +2329,7 @@ it("checks later threads when an earlier lookup times out on its own", async () 
         : new Promise<never>(() => undefined),
     { signal: AbortSignal.timeout(5_000), lookupTimeoutMs: 30 },
   );
-  expect(result).toEqual({ checked: 2, revoked: 1, failed: 1 });
+  expect(result).toEqual({ checked: 2, revoked: 1, failed: 1, deferred: 0 });
   expect(await threads.authenticate(tokenOf(archived).provider)).toBeNull();
   expect(await threads.authenticate(tokenOf(hang).provider)).not.toBeNull();
 });
@@ -2208,27 +2340,275 @@ it("revokes a later archived thread even when every thread failed a prior sweep 
   const [hangA, hangB, archived] = await loadOrder(directory, names);
   if (hangA === undefined || hangB === undefined || archived === undefined)
     throw new Error("missing thread");
+  const clock = controlSweepClock();
+  const { deadlines, timeout } = clock;
   let archivedRecovered = false;
-  const lookup: ThreadLookup = (threadId) =>
-    threadId === archived && archivedRecovered
+  let dispatched = 0;
+  let signalStarted: () => void = () => undefined;
+  const lookup: ThreadLookup = (threadId) => {
+    if (++dispatched === 3) signalStarted();
+    return threadId === archived && archivedRecovered
       ? Promise.resolve("gone")
       : new Promise<never>(() => undefined);
-  const allFailed = await threads.sweepThreads(lookup, {
-    signal: AbortSignal.timeout(5_000),
-    lookupTimeoutMs: 20,
-  });
-  expect(allFailed).toEqual({ checked: 3, revoked: 0, failed: 3 });
-  archivedRecovered = true;
-  let revoked = 0;
-  for (let sweeps = 0; revoked === 0 && sweeps < 4; sweeps += 1)
-    revoked += (
-      await threads.sweepThreads(lookup, {
-        signal: AbortSignal.timeout(40),
-        lookupTimeoutMs: 30,
-      })
-    ).revoked;
-  expect(revoked).toBe(1);
+  };
+  const sweep = async (budget: number, lookupTimeoutMs: number) => {
+    dispatched = 0;
+    timeout.mockClear();
+    const started = new Promise<void>((resolve) => {
+      signalStarted = resolve;
+    });
+    const global = AbortSignal.timeout(budget);
+    const pending = threads.sweepThreads(lookup, {
+      signal: global,
+      lookupTimeoutMs,
+    });
+    try {
+      await settledSweep(started);
+      expect(timeout.mock.calls).toEqual([
+        [budget],
+        [lookupTimeoutMs],
+        [lookupTimeoutMs],
+        [lookupTimeoutMs],
+      ]);
+      await vi.advanceTimersByTimeAsync(lookupTimeoutMs);
+      const result = await settledSweep(pending);
+      expect(global.aborted).toBe(false);
+      return result;
+    } finally {
+      for (const deadline of deadlines.splice(0)) deadline.abort();
+      vi.clearAllTimers();
+    }
+  };
+  try {
+    const allFailed = await sweep(5_000, 20);
+    expect(allFailed).toEqual({
+      checked: 3,
+      revoked: 0,
+      failed: 3,
+      deferred: 0,
+    });
+    archivedRecovered = true;
+    let revoked = 0;
+    for (let sweeps = 0; revoked === 0 && sweeps < 4; sweeps += 1)
+      revoked += (await sweep(40, 30)).revoked;
+    expect(revoked).toBe(1);
+  } finally {
+    clock.restore();
+  }
   expect(await threads.authenticate(tokenOf(archived).provider)).toBeNull();
   expect(await threads.authenticate(tokenOf(hangA).provider)).not.toBeNull();
   expect(await threads.authenticate(tokenOf(hangB).provider)).not.toBeNull();
+});
+
+it("issues actor credentials per thread, actor, and provider with strict private records", async () => {
+  const { directory, threads, route, hostToken } = await fixture();
+  const alpha = { ...route, actorId: "elyra:term_alpha.1" };
+  const beta = { ...route, actorId: "elyra:term_beta.1" };
+  const settled = await Promise.allSettled([
+    actorToken(threads, alpha, hostToken),
+    actorToken(threads, alpha, hostToken),
+  ]);
+  expect(settled.filter((entry) => entry.status === "rejected")).toHaveLength(1);
+  const winner = settled.find((entry) => entry.status === "fulfilled");
+  const first = winner?.status === "fulfilled" ? winner.value : "";
+  expect(first).toMatch(/^[A-Za-z0-9_-]{43}$/u);
+  const other = await actorToken(threads, beta, hostToken);
+  const codex = await actorToken(threads, { ...alpha, provider: "codex" }, hostToken);
+  expect(new Set([first, other, codex]).size).toBe(3);
+  expect(await threads.authenticateActor(first, "claude")).toEqual(alpha);
+  expect(await threads.authenticateActor(first, "codex")).toBeNull();
+  expect(await threads.authenticateActor(other)).toEqual(beta);
+  const thread = await threads.forThread(route, hostToken);
+  expect(await threads.authenticate(first)).toBeNull();
+  expect(await threads.authenticateNested(first)).toBeNull();
+  expect(await threads.authenticateActor(thread)).toBeNull();
+  expect(await threads.authenticateActor(null)).toBeNull();
+  expect(await threads.authenticateActor("A".repeat(43))).toBeNull();
+  await expect(
+    actorToken(threads, { ...alpha, actorId: "bad actor/../id" }, hostToken),
+  ).rejects.toThrow();
+  const files = (await fs.readdir(directory)).filter((name) =>
+    name.startsWith("scoped-actor-route-"),
+  );
+  expect(files).toHaveLength(3);
+  for (const file of files) {
+    expect((await fs.stat(path.join(directory, file))).mode & 0o777).toBe(0o600);
+  }
+  const record: unknown = JSON.parse(
+    await fs.readFile(path.join(directory, files[0] ?? ""), "utf8"),
+  );
+  expect(
+    Object.keys(z.record(z.string(), z.unknown()).parse(record)).sort(),
+  ).toEqual([
+    "accountId",
+    "actorId",
+    "generation",
+    "hostId",
+    "hostTokenDigest",
+    "provider",
+    "threadId",
+    "tokenDigest",
+  ]);
+  expect(JSON.stringify(threads.listActors())).not.toContain(first);
+  expect(threads.listActors()).toHaveLength(3);
+});
+
+it("rotates, re-snapshots, and revokes actor credentials", async () => {
+  const { directory, threads, route, hostToken } = await fixture();
+  const actor = { ...route, actorId: "actor-one" };
+  const first = await actorToken(threads, actor, hostToken);
+  const rotated = await actorToken(threads, actor, hostToken, { rotate: true });
+  expect(rotated).not.toBe(first);
+  expect(await threads.authenticateActor(first)).toBeNull();
+  expect(await threads.authenticateActor(rotated)).toEqual(actor);
+  const pinned = { ...actor, accountId: "11111111-1111-4111-8111-111111111111" };
+  const repinned = await actorToken(threads, pinned, hostToken, { rotate: true });
+  expect(repinned).not.toBe(rotated);
+  expect(await threads.authenticateActor(rotated)).toBeNull();
+  expect(await threads.authenticateActor(repinned)).toEqual(pinned);
+  const secondThread = await actorToken(threads, 
+    { ...actor, threadId: "thr_two" },
+    hostToken,
+  );
+  expect(await threads.revokeActor({ actorId: "actor-one", threadId: "thr_two" })).toBe(1);
+  expect(await threads.authenticateActor(secondThread)).toBeNull();
+  expect(await threads.authenticateActor(repinned)).toEqual(pinned);
+  expect(await threads.revokeActor({ actorId: "actor-one" })).toBe(1);
+  expect(await threads.authenticateActor(repinned)).toBeNull();
+  expect(await threads.revokeActor({ actorId: "actor-one" })).toBe(0);
+  expect(
+    (await fs.readdir(directory)).filter((name) =>
+      name.startsWith("scoped-actor-route-"),
+    ),
+  ).toEqual([]);
+});
+
+it("revokes actor credentials with their thread, sweep, and machine token rotation", async () => {
+  const { directory, hosts, threads, route, hostToken, advance } = await fixture();
+  const actor = { ...route, actorId: "actor-one" };
+  const token = await actorToken(threads, actor, hostToken);
+  const kept = await actorToken(threads, { ...actor, threadId: "thr_kept" }, hostToken);
+  const lookup: ThreadLookup = async (threadId) =>
+    threadId === route.threadId ? "gone" : "live";
+  expect(await threads.sweepThreads(lookup)).toMatchObject({ checked: 2, revoked: 1 });
+  expect(await threads.authenticateActor(token)).toBeNull();
+  expect(await threads.authenticateActor(kept)).toEqual({
+    ...actor,
+    threadId: "thr_kept",
+  });
+  await expect(actorToken(threads, actor, hostToken)).rejects.toThrow("archived");
+  await threads.removeThread("thr_kept");
+  expect(await threads.authenticateActor(kept)).toBeNull();
+  expect(
+    (await fs.readdir(directory)).filter((name) =>
+      name.startsWith("scoped-actor-route-"),
+    ),
+  ).toEqual([]);
+  const live = { ...actor, threadId: "thr_live" };
+  const before = await actorToken(threads, live, hostToken);
+  await hosts.rotate(route.hostId);
+  expect(await threads.authenticateActor(before)).toEqual(live);
+  advance(10 * 60_000 + 1);
+  expect(await threads.authenticateActor(before)).toBeNull();
+  const reloaded = new ThreadTokenStore(directory, hosts);
+  await reloaded.initialize([route.hostId]);
+  expect(await reloaded.authenticateActor(before)).toBeNull();
+  expect(reloaded.listActors()).toEqual([]);
+});
+
+it("reloads valid actor credentials and drops malformed or unenrolled ones", async () => {
+  const { directory, hosts, threads, route, hostToken } = await fixture();
+  const actor = { ...route, actorId: "actor-one" };
+  const token = await actorToken(threads, actor, hostToken);
+  const goneToken = await hosts.forHost("host-gone");
+  await actorToken(threads, { ...actor, hostId: "host-gone" }, goneToken);
+  const [file] = (await fs.readdir(directory)).filter(
+    (name) => name.startsWith("scoped-actor-route-") && name.includes("host-one"),
+  );
+  const malformed = path.join(directory, "scoped-actor-route-bad-v0.json");
+  await fs.writeFile(malformed, JSON.stringify({ ...JSON.parse(await fs.readFile(path.join(directory, file ?? ""), "utf8")), extra: 1 }), { mode: 0o600 });
+  const reloaded = new ThreadTokenStore(directory, hosts);
+  await reloaded.initialize([route.hostId]);
+  expect(await reloaded.authenticateActor(token)).toEqual(actor);
+  expect(reloaded.listActors()).toEqual([{ ...actor, generation: expect.stringMatching(/^[a-f0-9]{16}$/u) }]);
+  await expect(fs.stat(malformed)).rejects.toThrow();
+  const archivedThreads = new ThreadTokenStore(directory, hosts);
+  await archivedThreads.initialize([route.hostId]);
+  await archivedThreads.removeThread(route.threadId);
+  const afterRestart = new ThreadTokenStore(directory, hosts);
+  await afterRestart.initialize([route.hostId]);
+  expect(await afterRestart.authenticateActor(token)).toBeNull();
+});
+
+it("derives a non-secret generation that changes on rotation and gates conditional revocation", async () => {
+  const { threads, route, hostToken } = await fixture();
+  const actor = { ...route, actorId: "launch:gen" };
+  const first = await threads.forActor(actor, hostToken);
+  expect(first.generation).toMatch(/^[a-f0-9]{16}$/u);
+  expect(first.token).not.toContain(first.generation);
+  await expect(threads.forActor(actor, hostToken)).rejects.toThrow(
+    "already exists",
+  );
+  const rotated = await threads.forActor(actor, hostToken, { rotate: true });
+  expect(rotated.generation).not.toBe(first.generation);
+  expect(threads.listActors()[0]?.generation).toBe(rotated.generation);
+  expect(
+    await threads.revokeActor({
+      actorId: actor.actorId,
+      threadId: actor.threadId,
+      generation: first.generation,
+    }),
+  ).toBe(0);
+  expect(await threads.authenticateActor(rotated.token)).not.toBeNull();
+  expect(
+    await threads.revokeActor({
+      actorId: actor.actorId,
+      generation: rotated.generation,
+    }),
+  ).toBe(1);
+  expect(await threads.authenticateActor(rotated.token)).toBeNull();
+  await expect(
+    threads.revokeActor({ actorId: actor.actorId, generation: "nothex" }),
+  ).rejects.toThrow();
+});
+
+it("never writes an actor route token to disk and reloads it by digest after a restart", async () => {
+  const { directory, hosts, threads, route, hostToken } = await fixture();
+  const actor = { ...route, actorId: "launch:digest" };
+  const issued = await threads.forActor(actor, hostToken);
+  const files = (await fs.readdir(directory)).filter((name) =>
+    name.startsWith("scoped-actor-route-"),
+  );
+  expect(files).toHaveLength(1);
+  const text = await fs.readFile(path.join(directory, files[0] ?? ""), "utf8");
+  expect(text).not.toContain(issued.token);
+  expect(text).not.toMatch(/(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])/u);
+  const restarted = new ThreadTokenStore(directory, hosts);
+  await restarted.initialize([route.hostId]);
+  expect(await restarted.authenticateActor(issued.token)).toEqual(actor);
+  expect(restarted.listActors()[0]?.generation).toBe(issued.generation);
+});
+
+it("loads a legacy actor route that stored its raw token and rewrites it without the token", async () => {
+  const { directory, hosts, threads, route, hostToken } = await fixture();
+  const actor = { ...route, actorId: "launch:legacy" };
+  const issued = await threads.forActor(actor, hostToken);
+  const file = path.join(
+    directory,
+    (await fs.readdir(directory)).filter((name) =>
+      name.startsWith("scoped-actor-route-"),
+    )[0] ?? "",
+  );
+  const stored = z.record(z.string(), z.unknown()).parse(
+    JSON.parse(await fs.readFile(file, "utf8")),
+  );
+  const { tokenDigest, generation, ...rest } = stored;
+  expect(typeof tokenDigest).toBe("string");
+  expect(typeof generation).toBe("string");
+  await fs.writeFile(file, JSON.stringify({ ...rest, token: issued.token }));
+  const restarted = new ThreadTokenStore(directory, hosts);
+  await restarted.initialize([route.hostId]);
+  expect(await restarted.authenticateActor(issued.token)).toEqual(actor);
+  expect(restarted.listActors()[0]?.generation).toBe(issued.generation);
+  expect(await fs.readFile(file, "utf8")).not.toContain(issued.token);
 });

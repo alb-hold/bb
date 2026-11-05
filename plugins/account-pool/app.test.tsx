@@ -720,6 +720,12 @@ describe("Account Pool settings", () => {
     next.resolve({ nextAccountId: GMAIL_ID, reason: "Most headroom." });
     await waitFor(() => expect(nextRow?.textContent).toContain("Next"));
     expect(slot.getByText("· most headroom")).toBeTruthy();
+    expect(nextRow?.classList.contains("flex")).toBe(false);
+    expect(
+      slot
+        .getByText("· most headroom")
+        .parentElement?.classList.contains("max-w-full"),
+    ).toBe(true);
   });
 
   it("shows Ready when the next Claude binding lookup fails", async () => {
@@ -853,8 +859,8 @@ describe("Account Pool settings", () => {
     expect(
       slot.queryByRole("button", { name: /^Sign in again to / }),
     ).toBeNull();
-    expect(slot.getAllByText("Max 20x")).toHaveLength(2);
-    for (const badge of slot.getAllByText("Max 20x")) {
+    expect(slot.getAllByText("Ultra")).toHaveLength(2);
+    for (const badge of slot.getAllByText("Ultra")) {
       expect(badge.className).toContain("whitespace-nowrap");
       expect(badge.parentElement?.className).toContain("shrink-0");
     }
@@ -964,6 +970,91 @@ describe("Account Pool settings", () => {
     ).toBeTruthy();
   });
 
+  it("shows a future model weekly row with its API name and falls back for legacy servers", async () => {
+    const current = account({ label: "Future subscription" });
+    const slot = render([current], {
+      "display.get": () => ({
+        plans: {},
+        weekly: {
+          [current.id]: {
+            "Claude Future 42": {
+              utilization: 0.45,
+              resetAt: Date.now() + 86400000,
+              status: "allowed",
+              observedAt: Date.now(),
+              source: "usage",
+            },
+          },
+        },
+      }),
+    });
+    await slot.findByText(current.label);
+    await openActions(slot, current.label);
+    fireEvent.click(await slot.findByText("Usage details"));
+    expect(await slot.findByText("7d · Claude Future 42")).toBeTruthy();
+    expect(slot.queryByText("7d · Other")).toBeNull();
+  });
+
+  it("shows Ultra for the legacy 20x tier on a cold read without provider metadata", async () => {
+    const current = account({
+      label: "Cold subscription",
+      rateLimitTier: "default_claude_max_20x",
+    });
+    const slot = render([current], { "display.get": () => ({ plans: {} }) });
+    expect(await slot.findByText("Ultra")).toBeTruthy();
+    expect(slot.queryByText("Max (20x)")).toBeNull();
+    await openActions(slot, current.label);
+    fireEvent.click(await slot.findByText("Usage details"));
+    expect(slot.getAllByText("Ultra").length).toBeGreaterThan(1);
+  });
+
+  it("shows Ultra badges and usage details from display metadata over a legacy Max record", async () => {
+    const current = account({
+      label: "Primary subscription",
+      rateLimitTier: "default_claude_max_20x",
+    });
+    const slot = render([current], {
+      "display.get": () => ({ plans: { [current.id]: "Ultra" } }),
+    });
+    expect(await slot.findByText("Ultra")).toBeTruthy();
+    expect(slot.queryByText("Max (20x)")).toBeNull();
+    await openActions(slot, current.label);
+    fireEvent.click(await slot.findByText("Usage details"));
+    expect(slot.getAllByText("Ultra").length).toBeGreaterThan(1);
+  });
+
+  it("keeps reported Max off Claude API-key badges and retains non-Claude Max tiers", async () => {
+    const apiKey = account({
+      label: "Claude API-key fixture",
+      kind: "api-key",
+      subscriptionType: null,
+      rateLimitTier: null,
+      email: null,
+    });
+    const codex = account({
+      id: "22222222-2222-4222-8222-222222222222",
+      provider: "codex",
+      label: "Codex Max fixture",
+      subscriptionType: "max",
+      rateLimitTier: "max_20x",
+    });
+    const slot = render([apiKey, codex], {
+      "display.get": () => ({
+        plans: { [apiKey.id]: "Max", [codex.id]: "Max" },
+      }),
+    });
+    expect(await slot.findByText("Max (20x)")).toBeTruthy();
+    const claude = within(
+      slot.getByRole("group", { name: "Claude subscriptions" }),
+    );
+    expect(claude.getByText("API key")).toBeTruthy();
+    expect(claude.queryByText(/^Max(?: \(.*\))?$/u)).toBeNull();
+    const nonClaude = within(
+      slot.getByRole("group", { name: "Codex subscriptions" }),
+    );
+    expect(nonClaude.getByText("Max (20x)")).toBeTruthy();
+  });
+
   it("shows the plan from the tier and opens usage details for a Codex subscription", async () => {
     const blockingResetAt = Date.now() + 6 * 24 * 60 * 60 * 1_000;
     const slot = render([
@@ -991,7 +1082,7 @@ describe("Account Pool settings", () => {
       account({ label: "Claude Max" }),
     ]);
     expect(await slot.findByText("pro@example.com")).toBeTruthy();
-    expect(slot.getByText("Max 5x")).toBeTruthy();
+    expect(slot.getByText("Claude subscription")).toBeTruthy();
     expect(slot.getByText("· back in 6d 0h")).toBeTruthy();
     await openActions(slot, "pro@example.com");
     fireEvent.click(await slot.findByText("Usage details"));
@@ -1760,6 +1851,63 @@ describe("Account Pool settings", () => {
     expect(
       (await slot.findByLabelText("Codex user code")).textContent,
     ).toContain("ABCD-1234");
+  });
+
+  it("signs an existing account in again in place and completes into it", async () => {
+    const slot = render([account({ label: "Reserve", enabled: false })], {
+      "login.start": () => ({
+        sessionId: "22222222-2222-4222-8222-222222222222",
+        authorizeUrl: "https://claude.ai/oauth/authorize?state=state",
+      }),
+      "login.complete": () => account({ label: "Reserve", enabled: false }),
+    });
+    fireEvent.pointerDown(
+      await slot.findByRole("button", { name: "Reserve actions" }),
+    );
+    fireEvent.click(await slot.findByText("Sign in again…"));
+    expect(
+      await slot.findByRole("dialog", { name: "Sign in again" }),
+    ).toBeTruthy();
+    expect(slot.rpcCalls).toContainEqual({
+      method: "login.start",
+      input: { accountId: account().id },
+    });
+    fireEvent.change(slot.getByLabelText("Claude authorization code"), {
+      target: { value: "code#state" },
+    });
+    fireEvent.click(slot.getByRole("button", { name: "Complete" }));
+    expect(await slot.findByText("Signed in again to Reserve")).toBeTruthy();
+    expect(slot.queryByRole("button", { name: "Add another" })).toBeNull();
+  });
+
+  it("shows a refused Claude re-login inside the sign-in dialog", async () => {
+    const refusal =
+      "This login is for spouse@example.com, not person@example.com.";
+    const slot = render([account()], {
+      "login.start": () => ({
+        sessionId: "22222222-2222-4222-8222-222222222222",
+        authorizeUrl: "https://claude.ai/oauth/authorize?state=state",
+      }),
+      "login.complete": () => {
+        throw new Error(refusal);
+      },
+    });
+    fireEvent.pointerDown(
+      await slot.findByRole("button", { name: "person@example.com actions" }),
+    );
+    fireEvent.click(await slot.findByText("Sign in again…"));
+    fireEvent.change(await slot.findByLabelText("Claude authorization code"), {
+      target: { value: "code#state" },
+    });
+    fireEvent.click(slot.getByRole("button", { name: "Complete" }));
+    const dialog = await slot.findByRole("dialog", {
+      name: "Sign in again",
+    });
+    await waitFor(() => expect(dialog.textContent).toContain(refusal));
+    expect(
+      slot.getByRole("button", { name: "Complete" }).hasAttribute("disabled"),
+    ).toBe(true);
+    expect(slot.getByRole("button", { name: "Try again" })).toBeTruthy();
   });
 
   it("persists provider routing from the section switch", async () => {

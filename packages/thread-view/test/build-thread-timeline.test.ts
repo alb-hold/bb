@@ -713,6 +713,7 @@ function userQuestionLifecycleEvent({
                 { value: "production", label: "Production" },
               ],
               allowFreeText: true,
+              required: true,
             },
           ],
         },
@@ -979,8 +980,7 @@ describe("buildThreadTimelineFromEvents", () => {
 
   it("shows a shell command as run when shell command summaries are off", () => {
     const event = createTimelineEventFactory({ threadId: "thread-1" });
-    const command =
-      "until gh pr checks 5487 | grep -qv pending; do sleep 30; done";
+    const command = "grep -qv pending";
     const events = fromRows([
       event.turnStarted({ turnId: "turn-1" }),
       event.commandStarted({ itemId: "poll", command }),
@@ -1024,7 +1024,7 @@ describe("buildThreadTimelineFromEvents", () => {
 
     const unsummarized = commandRow(false);
     expect(unsummarized.activityIntents).toEqual([]);
-    expect(unsummarized.title).toMatch(/^Ran until gh pr checks 5487/);
+    expect(unsummarized.title).toBe(`Ran ${command}`);
   });
 
   it("hides a delivered tool result whose tool row is suppressed and shows one whose tool row is not", () => {
@@ -2254,6 +2254,29 @@ describe("buildThreadTimelineFromEvents", () => {
         status: "error",
         title: "Provider error",
         detail: longMessage,
+      }),
+    ]);
+  });
+
+  it("keeps a long system error message visible when the error also carries detail", () => {
+    const message =
+      "This thread's workspace folder no longer exists: /tmp/p19-i29-ws-fixture. Restore it from branch fix/ws-gone-fixture, or archive the thread.";
+    const detail =
+      "Unmanaged workspace path does not exist: /tmp/p19-i29-ws-fixture";
+    const rows = buildTimelineRows([
+      systemErrorEvent({
+        code: "thread_command_failed",
+        message,
+        detail,
+        seq: 1,
+      }),
+    ]);
+
+    expect(collectSystemRows(rows)).toEqual([
+      expect.objectContaining({
+        systemKind: "error",
+        title: "System error",
+        detail: `${message}\n${detail}`,
       }),
     ]);
   });

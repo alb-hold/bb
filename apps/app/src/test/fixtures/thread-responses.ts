@@ -20,6 +20,8 @@ export function makeThreadResponse(
   const thread = makeThreadWithRuntime({ runtime: overrides.runtime });
   return {
     ...thread,
+    hasPendingInteraction: false,
+    nativeTerminal: false,
     activeBackgroundAgentCount: 0,
     canRestoreEnvironment: false,
     canEditMessages: true,
@@ -48,6 +50,7 @@ export function makeThreadTimelineResponse(
     sessionOptions: null,
     modelFallback: null,
     maxSeq: 0,
+    tag: `timeline-${overrides.maxSeq ?? 0}`,
     timelinePage: {
       returnedSegmentCount: 0,
       olderCursor: null,

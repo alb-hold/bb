@@ -17,10 +17,9 @@ export type ChildTerminalBroadcastMessage = Extract<
   { type: "session-updated" | "exited" | "error" }
 >;
 
-export type ChildTerminalReplyMessage = Extract<
-  TerminalServerMessage,
-  { type: "features" | "resize-applied" }
->;
+export type ChildTerminalReplyMessage =
+  | Extract<TerminalServerMessage, { type: "features" | "resize-applied" }>
+  | Extract<TerminalServerMessage, { type: "session-updated" }>;
 
 export interface ChildTerminalSocketSink {
   broadcast(
@@ -52,6 +51,7 @@ export class ChildTerminalSocket {
     private readonly sink: ChildTerminalSocketSink,
     readonly outputAcks: boolean,
     readonly resizeAcks: boolean,
+    readonly resizeSeqEcho: boolean,
   ) {}
 
   get isClosed(): boolean {
@@ -93,7 +93,6 @@ export class ChildTerminalSocket {
         }
         this.sink.relayOutput(this.terminalId, message.chunk);
         return;
-      case "session-updated":
       case "exited":
       case "error":
         if (this.collecting !== null) {
@@ -102,6 +101,23 @@ export class ChildTerminalSocket {
         }
         this.sink.broadcast(this.terminalId, message, data.length);
         return;
+      case "session-updated":
+      {
+        const resizeSeq = message.resizeSeq;
+        if (typeof resizeSeq === "number") {
+          this.sink.reply(this.attachId, {
+            ...message,
+            resizeSeq,
+          });
+          return;
+        }
+        if (this.collecting !== null) {
+          this.collecting.trailing.push(message);
+          return;
+        }
+        this.sink.reply(this.attachId, message);
+        return;
+      }
     }
   }
 

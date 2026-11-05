@@ -280,9 +280,11 @@ export interface ThreadTimelineBuildProfile {
   totalDurationMs: number;
 }
 
+export type ThreadTimelineWindow = Omit<ThreadTimelineResponse, "tag">;
+
 interface BuildThreadTimelineInternalResult {
   profile: ThreadTimelineBuildProfile;
-  response: ThreadTimelineResponse;
+  response: ThreadTimelineWindow;
 }
 
 interface ThreadTimelineBuildProfileAccumulator {
@@ -833,14 +835,24 @@ function ensureTimelineSelectedItemLifecycleRows(
   },
 ): StoredEventRow[] {
   const items = new Map<string, ScopedItemRef>();
+  const lifecycleTypes = new Map<string, Set<string>>();
   for (const row of args.rows) {
     if (row.itemId === null) continue;
     const item = storedEventRowItemRef(row);
-    items.set(scopedItemRefKey(item), item);
+    const key = scopedItemRefKey(item);
+    items.set(key, item);
+    if (row.type === "item/started" || row.type === "item/completed") {
+      const types = lifecycleTypes.get(key) ?? new Set<string>();
+      types.add(row.type);
+      lifecycleTypes.set(key, types);
+    }
   }
-  if (items.size === 0) return [...args.rows];
+  const missingItems = [...items.entries()]
+    .filter(([key]) => lifecycleTypes.get(key)?.size !== 2)
+    .map(([, item]) => item);
+  if (missingItems.length === 0) return [...args.rows];
   const lifecycleRows = listStoredItemLifecycleRowsByItems(db, {
-    items: [...items.values()],
+    items: missingItems,
     maxInlineOutputChars: args.maxInlineOutputChars,
     sequenceBounds: {
       sequenceStart: args.sequenceStart,
@@ -1647,7 +1659,7 @@ function buildThreadTimelineInternal(
   profile.responseRowCount = paginatedTimeline.rows.length;
   profile.returnedSegmentCount = paginatedTimeline.returnedSegmentCount;
 
-  const response: ThreadTimelineResponse = {
+  const response: ThreadTimelineWindow = {
     maxSeq: snapshot.maxSeq,
     rows: options.summaryOnly ? [] : paginatedTimeline.rows,
     contextBoundarySeq,
@@ -1699,7 +1711,7 @@ export function buildThreadTimelineWithProfile(
   db: DbConnection,
   thread: Thread,
   options: BuildThreadTimelineOptions,
-): { profile: ThreadTimelineBuildProfile; response: ThreadTimelineResponse } {
+): { profile: ThreadTimelineBuildProfile; response: ThreadTimelineWindow } {
   return runEventLoopWorkSync(`timeline-build ${thread.id}`, () =>
     db.transaction(() => {
       const result = buildThreadTimelineInternal(db, thread, options);

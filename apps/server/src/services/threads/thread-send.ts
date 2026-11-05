@@ -1,8 +1,10 @@
 import {
   getEnvironment,
   getThread,
+  getThreadSpawner,
   requireThreadLifecycleEventApplied,
 } from "@bb/db";
+import { describeMissingWorkspace } from "./missing-workspace.js";
 import { assertNotNativeTerminalThread } from "./native-terminal-guard.js";
 import type { DbConnection, DbTransaction, EnvironmentRow } from "@bb/db";
 import type {
@@ -78,7 +80,14 @@ import {
   type GroupedPrompt,
   type PromptWithGroups,
 } from "./deferred-first-turn-context.js";
-import type { TelemetryEvent } from "../system/telemetry.js";
+import type {
+  TelemetryEvent,
+  TelemetryInitiator,
+} from "../system/telemetry.js";
+import {
+  initiatorTelemetryProperty,
+  resolveTelemetryInitiator,
+} from "./telemetry-initiator.js";
 import { assertThreadHostAcceptsWork } from "./thread-host-admission.js";
 
 type SendThreadMessageMode = SendMessageRequest["mode"];
@@ -98,6 +107,7 @@ interface SendThreadMessageArgs {
     forkSourceProviderThreadId: string | null;
     onCommandSettled?: () => void | Promise<void>;
   };
+  originPluginId: string | null;
   payload: SendThreadMessagePayload;
   thread: Thread;
   trigger: SendThreadMessageTrigger;
@@ -121,7 +131,7 @@ interface DispatchedThreadSend {
 const NO_REFUSAL: DispatchedThreadSend = { acceptance: Promise.resolve(null) };
 
 interface TurnAcceptanceWatch {
-  refuse: (error: Error) => void;
+  refuse: (error: Error, message?: string) => void;
   settle: () => void;
   result: Promise<ThreadSendRefusal | null>;
 }
@@ -141,11 +151,11 @@ function watchTurnAcceptance(graceMs: number): TurnAcceptanceWatch {
   const timer = setTimeout(() => resolve(null), graceMs);
   timer.unref?.();
   return {
-    refuse: (error) => {
+    refuse: (error, message) => {
       clearTimeout(timer);
       resolve({
         code: error instanceof ApiError ? error.body.code : "turn_refused",
-        message: error.message,
+        message: message ?? error.message,
       });
     },
     settle: () => {
@@ -154,6 +164,24 @@ function watchTurnAcceptance(graceMs: number): TurnAcceptanceWatch {
     },
     result,
   };
+}
+
+interface DescribeMissingWorkspaceRefusalArgs {
+  environmentId: string;
+  error: Error;
+}
+
+function describeMissingWorkspaceRefusal(
+  deps: Pick<AppDeps, "db">,
+  args: DescribeMissingWorkspaceRefusalArgs,
+): string | undefined {
+  return (
+    describeMissingWorkspace(deps.db, {
+      environmentId: args.environmentId,
+      errorCode: args.error instanceof ApiError ? args.error.body.code : "",
+      errorMessage: args.error.message,
+    }) ?? undefined
+  );
 }
 
 interface ResolveMessageSenderArgs {
@@ -203,6 +231,7 @@ interface AppendAndQueueSendThreadMessageArgs {
   initiator: ThreadTurnInitiator;
   input: PromptInput[];
   inputGroups?: PromptInput[][];
+  originPluginId: string | null;
   queueInTransaction: SendThreadMessageQueueRequest;
   requestId: ClientTurnRequestId;
   senderThreadId: string | null;
@@ -429,11 +458,12 @@ type UserMessageSentProperties = Extract<
 >["properties"];
 
 export function captureUserMessageSentTelemetry(
-  deps: Pick<LoggedPendingInteractionWorkSessionDeps, "telemetry">,
+  deps: Pick<LoggedPendingInteractionWorkSessionDeps, "config" | "telemetry">,
   args: {
     isChildThread: boolean;
     messageSource: UserMessageSentProperties["message_source"];
     providerId: string;
+    initiator: TelemetryInitiator;
   },
 ): void {
   deps.telemetry.capture({
@@ -442,6 +472,7 @@ export function captureUserMessageSentTelemetry(
       is_child_thread: args.isChildThread,
       message_source: args.messageSource,
       provider: args.providerId,
+      ...initiatorTelemetryProperty(deps.config.featureFlags, args.initiator),
     },
   });
 }
@@ -455,6 +486,7 @@ function appendAndQueueSendThreadMessageInTransaction({
   initiator,
   input,
   inputGroups,
+  originPluginId,
   queueInTransaction,
   requestId,
   senderThreadId,
@@ -478,6 +510,7 @@ function appendAndQueueSendThreadMessageInTransaction({
             ...(inputGroups !== undefined ? { inputGroups } : {}),
             execution,
             initiator,
+            originPluginId,
             senderThreadId,
             requestMethod: "turn/start",
             source: "tell",
@@ -517,8 +550,17 @@ export async function sendThreadMessage(
   assertNotNativeTerminalThread(deps.db, args.thread.id);
   if (isStandaloneBuiltinClearCommand(args.payload.input)) {
     await clearThreadContext(deps, {
+      ...(args.beforeAppendInTransaction !== undefined
+        ? { beforeCommitInTransaction: args.beforeAppendInTransaction }
+        : {}),
       environment: args.environment,
       thread: args.thread,
+      beforeClearInTransaction: (tx) => {
+        const current = getThread(tx, args.thread.id);
+        if (!current) {
+          throw new ApiError(404, "thread_not_found", "Thread not found");
+        }
+      },
     });
     return { refusal: null };
   }
@@ -619,28 +661,45 @@ async function sendThreadMessageWithoutContextClear(
   });
   const shouldCaptureUserMessageSent =
     args.trigger === "user" && initiator === "user" && input.length > 0;
+  const telemetryInitiator = resolveTelemetryInitiator({
+    origin: args.payload.originPluginId === undefined ? null : "plugin",
+    originPluginId: args.payload.originPluginId ?? null,
+    initiator,
+  });
   const expectedSteerTurnId =
     mode === "auto" || mode === "steer"
       ? getActiveTurnId(deps, thread.id)
       : null;
-  if (senderThreadId === null && args.retryOf === undefined) {
-    await recoverThreadModelOverride(deps, {
-      model: payload.model,
-      modelSource:
-        payload.executionInputSources === undefined
-          ? "explicit"
-          : payload.executionInputSources.model,
-      reasoningLevel: payload.reasoningLevel,
-      reasoningLevelSource:
-        payload.executionInputSources === undefined
-          ? "explicit"
-          : payload.executionInputSources.reasoningLevel,
-      thread,
-    });
-  }
   const execution = await buildExecutionOptions(deps, payload, {
     threadId: thread.id,
   });
+  const isManagedChild =
+    thread.parentThreadId !== null ||
+    getThreadSpawner(deps.db, thread.id) !== null;
+  const usesChildModelPolicy =
+    isManagedChild &&
+    deps.providerRegistry.get(thread.providerId)?.childThreadModel != null;
+  if (
+    senderThreadId === null &&
+    args.retryOf === undefined &&
+    (!usesChildModelPolicy || args.trigger === "user")
+  ) {
+    await recoverThreadModelOverride(deps, {
+      model: usesChildModelPolicy ? payload.model : execution.model,
+      modelSource: usesChildModelPolicy
+        ? payload.executionInputSources === undefined
+          ? "explicit"
+          : payload.executionInputSources.model
+        : "explicit",
+      reasoningLevel: execution.reasoningLevel,
+      reasoningLevelSource: usesChildModelPolicy
+        ? payload.executionInputSources === undefined
+          ? "explicit"
+          : payload.executionInputSources.reasoningLevel
+        : "explicit",
+      thread,
+    });
+  }
   const permissionEscalation = resolvePermissionEscalation({
     initiator,
   });
@@ -654,6 +713,7 @@ async function sendThreadMessageWithoutContextClear(
       initiator,
       input,
       inputGroups,
+      originPluginId: args.originPluginId,
       senderThreadId,
       thread,
     })
@@ -663,6 +723,7 @@ async function sendThreadMessageWithoutContextClear(
         isChildThread: thread.parentThreadId !== null,
         messageSource: "thread_send",
         providerId: thread.providerId,
+        initiator: telemetryInitiator,
       });
     }
     return NO_REFUSAL;
@@ -691,7 +752,6 @@ async function sendThreadMessageWithoutContextClear(
   if (mode === "start") {
     const commandArgs = {
       thread,
-      fork: null,
       input,
       ...(inputGroups !== undefined ? { inputGroups } : {}),
       requestId,
@@ -735,6 +795,7 @@ async function sendThreadMessageWithoutContextClear(
       initiator,
       input,
       inputGroups,
+      originPluginId: args.originPluginId,
       queueInTransaction: ({ tx }) => {
         const dispatchKind = command.mode;
         const currentThread = getThread(tx, thread.id);
@@ -792,7 +853,13 @@ async function sendThreadMessageWithoutContextClear(
           { err: error, threadId: thread.id },
           "Live ready turn command failed",
         );
-        acceptance?.refuse(error);
+        acceptance?.refuse(
+          error,
+          describeMissingWorkspaceRefusal(deps, {
+            environmentId: readyEnvironment.id,
+            error,
+          }),
+        );
       },
     });
     if (queuedRequest.activeThread) {
@@ -807,6 +874,7 @@ async function sendThreadMessageWithoutContextClear(
         isChildThread: thread.parentThreadId !== null,
         messageSource: "thread_send",
         providerId: thread.providerId,
+        initiator: telemetryInitiator,
       });
     }
     return {
@@ -850,6 +918,7 @@ async function sendThreadMessageWithoutContextClear(
     initiator,
     input,
     inputGroups,
+    originPluginId: args.originPluginId,
     queueInTransaction: () => {
       return { activeThread: null };
     },
@@ -880,7 +949,13 @@ async function sendThreadMessageWithoutContextClear(
         { err: error, threadId: thread.id },
         "Live turn submit command failed",
       );
-      acceptance.refuse(error);
+      acceptance.refuse(
+        error,
+        describeMissingWorkspaceRefusal(deps, {
+          environmentId: readyEnvironment.id,
+          error,
+        }),
+      );
     },
   });
   if (shouldCaptureUserMessageSent) {
@@ -888,6 +963,7 @@ async function sendThreadMessageWithoutContextClear(
       isChildThread: thread.parentThreadId !== null,
       messageSource: "thread_send",
       providerId: thread.providerId,
+      initiator: telemetryInitiator,
     });
   }
   return { acceptance: acceptance.result, requestId };

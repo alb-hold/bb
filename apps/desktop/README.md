@@ -56,7 +56,7 @@ Node runtime:
 pnpm exec turbo run start --filter=@bb/desktop
 ```
 
-Electron is pinned to `44.3.0`. macOS builds require macOS 13 (Ventura) or
+Electron is pinned to `44.9.3`. macOS builds require macOS 13 (Ventura) or
 newer. The bundled `bb-app` runtime uses `better-sqlite3@13.0.3`, whose N-API
 binaries work with Electron without an ABI-specific rebuild. The packaging
 hook opens an in-memory database with Electron before accepting the packaged
@@ -83,6 +83,19 @@ The macOS bundle declares macOS 13 as its minimum. The release feed generator
 writes the corresponding Darwin kernel minimum, 22.0.0, into both JSON and YAML
 update feeds. Run it before publishing release artifacts so older Macs reject
 incompatible updates.
+
+## Window state
+
+Window position, normal size, maximized/fullscreen state, and zoom are saved in
+`window-state.json` in Electron's user-data directory. Geometry changes save after
+500 ms of inactivity, and closing a window flushes immediately. A crash can lose
+changes still within that debounce interval. Writes replace the file atomically.
+Closing one of several windows removes it from the next launch; closing the final
+window keeps its state for Dock reopening and the next launch. Quitting with
+multiple windows open restores those windows individually. Zoom is one app-wide
+value because Chromium shares zoom across windows on the same origin: zoom
+commands apply to every window, new windows open at it, it saves immediately,
+and it survives reloads and server switches.
 
 ## Validation
 

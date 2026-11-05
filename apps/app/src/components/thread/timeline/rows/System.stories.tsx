@@ -358,6 +358,7 @@ export function Operations() {
             {...baseProps}
             initialExpanded={new Set([provisioningPending.id])}
             timelineRows={[provisioningPending]}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -369,6 +370,7 @@ export function Operations() {
           <ThreadTimelineRows
             {...baseProps}
             timelineRows={[provisioningCompleted]}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -380,6 +382,7 @@ export function Operations() {
           <ThreadTimelineRows
             {...baseProps}
             timelineRows={[compactionPending]}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -391,6 +394,7 @@ export function Operations() {
           <ThreadTimelineRows
             {...baseProps}
             timelineRows={[compactionCompleted]}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -399,7 +403,11 @@ export function Operations() {
         hint="thread/context/cleared → standalone completed operation"
       >
         <TimelineStage>
-          <ThreadTimelineRows {...baseProps} timelineRows={[contextCleared]} />
+          <ThreadTimelineRows
+            {...baseProps}
+            timelineRows={[contextCleared]}
+            threadIsActive={false}
+          />
         </TimelineStage>
       </StoryRow>
       <StoryRow
@@ -410,6 +418,7 @@ export function Operations() {
           <ThreadTimelineRows
             {...baseProps}
             timelineRows={[threadInterruptedManualStop]}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -421,6 +430,7 @@ export function Operations() {
           <ThreadTimelineRows
             {...baseProps}
             timelineRows={[providerUnhandled]}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -429,7 +439,11 @@ export function Operations() {
         hint="provider/warning, category=general, status=completed"
       >
         <TimelineStage>
-          <ThreadTimelineRows {...baseProps} timelineRows={[providerWarning]} />
+          <ThreadTimelineRows
+            {...baseProps}
+            timelineRows={[providerWarning]}
+            threadIsActive={false}
+          />
         </TimelineStage>
       </StoryRow>
       <StoryRow
@@ -440,6 +454,7 @@ export function Operations() {
           <ThreadTimelineRows
             {...baseProps}
             timelineRows={[deprecationNotice]}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -451,6 +466,7 @@ export function Operations() {
           <ThreadTimelineRows
             {...baseProps}
             timelineRows={[parentChangeAssign]}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -462,6 +478,7 @@ export function Operations() {
           <ThreadTimelineRows
             {...baseProps}
             timelineRows={[parentChangeRelease]}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -473,6 +490,7 @@ export function Operations() {
           <ThreadTimelineRows
             {...baseProps}
             timelineRows={[parentChangeTransfer]}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -492,6 +510,7 @@ export function NonOperations() {
             {...baseProps}
             initialExpanded={new Set([debugSystemRow.id])}
             timelineRows={[debugSystemRow]}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -504,6 +523,7 @@ export function NonOperations() {
             {...baseProps}
             initialExpanded={new Set([errorSystemRow.id])}
             timelineRows={[errorSystemRow]}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -515,6 +535,7 @@ export function NonOperations() {
           <ThreadTimelineRows
             {...baseProps}
             timelineRows={[reconnectSystemRow]}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -532,7 +553,11 @@ export function IconAlignment() {
         parentChangeAssign,
       ].map((row) => (
         <section key={row.id} className="w-full max-w-[760px]">
-          <ThreadTimelineRows {...baseProps} timelineRows={[row]} />
+          <ThreadTimelineRows
+            {...baseProps}
+            timelineRows={[row]}
+            threadIsActive={false}
+          />
         </section>
       ))}
     </StoryCard>
@@ -573,6 +598,7 @@ export function SummaryOverflow() {
                 detail: null,
               }),
             ]}
+            threadIsActive={false}
           />
         </section>
       ))}

@@ -1,7 +1,13 @@
-import { CAMPAIGN_PARAM_NAMES } from "./site";
+import type { VisitIds } from "./analytics";
+import {
+  CAMPAIGN_PARAM_NAMES,
+  CLICK_ID_PARAM_NAMES,
+  VISIT_PARAM_NAMES,
+} from "./site";
 
 const SAVED_UTM_KEY = "bb:landing-utm";
-const DOWNLOAD_PATH_PREFIX = "/download/";
+const FIRST_TOUCH_KEY = "bb:landing-first-touch";
+const DOWNLOAD_PATH = /^\/download\/(macos|windows|linux)$/;
 const CARRY_EVENTS = ["pointerdown", "click"] as const;
 
 type UtmStorage = Pick<Storage, "getItem" | "setItem">;
@@ -43,14 +49,64 @@ export function readSavedUtm(storage: UtmStorage): URLSearchParams {
   return pickUtmParams(storage.getItem(SAVED_UTM_KEY) ?? "");
 }
 
-export function carryUtmToDownloadLinks(): () => void {
+function rememberFirstTouch(storage: UtmStorage): void {
+  if (storage.getItem(FIRST_TOUCH_KEY) !== null) {
+    return;
+  }
+  const firstTouch = new URLSearchParams({
+    first_page: window.location.pathname,
+  });
+  const referrer = externalReferrer(document.referrer, window.location.origin);
+  if (referrer) {
+    firstTouch.set("first_referrer", referrer);
+  }
+  storage.setItem(FIRST_TOUCH_KEY, firstTouch.toString());
+}
+
+function externalReferrer(referrer: string, origin: string): string | null {
+  let url: URL;
+  try {
+    url = new URL(referrer);
+  } catch {
+    return null;
+  }
+  return url.origin === origin ? null : url.origin;
+}
+
+function addVisitParams(
+  search: string,
+  visit: VisitIds | null,
+  firstTouch: URLSearchParams,
+): string {
+  const params = new URLSearchParams(search);
+  for (const name of VISIT_PARAM_NAMES) {
+    params.delete(name);
+  }
+  if (visit) {
+    params.set("visitor_id", visit.distinctId);
+    if (visit.sessionId) {
+      params.set("session_id", visit.sessionId);
+    }
+  }
+  for (const [name, value] of firstTouch) {
+    params.set(name, value);
+  }
+  const query = params.toString();
+  return query ? `?${query}` : "";
+}
+
+export function carryUtmToDownloadLinks(
+  readVisit: () => VisitIds | null,
+): () => void {
   const globalPrivacyControl =
     "globalPrivacyControl" in navigator &&
     navigator.globalPrivacyControl === true;
   if (globalPrivacyControl) {
     const landingUrl = new URL(window.location.href);
-    if (landingUrl.searchParams.has("gclid")) {
-      landingUrl.searchParams.delete("gclid");
+    for (const name of CLICK_ID_PARAM_NAMES) {
+      landingUrl.searchParams.delete(name);
+    }
+    if (landingUrl.href !== window.location.href) {
       window.history.replaceState(window.history.state, "", landingUrl.href);
     }
   }
@@ -60,11 +116,14 @@ export function carryUtmToDownloadLinks(): () => void {
     const landingParams = new URLSearchParams(window.location.search);
     if (globalPrivacyControl) {
       const saved = readSavedUtm(storage);
-      saved.delete("gclid");
+      for (const name of CLICK_ID_PARAM_NAMES) {
+        saved.delete(name);
+        landingParams.delete(name);
+      }
       storage.setItem(SAVED_UTM_KEY, saved.toString());
-      landingParams.delete("gclid");
     }
     rememberLatestUtm(storage, landingParams.toString());
+    rememberFirstTouch(storage);
   } catch {
     storage = null;
   }
@@ -77,27 +136,37 @@ export function carryUtmToDownloadLinks(): () => void {
     if (
       !(link instanceof HTMLAnchorElement) ||
       link.origin !== window.location.origin ||
-      !link.pathname.startsWith(DOWNLOAD_PATH_PREFIX)
+      !DOWNLOAD_PATH.test(link.pathname)
     ) {
       return;
     }
     let saved = new URLSearchParams();
+    let firstTouch = new URLSearchParams();
     try {
       if (storage) {
         saved = readSavedUtm(storage);
+        firstTouch = new URLSearchParams(
+          storage.getItem(FIRST_TOUCH_KEY) ?? "",
+        );
       }
     } catch {
       storage = null;
     }
     let linkSearch = link.search;
     if (globalPrivacyControl) {
-      saved.delete("gclid");
       const params = new URLSearchParams(linkSearch);
-      params.delete("gclid");
+      for (const name of CLICK_ID_PARAM_NAMES) {
+        saved.delete(name);
+        params.delete(name);
+      }
       const query = params.toString();
       linkSearch = query ? `?${query}` : "";
     }
-    const search = addSavedUtmParams(linkSearch, saved);
+    const search = addVisitParams(
+      addSavedUtmParams(linkSearch, saved),
+      readVisit(),
+      firstTouch,
+    );
     if (search !== link.search) {
       link.search = search;
     }

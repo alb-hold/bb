@@ -13,6 +13,7 @@ Providers are agent backends (e.g., codex, claude-code). Each supports different
                                           List available providers
   bb provider models [providerId] [--machine <id-or-name> | --environment <id>]
                      [--project <id>]
+    [--selected-model <model-id>]
                                           List models for a provider
 
 `bb provider list` reports each provider's readiness, so an unusable provider
@@ -52,6 +53,15 @@ carries them per model as `sessionOptions`. Choose values at creation with
 without `--model` starts on a model that fits the chosen options, and a spawn
 whose `--model` cannot run with them is refused with the name of one that can.
 
+Providers may declare a child-thread model. When spawning a child thread, an
+explicit `--model` must exactly match that model or bb refuses the request;
+omit `--model` to use it automatically. Spawning with `bb thread spawn` from
+inside a thread during its turn records an active spawner and also makes the
+new thread a child, even without `--parent-self`. The same rule applies to
+explicit models on child-thread messages and sticky model updates. Stored
+overrides and queued work from before this rule remain readable and use the
+provider's child model when executed.
+
 Service tiers are provider-defined ids. `bb provider list --json` reports each
 provider's `serviceTiers` ({id, label, description?}); `default` always means
 the provider's standard tier. A model may narrow that list: `bb provider
@@ -61,8 +71,10 @@ tiers per model, in which case the model accepts every tier the provider
 lists). Pass a tier id to `--service-tier`; a tier the provider does not list
 is rejected.
 
-Model lists answer from the machine's last stored list while a background
-refresh runs, so a list can be hours old. A provider whose refresh keeps
+Model lists answer from the machine's last stored list. A request for a list
+more than a minute old starts a background refresh, and open model pickers
+update when it changes the list. The first request after a quiet period can
+therefore return a list that is hours old. A provider whose refresh keeps
 failing or timing out keeps answering from its last stored list.
 
 When no list can be served, bb provider models prints the failing provider,
@@ -119,13 +131,15 @@ browser there.
 Claude Code's native Workflow tool can be disabled separately on its provider
 page. This preference also defaults off and applies to newly started, resumed,
 or forked provider sessions. Claude Code plugin settings (`disable1MContext`,
-`chromeEnabled`, `sandboxEnabled`) are set with
+`chromeEnabled`, `artifactsEnabled`, `sandboxEnabled`,
+`fullAccessApprovalsEnabled`) are set with
 `bb plugin config provider-claude-code set <key> <value>` and documented in the
 claude-code-provider skill.
 
-Automatic retries after provider overloads and subscription-window limits
-come from the bundled Provider retry plugin (`bb provider-retry status`); see
-`bb guide plugins`. For a manual retry of a failed turn, use `bb thread retry`.
+Automatic retries after provider overloads, server or connection errors, and
+subscription-window limits come from the bundled Provider retry plugin
+(`bb provider-retry status`); see `bb guide plugins`. For a manual retry of a
+failed turn, use `bb thread retry`.
 
 Known ACP agents can appear automatically when their CLI is installed on the
 host. For example, opencode, omp, Grok Build's grok CLI, or Hermes' hermes CLI
@@ -161,3 +175,11 @@ Use top-level sharedSkillRoots for one provider-neutral skill collection. The
 user and project paths use the same relative-path rules. bb indexes these roots
 as read-only sources. It then injects the selected skills into all providers.
 The bb user and project roots keep higher precedence than matching shared roots.
+
+Use --selected-model to discover an unprobed model's reasoning choices and
+include a selected-only model; ACP probes only that model and caches the result.
+Each model reports reasoningDiscovery: unknown means its choices have not been
+discovered yet, and known with an empty supportedReasoningEfforts list means it
+has no selectable reasoning levels. Sending never waits for discovery. When the
+cached catalog lists a model without the thread's reasoning level, BB leaves
+reasoning out of the provider request and the agent keeps its own setting.

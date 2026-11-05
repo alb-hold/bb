@@ -12,6 +12,7 @@ import {
   FAQ_REVIEW,
   FAQ_SUBSCRIPTIONS,
   cell,
+  linkedCell,
   faqFree,
   faqPhone,
   faqPlatforms,
@@ -45,7 +46,7 @@ const PLUGINS_COPY_T3: SectionCopy = {
         machines to run on.
       </p>
       <p>
-        300+ are already in the marketplace, and bb still updates every week
+        400+ are already in the marketplace, and bb still updates every week
         with nothing for you to rebase.
       </p>
     </>
@@ -88,9 +89,10 @@ export const comparison: Comparison = {
         },
         {
           ...BB_ROWS.multiAgent,
-          competitor: cell(
+          competitor: linkedCell(
             "yes",
-            "Claude Code, Codex, Cursor, OpenCode, and more",
+            "Claude Code, Codex, Cursor, Grok Build, OpenCode, Pi, and more",
+            "https://github.com/pingdotgg/t3code/tree/d65249074b54d7e8a72cb9a9e7f8b37bbd0a89a6/docs/user",
           ),
         },
       ],
@@ -122,28 +124,21 @@ export const comparison: Comparison = {
       title: "Switching from T3 Code",
       items: [
         {
-          question: "When is T3 Code a better fit?",
-          answer: (
-            <p>
-              T3 Code may suit you better if you want a built-in button to
-              commit, push and open a pull request with a generated title and
-              description.{" "}
-              <a href="https://t3.codes/">T3 Code’s pull request workflow</a>.
-            </p>
-          ),
-        },
-        {
           question: "What’s the difference between bb and T3 Code?",
           answer: (
             <p>
               Both are free, MIT-licensed apps that run Claude Code, Codex, and
               other coding agents in Git worktrees on your own machines, with
-              mobile and remote access, and both let agents hand work to each
-              other. bb is built to be changed: install a plugin from the
-              marketplace or have an agent build one, instead of keeping a fork.
-              And in bb, every agent another agent starts is a full thread you
-              can open and message mid-run. bb is also fully scriptable: its CLI
-              and SDK can drive anything the app does.
+              mobile and remote access.{" "}
+              <a href="https://github.com/pingdotgg/t3code/blob/d65249074b54d7e8a72cb9a9e7f8b37bbd0a89a6/apps/server/src/mcp/toolkits/orchestrator/tools.ts#L66-L68">
+                T3 Code agents can also delegate to child agents on other
+                providers
+              </a>
+              . bb is built to be changed: install a plugin from the marketplace
+              or have an agent build one, instead of keeping a fork. And in bb,
+              every agent another agent starts is a full thread you can open and
+              message mid-run. bb is also fully scriptable: its CLI and SDK can
+              drive anything the app does.
             </p>
           ),
         },

@@ -9,9 +9,11 @@ function buildProgram(): Command {
     .command("spawn")
     .requiredOption("--project <id>", "Project ID")
     .option("--reasoning-level <level>");
-  thread.command("show [id]");
+  thread.command("show <id>");
   program.command("browser").command("instances").requiredOption("--host <id>");
-  program.command("terminal").command("output <terminalId>");
+  const terminal = program.command("terminal");
+  terminal.command("output <terminalId>");
+  terminal.command("list").requiredOption("--thread <id>", "Thread ID");
   return program;
 }
 
@@ -60,6 +62,32 @@ describe("summarizeCommanderError", () => {
     );
     expect(summary.hintLines[0]).toBe(
       "List project IDs with `bb project list`.",
+    );
+  });
+
+  it("suggests archived thread IDs when a required --thread is missing", async () => {
+    vi.stubEnv("BB_THREAD_ID", "");
+    const summary = await summarize(
+      ["terminal", "list"],
+      "commander.missingMandatoryOptionValue",
+      "error: required option '--thread <id>' not specified",
+    );
+
+    expect(summary.hintLines[0]).toBe(
+      "List thread IDs with `bb thread list --all` to include archived threads.",
+    );
+  });
+
+  it("suggests archived thread IDs for a missing thread ID argument", async () => {
+    vi.stubEnv("BB_THREAD_ID", "");
+    const summary = await summarize(
+      ["thread", "show"],
+      "commander.missingArgument",
+      "error: missing required argument 'id'",
+    );
+
+    expect(summary.hintLines[0]).toBe(
+      "List thread IDs with `bb thread list --all` to include archived threads.",
     );
   });
 

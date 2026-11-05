@@ -5,7 +5,10 @@ import {
   type JsonValue,
   type ThreadListEntry,
 } from "@bb/domain";
-import { isNativeActivityUnconfirmed } from "@bb/client-core";
+import {
+  isNativeActivityUnconfirmed,
+  nativeActivityEvidenceKind,
+} from "@bb/client-core";
 import { action } from "../../action.js";
 import { createCliBbSdk } from "../../client.js";
 import { resolveExplicitIdFlag } from "../../context-env.js";
@@ -28,6 +31,7 @@ interface ThreadListCommandOptions {
   parentThread?: string;
   thread: string[];
   archived?: boolean;
+  all?: boolean;
   section?: string;
   unsectioned?: boolean;
   json?: boolean;
@@ -40,7 +44,9 @@ export function registerListCommand(
 ): void {
   parent
     .command("list")
-    .description("List threads")
+    .description(
+      "List active threads; --thread IDs can include archived threads; use --archived or --all for history",
+    )
     .option("--project <id>", "Filter by project ID (defaults to all projects)")
     .option("--environment <id>", "Filter by environment ID")
     .option(
@@ -51,17 +57,21 @@ export function registerListCommand(
     .option("--parent-thread <id>", "Filter by parent thread ID")
     .option(
       "--thread <id>",
-      "Show only this thread ID, leaving out unknown or deleted IDs (repeatable, up to 200)",
+      "Show only this thread ID, including archived threads; leave out unknown or deleted IDs (repeatable, up to 200)",
       collectOption,
       [],
     )
     .option("--section <id>", "Filter by thread section ID")
     .option("--unsectioned", "Show only threads outside sections")
     .option("--archived", "Show only archived threads")
+    .option("--all", "Include archived and non-archived threads")
     .option("--include-hidden", "Include hidden threads")
     .option("--json", "Print machine-readable JSON output")
     .action(
       action(async (opts: ThreadListCommandOptions) => {
+        if (opts.all && opts.archived) {
+          throw new Error("--all cannot be combined with --archived.");
+        }
         const sdk = createCliBbSdk(getUrl());
         const projectId = resolveExplicitIdFlag({
           flagName: "--project flag",
@@ -105,7 +115,11 @@ export function registerListCommand(
           ...(hostId ? { hostId } : {}),
           ...(parentThreadId ? { parentThreadId } : {}),
           ...(threadIds.length > 0 ? { threadIds } : {}),
-          ...(opts.archived ? { archived: true } : {}),
+          ...(opts.archived
+            ? { archived: true }
+            : opts.all || threadIds.length > 0
+              ? {}
+              : { archived: false }),
           ...(sectionId ? { sectionId } : {}),
           ...(opts.unsectioned ? { unsectioned: true } : {}),
           ...(opts.includeHidden ? { includeHidden: true } : {}),
@@ -182,7 +196,11 @@ function formatThreadListStatus(
     thread.runtime !== undefined &&
     isNativeActivityUnconfirmed(thread.runtime)
   ) {
-    flags.push("activity unconfirmed");
+    flags.push(
+      nativeActivityEvidenceKind(thread.runtime) === "tool-call"
+        ? "agent tool call seen"
+        : "activity not reported",
+    );
   }
   if (thread.archivedAt !== null) {
     flags.push("archived");
@@ -286,5 +304,8 @@ export function formatThreadListIndicator(
   }
   if (wokeThreadIds.has(thread.id)) return "Woke";
   if (thread.listIndicator === "done-unread") return "Done";
+  if (thread.listIndicator === "activity-unreported") {
+    return "Activity not reported";
+  }
   return "-";
 }

@@ -53,6 +53,7 @@ export function registerTerminalRoutes(app: Hono, deps: AppDeps): void {
     const session = await deps.terminalSessions.closeTerminal({
       payload,
       terminalId: context.req.param("terminalId"),
+      caller: "public-terminal-close-route",
     });
     return context.json(session);
   });
@@ -94,5 +95,13 @@ export function registerTerminalRoutes(app: Hono, deps: AppDeps): void {
       terminalId: context.req.param("terminalId"),
     });
     return context.json(output);
+  });
+
+  get(routes.screen, async (context, query) => {
+    const screen = await deps.terminalSessions.readTerminalScreen({
+      query,
+      terminalId: context.req.param("terminalId"),
+    });
+    return context.json(screen);
   });
 }

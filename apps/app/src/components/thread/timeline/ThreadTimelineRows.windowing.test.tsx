@@ -16,6 +16,7 @@ import {
 } from "@/test/fixtures/thread-timeline-rows";
 import { ThreadTimelineRows } from "./ThreadTimelineRows";
 import { collectSearchedMessageAncestorRowIds } from "./useScrollToSearchedMessage";
+import { createInertScrollPositionKeeper } from "@/test/scroll-position-keeper";
 
 function rect(top: number, height: number): DOMRect {
   return {
@@ -75,7 +76,8 @@ function renderDelegation() {
             }),
           ]}
           threadRuntimeDisplayStatus="idle"
-          workspaceRootPath={undefined}
+
+          threadIsActive={false}
         />
       </QueryClientProvider>
     </MemoryRouter>,
@@ -179,11 +181,12 @@ describe("ThreadTimelineRows windowing", () => {
       const scrollElement = document.createElement("div");
       scrollElement.setAttribute("data-test-main-scroll", "");
       const bottomAnchor: BottomAnchorContextValue = {
-        captureScrollAnchor: vi.fn(),
+        positionKeeper: createInertScrollPositionKeeper(),
         holdContentPosition: vi.fn(),
         getScrollElement: () => scrollElement,
         isAtBottom: false,
         scrollElementIntoView: vi.fn(),
+        captureScrollAnchor: vi.fn(),
         scrollToBottom: vi.fn(),
       };
       const rows = Array.from({ length: count }, (_, index) =>
@@ -202,7 +205,8 @@ describe("ThreadTimelineRows windowing", () => {
                 <ThreadTimelineRows
                   timelineRows={rows}
                   threadRuntimeDisplayStatus="idle"
-                  workspaceRootPath={undefined}
+
+                  threadIsActive={false}
                 />
               </CompactViewportOverrideProvider>
             </BottomAnchorContext.Provider>
@@ -238,11 +242,12 @@ describe("ThreadTimelineRows windowing", () => {
     Object.defineProperty(scrollElement, "scrollHeight", { value: 8_000 });
     const scrollElementIntoView = vi.fn();
     const bottomAnchor: BottomAnchorContextValue = {
-      captureScrollAnchor: vi.fn(),
+      positionKeeper: createInertScrollPositionKeeper(),
       holdContentPosition: vi.fn(),
       getScrollElement: () => scrollElement,
       isAtBottom: false,
       scrollElementIntoView,
+      captureScrollAnchor: vi.fn(),
       scrollToBottom: vi.fn(),
     };
     const rows = Array.from({ length: 80 }, (_, index) => {
@@ -265,7 +270,8 @@ describe("ThreadTimelineRows windowing", () => {
                 threadId="thr_steer_window"
                 timelineRows={rows}
                 threadRuntimeDisplayStatus="idle"
-                workspaceRootPath={undefined}
+
+                threadIsActive={false}
               />
             </CompactViewportOverrideProvider>
           </BottomAnchorContext.Provider>
@@ -292,11 +298,12 @@ describe("ThreadTimelineRows windowing", () => {
     Object.defineProperty(scrollElement, "scrollHeight", { value: 8_000 });
     const scrollElementIntoView = vi.fn();
     const bottomAnchor: BottomAnchorContextValue = {
-      captureScrollAnchor: vi.fn(),
+      positionKeeper: createInertScrollPositionKeeper(),
       holdContentPosition: vi.fn(),
       getScrollElement: () => scrollElement,
       isAtBottom: false,
       scrollElementIntoView,
+      captureScrollAnchor: vi.fn(),
       scrollToBottom: vi.fn(),
     };
     const rows = Array.from({ length: 80 }, (_, index) =>
@@ -337,7 +344,8 @@ describe("ThreadTimelineRows windowing", () => {
                 timelineRows={rows}
                 timelineNavigationTargetRowId="search-message-40"
                 threadRuntimeDisplayStatus="idle"
-                workspaceRootPath={undefined}
+
+                threadIsActive={false}
               />
             </CompactViewportOverrideProvider>
           </BottomAnchorContext.Provider>

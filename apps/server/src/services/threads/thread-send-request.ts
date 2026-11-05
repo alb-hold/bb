@@ -7,6 +7,7 @@ import {
 import {
   acquireProjectAttachmentOwnership,
   getEnvironment,
+  getThreadSpawner,
   isNativeTerminalThread,
 } from "@bb/db";
 import { ApiError } from "../../errors.js";
@@ -22,9 +23,10 @@ import type {
 import type { LoggedPendingInteractionWorkSessionDeps } from "../../types.js";
 import { attemptDispatch } from "./dispatch-attempt.js";
 import { requireThreadCommandEnvironment } from "./thread-command-environment.js";
-import { sendThreadMessage } from "./thread-send.js";
 import { assertThreadHostAcceptsWork } from "./thread-host-admission.js";
 import { runWithTurnTrace } from "../system/turn-trace.js";
+import { assertRequestedModelAllowed } from "./child-thread-model.js";
+import { assertProviderAcceptsPromptActions } from "../providers/provider-plan-command.js";
 
 interface AcceptThreadSendRequestArgs {
   payload: SendMessageRequest;
@@ -60,6 +62,11 @@ export async function acceptThreadSendRequest(
       input,
       projectId: args.thread.projectId,
     });
+    const requestText = input.every((entry) => entry.type === "text")
+      ? input
+          .flatMap((entry) => (entry.type === "text" ? [entry.text] : []))
+          .join("\n\n")
+      : undefined;
     acquireProjectAttachmentOwnership(
       deps.db,
       args.thread.id,
@@ -69,22 +76,42 @@ export async function acceptThreadSendRequest(
       throw new ApiError(400, "invalid_request", "Message text is empty");
     }
     await sendNativeTerminalMessage(deps, {
+      ...(requestText === undefined ? {} : { requestText }),
       threadId: args.thread.id,
       pastes,
     });
     return { ok: true, delivery: "sent" };
   }
+  await assertRequestedModelAllowed(deps, {
+    childScope: args.thread.parentThreadId
+      ? "parent"
+      : getThreadSpawner(deps.db, args.thread.id) === null
+        ? null
+        : "spawner",
+    model: args.payload.model,
+    providerId: args.thread.providerId,
+    sources: args.payload.executionInputSources,
+  });
   assertThreadHostAcceptsWork(deps.db, args.thread);
+  assertProviderAcceptsPromptActions(deps.providerRegistry, {
+    input: args.payload.input,
+    providerId: args.thread.providerId,
+  });
   const { compactFirst, ...request } = args.payload;
   if (isStandaloneBuiltinClearCommand(request.input)) {
     if (compactFirst) throwInvalidCompactFirst("cannot clear the context");
     const environment = await requireThreadCommandEnvironment(deps, {
       thread: args.thread,
     });
-    await sendThreadMessage(deps, {
-      environment,
-      payload: request,
+    await attemptDispatch(deps, {
       thread: args.thread,
+      payload: request,
+      source: { kind: "operation", environment },
+      queuePayload: { kind: "inline" },
+      pluginSubmission: null,
+      origin: null,
+      originPluginId: null,
+      startedOnBehalfOf: null,
       trigger: "user",
     });
     return { ok: true, delivery: "sent" };
@@ -115,8 +142,8 @@ export async function acceptThreadSendRequest(
         source: { kind: "inline" },
         queuePayload: { kind: "inline" },
         pluginSubmission: payload.pluginSubmission ?? null,
-        origin: null,
-        originPluginId: null,
+        origin: payload.originPluginId === undefined ? null : "plugin",
+        originPluginId: payload.originPluginId ?? null,
         startedOnBehalfOf: null,
         onTurnRequestCreated: (turnRequestId, turnId) =>
           deps.hub.recordDeviceHandoffTurnSubmitter(

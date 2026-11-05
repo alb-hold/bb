@@ -1,11 +1,22 @@
 import { z } from "zod";
 import {
+  GENERATED_ID_ALPHABET,
+  GENERATED_ID_SUFFIX_LENGTH,
   terminalColsSchema,
   terminalDataBase64Schema,
   terminalRowsSchema,
   terminalSessionCloseReasonSchema,
   terminalSessionStatusSchema,
 } from "@bb/domain";
+
+export const terminalSessionIdSchema = z
+  .string()
+  .regex(
+    new RegExp(
+      `^term_[${GENERATED_ID_ALPHABET}]{${GENERATED_ID_SUFFIX_LENGTH}}$`,
+      "u",
+    ),
+  );
 
 export const terminalSessionSchema = z.object({
   id: z.string().min(1),
@@ -120,6 +131,7 @@ export type TerminalCreateTarget = z.infer<typeof terminalCreateTargetSchema>;
 export const createTerminalRequestSchema = z
   .object({
     cols: terminalColsSchema,
+    id: terminalSessionIdSchema.optional(),
     rows: terminalRowsSchema,
     cwd: z.string().trim().min(1).max(4096).optional(),
     start: z
@@ -152,7 +164,7 @@ export type CreateTerminalRequest = z.infer<typeof createTerminalRequestSchema>;
 export const closeTerminalRequestSchema = z
   .object({
     mode: z.enum(["force", "if-clean"]),
-    reason: z.literal("user"),
+    reason: z.enum(["user", "client-cleanup"]).default("user"),
   })
   .strict();
 export type CloseTerminalRequest = z.infer<typeof closeTerminalRequestSchema>;
@@ -172,7 +184,7 @@ export type UpdateTerminalRequest = z.infer<typeof updateTerminalRequestSchema>;
 export const terminalOutputChunkSchema = z
   .object({
     seq: z.number().int().nonnegative(),
-    dataBase64: terminalDataBase64Schema,
+    dataBase64: z.union([z.literal(""), terminalDataBase64Schema]),
   })
   .strict();
 export type TerminalOutputChunk = z.infer<typeof terminalOutputChunkSchema>;
@@ -207,6 +219,40 @@ export const terminalOutputQuerySchema = z
   .strict();
 export type TerminalOutputQuery = z.infer<typeof terminalOutputQuerySchema>;
 
+export const terminalScreenQuerySchema = z
+  .object({
+    lines: z.coerce.number().int().positive().max(500).optional(),
+    threadId: z.string().min(1).optional(),
+  })
+  .strict();
+export type TerminalScreenQuery = z.infer<typeof terminalScreenQuerySchema>;
+
+const terminalScreenFrameBase64Schema = z
+  .string()
+  .max(1_500_000)
+  .regex(/^[A-Za-z0-9+/]*={0,2}$/u);
+
+export const terminalScreenResponseSchema = z
+  .object({
+    rows: z.array(z.string()),
+    cursor: z
+      .object({
+        col: z.number().int().nonnegative(),
+        row: z.number().int().nonnegative(),
+      })
+      .strict(),
+    cols: terminalColsSchema,
+    gridRows: terminalRowsSchema,
+    truncated: z.boolean(),
+    complete: z.boolean(),
+    checkpointSeq: z.number().int().nonnegative().optional(),
+    dataBase64: terminalScreenFrameBase64Schema.optional(),
+  })
+  .strict();
+export type TerminalScreenResponse = z.infer<
+  typeof terminalScreenResponseSchema
+>;
+
 export const terminalWebSocketQuerySchema = z
   .object({
     sinceSeq: z.coerce.number().int().nonnegative().default(0),
@@ -225,6 +271,10 @@ export const terminalWebSocketQuerySchema = z
       .optional(),
   })
   .strict();
+
+export const TERMINAL_LEGACY_WEBSOCKET_PROTOCOL = "bb.terminal.v1";
+export const TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL =
+  "bb.terminal.resize-echo.v1";
 
 export const terminalOutputResponseSchema = z
   .object({
@@ -295,6 +345,7 @@ export const terminalServerMessageSchema = z.discriminatedUnion("type", [
     .object({
       type: z.literal("session-updated"),
       session: terminalSessionSchema,
+      resizeSeq: z.number().int().positive().optional(),
     })
     .strict(),
   z

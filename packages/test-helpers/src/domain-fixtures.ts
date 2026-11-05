@@ -178,6 +178,7 @@ export function makeThreadListEntry(
       titleFallback: null,
     }),
     pinSortKey: null,
+    nativeTerminal: false,
     activity: {
       activeWorkflowCount: 0,
       activeBackgroundAgentCount: 0,
@@ -195,6 +196,7 @@ export function makeThreadListEntry(
     environmentIsWorktree: null,
     environmentWorkspaceDisplayKind: "other",
     queuedWork: "none",
+    queuedFailedCount: 0,
     rowState: { statuses: {}, progress: null },
   };
   return {

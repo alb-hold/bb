@@ -15,7 +15,7 @@ import {
   getCsvTruncationNote,
 } from "./FilePreview";
 import { SOURCE_CODE_MAX_LINES } from "@/components/code/source-code-budget";
-import { BbSourceCodeSplit } from "@/components/code/SourceCodeHost";
+import { BbSourceCodeSplit } from "@/components/code/BbSourceCodeSplit";
 import { SecondaryPanelFilePreview } from "./ThreadStorageFilePreview";
 import { CompactViewportOverrideProvider } from "@bb/shared-ui/hooks/use-compact-viewport";
 import { HttpError } from "@/lib/api";
@@ -584,6 +584,16 @@ describe("FilePreview", () => {
       screen.queryByRole("button", { name: "Copy HTML source" }),
     ).toBeNull();
     expect(screen.queryByRole("button", { name: "Refresh file" })).toBeNull();
+    const openSpy = vi.spyOn(window, "open").mockReturnValue(null);
+    fireEvent.click(
+      screen.getByRole("button", { name: "Open in external browser" }),
+    );
+    expect(openSpy).toHaveBeenCalledWith(
+      `${window.location.origin}/gallery.html`,
+      "_blank",
+      "noopener,noreferrer",
+    );
+    openSpy.mockRestore();
     fireEvent.click(screen.getByRole("button", { name: "File actions" }));
     const refresh = await screen.findByRole("menuitem", {
       name: "Refresh file",
@@ -595,8 +605,8 @@ describe("FilePreview", () => {
       screen.getByRole("menuitem", { name: "Copy file path" }),
     ).toBeTruthy();
     expect(
-      screen.getByRole("menuitem", { name: "Open in external browser" }),
-    ).toBeTruthy();
+      screen.queryByRole("menuitem", { name: "Open in external browser" }),
+    ).toBeNull();
     expect(view.container.closest('[inert], [aria-hidden="true"]')).toBeNull();
     fireEvent.click(refresh);
     expect(onRefresh).toHaveBeenCalledOnce();
@@ -615,7 +625,9 @@ describe("FilePreview", () => {
     fireEvent.click(screen.getByRole("button", { name: "File actions" }));
     expect(
       (
-        await screen.findByRole("menuitemcheckbox", { name: "Wrap lines" })
+        await screen.findByRole("menuitemcheckbox", {
+          name: "Wrap lines",
+        })
       ).getAttribute("aria-checked"),
     ).toBe("true");
   });
@@ -731,12 +743,12 @@ describe("FilePreview", () => {
     await waitFor(() => {
       expect(
         screen
-          .getByRole("button", { name: "Disable line wrap" })
+          .getByRole("button", { name: "Wrap lines" })
           .getAttribute("aria-pressed"),
       ).toBe("true");
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "Disable line wrap" }));
+    fireEvent.click(screen.getByRole("button", { name: "Wrap lines" }));
     expect(
       screen
         .getByRole("button", { name: "Wrap lines" })

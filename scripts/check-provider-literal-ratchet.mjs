@@ -198,9 +198,37 @@ export function checkAllowlist(scan, allowlist) {
   return problems;
 }
 
-export function scanTree(root, roots = SCAN_ROOTS) {
+function trackedFilesIn(root, roots) {
+  try {
+    return execFileSync("git", ["ls-files", "-z", "--", ...roots], {
+      cwd: root,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      maxBuffer: 16 * 1024 * 1024,
+    }).split("\0").filter(Boolean);
+  } catch (error) {
+    if (
+      error.status === 128 &&
+      error.stderr?.toString().includes("not a git repository")
+    )
+      return null;
+    throw error;
+  }
+}
+
+export function scanTree(
+  root,
+  roots = SCAN_ROOTS,
+  trackedFiles = trackedFilesIn(root, roots),
+) {
   const files = [];
-  for (const r of roots) walk(join(root, r), root, files);
+  if (trackedFiles === null) {
+    for (const r of roots) walk(join(root, r), root, files);
+  } else {
+    for (const rel of trackedFiles) {
+      if (isIncluded(rel)) files.push({ abs: join(root, rel), rel });
+    }
+  }
   const counts = {};
   const hits = [];
   for (const { abs, rel } of files) {
@@ -244,7 +272,7 @@ function scanGitTree(root, ref) {
   const extracted = mkdtempSync(join(tmpdir(), "bb-provider-ratchet-"));
   try {
     execFileSync("tar", ["-x", "-C", extracted], { input: archive });
-    return scanTree(extracted);
+    return scanTree(extracted, SCAN_ROOTS, null);
   } finally {
     rmSync(extracted, { recursive: true, force: true });
   }

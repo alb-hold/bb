@@ -43,14 +43,16 @@ import {
   selectThreadMentionCandidates,
   shouldFetchSidebarThreadListFallback,
   threadDetailBootstrapQueryOptions,
-  threadHostFilePreviewQueryOptions,
   threadMentionCandidatesFallbackQueryOptions,
   threadPendingInteractionsQueryOptions,
   threadQueryOptions,
+} from "./thread-queries";
+import {
+  threadHostFilePreviewQueryOptions,
   threadQueuedMessagesQueryOptions,
   threadStorageLocationQueryOptions,
   threadTimelineQueryOptions,
-} from "./thread-queries";
+} from "./thread-panel-queries";
 import {
   COARSE_POINTER_THREAD_OPEN_CACHE_MAX_THREADS,
   THREAD_OPEN_CACHE_GC_MS,
@@ -276,6 +278,36 @@ beforeEach(() => {
   });
 });
 
+it.each([true, false])(
+  "projects native exit display status from the sidebar into detail query placeholders (clean: %s)",
+  (clean) => {
+    const { queryClient } = createQueryClientTestHarness();
+    const row = makeThreadListEntry({
+      id: "thread-native-exit",
+      projectId: "project-1",
+      status: "error",
+      runtime: {
+        displayStatus: "error",
+        ...(clean ? { nativeSessionExit: "clean" } : {}),
+      },
+    });
+    queryClient.setQueryData(
+      sidebarNavigationQueryKey(),
+      makeSidebarNavigation([row]),
+    );
+    const observer = observe(
+      queryClient,
+      threadQueryOptions(queryClient, row.id, { enabled: false }),
+    );
+    const expected = clean ? "idle" : "error";
+    expect(observer.getCurrentResult().data).toMatchObject({
+      status: expected,
+      runtime: { displayStatus: expected },
+    });
+    expect(observer.getCurrentResult().isPlaceholderData).toBe(true);
+  },
+);
+
 describe("useThreadDetailBootstrap", () => {
   it("starts the timeline request before the thread bootstrap settles", async () => {
     let resolveThread:
@@ -306,7 +338,7 @@ describe("useThreadDetailBootstrap", () => {
     });
   });
 
-  it("uses the cached timeline sequence and merges a prefetched delta", async () => {
+  it("uses the cached timeline tag and merges a prefetched delta", async () => {
     const previousTimeline = makeThreadTimelineResponse({
       rows: [
         {
@@ -333,10 +365,9 @@ describe("useThreadDetailBootstrap", () => {
       maxSeq: 7,
     });
     vi.mocked(sdk.threads.timeline).mockResolvedValueOnce({
-      ...previousTimeline,
-      rows: [],
       maxSeq: 8,
-      delta: { upsertRows: [] },
+      tag: "timeline-8",
+      delta: { afterTag: previousTimeline.tag, upsertRows: [], fields: {} },
     });
     const { queryClient } = createQueryClientTestHarness();
     queryClient.setQueryData(
@@ -355,7 +386,7 @@ describe("useThreadDetailBootstrap", () => {
     await vi.waitFor(() => {
       expect(sdk.threads.timeline).toHaveBeenCalledWith({
         deferContent: "true",
-        afterSequence: "7",
+        afterTag: previousTimeline.tag,
         signal: expect.any(AbortSignal),
         threadId: "thread-1",
       });
@@ -368,6 +399,7 @@ describe("useThreadDetailBootstrap", () => {
       ).toEqual({
         ...previousTimeline,
         maxSeq: 8,
+        tag: "timeline-8",
       });
     });
   });
@@ -549,7 +581,6 @@ describe("useThreadQueuedMessages", () => {
 
     expect(query?.options).toEqual(
       expect.objectContaining({
-        refetchOnMount: true,
         refetchOnWindowFocus: true,
       }),
     );
@@ -901,7 +932,7 @@ describe("useThreadTimeline segment limit", () => {
       deferContent: "true",
       threadId: "thread-1",
       segmentLimit: String(COMPACT_THREAD_TIMELINE_SEGMENT_LIMIT),
-      afterSequence: "0",
+      afterTag: "timeline-0",
       signal: expect.any(AbortSignal),
     });
   });
@@ -943,10 +974,13 @@ describe("thread open cache retention", () => {
         observer.setOptions(threadTimelineQueryOptions(queryClient, threadId));
       }
       const current = observer;
-      await vi.waitFor(() => {
-        expect(current.getCurrentResult().isFetchedAfterMount).toBe(true);
-        expect(current.getCurrentResult().isFetching).toBe(false);
-      });
+      await vi.waitFor(
+        () => {
+          expect(current.getCurrentResult().isFetchedAfterMount).toBe(true);
+          expect(current.getCurrentResult().isFetching).toBe(false);
+        },
+        { interval: 1 },
+      );
     }
     observer?.destroy();
   }
@@ -1025,12 +1059,13 @@ describe("thread open cache retention", () => {
     vi.mocked(sdk.threads.timeline)
       .mockResolvedValueOnce(firstTimeline)
       .mockResolvedValueOnce({
-        ...firstTimeline,
-        rows: [],
         maxSeq: 9,
+        tag: "timeline-9",
         delta: {
+          afterTag: firstTimeline.tag,
           upsertRows: [appendedRow],
-          rowOrder: ["row-1", "row-2"],
+          rowOrder: [[0, 1], "row-2"],
+          fields: {},
         },
       });
     const { queryClient } = createQueryClientTestHarness({
@@ -1053,7 +1088,7 @@ describe("thread open cache retention", () => {
 
     expect(vi.mocked(sdk.threads.timeline).mock.calls[1]?.[0]).toEqual({
       deferContent: "true",
-      afterSequence: "7",
+      afterTag: firstTimeline.tag,
       signal: expect.any(AbortSignal),
       threadId: "thread-1",
     });
@@ -1165,7 +1200,9 @@ describe("palette lifecycle queries", () => {
       recent: boolean;
       selected: boolean;
     }) =>
-      paletteRecentArchivedThreadsQueryOptions({ enabled: recent && selected });
+      paletteRecentArchivedThreadsQueryOptions({
+        enabled: recent && selected,
+      });
     const observer = observe(
       queryClient,
       options({ recent: true, selected: false }),

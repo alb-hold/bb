@@ -69,6 +69,7 @@ function buildModel(
     model,
     displayName,
     description: modelInfo.description,
+    reasoningDiscovery: "known",
     supportedReasoningEfforts,
     defaultReasoningEffort,
     isDefault: false,
@@ -91,6 +92,7 @@ export function buildClaudeCodeModels(
     model: entry.model,
     displayName: entry.displayName,
     description: entry.description,
+    reasoningDiscovery: "known",
     supportedReasoningEfforts: cloneReasoningEfforts(
       entry.supportedReasoningEfforts,
     ),
@@ -131,7 +133,9 @@ export function buildClaudeCodeModels(
     defaultModel !== null &&
     models.some((candidate) => candidate.model === defaultModel)
       ? defaultModel
-      : models.some((candidate) => candidate.model === DEFAULT_CLAUDE_CODE_MODEL)
+      : models.some(
+            (candidate) => candidate.model === DEFAULT_CLAUDE_CODE_MODEL,
+          )
         ? DEFAULT_CLAUDE_CODE_MODEL
         : models[0]?.model;
   return {

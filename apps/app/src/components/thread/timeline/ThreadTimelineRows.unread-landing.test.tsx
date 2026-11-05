@@ -1,14 +1,25 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+} from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { getDefaultStore } from "jotai";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { threadTimelineScrollAnchorAtomFamily } from "@/lib/thread-timeline-scroll-anchor";
-import { commandRow, conversationRow } from "@/test/fixtures/thread-timeline-rows";
+import {
+  commandRow,
+  conversationRow,
+} from "@/test/fixtures/thread-timeline-rows";
 import { useThreadUnreadDividerState } from "@/views/thread-detail/useThreadUnreadDividerState";
-import { ThreadTimelinePane } from "@/views/thread-detail/ThreadTimelinePane";
+import { ThreadScreen } from "@/views/thread-detail/ThreadScreen";
+import { makeThreadResponse } from "@/test/fixtures/thread-responses";
+import type { UseThreadTimelineControllerResult } from "@/components/thread/timeline";
 import { ThreadProviderContext } from "../thread-provider-context";
 
 const THREAD_ID = "thr_landing";
@@ -20,6 +31,36 @@ const DIVIDER_OFFSET = 900;
 vi.mock("@/components/thread/toc/ThreadTableOfContents", () => ({
   ThreadTableOfContents: () => null,
 }));
+vi.mock("@/hooks/queries/thread-queries", async (importOriginal) => ({
+  didThreadDetailBootstrapRefreshAfterMount: (
+    await importOriginal<typeof import("@/hooks/queries/thread-queries")>()
+  ).didThreadDetailBootstrapRefreshAfterMount,
+  useThreadSpendSummary: () => ({ data: undefined }),
+  isPendingInteractionStateUnknown: () => false,
+  useChildThreads: () => ({ data: [] }),
+  useThread: () => ({ data: undefined }),
+  useThreadPendingInteractions: () => ({
+    data: [],
+    isError: false,
+    isFetching: false,
+    refetch: vi.fn(),
+  }),
+}));
+vi.mock("@/hooks/queries/child-thread-pending-interactions", () => ({
+  useChildThreadPendingAttention: () => [],
+}));
+vi.mock("@/hooks/queries/system-queries", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/hooks/queries/system-queries")>()),
+  useSystemConfig: () => ({ data: undefined }),
+}));
+vi.mock("@/hooks/mutations/thread-runtime-mutations", () => {
+  const mutation = () => ({ isPending: false, mutateAsync: vi.fn() });
+  return {
+    useCreateThreadQueuedMessage: mutation,
+    useEditThreadMessage: mutation,
+    useSendThreadMessage: mutation,
+  };
+});
 
 const rows = [
   conversationRow({
@@ -51,6 +92,27 @@ const rows = [
     turnId: "turn-1",
   }),
 ];
+
+const TIMELINE = {
+  activeBackgroundCommands: [],
+  activePromptMode: null,
+  activeThinking: null,
+  activeWorkflows: [],
+  contextBoundarySeq: null,
+  contextWindowUsage: null,
+  goal: null,
+  hasOlderTimelineRows: false,
+  isCatchingUpTimeline: false,
+  isLoadingOlderTimelineRows: false,
+  loadOlderTimelineRows: async () => {},
+  modelFallback: null,
+  pendingTodos: null,
+  providerCommands: null,
+  sessionOptions: null,
+  timelineError: null,
+  timelineLoading: false,
+  timelineRows: rows,
+} as unknown as UseThreadTimelineControllerResult;
 
 class ResizeObserverMock implements ResizeObserver {
   static instances: ResizeObserverMock[] = [];
@@ -103,6 +165,7 @@ afterEach(() => {
 function UnseenThread() {
   const { placement, hasUnseenTimelineEvents } = useThreadUnreadDividerState({
     routeThreadId: THREAD_ID,
+    anchor: "first-unread-row",
     bootstrapQuery: {
       dataUpdatedAt: 0,
       isFetchedAfterMount: false,
@@ -118,26 +181,25 @@ function UnseenThread() {
     thread: { id: THREAD_ID, lastReadAt: 350, latestAttentionAt: 500 },
   });
   return (
-    <ThreadTimelinePane
-      footer={<div>Composer</div>}
-      canSpawnChild={false}
-      hasOlderTimelineRows={false}
-      isLoadingOlderTimelineRows={false}
-      isStopping={false}
-      onLoadOlderRows={() => undefined}
+    <ThreadScreen
       resolveMentionLink={() => null}
-      stoppingAnchorAt={0}
-      activeThinking={null}
-      contextBoundarySeq={null}
-      hasUnseenTimelineEvents={hasUnseenTimelineEvents}
-      isThreadTimelinePending={false}
-      timelineError={false}
-      showOngoingIndicator={false}
-      threadId={THREAD_ID}
-      threadRuntimeDisplayStatus="idle"
-      workspaceRootPath={undefined}
-      timelineRows={rows}
-      unreadDividerPlacement={placement}
+      composer={null}
+      environment={null}
+      presentation={{ kind: "page" }}
+      projectId="proj_landing"
+      thread={makeThreadResponse({
+        id: THREAD_ID,
+        projectId: "proj_landing",
+        status: "idle",
+        runtime: { displayStatus: "idle" },
+      })}
+      timeline={TIMELINE}
+      timelineHost={{
+        environmentHostName: null,
+        hasUnseenTimelineEvents: hasUnseenTimelineEvents,
+        includePluginMessageActions: false,
+        unreadDividerPlacement: placement,
+      }}
     />
   );
 }

@@ -144,6 +144,7 @@ export async function resolveResponse<TResponse extends SdkResponseLike>(
     if (isTypeErrorWithCauseCode(error, "ECONNREFUSED")) {
       throw new Error(
         "Cannot connect to BB server. Ensure it is running and BB_SERVER_URL is correct.",
+        { cause: error },
       );
     }
     throw error;
@@ -292,11 +293,18 @@ function readHttpErrorCode(parsed: unknown): string | null {
   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
     return null;
   }
-  if (!("code" in parsed)) {
-    return null;
+  if ("code" in parsed && typeof parsed.code === "string") return parsed.code;
+  if ("ok" in parsed && parsed.ok === false && "error" in parsed) {
+    const error = parsed.error;
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      typeof error.code === "string"
+    )
+      return error.code;
   }
-  const { code } = parsed;
-  return typeof code === "string" ? code : null;
+  return null;
 }
 
 async function readHttpErrorInfo(

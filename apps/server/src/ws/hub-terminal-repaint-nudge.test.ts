@@ -34,7 +34,7 @@ interface TwoClientRoom {
   delayReports: () => void;
   deliverReports: () => void;
   fit: (cols: number) => void;
-  peerResizes: (cols: number, rows: number) => void;
+  peerResizes: (cols: number, rows: number, claim?: boolean) => void;
   ptySize: () => { cols: number; rows: number };
   restoresSentByOwner: () => number;
   start: () => void;
@@ -64,8 +64,10 @@ function createRoom(): TwoClientRoom {
   const queued: unknown[] = [];
 
   const browserSocket: TerminalBrowserSocket & {
+    readonly protocol: string;
     deliver: (message: unknown) => void;
   } = {
+    protocol: "bb.terminal.resize-echo.v1",
     onclose: null,
     onerror: null,
     onmessage: null,
@@ -97,24 +99,51 @@ function createRoom(): TwoClientRoom {
       } else if (nudged && size.cols === FITTED.cols) {
         restores += 1;
       }
-      hub.recordTerminalClientSize(TERMINAL_ID, ownerSocket, size, Date.now());
-      settle();
-      if ("seq" in message && typeof message.seq === "number") {
-        emit({ type: "resize-applied", seq: message.seq });
+      hub.recordTerminalClientSize(
+        TERMINAL_ID,
+        ownerSocket,
+        size,
+        Date.now(),
+        "claim" in message && message.claim === true,
+      );
+
+      const seq = Reflect.get(message, "seq");
+      settle(ownerSocket, size, typeof seq === "number" ? seq : undefined);
+      if (typeof seq === "number") {
+        emit({ type: "resize-applied", seq });
       }
     },
   };
 
-  const settle = (): void => {
+  const settle = (
+    source: typeof ownerSocket | typeof peerSocket,
+    reported: { cols: number; rows: number },
+    seq?: number,
+  ): void => {
     const shared = hub.terminalSharedSize(TERMINAL_ID, Date.now());
     if (shared === null) {
       return;
     }
-    if (shared.cols === pty.cols && shared.rows === pty.rows) {
-      return;
+    const changed = shared.cols !== pty.cols || shared.rows !== pty.rows;
+    if (changed) {
+      pty = shared;
     }
-    pty = shared;
-    emit({ type: "session-updated", session: session(shared.cols, shared.rows) });
+    if (
+      (source === peerSocket && changed) ||
+      (source === ownerSocket &&
+        seq === undefined &&
+        changed &&
+        (reported.cols !== shared.cols || reported.rows !== shared.rows))
+    ) {
+      emit({ type: "session-updated", session: session(shared.cols, shared.rows) });
+    }
+    if (source === ownerSocket && changed && seq !== undefined) {
+      emit({
+        type: "session-updated",
+        session: session(shared.cols, shared.rows),
+        resizeSeq: seq,
+      });
+    }
   };
 
   const emit = (message: unknown): void => {
@@ -132,7 +161,7 @@ function createRoom(): TwoClientRoom {
         return;
       }
       const reported = { cols: message.session.cols, rows: message.session.rows };
-      if (!transport.consumeRepaintNudgeEcho(reported)) {
+      if (!transport.consumeRepaintNudgeEcho(reported, message.resizeSeq)) {
         shared = reported.cols;
         track();
       }
@@ -156,6 +185,7 @@ function createRoom(): TwoClientRoom {
     browserSocket.onopen?.(new Event("open"));
     browserSocket.deliver({ type: "features", resizeAcks: true });
     transport.markLayoutSettled();
+    transport.claimSize();
   };
 
   return {
@@ -174,14 +204,15 @@ function createRoom(): TwoClientRoom {
       track();
       transport.sendResize(cols, FITTED.rows);
     },
-    peerResizes: (cols, rows) => {
+    peerResizes: (cols, rows, claim = false) => {
       hub.recordTerminalClientSize(
         TERMINAL_ID,
         peerSocket,
         { cols, rows },
         Date.now(),
+        claim,
       );
-      settle();
+      settle(peerSocket, { cols, rows });
     },
     ptySize: () => pty,
     restoresSentByOwner: () => restores,
@@ -202,29 +233,29 @@ describe("repaint nudge with a second client on the same terminal", () => {
     vi.useRealTimers();
   });
 
-  it("leaves a peer's smaller size as the shared size after the restore, and the owner's view follows it", () => {
+  it("keeps the focused owner's size when a background peer is smaller", () => {
     const room = createRoom();
     room.start();
     expect(room.ptySize().cols).toBe(FITTED.cols - 1);
 
     room.advance(100);
     room.peerResizes(44, 20);
-    expect(room.viewCols()).toBe(44);
+    expect(room.viewCols()).toBe(FITTED.cols);
 
     room.advance(300);
     expect(room.restoresSentByOwner()).toBe(1);
     room.advance(1000);
 
-    expect(room.ptySize()).toEqual({ cols: 44, rows: 20 });
-    expect(room.viewCols()).toBe(44);
+    expect(room.ptySize()).toEqual(FITTED);
+    expect(room.viewCols()).toBe(FITTED.cols);
     room.transport.dispose();
   });
 
-  it("applies a peer size that is exactly the nudge size once the window closes, instead of dropping it as the echo", () => {
+  it("applies a focused peer's size at the nudge size instead of dropping it as the echo", () => {
     const room = createRoom();
     room.start();
     room.advance(100);
-    room.peerResizes(FITTED.cols - 1, FITTED.rows);
+    room.peerResizes(FITTED.cols - 1, FITTED.rows, true);
     expect(room.viewCols()).toBe(FITTED.cols);
 
     room.advance(300);
@@ -246,7 +277,7 @@ describe("repaint nudge with a second client on the same terminal", () => {
     room.transport.dispose();
   });
 
-  it("lets a larger peer leave the owner's size as the shared size", () => {
+  it("keeps the focused owner's size when a background peer is larger", () => {
     const room = createRoom();
     room.start();
     room.advance(100);
@@ -258,7 +289,7 @@ describe("repaint nudge with a second client on the same terminal", () => {
     room.transport.dispose();
   });
 
-  it("never applies the nudge size when the fit grows between nudge and restore and a smaller peer resizes", () => {
+  it("ignores the nudge echo and keeps the focused owner's grown fit over a smaller background peer", () => {
     const room = createRoom();
     room.start();
     room.advance(100);
@@ -269,12 +300,12 @@ describe("repaint nudge with a second client on the same terminal", () => {
 
     expect(room.viewHistory).not.toContain(FITTED.cols - 1);
     expect(room.restoresSentByOwner()).toBe(0);
-    expect(room.ptySize().cols).toBe(44);
-    expect(room.viewCols()).toBe(44);
+    expect(room.ptySize().cols).toBe(200);
+    expect(room.viewCols()).toBe(200);
     room.transport.dispose();
   });
 
-  it("never applies the nudge size when the fit shrinks between nudge and restore and a peer sits exactly at the nudge size", () => {
+  it("ignores the nudge echo and keeps the focused owner's shrunken fit over a background peer at that size", () => {
     const room = createRoom();
     room.start();
     room.advance(100);
@@ -289,11 +320,11 @@ describe("repaint nudge with a second client on the same terminal", () => {
     room.transport.dispose();
   });
 
-  it("applies a peer exactly at the nudge size once the restore or fit change is acknowledged without a newer report", () => {
+  it("keeps a focused peer at the nudge size when the background owner's fit changes", () => {
     const room = createRoom();
     room.start();
     room.advance(100);
-    room.peerResizes(FITTED.cols - 1, FITTED.rows);
+    room.peerResizes(FITTED.cols - 1, FITTED.rows, true);
     room.advance(50);
     room.fit(200);
     room.advance(2000);
@@ -303,7 +334,7 @@ describe("repaint nudge with a second client on the same terminal", () => {
     room.transport.dispose();
   });
 
-  it("never applies a nudge report delivered 2 s late, and still applies a later peer at the same size", () => {
+  it("ignores the late nudge echo, then applies a focused peer at the same size", () => {
     const room = createRoom();
     room.delayReports();
     room.start();
@@ -314,7 +345,7 @@ describe("repaint nudge with a second client on the same terminal", () => {
     expect(room.viewHistory).not.toContain(FITTED.cols - 1);
     expect(room.viewCols()).toBe(200);
 
-    room.peerResizes(FITTED.cols - 1, FITTED.rows);
+    room.peerResizes(FITTED.cols - 1, FITTED.rows, true);
     expect(room.ptySize().cols).toBe(FITTED.cols - 1);
     expect(room.viewCols()).toBe(FITTED.cols - 1);
     room.transport.dispose();
@@ -335,7 +366,7 @@ describe("repaint nudge with a second client on the same terminal", () => {
     room.transport.dispose();
   });
 
-  it("never applies the nudge size when the fit changes before the nudge report and a smaller peer resizes", () => {
+  it("ignores a delayed nudge echo and keeps the focused owner's fit over a smaller background peer", () => {
     const room = createRoom();
     room.delayReports();
     room.start();
@@ -346,12 +377,12 @@ describe("repaint nudge with a second client on the same terminal", () => {
     room.advance(2000);
 
     expect(room.viewHistory).not.toContain(FITTED.cols - 1);
-    expect(room.ptySize().cols).toBe(44);
-    expect(room.viewCols()).toBe(44);
+    expect(room.ptySize().cols).toBe(200);
+    expect(room.viewCols()).toBe(200);
     room.transport.dispose();
   });
 
-  it("is not stuck when the nudge report never arrives because a smaller peer already held the shared size", () => {
+  it("does not stick at the nudge when it is unreported and the focused owner later changes fit", () => {
     const room = createRoom();
     room.connect();
     room.peerResizes(44, 20);
@@ -361,9 +392,9 @@ describe("repaint nudge with a second client on the same terminal", () => {
     room.advance(2000);
 
     expect(room.viewHistory).not.toContain(FITTED.cols - 1);
-    expect(room.viewCols()).toBe(44);
+    expect(room.viewCols()).toBe(200);
 
-    room.peerResizes(FITTED.cols - 1, FITTED.rows);
+    room.peerResizes(FITTED.cols - 1, FITTED.rows, true);
     expect(room.ptySize().cols).toBe(FITTED.cols - 1);
     expect(room.viewCols()).toBe(FITTED.cols - 1);
     room.transport.dispose();
@@ -377,7 +408,7 @@ describe("repaint nudge with a second client on the same terminal", () => {
     room.advance(50);
     room.fit(500);
     room.advance(2000);
-    room.peerResizes(FITTED.cols - 1, FITTED.rows);
+    room.peerResizes(FITTED.cols - 1, FITTED.rows, true);
 
     expect(room.ptySize().cols).toBe(FITTED.cols - 1);
     expect(room.viewCols()).toBe(FITTED.cols - 1);

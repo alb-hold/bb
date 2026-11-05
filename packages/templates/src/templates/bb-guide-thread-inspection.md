@@ -11,13 +11,14 @@ Read-only commands take a thread ID or --self where supported.
 
 Listing:
 
-  bb thread list                           List threads
+  bb thread list                           List active threads
     --project <id>                         Filter by project
     --environment <id>                     Filter by environment
     --machine <id-or-name>                 Filter by the machine the environment is on (alias --host)
     --parent-thread <id>                   Filter by parent thread
-    --thread <id>                          Only this thread; unknown or deleted IDs are left out (repeatable, up to 200)
+    --thread <id>                          Only this thread, including archived; unknown or deleted IDs are left out (repeatable, up to 200)
     --archived                             Show only archived threads
+    --all                                  Include archived and active threads
     --section <id>                         Filter by section
     --unsectioned                          Show only threads outside sections
     --include-hidden                       Include hidden threads
@@ -26,12 +27,17 @@ Listing:
   Needs input, Working, automation Woke, or unread Done when applicable. Woke
   is omitted when the Automations plugin RPC is unavailable. An active native
   thread with no recent authenticated terminal activity report shows
-  `activity unconfirmed` in Status and does not show runtime-only Working.
+  `activity not reported` in Status and does not show runtime-only Working.
   This reports holder activity, not model or tool progress. JSON rows include
   `listIndicator` and optional runtime `nativeActivity` diagnostics. Title uses
   the thread title, then the fallback title from the first prompt, then "-". Long
   titles are cut at 60 characters. Project shows the project name; the
   personal project shows "-". Use --json for the full thread records.
+  Archived threads are excluded by default unless --thread IDs are given. An
+  explicit ID can select an archived thread. --parent-thread keeps the active
+  default; use --all to include archived children. Use --archived for
+  archived-only results or --all to include both archived and active threads.
+  These two flags cannot be combined.
 
   bb thread search <query> [--limit <1-50>]
                                              Search threads and messages
@@ -134,10 +140,16 @@ Opening threads and files in the app:
   bb thread open <thread-id> [path]        Open a thread, optionally with a panel file
     --line <number>                        Line number to focus
     --split <placement>                    right, down, left, top, or replace (default)
+    --all                                  Send to every open app client instead of only clients viewing this thread
   bb thread pane <action> [thread-id]      Maximize, restore, toggle, spotlight, or clear spotlight
 
   Inside a BB thread, BB_THREAD_ID selects the current thread automatically and
-  the thread ID argument is omitted for file-only opens. Outside a BB thread,
+  the thread ID argument is omitted for file-only opens. Without --all the
+  request reaches only app clients viewing the calling thread (also when it
+  opens a different thread); outside a thread, or with no such client, nothing
+  is sent and the command exits non-zero with no_caller_thread or
+  no_client_viewing_caller_thread (SDK: threads.open({ threadId, file, callerThreadId? | all? })).
+ Outside a BB thread,
   pass the thread ID as the first argument. A thread already open in a pane is focused instead of
   duplicated. Edge placement creates panes through the eighth pane; at eight
   panes, it replaces the focused pane.
@@ -158,3 +170,13 @@ Persisted panel tabs:
 
   bb thread tabs show <thread-id>
   bb thread tabs set <thread-id> --expected-revision <n> --tabs-json '<json>'
+
+Core Info uses plugin id `core` and tab id `info`; Diff belongs to the Git plugin, plugin id `bb--git` and tab id `diff`. Legacy `thread-info`, `git-diff` and `core` `diff` entries convert automatically without changing their order.
+
+Pinned plugin tabs use `{ "id": "plugin-fixed:<plugin-id>:<tab-id>", "kind": "plugin-fixed", "pluginId": "<plugin-id>", "tabId": "<tab-id>" }`.
+The id encodes each plugin/tab id with percent escapes. The app shows registered,
+visible tabs and retains saved identities while plugins are hidden or disabled.
+The SDK uses `threads.tabs.get({ threadId })` and
+`threads.tabs.update({ threadId, expectedRevision, tabs })` for the same state.
+Selection stays local to each client. Plugin authors can find registration and
+navigation details in the Plugin Guide's Thread side-panel tabs surface.

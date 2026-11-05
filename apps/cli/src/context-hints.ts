@@ -53,7 +53,7 @@ export function missingProjectHint(): string {
 export function missingThreadFlagHint(): string {
   const threadId = contextThreadId();
   return threadId === null
-    ? "List thread IDs with `bb thread list`."
+    ? "List thread IDs with `bb thread list --all` to include archived threads."
     : `The current thread is ${threadId}; add --thread ${threadId}.`;
 }
 

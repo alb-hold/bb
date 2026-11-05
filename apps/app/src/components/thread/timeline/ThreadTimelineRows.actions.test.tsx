@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { UNAVAILABLE_APP_PANEL_CONTROLLER } from "@/lib/app-fixed-tab-navigation";
 
 import {
   act,
@@ -10,6 +11,7 @@ import {
 } from "@testing-library/react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { AppNavigationHostProvider } from "@/lib/app-navigation-host";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useState, type ComponentProps, type ReactElement } from "react";
 import { MemoryRouter, useNavigate } from "react-router-dom";
@@ -105,7 +107,8 @@ function SameThreadSearchNavigationHarness() {
           }),
         ]}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
+
+        threadIsActive={false}
       />
     </>
   );
@@ -137,7 +140,8 @@ function EditActionAvailabilityHarness({
       timelineRows={rows}
       onEditMessage={onEditMessage}
       threadRuntimeDisplayStatus="active"
-      workspaceRootPath={undefined}
+
+      threadIsActive={false}
     />
   );
 }
@@ -189,7 +193,8 @@ function SearchOlderRowsHarness({
         setLoadedOlderRows(true);
       }}
       threadRuntimeDisplayStatus="idle"
-      workspaceRootPath={undefined}
+
+      threadIsActive={false}
     />
   );
 }
@@ -229,7 +234,8 @@ function SearchOlderRowsFailedLoadHarness({
           });
         }}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
+
+        threadIsActive={false}
       />
     </>
   );
@@ -304,7 +310,8 @@ describe("ThreadTimelineRows actions", () => {
         onForkMessage={vi.fn()}
         onMessageAddToChat={vi.fn()}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
+
+        threadIsActive={false}
       />,
     );
 
@@ -347,7 +354,8 @@ describe("ThreadTimelineRows actions", () => {
         ]}
         onSelectionAddToChat={vi.fn()}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
+
+        threadIsActive={false}
       />,
     );
 
@@ -403,7 +411,8 @@ describe("ThreadTimelineRows actions", () => {
         ]}
         onEditMessage={vi.fn()}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
+
+        threadIsActive={false}
       />,
     );
 
@@ -426,7 +435,8 @@ describe("ThreadTimelineRows actions", () => {
         ]}
         onEditMessage={vi.fn()}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
+
+        threadIsActive={false}
       />,
     );
 
@@ -461,7 +471,8 @@ describe("ThreadTimelineRows actions", () => {
         ]}
         onEditMessage={onEditMessage}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
+
+        threadIsActive={false}
       />,
     );
 
@@ -507,7 +518,8 @@ describe("ThreadTimelineRows actions", () => {
         ]}
         onSelectionAddToChat={vi.fn()}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
+
+        threadIsActive={false}
       />,
     );
 
@@ -553,7 +565,8 @@ describe("ThreadTimelineRows actions", () => {
           }),
         ]}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
+
+        threadIsActive={false}
       />,
     );
 
@@ -595,7 +608,8 @@ describe("ThreadTimelineRows actions", () => {
           }),
         ]}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
+
+        threadIsActive={false}
       />,
     );
 
@@ -621,7 +635,8 @@ describe("ThreadTimelineRows actions", () => {
           }),
         ]}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
+
+        threadIsActive={false}
       />,
     );
 
@@ -650,7 +665,8 @@ describe("ThreadTimelineRows actions", () => {
           }),
         ]}
         threadRuntimeDisplayStatus="active"
-        workspaceRootPath={undefined}
+
+        threadIsActive={false}
       />,
     );
 
@@ -686,7 +702,8 @@ describe("ThreadTimelineRows actions", () => {
           }),
         ]}
         threadRuntimeDisplayStatus="active"
-        workspaceRootPath={undefined}
+
+        threadIsActive={false}
       />,
     );
 
@@ -708,7 +725,8 @@ describe("ThreadTimelineRows actions", () => {
         ]}
         onMessageAddToChat={onMessageAddToChat}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
+
+        threadIsActive={false}
       />,
     );
 
@@ -739,7 +757,8 @@ describe("ThreadTimelineRows actions", () => {
         ]}
         onMessageAddToChat={onMessageAddToChat}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
+
+        threadIsActive={false}
       />,
     );
 
@@ -773,7 +792,8 @@ describe("ThreadTimelineRows actions", () => {
         ]}
         threadRuntimeDisplayStatus="idle"
         onSelectionAddToChat={onSelectionAddToChat}
-        workspaceRootPath={undefined}
+
+        threadIsActive={false}
       />,
     );
 
@@ -804,7 +824,8 @@ describe("ThreadTimelineRows actions", () => {
         ]}
         threadRuntimeDisplayStatus="idle"
         onSelectionAddToChat={onSelectionAddToChat}
-        workspaceRootPath={undefined}
+
+        threadIsActive={false}
       />,
     );
 
@@ -847,7 +868,8 @@ describe("ThreadTimelineRows actions", () => {
         ]}
         threadRuntimeDisplayStatus="idle"
         onSelectionAddToChat={onSelectionAddToChat}
-        workspaceRootPath={undefined}
+
+        threadIsActive={false}
       />,
     );
 
@@ -871,7 +893,8 @@ describe("ThreadTimelineRows actions", () => {
           }),
         ]}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
+
+        threadIsActive={false}
       />,
     );
 
@@ -879,12 +902,18 @@ describe("ThreadTimelineRows actions", () => {
     expect(markup).not.toContain('aria-label="Add to chat"');
   });
 
-  it.each(["mixed", "code", "partial-link", "boundary-spill"] as const)(
+  it.each([
+    "mixed",
+    "code",
+    "inline-code",
+    "partial-link",
+    "boundary-spill",
+  ] as const)(
     "adds a %s selection to chat with its Markdown preserved",
     async (mode) => {
       const onSelectionAddToChat = vi.fn();
       const markdown =
-        "- **First** [docs](https://example.com)\n- Second\n\n```ts\nconst x = 1;\n\nconst y = 2;\n```";
+        "- **First** [docs](https://example.com)\n- Second\n\n```ts\nconst x = 1;\n\nconst y = 2;\n```\n\n`pnpm --version`";
       const { container } = renderWithRouter(
         <ThreadTimelineRows
           timelineRows={[
@@ -892,7 +921,8 @@ describe("ThreadTimelineRows actions", () => {
           ]}
           threadRuntimeDisplayStatus="idle"
           onSelectionAddToChat={onSelectionAddToChat}
-          workspaceRootPath={undefined}
+
+          threadIsActive={false}
         />,
       );
       const prose = container.querySelector("[data-sidebar-swipe-selectable]")!;
@@ -901,6 +931,9 @@ describe("ThreadTimelineRows actions", () => {
       if (mode === "code") {
         range.selectNodeContents(prose.querySelector("pre code")!);
         expected = "const x = 1;\n\nconst y = 2;";
+      } else if (mode === "inline-code") {
+        range.selectNodeContents(prose.querySelector("p > code")!);
+        expected = "`pnpm --version`";
       } else if (mode === "partial-link") {
         const text = prose.querySelector("a")!.firstChild!;
         range.setStart(text, 1);
@@ -961,7 +994,8 @@ describe("ThreadTimelineRows actions", () => {
         ]}
         threadRuntimeDisplayStatus="idle"
         onSelectionAddToChat={onSelectionAddToChat}
-        workspaceRootPath={undefined}
+
+        threadIsActive={false}
       />,
     );
 
@@ -1005,7 +1039,8 @@ describe("ThreadTimelineRows actions", () => {
         ]}
         threadRuntimeDisplayStatus="idle"
         onSelectionAddToChat={onSelectionAddToChat}
-        workspaceRootPath={undefined}
+
+        threadIsActive={false}
       />,
     );
     const textNode = screen.getByText(
@@ -1047,7 +1082,8 @@ describe("ThreadTimelineRows actions", () => {
         ]}
         threadRuntimeDisplayStatus="idle"
         onSelectionAddToChat={onSelectionAddToChat}
-        workspaceRootPath={undefined}
+
+        threadIsActive={false}
       />,
     );
     const textNode = screen.getByText(
@@ -1092,7 +1128,8 @@ describe("ThreadTimelineRows actions", () => {
           }),
         ]}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
+
+        threadIsActive={false}
       />,
       [
         {
@@ -1143,7 +1180,8 @@ describe("ThreadTimelineRows actions", () => {
           }),
         ]}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
+
+        threadIsActive={false}
       />,
       [
         {
@@ -1208,7 +1246,8 @@ describe("ThreadTimelineRows actions", () => {
           }),
         ]}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
+
+        threadIsActive={false}
       />,
       [
         {
@@ -1375,30 +1414,37 @@ describe("ThreadTimelineRows actions", () => {
         { id: "summarize", title: "Summarize", icon: "Zap", run },
       ]),
     );
-    const onOpenPluginPanel = vi.fn().mockReturnValue(true);
+    const panel = {
+      ...UNAVAILABLE_APP_PANEL_CONTROLLER,
+      openTab: vi.fn(() => true),
+      toggleTab: vi.fn(() => true),
+      close: vi.fn(() => true),
+    };
     const { container } = renderWithRouter(
-      <ThreadTimelineRows
-        threadId="thr_main"
-        timelineRows={[
-          conversationRow({
-            id: "user_row",
-            role: "user",
-            text: "A user request.",
-            sourceSeqEnd: 7,
-            threadId: "thr_main",
-          }),
-          conversationRow({
-            id: "assistant_row",
-            role: "assistant",
-            text: "An assistant answer.",
-            sourceSeqEnd: 9,
-            threadId: "thr_main",
-          }),
-        ]}
-        onOpenPluginPanel={onOpenPluginPanel}
-        threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
-      />,
+      <AppNavigationHostProvider capabilities={{ panel }}>
+        <ThreadTimelineRows
+          threadId="thr_main"
+          timelineRows={[
+            conversationRow({
+              id: "user_row",
+              role: "user",
+              text: "A user request.",
+              sourceSeqEnd: 7,
+              threadId: "thr_main",
+            }),
+            conversationRow({
+              id: "assistant_row",
+              role: "assistant",
+              text: "An assistant answer.",
+              sourceSeqEnd: 9,
+              threadId: "thr_main",
+            }),
+          ]}
+          threadRuntimeDisplayStatus="idle"
+
+          threadIsActive={false}
+        />
+      </AppNavigationHostProvider>,
     );
 
     const userRow = container.querySelector(
@@ -1426,14 +1472,24 @@ describe("ThreadTimelineRows actions", () => {
       experimental_messageSeq: 9,
     });
     expect(context.selectedText).toBeUndefined();
+    const panelTab = {
+      id: "panel",
+      context: { kind: "thread" },
+      availability: "action",
+    } as const;
+    expect(
+      context.experimental_panel.toggleTab({ tab: panelTab, params: { a: 1 } }),
+    ).toBe(true);
     expect(context.openPanel({ actionId: "panel", params: { a: 1 } })).toBe(
       true,
     );
-    expect(onOpenPluginPanel).toHaveBeenCalledWith({
-      pluginId: "demo",
-      actionId: "panel",
+    const intent = {
+      tab: { ownerId: "plugin-thread:demo", tabId: "panel" },
+      availability: "action",
       params: { a: 1 },
-    });
+    };
+    expect(panel.toggleTab).toHaveBeenCalledWith(intent);
+    expect(panel.openTab).toHaveBeenCalledWith(intent);
   });
 
   it("omits plugin message actions when the surface has no thread identity", () => {
@@ -1449,7 +1505,8 @@ describe("ThreadTimelineRows actions", () => {
           conversationRow({ role: "assistant", text: "An answer." }),
         ]}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
+
+        threadIsActive={false}
       />,
     );
     expect(markup).not.toContain('aria-label="Summarize"');
@@ -1485,7 +1542,8 @@ describe("ThreadTimelineRows actions", () => {
           }),
         ]}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
+
+        threadIsActive={false}
       />,
     );
 
@@ -1533,7 +1591,8 @@ describe("ThreadTimelineRows actions", () => {
           },
         ]}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
+
+        threadIsActive={false}
       />,
     );
 
@@ -1589,7 +1648,8 @@ describe("ThreadTimelineRows actions", () => {
           },
         ]}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
+
+        threadIsActive={false}
       />,
     );
 
@@ -1649,7 +1709,8 @@ describe("ThreadTimelineRows actions", () => {
             }),
           ]}
           threadRuntimeDisplayStatus="idle"
-          workspaceRootPath={undefined}
+
+          threadIsActive={false}
         />,
       );
       expect(
@@ -1711,7 +1772,8 @@ describe("ThreadTimelineRows actions", () => {
           },
         ]}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
+
+        threadIsActive={false}
       />,
     );
     fireEvent.click(screen.getByRole("button", { name: "Plugin link" }));
@@ -1753,7 +1815,8 @@ describe("ThreadTimelineRows actions", () => {
           }),
         ]}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
+
+        threadIsActive={false}
       />,
     );
     const textNode = screen.getByText("Select part of this answer.").firstChild;
@@ -1870,7 +1933,8 @@ describe("ThreadTimelineRows shared message column width", () => {
         onForkMessage={vi.fn()}
         onMessageAddToChat={vi.fn()}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
+
+        threadIsActive={false}
       />,
     );
 
@@ -1949,7 +2013,8 @@ describe("ThreadTimelineRows shared message column width", () => {
         onForkMessage={vi.fn()}
         onMessageAddToChat={vi.fn()}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
+
+        threadIsActive={false}
       />,
     );
     const reportListWidth = (width: number) => {

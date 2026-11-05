@@ -2,6 +2,7 @@ import {
   clearQueuedMessageDispatchRetry,
   clearQueuedThreadMessageWaitingOn,
   createQueuedThreadMessageInTransaction,
+  getThread,
   requeueClaimedQueuedThreadMessages,
   type ClaimedQueuedThreadMessageRow,
   type DbConnection,
@@ -11,6 +12,7 @@ import {
 } from "@bb/db";
 import type {
   PromptInput,
+  QueuedMessageDeliveryMode,
   QueuedMessagePayload,
   QueuedMessageSystemNotice,
   QueuedMessageWaitingOn,
@@ -20,6 +22,12 @@ import type {
   ThreadCreateOrigin,
   ThreadQueuedMessage,
 } from "@bb/domain";
+import type { SendMessageRequest } from "@bb/server-contract";
+import type { ProviderRegistryService } from "../providers/provider-registry.js";
+import {
+  applyPreparedThreadModelOverrideRecovery,
+  type PreparedThreadModelOverrideRecovery,
+} from "./thread-execution-override.js";
 import { ApiError } from "../../errors.js";
 import {
   emitPluginMessageDispatched,
@@ -28,11 +36,17 @@ import {
 import { toThreadQueuedMessage } from "./thread-queued-messages.js";
 import { assertThreadHostAcceptsWork } from "./thread-host-admission.js";
 
-type QueueWaitDeps = { db: DbQueryConnection; hub: DbNotifier };
+type QueueWaitDeps = {
+  db: DbQueryConnection;
+  hub: DbNotifier;
+  providerRegistry: ProviderRegistryService;
+};
 
 export const QUEUED_MESSAGE_CLAIM_LOST_CODE = "queued_message_claim_lost";
 export const QUEUED_MESSAGE_AUTO_SEND_PAUSED_CODE =
   "queued_message_auto_send_paused";
+
+export class ThreadQueueScopeChangedError extends Error {}
 
 export function createQueuedMessageClaimLostError(): ApiError {
   return new ApiError(
@@ -67,6 +81,10 @@ export interface QueuedDispatchMessage {
   requestedBy: StartedOnBehalfOf | null;
   payload: QueuedMessagePayload;
   systemNotice: QueuedMessageSystemNotice | null;
+  deliveryMode: QueuedMessageDeliveryMode;
+  overrideRecovery?: PreparedThreadModelOverrideRecovery | null;
+  requestedModel?: string;
+  executionInputSources?: SendMessageRequest["executionInputSources"];
 }
 
 export interface RecordQueuedMessageWaitArgs {
@@ -89,6 +107,19 @@ export function recordQueuedMessageWait(
     row = deps.db.transaction(
       (tx) => {
         assertThreadHostAcceptsWork(tx, args.thread);
+        const currentThread = getThread(tx, args.thread.id);
+        if (
+          !currentThread ||
+          currentThread.parentThreadId !== args.thread.parentThreadId
+        ) {
+          throw new ThreadQueueScopeChangedError();
+        }
+        applyPreparedThreadModelOverrideRecovery(
+          tx,
+          deps.providerRegistry,
+          currentThread,
+          args.message.overrideRecovery ?? null,
+        );
         return createQueuedThreadMessageInTransaction(tx, {
           threadId: args.thread.id,
           content: args.message.input,
@@ -104,6 +135,7 @@ export function recordQueuedMessageWait(
           sendAt: args.sendAt,
           payload: args.message.payload,
           systemNotice: args.message.systemNotice,
+          deliveryMode: args.message.deliveryMode,
         });
       },
       { behavior: "immediate" },

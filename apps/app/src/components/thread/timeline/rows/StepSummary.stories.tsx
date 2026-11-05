@@ -420,6 +420,7 @@ export function Overview() {
               new Set([workSummaryId(mixedThreeBundlesRows.slice(0, -1))])
             }
             timelineRows={mixedThreeBundlesRows}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -434,6 +435,7 @@ export function Overview() {
               new Set([workSummaryId(commandsThenFilesRows.slice(0, -1))])
             }
             timelineRows={commandsThenFilesRows}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -448,6 +450,7 @@ export function Overview() {
               new Set([workSummaryId(exploreThenEditRows.slice(0, -1))])
             }
             timelineRows={exploreThenEditRows}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -462,6 +465,7 @@ export function Overview() {
               new Set([workSummaryId(explorationOnlyRows.slice(0, -1))])
             }
             timelineRows={explorationOnlyRows}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>
@@ -476,6 +480,7 @@ export function Overview() {
               new Set([workSummaryId(allCommandsRows.slice(0, -1))])
             }
             timelineRows={allCommandsRows}
+            threadIsActive={false}
           />
         </TimelineStage>
       </StoryRow>

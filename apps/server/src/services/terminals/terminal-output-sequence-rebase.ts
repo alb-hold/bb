@@ -21,8 +21,14 @@ export class TerminalOutputSequenceRebase {
     return Math.max(0, seq - (this.bases.get(terminalId) ?? 0));
   }
 
-  replayToServer(message: TerminalReplayMessage): TerminalReplayMessage {
-    const offset = this.bases.get(message.terminalId) ?? 0;
+  baseFor(terminalId: string): number {
+    return this.bases.get(terminalId) ?? 0;
+  }
+
+  replayToServer(
+    message: TerminalReplayMessage,
+    offset = this.baseFor(message.terminalId),
+  ): TerminalReplayMessage {
     return {
       ...message,
       replayStartSeq: message.replayStartSeq + offset,

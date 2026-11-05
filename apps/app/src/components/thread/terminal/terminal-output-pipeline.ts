@@ -20,7 +20,11 @@ export function createTerminalOutputPipeline(
   terminal: TerminalWriter,
   onGrid?: (grid: TerminalGrid, apply: boolean) => void,
   onResize?: (cols: number, rows: number) => void,
-  options: { resizeMarkerGrids?: boolean } = {},
+  options: {
+    resizeMarkerGrids?: boolean;
+    beforeResize?: () => void;
+    afterResize?: () => void;
+  } = {},
 ): {
   push(
     bytes: Uint8Array,
@@ -77,8 +81,10 @@ export function createTerminalOutputPipeline(
         if (operation.type === "grid") {
           await Promise.all(pendingWrites);
           if (operation.resize) {
+            options.beforeResize?.();
             terminal.resize(operation.grid.cols, operation.grid.rows);
             onResize?.(operation.grid.cols, operation.grid.rows);
+            options.afterResize?.();
           }
           operation.callback?.();
           continue;

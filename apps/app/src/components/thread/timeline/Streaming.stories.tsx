@@ -132,6 +132,7 @@ function ProvisioningStreaming({ restartKey }: { restartKey: number }) {
         {...baseProps}
         initialExpanded={new Set([row.id])}
         timelineRows={[row]}
+        threadIsActive={false}
       />
     </TimelineStage>
   );
@@ -205,6 +206,7 @@ function RunningCommandStreaming({ restartKey }: { restartKey: number }) {
         {...baseProps}
         initialExpanded={new Set([row.id])}
         timelineRows={[row]}
+        threadIsActive={false}
       />
     </TimelineStage>
   );
@@ -321,7 +323,11 @@ function ExploringBundleStreaming({ restartKey }: { restartKey: number }) {
   );
   return (
     <TimelineStage>
-      <ThreadTimelineRows {...baseProps} timelineRows={rows} />
+      <ThreadTimelineRows
+        {...baseProps}
+        timelineRows={rows}
+        threadIsActive={false}
+      />
     </TimelineStage>
   );
 }

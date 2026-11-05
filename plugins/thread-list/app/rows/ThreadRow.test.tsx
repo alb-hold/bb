@@ -7,7 +7,12 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { execFile } from "node:child_process";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { promisify } from "node:util";
+import { afterEach, describe, expect, inject, it, vi } from "vitest";
 import { getDefaultStore } from "jotai";
 import { DndContext, useDraggable } from "@dnd-kit/core";
 import { CompactViewportOverrideProvider } from "@/components/ui/hooks/use-compact-viewport";
@@ -15,8 +20,11 @@ import { useSidebarReorderDnd } from "@/components/ui/use-sidebar-reorder-dnd";
 import { SidebarTouchSensor } from "../dnd/sidebarTouchSensor.js";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { SidebarRenameProvider } from "./SidebarInlineRename.js";
+import {
+  RENAME_PRESENTATION_CASES,
+  type RenamePresentationOutcome,
+} from "@/components/ui/inline-rename-presentation-cases";
 import type {
-  PluginSidebarPullRequest,
   PluginSidebarProject,
   PluginSidebarSplitLayout,
   PluginSidebarThread,
@@ -31,14 +39,23 @@ import {
   type PluginSdkTestFakes,
   type RenderedSlot,
   type TestThreadActionsResolver,
+  type TestThreadBulkActionsResolver,
 } from "@get-bb/plugin-sdk/testing/app";
 import { NO_COLLAPSED_CHILD_ACTIVITY } from "../model/thread-activity.js";
+import {
+  threadListPullRequestRpcContract,
+  type ThreadListPullRequest,
+} from "./pull-request-query.js";
 import { useAutomationWokeAt } from "../model/automation-woke.js";
 import {
   makeSidebarEnvironment,
   makeSidebarThread,
+  makePluginProject,
 } from "../model/fixtures.js";
-import { sidebarShowProviderIconsAtom } from "../preferences/atoms.js";
+import {
+  sidebarShowProviderIconsAtom,
+  sidebarShowRowMetadataAtom,
+} from "../preferences/atoms.js";
 import { SidebarProjectsContext } from "../model/use-sidebar-data.js";
 import type { ThreadRowOptions } from "./ThreadRow.js";
 import {
@@ -55,6 +72,8 @@ const { SidebarDraftPresenceSync } =
   await import("../list/sidebarDraftPresence.js");
 const { ThreadRowNavigationProvider } =
   await import("./threadRowNavigation.js");
+const { ThreadSelectionProvider } =
+  await import("../selection/threadSelection.js");
 const {
   resetSidebarTitleDoubleClickForTest,
   SidebarProvidersContext,
@@ -94,28 +113,15 @@ function createThread(
 }
 
 function createPullRequest(
-  state: PluginSidebarPullRequest["state"],
+  state: ThreadListPullRequest["state"],
   number = 10843,
   title = `${state} pull request`,
-): PluginSidebarPullRequest {
+): ThreadListPullRequest {
   return {
     number,
     title,
     url: `https://github.com/albrand/bb/pull/${number}`,
     state,
-    attention:
-      state === "draft"
-        ? "draft"
-        : state === "merged"
-          ? "merged"
-          : state === "closed"
-            ? "closed"
-            : "none",
-    experimental_autoMerge: false,
-    experimental_inMergeQueue: false,
-    experimental_checks: { state: "no_checks" },
-    experimental_review: { state: "none" },
-    experimental_mergeability: { state: "unknown" },
   };
 }
 
@@ -143,10 +149,12 @@ interface HarnessProps {
   onRowEvent?: () => void;
   onCustomizeRowActions?: (threadId: string) => void;
   onFinishCustomizingRowActions?: (restoreFocus: boolean) => void;
+  siblings?: PluginSidebarThread[];
 }
 
 function ThreadRowHarness({
   thread,
+  siblings = [],
   projects = [],
   providers = [],
   isCompactViewport,
@@ -171,30 +179,41 @@ function ThreadRowHarness({
         <TooltipProvider>
           <SidebarDraftPresenceSync />
           <ThreadRowNavigationProvider>
-            <SidebarRenameProvider>
-              <CustomizeRowActionsContext.Provider
-                value={onCustomizeRowActions ?? null}
-              >
-                <ThreadRowActionsCustomizingContext.Provider
-                  value={
-                    onFinishCustomizingRowActions
-                      ? {
-                          threadId: thread.id,
-                          onDone: onFinishCustomizingRowActions,
-                        }
-                      : null
-                  }
+            <ThreadSelectionProvider activeThreadId={null}>
+              <SidebarRenameProvider>
+                <CustomizeRowActionsContext.Provider
+                  value={onCustomizeRowActions ?? null}
                 >
-                  <div
-                    onPointerDown={onRowEvent}
-                    onKeyDown={onRowEvent}
-                    onClick={onRowEvent}
+                  <ThreadRowActionsCustomizingContext.Provider
+                    value={
+                      onFinishCustomizingRowActions
+                        ? {
+                            threadId: thread.id,
+                            onDone: onFinishCustomizingRowActions,
+                          }
+                        : null
+                    }
                   >
-                    {row}
-                  </div>
-                </ThreadRowActionsCustomizingContext.Provider>
-              </CustomizeRowActionsContext.Provider>
-            </SidebarRenameProvider>
+                    <div
+                      onPointerDown={onRowEvent}
+                      onKeyDown={onRowEvent}
+                      onClick={onRowEvent}
+                    >
+                      {row}
+                      {siblings.map((sibling) => (
+                        <ThreadRow
+                          key={sibling.id}
+                          thread={sibling}
+                          crossProjectId={crossProjectId}
+                          isActive={false}
+                          options={options}
+                        />
+                      ))}
+                    </div>
+                  </ThreadRowActionsCustomizingContext.Provider>
+                </CustomizeRowActionsContext.Provider>
+              </SidebarRenameProvider>
+            </ThreadSelectionProvider>
           </ThreadRowNavigationProvider>
         </TooltipProvider>
       </SidebarProvidersContext.Provider>
@@ -246,10 +265,12 @@ interface RenderThreadRowArgs extends Omit<HarnessProps, "thread"> {
   splitLayout?: PluginSidebarSplitLayout;
   projects?: PluginSidebarProject[];
   providers?: PluginProvidersState["providers"];
-  sidebarPullRequest?: PluginSidebarPullRequest;
+  sidebarPullRequest?: ThreadListPullRequest;
   openUrl?: (url: string) => boolean;
   sdk?: PluginSdkTestFakes;
   threadActions?: TestThreadActionsResolver;
+  threadBulkActions?: TestThreadBulkActionsResolver;
+  experiments?: string[];
 }
 
 function renderThreadRow({
@@ -265,24 +286,59 @@ function renderThreadRow({
   openUrl,
   sdk,
   threadActions = hostThreadActions(),
+  threadBulkActions,
+  experiments,
   ...harness
 }: RenderThreadRowArgs = {}): RenderedSlot & {
   rerenderThreadRow(nextThread: PluginSidebarThread): void;
 } {
+  const rowThread = sidebarPullRequest
+    ? {
+        ...thread,
+        environment: thread.environment ?? {
+          id: `environment-${thread.id}`,
+          name: null,
+          branchName: null,
+          path: null,
+          isWorktree: null,
+          providerId: null,
+          workspaceDisplayKind: null,
+        },
+      }
+    : thread;
   const slot = renderSlot(
     { component: ThreadRowHarness },
-    { thread, projects, providers, ...harness },
+    { thread: rowThread, projects, providers, ...harness },
     {
-      sidebarThreads: { threads: [thread], projects },
+      sidebarThreads: {
+        threads: [rowThread, ...(harness.siblings ?? [])],
+        projects,
+      },
       providers: { providers },
       sidebarDraftThreadIds: [
         ...(hasComposerDraft ? [thread.id] : []),
         ...hiddenDraftThreadIds,
       ],
       sidebarRowStatuses: pluginStatus ? { [thread.id]: pluginStatus } : {},
-      sidebarPullRequests: sidebarPullRequest
-        ? { [thread.id]: sidebarPullRequest }
-        : {},
+      experimental_rpcContract: threadListPullRequestRpcContract,
+      rpc: {
+        pullRequests: (input) => {
+          const { keys } =
+            threadListPullRequestRpcContract.pullRequests.input.parse(input);
+          return Object.fromEntries(
+            keys.flatMap((key) =>
+              sidebarPullRequest && key === rowThread.environment?.id
+                ? [
+                    [
+                      key,
+                      { outcome: "available", pullRequest: sidebarPullRequest },
+                    ],
+                  ]
+                : [],
+            ),
+          );
+        },
+      },
       sidebarShortcuts: shortcutKey
         ? {
             [thread.id]: {
@@ -295,6 +351,8 @@ function renderThreadRow({
       openUrl,
       sdk,
       threadActions,
+      threadBulkActions,
+      experiments,
     },
   );
   return Object.assign(slot, {
@@ -434,9 +492,31 @@ function hostThreadActions({
   };
 }
 
+const pointerState = vi.hoisted(() => ({ coarse: false }));
+vi.mock("@/components/ui/hooks/use-pointer-coarse", () => ({
+  usePointerCoarse: () => pointerState.coarse,
+}));
+
+async function expectRenamePresentation(outcome: RenamePresentationOutcome) {
+  if (outcome === "none") {
+    expect(screen.queryByRole("textbox", { name: "Thread name" })).toBeNull();
+    return;
+  }
+  const input = await screen.findByRole("textbox", { name: "Thread name" });
+  expect(input).toHaveProperty("value", "Thread");
+  expect(input.closest('[role="dialog"]') === null ? "inline" : "dialog").toBe(
+    outcome,
+  );
+  fireEvent.keyDown(input, { key: "Escape" });
+  await waitFor(() =>
+    expect(screen.queryByRole("textbox", { name: "Thread name" })).toBeNull(),
+  );
+}
+
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
+  pointerState.coarse = false;
   vi.restoreAllMocks();
   resetSidebarTitleDoubleClickForTest();
   resetPreferencesSyncForTest();
@@ -638,29 +718,45 @@ describe("ThreadRow", () => {
     );
   });
 
-  it("renders open, draft, merged, and closed PR rows together", () => {
+  it("renders open, draft, merged, and closed PR rows together", async () => {
     const states = ["open", "draft", "merged", "closed"] as const;
     const threads = states.map((state) =>
-      createThread({ id: `thread-${state}`, title: `${state} thread` }),
+      createThread({
+        id: `thread-${state}`,
+        title: `${state} thread`,
+        environment: {
+          id: `environment-${state}`,
+          name: null,
+          branchName: null,
+          path: null,
+          isWorktree: null,
+          providerId: null,
+          workspaceDisplayKind: null,
+        },
+      }),
     );
     const pullRequests = Object.fromEntries(
       states.map((state, index) => [
-        threads[index].id,
-        createPullRequest(state, 10843 + index),
+        threads[index].environment!.id!,
+        {
+          outcome: "available",
+          pullRequest: createPullRequest(state, 10843 + index),
+        },
       ]),
     );
     const slot = renderSlot(
       { component: ThreadRowGalleryHarness },
       { threads },
       {
+        experimental_rpcContract: threadListPullRequestRpcContract,
         sidebarThreads: { threads },
-        sidebarPullRequests: pullRequests,
+        rpc: { pullRequests: () => pullRequests },
       },
     );
 
     for (const [index, state] of states.entries()) {
       expect(
-        slot.getByRole("link", {
+        await slot.findByRole("link", {
           name: new RegExp(`Pull request #${10843 + index}`),
         }),
       ).toBeTruthy();
@@ -668,12 +764,12 @@ describe("ThreadRow", () => {
     }
   });
 
-  it("keeps the PR chip in the trailing row while status is visible", () => {
+  it("keeps the PR chip in the trailing row while status is visible", async () => {
     renderThreadRow({
       thread: createThread({ isUnread: true }),
       sidebarPullRequest: createPullRequest("open"),
     });
-    const pullRequest = screen.getByRole("link", {
+    const pullRequest = await screen.findByRole("link", {
       name: /Pull request #10843/,
     });
 
@@ -683,7 +779,7 @@ describe("ThreadRow", () => {
     ).not.toBeNull();
   });
 
-  it("keeps the PR badge and row actions in the row's trailing layout lane", () => {
+  it("keeps the PR badge and row actions in the row's trailing layout lane", async () => {
     const { container } = renderThreadRow({
       sidebarPullRequest: createPullRequest("open"),
     });
@@ -694,7 +790,7 @@ describe("ThreadRow", () => {
       "[data-sidebar-row-controls]",
     );
     const actionSlot = controls?.parentElement;
-    const pullRequest = screen.getByRole("link", {
+    const pullRequest = await screen.findByRole("link", {
       name: /Pull request #10843/,
     });
 
@@ -747,7 +843,7 @@ describe("ThreadRow", () => {
     expect(badges.className).toContain("[@media(hover:none)]:opacity-100!");
   });
 
-  it("keeps working status, PR badge, and actions in the trailing layout lane", () => {
+  it("keeps working status, PR badge, and actions in the trailing layout lane", async () => {
     const { container } = renderThreadRow({
       thread: createThread({ status: "active", runtimeStatus: "active" }),
       sidebarPullRequest: createPullRequest("open"),
@@ -760,7 +856,7 @@ describe("ThreadRow", () => {
       "[data-sidebar-row-controls]",
     );
     const actionSlot = controls?.parentElement;
-    const pullRequest = screen.getByRole("link", {
+    const pullRequest = await screen.findByRole("link", {
       name: /Pull request #10843/,
     });
 
@@ -772,6 +868,221 @@ describe("ThreadRow", () => {
     expect(actionSlot?.classList.contains("absolute")).toBe(false);
   });
 
+  it("keeps undelivered queued messages visible and does not repeat the native activity state beside them", () => {
+    const { container } = renderThreadRow({
+      thread: createThread({
+        status: "active",
+        runtimeStatus: "active",
+        queuedWork: "failed",
+        experimental_queuedFailedCount: 4,
+        experimental_nativeActivity: {
+          lastEvidenceAt: null,
+          freshForMs: 90_000,
+          confirmation: "unconfirmed",
+          evidenceKind: "unknown",
+        },
+      }),
+    });
+
+    const queued = container.querySelector(
+      '[data-thread-status-glyph="queued-failed"]',
+    );
+    expect(queued?.getAttribute("data-queued-failed-count")).toBe("4");
+    expect(
+      container.querySelector("[data-sidebar-native-activity-warning]"),
+    ).toBeNull();
+    expect(container.querySelector('[aria-label="Working"]')).toBeNull();
+    const slot = container.querySelector(
+      "[data-sidebar-thread-trailing-indicator]",
+    );
+    expect(slot?.classList.contains("px-0")).toBe(true);
+    expect(slot?.classList.contains("px-1.5")).toBe(false);
+  });
+
+  it("keeps the activity warning screen-reader only beside a queued clock, which has no status text", () => {
+    const { container } = renderThreadRow({
+      thread: createThread({
+        lastReadAt: 1,
+        latestAttentionAt: 1,
+        queuedWork: "waiting",
+        experimental_nativeActivity: {
+          lastEvidenceAt: null,
+          freshForMs: 90_000,
+          confirmation: "unconfirmed",
+          evidenceKind: "unknown",
+        },
+      }),
+    });
+
+    expect(renderedIndicators()).toEqual(["queued-waiting"]);
+    const warning = container.querySelector(
+      "[data-sidebar-native-activity-warning]",
+    );
+    expect(warning?.textContent).toBe("Activity not reported");
+    expect(warning?.classList.contains("sr-only")).toBe(true);
+    expect(warning?.classList.contains("text-muted-foreground")).toBe(false);
+  });
+
+  describe("recovery guidance for an activity that is not reported", () => {
+    const unconfirmed = (
+      evidenceKind: "tool-call" | "unknown" = "unknown",
+    ) => ({
+      ...(evidenceKind === "tool-call" ? { lastToolCallAt: Date.now() } : {}),
+      lastEvidenceAt: null,
+      freshForMs: 90_000,
+      confirmation: "unconfirmed" as const,
+      evidenceKind,
+    });
+    const guidanceOf = (container: HTMLElement) =>
+      container.querySelector("[data-sidebar-native-activity-guidance]");
+
+    it("keeps the short label, and carries the host-aware guidance in the accessible description", () => {
+      const { container } = renderThreadRow({
+        thread: createThread({
+          id: "thr_native",
+          status: "active",
+          runtimeStatus: "active",
+          host: { id: "host_1", name: "Build box" },
+          experimental_nativeActivity: unconfirmed(),
+        }),
+      });
+      const label = screen.getByRole("img", { name: "Activity not reported" });
+      expect(label.textContent).toContain("Activity not reported");
+      expect(label.getAttribute("aria-describedby")).toBe(
+        guidanceOf(container)?.id,
+      );
+      expect(guidanceOf(container)?.textContent).toBe(
+        "If this session started before bb was updated, update bb on Build box, save your work, type /exit in the terminal, then reopen with bb thread native thr_native. A pending question will need to be asked again.",
+      );
+      expect(
+        label.querySelector("[data-sidebar-status-full]")?.textContent,
+      ).toBe("Activity not reported");
+    });
+
+    it("falls back to this thread's machine when the host is unknown", () => {
+      const { container } = renderThreadRow({
+        thread: createThread({
+          status: "active",
+          runtimeStatus: "active",
+          host: null,
+          experimental_nativeActivity: unconfirmed(),
+        }),
+      });
+      expect(guidanceOf(container)?.textContent).toContain(
+        "update bb on this thread's machine, save your work",
+      );
+    });
+
+    it("shows the guidance for tool-call-only evidence and does not turn it into Working", () => {
+      const { container } = renderThreadRow({
+        thread: createThread({
+          status: "active",
+          runtimeStatus: "active",
+          experimental_nativeActivity: unconfirmed("tool-call"),
+        }),
+      });
+      expect(guidanceOf(container)).not.toBeNull();
+      expect(
+        screen.getByRole("img", { name: /Agent tool call seen/u }),
+      ).toBeTruthy();
+      expect(container.querySelector('[aria-label="Working"]')).toBeNull();
+    });
+
+    it("shows no guidance for confirmed activity", () => {
+      const { container } = renderThreadRow({
+        thread: createThread({
+          status: "active",
+          runtimeStatus: "active",
+          experimental_nativeActivity: {
+            lastEvidenceAt: Date.now(),
+            freshForMs: 90_000,
+            confirmation: "confirmed",
+            evidenceKind: "holder-report",
+          },
+        }),
+      });
+      expect(guidanceOf(container)).toBeNull();
+      expect(
+        container
+          .querySelector("[data-sidebar-thread-trailing-indicator]")
+          ?.getAttribute("aria-describedby") ?? null,
+      ).toBeNull();
+    });
+
+    it("offers no action: the description is plain text", () => {
+      const { container } = renderThreadRow({
+        thread: createThread({
+          status: "active",
+          runtimeStatus: "active",
+          experimental_nativeActivity: unconfirmed(),
+        }),
+      });
+      expect(
+        guidanceOf(container)?.querySelectorAll("button, a, input"),
+      ).toHaveLength(0);
+    });
+
+    it("shows no guidance, no lead and no description next to a pending question", async () => {
+      const { container } = renderThreadRow({
+        thread: createThread({
+          status: "active",
+          runtimeStatus: "active",
+          hasPendingInteraction: true,
+          experimental_nativeActivity: unconfirmed(),
+        }),
+      });
+      const indicator = screen.getByRole("img", { name: "Needs input" });
+      expect(indicator.getAttribute("aria-describedby")).toBeNull();
+      expect(guidanceOf(container)).toBeNull();
+      expect(
+        container.querySelector("[data-sidebar-native-activity-warning]"),
+      ).toBeNull();
+      expect(container.textContent).not.toContain("Activity not reported");
+      fireEvent.pointerMove(indicator);
+      expect((await screen.findByRole("tooltip")).textContent).toBe(
+        "Needs input",
+      );
+    });
+
+    it("shows no guidance, no lead and no description next to undelivered queued messages", async () => {
+      const { container } = renderThreadRow({
+        thread: createThread({
+          status: "active",
+          runtimeStatus: "active",
+          queuedWork: "failed",
+          experimental_queuedFailedCount: 2,
+          experimental_nativeActivity: unconfirmed(),
+        }),
+      });
+      const indicator = container.querySelector(
+        "[data-sidebar-thread-trailing-indicator]",
+      );
+      expect(
+        container.querySelector('[data-thread-status-glyph="queued-failed"]'),
+      ).not.toBeNull();
+      expect(indicator?.getAttribute("aria-describedby")).toBeNull();
+      expect(indicator?.getAttribute("title")).toBeNull();
+      expect(guidanceOf(container)).toBeNull();
+      expect(
+        container.querySelector("[data-sidebar-native-activity-warning]"),
+      ).toBeNull();
+      expect(container.textContent).not.toContain("Activity not reported");
+    });
+
+    it("leaves a pending question as Needs input", () => {
+      renderThreadRow({
+        thread: createThread({
+          status: "active",
+          runtimeStatus: "active",
+          hasPendingInteraction: true,
+          experimental_nativeActivity: unconfirmed(),
+        }),
+      });
+      expect(screen.getByRole("img", { name: "Needs input" })).toBeTruthy();
+      expect(screen.queryByRole("img", { name: "Working" })).toBeNull();
+    });
+  });
+
   it("shows native activity uncertainty without a runtime Working label", () => {
     const { container } = renderThreadRow({
       thread: createThread({
@@ -781,12 +1092,13 @@ describe("ThreadRow", () => {
           lastEvidenceAt: null,
           freshForMs: 90_000,
           confirmation: "unconfirmed",
+          evidenceKind: "unknown",
         },
       }),
     });
-    const warning = screen.getByRole("img", { name: "Activity unconfirmed" });
+    const warning = screen.getByRole("img", { name: "Activity not reported" });
 
-    expect(warning.textContent).toContain("Activity unconfirmed");
+    expect(warning.textContent).toContain("Activity not reported");
     expect(container.querySelector('[aria-label="Working"]')).toBeNull();
   });
 
@@ -838,7 +1150,7 @@ describe("ThreadRow", () => {
       expect(screen.getByRole("img", { name: statusLabel })).toBe(status);
       expectPersistentRowMetadata(status);
       expectPersistentRowMetadata(
-        screen.getByRole("link", { name: /Pull request #10843/ }),
+        await screen.findByRole("link", { name: /Pull request #10843/ }),
       );
       const glyph = status.querySelector<HTMLElement>(
         "[data-thread-status-glyph]",
@@ -884,7 +1196,7 @@ describe("ThreadRow", () => {
     ["closed", "text-destructive"],
   ] as const)(
     "shows a %s pull request chip with its state color",
-    (state, tone) => {
+    async (state, tone) => {
       const stateLabel = state[0].toUpperCase() + state.slice(1);
       const slot = renderThreadRow({
         sidebarPullRequest: createPullRequest(
@@ -894,7 +1206,7 @@ describe("ThreadRow", () => {
         ),
       });
 
-      const chip = slot.getByRole("link", {
+      const chip = await slot.findByRole("link", {
         name: `Pull request #10843: Add sidebar PR status, ${stateLabel}, albrand/bb`,
       });
       expect(chip.textContent).toBe("#10843");
@@ -912,7 +1224,7 @@ describe("ThreadRow", () => {
     });
 
     fireEvent.pointerMove(
-      slot.getByRole("link", { name: /Pull request #10843/ }),
+      await slot.findByRole("link", { name: /Pull request #10843/ }),
     );
 
     expect((await slot.findByRole("tooltip")).textContent).toBe(
@@ -926,7 +1238,7 @@ describe("ThreadRow", () => {
     expect(slot.queryByRole("link", { name: /Pull request/ })).toBeNull();
   });
 
-  it("does not select the row when the PR chip is clicked", () => {
+  it("does not select the row when the PR chip is clicked", async () => {
     const onRowEvent = vi.fn();
     const openUrl = vi.fn(() => true);
     const slot = renderThreadRow({
@@ -939,7 +1251,9 @@ describe("ThreadRow", () => {
       ),
     });
 
-    fireEvent.click(slot.getByRole("link", { name: /Pull request #10843/ }));
+    fireEvent.click(
+      await slot.findByRole("link", { name: /Pull request #10843/ }),
+    );
 
     expect(onRowEvent).not.toHaveBeenCalled();
     expect(openUrl).toHaveBeenCalledWith(
@@ -1025,6 +1339,103 @@ describe("ThreadRow", () => {
       { method: "toThread", threadId: "thr_test", options: { split: true } },
     ]);
   });
+
+  it.each([
+    ["meta", { metaKey: true }],
+    ["ctrl", { ctrlKey: true }],
+  ])(
+    "selects the row on %s-shift-click and still splits without shift with multi-select on",
+    (_label, modifier) => {
+      const slot = renderThreadRow({ experiments: ["sidebarMultiSelect"] });
+      const link = screen.getByRole("link", { name: "Open Thread" });
+      const row = link.closest("[data-sidebar-rename-row]");
+      expect(row?.hasAttribute("data-sidebar-thread-selected")).toBe(false);
+      expect(fireEvent.click(link, { ...modifier, shiftKey: true })).toBe(
+        false,
+      );
+      expect(row?.hasAttribute("data-sidebar-thread-selected")).toBe(true);
+      expect(slot.inspection.navigateCalls).toEqual([]);
+      expect(fireEvent.click(link, modifier)).toBe(false);
+      expect(row?.hasAttribute("data-sidebar-thread-selected")).toBe(false);
+      expect(slot.inspection.navigateCalls).toEqual([
+        { method: "toThread", threadId: "thr_test", options: { split: true } },
+      ]);
+    },
+  );
+
+  it("opens the bulk menu for a selected row and its own menu for an unselected one", async () => {
+    const first = createThread({ id: "thr_first", title: "First" });
+    const second = createThread({ id: "thr_second", title: "Second" });
+    const third = createThread({ id: "thr_third", title: "Third" });
+    const bulkTargets: string[][] = [];
+    renderThreadRow({
+      thread: first,
+      siblings: [second, third],
+      projects: [makePluginProject()],
+      experiments: ["sidebarMultiSelect"],
+      threadBulkActions: (threads) => {
+        bulkTargets.push(threads.map((target) => target.id));
+        return [];
+      },
+    });
+    for (const title of ["First", "Second"]) {
+      fireEvent.click(screen.getByRole("link", { name: `Open ${title}` }), {
+        metaKey: true,
+        shiftKey: true,
+      });
+    }
+    fireEvent.contextMenu(screen.getByRole("link", { name: "Open Second" }));
+    await screen.findByRole("menu", { name: "Actions for 2 threads" });
+    expect(bulkTargets.at(-1)).toEqual(["thr_first", "thr_second"]);
+    expect(
+      screen.getByRole("menuitem", { name: "Clear selection" }),
+    ).toBeTruthy();
+    fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+    fireEvent.click(screen.getByRole("link", { name: "Open First" }), {
+      metaKey: true,
+      shiftKey: true,
+    });
+    fireEvent.click(screen.getByRole("link", { name: "Open Second" }), {
+      metaKey: true,
+      shiftKey: true,
+    });
+    fireEvent.contextMenu(screen.getByRole("link", { name: "Open Third" }));
+    expect(
+      await screen.findByRole("menu", { name: "Thread actions" }),
+    ).toBeTruthy();
+  });
+
+  it.each(["sidebar", "outside"])(
+    "clears selection on empty %s space but keeps it for rows and menus",
+    (target) => {
+      const { container } = renderThreadRow({
+        experiments: ["sidebarMultiSelect"],
+      });
+      container.setAttribute("data-sidebar", "sidebar");
+      const link = screen.getByRole("link", { name: "Open Thread" });
+      const row = link.closest("[data-sidebar-rename-row]")!;
+      const menu = document.createElement("div");
+      menu.setAttribute("role", "menu");
+      document.body.append(menu);
+      try {
+        fireEvent.click(link, { metaKey: true, shiftKey: true });
+        for (const keepingTarget of [
+          row,
+          link,
+          screen.getByRole("button", { name: "Thread actions" }),
+          menu,
+        ]) {
+          fireEvent.pointerDown(keepingTarget);
+          expect(row.hasAttribute("data-sidebar-thread-selected")).toBe(true);
+        }
+        fireEvent.pointerDown(target === "sidebar" ? container : document.body);
+        expect(row.hasAttribute("data-sidebar-thread-selected")).toBe(false);
+      } finally {
+        menu.remove();
+      }
+    },
+  );
 
   it("keeps desktop restore available, hides it on mobile, and blocks row event propagation", async () => {
     const thread = createThread({ archivedAt: 1, isArchived: true });
@@ -1241,6 +1652,84 @@ describe("ThreadRow", () => {
     },
   );
 
+  it.each([
+    { name: "desktop", isCompactViewport: false },
+    { name: "compact", isCompactViewport: true },
+  ])(
+    "opens the row's context menu from a status chip of a sticky parent on $name",
+    async ({ isCompactViewport }) => {
+      renderThreadRow({
+        thread: createThread({
+          experimental_rowState: {
+            statuses: { task: { value: "Running" } },
+            progress: null,
+          },
+        }),
+        isCompactViewport,
+        options: {
+          kind: "parent",
+          depth: 1,
+          isCompact: isCompactViewport,
+          isCollapsed: false,
+          childCount: 1,
+          childActivity: NO_COLLAPSED_CHILD_ACTIVITY,
+          stickyLevel: 0,
+          onToggleCollapsed: vi.fn(),
+        },
+      });
+      const chip = document.querySelector("[data-sidebar-thread-status-chip]");
+      if (chip === null) throw new Error("status chip missing");
+      fireEvent.contextMenu(chip);
+
+      expect(
+        await screen.findByRole("menuitem", { name: "Rename" }),
+      ).toBeTruthy();
+    },
+  );
+
+  it("keeps a sticky parent's row state inside the row node that carries the drag and drop bindings", () => {
+    renderThreadRow({
+      thread: createThread({
+        experimental_rowState: {
+          statuses: { task: { value: "Running" } },
+          progress: { value: 0.5 },
+        },
+      }),
+      options: {
+        kind: "parent",
+        depth: 1,
+        isCompact: false,
+        isCollapsed: false,
+        childCount: 1,
+        childActivity: NO_COLLAPSED_CHILD_ACTIVITY,
+        stickyLevel: 0,
+        onToggleCollapsed: vi.fn(),
+      },
+    });
+
+    const row = document.querySelector("[data-sidebar-rename-row]");
+    const rowState = document.querySelector("[data-sidebar-thread-row-state]");
+    expect(row?.contains(rowState ?? null)).toBe(true);
+  });
+
+  it.each(RENAME_PRESENTATION_CASES)(
+    "presents rename from the menu, a row action, and double click for compact=$compact coarse=$coarse",
+    async ({ compact, coarse, menu, direct, doubleClick }) => {
+      pointerState.coarse = coarse;
+      getDefaultStore().set(preferenceValueAtom("rowActions"), [
+        "bb--core/rename",
+      ]);
+      renderThreadRow({ isCompactViewport: compact });
+      fireEvent.click(screen.getByRole("button", { name: "Thread actions" }));
+      fireEvent.click(await screen.findByRole("menuitem", { name: "Rename" }));
+      await expectRenamePresentation(menu);
+      fireEvent.click(screen.getByRole("button", { name: "Rename" }));
+      await expectRenamePresentation(direct);
+      fireEvent.doubleClick(screen.getByText("Thread"));
+      await expectRenamePresentation(doubleClick);
+    },
+  );
+
   it("suppresses the context menu while the title is being edited", async () => {
     renderThreadRow();
     fireEvent.doubleClick(screen.getByText("Thread"));
@@ -1384,7 +1873,7 @@ describe("ThreadRow", () => {
         },
         onToggleCollapsed: vi.fn(),
       },
-      thread: createThread(),
+      thread: createThread({ lastReadAt: 1, latestAttentionAt: 1 }),
     },
   ])(
     "preserves the $label status in the split map accessible name",
@@ -1558,9 +2047,7 @@ describe("ThreadRow", () => {
     expect(marker?.getAttribute("aria-label")).toBe("In project Web App");
     expect(marker?.querySelector('[data-icon="FolderExport"]')).not.toBeNull();
     expect(
-      marker?.parentElement?.previousElementSibling?.querySelector(
-        ".bb-thread-title",
-      ),
+      marker?.parentElement?.querySelector(".bb-thread-title"),
     ).not.toBeNull();
     expect(
       marker?.closest("[data-sidebar-thread-trailing-indicator]"),
@@ -1677,7 +2164,7 @@ describe("ThreadRow", () => {
   });
 
   it.each([true, false])(
-    "gives a parent title the action space while actions are hidden (collapsed: %s)",
+    "reserves quick-action space after parent disclosure (collapsed: %s)",
     (isCollapsed) => {
       const onToggleCollapsed = vi.fn();
       renderThreadRow({
@@ -1699,16 +2186,31 @@ describe("ThreadRow", () => {
       const toggle = screen.getByRole("button", {
         name: /(?:Expand|Collapse) Nested discussion/,
       });
-      const titleContainer = toggle.parentElement;
       const link = screen.getByRole("link", {
         name: "Open Nested discussion with enough text to fill the sidebar width",
       });
+      const titleContainer = link.parentElement;
       const navigationTarget = link.parentElement;
-      const titleWrapper = link.nextElementSibling;
+      const titleWrapper = link.nextElementSibling?.firstElementChild;
       expect(titleContainer?.classList.contains("flex-1")).toBe(true);
       expect(titleContainer?.classList.contains("min-w-0")).toBe(true);
       expect(navigationTarget?.classList.contains("flex-1")).toBe(true);
       expect(titleWrapper?.classList.contains("flex-1")).toBe(true);
+      expect(
+        link.parentElement?.classList.contains(
+          "pr-(--bb-sidebar-hover-actions-inset)",
+        ),
+      ).toBe(true);
+      const row = link.closest("[data-sidebar-rename-row]");
+      expect(
+        Array.from(row?.querySelectorAll("button") ?? [], (button) =>
+          button.getAttribute("aria-label"),
+        ),
+      ).toEqual([
+        toggle.getAttribute("aria-label"),
+        "Archive",
+        "Thread actions",
+      ]);
       fireEvent.click(toggle);
       expect(onToggleCollapsed).toHaveBeenCalledWith("thr_test");
     },
@@ -1729,6 +2231,47 @@ describe("ThreadRow", () => {
 
     fireEvent.click(link);
     expect(clickLink).toHaveBeenCalledTimes(2);
+  });
+
+  it("draws other plugins' metadata only while Metadata is on", () => {
+    const slot = renderThreadRow({ experiments: ["threadRowMetadata"] });
+    expect(
+      slot.container.querySelector("[data-thread-row-metadata]"),
+    ).toBeNull();
+
+    act(() => getDefaultStore().set(sidebarShowRowMetadataAtom, true));
+    expect(
+      slot.container.querySelector("[data-thread-row-metadata]"),
+    ).not.toBeNull();
+  });
+
+  it("ignores the Metadata preference while its experiment is off", () => {
+    getDefaultStore().set(sidebarShowRowMetadataAtom, true);
+    const slot = renderThreadRow();
+    expect(
+      slot.container.querySelector("[data-thread-row-metadata]"),
+    ).toBeNull();
+  });
+
+  it("routes a click on other plugins' metadata like the rest of the row", () => {
+    getDefaultStore().set(sidebarShowRowMetadataAtom, true);
+    const slot = renderThreadRow({
+      experiments: ["sidebarMultiSelect", "threadRowMetadata"],
+    });
+    const link = screen.getByRole("link", { name: "Open Thread" });
+    const row = link.closest("[data-sidebar-rename-row]");
+    const items = row?.querySelector("[data-thread-row-metadata]");
+    expect(items).not.toBeNull();
+    const clickLink = vi.spyOn(link, "click");
+
+    fireEvent.click(items!, { metaKey: true, shiftKey: true });
+    expect(row?.hasAttribute("data-sidebar-thread-selected")).toBe(true);
+    expect(clickLink).not.toHaveBeenCalled();
+    expect(slot.inspection.navigateCalls).toEqual([]);
+
+    fireEvent.click(items!);
+    expect(row?.hasAttribute("data-sidebar-thread-selected")).toBe(false);
+    expect(clickLink).toHaveBeenCalledOnce();
   });
 
   it("does not route a suppressed drag click on the trailing area", () => {
@@ -1867,7 +2410,11 @@ describe("ThreadRow", () => {
 
   it("shows the workflow indicator for an idle thread with an active workflow", () => {
     renderThreadRow({
-      thread: createThread({ activity: activity({ workflows: 1 }) }),
+      thread: createThread({
+        activity: activity({ workflows: 1 }),
+        lastReadAt: 1,
+        latestAttentionAt: 1,
+      }),
     });
 
     expect(renderedIndicators()).toEqual(["working"]);
@@ -1882,7 +2429,11 @@ describe("ThreadRow", () => {
     "shows the $indicator indicator for $activityKey activity",
     ({ activityKey, indicator }) => {
       renderThreadRow({
-        thread: createThread({ activity: activity({ [activityKey]: 1 }) }),
+        thread: createThread({
+          activity: activity({ [activityKey]: 1 }),
+          lastReadAt: 1,
+          latestAttentionAt: 1,
+        }),
       });
 
       expect(renderedIndicators()).toEqual([indicator]);
@@ -1897,6 +2448,8 @@ describe("ThreadRow", () => {
           backgroundAgents: 1,
           backgroundCommands: 1,
         }),
+        lastReadAt: 1,
+        latestAttentionAt: 1,
       }),
     });
 
@@ -1907,9 +2460,28 @@ describe("ThreadRow", () => {
     renderThreadRow({
       thread: createThread({
         activity: activity({ backgroundAgents: 1, backgroundCommands: 1 }),
+        lastReadAt: 1,
+        latestAttentionAt: 1,
       }),
     });
 
+    expect(renderedIndicators()).toEqual(["working"]);
+  });
+
+  it("shows fork working precedence over unread background work and workflows", () => {
+    const background = renderThreadRow({
+      thread: createThread({
+        activity: activity({ backgroundAgents: 1, backgroundCommands: 1 }),
+      }),
+    });
+    expect(renderedIndicators()).toEqual(["working"]);
+    background.unmount();
+
+    renderThreadRow({
+      thread: createThread({
+        activity: activity({ workflows: 1, backgroundCommands: 1 }),
+      }),
+    });
     expect(renderedIndicators()).toEqual(["working"]);
   });
 
@@ -2048,16 +2620,15 @@ describe("ThreadRow", () => {
     expect(screen.getByText("Thread")).not.toBeNull();
   });
 
-  it("navigates instead of renaming when the title is double-tapped on a compact viewport", async () => {
+  it("renames inline after a fine-pointer double click on a compact viewport", async () => {
     renderThreadRow({ isCompactViewport: true });
     const link = screen.getByRole("link", { name: "Open Thread" });
-
     expect(fireEvent.click(link)).toBe(true);
-    expect(fireEvent.click(link)).toBe(true);
-    fireEvent.doubleClick(screen.getByText("Thread"));
-    await act(async () => new Promise(requestAnimationFrame));
-
-    expect(screen.queryByRole("textbox", { name: "Thread name" })).toBeNull();
+    expect(fireEvent.click(link)).toBe(false);
+    expect(
+      await screen.findByRole("textbox", { name: "Thread name" }),
+    ).toHaveProperty("value", "Thread");
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 
   it("does not start a sortable drag while editing the title", async () => {
@@ -2198,15 +2769,20 @@ describe("ThreadRow", () => {
       .mockReturnValue(false);
     const slot = renderThreadRow({
       options: { ...DEFAULT_OPTIONS, consumeClickSuppression },
+      experiments: ["sidebarMultiSelect"],
     });
     const link = screen.getByRole("link", { name: "Open Thread" });
 
+    const row = link.closest("[data-sidebar-rename-row]");
+
     expect(fireEvent.click(link)).toBe(false);
-    expect(fireEvent.click(link, { metaKey: true })).toBe(false);
+    expect(row?.hasAttribute("data-sidebar-thread-selected")).toBe(false);
+    expect(fireEvent.click(link, { metaKey: true, shiftKey: true })).toBe(
+      false,
+    );
     expect(consumeClickSuppression).toHaveBeenCalledTimes(2);
-    expect(slot.inspection.navigateCalls).toEqual([
-      { method: "toThread", threadId: "thr_test", options: { split: true } },
-    ]);
+    expect(row?.hasAttribute("data-sidebar-thread-selected")).toBe(true);
+    expect(slot.inspection.navigateCalls).toEqual([]);
   });
 
   it("starts a rename from a second click after the row remounts", async () => {
@@ -2221,5 +2797,484 @@ describe("ThreadRow", () => {
     expect(
       await screen.findByRole("textbox", { name: "Thread name" }),
     ).toHaveProperty("value", "Thread");
+  });
+});
+
+const execFileAsync = promisify(execFile);
+
+const chromiumPath = inject("threadListChromiumPath");
+const pluginCss = inject("threadListPluginCss");
+const CHROMIUM_QUIET_FLAGS = [
+  "--disable-dev-shm-usage",
+  "--disable-extensions",
+  "--disable-background-networking",
+  "--no-first-run",
+];
+
+interface RowLayout {
+  innerWidth: number;
+  row: {
+    width: number;
+    height: number;
+    bottom: number;
+    left: number;
+    right: number;
+  };
+  link: { width: number };
+  chip: { width: number; left: number; right: number } | null;
+  bar: {
+    width: number;
+    height: number;
+    bottom: number;
+    fill: number;
+    fillBackground: string;
+  } | null;
+}
+
+const MEASURE_SCRIPT = `
+const box = (element) => {
+  const rect = element.getBoundingClientRect();
+  return {
+    width: rect.width,
+    height: rect.height,
+    bottom: rect.bottom,
+    left: rect.left,
+    right: rect.right,
+  };
+};
+const bar = document.querySelector("[role=progressbar]");
+const chip = document.querySelector("[data-sidebar-thread-status-chip]");
+const layout = {
+  innerWidth: window.innerWidth,
+  row: box(document.querySelector("[data-sidebar-rename-row]")),
+  link: box(document.querySelector("[data-sidebar-thread-id]")),
+  chip: chip ? box(chip) : null,
+  bar: bar
+    ? {
+        ...box(bar),
+        fill: box(bar.firstElementChild).width,
+        fillBackground: getComputedStyle(bar.firstElementChild).backgroundColor,
+      }
+    : null,
+};
+document.getElementById("layout").textContent = JSON.stringify(layout);
+`;
+
+async function measureRowLayout(
+  rowHtml: string,
+  viewportWidth: number,
+): Promise<RowLayout> {
+  const dir = await mkdtemp(join(tmpdir(), "bb-row-layout-"));
+  try {
+    const page = join(dir, "row.html");
+    await writeFile(
+      page,
+      `<!doctype html><html><head><meta name="viewport" content="width=device-width"><style>
+:root{--bb-sidebar-row-height:1.75rem;--bb-sidebar-row-height-coarse:2.5rem;--sidebar-accent:#e4e4e7;--timeline-accent:#2563eb}
+*,::before,::after{box-sizing:border-box}
+body{margin:0}
+${pluginCss ?? ""}
+</style></head><body>
+<div data-bb-plugin-root style="width:${viewportWidth}px">${rowHtml}</div>
+<pre id="layout"></pre>
+<script>${MEASURE_SCRIPT}</script>
+</body></html>`,
+    );
+    const { stdout } = await execFileAsync(chromiumPath ?? "", [
+      "--headless",
+      "--no-sandbox",
+      "--disable-gpu",
+      ...CHROMIUM_QUIET_FLAGS,
+      "--hide-scrollbars",
+      `--window-size=${viewportWidth},900`,
+      "--virtual-time-budget=2000",
+      "--dump-dom",
+      `file://${page}`,
+    ]);
+    const match = /<pre id="layout">([^<]*)<\/pre>/.exec(stdout);
+    if (match?.[1] === undefined) throw new Error(stdout.slice(0, 500));
+    return JSON.parse(match[1].replaceAll("&quot;", '"')) as RowLayout;
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+interface StickyParentLayout {
+  tier: { top: number; bottom: number; height: number };
+  rowState: { top: number; bottom: number };
+  next: { top: number };
+  rowStateHitsRow: boolean;
+}
+
+const STICKY_MEASURE_SCRIPT = `
+const box = (element) => {
+  const rect = element.getBoundingClientRect();
+  return { top: rect.top, bottom: rect.bottom, height: rect.height };
+};
+const rowStateElement = document.querySelector("[data-sidebar-thread-row-state]");
+const rowStateBox = rowStateElement.getBoundingClientRect();
+const hit = document.elementFromPoint(
+  rowStateBox.left + rowStateBox.width / 2,
+  rowStateBox.top + rowStateBox.height / 2,
+);
+document.getElementById("layout").textContent = JSON.stringify({
+  tier: box(document.querySelector("[data-sidebar-sticky-tier]")),
+  rowState: box(rowStateElement),
+  next: box(document.getElementById("next-row")),
+  rowStateHitsRow: hit !== null && hit.closest("[data-sidebar-rename-row]") !== null,
+});
+`;
+
+async function measureStickyParentLayout(
+  rowHtml: string,
+  viewportWidth: number,
+): Promise<StickyParentLayout> {
+  const dir = await mkdtemp(join(tmpdir(), "bb-sticky-layout-"));
+  try {
+    const page = join(dir, "sticky.html");
+    const themeCss = await readFile(
+      join(process.cwd(), "../../apps/app/src/components/ui/theme.css"),
+      "utf8",
+    );
+    await writeFile(
+      page,
+      `<!doctype html><html><head><meta name="viewport" content="width=device-width"><style>
+@layer theme, base, components, utilities;
+:root{--bb-sidebar-row-height:1.75rem;--bb-sidebar-row-height-coarse:2.5rem;--sidebar:#fafafa;--sidebar-accent:#e4e4e7;--timeline-accent:#2563eb}
+*,::before,::after{box-sizing:border-box}
+body{margin:0}
+${pluginCss ?? ""}
+${themeCss}
+[data-sidebar-sticky-stack] [data-sidebar-sticky-tier]{top:auto}
+</style></head><body>
+<div data-bb-plugin-root style="width:${viewportWidth}px">
+<div data-sidebar-sticky-stack>${rowHtml}<div id="next-row" style="height:1.75rem">Next row</div></div>
+</div>
+<pre id="layout"></pre>
+<script>${STICKY_MEASURE_SCRIPT}</script>
+</body></html>`,
+    );
+    const { stdout } = await execFileAsync(chromiumPath ?? "", [
+      "--headless",
+      "--no-sandbox",
+      "--disable-gpu",
+      ...CHROMIUM_QUIET_FLAGS,
+      "--hide-scrollbars",
+      `--window-size=${viewportWidth},900`,
+      "--virtual-time-budget=2000",
+      "--dump-dom",
+      `file://${page}`,
+    ]);
+    const match = /<pre id="layout">([^<]*)<\/pre>/.exec(stdout);
+    if (match?.[1] === undefined) throw new Error(stdout.slice(0, 500));
+    return JSON.parse(match[1].replaceAll("&quot;", '"')) as StickyParentLayout;
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+interface NestedPinLayout {
+  rowStateHeight: number;
+  tier0: { top: number; bottom: number };
+  tier1: { top: number; bottom: number };
+  tier1Visible: boolean;
+}
+
+const NESTED_PIN_SCRIPT = `
+const scroller = document.getElementById("scroller");
+const tier0 = document.querySelector("[data-sidebar-sticky-tier]:not(#tier1)");
+const tier1 = document.getElementById("tier1");
+const rowState = tier0.querySelector("[data-sidebar-thread-row-state]");
+const rowStateHeight = rowState.getBoundingClientRect().height;
+const growingRowHeight = rowState.closest("[data-sidebar-rename-row]").getBoundingClientRect().height;
+tier1.style.setProperty("--bb-sidebar-sticky-parent-offset", "calc(" + growingRowHeight + "px - 1 * var(--bb-sidebar-sticky-row-height))");
+scroller.scrollTop = 400;
+const origin = scroller.getBoundingClientRect().top;
+const box = (element) => {
+  const rect = element.getBoundingClientRect();
+  return { top: rect.top - origin, bottom: rect.bottom - origin };
+};
+const tier1Box = tier1.getBoundingClientRect();
+const hit = document.elementFromPoint(tier1Box.left + 40, tier1Box.top + tier1Box.height / 2);
+document.getElementById("layout").textContent = JSON.stringify({
+  rowStateHeight,
+  tier0: box(tier0),
+  tier1: box(tier1),
+  tier1Visible: hit !== null && tier1.contains(hit),
+});
+`;
+
+async function measureNestedPinLayout(
+  rowHtml: string,
+  viewportWidth: number,
+): Promise<NestedPinLayout> {
+  const dir = await mkdtemp(join(tmpdir(), "bb-nested-pin-"));
+  try {
+    const page = join(dir, "nested.html");
+    const themeCss = await readFile(
+      join(process.cwd(), "../../apps/app/src/components/ui/theme.css"),
+      "utf8",
+    );
+    const children = Array.from(
+      { length: 30 },
+      (_, index) => `<div style="height:1.75rem">child ${index}</div>`,
+    ).join("");
+    await writeFile(
+      page,
+      `<!doctype html><html><head><meta name="viewport" content="width=device-width"><style>
+@layer theme, base, components, utilities;
+:root{--bb-sidebar-row-height:1.75rem;--bb-sidebar-row-height-coarse:2.5rem;--sidebar:#fafafa;--sidebar-accent:#e4e4e7;--timeline-accent:#2563eb}
+*,::before,::after{box-sizing:border-box}
+body{margin:0}
+${pluginCss ?? ""}
+${themeCss}
+[data-testid][data-thread-id],.group0>div:first-child{display:contents}
+</style></head><body>
+<div data-bb-plugin-root style="width:${viewportWidth}px">
+<div id="scroller" style="height:240px;overflow:auto">
+<div data-sidebar-sticky-stack style="--bb-sidebar-sticky-parent-base-top:0px">
+<div class="group0">${rowHtml}<div><div>
+<div data-sidebar-sticky-tier="parent" id="tier1" class="bg-sidebar" style="--bb-sidebar-sticky-parent-level:1">Level-1 parent</div>${children}</div>${children}</div></div>
+</div></div></div>
+<pre id="layout"></pre>
+<script>${NESTED_PIN_SCRIPT}</script>
+</body></html>`,
+    );
+    const { stdout } = await execFileAsync(chromiumPath ?? "", [
+      "--headless",
+      "--no-sandbox",
+      "--disable-gpu",
+      ...CHROMIUM_QUIET_FLAGS,
+      "--hide-scrollbars",
+      `--window-size=${viewportWidth},400`,
+      "--virtual-time-budget=2000",
+      "--dump-dom",
+      `file://${page}`,
+    ]);
+    const match = /<pre id="layout">([^<]*)<\/pre>/.exec(stdout);
+    if (match?.[1] === undefined) throw new Error(stdout.slice(0, 500));
+    return JSON.parse(match[1].replaceAll("&quot;", '"')) as NestedPinLayout;
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+describe.skipIf(
+  pluginCss === null || (chromiumPath === null && !process.env.CI),
+)("ThreadRow row-state layout", () => {
+  it("has a Chromium binary to measure layout with", () => {
+    expect(chromiumPath).not.toBeNull();
+  });
+
+  const VIEWPORTS = [
+    { name: "desktop", width: 280, isCompact: false },
+    { name: "compact 390px", width: 390, isCompact: true },
+  ];
+
+  async function layoutFor(
+    progress: { value: number; label?: string } | null,
+    viewport: (typeof VIEWPORTS)[number],
+  ): Promise<RowLayout> {
+    const { container } = renderThreadRow({
+      thread: createThread({
+        experimental_rowState: { statuses: {}, progress },
+      }),
+      isCompactViewport: viewport.isCompact,
+      options: { ...DEFAULT_OPTIONS, isCompact: viewport.isCompact },
+    });
+    return measureRowLayout(container.innerHTML, viewport.width);
+  }
+
+  it.each(VIEWPORTS)(
+    "renders the 60% progress bar at a real width on $name",
+    async (viewport) => {
+      const layout = await layoutFor({ value: 0.6 }, viewport);
+
+      expect(layout.innerWidth).toBeGreaterThan(0);
+      expect(layout.link.width).toBeGreaterThan(0);
+      expect(layout.bar).not.toBeNull();
+      expect(layout.bar?.width).toBeGreaterThan(viewport.width / 2);
+      expect(layout.bar?.height).toBeGreaterThan(0);
+      expect((layout.bar?.fill ?? 0) / (layout.bar?.width ?? 1)).toBeCloseTo(
+        0.6,
+        1,
+      );
+      expect(layout.bar?.bottom).toBeLessThanOrEqual(layout.row.bottom);
+      expect(layout.bar?.fillBackground).not.toBe("rgba(0, 0, 0, 0)");
+    },
+  );
+
+  it.each(VIEWPORTS)(
+    "keeps the row title readable beside a status chip and label on $name",
+    async (viewport) => {
+      const { container } = renderThreadRow({
+        thread: createThread({
+          experimental_rowState: {
+            statuses: { task: { value: "Running" } },
+            progress: { value: 0.6, label: "Writing tests" },
+          },
+        }),
+        isCompactViewport: viewport.isCompact,
+        options: { ...DEFAULT_OPTIONS, isCompact: viewport.isCompact },
+      });
+      const layout = await measureRowLayout(
+        container.innerHTML,
+        viewport.width,
+      );
+
+      expect(layout.link.width).toBeGreaterThan(viewport.width / 3);
+      expect(layout.bar?.width).toBeGreaterThan(viewport.width / 2);
+    },
+  );
+
+  it.each(VIEWPORTS)(
+    "keeps a short status chip content-sized on $name",
+    async (viewport) => {
+      const { container } = renderThreadRow({
+        thread: createThread({
+          experimental_rowState: {
+            statuses: { task: { value: "Running" } },
+            progress: { value: 0.6 },
+          },
+        }),
+        isCompactViewport: viewport.isCompact,
+        options: { ...DEFAULT_OPTIONS, isCompact: viewport.isCompact },
+      });
+      const layout = await measureRowLayout(
+        container.innerHTML,
+        viewport.width,
+      );
+
+      expect(layout.chip?.width).toBeGreaterThan(0);
+      expect(layout.chip?.width).toBeLessThan(layout.row.width / 2);
+      expect(layout.bar?.width).toBeGreaterThan(viewport.width / 2);
+    },
+  );
+
+  it.each(VIEWPORTS)(
+    "truncates a long status chip inside the row on $name",
+    async (viewport) => {
+      const { container } = renderThreadRow({
+        thread: createThread({
+          experimental_rowState: {
+            statuses: {
+              task: { value: "A very long status value ".repeat(8) },
+            },
+            progress: null,
+          },
+        }),
+        isCompactViewport: viewport.isCompact,
+        options: { ...DEFAULT_OPTIONS, isCompact: viewport.isCompact },
+      });
+      const layout = await measureRowLayout(
+        container.innerHTML,
+        viewport.width,
+      );
+
+      expect(layout.chip?.width).toBeGreaterThan(layout.row.width / 2);
+      expect(layout.chip?.left).toBeGreaterThanOrEqual(layout.row.left);
+      expect(layout.chip?.right).toBeLessThanOrEqual(layout.row.right);
+    },
+  );
+
+  it.each(VIEWPORTS)(
+    "keeps a sticky parent row's state inside the row, clear of the next row and under the pointer on $name",
+    async (viewport) => {
+      const { container } = renderThreadRow({
+        thread: createThread({
+          experimental_rowState: {
+            statuses: {
+              task: { value: "WT-GUARD preserve recoverable work" },
+              build: { value: "#138 f49bb0e9 OPEN: chain138.out:unit EXIT=0" },
+            },
+            progress: { value: 0.6, label: "#138 merge pipeline" },
+          },
+        }),
+        isCompactViewport: viewport.isCompact,
+        options: {
+          kind: "parent",
+          depth: 1,
+          isCompact: viewport.isCompact,
+          isCollapsed: false,
+          childCount: 1,
+          childActivity: NO_COLLAPSED_CHILD_ACTIVITY,
+          stickyLevel: 0,
+          onToggleCollapsed: vi.fn(),
+        },
+      });
+      const layout = await measureStickyParentLayout(
+        container.innerHTML,
+        viewport.width,
+      );
+
+      expect(layout.rowState.top).toBeGreaterThanOrEqual(layout.tier.top - 0.5);
+      expect(layout.rowState.bottom).toBeLessThanOrEqual(
+        layout.tier.bottom + 0.5,
+      );
+      expect(layout.tier.bottom).toBeLessThanOrEqual(layout.next.top + 0.5);
+      expect(layout.rowStateHitsRow).toBe(true);
+    },
+  );
+
+  it.each(VIEWPORTS)(
+    "keeps a nested sticky parent visible below a pinned parent that has row state on $name",
+    async (viewport) => {
+      const { container } = renderThreadRow({
+        thread: createThread({
+          experimental_rowState: {
+            statuses: {
+              task: { value: "WT-GUARD preserve recoverable work" },
+              build: { value: "#138 f49bb0e9 OPEN: chain138.out:unit EXIT=0" },
+            },
+            progress: { value: 0.6, label: "#138 merge pipeline" },
+          },
+        }),
+        isCompactViewport: viewport.isCompact,
+        options: {
+          kind: "parent",
+          depth: 1,
+          isCompact: viewport.isCompact,
+          isCollapsed: false,
+          childCount: 1,
+          childActivity: NO_COLLAPSED_CHILD_ACTIVITY,
+          stickyLevel: 0,
+          onToggleCollapsed: vi.fn(),
+        },
+      });
+      const layout = await measureNestedPinLayout(
+        container.innerHTML,
+        viewport.width,
+      );
+
+      expect(layout.rowStateHeight).toBeGreaterThan(40);
+      expect(layout.tier1.top).toBeGreaterThanOrEqual(
+        layout.tier0.bottom - 0.5,
+      );
+      expect(layout.tier1.top).toBeLessThanOrEqual(layout.tier0.bottom + 4);
+      expect(layout.tier1Visible).toBe(true);
+    },
+  );
+
+  it("renders no progress bar for 0.0 or null progress", () => {
+    const zero = renderThreadRow({
+      thread: createThread({
+        experimental_rowState: { statuses: {}, progress: { value: 0 } },
+      }),
+    });
+    expect(zero.container.querySelector("[role=progressbar]")).toBeNull();
+    expect(
+      zero.container.querySelector("[data-sidebar-thread-row-state]"),
+    ).toBeNull();
+    cleanup();
+
+    const none = renderThreadRow({
+      thread: createThread({
+        experimental_rowState: { statuses: {}, progress: null },
+      }),
+    });
+    expect(none.container.querySelector("[role=progressbar]")).toBeNull();
+    expect(
+      none.container.querySelector("[data-sidebar-thread-row-state]"),
+    ).toBeNull();
   });
 });

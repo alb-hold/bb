@@ -59,6 +59,33 @@ describe("openSignInWindow", () => {
     expect(close).toHaveBeenCalledWith(secondRequest.id);
   });
 
+  it("opens a sign-in window without crypto.randomUUID", () => {
+    const original = crypto.randomUUID;
+    Object.defineProperty(crypto, "randomUUID", {
+      configurable: true,
+      value: undefined,
+    });
+    const open = vi.fn(
+      async (
+        request: Parameters<NonNullable<BbDesktopApi["openSignInWindow"]>>[0],
+      ) => {
+        requests.push(request.id);
+        return { reason: "closed" as const };
+      },
+    );
+    const requests: string[] = [];
+    installDesktop({ openSignInWindow: open, closeSignInWindow: () => {} });
+    try {
+      expect(openSignInWindow({ url: "https://claude.ai/oauth/authorize" })).not.toBeNull();
+      expect(requests[0]).toMatch(/^[0-9a-f-]{36}$/);
+    } finally {
+      Object.defineProperty(crypto, "randomUUID", {
+        configurable: true,
+        value: original,
+      });
+    }
+  });
+
   it("settles closed when the shell rejects the request", async () => {
     installDesktop({
       openSignInWindow: async () => {

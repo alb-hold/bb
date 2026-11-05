@@ -9,6 +9,7 @@ import {
   resolveExplicitIdFlag,
   resolveServerUrl,
 } from "../context-env.js";
+import { missingThreadFlagHint } from "../context-hints.js";
 
 describe("context-env", () => {
   beforeEach(() => {
@@ -23,6 +24,12 @@ describe("context-env", () => {
   it("requires project and thread context when missing", () => {
     expect(() => requireThreadId(undefined)).toThrow(
       "Missing thread ID. Pass <threadId>.",
+    );
+  });
+
+  it("suggests --all when listing thread IDs without thread context", () => {
+    expect(missingThreadFlagHint()).toBe(
+      "List thread IDs with `bb thread list --all` to include archived threads.",
     );
   });
 

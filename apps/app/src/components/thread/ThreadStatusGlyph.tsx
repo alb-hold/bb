@@ -31,27 +31,21 @@ const WAITING_ICONS = {
 
 function ThreadDraftIndicator({
   hideIdleLabel = false,
-  isWorking,
   size,
 }: {
   hideIdleLabel?: boolean;
-  isWorking: boolean;
   size: "default" | "compact";
 }) {
-  const label = getThreadListIndicatorLabel(
-    isWorking ? "working-draft" : "draft",
-  );
+  const label = getThreadListIndicatorLabel("draft");
   return (
     <Icon
       name="Edit"
       className={cn(
         "pointer-events-none shrink-0",
         size === "compact" ? "size-3.5" : SIDEBAR_STATUS_ICON_CLASS,
-        isWorking
-          ? ["animate-shine-icon", SIDEBAR_WORKING_STATUS_COLOR_CLASS]
-          : "text-muted-foreground",
+        "text-muted-foreground",
       )}
-      {...(!isWorking && hideIdleLabel
+      {...(hideIdleLabel
         ? { "aria-hidden": true }
         : { "aria-label": label ?? undefined })}
     />
@@ -115,6 +109,7 @@ export function resolveThreadStatus(
   indicator: ThreadListIndicatorKind,
   rowStatus: PluginComposerThreadRowStatus | null = null,
   archived = false,
+  queuedFailedCount = 0,
 ): ThreadStatusResolution {
   const indicatorKind = archived ? "archived" : indicator;
   const rowStatusIsVisible =
@@ -131,7 +126,7 @@ export function resolveThreadStatus(
       ? rowStatus.label
       : indicatorKind === "archived"
         ? "Archived thread"
-        : getThreadListIndicatorLabel(indicatorKind),
+        : getThreadListIndicatorLabel(indicatorKind, queuedFailedCount),
     indicatorKind,
     rowStatusIsVisible,
   };
@@ -143,6 +138,7 @@ export function ThreadStatusGlyph({
   rowStatus = null,
   hideIdleDraftLabel = false,
   hideAccessibleLabel = false,
+  experimental_queuedFailedCount: queuedFailedCount = 0,
   size = "default",
 }: PluginThreadStatusGlyphProps) {
   const iconSizeClass =
@@ -151,6 +147,7 @@ export function ThreadStatusGlyph({
     indicator,
     rowStatus,
     archived,
+    queuedFailedCount,
   );
 
   if (rowStatusIsVisible && rowStatus) {
@@ -173,6 +170,7 @@ export function ThreadStatusGlyph({
         />
       );
     case "working":
+    case "working-draft":
       return (
         <Icon
           name="Loading"
@@ -212,12 +210,21 @@ export function ThreadStatusGlyph({
         />
       );
     case "unread-error":
-    case "queued-failed":
       return (
         <Icon
           name="CircleX"
           className={cn("text-destructive", iconSizeClass)}
           aria-label={getThreadListIndicatorLabel(kind) ?? undefined}
+        />
+      );
+    case "queued-failed":
+      return (
+        <Icon
+          name="Mail"
+          className={cn("text-warning", iconSizeClass)}
+          aria-label={
+            getThreadListIndicatorLabel(kind, queuedFailedCount) ?? undefined
+          }
         />
       );
     case "waiting-for-input":
@@ -229,8 +236,14 @@ export function ThreadStatusGlyph({
           aria-label={getThreadListIndicatorLabel(kind) ?? undefined}
         />
       );
-    case "working-draft":
-      return <ThreadDraftIndicator isWorking size={size} />;
+    case "activity-unreported":
+      return (
+        <Icon
+          name="Minus"
+          className={cn("text-muted-foreground/75", iconSizeClass)}
+          aria-label={getThreadListIndicatorLabel(kind) ?? undefined}
+        />
+      );
     case "workflow":
     case "background-agent":
     case "background-command":
@@ -261,11 +274,7 @@ export function ThreadStatusGlyph({
       );
     case "draft":
       return (
-        <ThreadDraftIndicator
-          hideIdleLabel={hideIdleDraftLabel}
-          isWorking={false}
-          size={size}
-        />
+        <ThreadDraftIndicator hideIdleLabel={hideIdleDraftLabel} size={size} />
       );
     case "unread-success":
       return (

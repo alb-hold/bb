@@ -1,7 +1,8 @@
 import { z } from "zod";
 import { convertLegacyStoredThreadEvent } from "./legacy-thread-events.js";
 import { maskResolvedProviderEnvironment } from "./provider-environment.js";
-import { threadEventSchema, threadEventTypeSchema } from "./provider-event.js";
+import { threadEventSchema } from "./provider-event.js";
+import { threadEventTypeSchema } from "./thread-event-types.js";
 import {
   systemMessageKindSchema,
   systemMessageSubjectSchema,

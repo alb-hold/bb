@@ -81,7 +81,9 @@ export function threadListEntry(
     environmentProviderId: null,
     environmentIsWorktree: null,
     environmentWorkspaceDisplayKind: "other",
+    nativeTerminal: false,
     queuedWork: "none",
+    queuedFailedCount: 0,
     rowState: { statuses: {}, progress: null },
     listIndicator: busy ? "working" : "none",
   };
@@ -94,7 +96,6 @@ export function threadResponse(
   const {
     activity: _activity,
     pinSortKey: _pinSortKey,
-    hasPendingInteraction: _hasPendingInteraction,
     environmentHostId: _environmentHostId,
     environmentName: _environmentName,
     environmentBranchName: _environmentBranchName,
@@ -103,12 +104,14 @@ export function threadResponse(
     environmentIsWorktree: _environmentIsWorktree,
     environmentWorkspaceDisplayKind: _environmentWorkspaceDisplayKind,
     queuedWork: _queuedWork,
+    queuedFailedCount: _queuedFailedCount,
     listIndicator: _listIndicator,
     rowState: _rowState,
     ...thread
   } = threadListEntry(view, now);
   return {
     ...thread,
+    nativeTerminal: thread.nativeTerminal,
     activeBackgroundAgentCount: 0,
     canRestoreEnvironment: false,
     canEditMessages: true,

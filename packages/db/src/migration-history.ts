@@ -54,6 +54,18 @@ export const compatibleMigrationHashes = [
     appliedWhen: 1792470678777,
     hash: "43e7562f9de43436a9ba4c2ab77246d0b550f47a8e5190e1c2956db123263658",
   },
+  {
+    tag: "0145_terminal_sessions_status_thread_index",
+    when: 1792208936004,
+    appliedWhen: 1792693676447,
+    hash: "a26f91de1b18228b2739eded945ee5c7bf40886efc1a78818dee7f14a351f32d",
+  },
+  {
+    tag: "0146_diff_viewed_files",
+    when: 1792453324528,
+    appliedWhen: 1792693676447,
+    hash: "a26f91de1b18228b2739eded945ee5c7bf40886efc1a78818dee7f14a351f32d",
+  },
 ] as const satisfies readonly CompatibleMigrationHash[];
 
 export const publishedMigrationWhensByTag: ReadonlyMap<string, number> =

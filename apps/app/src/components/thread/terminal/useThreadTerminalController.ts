@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import type {
+  CloseTerminalRequest,
   TerminalCreateTarget,
   TerminalSession,
 } from "@bb/server-contract";
+import { sdk } from "@/lib/sdk";
 import {
   terminalQueryScopeForTarget,
   useCloseTerminal,
@@ -18,11 +20,10 @@ import {
 import { applyTerminalSessionUpsert } from "@/hooks/cache-owners/terminal-cache-owner";
 import {
   isVisibleTerminalSession,
-  shouldCloseUnretainedDisconnectedTerminalSession,
+  omitSupersededDisconnectedSessions,
   shouldShowRetainedTerminalSession,
 } from "@/lib/terminal-session-visibility";
 import {
-  useMountedTerminalIds,
   useMountedTerminalRegistration,
 } from "./mounted-terminals";
 import {
@@ -30,6 +31,7 @@ import {
   type ThreadTerminalTarget,
 } from "./terminal-scope";
 import { normalizeTerminalTitle } from "./thread-terminal-title";
+import { useTerminalStart, type TerminalStart } from "./pending-terminals";
 import {
   clearTerminalCurrentCwd,
   setTerminalCurrentCwd,
@@ -37,11 +39,17 @@ import {
   terminalCwdTitle,
   terminalSpawnCwd,
 } from "./terminal-shell-state";
+import {
+  cancelPendingTerminalProgressTimeouts,
+  queueThreadProgressUpdate,
+  registerPendingTerminalProgressTimeout,
+} from "@/lib/terminal-progress-updates";
 
 export const DEFAULT_TERMINAL_COLS = 100;
 export const DEFAULT_TERMINAL_ROWS = 30;
 const EMPTY_TERMINAL_SESSIONS: readonly TerminalSession[] = [];
 const TERMINAL_TITLE_RENAME_DEBOUNCE_MS = 250;
+const TERMINAL_PROGRESS_UPDATE_INTERVAL_MS = 250;
 
 export type { ThreadTerminalTarget };
 
@@ -63,6 +71,11 @@ export interface ThreadTerminalController {
   handleActiveTerminalCwdChange: (cwd: string) => void;
   handleActiveTerminalSessionChange: (session: TerminalSession) => void;
   handleActiveTerminalTitleChange: ThreadTerminalTitleChangeHandler;
+  handleActiveTerminalProgressChange: (
+    progress: number | null,
+    outputSeq?: number,
+    terminalId?: string,
+  ) => void;
   handleActiveTerminalUserInput: ThreadTerminalActionHandler;
   handleCreateTerminal: ThreadTerminalActionHandler;
   handleSelectTerminal: ThreadTerminalIdHandler;
@@ -71,6 +84,8 @@ export interface ThreadTerminalController {
   isPanelOpen: boolean;
   shouldMountTerminalView: boolean;
   shouldRetainActiveTerminalView: boolean;
+  start: TerminalStart | null;
+  terminalsLoading: boolean;
   terminalBodyMessage: string;
 }
 
@@ -217,10 +232,24 @@ export function useThreadTerminalController({
   const uiCreatedTerminalIdsRef = useRef<Set<string>>(new Set());
   const terminalCwdsRef = useRef(new Map<string, string>());
   const terminalCwdTitlesRef = useRef(new Map<string, string>());
-  const userSetTerminalTitlesRef = useRef(new Set<string>());
+  const terminalProgramTitlesRef = useRef(new Map<string, string>());
+  const lastProgressUpdateRef = useRef<{
+    threadId: string;
+    terminalId: string;
+    value: number | null;
+    sentAt: number;
+  } | null>(null);
+  const pendingProgressUpdateRef = useRef<{
+    threadId: string;
+    terminalId: string;
+    value: number;
+    outputSeq: number | undefined;
+  } | null>(null);
+  const progressUpdateTimeoutRef = useRef<number | null>(null);
+  const cancelPendingProgressTimeoutRef = useRef<(() => void) | null>(null);
+  const unregisterPendingProgressTimeoutRef = useRef<(() => void) | null>(null);
   const dirtyTerminalIdsRef = useRef<Set<string>>(new Set());
   const closingCleanTerminalIdsRef = useRef<Set<string>>(new Set());
-  const closingDisconnectedTerminalIdsRef = useRef<Set<string>>(new Set());
   const latestRequestedTitleRenameRef =
     useRef<TerminalTitleRenameRequest | null>(null);
   const pendingTitleRenameTimeoutRef =
@@ -246,6 +275,7 @@ export function useThreadTerminalController({
   const createTerminal = useCreateTerminal();
   const closeTerminalMutation = useCloseTerminal();
   const renameTerminal = useRenameTerminal();
+  const start = useTerminalStart(terminalId ?? "");
   const isCreateTerminalPending = createTerminal.isPending;
   const isCloseTerminalPending = closeTerminalMutation.isPending;
   const closingTerminalVariables = closeTerminalMutation.variables;
@@ -275,7 +305,7 @@ export function useThreadTerminalController({
   );
   const visibleSessions = useMemo(
     () =>
-      sessions.filter((session) =>
+      omitSupersededDisconnectedSessions(sessions).filter((session) =>
         shouldShowRetainedTerminalSession({
           retainedTerminalIds: paneRetainedTerminalIds,
           session,
@@ -299,7 +329,6 @@ export function useThreadTerminalController({
     scopeKey: terminalTargetId,
     terminalId: activeTerminalId,
   });
-  const mountedTerminalIds = useMountedTerminalIds(terminalTargetId);
   const shouldRetainActiveTerminalView =
     activeSession?.status === "disconnected" &&
     activeSession.id === retainedTerminalViewId;
@@ -360,6 +389,182 @@ export function useThreadTerminalController({
     };
   }, []);
 
+  const sendTerminalProgressUpdate = useCallback(
+    (
+      threadId: string,
+      terminalId: string,
+      value: number | null,
+      outputSeq: number | undefined,
+    ) => {
+      const request =
+        value === null
+          ? {
+              threadId,
+              terminalId,
+              action: "progress-clear" as const,
+              ...(outputSeq === undefined ? {} : { outputSeq }),
+            }
+          : {
+              threadId,
+              terminalId,
+              action: "progress-set" as const,
+              progress: { value },
+              ...(outputSeq === undefined ? {} : { outputSeq }),
+            };
+      lastProgressUpdateRef.current = {
+        threadId,
+        terminalId,
+        value,
+        sentAt: Date.now(),
+      };
+      void queueThreadProgressUpdate(threadId, () =>
+        sdk.threads.experimental_updateRowState(request),
+      )
+        .catch(() => undefined);
+    },
+    [],
+  );
+
+  const cancelPendingProgressTimeout = useCallback(() => {
+    const cancel = cancelPendingProgressTimeoutRef.current;
+    if (cancel !== null) {
+      cancel();
+      return;
+    }
+    if (progressUpdateTimeoutRef.current !== null) {
+      window.clearTimeout(progressUpdateTimeoutRef.current);
+      progressUpdateTimeoutRef.current = null;
+    }
+    pendingProgressUpdateRef.current = null;
+  }, []);
+
+  const clearTerminalProgress = useCallback(
+    (
+      threadId: string | null,
+      terminalId: string | null,
+      outputSeq?: number,
+    ) => {
+      const pendingUpdate = pendingProgressUpdateRef.current;
+      const matchesTarget = (update: {
+        threadId: string;
+        terminalId: string;
+      }) =>
+        (threadId === null || update.threadId === threadId) &&
+        (terminalId === null || update.terminalId === terminalId);
+      const pendingMatches =
+        pendingUpdate !== null && matchesTarget(pendingUpdate);
+      if (pendingMatches) {
+        cancelPendingProgressTimeout();
+      }
+      cancelPendingTerminalProgressTimeouts(threadId, terminalId);
+      if (threadId === null || terminalId === null) return;
+      sendTerminalProgressUpdate(threadId, terminalId, null, outputSeq);
+    },
+    [cancelPendingProgressTimeout, sendTerminalProgressUpdate],
+  );
+
+  const queueTerminalProgressUpdate = useCallback(
+    (
+      threadId: string,
+      terminalId: string,
+      value: number,
+      outputSeq?: number,
+    ) => {
+      const lastUpdate = lastProgressUpdateRef.current;
+      const pendingUpdate = pendingProgressUpdateRef.current;
+      if (
+        pendingUpdate?.threadId === threadId &&
+        pendingUpdate.terminalId === terminalId &&
+        pendingUpdate.value === value
+      ) {
+        return;
+      }
+      if (
+        lastUpdate?.threadId === threadId &&
+        lastUpdate.terminalId === terminalId &&
+        lastUpdate.value === value
+      ) {
+        if (pendingUpdate?.threadId === threadId) {
+          cancelPendingProgressTimeout();
+        }
+        return;
+      }
+
+      const elapsed =
+        lastUpdate?.threadId === threadId
+          ? Date.now() - lastUpdate.sentAt
+          : TERMINAL_PROGRESS_UPDATE_INTERVAL_MS;
+      if (elapsed >= TERMINAL_PROGRESS_UPDATE_INTERVAL_MS) {
+        cancelPendingProgressTimeout();
+        sendTerminalProgressUpdate(threadId, terminalId, value, outputSeq);
+        return;
+      }
+
+      pendingProgressUpdateRef.current = {
+        threadId,
+        terminalId,
+        value,
+        outputSeq,
+      };
+      if (progressUpdateTimeoutRef.current !== null) {
+        const cancel = cancelPendingProgressTimeoutRef.current;
+        if (cancel !== null) {
+          unregisterPendingProgressTimeoutRef.current?.();
+          unregisterPendingProgressTimeoutRef.current =
+            registerPendingTerminalProgressTimeout(
+              threadId,
+              terminalId,
+              cancel,
+            );
+        }
+        return;
+      }
+      let timeoutId = 0;
+      const cancel = () => {
+        window.clearTimeout(timeoutId);
+        if (progressUpdateTimeoutRef.current === timeoutId) {
+          progressUpdateTimeoutRef.current = null;
+        }
+        pendingProgressUpdateRef.current = null;
+        if (cancelPendingProgressTimeoutRef.current === cancel) {
+          cancelPendingProgressTimeoutRef.current = null;
+        }
+        unregisterPendingProgressTimeoutRef.current?.();
+        unregisterPendingProgressTimeoutRef.current = null;
+      };
+      timeoutId = window.setTimeout(() => {
+        progressUpdateTimeoutRef.current = null;
+        if (cancelPendingProgressTimeoutRef.current === cancel) {
+          cancelPendingProgressTimeoutRef.current = null;
+        }
+        unregisterPendingProgressTimeoutRef.current?.();
+        unregisterPendingProgressTimeoutRef.current = null;
+        const nextUpdate = pendingProgressUpdateRef.current;
+        pendingProgressUpdateRef.current = null;
+        if (nextUpdate === null) return;
+        const previousUpdate = lastProgressUpdateRef.current;
+        if (
+          previousUpdate?.threadId === nextUpdate.threadId &&
+          previousUpdate.terminalId === nextUpdate.terminalId &&
+          previousUpdate.value === nextUpdate.value
+        ) {
+          return;
+        }
+        sendTerminalProgressUpdate(
+          nextUpdate.threadId,
+          nextUpdate.terminalId,
+          nextUpdate.value,
+          nextUpdate.outputSeq,
+        );
+      }, TERMINAL_PROGRESS_UPDATE_INTERVAL_MS - elapsed);
+      progressUpdateTimeoutRef.current = timeoutId;
+      cancelPendingProgressTimeoutRef.current = cancel;
+      unregisterPendingProgressTimeoutRef.current =
+        registerPendingTerminalProgressTimeout(threadId, terminalId, cancel);
+    },
+    [cancelPendingProgressTimeout, sendTerminalProgressUpdate],
+  );
+
   const activeSessionId = activeSession?.id;
   const activeSessionInitialCwd = activeSession?.initialCwd;
   const startTerminal = useCallback(() => {
@@ -404,7 +609,6 @@ export function useThreadTerminalController({
       terminalCwdsRef.current.set(activeSession.id, cwd);
       setTerminalCurrentCwd(activeSession.id, cwd);
       if (
-        userSetTerminalTitlesRef.current.has(activeSession.id) ||
         !shouldUseTerminalCwdTitle({
           currentTitle: activeSession.title,
           defaultTitle: ["bash", "zsh", "fish"].includes(activeSession.title)
@@ -412,6 +616,8 @@ export function useThreadTerminalController({
             : "",
           previousCwdTitle:
             terminalCwdTitlesRef.current.get(activeSession.id) ?? null,
+          previousProgramTitle:
+            terminalProgramTitlesRef.current.get(activeSession.id) ?? null,
         })
       ) {
         return;
@@ -430,15 +636,17 @@ export function useThreadTerminalController({
       mode,
       onSettled,
       onSuccess,
+      reason,
       terminalId,
     }: {
       mode: TerminalCloseMode;
       onSettled?: () => void;
       onSuccess?: (session: TerminalSession) => void;
+      reason?: CloseTerminalRequest["reason"];
       terminalId: string;
     }) => {
       closeTerminalMutation.mutate(
-        { mode, terminalId },
+        { mode, reason, terminalId },
         {
           onSettled: () => onSettled?.(),
           onSuccess: (session) => {
@@ -449,48 +657,6 @@ export function useThreadTerminalController({
     },
     [closeTerminalMutation],
   );
-
-  useEffect(() => {
-    if (!isPanelOpen || terminalsQuery.isLoading || terminalsQuery.error) {
-      return;
-    }
-    for (const session of sessions) {
-      if (
-        !shouldCloseUnretainedDisconnectedTerminalSession({
-          retainedTerminalIds: mountedTerminalIds,
-          session,
-        }) ||
-        closingDisconnectedTerminalIdsRef.current.has(session.id)
-      ) {
-        continue;
-      }
-      closingDisconnectedTerminalIdsRef.current.add(session.id);
-      closeTerminal({
-        mode: "force",
-        terminalId: session.id,
-        onSuccess: (closedSession) => {
-          if (closedSession.status !== "exited") {
-            return;
-          }
-          uiCreatedTerminalIdsRef.current.delete(closedSession.id);
-          dirtyTerminalIdsRef.current.delete(closedSession.id);
-          closingCleanTerminalIdsRef.current.delete(closedSession.id);
-          removeFixedTerminalTab(closedSession.id);
-        },
-        onSettled: () => {
-          closingDisconnectedTerminalIdsRef.current.delete(session.id);
-        },
-      });
-    }
-  }, [
-    closeTerminal,
-    isPanelOpen,
-    mountedTerminalIds,
-    removeFixedTerminalTab,
-    sessions,
-    terminalsQuery.error,
-    terminalsQuery.isLoading,
-  ]);
 
   const replaceDisconnectedTerminal = useCallback(
     (terminalId: string) => {
@@ -546,6 +712,7 @@ export function useThreadTerminalController({
       closingCleanTerminalIdsRef.current.add(session.id);
       closeTerminal({
         mode: "if-clean",
+        reason: "client-cleanup",
         terminalId: session.id,
         onSuccess: (closedSession) => {
           if (closedSession.status !== "exited") {
@@ -586,17 +753,18 @@ export function useThreadTerminalController({
   const handleActiveTerminalSessionChange = useCallback(
     (session: TerminalSession) => {
       if (session.status === "exited") {
+        clearTerminalProgress(session.threadId, session.id);
         clearTerminalCurrentCwd(session.id);
         terminalCwdsRef.current.delete(session.id);
         terminalCwdTitlesRef.current.delete(session.id);
-        userSetTerminalTitlesRef.current.delete(session.id);
+        terminalProgramTitlesRef.current.delete(session.id);
         setRetainedExitedSession(session);
         applyTerminalSessionUpsert({ queryClient, session });
         return;
       }
       applyTerminalSessionUpsert({ queryClient, session });
     },
-    [queryClient],
+    [clearTerminalProgress, queryClient],
   );
 
   const handleActiveTerminalUserInput = useCallback(() => {
@@ -605,6 +773,30 @@ export function useThreadTerminalController({
     }
     dirtyTerminalIdsRef.current.add(activeTerminalId);
   }, [activeTerminalId]);
+
+  const handleActiveTerminalProgressChange = useCallback(
+    (progress: number | null, outputSeq?: number, terminalId?: string) => {
+      const threadId = activeSession?.threadId;
+      if (!threadId) return;
+      if (terminalId !== undefined && terminalId !== activeSession.id) return;
+      if (progress === null) {
+        clearTerminalProgress(threadId, activeSession.id, outputSeq);
+        return;
+      }
+      queueTerminalProgressUpdate(
+        threadId,
+        activeSession.id,
+        progress,
+        outputSeq,
+      );
+    },
+    [
+      activeSession?.id,
+      activeSession?.threadId,
+      clearTerminalProgress,
+      queueTerminalProgressUpdate,
+    ],
+  );
 
   const handleActiveTerminalTitleChange: ThreadTerminalTitleChangeHandler =
     useCallback(
@@ -617,7 +809,6 @@ export function useThreadTerminalController({
           return;
         }
         if (
-          userSetTerminalTitlesRef.current.has(activeSession.id) ||
           !shouldUseTerminalCwdTitle({
             currentTitle: activeSession.title,
             defaultTitle: ["bash", "zsh", "fish"].includes(activeSession.title)
@@ -625,11 +816,13 @@ export function useThreadTerminalController({
               : "",
             previousCwdTitle:
               terminalCwdTitlesRef.current.get(activeSession.id) ?? null,
+            previousProgramTitle:
+              terminalProgramTitlesRef.current.get(activeSession.id) ?? null,
           })
         ) {
           return;
         }
-        userSetTerminalTitlesRef.current.add(activeSession.id);
+        terminalProgramTitlesRef.current.set(activeSession.id, normalizedTitle);
 
         const request: TerminalTitleRenameRequest = {
           terminalId: activeSession.id,
@@ -682,15 +875,19 @@ export function useThreadTerminalController({
     ? "Starting terminal..."
     : "Terminals unavailable.";
 
+  const terminalsLoading = terminalsQuery.isLoading;
   const terminalBodyMessage = terminalIsStarting
     ? inactiveTerminalBodyMessage
-    : "No terminals";
+    : terminalsLoading
+      ? "Loading terminals..."
+      : "No terminals";
 
   return {
     activeSession,
     handleActiveTerminalCwdChange,
     handleActiveTerminalSessionChange,
     handleActiveTerminalTitleChange,
+    handleActiveTerminalProgressChange,
     handleActiveTerminalUserInput,
     handleCreateTerminal,
     handleSelectTerminal,
@@ -700,6 +897,8 @@ export function useThreadTerminalController({
     isPanelOpen,
     shouldMountTerminalView,
     shouldRetainActiveTerminalView,
+    start,
+    terminalsLoading,
     terminalBodyMessage,
   };
 }

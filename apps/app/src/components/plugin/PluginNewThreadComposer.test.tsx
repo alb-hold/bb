@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { useContext, useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Provider } from "jotai";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
@@ -61,8 +61,8 @@ import {
   serializeFixedPanelTabsState,
 } from "@/lib/fixed-panel-tabs-state";
 import { buildPluginPaletteActions } from "@/lib/command-palette/palette-plugin-actions";
-import { getActiveThreadPanelOpener } from "./plugin-thread-panel-navigation";
-import { PluginDetailPanelContext } from "./plugin-detail-navigation";
+import { getFocusedAppPanelController } from "@/lib/app-fixed-tab-navigation";
+import { useFixedPanelTabsState } from "@/lib/fixed-panel-tabs";
 import { openPluginDetailsInWorkspace } from "./plugin-detail-opener";
 import { PluginNewThreadComposer } from "./PluginNewThreadComposer";
 import {
@@ -72,7 +72,11 @@ import {
 
 function PanedRootComposeView() {
   return (
-    <DefaultPaneContextProvider onRequestClose={null} navigateInPane={() => {}}>
+    <DefaultPaneContextProvider
+      paneId="main"
+      onRequestClose={null}
+      navigateInPane={() => {}}
+    >
       <RootComposeView />
     </DefaultPaneContextProvider>
   );
@@ -90,6 +94,7 @@ function render(element: ReactNode) {
 }
 
 const mocks = vi.hoisted(() => ({
+  unknownReasoning: false,
   promptBoxProps: [] as Array<Record<string, any>>,
   copyAttachments: vi.fn(),
   uploadAttachment: vi.fn(),
@@ -117,10 +122,15 @@ vi.mock("@/views/RootComposePanelCommandHandlers", () => ({
   }: {
     onClose: () => boolean;
   }) => {
-    const details = useContext(PluginDetailPanelContext);
+    const { secondary } = useFixedPanelTabsState("root-compose", null);
+    const active = secondary.tabs.find(
+      (tab) => tab.id === secondary.activeTabId,
+    );
     return (
       <button
-        data-active-detail={details?.activePluginId ?? ""}
+        data-active-detail={
+          active?.kind === "plugin-detail" ? active.detailKey : ""
+        }
         onClick={onClose}
       >
         Close panel command
@@ -339,21 +349,31 @@ vi.mock("@/hooks/queries/system-queries", () => ({
                 displayName: "GPT-5.6",
                 isDefault: true,
                 sessionOptions: mocks.modelSessionOptions,
-                supportedReasoningEfforts: [
-                  { reasoningEffort: "low" },
-                  { reasoningEffort: "medium" },
-                  { reasoningEffort: "high" },
-                ],
+                reasoningDiscovery: mocks.unknownReasoning
+                  ? ("unknown" as const)
+                  : ("known" as const),
+                supportedReasoningEfforts: mocks.unknownReasoning
+                  ? []
+                  : [
+                      { reasoningEffort: "low" },
+                      { reasoningEffort: "medium" },
+                      { reasoningEffort: "high" },
+                    ],
               },
               {
                 model: "gpt-5.6-sol",
                 displayName: "GPT-5.6 Sol",
                 isDefault: false,
                 sessionOptions: mocks.modelSessionOptions,
-                supportedReasoningEfforts: [
-                  { reasoningEffort: "medium" },
-                  { reasoningEffort: "high" },
-                ],
+                reasoningDiscovery: mocks.unknownReasoning
+                  ? ("unknown" as const)
+                  : ("known" as const),
+                supportedReasoningEfforts: mocks.unknownReasoning
+                  ? []
+                  : [
+                      { reasoningEffort: "medium" },
+                      { reasoningEffort: "high" },
+                    ],
               },
             ],
             selectedOnlyModels: [],
@@ -365,7 +385,7 @@ vi.mock("@/hooks/queries/system-queries", () => ({
         },
 }));
 
-vi.mock("@/hooks/queries/thread-queries", () => ({
+vi.mock("@/hooks/queries/thread-panel-queries", () => ({
   useThreadStorageFiles: () => ({
     data: undefined,
     error: null,
@@ -420,27 +440,15 @@ vi.mock("@/hooks/mutations/project-mutations", () => ({
   }),
 }));
 
-vi.mock("@/hooks/usePromptMentions", () => ({
-  usePromptMentions: () => ({
-    triggers: [],
-    suggestions: [],
-    isLoading: false,
-    isError: false,
-    setQuery: vi.fn(),
-  }),
-}));
+vi.mock("@/hooks/usePromptMentions", async () =>
+  (await import("@/test/fixtures/composer-search")).fakePromptMentionsModule(),
+);
 
-vi.mock("@/hooks/useCommandSuggestions", () => ({
-  useCommandSuggestions: () => ({
-    triggers: [],
-    suggestions: [],
-    isLoading: false,
-    isError: false,
-    hasMore: false,
-    isLoadingMore: false,
-    loadMore: vi.fn(),
-  }),
-}));
+vi.mock("@/hooks/useCommandSuggestions", async () =>
+  (
+    await import("@/test/fixtures/composer-search")
+  ).fakeCommandSuggestionsModule(),
+);
 
 vi.mock("@/hooks/useQuickCreateProject", () => ({
   useQuickCreateProjectController: () => ({
@@ -686,9 +694,17 @@ const STORED_REQUEST: NewThreadRequest = {
   input: [{ type: "text", text: "review every PR for slop", mentions: [] }],
 };
 
+const ignoreReportedSubmitError = () => {};
+
+function pressSubmit(): void {
+  void Promise.resolve(latestPromptBoxProps().onSubmit()).catch(
+    ignoreReportedSubmitError,
+  );
+}
+
 async function submit(): Promise<void> {
   await act(async () => {
-    latestPromptBoxProps().onSubmit();
+    pressSubmit();
   });
 }
 
@@ -729,6 +745,7 @@ describe("PluginNewThreadComposer seeding", () => {
   });
 
   afterEach(() => {
+    mocks.unknownReasoning = false;
     cleanup();
     vi.restoreAllMocks();
   });
@@ -938,6 +955,27 @@ describe("PluginNewThreadComposer seeding", () => {
     });
     expect(window.localStorage.getItem("bb.promptbox.machine-proj_1-1")).toBe(
       "host_2",
+    );
+  });
+
+  it("preserves the seeded reasoning preference when the model's levels are unknown", async () => {
+    mocks.unknownReasoning = true;
+    const submitted: NewThreadRequest[] = [];
+    renderComposer(
+      STORED_REQUEST,
+      (request) => {
+        submitted.push(request);
+      },
+      "unknown-reasoning",
+    );
+    await waitFor(() => {
+      expect(latestPromptBoxProps().disabled).toBe(false);
+    });
+    await submit();
+    expect(submitted).toHaveLength(1);
+    expect(submitted[0]?.reasoningLevel).toBe(STORED_REQUEST.reasoningLevel);
+    expect(submitted[0]?.executionInputSources?.reasoningLevel).toBe(
+      STORED_REQUEST.executionInputSources?.reasoningLevel,
     );
   });
 
@@ -1221,10 +1259,11 @@ describe("PluginNewThreadComposer seeding", () => {
       );
     });
     const host = latestPromptBoxProps().pluginComposerHost;
+    const submitAsEnter = latestPromptBoxProps().onSubmit;
     view.unmount();
     host.setDraft({ ...host.getCurrent(), text: "Background transcript" });
     await act(async () => {
-      await host.submit({ experimental_data: null }, undefined);
+      await submitAsEnter();
     });
     expect(submitted).toEqual([
       {
@@ -1274,10 +1313,7 @@ describe("PluginNewThreadComposer seeding", () => {
       data: { kind: "draft" } as const,
     };
     await act(async () => {
-      await latestPromptBoxProps().pluginComposerHost.submit(
-        { experimental_data: pluginSubmission.data },
-        pluginSubmission,
-      );
+      await latestPromptBoxProps().onSubmit({ pluginSubmission });
     });
 
     expect(submitted).toHaveLength(1);
@@ -1305,10 +1341,7 @@ describe("PluginNewThreadComposer seeding", () => {
       if (mode === "ordinary") await submit();
       else
         await act(async () => {
-          await latestPromptBoxProps().pluginComposerHost.submit(
-            { sendAt: Date.now() },
-            undefined,
-          );
+          await latestPromptBoxProps().onSubmit({ sendAt: Date.now() });
         });
       await waitFor(() => expect(submitted).toHaveLength(1));
       expect(submitted[0]).toMatchObject({
@@ -1708,10 +1741,14 @@ describe("PluginNewThreadComposer seeding", () => {
           defaultShortcut: null,
           id: "inspect",
           title: "Inspect project",
-          run: ({ openPanel }) => {
+          run: ({ experimental_panel }) => {
             accepted.push(
-              openPanel({
-                actionId: "inspect-project",
+              experimental_panel.openTab({
+                tab: {
+                  id: "inspect-project",
+                  context: { kind: "thread" },
+                  availability: "action",
+                },
                 title: "Inspect current project",
                 params: { section: "changes" },
               }),
@@ -1721,7 +1758,7 @@ describe("PluginNewThreadComposer seeding", () => {
       ],
       threadId: null,
       projectId: null,
-      openThreadPanel: getActiveThreadPanelOpener(),
+      panel: getFocusedAppPanelController(),
     });
     await act(async () => {
       command.run();
@@ -1749,7 +1786,7 @@ describe("PluginNewThreadComposer seeding", () => {
     ]);
     expect(panel.secondary.activeTabId).toBe(panel.secondary.tabs[0].id);
     view.unmount();
-    expect(getActiveThreadPanelOpener()).toBeNull();
+    expect(getFocusedAppPanelController()).toBeNull();
   });
 
   it("renders the root composer with a loading project picker before the sidebar bootstrap settles", () => {
@@ -2176,8 +2213,8 @@ describe("PluginNewThreadComposer seeding", () => {
     });
 
     act(() => {
-      latestPromptBoxProps().onSubmit();
-      latestPromptBoxProps().onSubmit();
+      pressSubmit();
+      pressSubmit();
     });
     expect(onSubmit).toHaveBeenCalledTimes(1);
     expect(latestPromptBoxProps().value).toBe("");
@@ -2200,7 +2237,9 @@ describe("PluginNewThreadComposer seeding", () => {
       expect(latestPromptBoxProps().disabled).toBe(false);
     });
 
-    act(() => latestPromptBoxProps().onSubmit());
+    act(() => {
+      pressSubmit();
+    });
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
     expect(latestPromptBoxProps().value).toBe("");
     await act(async () => {
@@ -2225,7 +2264,9 @@ describe("PluginNewThreadComposer seeding", () => {
       expect(latestPromptBoxProps().disabled).toBe(false);
     });
 
-    act(() => latestPromptBoxProps().onSubmit());
+    act(() => {
+      pressSubmit();
+    });
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
     expect(latestPromptBoxProps().value).toBe("");
     act(() => latestPromptBoxProps().onChange("next thread", []));

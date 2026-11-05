@@ -1,3 +1,5 @@
+import { parseApplicationUrl } from "@bb/domain/application-url";
+import { openApplicationUrl, applicationLinksEnabled } from "./application-url";
 import {
   createContext,
   useCallback,
@@ -31,6 +33,10 @@ const InAppBrowserUrlOpenContext = createContext<OpenInAppBrowserUrl | null>(
 );
 
 export function openUrlInExternalBrowser(url: string): void {
+  if (parseApplicationUrl(url) !== null) {
+    openApplicationUrl(url);
+    return;
+  }
   const desktopInfo = getBbDesktopInfo();
   if (desktopInfo !== null) {
     desktopInfo.openExternalUrl(url);
@@ -76,14 +82,17 @@ function useOpenUrlByPreference(): (url: string) => boolean {
     openInAppBrowser !== null && isDesktopBrowserAvailable();
 
   return useCallback(
-    (url: string) =>
-      openUrlByPreference({
+    (url: string) => {
+      if (parseApplicationUrl(url) !== null && !applicationLinksEnabled())
+        return false;
+      return openUrlByPreference({
         desktopBrowserAvailable,
         openExternalBrowser: openUrlInExternalBrowser,
         openInAppBrowser: openInAppBrowser ?? openUrlInExternalBrowser,
         openLinksInAppBrowser,
         url,
-      }),
+      });
+    },
     [desktopBrowserAvailable, openInAppBrowser, openLinksInAppBrowser],
   );
 }

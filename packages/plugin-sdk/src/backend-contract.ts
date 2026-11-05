@@ -1,9 +1,5 @@
-import type { EnvironmentRemoval } from "@bb/domain";
-import type { MachineBootstrapApi } from "./machine-bootstrap.js";
-import type Database from "better-sqlite3";
-import type { Context } from "hono";
-import type * as z from "zod";
 import type {
+  EnvironmentRemoval,
   Environment,
   Host,
   PermissionMode,
@@ -22,6 +18,10 @@ import type {
   ThreadTurnInitiator,
   WorkspaceProvisionType,
 } from "@bb/domain";
+import type { MachineBootstrapApi } from "./machine-bootstrap.js";
+import type Database from "better-sqlite3";
+import type { Context } from "hono";
+import type * as z from "zod";
 import type { ProviderFork } from "@bb/domain/provider-fork";
 import type {
   BbSdk,
@@ -255,6 +255,14 @@ export interface PluginTurnFailedEvent {
    * A policy caps its own retries by comparing against this.
    */
   attemptNumber: number;
+  /**
+   * The plugin that sent the failed turn's message through
+   * `bb.sdk.threads.send` or `bb.sdk.threads.spawn`, or null when a user, an
+   * agent, or core sent it. A retry is sent by core, so a retry's failure
+   * reports null. A retry policy uses this to ask the sender whether it
+   * wants the turn re-run.
+   */
+  originPluginId: string | null;
 }
 
 /**
@@ -881,6 +889,18 @@ export interface PluginHttp {
 }
 
 export interface PluginRpc {
+  /** Run a producer once per distinct watched read until its last client leaves. Register after the method. Abort stops the producer on unwatch or plugin disposal. */
+  experimental_whileWatched(
+    method: string,
+    handler: (
+      read: { input: JsonValue } | { key: string },
+      signal: AbortSignal,
+    ) => void | Promise<void>,
+  ): void;
+  /** Refresh reads whose contract tags overlap this nonempty list. */
+  experimental_invalidate(tags: readonly string[]): void;
+  /** Refresh every read of this plugin, including untagged reads. */
+  experimental_invalidateAll(): void;
   /**
    * Register a Standard Schema-driven rpc contract and its inferred handlers,
    * served at POST
@@ -889,7 +909,9 @@ export interface PluginRpc {
    * serialization. The response is `{ ok: true, result }` or
    * `{ ok: false, error: { code, message, issues? } }`. Each handler gets
    * the call's context as its second argument; `experimental_caller` names
-   * the plugin that called through `bb.sdk.plugins.callRpc`, or `client`.
+   * the plugin that called through `bb.sdk.plugins.callRpc`, or `client`,
+   * and `experimental_signal` aborts when the caller stops waiting or this
+   * plugin instance is reloaded, disabled or removed.
    */
   register<Contract extends PluginRpcContract>(
     contract: Contract,
@@ -956,7 +978,10 @@ export interface PluginCliContext {
   threadId?: string;
   projectId?: string;
   experimental_stdinInputs?: Readonly<Record<string, string>>;
-  /** Aborted when the invoking CLI HTTP request disconnects. */
+  /**
+   * Aborted when the invoking CLI HTTP request disconnects or this plugin
+   * instance is reloaded, disabled or removed.
+   */
   signal?: AbortSignal;
 }
 
@@ -1025,7 +1050,7 @@ export interface PluginCliResult {
  * Maximum combined UTF-8 bytes accepted from plugin CLI stdout and stderr.
  * This is the shared source of truth for production and the testing harness.
  */
-export const PLUGIN_CLI_OUTPUT_MAX_BYTES = 1024 * 1024;
+export const PLUGIN_CLI_OUTPUT_MAX_BYTES = 32 * 1024 * 1024;
 
 export interface PluginCliOutputLimitError {
   code: "plugin_cli_output_too_large";
@@ -1369,6 +1394,12 @@ export interface PluginProviderOptionDescriptor {
   id: string;
   label: string;
   description?: string;
+  /** Host glyph name (`"Zap"`) or declared icon (`"<pluginId>/<name>"`, an
+   * entry of this plugin's `bb.branding.experimental_icons`; any other plugin
+   * id or an undeclared name fails the load) shown beside a selected service
+   * tier. Host glyphs draw filled. Ignored for reasoning levels. Defaults to
+   * `"Zap"`. */
+  experimental_icon?: string;
 }
 
 /**
@@ -1596,9 +1627,11 @@ export interface PluginProviderDeclaration {
     scope?: PluginProviderModelCatalogScope;
     /**
      * The model every turn of a child thread runs on: a thread with a parent,
-     * or a top-level thread another thread spawned. It replaces whatever model
-     * the turn asked for or inherited. Omitted, children run like any other
-     * thread. 1–200 characters.
+     * or a top-level thread another thread spawned. An explicit request for a
+     * different model is rejected; omitted or client-preference models resolve
+     * to this model. Existing stored overrides and queued work remain readable
+     * and resolve to this model when executed. Omitted, children run like any
+     * other thread. 1–200 characters.
      */
     childThreadModel?: string;
   };
@@ -1678,7 +1711,12 @@ export interface PluginProviderDeclaration {
    *   `transcripts` file (`{yyyy}`, `{mm}`, `{dd}` cover the launch day and the
    *   day before) whose `header.match` fields equal the given strings, and
    *   binds the one whose `header.cwd` is the thread workspace and whose
-   *   `header.startedAt` follows the launch. Later launches use `resumeArgs`.
+   *   `header.startedAt` follows the launch. Optional `header.discoveryMatch`
+   *   fields must also equal the given strings, but only when binding a new
+   *   launch's session; a session is still found by its id without them, so a
+   *   session another client of the CLI created can be resumed. Declare it to
+   *   keep a session some other process started in the same workspace from
+   *   being bound. Later launches use `resumeArgs`.
    * - `activity` (optional): how bb learns that the CLI is working on a turn,
    *   so the thread shows as working, then as done, and gets a title from its
    *   first prompt. `hooks` adds `args` (with `{settings}` replaced by a JSON
@@ -1998,6 +2036,41 @@ export interface PluginServerApi {
    * not a place to write.
    */
   readonly experimental_dataDir: string;
+
+  /**
+   * Internal to bb's own connect plugins. Do not use: it is not part of the
+   * plugin API and may change or disappear in any release.
+   *
+   * Open (or share) this server's tunnel ingress for `audience`, a private
+   * listener on 127.0.0.1 with an ephemeral port. For a plugin that runs a
+   * tunnel client for bb connect next: point the client at `baseUrl`.
+   *
+   * Every HTTP request and WebSocket upgrade must carry an
+   * `x-bb-gate-assertion` signed by the bb connect gate for `audience`
+   * (`server:<serverId>`), the request method and the exact path and query;
+   * anything else is answered 401. A verified request reaches the same app
+   * as `loopbackBaseUrl`, authenticated only by the gate's claims.
+   *
+   * Opening the same audience again shares the listener; it stops when every
+   * handle is closed. Handles close when the plugin is disabled or unloaded.
+   */
+  internal_DO_NOT_USE_openTunnelIngress(
+    options: InternalDoNotUsePluginTunnelIngressOptions,
+  ): Promise<InternalDoNotUsePluginTunnelIngress>;
+}
+
+/** Options for `bb.server.internal_DO_NOT_USE_openTunnelIngress`. */
+export interface InternalDoNotUsePluginTunnelIngressOptions {
+  /** The gate assertion audience this ingress accepts, e.g. `server:<id>`. */
+  audience: string;
+}
+
+/** A handle on an open tunnel ingress. */
+export interface InternalDoNotUsePluginTunnelIngress {
+  /** Base URL of the ingress listener, e.g. "http://127.0.0.1:41234". */
+  readonly baseUrl: string;
+  /** Release this handle; idempotent. */
+  close(): Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
@@ -2056,8 +2129,10 @@ export interface PluginAiServiceDeclaration {
   /** Shown in the picker; 1-64 characters. */
   readonly displayName: string;
   /**
-   * Answer one prompt with plain text. Offered for thread titles and commit
-   * messages. Declare `complete`, `transcribe`, or both.
+   * Answer one prompt with plain text. Offered for thread titles, commit
+   * messages, and writing assistance (JSON edit proposals and dictation
+   * formatting, validated by bb before use). Declare `complete`,
+   * `transcribe`, or both.
    */
   readonly complete?: (
     prompt: string,
@@ -2097,6 +2172,48 @@ export interface PluginSharedPortTunnelIdentity {
   baseDomain: string;
 }
 
+/** The frp server a machine's next tunnel dials. */
+export interface InternalDoNotUsePluginNextTunnelServer {
+  /** `wss` for TLS, `websocket` for plain `ws://` (local runs only). */
+  protocol: "wss" | "websocket";
+  /** Host name without a port, e.g. "tunnel.next.getbb.app". */
+  host: string;
+  port: number;
+}
+
+/** Where every eligible machine serves its port shares through bb connect next. */
+export interface InternalDoNotUsePluginNextTunnelConfig {
+  /**
+   * Next domain without a scheme, with a port only for local runs, e.g.
+   * "next.getbb.app". A share answers at `<machine-label>--<port>.<domain>`.
+   */
+  domain: string;
+  server: InternalDoNotUsePluginNextTunnelServer;
+}
+
+/** One machine's next tunnel, as its daemon last reported it. */
+export interface InternalDoNotUsePluginHostNextTunnelStatus {
+  hostId: string;
+  hostName: string;
+  /**
+   * `idle` while the machine shares no port or next is off, `refused` when
+   * the gate refused the machine credential (retried after five minutes),
+   * `offline` when the gate cannot be reached (retried with backoff),
+   * `error` when the daemon could not start frpc or refused the configuration.
+   */
+  state: "idle" | "connecting" | "connected" | "refused" | "offline" | "error";
+  /** The machine's gate label, or null before the daemon learned it. */
+  label: string | null;
+  lastError: string | null;
+  nextRetryAt: number | null;
+  since: number;
+  shares: Array<{
+    port: number;
+    state: "pending" | "active" | "refused";
+    error: string | null;
+  }>;
+}
+
 export interface PluginHosts {
   /** Create the owning plugin's typed client for its singular `bb.host` entry. */
   experimental_client<
@@ -2126,6 +2243,38 @@ export interface PluginHosts {
    * here: it is owned by the daemon's trusted enrollment.
    */
   declareSharedPorts(hostId: string, ports: readonly number[]): void;
+
+  /**
+   * Internal to bb's own connect plugins. Do not use: it is not part of the
+   * plugin API and may change or disappear in any release.
+   *
+   * Turn bb connect next machine tunnels on (a config) or off (`null`). The
+   * server sends the config to every connected daemon that holds a bb connect
+   * machine credential and speaks a protocol that knows next tunnels; each
+   * such daemon runs frpc with one proxy per port declared with
+   * `declareSharedPorts`, at `<machine-label>--<port>.<domain>`. The daemon
+   * refuses a domain or tunnel server outside its trusted enrollment's
+   * domain. One plugin owns the setting at a time; another plugin's call
+   * throws while it is set. Cleared when the owning plugin is disabled.
+   */
+  internal_DO_NOT_USE_setNextTunnels(
+    config: InternalDoNotUsePluginNextTunnelConfig | null,
+  ): void;
+
+  /** Internal to bb's own connect plugins; do not use. The last next-tunnel status of every connected daemon that reported one. */
+  internal_DO_NOT_USE_nextTunnelStatuses(): InternalDoNotUsePluginHostNextTunnelStatus[];
+
+  /**
+   * Internal to bb's own connect plugins. Do not use: it is not part of the
+   * plugin API and may change or disappear in any release.
+   *
+   * Call `listener` whenever a daemon reports a changed next-tunnel status or
+   * its session ends. Returns an unsubscribe function; plugin disposal also
+   * unsubscribes.
+   */
+  internal_DO_NOT_USE_onNextTunnelStatusChange(
+    listener: () => void,
+  ): () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -2182,6 +2331,8 @@ export type PluginBbSdk = Omit<BbSdk, "threads"> & {
  * against.
  */
 export interface BbPluginApi {
+  /** Internal: counts one meaningful use of a first-party plugin's UI. */
+  internal_DO_NOT_USE_recordPluginUse(): void;
   /** The plugin's own id (namespaces storage, routes, commands). */
   readonly pluginId: string;
   /** Leveled, plugin-scoped logger. */

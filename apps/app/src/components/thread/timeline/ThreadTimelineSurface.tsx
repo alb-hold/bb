@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import type { ActiveThinking, ThreadRuntimeDisplayStatus } from "@bb/domain";
 import type { TimelineRow } from "@bb/server-contract";
-import type { PromptMentionLinkResolver } from "@/components/promptbox/editor/prompt-mention-link";
+import type { PromptMentionLinkResolver } from "@bb/client-core";
 import { Button } from "@bb/shared-ui/button";
 import { ConversationTimeline } from "@/components/ui/conversation.js";
 import { HeightTransition } from "@/components/ui/height-transition.js";
@@ -25,9 +25,6 @@ import type {
   ThreadTimelineInlineMessageEditor,
   ThreadTimelineAddToChatHandler,
   ThreadTimelineConsumerMessageAction,
-  ThreadTimelineLinkHandler,
-  ThreadTimelineLocalFileLinkHandler,
-  ThreadTimelineOpenPluginPanelHandler,
   ThreadTimelineUnreadDividerPlacement,
 } from "./types.js";
 
@@ -56,9 +53,6 @@ export interface ThreadTimelineSurfaceProps {
   consumerMessageActions?: readonly ThreadTimelineConsumerMessageAction[];
   includePluginMessageActions?: boolean;
   onLoadOlderRows?: () => Promise<void> | void;
-  onOpenLink?: ThreadTimelineLinkHandler;
-  onOpenLocalFileLink?: ThreadTimelineLocalFileLinkHandler;
-  onOpenPluginPanel?: ThreadTimelineOpenPluginPanelHandler;
   onTitleAction?: TimelineTitleActionResolver;
   projectId?: string;
   resolveMentionLink?: PromptMentionLinkResolver;
@@ -70,10 +64,10 @@ export interface ThreadTimelineSurfaceProps {
   timelineRows: TimelineRow[];
   timelineNavigationTargetRowId?: string | null;
   threadId: string;
-  threadIsActive?: boolean;
+  threadIsActive: boolean;
   threadRuntimeDisplayStatus: ThreadRuntimeDisplayStatus;
+  unreadDividerAutoScroll?: boolean;
   unreadDividerPlacement?: ThreadTimelineUnreadDividerPlacement | null;
-  workspaceRootPath: string | undefined;
 }
 
 interface BuildStopRequestedTimelineRowArgs {
@@ -158,9 +152,6 @@ export function ThreadTimelineSurface({
   consumerMessageActions,
   includePluginMessageActions,
   onLoadOlderRows,
-  onOpenLink,
-  onOpenLocalFileLink,
-  onOpenPluginPanel,
   onTitleAction,
   projectId,
   resolveMentionLink,
@@ -174,8 +165,8 @@ export function ThreadTimelineSurface({
   threadId,
   threadIsActive,
   threadRuntimeDisplayStatus,
+  unreadDividerAutoScroll,
   unreadDividerPlacement,
-  workspaceRootPath,
 }: ThreadTimelineSurfaceProps) {
   const showCatchUpIndicator =
     isCatchingUpTimeline &&
@@ -241,9 +232,6 @@ export function ThreadTimelineSurface({
             onSelectionAddToChat={onSelectionAddToChat}
             consumerMessageActions={consumerMessageActions}
             includePluginMessageActions={includePluginMessageActions}
-            onOpenLink={onOpenLink}
-            onOpenLocalFileLink={onOpenLocalFileLink}
-            onOpenPluginPanel={onOpenPluginPanel}
             onTitleAction={onTitleAction}
             projectId={projectId}
             resolveMentionLink={resolveMentionLink}
@@ -257,8 +245,10 @@ export function ThreadTimelineSurface({
             threadId={threadId}
             threadIsActive={threadIsActive}
             threadRuntimeDisplayStatus={threadRuntimeDisplayStatus}
+            {...(unreadDividerAutoScroll === undefined
+              ? {}
+              : { unreadDividerAutoScroll })}
             unreadDividerPlacement={unreadDividerPlacement}
-            workspaceRootPath={workspaceRootPath}
           />
         ) : null}
         {hostConnectionNotice ? (
@@ -267,18 +257,22 @@ export function ThreadTimelineSurface({
             className="mt-4 text-destructive"
           />
         ) : null}
-        <HeightTransition visible={showCatchUpIndicator}>
-          {showCatchUpIndicator ? <DelayedCatchUpIndicator /> : null}
-        </HeightTransition>
-        <HeightTransition visible={isOngoingIndicatorVisible}>
-          <TimelineWorkingIndicator
-            key={ongoingIndicatorKey}
-            details={activeThinkingDetails}
-            reasoningId={activeThinking?.id}
-            isThinking={showActiveThinking}
-            label={ongoingIndicatorLabel}
-          />
-        </HeightTransition>
+        {isThreadTimelinePending ? null : (
+          <>
+            <HeightTransition visible={showCatchUpIndicator}>
+              {showCatchUpIndicator ? <DelayedCatchUpIndicator /> : null}
+            </HeightTransition>
+            <HeightTransition visible={isOngoingIndicatorVisible}>
+              <TimelineWorkingIndicator
+                key={ongoingIndicatorKey}
+                details={activeThinkingDetails}
+                reasoningId={activeThinking?.id}
+                isThinking={showActiveThinking}
+                label={ongoingIndicatorLabel}
+              />
+            </HeightTransition>
+          </>
+        )}
       </ConversationTimeline>
     </TimelineReasoningExpansionProvider>
   );
@@ -376,4 +370,3 @@ function DelayedThreadLoadingIndicator() {
 
   return <ThreadTimelineLoadingSkeleton />;
 }
-

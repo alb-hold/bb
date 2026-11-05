@@ -5,10 +5,13 @@ import { useThreadTerminalController } from "./useThreadTerminalController";
 
 interface ThreadTerminalPanelProps {
   autoFocus?: boolean;
+  retainNativeOutput?: boolean;
   isPanelOpen: boolean;
   isPanelPersistedOpen: boolean;
   onAutoFocusHandled?: () => void;
+  onCloseStart: () => void;
   onOpenLink?: MarkdownPreviewLinkHandler;
+  onRetryStart: () => void;
   onSelectionAddToChat?: (text: string) => void;
   terminalId: string;
   target: TerminalCreateTarget;
@@ -16,10 +19,13 @@ interface ThreadTerminalPanelProps {
 
 export function ThreadTerminalPanel({
   autoFocus = false,
+  retainNativeOutput = false,
   isPanelOpen,
   isPanelPersistedOpen,
   onAutoFocusHandled,
+  onCloseStart,
   onOpenLink,
+  onRetryStart,
   onSelectionAddToChat,
   terminalId,
   target,
@@ -39,10 +45,13 @@ export function ThreadTerminalPanel({
     >
       <div className="min-h-0 flex-1 overflow-hidden bg-sidebar">
         <ThreadTerminalContent
+          retainNativeOutput={retainNativeOutput}
           autoFocus={autoFocus}
           controller={terminalController}
           onAutoFocusHandled={onAutoFocusHandled}
+          onCloseStart={onCloseStart}
           onOpenLink={onOpenLink}
+          onRetryStart={onRetryStart}
           onSelectionAddToChat={onSelectionAddToChat}
         />
       </div>

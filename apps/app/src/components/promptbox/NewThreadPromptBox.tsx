@@ -19,6 +19,7 @@ import type {
   SystemMachineProvider,
 } from "@bb/server-contract";
 import type { ComposerView } from "@get-bb/plugin-sdk";
+import type { ComposerSubmitExtras } from "@get-bb/plugin-sdk/internal/composer-handle";
 import type { ComposerTextEffectSource } from "@/lib/composer-text-effects";
 import { ComposerBannersSlot } from "@/components/plugin/PluginComposerBanners";
 import { PROMPT_STACK_TRACK_CLASS } from "@/components/promptbox/banner/PromptStackCard";
@@ -38,14 +39,14 @@ import {
 } from "@/components/promptbox/ExecutionControls";
 import {
   DEFAULT_COMPOSER_SCOPE,
-  PromptBoxInternal,
+  ComposerBox,
   type AttachmentsConfig,
   type HistoryConfig,
   type MentionMenuPlacement,
   type PromptBoxAction,
   type PromptBoxHandle,
   type TypeaheadConfig,
-} from "@/components/promptbox/PromptBoxInternal";
+} from "@/components/promptbox/ComposerBox";
 import { usePromptModePermissionDisplay } from "@/components/promptbox/usePromptModePermissionDisplay";
 import { usePromptVoice } from "@/components/promptbox/usePromptVoice";
 import {
@@ -121,7 +122,6 @@ export interface NewThreadModeConfig {
   environmentProviderInputsSlot?: ReactNode;
   machineProviderInputsSlot?: ReactNode;
   banner?: ReactNode;
-  header?: ReactNode;
 }
 
 interface NewThreadPromptBoxUIProps {
@@ -130,7 +130,7 @@ interface NewThreadPromptBoxUIProps {
   value: string;
   mentionRanges: readonly PromptTextMention[];
   onChange: (value: string, mentionRanges: PromptTextMention[]) => void;
-  onSubmit: () => void;
+  onSubmit: (extras?: ComposerSubmitExtras) => void | Promise<void>;
   focusRequest?: string;
   isSubmitting: boolean;
   disabled: boolean;
@@ -192,7 +192,9 @@ export const NewThreadPromptBoxUI = memo(function NewThreadPromptBoxUI({
   }, []);
   const voice = usePromptVoice(
     promptBoxRef,
-    pluginComposerHost ?? undefined,
+    pluginComposerHost
+      ? { ...pluginComposerHost, submit: () => onSubmit() }
+      : undefined,
     pluginComposerHost ? composerScopeIdentity(pluginComposerHost.scope) : null,
   );
   const attachmentCount = attachments.items?.length ?? 0;
@@ -311,7 +313,7 @@ const DefaultNewThreadComposer = memo(function DefaultNewThreadComposer({
           {modeConfig.banner}
         </ComposerBannersSlot>
       </div>
-      <PromptBoxInternal
+      <ComposerBox
         id={id}
         promptBoxRef={promptBoxRef}
         value={value}
@@ -320,9 +322,11 @@ const DefaultNewThreadComposer = memo(function DefaultNewThreadComposer({
         onSubmit={onSubmit}
         textEffects={textEffects}
         onComposerLayoutChange={onComposerLayoutChange}
-        history={history}
-        promptHistorySearch={{
-          projectId: project?.value ?? PERSONAL_PROJECT_ID,
+        history={{
+          ...history,
+          promptHistorySearch: {
+            projectId: project?.value ?? PERSONAL_PROJECT_ID,
+          },
         }}
         typeahead={typeahead}
         mentionMenuPlacement={mentionMenuPlacement}
@@ -337,11 +341,10 @@ const DefaultNewThreadComposer = memo(function DefaultNewThreadComposer({
         }}
         autoFocus={autoFocus}
         onFocusCommand={onFocusCommand}
-        editorLayout="root-compose"
+        surface="new-thread"
         minHeight={NEW_THREAD_PROMPT_BOX_MIN_HEIGHT}
         placeholder={placeholder}
-        header={modeConfig.header}
-        footerStart={<ExecutionControls {...execution} />}
+        executionControls={<ExecutionControls {...execution} />}
       />
       <div
         data-new-thread-footer=""

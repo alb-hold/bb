@@ -21,8 +21,15 @@ clears when a managed turn settles to idle or error, or when a native terminal
 session closes with process exit or user close. A daemon disconnect does not
 clear native row state because the terminal may reattach. Explicit clear
 commands remove the selected state, and a targeted read hides state after 60
-minutes without an update as a backstop. The SDK equivalents are
-threads.experimental_rowState and threads.experimental_updateRowState.
+minutes without an update as a backstop. `bb thread progress clear` explicitly
+clears progress even when a terminal owns it. The row-state PATCH route's
+`action: "clear"` resets all statuses, progress, and progress ownership.
+An ordinary `action: "progress-clear"` clears only ownerless progress when
+`terminalId` is omitted; `force: true` is the explicit override for
+user-requested progress clearing. SDK callers can pass `force: true` to
+threads.experimental_updateRowState when they intend that override. The SDK
+equivalents are threads.experimental_rowState and
+threads.experimental_updateRowState.
 
 Every command supports --json for machine-readable output. Read-only commands
 take a thread ID or --self where supported; mutating lifecycle and messaging
@@ -59,11 +66,12 @@ Spawning:
     --parent-self                  Parent to the current thread (BB_THREAD_ID)
     --lifecycle-owner-thread <id>  Archive/delete with this owner
     --provider <id>                Provider override
-    --model <model>                Model override
+    --model <model>                Model override; for a child thread, an explicit
+                                   model must match the provider's child model
     --reasoning-level <level>      Reasoning level id the model lists: low, medium, high, xhigh, max, or a provider-specific id
     --environment <id-or-path>     Attach to an existing environment (ID or workspace path)
     --new-environment <kind>       Create a fresh personal workspace or managed worktree
-    --base-branch <branch>         Exact Git ref for a new managed worktree
+    --base-branch <branch>         Base branch or ref for a new managed worktree
                                    (--new-environment worktree only; an
                                    --environment-provider takes its branch
                                    through --environment-inputs)
@@ -124,15 +132,28 @@ Spawning:
   reports every finished, failed, or interrupted turn and every blocker. stuck
   skips completed turns and keeps failures, interruptions, and blockers on an
   approval or question; the child sends its results with `bb thread tell`, so
-  say so in its prompt. off reports nothing. `bb status` and `bb thread show`
-  print the value for a child thread.
+  say so in its prompt. off reports nothing. Under stuck and off, unassigning
+  the child does not notify the former parent either. `bb status` and
+  `bb thread show` print the value for a child thread.
   A machine selector accepts an exact ID or an unambiguous name. It works with
   an unmanaged --environment path, --new-environment worktree, or the personal
   workspace. It cannot be combined with an existing environment ID because that
   environment already selects its machine. Without the flag, local/server
   machine resolution is unchanged.
-  Omit --base-branch for bb's default. Explicit values are exact; use
-  origin/<branch> for a remote ref.
+  Omit --base-branch for bb's default. Default and named branches use the
+  remote when local is equal or behind, preserving local commits when ahead
+  or diverged. Explicit refs are honored exactly. Remote refs such as
+  origin/<branch> are fetched before creation. When bb picked the remote and
+  the fetch fails (for example offline or unauthenticated), the worktree
+  starts from the last fetched copy and provisioning reports it; an explicit
+  origin/<branch> fails instead. refs/remotes/origin/<branch> uses the last
+  fetched copy without fetching.
+  With no environment flag, a new thread gets a fresh worktree of the
+  project's default branch (the project checkout when the project has no
+  branch) on the primary host, or on the persistent machine that holds the
+  project's source when the primary host has none. A child of a live thread
+  in the same project gets a worktree on its parent's machine; a child of an
+  unmanaged non-Git folder reuses its parent's environment.
   Before selecting a provider, run `bb environment providers --project <id>
   --machine <id-or-name>` to see whether it is available, needs setup, or is
   unavailable and why. The first-party providers are Project checkout,
@@ -154,7 +175,7 @@ Forking:
     --source-seq-end <seq>         Fork after the source turn containing this event sequence (tip by default)
     --environment <id-or-path>     Existing environment ID or unmanaged workspace path
     --new-environment <kind>       Create a fresh personal workspace or managed worktree
-    --base-branch <branch>         Exact Git ref for a new worktree; omit for the project default
+    --base-branch <branch>         Base branch or ref for a new worktree; omit for the project default
     --title <title>                Thread title (idle forks default to "(1) <source title>")
     --permission-mode <mode>       Inherit source by default; accepts accept-edits, auto, full
     --visibility <visibility>      visible (default) or hidden

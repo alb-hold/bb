@@ -3,6 +3,7 @@ import type {
   ExperimentalSignInWindowOptions,
 } from "@get-bb/plugin-sdk";
 import { getBbDesktopInfo } from "@/lib/bb-desktop";
+import { randomUuid } from "@/lib/random-uuid";
 
 export function openSignInWindow(
   options: ExperimentalSignInWindowOptions,
@@ -13,7 +14,7 @@ export function openSignInWindow(
   if (desktop === null || open === undefined || close === undefined) {
     return null;
   }
-  const id = crypto.randomUUID();
+  const id = randomUuid();
   const result = open
     .call(desktop, {
       id,

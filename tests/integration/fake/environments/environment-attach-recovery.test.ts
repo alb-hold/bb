@@ -37,6 +37,7 @@ describe("environment attach recovery", () => {
       initiator: null,
       path,
       setupScriptTimeoutMs: 30_000,
+      setupOperation: { id: "setup-op", resumeOnly: false },
     };
 
     const first = dispatchCommand(command, options);
@@ -66,6 +67,7 @@ describe("environment attach recovery", () => {
       initiator: null,
       path,
       setupScriptTimeoutMs: 30_000,
+      setupOperation: { id: "setup-op", resumeOnly: false },
     };
 
     await expect(dispatchCommand(command, options)).rejects.toThrow(

@@ -41,6 +41,7 @@ function menuArgs(
     openAbout: () => {},
     openNewTab: () => {},
     openNewThread: () => {},
+    quit: () => {},
     openLocalLogs: () => {},
     openSettings: () => {},
     reopenClosedTab: () => {},
@@ -80,6 +81,16 @@ function findDesktopSettingsServerSubmenu(
 }
 
 describe("application menu", () => {
+  it("routes Cmd+Q and menu Quit through the user quit guard", () => {
+    const quit = vi.fn();
+    const template = buildApplicationMenuTemplate(menuArgs(() => {}, { quit }));
+    const submenu = template[0]?.submenu as MenuItemConstructorOptions[];
+    const item = submenu.find((entry) => entry.label === "Quit bb");
+    expect(item?.accelerator).toBe("CommandOrControl+Q");
+    expect(item?.role).toBeUndefined();
+    item?.click?.({} as never, undefined, {} as never);
+    expect(quit).toHaveBeenCalledOnce();
+  });
   it.each([true, false])(
     "opens local logs independently of runtime ownership (isMac=%s)",
     (isMac) => {
@@ -419,7 +430,7 @@ describe("application menu", () => {
       (item) => item.label === "Close Window",
     );
 
-    expect(appMenu.map((item) => item.role).filter(Boolean)).toEqual(["quit"]);
+    expect(appMenu.map((item) => item.role).filter(Boolean)).toEqual([]);
     expect(windowSubmenu.map((item) => item.role).filter(Boolean)).toEqual([
       "minimize",
     ]);
@@ -503,6 +514,7 @@ it.each([
     const choices = buildDesktopServerChoices(
       store,
       alternatives && !custom ? [connect] : [],
+      "http://127.0.0.1:38886",
     );
     expect(choices.some((choice) => choice.id === "builtin")).toBe(visible);
     expect(choices.filter((choice) => choice.active)).toHaveLength(1);

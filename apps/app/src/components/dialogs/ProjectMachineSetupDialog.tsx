@@ -1,11 +1,4 @@
-import {
-  lazy,
-  Suspense,
-  useEffect,
-  useState,
-  type FormEvent,
-  type ReactNode,
-} from "react";
+import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import {
   getProjectPathValidationMessage,
   normalizeProjectPathInput,
@@ -23,6 +16,7 @@ import {
 import { Icon } from "@bb/shared-ui/icon";
 import { Input } from "@bb/shared-ui/input";
 import { cn } from "@bb/shared-ui/lib/utils";
+import { LazyRemotePathBrowser } from "@/components/dialogs/LazyRemotePathBrowser";
 import { useAddProjectSource } from "@/hooks/mutations/project-mutations";
 import {
   isHostPathMissing,
@@ -31,12 +25,6 @@ import {
 import { useHostCloneDefaultPath } from "@/hooks/queries/host-queries";
 import { BbHttpError } from "@bb/sdk/browser";
 import { getMutationErrorMessage } from "@/lib/mutation-errors";
-
-const RemotePathBrowser = lazy(() =>
-  import("@/components/dialogs/RemotePathBrowser").then((module) => ({
-    default: module.RemotePathBrowser,
-  })),
-);
 
 export interface ProjectMachineSetupDialogTarget {
   projectId: string;
@@ -304,17 +292,15 @@ function ProjectMachineSetupDialogContent({
           </div>
         ) : null}
         {option === "folder" ? (
-          <Suspense fallback={null}>
-            <RemotePathBrowser
-              hostId={target.hostId}
-              allowCreateFolder={false}
-              onDirectoryChange={(directory) => {
-                setFolderPath(directory);
-                setValidationMessage(null);
-              }}
-              disabled={pending}
-            />
-          </Suspense>
+          <LazyRemotePathBrowser
+            hostId={target.hostId}
+            allowCreateFolder={false}
+            onDirectoryChange={(directory) => {
+              setFolderPath(directory);
+              setValidationMessage(null);
+            }}
+            disabled={pending}
+          />
         ) : null}
         {pending && option === "clone" ? (
           <p className="flex items-center gap-2 text-sm text-muted-foreground">

@@ -44,6 +44,9 @@ bb status --json
 A plugin's commands and settings are documented in that plugin's own skill.
 `bb plugin list` shows which commands each plugin contributes.
 
+When choosing a thread-list scope, read `bb guide thread-inspection` for the
+active, archived-only, and all-thread options.
+
 ## Command habits
 
 - Resolve names and IDs with a list or show command before mutation.
@@ -117,7 +120,6 @@ bb environment providers --json
 bb provider list --environment "$BB_ENVIRONMENT_ID" --json
 bb thread show "$BB_THREAD_ID" --json
 bb thread context --self --json
-bb environment status "$BB_ENVIRONMENT_ID" --json
 bb plugin list --json
 bb skill list --environment "$BB_ENVIRONMENT_ID" --json
 ```

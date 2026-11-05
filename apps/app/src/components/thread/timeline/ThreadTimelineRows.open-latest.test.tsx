@@ -8,13 +8,45 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { threadTimelineScrollAnchorAtomFamily } from "@/lib/thread-timeline-scroll-anchor";
 import { conversationRow } from "@/test/fixtures/thread-timeline-rows";
 import { useThreadUnreadDividerState } from "@/views/thread-detail/useThreadUnreadDividerState";
-import { ThreadTimelinePane } from "@/views/thread-detail/ThreadTimelinePane";
+import { ThreadScreen } from "@/views/thread-detail/ThreadScreen";
+import { makeThreadResponse } from "@/test/fixtures/thread-responses";
+import type { UseThreadTimelineControllerResult } from "@/components/thread/timeline";
 import { ThreadProviderContext } from "../thread-provider-context";
 
 const THREAD_ID = "thr_main";
 vi.mock("@/components/thread/toc/ThreadTableOfContents", () => ({
   ThreadTableOfContents: () => null,
 }));
+vi.mock("@/hooks/queries/thread-queries", async (importOriginal) => ({
+  didThreadDetailBootstrapRefreshAfterMount: (
+    await importOriginal<typeof import("@/hooks/queries/thread-queries")>()
+  ).didThreadDetailBootstrapRefreshAfterMount,
+  useThreadSpendSummary: () => ({ data: undefined }),
+  isPendingInteractionStateUnknown: () => false,
+  useChildThreads: () => ({ data: [] }),
+  useThread: () => ({ data: undefined }),
+  useThreadPendingInteractions: () => ({
+    data: [],
+    isError: false,
+    isFetching: false,
+    refetch: vi.fn(),
+  }),
+}));
+vi.mock("@/hooks/queries/child-thread-pending-interactions", () => ({
+  useChildThreadPendingAttention: () => [],
+}));
+vi.mock("@/hooks/queries/system-queries", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/hooks/queries/system-queries")>()),
+  useSystemConfig: () => ({ data: undefined }),
+}));
+vi.mock("@/hooks/mutations/thread-runtime-mutations", () => {
+  const mutation = () => ({ isPending: false, mutateAsync: vi.fn() });
+  return {
+    useCreateThreadQueuedMessage: mutation,
+    useEditThreadMessage: mutation,
+    useSendThreadMessage: mutation,
+  };
+});
 const rows = [100, 200, 300].map((seq) =>
   conversationRow({
     id: `answer-${seq}`,
@@ -26,6 +58,27 @@ const rows = [100, 200, 300].map((seq) =>
     turnId: `turn-${seq}`,
   }),
 );
+
+const TIMELINE = {
+  activeBackgroundCommands: [],
+  activePromptMode: null,
+  activeThinking: null,
+  activeWorkflows: [],
+  contextBoundarySeq: null,
+  contextWindowUsage: null,
+  goal: null,
+  hasOlderTimelineRows: false,
+  isCatchingUpTimeline: false,
+  isLoadingOlderTimelineRows: false,
+  loadOlderTimelineRows: async () => {},
+  modelFallback: null,
+  pendingTodos: null,
+  providerCommands: null,
+  sessionOptions: null,
+  timelineError: null,
+  timelineLoading: false,
+  timelineRows: rows,
+} as unknown as UseThreadTimelineControllerResult;
 
 class ResizeObserverMock implements ResizeObserver {
   static instances: ResizeObserverMock[] = [];
@@ -112,6 +165,7 @@ function OpenThread({
   const { placement, hasUnseenTimelineEvents: openAtLatest } =
     useThreadUnreadDividerState({
       routeThreadId: THREAD_ID,
+      anchor: "first-unread-row",
       bootstrapQuery: {
         dataUpdatedAt: bootstrapUpdatedAt,
         isFetchedAfterMount: false,
@@ -127,26 +181,25 @@ function OpenThread({
       thread: { id: THREAD_ID, lastReadAt, latestAttentionAt },
     });
   return (
-    <ThreadTimelinePane
-      footer={<div>Composer</div>}
-      canSpawnChild={false}
-      hasOlderTimelineRows={false}
-      isLoadingOlderTimelineRows={false}
-      isStopping={false}
-      onLoadOlderRows={() => undefined}
+    <ThreadScreen
       resolveMentionLink={() => null}
-      stoppingAnchorAt={0}
-      activeThinking={null}
-      contextBoundarySeq={null}
-      hasUnseenTimelineEvents={openAtLatest}
-      isThreadTimelinePending={false}
-      timelineError={false}
-      showOngoingIndicator={false}
-      threadId={THREAD_ID}
-      threadRuntimeDisplayStatus="idle"
-      workspaceRootPath={undefined}
-      timelineRows={rows}
-      unreadDividerPlacement={placement}
+      composer={null}
+      environment={null}
+      presentation={{ kind: "page" }}
+      projectId="proj_landing"
+      thread={makeThreadResponse({
+        id: THREAD_ID,
+        projectId: "proj_landing",
+        status: "active",
+        runtime: { displayStatus: "idle" },
+      })}
+      timeline={TIMELINE}
+      timelineHost={{
+        environmentHostName: null,
+        hasUnseenTimelineEvents: openAtLatest,
+        includePluginMessageActions: false,
+        unreadDividerPlacement: placement,
+      }}
     />
   );
 }
@@ -216,7 +269,8 @@ function renderThread(
       rerender(element(false, 400, false, false, false)),
     blurThread: () => rerender(element(false, 300, false, false, false)),
     focusThread: () => rerender(element(false, 400, false, false, true)),
-    focusWithoutNewAttention: () => rerender(element(false, 300, false, false, true)),
+    focusWithoutNewAttention: () =>
+      rerender(element(false, 300, false, false, true)),
     receiveFreshThread: (latestAttentionAt: number) => {
       currentIsPlaceholderData = false;
       rerender(element(false, latestAttentionAt));
@@ -250,6 +304,19 @@ describe("opening an unseen timeline", () => {
     resize();
     flushFrames();
     expect(area.scrollTop).toBe(3300);
+  });
+
+  it("repairs a virtualizer scroll correction after growth while an unseen opening is pinned", () => {
+    height = 400_000;
+    const { area } = renderThread();
+    resize();
+    expect(area.scrollTop).toBe(399_200);
+    height += 100;
+    area.scrollTop = 20_500;
+    fireEvent.scroll(area);
+    flushFrames();
+    act(() => vi.advanceTimersByTime(25_000));
+    expect(area.scrollTop).toBe(399_300);
   });
 
   it("repairs a virtualizer scroll correction while an unseen opening is pinned", () => {
@@ -301,18 +368,48 @@ describe("opening an unseen timeline", () => {
     expect(area.scrollTop).toBe(3300);
   });
 
+  it("keeps an earlier upward scroll when unseen activity arrives before refocus", () => {
+    const { area, blurThread, receiveUnseenAttentionWhileHidden, focusThread } =
+      renderThread(150, true);
+    resize();
+    flushFrames();
+    expect(area.scrollTop).toBe(2700);
+
+    fireEvent.wheel(area, { deltaY: -500 });
+    area.scrollTop = 200;
+    fireEvent.scroll(area);
+    flushFrames();
+    expect(area.scrollTop).toBe(200);
+
+    blurThread();
+    receiveUnseenAttentionWhileHidden();
+    focusThread();
+    expect(area.scrollTop).toBe(200);
+    height += 600;
+    resize();
+    flushFrames();
+    expect(area.scrollTop).toBe(200);
+  });
+
   it.each(["wheel", "touch", "keyboard", "pointer"])(
     "leaves deliberate upward %s scrolling alone while unseen rows settle",
     (input) => {
       const { area } = renderThread();
       resize();
       if (input === "wheel") fireEvent.wheel(area, { deltaY: -500 });
-      if (input === "touch") fireEvent.touchMove(area);
+      if (input === "touch") {
+        fireEvent.touchStart(area, { touches: [{ clientY: 100 }] });
+        fireEvent.touchMove(area, { touches: [{ clientY: 120 }] });
+      }
       if (input === "keyboard") fireEvent.keyDown(area, { key: "ArrowUp" });
-      if (input === "pointer") fireEvent.pointerDown(area);
+      if (input === "pointer") {
+        fireEvent.pointerDown(area, { clientX: 10, clientY: 10 });
+        fireEvent.pointerMove(window, { clientX: 10, clientY: 20 });
+      }
       area.scrollTop = 200;
       fireEvent.scroll(area);
       if (input === "pointer") fireEvent.pointerUp(window);
+      if (input === "touch") fireEvent.touchEnd(area);
       act(() => vi.advanceTimersByTime(1));
       height += 600;
       resize();
@@ -506,7 +603,11 @@ describe("opening an unseen timeline", () => {
       offsetWithinRow: 0,
       atBottom: false,
     });
-    const { area, changeOpening, receiveNewEvent } = renderThread(350, false, true);
+    const { area, changeOpening, receiveNewEvent } = renderThread(
+      350,
+      false,
+      true,
+    );
     resize();
     act(() => vi.advanceTimersByTime(1));
     flushFrames();
@@ -544,7 +645,11 @@ describe("opening an unseen timeline", () => {
   });
 
   it("opens at newest when new attention arrives while a read cache is opening", () => {
-    const { area, catchUp, receiveOpeningAttention } = renderThread(350, false, true);
+    const { area, catchUp, receiveOpeningAttention } = renderThread(
+      350,
+      false,
+      true,
+    );
     resize();
     receiveOpeningAttention();
     act(() => vi.advanceTimersByTime(25_000));

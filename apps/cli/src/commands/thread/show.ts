@@ -1,3 +1,20 @@
+import {
+  GIT_PLUGIN_ID,
+  type WorkspaceDiffTarget,
+  resolveEnvironmentMergeBaseBranch,
+  tokenBreakdownLabels,
+  estimateCompactionSavings,
+  summarizeTokenWeather,
+  type Environment,
+  type ThreadEventRow,
+  type ThreadTimelinePendingTodos,
+} from "@bb/domain";
+import {
+  type ThreadGitDiffResponse,
+  type WorkspaceStatus,
+  gitDiffResultSchema,
+  gitStatusResultSchema,
+} from "bb-plugin-bb--git/contract";
 import { prependOlderTimelineRows } from "@bb/client-core";
 import { Command } from "commander";
 import {
@@ -5,31 +22,22 @@ import {
   type ThreadTimelineTextFormat,
 } from "@bb/thread-view";
 import {
-  resolveEnvironmentMergeBaseBranch,
-  tokenBreakdownLabels,
-  estimateCompactionSavings,
-  summarizeTokenWeather,
-  type Environment,
-  type Thread,
-  type ThreadEventRow,
-  type ThreadGitDiffResponse,
-  type ThreadPullRequest,
-  type ThreadTimelinePendingTodos,
-  type WorkspaceStatus,
-} from "@bb/domain";
-import {
   BbHttpError,
   type BbSdk,
+  type ThreadGetResult,
   type ThreadExecutionProfileResult,
   type ThreadChildSummaryResult,
   type ThreadSpendSummaryResult,
 } from "@bb/sdk";
-import type {
-  EnvironmentDiffQuery,
-  ThreadTimelineResponse,
-  TimelineConversationRow,
-} from "@bb/server-contract";
 import {
+  environmentPullRequestSchema,
+  type PullRequest,
+} from "bb-plugin-bb--github-pr-status/contract";
+import { GITHUB_PR_STATUS_PLUGIN_ID } from "bb-plugin-bb--github-pr-status/read-contract";
+import { z } from "zod";
+import {
+  type ThreadTimelineResponse,
+  type TimelineConversationRow,
   THREAD_EVENT_LIST_PAGE_SIZE,
   THREAD_MESSAGE_CONTEXT_LIMIT,
 } from "@bb/server-contract";
@@ -79,7 +87,7 @@ interface ThreadOutputCommandOptions {
 
 interface ThreadStatusPayload {
   lastError?: string | null;
-  thread: Thread;
+  thread: ThreadGetResult;
 }
 
 type ThreadShowEnvironmentJsonPayload = Environment & {
@@ -99,7 +107,7 @@ interface ThreadShowJsonPayload extends ThreadStatusPayload {
 
 interface ThreadShowPullRequestPayload {
   status: "available" | "none" | "unavailable";
-  pullRequest: ThreadPullRequest | null;
+  pullRequest: PullRequest | null;
   message?: string;
 }
 
@@ -124,9 +132,14 @@ async function fetchWorkStatus(args: {
   mergeBaseBranch: string;
   sdk: BbSdk;
 }): Promise<FetchedWorkStatus> {
-  const environmentStatus = await args.sdk.environments.status({
-    environmentId: args.environmentId,
-    mergeBaseBranch: args.mergeBaseBranch,
+  const environmentStatus = await args.sdk.plugins.callRpc({
+    pluginId: GIT_PLUGIN_ID,
+    method: "workspaceStatus",
+    input: {
+      environmentId: args.environmentId,
+      mergeBaseBranch: args.mergeBaseBranch,
+    },
+    outputSchema: gitStatusResultSchema,
   });
   if (environmentStatus.outcome === "available") {
     return { available: true, status: environmentStatus.workspace };
@@ -139,12 +152,14 @@ async function fetchWorkStatus(args: {
 
 async function fetchGitDiff(args: {
   environmentId: string;
-  query: EnvironmentDiffQuery;
+  target: WorkspaceDiffTarget;
   sdk: BbSdk;
 }): Promise<FetchedGitDiff> {
-  const environmentDiff = await args.sdk.environments.diff({
-    environmentId: args.environmentId,
-    ...args.query,
+  const environmentDiff = await args.sdk.plugins.callRpc({
+    pluginId: GIT_PLUGIN_ID,
+    method: "diff",
+    input: { environmentId: args.environmentId, target: args.target },
+    outputSchema: gitDiffResultSchema,
   });
   if (environmentDiff.outcome === "available") {
     return { available: true, diff: environmentDiff.diff };
@@ -160,9 +175,13 @@ async function fetchPullRequest(args: {
   sdk: BbSdk;
 }): Promise<FetchedPullRequest> {
   try {
-    const response = await args.sdk.environments.pullRequest({
-      environmentId: args.environmentId,
+    const rows = await args.sdk.plugins.callRpc({
+      pluginId: GITHUB_PR_STATUS_PLUGIN_ID,
+      method: "pullRequests",
+      input: { keys: [args.environmentId] },
+      outputSchema: z.record(z.string(), environmentPullRequestSchema),
     });
+    const response = rows[args.environmentId] ?? { outcome: "absent" };
     if (response.outcome === "available") {
       return {
         status: "available",
@@ -225,6 +244,15 @@ export function printExecutionProfile(
   console.log(
     `    Overrides:      ${model === null && reasoningLevel === null ? "none (defaults apply)" : `model ${model ?? "default"} · reasoning ${reasoningLevel ?? "default"}`}`,
   );
+  if (
+    model !== null &&
+    execution.nextTurn !== null &&
+    model !== execution.nextTurn.model
+  ) {
+    console.log(
+      `    Model comparison: stored override ${model}; next turn ${execution.nextTurn.model}`,
+    );
+  }
   console.log(
     `    Last requested: ${execution.lastRequested ? describe(execution.lastRequested) : "(no turn yet)"}`,
   );
@@ -505,18 +533,20 @@ export function registerShowCommand(
                 );
             }
           })();
-          const resolvedQuery: EnvironmentDiffQuery =
+          const target: WorkspaceDiffTarget =
             query.target === "branch_committed" || query.target === "all"
               ? {
-                  target: query.target,
+                  type: query.target,
                   mergeBaseBranch: await requireMergeBaseBranch(
                     query.mergeBaseBranch,
                   ),
                 }
-              : query;
+              : query.target === "commit"
+                ? { type: "commit", sha: query.sha }
+                : { type: "uncommitted" };
           fetchedGitDiff = await fetchGitDiff({
             environmentId: thread.environmentId,
-            query: resolvedQuery,
+            target,
             sdk,
           });
         }
@@ -603,7 +633,7 @@ export function registerShowCommand(
             if (ws.mergeBase) {
               console.log(`  Merge base:   ${ws.mergeBase.mergeBaseBranch}`);
               console.log(
-                `  Ahead: ${ws.mergeBase.aheadCount}  Behind: ${ws.mergeBase.behindCount}`,
+                `  Ahead: ${ws.mergeBase.aheadCount}  Behind: ${ws.mergeBase.behindCount}${ws.mergeBase.squashMergeCheckComplete ? "" : " (squash-merge check incomplete)"}`,
               );
             }
           } else {
@@ -793,7 +823,9 @@ function printThreadStatus(
 ): void {
   const { thread } = payload;
   console.log(`Thread: ${thread.id}`);
-  console.log(`  Status: ${thread.status}`);
+  console.log(
+    `  Status: ${thread.hasPendingInteraction ? "needs-input" : thread.status}`,
+  );
   if (payload.lastError != null) {
     console.log(`  Error: ${payload.lastError}`);
   }

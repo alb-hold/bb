@@ -146,6 +146,10 @@
       "type": "registry:ui"
     },
     {
+      "name": "inline-rename-presentation-cases",
+      "type": "registry:ui"
+    },
+    {
       "name": "input",
       "type": "registry:ui"
     },
@@ -194,6 +198,10 @@
       "type": "registry:ui"
     },
     {
+      "name": "pill",
+      "type": "registry:ui"
+    },
+    {
       "name": "plugin-icon",
       "type": "registry:ui"
     },
@@ -238,6 +246,10 @@
       "type": "registry:ui"
     },
     {
+      "name": "rename-session-dialog",
+      "type": "registry:ui"
+    },
+    {
       "name": "resizable",
       "type": "registry:ui"
     },
@@ -270,10 +282,6 @@
       "type": "registry:ui"
     },
     {
-      "name": "resource-route-label",
-      "type": "registry:ui"
-    },
-    {
       "name": "resource-row",
       "type": "registry:ui"
     },
@@ -283,6 +291,14 @@
     },
     {
       "name": "responsive-overlay",
+      "type": "registry:ui"
+    },
+    {
+      "name": "schedule-time",
+      "type": "registry:lib"
+    },
+    {
+      "name": "schedule-time-fields",
       "type": "registry:ui"
     },
     {
@@ -370,6 +386,10 @@
       "type": "registry:ui"
     },
     {
+      "name": "truncate-start",
+      "type": "registry:ui"
+    },
+    {
       "name": "use-browser-dimming-modal",
       "type": "registry:hook"
     },
@@ -404,6 +424,14 @@
     {
       "name": "utils",
       "type": "registry:lib"
+    },
+    {
+      "name": "video",
+      "type": "registry:ui"
+    },
+    {
+      "name": "video-thumbnail",
+      "type": "registry:ui"
     },
     {
       "name": "voice-input-textarea",

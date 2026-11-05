@@ -34,6 +34,7 @@ import { createCliBbSdk } from "../client.js";
 import { columnWidths, printBorderlessTable } from "../table.js";
 import { outputJson } from "./helpers.js";
 import { resolveMachineHostId, resolveMachineTargetOption } from "./machine.js";
+import { registerWritingSettingsCommands } from "./settings-writing.js";
 
 interface JsonOptions {
   json?: boolean;
@@ -144,6 +145,9 @@ function describeAiSelection(
 
 function printAiServices(view: SystemAiServicesResponse): void {
   for (const task of AI_TASKS) {
+    if (!(task in view.selections)) {
+      continue;
+    }
     const selection = view.selections[task];
     const automatic =
       selection.mode === "automatic" ? automaticAiServiceFor(view, task) : null;
@@ -246,16 +250,18 @@ function updateGeneralSetting(
     );
   }
 
+  let message: string | null = null;
   for (const candidate of generalSettingValueCandidates(value)) {
     const updated = appSettingsSchema.strip().safeParse({
       ...settings,
       [settingKey.data]: candidate,
     });
     if (updated.success) return updated.data;
+    message ??= updated.error.issues[0]?.message ?? null;
   }
 
   throw new Error(
-    `Invalid value '${value}' for '${settingKey.data}'. Booleans take true, false, on, or off, null clears a nullable setting, and structured values take JSON.`,
+    `Invalid value '${value}' for '${settingKey.data}'${message === null ? "" : `: ${message}`}. Booleans take true, false, on, or off, null clears a nullable setting, and structured values take JSON.`,
   );
 }
 
@@ -397,6 +403,8 @@ export function registerSettingsCommands(
         console.log(JSON.stringify(result, null, 2));
       }),
     );
+
+  registerWritingSettingsCommands(settings, getUrl);
 
   const aiServices = settings
     .command("ai-services")

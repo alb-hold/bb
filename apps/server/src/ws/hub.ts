@@ -41,6 +41,13 @@ import {
   type ThreadOpenTerminalLayoutAction,
   type TerminalServerMessage,
 } from "@bb/server-contract";
+import { COMPRESSED_SEND } from "./compression.js";
+import {
+  WatchedTargetRegistry,
+  type WatchedTarget,
+  type WatchedTargetChange,
+  type WatchedTargetKind,
+} from "./watched-targets.js";
 
 const TERMINAL_SOCKET_HIGH_WATER_BYTES = 1024 * 1024;
 const TERMINAL_SOCKET_MAX_QUEUE_BYTES = 32 * 1024 * 1024;
@@ -54,7 +61,7 @@ const LIST_RELEVANT_THREAD_EVENT_TYPES: ReadonlySet<ThreadEventType> =
 interface HubSocket {
   close(code?: number, reason?: string): void;
   raw?: { bufferedAmount: number };
-  send(data: string): void;
+  send(data: string, options?: { compress: boolean }): void;
 }
 
 type DaemonSessionChange =
@@ -71,6 +78,14 @@ type DeviceHandoffAttentionListener = (
 interface TerminalSize {
   cols: number;
   rows: number;
+}
+
+interface TerminalResizeOwnerChange {
+  clientId: string;
+  cols: number | null;
+  reason: "claimed" | "resized" | "hidden" | "disconnected" | "stale";
+  rows: number | null;
+  terminalId: string;
 }
 
 interface TerminalClientState {
@@ -93,9 +108,23 @@ export type ServerChangedMessage =
       ChangedMessage,
       { entity: "thread" | "project" | "environment" | "host" }
     > & { id: string })
-  | Extract<ChangedMessage, { entity: "system" }>;
+  | Extract<ChangedMessage, { entity: "system" | "plugin" }>;
 
 type ChangedMessageListener = (message: ServerChangedMessage) => void;
+type ThreadTimelineTagListener = (
+  target: ThreadTimelineSubscriptionTarget,
+  tag: string,
+) => void;
+
+export type ThreadTimelineSubscriberBaseline =
+  | { kind: "legacy" }
+  | { kind: "pending" }
+  | { kind: "tag"; tag: string };
+
+export interface ThreadTimelineSubscriber {
+  baseline: ThreadTimelineSubscriberBaseline;
+  socket: HubSocket;
+}
 
 interface PendingThreadListEventsAppended {
   timelineSequence: number | undefined;
@@ -166,6 +195,8 @@ function subscriptionKeysForMessage(message: ServerChangedMessage): string[] {
         subscriptionKey({ kind: "host-list" }),
         subscriptionKey({ kind: "host-detail", hostId: message.id }),
       ];
+    case "plugin":
+      return [subscriptionKey({ kind: "plugin", pluginId: message.pluginId })];
     case "system":
       return [subscriptionKey({ kind: "system" })];
   }
@@ -203,6 +234,34 @@ function scheduleTimer(
     callback();
   }, delayMs);
   timers.set(sessionId, timeout);
+}
+
+interface ThreadOpenNotification {
+  split: ThreadOpenSplit;
+  file: ThreadOpenFile | null;
+  terminalAction?: ThreadOpenTerminalAction;
+  terminalLayoutAction?: ThreadOpenTerminalLayoutAction;
+}
+
+function threadOpenPayload(
+  thread: { projectId: string; threadId: string },
+  request: ThreadOpenNotification,
+): string {
+  return JSON.stringify(
+    threadOpenSignalSchema.parse({
+      type: "thread-open",
+      projectId: thread.projectId,
+      threadId: thread.threadId,
+      split: request.split,
+      file: request.file,
+      ...(request.terminalAction
+        ? { terminalAction: request.terminalAction }
+        : {}),
+      ...(request.terminalLayoutAction
+        ? { terminalLayoutAction: request.terminalLayoutAction }
+        : {}),
+    }),
+  );
 }
 
 interface ThreadEventWaiter {
@@ -273,13 +332,21 @@ export class HostOnlineRpcUnavailableError extends Error {
 }
 
 export class NotificationHub implements DbNotifier {
-  private readonly clientKeysBySocket = new Map<HubSocket, Set<string>>();
+  private nextTerminalClientId = 1;
+  private readonly terminalClientIdBySocket = new WeakMap<HubSocket, string>();
+  private readonly clientKeysBySocket = new Map<
+    HubSocket,
+    Map<string, RealtimeSubscriptionTarget>
+  >();
   private readonly appClientSockets = new Set<HubSocket>();
   private readonly clientSocketsByKey = new Map<string, Set<HubSocket>>();
-  private readonly threadTimelineTargetsByKey = new Map<
-    string,
-    ThreadTimelineSubscriptionTarget
+  private readonly hiddenClients = new Set<HubSocket>();
+  private readonly timelineTagsBySocket = new Map<
+    HubSocket,
+    Map<string, string | null>
   >();
+  private readonly timelineTagListeners = new Set<ThreadTimelineTagListener>();
+  private readonly watchedTargets = new WatchedTargetRegistry();
   private readonly daemonSessions = new Map<
     string,
     {
@@ -354,6 +421,7 @@ export class NotificationHub implements DbNotifier {
     string,
     Map<HubSocket, TerminalClientState>
   >();
+  private readonly terminalResizeOwnerById = new Map<string, HubSocket>();
   private readonly threadEventWaiters = new Map<
     string,
     Set<ThreadEventWaiter>
@@ -415,12 +483,6 @@ export class NotificationHub implements DbNotifier {
     string,
     Set<HubSocket>
   >();
-
-  registerClient(socket: HubSocket, isAppClient = false): void {
-    if (this.clientKeysBySocket.has(socket)) return;
-    this.clientKeysBySocket.set(socket, new Set());
-    if (isAppClient) this.appClientSockets.add(socket);
-  }
 
   issueDeviceHandoffClientToken(
     socket: HubSocket,
@@ -604,6 +666,93 @@ export class NotificationHub implements DbNotifier {
     return true;
   }
 
+  constructor(
+    private readonly onTerminalResizeOwnerChange: (
+      change: TerminalResizeOwnerChange,
+    ) => void = () => undefined,
+  ) {}
+
+  private terminalClientId(socket: HubSocket): string {
+    let id = this.terminalClientIdBySocket.get(socket);
+    if (id === undefined) {
+      id = `terminal-client-${this.nextTerminalClientId}`;
+      this.nextTerminalClientId += 1;
+      this.terminalClientIdBySocket.set(socket, id);
+    }
+    return id;
+  }
+
+  private clearTerminalResizeOwner(
+    terminalId: string,
+    socket: HubSocket,
+    reason: TerminalResizeOwnerChange["reason"],
+  ): void {
+    if (this.terminalResizeOwnerById.get(terminalId) !== socket) return;
+    const size = this.terminalClientStateById
+      .get(terminalId)
+      ?.get(socket)?.size;
+    this.terminalResizeOwnerById.delete(terminalId);
+    this.onTerminalResizeOwnerChange({
+      clientId: this.terminalClientId(socket),
+      cols: size?.cols ?? null,
+      rows: size?.rows ?? null,
+      reason,
+      terminalId,
+    });
+  }
+
+  private clientChangeNotificationsStopped = false;
+
+  stopClientChangeNotifications(): void {
+    this.clientChangeNotificationsStopped = true;
+  }
+
+  notifyPluginChanged(pluginId: string, tags: readonly string[] | null): void {
+    this.notifyClients({
+      type: "changed",
+      entity: "plugin",
+      pluginId,
+      tags: tags === null ? null : [...tags],
+    });
+  }
+
+  registerClient(socket: HubSocket, isAppClient = false): void {
+    if (!this.clientKeysBySocket.has(socket)) {
+      this.clientKeysBySocket.set(socket, new Map());
+    }
+    if (isAppClient) this.appClientSockets.add(socket);
+  }
+
+  setClientVisible(socket: HubSocket, visible: boolean): void {
+    this.registerClient(socket);
+    if (visible !== this.hiddenClients.has(socket)) {
+      return;
+    }
+    const targets = this.clientKeysBySocket.get(socket) ?? new Map();
+    if (visible) {
+      this.hiddenClients.delete(socket);
+      this.watchedTargets.update(
+        [...targets].map(([key, target]) => ({ key, target: { ...target } })),
+        [],
+      );
+      return;
+    }
+    this.hiddenClients.add(socket);
+    this.watchedTargets.update(
+      [],
+      [...targets.keys()].filter((key) => !this.isWatched(key)),
+    );
+  }
+
+  private isWatched(key: string): boolean {
+    for (const socket of this.clientSocketsByKey.get(key) ?? []) {
+      if (!this.hiddenClients.has(socket)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   unregisterClient(socket: HubSocket): void {
     const deviceHash = this.deviceHandoffDeviceHashByClientSocket.get(socket);
     if (deviceHash !== undefined) {
@@ -626,7 +775,8 @@ export class NotificationHub implements DbNotifier {
       return;
     }
 
-    for (const key of keys) {
+    const stoppedKeys: string[] = [];
+    for (const key of keys.keys()) {
       const sockets = this.clientSocketsByKey.get(key);
       if (!sockets) {
         continue;
@@ -634,12 +784,31 @@ export class NotificationHub implements DbNotifier {
       sockets.delete(socket);
       if (sockets.size === 0) {
         this.clientSocketsByKey.delete(key);
-        this.threadTimelineTargetsByKey.delete(key);
+      }
+      if (!this.isWatched(key)) {
+        stoppedKeys.push(key);
       }
     }
 
     this.clientKeysBySocket.delete(socket);
+    this.clientKeysBySocket.delete(socket);
     this.appClientSockets.delete(socket);
+    this.hiddenClients.delete(socket);
+    this.timelineTagsBySocket.delete(socket);
+    this.watchedTargets.update([], stoppedKeys);
+  }
+
+  onWatchedTargets<Kind extends WatchedTargetKind>(
+    kinds: readonly Kind[],
+    listener: (change: WatchedTargetChange<WatchedTarget<Kind>>) => void,
+  ): () => void {
+    return this.watchedTargets.listen(kinds, listener);
+  }
+
+  listWatchedTargets<Kind extends WatchedTargetKind>(
+    kind: Kind,
+  ): WatchedTarget<Kind>[] {
+    return this.watchedTargets.list(kind);
   }
 
   onChangedMessage(listener: ChangedMessageListener): () => void {
@@ -683,10 +852,36 @@ export class NotificationHub implements DbNotifier {
     socket: HubSocket,
     size: TerminalSize,
     now: number,
+    claim = false,
   ): void {
     const state = this.terminalClientState(terminalId, socket, now);
+    const previousSize = state.size;
     state.size = size;
     state.lastSeenAt = now;
+    if (state.visible) {
+      const currentOwner = this.terminalResizeOwnerById.get(terminalId);
+      if (claim && currentOwner !== socket) {
+        this.terminalResizeOwnerById.set(terminalId, socket);
+        this.onTerminalResizeOwnerChange({
+          clientId: this.terminalClientId(socket),
+          cols: size.cols,
+          rows: size.rows,
+          reason: "claimed",
+          terminalId,
+        });
+      } else if (
+        currentOwner === socket &&
+        (previousSize?.cols !== size.cols || previousSize?.rows !== size.rows)
+      ) {
+        this.onTerminalResizeOwnerChange({
+          clientId: this.terminalClientId(socket),
+          cols: size.cols,
+          rows: size.rows,
+          reason: "resized",
+          terminalId,
+        });
+      }
+    }
   }
 
   recordTerminalClientVisibility(
@@ -698,6 +893,9 @@ export class NotificationHub implements DbNotifier {
     const state = this.terminalClientState(terminalId, socket, now);
     state.visible = visible;
     state.lastSeenAt = now;
+    if (!visible) {
+      this.clearTerminalResizeOwner(terminalId, socket, "hidden");
+    }
     if (visible) {
       this.deliverPendingDeviceHandoffs({ terminalSessionId: terminalId }, now);
       for (const clientSocket of this.deviceHandoffRecipients(
@@ -745,6 +943,19 @@ export class NotificationHub implements DbNotifier {
   }
 
   terminalSharedSize(terminalId: string, now: number): TerminalSize | null {
+    const owner = this.terminalResizeOwnerById.get(terminalId);
+    if (owner !== undefined) {
+      const state = this.terminalClientStateById.get(terminalId)?.get(owner);
+      if (
+        state?.size !== null &&
+        state !== undefined &&
+        state.visible &&
+        (!state.heartbeats || now - state.lastSeenAt <= TERMINAL_CLIENT_STALE_MS)
+      ) {
+        return { ...state.size };
+      }
+      this.clearTerminalResizeOwner(terminalId, owner, "stale");
+    }
     let shared: TerminalSize | null = null;
     for (const state of this.terminalClientStateById
       .get(terminalId)
@@ -813,6 +1024,7 @@ export class NotificationHub implements DbNotifier {
         this.terminalClientSocketsById.delete(terminalId);
       }
     }
+    this.clearTerminalResizeOwner(terminalId, socket, "disconnected");
     this.forgetTerminalClientState(terminalId, socket);
 
     const terminalIds = this.terminalIdsByClientSocket.get(socket);
@@ -842,6 +1054,7 @@ export class NotificationHub implements DbNotifier {
       if (sockets.size === 0) {
         this.terminalClientSocketsById.delete(terminalId);
       }
+      this.clearTerminalResizeOwner(terminalId, socket, "disconnected");
       this.forgetTerminalClientState(terminalId, socket);
     }
 
@@ -890,6 +1103,7 @@ export class NotificationHub implements DbNotifier {
   sendTerminalClientMessage(
     terminalId: string,
     message: TerminalServerMessage,
+    excludedSocket?: HubSocket,
   ): void {
     const sockets = this.terminalClientSocketsById.get(terminalId);
     if (!sockets) {
@@ -898,6 +1112,9 @@ export class NotificationHub implements DbNotifier {
 
     const payload = JSON.stringify(terminalServerMessageSchema.parse(message));
     for (const socket of [...sockets]) {
+      if (socket === excludedSocket) {
+        continue;
+      }
       this.sendOrQueueTerminalPayload(socket, payload);
     }
   }
@@ -995,19 +1212,31 @@ export class NotificationHub implements DbNotifier {
     this.terminalSocketSendQueues.delete(socket);
   }
 
-  subscribe(socket: HubSocket, target: RealtimeSubscriptionTarget): void {
+  subscribe(
+    socket: HubSocket,
+    target: RealtimeSubscriptionTarget,
+    timelineTag?: string | null,
+  ): void {
     this.registerClient(socket);
     const key = subscriptionKey(target);
-    this.clientKeysBySocket.get(socket)?.add(key);
+    this.clientKeysBySocket.get(socket)?.set(key, target);
+    if (target.kind === "thread-timeline" && timelineTag !== undefined) {
+      const tags = this.timelineTagsBySocket.get(socket) ?? new Map();
+      tags.set(key, timelineTag);
+      this.timelineTagsBySocket.set(socket, tags);
+    }
 
     const sockets = this.clientSocketsByKey.get(key) ?? new Set<HubSocket>();
     sockets.add(socket);
     this.clientSocketsByKey.set(key, sockets);
-    if (
-      target.kind === "thread-timeline" &&
-      !this.threadTimelineTargetsByKey.has(key)
-    ) {
-      this.threadTimelineTargetsByKey.set(key, { ...target });
+    if (this.hiddenClients.has(socket)) {
+      return;
+    }
+    this.watchedTargets.update([{ key, target: { ...target } }], []);
+    if (target.kind === "thread-timeline" && typeof timelineTag === "string") {
+      for (const listener of [...this.timelineTagListeners]) {
+        listener(target, timelineTag);
+      }
     }
     if (target.kind === "thread-detail") {
       this.deliverPendingDeviceHandoffs(
@@ -1085,6 +1314,7 @@ export class NotificationHub implements DbNotifier {
   unsubscribe(socket: HubSocket, target: RealtimeSubscriptionTarget): void {
     const key = subscriptionKey(target);
     this.clientKeysBySocket.get(socket)?.delete(key);
+    this.timelineTagsBySocket.get(socket)?.delete(key);
 
     const sockets = this.clientSocketsByKey.get(key);
     if (!sockets) {
@@ -1093,29 +1323,69 @@ export class NotificationHub implements DbNotifier {
     sockets.delete(socket);
     if (sockets.size === 0) {
       this.clientSocketsByKey.delete(key);
-      this.threadTimelineTargetsByKey.delete(key);
+    }
+    if (!this.isWatched(key)) {
+      this.watchedTargets.update([], [key]);
     }
   }
 
-  listThreadTimelineTargets(
-    threadId: string,
-  ): ThreadTimelineSubscriptionTarget[] {
-    const targets: ThreadTimelineSubscriptionTarget[] = [];
-    for (const target of this.threadTimelineTargetsByKey.values()) {
-      if (target.threadId === threadId) {
-        targets.push(target);
+  onThreadTimelineTag(listener: ThreadTimelineTagListener): () => void {
+    this.timelineTagListeners.add(listener);
+    return () => {
+      this.timelineTagListeners.delete(listener);
+    };
+  }
+
+  listThreadTimelineSubscribers(
+    target: ThreadTimelineSubscriptionTarget,
+  ): ThreadTimelineSubscriber[] {
+    const key = subscriptionKey(target);
+    return [...(this.clientSocketsByKey.get(key) ?? [])].map((socket) => {
+      const tags = this.timelineTagsBySocket.get(socket);
+      if (tags === undefined || !tags.has(key)) {
+        return { baseline: { kind: "legacy" }, socket };
+      }
+      const tag = tags.get(key) ?? null;
+      return {
+        baseline: tag === null ? { kind: "pending" } : { kind: "tag", tag },
+        socket,
+      };
+    });
+  }
+
+  listThreadTimelineTags(threadId: string): Set<string> {
+    const held = new Set<string>();
+    for (const [socket, tags] of this.timelineTagsBySocket) {
+      const targets = this.clientKeysBySocket.get(socket);
+      for (const [key, tag] of tags) {
+        const target = targets?.get(key);
+        if (
+          tag !== null &&
+          target?.kind === "thread-timeline" &&
+          target.threadId === threadId
+        ) {
+          held.add(tag);
+        }
       }
     }
-    return targets;
+    return held;
   }
 
-  sendThreadTimelineSignal(signal: ThreadTimelineSignal): number {
-    const sockets = this.clientSocketsByKey.get(subscriptionKey(signal.target));
-    if (!sockets) {
-      return 0;
-    }
+  sendThreadTimelineSignal(
+    subscribers: readonly ThreadTimelineSubscriber[],
+    signal: ThreadTimelineSignal,
+  ): number {
+    const key = subscriptionKey(signal.target);
     const payload = JSON.stringify(signal);
-    this.notifyClientsByKeySet(sockets, payload);
+    for (const { baseline, socket } of subscribers) {
+      if (baseline.kind !== "legacy") {
+        this.timelineTagsBySocket.get(socket)?.set(key, signal.timeline.tag);
+      }
+    }
+    this.notifyClientsByKeySet(
+      subscribers.map(({ socket }) => socket),
+      payload,
+    );
     return payload.length;
   }
 
@@ -1477,30 +1747,25 @@ export class NotificationHub implements DbNotifier {
 
   notifyThreadOpen(
     thread: { projectId: string; threadId: string },
-    request: {
-      split: ThreadOpenSplit;
-      file: ThreadOpenFile | null;
-      terminalAction?: ThreadOpenTerminalAction;
-      terminalLayoutAction?: ThreadOpenTerminalLayoutAction;
-    },
+    request: ThreadOpenNotification,
   ): number {
-    return this.broadcastToAppClients(
-      JSON.stringify(
-        threadOpenSignalSchema.parse({
-          type: "thread-open",
-          projectId: thread.projectId,
-          threadId: thread.threadId,
-          split: request.split,
-          file: request.file,
-          ...(request.terminalAction
-            ? { terminalAction: request.terminalAction }
-            : {}),
-          ...(request.terminalLayoutAction
-            ? { terminalLayoutAction: request.terminalLayoutAction }
-            : {}),
-        }),
-      ),
-    );
+    return this.broadcastToAppClients(threadOpenPayload(thread, request));
+  }
+
+  notifyThreadOpenToViewers(
+    thread: { projectId: string; threadId: string },
+    request: ThreadOpenNotification,
+    viewerThreadId: string,
+  ): number {
+    const payload = threadOpenPayload(thread, request);
+    let delivered = 0;
+    for (const [socket, view] of this.activeDeviceHandoffViewByClientSocket) {
+      if (!this.appClientSockets.has(socket)) continue;
+      if (view.threadId !== viewerThreadId) continue;
+      socket.send(payload);
+      delivered += 1;
+    }
+    return delivered;
   }
 
   notifyThreadPaneAction(
@@ -1906,7 +2171,7 @@ export class NotificationHub implements DbNotifier {
   private broadcastToAllClients(payload: string): number {
     let delivered = 0;
     for (const socket of this.clientKeysBySocket.keys()) {
-      socket.send(payload);
+      socket.send(payload, COMPRESSED_SEND);
       delivered += 1;
     }
     return delivered;
@@ -2229,11 +2494,15 @@ export class NotificationHub implements DbNotifier {
       if (this.clientKeysBySocket.get(socket)?.has(detailKey)) {
         continue;
       }
-      socket.send(payload);
+      socket.send(payload, COMPRESSED_SEND);
     }
   }
 
   private notifyClients(message: ServerChangedMessage): void {
+    if (this.clientChangeNotificationsStopped) {
+      this.notifyChangedMessageListeners(message);
+      return;
+    }
     const sockets = new Set<HubSocket>();
     for (const key of subscriptionKeysForMessage(message)) {
       const specificSockets = this.clientSocketsByKey.get(key);
@@ -2258,7 +2527,7 @@ export class NotificationHub implements DbNotifier {
     payload: string,
   ): void {
     for (const socket of sockets) {
-      socket.send(payload);
+      socket.send(payload, COMPRESSED_SEND);
     }
   }
 

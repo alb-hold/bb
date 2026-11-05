@@ -73,6 +73,7 @@ function spec(
 ): NativeTerminalLaunchSpec {
   return {
     threadId: "thr_native",
+    providerId: "codex",
     cli: ASSIGNED_CLI,
     nativeSessionId: "6f1c2a8e-7d1b-4a55-9f0e-1c2d3e4f5a6b",
     initialPrompt: null,
@@ -591,6 +592,67 @@ describe("findNativeSession", () => {
         nowMs: launchedAtMs + 1_000,
       }),
     ).toEqual({ kind: "none" });
+  });
+
+  it("binds a new launch only to a session whose header carries the declared discovery fields, yet still finds any session by its id", () => {
+    const home = tempHome();
+    const launchedAtMs = Date.now();
+    const cli: ProviderNativeTerminal = {
+      ...DISCOVERED_CLI,
+      session: {
+        kind: "discovered",
+        resumeArgs: ["resume", "{sessionId}"],
+        transcripts: "sessions/{yyyy}/{mm}/{dd}/rollout-*.jsonl",
+        header: {
+          match: { type: "session_meta" },
+          discoveryMatch: { "payload.source": "cli" },
+          id: "payload.id",
+          cwd: "payload.cwd",
+          startedAt: "payload.timestamp",
+        },
+      },
+    };
+    const file = writeRollout({
+      home,
+      id: "55555555-aaaa-bbbb-cccc-000000000001",
+      cwd: "/work/declared",
+      timestamp: new Date(launchedAtMs + 500),
+    });
+    expect(
+      findNativeSession({
+        cli,
+        cwd: "/work/declared",
+        env: { HOME: home },
+        launchedAtMs,
+        nowMs: launchedAtMs + 1_000,
+      }),
+    ).toEqual({ kind: "none" });
+    expect(
+      findNativeSessionFile(
+        cli,
+        { HOME: home },
+        "55555555-aaaa-bbbb-cccc-000000000001",
+      ),
+    ).toBe(file);
+    writeFileSync(
+      file,
+      readFileSync(file, "utf8").replace(
+        '"payload":{',
+        '"payload":{"source":"cli",',
+      ),
+    );
+    expect(
+      findNativeSession({
+        cli,
+        cwd: "/work/declared",
+        env: { HOME: home },
+        launchedAtMs,
+        nowMs: launchedAtMs + 1_000,
+      }),
+    ).toEqual({
+      kind: "unique",
+      sessionId: "55555555-aaaa-bbbb-cccc-000000000001",
+    });
   });
 
   it("reports none when codex has not written a rollout yet", () => {

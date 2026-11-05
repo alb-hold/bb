@@ -23,6 +23,7 @@ List and create require exactly one explicit scope:
     --working-directory <path>       Initial shell working directory
     --host <id-or-name>                   Alias for --machine
     --title <title>                       Display title
+    --id <terminal-id>                    Use this ID (term_ plus 10 characters); fails if it exists
     --cols <n>                            Initial terminal columns
     --rows <n>                            Initial terminal rows
     --attach                              Attach after creating
@@ -49,18 +50,26 @@ and browser requests open the terminal's thread in connected bb app clients.
 The browser action uses the same thread panel placement as terminal links.
 
   bb terminal surfaces --thread <thread-id> [--json]
-  bb terminal focus <terminal-id>
-  bb terminal open-link <terminal-id> <http-or-https-url>
-  bb terminal split <terminal-id> --side right|left|up|down
-  bb terminal move <terminal-id> --to-pane-of <other-terminal-id>
+  bb terminal focus <terminal-id> [--all]
+  bb terminal open-link <terminal-id> <http-or-https-url> [--all]
+  bb terminal split <terminal-id> --side right|left|up|down [--all]
+  bb terminal move <terminal-id> --to-pane-of <other-terminal-id> [--all]
+
+`focus`, `open-link`, `split`, and `move` reach only the app clients currently viewing the calling
+thread (`BB_THREAD_ID`), so an agent never moves another window or another
+agent's browser. If the terminal belongs to a different thread, the calling
+thread's clients are moved to it. Outside a thread, or with no client viewing
+the calling thread, nothing is sent and the command exits non-zero with
+`no_caller_thread` or `no_client_viewing_caller_thread`. `--all` sends to every
+open app client. `bb thread open` follows the same rule.
 
 The SDK exposes `sdk.terminals.experimental_surfaces.list({ threadId })`,
-`sdk.terminals.experimental_focus({ terminalId })`, and
-`sdk.terminals.experimental_openBrowser({ terminalId, url })`. A surface
+`sdk.terminals.experimental_focus({ terminalId, callerThreadId? | all? })`, and
+`sdk.terminals.experimental_openBrowser({ terminalId, url, callerThreadId? | all? })`. A surface
 includes its thread and terminal IDs, title, status, and whether it is a
 regular or native terminal. Archived threads and terminal IDs outside the
 requested thread fail closed.
-`sdk.terminals.experimental_layout.split({ terminalId, side })` and
+`sdk.terminals.experimental_layout.split({ terminalId, side, callerThreadId? | all? })` and
 `sdk.terminals.experimental_layout.move({ terminalId, targetTerminalId })`
 arrange terminal tabs in persisted sidebar panes and return `deliveredClients`,
 the number of open app sockets the request was sent to. A zero-client response
@@ -140,6 +149,18 @@ prints the target because it has no app window. The SDK exposes
   `Terminal <id> exited with code N` on stderr. Once the scrollback is gone,
   output fails with `terminal_output_unavailable` and says why.
 
+  bb terminal screen <terminal-id>
+    --lines <n>                          Print latest rendered rows, up to 500
+    --json                                Include cursor position, grid size, and completeness
+
+  Screen reads replay at most 64 KiB of retained output into disposable
+  server-side terminal renderers. The default returns the visible grid. JSON
+  includes `complete`, true when the retained output fully determines the visible
+  screen. A false value means the retained output does not prove the screen is
+  complete.
+  Selection
+  is client-local and is not available through this command.
+
   bb terminal wait <terminal-id>
     --contains <text>                     Wait for new output containing text
     --regex <pattern>                     Wait for new output matching regex
@@ -150,7 +171,8 @@ prints the target because it has no app window. The SDK exposes
 
   When the terminal exits before the text appears, wait stops at once with exit
   code 124, the terminal's exit code, and the last output it printed. `--exit`
-  prints the exit code.
+  prints the exit code. Text and regex matching ignore colors and other
+  terminal escapes, so `--contains "Local:"` matches a bold `Local`.
 
 For a dev server, prefer:
 
@@ -159,3 +181,16 @@ For a dev server, prefer:
 
 Do not run long-lived servers as one-off foreground commands when the user will
 need to inspect logs, refresh the page, or stop the process later.
+
+In the app, Find in terminal (`terminal.find`; Cmd+F on macOS, Ctrl+Shift+F
+elsewhere) searches the focused terminal's scrollback; Enter and Shift+Enter
+move between matches, Match case toggles case sensitivity, and Escape closes
+find and returns focus. Rebind it in Settings → Keyboard or with
+`bb settings keyboard set terminal.find <shortcut>`; the SDK's
+`system.updateKeyboardSettings` accepts the same command ID.
+
+Terminal URLs and file paths open with Cmd+click on macOS, Ctrl+click
+elsewhere, or a tap on touch screens. Printed file paths, including `path:line`
+and `path:line:column`, open in bb's file viewer on the terminal's machine.
+Relative paths use the shell's OSC 7 working directory when reported, otherwise
+the session's initial directory. Quoted paths may contain spaces.

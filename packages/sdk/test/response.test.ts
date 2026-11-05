@@ -225,6 +225,11 @@ describe("readJsonResponse()", () => {
     expect(error.message).toBe("HTTP 404: Thread thread-1 not found");
     expect(error.status).toBe(404);
     expect(error.code).toBe("thread_not_found");
+    expect(error.body).toEqual({
+      code: "thread_not_found",
+      message: "Thread thread-1 not found",
+      error: "Thread thread-1 not found",
+    });
   });
 
   it("reports a null code when the error body has none", async () => {
@@ -304,6 +309,24 @@ describe("readJsonResponse()", () => {
     await expect(readJsonResponse(Promise.reject(connError))).rejects.toThrow(
       "Cannot connect to BB server. Ensure it is running and BB_SERVER_URL is correct.",
     );
+  });
+
+  it("keeps the original connection error as the cause of the connection error", async () => {
+    const connError = new TypeError("fetch failed", {
+      cause: { code: "ECONNREFUSED" },
+    });
+
+    const thrown = await readJsonResponse(Promise.reject(connError)).catch(
+      (error: unknown) => error,
+    );
+
+    expect(thrown).toBeInstanceOf(Error);
+    expect(thrown).toMatchObject({
+      message:
+        "Cannot connect to BB server. Ensure it is running and BB_SERVER_URL is correct.",
+    });
+    expect(thrown).toHaveProperty("cause", connError);
+    expect(thrown).toHaveProperty("cause.cause.code", "ECONNREFUSED");
   });
 
   it("rethrows non-TypeError connection errors", async () => {

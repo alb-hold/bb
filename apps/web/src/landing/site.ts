@@ -59,11 +59,18 @@ export const UTM_PARAM_NAMES = [
   "utm_content",
 ] as const;
 
+export const CLICK_ID_PARAM_NAMES = ["gclid", "gbraid", "wbraid"] as const;
+
 export const CAMPAIGN_PARAM_NAMES = [
   ...UTM_PARAM_NAMES,
-  "gclid",
-  "gbraid",
-  "wbraid",
+  ...CLICK_ID_PARAM_NAMES,
+] as const;
+
+export const VISIT_PARAM_NAMES = [
+  "visitor_id",
+  "session_id",
+  "first_page",
+  "first_referrer",
 ] as const;
 
 export function downloadHref(

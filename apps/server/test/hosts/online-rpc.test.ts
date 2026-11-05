@@ -41,8 +41,11 @@ interface DropThenReplaceSocketArgs {
   successResult: HostDaemonOnlineRpcResult;
 }
 
-function parseHostRpcRequest(data: string): HostDaemonOnlineRpcRequestMessage {
+function parseHostRpcRequest(
+  data: string,
+): HostDaemonOnlineRpcRequestMessage | null {
   const message = hostDaemonServerWsMessageSchema.parse(JSON.parse(data));
+  if (message.type === "provider-session-policy.replace") return null;
   if (message.type !== "host-rpc.request") {
     throw new Error(`Expected host-rpc.request, got ${message.type}`);
   }
@@ -54,6 +57,7 @@ function registerDropThenReplaceSocket(args: DropThenReplaceSocketArgs): void {
     close() {},
     send(data) {
       const request = parseHostRpcRequest(data);
+      if (request === null) return;
       args.requests.push(request);
       args.hub.recordHostOnlineRpcResponse({
         sessionId: args.sessionId,
@@ -70,7 +74,9 @@ function registerDropThenReplaceSocket(args: DropThenReplaceSocketArgs): void {
   const droppedSocket: TestHostRpcSocket = {
     close() {},
     send(data) {
-      args.requests.push(parseHostRpcRequest(data));
+      const request = parseHostRpcRequest(data);
+      if (request === null) return;
+      args.requests.push(request);
       args.hub.unregisterDaemon(args.sessionId);
       args.hub.registerDaemon(args.sessionId, args.hostId, retrySocket);
     },
@@ -131,6 +137,7 @@ describe("host online RPC retry semantics", () => {
         close() {},
         send(data) {
           const request = parseHostRpcRequest(data);
+          if (request === null) return;
           requests.push(request);
           harness.hub.recordHostOnlineRpcResponse({
             sessionId: session.id,
@@ -189,6 +196,7 @@ describe("host online RPC retry semantics", () => {
           close() {},
           send(data) {
             const request = parseHostRpcRequest(data);
+            if (request === null) return;
             requests.push(request);
             harness.hub.recordHostOnlineRpcResponse({
               sessionId: session.id,
@@ -245,6 +253,7 @@ describe("host online RPC retry semantics", () => {
           close() {},
           send(data) {
             const request = parseHostRpcRequest(data);
+            if (request === null) return;
             requests.push(request);
             harness.hub.recordHostOnlineRpcResponse({
               sessionId: reconnected.id,
@@ -346,6 +355,7 @@ describe("host online RPC retry semantics", () => {
         close() {},
         send(data) {
           const request = parseHostRpcRequest(data);
+          if (request === null) return;
           requests.push(request);
           if (requests.length === 1) return;
           const firstRequest = requests[0];
@@ -419,7 +429,9 @@ describe("host online RPC retry semantics", () => {
       const socket: TestHostRpcSocket = {
         close() {},
         send(data) {
-          requests.push(parseHostRpcRequest(data));
+          const request = parseHostRpcRequest(data);
+          if (request === null) return;
+          requests.push(request);
         },
       };
       harness.hub.registerDaemon(session.id, host.id, socket);
@@ -462,7 +474,9 @@ describe("host online RPC retry semantics", () => {
       const socket: TestHostRpcSocket = {
         close() {},
         send(data) {
-          requests.push(parseHostRpcRequest(data));
+          const request = parseHostRpcRequest(data);
+          if (request === null) return;
+          requests.push(request);
         },
       };
       harness.hub.registerDaemon(session.id, host.id, socket);
@@ -554,7 +568,7 @@ describe("host online RPC retry semantics", () => {
     });
   });
 
-  it("rejects malformed host RPC responses at the daemon websocket boundary without resolving the waiter", async () => {
+  it("drops malformed host RPC responses at the daemon websocket boundary without resolving the waiter or closing the socket", async () => {
     await withTestHarness(async (harness) => {
       const { host, session } = seedHostSession(harness.deps, {
         id: "host-online-rpc-boundary-rejects-malformed-response",
@@ -568,6 +582,7 @@ describe("host online RPC retry semantics", () => {
         },
         send(data) {
           const request = parseHostRpcRequest(data);
+          if (request === null) return;
           requests.push(request);
           feedRawDaemonWebSocketMessage({
             harness,
@@ -596,6 +611,7 @@ describe("host online RPC retry semantics", () => {
           timeoutMs: 25,
           command: {
             type: "host.read_file",
+            followRootSymlink: false,
             path: filePath,
           },
         });
@@ -611,10 +627,11 @@ describe("host online RPC retry semantics", () => {
       expect(requests.map((request) => request.command)).toEqual([
         {
           type: "host.read_file",
+          followRootSymlink: false,
           path: filePath,
         },
       ]);
-      expect(closes).toEqual([{ code: 1008, reason: "invalid-message" }]);
+      expect(closes).toEqual([]);
     });
   });
 
@@ -632,6 +649,7 @@ describe("host online RPC retry semantics", () => {
         },
         send(data) {
           const request = parseHostRpcRequest(data);
+          if (request === null) return;
           requests.push(request);
           feedRawDaemonWebSocketMessage({
             harness,
@@ -660,6 +678,7 @@ describe("host online RPC retry semantics", () => {
           timeoutMs: 1_000,
           command: {
             type: "host.read_file",
+            followRootSymlink: false,
             path: filePath,
           },
         });
@@ -678,6 +697,7 @@ describe("host online RPC retry semantics", () => {
       expect(requests.map((request) => request.command)).toEqual([
         {
           type: "host.read_file",
+          followRootSymlink: false,
           path: filePath,
         },
       ]);

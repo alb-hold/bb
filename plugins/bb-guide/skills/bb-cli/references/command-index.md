@@ -15,6 +15,14 @@ This index lists every command path that the core CLI registers, including alias
 - `bb settings ai-services show`
 - `bb settings ai-services set`
 - `bb settings ai-services test`
+- `bb settings writing`
+- `bb settings writing show`
+- `bb settings writing set`
+- `bb settings writing vocabulary`
+- `bb settings writing vocabulary add`
+- `bb settings writing vocabulary remove`
+- `bb settings writing correct`
+- `bb settings writing transcribe`
 - `bb settings cli-command`
 - `bb settings cli-command show`
 - `bb settings cli-command install`
@@ -75,6 +83,8 @@ This index lists every command path that the core CLI registers, including alias
 - `bb provider enable`
 - `bb provider disable`
 - `bb provider models`
+
+Use `--selected-model <model-id>` to discover its reasoning choices and include selected-only entries.
 
 ## machine
 
@@ -155,6 +165,7 @@ This index lists every command path that the core CLI registers, including alias
 - `bb terminal send`
 - `bb terminal resize`
 - `bb terminal output`
+- `bb terminal screen`
 - `bb terminal pipe`
 - `bb terminal read`
 - `bb terminal wait`
@@ -165,6 +176,8 @@ This index lists every command path that the core CLI registers, including alias
 
 For `focus`, `open-link`, `split`, and `move`, `deliveredClients` counts open
 app sockets the request was sent to; it does not confirm receipt or application.
+`focus`, `open-link`, `split`, `move`, and `bb thread open` send only to app
+clients viewing the calling thread unless `--all` is passed.
 
 ## thread
 
@@ -217,6 +230,7 @@ app sockets the request was sent to; it does not confirm receipt or application.
 - `bb thread restore-environment`
 - `bb thread pin`
 - `bb thread unpin`
+- `bb thread regenerate-title`
 - `bb thread delete`
 - `bb thread edit-message`
 - `bb thread tell`
@@ -253,21 +267,10 @@ app sockets the request was sent to; it does not confirm receipt or application.
 - `bb environment cleanup`
 - `bb environment show`
 - `bb environment get`
-- `bb environment status`
-- `bb environment branches`
 - `bb environment paths`
-- `bb environment diff`
-- `bb environment diff-files`
-- `bb environment diff-file`
-- `bb environment diff-patch`
 - `bb environment update`
 - `bb environment commit`
 - `bb environment archive-threads`
-- `bb environment pull-request`
-- `bb environment pull-request show`
-- `bb environment pull-request ready`
-- `bb environment pull-request draft`
-- `bb environment pull-request merge`
 
 ## file
 

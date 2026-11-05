@@ -15,10 +15,9 @@ import { nativeTerminalThreadQueryKey } from "@/hooks/queries/query-keys";
 import { REALTIME_OWNED_STATIC_CACHE_QUERY_POLICY } from "@/hooks/queries/query-policies";
 import { useSystemProviders } from "@/hooks/queries/system-queries";
 import { showMutationErrorToast } from "@/lib/mutation-errors";
-import {
-  lookupCachedThread,
-  useThreadEntryMap,
-} from "@/lib/plugin-sidebar-hooks";
+import { lookupCachedThread } from "@/lib/cached-thread";
+import { getPromptDraftAccessor } from "@/hooks/usePromptDraftStorage";
+import { useSidebarThreadEntries } from "@/lib/sidebar-thread-entries";
 import { sdk } from "@/lib/sdk";
 
 type NativeTerminalModeState = "chat" | "terminal" | "terminalOnly" | "unknown";
@@ -27,14 +26,18 @@ export interface NativeTerminalModeData {
   providerIdOf: (threadId: string) => string | null;
   isNativeProvider: (providerId: string) => boolean;
   modeOf: (threadId: string) => NativeTerminalModeState;
-  switchMode: (threadId: string, mode: NativeTerminalMode) => Promise<void>;
+  switchMode: (
+    threadId: string,
+    mode: NativeTerminalMode,
+    projectId: string,
+  ) => Promise<void>;
 }
 
 export function useNativeTerminalModeData({
   threadIds,
 }: PluginThreadActionDataInput): NativeTerminalModeData {
   const queryClient = useQueryClient();
-  const entries = useThreadEntryMap();
+  const entries = useSidebarThreadEntries();
   const providers = useSystemProviders().data;
   const nativeProvidersKey = (providers ?? [])
     .filter((provider) => provider.capabilities.supportsNativeTerminal === true)
@@ -99,8 +102,15 @@ export function useNativeTerminalModeData({
           ?.providerId ?? null,
       isNativeProvider: (providerId) => nativeProviders.has(providerId),
       modeOf: (threadId) => terminalModes.get(threadId) ?? "unknown",
-      switchMode: async (threadId, mode) => {
+      switchMode: async (threadId, mode, projectId) => {
         const view = await sdk.nativeTerminals.switchMode({ threadId, mode });
+        if (mode === "terminal") {
+          getPromptDraftAccessor({
+            kind: "thread",
+            projectId,
+            threadId,
+          }).clear();
+        }
         await applyNativeTerminalModeSwitch({ queryClient, threadId, view });
       },
     };
@@ -123,7 +133,7 @@ export function nativeTerminalModeItem({
       icon: "MessageSquare",
       run: async () => {
         try {
-          await data.switchMode(thread.id, "chat");
+          await data.switchMode(thread.id, "chat", thread.projectId);
           appToast.success("Thread is back in chat");
         } catch (error) {
           showMutationErrorToast({
@@ -144,7 +154,7 @@ export function nativeTerminalModeItem({
     ...(running ? { detail: "Stops the running turn first" } : {}),
     run: async () => {
       try {
-        await data.switchMode(thread.id, "terminal");
+        await data.switchMode(thread.id, "terminal", thread.projectId);
         navigate.toThread(thread.id);
       } catch (error) {
         showMutationErrorToast({

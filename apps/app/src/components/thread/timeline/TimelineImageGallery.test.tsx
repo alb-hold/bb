@@ -54,7 +54,6 @@ it("stops at each end of the loaded page without fetching older history, preserv
       <ThreadTimelineRows
         threadId="thread-1"
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
         hasOlderTimelineRows
         timelineRows={[
           conversationRow({
@@ -68,6 +67,7 @@ it("stops at each end of the loaded page without fetching older history, preserv
             sourceSeqStart: 10,
           }),
         ]}
+        threadIsActive={false}
       />
     </>,
   );
@@ -119,13 +119,13 @@ it("preserves occurrence identity as streaming images settle into cached blocks"
     <ThreadTimelineRows
       threadId="thread-1"
       threadRuntimeDisplayStatus="active"
-      workspaceRootPath={undefined}
       timelineRows={[
         conversationRow({
           id: "streaming",
           text: "![A](https://example.com/a.png)\n\n![B](https://example.com/a.png)\nStill streaming",
         }),
       ]}
+      threadIsActive={false}
     />,
   );
   fireEvent.click(screen.getByRole("img", { name: "B" }));
@@ -134,7 +134,6 @@ it("preserves occurrence identity as streaming images settle into cached blocks"
     <ThreadTimelineRows
       threadId="thread-1"
       threadRuntimeDisplayStatus="active"
-      workspaceRootPath={undefined}
       timelineRows={[
         conversationRow({
           id: "streaming",
@@ -142,6 +141,7 @@ it("preserves occurrence identity as streaming images settle into cached blocks"
           text: "![A](https://example.com/a.png)\n\n![B](https://example.com/a.png)\n\n![C](https://example.com/c.png)\nStill streaming",
         }),
       ]}
+      threadIsActive={false}
     />,
   );
   await waitFor(() => {
@@ -151,7 +151,6 @@ it("preserves occurrence identity as streaming images settle into cached blocks"
     <ThreadTimelineRows
       threadId="thread-1"
       threadRuntimeDisplayStatus="idle"
-      workspaceRootPath={undefined}
       timelineRows={[
         conversationRow({
           id: "streaming",
@@ -159,6 +158,7 @@ it("preserves occurrence identity as streaming images settle into cached blocks"
           text: "![A](https://example.com/a.png)\n\n![B](https://example.com/a.png)\n\n![C](https://example.com/c.png)\nFinished",
         }),
       ]}
+      threadIsActive={false}
     />,
   );
   fireEvent.click(screen.getByRole("button", { name: "Previous image" }));
@@ -172,8 +172,8 @@ it("preserves identical inline and footnote occurrences when normalized streamin
     <ThreadTimelineRows
       threadId="thread-1"
       threadRuntimeDisplayStatus={status}
-      workspaceRootPath={undefined}
       timelineRows={[conversationRow({ id: "streaming", text })]}
+      threadIsActive={false}
     />
   );
   const { rerender } = renderTimeline(timeline("active"));
@@ -210,7 +210,6 @@ it("includes lazy turn details only while expanded, including during the collaps
     <ThreadTimelineRows
       threadId="thread-1"
       threadRuntimeDisplayStatus="idle"
-      workspaceRootPath={undefined}
       timelineRows={[
         turnRow({
           id: "completed-turn",
@@ -224,6 +223,7 @@ it("includes lazy turn details only while expanded, including during the collaps
           sourceSeqStart: 13,
         }),
       ]}
+      threadIsActive={false}
     />,
   );
   const turn = container.querySelector(
@@ -256,7 +256,6 @@ it("never includes images suppressed in ordinary worker messages", () => {
     <ThreadTimelineRows
       threadId="thread-1"
       threadRuntimeDisplayStatus="idle"
-      workspaceRootPath={undefined}
       timelineRows={[
         conversationRow({
           id: "worker-message",
@@ -272,6 +271,7 @@ it("never includes images suppressed in ordinary worker messages", () => {
           sourceSeqStart: 2,
         }),
       ]}
+      threadIsActive={false}
     />,
   );
   expect(screen.queryByRole("img", { name: "Suppressed" })).toBeNull();
@@ -374,7 +374,6 @@ it("excludes clipped user-message images until expanded", () => {
     <ThreadTimelineRows
       threadId="thread-1"
       threadRuntimeDisplayStatus="idle"
-      workspaceRootPath={undefined}
       timelineRows={[
         conversationRow({
           id: "user",
@@ -389,6 +388,7 @@ it("excludes clipped user-message images until expanded", () => {
           sourceSeqStart: 2,
         }),
       ]}
+      threadIsActive={false}
     />,
   );
   fireEvent.click(screen.getByRole("img", { name: "Visible" }));
