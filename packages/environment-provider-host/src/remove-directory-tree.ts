@@ -282,6 +282,21 @@ export async function removeDirectoryTree(
         return "retained";
       }
       await hooks.afterEntryCheck?.(entry);
+      let beforeQuarantineInfo;
+      try {
+        beforeQuarantineInfo = await lstat(anchoredEntry);
+      } catch {
+        return "retained";
+      }
+      if (
+        beforeQuarantineInfo.dev !== checkedInfo.dev ||
+        beforeQuarantineInfo.ino !== checkedInfo.ino ||
+        beforeQuarantineInfo.ctimeMs !== checkedInfo.ctimeMs ||
+        beforeQuarantineInfo.mtimeMs !== checkedInfo.mtimeMs ||
+        beforeQuarantineInfo.size !== checkedInfo.size
+      ) {
+        return "retained";
+      }
       const quarantined = path.join(
         parentDirectory,
         `.bb-removing-${randomUUID()}`,
@@ -301,7 +316,6 @@ export async function removeDirectoryTree(
         if (
           movedInfo.dev !== checkedInfo.dev ||
           movedInfo.ino !== checkedInfo.ino ||
-          movedInfo.ctimeMs !== checkedInfo.ctimeMs ||
           movedInfo.mtimeMs !== checkedInfo.mtimeMs ||
           movedInfo.size !== checkedInfo.size
         ) {
