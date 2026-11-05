@@ -355,7 +355,7 @@ function prepareFirstAttachFontMetricsHarness(): void {
   );
 }
 
-function stubVisibleIntersectionObserver(): void {
+function stubVisibleIntersectionObserver(deferred = false): void {
   vi.stubGlobal(
     "IntersectionObserver",
     class {
@@ -367,16 +367,19 @@ function stubVisibleIntersectionObserver(): void {
       disconnect(): void {}
 
       observe(target: Element): void {
-        this.callback(
-          [
-            {
-              target,
-              isIntersecting: true,
-              intersectionRect: new DOMRect(0, 0, 354, 504),
-            } as IntersectionObserverEntry,
-          ],
-          this as unknown as IntersectionObserver,
-        );
+        const notify = () =>
+          this.callback(
+            [
+              {
+                target,
+                isIntersecting: true,
+                intersectionRect: new DOMRect(0, 0, 354, 504),
+              } as IntersectionObserverEntry,
+            ],
+            this as unknown as IntersectionObserver,
+          );
+        if (deferred) requestAnimationFrame(notify);
+        else notify();
       }
 
       unobserve(): void {}
@@ -2315,12 +2318,12 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
     referenceHost.remove();
   }, 30_000);
 
-  it.each(["ready", "timeout", "failure"] as const)(
+  it.each(["ready", "visibility", "timeout", "failure"] as const)(
     "sends one native cold-open resize when WebGL load ends with %s",
     async (outcome) => {
       prepareFirstAttachFontMetricsHarness();
       testState.touchEnabled = false;
-      stubVisibleIntersectionObserver();
+      stubVisibleIntersectionObserver(outcome === "visibility");
       type WebglModule = Awaited<
         ReturnType<typeof terminalModules.importTerminalWebglAddon>
       >;
@@ -2398,7 +2401,7 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
       );
       expect(resizes()).toHaveLength(1);
       expect(mounted.current?.options.lineHeight).toBe(
-        outcome === "ready" ? 1.12 : 1,
+        outcome === "ready" || outcome === "visibility" ? 1.12 : 1,
       );
       if (outcome === "ready") {
         act(() => loseContext());

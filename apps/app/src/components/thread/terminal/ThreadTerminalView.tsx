@@ -2266,6 +2266,7 @@ export function ThreadTerminalView({
                 if (terminal.options.lineHeight === lineHeight) return;
                 terminal.options.lineHeight = lineHeight;
                 scheduleFitRef.current?.();
+                if (renderer === "webgl") settleInitialRenderer();
               },
             },
           );
@@ -2487,19 +2488,23 @@ export function ThreadTerminalView({
           fitTerminal();
         });
       };
+      function settleInitialRenderer() {
+        if (disposed || initialRendererSettled || terminal === null) return;
+        clearTimeout(rendererDeadline);
+        initialRendererSettled = true;
+        webglLineHeight = terminal.options.lineHeight ?? 1;
+        fitTerminal();
+      }
       if (!retainNativeOutput) {
-        const settleInitialRenderer = () => {
-          if (disposed || initialRendererSettled || terminal === null) return;
-          clearTimeout(rendererDeadline);
-          initialRendererSettled = true;
-          webglLineHeight = terminal.options.lineHeight ?? 1;
-          fitTerminal();
-        };
         rendererDeadline = setTimeout(
           settleInitialRenderer,
           TERMINAL_RENDERER_SETTLE_MS,
         );
-        void initialRendererReady.then(settleInitialRenderer);
+        void initialRendererReady.then(() => {
+          if (webglRenderer === null || webglRenderer.renderer === "webgl") {
+            settleInitialRenderer();
+          }
+        });
       }
       fitTerminal();
       const fontSet = document.fonts;
