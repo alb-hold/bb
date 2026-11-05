@@ -96,6 +96,7 @@ export interface RunningTestServer {
   config: ServerRuntimeConfig;
   db: DbConnection;
   hub: NotificationHub;
+  terminalSessions: TerminalSessionLifecycle;
   machineAuth: Awaited<ReturnType<typeof createMachineAuthService>>;
   providerRegistry: ProviderRegistryService;
 }
@@ -356,6 +357,7 @@ async function startIntegrationServer(
     config,
     db,
     hub,
+    terminalSessions,
     machineAuth,
     providerRegistry,
     async close(): Promise<void> {
