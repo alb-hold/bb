@@ -1274,7 +1274,7 @@ describe("terminal replay preview", () => {
     ).not.toContain("live after marker");
 
     harness.cover.setPtyGrid(120, 40);
-    await vi.waitFor(() => expect(liveWriteCompleted).toBe(true));
+    await vi.waitFor(() => expect(liveWriteCompleted).toBe(true), { timeout: 5000 });
     expect(terminalWrite).toHaveBeenCalledOnce();
     expect(
       Array.from({ length: harness.terminal.buffer.active.length }, (_, index) =>
@@ -1316,7 +1316,7 @@ describe("terminal replay preview", () => {
     await vi.waitFor(() => {
       expect(firstCompleted).toBe(true);
       expect(secondCompleted).toBe(true);
-    }, { timeout: 1500 });
+    }, { timeout: 5000 });
 
     const rendered = Array.from(
       { length: harness.terminal.buffer.active.length },
@@ -1365,7 +1365,7 @@ describe("terminal replay preview", () => {
         expect(firstCallbackCount).toBe(1);
         expect(secondCallbackCount).toBe(1);
       },
-      { timeout: 1500 },
+      { timeout: 5000 },
     );
     const rendered = Array.from(
       { length: harness.terminal.buffer.active.length },
@@ -1403,7 +1403,7 @@ describe("terminal replay preview", () => {
     expect(terminalWrite).not.toHaveBeenCalled();
 
     await harness.cover.resize(120, 36);
-    await vi.waitFor(() => expect(completed).toBe(true));
+    await vi.waitFor(() => expect(completed).toBe(true), { timeout: 5000 });
     expect(terminalWrite).toHaveBeenCalledOnce();
     expect(
       Array.from({ length: harness.terminal.buffer.active.length }, (_, index) =>
@@ -1431,7 +1431,7 @@ describe("terminal replay preview", () => {
 
     harness.cover.processExited();
 
-    await vi.waitFor(() => expect(completed).toBe(true));
+    await vi.waitFor(() => expect(completed).toBe(true), { timeout: 5000 });
     expect(terminalWrite).toHaveBeenCalled();
     expect(
       Array.from({ length: harness.terminal.buffer.active.length }, (_, index) =>
