@@ -2315,8 +2315,99 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
     referenceHost.remove();
   }, 30_000);
 
+  it.each(["ready", "timeout", "failure"] as const)(
+    "sends one native cold-open resize when WebGL load ends with %s",
+    async (outcome) => {
+      prepareFirstAttachFontMetricsHarness();
+      testState.touchEnabled = false;
+      stubVisibleIntersectionObserver();
+      type WebglModule = Awaited<
+        ReturnType<typeof terminalModules.importTerminalWebglAddon>
+      >;
+      let resolveWebgl!: (module: WebglModule) => void;
+      let rejectWebgl!: (error: Error) => void;
+      vi.spyOn(terminalModules, "importTerminalWebglAddon").mockReturnValue(
+        new Promise<WebglModule>((resolve, reject) => {
+          resolveWebgl = resolve;
+          rejectWebgl = reject;
+        }),
+      );
+      let loseContext = () => {};
+      class WebglAddon {
+        activate(_terminal: Terminal): void {}
+        dispose(): void {}
+        onContextLoss(listener: () => void) {
+          loseContext = listener;
+          return { dispose: () => {} };
+        }
+      }
+      const mounted: { current: Terminal | null } = { current: null };
+      const open = Terminal.prototype.open;
+      let resolveOpened!: () => void;
+      const opened = new Promise<void>((resolve) => {
+        resolveOpened = resolve;
+      });
+      vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
+        this: Terminal,
+        element,
+      ) {
+        mounted.current = this;
+        open.call(this, element);
+        resolveOpened();
+      });
+      vi.spyOn(FitAddon.prototype, "proposeDimensions").mockImplementation(
+        () => ({
+          cols: 40,
+          rows: mounted.current?.options.lineHeight === 1.12 ? 10 : 12,
+        }),
+      );
+      const resizes = () =>
+        testState.socketMessages
+          .map((message) => JSON.parse(message))
+          .filter((message) => message.type === "resize" && message.claim !== true);
+      const settled = vi.spyOn(
+        TerminalWebSocketTransport.prototype,
+        "markLayoutSettled",
+      );
+      renderMobileTerminal();
+      await waitForReadiness(opened, "terminal did not mount");
+      if (outcome === "timeout") {
+        await waitForReadinessCondition(
+          () => expect(settled).toHaveBeenCalled(),
+          "terminal layout did not settle before late WebGL load",
+        );
+        await waitForReadinessCondition(
+          () => expect(resizes()).toHaveLength(1),
+          "terminal did not fit before late WebGL load",
+        );
+      }
+      await act(async () => {
+        if (outcome === "failure") rejectWebgl(new Error("GPU unavailable"));
+        else resolveWebgl({ WebglAddon } as WebglModule);
+      });
+      await waitForReadinessCondition(
+        () => expect(resizes()).toHaveLength(1),
+        "native cold open sent more than one resize",
+      );
+      await act(
+        () =>
+          new Promise<void>((resolve) => {
+            requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+          }),
+      );
+      expect(resizes()).toHaveLength(1);
+      expect(mounted.current?.options.lineHeight).toBe(
+        outcome === "ready" ? 1.12 : 1,
+      );
+      if (outcome === "ready") {
+        act(() => loseContext());
+        expect(mounted.current?.options.lineHeight).toBe(1);
+      }
+    },
+  );
+
   it("preserves terminal state when WebGL attaches after replay", async () => {
-    prepareMobileTerminal();
+    prepareFirstAttachFontMetricsHarness();
     testState.touchEnabled = false;
     stubVisibleIntersectionObserver();
     vi.spyOn(FitAddon.prototype, "proposeDimensions").mockReturnValue({
@@ -2359,6 +2450,16 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
     const terminal = mountedTerminal.current;
     if (!terminal) throw new Error("terminal did not mount");
     expect(terminal.options.lineHeight).toBe(1);
+    await waitForReadinessCondition(
+      () =>
+        expect(
+          testState.socketMessages.some((raw) => {
+            const message = JSON.parse(raw);
+            return message.type === "resize" && message.claim !== true;
+          }),
+        ).toBe(true),
+      "terminal did not fit before WebGL resolution",
+    );
     const history = Array.from(
       { length: 160 },
       (_, index) => `history ${String(index + 1).padStart(3, "0")}`,
@@ -2396,7 +2497,7 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
         ).toBe("webgl"),
       "WebGL renderer did not attach after replay",
     );
-    expect(terminal.options.lineHeight).toBe(1.12);
+    expect(terminal.options.lineHeight).toBe(1);
     expect({
       cols: terminal.cols,
       rows: terminal.rows,

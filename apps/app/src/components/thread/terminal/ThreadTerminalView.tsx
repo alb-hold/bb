@@ -552,6 +552,7 @@ type TerminalReplayNotice = "reconnecting" | "unavailable";
 
 const TERMINAL_RECONNECTING_NOTICE_DELAY_MS = 1_000;
 const TERMINAL_RECONNECTED_NOTICE_DURATION_MS = 1_500;
+const TERMINAL_RENDERER_SETTLE_MS = 150;
 const EMPTY_TERMINAL_PROMPT_TRACKER: TerminalPromptTrackerState = {
   commandMarks: [],
   lineHeight: 16,
@@ -1695,6 +1696,7 @@ export function ThreadTerminalView({
     let terminal: XTermTerminal | null = null;
     let webglRenderer: ReturnType<typeof loadTerminalWebglRenderer> | null =
       null;
+    let rendererDeadline: ReturnType<typeof setTimeout> | undefined;
     let fitAddon: FitAddon | null = null;
     let replayNextSeq: number | null = null;
     let replayNextSequence = 0;
@@ -1811,6 +1813,9 @@ export function ThreadTerminalView({
       fontSize: Math.max(12, terminalFontSizeRef.current),
       lineHeight: 1,
     };
+    let webglLineHeight = 1.12;
+    let initialRendererSettled = retainNativeOutput;
+    let initialLayoutSettled = false;
     let retainedOutputReplayed = sessionStatusRef.current !== "exited";
     let retainedOutputGrid: TerminalGridSize | null = null;
     let latestPtyGrid: TerminalGridSize = {
@@ -2239,7 +2244,9 @@ export function ThreadTerminalView({
           }
         })
         .catch(() => undefined);
-      void loadOptionalTerminalWebglAddon(importTerminalWebglAddon)
+      const initialRendererReady = loadOptionalTerminalWebglAddon(
+        importTerminalWebglAddon,
+      )
         .then((webglAddonModule) => {
           if (
             disposed ||
@@ -2257,7 +2264,7 @@ export function ThreadTerminalView({
               visible: false,
               onRendererChange: (renderer) => {
                 if (disposed || terminal === null) return;
-                const lineHeight = renderer === "webgl" ? 1.12 : 1;
+                const lineHeight = renderer === "webgl" ? webglLineHeight : 1;
                 if (terminal.options.lineHeight === lineHeight) return;
                 terminal.options.lineHeight = lineHeight;
                 scheduleFitRef.current?.();
@@ -2469,7 +2476,9 @@ export function ThreadTerminalView({
           return;
         }
         updateGridVisibility();
-        transport?.sendResize(fitted.cols, fitted.rows);
+        if (initialRendererSettled && initialLayoutSettled) {
+          transport?.sendResize(fitted.cols, fitted.rows);
+        }
       };
       const scheduleFit: TerminalFitScheduler = () => {
         if (resizeAnimationFrame !== null) {
@@ -2480,6 +2489,20 @@ export function ThreadTerminalView({
           fitTerminal();
         });
       };
+      if (!retainNativeOutput) {
+        const settleInitialRenderer = () => {
+          if (disposed || initialRendererSettled || terminal === null) return;
+          clearTimeout(rendererDeadline);
+          initialRendererSettled = true;
+          webglLineHeight = terminal.options.lineHeight ?? 1;
+          fitTerminal();
+        };
+        rendererDeadline = setTimeout(
+          settleInitialRenderer,
+          TERMINAL_RENDERER_SETTLE_MS,
+        );
+        void initialRendererReady.then(settleInitialRenderer);
+      }
       fitTerminal();
       const fontSet = document.fonts;
       if (fontSet !== undefined) {
@@ -3084,8 +3107,9 @@ export function ThreadTerminalView({
             return;
           }
           captureLiveViewportBeforeGridResize();
-          fitTerminal();
+          initialLayoutSettled = true;
           activeTransport.markLayoutSettled();
+          fitTerminal();
           if (hasRestoredViewport && !hasManualScrollIntent) {
             restoreViewport(true);
           }
@@ -3273,6 +3297,7 @@ export function ThreadTerminalView({
       webglVisibilityRef.current?.dispose();
       webglVisibilityRef.current = null;
       webglRenderer?.dispose();
+      clearTimeout(rendererDeadline);
       terminal?.dispose();
       terminalRef.current = null;
       scheduleFitRef.current = null;
