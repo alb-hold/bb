@@ -123,10 +123,45 @@ it("derives dark Codex indexed prompt backgrounds from the muted surface", () =>
   expect(dark).toContain("--ansi-8: var(--muted)");
 });
 
-it("lifts dim terminal output without changing the glyph metrics", () => {
-  const appCss = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../../../app.css"), "utf8");
-  const rule = appCss.match(/\[data-terminal-renderer\] \.xterm \.xterm-dim\s*\{([^}]+)\}/)?.[1];
-  expect(rule).toBeDefined();
-  expect(rule).toContain("opacity: 0.8");
-  expect(rule).not.toMatch(/font|height|width|padding/);
-});
+it.each(["light", "dark"] as const)(
+  "keeps faint output readable in %s mode",
+  async (mode) => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
+      measureText: (text: string) => ({ width: text.length * 9 }),
+    } as unknown as CanvasRenderingContext2D);
+    const background = themeColor(mode, "--sidebar");
+    const terminal = new Terminal({
+      ...TERMINAL_THEME_OPTIONS,
+      cols: 40,
+      rows: 2,
+      theme: buildTerminalThemeFromCssColors((name) =>
+        name.startsWith("--terminal-scrollbar")
+          ? undefined
+          : themeColor(mode, name),
+      ),
+    });
+    const container = document.createElement("div");
+    document.body.append(container);
+    try {
+      terminal.open(container);
+      await new Promise<void>((resolve) =>
+        terminal.write("\x1b[2;38;2;100;100;100mfaint-path\x1b[0m", resolve),
+      );
+      await waitFor(() =>
+        expect(container.querySelector(".xterm-rows")?.textContent).toContain(
+          "faint-path",
+        ),
+      );
+      const span = Array.from(
+        container.querySelectorAll(".xterm-rows span"),
+      ).find((node) => node.textContent?.includes("faint-path"))!;
+      const fg = luminance(getComputedStyle(span).color);
+      const bg = luminance(background);
+      expect(
+        (Math.max(fg, bg) + 0.05) / (Math.min(fg, bg) + 0.05),
+      ).toBeGreaterThanOrEqual(3.5);
+    } finally {
+      terminal.dispose();
+    }
+  },
+);

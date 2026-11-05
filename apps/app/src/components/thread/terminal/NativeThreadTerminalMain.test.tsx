@@ -161,7 +161,9 @@ describe("NativeThreadTerminalMain", () => {
     expect(screen.queryByText("Check terminal")).toBeNull();
     expect(container.querySelector(".ring-attention")).toBeNull();
     expect(
-      screen.getByTestId("terminal-panel").getAttribute("data-attention-banner"),
+      screen
+        .getByTestId("terminal-panel")
+        .getAttribute("data-attention-banner"),
     ).toBe("true");
     terminal.attention = null;
     rerender(<NativeThreadTerminalMain {...props} />);

@@ -280,15 +280,50 @@ function scrollTerminalAsUser(terminal: Terminal, line: number): void {
 }
 
 describe("ThreadTerminalView terminal viewport and focus", () => {
+  it.each([360, 390])(
+    "starts compact terminals at 13px at %s px",
+    async (width) => {
+      prepareMobileTerminal();
+      vi.stubGlobal("matchMedia", (query: string) => ({
+        matches:
+          query === "(pointer: coarse)" ||
+          (query === "(max-width: 767px)" && width <= 767),
+        media: query,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        onchange: null,
+        dispatchEvent: vi.fn(),
+      }));
+      vi.spyOn(FitAddon.prototype, "proposeDimensions").mockReturnValue({
+        cols: 40,
+        rows: 12,
+      });
+      renderMobileTerminal();
+      await waitFor(() =>
+        expect(
+          document
+            .querySelector("[data-terminal-font-size]")
+            ?.getAttribute("data-terminal-font-size"),
+        ).toBe("13"),
+      );
+    },
+  );
   it("uses relaxed cell line spacing when mounting the terminal", async () => {
     prepareMobileTerminal();
-    vi.spyOn(FitAddon.prototype, "proposeDimensions").mockReturnValue({ cols: 40, rows: 12 });
+    vi.spyOn(FitAddon.prototype, "proposeDimensions").mockReturnValue({
+      cols: 40,
+      rows: 12,
+    });
     let terminal: Terminal | null = null;
     const open = Terminal.prototype.open;
-    vi.spyOn(Terminal.prototype, "open").mockImplementation(function (this: Terminal, element) {
-      terminal = this;
-      open.call(this, element);
-    });
+    vi.spyOn(Terminal.prototype, "open").mockImplementation(
+      function (this: Terminal, element) {
+        terminal = this;
+        open.call(this, element);
+      },
+    );
     renderMobileTerminal();
     await waitFor(() => expect(terminal?.options.lineHeight).toBe(1.12));
   });

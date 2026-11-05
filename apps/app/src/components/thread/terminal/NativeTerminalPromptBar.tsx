@@ -15,6 +15,10 @@ import {
 import type { PromptInput } from "@bb/domain";
 import type { UploadedPromptAttachment } from "@bb/server-contract";
 import { Button } from "@bb/shared-ui/button";
+import {
+  COMPOSER_SHELL_CLASS,
+  ComposerSubmitButton,
+} from "@bb/shared-ui/composer-primitives";
 import { Icon } from "@bb/shared-ui/icon";
 import { cn } from "@bb/shared-ui/lib/utils";
 import {
@@ -546,8 +550,9 @@ export function NativeTerminalPromptBar({
       ) : null}
       <div
         className={cn(
-          "flex flex-col rounded-2xl border bg-background px-1.5 py-0.5 transition-[border-color,box-shadow] duration-200 focus-within:border-ring/60 motion-reduce:transition-none",
-          recording ? "border-destructive/40" : "border-input",
+          COMPOSER_SHELL_CLASS,
+          "flex flex-col px-1.5 py-0.5 transition-[border-color,box-shadow] duration-200 focus-within:border-ring/60 motion-reduce:transition-none",
+          recording && "border-destructive/40",
         )}
         data-native-composer=""
         onDragOver={onDragOver}
@@ -681,16 +686,11 @@ export function NativeTerminalPromptBar({
               )}
             </Button>
           ) : null}
-          <Button
-            type="submit"
-            size="icon"
-            className="size-9 shrink-0 rounded-full pointer-coarse:size-11"
+          <ComposerSubmitButton
             disabled={!canSend}
             aria-label={`Send to ${providerLabel}`}
             onMouseDown={(event) => event.preventDefault()}
-          >
-            <Icon name="ArrowUp" className="size-4" />
-          </Button>
+          />
         </div>
       </div>
     </form>

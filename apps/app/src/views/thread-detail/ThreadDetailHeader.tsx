@@ -264,8 +264,11 @@ export function ThreadDetailHeader({
             aria-label="Search terminal output"
             aria-keyshortcuts={findShortcut?.ariaKeyshortcuts}
             onClick={() => {
-              const pane = headerRef.current.closest("[data-split-pane-id]") ?? headerRef.current.parentElement;
-              const terminal = pane?.querySelector("[data-terminal-renderer]") ?? null;
+              const pane =
+                headerRef.current.closest("[data-split-pane-id]") ??
+                headerRef.current.parentElement;
+              const terminal =
+                pane?.querySelector("[data-terminal-renderer]") ?? null;
               commandRunner.dispatch("terminal.find", terminal);
             }}
           >
