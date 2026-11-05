@@ -400,7 +400,11 @@ export class TerminalDataPlaneChild {
         this.write(attach, JSON.stringify({ type: "pong" }));
         return;
       case "input":
-        this.forwardInput(attach, message.dataBase64);
+        this.forwardInput(
+          attach,
+          message.dataBase64,
+          message.isUserInput !== false,
+        );
         return;
       case "resize":
         this.send({
@@ -580,10 +584,7 @@ export class TerminalDataPlaneChild {
     }
   }
 
-  private sendReply(
-    attachId: string,
-    message: TerminalServerMessage,
-  ): void {
+  private sendReply(attachId: string, message: TerminalServerMessage): void {
     const attach = this.attaches.get(attachId);
     if (attach === undefined || attach.closed) {
       return;
@@ -823,13 +824,18 @@ export class TerminalDataPlaneChild {
     }
   }
 
-  private forwardInput(attach: BrowserAttach, dataBase64: string): void {
+  private forwardInput(
+    attach: BrowserAttach,
+    dataBase64: string,
+    isUserInput: boolean,
+  ): void {
     const terminalId = attach.terminalId;
     const now = this.now();
     const lastActivityAt = this.lastInputActivityAt.get(terminalId);
     if (
-      lastActivityAt === undefined ||
-      now - lastActivityAt >= TERMINAL_DATA_PLANE_INPUT_ACTIVITY_INTERVAL_MS
+      isUserInput &&
+      (lastActivityAt === undefined ||
+        now - lastActivityAt >= TERMINAL_DATA_PLANE_INPUT_ACTIVITY_INTERVAL_MS)
     ) {
       this.lastInputActivityAt.set(terminalId, now);
       this.send({ v: V, type: "terminal.input-activity", terminalId, at: now });

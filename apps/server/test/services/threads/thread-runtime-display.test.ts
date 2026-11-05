@@ -1307,9 +1307,10 @@ it.each([false, true])(
   },
 );
 
-it("keeps a native attention signal in both list and header state until input clears it", () => {
+it.each(["active", "idle"] as const)("preserves ambiguous native attention in list and header while %s until input clears it", (status) => {
   const { db, hostId, hub } = setup();
-  const { thread } = createLiveNativeReportingThread({ db, hostId });
+  const { thread: storedThread } = createLiveNativeReportingThread({ db, hostId });
+  const thread = { ...storedThread, status };
   const terminalId = getNativeTerminalThread(db, thread.id)!.terminalSessionId!;
   upsertTerminalAttention(db, {
     terminalSessionId: terminalId,

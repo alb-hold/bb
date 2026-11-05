@@ -34,6 +34,59 @@ afterEach(async () => {
 });
 
 describe("terminal attention persistence", () => {
+  it.each([true, undefined])(
+    "preserves attention and input time for generated replies, then clears on user input (%s)",
+    async (isUserInput) => {
+      const harness = await createTestAppHarness({
+        db: createMigratedConnection(),
+      });
+      harnesses.push(harness);
+      const { terminalId } = createAttentionTerminal(harness);
+      harness.deps.terminalSessions.notifyTerminal({
+        terminalId,
+        payload: { title: "Approval" },
+      });
+      const sent = vi
+        .spyOn(harness.hub, "sendDaemonSessionMessage")
+        .mockReturnValue(true);
+      const socket = { close() {}, send() {} };
+      const inputTime = () =>
+        harness.db.$client
+          .prepare(
+            "SELECT last_user_input_at AS at FROM terminal_sessions WHERE id = ?",
+          )
+          .get(terminalId);
+      const before = inputTime();
+      const dataBase64 = Buffer.from("\x1b[36;2R").toString("base64");
+      harness.deps.terminalSessions.handleBrowserTerminalMessage({
+        terminalId,
+        socket,
+        message: { type: "input", dataBase64, isUserInput: false },
+      });
+      expect(sent).toHaveBeenCalledWith(expect.any(String), {
+        type: "terminal.input",
+        terminalId,
+        dataBase64,
+      });
+      expect(inputTime()).toEqual(before);
+      expect(
+        getTerminalAttention(harness.db, terminalId)?.clearedAt,
+      ).toBeNull();
+      harness.deps.terminalSessions.handleBrowserTerminalMessage({
+        terminalId,
+        socket,
+        message: {
+          type: "input",
+          dataBase64: "eA==",
+          ...(isUserInput === undefined ? {} : { isUserInput }),
+        },
+      });
+      expect(inputTime()).not.toEqual(before);
+      expect(
+        getTerminalAttention(harness.db, terminalId)?.clearedAt,
+      ).not.toBeNull();
+    },
+  );
   it("keeps an unbound idle CLI neutral before and after input and binding", async () => {
     const harness = await createTestAppHarness({
       db: createMigratedConnection(),

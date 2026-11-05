@@ -1,3 +1,4 @@
+import { terminalClientMessageSchema } from "@bb/server-contract";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   TerminalServerMessage,
@@ -138,6 +139,38 @@ afterEach(() => {
 });
 
 describe("TerminalWebSocketTransport", () => {
+  it("validates the input classification at the browser boundary", () => {
+    const input = { type: "input", dataBase64: "eA==" };
+    expect(terminalClientMessageSchema.safeParse(input).success).toBe(true);
+    expect(
+      terminalClientMessageSchema.safeParse({ ...input, isUserInput: false })
+        .success,
+    ).toBe(true);
+    expect(
+      terminalClientMessageSchema.safeParse({ ...input, isUserInput: "false" })
+        .success,
+    ).toBe(false);
+  });
+
+  it("retains non-user classification through queued and immediate sends", () => {
+    const harness = createHarness();
+    harness.transport.start();
+    harness.transport.sendInput("eA==", undefined, false);
+    harness.sockets[0]?.open();
+    harness.transport.sendInput("eQ==", undefined, false);
+    harness.transport.sendInput("eg==");
+    expect(
+      harness.sockets[0]?.sent
+        .map((frame) => JSON.parse(frame))
+        .filter((frame) => frame.type === "input"),
+    ).toEqual([
+      { type: "input", dataBase64: "eA==", isUserInput: false },
+      { type: "input", dataBase64: "eQ==", isUserInput: false },
+      { type: "input", dataBase64: "eg==" },
+    ]);
+    harness.transport.dispose();
+  });
+
   it("timestamps queued acceptance at insertion and send after serialization", () => {
     let timestamp = 100;
     const inputAccepted = vi.fn();
