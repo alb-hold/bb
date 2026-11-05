@@ -143,6 +143,7 @@ vi.mock("@/components/promptbox/FollowUpPromptBox", async () => {
         pending?: boolean;
         providerRouting: { environmentId?: string; hostId?: string };
         model: {
+          substitutionNote?: string;
           active?: { model: string } | null;
           onChange: (model: string) => void;
         };
@@ -229,7 +230,7 @@ vi.mock("@/components/promptbox/FollowUpPromptBox", async () => {
         <div data-testid="command-suggestions">
           {`${typeahead.command.source.providerId}:${typeahead.command.source.commandScope}`}
         </div>
-        <div data-testid="selected-model">
+        <div data-testid="selected-model" title={execution.model.substitutionNote}>
           {execution.pending
             ? "Loading execution options"
             : execution.model.active?.model}

@@ -91,6 +91,7 @@ describe("ExecutionControls", () => {
         choice.querySelector("span")?.classList.contains("max-md:hidden"),
       ).toBe(name !== "Chat");
     }
+    expect(wrappingRow?.classList.contains("max-md:flex-col")).toBe(true);
     expect(chip.textContent).toContain("1M");
   });
 
@@ -178,6 +179,21 @@ describe("ExecutionControls", () => {
     ).toBe(true);
     expect(screen.queryByRole("status")).toBeNull();
     expect(screen.getByText("GPT-5")).not.toBeNull();
+  });
+
+  it("exposes the stored-model substitution on the model chip", () => {
+    const props = makeExecutionControlsProps();
+    const note = "gpt-5.2-codex isn't available; using GPT-5";
+    renderExecutionControls({
+      ...props,
+      model: { ...props.model, substitutionNote: note },
+    });
+    const chip = screen.getByRole("button", {
+      name: "Provider, model and reasoning",
+    });
+    expect(chip.querySelector("[title]")?.getAttribute("title")).toBe(note);
+    expect(chip.getAttribute("aria-description")).toBe(note);
+    expect(chip.textContent).toContain("GPT-5");
   });
 
   it("hides provider tabs when the provider is locked", () => {

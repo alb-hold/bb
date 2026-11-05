@@ -75,7 +75,7 @@ export function PermissionModePicker({
         role="status"
         aria-label="Loading permission mode"
         className={cn(
-          "flex h-6 w-28 shrink-0 items-center px-2 max-md:w-16 max-md:pointer-coarse:h-11",
+          "flex h-6 w-28 shrink-0 items-center px-2 max-md:pointer-coarse:h-11",
           className,
         )}
       >
@@ -98,7 +98,7 @@ export function PermissionModePicker({
       onChange={onChange}
       className={cn(
         LIST_HOVER_TRANSITION,
-        pending !== undefined && "w-28 max-md:w-16",
+        pending !== undefined && "w-28",
         className,
       )}
       caretClassName="text-subtle-foreground/75"

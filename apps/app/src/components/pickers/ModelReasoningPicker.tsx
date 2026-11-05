@@ -183,6 +183,7 @@ interface ModelReasoningPickerProps {
   onProviderPreviewResolved?: (value: ResolvedProviderPreview) => void;
   requireVerifiedProviderPreview?: boolean;
   hasMultipleProviders: boolean;
+  modelSubstitutionNote?: string;
   modelValue: string;
   modelOptions: readonly ModelPickerOption[];
   moreModelOptions?: readonly ModelPickerOption[];
@@ -218,6 +219,7 @@ export function ModelReasoningPicker({
   requireVerifiedProviderPreview = false,
   hasMultipleProviders,
   modelValue,
+  modelSubstitutionNote,
   modelOptions,
   moreModelOptions = [],
   modelIsLoading = false,
@@ -927,6 +929,7 @@ export function ModelReasoningPicker({
           ? `Provider, model and reasoning (${toggleShortcut.label})`
           : "Provider, model and reasoning"
       }
+      aria-description={modelSubstitutionNote}
       aria-keyshortcuts={toggleShortcut?.ariaKeyshortcuts}
       disabled={disabled}
       {...ModelReasoningMenu.intentProps}
@@ -941,7 +944,10 @@ export function ModelReasoningPicker({
         className,
       )}
     >
-      <span className={OPTION_TRIGGER_CONTENT_CLASS_NAME} title={triggerTitle}>
+      <span
+        className={OPTION_TRIGGER_CONTENT_CLASS_NAME}
+        title={modelSubstitutionNote ?? triggerTitle}
+      >
         {showLoadingTrigger ? (
           <>
             {TriggerIcon ? (

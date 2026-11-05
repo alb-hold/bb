@@ -1069,18 +1069,31 @@ describe("ThreadDetailPromptArea", () => {
     expect(screen.getByTestId("selected-permission").textContent).toBe("full");
   });
 
-  it("ends the placeholder if the catalog request never settles", () => {
+  it("keeps stored values if the catalog request never settles", () => {
     vi.useFakeTimers();
     try {
       mocks.modelCatalogIsSettled = false;
       mocks.modelCatalogIsVerified = false;
       mocks.defaultExecutionOptions = { model: "thread-stored-model", permissionMode: "full", reasoningLevel: "high", serviceTier: "default", source: "client/turn/requested" };
       renderPromptArea();
-      expect(screen.getByTestId("selected-model").textContent).toBe("Loading execution options");
+      expect(screen.getByTestId("selected-model").textContent).toBe("thread-stored-model");
       act(() => vi.advanceTimersByTime(5000));
       expect(screen.getByTestId("selected-model").textContent).toBe("thread-stored-model");
       expect(screen.getByTestId("selected-permission").textContent).toBe("full");
     } finally { vi.useRealTimers(); }
+  });
+
+  it("names the stored model when a verified catalog substitutes it", () => {
+    mocks.defaultExecutionOptions = { model: "gpt-5.2-codex", permissionMode: "full", reasoningLevel: "medium", serviceTier: "default", source: "client/turn/requested" };
+    renderPromptArea();
+    expect(screen.getByTestId("selected-model").textContent).toBe("gpt-5");
+    expect(screen.getByTestId("selected-model").title).toBe("gpt-5.2-codex isn't available; using GPT-5");
+  });
+
+  it("does not report substitution when the stored model remains selected", () => {
+    renderPromptArea();
+    expect(screen.getByTestId("selected-model").textContent).toBe("gpt-5");
+    expect(screen.getByTestId("selected-model").title).toBe("");
   });
 
   it("uses the real thread cache keys immediately", () => {

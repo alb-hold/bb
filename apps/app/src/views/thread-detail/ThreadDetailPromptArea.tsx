@@ -99,6 +99,7 @@ import type { WorkspaceCheckoutDisplay } from "@bb/shared-ui/lib/workspace-check
 import { useComposerTextEffects } from "@/lib/composer-text-effects";
 import { useLatestRef } from "@/hooks/useLatestRef";
 import { useThreadCreationOptions } from "@/hooks/useThreadCreationOptions";
+import { formatModelLabel } from "@/hooks/thread-creation-options/selection-state";
 import { useProjectDisplayName } from "@/hooks/queries/sidebar-navigation-query";
 import {
   useActiveComposerDraft,
@@ -1589,7 +1590,8 @@ export function ThreadDetailPromptArea({
   const bottomExecutionConfig = useMemo(
     () => ({
       pending:
-        (!hasConcreteDefaultExecutionOptions || catalogPending) &&
+        (!hasConcreteDefaultExecutionOptions ||
+          (executionOptionsPending && catalogPending)) &&
         !isHandoffSelection,
       providerRouting:
         thread.environmentId === null
@@ -1602,6 +1604,16 @@ export function ThreadDetailPromptArea({
         hasMultiple: hasMultipleProviders,
       },
       model: {
+        substitutionNote:
+          modelCatalogIsVerified &&
+          !isHandoffSelection &&
+          defaultExecutionOptions?.model &&
+          defaultExecutionOptions.model !== effectiveSelectedModel &&
+          ![...modelOptions, ...moreModelOptions].some(
+            (option) => option.value === defaultExecutionOptions.model,
+          )
+            ? `${defaultExecutionOptions.model} isn't available; using ${formatModelLabel(effectiveSelectedModel)}`
+            : undefined,
         active:
           !modelCatalogIsVerified &&
           !isHandoffSelection &&
@@ -1648,6 +1660,7 @@ export function ThreadDetailPromptArea({
     }),
     [
       hasConcreteDefaultExecutionOptions,
+      executionOptionsPending,
       modelCatalogIsVerified,
       catalogPending,
       defaultExecutionOptions,

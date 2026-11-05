@@ -36,6 +36,7 @@ interface ExecutionProviderConfig {
 }
 
 interface ExecutionModelConfig {
+  substitutionNote?: string;
   active?: { model: string } | null;
   selected: string;
   options: readonly ModelPickerOption[];
@@ -136,7 +137,7 @@ export const ExecutionControls = memo(function ExecutionControls({
     handoff !== undefined;
 
   return (
-    <div className="flex min-w-0 max-w-full flex-wrap max-md:flex-nowrap items-center gap-x-1 gap-y-2">
+    <div className="flex min-w-0 max-w-full flex-wrap max-md:flex-nowrap max-md:flex-col max-md:items-start max-md:gap-y-0 items-center gap-x-1 gap-y-2">
       {pending ? (
         <div
           role="status"
@@ -153,6 +154,7 @@ export const ExecutionControls = memo(function ExecutionControls({
           onSelectedProviderChange={provider.onChange}
           hasMultipleProviders={provider.hasMultiple ?? false}
           modelValue={model.active?.model ?? model.selected}
+          modelSubstitutionNote={model.substitutionNote}
           modelOptions={model.options}
           moreModelOptions={model.moreOptions}
           modelIsLoading={model.isLoading}
