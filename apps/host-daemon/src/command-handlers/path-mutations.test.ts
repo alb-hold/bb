@@ -5,7 +5,7 @@ import { existsSync } from "node:fs";
 
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   mkdirHostPath,
   moveHostPath,
@@ -22,9 +22,21 @@ import {
 } from "@bb/process-utils";
 
 const roots: string[] = [];
+const trackedPids = new Set<number>();
 const hasHeldDirectoryRemoval = existsSync(
   new URL("./remove-held-directory.ts", import.meta.url),
 );
+
+beforeEach(() => {
+  trackedPids.clear();
+  useProcReaderForTests({
+    ...hostProc,
+    readdir: async (name) =>
+      name === "/proc"
+        ? [String(process.pid), ...[...trackedPids].map(String)]
+        : hostProc.readdir(name),
+  });
+});
 
 async function makeRoot(): Promise<string> {
   const root = await fs.realpath(
@@ -37,6 +49,7 @@ async function makeRoot(): Promise<string> {
 afterEach(async () => {
   useCwdScanIoForTests(null);
   useProcReaderForTests(null);
+  trackedPids.clear();
   await Promise.all(
     roots
       .splice(0)
@@ -119,11 +132,11 @@ describe("confined host path mutations", () => {
         "python3",
         [
           "-c",
-          "import os,sys; fd=os.open(sys.argv[1], os.O_RDONLY); print('ready', flush=True); sys.stdin.readline(); os.fchdir(fd); open('late.txt','w').write('late'); print('written', flush=True); sys.stdin.readline()",
-          target,
+          "import os,sys; print('ready', flush=True); target=sys.stdin.readline().strip(); fd=os.open(target, os.O_RDONLY); os.fchdir(fd); open('late.txt','w').write('late'); print('written', flush=True); sys.stdin.readline()",
         ],
         { stdio: ["pipe", "pipe", "ignore"] },
       );
+      if (worker.pid !== undefined) trackedPids.add(worker.pid);
       let output = "";
       worker.stdout?.on("data", (chunk) => {
         output += chunk.toString();
@@ -138,8 +151,8 @@ describe("confined host path mutations", () => {
             directory: target,
             action: "remove worktree",
             recursive: true,
-            afterHolderScan: async () => {
-              worker.stdin?.write("go\n");
+            afterHolderScan: async (quarantine) => {
+              worker.stdin?.write(`${quarantine}\n`);
               await waitFor("written");
               worker.stdin?.write("done\n");
             },
@@ -267,6 +280,7 @@ describe("confined host path mutations", () => {
         },
       );
       workers.push(worker);
+      if (worker.pid !== undefined) trackedPids.add(worker.pid);
       await once(worker, "message");
     });
     try {
@@ -343,6 +357,7 @@ describe("confined host path mutations", () => {
           ["-e", "setInterval(() => {}, 1000); process.send('ready')"],
           { cwd: String(to), stdio: ["ignore", "ignore", "ignore", "ipc"] },
         );
+        if (worker.pid !== undefined) trackedPids.add(worker.pid);
         await once(worker, "message");
         workers.push(worker);
       });

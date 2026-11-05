@@ -10,6 +10,7 @@ import {
   dispatchOnlineRpcCommand,
 } from "./command-dispatch.js";
 import { RuntimeManager } from "./runtime-manager.js";
+import { hostProc, useProcReaderForTests } from "@bb/process-utils";
 
 it.for(["thread deletion", "orphan removal"] as const)(
   "%s refuses while a process works in nested thread storage, names it, stops nothing, and removes the folder once nothing works there",
@@ -49,6 +50,17 @@ it.for(["thread deletion", "orphan removal"] as const)(
     const siblingReady = once(sibling, "message");
     try {
       await Promise.all([childReady, siblingReady]);
+      useProcReaderForTests({
+        ...hostProc,
+        readdir: async (name) =>
+          name === "/proc"
+            ? [
+                String(process.pid),
+                ...(child.pid === undefined ? [] : [String(child.pid)]),
+                ...(sibling.pid === undefined ? [] : [String(sibling.pid)]),
+              ]
+            : hostProc.readdir(name),
+      });
       const options = makeDispatchOptions({
         runtimeManager: new RuntimeManager(),
         threadStorageRootPath: storageRoot,
@@ -73,7 +85,7 @@ it.for(["thread deletion", "orphan removal"] as const)(
               options,
               new AbortController().signal,
             );
-      await expect(run()).rejects.toThrow(/still working inside/);
+      await expect(run()).rejects.toThrow(/still working inside|still using it/);
       await expect(fs.stat(checkout)).resolves.toMatchObject({});
       expect(child.exitCode).toBeNull();
       expect(child.signalCode).toBeNull();
@@ -90,6 +102,7 @@ it.for(["thread deletion", "orphan removal"] as const)(
       expect(sibling.signalCode).toBeNull();
       await expect(fs.stat(neighbor)).resolves.toMatchObject({});
     } finally {
+      useProcReaderForTests(null);
       await Promise.all(
         [child, sibling].map(async (running) => {
           if (running.exitCode !== null || running.signalCode !== null) return;
