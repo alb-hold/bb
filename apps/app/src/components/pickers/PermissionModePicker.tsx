@@ -104,7 +104,7 @@ export function PermissionModePicker({
         value === "full" &&
           !pending &&
           !displayOverride &&
-          "rounded-md border border-solid border-attention/60 text-muted-foreground hover:text-muted-foreground data-[state=open]:text-muted-foreground",
+          "rounded-md border border-solid border-attention/60 text-muted-foreground",
         className,
       )}
       caretClassName="text-subtle-foreground/75"
