@@ -1971,9 +1971,7 @@ export function ThreadTerminalView({
           fitGrid: localFitGrid,
           fontSize: terminalFontSizeRef.current,
           isOwner: ownsTerminal,
-          minimumFontSize: getMediaQuerySnapshot(COMPACT_VIEWPORT_QUERY)
-            ? 13
-            : 12,
+          minimumFontSize: defaultFontSizeRef.current,
           running: sessionStatusRef.current === "running",
         });
         setShowFitControl(presentation.showFitControl);
