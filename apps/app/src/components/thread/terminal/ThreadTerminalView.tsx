@@ -413,7 +413,7 @@ function readResolvedCssColor(
 
 type TerminalCssVariableReader = (name: string) => string | undefined;
 
-export const TERMINAL_THEME_OPTIONS = { minimumContrastRatio: 4.5 };
+export const TERMINAL_THEME_OPTIONS = { minimumContrastRatio: 7 };
 
 export function resolveTerminalFontFamily(
   get: TerminalCssVariableReader,
@@ -1255,6 +1255,7 @@ export function ThreadTerminalView({
     [],
   );
   const isTouchDevice = useMediaQuery("(pointer: coarse)");
+  const isCompactViewport = useMediaQuery(COMPACT_VIEWPORT_QUERY);
   const attentionClearRequestRef = useRef<string | null>(null);
   const [controlActive, setControlActive] = useState(false);
   const controlActiveRef = useRef(false);
@@ -1293,8 +1294,11 @@ export function ThreadTerminalView({
   const [textSnapshotInitialLine, setTextSnapshotInitialLine] = useState<
     number | null
   >(null);
-  const [terminalFontSize, setTerminalFontSize] = useState(() => getMediaQuerySnapshot(COMPACT_VIEWPORT_QUERY) ? 13 : 12);
+  const [terminalFontSize, setTerminalFontSize] = useState(() =>
+    getMediaQuerySnapshot(COMPACT_VIEWPORT_QUERY) ? 13 : 12,
+  );
   const terminalFontSizeRef = useRef(terminalFontSize);
+  const defaultFontSizeRef = useRef(terminalFontSize);
   const longPressGestureRef = useRef<{
     cancel: () => void;
     move: (touches: readonly TerminalGestureTouch[]) => void;
@@ -1962,7 +1966,9 @@ export function ThreadTerminalView({
           fitGrid: localFitGrid,
           fontSize: terminalFontSizeRef.current,
           isOwner: ownsTerminal,
-          minimumFontSize: getMediaQuerySnapshot(COMPACT_VIEWPORT_QUERY) ? 13 : 12,
+          minimumFontSize: getMediaQuerySnapshot(COMPACT_VIEWPORT_QUERY)
+            ? 13
+            : 12,
           running: sessionStatusRef.current === "running",
         });
         setShowFitControl(presentation.showFitControl);
@@ -3385,6 +3391,19 @@ export function ThreadTerminalView({
       event.stopPropagation();
     }
   };
+  useEffect(() => {
+    const size = isCompactViewport ? 13 : 12;
+    const previousDefault = defaultFontSizeRef.current;
+    defaultFontSizeRef.current = size;
+    if (terminalFontSizeRef.current !== previousDefault) return;
+    terminalFontSizeRef.current = size;
+    setTerminalFontSize(size);
+    if (terminalRef.current !== null) {
+      terminalRef.current.options.fontSize = size;
+      scheduleFitRef.current?.();
+    }
+  }, [isCompactViewport]);
+
   const ensurePinchGesture = () => {
     pinchGestureRef.current ??= createTerminalPinchGesture({
       getFontSize: () => terminalFontSizeRef.current,

@@ -865,7 +865,3 @@
     min-width: 2.75rem;
   }
 }
-
-[data-terminal-renderer] .xterm .xterm-dim {
-  opacity: 0.8;
-}

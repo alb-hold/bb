@@ -164,6 +164,9 @@ describe("NativeTerminalPromptBar", () => {
     expect(input.classList.contains("placeholder:text-sm")).toBe(true);
     expect(input.classList.contains("min-h-7")).toBe(true);
     expect(form.classList.contains("pt-1")).toBe(true);
+    const shell = form.querySelector("[data-native-composer]")!;
+    expect(shell.classList.contains("rounded-xl")).toBe(true);
+    expect(shell.classList.contains("border-border")).toBe(true);
     expect(sendButton.classList.contains("pointer-coarse:size-11")).toBe(true);
     expect(
       screen.getByRole("button", { name: "Attach image" }).querySelector("svg"),

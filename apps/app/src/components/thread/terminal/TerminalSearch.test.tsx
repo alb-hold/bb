@@ -91,8 +91,18 @@ function watchTerminalKeys(textarea: HTMLTextAreaElement) {
 
 describe("TerminalSearch shortcuts and closed controls", () => {
   it("omits the floating trigger when the header owns search", () => {
-    render(<TerminalSearch addon={null} terminal={null} open={false} hideTrigger onOpenChange={vi.fn()} />);
-    expect(screen.queryByRole("button", { name: "Search terminal output" })).toBeNull();
+    render(
+      <TerminalSearch
+        addon={null}
+        terminal={null}
+        open={false}
+        hideTrigger
+        onOpenChange={vi.fn()}
+      />,
+    );
+    expect(
+      screen.queryByRole("button", { name: "Search terminal output" }),
+    ).toBeNull();
   });
   it("keeps an early search request open until the add-on arrives", () => {
     const addon = createSearchAddon();
@@ -125,7 +135,9 @@ describe("TerminalSearch shortcuts and closed controls", () => {
         </div>,
       ),
     ).not.toThrow();
-    expect(screen.getByRole("searchbox", { name: "Find in terminal" })).toBeTruthy();
+    expect(
+      screen.getByRole("searchbox", { name: "Find in terminal" }),
+    ).toBeTruthy();
   });
 
   it("does not open search shortcuts when the optional add-on failed to load", async () => {

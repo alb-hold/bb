@@ -19,7 +19,10 @@ import { createBbDesktopApi } from "@/test/bb-desktop-test-utils";
 import { MACOS_TITLE_BAR_TRAILING_TOGGLE_CLASS } from "@/lib/bb-desktop";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { MemoryRouter } from "react-router-dom";
-import { AppCommandProvider } from "@/components/commands/AppCommandProvider";
+import {
+  AppCommandProvider,
+  useAppCommandHandler,
+} from "@/components/commands/AppCommandProvider";
 import {
   ThreadActionCollectors,
   resetThreadActionRegistryForTest,
@@ -235,19 +238,68 @@ beforeEach(() => {
 });
 
 describe("ThreadDetailHeader", () => {
+  it("dispatches header search to its own pane terminal", () => {
+    const find = vi.fn<(target: EventTarget | null) => boolean>(() => true);
+    function TerminalHandler() {
+      useAppCommandHandler("terminal.find", ({ target }) => find(target));
+      return <div data-terminal-renderer="" />;
+    }
+    const { container } = render(
+      <AppCommandProvider>
+        <PaneContext.Provider value={PANE_CONTEXT}>
+          <section data-split-pane-id="native">
+            <ThreadDetailHeader
+              actionsMenu={null}
+              isSecondaryPanelOpen={false}
+              onToggleSecondaryPanel={vi.fn()}
+              thread={THREAD_TARGET}
+              threadTitle="Terminal"
+              hasNativeTerminal
+            />
+            <TerminalHandler />
+          </section>
+        </PaneContext.Provider>
+      </AppCommandProvider>,
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Search terminal output" }),
+    );
+    expect(find).toHaveBeenCalledWith(
+      container.querySelector("[data-terminal-renderer]"),
+    );
+  });
   it("puts native terminal search in the thread header", () => {
     const { container, rerender } = render(
       <PaneContext.Provider value={PANE_CONTEXT}>
-        <ThreadDetailHeader actionsMenu={null} isSecondaryPanelOpen={false} onToggleSecondaryPanel={vi.fn()} thread={THREAD_TARGET} threadTitle="Terminal" hasNativeTerminal />
+        <ThreadDetailHeader
+          actionsMenu={null}
+          isSecondaryPanelOpen={false}
+          onToggleSecondaryPanel={vi.fn()}
+          thread={THREAD_TARGET}
+          threadTitle="Terminal"
+          hasNativeTerminal
+        />
       </PaneContext.Provider>,
     );
-    expect(container.querySelector('header button[aria-label="Search terminal output"]')).not.toBeNull();
+    expect(
+      container.querySelector(
+        'header button[aria-label="Search terminal output"]',
+      ),
+    ).not.toBeNull();
     rerender(
       <PaneContext.Provider value={PANE_CONTEXT}>
-        <ThreadDetailHeader actionsMenu={null} isSecondaryPanelOpen={false} onToggleSecondaryPanel={vi.fn()} thread={THREAD_TARGET} threadTitle="Chat" />
+        <ThreadDetailHeader
+          actionsMenu={null}
+          isSecondaryPanelOpen={false}
+          onToggleSecondaryPanel={vi.fn()}
+          thread={THREAD_TARGET}
+          threadTitle="Chat"
+        />
       </PaneContext.Provider>,
     );
-    expect(screen.queryByRole("button", { name: "Search terminal output" })).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "Search terminal output" }),
+    ).toBeNull();
   });
   it.each([true, false])(
     "shows native pending input in the header: %s",
