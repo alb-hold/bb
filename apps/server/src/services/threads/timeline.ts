@@ -1205,7 +1205,7 @@ function selectStandardTimelineEventRows(
         threadId: thread.id,
         rows: selectedRows,
         sequenceStart,
-        beforeSequence: maxSeq + 1,
+        beforeSequence,
       });
       selectedRows = ensureTimelineWindowParentedRows(db, {
         threadId: thread.id,
