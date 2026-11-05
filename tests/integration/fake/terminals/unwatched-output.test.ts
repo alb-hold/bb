@@ -301,7 +301,10 @@ describe.sequential("terminal output nobody is watching", () => {
       expect(first.text()).not.toContain("FLOOD2_DONE");
 
       first.close();
-      await pause(500);
+      await waitUntil(
+        "the server to drop the detached browser",
+        () => !harness.hub.hasTerminalClients(terminalId),
+      );
       const lastSeenBeforeDetach =
         first.chunks[first.chunks.length - 1]?.seq ?? 0;
 
