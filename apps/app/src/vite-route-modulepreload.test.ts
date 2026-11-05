@@ -22,7 +22,9 @@ it("keeps route-only chunks out of startup HTML preloads", async () => {
         "index.html":
           '<html><head><script>localStorage.getItem("bb.theme")</script><script type="module" src="/main.js"></script></head></html>',
         "main.js":
-          'import { value } from "./shared.js"; window.value = value; window.route = () => import("./src/views/SplitWorkspaceRoute.tsx"); window.other = () => import("./other.js"); window.markdown = () => import("./src/components/ui/markdown-html.tsx"); window.queue = () => import("./src/components/promptbox/banner/QueuedMessagesList.tsx");',
+          'import { value } from "./shared.js"; window.value = value; window.thread = () => import("./src/views/thread-detail/ThreadDetailView.tsx"); window.route = () => import("./src/views/SplitWorkspaceRoute.tsx"); window.other = () => import("./other.js"); window.markdown = () => import("./src/components/ui/markdown-html.tsx"); window.queue = () => import("./src/components/promptbox/banner/QueuedMessagesList.tsx");',
+        "src/views/thread-detail/ThreadDetailView.tsx":
+          'import { value } from "../../../shared.js"; export default value;',
         "shared.js": "export const value = Math.random();",
         "src/views/SplitWorkspaceRoute.tsx":
           'import { value } from "../../shared.js"; import { extra } from "../../route-dep.js"; export default value + extra;',
@@ -62,6 +64,8 @@ it("keeps route-only chunks out of startup HTML preloads", async () => {
     expect(preloaded.some((href) => href.includes("other"))).toBe(false);
     expect(html).toContain("bb-prefetch-markdown-html");
     expect(html).toContain("bb-prefetch-queued-messages-list");
+    expect(html).toContain('id="bb-initial-thread-preload"');
+    expect(html).toMatch(/"route":\["\/app\/assets\/ThreadDetailView-[\w-]+\.js"/);
     expect(new Set(preloaded).size).toBe(preloaded.length);
     for (const href of preloaded) {
       expect(href.startsWith("/app/assets/")).toBe(true);
