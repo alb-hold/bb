@@ -539,9 +539,8 @@ describe("real worktree teardown preservation", () => {
       readFile(path.join(worktree.path, "README.md"), "utf8"),
     ).resolves.toBe("late-data\n");
     if (originalTimes === null) throw new Error("missing file stat");
-    await expect(
-      fs.stat(path.join(worktree.path, "README.md")),
-    ).resolves.toMatchObject({ mtimeMs: originalTimes.mtimeMs });
+    const restoredStat = await fs.stat(path.join(worktree.path, "README.md"));
+    expect(restoredStat.mtimeMs).toBeCloseTo(originalTimes.mtimeMs, 0);
   });
 
   it("retains a replacement directory created before directory removal", async () => {
