@@ -147,7 +147,7 @@ describe("arePromptEditorValuesEqual", () => {
   });
 });
 
-it("owns the stacked action row through stable composer slots", () => {
+it("owns the single phone action row through stable composer slots", () => {
   const source = readFileSync("src/PromptBoxInternal.tsx", "utf8");
   const css = readFileSync("../../apps/app/src/app.css", "utf8");
   const pluginCss = readFileSync("src/composer.css", "utf8");
@@ -170,20 +170,28 @@ it("owns the stacked action row through stable composer slots", () => {
       new RegExp(`\\[data-promptbox-${slot}\\]\\s*\\{([^}]+)`),
     )?.[1];
     expect(rule).toContain(`grid-column: ${column}`);
-    expect(rule).toContain("grid-row: 2");
+    expect(rule).toContain("grid-row: 1");
   }
   expect(css).not.toContain('aria-label="Prompt actions"');
 });
 
-
-it("pins mobile pending controls to the same two rows in the eager stylesheet", () => {
+it("pins pending execution controls to one phone row in the eager stylesheet", () => {
   const css = readFileSync("../../apps/app/src/app.css", "utf8");
+  const pluginCss = readFileSync("src/composer.css", "utf8");
+  for (const slot of [
+    "data-execution-controls-layout",
+    "data-model-reasoning-trigger",
+    "data-native-terminal-toggle",
+  ]) {
+    expect(pluginCss).not.toContain(slot);
+  }
   for (const [selector, declarations] of [
-    ['[data-execution-controls-layout="stacked"]', ["display: contents"]],
-    ['[data-model-reasoning-trigger]', ["grid-column: 1 / -1", "grid-row: 1"]],
-    ['[data-native-terminal-toggle]', ["grid-column: 2", "grid-row: 2", "height: auto"]],
+    ['[data-execution-controls-layout="stacked"]', ["display: flex", "grid-column: 2", "grid-row: 1", "min-width: 0", "flex-wrap: nowrap", "gap: 0"]],
+    ['[data-model-reasoning-trigger]', ["min-width: 0", "flex: 1 1 0%", "overflow: hidden"]],
+    ['[data-native-terminal-toggle]', ["height: auto"]],
     ['[data-native-terminal-toggle] > button', ["height: 2.75rem", "min-width: 2.75rem"]],
   ] as const) {
+    expect(css).toContain(selector + " {");
     const rule = css.slice(css.indexOf(selector + " {"));
     const body = rule.slice(0, rule.indexOf("}"));
     for (const declaration of declarations) expect(body).toContain(declaration);
