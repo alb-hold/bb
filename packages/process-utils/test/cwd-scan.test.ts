@@ -701,6 +701,15 @@ describe("scanProcessesWithCwdUnder", () => {
       expect(io.delays).toEqual([200]);
     });
 
+    it("clears an allowlisted helper absent from lsof when both ps snapshots show it alive", async () => {
+      const base = await dir();
+      const table = psLine(51, 501, "/usr/bin/ssh-agent");
+      const io = fakeMac({ ps: [table, table], lsof: {} });
+      const scan = await scanProcessesWithCwdUnder({ directories: [base] }, io);
+      expect(scan).toMatchObject({ status: "clear" });
+      expect(io.psCalls).toBe(2);
+    });
+
     it("still reports a holder lsof lists, and keeps the existing unknown results for lsof and ps failures", async () => {
       const base = await dir();
       const held = await scanProcessesWithCwdUnder(

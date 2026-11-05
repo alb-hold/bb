@@ -677,8 +677,13 @@ export async function inspectDarwinProcesses(
     for (const row of candidates) {
       const now = alive.get(row.pid);
       if (now !== undefined && now.comm === row.comm && now.uid === row.uid) {
-        invisible.push({ pid: row.pid, comm: row.comm });
-        rows.push({ ...row, klass: "unreadable-same-uid" });
+        if (UNREADABLE_SESSION_AGENT_COMMS.has(row.comm)) {
+          helpers.push({ pid: row.pid, comm: row.comm });
+          rows.push({ ...row, klass: "allowlisted-helper" });
+        } else {
+          invisible.push({ pid: row.pid, comm: row.comm });
+          rows.push({ ...row, klass: "unreadable-same-uid" });
+        }
       }
     }
   }
