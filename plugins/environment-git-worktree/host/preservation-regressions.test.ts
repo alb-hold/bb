@@ -20,7 +20,12 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { hostProc, useProcReaderForTests, type ProcReader } from "./holders.js";
+import {
+  hostProc,
+  scanWorktreeHolders,
+  useProcReaderForTests,
+  type ProcReader,
+} from "./holders.js";
 import { descendantsOnly } from "./descendants-only.js";
 import { removeWorktree } from "./worktree.js";
 
@@ -1031,9 +1036,10 @@ describe("real worktree teardown preservation", () => {
     "retains the worktree without signalling when an unreadable foreign cwd can traverse a group-execute-only ancestor",
     async () => {
       const root = await mkdtemp(
-        path.join(os.tmpdir(), "bb-preserve-worktree-group-"),
+        path.join("/tmp", "bb-preserve-worktree-group-"),
       );
       const worktree = await makeWorktree(root);
+      await fs.chmod(worktree.path, 0o710);
       const worker = spawn(
         process.execPath,
         ["-e", "setInterval(() => {}, 1000)"],
@@ -1046,10 +1052,23 @@ describe("real worktree teardown preservation", () => {
       });
       await fs.chmod(root, 0o710);
       const processGroup = process.getgid?.() ?? process.getegid?.() ?? 1000;
-      useProcReaderForTests(
-        foreignUnreadableCwdProc(worker.pid ?? -1, [processGroup]),
-      );
+      const proc = foreignUnreadableCwdProc(worker.pid ?? -1, [processGroup]);
+      useProcReaderForTests(proc);
+      const status = await proc.readFile(`/proc/${worker.pid}/status`);
+      const worktreeInfo = await fs.stat(worktree.path);
+      const statusGroups = /^Groups:\s*(.*)$/mu
+        .exec(status)?.[1]
+        ?.split(/\s+/u)
+        .map(Number);
+      expect(statusGroups).toContain(processGroup);
+      expect(worktreeInfo.mode & 0o777).toBe(0o710);
+      expect(worktreeInfo.gid).toBe(processGroup);
       const signal = vi.spyOn(process, "kill");
+
+      const scan = await scanWorktreeHolders(worktree.path);
+      expect(scan).toMatchObject({
+        status: "uncertain",
+      });
 
       await expect(remove(worktree)).rejects.toMatchObject({
         code: "worktree_preserved",
@@ -1074,6 +1093,7 @@ describe("real worktree teardown preservation", () => {
         path.join("/tmp", "bb-preserve-worktree-foreign-group-"),
       );
       const worktree = await makeWorktree(root);
+      await fs.chmod(worktree.path, 0o710);
       const worker = spawn(
         process.execPath,
         ["-e", "setInterval(() => {}, 1000)"],
