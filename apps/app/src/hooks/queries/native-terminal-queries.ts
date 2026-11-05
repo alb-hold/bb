@@ -1,3 +1,4 @@
+import { prefetchTerminalScreen } from "@/components/thread/terminal/terminal-screen-prefetch";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { PromptInput } from "@bb/domain";
 import type { NativeTerminalThread } from "@bb/server-contract";
@@ -14,6 +15,8 @@ export function useNativeTerminalThread(threadId: string) {
     queryFn: async ({ signal }) => {
       const view = await sdk.nativeTerminals.get({ threadId, signal });
       if (view !== null) {
+        if (view.terminal?.status === "running")
+          prefetchTerminalScreen(view.terminal.id, threadId);
         void LazyThreadTerminalPanel.preload();
         preloadTerminalModules();
       }

@@ -34,7 +34,7 @@ afterEach(async () => {
 });
 
 describe("terminal attention persistence", () => {
-  it("marks an untouched unbound CLI waiting after the delay and clears on input or binding", async () => {
+  it("keeps an unbound idle CLI neutral before and after input and binding", async () => {
     const harness = await createTestAppHarness({
       db: createMigratedConnection(),
     });
@@ -72,7 +72,7 @@ describe("terminal attention persistence", () => {
     harness.db.$client
       .prepare("UPDATE terminal_sessions SET created_at = ? WHERE id = ?")
       .run(Date.now() - 13000, terminalId);
-    expect(await waiting()).toBe(true);
+    expect(await waiting()).toBe(false);
     harness.db.$client
       .prepare(
         "UPDATE terminal_sessions SET last_user_input_at = ? WHERE id = ?",
@@ -84,7 +84,7 @@ describe("terminal attention persistence", () => {
         "UPDATE terminal_sessions SET last_user_input_at = ? WHERE id = ?",
       )
       .run(Date.now() - 12000, terminalId);
-    expect(await waiting()).toBe(true);
+    expect(await waiting()).toBe(false);
     recordNativeTerminalThreadSessionId(harness.db, {
       threadId,
       nativeSessionId: "bound-session",
@@ -127,10 +127,7 @@ describe("terminal attention persistence", () => {
     vi.advanceTimersByTime(11999);
     expect(notify).not.toHaveBeenCalled();
     vi.advanceTimersByTime(1);
-    expect(notify).toHaveBeenCalledWith(threadId, [
-      "terminals-changed",
-      "status-changed",
-    ]);
+    expect(notify).toHaveBeenCalledWith(threadId, ["terminals-changed"]);
     harness.deps.terminalSessions.recordDirectTerminalInput(terminalId);
     recordNativeTerminalThreadSessionId(harness.db, {
       threadId,

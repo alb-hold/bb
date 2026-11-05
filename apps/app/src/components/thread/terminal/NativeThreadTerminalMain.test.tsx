@@ -31,8 +31,8 @@ const hooks = vi.hoisted(() => ({
 
 vi.mock("@tanstack/react-query", () => ({ useQuery: hooks.profile }));
 
-vi.mock("@/components/secondary-panel/lazySecondaryPanelComponents", () => ({
-  LazyThreadTerminalPanel: Object.assign(
+vi.mock("./NativeTerminalPanel", () => ({
+  NativeTerminalPanel: Object.assign(
     ({
       onRetryStart,
       onCloseStart,
@@ -151,23 +151,21 @@ describe("NativeThreadTerminalMain", () => {
       view: { ...nativeView, nativeSessionId: null, terminal },
     };
     const { rerender } = render(<NativeThreadTerminalMain {...props} />);
-    expect(screen.queryByText(/may be waiting for setup/)).toBeNull();
+    expect(screen.queryByText(/hasn't started a session yet/)).toBeNull();
     act(() => vi.advanceTimersByTime(12000));
     expect(
-      screen.getByText(
-        "Check the terminal: Claude Code may be waiting for setup",
-      ),
+      screen.getByText("Claude Code hasn't started a session yet"),
     ).toBeTruthy();
     expect(screen.getByTestId("execution-defaults").textContent).toMatch(
       /^Default:/,
     );
     terminal.lastUserInputAt = Date.now();
     rerender(<NativeThreadTerminalMain {...props} />);
-    expect(screen.queryByText(/may be waiting for setup/)).toBeNull();
+    expect(screen.queryByText(/hasn't started a session yet/)).toBeNull();
     act(() => vi.advanceTimersByTime(11999));
-    expect(screen.queryByText(/may be waiting for setup/)).toBeNull();
+    expect(screen.queryByText(/hasn't started a session yet/)).toBeNull();
     act(() => vi.advanceTimersByTime(1));
-    expect(screen.queryByText(/may be waiting for setup/)).toBeTruthy();
+    expect(screen.queryByText(/hasn't started a session yet/)).toBeTruthy();
     rerender(
       <NativeThreadTerminalMain
         {...props}
@@ -175,13 +173,13 @@ describe("NativeThreadTerminalMain", () => {
       />,
     );
     act(() => vi.advanceTimersByTime(12000));
-    expect(screen.queryByText(/may be waiting for setup/)).toBeNull();
+    expect(screen.queryByText(/hasn't started a session yet/)).toBeNull();
   });
 
   it.each([
-    ["gpt-6-sol", "gpt-6-sol", "session-native", "Live:"],
-    ["gpt-6-sol", "different-model", "session-native", "Default:"],
-    ["gpt-6-sol", "gpt-6-sol", null, "Default:"],
+    ["gpt-6-sol", "gpt-6-sol", "session-native", "Last reported:"],
+    ["gpt-6-sol", "different-model", "session-native", "Last reported:"],
+    ["gpt-6-sol", "gpt-6-sol", null, "Last reported:"],
   ])(
     "labels provider reports without presenting stale or unbound reports as live (%s/%s/%s)",
     (model, requested, nativeSessionId, label) => {
@@ -232,10 +230,14 @@ describe("NativeThreadTerminalMain", () => {
       expect(screen.getByTestId("execution-defaults").textContent).toMatch(
         new RegExp(`^${label}`),
       );
-      if (label === "Live:")
+      if (label === "Last reported:")
         expect(screen.getByTestId("execution-defaults").textContent).toContain(
           "GPT-6-Sol",
         );
+      expect(screen.getByTestId("execution-defaults").textContent).toContain(
+        "Default: GPT-5",
+      );
+      expect(screen.queryByText(/^Live:/)).toBeNull();
     },
   );
 

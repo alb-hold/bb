@@ -1,3 +1,5 @@
+import { trackTerminalScrollability } from "./terminal-scrollbar";
+import { fetchTerminalScreen } from "./terminal-screen-prefetch";
 import {
   useCallback,
   useEffect,
@@ -427,6 +429,9 @@ export function buildTerminalThemeFromCssColors(
     foreground: get("--foreground"),
     cursor: get("--foreground"),
     cursorAccent: get("--sidebar"),
+    scrollbarSliderBackground: get("--terminal-scrollbar"),
+    scrollbarSliderHoverBackground: get("--terminal-scrollbar-hover"),
+    scrollbarSliderActiveBackground: get("--terminal-scrollbar-hover"),
     selectionBackground: get("--muted"),
     selectionInactiveBackground: get("--muted"),
     black: get("--ansi-0"),
@@ -1985,12 +1990,7 @@ export function ThreadTerminalView({
       const screenPromise =
         sessionRef.current.status === "exited" || pendingExitNotices.length > 0
           ? Promise.resolve(null)
-          : Promise.resolve(
-              sdk.terminals.experimental_screen({
-                terminalId: session.id,
-                threadId: session.threadId ?? undefined,
-              }),
-            ).catch(() => null);
+          : fetchTerminalScreen(session.id, session.threadId ?? undefined);
       const requiredModulesPromise = importTerminalModules();
       const [{ Terminal }, { FitAddon: LoadedFitAddon }, { Unicode11Addon }] =
         await requiredModulesPromise;
@@ -2154,6 +2154,7 @@ export function ThreadTerminalView({
       terminal.loadAddon(new Unicode11Addon());
       terminal.unicode.activeVersion = TERMINAL_UNICODE_VERSION;
       terminal.open(containerElement);
+      trackTerminalScrollability(terminal);
       const viewport =
         terminal.element?.querySelector<HTMLElement>(".xterm-viewport");
       if (retainNativeOutput && viewport) {

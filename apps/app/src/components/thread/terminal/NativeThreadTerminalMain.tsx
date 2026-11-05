@@ -11,7 +11,7 @@ import { Button } from "@bb/shared-ui/button";
 import { useMediaQuery } from "@bb/shared-ui/hooks/use-media-query";
 import type { NativeTerminalThread } from "@bb/server-contract";
 import type { ThreadRuntimeState } from "@bb/domain";
-import { LazyThreadTerminalPanel } from "@/components/secondary-panel/lazySecondaryPanelComponents";
+import { NativeTerminalPanel } from "./NativeTerminalPanel";
 import type { MarkdownPreviewLinkHandler } from "@/components/ui/markdown-link";
 import {
   useNativeTerminalThread,
@@ -61,13 +61,28 @@ export function NativeThreadTerminalMain({
     staleTime: 30_000,
   }).data;
   const report = profile?.executed;
-  const liveReport =
-    view.nativeSessionId !== null &&
-    report &&
-    (!profile.lastRequested || profile.lastRequested.model === report.model)
-      ? report
-      : null;
-  const metadata = liveReport ?? profile?.nextTurn;
+  const formatExecution = (metadata: typeof report) =>
+    [
+      metadata?.model ? formatModelLabel(metadata.model) : null,
+      metadata?.reasoningLevel
+        ? reasoningLevelLabel(metadata.reasoningLevel, undefined)
+        : null,
+      PERMISSION_MODE_OPTIONS.find(
+        (option) => option.value === metadata?.permissionMode,
+      )?.label,
+    ]
+      .filter(Boolean)
+      .join(" · ");
+  const executionLabel = [
+    report && formatExecution(report)
+      ? `Last reported: ${formatExecution(report)}`
+      : null,
+    profile?.nextTurn && formatExecution(profile.nextTurn)
+      ? `Default: ${formatExecution(profile.nextTurn)}`
+      : null,
+  ]
+    .filter(Boolean)
+    .join("; ");
   const activityNotice = useNativeActivityNotice(runtime);
   const terminalsQuery = useThreadTerminals(threadId);
   const interactionsQuery = useThreadPendingInteractions(threadId);
@@ -85,17 +100,6 @@ export function NativeThreadTerminalMain({
     threadIsRunning: isRunningThreadRuntimeDisplayStatus(runtime.displayStatus),
   });
   const providerLabel = view.displayName;
-  const executionLabel = [
-    metadata?.model ? formatModelLabel(metadata.model) : null,
-    metadata?.reasoningLevel
-      ? reasoningLevelLabel(metadata.reasoningLevel, undefined)
-      : null,
-    PERMISSION_MODE_OPTIONS.find(
-      (option) => option.value === metadata?.permissionMode,
-    )?.label,
-  ]
-    .filter(Boolean)
-    .join(" · ");
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     if (view.nativeSessionId !== null || session?.status !== "running") return;
@@ -143,10 +147,6 @@ export function NativeThreadTerminalMain({
   }, [paneIsFocused]);
 
   useEffect(() => {
-    void LazyThreadTerminalPanel.preload();
-  }, []);
-
-  useEffect(() => {
     if (state.kind === "live") return;
     void refetch();
   }, [refetch, state.kind, terminalsUpdatedAt]);
@@ -154,7 +154,7 @@ export function NativeThreadTerminalMain({
   if (state.kind === "live") {
     return (
       <div
-        className="flex h-full min-h-0 min-w-0 flex-col"
+        className="flex h-full min-h-0 min-w-0 flex-col bg-sidebar"
         data-native-terminal-thread={view.providerId}
         data-no-sidebar-swipe=""
         onFocus={onFocusWithin}
@@ -162,11 +162,11 @@ export function NativeThreadTerminalMain({
         {setupWaiting || session?.attention ? (
           <div
             role="status"
-            className="shrink-0 px-3 py-1 text-xs text-attention"
+            className={`shrink-0 px-3 py-1 text-xs ${session?.attention ? "text-attention" : "text-muted-foreground"}`}
           >
-            {setupWaiting
-              ? `Check the terminal: ${providerLabel} may be waiting for setup`
-              : "Terminal needs attention"}
+            {session?.attention
+              ? "Terminal needs attention"
+              : `${providerLabel} hasn't started a session yet`}
           </div>
         ) : null}
         <NativeTerminalWaitingBanner
@@ -179,7 +179,7 @@ export function NativeThreadTerminalMain({
           pendingPromptCount={waitingPrompts.length}
           threadId={threadId}
         />
-        <LazyThreadTerminalPanel
+        <NativeTerminalPanel
           autoFocus={paneIsFocused && !isTouchDevice && !composerEngaged}
           isPanelOpen
           isPanelPersistedOpen
@@ -191,11 +191,7 @@ export function NativeThreadTerminalMain({
         />
         <NativeTerminalPromptBar
           projectId={projectId}
-          executionLabel={
-            executionLabel
-              ? `${liveReport ? "Live" : "Default"}: ${executionLabel}`
-              : undefined
-          }
+          executionLabel={executionLabel || undefined}
           providerLabel={providerLabel}
           threadId={threadId}
         />
@@ -247,7 +243,7 @@ export function NativeThreadTerminalMain({
   if (session?.status === "exited" && !historyExpired) {
     return (
       <div
-        className="flex h-full min-h-0 min-w-0 flex-col"
+        className="flex h-full min-h-0 min-w-0 flex-col bg-sidebar"
         data-native-terminal-thread={view.providerId}
         data-no-sidebar-swipe=""
       >
@@ -273,7 +269,7 @@ export function NativeThreadTerminalMain({
           </Button>
         </div>
         <div className="min-h-0 flex-1">
-          <LazyThreadTerminalPanel
+          <NativeTerminalPanel
             retainNativeOutput
             autoFocus={false}
             isPanelOpen

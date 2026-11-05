@@ -2832,6 +2832,8 @@ describe("buildTerminalThemeFromCssColors", () => {
 
     expect(theme.background).toBe("--sidebar");
     expect(theme.cursorAccent).toBe("--sidebar");
+    expect(theme.scrollbarSliderBackground).toBe("--terminal-scrollbar");
+    expect(theme.scrollbarSliderHoverBackground).toBe("--terminal-scrollbar-hover");
   });
 });
 

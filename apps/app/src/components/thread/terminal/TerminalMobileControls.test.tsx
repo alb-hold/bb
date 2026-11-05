@@ -38,6 +38,7 @@ describe("TerminalMobileControls", () => {
       name: "Terminal keyboard controls",
     });
     const buttons = Array.from(controls.querySelectorAll("button"));
+    expect(controls.querySelector(".bg-gradient-to-l")).toBeNull();
 
     expect(
       buttons.slice(0, 3).map((button) => button.getAttribute("aria-label")),

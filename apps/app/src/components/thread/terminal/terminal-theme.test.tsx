@@ -78,7 +78,11 @@ it.each(["light", "dark"] as const)(
       ...TERMINAL_THEME_OPTIONS,
       cols: 80,
       rows: 5,
-      theme: buildTerminalThemeFromCssColors((name) => themeColor(mode, name)),
+      theme: buildTerminalThemeFromCssColors((name) =>
+        name.startsWith("--terminal-scrollbar")
+          ? undefined
+          : themeColor(mode, name),
+      ),
     });
     const container = document.createElement("div");
     document.body.append(container);
