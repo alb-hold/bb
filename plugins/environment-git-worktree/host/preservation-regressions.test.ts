@@ -507,23 +507,25 @@ describe("real worktree teardown preservation", () => {
   it("retains a file modified after quarantine even when its mtime is restored", async () => {
     const worktree = await makeWorktree();
     useProcReaderForTests(descendantsOnly(hostProc, -1));
-    let handle: Awaited<ReturnType<typeof fs.open>> | null = null;
-    let originalTimes: { atimeMs: number; mtimeMs: number } | null = null;
+    const state: {
+      handle?: Awaited<ReturnType<typeof fs.open>>;
+      originalTimes?: { atimeMs: number; mtimeMs: number };
+    } = {};
     try {
       await expect(
         remove(worktree, {
           afterEntryCheck: async (entry) => {
             if (!entry.endsWith("/README.md")) return;
             const opened = await fs.open(entry, "r+");
-            handle = opened;
-            originalTimes = await opened.stat();
+            state.handle = opened;
+            state.originalTimes = await opened.stat();
           },
           afterEntryQuarantined: async (entry, quarantined) => {
-            const opened = handle;
-            const times = originalTimes;
-            if (!entry.endsWith("/README.md") || opened === null) return;
+            const opened = state.handle;
+            const times = state.originalTimes;
+            if (!entry.endsWith("/README.md") || opened === undefined) return;
             await opened.writeFile("late-data\n");
-            if (times === null) throw new Error("missing file stat");
+            if (times === undefined) throw new Error("missing file stat");
             await utimes(
               quarantined,
               times.atimeMs / 1000,
@@ -533,12 +535,13 @@ describe("real worktree teardown preservation", () => {
         }),
       ).rejects.toMatchObject({ code: "worktree_preserved" });
     } finally {
-      await handle?.close();
+      await state.handle?.close();
     }
     await expect(
       readFile(path.join(worktree.path, "README.md"), "utf8"),
     ).resolves.toBe("late-data\n");
-    if (originalTimes === null) throw new Error("missing file stat");
+    const originalTimes = state.originalTimes;
+    if (originalTimes === undefined) throw new Error("missing file stat");
     const restoredStat = await fs.stat(path.join(worktree.path, "README.md"));
     expect(restoredStat.mtimeMs).toBeCloseTo(originalTimes.mtimeMs, 0);
   });

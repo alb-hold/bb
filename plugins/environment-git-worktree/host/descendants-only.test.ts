@@ -18,6 +18,7 @@ function table(parents: Record<string, number>): ProcReader {
     lstatId: reject,
     statId: reject,
     statAccess: reject,
+    hasExtendedAcl: async () => false,
     creationMs: reject,
     subdirectories: reject,
   };
