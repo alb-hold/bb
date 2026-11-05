@@ -36,13 +36,22 @@ export async function linuxPathHasExtendedAcl(
   target: string,
 ): Promise<boolean | null> {
   try {
-    const { stdout } = await execFileAsync("getfacl", ["-cp", "--", target], {
-      timeout: 5_000,
-      maxBuffer: 1024 * 1024,
-    });
-    return stdout.split("\n").some((line) =>
-      /^(?:user|group):[^:]([^:]*):/.test(line) || /^mask::/.test(line),
+    const { stdout } = await execFileAsync(
+      "python3",
+      [
+        "-c",
+        "import errno,os,sys\ntry:\n os.getxattr(sys.argv[1], 'system.posix_acl_access')\n print('1')\nexcept OSError as e:\n print('0') if e.errno in (errno.ENODATA, errno.ENOTSUP, errno.EOPNOTSUPP) else sys.exit(1)",
+        target,
+      ],
+      {
+        timeout: 5_000,
+        maxBuffer: 1024 * 1024,
+      },
     );
+    const value = stdout.trim();
+    if (value === "1") return true;
+    if (value === "0") return false;
+    return null;
   } catch {
     return null;
   }

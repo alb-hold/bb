@@ -273,10 +273,16 @@ export async function findStructuralReasons(
   }
   const bisectRefs = await runGit(
     ["for-each-ref", "--format=%(refname)", "refs/bisect"],
-    { cwd: identity.path, env: gitEnvironment(identity.path), allowFailure: true },
+    {
+      cwd: identity.path,
+      env: gitEnvironment(identity.path, identity.gitDir, identity.commonDir),
+      allowFailure: true,
+    },
   );
   if (bisectRefs.exitCode !== 0) {
-    reasons.push("could not check for refs/bisect state");
+    reasons.push(
+      `could not check for refs/bisect state${bisectRefs.stderr.trim() ? ` (${bisectRefs.stderr.trim()})` : ""}`,
+    );
   } else if (bisectRefs.stdout.trim() !== "") {
     reasons.push("has refs/bisect state");
   }
