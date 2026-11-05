@@ -31,6 +31,7 @@ import {
 import { useIsSidebarFramed } from "@/components/ui/sidebar.js";
 import { cn } from "@bb/shared-ui/lib/utils";
 import {
+  useAppCommandRunner,
   useAppCommandHandler,
   useAppCommandShortcut,
 } from "@/components/commands/AppCommandProvider";
@@ -80,6 +81,7 @@ interface ThreadDetailHeaderProps {
   threadTitle: string;
   needsInput?: boolean;
   checkTerminal?: boolean;
+  hasNativeTerminal?: boolean;
   workspaceOpenButton?: ReactNode;
 }
 
@@ -93,9 +95,12 @@ export function ThreadDetailHeader({
   threadTitle,
   needsInput = false,
   checkTerminal = false,
+  hasNativeTerminal = false,
   workspaceOpenButton,
   contextCardButton,
 }: ThreadDetailHeaderProps) {
+  const commandRunner = useAppCommandRunner();
+  const findShortcut = useAppCommandShortcut("terminal.find");
   const isCompactViewport = useIsCompactViewport();
   const threadId = thread.id;
   const headerActions = useThreadHeaderActionEntries(thread);
@@ -250,6 +255,23 @@ export function ThreadDetailHeader({
         className="flex items-center gap-1"
         data-thread-header-workflow-actions=""
       >
+        {hasNativeTerminal ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className={HEADER_ICON_BUTTON_CLASS}
+            aria-label="Search terminal output"
+            aria-keyshortcuts={findShortcut?.ariaKeyshortcuts}
+            onClick={() => {
+              const pane = headerRef.current.closest("[data-split-pane-id]") ?? headerRef.current.parentElement;
+              const terminal = pane?.querySelector("[data-terminal-renderer]") ?? null;
+              commandRunner.dispatch("terminal.find", terminal);
+            }}
+          >
+            <Icon name="Search" className="size-4" />
+          </Button>
+        ) : null}
         {pluginActions}
         {!usesResponsiveActionOverflow && workspaceOpenButton ? (
           <span className="inline-flex" data-thread-header-responsive-action="">

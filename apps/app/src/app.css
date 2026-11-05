@@ -816,3 +816,7 @@
   :where([data-testid="root-compose-desktop-recents"]) {
   display: none;
 }
+
+[data-terminal-renderer] .xterm .xterm-dim {
+  opacity: 0.8;
+}

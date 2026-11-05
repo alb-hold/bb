@@ -505,7 +505,7 @@ export function NativeTerminalPromptBar({
   return (
     <form
       className={cn(
-        "mx-auto flex w-full shrink-0 flex-col gap-1.5 bg-sidebar px-4 pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]",
+        "mx-auto flex w-full shrink-0 flex-col gap-1.5 bg-sidebar px-4 pt-1 pb-[max(0.5rem,env(safe-area-inset-bottom))]",
         CONTENT_MEASURE_MAX_WIDTH_CLASS,
       )}
       data-native-terminal-prompt=""
@@ -546,7 +546,7 @@ export function NativeTerminalPromptBar({
       ) : null}
       <div
         className={cn(
-          "flex flex-col rounded-2xl border bg-background px-1.5 pt-1 pb-1 transition-[border-color,box-shadow] duration-200 focus-within:border-ring/60 motion-reduce:transition-none",
+          "flex flex-col rounded-2xl border bg-background px-1.5 py-0.5 transition-[border-color,box-shadow] duration-200 focus-within:border-ring/60 motion-reduce:transition-none",
           recording ? "border-destructive/40" : "border-input",
         )}
         data-native-composer=""
@@ -567,7 +567,7 @@ export function NativeTerminalPromptBar({
         )}
         <div
           aria-label="Terminal execution"
-          className="truncate px-2 text-xs text-muted-foreground"
+          className="truncate px-2 text-xs leading-tight text-muted-foreground"
           title={executionLabel ?? providerLabel}
         >
           {executionLabel ?? providerLabel}
@@ -601,7 +601,7 @@ export function NativeTerminalPromptBar({
           }}
           onKeyDown={onKeyDown}
           onPaste={onPaste}
-          className="max-h-48 min-h-8 w-full resize-none bg-transparent px-2 py-1 text-base md:text-sm text-foreground field-sizing-content placeholder:text-sm placeholder:text-muted-foreground focus-visible:outline-none"
+          className="max-h-48 min-h-7 w-full resize-none bg-transparent px-2 py-1 text-base md:text-sm text-foreground field-sizing-content placeholder:text-sm placeholder:text-muted-foreground focus-visible:outline-none"
         />
         <AssistStrip
           suggestions={assist.suggestions}

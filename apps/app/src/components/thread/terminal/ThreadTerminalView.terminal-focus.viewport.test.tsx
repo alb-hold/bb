@@ -280,6 +280,18 @@ function scrollTerminalAsUser(terminal: Terminal, line: number): void {
 }
 
 describe("ThreadTerminalView terminal viewport and focus", () => {
+  it("uses relaxed cell line spacing when mounting the terminal", async () => {
+    prepareMobileTerminal();
+    vi.spyOn(FitAddon.prototype, "proposeDimensions").mockReturnValue({ cols: 40, rows: 12 });
+    let terminal: Terminal | null = null;
+    const open = Terminal.prototype.open;
+    vi.spyOn(Terminal.prototype, "open").mockImplementation(function (this: Terminal, element) {
+      terminal = this;
+      open.call(this, element);
+    });
+    renderMobileTerminal();
+    await waitFor(() => expect(terminal?.options.lineHeight).toBe(1.12));
+  });
   it("keeps a bottom-following client at the bottom after output and a shared resize", async () => {
     prepareMobileTerminal();
     let fitCols = 40;

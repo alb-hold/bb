@@ -90,6 +90,10 @@ function watchTerminalKeys(textarea: HTMLTextAreaElement) {
 }
 
 describe("TerminalSearch shortcuts and closed controls", () => {
+  it("omits the floating trigger when the header owns search", () => {
+    render(<TerminalSearch addon={null} terminal={null} open={false} hideTrigger onOpenChange={vi.fn()} />);
+    expect(screen.queryByRole("button", { name: "Search terminal output" })).toBeNull();
+  });
   it("keeps an early search request open until the add-on arrives", () => {
     const addon = createSearchAddon();
     const textarea = document.createElement("textarea");

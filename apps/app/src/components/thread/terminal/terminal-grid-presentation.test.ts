@@ -175,6 +175,18 @@ it.each([
     ).toEqual({ scale, panHorizontally, showFitControl });
   },
 );
+it.each([360, 390])("keeps compact terminal text at 13px at %s px", (width) => {
+  const presentation = terminalSurfacePresentation({
+    grid: { cols: 120, rows: 40 },
+    fitGrid: { cols: Math.floor(width / 7.8), rows: 30 },
+    fontSize: 13,
+    minimumFontSize: 13,
+    isOwner: false,
+    running: true,
+  });
+  expect(presentation.scale * 13).toBe(13);
+  expect(presentation.panHorizontally).toBe(true);
+});
 it("does not offer a size claim before measurement", () => {
   expect(
     terminalSurfacePresentation({

@@ -122,3 +122,11 @@ it("derives dark Codex indexed prompt backgrounds from the muted surface", () =>
   const dark = css.slice(css.indexOf(".dark {"));
   expect(dark).toContain("--ansi-8: var(--muted)");
 });
+
+it("lifts dim terminal output without changing the glyph metrics", () => {
+  const appCss = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../../../app.css"), "utf8");
+  const rule = appCss.match(/\[data-terminal-renderer\] \.xterm \.xterm-dim\s*\{([^}]+)\}/)?.[1];
+  expect(rule).toBeDefined();
+  expect(rule).toContain("opacity: 0.8");
+  expect(rule).not.toMatch(/font|height|width|padding/);
+});
