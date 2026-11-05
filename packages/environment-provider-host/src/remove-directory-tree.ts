@@ -255,6 +255,19 @@ export async function removeDirectoryTree(
     ) {
       return "retained";
     }
+    let beforeRemovalHookCalled = false;
+    if (info.isDirectory() && expectedSiblingNames !== undefined) {
+      await hooks.beforeEntryRemoval?.(entry);
+      beforeRemovalHookCalled = true;
+      let siblings: string[];
+      try {
+        siblings = await readdir(parentDirectory);
+      } catch {
+        return "retained";
+      }
+      if (siblings.some((sibling) => !expectedSiblingNames.has(sibling)))
+        return "retained";
+    }
     if (!info.isDirectory()) {
       let beforeRemovalInfo;
       try {
@@ -527,7 +540,7 @@ export async function removeDirectoryTree(
         return "retained";
       }
       if (!sameDirectory(openedInfo, currentInfo)) return "retained";
-      await hooks.beforeEntryRemoval?.(entry);
+      if (!beforeRemovalHookCalled) await hooks.beforeEntryRemoval?.(entry);
       if (expectedSiblingNames !== undefined) {
         let siblings: string[];
         try {
