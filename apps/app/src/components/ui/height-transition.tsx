@@ -400,6 +400,7 @@ export function AutoHeightContainer({
     <AutoHeightSnapContext.Provider value={snapToContentHeight}>
       <div
         ref={wrapperRef}
+        data-compact-touch-height=""
         style={{
           overflowX: "visible",
           overflowY: "clip",

@@ -78,3 +78,13 @@ it("expands timeline hit areas without increasing their layout heights", () => {
   expect(timeline).toContain("--compact-touch-summary-end: -4px");
   expect(timeline).toContain("button[data-compact-touch-summary]::after");
 });
+
+it("keeps the last summary hit area inside the animated clip without adding layout height", () => {
+  const block = css.slice(css.lastIndexOf("@media (width < 48rem)"));
+  expect(block).toMatch(
+    /\[data-compact-touch-height\]:has\(\[data-compact-touch-summary\]\)\s*\{\s*margin-block-end: -20px;\s*\}/,
+  );
+  expect(block).toMatch(
+    /\[data-compact-touch-height\]:has\(\[data-compact-touch-summary\]\) > div\s*\{\s*padding-block-end: 20px;\s*\}/,
+  );
+});

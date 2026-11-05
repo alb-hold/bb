@@ -944,6 +944,14 @@
     overflow: visible;
   }
 
+  [data-compact-touch-height]:has([data-compact-touch-summary]) {
+    margin-block-end: -20px;
+  }
+
+  [data-compact-touch-height]:has([data-compact-touch-summary]) > div {
+    padding-block-end: 20px;
+  }
+
   button[data-compact-touch-summary]::after {
     inset-block: -4px var(--compact-touch-summary-end, -20px);
   }

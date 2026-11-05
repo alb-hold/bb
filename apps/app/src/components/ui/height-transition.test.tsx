@@ -111,6 +111,8 @@ describe("AutoHeightContainer", () => {
     });
 
     expect(wrapper.style.height).toBe("120px");
+    expect(wrapper.hasAttribute("data-compact-touch-height")).toBe(true);
+    expect(wrapper.style.overflowY).toBe("clip");
   });
 
   it("snap-syncs an authoritative layout revision", () => {
