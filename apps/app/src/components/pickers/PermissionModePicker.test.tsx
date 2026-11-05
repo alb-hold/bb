@@ -60,7 +60,10 @@ describe("PermissionModePicker", () => {
     );
     const trigger = screen.getByRole("button", { name: "Permission mode" });
     expect(trigger.textContent).toContain("Full Access");
-    expect(trigger.classList.contains("border-warning-text/30")).toBe(true);
+    expect(trigger.classList.contains("border-attention/60")).toBe(true);
+    expect(trigger.classList.contains("border-solid")).toBe(true);
+    expect(trigger.classList.contains("border-none")).toBe(false);
+    expect(trigger.classList.contains("bg-attention")).toBe(false);
     expect(trigger.classList.contains("text-muted-foreground")).toBe(true);
   });
 

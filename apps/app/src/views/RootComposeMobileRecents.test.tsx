@@ -358,6 +358,9 @@ describe("mobile recents section", () => {
       </TestProviders>,
     );
 
+    expect(
+      screen.getByText("Recent").classList.contains("text-subtle-foreground"),
+    ).toBe(true);
     const label = screen.getByText("Recent").parentElement;
     if (!(label instanceof HTMLElement)) {
       throw new Error("Expected a Recent label wrapper");
