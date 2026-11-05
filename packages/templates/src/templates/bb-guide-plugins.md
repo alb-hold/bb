@@ -141,6 +141,9 @@ Each bundled plugin documents its commands and behavior in its own skill.
   behind the bb server with quota-aware failover. Run
   `bb plugin enable account-pool`, then `bb pool account add`,
   `bb pool status`, and `bb pool routing`; see the `account-pool` skill.
+  `bb pool route issue|revoke|list` mints revocable per-actor routes for an
+  external `claude`; issuing and revoking need the thread's own pool token on
+  `--proof-stdin`.
 - Keep Awake (builtin): prevents idle sleep on selected macOS and Windows
   hosts while bb runs; closing the lid still sleeps.
   `bb keep-awake status|enable|disable [--json]`, `bb keep-awake hosts all`,

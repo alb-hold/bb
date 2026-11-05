@@ -15,6 +15,13 @@ import {
   type ThreadLookup,
 } from "./thread-tokens.js";
 
+async function actorToken(
+  store: ThreadTokenStore,
+  ...args: Parameters<ThreadTokenStore["forActor"]>
+): Promise<string> {
+  return (await store.forActor(...args)).token;
+}
+
 const directories: string[] = [];
 const sweepClockCleanups: Array<() => void> = [];
 afterEach(async () => {
@@ -2391,4 +2398,217 @@ it("revokes a later archived thread even when every thread failed a prior sweep 
   expect(await threads.authenticate(tokenOf(archived).provider)).toBeNull();
   expect(await threads.authenticate(tokenOf(hangA).provider)).not.toBeNull();
   expect(await threads.authenticate(tokenOf(hangB).provider)).not.toBeNull();
+});
+
+it("issues actor credentials per thread, actor, and provider with strict private records", async () => {
+  const { directory, threads, route, hostToken } = await fixture();
+  const alpha = { ...route, actorId: "elyra:term_alpha.1" };
+  const beta = { ...route, actorId: "elyra:term_beta.1" };
+  const settled = await Promise.allSettled([
+    actorToken(threads, alpha, hostToken),
+    actorToken(threads, alpha, hostToken),
+  ]);
+  expect(settled.filter((entry) => entry.status === "rejected")).toHaveLength(1);
+  const winner = settled.find((entry) => entry.status === "fulfilled");
+  const first = winner?.status === "fulfilled" ? winner.value : "";
+  expect(first).toMatch(/^[A-Za-z0-9_-]{43}$/u);
+  const other = await actorToken(threads, beta, hostToken);
+  const codex = await actorToken(threads, { ...alpha, provider: "codex" }, hostToken);
+  expect(new Set([first, other, codex]).size).toBe(3);
+  expect(await threads.authenticateActor(first, "claude")).toEqual(alpha);
+  expect(await threads.authenticateActor(first, "codex")).toBeNull();
+  expect(await threads.authenticateActor(other)).toEqual(beta);
+  const thread = await threads.forThread(route, hostToken);
+  expect(await threads.authenticate(first)).toBeNull();
+  expect(await threads.authenticateNested(first)).toBeNull();
+  expect(await threads.authenticateActor(thread)).toBeNull();
+  expect(await threads.authenticateActor(null)).toBeNull();
+  expect(await threads.authenticateActor("A".repeat(43))).toBeNull();
+  await expect(
+    actorToken(threads, { ...alpha, actorId: "bad actor/../id" }, hostToken),
+  ).rejects.toThrow();
+  const files = (await fs.readdir(directory)).filter((name) =>
+    name.startsWith("scoped-actor-route-"),
+  );
+  expect(files).toHaveLength(3);
+  for (const file of files) {
+    expect((await fs.stat(path.join(directory, file))).mode & 0o777).toBe(0o600);
+  }
+  const record: unknown = JSON.parse(
+    await fs.readFile(path.join(directory, files[0] ?? ""), "utf8"),
+  );
+  expect(
+    Object.keys(z.record(z.string(), z.unknown()).parse(record)).sort(),
+  ).toEqual([
+    "accountId",
+    "actorId",
+    "generation",
+    "hostId",
+    "hostTokenDigest",
+    "provider",
+    "threadId",
+    "tokenDigest",
+  ]);
+  expect(JSON.stringify(threads.listActors())).not.toContain(first);
+  expect(threads.listActors()).toHaveLength(3);
+});
+
+it("rotates, re-snapshots, and revokes actor credentials", async () => {
+  const { directory, threads, route, hostToken } = await fixture();
+  const actor = { ...route, actorId: "actor-one" };
+  const first = await actorToken(threads, actor, hostToken);
+  const rotated = await actorToken(threads, actor, hostToken, { rotate: true });
+  expect(rotated).not.toBe(first);
+  expect(await threads.authenticateActor(first)).toBeNull();
+  expect(await threads.authenticateActor(rotated)).toEqual(actor);
+  const pinned = { ...actor, accountId: "11111111-1111-4111-8111-111111111111" };
+  const repinned = await actorToken(threads, pinned, hostToken, { rotate: true });
+  expect(repinned).not.toBe(rotated);
+  expect(await threads.authenticateActor(rotated)).toBeNull();
+  expect(await threads.authenticateActor(repinned)).toEqual(pinned);
+  const secondThread = await actorToken(threads, 
+    { ...actor, threadId: "thr_two" },
+    hostToken,
+  );
+  expect(await threads.revokeActor({ actorId: "actor-one", threadId: "thr_two" })).toBe(1);
+  expect(await threads.authenticateActor(secondThread)).toBeNull();
+  expect(await threads.authenticateActor(repinned)).toEqual(pinned);
+  expect(await threads.revokeActor({ actorId: "actor-one" })).toBe(1);
+  expect(await threads.authenticateActor(repinned)).toBeNull();
+  expect(await threads.revokeActor({ actorId: "actor-one" })).toBe(0);
+  expect(
+    (await fs.readdir(directory)).filter((name) =>
+      name.startsWith("scoped-actor-route-"),
+    ),
+  ).toEqual([]);
+});
+
+it("revokes actor credentials with their thread, sweep, and machine token rotation", async () => {
+  const { directory, hosts, threads, route, hostToken, advance } = await fixture();
+  const actor = { ...route, actorId: "actor-one" };
+  const token = await actorToken(threads, actor, hostToken);
+  const kept = await actorToken(threads, { ...actor, threadId: "thr_kept" }, hostToken);
+  const lookup: ThreadLookup = async (threadId) =>
+    threadId === route.threadId ? "gone" : "live";
+  expect(await threads.sweepThreads(lookup)).toMatchObject({ checked: 2, revoked: 1 });
+  expect(await threads.authenticateActor(token)).toBeNull();
+  expect(await threads.authenticateActor(kept)).toEqual({
+    ...actor,
+    threadId: "thr_kept",
+  });
+  await expect(actorToken(threads, actor, hostToken)).rejects.toThrow("archived");
+  await threads.removeThread("thr_kept");
+  expect(await threads.authenticateActor(kept)).toBeNull();
+  expect(
+    (await fs.readdir(directory)).filter((name) =>
+      name.startsWith("scoped-actor-route-"),
+    ),
+  ).toEqual([]);
+  const live = { ...actor, threadId: "thr_live" };
+  const before = await actorToken(threads, live, hostToken);
+  await hosts.rotate(route.hostId);
+  expect(await threads.authenticateActor(before)).toEqual(live);
+  advance(10 * 60_000 + 1);
+  expect(await threads.authenticateActor(before)).toBeNull();
+  const reloaded = new ThreadTokenStore(directory, hosts);
+  await reloaded.initialize([route.hostId]);
+  expect(await reloaded.authenticateActor(before)).toBeNull();
+  expect(reloaded.listActors()).toEqual([]);
+});
+
+it("reloads valid actor credentials and drops malformed or unenrolled ones", async () => {
+  const { directory, hosts, threads, route, hostToken } = await fixture();
+  const actor = { ...route, actorId: "actor-one" };
+  const token = await actorToken(threads, actor, hostToken);
+  const goneToken = await hosts.forHost("host-gone");
+  await actorToken(threads, { ...actor, hostId: "host-gone" }, goneToken);
+  const [file] = (await fs.readdir(directory)).filter(
+    (name) => name.startsWith("scoped-actor-route-") && name.includes("host-one"),
+  );
+  const malformed = path.join(directory, "scoped-actor-route-bad-v0.json");
+  await fs.writeFile(malformed, JSON.stringify({ ...JSON.parse(await fs.readFile(path.join(directory, file ?? ""), "utf8")), extra: 1 }), { mode: 0o600 });
+  const reloaded = new ThreadTokenStore(directory, hosts);
+  await reloaded.initialize([route.hostId]);
+  expect(await reloaded.authenticateActor(token)).toEqual(actor);
+  expect(reloaded.listActors()).toEqual([{ ...actor, generation: expect.stringMatching(/^[a-f0-9]{16}$/u) }]);
+  await expect(fs.stat(malformed)).rejects.toThrow();
+  const archivedThreads = new ThreadTokenStore(directory, hosts);
+  await archivedThreads.initialize([route.hostId]);
+  await archivedThreads.removeThread(route.threadId);
+  const afterRestart = new ThreadTokenStore(directory, hosts);
+  await afterRestart.initialize([route.hostId]);
+  expect(await afterRestart.authenticateActor(token)).toBeNull();
+});
+
+it("derives a non-secret generation that changes on rotation and gates conditional revocation", async () => {
+  const { threads, route, hostToken } = await fixture();
+  const actor = { ...route, actorId: "launch:gen" };
+  const first = await threads.forActor(actor, hostToken);
+  expect(first.generation).toMatch(/^[a-f0-9]{16}$/u);
+  expect(first.token).not.toContain(first.generation);
+  await expect(threads.forActor(actor, hostToken)).rejects.toThrow(
+    "already exists",
+  );
+  const rotated = await threads.forActor(actor, hostToken, { rotate: true });
+  expect(rotated.generation).not.toBe(first.generation);
+  expect(threads.listActors()[0]?.generation).toBe(rotated.generation);
+  expect(
+    await threads.revokeActor({
+      actorId: actor.actorId,
+      threadId: actor.threadId,
+      generation: first.generation,
+    }),
+  ).toBe(0);
+  expect(await threads.authenticateActor(rotated.token)).not.toBeNull();
+  expect(
+    await threads.revokeActor({
+      actorId: actor.actorId,
+      generation: rotated.generation,
+    }),
+  ).toBe(1);
+  expect(await threads.authenticateActor(rotated.token)).toBeNull();
+  await expect(
+    threads.revokeActor({ actorId: actor.actorId, generation: "nothex" }),
+  ).rejects.toThrow();
+});
+
+it("never writes an actor route token to disk and reloads it by digest after a restart", async () => {
+  const { directory, hosts, threads, route, hostToken } = await fixture();
+  const actor = { ...route, actorId: "launch:digest" };
+  const issued = await threads.forActor(actor, hostToken);
+  const files = (await fs.readdir(directory)).filter((name) =>
+    name.startsWith("scoped-actor-route-"),
+  );
+  expect(files).toHaveLength(1);
+  const text = await fs.readFile(path.join(directory, files[0] ?? ""), "utf8");
+  expect(text).not.toContain(issued.token);
+  expect(text).not.toMatch(/(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])/u);
+  const restarted = new ThreadTokenStore(directory, hosts);
+  await restarted.initialize([route.hostId]);
+  expect(await restarted.authenticateActor(issued.token)).toEqual(actor);
+  expect(restarted.listActors()[0]?.generation).toBe(issued.generation);
+});
+
+it("loads a legacy actor route that stored its raw token and rewrites it without the token", async () => {
+  const { directory, hosts, threads, route, hostToken } = await fixture();
+  const actor = { ...route, actorId: "launch:legacy" };
+  const issued = await threads.forActor(actor, hostToken);
+  const file = path.join(
+    directory,
+    (await fs.readdir(directory)).filter((name) =>
+      name.startsWith("scoped-actor-route-"),
+    )[0] ?? "",
+  );
+  const stored = z.record(z.string(), z.unknown()).parse(
+    JSON.parse(await fs.readFile(file, "utf8")),
+  );
+  const { tokenDigest, generation, ...rest } = stored;
+  expect(typeof tokenDigest).toBe("string");
+  expect(typeof generation).toBe("string");
+  await fs.writeFile(file, JSON.stringify({ ...rest, token: issued.token }));
+  const restarted = new ThreadTokenStore(directory, hosts);
+  await restarted.initialize([route.hostId]);
+  expect(await restarted.authenticateActor(issued.token)).toEqual(actor);
+  expect(restarted.listActors()[0]?.generation).toBe(issued.generation);
+  expect(await fs.readFile(file, "utf8")).not.toContain(issued.token);
 });
