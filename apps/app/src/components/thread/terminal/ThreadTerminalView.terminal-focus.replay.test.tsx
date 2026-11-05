@@ -2005,43 +2005,54 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
 
   it("backs off instead of spinning when the retried replay also stalls", async () => {
     shortenReplayHoldTimeout(600);
+    let notifyRetry = () => {};
+    const nextRetry = () =>
+      new Promise<void>((resolve) => {
+        notifyRetry = resolve;
+      });
+    let retried = nextRetry();
+    const retry = TerminalWebSocketTransport.prototype.retry;
+    const retryAttempt = vi
+      .spyOn(TerminalWebSocketTransport.prototype, "retry")
+      .mockImplementation(function (this: TerminalWebSocketTransport) {
+        vi.useFakeTimers();
+        retry.call(this);
+        notifyRetry();
+      });
     const { preview, session } = await mountReplayAfterCheckpointedOpen();
+    testState.deferSocketOpen = true;
     let known = testState.sockets.length;
-    const stallTimes: number[] = [];
-    const openTimes: number[] = [];
-    for (const round of [1, 2]) {
-      await waitForReadinessCondition(
-        () =>
-          expect(preview()?.dataset.terminalReplayHoldExpired).toBeDefined(),
-        `hold backstop did not fire in round ${round}`,
-      );
-      stallTimes.push(performance.now());
+    const advance = (ms: number) =>
+      act(async () => {
+        await vi.advanceTimersByTimeAsync(ms);
+      });
+    for (const delay of [100, 250, 500]) {
+      await waitForReadiness(retried, "replay hold did not expire");
+      await advance(0);
+      expect(retryAttempt).toHaveBeenCalledTimes(known - 1);
       expect(pageText()).toContain("Reconnecting");
       expect(pageText()).not.toContain("Terminal output unavailable");
-      await waitForReadinessCondition(
-        () => expect(testState.sockets).toHaveLength(known + 1),
-        `stalled replay did not reconnect in round ${round}`,
-      );
-      openTimes.push(performance.now());
+      await advance(delay - 1);
+      expect(testState.sockets).toHaveLength(known);
+      await advance(1);
+      expect(testState.sockets).toHaveLength(known + 1);
       const next = testState.sockets[known];
       if (!next) throw new Error("retry socket is missing");
       known += 1;
-      await waitForReadiness(next.opened, "retry socket did not open");
-      next.receive({
-        type: "attached",
-        session,
-        replayStartSeq: 4,
-        nextSeq: 6,
+      vi.clearAllTimers();
+      vi.useRealTimers();
+      retried = nextRetry();
+      await act(async () => {
+        next.open();
+        next.receive({
+          type: "attached",
+          session,
+          replayStartSeq: 4,
+          nextSeq: 6,
+        });
       });
-      await waitForReadinessCondition(
-        () =>
-          expect(preview()?.dataset.terminalReplayHoldExpired).toBeUndefined(),
-        `retry socket ${round} did not start a new held replay`,
-      );
+      expect(preview()?.dataset.terminalReplayHoldExpired).toBeUndefined();
     }
-    const firstDelay = (openTimes[0] ?? 0) - (stallTimes[0] ?? 0);
-    const secondDelay = (openTimes[1] ?? 0) - (stallTimes[1] ?? 0);
-    expect(secondDelay).toBeGreaterThan(firstDelay + 100);
     expect(pageText()).toContain("Reconnecting");
     expect(pageText()).not.toContain("Terminal output unavailable");
     expectPaintedScreenKept(preview);
