@@ -102,14 +102,14 @@ vi.mock("@/lib/attachment-local-previews", () => ({
   registerLocalAttachmentPreview: vi.fn(),
 }));
 
-function renderBar() {
+function renderBar(executionLabel = "Native CLI · GPT-5 · Full access") {
   const { wrapper: Wrapper, queryClient } = createQueryClientTestHarness();
   render(
     <Wrapper>
       <NativeTerminalPromptBar
         projectId="proj-n"
         providerLabel="Native CLI"
-        executionLabel="Native CLI · GPT-5 · Full access"
+        executionLabel={executionLabel}
         threadId="thr-n"
       />
     </Wrapper>,
@@ -182,6 +182,15 @@ describe("NativeTerminalPromptBar", () => {
       screen.getByText("Native CLI · GPT-5 · Full access").className,
     ).toContain("truncate");
   });
+  it.each(["Native CLI", " Native CLI ", ""])(
+    "omits redundant execution text %j",
+    (label) => {
+      renderBar(label);
+      expect(screen.queryByLabelText("Terminal execution")).toBeNull();
+      expect(screen.getByLabelText("Send to Native CLI terminal")).toBeTruthy();
+    },
+  );
+
   it("sends the trimmed message on Enter and clears the field", async () => {
     const { input } = renderBar();
     fireEvent.change(input, { target: { value: "  fix the build  " } });

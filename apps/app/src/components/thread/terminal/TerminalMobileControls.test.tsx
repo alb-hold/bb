@@ -42,7 +42,7 @@ describe("TerminalMobileControls", () => {
 
     expect(
       buttons.slice(0, 3).map((button) => button.getAttribute("aria-label")),
-    ).toEqual(["Escape", "Arrow up", "Arrow down"]);
+    ).toEqual(["Interrupt (Control C)", "Escape", "Arrow up"]);
     expect(buttons[0]?.parentElement?.className.split(/\s+/u)).toEqual(
       expect.arrayContaining(["flex-nowrap", "overflow-x-auto"]),
     );
@@ -61,6 +61,45 @@ describe("TerminalMobileControls", () => {
       expect(button.className.split(/\s+/u)).toContain("min-w-11");
       expect(button.className.split(/\s+/u)).toContain("flex-none");
     }
+  });
+
+  it("interrupts without expanding or scrolling the key bar", () => {
+    const { onInput } = renderControls();
+    const interrupt = screen.getByRole("button", {
+      name: "Interrupt (Control C)",
+    });
+    expect(
+      interrupt.closest("[data-terminal-key-scroller]")?.firstElementChild,
+    ).toBe(interrupt);
+    fireEvent.click(interrupt);
+    expect(onInput).toHaveBeenCalledExactlyOnceWith("\x03");
+    expect(screen.queryByRole("button", { name: "Shift Tab" })).toBeNull();
+  });
+
+  it("shows an overflow cue only on edges with hidden keys", () => {
+    renderControls();
+    const scroller = document.querySelector<HTMLElement>(
+      "[data-terminal-key-scroller]",
+    )!;
+    Object.defineProperties(scroller, {
+      clientWidth: { configurable: true, value: 240 },
+      scrollWidth: { configurable: true, value: 380 },
+    });
+    fireEvent.scroll(scroller);
+    expect(scroller.dataset.moreRight).toBe("");
+    expect(scroller.dataset.moreLeft).toBeUndefined();
+    scroller.scrollLeft = 70;
+    fireEvent.scroll(scroller);
+    expect(scroller.dataset.moreLeft).toBe("");
+    expect(scroller.dataset.moreRight).toBe("");
+    scroller.scrollLeft = 140;
+    fireEvent.scroll(scroller);
+    expect(scroller.dataset.moreRight).toBeUndefined();
+    Object.defineProperty(scroller, "clientWidth", { value: 400 });
+    scroller.scrollLeft = 0;
+    fireEvent.scroll(scroller);
+    expect(scroller.dataset.moreLeft).toBeUndefined();
+    expect(scroller.dataset.moreRight).toBeUndefined();
   });
 
   it("hides the extra keys until the user expands them", () => {

@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
+import * as rendererModule from "./terminal-webgl-renderer";
 import { FitAddon } from "@xterm/addon-fit";
 import { TerminalWebSocketTransport } from "@bb/client-core";
 import { MemoryRouter } from "react-router-dom";
@@ -189,6 +190,171 @@ const originalClipboardDescriptor = Object.getOwnPropertyDescriptor(
 vi.setConfig({ testTimeout: 30_000 });
 
 describe("ThreadTerminalView terminal visibility and panel", () => {
+  it("refreshes the fitted grid when DOM fallback resolves after the renderer deadline", async () => {
+    const focusGuard = render(<button>Other input</button>);
+    focusGuard.getByRole("button").focus();
+    vi.stubGlobal("WebSocket", TestTerminalSocket);
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
+      measureText: (text: string) => ({ width: text.length * 8 }),
+    } as unknown as CanvasRenderingContext2D);
+    let finishRenderer!: (value: null) => void;
+    vi.spyOn(rendererModule, "loadOptionalTerminalWebglAddon").mockReturnValue(
+      new Promise<null>((resolve) => {
+        finishRenderer = resolve;
+      }),
+    );
+    for (const dimension of ["clientWidth", "offsetWidth"] as const) {
+      vi.spyOn(HTMLElement.prototype, dimension, "get").mockImplementation(
+        function (this: HTMLElement) {
+          return this.classList.contains("xterm-char-measure-element")
+            ? 8
+            : 354;
+        },
+      );
+    }
+    for (const dimension of ["clientHeight", "offsetHeight"] as const) {
+      vi.spyOn(HTMLElement.prototype, dimension, "get").mockImplementation(
+        function (this: HTMLElement) {
+          return this.classList.contains("xterm-char-measure-element")
+            ? 18
+            : 504;
+        },
+      );
+    }
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
+      width: 354,
+      height: 504,
+      top: 0,
+      left: 0,
+      right: 354,
+      bottom: 504,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    });
+    let cols = 132;
+    vi.spyOn(FitAddon.prototype, "proposeDimensions").mockImplementation(
+      () => ({ cols, rows: 39 }),
+    );
+    render(
+      <MemoryRouter>
+        <AppCommandProvider>
+          <ThreadTerminalView
+            autoFocus={false}
+            isPanelOpen
+            session={makeTerminalSession({
+              id: "term_late_dom",
+              threadId: null,
+              status: "running",
+            })}
+          />
+        </AppCommandProvider>
+      </MemoryRouter>,
+    );
+    const sizes = () =>
+      testState.socketMessages
+        .map((value) => JSON.parse(value) as { type: string; cols: number })
+        .filter((value) => value.type === "resize");
+    await waitForReadinessCondition(
+      () => expect(sizes().at(-1)?.cols).toBe(132),
+      "renderer deadline did not send initial grid",
+    );
+    cols = 44;
+    finishRenderer(null);
+    await waitForReadinessCondition(
+      () => expect(sizes().at(-1)?.cols).toBe(44),
+      "late fallback did not send the phone grid",
+    );
+    expect(sizes().map((size) => size.cols)).toEqual([132, 44]);
+  });
+
+  it("sends exactly one fitted resize when WebGL settles before the deadline", async () => {
+    const focusGuard = render(<button>Other input</button>);
+    focusGuard.getByRole("button").focus();
+    vi.stubGlobal("WebSocket", TestTerminalSocket);
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
+      measureText: (text: string) => ({ width: text.length * 8 }),
+    } as unknown as CanvasRenderingContext2D);
+    vi.spyOn(
+      rendererModule,
+      "loadOptionalTerminalWebglAddon",
+    ).mockResolvedValue({
+      WebglAddon: class {
+        activate() {}
+        dispose() {}
+        onContextLoss() {
+          return { dispose() {} };
+        }
+      },
+    });
+    vi.spyOn(rendererModule, "loadTerminalWebglRenderer").mockReturnValue({
+      renderer: "webgl",
+      setVisible() {},
+      dispose() {},
+    });
+    for (const dimension of ["clientWidth", "offsetWidth"] as const) {
+      vi.spyOn(HTMLElement.prototype, dimension, "get").mockImplementation(
+        function (this: HTMLElement) {
+          return this.classList.contains("xterm-char-measure-element")
+            ? 8
+            : 354;
+        },
+      );
+    }
+    for (const dimension of ["clientHeight", "offsetHeight"] as const) {
+      vi.spyOn(HTMLElement.prototype, dimension, "get").mockImplementation(
+        function (this: HTMLElement) {
+          return this.classList.contains("xterm-char-measure-element")
+            ? 18
+            : 504;
+        },
+      );
+    }
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
+      width: 354,
+      height: 504,
+      top: 0,
+      left: 0,
+      right: 354,
+      bottom: 504,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    });
+    vi.spyOn(FitAddon.prototype, "proposeDimensions").mockReturnValue({
+      cols: 44,
+      rows: 39,
+    });
+    render(
+      <MemoryRouter>
+        <AppCommandProvider>
+          <ThreadTerminalView
+            autoFocus={false}
+            isPanelOpen
+            session={makeTerminalSession({
+              id: "term_webgl_single_resize",
+              threadId: null,
+              status: "running",
+            })}
+          />
+        </AppCommandProvider>
+      </MemoryRouter>,
+    );
+    const sizes = () =>
+      testState.socketMessages
+        .map(
+          (value) =>
+            JSON.parse(value) as { type: string; cols: number; rows: number },
+        )
+        .filter((value) => value.type === "resize");
+    await waitForReadinessCondition(
+      () => expect(sizes().length).toBeGreaterThan(0),
+      "WebGL did not send fitted grid",
+    );
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect(sizes()).toEqual([expect.objectContaining({ cols: 44, rows: 39 })]);
+  });
+
   it("keeps the app identity when the server echoes it after terminal attach", async () => {
     vi.stubGlobal("WebSocket", TestTerminalSocket);
     vi.stubGlobal(
