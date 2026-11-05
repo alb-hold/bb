@@ -118,12 +118,16 @@ export function TopLevelSidebarSection({
     const content = contentRef.current;
     if (!content || !contentClassName) return;
     const measure = () => updateContentScrollCue(content);
-    measure();
+    const frame =
+      typeof ResizeObserver === "undefined" ? requestAnimationFrame(measure) : null;
     const observer =
       typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
     observer?.observe(content);
     for (const child of content.children) observer?.observe(child);
-    return () => observer?.disconnect();
+    return () => {
+      if (frame !== null) cancelAnimationFrame(frame);
+      observer?.disconnect();
+    };
   }, [children, contentClassName, collapseControl?.isCollapsed]);
   const threadDropState = useSectionDropTargetState(dropParentKey);
   const collapsedSplitIndicator = useThreadGroupSplitIndicator(
