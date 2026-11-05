@@ -43,3 +43,26 @@ describe("app.css sidebar drag cursor", () => {
     expect(block).toMatch(/cursor:\s*grabbing !important;/);
   });
 });
+
+describe("compact touch targets", () => {
+  const block = css.slice(css.lastIndexOf("@media (width < 48rem)"));
+  it.each([
+    'aria-label="Message actions"',
+    'aria-label="Copy message"',
+    'aria-label="Reply in side chat"',
+    'aria-label="Wrap lines"',
+    'aria-label="Copy code"',
+    'aria-label="Thread actions"',
+    'aria-label="Show right panel"',
+    'aria-label="Toggle sidebar"',
+    'aria-label="Prompt actions"',
+    'aria-label="Start voice input"',
+    'data-model-reasoning-trigger',
+    'data-compact-touch-summary',
+  ])("reserves a disjoint 44px target for %s only at compact widths", (selector) => {
+    expect(block).toContain(`[${selector}]`);
+    expect(block).toContain("min-inline-size: 44px");
+    expect(block).toContain("min-block-size: 44px");
+    expect(block).not.toMatch(/svg|data-icon-root/);
+  });
+});

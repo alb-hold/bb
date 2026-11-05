@@ -29,7 +29,7 @@ describe("PermissionModePicker", () => {
         />,
       );
       const trigger = screen.getByRole("button", { name: "Permission mode" });
-      expect(trigger.textContent).toBe("PermissionsPermissions");
+      expect(trigger.textContent).toBe(({ full: "Full Access", "accept-edits": "Edits", auto: "Approve" }[value]));
       expect(trigger.hasAttribute("disabled")).toBe(true);
       expect(trigger.className).not.toContain("warning");
       expect(
@@ -45,11 +45,11 @@ describe("PermissionModePicker", () => {
       );
       expect(screen.queryByText("Full Access")).toBeNull();
       expect(screen.queryByText("Accept Edits")).toBeNull();
-      expect(screen.getByText("Approve for me")).not.toBeNull();
+      expect(screen.getByText("Approve")).not.toBeNull();
     },
   );
 
-  it("keeps full access legible with a quiet warning outline", () => {
+  it("keeps full access warning text in the standard picker shape", () => {
     render(
       <PermissionModePicker
         value="full"
@@ -60,11 +60,11 @@ describe("PermissionModePicker", () => {
     );
     const trigger = screen.getByRole("button", { name: "Permission mode" });
     expect(trigger.textContent).toContain("Full Access");
-    expect(trigger.classList.contains("border-attention/60")).toBe(true);
-    expect(trigger.classList.contains("border-solid")).toBe(true);
-    expect(trigger.classList.contains("border-none")).toBe(false);
+    expect(trigger.classList.contains("border-attention/60")).toBe(false);
+    expect(trigger.classList.contains("text-warning-text")).toBe(true);
+    expect(trigger.classList.contains("border-none")).toBe(true);
     expect(trigger.classList.contains("bg-attention")).toBe(false);
-    expect(trigger.classList.contains("text-muted-foreground")).toBe(true);
+    expect(trigger.classList.contains("text-muted-foreground")).toBe(false);
   });
 
   it("uses the same approve vocabulary for compact and wide labels", () => {
@@ -79,7 +79,7 @@ describe("PermissionModePicker", () => {
     );
     const trigger = screen.getByRole("button", { name: "Permission mode" });
     expect(trigger.classList.contains("w-28")).toBe(false);
-    expect(trigger.textContent).toContain("Approve for me");
+    expect(trigger.textContent).toBe("Approve");
     expect(trigger.textContent).toContain("Approve");
     expect(trigger.textContent).not.toContain("Auto");
   });
@@ -105,4 +105,23 @@ describe("PermissionModePicker", () => {
     expect(trigger.textContent).toContain("Plan Mode");
     expect(trigger.textContent).not.toContain("Full Access");
   });
+});
+
+it.each([360, 390, 1280])("retains the last permission label and chevron while pending at %s", (width) => {
+  window.innerWidth = width;
+  const props = { options: permissionOptions, onChange: () => {}, supported: true };
+  const view = render(<PermissionModePicker {...props} value="full" />);
+  const before = screen.getByRole("button", { name: "Permission mode" });
+  expect(before.textContent).toBe("Full Access");
+  view.rerender(<PermissionModePicker {...props} pending />);
+  const pending = screen.getByRole("button", { name: "Permission mode" });
+  expect(pending.textContent).toBe("Full Access");
+  expect(pending.querySelector('[data-icon="ChevronDown"]')).not.toBeNull();
+});
+
+it("uses the default permission label and chevron before the first value", () => {
+  render(<PermissionModePicker options={[]} pending onChange={() => {}} supported />);
+  const trigger = screen.getByRole("button", { name: "Permission mode" });
+  expect(trigger.textContent).toBe("Approve");
+  expect(trigger.querySelector('[data-icon="ChevronDown"]')).not.toBeNull();
 });

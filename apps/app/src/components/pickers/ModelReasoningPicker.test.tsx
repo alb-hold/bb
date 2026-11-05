@@ -1458,7 +1458,7 @@ describe("ModelReasoningPicker service tiers", () => {
   it.each([
     ["fast", "Zap"],
     ["ultrafast", "provider-codex/ultrafast"],
-  ])("shows the %s tier's icon on the trigger", (tier, icon) => {
+  ])("keeps provider identity for the %s tier", (tier, icon) => {
     setPluginAssetIcons(
       new Map([["provider-codex/ultrafast", "/icons/ultrafast.svg"]]),
     );
@@ -1476,7 +1476,8 @@ describe("ModelReasoningPicker service tiers", () => {
     const icons = [...trigger.querySelectorAll("[data-icon]")].map((node) =>
       node.getAttribute("data-icon"),
     );
-    expect(icons).toContain(icon);
+    expect(icons).toContain("ChevronDown");
+    expect(icons).not.toContain(icon);
     expect(icons).not.toContain(
       icon === "Zap" ? "provider-codex/ultrafast" : "Zap",
     );
@@ -1665,4 +1666,18 @@ it("uses the persisted model when the home selection is still loading", () => {
   } finally {
     act(() => result.current.setValue(""));
   }
+});
+
+it.each([
+  [false, false],
+  [true, false],
+  [false, true],
+  [true, true],
+])("keeps model identity and chevron with compact=%s pending=%s", (compact, modelIsLoading) => {
+  renderPicker({ compact, modelIsLoading, modelValue: "gpt-5.5", serviceTierOptions: [{ id: "fast", label: "Fast" }], serviceTierValue: "fast" });
+  const trigger = screen.getByRole("button", { name: "Provider, model and reasoning" });
+  expect(trigger.textContent).toContain("5.5");
+  expect(trigger.querySelector('[data-icon="ChevronDown"]')).not.toBeNull();
+  expect(trigger.querySelector('[data-icon="Bot"]')).not.toBeNull();
+  expect(trigger.querySelector('[data-icon="Zap"]')).toBeNull();
 });

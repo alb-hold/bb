@@ -874,3 +874,26 @@
 [data-testid="root-compose-compact-scroll-viewport"]:not([data-more-above]) [data-root-compose-mobile-recents] [data-overflow-fade="below"] {
   visibility: hidden;
 }
+
+@media (width < 48rem) {
+  button:not([data-native-terminal-prompt] button):is(
+    [aria-label="Message actions"],
+    [aria-label="Copy message"],
+    [aria-label="Reply in side chat"],
+    [aria-label="Wrap lines"],
+    [aria-label="Copy code"],
+    [aria-label="Thread actions"],
+    [aria-label="Show right panel"],
+    [aria-label="Hide right panel"],
+    [aria-label="Toggle sidebar"],
+    [aria-label="Prompt actions"],
+    [aria-label="Start voice input"],
+    [data-model-reasoning-trigger],
+    [data-compact-touch-summary]
+  ) {
+    position: relative;
+    min-inline-size: 44px;
+    min-block-size: 44px;
+    flex-shrink: 0;
+  }
+}

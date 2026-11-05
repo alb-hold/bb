@@ -99,6 +99,7 @@ export function CollapsibleHeader({
   return (
     <button
       type="button"
+      data-compact-touch-summary=""
       aria-expanded={isExpanded}
       onClick={onToggle}
       className={rootClassName}

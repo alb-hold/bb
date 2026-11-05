@@ -295,6 +295,7 @@ it.each(["Ran 1 command", "Ran 1 tool", "Worked for 1s"])(
       />,
     );
     const header = screen.getByRole("button", { name: summary });
+    expect(header.hasAttribute("data-compact-touch-summary")).toBe(true);
     const chevron = header.querySelector("svg");
     expect(chevron?.classList.contains("opacity-100")).toBe(true);
     expect(chevron?.classList.contains("text-muted-foreground")).toBe(true);
