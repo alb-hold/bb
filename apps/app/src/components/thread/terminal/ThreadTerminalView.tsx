@@ -1,3 +1,4 @@
+import { mountTerminalScreenLoadingPreview } from "./terminal-screen-loading-preview";
 import { trackTerminalScrollability } from "./terminal-scrollbar";
 import { fetchTerminalScreen } from "./terminal-screen-prefetch";
 import {
@@ -1794,6 +1795,7 @@ export function ThreadTerminalView({
     const pendingExitNotices: string[] = [];
     let replayCheckpointSequence: number | null = null;
     let localFitGrid: TerminalGridSize | null = null;
+    let removeScreenLoadingPreview: (() => void) | null = null;
     let retainedOutputReplayed = sessionStatusRef.current !== "exited";
     let retainedOutputGrid: TerminalGridSize | null = null;
     let latestPtyGrid: TerminalGridSize = {
@@ -1995,9 +1997,28 @@ export function ThreadTerminalView({
         sessionRef.current.status === "exited" || pendingExitNotices.length > 0
           ? Promise.resolve(null)
           : fetchTerminalScreen(session.id, session.threadId ?? undefined);
+      let modulesReady = false;
+      void screenPromise.then((snapshot) => {
+        if (
+          disposed ||
+          modulesReady ||
+          snapshot == null ||
+          !snapshot.complete ||
+          snapshot.truncated ||
+          snapshot.cols !== latestPtyGrid.cols ||
+          snapshot.gridRows !== latestPtyGrid.rows
+        )
+          return;
+        removeScreenLoadingPreview = mountTerminalScreenLoadingPreview({
+          container: containerElement,
+          snapshot,
+          fontFamily: readTerminalFontFamily(),
+        });
+      });
       const requiredModulesPromise = importTerminalModules();
       const [{ Terminal }, { FitAddon: LoadedFitAddon }, { Unicode11Addon }] =
         await requiredModulesPromise;
+      modulesReady = true;
       if (disposed) {
         return;
       }
@@ -3007,6 +3028,10 @@ export function ThreadTerminalView({
           replayPreview?.dispose();
           replayPreview = null;
         }
+        window.requestAnimationFrame(() => {
+          removeScreenLoadingPreview?.();
+          removeScreenLoadingPreview = null;
+        });
         if (disposed) return;
         activeTransport.start();
       }
@@ -3160,6 +3185,7 @@ export function ThreadTerminalView({
 
     return () => {
       disposed = true;
+      removeScreenLoadingPreview?.();
       outputLineAnchorTracker.dispose();
       viewportLineAnchor?.dispose();
       viewportLineAnchor = null;

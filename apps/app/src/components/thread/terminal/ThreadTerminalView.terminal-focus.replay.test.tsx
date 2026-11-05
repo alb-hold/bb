@@ -1099,8 +1099,18 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
     );
   }
 
-  it("requests the screen while terminal modules are still loading", async () => {
+  it("paints the screen before terminal modules or socket replay arrive", async () => {
     prepareMobileTerminal();
+    testState.screen.mockResolvedValue({
+      rows: ["early snapshot"],
+      cursor: { col: 0, row: 0 },
+      cols: 40,
+      gridRows: 12,
+      complete: true,
+      truncated: false,
+      checkpointSeq: 2,
+      dataBase64: btoa("early snapshot"),
+    });
     vi.spyOn(terminalModules, "importTerminalModules").mockImplementationOnce(
       () => new Promise(() => {}),
     );
@@ -1109,7 +1119,105 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
       () => expect(testState.screen).toHaveBeenCalledOnce(),
       "screen fetch did not overlap module loading",
     );
+    await waitForReadinessCondition(
+      () =>
+        expect(
+          document.querySelector("[data-terminal-screen-loading-preview]")
+            ?.textContent,
+        ).toBe("early snapshot"),
+      "snapshot remained hidden behind module loading",
+    );
     expect(testState.sockets).toHaveLength(0);
+    cleanup();
+    expect(
+      document.querySelector("[data-terminal-screen-loading-preview]"),
+    ).toBeNull();
+  });
+
+  it("replaces the loading snapshot with replay history exactly once", async () => {
+    prepareMobileTerminal();
+    stubVisibleIntersectionObserver();
+    vi.spyOn(FitAddon.prototype, "proposeDimensions").mockReturnValue({
+      cols: 40,
+      rows: 12,
+    });
+    const modules = terminalModules.importTerminalModules();
+    let finishModules!: () => void;
+    vi.spyOn(terminalModules, "importTerminalModules").mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishModules = () => {
+            void modules.then(resolve);
+          };
+        }),
+    );
+    testState.screen.mockResolvedValue({
+      rows: ["snapshot text"],
+      cursor: { col: 0, row: 0 },
+      cols: 40,
+      gridRows: 12,
+      complete: true,
+      truncated: false,
+      checkpointSeq: 1,
+      dataBase64: btoa("snapshot text"),
+    });
+    const terminals: Terminal[] = [];
+    const open = Terminal.prototype.open;
+    vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
+      this: Terminal,
+      element: HTMLElement,
+    ) {
+      terminals.push(this);
+      open.call(this, element);
+    });
+    const session = renderMobileTerminal();
+    await waitFor(() =>
+      expect(
+        document.querySelector("[data-terminal-screen-loading-preview]")
+          ?.textContent,
+      ).toBe("snapshot text"),
+    );
+    expect(testState.sockets).toHaveLength(0);
+    finishModules();
+    await waitFor(() => expect(testState.sockets).toHaveLength(1), {
+      timeout: 20_000,
+    });
+    await waitFor(() =>
+      expect(
+        document.querySelector("[data-terminal-screen-loading-preview]"),
+      ).toBeNull(),
+    );
+    const preview = document.querySelector<HTMLElement>(
+      "[data-terminal-replay-preview]",
+    );
+    expect(preview?.style.visibility).toBe("visible");
+    const socket = testState.sockets[0]!;
+    await waitForReadiness(socket.opened, "socket did not open");
+    socket.receive({
+      type: "attached",
+      session,
+      replayStartSeq: 0,
+      nextSeq: 2,
+    });
+    socket.receive({
+      type: "output",
+      chunk: { seq: 0, dataBase64: btoa("older scrollback\r\n") },
+    });
+    socket.receive({
+      type: "output",
+      chunk: { seq: 1, dataBase64: btoa("snapshot text\r\n") },
+    });
+    await waitFor(() =>
+      expect(
+        document.querySelector("[data-terminal-replay-preview]"),
+      ).toBeNull(),
+    );
+    const terminal = terminals[0]!;
+    const text = Array.from({ length: terminal.buffer.active.length }, (_, i) =>
+      terminal.buffer.active.getLine(i)?.translateToString(true),
+    ).join("\n");
+    expect(text).toContain("older scrollback");
+    expect(text.match(/snapshot text/g)).toHaveLength(1);
   });
 
   async function mountReplayWithUnusableSnapshot() {
