@@ -507,6 +507,42 @@ describe("the Linux process-list visibility rule", () => {
     });
   });
 
+  it("does not inspect ACLs when mode bits already allow search", async () => {
+    let allowedModeCalls = 0;
+    const allowedModeProc = fakeProc({
+      worktreeMode: 0o711,
+      processes: { 101: { uid: 1001, cwdDenied: true } },
+    });
+    allowedModeProc.hasExtendedAcl = async () => {
+      allowedModeCalls += 1;
+      return false;
+    };
+    expect(await scanLinux("/work/tree", allowedModeProc, 4242)).toMatchObject({
+      status: "uncertain",
+    });
+    expect(allowedModeCalls).toBe(0);
+  });
+
+  it("memoizes ACL inspection for a shared path within one scan", async () => {
+    let sharedPathCalls = 0;
+    const sharedPathProc = fakeProc({
+      worktreeMode: 0o700,
+      worktreeGid: 2000,
+      processes: {
+        101: { uid: 1001, cwdDenied: true },
+        102: { uid: 1002, cwdDenied: true },
+      },
+    });
+    sharedPathProc.hasExtendedAcl = async () => {
+      sharedPathCalls += 1;
+      return false;
+    };
+    expect(await scanLinux("/work/tree", sharedPathProc, 4242)).toEqual({
+      status: "clear",
+    });
+    expect(sharedPathCalls).toBe(1);
+  });
+
   it("is clear when an unreadable foreign cwd cannot reach the worktree and skips root and system UIDs", async () => {
     const inaccessible = fakeProc({
       worktreeMode: 0o700,

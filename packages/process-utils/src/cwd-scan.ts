@@ -5,6 +5,7 @@ import { spawnPortableOutputProcess } from "./spawn.js";
 import { UNREADABLE_SESSION_AGENT_COMMS } from "./session-agent-comms.js";
 import {
   linuxDirectoryIsTraversable,
+  linuxDirectoryModeAllowsTraversal,
   linuxPathHasExtendedAcl,
   parseLinuxSupplementaryGroups,
 } from "./linux-path-access.js";
@@ -277,6 +278,7 @@ async function foreignUidCanReachTarget(args: {
   uid: number;
   directories: readonly string[];
   io: CwdScanIo;
+  acls: Map<string, Promise<boolean | null>>;
 }): Promise<boolean | null> {
   if (
     args.io.effectiveCapabilities === undefined ||
@@ -310,18 +312,26 @@ async function foreignUidCanReachTarget(args: {
         if (GONE.has(codeOf(error))) break;
         return null;
       }
-      const canSearch = linuxDirectoryIsTraversable({
+      const accessArgs = {
         processUid: args.uid,
         processFilesystemGid: filesystemGid,
         processSupplementaryGroups: supplementaryGroups,
         directoryUid: access.uid,
         directoryGid: access.gid,
         mode: access.mode,
-        hasExtendedAcl:
-          args.io.hasExtendedAcl === undefined
-            ? null
-            : await args.io.hasExtendedAcl(cursor),
-      });
+      };
+      let canSearch = linuxDirectoryModeAllowsTraversal(accessArgs);
+      if (!canSearch) {
+        let acl = args.acls.get(cursor);
+        if (acl === undefined) {
+          acl = args.io.hasExtendedAcl?.(cursor) ?? Promise.resolve(null);
+          args.acls.set(cursor, acl);
+        }
+        canSearch = linuxDirectoryIsTraversable({
+          ...accessArgs,
+          hasExtendedAcl: await acl,
+        });
+      }
       if (!canSearch) break;
       const parent = path.dirname(cursor);
       if (parent === cursor) return true;
@@ -377,6 +387,7 @@ export async function scanProcessesWithCwdUnder(
     }
     let excluded = 0;
     const skippedOtherUsers: CwdSkippedProcess[] = [];
+    const acls = new Map<string, Promise<boolean | null>>();
     for (const entry of entries) {
       if (!/^\d+$/u.test(entry)) continue;
       const pid = Number(entry);
@@ -413,6 +424,7 @@ export async function scanProcessesWithCwdUnder(
               uid: owner,
               directories,
               io,
+              acls,
             });
             if (reachable === null) {
               return {

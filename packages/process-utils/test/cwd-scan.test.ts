@@ -224,6 +224,46 @@ describe("scanProcessesWithCwdUnder", () => {
     expect(scan).toMatchObject({ status: "unknown" });
   });
 
+  it("does not inspect ACLs when mode bits already allow search", async () => {
+    const base = await dir();
+    let allowedModeCalls = 0;
+    const allowedMode = await scanProcessesWithCwdUnder(
+      { directories: [base] },
+      {
+        ...fakeLinux({ 10: denied() }, { 10: 1001 }),
+        statAccess: async () => ({ uid: 1000, gid: 2000, mode: 0o711 }),
+        hasExtendedAcl: async () => {
+          allowedModeCalls += 1;
+          return false;
+        },
+      },
+    );
+    expect(allowedMode).toMatchObject({ status: "unknown" });
+    expect(allowedModeCalls).toBe(0);
+  });
+
+  it("memoizes ACL inspection for a shared path within one scan", async () => {
+    const base = await dir();
+    let sharedPathCalls = 0;
+    const sharedPath = await scanProcessesWithCwdUnder(
+      { directories: [base] },
+      {
+        ...fakeLinux({ 10: denied(), 11: denied() }, { 10: 1001, 11: 1002 }),
+        statAccess: async (target) => ({
+          uid: 1000,
+          gid: 2000,
+          mode: target === base ? 0o700 : 0o711,
+        }),
+        hasExtendedAcl: async () => {
+          sharedPathCalls += 1;
+          return false;
+        },
+      },
+    );
+    expect(sharedPath).toMatchObject({ status: "clear" });
+    expect(sharedPathCalls).toBe(1);
+  });
+
   it("clears a foreign process whose cwd is unreadable and no path component grants traversal", async () => {
     const base = await dir();
     const scan = await scanProcessesWithCwdUnder(

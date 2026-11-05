@@ -4,6 +4,7 @@ import path from "node:path";
 import { UNREADABLE_SESSION_AGENT_COMMS } from "@bb/process-utils/session-agent-comms";
 import {
   linuxDirectoryIsTraversable,
+  linuxDirectoryModeAllowsTraversal,
   linuxPathHasExtendedAcl,
   parseLinuxSupplementaryGroups,
 } from "@bb/process-utils/linux-path-access";
@@ -131,6 +132,7 @@ type TreeIdsReader = () => Promise<TreeIds>;
 
 interface ScanContext {
   tree: TreeIdsReader;
+  acls: Map<string, Promise<boolean | null>>;
 }
 
 async function listTreeIds(
@@ -272,15 +274,26 @@ async function scanLinuxProcess(
         return {
           uncertain: `process ${pid} cwd reachability could not be determined`,
         };
-      const canSearch = linuxDirectoryIsTraversable({
+      const accessArgs = {
         processUid: foreignUid,
         processFilesystemGid: gids[3],
         processSupplementaryGroups: supplementaryGroups,
         directoryUid: access.value.uid,
         directoryGid: access.value.gid,
         mode: access.value.mode,
-        hasExtendedAcl: await proc.hasExtendedAcl(cursor),
-      });
+      };
+      let canSearch = linuxDirectoryModeAllowsTraversal(accessArgs);
+      if (!canSearch) {
+        let acl = context.acls.get(cursor);
+        if (acl === undefined) {
+          acl = proc.hasExtendedAcl(cursor);
+          context.acls.set(cursor, acl);
+        }
+        canSearch = linuxDirectoryIsTraversable({
+          ...accessArgs,
+          hasExtendedAcl: await acl,
+        });
+      }
       if (!canSearch) return { otherUser: true };
       const parent = path.dirname(cursor);
       if (parent === cursor) break;
@@ -787,7 +800,7 @@ export async function scanLinux(
     listed ??= listTreeIds(proc, directory, limits.maxDirectories);
     return listed;
   };
-  const context: ScanContext = { tree };
+  const context: ScanContext = { tree, acls: new Map() };
   for (let offset = 0; offset < pids.length; offset += LINUX_SCAN_CONCURRENCY) {
     const batch = pids.slice(offset, offset + LINUX_SCAN_CONCURRENCY);
     const results = await Promise.all(

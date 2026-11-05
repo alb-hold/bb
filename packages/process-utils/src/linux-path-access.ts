@@ -9,16 +9,18 @@ export function parseLinuxSupplementaryGroups(
   return groups.every(Number.isSafeInteger) ? groups : null;
 }
 
-export function linuxDirectoryIsTraversable(args: {
+export interface LinuxDirectoryAccess {
   processUid: number;
   processFilesystemGid: number | null;
   processSupplementaryGroups: readonly number[] | null;
   directoryUid: number;
   directoryGid: number;
   mode: number;
-  hasExtendedAcl: boolean | null;
-}): boolean {
-  if (args.hasExtendedAcl !== false) return true;
+}
+
+export function linuxDirectoryModeAllowsTraversal(
+  args: LinuxDirectoryAccess,
+): boolean {
   const permissions = args.mode & 0o777;
   if (args.directoryUid === args.processUid && (permissions & 0o100) !== 0)
     return true;
@@ -29,6 +31,14 @@ export function linuxDirectoryIsTraversable(args: {
   return (
     args.processSupplementaryGroups === null ||
     args.processSupplementaryGroups.includes(args.directoryGid)
+  );
+}
+
+export function linuxDirectoryIsTraversable(
+  args: LinuxDirectoryAccess & { hasExtendedAcl: boolean | null },
+): boolean {
+  return (
+    args.hasExtendedAcl !== false || linuxDirectoryModeAllowsTraversal(args)
   );
 }
 
