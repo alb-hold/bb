@@ -545,6 +545,7 @@ export async function scanProcessesWithCwdUnder(
 export type CwdProcessClass =
   | "readable"
   | "unreadable-same-uid"
+  | "allowlisted-helper"
   | "skipped-other-uid";
 
 export type DarwinInspection =
@@ -677,7 +678,10 @@ export async function inspectDarwinProcesses(
     for (const row of candidates) {
       const now = alive.get(row.pid);
       if (now !== undefined && now.comm === row.comm && now.uid === row.uid) {
-        if (UNREADABLE_SESSION_AGENT_COMMS.has(row.comm)) {
+        if (
+          row.uid === io.uid &&
+          UNREADABLE_SESSION_AGENT_COMMS.has(row.comm)
+        ) {
           helpers.push({ pid: row.pid, comm: row.comm });
           rows.push({ ...row, klass: "allowlisted-helper" });
         } else {

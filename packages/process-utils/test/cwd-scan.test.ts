@@ -690,15 +690,23 @@ describe("scanProcessesWithCwdUnder", () => {
       expect(scan).toMatchObject({ status: "clear" });
     });
 
-    it("looks again and stays unknown when an unreadable process uses a session-helper name", async () => {
+    it("clears a same-UID allowlisted helper confirmed alive in both ps snapshots", async () => {
       const base = await dir();
-      const io = fakeMac({
-        ps: [psLine(50, 501, "/usr/bin/ssh-agent")],
-        lsof: {},
-      });
+      const table = psLine(50, 501, "/usr/bin/ssh-agent");
+      const io = fakeMac({ ps: [table, table], lsof: {} });
+      const scan = await scanProcessesWithCwdUnder({ directories: [base] }, io);
+      expect(scan.status).toBe("clear");
+      expect(io.delays).toEqual([200]);
+      expect(io.psCalls).toBe(2);
+    });
+
+    it("keeps a foreign allowlisted helper unknown when the daemon runs as root", async () => {
+      const base = await dir();
+      const table = psLine(52, 501, "/usr/bin/ssh-agent");
+      const io = fakeMac({ ps: [table, table], lsof: {}, uid: 0 });
       const scan = await scanProcessesWithCwdUnder({ directories: [base] }, io);
       expect(scan.status).toBe("unknown");
-      expect(io.delays).toEqual([200]);
+      expect(io.psCalls).toBe(2);
     });
 
     it("clears an allowlisted helper absent from lsof when both ps snapshots show it alive", async () => {
