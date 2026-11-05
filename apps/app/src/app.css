@@ -804,27 +804,7 @@
   background: transparent;
 }
 
-:where([data-testid="root-compose-compact-scroll-viewport"][data-more-above]) {
-  mask-image: linear-gradient(to bottom, transparent, var(--ink) 1.5rem);
-}
-
-:where(
-  [data-testid="root-compose-compact-scroll-viewport"][data-more-above][data-more-below]
-) {
-  mask-image: linear-gradient(
-    to bottom,
-    transparent,
-    var(--ink) 1.5rem,
-    var(--ink) calc(100% - 2.5rem),
-    transparent
-  );
-}
-
-:where(
-  [data-testid="root-compose-compact-scroll-viewport"][data-more-below]:not(
-      [data-more-above]
-    )
-) {
+:where([data-testid="root-compose-compact-scroll-viewport"][data-more-below]) {
   mask-image: linear-gradient(
     to bottom,
     var(--ink) calc(100% - 24px),

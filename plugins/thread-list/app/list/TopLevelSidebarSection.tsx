@@ -1,5 +1,7 @@
 import {
   useCallback,
+  useLayoutEffect,
+  useRef,
   type CSSProperties,
   type KeyboardEventHandler,
   type MouseEvent,
@@ -47,6 +49,13 @@ import { COARSE_POINTER_ROW_ACTION_SIZE_CLASS } from "@/components/ui/coarse-poi
 import { usePluginThreadRowStatusForThreads } from "./groupRollups.js";
 
 const EMPTY_SPLIT_INDICATOR_THREADS: readonly ThreadSplitIndicatorTarget[] = [];
+
+function updateContentScrollCue(element: HTMLDivElement) {
+  element.toggleAttribute(
+    "data-more-below",
+    element.scrollTop + element.clientHeight < element.scrollHeight - 1,
+  );
+}
 
 function stopActionsClick(event: MouseEvent<HTMLSpanElement>) {
   event.stopPropagation();
@@ -104,6 +113,18 @@ export function TopLevelSidebarSection({
   consumeClickSuppression,
   isDropTargetActive = false,
 }: TopLevelSidebarSectionProps) {
+  const contentRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const content = contentRef.current;
+    if (!content || !contentClassName) return;
+    const measure = () => updateContentScrollCue(content);
+    measure();
+    const observer =
+      typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+    observer?.observe(content);
+    for (const child of content.children) observer?.observe(child);
+    return () => observer?.disconnect();
+  }, [children, contentClassName, collapseControl?.isCollapsed]);
   const threadDropState = useSectionDropTargetState(dropParentKey);
   const collapsedSplitIndicator = useThreadGroupSplitIndicator(
     collapsedThreads,
@@ -298,7 +319,18 @@ export function TopLevelSidebarSection({
         ) : null}
       </SidebarStickyTier>
       {collapseControl?.isCollapsed || children == null ? null : (
-        <div className={cn("mt-1", contentClassName)}>{children}</div>
+        <div
+          ref={contentRef}
+          data-sidebar-section-scroll={contentClassName ? "" : undefined}
+          className={cn("mt-1", contentClassName)}
+          onScroll={
+            contentClassName
+              ? (event) => updateContentScrollCue(event.currentTarget)
+              : undefined
+          }
+        >
+          {children}
+        </div>
       )}
     </SidebarStickyGroup>
   );
