@@ -35,6 +35,57 @@ vi.mock("@/lib/sdk", () => ({
 describe("thread usage summary", () => {
   afterEach(cleanup);
 
+  it("keeps the collapsed total readable and puts the breakdown in its tooltip", async () => {
+    const { container } = render(
+      <TooltipProvider delayDuration={0}>
+        <ThreadTurnTokenSummary
+          compact
+          openAnalysisOnClick={false}
+          threadId="parent"
+          turnId="da385f7e5d-t1"
+        />
+      </TooltipProvider>,
+    );
+    const summary = container.querySelector("[data-thread-turn-tokens]")!;
+    expect(summary.textContent).toBe("Σ 2.8M");
+    expect(summary.querySelectorAll("[data-token-part]")).toHaveLength(1);
+    expect(summary.className).toContain("font-sans");
+    fireEvent.pointerMove(summary);
+    expect(await screen.findAllByText("Fresh input")).not.toHaveLength(0);
+    expect(await screen.findAllByText("2,843,776")).not.toHaveLength(0);
+  });
+
+  it("does not invent a collapsed total when only partial usage is reported", () => {
+    useThreadSpendSummary.mockReturnValue({
+      data: {
+        total: {},
+        turns: [
+          {
+            turnId: "partial",
+            inputTokens: null,
+            cachedInputTokens: null,
+            outputTokens: 23,
+            reasoningOutputTokens: null,
+            totalTokens: null,
+          },
+        ],
+      },
+    });
+    const { container } = render(
+      <TooltipProvider>
+        <ThreadTurnTokenSummary
+          compact
+          openAnalysisOnClick={false}
+          threadId="parent"
+          turnId="partial"
+        />
+      </TooltipProvider>,
+    );
+    expect(
+      container.querySelector("[data-thread-turn-tokens]")?.textContent,
+    ).toBe("Σ unavailable");
+  });
+
   it("keeps token-summary taps above the composer resize handle on short viewports", () => {
     const messageActionBarStyles = readFileSync(
       "src/components/thread/timeline/message-action-bar.css",

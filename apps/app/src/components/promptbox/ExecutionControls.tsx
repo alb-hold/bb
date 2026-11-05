@@ -180,7 +180,7 @@ export const ExecutionControls = memo(function ExecutionControls({
             }
           }}
           disabled={disabled}
-          className="h-7 shrink-0 gap-0.5 rounded-md border border-border p-0.5 max-md:h-auto"
+          className="h-7 shrink-0 gap-0.5 rounded-md p-0.5 max-md:h-auto"
         >
           {NATIVE_TERMINAL_CHOICES.map((choice) => (
             <ToggleGroupItem

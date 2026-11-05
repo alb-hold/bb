@@ -1,10 +1,24 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import type { ComposerMention } from "@get-bb/plugin-sdk/app";
 import {
   arePromptEditorValuesEqual,
   suppressPromptEditorAnchorActivation,
 } from "./PromptBoxInternal";
+
+it("gives the primary voice action the same round shape as submit", () => {
+  const source = readFileSync(
+    "src/PromptBoxInternal.tsx",
+    "utf8",
+  );
+  const primaryVoice = source.slice(
+    source.indexOf(") : showVoiceAsPrimaryAction ? ("),
+  );
+  expect(
+    primaryVoice.slice(0, primaryVoice.indexOf("</VoiceInputButton>")),
+  ).toContain('"rounded-full transition-colors"');
+});
 
 function dispatchThroughEditorTarget({
   eventName,

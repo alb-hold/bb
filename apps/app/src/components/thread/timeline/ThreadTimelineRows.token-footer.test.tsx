@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -188,8 +188,18 @@ describe("ThreadTimelineRows token footer", () => {
         ?.closest("[data-timeline-row-id]")
         ?.getAttribute("data-timeline-row-id"),
     ).toBe(turnId);
+    expect(footer?.textContent).toBe("Σ 121.2K");
+    expect(footer?.querySelector('[data-token-part="reasoning"]')).toBeNull();
+    expect(footer?.className).toContain("font-sans");
+    expect(footer?.className).toContain("text-xs");
+    expect(footer?.className).toContain("text-muted-foreground");
+    fireEvent.click(
+      container.querySelector(
+        `[data-timeline-row-id="${turnId}"] button[aria-expanded]`,
+      )!,
+    );
     expect(
-      footer?.querySelector('[data-token-part="reasoning"]')?.textContent,
+      container.querySelector('[data-token-part="reasoning"]')?.textContent,
     ).toBe("reason 567");
   });
 
@@ -756,9 +766,7 @@ describe("ThreadTimelineRows token footer", () => {
         ?.closest("[data-timeline-row-id]")
         ?.getAttribute("data-timeline-row-id"),
     ).toBe(`turn-${first.turnId}`);
-    expect(
-      summaries[0]?.querySelector('[data-token-part="output"]')?.textContent,
-    ).toContain("out 435");
+    expect(summaries[0]?.textContent).toBe("Σ 466.6K");
     expect(useThreadSpendSummary).toHaveBeenCalledWith(first.threadId);
 
     const idleRows = [...activeRows];
@@ -797,10 +805,7 @@ describe("ThreadTimelineRows token footer", () => {
         ?.closest("[data-timeline-row-id]")
         ?.getAttribute("data-timeline-row-id"),
     ).toBe(`turn-${second.turnId}`);
-    expect(
-      idleSummaries[1]?.querySelector('[data-token-part="output"]')
-        ?.textContent,
-    ).toContain("out 3.2K");
+    expect(idleSummaries[1]?.textContent).toBe("Σ 907.7K");
   });
 
   it("keeps partial active-turn spend hidden while waiting for its host", () => {

@@ -111,6 +111,11 @@ describe("ExecutionControls", () => {
       "Runs the provider's own CLI",
     );
     expect(terminal.className).toContain("data-[state=on]:bg-foreground");
+    expect(
+      screen
+        .getByRole("radiogroup", { name: "Run this thread in" })
+        .classList.contains("border"),
+    ).toBe(false);
     expect(chat.getAttribute("aria-checked")).toBe("true");
     expect(terminal.getAttribute("aria-checked")).toBe("false");
     fireEvent.click(chat);

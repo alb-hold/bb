@@ -2045,6 +2045,14 @@ describe("ThreadRow", () => {
     });
 
     expect(renderedIndicators()).toEqual(["needs-input"]);
+    expect(
+      screen
+        .getByRole("img", { name: "Needs input" })
+        .classList.contains("text-attention"),
+    ).toBe(true);
+    expect(
+      screen.getByRole("img", { name: "Needs input" }).className,
+    ).not.toContain("destructive");
   });
 
   it("clocks a thread with queued work, and drops the clock once it runs", () => {

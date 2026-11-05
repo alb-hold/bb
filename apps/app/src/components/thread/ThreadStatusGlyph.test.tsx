@@ -53,6 +53,33 @@ afterEach(() => {
 });
 
 describe("ThreadStatusGlyph", () => {
+  it.each(["default", "compact"] as const)(
+    "distinguishes input from errors at %s size",
+    (size) => {
+      const { rerender } = render(
+        <ThreadStatusGlyph indicator="needs-input" size={size} />,
+      );
+      expect(
+        screen
+          .getByLabelText("Needs input")
+          .classList.contains("text-attention"),
+      ).toBe(true);
+      expect(screen.getByLabelText("Needs input").className).not.toContain(
+        "destructive",
+      );
+      rerender(<ThreadStatusGlyph indicator="unread-error" size={size} />);
+      expect(
+        screen
+          .getByLabelText("Unread thread failed")
+          .classList.contains("text-destructive"),
+      ).toBe(true);
+      expect(
+        screen
+          .getByLabelText("Unread thread failed")
+          .classList.contains("text-attention"),
+      ).toBe(false);
+    },
+  );
   it.each([
     ["working thread", "working", "Working", "Loading"],
     [
@@ -197,7 +224,7 @@ describe("ThreadStatusGlyph", () => {
   });
 
   it.each([
-    ["needs-input", "Needs input", "CircleQuestion", "text-destructive-text"],
+    ["needs-input", "Needs input", "CircleQuestion", "text-attention"],
     ["working", "Working", "Loading", SIDEBAR_WORKING_STATUS_COLOR_CLASS],
     ["done-unread", "Done", "Check", SIDEBAR_SUCCESS_STATUS_COLOR_CLASS],
   ] satisfies [PluginSidebarThreadIndicator, string, string, string][])(

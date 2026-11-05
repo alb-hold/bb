@@ -3665,7 +3665,7 @@ export function PromptBoxInternal({
                                 "ml-1",
                                 COARSE_POINTER_PROMPT_ACTION_BUTTON_CLASS,
                               ],
-                          "transition-colors",
+                          "rounded-full transition-colors",
                           PROMPT_ACTION_LAYOUT_CLASS,
                         )}
                       >

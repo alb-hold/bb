@@ -3613,6 +3613,7 @@ describe("ComposerBox compact layout", () => {
         "[data-promptbox-submit-group]",
       );
       expect(submitGroup?.contains(voiceButton)).toBe(true);
+      expect(voiceButton.classList.contains("rounded-full")).toBe(true);
       expect(
         screen.queryByRole("button", { name: "Submit (Enter)" }),
       ).toBeNull();

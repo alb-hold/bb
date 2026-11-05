@@ -164,7 +164,7 @@ export function ThreadStatusGlyph({
       return (
         <Icon
           name="CircleQuestion"
-          className={cn("text-destructive-text", iconSizeClass)}
+          className={cn("text-attention", iconSizeClass)}
           aria-label={statusLabel}
           aria-hidden={hideAccessibleLabel}
         />
