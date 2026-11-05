@@ -958,7 +958,7 @@ export function ModelReasoningPicker({
         {selectedServiceTierOption ? (
           <Icon
             name={selectedServiceTierOption.icon ?? "Zap"}
-            className="size-4 shrink-0"
+            className="size-3.5 shrink-0 fill-current text-subtle-foreground"
           />
         ) : TriggerIcon ? (
           <TriggerIcon className="size-4 shrink-0" />

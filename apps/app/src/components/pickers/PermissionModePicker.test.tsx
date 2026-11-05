@@ -20,7 +20,7 @@ afterEach(() => {
 
 describe("PermissionModePicker", () => {
   it.each(["full", "accept-edits", "auto"] as const)(
-    "keeps provisional %s neutral until the effective permission resolves",
+    "retains the known %s mode while disabling pending changes",
     (value) => {
       const { rerender } = render(
         <PermissionModePicker
@@ -34,7 +34,7 @@ describe("PermissionModePicker", () => {
       const trigger = screen.getByRole("button", { name: "Permission mode" });
       expect(trigger.textContent).toBe(({ full: "Full Access", "accept-edits": "Edits", auto: "Approve" }[value]));
       expect(trigger.hasAttribute("disabled")).toBe(true);
-      expect(trigger.className).not.toContain("warning");
+      expect(trigger.querySelector('[data-icon="AlertTriangle"]') !== null).toBe(value === "full");
       expect(
         trigger.querySelector('[data-slot="skeleton"], .bg-state-hover'),
       ).toBeNull();
@@ -49,6 +49,7 @@ describe("PermissionModePicker", () => {
       expect(screen.queryByText("Full Access")).toBeNull();
       expect(screen.queryByText("Accept Edits")).toBeNull();
       expect(screen.getByText("Approve")).not.toBeNull();
+      expect(trigger.querySelector('[data-icon="AlertTriangle"]')).toBeNull();
     },
   );
 
@@ -68,6 +69,7 @@ describe("PermissionModePicker", () => {
     expect(trigger.classList.contains("border-none")).toBe(true);
     expect(trigger.classList.contains("bg-attention")).toBe(false);
     expect(trigger.classList.contains("text-muted-foreground")).toBe(false);
+    expect(trigger.querySelector('[data-icon="AlertTriangle"]')?.classList.contains("text-attention")).toBe(true);
   });
 
   it("uses the same approve vocabulary for compact and wide labels", () => {
@@ -81,7 +83,7 @@ describe("PermissionModePicker", () => {
       />,
     );
     const trigger = screen.getByRole("button", { name: "Permission mode" });
-    expect(trigger.classList.contains("w-28")).toBe(false);
+    expect(trigger.classList.contains("w-28")).toBe(true);
     expect(trigger.textContent).toBe("Approve");
     expect(trigger.textContent).toContain("Approve");
     expect(trigger.textContent).not.toContain("Auto");
@@ -107,6 +109,7 @@ describe("PermissionModePicker", () => {
     const trigger = screen.getByRole("button", { name: "Permission mode" });
     expect(trigger.textContent).toContain("Plan Mode");
     expect(trigger.textContent).not.toContain("Full Access");
+    expect(trigger.querySelector('[data-icon="AlertTriangle"]')).toBeNull();
   });
 });
 
@@ -120,11 +123,33 @@ it.each([360, 390, 1280])("retains the last permission label and chevron while p
   const pending = screen.getByRole("button", { name: "Permission mode" });
   expect(pending.textContent).toBe("Full Access");
   expect(pending.querySelector('[data-icon="ChevronDown"]')).not.toBeNull();
+  expect(pending.querySelector('[data-icon="AlertTriangle"]')).not.toBeNull();
 });
 
-it("uses the default permission label and chevron before the first value", () => {
-  render(<PermissionModePicker options={[]} pending onChange={() => {}} supported />);
+it.each([360, 390, 1280])("keeps an unknown mode neutral and reserves its resolved width at %s", (width) => {
+  window.innerWidth = width;
+  const onChange = vi.fn();
+  const view = render(<PermissionModePicker options={permissionOptions} pending onChange={onChange} supported />);
   const trigger = screen.getByRole("button", { name: "Permission mode" });
-  expect(trigger.textContent).toBe("Approve");
+  expect(trigger.textContent).toBe("Permissions");
+  expect(trigger.hasAttribute("disabled")).toBe(true);
+  expect(trigger.classList.contains("w-28")).toBe(true);
   expect(trigger.querySelector('[data-icon="ChevronDown"]')).not.toBeNull();
+  expect(trigger.querySelector('[data-icon="AlertTriangle"]')).toBeNull();
+  expect(trigger.className).not.toContain("text-warning-text");
+  expect(onChange).not.toHaveBeenCalled();
+  view.rerender(<PermissionModePicker options={permissionOptions} value="full" onChange={onChange} supported />);
+  expect(trigger.textContent).toBe("Full Access");
+  expect(trigger.classList.contains("w-28")).toBe(true);
+  expect(trigger.querySelector('[data-icon="AlertTriangle"]')).not.toBeNull();
+  view.rerender(<PermissionModePicker options={[]} pending onChange={onChange} supported />);
+  expect(trigger.textContent).toBe("Full Access");
+  expect(trigger.querySelector('[data-icon="AlertTriangle"]')).not.toBeNull();
+});
+
+it.each(["full", "accept-edits", "auto"] as const)("owns the full-access cue for %s independently of option tones", (value) => {
+  render(<PermissionModePicker options={permissionOptions.map(({ value, label }) => ({ value, label }))} value={value} onChange={() => {}} supported />);
+  const trigger = screen.getByRole("button", { name: "Permission mode" });
+  expect(trigger.querySelector('[data-icon="AlertTriangle"]') !== null).toBe(value === "full");
+  expect(trigger.className.includes("text-warning-text")).toBe(value === "full");
 });

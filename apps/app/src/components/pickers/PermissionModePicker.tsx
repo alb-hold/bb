@@ -2,6 +2,7 @@ import { useMemo, useRef } from "react";
 import type { PermissionMode } from "@bb/domain";
 import { LIST_HOVER_TRANSITION } from "@bb/shared-ui/motion";
 import { cn } from "@bb/shared-ui/lib/utils";
+import { Icon } from "@bb/shared-ui/icon";
 import { OptionPicker, type PickerOption } from "./OptionPicker";
 
 type PermissionModeOption = PickerOption<PermissionMode>;
@@ -71,7 +72,8 @@ export function PermissionModePicker({
   );
   const lastValue = useRef<PermissionMode | undefined>(value);
   if (value !== undefined) lastValue.current = value;
-  const displayValue = value ?? lastValue.current ?? "auto";
+  const displayValue = value ?? lastValue.current;
+  const showFullAccessWarning = displayValue === "full" && !displayOverride;
   if (
     !pending &&
     (value === undefined ||
@@ -86,7 +88,13 @@ export function PermissionModePicker({
       value={displayValue}
       options={compactOptions}
       onChange={onChange}
-      className={cn(LIST_HOVER_TRANSITION, className)}
+      className={cn(
+        LIST_HOVER_TRANSITION,
+        "w-28 justify-between",
+        showFullAccessWarning && "text-warning-text hover:text-warning-text data-[state=open]:text-warning-text",
+        className,
+      )}
+      leading={showFullAccessWarning ? <Icon name="AlertTriangle" className="size-3.5 shrink-0 text-attention" /> : undefined}
       caretClassName="text-subtle-foreground/75"
       contentClassName="max-w-72"
       muted={muted}
@@ -97,9 +105,10 @@ export function PermissionModePicker({
         displayOverride ??
         (pending
           ? {
-              label:
-                compactOptions.find((option) => option.value === displayValue)
-                  ?.label ?? getPermissionModeCompactLabel(displayValue),
+              label: displayValue === undefined
+                ? "Permissions"
+                : compactOptions.find((option) => option.value === displayValue)
+                    ?.label ?? getPermissionModeCompactLabel(displayValue),
             }
           : undefined)
       }

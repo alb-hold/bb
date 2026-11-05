@@ -1700,6 +1700,9 @@ it.each([false, true])("keeps the selected tier cue with compact=%s", (compact) 
   });
   const trigger = screen.getByRole("button", { name: /^Provider, model and reasoning/ });
   expect(trigger.querySelector('[data-icon="Zap"]')).not.toBeNull();
+  expect(trigger.querySelector('[data-icon="Zap"]')?.classList.contains("size-3.5")).toBe(true);
+  expect(trigger.querySelector('[data-icon="Zap"]')?.classList.contains("fill-current")).toBe(true);
+  expect(trigger.querySelector('[data-icon="Zap"]')?.classList.contains("text-subtle-foreground")).toBe(true);
   expect(trigger.querySelector('[data-icon="ChevronDown"]')).not.toBeNull();
 });
 
