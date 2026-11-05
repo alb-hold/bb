@@ -513,6 +513,16 @@ export async function removeDirectoryTree(
       }
       if (!sameDirectory(openedInfo, currentInfo)) return "retained";
       await hooks.beforeEntryRemoval?.(entry);
+      if (expectedSiblingNames !== undefined) {
+        let siblings: string[];
+        try {
+          siblings = await readdir(parentDirectory);
+        } catch {
+          return "retained";
+        }
+        if (siblings.some((sibling) => !expectedSiblingNames.has(sibling)))
+          return "retained";
+      }
       let checkedDirectoryInfo;
       try {
         checkedDirectoryInfo = await lstat(anchoredEntry);

@@ -951,6 +951,48 @@ describe("real worktree teardown preservation", () => {
     });
   });
 
+  it("retains a directory child when a late sibling appears during its removal", async () => {
+    const worktree = await makeWorktree();
+    useProcReaderForTests(descendantsOnly(hostProc, -1));
+    const lateDirectory = path.join(worktree.path, "late-dir");
+    await mkdir(lateDirectory);
+    await mkdir(path.join(lateDirectory, "a-old-dir"));
+    await writeFile(path.join(lateDirectory, "a-old-dir", "old.txt"), "old\n");
+    await mkdir(path.join(lateDirectory, "b-dir"));
+    await writeFile(path.join(lateDirectory, "b-dir", "inside.txt"), "inside\n");
+    await writeFile(path.join(lateDirectory, "c-remaining.txt"), "remaining\n");
+    await git(worktree.path, "add", "late-dir");
+    await git(worktree.path, "commit", "-m", "published directory children");
+    await git(worktree.path, "push", "origin", "feature");
+    let injected = false;
+    const result = await removeDirectoryTree(worktree.path, {
+      startedAt: Number.MAX_SAFE_INTEGER,
+      beforeEntryRemoval: async (entry) => {
+        if (!entry.endsWith("late-dir/b-dir") || injected) return;
+        injected = true;
+        await writeFile(path.join(lateDirectory, "late-file.txt"), "kept\n");
+      },
+    });
+
+    expect(result).toBe("retained");
+    expect(injected).toBe(true);
+    await expect(
+      readFile(path.join(lateDirectory, "late-file.txt"), "utf8"),
+    ).resolves.toBe("kept\n");
+    await expect(
+      readFile(path.join(lateDirectory, "b-dir", "inside.txt"), "utf8"),
+    ).resolves.toBe("inside\n");
+    await expect(
+      readFile(path.join(lateDirectory, "c-remaining.txt"), "utf8"),
+    ).resolves.toBe("remaining\n");
+    await expect(access(path.join(lateDirectory, "a-old-dir"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    await expect(git(worktree.path, "rev-parse", "--git-dir")).resolves.toMatch(
+      /worktrees/u,
+    );
+  });
+
   it("removes a clean worktree on macOS when lsof reports no open paths", async () => {
     const worktree = await makeWorktree();
     const platform = Object.getOwnPropertyDescriptor(process, "platform");
