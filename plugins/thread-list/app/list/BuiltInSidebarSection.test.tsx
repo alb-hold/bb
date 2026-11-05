@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { NO_COLLAPSED_CHILD_ACTIVITY } from "../model/thread-activity.js";
@@ -56,9 +56,33 @@ function BuiltInSectionsProbe({ showPinned }: { showPinned: boolean }) {
   );
 }
 
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
 
 describe("built-in sidebar section renderer", () => {
+  it("waits for observed layout before measuring the pinned overflow cue", () => {
+    const callbacks: ResizeObserverCallback[] = [];
+    vi.stubGlobal("ResizeObserver", class {
+      constructor(callback: ResizeObserverCallback) { callbacks.push(callback); }
+      observe() {}
+      disconnect() {}
+    });
+    const height = vi.spyOn(Element.prototype, "clientHeight", "get").mockReturnValue(224);
+    const scrollHeight = vi.spyOn(Element.prototype, "scrollHeight", "get").mockReturnValue(400);
+    renderSections(<BuiltInSectionsProbe showPinned />);
+    expect(height).not.toHaveBeenCalled();
+    expect(scrollHeight).not.toHaveBeenCalled();
+    const content = screen.getByText("Pinned content").parentElement!;
+    act(() => callbacks.forEach((callback) => callback([], {} as ResizeObserver)));
+    expect(content.hasAttribute("data-more-below")).toBe(true);
+    content.scrollTop = 176;
+    fireEvent.scroll(content);
+    expect(content.hasAttribute("data-more-below")).toBe(false);
+  });
+
   it("fades clipped pinned rows only while more content remains below", () => {
     renderSections(<BuiltInSectionsProbe showPinned />);
     const content = screen.getByText("Pinned content").parentElement;

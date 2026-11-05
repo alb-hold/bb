@@ -45,10 +45,22 @@ it("revalidates pixel minimums on container resize while preserving explicit col
   vi.stubGlobal(
     "ResizeObserver",
     class {
-      constructor(callback: () => void) {
-        notify = callback;
+      constructor(private callback: ResizeObserverCallback) {}
+      observe(target: Element) {
+        notify = () =>
+          this.callback(
+            [
+              {
+                target,
+                contentRect: new DOMRect(0, 0, width, 600),
+                borderBoxSize: [{ inlineSize: width, blockSize: 600 }],
+                contentBoxSize: [],
+                devicePixelContentBoxSize: [],
+              },
+            ],
+            this as unknown as ResizeObserver,
+          );
       }
-      observe() {}
       disconnect() {}
     },
   );
@@ -82,6 +94,7 @@ it("revalidates pixel minimums on container resize while preserving explicit col
   );
   const size = (id: string) =>
     Number(screen.getByTestId(id).getAttribute("data-panel-size"));
+  act(notify);
   expect(size("main")).toBeCloseTo(10);
   act(() => {
     width = 800;
