@@ -2497,6 +2497,7 @@ export function ThreadTerminalView({
       resizeObserver.observe(containerElement);
       const currentActiveElement = document.activeElement;
       if (
+        !terminalSearchOpenRef.current &&
         shouldFocusTerminalAfterAsyncMount({
           currentFocusIsAvailable:
             currentActiveElement !== null &&
@@ -3317,7 +3318,7 @@ export function ThreadTerminalView({
       return;
     }
     const terminal = terminalRef.current;
-    if (terminal !== null) {
+    if (terminal !== null && !terminalSearchOpenRef.current) {
       terminal.focus();
       onAutoFocusHandledRef.current?.();
     }
