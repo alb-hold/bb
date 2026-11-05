@@ -1,3 +1,4 @@
+import { xtermFaintContrast } from "./vite-xterm-faint.js";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineConfig, type UserConfig } from "vite";
@@ -14,6 +15,7 @@ const appDir = dirname(fileURLToPath(import.meta.url));
 
 export const sharedViteConfig = {
   plugins: [
+    xtermFaintContrast(),
     sharedUiEnvSeam(),
     react(),
     cachedReactCompiler(),

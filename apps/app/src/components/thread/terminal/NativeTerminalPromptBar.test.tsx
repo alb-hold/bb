@@ -177,10 +177,22 @@ describe("NativeTerminalPromptBar", () => {
 
   it("labels the terminal destination and keeps execution details read-only", () => {
     const { input } = renderBar();
-    expect(input.placeholder).toBe("Send to Native CLI terminal");
+    expect(input.placeholder).toBe("To terminal above");
     expect(
       screen.getByText("Native CLI · GPT-5 · Full access").className,
     ).toContain("truncate");
+  });
+  it("uses one phone row only while the terminal draft is empty and unfocused", () => {
+    const { input } = renderBar();
+    const shell = input.closest("[data-native-composer]")!;
+    expect(shell.classList.contains("max-md:grid")).toBe(true);
+    fireEvent.focus(input);
+    expect(shell.classList.contains("max-md:grid")).toBe(false);
+    fireEvent.change(input, { target: { value: "explain this output" } });
+    fireEvent.blur(input);
+    expect(shell.classList.contains("max-md:grid")).toBe(false);
+    fireEvent.change(input, { target: { value: "" } });
+    expect(shell.classList.contains("max-md:grid")).toBe(true);
   });
   it.each(["Native CLI", " Native CLI ", ""])(
     "omits redundant execution text %j",
