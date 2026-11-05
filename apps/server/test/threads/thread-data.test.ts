@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   createProject,
   createThread,
-  createConnection,
   getThread,
   upsertNativeThreadReply,
   listStoredEventRows,
@@ -10,14 +9,14 @@ import {
   migrate,
   upsertHost,
 } from "@bb/db";
+import { createMigratedConnection } from "@bb/db/testing";
 import {
   getLastThreadOutput,
   parseStoredEvent,
 } from "../../src/services/threads/thread-data.js";
 
 function setup() {
-  const db = createConnection(":memory:");
-  migrate(db);
+  const db = createMigratedConnection();
   const host = upsertHost(db, noopNotifier, {
     name: "test-host",
   });
@@ -41,14 +40,15 @@ describe("thread data stored event parsing", () => {
           `
         INSERT INTO events (
           id, thread_id, scope_kind, turn_id, sequence, type, item_id,
-          item_kind, parent_tool_call_id, data, created_at
-        ) VALUES (?, ?, 'turn', 'old-turn', 1, 'item/completed', ?, 'agentMessage', NULL, ?, ?)
+          item_kind, parent_tool_call_id, provider_thread_id, data, created_at
+        ) VALUES (?, ?, 'turn', 'old-turn', 1, 'item/completed', ?, 'agentMessage', NULL, ?, ?, ?)
       `,
         )
         .run(
           "evt_old_native_output",
           thread.id,
           "msg_old",
+          "provider-old",
           JSON.stringify({
             item: {
               id: "msg_old",
@@ -84,14 +84,15 @@ describe("thread data stored event parsing", () => {
           `
         INSERT INTO events (
           id, thread_id, scope_kind, turn_id, sequence, type, item_id,
-          item_kind, parent_tool_call_id, data, created_at
-        ) VALUES (?, ?, 'turn', 'new-turn', 1, 'item/completed', ?, 'agentMessage', NULL, ?, ?)
+          item_kind, parent_tool_call_id, provider_thread_id, data, created_at
+        ) VALUES (?, ?, 'turn', 'new-turn', 1, 'item/completed', ?, 'agentMessage', NULL, ?, ?, ?)
       `,
         )
         .run(
           "evt_new_provider_output",
           thread.id,
           "msg_new",
+          "provider-new",
           JSON.stringify({
             item: {
               id: "msg_new",
