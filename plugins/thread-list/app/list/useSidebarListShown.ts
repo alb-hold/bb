@@ -1,4 +1,5 @@
 import { useLayoutEffect, useState } from "react";
+import { flushSync } from "react-dom";
 import { useSidebarContentElementRef } from "../ui/sidebar.js";
 
 export function useSidebarListShown(): boolean {
@@ -14,9 +15,10 @@ export function useSidebarListShown(): boolean {
       );
       return () => clearTimeout(fallback);
     }
-    const update = () => setShown(element.clientHeight > 0);
-    update();
-    const observer = new ResizeObserver(update);
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries.find((entry) => entry.target === element);
+      if (entry) flushSync(() => setShown(entry.contentRect.height > 0));
+    });
     observer.observe(element);
     return () => observer.disconnect();
   }, [canObserve, scrollElementRef]);

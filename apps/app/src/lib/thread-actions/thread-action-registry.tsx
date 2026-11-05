@@ -147,6 +147,7 @@ const THREAD_IDS_QUIET_MS = 32;
 const THREAD_IDS_MAX_WAIT_MS = 100;
 let threadIdsFlushTimer: ReturnType<typeof setTimeout> | null = null;
 let threadIdsPendingSince: number | null = null;
+let threadIdsDeadline = 0;
 
 function cancelThreadIdsFlush(): void {
   if (threadIdsFlushTimer !== null) clearTimeout(threadIdsFlushTimer);
@@ -178,12 +179,20 @@ function flushSubscribedThreadIds(): void {
 function scheduleSubscribedThreadIdsFlush(): void {
   const now = performance.now();
   threadIdsPendingSince ??= now;
-  if (threadIdsFlushTimer !== null) clearTimeout(threadIdsFlushTimer);
-  const remaining = THREAD_IDS_MAX_WAIT_MS - (now - threadIdsPendingSince);
-  threadIdsFlushTimer = setTimeout(
-    flushSubscribedThreadIds,
-    Math.max(0, Math.min(THREAD_IDS_QUIET_MS, remaining)),
+  threadIdsDeadline = Math.min(
+    now + THREAD_IDS_QUIET_MS,
+    threadIdsPendingSince + THREAD_IDS_MAX_WAIT_MS,
   );
+  if (threadIdsFlushTimer !== null) return;
+  const tick = () => {
+    const remaining = threadIdsDeadline - performance.now();
+    if (remaining > 0) {
+      threadIdsFlushTimer = setTimeout(tick, remaining);
+    } else {
+      flushSubscribedThreadIds();
+    }
+  };
+  threadIdsFlushTimer = setTimeout(tick, Math.max(0, threadIdsDeadline - now));
 }
 
 function retainThreadId(

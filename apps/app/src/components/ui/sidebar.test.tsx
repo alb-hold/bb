@@ -556,13 +556,20 @@ describe("SidebarContent", () => {
       }
     }
     vi.stubGlobal("ResizeObserver", StubResizeObserver);
-    vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(256);
+    const offsetWidth = vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(256);
     const clientWidth = vi
       .spyOn(Element.prototype, "clientWidth", "get")
       .mockReturnValue(246);
 
     render(<SidebarContent data-testid="content">Rows</SidebarContent>);
     const content = screen.getByTestId("content");
+    expect(offsetWidth).not.toHaveBeenCalled();
+    expect(clientWidth).not.toHaveBeenCalled();
+    act(() => {
+      for (const { callback, instance, targets } of observers) {
+        if (targets.has(content)) callback([], instance);
+      }
+    });
     expect(content.style.getPropertyValue("--bb-sidebar-scrollbar-lane")).toBe(
       "10px",
     );
