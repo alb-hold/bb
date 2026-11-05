@@ -1,3 +1,4 @@
+import { mountTerminalScreenLoadingPreview } from "./terminal-screen-loading-preview";
 import { trackTerminalScrollability } from "./terminal-scrollbar";
 import { fetchTerminalScreen } from "./terminal-screen-prefetch";
 import {
@@ -1794,6 +1795,16 @@ export function ThreadTerminalView({
     const pendingExitNotices: string[] = [];
     let replayCheckpointSequence: number | null = null;
     let localFitGrid: TerminalGridSize | null = null;
+    let removeScreenLoadingPreview: (() => void) | null = null;
+    const clearScreenLoadingPreview = () => {
+      removeScreenLoadingPreview?.();
+      removeScreenLoadingPreview = null;
+    };
+    const terminalFontOptions = {
+      fontFamily: readTerminalFontFamily(),
+      fontSize: Math.max(12, terminalFontSizeRef.current),
+      lineHeight: 1,
+    };
     let retainedOutputReplayed = sessionStatusRef.current !== "exited";
     let retainedOutputGrid: TerminalGridSize | null = null;
     let latestPtyGrid: TerminalGridSize = {
@@ -1995,9 +2006,28 @@ export function ThreadTerminalView({
         sessionRef.current.status === "exited" || pendingExitNotices.length > 0
           ? Promise.resolve(null)
           : fetchTerminalScreen(session.id, session.threadId ?? undefined);
+      let modulesReady = false;
+      void screenPromise.then((snapshot) => {
+        if (
+          disposed ||
+          modulesReady ||
+          snapshot == null ||
+          !snapshot.complete ||
+          snapshot.truncated ||
+          snapshot.cols !== latestPtyGrid.cols ||
+          snapshot.gridRows !== latestPtyGrid.rows
+        )
+          return;
+        removeScreenLoadingPreview = mountTerminalScreenLoadingPreview({
+          container: containerElement,
+          snapshot,
+          ...terminalFontOptions,
+        });
+      });
       const requiredModulesPromise = importTerminalModules();
       const [{ Terminal }, { FitAddon: LoadedFitAddon }, { Unicode11Addon }] =
         await requiredModulesPromise;
+      modulesReady = true;
       if (disposed) {
         return;
       }
@@ -2016,8 +2046,7 @@ export function ThreadTerminalView({
         allowProposedApi: TERMINAL_ALLOW_PROPOSED_API,
         convertEol: true,
         cursorBlink: true,
-        fontFamily: readTerminalFontFamily(),
-        fontSize: 12,
+        ...terminalFontOptions,
         linkHandler: osc8LinkHandler,
         scrollback: 10_000,
         theme: buildTerminalTheme(),
@@ -2801,8 +2830,7 @@ export function ThreadTerminalView({
                   allowProposedApi: TERMINAL_ALLOW_PROPOSED_API,
                   cols: replayGrid.cols,
                   rows: replayGrid.rows,
-                  fontFamily: readTerminalFontFamily(),
-                  fontSize: 12,
+                  ...terminalFontOptions,
                   theme: buildTerminalTheme(),
                 });
                 previewTerminal.loadAddon(new Unicode11Addon());
@@ -2980,8 +3008,7 @@ export function ThreadTerminalView({
               allowProposedApi: TERMINAL_ALLOW_PROPOSED_API,
               cols: snapshot.cols,
               rows: snapshot.gridRows,
-              fontFamily: readTerminalFontFamily(),
-              fontSize: 12,
+              ...terminalFontOptions,
               theme: buildTerminalTheme(),
             });
             previewTerminal.loadAddon(new Unicode11Addon());
@@ -3151,15 +3178,21 @@ export function ThreadTerminalView({
       );
     }
 
-    void mountTerminal(container).catch((error) => {
-      if (!disposed) {
-        container.textContent =
-          error instanceof Error ? error.message : String(error);
-      }
-    });
+    void mountTerminal(container)
+      .then(() => {
+        window.requestAnimationFrame(clearScreenLoadingPreview);
+      })
+      .catch((error) => {
+        clearScreenLoadingPreview();
+        if (!disposed) {
+          container.textContent =
+            error instanceof Error ? error.message : String(error);
+        }
+      });
 
     return () => {
       disposed = true;
+      clearScreenLoadingPreview();
       outputLineAnchorTracker.dispose();
       viewportLineAnchor?.dispose();
       viewportLineAnchor = null;
