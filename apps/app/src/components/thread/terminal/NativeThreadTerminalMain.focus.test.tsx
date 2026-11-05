@@ -37,8 +37,18 @@ vi.mock("@/hooks/queries/native-terminal-queries", () => ({
   useNativeTerminalThread: () => ({ dataUpdatedAt: 1, refetch: vi.fn() }),
   useOpenNativeTerminal: () => ({ mutate: vi.fn(), isPending: false }),
 }));
-vi.mock("@/hooks/queries/thread-default-execution-options-query", () => ({
-  useThreadDefaultExecutionOptions: () => execution,
+vi.mock("@tanstack/react-query", () => ({
+  useQuery: () => ({
+    data:
+      execution.data === null
+        ? null
+        : {
+            executed: null,
+            lastRequested: null,
+            nextTurn: execution.data,
+            overrides: { model: null, reasoningLevel: null },
+          },
+  }),
 }));
 vi.mock("@/hooks/queries/thread-queries", () => ({
   useThreadPendingInteractions: () => ({ data: [] }),

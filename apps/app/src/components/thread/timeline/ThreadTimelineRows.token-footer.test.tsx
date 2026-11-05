@@ -169,6 +169,7 @@ describe("ThreadTimelineRows token footer", () => {
               threadId: row.threadId,
               turnId: row.turnId,
               status: "completed",
+              children: [],
             }),
             assistant,
           ]}

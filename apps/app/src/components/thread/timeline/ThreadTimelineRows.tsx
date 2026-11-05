@@ -1379,23 +1379,13 @@ function TimelineExpandableBodyContent({
     }
     case "turn":
       return (
-        <>
-          <TurnRowBody
-            row={row}
-            compactActivityIntents={compactActivityIntents}
-            showAssistantMessageActions={
-              showAssistantMessageActions && row.status === "pending"
-            }
-          />
-          {row.status !== "pending" ? (
-            <TooltipProvider>
-              <ThreadTurnTokenSummary
-                threadId={row.threadId}
-                turnId={row.turnId}
-              />
-            </TooltipProvider>
-          ) : null}
-        </>
+        <TurnRowBody
+          row={row}
+          compactActivityIntents={compactActivityIntents}
+          showAssistantMessageActions={
+            showAssistantMessageActions && row.status === "pending"
+          }
+        />
       );
     case "work":
       if (row.workKind === "delegation") {
@@ -1473,6 +1463,11 @@ function TurnRowBody({
   return (
     <TimelineRowsList
       rows={row.children}
+      turnTokenSummary={
+        row.status !== "pending"
+          ? { threadId: row.threadId, turnId: row.turnId }
+          : undefined
+      }
       scopeActive={false}
       showAssistantMessageActions={showAssistantMessageActions}
       compactActivityIntents={compactActivityIntents}
@@ -1592,6 +1587,11 @@ function LazyTurnRowBody({
           ) : null}
           <TimelineRowsList
             rows={rows}
+            turnTokenSummary={
+              row.status !== "pending"
+                ? { threadId: threadId ?? row.threadId, turnId: row.turnId }
+                : undefined
+            }
             scopeActive={false}
             showAssistantMessageActions={showAssistantMessageActions}
             compactActivityIntents={compactActivityIntents}
@@ -2749,6 +2749,14 @@ function TimelineRowsList({
               );
             }}
           />
+          {turnTokenSummary && turnTokenSummaryMessageId === null ? (
+            <TooltipProvider>
+              <ThreadTurnTokenSummary
+                threadId={turnTokenSummary.threadId}
+                turnId={turnTokenSummary.turnId}
+              />
+            </TooltipProvider>
+          ) : null}
         </div>
       </MessageColumnWidthContext.Provider>
     </TimelineSearchExpansionContext.Provider>

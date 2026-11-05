@@ -100,7 +100,7 @@ function Surface({ open, browser }: { open: boolean; browser: boolean }) {
   );
 }
 
-it("warms the shell once preloading starts and tab code on first open without mounting hidden content", async () => {
+it("keeps the hidden shell out of background preloading and loads tab code on first open without mounting hidden content", async () => {
   const view = render(<Surface open={false} browser={false} />);
   await act(async () => {});
   expect(imports.panel).not.toHaveBeenCalled();
@@ -108,7 +108,10 @@ it("warms the shell once preloading starts and tab code on first open without mo
     window.setTimeout(callback, 0),
   );
   startSplitPreloading();
-  await waitFor(() => expect(imports.panel).toHaveBeenCalledOnce());
+  await act(async () => {
+    await new Promise((resolve) => window.setTimeout(resolve, 10));
+  });
+  expect(imports.panel).not.toHaveBeenCalled();
   expect(screen.queryByRole("textbox", { name: "Panel draft" })).toBeNull();
   expect(imports.browser).not.toHaveBeenCalled();
 
