@@ -911,8 +911,7 @@ export function ModelReasoningPicker({
 
   const TriggerIcon =
     hasSelectedModel || modelIsLoading ? ProviderIcon : undefined;
-  const showCompactIconOnly =
-    compactIconOnly && isCompactViewport && TriggerIcon !== undefined;
+  const showCompactIconOnly = compactIconOnly && isCompactViewport;
   const triggerTitleModelLabel = showLoadingTrigger
     ? "Model"
     : selectedModelLoadFailed
@@ -926,7 +925,9 @@ export function ModelReasoningPicker({
       : "",
   ].join("");
   const triggerAccessibleLabel = showCompactIconOnly
-    ? `Provider, model and reasoning: ${selectedProviderLabel}: ${selectedModelLabel} · ${triggerReasoningLabel ?? reasoningLevelLabel(reasoningValue, undefined)} reasoning`
+    ? hasSelectedModel
+      ? `Provider, model and reasoning: ${selectedProviderLabel}: ${selectedModelLabel} · ${triggerReasoningLabel ?? reasoningLevelLabel(reasoningValue, undefined)} reasoning`
+      : "Model"
     : toggleShortcut
       ? `Provider, model and reasoning (${toggleShortcut.label})`
       : "Provider, model and reasoning";
@@ -964,6 +965,8 @@ export function ModelReasoningPicker({
           />
         ) : TriggerIcon ? (
           <TriggerIcon className="size-4 shrink-0" />
+        ) : showCompactIconOnly ? (
+          <Icon name="Cpu" className="size-4 shrink-0" />
         ) : null}
         {showCompactIconOnly ? null : (
           <>
@@ -991,7 +994,7 @@ export function ModelReasoningPicker({
           </>
         )}
       </span>
-      {disabled ? null : (
+      {disabled && !showCompactIconOnly ? null : (
         <Icon
           name="ChevronDown"
           className={cn(

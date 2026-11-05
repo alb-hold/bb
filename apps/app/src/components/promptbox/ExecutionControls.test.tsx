@@ -61,6 +61,33 @@ afterEach(() => {
 });
 
 describe("ExecutionControls", () => {
+  it("keeps the unresolved model glyph and chevron in a 360px compact composer", () => {
+    const props = makeExecutionControlsProps();
+    const { wrapper } = createQueryClientTestHarness();
+    render(
+      <CompactViewportOverrideProvider isCompactViewport>
+        <div style={{ width: 360 }}>
+          <ExecutionControls
+            {...props}
+            pending
+            provider={{ options: [], selectedId: "" }}
+            model={{ ...props.model, selected: "", options: [], isLoading: true }}
+            nativeTerminal={{ enabled: true, onChange: vi.fn() }}
+          />
+        </div>
+      </CompactViewportOverrideProvider>,
+      { wrapper },
+    );
+
+    const chip = screen.getByRole("button", { name: "Model" });
+    expect(chip.textContent).toBe("");
+    expect(chip.querySelectorAll("[data-icon-root]").length).toBe(2);
+    expect(chip.hasAttribute("disabled")).toBe(true);
+    expect(chip.closest("[data-execution-controls-layout]")?.getAttribute("data-execution-controls-layout")).toBe("stacked");
+    expect(screen.getByRole("radio", { name: "Chat" })).toBeTruthy();
+    expect(screen.getByRole("radio", { name: "Terminal" })).toBeTruthy();
+  });
+
   it("uses a glyph without partial model text beside compact execution choices", () => {
     const props = makeExecutionControlsProps();
     const { wrapper } = createQueryClientTestHarness();
