@@ -22,7 +22,7 @@ import {
 } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { MemoryRouter, useNavigate } from "react-router-dom";
-import { AppRoutes } from "./App";
+import { AppRoutes, AuthCallbackRoute } from "./App";
 import { startSplitPreloading } from "./lib/split-prefetch";
 
 const downloads = await vi.hoisted(async () => {
@@ -63,6 +63,19 @@ afterEach(() => {
   cleanup();
   appQueryClient.clear();
   vi.restoreAllMocks();
+});
+
+it.each([
+  ["success", "Authentication completed"],
+  ["error", "Authentication failed"],
+])("loads the authentication result route for %s", async (status, title) => {
+  render(
+    <MemoryRouter initialEntries={[`/auth/callback?status=${status}`]}>
+      <AuthCallbackRoute />
+    </MemoryRouter>,
+  );
+  expect(await screen.findByRole("heading", { name: title })).toBeTruthy();
+  expect(downloads.workspaceStarted).not.toHaveBeenCalled();
 });
 
 it("keeps the workspace chunk off routes that do not use it", async () => {

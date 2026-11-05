@@ -7,7 +7,17 @@ interface PluginFrontendBootScheduleDeps {
 }
 
 export const PLUGIN_FRONTEND_BOOT_TIMEOUT_MS = 1_500;
+export const PLUGIN_FRONTEND_THREAD_SURFACE_TIMEOUT_MS = 10_000;
 const HOME_COMPOSER_SELECTOR = "textarea, [contenteditable=true]";
+const THREAD_CONTENT_SELECTOR = ".xterm-screen, [data-timeline-row-id]";
+
+function hasMountedSurface(selector: string): boolean {
+  return [...document.querySelectorAll<HTMLElement>(selector)].some(
+    (element) =>
+      typeof element.checkVisibility !== "function" ||
+      element.checkVisibility(),
+  );
+}
 
 export function whenHomeComposerInputOrTimeout(): Promise<void> {
   if (window.location.pathname !== "/") return Promise.resolve();
@@ -24,11 +34,15 @@ export function whenHomeComposerInputOrTimeout(): Promise<void> {
   });
 }
 
-export function whenHomeComposerMounted(): Promise<void> {
-  if (
-    window.location.pathname !== "/" ||
-    document.querySelector(HOME_COMPOSER_SELECTOR)
-  )
+export function whenRouteSurfaceMounted(): Promise<void> {
+  const pathname = window.location.pathname;
+  const selector =
+    pathname === "/"
+      ? HOME_COMPOSER_SELECTOR
+      : /^(?:\/projects\/[^/]+)?\/threads\/[^/]+\/?$/.test(pathname)
+        ? THREAD_CONTENT_SELECTOR
+        : null;
+  if (selector === null || hasMountedSurface(selector))
     return Promise.resolve();
   return new Promise((resolve) => {
     const finish = () => {
@@ -37,10 +51,21 @@ export function whenHomeComposerMounted(): Promise<void> {
       resolve();
     };
     const observer = new MutationObserver(() => {
-      if (document.querySelector(HOME_COMPOSER_SELECTOR)) finish();
+      if (window.location.pathname !== pathname || hasMountedSurface(selector))
+        finish();
     });
-    const timeout = window.setTimeout(finish, PLUGIN_FRONTEND_BOOT_TIMEOUT_MS);
-    observer.observe(document, { childList: true, subtree: true });
+    const timeout = window.setTimeout(
+      finish,
+      pathname === "/"
+        ? PLUGIN_FRONTEND_BOOT_TIMEOUT_MS
+        : PLUGIN_FRONTEND_THREAD_SURFACE_TIMEOUT_MS,
+    );
+    observer.observe(document, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["class", "style", "hidden"],
+    });
   });
 }
 

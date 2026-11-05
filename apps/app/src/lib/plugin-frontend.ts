@@ -5,18 +5,12 @@ import * as reactDom from "react-dom";
 import * as reactDomClient from "react-dom/client";
 import * as jsxRuntime from "react/jsx-runtime";
 import * as jsxDevRuntime from "react/jsx-dev-runtime";
-import * as radixAlertDialog from "@radix-ui/react-alert-dialog";
 import * as radixContextMenu from "@radix-ui/react-context-menu";
 import * as radixDialog from "@radix-ui/react-dialog";
 import * as radixDropdownMenu from "@radix-ui/react-dropdown-menu";
-import * as radixHoverCard from "@radix-ui/react-hover-card";
-import * as radixMenubar from "@radix-ui/react-menubar";
-import * as radixNavigationMenu from "@radix-ui/react-navigation-menu";
 import * as radixPopover from "@radix-ui/react-popover";
-import * as radixSelect from "@radix-ui/react-select";
 import * as radixTooltip from "@radix-ui/react-tooltip";
 import * as sonner from "sonner";
-import * as vaul from "vaul";
 import * as clsx from "clsx";
 import * as tailwindMerge from "tailwind-merge";
 import * as classVarianceAuthority from "class-variance-authority";
@@ -57,7 +51,7 @@ import { setPluginLogoUrls, type PluginLogoUrls } from "./plugin-logos";
 import { createRetryingModuleLoader } from "./plugin-frontend-lazy";
 import {
   requestBrowserIdle,
-  whenHomeComposerMounted,
+  whenRouteSurfaceMounted,
   whenHomeComposerInputOrTimeout,
 } from "./plugin-frontend-boot-schedule";
 import { whenRouteContentPainted } from "./route-content-paint";
@@ -203,18 +197,18 @@ interface BbPluginRuntime {
   jsxRuntime: unknown;
   jsxDevRuntime: unknown;
   pluginSdkApp: PluginSdkApp & typeof retiredPluginSdkAppMembers;
-  radixAlertDialog: unknown;
+  radixAlertDialog?: unknown;
   radixContextMenu: unknown;
   radixDialog: unknown;
   radixDropdownMenu: unknown;
-  radixHoverCard: unknown;
-  radixMenubar: unknown;
-  radixNavigationMenu: unknown;
+  radixHoverCard?: unknown;
+  radixMenubar?: unknown;
+  radixNavigationMenu?: unknown;
   radixPopover: unknown;
-  radixSelect: unknown;
+  radixSelect?: unknown;
   radixTooltip: unknown;
   sonner: unknown;
-  vaul: unknown;
+  vaul?: unknown;
   pierreDiffs?: unknown;
   pierreDiffsReact?: unknown;
   clsx: unknown;
@@ -239,18 +233,12 @@ export function installPluginRuntime(): BbPluginRuntime {
       ...pluginSdkAppImplementation,
       ...retiredPluginSdkAppMembers,
     },
-    radixAlertDialog,
     radixContextMenu,
     radixDialog,
     radixDropdownMenu,
-    radixHoverCard,
-    radixMenubar,
-    radixNavigationMenu,
     radixPopover,
-    radixSelect,
     radixTooltip,
     sonner: { ...sonner, toast: createPluginToast(sonner.toast) },
-    vaul,
     clsx,
     tailwindMerge,
     classVarianceAuthority,
@@ -262,6 +250,42 @@ export function installPluginRuntime(): BbPluginRuntime {
 }
 
 const lazyRuntimeGroups = [
+  {
+    slots: ["radixAlertDialog"],
+    load: createRetryingModuleLoader(async () => ({
+      radixAlertDialog: await import("@radix-ui/react-alert-dialog"),
+    })),
+  },
+  {
+    slots: ["radixHoverCard"],
+    load: createRetryingModuleLoader(async () => ({
+      radixHoverCard: await import("@radix-ui/react-hover-card"),
+    })),
+  },
+  {
+    slots: ["radixMenubar"],
+    load: createRetryingModuleLoader(async () => ({
+      radixMenubar: await import("@radix-ui/react-menubar"),
+    })),
+  },
+  {
+    slots: ["radixNavigationMenu"],
+    load: createRetryingModuleLoader(async () => ({
+      radixNavigationMenu: await import("@radix-ui/react-navigation-menu"),
+    })),
+  },
+  {
+    slots: ["radixSelect"],
+    load: createRetryingModuleLoader(async () => ({
+      radixSelect: await import("@radix-ui/react-select"),
+    })),
+  },
+  {
+    slots: ["vaul"],
+    load: createRetryingModuleLoader(async () => ({
+      vaul: await import("vaul"),
+    })),
+  },
   {
     slots: ["pierreDiffs", "pierreDiffsReact"],
     load: createRetryingModuleLoader(async () => {
@@ -1125,7 +1149,7 @@ const browserReconcileDeps: PluginFrontendReconcileDeps = {
   priorityPluginIds: () => frontendPriorityPluginIds(window.location.pathname),
   waitForDeferredLoad: async () => {
     await whenRouteContentPainted();
-    await whenHomeComposerMounted();
+    await whenRouteSurfaceMounted();
     await whenHomeComposerInputOrTimeout();
     await new Promise<void>((resolve) =>
       requestAnimationFrame(() => requestAnimationFrame(() => resolve())),

@@ -19,7 +19,6 @@ import {
   useParams,
 } from "react-router-dom";
 import { AppLayout } from "./components/layout/AppLayout";
-import { AuthCallbackView } from "./views/AuthCallbackView";
 import { QuickCreateProjectProvider } from "./hooks/useQuickCreateProject";
 import { RouteNavigationProvider } from "./components/ui/app-route-anchor";
 import { RouteNavigationIndicator } from "./components/ui/route-navigation-indicator";
@@ -94,6 +93,19 @@ import {
   whenCriticalLoadsSettled,
 } from "./lib/split-prefetch";
 
+const AuthCallbackView = lazy(() =>
+  import("./views/AuthCallbackView").then((m) => ({
+    default: m.AuthCallbackView,
+  })),
+);
+
+export function AuthCallbackRoute() {
+  return (
+    <Suspense fallback={null}>
+      <AuthCallbackView />
+    </Suspense>
+  );
+}
 const SettingsView = lazy(() =>
   import("./views/SettingsView").then((m) => ({
     default: m.SettingsView,
@@ -525,7 +537,7 @@ export function App() {
               <Routes>
                 <Route
                   path={AUTH_CALLBACK_ROUTE_PATH}
-                  element={<AuthCallbackView />}
+                  element={<AuthCallbackRoute />}
                 />
                 <Route
                   path="*"

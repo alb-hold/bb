@@ -216,6 +216,8 @@
     "sonner"
   ],
   "splitBoundaries": {
+    "src/components/dialogs/ProviderCliInstallLogDialog.tsx": ["boot"],
+    "src/views/AuthCallbackView.tsx": ["boot"],
     "src/components/tools/ResourceSidebar.tsx": ["boot"],
     "src/components/settings/SettingsSidebar.tsx": ["boot"],
     "src/components/dialogs/RemotePathBrowser.tsx": ["boot"],
@@ -347,9 +349,14 @@
   },
   "routeClosures": {
     "PluginFrontend": {
-      "maxBytes": 676970,
-      "maxBrotliBytes": 211533,
+      "maxBytes": 505525,
+      "maxBrotliBytes": 162937,
       "forbiddenPackages": [
+        "@radix-ui/react-hover-card",
+        "@radix-ui/react-menubar",
+        "@radix-ui/react-navigation-menu",
+        "@radix-ui/react-select",
+        "vaul",
         "@pierre/diffs",
         "@pierre/theming",
         "@shikijs/core",
