@@ -660,7 +660,7 @@ describe("terminal viewport restore", () => {
     terminal.dispose();
   });
 
-  it("keeps the saved top line when the phone fit shrinks the replay grid", async () => {
+  it("keeps the saved top line at the accepted phone grid after replay", async () => {
     const terminal = new Terminal({ cols: 80, rows: 33, scrollback: 10_000 });
     const pipeline = createTerminalOutputPipeline(terminal);
     const tracker = createTerminalOutputLineAnchorTracker({
@@ -693,8 +693,7 @@ describe("terminal viewport restore", () => {
       applyTerminalGridBeforeViewportRestore({
         pipeline,
         cols: 80,
-        rows: 56,
-        fitGrid: { cols: 80, rows: 33 },
+        rows: 33,
         onGridApplied: () => {},
         restoreViewport: () => {
           terminal.scrollToLine(
@@ -707,13 +706,11 @@ describe("terminal viewport restore", () => {
             }),
           );
         },
-        afterRestore: () => {
-          if (terminal.rows !== 33) terminal.resize(80, 33);
-          resolve();
-        },
+        afterRestore: resolve,
       });
     });
 
+    expect(terminal.rows).toBe(33);
     expect(
       terminal.buffer.active
         .getLine(terminal.buffer.active.viewportY)

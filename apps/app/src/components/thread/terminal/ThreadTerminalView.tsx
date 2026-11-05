@@ -898,7 +898,6 @@ export function applyTerminalGridBeforeViewportRestore({
   pipeline,
   cols,
   rows,
-  fitGrid,
   onGridApplied,
   restoreViewport,
   afterRestore,
@@ -906,7 +905,6 @@ export function applyTerminalGridBeforeViewportRestore({
   pipeline: ReturnType<typeof createTerminalOutputPipeline> | null | undefined;
   cols: number;
   rows: number;
-  fitGrid?: { cols: number; rows: number };
   onGridApplied: () => void;
   restoreViewport: () => void;
   afterRestore: () => void;
@@ -920,16 +918,7 @@ export function applyTerminalGridBeforeViewportRestore({
     finish();
     return;
   }
-  pipeline.setGrid(cols, rows, () => {
-    if (
-      fitGrid !== undefined &&
-      (fitGrid.cols !== cols || fitGrid.rows !== rows)
-    ) {
-      pipeline.setGrid(fitGrid.cols, fitGrid.rows, finish);
-      return;
-    }
-    finish();
-  });
+  pipeline.setGrid(cols, rows, finish);
 }
 
 export function applyTerminalGridAndKeepViewport({
@@ -2860,14 +2849,10 @@ export function ThreadTerminalView({
                 releasePreview: releaseReplayPreview,
                 processExited: () => replayPreview?.processExited(),
               });
-              const fitGrid = fitAddon?.proposeDimensions();
               applyTerminalGridBeforeViewportRestore({
                 pipeline: outputPipeline,
                 cols: latestPtyGrid.cols,
                 rows: latestPtyGrid.rows,
-                ...(fitGrid === undefined || savedViewportAnchor === null
-                  ? {}
-                  : { fitGrid: { cols: fitGrid.cols, rows: fitGrid.rows } }),
                 onGridApplied: updateGridVisibility,
                 restoreViewport,
                 afterRestore: () => {
