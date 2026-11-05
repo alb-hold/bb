@@ -84,6 +84,13 @@ interface Fixture {
   account: AccountSummary;
 }
 
+async function waitForAccepting(read: () => Promise<boolean>): Promise<void> {
+  await vi.waitFor(async () => expect(await read()).toBe(true), {
+    timeout: 20_000,
+    interval: 50,
+  });
+}
+
 const cleanups: Array<() => Promise<void>> = [];
 const sweepClockCleanups: Array<() => void> = [];
 const bbThreadStates = new Map<string, "archived" | "deleted">();
@@ -630,6 +637,7 @@ async function createFixture(args: {
   apiKey?: string;
   priority?: number;
   beforePlugin?: (host: Fixture["host"]) => void;
+  hubStartupDelayMs?: number;
   loopbackBaseUrl?: string;
   hostRpc?: (call: ExperimentalFakeHostRpcCall) => unknown | Promise<unknown>;
 }): Promise<Fixture> {
@@ -677,13 +685,37 @@ async function createFixture(args: {
       priority: args.priority ?? 100,
     }),
   );
-  const service = host.harness.behavior.runService("hub");
-  await vi.waitFor(async () => {
+  const runService = host.harness.behavior.runService.bind(
+    host.harness.behavior,
+  );
+  const service = args.hubStartupDelayMs === undefined
+    ? runService("hub")
+    : (() => {
+        const controller = new AbortController();
+        let active: ReturnType<typeof runService> | null = null;
+        const done = (async () => {
+          await waitForIo(args.hubStartupDelayMs);
+          if (controller.signal.aborted) return;
+          active = runService("hub");
+          controller.signal.addEventListener(
+            "abort",
+            () => active?.controller.abort(controller.signal.reason),
+            { once: true },
+          );
+          await active.done;
+        })();
+        return { controller, done } as ReturnType<typeof runService>;
+      })();
+  cleanups.push(async () => {
+    service.controller.abort();
+    await service.done;
+    await host.harness.lifecycle.dispose();
+    await fs.rm(dataDir, { recursive: true, force: true });
+  });
+  await waitForAccepting(async () => {
     const result = await host.harness.behavior.runCli(["status", "--json"]);
     expect(result.exitCode).toBe(0);
-    expect(statusReportSchema.parse(JSON.parse(result.stdout)).accepting).toBe(
-      true,
-    );
+    return statusReportSchema.parse(JSON.parse(result.stdout)).accepting;
   });
   const statusResult = await host.harness.behavior.runCli(["status", "--json"]);
   const status = statusReportSchema.parse(JSON.parse(statusResult.stdout));
@@ -691,12 +723,6 @@ async function createFixture(args: {
     (candidate) => candidate.id === accountMetadata.id,
   );
   if (account === undefined) throw new Error("Added account was not listed.");
-  cleanups.push(async () => {
-    service.controller.abort();
-    await service.done;
-    await host.harness.lifecycle.dispose();
-    await fs.rm(dataDir, { recursive: true, force: true });
-  });
   const key =
     args.provider === "codex"
       ? (await resolveCodexToken(host)).token
@@ -903,6 +929,18 @@ describe("Account Pool config schema", () => {
 });
 
 describe("Account Pool plugin", () => {
+  it("waits for the hub to accept requests after a delayed service start", async () => {
+    const fixture = await createFixture({
+      upstreamUrl: "http://127.0.0.1:9001",
+      hubStartupDelayMs: 1_200,
+    });
+    await waitForAccepting(async () =>
+      statusSchema.parse(
+        await fixture.host.harness.behavior.callRpc("status.get", null),
+      ).accepting,
+    );
+  });
+
   it("appends accounts to the current priority order and renames over RPC and CLI", async () => {
     const fixture = await createFixture({
       upstreamUrl: "http://127.0.0.1:9001",
@@ -4375,12 +4413,9 @@ describe("Account Pool plugin", () => {
       restarted.controller.abort();
       await restarted.done;
     });
-    await vi.waitFor(async () => {
-      const status = statusSchema.parse(
+    await waitForAccepting(async () => statusSchema.parse(
         await fixture.host.harness.behavior.callRpc("status.get", null),
-      );
-      expect(status.accepting).toBe(true);
-    });
+       ).accepting);
     const response = await fixture.host.harness.behavior.fetchHttp(
       "POST",
       "/v1/messages",
@@ -4790,12 +4825,9 @@ describe("Account Pool plugin", () => {
           await service.done;
           await host.harness.lifecycle.dispose();
         });
-        await vi.waitFor(async () => {
-          const status = statusSchema.parse(
+        await waitForAccepting(async () => statusSchema.parse(
             await host.harness.behavior.callRpc("status.get", null),
-          );
-          expect(status.accepting).toBe(true);
-        });
+           ).accepting);
         await send("fresh-after-restart");
         await send("original");
         await send("fallback");
@@ -4846,12 +4878,9 @@ describe("Account Pool plugin", () => {
         await service.done;
         await host.harness.lifecycle.dispose();
       });
-      await vi.waitFor(async () => {
-        const status = statusSchema.parse(
+      await waitForAccepting(async () => statusSchema.parse(
           await host.harness.behavior.callRpc("status.get", null),
-        );
-        expect(status.accepting).toBe(true);
-      });
+         ).accepting);
       const newToken = await resolveToken(host);
       expect(newToken).not.toBe(oldToken);
       const send = async (token: string) => {
@@ -4927,12 +4956,9 @@ describe("Account Pool plugin", () => {
             await service.done;
             await host.harness.lifecycle.dispose();
           });
-          await vi.waitFor(async () => {
-            const status = statusSchema.parse(
+          await waitForAccepting(async () => statusSchema.parse(
               await host.harness.behavior.callRpc("status.get", null),
-            );
-            expect(status.accepting).toBe(true);
-          });
+             ).accepting);
         }
         expect(await send("original")).toBe("sk-first");
         expect(await send("fresh")).toBe("sk-second");
@@ -6271,12 +6297,9 @@ describe("Account Pool plugin", () => {
           restarted.controller.abort();
           await restarted.done;
         });
-        await vi.waitFor(async () => {
-          const status = statusSchema.parse(
+        await waitForAccepting(async () => statusSchema.parse(
             await fixture.host.harness.behavior.callRpc("status.get", null),
-          );
-          expect(status.accepting).toBe(true);
-        });
+           ).accepting);
         await (await sendClaude()).text();
         await (await sendCodex()).text();
         const claudeAccount = attempts[0];
@@ -7290,19 +7313,17 @@ describe("Account Pool plugin", () => {
         current.controller.abort();
         await current.done;
         current = fixture.host.harness.behavior.runService("hub");
-        await vi.waitFor(async () =>
-          expect(
-            statusReportSchema.parse(
-              JSON.parse(
-                (
-                  await fixture.host.harness.behavior.runCli([
-                    "status",
-                    "--json",
-                  ])
-                ).stdout,
-              ),
-            ).accepting,
-          ).toBe(true),
+        await waitForAccepting(async () =>
+          statusReportSchema.parse(
+            JSON.parse(
+              (
+                await fixture.host.harness.behavior.runCli([
+                  "status",
+                  "--json",
+                ])
+              ).stdout,
+            ),
+          ).accepting,
         );
         if (cycle === 0)
           await vi.waitFor(() => expect(calls).toBeGreaterThan(1));
@@ -13413,12 +13434,9 @@ describe("Account Pool credential scoping", () => {
       await service.done;
       await reloaded.harness.lifecycle.dispose();
     });
-    await vi.waitFor(async () => {
-      const status = statusSchema.parse(
+    await waitForAccepting(async () => statusSchema.parse(
         await reloaded.harness.behavior.callRpc("status.get", null),
-      );
-      expect(status.accepting).toBe(true);
-    });
+       ).accepting);
     expect(await statusOf(reloaded, claude, "/v1/messages")).toBe(401);
     expect(await statusOf(reloaded, nested, "/availability")).toBe(401);
     expect(await routedTokens(reloaded)).toEqual([]);
@@ -13535,12 +13553,9 @@ describe("Account Pool credential scoping", () => {
         await service.done;
         await reloaded.harness.lifecycle.dispose();
       });
-      await vi.waitFor(async () => {
-        const status = statusSchema.parse(
+      await waitForAccepting(async () => statusSchema.parse(
           await reloaded.harness.behavior.callRpc("status.get", null),
-        );
-        expect(status.accepting).toBe(true);
-      });
+         ).accepting);
       expect(
         (
           await reloaded.harness.behavior.resolveProviderEnv("claude-code", {
@@ -13644,12 +13659,9 @@ describe("Account Pool credential scoping", () => {
       await service.done;
       await host.harness.lifecycle.dispose();
     });
-    await vi.waitFor(async () => {
-      const status = statusSchema.parse(
+    await waitForAccepting(async () => statusSchema.parse(
         await host.harness.behavior.callRpc("status.get", null),
-      );
-      expect(status.accepting).toBe(true);
-    });
+       ).accepting);
     expect(await statusOf(host, claude, "/v1/messages")).toBe(200);
     expect(await statusOf(host, nested, "/availability")).toBe(200);
     expect(await statusOf(host, revoked, "/v1/messages")).toBe(401);
@@ -13818,12 +13830,9 @@ describe("Account Pool credential scoping", () => {
       await service.done;
       await host.harness.lifecycle.dispose();
     });
-    await vi.waitFor(async () => {
-      const status = statusSchema.parse(
+    await waitForAccepting(async () => statusSchema.parse(
         await host.harness.behavior.callRpc("status.get", null),
-      );
-      expect(status.accepting).toBe(true);
-    });
+       ).accepting);
     return host;
   }
 
@@ -14852,12 +14861,9 @@ describe("Account Pool credential scoping", () => {
       await child.harness.lifecycle.dispose();
       await fs.rm(dataDir, { recursive: true, force: true });
     });
-    await vi.waitFor(async () => {
-      const status = statusSchema.parse(
+    await waitForAccepting(async () => statusSchema.parse(
         await child.harness.behavior.callRpc("status.get", null),
-      );
-      expect(status.accepting).toBe(true);
-    });
+       ).accepting);
     return { host: child, dataDir };
   }
 
