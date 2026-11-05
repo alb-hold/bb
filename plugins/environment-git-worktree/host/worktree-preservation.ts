@@ -13,6 +13,8 @@ const IN_PROGRESS_OPERATION_PATHS = [
   "rebase-apply",
   "CHERRY_PICK_HEAD",
   "REVERT_HEAD",
+  "BISECT_LOG",
+  "BISECT_START",
 ];
 
 export interface WorktreeIdentity {
@@ -268,6 +270,15 @@ export async function findStructuralReasons(
     } else if (present === null) {
       reasons.push(`could not check for a Git operation in progress (${name})`);
     }
+  }
+  const bisectRefs = await runGit(
+    ["for-each-ref", "--format=%(refname)", "refs/bisect"],
+    { cwd: identity.path, env: gitEnvironment(identity.path), allowFailure: true },
+  );
+  if (bisectRefs.exitCode !== 0) {
+    reasons.push("could not check for refs/bisect state");
+  } else if (bisectRefs.stdout.trim() !== "") {
+    reasons.push("has refs/bisect state");
   }
   return reasons;
 }

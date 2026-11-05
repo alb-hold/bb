@@ -282,6 +282,22 @@ describe("real worktree teardown preservation", () => {
     await expect(access(worktree.path)).resolves.toBeUndefined();
   });
 
+  it("retains a clean published worktree during a real bisect", async () => {
+    const worktree = await makeWorktree();
+    await writeFile(path.join(worktree.path, "bisect.txt"), "bisect\n");
+    await git(worktree.path, "add", "bisect.txt");
+    await git(worktree.path, "-c", "user.name=Worktree Test", "-c", "user.email=worktree@example.test", "commit", "-m", "bisect point");
+    await git(worktree.path, "push", "origin", "feature");
+    await git(worktree.path, "bisect", "start", "HEAD", "HEAD^");
+    useProcReaderForTests(descendantsOnly(hostProc, -1));
+
+    await expect(remove(worktree)).rejects.toMatchObject({
+      code: "worktree_preserved",
+    });
+    await expect(access(worktree.path)).resolves.toBeUndefined();
+    expect(await git(worktree.path, "status", "--porcelain")).toBe("");
+  });
+
   it("retains an untracked file created after the final check", async () => {
     const worktree = await makeWorktree();
     useProcReaderForTests(descendantsOnly(hostProc, -1));

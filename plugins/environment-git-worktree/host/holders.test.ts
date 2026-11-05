@@ -183,6 +183,7 @@ function fakeProc(options: {
   noBoot?: boolean;
   worktreeMode?: number;
   worktreeGid?: number;
+  extendedAcl?: boolean | null;
 }): ProcReader {
   const self = options.self ?? {};
   const files = new Map<string, string>();
@@ -279,6 +280,8 @@ function fakeProc(options: {
       gid: path === "/work/tree" ? (options.worktreeGid ?? 0) : 0,
       mode: path === "/work/tree" ? (options.worktreeMode ?? 0o755) : 0o755,
     }),
+    hasExtendedAcl: async () =>
+      options.extendedAcl === undefined ? false : options.extendedAcl,
     creationMs: async () => {
       if (options.createdMs === null) return null;
       return options.createdMs ?? 1_000_060_000;
@@ -464,6 +467,25 @@ describe("the Linux process-list visibility rule", () => {
     });
     expect(await scanLinux("/work/tree", proc, 4242)).toEqual({
       status: "clear",
+    });
+  });
+
+  it.each([true, null])("is uncertain when an ACL may grant access (%s)", async (extendedAcl) => {
+    const proc = fakeProc({
+      worktreeMode: 0o710,
+      worktreeGid: 2000,
+      extendedAcl,
+      processes: {
+        101: {
+          uid: 1001,
+          gidValues: [1001, 1001, 1001, 1001],
+          groups: [],
+          cwdDenied: true,
+        },
+      },
+    });
+    expect(await scanLinux("/work/tree", proc, 4242)).toMatchObject({
+      status: "uncertain",
     });
   });
 

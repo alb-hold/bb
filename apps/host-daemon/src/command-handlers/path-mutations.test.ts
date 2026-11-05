@@ -36,6 +36,44 @@ afterEach(async () => {
 
 describe("confined host path mutations", () => {
   it.skipIf(!hasHeldDirectoryRemoval)(
+    "retains data written after the holder scan by a worker that fchdirs into quarantine",
+    async () => {
+      const root = await makeRoot();
+      const target = path.join(root, "fchdir-race");
+      await fs.mkdir(target);
+      await fs.writeFile(path.join(target, "before.txt"), "before");
+      const worker = spawn(
+        "python3",
+        ["-c", "import os,sys; fd=os.open(sys.argv[1], os.O_RDONLY); print('ready', flush=True); sys.stdin.readline(); os.fchdir(fd); open('late.txt','w').write('late'); print('written', flush=True); sys.stdin.readline()", target],
+        { stdio: ["pipe", "pipe", "ignore"] },
+      );
+      let output = "";
+      worker.stdout?.on("data", (chunk) => { output += chunk.toString(); });
+      const waitFor = async (value: string) => {
+        while (!output.includes(value)) await once(worker.stdout!, "data");
+      };
+      try {
+        await waitFor("ready");
+        await expect(
+          removeDirectoryAfterHolderRecheck({
+            directory: target,
+            action: "remove worktree",
+            recursive: true,
+            afterHolderScan: async () => {
+              worker.stdin?.write("go\n");
+              await waitFor("written");
+              worker.stdin?.write("done\n");
+            },
+          }),
+        ).rejects.toMatchObject({ code: "path_in_use" });
+        await expect(fs.readFile(path.join(target, "late.txt"), "utf8")).resolves.toBe("late");
+      } finally {
+        worker.kill("SIGKILL");
+      }
+    },
+  );
+
+  it.skipIf(!hasHeldDirectoryRemoval)(
     "reports a previous removal quarantine when forced deletion finds no source path",
     async () => {
       const root = await makeRoot();

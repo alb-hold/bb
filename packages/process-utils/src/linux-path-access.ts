@@ -16,7 +16,9 @@ export function linuxDirectoryIsTraversable(args: {
   directoryUid: number;
   directoryGid: number;
   mode: number;
+  hasExtendedAcl: boolean | null;
 }): boolean {
+  if (args.hasExtendedAcl !== false) return true;
   const permissions = args.mode & 0o777;
   if (args.directoryUid === args.processUid && (permissions & 0o100) !== 0)
     return true;
@@ -29,3 +31,23 @@ export function linuxDirectoryIsTraversable(args: {
     args.processSupplementaryGroups.includes(args.directoryGid)
   );
 }
+
+export async function linuxPathHasExtendedAcl(
+  target: string,
+): Promise<boolean | null> {
+  try {
+    const { stdout } = await execFileAsync("getfacl", ["-cp", "--", target], {
+      timeout: 5_000,
+      maxBuffer: 1024 * 1024,
+    });
+    return stdout.split("\n").some((line) =>
+      /^(?:user|group):[^:]([^:]*):/.test(line) || /^mask::/.test(line),
+    );
+  } catch {
+    return null;
+  }
+}
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);

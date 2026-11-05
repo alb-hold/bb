@@ -10,6 +10,7 @@ export async function removeDirectoryAfterHolderRecheck(args: {
   action: string;
   force?: boolean;
   recursive?: boolean;
+  afterHolderScan?: (quarantine: string) => Promise<void>;
 }): Promise<void> {
   const previousQuarantine = await findPreviousQuarantine(args.directory);
   if (previousQuarantine !== null) {
@@ -44,6 +45,7 @@ export async function removeDirectoryAfterHolderRecheck(args: {
   try {
     const rootInfo = await fs.lstat(quarantine);
     await refuseWhileHeld({ directory: quarantine, action: args.action });
+    await args.afterHolderScan?.(quarantine);
     if (args.recursive === true) {
       if (
         (await removeDirectoryTree(quarantine, {

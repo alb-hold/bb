@@ -48,6 +48,7 @@ function fakeLinux(
     filesystemUid: async (pid) => owners[pid] ?? 1000,
     filesystemGid: async () => 1000,
     supplementaryGroups: async () => [],
+    hasExtendedAcl: async () => false,
     readComm: async (pid) => comms[pid] ?? "node",
     runLsof: async () => {
       throw new Error("unused");
@@ -191,6 +192,21 @@ describe("scanProcessesWithCwdUnder", () => {
       },
     );
     expect(scan).toMatchObject({ status: "clear", excludedOtherUsers: 1 });
+  });
+
+  it.each([true, null])("returns unknown when ACL inspection is %s", async (extendedAcl) => {
+    const base = await dir();
+    const scan = await scanProcessesWithCwdUnder(
+      { directories: [base] },
+      {
+        ...fakeLinux({ 10: denied() }, { 10: 1001 }),
+        filesystemGid: async () => 1001,
+        supplementaryGroups: async () => [],
+        statAccess: async () => ({ uid: 1000, gid: 2000, mode: 0o710 }),
+        hasExtendedAcl: async () => extendedAcl,
+      },
+    );
+    expect(scan).toMatchObject({ status: "unknown" });
   });
 
   it("clears a foreign process whose cwd is unreadable and no path component grants traversal", async () => {

@@ -5,6 +5,7 @@ import { spawnPortableOutputProcess } from "./spawn.js";
 import { UNREADABLE_SESSION_AGENT_COMMS } from "./session-agent-comms.js";
 import {
   linuxDirectoryIsTraversable,
+  linuxPathHasExtendedAcl,
   parseLinuxSupplementaryGroups,
 } from "./linux-path-access.js";
 
@@ -50,6 +51,7 @@ export interface CwdScanIo {
   supplementaryGroups?(pid: number): Promise<number[] | null>;
   effectiveCapabilities?(pid: number): Promise<bigint>;
   statAccess?(path: string): Promise<{ uid: number; gid: number; mode: number }>;
+  hasExtendedAcl?(path: string): Promise<boolean | null>;
   readComm(pid: number): Promise<string>;
   runLsof(
     timeoutMs: number,
@@ -184,6 +186,7 @@ export const hostCwdScanIo: CwdScanIo = {
     const info = await stat(path);
     return { uid: info.uid, gid: info.gid, mode: info.mode };
   },
+  hasExtendedAcl: linuxPathHasExtendedAcl,
   readComm: async (pid) => {
     const text = await readFile(`/proc/${pid}/stat`, "utf8");
     const open = text.indexOf("(");
@@ -314,6 +317,10 @@ async function foreignUidCanReachTarget(args: {
         directoryUid: access.uid,
         directoryGid: access.gid,
         mode: access.mode,
+        hasExtendedAcl:
+          args.io.hasExtendedAcl === undefined
+            ? null
+            : await args.io.hasExtendedAcl(cursor),
       });
       if (!canSearch) break;
       const parent = path.dirname(cursor);

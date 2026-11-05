@@ -4,6 +4,7 @@ import path from "node:path";
 import { UNREADABLE_SESSION_AGENT_COMMS } from "@bb/process-utils/session-agent-comms";
 import {
   linuxDirectoryIsTraversable,
+  linuxPathHasExtendedAcl,
   parseLinuxSupplementaryGroups,
 } from "@bb/process-utils/linux-path-access";
 
@@ -80,6 +81,7 @@ export interface ProcReader {
   lstatId(path: string): Promise<string>;
   statId(path: string): Promise<string>;
   statAccess(path: string): Promise<{ uid: number; gid: number; mode: number }>;
+  hasExtendedAcl(path: string): Promise<boolean | null>;
   creationMs(directory: string): Promise<number | null>;
   subdirectories(path: string): Promise<string[]>;
 }
@@ -100,6 +102,7 @@ export const hostProc: ProcReader = {
     const info = await fs.stat(path);
     return { uid: info.uid, gid: info.gid, mode: info.mode };
   },
+  hasExtendedAcl: linuxPathHasExtendedAcl,
   creationMs: async (directory) => {
     const info = await fs.stat(directory, { bigint: true });
     if (info.birthtimeNs > 0n) return Number(info.birthtimeNs / 1_000_000n);
@@ -276,6 +279,7 @@ async function scanLinuxProcess(
         directoryUid: access.value.uid,
         directoryGid: access.value.gid,
         mode: access.value.mode,
+        hasExtendedAcl: await proc.hasExtendedAcl(cursor),
       });
       if (!canSearch) return { otherUser: true };
       const parent = path.dirname(cursor);
