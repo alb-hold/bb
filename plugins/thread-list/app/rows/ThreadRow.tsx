@@ -19,6 +19,7 @@ import { useSidebarRowMetadataExperiment } from "../list/SidebarRowMetadataExper
 import { useStickyRowStateReport } from "../ui/stickyOffset.js";
 import { useAtomValue } from "jotai";
 import { Icon } from "@/components/ui/icon";
+import { InfoRowTime } from "@bb/shared-ui/info-list-row";
 import { useIsCompactViewport } from "@/components/ui/hooks/use-compact-viewport";
 import {
   Tooltip,
@@ -93,6 +94,7 @@ import type { ConsumeDragClickSuppression } from "@/components/ui/use-drag-click
 import { SidebarChildToggleChevron } from "./SidebarChildToggleChevron.js";
 import { useSidebarRename } from "./SidebarInlineRename.js";
 import { SidebarRowControls } from "./SidebarRowControls.js";
+import { DESKTOP_THREAD_ROW_HEIGHT_VARIABLE_CLASS } from "./thread-row-height.js";
 import {
   SIDEBAR_CONTROL_BUTTON_CLASS,
   SIDEBAR_ROW_BASE_CLASS,
@@ -612,6 +614,7 @@ function ThreadRowComponent({
   );
   const labelTitle = thread.displayTitle;
   const crossProjectName = useSidebarProjectName(crossProjectId);
+  const projectName = useSidebarProjectName(thread.projectId);
   const crossProjectLabel =
     crossProjectId === null
       ? null
@@ -826,6 +829,9 @@ function ThreadRowComponent({
     "group/thread-row cursor-pointer",
     SIDEBAR_ROW_BASE_CLASS,
     "gap-1",
+    DESKTOP_THREAD_ROW_HEIGHT_VARIABLE_CLASS,
+    !hasRowState && !showRowMetadata &&
+      "md:h-(--bb-sidebar-desktop-row-height) md:min-h-(--bb-sidebar-desktop-row-height)",
     LIST_HOVER_TRANSITION,
     parentOptions?.stickyLevel === undefined && "relative",
     hasRowState
@@ -985,7 +991,7 @@ function ThreadRowComponent({
                   data-sidebar-thread-provider={provider.id}
                   role="img"
                   aria-label={provider.displayName}
-                  className="pointer-events-auto relative z-[31] flex size-4 shrink-0 items-center justify-center mr-1.5 text-muted-foreground"
+                  className="pointer-events-auto relative z-[31] flex size-4 shrink-0 items-center justify-center mr-1 max-md:mr-1.5 text-muted-foreground"
                   onClick={(event) => {
                     event.preventDefault();
                     event.stopPropagation();
@@ -1008,11 +1014,18 @@ function ThreadRowComponent({
             </span>
           ) : (
             <span
-              className={cn("bb-thread-title", "min-w-0 flex-1 truncate")}
+              className="min-w-0 flex-1"
               title={labelTitle}
               onDoubleClick={startTitleEditing}
             >
-              <ThreadTitle threadId={thread.id} />
+              <span className="bb-thread-title block min-w-0 flex-1 truncate">
+                <ThreadTitle threadId={thread.id} />
+              </span>
+              <span data-sidebar-thread-context="" className="hidden min-w-0 items-center gap-1 truncate text-2xs leading-4 text-muted-foreground md:flex">
+                {thread.experimental_nativeActivity !== undefined ? <span role="img" aria-label="Native terminal"><Icon name="Terminal" className="size-3 shrink-0" aria-hidden /></span> : null}
+                {projectName ? <><span className="truncate">{projectName}</span><span aria-hidden>·</span></> : null}
+                <InfoRowTime timestamp={thread.updatedAt} />
+              </span>
             </span>
           )}
         </span>

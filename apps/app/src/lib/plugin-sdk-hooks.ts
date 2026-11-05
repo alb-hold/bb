@@ -51,7 +51,7 @@ import {
 import {
   getComposerEditorBridges,
   subscribeComposerEditorBridges,
-  useComposerEditorBridge,
+  useComposerEditorState,
 } from "@/lib/composer-editor-registry";
 import { createComposerHandleBinding } from "@get-bb/plugin-sdk/internal/composer-handle";
 import {
@@ -576,7 +576,7 @@ export function useComposer(): PluginComposerApi {
     getNoComposerSelection,
   );
   const textEffectKey = composerHost?.textEffectKey ?? routeDraft.storageKey;
-  useComposerEditorBridge(textEffectKey);
+  useComposerEditorState(textEffectKey);
 
   const composerScope = composerHost?.scope;
   const scope: PluginComposerScope = useMemo(

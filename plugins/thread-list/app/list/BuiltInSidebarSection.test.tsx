@@ -83,7 +83,7 @@ describe("built-in sidebar section renderer", () => {
     expect(content.hasAttribute("data-more-below")).toBe(false);
   });
 
-  it("fades clipped pinned rows only while more content remains below", () => {
+  it("keeps clipped pinned rows opaque while preserving scrolling", () => {
     renderSections(<BuiltInSectionsProbe showPinned />);
     const content = screen.getByText("Pinned content").parentElement;
     if (!content) throw new Error("Expected pinned content viewport");
@@ -93,7 +93,9 @@ describe("built-in sidebar section renderer", () => {
     });
     fireEvent.scroll(content);
     expect(content.hasAttribute("data-more-below")).toBe(true);
-    expect(content.className).toContain("data-[more-below]:[mask-image:");
+    expect(content.className).not.toContain("mask-image");
+    expect(content.className).toContain("[--bb-sidebar-desktop-row-height:2.5rem]");
+    expect(content.className).toContain("md:max-h-[calc(7*var(--bb-sidebar-desktop-row-height)_+_0.75rem)]");
     content.scrollTop = 176;
     fireEvent.scroll(content);
     expect(content.hasAttribute("data-more-below")).toBe(false);
