@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Icon } from "@bb/shared-ui/icon";
 import { cn } from "@bb/shared-ui/lib/utils";
 import { getNativeShell } from "@/lib/native-shell/native-shell";
@@ -79,6 +79,28 @@ export function TerminalMobileControls({
   onSelectText,
 }: TerminalMobileControlsProps) {
   const [expanded, setExpanded] = useState(false);
+  const scrollerRef = useRef<HTMLDivElement>(null);
+  const updateOverflow = () => {
+    const scroller = scrollerRef.current;
+    if (!scroller) return;
+    const left = scroller.scrollLeft > 1;
+    const right =
+      scroller.scrollWidth - scroller.clientWidth - scroller.scrollLeft > 1;
+    scroller.toggleAttribute("data-more-left", left);
+    scroller.toggleAttribute("data-more-right", right);
+    scroller.style.maskImage =
+      left || right
+        ? `linear-gradient(to right, ${left ? "transparent, var(--ink) 16px" : "var(--ink)"}, ${right ? "var(--ink) calc(100% - 16px), transparent" : "var(--ink)"})`
+        : "none";
+  };
+  useLayoutEffect(() => {
+    updateOverflow();
+    const scroller = scrollerRef.current;
+    if (!scroller) return;
+    const observer = new ResizeObserver(updateOverflow);
+    observer.observe(scroller);
+    return () => observer.disconnect();
+  }, [searchAvailable]);
   const keyProps = { disabled };
   const readOnlyKeyProps = { disabled: readOnlyDisabled };
   const readOnlyExited = disabled && !readOnlyDisabled;
@@ -119,12 +141,8 @@ export function TerminalMobileControls({
           >
             ⇧Tab
           </Key>
-          <Key
-            {...keyProps}
-            label="Interrupt (Control C)"
-            onPress={() => onInput("\x03")}
-          >
-            ^C
+          <Key {...keyProps} label="Arrow down" onPress={() => onArrow("down")}>
+            <Icon name="ArrowDown" className="size-4" />
           </Key>
           <Key
             {...keyProps}
@@ -206,21 +224,23 @@ export function TerminalMobileControls({
       <div className="flex min-w-0 gap-1">
         <div className="relative min-w-0 flex-1">
           <div
+            ref={scrollerRef}
+            onScroll={updateOverflow}
             data-terminal-key-scroller=""
             className="flex flex-nowrap gap-1 overflow-x-auto touch-pan-x"
           >
+            <Key
+              {...keyProps}
+              label="Interrupt (Control C)"
+              onPress={() => onInput("\x03")}
+            >
+              ^C
+            </Key>
             <Key {...keyProps} label="Escape" onPress={() => onInput("\x1b")}>
               Esc
             </Key>
             <Key {...keyProps} label="Arrow up" onPress={() => onArrow("up")}>
               <Icon name="ArrowUp" className="size-4" />
-            </Key>
-            <Key
-              {...keyProps}
-              label="Arrow down"
-              onPress={() => onArrow("down")}
-            >
-              <Icon name="ArrowDown" className="size-4" />
             </Key>
             {searchAvailable ? (
               <Key

@@ -571,13 +571,16 @@ export function NativeTerminalPromptBar({
             onDiscard={dictation.discardFailed}
           />
         )}
-        <div
-          aria-label="Terminal execution"
-          className="truncate px-2 text-xs leading-tight text-muted-foreground"
-          title={executionLabel ?? providerLabel}
-        >
-          {executionLabel ?? providerLabel}
-        </div>
+        {executionLabel?.trim() &&
+        executionLabel.trim() !== providerLabel.trim() ? (
+          <div
+            aria-label="Terminal execution"
+            className="truncate px-2 text-xs leading-tight text-muted-foreground"
+            title={executionLabel ?? providerLabel}
+          >
+            {executionLabel}
+          </div>
+        ) : null}
         <label className="sr-only" htmlFor={inputId}>
           Send to {providerLabel} terminal
         </label>

@@ -2263,10 +2263,12 @@ export function ThreadTerminalView({
               onRendererChange: (renderer) => {
                 if (disposed || terminal === null) return;
                 const lineHeight = renderer === "webgl" ? webglLineHeight : 1;
-                if (terminal.options.lineHeight === lineHeight) return;
-                terminal.options.lineHeight = lineHeight;
+                if (terminal.options.lineHeight !== lineHeight) {
+                  terminal.options.lineHeight = lineHeight;
+                }
                 scheduleFitRef.current?.();
-                if (renderer === "webgl") settleInitialRenderer();
+                if (renderer === "webgl" && !initialRendererSettled)
+                  settleInitialRenderer();
               },
             },
           );
@@ -2489,7 +2491,7 @@ export function ThreadTerminalView({
         });
       };
       function settleInitialRenderer() {
-        if (disposed || initialRendererSettled || terminal === null) return;
+        if (disposed || terminal === null) return;
         clearTimeout(rendererDeadline);
         initialRendererSettled = true;
         webglLineHeight = terminal.options.lineHeight ?? 1;
@@ -2501,7 +2503,11 @@ export function ThreadTerminalView({
           TERMINAL_RENDERER_SETTLE_MS,
         );
         void initialRendererReady.then(() => {
-          if (webglRenderer === null || webglRenderer.renderer === "webgl") {
+          if (
+            initialRendererSettled ||
+            webglRenderer === null ||
+            webglRenderer.renderer === "webgl"
+          ) {
             settleInitialRenderer();
           }
         });
