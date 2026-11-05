@@ -778,7 +778,7 @@ describe("public terminal routes", () => {
     }
   });
 
-  it("records daemon attention on the existing thread unread timestamp and clears terminal state when visible", async () => {
+  it("records daemon attention on the existing thread unread timestamp and keeps it while visible until input", async () => {
     const fixture = await createTerminalRouteFixture();
     harnesses.push(fixture.harness);
     const stored = createTerminalSession(fixture.harness.db, {
@@ -841,7 +841,25 @@ describe("public terminal routes", () => {
         ),
       ),
     );
-    expect(afterClear.sessions[0]?.attention).toBeNull();
+    expect(afterClear.sessions[0]?.attention).toEqual(
+      listed.sessions[0]?.attention,
+    );
+    onTerminalSocketMessage(fixture.harness.deps, {
+      raw: JSON.stringify({
+        type: "input",
+        dataBase64: Buffer.from("y", "utf8").toString("base64"),
+      }),
+      socket: browserSocket,
+      terminalId: stored.id,
+    });
+    const afterInput = terminalListResponseSchema.parse(
+      await readJson(
+        await fixture.harness.app.request(
+          `/api/v1/terminals?threadId=${encodeURIComponent(fixture.thread.id)}`,
+        ),
+      ),
+    );
+    expect(afterInput.sessions[0]?.attention).toBeNull();
   });
 
   it("gets and renames a terminal by ID without a redundant scope", async () => {

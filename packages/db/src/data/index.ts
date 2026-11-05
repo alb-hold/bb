@@ -536,6 +536,7 @@ export {
   createTerminalSession,
   getTerminalSession,
   listTerminalSessions,
+  TERMINAL_USER_INPUT_REFRESH_MS,
   updateTerminalSession,
   updateTerminalSessions,
 } from "./terminal-sessions.js";

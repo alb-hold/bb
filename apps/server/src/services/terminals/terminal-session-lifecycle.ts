@@ -37,6 +37,7 @@ import {
   updateTerminalSessions,
   updateThread,
   TERMINAL_OUTPUT_RETENTION_MS,
+  TERMINAL_USER_INPUT_REFRESH_MS,
   type TerminalSessionMutation,
   type TerminalSessionRow,
   TERMINAL_RETAINED_OUTPUT_BYTES,
@@ -830,6 +831,19 @@ function getTerminalById(
   terminalId: string,
 ): TerminalSessionRow | null {
   return getTerminalSession(db, { kind: "terminal", terminalId });
+}
+
+function markTerminalUserInput(
+  db: AppDeps["db"],
+  current: TerminalSessionRow,
+): TerminalSessionRow | null {
+  if (
+    current.lastUserInputAt !== null &&
+    Date.now() - current.lastUserInputAt < TERMINAL_USER_INPUT_REFRESH_MS
+  ) {
+    return null;
+  }
+  return updateTerminalById(db, current.id, { kind: "user-input" });
 }
 
 function updateTerminalById(
@@ -1979,9 +1993,7 @@ export class TerminalSessionLifecycle {
       );
     }
 
-    const markedInput = updateTerminalById(this.options.db, current.id, {
-      kind: "user-input",
-    });
+    const markedInput = markTerminalUserInput(this.options.db, current);
     const session = markedInput ?? current;
     if (markedInput) {
       this.notifyTerminalSessionChanged(markedInput);
@@ -3134,9 +3146,7 @@ export class TerminalSessionLifecycle {
     if (current?.status !== "running") {
       return;
     }
-    const markedInput = updateTerminalById(this.options.db, current.id, {
-      kind: "user-input",
-    });
+    const markedInput = markTerminalUserInput(this.options.db, current);
     if (markedInput) {
       this.notifyTerminalSessionChanged(markedInput);
       this.options.hub.sendTerminalClientMessage(markedInput.id, {
