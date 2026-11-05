@@ -303,11 +303,13 @@ describe("ThreadTerminalView terminal viewport and focus", () => {
         rows: 12,
       });
       renderMobileTerminal(true);
-      await waitFor(() => {
-        expect(
-          loadAddon.mock.calls.some(([addon]) => "findNext" in addon),
-        ).toBe(true);
-      });
+      await waitForReadinessCondition(
+        () =>
+          expect(
+            loadAddon.mock.calls.some(([addon]) => "findNext" in addon),
+          ).toBe(true),
+        "terminal search addon was not loaded within 5000 ms",
+      );
       expect(
         screen.getAllByRole("button", { name: "Search terminal output" }),
       ).toHaveLength(1);
