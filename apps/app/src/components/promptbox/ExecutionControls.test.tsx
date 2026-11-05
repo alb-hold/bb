@@ -196,6 +196,44 @@ describe("ExecutionControls", () => {
     ).toBeNull();
   });
 
+  it("retains the mode control geometry when the resolved provider cannot run terminals", () => {
+    const onChange = vi.fn();
+    const props = {
+      ...makeExecutionControlsProps(),
+      nativeTerminal: { enabled: false, disabled: true, onChange },
+    };
+    const { container, rerender } = renderExecutionControls({
+      ...props,
+      pending: true,
+    });
+    const before = Array.from(container.querySelectorAll("button")).map(
+      (button) => button.className,
+    );
+    const count = container.querySelectorAll("button").length;
+    rerender(
+      <ExecutionControls
+        {...props}
+        nativeTerminal={{
+          ...props.nativeTerminal,
+          unavailableReason: "This provider does not support Terminal mode",
+        }}
+        pending={false}
+      />,
+    );
+    expect(container.querySelectorAll("button")).toHaveLength(count);
+    const terminal = screen.getByRole("radio", { name: "Terminal" });
+    expect(terminal.className).toBe(before.at(-1));
+    expect(terminal.hasAttribute("disabled")).toBe(true);
+    expect(terminal.title).toBe("This provider does not support Terminal mode");
+    fireEvent.click(terminal);
+    expect(onChange).not.toHaveBeenCalled();
+    expect(
+      screen
+        .getByRole("radiogroup", { name: "Run this thread in" })
+        .classList.contains("max-md:row-start-2"),
+    ).toBe(true);
+  });
+
   it("exposes the stored-model substitution on the model chip", () => {
     const props = makeExecutionControlsProps();
     const note = "gpt-5.2-codex isn't available; using GPT-5";

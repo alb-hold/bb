@@ -3385,6 +3385,23 @@ describe("ComposerBox compact layout", () => {
     expect(document.querySelector("[data-promptbox-attachments]")).toBeNull();
   });
 
+  it("keeps a labelled desktop submit action as a pill", () => {
+    render(
+      <ComposerBox
+        {...createPromptBoxProps({
+          value: "Run this",
+          submission: { label: "Run task" },
+        })}
+      />,
+    );
+    const submit = document.querySelector("[data-promptbox-submit-action]");
+    expect(submit?.textContent).toContain("Run task");
+    expect(submit?.classList.contains("size-auto")).toBe(true);
+    expect(submit?.classList.contains("h-8")).toBe(true);
+    expect(submit?.classList.contains("size-9")).toBe(false);
+    expect(submit?.classList.contains("rounded-full")).toBe(true);
+  });
+
   it.each(["new-thread", "thread"] as const)(
     "uses the same idle send glyph on %s",
     (surface) => {

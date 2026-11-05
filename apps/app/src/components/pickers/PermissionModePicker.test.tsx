@@ -47,7 +47,7 @@ describe("PermissionModePicker", () => {
     const trigger = screen.getByRole("button", { name: "Permission mode" });
     expect(trigger.textContent).toContain("Full Access");
     expect(trigger.classList.contains("border-warning-text/30")).toBe(true);
-    expect(trigger.classList.contains("!text-muted-foreground")).toBe(true);
+    expect(trigger.classList.contains("text-muted-foreground")).toBe(true);
   });
 
   it("uses the same approve vocabulary for compact and wide labels", () => {
@@ -70,8 +70,9 @@ describe("PermissionModePicker", () => {
     const onChange = vi.fn();
     render(
       <PermissionModePicker
+        pending
         value="full"
-        options={permissionOptions}
+        options={[]}
         onChange={onChange}
         supported
         displayOverride={{

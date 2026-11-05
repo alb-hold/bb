@@ -1,3 +1,4 @@
+import { PERMISSION_MODE_OPTIONS } from "@bb/client-core";
 import { Button } from "@bb/shared-ui/button";
 import { useMemo } from "react";
 import type { PermissionMode } from "@bb/domain";
@@ -102,7 +103,7 @@ export function PermissionModePicker({
         LIST_HOVER_TRANSITION,
         value === "full" &&
           !displayOverride &&
-          "rounded-md border border-warning-text/30 !text-muted-foreground hover:!text-warning-text",
+          "rounded-md border border-warning-text/30 text-muted-foreground hover:text-warning-text",
         className,
       )}
       caretClassName="text-subtle-foreground/75"
@@ -112,14 +113,13 @@ export function PermissionModePicker({
       modal={modal}
       align={align}
       displayOverride={
-        pending && !options.some((option) => option.value === value)
+        pending &&
+        !displayOverride &&
+        !options.some((option) => option.value === value)
           ? {
               label:
-                value === "full"
-                  ? "Full Access"
-                  : value === "accept-edits"
-                    ? "Accept Edits"
-                    : "Approve for me",
+                PERMISSION_MODE_OPTIONS.find((option) => option.value === value)
+                  ?.label ?? "Permissions",
               compactLabel: getPermissionModeCompactLabel(value),
             }
           : displayOverride

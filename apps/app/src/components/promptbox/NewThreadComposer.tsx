@@ -2182,18 +2182,20 @@ export function NewThreadComposer({
           }}
           execution={{
             pending: projectDefaultsUnavailable || isLoadingModels,
-            ...(nativeTerminalAvailable ||
-            agentProviders === undefined ||
-            projectDefaultsUnavailable ||
-            isLoadingModels
-              ? {
-                  nativeTerminal: {
-                    enabled: nativeTerminalRequested,
-                    disabled: !nativeTerminalAvailable,
-                    onChange: setNativeTerminalRequested,
-                  },
-                }
-              : {}),
+            nativeTerminal: {
+              enabled:
+                projectDefaultsUnavailable || isLoadingModels
+                  ? nativeTerminalRequested
+                  : nativeTerminal,
+              disabled: !nativeTerminalAvailable,
+              unavailableReason:
+                !nativeTerminalAvailable &&
+                agentProviders !== undefined &&
+                !isLoadingModels
+                  ? "This provider does not support Terminal mode"
+                  : undefined,
+              onChange: setNativeTerminalRequested,
+            },
             providerRouting: executionOptionsRouting,
             provider: {
               options: providerOptions,

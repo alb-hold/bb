@@ -87,6 +87,7 @@ export interface ExecutionPermissionConfig {
 export interface ExecutionNativeTerminalConfig {
   enabled: boolean;
   disabled?: boolean;
+  unavailableReason?: string;
   onChange: (enabled: boolean) => void;
 }
 
@@ -197,8 +198,10 @@ export const ExecutionControls = memo(function ExecutionControls({
             <ToggleGroupItem
               key={choice.value}
               value={choice.value}
-              title={choice.title}
-              aria-description={choice.title}
+              title={nativeTerminal.unavailableReason ?? choice.title}
+              aria-description={
+                nativeTerminal.unavailableReason ?? choice.title
+              }
               aria-label={choice.label}
               className={cn(
                 "h-6 min-w-0 gap-1 whitespace-nowrap rounded-sm px-1.5 text-xs font-normal text-muted-foreground shadow-none hover:bg-state-hover hover:text-foreground data-[state=on]:bg-foreground data-[state=on]:text-background data-[state=on]:font-medium data-[state=on]:hover:bg-foreground",
