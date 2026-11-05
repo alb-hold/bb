@@ -119,7 +119,8 @@ export function resolveThreadStatus(
     indicatorKind !== "runtime" &&
     indicatorKind !== "unread-error" &&
     indicatorKind !== "waiting-for-input" &&
-    indicatorKind !== "needs-input";
+    indicatorKind !== "needs-input" &&
+    indicatorKind !== "check-terminal";
 
   return {
     accessibleLabel: rowStatusIsVisible
@@ -160,10 +161,11 @@ export function ThreadStatusGlyph({
       undefined);
 
   switch (kind) {
+    case "check-terminal":
     case "needs-input":
       return (
         <Icon
-          name="CircleQuestion"
+          name={kind === "check-terminal" ? "BellDot" : "CircleQuestion"}
           className={cn("text-attention", iconSizeClass)}
           aria-label={statusLabel}
           aria-hidden={hideAccessibleLabel}

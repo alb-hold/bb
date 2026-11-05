@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import type { PluginSidebarThreadIndicator } from "@get-bb/plugin-sdk";
 import { resolveThreadListIndicator } from "@bb/client-core";
@@ -331,4 +331,19 @@ describe("ThreadStatusGlyph", () => {
       expect(screen.queryByLabelText("Improving")).toBeNull();
     },
   );
+});
+
+it("shows a bell and an honest label ahead of plugin status", async () => {
+  render(
+    <ThreadStatusGlyph
+      indicator="check-terminal"
+      rowStatus={{ label: "Done", icon: "Check", tone: "success" }}
+    />,
+  );
+  await waitFor(() =>
+    expect(
+      screen.getByLabelText("Check terminal").getAttribute("data-icon"),
+    ).toBe("BellDot"),
+  );
+  expect(screen.queryByLabelText("Needs input")).toBeNull();
 });

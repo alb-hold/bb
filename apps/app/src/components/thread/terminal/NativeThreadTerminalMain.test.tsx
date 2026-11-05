@@ -130,6 +130,34 @@ afterEach(() => {
 });
 
 describe("NativeThreadTerminalMain", () => {
+  it("shows one honest banner for a plain signal and clears it on a session update", () => {
+    const terminal = {
+      id: "term-live",
+      status: "running",
+      createdAt: Date.now(),
+      lastUserInputAt: null,
+      attention: { at: 10, kind: "bell", seq: 1 },
+    } as NonNullable<NativeTerminalThread["terminal"]>;
+    hooks.listTerminals.mockReturnValue({
+      data: { sessions: [terminal] },
+      dataUpdatedAt: 1,
+    });
+    const props = {
+      projectId: "proj_native",
+      runtime: { displayStatus: "idle" as const },
+      threadId: "thr_native",
+      threadIsProvisioning: false,
+      view: { ...nativeView, terminal },
+    };
+    const { container, rerender } = render(
+      <NativeThreadTerminalMain {...props} />,
+    );
+    expect(screen.getByRole("status").textContent).toBe("Check terminal");
+    expect(container.querySelector(".ring-attention")).toBeNull();
+    terminal.attention = null;
+    rerender(<NativeThreadTerminalMain {...props} />);
+    expect(screen.queryByText("Check terminal")).toBeNull();
+  });
   it("does not guess execution labels while its profile is unresolved", () => {
     hooks.profile.mockReturnValue({ data: null });
     hooks.listTerminals.mockReturnValue({

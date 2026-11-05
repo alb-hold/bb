@@ -90,6 +90,7 @@ interface ThreadPromptChildThreadItem {
   title: string;
   href: string;
   hasPendingInteraction: boolean;
+  hasTerminalAttention?: boolean;
 }
 
 export interface ChildThreadQuestion {
@@ -356,6 +357,12 @@ function ChildThreadsBody({
                 className="size-3.5 shrink-0 text-muted-foreground/75 no-underline"
                 aria-label="Needs input"
               />
+            ) : item.hasTerminalAttention ? (
+              <Icon
+                name="BellDot"
+                className="size-3.5 shrink-0 text-attention"
+                aria-label="Check terminal"
+              />
             ) : (
               <Icon
                 name="Loading"
@@ -374,7 +381,12 @@ function ChildThreadsBody({
                 })}
               />
             ) : (
-              <ThreadTitle title={item.title} tooltip className="flex-1" />
+              <>
+                <ThreadTitle title={item.title} tooltip className="flex-1" />
+                {item.hasTerminalAttention && !item.hasPendingInteraction ? (
+                  <span>Check terminal</span>
+                ) : null}
+              </>
             )}
           </>
         );
@@ -606,7 +618,7 @@ function useExpandForNewNeedsInput(
   onExpand: () => void,
 ) {
   const needsInputKey = items
-    .filter((item) => item.hasPendingInteraction)
+    .filter((item) => item.hasPendingInteraction || item.hasTerminalAttention)
     .map((item) => item.id)
     .join(" ");
   const seenNeedsInputKey = useRef("");

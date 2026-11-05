@@ -226,7 +226,8 @@ function useChildThreadsSection(
           entry.originKind === null &&
           ((isThreadDisplayStatusBannerActive(entry.runtime.displayStatus) &&
             !isNativeActivityUnconfirmed(entry.runtime, activityNow)) ||
-            entry.hasPendingInteraction),
+            entry.hasPendingInteraction ||
+            entry.listIndicator === "check-terminal"),
       )
       .sort((left, right) =>
         left.hasPendingInteraction === right.hasPendingInteraction
@@ -243,6 +244,7 @@ function useChildThreadsSection(
           threadId: entry.id,
         }),
         hasPendingInteraction: entry.hasPendingInteraction,
+        hasTerminalAttention: entry.listIndicator === "check-terminal",
       }));
     if (activeItems.length === 0) return null;
     return { items: activeItems };

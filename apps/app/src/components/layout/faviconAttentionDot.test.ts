@@ -31,6 +31,40 @@ const BASE_ARGS = {
 };
 
 describe("shouldShowFaviconAttentionDot", () => {
+  it("keeps terminal signals in home, current-thread and delegated-child attention", () => {
+    const signal = makeSidebarThread({
+      lastReadAt: 20,
+      listIndicator: "check-terminal",
+    });
+    expect(
+      shouldShowFaviconAttentionDot({ ...BASE_ARGS, sidebarThreads: [signal] }),
+    ).toBe(true);
+    expect(
+      shouldShowFaviconAttentionDot({
+        ...BASE_ARGS,
+        isThreadView: true,
+        currentThreadId: signal.id,
+        sidebarThreads: [signal],
+      }),
+    ).toBe(true);
+    expect(
+      shouldShowFaviconAttentionDot({
+        ...BASE_ARGS,
+        isThreadView: true,
+        currentThreadId: "parent",
+        sidebarThreads: [{ ...signal, parentThreadId: "parent" }],
+      }),
+    ).toBe(true);
+    expect(desktopAttentionThreads([signal]).pendingThreadIds).toEqual([
+      signal.id,
+    ]);
+    expect(
+      shouldShowFaviconAttentionDot({
+        ...BASE_ARGS,
+        sidebarThreads: [{ ...signal, listIndicator: "none" }],
+      }),
+    ).toBe(false);
+  });
   it("ignores unread side-chat threads hidden from the sidebar", () => {
     expect(
       shouldShowFaviconAttentionDot({

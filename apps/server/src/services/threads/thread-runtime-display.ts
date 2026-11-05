@@ -552,10 +552,7 @@ function buildThreadResponseFromThread(
       listThreadsWithPendingInteractionState(deps.db, {
         threadIds: [args.thread.id],
         includeHidden: true,
-      })[0]?.hasPendingInteraction === true ||
-      nativeTerminalAttentionThreadIds(deps.db, [args.thread.id]).has(
-        args.thread.id,
-      ),
+      })[0]?.hasPendingInteraction === true,
     nativeTerminal: getNativeTerminalThread(deps.db, args.thread.id) !== null,
     activeBackgroundAgentCount:
       listActiveBackgroundTaskCountsByThreadIds(deps.db, {
@@ -882,9 +879,7 @@ export function toThreadListEntryResponses(
         statuses: {},
         progress: null,
       },
-      thread: attentionThreadIds.has(thread.id)
-        ? { ...thread, hasPendingInteraction: true }
-        : thread,
+      thread,
     });
     const withEnvironmentHost =
       thread.environmentHostId === null &&
@@ -896,9 +891,14 @@ export function toThreadListEntryResponses(
         : entry;
     return {
       ...withEnvironmentHost,
-      listIndicator: resolveThreadListIndicator(
-        threadListIndicatorStateForThread(withEnvironmentHost, false, args.now),
-      ),
+      listIndicator: resolveThreadListIndicator({
+        ...threadListIndicatorStateForThread(
+          withEnvironmentHost,
+          false,
+          args.now,
+        ),
+        hasTerminalAttention: attentionThreadIds.has(thread.id),
+      }),
     };
   });
 }

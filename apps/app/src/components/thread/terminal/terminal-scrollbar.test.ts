@@ -1,4 +1,7 @@
 // @vitest-environment jsdom
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { expect, it, vi } from "vitest";
 import { trackTerminalScrollability } from "./terminal-scrollbar";
 
@@ -26,4 +29,18 @@ it("hides an empty terminal thumb, shows scrollback, and hides it after clearing
   active.baseY = 0;
   scroll();
   expect(element.dataset.scrollable).toBe("false");
+});
+
+it("keeps the xterm custom track transparent and its thumb thin", () => {
+  const css = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), "../../../app.css"),
+    "utf8",
+  );
+  expect(css).toMatch(
+    /:where\(\.xterm\) \.xterm-scrollable-element > \.xterm-scrollbar \{\s*background: transparent !important;/,
+  );
+  expect(css).toMatch(/> \.xterm-slider \{\s*width: 4px !important;/);
+  expect(css).toContain(
+    "scrollbar-color: var(--terminal-scrollbar) transparent",
+  );
 });

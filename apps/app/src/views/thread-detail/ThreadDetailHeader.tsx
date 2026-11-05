@@ -79,6 +79,7 @@ interface ThreadDetailHeaderProps {
   thread: PluginThreadActionTarget;
   threadTitle: string;
   needsInput?: boolean;
+  checkTerminal?: boolean;
   workspaceOpenButton?: ReactNode;
 }
 
@@ -91,6 +92,7 @@ export function ThreadDetailHeader({
   thread,
   threadTitle,
   needsInput = false,
+  checkTerminal = false,
   workspaceOpenButton,
   contextCardButton,
 }: ThreadDetailHeaderProps) {
@@ -195,8 +197,11 @@ export function ThreadDetailHeader({
           isSplitPaneHeader && isFocused && CONTEXT_SELECTION_SURFACE_CLASS,
         )}
       >
-        {needsInput ? (
-          <ThreadStatusGlyph indicator="needs-input" size="compact" />
+        {needsInput || checkTerminal ? (
+          <ThreadStatusGlyph
+            indicator={needsInput ? "needs-input" : "check-terminal"}
+            size="compact"
+          />
         ) : null}
         <p
           data-thread-detail-header-title=""

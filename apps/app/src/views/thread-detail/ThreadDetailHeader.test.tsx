@@ -1083,3 +1083,27 @@ describe("ThreadDetailHeader", () => {
     },
   );
 });
+
+it.each([false, true])(
+  "keeps real input ahead of a terminal signal: %s",
+  (needsInput) => {
+    const { container } = render(
+      <PaneContext.Provider value={PANE_CONTEXT}>
+        <ThreadDetailHeader
+          actionsMenu={null}
+          isSecondaryPanelOpen={false}
+          onToggleSecondaryPanel={vi.fn()}
+          thread={THREAD_TARGET}
+          threadTitle="Native terminal"
+          needsInput={needsInput}
+          checkTerminal
+        />
+      </PaneContext.Provider>,
+    );
+    expect(
+      container.querySelector(
+        `header [aria-label="${needsInput ? "Needs input" : "Check terminal"}"]`,
+      ),
+    ).not.toBeNull();
+  },
+);
