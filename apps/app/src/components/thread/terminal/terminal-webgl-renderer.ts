@@ -16,6 +16,7 @@ interface TerminalWebglRenderer extends IDisposable {
 interface TerminalWebglRendererOptions {
   root?: Pick<HTMLElement, "dataset">;
   visible?: boolean;
+  onRendererChange?: (renderer: "webgl" | "dom") => void;
 }
 
 type TerminalAddonLoader = Pick<Terminal, "loadAddon"> &
@@ -54,7 +55,7 @@ function captureWebglContextRelease(
 export function loadTerminalWebglRenderer(
   terminal: TerminalAddonLoader,
   createAddon: () => WebglRendererAddon,
-  { root, visible = true }: TerminalWebglRendererOptions = {},
+  { root, visible = true, onRendererChange }: TerminalWebglRendererOptions = {},
 ): TerminalWebglRenderer {
   let renderer: "webgl" | "dom" = "dom";
   let contextLossCount = 0;
@@ -73,6 +74,7 @@ export function loadTerminalWebglRenderer(
       root.dataset.terminalRenderer = renderer;
       root.dataset.terminalContextLossCount = String(contextLossCount);
     }
+    onRendererChange?.(renderer);
   };
   const cancelRecovery = () => {
     if (recoveryTimeout !== null) {

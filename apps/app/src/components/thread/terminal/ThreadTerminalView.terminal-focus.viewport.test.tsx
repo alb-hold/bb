@@ -357,7 +357,7 @@ describe("ThreadTerminalView terminal viewport and focus", () => {
       );
     },
   );
-  it("uses relaxed cell line spacing when mounting the terminal", async () => {
+  it("keeps DOM cell line spacing contiguous when mounting the terminal", async () => {
     prepareMobileTerminal();
     vi.spyOn(FitAddon.prototype, "proposeDimensions").mockReturnValue({
       cols: 40,
@@ -372,7 +372,7 @@ describe("ThreadTerminalView terminal viewport and focus", () => {
       },
     );
     renderMobileTerminal();
-    await waitFor(() => expect(terminal?.options.lineHeight).toBe(1.12));
+    await waitFor(() => expect(terminal?.options.lineHeight).toBe(1));
   });
   it("keeps a bottom-following client at the bottom after output and a shared resize", async () => {
     prepareMobileTerminal();

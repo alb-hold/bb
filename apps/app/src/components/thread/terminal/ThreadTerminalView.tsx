@@ -1809,7 +1809,7 @@ export function ThreadTerminalView({
     const terminalFontOptions = {
       fontFamily: readTerminalFontFamily(),
       fontSize: Math.max(12, terminalFontSizeRef.current),
-      lineHeight: 1.12,
+      lineHeight: 1,
     };
     let retainedOutputReplayed = sessionStatusRef.current !== "exited";
     let retainedOutputGrid: TerminalGridSize | null = null;
@@ -2252,7 +2252,17 @@ export function ThreadTerminalView({
           webglRenderer = loadTerminalWebglRenderer(
             terminal,
             () => new webglAddonModule.WebglAddon(),
-            { root: containerElement, visible: false },
+            {
+              root: containerElement,
+              visible: false,
+              onRendererChange: (renderer) => {
+                if (disposed || terminal === null) return;
+                const lineHeight = renderer === "webgl" ? 1.12 : 1;
+                if (terminal.options.lineHeight === lineHeight) return;
+                terminal.options.lineHeight = lineHeight;
+                scheduleFitRef.current?.();
+              },
+            },
           );
           webglVisibilityRef.current = observeTerminalWebglVisibility({
             root: containerElement,

@@ -1178,7 +1178,9 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
       ).toBe("snapshot text"),
     );
     expect(testState.sockets).toHaveLength(0);
-    const previewFontSize = document.querySelector<HTMLElement>("[data-terminal-screen-loading-preview]")!.style.fontSize;
+    const previewFontSize = document.querySelector<HTMLElement>(
+      "[data-terminal-screen-loading-preview]",
+    )!.style.fontSize;
     finishModules();
     await waitFor(() => expect(testState.sockets).toHaveLength(1), {
       timeout: 20_000,
@@ -2331,10 +2333,12 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
     vi.spyOn(terminalModules, "importTerminalWebglAddon").mockReturnValue(
       webglModule,
     );
+    let loseContext = () => {};
     class WebglAddon {
       activate(_terminal: Terminal): void {}
       dispose(): void {}
-      onContextLoss(_listener: () => void) {
+      onContextLoss(listener: () => void) {
+        loseContext = listener;
         return { dispose: () => {} };
       }
     }
@@ -2354,6 +2358,7 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
     );
     const terminal = mountedTerminal.current;
     if (!terminal) throw new Error("terminal did not mount");
+    expect(terminal.options.lineHeight).toBe(1);
     const history = Array.from(
       { length: 160 },
       (_, index) => `history ${String(index + 1).padStart(3, "0")}`,
@@ -2391,6 +2396,7 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
         ).toBe("webgl"),
       "WebGL renderer did not attach after replay",
     );
+    expect(terminal.options.lineHeight).toBe(1.12);
     expect({
       cols: terminal.cols,
       rows: terminal.rows,
@@ -2400,6 +2406,8 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
       viewportY: terminal.buffer.active.viewportY,
       retainedLine: terminal.buffer.active.getLine(5)?.translateToString(true),
     }).toEqual(before);
+    act(() => loseContext());
+    expect(terminal.options.lineHeight).toBe(1);
   }, 30_000);
 
   it("keeps the DOM renderer and replay working when WebGL import fails", async () => {
@@ -2725,17 +2733,15 @@ describe("terminal first paint", () => {
     vi.stubGlobal("innerWidth", 390);
     const paintOpacities: string[] = [];
     const write = Terminal.prototype.write;
-    vi.spyOn(Terminal.prototype, "write").mockImplementation(function (
-      this: Terminal,
-      data,
-      callback,
-    ) {
-      paintOpacities.push(
-        document.querySelector<HTMLElement>("[data-terminal-renderer]")!.style
-          .opacity,
-      );
-      write.call(this, data, callback);
-    });
+    vi.spyOn(Terminal.prototype, "write").mockImplementation(
+      function (this: Terminal, data, callback) {
+        paintOpacities.push(
+          document.querySelector<HTMLElement>("[data-terminal-renderer]")!.style
+            .opacity,
+        );
+        write.call(this, data, callback);
+      },
+    );
     let finishOutput!: (value: {
       chunks: { seq: number; dataBase64: string }[];
       nextSeq: number;
@@ -2866,13 +2872,12 @@ describe("terminal first paint recovery", () => {
     );
     const mounted: { current: Terminal | null } = { current: null };
     const open = Terminal.prototype.open;
-    vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
-      this: Terminal,
-      container,
-    ) {
-      mounted.current ??= this;
-      open.call(this, container);
-    });
+    vi.spyOn(Terminal.prototype, "open").mockImplementation(
+      function (this: Terminal, container) {
+        mounted.current ??= this;
+        open.call(this, container);
+      },
+    );
     let resolveOutput!: (output: {
       chunks: { seq: number; dataBase64: string }[];
       nextSeq: number;
