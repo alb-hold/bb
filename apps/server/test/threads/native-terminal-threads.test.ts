@@ -543,15 +543,25 @@ describe("native terminal threads", () => {
     const credential = open.contributedEnv.find(
       (entry) => entry.name === NATIVE_TOOL_CREDENTIAL_ENV,
     )?.value;
-    recordNativeTerminalActivity(fixture.harness.deps, {
-      authorization: `Bearer ${credential}`,
-      confirms: true,
-      lastAssistantText: "persisted native final reply",
-      state: "working",
-      threadId: thread.id,
-    });
+    const report = (state: "idle" | "working", text: string) =>
+      recordNativeTerminalActivity(fixture.harness.deps, {
+        authorization: `Bearer ${credential}`,
+        confirms: true,
+        lastAssistantText: text,
+        state,
+        threadId: thread.id,
+      });
+    report("idle", "completed reply A");
     expect(getLastThreadOutput(fixture.harness.db, thread.id)).toBe(
-      "persisted native final reply",
+      "completed reply A",
+    );
+    report("working", "partial reply B");
+    expect(getLastThreadOutput(fixture.harness.db, thread.id)).toBe(
+      "completed reply A",
+    );
+    report("idle", "completed reply C");
+    expect(getLastThreadOutput(fixture.harness.db, thread.id)).toBe(
+      "completed reply C",
     );
   });
 

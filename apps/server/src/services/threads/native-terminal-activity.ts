@@ -384,12 +384,14 @@ export function recordNativeTerminalActivity(
       if (oldest !== undefined) replies.delete(oldest);
     }
     replies.set(thread.id, lastAssistantText);
-    upsertNativeThreadReply(deps.db, {
-      threadId: thread.id,
-      text: lastAssistantText,
-      turnId: null,
-      recordedAt: now,
-    });
+    if (args.state === "idle") {
+      upsertNativeThreadReply(deps.db, {
+        threadId: thread.id,
+        text: lastAssistantText,
+        turnId: null,
+        recordedAt: now,
+      });
+    }
   }
   if (args.state === "idle") settleNativeTerminalTurn(deps, thread.id);
   const resolvedQuestions = reconcileNativeQuestions(deps, {
