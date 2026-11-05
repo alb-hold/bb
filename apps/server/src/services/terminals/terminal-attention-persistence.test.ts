@@ -1,7 +1,10 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createMigratedConnection } from "@bb/db/testing";
 import {
   createConnection,
+  createNativeTerminalThread,
+  setNativeTerminalThreadTerminal,
+  recordNativeTerminalThreadSessionId,
   createTerminalSession,
   getDeviceHandoffAttentionMarker,
   getTerminalAttention,
@@ -23,12 +26,270 @@ import {
 const harnesses: TestAppHarness[] = [];
 
 afterEach(async () => {
+  vi.restoreAllMocks();
+  vi.useRealTimers();
   for (const harness of harnesses.splice(0)) {
     await harness.cleanup();
   }
 });
 
 describe("terminal attention persistence", () => {
+  it.each([true, undefined])(
+    "preserves attention and input time for generated replies, then clears on user input (%s)",
+    async (isUserInput) => {
+      const harness = await createTestAppHarness({
+        db: createMigratedConnection(),
+      });
+      harnesses.push(harness);
+      const { terminalId } = createAttentionTerminal(harness);
+      harness.deps.terminalSessions.notifyTerminal({
+        terminalId,
+        payload: { title: "Approval" },
+      });
+      const sent = vi
+        .spyOn(harness.hub, "sendDaemonSessionMessage")
+        .mockReturnValue(true);
+      const socket = { close() {}, send() {} };
+      const inputTime = () =>
+        harness.db.$client
+          .prepare(
+            "SELECT last_user_input_at AS at FROM terminal_sessions WHERE id = ?",
+          )
+          .get(terminalId);
+      const before = inputTime();
+      const dataBase64 = Buffer.from("\x1b[36;2R").toString("base64");
+      harness.deps.terminalSessions.handleBrowserTerminalMessage({
+        terminalId,
+        socket,
+        message: { type: "input", dataBase64, isUserInput: false },
+      });
+      expect(sent).toHaveBeenCalledWith(expect.any(String), {
+        type: "terminal.input",
+        terminalId,
+        dataBase64,
+      });
+      expect(inputTime()).toEqual(before);
+      expect(
+        getTerminalAttention(harness.db, terminalId)?.clearedAt,
+      ).toBeNull();
+      harness.deps.terminalSessions.handleBrowserTerminalMessage({
+        terminalId,
+        socket,
+        message: {
+          type: "input",
+          dataBase64: "eA==",
+          ...(isUserInput === undefined ? {} : { isUserInput }),
+        },
+      });
+      expect(inputTime()).not.toEqual(before);
+      expect(
+        getTerminalAttention(harness.db, terminalId)?.clearedAt,
+      ).not.toBeNull();
+    },
+  );
+  it.each(["websocket", "route"] as const)(
+    "clears attention raised right after recent %s input without rewriting the input time",
+    async (path) => {
+      const harness = await createTestAppHarness({
+        db: createMigratedConnection(),
+      });
+      harnesses.push(harness);
+      const { terminalId } = createAttentionTerminal(harness);
+      vi.spyOn(harness.hub, "sendDaemonSessionMessage").mockReturnValue(true);
+      const socket = { close() {}, send() {} };
+      const sendInput = (text: string) => {
+        const dataBase64 = Buffer.from(text, "utf8").toString("base64");
+        if (path === "route") {
+          harness.deps.terminalSessions.sendTerminalInput({
+            terminalId,
+            payload: { dataBase64 },
+          });
+          return;
+        }
+        harness.deps.terminalSessions.handleBrowserTerminalMessage({
+          terminalId,
+          socket,
+          message: { type: "input", dataBase64, isUserInput: true },
+        });
+      };
+      const inputTime = () =>
+        harness.db.$client
+          .prepare(
+            "SELECT last_user_input_at AS at FROM terminal_sessions WHERE id = ?",
+          )
+          .get(terminalId) as { at: number | null };
+
+      sendInput("a");
+      const firstInput = inputTime().at;
+      expect(firstInput).toBeTypeOf("number");
+      harness.deps.terminalSessions.notifyTerminal({
+        terminalId,
+        payload: { title: "Approve?" },
+      });
+      expect(getTerminalAttention(harness.db, terminalId)?.clearedAt).toBeNull();
+      const sqlite = harness.db.$client;
+      const prepare = sqlite.prepare.bind(sqlite);
+      const statements: string[] = [];
+      vi.spyOn(sqlite, "prepare").mockImplementation((source: string) => {
+        statements.push(source);
+        return prepare(source);
+      });
+
+      sendInput("y");
+
+      expect(
+        getTerminalAttention(harness.db, terminalId)?.clearedAt,
+      ).toBeTypeOf("number");
+      expect(
+        statements.filter((source) =>
+          /^\s*update\s+["`]?terminal_sessions["`]?/iu.test(source),
+        ),
+      ).toEqual([]);
+      vi.mocked(sqlite.prepare).mockRestore();
+      expect(inputTime().at).toBe(firstInput);
+    },
+  );
+  it("keeps attention and input time when a user frame is empty or not delivered", async () => {
+    const harness = await createTestAppHarness({
+      db: createMigratedConnection(),
+    });
+    harnesses.push(harness);
+    const { terminalId } = createAttentionTerminal(harness);
+    harness.deps.terminalSessions.notifyTerminal({
+      terminalId,
+      payload: { title: "Approval" },
+    });
+    const sent = vi
+      .spyOn(harness.hub, "sendDaemonSessionMessage")
+      .mockReturnValue(true);
+    const socket = { close() {}, send() {} };
+    const inputTime = () =>
+      harness.db.$client
+        .prepare(
+          "SELECT last_user_input_at AS at FROM terminal_sessions WHERE id = ?",
+        )
+        .get(terminalId);
+    const before = inputTime();
+    harness.deps.terminalSessions.handleBrowserTerminalMessage({
+      terminalId,
+      socket,
+      message: { type: "input", dataBase64: "", isUserInput: true },
+    });
+    expect(inputTime()).toEqual(before);
+    expect(getTerminalAttention(harness.db, terminalId)?.clearedAt).toBeNull();
+    sent.mockReturnValue(false);
+    harness.deps.terminalSessions.handleBrowserTerminalMessage({
+      terminalId,
+      socket,
+      message: { type: "input", dataBase64: "eA==", isUserInput: true },
+    });
+    expect(inputTime()).toEqual(before);
+    expect(getTerminalAttention(harness.db, terminalId)?.clearedAt).toBeNull();
+  });
+  it("keeps an unbound idle CLI neutral before and after input and binding", async () => {
+    const harness = await createTestAppHarness({
+      db: createMigratedConnection(),
+    });
+    harnesses.push(harness);
+    const { terminalId, threadId } = createAttentionTerminal(harness);
+    const thread = getThread(harness.db, threadId)!;
+    createNativeTerminalThread(harness.db, {
+      threadId,
+      providerId: thread.providerId,
+      nativeSessionId: null,
+      initialPrompt: null,
+      initialImages: [],
+      model: null,
+    });
+    setNativeTerminalThreadTerminal(harness.db, {
+      threadId,
+      terminalSessionId: terminalId,
+    });
+    const waiting = async () => {
+      const response = await harness.app.request(`/api/v1/threads/${threadId}`);
+      expect(response.status).toBe(200);
+      const pending = (await response.json()).hasPendingInteraction;
+      const listed = await harness.app.request(
+        `/api/v1/threads?threadIds=${threadId}`,
+      );
+      expect(listed.status).toBe(200);
+      const rows = await listed.json();
+      expect(
+        rows.find((row: { id: string }) => row.id === threadId)
+          ?.hasPendingInteraction,
+      ).toBe(pending);
+      return pending;
+    };
+    expect(await waiting()).toBe(false);
+    harness.db.$client
+      .prepare("UPDATE terminal_sessions SET created_at = ? WHERE id = ?")
+      .run(Date.now() - 13000, terminalId);
+    expect(await waiting()).toBe(false);
+    harness.db.$client
+      .prepare(
+        "UPDATE terminal_sessions SET last_user_input_at = ? WHERE id = ?",
+      )
+      .run(Date.now(), terminalId);
+    expect(await waiting()).toBe(false);
+    harness.db.$client
+      .prepare(
+        "UPDATE terminal_sessions SET last_user_input_at = ? WHERE id = ?",
+      )
+      .run(Date.now() - 12000, terminalId);
+    expect(await waiting()).toBe(false);
+    recordNativeTerminalThreadSessionId(harness.db, {
+      threadId,
+      nativeSessionId: "bound-session",
+    });
+    expect(await waiting()).toBe(false);
+  });
+  it("records repeated input and delays notification until twelve quiet seconds, cancelling on binding", async () => {
+    const harness = await createTestAppHarness({
+      db: createMigratedConnection(),
+    });
+    harnesses.push(harness);
+    const { terminalId, threadId } = createAttentionTerminal(harness);
+    const thread = getThread(harness.db, threadId)!;
+    createNativeTerminalThread(harness.db, {
+      threadId,
+      providerId: thread.providerId,
+      nativeSessionId: null,
+      initialPrompt: null,
+      initialImages: [],
+      model: null,
+    });
+    setNativeTerminalThreadTerminal(harness.db, {
+      threadId,
+      terminalSessionId: terminalId,
+    });
+    vi.useFakeTimers();
+    const startedAt = Date.now();
+    const notify = vi.spyOn(harness.deps.hub, "notifyThread");
+    harness.deps.terminalSessions.recordDirectTerminalInput(terminalId);
+    vi.advanceTimersByTime(6000);
+    harness.deps.terminalSessions.recordDirectTerminalInput(terminalId);
+    expect(
+      harness.db.$client
+        .prepare(
+          "SELECT last_user_input_at AS at FROM terminal_sessions WHERE id = ?",
+        )
+        .get(terminalId),
+    ).toEqual({ at: startedAt + 6000 });
+    notify.mockClear();
+    vi.advanceTimersByTime(11999);
+    expect(notify).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(notify).toHaveBeenCalledWith(threadId, ["terminals-changed"]);
+    harness.deps.terminalSessions.recordDirectTerminalInput(terminalId);
+    recordNativeTerminalThreadSessionId(harness.db, {
+      threadId,
+      nativeSessionId: "bound-session",
+    });
+    notify.mockClear();
+    vi.advanceTimersByTime(12000);
+    expect(notify).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
   it("uses the public API host guard and rejects unknown clear targets", async () => {
     const harness = await createTestAppHarness();
     harnesses.push(harness);
@@ -207,7 +468,7 @@ describe("terminal attention persistence", () => {
     });
   });
 
-  it("keeps daemon attention cleared while the terminal is visible", async () => {
+  it("keeps daemon attention pending while the terminal is visible", async () => {
     const harness = await createTestAppHarness();
     harnesses.push(harness);
     const { daemonSessionId, hostId, terminalId, threadId } =
@@ -235,18 +496,16 @@ describe("terminal attention persistence", () => {
       },
     });
 
-    expect(
-      getTerminalAttention(harness.db, terminalId)?.clearedAt,
-    ).not.toBeNull();
+    expect(getTerminalAttention(harness.db, terminalId)?.clearedAt).toBeNull();
     expect(
       await getTerminalApiAttention(harness, threadId, terminalId),
-    ).toBeNull();
-    expect(getThread(harness.db, threadId)?.latestAttentionAt).toBe(
-      latestAttentionAt,
+    ).not.toBeNull();
+    expect(getThread(harness.db, threadId)?.latestAttentionAt).toBeGreaterThan(
+      latestAttentionAt ?? 0,
     );
   });
 
-  it("publishes the cleared attention on the visible client session update", async () => {
+  it("keeps attention when a client becomes visible", async () => {
     const db = createMigratedConnection();
     const harness = await createTestAppHarness({ db });
     harnesses.push(harness);
@@ -270,14 +529,12 @@ describe("terminal attention persistence", () => {
       message: { type: "visibility", visible: true },
     });
 
-    expect(
-      getTerminalAttention(harness.db, terminalId)?.clearedAt,
-    ).not.toBeNull();
+    expect(getTerminalAttention(harness.db, terminalId)?.clearedAt).toBeNull();
     expect(
       sent
-        .map((data) => JSON.parse(data) as Record<string, unknown>)
-        .find((message) => message.type === "session-updated")?.session,
-    ).toMatchObject({ attention: null, id: terminalId });
+        .map((data) => JSON.parse(data))
+        .filter((message) => message.type === "session-updated"),
+    ).toEqual([]);
   });
 
   it("keeps pending attention when a second client attaches hidden", async () => {
@@ -304,7 +561,7 @@ describe("terminal attention persistence", () => {
     });
   });
 
-  it("keeps API attention cleared while the terminal is visible", async () => {
+  it("keeps API attention pending while the terminal is visible", async () => {
     const harness = await createTestAppHarness();
     harnesses.push(harness);
     const { terminalId, threadId } = createAttentionTerminal(harness);
@@ -317,20 +574,19 @@ describe("terminal attention persistence", () => {
       socket: { close() {}, send() {} },
       message: { type: "visibility", visible: true },
     });
+    await new Promise((resolve) => setTimeout(resolve, 2));
 
     harness.deps.terminalSessions.notifyTerminal({
       terminalId,
       payload: { title: "visible API signal" },
     });
 
-    expect(
-      getTerminalAttention(harness.db, terminalId)?.clearedAt,
-    ).not.toBeNull();
+    expect(getTerminalAttention(harness.db, terminalId)?.clearedAt).toBeNull();
     expect(
       await getTerminalApiAttention(harness, threadId, terminalId),
-    ).toBeNull();
-    expect(getThread(harness.db, threadId)?.latestAttentionAt).toBe(
-      latestAttentionAt,
+    ).not.toBeNull();
+    expect(getThread(harness.db, threadId)?.latestAttentionAt).toBeGreaterThan(
+      latestAttentionAt ?? 0,
     );
   });
 
@@ -477,11 +733,7 @@ describe("terminal attention persistence", () => {
       seq: 1,
       clearedAt: null,
     });
-    original.deps.terminalSessions.handleBrowserTerminalMessage({
-      terminalId,
-      socket: { close() {}, send() {} },
-      message: { type: "visibility", visible: true },
-    });
+    original.deps.terminalSessions.recordDirectTerminalInput(terminalId);
     expect(getTerminalAttention(original.db, terminalId)).toMatchObject({
       seq: 1,
       clearedAt: expect.any(Number),

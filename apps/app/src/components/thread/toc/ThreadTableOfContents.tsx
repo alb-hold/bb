@@ -729,7 +729,7 @@ export function ThreadTableOfContents({
           onClick={() => setOpen(true)}
           className="no-scrollbar flex max-h-[calc(100vh-7rem)] w-8 cursor-pointer flex-col items-center gap-2 overflow-y-auto py-2"
         >
-          <span aria-hidden className="flex w-full flex-col items-center gap-2">
+          <span aria-hidden className="flex w-full flex-col items-center gap-2 opacity-40 transition-opacity group-hover/toc:opacity-100 group-focus-within/toc:opacity-100">
             {railItems.map((item) => (
               <span
                 key={item.id}

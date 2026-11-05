@@ -1,3 +1,7 @@
+import {
+  NATIVE_TERMINAL_SETUP_DELAY_MS,
+  nativeTerminalMayNeedSetup,
+} from "@bb/domain";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import {
   consumeNativeTerminalThreadLaunchInput,
@@ -536,6 +540,31 @@ async function openNativeTerminalOnce(
       threadId: thread.id,
       terminalSessionId: terminal.id,
     });
+    const checkSetup = () => {
+      try {
+        const current = getNativeTerminalThread(deps.db, thread.id);
+        if (current?.terminalSessionId !== terminal.id) return;
+        const currentTerminal = readRecordTerminal(deps, current);
+        if (
+          current.nativeSessionId !== null ||
+          currentTerminal?.status !== "running"
+        )
+          return;
+        if (
+          nativeTerminalMayNeedSetup({
+            nativeSessionId: current.nativeSessionId,
+            terminal: currentTerminal,
+            now: Date.now(),
+          })
+        )
+          deps.hub.notifyThread(thread.id, [
+            "terminals-changed",
+          ]);
+      } catch (error) {
+        if (!isClosedDatabaseConnectionError(error)) throw error;
+      }
+    };
+    setTimeout(checkSetup, NATIVE_TERMINAL_SETUP_DELAY_MS).unref();
     if (!args.reattachOnly) interruptNativeTerminalQuestions(deps, thread.id);
     forgetRejectedNativeQuestions(deps, thread.id);
     returnResumedNativeThreadToIdle(deps, thread.id);

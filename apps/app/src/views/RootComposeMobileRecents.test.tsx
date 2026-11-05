@@ -185,10 +185,12 @@ describe("mobile recents hierarchy interaction", () => {
     });
     expect(collapse.getAttribute("aria-expanded")).toBe("true");
 
-    const providerTile = collapse.querySelector("span.size-7");
+    const providerTile = collapse.querySelector("span.size-4");
     if (!(providerTile instanceof HTMLElement)) {
       throw new Error("Expected provider tile inside the disclosure button");
     }
+    expect(providerTile.className).not.toContain("border");
+    expect(providerTile.closest("li")?.querySelector("a")?.className).toContain("h-13");
     fireEvent.click(providerTile);
 
     expect(screen.queryByText("Audit folder query paths")).toBeNull();
@@ -358,6 +360,9 @@ describe("mobile recents section", () => {
       </TestProviders>,
     );
 
+    expect(
+      screen.getByText("Recent").classList.contains("text-subtle-foreground"),
+    ).toBe(true);
     const label = screen.getByText("Recent").parentElement;
     if (!(label instanceof HTMLElement)) {
       throw new Error("Expected a Recent label wrapper");
@@ -365,7 +370,11 @@ describe("mobile recents section", () => {
     expect(label.className).toContain("sticky");
     expect(label.className).toContain("top-0");
     expect(label.className).toContain("bg-background");
+    expect(label.classList.contains("py-2")).toBe(true);
     expect(label.querySelector('[data-overflow-fade="below"]')).not.toBeNull();
+    expect(
+      label.querySelector('[data-overflow-fade="below"]')?.className,
+    ).toContain("h-6");
   });
 });
 
@@ -501,6 +510,36 @@ describe("mobile recent thread rows", () => {
 });
 
 describe("RootComposeMobileRecents", () => {
+  it("limits desktop Recent to three rows and omits an empty group", () => {
+    const props = {
+      highlightedThreadId: null,
+      projectNamesById: new Map<string, string>(),
+      providersById: new Map(),
+      showCreatingRow: false,
+      maxRows: 3,
+    };
+    const { rerender } = render(
+      <TestProviders>
+        <RootComposeMobileRecents
+          {...props}
+          threads={Array.from({ length: 6 }, (_, i) =>
+            makeThread({ id: `recent-${i}`, title: `Recent ${i}` }),
+          )}
+        />
+      </TestProviders>,
+    );
+    expect(screen.getAllByRole("link")).toHaveLength(3);
+    expect(
+      screen.getByText("Recent").closest("section")?.className,
+    ).not.toContain("md:hidden");
+    rerender(
+      <TestProviders>
+        <RootComposeMobileRecents {...props} threads={[]} />
+      </TestProviders>,
+    );
+    expect(screen.queryByText("Recent")).toBeNull();
+  });
+
   it("opens thread actions on a long press without following the thread link", async () => {
     vi.useFakeTimers();
     const thread = makeThread();

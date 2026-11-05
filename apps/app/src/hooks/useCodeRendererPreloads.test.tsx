@@ -59,7 +59,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-it("warms selected implementations after startup and idle, skips replacements, and mounts warmed SDK views without skeletons", async () => {
+it("waits for thread intent, skips replacements, and mounts warmed SDK views without skeletons", async () => {
   vi.useFakeTimers();
   const release = holdSplitPreloads();
   markPluginFrontendBootStarted();
@@ -114,6 +114,17 @@ it("warms selected implementations after startup and idle, skips replacements, a
     await vi.advanceTimersByTimeAsync(2000);
     await vi.dynamicImportSettled();
   });
+  expect(imports.diff).not.toHaveBeenCalled();
+  expect(imports.source).not.toHaveBeenCalled();
+  const row = document.createElement("button");
+  row.dataset.sidebarThreadId = "thread-1";
+  document.body.append(row);
+  await act(async () => {
+    row.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+    await vi.advanceTimersByTimeAsync(2000);
+    await vi.dynamicImportSettled();
+  });
+  row.remove();
   expect(imports.diff).toHaveBeenCalledTimes(1);
   expect(imports.source).toHaveBeenCalledTimes(1);
 

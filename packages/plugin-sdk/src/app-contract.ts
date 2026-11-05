@@ -1271,9 +1271,13 @@ export interface ExperimentalSidebarFooter {
  * one. "queued-failed" and "queued-waiting" are reported, with the same
  * precedence bb's list uses (a failed send outranks the unread dot; a waiting
  * message ranks just below it).
+ * "check-terminal" means a pending plain native-terminal signal, not a
+ * confirmed question. Its accessible label is "Check terminal". A real
+ * pending approval or question keeps "needs-input" or "waiting-for-input".
  */
 export type PluginSidebarThreadIndicator =
   | "needs-input"
+  | "check-terminal"
   | "working"
   | "woke"
   | "done-unread"

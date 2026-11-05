@@ -9,6 +9,7 @@ import {
 } from "@testing-library/react";
 import { Provider, createStore } from "jotai";
 import {
+  useSidebarFooterPreferences,
   sidebarFooterCapacityAtom,
   sidebarFooterOrderAtom,
   sidebarFooterHiddenAtom,
@@ -26,6 +27,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { SidebarMenu, SidebarProvider } from "@/components/ui/sidebar.js";
 import {
   resetPluginSlotStoreForTest,
+  getPluginSlotSnapshot,
   removePluginSlotRegistrations,
   setPluginSlotRegistrations,
   type PluginRegistrationSet,
@@ -60,7 +62,19 @@ function registrationSet(
   };
 }
 
-function renderWithProviders(ui: ReactNode, store = createStore()) {
+function pinnedFooterStore() {
+  const store = createStore();
+  store.set(sidebarFooterOrderAtom, [
+    "builtin:mobile",
+    ...getPluginSlotSnapshot().sidebarFooterItems.map(
+      (item) => `plugin:${item.pluginId}/${item.id}`,
+    ),
+    "builtin:report-bug",
+  ]);
+  return store;
+}
+
+function renderWithProviders(ui: ReactNode, store = pinnedFooterStore()) {
   return render(
     <Provider store={store}>
       <MemoryRouter>
@@ -116,7 +130,80 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+function FooterPreferencesProbe() {
+  const preferences = useSidebarFooterPreferences();
+  return <><output data-testid="visible-footer">{preferences.footer.map(item => item.key).join(",")}</output><output data-testid="more-footer">{preferences.more.map(item => item.key).join(",")}</output><button onClick={() => preferences.addToFooter("builtin:mobile")}>Choose mobile</button></>;
+}
+
 describe("PluginSidebarFooterItems", () => {
+  it.each(["order", "hidden"])("preserves an existing profile with saved %s", (kind) => {
+    const store = createStore();
+    if (kind === "order") store.set(sidebarFooterOrderAtom, ["builtin:report-bug", "builtin:mobile"]);
+    else store.set(sidebarFooterHiddenAtom, ["builtin:report-bug"]);
+    renderWithProviders(<FooterPreferencesProbe />, store);
+    expect(screen.getByTestId("visible-footer").textContent).toContain("builtin:mobile");
+    expect(screen.getByTestId(kind === "hidden" ? "more-footer" : "visible-footer").textContent).toContain("builtin:report-bug");
+  });
+
+  it("chooses an item without hiding existing shortcuts", () => {
+    const store = createStore();
+    store.set(sidebarFooterOrderAtom, ["builtin:report-bug", "builtin:mobile"]);
+    store.set(sidebarFooterHiddenAtom, ["builtin:mobile"]);
+    renderWithProviders(<FooterPreferencesProbe />, store);
+    expect(screen.getByTestId("visible-footer").textContent).toBe("builtin:report-bug");
+    fireEvent.click(screen.getByRole("button", {name: "Choose mobile"}));
+    expect(screen.getByTestId("visible-footer").textContent).toBe("builtin:report-bug,builtin:mobile");
+  });
+
+  it("keeps plugin actions and bug reporting in the footer and mobile apps in More by default", async () => {
+    const run = vi.fn();
+    setPluginSlotRegistrations(
+      "example",
+      collectPluginAppRegistrations(
+        definePluginApp((app) => {
+          app.experimental_sidebarFooter.register({
+            kind: "action",
+            id: "action",
+            label: "Run action",
+            icon: "Zap",
+            onActivate: run,
+          });
+        }),
+      ),
+    );
+    renderWithProviders(
+      <SidebarMenu>
+        <PluginSidebarFooterItems
+          activeDisclosureKey={null}
+          onDisclosureCommand={vi.fn()}
+          onCustomize={vi.fn()}
+          builtInActions={[
+            { id: "mobile", onActivate: run },
+            { id: "report-bug", onActivate: run },
+          ]}
+        />
+      </SidebarMenu>,
+      createStore(),
+    );
+    expect(document.querySelectorAll("[data-footer-item]")).toHaveLength(2);
+    fireEvent.click(screen.getByRole("button", { name: "Run action" }));
+    expect(run).toHaveBeenCalledOnce();
+    expect(screen.getByRole("button", { name: "Report a bug" })).toBeDefined();
+    expect(screen.queryByRole("button", { name: "Mobile apps" })).toBeNull();
+    const more = screen.getByRole("button", { name: "More footer actions" });
+    expect(more.className).toContain("text-muted-foreground");
+    expect(more.className).not.toContain("opacity-80");
+    fireEvent.pointerDown(
+      screen.getByRole("button", { name: "More footer actions" }),
+      { button: 0, ctrlKey: false, pointerType: "mouse" },
+    );
+    expect(
+      await screen.findByRole("menuitem", { name: "Mobile apps" }),
+    ).toBeDefined();
+    expect(screen.queryByRole("menuitem", { name: "Report a bug" })).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: "Run action" })).toBeNull();
+  });
+
   it("fills the footer to its measured capacity and keeps overflow in More when an icon is removed", () => {
     setPluginSlotRegistrations(
       "example",
@@ -134,7 +221,7 @@ describe("PluginSidebarFooterItems", () => {
         }),
       ),
     );
-    const store = createStore();
+    const store = pinnedFooterStore();
     store.set(sidebarFooterHiddenAtom, ["plugin:unloaded/action"]);
     store.set(sidebarFooterCapacityAtom, 5);
     renderWithProviders(<SidebarFooterCustomize onDone={() => {}} />, store);
@@ -219,7 +306,7 @@ describe("PluginSidebarFooterItems", () => {
         }),
       ),
     );
-    const store = createStore();
+    const store = pinnedFooterStore();
     store.set(sidebarFooterHiddenAtom, ["plugin:unloaded/action"]);
     renderWithProviders(<FooterHarness />, store);
     const openMore = () =>
@@ -530,7 +617,7 @@ describe("PluginSidebarFooterItems", () => {
       "usage-plugin",
       collectPluginAppRegistrations(definition),
     );
-    const store = createStore();
+    const store = pinnedFooterStore();
     const onCustomize = vi.fn();
     renderWithProviders(
       <>

@@ -33,6 +33,7 @@ export function VoiceInputButton({
             <TooltipTrigger asChild>
               <Button
                 {...props}
+                data-compact-touch="voice"
                 ref={triggerRef}
                 className={cn("relative", props.className)}
                 aria-label={

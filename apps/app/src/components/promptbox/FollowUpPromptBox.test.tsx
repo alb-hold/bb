@@ -97,6 +97,7 @@ vi.mock("@/components/promptbox/ComposerBox", async () => {
     ComposerBox: function ComposerBox({
       surface,
       executionControls,
+      compactBeforeSend,
       handoff,
       compact,
       onSubmit,
@@ -111,6 +112,7 @@ vi.mock("@/components/promptbox/ComposerBox", async () => {
     }: {
       surface: "thread" | "new-thread";
       executionControls?: ReactNode;
+      compactBeforeSend?: ReactNode;
       handoff?: ReactNode;
       compact?: {
         when: "always" | "narrow";
@@ -156,6 +158,7 @@ vi.mock("@/components/promptbox/ComposerBox", async () => {
           >
             {handoff}
             {executionControls}
+            {compactBeforeSend}
             <input
               aria-label="Follow-up prompt"
               ref={(node) => {
@@ -707,6 +710,32 @@ describe("FollowUpPromptBox", () => {
     },
   );
 
+  it("restores plugin customizations after execution resolves without replacing the editor or its draft", () => {
+    const props = createFollowUpPromptBoxProps({ kind: "ready" });
+    const { rerender } = render(
+      <FollowUpPromptBox
+        {...props}
+        execution={{ ...props.execution, pending: true }}
+      />,
+    );
+    const box = screen.getByTestId("prompt-box");
+    const input = screen.getByLabelText(
+      "Follow-up prompt",
+    ) as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: "Keep this draft" } });
+    expect(box.dataset.pluginCustomizationsSuppressed).toBe("true");
+    rerender(
+      <FollowUpPromptBox
+        {...props}
+        execution={{ ...props.execution, pending: false }}
+      />,
+    );
+    expect(screen.getByLabelText("Follow-up prompt")).toBe(input);
+    expect(input.value).toBe("Keep this draft");
+    expect(screen.getByTestId("prompt-box")).toBe(box);
+    expect(box.dataset.pluginCustomizationsSuppressed).toBe("false");
+  });
+
   it("forwards customization suppression changes without remounting the composer", () => {
     const props = createFollowUpPromptBoxProps({ kind: "ready" });
     const { rerender } = render(
@@ -881,6 +910,15 @@ describe("FollowUpPromptBox", () => {
     },
   );
 
+  it("forwards pending permission values without marking them resolved", () => {
+    const props = createFollowUpPromptBoxProps({ kind: "ready" });
+    props.permission = { ...props.permission, pending: true, value: "full" };
+    const view = render(<FollowUpPromptBox {...props} />);
+    expect(mocks.permissionModePicker).toHaveBeenLastCalledWith(expect.objectContaining({ pending: true, value: "full" }));
+    view.rerender(<FollowUpPromptBox {...props} permission={{ ...props.permission, pending: false, value: "auto" }} />);
+    expect(mocks.permissionModePicker).toHaveBeenLastCalledWith(expect.objectContaining({ pending: false, value: "auto" }));
+  });
+
   it("disables the permission picker while plan mode is active", () => {
     const props = createFollowUpPromptBoxProps({
       kind: "queue",
@@ -934,6 +972,7 @@ describe("FollowUpPromptBox", () => {
       "true",
     );
     expect(screen.getByText("Ask a follow-up")).toBeTruthy();
+    expect(mocks.permissionModePicker).toHaveBeenCalledWith(expect.objectContaining({ compactWarningOnly: true }));
     expect(screen.queryByText("Local environment")).toBeNull();
     expect(
       screen.queryByRole("button", { name: "Collapse prompt box" }),

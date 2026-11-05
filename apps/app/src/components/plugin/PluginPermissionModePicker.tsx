@@ -48,6 +48,7 @@ export function PluginPermissionModePicker({
 
   return (
     <PermissionModePicker
+      pending={!controller.permissionModeIsVerified}
       value={controller.permissionMode}
       options={controller.permissionModeOptions}
       onChange={onChange}

@@ -102,20 +102,23 @@ vi.mock("@/lib/attachment-local-previews", () => ({
   registerLocalAttachmentPreview: vi.fn(),
 }));
 
-function renderBar() {
+function renderBar(executionLabel = "Native CLI · GPT-5 · Full access") {
   const { wrapper: Wrapper, queryClient } = createQueryClientTestHarness();
   render(
     <Wrapper>
       <NativeTerminalPromptBar
         projectId="proj-n"
         providerLabel="Native CLI"
+        executionLabel={executionLabel}
         threadId="thr-n"
       />
     </Wrapper>,
   );
   return {
     queryClient,
-    input: screen.getByLabelText("Message Native CLI") as HTMLTextAreaElement,
+    input: screen.getByLabelText(
+      "Send to Native CLI terminal",
+    ) as HTMLTextAreaElement,
     sendButton: screen.getByRole("button", { name: "Send to Native CLI" }),
   };
 }
@@ -151,6 +154,55 @@ function pasteFiles(target: HTMLElement, files: File[]) {
 afterEach(cleanup);
 
 describe("NativeTerminalPromptBar", () => {
+  it("uses the shared chat width, compact input typography and attachment action", () => {
+    const { input, sendButton } = renderBar();
+    const form = input.closest("form")!;
+    expect(form.className).toContain("max-w-[var(--bb-content-measure,760px)]");
+    expect(form.className).toContain("mx-auto");
+    expect(input.classList.contains("text-base")).toBe(true);
+    expect(input.classList.contains("md:text-sm")).toBe(true);
+    expect(input.classList.contains("placeholder:text-sm")).toBe(true);
+    expect(input.classList.contains("min-h-7")).toBe(true);
+    expect(form.classList.contains("pt-1")).toBe(true);
+    const shell = form.querySelector("[data-native-composer]")!;
+    expect(shell.classList.contains("rounded-xl")).toBe(true);
+    expect(shell.classList.contains("border-border")).toBe(true);
+    expect(sendButton.classList.contains("pointer-coarse:size-11")).toBe(true);
+    expect(
+      screen.getByRole("button", { name: "Attach image" }).querySelector("svg"),
+    ).not.toBeNull();
+    expect(sendButton.parentElement?.lastElementChild).toBe(sendButton);
+    expect(screen.getByLabelText("Terminal execution")).toBeTruthy();
+  });
+
+  it("labels the terminal destination and keeps execution details read-only", () => {
+    const { input } = renderBar();
+    expect(input.placeholder).toBe("To terminal above");
+    expect(
+      screen.getByText("Native CLI · GPT-5 · Full access").className,
+    ).toContain("truncate");
+  });
+  it("uses one phone row only while the terminal draft is empty and unfocused", () => {
+    const { input } = renderBar();
+    const shell = input.closest("[data-native-composer]")!;
+    expect(shell.classList.contains("max-md:grid")).toBe(true);
+    fireEvent.focus(input);
+    expect(shell.classList.contains("max-md:grid")).toBe(false);
+    fireEvent.change(input, { target: { value: "explain this output" } });
+    fireEvent.blur(input);
+    expect(shell.classList.contains("max-md:grid")).toBe(false);
+    fireEvent.change(input, { target: { value: "" } });
+    expect(shell.classList.contains("max-md:grid")).toBe(true);
+  });
+  it.each(["Native CLI", " Native CLI ", ""])(
+    "omits redundant execution text %j",
+    (label) => {
+      renderBar(label);
+      expect(screen.queryByLabelText("Terminal execution")).toBeNull();
+      expect(screen.getByLabelText("Send to Native CLI terminal")).toBeTruthy();
+    },
+  );
+
   it("sends the trimmed message on Enter and clears the field", async () => {
     const { input } = renderBar();
     fireEvent.change(input, { target: { value: "  fix the build  " } });

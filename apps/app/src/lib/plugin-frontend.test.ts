@@ -123,15 +123,10 @@ describe("installPluginRuntime", () => {
       "jsxRuntime",
       "pluginSdkApp",
       "questionFormHost",
-      "radixAlertDialog",
       "radixContextMenu",
       "radixDialog",
       "radixDropdownMenu",
-      "radixHoverCard",
-      "radixMenubar",
-      "radixNavigationMenu",
       "radixPopover",
-      "radixSelect",
       "radixTooltip",
       "react",
       "reactDom",
@@ -139,7 +134,6 @@ describe("installPluginRuntime", () => {
       "sharedUiIcon",
       "sonner",
       "tailwindMerge",
-      "vaul",
       "voiceInputTextarea",
     ]);
     expect((runtime.clsx as { default: unknown }).default).toBe(clsx);
@@ -161,10 +155,51 @@ describe("installPluginRuntime", () => {
     expect((globalThis as RuntimeHost).__bbPluginRuntime).toBe(runtime);
   });
 
+  it("awaits lazy Radix runtimes before evaluating a requesting plugin", async () => {
+    const runtime = installPluginRuntime();
+    expect(runtime.radixSlot).toBeUndefined();
+    const importModule = vi.fn(async () => {
+      expect(runtime.radixSlot).toBeDefined();
+      expect(runtime.radixCheckbox).toBeDefined();
+      return { default: {} };
+    });
+    const result = await loadPluginFrontend(
+      candidate("shared", { runtimeSlots: ["radixSlot"] }),
+      { importModule, prefetchModule: vi.fn(), warn: vi.fn() },
+    );
+    expect(result.status).toBe("loaded");
+    expect(importModule).toHaveBeenCalledOnce();
+  });
+
+  it("provides optional UI runtimes only for a bundle that requests them", async () => {
+    installPluginRuntime();
+    const runtime = (globalThis as RuntimeHost).__bbPluginRuntime as Record<
+      string,
+      unknown
+    >;
+    const importModule = vi.fn(async () => {
+      expect(runtime.radixMenubar).toBeDefined();
+      expect(runtime.radixSelect).toBeUndefined();
+      expect(runtime.vaul).toBeUndefined();
+      return { default: {} };
+    });
+    const prefetchModule = vi.fn();
+    expect(runtime.radixMenubar).toBeUndefined();
+    await loadPluginFrontend(
+      candidate("menubar", { runtimeSlots: ["radixMenubar"] }),
+      { importModule, prefetchModule, warn: vi.fn() },
+    );
+    expect(prefetchModule).toHaveBeenCalledOnce();
+    expect(importModule).toHaveBeenCalledOnce();
+  });
+
   it("provides @pierre/diffs only to bundles that import it, downloading the bundle meanwhile", async () => {
     const pierreSlots = () =>
       Object.keys(
-        (globalThis as RuntimeHost).__bbPluginRuntime as Record<string, unknown>,
+        (globalThis as RuntimeHost).__bbPluginRuntime as Record<
+          string,
+          unknown
+        >,
       ).filter((slot) => slot.startsWith("pierre"));
     const slotsAtImport: string[][] = [];
     const importModule = vi.fn(async () => {

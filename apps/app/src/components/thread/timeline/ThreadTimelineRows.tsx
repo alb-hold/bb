@@ -676,8 +676,9 @@ function timelineRowsListGapClassName(
 ): string {
   switch (spacing) {
     case "top-level":
-    case "nested":
       return "gap-2";
+    case "nested":
+      return "gap-1";
     case "bundle":
       return "gap-0";
   }
@@ -1747,7 +1748,7 @@ function DelegationRowBody({ row }: { row: TimelineViewDelegationWorkRow }) {
   );
 }
 
-export const PAST_ROW_DIM_CLASS_NAME = "opacity-40";
+export const PAST_ROW_DIM_CLASS_NAME = "text-muted-foreground";
 
 export function pastRowDimClassName({
   activeLatestBundleId,
@@ -2089,10 +2090,11 @@ function TimelineExpandableRowView({
       }
       forceExpanded={searchExpandedRowIds.has(row.id)}
       terminalAutoExpanded={terminalAutoExpandedRowIds.has(row.id)}
-      collapsedPreview={
+      summaryAdornment={
         row.kind === "turn" && row.status !== "pending" ? (
           <TooltipProvider>
             <ThreadTurnTokenSummary
+              compact
               openAnalysisOnClick={false}
               threadId={row.threadId}
               turnId={row.turnId}
@@ -2270,7 +2272,7 @@ export function buildTimelineRowsListItems({
     unreadDividerPlacement,
   });
 
-  for (let index = 0; index < rows.length;) {
+  for (let index = 0; index < rows.length; ) {
     if (index === dividerIndex) {
       items.push({ kind: "unread-divider", id: "thread-unread-divider" });
     }
@@ -2748,6 +2750,14 @@ function TimelineRowsList({
               );
             }}
           />
+          {turnTokenSummary && turnTokenSummaryMessageId === null ? (
+            <TooltipProvider>
+              <ThreadTurnTokenSummary
+                threadId={turnTokenSummary.threadId}
+                turnId={turnTokenSummary.turnId}
+              />
+            </TooltipProvider>
+          ) : null}
         </div>
       </MessageColumnWidthContext.Provider>
     </TimelineSearchExpansionContext.Provider>

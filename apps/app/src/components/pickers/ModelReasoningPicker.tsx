@@ -1,3 +1,4 @@
+import { usePromptBoxModelPreference } from "@/hooks/thread-creation-options/persisted-selection-fields";
 import {
   useCallback,
   useEffect,
@@ -31,7 +32,6 @@ import {
   COARSE_POINTER_TEXT_SM_CLASS,
 } from "@bb/shared-ui/coarse-pointer-sizing";
 import { Popover, PopoverContent, PopoverTrigger } from "@bb/shared-ui/popover";
-import { Skeleton } from "@bb/shared-ui/skeleton";
 import { LIST_HOVER_TRANSITION } from "@bb/shared-ui/motion";
 import { cn } from "@bb/shared-ui/lib/utils";
 import {
@@ -56,9 +56,7 @@ import {
 } from "./model-picker-menu";
 import { ModelReasoningMenu } from "./ModelReasoningMenuSplit";
 import { searchPickerOptions } from "@bb/shared-ui/picker-search";
-import {
-  useResetPickerScroll,
-} from "@bb/shared-ui/hooks/use-reset-picker-scroll";
+import { useResetPickerScroll } from "@bb/shared-ui/hooks/use-reset-picker-scroll";
 import { formatModelLoadErrorText } from "./model-load-error-message";
 import {
   useAppCommandContext,
@@ -116,7 +114,7 @@ export interface ModelReasoningPickerHandoff {
 const FAILED_TO_LOAD_MODELS_LABEL = "Failed to load models";
 const EMPTY_MODEL_OPTIONS: readonly ModelPickerOption[] = [];
 const EMPTY_SERVICE_TIER_OPTIONS: readonly ProviderOptionDescriptor[] = [];
-const preserveModelLabel = (displayName: string): string => displayName;
+
 const MODEL_CYCLE_COMMANDS = [
   "modelPicker.cycleModel",
   "modelPicker.cycleModelBackward",
@@ -183,6 +181,7 @@ interface ModelReasoningPickerProps {
   onProviderPreviewResolved?: (value: ResolvedProviderPreview) => void;
   requireVerifiedProviderPreview?: boolean;
   hasMultipleProviders: boolean;
+  unavailableModel?: string;
   modelValue: string;
   modelOptions: readonly ModelPickerOption[];
   moreModelOptions?: readonly ModelPickerOption[];
@@ -202,6 +201,7 @@ interface ModelReasoningPickerProps {
   commandShortcutsEnabled?: boolean;
   serviceTierSupportByProvider?: Record<string, boolean>;
   className?: string;
+  compactIconOnly?: boolean;
   muted?: boolean;
   modal?: boolean;
   align?: "start" | "center" | "end";
@@ -218,6 +218,7 @@ export function ModelReasoningPicker({
   requireVerifiedProviderPreview = false,
   hasMultipleProviders,
   modelValue,
+  unavailableModel,
   modelOptions,
   moreModelOptions = [],
   modelIsLoading = false,
@@ -236,6 +237,7 @@ export function ModelReasoningPicker({
   commandShortcutsEnabled = true,
   serviceTierSupportByProvider,
   className,
+  compactIconOnly = false,
   muted,
   modal = true,
   align = "start",
@@ -292,12 +294,15 @@ export function ModelReasoningPicker({
     (p) => p.value === selectedProviderId,
   );
   const ProviderIcon = selectedProvider?.icon;
-  const selectedModelOption = modelOptions.find((m) => m.value === modelValue);
-  const selectedModelLabel =
-    selectedModelOption?.label ??
-    (modelIsLoading
-      ? (formatModelLabel ?? formatFallbackModelLabel)(modelValue)
-      : modelValue);
+  const { value: rememberedModel } = usePromptBoxModelPreference(selectedProviderId);
+  const displayModel = modelValue || (modelIsLoading ? rememberedModel : "");
+  const selectedModelOption = modelOptions.find((m) => m.value === displayModel);
+  const selectedModelLabel = (formatModelLabel ?? formatFallbackModelLabel)(
+    selectedModelOption?.label ?? displayModel,
+  );
+  const modelSubstitutionNote = unavailableModel
+    ? `${unavailableModel} isn't available; using ${selectedModelLabel}`
+    : undefined;
   const hasSelectedModel = selectedModelLabel.trim().length > 0;
   const showLoadingTrigger = modelIsLoading && !hasSelectedModel;
   const selectedProviderLabel = selectedProvider?.label ?? selectedProviderId;
@@ -330,9 +335,13 @@ export function ModelReasoningPicker({
         })
       : "Could not load models.";
   const triggerModelLabel = showLoadingTrigger
-    ? "Loading models..."
+    ? "Model"
     : hasSelectedModel
-      ? stripModelBrandPrefix(selectedModelLabel, selectedProvider?.brandPrefix)
+      ? stripModelBrandPrefix(
+          selectedModelLabel,
+          selectedProvider?.brandPrefix ??
+            (selectedProviderId === "codex" ? "GPT-" : undefined),
+        )
       : selectedModelLoadFailed
         ? hasAlternateSelectionPath
           ? "Select model"
@@ -395,7 +404,7 @@ export function ModelReasoningPicker({
             preferredReasoningLevel: reasoningValue,
             provider: previewProvider,
             catalogIsVerified: previewCatalogIsVerified,
-            formatModelLabel: formatModelLabel ?? preserveModelLabel,
+            formatModelLabel: formatModelLabel ?? formatFallbackModelLabel,
           })
         : null,
     [
@@ -900,31 +909,44 @@ export function ModelReasoningPicker({
     el?.scrollIntoView({ block: "nearest" });
   }, [highlightedIndex, navId]);
 
-  const TriggerIcon =
-    hasSelectedModel || modelIsLoading ? ProviderIcon : undefined;
+  const TriggerIcon = ProviderIcon;
+  const showCompactIconOnly = compactIconOnly && isCompactViewport;
   const triggerTitleModelLabel = showLoadingTrigger
-    ? "Loading models..."
+    ? "Model"
     : selectedModelLoadFailed
       ? selectedModelLoadErrorText
       : triggerModelLabel;
   const triggerTitle = [
-    `${selectedProviderLabel}: ${triggerTitleModelLabel}`,
+    [selectedProviderLabel, triggerTitleModelLabel].filter((label) => label.trim().length > 0).join(": "),
     triggerReasoningLabel ? ` · ${triggerReasoningLabel} reasoning` : "",
     selectedServiceTierOption
       ? ` (${selectedServiceTierOption.label} mode)`
       : "",
   ].join("");
+  const compactSelectionLabel = [selectedProviderLabel, selectedModelLabel || "Model"]
+    .filter((label) => label.trim().length > 0)
+    .join(": ");
+  const compactReasoningLabel = triggerReasoningLabel ?? reasoningLevelLabel(reasoningValue, undefined);
+  const compactAccessibleLabel = !selectedProviderLabel.trim() && !hasSelectedModel
+    ? "Model"
+    : `Provider, model and reasoning: ${[
+        compactSelectionLabel,
+        compactReasoningLabel ? `${compactReasoningLabel} reasoning` : "",
+      ].filter(Boolean).join(" · ")}`;
+  const triggerAccessibleLabel = showCompactIconOnly
+    ? compactAccessibleLabel
+    : toggleShortcut
+      ? `Provider, model and reasoning (${toggleShortcut.label})`
+      : "Provider, model and reasoning";
   const trigger = (
     <Button
       ref={triggerRef}
+      data-model-reasoning-trigger=""
       type="button"
       variant="ghost"
       size="sm"
-      aria-label={
-        toggleShortcut
-          ? `Provider, model and reasoning (${toggleShortcut.label})`
-          : "Provider, model and reasoning"
-      }
+      aria-label={triggerAccessibleLabel}
+      aria-description={modelSubstitutionNote}
       aria-keyshortcuts={toggleShortcut?.ariaKeyshortcuts}
       disabled={disabled}
       {...ModelReasoningMenu.intentProps}
@@ -939,39 +961,21 @@ export function ModelReasoningPicker({
         className,
       )}
     >
-      <span className={OPTION_TRIGGER_CONTENT_CLASS_NAME} title={triggerTitle}>
-        {showLoadingTrigger ? (
-          <>
-            {TriggerIcon ? (
-              <TriggerIcon className="size-4 shrink-0" />
-            ) : (
-              <Icon
-                name="Spinner"
-                className="size-3.5 shrink-0 animate-spin text-muted-foreground"
-                aria-hidden
-              />
-            )}
-            <span className="sr-only">Loading models</span>
-            <Skeleton
-              aria-hidden
-              data-model-loading-placeholder="trigger-model"
-              className="h-3 w-10 shrink-0 rounded-sm"
-            />
-            <Skeleton
-              aria-hidden
-              data-model-loading-placeholder="trigger-reasoning"
-              className="h-3 w-8 shrink-0 rounded-sm"
-            />
-          </>
-        ) : selectedServiceTierOption ? (
+      <span
+        className={OPTION_TRIGGER_CONTENT_CLASS_NAME}
+        title={modelSubstitutionNote ?? triggerTitle}
+      >
+        {selectedServiceTierOption ? (
           <Icon
             name={selectedServiceTierOption.icon ?? "Zap"}
             className="size-3.5 shrink-0 fill-current text-subtle-foreground"
           />
         ) : TriggerIcon ? (
           <TriggerIcon className="size-4 shrink-0" />
-        ) : null}
-        {showLoadingTrigger ? null : (
+        ) : (
+          <Icon name="Bot" className="size-4 shrink-0" />
+        )}
+        {showCompactIconOnly ? null : (
           <>
             <span
               className={cn(
@@ -997,25 +1001,19 @@ export function ModelReasoningPicker({
           </>
         )}
       </span>
-      {disabled ? null : (
-        <Icon
-          name="ChevronDown"
-          className={cn(
-            "size-3.5 shrink-0",
-            muted ? "text-subtle-foreground/75" : "text-muted-foreground",
-          )}
-        />
-      )}
+      <Icon
+        name="ChevronDown"
+        className={cn(
+          "size-3.5 shrink-0",
+          muted ? "text-subtle-foreground/75" : "text-muted-foreground",
+        )}
+      />
       <AppCommandShortcutHint
         shortcut={disabled ? null : toggleShortcut}
         className="ml-1"
       />
     </Button>
   );
-
-  if (disabled) {
-    return trigger;
-  }
 
   const showSearchInput =
     isCompactViewport ||
@@ -1026,7 +1024,7 @@ export function ModelReasoningPicker({
         MODEL_SEARCH_MIN_OPTIONS);
 
   return (
-    <Popover open={open} onOpenChange={setOpen} modal={modal}>
+    <Popover open={open && !disabled} onOpenChange={setOpen} modal={modal}>
       <PopoverTrigger asChild>{trigger}</PopoverTrigger>
       <PopoverContent
         align={align}

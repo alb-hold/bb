@@ -113,7 +113,6 @@ import {
 import type { CommandSuggestionSource } from "@/hooks/useCommandSuggestions";
 import {
   usePromptDraftController,
-  usePromptDraftInputEmpty,
   usePromptDraftSnapshot,
   type PromptDraftController,
   type PromptDraftScope,
@@ -269,7 +268,7 @@ export interface NewThreadComposerState {
 
 const nativeTerminalPreferenceAtom = atomWithStorage<boolean>(
   "bb.composer.nativeTerminal",
-  false,
+  true,
   createJsonLocalStorage<boolean>(
     (value): value is boolean => typeof value === "boolean",
   ),
@@ -324,6 +323,7 @@ type LiveDraftNewThreadPromptBoxProps = Omit<
   history: Omit<NewThreadPromptBoxProps["history"], "currentDraft">;
   promptDraft: PromptDraftController;
   blockerReason: NewThreadBlockerReason | null;
+  allowEmpty: boolean;
 };
 
 function LiveDraftNewThreadPromptBox({
@@ -331,10 +331,16 @@ function LiveDraftNewThreadPromptBox({
   history,
   promptDraft,
   blockerReason,
+  allowEmpty,
   ...promptBoxProps
 }: LiveDraftNewThreadPromptBoxProps) {
   const draft = usePromptDraftSnapshot(promptDraft);
   const hasDraft = !isPromptDraftEmpty(draft);
+  const disabledReason =
+    promptBoxProps.disabledReason ??
+    (promptDraftToInput(draft).length === 0 && !allowEmpty
+      ? "Enter a prompt or attach a file."
+      : undefined);
   const reportedBlockers = useRef(new Set<NewThreadBlockerReason>());
   useEffect(() => {
     if (!hasDraft || blockerReason === null) return;
@@ -348,6 +354,8 @@ function LiveDraftNewThreadPromptBox({
   return (
     <NewThreadPromptBox
       {...promptBoxProps}
+      disabled={disabledReason !== undefined}
+      disabledReason={disabledReason}
       value={draft.text}
       mentionRanges={draft.mentions}
       history={{ ...history, currentDraft: draft }}
@@ -1655,7 +1663,6 @@ export function NewThreadComposer({
     () => promptHistoryEntriesToDrafts(projectPromptHistory),
     [projectPromptHistory],
   );
-  const promptInputEmpty = usePromptDraftInputEmpty(promptDraft);
   const agentProviders = useSystemProviders().data;
   const nativeTerminalAvailable =
     agentProviders?.find((provider) => provider.id === selectedProviderId)
@@ -1712,11 +1719,7 @@ export function NewThreadComposer({
   });
   const submissionReadinessReason = submissionBlocker?.message ?? null;
   const submissionBlockerReason = submissionBlocker?.reason ?? null;
-  const submitDisabledReason =
-    submissionReadinessReason ??
-    (promptInputEmpty && !nativeTerminal
-      ? "Enter a prompt or attach a file."
-      : null);
+  const submitDisabledReason = submissionReadinessReason;
   const submitDraft = useCallback(
     async (
       blockedReason: string | null,
@@ -2040,6 +2043,7 @@ export function NewThreadComposer({
       const disabledReason = options.blocker?.message ?? submitDisabledReason;
       return (
         <LiveDraftNewThreadPromptBox
+          allowEmpty={nativeTerminal}
           blockerReason={
             options.blocker ? options.blocker.reason : submissionBlockerReason
           }
@@ -2105,6 +2109,7 @@ export function NewThreadComposer({
               disabled: locks.environment,
             },
             permission: {
+              pending: projectDefaultsUnavailable || isLoadingModels,
               value: permissionMode,
               options: permissionModeOptions,
               onChange: handlePermissionChange,
@@ -2176,14 +2181,21 @@ export function NewThreadComposer({
             showChevronWhenDisabled: !locks.project,
           }}
           execution={{
-            ...(nativeTerminalAvailable
-              ? {
-                  nativeTerminal: {
-                    enabled: nativeTerminal,
-                    onChange: setNativeTerminalRequested,
-                  },
-                }
-              : {}),
+            pending: projectDefaultsUnavailable || isLoadingModels,
+            nativeTerminal: {
+              enabled:
+                projectDefaultsUnavailable || isLoadingModels
+                  ? nativeTerminalRequested
+                  : nativeTerminal,
+              disabled: !nativeTerminalAvailable,
+              unavailableReason:
+                !nativeTerminalAvailable &&
+                agentProviders !== undefined &&
+                !isLoadingModels
+                  ? "This provider does not support Terminal mode"
+                  : undefined,
+              onChange: setNativeTerminalRequested,
+            },
             providerRouting: executionOptionsRouting,
             provider: {
               options: providerOptions,
@@ -2227,6 +2239,7 @@ export function NewThreadComposer({
     },
     [
       activeModel,
+      projectDefaultsUnavailable,
       attachmentError,
       commandSource,
       defaultMentionLinkResolver,
@@ -2295,6 +2308,8 @@ export function NewThreadComposer({
       textEffects,
       serviceTierOptions,
       nativeTerminal,
+      agentProviders,
+      nativeTerminalRequested,
       nativeTerminalAvailable,
       setNativeTerminalRequested,
       pickerSessionOptionSections,

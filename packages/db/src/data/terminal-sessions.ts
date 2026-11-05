@@ -7,6 +7,7 @@ import {
   gt,
   inArray,
   isNull,
+  lte,
   notExists,
   or,
   type SQL,
@@ -264,9 +265,20 @@ function markHolderBacked(
     .run();
 }
 
-function mutationWhere(update: TerminalSessionMutation): SQL | undefined {
+export const TERMINAL_USER_INPUT_REFRESH_MS = 1_000;
+
+function mutationWhere(
+  update: TerminalSessionMutation,
+  now: number,
+): SQL | undefined {
   return update.kind === "user-input"
-    ? isNull(terminalSessions.lastUserInputAt)
+    ? or(
+        isNull(terminalSessions.lastUserInputAt),
+        lte(
+          terminalSessions.lastUserInputAt,
+          now - TERMINAL_USER_INPUT_REFRESH_MS,
+        ),
+      )
     : undefined;
 }
 
@@ -398,7 +410,7 @@ export function updateTerminalSession(
   const row = db
     .update(terminalSessions)
     .set(mutationValues(args.update, now))
-    .where(terminalScope(args.scope, mutationWhere(args.update)))
+    .where(terminalScope(args.scope, mutationWhere(args.update, now)))
     .returning()
     .get();
   if (row === undefined) return null;
@@ -421,7 +433,7 @@ export function updateTerminalSessions(
   const rows = db
     .update(terminalSessions)
     .set(mutationValues(args.update, now))
-    .where(terminalScope(args.scope, mutationWhere(args.update)))
+    .where(terminalScope(args.scope, mutationWhere(args.update, now)))
     .returning()
     .all();
   if (args.update.kind === "holder-backed") {

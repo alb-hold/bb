@@ -39,7 +39,7 @@
     align-items: flex-start;
   }
 
-  [data-message-action-row] > button[aria-label="Message actions"] {
+  [data-message-action-row] > button[data-compact-touch="action-menu"] {
     order: 1;
   }
 

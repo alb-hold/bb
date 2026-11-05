@@ -44,6 +44,7 @@ export function ComposerEditorSlot({
     <div
       ref={scrollContainerRef}
       data-promptbox-editor-scroll=""
+      data-compact-empty-editor={layout === "root-compose" && userHeightPx === null && (editor?.isEmpty ?? true) ? "" : undefined}
       aria-busy={inputLocked || undefined}
       className={cn(
         "w-full overflow-y-auto bg-transparent px-4 pb-1 pr-14 pt-3 outline-none",
@@ -89,7 +90,6 @@ export function ComposerEditorSlot({
             "[&_.ProseMirror_p.is-editor-empty:first-child::before]:h-0",
             "[&_.ProseMirror_p.is-editor-empty:first-child::before]:text-subtle-foreground",
             "[&_.ProseMirror_p.is-editor-empty:first-child::before]:font-light",
-            "[&_.ProseMirror_p.is-editor-empty:first-child::before]:opacity-70",
           )}
         />
       </PromptMentionLinkContext.Provider>

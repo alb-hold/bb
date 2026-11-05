@@ -3,13 +3,20 @@ import { matchPath } from "react-router-dom";
 import { PluginSlotMount } from "@/components/plugin/PluginSlotMount";
 import { LazySettingsSidebar } from "@/components/settings/LazySettingsSidebar";
 import { SectionSidebar } from "@/components/sidebar/SectionSidebar";
-import { ResourceSidebar } from "@/components/tools/ResourceSidebar";
+import { lazy, Suspense } from "react";
+
 import type { PluginNavPanelSlot } from "@/lib/plugin-slots";
 import {
   isPluginsRoutePath,
   isSkillsRoutePath,
   SETTINGS_ROUTE_PATH,
 } from "@/lib/route-paths";
+
+const ResourceSidebar = lazy(() =>
+  import("@/components/tools/ResourceSidebar").then((module) => ({
+    default: module.ResourceSidebar,
+  })),
+);
 
 export interface RouteSidebarProps {
   backTo: string | null;
@@ -35,14 +42,18 @@ const SETTINGS_ROUTE_SIDEBAR: RouteSidebar = {
 const PLUGINS_ROUTE_SIDEBAR: RouteSidebar = {
   id: "plugins",
   render: (props) => (
-    <ResourceSidebar key="plugins" workspace="plugins" {...props} />
+    <Suspense fallback={null}>
+      <ResourceSidebar key="plugins" workspace="plugins" {...props} />
+    </Suspense>
   ),
 };
 
 const SKILLS_ROUTE_SIDEBAR: RouteSidebar = {
   id: "skills",
   render: (props) => (
-    <ResourceSidebar key="skills" workspace="skills" {...props} />
+    <Suspense fallback={null}>
+      <ResourceSidebar key="skills" workspace="skills" {...props} />
+    </Suspense>
   ),
 };
 

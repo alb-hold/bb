@@ -5,6 +5,7 @@ import {
   attachTerminalScalePointerCoordinates,
   canRevealTerminalSurface,
   terminalSurfaceScale,
+  terminalSurfacePresentation,
   terminalSurfaceScaleToWidth,
 } from "./terminal-grid-presentation";
 
@@ -69,7 +70,9 @@ describe("terminal grid presentation", () => {
     surface.append(screen);
     let availableWidth = 964;
     Object.defineProperty(screen, "getBoundingClientRect", {
-      value: () => ({ width: 975 * Number(surface.dataset.surfaceScale ?? "1") }),
+      value: () => ({
+        width: 975 * Number(surface.dataset.surfaceScale ?? "1"),
+      }),
     });
     const fitGrid = { cols: 135, rows: 56 };
     let scale = terminalSurfaceScaleToWidth(
@@ -140,4 +143,58 @@ describe("terminal grid presentation", () => {
     detach();
     surface.remove();
   });
+});
+
+it.each([
+  [12, 120, 40, false, true, 1, true, true],
+  [16, 120, 100, false, true, 100 / 120, false, false],
+  [16, 120, 40, false, true, 0.75, true, true],
+  [12, 40, 40, true, true, 1, false, false],
+  [12, 120, 40, true, true, 1, true, false],
+  [12, 120, 40, false, false, 1, true, false],
+])(
+  "readable surface %s px %s/%s owner=%s running=%s",
+  (
+    fontSize,
+    cols,
+    fitCols,
+    isOwner,
+    running,
+    scale,
+    panHorizontally,
+    showFitControl,
+  ) => {
+    expect(
+      terminalSurfacePresentation({
+        grid: { cols, rows: 24 },
+        fitGrid: { cols: fitCols, rows: 24 },
+        fontSize,
+        isOwner,
+        running,
+      }),
+    ).toEqual({ scale, panHorizontally, showFitControl });
+  },
+);
+it.each([360, 390])("keeps compact terminal text at 13px at %s px", (width) => {
+  const presentation = terminalSurfacePresentation({
+    grid: { cols: 120, rows: 40 },
+    fitGrid: { cols: Math.floor(width / 7.8), rows: 30 },
+    fontSize: 13,
+    minimumFontSize: 13,
+    isOwner: false,
+    running: true,
+  });
+  expect(presentation.scale * 13).toBe(13);
+  expect(presentation.panHorizontally).toBe(true);
+});
+it("does not offer a size claim before measurement", () => {
+  expect(
+    terminalSurfacePresentation({
+      grid: { cols: 120, rows: 24 },
+      fitGrid: null,
+      fontSize: 12,
+      isOwner: false,
+      running: true,
+    }).showFitControl,
+  ).toBe(false);
 });

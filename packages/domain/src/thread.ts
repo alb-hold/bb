@@ -219,6 +219,7 @@ export type ThreadQueuedWork = z.infer<typeof threadQueuedWorkSchema>;
 export const threadListIndicatorSchema = z.enum([
   "unread-error",
   "needs-input",
+  "check-terminal",
   "working",
   "woke",
   "done-unread",

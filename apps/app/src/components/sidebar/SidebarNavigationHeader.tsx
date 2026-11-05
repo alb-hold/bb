@@ -103,7 +103,6 @@ function PluginNavigationHeader({
           : { width, controlSize },
       );
     };
-    measure(Math.floor(element.clientWidth - paddingOf(element)));
     const observer = new ResizeObserver((entries) => {
       const entry = entries[entries.length - 1];
       if (entry) flushSync(() => measure(Math.floor(entry.contentRect.width)));
@@ -147,13 +146,5 @@ function PluginNavigationHeader({
         }}
       />
     </div>
-  );
-}
-
-function paddingOf(element: HTMLElement): number {
-  const style = getComputedStyle(element);
-  return (
-    (Number.parseFloat(style.paddingLeft) || 0) +
-    (Number.parseFloat(style.paddingRight) || 0)
   );
 }

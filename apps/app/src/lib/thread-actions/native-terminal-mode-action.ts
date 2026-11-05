@@ -43,20 +43,13 @@ export function useNativeTerminalModeData({
     .filter((provider) => provider.capabilities.supportsNativeTerminal === true)
     .map((provider) => provider.id)
     .join("\n");
-  const providerIdOf = (threadId: string) =>
-    (entries.get(threadId) ?? lookupCachedThread(queryClient, threadId))
-      ?.providerId ?? null;
-  const nativeProviderIds = new Set(
-    nativeProvidersKey === "" ? [] : nativeProvidersKey.split("\n"),
-  );
   const views = useQueries({
     queries: threadIds.map((threadId) => {
-      const providerId = providerIdOf(threadId);
       return {
         queryKey: nativeTerminalThreadQueryKey(threadId),
         queryFn: ({ signal }: { signal: AbortSignal }) =>
           sdk.nativeTerminals.get({ threadId, signal }),
-        enabled: providerId !== null && nativeProviderIds.has(providerId),
+        enabled: false,
         ...REALTIME_OWNED_STATIC_CACHE_QUERY_POLICY,
       };
     }),

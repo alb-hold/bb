@@ -35,10 +35,7 @@ import { showMutationErrorToast } from "@/lib/mutation-errors";
 import { getThreadDisplayTitle } from "@/lib/thread-title";
 import { useRenameController } from "@bb/shared-ui/inline-rename";
 import { RenameControllerProvider } from "@/components/sidebar/SidebarInlineRename";
-import {
-  ThreadDeleteDialog,
-  type ThreadDeleteDialogTarget,
-} from "@/components/dialogs/ThreadDeleteDialog";
+import type { ThreadDeleteDialogTarget } from "@/components/dialogs/ThreadDeleteDialog";
 import type { ThreadArchiveDialogTarget } from "@/components/dialogs/ThreadArchiveDialog";
 import { defineSplit } from "@/lib/define-split";
 import { ArchivedThreadToastDescription } from "@/components/thread/ArchivedThreadToastDescription";
@@ -107,6 +104,22 @@ interface DeleteDialogRequest extends ThreadDeleteDialogTarget {
   roots: readonly Thread[];
   cascadeThreadIdsByRootId: ReadonlyMap<string, readonly string[]>;
 }
+
+const ThreadDeleteDialog = defineSplit<
+  Parameters<
+    typeof import("@/components/dialogs/ThreadDeleteDialog").ThreadDeleteDialog<DeleteDialogRequest>
+  >[0]
+>({
+  id: "thread-delete-dialog",
+  load: () =>
+    import("@/components/dialogs/ThreadDeleteDialog").then(
+      (module) => module.ThreadDeleteDialog<DeleteDialogRequest>,
+    ),
+  loading: () => null,
+  tier: "intent",
+  mountWhen: ({ target }) => target !== null,
+  keepMounted: true,
+});
 
 function describeThreadCount(count: number): string {
   return count === 1 ? "1 thread" : `${count} threads`;

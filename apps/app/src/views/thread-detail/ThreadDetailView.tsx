@@ -1792,6 +1792,7 @@ function ThreadDetailViewInternal(
                 HEADER_ICON_BUTTON_CLASS,
               )}
               aria-label="Thread actions"
+              data-compact-touch="header"
               onClick={(event) => {
                 triggerProps.onClick?.(event);
                 event.stopPropagation();
@@ -1832,6 +1833,9 @@ function ThreadDetailViewInternal(
       }
       thread={threadActionTarget}
       threadTitle={threadTitle}
+      needsInput={thread.nativeTerminal && thread.hasPendingInteraction}
+      hasNativeTerminal={nativeTerminalThread != null}
+      checkTerminal={nativeTerminalThread?.terminal?.attention != null}
       contextCardButton={<ThreadContextCardHeaderButton />}
       workspaceOpenButton={workspaceOpenButton}
     />

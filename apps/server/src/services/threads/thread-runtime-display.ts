@@ -314,6 +314,26 @@ function getNativeActivityThread(
     : null;
 }
 
+function nativeTerminalAttentionThreadIds(
+  db: DbConnection,
+  threadIds: readonly string[],
+): Set<string> {
+  if (threadIds.length === 0) return new Set();
+  const rows = db.$client
+    .prepare(
+      `
+    SELECT n.thread_id AS threadId
+    FROM fork_native_terminal_threads n
+    JOIN terminal_sessions t ON t.id = n.terminal_session_id AND t.status = 'running'
+    LEFT JOIN fork_terminal_attention a ON a.terminal_session_id = t.id AND a.cleared_at IS NULL
+    WHERE n.thread_id IN (SELECT value FROM json_each(?))
+    AND a.terminal_session_id IS NOT NULL
+  `,
+    )
+    .all(JSON.stringify(threadIds)) as Array<{ threadId: string }>;
+  return new Set(rows.map((row) => row.threadId));
+}
+
 function getNativeTerminalThreadsById(
   deps: NativeActivityDisplayDeps,
   threads: readonly Thread[],
@@ -532,7 +552,7 @@ function buildThreadResponseFromThread(
       listThreadsWithPendingInteractionState(deps.db, {
         threadIds: [args.thread.id],
         includeHidden: true,
-      })[0]?.hasPendingInteraction ?? false,
+      })[0]?.hasPendingInteraction === true,
     nativeTerminal: getNativeTerminalThread(deps.db, args.thread.id) !== null,
     activeBackgroundAgentCount:
       listActiveBackgroundTaskCountsByThreadIds(deps.db, {
@@ -835,6 +855,10 @@ export function toThreadListEntryResponses(
     deps,
     args.threads,
   );
+  const attentionThreadIds = nativeTerminalAttentionThreadIds(
+    deps.db,
+    args.threads.map((thread) => thread.id),
+  );
   return args.threads.map((thread) => {
     const entry = toThreadListEntryResponseFromLatestSession({
       deps,
@@ -867,9 +891,14 @@ export function toThreadListEntryResponses(
         : entry;
     return {
       ...withEnvironmentHost,
-      listIndicator: resolveThreadListIndicator(
-        threadListIndicatorStateForThread(withEnvironmentHost, false, args.now),
-      ),
+      listIndicator: resolveThreadListIndicator({
+        ...threadListIndicatorStateForThread(
+          withEnvironmentHost,
+          false,
+          args.now,
+        ),
+        hasTerminalAttention: attentionThreadIds.has(thread.id),
+      }),
     };
   });
 }

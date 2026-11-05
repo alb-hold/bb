@@ -18,8 +18,8 @@ interface SidebarUpdatesBadgeProps {
 }
 
 const CHIP_CLASS = cn(
-  "flex h-6 shrink-0 items-center gap-1.5 rounded-full border border-sidebar-border px-2",
-  "text-xs font-medium text-sidebar-foreground transition-colors hover:bg-sidebar-accent",
+  "flex h-7 shrink-0 items-center gap-1.5 rounded-md px-1.5",
+  "text-xs font-medium text-muted-foreground transition-colors hover:bg-sidebar-accent",
 );
 
 function joinNames(names: string[]): string {

@@ -44,6 +44,7 @@ describe("RootComposeRightPanelToggle", () => {
     expect(preloadThreadSecondaryPanel).not.toHaveBeenCalled();
 
     const button = screen.getByRole("button", { name: "Show right panel" });
+    expect(button.className).toContain("max-md:size-11");
     fireEvent.pointerEnter(button);
     fireEvent.pointerDown(button);
     fireEvent.focus(button);

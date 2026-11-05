@@ -11,6 +11,10 @@ import {
   createEnvironment,
   createPendingInteraction,
   createNativeTerminalThread,
+  getNativeTerminalThread,
+  recordNativeTerminalThreadSessionId,
+  upsertTerminalAttention,
+  clearTerminalAttention,
   createProject,
   createQueuedThreadMessage,
   createTerminalSession,
@@ -1300,5 +1304,147 @@ it.each([false, true])(
         runtime: { displayStatus: clean ? "idle" : "error" },
       });
     }
+  },
+);
+
+it.each(["active", "idle"] as const)(
+  "preserves ambiguous native attention in list and header while %s until input clears it",
+  (status) => {
+    const { db, hostId, hub } = setup();
+    const { thread: storedThread } = createLiveNativeReportingThread({
+      db,
+      hostId,
+    });
+    const thread = { ...storedThread, status };
+    const terminalId = getNativeTerminalThread(
+      db,
+      thread.id,
+    )!.terminalSessionId!;
+    upsertTerminalAttention(db, {
+      terminalSessionId: terminalId,
+      seq: 1,
+      daemonSeq: 1,
+      kind: "bell",
+      title: null,
+      body: null,
+      attentionAt: 100_001,
+    });
+    const deps = { db, hub, providerRegistry };
+    const detail = () => toThreadResponseFromThread(deps, { thread });
+    const list = () =>
+      toThreadListEntryResponsesForTest(deps, {
+        threads: [createThreadListEntry({ thread, environmentHostId: hostId })],
+      });
+    expect(detail().hasPendingInteraction).toBe(false);
+    expect(list()[0]?.hasPendingInteraction).toBe(false);
+    expect(list()[0]?.listIndicator).toBe("check-terminal");
+    clearTerminalAttention(db, terminalId, 100_002);
+    expect(detail().hasPendingInteraction).toBe(false);
+    expect(list()[0]?.hasPendingInteraction).toBe(false);
+    expect(list()[0]?.listIndicator).not.toBe("check-terminal");
+    db.$client.close();
+  },
+);
+
+it("keeps a real pending question ahead of a concurrent terminal signal", () => {
+  const { db, hostId, hub } = setup();
+  try {
+    const { thread } = createLiveNativeReportingThread({ db, hostId });
+    const terminalId = getNativeTerminalThread(
+      db,
+      thread.id,
+    )!.terminalSessionId!;
+    upsertTerminalAttention(db, {
+      terminalSessionId: terminalId,
+      seq: 1,
+      daemonSeq: 1,
+      kind: "bell",
+      title: null,
+      body: null,
+      attentionAt: 100_001,
+    });
+    createPendingInteraction(db, {
+      threadId: thread.id,
+      providerId: thread.providerId,
+      providerThreadId: "native-session",
+      providerRequestId: "native-question",
+      turnId: "turn-question",
+      payload: JSON.stringify({ method: "AskUserQuestion" }),
+    });
+    const deps = { db, hub, providerRegistry };
+    const [entry] = toThreadListEntryResponsesForTest(deps, {
+      threads: listThreadsWithPendingInteractionState(db, {
+        threadIds: [thread.id],
+      }),
+    });
+    expect(entry?.listIndicator).toBe("needs-input");
+    expect(entry?.hasPendingInteraction).toBe(true);
+    expect(
+      toThreadResponseFromThread(deps, { thread }).hasPendingInteraction,
+    ).toBe(true);
+  } finally {
+    db.$client.close();
+  }
+});
+
+it.each(["bell", "osc-9", "osc-99", "osc-777"] as const)(
+  "keeps idle unbound CLIs neutral and holds pre-binding %s attention until input",
+  (kind) => {
+    const { db, hostId, hub } = setup();
+    const { thread } = createLiveNativeReportingThread({ db, hostId });
+    db.$client
+      .prepare(
+        "UPDATE fork_native_terminal_threads SET native_session_id = NULL WHERE thread_id = ?",
+      )
+      .run(thread.id);
+    const deps = { db, hub, providerRegistry };
+    const detail = () => toThreadResponseFromThread(deps, { thread });
+    const list = () =>
+      toThreadListEntryResponsesForTest(deps, {
+        threads: [createThreadListEntry({ thread, environmentHostId: hostId })],
+      });
+    expect(detail().hasPendingInteraction).toBe(false);
+    expect(list()[0]?.hasPendingInteraction).toBe(false);
+    const terminalId = getNativeTerminalThread(
+      db,
+      thread.id,
+    )!.terminalSessionId!;
+    upsertTerminalAttention(db, {
+      terminalSessionId: terminalId,
+      seq: 1,
+      daemonSeq: 1,
+      kind,
+      title: null,
+      body: null,
+      attentionAt: Date.now(),
+    });
+    expect(detail().hasPendingInteraction).toBe(false);
+    expect(list()[0]?.listIndicator).toBe("check-terminal");
+    recordNativeTerminalThreadSessionId(db, {
+      threadId: thread.id,
+      nativeSessionId: "bound",
+    });
+    expect(detail().hasPendingInteraction).toBe(false);
+    expect(list()[0]?.listIndicator).toBe("check-terminal");
+    clearTerminalAttention(db, terminalId, Date.now());
+    expect(detail().hasPendingInteraction).toBe(false);
+    expect(list()[0]?.hasPendingInteraction).toBe(false);
+    upsertTerminalAttention(db, {
+      terminalSessionId: terminalId,
+      seq: 2,
+      daemonSeq: 2,
+      kind,
+      title: null,
+      body: null,
+      attentionAt: Date.now(),
+    });
+    expect(detail().hasPendingInteraction).toBe(false);
+    expect(list()[0]?.listIndicator).toBe("check-terminal");
+    recordNativeTerminalThreadSessionId(db, {
+      threadId: thread.id,
+      nativeSessionId: "bound",
+    });
+    expect(detail().hasPendingInteraction).toBe(false);
+    db.$client.close();
   },
 );

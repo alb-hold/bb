@@ -46,12 +46,14 @@ export function TerminalSearch({
   addon,
   terminal,
   touch = false,
+  hideTrigger = false,
   open,
   onOpenChange,
 }: {
   addon: TerminalSearchAddonInstance | null;
   terminal: Terminal | null;
   touch?: boolean;
+  hideTrigger?: boolean;
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
@@ -129,7 +131,7 @@ export function TerminalSearch({
 
   return (
     <div className="pointer-events-none absolute inset-x-2 top-2 z-20 flex justify-end">
-      {!open ? (
+      {!open && !hideTrigger ? (
         <button
           type="button"
           aria-label="Search terminal output"
@@ -143,7 +145,7 @@ export function TerminalSearch({
         >
           <Icon name="Search" className="size-4" />
         </button>
-      ) : (
+      ) : open ? (
         <div
           role="search"
           aria-label="Search terminal output"
@@ -240,7 +242,7 @@ export function TerminalSearch({
             </p>
           ) : null}
         </div>
-      )}
+      ) : null}
     </div>
   );
 }

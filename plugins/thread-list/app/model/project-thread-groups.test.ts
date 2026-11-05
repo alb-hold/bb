@@ -480,6 +480,7 @@ describe("buildProjectThreadGroups", () => {
           "pending-grandchild",
         ]),
         pending: true,
+        terminalAttention: false,
         working: true,
         runtimeWorking: true,
         workflow: false,
@@ -494,6 +495,7 @@ describe("buildProjectThreadGroups", () => {
     });
     expect(findNode(rootItems, "quiet-child")?.stats).toEqual({
       childActivity: {
+        terminalAttention: false,
         threadIds: expect.arrayContaining([
           "busy-grandchild",
           "pending-grandchild",

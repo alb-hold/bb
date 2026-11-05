@@ -598,7 +598,7 @@ function FollowUpPromptBoxWithComposer({
     return true;
   }, [collapseWidePromptBox]);
   const extensionController = useComposerExtensionController({
-    host: pluginComposerHost ?? null,
+    host: execution.pending ? null : (pluginComposerHost ?? null),
     view: composerView,
     collapseIfFocused,
     focusDefault,
@@ -643,6 +643,8 @@ function FollowUpPromptBoxWithComposer({
   const permissionControl = useMemo(
     () => (
       <PermissionModePicker
+        compactWarningOnly={isPromptBoxCompact}
+        pending={permission.pending}
         value={permission.value}
         options={permission.options}
         onChange={permission.onChange}
@@ -654,6 +656,8 @@ function FollowUpPromptBoxWithComposer({
       />
     ),
     [
+      isPromptBoxCompact,
+      permission.pending,
       permission.onChange,
       permission.options,
       permission.supported,
@@ -711,9 +715,7 @@ function FollowUpPromptBoxWithComposer({
       className="relative z-20"
       data-follow-up-composer=""
       data-follow-up-composer-expanded={isEditorExpanded ? "" : undefined}
-      data-follow-up-composer-footer-visible={
-        isEditorExpanded ? "" : undefined
-      }
+      data-follow-up-composer-footer-visible={isEditorExpanded ? "" : undefined}
       hidden={hasPendingInteraction}
       onBlurCapture={scheduleCollapseAfterFocusLoss}
       onFocusCapture={handleComposerFocus}
@@ -788,12 +790,13 @@ function FollowUpPromptBoxWithComposer({
         attachments={attachments}
         promptActions={promptActions}
         compactBeforeSend={
-          compactBeforeSend ? (
-            <CompactBeforeSendChip {...compactBeforeSend} />
-          ) : null
+          <>
+            {isPromptBoxCompact ? permissionControl : null}
+            {compactBeforeSend ? <CompactBeforeSendChip {...compactBeforeSend} /> : null}
+          </>
         }
         suppressPluginComposerCustomizations={
-          suppressPluginComposerCustomizations
+          suppressPluginComposerCustomizations || execution.pending
         }
         compact={compactConfig}
         surface="thread"
@@ -851,7 +854,9 @@ function FollowUpPromptBoxWithComposer({
           active={composer.threadRuntimeDisplayStatus === "active"}
           composerElement={composerElement}
           hasPluginComposerScope={
-            composerScope !== null && !suppressPluginComposerCustomizations
+            composerScope !== null &&
+            !suppressPluginComposerCustomizations &&
+            !execution.pending
           }
           isPrimaryComposer={isPrimaryComposer}
           pendingInteraction={pendingInteraction}

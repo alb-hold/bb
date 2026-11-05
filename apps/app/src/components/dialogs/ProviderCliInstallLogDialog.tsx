@@ -15,7 +15,7 @@ export interface ProviderCliInstallLogDialogState {
   title: string;
 }
 
-interface ProviderCliInstallLogDialogProps {
+export interface ProviderCliInstallLogDialogProps {
   state: ProviderCliInstallLogDialogState | null;
   onClose: () => void;
 }

@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
+import { readFileSync } from "node:fs";
 import { Provider, createStore, getDefaultStore } from "jotai";
+import { ExecutionControls } from "./ExecutionControls";
 import {
   COMPOSER_EDITOR_HEIGHT_STORAGE_KEY,
   composerEditorHeightAtom,
@@ -38,6 +40,7 @@ import {
   useState,
   type ComponentType,
   type ComponentProps,
+  type ReactNode,
   type RefObject,
 } from "react";
 import {
@@ -62,7 +65,7 @@ import {
   clearLocalAttachmentPreviews,
   registerLocalAttachmentPreview,
 } from "@/lib/attachment-local-previews";
-import { registerComposerPlugin } from "@/test/fixtures/composer-plugin";
+import { composerPluginModule, registerComposerPlugin } from "@/test/fixtures/composer-plugin";
 import { ComposerTestProviders } from "@/test/fixtures/composer-test-providers";
 import { ThreadTitleMentionResourcesProvider } from "@/components/thread/ThreadTitleMentions";
 import { ThreadContextWindowIndicator } from "@/components/thread/timeline/ThreadContextWindowIndicator";
@@ -71,7 +74,7 @@ import {
   promptInputToDraft,
   type PromptDraftState,
 } from "@bb/client-core";
-import type { ComposerSubmitOptions } from "@get-bb/plugin-sdk/app";
+import type { ComposerSubmitOptions, ExperimentalComposerInput } from "@get-bb/plugin-sdk/app";
 import { createCoreComposerActions } from "@/lib/plugin-composer-handle";
 import {
   getComposerInputLock,
@@ -725,6 +728,42 @@ beforeEach(async () => {
 });
 
 describe("suppressPromptEditorAnchorActivation", () => {
+  it("commits once per typed draft while keeping editor props stable", async () => {
+    const changed = vi.fn();
+    const module = await composerPluginModule<{ PromptBoxInternal: (props: ExperimentalComposerInput) => ReactNode }>("PromptBoxInternal.tsx");
+    const renderedInner = vi.spyOn(module, "PromptBoxInternal");
+    onTestFinished(() => renderedInner.mockRestore());
+    function TypingComposer() {
+      const [value, setValue] = useState("Draft");
+      return (
+        <ComposerBox
+          {...createPromptBoxProps({
+            value,
+            onChange: (text) => {
+              changed(text);
+              setValue(text);
+            },
+          })}
+        />
+      );
+    }
+    render(<TypingComposer />);
+    const element = getPromptEditorElement() as TiptapEditorHTMLElement;
+    const editor = element.editor;
+    if (!editor) throw new Error("Editor was not mounted");
+    const editorProps = editor.options.editorProps;
+    for (const text of ["a", "b", "c"]) {
+      renderedInner.mockClear();
+      await act(async () => {
+        editor.commands.insertContent(text);
+      });
+      expect(editor.options.editorProps).toBe(editorProps);
+      expect(renderedInner).toHaveBeenCalledTimes(1);
+    }
+    expect(editor.getText()).toContain("abc");
+    expect(changed).toHaveBeenLastCalledWith(editor.getText());
+  });
+
   it("restores the editor selection when pane navigation returns focus", async () => {
     render(
       <ComposerBox {...createPromptBoxProps({ value: "Retained draft" })} />,
@@ -3384,6 +3423,39 @@ describe("ComposerBox compact layout", () => {
     expect(document.querySelector("[data-promptbox-attachments]")).toBeNull();
   });
 
+  it("keeps a labelled desktop submit action as a pill", () => {
+    render(
+      <ComposerBox
+        {...createPromptBoxProps({
+          value: "Run this",
+          submission: { label: "Run task" },
+        })}
+      />,
+    );
+    const submit = document.querySelector("[data-promptbox-submit-action]");
+    expect(submit?.textContent).toContain("Run task");
+    expect(submit?.classList.contains("size-auto")).toBe(true);
+    expect(submit?.classList.contains("h-8")).toBe(true);
+    expect(submit?.classList.contains("size-9")).toBe(false);
+    expect(submit?.classList.contains("rounded-full")).toBe(true);
+  });
+
+  it.each(["new-thread", "thread"] as const)(
+    "uses the same idle send glyph on %s",
+    (surface) => {
+      render(
+        <ComposerBox
+          {...createPromptBoxProps()}
+          surface={surface}
+          voice={undefined}
+        />,
+      );
+      const submit = document.querySelector("[data-promptbox-submit-action]");
+      expect(submit?.querySelector('[data-icon="ArrowUp"]')).not.toBeNull();
+      expect(submit?.querySelector(".animate-spin")).toBeNull();
+    },
+  );
+
   it("shows attachment upload progress on the submit button", () => {
     const restoreMatchMedia = mockPointerCoarse(true);
     try {
@@ -3613,6 +3685,7 @@ describe("ComposerBox compact layout", () => {
         "[data-promptbox-submit-group]",
       );
       expect(submitGroup?.contains(voiceButton)).toBe(true);
+      expect(voiceButton.classList.contains("rounded-full")).toBe(true);
       expect(
         screen.queryByRole("button", { name: "Submit (Enter)" }),
       ).toBeNull();
@@ -4727,6 +4800,120 @@ describe("ComposerBox compact layout", () => {
       ).resolves.toBeUndefined();
     } finally {
       window.matchMedia = originalMatchMedia;
+    }
+  });
+
+  it.each([
+    ["new-thread", false],
+    ["new-thread", true],
+    ["thread", false],
+    ["thread", true],
+  ] as const)("keeps %s action slots stable (pending: %s)", (surface, pending) => {
+    render(
+      <ComposerBox
+        {...createPromptBoxProps({
+          surface,
+          submission: { isRunning: pending, onStop: vi.fn() },
+          voice: createVoiceConfig(),
+          attachments: { onAttachFiles: vi.fn() },
+          promptActions,
+          executionControls: (
+            <ExecutionControls
+              pending={pending}
+              provider={{ selectedId: "codex" }}
+              model={{
+                selected: "gpt-6.1-sol",
+                options: [{ value: "gpt-6.1-sol", label: "GPT-6.1-Sol" }],
+                moreOptions: [],
+                isLoading: false,
+                loadFailed: false,
+                onChange: vi.fn(),
+              }}
+              reasoning={{
+                value: "medium",
+                options: [{ value: "medium", label: "Medium" }],
+                onChange: vi.fn(),
+              }}
+              nativeTerminal={{ enabled: true, onChange: vi.fn() }}
+            />
+          ),
+        })}
+      />,
+    );
+    const row = document.querySelector('[data-promptbox-action-row]');
+    expect(row).not.toBeNull();
+    expect(row?.getAttribute("data-promptbox-execution-layout")).toBe(
+      surface === "new-thread" ? "stacked" : null,
+    );
+    const plus = screen.getByRole("button", { name: "Prompt actions" });
+    const model = screen.getByRole("button", {
+      name: "Provider, model and reasoning",
+    });
+    const toggle = screen.getByRole("radiogroup", {
+      name: "Run this thread in",
+    });
+    const send = screen.getByRole("button", { name: pending ? "Stop run" : "Submit (Enter)" });
+    expect(model.hasAttribute("disabled")).toBe(pending);
+    expect(screen.getByRole("radio", { name: "Terminal" }).hasAttribute("disabled")).toBe(pending);
+    const mic = screen.getByRole("button", { name: "Start voice input" });
+    expect(row?.querySelector("[data-promptbox-trailing-actions]")?.contains(mic)).toBe(true);
+    expect(
+      row?.querySelector("[data-promptbox-plus-control]")?.contains(plus),
+    ).toBe(true);
+    expect(
+      row?.querySelector("[data-promptbox-trailing-actions]")?.contains(send),
+    ).toBe(true);
+    const controls = row?.querySelector("[data-promptbox-execution-controls]");
+    expect(controls?.contains(model)).toBe(true);
+    expect(controls?.contains(toggle)).toBe(true);
+    expect(model.hasAttribute("data-model-reasoning-trigger")).toBe(true);
+    expect(toggle.hasAttribute("data-native-terminal-toggle")).toBe(true);
+    expect(
+      model.parentElement?.getAttribute("data-execution-controls-layout"),
+    ).toBe("stacked");
+    if (surface === "thread") {
+      expect(row?.classList.contains("flex-wrap")).toBe(true);
+      return;
+    }
+    const style = document.createElement("style");
+    const appCss = readFileSync("src/app.css", "utf8");
+    const layoutSelector = '[data-promptbox]:not([data-promptbox-voice-active]) [data-promptbox-execution-layout="stacked"]';
+    const layoutStart = appCss.indexOf(layoutSelector);
+    expect(layoutStart).toBeGreaterThan(-1);
+    style.textContent = appCss.slice(appCss.lastIndexOf("@media (width < 48rem)", layoutStart));
+    document.head.append(style);
+    try {
+      const media = Array.from(style.sheet?.cssRules ?? []).find(
+        (rule): rule is CSSMediaRule => "media" in rule && "cssRules" in rule,
+      );
+      expect(media?.conditionText).toBe("(width < 48rem)");
+      const rules = Array.from(media?.cssRules ?? []).filter(
+        (rule): rule is CSSStyleRule => "selectorText" in rule && "style" in rule,
+      );
+      const declaration = (element: Element, property: string) =>
+        rules
+          .filter((rule) => element.matches(rule.selectorText))
+          .map((rule) => rule.style.getPropertyValue(property))
+          .filter(Boolean)
+          .at(-1);
+      expect(declaration(model, "flex")).toBe("1 1 0%");
+      expect(declaration(model, "overflow")).toBe("hidden");
+      for (const [slot, column] of [
+        [row?.querySelector("[data-promptbox-plus-control]"), "1"],
+        [model.parentElement, "2"],
+        [row?.querySelector("[data-promptbox-trailing-actions]"), "3"],
+      ] as const) {
+        expect(slot).not.toBeNull();
+        if (slot == null) throw new Error("Missing action-row slot");
+        expect(declaration(slot, "grid-column")).toBe(column);
+        expect(declaration(slot, "grid-row")).toBe("1");
+      }
+      if (model.parentElement === null)
+        throw new Error("Missing execution controls");
+      expect(declaration(model.parentElement, "display")).toBe("flex");
+      expect(declaration(model.parentElement, "flex-wrap")).toBe("nowrap");
+    } finally {
+      style.remove();
     }
   });
 

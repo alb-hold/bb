@@ -208,13 +208,13 @@ export function ThreadContextWindowIndicator({
         <button
           type="button"
           {...triggerHoverProps}
-          className="-m-1 inline-flex size-8 cursor-pointer max-md:ml-0 max-md:-mr-3 max-md:h-11 max-md:pointer-coarse:my-0 max-md:pointer-coarse:-mr-3 max-md:pointer-coarse:-ml-1 max-md:pointer-coarse:h-11 max-md:w-auto max-md:gap-1.5 max-md:pointer-coarse:pl-2 max-md:pointer-coarse:pr-3.5 items-center justify-center rounded-full transition-colors hover:bg-state-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="-m-1 inline-flex h-8 w-auto gap-1.5 px-1 cursor-pointer max-md:ml-0 max-md:-mr-3 max-md:h-11 max-md:pointer-coarse:my-0 max-md:pointer-coarse:-mr-3 max-md:pointer-coarse:-ml-1 max-md:pointer-coarse:h-11 max-md:w-auto max-md:gap-1.5 max-md:pointer-coarse:pl-2 max-md:pointer-coarse:pr-3.5 items-center justify-center rounded-full transition-colors hover:bg-state-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           aria-label={`Context window ${usedPercent}% used`}
         >
           <span
             aria-hidden="true"
             className={cn(
-              "hidden text-xs tabular-nums max-md:inline",
+              "text-xs tabular-nums",
               toneClass,
             )}
           >

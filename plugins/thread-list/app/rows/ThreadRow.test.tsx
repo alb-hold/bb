@@ -1,5 +1,9 @@
 // @vitest-environment jsdom
 
+import { SidebarRowMetadataExperiment } from "../list/SidebarRowMetadataExperiment.js";
+import { ThreadListVisibilityGroupScope } from "../list/ThreadListVisibility.js";
+import * as pluginSdk from "@get-bb/plugin-sdk/app";
+
 import {
   act,
   cleanup,
@@ -41,7 +45,10 @@ import {
   type TestThreadActionsResolver,
   type TestThreadBulkActionsResolver,
 } from "@get-bb/plugin-sdk/testing/app";
-import { NO_COLLAPSED_CHILD_ACTIVITY } from "../model/thread-activity.js";
+import {
+  NO_COLLAPSED_CHILD_ACTIVITY,
+  getCollapsedChildActivity,
+} from "../model/thread-activity.js";
 import {
   threadListPullRequestRpcContract,
   type ThreadListPullRequest,
@@ -55,6 +62,7 @@ import {
 import {
   sidebarShowProviderIconsAtom,
   sidebarShowRowMetadataAtom,
+  THREAD_ROW_METADATA_EXPERIMENT,
 } from "../preferences/atoms.js";
 import { SidebarProjectsContext } from "../model/use-sidebar-data.js";
 import type { ThreadRowOptions } from "./ThreadRow.js";
@@ -144,6 +152,7 @@ interface HarnessProps {
   providers?: PluginProvidersState["providers"];
   isCompactViewport?: boolean;
   crossProjectId?: string | null;
+  visibilityGroup?: string;
   isActive?: boolean;
   options?: ThreadRowOptions;
   onRowEvent?: () => void;
@@ -159,65 +168,71 @@ function ThreadRowHarness({
   providers = [],
   isCompactViewport,
   crossProjectId = null,
+  visibilityGroup,
   isActive = false,
   options = DEFAULT_OPTIONS,
   onRowEvent,
   onCustomizeRowActions,
   onFinishCustomizingRowActions,
 }: HarnessProps) {
-  const row = (
-    <ThreadRow
-      thread={thread}
-      crossProjectId={crossProjectId}
-      isActive={isActive}
-      options={options}
-    />
+  const threadRow = (
+      <ThreadRow
+        thread={thread}
+        crossProjectId={crossProjectId}
+        isActive={isActive}
+        options={options}
+      />
   );
+  const row = visibilityGroup ? (
+    <ThreadListVisibilityGroupScope id={visibilityGroup}>{threadRow}</ThreadListVisibilityGroupScope>
+  ) : threadRow;
   const content = (
-    <SidebarProjectsContext.Provider value={projects}>
-      <SidebarProvidersContext.Provider value={providers}>
-        <TooltipProvider>
-          <SidebarDraftPresenceSync />
-          <ThreadRowNavigationProvider>
-            <ThreadSelectionProvider activeThreadId={null}>
-              <SidebarRenameProvider>
-                <CustomizeRowActionsContext.Provider
-                  value={onCustomizeRowActions ?? null}
-                >
-                  <ThreadRowActionsCustomizingContext.Provider
-                    value={
-                      onFinishCustomizingRowActions
-                        ? {
-                            threadId: thread.id,
-                            onDone: onFinishCustomizingRowActions,
-                          }
-                        : null
-                    }
+    <SidebarRowMetadataExperiment>
+      <SidebarProjectsContext.Provider value={projects}>
+        <SidebarProvidersContext.Provider value={providers}>
+          <TooltipProvider>
+            <SidebarDraftPresenceSync />
+            <ThreadRowNavigationProvider>
+              <ThreadSelectionProvider activeThreadId={null}>
+                <SidebarRenameProvider>
+                  <CustomizeRowActionsContext.Provider
+                    value={onCustomizeRowActions ?? null}
                   >
-                    <div
-                      onPointerDown={onRowEvent}
-                      onKeyDown={onRowEvent}
-                      onClick={onRowEvent}
+                    <ThreadRowActionsCustomizingContext.Provider
+                      value={
+                        onFinishCustomizingRowActions
+                          ? {
+                              threadId: thread.id,
+                              onDone: onFinishCustomizingRowActions,
+                            }
+                          : null
+                      }
                     >
-                      {row}
-                      {siblings.map((sibling) => (
-                        <ThreadRow
-                          key={sibling.id}
-                          thread={sibling}
-                          crossProjectId={crossProjectId}
-                          isActive={false}
-                          options={options}
-                        />
-                      ))}
-                    </div>
-                  </ThreadRowActionsCustomizingContext.Provider>
-                </CustomizeRowActionsContext.Provider>
-              </SidebarRenameProvider>
-            </ThreadSelectionProvider>
-          </ThreadRowNavigationProvider>
-        </TooltipProvider>
-      </SidebarProvidersContext.Provider>
-    </SidebarProjectsContext.Provider>
+                      <div
+                        onPointerDown={onRowEvent}
+                        onKeyDown={onRowEvent}
+                        onClick={onRowEvent}
+                      >
+                        {row}
+                        {siblings.map((sibling) => (
+                          <ThreadRow
+                            key={sibling.id}
+                            thread={sibling}
+                            crossProjectId={crossProjectId}
+                            isActive={false}
+                            options={options}
+                          />
+                        ))}
+                      </div>
+                    </ThreadRowActionsCustomizingContext.Provider>
+                  </CustomizeRowActionsContext.Provider>
+                </SidebarRenameProvider>
+              </ThreadSelectionProvider>
+            </ThreadRowNavigationProvider>
+          </TooltipProvider>
+        </SidebarProvidersContext.Provider>
+      </SidebarProjectsContext.Provider>
+    </SidebarRowMetadataExperiment>
   );
   return isCompactViewport === undefined ? (
     content
@@ -523,6 +538,62 @@ afterEach(() => {
 });
 
 describe("ThreadRow", () => {
+  it.each([
+    ["project:proj_context", "2m"],
+    ["project:proj_other", "Orbital ·2m"],
+    ["threads", "Orbital ·2m"],
+    ["pinned", "Orbital ·2m"],
+    ["section:custom", "Orbital ·2m"],
+  ])("shows project context only outside its own project group (%s)", (group, expected) => {
+    const updatedAt = Date.now() - 120_000;
+    const view = renderThreadRow({
+      visibilityGroup: group,
+      thread: createThread({ projectId: "proj_context", updatedAt, archivedAt: 1 }),
+      projects: [{ id: "proj_context", name: "Orbital", isPersonal: false, href: "/", settingsHref: "/" }],
+    });
+    expect(view.container.querySelector("[data-sidebar-thread-context]")?.textContent).toBe(expected);
+  });
+
+  it("shows project and age context without requiring plugin metadata", () => {
+    const updatedAt = Date.now() - 120_000;
+    const view = renderThreadRow({
+      thread: createThread({ projectId: "proj_context", updatedAt, archivedAt: 1 }),
+      projects: [{ id: "proj_context", name: "Orbital", isPersonal: false, href: "/", settingsHref: "/" }],
+    });
+    const context = view.container.querySelector("[data-sidebar-thread-context]");
+    expect(context?.textContent).toBe("Orbital ·2m");
+    expect(context?.querySelector("time")?.dateTime).toBe(new Date(updatedAt).toISOString());
+    expect(view.container.querySelector("[data-thread-row-metadata]")).toBeNull();
+    expect(screen.queryByRole("img", { name: "Native terminal", hidden: true })).toBeNull();
+  });
+
+  it("keeps age context when the project is unavailable", () => {
+    const view = renderThreadRow({ thread: createThread({ updatedAt: Date.now(), archivedAt: 1 }) });
+    expect(view.container.querySelector("[data-sidebar-thread-context]")?.textContent).toBe("now");
+  });
+
+  it("shares the metadata experiment subscription with sibling rows", () => {
+    const subscribe = vi.spyOn(pluginSdk, "experimental_useExperiment");
+    renderThreadRow({
+      thread: createThread({ archivedAt: 1 }),
+      siblings: Array.from({ length: 20 }, (_, index) =>
+        createThread({ id: `sibling-${index}`, archivedAt: 1 }),
+      ),
+    });
+    expect(
+      subscribe.mock.calls.filter(
+        ([key]) => key === THREAD_ROW_METADATA_EXPERIMENT,
+      ),
+    ).toHaveLength(1);
+  });
+  it("preserves nesting indentation while keeping compact title spacing", () => {
+    const view = renderThreadRow({ thread: createThread({ archivedAt: 1 }) });
+    const row = view.container.querySelector<HTMLElement>(
+      "[data-sidebar-rename-row]",
+    );
+    expect(row?.style.paddingLeft).toBe("22px");
+    expect(row?.classList.contains("gap-1")).toBe(true);
+  });
   it("renders bounded status chips and progress on the row", () => {
     const statuses = Object.fromEntries(
       Array.from({ length: 8 }, (_, index) => [
@@ -887,6 +958,7 @@ describe("ThreadRow", () => {
     const queued = container.querySelector(
       '[data-thread-status-glyph="queued-failed"]',
     );
+    expect(screen.getByRole("img", { name: "Native terminal", hidden: true })).toBeTruthy();
     expect(queued?.getAttribute("data-queued-failed-count")).toBe("4");
     expect(
       container.querySelector("[data-sidebar-native-activity-warning]"),
@@ -2099,12 +2171,41 @@ describe("ThreadRow", () => {
     ).toBeNull();
   });
 
+  it("shows a plain terminal signal with its own label", () => {
+    renderThreadRow({
+      thread: createThread({
+        indicator: "check-terminal",
+        hasPendingInteraction: false,
+      }),
+    });
+    expect(renderedIndicators()).toEqual(["check-terminal"]);
+    expect(screen.getByRole("img", { name: "Check terminal" })).toBeTruthy();
+    expect(screen.getByText("Check terminal")).toBeTruthy();
+    expect(screen.queryByText("Needs input")).toBeNull();
+  });
+
+  it.each([false, true])("shows a collapsed child's signal, with real questions first: %s", (withQuestion) => {
+    const children = [createThread({ id: "signal", indicator: "check-terminal", hasPendingInteraction: false })];
+    if (withQuestion) children.push(createThread({ id: "question", hasPendingInteraction: true }));
+    renderThreadRow({ thread: createThread({ lastReadAt: 1, latestAttentionAt: 1 }), options: { kind: "parent", depth: 1, isCompact: false, isCollapsed: true, childCount: children.length, childActivity: getCollapsedChildActivity(children), onToggleCollapsed: vi.fn() } });
+    expect(renderedIndicators()).toEqual([withQuestion ? "needs-input" : "check-terminal"]);
+    expect(screen.getByRole("img", { name: withQuestion ? "Needs input" : "Check terminal" })).toBeTruthy();
+  });
+
   it("shows the needs-input indicator when the thread needs user input", () => {
     renderThreadRow({
       thread: createThread({ hasPendingInteraction: true }),
     });
 
     expect(renderedIndicators()).toEqual(["needs-input"]);
+    expect(
+      screen
+        .getByRole("img", { name: "Needs input" })
+        .classList.contains("text-attention"),
+    ).toBe(true);
+    expect(
+      screen.getByRole("img", { name: "Needs input" }).className,
+    ).not.toContain("destructive");
   });
 
   it("clocks a thread with queued work, and drops the clock once it runs", () => {
@@ -2369,6 +2470,9 @@ describe("ThreadRow", () => {
     ).toBe("1");
     expect(tier?.style.paddingLeft).toBe("36px");
     expect(tier?.querySelector('[aria-hidden="true"].w-px')).not.toBeNull();
+    expect(
+      tier?.querySelector<HTMLElement>('[aria-hidden="true"].w-px')?.style.left,
+    ).toBe("30px");
   });
 
   it("keeps its active indicator and actions alongside a Command shortcut", () => {
@@ -2821,6 +2925,7 @@ interface RowLayout {
     right: number;
   };
   link: { width: number };
+  statusGlyph: { kind: string | null; width: number; height: number; visible: boolean } | null;
   chip: { width: number; left: number; right: number } | null;
   bar: {
     width: number;
@@ -2844,10 +2949,20 @@ const box = (element) => {
 };
 const bar = document.querySelector("[role=progressbar]");
 const chip = document.querySelector("[data-sidebar-thread-status-chip]");
+const glyph = document.querySelector("[data-thread-status-glyph]");
+const statusSlot = document.querySelector("[data-sidebar-thread-trailing-indicator]");
+const visible = (element) => {
+  for (let node = element; node; node = node.parentElement) {
+    const style = getComputedStyle(node);
+    if (style.display === "none" || style.visibility === "hidden" || Number(style.opacity) === 0) return false;
+  }
+  return true;
+};
 const layout = {
   innerWidth: window.innerWidth,
   row: box(document.querySelector("[data-sidebar-rename-row]")),
   link: box(document.querySelector("[data-sidebar-thread-id]")),
+  statusGlyph: glyph && statusSlot ? { ...box(statusSlot), kind: glyph.getAttribute("data-thread-status-glyph"), visible: visible(glyph) } : null,
   chip: chip ? box(chip) : null,
   bar: bar
     ? {
@@ -3070,6 +3185,25 @@ describe.skipIf(
     { name: "desktop", width: 280, isCompact: false },
     { name: "compact 390px", width: 390, isCompact: true },
   ];
+
+  it.each([
+    { kind: "working", thread: { status: "active", runtimeStatus: "active" } },
+    { kind: "needs-input", thread: { hasPendingInteraction: true } },
+  ] as const)("keeps the $kind status slot visible at desktop width", async ({ kind, thread }) => {
+    const { container } = renderThreadRow({
+      thread: createThread(thread),
+      isCompactViewport: false,
+    });
+    const row = container.querySelector("[data-sidebar-rename-row]");
+    expect(row?.className).toContain("[--bb-sidebar-desktop-row-height:2.5rem]");
+    expect(row?.className).toContain("md:h-(--bb-sidebar-desktop-row-height)");
+    const layout = await measureRowLayout(container.innerHTML, 1280);
+    expect(layout.innerWidth).toBeGreaterThanOrEqual(768);
+    expect(layout.statusGlyph?.kind).toBe(kind);
+    expect(layout.statusGlyph?.visible).toBe(true);
+    expect(layout.statusGlyph?.width).toBeGreaterThan(0);
+    expect(layout.statusGlyph?.height).toBeGreaterThan(0);
+  });
 
   async function layoutFor(
     progress: { value: number; label?: string } | null,

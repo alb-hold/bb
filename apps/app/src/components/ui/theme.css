@@ -695,7 +695,7 @@
   --ansi-5: #8a2f8a;
   --ansi-6: #0b6f88;
   --ansi-7: #3d3d3d;
-  --ansi-8: #3a3a3a;
+  --ansi-8: color-mix(in oklch, var(--ink) 70%, var(--canvas));
   --ansi-9: #d32f2f;
   --ansi-10: #197c52;
   --ansi-11: #a35f00;
@@ -905,7 +905,7 @@
   --ansi-5: #c85ac8;
   --ansi-6: #11a8cd;
   --ansi-7: #e5e5e5;
-  --ansi-8: #9a9a9a;
+  --ansi-8: color-mix(in oklch, var(--ink) 70%, var(--canvas));
   --ansi-9: #ff6f6f;
   --ansi-10: #23d18b;
   --ansi-11: #f5f543;

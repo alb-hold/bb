@@ -470,49 +470,68 @@ describe("terminal data plane", () => {
     120_000,
   );
 
-  it(
-    "carries a terminal's bytes between the browser and the daemon's data socket and leaves the rest to the server",
-    async () => {
-      const fixture = await attachedFixture();
-      expect(fixture.commands).toEqual([
-        "terminal-data-plane.probe",
-        "terminal-data-plane.connect",
-      ]);
-      expect(fixture.directOutput).toEqual([
-        { daemonSessionId: "session_1", enabled: true },
-      ]);
+  it("carries a terminal's bytes between the browser and the daemon's data socket and leaves the rest to the server", async () => {
+    const fixture = await attachedFixture();
+    expect(fixture.commands).toEqual([
+      "terminal-data-plane.probe",
+      "terminal-data-plane.connect",
+    ]);
+    expect(fixture.directOutput).toEqual([
+      { daemonSessionId: "session_1", enabled: true },
+    ]);
 
-      const client = connectClient(fixture.port, "/ws/terminals/term_1?sinceSeq=5");
-      await until(() => client.frames.length >= 2, "the replay");
-      client.socket.send(
-        JSON.stringify({ type: "input", dataBase64: base64("typed") }),
-      );
-      await until(() => client.frames.length >= 3, "the echo");
+    const client = connectClient(
+      fixture.port,
+      "/ws/terminals/term_1?sinceSeq=5",
+    );
+    await until(() => client.frames.length >= 2, "the replay");
+    client.socket.send(
+      JSON.stringify({
+        type: "input",
+        dataBase64: base64("\x1b[36;2R"),
+        isUserInput: false,
+      }),
+    );
+    await until(() => client.frames.length === 3, "the generated reply echo");
+    expect(fixture.daemonFrames[0]).toEqual({
+      type: "terminal.input",
+      terminalId: "term_1",
+      dataBase64: base64("\x1b[36;2R"),
+    });
+    expect(fixture.inputActivity).toEqual([]);
+    client.socket.send(
+      JSON.stringify({ type: "input", dataBase64: base64("typed") }),
+    );
+    await until(() => client.frames.length >= 4, "the echo");
 
-      expect(client.frames).toEqual([
-        { type: "attached", session, replayStartSeq: 5, nextSeq: 6 },
-        { type: "output", chunk: { seq: 5, dataBase64: base64("replayed") } },
-        { type: "output", chunk: { seq: 6, dataBase64: base64("typed") } },
-      ]);
-      expect(fixture.daemonFrames).toEqual([
-        { type: "terminal.input", terminalId: "term_1", dataBase64: base64("typed") },
-      ]);
-      expect(fixture.received).toEqual([]);
-      await until(() => fixture.inputActivity.length === 1, "the input activity");
-      expect(fixture.inputActivity).toEqual(["term_1"]);
-      expect(fixture.plane.attachedSocketCount).toBe(1);
-      expect(fixture.fallbackUpgrades).toEqual([]);
+    expect(client.frames).toEqual([
+      { type: "attached", session, replayStartSeq: 5, nextSeq: 6 },
+      { type: "output", chunk: { seq: 5, dataBase64: base64("replayed") } },
+      { type: "output", chunk: { seq: 6, dataBase64: base64("\x1b[36;2R") } },
+      { type: "output", chunk: { seq: 7, dataBase64: base64("typed") } },
+    ]);
+    expect(fixture.daemonFrames).toEqual([
+      { type: "terminal.input", terminalId: "term_1", dataBase64: base64("\x1b[36;2R") },
+      {
+        type: "terminal.input",
+        terminalId: "term_1",
+        dataBase64: base64("typed"),
+      },
+    ]);
+    expect(fixture.received).toEqual([]);
+    await until(() => fixture.inputActivity.length === 1, "the input activity");
+    expect(fixture.inputActivity).toEqual(["term_1"]);
+    expect(fixture.plane.attachedSocketCount).toBe(1);
+    expect(fixture.fallbackUpgrades).toEqual([]);
 
-      const stranger = connectClient(fixture.port, "/ws/terminals/term_other");
-      await until(() => stranger.closed(), "the unknown terminal to be refused");
-      expect(fixture.fallbackUpgrades).toEqual(["/ws/terminals/term_other"]);
+    const stranger = connectClient(fixture.port, "/ws/terminals/term_other");
+    await until(() => stranger.closed(), "the unknown terminal to be refused");
+    expect(fixture.fallbackUpgrades).toEqual(["/ws/terminals/term_other"]);
 
-      client.socket.close();
-      await until(() => fixture.detached.length === 1, "the detach");
-      expect(fixture.plane.attachedSocketCount).toBe(0);
-    },
-    120_000,
-  );
+    client.socket.close();
+    await until(() => fixture.detached.length === 1, "the detach");
+    expect(fixture.plane.attachedSocketCount).toBe(0);
+  }, 120_000);
 
   it(
     "attaches after a probe that got no answer",

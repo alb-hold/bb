@@ -101,6 +101,8 @@ describe("MessageActionBar", () => {
 
     expect(tokenSummary).toBeTruthy();
     expect(tokenSummary?.parentElement).toBe(actionButton.parentElement);
+    expect(actionButton.getAttribute("data-compact-touch")).toBe("action-menu");
+    expect(screen.getByRole("button", { name: "Copy message" }).getAttribute("data-compact-touch")).toBe("action");
   });
 
   it("uses the nearest thread window as the tooltip collision boundary", () => {

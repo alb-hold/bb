@@ -37,11 +37,14 @@ import {
   updateTerminalSessions,
   updateThread,
   TERMINAL_OUTPUT_RETENTION_MS,
+  TERMINAL_USER_INPUT_REFRESH_MS,
   type TerminalSessionMutation,
   type TerminalSessionRow,
   TERMINAL_RETAINED_OUTPUT_BYTES,
 } from "@bb/db";
 import {
+  NATIVE_TERMINAL_SETUP_DELAY_MS,
+  nativeTerminalMayNeedSetup,
   findLastTerminalGridMarker,
   TERMINAL_DATA_MAX_BYTES,
   TERMINAL_GRID_OSC_PREFIX,
@@ -830,6 +833,19 @@ function getTerminalById(
   return getTerminalSession(db, { kind: "terminal", terminalId });
 }
 
+function markTerminalUserInput(
+  db: AppDeps["db"],
+  current: TerminalSessionRow,
+): TerminalSessionRow | null {
+  if (
+    current.lastUserInputAt !== null &&
+    Date.now() - current.lastUserInputAt < TERMINAL_USER_INPUT_REFRESH_MS
+  ) {
+    return null;
+  }
+  return updateTerminalById(db, current.id, { kind: "user-input" });
+}
+
 function updateTerminalById(
   db: AppDeps["db"],
   terminalId: string,
@@ -1331,10 +1347,6 @@ export class TerminalSessionLifecycle {
     if (!session || session.status !== "running") return null;
     const now = attention.at ?? Date.now();
     const source = attention.source;
-    const alreadyVisible = this.options.hub.hasVisibleTerminalClient(
-      attention.terminalId,
-      now,
-    );
     const daemonSeq = source === "daemon" ? attention.seq : null;
     const { deviceHandoff, terminalId, ...value } = attention;
     const previous = getTerminalAttention(this.options.db, terminalId);
@@ -1365,25 +1377,20 @@ export class TerminalSessionLifecycle {
       }
     });
     persistAttention();
-    if (alreadyVisible) {
-      clearTerminalAttention(this.options.db, terminalId, now);
-      if (deviceHandoff) {
-        deleteDeviceHandoffAttentionMarker(this.options.db, terminalId, seq);
-      }
-    }
     if (session.threadId !== null) {
-      if (!alreadyVisible) {
-        const previous = this.lastThreadAttentionAt.get(session.threadId) ?? 0;
-        if (now - previous >= TERMINAL_THREAD_ATTENTION_DEBOUNCE_MS) {
-          updateThread(this.options.db, this.options.hub, session.threadId, {
-            latestAttentionAt: now,
-          });
-          this.lastThreadAttentionAt.set(session.threadId, now);
-        }
+      const previous = this.lastThreadAttentionAt.get(session.threadId) ?? 0;
+      if (now - previous >= TERMINAL_THREAD_ATTENTION_DEBOUNCE_MS) {
+        updateThread(this.options.db, this.options.hub, session.threadId, {
+          latestAttentionAt: now,
+        });
+        this.lastThreadAttentionAt.set(session.threadId, now);
       }
-      this.options.hub.notifyThread(session.threadId, ["terminals-changed"]);
+      this.options.hub.notifyThread(session.threadId, [
+        "terminals-changed",
+        "status-changed",
+      ]);
     }
-    return alreadyVisible ? null : seq;
+    return seq;
   }
 
   private clearTerminalAttention(terminalId: string): void {
@@ -1399,7 +1406,10 @@ export class TerminalSessionLifecycle {
       });
     }
     if (session?.threadId !== null && session?.threadId !== undefined) {
-      this.options.hub.notifyThread(session.threadId, ["terminals-changed"]);
+      this.options.hub.notifyThread(session.threadId, [
+        "terminals-changed",
+        "status-changed",
+      ]);
     }
   }
 
@@ -1983,12 +1993,7 @@ export class TerminalSessionLifecycle {
       );
     }
 
-    const markedInput =
-      current.lastUserInputAt === null
-        ? updateTerminalById(this.options.db, current.id, {
-            kind: "user-input",
-          })
-        : null;
+    const markedInput = markTerminalUserInput(this.options.db, current);
     const session = markedInput ?? current;
     if (markedInput) {
       this.notifyTerminalSessionChanged(markedInput);
@@ -2016,8 +2021,10 @@ export class TerminalSessionLifecycle {
         throw new ApiError(502, "host_disconnected", "Host is not connected");
       }
     }
-    if (args.payload.dataBase64.length > 0)
+    if (args.payload.dataBase64.length > 0) {
+      this.clearTerminalAttention(current.id);
       emitPluginTerminalInput(this.toTerminalSession(session));
+    }
     return this.toTerminalSession(session);
   }
 
@@ -2545,6 +2552,8 @@ export class TerminalSessionLifecycle {
       clearTimeout(pending.timer);
     }
     this.pendingHolderOutput.clear();
+    for (const timer of this.setupCueTimers.values()) clearTimeout(timer);
+    this.setupCueTimers.clear();
     this.terminalScreenStates.dispose();
   }
 
@@ -3137,12 +3146,7 @@ export class TerminalSessionLifecycle {
     if (current?.status !== "running") {
       return;
     }
-    const markedInput =
-      current.lastUserInputAt === null
-        ? updateTerminalById(this.options.db, current.id, {
-            kind: "user-input",
-          })
-        : null;
+    const markedInput = markTerminalUserInput(this.options.db, current);
     if (markedInput) {
       this.notifyTerminalSessionChanged(markedInput);
       this.options.hub.sendTerminalClientMessage(markedInput.id, {
@@ -3150,6 +3154,7 @@ export class TerminalSessionLifecycle {
         session: this.toTerminalSession(markedInput),
       });
     }
+    this.clearTerminalAttention(current.id);
     emitPluginTerminalInput(this.toTerminalSession(markedInput ?? current));
   }
 
@@ -3326,9 +3331,6 @@ export class TerminalSessionLifecycle {
         );
         return;
       case "visibility":
-        if (args.message.visible) {
-          this.clearTerminalAttention(args.terminalId);
-        }
         if (this.outputAckSocketVisibility.has(args.socket)) {
           this.outputAckSocketVisibility.set(args.socket, args.message.visible);
         }
@@ -4049,20 +4051,6 @@ export class TerminalSessionLifecycle {
       Date.now(),
     );
     this.applySharedTerminalSize(args);
-    const markedInput =
-      current.lastUserInputAt === null
-        ? updateTerminalById(this.options.db, current.id, {
-            kind: "user-input",
-          })
-        : null;
-    if (markedInput) {
-      const session = this.toTerminalSession(markedInput);
-      this.notifyTerminalSessionChanged(markedInput);
-      this.options.hub.sendTerminalClientMessage(markedInput.id, {
-        type: "session-updated",
-        session,
-      });
-    }
     const sent = this.options.hub.sendDaemonSessionMessage(
       current.daemonSessionId,
       {
@@ -4080,8 +4068,11 @@ export class TerminalSessionLifecycle {
       this.disconnectDaemonSessionTerminals({
         daemonSessionId: current.daemonSessionId,
       });
-    } else if (args.message.dataBase64.length > 0) {
-      emitPluginTerminalInput(this.toTerminalSession(markedInput ?? current));
+    } else if (
+      args.message.isUserInput !== false &&
+      args.message.dataBase64.length > 0
+    ) {
+      this.recordDirectTerminalInput(current.id);
     }
   }
 
@@ -4941,9 +4932,56 @@ export class TerminalSessionLifecycle {
     this.exitListeners.add(listener);
   }
 
+  private readonly setupCueTimers = new Map<
+    string,
+    ReturnType<typeof setTimeout>
+  >();
+
   private notifyTerminalSessionChanged(session: TerminalSessionRow): void {
+    const previous = this.setupCueTimers.get(session.id);
+    if (previous) clearTimeout(previous);
+    this.setupCueTimers.delete(session.id);
+    if (
+      session.status === "running" &&
+      session.threadId !== null &&
+      session.lastUserInputAt !== null
+    ) {
+      const threadId = session.threadId;
+      const native = getNativeTerminalThread(this.options.db, threadId);
+      if (
+        native?.terminalSessionId === session.id &&
+        native.nativeSessionId === null
+      ) {
+        const timer = setTimeout(
+          () => {
+            this.setupCueTimers.delete(session.id);
+            const current = getNativeTerminalThread(this.options.db, threadId);
+            if (current?.terminalSessionId !== session.id) return;
+            if (
+              nativeTerminalMayNeedSetup({
+                nativeSessionId: current.nativeSessionId,
+                terminal: getTerminalById(this.options.db, session.id),
+                now: Date.now(),
+              })
+            )
+              this.options.hub.notifyThread(threadId, ["terminals-changed"]);
+          },
+          Math.max(
+            0,
+            Math.max(session.createdAt, session.lastUserInputAt) +
+              NATIVE_TERMINAL_SETUP_DELAY_MS -
+              Date.now(),
+          ),
+        );
+        timer.unref();
+        this.setupCueTimers.set(session.id, timer);
+      }
+    }
     if (session.threadId !== null) {
-      this.options.hub.notifyThread(session.threadId, ["terminals-changed"]);
+      this.options.hub.notifyThread(session.threadId, [
+        "terminals-changed",
+        "status-changed",
+      ]);
     }
     if (session.status !== "running") {
       this.cancelTerminalScreenStateRebuild(session.id);

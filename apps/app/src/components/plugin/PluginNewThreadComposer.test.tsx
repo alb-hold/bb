@@ -94,6 +94,7 @@ function render(element: ReactNode) {
 }
 
 const mocks = vi.hoisted(() => ({
+  rootCompositionRenders: 0,
   unknownReasoning: false,
   promptBoxProps: [] as Array<Record<string, any>>,
   copyAttachments: vi.fn(),
@@ -1144,6 +1145,7 @@ describe("PluginNewThreadComposer seeding", () => {
   });
 
   it("hides agent options for a native terminal thread and submits none", async () => {
+    window.localStorage.setItem("bb.composer.nativeTerminal", "false");
     mocks.modelSessionOptions = [
       { type: "boolean", id: "daybreak", label: "Daybreak", value: false },
       {
@@ -1197,7 +1199,7 @@ describe("PluginNewThreadComposer seeding", () => {
     });
   });
 
-  it("opens the next composer with the native terminal choice it was left on", async () => {
+  it("defaults to Terminal and preserves an explicit Chat choice", async () => {
     mocks.systemProviders = [
       { id: "codex", capabilities: { supportsNativeTerminal: true } },
     ];
@@ -1214,22 +1216,22 @@ describe("PluginNewThreadComposer seeding", () => {
     const first = renderNativeComposer();
     await waitFor(() => {
       expect(latestPromptBoxProps().execution.nativeTerminal.enabled).toBe(
-        false,
+        true,
       );
     });
     await act(async () => {
-      latestPromptBoxProps().execution.nativeTerminal.onChange(true);
+      latestPromptBoxProps().execution.nativeTerminal.onChange(false);
     });
     first.unmount();
 
     const second = renderNativeComposer();
     await waitFor(() => {
       expect(latestPromptBoxProps().execution.nativeTerminal.enabled).toBe(
-        true,
+        false,
       );
     });
     expect(window.localStorage.getItem("bb.composer.nativeTerminal")).toBe(
-      "true",
+      "false",
     );
     await act(async () => {
       latestPromptBoxProps().execution.nativeTerminal.onChange(false);
@@ -3094,9 +3096,10 @@ describe("NewThreadComposer setSelection", () => {
         selectionScope="new-thread"
         onSubmit={() => undefined}
       >
-        {(composer) =>
-          composer.renderPromptBox({ mentionMenuPlacement: "bottom" })
-        }
+        {(composer) => {
+          mocks.rootCompositionRenders += 1;
+          return composer.renderPromptBox({ mentionMenuPlacement: "bottom" });
+        }}
       </NewThreadComposer>
     );
   }
@@ -3117,6 +3120,23 @@ describe("NewThreadComposer setSelection", () => {
     expect(host.setSelection).toBeDefined();
     return host;
   }
+
+  it("updates empty draft gating without rerendering root composition", async () => {
+    render(rootLikeElement("proj_1"));
+    await waitFor(() =>
+      expect(latestPromptBoxProps().disabledReason).toBe(
+        "Enter a prompt or attach a file.",
+      ),
+    );
+    const renders = mocks.rootCompositionRenders;
+    act(() => latestPromptBoxProps().onChange("a", []));
+    expect(latestPromptBoxProps().value).toBe("a");
+    expect(latestPromptBoxProps().disabled).toBe(false);
+    expect(mocks.rootCompositionRenders).toBe(renders);
+    act(() => latestPromptBoxProps().onChange("", []));
+    expect(latestPromptBoxProps().disabled).toBe(true);
+    expect(mocks.rootCompositionRenders).toBe(renders);
+  });
 
   it("tracks values changed through the visible model picker", async () => {
     render(rootLikeElement("proj_1"));

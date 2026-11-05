@@ -19,8 +19,19 @@ const css = readFileSync(
 function themeColor(mode: "light" | "dark", name: string): string {
   const at = css.indexOf(`color-scheme: ${mode};`);
   const block = css.slice(css.lastIndexOf("{", at), css.indexOf("}", at));
-  const value = block.match(new RegExp(`${name}:\\s*([^;]+);`))?.[1].trim();
+  let value = block.match(new RegExp(`${name}:\\s*([^;]+);`))?.[1].trim();
+  if (!value && name === "--muted")
+    value = "color-mix(in oklch, var(--ink) 11%, var(--canvas))";
   if (!value) throw new Error(`Missing ${name}`);
+  const mix = value.match(
+    /^color-mix\(in oklch, var\((--[^)]+)\) ([\d.]+)%, var\((--[^)]+)\)\)$/,
+  );
+  if (mix) {
+    const lightness = (token: string) =>
+      Number(block.match(new RegExp(`${token}: oklch\\(([\\d.]+)`))?.[1]);
+    const weight = Number(mix[2]) / 100;
+    value = `oklch(${lightness(mix[1]) * weight + lightness(mix[3]) * (1 - weight)} 0 0)`;
+  }
   const alias = value.match(/^var\((--[^)]+)\)$/);
   if (alias) return themeColor(mode, alias[1]);
   const neutral = value.match(/^oklch\(([\d.]+) 0 0\)$/);
@@ -37,10 +48,17 @@ function themeColor(mode: "light" | "dark", name: string): string {
   return value;
 }
 
-function luminance(color: string): number {
+function luminance(color: string, background?: string): number {
   const channels = color.startsWith("#")
     ? [1, 3, 5].map((at) => parseInt(color.slice(at, at + 2), 16))
     : (color.match(/[\d.]+/g) ?? []).slice(0, 3).map(Number);
+  if (background && color.startsWith("rgba")) {
+    const alpha = Number(color.match(/[\d.]+/g)?.[3] ?? 1);
+    const base = (background.match(/[\d.]+/g) ?? []).slice(0, 3).map(Number);
+    channels.forEach((channel, index) => {
+      channels[index] = channel * alpha + base[index] * (1 - alpha);
+    });
+  }
   expect(channels).toHaveLength(3);
   return channels.reduce((sum, channel, index) => {
     const s = channel / 255;
@@ -67,7 +85,11 @@ it.each(["light", "dark"] as const)(
       ...TERMINAL_THEME_OPTIONS,
       cols: 80,
       rows: 5,
-      theme: buildTerminalThemeFromCssColors((name) => themeColor(mode, name)),
+      theme: buildTerminalThemeFromCssColors((name) =>
+        name.startsWith("--terminal-scrollbar")
+          ? undefined
+          : themeColor(mode, name),
+      ),
     });
     const container = document.createElement("div");
     document.body.append(container);
@@ -100,5 +122,74 @@ it.each(["light", "dark"] as const)(
     } finally {
       terminal.dispose();
     }
+  },
+);
+
+it("derives brighter dark ANSI grey from the ink and canvas tokens", () => {
+  const dark = css.slice(css.indexOf(".dark {"));
+  expect(dark).toContain(
+    "--ansi-8: color-mix(in oklch, var(--ink) 70%, var(--canvas))",
+  );
+});
+
+it.each([
+  ["light", "\x1b[2m"],
+  ["dark", "\x1b[2m"],
+  ["light", "\x1b[2;31m"],
+  ["dark", "\x1b[2;31m"],
+] as const)(
+  "keeps faint output readable in %s mode (%s)",
+  async (mode, sgr) => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
+      measureText: (text: string) => ({ width: text.length * 9 }),
+    } as unknown as CanvasRenderingContext2D);
+    const background = themeColor(mode, "--sidebar");
+    const terminal = new Terminal({
+      ...TERMINAL_THEME_OPTIONS,
+      cols: 40,
+      rows: 2,
+      theme: buildTerminalThemeFromCssColors((name) =>
+        name.startsWith("--terminal-scrollbar")
+          ? undefined
+          : themeColor(mode, name),
+      ),
+    });
+    const container = document.createElement("div");
+    document.body.append(container);
+    try {
+      terminal.open(container);
+      await new Promise<void>((resolve) =>
+        terminal.write(`${sgr}faint-path\x1b[0m`, resolve),
+      );
+      await waitFor(() =>
+        expect(container.querySelector(".xterm-rows")?.textContent).toContain(
+          "faint-path",
+        ),
+      );
+      const span = Array.from(
+        container.querySelectorAll(".xterm-rows span"),
+      ).find((node) => node.textContent?.includes("faint-path"))!;
+      const fg = luminance(getComputedStyle(span).color, background);
+      const bg = luminance(background);
+      expect(
+        (Math.max(fg, bg) + 0.05) / (Math.min(fg, bg) + 0.05),
+      ).toBeGreaterThanOrEqual(4.5);
+    } finally {
+      terminal.dispose();
+    }
+  },
+);
+
+it.each(["light", "dark"] as const)(
+  "keeps bright black distinct and readable in %s mode",
+  (mode) => {
+    const fg = luminance(themeColor(mode, "--ansi-8"));
+    const bg = luminance(themeColor(mode, "--sidebar"));
+    const ratio = (Math.max(fg, bg) + 0.05) / (Math.min(fg, bg) + 0.05);
+    console.log(`${mode} bright black contrast=${ratio}`);
+    expect(ratio).toBeGreaterThanOrEqual(4.5);
+    expect(themeColor(mode, "--ansi-8")).not.toBe(
+      themeColor(mode, "--foreground"),
+    );
   },
 );

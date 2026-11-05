@@ -6,6 +6,17 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { NativeThreadTerminalMain } from "./NativeThreadTerminalMain";
 
 const pane = vi.hoisted(() => ({ isFocused: true }));
+const execution = vi.hoisted(() => ({
+  data: {
+    model: "gpt-5",
+    reasoningLevel: "medium",
+    permissionMode: "full",
+  } as {
+    model?: string;
+    reasoningLevel?: string;
+    permissionMode?: string;
+  } | null,
+}));
 
 vi.mock("@/views/thread-detail/PaneContext", () => ({
   useOptionalPaneContext: () => ({ isFocused: pane.isFocused }),
@@ -26,14 +37,27 @@ vi.mock("@/hooks/queries/native-terminal-queries", () => ({
   useNativeTerminalThread: () => ({ dataUpdatedAt: 1, refetch: vi.fn() }),
   useOpenNativeTerminal: () => ({ mutate: vi.fn(), isPending: false }),
 }));
+vi.mock("@tanstack/react-query", () => ({
+  useQuery: () => ({
+    data:
+      execution.data === null
+        ? null
+        : {
+            executed: null,
+            lastRequested: null,
+            nextTurn: execution.data,
+            overrides: { model: null, reasoningLevel: null },
+          },
+  }),
+}));
 vi.mock("@/hooks/queries/thread-queries", () => ({
   useThreadPendingInteractions: () => ({ data: [] }),
 }));
 vi.mock("@/hooks/queries/thread-terminal-queries", () => ({
   useThreadTerminals: () => ({ data: undefined, dataUpdatedAt: 0 }),
 }));
-vi.mock("@/components/secondary-panel/lazySecondaryPanelComponents", () => ({
-  LazyThreadTerminalPanel: Object.assign(
+vi.mock("./NativeTerminalPanel", () => ({
+  NativeTerminalPanel: Object.assign(
     ({ autoFocus }: { autoFocus?: boolean }) => (
       <div data-testid="terminal" data-autofocus={String(autoFocus)} />
     ),
@@ -41,8 +65,13 @@ vi.mock("@/components/secondary-panel/lazySecondaryPanelComponents", () => ({
   ),
 }));
 vi.mock("./NativeTerminalPromptBar", () => ({
-  NativeTerminalPromptBar: () => (
+  NativeTerminalPromptBar: ({
+    executionLabel = "Codex",
+  }: {
+    executionLabel?: string;
+  }) => (
     <form data-native-terminal-prompt="">
+      <span aria-label="Terminal execution">{executionLabel}</span>
       <textarea aria-label="Message" />
     </form>
   ),
@@ -58,6 +87,11 @@ vi.mock("./NativeTerminalWaitingBanner", () => ({
 afterEach(() => {
   cleanup();
   pane.isFocused = true;
+  execution.data = {
+    model: "gpt-5",
+    reasoningLevel: "medium",
+    permissionMode: "full",
+  };
 });
 
 const view = {
@@ -82,6 +116,24 @@ const terminalAutoFocus = () =>
   screen.getByTestId("terminal").getAttribute("data-autofocus");
 
 describe("NativeThreadTerminalMain focus", () => {
+  it("uses the composer labels for the stored model, reasoning and permission", () => {
+    renderMain();
+    expect(screen.getByLabelText("Terminal execution").textContent).toBe(
+      "Default: GPT-5 · Medium · Full Access",
+    );
+  });
+
+  it.each([null, {}, { model: "gpt-5" }])(
+    "omits absent execution fields for %j",
+    (data) => {
+      execution.data = data;
+      renderMain();
+      expect(screen.getByLabelText("Terminal execution").textContent).toBe(
+        data?.model ? "Default: GPT-5" : "Codex",
+      );
+    },
+  );
+
   it("auto-focuses the terminal on desktop until the user focuses the composer", () => {
     renderMain();
     expect(terminalAutoFocus()).toBe("true");
@@ -118,3 +170,25 @@ describe("NativeThreadTerminalMain focus", () => {
     expect(terminalAutoFocus()).toBe("true");
   });
 });
+
+it.each(["active", "idle"] as const)(
+  "describes an unlabelled signal truthfully while %s",
+  (displayStatus) => {
+    render(
+      <NativeThreadTerminalMain
+        projectId="proj_1"
+        threadId="thr_1"
+        threadIsProvisioning={false}
+        view={{
+          ...view,
+          terminal: {
+            ...view.terminal!,
+            attention: { at: 10, kind: "bell", seq: 1 },
+          },
+        }}
+        runtime={{ displayStatus }}
+      />,
+    );
+    expect(screen.queryByText("Check terminal")).toBeNull();
+  },
+);

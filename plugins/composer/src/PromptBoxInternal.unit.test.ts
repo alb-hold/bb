@@ -1,10 +1,21 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import type { ComposerMention } from "@get-bb/plugin-sdk/app";
 import {
   arePromptEditorValuesEqual,
   suppressPromptEditorAnchorActivation,
 } from "./PromptBoxInternal";
+
+it("gives the primary voice action the same round shape as submit", () => {
+  const source = readFileSync("src/PromptBoxInternal.tsx", "utf8");
+  const primaryVoice = source.slice(
+    source.indexOf(") : showVoiceAsPrimaryAction ? ("),
+  );
+  expect(
+    primaryVoice.slice(0, primaryVoice.indexOf("</VoiceInputButton>")),
+  ).toContain('"rounded-full transition-colors"');
+});
 
 function dispatchThroughEditorTarget({
   eventName,
@@ -134,4 +145,55 @@ describe("arePromptEditorValuesEqual", () => {
       ),
     ).toBe(true);
   });
+});
+
+it("owns the single phone action row through stable composer slots", () => {
+  const source = readFileSync("src/PromptBoxInternal.tsx", "utf8");
+  const css = readFileSync("../../apps/app/src/app.css", "utf8");
+  const pluginCss = readFileSync("src/composer.css", "utf8");
+  expect(pluginCss).not.toContain('data-promptbox-execution-layout="stacked"');
+  expect(source).toContain("data-promptbox-execution-layout=");
+  expect(source).toContain('surface === "new-thread" && executionControls');
+  for (const slot of [
+    "leading-actions",
+    "plus-control",
+    "execution-controls",
+    "trailing-actions",
+  ]) {
+    expect(source).toContain(`data-promptbox-${slot}=""`);
+  }
+  for (const [slot, column] of [
+    ["plus-control", "1"],
+    ["trailing-actions", "3"],
+  ]) {
+    const rule = css.match(
+      new RegExp(`\\[data-promptbox-${slot}\\]\\s*\\{([^}]+)`),
+    )?.[1];
+    expect(rule).toContain(`grid-column: ${column}`);
+    expect(rule).toContain("grid-row: 1");
+  }
+  expect(css).not.toContain('aria-label="Prompt actions"');
+});
+
+it("pins pending execution controls to one phone row in the eager stylesheet", () => {
+  const css = readFileSync("../../apps/app/src/app.css", "utf8");
+  const pluginCss = readFileSync("src/composer.css", "utf8");
+  for (const slot of [
+    "data-execution-controls-layout",
+    "data-model-reasoning-trigger",
+    "data-native-terminal-toggle",
+  ]) {
+    expect(pluginCss).not.toContain(slot);
+  }
+  for (const [selector, declarations] of [
+    ['[data-execution-controls-layout="stacked"]', ["display: flex", "grid-column: 2", "grid-row: 1", "min-width: 0", "flex-wrap: nowrap", "gap: 0"]],
+    ['[data-model-reasoning-trigger]', ["min-width: 0", "flex: 1 1 0%", "overflow: hidden"]],
+    ['[data-native-terminal-toggle]', ["height: auto"]],
+    ['[data-native-terminal-toggle] > button', ["height: 2.75rem", "min-width: 2.75rem"]],
+  ] as const) {
+    expect(css).toContain(selector + " {");
+    const rule = css.slice(css.indexOf(selector + " {"));
+    const body = rule.slice(0, rule.indexOf("}"));
+    for (const declaration of declarations) expect(body).toContain(declaration);
+  }
 });

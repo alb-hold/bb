@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { SIDEBAR_RAIL_BUTTON_CLASS, SIDEBAR_FOOTER_ACTION_CLASS } from "@bb/shared-ui/sidebar-row-classes";
 import {
   act,
   cleanup,
@@ -1034,4 +1035,10 @@ describe("Rail", () => {
     ]);
     expect(screen.getByRole("button", { name: "New thread" })).toBeDefined();
   });
+});
+
+it("preserves the sidebar selected surface and normalizes footer glyphs", () => {
+  expect(SIDEBAR_RAIL_BUTTON_CLASS).toContain("aria-[current=page]:bg-state-active");
+  expect(SIDEBAR_RAIL_BUTTON_CLASS).toContain("text-muted-foreground");
+  expect(SIDEBAR_FOOTER_ACTION_CLASS).toContain("[&_[data-icon-root]]:size-4");
 });

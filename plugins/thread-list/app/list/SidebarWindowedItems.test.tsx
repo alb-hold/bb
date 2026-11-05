@@ -30,6 +30,23 @@ interface FakeIntersectionObserver {
 }
 
 const observerInstances: FakeIntersectionObserver[] = [];
+const resizeObservers: ResizeObserverCallback[] = [];
+
+function emitViewportResize(target: Element, height = 500) {
+  for (const callback of resizeObservers)
+    callback(
+      [
+        {
+          target,
+          contentRect: new DOMRect(0, 0, 300, height),
+          borderBoxSize: [],
+          contentBoxSize: [],
+          devicePixelContentBoxSize: [],
+        },
+      ],
+      {} as ResizeObserver,
+    );
+}
 
 function wrapperAt(index: number): Element {
   const wrapper = document.querySelectorAll("[data-sidebar-windowed-item]")[
@@ -120,6 +137,17 @@ beforeEach(() => {
   });
 
   observerInstances.length = 0;
+  resizeObservers.length = 0;
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      constructor(callback: ResizeObserverCallback) {
+        resizeObservers.push(callback);
+      }
+      observe() {}
+      disconnect() {}
+    },
+  );
   vi.stubGlobal(
     "IntersectionObserver",
     class {
@@ -161,6 +189,14 @@ afterEach(() => {
 });
 
 describe("SidebarWindowedItems", () => {
+  it("does not read layout while committing the initial window", () => {
+    const rect = vi.mocked(HTMLElement.prototype.getBoundingClientRect);
+    renderList({ current: scrollElement });
+    expect(rect).not.toHaveBeenCalled();
+    act(() => emitViewportResize(scrollElement));
+    expect(rect).toHaveBeenCalled();
+    expect(screen.queryByTestId("real-item-0")).toBeNull();
+  });
   it("mounts and focuses an offscreen item on request without refocusing on updates", () => {
     const tree = (focusItemKey?: string) =>
       withScrollRef(
@@ -329,6 +365,7 @@ describe("SidebarWindowedItems", () => {
         />,
       );
     const { rerender } = render(tree(["a", "b", "c", "d"]));
+    act(() => emitViewportResize(scrollElement));
     expect(screen.queryByTestId("real-a")).not.toBeNull();
     expect(screen.queryByTestId("real-d")).toBeNull();
 
@@ -394,7 +431,7 @@ describe("SidebarWindowedItems", () => {
     expect(unobserve).not.toHaveBeenCalled();
   });
 
-  it("connects the observer once a zero-height scroll container gains height", () => {
+  it("observes hidden placeholders and realizes them once the scroll container gains height", () => {
     const pendingLayoutElement = document.createElement("div");
     let clientHeight = 0;
     Object.defineProperty(pendingLayoutElement, "clientHeight", {
@@ -416,12 +453,23 @@ describe("SidebarWindowedItems", () => {
 
     renderList({ current: pendingLayoutElement });
     expect(screen.queryAllByTestId(/^real-item-/)).toHaveLength(0);
-    expect(observerInstances).toHaveLength(0);
+    expect(observerInstances).toHaveLength(1);
 
     clientHeight = 500;
     act(() => {
       for (const callback of resizeCallbacks) {
-        callback([], {} as ResizeObserver);
+        callback(
+          [
+            {
+              target: pendingLayoutElement,
+              contentRect: new DOMRect(0, 0, 300, clientHeight),
+              borderBoxSize: [],
+              contentBoxSize: [],
+              devicePixelContentBoxSize: [],
+            },
+          ],
+          {} as ResizeObserver,
+        );
       }
     });
 

@@ -13,7 +13,7 @@ import type {
   SystemExecutionOptionsModelLoadError,
   SystemProvidersQuery,
 } from "@bb/server-contract";
-import { formatModelLabel } from "@/hooks/useThreadCreationOptions";
+import { formatModelLabel } from "@/hooks/thread-creation-options/selection-state";
 import {
   ModelReasoningPicker,
   type ModelReasoningPickerHandoff,
@@ -36,6 +36,7 @@ interface ExecutionProviderConfig {
 }
 
 interface ExecutionModelConfig {
+  unavailableModel?: string;
   active?: { model: string } | null;
   selected: string;
   options: readonly ModelPickerOption[];
@@ -65,18 +66,18 @@ const NATIVE_TERMINAL_CHOICES = [
     value: "chat",
     label: "Chat",
     icon: "MessageSquare",
-    title: "bb runs the agent and shows its turns in the chat view",
+    title: "bb renders the conversation",
   },
   {
     value: "terminal",
     label: "Terminal",
     icon: "Terminal",
-    title:
-      "Run the provider's own claude or codex TUI in this thread's terminal",
+    title: "Runs the provider's own CLI",
   },
 ] as const;
 
 export interface ExecutionPermissionConfig {
+  pending?: boolean;
   value?: PermissionMode;
   options: readonly PickerOption<PermissionMode>[];
   onChange: (value: PermissionMode) => void;
@@ -85,6 +86,8 @@ export interface ExecutionPermissionConfig {
 
 export interface ExecutionNativeTerminalConfig {
   enabled: boolean;
+  disabled?: boolean;
+  unavailableReason?: string;
   onChange: (enabled: boolean) => void;
 }
 
@@ -94,6 +97,7 @@ export interface ExecutionAgentOptionsConfig {
 }
 
 export interface ExecutionControlsProps {
+  pending?: boolean;
   nativeTerminal?: ExecutionNativeTerminalConfig;
   providerRouting?: SystemProvidersQuery;
   provider: ExecutionProviderConfig;
@@ -106,6 +110,7 @@ export interface ExecutionControlsProps {
 }
 
 export const ExecutionControls = memo(function ExecutionControls({
+  pending,
   nativeTerminal,
   provider,
   providerRouting,
@@ -134,8 +139,13 @@ export const ExecutionControls = memo(function ExecutionControls({
     handoff !== undefined;
 
   return (
-    <div className="flex min-w-0 max-w-full flex-wrap items-center gap-1">
-      {showModelPicker ? (
+    <div
+      data-execution-controls-layout={nativeTerminal ? "stacked" : undefined}
+      className={cn(
+        "flex min-w-0 max-w-full flex-wrap items-center gap-x-1 gap-y-2",
+      )}
+    >
+      {showModelPicker || pending ? (
         <ModelReasoningPicker
           providerOptions={provider.options ?? []}
           providerRouting={providerRouting}
@@ -143,6 +153,7 @@ export const ExecutionControls = memo(function ExecutionControls({
           onSelectedProviderChange={provider.onChange}
           hasMultipleProviders={provider.hasMultiple ?? false}
           modelValue={model.active?.model ?? model.selected}
+          unavailableModel={model.unavailableModel}
           modelOptions={model.options}
           moreModelOptions={model.moreOptions}
           modelIsLoading={model.isLoading}
@@ -164,8 +175,9 @@ export const ExecutionControls = memo(function ExecutionControls({
           agentSections={agentOptions?.sections}
           onAgentOptionChange={agentOptions?.onChange}
           muted
-          className="overflow-hidden"
-          disabled={disabled}
+          compactIconOnly={nativeTerminal !== undefined}
+          className="min-w-0 overflow-hidden"
+          disabled={disabled || pending}
           handoff={handoff}
         />
       ) : null}
@@ -180,22 +192,26 @@ export const ExecutionControls = memo(function ExecutionControls({
               nativeTerminal.onChange(value === "terminal");
             }
           }}
-          disabled={disabled}
-          className="h-7 shrink-0 gap-0.5 rounded-md border border-border p-0.5 max-md:pointer-coarse:h-10"
+          disabled={disabled || pending || nativeTerminal.disabled}
+          className="h-7 shrink-0 gap-0.5 rounded-md p-0.5"
         >
           {NATIVE_TERMINAL_CHOICES.map((choice) => (
             <ToggleGroupItem
               key={choice.value}
               value={choice.value}
-              title={choice.title}
+              title={nativeTerminal.unavailableReason ?? choice.title}
+              aria-description={
+                nativeTerminal.unavailableReason ?? choice.title
+              }
+              aria-label={choice.label}
               className={cn(
-                "h-6 min-w-0 gap-1 whitespace-nowrap rounded-sm px-1.5 text-xs font-normal text-muted-foreground shadow-none hover:bg-state-hover hover:text-foreground data-[state=on]:bg-state-active data-[state=on]:text-foreground data-[state=on]:hover:bg-state-active",
-                "max-md:pointer-coarse:h-9 max-md:pointer-coarse:text-sm",
+                "h-6 min-w-0 gap-1 whitespace-nowrap rounded-sm px-1.5 text-xs font-normal text-muted-foreground shadow-none hover:bg-state-hover hover:text-foreground data-[state=on]:bg-accent data-[state=on]:text-accent-foreground data-[state=on]:font-medium data-[state=on]:hover:bg-accent",
+                "relative max-md:h-11 max-md:min-w-11 max-md:text-sm max-md:data-[state=on]:bg-transparent max-md:data-[state=on]:text-foreground max-md:data-[state=on]:hover:bg-transparent max-md:before:absolute max-md:before:inset-x-0 max-md:before:inset-y-1.5 max-md:before:rounded-md max-md:data-[state=on]:before:bg-state-hover",
                 LIST_HOVER_TRANSITION,
               )}
             >
-              <Icon name={choice.icon} className="size-3.5" />
-              {choice.label}
+              <Icon name={choice.icon} className="relative size-3.5" />
+              <span className="relative">{choice.label}</span>
             </ToggleGroupItem>
           ))}
         </ToggleGroup>

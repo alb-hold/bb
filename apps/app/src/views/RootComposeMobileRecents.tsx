@@ -53,10 +53,9 @@ import { usePromptDraftInputThreadIds } from "@/hooks/usePromptDraftStorage";
 import { useSecondTick } from "@/hooks/useSecondTick";
 import { mobileRecentsCollapsedThreadIdsAtom } from "./mobile-recents-collapse";
 
-export const MOBILE_RECENT_ROW_HEIGHT_PX = 60;
-export const MOBILE_RECENT_LABEL_HEIGHT_PX = 24;
+const MOBILE_RECENT_ROW_HEIGHT_PX = 52;
 
-const MOBILE_RECENT_ROW_HEIGHT_CLASS = "h-15";
+const MOBILE_RECENT_ROW_HEIGHT_CLASS = "h-13";
 
 type ThreadListEntryComparator = (
   left: ThreadListEntry,
@@ -123,6 +122,7 @@ function getMobileRecentThreadMetadata({
 }
 
 interface RootComposeMobileRecentsProps {
+  maxRows?: number;
   highlightedThreadId: string | null;
   projectNamesById: ReadonlyMap<string, string>;
   providersById: ReadonlyMap<string, ProviderInfo>;
@@ -319,7 +319,7 @@ function MobileRecentThreadRow({
   const providerTile = (
     <span
       className={cn(
-        "flex size-7 shrink-0 items-center justify-center rounded-md border border-border-seam bg-surface-raised",
+        "flex size-4 shrink-0 items-center justify-center text-muted-foreground",
         depth > 0 && "opacity-60",
       )}
     >
@@ -442,6 +442,7 @@ function MobileRecentThreadRow({
 }
 
 export function RootComposeMobileRecents({
+  maxRows,
   highlightedThreadId,
   projectNamesById,
   providersById,
@@ -493,8 +494,8 @@ export function RootComposeMobileRecents({
   );
   const hasMountedAllRows = useDeferredValue(true, false);
   const renderedThreads = hasMountedAllRows
-    ? recentThreads
-    : recentThreads.slice(0, getFirstPaintMobileRecentRowCount());
+    ? recentThreads.slice(0, maxRows)
+    : recentThreads.slice(0, maxRows ?? getFirstPaintMobileRecentRowCount());
 
   if (!showCreatingRow && recentThreads.length === 0) {
     return null;
@@ -504,16 +505,15 @@ export function RootComposeMobileRecents({
     <section
       data-root-compose-mobile-recents=""
       aria-labelledby="root-compose-mobile-recents"
-      className="md:hidden"
     >
-      <div className="sticky top-0 z-10 mb-1 bg-background px-2">
+      <div className="sticky top-0 z-10 mb-1 bg-background px-2 py-2">
         <h2
           id="root-compose-mobile-recents"
-          className={CHROME_SECTION_LABEL_CLASS}
+          className={cn(CHROME_SECTION_LABEL_CLASS, "text-subtle-foreground")}
         >
           Recent
         </h2>
-        <OverflowFade placement="below" tone="background" size="sm" />
+        <OverflowFade placement="below" tone="background" />
       </div>
       {showCreatingRow ? (
         <div

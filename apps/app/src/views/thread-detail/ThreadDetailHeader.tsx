@@ -31,12 +31,14 @@ import {
 import { useIsSidebarFramed } from "@/components/ui/sidebar.js";
 import { cn } from "@bb/shared-ui/lib/utils";
 import {
+  useAppCommandRunner,
   useAppCommandHandler,
   useAppCommandShortcut,
 } from "@/components/commands/AppCommandProvider";
 import { useSidebarRename } from "@/components/sidebar/SidebarInlineRename";
 import { useThreadActions } from "@/components/thread/ThreadActionsProvider";
 import { ThreadTitle } from "@/components/thread/ThreadTitleMentions";
+import { ThreadStatusGlyph } from "@/components/thread/ThreadStatusGlyph";
 import { ThreadUsageAndAgents } from "@/components/thread/ThreadUsageSummary";
 import { useThreadHeaderActionEntries } from "@/lib/thread-actions/thread-action-registry";
 import { SecondaryPanelHostLayoutContext } from "@/components/secondary-panel/SecondaryPanelHostLayoutContext";
@@ -77,6 +79,9 @@ interface ThreadDetailHeaderProps {
   pluginActions?: ReactNode;
   thread: PluginThreadActionTarget;
   threadTitle: string;
+  needsInput?: boolean;
+  checkTerminal?: boolean;
+  hasNativeTerminal?: boolean;
   workspaceOpenButton?: ReactNode;
 }
 
@@ -88,9 +93,14 @@ export function ThreadDetailHeader({
   pluginActions,
   thread,
   threadTitle,
+  needsInput = false,
+  checkTerminal = false,
+  hasNativeTerminal = false,
   workspaceOpenButton,
   contextCardButton,
 }: ThreadDetailHeaderProps) {
+  const commandRunner = useAppCommandRunner();
+  const findShortcut = useAppCommandShortcut("terminal.find");
   const isCompactViewport = useIsCompactViewport();
   const threadId = thread.id;
   const headerActions = useThreadHeaderActionEntries(thread);
@@ -192,6 +202,12 @@ export function ThreadDetailHeader({
           isSplitPaneHeader && isFocused && CONTEXT_SELECTION_SURFACE_CLASS,
         )}
       >
+        {needsInput || checkTerminal ? (
+          <ThreadStatusGlyph
+            indicator={needsInput ? "needs-input" : "check-terminal"}
+            size="compact"
+          />
+        ) : null}
         <p
           data-thread-detail-header-title=""
           className={cn(
@@ -239,6 +255,26 @@ export function ThreadDetailHeader({
         className="flex items-center gap-1"
         data-thread-header-workflow-actions=""
       >
+        {hasNativeTerminal ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className={HEADER_ICON_BUTTON_CLASS}
+            aria-label="Search terminal output"
+            aria-keyshortcuts={findShortcut?.ariaKeyshortcuts}
+            onClick={() => {
+              const pane =
+                headerRef.current.closest("[data-split-pane-id]") ??
+                headerRef.current.parentElement;
+              const terminal =
+                pane?.querySelector("[data-terminal-renderer]") ?? null;
+              commandRunner.dispatch("terminal.find", terminal);
+            }}
+          >
+            <Icon name="Search" className="size-4" />
+          </Button>
+        ) : null}
         {pluginActions}
         {!usesResponsiveActionOverflow && workspaceOpenButton ? (
           <span className="inline-flex" data-thread-header-responsive-action="">
@@ -314,6 +350,7 @@ export function ThreadDetailHeader({
               !showRightPanelToggle && "hidden",
             )}
             inert={!showRightPanelToggle}
+            data-compact-touch="header"
             aria-label={
               panelShortcut
                 ? `${rightPanelLabel} (${panelShortcut.label})`

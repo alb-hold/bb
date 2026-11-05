@@ -169,6 +169,23 @@ for (const [id, entryPoint] of Object.entries(RUNTIME_SOURCE_MODULES)) {
   pushEntry(id, await sourceModuleExports(entryPoint));
 }
 const entries = entryChunks.join("\n");
+const runtimeVersions = {};
+for (const id of RUNTIME_MODULE_IDS) {
+  const parts = id.split("/");
+  const name = id.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0];
+  const pkg = JSON.parse(
+    await readFile(
+      path.join(
+        scriptDir,
+        "../../../apps/app/node_modules",
+        name,
+        "package.json",
+      ),
+      "utf8",
+    ),
+  );
+  runtimeVersions[id] = pkg.version;
+}
 
 const output = `// GENERATED FILE — do not edit by hand.
 // Named exports of the plugin SDK app facade and shared runtime modules
@@ -184,6 +201,8 @@ const output = `// GENERATED FILE — do not edit by hand.
 export const RUNTIME_EXPORT_MANIFEST: Record<string, readonly string[]> = {
 ${entries}
 };
+
+export const RUNTIME_PACKAGE_VERSIONS: Readonly<Record<string, string>> = ${JSON.stringify(runtimeVersions, null, 2)};
 `;
 
 const outFlagIndex = process.argv.indexOf("--out");

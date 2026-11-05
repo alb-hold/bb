@@ -675,6 +675,8 @@ describe("ThreadTableOfContents", () => {
           "[data-thread-toc] [aria-hidden] > span",
         ),
       );
+    expect(railTicks()[0]?.parentElement?.className).toContain("opacity-40");
+    expect(railTicks()[0]?.parentElement?.className).toContain("group-focus-within/toc:opacity-100");
     expect(railTicks()[0]?.classList.contains("w-5")).toBe(true);
 
     act(() => {
@@ -683,6 +685,8 @@ describe("ThreadTableOfContents", () => {
       fireEvent.scroll(scrollElement);
       vi.advanceTimersByTime(119);
     });
+    expect(railTicks()[0]?.parentElement?.className).toContain("opacity-40");
+    expect(railTicks()[0]?.parentElement?.className).toContain("group-focus-within/toc:opacity-100");
     expect(railTicks()[0]?.classList.contains("w-5")).toBe(true);
     expect(railTicks()[1]?.classList.contains("w-5")).toBe(false);
 

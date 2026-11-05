@@ -4,6 +4,7 @@ import { loadTerminalWebglRenderer } from "./terminal-webgl-renderer";
 function setupRenderer({ visible = true, failLoads = false } = {}) {
   vi.useFakeTimers();
   const root: Pick<HTMLElement, "dataset"> = { dataset: {} };
+  const onRendererChange = vi.fn();
   const addons: Array<{
     activate: ReturnType<typeof vi.fn>;
     dispose: ReturnType<typeof vi.fn>;
@@ -34,8 +35,9 @@ function setupRenderer({ visible = true, failLoads = false } = {}) {
   const renderer = loadTerminalWebglRenderer(terminal, createAddon, {
     root,
     visible,
+    onRendererChange,
   });
-  return { root, addons, createAddon, terminal, renderer };
+  return { root, addons, createAddon, terminal, renderer, onRendererChange };
 }
 
 afterEach(() => {
@@ -45,7 +47,8 @@ afterEach(() => {
 
 describe("terminal WebGL lifecycle", () => {
   it("recreates a lost context and reports the active renderer", () => {
-    const { addons, renderer, root, terminal } = setupRenderer();
+    const { addons, renderer, root, terminal, onRendererChange } =
+      setupRenderer();
     expect(root.dataset.terminalRenderer).toBe("webgl");
 
     addons[0]!.lose();
@@ -58,6 +61,12 @@ describe("terminal WebGL lifecycle", () => {
     expect(terminal.loadAddon).toHaveBeenCalledTimes(2);
     expect(root.dataset.terminalRenderer).toBe("webgl");
     expect(renderer.renderer).toBe("webgl");
+    expect(onRendererChange.mock.calls).toEqual([
+      ["dom"],
+      ["webgl"],
+      ["dom"],
+      ["webgl"],
+    ]);
     renderer.dispose();
   });
 

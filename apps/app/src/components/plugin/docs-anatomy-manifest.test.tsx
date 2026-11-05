@@ -23,6 +23,7 @@ import {
 } from "@/lib/plugin-slots";
 import { sidebarNavigationQueryKey } from "@/hooks/queries/query-keys";
 import { makePluginRegistrationSet } from "@/test/fixtures/plugins";
+import { SidebarThreadEntriesProvider } from "@/lib/sidebar-thread-entries";
 
 const REPO_ROOT = resolve(import.meta.dirname, "../../../../..");
 
@@ -130,27 +131,29 @@ function renderAppSidebar() {
     <MemoryRouter initialEntries={["/"]}>
       <JotaiProvider>
         <QueryClientProvider client={queryClient}>
-          <TooltipProvider delayDuration={0}>
-            <AppCommandProvider>
-              <QuickCreateProjectProvider>
-                <ProjectActionsProvider>
-                  <ThreadActionsProvider>
-                    <SidebarProvider>
-                      <AppSidebar
-                        onResizeMouseDown={() => {}}
-                        isResizing={false}
-                        isBodyHidden={false}
-                        navigation={{ kind: "loading", placement: "rail" }}
-                        settingsRoutePath="/settings"
-                        isSettingsActive={false}
-                        alternateBody={null}
-                      />
-                    </SidebarProvider>
-                  </ThreadActionsProvider>
-                </ProjectActionsProvider>
-              </QuickCreateProjectProvider>
-            </AppCommandProvider>
-          </TooltipProvider>
+          <SidebarThreadEntriesProvider navigation={undefined}>
+            <TooltipProvider delayDuration={0}>
+              <AppCommandProvider>
+                <QuickCreateProjectProvider>
+                  <ProjectActionsProvider>
+                    <ThreadActionsProvider>
+                      <SidebarProvider>
+                        <AppSidebar
+                          onResizeMouseDown={() => {}}
+                          isResizing={false}
+                          isBodyHidden={false}
+                          navigation={{ kind: "loading", placement: "rail" }}
+                          settingsRoutePath="/settings"
+                          isSettingsActive={false}
+                          alternateBody={null}
+                        />
+                      </SidebarProvider>
+                    </ThreadActionsProvider>
+                  </ProjectActionsProvider>
+                </QuickCreateProjectProvider>
+              </AppCommandProvider>
+            </TooltipProvider>
+          </SidebarThreadEntriesProvider>
         </QueryClientProvider>
       </JotaiProvider>
     </MemoryRouter>,

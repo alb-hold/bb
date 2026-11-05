@@ -226,6 +226,7 @@ function DesktopMessageAction({
       <TooltipTrigger asChild>
         {action.kind === "copy" ? (
           <CopyButton
+            data-compact-touch="action"
             text={action.copyText ?? ""}
             imageUrl={action.copyImageUrl}
             label={action.label}
@@ -233,6 +234,7 @@ function DesktopMessageAction({
           />
         ) : (
           <button
+            data-compact-touch="action"
             type="button"
             className={cn(ACTION_BUTTON_CLASS, className)}
             onClick={action.onSelect}
@@ -501,6 +503,7 @@ export function MessageActionBar({
                   "data-[state=open]:text-foreground data-[state=open]:opacity-100",
                 )}
                 aria-label="Message actions"
+                data-compact-touch="action-menu"
                 data-no-sidebar-swipe=""
               >
                 <Icon name="MoreHorizontal" className="size-3" />
@@ -530,6 +533,7 @@ function MobileInlineActions({
   return actions.map((action) =>
     action.kind === "copy" ? (
       <CopyButton
+        data-compact-touch="action"
         key={action.key ?? action.label}
         text={action.copyText ?? ""}
         imageUrl={action.copyImageUrl}
@@ -538,6 +542,7 @@ function MobileInlineActions({
       />
     ) : (
       <button
+        data-compact-touch="action"
         key={action.key ?? action.label}
         type="button"
         className={cn(

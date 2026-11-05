@@ -136,7 +136,7 @@ const ThreadSecondaryPanelSplit = defineSplit<LazyThreadSecondaryPanelProps>({
     ),
   mountWhen: (props) => props.isOpen,
   keepMounted: true,
-  tier: "preload",
+  tier: "intent",
 });
 
 export const LazyThreadSecondaryPanel = Object.assign(
@@ -220,7 +220,7 @@ export const LazyWorkspaceFilePreviewTabContent = defineSplit({
   loading: ({ activePath, copyPath }) => (
     <FilePreviewLoading path={activePath} copyPath={copyPath ?? null} />
   ),
-  tier: "preload",
+  tier: "intent",
 });
 
 export const LazyHostFilePreviewTabContent = defineSplit({
@@ -232,7 +232,7 @@ export const LazyHostFilePreviewTabContent = defineSplit({
   loading: ({ activePath, copyPath }) => (
     <FilePreviewLoading path={activePath} copyPath={copyPath ?? null} />
   ),
-  tier: "preload",
+  tier: "intent",
 });
 
 export const LazyHostScopedFilePreviewTabContent = defineSplit({
@@ -244,7 +244,7 @@ export const LazyHostScopedFilePreviewTabContent = defineSplit({
   loading: ({ activePath }) => (
     <FilePreviewLoading path={activePath} copyPath={activePath} />
   ),
-  tier: "preload",
+  tier: "intent",
 });
 
 export const LazyProjectFilePreviewTabContent = defineSplit({
@@ -256,7 +256,7 @@ export const LazyProjectFilePreviewTabContent = defineSplit({
   loading: ({ activePath, copyPath }) => (
     <FilePreviewLoading path={activePath} copyPath={copyPath ?? null} />
   ),
-  tier: "preload",
+  tier: "intent",
 });
 
 export const LazyThreadStorageFilePreviewTabContent = defineSplit({
@@ -268,7 +268,7 @@ export const LazyThreadStorageFilePreviewTabContent = defineSplit({
   loading: ({ activePath, copyPath }) => (
     <FilePreviewLoading path={activePath} copyPath={copyPath ?? null} />
   ),
-  tier: "preload",
+  tier: "intent",
 });
 
 export const LazyAttachmentFilePreviewTabContent = defineSplit({

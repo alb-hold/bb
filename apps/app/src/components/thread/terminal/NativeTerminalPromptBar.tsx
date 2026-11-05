@@ -1,3 +1,4 @@
+import { CONTENT_MEASURE_MAX_WIDTH_CLASS } from "@/lib/content-measure";
 import {
   useCallback,
   useEffect,
@@ -14,6 +15,11 @@ import {
 import type { PromptInput } from "@bb/domain";
 import type { UploadedPromptAttachment } from "@bb/server-contract";
 import { Button } from "@bb/shared-ui/button";
+import {
+  COMPOSER_SHELL_CLASS,
+  COMPOSER_SUBMIT_CLASS,
+  COMPOSER_SEND_ICON,
+} from "@bb/shared-ui/composer-primitives";
 import { Icon } from "@bb/shared-ui/icon";
 import { cn } from "@bb/shared-ui/lib/utils";
 import {
@@ -43,6 +49,7 @@ interface NativeTerminalPromptBarProps {
   projectId: string;
   providerLabel: string;
   threadId: string;
+  executionLabel?: string;
 }
 
 const PUSH_TO_TALK_HOLD_MS = 350;
@@ -93,12 +100,14 @@ function pastedFiles(clipboard: Pick<DataTransfer, "files" | "items">): File[] {
 export function NativeTerminalPromptBar({
   projectId,
   providerLabel,
+  executionLabel,
   threadId,
 }: NativeTerminalPromptBarProps) {
   const inputId = useId();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [text, setText] = useState("");
+  const [focused, setFocused] = useState(false);
   const textRef = useRef("");
   const programmaticRef = useRef(false);
   const composingRef = useRef(false);
@@ -501,7 +510,10 @@ export function NativeTerminalPromptBar({
 
   return (
     <form
-      className="flex shrink-0 flex-col gap-1.5 border-t border-border/50 bg-sidebar px-2 pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]"
+      className={cn(
+        "mx-auto flex w-full shrink-0 flex-col gap-1.5 bg-sidebar px-4 pt-1 pb-[max(0.5rem,env(safe-area-inset-bottom))]",
+        CONTENT_MEASURE_MAX_WIDTH_CLASS,
+      )}
       data-native-terminal-prompt=""
       onSubmit={submit}
     >
@@ -540,8 +552,13 @@ export function NativeTerminalPromptBar({
       ) : null}
       <div
         className={cn(
-          "flex flex-col rounded-2xl border bg-background px-1.5 pt-1 pb-1 transition-[border-color,box-shadow] duration-200 focus-within:border-ring/60 motion-reduce:transition-none",
-          recording ? "border-destructive/40" : "border-input",
+          COMPOSER_SHELL_CLASS,
+          "flex flex-col px-1.5 py-0.5 transition-[border-color,box-shadow] duration-200 focus-within:border-ring/60 motion-reduce:transition-none",
+          recording && "border-destructive/40",
+          !text &&
+            !focused &&
+            dictation.phase === "idle" &&
+            "max-md:grid max-md:grid-cols-[minmax(0,1fr)_auto] max-md:items-center",
         )}
         data-native-composer=""
         onDragOver={onDragOver}
@@ -559,8 +576,18 @@ export function NativeTerminalPromptBar({
             onDiscard={dictation.discardFailed}
           />
         )}
+        {executionLabel?.trim() &&
+        executionLabel.trim() !== providerLabel.trim() ? (
+          <div
+            aria-label="Terminal execution"
+            className="col-span-2 truncate px-2 text-xs leading-tight text-muted-foreground"
+            title={executionLabel ?? providerLabel}
+          >
+            {executionLabel}
+          </div>
+        ) : null}
         <label className="sr-only" htmlFor={inputId}>
-          Message {providerLabel}
+          Send to {providerLabel} terminal
         </label>
         <textarea
           ref={textareaRef}
@@ -575,8 +602,10 @@ export function NativeTerminalPromptBar({
               ? "Starting microphone…"
               : recording
                 ? "Listening…"
-                : `Message ${providerLabel}`
+                : "To terminal above"
           }
+          onFocus={() => setFocused(true)}
+          onBlur={() => setFocused(false)}
           onChange={(event) => {
             applyValue(event.target.value, programmaticRef.current);
           }}
@@ -588,7 +617,12 @@ export function NativeTerminalPromptBar({
           }}
           onKeyDown={onKeyDown}
           onPaste={onPaste}
-          className="max-h-48 min-h-10 w-full resize-none bg-transparent px-2 py-2 text-base text-foreground field-sizing-content placeholder:text-muted-foreground focus-visible:outline-none"
+          className={cn(
+            "max-h-48 min-h-7 min-w-0 w-full resize-none bg-transparent px-2 py-1 text-base md:text-sm text-foreground field-sizing-content placeholder:text-sm placeholder:text-muted-foreground focus-visible:outline-none",
+            !text &&
+              !focused &&
+              "max-md:h-11 max-md:whitespace-nowrap max-md:overflow-hidden",
+          )}
         />
         <AssistStrip
           suggestions={assist.suggestions}
@@ -601,7 +635,7 @@ export function NativeTerminalPromptBar({
           onDismiss={assist.dismissSuggestion}
           onUndo={assist.undoRecent}
         />
-        <div className="flex items-center gap-1">
+        <div className="flex shrink-0 items-center gap-1">
           <input
             ref={fileInputRef}
             type="file"
@@ -623,7 +657,7 @@ export function NativeTerminalPromptBar({
             aria-label="Attach image"
             onClick={() => fileInputRef.current?.click()}
           >
-            <Icon name="Paperclip" className="size-4" />
+            <Icon name="Plus" className="size-4" />
           </Button>
           <div className="flex-1" />
           {voiceAvailable ? (
@@ -670,13 +704,14 @@ export function NativeTerminalPromptBar({
           ) : null}
           <Button
             type="submit"
+            variant="default"
             size="icon"
-            className="size-9 shrink-0 rounded-full pointer-coarse:size-11"
+            className={COMPOSER_SUBMIT_CLASS}
             disabled={!canSend}
             aria-label={`Send to ${providerLabel}`}
             onMouseDown={(event) => event.preventDefault()}
           >
-            <Icon name="ArrowUp" className="size-4" />
+            <Icon name={COMPOSER_SEND_ICON} className="size-4" />
           </Button>
         </div>
       </div>

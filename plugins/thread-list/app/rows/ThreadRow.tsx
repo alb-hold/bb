@@ -15,9 +15,11 @@ import {
   type ReactNode,
 } from "react";
 import { useComposedRefs } from "@radix-ui/react-compose-refs";
+import { useSidebarRowMetadataExperiment } from "../list/SidebarRowMetadataExperiment.js";
 import { useStickyRowStateReport } from "../ui/stickyOffset.js";
 import { useAtomValue } from "jotai";
 import { Icon } from "@/components/ui/icon";
+import { InfoRowTime } from "@bb/shared-ui/info-list-row";
 import { useIsCompactViewport } from "@/components/ui/hooks/use-compact-viewport";
 import {
   Tooltip,
@@ -48,7 +50,6 @@ import {
   experimental_ThreadStatusGlyph as ThreadStatusGlyph,
   experimental_ThreadRowMetadata as ThreadRowMetadata,
   experimental_THREAD_ACTION_GROUPS,
-  experimental_useExperiment,
   experimental_useThreadActions,
   experimental_useSidebarThreadSplit,
   experimental_ProviderIcon as ProviderIcon,
@@ -78,7 +79,6 @@ import { useSidebarProjectName } from "../model/use-sidebar-data.js";
 import {
   sidebarShowProviderIconsAtom,
   sidebarShowRowMetadataAtom,
-  THREAD_ROW_METADATA_EXPERIMENT,
   threadRowActionsAtom,
 } from "../preferences/atoms.js";
 import { ShortcutPill } from "@/components/ui/shortcut-pill";
@@ -94,6 +94,7 @@ import type { ConsumeDragClickSuppression } from "@/components/ui/use-drag-click
 import { SidebarChildToggleChevron } from "./SidebarChildToggleChevron.js";
 import { useSidebarRename } from "./SidebarInlineRename.js";
 import { SidebarRowControls } from "./SidebarRowControls.js";
+import { DESKTOP_THREAD_ROW_HEIGHT_VARIABLE_CLASS } from "./thread-row-height.js";
 import {
   SIDEBAR_CONTROL_BUTTON_CLASS,
   SIDEBAR_ROW_BASE_CLASS,
@@ -127,6 +128,8 @@ import {
 import { useThreadSelectionMenu } from "../selection/useThreadSelectionMenu.js";
 import { useOpenThreadInSplit } from "./threadRowNavigation.js";
 import { Button } from "@/components/ui/button";
+import { useThreadListVisibilityGroup } from "../list/ThreadListVisibility.js";
+import { buildSidebarEntitySectionId } from "../model/sidebar-section-order.js";
 import { COARSE_POINTER_ICON_SIZE_CLASS } from "@/components/ui/coarse-pointer-sizing";
 import {
   useCustomizeThreadRowActions,
@@ -309,6 +312,7 @@ export function CollapsedThreadStatusGlyph({
   const hasUnsubmittedDraft = useThreadsHaveDraft(activity.threadIds);
   const statusProps: ThreadListIndicatorState = {
     hasPendingInteraction: activity.pending,
+    hasTerminalAttention: activity.terminalAttention,
     hasUnsubmittedDraft,
     hasUnreadError: activity.unreadError,
     hasUnreadSuccess: activity.unread,
@@ -369,8 +373,10 @@ function ThreadTrailingIndicator({
   }
 
   const statusText =
-    indicatorKind === "needs-input"
-      ? "Needs input"
+    indicatorKind === "check-terminal"
+      ? "Check terminal"
+      : indicatorKind === "needs-input"
+        ? "Needs input"
       : indicatorKind === "working"
         ? `Working${elapsedMinutes === null ? "" : ` ${elapsedMinutes}m`}`
         : indicatorKind === "woke"
@@ -384,6 +390,7 @@ function ThreadTrailingIndicator({
   const activityNoticeApplies =
     nativeActivityUnconfirmed &&
     indicatorKind !== "needs-input" &&
+    indicatorKind !== "check-terminal" &&
     indicatorKind !== "queued-failed";
   const hasGuidance =
     indicatorKind === "activity-unreported" && nativeActivityGuidance !== null;
@@ -396,7 +403,8 @@ function ThreadTrailingIndicator({
         "inline-flex h-5 shrink-0 items-center gap-1.5 rounded-full px-1.5 font-medium text-xs",
         statusText !== null && "justify-end gap-1 whitespace-nowrap px-0",
         statusText === null && "px-0",
-        indicatorKind === "needs-input" && "text-destructive-text",
+        (indicatorKind === "needs-input" || indicatorKind === "check-terminal") &&
+          "text-attention",
         indicatorKind === "working" && SIDEBAR_WORKING_STATUS_COLOR_CLASS,
         indicatorKind === "woke" && "text-warning",
         indicatorKind === "done-unread" && SIDEBAR_SUCCESS_STATUS_COLOR_CLASS,
@@ -589,9 +597,7 @@ function ThreadRowComponent({
   const multiSelection = useMultiSelectionContaining(thread.id);
   const selectionMenu = useThreadSelectionMenu(multiSelection);
   const showProviderIcons = useAtomValue(sidebarShowProviderIconsAtom);
-  const rowMetadataEnabled = experimental_useExperiment(
-    THREAD_ROW_METADATA_EXPERIMENT,
-  );
+  const rowMetadataEnabled = useSidebarRowMetadataExperiment();
   const showRowMetadata =
     useAtomValue(sidebarShowRowMetadataAtom) && rowMetadataEnabled;
   const providers = useContext(SidebarProvidersContext);
@@ -610,6 +616,9 @@ function ThreadRowComponent({
   );
   const labelTitle = thread.displayTitle;
   const crossProjectName = useSidebarProjectName(crossProjectId);
+  const projectName = useSidebarProjectName(thread.projectId);
+  const visibilityGroup = useThreadListVisibilityGroup();
+  const showProjectName = visibilityGroup !== buildSidebarEntitySectionId("project", thread.projectId);
   const crossProjectLabel =
     crossProjectId === null
       ? null
@@ -703,6 +712,8 @@ function ThreadRowComponent({
     hasHiddenChildren ? childActivity.threadIds : NO_THREAD_IDS,
   );
   const trailingIndicatorState: ThreadListIndicatorState = {
+    hasTerminalAttention: threadStatus.hasTerminalAttention ||
+      (hasHiddenChildren && childActivity.terminalAttention),
     hasPendingInteraction:
       threadStatus.hasPendingInteraction ||
       (hasHiddenChildren && childActivity.pending),
@@ -745,6 +756,7 @@ function ThreadRowComponent({
     thread.archivedAt === null &&
     (automationStartedAt !== null ||
       trailingIndicatorKind === "needs-input" ||
+      trailingIndicatorKind === "check-terminal" ||
       trailingIndicatorKind === "working" ||
       trailingIndicatorKind === "woke" ||
       trailingIndicatorKind === "done-unread");
@@ -820,6 +832,10 @@ function ThreadRowComponent({
     SIDEBAR_HOVER_ACTIONS_ROW_CLASS,
     "group/thread-row cursor-pointer",
     SIDEBAR_ROW_BASE_CLASS,
+    "gap-1",
+    DESKTOP_THREAD_ROW_HEIGHT_VARIABLE_CLASS,
+    !hasRowState && !showRowMetadata &&
+      "md:h-(--bb-sidebar-desktop-row-height) md:min-h-(--bb-sidebar-desktop-row-height)",
     LIST_HOVER_TRANSITION,
     parentOptions?.stickyLevel === undefined && "relative",
     hasRowState
@@ -979,7 +995,7 @@ function ThreadRowComponent({
                   data-sidebar-thread-provider={provider.id}
                   role="img"
                   aria-label={provider.displayName}
-                  className="pointer-events-auto relative z-[31] flex size-4 shrink-0 items-center justify-center mr-1.5 text-muted-foreground"
+                  className="pointer-events-auto relative z-[31] flex size-4 shrink-0 items-center justify-center mr-1 max-md:mr-1.5 text-muted-foreground"
                   onClick={(event) => {
                     event.preventDefault();
                     event.stopPropagation();
@@ -1002,11 +1018,18 @@ function ThreadRowComponent({
             </span>
           ) : (
             <span
-              className={cn("bb-thread-title", "min-w-0 flex-1 truncate")}
+              className="min-w-0 flex-1"
               title={labelTitle}
               onDoubleClick={startTitleEditing}
             >
-              <ThreadTitle threadId={thread.id} />
+              <span className="bb-thread-title block min-w-0 flex-1 truncate">
+                <ThreadTitle threadId={thread.id} />
+              </span>
+              <span data-sidebar-thread-context="" className="hidden min-w-0 items-center gap-1 truncate text-2xs leading-4 text-muted-foreground md:flex">
+                {thread.experimental_nativeActivity !== undefined ? <span role="img" aria-label="Native terminal"><Icon name="Terminal" className="size-3 shrink-0" aria-hidden /></span> : null}
+                {showProjectName && projectName ? <span className="truncate">{projectName} ·</span> : null}
+                <InfoRowTime timestamp={thread.updatedAt} />
+              </span>
             </span>
           )}
         </span>

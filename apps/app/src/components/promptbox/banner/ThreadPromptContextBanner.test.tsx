@@ -51,9 +51,7 @@ function Banner({
   const isReadOnly =
     archivedSection !== null || environmentGoneSection !== null;
   return (
-    <GitSegmentFixtureProvider
-      value={gitSectionPending ? null : gitSection}
-    >
+    <GitSegmentFixtureProvider value={gitSectionPending ? null : gitSection}>
       <ThreadChildThreadsBanner
         childThreads={isReadOnly ? null : childThreadsSection}
         isExpanded={expandedSection === CHILD_THREADS}
@@ -115,6 +113,37 @@ afterEach(() => {
   cleanup();
   removePluginSlotRegistrations(GIT_SEGMENT_FIXTURE_PLUGIN_ID);
 });
+
+it.each([false, true])(
+  "labels a child terminal signal without inventing a question: pending=%s",
+  (pending) => {
+    render(
+      <MemoryRouter>
+        <ThreadChildThreadsBanner
+          childThreads={{
+            items: [
+              {
+                id: "child-signal",
+                title: "Child terminal",
+                href: "/threads/child-signal",
+                hasPendingInteraction: pending,
+                hasTerminalAttention: true,
+              },
+            ],
+            pendingInteractions: [],
+          }}
+          isExpanded
+          onExpandedChange={noop}
+        />
+      </MemoryRouter>,
+    );
+    expect(
+      screen.getAllByLabelText(pending ? "Needs input" : "Check terminal").length,
+    ).toBeGreaterThan(0);
+    if (pending) expect(screen.queryByText("Check terminal")).toBeNull();
+    else expect(screen.queryByLabelText("Needs input")).toBeNull();
+  },
+);
 
 function childThreadItem(
   id: string,

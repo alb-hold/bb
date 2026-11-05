@@ -1,4 +1,3 @@
-import { queueSplitDownload } from "@/lib/split-prefetch";
 import { pluginDetailKeyFromRoute } from "@/components/plugin/plugin-detail-key";
 import { useMemo } from "react";
 import { disableGlobalCursorStyles } from "react-resizable-panels";
@@ -21,8 +20,6 @@ import { LazyPluginsView } from "./ToolsViewSplits";
 disableGlobalCursorStyles();
 
 const ROOT_COMPOSE_CONTENT = { kind: "new-thread" } as const;
-
-queueSplitDownload("markdown-html");
 
 export default function SplitWorkspaceRoute() {
   const location = useLocation();

@@ -5,6 +5,10 @@ import { PluginUpdateJobsHost } from "./components/plugin/PluginUpdateJobsHost";
 import { LazyThreadDetailView } from "./views/thread-detail/LazyThreadDetailView";
 import { LazyRootComposeView } from "./views/LazyRootComposeView";
 import { useRouteState } from "./hooks/useRouteState";
+import {
+  useThreadOpenIntent,
+  prefetchThreadOpenOnIntent,
+} from "./hooks/useThreadOpenIntent";
 import { lazy, Suspense, useEffect } from "react";
 import {
   matchPath,
@@ -15,7 +19,6 @@ import {
   useParams,
 } from "react-router-dom";
 import { AppLayout } from "./components/layout/AppLayout";
-import { AuthCallbackView } from "./views/AuthCallbackView";
 import { QuickCreateProjectProvider } from "./hooks/useQuickCreateProject";
 import { RouteNavigationProvider } from "./components/ui/app-route-anchor";
 import { RouteNavigationIndicator } from "./components/ui/route-navigation-indicator";
@@ -90,6 +93,19 @@ import {
   whenCriticalLoadsSettled,
 } from "./lib/split-prefetch";
 
+const AuthCallbackView = lazy(() =>
+  import("./views/AuthCallbackView").then((m) => ({
+    default: m.AuthCallbackView,
+  })),
+);
+
+export function AuthCallbackRoute() {
+  return (
+    <Suspense fallback={null}>
+      <AuthCallbackView />
+    </Suspense>
+  );
+}
 const SettingsView = lazy(() =>
   import("./views/SettingsView").then((m) => ({
     default: m.SettingsView,
@@ -115,11 +131,9 @@ const MachineSettingsView = lazy(() =>
     default: m.MachineSettingsView,
   })),
 );
-const splitWorkspaceRouteModule = trackCriticalLoad(
-  import("./views/SplitWorkspaceRoute"),
+const SplitWorkspaceRoute = lazy(() =>
+  trackCriticalLoad(import("./views/SplitWorkspaceRoute")),
 );
-splitWorkspaceRouteModule.catch(() => {});
-const SplitWorkspaceRoute = lazy(() => splitWorkspaceRouteModule);
 
 function NavigatePreservingLocation({ pathname }: { pathname: string }) {
   const location = useLocation();
@@ -316,7 +330,11 @@ export function HashNavigationScroll() {
 }
 
 export function AppRoutes() {
-  const { isThreadView } = useRouteState();
+  const { isThreadView, threadId } = useRouteState();
+  useThreadOpenIntent();
+  useEffect(() => {
+    if (threadId) prefetchThreadOpenOnIntent(threadId);
+  }, [threadId]);
   const isRootComposeView = useLocation().pathname === APP_ROOT_ROUTE_PATH;
   useEffect(() => {
     if (isThreadView) void trackCriticalLoad(LazyThreadDetailView.preload());
@@ -519,7 +537,7 @@ export function App() {
               <Routes>
                 <Route
                   path={AUTH_CALLBACK_ROUTE_PATH}
-                  element={<AuthCallbackView />}
+                  element={<AuthCallbackRoute />}
                 />
                 <Route
                   path="*"

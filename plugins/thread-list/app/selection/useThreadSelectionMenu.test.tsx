@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import type { PluginThreadActionTarget } from "@get-bb/plugin-sdk/app";
 import {
   installTestPluginRuntime,
@@ -9,6 +9,19 @@ import {
 } from "@get-bb/plugin-sdk/testing/app";
 import { makePluginProject, makeSidebarThread } from "../model/fixtures.js";
 import { resetPreferencesSyncForTest } from "../preferences/preferences-sync.js";
+
+const subscriptions = vi.hoisted(() => vi.fn());
+vi.mock("../model/use-sidebar-data.js", async (importOriginal) => {
+  const original =
+    await importOriginal<typeof import("../model/use-sidebar-data.js")>();
+  return {
+    ...original,
+    useSidebarData: () => {
+      subscriptions();
+      return original.useSidebarData();
+    },
+  };
+});
 
 installTestPluginRuntime();
 const { experimental_ThreadActionsContextMenu: ThreadActionsContextMenu } =
@@ -23,6 +36,31 @@ const {
 afterEach(() => {
   cleanup();
   resetPreferencesSyncForTest();
+  subscriptions.mockClear();
+});
+
+function ClosedMenu() {
+  const menu = useThreadSelectionMenu(null);
+  return <output>{menu === null ? "closed" : "selected"}</output>;
+}
+
+it("shares the selection provider's sidebar subscription across 100 closed row menus", () => {
+  function Rows() {
+    return (
+      <ThreadSelectionProvider activeThreadId={null}>
+        {Array.from({ length: 100 }, (_, index) => <ClosedMenu key={index} />)}
+      </ThreadSelectionProvider>
+    );
+  }
+  renderSlot({ component: Rows }, {}, {
+    sidebarThreads: {
+      threads: [makeSidebarThread({ id: "a" })],
+      projects: [makePluginProject()],
+      sections: [],
+    },
+  });
+  expect(screen.getAllByText("closed")).toHaveLength(100);
+  expect(subscriptions).toHaveBeenCalledTimes(2);
 });
 
 function Selection() {

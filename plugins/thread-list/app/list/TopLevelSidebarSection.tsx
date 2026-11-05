@@ -1,5 +1,7 @@
 import {
   useCallback,
+  useLayoutEffect,
+  useRef,
   type CSSProperties,
   type KeyboardEventHandler,
   type MouseEvent,
@@ -48,6 +50,13 @@ import { usePluginThreadRowStatusForThreads } from "./groupRollups.js";
 
 const EMPTY_SPLIT_INDICATOR_THREADS: readonly ThreadSplitIndicatorTarget[] = [];
 
+function updateContentScrollCue(element: HTMLDivElement) {
+  element.toggleAttribute(
+    "data-more-below",
+    element.scrollTop + element.clientHeight < element.scrollHeight - 1,
+  );
+}
+
 function stopActionsClick(event: MouseEvent<HTMLSpanElement>) {
   event.stopPropagation();
 }
@@ -65,6 +74,7 @@ export interface TopLevelSidebarSectionProps {
   dropParentKey?: string;
   sectionId?: string;
   stickyHeader?: boolean;
+  contentClassName?: string;
   status?: ReactNode;
   actions?: ReactNode;
   actionsAlwaysVisible?: boolean;
@@ -88,6 +98,7 @@ export function TopLevelSidebarSection({
   dropParentKey,
   sectionId,
   stickyHeader = true,
+  contentClassName,
   status,
   actions,
   actionsAlwaysVisible = false,
@@ -102,6 +113,22 @@ export function TopLevelSidebarSection({
   consumeClickSuppression,
   isDropTargetActive = false,
 }: TopLevelSidebarSectionProps) {
+  const contentRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const content = contentRef.current;
+    if (!content || !contentClassName) return;
+    const measure = () => updateContentScrollCue(content);
+    const frame =
+      typeof ResizeObserver === "undefined" ? requestAnimationFrame(measure) : null;
+    const observer =
+      typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+    observer?.observe(content);
+    for (const child of content.children) observer?.observe(child);
+    return () => {
+      if (frame !== null) cancelAnimationFrame(frame);
+      observer?.disconnect();
+    };
+  }, [children, contentClassName, collapseControl?.isCollapsed]);
   const threadDropState = useSectionDropTargetState(dropParentKey);
   const collapsedSplitIndicator = useThreadGroupSplitIndicator(
     collapsedThreads,
@@ -296,7 +323,18 @@ export function TopLevelSidebarSection({
         ) : null}
       </SidebarStickyTier>
       {collapseControl?.isCollapsed || children == null ? null : (
-        <div className="mt-1">{children}</div>
+        <div
+          ref={contentRef}
+          data-sidebar-section-scroll={contentClassName ? "" : undefined}
+          className={cn("mt-1", contentClassName)}
+          onScroll={
+            contentClassName
+              ? (event) => updateContentScrollCue(event.currentTarget)
+              : undefined
+          }
+        >
+          {children}
+        </div>
       )}
     </SidebarStickyGroup>
   );

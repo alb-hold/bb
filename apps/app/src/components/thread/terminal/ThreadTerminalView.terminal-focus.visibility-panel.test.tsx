@@ -1,7 +1,10 @@
 // @vitest-environment jsdom
 
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
+import * as rendererModule from "./terminal-webgl-renderer";
 import { FitAddon } from "@xterm/addon-fit";
+import { Terminal } from "@xterm/xterm";
+import { createTerminalGridMarker } from "@bb/domain";
 import { TerminalWebSocketTransport } from "@bb/client-core";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -159,6 +162,7 @@ afterEach(() => {
   vi.useRealTimers();
   cleanup();
   sessionStorage.removeItem("bb:terminal-viewport:term_mobile_paste");
+  sessionStorage.removeItem("bb:terminal-viewport:term_existing_client_grid");
   Reflect.set(wsManager, "deviceHandoffClientToken", null);
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
@@ -189,6 +193,515 @@ const originalClipboardDescriptor = Object.getOwnPropertyDescriptor(
 vi.setConfig({ testTimeout: 30_000 });
 
 describe("ThreadTerminalView terminal visibility and panel", () => {
+  it("refreshes the fitted grid when DOM fallback resolves after the renderer deadline", async () => {
+    const focusGuard = render(<button>Other input</button>);
+    focusGuard.getByRole("button").focus();
+    vi.stubGlobal("WebSocket", TestTerminalSocket);
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
+      measureText: (text: string) => ({ width: text.length * 8 }),
+    } as unknown as CanvasRenderingContext2D);
+    let finishRenderer!: (value: null) => void;
+    vi.spyOn(rendererModule, "loadOptionalTerminalWebglAddon").mockReturnValue(
+      new Promise<null>((resolve) => {
+        finishRenderer = resolve;
+      }),
+    );
+    for (const dimension of ["clientWidth", "offsetWidth"] as const) {
+      vi.spyOn(HTMLElement.prototype, dimension, "get").mockImplementation(
+        function (this: HTMLElement) {
+          return this.classList.contains("xterm-char-measure-element")
+            ? 8
+            : 354;
+        },
+      );
+    }
+    for (const dimension of ["clientHeight", "offsetHeight"] as const) {
+      vi.spyOn(HTMLElement.prototype, dimension, "get").mockImplementation(
+        function (this: HTMLElement) {
+          return this.classList.contains("xterm-char-measure-element")
+            ? 18
+            : 504;
+        },
+      );
+    }
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
+      width: 354,
+      height: 504,
+      top: 0,
+      left: 0,
+      right: 354,
+      bottom: 504,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    });
+    let cols = 132;
+    vi.spyOn(FitAddon.prototype, "proposeDimensions").mockImplementation(
+      () => ({ cols, rows: 39 }),
+    );
+    render(
+      <MemoryRouter>
+        <AppCommandProvider>
+          <ThreadTerminalView
+            autoFocus={false}
+            isPanelOpen
+            session={makeTerminalSession({
+              id: "term_late_dom",
+              threadId: null,
+              status: "running",
+            })}
+          />
+        </AppCommandProvider>
+      </MemoryRouter>,
+    );
+    const sizes = () =>
+      testState.socketMessages
+        .map((value) => JSON.parse(value) as { type: string; cols: number })
+        .filter((value) => value.type === "resize");
+    await waitForReadinessCondition(
+      () => expect(sizes().at(-1)?.cols).toBe(132),
+      "renderer deadline did not send initial grid",
+    );
+    cols = 44;
+    finishRenderer(null);
+    await waitForReadinessCondition(
+      () => expect(sizes().at(-1)?.cols).toBe(44),
+      "late fallback did not send the phone grid",
+    );
+    expect(sizes().map((size) => size.cols)).toEqual([132, 44]);
+  });
+
+  it.each([
+    {
+      name: "phone with a stale live marker",
+      reconnect: false,
+      lateRenderer: null,
+      fit: { cols: 44, rows: 40 },
+      attached: { cols: 125, rows: 44 },
+      live: { cols: 125, rows: 44 },
+    },
+    {
+      name: "phone with the current live marker",
+      reconnect: false,
+      lateRenderer: null,
+      fit: { cols: 44, rows: 40 },
+      attached: { cols: 125, rows: 44 },
+      live: { cols: 44, rows: 40 },
+    },
+    {
+      name: "desktop after a phone client",
+      reconnect: false,
+      lateRenderer: null,
+      fit: { cols: 125, rows: 44 },
+      attached: { cols: 44, rows: 40 },
+      live: { cols: 125, rows: 44 },
+    },
+    ...(["dom", "webgl"] as const).map((lateRenderer) => ({
+      name: `phone late ${lateRenderer} settle`,
+      reconnect: false,
+      fit: { cols: 44, rows: 40 },
+      attached: { cols: 125, rows: 44 },
+      live: { cols: 44, rows: 40 },
+      lateRenderer,
+    })),
+    {
+      name: "desktop after an empty reconnect with pending replay writes",
+      reconnect: true,
+      fit: { cols: 132, rows: 41 },
+      attached: { cols: 132, rows: 41 },
+      live: { cols: 132, rows: 41 },
+      lateRenderer: null,
+    },
+  ])(
+    "applies the accepted grid to $name before pending replay writes drain",
+    async ({ fit, attached, live, lateRenderer, reconnect }) => {
+      const focusGuard = render(<button>Other input</button>);
+      focusGuard.getByRole("button").focus();
+      vi.stubGlobal("WebSocket", TestTerminalSocket);
+      vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
+        measureText: (text: string) => ({ width: text.length * 8 }),
+      } as unknown as CanvasRenderingContext2D);
+      let finishRenderer:
+        | ((
+            module: Awaited<
+              ReturnType<typeof rendererModule.loadOptionalTerminalWebglAddon>
+            >,
+          ) => void)
+        | undefined;
+      const loadRenderer = vi.spyOn(
+        rendererModule,
+        "loadOptionalTerminalWebglAddon",
+      );
+      if (lateRenderer === null) loadRenderer.mockResolvedValue(null);
+      else {
+        loadRenderer.mockReturnValue(
+          new Promise((resolve) => {
+            finishRenderer = resolve;
+          }),
+        );
+        sessionStorage.setItem(
+          "bb:terminal-viewport:term_existing_client_grid",
+          JSON.stringify({
+            distanceFromTail: 0,
+            lineOffset: 0,
+            outputSequence: 0,
+          }),
+        );
+      }
+
+      for (const dimension of ["clientWidth", "offsetWidth"] as const) {
+        vi.spyOn(HTMLElement.prototype, dimension, "get").mockImplementation(
+          function (this: HTMLElement) {
+            return this.classList.contains("xterm-char-measure-element")
+              ? 8
+              : 354;
+          },
+        );
+      }
+      for (const dimension of ["clientHeight", "offsetHeight"] as const) {
+        vi.spyOn(HTMLElement.prototype, dimension, "get").mockImplementation(
+          function (this: HTMLElement) {
+            return this.classList.contains("xterm-char-measure-element")
+              ? 18
+              : 504;
+          },
+        );
+      }
+      vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
+        width: 354,
+        height: 504,
+        top: 0,
+        left: 0,
+        right: 354,
+        bottom: 504,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      });
+      let fitted = fit;
+      let mountedContainer: HTMLElement | undefined;
+      let fitMeasurements = 0;
+      const notifyContainerResize: Array<() => void> = [];
+      if (reconnect) {
+        vi.stubGlobal(
+          "ResizeObserver",
+          class {
+            constructor(private readonly callback: ResizeObserverCallback) {}
+            observe(target: Element) {
+              if (target.hasAttribute("data-terminal-renderer")) {
+                notifyContainerResize.push(() =>
+                  this.callback(
+                    [
+                      {
+                        target,
+                        contentRect: target.getBoundingClientRect(),
+                      } as ResizeObserverEntry,
+                    ],
+                    this,
+                  ),
+                );
+              }
+            }
+            disconnect() {}
+            unobserve() {}
+          },
+        );
+      }
+      vi.spyOn(FitAddon.prototype, "proposeDimensions").mockImplementation(
+        () => {
+          fitMeasurements += 1;
+          const status = mountedContainer?.querySelector("[role=status]");
+          return {
+            cols: fitted.cols,
+            rows:
+              fitted.rows -
+              (reconnect &&
+              status &&
+              getComputedStyle(status).position !== "absolute"
+                ? 2
+                : 0),
+          };
+        },
+      );
+      const session = makeTerminalSession({
+        id: "term_existing_client_grid",
+        ...attached,
+        threadId: null,
+        status: "running",
+      });
+      const mounted = render(
+        <MemoryRouter>
+          <AppCommandProvider>
+            <ThreadTerminalView
+              autoFocus={false}
+              isPanelOpen
+              session={session}
+            />
+          </AppCommandProvider>
+        </MemoryRouter>,
+      );
+      const sizes = () =>
+        testState.socketMessages
+          .map((raw) => JSON.parse(raw))
+          .filter((message) => message.type === "resize");
+      mountedContainer = mounted.container;
+      await waitFor(
+        () => {
+          expect(sizes()).toHaveLength(1);
+          expect(sizes()[0]).toMatchObject(fit);
+        },
+        { timeout: 10_000 },
+      );
+      let socket = testState.sockets[0];
+      if (!socket) throw new Error("terminal socket is missing");
+      const renderer = mounted.container.querySelector<HTMLElement>(
+        "[data-terminal-renderer]",
+      );
+      expect(renderer?.style.opacity).toBe("0");
+      socket.receive({
+        type: "attached",
+        session,
+        replayStartSeq: 0,
+        nextSeq: 1,
+      });
+      let holdWrites = true;
+      const pendingWrites: Array<() => void> = [];
+      const write = Terminal.prototype.write;
+      vi.spyOn(Terminal.prototype, "write").mockImplementation(function (
+        this: Terminal,
+        data,
+        callback,
+      ) {
+        write.call(this, data, () => {
+          if (holdWrites && callback) pendingWrites.push(callback);
+          else callback?.();
+        });
+      });
+      try {
+        socket.receive({
+          type: "output",
+          chunk: {
+            seq: 0,
+            dataBase64: btoa(
+              createTerminalGridMarker(attached) +
+                "replay\r\n" +
+                createTerminalGridMarker({ cols: 44, rows: 38 }),
+            ),
+          },
+        });
+        await waitForReadinessCondition(
+          () => expect(pendingWrites.length).toBeGreaterThan(0),
+          "historical replay did not reach the deferred parser callback",
+        );
+        if (reconnect) {
+          testState.deferSocketOpen = true;
+          socket.disconnect();
+          await waitForReadinessCondition(
+            () => expect(testState.sockets).toHaveLength(2),
+            "reconnect socket was not created",
+          );
+          socket = testState.sockets[1]!;
+          await waitForReadinessCondition(
+            () =>
+              expect(
+                mounted.container.querySelector("[role=status]")?.textContent,
+              ).toBe("Reconnecting…"),
+            "reconnect status was not shown",
+          );
+          const measurements = fitMeasurements;
+          const previousSizes = sizes();
+          for (const notify of notifyContainerResize) notify();
+          await waitForReadinessCondition(
+            () => expect(fitMeasurements).toBeGreaterThan(measurements),
+            "terminal did not remeasure with the reconnect status",
+          );
+          expect(renderer?.dataset.fitGridRows).toBe(String(fit.rows));
+          expect(sizes()).toEqual(previousSizes);
+          socket.open();
+          socket.receive({
+            type: "attached",
+            session: { ...session, rows: fit.rows - 2 },
+            replayStartSeq: 1,
+            nextSeq: 1,
+          });
+          expect(renderer?.dataset.replayHeld).toBe("false");
+          expect(renderer?.dataset.renderGridRows).toBe(String(fit.rows - 2));
+        }
+        socket.receive({ type: "features", resizeAcks: true });
+        socket.receive({
+          type: "session-updated",
+          session: { ...session, ...fit },
+        });
+        socket.receive({ type: "resize-applied", seq: 1 });
+        await waitFor(
+          () => {
+            expect(renderer?.dataset.renderGridCols).toBe(String(fit.cols));
+            expect(renderer?.dataset.renderGridRows).toBe(String(fit.rows));
+            expect(renderer?.dataset.ptyGridCols).toBe(String(fit.cols));
+            expect(renderer?.dataset.ptyGridRows).toBe(String(fit.rows));
+            expect(renderer?.dataset.replayHeld).toBe(
+              reconnect ? "false" : "true",
+            );
+          },
+          { timeout: 1000 },
+        );
+      } finally {
+        if (lateRenderer !== null)
+          fitted = { cols: fit.cols, rows: fit.rows - 2 };
+        holdWrites = false;
+        for (const callback of pendingWrites.splice(0)) callback();
+      }
+      socket.receive({
+        type: "output",
+        chunk: {
+          seq: 1,
+          dataBase64: btoa(createTerminalGridMarker(live) + "tail\r\n"),
+        },
+      });
+      await waitForReadinessCondition(
+        () =>
+          expect(socket.sent.map((raw) => JSON.parse(raw))).toContainEqual({
+            type: "ack",
+            nextSeq: 2,
+          }),
+        "replay and buffered live output were not parsed",
+      );
+      if (lateRenderer !== null) {
+        await waitForReadinessCondition(
+          () => expect(renderer?.dataset.replayHeld).toBe("false"),
+          "replay did not complete before late renderer settle",
+        );
+        fitted = fit;
+        if (lateRenderer === "webgl") {
+          vi.spyOn(rendererModule, "loadTerminalWebglRenderer").mockReturnValue(
+            { renderer: "webgl", setVisible() {}, dispose() {} },
+          );
+          finishRenderer?.({
+            WebglAddon: class {
+              activate() {}
+              dispose() {}
+              onContextLoss() {
+                return { dispose() {} };
+              }
+            },
+          });
+        } else finishRenderer?.(null);
+        await waitForReadinessCondition(
+          () => expect(renderer?.dataset.fitGridRows).toBe(String(fit.rows)),
+          "late renderer did not refresh fit rows",
+        );
+        await waitForReadinessCondition(
+          () => expect(sizes().at(-1)).toMatchObject(fit),
+          "late settle sent a stale fitted resize",
+        );
+      }
+      await waitForReadinessCondition(() => {
+        expect(renderer?.dataset.replayHeld).toBe("false");
+        expect(renderer?.dataset.ptyGridCols).toBe(String(fit.cols));
+        expect(renderer?.dataset.ptyGridRows).toBe(String(fit.rows));
+        expect(renderer?.dataset.renderGridCols).toBe(String(fit.cols));
+        expect(renderer?.dataset.renderGridRows).toBe(String(fit.rows));
+      }, "buffered output replaced the accepted grid");
+      socket.receive({
+        type: "session-updated",
+        session: { ...session, cols: 41, rows: 36 },
+      });
+      await waitForReadinessCondition(() => {
+        expect(renderer?.dataset.ptyGridCols).toBe("41");
+        expect(renderer?.dataset.ptyGridRows).toBe("36");
+        expect(renderer?.dataset.renderGridCols).toBe("41");
+        expect(renderer?.dataset.renderGridRows).toBe("36");
+      }, "a remote client size update was suppressed after a grid marker");
+    },
+  );
+
+  it("sends exactly one fitted resize when WebGL settles before the deadline", async () => {
+    const focusGuard = render(<button>Other input</button>);
+    focusGuard.getByRole("button").focus();
+    vi.stubGlobal("WebSocket", TestTerminalSocket);
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
+      measureText: (text: string) => ({ width: text.length * 8 }),
+    } as unknown as CanvasRenderingContext2D);
+    vi.spyOn(
+      rendererModule,
+      "loadOptionalTerminalWebglAddon",
+    ).mockResolvedValue({
+      WebglAddon: class {
+        activate() {}
+        dispose() {}
+        onContextLoss() {
+          return { dispose() {} };
+        }
+      },
+    });
+    vi.spyOn(rendererModule, "loadTerminalWebglRenderer").mockReturnValue({
+      renderer: "webgl",
+      setVisible() {},
+      dispose() {},
+    });
+    for (const dimension of ["clientWidth", "offsetWidth"] as const) {
+      vi.spyOn(HTMLElement.prototype, dimension, "get").mockImplementation(
+        function (this: HTMLElement) {
+          return this.classList.contains("xterm-char-measure-element")
+            ? 8
+            : 354;
+        },
+      );
+    }
+    for (const dimension of ["clientHeight", "offsetHeight"] as const) {
+      vi.spyOn(HTMLElement.prototype, dimension, "get").mockImplementation(
+        function (this: HTMLElement) {
+          return this.classList.contains("xterm-char-measure-element")
+            ? 18
+            : 504;
+        },
+      );
+    }
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
+      width: 354,
+      height: 504,
+      top: 0,
+      left: 0,
+      right: 354,
+      bottom: 504,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    });
+    vi.spyOn(FitAddon.prototype, "proposeDimensions").mockReturnValue({
+      cols: 44,
+      rows: 39,
+    });
+    render(
+      <MemoryRouter>
+        <AppCommandProvider>
+          <ThreadTerminalView
+            autoFocus={false}
+            isPanelOpen
+            session={makeTerminalSession({
+              id: "term_webgl_single_resize",
+              threadId: null,
+              status: "running",
+            })}
+          />
+        </AppCommandProvider>
+      </MemoryRouter>,
+    );
+    const sizes = () =>
+      testState.socketMessages
+        .map(
+          (value) =>
+            JSON.parse(value) as { type: string; cols: number; rows: number },
+        )
+        .filter((value) => value.type === "resize");
+    await waitForReadinessCondition(
+      () => expect(sizes().length).toBeGreaterThan(0),
+      "WebGL did not send fitted grid",
+    );
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect(sizes()).toEqual([expect.objectContaining({ cols: 44, rows: 39 })]);
+  });
+
   it("keeps the app identity when the server echoes it after terminal attach", async () => {
     vi.stubGlobal("WebSocket", TestTerminalSocket);
     vi.stubGlobal(
@@ -370,7 +883,15 @@ describe("ThreadTerminalView terminal visibility and panel", () => {
     }, "terminal visibility was not reported within 5000 ms");
   });
 
-  it("clears attention when its terminal panel becomes visible", async () => {
+  it("keeps attention on open until a terminal keystroke", async () => {
+    vi.stubGlobal("WebSocket", TestTerminalSocket);
+    vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(108);
+    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(90);
+    vi.spyOn(FitAddon.prototype, "proposeDimensions").mockReturnValue({
+      cols: 12,
+      rows: 5,
+    });
     const session = makeTerminalSession({
       id: "term_attention",
       attention: { at: 10, kind: "bell", seq: 3 },
@@ -408,6 +929,36 @@ describe("ThreadTerminalView terminal visibility and panel", () => {
       </MemoryRouter>,
     );
 
+    expect(testState.clearAttention).not.toHaveBeenCalled();
+    await waitForReadinessCondition(() => {
+      expect(document.querySelector(".xterm-helper-textarea")).not.toBeNull();
+    }, "terminal did not mount");
+    expect(testState.clearAttention).not.toHaveBeenCalled();
+    await waitForReadinessCondition(() => {
+      expect(
+        Array.from(document.querySelectorAll("button")).some(
+          (button) => button.textContent === "Fit to this screen",
+        ),
+      ).toBe(true);
+    }, "fit control did not become ready");
+    const fitControl = Array.from(document.querySelectorAll("button")).find(
+      (button) => button.textContent === "Fit to this screen",
+    );
+    expect(fitControl).toBeDefined();
+    fireEvent.click(fitControl!);
+    expect(testState.clearAttention).not.toHaveBeenCalled();
+    await waitForReadinessCondition(() => {
+      expect(
+        testState.socketMessages.some((raw) => {
+          const message = JSON.parse(raw);
+          return message.type === "resize" && message.claim === true;
+        }),
+      ).toBe(true);
+    }, "fit control did not claim the existing resize path");
+    fireEvent.keyDown(document.querySelector(".xterm-helper-textarea")!, {
+      key: "a",
+      keyCode: 65,
+    });
     await waitForReadinessCondition(() => {
       expect(testState.clearAttention).toHaveBeenCalledWith({
         terminalId: session.id,
@@ -657,7 +1208,7 @@ it.each([
     rows: 40,
     renderCols: 80,
     renderRows: 24,
-    scale: "0.95",
+    scale: "1",
   },
 ])(
   "preserves exited native output layout on $device after touch focus and remount",
@@ -666,9 +1217,10 @@ it.each([
     const matchMedia = window.matchMedia.bind(window);
     vi.spyOn(window, "matchMedia").mockImplementation((query) => ({
       ...matchMedia(query),
-      matches: query === COMPACT_VIEWPORT_QUERY
-        ? width <= 767
-        : matchMedia(query).matches,
+      matches:
+        query === COMPACT_VIEWPORT_QUERY
+          ? width <= 767
+          : matchMedia(query).matches,
     }));
     const sendResize = vi.spyOn(
       TerminalWebSocketTransport.prototype,

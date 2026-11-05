@@ -166,10 +166,22 @@
     "1589.6), so boot plus ThreadPage fell from 3203.9 to 3160.2 KB. Both",
     "boot caps rose to the measured size plus under 1 KB: to 1,610,000 raw /",
     "394,500 Brotli bytes. Code that moved between the entry chunk and the",
-    "thread route in the sync was not individually attributed."
+    "thread route in the sync was not individually attributed.",
+    "",
+    "On 2026-11-05 PR 426 round 7 measured the boot payload at 1,609,919 raw",
+    "bytes, 276 over the cap this PR had lowered to 1,609,643. The growth is",
+    "the check-terminal indicator: its list-indicator branch, the favicon",
+    "dot check and the child-banner filter. The raw cap returns to the",
+    "1,610,000 set by the 0.48.0 sync; the Brotli cap stays lowered.",
+    "",
+    "On 2026-11-05 PR 426 round 8 added the phone home scroll-edge cue (one",
+    "scroll listener toggling a data attribute; the mask rule lives in app.css).",
+    "Raw boot stayed at 1,609,919 bytes, but Brotli measured about 394,430,",
+    "66 over the lowered cap. The Brotli cap returns to the 394,500 set by the",
+    "0.48.0 sync; neither cap is above the base."
   ],
-  "maxBootBytes": 1610000,
-  "maxBootBrotliBytes": 394500,
+  "maxBootBytes": 1598045,
+  "maxBootBrotliBytes": 392322,
   "forbiddenBootPackages": [
     "@dnd-kit/accessibility",
     "@dnd-kit/core",
@@ -204,6 +216,12 @@
     "sonner"
   ],
   "splitBoundaries": {
+    "src/components/dialogs/ThreadDeleteDialog.tsx": ["boot"],
+    "src/components/notifications/NotificationCenterView.tsx": ["boot"],
+    "src/components/device-handoff/DeviceHandoffSheet.tsx": ["boot"],
+    "src/components/dialogs/ProviderCliInstallLogDialog.tsx": ["boot"],
+    "src/views/AuthCallbackView.tsx": ["boot"],
+    "src/components/tools/ResourceSidebar.tsx": ["boot"],
     "src/components/settings/SettingsSidebar.tsx": ["boot"],
     "src/components/dialogs/RemotePathBrowser.tsx": ["boot"],
     "src/lib/plugin-sdk-hooks.ts": ["boot"],
@@ -334,9 +352,14 @@
   },
   "routeClosures": {
     "PluginFrontend": {
-      "maxBytes": 676970,
-      "maxBrotliBytes": 211533,
+      "maxBytes": 505525,
+      "maxBrotliBytes": 162937,
       "forbiddenPackages": [
+        "@radix-ui/react-hover-card",
+        "@radix-ui/react-menubar",
+        "@radix-ui/react-navigation-menu",
+        "@radix-ui/react-select",
+        "vaul",
         "@pierre/diffs",
         "@pierre/theming",
         "@shikijs/core",
@@ -385,8 +408,8 @@
       ]
     },
     "NewThreadPage": {
-      "maxBytes": 1466040,
-      "maxBrotliBytes": 431498,
+      "maxBytes": 850000,
+      "maxBrotliBytes": 270000,
       "forbiddenPackages": [
         "@dnd-kit/accessibility",
         "@dnd-kit/core",

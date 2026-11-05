@@ -1,3 +1,4 @@
+import { xtermFaintContrast } from "./vite-xterm-faint.js";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineConfig, type UserConfig } from "vite";
@@ -5,7 +6,7 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { bundleStats } from "./vite-bundle-stats.js";
 import { splitPrefetch } from "./vite-split-prefetch.js";
-import { routeModulePreload } from "./vite-route-modulepreload.js";
+import { initialThreadPreload } from "./vite-initial-thread-preload.js";
 import { fontPreload } from "./vite-font-preload.js";
 import { sharedUiEnvSeam } from "./vite-shared-ui-seam.js";
 import { cachedReactCompiler } from "./vite-react-compiler.js";
@@ -14,13 +15,14 @@ const appDir = dirname(fileURLToPath(import.meta.url));
 
 export const sharedViteConfig = {
   plugins: [
+    xtermFaintContrast(),
     sharedUiEnvSeam(),
     react(),
     cachedReactCompiler(),
     tailwindcss(),
     bundleStats(),
     fontPreload(),
-    routeModulePreload("src/views/SplitWorkspaceRoute.tsx"),
+    initialThreadPreload(),
     splitPrefetch({
       "markdown-html": "src/components/ui/markdown-html.tsx",
       "queued-messages-list":

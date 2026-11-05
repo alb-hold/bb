@@ -38,12 +38,68 @@ describe("TerminalMobileControls", () => {
       name: "Terminal keyboard controls",
     });
     const buttons = Array.from(controls.querySelectorAll("button"));
+    expect(controls.querySelector(".bg-gradient-to-l")).toBeNull();
 
-    expect(buttons.length).toBeGreaterThan(0);
+    expect(
+      buttons.slice(0, 3).map((button) => button.getAttribute("aria-label")),
+    ).toEqual(["Interrupt (Control C)", "Escape", "Arrow up"]);
+    expect(buttons[0]?.parentElement?.className.split(/\s+/u)).toEqual(
+      expect.arrayContaining(["flex-nowrap", "overflow-x-auto"]),
+    );
+    expect(buttons[0]?.parentElement?.className.split(/\s+/u)).not.toContain(
+      "flex-wrap",
+    );
+    for (const label of ["Enter", "More terminal keys"]) {
+      expect(
+        screen
+          .getByRole("button", { name: label })
+          .closest("[data-terminal-key-scroller]"),
+      ).toBeNull();
+    }
+    expect(buttons[0]?.closest("[data-terminal-key-scroller]")).not.toBeNull();
     for (const button of buttons) {
-      expect(button.className.split(/\s+/u)).toContain("min-w-8");
+      expect(button.className.split(/\s+/u)).toContain("min-w-11");
       expect(button.className.split(/\s+/u)).toContain("flex-none");
     }
+  });
+
+  it("interrupts without expanding or scrolling the key bar", () => {
+    const { onInput } = renderControls();
+    const interrupt = screen.getByRole("button", {
+      name: "Interrupt (Control C)",
+    });
+    expect(
+      interrupt.closest("[data-terminal-key-scroller]")?.firstElementChild,
+    ).toBe(interrupt);
+    fireEvent.click(interrupt);
+    expect(onInput).toHaveBeenCalledExactlyOnceWith("\x03");
+    expect(screen.queryByRole("button", { name: "Shift Tab" })).toBeNull();
+  });
+
+  it("shows an overflow cue only on edges with hidden keys", () => {
+    renderControls();
+    const scroller = document.querySelector<HTMLElement>(
+      "[data-terminal-key-scroller]",
+    )!;
+    Object.defineProperties(scroller, {
+      clientWidth: { configurable: true, value: 240 },
+      scrollWidth: { configurable: true, value: 380 },
+    });
+    fireEvent.scroll(scroller);
+    expect(scroller.dataset.moreRight).toBe("");
+    expect(scroller.dataset.moreLeft).toBeUndefined();
+    scroller.scrollLeft = 70;
+    fireEvent.scroll(scroller);
+    expect(scroller.dataset.moreLeft).toBe("");
+    expect(scroller.dataset.moreRight).toBe("");
+    scroller.scrollLeft = 140;
+    fireEvent.scroll(scroller);
+    expect(scroller.dataset.moreRight).toBeUndefined();
+    Object.defineProperty(scroller, "clientWidth", { value: 400 });
+    scroller.scrollLeft = 0;
+    fireEvent.scroll(scroller);
+    expect(scroller.dataset.moreLeft).toBeUndefined();
+    expect(scroller.dataset.moreRight).toBeUndefined();
   });
 
   it("hides the extra keys until the user expands them", () => {
@@ -57,6 +113,7 @@ describe("TerminalMobileControls", () => {
 
   it.each([
     ["Shift Tab", "\x1b[Z"],
+    ["Function key F2", "\x1bOQ"],
     ["Interrupt (Control C)", "\x03"],
     ["End of input (Control D)", "\x04"],
     ["Page up", "\x1b[5~"],
@@ -74,6 +131,7 @@ describe("TerminalMobileControls", () => {
 
   it("opens terminal output search from the touch controls", () => {
     const { onSearch } = renderControls();
+    fireEvent.click(screen.getByRole("button", { name: "More terminal keys" }));
     fireEvent.click(
       screen.getByRole("button", { name: "Search terminal output" }),
     );
@@ -109,4 +167,18 @@ describe("TerminalMobileControls", () => {
     expect(buttonDisabled("Enter")).toBe(true);
     expect(buttonDisabled("More terminal keys")).toBe(true);
   });
+});
+
+it("keeps both vertical arrows together before the narrow row overflow", () => {
+  renderControls();
+  const up = screen.getByRole("button", { name: "Arrow up" });
+  const down = screen.getByRole("button", { name: "Arrow down" });
+  expect(up.nextElementSibling).toBe(down);
+  expect(
+    screen.queryByRole("button", { name: "Control for next key" }),
+  ).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "More terminal keys" }));
+  expect(
+    screen.getByRole("button", { name: "Control for next key" }),
+  ).toBeTruthy();
 });

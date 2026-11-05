@@ -5,6 +5,7 @@ import {
   cleanup,
   fireEvent,
   render,
+  renderHook,
   screen,
 } from "@testing-library/react";
 import type {
@@ -22,6 +23,7 @@ import type {
 } from "@bb/server-contract";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { systemExecutionOptionsQueryKey } from "@/hooks/queries/query-keys";
+import { usePromptBoxModelPreference } from "@/hooks/thread-creation-options/persisted-selection-fields";
 import { sdk } from "@/lib/sdk";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
 import { CompactViewportOverrideProvider } from "@bb/shared-ui/hooks/use-compact-viewport";
@@ -181,6 +183,7 @@ function renderPicker({
   modelIsLoading = false,
   modelLoadError = null,
   compact = false,
+  compactIconOnly = false,
   splitPane = false,
   muted = false,
   handoff,
@@ -207,6 +210,7 @@ function renderPicker({
   modelIsLoading?: boolean;
   modelLoadError?: SystemExecutionOptionsModelLoadError | null;
   compact?: boolean;
+  compactIconOnly?: boolean;
   splitPane?: boolean;
   muted?: boolean;
   handoff?: ModelReasoningPickerHandoff;
@@ -235,6 +239,7 @@ function renderPicker({
   const picker = (
     <div data-app-composer>
       <ModelReasoningPicker
+        compactIconOnly={compactIconOnly}
         providerOptions={pickerProviderOptions}
         providerRouting={providerRouting}
         selectedProviderId={selectedProviderId}
@@ -329,6 +334,20 @@ describe("ModelReasoningPicker", () => {
     expect(onReasoningChange).not.toHaveBeenCalled();
   });
 
+  it("keeps the GPT family in the visible trigger and tooltip", () => {
+    renderPicker({
+      modelOptions: [{ value: "gpt-6.1-sol", label: "GPT-6.1-Sol" }],
+      modelValue: "gpt-6.1-sol",
+    });
+    const trigger = screen.getByRole("button", {
+      name: "Provider, model and reasoning",
+    });
+    expect(trigger.textContent).toContain("GPT-6.1-Sol");
+    expect(trigger.querySelector("[title]")?.getAttribute("title")).toContain(
+      "GPT-6.1-Sol",
+    );
+  });
+
   it("adjusts reasoning in an empty search but preserves text navigation", () => {
     const { onReasoningChange, onModelChange } = renderPicker({
       modelOptions: manyCodexModels,
@@ -354,7 +373,7 @@ describe("ModelReasoningPicker", () => {
         name: "Provider, model and reasoning",
       }),
     );
-    const model = screen.getByRole("button", { name: "5.5" });
+    const model = screen.getByRole("button", { name: "GPT-5.5" });
     model.focus();
     fireEvent.keyDown(model, { key: "ArrowRight" });
     expect(onReasoningChange).toHaveBeenCalledExactlyOnceWith("high");
@@ -528,7 +547,7 @@ describe("ModelReasoningPicker", () => {
     },
   );
 
-  it("holds the trigger and model-list layout with skeletons while loading", () => {
+  it("shows a neutral model label while the model list loads", () => {
     renderPicker({
       modelOptions: [],
       modelValue: "",
@@ -541,8 +560,9 @@ describe("ModelReasoningPicker", () => {
 
     expect(
       trigger.querySelectorAll("[data-model-loading-placeholder]"),
-    ).toHaveLength(2);
-    expect(trigger.textContent).not.toContain("Loading models...");
+    ).toHaveLength(0);
+    expect(trigger.textContent).toContain("Model");
+    expect(trigger.querySelector(".animate-spin")).toBeNull();
 
     fireEvent.click(trigger);
 
@@ -710,7 +730,7 @@ describe("ModelReasoningPicker", () => {
     fireEvent.click(
       screen.getByRole("button", { name: "Provider, model and reasoning" }),
     );
-    fireEvent.click(screen.getByText("5.2"));
+    fireEvent.click(screen.getByText("GPT-5.2"));
 
     expect(onModelChange).toHaveBeenCalledWith("gpt-5.2");
     expect(screen.getByRole("dialog")).not.toBeNull();
@@ -780,13 +800,13 @@ describe("ModelReasoningPicker", () => {
         name: "Provider, model and reasoning",
       }),
     );
-    expect(screen.getAllByText("5.5")).toHaveLength(2);
+    expect(screen.getAllByText("GPT-5.5")).toHaveLength(2);
 
     fireEvent.click(screen.getByTitle("Claude Code"));
 
     expect(onSelectedProviderChange).toHaveBeenCalledWith("claude-code");
     expect(await screen.findByText("Opus 4.7")).not.toBeNull();
-    expect(screen.getAllByText("5.5")).toHaveLength(1);
+    expect(screen.getAllByText("GPT-5.5")).toHaveLength(1);
     expect(onModelChange).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByText("Opus 4.7"));
@@ -818,7 +838,7 @@ describe("ModelReasoningPicker", () => {
       screen.getByRole("button", { name: "Handoff to new thread" }),
     );
     expect(onStart).toHaveBeenCalledOnce();
-    fireEvent.click(screen.getByRole("button", { name: "5.5" }));
+    fireEvent.click(screen.getByRole("button", { name: "GPT-5.5" }));
     expect(onSelect).toHaveBeenCalledWith(
       expect.objectContaining({ providerId: "codex" }),
     );
@@ -1074,6 +1094,18 @@ describe("ModelReasoningPicker", () => {
     expect(onModelChange).toHaveBeenCalledWith(apiModel);
   });
 
+  it("formats catalog and fallback model labels through the same formatter", () => {
+    renderPicker({
+      modelValue: "gpt-5.2-codex",
+      pickerProviderOptions: [{ value: "codex", label: "Codex" }],
+      modelOptions: [{ value: "gpt-5.2-codex", label: "gpt-5.2-codex" }],
+    });
+    expect(
+      screen.getByRole("button", { name: "Provider, model and reasoning" })
+        .textContent,
+    ).toContain("5.2-Codex");
+  });
+
   it("uses picker search policy and selects the match by keyboard", () => {
     const { onModelChange } = renderPicker({ modelOptions: manyCodexModels });
 
@@ -1189,7 +1221,7 @@ describe("ModelReasoningPicker", () => {
     const search = screen.getByPlaceholderText("Search models");
     fireEvent.change(search, { target: { value: "legacy" } });
 
-    expect(screen.getByText("4.1 Legacy")).not.toBeNull();
+    expect(screen.getByText("GPT-4.1 Legacy")).not.toBeNull();
 
     fireEvent.keyDown(search, { key: "ArrowDown" });
     fireEvent.keyDown(search, { key: "Enter" });
@@ -1429,7 +1461,7 @@ describe("ModelReasoningPicker service tiers", () => {
   it.each([
     ["fast", "Zap"],
     ["ultrafast", "provider-codex/ultrafast"],
-  ])("shows the %s tier's icon on the trigger", (tier, icon) => {
+  ])("shows the selected %s tier icon on the trigger", (tier, icon) => {
     setPluginAssetIcons(
       new Map([["provider-codex/ultrafast", "/icons/ultrafast.svg"]]),
     );
@@ -1447,6 +1479,7 @@ describe("ModelReasoningPicker service tiers", () => {
     const icons = [...trigger.querySelectorAll("[data-icon]")].map((node) =>
       node.getAttribute("data-icon"),
     );
+    expect(icons).toContain("ChevronDown");
     expect(icons).toContain(icon);
     expect(icons).not.toContain(
       icon === "Zap" ? "provider-codex/ultrafast" : "Zap",
@@ -1625,4 +1658,65 @@ describe("ModelReasoningPicker service tiers", () => {
     ).toBeTruthy();
     expect(screen.queryByRole("radiogroup", { name: "Speed" })).toBeNull();
   });
+});
+
+it("uses the persisted model when the home selection is still loading", () => {
+  const { result } = renderHook(() => usePromptBoxModelPreference("codex"));
+  act(() => result.current.setValue("gpt-5.5"));
+  try {
+    renderPicker({ modelValue: "", modelOptions: [], modelIsLoading: true });
+    expect(screen.getByRole("button", { name: "Provider, model and reasoning" }).textContent).toContain("5.5");
+  } finally {
+    act(() => result.current.setValue(""));
+  }
+});
+
+it.each([
+  [false, false],
+  [true, false],
+  [false, true],
+  [true, true],
+])("keeps model identity and chevron with compact=%s pending=%s", (compact, modelIsLoading) => {
+  renderPicker({ compact, modelIsLoading, modelValue: "gpt-5.5" });
+  const trigger = screen.getByRole("button", { name: "Provider, model and reasoning" });
+  expect(trigger.textContent).toContain("5.5");
+  expect(trigger.querySelector('[data-icon="ChevronDown"]')).not.toBeNull();
+  expect(trigger.querySelector('[data-icon="Bot"]')).not.toBeNull();
+  expect(trigger.querySelector('[data-icon="Zap"]')).toBeNull();
+});
+
+it.each([false, true])("keeps provider, model and effort in compact accessible names while pending=%s", (modelIsLoading) => {
+  renderPicker({ compact: true, compactIconOnly: true, modelIsLoading, modelValue: "gpt-5.5" });
+  const trigger = screen.getByRole("button", { name: "Provider, model and reasoning: Codex: GPT-5.5 · Medium reasoning" });
+  expect(trigger.querySelector('[data-icon="ChevronDown"]')).not.toBeNull();
+});
+
+it.each([false, true])("keeps the selected tier cue with compact=%s", (compact) => {
+  renderPicker({
+    compact,
+    compactIconOnly: compact,
+    serviceTierOptions: [{ id: "fast", label: "Fast" }],
+    serviceTierValue: "fast",
+  });
+  const trigger = screen.getByRole("button", { name: /^Provider, model and reasoning/ });
+  expect(trigger.querySelector('[data-icon="Zap"]')).not.toBeNull();
+  expect(trigger.querySelector('[data-icon="Zap"]')?.classList.contains("size-3.5")).toBe(true);
+  expect(trigger.querySelector('[data-icon="Zap"]')?.classList.contains("fill-current")).toBe(true);
+  expect(trigger.querySelector('[data-icon="Zap"]')?.classList.contains("text-subtle-foreground")).toBe(true);
+  expect(trigger.querySelector('[data-icon="ChevronDown"]')).not.toBeNull();
+});
+
+it("keeps provider and effort in the compact name before a model resolves", () => {
+  renderPicker({ compact: true, compactIconOnly: true, modelIsLoading: true, modelValue: "", modelOptions: [] });
+  expect(screen.getByRole("button", { name: "Provider, model and reasoning: Codex: Model · Medium reasoning" })).not.toBeNull();
+});
+
+it("uses Model for an unresolved compact picker without a provider", () => {
+  renderPicker({ compact: true, compactIconOnly: true, selectedProviderId: "", pickerProviderOptions: [], modelValue: "", modelOptions: [], modelIsLoading: true });
+  expect(screen.getByRole("button", { name: "Model" })).not.toBeNull();
+});
+
+it("omits an empty provider segment from the resolved compact name", () => {
+  renderPicker({ compact: true, compactIconOnly: true, selectedProviderId: "", pickerProviderOptions: [], modelValue: "gpt-5.5" });
+  expect(screen.getByRole("button", { name: "Provider, model and reasoning: GPT-5.5 · Medium reasoning" })).not.toBeNull();
 });

@@ -7,11 +7,20 @@ import Text from "@tiptap/extension-text";
 import { UndoRedo } from "@tiptap/extensions/undo-redo";
 import { TrailingNode } from "@tiptap/extensions/trailing-node";
 import type { AnyExtension } from "@tiptap/react";
+import { Plugin } from "@tiptap/pm/state";
 import {
   PromptDecorationExtension,
   type PromptDecorationExtensionOptions,
 } from "./prompt-decoration-extension";
 import { PromptMentionExtension } from "./prompt-mention-extension";
+
+const CurrentNodePlaceholder = Placeholder.extend({
+  addProseMirrorPlugins() {
+    return (this.parent?.() ?? []).map(
+      (plugin) => new Plugin({ props: plugin.props }),
+    );
+  },
+});
 
 interface PromptEditorExtensionsOptions extends PromptDecorationExtensionOptions {
   getPlaceholder: () => string;
@@ -30,7 +39,9 @@ export function promptEditorExtensions({
     Paragraph,
     Text,
     TrailingNode,
-    Placeholder.configure({
+    CurrentNodePlaceholder.configure({
+      showOnlyCurrent: true,
+      includeChildren: false,
       placeholder: () => getPlaceholder(),
     }),
     PromptMentionExtension,

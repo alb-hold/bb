@@ -168,9 +168,17 @@ function Handler() {
   return null;
 }
 
+const initialStyleSheetCount = document.styleSheets.length;
+
 afterEach(() => {
   vi.useRealTimers();
   cleanup();
+  for (const sheet of [...document.styleSheets]) {
+    const owner = sheet.ownerNode;
+    if (owner instanceof HTMLStyleElement && !owner.isConnected) {
+      owner.textContent = "";
+    }
+  }
   sessionStorage.removeItem("bb:terminal-viewport:term_mobile_paste");
   Reflect.set(wsManager, "deviceHandoffClientToken", null);
   vi.unstubAllGlobals();
@@ -191,6 +199,7 @@ afterEach(() => {
   testState.toastError.mockReset();
   testState.touchEnabled = false;
   testState.mediaQueryListeners.clear();
+  expect(document.styleSheets).toHaveLength(initialStyleSheetCount);
 });
 
 const originalClipboardDescriptor = Object.getOwnPropertyDescriptor(
@@ -255,7 +264,9 @@ function prepareMobileTerminal(): void {
   );
 }
 
-function renderMobileTerminal(): ReturnType<typeof makeTerminalSession> {
+function renderMobileTerminal(
+  native = false,
+): ReturnType<typeof makeTerminalSession> {
   const session = makeTerminalSession({
     id: "term_mobile_paste",
     status: "running",
@@ -265,7 +276,17 @@ function renderMobileTerminal(): ReturnType<typeof makeTerminalSession> {
   render(
     <MemoryRouter>
       <AppCommandProvider>
-        <ThreadTerminalView autoFocus={false} isPanelOpen session={session} />
+        {native ? (
+          <header>
+            <button aria-label="Search terminal output" />
+          </header>
+        ) : null}
+        <ThreadTerminalView
+          autoFocus={false}
+          isPanelOpen
+          session={session}
+          attentionShownAsBanner={native}
+        />
       </AppCommandProvider>
     </MemoryRouter>,
   );
@@ -280,6 +301,89 @@ function scrollTerminalAsUser(terminal: Terminal, line: number): void {
 }
 
 describe("ThreadTerminalView terminal viewport and focus", () => {
+  it.each([true, false])(
+    "leaves one header search action in a native pane with touch=%s",
+    async (touch) => {
+      prepareMobileTerminal();
+      testState.touchEnabled = touch;
+      const loadAddon = vi.spyOn(Terminal.prototype, "loadAddon");
+      vi.spyOn(FitAddon.prototype, "proposeDimensions").mockReturnValue({
+        cols: 40,
+        rows: 12,
+      });
+      renderMobileTerminal(true);
+      await waitForReadinessCondition(
+        () =>
+          expect(
+            loadAddon.mock.calls.some(([addon]) => "findNext" in addon),
+          ).toBe(true),
+        "terminal search addon was not loaded within 5000 ms",
+      );
+      expect(
+        screen.getAllByRole("button", { name: "Search terminal output" }),
+      ).toHaveLength(1);
+      if (touch) {
+        expect(
+          screen
+            .getByRole("group", { name: "Terminal keyboard controls" })
+            .classList.contains("py-0"),
+        ).toBe(true);
+        expect(
+          screen
+            .getByRole("button", { name: "Escape" })
+            .classList.contains("h-11"),
+        ).toBe(true);
+      }
+    },
+  );
+  it.each([360, 390])(
+    "starts compact terminals at 13px at %s px",
+    async (width) => {
+      prepareMobileTerminal();
+      vi.stubGlobal("matchMedia", (query: string) => ({
+        matches:
+          query === "(pointer: coarse)" ||
+          (query === "(max-width: 767px)" && width <= 767),
+        media: query,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        onchange: null,
+        dispatchEvent: vi.fn(),
+      }));
+      vi.spyOn(FitAddon.prototype, "proposeDimensions").mockReturnValue({
+        cols: 40,
+        rows: 12,
+      });
+      renderMobileTerminal();
+      await waitFor(() =>
+        expect(
+          document
+            .querySelector("[data-terminal-font-size]")
+            ?.getAttribute("data-terminal-font-size"),
+        ).toBe("13"),
+      );
+    },
+  );
+  it("keeps DOM cell line spacing contiguous when mounting the terminal", async () => {
+    prepareMobileTerminal();
+    vi.spyOn(FitAddon.prototype, "proposeDimensions").mockReturnValue({
+      cols: 40,
+      rows: 12,
+    });
+    let terminal: Terminal | null = null;
+    const open = Terminal.prototype.open;
+    vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
+      this: Terminal,
+      element,
+    ) {
+      terminal = this;
+      open.call(this, element);
+    });
+    renderMobileTerminal();
+    await waitFor(() => expect(terminal?.options.lineHeight).toBe(1));
+  });
   it("keeps a bottom-following client at the bottom after output and a shared resize", async () => {
     prepareMobileTerminal();
     let fitCols = 40;
@@ -980,7 +1084,9 @@ describe("ThreadTerminalView terminal viewport and focus", () => {
               type?: string;
             },
         )
-        .filter((message) => message.type === "resize" && message.claim !== true);
+        .filter(
+          (message) => message.type === "resize" && message.claim !== true,
+        );
 
     await waitForReadinessCondition(
       () => expect(resizeMessages()).toHaveLength(1),
@@ -1014,6 +1120,10 @@ describe("ThreadTerminalView terminal viewport and focus", () => {
     );
     await waitFor(() => expect(resizeMessages()).toHaveLength(3));
     expect(resizeMessages().at(-1)).toEqual(originalGrid);
+    dispatchTouches("touchstart", 100);
+    dispatchTouches("touchmove", 50);
+    dispatchTouches("touchend", 50, true);
+    expect(fontSizeNode?.getAttribute("data-terminal-font-size")).toBe("12");
   });
 
   it("preserves the open terminal and its scrollback when pointer mode changes", async () => {

@@ -1,4 +1,5 @@
 import { type RefObject, useLayoutEffect } from "react";
+import { flushSync } from "react-dom";
 import { atom, useAtom, useAtomValue, useSetAtom } from "jotai";
 import {
   usePluginSlots,
@@ -35,9 +36,11 @@ export function useMeasureSidebarFooterCapacity(
         Math.max(0, Math.floor((width + gap) / (controlWidth + gap)) - 1),
       );
     };
-    measure();
-    if (typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(measure);
+    if (typeof ResizeObserver === "undefined") {
+      const frame = requestAnimationFrame(measure);
+      return () => cancelAnimationFrame(frame);
+    }
+    const observer = new ResizeObserver(() => flushSync(measure));
     observer.observe(row);
     observer.observe(more);
     return () => observer.disconnect();
@@ -100,7 +103,15 @@ export function useSidebarFooterPreferences() {
     getId: (item) => item.key,
   });
   const footer = ordered
-    .filter((item) => !hidden.includes(item.key))
+    .filter(
+      (item) =>
+        !hidden.includes(item.key) &&
+        (item.kind === "plugin" ||
+          item.key === "builtin:settings" ||
+          item.key === "builtin:report-bug" ||
+          order.length > 0 ||
+          hidden.length > 0),
+    )
     .slice(0, capacity ?? undefined);
   const more = ordered.filter((item) => !footer.includes(item));
   const isFull = capacity !== null && footer.length >= capacity;
@@ -125,7 +136,11 @@ export function useSidebarFooterPreferences() {
       const rest = normalizedOrder.filter((id) => id !== key);
       const index = last === undefined ? 0 : rest.indexOf(last) + 1;
       setOrder([...rest.slice(0, index), key, ...rest.slice(index)]);
-      setHidden((previous) => previous.filter((id) => id !== key));
+      setHidden((previous) =>
+        [...new Set([...previous, ...more.map((item) => item.key)])].filter(
+          (id) => id !== key,
+        ),
+      );
     },
     setFooterShown(shown: boolean) {
       setHidden((previous) => {

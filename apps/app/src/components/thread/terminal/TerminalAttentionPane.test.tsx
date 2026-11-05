@@ -59,3 +59,19 @@ describe("terminal attention pane", () => {
     expect(rendered.container.querySelector(".ring-attention")).toBeNull();
   });
 });
+
+it("leaves native terminal attention to the top banner", () => {
+  const { container } = render(
+    <TerminalAttentionPane
+      attention={{ at: 10, kind: "bell", seq: 1 }}
+      bannerOnly
+      className="native-pane"
+    >
+      Check terminal
+    </TerminalAttentionPane>,
+  );
+  expect(container.querySelector(".ring-attention")).toBeNull();
+  expect(container.querySelector(".native-pane")?.textContent).toBe(
+    "Check terminal",
+  );
+});
