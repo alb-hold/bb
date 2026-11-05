@@ -87,6 +87,68 @@ describe("terminal attention persistence", () => {
       ).not.toBeNull();
     },
   );
+  it.each(["websocket", "route"] as const)(
+    "clears attention raised right after recent %s input without rewriting the input time",
+    async (path) => {
+      const harness = await createTestAppHarness({
+        db: createMigratedConnection(),
+      });
+      harnesses.push(harness);
+      const { terminalId } = createAttentionTerminal(harness);
+      vi.spyOn(harness.hub, "sendDaemonSessionMessage").mockReturnValue(true);
+      const socket = { close() {}, send() {} };
+      const sendInput = (text: string) => {
+        const dataBase64 = Buffer.from(text, "utf8").toString("base64");
+        if (path === "route") {
+          harness.deps.terminalSessions.sendTerminalInput({
+            terminalId,
+            payload: { dataBase64 },
+          });
+          return;
+        }
+        harness.deps.terminalSessions.handleBrowserTerminalMessage({
+          terminalId,
+          socket,
+          message: { type: "input", dataBase64, isUserInput: true },
+        });
+      };
+      const inputTime = () =>
+        harness.db.$client
+          .prepare(
+            "SELECT last_user_input_at AS at FROM terminal_sessions WHERE id = ?",
+          )
+          .get(terminalId) as { at: number | null };
+
+      sendInput("a");
+      const firstInput = inputTime().at;
+      expect(firstInput).toBeTypeOf("number");
+      harness.deps.terminalSessions.notifyTerminal({
+        terminalId,
+        payload: { title: "Approve?" },
+      });
+      expect(getTerminalAttention(harness.db, terminalId)?.clearedAt).toBeNull();
+      const sqlite = harness.db.$client;
+      const prepare = sqlite.prepare.bind(sqlite);
+      const statements: string[] = [];
+      vi.spyOn(sqlite, "prepare").mockImplementation((source: string) => {
+        statements.push(source);
+        return prepare(source);
+      });
+
+      sendInput("y");
+
+      expect(
+        getTerminalAttention(harness.db, terminalId)?.clearedAt,
+      ).toBeTypeOf("number");
+      expect(
+        statements.filter((source) =>
+          /^\s*update\s+["`]?terminal_sessions["`]?/iu.test(source),
+        ),
+      ).toEqual([]);
+      vi.mocked(sqlite.prepare).mockRestore();
+      expect(inputTime().at).toBe(firstInput);
+    },
+  );
   it("keeps attention and input time when a user frame is empty or not delivered", async () => {
     const harness = await createTestAppHarness({
       db: createMigratedConnection(),
