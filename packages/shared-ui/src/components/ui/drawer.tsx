@@ -5,6 +5,7 @@ import { cn } from "../../lib/utils";
 import { usePortalScopeProps } from "../../lib/portal-scope";
 import {
   getOverlayTriggerClassName,
+  useOverlayTriggerModality,
   preventOverlayTriggerSelection,
 } from "./overlay-trigger.js";
 
@@ -22,14 +23,17 @@ Drawer.displayName = "Drawer";
 const DrawerTrigger = React.forwardRef<
   React.ComponentRef<typeof DrawerPrimitive.Trigger>,
   React.ComponentPropsWithoutRef<typeof DrawerPrimitive.Trigger>
->(({ className, ...props }, ref) => (
-  <DrawerPrimitive.Trigger
-    ref={ref}
-    className={getOverlayTriggerClassName(className)}
-    onMouseDown={preventOverlayTriggerSelection}
-    {...props}
-  />
-));
+>(({ className, ...props }, ref) => {
+  useOverlayTriggerModality();
+  return (
+    <DrawerPrimitive.Trigger
+      ref={ref}
+      className={getOverlayTriggerClassName(className)}
+      onMouseDown={preventOverlayTriggerSelection}
+      {...props}
+    />
+  );
+});
 DrawerTrigger.displayName = DrawerPrimitive.Trigger.displayName;
 
 const DrawerPortal = DrawerPrimitive.Portal;
