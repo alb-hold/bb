@@ -461,11 +461,19 @@ describe("the Linux process-list visibility rule", () => {
 
   it("is uncertain for an unreadable foreign regular-user cwd when it can reach the worktree", async () => {
     const proc = fakeProc({
-      processes: { 101: { uid: 1001, cwdDenied: true } },
+      self: { uid: 1000 },
+      processes: {
+        101: {
+          uid: 1001,
+          uidValues: [1001, 1002, 1003, 1004],
+          gidValues: [2001, 2002, 2003, 2004],
+          cwdDenied: true,
+        },
+      },
     });
     expect(await scanLinux("/work/tree", proc, 4242)).toMatchObject({
       status: "uncertain",
-      reason: expect.stringContaining("foreign uid 1001"),
+      reason: expect.stringContaining("foreign uid 1004"),
     });
   });
 

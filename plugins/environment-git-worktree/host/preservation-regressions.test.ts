@@ -1009,7 +1009,7 @@ describe("real worktree teardown preservation", () => {
         worker.once("spawn", resolve);
         worker.once("error", reject);
       });
-      await fs.chmod(worktree.root, 0o700);
+      await fs.chmod(worktree.root, 0o711);
       useProcReaderForTests(foreignUnreadableCwdProc(worker.pid ?? -1));
       const signal = vi.spyOn(process, "kill");
 
