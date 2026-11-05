@@ -480,6 +480,7 @@ describe("buildProjectThreadGroups", () => {
           "pending-grandchild",
         ]),
         pending: true,
+        terminalAttention: false,
         working: true,
         runtimeWorking: true,
         workflow: false,
