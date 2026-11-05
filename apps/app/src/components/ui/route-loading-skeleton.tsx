@@ -10,7 +10,7 @@ import {
 } from "@/lib/bb-desktop";
 import { useIsCompactViewport } from "@bb/shared-ui/hooks/use-compact-viewport";
 import { Skeleton } from "@bb/shared-ui/skeleton";
-import { ComposerLoadingControls } from "@/components/promptbox/ComposerPlaceholder";
+import { ComposerLoadingControls } from "@/components/promptbox/ComposerLoadingControls";
 import { cn } from "@bb/shared-ui/lib/utils";
 import { CONTENT_MEASURE_MAX_WIDTH_CLASS } from "@/lib/content-measure";
 import { useEffect, type ReactNode } from "react";
