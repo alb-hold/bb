@@ -544,6 +544,7 @@ describe("composer and navigation contrast", () => {
 });
 
 it("keeps terminal bright-black output distinct from the canvas in both themes", () => {
-  expect(modeBlock("dark")).toContain("--ansi-8: color-mix(in oklch, var(--ink) 35%, var(--canvas))");
-  expect(modeBlock("light")).toContain("--ansi-8: #3a3a3a");
+  for (const mode of ["dark", "light"] as const) {
+    expect(modeBlock(mode)).toContain("--ansi-8: color-mix(in oklch, var(--ink) 70%, var(--canvas))");
+  }
 });

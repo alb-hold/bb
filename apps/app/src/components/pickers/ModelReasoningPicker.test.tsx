@@ -1710,3 +1710,13 @@ it("keeps provider and effort in the compact name before a model resolves", () =
   renderPicker({ compact: true, compactIconOnly: true, modelIsLoading: true, modelValue: "", modelOptions: [] });
   expect(screen.getByRole("button", { name: "Provider, model and reasoning: Codex: Model · Medium reasoning" })).not.toBeNull();
 });
+
+it("uses Model for an unresolved compact picker without a provider", () => {
+  renderPicker({ compact: true, compactIconOnly: true, selectedProviderId: "", pickerProviderOptions: [], modelValue: "", modelOptions: [], modelIsLoading: true });
+  expect(screen.getByRole("button", { name: "Model" })).not.toBeNull();
+});
+
+it("omits an empty provider segment from the resolved compact name", () => {
+  renderPicker({ compact: true, compactIconOnly: true, selectedProviderId: "", pickerProviderOptions: [], modelValue: "gpt-5.5" });
+  expect(screen.getByRole("button", { name: "Provider, model and reasoning: GPT-5.5 · Medium reasoning" })).not.toBeNull();
+});

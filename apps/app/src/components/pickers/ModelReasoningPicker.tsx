@@ -917,14 +917,24 @@ export function ModelReasoningPicker({
       ? selectedModelLoadErrorText
       : triggerModelLabel;
   const triggerTitle = [
-    `${selectedProviderLabel}: ${triggerTitleModelLabel}`,
+    [selectedProviderLabel, triggerTitleModelLabel].filter((label) => label.trim().length > 0).join(": "),
     triggerReasoningLabel ? ` · ${triggerReasoningLabel} reasoning` : "",
     selectedServiceTierOption
       ? ` (${selectedServiceTierOption.label} mode)`
       : "",
   ].join("");
+  const compactSelectionLabel = [selectedProviderLabel, selectedModelLabel || "Model"]
+    .filter((label) => label.trim().length > 0)
+    .join(": ");
+  const compactReasoningLabel = triggerReasoningLabel ?? reasoningLevelLabel(reasoningValue, undefined);
+  const compactAccessibleLabel = !selectedProviderLabel.trim() && !hasSelectedModel
+    ? "Model"
+    : `Provider, model and reasoning: ${[
+        compactSelectionLabel,
+        compactReasoningLabel ? `${compactReasoningLabel} reasoning` : "",
+      ].filter(Boolean).join(" · ")}`;
   const triggerAccessibleLabel = showCompactIconOnly
-    ? `Provider, model and reasoning: ${selectedProviderLabel}: ${selectedModelLabel || "Model"} · ${triggerReasoningLabel ?? reasoningLevelLabel(reasoningValue, undefined)} reasoning`
+    ? compactAccessibleLabel
     : toggleShortcut
       ? `Provider, model and reasoning (${toggleShortcut.label})`
       : "Provider, model and reasoning";

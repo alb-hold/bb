@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { SidebarRowMetadataExperiment } from "../list/SidebarRowMetadataExperiment.js";
+import { ThreadListVisibilityGroupScope } from "../list/ThreadListVisibility.js";
 import * as pluginSdk from "@get-bb/plugin-sdk/app";
 
 import {
@@ -151,6 +152,7 @@ interface HarnessProps {
   providers?: PluginProvidersState["providers"];
   isCompactViewport?: boolean;
   crossProjectId?: string | null;
+  visibilityGroup?: string;
   isActive?: boolean;
   options?: ThreadRowOptions;
   onRowEvent?: () => void;
@@ -166,20 +168,24 @@ function ThreadRowHarness({
   providers = [],
   isCompactViewport,
   crossProjectId = null,
+  visibilityGroup,
   isActive = false,
   options = DEFAULT_OPTIONS,
   onRowEvent,
   onCustomizeRowActions,
   onFinishCustomizingRowActions,
 }: HarnessProps) {
-  const row = (
-    <ThreadRow
-      thread={thread}
-      crossProjectId={crossProjectId}
-      isActive={isActive}
-      options={options}
-    />
+  const threadRow = (
+      <ThreadRow
+        thread={thread}
+        crossProjectId={crossProjectId}
+        isActive={isActive}
+        options={options}
+      />
   );
+  const row = visibilityGroup ? (
+    <ThreadListVisibilityGroupScope id={visibilityGroup}>{threadRow}</ThreadListVisibilityGroupScope>
+  ) : threadRow;
   const content = (
     <SidebarRowMetadataExperiment>
       <SidebarProjectsContext.Provider value={projects}>
@@ -532,6 +538,22 @@ afterEach(() => {
 });
 
 describe("ThreadRow", () => {
+  it.each([
+    ["project:proj_context", "2m"],
+    ["project:proj_other", "Orbital ·2m"],
+    ["threads", "Orbital ·2m"],
+    ["pinned", "Orbital ·2m"],
+    ["section:custom", "Orbital ·2m"],
+  ])("shows project context only outside its own project group (%s)", (group, expected) => {
+    const updatedAt = Date.now() - 120_000;
+    const view = renderThreadRow({
+      visibilityGroup: group,
+      thread: createThread({ projectId: "proj_context", updatedAt, archivedAt: 1 }),
+      projects: [{ id: "proj_context", name: "Orbital", isPersonal: false, href: "/", settingsHref: "/" }],
+    });
+    expect(view.container.querySelector("[data-sidebar-thread-context]")?.textContent).toBe(expected);
+  });
+
   it("shows project and age context without requiring plugin metadata", () => {
     const updatedAt = Date.now() - 120_000;
     const view = renderThreadRow({
@@ -539,7 +561,7 @@ describe("ThreadRow", () => {
       projects: [{ id: "proj_context", name: "Orbital", isPersonal: false, href: "/", settingsHref: "/" }],
     });
     const context = view.container.querySelector("[data-sidebar-thread-context]");
-    expect(context?.textContent).toBe("Orbital·2m");
+    expect(context?.textContent).toBe("Orbital ·2m");
     expect(context?.querySelector("time")?.dateTime).toBe(new Date(updatedAt).toISOString());
     expect(view.container.querySelector("[data-thread-row-metadata]")).toBeNull();
     expect(screen.queryByRole("img", { name: "Native terminal", hidden: true })).toBeNull();

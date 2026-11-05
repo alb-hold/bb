@@ -128,6 +128,8 @@ import {
 import { useThreadSelectionMenu } from "../selection/useThreadSelectionMenu.js";
 import { useOpenThreadInSplit } from "./threadRowNavigation.js";
 import { Button } from "@/components/ui/button";
+import { useThreadListVisibilityGroup } from "../list/ThreadListVisibility.js";
+import { buildSidebarEntitySectionId } from "../model/sidebar-section-order.js";
 import { COARSE_POINTER_ICON_SIZE_CLASS } from "@/components/ui/coarse-pointer-sizing";
 import {
   useCustomizeThreadRowActions,
@@ -615,6 +617,8 @@ function ThreadRowComponent({
   const labelTitle = thread.displayTitle;
   const crossProjectName = useSidebarProjectName(crossProjectId);
   const projectName = useSidebarProjectName(thread.projectId);
+  const visibilityGroup = useThreadListVisibilityGroup();
+  const showProjectName = visibilityGroup !== buildSidebarEntitySectionId("project", thread.projectId);
   const crossProjectLabel =
     crossProjectId === null
       ? null
@@ -1023,7 +1027,7 @@ function ThreadRowComponent({
               </span>
               <span data-sidebar-thread-context="" className="hidden min-w-0 items-center gap-1 truncate text-2xs leading-4 text-muted-foreground md:flex">
                 {thread.experimental_nativeActivity !== undefined ? <span role="img" aria-label="Native terminal"><Icon name="Terminal" className="size-3 shrink-0" aria-hidden /></span> : null}
-                {projectName ? <><span className="truncate">{projectName}</span><span aria-hidden>·</span></> : null}
+                {showProjectName && projectName ? <span className="truncate">{projectName} ·</span> : null}
                 <InfoRowTime timestamp={thread.updatedAt} />
               </span>
             </span>
