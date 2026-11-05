@@ -20,14 +20,15 @@ function bootstrap(pathname: string, view: unknown, ok = true) {
     "other.js": chunk("other.js", "/app/settings.ts"),
   }});
   const links: Array<{ href: string; rel: string; fetchPriority: string }> = [];
+  const order: string[] = [];
   const timer = vi.fn();
   let fallback = () => {};
   const setTimeout = vi.fn((callback: () => void, _ms: number) => { fallback = callback; return 1; });
   let resolve: (response: unknown) => void = () => {};
-  const fetch = vi.fn(() => new Promise((r) => { resolve = r; }));
-  const document = { createElement: () => ({}), head: { append: (link: { href: string; rel: string; fetchPriority: string }) => links.push(link) } };
+  const fetch = vi.fn(() => { order.push("lookup"); return new Promise((r) => { resolve = r; }); });
+  const document = { createElement: () => ({}), head: { append: (link: { href: string; rel: string; fetchPriority: string }) => { order.push(link.href); links.push(link); } } };
   runInNewContext(tags[0]!.children, { document, location: { pathname }, fetch, setTimeout, clearTimeout: timer });
-  return { links, fetch, tags, setTimeout, timer, fallback: () => fallback(), respond: async () => {
+  return { links, fetch, tags, order, setTimeout, timer, fallback: () => fallback(), respond: async () => {
     resolve({ ok, json: async () => view });
     await new Promise((r) => globalThis.setTimeout(r, 0));
   } };
@@ -37,7 +38,8 @@ it.each(["/threads/thr_abc", "/projects/proj_a/threads/thr_abc/"])("fetches the 
   const state = bootstrap(path, { threadId: "thr_abc", providerId: "codex" });
   expect(state.tags[0]!.injectTo).toBe("head-prepend");
   expect(state.links.map((link) => link.href)).toEqual(["/thread.js", "/shared.js"]);
-  expect(state.fetch).toHaveBeenCalledWith("/api/v1/threads/thr_abc/native-terminal");
+  expect(state.fetch).toHaveBeenCalledWith("/api/v1/threads/thr_abc/native-terminal", { priority: "high" });
+  expect(state.order).toEqual(["lookup", "/thread.js", "/shared.js"]);
   await state.respond();
   expect(state.links.map((link) => link.href)).toEqual(["/thread.js", "/shared.js", "/terminal.js", "/webgl.js", "/panel.js"]);
   expect(state.links.every((link) => link.rel === "modulepreload")).toBe(true);
