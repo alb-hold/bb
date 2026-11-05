@@ -187,7 +187,10 @@ export async function moveHostPath(
     await hooks.afterLinkBeforeCheck?.();
     const linked = await fs.lstat(destination);
     if (!isSameFile(linked, opened)) {
-      refuseMove(command.sourcePath, "the destination now holds something else");
+      refuseMove(
+        command.sourcePath,
+        "the destination now holds something else",
+      );
     }
     await hooks.afterLink?.();
     const holding = path.join(
@@ -203,6 +206,31 @@ export async function moveHostPath(
     }
     const held = await fs.lstat(holding);
     if (isSameFile(held, opened)) {
+      let destinationMatches = false;
+      try {
+        destinationMatches = isSameFile(await fs.lstat(destination), opened);
+      } catch {
+        destinationMatches = false;
+      }
+      if (!destinationMatches) {
+        try {
+          await fs.link(holding, source);
+        } catch (error) {
+          const code =
+            error instanceof Error && "code" in error
+              ? String(error.code)
+              : "error";
+          throw new CommandDispatchError(
+            "invalid_path",
+            `The destination now holds something else, and the source could not be restored (${code}); the original file remains at ${holding}.`,
+          );
+        }
+        await fs.unlink(holding);
+        refuseMove(
+          command.sourcePath,
+          "the destination now holds something else",
+        );
+      }
       await fs.unlink(holding);
       return { ok: true };
     }

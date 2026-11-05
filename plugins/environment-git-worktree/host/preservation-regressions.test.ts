@@ -18,6 +18,7 @@ import {
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { hostProc, useProcReaderForTests, type ProcReader } from "./holders.js";
 import { descendantsOnly } from "./descendants-only.js";
@@ -53,9 +54,18 @@ async function removeDirectoryTree(
   return (await import(moduleUrl)).removeDirectoryTree(root, hooks);
 }
 
-function foreignUnreadableCwdProc(pid: number): ProcReader {
-  const realUid = process.getuid?.() ?? process.geteuid?.() ?? 1000;
-  const realGid = process.getgid?.() ?? process.getegid?.() ?? 1000;
+function foreignUnreadableCwdProc(
+  pid: number,
+  supplementaryGroups: number[] = [],
+): ProcReader {
+  const daemonUid = process.getuid?.() ?? process.geteuid?.() ?? 1000;
+  const daemonGid = process.getgid?.() ?? process.getegid?.() ?? 1000;
+  let foreignUid = 60_000;
+  while (foreignUid <= daemonUid && foreignUid + 3 >= daemonUid)
+    foreignUid += 4;
+  let foreignGid = 61_000;
+  while (foreignGid <= daemonGid && foreignGid + 3 >= daemonGid)
+    foreignGid += 4;
   return {
     ...hostProc,
     readlink: async (target) => {
@@ -68,7 +78,7 @@ function foreignUnreadableCwdProc(pid: number): ProcReader {
     },
     readFile: async (target) => {
       if (target === `/proc/${pid}/status`)
-        return `Name:\tforeign\nState:\tS (sleeping)\nUid:\t1001\t1002\t1003\t${realUid}\nGid:\t1001\t1002\t1003\t${realGid}\nGroups:\t${realGid}\nCapEff:\t0000000000000000\n`;
+        return `Name:\tforeign\nState:\tS (sleeping)\nUid:\t${foreignUid}\t${foreignUid + 1}\t${foreignUid + 2}\t${foreignUid + 3}\nGid:\t${foreignGid}\t${foreignGid + 1}\t${foreignGid + 2}\t${foreignGid + 3}\nGroups:\t${[foreignGid + 3, ...supplementaryGroups].join(" ")}\nCapEff:\t0000000000000000\n`;
       return hostProc.readFile(target);
     },
     readdir: async (target) => {
@@ -287,7 +297,16 @@ describe("real worktree teardown preservation", () => {
     const worktree = await makeWorktree();
     await writeFile(path.join(worktree.path, "bisect.txt"), "bisect\n");
     await git(worktree.path, "add", "bisect.txt");
-    await git(worktree.path, "-c", "user.name=Worktree Test", "-c", "user.email=worktree@example.test", "commit", "-m", "bisect point");
+    await git(
+      worktree.path,
+      "-c",
+      "user.name=Worktree Test",
+      "-c",
+      "user.email=worktree@example.test",
+      "commit",
+      "-m",
+      "bisect point",
+    );
     await git(worktree.path, "push", "origin", "feature");
     await git(worktree.path, "bisect", "start", "HEAD", "HEAD^");
     useProcReaderForTests(descendantsOnly(hostProc, -1));
@@ -388,12 +407,7 @@ describe("real worktree teardown preservation", () => {
     await expect(remove(worktree)).rejects.toMatchObject({
       code: "worktree_preserved",
     });
-    const reachable = await git(
-      worktree.path,
-      "rev-list",
-      "--all",
-      "--reflog",
-    );
+    const reachable = await git(worktree.path, "rev-list", "--all", "--reflog");
     expect(reachable.split("\n")).toContain(commit);
   });
 
@@ -547,6 +561,61 @@ describe("real worktree teardown preservation", () => {
     expect(restoredStat.mtimeMs).toBeCloseTo(originalTimes.mtimeMs, 0);
   });
 
+  it("retains an in-place edit made after entry check even when its mtime is restored", async () => {
+    const worktree = await makeWorktree();
+    useProcReaderForTests(descendantsOnly(hostProc, -1));
+    const stableMtime = Math.floor(Date.now() / 1000) - 10;
+    await utimes(
+      path.join(worktree.path, ".gitignore"),
+      stableMtime,
+      stableMtime,
+    );
+    let originalTimes: { atimeMs: number; mtimeMs: number } | undefined;
+    let injected = false;
+    const checkedEntries: string[] = [];
+
+    await expect(
+      remove(worktree, {
+        afterEntryCheck: async (entry) => {
+          checkedEntries.push(entry);
+          if (path.basename(entry) !== ".gitignore" || injected) return;
+          injected = true;
+          const opened = await fs.open(entry, "r+");
+          try {
+            const before = await opened.stat();
+            originalTimes = before;
+            await opened.writeFile(".xxx\n");
+            let changed = await opened.stat();
+            const deadline = Date.now() + 1_000;
+            while (
+              changed.ctimeMs === before.ctimeMs &&
+              Date.now() < deadline
+            ) {
+              await delay(5);
+              changed = await opened.stat();
+            }
+            expect(changed.ctimeMs).not.toBe(before.ctimeMs);
+            await utimes(entry, before.atimeMs / 1000, before.mtimeMs / 1000);
+            expect((await opened.stat()).mtimeMs).toBe(before.mtimeMs);
+          } finally {
+            await opened.close();
+          }
+        },
+      }),
+    ).rejects.toMatchObject({ code: "worktree_preserved" });
+
+    expect(injected, checkedEntries.join("\n")).toBe(true);
+    await expect(
+      readFile(path.join(worktree.path, ".gitignore"), "utf8"),
+    ).resolves.toBe(".xxx\n");
+    await expect(git(worktree.path, "rev-parse", "--git-dir")).resolves.toMatch(
+      /worktrees/u,
+    );
+    if (originalTimes === undefined) throw new Error("missing original times");
+    const after = await fs.stat(path.join(worktree.path, ".gitignore"));
+    expect(after.mtimeMs).toBeCloseTo(originalTimes.mtimeMs, 0);
+  });
+
   it("retains a replacement directory created before directory removal", async () => {
     const worktree = await makeWorktree();
     useProcReaderForTests(descendantsOnly(hostProc, -1));
@@ -654,9 +723,9 @@ describe("real worktree teardown preservation", () => {
 
       expect(injected).toBe(true);
       expect(result).toBe("retained");
-      expect((await git(worktree.path, "rev-parse", "--git-dir")).trim()).not.toBe(
-        "",
-      );
+      expect(
+        (await git(worktree.path, "rev-parse", "--git-dir")).trim(),
+      ).not.toBe("");
       await expect(git(worktree.path, "worktree", "list")).resolves.toContain(
         worktree.path,
       );
@@ -961,7 +1030,9 @@ describe("real worktree teardown preservation", () => {
   )(
     "retains the worktree without signalling when an unreadable foreign cwd can traverse a group-execute-only ancestor",
     async () => {
-      const root = await mkdtemp(path.join(os.tmpdir(), "bb-preserve-worktree-group-"));
+      const root = await mkdtemp(
+        path.join(os.tmpdir(), "bb-preserve-worktree-group-"),
+      );
       const worktree = await makeWorktree(root);
       const worker = spawn(
         process.execPath,
@@ -974,7 +1045,10 @@ describe("real worktree teardown preservation", () => {
         worker.once("error", reject);
       });
       await fs.chmod(root, 0o710);
-      useProcReaderForTests(foreignUnreadableCwdProc(worker.pid ?? -1));
+      const processGroup = process.getgid?.() ?? process.getegid?.() ?? 1000;
+      useProcReaderForTests(
+        foreignUnreadableCwdProc(worker.pid ?? -1, [processGroup]),
+      );
       const signal = vi.spyOn(process, "kill");
 
       await expect(remove(worktree)).rejects.toMatchObject({
@@ -984,10 +1058,56 @@ describe("real worktree teardown preservation", () => {
       expect(signal).not.toHaveBeenCalled();
       expect(() => process.kill(worker.pid!, 0)).not.toThrow();
       await expect(access(worktree.path)).resolves.toBeUndefined();
-      expect(await readFile(path.join(worktree.path, "README.md"), "utf8")).toBe(
-        "published\n",
-      );
+      expect(
+        await readFile(path.join(worktree.path, "README.md"), "utf8"),
+      ).toBe("published\n");
     },
   );
 
+  it.skipIf(
+    process.platform !== "linux" ||
+      (typeof process.getuid === "function" && process.getuid() === 0),
+  )(
+    "removes a clean worktree when a genuinely foreign unreadable process cannot traverse group-only access",
+    async () => {
+      const root = await mkdtemp(
+        path.join("/tmp", "bb-preserve-worktree-foreign-group-"),
+      );
+      const worktree = await makeWorktree(root);
+      const worker = spawn(
+        process.execPath,
+        ["-e", "setInterval(() => {}, 1000)"],
+        { cwd: worktree.path, stdio: "ignore" },
+      );
+      workers.push(worker);
+      await new Promise<void>((resolve, reject) => {
+        worker.once("spawn", resolve);
+        worker.once("error", reject);
+      });
+      await fs.chmod(root, 0o710);
+      const proc = foreignUnreadableCwdProc(worker.pid ?? -1);
+      const status = await proc.readFile(`/proc/${worker.pid}/status`);
+      const daemonUid = process.getuid?.() ?? process.geteuid?.() ?? 1000;
+      const daemonGid = process.getgid?.() ?? process.getegid?.() ?? 1000;
+      const uidValues = /^Uid:\s*(.*)$/mu
+        .exec(status)?.[1]
+        ?.split(/\s+/u)
+        .map(Number);
+      const gidValues = /^Gid:\s*(.*)$/mu
+        .exec(status)?.[1]
+        ?.split(/\s+/u)
+        .map(Number);
+      expect(uidValues).toHaveLength(4);
+      expect(gidValues).toHaveLength(4);
+      expect(uidValues?.every((uid) => uid !== daemonUid)).toBe(true);
+      expect(gidValues?.every((gid) => gid !== daemonGid)).toBe(true);
+      useProcReaderForTests(proc);
+
+      await expect(remove(worktree)).resolves.toBeUndefined();
+      await expect(access(worktree.path)).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+      expect(() => process.kill(worker.pid!, 0)).not.toThrow();
+    },
+  );
 });

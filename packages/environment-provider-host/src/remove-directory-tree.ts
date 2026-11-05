@@ -301,7 +301,9 @@ export async function removeDirectoryTree(
         if (
           movedInfo.dev !== checkedInfo.dev ||
           movedInfo.ino !== checkedInfo.ino ||
-          movedInfo.mtimeMs !== checkedInfo.mtimeMs
+          movedInfo.ctimeMs !== checkedInfo.ctimeMs ||
+          movedInfo.mtimeMs !== checkedInfo.mtimeMs ||
+          movedInfo.size !== checkedInfo.size
         ) {
           await restoreQuarantine();
           return "retained";

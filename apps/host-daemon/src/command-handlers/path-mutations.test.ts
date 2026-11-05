@@ -44,11 +44,17 @@ describe("confined host path mutations", () => {
       await fs.writeFile(path.join(target, "before.txt"), "before");
       const worker = spawn(
         "python3",
-        ["-c", "import os,sys; fd=os.open(sys.argv[1], os.O_RDONLY); print('ready', flush=True); sys.stdin.readline(); os.fchdir(fd); open('late.txt','w').write('late'); print('written', flush=True); sys.stdin.readline()", target],
+        [
+          "-c",
+          "import os,sys; fd=os.open(sys.argv[1], os.O_RDONLY); print('ready', flush=True); sys.stdin.readline(); os.fchdir(fd); open('late.txt','w').write('late'); print('written', flush=True); sys.stdin.readline()",
+          target,
+        ],
         { stdio: ["pipe", "pipe", "ignore"] },
       );
       let output = "";
-      worker.stdout?.on("data", (chunk) => { output += chunk.toString(); });
+      worker.stdout?.on("data", (chunk) => {
+        output += chunk.toString();
+      });
       const waitFor = async (value: string) => {
         while (!output.includes(value)) await once(worker.stdout!, "data");
       };
@@ -66,7 +72,9 @@ describe("confined host path mutations", () => {
             },
           }),
         ).rejects.toMatchObject({ code: "path_in_use" });
-        await expect(fs.readFile(path.join(target, "late.txt"), "utf8")).resolves.toBe("late");
+        await expect(
+          fs.readFile(path.join(target, "late.txt"), "utf8"),
+        ).resolves.toBe("late");
       } finally {
         worker.kill("SIGKILL");
       }
@@ -563,10 +571,40 @@ describe("confined host path mutations", () => {
       code: "invalid_path",
       message: expect.stringContaining("destination now holds something else"),
     });
-    await expect(fs.readFile(destination, "utf8")).resolves.toBe(
-      "replacement",
-    );
+    await expect(fs.readFile(destination, "utf8")).resolves.toBe("replacement");
     await expect(fs.readFile(source, "utf8")).resolves.toBe("original");
+  });
+
+  it("restores the source and refuses when the destination changes after its post-link check", async () => {
+    const root = await makeRoot();
+    const source = path.join(root, "a.txt");
+    const destination = path.join(root, "b.txt");
+    await fs.writeFile(source, "original");
+
+    const failure = await moveHostPath(
+      {
+        type: "host.move_path",
+        sourcePath: source,
+        destinationPath: destination,
+        rootPath: root,
+      },
+      {
+        afterLink: async () => {
+          await fs.unlink(destination);
+          await fs.writeFile(destination, "replacement");
+        },
+      },
+    ).catch((error: unknown) => error);
+
+    expect(failure).toMatchObject({
+      code: "invalid_path",
+      message: expect.stringContaining("destination now holds something else"),
+    });
+    await expect(fs.readFile(source, "utf8")).resolves.toBe("original");
+    await expect(fs.readFile(destination, "utf8")).resolves.toBe("replacement");
+    expect(
+      (await fs.readdir(root)).filter((name) => name.startsWith(".bb-moving-")),
+    ).toEqual([]);
   });
 
   it.each([

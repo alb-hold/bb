@@ -1,16 +1,19 @@
 import { spawn, spawnSync } from "node:child_process";
 import {
   mkdir,
+  chmod,
   mkdtemp,
   readFile,
   readlink as fsReadlink,
   realpath,
   rm,
+  stat,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { linuxPathHasExtendedAcl } from "@bb/process-utils/linux-path-access";
 import {
   describeHolderScan,
   hostProc,
@@ -119,6 +122,94 @@ describe("scanWorktreeHolders", () => {
     ).toContain("node (pid 42, open file)");
     expect(describeHolderScan({ status: "clear" })).toBeNull();
   });
+});
+
+describe("real Linux POSIX ACL access checks", () => {
+  it.skipIf(process.platform !== "linux")(
+    "detects a named-user ACL and treats its target as reachable",
+    async () => {
+      const root = await realpath(
+        await mkdtemp(join("/tmp", "bb-holders-acl-")),
+      );
+      roots.push(root);
+      const aclDirectory = join(root, "acl");
+      await mkdir(aclDirectory, { mode: 0o710 });
+      await chmod(root, 0o711);
+      const acl = spawnSync(
+        "python3",
+        [
+          "-c",
+          "import os,struct,sys\np=sys.argv[1]\nu=int(sys.argv[2])\ne=[(1,7,0xffffffff),(2,1,u),(4,1,0xffffffff),(16,1,0xffffffff),(32,0,0xffffffff)]\nos.setxattr(p,'system.posix_acl_access',struct.pack('<I',2)+b''.join(struct.pack('<HHI',*v) for v in e))",
+          aclDirectory,
+          "65534",
+        ],
+        { encoding: "utf8" },
+      );
+      expect(acl.error).toBeUndefined();
+      expect(acl.status, acl.stderr).toBe(0);
+      await expect(linuxPathHasExtendedAcl(aclDirectory)).resolves.toBe(true);
+      const pid = 4_000_000_000;
+      const proc: ProcReader = {
+        ...hostProc,
+        readdir: async (target) =>
+          target === "/proc"
+            ? [String(process.pid), String(pid)]
+            : hostProc.readdir(target),
+        readFile: async (target) =>
+          target === `/proc/${pid}/status`
+            ? "Name:\tforeign\nState:\tS (sleeping)\nUid:\t65534\t65534\t65534\t65534\nGid:\t65534\t65534\t65534\t65534\nGroups:\t65534\nCapEff:\t0000000000000000\n"
+            : hostProc.readFile(target),
+        readlink: async (target) => {
+          if (target === `/proc/${pid}/cwd`)
+            throw Object.assign(new Error("Permission denied"), {
+              code: "EACCES",
+            });
+          return hostProc.readlink(target);
+        },
+        statAccess: async (target) => {
+          const info = await stat(target);
+          return { uid: info.uid, gid: info.gid, mode: info.mode };
+        },
+        hasExtendedAcl: linuxPathHasExtendedAcl,
+      };
+      await expect(scanLinux(aclDirectory, proc)).resolves.toMatchObject({
+        status: "uncertain",
+      });
+    },
+  );
+
+  it.skipIf(process.platform !== "linux")(
+    "clears a genuinely foreign process outside a group-execute-only directory",
+    async () => {
+      const root = await realpath(
+        await mkdtemp(join("/tmp", "bb-holders-foreign-group-")),
+      );
+      roots.push(root);
+      await chmod(root, 0o710);
+      const pid = 4_000_000_001;
+      const proc: ProcReader = {
+        ...hostProc,
+        readdir: async (target) =>
+          target === "/proc"
+            ? [String(process.pid), String(pid)]
+            : hostProc.readdir(target),
+        readFile: async (target) =>
+          target === `/proc/${pid}/status`
+            ? "Name:\tforeign\nState:\tS (sleeping)\nUid:\t65530\t65531\t65532\t65533\nGid:\t65530\t65531\t65532\t65533\nGroups:\t65533\nCapEff:\t0000000000000000\n"
+            : hostProc.readFile(target),
+        readlink: async (target) => {
+          if (target === `/proc/${pid}/cwd`)
+            throw Object.assign(new Error("Permission denied"), {
+              code: "EACCES",
+            });
+          return hostProc.readlink(target);
+        },
+      };
+      await expect(scanLinux(root, proc)).resolves.toMatchObject({
+        status: "clear",
+      });
+    },
+  );
 });
 
 interface FakeProcess {
@@ -433,8 +524,16 @@ describe("the Linux process-list visibility rule", () => {
   );
 
   it.each([
-    ["filesystem GID", [1001, 1001, 1001, 2000] as [number, number, number, number], []],
-    ["supplementary group", [1001, 1001, 1001, 1001] as [number, number, number, number], [2000]],
+    [
+      "filesystem GID",
+      [1001, 1001, 1001, 2000] as [number, number, number, number],
+      [],
+    ],
+    [
+      "supplementary group",
+      [1001, 1001, 1001, 1001] as [number, number, number, number],
+      [2000],
+    ],
   ])(
     "is uncertain for a foreign UID in the directory %s with group-execute-only access",
     async (_name, gidValues, groups) => {
@@ -470,24 +569,27 @@ describe("the Linux process-list visibility rule", () => {
     });
   });
 
-  it.each([true, null])("is uncertain when an ACL may grant access (%s)", async (extendedAcl) => {
-    const proc = fakeProc({
-      worktreeMode: 0o710,
-      worktreeGid: 2000,
-      extendedAcl,
-      processes: {
-        101: {
-          uid: 1001,
-          gidValues: [1001, 1001, 1001, 1001],
-          groups: [],
-          cwdDenied: true,
+  it.each([true, null])(
+    "is uncertain when an ACL may grant access (%s)",
+    async (extendedAcl) => {
+      const proc = fakeProc({
+        worktreeMode: 0o710,
+        worktreeGid: 2000,
+        extendedAcl,
+        processes: {
+          101: {
+            uid: 1001,
+            gidValues: [1001, 1001, 1001, 1001],
+            groups: [],
+            cwdDenied: true,
+          },
         },
-      },
-    });
-    expect(await scanLinux("/work/tree", proc, 4242)).toMatchObject({
-      status: "uncertain",
-    });
-  });
+      });
+      expect(await scanLinux("/work/tree", proc, 4242)).toMatchObject({
+        status: "uncertain",
+      });
+    },
+  );
 
   it("is uncertain when ACL inspection fails on a restrictive mode", async () => {
     const proc = fakeProc({

@@ -1,5 +1,13 @@
-import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, realpath, rm, symlink } from "node:fs/promises";
+import { spawn, spawnSync } from "node:child_process";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  realpath,
+  rm,
+  stat,
+  symlink,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -15,8 +23,11 @@ import {
   scanProcessesWithCwdUnder,
   type CwdScanIo,
 } from "../src/cwd-scan.js";
+import { linuxPathHasExtendedAcl } from "../src/linux-path-access.js";
 
 const cleanups: (() => Promise<void>)[] = [];
+const hasSetfacl =
+  spawnSync("setfacl", ["--version"], { encoding: "utf8" }).error === undefined;
 afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
@@ -59,7 +70,9 @@ function fakeLinux(
     statAccess: async () => ({ uid: 0, gid: 0, mode: 0o711 }),
   }) as CwdScanIo & {
     effectiveCapabilities(pid: number): Promise<bigint>;
-    statAccess(path: string): Promise<{ uid: number; gid: number; mode: number }>;
+    statAccess(
+      path: string,
+    ): Promise<{ uid: number; gid: number; mode: number }>;
   };
 }
 
@@ -137,7 +150,7 @@ describe("scanProcessesWithCwdUnder", () => {
         },
       },
     );
-      expect(scan).toMatchObject({ status: "unknown" });
+    expect(scan).toMatchObject({ status: "unknown" });
   });
 
   it.each([
@@ -194,20 +207,23 @@ describe("scanProcessesWithCwdUnder", () => {
     expect(scan).toMatchObject({ status: "clear", excludedOtherUsers: 1 });
   });
 
-  it.each([true, null])("returns unknown when ACL inspection is %s", async (extendedAcl) => {
-    const base = await dir();
-    const scan = await scanProcessesWithCwdUnder(
-      { directories: [base] },
-      {
-        ...fakeLinux({ 10: denied() }, { 10: 1001 }),
-        filesystemGid: async () => 1001,
-        supplementaryGroups: async () => [],
-        statAccess: async () => ({ uid: 1000, gid: 2000, mode: 0o710 }),
-        hasExtendedAcl: async () => extendedAcl,
-      },
-    );
-    expect(scan).toMatchObject({ status: "unknown" });
-  });
+  it.each([true, null])(
+    "returns unknown when ACL inspection is %s",
+    async (extendedAcl) => {
+      const base = await dir();
+      const scan = await scanProcessesWithCwdUnder(
+        { directories: [base] },
+        {
+          ...fakeLinux({ 10: denied() }, { 10: 1001 }),
+          filesystemGid: async () => 1001,
+          supplementaryGroups: async () => [],
+          statAccess: async () => ({ uid: 1000, gid: 2000, mode: 0o710 }),
+          hasExtendedAcl: async () => extendedAcl,
+        },
+      );
+      expect(scan).toMatchObject({ status: "unknown" });
+    },
+  );
 
   it("returns unknown when ACL inspection fails on a restrictive mode", async () => {
     const base = await dir();
@@ -721,4 +737,82 @@ describe("scanProcessesWithCwdUnder", () => {
       ).toBe("unknown");
     });
   });
+});
+
+describe("real Linux POSIX ACL access checks", () => {
+  it.skipIf(process.platform !== "linux")(
+    "detects and respects a named-user ACL from a real filesystem xattr",
+    async () => {
+      const base = await realpath(await mkdtemp(join("/tmp", "bb-cwd-acl-")));
+      cleanups.push(() => rm(base, { recursive: true, force: true }));
+      const aclDirectory = join(base, "acl");
+      await mkdir(aclDirectory, { mode: 0o710 });
+      await chmod(base, 0o711);
+      const uid = 65534;
+      const setAcl = spawnSync(
+        "python3",
+        [
+          "-c",
+          "import os,struct,sys\np=sys.argv[1]\nu=int(sys.argv[2])\ne=[(1,7,0xffffffff),(2,1,u),(4,1,0xffffffff),(16,1,0xffffffff),(32,0,0xffffffff)]\nos.setxattr(p,'system.posix_acl_access',struct.pack('<I',2)+b''.join(struct.pack('<HHI',*v) for v in e))",
+          aclDirectory,
+          String(uid),
+        ],
+        { encoding: "utf8" },
+      );
+      expect(setAcl.error).toBeUndefined();
+      expect(setAcl.status, setAcl.stderr).toBe(0);
+      await expect(linuxPathHasExtendedAcl(aclDirectory)).resolves.toBe(true);
+      await expect(linuxPathHasExtendedAcl(base)).resolves.toBe(false);
+      let statCalls = 0;
+      let aclCalls = 0;
+      const io = {
+        ...fakeLinux({ 10: denied() }, { 10: uid }),
+        filesystemGid: async () => uid,
+        supplementaryGroups: async () => [],
+        statAccess: async (target: string) => {
+          statCalls += 1;
+          const info = await stat(target);
+          return { uid: info.uid, gid: info.gid, mode: info.mode };
+        },
+        hasExtendedAcl: async (target: string) => {
+          aclCalls += 1;
+          return linuxPathHasExtendedAcl(target);
+        },
+      };
+      const scan = await scanProcessesWithCwdUnder(
+        { directories: [aclDirectory] },
+        io,
+      );
+      expect(
+        scan,
+        `stat calls ${statCalls}, ACL calls ${aclCalls}`,
+      ).toMatchObject({
+        status: "unknown",
+      });
+    },
+  );
+
+  const itWithSetfacl = hasSetfacl ? it : it.skip;
+  itWithSetfacl(
+    hasSetfacl
+      ? "detects and respects a named-user ACL created by setfacl"
+      : "detects and respects a named-user ACL created by setfacl (skipped: setfacl is not installed on this host)",
+    async () => {
+      const base = await realpath(
+        await mkdtemp(join("/tmp", "bb-cwd-setfacl-")),
+      );
+      cleanups.push(() => rm(base, { recursive: true, force: true }));
+      const aclDirectory = join(base, "setfacl-acl");
+      await mkdir(aclDirectory, { mode: 0o710 });
+      await chmod(base, 0o711);
+      const changed = spawnSync(
+        "setfacl",
+        ["-m", "u:65534:--x", aclDirectory],
+        { encoding: "utf8" },
+      );
+      expect(changed.error).toBeUndefined();
+      expect(changed.status, changed.stderr).toBe(0);
+      await expect(linuxPathHasExtendedAcl(aclDirectory)).resolves.toBe(true);
+    },
+  );
 });
