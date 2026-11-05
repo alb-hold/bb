@@ -46,6 +46,7 @@ async function removeDirectoryTree(
       entry: string,
       quarantined: string,
     ) => Promise<void>;
+    afterRootMarkerDetached?: (root: string) => Promise<void>;
   },
 ) {
   const moduleUrl = new URL("./remove-directory-tree.js", import.meta.url).href;
@@ -637,6 +638,38 @@ describe("real worktree teardown preservation", () => {
       readFile(path.join(worktree.path, "late-dir", "old.txt"), "utf8"),
     ).resolves.toBe("old\n");
   });
+
+  removeDirectoryTreeTest(
+    "restores the git marker when late data appears after it is detached",
+    async () => {
+      const worktree = await makeWorktree();
+      let injected = false;
+      const result = await removeDirectoryTree(worktree.path, {
+        startedAt: Date.now() + 10_000,
+        afterRootMarkerDetached: async (root) => {
+          injected = true;
+          await writeFile(path.join(root, "late-after-marker.txt"), "late\n");
+        },
+      });
+
+      expect(injected).toBe(true);
+      expect(result).toBe("retained");
+      expect((await git(worktree.path, "rev-parse", "--git-dir")).trim()).not.toBe(
+        "",
+      );
+      await expect(git(worktree.path, "worktree", "list")).resolves.toContain(
+        worktree.path,
+      );
+      await expect(
+        readFile(path.join(worktree.path, "late-after-marker.txt"), "utf8"),
+      ).resolves.toBe("late\n");
+      expect(
+        (await fs.readdir(path.dirname(worktree.path))).filter((name) =>
+          name.startsWith(".bb-gitfile-"),
+        ),
+      ).toEqual([]);
+    },
+  );
 
   it("retains late data after removing an earlier clean entry", async () => {
     const worktree = await makeWorktree();

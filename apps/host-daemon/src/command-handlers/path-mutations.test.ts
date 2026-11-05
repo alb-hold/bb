@@ -538,6 +538,37 @@ describe("confined host path mutations", () => {
     ).toEqual([]);
   });
 
+  it("leaves a destination replacement untouched when it changes after link", async () => {
+    const root = await makeRoot();
+    const source = path.join(root, "a.txt");
+    const destination = path.join(root, "b.txt");
+    await fs.writeFile(source, "original");
+
+    const failure = await moveHostPath(
+      {
+        type: "host.move_path",
+        sourcePath: source,
+        destinationPath: destination,
+        rootPath: root,
+      },
+      {
+        afterLinkBeforeCheck: async () => {
+          await fs.unlink(destination);
+          await fs.writeFile(destination, "replacement");
+        },
+      },
+    ).catch((error: unknown) => error);
+
+    expect(failure).toMatchObject({
+      code: "invalid_path",
+      message: expect.stringContaining("destination now holds something else"),
+    });
+    await expect(fs.readFile(destination, "utf8")).resolves.toBe(
+      "replacement",
+    );
+    await expect(fs.readFile(source, "utf8")).resolves.toBe("original");
+  });
+
   it.each([
     [
       "a folder",

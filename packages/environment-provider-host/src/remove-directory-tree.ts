@@ -23,6 +23,7 @@ export interface RemoveDirectoryTreeHooks {
   beforeEntryRemoval?: (entry: string) => Promise<void>;
   afterEntryCheck?: (entry: string) => Promise<void>;
   afterEntryQuarantined?: (entry: string, quarantined: string) => Promise<void>;
+  afterRootMarkerDetached?: (root: string) => Promise<void>;
   allowQuarantinedRoot?: true;
 }
 
@@ -401,7 +402,7 @@ export async function removeDirectoryTree(
       const removalOrder = [
         ...directories,
         ...files,
-        ...(listed.includes(".git") ? [".git"] : []),
+        ...(listed.includes(".git") && !rootEntry ? [".git"] : []),
       ];
       for (const childName of removalOrder) {
         const childResult = await removeEntry(
@@ -440,35 +441,87 @@ export async function removeDirectoryTree(
         parentDirectory,
         `.bb-removing-${randomUUID()}`,
       );
-      const restoreQuarantine = async (): Promise<void> => {
+      const rootGitMarker =
+        rootEntry && listed.includes(".git")
+          ? path.join(quarantined, ".git")
+          : null;
+      const heldGitMarker =
+        rootGitMarker === null
+          ? null
+          : path.join(parentDirectory, `.bb-gitfile-${randomUUID()}`);
+      let gitMarkerHeld = false;
+      let rootQuarantined = false;
+      const restoreQuarantine = async (): Promise<boolean> => {
         try {
           await rename(quarantined, anchoredEntry);
+          rootQuarantined = false;
+          return true;
         } catch {
-          return;
+          return false;
         }
+      };
+      const restoreGitMarker = async (rootPath: string): Promise<boolean> => {
+        if (!gitMarkerHeld || heldGitMarker === null) return true;
+        try {
+          await link(heldGitMarker, path.join(rootPath, ".git"));
+          await unlink(heldGitMarker);
+          gitMarkerHeld = false;
+          return true;
+        } catch {
+          return false;
+        }
+      };
+      const retain = async (): Promise<RemoveDirectoryTreeResult> => {
+        await restoreGitMarker(rootQuarantined ? quarantined : anchoredEntry);
+        if (rootQuarantined) await restoreQuarantine();
+        return "retained";
       };
       try {
         await rename(anchoredEntry, quarantined);
+        rootQuarantined = true;
         const movedInfo = await lstat(quarantined);
         let movedEntries: string[];
         try {
           movedEntries = await readdir(directoryPath);
         } catch {
-          await restoreQuarantine();
-          return "retained";
+          return await retain();
         }
         if (
           !sameDirectory(openedInfo, movedInfo) ||
           movedInfo.mtimeMs !== checkedDirectoryInfo.mtimeMs ||
-          movedEntries.length > 0
+          movedEntries.some((name) => name !== ".git") ||
+          (rootGitMarker === null && movedEntries.length > 0) ||
+          (rootGitMarker !== null &&
+            !movedEntries.includes(path.basename(rootGitMarker)))
         ) {
-          await restoreQuarantine();
-          return "retained";
+          return await retain();
         }
+        let heldMarkerInfo: Awaited<ReturnType<typeof lstat>> | null = null;
+        if (rootGitMarker !== null && heldGitMarker !== null) {
+          await rename(rootGitMarker, heldGitMarker);
+          gitMarkerHeld = true;
+          heldMarkerInfo = await lstat(quarantined);
+          await hooks.afterRootMarkerDetached?.(quarantined);
+        }
+        const finalEntries = await readdir(directoryPath);
+        const finalDirectoryInfo = await lstat(quarantined);
+        if (
+          finalEntries.length > 0 ||
+          !sameDirectory(openedInfo, finalDirectoryInfo) ||
+          (heldMarkerInfo !== null &&
+            (finalDirectoryInfo.ctimeMs !== heldMarkerInfo.ctimeMs ||
+              finalDirectoryInfo.mtimeMs !== heldMarkerInfo.mtimeMs))
+        )
+          return await retain();
         await rmdir(quarantined);
+        rootQuarantined = false;
+        if (heldGitMarker !== null && gitMarkerHeld) {
+          await unlink(heldGitMarker);
+          gitMarkerHeld = false;
+        }
         return "removed";
       } catch (error) {
-        await restoreQuarantine();
+        await retain();
         const code = errorCode(error);
         return code === "ENOENT" ? "removed" : "retained";
       }

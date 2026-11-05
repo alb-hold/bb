@@ -116,6 +116,7 @@ function refuseMove(sourcePath: string, reason: string): never {
 
 export interface MoveHostFileHooks {
   afterOpen?: () => Promise<void>;
+  afterLinkBeforeCheck?: () => Promise<void>;
   afterLink?: () => Promise<void>;
   afterHold?: () => Promise<void>;
 }
@@ -183,10 +184,10 @@ export async function moveHostPath(
       }
       throw error;
     }
+    await hooks.afterLinkBeforeCheck?.();
     const linked = await fs.lstat(destination);
     if (!isSameFile(linked, opened)) {
-      await fs.unlink(destination);
-      refuseMove(command.sourcePath, "it changed while it was being moved");
+      refuseMove(command.sourcePath, "the destination now holds something else");
     }
     await hooks.afterLink?.();
     const holding = path.join(
