@@ -190,7 +190,7 @@ it.each(["active", "idle"] as const)(
       />,
     );
     expect(screen.getByRole("status").textContent).toBe(
-      "Codex signaled. Check the terminal.",
+      "Check terminal",
     );
   },
 );

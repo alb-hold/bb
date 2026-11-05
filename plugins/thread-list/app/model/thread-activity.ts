@@ -16,6 +16,7 @@ type ThreadActivityStateShape = Pick<PluginSidebarThread, "activity">;
 
 export interface ThreadListIndicatorState {
   hasPendingInteraction: boolean;
+  hasTerminalAttention?: boolean;
   hasUnsubmittedDraft: boolean;
   hasUnreadError: boolean;
   hasUnreadSuccess: boolean;
@@ -40,6 +41,7 @@ const THREAD_LIST_INDICATOR_LABELS: Record<
   "unread-error": "Unread thread failed",
   "waiting-for-input": "Thread needs user input",
   "needs-input": "Needs input",
+  "check-terminal": "Check terminal",
   working: "Working",
   woke: "Woke",
   "done-unread": "Done",
@@ -205,6 +207,7 @@ export function resolveThreadListIndicator(
   state: ThreadListIndicatorState,
 ): ThreadListIndicatorKind {
   if (state.hasPendingInteraction) return "needs-input";
+  if (state.hasTerminalAttention) return "check-terminal";
   const hasActiveWork = hasThreadListWorkingActivity(state);
   if (hasActiveWork) return "working";
   if (state.isAutomationWoken) return "woke";
@@ -233,7 +236,8 @@ export function resolveThreadStatus(
     indicatorKind !== "runtime" &&
     indicatorKind !== "unread-error" &&
     indicatorKind !== "waiting-for-input" &&
-    indicatorKind !== "needs-input";
+    indicatorKind !== "needs-input" &&
+    indicatorKind !== "check-terminal";
   return {
     accessibleLabel: rowStatusIsVisible
       ? rowStatus.label
@@ -249,13 +253,17 @@ export function threadListIndicatorStateForThread(
     ThreadActivityStateShape &
     Pick<
       PluginSidebarThread,
-      "experimental_queuedFailedCount" | "hasPendingInteraction" | "queuedWork"
+      | "experimental_queuedFailedCount"
+      | "hasPendingInteraction"
+      | "queuedWork"
+      | "indicator"
     >,
   hasUnsubmittedDraft: boolean,
 ): ThreadListIndicatorState {
   const unreadDone = isUnreadDoneThread(thread);
   return {
     hasPendingInteraction: thread.hasPendingInteraction,
+    hasTerminalAttention: thread.indicator === "check-terminal",
     hasUnsubmittedDraft,
     hasUnreadError: unreadDone && thread.status === "error",
     hasUnreadSuccess: unreadDone && thread.status !== "error",

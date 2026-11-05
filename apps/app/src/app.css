@@ -783,3 +783,23 @@
 :where(.xterm[data-scrollable="false"]) .xterm-scrollbar {
   visibility: hidden;
 }
+
+:where(.xterm) .xterm-scrollable-element > .xterm-scrollbar {
+  background: transparent !important;
+}
+
+:where(.xterm) .xterm-scrollable-element > .xterm-scrollbar.xterm-vertical > .xterm-slider {
+  width: 4px !important;
+  left: auto !important;
+  right: 2px;
+  border-radius: 9999px;
+}
+
+:where(.xterm) .xterm-viewport {
+  scrollbar-color: var(--terminal-scrollbar) transparent;
+  scrollbar-width: thin;
+}
+
+:where(.xterm) .xterm-viewport::-webkit-scrollbar-track {
+  background: transparent;
+}

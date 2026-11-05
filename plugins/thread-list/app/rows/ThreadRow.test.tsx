@@ -2039,6 +2039,19 @@ describe("ThreadRow", () => {
     ).toBeNull();
   });
 
+  it("shows a plain terminal signal with its own label", () => {
+    renderThreadRow({
+      thread: createThread({
+        indicator: "check-terminal",
+        hasPendingInteraction: false,
+      }),
+    });
+    expect(renderedIndicators()).toEqual(["check-terminal"]);
+    expect(screen.getByRole("img", { name: "Check terminal" })).toBeTruthy();
+    expect(screen.getByText("Check terminal")).toBeTruthy();
+    expect(screen.queryByText("Needs input")).toBeNull();
+  });
+
   it("shows the needs-input indicator when the thread needs user input", () => {
     renderThreadRow({
       thread: createThread({ hasPendingInteraction: true }),

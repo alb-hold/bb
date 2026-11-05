@@ -367,8 +367,10 @@ function ThreadTrailingIndicator({
   }
 
   const statusText =
-    indicatorKind === "needs-input"
-      ? "Needs input"
+    indicatorKind === "check-terminal"
+      ? "Check terminal"
+      : indicatorKind === "needs-input"
+        ? "Needs input"
       : indicatorKind === "working"
         ? `Working${elapsedMinutes === null ? "" : ` ${elapsedMinutes}m`}`
         : indicatorKind === "woke"
@@ -382,6 +384,7 @@ function ThreadTrailingIndicator({
   const activityNoticeApplies =
     nativeActivityUnconfirmed &&
     indicatorKind !== "needs-input" &&
+    indicatorKind !== "check-terminal" &&
     indicatorKind !== "queued-failed";
   const hasGuidance =
     indicatorKind === "activity-unreported" && nativeActivityGuidance !== null;
@@ -394,7 +397,8 @@ function ThreadTrailingIndicator({
         "inline-flex h-5 shrink-0 items-center gap-1.5 rounded-full px-1.5 font-medium text-xs",
         statusText !== null && "justify-end gap-1 whitespace-nowrap px-0",
         statusText === null && "px-0",
-        indicatorKind === "needs-input" && "text-attention",
+        (indicatorKind === "needs-input" || indicatorKind === "check-terminal") &&
+          "text-attention",
         indicatorKind === "working" && SIDEBAR_WORKING_STATUS_COLOR_CLASS,
         indicatorKind === "woke" && "text-warning",
         indicatorKind === "done-unread" && SIDEBAR_SUCCESS_STATUS_COLOR_CLASS,
@@ -701,6 +705,7 @@ function ThreadRowComponent({
     hasHiddenChildren ? childActivity.threadIds : NO_THREAD_IDS,
   );
   const trailingIndicatorState: ThreadListIndicatorState = {
+    hasTerminalAttention: threadStatus.hasTerminalAttention,
     hasPendingInteraction:
       threadStatus.hasPendingInteraction ||
       (hasHiddenChildren && childActivity.pending),
@@ -743,6 +748,7 @@ function ThreadRowComponent({
     thread.archivedAt === null &&
     (automationStartedAt !== null ||
       trailingIndicatorKind === "needs-input" ||
+      trailingIndicatorKind === "check-terminal" ||
       trailingIndicatorKind === "working" ||
       trailingIndicatorKind === "woke" ||
       trailingIndicatorKind === "done-unread");

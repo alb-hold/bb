@@ -499,6 +499,7 @@ describe("thread-activity", () => {
 
       expect(threadListIndicatorStateForThread(thread, false)).toEqual({
         hasPendingInteraction: true,
+        hasTerminalAttention: false,
         isActivityUnreported: false,
         queuedFailedCount: 0,
         hasUnsubmittedDraft: false,
@@ -791,4 +792,32 @@ describe("nativeActivityGuidanceText", () => {
       ),
     ).toContain("update bb on this thread's machine, save your work");
   });
+});
+
+it("keeps terminal signals distinct and gives real questions precedence", () => {
+  const thread = makeEntry({
+    indicator: "check-terminal",
+    hasPendingInteraction: false,
+  });
+  expect(
+    resolveThreadListIndicator(
+      threadListIndicatorStateForThread(thread, false),
+    ),
+  ).toBe("check-terminal");
+  expect(
+    resolveThreadListIndicator(
+      threadListIndicatorStateForThread(
+        { ...thread, hasPendingInteraction: true },
+        false,
+      ),
+    ),
+  ).toBe("needs-input");
+  expect(
+    resolveThreadListIndicator(
+      threadListIndicatorStateForThread(
+        { ...thread, indicator: "none" },
+        false,
+      ),
+    ),
+  ).not.toBe("check-terminal");
 });

@@ -105,6 +105,7 @@ function isBusyThread(
 
 export interface ThreadListIndicatorState {
   hasPendingInteraction: boolean;
+  hasTerminalAttention?: boolean;
   isActivityUnreported: boolean;
   queuedFailedCount: number;
   hasUnsubmittedDraft: boolean;
@@ -135,6 +136,7 @@ const THREAD_LIST_INDICATOR_LABELS: Record<
   "unread-error": "Unread thread failed",
   "waiting-for-input": "Thread needs user input",
   "needs-input": "Needs input",
+  "check-terminal": "Check terminal",
   working: "Working",
   woke: "Woke",
   "done-unread": "Done",
@@ -194,6 +196,7 @@ export function threadListIndicatorStateForThread(
     isNativeActivityUnconfirmed(thread.runtime, now);
   return {
     hasPendingInteraction: thread.hasPendingInteraction,
+    hasTerminalAttention: thread.listIndicator === "check-terminal",
     isActivityUnreported:
       thread.runtime.nativeActivity !== undefined &&
       activityUnconfirmed &&
@@ -223,6 +226,7 @@ export function resolveThreadListIndicator(
   state: ThreadListIndicatorState,
 ): ThreadListIndicatorKind {
   if (state.hasPendingInteraction) return "needs-input";
+  if (state.hasTerminalAttention) return "check-terminal";
   const hasActiveWork = hasThreadListWorkingActivity(state);
   if (hasActiveWork) return "working";
   if (state.isAutomationWoken) return "woke";

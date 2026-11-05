@@ -3449,6 +3449,7 @@ export function ThreadTerminalView({
         <ContextMenuTrigger asChild>
           <TerminalAttentionPane
             attention={session.attention}
+            bannerOnly={retainNativeOutput}
             className={`group/terminal-pane relative min-h-0 w-full flex-1 overflow-hidden bg-sidebar p-2 ${isTouchDevice ? (showFitControl || (retainNativeOutput && session.status === "exited") ? "touch-pan-x touch-pan-y" : "touch-pan-y") : ""}`}
             onContextMenuCapture={captureTerminalContextMenu}
             onTouchStart={(event) => {

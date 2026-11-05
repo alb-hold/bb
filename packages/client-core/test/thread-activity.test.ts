@@ -515,6 +515,7 @@ describe("thread-activity", () => {
 
       expect(threadListIndicatorStateForThread(thread, false)).toEqual({
         hasPendingInteraction: true,
+        hasTerminalAttention: false,
         isActivityUnreported: false,
         queuedFailedCount: 0,
         hasUnsubmittedDraft: false,
@@ -971,3 +972,31 @@ it.each([false, true])(
     expect(children.unread).toBe(clean);
   },
 );
+
+it("keeps terminal signals distinct and gives real questions precedence", () => {
+  const thread = makeThreadListEntry({
+    listIndicator: "check-terminal",
+    hasPendingInteraction: false,
+  });
+  expect(
+    resolveThreadListIndicator(
+      threadListIndicatorStateForThread(thread, false),
+    ),
+  ).toBe("check-terminal");
+  expect(
+    resolveThreadListIndicator(
+      threadListIndicatorStateForThread(
+        { ...thread, hasPendingInteraction: true },
+        false,
+      ),
+    ),
+  ).toBe("needs-input");
+  expect(
+    resolveThreadListIndicator(
+      threadListIndicatorStateForThread(
+        { ...thread, listIndicator: "none" },
+        false,
+      ),
+    ),
+  ).not.toBe("check-terminal");
+});
