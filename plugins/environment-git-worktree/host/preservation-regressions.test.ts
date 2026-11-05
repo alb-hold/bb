@@ -466,6 +466,7 @@ describe("real worktree teardown preservation", () => {
 
   it("retains a replacement entry created between inspection and unlink", async () => {
     const worktree = await makeWorktree();
+    useProcReaderForTests(descendantsOnly(hostProc, -1));
     await expect(
       remove(worktree, {
         afterEntryCheck: async (entry) => {
@@ -489,6 +490,7 @@ describe("real worktree teardown preservation", () => {
 
   it("retains a file modified after quarantine even when its mtime is restored", async () => {
     const worktree = await makeWorktree();
+    useProcReaderForTests(descendantsOnly(hostProc, -1));
     let handle: Awaited<ReturnType<typeof fs.open>> | null = null;
     let originalTimes: { atimeMs: number; mtimeMs: number } | null = null;
     try {
@@ -528,6 +530,7 @@ describe("real worktree teardown preservation", () => {
 
   it("retains a replacement directory created before directory removal", async () => {
     const worktree = await makeWorktree();
+    useProcReaderForTests(descendantsOnly(hostProc, -1));
     const initialDirectory = path.join(worktree.path, "replace-me");
     await mkdir(initialDirectory);
     await writeFile(path.join(initialDirectory, "original.txt"), "original\n");

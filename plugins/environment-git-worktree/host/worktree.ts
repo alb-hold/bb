@@ -963,7 +963,6 @@ async function removeRegisteredWorktree(
         path: quarantinedPath,
         gitDir: severedGitDir,
       };
-      const finalCheckStartedAt = Date.now();
       const reasons = await findPreservationReasons(
         quarantineIdentity,
         args.signal,
@@ -972,6 +971,7 @@ async function removeRegisteredWorktree(
       if (reasons.length > 0) {
         throw worktreePreservedError(identity.path, reasons);
       }
+      const finalCheckStartedAt = Date.now();
       await args.testHooks?.afterFinalCheck?.(quarantinedPath, severedGitDir);
       if (await directoryTreeChangedSince(severedGitDir, finalCheckStartedAt)) {
         throw worktreePreservedError(identity.path, [
@@ -993,8 +993,14 @@ async function removeRegisteredWorktree(
         ]);
       }
       workspaceRemoved = true;
+      const gitRootInfo = await fs.stat(severedGitDir);
       const removedGitDir = await removeDirectoryTree(severedGitDir, {
         startedAt: finalCheckStartedAt,
+        allowQuarantinedRoot: true,
+        rootMetadataBaseline: {
+          ctimeMs: gitRootInfo.ctimeMs,
+          mtimeMs: gitRootInfo.mtimeMs,
+        },
         afterDirectoryListed: args.testHooks?.afterDirectoryListed,
         beforeEntryRemoval: args.testHooks?.beforeEntryRemoval,
         afterEntryCheck: args.testHooks?.afterEntryCheck,

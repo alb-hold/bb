@@ -23,6 +23,7 @@ export interface RemoveDirectoryTreeHooks {
   beforeEntryRemoval?: (entry: string) => Promise<void>;
   afterEntryCheck?: (entry: string) => Promise<void>;
   afterEntryQuarantined?: (entry: string, quarantined: string) => Promise<void>;
+  allowQuarantinedRoot?: true;
 }
 
 export type RemoveDirectoryTreeResult = "removed" | "retained";
@@ -138,7 +139,11 @@ export async function removeDirectoryTree(
 ): Promise<RemoveDirectoryTreeResult> {
   const startedAt = hooks.startedAt ?? Date.now();
   await hooks.afterStart?.(startedAt);
-  if (path.basename(root).startsWith(".bb-removing-")) return "retained";
+  if (
+    path.basename(root).startsWith(".bb-removing-") &&
+    hooks.allowQuarantinedRoot !== true
+  )
+    return "retained";
   const rootName = path.basename(root);
   const parent = await openDirectory(path.dirname(root));
   if (parent === null || rootName === "") {
@@ -147,6 +152,76 @@ export async function removeDirectoryTree(
   }
   const parentPath = await descriptorPath(parent);
   if (parentPath === null) {
+    await parent.close();
+    return "retained";
+  }
+  const inspectBeforeRemoval = async (
+    directory: string,
+    rootEntry = false,
+  ): Promise<boolean> => {
+    let info;
+    try {
+      info = await lstat(directory);
+    } catch {
+      return false;
+    }
+    const rootChangedSinceBaseline =
+      rootEntry &&
+      hooks.rootMetadataBaseline !== undefined &&
+      (info.ctimeMs > hooks.rootMetadataBaseline.ctimeMs ||
+        info.mtimeMs > hooks.rootMetadataBaseline.mtimeMs);
+    if (
+      rootEntry
+        ? hooks.rootMetadataBaseline === undefined
+          ? changedSince(info, startedAt)
+          : rootChangedSinceBaseline
+        : changedSince(info, startedAt)
+    )
+      return false;
+    if (!info.isDirectory()) return true;
+    const handle = await openDirectory(directory);
+    if (handle === null) return false;
+    try {
+      const openedInfo = await handle.stat();
+      if (!sameDirectory(info, openedInfo)) return false;
+      const openedPath = await descriptorPath(handle);
+      if (openedPath === null) return false;
+      const listed = await readdir(openedPath);
+      if (listed.some((name) => name.startsWith(".bb-removing-"))) return false;
+      await hooks.afterDirectoryListed?.(directory, listed);
+      const currentInfo = await lstat(directory);
+      if (!sameDirectory(openedInfo, currentInfo)) return false;
+      const currentRootChangedSinceBaseline =
+        rootEntry &&
+        hooks.rootMetadataBaseline !== undefined &&
+        (currentInfo.ctimeMs > hooks.rootMetadataBaseline.ctimeMs ||
+          currentInfo.mtimeMs > hooks.rootMetadataBaseline.mtimeMs);
+      if (
+        rootEntry
+          ? hooks.rootMetadataBaseline === undefined
+            ? changedSince(currentInfo, startedAt)
+            : currentRootChangedSinceBaseline
+          : changedSince(currentInfo, startedAt)
+      )
+        return false;
+      const afterHook = await readdir(openedPath);
+      if (
+        afterHook.length !== listed.length ||
+        afterHook.some((name) => !listed.includes(name))
+      )
+        return false;
+      for (const name of listed) {
+        if (!(await inspectBeforeRemoval(path.join(directory, name))))
+          return false;
+      }
+      return true;
+    } catch {
+      return false;
+    } finally {
+      await handle.close();
+    }
+  };
+  if (!(await inspectBeforeRemoval(root, true))) {
     await parent.close();
     return "retained";
   }
@@ -164,6 +239,7 @@ export async function removeDirectoryTree(
       return errorCode(error) === "ENOENT" ? "removed" : "retained";
     }
     const rootChangedSinceBaseline =
+      rootEntry &&
       hooks.rootMetadataBaseline !== undefined &&
       (info.ctimeMs > hooks.rootMetadataBaseline.ctimeMs ||
         info.mtimeMs > hooks.rootMetadataBaseline.mtimeMs);
@@ -173,8 +249,9 @@ export async function removeDirectoryTree(
             changedSince(info, startedAt)) ||
           rootChangedSinceBaseline
         : changedSince(info, startedAt)
-    )
+    ) {
       return "retained";
+    }
     if (!info.isDirectory()) {
       let beforeRemovalInfo;
       try {
@@ -186,8 +263,9 @@ export async function removeDirectoryTree(
         beforeRemovalInfo.dev !== info.dev ||
         beforeRemovalInfo.ino !== info.ino ||
         changedSince(beforeRemovalInfo, startedAt)
-      )
+      ) {
         return "retained";
+      }
       await hooks.beforeEntryRemoval?.(entry);
       let checkedInfo;
       try {
@@ -199,8 +277,9 @@ export async function removeDirectoryTree(
         checkedInfo.dev !== info.dev ||
         checkedInfo.ino !== info.ino ||
         changedSince(checkedInfo, startedAt)
-      )
+      ) {
         return "retained";
+      }
       await hooks.afterEntryCheck?.(entry);
       const quarantined = path.join(
         parentDirectory,
@@ -226,13 +305,16 @@ export async function removeDirectoryTree(
           await restoreQuarantine();
           return "retained";
         }
+        const movedPreciseInfo = await lstat(quarantined, { bigint: true });
         await hooks.afterEntryQuarantined?.(entry, quarantined);
         const finalInfo = await lstat(quarantined);
+        const finalPreciseInfo = await lstat(quarantined, { bigint: true });
         if (
           finalInfo.dev !== movedInfo.dev ||
           finalInfo.ino !== movedInfo.ino ||
           finalInfo.ctimeMs !== movedInfo.ctimeMs ||
-          finalInfo.mtimeMs !== movedInfo.mtimeMs
+          finalInfo.mtimeMs !== movedInfo.mtimeMs ||
+          finalPreciseInfo.ctimeNs !== movedPreciseInfo.ctimeNs
         ) {
           await restoreQuarantine();
           return "retained";
@@ -259,6 +341,7 @@ export async function removeDirectoryTree(
       }
       if (!sameDirectory(openedInfo, currentInfo)) return "retained";
       const openedRootChangedSinceBaseline =
+        rootEntry &&
         hooks.rootMetadataBaseline !== undefined &&
         (openedInfo.ctimeMs > hooks.rootMetadataBaseline.ctimeMs ||
           openedInfo.mtimeMs > hooks.rootMetadataBaseline.mtimeMs);
@@ -278,7 +361,6 @@ export async function removeDirectoryTree(
       }
       if (listed.some((childName) => childName.startsWith(".bb-removing-")))
         return "retained";
-      await hooks.afterDirectoryListed?.(entry, listed);
       try {
         currentInfo = await lstat(anchoredEntry);
       } catch {
@@ -290,7 +372,9 @@ export async function removeDirectoryTree(
           ? currentInfo.ctimeMs > hooks.rootMetadataBaseline.ctimeMs ||
             currentInfo.mtimeMs > hooks.rootMetadataBaseline.mtimeMs
           : changedSince(currentInfo, startedAt);
-      if (changedDuringListing) return "retained";
+      if (changedDuringListing) {
+        return "retained";
+      }
       let afterHook: string[];
       try {
         afterHook = await readdir(directoryPath);
@@ -302,18 +386,32 @@ export async function removeDirectoryTree(
         afterHook.some((childName) => !listed.includes(childName))
       )
         return "retained";
-      const removalOrder = [...listed].sort((left, right) =>
-        left === ".git" ? 1 : right === ".git" ? -1 : 0,
-      );
-      for (const childName of removalOrder) {
-        if (
-          (await removeEntry(
-            directoryPath,
-            childName,
-            path.join(entry, childName),
-          )) === "retained"
-        )
+      const directories: string[] = [];
+      const files: string[] = [];
+      for (const childName of listed) {
+        if (childName === ".git") continue;
+        let childInfo;
+        try {
+          childInfo = await lstat(path.join(directoryPath, childName));
+        } catch {
           return "retained";
+        }
+        (childInfo.isDirectory() ? directories : files).push(childName);
+      }
+      const removalOrder = [
+        ...directories,
+        ...files,
+        ...(listed.includes(".git") ? [".git"] : []),
+      ];
+      for (const childName of removalOrder) {
+        const childResult = await removeEntry(
+          directoryPath,
+          childName,
+          path.join(entry, childName),
+        );
+        if (childResult === "retained") {
+          return "retained";
+        }
       }
       let after: string[];
       try {
