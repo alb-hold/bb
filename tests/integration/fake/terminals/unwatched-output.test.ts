@@ -305,6 +305,7 @@ describe.sequential("terminal output nobody is watching", () => {
         "the server to drop the detached browser",
         () => !harness.hub.hasTerminalClients(terminalId),
       );
+      harness.server.terminalSessions.flushAllRetainedOutput();
       const lastSeenBeforeDetach =
         first.chunks[first.chunks.length - 1]?.seq ?? 0;
 
