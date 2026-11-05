@@ -172,10 +172,16 @@
     "bytes, 276 over the cap this PR had lowered to 1,609,643. The growth is",
     "the check-terminal indicator: its list-indicator branch, the favicon",
     "dot check and the child-banner filter. The raw cap returns to the",
-    "1,610,000 set by the 0.48.0 sync; the Brotli cap stays lowered."
+    "1,610,000 set by the 0.48.0 sync; the Brotli cap stays lowered.",
+    "",
+    "On 2026-11-05 PR 426 round 8 added the phone home scroll-edge cue (one",
+    "scroll listener toggling a data attribute; the mask rule lives in app.css).",
+    "Raw boot stayed at 1,609,919 bytes, but Brotli measured about 394,430,",
+    "66 over the lowered cap. The Brotli cap returns to the 394,500 set by the",
+    "0.48.0 sync; neither cap is above the base."
   ],
   "maxBootBytes": 1610000,
-  "maxBootBrotliBytes": 394364,
+  "maxBootBrotliBytes": 394500,
   "forbiddenBootPackages": [
     "@dnd-kit/accessibility",
     "@dnd-kit/core",
