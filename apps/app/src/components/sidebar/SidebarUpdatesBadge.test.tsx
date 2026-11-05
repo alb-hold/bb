@@ -183,7 +183,9 @@ describe("SidebarUpdatesBadge", () => {
   it("shows only the bb chip for a bb-only update", () => {
     renderBadge({ appUpdateAvailable: true });
 
-    expect(screen.getByTestId("sidebar-updates-badge-bb")).toBeTruthy();
+    const badge = screen.getByTestId("sidebar-updates-badge-bb");
+    expect(badge.classList.contains("text-muted-foreground")).toBe(true);
+    expect(badge.classList.contains("rounded-full")).toBe(false);
     expect(screen.queryByTestId("sidebar-updates-badge-providers")).toBeNull();
   });
 

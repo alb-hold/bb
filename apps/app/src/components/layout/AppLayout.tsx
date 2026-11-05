@@ -1,3 +1,4 @@
+import { CompactHomeHeader } from "./CompactHomeHeader";
 import { useCorePageTitle } from "./core-page-title";
 import { type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import {
@@ -891,6 +892,9 @@ function AppLayoutContent({ children }: AppLayoutProps) {
                     data-app-content-shell=""
                     className="relative flex h-full min-h-0 min-w-0 w-full flex-col pt-[env(safe-area-inset-top)] pr-[env(safe-area-inset-right)] pb-(--bb-content-bottom-inset) pl-[env(safe-area-inset-left)] [--bb-content-bottom-inset:var(--bb-safe-area-bottom,env(safe-area-inset-bottom))]"
                   >
+                    {isRootView && isCompactViewport ? (
+                      <CompactHomeHeader title={project?.name ?? "Home"} />
+                    ) : null}
                     {showHeader ? (
                       <AppHeader
                         resourceSection={

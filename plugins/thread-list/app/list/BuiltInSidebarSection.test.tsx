@@ -93,6 +93,14 @@ describe("built-in sidebar section renderer", () => {
         false,
       );
       expect(screen.queryByText("Pinned content") !== null).toBe(!collapsed);
+      if (!collapsed) {
+        expect(
+          screen.getByText("Pinned content").parentElement?.className,
+        ).toContain("max-h-[28svh]");
+        expect(
+          screen.getByText("Pinned content").parentElement?.className,
+        ).toContain("overflow-y-auto");
+      }
     },
   );
 

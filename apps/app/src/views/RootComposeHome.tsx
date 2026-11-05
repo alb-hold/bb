@@ -40,6 +40,10 @@ function useCompactHomeMetrics(isCompact: boolean) {
     }
     const updateScrollCue = () => {
       scrollViewport.toggleAttribute(
+        "data-more-above",
+        scrollViewport.scrollTop > 1,
+      );
+      scrollViewport.toggleAttribute(
         "data-more-below",
         scrollViewport.scrollTop + scrollViewport.clientHeight <
           scrollViewport.scrollHeight - 1,
@@ -177,7 +181,10 @@ export function RootComposeHome({
           </div>
         </div>
         {!isCompact && showDesktopRecents ? (
-          <div className="mt-6 empty:hidden" data-testid="root-compose-desktop-recents">
+          <div
+            className="mt-6 empty:hidden"
+            data-testid="root-compose-desktop-recents"
+          >
             {compactScrollContent}
           </div>
         ) : null}

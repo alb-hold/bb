@@ -69,9 +69,11 @@ describe("RootComposeHome", () => {
         screen.queryByTestId("root-compose-compact-leading-spacer"),
       ).toBeNull();
       expect(viewport.hasAttribute("data-more-below")).toBe(true);
+      expect(viewport.hasAttribute("data-more-above")).toBe(false);
       viewport.scrollTop = 348;
       fireEvent.scroll(viewport);
       expect(viewport.hasAttribute("data-more-below")).toBe(false);
+      expect(viewport.hasAttribute("data-more-above")).toBe(true);
       viewport.scrollTop = 0;
       fireEvent.scroll(viewport);
       expect(viewport.hasAttribute("data-more-below")).toBe(true);

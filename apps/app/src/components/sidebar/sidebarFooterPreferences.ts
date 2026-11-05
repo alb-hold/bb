@@ -100,7 +100,11 @@ export function useSidebarFooterPreferences() {
     getId: (item) => item.key,
   });
   const footer = ordered
-    .filter((item) => !hidden.includes(item.key))
+    .filter(
+      (item) =>
+        !hidden.includes(item.key) &&
+        (item.key === "builtin:settings" || order.includes(item.key)),
+    )
     .slice(0, capacity ?? undefined);
   const more = ordered.filter((item) => !footer.includes(item));
   const isFull = capacity !== null && footer.length >= capacity;
@@ -125,7 +129,11 @@ export function useSidebarFooterPreferences() {
       const rest = normalizedOrder.filter((id) => id !== key);
       const index = last === undefined ? 0 : rest.indexOf(last) + 1;
       setOrder([...rest.slice(0, index), key, ...rest.slice(index)]);
-      setHidden((previous) => previous.filter((id) => id !== key));
+      setHidden((previous) =>
+        [...new Set([...previous, ...more.map((item) => item.key)])].filter(
+          (id) => id !== key,
+        ),
+      );
     },
     setFooterShown(shown: boolean) {
       setHidden((previous) => {

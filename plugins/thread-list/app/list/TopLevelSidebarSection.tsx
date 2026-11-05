@@ -11,10 +11,7 @@ import { cn } from "@/lib/utils";
 import { Icon } from "@/components/ui/icon";
 import { LIST_HOVER_TRANSITION } from "@/components/ui/motion";
 import { CHROME_SECTION_LABEL_CLASS } from "@/components/ui/chrome-style-tokens";
-import {
-  SidebarStickyGroup,
-  SidebarStickyTier,
-} from "../ui/sidebar.js";
+import { SidebarStickyGroup, SidebarStickyTier } from "../ui/sidebar.js";
 import {
   SIDEBAR_HOVER_ACTIONS_CLASS,
   SIDEBAR_HOVER_ACTIONS_FADE_CLASS,
@@ -65,6 +62,7 @@ export interface TopLevelSidebarSectionProps {
   dropParentKey?: string;
   sectionId?: string;
   stickyHeader?: boolean;
+  contentClassName?: string;
   status?: ReactNode;
   actions?: ReactNode;
   actionsAlwaysVisible?: boolean;
@@ -88,6 +86,7 @@ export function TopLevelSidebarSection({
   dropParentKey,
   sectionId,
   stickyHeader = true,
+  contentClassName,
   status,
   actions,
   actionsAlwaysVisible = false,
@@ -285,8 +284,7 @@ export function TopLevelSidebarSection({
                   "inline-flex shrink-0 items-center",
                   SIDEBAR_HOVER_ACTIONS_GAP_CLASS,
                   !actionsAlwaysVisible && SIDEBAR_HOVER_ACTIONS_CLASS,
-                  collapseControl?.isCollapsed &&
-                    "[@media(hover:none)]:hidden",
+                  collapseControl?.isCollapsed && "[@media(hover:none)]:hidden",
                 )}
               >
                 {actions}
@@ -296,7 +294,7 @@ export function TopLevelSidebarSection({
         ) : null}
       </SidebarStickyTier>
       {collapseControl?.isCollapsed || children == null ? null : (
-        <div className="mt-1">{children}</div>
+        <div className={cn("mt-1", contentClassName)}>{children}</div>
       )}
     </SidebarStickyGroup>
   );
