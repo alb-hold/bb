@@ -166,9 +166,15 @@
     "1589.6), so boot plus ThreadPage fell from 3203.9 to 3160.2 KB. Both",
     "boot caps rose to the measured size plus under 1 KB: to 1,610,000 raw /",
     "394,500 Brotli bytes. Code that moved between the entry chunk and the",
-    "thread route in the sync was not individually attributed."
+    "thread route in the sync was not individually attributed.",
+    "",
+    "On 2026-11-05 PR 426 round 7 measured the boot payload at 1,609,919 raw",
+    "bytes, 276 over the cap this PR had lowered to 1,609,643. The growth is",
+    "the check-terminal indicator: its list-indicator branch, the favicon",
+    "dot check and the child-banner filter. The raw cap returns to the",
+    "1,610,000 set by the 0.48.0 sync; the Brotli cap stays lowered."
   ],
-  "maxBootBytes": 1609643,
+  "maxBootBytes": 1610000,
   "maxBootBrotliBytes": 394364,
   "forbiddenBootPackages": [
     "@dnd-kit/accessibility",
