@@ -2003,45 +2003,100 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
     expect(testState.sockets).toHaveLength(socketsBefore + 1);
   });
 
+  it("claims the terminal on the first key without remeasuring its grid on later keys", async () => {
+    prepareMobileTerminal();
+    stubVisibleIntersectionObserver();
+    testState.screen.mockResolvedValue(null);
+    const session = renderMobileTerminal();
+    await waitForReadinessCondition(
+      () => expect(testState.sockets).toHaveLength(1),
+      "terminal socket did not mount",
+    );
+    const socket = testState.sockets[0];
+    if (!socket) throw new Error("terminal socket is missing");
+    await waitForReadiness(socket.opened, "terminal socket did not open");
+    socket.receive({
+      type: "attached",
+      session,
+      replayStartSeq: 0,
+      nextSeq: 0,
+    });
+    const textarea = document.querySelector<HTMLTextAreaElement>(
+      ".xterm-helper-textarea",
+    );
+    if (!textarea) throw new Error("terminal input did not mount");
+    textarea.focus();
+    const bounds = vi.mocked(HTMLElement.prototype.getBoundingClientRect);
+    const key = () =>
+      fireEvent.keyDown(textarea, {
+        key: "ArrowLeft",
+        code: "ArrowLeft",
+        keyCode: 37,
+        which: 37,
+      });
+    bounds.mockClear();
+    key();
+    expect(bounds.mock.calls.length).toBeGreaterThan(0);
+    bounds.mockClear();
+    for (let i = 0; i < 40; i += 1) key();
+    expect(bounds).not.toHaveBeenCalled();
+    expect(
+      socket.sent
+        .map((message) => JSON.parse(message))
+        .filter((message) => message.type === "input"),
+    ).toHaveLength(41);
+  });
+
   it("backs off instead of spinning when the retried replay also stalls", async () => {
     shortenReplayHoldTimeout(600);
+    let notifyRetry = () => {};
+    const nextRetry = () =>
+      new Promise<void>((resolve) => {
+        notifyRetry = resolve;
+      });
+    let retried = nextRetry();
+    const retry = TerminalWebSocketTransport.prototype.retry;
+    const retryAttempt = vi
+      .spyOn(TerminalWebSocketTransport.prototype, "retry")
+      .mockImplementation(function (this: TerminalWebSocketTransport) {
+        vi.useFakeTimers();
+        retry.call(this);
+        notifyRetry();
+      });
     const { preview, session } = await mountReplayAfterCheckpointedOpen();
+    testState.deferSocketOpen = true;
     let known = testState.sockets.length;
-    const stallTimes: number[] = [];
-    const openTimes: number[] = [];
-    for (const round of [1, 2]) {
-      await waitForReadinessCondition(
-        () =>
-          expect(preview()?.dataset.terminalReplayHoldExpired).toBeDefined(),
-        `hold backstop did not fire in round ${round}`,
-      );
-      stallTimes.push(performance.now());
+    const advance = (ms: number) =>
+      act(async () => {
+        await vi.advanceTimersByTimeAsync(ms);
+      });
+    for (const delay of [100, 250, 500]) {
+      await waitForReadiness(retried, "replay hold did not expire");
+      await advance(0);
+      expect(retryAttempt).toHaveBeenCalledTimes(known - 1);
       expect(pageText()).toContain("Reconnecting");
       expect(pageText()).not.toContain("Terminal output unavailable");
-      await waitForReadinessCondition(
-        () => expect(testState.sockets).toHaveLength(known + 1),
-        `stalled replay did not reconnect in round ${round}`,
-      );
-      openTimes.push(performance.now());
+      await advance(delay - 1);
+      expect(testState.sockets).toHaveLength(known);
+      await advance(1);
+      expect(testState.sockets).toHaveLength(known + 1);
       const next = testState.sockets[known];
       if (!next) throw new Error("retry socket is missing");
       known += 1;
-      await waitForReadiness(next.opened, "retry socket did not open");
-      next.receive({
-        type: "attached",
-        session,
-        replayStartSeq: 4,
-        nextSeq: 6,
+      vi.clearAllTimers();
+      vi.useRealTimers();
+      retried = nextRetry();
+      await act(async () => {
+        next.open();
+        next.receive({
+          type: "attached",
+          session,
+          replayStartSeq: 4,
+          nextSeq: 6,
+        });
       });
-      await waitForReadinessCondition(
-        () =>
-          expect(preview()?.dataset.terminalReplayHoldExpired).toBeUndefined(),
-        `retry socket ${round} did not start a new held replay`,
-      );
+      expect(preview()?.dataset.terminalReplayHoldExpired).toBeUndefined();
     }
-    const firstDelay = (openTimes[0] ?? 0) - (stallTimes[0] ?? 0);
-    const secondDelay = (openTimes[1] ?? 0) - (stallTimes[1] ?? 0);
-    expect(secondDelay).toBeGreaterThan(firstDelay + 100);
     expect(pageText()).toContain("Reconnecting");
     expect(pageText()).not.toContain("Terminal output unavailable");
     expectPaintedScreenKept(preview);

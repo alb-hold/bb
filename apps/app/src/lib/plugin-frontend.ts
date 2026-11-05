@@ -195,6 +195,7 @@ export async function loadPluginFrontend(
 }
 
 export interface BbPluginRuntime {
+  zod?: unknown;
   radixCheckbox?: unknown;
   radixSlot?: unknown;
   radixComposeRefs?: unknown;

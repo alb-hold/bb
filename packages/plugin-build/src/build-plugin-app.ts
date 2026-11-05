@@ -10,7 +10,8 @@ import {
 import { existsSync } from "node:fs";
 import { dirname, extname, join, resolve } from "node:path";
 import { derivePluginId } from "@bb/domain";
-import type { Metafile, Plugin } from "esbuild";
+import type { BuildOptions, Metafile, Plugin } from "esbuild";
+import { pluginZodAdmission } from "./zod-admission.js";
 import {
   PLUGIN_THEME_CSS,
   TW_ANIMATE_CSS,
@@ -194,6 +195,8 @@ const SHIM_FILTER = new RegExp(
 );
 
 const VERSIONED_RUNTIME_SPECIFIERS = new Set([
+  "zod",
+  "zod/v4",
   "@radix-ui/react-checkbox",
   "@radix-ui/react-slot",
   "@radix-ui/react-compose-refs",
@@ -237,7 +240,10 @@ async function installedPackageVersion(
   return null;
 }
 
-export function runtimeShimPlugin(pluginSdkAppModuleUrl?: string): Plugin {
+export function runtimeShimPlugin(
+  pluginSdkAppModuleUrl?: string,
+  shareZod = false,
+): Plugin {
   return {
     name: "bb-plugin-runtime-shims",
     setup(build) {
@@ -290,6 +296,8 @@ export function runtimeShimPlugin(pluginSdkAppModuleUrl?: string): Plugin {
       );
       build.onResolve({ filter: SHIM_FILTER }, async (args) => {
         if (args.pluginData?.bbRuntimeVersionResolution) return undefined;
+        if ((args.path === "zod" || args.path === "zod/v4") && !shareZod)
+          return undefined;
         if (VERSIONED_RUNTIME_SPECIFIERS.has(args.path)) {
           const resolved = await build.resolve(args.path, {
             resolveDir: args.resolveDir,
@@ -622,7 +630,7 @@ export async function buildPluginApp(
     const esbuild = (await import(
       toolchain.esbuild
     )) as typeof import("esbuild");
-    const bundle = await esbuild.build({
+    const buildOptions = {
       entryPoints: [appEntry],
       outfile: stagedJsPath,
       absWorkingDir: rootDir,
@@ -641,7 +649,31 @@ export async function buildPluginApp(
       },
       logLevel: "error",
       plugins: [zodLocaleStubPlugin(), runtimeShimPlugin()],
-    });
+    } satisfies BuildOptions;
+    const preflight = await esbuild.build({ ...buildOptions, write: false });
+    const admission = await pluginZodAdmission(
+      preflight.metafile!,
+      rootDir,
+      esbuild.transform,
+      async (path) =>
+        canShareRuntimeVersion(
+          await installedPackageVersion(path, "zod"),
+          RUNTIME_PACKAGE_VERSIONS.zod,
+        ),
+    );
+    const bundle = admission.shared
+      ? await esbuild.build({
+          ...buildOptions,
+          plugins: [zodLocaleStubPlugin(), runtimeShimPlugin(undefined, true)],
+        })
+      : preflight;
+    if (!admission.shared) {
+      await Promise.all(
+        preflight.outputFiles!.map((file) =>
+          writeFile(file.path, file.contents),
+        ),
+      );
+    }
 
     migrationWarnings = bundle.warnings
       .filter((warning) => warning.pluginName === "bb-plugin-runtime-shims")
@@ -649,6 +681,10 @@ export async function buildPluginApp(
         warning.location === null
           ? warning.text
           : `${warning.location.file}:${warning.location.line}: ${warning.text}`,
+      );
+    if (admission.reason !== null)
+      migrationWarnings.push(
+        `Bundling Zod for ${packageName}: ${admission.reason}`,
       );
 
     let authoredCss = "";
