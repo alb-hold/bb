@@ -115,7 +115,7 @@ describe("built-in sidebar section renderer", () => {
       if (!collapsed) {
         expect(
           screen.getByText("Pinned content").parentElement?.className,
-        ).toContain("max-h-[28svh]");
+        ).toContain("max-h-[calc(7*var(--bb-sidebar-row-height)_+_0.75rem)]");
         expect(
           screen.getByText("Pinned content").parentElement?.className,
         ).toContain("overflow-y-auto");

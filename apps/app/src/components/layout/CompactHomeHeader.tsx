@@ -5,7 +5,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@bb/shared-ui/tooltip";
 export function CompactHomeHeader({ title }: { title: string }) {
   const commands = useAppCommandRunner();
   return (
-    <div className="fixed inset-x-14 top-(--bb-window-frame-top) z-30 flex h-12 min-w-0 items-center gap-2">
+    <div className="fixed left-14 right-[calc(3.5rem+env(safe-area-inset-right))] top-(--bb-window-frame-top) z-30 flex h-12 min-w-0 items-center gap-2">
       <p className="min-w-0 flex-1 truncate text-sm font-medium">{title}</p>
       <Tooltip>
         <TooltipTrigger asChild>

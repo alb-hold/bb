@@ -276,7 +276,7 @@ export function RootComposeRightPanelToggle({
       type="button"
       variant="ghost"
       size="icon"
-      className={cn(HEADER_ICON_BUTTON_CLASS, "relative")}
+      className={cn(HEADER_ICON_BUTTON_CLASS, "relative max-md:size-11 max-md:pointer-coarse:size-11")}
       aria-label={
         shortcut ? `${rightPanelLabel} (${shortcut.label})` : rightPanelLabel
       }

@@ -118,9 +118,9 @@ it.each(["light", "dark"] as const)(
   },
 );
 
-it("derives dark Codex indexed prompt backgrounds from the muted surface", () => {
+it("derives brighter dark ANSI grey from the ink and canvas tokens", () => {
   const dark = css.slice(css.indexOf(".dark {"));
-  expect(dark).toContain("--ansi-8: var(--muted)");
+  expect(dark).toContain("--ansi-8: color-mix(in oklch, var(--ink) 35%, var(--canvas))");
 });
 
 it.each(["light", "dark"] as const)(
