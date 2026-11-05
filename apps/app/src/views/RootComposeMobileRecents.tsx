@@ -513,7 +513,7 @@ export function RootComposeMobileRecents({
         >
           Recent
         </h2>
-        <OverflowFade placement="below" tone="background" size="sm" />
+        <OverflowFade placement="below" tone="background" />
       </div>
       {showCreatingRow ? (
         <div

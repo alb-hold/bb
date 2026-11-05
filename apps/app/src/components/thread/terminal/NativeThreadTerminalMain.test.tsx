@@ -159,6 +159,7 @@ describe("NativeThreadTerminalMain", () => {
     );
     expect(screen.getByRole("status").textContent).toBe("Check terminal");
     expect(container.querySelector(".ring-attention")).toBeNull();
+    expect(screen.getByRole("status").querySelector("svg")).not.toBeNull();
     expect(
       screen.getByTestId("terminal-panel").getAttribute("data-attention-banner"),
     ).toBe("true");

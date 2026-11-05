@@ -366,6 +366,9 @@ describe("mobile recents section", () => {
     expect(label.className).toContain("top-0");
     expect(label.className).toContain("bg-background");
     expect(label.querySelector('[data-overflow-fade="below"]')).not.toBeNull();
+    expect(
+      label.querySelector('[data-overflow-fade="below"]')?.className,
+    ).toContain("h-6");
   });
 });
 
