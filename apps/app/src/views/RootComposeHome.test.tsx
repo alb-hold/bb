@@ -217,7 +217,7 @@ it("never fades the first Recent title before scrolling", () => {
   const fade = document.querySelector('[data-root-compose-mobile-recents] [data-overflow-fade="below"]');
   const viewport = screen.getByTestId("root-compose-compact-scroll-viewport");
   const css = readFileSync("src/app.css", "utf8");
-  const rule = css.match(/([^{}]+)\{\s*visibility: hidden;\s*\}\s*$/);
+  const rule = css.match(/([^{}]*\[data-root-compose-mobile-recents\][^{}]*)\{\s*visibility: hidden;\s*\}/);
   expect(rule).not.toBeNull();
   const selector = rule![1].trim();
   expect(fade?.matches(selector)).toBe(true);
