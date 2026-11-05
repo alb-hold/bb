@@ -25,7 +25,6 @@ import {
   resolveAdoptableWorktree,
 } from "./host/worktree.js";
 import { classifyCreateFailure } from "./host/create-failure.js";
-import { proveRetentionAbsent } from "./host/retention-proof.js";
 import { isWorktreePreservedError } from "./host/worktree-preservation.js";
 
 function completionPathForWorktree(worktreePath: string): string {
@@ -213,37 +212,6 @@ export function createWorktreeHostEntry() {
             message: error instanceof Error ? error.message : String(error),
             kept: classifyCreateFailure(error, targetPath),
           } as const;
-        }
-      },
-
-      async proveRetentionAbsent(input, context) {
-        return proveRetentionAbsent({
-          ...input,
-          dataDir: context.experimental_paths.dataDir,
-          signal: context.signal,
-        });
-      },
-
-      async inspect(input, context) {
-        try {
-          const targets = await removalTargets(
-            context.experimental_paths.dataDir,
-            input,
-          );
-          const refusals = await findProtectedTargets(
-            targets,
-            resolveWorktreeAttemptRoot({
-              dataDir: context.experimental_paths.dataDir,
-              pathKey: input.pathKey,
-            }),
-            context.signal,
-          );
-          return refusals.length === 0
-            ? ({ status: "removable" } as const)
-            : ({ status: "retained", message: refusals.join("\n") } as const);
-        } catch (error) {
-          if (context.signal.aborted) throw error;
-          return { status: "failed", message: describeError(error) } as const;
         }
       },
 
