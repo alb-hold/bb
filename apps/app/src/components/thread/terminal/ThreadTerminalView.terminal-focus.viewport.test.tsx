@@ -168,9 +168,17 @@ function Handler() {
   return null;
 }
 
+const initialStyleSheetCount = document.styleSheets.length;
+
 afterEach(() => {
   vi.useRealTimers();
   cleanup();
+  for (const sheet of [...document.styleSheets]) {
+    const owner = sheet.ownerNode;
+    if (owner instanceof HTMLStyleElement && !owner.isConnected) {
+      owner.textContent = "";
+    }
+  }
   sessionStorage.removeItem("bb:terminal-viewport:term_mobile_paste");
   Reflect.set(wsManager, "deviceHandoffClientToken", null);
   vi.unstubAllGlobals();
@@ -191,6 +199,7 @@ afterEach(() => {
   testState.toastError.mockReset();
   testState.touchEnabled = false;
   testState.mediaQueryListeners.clear();
+  expect(document.styleSheets).toHaveLength(initialStyleSheetCount);
 });
 
 const originalClipboardDescriptor = Object.getOwnPropertyDescriptor(
@@ -365,12 +374,13 @@ describe("ThreadTerminalView terminal viewport and focus", () => {
     });
     let terminal: Terminal | null = null;
     const open = Terminal.prototype.open;
-    vi.spyOn(Terminal.prototype, "open").mockImplementation(
-      function (this: Terminal, element) {
-        terminal = this;
-        open.call(this, element);
-      },
-    );
+    vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
+      this: Terminal,
+      element,
+    ) {
+      terminal = this;
+      open.call(this, element);
+    });
     renderMobileTerminal();
     await waitFor(() => expect(terminal?.options.lineHeight).toBe(1));
   });
