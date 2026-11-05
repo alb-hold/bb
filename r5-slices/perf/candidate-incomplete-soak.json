@@ -1,0 +1,19 @@
+[
+  {
+    "navigation": 0,
+    "terminalVisits": 0,
+    "panels": 0,
+    "palettes": 0,
+    "scrolls": 0,
+    "liveXterm": 1,
+    "liveWebGL": 1,
+    "heapMiB": 274.8694534301758,
+    "documents": 13,
+    "nodes": 10394,
+    "jsEventListeners": 5835,
+    "connected": 1195,
+    "xtermDOM": 1,
+    "canvas": 3,
+    "path": "/projects/proj_38nn2cfvnd/threads/thr_ti5myaruiv"
+  }
+]

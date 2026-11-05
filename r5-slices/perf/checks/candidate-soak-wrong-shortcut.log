@@ -1,0 +1,31 @@
+{ stage: 'snapshot-start' }
+{ stage: 'prototype-ready', available: true }
+Unable to configure physical footprint data collection: Operation not permitted
+task_read_for_pid (?/?)  (ffffffff)
+footprint: Unable to analyze process with pid 67005 (try as root?)
+footprint: Unable to find any processes matching the supplied process names or pids (try as root?)
+{
+  navigation: 0,
+  terminalVisits: 0,
+  panels: 0,
+  palettes: 0,
+  scrolls: 0,
+  liveXterm: 1,
+  liveWebGL: 1,
+  heapMiB: 274.8694534301758,
+  documents: 13,
+  nodes: 10394,
+  jsEventListeners: 5835,
+  connected: 1195,
+  xtermDOM: 1,
+  canvas: 3,
+  path: '/projects/proj_38nn2cfvnd/threads/thr_ti5myaruiv'
+}
+file:///Users/alexandrebrandizzi/.bb/plugins/environment-git-worktree/host-data/worktrees/thr_k6i2b2xnry-1/bb-fork/r5-slices/perf/candidate-soak.mjs:24
+ if(i%25===0){mutate(`document.querySelector('button[aria-label^="Show right panel"]')?.click();true`);await delay(300);const shown=await read(`!!document.querySelector('button[aria-label^="Hide right panel"]')`);if(!shown)throw Error('Panel did not open');panels++;mutate(`document.querySelector('button[aria-label^="Hide right panel"]')?.click();true`);mutate(`document.dispatchEvent(new KeyboardEvent('keydown',{key:'p',code:'KeyP',metaKey:true,bubbles:true}));true`);await delay(300);if(!await read(`!!document.querySelector('[data-testid="command-palette"]')`))throw Error('Palette did not open');palettes++;mutate(`document.activeElement.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',code:'Escape',bubbles:true}));true`);await delay(200);if(await read(`!!document.querySelector('[data-testid="command-palette"]')`))throw Error('Palette did not close');}
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            ^
+
+Error: Palette did not open
+    at file:///Users/alexandrebrandizzi/.bb/plugins/environment-git-worktree/host-data/worktrees/thr_k6i2b2xnry-1/bb-fork/r5-slices/perf/candidate-soak.mjs:24:573
+
+Node.js v24.13.0

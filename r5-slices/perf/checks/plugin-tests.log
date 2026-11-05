@@ -1,0 +1,56 @@
+• turbo 2.10.12
+
+   • Packages in scope: bb-plugin-bb--composer
+   • Running test in 1 packages
+   • Remote caching disabled
+
+@bb/templates:generate:templates: cache miss, executing 3b009c53247ce5b3
+@bb/plugin-build:generate: cache miss, executing f58bb0081ee43032
+@bb/templates:generate:plugin-scaffold: cache miss, executing 8243fd3c8304788c
+@bb/process-utils:generate:profile-worker: cache miss, executing d32ee05c23ff6a64
+@bb/templates:generate:templates: 
+@bb/templates:generate:templates: > @bb/templates@0.0.1 generate:templates /home/alex_/bb-remote-heavy/bb-fork-837544a4aeb6/packages/templates
+@bb/templates:generate:templates: > node ./scripts/generate-templates.mjs
+@bb/templates:generate:templates: 
+@bb/plugin-build:generate: 
+@bb/plugin-build:generate: > @bb/plugin-build@0.0.1 generate /home/alex_/bb-remote-heavy/bb-fork-837544a4aeb6/packages/plugin-build
+@bb/plugin-build:generate: > node ./scripts/generate-plugin-theme.mjs && node ./scripts/generate-runtime-export-manifest.mjs
+@bb/plugin-build:generate: 
+@bb/templates:generate:plugin-scaffold: 
+@bb/templates:generate:plugin-scaffold: > @bb/templates@0.0.1 generate:plugin-scaffold /home/alex_/bb-remote-heavy/bb-fork-837544a4aeb6/packages/templates
+@bb/templates:generate:plugin-scaffold: > node ./scripts/generate-plugin-scaffold.mjs
+@bb/templates:generate:plugin-scaffold: 
+@bb/process-utils:generate:profile-worker: 
+@bb/process-utils:generate:profile-worker: > @bb/process-utils@0.0.1 generate:profile-worker /home/alex_/bb-remote-heavy/bb-fork-837544a4aeb6/packages/process-utils
+@bb/process-utils:generate:profile-worker: > node scripts/generate-profile-worker.mjs
+@bb/process-utils:generate:profile-worker: 
+@get-bb/plugin-sdk:build: cache miss, executing 9d6efa2ec8031518
+@get-bb/plugin-sdk:build: 
+@get-bb/plugin-sdk:build: > @get-bb/plugin-sdk@0.6.110 build /home/alex_/bb-remote-heavy/bb-fork-837544a4aeb6/packages/plugin-sdk
+@get-bb/plugin-sdk:build: > node scripts/build-runtime.mjs
+@get-bb/plugin-sdk:build: 
+@get-bb/plugin-sdk:build: Built 23 @get-bb/plugin-sdk runtime entries.
+@bb/plugin-build:generate: plugin-theme.generated.ts up to date
+@bb/plugin-build:generate: host-tailwind.css up to date
+@bb/plugin-build:generate: host-tailwind-version.ts up to date
+@bb/plugin-build:generate: wrote /home/alex_/bb-remote-heavy/bb-fork-837544a4aeb6/packages/plugin-build/src/generated/runtime-export-manifest.generated.ts (react@19.3.0)
+bb-plugin-bb--composer:test: cache miss, executing 82aeaeda904286c3
+bb-plugin-bb--composer:test: 
+bb-plugin-bb--composer:test: > bb-plugin-bb--composer@0.1.0 test /home/alex_/bb-remote-heavy/bb-fork-837544a4aeb6/plugins/composer
+bb-plugin-bb--composer:test: > vitest run --config vitest.config.ts "src/editor/prompt-editor-placeholder.test.ts"
+bb-plugin-bb--composer:test: 
+bb-plugin-bb--composer:test: 
+bb-plugin-bb--composer:test:  RUN  v4.1.1 /home/alex_/bb-remote-heavy/bb-fork-837544a4aeb6/plugins/composer
+bb-plugin-bb--composer:test: 
+bb-plugin-bb--composer:test:  ✓  bb-plugin-bb--composer  src/editor/prompt-editor-placeholder.test.ts (2 tests) 77ms
+bb-plugin-bb--composer:test: 
+bb-plugin-bb--composer:test:  Test Files  1 passed (1)
+bb-plugin-bb--composer:test:       Tests  2 passed (2)
+bb-plugin-bb--composer:test:    Start at  23:42:19
+bb-plugin-bb--composer:test:    Duration  1.05s (transform 189ms, setup 283ms, import 136ms, tests 77ms, environment 449ms)
+bb-plugin-bb--composer:test: 
+
+ Tasks:    6 successful, 6 total
+Cached:    0 cached, 6 total
+  Time:    3.332s 
+

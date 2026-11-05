@@ -1,0 +1,658 @@
+[
+  {
+    "array": {
+      "id": 820441,
+      "type": "array",
+      "name": "(object elements)",
+      "selfSize": 117952
+    },
+    "pathToRendererInterfaces": [
+      {
+        "from": {
+          "id": 862571,
+          "type": "object",
+          "name": "Array",
+          "selfSize": 16
+        },
+        "edge": "internal:elements"
+      },
+      {
+        "from": {
+          "id": 862417,
+          "type": "object",
+          "name": "Array",
+          "selfSize": 16
+        },
+        "edge": "element:21"
+      },
+      {
+        "from": {
+          "id": 862049,
+          "type": "object",
+          "name": "system / Context / scope @452217",
+          "selfSize": 784
+        },
+        "edge": "context:Lt"
+      },
+      {
+        "from": {
+          "id": 861835,
+          "type": "closure",
+          "name": "cleanup",
+          "selfSize": 32
+        },
+        "edge": "internal:context"
+      },
+      {
+        "from": {
+          "id": 861833,
+          "type": "object",
+          "name": "Object",
+          "selfSize": 180
+        },
+        "edge": "property:cleanup"
+      },
+      {
+        "from": {
+          "id": 3530395,
+          "type": "array",
+          "name": "",
+          "selfSize": 76
+        },
+        "edge": "internal:6"
+      },
+      {
+        "from": {
+          "id": 3521077,
+          "type": "object",
+          "name": "Map",
+          "selfSize": 16
+        },
+        "edge": "internal:table"
+      },
+      {
+        "from": {
+          "id": 862355,
+          "type": "object",
+          "name": "Object",
+          "selfSize": 84
+        },
+        "edge": "property:rendererInterfaces"
+      }
+    ]
+  },
+  {
+    "array": {
+      "id": 6755817,
+      "type": "array",
+      "name": "",
+      "selfSize": 114708
+    },
+    "pathToRendererInterfaces": [
+      {
+        "from": {
+          "id": 1398859,
+          "type": "object",
+          "name": "Map",
+          "selfSize": 16
+        },
+        "edge": "internal:table"
+      },
+      {
+        "from": {
+          "id": 1398167,
+          "type": "object",
+          "name": "system / Context / scope @1398165",
+          "selfSize": 900
+        },
+        "edge": "context:kt"
+      },
+      {
+        "from": {
+          "id": 1937673,
+          "type": "object",
+          "name": "system / Context / scope @1494787",
+          "selfSize": 784
+        },
+        "edge": "internal:previous"
+      },
+      {
+        "from": {
+          "id": 1937669,
+          "type": "closure",
+          "name": "cleanup",
+          "selfSize": 32
+        },
+        "edge": "internal:context"
+      },
+      {
+        "from": {
+          "id": 1398649,
+          "type": "object",
+          "name": "Object",
+          "selfSize": 180
+        },
+        "edge": "property:cleanup"
+      },
+      {
+        "from": {
+          "id": 1398175,
+          "type": "array",
+          "name": "",
+          "selfSize": 76
+        },
+        "edge": "internal:6"
+      },
+      {
+        "from": {
+          "id": 1397351,
+          "type": "object",
+          "name": "Map",
+          "selfSize": 16
+        },
+        "edge": "internal:table"
+      },
+      {
+        "from": {
+          "id": 1397357,
+          "type": "object",
+          "name": "Object",
+          "selfSize": 84
+        },
+        "edge": "property:rendererInterfaces"
+      }
+    ]
+  },
+  {
+    "array": {
+      "id": 1886393,
+      "type": "array",
+      "name": "",
+      "selfSize": 114708
+    },
+    "pathToRendererInterfaces": [
+      {
+        "from": {
+          "id": 3532779,
+          "type": "object",
+          "name": "Map",
+          "selfSize": 16
+        },
+        "edge": "internal:table"
+      },
+      {
+        "from": {
+          "id": 862443,
+          "type": "object",
+          "name": "system / Context / scope @452257",
+          "selfSize": 900
+        },
+        "edge": "context:kt"
+      },
+      {
+        "from": {
+          "id": 862049,
+          "type": "object",
+          "name": "system / Context / scope @452217",
+          "selfSize": 784
+        },
+        "edge": "internal:previous"
+      },
+      {
+        "from": {
+          "id": 861835,
+          "type": "closure",
+          "name": "cleanup",
+          "selfSize": 32
+        },
+        "edge": "internal:context"
+      },
+      {
+        "from": {
+          "id": 861833,
+          "type": "object",
+          "name": "Object",
+          "selfSize": 180
+        },
+        "edge": "property:cleanup"
+      },
+      {
+        "from": {
+          "id": 3530395,
+          "type": "array",
+          "name": "",
+          "selfSize": 76
+        },
+        "edge": "internal:6"
+      },
+      {
+        "from": {
+          "id": 3521077,
+          "type": "object",
+          "name": "Map",
+          "selfSize": 16
+        },
+        "edge": "internal:table"
+      },
+      {
+        "from": {
+          "id": 862355,
+          "type": "object",
+          "name": "Object",
+          "selfSize": 84
+        },
+        "edge": "property:rendererInterfaces"
+      }
+    ]
+  },
+  {
+    "array": {
+      "id": 6463009,
+      "type": "array",
+      "name": "(object elements)",
+      "selfSize": 96580
+    },
+    "pathToRendererInterfaces": [
+      {
+        "from": {
+          "id": 6855597,
+          "type": "object",
+          "name": "Array",
+          "selfSize": 16
+        },
+        "edge": "internal:elements"
+      },
+      {
+        "from": {
+          "id": 3592539,
+          "type": "object",
+          "name": "Array",
+          "selfSize": 16
+        },
+        "edge": "element:1070"
+      },
+      {
+        "from": {
+          "id": 1937673,
+          "type": "object",
+          "name": "system / Context / scope @1494787",
+          "selfSize": 784
+        },
+        "edge": "context:Lt"
+      },
+      {
+        "from": {
+          "id": 1937669,
+          "type": "closure",
+          "name": "cleanup",
+          "selfSize": 32
+        },
+        "edge": "internal:context"
+      },
+      {
+        "from": {
+          "id": 1398649,
+          "type": "object",
+          "name": "Object",
+          "selfSize": 180
+        },
+        "edge": "property:cleanup"
+      },
+      {
+        "from": {
+          "id": 1398175,
+          "type": "array",
+          "name": "",
+          "selfSize": 76
+        },
+        "edge": "internal:6"
+      },
+      {
+        "from": {
+          "id": 1397351,
+          "type": "object",
+          "name": "Map",
+          "selfSize": 16
+        },
+        "edge": "internal:table"
+      },
+      {
+        "from": {
+          "id": 1397357,
+          "type": "object",
+          "name": "Object",
+          "selfSize": 84
+        },
+        "edge": "property:rendererInterfaces"
+      }
+    ]
+  },
+  {
+    "array": {
+      "id": 6024051,
+      "type": "array",
+      "name": "(object elements)",
+      "selfSize": 96580
+    },
+    "pathToRendererInterfaces": [
+      {
+        "from": {
+          "id": 5791161,
+          "type": "object",
+          "name": "Array",
+          "selfSize": 16
+        },
+        "edge": "internal:elements"
+      },
+      {
+        "from": {
+          "id": 3592539,
+          "type": "object",
+          "name": "Array",
+          "selfSize": 16
+        },
+        "edge": "element:681"
+      },
+      {
+        "from": {
+          "id": 1937673,
+          "type": "object",
+          "name": "system / Context / scope @1494787",
+          "selfSize": 784
+        },
+        "edge": "context:Lt"
+      },
+      {
+        "from": {
+          "id": 1937669,
+          "type": "closure",
+          "name": "cleanup",
+          "selfSize": 32
+        },
+        "edge": "internal:context"
+      },
+      {
+        "from": {
+          "id": 1398649,
+          "type": "object",
+          "name": "Object",
+          "selfSize": 180
+        },
+        "edge": "property:cleanup"
+      },
+      {
+        "from": {
+          "id": 1398175,
+          "type": "array",
+          "name": "",
+          "selfSize": 76
+        },
+        "edge": "internal:6"
+      },
+      {
+        "from": {
+          "id": 1397351,
+          "type": "object",
+          "name": "Map",
+          "selfSize": 16
+        },
+        "edge": "internal:table"
+      },
+      {
+        "from": {
+          "id": 1397357,
+          "type": "object",
+          "name": "Object",
+          "selfSize": 84
+        },
+        "edge": "property:rendererInterfaces"
+      }
+    ]
+  },
+  {
+    "array": {
+      "id": 6827905,
+      "type": "array",
+      "name": "(object elements)",
+      "selfSize": 96580
+    },
+    "pathToRendererInterfaces": [
+      {
+        "from": {
+          "id": 6856077,
+          "type": "object",
+          "name": "Array",
+          "selfSize": 16
+        },
+        "edge": "internal:elements"
+      },
+      {
+        "from": {
+          "id": 3592539,
+          "type": "object",
+          "name": "Array",
+          "selfSize": 16
+        },
+        "edge": "element:1416"
+      },
+      {
+        "from": {
+          "id": 1937673,
+          "type": "object",
+          "name": "system / Context / scope @1494787",
+          "selfSize": 784
+        },
+        "edge": "context:Lt"
+      },
+      {
+        "from": {
+          "id": 1937669,
+          "type": "closure",
+          "name": "cleanup",
+          "selfSize": 32
+        },
+        "edge": "internal:context"
+      },
+      {
+        "from": {
+          "id": 1398649,
+          "type": "object",
+          "name": "Object",
+          "selfSize": 180
+        },
+        "edge": "property:cleanup"
+      },
+      {
+        "from": {
+          "id": 1398175,
+          "type": "array",
+          "name": "",
+          "selfSize": 76
+        },
+        "edge": "internal:6"
+      },
+      {
+        "from": {
+          "id": 1397351,
+          "type": "object",
+          "name": "Map",
+          "selfSize": 16
+        },
+        "edge": "internal:table"
+      },
+      {
+        "from": {
+          "id": 1397357,
+          "type": "object",
+          "name": "Object",
+          "selfSize": 84
+        },
+        "edge": "property:rendererInterfaces"
+      }
+    ]
+  },
+  {
+    "array": {
+      "id": 7270891,
+      "type": "array",
+      "name": "(object elements)",
+      "selfSize": 96580
+    },
+    "pathToRendererInterfaces": [
+      {
+        "from": {
+          "id": 6856695,
+          "type": "object",
+          "name": "Array",
+          "selfSize": 16
+        },
+        "edge": "internal:elements"
+      },
+      {
+        "from": {
+          "id": 3592539,
+          "type": "object",
+          "name": "Array",
+          "selfSize": 16
+        },
+        "edge": "element:1809"
+      },
+      {
+        "from": {
+          "id": 1937673,
+          "type": "object",
+          "name": "system / Context / scope @1494787",
+          "selfSize": 784
+        },
+        "edge": "context:Lt"
+      },
+      {
+        "from": {
+          "id": 1937669,
+          "type": "closure",
+          "name": "cleanup",
+          "selfSize": 32
+        },
+        "edge": "internal:context"
+      },
+      {
+        "from": {
+          "id": 1398649,
+          "type": "object",
+          "name": "Object",
+          "selfSize": 180
+        },
+        "edge": "property:cleanup"
+      },
+      {
+        "from": {
+          "id": 1398175,
+          "type": "array",
+          "name": "",
+          "selfSize": 76
+        },
+        "edge": "internal:6"
+      },
+      {
+        "from": {
+          "id": 1397351,
+          "type": "object",
+          "name": "Map",
+          "selfSize": 16
+        },
+        "edge": "internal:table"
+      },
+      {
+        "from": {
+          "id": 1397357,
+          "type": "object",
+          "name": "Object",
+          "selfSize": 84
+        },
+        "edge": "property:rendererInterfaces"
+      }
+    ]
+  },
+  {
+    "array": {
+      "id": 4381229,
+      "type": "array",
+      "name": "(object elements)",
+      "selfSize": 95832
+    },
+    "pathToRendererInterfaces": [
+      {
+        "from": {
+          "id": 3593747,
+          "type": "object",
+          "name": "Array",
+          "selfSize": 16
+        },
+        "edge": "internal:elements"
+      },
+      {
+        "from": {
+          "id": 3592539,
+          "type": "object",
+          "name": "Array",
+          "selfSize": 16
+        },
+        "edge": "element:8"
+      },
+      {
+        "from": {
+          "id": 1937673,
+          "type": "object",
+          "name": "system / Context / scope @1494787",
+          "selfSize": 784
+        },
+        "edge": "context:Lt"
+      },
+      {
+        "from": {
+          "id": 1937669,
+          "type": "closure",
+          "name": "cleanup",
+          "selfSize": 32
+        },
+        "edge": "internal:context"
+      },
+      {
+        "from": {
+          "id": 1398649,
+          "type": "object",
+          "name": "Object",
+          "selfSize": 180
+        },
+        "edge": "property:cleanup"
+      },
+      {
+        "from": {
+          "id": 1398175,
+          "type": "array",
+          "name": "",
+          "selfSize": 76
+        },
+        "edge": "internal:6"
+      },
+      {
+        "from": {
+          "id": 1397351,
+          "type": "object",
+          "name": "Map",
+          "selfSize": 16
+        },
+        "edge": "internal:table"
+      },
+      {
+        "from": {
+          "id": 1397357,
+          "type": "object",
+          "name": "Object",
+          "selfSize": 84
+        },
+        "edge": "property:rendererInterfaces"
+      }
+    ]
+  }
+]

@@ -1,0 +1,302 @@
+[
+  {
+    "file": "r5-slices/perf/raw/baseline-profile.json",
+    "bytes": 424503,
+    "sha256": "5a90c661074aca3a85c616c470b4811cdf2b1c60593f9db456a24002671578d3"
+  },
+  {
+    "file": "r5-slices/perf/raw/baseline-trace.json",
+    "bytes": 1162123,
+    "sha256": "340b77631ae2485b7e14218f2fe1d2607336adb60df03abfe073ffc0ae772756"
+  },
+  {
+    "file": "r5-slices/perf/raw/broad-0.heapsnapshot",
+    "bytes": 283932939,
+    "sha256": "1c4e91013e8deecaad504d77b3d20b509faa5e85be269478b2063f6fb7f2cd97"
+  },
+  {
+    "file": "r5-slices/perf/raw/broad-150.heapsnapshot",
+    "bytes": 312982665,
+    "sha256": "7d3c325b64b31b43c665a39788a3e6e8a6b6d6bec609c82b9fa4bfd6b1f90533"
+  },
+  {
+    "file": "r5-slices/perf/raw/broad-300.heapsnapshot",
+    "bytes": 317259164,
+    "sha256": "1319a2bf683edf613ddacefdb08509bfe63c24f68c2de71a388b8ebbe92d3813"
+  },
+  {
+    "file": "r5-slices/perf/raw/candidate-0.heapsnapshot",
+    "bytes": 841257141,
+    "sha256": "8ec322c2cd193b9da2dbf80260d718d423ac08daf9e3652845bb7e95ee859075"
+  },
+  {
+    "file": "r5-slices/perf/raw/candidate-150.heapsnapshot",
+    "bytes": 549770320,
+    "sha256": "0d5c80bbfc269cbad8dfe1d76212b15c9a792f83a2dc1b23ad5dc3fd30c182b6"
+  },
+  {
+    "file": "r5-slices/perf/raw/candidate-300.heapsnapshot",
+    "bytes": 301759009,
+    "sha256": "0965717a0cce169ffc1e5a4086d06c07d13e89fbb1915ed3fa9df0b20660a95e"
+  },
+  {
+    "file": "r5-slices/perf/raw/perf-r5-ab/adapter-ready-0-16800.profile.json",
+    "bytes": 663149,
+    "sha256": "9ea927e07149e61161caa4b3c70faa579872d26024816139a721ce72bae33d04"
+  },
+  {
+    "file": "r5-slices/perf/raw/perf-r5-ab/adapter-ready-0-16800.trace.json",
+    "bytes": 2038913,
+    "sha256": "0a529a1170bee4fc587dc6b2a413bf851852970656e742d419b932b7bc33f66b"
+  },
+  {
+    "file": "r5-slices/perf/raw/perf-r5-ab/adapter-ready-0-16820.profile.json",
+    "bytes": 644596,
+    "sha256": "3ce1d1833dea485de3b98656ad4bc6d2dff33916362194084dc8cd207d33c79d"
+  },
+  {
+    "file": "r5-slices/perf/raw/perf-r5-ab/adapter-ready-0-16820.trace.json",
+    "bytes": 2301330,
+    "sha256": "51f7d602b1ce3edb36a695b921372b18c73b3b3e66a7b5cba3edebbb478f57e4"
+  },
+  {
+    "file": "r5-slices/perf/raw/perf-r5-ab/adapter-ready-1-16800.profile.json",
+    "bytes": 616008,
+    "sha256": "d09f210228809acdf9e200114ac937eaf860db15ed91d9e4faf1dd18eab5aca3"
+  },
+  {
+    "file": "r5-slices/perf/raw/perf-r5-ab/adapter-ready-1-16800.trace.json",
+    "bytes": 2130155,
+    "sha256": "fe74a3e8db7c378f5beb93adcfff374c7af659e2133c228a1d5cf8de500a2606"
+  },
+  {
+    "file": "r5-slices/perf/raw/perf-r5-ab/adapter-ready-1-16820.profile.json",
+    "bytes": 486193,
+    "sha256": "fd2da5a986c59be45d51bff353d4a525faf456b9abc51a3d063eb45b09a153e9"
+  },
+  {
+    "file": "r5-slices/perf/raw/perf-r5-ab/adapter-ready-1-16820.trace.json",
+    "bytes": 2123498,
+    "sha256": "2573c93d854310d43a19e8118377c95aadf5c6aae2180f83b46b5333621f1581"
+  },
+  {
+    "file": "r5-slices/perf/raw/perf-r5-ab/adapter-ready-2-16800.profile.json",
+    "bytes": 688052,
+    "sha256": "43d4cde2afe6bcdd3d5a590a75def02e1b2576a51ebf1a1420ba02f3efb93556"
+  },
+  {
+    "file": "r5-slices/perf/raw/perf-r5-ab/adapter-ready-2-16800.trace.json",
+    "bytes": 2849217,
+    "sha256": "60f706f7d97b68d6d2a59af9cafec15a8b2023a3a06afa70e8e5ae5ff28c8219"
+  },
+  {
+    "file": "r5-slices/perf/raw/perf-r5-ab/adapter-ready-2-16820.profile.json",
+    "bytes": 379721,
+    "sha256": "0a06cb78235b41a47e4e617959952969f1c610abe91492f44c7043d799586cc0"
+  },
+  {
+    "file": "r5-slices/perf/raw/perf-r5-ab/adapter-ready-2-16820.trace.json",
+    "bytes": 2145140,
+    "sha256": "b35c9fd321760a47f14eec95c7aadf20401dc1ab99d979da1e6f3f07fe48fbd4"
+  },
+  {
+    "file": "r5-slices/perf/raw/perf-r5-ab/adapter-ready-3-16800.profile.json",
+    "bytes": 807880,
+    "sha256": "579e0cd9fabb23d041115d6e38302516addf0d146673b64d5dae124f9aa0c922"
+  },
+  {
+    "file": "r5-slices/perf/raw/perf-r5-ab/adapter-ready-3-16800.trace.json",
+    "bytes": 2090979,
+    "sha256": "34f9355ca1a98a195ffa864ef48a5987289c240d3acc305139008f3995836985"
+  },
+  {
+    "file": "r5-slices/perf/raw/perf-r5-ab/adapter-ready-3-16820.profile.json",
+    "bytes": 555017,
+    "sha256": "52cb1f319a35617d8cb7dee92146d39f388204874948b1a31fe1c6baa94eb0bd"
+  },
+  {
+    "file": "r5-slices/perf/raw/perf-r5-ab/adapter-ready-3-16820.trace.json",
+    "bytes": 2069263,
+    "sha256": "6ccfbaa37398592eb548f77418af0daea62d27f28ae843b6a283193f9ebb591e"
+  },
+  {
+    "file": "r5-slices/perf/raw/perf-r5-ab/adapter-ready-4-16800.profile.json",
+    "bytes": 676754,
+    "sha256": "281a73b3750acfbfe76d3933300150428e194a995cad293c80a589b8de7f71a2"
+  },
+  {
+    "file": "r5-slices/perf/raw/perf-r5-ab/adapter-ready-4-16800.trace.json",
+    "bytes": 5139765,
+    "sha256": "415a6b7466a6fe2f617e8c78322007a1f7932656b1e858a44546afbd04dabbe7"
+  },
+  {
+    "file": "r5-slices/perf/raw/perf-r5-ab/adapter-ready-4-16820.profile.json",
+    "bytes": 679962,
+    "sha256": "fdd42ad1da3386eb1669755a79adb40ca25750be3566784dcd8a5b9a6d581ca3"
+  },
+  {
+    "file": "r5-slices/perf/raw/perf-r5-ab/adapter-ready-4-16820.trace.json",
+    "bytes": 2109801,
+    "sha256": "9395f135877e66ee85022f93aec120ac1e18fc1c21847f67df6c376c3c2c1be4"
+  },
+  {
+    "file": "r5-slices/perf/raw/perf-r5-ab/adapter-ready-5-16800.profile.json",
+    "bytes": 509612,
+    "sha256": "c5de9b7dfbc0ff9652f715c7a6e000035cfe6e08fb5da252f129c6c5b1639a95"
+  },
+  {
+    "file": "r5-slices/perf/raw/perf-r5-ab/adapter-ready-5-16800.trace.json",
+    "bytes": 2188754,
+    "sha256": "5ed3d4fab24e971ed6b45f89875e8fd02ca26da4cbce8f72cdc09f28148f5572"
+  },
+  {
+    "file": "r5-slices/perf/raw/perf-r5-ab/adapter-ready-5-16820.profile.json",
+    "bytes": 522598,
+    "sha256": "d418f174dc6798d5e991d42c5c84dafd91ba4eb6431cc969d69f43bcf0917457"
+  },
+  {
+    "file": "r5-slices/perf/raw/perf-r5-ab/adapter-ready-5-16820.trace.json",
+    "bytes": 2172140,
+    "sha256": "35a1beb9e247e036b719f043bc776adb64484088a3279ab9ea0b393f4d2c8892"
+  },
+  {
+    "file": "r5-slices/perf/raw/perf-r5-ab/settled-0-16800.profile.json",
+    "bytes": 250560,
+    "sha256": "0c2471fede9c664dbd552a00f0f2a14b987a5e9f59bfeb38eb829403b404d1d1"
+  },
+  {
+    "file": "r5-slices/perf/raw/perf-r5-ab/settled-0-16800.trace.json",
+    "bytes": 2184814,
+    "sha256": "95f14ac55d0956b719fbf07b282c7a06fe6386bded5fc9018aa58ce725305971"
+  },
+  {
+    "file": "r5-slices/perf/raw/perf-r5-ab/settled-0-16820.profile.json",
+    "bytes": 361133,
+    "sha256": "cff659bceb25922f4eb9d4da870ea3f86de3b08059cb6434a642b5d602cf8898"
+  },
+  {
+    "file": "r5-slices/perf/raw/perf-r5-ab/settled-0-16820.trace.json",
+    "bytes": 2097940,
+    "sha256": "cb277c3b4208288672484d09a8764d9f30537a5d5caf1c116e44cfd390814bd3"
+  },
+  {
+    "file": "r5-slices/perf/raw/perf-r5-ab/settled-1-16800.profile.json",
+    "bytes": 281508,
+    "sha256": "5cdd69ef4270dde3443165c1ae67a85b64ac7482bbfdadabc2699c2f9e2552d4"
+  },
+  {
+    "file": "r5-slices/perf/raw/perf-r5-ab/settled-1-16800.trace.json",
+    "bytes": 2060973,
+    "sha256": "9ea5fb7604058f47f0dd6cb725a921e2b649a3733ea40d5cb136d66ca18e60da"
+  },
+  {
+    "file": "r5-slices/perf/raw/perf-r5-ab/settled-1-16820.profile.json",
+    "bytes": 308585,
+    "sha256": "1c03fdc4c3d78503233e742ede2c1145bb63a6d2fdf4cfd6c96f68f753c7ed08"
+  },
+  {
+    "file": "r5-slices/perf/raw/perf-r5-ab/settled-1-16820.trace.json",
+    "bytes": 2010726,
+    "sha256": "b974b31f7df97d3fa90d76e89db2e64cf7c64e27314c06e799741abdc49d1cfa"
+  },
+  {
+    "file": "r5-slices/perf/raw/perf-r5-ab/settled-2-16800.profile.json",
+    "bytes": 386823,
+    "sha256": "2dfc85a52a91d68cd789f9e26f50c6b9a9005524d5cecee81c03010643d92de3"
+  },
+  {
+    "file": "r5-slices/perf/raw/perf-r5-ab/settled-2-16800.trace.json",
+    "bytes": 2074280,
+    "sha256": "60f629ff566ebcaf0031ec940c78e61fc35a2f9473932883228724822879ee34"
+  },
+  {
+    "file": "r5-slices/perf/raw/perf-r5-ab/settled-2-16820.profile.json",
+    "bytes": 260655,
+    "sha256": "1c8002160547f3496bafc00eb1eab575ec53e418591dcedb8b613293ab341f8c"
+  },
+  {
+    "file": "r5-slices/perf/raw/perf-r5-ab/settled-2-16820.trace.json",
+    "bytes": 2082465,
+    "sha256": "d3b40f099ead655f2eb8fc075e186c95aafa10369574c054d79f2fddf59af3d9"
+  },
+  {
+    "file": "r5-slices/perf/raw/perf-r5-ab/settled-3-16800.profile.json",
+    "bytes": 243780,
+    "sha256": "e0f1c2dfdae076eb5c862d479edb89b99b6c8fa6aeeeafa042a8f2c393e3d378"
+  },
+  {
+    "file": "r5-slices/perf/raw/perf-r5-ab/settled-3-16800.trace.json",
+    "bytes": 2018694,
+    "sha256": "570a7d84f557b3511986913ea6a0b0474bdd7da914f7a425224e0b99552cf32b"
+  },
+  {
+    "file": "r5-slices/perf/raw/perf-r5-ab/settled-3-16820.profile.json",
+    "bytes": 267796,
+    "sha256": "318680f82d2da38fc26afbc3220c3f90aef134b6814e5ca8cbd40b3ac1cb5d06"
+  },
+  {
+    "file": "r5-slices/perf/raw/perf-r5-ab/settled-3-16820.trace.json",
+    "bytes": 5267217,
+    "sha256": "56d65f8092027d3fa4acf290458025865cb6825a519be379325c6efe6de67a95"
+  },
+  {
+    "file": "r5-slices/perf/raw/perf-r5-ab/settled-4-16800.profile.json",
+    "bytes": 214507,
+    "sha256": "b75be3c1a312c6eee40f17d10fab292f462c6fe70fb546084d2d06e254af90d6"
+  },
+  {
+    "file": "r5-slices/perf/raw/perf-r5-ab/settled-4-16800.trace.json",
+    "bytes": 2069339,
+    "sha256": "ab6271192eeee68090f197e5c5116406b1d7431da9521be68591ddb8af69e013"
+  },
+  {
+    "file": "r5-slices/perf/raw/perf-r5-ab/settled-4-16820.profile.json",
+    "bytes": 330726,
+    "sha256": "a040e1b2c4375006a04f2ba34b57d172c1c268fc5a9b37a623f2416238443cfb"
+  },
+  {
+    "file": "r5-slices/perf/raw/perf-r5-ab/settled-4-16820.trace.json",
+    "bytes": 2034024,
+    "sha256": "c9e17138e1d4fc5e5ca3c00757dbfa3b844a0309e8809820a451ad45ef9834e3"
+  },
+  {
+    "file": "r5-slices/perf/raw/perf-r5-ab/settled-5-16800.profile.json",
+    "bytes": 214837,
+    "sha256": "94380db90f5af8199e394fe00df368ec4f69c16300adbe72babf1a8cd22c8ab1"
+  },
+  {
+    "file": "r5-slices/perf/raw/perf-r5-ab/settled-5-16800.trace.json",
+    "bytes": 2178105,
+    "sha256": "4db257f0cd61b121a5921242f3f88c8b99a32d1f281c01877ee3a7865349ea7c"
+  },
+  {
+    "file": "r5-slices/perf/raw/perf-r5-ab/settled-5-16820.profile.json",
+    "bytes": 232641,
+    "sha256": "4a590e7fb4d8543a350bd9d1bc23a47ce6b82d8f3a0f522608251e8f2c74c393"
+  },
+  {
+    "file": "r5-slices/perf/raw/perf-r5-ab/settled-5-16820.trace.json",
+    "bytes": 2058347,
+    "sha256": "265c91e3366e9984f4329878c6fc58d0529eb1a0411e43babdb54200ee2a185e"
+  },
+  {
+    "file": "r5-slices/perf/raw/perf-r5-soak-late.heapsnapshot",
+    "bytes": 275027318,
+    "sha256": "bea3dfcd0acfff39167a1fd3507bf8d797728fcd5f9b4f01c8a66a1677f4a2ad"
+  },
+  {
+    "file": "r5-slices/perf/raw/qa-measurement-evidence.json",
+    "bytes": 2390,
+    "sha256": "9f0f7705cce85c3d78b9cdf7eaee1eeafd79868a60d3f76b539adc9a192280b8"
+  },
+  {
+    "file": "r5-slices/perf/raw/thread-list-response.json",
+    "bytes": 110315,
+    "sha256": "a880f60a21b4c8571650cbbec19e92404fcd457bcef4d0cfff9f24fe084ffbde"
+  },
+  {
+    "file": "r5-slices/perf/raw/broad-array-retainers.json",
+    "bytes": 3629458,
+    "sha256": "32d699854bff3018cd3912e6c6acb766704c7be93f647a902d4a4c4fdc6bdde2"
+  }
+]

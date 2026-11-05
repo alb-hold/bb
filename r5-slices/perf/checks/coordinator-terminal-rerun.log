@@ -1,0 +1,69 @@
+• turbo 2.10.12
+
+   • Packages in scope: @bb/app
+   • Running test in 1 packages
+   • Remote caching disabled, using shared worktree cache
+
+//:ensure-native-modules: cache bypass, force executing f6e521208ec7cfc3
+@bb/process-utils:generate:profile-worker: cache miss, executing dbf7260aaded5358
+@bb/process-utils:generate:profile-worker: 
+@bb/process-utils:generate:profile-worker: > @bb/process-utils@0.0.1 generate:profile-worker /Users/alexandrebrandizzi/projects/bb-fork-wt/ui-polish-overhaul/packages/process-utils
+@bb/process-utils:generate:profile-worker: > node scripts/generate-profile-worker.mjs
+@bb/process-utils:generate:profile-worker: 
+//:ensure-native-modules: 
+//:ensure-native-modules: > bb@ ensure-native-modules /Users/alexandrebrandizzi/projects/bb-fork-wt/ui-polish-overhaul
+//:ensure-native-modules: > node scripts/ensure-native-modules.mjs
+//:ensure-native-modules: 
+@bb/plugin-build:generate: cache miss, executing 6ba40574ae5d4920
+@bb/templates:generate:templates: cache miss, executing 32cfb1981065b6c6
+@bb/plugin-build:generate: 
+@bb/plugin-build:generate: > @bb/plugin-build@0.0.1 generate /Users/alexandrebrandizzi/projects/bb-fork-wt/ui-polish-overhaul/packages/plugin-build
+@bb/plugin-build:generate: > node ./scripts/generate-plugin-theme.mjs && node ./scripts/generate-runtime-export-manifest.mjs
+@bb/plugin-build:generate: 
+@bb/templates:generate:templates: 
+@bb/templates:generate:templates: > @bb/templates@0.0.1 generate:templates /Users/alexandrebrandizzi/projects/bb-fork-wt/ui-polish-overhaul/packages/templates
+@bb/templates:generate:templates: > node ./scripts/generate-templates.mjs
+@bb/templates:generate:templates: 
+@bb/templates:generate:plugin-scaffold: cache miss, executing 818a8613432156a7
+@bb/templates:generate:plugin-scaffold: 
+@bb/templates:generate:plugin-scaffold: > @bb/templates@0.0.1 generate:plugin-scaffold /Users/alexandrebrandizzi/projects/bb-fork-wt/ui-polish-overhaul/packages/templates
+@bb/templates:generate:plugin-scaffold: > node ./scripts/generate-plugin-scaffold.mjs
+@bb/templates:generate:plugin-scaffold: 
+@bb/plugin-build:generate: plugin-theme.generated.ts up to date
+@bb/plugin-build:generate: host-tailwind.css up to date
+@bb/plugin-build:generate: host-tailwind-version.ts up to date
+@bb/plugin-build:generate: wrote /Users/alexandrebrandizzi/projects/bb-fork-wt/ui-polish-overhaul/packages/plugin-build/src/generated/runtime-export-manifest.generated.ts (react@19.3.0)
+@bb/app:test: cache miss, executing d3a564e350b26a28
+@bb/app:test: 
+@bb/app:test: > @bb/app@0.0.1 test /Users/alexandrebrandizzi/projects/bb-fork-wt/ui-polish-overhaul/apps/app
+@bb/app:test: > node scripts/generate-pwa-icons.mjs --check && vitest run --config vitest.config.ts "ThreadTerminalView.terminal-focus.viewport" "terminal-repaint-grid"
+@bb/app:test: 
+@bb/app:test: 
+@bb/app:test: [1m[46m RUN [49m[22m [36mv4.1.1 [39m[90m/Users/alexandrebrandizzi/projects/bb-fork-wt/ui-polish-overhaul/apps/app[39m
+@bb/app:test: 
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test:  [32m✓[39m [30m[45m @bb/app:isolated [49m[39m src/components/thread/terminal/terminal-repaint-grid.test.ts [2m([22m[2m13 tests[22m[2m)[22m[33m 867[2mms[22m[39m
+@bb/app:test:      [33m[2m✓[22m[39m never narrows the page's own terminal for the echo of its nudge and ends at the real size with a clean screen [33m 813[2mms[22m[39m
+@bb/app:test:  [32m✓[39m [30m[45m @bb/app:isolated [49m[39m src/components/thread/terminal/ThreadTerminalView.terminal-focus.viewport.test.tsx [2m([22m[2m11 tests[22m[2m)[22m[33m 31065[2mms[22m[39m
+@bb/app:test:      [33m[2m✓[22m[39m keeps a bottom-following client at the bottom after output and a shared resize [33m 962[2mms[22m[39m
+@bb/app:test:      [33m[2m✓[22m[39m keeps a saved bottom-follow position after live output and a shared resize [33m 1454[2mms[22m[39m
+@bb/app:test:      [33m[2m✓[22m[39m keeps a live scrolled-up line through a shared resize without stored viewport state [33m 2035[2mms[22m[39m
+@bb/app:test:      [33m[2m✓[22m[39m restores a reloaded bottom-following client after a terminal resize [33m 1673[2mms[22m[39m
+@bb/app:test:      [33m[2m✓[22m[39m keeps a live bottom-following client at the bottom after typed output and a shared resize [33m 2483[2mms[22m[39m
+@bb/app:test:      [33m[2m✓[22m[39m keeps a restored scrolled-up content line through the component column reflow [33m 2516[2mms[22m[39m
+@bb/app:test:      [33m[2m✓[22m[39m uses gesture-start scale for uneven multi-frame pinch gestures [33m 2230[2mms[22m[39m
+@bb/app:test:      [33m[2m✓[22m[39m preserves the open terminal and its scrollback when pointer mode changes [33m 7082[2mms[22m[39m
+@bb/app:test:      [33m[2m✓[22m[39m sends clipboard text once through xterm paste input [33m 5266[2mms[22m[39m
+@bb/app:test:      [33m[2m✓[22m[39m shows the clipboard fallback without sending input when read is denied [33m 4642[2mms[22m[39m
+@bb/app:test:      [33m[2m✓[22m[39m suppresses terminal-scoped shortcuts from the real xterm input [33m 721[2mms[22m[39m
+@bb/app:test: 
+@bb/app:test: [2m Test Files [22m [1m[32m2 passed[39m[22m[90m (2)[39m
+@bb/app:test: [2m      Tests [22m [1m[32m24 passed[39m[22m[90m (24)[39m
+@bb/app:test: [2m   Start at [22m 23:42:43
+@bb/app:test: [2m   Duration [22m 37.67s[2m (transform 6.99s, setup 948ms, import 7.99s, tests 31.93s, environment 1.26s)[22m
+@bb/app:test: 
+
+ Tasks:    6 successful, 6 total
+Cached:    0 cached, 6 total
+  Time:    42.431s 
+

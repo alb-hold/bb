@@ -1,0 +1,18 @@
+{
+  "file": "r5-slices/perf/raw/broad-300.heapsnapshot",
+  "devtoolsLtQueues": [
+    {
+      "rootId": 3592539,
+      "directEntries": 1952,
+      "arrayNodes": 3906,
+      "arraySelfBytes": 18600908
+    },
+    {
+      "rootId": 862417,
+      "directEntries": 2162,
+      "arrayNodes": 4326,
+      "arraySelfBytes": 20041728
+    }
+  ],
+  "totalArraySelfBytes": 38642636
+}

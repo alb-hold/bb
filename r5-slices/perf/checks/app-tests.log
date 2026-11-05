@@ -1,0 +1,1960 @@
+• turbo 2.10.12
+
+   • Packages in scope: @bb/app
+   • Running test in 1 packages
+   • Remote caching disabled
+
+//:ensure-native-modules: cache bypass, force executing d3b7263e69e696cb
+@bb/plugin-build:generate: cache hit, replaying logs cac61967fdba660b
+@bb/plugin-build:generate: 
+@bb/plugin-build:generate: > @bb/plugin-build@0.0.1 generate /home/alex_/bb-remote-heavy/bb-fork-837544a4aeb6/packages/plugin-build
+@bb/plugin-build:generate: > node ./scripts/generate-plugin-theme.mjs && node ./scripts/generate-runtime-export-manifest.mjs
+@bb/plugin-build:generate: 
+@bb/plugin-build:generate: wrote packages/plugin-build/src/generated/plugin-theme.generated.ts
+@bb/plugin-build:generate: wrote packages/plugin-build/src/generated/host-tailwind.css
+@bb/plugin-build:generate: wrote packages/plugin-build/src/generated/host-tailwind-version.ts
+@bb/plugin-build:generate: wrote /home/alex_/bb-remote-heavy/bb-fork-837544a4aeb6/packages/plugin-build/src/generated/runtime-export-manifest.generated.ts (react@19.3.0)
+@bb/process-utils:generate:profile-worker: cache hit, replaying logs 4b7a807373f23e31
+@bb/process-utils:generate:profile-worker: 
+@bb/process-utils:generate:profile-worker: > @bb/process-utils@0.0.1 generate:profile-worker /home/alex_/bb-remote-heavy/bb-fork-837544a4aeb6/packages/process-utils
+@bb/process-utils:generate:profile-worker: > node scripts/generate-profile-worker.mjs
+@bb/process-utils:generate:profile-worker: 
+@bb/templates:generate:templates: cache hit, replaying logs 420c02ee020bbaa4
+@bb/templates:generate:templates: 
+@bb/templates:generate:templates: > @bb/templates@0.0.1 generate:templates /home/alex_/bb-remote-heavy/bb-fork-837544a4aeb6/packages/templates
+@bb/templates:generate:templates: > node ./scripts/generate-templates.mjs
+@bb/templates:generate:templates: 
+@bb/templates:generate:plugin-scaffold: cache hit, replaying logs f6372830cb434cdd
+@bb/templates:generate:plugin-scaffold: 
+@bb/templates:generate:plugin-scaffold: > @bb/templates@0.0.1 generate:plugin-scaffold /home/alex_/bb-remote-heavy/bb-fork-837544a4aeb6/packages/templates
+@bb/templates:generate:plugin-scaffold: > node ./scripts/generate-plugin-scaffold.mjs
+@bb/templates:generate:plugin-scaffold: 
+//:ensure-native-modules: 
+//:ensure-native-modules: > bb@ ensure-native-modules /home/alex_/bb-remote-heavy/bb-fork-837544a4aeb6
+//:ensure-native-modules: > node scripts/ensure-native-modules.mjs
+//:ensure-native-modules: 
+//:ensure-native-modules: [ensure-native-modules] Detached hardlinked better-sqlite3 binary before verification
+@bb/app:test: cache miss, executing a3dd31c0e40d0113
+@bb/app:test: 
+@bb/app:test: > @bb/app@0.0.1 test /home/alex_/bb-remote-heavy/bb-fork-837544a4aeb6/apps/app
+@bb/app:test: > node scripts/generate-pwa-icons.mjs --check && vitest run --config vitest.config.ts
+@bb/app:test: 
+@bb/app:test: 
+@bb/app:test:  RUN  v4.1.1 /home/alex_/bb-remote-heavy/bb-fork-837544a4aeb6/apps/app
+@bb/app:test: 
+@bb/app:test:  ✓  @bb/app  src/components/ui/theme.test.ts (40 tests) 72ms
+@bb/app:test:  ✓  @bb/app  src/components/onboarding/onboarding-model.test.ts (26 tests) 57ms
+@bb/app:test:  ✓  @bb/app  src/bundle-budget.test.ts (20 tests) 1436ms
+@bb/app:test:  ✓  @bb/app  src/lib/queued-message-wait.test.ts (24 tests) 96ms
+@bb/app:test:  ✓  @bb/app  src/components/plugin/theme-preview-fixture-anatomy.test.ts (22 tests) 169ms
+@bb/app:test:  ✓  @bb/app  src/components/thread/terminal/terminal-shell-state.test.ts (24 tests) 134ms
+@bb/app:test:  ✓  @bb/app  src/hooks/cache-owners/cache-owner-registry.test.ts (3 tests) 5270ms
+@bb/app:test:      ✓ keeps raw frontend-domain cache writes inside cache owners  5011ms
+@bb/app:test:  ✓  @bb/app  src/lib/plugin-app-definition.test.ts (70 tests) 109ms
+@bb/app:test:  ✓  @bb/app  src/lib/command-palette/palette-thread-search.test.ts (29 tests) 221ms
+@bb/app:test:  ✓  @bb/app  src/lib/keyboard-shortcut-settings.test.ts (11 tests) 31ms
+@bb/app:test:  ✓  @bb/app  src/lib/environment-workspace-display.test.ts (26 tests) 58ms
+@bb/app:test:  ✓  @bb/app  src/components/machines/server-move.test.ts (21 tests) 19ms
+@bb/app:test:  ✓  @bb/app  src/lib/dictation/dictation-session.test.ts (18 tests) 51ms
+@bb/app:test:  ✓  @bb/app  src/lib/split-layout/ops.test.ts (7 tests) 12ms
+@bb/app:test:  ✓  @bb/app  src/lib/plugin-slot-resolvers.test.ts (7 tests) 30ms
+@bb/app:test:  ✓  @bb/app  src/hooks/cache-owners/in-flight-fetch-writes.test.ts (9 tests) 90ms
+@bb/app:test:  ✓  @bb/app  src/lib/app-keybindings.test.ts (14 tests) 11ms
+@bb/app:test:  ✓  @bb/app  src/components/plugin/management/plugin-status.test.ts (18 tests) 7ms
+@bb/app:test:  ✓  @bb/app  src/hooks/cache-owners/optimistic-query-cancellation.test.ts (6 tests) 269ms
+@bb/app:test:  ✓  @bb/app  src/components/plugin/new-thread-environment-seed.test.ts (10 tests) 11ms
+@bb/app:test:  ✓  @bb/app  src/lib/route-paths.test.ts (20 tests) 34ms
+@bb/app:test:  ✓  @bb/app  src/components/ui/markdown-local-file-link.test.ts (29 tests) 42ms
+@bb/app:test:  ✓  @bb/app  src/hooks/threadMentionSuggestions.test.ts (19 tests) 58ms
+@bb/app:test:  ✓  @bb/app  src/components/thread/timeline/timeline-auto-expand.test.ts (22 tests) 120ms
+@bb/app:test:  ✓  @bb/app  src/components/secondary-panel/secondaryPanelTabState.test.ts (26 tests) 93ms
+@bb/app:test:  ✓  @bb/app  src/components/secondary-panel/sidebarSplitLayout.test.ts (39 tests) 118ms
+@bb/app:test:  ✓  @bb/app  src/components/plugin/pluginNavSidebarOrder.test.ts (11 tests) 13ms
+@bb/app:test:  ✓  @bb/app  src/hooks/queries/query-helpers.test.ts (14 tests) 56ms
+@bb/app:test:  ✓  @bb/app  src/components/plugin/management/plugin-browse-discovery.test.ts (5 tests) 8ms
+@bb/app:test:  ✓  @bb/app  src/components/settings/release-notes-model.test.ts (10 tests) 17ms
+@bb/app:test:  ✓  @bb/app  src/lib/plugin-composer-handle.test.ts (28 tests) 63ms
+@bb/app:test:  ✓  @bb/app  src/lib/terminal-session-visibility.test.ts (15 tests) 16ms
+@bb/app:test:  ✓  @bb/app  src/lib/lifecycle-errors.test.ts (37 tests) 33ms
+@bb/app:test:  ✓  @bb/app  src/components/plugin/file-opener-tabs.test.ts (8 tests) 31ms
+@bb/app:test:  ✓  @bb/app  src/components/secondary-panel/terminalPanelTabs.test.ts (15 tests) 27ms
+@bb/app:test:  ✓  @bb/app  src/hooks/thread-creation-options/model-catalog-selection.test.ts (10 tests) 17ms
+@bb/app:test:  ✓  @bb/app  src/vite-font-preload.test.ts (8 tests | 1 skipped) 27ms
+@bb/app:test:  ✓  @bb/app  src/components/layout/faviconAttentionDot.test.ts (11 tests) 3ms
+@bb/app:test:  ✓  @bb/app  src/lib/workspace-open-target-preference.test.ts (14 tests) 3ms
+@bb/app:test:  ✓  @bb/app  src/components/settings/browser-import-wizard.test.ts (7 tests) 20ms
+@bb/app:test:  ✓  @bb/app  src/components/thread/timeline/streaming-markdown-split.test.ts (28 tests) 17ms
+@bb/app:test:  ✓  @bb/app  src/lib/live-file-navigation.test.ts (25 tests) 26ms
+@bb/app:test:  ✓  @bb/app  src/components/ui/markdown-local-file-link-normalize.test.ts (12 tests) 12ms
+@bb/app:test:  ✓  @bb/app  src/components/settings/settings-search.test.ts (14 tests) 54ms
+@bb/app:test:  ✓  @bb/app  src/hooks/queries/plugin-catalog-queries.test.ts (6 tests) 104ms
+@bb/app:test:  ✓  @bb/app  src/views/thread-detail/splitThreadNavigation.test.ts (10 tests) 25ms
+@bb/app:test:  ✓  @bb/app  src/lib/thread-local-file-links.test.ts (10 tests) 15ms
+@bb/app:test:  ✓  @bb/app  src/lib/browser-url.test.ts (13 tests) 35ms
+@bb/app:test:  ✓  @bb/app  src/hooks/cache-owners/archived-thread-browser-owner.test.ts (4 tests) 180ms
+@bb/app:test:  ✓  @bb/app  src/lib/split-drag/zones.test.ts (17 tests) 10ms
+@bb/app:test:  ✓  @bb/app  src/lib/command-palette/palette-thread-search-window.test.ts (8 tests) 10ms
+@bb/app:test:  ✓  @bb/app  src/components/thread/terminal/terminal-link-routing.test.ts (15 tests) 21ms
+@bb/app:test:  ✓  @bb/app  src/hooks/system-cache-effects.test.ts (7 tests) 335ms
+@bb/app:test:  ✓  @bb/app  src/components/secondary-panel/browserViewVisibilityCoordinator.test.ts (7 tests) 14ms
+@bb/app:test:  ✓  @bb/app  src/lib/local-host-daemon-access.test.ts (10 tests) 165ms
+@bb/app:test:  ✓  @bb/app  src/lib/audio-input-device-preference.test.ts (13 tests) 74ms
+@bb/app:test:  ✓  @bb/app  src/components/thread/terminal/native-terminal-state.test.ts (8 tests) 16ms
+@bb/app:test:  ✓  @bb/app  src/components/thread/ThreadTitleMentions.resources.test.ts (9 tests) 14ms
+@bb/app:test:  ✓  @bb/app  src/hooks/cache-owners/thread-runtime-cache-owner.test.ts (26 tests) 243ms
+@bb/app:test:  ✓  @bb/app  src/hooks/cache-owners/thread-state-cache-owner.test.ts (23 tests) 196ms
+@bb/app:test:  ✓  @bb/app  src/hooks/useAppSettingsRouteMemory.test.ts (11 tests) 24ms
+@bb/app:test:  ✓  @bb/app  src/lib/stored-order.test.ts (12 tests) 15ms
+@bb/app:test:  ✓  @bb/app  src/lib/plugin-sidebar-threads.test.ts (18 tests) 91ms
+@bb/app:test:  ✓  @bb/app  src/lib/in-app-browser-link-preference.test.ts (8 tests) 5ms
+@bb/app:test:  ✓  @bb/app  src/views/root-compose-thread-environment.test.ts (6 tests) 2ms
+@bb/app:test:  ✓  @bb/app  src/lib/plugin-command-keybindings.test.ts (6 tests) 12ms
+@bb/app:test:  ✓  @bb/app  src/components/secondary-panel/usePanelFiles.test.tsx (28 tests | 2 skipped) 50ms
+@bb/app:test:  ✓  @bb/app  src/hooks/useCommandSuggestions.test.ts (6 tests) 13ms
+@bb/app:test:  ✓  @bb/app  src/lib/bb-desktop.test.ts (7 tests) 12ms
+@bb/app:test:  ✓  @bb/app  src/components/promptbox/mentions/initial-prompt-draft.test.ts (5 tests) 93ms
+@bb/app:test:  ✓  @bb/app  src/components/thread/timeline/useTimelineWorkRowFullOutput.test.ts (9 tests) 5ms
+@bb/app:test:  ✓  @bb/app  src/components/ui/pan-zoom.test.ts (11 tests) 4ms
+@bb/app:test:  ✓  @bb/app  src/components/layout/AppLayout.tools-breadcrumbs.test.ts (7 tests) 12ms
+@bb/app:test:  ✓  @bb/app  src/components/ui/markdown-prompt-mentions.test.ts (8 tests) 73ms
+@bb/app:test:  ✓  @bb/app  src/lib/split-layout/computePaneRects.test.ts (6 tests) 8ms
+@bb/app:test:  ✓  @bb/app  src/components/thread/terminal/terminal-output-boundaries.test.ts (1 test) 680ms
+@bb/app:test:      ✓ emits exactly the bytes of the per-byte reference for 3000 seeded streams cut at random chunk boundaries  677ms
+@bb/app:test:  ✓  @bb/app  src/lib/command-palette/palette-plugin-actions.test.ts (4 tests) 9ms
+@bb/app:test:  ✓  @bb/app  src/hooks/cache-owners/terminal-cache-owner.test.ts (4 tests) 23ms
+@bb/app:test:  ✓  @bb/app  src/components/thread/terminal/useThreadTerminalController.test.ts (10 tests) 3ms
+@bb/app:test:  ✓  @bb/app  src/views/thread-detail/threadParentSelectorOptions.test.ts (4 tests) 8ms
+@bb/app:test:  ✓  @bb/app  src/components/pickers/modelPickerToggle.test.ts (12 tests) 4ms
+@bb/app:test:  ✓  @bb/app  src/components/sidebar/sidebarNavigationProvider.test.ts (13 tests) 2ms
+@bb/app:test:  ✓  @bb/app  src/lib/command-palette/palette-app-commands.test.ts (8 tests) 9ms
+@bb/app:test:  ✓  @bb/app  src/lib/split-layout/persistence.test.ts (4 tests) 17ms
+@bb/app:test:  ✓  @bb/app  src/components/pickers/modelPickerCycle.test.ts (11 tests) 7ms
+@bb/app:test:  ✓  @bb/app  src/views/useMobileRecentsThreadReveal.test.ts (4 tests) 6ms
+@bb/app:test:  ✓  @bb/app  src/components/settings/changelog-preview.test.ts (7 tests) 4ms
+@bb/app:test:  ✓  @bb/app  src/lib/reasoning-labels.test.ts (6 tests) 13ms
+@bb/app:test:  ✓  @bb/app  src/components/thread/terminal/terminal-search-controller.test.ts (4 tests) 20ms
+@bb/app:test:  ✓  @bb/app  src/hooks/cache-owners/query-cache.test.ts (3 tests) 9ms
+@bb/app:test:  ✓  @bb/app  src/lib/split-layout/openThreadInSplit.test.ts (4 tests) 3ms
+@bb/app:test:  ✓  @bb/app  src/hooks/useUpdateInventory.test.ts (8 tests) 14ms
+@bb/app:test:  ✓  @bb/app  src/components/plugin/PluginInstallJobsHost.test.ts (3 tests) 20ms
+@bb/app:test:  ✓  @bb/app  src/components/thread/terminal/composer-text-ops.test.ts (12 tests) 17ms
+@bb/app:test:  ✓  @bb/app  src/components/pickers/ReuseEnvironmentPicker.test.ts (7 tests) 5ms
+@bb/app:test:  ✓  @bb/app  src/lib/plugin-css-dedupe.test.ts (3 tests) 2ms
+@bb/app:test:  ✓  @bb/app  src/components/secondary-panel/info/thread-storage-tree.test.ts (6 tests) 7ms
+@bb/app:test:  ✓  @bb/app  src/lib/split-resize-snap.test.ts (4 tests) 3ms
+@bb/app:test:  ✓  @bb/app  src/components/thread/user-questions/user-question-form-state.test.ts (7 tests) 3ms
+@bb/app:test:  ✓  @bb/app  src/hooks/useResolvedLiveFileTarget.test.ts (9 tests) 2ms
+@bb/app:test:  ✓  @bb/app  src/lib/stylesheet-property-registry.test.ts (4 tests) 3ms
+@bb/app:test:  ✓  @bb/app  src/components/thread/composer/useComposerAttachmentUploads.test.ts (4 tests) 19ms
+@bb/app:test:  ✓  @bb/app  src/lib/plugin-timeline-renderers.test.ts (2 tests) 9ms
+@bb/app:test:  ✓  @bb/app  src/components/plugin/management/installed-plugin-catalog.test.ts (5 tests) 2ms
+@bb/app:test:  ✓  @bb/app  src/lib/command-palette/palette-ranking.test.ts (6 tests) 41ms
+@bb/app:test:  ✓  @bb/app  src/lib/plugin-bound-sdk.test.ts (24 tests) 728ms
+@bb/app:test:  ✓  @bb/app  src/lib/themes/built-in-themes.test.ts (4 tests) 209ms
+@bb/app:test:  ✓  @bb/app  src/components/machines/machine-server-access.test.ts (4 tests) 2ms
+@bb/app:test:  ✓  @bb/app  src/components/ui/markdown-message-directives.test.ts (5 tests) 6ms
+@bb/app:test:  ✓  @bb/app  src/components/ui/markdown-math-fences.test.ts (9 tests) 8ms
+@bb/app:test:  ✓  @bb/app  src/hooks/queries/host-queries.test.ts (7 tests) 8ms
+@bb/app:test:  ✓  @bb/app  src/lib/plugin-thread-row-status.test.ts (4 tests) 6ms
+@bb/app:test:  ✓  @bb/app  src/components/secondary-panel/usePanelBrowser.test.tsx (3 tests) 20ms
+@bb/app:test:  ✓  @bb/app  src/regex-engine-feature-probes.test.ts (2 tests) 720ms
+@bb/app:test:      ✓ the @pierre/diffs portable worker evaluates on Safari 16  440ms
+@bb/app:test:  ✓  @bb/app  src/hooks/pluginMentionSuggestions.test.ts (2 tests) 1ms
+@bb/app:test:  ✓  @bb/app  src/hooks/namedMentionSuggestions.test.ts (6 tests) 9ms
+@bb/app:test:  ✓  @bb/app  src/lib/plugin-replacement-preference.test.ts (6 tests) 4ms
+@bb/app:test:  ✓  @bb/app  src/components/plugin/management/plugin-marketplace-author.test.ts (2 tests) 1ms
+@bb/app:test:  ✓  @bb/app  src/hooks/pathMentionSuggestions.test.ts (4 tests) 2ms
+@bb/app:test:  ✓  @bb/app  src/components/secondary-panel/useThreadStorageBrowser.test.ts (4 tests) 2ms
+@bb/app:test:  ✓  @bb/app  src/components/ui/truncate-path-middle.test.ts (14 tests) 12ms
+@bb/app:test:  ✓  @bb/app  src/lib/prompt-history.test.ts (3 tests) 2ms
+@bb/app:test:  ✓  @bb/app  src/components/promptbox/banner/queued-messages-expanded.test.ts (4 tests) 8ms
+@bb/app:test:  ✓  @bb/app  src/components/secondary-panel/gitDiffTabEligibility.test.ts (4 tests) 1ms
+@bb/app:test:  ✓  @bb/app  src/components/promptbox/banner/ProviderCliBanner.test.tsx (3 tests) 23ms
+@bb/app:test:  ✓  @bb/app  src/components/thread/timeline/thread-ongoing-indicator.test.ts (7 tests) 1ms
+@bb/app:test:  ✓  @bb/app  src/lib/fixed-panel-tabs.plugin-terminal.test.ts (3 tests) 2ms
+@bb/app:test:  ✓  @bb/app  src/lib/app-route-history.stack.test.ts (1 test) 8ms
+@bb/app:test:  ✓  @bb/app  src/components/promptbox/prompt-voice-intent.test.ts (3 tests) 3ms
+@bb/app:test:  ✓  @bb/app  src/hooks/environment-cache-effects.test.ts (1 test) 5ms
+@bb/app:test:  ✓  @bb/app  src/components/sidebar/paneContentSplitIndicator.test.ts (3 tests) 2ms
+@bb/app:test:  ✓  @bb/app  src/hooks/promptMentionCandidates.test.ts (2 tests) 2ms
+@bb/app:test:  ✓  @bb/app  src/lib/thread-links.test.ts (24 tests) 12ms
+@bb/app:test:  ✓  @bb/app  src/components/thread/terminal/terminal-text-snapshot.test.ts (5 tests) 108ms
+@bb/app:test:  ✓  @bb/app  src/lib/plugin-sdk-hooks.test.ts (16 tests) 83ms
+@bb/app:test:  ✓  @bb/app  src/components/layout/windowTopLeftReserve.test.ts (7 tests) 1ms
+@bb/app:test:  ✓  @bb/app  src/views/thread-detail/splitPaneCommands.test.ts (4 tests) 4ms
+@bb/app:test:  ✓  @bb/app  src/components/secondary-panel/threadRecentItems.test.ts (4 tests) 4ms
+@bb/app:test:  ✓  @bb/app  src/components/thread/timeline/SelectableMessageProse.test.ts (5 tests) 11ms
+@bb/app:test:  ✓  @bb/app  src/lib/pierre-strict-mode-recovery.test.ts (1 test) 2ms
+@bb/app:test:  ✓  @bb/app  src/hooks/queries/plugin-install-job-queries.test.ts (2 tests) 47ms
+@bb/app:test:  ✓  @bb/app  src/components/ui/scroll-to-bottom-button.test.tsx (4 tests) 71ms
+@bb/app:test:  ✓  @bb/app  src/precompress-app-dist.test.ts (1 test) 439ms
+@bb/app:test:      ✓ writes valid Brotli and gzip sidecars only for eligible assets  438ms
+@bb/app:test:  ✓  @bb/app  src/components/thread/terminal/terminal-file-drop.test.ts (6 tests) 1ms
+@bb/app:test:  ✓  @bb/app  src/views/thread-detail/threadWorkspaceOpenPath.test.ts (2 tests) 2ms
+@bb/app:test:  ✓  @bb/app  src/components/settings/plugin-settings-entries.test.ts (2 tests) 2ms
+@bb/app:test:  ✓  @bb/app  src/lib/composer-create-data.test.ts (2 tests) 12ms
+@bb/app:test:  ✓  @bb/app  src/components/thread/terminal/terminal-shared-size.render.test.ts (2 tests) 69ms
+@bb/app:test:  ✓  @bb/app  src/lib/app-fixed-tab-navigation.test.ts (3 tests) 11ms
+@bb/app:test:  ✓  @bb/app  src/hooks/usePathSuggestions.test.ts (2 tests) 7ms
+@bb/app:test:  ✓  @bb/app  src/hooks/cache-owners/thread-lifecycle-cache.test.ts (2 tests) 35ms
+@bb/app:test:  ✓  @bb/app  src/components/thread/terminal/terminal-shared-size.test.ts (7 tests) 1ms
+@bb/app:test:  ✓  @bb/app  src/components/secondary-panel/ThreadMetadataContent.test.tsx (11 tests) 126ms
+@bb/app:test:  ✓  @bb/app  src/views/RootComposeMobileRecents.test.ts (8 tests) 14ms
+@bb/app:test:  ✓  @bb/app  src/app.css.test.ts (4 tests) 8ms
+@bb/app:test:  ✓  @bb/app  src/components/thread/terminal/terminal-osc52-policy.test.ts (4 tests) 2ms
+@bb/app:test:  ✓  @bb/app  src/lib/ws.plugin-signal.test.ts (3 tests) 130ms
+@bb/app:test:  ✓  @bb/app  src/components/promptbox/composerHeightAtoms.test.ts (4 tests) 2ms
+@bb/app:test:  ✓  @bb/app  src/lib/composer-text-effects.test.ts (1 test) 2ms
+@bb/app:test:  ✓  @bb/app  src/components/thread/terminal/terminal-mobile-input.test.ts (3 tests) 27ms
+@bb/app:test:  ✓  @bb/app  src/hooks/resolvePermissionModeSelection.test.ts (4 tests) 3ms
+@bb/app:test:  ✓  @bb/app  src/lib/diff-worker-pool.test.ts (4 tests) 12ms
+@bb/app:test:  ✓  @bb/app  src/views/root-compose-initial-prompt.test.ts (4 tests) 6ms
+@bb/app:test:  ✓  @bb/app  src/hooks/voice-input-support.test.ts (4 tests) 10ms
+@bb/app:test:  ✓  @bb/app  src/components/ui/markdown-code-block.test.ts (5 tests) 3ms
+@bb/app:test:  ✓  @bb/app  src/lib/plugin-frontend-lazy.test.ts (3 tests) 11ms
+@bb/app:test:  ✓  @bb/app  src/hooks/useLocalPathPicker.path-entry.test.ts (5 tests) 1ms
+@bb/app:test:  ✓  @bb/app  src/components/machines/MachineLabel.test.ts (2 tests) 2ms
+@bb/app:test:  ✓  @bb/app  src/components/thread/timeline/MessageActionBar.test.ts (5 tests) 32ms
+@bb/app:test:  ✓  @bb/app  src/components/plugin/usePluginBranchPickerState.source-host.test.ts (4 tests) 13ms
+@bb/app:test:  ✓  @bb/app  src/components/promptbox/banner/ThreadMachineStatus.test.tsx (3 tests) 88ms
+@bb/app:test:  ✓  @bb/app  src/lib/native-activity-guidance-parity.test.ts (2 tests) 2ms
+@bb/app:test:  ✓  @bb/app  src/hooks/useAudioInputDevices.test.ts (1 test) 6ms
+@bb/app:test:  ✓  @bb/app  src/components/thread/terminal/thread-terminal-title.test.ts (6 tests) 2ms
+@bb/app:test:  ✓  @bb/app  src/components/secondary-panel/TerminalHostSelector.test.ts (2 tests) 64ms
+@bb/app:test:  ✓  @bb/app  src/lib/loopback-hostname.test.ts (24 tests) 19ms
+@bb/app:test:  ✓  @bb/app  src/components/settings/settings-nav.test.ts (5 tests) 14ms
+@bb/app:test:  ✓  @bb/app  src/lib/pierre-worker-pool-theme.test.ts (3 tests) 2ms
+@bb/app:test:  ✓  @bb/app  src/lib/ios-webkit.test.ts (2 tests) 4ms
+@bb/app:test:  ✓  @bb/app  src/components/ui/tailwind-has-variants.test.ts (1 test) 621ms
+@bb/app:test:      ✓ does not use group-has-* or peer-has-* variants  620ms
+@bb/app:test:  ✓  @bb/app  src/components/secondary-panel/useThreadStorageViewer.test.ts (4 tests) 2ms
+@bb/app:test:  ✓  @bb/app  src/lib/plugin-sidebar-split.test.ts (2 tests) 3ms
+@bb/app:test:  ✓  @bb/app  src/lib/thread-selection-plan.test.ts (1 test) 4ms
+@bb/app:test:  ✓  @bb/app  src/components/pickers/environment-picker-value.test.ts (3 tests) 2ms
+@bb/app:test:  ✓  @bb/app  src/lib/plugin-json-value.test.ts (5 tests) 29ms
+@bb/app:test:  ✓  @bb/app  src/lib/side-chat-plugin.test.ts (2 tests) 1ms
+@bb/app:test:  ✓  @bb/app  src/lib/localhost-link-rewrite-description.test.ts (4 tests) 2ms
+@bb/app:test:  ✓  @bb/app  src/lib/split-layout/focusedPaneThread.test.ts (3 tests) 2ms
+@bb/app:test:  ✓  @bb/app  src/components/machines/machine-status.test.ts (2 tests) 8ms
+@bb/app:test:  ✓  @bb/app  src/components/thread/timeline/thread-context-window-usage.test.ts (5 tests) 2ms
+@bb/app:test:  ✓  @bb/app  src/lib/resource-edit-prompt.test.ts (1 test) 1ms
+@bb/app:test:  ✓  @bb/app  src/hooks/cache-owners/palette-archive-cache.test.ts (1 test) 8ms
+@bb/app:test:  ✓  @bb/app  src/lib/parse-env-file.test.ts (2 tests) 4ms
+@bb/app:test:  ✓  @bb/app  src/components/thread/terminal/terminal-mouse-reports.test.ts (4 tests) 2ms
+@bb/app:test:  ✓  @bb/app  src/lib/thread-creation-placement.test.ts (6 tests) 2ms
+@bb/app:test:  ✓  @bb/app  src/components/app-update/app-update-presentation.test.ts (2 tests) 1ms
+@bb/app:test:  ✓  @bb/app  src/components/thread/user-questions/question-shortcut-choice.test.ts (1 test) 1ms
+@bb/app:test:  ✓  @bb/app  src/components/tools/path-display.test.ts (9 tests) 6ms
+@bb/app:test:  ✓  @bb/app  src/components/tools/tools-navigation.test.ts (9 tests) 14ms
+@bb/app:test:  ✓  @bb/app  src/components/ui/image-lightbox.test.ts (1 test) 2ms
+@bb/app:test:  ✓  @bb/app  src/lib/composer-submissions.test.ts (1 test) 1ms
+@bb/app:test:  ✓  @bb/app  src/components/thread/terminal/terminal-progress.test.ts (3 tests) 1ms
+@bb/app:test:  ✓  @bb/app  src/lib/random-uuid.test.ts (1 test) 31ms
+@bb/app:test:  ✓  @bb/app  src/components/ui/route-loading-skeleton.test.tsx (2 tests) 30ms
+@bb/app:test:  ✓  @bb/app  src/hooks/cache-owners/trailing-refetch-pacing.test.ts (3 tests) 1ms
+@bb/app:test:  ✓  @bb/app  src/lib/thread-provisioning-failure.test.ts (1 test) 1ms
+@bb/app:test:  ✓  @bb/app  src/components/settings/SplitDimmingSetting.test.ts (1 test) 3ms
+@bb/app:test:  ✓  @bb/app  src/lib/split-layout/sizing.test.ts (4 tests) 23ms
+@bb/app:test:  ✓  @bb/app  src/components/dialogs/RemotePathBrowser.breadcrumb.test.ts (3 tests) 8ms
+@bb/app:test:  ✓  @bb/app  src/components/secondary-panel/BrowserTabDeck.test.ts (4 tests) 2ms
+@bb/app:test:  ✓  @bb/app  src/pwa-icon-generation.test.ts (1 test) 4309ms
+@bb/app:test:    ✓ checks generated icons during generation and rejects stale assets  4309ms
+@bb/app:test:  ✓  @bb/app  src/components/secondary-panel/ThreadSecondaryPanel.test.ts (13 tests) 35ms
+@bb/app:test:  ✓  @bb/app  src/views/RootComposeHome.test.ts (2 tests) 1ms
+@bb/app:test:  ✓  @bb/app  src/components/thread/timeline/GeneratedConversationMessage.test.ts (12 tests) 20ms
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test:  ✓  @bb/app  src/components/tools/SkillDetailView.test.ts (1 test) 2ms
+@bb/app:test:  ✓  @bb/app  src/components/thread/timeline/ThreadTimelineRows.streaming.test.ts (3 tests) 9ms
+@bb/app:test:  ✓  @bb/app  src/components/thread/timeline/ThreadTimelineRows.dim.test.ts (13 tests) 46ms
+@bb/app:test:  ✓  @bb/app  src/hooks/useCreateThreadInEnvironment.test.ts (2 tests) 1ms
+@bb/app:test:  ✓  @bb/app  src/views/RootComposeView.test.ts (70 tests) 71ms
+@bb/app:test:  ✓  @bb/app  src/lib/plugin-frontend-live-reconcile.test.ts (1 test) 75ms
+@bb/app:test:  ✓  @bb/app  src/lib/plugin-frontend-load-order.test.ts (8 tests) 345ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/ui/scroll-position-keeper.test.ts (80 tests) 2171ms
+@bb/app:test:      ✓ measures a logarithmic number of rows per scroll event, however long the timeline is  308ms
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test:  ✓  @bb/app  src/views/SettingsView.experiments.test.ts (2 tests) 9ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/ui/sidebar.test.tsx (58 tests) 3532ms
+@bb/app:test:      ✓ re-renders its reader only when the visible bit flips, not on every provider commit  425ms
+@bb/app:test:      ✓ keeps the realize commit out of the open tap's synchronous flush  301ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/secondary-panel/SidebarSplitContainer.test.tsx (46 tests) 3635ms
+@bb/app:test:      ✓ opens a missing terminal tab before applying its split request  314ms
+@bb/app:test:      ✓ re-activates the active tab when it is selected again  805ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/secondary-panel/useThreadFileTabs.test.ts (41 tests) 801ms
+@bb/app:test:  ✓  @bb/app:isolated  src/hooks/useThreadCreationOptions.test.tsx (38 tests) 4495ms
+@bb/app:test:      ✓ keeps an unprobed selection without reasoning choices until its actual ladder arrives  361ms
+@bb/app:test:      ✓ restores each provider's model and reasoning selection  357ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/plugin/plugin-slot-mounts.test.tsx (42 tests) 1869ms
+@bb/app:test:      ✓ releases the plugin stylesheet when navigation unmounts the panel route  326ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/pickers/ModelReasoningPicker.test.tsx (64 tests) 10367ms
+@bb/app:test:      ✓ adjusts reasoning with ArrowRight on the focused trigger  482ms
+@bb/app:test:      ✓ can hand off within the source provider and exit the picker mode  314ms
+@bb/app:test:      ✓ modelPicker.cycleReasoning keeps the handoff preview and applies its reasoning to selection  310ms
+@bb/app:test:      ✓ keeps handoff mode when browsing the current provider  376ms
+@bb/app:test:      ✓ keeps reasoning ladders on one compact row  640ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/promptbox/banner/QueuedMessagesList.test.tsx (66 tests) 11257ms
+@bb/app:test:      ✓ keeps row actions visible inside an embedded side chat  701ms
+@bb/app:test:      ✓ offers Send now for a failed 'host-offline' row  845ms
+@bb/app:test:      ✓ labels non-user senders and refreshes their names from the thread cache  479ms
+@bb/app:test:      ✓ toggles an overflowing queue with the same disclosure as a fitted queue  560ms
+@bb/app:test:      ✓ uses labeled inline icon actions with tooltips  358ms
+@bb/app:test:      ✓ changes, removes, or reports a failed change to a scheduled row's send time  1897ms
+@bb/app:test:      ✓ expands one row's actions inline and resets them outside the queue  719ms
+@bb/app:test:      ✓ shows a bottom fade when the expanded queue overflows  548ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/settings/UpdatesSettingsSection.test.tsx (67 tests) 11199ms
+@bb/app:test:      ✓ checks for updates once when the view mounts  740ms
+@bb/app:test:        ✓ offers the newest release's notes on a nightly build  331ms
+@bb/app:test:        ✓ opens the release's notes under the bb row and closes them again  376ms
+@bb/app:test:        ✓ opens the full changelog in the external browser  429ms
+@bb/app:test:      ✓ does not claim up to date when the latest version is unknown  314ms
+@bb/app:test:      ✓ keeps error red on the reason and off the recovery  308ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/timeline/useThreadTimelineController.test.tsx (34 tests) 6836ms
+@bb/app:test:      ✓ refetches an uncached timeline after its transient retries run out while connected  1574ms
+@bb/app:test:      ✓ does not refetch a failed timeline while its pane is hidden  2052ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/promptbox/FollowUpPromptBox.test.tsx (49 tests) 2555ms
+@bb/app:test:      ✓ keeps exit handoff available without replacing the editor (compact viewport: false)  493ms
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test:  ✓  @bb/app:isolated  src/components/plugin/PluginNewThreadComposer.test.tsx (68 tests) 6384ms
+@bb/app:test:      ✓ closes visible plugin details before an underlying terminal  435ms
+@bb/app:test:      ✓ waits for the model catalog before reporting, bounded by the settle timeout  301ms
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/plugin-frontend-reload.test.ts (51 tests) 1347ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/plugin/PluginPanelRightPanelHost.test.tsx (24 tests) 6443ms
+@bb/app:test:      ✓ shows the side-panel glyph on the trigger for a compact viewport  919ms
+@bb/app:test:      ✓ keeps one panel toggle and retains the panel after its first opening  839ms
+@bb/app:test:      ✓ maximizes and restores an ordinary plugin page panel and resets on close  477ms
+@bb/app:test:      ✓ opens plugin detail links in a header-controlled tab without leaving the plugin page  745ms
+@bb/app:test:      ✓ restores closed plugin details before older content tabs  317ms
+@bb/app:test:      ✓ retains a validated fixed-tab target across panel and route remounts for the app session  486ms
+@bb/app:test:      ✓ starts a terminal on the machine selected in the New tab row  359ms
+@bb/app:test:  ✓  @bb/app:isolated  src/views/thread-detail/SplitThreadArea.test.tsx (82 tests) 12486ms
+@bb/app:test:      ✓ preserves focused editor and external control identity through 'desktop to phone' layout replacement  728ms
+@bb/app:test:      ✓ hosts Browser-tab navigation on compact plugin-panel routes  418ms
+@bb/app:test:      ✓ hosts the app panel while a plugin pane is focused  310ms
+@bb/app:test:      ✓ preserves plugin-owned right panels with and without a plugin split  377ms
+@bb/app:test:      ✓ reserves collapsed window-left chrome only for the structural top-left plugin pane  325ms
+@bb/app:test:  ✓  @bb/app:isolated  src/hooks/realtime-cache-effects.test.ts (96 tests) 1457ms
+@bb/app:test:  ✓  @bb/app:isolated  src/views/SkillsView.test.tsx (34 tests) 10562ms
+@bb/app:test:      ✓ labels the Type filter and preserves independent source toggles  1883ms
+@bb/app:test:      ✓ puts every non-builtin, non-plugin scope in the User bucket  1081ms
+@bb/app:test:      ✓ toggles BB Official independently from Included in plugin  1125ms
+@bb/app:test:      ✓ uses filter-neutral copy when a Type selection removes every skill  402ms
+@bb/app:test:      ✓ names custom ACP agents from the provider roster  529ms
+@bb/app:test:      ✓ preserves a user-selected provider filter across library refreshes  465ms
+@bb/app:test:      ✓ opens /skills on Browse before Library and can start a skill from the registry  416ms
+@bb/app:test:      ✓ presents a built-in skill as BB Official without an actions menu  362ms
+@bb/app:test:      ✓ presents 'documents' as plugin-provided  417ms
+@bb/app:test:      ✓ presents 'plugin-notes' as plugin-provided  463ms
+@bb/app:test:      ✓ labels externally discovered provider skills as imported  459ms
+@bb/app:test: Not implemented: navigation to another Document
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/timeline/ThreadTimelineRows.actions.test.tsx (45 tests) 6996ms
+@bb/app:test:      ✓ uses inline mobile candidates only for the last assistant message  306ms
+@bb/app:test:      ✓ passes agent message text to add-to-chat  469ms
+@bb/app:test:      ✓ passes agent message attachments to add-to-chat  498ms
+@bb/app:test:      ✓ adds a inline-code selection to chat with its Markdown preserved  369ms
+@bb/app:test:  ✓  @bb/app  src/components/ui/markdown-incremental-pieces.test.ts (39 tests) 71070ms
+@bb/app:test:      ✓ matches a single document at every character prefix: fence inside a list item  390ms
+@bb/app:test:      ✓ matches a single document at every character prefix: glued math closer (#1778)  821ms
+@bb/app:test:      ✓ matches a single document at every character prefix: indented code continuation  388ms
+@bb/app:test:      ✓ matches a single document at every character prefix: directives  497ms
+@bb/app:test:      ✓ matches a single document at every character prefix: math  1520ms
+@bb/app:test:      ✓ matches a single document at every character prefix: loose list  425ms
+@bb/app:test:      ✓ matches a single document at every character prefix: stray math delimiter  652ms
+@bb/app:test:      ✓ matches a single document at every character prefix: blockquotes and thread ids  437ms
+@bb/app:test:      ✓ parses each settled code, table, list, and math piece once while a prefix grows  310ms
+@bb/app:test:      ✓ parses a completed document once on a cold cache  480ms
+@bb/app:test:      ✓ merges an unclosed construct through the end of the body in linear volume  1376ms
+@bb/app:test:      ✓ keeps the settled parse volume near the message length while fixtures stream in chunks  4187ms
+@bb/app:test:      ✓ matches a single document for every prefix of seeded block sequences  12679ms
+@bb/app:test:      ✓ matches single documents for every streamed chunk of the 'long-response' fixture  5290ms
+@bb/app:test:      ✓ matches single documents for every streamed chunk of the 'incident-writeup' fixture  2357ms
+@bb/app:test:      ✓ matches single documents for every streamed chunk of the 'refactor-plan' fixture  2054ms
+@bb/app:test:      ✓ matches single documents for every streamed chunk of the 'api-design' fixture  3367ms
+@bb/app:test:      ✓ matches single documents for every streamed chunk of the 'data-analysis' fixture  4152ms
+@bb/app:test:      ✓ matches single documents for every streamed chunk of the 'pathological' fixture  27549ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/ui/markdown-preview.test.tsx (89 tests) 7125ms
+@bb/app:test:      ✓ contains table breakouts to the markdown content width  769ms
+@bb/app:test:      ✓ shows a context menu on local file links when the context provides items  318ms
+@bb/app:test:      ✓ renders inline LaTeX math with KaTeX  564ms
+@bb/app:test:      ✓ asks on every click in the browser and cancels without launching  802ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/commands/CommandPalette.test.tsx (74 tests) 28366ms
+@bb/app:test:      ✓ closes direct thread search on Escape and restores terminal focus  1371ms
+@bb/app:test:      ✓ opens only the selected result in a split with click  367ms
+@bb/app:test:      ✓ opens only the selected result in a split with Control  633ms
+@bb/app:test:      ✓ opens only the selected result in a split with Meta  409ms
+@bb/app:test:      ✓ expands Show more on modifier Enter without opening a split, and hides the action for no matches  546ms
+@bb/app:test:      ✓ runs an available shortcut from commands even with no matches, after closing and restoring focus  369ms
+@bb/app:test:      ✓ runs an available shortcut from threads even with no matches, after closing and restoring focus  364ms
+@bb/app:test:      ✓ switches modes by shortcut without losing the invocation target or intercepting editing, repeat, and composition events  382ms
+@bb/app:test:      ✓ shows shortcut keycaps only on desktop, including filtered plugin results (compact: false)  414ms
+@bb/app:test:      ✓ shows shortcut keycaps only on desktop, including filtered plugin results (compact: true)  369ms
+@bb/app:test:      ✓ uses the shared tab-pill clear affordance without running the mode command  800ms
+@bb/app:test:      ✓ keeps saved messages with Active and caps Active at six and Archived at three for query ''  650ms
+@bb/app:test:      ✓ keeps saved messages with Active and caps Active at six and Archived at three for query 'match'  977ms
+@bb/app:test:      ✓ groups lifecycle with headings while preserving highlights and attention status  348ms
+@bb/app:test:      ✓ caps mixed matches, expands sections independently, and resets on query changes  1466ms
+@bb/app:test:      ✓ matches loaded titles on the first character and keeps the highlight when server rows merge in  323ms
+@bb/app:test:      ✓ keeps a highlighted row in view when server rows push it down  716ms
+@bb/app:test:      ✓ shows six active-only matches and opens a revealed result  357ms
+@bb/app:test:      ✓ shows six archived-only matches and opens a revealed result  352ms
+@bb/app:test:      ✓ shows only meaningful status after left-aligned metadata for query 'match'  305ms
+@bb/app:test:      ✓ leaves Home to an active IME composition  304ms
+@bb/app:test:      ✓ keeps the default catalog unchanged after running a command  574ms
+@bb/app:test:      ✓ scrolls the highlighted row into view when arrowing, but not on hover  465ms
+@bb/app:test:      ✓ dispatches defaults and overrides, respects availability, and unregisters disabled commands  326ms
+@bb/app:test:      ✓ opens a plugin page  406ms
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test:  ✓  @bb/app:isolated  src/components/ui/responsive-overlay.test.tsx (35 tests) 2518ms
+@bb/app:test:      ✓ starts the persistent shell before it realizes content two frames later  582ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/toc/ThreadTableOfContents.test.tsx (30 tests) 2265ms
+@bb/app:test:      ✓ keeps the rail mounted but hidden while the pane is too narrow  421ms
+@bb/app:test:      ✓ tracks overflow when an initially closed panel opens and reopens  359ms
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/ws.test.ts (36 tests) 816ms
+@bb/app:test:      ✓ creates and stores a browser device id before the first WebSocket connection  368ms
+@bb/app:test:  ✓  @bb/app:isolated  src/views/thread-detail/ThreadDetailPromptArea.test.tsx (77 tests) 21827ms
+@bb/app:test:        ✓ serializes ordinary then ordinary without losing edits  775ms
+@bb/app:test:        ✓ serializes ordinary then modifier without losing edits  631ms
+@bb/app:test:        ✓ serializes modifier then ordinary without losing edits  398ms
+@bb/app:test:        ✓ serializes modifier then modifier without losing edits  304ms
+@bb/app:test:        ✓ serializes ordinary then ordinary without losing edits  680ms
+@bb/app:test:        ✓ serializes ordinary then modifier without losing edits  712ms
+@bb/app:test:        ✓ serializes modifier then ordinary without losing edits  456ms
+@bb/app:test:        ✓ serializes modifier then modifier without losing edits  373ms
+@bb/app:test:        ✓ serializes ordinary then ordinary without losing edits  351ms
+@bb/app:test:        ✓ serializes ordinary then modifier without losing edits  968ms
+@bb/app:test:        ✓ serializes modifier then ordinary without losing edits  555ms
+@bb/app:test:        ✓ serializes modifier then modifier without losing edits  663ms
+@bb/app:test:      ✓ saves a choice on the thread and shows it at once, then returns to the agent's value if the save fails  739ms
+@bb/app:test:      ✓ keeps the mode in the footer and moves every other option into the model picker  619ms
+@bb/app:test:      ✓ updates an inline-edited queue item without touching the bottom draft  542ms
+@bb/app:test:      ✓ renders text effects only for the active queued edit session  438ms
+@bb/app:test:      ✓ keeps queued execution and commands source-locked during a bottom handoff  330ms
+@bb/app:test:      ✓ dismisses an inline edit when its thread changes or its live row disappears  301ms
+@bb/app:test:      ✓ does not attach a delayed queued upload to a later edit or the bottom draft  525ms
+@bb/app:test:      ✓ dismisses a missing queued message but keeps a stale edit recoverable  444ms
+@bb/app:test:      ✓ auto-collapses concurrently running workflows into a stack that expands to independently expandable cards  691ms
+@bb/app:test:      ✓ re-collapses the workflow stack after the running count drops below two  563ms
+@bb/app:test:      ✓ keeps changed files expanded when a child newly needs input through prompt-area wiring  603ms
+@bb/app:test:      ✓ keeps a newly waiting child collapsed in the pending-interaction prompt stack  555ms
+@bb/app:test:      ✓ pins a snapshot-policy composer to the thread's permission mode  362ms
+@bb/app:test:      ✓ starts a handoff when a plugin sets another provider, and drops the fields a thread has no picker for  402ms
+@bb/app:test:      ✓ Complete handoff flow prepares a handoff and restores the draft on return  316ms
+@bb/app:test:      ✓ shows destination permissions instead of the source active Plan mode  432ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/secondary-panel/ThreadSecondaryPanel.collapseControl.test.tsx (25 tests) 3956ms
+@bb/app:test:      ✓ shows the exited marker on a terminal tab in the drawer  335ms
+@bb/app:test:      ✓ only mounts the unavailable fallback while open (drawer=false)  401ms
+@bb/app:test:      ✓ renders each split pane from the descriptor attached to its tab  342ms
+@bb/app:test:      ✓ offers every existing split position from the right-panel control and moves the active tab  491ms
+@bb/app:test:    ✓ focuses New tab without opening it and resumes cycling from the button  330ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/terminal/ThreadTerminalView.test.ts (89 tests) 2840ms
+@bb/app:test:      ✓ keeps the exact saved phone line when replay completion applies the PTY grid afterward  339ms
+@bb/app:test:      ✓ queues markerless output writes without waiting per chunk  359ms
+@bb/app:test:  ✓  @bb/app:isolated  src/hooks/queries/thread-queries.test.ts (32 tests) 1766ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/pickers/EnvironmentPicker.test.tsx (37 tests) 8633ms
+@bb/app:test:      ✓ does not expose an ephemeral host through the single-machine fallback  1037ms
+@bb/app:test:      ✓ shows loading instead of empty options (multiple machines: false)  397ms
+@bb/app:test:      ✓ shows loading instead of empty options (multiple machines: true)  421ms
+@bb/app:test:      ✓ bounds arbitrary provider labels without changing selection  318ms
+@bb/app:test:      ✓ hides an unavailable provider that is not selected and keeps unknown ones  412ms
+@bb/app:test:      ✓ disables a provider that declares inputs until its plugin registers a control  346ms
+@bb/app:test:      ✓ keeps a provider whose inputs schema requires nothing selectable without a control  523ms
+@bb/app:test:      ✓ fuzzy-searches machine names and host ids while keeping hostless targets visible  492ms
+@bb/app:test:      ✓ lists every eligible provider row under each machine  469ms
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/user-questions/QuestionForm.test.tsx (35 tests) 2968ms
+@bb/app:test:      ✓ appends a transcript to the latest edited answer without submitting  629ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/ThreadActionsMenu.test.tsx (117 tests | 17 skipped) 35916ms
+@bb/app:test:      ✓ keeps outside controls reachable and dismisses when they receive focus  906ms
+@bb/app:test:      ✓ keeps a submenu row's detail out of sight but in its accessible name  535ms
+@bb/app:test:      ✓ runs each action's effect  2788ms
+@bb/app:test:      ✓ moves the thread to another project through the sdk  353ms
+@bb/app:test:      ✓ filters a long project list and moves the thread to the match  495ms
+@bb/app:test:      ✓ says when no project matches the filter  520ms
+@bb/app:test:      ✓ opens the project filter focused so typing filters at once  528ms
+@bb/app:test:      ✓ sends a letter typed on a project row into the filter  774ms
+@bb/app:test:      ✓ moves from the filter to the first match with the down arrow  750ms
+@bb/app:test:      ✓ lists a short project list without a filter  526ms
+@bb/app:test:      ✓ opens the thread on the 'top' of the focused pane  390ms
+@bb/app:test:      ✓ opens the thread on the 'bottom' of the focused pane  588ms
+@bb/app:test:      ✓ keeps Focus split at the pane limit when the thread is already in a pane  568ms
+@bb/app:test:      ✓ runs each action's effect  1914ms
+@bb/app:test:      ✓ moves the thread to another project through the sdk  320ms
+@bb/app:test:      ✓ filters a long project list and moves the thread to the match  532ms
+@bb/app:test:      ✓ says when no project matches the filter  387ms
+@bb/app:test:      ✓ opens the project filter focused so typing filters at once  424ms
+@bb/app:test:      ✓ sends a letter typed on a project row into the filter  594ms
+@bb/app:test:      ✓ moves from the filter to the first match with the down arrow  495ms
+@bb/app:test:      ✓ lists a short project list without a filter  578ms
+@bb/app:test:      ✓ opens the thread on the 'right' of the focused pane  524ms
+@bb/app:test:      ✓ opens the thread on the 'top' of the focused pane  333ms
+@bb/app:test:      ✓ opens the thread on the 'bottom' of the focused pane  360ms
+@bb/app:test:      ✓ shows the Open beside keyboard shortcut  334ms
+@bb/app:test:      ✓ explains the pane limit instead of offering an open that would replace a pane  426ms
+@bb/app:test:      ✓ lists the items for 'the thread already in view'  317ms
+@bb/app:test:      ✓ lists the items for 'the thread in the focused split pane'  310ms
+@bb/app:test:      ✓ runs each action's effect  1191ms
+@bb/app:test:      ✓ runs each action's effect  1232ms
+@bb/app:test:      ✓ contains a rejected run so the menu keeps working  374ms
+@bb/app:test:      ✓ fetches a thread bb has not cached before archiving or deleting it  1059ms
+@bb/app:test:      ✓ lists only bulk items under the selection count, then inline items  346ms
+@bb/app:test:      ✓ runs each selection action against every selected thread  1814ms
+@bb/app:test:      ✓ shows the thread's own menu for a selection of one  462ms
+@bb/app:test:      ✓ runs each selection action against every selected thread  923ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/ui/markdown-thread-mentions.test.tsx (46 tests) 4193ms
+@bb/app:test:      ✓ renders an exact raw-id inline-code span as a linked pill  796ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/plugin/PluginSettings.test.tsx (21 tests) 4757ms
+@bb/app:test:      ✓ autosaves the latest text value on blur  815ms
+@bb/app:test:      ✓ autosaves a number input on blur and unsets it when cleared  1038ms
+@bb/app:test:      ✓ lets users disable and enable a plugin from the settings header  400ms
+@bb/app:test:  ✓  @bb/app:isolated  src/views/thread-detail/ThreadDetailHeader.test.tsx (33 tests) 5000ms
+@bb/app:test:      ✓ keeps the title visible and collapses the agent rollup on compact widths  552ms
+@bb/app:test:      ✓ edits the title inline after a double click and commits on Enter  546ms
+@bb/app:test:      ✓ presents rename from the menu, shortcut, and double click for compact=true coarse=false  692ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/secondary-panel/FilePreview.test.tsx (42 tests) 13474ms
+@bb/app:test:      ✓ offers a manual file refresh action  816ms
+@bb/app:test:      ✓ rerenders the code view when the Pierre worker pool advances  639ms
+@bb/app:test:      ✓ caps oversized code previews to a leading prefix until the full file is requested  1518ms
+@bb/app:test:      ✓ shows the whole file when a line link points past the capped prefix  632ms
+@bb/app:test:      ✓ keeps compact file actions available without crowding the preview controls  659ms
+@bb/app:test:      ✓ mounts only the CSV rows near the viewport, not the whole 500x100 window  2483ms
+@bb/app:test:      ✓ tracks preview loading across view changes, document revisions, and URLs  911ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/ThreadActionsProvider.test.tsx (25 tests) 6011ms
+@bb/app:test:      ✓ archives parent and children immediately when confirmation is disabled  801ms
+@bb/app:test:      ✓ keeps confirmation enabled before settings are available  880ms
+@bb/app:test:      ✓ shows one archive toast whose Undo restores the parent and children  484ms
+@bb/app:test:      ✓ returns to the thread when Undo reverses archive navigation  494ms
+@bb/app:test:      ✓ opens the shared rename dialog and keeps it open with the error until a save succeeds  474ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/timeline/SelectableMessageProse.events.test.tsx (23 tests) 1648ms
+@bb/app:test:  ✓  @bb/app:isolated  src/hooks/queries/system-queries.test.ts (27 tests) 1796ms
+@bb/app:test: Not implemented: Window's open() method
+@bb/app:test:  ✓  @bb/app:isolated  src/components/secondary-panel/SecondaryPanelLayout.test.tsx (19 tests) 1063ms
+@bb/app:test:      ✓ sizes a plugin page from its own width instead of the thread width  412ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/secondary-panel/BrowserTabDeck.browser-view-ordering.test.tsx (25 tests) 5041ms
+@bb/app:test:      ✓ waits for the desktop connection after a relaunch instead of falling back  797ms
+@bb/app:test:      ✓ says it is reconnecting, not that the tab is elsewhere, while the desktop stays offline  1800ms
+@bb/app:test:      ✓ retries the open-window check when it fails  801ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/device-handoff/DeviceHandoffSheet.test.tsx (12 tests) 2671ms
+@bb/app:test:      ✓ shows queued and live standalone handoffs in the focused phone drawer  1035ms
+@bb/app:test:      ✓ shows standalone terminal handoffs only while their terminal is active  443ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/terminal/useThreadTerminalController.split-panes.test.tsx (24 tests) 5070ms
+@bb/app:test:      ✓ writes terminal progress through the existing thread row-state contract  405ms
+@bb/app:test:      ✓ a user-renamed terminal keeps its title when the program emits a title  374ms
+@bb/app:test:      ✓ successive program titles keep updating the title  593ms
+@bb/app:test:      ✓ shows a loading state while the terminal sessions query is pending  544ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/plugin/management/PluginBrowseControls.test.tsx (30 tests) 12863ms
+@bb/app:test:      ✓ shows category counts and checkboxes without search  1100ms
+@bb/app:test:      ✓ keeps the menu open for multiple selections  507ms
+@bb/app:test:      ✓ moves focus through options with the keyboard  513ms
+@bb/app:test:      ✓ keeps keyboard focus inside each filter instance  551ms
+@bb/app:test:      ✓ describes applied selections in the 'Category: Security' tooltip  389ms
+@bb/app:test:      ✓ describes applied selections in the 'Source: Local' tooltip  437ms
+@bb/app:test:      ✓ opens 'Source' without a redundant heading  591ms
+@bb/app:test:      ✓ opens 'Sort' without a redundant heading  558ms
+@bb/app:test:      ✓ keeps an open sort menu stable when its selected label grows, then combines after dismissal  658ms
+@bb/app:test:      ✓ updates the selected 'Name' label and direction without clearing filters  443ms
+@bb/app:test:      ✓ updates the selected 'Published' label and direction without clearing filters  425ms
+@bb/app:test:      ✓ updates the selected 'Installs' label and direction without clearing filters  816ms
+@bb/app:test:      ✓ shows actual selections and sort direction in the combined menu  316ms
+@bb/app:test:      ✓ opens compact search with the query selected and restores controls on submit or blur  564ms
+@bb/app:test:      ✓ clears compact search, dismisses the input, and retains the other selections  658ms
+@bb/app:test:      ✓ preserves the allowed combined controls for {"installed":true,"categoryShelf":false,"labels":["Category","Source","Sort"]}  300ms
+@bb/app:test:      ✓ shares sort, category selection, and source clearing in the combined menu without resetting other values  1421ms
+@bb/app:test:      ✓ restores focus to the category entry in the compact drawer  572ms
+@bb/app:test:      ✓ moves focused controls into the combined menu and back without losing search or selection  356ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/ui/bottom-anchored-scroll-body.test.tsx (27 tests) 4071ms
+@bb/app:test:      ✓ restores the reading row exactly after switching threads and back  843ms
+@bb/app:test:      ✓ waits at the end for a saved row that has not loaded, then restores it when it arrives  311ms
+@bb/app:test:      ✓ keeps the reading row still when older rows load after post-touchend momentum  325ms
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/plugin-sidebar-hooks.test.tsx (26 tests) 753ms
+@bb/app:test:      ✓ refreshes native activity confirmation through receipts, silence, and recovery  342ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/ui/markdown-message-directives.test.tsx (37 tests) 2860ms
+@bb/app:test:      ✓ preserves directive attributes and source: file="my*report*.html"  527ms
+@bb/app:test:      ✓ mounts directives in assistant and delegation output from the slot store  551ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/pending-interactions/ThreadPendingInteractionBanner.test.tsx (18 tests) 3670ms
+@bb/app:test:      ✓ renders the ask from the subject's presentation with the permission decisions  608ms
+@bb/app:test:      ✓ toggles through the title without submitting an approval  419ms
+@bb/app:test:      ✓ keeps focus on the disclosure button across toggles so Escape works right after opening  443ms
+@bb/app:test:      ✓ renders a user question open by default and keeps draft answers across collapse  605ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/settings/MachinesSettingsSection.test.tsx (27 tests) 10612ms
+@bb/app:test:      ✓ explains offline machines and removes the warning after reconnection  989ms
+@bb/app:test:      ✓ shows the cleanup error in the warning and keeps recovery in the machine menu  521ms
+@bb/app:test:      ✓ reveals sandboxes in the machine list behind Show all machines  747ms
+@bb/app:test:      ✓ does not promote a fallback host to the server badge  808ms
+@bb/app:test:      ✓ prioritizes offline status while keeping the retry update action available  555ms
+@bb/app:test:      ✓ requests an immediate daemon update retry  313ms
+@bb/app:test:      ✓ renames a machine through the row menu  369ms
+@bb/app:test:      ✓ removes a machine after confirmation  768ms
+@bb/app:test:      ✓ removes a stranded machine without cleanup after confirmation  587ms
+@bb/app:test:      ✓ disables removal of the server machine  701ms
+@bb/app:test:      ✓ keeps Move server here and its explainer hidden while the serverMove experiment is off  409ms
+@bb/app:test:      ✓ keeps a dialog chosen from the row menu with the keyboard open  815ms
+@bb/app:test:      ✓ requests a reconnect command and shows it for the chosen machine  431ms
+@bb/app:test:      ✓ opens the move dialog and checks the machine without an address  379ms
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/ui-preferences/ui-preferences-sync.test.ts (23 tests) 665ms
+@bb/app:test:  ✓  @bb/app:isolated  src/hooks/useVoiceInput.test.tsx (23 tests) 260ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/terminal/terminal-replay-preview.test.ts (32 tests) 52791ms
+@bb/app:test:      ✓ preserves xterm focus when mounting the snapshot preview surface  2064ms
+@bb/app:test:      ✓ keeps a held preview hidden while history replays and shows it once released  1175ms
+@bb/app:test:      ✓ keeps a preview hidden when the backstop fires, flags it, and clears the flag when held again  824ms
+@bb/app:test:      ✓ does not count down while held without a countdown, and a normal release is not flagged  623ms
+@bb/app:test:      ✓ keeps the attached grid visible while replay hides historical grids  1942ms
+@bb/app:test:      ✓ keeps snapshot columns until the authoritative PTY grid matches the phone fit  2108ms
+@bb/app:test:      ✓ waits for the phone fit before revealing a readable, pannable attached-grid preview  1521ms
+@bb/app:test:      ✓ pans a visible 135-column preview across a desktop-to-phone resize  1555ms
+@bb/app:test:      ✓ keeps the preview painted while the authoritative PTY grid is applied  3513ms
+@bb/app:test:      ✓ shows an owner the snapshot grid until the authoritative fitted grid arrives  1163ms
+@bb/app:test:      ✓ keeps the fitted snapshot visible when its viewer becomes the owner  2408ms
+@bb/app:test:      ✓ does not show a short first frame while the pane waits for the PTY resize  2238ms
+@bb/app:test:      ✓ keeps snapshot columns and content while fitting a wider pane  2808ms
+@bb/app:test:      ✓ keeps the local frame painted until the authoritative smaller grid is applied  3438ms
+@bb/app:test:      ✓ keeps an expanded snapshot visible when no authoritative grid arrives  3279ms
+@bb/app:test:      ✓ keeps snapshot rows visible when the pane fit is smaller and no grid arrives  1512ms
+@bb/app:test:      ✓ holds post-snapshot output until the authoritative grid arrives  1970ms
+@bb/app:test:      ✓ hands held output off at the last-known grid after the deadline  3075ms
+@bb/app:test:      ✓ finishes replay in order when the non-owner receives no resize or animation frame  2141ms
+@bb/app:test:      ✓ hands held output off when an equal-grid attach arrives  1861ms
+@bb/app:test:      ✓ hands held output off when the process exits  1686ms
+@bb/app:test:      ✓ completes held callbacks without writing when disposed  2594ms
+@bb/app:test:      ✓ hands off without dropping output when the pending byte bound is exceeded  2218ms
+@bb/app:test:      ✓ allows a frame to paint during a 61,929-byte 1,019-chunk replay  4882ms
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/fixed-panel-tabs-state.test.ts (24 tests) 408ms
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test:  ✓  @bb/app:isolated  src/components/plugin/PluginsOverview.test.tsx (17 tests) 19446ms
+@bb/app:test:      ✓ explains a failed plugin even when search hides its card and opens its recovery details  1734ms
+@bb/app:test:      ✓ checks updates on entering Installed, without rechecking on filters or focus  1716ms
+@bb/app:test:      ✓ clears only Source while retaining search, category, and sort  664ms
+@bb/app:test:      ✓ opens on Browse and renders it before Installed  1850ms
+@bb/app:test:      ✓ uses the existing sidebar history control to return from creation  2360ms
+@bb/app:test:      ✓ filters Browse by category  865ms
+@bb/app:test:      ✓ sends Installed's New plugin to the new-thread page with the seed  466ms
+@bb/app:test:      ✓ retains Direct install source filtering when sorting Installed  1210ms
+@bb/app:test:      ✓ keeps Browse filters in the toolbar rather than a separate pill band  1032ms
+@bb/app:test:      ✓ opens installed resources on the canonical Settings detail route  533ms
+@bb/app:test:      ✓ keeps Browse and its filters open after installation  1060ms
+@bb/app:test:      ✓ loads more installed plugins as the scroll sentinel is reached  868ms
+@bb/app:test:      ✓ keeps loading in Settings while the sentinel stays visible so disabled plugins are reachable  2260ms
+@bb/app:test:      ✓ keeps disabled plugins in place, sorting published plugins first  961ms
+@bb/app:test:      ✓ groups path installs as Local while preserving marketplace categories  697ms
+@bb/app:test:      ✓ keeps disabled plugins installed regardless of provenance  673ms
+@bb/app:test:      ✓ keeps the recorded publisher when the catalog entry belongs to another marketplace  491ms
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test:  ✓  @bb/app:isolated  src/components/commands/AppCommandProvider.test.tsx (22 tests) 3131ms
+@bb/app:test:      ✓ shares shortcut-hint modifier state after 700ms and clears it on release or blur  526ms
+@bb/app:test:      ✓ tracks modifier holds and releases from controls that stop propagation  356ms
+@bb/app:test:      ✓ suppresses a terminal-scoped command from a native terminal input  1212ms
+@bb/app:test:      ✓ dispatches terminal attention from the real key handler while terminal input is focused  759ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/sidebar/SidebarNavigationRail.test.tsx (39 tests) 20007ms
+@bb/app:test:      ✓ opens Settings in a browser tab with {"metaKey":true} even when already active  1008ms
+@bb/app:test:      ✓ navigates Home in place when a rail plugin calls goHome without options  529ms
+@bb/app:test:      ✓ returns Home to the last thread after settings navigation closes the compact sidebar  774ms
+@bb/app:test:      ✓ dismisses the drawer for a plugin panel but not for destinations that swap the list beside the rail  523ms
+@bb/app:test:      ✓ marks More and the More menu item for a badged destination hidden under More  316ms
+@bb/app:test:      ✓ keeps hidden destinations reachable from More  534ms
+@bb/app:test:      ✓ dispatches Search threads from More with terminal focus restored  344ms
+@bb/app:test:      ✓ keeps the terminal target when the compact drawer trigger takes focus  393ms
+@bb/app:test:      ✓ opens the customize sheet from More on a compact viewport  1610ms
+@bb/app:test:      ✓ toggles 'Docs' visibility from its customization row (compact: false) without activating it  2447ms
+@bb/app:test:      ✓ toggles 'Search threads' visibility from its customization row (compact: false) without activating it  2988ms
+@bb/app:test:      ✓ toggles 'Docs' visibility from its customization row (compact: true) without activating it  808ms
+@bb/app:test:      ✓ toggles 'Search threads' visibility from its customization row (compact: true) without activating it  784ms
+@bb/app:test:      ✓ customizes the rail from a popover beside it without leaving Settings  1181ms
+@bb/app:test:      ✓ opens the customize popover at the top of the navigation and keeps it there while More moves  774ms
+@bb/app:test:      ✓ offers no New thread row in Customize navigation  968ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/timeline/ThreadTimelineRows.token-footer.test.tsx (18 tests) 1258ms
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/fixed-panel-tabs-sync.test.ts (14 tests) 1196ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/ThreadUsageSummary.test.tsx (19 tests) 3800ms
+@bb/app:test:      ✓ keeps the collapsed total readable and puts the breakdown in its tooltip  804ms
+@bb/app:test:      ✓ uses persisted thread totals when pruned turns have unavailable usage  301ms
+@bb/app:test:      ✓ renders compact per-turn tokens and an expandable child agent summary  950ms
+@bb/app:test:      ✓ keeps partial spend compact and marks missing reasoning in the tooltip  883ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/terminal/NativeTerminalPromptBar.test.tsx (53 tests) 45782ms
+@bb/app:test:      ✓ uses the shared chat width, compact input typography and attachment action  521ms
+@bb/app:test:      ✓ reports a failed upload and does not send while uploads are pending  311ms
+@bb/app:test:      ✓ keeps an image and text added while a send is in flight  405ms
+@bb/app:test:      ✓ applies a safe fix to a finished sentence and lets Undo restore it  1380ms
+@bb/app:test:      ✓ keeps the caret where the user left it through a fix and its Undo  1232ms
+@bb/app:test:      ✓ moves the caret by the size of a fix made before it and back on Undo  1293ms
+@bb/app:test:      ✓ keeps a caret moved to the 'start' of a fix while it was checked at that edge of the fix and back on Undo  1363ms
+@bb/app:test:      ✓ keeps a caret moved to the 'end' of a fix while it was checked at that edge of the fix and back on Undo  1441ms
+@bb/app:test:      ✓ does not send a corrected sentence back for another correction  2823ms
+@bb/app:test:      ✓ drops a correction when the user edited that sentence meanwhile  1201ms
+@bb/app:test:      ✓ offers meaning changes as suggestions the user can accept  1284ms
+@bb/app:test:      ✓ keeps typing and sending working while a correction is pending  1223ms
+@bb/app:test:      ✓ checks a sentence typed before writing assistance finished loading  2541ms
+@bb/app:test:      ✓ checks a sentence again after its check was cancelled by turning assistance off  2340ms
+@bb/app:test:      ✓ retries a sentence whose check failed once, then stops after a second failure  3863ms
+@bb/app:test:      ✓ checks every sentence of a draft longer than one request, each once, and keeps the caret and Undo  4110ms
+@bb/app:test:      ✓ sends an unfinished last sentence of five words as incomplete after about four seconds idle  4082ms
+@bb/app:test:      ✓ never sends an unfinished last sentence shorter than five words  5653ms
+@bb/app:test:      ✓ sends one sentence longer than 500 characters on its own  1213ms
+@bb/app:test:      ✓ checks a dictation longer than one request in parts, each sentence once  2932ms
+@bb/app:test:      ✓ does not ask for corrections when typing correction is off  1399ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/timeline/ConversationMessageContent.test.tsx (18 tests) 1936ms
+@bb/app:test:      ✓ serves local Markdown images through the thread host-file route  375ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/plugin/management/BrowsePluginsTab.test.tsx (23 tests) 17888ms
+@bb/app:test:      ✓ puts the shared create action in the compact toolbar and keeps the page description  2357ms
+@bb/app:test:      ✓ shows collection shelves before category shelves  1000ms
+@bb/app:test:      ✓ keeps the shelves mounted while a search is active  679ms
+@bb/app:test:      ✓ keeps every keystroke while the URL query catches up  558ms
+@bb/app:test:      ✓ renders search results a page at a time  993ms
+@bb/app:test:      ✓ routes the card author name and preserves the Browse filters  345ms
+@bb/app:test:      ✓ round trips repeatable category parameters  1125ms
+@bb/app:test:      ✓ orders category options by shelf order and omits missing categories  703ms
+@bb/app:test:      ✓ disables the install sort when no listing publishes a count  650ms
+@bb/app:test:      ✓ sorts by install count and sinks uncounted entries in both directions  2513ms
+@bb/app:test:      ✓ puts entries without a published date last in both directions  678ms
+@bb/app:test:      ✓ clears a flat sort and restores the shelves  773ms
+@bb/app:test:      ✓ opens a category shelf route and returns to Browse  1106ms
+@bb/app:test:      ✓ loads a curated shelf directly and preserves its order  429ms
+@bb/app:test:      ✓ scopes a category page to its category and restores Browse filters on return  547ms
+@bb/app:test:      ✓ notifies once while saved results remain available after failed refreshes  551ms
+@bb/app:test:      ✓ swaps the browse body for examples while composing  934ms
+@bb/app:test:      ✓ routes every create affordance into the inline composer  648ms
+@bb/app:test:      ✓ shows compact install data and reports the card trigger  329ms
+@bb/app:test:      ✓ shows an off switch for an installed plugin that is turned off and enables it  364ms
+@bb/app:test: Not implemented: Window's scrollBy() method
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/timeline/GeneratedConversationMessage.test.tsx (22 tests) 3670ms
+@bb/app:test:      ✓ routes images in generated system messages through the current thread  836ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/promptbox/banner/ThreadPromptContextBanner.test.tsx (24 tests) 2495ms
+@bb/app:test:      ✓ keeps 'Parent' context title text aligned  556ms
+@bb/app:test:      ✓ does not replace the open changed-files section when a child newly needs input  359ms
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test:  ✓  @bb/app:isolated  src/components/layout/useMobileVisualViewportHeight.test.tsx (14 tests) 1485ms
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test:  ✓  @bb/app:isolated  src/components/plugin/PluginSidebarFooterItems.test.tsx (12 tests) 5616ms
+@bb/app:test:      ✓ fills the footer to its measured capacity and keeps overflow in More when an icon is removed  1221ms
+@bb/app:test:      ✓ hides the whole footer from More and shows it again  932ms
+@bb/app:test:      ✓ moves an open disclosure into More, still opens it there, and restores it through appearance settings  1923ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/layout/AppLayoutSidebar.test.tsx (16 tests) 5426ms
+@bb/app:test:      ✓ holds the body of a closing compact drawer until it has settled, keeping one panel, the rail, and the app sidebar mounted  1294ms
+@bb/app:test:      ✓ keeps the rail and the app sidebar mounted while the body swaps on wide viewports  577ms
+@bb/app:test:      ✓ drops the rail in the top list layout and gives Settings a row back to the app  505ms
+@bb/app:test:      ✓ closes the compact drawer on actual Open dashboard navigation but keeps local actions open  617ms
+@bb/app:test:      ✓ closes the compact drawer on actual Dashboard link navigation but keeps local actions open  376ms
+@bb/app:test:      ✓ closes the compact drawer through the existing SDK Open thread route  408ms
+@bb/app:test:      ✓ contains a crash inside the panel sidebar and retries on new input or generation  385ms
+@bb/app:test:  ✓  @bb/app:isolated  src/views/thread-detail/ThreadDetailSecondaryContent.test.tsx (11 tests) 3260ms
+@bb/app:test:      ✓ publishes the hosted panel and keeps the header interactive while the main pane is collapsed  329ms
+@bb/app:test:      ✓ keeps the panel's own hide control for the inline thread panel  2372ms
+@bb/app:test:  ❯  @bb/app:isolated  src/components/thread/terminal/terminal-repaint-grid.test.ts (13 tests | 1 failed) 1203ms
+@bb/app:test:      × leaves a full-width inline TUI exactly as a clean draw after the return nudge 205ms
+@bb/app:test:      ✓ never narrows the page's own terminal for the echo of its nudge and ends at the real size with a clean screen  856ms
+@bb/app:test:      ✓ still follows a smaller size another client chose during the nudge window 24ms
+@bb/app:test:      ✓ never takes the nudge size when the fit grows past a smaller peer, and ends at the peer's size 23ms
+@bb/app:test:      ✓ follows a peer at the nudge size and then the owner's smaller fit 8ms
+@bb/app:test:      ✓ applies the peer's size once the exchange is acknowledged when the fit grows past a peer exactly at the nudge size 4ms
+@bb/app:test:      ✓ follows the fit with no peer and never takes the nudge size 4ms
+@bb/app:test:      ✓ never takes the nudge size when the fit changes before the nudge report is delivered 13ms
+@bb/app:test:      ✓ never takes the nudge size when the fit shrinks before the nudge report is delivered and a smaller peer resizes 5ms
+@bb/app:test:      ✓ applies a peer exactly at the nudge size once acknowledged when the fit grows before the nudge report is delivered 7ms
+@bb/app:test:      ✓ never takes a nudge report that is delivered 2 s late after the fit changed 23ms
+@bb/app:test:      ✓ still applies a legitimate later peer at the same size as the nudge 21ms
+@bb/app:test:      ✓ applies a peer at the nudge size that arrives after an acknowledged nudge with no fit change 7ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/terminal/terminal-latency-diagnostics.test.ts (11 tests) 102ms
+@bb/app:test:  ✓  @bb/app:isolated  src/views/RootComposeMobileRecents.test.tsx (17 tests) 2881ms
+@bb/app:test:      ✓ collapses and expands children from the provider tile and caret  864ms
+@bb/app:test:      ✓ opens thread actions on a long press without following the thread link  397ms
+@bb/app:test:  ✓  @bb/app:isolated  src/views/ToolsView.plugin-detail.test.tsx (61 tests) 45428ms
+@bb/app:test:      ✓ closes active details before window fallback via desktop (compact: false)  2667ms
+@bb/app:test:      ✓ closes active details before window fallback via command (compact: false)  4116ms
+@bb/app:test:      ✓ closes active details before window fallback via desktop (compact: true)  1173ms
+@bb/app:test:      ✓ closes active details before window fallback via command (compact: true)  2135ms
+@bb/app:test:      ✓ shows a disabled Uninstall action for a built-in plugin  607ms
+@bb/app:test:      ✓ 'Close other tabs' on 'memory' with 'memory' active persists every close and the surviving selection  1909ms
+@bb/app:test:      ✓ 'Close other tabs' on 'github' with 'memory' active persists every close and the surviving selection  1742ms
+@bb/app:test:      ✓ 'Close tabs to the right' on 'automations' with 'memory' active persists every close and the surviving selection  2027ms
+@bb/app:test:      ✓ 'Close tabs to the right' on 'automations' with 'github' active persists every close and the surviving selection  1088ms
+@bb/app:test:      ✓ keeps official attribution and tabs through collection navigation (compact: false)  3150ms
+@bb/app:test:      ✓ keeps official attribution and tabs through collection navigation (compact: true)  1564ms
+@bb/app:test:      ✓ opens a marketplace entry instead of a local plugin that shares its id  2001ms
+@bb/app:test:      ✓ resolves an uninstalled catalog plugin and opens its install confirmation  1089ms
+@bb/app:test:      ✓ preserves browse and restores card focus across the real app routes  2041ms
+@bb/app:test:      ✓ preserves installed and restores card focus across the real app routes  1938ms
+@bb/app:test:      ✓ opens installed plugin settings from /settings/plugins/github?view=installed  778ms
+@bb/app:test:      ✓ opens installed plugin settings from /settings/plugins  898ms
+@bb/app:test:      ✓ opens installed plugin settings from /plugins/github?view=installed  1097ms
+@bb/app:test:      ✓ opens installed plugin settings from /plugins?view=installed  1720ms
+@bb/app:test:      ✓ opens an author from a card and returns to the prior Browse filters  1578ms
+@bb/app:test:      ✓ routes the detail author link to the restored author page  1347ms
+@bb/app:test:      ✓ warns that removing a local plugin deletes its settings, secrets, and schedules and names the move path  2220ms
+@bb/app:test:      ✓ lists each contributed capability and keeps health separate  998ms
+@bb/app:test:      ✓ preserves the workspace until disable settles (failure=false)  376ms
+@bb/app:test:      ✓ preserves the workspace until disable settles (failure=true)  317ms
+@bb/app:test:      ✓ shows a local plugin's source with open and copy actions outside the overflow menu  364ms
+@bb/app:test:      ✓ opens settings in place from the detail gear and returns to details  496ms
+@bb/app:test:      ✓ keeps in-place settings out of the URL when the detail pane is embedded in a thread  734ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/layout/AppLayout.test.tsx (26 tests) 6158ms
+@bb/app:test:      ✓ redirects /threads/thr_one?message=12#event-12 to the thread's project route  562ms
+@bb/app:test:      ✓ opens and collapses the sidebar on /plugins with a full detail panel  845ms
+@bb/app:test:      ✓ opens and collapses the sidebar on /plugins/plugin-api-docs with a full detail panel  653ms
+@bb/app:test:      ✓ opens and collapses the sidebar on /plugins/plugin-api-docs/plugin-api with a full detail panel  745ms
+@bb/app:test:      ✓ opens and collapses the sidebar on /settings with a full detail panel  528ms
+@bb/app:test:      ✓ opens and collapses the sidebar on /skills with a full detail panel  520ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/terminal/terminal-layout-settle.test.ts (31 tests) 123ms
+@bb/app:test:  ✓  @bb/app:isolated  src/hooks/cache-owners/thread-entity-store.test.ts (19 tests) 259ms
+@bb/app:test:  ✓  @bb/app:isolated  src/views/MachineSettingsView.test.tsx (14 tests) 4895ms
+@bb/app:test:      ✓ links update issues to Updates in a warning pill  1090ms
+@bb/app:test:      ✓ lists a few of the machine's unarchived threads in the removal dialog  331ms
+@bb/app:test:      ✓ offers Move server here in the title menu of an eligible machine  763ms
+@bb/app:test:      ✓ does not offer Move server here on the server machine or an offline machine  485ms
+@bb/app:test:      ✓ deletes the locked old server copy on the machine the server moved from  308ms
+@bb/app:test:      ✓ hides Move server here and the old server copy while the serverMove experiment is off  513ms
+@bb/app:test:      ✓ shows the old server copy only on the machine the server left, until it is deleted  399ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/settings/InstallCliSkillsDialog.test.tsx (16 tests) 2616ms
+@bb/app:test:      ✓ gives dialog actions 44px targets on coarse-pointer layouts below desktop widths  575ms
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/plugin-sdk-app-impl.test.tsx (19 tests) 3225ms
+@bb/app:test:      ✓ renders 'GitHub PR tables with inline code' through the shared host path  409ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/machines/ServerMoveOverlay.test.tsx (11 tests) 2239ms
+@bb/app:test:      ✓ blocks the app with the step list and offers Cancel only while the move is cancellable  752ms
+@bb/app:test:      ✓ waits for a direct-address move's new server to be ready, then opens it at the current path  343ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/terminal/ThreadTerminalView.terminal-focus.visibility-panel.test.tsx (10 tests) 31486ms
+@bb/app:test:      ✓ keeps the app identity when the server echoes it after terminal attach  2263ms
+@bb/app:test:      ✓ attaches the 'desktop terminal tab' with its owning app token  1544ms
+@bb/app:test:      ✓ attaches the 'split-pane terminal' with its owning app token  883ms
+@bb/app:test:      ✓ attaches the 'phone right-panel terminal tab' with its owning app token  1057ms
+@bb/app:test:      ✓ attaches the 'thread terminal with a threadless ori…' with its owning app token  1104ms
+@bb/app:test:      ✓ keeps attention on open until a terminal keystroke  5571ms
+@bb/app:test:      ✓ reports hidden visibility when its panel closes while the document stays visible  2267ms
+@bb/app:test:      ✓ waits for fit dimensions before settling the initial main-pane layout  3043ms
+@bb/app:test:    ✓ preserves exited native output layout on 'phone' after touch focus and remount  6335ms
+@bb/app:test:    ✓ preserves exited native output layout on 'desktop' after touch focus and remount  7411ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/timeline/ThreadTimelineRows.open-latest.test.tsx (26 tests) 4207ms
+@bb/app:test:      ✓ keeps the newest answer visible after the unread divider and late layout settle  484ms
+@bb/app:test:      ✓ opens at newest when new attention arrives while a read cache is opening  324ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/secondary-panel/CompactSecondaryPanelShelf.test.tsx (14 tests) 1431ms
+@bb/app:test:      ✓ opens from a leftward swipe on the main content and snaps back from a short one  512ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/plugin/PluginPendingInteractionComposer.test.tsx (15 tests) 2667ms
+@bb/app:test:      ✓ adds path break opportunities without changing the header label  346ms
+@bb/app:test:      ✓ preserves drafts and pauses keyboard listeners while collapsed  593ms
+@bb/app:test:      ✓ submits a numbered pi selection through the shared question form  356ms
+@bb/app:test:      ✓ keeps the plugin form disabled after a successful cancel and re-enables it after a failure  488ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/timeline/TimelineWindowedItems.test.tsx (15 tests) 3414ms
+@bb/app:test:      ✓ renders every row while the scrollport has no usable geometry, then windows once it does with spacers sized from the heights it measured  775ms
+@bb/app:test:      ✓ keeps every row mounted on iOS WebKit  348ms
+@bb/app:test:      ✓ keeps forced and interacted rows mounted outside the window  1015ms
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/timeline/SelectableMessageProse.clipboard.test.tsx (77 tests) 3150ms
+@bb/app:test:    ✓ copies selected rendered lists, links and fenced code as markdown without controls  387ms
+@bb/app:test:    ✓ copies rendered math as TeX text and MathML without KaTeX's duplicate layout  422ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/tools/detail-page-recipes.test.tsx (20 tests) 2413ms
+@bb/app:test:      ✓ keeps wrapped title metadata in the title column beside the leading icon  508ms
+@bb/app:test:      ✓ collapses long capability descriptions until requested  399ms
+@bb/app:test:      ✓ links every capability with a stable destination to its owning surface  501ms
+@bb/app:test:  ✓  @bb/app:isolated  src/hooks/mutations/thread-pin-mutations.test.tsx (8 tests) 2055ms
+@bb/app:test:    ✓ rolls back a failed pin under concurrent status and membership writes  564ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/plugin/PluginProviderModelPicker.test.tsx (8 tests) 3499ms
+@bb/app:test:      ✓ resolves provider, default model, reasoning, and service tier atomically  1617ms
+@bb/app:test:      ✓ reconciles model capabilities and drops unsupported service tiers  598ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/promptbox/PromptBoxInternal.test.tsx (192 tests) 69561ms
+@bb/app:test:      ✓ leaves drawer focus alone when its noninteractive content receives a pointer press  8369ms
+@bb/app:test:      ✓ opens from a composer menu top and inserts at the preserved cursor  1171ms
+@bb/app:test:      ✓ opens from a composer menu bottom and inserts at the preserved cursor  1561ms
+@bb/app:test:      ✓ switches between popups in one customization by popup id  1167ms
+@bb/app:test:      ✓ replaces suggestions and keeps their trigger dismissed through popup focus transfer  1269ms
+@bb/app:test:      ✓ honors scope, rejects another plugin's close, and closes on plugin removal  631ms
+@bb/app:test:      ✓ defers compact content and retains it without making the app root inert  640ms
+@bb/app:test:      ✓ wires scoped plugin rich-text rules and draft observers without rebuilding the editor  354ms
+@bb/app:test:      ✓ refreshes draft observers when the composer scope identity changes  760ms
+@bb/app:test:      ✓ preserves decorated serialization, mentions, and history through a real 'plain text' paste  681ms
+@bb/app:test:      ✓ preserves decorated serialization, mentions, and history through a real 'structured blockquote' paste  620ms
+@bb/app:test:      ✓ honors a focus-scope change when a coarse pointer becomes fine  374ms
+@bb/app:test:      ✓ blurs the editor before starting voice input on coarse pointers  371ms
+@bb/app:test:      ✓ refocuses when the history reset key changes on fine pointers  354ms
+@bb/app:test:      ✓ keeps cycling history past entries with attachments and mentions  1049ms
+@bb/app:test:      ✓ steers on request when Enter queues  303ms
+@bb/app:test:      ✓ passes sendAt and plugin data to the chosen action  426ms
+@bb/app:test:      ✓ rejects with Enter's failure while Enter itself ignores it  329ms
+@bb/app:test:      ✓ exposes the disabled submit reason as its label and hover tooltip  580ms
+@bb/app:test:      ✓ offers alternate send actions and existing draft/scheduling registrations (Enter steers: false, touch: true)  749ms
+@bb/app:test:      ✓ offers alternate send actions and existing draft/scheduling registrations (Enter steers: true, touch: true)  957ms
+@bb/app:test:      ✓ offers alternate send actions and existing draft/scheduling registrations (Enter steers: false, touch: false)  2154ms
+@bb/app:test:      ✓ offers alternate send actions and existing draft/scheduling registrations (Enter steers: true, touch: false)  1454ms
+@bb/app:test:      ✓ mounts scope-matched actions in deterministic order before voice  317ms
+@bb/app:test:      ✓ makes the editor read-only while locked and restores it on unlock  822ms
+@bb/app:test:      ✓ does not mount plugin actions in compact layout  492ms
+@bb/app:test:      ✓ shows only an attachment count when compact and removal controls when expanded  584ms
+@bb/app:test:      ✓ shows attachment upload progress on the submit button  315ms
+@bb/app:test:      ✓ does not start voice input from the trailing click of a touch submit  659ms
+@bb/app:test:      ✓ does not stop from the trailing click of a touch submit (already running: false)  487ms
+@bb/app:test:      ✓ stops a run for deliberate mouse activation  342ms
+@bb/app:test:      ✓ cancels immediately while retaining the voice bar for its exit transition  302ms
+@bb/app:test:      ✓ applies the first result with Enter for a multiword mention query  894ms
+@bb/app:test:      ✓ offers the draft's file attachments on a bare @ and mentions the picked one  645ms
+@bb/app:test:      ✓ dismisses a coarse-pointer occurrence from a 44px close target  647ms
+@bb/app:test:      ✓ reopens after a touch-dismissed occurrence is removed and retyped  1310ms
+@bb/app:test:      ✓ keeps a plugin mention's named icon ahead of branding in the menu row and the inserted pill  364ms
+@bb/app:test:      ✓ inserts hash-triggered plugin mentions without duplicating the prefix  327ms
+@bb/app:test:      ✓ keeps the keyboard-selected mention when a stronger delayed result arrives  907ms
+@bb/app:test:      ✓ keeps the custom caret reveal for composer-handled text pastes  322ms
+@bb/app:test:      ✓ undoes and redoes a pasted file without uploading it again  410ms
+@bb/app:test:      ✓ undoes a large paste into its text, then to before the paste  1208ms
+@bb/app:test:      ✓ restores a removed attachment to its original position  365ms
+@bb/app:test:      ✓ keeps a file undone during its upload out of the draft until redo  370ms
+@bb/app:test:      ✓ keeps multiple pasted plugin references as distinct pills  585ms
+@bb/app:test:      ✓ opens the file picker from the prompt actions menu  411ms
+@bb/app:test:      ✓ inserts the skills trigger with no trailing space  566ms
+@bb/app:test:      ✓ does not duplicate the skills trigger when it is already active  448ms
+@bb/app:test:      ✓ inserts goal mode as a command pill  484ms
+@bb/app:test:      ✓ starts the draft with the automation prompt  559ms
+@bb/app:test:      ✓ puts plan before existing text and keeps later pills on their text  642ms
+@bb/app:test:      ✓ replaces a leading command with the plugin prompt once  1255ms
+@bb/app:test:      ✓ selects a slash typeahead command as a command pill  311ms
+@bb/app:test:      ✓ keeps typed content when another command replaces the leading one  1250ms
+@bb/app:test:      ✓ does not submit when a non-built-in command is selected with Enter  567ms
+@bb/app:test:      ✓ does not submit when a built-in command is selected with Tab  339ms
+@bb/app:test:      ✓ uses the rendered section order for Arrow keys and Enter  1208ms
+@bb/app:test:      ✓ hoists an exactly-named user command above the skills section  386ms
+@bb/app:test:      ✓ keeps HTML code and authored links literal while converting repeated URLs in prose  872ms
+@bb/app:test:      ✓ keeps ctrlKey+Shift+V literal and converts the next normal clipboard paste through the SDK  1093ms
+@bb/app:test:      ✓ does not apply a delayed resolution after the real replace draft handler  321ms
+@bb/app:test:      ✓ separates text typed right after a restored trailing pill  423ms
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/thread-tabs-sync.test.ts (21 tests) 342ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/ui/markdown-code-fence-renderers.test.tsx (24 tests) 1362ms
+@bb/app:test:      ✓ renders claimed fences with code, language, per-language index, status, and message  568ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/sidebar/SidebarNavigationHost.test.tsx (39 tests) 6302ms
+@bb/app:test:        ✓ opens Plugins (/plugins) in a browser tab with {"metaKey":true}  715ms
+@bb/app:test:        ✓ opens Plugins (/plugins) in a browser tab with {"metaKey":true}  324ms
+@bb/app:test:      ✓ preserves legacy activation for Plugins at /plugins with openInSplit=true  514ms
+@bb/app:test:      ✓ opens bb's customize editor beside a plugin's navigation  442ms
+@bb/app:test:  ✓  @bb/app:isolated  src/hooks/mutations/thread-runtime-mutations.test.ts (11 tests) 378ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/secondary-panel/usePanelTerminals.test.tsx (36 tests) 1906ms
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/system-config-atoms.local-access.test.ts (12 tests) 518ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/terminal/NativeThreadTerminalMain.test.tsx (13 tests) 1232ms
+@bb/app:test:      ✓ cues silent setup after twelve seconds, clearing on first input and binding  536ms
+@bb/app:test:      ✓ shows the exited terminal panel with an ended bar and Resume  346ms
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/define-split.test.tsx (18 tests) 2626ms
+@bb/app:test:    ✓ shares a pending intent preload with rendering, preserves props, and stays mounted across parent renders  367ms
+@bb/app:test:    ✓ keeps load failure local and retries a failed import instead of caching the rejection forever  754ms
+@bb/app:test:    ✓ recovers from a rejected speculative preload when the feature is opened  305ms
+@bb/app:test:    ✓ does not commit a loading fallback after previous mount resolves the component  395ms
+@bb/app:test:    ✓ mounts only when wanted and keeps a retained split mounted after it closes  332ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/provider-cli/provider-cli-install.test.ts (10 tests) 206ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/settings/KeyboardSettingsSection.test.tsx (25 tests) 48265ms
+@bb/app:test:      ✓ Reset shortcut for Open first plugin removes an explicit plugin default and restores conflict suppression  3209ms
+@bb/app:test:      ✓ Reset all removes an explicit plugin default and restores conflict suppression  3615ms
+@bb/app:test:      ✓ resets a shared binding to each surface's defaults while preserving other platforms  6034ms
+@bb/app:test:      ✓ keeps UI edits and both reset actions on the current platform  5472ms
+@bb/app:test:      ✓ ranks visible label matches ahead of description matches across groups  606ms
+@bb/app:test:      ✓ ranks exact labels, label prefixes, label substrings, IDs, and descriptions in order  1200ms
+@bb/app:test:      ✓ finds commands by their shortcut keys and modifiers  769ms
+@bb/app:test:      ✓ finds the literal , key without matching unrelated modifier shortcuts  1253ms
+@bb/app:test:      ✓ finds the literal [ key without matching unrelated modifier shortcuts  549ms
+@bb/app:test:      ✓ finds the literal ] key without matching unrelated modifier shortcuts  424ms
+@bb/app:test:      ✓ finds the literal \ key without matching unrelated modifier shortcuts  597ms
+@bb/app:test:      ✓ finds the literal / key without matching unrelated modifier shortcuts  331ms
+@bb/app:test:      ✓ finds the literal + key without matching unrelated modifier shortcuts  333ms
+@bb/app:test:      ✓ restores category and command order when the search is cleared  2931ms
+@bb/app:test:      ✓ lists commands without defaults and persists bindings under stable plugin IDs  1036ms
+@bb/app:test:      ✓ explains when a plugin default conflicts with a core shortcut  1179ms
+@bb/app:test:      ✓ records, clears, and resets a command shortcut  3359ms
+@bb/app:test:      ✓ lets users assign a command that has no default shortcut  1611ms
+@bb/app:test:      ✓ keeps unaffected shortcut controls stable while saving  2020ms
+@bb/app:test:      ✓ asks before replacing a conflicting assignment and supports cancel  4678ms
+@bb/app:test:      ✓ rolls reset-all draft state back when the mutation fails  3879ms
+@bb/app:test:      ✓ shows web and desktop defaults without OS-specific groups  1204ms
+@bb/app:test:      ✓ selects the active desktop shortcut from the displayed surface defaults  1471ms
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test:  ✓  @bb/app:isolated  src/components/plugin/management/AddPluginDialog.test.tsx (12 tests) 3277ms
+@bb/app:test:      ✓ offers source Retry only for a recoverable HTTP 503 failure  880ms
+@bb/app:test:      ✓ keeps the dialog open with the reason when the server refuses to start  405ms
+@bb/app:test:      ✓ shows a third-party listing's resolved source before confirming  606ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/timeline/ThreadTimelineRows.system-summary.test.tsx (13 tests) 2593ms
+@bb/app:test:      ✓ groups consecutive thread interruptions and expands their individual entries  727ms
+@bb/app:test:      ✓ expands an overflowing 'operation' / 'deprecation' summary  368ms
+@bb/app:test:      ✓ expands an overflowing 'reconnect' / undefined summary  337ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/promptbox/composer-contract.test.tsx (92 tests) 12604ms
+@bb/app:test:        ✓ shows the surface's draft and follows replacements  1827ms
+@bb/app:test:        ✓ turns threads dropped from the sidebar into thread mentions in order  359ms
+@bb/app:test:        ✓ turns threads dropped from the sidebar into thread mentions in order  406ms
+@bb/app:test:        ✓ shows the surface's draft and follows replacements  340ms
+@bb/app:test:        ✓ opens and closes another plugin's popup  329ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/settings/CliSkillsSettingsSection.test.tsx (20 tests) 1835ms
+@bb/app:test:      ✓ offers the picker when a machine is connected  1016ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/timeline/TimelineImageGallery.test.tsx (10 tests) 6514ms
+@bb/app:test:    ✓ stops at each end of the loaded page without fetching older history, preserving duplicate URLs  1700ms
+@bb/app:test:    ✓ preserves occurrence identity as streaming images settle into cached blocks  604ms
+@bb/app:test:    ✓ preserves identical inline and footnote occurrences when normalized streaming content settles  499ms
+@bb/app:test:    ✓ includes lazy turn details only while expanded, including during the collapse transition  1329ms
+@bb/app:test:    ✓ never includes images suppressed in ordinary worker messages  328ms
+@bb/app:test:    ✓ retains only the displayed image after hiding and removing its source  336ms
+@bb/app:test:    ✓ excludes clipped user-message images until expanded  1408ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/secondary-panel/ThreadSecondaryPanel.compact-layout.test.tsx (6 tests) 2550ms
+@bb/app:test:      ✓ selects the requested terminal on a non-drawer host without split state  1147ms
+@bb/app:test:      ✓ keeps a desktop split request pending until fixed tabs are ready  929ms
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/timeline/MessageActionBar.test.tsx (9 tests) 4086ms
+@bb/app:test:      ✓ places the token summary in the message action row  742ms
+@bb/app:test:      ✓ keeps candidates inline in priority order and reserves the menu for trailing actions  617ms
+@bb/app:test:      ✓ moves candidates that do not fit into the menu from the end  421ms
+@bb/app:test:      ✓ puts every candidate in the menu when none fit  601ms
+@bb/app:test:      ✓ shows a timestamp-only footer in the menu  506ms
+@bb/app:test:      ✓ lists every action in the latest touch message drawer even when actions fit inline  846ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/ui/markdown-preview.incremental.test.tsx (13 tests) 8771ms
+@bb/app:test:      ✓ renders the same DOM as a single document at every line step: lists  1596ms
+@bb/app:test:      ✓ renders the same DOM as a single document at every line step: code and html flow  746ms
+@bb/app:test:      ✓ renders the same DOM as a single document at every line step: math, mermaid, and tables  1952ms
+@bb/app:test:      ✓ renders the same DOM as a single document at every line step: directives, mentions, and links  999ms
+@bb/app:test:      ✓ renders the same DOM as a single document at every line step: glued directives and attribute formatting  717ms
+@bb/app:test:      ✓ renders the same DOM as a single document at every line step: frontmatter and late references  600ms
+@bb/app:test:      ✓ commits the same DOM mutations as a single document while settled content grows  511ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/code/DiffHost.test.tsx (14 tests) 1920ms
+@bb/app:test:      ✓ loads BB's renderer only when the replacement delegates  386ms
+@bb/app:test:      ✓ contains a failing BB renderer inside a delegating replacement without disabling the plugin  835ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/sidebar/SidebarUpdatesBadge.test.tsx (11 tests) 1284ms
+@bb/app:test:      ✓ counts plugin updates but not blocked plugin candidates  522ms
+@bb/app:test:  ✓  @bb/app:isolated  src/hooks/useThreadReadTracking.integration.test.tsx (12 tests) 2456ms
+@bb/app:test:    ✓ retries a failed read after reopening when an older manual unread has the same timestamp  353ms
+@bb/app:test:  ✓  @bb/app:isolated  src/views/thread-detail/ThreadScreen.test.tsx (15 tests) 926ms
+@bb/app:test:      ✓ sizes a page-measure panel to the content measure and a panel-measure one to its container  318ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/promptbox/PromptBoxActionsMenu.test.tsx (9 tests) 5133ms
+@bb/app:test:      ✓ offers file attachments even when no provider actions are available  1459ms
+@bb/app:test:      ✓ lists provider actions before the Automation and Plugin rows in a 'new-thread' composer  718ms
+@bb/app:test:      ✓ lists provider actions before the Automation and Plugin rows in a 'thread' composer  344ms
+@bb/app:test:      ✓ lists provider actions before the Automation and Plugin rows in a 'queued-message' composer  419ms
+@bb/app:test:      ✓ re-renders plus-menu rows when the composer selection changes  520ms
+@bb/app:test:      ✓ re-renders send-menu rows when the composer selection changes  315ms
+@bb/app:test:      ✓ restores composer focus after an update-only plugin item in the compact drawer  430ms
+@bb/app:test:      ✓ renders plugin rows without a header and preserves focus deliberately moved by a plugin  706ms
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/clipboard.test.ts (18 tests) 725ms
+@bb/app:test:      ✓ copies Android HTML metadata with a plain text fallback  391ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/promptbox/NewThreadPromptBox.test.tsx (10 tests) 3736ms
+@bb/app:test:      ✓ counts provider-made machines in the projectless machine chip  822ms
+@bb/app:test:      ✓ routes a machine pick through the selected provider  1372ms
+@bb/app:test:      ✓ keeps an open environment menu mounted while project scope replays  301ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/ui/scroll-position-keeper.model.test.ts (1 test) 30454ms
+@bb/app:test:      ✓ keeps the button, the bottom, and the reading row consistent across 200 random sequences  30452ms
+@bb/app:test:  ✓  @bb/app:isolated  src/hooks/usePromptDraftStorage.test.tsx (14 tests) 233ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/secondary-panel/usePanelTerminals.owner-progress.integration.test.tsx (3 tests) 2127ms
+@bb/app:test:      ✓ keeps a sibling's progress and clears it when its owner tab closes  1728ms
+@bb/app:test:  ✓  @bb/app:isolated  src/hooks/mutations/settings-mutations.test.ts (8 tests) 464ms
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/foreign-dom-mutation-guard.test.tsx (11 tests) 446ms
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/terminal/TerminalSearch.test.tsx (11 tests) 1249ms
+@bb/app:test:      ✓ keeps an early search request open until the add-on arrives  707ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/promptbox/banner/ThreadPromptContextBanner.child-questions.test.tsx (14 tests) 8161ms
+@bb/app:test:      ✓ auto-expands to the row list without opening a question  1924ms
+@bb/app:test:      ✓ opens the clicked child's question compactly inside the banner  1242ms
+@bb/app:test:      ✓ expands to the row list from the collapsed header without opening a question  397ms
+@bb/app:test:      ✓ steps both ways, wraps, and keeps focus on the pressed caret  1774ms
+@bb/app:test:      ✓ drops the back control when the parent has a single child thread  343ms
+@bb/app:test:      ✓ returns focus to the row in its own banner when another banner lists the same child  503ms
+@bb/app:test:      ✓ returns to the row list on Escape  360ms
+@bb/app:test:      ✓ keeps the question open for an Escape that ends text composition  320ms
+@bb/app:test:      ✓ moves to the next question after an answer, keeping focus in the banner, then closes when none remain  340ms
+@bb/app:test:  ✓  @bb/app:isolated  src/views/ProjectDetailSettingsView.test.tsx (13 tests) 9801ms
+@bb/app:test:      ✓ keeps checkout counts in sync with the show-all machine toggle  3372ms
+@bb/app:test:      ✓ lists every paired machine with its checkout or a set-up action  577ms
+@bb/app:test:      ✓ opens the machine setup dialog for a remote machine  460ms
+@bb/app:test:      ✓ opens the path dialog when the local machine has no checkout  667ms
+@bb/app:test:      ✓ refuses to remove the last checkout but removes an extra one  1033ms
+@bb/app:test:      ✓ changes the folder of a checkout on another machine  1789ms
+@bb/app:test:      ✓ disables changing the folder on an offline machine  395ms
+@bb/app:test:      ✓ disables removal when the project has a single checkout  398ms
+@bb/app:test:      ✓ deletes the project and returns to the list  588ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/timeline/ThreadTimelineRows.windowing.test.tsx (10 tests) 11456ms
+@bb/app:test:      ✓ windows the rows inside a large expanded detail  2496ms
+@bb/app:test:      ✓ bounds mounted content for 19 top-level rows (compact: false, iPhone: false)  784ms
+@bb/app:test:      ✓ bounds mounted content for 20 top-level rows (compact: false, iPhone: false)  732ms
+@bb/app:test:      ✓ bounds mounted content for 59 top-level rows (compact: false, iPhone: false)  917ms
+@bb/app:test:      ✓ bounds mounted content for 19 top-level rows (compact: true, iPhone: false)  809ms
+@bb/app:test:      ✓ bounds mounted content for 20 top-level rows (compact: true, iPhone: false)  1375ms
+@bb/app:test:      ✓ bounds mounted content for 39 top-level rows (compact: true, iPhone: false)  992ms
+@bb/app:test:      ✓ bounds mounted content for 59 top-level rows (compact: true, iPhone: true)  1745ms
+@bb/app:test:      ✓ keeps an offscreen steer realized and reveals it by its message seq  870ms
+@bb/app:test:      ✓ keeps offscreen search and outline targets realized  731ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/settings/ProvidersSettingsSection.test.tsx (13 tests) 5015ms
+@bb/app:test:      ✓ names the sign-in command for a provider that is not signed in  796ms
+@bb/app:test:      ✓ says a provider is not signed in even when it names no command  444ms
+@bb/app:test:      ✓ shows the server-wide fast tier setting and saves changes  414ms
+@bb/app:test:      ✓ saves the idle session timeout 0 from the menu  1294ms
+@bb/app:test:      ✓ saves the idle session timeout 60 from the menu  441ms
+@bb/app:test:      ✓ shows reorder handles and writes the default as a user setting  370ms
+@bb/app:test:      ✓ keeps a provider with a disabled plugin visible and enables it without navigating away  374ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/secondary-panel/SecondaryPanelTabStrip.test.ts (9 tests) 3223ms
+@bb/app:test:      ✓ shows the attention ring on an unread terminal tab  1462ms
+@bb/app:test:      ✓ keeps the app accessible while the tab menu is open  513ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/AppToaster.test.tsx (10 tests) 2737ms
+@bb/app:test:      ✓ places compact viewport toasts at the top center  803ms
+@bb/app:test:      ✓ resets an interrupted swipe after pointer cancellation  462ms
+@bb/app:test:      ✓ resets an interrupted swipe after pointer capture loss  442ms
+@bb/app:test:      ✓ keeps an archive title tappable but does not open it during a swipe  427ms
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/split-drag/splitDragSession.test.ts (13 tests) 352ms
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test:  ✓  @bb/app:isolated  src/components/ui/markdown-mermaid-diagram.render.test.tsx (9 tests) 1280ms
+@bb/app:test:      ✓ does not render until the diagram nears the viewport and shares one observer across diagrams  368ms
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test:  ✓  @bb/app:isolated  src/components/ui/compact-long-press-menu.test.tsx (11 tests) 863ms
+@bb/app:test: stdout | src/components/thread/terminal/ThreadTerminalView.terminal-focus.viewport.test.tsx > ThreadTerminalView terminal viewport and focus > preserves the open terminal and its scrollback when pointer mode changes
+@bb/app:test: Terminal viewport restore {
+@bb/app:test:   terminalId: 'term_mobile_paste',
+@bb/app:test:   branch: 'no-anchor',
+@bb/app:test:   anchor: null,
+@bb/app:test:   replayStartSequence: 0,
+@bb/app:test:   replayNextSequence: 1
+@bb/app:test: }
+@bb/app:test: 
+@bb/app:test:  ✓  @bb/app:isolated  src/hooks/useThreadReadTracking.test.tsx (12 tests) 284ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/ThreadStatusGlyph.test.tsx (37 tests) 405ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/terminal/terminal-webgl-renderer.visibility.test.ts (8 tests) 702ms
+@bb/app:test:      ✓ releases and reacquires sub-threshold visible slivers on scroll  347ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/terminal/TerminalTextSelectSheet.test.tsx (14 tests) 2059ms
+@bb/app:test:      ✓ offers Copy selection for the snapshot  347ms
+@bb/app:test:      ✓ opens text selection from the extra keys  382ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/plugin/PluginThreadChat.test.tsx (7 tests) 935ms
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/query-client.test.ts (8 tests) 887ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/machines/MoveServerDialog.test.tsx (6 tests) 2467ms
+@bb/app:test:      ✓ checks the machine, groups the results by severity, and starts a bb connect move  962ms
+@bb/app:test:      ✓ asks for the new address when the server has no bb connect handle and re-checks with it  367ms
+@bb/app:test:      ✓ requires confirming that the existing bb data on the machine gets archived  518ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/promptbox/banner/ThreadPromptContextBanner.segments.test.tsx (12 tests) 1694ms
+@bb/app:test:      ✓ leaves the parent thread to the thread context card when the view shows one  535ms
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/provider-icon.test.tsx (8 tests) 226ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/ui/select.test.tsx (7 tests) 2797ms
+@bb/app:test:      ✓ dismisses only the picker from the surface over its trigger and from Escape  805ms
+@bb/app:test:      ✓ selects an enabled option, keeps the parent and returns focus to the trigger  368ms
+@bb/app:test:      ✓ opens from the keyboard, skips disabled options and selects with Enter  422ms
+@bb/app:test:      ✓ moves focus by typeahead, honouring textValue and skipping disabled options  333ms
+@bb/app:test:      ✓ keeps the floating listbox on desktop  332ms
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test:  ✓  @bb/app:isolated  src/components/settings/ProjectsSettingsSection.test.tsx (15 tests) 3571ms
+@bb/app:test:    ✓ counts only persistent checkouts and their connection status in project summaries  1136ms
+@bb/app:test:      ✓ shows a drag handle per project and disables them with a single project  415ms
+@bb/app:test:      ✓ renames a project through the existing dialog  496ms
+@bb/app:test:      ✓ deletes a project after confirmation  441ms
+@bb/app:test:      ✓ opens the add-project dialog with the paired machines listed  520ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/plugin/PluginTabs.test.tsx (6 tests) 1586ms
+@bb/app:test:    ✓ keeps thread fixed lifecycle and saved identity through new registration  886ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/timeline/ThreadTimelineRows.presentation.test.tsx (9 tests) 1245ms
+@bb/app:test:      ✓ renders a plan-steps row with every step and its status  826ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/sidebar/SidebarNavigationList.test.tsx (11 tests) 6193ms
+@bb/app:test:      ✓ labels each visible destination in a row and puts hidden ones, New thread included, behind More  1144ms
+@bb/app:test:      ✓ scrolls the destinations, New thread among them, keeping More in view  523ms
+@bb/app:test:      ✓ hides New thread from Customize like any other row  1449ms
+@bb/app:test:      ✓ customizes the list from More and returns focus to More  1028ms
+@bb/app:test:      ✓ opens a row's options from its menu button and customizes from there  773ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/ui/disclosure.test.tsx (9 tests) 2068ms
+@bb/app:test:      ✓ flips the caret in the tap's commit and mounts the body in a deferred one  450ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/layout/AppLayout.plugin-panel-header.test.tsx (12 tests) 1983ms
+@bb/app:test:      ✓ keeps the fixed left trigger visible while the compact sidebar drawer is open  1216ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/pickers/ProjectSelector.test.tsx (13 tests) 3975ms
+@bb/app:test:      ✓ selects a searched project and returns to all projects without falling back to the first project  1382ms
+@bb/app:test:      ✓ reflects choosing no project in both trigger labels and its accessible name  569ms
+@bb/app:test:      ✓ keeps project actions visible and resets search after closing  684ms
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test:  ✓  @bb/app:isolated  src/views/RootComposeSecondaryContent.test.tsx (8 tests) 1305ms
+@bb/app:test:      ✓ mounts compact scroll content only while the compact home layout is active and keeps the composer mounted  818ms
+@bb/app:test:      ✓ always offers a new tab from the new-thread right panel  331ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/secondary-panel/BrowserTabContent.find.test.tsx (9 tests) 1969ms
+@bb/app:test:      ✓ opens the find bar from the chord only while the browser pane has focus  948ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/secondary-panel/MobilePanelTabPager.test.tsx (7 tests) 2160ms
+@bb/app:test:      ✓ shows the fixed buttons and one content tab while navigating a narrow header  1064ms
+@bb/app:test:      ✓ uses wider headers for neighboring tabs and keeps selection visible through resize and removal  652ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/terminal/ThreadTerminalView.clipboard.test.tsx (11 tests) 26160ms
+@bb/app:test:      ✓ copies only the finished drag selection and shows one success notification  3243ms
+@bb/app:test:      ✓ keeps copying drag selections after the terminal is unmounted and mounted again  3358ms
+@bb/app:test:      ✓ copies a new drag selection with different text when the previous selection's menu is dismissed after the release  3485ms
+@bb/app:test:      ✓ copies a new drag selection with identical text when the previous selection's menu is dismissed after the release  2487ms
+@bb/app:test:      ✓ copies a drag selection released outside the terminal  994ms
+@bb/app:test:      ✓ does not copy selections or show notifications when disabled, while explicit Copy still works  892ms
+@bb/app:test:      ✓ applies preference changes to an existing terminal without remounting  1590ms
+@bb/app:test:      ✓ does not auto-copy selected text outside the terminal  1603ms
+@bb/app:test:      ✓ leaves middle-click primary-selection paste native with copy-on-select=true  2050ms
+@bb/app:test:      ✓ leaves middle-click primary-selection paste native with copy-on-select=false  2503ms
+@bb/app:test:      ✓ offers Paste on an unselected terminal and reads the clipboard  3934ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/secondary-panel/usePanelResizeSnap.test.tsx (17 tests) 1396ms
+@bb/app:test:      ✓ updates the panel library once per frame without a separate DOM preview  370ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/terminal/terminal-interactions.test.ts (7 tests) 100ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/plugin/PluginThreadContextCard.test.tsx (15 tests) 1143ms
+@bb/app:test:      ✓ orders rows by group, then order, core first on a tie, and puts titled sections below them  486ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/dialogs/RemotePathBrowser.createFolder.test.tsx (9 tests) 2561ms
+@bb/app:test:      ✓ hides folder creation for existing-folder pickers  451ms
+@bb/app:test:      ✓ does not create in the previous folder while navigation is loading  309ms
+@bb/app:test:      ✓ locks navigation while folder creation is pending  425ms
+@bb/app:test:      ✓ returns to the top when browsing into another large directory  772ms
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/plugin-slots.test.ts (11 tests) 185ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/plugin/app-icons.test.tsx (11 tests) 332ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/secondary-panel/BrowserTabContent.chrome.test.tsx (16 tests) 1539ms
+@bb/app:test:      ✓ keeps navigation visible while loading and preserves the stop action  533ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/terminal/ThreadTerminalView.terminal-focus.replay.test.tsx (52 tests) 132576ms
+@bb/app:test:      ✓ restores history and one exit notice from exited props without WebSocket messages  3355ms
+@bb/app:test:      ✓ keeps replayed history exactly once when the process exits after replay  3331ms
+@bb/app:test:      ✓ replays hidden output across a reconnect before showing the terminal  4530ms
+@bb/app:test:      ✓ does not repaint-nudge the initial terminal replay  1667ms
+@bb/app:test:      ✓ retries a replay attempt that outlasts the backstop and holds again for the next attempt  6665ms
+@bb/app:test:      ✓ replays output received while the terminal panel is closed  2019ms
+@bb/app:test:      ✓ replays a retained OSC 52 continuation from a parser-safe cursor  4984ms
+@bb/app:test:      ✓ keeps the preview of a replay without a usable snapshot hidden until the replay completes  3637ms
+@bb/app:test:      ✓ finishes a non-owner attach using its grid without a later resize or deadline  2895ms
+@bb/app:test:      ✓ keeps the preview hidden while the socket is down and holds it again for the replay a reconnect starts  5089ms
+@bb/app:test:      ✓ keeps the preview hidden through a reconnect that outlasts the hold timeout and holds again for the retry  4396ms
+@bb/app:test:      ✓ keeps the painted screen visible and partial output hidden after a stalled replay hold expires  4114ms
+@bb/app:test:      ✓ keeps the painted screen visible and the partial output hidden when the transport closes during a stalled replay  2533ms
+@bb/app:test:      ✓ keeps the preview hidden when the terminal process exits mid-replay and reveals it with the exit marker once the replay completes  2565ms
+@bb/app:test:      ✓ keeps the preview hidden and shows the unavailable state when the replay errors after the process exited  2043ms
+@bb/app:test:      ✓ marks a fallback preview exited once when the process exit is reported by a session update and an exited message mid-replay  2528ms
+@bb/app:test:      ✓ marks a snapshot preview exited once when a session update and an exited message both report the exit  1874ms
+@bb/app:test:      ✓ marks a snapshot preview exited once for a single exited message  2236ms
+@bb/app:test:      ✓ keeps the replay hidden and shows the reconnecting badge when a replay fails without a prior screen  3087ms
+@bb/app:test:      ✓ keeps the painted screen visible and partial output hidden after a checkpoint-backed replay hold expires  4410ms
+@bb/app:test:      ✓ retries after a checkpoint-backed replay error, keeps the painted screen, and recovers without manual action  4967ms
+@bb/app:test:      ✓ reconnects on a new socket when a replay stalls on an open socket and settles once the replay arrives  6658ms
+@bb/app:test:      ✓ backs off instead of spinning when the retried replay also stalls  6444ms
+@bb/app:test:      ✓ does not reconnect when a stalled replay belongs to an exited process  4046ms
+@bb/app:test:      ✓ stays live and reconnects after an error that arrives once the replay completed  3467ms
+@bb/app:test:      ✓ keeps retrying after repeated replay errors and never reaches an unavailable state  13168ms
+@bb/app:test:      ✓ keeps a checkpoint-backed replay hidden and shows the closed state when the transport closes before completion  3176ms
+@bb/app:test:      ✓ notifies the replay preview when a session update reports process exit  2458ms
+@bb/app:test:      ✓ reveals before a pending search add-on loads, then attaches it  1121ms
+@bb/app:test:      ✓ keeps the terminal open when an optional search add-on fails  1104ms
+@bb/app:test:      ✓ uses Unicode 11 cell widths for replayed wide TUI status lines  1015ms
+@bb/app:test:      ✓ preserves terminal state when WebGL attaches after replay  848ms
+@bb/app:test:      ✓ keeps the DOM renderer and replay working when WebGL import fails  1944ms
+@bb/app:test:      ✓ mounts and records output boundaries without crypto.randomUUID  662ms
+@bb/app:test:      ✓ fits a live native session at phone width without retained-history scrolling  1885ms
+@bb/app:test:      ✓ keeps phone history at the normal text size for 80 recorded columns  826ms
+@bb/app:test:      ✓ keeps phone history at the normal text size for 120 recorded columns  928ms
+@bb/app:test:      ✓ keeps phone history at the normal text size for 200 recorded columns  697ms
+@bb/app:test:      ✓ uses compact media-query result true at viewport width 767 for history gestures  614ms
+@bb/app:test:      ✓ uses compact media-query result false at viewport width 768 for history gestures  640ms
+@bb/app:test:      ✓ uses compact media-query result true at viewport width 768 for history gestures  619ms
+@bb/app:test:      ✓ uses compact media-query result false at viewport width 767 for history gestures  853ms
+@bb/app:test:      ✓ leaves exited phone-history swipes to the browser instead of xterm's document handlers  685ms
+@bb/app:test:      ✓ hides exited native replay until the first fitted resize  700ms
+@bb/app:test:      ✓ preserves a full prompt band when phone fit is narrower than retained output  607ms
+@bb/app:test:      ✓ keeps the terminal hidden when its first fit has no dimensions  348ms
+@bb/app:test:      ✓ reconciles retained history arriving after the timeout  997ms
+@bb/app:test:      ✓ reveals an exit and error state when retained output rejects  647ms
+@bb/app:test:      ✓ reveals an exit state when retained output never settles  674ms
+@bb/app:test:      ✓ uses current status when an exited session becomes running without remount  880ms
+@bb/app:test:      ✓ fits a running session that exits without remount before revealing it  895ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/timeline/TimelineSelectionMenu.test.tsx (12 tests) 1296ms
+@bb/app:test:      ✓ stays actionable while a scroll moves the selection  420ms
+@bb/app:test:  ✓  @bb/app:isolated  src/views/thread-detail/SplitThreadArea.archive.test.tsx (4 tests) 858ms
+@bb/app:test:      ✓ keeps the archived pane and its focus when unarchiving is rejected  544ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/terminal/terminal-touch-flow.test.ts (8 tests) 2506ms
+@bb/app:test:      ✓ sends exactly one press and one release for a short tap  1078ms
+@bb/app:test:      ✓ sends no click for a swipe and leaves the swipe to xterm  324ms
+@bb/app:test:      ✓ keeps the eight-move drag on xterm native scrolling  475ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/dialogs/AddMachineDialog.test.tsx (8 tests) 1089ms
+@bb/app:test:    ✓ names the server machine a new machine depends on  313ms
+@bb/app:test: Not implemented: navigation to another Document
+@bb/app:test: Not implemented: navigation to another Document
+@bb/app:test:  ✓  @bb/app:isolated  src/components/ui/app-route-anchor.test.tsx (11 tests) 793ms
+@bb/app:test:      ✓ notifies a scoped host only for handled route navigation (delegate: false)  339ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/timeline/ThreadTimelineRows.unread-divider.test.ts (16 tests) 94ms
+@bb/app:test:  ✓  @bb/app:isolated  src/hooks/queries/thread-timeline-push.test.tsx (7 tests) 224ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/ui/resource-pagination.test.tsx (9 tests) 1560ms
+@bb/app:test:      ✓ measures a new projection from its own rows  360ms
+@bb/app:test:      ✓ measures again when the viewport width changes  313ms
+@bb/app:test:      ✓ measures once per frame however many mutations arrive  303ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/terminal/ThreadTerminalView.osc52.test.tsx (18 tests) 27178ms
+@bb/app:test:      ✓ copies the decoded text and writes nothing to the PTY with copy-on-select on: 'native Claude Code (c; selection, BEL…'  2847ms
+@bb/app:test:      ✓ copies the decoded text and writes nothing to the PTY with copy-on-select on: 'native Codex (c; selection, ST termin…'  1002ms
+@bb/app:test:      ✓ copies the decoded text and writes nothing to the PTY with copy-on-select on: 'plain shell printf (empty selection p…'  753ms
+@bb/app:test:      ✓ copies the decoded text and writes nothing to the PTY with copy-on-select on: 'plain shell printf (primary selection…'  1114ms
+@bb/app:test:      ✓ copies the decoded text and writes nothing to the PTY with copy-on-select on: 'plain shell printf (cut buffer s0;)'  966ms
+@bb/app:test:      ✓ leaves the clipboard alone and offers the text for explicit copy with copy-on-select off: 'native Claude Code (c; selection, BEL…'  889ms
+@bb/app:test:      ✓ leaves the clipboard alone and offers the text for explicit copy with copy-on-select off: 'native Codex (c; selection, ST termin…'  1310ms
+@bb/app:test:      ✓ leaves the clipboard alone and offers the text for explicit copy with copy-on-select off: 'plain shell printf (empty selection p…'  1000ms
+@bb/app:test:      ✓ leaves the clipboard alone and offers the text for explicit copy with copy-on-select off: 'plain shell printf (primary selection…'  1161ms
+@bb/app:test:      ✓ leaves the clipboard alone and offers the text for explicit copy with copy-on-select off: 'plain shell printf (cut buffer s0;)'  1204ms
+@bb/app:test:      ✓ offers the text through the handoff sheet when the clipboard write fails  1245ms
+@bb/app:test:      ✓ never copies a clipboard query or an invalid payload  1574ms
+@bb/app:test:      ✓ offers the handoff and leaves the clipboard alone when no user input preceded the OSC 52  1606ms
+@bb/app:test:      ✓ writes the clipboard when the OSC 52 arrives within the window after the user's input  1917ms
+@bb/app:test:      ✓ offers the handoff when the OSC 52 arrives after the window  2109ms
+@bb/app:test:      ✓ counts a pointer gesture on the terminal as the user's input  2816ms
+@bb/app:test:      ✓ offers the handoff instead of writing when the decoded text is over the cap, even right after input  1748ms
+@bb/app:test:      ✓ still writes a payload exactly at the cap right after input  1911ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/timeline/ThreadTimelineSurface.test.tsx (5 tests) 709ms
+@bb/app:test:      ✓ resumes auto-loading after a context boundary replaces a timeline whose older page failed  388ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/timeline/ThreadTimelineRows.deferred-details.test.tsx (6 tests) 729ms
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/thread-actions/native-terminal-mode-data.test.tsx (4 tests) 443ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/promptbox/AttachmentPreview.test.tsx (6 tests) 798ms
+@bb/app:test:      ✓ shows a local preview before upload completion and releases it on settlement  316ms
+@bb/app:test:  ✓  @bb/app:isolated  src/views/thread-detail/ThreadDetailPromptArea.keystrokes.test.tsx (4 tests) 1804ms
+@bb/app:test:      ✓ keeps the published host referentially stable while keystrokes reach draft consumers  577ms
+@bb/app:test:      ✓ swaps to a per-session stable host for inline queued-message edits and streams the inline draft  551ms
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test:  ✓  @bb/app:isolated  src/views/thread-detail/PaneMaximizeButton.test.tsx (12 tests) 1787ms
+@bb/app:test:      ✓ renders a keyboard-focusable native button that maximizes a web pane  495ms
+@bb/app:test:      ✓ restores a web split on click and uses the clear tooltip copy  303ms
+@bb/app:test:      ✓ shows only BB's supported split arrangement actions on hover  455ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/plugin/management/UpdatePluginDialog.test.tsx (7 tests) 1459ms
+@bb/app:test:      ✓ always shows the rollback promise for a compatible update and keeps details collapsed  633ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/terminal/terminal-mobile-ime.test.ts (11 tests) 1402ms
+@bb/app:test:      ✓ sends a committed composition exactly once  539ms
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/app-panel-tabs.test.tsx (13 tests) 48ms
+@bb/app:test:  ✓  @bb/app:isolated  src/views/thread-detail/thread-opening.model.test.tsx (2 tests) 73606ms
+@bb/app:test:      ✓ lands every opening where the read state says, across 40 random loading orders  73284ms
+@bb/app:test:      ✓ keeps a read thread at the end when a live reply adds NEW above the view  320ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/timeline/ThreadTimelineRows.height.test.tsx (3 tests) 320ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/plugin/management/OpenPluginGuideButton.test.tsx (5 tests) 1250ms
+@bb/app:test:      ✓ enables a disabled Guide before navigating and prevents duplicate requests  387ms
+@bb/app:test:      ✓ offers the existing install dialog when Guide is absent and cancels without a write  318ms
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test:  ✓  @bb/app:isolated  src/components/settings/MachineEnvironmentSettings.test.tsx (6 tests) 1681ms
+@bb/app:test:    ✓ stages additions and preserves an unchanged saved secret  560ms
+@bb/app:test:    ✓ saves an empty project override without copying inherited secrets and removes it to restore inheritance  344ms
+@bb/app:test:  ✓  @bb/app:isolated  src/views/RootComposeView.contract.test.tsx (11 tests | 5 skipped) 529ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/terminal/terminal-clipboard.test.tsx (18 tests) 1493ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/plugin/ProviderIcon.test.tsx (9 tests) 445ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/promptbox/usePromptVoice.test.tsx (7 tests) 62ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/timeline/ThreadTimelineRows.row-isolation.test.tsx (7 tests) 1301ms
+@bb/app:test:      ✓ places metadata above a user message and in its action row without duplicating contributions  397ms
+@bb/app:test:  ❯  @bb/app:isolated  src/components/thread/terminal/ThreadTerminalView.terminal-focus.viewport.test.tsx (11 tests | 1 failed) 120841ms
+@bb/app:test:      ✓ keeps a bottom-following client at the bottom after output and a shared resize  4430ms
+@bb/app:test:      ✓ keeps a saved bottom-follow position after live output and a shared resize  5354ms
+@bb/app:test:      ✓ keeps a live scrolled-up line through a shared resize without stored viewport state  9487ms
+@bb/app:test:      ✓ restores a reloaded bottom-following client after a terminal resize  5280ms
+@bb/app:test:      ✓ keeps a live bottom-following client at the bottom after typed output and a shared resize  12532ms
+@bb/app:test:      ✓ keeps a restored scrolled-up content line through the component column reflow  8747ms
+@bb/app:test:      ✓ uses gesture-start scale for uneven multi-frame pinch gestures  7112ms
+@bb/app:test:      × preserves the open terminal and its scrollback when pointer mode changes 30412ms
+@bb/app:test:      ✓ sends clipboard text once through xterm paste input  22568ms
+@bb/app:test:      ✓ shows the clipboard fallback without sending input when read is denied  12965ms
+@bb/app:test:      ✓ suppresses terminal-scoped shortcuts from the real xterm input  1947ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/layout/page-title.test.tsx (5 tests) 623ms
+@bb/app:test:      ✓ isolates pane hooks and updates only the focused window title through route changes and unmount  372ms
+@bb/app:test:  ✓  @bb/app:isolated  src/test/react-compiler-cache.test.ts (4 tests) 1822ms
+@bb/app:test:    ✓ reuses exact compiler output and maps, invalidates inputs, and repairs corrupt entries  1817ms
+@bb/app:test: Not implemented: navigation to another Document
+@bb/app:test:  ✓  @bb/app:isolated  src/components/plugin/docs-anatomy-manifest.test.tsx (4 tests) 695ms
+@bb/app:test:      ✓ matches AppSidebar's section order  407ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/timeline/ConversationMessageContent.streaming-render.test.tsx (14 tests) 1067ms
+@bb/app:test:      ✓ shows incomplete links as text and mounts links only after their destination completes  405ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/sidebar/useThreadRowSplitDrag.test.tsx (10 tests) 120ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/secondary-panel/ThreadSecondaryPanel.markdown-scroll.test.tsx (10 tests) 4778ms
+@bb/app:test:      ✓ provides a bounded scroll container inside a full-height file opener  1178ms
+@bb/app:test:      ✓ restores the originating thread after shared tab ids  455ms
+@bb/app:test:      ✓ retains position after leaving through a tab  386ms
+@bb/app:test:      ✓ retains position after leaving through a hyperlink  583ms
+@bb/app:test:      ✓ retains separate document positions when the outgoing layout clamps  634ms
+@bb/app:test:      ✓ waits for ready Markdown content before restoring  336ms
+@bb/app:test:      ✓ forgets a closed document even when reopening uses the same tab id (undefined)  323ms
+@bb/app:test:      ✓ forgets a closed document even when reopening uses the same tab id (reading-close)  328ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/app-update/AppUpdateHost.test.tsx (8 tests) 1204ms
+@bb/app:test:      ✓ keeps a failure visible until dismissed from its details  593ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/settings/SettingsSidebar.test.tsx (13 tests) 3239ms
+@bb/app:test:      ✓ offers installed-plugin management and configurable plugin settings  869ms
+@bb/app:test:      ✓ marks the active plugin settings page  354ms
+@bb/app:test:      ✓ opens the highlighted setting with Enter and returns to the section list  499ms
+@bb/app:test:      ✓ clears the query with Escape without letting the key leave Settings  437ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/ui/markdown-code-highlight.test.ts (14 tests) 1404ms
+@bb/app:test:      ✓ recomputes code over 128_000 characters and markup over the character budget without evicting cached blocks  1176ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/timeline/ThreadTimelineRows.unread-landing.test.tsx (2 tests) 388ms
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test:  ✓  @bb/app:isolated  src/hooks/cache-owners/environment-workspace-cache-owner.test.ts (7 tests) 84ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/promptbox/banner/ThreadBackgroundCommandsCard.test.tsx (5 tests) 472ms
+@bb/app:test:      ✓ summarizes and expands a single background command in compact mode  315ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/timeline/useAutoLoadOlderRows.test.tsx (6 tests) 80ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/plugin/PluginPanelRightPanelHost.contract.test.tsx (11 tests) 628ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/plugin/PluginPermissionModePicker.test.tsx (4 tests) 1054ms
+@bb/app:test:      ✓ normalizes against provider capabilities and the routed machine ceiling  607ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/terminal/ThreadTerminalView.progress-output-seq.test.tsx (2 tests) 3765ms
+@bb/app:test:      ✓ reports the output sequence of replayed and live progress  2541ms
+@bb/app:test:      ✓ reports the output sequence of the retained output of an exited terminal  1222ms
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/mutation-errors.test.ts (9 tests) 38ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/promptbox/composer-commands.test.tsx (5 tests) 1694ms
+@bb/app:test:      ✓ runs core and plugin commands in the composer holding the caret  797ms
+@bb/app:test:      ✓ opens prompt search with Ctrl+R only in the focused composer that has history search  303ms
+@bb/app:test:  ✓  @bb/app:isolated  src/hooks/queries/thread-timeline-resubscribe.test.tsx (3 tests) 342ms
+@bb/app:test:  ✓  @bb/app:isolated  src/hooks/queries/project-queries.test.tsx (4 tests) 312ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/settings/MarketplacesSettingsSection.test.tsx (7 tests) 1183ms
+@bb/app:test:      ✓ adds a marketplace through the server route  434ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/onboarding/OnboardingGate.completion.test.tsx (3 tests) 449ms
+@bb/app:test:      ✓ keeps the guide closed when a config read from before the save lands while the save is in flight  388ms
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/split-layout/atoms.test.ts (10 tests) 57ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/plugin/PluginThreadFixedTabs.test.tsx (4 tests) 495ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/plugin/management/PluginAuthorPage.test.tsx (5 tests) 2178ms
+@bb/app:test:      ✓ selects an author name by 'frequency before length'  523ms
+@bb/app:test:      ✓ applies search, multiple categories, and both optional-value sorts  1173ms
+@bb/app:test:  ✓  @bb/app:isolated  src/views/thread-detail/ThreadDetailView.contract.test.tsx (11 tests) 1506ms
+@bb/app:test:      ✓ opens a fixed tab and reveals the side panel  302ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/ui/markdown-file-routing.test.tsx (6 tests) 1003ms
+@bb/app:test:      ✓ cycles images rendered in a Markdown table  645ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/dialogs/ProjectMachineSetupDialog.test.tsx (6 tests) 1904ms
+@bb/app:test:      ✓ defaults to cloning from the remote into the host's default path  562ms
+@bb/app:test:      ✓ submits an existing browsed folder as a local_path source  575ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/secondary-panel/NewTabPage.navigation.test.tsx (6 tests) 1216ms
+@bb/app:test:    ✓ moves focus through search, actions and recents, skipping reorder handles  727ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/plugin/PluginAppOverlays.test.tsx (3 tests) 461ms
+@bb/app:test:      ✓ keeps sidebar thread actions available through a portal and route change  400ms
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/server-choices.test.ts (8 tests) 65ms
+@bb/app:test:  ✓  @bb/app:isolated  src/hooks/queries/connection-aware-query-state.test.ts (8 tests) 64ms
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test:  ✓  @bb/app:isolated  src/components/settings/MobileAppSection.test.tsx (9 tests) 1076ms
+@bb/app:test:    ✓ reports Android update status for build 3 and release 4  427ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/secondary-panel/NewTabActions.test.tsx (18 tests) 871ms
+@bb/app:test:      ✓ keeps a trailing terminal control separate from the terminal action  324ms
+@bb/app:test:  ✓  @bb/app:isolated  src/hooks/useLocalPathPicker.test.tsx (12 tests) 189ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/ui/height-transition.test.tsx (8 tests) 135ms
+@bb/app:test:  ✓  @bb/app:isolated  src/hooks/thread-creation-options/persisted-selection-fields.test.tsx (11 tests) 134ms
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/notifications/notifications.test.tsx (5 tests) 546ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/plugin/management/PluginUpdatesCard.test.tsx (4 tests) 378ms
+@bb/app:test:  ✓  @bb/app:isolated  src/views/thread-detail/ThreadCommandHandlers.test.tsx (7 tests) 691ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/terminal/terminal-mobile-gestures.test.ts (7 tests) 23ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/layout/AppLayout.root-compose-project.test.tsx (2 tests) 268ms
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/useThreadTerminalLayout.test.tsx (6 tests) 89ms
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/app-route-history.test.tsx (2 tests) 1020ms
+@bb/app:test:      ✓ keeps the sidebar arrows' stack when the controls remount across sidebar layouts  784ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/terminal/ThreadTerminalView.commands.test.tsx (2 tests) 2452ms
+@bb/app:test:    ✓ finds scrollback without copying matches, navigates them, and returns focus on Escape  1550ms
+@bb/app:test:    ✓ leaves Ctrl+letter shell keys to the shell on Linux and finds with Ctrl+Shift+F  900ms
+@bb/app:test:  ✓  @bb/app:isolated  src/hooks/queries/plugin-settings-queries.test.ts (12 tests) 86ms
+@bb/app:test:  ✓  @bb/app:isolated  src/hooks/usePluginFrontendBoot.test.tsx (6 tests) 95ms
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/plugin-frontend.test.ts (8 tests) 412ms
+@bb/app:test:      ✓ provides @pierre/diffs only to bundles that import it, downloading the bundle meanwhile  392ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/terminal/terminal-webgl-renderer.test.ts (9 tests) 34ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/promptbox/ThreadEnvironmentSummary.test.tsx (8 tests) 769ms
+@bb/app:test:      ✓ keeps matching environment and branch labels visibly separate  331ms
+@bb/app:test:  ✓  @bb/app:isolated  src/hooks/usePromptMentions.test.tsx (2 tests) 714ms
+@bb/app:test:      ✓ reports refreshing while newer results load behind the current ones  439ms
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/skills-registry.test.ts (7 tests) 66ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/plugin/browse-hero/BrowseHeroCarousel.test.tsx (7 tests) 1419ms
+@bb/app:test:      ✓ moves between slides from the tablist and wraps at both ends  682ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/layout/HistoryCommandHandlers.test.tsx (2 tests) 746ms
+@bb/app:test:      ✓ moves through the sidebar's route history and closes the mobile sidebar  491ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/pickers/MachinePicker.test.tsx (8 tests) 1830ms
+@bb/app:test:      ✓ shows search only when there are more than five machines  533ms
+@bb/app:test:      ✓ fuzzy-searches machine names and host ids, then resets after selection  366ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/plugin/PluginComposerBanners.test.tsx (6 tests) 507ms
+@bb/app:test:      ✓ uses card chrome by default and leaves bare banners unwrapped  423ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/settings/AiServicesSettingsSection.test.tsx (6 tests) 1878ms
+@bb/app:test:      ✓ shows each task's choice, including a selection whose plugin is gone  585ms
+@bb/app:test:      ✓ offers only services that handle the task and saves the choice  617ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/commands/AppCommandProvider.availability.test.tsx (9 tests) 188ms
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/stale-chunk-recovery.test.ts (14 tests) 571ms
+@bb/app:test:    ✓ reloads once after a deployment, persists the latest composer edit before navigation, and restores it with fresh module state  415ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/onboarding/useOnboardingProjectImport.test.tsx (12 tests) 212ms
+@bb/app:test:  ✓  @bb/app:isolated  src/views/thread-detail/SplitThreadArea.environment-archive.test.tsx (1 test) 516ms
+@bb/app:test:    ✓ keeps an unrelated split pane open and focused when an environment is archived  514ms
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/native-shell/native-shell.test.ts (9 tests) 122ms
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/api-server.test.ts (5 tests) 996ms
+@bb/app:test:      ✓ reuses one generated device id across turn submissions  395ms
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/shared-resize-observer.test.tsx (4 tests) 103ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/settings/BrowserSettingsSection.test.tsx (6 tests) 907ms
+@bb/app:test:      ✓ asks for a profile when a browser has several, then imports it  502ms
+@bb/app:test:  ✓  @bb/app:isolated  src/hooks/useAppThemePreview.test.tsx (7 tests) 141ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/promptbox/composer-decorations.test.ts (6 tests) 21ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/code/BbDiff.test.tsx (5 tests) 117ms
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test:  ✓  @bb/app:isolated  src/hooks/useSegmentedDictation.test.tsx (7 tests) 96ms
+@bb/app:test:  ✓  @bb/app:isolated  src/hooks/usePromptMentions.coverage.test.tsx (4 tests) 620ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/promptbox/ExecutionControls.test.tsx (5 tests) 916ms
+@bb/app:test:      ✓ keeps the model chip bounded beside a terminal control that can wrap  314ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/terminal/terminal-grid-presentation.test.ts (13 tests) 216ms
+@bb/app:test:  ✓  @bb/app:isolated  src/hooks/queries/host-file-preview-query.test.ts (5 tests) 292ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/promptbox/PromptHistorySearchDialog.test.tsx (5 tests) 1717ms
+@bb/app:test:      ✓ preserves subsequent typing when a cancelled attachment copy resolve  1186ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/plugin/ThreadRowMetadata.test.tsx (4 tests) 162ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/timeline/ThreadTimelineRows.containment.test.tsx (2 tests) 508ms
+@bb/app:test:      ✓ applies content-visibility containment to top-level row wrappers only, after their first layout  394ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/plugin/PluginThreadChat.provider-context.test.tsx (2 tests) 1752ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/promptbox/WaveformVisualizer.test.tsx (4 tests) 289ms
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/plugin-nav-panel-chrome.test.ts (6 tests) 43ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/terminal/terminal-output-boundaries.utf8-control-string.test.ts (6 tests) 6761ms
+@bb/app:test:      ✓ renders OSC 8 hyperlink with Ŝ and a curly quote in its parameters exactly as without markers, with one marker per chunk, for every two-chunk split  343ms
+@bb/app:test:      ✓ renders 400 seeded streams with UTF-8 control strings exactly as without markers wherever they are cut  5958ms
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test:  ✓  @bb/app:isolated  src/components/ui/attachment-media.test.tsx (5 tests) 742ms
+@bb/app:test:    ✓ reuses an uploaded video locally for its thumbnail and lightbox (MIME video/quicktime)  303ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/plugin/PluginComposerActions.test.tsx (3 tests) 642ms
+@bb/app:test:      ✓ limits five plugins by group, freezes open order, persists promotion, and cleans up hidden mounts  618ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/secondary-panel/ThreadSecondaryPanelTabContent.markdown-images.test.tsx (5 tests) 163ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/timeline/ThreadTimelineRows.location.test.tsx (3 tests) 673ms
+@bb/app:test:      ✓ does not re-render timeline lists when a focus navigation carries no search target  333ms
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/use-async-atom-value.test.tsx (4 tests) 66ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/terminal/NativeThreadTerminalMain.focus.test.tsx (7 tests) 353ms
+@bb/app:test:  ✓  @bb/app:isolated  src/hooks/queries/sidebar-navigation-query.test.tsx (3 tests) 244ms
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/terminal/NativeTerminalPromptBar.dictation-start.test.tsx (2 tests) 599ms
+@bb/app:test:      ✓ sends the draft once when Send is pressed before the microphone is granted  483ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/terminal/terminal-wheel.test.ts (8 tests) 1174ms
+@bb/app:test:      ✓ sends one wheel report per scrolled line when the app tracks the mouse  716ms
+@bb/app:test:      ✓ sends trackpad scrolling that xterm would round down to nothing  325ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/promptbox/PromptBoxAppShortcuts.test.tsx (6 tests) 1273ms
+@bb/app:test:      ✓ runs the sidebar shortcut while the composer has focus  669ms
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/timeline/TimelineReasoning.test.tsx (7 tests) 991ms
+@bb/app:test:      ✓ keeps expansion and prose styling on completion (nested: false)  453ms
+@bb/app:test:  ✓  @bb/app:isolated  src/views/thread-detail/useThreadUnreadDividerState.test.ts (7 tests) 58ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/pickers/SessionOptionsMenu.test.tsx (9 tests) 830ms
+@bb/app:test:      ✓ reports a select choice by value id and a boolean choice as a boolean  784ms
+@bb/app:test:  ✓  @bb/app:isolated  src/views/SplitWorkspaceRoute.test.tsx (21 tests) 920ms
+@bb/app:test:      ✓ preserves the workspace mount across focus-driven page URL changes  388ms
+@bb/app:test:      ✓ passes the plugin id from the full-window detail URL to PluginsView  333ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/timeline/conversation-message-overflow.test.tsx (4 tests) 376ms
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/content-measure.test.ts (6 tests) 55ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/promptbox/PromptBoxInternal.ipados.test.tsx (3 tests) 1281ms
+@bb/app:test:      ✓ applies typeahead before submitting a Magic Keyboard Enter  1107ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/terminal/terminal-size-claims.test.ts (4 tests) 20ms
+@bb/app:test:  ✓  @bb/app:isolated  src/views/thread-detail/ThreadDetailWorkerPoolProvider.test.tsx (5 tests) 102ms
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/thread-actions/native-terminal-mode-action.test.ts (5 tests) 11ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/secondary-panel/useSecondaryPanelResize.test.tsx (2 tests) 336ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/plugin/PluginIcon.test.tsx (8 tests) 194ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/ui/icon-root.test.tsx (5 tests) 291ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/code/SourceCodeHost.test.tsx (5 tests) 421ms
+@bb/app:test:      ✓ loads BB's renderer only when the replacement delegates  325ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/sidebar/SidebarNavigationHeader.test.tsx (5 tests) 520ms
+@bb/app:test:      ✓ mounts the navigation's header with the control size  319ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/terminal/terminal-wheel-viewport.test.ts (4 tests) 2830ms
+@bb/app:test:      ✓ scrolls the viewport exactly like xterm when the app does not track the mouse  782ms
+@bb/app:test:      ✓ leaves Shift-held wheel input to xterm while the app tracks the mouse  889ms
+@bb/app:test:      ✓ sends one report per line and does not move the viewport while the app tracks the mouse  928ms
+@bb/app:test: Not implemented: navigation to another Document
+@bb/app:test:  ✓  @bb/app:isolated  src/components/plugin/PluginUrlLink.test.tsx (9 tests) 557ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/sidebar/useSidebarReorderDnd.test.tsx (4 tests) 41ms
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/portal-scope.test.tsx (7 tests) 934ms
+@bb/app:test:      ✓ stamps portaled dialog content + overlay inside a plugin slot  339ms
+@bb/app:test:  ✓  @bb/app:isolated  src/hooks/cache-owners/thread-detail-cache-owner.test.ts (5 tests) 123ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/secondary-panel/info/ThreadInfoSlots.test.tsx (3 tests) 599ms
+@bb/app:test:      ✓ places plugin rows and sections by group, then order, after core on a tie  363ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/secondary-panel/BrowserTabIcon.test.tsx (2 tests) 122ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/sidebar/sidebarThreadShortcuts.test.ts (4 tests) 40ms
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/url-open-routing.test.tsx (3 tests) 531ms
+@bb/app:test:    ✓ gates plugin navigation and direct external opening as the experiment changes  359ms
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/sidebar-thread-entries.test.tsx (2 tests) 164ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/terminal/ThreadTerminalContent.test.tsx (4 tests) 72ms
+@bb/app:test:  ✓  @bb/app:isolated  src/hooks/queries/thread-default-execution-options-query.test.tsx (4 tests) 305ms
+@bb/app:test:  ✓  @bb/app:isolated  src/hooks/thread-read-sidebar-refresh.integration.test.ts (16 tests) 901ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/user-questions/useStickyFooterAvailableHeight.test.tsx (3 tests) 82ms
+@bb/app:test:  ✓  @bb/app:isolated  src/views/RootComposeHome.test.tsx (6 tests) 142ms
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/last-known-cache.test.ts (8 tests) 26ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/plugin/usePluginBranchPickerState.test.tsx (3 tests) 404ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/ui/overlay-anchor-detach.test.tsx (16 tests) 1751ms
+@bb/app:test:      ✓ closes when an ancestor of the anchor becomes inert  423ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/timeline/WorkflowWorkRowBody.test.tsx (4 tests) 588ms
+@bb/app:test:      ✓ keeps the native Claude phase tree behavior through shared UI  356ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/dialogs/ProjectPathDialog.test.tsx (4 tests) 1293ms
+@bb/app:test:      ✓ creates a project from a folder on the selected connected machine  872ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/terminal/terminal-output-boundary.osc52.test.ts (5 tests) 7619ms
+@bb/app:test:      ✓ leaves the visible output identical to an unsplit stream and reports every chunk start once, in order, wherever the chunks are cut  7466ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/terminal/terminal-split-sequences.test.ts (12 tests) 5508ms
+@bb/app:test:      ✓ synchronized output frame (?2026h … ?2026l) renders identically at every byte split  412ms
+@bb/app:test:      ✓ dashed underline SGR 4:5 then SGR 0 renders identically at every byte split  445ms
+@bb/app:test:      ✓ CSI with parameters and intermediates renders identically at every byte split  317ms
+@bb/app:test:      ✓ OSC 8 hyperlink with UTF-8 and ST renders identically at every byte split  391ms
+@bb/app:test:      ✓ renders a three-way split of a synchronized frame identically  1199ms
+@bb/app:test:      ✓ synchronized output frame (?2026h … ?2026l) renders identically at every byte split  318ms
+@bb/app:test:      ✓ dashed underline SGR 4:5 then SGR 0 renders identically at every byte split  449ms
+@bb/app:test:      ✓ CSI with parameters and intermediates renders identically at every byte split  361ms
+@bb/app:test:      ✓ OSC 8 hyperlink with UTF-8 and ST renders identically at every byte split  383ms
+@bb/app:test:      ✓ renders a three-way split of a synchronized frame identically  868ms
+@bb/app:test:  ✓  @bb/app:isolated  src/hooks/mutations/thread-state-mutations.test.ts (2 tests) 27ms
+@bb/app:test:  ✓  @bb/app:isolated  src/hooks/queries/child-thread-pending-interactions.hook.test.tsx (3 tests) 152ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/ui/bottom-anchored-scroll-body.coarse-pointer.test.tsx (2 tests) 120ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/secondary-panel/SidebarSplitContainer.navigation.test.tsx (2 tests) 425ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/terminal/NativeActivityNotice.test.tsx (7 tests) 355ms
+@bb/app:test:  ✓  @bb/app:isolated  src/hooks/useForkThreadFromMessage.test.tsx (3 tests) 81ms
+@bb/app:test:  ✓  @bb/app:isolated  src/index-html-pre-paint.test.ts (6 tests) 110ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/onboarding/OnboardingGate.test.tsx (7 tests) 496ms
+@bb/app:test:      ✓ shows the setup guide instead of the app on a server that has never been set up  357ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/promptbox/VoiceRecordingBar.test.tsx (3 tests) 448ms
+@bb/app:test:  ✓  @bb/app:isolated  src/views/RootComposePanelCommandHandlers.test.tsx (1 test) 62ms
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test:  ✓  @bb/app:isolated  src/App.legacy-skill-route.test.tsx (26 tests) 1021ms
+@bb/app:test:      ✓ opens workspace installed detail for github alongside Settings routes  612ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/timeline/MessageMetadata.test.tsx (4 tests) 379ms
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test:  ✓  @bb/app:isolated  src/components/sidebar/AppSidebar.test.tsx (2 tests) 838ms
+@bb/app:test:      ✓ keeps the footer after the navigation in one column for list navigation, so docking plugins can inset it  636ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/secondary-panel/lazySecondaryPanelComponents.test.tsx (4 tests) 722ms
+@bb/app:test:      ✓ reports a failed download only while a browser tab is showing  597ms
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test:  ✓  @bb/app:isolated  src/views/SettingsView.palette-preview.test.tsx (6 tests) 3847ms
+@bb/app:test:      ✓ prefetches every palette when the menu opens  788ms
+@bb/app:test:      ✓ previews the highlighted palette and clears it when the highlight leaves  927ms
+@bb/app:test:      ✓ previews compact keyboard focus and clears it on blur or cancel  376ms
+@bb/app:test:      ✓ clears the preview when the menu closes without a selection  429ms
+@bb/app:test:      ✓ keeps the preview in place after selecting a palette so the commit does not flash  455ms
+@bb/app:test:      ✓ previews again after a selection once the menu reopens  864ms
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/use-composers.test.tsx (3 tests) 45ms
+@bb/app:test:  ✓  @bb/app:isolated  src/hooks/useCodeRendererPreloads.test.tsx (1 test) 2742ms
+@bb/app:test:    ✓ waits for thread intent, skips replacements, and mounts warmed SDK views without skeletons  2738ms
+@bb/app:test:  ✓  @bb/app:isolated  src/views/SettingsView.branch-prefix.test.tsx (7 tests) 1113ms
+@bb/app:test:      ✓ displays the saved value and allows opting out  699ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/terminal/terminal-viewport-storage.dom.test.ts (2 tests) 62ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/secondary-panel/split-demand.test.tsx (1 test) 776ms
+@bb/app:test:    ✓ keeps the hidden shell out of background preloading and loads tab code on first open without mounting hidden content  775ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/plugin/PluginSlotMount.test.tsx (5 tests) 160ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/terminal/TerminalMobileControls.test.tsx (11 tests) 1559ms
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/useCompactTerminalLayoutRequest.test.tsx (3 tests) 52ms
+@bb/app:test:  ✓  @bb/app:isolated  src/hooks/useNativeActivityUnconfirmed.test.ts (6 tests) 62ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/sidebar/usePaneContentSplitDrag.newThread.test.tsx (5 tests) 50ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/commands/PaletteThreadViewMenu.test.tsx (3 tests) 1222ms
+@bb/app:test:      ✓ keeps a nonempty selection through the responsive menu (compact=false)  824ms
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/save-file.test.ts (5 tests) 51ms
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/split-resize-snap.dom.test.ts (3 tests) 78ms
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/retired-sidebar-pull-request.test.tsx (4 tests) 50ms
+@bb/app:test:  ✓  @bb/app:isolated  src/App.route-preload.test.tsx (2 tests) 1995ms
+@bb/app:test:    ✓ keeps the workspace chunk off routes that do not use it  364ms
+@bb/app:test:    ✓ starts destination code before the workspace settles and keeps thread code off new-thread startup  1629ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/pickers/ParentThreadPicker.test.tsx (6 tests) 1281ms
+@bb/app:test:      ✓ exposes the current parent separately from keyboard highlight  499ms
+@bb/app:test:  ✓  @bb/app:isolated  src/hooks/queries/plugin-contribution-requests.test.ts (3 tests) 114ms
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/favicon-color-preference.test.ts (3 tests) 134ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/ui/tab-pill.test.tsx (6 tests) 477ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/commands/CommandPalette.cold-open.test.tsx (1 test) 928ms
+@bb/app:test:    ✓ stays usable before its body downloads on first open and keeps typed text  924ms
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/plugin-frontend-boot-schedule.test.ts (5 tests) 11ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/terminal/terminal-theme.test.tsx (3 tests) 1250ms
+@bb/app:test:    ✓ keeps the recorded Codex prompt echo readable in light mode  801ms
+@bb/app:test:    ✓ keeps the recorded Codex prompt echo readable in dark mode  441ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/secondary-panel/SidebarSplitContainer.tab-gestures.test.tsx (4 tests) 977ms
+@bb/app:test:    ✓ selects a tab clicked with 5px of jitter without reordering or splitting  510ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/layout/DesktopZoomIndicator.test.tsx (7 tests) 617ms
+@bb/app:test:      ✓ shows the changed percentage and dispatches zoom commands  402ms
+@bb/app:test: Not implemented: navigation to another Document
+@bb/app:test:  ✓  @bb/app:isolated  src/components/ui/bottom-anchored-scroll-body.paging.test.tsx (2 tests) 214ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/plugin/ExperimentalFileLink.test.tsx (5 tests) 508ms
+@bb/app:test:      ✓ sends ordinary activation to the shared preview host  374ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/sidebar/PluginThreadList.test.tsx (3 tests) 427ms
+@bb/app:test:      ✓ shows the loading placeholder until plugin frontends have booted, then the missing state  321ms
+@bb/app:test:  ✓  @bb/app:isolated  src/hooks/mutations/thread-interaction-mutations.test.ts (2 tests) 44ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/secondary-panel/ThreadSecondaryPanel.pendingFixedTab.test.tsx (4 tests) 573ms
+@bb/app:test:      ✓ holds on the loading state instead of falling back to another fixed tab (drawer=false)  411ms
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/notifications/notification-center.test.tsx (3 tests) 1319ms
+@bb/app:test:    ✓ keeps notification details open when dismissing the toast restores composer focus  684ms
+@bb/app:test:    ✓ requires manual close or Escape (compact: false)  428ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/secondary-panel/SecondaryPanelLayout.split-drag.test.tsx (2 tests) 188ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/ThreadActionsProvider.navigation.test.tsx (2 tests) 483ms
+@bb/app:test:      ✓ keeps the context value and memoized consumers stable when the route changes  424ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/plugin/PluginBranchPicker.test.tsx (10 tests) 1425ms
+@bb/app:test:      ✓ shows the placeholder while nothing is picked  337ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/plugin/lazy-plugin-renderers.cold-load.test.tsx (1 test) 2461ms
+@bb/app:test:    ✓ starts selected built-ins while SDK adapters are still downloading, without warming replaced renderers  2457ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/settings/useRevealSettingsSearchTarget.test.tsx (3 tests) 567ms
+@bb/app:test:      ✓ scrolls to the setting a search result names and flashes it  327ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/settings/VoiceInputSettingsSection.test.tsx (4 tests) 669ms
+@bb/app:test:      ✓ keeps the refresh action inline with the heading on mobile  320ms
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/relative-time.test.ts (6 tests) 32ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/plugin/management/plugin-ui.test.tsx (5 tests) 184ms
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/sign-in-window.test.ts (5 tests) 13ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/timeline/ConversationMessageContent.streaming.test.tsx (1 test) 103ms
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test:  ✓  @bb/app:isolated  src/components/promptbox/MicrophonePreferences.test.tsx (3 tests) 653ms
+@bb/app:test:    ✓ selects and tests a microphone directly, then releases it on exit  491ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/settings/CodeRendererSettings.test.tsx (3 tests) 840ms
+@bb/app:test:      ✓ pins BB's diff renderer without touching the source-code choice  555ms
+@bb/app:test:  ✓  @bb/app:isolated  src/hooks/plugin-startup-recovery.test.ts (3 tests) 95ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/dialogs/ThreadArchiveDialog.test.tsx (10 tests) 964ms
+@bb/app:test:      ✓ announces the cascade with singular and plural child counts  409ms
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/api.test.ts (5 tests) 48ms
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test:  ✓  @bb/app:isolated  src/components/settings/WritingAssistanceSettingsSection.test.tsx (3 tests) 794ms
+@bb/app:test:      ✓ saves only the added and removed terms, so a term added elsewhere meanwhile is kept  534ms
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test:  ✓  @bb/app:isolated  src/components/promptbox/VoiceInputButton.test.tsx (4 tests) 1436ms
+@bb/app:test:    ✓ opens microphone preferences from warning without recording or hiding the app  718ms
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test:  ✓  @bb/app:isolated  src/components/plugin/PluginReplacementSlot.test.tsx (4 tests) 117ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/plugin/PluginThreadTitle.test.tsx (3 tests) 91ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/secondary-panel/ThreadSecondaryPanelTabContent.panelGate.test.tsx (2 tests) 360ms
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/thread-actions/core-thread-actions.project-move.test.tsx (2 tests) 38ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/terminal/terminal-file-links.test.ts (13 tests) 55ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/ui/markdown-prompt-mentions.test.tsx (4 tests) 182ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/settings/usePluginSettingSearch.test.tsx (3 tests) 167ms
+@bb/app:test:  ✓  @bb/app:isolated  src/App.hash-navigation.test.tsx (7 tests) 74ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/secondary-panel/ThreadSecondaryPanel.plugin-priority.test.tsx (1 test) 132ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/plugin/AppFileExternalNavigationHost.test.tsx (2 tests) 3056ms
+@bb/app:test:      ✓ resolves and dispatches an accepted intent through the preferred target  3024ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/sidebar/SidebarOpenBesideCommandHandler.test.tsx (3 tests) 117ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/secondary-panel/secondaryPanelSizing.test.tsx (1 test) 115ms
+@bb/app:test:  ✓  @bb/app:isolated  src/hooks/realtime-thread-list-throttle.test.ts (11 tests) 151ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/timeline/ThreadContextWindowIndicator.test.tsx (3 tests) 410ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/ui/icon.test.tsx (3 tests) 534ms
+@bb/app:test:      ✓ renders a core glyph synchronously before the extended registry loads  402ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/plugin/management/PluginMarketplaceListing.test.tsx (2 tests) 579ms
+@bb/app:test:      ✓ routes the detail author name to the author page  417ms
+@bb/app:test:  ✓  @bb/app:isolated  src/hooks/queries/thread-composer-startup.test.tsx (2 tests) 125ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/sidebar/SidebarPluginAttentionGlyph.test.tsx (4 tests) 245ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/promptbox/banner/LazyQueuedMessagesList.test.tsx (1 test) 2059ms
+@bb/app:test:    ✓ downloads the queue only for queued work, warming it from the pending summary without mounting it  2057ms
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test:  ✓  @bb/app:isolated  src/components/promptbox/composer-selection-settle.test.ts (4 tests) 14ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/promptbox/banner/queued-messages-expanded.test.tsx (2 tests) 56ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/plugin/ComposerExtensionHost.test.tsx (3 tests) 358ms
+@bb/app:test:      ✓ binds the default renderer and focus to one controller  309ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/layout/TerminalAttentionCommandHandler.test.tsx (3 tests) 66ms
+@bb/app:test:  ✓  @bb/app:isolated  src/vite-route-modulepreload.test.ts (1 test) 270ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/terminal/terminal-tap-click.test.ts (3 tests) 1035ms
+@bb/app:test:      ✓ sends a press and a release when the app tracks the mouse  791ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/pending-interactions/ThreadPendingInteractionBanner.shortcuts.test.tsx (1 test) 781ms
+@bb/app:test:      ✓ ignores numeric answer shortcuts while collapsed and honours them again once expanded  777ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/plugin/plugin-detail-navigation.test.tsx (1 test) 367ms
+@bb/app:test:      ✓ opens one tab per plugin in the focused pane's panel, which owns them like any other tab  364ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/secondary-panel/SidebarSplitContainer.newTerminalSplit.test.tsx (1 test) 196ms
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/dev-websocket-url.test.ts (6 tests) 9ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/settings/CliCommandSettingsSection.test.tsx (6 tests) 485ms
+@bb/app:test:      ✓ installs the command when it is not on PATH  310ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/ui/image-lightbox.interaction.test.tsx (3 tests) 630ms
+@bb/app:test:    ✓ dismisses from the image, backdrop, or close control without hiding the app root  418ms
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/use-desktop-browser-reveal.test.tsx (3 tests) 52ms
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/voice-recording-store.test.tsx (2 tests) 238ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/plugin/plugin-detail-opener.test.tsx (2 tests) 104ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/plugin/management/PluginCatalogInstallControl.test.tsx (8 tests) 600ms
+@bb/app:test:    ✓ protects included plugins while keeping one Installed control: true  310ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/secondary-panel/SecondaryPanelSelectionActions.test.tsx (4 tests) 1121ms
+@bb/app:test:    ✓ adds a selection of whole document to chat with raw TeX  679ms
+@bb/app:test:  ✓  @bb/app:isolated  src/hooks/queries/environment-provider-queries.test.tsx (2 tests) 184ms
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/app-surface.test.ts (4 tests) 44ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/settings/settings-search-anchors.test.tsx (18 tests) 2933ms
+@bb/app:test:      ✓ renders every unconditional 'General' setting without plugins on localhost  572ms
+@bb/app:test:      ✓ renders every unconditional 'Keyboard' setting without plugins on localhost  309ms
+@bb/app:test:      ✓ renders every 'Keyboard' setting once each condition is met  445ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/secondary-panel/NewTabFileSearch.test.tsx (3 tests) 61ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/ui/tooltip-focus-modality.test.tsx (5 tests) 563ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/dialogs/AddMachineDialog.expiry.test.tsx (4 tests) 357ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/settings/useSettingsSearchConditions.test.tsx (2 tests) 71ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/secondary-panel/ImageTabLightboxContext.test.tsx (2 tests) 636ms
+@bb/app:test:      ✓ shows loading instead of retaining the previous tab image  529ms
+@bb/app:test:  ✓  @bb/app:isolated  src/hooks/useServerDaemonLogsCommand.test.tsx (2 tests) 118ms
+@bb/app:test:  ✓  @bb/app:isolated  src/hooks/buffered-environment-invalidator.test.ts (3 tests) 17ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/composer/useQueuedMessageEditHold.test.ts (2 tests) 165ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/sidebar/SidebarChrome.test.tsx (4 tests) 448ms
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/plugin-code-theme.test.tsx (3 tests) 321ms
+@bb/app:test:  ✓  @bb/app:isolated  src/hooks/useQuickCreateProject.test.tsx (2 tests) 26ms
+@bb/app:test:  ✓  @bb/app:isolated  src/hooks/useDesktopThemeSync.test.tsx (1 test) 921ms
+@bb/app:test:      ✓ keeps Electron on system while the resolved theme follows OS changes  912ms
+@bb/app:test:  ✓  @bb/app:isolated  src/hooks/useLiveFileOpenTargets.test.tsx (2 tests) 101ms
+@bb/app:test:  ✓  @bb/app:isolated  src/hooks/useSecondTick.test.ts (3 tests) 83ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/ui/menu-item-hover.test.tsx (3 tests) 89ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/plugin/plugin-composer-host.test.tsx (1 test) 81ms
+@bb/app:test:  ✓  @bb/app:isolated  src/hooks/cache-owners/sidebar-thread-placeholder.test.ts (3 tests) 8ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/secondary-panel/ThreadSecondaryPanel.tabVisible.test.tsx (1 test) 142ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/pickers/ModelReasoningPicker.cold-open.test.tsx (1 test) 809ms
+@bb/app:test:    ✓ keeps search typing and keyboard selection across the first menu download  807ms
+@bb/app:test:  ✓  @bb/app:isolated  src/hooks/usePromptMentions.thread-context.test.tsx (1 test) 21ms
+@bb/app:test:  ✓  @bb/app:isolated  src/hooks/useLocalFileLinkOpener.test.tsx (3 tests) 50ms
+@bb/app:test:  ✓  @bb/app:isolated  src/hooks/useSenderThreadMetadataById.test.tsx (2 tests) 95ms
+@bb/app:test:  ✓  @bb/app:isolated  src/views/thread-detail/useThreadSecondaryPanelVisibility.test.tsx (2 tests) 38ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/promptbox/banner/ThreadPromptModeCard.test.tsx (3 tests) 396ms
+@bb/app:test:      ✓ shows the plan prompt only when expanded  328ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/layout/app-chrome-selection.test.tsx (4 tests) 414ms
+@bb/app:test:      ✓ marks the desktop sidebar panel, its trigger and the page header  393ms
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/themes/conductor-retry.test.ts (2 tests) 2062ms
+@bb/app:test:      ✓ applies 'conductor' after its chunk import rejects once  1363ms
+@bb/app:test:      ✓ applies 'conductor-black' after its chunk import rejects once  692ms
+@bb/app:test:  ✓  @bb/app:isolated  src/views/SettingsView.local-helper.test.tsx (5 tests) 694ms
+@bb/app:test:      ✓ requests local helper access only after the user clicks Enable  361ms
+@bb/app:test:  ✓  @bb/app:isolated  src/hooks/usePromptHistoryEnabled.test.tsx (3 tests) 52ms
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/browser-storage.test.ts (3 tests) 49ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/plugin/management/PluginOverviewMarkdown.test.tsx (1 test) 123ms
+@bb/app:test:  ✓  @bb/app:isolated  src/hooks/usePluginSafeModeCommands.dom.test.tsx (1 test) 47ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/timeline/TimelineRowDetails.output-preview.test.tsx (1 test) 665ms
+@bb/app:test:      ✓ shows the preview with a retry when the full-output load fails  662ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/settings/MachineAccessSettings.test.tsx (1 test) 406ms
+@bb/app:test:    ✓ follows access availability through setup, readiness, revocation, and recovery  405ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/plugin/management/PluginRowSignal.test.tsx (3 tests) 564ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/sidebar/SidebarVisibilityControls.cold-load.failure.test.tsx (1 test) 449ms
+@bb/app:test:    ✓ preserves Done, Escape and compact Back callbacks through an import failure  447ms
+@bb/app:test:  ✓  @bb/app:isolated  src/hooks/useCommandSuggestions.dom.test.tsx (1 test) 101ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/ui/route-navigation-indicator.test.ts (4 tests) 18ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/secondary-panel/info/info-list.test.tsx (4 tests) 584ms
+@bb/app:test:      ✓ collapses past the limit and expands to every item  392ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/secondary-panel/ThreadMetadataContent.dom.test.tsx (2 tests) 595ms
+@bb/app:test:      ✓ explains the create-thread action in a tooltip  526ms
+@bb/app:test:  ✓  @bb/app:isolated  src/vite-split-prefetch.test.ts (1 test) 200ms
+@bb/app:test:  ✓  @bb/app:isolated  src/hooks/useAppTheme.test.tsx (1 test) 54ms
+@bb/app:test:  ✓  @bb/app:isolated  src/hooks/usePluginSafeModeCommands.test.ts (3 tests) 16ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/ui/app-toast.test.tsx (3 tests) 382ms
+@bb/app:test:      ✓ wraps titles and descriptions while keeping actions available  335ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/settings/SidebarThreadListSetting.test.tsx (1 test) 708ms
+@bb/app:test:      ✓ defaults to Automatic, which prefers an installed plugin over the bundled Thread list  707ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/sidebar/SidebarVisibilityControls.cold-load.retry.test.tsx (1 test) 969ms
+@bb/app:test:    ✓ retries the failed import and updates sidebar visibility  968ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/ui/title-bar-scroll-fade.test.tsx (3 tests) 81ms
+@bb/app:test:  ✓  @bb/app:isolated  src/views/thread-detail/useTerminalAttentionHandoff.test.tsx (1 test) 46ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/sidebar/SidebarVisibilityControls.cold-load.test.tsx (1 test) 722ms
+@bb/app:test:    ✓ keeps Done, Escape and compact Back usable while the import is held  720ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/terminal/terminal-links.test.ts (11 tests) 28ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/code/CodeHosts.cold-load.test.tsx (1 test) 173ms
+@bb/app:test:  ✓  @bb/app:isolated  src/App.project-settings-routes.test.tsx (5 tests) 615ms
+@bb/app:test:      ✓ opens the existing detail for legacy project proj_example  393ms
+@bb/app:test:  ✓  @bb/app:isolated  src/hooks/queries/native-terminal-queries.test.tsx (1 test) 110ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/ui/split-button.test.tsx (2 tests) 647ms
+@bb/app:test:      ✓ keeps the primary and app-picker actions independently operable with tooltips  567ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/plugin/management/InstalledPluginsTab.test.tsx (2 tests) 498ms
+@bb/app:test:      ✓ shows the status word and detail and marks the switch when a plugin is not running  466ms
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/browser-storage-enum.test.ts (4 tests) 9ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/layout/AppPageHeader.test.tsx (2 tests) 134ms
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/retryable-chunk-import.test.ts (2 tests) 19ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/settings/FileOpenersSettingsSection.test.tsx (1 test) 1206ms
+@bb/app:test:      ✓ defaults to automatic and persists built-in, plugin, and automatic choices  1204ms
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/thread-open-prefetch.test.ts (2 tests) 69ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/ui/useReorderDnd.test.tsx (1 test) 294ms
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test:  ✓  @bb/app:isolated  src/components/plugin/PluginUpdateJobsHost.test.ts (2 tests) 11ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/secondary-panel/SecondaryPanelTabStrip.touch-sensor.test.tsx (1 test) 205ms
+@bb/app:test: Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/terminal/NativeComposerStatus.test.tsx (4 tests) 536ms
+@bb/app:test:      ✓ Undo keeps the composer focused through mousedown without cancelling the touch pointerdown that WebKit needs to fire click  324ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/terminal/NativeTerminalWaitingBanner.test.tsx (3 tests) 100ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/layout/WindowFindHost.test.tsx (1 test) 433ms
+@bb/app:test:      ✓ opens the desktop find bar on the chord  429ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/promptbox/banner/ThreadGoalCard.test.tsx (2 tests) 479ms
+@bb/app:test:      ✓ requests a provider clear from its X action  399ms
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/pierre-worker-pool.test.tsx (1 test) 13ms
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/root-compose-selection.test.tsx (1 test) 77ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/machines/server-move-destination.test.ts (5 tests) 73ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/ui/sidebar-safe-area.test.tsx (4 tests) 774ms
+@bb/app:test:    ✓ reserves only exposed safe-area edges (compact=false, left=+0, right=+0)  512ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/onboarding/useSetupComplete.test.tsx (3 tests) 62ms
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/thread-lifecycle-filter.test.ts (2 tests) 25ms
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/themes/preview.test.ts (3 tests) 69ms
+@bb/app:test: Not implemented: Window's scrollTo() method
+@bb/app:test:  ✓  @bb/app:isolated  src/test/virtualizer-scroll-lifecycle.test.tsx (2 tests) 103ms
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/plugin-surface-providers.test.tsx (3 tests) 71ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/ui/bottom-anchored-scroll-body.grid.test.tsx (1 test) 37ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/pickers/PermissionModePicker.test.tsx (2 tests) 519ms
+@bb/app:test:      ✓ uses the same approve vocabulary for compact and wide labels  447ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/terminal/TerminalAttentionPane.test.tsx (1 test) 511ms
+@bb/app:test:      ✓ removes the pane ring when the session-updated frame clears attention  508ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/sidebar/sidebarOpenBesideTarget.test.ts (3 tests) 52ms
+@bb/app:test:  ✓  @bb/app:isolated  src/hooks/realtime-cache-effects.coarse-pointer.test.ts (1 test) 584ms
+@bb/app:test:      ✓ widens the thread invalidation debounce on coarse pointers  582ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/ui/markdown-katex-loader.test.tsx (1 test) 436ms
+@bb/app:test:      ✓ loads KaTeX only for math and shares it across mounted previews  434ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/layout/PageTitleHeader.test.tsx (4 tests) 139ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/promptbox/banner/ThreadWorkflowCard.test.tsx (1 test) 403ms
+@bb/app:test:      ✓ opens from the card, closes from the chevron row, and moves focus with each toggle  401ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/promptbox/usePendingAttachmentUploads.test.ts (2 tests) 23ms
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/message-clipboard.test.ts (7 tests) 80ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/onboarding/OnboardingViews.test.tsx (2 tests) 507ms
+@bb/app:test:      ✓ offers the install log only on the agent whose install failed  409ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/promptbox/banner/ThreadModelFallbackCard.test.tsx (2 tests) 462ms
+@bb/app:test:      ✓ renders as a compact prompt-stack card and persists dismissal  448ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/ui/markdown-preview.cold-html.test.tsx (1 test) 475ms
+@bb/app:test:    ✓ keeps plain Markdown immediate and HTML safe while the real pipeline downloads  473ms
+@bb/app:test:  ✓  @bb/app:isolated  src/hooks/useThreadOpenIntent.test.tsx (1 test) 162ms
+@bb/app:test:  ✓  @bb/app:isolated  src/hooks/use-retained-thread-snapshot.test.tsx (2 tests) 22ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/timeline/TimelineRowDetails.file-change.test.tsx (3 tests) 794ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/ui/sidebar-visibility-customize.test.tsx (1 test) 391ms
+@bb/app:test:      ✓ loads group customization and toggles visibility without navigating away  389ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/AppErrorBoundary.test.tsx (1 test) 71ms
+@bb/app:test:  ✓  @bb/app:isolated  src/hooks/useSustainedFlag.test.tsx (2 tests) 26ms
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/notifications/plugin-toast-startup.test.tsx (1 test) 353ms
+@bb/app:test:    ✓ delivers startup plugin notifications after the toaster mounts, including custom toasts and dismissals  351ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/sidebar/SidebarVisibilityControls.test.tsx (1 test) 290ms
+@bb/app:test:  ✓  @bb/app:isolated  src/hooks/useTimeHasPassed.test.tsx (2 tests) 39ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/timeline/LazyTerminalOutputBlock.test.tsx (1 test) 387ms
+@bb/app:test:    ✓ requests full command output while the terminal renderer is still downloading  385ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/layout/AppBreadcrumbs.test.tsx (1 test) 407ms
+@bb/app:test:      ✓ navigates through ancestors while keeping the resource passive  405ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/timeline/ThreadTimelineRows.visual.test.tsx (1 test) 107ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/ui/resource-row.test.tsx (2 tests) 659ms
+@bb/app:test:      ✓ opens the resource when its title is clicked  384ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/timeline/ExpandableTimelineRow.test.tsx (1 test) 332ms
+@bb/app:test:    ✓ settles a refreshed automatic group without retaining or animating its stale body  330ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/promptbox/modifier-submit-shortcut.test.ts (2 tests) 6ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/ThreadTitleMentions.test.tsx (1 test) 64ms
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/thread-actions/native-terminal-mode-action.sources.test.tsx (2 tests) 49ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/project/ProjectActionsMenu.test.tsx (1 test) 515ms
+@bb/app:test:      ✓ closes after selecting an action  511ms
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/plugin-frontend-composer-ready.test.ts (2 tests) 34ms
+@bb/app:test:  ✓  @bb/app:isolated  src/hooks/useDebouncedValue.test.tsx (2 tests) 26ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/ui/app-toast-runtime.test.ts (1 test) 7ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/terminal/terminal-search-color.test.ts (2 tests) 7ms
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/retired-plugin-redirect.test.tsx (2 tests) 26ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/terminal/TerminalCommandGutter.test.tsx (1 test) 54ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/dialogs/RenameDialog.test.tsx (1 test) 402ms
+@bb/app:test:    ✓ restores focus after a programmatically opened rename dialog closes  401ms
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/notifications/app-toast-title-overflow.test.tsx (1 test) 249ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/ui/dialog.browser-dimming.test.tsx (1 test) 285ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/ThreadTitle.test.tsx (1 test) 72ms
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/app-keybindings.dom.test.ts (1 test) 17ms
+@bb/app:test:  ✓  @bb/app:isolated  src/hooks/useLocalOpenTargets.test.tsx (2 tests) 40ms
+@bb/app:test:  ✓  @bb/app:isolated  src/views/RootComposeRightPanelToggle.test.tsx (1 test) 138ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/thread/ArchivedThreadToastDescription.test.tsx (1 test) 151ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/secondary-panel/ThreadSecondaryPanelTabContent.html-routing.test.tsx (1 test) 104ms
+@bb/app:test:  ✓  @bb/app:isolated  src/components/promptbox/composer-search.test.tsx (1 test) 109ms
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/plugin-frontend-boot.test.ts (1 test) 2622ms
+@bb/app:test:    ✓ reports a failed plugin frontend boot as failed until a retry succeeds  2620ms
+@bb/app:test: 
+@bb/app:test: ⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+@bb/app:test: 
+@bb/app:test:  FAIL   @bb/app:isolated  src/components/thread/terminal/ThreadTerminalView.terminal-focus.viewport.test.tsx > ThreadTerminalView terminal viewport and focus > preserves the open terminal and its scrollback when pointer mode changes
+@bb/app:test: Error: Test timed out in 30000ms.
+@bb/app:test: If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".
+@bb/app:test:  ❯ src/components/thread/terminal/ThreadTerminalView.terminal-focus.viewport.test.tsx:1025:3
+@bb/app:test:     1023|   });
+@bb/app:test:     1024|
+@bb/app:test:     1025|   it("preserves the open terminal and its scrollback when pointer mode…
+@bb/app:test:        |   ^
+@bb/app:test:     1026|     prepareMobileTerminal();
+@bb/app:test:     1027|     testState.touchEnabled = false;
+@bb/app:test: 
+@bb/app:test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+@bb/app:test: 
+@bb/app:test:  FAIL   @bb/app:isolated  src/components/thread/terminal/terminal-repaint-grid.test.ts > replay repaint nudge > leaves a full-width inline TUI exactly as a clean draw after the return nudge
+@bb/app:test: AssertionError: expected { cols: 39, rows: 12, seq: 2 } to match object { cols: 40, rows: 12 }
+@bb/app:test: (1 matching property omitted from actual)
+@bb/app:test: 
+@bb/app:test: - Expected
+@bb/app:test: + Received
+@bb/app:test: 
+@bb/app:test:   {
+@bb/app:test: -   "cols": 40,
+@bb/app:test: +   "cols": 39,
+@bb/app:test:     "rows": 12,
+@bb/app:test:   }
+@bb/app:test: 
+@bb/app:test:  ❯ src/components/thread/terminal/terminal-repaint-grid.test.ts:243:35
+@bb/app:test:     241|     await writeAndWait(terminal, "");
+@bb/app:test:     242|
+@bb/app:test:     243|     expect(socket.resizes.at(-1)).toMatchObject({
+@bb/app:test:        |                                   ^
+@bb/app:test:     244|       cols: FITTED_COLS,
+@bb/app:test:     245|       rows: FITTED_ROWS,
+@bb/app:test: 
+@bb/app:test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+@bb/app:test: 
+@bb/app:test: 
+@bb/app:test:  Test Files  2 failed | 756 passed (758)
+@bb/app:test:       Tests  2 failed | 7809 passed | 25 skipped (7836)
+@bb/app:test:    Start at  23:36:31
+@bb/app:test:    Duration  285.18s (transform 1084.03s, setup 556.73s, import 3548.85s, tests 1632.56s, environment 574.62s)
+@bb/app:test: 
+@bb/app:test:  ELIFECYCLE  Test failed. See above for more details.
+@bb/app#test:  ERROR  command (/home/alex_/bb-remote-heavy/bb-fork-837544a4aeb6/apps/app) /usr/bin/pnpm run test exited (1)
+
+ Tasks:    5 successful, 6 total
+Cached:    4 cached, 6 total
+  Time:    4m55.57s 
+Failed:    @bb/app#test
+
+ ERROR  run failed: command  exited (1)

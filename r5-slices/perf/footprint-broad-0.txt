@@ -1,0 +1,46 @@
+======================================================================
+Google Chrome Helper (Aperitif Renderer) [67005]: 64-bit    Footprint: 647 MB (16384 bytes per page)
+======================================================================
+
+  Dirty      Clean  Reclaimable    Regions    Category
+    ---        ---          ---        ---    ---
+ 410 MB        0 B      1353 MB      57005    App-Specific Tag 14
+ 213 MB        0 B       110 MB      16533    App-Specific Tag 16
+  13 MB        0 B          0 B        386    Untagged
+5640 KB        0 B          0 B          1    page table
+1823 KB     272 KB          0 B       1009    __DATA
+1008 KB        0 B          0 B         46    Stack
+ 658 KB        0 B          0 B        992    __DATA_DIRTY
+ 576 KB        0 B          0 B         10    Malloc Metadata
+ 304 KB        0 B          0 B          4    Malloc Small
+ 288 KB        0 B          0 B          1    Dispatch Continuations
+ 256 KB        0 B          0 B          8    Mach Message
+ 132 KB        0 B          0 B       2699    unused dyld shared cache area
+ 119 KB        0 B          0 B        521    __AUTH
+  80 KB        0 B          0 B          1    Malloc Tiny
+  80 KB        0 B          0 B          3    App-Specific Tag 2
+  80 KB        0 B          0 B          4    __TPRO_CONST
+  36 KB        0 B          0 B          1    __OBJC_RW
+  16 KB        0 B          0 B          1    Activity Tracing
+  16 KB        0 B          0 B          1    Deferred Reclaim
+  16 KB        0 B          0 B          1    PROTECTED_MEMORY
+  16 KB        0 B          0 B          1    OS Alloc Once
+  16 KB        0 B          0 B          1    Foundation
+  16 KB        0 B          0 B          1    ColorSync
+  16 KB        0 B          0 B          1    IOKit
+    0 B      98 MB          0 B       1140    __TEXT
+    0 B    6000 KB          0 B         18    mapped file
+    0 B    4432 KB          0 B       1052    __DATA_CONST
+    0 B     144 KB          0 B          5    __LINKEDIT
+    0 B        0 B          0 B          1    __OBJC_RO
+    0 B        0 B          0 B          1    __FONT_DATA
+    0 B        0 B          0 B         25    IOSurface
+    0 B        0 B          0 B          1    __CTF
+    0 B        0 B          0 B       1045    __AUTH_CONST
+    ---        ---          ---        ---    ---
+ 647 MB     108 MB      1463 MB      82521    TOTAL
+
+Auxiliary data:
+    phys_footprint: 647 MB
+    phys_footprint_peak: 4700 MB
+

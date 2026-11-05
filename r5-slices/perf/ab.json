@@ -1,0 +1,1482 @@
+[
+  {
+    "mode": "adapter-ready",
+    "pair": 0,
+    "port": 16800,
+    "taskWallMs": 12.115,
+    "taskThreadCpuMs": 11.701,
+    "jsSelfMs": 4.887999999999999,
+    "engineBuckets": [
+      [
+        "(program) :0:0",
+        8.766999999999998
+      ],
+      [
+        "(idle) :0:0",
+        38.21800000000001
+      ]
+    ],
+    "top10": [
+      [
+        "measureHostInstance chrome-extension://fmkadmapgofadopljbjfkapdkoienihi/build/installHook.js:1:85361",
+        0.8310000000000001
+      ],
+      [
+        "es http://127.0.0.1:16800/assets/boot-vendor-DuzOTexH.js:8:49108",
+        0.327
+      ],
+      [
+        "Il http://127.0.0.1:16800/assets/boot-vendor-DuzOTexH.js:8:97170",
+        0.306
+      ],
+      [
+        "(anonymous) http://127.0.0.1:16800/assets/index-BQOiwaWj.js:10:156412",
+        0.3
+      ],
+      [
+        "ft http://127.0.0.1:16800/assets/boot-vendor-DuzOTexH.js:9:89541",
+        0.264
+      ],
+      [
+        "(anonymous) http://127.0.0.1:16800/api/v1/plugin-app-assets/b8008bfe471efeaf/app.js:4:10075",
+        0.173
+      ],
+      [
+        "IE http://127.0.0.1:16800/api/v1/plugin-app-assets/b8008bfe471efeaf/app.js:8:11349",
+        0.17
+      ],
+      [
+        "eq http://127.0.0.1:16800/api/v1/plugin-app-assets/b8008bfe471efeaf/app.js:12:28684",
+        0.169
+      ],
+      [
+        "invert http://127.0.0.1:16800/api/v1/plugin-app-assets/b8008bfe471efeaf/app.js:6:16435",
+        0.166
+      ],
+      [
+        "rf http://127.0.0.1:16800/assets/boot-vendor-DuzOTexH.js:8:129069",
+        0.162
+      ]
+    ],
+    "raw": "/tmp/perf-r5-ab/adapter-ready-0-16800"
+  },
+  {
+    "mode": "adapter-ready",
+    "pair": 0,
+    "port": 16820,
+    "taskWallMs": 12.362,
+    "taskThreadCpuMs": 11.932,
+    "jsSelfMs": 5.038999999999999,
+    "engineBuckets": [
+      [
+        "(program) :0:0",
+        8.683999999999996
+      ],
+      [
+        "(idle) :0:0",
+        37.581999999999994
+      ]
+    ],
+    "top10": [
+      [
+        "collapse :0:0",
+        0.7429999999999999
+      ],
+      [
+        "measureHostInstance chrome-extension://fmkadmapgofadopljbjfkapdkoienihi/build/installHook.js:1:85361",
+        0.709
+      ],
+      [
+        "vu http://127.0.0.1:16820/assets/boot-vendor-DuzOTexH.js:8:104637",
+        0.45
+      ],
+      [
+        "Ct http://127.0.0.1:16820/assets/boot-vendor-DuzOTexH.js:8:3835",
+        0.377
+      ],
+      [
+        "Kv http://127.0.0.1:16820/api/v1/plugin-app-assets/b8008bfe471efeaf/app.js:136:1445",
+        0.311
+      ],
+      [
+        "oS http://127.0.0.1:16820/assets/boot-vendor-DuzOTexH.js:107:38971",
+        0.225
+      ],
+      [
+        "Pd http://127.0.0.1:16820/assets/boot-vendor-DuzOTexH.js:8:122910",
+        0.218
+      ],
+      [
+        "gn http://127.0.0.1:16820/assets/boot-vendor-DuzOTexH.js:8:10667",
+        0.207
+      ],
+      [
+        "b http://127.0.0.1:16820/assets/boot-vendor-DuzOTexH.js:9:52211",
+        0.202
+      ],
+      [
+        "Zd http://127.0.0.1:16820/assets/boot-vendor-DuzOTexH.js:8:127320",
+        0.193
+      ]
+    ],
+    "raw": "/tmp/perf-r5-ab/adapter-ready-0-16820"
+  },
+  {
+    "mode": "adapter-ready",
+    "pair": 1,
+    "port": 16820,
+    "taskWallMs": 12.841,
+    "taskThreadCpuMs": 12.197,
+    "jsSelfMs": 5.435,
+    "engineBuckets": [
+      [
+        "(program) :0:0",
+        9.469999999999999
+      ],
+      [
+        "(garbage collector) :0:0",
+        0
+      ],
+      [
+        "(idle) :0:0",
+        36.52199999999998
+      ]
+    ],
+    "top10": [
+      [
+        "measureHostInstance chrome-extension://fmkadmapgofadopljbjfkapdkoienihi/build/installHook.js:1:85361",
+        0.5599999999999999
+      ],
+      [
+        "caretPositionFromPoint :0:0",
+        0.495
+      ],
+      [
+        "setEnd :0:0",
+        0.402
+      ],
+      [
+        "$N http://127.0.0.1:16820/assets/index-BQOiwaWj.js:9:172001",
+        0.378
+      ],
+      [
+        "(anonymous) http://127.0.0.1:16820/assets/index-BQOiwaWj.js:2:82745",
+        0.325
+      ],
+      [
+        "vu http://127.0.0.1:16820/assets/boot-vendor-DuzOTexH.js:8:104637",
+        0.325
+      ],
+      [
+        "defaultQueryOptions http://127.0.0.1:16820/assets/boot-vendor-DuzOTexH.js:9:86422",
+        0.185
+      ],
+      [
+        "(anonymous) http://127.0.0.1:16820/assets/boot-vendor-DuzOTexH.js:107:1618",
+        0.183
+      ],
+      [
+        "onUpdate http://127.0.0.1:16820/api/v1/plugin-app-assets/b8008bfe471efeaf/app.js:17:109",
+        0.176
+      ],
+      [
+        "Kv http://127.0.0.1:16820/api/v1/plugin-app-assets/b8008bfe471efeaf/app.js:136:1445",
+        0.172
+      ]
+    ],
+    "raw": "/tmp/perf-r5-ab/adapter-ready-1-16820"
+  },
+  {
+    "mode": "adapter-ready",
+    "pair": 1,
+    "port": 16800,
+    "taskWallMs": 11.064,
+    "taskThreadCpuMs": 10.665,
+    "jsSelfMs": 4.401999999999998,
+    "engineBuckets": [
+      [
+        "(program) :0:0",
+        7.479999999999998
+      ],
+      [
+        "(idle) :0:0",
+        39.07099999999996
+      ]
+    ],
+    "top10": [
+      [
+        "measureHostInstance chrome-extension://fmkadmapgofadopljbjfkapdkoienihi/build/installHook.js:1:85361",
+        0.674
+      ],
+      [
+        "Lc http://127.0.0.1:16800/assets/boot-vendor-DuzOTexH.js:8:68543",
+        0.308
+      ],
+      [
+        "n http://127.0.0.1:16800/api/v1/plugin-app-assets/b8008bfe471efeaf/app.js:118:5894",
+        0.219
+      ],
+      [
+        "sn http://127.0.0.1:16800/assets/boot-vendor-DuzOTexH.js:8:7375",
+        0.181
+      ],
+      [
+        "Li http://127.0.0.1:16800/assets/boot-vendor-DuzOTexH.js:8:28900",
+        0.177
+      ],
+      [
+        "updateResult http://127.0.0.1:16800/assets/boot-vendor-DuzOTexH.js:9:69514",
+        0.159
+      ],
+      [
+        "caretPositionFromPoint :0:0",
+        0.159
+      ],
+      [
+        "create http://127.0.0.1:16800/api/v1/plugin-app-assets/b8008bfe471efeaf/app.js:4:5051",
+        0.158
+      ],
+      [
+        "EventTarget.addEventListener http://127.0.0.1:16800/assets/index-BQOiwaWj.js:411:23622",
+        0.157
+      ],
+      [
+        "isTerminal :9:24",
+        0.156
+      ]
+    ],
+    "raw": "/tmp/perf-r5-ab/adapter-ready-1-16800"
+  },
+  {
+    "mode": "adapter-ready",
+    "pair": 2,
+    "port": 16800,
+    "taskWallMs": 13.537,
+    "taskThreadCpuMs": 13.033,
+    "jsSelfMs": 5.223000000000001,
+    "engineBuckets": [
+      [
+        "(program) :0:0",
+        9.406999999999998
+      ],
+      [
+        "(idle) :0:0",
+        36.64800000000004
+      ]
+    ],
+    "top10": [
+      [
+        "measureHostInstance chrome-extension://fmkadmapgofadopljbjfkapdkoienihi/build/installHook.js:1:85361",
+        0.8240000000000001
+      ],
+      [
+        "EA http://127.0.0.1:16800/assets/index-BQOiwaWj.js:9:113998",
+        0.297
+      ],
+      [
+        "collapse :0:0",
+        0.28800000000000003
+      ],
+      [
+        "removeAttribute :0:0",
+        0.28600000000000003
+      ],
+      [
+        "D http://127.0.0.1:16800/assets/boot-vendor-DuzOTexH.js:9:53233",
+        0.222
+      ],
+      [
+        "addAll http://127.0.0.1:16800/api/v1/plugin-app-assets/b8008bfe471efeaf/app.js:6:1342",
+        0.168
+      ],
+      [
+        "Ct http://127.0.0.1:16800/assets/boot-vendor-DuzOTexH.js:8:3835",
+        0.166
+      ],
+      [
+        "ignoreSelectionChange http://127.0.0.1:16800/api/v1/plugin-app-assets/b8008bfe471efeaf/app.js:12:31112",
+        0.162
+      ],
+      [
+        "scrollToSelection http://127.0.0.1:16800/api/v1/plugin-app-assets/b8008bfe471efeaf/app.js:12:46124",
+        0.162
+      ],
+      [
+        "R0 http://127.0.0.1:16800/assets/index-BQOiwaWj.js:10:295928",
+        0.161
+      ]
+    ],
+    "raw": "/tmp/perf-r5-ab/adapter-ready-2-16800"
+  },
+  {
+    "mode": "adapter-ready",
+    "pair": 2,
+    "port": 16820,
+    "taskWallMs": 12.354,
+    "taskThreadCpuMs": 11.924,
+    "jsSelfMs": 4.808,
+    "engineBuckets": [
+      [
+        "(program) :0:0",
+        8.264999999999999
+      ],
+      [
+        "(idle) :0:0",
+        37.59000000000001
+      ]
+    ],
+    "top10": [
+      [
+        "Ct http://127.0.0.1:16820/assets/boot-vendor-DuzOTexH.js:8:3835",
+        0.587
+      ],
+      [
+        "measureHostInstance chrome-extension://fmkadmapgofadopljbjfkapdkoienihi/build/installHook.js:1:85361",
+        0.517
+      ],
+      [
+        "getClientRects :0:0",
+        0.419
+      ],
+      [
+        "fl http://127.0.0.1:16820/assets/boot-vendor-DuzOTexH.js:8:81334",
+        0.402
+      ],
+      [
+        "Li http://127.0.0.1:16820/assets/boot-vendor-DuzOTexH.js:8:28900",
+        0.369
+      ],
+      [
+        "wa http://127.0.0.1:16820/assets/boot-vendor-DuzOTexH.js:8:35073",
+        0.324
+      ],
+      [
+        "e.cloneElement http://127.0.0.1:16820/assets/boot-vendor-DuzOTexH.js:1:5454",
+        0.296
+      ],
+      [
+        "(anonymous) http://127.0.0.1:16820/api/v1/plugin-app-assets/1640eb3a136d7de4/app.js:1:21077",
+        0.205
+      ],
+      [
+        "lg http://127.0.0.1:16820/api/v1/plugin-app-assets/b8008bfe471efeaf/app.js:9:10934",
+        0.179
+      ],
+      [
+        "get tr http://127.0.0.1:16820/api/v1/plugin-app-assets/b8008bfe471efeaf/app.js:7:25606",
+        0.173
+      ]
+    ],
+    "raw": "/tmp/perf-r5-ab/adapter-ready-2-16820"
+  },
+  {
+    "mode": "adapter-ready",
+    "pair": 3,
+    "port": 16820,
+    "taskWallMs": 13.499,
+    "taskThreadCpuMs": 13.036,
+    "jsSelfMs": 5.021,
+    "engineBuckets": [
+      [
+        "(program) :0:0",
+        8.686999999999998
+      ],
+      [
+        "(idle) :0:0",
+        36.732000000000006
+      ]
+    ],
+    "top10": [
+      [
+        "measureHostInstance chrome-extension://fmkadmapgofadopljbjfkapdkoienihi/build/installHook.js:1:85361",
+        0.922
+      ],
+      [
+        "sn http://127.0.0.1:16820/assets/boot-vendor-DuzOTexH.js:8:7375",
+        0.31799999999999995
+      ],
+      [
+        "collapse :0:0",
+        0.28300000000000003
+      ],
+      [
+        "caretPositionFromPoint :0:0",
+        0.277
+      ],
+      [
+        "fh http://127.0.0.1:16820/api/v1/plugin-app-assets/b8008bfe471efeaf/app.js:6:5061",
+        0.189
+      ],
+      [
+        "nodesBetween http://127.0.0.1:16820/api/v1/plugin-app-assets/b8008bfe471efeaf/app.js:3:32083",
+        0.174
+      ],
+      [
+        "(anonymous) http://127.0.0.1:16820/assets/boot-vendor-DuzOTexH.js:8:44817",
+        0.164
+      ],
+      [
+        "lg http://127.0.0.1:16820/api/v1/plugin-app-assets/b8008bfe471efeaf/app.js:9:10934",
+        0.163
+      ],
+      [
+        "get http://127.0.0.1:16820/api/v1/plugin-app-assets/b8008bfe471efeaf/app.js:1:547",
+        0.163
+      ],
+      [
+        "isTerminal :9:24",
+        0.161
+      ]
+    ],
+    "raw": "/tmp/perf-r5-ab/adapter-ready-3-16820"
+  },
+  {
+    "mode": "adapter-ready",
+    "pair": 3,
+    "port": 16800,
+    "taskWallMs": 12.773,
+    "taskThreadCpuMs": 12.361,
+    "jsSelfMs": 4.565,
+    "engineBuckets": [
+      [
+        "(program) :0:0",
+        8.967
+      ],
+      [
+        "(idle) :0:0",
+        37.11599999999995
+      ]
+    ],
+    "top10": [
+      [
+        "measureHostInstance chrome-extension://fmkadmapgofadopljbjfkapdkoienihi/build/installHook.js:1:85361",
+        0.7400000000000001
+      ],
+      [
+        "s http://127.0.0.1:16800/assets/boot-vendor-DuzOTexH.js:65:39245",
+        0.216
+      ],
+      [
+        "(anonymous) :1:1",
+        0.194
+      ],
+      [
+        "e._zod.run http://127.0.0.1:16800/assets/boot-vendor-DuzOTexH.js:13:1059",
+        0.165
+      ],
+      [
+        "e.leafAppend http://127.0.0.1:16800/api/v1/plugin-app-assets/b8008bfe471efeaf/app.js:106:5701",
+        0.164
+      ],
+      [
+        "removeEventListener :0:0",
+        0.164
+      ],
+      [
+        "r http://127.0.0.1:16800/assets/index-BQOiwaWj.js:9:112009",
+        0.163
+      ],
+      [
+        "Lc http://127.0.0.1:16800/assets/boot-vendor-DuzOTexH.js:8:68543",
+        0.161
+      ],
+      [
+        "setOptions http://127.0.0.1:16800/assets/boot-vendor-DuzOTexH.js:9:58739",
+        0.159
+      ],
+      [
+        "collapse :0:0",
+        0.158
+      ]
+    ],
+    "raw": "/tmp/perf-r5-ab/adapter-ready-3-16800"
+  },
+  {
+    "mode": "adapter-ready",
+    "pair": 4,
+    "port": 16800,
+    "taskWallMs": 12.511,
+    "taskThreadCpuMs": 12.076,
+    "jsSelfMs": 4.09,
+    "engineBuckets": [
+      [
+        "(program) :0:0",
+        8.726999999999995
+      ],
+      [
+        "(idle) :0:0",
+        37.82799999999998
+      ]
+    ],
+    "top10": [
+      [
+        "measureHostInstance chrome-extension://fmkadmapgofadopljbjfkapdkoienihi/build/installHook.js:1:85361",
+        0.492
+      ],
+      [
+        "collapse :0:0",
+        0.216
+      ],
+      [
+        "Li http://127.0.0.1:16800/assets/boot-vendor-DuzOTexH.js:8:28900",
+        0.183
+      ],
+      [
+        "postMessage :0:0",
+        0.176
+      ],
+      [
+        "updateVirtualChildrenRecursively chrome-extension://fmkadmapgofadopljbjfkapdkoienihi/build/installHook.js:1:108258",
+        0.167
+      ],
+      [
+        "wl http://127.0.0.1:16800/assets/boot-vendor-DuzOTexH.js:8:95071",
+        0.165
+      ],
+      [
+        "getClientRects :0:0",
+        0.164
+      ],
+      [
+        "createResult http://127.0.0.1:16800/assets/boot-vendor-DuzOTexH.js:9:67531",
+        0.157
+      ],
+      [
+        "caretPositionFromPoint :0:0",
+        0.157
+      ],
+      [
+        "Lc http://127.0.0.1:16800/assets/boot-vendor-DuzOTexH.js:8:68543",
+        0.156
+      ]
+    ],
+    "raw": "/tmp/perf-r5-ab/adapter-ready-4-16800"
+  },
+  {
+    "mode": "adapter-ready",
+    "pair": 4,
+    "port": 16820,
+    "taskWallMs": 9.946,
+    "taskThreadCpuMs": 9.616,
+    "jsSelfMs": 4.792999999999998,
+    "engineBuckets": [
+      [
+        "(program) :0:0",
+        7.016999999999999
+      ],
+      [
+        "(idle) :0:0",
+        39.30799999999998
+      ]
+    ],
+    "top10": [
+      [
+        "measureHostInstance chrome-extension://fmkadmapgofadopljbjfkapdkoienihi/build/installHook.js:1:85361",
+        0.43600000000000005
+      ],
+      [
+        "caretPositionFromPoint :0:0",
+        0.275
+      ],
+      [
+        "collapse :0:0",
+        0.179
+      ],
+      [
+        "p http://127.0.0.1:16820/assets/boot-vendor-DuzOTexH.js:8:41096",
+        0.172
+      ],
+      [
+        "(anonymous) :0:0",
+        0.167
+      ],
+      [
+        "isTerminal :9:24",
+        0.163
+      ],
+      [
+        "nodesBetween http://127.0.0.1:16820/api/v1/plugin-app-assets/b8008bfe471efeaf/app.js:3:32083",
+        0.163
+      ],
+      [
+        "schemaRules http://127.0.0.1:16820/api/v1/plugin-app-assets/b8008bfe471efeaf/app.js:4:11022",
+        0.161
+      ],
+      [
+        "Ic http://127.0.0.1:16820/assets/boot-vendor-DuzOTexH.js:8:68472",
+        0.16
+      ],
+      [
+        "s http://127.0.0.1:16820/assets/boot-vendor-DuzOTexH.js:65:39245",
+        0.159
+      ]
+    ],
+    "raw": "/tmp/perf-r5-ab/adapter-ready-4-16820"
+  },
+  {
+    "mode": "adapter-ready",
+    "pair": 5,
+    "port": 16820,
+    "taskWallMs": 12.818,
+    "taskThreadCpuMs": 12.378,
+    "jsSelfMs": 3.9280000000000004,
+    "engineBuckets": [
+      [
+        "(program) :0:0",
+        9.028999999999996
+      ],
+      [
+        "(idle) :0:0",
+        38.08799999999998
+      ]
+    ],
+    "top10": [
+      [
+        "(anonymous) http://127.0.0.1:16820/assets/boot-vendor-DuzOTexH.js:65:32032",
+        0.886
+      ],
+      [
+        "measureHostInstance chrome-extension://fmkadmapgofadopljbjfkapdkoienihi/build/installHook.js:1:85361",
+        0.427
+      ],
+      [
+        "isTerminal :9:24",
+        0.318
+      ],
+      [
+        "collapse :0:0",
+        0.29500000000000004
+      ],
+      [
+        "(anonymous) :1:2",
+        0.225
+      ],
+      [
+        "N0 http://127.0.0.1:16820/assets/index-BQOiwaWj.js:10:294875",
+        0.193
+      ],
+      [
+        "o http://127.0.0.1:16820/assets/boot-vendor-DuzOTexH.js:107:590",
+        0.165
+      ],
+      [
+        "remove :0:0",
+        0.155
+      ],
+      [
+        "(anonymous) http://127.0.0.1:16820/api/v1/plugin-app-assets/b8008bfe471efeaf/app.js:142:3007",
+        0.154
+      ],
+      [
+        "gn http://127.0.0.1:16820/assets/boot-vendor-DuzOTexH.js:8:10667",
+        0.153
+      ]
+    ],
+    "raw": "/tmp/perf-r5-ab/adapter-ready-5-16820"
+  },
+  {
+    "mode": "adapter-ready",
+    "pair": 5,
+    "port": 16800,
+    "taskWallMs": 12.993,
+    "taskThreadCpuMs": 11.911,
+    "jsSelfMs": 6.045000000000001,
+    "engineBuckets": [
+      [
+        "(program) :0:0",
+        7.193999999999998
+      ],
+      [
+        "(idle) :0:0",
+        37.57100000000001
+      ]
+    ],
+    "top10": [
+      [
+        "caretPositionFromPoint :0:0",
+        0.7570000000000001
+      ],
+      [
+        "di http://127.0.0.1:16800/api/v1/plugin-app-assets/b8008bfe471efeaf/app.js:6:8564",
+        0.607
+      ],
+      [
+        "measureHostInstance chrome-extension://fmkadmapgofadopljbjfkapdkoienihi/build/installHook.js:1:85361",
+        0.467
+      ],
+      [
+        "pM http://127.0.0.1:16800/api/v1/plugin-app-assets/b8008bfe471efeaf/app.js:106:10607",
+        0.401
+      ],
+      [
+        "es http://127.0.0.1:16800/assets/boot-vendor-DuzOTexH.js:8:49108",
+        0.326
+      ],
+      [
+        "removeAttribute :0:0",
+        0.264
+      ],
+      [
+        "hs http://127.0.0.1:16800/assets/boot-vendor-DuzOTexH.js:8:51608",
+        0.216
+      ],
+      [
+        "updateFiberRecursively chrome-extension://fmkadmapgofadopljbjfkapdkoienihi/build/installHook.js:1:109977",
+        0.197
+      ],
+      [
+        "nl http://127.0.0.1:16800/assets/ExecutionControls-BFdx3Wdl.js:2:87542",
+        0.191
+      ],
+      [
+        "collapse :0:0",
+        0.188
+      ]
+    ],
+    "raw": "/tmp/perf-r5-ab/adapter-ready-5-16800"
+  },
+  {
+    "mode": "settled",
+    "pair": 0,
+    "port": 16800,
+    "taskWallMs": 13.091,
+    "taskThreadCpuMs": 11.715,
+    "jsSelfMs": 5.415999999999999,
+    "engineBuckets": [
+      [
+        "(program) :0:0",
+        8.418
+      ],
+      [
+        "(garbage collector) :0:0",
+        0.223
+      ],
+      [
+        "(idle) :0:0",
+        37.14799999999999
+      ]
+    ],
+    "top10": [
+      [
+        "measureHostInstance chrome-extension://fmkadmapgofadopljbjfkapdkoienihi/build/installHook.js:1:85361",
+        0.6779999999999999
+      ],
+      [
+        "caretPositionFromPoint :0:0",
+        0.32899999999999996
+      ],
+      [
+        "GG http://127.0.0.1:16800/assets/index-BQOiwaWj.js:10:153924",
+        0.3
+      ],
+      [
+        "(anonymous) :1:2",
+        0.294
+      ],
+      [
+        "collapse :0:0",
+        0.237
+      ],
+      [
+        "Kv http://127.0.0.1:16800/api/v1/plugin-app-assets/b8008bfe471efeaf/app.js:136:1445",
+        0.226
+      ],
+      [
+        "fh http://127.0.0.1:16800/api/v1/plugin-app-assets/b8008bfe471efeaf/app.js:6:5061",
+        0.209
+      ],
+      [
+        "dispatchTransaction http://127.0.0.1:16800/api/v1/plugin-app-assets/b8008bfe471efeaf/app.js:87:7557",
+        0.194
+      ],
+      [
+        "Ze http://127.0.0.1:16800/assets/voice-input-textarea-Cf_Tv2q3.js:2:22042",
+        0.186
+      ],
+      [
+        "cp http://127.0.0.1:16800/assets/boot-vendor-DuzOTexH.js:9:7996",
+        0.175
+      ]
+    ],
+    "raw": "/tmp/perf-r5-ab/settled-0-16800"
+  },
+  {
+    "mode": "settled",
+    "pair": 0,
+    "port": 16820,
+    "taskWallMs": 11.457,
+    "taskThreadCpuMs": 11.064,
+    "jsSelfMs": 4.880999999999999,
+    "engineBuckets": [
+      [
+        "(program) :0:0",
+        7.295999999999998
+      ],
+      [
+        "(idle) :0:0",
+        38.901999999999994
+      ]
+    ],
+    "top10": [
+      [
+        "measureHostInstance chrome-extension://fmkadmapgofadopljbjfkapdkoienihi/build/installHook.js:1:85361",
+        0.619
+      ],
+      [
+        "caretPositionFromPoint :0:0",
+        0.236
+      ],
+      [
+        "updateResult http://127.0.0.1:16820/assets/boot-vendor-DuzOTexH.js:9:69514",
+        0.165
+      ],
+      [
+        "cp http://127.0.0.1:16820/assets/boot-vendor-DuzOTexH.js:9:7996",
+        0.164
+      ],
+      [
+        "bs http://127.0.0.1:16820/assets/boot-vendor-DuzOTexH.js:8:53839",
+        0.163
+      ],
+      [
+        "Lf http://127.0.0.1:16820/api/v1/plugin-app-assets/b8008bfe471efeaf/app.js:142:240",
+        0.162
+      ],
+      [
+        "o http://127.0.0.1:16820/assets/boot-vendor-DuzOTexH.js:107:590",
+        0.161
+      ],
+      [
+        "observe :0:0",
+        0.16
+      ],
+      [
+        "Ss http://127.0.0.1:16820/assets/boot-vendor-DuzOTexH.js:8:53983",
+        0.16
+      ],
+      [
+        "isTerminal :9:24",
+        0.158
+      ]
+    ],
+    "raw": "/tmp/perf-r5-ab/settled-0-16820"
+  },
+  {
+    "mode": "settled",
+    "pair": 1,
+    "port": 16820,
+    "taskWallMs": 13.963,
+    "taskThreadCpuMs": 13.508,
+    "jsSelfMs": 5.4239999999999995,
+    "engineBuckets": [
+      [
+        "(program) :0:0",
+        9.458000000000002
+      ],
+      [
+        "(idle) :0:0",
+        36.479000000000006
+      ]
+    ],
+    "top10": [
+      [
+        "measureHostInstance chrome-extension://fmkadmapgofadopljbjfkapdkoienihi/build/installHook.js:1:85361",
+        0.799
+      ],
+      [
+        "caretPositionFromPoint :0:0",
+        0.347
+      ],
+      [
+        "es http://127.0.0.1:16820/assets/boot-vendor-DuzOTexH.js:8:49108",
+        0.31799999999999995
+      ],
+      [
+        "collapse :0:0",
+        0.314
+      ],
+      [
+        "Li http://127.0.0.1:16820/assets/boot-vendor-DuzOTexH.js:8:28900",
+        0.251
+      ],
+      [
+        "ml http://127.0.0.1:16820/assets/boot-vendor-DuzOTexH.js:8:82330",
+        0.178
+      ],
+      [
+        "remove :0:0",
+        0.169
+      ],
+      [
+        "applyTransaction http://127.0.0.1:16820/api/v1/plugin-app-assets/b8008bfe471efeaf/app.js:7:24759",
+        0.166
+      ],
+      [
+        "IE http://127.0.0.1:16820/api/v1/plugin-app-assets/b8008bfe471efeaf/app.js:8:11349",
+        0.166
+      ],
+      [
+        "Qu http://127.0.0.1:16820/assets/boot-vendor-DuzOTexH.js:8:121427",
+        0.166
+      ]
+    ],
+    "raw": "/tmp/perf-r5-ab/settled-1-16820"
+  },
+  {
+    "mode": "settled",
+    "pair": 1,
+    "port": 16800,
+    "taskWallMs": 12.996,
+    "taskThreadCpuMs": 12.594,
+    "jsSelfMs": 4.611,
+    "engineBuckets": [
+      [
+        "(program) :0:0",
+        9.032000000000002
+      ],
+      [
+        "(idle) :0:0",
+        37.17100000000001
+      ]
+    ],
+    "top10": [
+      [
+        "measureHostInstance chrome-extension://fmkadmapgofadopljbjfkapdkoienihi/build/installHook.js:1:85361",
+        0.682
+      ],
+      [
+        "e.cloneElement http://127.0.0.1:16800/assets/boot-vendor-DuzOTexH.js:1:5454",
+        0.491
+      ],
+      [
+        "jm http://127.0.0.1:16800/assets/boot-vendor-DuzOTexH.js:65:35712",
+        0.366
+      ],
+      [
+        "collapse :0:0",
+        0.333
+      ],
+      [
+        "(anonymous) chrome-extension://fmkadmapgofadopljbjfkapdkoienihi/build/installHook.js:1:113855",
+        0.276
+      ],
+      [
+        "(anonymous) chrome-extension://fmkadmapgofadopljbjfkapdkoienihi/build/installHook.js:1:116433",
+        0.186
+      ],
+      [
+        "inspect :28:21",
+        0.178
+      ],
+      [
+        "eq http://127.0.0.1:16800/api/v1/plugin-app-assets/b8008bfe471efeaf/app.js:12:20988",
+        0.17
+      ],
+      [
+        "e._zod.parse http://127.0.0.1:16800/assets/boot-vendor-DuzOTexH.js:63:10441",
+        0.162
+      ],
+      [
+        "Sm http://127.0.0.1:16800/api/v1/plugin-app-assets/b8008bfe471efeaf/app.js:8:11541",
+        0.159
+      ]
+    ],
+    "raw": "/tmp/perf-r5-ab/settled-1-16800"
+  },
+  {
+    "mode": "settled",
+    "pair": 2,
+    "port": 16800,
+    "taskWallMs": 13.146,
+    "taskThreadCpuMs": 12.446,
+    "jsSelfMs": 5.811000000000002,
+    "engineBuckets": [
+      [
+        "(program) :0:0",
+        8.409999999999997
+      ],
+      [
+        "(idle) :0:0",
+        37.16799999999998
+      ]
+    ],
+    "top10": [
+      [
+        "measureHostInstance chrome-extension://fmkadmapgofadopljbjfkapdkoienihi/build/installHook.js:1:85361",
+        0.654
+      ],
+      [
+        "fl http://127.0.0.1:16800/assets/boot-vendor-DuzOTexH.js:8:81334",
+        0.478
+      ],
+      [
+        "updateVirtualChildrenRecursively chrome-extension://fmkadmapgofadopljbjfkapdkoienihi/build/installHook.js:1:108258",
+        0.374
+      ],
+      [
+        "(anonymous) :1:2",
+        0.352
+      ],
+      [
+        "collapse :0:0",
+        0.28800000000000003
+      ],
+      [
+        "caretPositionFromPoint :0:0",
+        0.249
+      ],
+      [
+        "wa http://127.0.0.1:16800/assets/boot-vendor-DuzOTexH.js:8:35073",
+        0.202
+      ],
+      [
+        "$v http://127.0.0.1:16800/api/v1/plugin-app-assets/b8008bfe471efeaf/app.js:127:28808",
+        0.191
+      ],
+      [
+        "Nu http://127.0.0.1:16800/assets/boot-vendor-DuzOTexH.js:8:109479",
+        0.184
+      ],
+      [
+        "Kv http://127.0.0.1:16800/api/v1/plugin-app-assets/b8008bfe471efeaf/app.js:136:1445",
+        0.174
+      ]
+    ],
+    "raw": "/tmp/perf-r5-ab/settled-2-16800"
+  },
+  {
+    "mode": "settled",
+    "pair": 2,
+    "port": 16820,
+    "taskWallMs": 12.407,
+    "taskThreadCpuMs": 11.897,
+    "jsSelfMs": 5.210999999999999,
+    "engineBuckets": [
+      [
+        "(program) :0:0",
+        8.277
+      ],
+      [
+        "(idle) :0:0",
+        37.758
+      ]
+    ],
+    "top10": [
+      [
+        "getComputedStyle :0:0",
+        0.898
+      ],
+      [
+        "eq http://127.0.0.1:16820/api/v1/plugin-app-assets/b8008bfe471efeaf/app.js:7:18253",
+        0.754
+      ],
+      [
+        "jm http://127.0.0.1:16820/assets/boot-vendor-DuzOTexH.js:65:35712",
+        0.531
+      ],
+      [
+        "o http://127.0.0.1:16820/assets/boot-vendor-DuzOTexH.js:107:590",
+        0.408
+      ],
+      [
+        "Ft http://127.0.0.1:16820/api/v1/plugin-app-assets/b8008bfe471efeaf/app.js:8:8914",
+        0.404
+      ],
+      [
+        "measureHostInstance chrome-extension://fmkadmapgofadopljbjfkapdkoienihi/build/installHook.js:1:85361",
+        0.328
+      ],
+      [
+        "wa http://127.0.0.1:16820/assets/boot-vendor-DuzOTexH.js:8:35073",
+        0.26
+      ],
+      [
+        "cp http://127.0.0.1:16820/assets/boot-vendor-DuzOTexH.js:9:7996",
+        0.219
+      ],
+      [
+        "closest :0:0",
+        0.167
+      ],
+      [
+        "Il http://127.0.0.1:16820/assets/boot-vendor-DuzOTexH.js:8:97170",
+        0.166
+      ]
+    ],
+    "raw": "/tmp/perf-r5-ab/settled-2-16820"
+  },
+  {
+    "mode": "settled",
+    "pair": 3,
+    "port": 16820,
+    "taskWallMs": 11.62,
+    "taskThreadCpuMs": 11.258,
+    "jsSelfMs": 4.868999999999999,
+    "engineBuckets": [
+      [
+        "(program) :0:0",
+        7.412999999999998
+      ],
+      [
+        "(garbage collector) :0:0",
+        0
+      ],
+      [
+        "(idle) :0:0",
+        38.70200000000002
+      ]
+    ],
+    "top10": [
+      [
+        "measureHostInstance chrome-extension://fmkadmapgofadopljbjfkapdkoienihi/build/installHook.js:1:85361",
+        0.62
+      ],
+      [
+        "FR http://127.0.0.1:16820/api/v1/plugin-app-assets/b8008bfe471efeaf/app.js:126:3301",
+        0.17
+      ],
+      [
+        "pg http://127.0.0.1:16820/api/v1/plugin-app-assets/b8008bfe471efeaf/app.js:9:22062",
+        0.168
+      ],
+      [
+        "Kc http://127.0.0.1:16820/assets/ExecutionControls-BFdx3Wdl.js:2:85853",
+        0.167
+      ],
+      [
+        "dispatchTransaction http://127.0.0.1:16820/api/v1/plugin-app-assets/b8008bfe471efeaf/app.js:87:7557",
+        0.164
+      ],
+      [
+        "someProp http://127.0.0.1:16820/api/v1/plugin-app-assets/b8008bfe471efeaf/app.js:12:47461",
+        0.163
+      ],
+      [
+        "Xs http://127.0.0.1:16820/assets/boot-vendor-DuzOTexH.js:8:57898",
+        0.163
+      ],
+      [
+        "ml http://127.0.0.1:16820/assets/boot-vendor-DuzOTexH.js:8:82330",
+        0.161
+      ],
+      [
+        "collapse :0:0",
+        0.16
+      ],
+      [
+        "cm http://127.0.0.1:16820/assets/boot-vendor-DuzOTexH.js:65:33126",
+        0.159
+      ]
+    ],
+    "raw": "/tmp/perf-r5-ab/settled-3-16820"
+  },
+  {
+    "mode": "settled",
+    "pair": 3,
+    "port": 16800,
+    "taskWallMs": 12.244,
+    "taskThreadCpuMs": 11.833,
+    "jsSelfMs": 5.882000000000001,
+    "engineBuckets": [
+      [
+        "(program) :0:0",
+        7.771999999999998
+      ],
+      [
+        "(idle) :0:0",
+        37.999999999999986
+      ]
+    ],
+    "top10": [
+      [
+        "dT http://127.0.0.1:16800/api/v1/plugin-app-assets/b8008bfe471efeaf/app.js:14:764",
+        0.74
+      ],
+      [
+        "measureHostInstance chrome-extension://fmkadmapgofadopljbjfkapdkoienihi/build/installHook.js:1:85361",
+        0.622
+      ],
+      [
+        "unmountRemainingChildren chrome-extension://fmkadmapgofadopljbjfkapdkoienihi/build/installHook.js:1:94374",
+        0.403
+      ],
+      [
+        "collapse :0:0",
+        0.199
+      ],
+      [
+        "l http://127.0.0.1:16800/assets/boot-vendor-DuzOTexH.js:1:15679",
+        0.187
+      ],
+      [
+        "fh http://127.0.0.1:16800/api/v1/plugin-app-assets/b8008bfe471efeaf/app.js:6:5061",
+        0.184
+      ],
+      [
+        "Kv http://127.0.0.1:16800/api/v1/plugin-app-assets/b8008bfe471efeaf/app.js:136:1445",
+        0.177
+      ],
+      [
+        "d http://127.0.0.1:16800/api/v1/plugin-app-assets/b8008bfe471efeaf/app.js:117:332",
+        0.175
+      ],
+      [
+        "isTerminal :9:24",
+        0.172
+      ],
+      [
+        "(anonymous) http://127.0.0.1:16800/assets/boot-vendor-DuzOTexH.js:107:40239",
+        0.167
+      ]
+    ],
+    "raw": "/tmp/perf-r5-ab/settled-3-16800"
+  },
+  {
+    "mode": "settled",
+    "pair": 4,
+    "port": 16800,
+    "taskWallMs": 12.075,
+    "taskThreadCpuMs": 11.672,
+    "jsSelfMs": 3.6360000000000006,
+    "engineBuckets": [
+      [
+        "(program) :0:0",
+        9.338999999999995
+      ],
+      [
+        "(idle) :0:0",
+        38.943
+      ]
+    ],
+    "top10": [
+      [
+        "cs http://127.0.0.1:16800/assets/boot-vendor-DuzOTexH.js:8:50309",
+        0.597
+      ],
+      [
+        "getClientRects :0:0",
+        0.562
+      ],
+      [
+        "measureHostInstance chrome-extension://fmkadmapgofadopljbjfkapdkoienihi/build/installHook.js:1:85361",
+        0.543
+      ],
+      [
+        "areEqualRects chrome-extension://fmkadmapgofadopljbjfkapdkoienihi/build/installHook.js:1:67668",
+        0.223
+      ],
+      [
+        "r http://127.0.0.1:16800/assets/boot-vendor-DuzOTexH.js:9:87088",
+        0.221
+      ],
+      [
+        "V0 http://127.0.0.1:16800/api/v1/plugin-app-assets/b8008bfe471efeaf/app.js:12:34287",
+        0.206
+      ],
+      [
+        "e.unstable_now http://127.0.0.1:16800/assets/boot-vendor-DuzOTexH.js:1:8567",
+        0.17
+      ],
+      [
+        "dispatchTransaction http://127.0.0.1:16800/api/v1/plugin-app-assets/b8008bfe471efeaf/app.js:87:7557",
+        0.165
+      ],
+      [
+        "closest :0:0",
+        0.156
+      ],
+      [
+        "setAttribute :0:0",
+        0.152
+      ]
+    ],
+    "raw": "/tmp/perf-r5-ab/settled-4-16800"
+  },
+  {
+    "mode": "settled",
+    "pair": 4,
+    "port": 16820,
+    "taskWallMs": 14.349,
+    "taskThreadCpuMs": 13.517,
+    "jsSelfMs": 6.262999999999998,
+    "engineBuckets": [
+      [
+        "(program) :0:0",
+        10.479
+      ],
+      [
+        "(idle) :0:0",
+        34.51999999999999
+      ]
+    ],
+    "top10": [
+      [
+        "measureHostInstance chrome-extension://fmkadmapgofadopljbjfkapdkoienihi/build/installHook.js:1:85361",
+        0.954
+      ],
+      [
+        "Il http://127.0.0.1:16820/assets/boot-vendor-DuzOTexH.js:8:97170",
+        0.324
+      ],
+      [
+        "ml http://127.0.0.1:16820/assets/boot-vendor-DuzOTexH.js:8:82330",
+        0.313
+      ],
+      [
+        "collapse :0:0",
+        0.29100000000000004
+      ],
+      [
+        "W http://127.0.0.1:16820/assets/plugin-sdk-hooks-DvWpWl_7.js:3:6006",
+        0.249
+      ],
+      [
+        "removeAttribute :0:0",
+        0.184
+      ],
+      [
+        "ti http://127.0.0.1:16820/assets/index-BQOiwaWj.js:2:23705",
+        0.181
+      ],
+      [
+        "r http://127.0.0.1:16820/assets/index-BQOiwaWj.js:9:112009",
+        0.18
+      ],
+      [
+        "(anonymous) http://127.0.0.1:16820/assets/boot-vendor-DuzOTexH.js:107:30150",
+        0.173
+      ],
+      [
+        "from http://127.0.0.1:16820/api/v1/plugin-app-assets/b8008bfe471efeaf/app.js:12:25409",
+        0.173
+      ]
+    ],
+    "raw": "/tmp/perf-r5-ab/settled-4-16820"
+  },
+  {
+    "mode": "settled",
+    "pair": 5,
+    "port": 16820,
+    "taskWallMs": 11.355,
+    "taskThreadCpuMs": 10.975,
+    "jsSelfMs": 4.686000000000001,
+    "engineBuckets": [
+      [
+        "(program) :0:0",
+        8.592999999999998
+      ],
+      [
+        "(garbage collector) :0:0",
+        0.005
+      ],
+      [
+        "(idle) :0:0",
+        37.611999999999995
+      ]
+    ],
+    "top10": [
+      [
+        "measureHostInstance chrome-extension://fmkadmapgofadopljbjfkapdkoienihi/build/installHook.js:1:85361",
+        0.7040000000000001
+      ],
+      [
+        "fl http://127.0.0.1:16820/assets/boot-vendor-DuzOTexH.js:8:81334",
+        0.32199999999999995
+      ],
+      [
+        "caretPositionFromPoint :0:0",
+        0.18100000000000002
+      ],
+      [
+        "ww http://127.0.0.1:16820/assets/boot-vendor-DuzOTexH.js:147:4852",
+        0.181
+      ],
+      [
+        "r http://127.0.0.1:16820/assets/index-BQOiwaWj.js:9:112009",
+        0.176
+      ],
+      [
+        "e.useMemo http://127.0.0.1:16820/assets/boot-vendor-DuzOTexH.js:1:7481",
+        0.173
+      ],
+      [
+        "cp http://127.0.0.1:16820/assets/boot-vendor-DuzOTexH.js:9:7996",
+        0.168
+      ],
+      [
+        "$b http://127.0.0.1:16820/api/v1/plugin-app-assets/b8008bfe471efeaf/app.js:108:63701",
+        0.166
+      ],
+      [
+        "clearTimeout :0:0",
+        0.164
+      ],
+      [
+        "Xs http://127.0.0.1:16820/assets/boot-vendor-DuzOTexH.js:8:57898",
+        0.162
+      ]
+    ],
+    "raw": "/tmp/perf-r5-ab/settled-5-16820"
+  },
+  {
+    "mode": "settled",
+    "pair": 5,
+    "port": 16800,
+    "taskWallMs": 13.565,
+    "taskThreadCpuMs": 12.969,
+    "jsSelfMs": 4.203,
+    "engineBuckets": [
+      [
+        "(program) :0:0",
+        11.082999999999995
+      ],
+      [
+        "(idle) :0:0",
+        37.60200000000001
+      ]
+    ],
+    "top10": [
+      [
+        "(anonymous) http://127.0.0.1:16800/assets/boot-vendor-DuzOTexH.js:65:31914",
+        1.661
+      ],
+      [
+        "measureHostInstance chrome-extension://fmkadmapgofadopljbjfkapdkoienihi/build/installHook.js:1:85361",
+        0.6910000000000001
+      ],
+      [
+        "removeAttribute :0:0",
+        0.561
+      ],
+      [
+        "update http://127.0.0.1:16800/api/v1/plugin-app-assets/b8008bfe471efeaf/app.js:127:1405",
+        0.462
+      ],
+      [
+        "Ct http://127.0.0.1:16800/assets/boot-vendor-DuzOTexH.js:8:3835",
+        0.174
+      ],
+      [
+        "resolveCached http://127.0.0.1:16800/api/v1/plugin-app-assets/b8008bfe471efeaf/app.js:3:43762",
+        0.156
+      ],
+      [
+        "(anonymous) http://127.0.0.1:16800/assets/boot-vendor-DuzOTexH.js:147:10379",
+        0.153
+      ],
+      [
+        "fh http://127.0.0.1:16800/api/v1/plugin-app-assets/b8008bfe471efeaf/app.js:6:5061",
+        0.149
+      ],
+      [
+        "(anonymous) http://127.0.0.1:16800/assets/index-BQOiwaWj.js:10:118696",
+        0.124
+      ],
+      [
+        "ho http://127.0.0.1:16800/api/v1/plugin-app-assets/b8008bfe471efeaf/app.js:8:8150",
+        0.072
+      ]
+    ],
+    "raw": "/tmp/perf-r5-ab/settled-5-16800"
+  }
+]

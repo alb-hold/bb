@@ -1,0 +1,45 @@
+{
+  "sourceSha": "8e616a15e61fec57da8c5aef6680c50287dc8c80",
+  "navigations": 300,
+  "distinctThreads": 56,
+  "nativeVisits": 42,
+  "panelCycles": 12,
+  "paletteCycles": 12,
+  "longThreadScrolls": 26,
+  "heapMiB": {
+    "initial": 121.90356826782227,
+    "final": 159.59246826171875,
+    "min": 121.90356826782227,
+    "max": 159.59246826171875
+  },
+  "snapshots": {
+    "0": {
+      "wrapperCount": 2,
+      "totalSelfMiB": 170.79761600494385
+    },
+    "150": {
+      "wrapperCount": 0,
+      "totalSelfMiB": 190.9026584625244
+    },
+    "300": {
+      "wrapperCount": 0,
+      "totalSelfMiB": 202.5013132095337
+    }
+  },
+  "snapshotTypeDeltaBytes": {
+    "synthetic": 0,
+    "native": -4348168,
+    "string": 2002388,
+    "object shape": 283660,
+    "code": 12487668,
+    "array": 19492840,
+    "number": 140904,
+    "symbol": 288,
+    "object": 2561636,
+    "closure": 498776,
+    "concatenated string": 119520,
+    "regexp": 264,
+    "sliced string": 3960,
+    "bigint": 0
+  }
+}

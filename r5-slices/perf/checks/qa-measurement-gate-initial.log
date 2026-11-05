@@ -1,0 +1,28 @@
+{
+  "ok": false,
+  "operation": "claim_e2e_complete",
+  "reasoning_effort_observed": null,
+  "reasoning_invariant": true,
+  "failures": [
+    {
+      "code": "AUTH_STATE_MISMATCH",
+      "path": "authentication.state",
+      "message": "authentication state must be not_required when authentication is not required"
+    },
+    {
+      "code": "STEP_SURFACE_MISMATCH",
+      "path": "journey.steps[0].surface",
+      "message": "step surface \"BB production preview\" does not match actor surface \"BB production preview desktop 1280x800\""
+    },
+    {
+      "code": "STEP_SURFACE_MISMATCH",
+      "path": "journey.steps[1].surface",
+      "message": "step surface \"BB production preview\" does not match actor surface \"BB production preview desktop 1280x800\""
+    },
+    {
+      "code": "STEP_SURFACE_MISMATCH",
+      "path": "journey.steps[2].surface",
+      "message": "step surface \"BB production preview\" does not match actor surface \"BB production preview desktop 1280x800\""
+    }
+  ]
+}

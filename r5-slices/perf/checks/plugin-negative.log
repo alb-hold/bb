@@ -1,0 +1,95 @@
+• turbo 2.10.12
+
+   • Packages in scope: bb-plugin-bb--composer
+   • Running test in 1 packages
+   • Remote caching disabled
+
+@bb/templates:generate:templates: cache hit, replaying logs 3b009c53247ce5b3
+@bb/templates:generate:templates: 
+@bb/templates:generate:templates: > @bb/templates@0.0.1 generate:templates /home/alex_/bb-remote-heavy/bb-fork-837544a4aeb6/packages/templates
+@bb/templates:generate:templates: > node ./scripts/generate-templates.mjs
+@bb/templates:generate:templates: 
+@bb/plugin-build:generate: cache hit, replaying logs f58bb0081ee43032
+@bb/plugin-build:generate: 
+@bb/plugin-build:generate: > @bb/plugin-build@0.0.1 generate /home/alex_/bb-remote-heavy/bb-fork-837544a4aeb6/packages/plugin-build
+@bb/plugin-build:generate: > node ./scripts/generate-plugin-theme.mjs && node ./scripts/generate-runtime-export-manifest.mjs
+@bb/plugin-build:generate: 
+@bb/plugin-build:generate: plugin-theme.generated.ts up to date
+@bb/plugin-build:generate: host-tailwind.css up to date
+@bb/plugin-build:generate: host-tailwind-version.ts up to date
+@bb/plugin-build:generate: wrote /home/alex_/bb-remote-heavy/bb-fork-837544a4aeb6/packages/plugin-build/src/generated/runtime-export-manifest.generated.ts (react@19.3.0)
+@bb/templates:generate:plugin-scaffold: cache hit, replaying logs 8243fd3c8304788c
+@bb/templates:generate:plugin-scaffold: 
+@bb/templates:generate:plugin-scaffold: > @bb/templates@0.0.1 generate:plugin-scaffold /home/alex_/bb-remote-heavy/bb-fork-837544a4aeb6/packages/templates
+@bb/templates:generate:plugin-scaffold: > node ./scripts/generate-plugin-scaffold.mjs
+@bb/templates:generate:plugin-scaffold: 
+@bb/process-utils:generate:profile-worker: cache hit, replaying logs d32ee05c23ff6a64
+@bb/process-utils:generate:profile-worker: 
+@bb/process-utils:generate:profile-worker: > @bb/process-utils@0.0.1 generate:profile-worker /home/alex_/bb-remote-heavy/bb-fork-837544a4aeb6/packages/process-utils
+@bb/process-utils:generate:profile-worker: > node scripts/generate-profile-worker.mjs
+@bb/process-utils:generate:profile-worker: 
+@get-bb/plugin-sdk:build: cache hit, replaying logs 9d6efa2ec8031518
+@get-bb/plugin-sdk:build: 
+@get-bb/plugin-sdk:build: > @get-bb/plugin-sdk@0.6.110 build /home/alex_/bb-remote-heavy/bb-fork-837544a4aeb6/packages/plugin-sdk
+@get-bb/plugin-sdk:build: > node scripts/build-runtime.mjs
+@get-bb/plugin-sdk:build: 
+@get-bb/plugin-sdk:build: Built 23 @get-bb/plugin-sdk runtime entries.
+bb-plugin-bb--composer:test: cache miss, executing 355890f84d388d60
+bb-plugin-bb--composer:test: 
+bb-plugin-bb--composer:test: > bb-plugin-bb--composer@0.1.0 test /home/alex_/bb-remote-heavy/bb-fork-837544a4aeb6/plugins/composer
+bb-plugin-bb--composer:test: > vitest run --config vitest.config.ts "src/editor/prompt-editor-placeholder.test.ts"
+bb-plugin-bb--composer:test: 
+bb-plugin-bb--composer:test: 
+bb-plugin-bb--composer:test:  RUN  v4.1.1 /home/alex_/bb-remote-heavy/bb-fork-837544a4aeb6/plugins/composer
+bb-plugin-bb--composer:test: 
+bb-plugin-bb--composer:test:  ❯  bb-plugin-bb--composer  src/editor/prompt-editor-placeholder.test.ts (2 tests | 1 failed) 164ms
+bb-plugin-bb--composer:test:    × keeps placeholder changes off the viewport measurement path 147ms
+bb-plugin-bb--composer:test:    ✓ decorates the current empty paragraph after multiline input 16ms
+bb-plugin-bb--composer:test: 
+bb-plugin-bb--composer:test: ⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+bb-plugin-bb--composer:test: 
+bb-plugin-bb--composer:test:  FAIL   bb-plugin-bb--composer  src/editor/prompt-editor-placeholder.test.ts > keeps placeholder changes off the viewport measurement path
+bb-plugin-bb--composer:test: AssertionError: expected "getBoundingClientRect" to not be called at all, but actually been called 3 times
+bb-plugin-bb--composer:test: 
+bb-plugin-bb--composer:test: Received:
+bb-plugin-bb--composer:test: 
+bb-plugin-bb--composer:test:   1st getBoundingClientRect call:
+bb-plugin-bb--composer:test: 
+bb-plugin-bb--composer:test:     Array []
+bb-plugin-bb--composer:test: 
+bb-plugin-bb--composer:test:   2nd getBoundingClientRect call:
+bb-plugin-bb--composer:test: 
+bb-plugin-bb--composer:test:     Array []
+bb-plugin-bb--composer:test: 
+bb-plugin-bb--composer:test:   3rd getBoundingClientRect call:
+bb-plugin-bb--composer:test: 
+bb-plugin-bb--composer:test:     Array []
+bb-plugin-bb--composer:test: 
+bb-plugin-bb--composer:test: 
+bb-plugin-bb--composer:test: Number of calls: 3
+bb-plugin-bb--composer:test: 
+bb-plugin-bb--composer:test:  ❯ src/editor/prompt-editor-placeholder.test.ts:28:23
+bb-plugin-bb--composer:test:      26|   editor.commands.deleteSelection();
+bb-plugin-bb--composer:test:      27|   expect(paragraph?.getAttribute("data-placeholder")).toBe("Write a pr…
+bb-plugin-bb--composer:test:      28|   expect(measure).not.toHaveBeenCalled();
+bb-plugin-bb--composer:test:        |                       ^
+bb-plugin-bb--composer:test:      29|   editor.setEditable(false);
+bb-plugin-bb--composer:test:      30|   expect(paragraph?.hasAttribute("data-placeholder")).toBe(false);
+bb-plugin-bb--composer:test: 
+bb-plugin-bb--composer:test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+bb-plugin-bb--composer:test: 
+bb-plugin-bb--composer:test: 
+bb-plugin-bb--composer:test:  Test Files  1 failed (1)
+bb-plugin-bb--composer:test:       Tests  1 failed | 1 passed (2)
+bb-plugin-bb--composer:test:    Start at  23:42:46
+bb-plugin-bb--composer:test:    Duration  1.28s (transform 205ms, setup 314ms, import 148ms, tests 164ms, environment 533ms)
+bb-plugin-bb--composer:test: 
+bb-plugin-bb--composer:test:  ELIFECYCLE  Test failed. See above for more details.
+
+ Tasks:    5 successful, 6 total
+Cached:    5 cached, 6 total
+  Time:    2.106s 
+bb-plugin-bb--composer#test:  ERROR  command (/home/alex_/bb-remote-heavy/bb-fork-837544a4aeb6/plugins/composer) /usr/bin/pnpm run test src/editor/prompt-editor-placeholder.test.ts exited (1)
+Failed:    bb-plugin-bb--composer#test
+
+ ERROR  run failed: command  exited (1)
