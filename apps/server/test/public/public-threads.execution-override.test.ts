@@ -46,6 +46,7 @@ function stubProviderCatalog(
             model,
             displayName: model,
             description: "",
+            reasoningDiscovery: "known" as const,
             supportedReasoningEfforts: [
               { reasoningEffort: "low", description: "" },
               { reasoningEffort: "medium", description: "" },

@@ -1,6 +1,9 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import type { AgentRuntime } from "@bb/agent-runtime";
+import {
+  ProviderWorkspaceMissingError,
+  type AgentRuntime,
+} from "@bb/agent-runtime";
 import type {
   HostDaemonInjectedSkillSource,
   ProviderCliInstallEvent,
@@ -21,7 +24,10 @@ import {
   fetchDispatchTestArtifact,
   unexpectedProviderMaintenance,
 } from "../test/command/dispatch-helpers.js";
-import type { CommandOf } from "./command-dispatch-support.js";
+import {
+  ExpectedCommandDispatchError,
+  type CommandOf,
+} from "./command-dispatch-support.js";
 import { PROVIDER_INSTALLATION_GATE_TTL_MS } from "./provider-installation-gate.js";
 import { RuntimeManager } from "./runtime-manager.js";
 import { stageInjectedSkillSources } from "./injected-skills.js";
@@ -61,8 +67,8 @@ async function writeInjectedSkillSource(
     "utf8",
   );
   return {
-    kind: "workspace-path",
-    sourceType: "project",
+    kind: "host-path",
+    sourceType: "shared-user",
     name: "release-notes",
     description: "Use release-notes when command dispatch tests run.",
     sourceRootPath,
@@ -114,15 +120,9 @@ function createWorkspace(workspacePath = WORKSPACE_PATH): HostWorkspace {
     getDefaultBranch: unexpectedWorkspaceCall,
     getCurrentBranch: unexpectedWorkspaceCall,
     getHeadSha: unexpectedWorkspaceCall,
-    getLocalStateFingerprint: unexpectedWorkspaceCall,
-    getSharedGitRefsFingerprint: unexpectedWorkspaceCall,
+    getLocalStateSnapshot: unexpectedWorkspaceCall,
+    getSharedGitRefsSnapshot: unexpectedWorkspaceCall,
     getAdditionalWorkspaceWriteRoots: vi.fn(async () => []),
-    getStatus: unexpectedWorkspaceCall,
-    getDiff: unexpectedWorkspaceCall,
-    diffFiles: unexpectedWorkspaceCall,
-    diffPatch: unexpectedWorkspaceCall,
-    getPullRequest: unexpectedWorkspaceCall,
-    runPullRequestAction: unexpectedWorkspaceCall,
     commit: unexpectedWorkspaceCall,
   };
 }
@@ -447,6 +447,32 @@ describe("dispatchCommand", () => {
     }
     expect(directories[0]).toBe(directories[1]);
     expect(directories[2]).toBe(workspace);
+  });
+
+  it("reports a deleted workspace folder as path_not_found when the provider cannot start in it", async () => {
+    const runtime = createRuntime();
+    vi.mocked(runtime.runTurn).mockRejectedValueOnce(
+      new ProviderWorkspaceMissingError(WORKSPACE_PATH),
+    );
+    const manager = new RuntimeManager({
+      createRuntime: () => runtime,
+      provisionWorkspace: async () => createWorkspace(),
+    });
+    await manager.ensureEnvironment({
+      environmentId: "env-1",
+      workspacePath: WORKSPACE_PATH,
+    });
+
+    const failure = await dispatchCommand(
+      createTurnSubmitCommand({ mode: "start" }),
+      makeDispatchOptions({ runtimeManager: manager }),
+    ).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(ExpectedCommandDispatchError);
+    expect(failure).toMatchObject({
+      code: "path_not_found",
+      message: `Unmanaged workspace path does not exist: ${WORKSPACE_PATH}`,
+    });
   });
 
   it("steers an auto submit when the active turn appears after the server snapshot", async () => {
@@ -2369,6 +2395,7 @@ describe("dispatchCommand", () => {
     expect(result.providerThreadId).toBe("provider-thread-1");
     expect(fixture.runtime.startThread).toHaveBeenCalledTimes(1);
     const currentCatalog = await stageInjectedSkillSources({
+      workspacePath: fixture.dataDir,
       dataDir: fixture.dataDir,
       injectedSkillSources: [fixture.source],
     });

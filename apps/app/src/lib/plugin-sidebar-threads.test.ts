@@ -208,10 +208,13 @@ describe("toPluginSidebarThread", () => {
   });
 
   it("reports queued work as its own indicators", () => {
-    const failed = toPluginSidebarThread(makeThread({ queuedWork: "failed" }));
+    const failed = toPluginSidebarThread(
+      makeThread({ queuedWork: "failed", queuedFailedCount: 3 }),
+    );
     expect(failed.queuedWork).toBe("failed");
+    expect(failed.experimental_queuedFailedCount).toBe(3);
     expect(failed.indicator).toBe("queued-failed");
-    expect(failed.indicatorLabel).toBe("Queued message failed to send");
+    expect(failed.indicatorLabel).toBe("3 queued messages not delivered");
 
     const waiting = toPluginSidebarThread(
       makeThread({ queuedWork: "waiting" }),
@@ -253,3 +256,27 @@ describe("toPluginSidebarThread", () => {
     expect(toPluginSidebarThread(makeThread()).host).toBeNull();
   });
 });
+
+it.each([null, 100])(
+  "presents a clean exit without a red error (archivedAt %s)",
+  (archivedAt) => {
+    const entry = makeThread({
+      status: "error",
+      archivedAt,
+      runtime: { displayStatus: "error", nativeSessionExit: "clean" },
+      lastReadAt: 0,
+    });
+    const mapped = toPluginSidebarThread(entry);
+    expect(mapped.status).toBe("idle");
+    expect(mapped.runtimeStatus).toBe("idle");
+    expect(mapped.indicator).not.toBe("unread-error");
+    const failed = toPluginSidebarThread(
+      makeThread({
+        status: "error",
+        archivedAt,
+        runtime: { displayStatus: "error" },
+      }),
+    );
+    expect(failed.status).toBe("error");
+  },
+);

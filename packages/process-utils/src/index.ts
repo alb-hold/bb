@@ -15,3 +15,6 @@ export * from "./process-info.js";
 export * from "./tcp-server-sockets.js";
 export * from "./performance-diagnostics.js";
 export * from "./vcs-process-scheduler.js";
+export * from "./host-toolchain.js";
+export * from "./host-process.js";
+export { inheritedNodeNetworkArgs, nodeNetworkArgs } from "./node-network.js";

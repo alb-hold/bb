@@ -141,6 +141,9 @@ Each bundled plugin documents its commands and behavior in its own skill.
   behind the bb server with quota-aware failover. Run
   `bb plugin enable account-pool`, then `bb pool account add`,
   `bb pool status`, and `bb pool routing`; see the `account-pool` skill.
+  `bb pool route issue|revoke|list` mints revocable per-actor routes for an
+  external `claude`; issuing and revoking need the thread's own pool token on
+  `--proof-stdin`.
 - Keep Awake (builtin): prevents idle sleep on selected macOS and Windows
   hosts while bb runs; closing the lid still sleeps.
   `bb keep-awake status|enable|disable [--json]`, `bb keep-awake hosts all`,
@@ -270,10 +273,15 @@ list. To publish a marketplace, see the bb-plugin-authoring skill.
 
 Updates and pinning
 
-Updates are manual: `bb plugin outdated` checks tracking sources and
-`bb plugin update` applies compatible candidates. Reinstalling an installed
-managed plugin is refused; use `bb plugin update`. A failed activation restores
-the previous version and leaves the failure visible.
+bb checks tracking sources every six hours. With the `pluginUpdates`
+experiment on (`bb settings experiment pluginUpdates true`, on for early
+adopters), Settings → Updates checks again when it opens, lists each compatible
+update with an Update button and Update all, shows candidates blocked by
+engines.bb or engines.bbPluginSdk with the reason, and the sidebar updates
+badge counts plugin updates. Updates are never applied automatically: `bb plugin outdated` checks on
+demand and `bb plugin update` applies compatible candidates. Reinstalling an
+installed managed plugin is refused; use `bb plugin update`. A failed
+activation restores the previous version and leaves the failure visible.
 
 Exact npm versions, Git tags and commits, path sources, and bundled official
 plugins are pinned. npm ranges, dist-tags, and omitted specs, omitted Git refs
@@ -322,7 +330,10 @@ Authoring a plugin
   bb plugin build [path]         Compile the plugin into dist/; no server
                                  required
   bb plugin types [path] [--check]  Sync the plugin's SDK and shimmed-package
-                                 type pins to this bb; --check only reports
+                                 type pins to this bb; keep the SDK in
+                                 dependencies when an entry needs its own
+                                 SDK install; --check reports stale pins
+                                 and the wrong dependency field
   bb plugin migrate [path] [--yes]  Move a plugin that vendors types/ to the
                                  @get-bb/plugin-sdk npm package
 

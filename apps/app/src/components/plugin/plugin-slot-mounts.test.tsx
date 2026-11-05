@@ -1,3 +1,4 @@
+import { useThreadFixedTabs } from "./PluginThreadFixedTabs";
 // @vitest-environment jsdom
 
 import {
@@ -29,12 +30,13 @@ import type {
   PluginComposerApi,
   PluginFileOpenerProps,
   PluginNewThreadPanelProps,
-  PluginThreadPanelProps,
+  ExperimentalThreadActionTabProps,
 } from "@get-bb/plugin-sdk";
 import { createPluginPanelFixedPanelTab } from "@/lib/fixed-panel-tabs-state";
 import {
   resetPluginSlotStoreForTest,
   setPluginSlotRegistrations,
+  usePluginSlots,
   type PluginNavPanelSlot,
 } from "@/lib/plugin-slots";
 import { PLUGIN_PANEL_ROUTE_PATH } from "@/lib/route-paths";
@@ -78,11 +80,13 @@ import {
   usePromptDraftStorage,
 } from "@/hooks/usePromptDraftStorage";
 import {
+  createPanelActionDestination,
   PluginPanelTabContent,
   usePluginNewThreadPanelActions,
   usePluginPanelActions,
   type OpenPluginPanelArgs,
 } from "./PluginPanelActions";
+import { createAppPanelController } from "@/lib/app-fixed-tab-navigation";
 import {
   NewTabActions,
   useNewTabActions,
@@ -1344,7 +1348,7 @@ describe("useComposer", () => {
     function Harness() {
       const host = useMemo<PluginComposerHost>(
         () => ({
-          scope: { kind: "thread", threadId: "thr_submit" },
+          scope: { kind: "thread", threadId: "thr_submit", environment: null },
           textEffectKey: "thread:thr_submit",
           getCurrent: () => draft,
           subscribeDraft: () => () => {},
@@ -1583,7 +1587,7 @@ describe("useComposer().experimental_setSelection", () => {
       }),
     );
     const host = {
-      scope: { kind: "thread", threadId: "thr_own_selection" },
+      scope: { kind: "thread", threadId: "thr_own_selection", environment: null },
       textEffectKey: "thread:thr_own_selection",
       getSelection: () => selection,
       subscribeSelection: (listener: () => void) => {
@@ -1887,7 +1891,7 @@ describe("plugin panel shared title bar and full-bleed body", () => {
 });
 
 describe("plugin thread panel actions", () => {
-  function PanelProbe({ threadId, params }: PluginThreadPanelProps) {
+  function PanelProbe({ threadId, params }: ExperimentalThreadActionTabProps) {
     return (
       <div>
         panel body for {threadId} / {JSON.stringify(params)}
@@ -1906,6 +1910,25 @@ describe("plugin thread panel actions", () => {
     );
   }
 
+  function usePanelFor(
+    actions: readonly Parameters<
+      typeof createPanelActionDestination
+    >[0]["action"][],
+    openPluginPanel: (args: OpenPluginPanelArgs) => void,
+  ) {
+    return useMemo(
+      () =>
+        createAppPanelController(() => ({
+          activeTabId: null,
+          close: () => undefined,
+          destinations: actions.map((action) =>
+            createPanelActionDestination({ action, openPluginPanel }),
+          ),
+        })),
+      [actions, openPluginPanel],
+    );
+  }
+
   function ActionsProbe({
     threadId,
     openPluginPanel,
@@ -1913,7 +1936,13 @@ describe("plugin thread panel actions", () => {
     threadId: string | null;
     openPluginPanel: (args: OpenPluginPanelArgs) => void;
   }) {
-    const entries = usePluginPanelActions({ openPluginPanel, threadId });
+    const { actions } = useThreadFixedTabs({ threadId, environmentId: null });
+    const entries = usePluginPanelActions({
+      panel: usePanelFor(actions, openPluginPanel),
+      threadId,
+      environmentId: null,
+      actions,
+    });
     return (
       <div>
         {entries.map((entry) => (
@@ -1934,8 +1963,13 @@ describe("plugin thread panel actions", () => {
             id: "issue",
             title: "Issue",
             component: PanelProbe,
-            run: ({ threadId, openPanel }) => {
-              openPanel({
+            run: ({ threadId, experimental_panel }) => {
+              experimental_panel.openTab({
+                tab: {
+                  id: "issue",
+                  context: { kind: "thread" },
+                  availability: "action",
+                },
                 title: `Issue for ${threadId}`,
                 params: { n: 1, nested: [true, null, { label: "ok" }] },
               });
@@ -1960,7 +1994,7 @@ describe("plugin thread panel actions", () => {
           {tab ? (
             <PluginPanelTabContent
               tab={tab}
-              context={{ kind: "thread", threadId: "thr_9" }}
+              context={{ kind: "thread", threadId: "thr_9", environment: null }}
             />
           ) : null}
         </>
@@ -1998,17 +2032,33 @@ describe("plugin thread panel actions", () => {
             id: "cyclic",
             title: "Cyclic",
             component: PanelProbe,
-            run: ({ openPanel }) => {
-              declines.push(openPanel({ params: cyclic as never }));
+            run: ({ experimental_panel }) => {
+              declines.push(
+                experimental_panel.openTab({
+                  tab: {
+                    id: "cyclic",
+                    context: { kind: "thread" },
+                    availability: "action",
+                  },
+                  params: cyclic as never,
+                }),
+              );
             },
           },
           {
             id: "coerced",
             title: "Coerced",
             component: PanelProbe,
-            run: ({ openPanel }) => {
+            run: ({ experimental_panel }) => {
               declines.push(
-                openPanel({ params: new Date("2026-01-01") as never }),
+                experimental_panel.openTab({
+                  tab: {
+                    id: "coerced",
+                    context: { kind: "thread" },
+                    availability: "action",
+                  },
+                  params: new Date("2026-01-01") as never,
+                }),
               );
             },
           },
@@ -2022,11 +2072,14 @@ describe("plugin thread panel actions", () => {
     fireEvent.click(screen.getByText("Coerced"));
     expect(openPluginPanel).not.toHaveBeenCalled();
     expect(declines).toEqual([false, false]);
-    expect(warn).toHaveBeenCalledTimes(3);
+    expect(warn).toHaveBeenCalledTimes(1);
   });
 
-  it("reports an accepted open as true from both panel action kinds", () => {
+  it("reports an accepted open as true from both panel action kinds, including the retired openPanel", () => {
     const accepted: boolean[] = [];
+    type RetiredOpenPanel = {
+      openPanel(options: { params: { source: string } }): boolean;
+    };
     setPluginSlotRegistrations(
       "demo",
       registrationSet({
@@ -2035,8 +2088,20 @@ describe("plugin thread panel actions", () => {
             id: "issue",
             title: "Thread action",
             component: PanelProbe,
-            run: ({ openPanel }) => {
-              accepted.push(openPanel({ params: { source: "thread" } }));
+            run: (context) => {
+              accepted.push(
+                context.experimental_panel.openTab({
+                  tab: {
+                    id: "issue",
+                    context: { kind: "thread" },
+                    availability: "action",
+                  },
+                  params: { source: "thread" },
+                }),
+                (context as unknown as RetiredOpenPanel).openPanel({
+                  params: { source: "retired-thread" },
+                }),
+              );
             },
           },
         ],
@@ -2045,21 +2110,41 @@ describe("plugin thread panel actions", () => {
             id: "setup",
             title: "Root action",
             component: NewThreadPanelProbe,
-            run: ({ openPanel }) => {
-              accepted.push(openPanel({ params: { source: "root" } }));
+            run: (context) => {
+              accepted.push(
+                context.experimental_panel.openTab({
+                  tab: {
+                    id: "setup",
+                    context: { kind: "thread" },
+                    availability: "action",
+                  },
+                  params: { source: "root" },
+                }),
+                (context as unknown as RetiredOpenPanel).openPanel({
+                  params: { source: "retired-root" },
+                }),
+              );
             },
           },
         ],
       }),
     );
 
+    const opened: (string | null)[] = [];
+    const recordOpen = (args: OpenPluginPanelArgs) => {
+      opened.push(args.paramsJson);
+    };
     function BothActionsHarness() {
+      const { actions } = useThreadFixedTabs({ threadId: "thr_one", environmentId: null });
+      const { newThreadPanelActions } = usePluginSlots();
       const threadEntries = usePluginPanelActions({
-        openPluginPanel: () => undefined,
+        actions,
+        panel: usePanelFor(actions, recordOpen),
         threadId: "thr_9",
+        environmentId: null,
       });
       const rootEntries = usePluginNewThreadPanelActions({
-        openPluginPanel: () => undefined,
+        panel: usePanelFor(newThreadPanelActions, recordOpen),
         projectId: "proj_1",
       });
       return (
@@ -2077,7 +2162,13 @@ describe("plugin thread panel actions", () => {
     fireEvent.click(screen.getByText("Thread action"));
     fireEvent.click(screen.getByText("Root action"));
 
-    expect(accepted).toEqual([true, true]);
+    expect(accepted).toEqual([true, true, true, true]);
+    expect(opened).toEqual([
+      '{"source":"thread"}',
+      '{"source":"retired-thread"}',
+      '{"source":"root"}',
+      '{"source":"retired-root"}',
+    ]);
   });
 
   it("offers no actions outside a thread context", () => {
@@ -2106,8 +2197,13 @@ describe("plugin thread panel actions", () => {
             title: "Set up thread",
             icon: "Wand",
             component: NewThreadPanelProbe,
-            run: ({ projectId, openPanel }) => {
-              openPanel({
+            run: ({ projectId, experimental_panel }) => {
+              experimental_panel.openTab({
+                tab: {
+                  id: "setup",
+                  context: { kind: "thread" },
+                  availability: "action",
+                },
                 title: `Setup for ${String(projectId)}`,
                 params: { source: "root" },
               });
@@ -2121,8 +2217,11 @@ describe("plugin thread panel actions", () => {
       const [tab, setTab] = useState<ReturnType<
         typeof createPluginPanelFixedPanelTab
       > | null>(null);
+      const { newThreadPanelActions } = usePluginSlots();
       const entries = usePluginNewThreadPanelActions({
-        openPluginPanel: (args) => setTab(createPluginPanelFixedPanelTab(args)),
+        panel: usePanelFor(newThreadPanelActions, (args) =>
+          setTab(createPluginPanelFixedPanelTab(args)),
+        ),
         projectId: "proj_1",
       });
       const actions = useNewTabActions({
@@ -2167,7 +2266,7 @@ describe("plugin thread panel actions", () => {
     render(
       <PluginPanelTabContent
         tab={tab}
-        context={{ kind: "thread", threadId: "thr_9" }}
+        context={{ kind: "thread", threadId: "thr_9", environment: null }}
       />,
     );
     expect(screen.queryByText(/This plugin tab is not available/)).toBeNull();
@@ -2196,7 +2295,7 @@ describe("plugin thread panel actions", () => {
     render(
       <PluginPanelTabContent
         tab={tab}
-        context={{ kind: "thread", threadId: "thr_9" }}
+        context={{ kind: "thread", threadId: "thr_9", environment: null }}
       />,
     );
     expect(screen.getByText("panel body for thr_9 / null")).toBeDefined();
@@ -2350,7 +2449,7 @@ describe("plugin file opener tabs", () => {
       const content = () => (
         <PluginPanelTabContent
           tab={tab}
-          context={{ kind: "thread", threadId: "thr_1" }}
+          context={{ kind: "thread", threadId: "thr_1", environment: null }}
           fileOpenerOriginal={<div>native</div>}
         />
       );
@@ -2427,7 +2526,7 @@ describe("plugin file opener tabs", () => {
     render(
       <PluginPanelTabContent
         tab={tab}
-        context={{ kind: "thread", threadId: "thr_1" }}
+        context={{ kind: "thread", threadId: "thr_1", environment: null }}
         fileOpenerOriginal={
           <button type="button">Native line 7 and editor actions</button>
         }

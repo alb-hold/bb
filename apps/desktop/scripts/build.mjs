@@ -28,12 +28,6 @@ function readPackageVersion(packageJsonText, label) {
   }
   return packageJson.version;
 }
-
-/**
- * The About panel reports the commit a build came from. A tarball checkout or
- * a shallow CI clone can have no usable git metadata, so an unknown commit is
- * reported as such rather than failing the build.
- */
 function readBuildCommit(env) {
   const injected =
     env.BB_DESKTOP_COMMIT?.trim() ?? env.GITHUB_SHA?.trim() ?? "";

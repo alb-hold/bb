@@ -79,6 +79,12 @@ import {
   SidebarStickyTier,
 } from "../ui/sidebar.js";
 import {
+  addGrowingRow,
+  StickyOffsetProvider,
+  StickyRowStateReportProvider,
+  useStickyOffset,
+} from "../ui/stickyOffset.js";
+import {
   ProjectActionsContextMenu,
   ProjectActionsMenuItems,
 } from "./ProjectActionsMenu.js";
@@ -120,6 +126,7 @@ import {
   getSidebarDndItemId,
   isSidebarProjectThread,
   projectThreadItemContainsThread,
+  selectedThreadIdWithin,
   type EnvironmentThreadGroup,
   type ProjectThreadItem,
   type ProjectThreadItemRowCountContext,
@@ -531,15 +538,14 @@ function SectionDndSortableList({
   sectionDnd?: SectionThreadDndState | null;
   parentKey: string;
 }) {
+  const itemIds = sectionDnd?.itemIdsByParentKey.get(parentKey);
+  const items = useMemo(() => [...(itemIds ?? [])], [itemIds]);
   if (!sectionDnd) {
     return <>{children}</>;
   }
 
   return (
-    <SortableContext
-      items={[...(sectionDnd.itemIdsByParentKey.get(parentKey) ?? [])]}
-      strategy={verticalListSortingStrategy}
-    >
+    <SortableContext items={items} strategy={verticalListSortingStrategy}>
       {children}
     </SortableContext>
   );
@@ -588,7 +594,9 @@ const DraggableSectionThreadItemRow = memo(
       disabled: false,
       displace: false,
     });
-    const isActive = sectionDnd.activeItemId === itemId;
+    const isActive =
+      sectionDnd.activeItemId === itemId ||
+      (sectionDnd.draggedThreadIds?.has(itemId) ?? false);
 
     return (
       <ThreadTreeItemRow
@@ -1034,7 +1042,10 @@ const EnvironmentThreadGroupRow = memo(function EnvironmentThreadGroupRow({
                     sectionDnd={sectionDnd}
                     depthOffset={depthOffset + 1}
                     isEnvGrouped
-                    selectedThreadId={selectedThreadId}
+                    selectedThreadId={selectedThreadIdWithin(
+                      nodeItems[index],
+                      selectedThreadId,
+                    )}
                     collapsedThreadIds={collapsedThreadIds}
                     collapsedEnvironmentIds={collapsedEnvironmentIds}
                     onProjectSelect={onProjectSelect}
@@ -1332,7 +1343,10 @@ const SectionTreeItemRow = memo(function SectionTreeItemRow({
                     projectId={getItemProjectId(item)}
                     item={item}
                     depthOffset={depthOffset === 0 ? 0 : depthOffset + 1}
-                    selectedThreadId={selectedThreadId}
+                    selectedThreadId={selectedThreadIdWithin(
+                      item,
+                      selectedThreadId,
+                    )}
                     collapsedThreadIds={collapsedThreadIds}
                     collapsedEnvironmentIds={collapsedEnvironmentIds}
                     onProjectSelect={onProjectSelect}
@@ -1461,6 +1475,8 @@ export const ThreadTreeNodeRow = memo(function ThreadTreeNodeRow({
   const isCollapsed = collapsedThreadIds.has(node.thread.id);
   const hasChildren = node.children.length > 0;
   const isParent = hasChildren;
+  const inheritedStickyOffset = useStickyOffset();
+  const [growingRowHeight, setGrowingRowHeight] = useState(0);
   const nestDropEnabled = Boolean(sectionDnd);
   const { setNodeRef: setNestDropNodeRef } = useDroppable({
     id: getSidebarThreadRowDroppableId(node.thread.id),
@@ -1571,57 +1587,66 @@ export const ThreadTreeNodeRow = memo(function ThreadTreeNodeRow({
         afterSubtree && REORDER_PLACEMENT_CLASS.after,
       )}
     >
-      {row}
+      <StickyRowStateReportProvider value={setGrowingRowHeight}>
+        {row}
+      </StickyRowStateReportProvider>
       {showChildren || nestPreviewThread !== null ? (
-        <div className="relative space-y-px">
-          <ThreadTreeGroupLine parentRowDepth={parentRowDepth} />
-          {showChildren ? (
-            <SidebarWindowedItems
-              itemKeys={itemKeys}
-              estimateRows={estimateRows}
-              getNavigationEntries={getNavigationEntries}
-              alwaysMountedKeys={alwaysMountedKeys}
-              renderItem={(index) => {
-                const item = node.children[index];
-                if (!item) {
-                  return null;
-                }
-                const itemKey = getSidebarItemKey(item);
-                return (
-                  <Fragment key={itemKey}>
-                    {nestPreviewThread !== null &&
-                    nestPreviewBeforeKey === itemKey ? (
-                      <NestDropPreviewRow
-                        depth={parentRowDepth + 1}
-                        thread={nestPreviewThread}
+        <StickyOffsetProvider
+          value={addGrowingRow(inheritedStickyOffset, growingRowHeight)}
+        >
+          <div className="relative space-y-px">
+            <ThreadTreeGroupLine parentRowDepth={parentRowDepth} />
+            {showChildren ? (
+              <SidebarWindowedItems
+                itemKeys={itemKeys}
+                estimateRows={estimateRows}
+                getNavigationEntries={getNavigationEntries}
+                alwaysMountedKeys={alwaysMountedKeys}
+                renderItem={(index) => {
+                  const item = node.children[index];
+                  if (!item) {
+                    return null;
+                  }
+                  const itemKey = getSidebarItemKey(item);
+                  return (
+                    <Fragment key={itemKey}>
+                      {nestPreviewThread !== null &&
+                      nestPreviewBeforeKey === itemKey ? (
+                        <NestDropPreviewRow
+                          depth={parentRowDepth + 1}
+                          thread={nestPreviewThread}
+                        />
+                      ) : null}
+                      <SectionDndItemRow
+                        projectId={rowProjectId}
+                        item={item}
+                        depthOffset={depthOffset}
+                        selectedThreadId={selectedThreadIdWithin(
+                          item,
+                          selectedThreadId,
+                        )}
+                        collapsedThreadIds={collapsedThreadIds}
+                        collapsedEnvironmentIds={collapsedEnvironmentIds}
+                        onProjectSelect={onProjectSelect}
+                        onToggleThreadCollapsed={onToggleThreadCollapsed}
+                        onToggleEnvironmentCollapsed={
+                          onToggleEnvironmentCollapsed
+                        }
+                        sectionDnd={sectionDnd ?? undefined}
                       />
-                    ) : null}
-                    <SectionDndItemRow
-                      projectId={rowProjectId}
-                      item={item}
-                      depthOffset={depthOffset}
-                      selectedThreadId={selectedThreadId}
-                      collapsedThreadIds={collapsedThreadIds}
-                      collapsedEnvironmentIds={collapsedEnvironmentIds}
-                      onProjectSelect={onProjectSelect}
-                      onToggleThreadCollapsed={onToggleThreadCollapsed}
-                      onToggleEnvironmentCollapsed={
-                        onToggleEnvironmentCollapsed
-                      }
-                      sectionDnd={sectionDnd ?? undefined}
-                    />
-                  </Fragment>
-                );
-              }}
-            />
-          ) : null}
-          {nestPreviewThread !== null && nestPreviewBeforeKey === null ? (
-            <NestDropPreviewRow
-              depth={parentRowDepth + 1}
-              thread={nestPreviewThread}
-            />
-          ) : null}
-        </div>
+                    </Fragment>
+                  );
+                }}
+              />
+            ) : null}
+            {nestPreviewThread !== null && nestPreviewBeforeKey === null ? (
+              <NestDropPreviewRow
+                depth={parentRowDepth + 1}
+                thread={nestPreviewThread}
+              />
+            ) : null}
+          </div>
+        </StickyOffsetProvider>
       ) : null}
     </SidebarStickyGroup>
   );
@@ -1773,7 +1798,7 @@ function SectionThreadTreeItems({
               projectId={projectId ?? getItemProjectId(item)}
               item={item}
               depthOffset={depthOffset}
-              selectedThreadId={selectedThreadId}
+              selectedThreadId={selectedThreadIdWithin(item, selectedThreadId)}
               collapsedThreadIds={collapsedThreadIds}
               collapsedEnvironmentIds={collapsedEnvironmentIds}
               onProjectSelect={onProjectSelect}
@@ -1945,7 +1970,14 @@ export const ChronologicalSectionThreadSections = memo(
       threads,
     });
     const sectionItems = rootItems.filter((item) => item.kind === "section");
-    const looseItems = rootItems.filter((item) => item.kind !== "section");
+    const looseItems = useMemo(
+      () => rootItems.filter((item) => item.kind !== "section"),
+      [rootItems],
+    );
+    const looseItemIds = useMemo(
+      () => looseItems.map(getSidebarDndItemId),
+      [looseItems],
+    );
     const looseThreads = getProjectThreadItemDescendants(looseItems);
 
     const renderItems = (items: readonly ProjectThreadItem[]) => (
@@ -1978,7 +2010,7 @@ export const ChronologicalSectionThreadSections = memo(
         <ThreadTreeLoadingSkeleton />
       ) : looseItems.length > 0 ? (
         <SortableContext
-          items={looseItems.map(getSidebarDndItemId)}
+          items={looseItemIds}
           strategy={verticalListSortingStrategy}
         >
           {renderItems(looseItems)}

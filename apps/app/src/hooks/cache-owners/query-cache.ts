@@ -1,4 +1,5 @@
 import type { QueryClient, QueryKey } from "@tanstack/react-query";
+import { withEffectiveDisplayStatus } from "@bb/domain";
 import type {
   Thread,
   ThreadListEntry,
@@ -8,7 +9,6 @@ import {
   getCachedThreadLists,
   iterateThreadListCacheEntries,
 } from "./thread-list-cache-data";
-import { bumpDiffPatchEvictionGeneration } from "./environment-diff-patch-cache-owner";
 import { patchCachedQueryData } from "./cache-effect-utils";
 import { readCachedSidebarBootstrap } from "@/lib/sidebar-bootstrap-cache";
 import type {
@@ -19,21 +19,13 @@ import type {
 } from "@bb/server-contract";
 import {
   ARCHIVED_THREADS_LIST_KIND,
-  ENVIRONMENT_WORK_STATUS_QUERY_KEY,
-  environmentDiffFilesQueryKeyPrefix,
-  environmentDiffPatchQueryKeyPrefix,
   environmentFilePreviewQueryKeyPrefix,
-  environmentMergeBaseBranchesQueryKeyPrefix,
-  environmentPullRequestQueryKey,
   environmentQueryKey,
-  environmentWorkStatusQueryKey,
-  environmentWorkStatusQueryKeyPrefix,
   SIDEBAR_NAVIGATION_QUERY_KEY,
   sidebarNavigationQueryKey,
   THREADS_QUERY_KEY,
   threadsQueryKey,
   threadTimelineQueryKeyPrefix,
-  type EnvironmentWorkStatusQueryKey,
   type ArchivedThreadsListFilters,
   type ThreadListQueryFilters,
 } from "../queries/query-keys";
@@ -54,11 +46,6 @@ interface UpdateCachedTimelineRowsArgs {
 
 interface EnvironmentInvalidationParams {
   environmentId: string;
-}
-
-interface EnvironmentDiffPatchRemovalParams {
-  environmentId: string;
-  queryClient: QueryClient;
 }
 
 interface ProjectThreadListInvalidationParams {
@@ -323,68 +310,7 @@ export function getEnvironmentRecordInvalidationQueryKeys({
 export function getEnvironmentWorkspaceStateInvalidationQueryKeys({
   environmentId,
 }: EnvironmentInvalidationParams): QueryKey[] {
-  return [
-    environmentWorkStatusQueryKeyPrefix(environmentId),
-    environmentPullRequestQueryKey(environmentId),
-    environmentDiffFilesQueryKeyPrefix(environmentId),
-    environmentFilePreviewQueryKeyPrefix(environmentId),
-  ];
-}
-
-export function removeEnvironmentDiffPatchQueries({
-  environmentId,
-  queryClient,
-}: EnvironmentDiffPatchRemovalParams): void {
-  bumpDiffPatchEvictionGeneration(environmentId);
-  queryClient.removeQueries({
-    queryKey: environmentDiffPatchQueryKeyPrefix(environmentId),
-  });
-}
-
-export function getEnvironmentBranchListInvalidationQueryKeys({
-  environmentId,
-}: EnvironmentInvalidationParams): QueryKey[] {
-  return [environmentMergeBaseBranchesQueryKeyPrefix(environmentId)];
-}
-
-function isEnvironmentWorkStatusQueryKeyForEnvironment(
-  queryKey: QueryKey,
-  environmentId: string,
-): queryKey is EnvironmentWorkStatusQueryKey {
-  return (
-    queryKey[0] === ENVIRONMENT_WORK_STATUS_QUERY_KEY &&
-    queryKey[1] === environmentId &&
-    (typeof queryKey[2] === "string" || queryKey[2] === null)
-  );
-}
-
-function isMergeBaseEnvironmentWorkStatusQueryKey(
-  queryKey: QueryKey,
-  environmentId: string,
-): queryKey is EnvironmentWorkStatusQueryKey {
-  return (
-    isEnvironmentWorkStatusQueryKeyForEnvironment(queryKey, environmentId) &&
-    typeof queryKey[2] === "string"
-  );
-}
-
-export function getCachedEnvironmentRefWorkspaceStateInvalidationQueryKeys(
-  queryClient: QueryClient,
-  { environmentId }: EnvironmentInvalidationParams,
-): QueryKey[] {
-  const queryKeys: QueryKey[] = [];
-
-  for (const [queryKey] of queryClient.getQueriesData({
-    queryKey: environmentWorkStatusQueryKeyPrefix(environmentId),
-  })) {
-    if (isMergeBaseEnvironmentWorkStatusQueryKey(queryKey, environmentId)) {
-      queryKeys.push(environmentWorkStatusQueryKey(environmentId, queryKey[2]));
-    }
-  }
-
-  queryKeys.push(environmentDiffFilesQueryKeyPrefix(environmentId));
-
-  return queryKeys;
+  return [environmentFilePreviewQueryKeyPrefix(environmentId)];
 }
 
 export function getEnvironmentActionInvalidationQueryKeys({
@@ -392,7 +318,6 @@ export function getEnvironmentActionInvalidationQueryKeys({
 }: EnvironmentInvalidationParams): QueryKey[] {
   return [
     ...getEnvironmentWorkspaceStateInvalidationQueryKeys({ environmentId }),
-    ...getEnvironmentBranchListInvalidationQueryKeys({ environmentId }),
     threadsQueryKey(),
   ];
 }
@@ -492,6 +417,7 @@ export function optimisticallyInsertThread(
     hasPendingInteraction: false,
     pinSortKey: null,
     queuedWork,
+    queuedFailedCount: 0,
     rowState: { statuses: {}, progress: null },
   };
   const upsertThread = (threads: ThreadListEntry[]): ThreadListEntry[] => {
@@ -636,7 +562,7 @@ export function updateCachedThreadListStatusState(
   patchThreadEntity(
     queryClient,
     threadId,
-    statusChange,
+    withEffectiveDisplayStatus(statusChange),
     statusChange.updatedAt,
   );
 }
@@ -649,7 +575,11 @@ export function updateCachedThreadStatusState(
   patchThreadEntity(
     queryClient,
     threadId,
-    { status, runtime, latestAttentionAt, updatedAt },
+    {
+      ...withEffectiveDisplayStatus({ status, runtime }),
+      latestAttentionAt,
+      updatedAt,
+    },
     updatedAt,
   );
 }

@@ -5,8 +5,12 @@ import {
   type Host,
   type ThreadListEntry,
 } from "@bb/domain";
+import type { PullRequest } from "bb-plugin-bb--github-pr-status/contract";
 import { useIsCompactViewport } from "@bb/shared-ui/hooks/use-compact-viewport";
-import { isNativeActivityUnconfirmed } from "@bb/client-core";
+import {
+  isNativeActivityUnconfirmed,
+  nativeActivityEvidenceKind,
+} from "@bb/client-core";
 import type {
   PluginSdkApp,
   PluginSidebarProject,
@@ -15,7 +19,6 @@ import type {
   PluginSidebarThread,
   PluginSidebarThreadActions,
   PluginSidebarThreadDraftState,
-  PluginSidebarThreadPullRequestState,
   PluginSidebarThreadRowStatus,
   PluginSidebarThreadShortcut,
   PluginSidebarThreadsState,
@@ -35,10 +38,7 @@ import {
 } from "./plugin-thread-row-status";
 import { getThreadConversationCollapsedAtom } from "@/components/secondary-panel/threadSecondaryPanelAtoms";
 import { useThreadActions } from "@/components/thread/ThreadActionsProvider";
-import {
-  getEnvironmentPullRequestFromResponse,
-  useEnvironmentPullRequest,
-} from "@/hooks/queries/environment-queries";
+import { useRetiredSidebarEnvironmentPullRequest } from "./retired-sidebar-pull-request";
 import { useHosts } from "@/hooks/queries/host-queries";
 import { useQuickCreateProject } from "@/hooks/useQuickCreateProject";
 import { useArchivedThreads } from "@/hooks/queries/thread-queries";
@@ -88,7 +88,7 @@ const pluginSidebarThreadByEntry = new WeakMap<
   {
     hostNamesById: ReadonlyMap<string, string>;
     titleResources: ThreadTitleMentionResources;
-    nativeActivityUnconfirmed: boolean;
+    nativeActivityKey: string;
     thread: PluginSidebarThread;
   }
 >();
@@ -104,11 +104,22 @@ function toPluginSidebarThreadCached(
     entry.runtime,
     now,
   );
+  const evidenceKind = nativeActivityEvidenceKind(
+    entry.runtime,
+    now,
+    nativeActivityUnconfirmed,
+  );
+  const lastToolCallAt = entry.runtime.nativeActivity?.lastToolCallAt;
+  const toolCallAgeMinutes =
+    evidenceKind === "tool-call" && lastToolCallAt !== undefined
+      ? Math.floor((now - lastToolCallAt) / 60_000)
+      : 0;
+  const nativeActivityKey = `${nativeActivityUnconfirmed}:${evidenceKind}:${toolCallAgeMinutes}`;
   if (
     cached !== undefined &&
     cached.hostNamesById === hostNamesById &&
     cached.titleResources === titleResources &&
-    cached.nativeActivityUnconfirmed === nativeActivityUnconfirmed
+    cached.nativeActivityKey === nativeActivityKey
   ) {
     return cached.thread;
   }
@@ -122,7 +133,7 @@ function toPluginSidebarThreadCached(
   pluginSidebarThreadByEntry.set(entry, {
     hostNamesById,
     titleResources,
-    nativeActivityUnconfirmed,
+    nativeActivityKey,
     thread,
   });
   return thread;
@@ -416,17 +427,35 @@ export function useSidebarThreadShortcut(
   return useHostSidebarThreadShortcut(threadId) ?? null;
 }
 
+interface RetiredSidebarThreadPullRequestState {
+  isLoading: boolean;
+  pullRequest: {
+    number: number;
+    title: string;
+    url: string;
+    state: PullRequest["state"];
+    attention: PullRequest["attention"];
+    experimental_autoMerge: boolean;
+    experimental_inMergeQueue: boolean | null;
+    experimental_checks: { state: PullRequest["checks"]["state"] };
+    experimental_review: { state: PullRequest["review"]["state"] };
+    experimental_mergeability: {
+      state: PullRequest["mergeability"]["state"];
+    };
+  } | null;
+}
+
 export function useSidebarThreadPullRequest(
   threadId: string,
-): PluginSidebarThreadPullRequestState {
+): RetiredSidebarThreadPullRequestState {
   const entry = useSidebarThreadEntry(threadId);
   const environmentId = entry?.environmentId ?? null;
-  const query = useEnvironmentPullRequest(environmentId);
-  const pullRequest = getEnvironmentPullRequestFromResponse(query.data);
+  const { isLoading, pullRequest } =
+    useRetiredSidebarEnvironmentPullRequest(environmentId);
 
-  return useMemo<PluginSidebarThreadPullRequestState>(
+  return useMemo<RetiredSidebarThreadPullRequestState>(
     () => ({
-      isLoading: environmentId !== null && query.isPending,
+      isLoading,
       pullRequest:
         pullRequest === null
           ? null
@@ -445,7 +474,7 @@ export function useSidebarThreadPullRequest(
               },
             },
     }),
-    [environmentId, pullRequest, query.isPending],
+    [isLoading, pullRequest],
   );
 }
 

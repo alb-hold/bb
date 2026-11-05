@@ -4,13 +4,20 @@ import { createLastKnownCache } from "@/lib/last-known-cache";
 import { usePluginFrontendBootComplete } from "@/lib/plugin-frontend-boot-state";
 import { getPluginPanelRoutePluginId } from "@/lib/route-paths";
 
-const PLUGIN_SURFACES = ["thread-list", "sidebar-navigation"] as const;
+const PLUGIN_SURFACES = [
+  "composer",
+  "thread-list",
+  "sidebar-navigation",
+  "thread-panel-tab",
+] as const;
 
 export type PluginSurface = (typeof PLUGIN_SURFACES)[number];
 
-const DEFAULT_SURFACE_PROVIDERS: Record<PluginSurface, string> = {
+const DEFAULT_SURFACE_PROVIDERS: Record<PluginSurface, string | null> = {
+  composer: "bb--composer",
   "thread-list": "thread-list",
   "sidebar-navigation": "navigation",
+  "thread-panel-tab": null,
 };
 
 const surfaceProviderCache = createLastKnownCache({

@@ -122,69 +122,14 @@ Making your repo work with bb:
                                           provider removal completes
   bb environment cleanup <id>             Remove an unused provider-managed environment now
     --recover                             After inspection, acknowledge interrupted hooks and
-                                          retry failed cleanup (Linux same-user process guard)
+                                          retry failed cleanup (same-user process guard on Linux and macOS)
   bb environment show <id>                Show environment details (path, branch, status, lifecycle, retirement deadline and teardown attempts)
-
-  bb environment status <id>              Show workspace status. Each file list holds at most
-                                          200 entries (tracked changes first); fileCount is
-                                          the total number of changed files
-    --merge-base-branch <branch>          Include merge-base status
-      If squash-merge detection hits its limits (1,000 commits, 1 second),
-      mergeBase.squashMergeCheckComplete is false and counts may include
-      already squash-merged commits.
-
-  bb environment branches <id>            List local and remote branches
-    --query <query>                       Filter branch names
-    --limit <count>                       Limit local and remote results
 
   bb environment paths <id>               Search workspace paths
     --query <query>                       Fuzzy path query
     --limit <count>                       Maximum results
     --files                               Include only files unless combined with --directories
     --directories                         Include only directories unless combined with --files
-
-  bb environment diff <id>                Show file summary and full git diff
-  bb environment diff-files <id>          List changed-file metadata
-    --target <target>                     uncommitted, branch_committed, all, or commit (required)
-    --merge-base-branch <branch>          Required for branch_committed and all
-    --sha <sha>                           Required for commit
-    --ignore-whitespace                   Count and diff with git -w; whitespace-only
-                                          files stay listed with +0 -0
-
-  bb environment diff-file <id>           Read one side of a changed file
-    --target <target>                     Diff target (required)
-    --path <path>                         Repository-relative path (required)
-    --side <old|new>                      File side (required)
-    --merge-base-ref <sha>                Required for branch_committed and all
-    --sha <sha>                           Required for commit
-
-  bb environment diff-patch <id>          Fetch selected file patches
-    --target <target>                     Diff target (required)
-    --path <path>                         Changed path; repeat for multiple files (required)
-    --merge-base-branch <branch>          Required for branch_committed and all
-    --sha <sha>                           Required for commit
-    --ignore-whitespace                   Patch with git -w; whitespace-only files
-                                          return an empty patch
-
-  diff-files --json reports each file's revision: old and new git modes and
-  blob ids (<oldMode>:<oldBlob>:<newMode>:<newBlob>). Any content or mode
-  edit, including whitespace, changes it; staging does not.
-
-  bb environment diff-viewed list <id>    List files marked Viewed
-    --path <path>                         Limit to these paths; repeat up to 500 times (revision, path)
-  bb environment diff-viewed mark <id>    Mark a file Viewed
-    --path <path>                         Changed path (required)
-    --revision <revision>                 Defaults to the file's current revision
-  bb environment diff-viewed unmark <id>  Clear Viewed for --path <path>
-  bb environment diff-viewed clear <id>   Clear Viewed for every file in the target
-    All diff-viewed commands take --target, --merge-base-branch, --sha, --json.
-
-  Viewed mutation commands acknowledge success (`{ "ok": true }` with --json);
-  use list to read records. Omitting --path from list returns the whole target.
-
-  Viewed is stored per environment and diff target. A file shows as Viewed
-  only while its current revision equals the stored one, so new edits
-  un-view it.
 
   bb environment update <id>              Update environment metadata
     --merge-base-branch <branch>          Set merge-base branch override
@@ -223,9 +168,12 @@ Making your repo work with bb:
   setup without a recorded hook operation. A teardown hook that never started
   still runs. A daemon reboot alone never proves a detached hook has stopped.
 
-  Recovery currently requires Linux. It refuses while a setup/hook is still
-  active, while any process owned by the daemon UID has its cwd or a mapped
-  file path under the workspace, or while any such process cannot be inspected.
+  Recovery requires host process inspection (Linux `/proc`, macOS `lsof -u <uid>`).
+  It refuses while a setup/hook is still active, while any process owned by the
+  daemon UID has its cwd or an open file path under the workspace, or while any
+  such same-user process cannot be inspected. Other users' processes are out of
+  scope; inspect them separately before recovering, as with the Linux `Uid:`
+  check in `/proc`.
   The guard compares paths, including deleted paths, rather than shared inode
   identity. It does not kill processes. Processes owned by other users require
   separate inspection before recovery. Stop or move your own workspace users
@@ -234,13 +182,24 @@ Making your repo work with bb:
   `sdk.environments.experimental_cleanup({ environmentId, recover: true })`.
   Inspect `bb environment show <id>` after recovery to confirm removal.
 
-  bb environment pull-request show <id>   Inspect a pull request
-  bb environment pull-request ready <id>  Mark a pull request ready
-  bb environment pull-request draft <id>  Convert a pull request to draft
-  bb environment pull-request merge <id>  Merge a pull request
-    --method <method>                     merge, squash, or rebase
+  Pull requests moved to the bundled GitHub PR Status plugin:
+  `bb pull-request show|ready|draft|merge <environment-id>`; ready, draft and
+  merge each need `--expected-head-oid`, `--expected-host`,
+  `--expected-repository`, `--expected-number` and `--expected-base-ref`, all
+  copied from `show`. See its github-pr-status skill.
+
+  Git status, branches, diffs and Viewed marks moved to the bundled Git
+  plugin: `bb git status|branches|diff|files|file|patch|viewed
+  <environment-id>`. See its git skill. The old `bb environment status`,
+  `branches`, `diff`, `diff-files`, `diff-file`, `diff-patch` and
+  `diff-viewed` commands still run and print the command that replaced them.
 
 Every inspection command accepts an arbitrary environment ID and supports
-`--json`. Non-git status/diff responses are reported explicitly. `diff-file`
-prints UTF-8 content directly and labels base64 binary content; diff and patch
-truncation markers are preserved.
+`--json`.
+
+Host commands share executable discovery across the daemon, server, desktop,
+providers, and plugins. Service launches include native `~/.local/bin` installs
+and mise/asdf shims. If a command disappears or exits 127, the next launch
+refreshes discovery. A replaced Node executable is recovered when a compatible
+runtime is available; commands with possible side effects are not retried
+automatically.

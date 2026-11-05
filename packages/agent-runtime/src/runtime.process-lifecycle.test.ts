@@ -7,12 +7,21 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  onTestFinished,
+  vi,
+} from "vitest";
 import type { ThreadEvent } from "@bb/domain";
 import { createAgentRuntime } from "./runtime.js";
 import { createProviderForId } from "./provider-registry.js";
 import {
   isProviderProcessExitedError,
+  ProviderWorkspaceMissingError,
   RuntimeProviderProcessManager,
 } from "./runtime-provider-process.js";
 import { RuntimeThreadIdentityRegistry } from "./runtime-thread-identity.js";
@@ -247,6 +256,33 @@ describe("createAgentRuntime process lifecycle", () => {
     await runtime.shutdown();
   });
 
+  it("reports a missing workspace folder instead of spawning the provider into it", async () => {
+    const onProcessExit = vi.fn();
+    const goneWorkspacePath = join(tmpDir, "deleted-workspace");
+    const manager = createProviderProcessManager({
+      onProcessExit,
+      workspacePath: goneWorkspacePath,
+    });
+
+    const failure = await manager
+      .ensureProvider(MANAGER_PROVIDER)
+      .catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(ProviderWorkspaceMissingError);
+    expect(failure).toMatchObject({
+      code: "path_not_found",
+      message: `Unmanaged workspace path does not exist: ${goneWorkspacePath}`,
+      workspacePath: goneWorkspacePath,
+    });
+    expect(onProcessExit).not.toHaveBeenCalled();
+    expect(() =>
+      manager.requireProviderProcess({
+        processKey: "fake",
+        providerId: "fake",
+      }),
+    ).toThrow();
+  });
+
   it("retires a threadless bridge process superseded by a new artifact hash", async () => {
     const manager = createProviderProcessManager({
       onProcessExit: vi.fn(),
@@ -367,6 +403,11 @@ describe("createAgentRuntime process lifecycle", () => {
     });
     expect(starts).toBe(2);
     const replacementProcess = manager.requireProviderProcess(MANAGER_PROVIDER);
+    onTestFinished(async () => {
+      await replacementProcess.stop();
+    });
+    const exited = vi.fn();
+    replacementProcess.child.once("exit", exited);
     const fullShutdown = manager.shutdown();
     const operations = Promise.all([
       retirement,
@@ -388,7 +429,7 @@ describe("createAgentRuntime process lifecycle", () => {
       undefined,
     ]);
     expect(completedPromptly).toBe(true);
-    expect(processIsAlive(replacementProcess.child.pid ?? 0)).toBe(false);
+    expect(exited).toHaveBeenCalledOnce();
     await manager.ensureProvider(MANAGER_PROVIDER);
     expect(manager.listRunningProviders()).toEqual([]);
   });
@@ -806,7 +847,9 @@ describe("createAgentRuntime process lifecycle", () => {
     });
 
     providerProcess?.child.emit("error", new Error("worker pipe failed"));
-    await expect(pendingRequest).rejects.toThrow(/exited unexpectedly/i);
+    await expect(pendingRequest).rejects.toThrow(
+      /stopped unexpectedly; its exit status could not be read/i,
+    );
     expect(isProviderProcessExitedError(rejectedError)).toBe(true);
     expect(exitInfo).toHaveBeenCalledWith(
       expect.objectContaining({

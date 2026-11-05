@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Environment, Thread } from "@bb/domain";
+import type { ThreadOpenSkipReason } from "@bb/server-contract";
 import {
   setupCommandOutputTestEnvironment,
   collectLogLines,
@@ -12,9 +13,14 @@ import type { CommandRegistrar } from "../helpers/command-output-harness.js";
 import * as fixtures from "../helpers/command-output-fixtures.js";
 import { registerThreadCommands } from "../../commands/thread/index.js";
 
+interface OpenThreadResult {
+  deliveredClients: number;
+  skipReason: ThreadOpenSkipReason | null;
+}
+
 type OpenThreadHandler = (
   request: unknown,
-) => Promise<{ deliveredClients: number }> | { deliveredClients: number };
+) => Promise<OpenThreadResult> | OpenThreadResult;
 
 function stubThreadOpenApi(args: {
   environments?: Record<string, Environment>;
@@ -37,7 +43,8 @@ function stubThreadOpenApi(args: {
     }
     return environment;
   });
-  const openThread = vi.fn(args.open ?? (async () => ({ deliveredClients: 0 })));
+  const openThread = vi.fn(args.open ??
+      (async () => ({ deliveredClients: 0, skipReason: null })));
   stubServerApi({
     "v1.threads.:id.$get": getThread,
     "v1.environments.:id.$get": getEnvironment,
@@ -55,7 +62,7 @@ describe("bb thread open command output", () => {
   it("uses BB_THREAD_ID and opens a thread-relative workspace path", async () => {
     vi.stubEnv("BB_THREAD_ID", "thread-current");
     const { openThread } = stubThreadOpenApi({
-      open: async () => ({ deliveredClients: 2 }),
+      open: async () => ({ deliveredClients: 2, skipReason: null }),
     });
 
     await runCommand(["thread", "open", "reports/status.md"], register);
@@ -63,6 +70,7 @@ describe("bb thread open command output", () => {
     expect(openThread).toHaveBeenCalledWith({
       param: { id: "thread-current" },
       json: {
+        callerThreadId: "thread-current",
         file: {
           source: "workspace",
           path: "reports/status.md",
@@ -95,7 +103,7 @@ describe("bb thread open command output", () => {
     });
     const { getEnvironment, getThread, openThread } = stubThreadOpenApi({
       environments: { "env-workspace": environment },
-      open: async () => ({ deliveredClients: 1 }),
+      open: async () => ({ deliveredClients: 1, skipReason: null }),
       threads: { "thread-workspace": thread },
     });
 
@@ -119,6 +127,7 @@ describe("bb thread open command output", () => {
     expect(openThread).toHaveBeenCalledWith({
       param: { id: "thread-workspace" },
       json: {
+        callerThreadId: "thread-workspace",
         file: {
           source: "workspace",
           path: "reports/status.md",
@@ -140,7 +149,7 @@ describe("bb thread open command output", () => {
     vi.stubEnv("BB_THREAD_ID", "thread-storage");
     vi.stubEnv("BB_THREAD_STORAGE", "/tmp/bb-thread-storage/thread-storage");
     const { getEnvironment, getThread, openThread } = stubThreadOpenApi({
-      open: async () => ({ deliveredClients: 1 }),
+      open: async () => ({ deliveredClients: 1, skipReason: null }),
     });
 
     await runCommand(
@@ -157,6 +166,7 @@ describe("bb thread open command output", () => {
     expect(openThread).toHaveBeenCalledWith({
       param: { id: "thread-storage" },
       json: {
+        callerThreadId: "thread-storage",
         file: {
           source: "thread-storage",
           path: "reports/preview.html",
@@ -183,7 +193,7 @@ describe("bb thread open command output", () => {
 
   it("returns the opened path as JSON", async () => {
     const { openThread } = stubThreadOpenApi({
-      open: async () => ({ deliveredClients: 3 }),
+      open: async () => ({ deliveredClients: 3, skipReason: null }),
     });
 
     await runCommand(
@@ -219,7 +229,7 @@ describe("bb thread open command output", () => {
 
   it("opens a thread in a split without requiring a file path", async () => {
     const { openThread } = stubThreadOpenApi({
-      open: async () => ({ deliveredClients: 2 }),
+      open: async () => ({ deliveredClients: 2, skipReason: null }),
     });
 
     await runCommand(
@@ -246,7 +256,7 @@ describe("bb thread open command output", () => {
 
     expect(openThread).toHaveBeenCalledWith({
       param: { id: "thr_2thread345" },
-      json: { file: null },
+      json: { callerThreadId: "thr_currentabc", file: null },
     });
   });
 
@@ -259,6 +269,7 @@ describe("bb thread open command output", () => {
     expect(openThread).toHaveBeenCalledWith({
       param: { id: "thr_currentabc" },
       json: {
+        callerThreadId: "thr_currentabc",
         file: { source: "workspace", path: "thr_2thread345", lineNumber: null },
       },
     });
@@ -276,6 +287,7 @@ describe("bb thread open command output", () => {
     expect(openThread).toHaveBeenCalledWith({
       param: { id: "thread-other" },
       json: {
+        callerThreadId: "thread-current",
         file: {
           source: "workspace",
           path: "reports/status.md",
@@ -295,5 +307,68 @@ describe("bb thread open command output", () => {
       ),
     ).rejects.toThrow("process.exit:1");
     expect(openThread).not.toHaveBeenCalled();
+  });
+
+  it("sends to every open app client with --all and names no caller", async () => {
+    vi.stubEnv("BB_THREAD_ID", "thread-current");
+    const { openThread } = stubThreadOpenApi({
+      open: async () => ({ deliveredClients: 3, skipReason: null }),
+    });
+
+    await runCommand(
+      ["thread", "open", "thread-other", "reports/status.md", "--all"],
+      register,
+    );
+
+    expect(openThread).toHaveBeenCalledWith({
+      param: { id: "thread-other" },
+      json: {
+        all: true,
+        file: {
+          source: "workspace",
+          path: "reports/status.md",
+          lineNumber: null,
+        },
+      },
+    });
+  });
+
+  it("exits non-zero and names --all when no client views the caller thread", async () => {
+    vi.stubEnv("BB_THREAD_ID", "thread-current");
+    stubThreadOpenApi({
+      open: async () => ({
+        deliveredClients: 0,
+        skipReason: "no_client_viewing_caller_thread",
+      }),
+    });
+
+    await expect(
+      runCommand(["thread", "open", "thread-other"], register),
+    ).rejects.toThrow("process.exit:1");
+
+    expect(collectLogLines(vi.mocked(console.log))).toEqual([]);
+    expect(
+      vi
+        .mocked(console.error)
+        .mock.calls.map((call) => call.join(" "))
+        .join("\n"),
+    ).toContain("Pass --all to send to every open bb app client");
+  });
+
+  it("reports the skip reason in JSON and exits non-zero outside a thread", async () => {
+    stubThreadOpenApi({
+      open: async () => ({
+        deliveredClients: 0,
+        skipReason: "no_caller_thread",
+      }),
+    });
+
+    await expect(
+      runCommand(["thread", "open", "thread-other", "--json"], register),
+    ).rejects.toThrow("process.exit:1");
+
+    const payloads = collectLogPayloads(vi.mocked(console.log)).join("\n");
+    expect(payloads).toContain('"skipReason": "no_caller_thread"');
+    expect(payloads).toContain('"deliveredClients": 0');
   });
 });

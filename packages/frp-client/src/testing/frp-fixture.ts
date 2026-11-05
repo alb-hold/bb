@@ -1,11 +1,12 @@
-import { spawn, execFile, type ChildProcess } from "node:child_process";
+import { spawnHostProcess as spawn, execHostFile } from "@bb/process-utils";
+import type { ChildProcess } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
 import http from "node:http";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import tls from "node:tls";
-import { promisify } from "node:util";
 import {
   FRP_CREDENTIAL_META,
   FRP_LOGIN_REFUSED_REASON,
@@ -20,7 +21,7 @@ import {
   type FrpArchive,
 } from "../binary.js";
 
-const run = promisify(execFile);
+const run = execHostFile;
 
 export const FRP_CACHE_DIR =
   process.env.BB_FRP_CACHE_DIR ??
@@ -29,6 +30,17 @@ export const FRP_CACHE_DIR =
 export const GATE_REFUSAL_REASON = FRP_LOGIN_REFUSED_REASON;
 export const VHOST_DOMAIN = "next.test";
 
+async function fetchTestArchive(url: string): Promise<Uint8Array> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await fetchArchive(url);
+    } catch (error) {
+      if (!(error instanceof TypeError) || attempt === 2) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 250 * 2 ** attempt));
+    }
+  }
+}
+
 async function cachedArchiveBytes(archive: FrpArchive): Promise<Uint8Array> {
   const file = path.join(FRP_CACHE_DIR, archive.fileName);
   try {
@@ -36,12 +48,24 @@ async function cachedArchiveBytes(archive: FrpArchive): Promise<Uint8Array> {
     verifyFrpArchive(archive, bytes);
     return bytes;
   } catch {
-    const bytes = await fetchArchive(archive.url);
+    const bytes = await fetchTestArchive(archive.url);
     verifyFrpArchive(archive, bytes);
     await fs.mkdir(FRP_CACHE_DIR, { recursive: true });
-    const staging = `${file}.${process.pid}.${Date.now()}`;
-    await fs.writeFile(staging, bytes);
-    await fs.rename(staging, file);
+    const staging = `${file}.${randomUUID()}`;
+    try {
+      await fs.writeFile(staging, bytes);
+      try {
+        await fs.rename(staging, file);
+      } catch (error) {
+        try {
+          verifyFrpArchive(archive, new Uint8Array(await fs.readFile(file)));
+        } catch {
+          throw error;
+        }
+      }
+    } finally {
+      await fs.rm(staging, { force: true });
+    }
     return bytes;
   }
 }

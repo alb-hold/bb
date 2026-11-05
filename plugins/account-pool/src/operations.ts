@@ -1,3 +1,4 @@
+import type { LoginTarget } from "./contracts.js";
 import type {
   Account,
   AccountSecret,
@@ -18,6 +19,7 @@ import type {
 } from "./store.js";
 import type { ClaudeOAuthAccount } from "./oauth-login.js";
 import type { CodexDeviceAccount } from "./codex-device-login.js";
+import { z } from "zod";
 import { subscriptionMembers } from "./subscriptions.js";
 
 interface PoolHost {
@@ -177,18 +179,21 @@ export class PoolOperations {
     return account;
   }
 
-  async addOAuth(authenticated: ClaudeOAuthAccount): Promise<Account> {
+  async addOAuth(
+    authenticated: ClaudeOAuthAccount,
+    target: Extract<LoginTarget, { kind: "add" }> | null = null,
+  ): Promise<Account> {
     const account = await this.accounts.add(
       {
         provider: "claude",
         kind: "oauth",
-        label: authenticated.label,
+        label: target?.label ?? authenticated.label,
         email: authenticated.email,
         accountUuid: authenticated.accountUuid,
         subscriptionType: authenticated.subscriptionType,
         rateLimitTier: authenticated.rateLimitTier,
         enabled: true,
-        priority: await this.nextPriority("claude"),
+        priority: target?.priority ?? (await this.nextPriority("claude")),
       },
       {
         kind: "oauth",
@@ -209,19 +214,20 @@ export class PoolOperations {
 
   async addCodexOAuth(
     authenticated: CodexDeviceAccount,
+    target: Extract<LoginTarget, { kind: "add" }> | null = null,
   ): Promise<AccountSummary> {
     const account = await this.accounts.add(
       {
         provider: "codex",
         kind: "oauth",
-        label: authenticated.label,
+        label: target?.label ?? authenticated.label,
         email: authenticated.email,
         accountUuid: null,
         codexAccountId: authenticated.accountId,
         subscriptionType: null,
         rateLimitTier: null,
         enabled: true,
-        priority: await this.nextPriority("codex"),
+        priority: target?.priority ?? (await this.nextPriority("codex")),
       },
       {
         kind: "oauth",
@@ -348,13 +354,17 @@ export class PoolOperations {
     secret: AccountSecret,
     organizationUuid: string | null,
   ): Promise<Account> {
-    const updated = await this.accounts.replaceCredentials(
-      account.id,
-      identity,
-      secret,
-    );
-    if (updated === null)
-      throw new Error("This subscription no longer exists.");
+    let updated = account;
+    await this.hub.replaceSecret(account.id, secret, async () => {
+      const replacement = await this.accounts.replaceCredentials(
+        account.id,
+        identity,
+        secret,
+      );
+      if (replacement === null)
+        throw new Error("This subscription no longer exists.");
+      updated = replacement;
+    });
     if (organizationUuid !== null)
       await this.accounts.setOrganization(updated.id, organizationUuid);
     this.quotas.put({
@@ -410,6 +420,10 @@ export class PoolOperations {
         },
       ];
     });
+  }
+
+  async display() {
+    return this.hub.display();
   }
 
   async list(): Promise<AccountSummary[]> {
@@ -667,16 +681,24 @@ export class PoolOperations {
   }
 
   async hasUsableEnabledAccount(provider: PoolProvider): Promise<boolean> {
+    let readFailure: { error: unknown } | null = null;
     for (const account of await this.accounts.list()) {
       if (!account.enabled || account.provider !== provider) continue;
       try {
         await this.accounts.readSecret(account.id);
         return true;
-      } catch {
-        continue;
+      } catch (error) {
+        if (!isUnusableSecret(error)) readFailure ??= { error };
       }
     }
+    if (readFailure !== null) throw readFailure.error;
     return false;
+  }
+
+  async hasEnabledAccount(provider: PoolProvider): Promise<boolean> {
+    return (await this.accounts.list()).some(
+      (account) => account.enabled && account.provider === provider,
+    );
   }
 
   async hasReadyAccount(provider: PoolProvider): Promise<boolean> {
@@ -758,4 +780,12 @@ function carriesCredential(secret: AccountSecret): boolean {
   return secret.kind === "oauth"
     ? secret.accessToken.length > 0 && secret.refreshToken.length > 0
     : secret.apiKey.length > 0;
+}
+
+function isUnusableSecret(error: unknown): boolean {
+  return (
+    error instanceof SyntaxError ||
+    error instanceof z.ZodError ||
+    (error instanceof Error && "code" in error && error.code === "ENOENT")
+  );
 }

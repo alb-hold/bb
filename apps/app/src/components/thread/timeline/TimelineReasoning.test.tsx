@@ -60,7 +60,7 @@ function Fixture({
                   : thought,
               ]}
               threadRuntimeDisplayStatus="idle"
-              workspaceRootPath={undefined}
+
               threadIsActive={false}
             />
           )}
@@ -156,7 +156,7 @@ it("reveals interleaved reasoning inside an exploration group", () => {
               fileReadRow({ id: "read-b", path: "b.ts", seq: 3 }),
             ]}
             threadRuntimeDisplayStatus="idle"
-            workspaceRootPath={undefined}
+
             threadIsActive={false}
           />
         </TimelineReasoningExpansionProvider>

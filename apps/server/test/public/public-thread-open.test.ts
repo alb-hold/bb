@@ -14,12 +14,12 @@ import { withTestHarness, type TestAppHarness } from "../helpers/test-app.js";
 async function postOpen(
   harness: TestAppHarness,
   threadId: string,
-  body: unknown,
+  body: Record<string, unknown>,
 ): Promise<Response> {
   return harness.app.request(`/api/v1/threads/${threadId}/open`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
+    body: JSON.stringify({ all: true, ...body }),
   });
 }
 
@@ -66,6 +66,7 @@ describe("public thread open", () => {
       expect(response.status).toBe(200);
       expect(threadOpenResponseSchema.parse(await readJson(response))).toEqual({
         deliveredClients: 0,
+        skipReason: null,
       });
     });
   });
@@ -102,6 +103,7 @@ describe("public thread open", () => {
       expect(response.status).toBe(200);
       expect(threadOpenResponseSchema.parse(await readJson(response))).toEqual({
         deliveredClients: 0,
+        skipReason: null,
       });
       expect(socket.messages).toHaveLength(1);
     });
@@ -133,7 +135,7 @@ describe("public thread open", () => {
 
       expect(response.status).toBe(200);
       const body = threadOpenResponseSchema.parse(await readJson(response));
-      expect(body).toEqual({ deliveredClients: 1 });
+      expect(body).toEqual({ deliveredClients: 1, skipReason: null });
 
       expect(socket.messages).toHaveLength(1);
       expect(JSON.parse(socket.messages[0])).toEqual({
@@ -309,6 +311,7 @@ describe("public thread open", () => {
       expect(focus.status).toBe(200);
       expect(threadOpenResponseSchema.parse(await readJson(focus))).toEqual({
         deliveredClients: 1,
+        skipReason: null,
       });
       expect(JSON.parse(socket.messages[0]!)).toMatchObject({
         type: "thread-open",

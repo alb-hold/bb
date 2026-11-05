@@ -1,5 +1,9 @@
 import ReconnectingWebSocket from "partysocket/ws";
 import {
+  realtimeSubscriptionTargetSchema,
+  type ThreadTimelineSubscriptionTarget,
+} from "@bb/domain";
+import {
   changedMessageLenientSchema,
   pluginSignalLenientSchema,
   pongMessageLenientSchema,
@@ -21,7 +25,7 @@ import type {
   ThreadOpenFile,
   ThreadOpenSignal,
   ThreadPaneActionSignal,
-  ThreadTimelineSignal,
+  ReceivedThreadTimelineSignal,
   DeviceHandoffSignal,
   DeviceHandoffExpiredSignal,
   DeviceHandoffAcknowledgedSignal,
@@ -40,7 +44,7 @@ type ChangeCallback = (message: ChangedMessage) => void;
 type ThreadOpenCallback = (signal: ThreadOpenSignal) => void;
 type ThreadPaneActionCallback = (signal: ThreadPaneActionSignal) => void;
 type PluginSignalCallback = (signal: PluginSignal) => void;
-type ThreadTimelineCallback = (signal: ThreadTimelineSignal) => void;
+type ThreadTimelineCallback = (signal: ReceivedThreadTimelineSignal) => void;
 type DeviceHandoffCallback = (
   signal:
     | DeviceHandoffSignal
@@ -92,6 +96,10 @@ function createDefaultBrowserEvents(): WebSocketManagerBrowserEvents {
   };
 }
 
+type HeldThreadTimelineTagSource = (
+  target: ThreadTimelineSubscriptionTarget,
+) => string | null;
+
 interface ActiveSubscription {
   count: number;
   target: RealtimeSubscriptionTarget;
@@ -100,6 +108,8 @@ interface ActiveSubscription {
 export class WebSocketManager {
   private socket: ReconnectingWebSocket | null = null;
   private subscriptions = new Map<string, ActiveSubscription>();
+  private readonly timelineTags = new Map<string, string>();
+  private heldThreadTimelineTag: HeldThreadTimelineTagSource = () => null;
   private callbacks = new Set<ChangeCallback>();
   private threadOpenCallbacks = new Set<ThreadOpenCallback>();
   private threadPaneActionCallbacks = new Set<ThreadPaneActionCallback>();
@@ -169,14 +179,13 @@ export class WebSocketManager {
       if (this.watchesReleased) {
         this.sendMessage({ type: "visibility", visible: false });
       }
-      if (this.subscriptions.size > 0) {
+      const targets = this.activeSubscriptionTargets();
+      if (targets.length > 0)
         this.sendMessage({
           type: "subscribe",
-          targets: [...this.subscriptions.values()].map(
-            (subscription) => subscription.target,
-          ),
+          targets,
+          ...this.timelineTagsFor(targets),
         });
-      }
       if (
         this.activeDeviceHandoffView.threadId !== null ||
         this.activeDeviceHandoffView.terminalSessionId !== null
@@ -311,9 +320,13 @@ export class WebSocketManager {
     }
     this.watchesReleased = false;
     this.sendMessage({ type: "visibility", visible: true });
-    return [...this.subscriptions.values()].map(
-      (subscription) => subscription.target,
-    );
+    return this.activeSubscriptionTargets();
+  }
+
+  private activeSubscriptionTargets(): RealtimeSubscriptionTarget[] {
+    return [...this.subscriptions.values()]
+      .filter((subscription) => subscription.count > 0)
+      .map((subscription) => subscription.target);
   }
 
   private notifyResumed(
@@ -456,6 +469,11 @@ export class WebSocketManager {
 
     const threadTimeline = threadTimelineSignalLenientSchema.safeParse(parsed);
     if (threadTimeline.success) {
+      const { target, timeline } = threadTimeline.data;
+      const key = realtimeSubscriptionTargetKey(target);
+      if (timeline !== null && this.subscriptions.has(key)) {
+        this.timelineTags.set(key, timeline.tag);
+      }
       for (const cb of this.threadTimelineCallbacks) {
         cb(threadTimeline.data);
       }
@@ -558,28 +576,105 @@ export class WebSocketManager {
       existing.count += 1;
       return;
     }
+    if (!realtimeSubscriptionTargetSchema.safeParse(target).success) {
+      console.error(
+        "Skipped invalid realtime subscription target",
+        target.kind,
+      );
+      return;
+    }
 
     this.subscriptions.set(key, { count: 1, target });
     if (this.socket?.readyState === WebSocket.OPEN) {
-      this.sendMessage({ type: "subscribe", target });
+      this.sendMessage({
+        type: "subscribe",
+        target,
+        ...this.timelineTagsFor([target]),
+      });
     }
+  }
+
+  syncThreadTimelineTag(
+    target: ThreadTimelineSubscriptionTarget,
+    tag: string,
+  ): void {
+    const key = realtimeSubscriptionTargetKey(target);
+    if (this.timelineTags.get(key) === tag) {
+      return;
+    }
+    this.timelineTags.set(key, tag);
+    const subscription = this.subscriptions.get(key);
+    if (
+      subscription !== undefined &&
+      subscription.count > 0 &&
+      this.socket?.readyState === WebSocket.OPEN
+    ) {
+      this.sendMessage({
+        type: "subscribe",
+        target,
+        timelineTags: { [key]: tag },
+      });
+    }
+  }
+
+  setHeldThreadTimelineTagSource(
+    source: HeldThreadTimelineTagSource,
+  ): () => void {
+    this.heldThreadTimelineTag = source;
+    return () => {
+      if (this.heldThreadTimelineTag === source) {
+        this.heldThreadTimelineTag = () => null;
+      }
+    };
+  }
+
+  private timelineTagsFor(targets: readonly RealtimeSubscriptionTarget[]): {
+    timelineTags?: Record<string, string | null>;
+  } {
+    const timelineTargets = targets.filter(
+      (target): target is ThreadTimelineSubscriptionTarget =>
+        target.kind === "thread-timeline",
+    );
+    if (timelineTargets.length === 0) {
+      return {};
+    }
+    return {
+      timelineTags: Object.fromEntries(
+        timelineTargets.map((target) => {
+          const key = realtimeSubscriptionTargetKey(target);
+          const tag =
+            this.heldThreadTimelineTag(target) ??
+            this.timelineTags.get(key) ??
+            null;
+          if (tag !== null) {
+            this.timelineTags.set(key, tag);
+          }
+          return [key, tag];
+        }),
+      ),
+    };
   }
 
   unsubscribe(target: RealtimeSubscriptionTarget): void {
     const key = realtimeSubscriptionTargetKey(target);
     const existing = this.subscriptions.get(key);
-    if (!existing) {
+    if (!existing || existing.count === 0) {
       return;
     }
-    if (existing.count > 1) {
-      existing.count -= 1;
+    existing.count -= 1;
+    if (existing.count > 0) {
       return;
     }
-
-    this.subscriptions.delete(key);
-    if (this.socket?.readyState === WebSocket.OPEN) {
-      this.sendMessage({ type: "unsubscribe", target });
-    }
+    queueMicrotask(() => {
+      if (this.subscriptions.get(key) !== existing || existing.count > 0) {
+        return;
+      }
+      this.subscriptions.delete(key);
+      this.timelineTags.delete(key);
+      if (this.socket?.readyState === WebSocket.OPEN) {
+        this.sendMessage({ type: "unsubscribe", target });
+      }
+    });
   }
 
   onChanged(callback: ChangeCallback): () => void {

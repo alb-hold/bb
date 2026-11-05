@@ -6,7 +6,9 @@ export type ThreadLifecycleEvent =
   | { type: "run.succeeded" }
   | { type: "run.failed" }
   | { type: "stop.requested" }
-  | { type: "stop.settled" };
+  | { type: "stop.settled" }
+  | { type: "session.lost" }
+  | { type: "session.resumed" };
 
 export type ThreadLifecycleEventType = ThreadLifecycleEvent["type"];
 
@@ -25,6 +27,8 @@ export const THREAD_LIFECYCLE_EVENT_PREDICATES: Record<
   "run.failed": { notDeleted: true },
   "stop.requested": {},
   "stop.settled": {},
+  "session.lost": { notArchived: true, notDeleted: true },
+  "session.resumed": {},
 };
 
 export const THREAD_LIFECYCLE: Record<
@@ -47,6 +51,7 @@ export const THREAD_LIFECYCLE: Record<
   idle: {
     "run.preparing": "starting",
     "run.started": "active",
+    "session.lost": "error",
   },
   starting: {
     "run.started": "active",
@@ -68,6 +73,7 @@ export const THREAD_LIFECYCLE: Record<
   error: {
     "run.preparing": "starting",
     "run.started": "active",
+    "session.resumed": "idle",
   },
 };
 

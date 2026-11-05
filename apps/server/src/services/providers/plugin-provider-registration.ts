@@ -53,6 +53,9 @@ function toOptionDescriptors(
     ...(option.description === undefined
       ? {}
       : { description: option.description }),
+    ...(option.experimental_icon === undefined
+      ? {}
+      : { icon: option.experimental_icon }),
   }));
 }
 
@@ -104,6 +107,7 @@ export function projectFallbackModels(
     model: model.id,
     displayName: model.displayName,
     description: model.description,
+    reasoningDiscovery: "known",
     supportedReasoningEfforts: model.supportedReasoningEfforts.map(
       (effort) => ({
         reasoningEffort: effort.reasoningEffort,

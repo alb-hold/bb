@@ -5,6 +5,7 @@ import type {
   SidebarBootstrapResponse,
   SystemAiServicesResponse,
   SystemVersionResponse,
+  WritingAssistanceView,
 } from "@bb/server-contract";
 import type { ProviderCliStatusResponse } from "@bb/host-daemon-contract";
 import {
@@ -19,6 +20,7 @@ import {
   systemConfigQueryKey,
   systemProvidersQueryKey,
   systemVersionQueryKey,
+  writingAssistanceQueryKey,
 } from "../src/hooks/queries/query-keys";
 import {
   buildUpdateInventoryProviderIssues,
@@ -35,6 +37,7 @@ import { makeProviderInfo } from "@bb/test-helpers/domain-fixtures";
 import {
   BbAppUpdateRows,
   BbUpdatesCard,
+  PluginUpdatesSection,
   ProviderCliUpdatesSection,
 } from "../src/components/settings/UpdatesSettingsSection";
 import {
@@ -68,11 +71,34 @@ const STORY_GLOBAL_VARIABLES = [
   { name: "SENTRY_DSN", value: null, secret: true as const, note: null },
 ];
 
+const STORY_WRITING_ASSISTANCE: WritingAssistanceView = {
+  settings: {
+    mode: "prompt",
+    typingCorrection: "automatic",
+    dictationFormatting: true,
+    vocabulary: ["bb", "Hermes", "refreshToken"],
+    dailyCorrectionLimit: 300,
+    dailyDictationMinutes: 60,
+  },
+  usage: {
+    day: "2026-10-16",
+    corrections: 42,
+    formattings: 18,
+    dictationSegments: 18,
+    audioSeconds: 312,
+    inputChars: 61_200,
+    outputChars: 9_800,
+    estimatedCostMicros: 41_300,
+  },
+  correctionAvailable: true,
+};
+
 const STORY_AI_SERVICES: SystemAiServicesResponse = {
   selections: {
     "thread-title": { mode: "automatic" },
     "commit-message": { mode: "automatic" },
     voice: { mode: "automatic" },
+    writing: { mode: "automatic" },
   },
   services: [
     {
@@ -300,6 +326,12 @@ export function SettingsUpdatesStory() {
         onRetryAllDaemonUpdates={noop}
         onRecheckClis={noop}
       />
+      <PluginUpdatesSection
+        plugins={{ trackedCount: 0, items: [] }}
+        updatingPluginIds={noJobs}
+        checking={false}
+        onStartUpdates={noop}
+      />
     </div>
   );
 }
@@ -324,6 +356,10 @@ function createSettingsStoryQueryClient(hosts: Host[] = SETTINGS_STORY_HOSTS) {
   queryClient.setQueryData(sidebarNavigationQueryKey(), sidebarNavigation);
   queryClient.setQueryData(pluginMarketplacesQueryKey(), []);
   queryClient.setQueryData(systemAiServicesQueryKey(), STORY_AI_SERVICES);
+  queryClient.setQueryData(
+    writingAssistanceQueryKey(),
+    STORY_WRITING_ASSISTANCE,
+  );
   queryClient.setQueryData(machineEnvironmentQueryKey(null), {
     builtInGit: STORY_GIT_HEALTH,
     variables: STORY_GLOBAL_VARIABLES,

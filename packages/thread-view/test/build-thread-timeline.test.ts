@@ -713,6 +713,7 @@ function userQuestionLifecycleEvent({
                 { value: "production", label: "Production" },
               ],
               allowFreeText: true,
+              required: true,
             },
           ],
         },
@@ -2253,6 +2254,29 @@ describe("buildThreadTimelineFromEvents", () => {
         status: "error",
         title: "Provider error",
         detail: longMessage,
+      }),
+    ]);
+  });
+
+  it("keeps a long system error message visible when the error also carries detail", () => {
+    const message =
+      "This thread's workspace folder no longer exists: /tmp/p19-i29-ws-fixture. Restore it from branch fix/ws-gone-fixture, or archive the thread.";
+    const detail =
+      "Unmanaged workspace path does not exist: /tmp/p19-i29-ws-fixture";
+    const rows = buildTimelineRows([
+      systemErrorEvent({
+        code: "thread_command_failed",
+        message,
+        detail,
+        seq: 1,
+      }),
+    ]);
+
+    expect(collectSystemRows(rows)).toEqual([
+      expect.objectContaining({
+        systemKind: "error",
+        title: "System error",
+        detail: `${message}\n${detail}`,
       }),
     ]);
   });

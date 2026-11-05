@@ -10,12 +10,7 @@ import {
   stripTerminalGridMarkers,
 } from "@bb/domain";
 import type { HostWorkspace } from "@bb/host-workspace";
-import {
-  createDeferredPromise,
-  makeTempDir,
-  makeWorkspaceMergeBase,
-  makeWorkspaceStatus,
-} from "@bb/test-helpers";
+import { createDeferredPromise, makeTempDir } from "@bb/test-helpers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { HostDaemonLogger } from "../logger.js";
 import { RuntimeManager } from "../runtime-manager.js";
@@ -294,35 +289,20 @@ function createFakeWorkspace(path: string): HostWorkspace {
     isWorktree: false,
     getCurrentBranch: vi.fn(async () => "main"),
     getHeadSha: vi.fn(async () => "commit-1"),
-    getLocalStateFingerprint: vi.fn(async () => "local-1"),
-    getSharedGitRefsFingerprint: vi.fn(async () => "refs-1"),
+    getLocalStateSnapshot: vi.fn(async () => ({
+      fingerprint: "local-1",
+      branchName: "main",
+    })),
+    getSharedGitRefsSnapshot: vi.fn(async () => ({
+      fingerprint: "refs-1",
+      defaultBranch: "main",
+    })),
     getAdditionalWorkspaceWriteRoots: vi.fn(async () => []),
-    getStatus: vi.fn(async () =>
-      makeWorkspaceStatus({
-        mergeBase: makeWorkspaceMergeBase(),
-      }),
-    ),
     getDefaultBranch: vi.fn(async () => "main"),
-    getDiff: vi.fn(async () => ({
-      diff: "",
-      files: "",
-      mergeBaseRef: null,
-      shortstat: "",
-      truncated: false,
-    })),
-    diffFiles: vi.fn(async () => ({
-      files: [],
-      shortstat: "",
-      mergeBaseRef: null,
-      truncated: false,
-    })),
-    diffPatch: vi.fn(async () => []),
-    getPullRequest: vi.fn(async () => ({ outcome: "none" as const })),
     commit: vi.fn(async () => ({
       commitSha: "commit-1",
       commitSubject: "commit",
     })),
-    runPullRequestAction: vi.fn(async () => undefined),
   };
 }
 
@@ -2023,6 +2003,40 @@ describe("TerminalManager", () => {
     });
   });
 
+  it("starts replay after an OSC 52 continuation at the retained boundary", async () => {
+    const harness = createHarness();
+    const pty = await openTerminal(harness);
+    const prefix = `\u001b]52;c;${"x".repeat(1017)}`;
+    const continuation = `${"Q".repeat(1590)}\u0007`;
+
+    pty.emitData(prefix);
+    await harness.manager.handleMessage({
+      type: "terminal.attach",
+      requestId: "flush-osc52-prefix",
+      terminalId: "term-1",
+      sinceSeq: 0,
+      tailBytes: 64 * 1024,
+    });
+    pty.emitData(continuation);
+    await harness.manager.handleMessage({
+      type: "terminal.attach",
+      requestId: "attach-osc52-tail",
+      terminalId: "term-1",
+      sinceSeq: 0,
+      tailBytes: Buffer.byteLength(continuation),
+    });
+
+    expect(harness.messages).toContainEqual(
+      expect.objectContaining({
+        type: "terminal.replay",
+        requestId: "attach-osc52-tail",
+        chunks: [],
+        replayStartSeq: 2,
+        nextSeq: 2,
+      }),
+    );
+  });
+
   it("starts replay after a UTF-8 code point that crosses the tail boundary", async () => {
     const harness = createHarness();
     const pty = await openTerminal(harness);
@@ -2165,7 +2179,7 @@ describe("TerminalManager", () => {
   );
 
   it.each([256, 512])(
-    "bounds retained CSI snapshots across 12000 separate %s-byte output chunks",
+    "bounds retained CSI snapshots across separate %s-byte output chunks emitted past the retention window",
     async (chunkBytes) => {
       const harness = createHarness();
       const pty = await openTerminal(harness);
@@ -2182,34 +2196,53 @@ describe("TerminalManager", () => {
       if (!session) {
         throw new Error("Terminal session did not open");
       }
+      const retainedChunks = Math.min(10_000, (4 * 1024 * 1024) / chunkBytes);
+      const emittedChunks = retainedChunks + 1_000;
       const capturedLengths = new Set<number>();
       let maxRetainedChunks = 0;
       let maxRetainedBytes = 0;
-      for (let index = 0; index < 12_000; index += 1) {
+      let firstBadSeq = -1;
+      let firstBadLength = -1;
+      for (let index = 0; index < emittedChunks; index += 1) {
         pty.emitData(
           `${index === 0 ? "\u001b[" : ""}${";".repeat(chunkBytes)}`,
         );
         vi.advanceTimersByTime(4);
         const entry = session.scrollback.at(-1);
-        expect(entry?.chunk.seq).toBe(index);
         const length = entry?.parserStateBefore.csiParameters.length ?? -1;
-        expect(length).toBeGreaterThanOrEqual(0);
-        expect(length).toBeLessThanOrEqual(1024);
+        if (entry?.chunk.seq !== index && firstBadSeq === -1) {
+          firstBadSeq = index;
+        }
+        if ((length < 0 || length > 1024) && firstBadLength === -1) {
+          firstBadLength = index;
+        }
         capturedLengths.add(length);
         maxRetainedChunks = Math.max(
           maxRetainedChunks,
           session.scrollback.length,
         );
         maxRetainedBytes = Math.max(maxRetainedBytes, session.scrollbackBytes);
+        if (index % 500 === 0) {
+          expect(session.scrollback.length).toBe(
+            Math.min(index + 1, retainedChunks),
+          );
+          expect(session.scrollbackBytes).toBeGreaterThanOrEqual(
+            session.scrollback.length * chunkBytes,
+          );
+          expect(session.scrollbackBytes).toBeLessThanOrEqual(4 * 1024 * 1024);
+        }
       }
+      expect(firstBadSeq).toBe(-1);
+      expect(firstBadLength).toBe(-1);
       expect(capturedLengths.has(chunkBytes)).toBe(true);
       expect(capturedLengths.has(1024)).toBe(true);
-      const retainedChunks = Math.min(10_000, (4 * 1024 * 1024) / chunkBytes);
       expect(maxRetainedChunks).toBe(retainedChunks);
       expect(maxRetainedBytes).toBeLessThanOrEqual(4 * 1024 * 1024);
       expect(session.scrollback).toHaveLength(retainedChunks);
       expect(session.scrollbackBytes).toBe(retainedChunks * chunkBytes);
-      expect(session.scrollback[0]?.chunk.seq).toBe(12_000 - retainedChunks);
+      expect(session.scrollback[0]?.chunk.seq).toBe(
+        emittedChunks - retainedChunks,
+      );
       expect(
         session.scrollback.every(
           (entry) => entry.parserStateBefore.escape === "csi-ignore",
@@ -2876,6 +2909,48 @@ describe("TerminalManager", () => {
       {
         type: "terminal.exited",
         terminalId: "term-missing",
+        exitCode: null,
+        closeReason: "user",
+      },
+    ]);
+  });
+
+  it("treats a repeated close as a no-op that never touches another terminal", async () => {
+    const harness = createHarness();
+    const first = await openTerminalWithId(harness, "term-1");
+    const second = await openTerminalWithId(harness, "term-2");
+
+    await harness.manager.handleMessage({
+      type: "terminal.close",
+      terminalId: "term-1",
+      reason: "user",
+    });
+    await harness.manager.handleMessage({
+      type: "terminal.close",
+      terminalId: "term-1",
+      reason: "user",
+    });
+    first.emitExit(0);
+    await harness.manager.handleMessage({
+      type: "terminal.close",
+      terminalId: "term-1",
+      reason: "user",
+    });
+
+    expect(first.killCalls).toEqual([null]);
+    expect(second.killCalls).toEqual([]);
+    expect(
+      harness.messages.filter((message) => message.type === "terminal.exited"),
+    ).toEqual([
+      {
+        type: "terminal.exited",
+        terminalId: "term-1",
+        exitCode: 0,
+        closeReason: "user",
+      },
+      {
+        type: "terminal.exited",
+        terminalId: "term-1",
         exitCode: null,
         closeReason: "user",
       },

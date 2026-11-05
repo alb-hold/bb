@@ -23,6 +23,7 @@ function target(
     archivedAt: null,
     pinnedAt: null,
     sectionId: null,
+    parentNotifications: "auto",
     isUnread: false,
     status: "idle",
     environment: { id: "env_a", path: "/workspace" },
@@ -56,6 +57,7 @@ function itemFor(
     thread,
     data,
     navigate,
+    experimental_panel: {} as never,
     sdk: {} as never,
   });
   return { item, navigate };
@@ -86,7 +88,7 @@ describe("Open in terminal / Back to chat", () => {
       });
       expect(item?.detail).toBeUndefined();
       await runItem(item);
-      expect(switchMode).toHaveBeenCalledWith("thr_a", "terminal");
+      expect(switchMode).toHaveBeenCalledWith("thr_a", "terminal", "prj_a");
       expect(navigate.toThread).toHaveBeenCalledWith("thr_a");
     }
   });
@@ -110,7 +112,7 @@ describe("Open in terminal / Back to chat", () => {
       icon: "MessageSquare",
     });
     await runItem(item);
-    expect(switchMode).toHaveBeenCalledWith("thr_a", "chat");
+    expect(switchMode).toHaveBeenCalledWith("thr_a", "chat", "prj_a");
     expect(toast.success).toHaveBeenCalledWith("Thread is back in chat");
     expect(navigate.toThread).not.toHaveBeenCalled();
   });

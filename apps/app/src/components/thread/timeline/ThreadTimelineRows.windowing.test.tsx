@@ -76,7 +76,7 @@ function renderDelegation() {
             }),
           ]}
           threadRuntimeDisplayStatus="idle"
-          workspaceRootPath={undefined}
+
           threadIsActive={false}
         />
       </QueryClientProvider>
@@ -186,7 +186,6 @@ describe("ThreadTimelineRows windowing", () => {
         getScrollElement: () => scrollElement,
         isAtBottom: false,
         scrollElementIntoView: vi.fn(),
-        scrollElementIntoViewClampedToMaxScroll: vi.fn(),
         captureScrollAnchor: vi.fn(),
         scrollToBottom: vi.fn(),
       };
@@ -206,7 +205,7 @@ describe("ThreadTimelineRows windowing", () => {
                 <ThreadTimelineRows
                   timelineRows={rows}
                   threadRuntimeDisplayStatus="idle"
-                  workspaceRootPath={undefined}
+
                   threadIsActive={false}
                 />
               </CompactViewportOverrideProvider>
@@ -248,7 +247,6 @@ describe("ThreadTimelineRows windowing", () => {
       getScrollElement: () => scrollElement,
       isAtBottom: false,
       scrollElementIntoView,
-      scrollElementIntoViewClampedToMaxScroll: vi.fn(),
       captureScrollAnchor: vi.fn(),
       scrollToBottom: vi.fn(),
     };
@@ -272,7 +270,7 @@ describe("ThreadTimelineRows windowing", () => {
                 threadId="thr_steer_window"
                 timelineRows={rows}
                 threadRuntimeDisplayStatus="idle"
-                workspaceRootPath={undefined}
+
                 threadIsActive={false}
               />
             </CompactViewportOverrideProvider>
@@ -305,7 +303,6 @@ describe("ThreadTimelineRows windowing", () => {
       getScrollElement: () => scrollElement,
       isAtBottom: false,
       scrollElementIntoView,
-      scrollElementIntoViewClampedToMaxScroll: vi.fn(),
       captureScrollAnchor: vi.fn(),
       scrollToBottom: vi.fn(),
     };
@@ -347,7 +344,7 @@ describe("ThreadTimelineRows windowing", () => {
                 timelineRows={rows}
                 timelineNavigationTargetRowId="search-message-40"
                 threadRuntimeDisplayStatus="idle"
-                workspaceRootPath={undefined}
+
                 threadIsActive={false}
               />
             </CompactViewportOverrideProvider>

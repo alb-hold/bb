@@ -1,5 +1,4 @@
 import { useEffect, useRef } from "react";
-import { usePrefersReducedMotion } from "@bb/shared-ui/hooks/use-media-query";
 import { cn } from "@bb/shared-ui/lib/utils";
 
 interface WaveformVisualizerProps {
@@ -24,7 +23,6 @@ export function WaveformVisualizer({
 }: WaveformVisualizerProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const barsRef = useRef<number[]>([]);
-  const prefersReducedMotion = usePrefersReducedMotion();
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -98,8 +96,7 @@ export function WaveformVisualizer({
     const canAnimate =
       active &&
       audioTrack !== null &&
-      typeof window.AudioContext !== "undefined" &&
-      !prefersReducedMotion;
+      typeof window.AudioContext !== "undefined";
 
     if (!canAnimate || audioTrack === null) {
       if (barsRef.current.length === 0) {
@@ -114,7 +111,7 @@ export function WaveformVisualizer({
     }
 
     const audioCtx = new AudioContext();
-    void audioCtx.resume();
+    void audioCtx.resume().catch(() => {});
     const analysisTrack = audioTrack.clone();
     const source = audioCtx.createMediaStreamSource(
       new MediaStream([analysisTrack]),
@@ -128,7 +125,8 @@ export function WaveformVisualizer({
     let rafId = 0;
 
     const tick = () => {
-      if (audioCtx.state === "suspended") void audioCtx.resume();
+      if (audioCtx.state === "suspended")
+        void audioCtx.resume().catch(() => {});
       if (frame % SAMPLE_EVERY_N_FRAMES === 0) {
         analyser.getByteTimeDomainData(timeData);
         let sumSquares = 0;
@@ -157,9 +155,9 @@ export function WaveformVisualizer({
       source.disconnect();
       analyser.disconnect();
       analysisTrack.stop();
-      void audioCtx.close();
+      void audioCtx.close().catch(() => {});
     };
-  }, [stream, active, prefersReducedMotion]);
+  }, [stream, active]);
 
   return (
     <canvas

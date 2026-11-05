@@ -87,6 +87,7 @@ describe.skipIf(!availability.ok)("connect-next gate process", () => {
             FRP_BIND_PORT: String(await freePort()),
             FRP_VHOST_PORT: String(await freePort()),
             FRP_HOOKS_PORT: String(await freePort()),
+            FRP_ADMIN_PORT: String(await freePort()),
             FLY_MACHINE_ID: "process-gate",
             FLY_REGION: "test",
           },

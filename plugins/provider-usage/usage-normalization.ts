@@ -1,7 +1,9 @@
 import type { UsageMeasurement } from "./usage-source-contract.js";
+import { internal_DO_NOT_USE_claudeLocalPlanLabel as claudeLocalPlanLabel } from "@get-bb/plugin-sdk";
 
 export function normalizeUsageMeasurement(
   measurement: UsageMeasurement,
+  providerId: string,
 ): UsageMeasurement {
   if (measurement.usage.status !== "ok") return measurement;
   const usage = measurement.usage;
@@ -18,7 +20,25 @@ export function normalizeUsageMeasurement(
     edu: "Education",
   };
   const plan = usage.plan;
-  const planName = plan ? labels[plan.id] : undefined;
+  const claudeMax =
+    providerId === "claude-code" &&
+    /max/iu.test(`${plan?.id ?? ""} ${usage.planLabel ?? ""}`);
+  const planLabel = claudeMax
+    ? claudeLocalPlanLabel({
+        subscriptionType: "max",
+        rateLimitTier:
+          plan?.multiplier == null ? null : `max_${plan.multiplier}x`,
+      })
+    : usage.planLabel !== null &&
+        /^max$/iu.test(usage.planLabel) &&
+        plan?.multiplier != null
+      ? `Max (${plan.multiplier}x)`
+      : usage.planLabel;
+  const planName = claudeMax
+    ? "Claude subscription"
+    : plan
+      ? labels[plan.id]
+      : undefined;
   const windowLabels = {
     "five-hour": "Five-hour limit",
     daily: "Daily limit",
@@ -29,9 +49,13 @@ export function normalizeUsageMeasurement(
     ...measurement,
     usage: {
       ...usage,
-      planLabel: planName
-        ? `${planName}${plan?.multiplier == null ? "" : ` (${plan.multiplier}x)`}`
-        : usage.planLabel,
+      planLabel:
+        planLabel ??
+        (planName
+          ? `${planName}${plan?.multiplier == null || claudeMax ? "" : ` (${plan.multiplier}x)`}`
+          : providerId === "claude-code"
+            ? "Claude subscription"
+            : null),
       windows: usage.windows.map((window) => ({
         ...window,
         label:

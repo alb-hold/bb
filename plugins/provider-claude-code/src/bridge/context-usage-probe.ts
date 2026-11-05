@@ -1,6 +1,7 @@
 import { query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { setTimeout as delay } from "node:timers/promises";
 import type { DynamicTool } from "@get-bb/plugin-sdk/provider-bridge";
+import { applyPinnedSettings } from "./pinned-settings.js";
 import type { SdkSessionOptions } from "./sdk-session.js";
 import { buildBridgeMcpServer } from "./tool-proxy-mcp.js";
 import { BB_BRIDGE_MCP_SERVER_NAME } from "../tool-classification.js";
@@ -23,56 +24,64 @@ export async function readIsolatedClaudeContextUsage(args: {
   args.signal.throwIfAborted();
   const options = args.sessionOptions;
   const end = new AbortController();
-  const session = query({
-    prompt: promptWithoutMessages(end.signal),
-    options: {
-      cwd: options.cwd,
-      systemPrompt: options.systemPrompt,
-      model: options.model,
-      effort: options.effort,
-      thinking: options.thinking,
-      env: options.env,
-      pathToClaudeCodeExecutable: options.pathToClaudeCodeExecutable,
-      plugins: options.plugins,
-      extraArgs: options.extraArgs,
-      additionalDirectories: options.additionalDirectories
-        ? [...options.additionalDirectories]
-        : [],
-      sandbox: options.sandbox,
-      settingSources: ["user", "project", "local"],
-      settings: {
-        ...(typeof options.settings === "object" ? options.settings : {}),
-        disableAllHooks: true,
-      },
-      resume: args.providerSessionId,
-      forkSession: true,
-      persistSession: false,
-      canUseTool: async () => ({
-        behavior: "deny",
-        message: "Context reporting cannot execute tools.",
-      }),
-      ...(args.dynamicTools.length > 0
-        ? {
-            mcpServers: {
-              [BB_BRIDGE_MCP_SERVER_NAME]: buildBridgeMcpServer(
-                args.dynamicTools,
-                async () => ({
-                  content: "Context reporting cannot execute tools.",
-                  isError: true,
-                }),
-              ),
-            },
-            allowedTools: options.allowedTools,
-          }
-        : {}),
+  const pinned = applyPinnedSettings({
+    cwd: options.cwd,
+    systemPrompt: options.systemPrompt,
+    model: options.model,
+    effort: options.effort,
+    thinking: options.thinking,
+    env: options.env,
+    pathToClaudeCodeExecutable: options.pathToClaudeCodeExecutable,
+    plugins: options.plugins,
+    extraArgs: options.extraArgs,
+    additionalDirectories: options.additionalDirectories
+      ? [...options.additionalDirectories]
+      : [],
+    sandbox: options.sandbox,
+    settingSources: ["user", "project", "local"],
+    settings: {
+      ...(typeof options.settings === "object" ? options.settings : {}),
+      disableAllHooks: true,
     },
+    resume: args.providerSessionId,
+    forkSession: true,
+    persistSession: false,
+    canUseTool: async () => ({
+      behavior: "deny",
+      message: "Context reporting cannot execute tools.",
+    }),
+    ...(args.dynamicTools.length > 0
+      ? {
+          mcpServers: {
+            [BB_BRIDGE_MCP_SERVER_NAME]: buildBridgeMcpServer(
+              args.dynamicTools,
+              async () => ({
+                content: "Context reporting cannot execute tools.",
+                isError: true,
+              }),
+            ),
+          },
+          allowedTools: options.allowedTools,
+        }
+      : {}),
   });
+  let session: ReturnType<typeof query>;
+  try {
+    session = query({
+      prompt: promptWithoutMessages(end.signal),
+      options: pinned.options,
+    });
+  } catch (error) {
+    pinned.release();
+    throw error;
+  }
   let closed = false;
   const close = (): void => {
     if (closed) return;
     closed = true;
     end.abort();
     session.close();
+    pinned.release();
   };
   args.signal.addEventListener("abort", close, { once: true });
   try {

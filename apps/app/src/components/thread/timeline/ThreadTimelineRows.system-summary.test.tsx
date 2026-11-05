@@ -1,6 +1,12 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+} from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -12,25 +18,29 @@ import {
 import { buildThreadTimelineFromEvents } from "@bb/thread-view";
 import { ThreadTitleMentionResourcesProvider } from "@/components/thread/ThreadTitleMentions";
 import { systemRow, turnRow } from "@/test/fixtures/thread-timeline-rows";
+import { installFakeFlowLayout } from "@/test/fake-flow-layout";
 import { makeThreadListEntry } from "@bb/test-helpers/domain-fixtures";
 import {
   buildTimelineRowsListItems,
   ThreadTimelineRows,
 } from "./ThreadTimelineRows";
 
-function renderRow(row: TimelineRow) {
-  return render(
-    <QueryClientProvider client={new QueryClient()}>
+function rowTree(row: TimelineRow, queryClient = new QueryClient()) {
+  return (
+    <QueryClientProvider client={queryClient}>
       <MemoryRouter>
         <ThreadTimelineRows
           threadIsActive={false}
           timelineRows={[row]}
           threadRuntimeDisplayStatus="idle"
-          workspaceRootPath={undefined}
         />
       </MemoryRouter>
-    </QueryClientProvider>,
+    </QueryClientProvider>
   );
+}
+
+function renderRow(row: TimelineRow) {
+  return render(rowTree(row));
 }
 
 beforeEach(() => {
@@ -115,7 +125,6 @@ describe("system summary overflow", () => {
             timelineRows={interruptionRows}
             threadIsActive={false}
             threadRuntimeDisplayStatus="idle"
-            workspaceRootPath={undefined}
           />
         </MemoryRouter>
       </QueryClientProvider>,
@@ -177,6 +186,7 @@ describe("system summary overflow", () => {
     ];
     const [item] = buildTimelineRowsListItems({
       rows,
+      scopeActive: false,
       threadIsActive: false,
       excludedInterruptionRowIds: new Set(),
       unreadDividerPlacement: null,
@@ -195,7 +205,6 @@ describe("system summary overflow", () => {
             timelineRows={rows}
             threadIsActive={false}
             threadRuntimeDisplayStatus="idle"
-            workspaceRootPath={undefined}
           />
         </MemoryRouter>
       </QueryClientProvider>,
@@ -234,6 +243,7 @@ describe("system summary overflow", () => {
     const displayedDetail = (rows: TimelineRow[], threadIsActive = false) => {
       const firstItem = buildTimelineRowsListItems({
         rows,
+        scopeActive: false,
         threadIsActive,
         excludedInterruptionRowIds: new Set(),
         unreadDividerPlacement: null,
@@ -285,7 +295,6 @@ describe("system summary overflow", () => {
                 }),
               ]}
               threadRuntimeDisplayStatus="idle"
-              workspaceRootPath={undefined}
             />
           </ThreadTitleMentionResourcesProvider>
         </MemoryRouter>
@@ -352,5 +361,87 @@ describe("system summary overflow", () => {
     );
     expect(screen.getByText(/at reconnect/).textContent).toContain(detail);
     expect(screen.queryByRole("button", { name: "Show more" })).toBeNull();
+  });
+});
+
+describe("pending system detail scrolling", () => {
+  const LINE_HEIGHT = 100;
+  const DETAIL_HEIGHT = 100;
+
+  it("keeps an expanded pending detail at its end while it streams, holds a reader who scrolled up, and follows again once they reach the new end", async () => {
+    vi.useFakeTimers({
+      toFake: [
+        "setTimeout",
+        "clearTimeout",
+        "requestAnimationFrame",
+        "cancelAnimationFrame",
+        "performance",
+      ],
+    });
+    const layout = installFakeFlowLayout({
+      heightOf: (element) =>
+        element.tagName === "PRE"
+          ? (element.textContent ?? "").split("\n").length * LINE_HEIGHT
+          : null,
+      scrollElement: () =>
+        document.querySelector<HTMLElement>("[data-detail-scroll-area]"),
+      viewportHeight: DETAIL_HEIGHT,
+    });
+    try {
+      const pendingRow = (lineCount: number) =>
+        systemRow({
+          detail: Array.from(
+            { length: lineCount },
+            (_, index) => `line ${index + 1}`,
+          ).join("\n"),
+          status: "pending",
+        });
+      const settle = async () => {
+        await act(async () => {
+          layout.flushResizeObservers();
+          await vi.advanceTimersByTimeAsync(50);
+        });
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(4_000);
+          layout.flushResizeObservers();
+        });
+      };
+      const queryClient = new QueryClient();
+      const view = render(rowTree(pendingRow(10), queryClient));
+      const stream = async (lineCount: number) => {
+        view.rerender(rowTree(pendingRow(lineCount), queryClient));
+        await settle();
+      };
+
+      fireEvent.click(
+        screen.getByRole("button", { name: /Provisioned thread/u }),
+      );
+      await settle();
+      expect(layout.maxScrollTop()).toBe(900);
+      expect(layout.scrollTop).toBe(900);
+
+      act(() => layout.layoutScrollTo(500));
+      await stream(11);
+      expect(layout.scrollTop).toBe(1_000);
+
+      act(() => layout.userScrollTo(500));
+      await settle();
+      await stream(12);
+      expect(layout.maxScrollTop()).toBe(1_100);
+      expect(layout.scrollTop).toBe(500);
+
+      act(() => layout.userScrollTo(1_000));
+      await settle();
+      await stream(13);
+      expect(layout.scrollTop).toBe(1_000);
+
+      act(() => layout.userScrollTo(1_200));
+      await settle();
+      await stream(14);
+      expect(layout.scrollTop).toBe(1_300);
+    } finally {
+      layout.restore();
+      vi.useRealTimers();
+    }
   });
 });

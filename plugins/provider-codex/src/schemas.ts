@@ -45,7 +45,7 @@ const codexThreadGoalStatusSchema = z.union([
     ),
 ]);
 
-const codexThreadGoalSchema = z
+export const codexThreadGoalSchema = z
   .object({
     objective: z.string(),
     status: codexThreadGoalStatusSchema,

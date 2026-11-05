@@ -1,16 +1,17 @@
 import { Buffer } from "node:buffer";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
+import { stripVTControlCharacters } from "node:util";
 import { Command, Option } from "commander";
+import { TerminalWebSocketTransport } from "@bb/client-core";
 import {
   createTerminalGridByteMarkerScanner,
   TERMINAL_DATA_MAX_BYTES,
 } from "@bb/domain";
 import type { TerminalCreateScope, TerminalListScope } from "@bb/sdk";
-import { createNodeWebsocketFactory } from "@bb/sdk/node-websocket";
 import {
-  terminalServerMessageSchema,
   type TerminalSession,
+  type ThreadOpenSkipReason,
 } from "@bb/server-contract";
 import { action, CliExitError, CliUsageError } from "../action.js";
 import { createCliBbSdk } from "../client.js";
@@ -25,22 +26,34 @@ import {
 } from "../native-holder.js";
 import { terminalScopeHint } from "../context-hints.js";
 import { durationHelp, parseDurationMs } from "../duration.js";
+import {
+  ALL_CLIENTS_OPTION_DESCRIPTION,
+  openDeliveryScope,
+  SKIP_REASON_MESSAGES,
+  type OpenDeliveryOptions,
+} from "../open-delivery.js";
 import { columnWidths, printBorderlessTable } from "../table.js";
 import { outputJson } from "./helpers.js";
 import { resolveMachineHostId, resolveMachineTargetOption } from "./machine.js";
 
 const DEFAULT_COLS = 80;
 const DEFAULT_ROWS = 24;
-const TERMINAL_ATTACH_HEARTBEAT_MS = 15_000;
 const TERMINAL_WAIT_TIMEOUT_EXIT_CODE = 124;
-const NO_APP_CLIENT_MESSAGE = "No bb app is open to apply this; open bb and retry";
+const NO_APP_CLIENT_MESSAGE =
+  "No bb app is open to apply this; open bb and retry";
 
-function reportTerminalActionDelivery(deliveredClients: number): void {
+function reportTerminalActionDelivery(
+  deliveredClients: number,
+  skipReason: ThreadOpenSkipReason | null,
+): void {
   if (deliveredClients === 0) {
-    throw new CliExitError(NO_APP_CLIENT_MESSAGE, 1, {
-      code: "no_app_clients",
-      hint: null,
-    });
+    throw new CliExitError(
+      skipReason === null
+        ? NO_APP_CLIENT_MESSAGE
+        : SKIP_REASON_MESSAGES[skipReason],
+      1,
+      { code: skipReason ?? "no_app_clients", hint: null },
+    );
   }
   console.log(
     `Request sent to ${deliveredClients} open bb app client${deliveredClients === 1 ? "" : "s"}; receipt and application are not confirmed.`,
@@ -50,19 +63,33 @@ function reportTerminalActionDelivery(deliveredClients: number): void {
 function reportTerminalActionResult(
   opts: TerminalJsonOptions,
   result: Record<string, unknown> & { deliveredClients: number },
+  skipReason: ThreadOpenSkipReason | null = null,
 ): void {
   if (opts.json) {
     outputJson(opts, {
       ...result,
+      ...(skipReason === null ? {} : { skipReason }),
       ...(result.deliveredClients === 0
-        ? { error: { code: "no_app_clients", message: NO_APP_CLIENT_MESSAGE } }
+        ? {
+            error: {
+              code: skipReason ?? "no_app_clients",
+              message:
+                skipReason === null
+                  ? NO_APP_CLIENT_MESSAGE
+                  : SKIP_REASON_MESSAGES[skipReason],
+            },
+          }
         : {}),
     });
-    if (result.deliveredClients === 0) reportTerminalActionDelivery(0);
+    if (result.deliveredClients === 0)
+      reportTerminalActionDelivery(0, skipReason);
     return;
   }
-  reportTerminalActionDelivery(result.deliveredClients);
+  reportTerminalActionDelivery(result.deliveredClients, skipReason);
 }
+
+interface TerminalDeliveryOptions
+  extends TerminalJsonOptions, OpenDeliveryOptions {}
 
 interface TerminalJsonOptions {
   json?: boolean;
@@ -161,81 +188,114 @@ export function registerTerminalCommands(
       hidden: true,
     })
     .action(
-      action(async (terminalId: string, shell: string, shellArgsBase64: string) => {
-        const baseUrl = getUrl();
-        const socketPath = defaultNativeHolderSocketPath(baseUrl, terminalId);
-        const script = process.argv[1];
-        if (script === undefined) throw new CliExitError("Cannot locate the bb CLI", 1);
-        const session = await createCliBbSdk(baseUrl).terminals.get({ terminalId });
-        const connection = await openNativeHolderConnection({
-          socketPath,
-          reattachOnly:
-            session.status === "exited" ||
-            process.env.BB_TERMINAL_HOLDER_REATTACH_ONLY === "1",
-          startTimeoutMs: 20_000,
-          startHolder: () => {
-            const holder = spawn(
-              process.execPath,
-              [...process.execArgv, script, "terminal", "holder-shell", terminalId, shell, shellArgsBase64],
-              { cwd: process.cwd(), detached: true, env: process.env, stdio: "ignore" },
-            );
-            holder.unref();
-          },
-        });
-        if (connection.kind !== "attached") return;
-        writeNativeHolderAttachMarker(process.stdout, terminalId);
-        for (const signal of ["SIGTERM", "SIGHUP"] as const) {
-          process.on(signal, () => connection.socket.destroy());
-        }
-        await pipeNativeHolderClient(connection.socket, {
-          input: process.stdin,
-          output: process.stdout,
-          fallbackSize: { cols: 80, rows: 24 },
-        });
-      }),
+      action(
+        async (terminalId: string, shell: string, shellArgsBase64: string) => {
+          const baseUrl = getUrl();
+          const socketPath = defaultNativeHolderSocketPath(baseUrl, terminalId);
+          const script = process.argv[1];
+          if (script === undefined)
+            throw new CliExitError("Cannot locate the bb CLI", 1);
+          const session = await createCliBbSdk(baseUrl).terminals.get({
+            terminalId,
+          });
+          const connection = await openNativeHolderConnection({
+            socketPath,
+            reattachOnly:
+              session.status === "exited" ||
+              process.env.BB_TERMINAL_HOLDER_REATTACH_ONLY === "1",
+            startTimeoutMs: 20_000,
+            startHolder: () => {
+              const holder = spawn(
+                process.execPath,
+                [
+                  ...process.execArgv,
+                  script,
+                  "terminal",
+                  "holder-shell",
+                  terminalId,
+                  shell,
+                  shellArgsBase64,
+                ],
+                {
+                  cwd: process.cwd(),
+                  detached: true,
+                  env: process.env,
+                  stdio: "ignore",
+                },
+              );
+              holder.unref();
+            },
+          });
+          if (connection.kind !== "attached") return;
+          writeNativeHolderAttachMarker(process.stdout, terminalId);
+          for (const signal of ["SIGTERM", "SIGHUP"] as const) {
+            process.on(signal, () => connection.socket.destroy());
+          }
+          await pipeNativeHolderClient(connection.socket, {
+            input: process.stdin,
+            output: process.stdout,
+            fallbackSize: { cols: 80, rows: 24 },
+          });
+        },
+      ),
     );
 
   terminal
-    .command("holder-shell <terminalId> <shell> <shellArgsBase64>", { hidden: true })
+    .command("holder-shell <terminalId> <shell> <shellArgsBase64>", {
+      hidden: true,
+    })
     .action(
-      action(async (terminalId: string, shell: string, shellArgsBase64: string) => {
-        const socketPath = defaultNativeHolderSocketPath(getUrl(), terminalId);
-        ignoreNativeHolderSignals(process, socketPath);
-        delete process.env.BB_TERMINAL_HOLDER_REATTACH_ONLY;
-        const shellArgs: unknown = JSON.parse(
-          Buffer.from(shellArgsBase64, "base64").toString("utf8"),
-        );
-        if (!Array.isArray(shellArgs) || !shellArgs.every((arg) => typeof arg === "string")) {
-          throw new CliExitError("Invalid shell arguments", 1);
-        }
-        const nodePty = await import("node-pty");
-        const sdk = createCliBbSdk(getUrl());
-        const exitCode = await runNativeHolder({
-          socketPath,
-          cwd: process.cwd(),
-          env: process.env,
-          prepare: async () => ({ command: shell, args: shellArgs }),
-          spawnPty: (child, options) => nodePty.spawn(child.command, child.args, {
-            name: process.env.TERM ?? "xterm-256color",
-            cols: options.cols,
-            rows: options.rows,
-            cwd: options.cwd,
-            env: options.env,
-          }),
-          checkTerminal: async () => {
-            try {
-              const session = await sdk.terminals.get({ terminalId });
-              return nativeTerminalCheck({ terminal: session });
-            } catch (error) {
-              if (error instanceof Error && "status" in error && error.status === 404) {
-                return "closed-for-good";
+      action(
+        async (terminalId: string, shell: string, shellArgsBase64: string) => {
+          const socketPath = defaultNativeHolderSocketPath(
+            getUrl(),
+            terminalId,
+          );
+          ignoreNativeHolderSignals(process, socketPath);
+          delete process.env.BB_TERMINAL_HOLDER_REATTACH_ONLY;
+          const shellArgs: unknown = JSON.parse(
+            Buffer.from(shellArgsBase64, "base64").toString("utf8"),
+          );
+          if (
+            !Array.isArray(shellArgs) ||
+            !shellArgs.every((arg) => typeof arg === "string")
+          ) {
+            throw new CliExitError("Invalid shell arguments", 1);
+          }
+          const nodePty = await import("node-pty");
+          const sdk = createCliBbSdk(getUrl());
+          const exitCode = await runNativeHolder({
+            socketPath,
+            cwd: process.cwd(),
+            env: process.env,
+            prepare: async () => ({ command: shell, args: shellArgs }),
+            spawnPty: (child, options) =>
+              nodePty.spawn(child.command, child.args, {
+                name: process.env.TERM ?? "xterm-256color",
+                cols: options.cols,
+                rows: options.rows,
+                cwd: options.cwd,
+                env: options.env,
+              }),
+            checkTerminal: async () => {
+              try {
+                const session = await sdk.terminals.get({ terminalId });
+                return nativeTerminalCheck({ terminal: session });
+              } catch (error) {
+                if (
+                  error instanceof Error &&
+                  "status" in error &&
+                  error.status === 404
+                ) {
+                  return "closed-for-good";
+                }
+                throw error;
               }
-              throw error;
-            }
-          },
-        });
-        process.exitCode = exitCode;
-      }),
+            },
+          });
+          process.exitCode = exitCode;
+        },
+      ),
     );
 
   addTerminalScopeOptions(
@@ -288,8 +348,9 @@ export function registerTerminalCommands(
     .option("--json", "Print machine-readable JSON output")
     .action(
       action(async (opts: TerminalSurfacesOptions) => {
-        const surfaces = await createCliBbSdk(getUrl()).terminals
-          .experimental_surfaces.list({ threadId: opts.thread });
+        const surfaces = await createCliBbSdk(
+          getUrl(),
+        ).terminals.experimental_surfaces.list({ threadId: opts.thread });
         if (outputJson(opts, { threadId: opts.thread, surfaces })) return;
         for (const surface of surfaces) {
           console.log(
@@ -301,77 +362,131 @@ export function registerTerminalCommands(
 
   terminal
     .command("focus <terminalId>")
-    .description("Focus a terminal tab in the app")
+    .description("Focus a terminal tab in the app clients viewing this thread")
+    .option("--all", ALL_CLIENTS_OPTION_DESCRIPTION)
     .option("--json", "Print machine-readable JSON output")
     .action(
-      action(async (terminalId: string, opts: TerminalJsonOptions) => {
+      action(async (terminalId: string, opts: TerminalDeliveryOptions) => {
         const result = await createCliBbSdk(
           getUrl(),
-        ).terminals.experimental_focus({ terminalId });
-        reportTerminalActionResult(opts, { terminalId, deliveredClients: result.deliveredClients });
+        ).terminals.experimental_focus({
+          terminalId,
+          ...openDeliveryScope(opts),
+        });
+        reportTerminalActionResult(
+          opts,
+          { terminalId, deliveredClients: result.deliveredClients },
+          result.skipReason,
+        );
       }),
     );
 
   terminal
     .command("open-link <terminalId> <url>")
-    .description("Open a URL in the terminal thread's browser")
+    .description(
+      "Open a URL in the browser tab of the app clients viewing this thread",
+    )
+    .option("--all", ALL_CLIENTS_OPTION_DESCRIPTION)
     .option("--json", "Print machine-readable JSON output")
     .action(
-      action(async (terminalId: string, url: string, opts: TerminalJsonOptions) => {
-        const result = await createCliBbSdk(
-          getUrl(),
-        ).terminals.experimental_openBrowser({ terminalId, url });
-        reportTerminalActionResult(opts, { terminalId, url, deliveredClients: result.deliveredClients });
-      }),
+      action(
+        async (
+          terminalId: string,
+          url: string,
+          opts: TerminalDeliveryOptions,
+        ) => {
+          const result = await createCliBbSdk(
+            getUrl(),
+          ).terminals.experimental_openBrowser({
+            terminalId,
+            url,
+            ...openDeliveryScope(opts),
+          });
+          reportTerminalActionResult(
+            opts,
+            { terminalId, url, deliveredClients: result.deliveredClients },
+            result.skipReason,
+          );
+        },
+      ),
     );
 
   terminal
     .command("split <terminalId>")
-    .description("Place a terminal in a new side panel pane")
+    .description(
+      "Place a terminal in a new side panel pane in the app clients viewing this thread",
+    )
     .requiredOption("--side <side>", "Pane side: right, left, up, or down")
+    .option("--all", ALL_CLIENTS_OPTION_DESCRIPTION)
     .option("--json", "Print machine-readable JSON output")
     .action(
-      action(async (terminalId: string, opts: { side: string; json?: boolean }) => {
-        if (!["right", "left", "up", "down"].includes(opts.side)) {
-          throw new CliUsageError({
-            code: "invalid_terminal_split_side",
-            hint: "Choose right, left, up, or down.",
-            message: "--side must be right, left, up, or down",
-          });
-        }
-        const result = await createCliBbSdk(
-          getUrl(),
-        ).terminals.experimental_layout.split({
-          terminalId,
-          side: opts.side as "right" | "left" | "up" | "down",
-        });
-        reportTerminalActionResult(opts, {
+      action(
+        async (
+          terminalId: string,
+          opts: TerminalDeliveryOptions & { side: string },
+        ) => {
+          if (!["right", "left", "up", "down"].includes(opts.side)) {
+            throw new CliUsageError({
+              code: "invalid_terminal_split_side",
+              hint: "Choose right, left, up, or down.",
+              message: "--side must be right, left, up, or down",
+            });
+          }
+          const result = await createCliBbSdk(
+            getUrl(),
+          ).terminals.experimental_layout.split({
             terminalId,
-            side: opts.side,
-            deliveredClients: result.deliveredClients,
+            side: opts.side as "right" | "left" | "up" | "down",
+            ...openDeliveryScope(opts),
           });
-      }),
+          reportTerminalActionResult(
+            opts,
+            {
+              terminalId,
+              side: opts.side,
+              deliveredClients: result.deliveredClients,
+            },
+            result.skipReason,
+          );
+        },
+      ),
     );
 
   terminal
     .command("move <terminalId>")
-    .description("Move a terminal tab to the pane containing another terminal")
-    .requiredOption("--to-pane-of <terminalId>", "Terminal whose pane receives this tab")
+    .description(
+      "Move a terminal tab to the pane containing another terminal in the app clients viewing this thread",
+    )
+    .requiredOption(
+      "--to-pane-of <terminalId>",
+      "Terminal whose pane receives this tab",
+    )
+    .option("--all", ALL_CLIENTS_OPTION_DESCRIPTION)
     .option("--json", "Print machine-readable JSON output")
     .action(
-      action(async (terminalId: string, opts: { toPaneOf: string; json?: boolean }) => {
-        const result = await createCliBbSdk(
-          getUrl(),
-        ).terminals.experimental_layout.move({
-          terminalId,
-          targetTerminalId: opts.toPaneOf,
-        });
-        reportTerminalActionResult(opts, {
+      action(
+        async (
+          terminalId: string,
+          opts: TerminalDeliveryOptions & { toPaneOf: string },
+        ) => {
+          const result = await createCliBbSdk(
+            getUrl(),
+          ).terminals.experimental_layout.move({
             terminalId,
             targetTerminalId: opts.toPaneOf,
-            deliveredClients: result.deliveredClients,
+            ...openDeliveryScope(opts),
           });
-      }),
+          reportTerminalActionResult(
+            opts,
+            {
+              terminalId,
+              targetTerminalId: opts.toPaneOf,
+              deliveredClients: result.deliveredClients,
+            },
+            result.skipReason,
+          );
+        },
+      ),
     );
 
   attention
@@ -584,7 +699,9 @@ export function registerTerminalCommands(
         if (outputJson(opts, screen)) return;
         process.stdout.write(`${screen.rows.join("\n")}\n`);
         if (!screen.complete) {
-          process.stdout.write("Screen may be incomplete because earlier terminal output was discarded.\n");
+          process.stdout.write(
+            "Screen may be incomplete because earlier terminal output was discarded.\n",
+          );
         }
       }),
     );
@@ -671,10 +788,13 @@ export function registerTerminalCommands(
   terminal
     .command("wait <terminalId>")
     .description("Wait for terminal output or exit")
-    .option("--contains <text>", "Wait until output contains text")
+    .option(
+      "--contains <text>",
+      "Wait until output contains text, ignoring terminal escapes",
+    )
     .option(
       "--regex <pattern>",
-      "Wait until output matches a regular expression",
+      "Wait until output matches a regular expression, ignoring terminal escapes",
     )
     .option("--exit", "Wait until the terminal exits")
     .option("--from-start", "Include existing scrollback from sequence 0")
@@ -1027,80 +1147,88 @@ export async function attachTerminal(args: {
     throw new Error("Attach requires an interactive terminal");
   }
 
-  const socket = createNodeWebsocketFactory()(
-    terminalWebsocketUrl({
-      baseUrl: args.baseUrl,
-      terminalId: args.terminalId,
-    }),
-  );
-  let detachPrefix = false;
   const previousRawMode = process.stdin.isRaw;
-  const onInput = (chunk: Buffer) => {
-    if (chunk.length === 1 && chunk[0] === 0x02) {
-      detachPrefix = true;
-      return;
-    }
-    if (detachPrefix) {
-      detachPrefix = false;
-      if (chunk.length === 1 && chunk[0] === 0x64) {
-        socket.close();
+  let cleanup = () => {};
+  await new Promise<void>((resolve, reject) => {
+    const transport = new TerminalWebSocketTransport({
+      url: terminalWebsocketUrl(args),
+      terminalId: args.terminalId,
+      createSocket: (url, protocols) => {
+        let socket: WebSocket;
+        try {
+          socket = new WebSocket(url, protocols);
+        } catch (error) {
+          reject(error);
+          throw error;
+        }
+        socket.addEventListener("open", () => {
+          process.stdin.setRawMode(true);
+          process.stdin.resume();
+        });
+        socket.addEventListener("error", () =>
+          reject(new Error("Terminal websocket failed")),
+        );
+        return socket;
+      },
+      shouldReconnect: () => false,
+      onInputOverflow: () => reject(new Error("Terminal input queue is full")),
+      onConnectionState: (state) => {
+        if (state === "closed") resolve();
+      },
+      onMessage: (message) => {
+        switch (message.type) {
+          case "output":
+            process.stdout.write(
+              Buffer.from(message.chunk.dataBase64, "base64"),
+            );
+            transport.acknowledgeOutput(message.chunk.seq + 1);
+            return;
+          case "exited":
+            transport.dispose();
+            return;
+          case "error":
+            reject(new Error(message.message));
+            return;
+        }
+      },
+    });
+    let detachPrefix = false;
+    const onInput = (chunk: Buffer) => {
+      if (chunk.length === 1 && chunk[0] === 0x02) {
+        detachPrefix = true;
         return;
       }
-      sendTerminalInput(socket, Buffer.from([0x02]));
-    }
-    sendTerminalInput(socket, chunk);
-  };
-  const onResize = () => {
-    socket.send(
-      JSON.stringify({
-        type: "resize",
-        cols: process.stdout.columns || DEFAULT_COLS,
-        rows: process.stdout.rows || DEFAULT_ROWS,
-      }),
-    );
-  };
-  let heartbeat: ReturnType<typeof setInterval> | null = null;
-  await new Promise<void>((resolve, reject) => {
-    socket.onopen = () => {
-      process.stdin.setRawMode(true);
-      process.stdin.resume();
-      socket.send(JSON.stringify({ type: "visibility", visible: true }));
-      onResize();
-      heartbeat = setInterval(() => {
-        socket.send(JSON.stringify({ type: "ping" }));
-      }, TERMINAL_ATTACH_HEARTBEAT_MS);
-    };
-    socket.onerror = () => reject(new Error("Terminal websocket failed"));
-    socket.onclose = () => resolve();
-    socket.onmessage = (event) => {
-      const message = terminalServerMessageSchema.parse(
-        JSON.parse(String(event.data)),
-      );
-      switch (message.type) {
-        case "attached":
-        case "pong":
-        case "session-updated":
+      if (detachPrefix) {
+        detachPrefix = false;
+        if (chunk.length === 1 && chunk[0] === 0x64) {
+          transport.dispose();
           return;
-        case "output":
-          process.stdout.write(Buffer.from(message.chunk.dataBase64, "base64"));
-          return;
-        case "exited":
-          socket.close();
-          return;
-        case "error":
-          reject(new Error(message.message));
-          return;
+        }
+        sendTerminalInput(transport, Buffer.from([0x02]));
       }
+      sendTerminalInput(transport, chunk);
+    };
+    const onResize = () => {
+      transport.sendResize(
+        process.stdout.columns || DEFAULT_COLS,
+        process.stdout.rows || DEFAULT_ROWS,
+      );
+      transport.claimSize();
+    };
+    cleanup = () => {
+      transport.dispose();
+      process.stdin.off("data", onInput);
+      process.stdout.off("resize", onResize);
+      process.stdin.setRawMode(previousRawMode);
+      process.stdin.pause();
     };
     process.stdin.on("data", onInput);
     process.stdout.on("resize", onResize);
-  }).finally(() => {
-    if (heartbeat !== null) clearInterval(heartbeat);
-    process.stdin.off("data", onInput);
-    process.stdout.off("resize", onResize);
-    process.stdin.setRawMode(previousRawMode);
-    process.stdin.pause();
-  });
+    transport.setVisible(true);
+    onResize();
+    transport.markLayoutSettled();
+    transport.start();
+  }).finally(() => cleanup());
 }
 
 function chunkTerminalInput(data: Buffer): Buffer[] {
@@ -1120,14 +1248,13 @@ function chunkTerminalInput(data: Buffer): Buffer[] {
   return chunks;
 }
 
-function sendTerminalInput(socket: { send(data: string): void }, data: Buffer) {
+function sendTerminalInput(
+  transport: TerminalWebSocketTransport,
+  data: Buffer,
+) {
+  transport.claimSize();
   for (const chunk of chunkTerminalInput(data)) {
-    socket.send(
-      JSON.stringify({
-        type: "input",
-        dataBase64: chunk.toString("base64"),
-      }),
-    );
+    if (!transport.sendInput(chunk.toString("base64"))) return;
   }
 }
 
@@ -1235,9 +1362,10 @@ async function waitForTerminal(args: {
     nextSeq = output.nextSeq;
     const searched = `${seen}${decodeChunks(output.chunks)}`;
     seen = searched.slice(-TERMINAL_WAIT_MATCH_WINDOW_CHARS);
+    const plainText = stripVTControlCharacters(searched);
     if (
       args.opts.contains !== undefined &&
-      searched.includes(args.opts.contains)
+      plainText.includes(args.opts.contains)
     ) {
       return {
         exitCode: output.exitCode,
@@ -1246,7 +1374,7 @@ async function waitForTerminal(args: {
         terminalId: args.terminalId,
       };
     }
-    if (regex && regex.test(searched)) {
+    if (regex && regex.test(plainText)) {
       return {
         exitCode: output.exitCode,
         matched: args.opts.regex ?? "",

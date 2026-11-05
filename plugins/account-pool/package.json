@@ -6,7 +6,7 @@
   "description": "Routes Claude and Codex API traffic across provider account pools.",
   "engines": {
     "bb": ">=0.0",
-    "bbPluginSdk": ">=0.6.17"
+    "bbPluginSdk": ">=0.6.86"
   },
   "bb": {
     "name": "Account Pooler [Experimental]",
@@ -15,6 +15,7 @@
       "icon": "Layers"
     },
     "server": "./src/server.ts",
+    "host": "./src/host.ts",
     "app": "./app.tsx"
   },
   "scripts": {
@@ -28,8 +29,8 @@
     "@dnd-kit/core": "^6.3.1",
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
-    "zod": "^4.3.6",
-    "undici": "^7.28.0"
+    "undici": "^7.28.0",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@bb/plugin-build": "workspace:*",

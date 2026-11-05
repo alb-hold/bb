@@ -45,6 +45,20 @@ function write(rel, content) {
 }
 
 describe("scanTree (pure)", () => {
+  it("counts tracked hidden source and ignores untracked source", () => {
+    const tracked = "packages/core/.managed-json-cli-source/entry.mjs";
+    const untracked = "packages/core/new.mjs";
+    write(tracked, 'const ids = ["codex", "claude-code"];\n');
+    write(untracked, 'const id = "pi";\n');
+    execFileSync("git", ["init", "-q"], { cwd: dir });
+    execFileSync("git", ["add", tracked], { cwd: dir });
+    write(
+      "packages/core/.managed-json-cli-TEST/entry.mjs",
+      'const id = "codex";\n',
+    );
+    expect(scanTree(dir).files).toEqual({ [tracked]: 2 });
+  });
+
   it.each([
     [
       "apps/cli/.packaged-plugin-build-IZlVup/cli-chunks/server.js",
@@ -233,6 +247,31 @@ describe("ratchet CLI refusal paths (fixture root)", () => {
     diesAt: "never",
   });
 
+  it("ignores a gitignored bundled stage directory while checking tracked source", () => {
+    write(".gitignore", "/plugins/.bundled-stage-*/\n");
+    write("packages/core/a.ts", 'const id = "codex";\n');
+    write(
+      "scripts/provider-literal-baseline.json",
+      baseline({ "packages/core/a.ts": 1 }, { "packages/core/a.ts": entry(1) }),
+    );
+    execFileSync("git", ["init", "-q"], { cwd: dir });
+    execFileSync("git", ["add", "."], { cwd: dir });
+    write("plugins/.bundled-stage-x/runtime.ts", 'const id = "claude-code";\n');
+    expect(
+      execFileSync("git", ["check-ignore", "plugins/.bundled-stage-x/runtime.ts"], {
+        cwd: dir,
+        encoding: "utf8",
+      }).trim(),
+    ).toBe("plugins/.bundled-stage-x/runtime.ts");
+    const result = run([], { BB_RATCHET_ROOT: dir });
+    expect(result.code, result.out).toBe(0);
+    expect(result.out).toContain("ratchet OK: 1 references");
+    write("packages/core/a.ts", 'const ids = ["codex", "pi"];\n');
+    const increase = run([], { BB_RATCHET_ROOT: dir });
+    expect(increase.code, increase.out).toBe(1);
+    expect(increase.out).toContain("core gained provider-id references");
+  });
+
   it("refuses --write when the live total rises above the committed baseline", () => {
     write("packages/core/a.ts", 'const id = "codex";\n');
     write("scripts/provider-literal-baseline.json", baseline({}));
@@ -302,6 +341,52 @@ describe("ratchet CLI refusal paths (fixture root)", () => {
 });
 
 describe("ratchet CLI (against the real repo baseline)", () => {
+  it("ignores untracked hidden source and managed JSON CLI temp directories", () => {
+    const source = join(ROOT, "packages/bb-app/.local-tools");
+    const temp = join(ROOT, "packages/bb-app/.managed-json-cli-TEST");
+    mkdirSync(source);
+    try {
+      mkdirSync(temp);
+      try {
+        writeFileSync(join(source, "index.ts"), 'const id = "codex";\n');
+        writeFileSync(join(temp, "bb-app.mjs"), 'const id = "codex";\n');
+        const result = run();
+        expect(result.code, result.out).toBe(0);
+        expect(result.out).not.toContain(".local-tools");
+        expect(result.out).not.toContain(".managed-json-cli-TEST");
+      } finally {
+        rmSync(temp, { recursive: true, force: true });
+      }
+    } finally {
+      rmSync(source, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it("fails closed when Git cannot read the index", () => {
+    const index = join(dir, "invalid-index");
+    writeFileSync(index, "invalid");
+    const result = run([], { GIT_INDEX_FILE: index });
+    expect(result.code).not.toBe(0);
+    expect(result.out).toContain("index file smaller than expected");
+  }, 30_000);
+
+  it("ignores an untracked managed JSON CLI temp directory", () => {
+    const temp = join(ROOT, "packages/bb-app/.managed-json-cli-TEST");
+    mkdirSync(temp);
+    try {
+      writeFileSync(
+        join(temp, "bb-app.mjs"),
+        'const ids = ["codex", "claude-code", "pi", "acp-cursor"];\n',
+      );
+      const result = run();
+      expect(result.code, result.out).toBe(0);
+      expect(result.out).toMatch(/ratchet OK/);
+      expect(run(["--list"]).out).not.toContain(".managed-json-cli-TEST");
+    } finally {
+      rmSync(temp, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   // These two scan the whole repo tree: ~0.3s locally, ~6s on a slow CI
   // runner, so vitest's 5s default is not enough headroom.
   it("passes against the committed baseline", () => {
