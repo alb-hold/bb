@@ -13,7 +13,7 @@ import type {
   SystemExecutionOptionsModelLoadError,
   SystemProvidersQuery,
 } from "@bb/server-contract";
-import { formatModelLabel } from "@/hooks/useThreadCreationOptions";
+import { formatModelLabel } from "@/hooks/thread-creation-options/selection-state";
 import {
   ModelReasoningPicker,
   type ModelReasoningPickerHandoff,
@@ -36,6 +36,7 @@ interface ExecutionProviderConfig {
 }
 
 interface ExecutionModelConfig {
+  unavailableModel?: string;
   active?: { model: string } | null;
   selected: string;
   options: readonly ModelPickerOption[];
@@ -76,6 +77,7 @@ const NATIVE_TERMINAL_CHOICES = [
 ] as const;
 
 export interface ExecutionPermissionConfig {
+  pending?: boolean;
   value?: PermissionMode;
   options: readonly PickerOption<PermissionMode>[];
   onChange: (value: PermissionMode) => void;
@@ -93,6 +95,7 @@ export interface ExecutionAgentOptionsConfig {
 }
 
 export interface ExecutionControlsProps {
+  pending?: boolean;
   nativeTerminal?: ExecutionNativeTerminalConfig;
   providerRouting?: SystemProvidersQuery;
   provider: ExecutionProviderConfig;
@@ -105,6 +108,7 @@ export interface ExecutionControlsProps {
 }
 
 export const ExecutionControls = memo(function ExecutionControls({
+  pending,
   nativeTerminal,
   provider,
   providerRouting,
@@ -133,8 +137,16 @@ export const ExecutionControls = memo(function ExecutionControls({
     handoff !== undefined;
 
   return (
-    <div className="flex min-w-0 max-w-full flex-wrap max-md:flex-nowrap items-center gap-x-1 gap-y-2">
-      {showModelPicker ? (
+    <div className="flex min-w-0 max-w-full flex-wrap max-md:flex-nowrap max-md:flex-col max-md:items-start max-md:gap-y-0 items-center gap-x-1 gap-y-2">
+      {pending ? (
+        <div
+          role="status"
+          aria-label="Loading execution options"
+          className="flex h-6 w-52 min-w-0 max-w-full items-center px-2 max-md:h-11"
+        >
+          <span aria-hidden className="h-3 w-full rounded-sm bg-state-hover" />
+        </div>
+      ) : showModelPicker ? (
         <ModelReasoningPicker
           providerOptions={provider.options ?? []}
           providerRouting={providerRouting}
@@ -142,6 +154,7 @@ export const ExecutionControls = memo(function ExecutionControls({
           onSelectedProviderChange={provider.onChange}
           hasMultipleProviders={provider.hasMultiple ?? false}
           modelValue={model.active?.model ?? model.selected}
+          unavailableModel={model.unavailableModel}
           modelOptions={model.options}
           moreModelOptions={model.moreOptions}
           modelIsLoading={model.isLoading}
@@ -163,7 +176,10 @@ export const ExecutionControls = memo(function ExecutionControls({
           agentSections={agentOptions?.sections}
           onAgentOptionChange={agentOptions?.onChange}
           muted
-          className="min-w-0 overflow-hidden"
+          className={cn(
+            "min-w-0 overflow-hidden",
+            pending !== undefined && "w-52",
+          )}
           disabled={disabled}
           handoff={handoff}
         />
@@ -196,7 +212,15 @@ export const ExecutionControls = memo(function ExecutionControls({
               )}
             >
               <Icon name={choice.icon} className="size-3.5" />
-              <span className="max-md:hidden">{choice.label}</span>
+              <span
+                className={cn(
+                  choice.value !==
+                    (nativeTerminal.enabled ? "terminal" : "chat") &&
+                    "max-md:hidden",
+                )}
+              >
+                {choice.label}
+              </span>
             </ToggleGroupItem>
           ))}
         </ToggleGroup>

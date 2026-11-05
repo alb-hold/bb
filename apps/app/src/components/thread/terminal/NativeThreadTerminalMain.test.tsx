@@ -130,6 +130,33 @@ afterEach(() => {
 });
 
 describe("NativeThreadTerminalMain", () => {
+  it("does not guess execution labels while its profile is unresolved", () => {
+    hooks.profile.mockReturnValue({ data: null });
+    hooks.listTerminals.mockReturnValue({
+      data: {
+        sessions: [
+          {
+            id: "term-live",
+            status: "running",
+            createdAt: 1000,
+            lastUserInputAt: null,
+          },
+        ],
+      },
+      dataUpdatedAt: 1,
+    });
+    render(
+      <NativeThreadTerminalMain
+        projectId="proj_native"
+        runtime={{ displayStatus: "idle" }}
+        threadId="thr_native"
+        threadIsProvisioning={false}
+        view={nativeView}
+      />,
+    );
+    expect(screen.queryByText(/GPT|Full Access/)).toBeNull();
+  });
+
   it("cues silent setup after twelve seconds, clearing on first input and binding", () => {
     vi.useFakeTimers();
     vi.setSystemTime(1000);

@@ -209,7 +209,7 @@ export const NewThreadPromptBoxUI = memo(function NewThreadPromptBoxUI({
     isSubmitting,
   });
   const controller = useComposerExtensionController({
-    host: pluginComposerHost ?? null,
+    host: execution.pending ? null : (pluginComposerHost ?? null),
     view: composerView,
     focusDefault,
   });
@@ -314,6 +314,7 @@ const DefaultNewThreadComposer = memo(function DefaultNewThreadComposer({
         </ComposerBannersSlot>
       </div>
       <ComposerBox
+        suppressPluginComposerCustomizations={execution.pending}
         id={id}
         promptBoxRef={promptBoxRef}
         value={value}
@@ -377,6 +378,7 @@ const DefaultNewThreadComposer = memo(function DefaultNewThreadComposer({
         <div className="flex shrink-0 items-center gap-2">
           {modeConfig.sessionOptionsControl}
           <PermissionModePicker
+            pending={modeConfig.permission.pending}
             value={modeConfig.permission.value}
             options={modeConfig.permission.options}
             onChange={modeConfig.permission.onChange}

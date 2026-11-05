@@ -183,6 +183,7 @@ interface ModelReasoningPickerProps {
   onProviderPreviewResolved?: (value: ResolvedProviderPreview) => void;
   requireVerifiedProviderPreview?: boolean;
   hasMultipleProviders: boolean;
+  unavailableModel?: string;
   modelValue: string;
   modelOptions: readonly ModelPickerOption[];
   moreModelOptions?: readonly ModelPickerOption[];
@@ -218,6 +219,7 @@ export function ModelReasoningPicker({
   requireVerifiedProviderPreview = false,
   hasMultipleProviders,
   modelValue,
+  unavailableModel,
   modelOptions,
   moreModelOptions = [],
   modelIsLoading = false,
@@ -296,6 +298,9 @@ export function ModelReasoningPicker({
   const selectedModelLabel = (formatModelLabel ?? formatFallbackModelLabel)(
     selectedModelOption?.label ?? modelValue,
   );
+  const modelSubstitutionNote = unavailableModel
+    ? `${unavailableModel} isn't available; using ${selectedModelLabel}`
+    : undefined;
   const hasSelectedModel = selectedModelLabel.trim().length > 0;
   const showLoadingTrigger = modelIsLoading && !hasSelectedModel;
   const selectedProviderLabel = selectedProvider?.label ?? selectedProviderId;
@@ -927,6 +932,7 @@ export function ModelReasoningPicker({
           ? `Provider, model and reasoning (${toggleShortcut.label})`
           : "Provider, model and reasoning"
       }
+      aria-description={modelSubstitutionNote}
       aria-keyshortcuts={toggleShortcut?.ariaKeyshortcuts}
       disabled={disabled}
       {...ModelReasoningMenu.intentProps}
@@ -941,7 +947,10 @@ export function ModelReasoningPicker({
         className,
       )}
     >
-      <span className={OPTION_TRIGGER_CONTENT_CLASS_NAME} title={triggerTitle}>
+      <span
+        className={OPTION_TRIGGER_CONTENT_CLASS_NAME}
+        title={modelSubstitutionNote ?? triggerTitle}
+      >
         {showLoadingTrigger ? (
           <>
             {TriggerIcon ? (

@@ -665,6 +665,9 @@ export function ThreadScreen({
       activePromptMode={timeline.activePromptMode}
       goal={timeline.goal}
       providerCommands={timeline.providerCommands}
+      executionOptionsPending={
+        timeline.timelineLoading || Boolean(timeline.timelineError)
+      }
       sessionOptions={timeline.sessionOptions}
       modelFallback={timeline.modelFallback}
       activeWorkflows={timeline.activeWorkflows}

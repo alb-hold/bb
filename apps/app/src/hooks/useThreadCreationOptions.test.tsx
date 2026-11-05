@@ -17,6 +17,7 @@ import {
   systemProvidersQueryKey,
 } from "./queries/query-keys";
 import { getProjectScopedStorageKey } from "@/lib/project-scoped-storage";
+import { buildAutoFollowUpRequest } from "@bb/client-core";
 import { useThreadCreationOptions } from "./useThreadCreationOptions";
 import {
   providerListCacheKey,
@@ -338,6 +339,45 @@ afterEach(() => {
 });
 
 describe("useThreadCreationOptions", () => {
+  it("sends the catalog substitute when a verified catalog omits the stored model", async () => {
+    const catalog = createDeferredPromise<SystemExecutionOptionsResponse>();
+    vi.mocked(sdk.system.executionOptions).mockReturnValue(catalog.promise);
+    const { wrapper } = createQueryClientTestHarness();
+    const { result } = renderHook(
+      () =>
+        useThreadCreationOptions({
+          scope: "component-local",
+          initialProviderId: GLOBAL_PROVIDER_ID,
+          initialModel: "gpt-5.2-codex",
+          initialReasoningLevel: "medium",
+          initialPermissionMode: "full",
+        }),
+      { wrapper },
+    );
+    expect(result.current.selectedModel).toBe("gpt-5.2-codex");
+    await act(async () => catalog.resolve(executionOptionsResponse()));
+    await waitFor(() =>
+      expect(result.current.modelCatalogIsVerified).toBe(true),
+    );
+    expect(result.current.selectedModel).toBe("global-model");
+    expect(result.current.activeModel?.model).toBe("global-model");
+    const request = buildAutoFollowUpRequest({
+      compactFirst: false,
+      input: [{ type: "text", text: "Continue", mentions: [] }],
+      threadId: "thr_stored",
+      execution: {
+        model: result.current.selectedModel,
+        supportsServiceTier: result.current.supportsServiceTier,
+        serviceTier: result.current.serviceTier,
+        reasoningLevel: result.current.reasoningLevel,
+        permissionMode: result.current.permissionMode,
+        executionInputSources: result.current.executionInputSources,
+      },
+    });
+    expect(request?.model).toBe("global-model");
+    expect(request?.executionInputSources?.model).toBe("explicit");
+  });
+
   it("keeps an unprobed selection without reasoning choices until its actual ladder arrives", async () => {
     const discovery = createDeferredPromise<SystemExecutionOptionsResponse>();
     const catalog = executionOptionsResponse();
@@ -996,7 +1036,9 @@ describe("useThreadCreationOptions", () => {
         }),
       { wrapper },
     );
-    await waitFor(() => expect(result.current.selectedModel).toBe("global-default"));
+    await waitFor(() =>
+      expect(result.current.selectedModel).toBe("global-default"),
+    );
     act(() => result.current.setSelectedProviderId(PROJECT_PROVIDER_ID));
     await waitFor(() => {
       expect(result.current.selectedProviderId).toBe(PROJECT_PROVIDER_ID);
@@ -1004,10 +1046,12 @@ describe("useThreadCreationOptions", () => {
       expect(result.current.reasoningLevel).toBe("high");
     });
     expect(sdk.projects.defaultExecutionOptions).toHaveBeenCalledWith(
-      expect.objectContaining({ projectId: PROJECT_ID, providerId: PROJECT_PROVIDER_ID }),
+      expect.objectContaining({
+        projectId: PROJECT_ID,
+        providerId: PROJECT_PROVIDER_ID,
+      }),
     );
   });
-
 
   it("offers each model's own tiers and keeps the chosen tier for the models that have it", async () => {
     const base = executionOptionsResponse();

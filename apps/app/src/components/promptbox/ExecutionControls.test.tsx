@@ -87,8 +87,11 @@ describe("ExecutionControls", () => {
     for (const name of ["Chat", "Terminal"]) {
       const choice = screen.getByRole("radio", { name });
       expect(choice.textContent).toBe(name);
-      expect(choice.querySelector("span.max-md\\:hidden")).not.toBeNull();
+      expect(
+        choice.querySelector("span")?.classList.contains("max-md:hidden"),
+      ).toBe(name !== "Chat");
     }
+    expect(wrappingRow?.classList.contains("max-md:flex-col")).toBe(true);
     expect(chip.textContent).toContain("1M");
   });
 
@@ -134,6 +137,18 @@ describe("ExecutionControls", () => {
         .getByRole("radio", { name: "Terminal" })
         .getAttribute("aria-checked"),
     ).toBe("true");
+    expect(
+      screen
+        .getByRole("radio", { name: "Terminal" })
+        .querySelector("span")
+        ?.classList.contains("max-md:hidden"),
+    ).toBe(false);
+    expect(
+      screen
+        .getByRole("radio", { name: "Chat" })
+        .querySelector("span")
+        ?.classList.contains("max-md:hidden"),
+    ).toBe(true);
     fireEvent.click(screen.getByRole("radio", { name: "Terminal" }));
     expect(onChange).toHaveBeenCalledTimes(1);
     fireEvent.click(screen.getByRole("radio", { name: "Chat" }));
@@ -143,6 +158,42 @@ describe("ExecutionControls", () => {
     expect(
       screen.queryByRole("radiogroup", { name: "Run this thread in" }),
     ).toBeNull();
+  });
+
+  it("withholds a guessed model until thread execution options resolve", () => {
+    const props = makeExecutionControlsProps();
+    const { rerender } = renderExecutionControls({ ...props, pending: true });
+    expect(screen.queryByText("GPT-5")).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "Provider, model and reasoning" }),
+    ).toBeNull();
+    const placeholder = screen.getByRole("status", {
+      name: "Loading execution options",
+    });
+    expect(placeholder.classList.contains("w-52")).toBe(true);
+    rerender(<ExecutionControls {...props} pending={false} />);
+    expect(
+      screen
+        .getByRole("button", { name: "Provider, model and reasoning" })
+        .classList.contains("w-52"),
+    ).toBe(true);
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.getByText("GPT-5")).not.toBeNull();
+  });
+
+  it("exposes the stored-model substitution on the model chip", () => {
+    const props = makeExecutionControlsProps();
+    const note = "gpt-5.2-codex isn't available; using GPT-5";
+    renderExecutionControls({
+      ...props,
+      model: { ...props.model, unavailableModel: "gpt-5.2-codex" },
+    });
+    const chip = screen.getByRole("button", {
+      name: "Provider, model and reasoning",
+    });
+    expect(chip.querySelector("[title]")?.getAttribute("title")).toBe(note);
+    expect(chip.getAttribute("aria-description")).toBe(note);
+    expect(chip.textContent).toContain("GPT-5");
   });
 
   it("hides provider tabs when the provider is locked", () => {
