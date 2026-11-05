@@ -180,8 +180,8 @@
     "66 over the lowered cap. The Brotli cap returns to the 394,500 set by the",
     "0.48.0 sync; neither cap is above the base."
   ],
-  "maxBootBytes": 1610000,
-  "maxBootBrotliBytes": 394500,
+  "maxBootBytes": 1598045,
+  "maxBootBrotliBytes": 392322,
   "forbiddenBootPackages": [
     "@dnd-kit/accessibility",
     "@dnd-kit/core",
@@ -216,6 +216,9 @@
     "sonner"
   ],
   "splitBoundaries": {
+    "src/components/dialogs/ThreadDeleteDialog.tsx": ["boot"],
+    "src/components/notifications/NotificationCenterView.tsx": ["boot"],
+    "src/components/device-handoff/DeviceHandoffSheet.tsx": ["boot"],
     "src/components/dialogs/ProviderCliInstallLogDialog.tsx": ["boot"],
     "src/views/AuthCallbackView.tsx": ["boot"],
     "src/components/tools/ResourceSidebar.tsx": ["boot"],
