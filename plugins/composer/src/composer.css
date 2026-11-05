@@ -212,3 +212,9 @@
     content: var(--promptbox-container-compact-placeholder);
   }
 }
+
+@media (width < 48rem) {
+  [data-compact-empty-editor] {
+    min-height: 44px !important;
+  }
+}

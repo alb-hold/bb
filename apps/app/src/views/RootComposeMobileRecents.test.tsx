@@ -185,10 +185,12 @@ describe("mobile recents hierarchy interaction", () => {
     });
     expect(collapse.getAttribute("aria-expanded")).toBe("true");
 
-    const providerTile = collapse.querySelector("span.size-7");
+    const providerTile = collapse.querySelector("span.size-4");
     if (!(providerTile instanceof HTMLElement)) {
       throw new Error("Expected provider tile inside the disclosure button");
     }
+    expect(providerTile.className).not.toContain("border");
+    expect(providerTile.closest("li")?.querySelector("a")?.className).toContain("h-13");
     fireEvent.click(providerTile);
 
     expect(screen.queryByText("Audit folder query paths")).toBeNull();

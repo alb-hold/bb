@@ -14,6 +14,8 @@ import {
   type ExecutionControlsProps,
 } from "./ExecutionControls";
 import { ModelReasoningMenu } from "@/components/pickers/ModelReasoningMenuSplit";
+import { Icon } from "@bb/shared-ui/icon";
+import { CompactViewportOverrideProvider } from "@bb/shared-ui/hooks/use-compact-viewport";
 
 function makeExecutionControlsProps(
   providerOnChange?: (value: string) => void,
@@ -59,6 +61,70 @@ afterEach(() => {
 });
 
 describe("ExecutionControls", () => {
+  it("keeps the unresolved model glyph and chevron in a 360px compact composer", () => {
+    const props = makeExecutionControlsProps();
+    const { wrapper } = createQueryClientTestHarness();
+    render(
+      <CompactViewportOverrideProvider isCompactViewport>
+        <div style={{ width: 360 }}>
+          <ExecutionControls
+            {...props}
+            pending
+            provider={{ options: [], selectedId: "" }}
+            model={{ ...props.model, selected: "", options: [], isLoading: true }}
+            nativeTerminal={{ enabled: true, onChange: vi.fn() }}
+          />
+        </div>
+      </CompactViewportOverrideProvider>,
+      { wrapper },
+    );
+
+    const chip = screen.getByRole("button", { name: "Model" });
+    expect(chip.textContent).toBe("");
+    expect(chip.querySelectorAll("[data-icon-root]").length).toBe(2);
+    expect(chip.hasAttribute("disabled")).toBe(true);
+    expect(chip.closest("[data-execution-controls-layout]")?.getAttribute("data-execution-controls-layout")).toBe("stacked");
+    expect(screen.getByRole("radio", { name: "Chat" })).toBeTruthy();
+    expect(screen.getByRole("radio", { name: "Terminal" })).toBeTruthy();
+  });
+
+  it("uses a glyph without partial model text beside compact execution choices", () => {
+    const props = makeExecutionControlsProps();
+    const { wrapper } = createQueryClientTestHarness();
+    render(
+      <CompactViewportOverrideProvider isCompactViewport>
+        <ExecutionControls
+          {...props}
+          provider={{
+            ...props.provider,
+            options: [{
+              value: "codex",
+              label: "Codex",
+              icon: () => <Icon name="Terminal" />,
+            }],
+          }}
+          model={{
+            ...props.model,
+            selected: "gpt-6.1-sol",
+            options: [{ value: "gpt-6.1-sol", label: "GPT-6.1-Sol" }],
+          }}
+          nativeTerminal={{ enabled: true, onChange: vi.fn() }}
+        />
+      </CompactViewportOverrideProvider>,
+      { wrapper },
+    );
+
+    const chip = screen.getByRole("button", {
+      name: "Provider, model and reasoning: Codex: GPT-6.1-Sol · Medium reasoning",
+    });
+    expect(chip.textContent).toBe("");
+    expect(chip.querySelectorAll("[data-icon-root]").length).toBe(2);
+    expect(screen.getByRole("radio", { name: "Chat" })).toBeTruthy();
+    expect(screen.getByRole("radio", { name: "Terminal" })).toBeTruthy();
+    fireEvent.click(chip);
+    expect(screen.getByRole("dialog")).toBeTruthy();
+  });
+
   it("keeps both execution labels visible beside a bounded model chip", () => {
     const props = makeExecutionControlsProps();
     renderExecutionControls({
@@ -87,6 +153,7 @@ describe("ExecutionControls", () => {
     expect(chip.hasAttribute("data-model-reasoning-trigger")).toBe(true);
     for (const name of ["Chat", "Terminal"]) {
       const choice = screen.getByRole("radio", { name });
+      expect(choice.className).toContain("data-[state=on]:bg-accent");
       expect(choice.textContent).toBe(name);
       expect(
         choice.querySelector("span")?.classList.contains("max-md:hidden"),

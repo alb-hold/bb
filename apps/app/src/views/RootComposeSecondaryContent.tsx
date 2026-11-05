@@ -22,7 +22,7 @@ import { RootComposeHome } from "./RootComposeHome";
 import { useOptionalPaneContext } from "./thread-detail/PaneContext";
 
 const ROOT_COMPOSE_PINNED_PANEL_TOGGLE_POSITION_CLASS =
-  "right-[calc(1rem+env(safe-area-inset-right))] top-[calc(0.625rem+env(safe-area-inset-top))] max-md:pointer-coarse:top-[calc(0.375rem+env(safe-area-inset-top))]";
+  "right-[calc(1rem+env(safe-area-inset-right))] top-[calc(0.625rem+env(safe-area-inset-top))] max-md:top-(--bb-window-frame-top) max-md:right-[calc(0.5rem+env(safe-area-inset-right))] max-md:flex max-md:h-12 max-md:items-center";
 
 export function useRootComposePinnedPanelToggleBoxClassName(): string {
   const [desktopInfo] = useState(getBbDesktopInfo);

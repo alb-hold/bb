@@ -39,6 +39,7 @@ function useCompactHomeMetrics(isCompact: boolean) {
       return;
     }
     const updateScrollCue = () => {
+      scrollViewport.toggleAttribute("data-more-above", scrollViewport.scrollTop > 1);
       scrollViewport.toggleAttribute(
         "data-more-below",
         scrollViewport.scrollTop + scrollViewport.clientHeight <
@@ -156,7 +157,7 @@ export function RootComposeHome({
           }
         >
           {!isCompact ? (
-            <p className="mb-4 text-center text-sm text-muted-foreground">
+            <p className="mb-6 text-center text-base font-medium text-foreground">
               Start a new thread
             </p>
           ) : null}
