@@ -180,6 +180,7 @@ export function NativeThreadTerminalMain({
           threadId={threadId}
         />
         <NativeTerminalPanel
+          attentionShownAsBanner
           autoFocus={paneIsFocused && !isTouchDevice && !composerEngaged}
           isPanelOpen
           isPanelPersistedOpen
@@ -270,6 +271,7 @@ export function NativeThreadTerminalMain({
         </div>
         <div className="min-h-0 flex-1">
           <NativeTerminalPanel
+            attentionShownAsBanner
             retainNativeOutput
             autoFocus={false}
             isPanelOpen

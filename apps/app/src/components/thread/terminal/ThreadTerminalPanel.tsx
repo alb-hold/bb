@@ -6,6 +6,7 @@ import { useThreadTerminalController } from "./useThreadTerminalController";
 interface ThreadTerminalPanelProps {
   autoFocus?: boolean;
   retainNativeOutput?: boolean;
+  attentionShownAsBanner?: boolean;
   isPanelOpen: boolean;
   isPanelPersistedOpen: boolean;
   onAutoFocusHandled?: () => void;
@@ -20,6 +21,7 @@ interface ThreadTerminalPanelProps {
 export function ThreadTerminalPanel({
   autoFocus = false,
   retainNativeOutput = false,
+  attentionShownAsBanner = false,
   isPanelOpen,
   isPanelPersistedOpen,
   onAutoFocusHandled,
@@ -46,6 +48,7 @@ export function ThreadTerminalPanel({
       <div className="min-h-0 flex-1 overflow-hidden bg-sidebar">
         <ThreadTerminalContent
           retainNativeOutput={retainNativeOutput}
+          attentionShownAsBanner={attentionShownAsBanner}
           autoFocus={autoFocus}
           controller={terminalController}
           onAutoFocusHandled={onAutoFocusHandled}

@@ -34,13 +34,18 @@ vi.mock("@tanstack/react-query", () => ({ useQuery: hooks.profile }));
 vi.mock("./NativeTerminalPanel", () => ({
   NativeTerminalPanel: Object.assign(
     ({
+      attentionShownAsBanner,
       onRetryStart,
       onCloseStart,
     }: {
+      attentionShownAsBanner?: boolean;
       onRetryStart: () => void;
       onCloseStart: () => void;
     }) => (
-      <div data-testid="terminal-panel">
+      <div
+        data-testid="terminal-panel"
+        data-attention-banner={attentionShownAsBanner ? "true" : "false"}
+      >
         <button onClick={onRetryStart}>Panel retry</button>
         <button onClick={onCloseStart}>Panel close</button>
       </div>
@@ -154,6 +159,9 @@ describe("NativeThreadTerminalMain", () => {
     );
     expect(screen.getByRole("status").textContent).toBe("Check terminal");
     expect(container.querySelector(".ring-attention")).toBeNull();
+    expect(
+      screen.getByTestId("terminal-panel").getAttribute("data-attention-banner"),
+    ).toBe("true");
     terminal.attention = null;
     rerender(<NativeThreadTerminalMain {...props} />);
     expect(screen.queryByText("Check terminal")).toBeNull();

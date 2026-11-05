@@ -527,6 +527,7 @@ export function observeTerminalFontLoading(
 
 interface ThreadTerminalViewProps {
   retainNativeOutput?: boolean;
+  attentionShownAsBanner?: boolean;
   autoFocus: boolean;
   isPanelOpen: boolean;
   onAutoFocusHandled?: () => void;
@@ -1233,6 +1234,7 @@ export function handleTerminalServerMessage({
 
 export function ThreadTerminalView({
   retainNativeOutput = false,
+  attentionShownAsBanner = false,
   autoFocus,
   isPanelOpen,
   onAutoFocusHandled,
@@ -3482,7 +3484,7 @@ export function ThreadTerminalView({
         <ContextMenuTrigger asChild>
           <TerminalAttentionPane
             attention={session.attention}
-            bannerOnly={retainNativeOutput}
+            bannerOnly={attentionShownAsBanner}
             className={`group/terminal-pane relative min-h-0 w-full flex-1 overflow-hidden bg-sidebar p-2 ${isTouchDevice ? (showFitControl || (retainNativeOutput && session.status === "exited") ? "touch-pan-x touch-pan-y" : "touch-pan-y") : ""}`}
             onContextMenuCapture={captureTerminalContextMenu}
             onTouchStart={(event) => {
