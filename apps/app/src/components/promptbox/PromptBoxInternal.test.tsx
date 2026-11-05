@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { readFileSync } from "node:fs";
 import { Provider, createStore, getDefaultStore } from "jotai";
 import { ExecutionControls } from "./ExecutionControls";
 import {
@@ -4846,13 +4847,47 @@ describe("ComposerBox compact layout", () => {
     const controls = row?.querySelector("[data-promptbox-execution-controls]");
     expect(controls?.contains(model)).toBe(true);
     expect(controls?.contains(toggle)).toBe(true);
-    expect(model.classList.contains("max-md:row-start-1")).toBe(true);
-    expect(model.classList.contains("max-md:col-span-full")).toBe(true);
-    expect(toggle.classList.contains("max-md:row-start-2")).toBe(true);
-    expect(toggle.classList.contains("max-md:col-start-2")).toBe(true);
-    expect(model.parentElement?.classList.contains("max-md:contents")).toBe(
-      true,
-    );
+    expect(model.hasAttribute("data-model-reasoning-trigger")).toBe(true);
+    expect(toggle.hasAttribute("data-native-terminal-toggle")).toBe(true);
+    expect(
+      model.parentElement?.getAttribute("data-execution-controls-layout"),
+    ).toBe("stacked");
+    const style = document.createElement("style");
+    const appCss = readFileSync("src/app.css", "utf8");
+    style.textContent = appCss.slice(appCss.lastIndexOf("@media (width < 48rem)"));
+    document.head.append(style);
+    try {
+      const media = Array.from(style.sheet?.cssRules ?? []).find(
+        (rule): rule is CSSMediaRule => "media" in rule && "cssRules" in rule,
+      );
+      expect(media?.conditionText).toBe("(width < 48rem)");
+      const rules = Array.from(media?.cssRules ?? []).filter(
+        (rule): rule is CSSStyleRule => "selectorText" in rule && "style" in rule,
+      );
+      const declaration = (element: Element, property: string) =>
+        rules
+          .filter((rule) => element.matches(rule.selectorText))
+          .map((rule) => rule.style.getPropertyValue(property))
+          .filter(Boolean)
+          .at(-1);
+      expect(declaration(model, "grid-column")).toBe("1 / -1");
+      expect(declaration(model, "grid-row")).toBe("1");
+      for (const [slot, column] of [
+        [row?.querySelector("[data-promptbox-plus-control]"), "1"],
+        [toggle, "2"],
+        [row?.querySelector("[data-promptbox-trailing-actions]"), "3"],
+      ] as const) {
+        expect(slot).not.toBeNull();
+        if (slot == null) throw new Error("Missing action-row slot");
+        expect(declaration(slot, "grid-column")).toBe(column);
+        expect(declaration(slot, "grid-row")).toBe("2");
+      }
+      if (model.parentElement === null)
+        throw new Error("Missing execution controls");
+      expect(declaration(model.parentElement, "display")).toBe("contents");
+    } finally {
+      style.remove();
+    }
   });
 
   it("keeps prompt actions in the full mobile layout", () => {
