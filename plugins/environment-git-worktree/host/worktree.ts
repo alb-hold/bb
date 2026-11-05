@@ -971,6 +971,7 @@ async function removeRegisteredWorktree(
       if (reasons.length > 0) {
         throw worktreePreservedError(identity.path, reasons);
       }
+      const workspaceMetadataBaseline = await fs.lstat(quarantinedPath);
       const finalCheckStartedAt = Date.now();
       await args.testHooks?.afterFinalCheck?.(quarantinedPath, severedGitDir);
       if (await directoryTreeChangedSince(severedGitDir, finalCheckStartedAt)) {
@@ -979,14 +980,12 @@ async function removeRegisteredWorktree(
           ...keptNote,
         ]);
       }
-      if (await directoryTreeChangedSince(quarantinedPath, finalCheckStartedAt)) {
-        throw worktreePreservedError(identity.path, [
-          "new or changed workspace data was found after its final inspection",
-          ...keptNote,
-        ]);
-      }
       const removed = await removeDirectoryTree(quarantinedPath, {
         startedAt: finalCheckStartedAt,
+        rootMetadataBaseline: {
+          ctimeMs: workspaceMetadataBaseline.ctimeMs,
+          mtimeMs: workspaceMetadataBaseline.mtimeMs,
+        },
         afterDirectoryListed: args.testHooks?.afterDirectoryListed,
         beforeEntryRemoval: args.testHooks?.beforeEntryRemoval,
         afterEntryCheck: args.testHooks?.afterEntryCheck,
