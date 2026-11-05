@@ -232,6 +232,7 @@ export async function removeDirectoryTree(
     name: string,
     entry: string,
     rootEntry = false,
+    expectedSiblingNames?: ReadonlySet<string>,
   ): Promise<RemoveDirectoryTreeResult> => {
     const anchoredEntry = path.join(parentDirectory, name);
     let info;
@@ -269,6 +270,16 @@ export async function removeDirectoryTree(
         return "retained";
       }
       await hooks.beforeEntryRemoval?.(entry);
+      if (expectedSiblingNames !== undefined) {
+        let siblings: string[];
+        try {
+          siblings = await readdir(parentDirectory);
+        } catch {
+          return "retained";
+        }
+        if (siblings.some((sibling) => !expectedSiblingNames.has(sibling)))
+          return "retained";
+      }
       let checkedPreciseInfo;
       try {
         checkedPreciseInfo = await lstat(anchoredEntry, { bigint: true });
@@ -465,15 +476,27 @@ export async function removeDirectoryTree(
         ...files,
         ...(listed.includes(".git") && !rootEntry ? [".git"] : []),
       ];
+      const remainingNames = new Set(listed);
       for (const childName of removalOrder) {
+        let currentNames: string[];
+        try {
+          currentNames = await readdir(directoryPath);
+        } catch {
+          return "retained";
+        }
+        if (currentNames.some((current) => !remainingNames.has(current)))
+          return "retained";
         const childResult = await removeEntry(
           directoryPath,
           childName,
           path.join(entry, childName),
+          false,
+          remainingNames,
         );
         if (childResult === "retained") {
           return "retained";
         }
+        remainingNames.delete(childName);
       }
       let after: string[];
       try {
