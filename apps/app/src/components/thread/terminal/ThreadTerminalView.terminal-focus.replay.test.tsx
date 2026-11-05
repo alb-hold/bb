@@ -1178,6 +1178,7 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
       ).toBe("snapshot text"),
     );
     expect(testState.sockets).toHaveLength(0);
+    const previewFontSize = document.querySelector<HTMLElement>("[data-terminal-screen-loading-preview]")!.style.fontSize;
     finishModules();
     await waitFor(() => expect(testState.sockets).toHaveLength(1), {
       timeout: 20_000,
@@ -1213,11 +1214,47 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
       ).toBeNull(),
     );
     const terminal = terminals[0]!;
+    expect(previewFontSize).toBe(`${terminal.options.fontSize}px`);
     const text = Array.from({ length: terminal.buffer.active.length }, (_, i) =>
       terminal.buffer.active.getLine(i)?.translateToString(true),
     ).join("\n");
     expect(text).toContain("older scrollback");
     expect(text.match(/snapshot text/g)).toHaveLength(1);
+  });
+
+  it("removes the loading snapshot when terminal modules fail", async () => {
+    prepareMobileTerminal();
+    testState.screen.mockResolvedValue({
+      rows: ["stale snapshot"],
+      cursor: { col: 0, row: 0 },
+      cols: 40,
+      gridRows: 12,
+      complete: true,
+      truncated: false,
+      checkpointSeq: 2,
+      dataBase64: btoa("stale snapshot"),
+    });
+    let fail!: (error: Error) => void;
+    vi.spyOn(terminalModules, "importTerminalModules").mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          fail = reject;
+        }),
+    );
+    renderMobileTerminal();
+    await waitFor(() =>
+      expect(
+        document.querySelector("[data-terminal-screen-loading-preview]"),
+      ).not.toBeNull(),
+    );
+    fail(new Error("renderer unavailable"));
+    await waitFor(() =>
+      expect(
+        document.querySelector("[data-terminal-screen-loading-preview]"),
+      ).toBeNull(),
+    );
+    expect(document.body.textContent).toContain("renderer unavailable");
+    expect(testState.sockets).toHaveLength(0);
   });
 
   async function mountReplayWithUnusableSnapshot() {
@@ -1310,13 +1347,14 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
       handler: TimerHandler,
       delay?: number,
       ...args: unknown[]
-    ) => setTimeout(
-      handler,
-      typeof handler === "function" && handler.name === "handoffAtLatestGrid"
-        ? 10_000
-        : delay,
-      ...args,
-    )) as typeof window.setTimeout);
+    ) =>
+      setTimeout(
+        handler,
+        typeof handler === "function" && handler.name === "handoffAtLatestGrid"
+          ? 10_000
+          : delay,
+        ...args,
+      )) as typeof window.setTimeout);
     const { preview, socket } = await mountReplayWithUnusableSnapshot();
     socket.receive({
       type: "output",

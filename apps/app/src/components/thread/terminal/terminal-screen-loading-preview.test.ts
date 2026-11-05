@@ -10,6 +10,8 @@ it("shows literal snapshot rows outside xterm and removes them without changing 
   const remove = mountTerminalScreenLoadingPreview({
     container,
     fontFamily: "monospace",
+    fontSize: 18,
+    lineHeight: 1.5,
     snapshot: {
       rows: ["<script>literal</script>", "next line"],
       cursor: { col: 0, row: 0 },
@@ -23,6 +25,8 @@ it("shows literal snapshot rows outside xterm and removes them without changing 
     "<script>literal</script>\nnext line",
   );
   expect(parent.querySelector("script")).toBeNull();
+  expect(parent.querySelector("pre")?.style.fontSize).toBe("18px");
+  expect(parent.querySelector("pre")?.style.lineHeight).toBe("32px");
   expect(container.textContent).toBe("replayed history");
   remove();
   remove();

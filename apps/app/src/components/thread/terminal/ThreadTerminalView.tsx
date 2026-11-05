@@ -1796,6 +1796,15 @@ export function ThreadTerminalView({
     let replayCheckpointSequence: number | null = null;
     let localFitGrid: TerminalGridSize | null = null;
     let removeScreenLoadingPreview: (() => void) | null = null;
+    const clearScreenLoadingPreview = () => {
+      removeScreenLoadingPreview?.();
+      removeScreenLoadingPreview = null;
+    };
+    const terminalFontOptions = {
+      fontFamily: readTerminalFontFamily(),
+      fontSize: Math.max(12, terminalFontSizeRef.current),
+      lineHeight: 1,
+    };
     let retainedOutputReplayed = sessionStatusRef.current !== "exited";
     let retainedOutputGrid: TerminalGridSize | null = null;
     let latestPtyGrid: TerminalGridSize = {
@@ -2012,7 +2021,7 @@ export function ThreadTerminalView({
         removeScreenLoadingPreview = mountTerminalScreenLoadingPreview({
           container: containerElement,
           snapshot,
-          fontFamily: readTerminalFontFamily(),
+          ...terminalFontOptions,
         });
       });
       const requiredModulesPromise = importTerminalModules();
@@ -2037,8 +2046,7 @@ export function ThreadTerminalView({
         allowProposedApi: TERMINAL_ALLOW_PROPOSED_API,
         convertEol: true,
         cursorBlink: true,
-        fontFamily: readTerminalFontFamily(),
-        fontSize: 12,
+        ...terminalFontOptions,
         linkHandler: osc8LinkHandler,
         scrollback: 10_000,
         theme: buildTerminalTheme(),
@@ -2822,8 +2830,7 @@ export function ThreadTerminalView({
                   allowProposedApi: TERMINAL_ALLOW_PROPOSED_API,
                   cols: replayGrid.cols,
                   rows: replayGrid.rows,
-                  fontFamily: readTerminalFontFamily(),
-                  fontSize: 12,
+                  ...terminalFontOptions,
                   theme: buildTerminalTheme(),
                 });
                 previewTerminal.loadAddon(new Unicode11Addon());
@@ -3001,8 +3008,7 @@ export function ThreadTerminalView({
               allowProposedApi: TERMINAL_ALLOW_PROPOSED_API,
               cols: snapshot.cols,
               rows: snapshot.gridRows,
-              fontFamily: readTerminalFontFamily(),
-              fontSize: 12,
+              ...terminalFontOptions,
               theme: buildTerminalTheme(),
             });
             previewTerminal.loadAddon(new Unicode11Addon());
@@ -3028,10 +3034,6 @@ export function ThreadTerminalView({
           replayPreview?.dispose();
           replayPreview = null;
         }
-        window.requestAnimationFrame(() => {
-          removeScreenLoadingPreview?.();
-          removeScreenLoadingPreview = null;
-        });
         if (disposed) return;
         activeTransport.start();
       }
@@ -3176,16 +3178,21 @@ export function ThreadTerminalView({
       );
     }
 
-    void mountTerminal(container).catch((error) => {
-      if (!disposed) {
-        container.textContent =
-          error instanceof Error ? error.message : String(error);
-      }
-    });
+    void mountTerminal(container)
+      .then(() => {
+        window.requestAnimationFrame(clearScreenLoadingPreview);
+      })
+      .catch((error) => {
+        clearScreenLoadingPreview();
+        if (!disposed) {
+          container.textContent =
+            error instanceof Error ? error.message : String(error);
+        }
+      });
 
     return () => {
       disposed = true;
-      removeScreenLoadingPreview?.();
+      clearScreenLoadingPreview();
       outputLineAnchorTracker.dispose();
       viewportLineAnchor?.dispose();
       viewportLineAnchor = null;
