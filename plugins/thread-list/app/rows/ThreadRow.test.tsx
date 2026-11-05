@@ -1,5 +1,8 @@
 // @vitest-environment jsdom
 
+import { SidebarRowMetadataExperiment } from "../list/SidebarRowMetadataExperiment.js";
+import * as pluginSdk from "@get-bb/plugin-sdk/app";
+
 import {
   act,
   cleanup,
@@ -41,7 +44,10 @@ import {
   type TestThreadActionsResolver,
   type TestThreadBulkActionsResolver,
 } from "@get-bb/plugin-sdk/testing/app";
-import { NO_COLLAPSED_CHILD_ACTIVITY, getCollapsedChildActivity } from "../model/thread-activity.js";
+import {
+  NO_COLLAPSED_CHILD_ACTIVITY,
+  getCollapsedChildActivity,
+} from "../model/thread-activity.js";
 import {
   threadListPullRequestRpcContract,
   type ThreadListPullRequest,
@@ -55,6 +61,7 @@ import {
 import {
   sidebarShowProviderIconsAtom,
   sidebarShowRowMetadataAtom,
+  THREAD_ROW_METADATA_EXPERIMENT,
 } from "../preferences/atoms.js";
 import { SidebarProjectsContext } from "../model/use-sidebar-data.js";
 import type { ThreadRowOptions } from "./ThreadRow.js";
@@ -174,50 +181,52 @@ function ThreadRowHarness({
     />
   );
   const content = (
-    <SidebarProjectsContext.Provider value={projects}>
-      <SidebarProvidersContext.Provider value={providers}>
-        <TooltipProvider>
-          <SidebarDraftPresenceSync />
-          <ThreadRowNavigationProvider>
-            <ThreadSelectionProvider activeThreadId={null}>
-              <SidebarRenameProvider>
-                <CustomizeRowActionsContext.Provider
-                  value={onCustomizeRowActions ?? null}
-                >
-                  <ThreadRowActionsCustomizingContext.Provider
-                    value={
-                      onFinishCustomizingRowActions
-                        ? {
-                            threadId: thread.id,
-                            onDone: onFinishCustomizingRowActions,
-                          }
-                        : null
-                    }
+    <SidebarRowMetadataExperiment>
+      <SidebarProjectsContext.Provider value={projects}>
+        <SidebarProvidersContext.Provider value={providers}>
+          <TooltipProvider>
+            <SidebarDraftPresenceSync />
+            <ThreadRowNavigationProvider>
+              <ThreadSelectionProvider activeThreadId={null}>
+                <SidebarRenameProvider>
+                  <CustomizeRowActionsContext.Provider
+                    value={onCustomizeRowActions ?? null}
                   >
-                    <div
-                      onPointerDown={onRowEvent}
-                      onKeyDown={onRowEvent}
-                      onClick={onRowEvent}
+                    <ThreadRowActionsCustomizingContext.Provider
+                      value={
+                        onFinishCustomizingRowActions
+                          ? {
+                              threadId: thread.id,
+                              onDone: onFinishCustomizingRowActions,
+                            }
+                          : null
+                      }
                     >
-                      {row}
-                      {siblings.map((sibling) => (
-                        <ThreadRow
-                          key={sibling.id}
-                          thread={sibling}
-                          crossProjectId={crossProjectId}
-                          isActive={false}
-                          options={options}
-                        />
-                      ))}
-                    </div>
-                  </ThreadRowActionsCustomizingContext.Provider>
-                </CustomizeRowActionsContext.Provider>
-              </SidebarRenameProvider>
-            </ThreadSelectionProvider>
-          </ThreadRowNavigationProvider>
-        </TooltipProvider>
-      </SidebarProvidersContext.Provider>
-    </SidebarProjectsContext.Provider>
+                      <div
+                        onPointerDown={onRowEvent}
+                        onKeyDown={onRowEvent}
+                        onClick={onRowEvent}
+                      >
+                        {row}
+                        {siblings.map((sibling) => (
+                          <ThreadRow
+                            key={sibling.id}
+                            thread={sibling}
+                            crossProjectId={crossProjectId}
+                            isActive={false}
+                            options={options}
+                          />
+                        ))}
+                      </div>
+                    </ThreadRowActionsCustomizingContext.Provider>
+                  </CustomizeRowActionsContext.Provider>
+                </SidebarRenameProvider>
+              </ThreadSelectionProvider>
+            </ThreadRowNavigationProvider>
+          </TooltipProvider>
+        </SidebarProvidersContext.Provider>
+      </SidebarProjectsContext.Provider>
+    </SidebarRowMetadataExperiment>
   );
   return isCompactViewport === undefined ? (
     content
@@ -523,6 +532,20 @@ afterEach(() => {
 });
 
 describe("ThreadRow", () => {
+  it("shares the metadata experiment subscription with sibling rows", () => {
+    const subscribe = vi.spyOn(pluginSdk, "experimental_useExperiment");
+    renderThreadRow({
+      thread: createThread({ archivedAt: 1 }),
+      siblings: Array.from({ length: 20 }, (_, index) =>
+        createThread({ id: `sibling-${index}`, archivedAt: 1 }),
+      ),
+    });
+    expect(
+      subscribe.mock.calls.filter(
+        ([key]) => key === THREAD_ROW_METADATA_EXPERIMENT,
+      ),
+    ).toHaveLength(1);
+  });
   it("preserves nesting indentation while keeping compact title spacing", () => {
     const view = renderThreadRow({ thread: createThread({ archivedAt: 1 }) });
     const row = view.container.querySelector<HTMLElement>(
