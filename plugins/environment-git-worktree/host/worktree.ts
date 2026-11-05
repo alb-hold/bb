@@ -979,6 +979,12 @@ async function removeRegisteredWorktree(
           ...keptNote,
         ]);
       }
+      if (await directoryTreeChangedSince(quarantinedPath, finalCheckStartedAt)) {
+        throw worktreePreservedError(identity.path, [
+          "new or changed workspace data was found after its final inspection",
+          ...keptNote,
+        ]);
+      }
       const removed = await removeDirectoryTree(quarantinedPath, {
         startedAt: finalCheckStartedAt,
         afterDirectoryListed: args.testHooks?.afterDirectoryListed,

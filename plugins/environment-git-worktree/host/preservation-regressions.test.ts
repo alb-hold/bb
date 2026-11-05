@@ -836,7 +836,7 @@ describe("real worktree teardown preservation", () => {
   });
 
   it.skipIf(process.platform !== "linux")(
-    "removes a clean worktree despite an unrelated unreadable same-user process",
+    "retains a worktree when an unreadable same-user process is not an allowlisted session agent",
     async () => {
       const worktree = await makeWorktree();
       const uid = process.getuid?.() ?? process.geteuid?.() ?? 1000;
@@ -860,10 +860,13 @@ describe("real worktree teardown preservation", () => {
           return base.readlink(target);
         },
       });
-      await remove(worktree);
-      await expect(access(worktree.path)).rejects.toMatchObject({
-        code: "ENOENT",
+      await expect(remove(worktree)).rejects.toMatchObject({
+        code: "worktree_preserved",
       });
+      await expect(access(worktree.path)).resolves.toBeUndefined();
+      await expect(
+        readFile(path.join(worktree.path, "README.md"), "utf8"),
+      ).resolves.toBe("published\n");
     },
   );
 
