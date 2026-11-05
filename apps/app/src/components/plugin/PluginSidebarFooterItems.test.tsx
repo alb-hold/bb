@@ -155,7 +155,7 @@ describe("PluginSidebarFooterItems", () => {
     expect(screen.getByTestId("visible-footer").textContent).toBe("builtin:report-bug,builtin:mobile");
   });
 
-  it("keeps secondary tools reachable in More by default", async () => {
+  it("keeps plugin actions and bug reporting in the footer and mobile apps in More by default", async () => {
     const run = vi.fn();
     setPluginSlotRegistrations(
       "example",
@@ -185,7 +185,11 @@ describe("PluginSidebarFooterItems", () => {
       </SidebarMenu>,
       createStore(),
     );
-    expect(document.querySelectorAll("[data-footer-item]")).toHaveLength(0);
+    expect(document.querySelectorAll("[data-footer-item]")).toHaveLength(2);
+    fireEvent.click(screen.getByRole("button", { name: "Run action" }));
+    expect(run).toHaveBeenCalledOnce();
+    expect(screen.getByRole("button", { name: "Report a bug" })).toBeDefined();
+    expect(screen.queryByRole("button", { name: "Mobile apps" })).toBeNull();
     const more = screen.getByRole("button", { name: "More footer actions" });
     expect(more.className).toContain("text-muted-foreground");
     expect(more.className).not.toContain("opacity-80");
@@ -196,11 +200,8 @@ describe("PluginSidebarFooterItems", () => {
     expect(
       await screen.findByRole("menuitem", { name: "Mobile apps" }),
     ).toBeDefined();
-    expect(
-      screen.getByRole("menuitem", { name: "Report a bug" }),
-    ).toBeDefined();
-    fireEvent.click(screen.getByRole("menuitem", { name: "Run action" }));
-    expect(run).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("menuitem", { name: "Report a bug" })).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: "Run action" })).toBeNull();
   });
 
   it("fills the footer to its measured capacity and keeps overflow in More when an icon is removed", () => {

@@ -103,7 +103,11 @@ export function useSidebarFooterPreferences() {
     .filter(
       (item) =>
         !hidden.includes(item.key) &&
-        (item.key === "builtin:settings" || order.length > 0 || hidden.length > 0),
+        (item.kind === "plugin" ||
+          item.key === "builtin:settings" ||
+          item.key === "builtin:report-bug" ||
+          order.length > 0 ||
+          hidden.length > 0),
     )
     .slice(0, capacity ?? undefined);
   const more = ordered.filter((item) => !footer.includes(item));

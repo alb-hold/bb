@@ -246,7 +246,7 @@ function getHoverActionsInsetStyle(actionCount: number): CSSProperties {
 
 function getThreadRowStyle(depth: number): CSSProperties {
   return {
-    paddingLeft: getSidebarThreadRowPaddingLeft(depth) - 4,
+    paddingLeft: getSidebarThreadRowPaddingLeft(depth),
   };
 }
 
@@ -852,7 +852,7 @@ function ThreadRowComponent({
   );
   const rowStyle = getThreadRowStyle(options.depth);
   const parentGuideLeft =
-    options.depth > 0 ? getSidebarThreadGroupLineLeft(options.depth - 1) - 4 : null;
+    options.depth > 0 ? getSidebarThreadGroupLineLeft(options.depth - 1) : null;
   const handleRowClickCapture = useCallback<ThreadRowClickCaptureHandler>(
     (event) => {
       if (!options.consumeClickSuppression?.()) {
