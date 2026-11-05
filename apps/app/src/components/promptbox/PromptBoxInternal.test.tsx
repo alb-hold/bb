@@ -4797,15 +4797,23 @@ describe("ComposerBox compact layout", () => {
     }
   });
 
-  it("keeps the home model inline with Plus, execution toggle and send", () => {
+  it.each([
+    ["new-thread", false],
+    ["new-thread", true],
+    ["thread", false],
+    ["thread", true],
+  ] as const)("keeps %s action slots stable (pending: %s)", (surface, pending) => {
     render(
       <ComposerBox
         {...createPromptBoxProps({
-          surface: "new-thread",
+          surface,
+          submission: { isRunning: pending, onStop: vi.fn() },
+          voice: createVoiceConfig(),
           attachments: { onAttachFiles: vi.fn() },
           promptActions,
           executionControls: (
             <ExecutionControls
+              pending={pending}
               provider={{ selectedId: "codex" }}
               model={{
                 selected: "gpt-6.1-sol",
@@ -4826,10 +4834,11 @@ describe("ComposerBox compact layout", () => {
         })}
       />,
     );
-    const row = document.querySelector(
-      '[data-promptbox-execution-layout="stacked"]',
-    );
+    const row = document.querySelector('[data-promptbox-action-row]');
     expect(row).not.toBeNull();
+    expect(row?.getAttribute("data-promptbox-execution-layout")).toBe(
+      surface === "new-thread" ? "stacked" : null,
+    );
     const plus = screen.getByRole("button", { name: "Prompt actions" });
     const model = screen.getByRole("button", {
       name: "Provider, model and reasoning",
@@ -4837,7 +4846,11 @@ describe("ComposerBox compact layout", () => {
     const toggle = screen.getByRole("radiogroup", {
       name: "Run this thread in",
     });
-    const send = screen.getByRole("button", { name: "Submit (Enter)" });
+    const send = screen.getByRole("button", { name: pending ? "Stop run" : "Submit (Enter)" });
+    expect(model.hasAttribute("disabled")).toBe(pending);
+    expect(screen.getByRole("radio", { name: "Terminal" }).hasAttribute("disabled")).toBe(pending);
+    const mic = screen.getByRole("button", { name: "Start voice input" });
+    expect(row?.querySelector("[data-promptbox-trailing-actions]")?.contains(mic)).toBe(true);
     expect(
       row?.querySelector("[data-promptbox-plus-control]")?.contains(plus),
     ).toBe(true);
@@ -4852,6 +4865,10 @@ describe("ComposerBox compact layout", () => {
     expect(
       model.parentElement?.getAttribute("data-execution-controls-layout"),
     ).toBe("stacked");
+    if (surface === "thread") {
+      expect(row?.classList.contains("flex-wrap")).toBe(true);
+      return;
+    }
     const style = document.createElement("style");
     const appCss = readFileSync("src/app.css", "utf8");
     style.textContent = appCss.slice(appCss.lastIndexOf("@media (width < 48rem)"));
