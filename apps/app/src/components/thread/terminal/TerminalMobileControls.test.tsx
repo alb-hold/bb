@@ -113,6 +113,7 @@ describe("TerminalMobileControls", () => {
 
   it.each([
     ["Shift Tab", "\x1b[Z"],
+    ["Function key F2", "\x1bOQ"],
     ["Interrupt (Control C)", "\x03"],
     ["End of input (Control D)", "\x04"],
     ["Page up", "\x1b[5~"],
@@ -130,6 +131,7 @@ describe("TerminalMobileControls", () => {
 
   it("opens terminal output search from the touch controls", () => {
     const { onSearch } = renderControls();
+    fireEvent.click(screen.getByRole("button", { name: "More terminal keys" }));
     fireEvent.click(
       screen.getByRole("button", { name: "Search terminal output" }),
     );
@@ -165,4 +167,18 @@ describe("TerminalMobileControls", () => {
     expect(buttonDisabled("Enter")).toBe(true);
     expect(buttonDisabled("More terminal keys")).toBe(true);
   });
+});
+
+it("keeps both vertical arrows together before the narrow row overflow", () => {
+  renderControls();
+  const up = screen.getByRole("button", { name: "Arrow up" });
+  const down = screen.getByRole("button", { name: "Arrow down" });
+  expect(up.nextElementSibling).toBe(down);
+  expect(
+    screen.queryByRole("button", { name: "Control for next key" }),
+  ).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "More terminal keys" }));
+  expect(
+    screen.getByRole("button", { name: "Control for next key" }),
+  ).toBeTruthy();
 });

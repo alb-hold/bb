@@ -48,10 +48,17 @@ function themeColor(mode: "light" | "dark", name: string): string {
   return value;
 }
 
-function luminance(color: string): number {
+function luminance(color: string, background?: string): number {
   const channels = color.startsWith("#")
     ? [1, 3, 5].map((at) => parseInt(color.slice(at, at + 2), 16))
     : (color.match(/[\d.]+/g) ?? []).slice(0, 3).map(Number);
+  if (background && color.startsWith("rgba")) {
+    const alpha = Number(color.match(/[\d.]+/g)?.[3] ?? 1);
+    const base = (background.match(/[\d.]+/g) ?? []).slice(0, 3).map(Number);
+    channels.forEach((channel, index) => {
+      channels[index] = channel * alpha + base[index] * (1 - alpha);
+    });
+  }
   expect(channels).toHaveLength(3);
   return channels.reduce((sum, channel, index) => {
     const s = channel / 255;
@@ -120,12 +127,19 @@ it.each(["light", "dark"] as const)(
 
 it("derives brighter dark ANSI grey from the ink and canvas tokens", () => {
   const dark = css.slice(css.indexOf(".dark {"));
-  expect(dark).toContain("--ansi-8: color-mix(in oklch, var(--ink) 35%, var(--canvas))");
+  expect(dark).toContain(
+    "--ansi-8: color-mix(in oklch, var(--ink) 70%, var(--canvas))",
+  );
 });
 
-it.each(["light", "dark"] as const)(
-  "keeps faint output readable in %s mode",
-  async (mode) => {
+it.each([
+  ["light", "\x1b[2m"],
+  ["dark", "\x1b[2m"],
+  ["light", "\x1b[2;31m"],
+  ["dark", "\x1b[2;31m"],
+] as const)(
+  "keeps faint output readable in %s mode (%s)",
+  async (mode, sgr) => {
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
       measureText: (text: string) => ({ width: text.length * 9 }),
     } as unknown as CanvasRenderingContext2D);
@@ -145,7 +159,7 @@ it.each(["light", "dark"] as const)(
     try {
       terminal.open(container);
       await new Promise<void>((resolve) =>
-        terminal.write("\x1b[2;38;2;100;100;100mfaint-path\x1b[0m", resolve),
+        terminal.write(`${sgr}faint-path\x1b[0m`, resolve),
       );
       await waitFor(() =>
         expect(container.querySelector(".xterm-rows")?.textContent).toContain(
@@ -155,13 +169,27 @@ it.each(["light", "dark"] as const)(
       const span = Array.from(
         container.querySelectorAll(".xterm-rows span"),
       ).find((node) => node.textContent?.includes("faint-path"))!;
-      const fg = luminance(getComputedStyle(span).color);
+      const fg = luminance(getComputedStyle(span).color, background);
       const bg = luminance(background);
       expect(
         (Math.max(fg, bg) + 0.05) / (Math.min(fg, bg) + 0.05),
-      ).toBeGreaterThanOrEqual(3.5);
+      ).toBeGreaterThanOrEqual(4.5);
     } finally {
       terminal.dispose();
     }
+  },
+);
+
+it.each(["light", "dark"] as const)(
+  "keeps bright black distinct and readable in %s mode",
+  (mode) => {
+    const fg = luminance(themeColor(mode, "--ansi-8"));
+    const bg = luminance(themeColor(mode, "--sidebar"));
+    const ratio = (Math.max(fg, bg) + 0.05) / (Math.min(fg, bg) + 0.05);
+    console.log(`${mode} bright black contrast=${ratio}`);
+    expect(ratio).toBeGreaterThanOrEqual(4.5);
+    expect(themeColor(mode, "--ansi-8")).not.toBe(
+      themeColor(mode, "--foreground"),
+    );
   },
 );

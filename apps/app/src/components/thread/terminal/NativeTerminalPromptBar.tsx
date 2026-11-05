@@ -107,6 +107,7 @@ export function NativeTerminalPromptBar({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [text, setText] = useState("");
+  const [focused, setFocused] = useState(false);
   const textRef = useRef("");
   const programmaticRef = useRef(false);
   const composingRef = useRef(false);
@@ -554,6 +555,10 @@ export function NativeTerminalPromptBar({
           COMPOSER_SHELL_CLASS,
           "flex flex-col px-1.5 py-0.5 transition-[border-color,box-shadow] duration-200 focus-within:border-ring/60 motion-reduce:transition-none",
           recording && "border-destructive/40",
+          !text &&
+            !focused &&
+            dictation.phase === "idle" &&
+            "max-md:grid max-md:grid-cols-[minmax(0,1fr)_auto] max-md:items-center",
         )}
         data-native-composer=""
         onDragOver={onDragOver}
@@ -575,7 +580,7 @@ export function NativeTerminalPromptBar({
         executionLabel.trim() !== providerLabel.trim() ? (
           <div
             aria-label="Terminal execution"
-            className="truncate px-2 text-xs leading-tight text-muted-foreground"
+            className="col-span-2 truncate px-2 text-xs leading-tight text-muted-foreground"
             title={executionLabel ?? providerLabel}
           >
             {executionLabel}
@@ -597,8 +602,10 @@ export function NativeTerminalPromptBar({
               ? "Starting microphone…"
               : recording
                 ? "Listening…"
-                : `Send to ${providerLabel} terminal`
+                : "To terminal above"
           }
+          onFocus={() => setFocused(true)}
+          onBlur={() => setFocused(false)}
           onChange={(event) => {
             applyValue(event.target.value, programmaticRef.current);
           }}
@@ -610,7 +617,12 @@ export function NativeTerminalPromptBar({
           }}
           onKeyDown={onKeyDown}
           onPaste={onPaste}
-          className="max-h-48 min-h-7 w-full resize-none bg-transparent px-2 py-1 text-base md:text-sm text-foreground field-sizing-content placeholder:text-sm placeholder:text-muted-foreground focus-visible:outline-none"
+          className={cn(
+            "max-h-48 min-h-7 min-w-0 w-full resize-none bg-transparent px-2 py-1 text-base md:text-sm text-foreground field-sizing-content placeholder:text-sm placeholder:text-muted-foreground focus-visible:outline-none",
+            !text &&
+              !focused &&
+              "max-md:h-11 max-md:whitespace-nowrap max-md:overflow-hidden",
+          )}
         />
         <AssistStrip
           suggestions={assist.suggestions}
@@ -623,7 +635,7 @@ export function NativeTerminalPromptBar({
           onDismiss={assist.dismissSuggestion}
           onUndo={assist.undoRecent}
         />
-        <div className="flex items-center gap-1">
+        <div className="flex shrink-0 items-center gap-1">
           <input
             ref={fileInputRef}
             type="file"

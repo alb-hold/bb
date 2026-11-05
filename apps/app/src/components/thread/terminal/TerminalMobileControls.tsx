@@ -79,10 +79,14 @@ export function TerminalMobileControls({
   onSelectText,
 }: TerminalMobileControlsProps) {
   const [expanded, setExpanded] = useState(false);
+  const [secondaryKeysInline, setSecondaryKeysInline] = useState(false);
   const scrollerRef = useRef<HTMLDivElement>(null);
   const updateOverflow = () => {
     const scroller = scrollerRef.current;
     if (!scroller) return;
+    setSecondaryKeysInline(
+      scroller.clientWidth >= (searchAvailable ? 9 : 8) * 48 - 4,
+    );
     const left = scroller.scrollLeft > 1;
     const right =
       scroller.scrollWidth - scroller.clientWidth - scroller.scrollLeft > 1;
@@ -104,6 +108,36 @@ export function TerminalMobileControls({
   const keyProps = { disabled };
   const readOnlyKeyProps = { disabled: readOnlyDisabled };
   const readOnlyExited = disabled && !readOnlyDisabled;
+  const secondaryKeys = (
+    <>
+      {searchAvailable ? (
+        <Key
+          {...readOnlyKeyProps}
+          label="Search terminal output"
+          onPress={onSearch}
+        >
+          <Icon name="Search" className="size-4" />
+        </Key>
+      ) : null}
+      <Key
+        {...keyProps}
+        label="Control for next key"
+        toggle
+        active={controlActive}
+        onPress={() => onControlChange(!controlActive)}
+      >
+        Ctrl
+      </Key>
+      <div className="flex flex-none gap-1">
+        <Key {...keyProps} label="Arrow left" onPress={() => onArrow("left")}>
+          <Icon name="ArrowLeft" className="size-4" />
+        </Key>
+        <Key {...keyProps} label="Arrow right" onPress={() => onArrow("right")}>
+          <Icon name="ArrowRight" className="size-4" />
+        </Key>
+      </div>
+    </>
+  );
   return (
     <div
       role="group"
@@ -114,8 +148,12 @@ export function TerminalMobileControls({
         className,
       )}
     >
+      {readOnlyExited && !secondaryKeysInline ? (
+        <div className="mb-1 flex flex-wrap gap-1">{secondaryKeys}</div>
+      ) : null}
       {expanded ? (
         <div className="mb-1 flex flex-wrap gap-1">
+          {!secondaryKeysInline ? secondaryKeys : null}
           {onPreviousPrompt ? (
             <Key
               {...readOnlyKeyProps}
@@ -141,8 +179,12 @@ export function TerminalMobileControls({
           >
             ⇧Tab
           </Key>
-          <Key {...keyProps} label="Arrow down" onPress={() => onArrow("down")}>
-            <Icon name="ArrowDown" className="size-4" />
+          <Key
+            {...keyProps}
+            label="Function key F2"
+            onPress={() => onInput("\x1bOQ")}
+          >
+            F2
           </Key>
           <Key
             {...keyProps}
@@ -242,43 +284,17 @@ export function TerminalMobileControls({
             <Key {...keyProps} label="Arrow up" onPress={() => onArrow("up")}>
               <Icon name="ArrowUp" className="size-4" />
             </Key>
-            {searchAvailable ? (
-              <Key
-                {...readOnlyKeyProps}
-                label="Search terminal output"
-                onPress={onSearch}
-              >
-                <Icon name="Search" className="size-4" />
-              </Key>
-            ) : null}
+            <Key
+              {...keyProps}
+              label="Arrow down"
+              onPress={() => onArrow("down")}
+            >
+              <Icon name="ArrowDown" className="size-4" />
+            </Key>
             <Key {...keyProps} label="Tab" onPress={() => onInput("\t")}>
               Tab
             </Key>
-            <Key
-              {...keyProps}
-              label="Control for next key"
-              toggle
-              active={controlActive}
-              onPress={() => onControlChange(!controlActive)}
-            >
-              Ctrl
-            </Key>
-            <div className="flex flex-none gap-1">
-              <Key
-                {...keyProps}
-                label="Arrow left"
-                onPress={() => onArrow("left")}
-              >
-                <Icon name="ArrowLeft" className="size-4" />
-              </Key>
-              <Key
-                {...keyProps}
-                label="Arrow right"
-                onPress={() => onArrow("right")}
-              >
-                <Icon name="ArrowRight" className="size-4" />
-              </Key>
-            </div>
+            {secondaryKeysInline ? secondaryKeys : null}
           </div>
         </div>
         <Key {...keyProps} label="Enter" onPress={() => onInput("\r")}>
