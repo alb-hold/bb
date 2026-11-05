@@ -12,7 +12,6 @@ import {
   removeHostPath,
 } from "./path-mutations.js";
 import { removeDirectoryAfterHolderRecheck } from "./remove-held-directory.js";
-import type { WorktreeHolderScan } from "@bb/process-utils/worktree-holders";
 import {
   hostProc,
   scanWorktreeHolders,
@@ -34,6 +33,7 @@ async function makeRoot(): Promise<string> {
 }
 
 afterEach(async () => {
+  useProcReaderForTests(null);
   await Promise.all(
     roots
       .splice(0)
@@ -52,11 +52,9 @@ describe("confined host path mutations", () => {
       const signal = vi.spyOn(process, "kill");
       const pid = 4_000_000_103;
       const base = `/proc/${pid}`;
-      const scanHolders = async (
-        directory: string,
-      ): Promise<WorktreeHolderScan> => {
-        let mount: string | undefined;
-        const proc: ProcReader = {
+      const file = await fs.stat(path.join(target, "data.txt"), { bigint: true });
+      let mount: string | undefined;
+      const proc: ProcReader = {
           ...hostProc,
           readFile: async (name) => {
             if (name === "/proc/self/status")
@@ -80,25 +78,21 @@ describe("confined host path mutations", () => {
             }
             if (name === "/proc/self/root" || name === `${base}/root`) return "/";
             if (name === `${base}/cwd` || name === `${base}/task/${pid}/cwd`) return "/tmp/outside";
-            if (name === `${base}/exe`) return path.join(directory, "data.txt");
-            if (name === `${base}/fd/3`) return "/dev/null";
+            if (name === `${base}/exe`) return "/tmp/outside/data.txt";
+            if (name === `${base}/fd/3`) return "/tmp/outside/data.txt";
             return hostProc.readlink(name);
           },
+          lstatId: async (name) => name === `${base}/root/tmp/outside/data.txt`
+            ? `${file.dev}:${file.ino}`
+            : hostProc.lstatId(name),
         };
-        useProcReaderForTests(proc);
-        try {
-          return await scanWorktreeHolders(directory);
-        } finally {
-          useProcReaderForTests(null);
-        }
-      };
+      useProcReaderForTests(proc);
 
       await expect(
         removeDirectoryAfterHolderRecheck({
           directory: target,
           action: "remove",
           recursive: true,
-          scanHolders,
         }),
       ).rejects.toMatchObject({ code: "path_in_use" });
 

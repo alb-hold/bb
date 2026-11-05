@@ -4,8 +4,8 @@ import { CommandDispatchError } from "../command-dispatch-support.js";
 export async function refuseWhileHeld(args: {
   directory: string;
   action: string;
-}, scanHolders: typeof scanWorktreeHolders = scanWorktreeHolders): Promise<void> {
-  const scan = await scanHolders(args.directory);
+}): Promise<void> {
+  const scan = await scanWorktreeHolders(args.directory);
   if (scan.status === "clear") return;
   if (scan.status === "unknown") {
     throw new CommandDispatchError(
