@@ -12,6 +12,13 @@ import {
   removeHostPath,
 } from "./path-mutations.js";
 import { removeDirectoryAfterHolderRecheck } from "./remove-held-directory.js";
+import type { WorktreeHolderScan } from "@bb/process-utils/worktree-holders";
+import {
+  hostProc,
+  scanWorktreeHolders,
+  useProcReaderForTests,
+  type ProcReader,
+} from "@bb/process-utils/worktree-holders";
 
 const roots: string[] = [];
 const hasHeldDirectoryRemoval = existsSync(
@@ -35,6 +42,71 @@ afterEach(async () => {
 });
 
 describe("confined host path mutations", () => {
+  it.skipIf(!hasHeldDirectoryRemoval || process.platform !== "linux")(
+    "refuses recursive removal when the shared fd and executable scan finds a foreign holder",
+    async () => {
+      const root = await makeRoot();
+      const target = path.join(root, "foreign-holder");
+      await fs.mkdir(target);
+      await fs.writeFile(path.join(target, "data.txt"), "keep");
+      const signal = vi.spyOn(process, "kill");
+      const pid = 4_000_000_103;
+      const base = `/proc/${pid}`;
+      const scanHolders = async (
+        directory: string,
+      ): Promise<WorktreeHolderScan> => {
+        let mount: string | undefined;
+        const proc: ProcReader = {
+          ...hostProc,
+          readFile: async (name) => {
+            if (name === "/proc/self/status")
+              return `Name:\tnode\nState:\tR (running)\nNSpid:\t${process.pid}\nUid:\t0\t0\t0\t0\nGid:\t0\t0\t0\t0\nGroups:\t0\n`;
+            if (name === `${base}/status`)
+              return `Name:\tforeign\nState:\tS (sleeping)\nUid:\t501\t501\t501\t501\nGid:\t501\t501\t501\t501\nGroups:\t501\nCapEff:\t0000000000000000\n`;
+            if (name === `${base}/comm`) return "foreign-holder\n";
+            if (name === `${base}/maps`) return "";
+            return hostProc.readFile(name);
+          },
+          readdir: async (name) => {
+            if (name === "/proc") return [String(process.pid), String(pid)];
+            if (name === `${base}/task`) return [String(pid)];
+            if (name === `${base}/fd`) return ["3"];
+            return hostProc.readdir(name);
+          },
+          readlink: async (name) => {
+            if (name === "/proc/self/ns/mnt" || name === `${base}/ns/mnt` || name === `${base}/task/${pid}/ns/mnt`) {
+              mount ??= await hostProc.readlink("/proc/self/ns/mnt");
+              return mount;
+            }
+            if (name === "/proc/self/root" || name === `${base}/root`) return "/";
+            if (name === `${base}/cwd` || name === `${base}/task/${pid}/cwd`) return "/tmp/outside";
+            if (name === `${base}/exe`) return path.join(directory, "data.txt");
+            if (name === `${base}/fd/3`) return "/dev/null";
+            return hostProc.readlink(name);
+          },
+        };
+        useProcReaderForTests(proc);
+        try {
+          return await scanWorktreeHolders(directory);
+        } finally {
+          useProcReaderForTests(null);
+        }
+      };
+
+      await expect(
+        removeDirectoryAfterHolderRecheck({
+          directory: target,
+          action: "remove",
+          recursive: true,
+          scanHolders,
+        }),
+      ).rejects.toMatchObject({ code: "path_in_use" });
+
+      expect(signal).not.toHaveBeenCalled();
+      await expect(fs.readFile(path.join(target, "data.txt"), "utf8")).resolves.toBe("keep");
+    },
+  );
+
   it.skipIf(!hasHeldDirectoryRemoval)(
     "retains data written after the holder scan by a worker that fchdirs into quarantine",
     async () => {

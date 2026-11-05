@@ -21,6 +21,7 @@ export interface RemoveDirectoryTreeHooks {
     entries: readonly string[],
   ) => Promise<void>;
   beforeEntryRemoval?: (entry: string) => Promise<void>;
+  beforeEntryRename?: (entry: string) => Promise<void>;
   afterEntryCheck?: (entry: string) => Promise<void>;
   afterEntryQuarantined?: (entry: string, quarantined: string) => Promise<void>;
   afterRootMarkerDetached?: (root: string) => Promise<void>;
@@ -319,6 +320,7 @@ export async function removeDirectoryTree(
       ) {
         return "retained";
       }
+      await hooks.beforeEntryRename?.(entry);
       const quarantined = path.join(
         parentDirectory,
         `.bb-removing-${randomUUID()}`,
@@ -347,6 +349,7 @@ export async function removeDirectoryTree(
         if (
           movedInfo.dev !== checkedInfo.dev ||
           movedInfo.ino !== checkedInfo.ino ||
+          movedPreciseInfo.ctimeNs !== beforeQuarantinePreciseInfo.ctimeNs ||
           movedPreciseInfo.mtimeNs !== checkedInfo.mtimeNs ||
           movedInfo.size !== checkedInfo.size
         ) {

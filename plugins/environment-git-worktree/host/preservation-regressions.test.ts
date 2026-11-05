@@ -47,6 +47,7 @@ async function removeDirectoryTree(
       entries: readonly string[],
     ) => Promise<void>;
     beforeEntryRemoval?: (entry: string) => Promise<void>;
+    beforeEntryRename?: (entry: string) => Promise<void>;
     afterEntryCheck?: (entry: string) => Promise<void>;
     afterEntryQuarantined?: (
       entry: string,
@@ -141,6 +142,36 @@ function rootDaemonHolderProc(
           ? path.join(worktreePath, "README.md")
           : "/dev/null";
       return hostProc.readlink(target);
+    },
+  };
+}
+
+function rootUnreadableForeignProc(pid: number): ProcReader {
+  const base = `/proc/${pid}`;
+  const proc = rootDaemonHolderProc(pid, "/tmp/outside", "fd");
+  return {
+    ...proc,
+    readFile: async (target) => {
+      if (target === "/proc/self/status")
+        return `Name:\tnode\nState:\tR (running)\nNSpid:\t${process.pid}\nUid:\t0\t0\t0\t0\nGid:\t0\t0\t0\t0\nGroups:\t0\n`;
+      if (target === `${base}/status`)
+        return `Name:\tssh-agent\nState:\tS (sleeping)\nUid:\t501\t501\t501\t501\nGid:\t501\t501\t501\t501\nGroups:\t501\nCapEff:\t0000000000000000\n`;
+      if (target === `${base}/comm`) return "ssh-agent\n";
+      return proc.readFile(target);
+    },
+    readdir: async (target) => {
+      if (target === `${base}/fd`)
+        throw Object.assign(new Error("Permission denied"), {
+          code: "EACCES",
+        });
+      return proc.readdir(target);
+    },
+    readlink: async (target) => {
+      if (target === `${base}/exe`)
+        throw Object.assign(new Error("Permission denied"), {
+          code: "EACCES",
+        });
+      return proc.readlink(target);
     },
   };
 }
@@ -242,6 +273,22 @@ afterEach(async () => {
 });
 
 describe("real worktree teardown preservation", () => {
+  it("retains for a foreign uid with unreadable fd and exe paths even when comm is allowlisted", async () => {
+    const worktree = await makeWorktree();
+    useProcReaderForTests(rootUnreadableForeignProc(4_000_000_102));
+    const signal = vi.spyOn(process, "kill");
+    const scan = await scanWorktreeHolders(worktree.path);
+    expect(scan.status).toBe("unknown");
+    await expect(remove(worktree)).rejects.toMatchObject({
+      code: "worktree_preserved",
+    });
+    expect(signal).not.toHaveBeenCalled();
+    await expect(access(worktree.path)).resolves.toBeUndefined();
+    await expect(
+      readFile(path.join(worktree.path, "README.md"), "utf8"),
+    ).resolves.toBe("published\n");
+  });
+
   it.each(["fd", "exe"] as const)(
     "retains a clean worktree for a foreign root-visible process with its %s inside",
     async (holder) => {
@@ -580,7 +627,7 @@ describe("real worktree teardown preservation", () => {
     useProcReaderForTests(descendantsOnly(hostProc, -1));
     await expect(
       remove(worktree, {
-        afterEntryCheck: async (entry) => {
+        beforeEntryRename: async (entry) => {
           if (!entry.endsWith("/README.md")) return;
           const saved = path.join(path.dirname(entry), "saved-original");
           await fs.rename(entry, saved);
@@ -856,6 +903,7 @@ describe("real worktree teardown preservation", () => {
     await mkdir(lateDirectory);
     await writeFile(path.join(lateDirectory, "a-old.txt"), "old\n");
     await writeFile(path.join(lateDirectory, "b-trigger.txt"), "trigger\n");
+    await writeFile(path.join(lateDirectory, "c-remaining.txt"), "remaining\n");
     await git(worktree.path, "add", "late-dir");
     await git(
       worktree.path,
@@ -890,6 +938,12 @@ describe("real worktree teardown preservation", () => {
     await expect(
       readFile(path.join(lateDirectory, "late-file.txt"), "utf8"),
     ).resolves.toBe("kept\n");
+    await expect(
+      readFile(path.join(lateDirectory, "b-trigger.txt"), "utf8"),
+    ).resolves.toBe("trigger\n");
+    await expect(
+      readFile(path.join(lateDirectory, "c-remaining.txt"), "utf8"),
+    ).resolves.toBe("remaining\n");
     await expect(
       access(path.join(lateDirectory, "a-old.txt")),
     ).rejects.toMatchObject({
