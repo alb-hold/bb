@@ -269,7 +269,7 @@ afterEach(() => {
 it("shows the compact home context and reuses new-thread navigation", async () => {
   render(
     <CompactViewportOverrideProvider isCompactViewport>
-      {layoutTree("/", null)}
+      {layoutTree("/", <Link to="/projects/proj_one/threads/thr_one">Open seeded thread</Link>)}
     </CompactViewportOverrideProvider>,
   );
   expect(screen.getByText("Home")).toBeDefined();
@@ -280,6 +280,8 @@ it("shows the compact home context and reuses new-thread navigation", async () =
   await waitFor(() =>
     expect(screen.getByTestId("location").textContent).toBe("/"),
   );
+  fireEvent.click(screen.getByRole("link", {name: "Open seeded thread"}));
+  await waitFor(() => expect(screen.queryByRole("button", {name: /^New thread$/})).toBeNull());
 });
 
 describe("canonical thread routes", () => {
