@@ -22,7 +22,7 @@ function bootstrap(pathname: string, view: unknown, ok = true) {
   const links: Array<{ href: string; rel: string; fetchPriority: string }> = [];
   const timer = vi.fn();
   let fallback = () => {};
-  const setTimeout = vi.fn((callback: () => void) => { fallback = callback; return 1; });
+  const setTimeout = vi.fn((callback: () => void, _ms: number) => { fallback = callback; return 1; });
   let resolve: (response: unknown) => void = () => {};
   const fetch = vi.fn(() => new Promise((r) => { resolve = r; }));
   const document = { createElement: () => ({}), head: { append: (link: { href: string; rel: string; fetchPriority: string }) => links.push(link) } };
