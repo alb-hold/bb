@@ -9,6 +9,7 @@ import {
 } from "@testing-library/react";
 import { Provider, createStore } from "jotai";
 import {
+  useSidebarFooterPreferences,
   sidebarFooterCapacityAtom,
   sidebarFooterOrderAtom,
   sidebarFooterHiddenAtom,
@@ -129,7 +130,31 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+function FooterPreferencesProbe() {
+  const preferences = useSidebarFooterPreferences();
+  return <><output data-testid="visible-footer">{preferences.footer.map(item => item.key).join(",")}</output><output data-testid="more-footer">{preferences.more.map(item => item.key).join(",")}</output><button onClick={() => preferences.addToFooter("builtin:mobile")}>Choose mobile</button></>;
+}
+
 describe("PluginSidebarFooterItems", () => {
+  it.each(["order", "hidden"])("preserves an existing profile with saved %s", (kind) => {
+    const store = createStore();
+    if (kind === "order") store.set(sidebarFooterOrderAtom, ["builtin:report-bug", "builtin:mobile"]);
+    else store.set(sidebarFooterHiddenAtom, ["builtin:report-bug"]);
+    renderWithProviders(<FooterPreferencesProbe />, store);
+    expect(screen.getByTestId("visible-footer").textContent).toContain("builtin:mobile");
+    expect(screen.getByTestId(kind === "hidden" ? "more-footer" : "visible-footer").textContent).toContain("builtin:report-bug");
+  });
+
+  it("chooses an item without hiding existing shortcuts", () => {
+    const store = createStore();
+    store.set(sidebarFooterOrderAtom, ["builtin:report-bug", "builtin:mobile"]);
+    store.set(sidebarFooterHiddenAtom, ["builtin:mobile"]);
+    renderWithProviders(<FooterPreferencesProbe />, store);
+    expect(screen.getByTestId("visible-footer").textContent).toBe("builtin:report-bug");
+    fireEvent.click(screen.getByRole("button", {name: "Choose mobile"}));
+    expect(screen.getByTestId("visible-footer").textContent).toBe("builtin:report-bug,builtin:mobile");
+  });
+
   it("keeps secondary tools reachable in More by default", async () => {
     const run = vi.fn();
     setPluginSlotRegistrations(
@@ -704,7 +729,7 @@ describe("PluginSidebarFooterItems", () => {
         ),
       ),
     );
-    expect(screen.queryByRole("button", { name: "New action" })).toBeNull();
+    expect(screen.getByRole("button", { name: "New action" })).toBeDefined();
     act(() => setPluginSlotRegistrations("example", registration));
     expect(screen.queryByRole("button", { name: "Run action" })).toBeNull();
     expect(store.get(sidebarFooterHiddenAtom)).toEqual([

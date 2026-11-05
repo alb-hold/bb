@@ -100,7 +100,7 @@ function BuiltInSidebarSection({
       stickyHeader={id !== "pinned"}
       contentClassName={
         id === "pinned"
-          ? "max-h-[28svh] overflow-y-auto overscroll-contain"
+          ? "max-h-[28svh] overflow-y-auto"
           : undefined
       }
       disabled={disabled}

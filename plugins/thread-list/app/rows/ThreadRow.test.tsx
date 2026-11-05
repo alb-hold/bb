@@ -41,10 +41,7 @@ import {
   type TestThreadActionsResolver,
   type TestThreadBulkActionsResolver,
 } from "@get-bb/plugin-sdk/testing/app";
-import {
-  NO_COLLAPSED_CHILD_ACTIVITY,
-  getCollapsedChildActivity,
-} from "../model/thread-activity.js";
+import { NO_COLLAPSED_CHILD_ACTIVITY, getCollapsedChildActivity } from "../model/thread-activity.js";
 import {
   threadListPullRequestRpcContract,
   type ThreadListPullRequest,
@@ -527,11 +524,11 @@ afterEach(() => {
 
 describe("ThreadRow", () => {
   it("recovers title width without changing nesting indentation", () => {
-    const view = renderThreadRow({ thread: createThread({}) });
+    const view = renderThreadRow({ thread: createThread({ archivedAt: 1 }) });
     const row = view.container.querySelector<HTMLElement>(
       "[data-sidebar-rename-row]",
     );
-    expect(row?.style.paddingLeft).toBe("4px");
+    expect(row?.style.paddingLeft).toBe("18px");
     expect(row?.classList.contains("gap-1")).toBe(true);
   });
   it("renders bounded status chips and progress on the row", () => {
@@ -2123,42 +2120,13 @@ describe("ThreadRow", () => {
     expect(screen.queryByText("Needs input")).toBeNull();
   });
 
-  it.each([false, true])(
-    "shows a collapsed child's signal, with real questions first: %s",
-    (withQuestion) => {
-      const children = [
-        createThread({
-          id: "signal",
-          indicator: "check-terminal",
-          hasPendingInteraction: false,
-        }),
-      ];
-      if (withQuestion)
-        children.push(
-          createThread({ id: "question", hasPendingInteraction: true }),
-        );
-      renderThreadRow({
-        thread: createThread({ lastReadAt: 1, latestAttentionAt: 1 }),
-        options: {
-          kind: "parent",
-          depth: 1,
-          isCompact: false,
-          isCollapsed: true,
-          childCount: children.length,
-          childActivity: getCollapsedChildActivity(children),
-          onToggleCollapsed: vi.fn(),
-        },
-      });
-      expect(renderedIndicators()).toEqual([
-        withQuestion ? "needs-input" : "check-terminal",
-      ]);
-      expect(
-        screen.getByRole("img", {
-          name: withQuestion ? "Needs input" : "Check terminal",
-        }),
-      ).toBeTruthy();
-    },
-  );
+  it.each([false, true])("shows a collapsed child's signal, with real questions first: %s", (withQuestion) => {
+    const children = [createThread({ id: "signal", indicator: "check-terminal", hasPendingInteraction: false })];
+    if (withQuestion) children.push(createThread({ id: "question", hasPendingInteraction: true }));
+    renderThreadRow({ thread: createThread({ lastReadAt: 1, latestAttentionAt: 1 }), options: { kind: "parent", depth: 1, isCompact: false, isCollapsed: true, childCount: children.length, childActivity: getCollapsedChildActivity(children), onToggleCollapsed: vi.fn() } });
+    expect(renderedIndicators()).toEqual([withQuestion ? "needs-input" : "check-terminal"]);
+    expect(screen.getByRole("img", { name: withQuestion ? "Needs input" : "Check terminal" })).toBeTruthy();
+  });
 
   it("shows the needs-input indicator when the thread needs user input", () => {
     renderThreadRow({

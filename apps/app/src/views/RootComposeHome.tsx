@@ -181,10 +181,7 @@ export function RootComposeHome({
           </div>
         </div>
         {!isCompact && showDesktopRecents ? (
-          <div
-            className="mt-6 empty:hidden"
-            data-testid="root-compose-desktop-recents"
-          >
+          <div className="mt-6 empty:hidden" data-testid="root-compose-desktop-recents">
             {compactScrollContent}
           </div>
         ) : null}

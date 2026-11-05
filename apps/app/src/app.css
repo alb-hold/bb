@@ -734,13 +734,11 @@
     transform: scaleX(1);
   }
 }
-[data-thread-agent-rollup][data-adaptive-summary="true"]
-  [data-agent-summary-full] {
+[data-thread-agent-rollup][data-adaptive-summary="true"] [data-agent-summary-full] {
   display: none;
 }
 
-[data-thread-agent-rollup][data-adaptive-summary="true"]
-  [data-agent-summary-compact] {
+[data-thread-agent-rollup][data-adaptive-summary="true"] [data-agent-summary-compact] {
   display: inline;
 }
 
@@ -749,34 +747,27 @@
 }
 
 @container thread-header (min-width: 50rem) {
-  [data-thread-agent-rollup][data-adaptive-summary="true"]
-    [data-agent-summary-full] {
+  [data-thread-agent-rollup][data-adaptive-summary="true"] [data-agent-summary-full] {
     display: inline;
   }
 
-  [data-thread-agent-rollup][data-adaptive-summary="true"]
-    [data-agent-summary-compact] {
+  [data-thread-agent-rollup][data-adaptive-summary="true"] [data-agent-summary-compact] {
     display: none;
   }
 }
 
 @container thread-header (max-width: 28rem) {
-  [data-thread-agent-rollup][data-adaptive-summary="true"]
-    [data-agent-summary-compact],
-  [data-thread-agent-rollup][data-adaptive-summary="true"]
-    [data-agent-summary-full],
-  [data-thread-agent-rollup][data-adaptive-summary="true"]
-    [data-agent-summary-view] {
+  [data-thread-agent-rollup][data-adaptive-summary="true"] [data-agent-summary-compact],
+  [data-thread-agent-rollup][data-adaptive-summary="true"] [data-agent-summary-full],
+  [data-thread-agent-rollup][data-adaptive-summary="true"] [data-agent-summary-view] {
     display: none;
   }
 
-  [data-thread-agent-rollup][data-adaptive-summary="true"]
-    [data-agent-summary-count] {
+  [data-thread-agent-rollup][data-adaptive-summary="true"] [data-agent-summary-count] {
     display: inline;
   }
 
-  [data-thread-agent-rollup][data-adaptive-summary="true"]
-    [data-agent-summary-trigger] {
+  [data-thread-agent-rollup][data-adaptive-summary="true"] [data-agent-summary-trigger] {
     border: 1px solid var(--border);
     border-radius: 9999px;
     background: var(--background);
@@ -786,11 +777,7 @@
 
 :root {
   --terminal-scrollbar: color-mix(in oklab, var(--foreground) 20%, transparent);
-  --terminal-scrollbar-hover: color-mix(
-    in oklab,
-    var(--foreground) 30%,
-    transparent
-  );
+  --terminal-scrollbar-hover: color-mix(in oklab, var(--foreground) 30%, transparent);
 }
 
 :where(.xterm[data-scrollable="false"]) .xterm-scrollbar {
@@ -801,10 +788,7 @@
   background: transparent !important;
 }
 
-:where(.xterm)
-  .xterm-scrollable-element
-  > .xterm-scrollbar.xterm-vertical
-  > .xterm-slider {
+:where(.xterm) .xterm-scrollable-element > .xterm-scrollbar.xterm-vertical > .xterm-slider {
   width: 4px !important;
   left: auto !important;
   right: 2px;
