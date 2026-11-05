@@ -29,6 +29,11 @@
       "types": "./src/components/ui/branch-picker-primitives.tsx",
       "default": "./src/components/ui/branch-picker-primitives.tsx"
     },
+    "./composer-primitives": {
+      "source": "./src/components/ui/composer-primitives.tsx",
+      "types": "./src/components/ui/composer-primitives.tsx",
+      "default": "./src/components/ui/composer-primitives.tsx"
+    },
     "./button": {
       "source": "./src/components/ui/button.tsx",
       "types": "./src/components/ui/button.tsx",
