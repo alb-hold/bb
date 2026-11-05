@@ -149,7 +149,9 @@ describe("arePromptEditorValuesEqual", () => {
 
 it("owns the stacked action row through stable composer slots", () => {
   const source = readFileSync("src/PromptBoxInternal.tsx", "utf8");
-  const css = readFileSync("src/composer.css", "utf8");
+  const css = readFileSync("../../apps/app/src/app.css", "utf8");
+  const pluginCss = readFileSync("src/composer.css", "utf8");
+  expect(pluginCss).not.toContain('data-promptbox-execution-layout="stacked"');
   expect(source).toContain("data-promptbox-execution-layout=");
   expect(source).toContain('surface === "new-thread" && executionControls');
   for (const slot of [

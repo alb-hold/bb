@@ -816,3 +816,30 @@
   :where([data-testid="root-compose-desktop-recents"]) {
   display: none;
 }
+
+@media (width < 48rem) {
+  [data-promptbox]:not([data-promptbox-voice-active]) [data-promptbox-execution-layout="stacked"] {
+    display: grid;
+    grid-template-columns: 2.75rem minmax(0, 1fr) auto;
+    align-items: center;
+    column-gap: 0.25rem;
+    row-gap: 0;
+  }
+
+  [data-promptbox]:not([data-promptbox-voice-active]) [data-promptbox-execution-layout="stacked"] > [data-promptbox-leading-actions] {
+    display: contents;
+  }
+
+  [data-promptbox-execution-layout="stacked"] [data-promptbox-plus-control] {
+    display: flex;
+    grid-column: 1;
+    grid-row: 2;
+    align-items: center;
+    justify-content: center;
+  }
+
+  [data-promptbox-execution-layout="stacked"] > [data-promptbox-trailing-actions] {
+    grid-column: 3;
+    grid-row: 2;
+  }
+}

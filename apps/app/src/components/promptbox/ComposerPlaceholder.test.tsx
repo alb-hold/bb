@@ -23,8 +23,8 @@ it("reserves the home composer with labeled disabled controls", () => {
   const shell = container.querySelector(
     '[data-composer-placeholder="loading"]',
   );
-  expect(shell?.classList.contains("h-32")).toBe(true);
-  expect(shell?.classList.contains("max-md:pointer-coarse:h-[180px]")).toBe(
+  expect(shell?.classList.contains("h-[132px]")).toBe(true);
+  expect(shell?.classList.contains("max-md:pointer-coarse:h-44")).toBe(
     true,
   );
   expect(shell?.classList.contains("rounded-xl")).toBe(true);

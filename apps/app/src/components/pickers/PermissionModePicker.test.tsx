@@ -16,24 +16,38 @@ afterEach(() => {
 });
 
 describe("PermissionModePicker", () => {
-  it("shows the stored permission with actions disabled until its options resolve", () => {
-    render(
-      <PermissionModePicker
-        pending
-        value="full"
-        options={[]}
-        onChange={() => {}}
-        supported
-      />,
-    );
-    expect(screen.getByText("Full Access")).not.toBeNull();
-    const trigger = screen.getByRole("button", { name: "Permission mode" });
-    expect(trigger.textContent).toContain("Full Access");
-    expect(trigger.hasAttribute("disabled")).toBe(true);
-    expect(
-      trigger.querySelector('[data-slot="skeleton"], .bg-state-hover'),
-    ).toBeNull();
-  });
+  it.each(["full", "accept-edits", "auto"] as const)(
+    "keeps provisional %s neutral until the effective permission resolves",
+    (value) => {
+      const { rerender } = render(
+        <PermissionModePicker
+          pending
+          value={value}
+          options={permissionOptions}
+          onChange={() => {}}
+          supported
+        />,
+      );
+      const trigger = screen.getByRole("button", { name: "Permission mode" });
+      expect(trigger.textContent).toBe("PermissionsPermissions");
+      expect(trigger.hasAttribute("disabled")).toBe(true);
+      expect(trigger.className).not.toContain("warning");
+      expect(
+        trigger.querySelector('[data-slot="skeleton"], .bg-state-hover'),
+      ).toBeNull();
+      rerender(
+        <PermissionModePicker
+          value="auto"
+          options={permissionOptions}
+          onChange={() => {}}
+          supported
+        />,
+      );
+      expect(screen.queryByText("Full Access")).toBeNull();
+      expect(screen.queryByText("Accept Edits")).toBeNull();
+      expect(screen.getByText("Approve for me")).not.toBeNull();
+    },
+  );
 
   it("keeps full access legible with a quiet warning outline", () => {
     render(

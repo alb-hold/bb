@@ -8,7 +8,7 @@ export type ComposerLoadingShape = "thread" | "thread-compact" | "new-thread";
 const COMPOSER_LOADING_SHAPE_CLASS: Record<ComposerLoadingShape, string> = {
   thread: "h-[151px]",
   "thread-compact": "h-[50px]",
-  "new-thread": "h-32 max-md:pointer-coarse:h-[180px]",
+  "new-thread": "h-[132px] max-md:pointer-coarse:h-44",
 };
 
 export function ComposerLoadingControls({
