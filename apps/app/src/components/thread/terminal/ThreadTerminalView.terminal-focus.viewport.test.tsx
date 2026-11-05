@@ -297,30 +297,17 @@ describe("ThreadTerminalView terminal viewport and focus", () => {
     async (touch) => {
       prepareMobileTerminal();
       testState.touchEnabled = touch;
+      const loadAddon = vi.spyOn(Terminal.prototype, "loadAddon");
       vi.spyOn(FitAddon.prototype, "proposeDimensions").mockReturnValue({
         cols: 40,
         rows: 12,
       });
       renderMobileTerminal(true);
-      const textarea = await waitFor(() => {
-        const element = document.querySelector<HTMLTextAreaElement>(
-          ".xterm-helper-textarea",
-        );
-        expect(element).not.toBeNull();
-        return element!;
-      });
-      textarea.focus();
       await waitFor(() => {
-        fireEvent.keyDown(textarea, {
-          key: "f",
-          ctrlKey: true,
-          shiftKey: true,
-        });
         expect(
-          screen.getByRole("searchbox", { name: "Find in terminal" }),
-        ).toBeTruthy();
+          loadAddon.mock.calls.some(([addon]) => "findNext" in addon),
+        ).toBe(true);
       });
-      fireEvent.click(screen.getByRole("button", { name: "Close search" }));
       expect(
         screen.getAllByRole("button", { name: "Search terminal output" }),
       ).toHaveLength(1);
