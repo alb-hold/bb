@@ -1975,6 +1975,8 @@ export function ThreadTerminalView({
           running: sessionStatusRef.current === "running",
         });
         setShowFitControl(presentation.showFitControl);
+        containerElement.dataset.ptyGridCols = String(latestPtyGrid.cols);
+        containerElement.dataset.ptyGridRows = String(latestPtyGrid.rows);
         if (replayPreview !== null && !replayCompleted) return;
         containerElement.style.opacity = "0";
         const scrollRetainedOutput =
@@ -2003,8 +2005,6 @@ export function ThreadTerminalView({
         const widthFits =
           rendererWidth > 0 &&
           (scrollRetainedOutput || paintedWidth <= rendererWidth + 1);
-        containerElement.dataset.ptyGridCols = String(latestPtyGrid.cols);
-        containerElement.dataset.ptyGridRows = String(latestPtyGrid.rows);
         if (canReveal && widthFits) {
           containerElement.style.opacity = "";
           if (replayCompleted && replayPreview !== null) {
@@ -2160,10 +2160,14 @@ export function ThreadTerminalView({
         terminal,
         (grid, apply) => {
           markerGridActive = true;
-          if (apply) {
+          if (apply && !hasReceivedInitialAttach) {
             latestPtyGrid = grid;
           }
-          updateTerminalReplayPreviewPtyGrid(replayPreview, grid, apply);
+          updateTerminalReplayPreviewPtyGrid(
+            replayPreview,
+            hasReceivedInitialAttach ? latestPtyGrid : grid,
+            apply,
+          );
           updateGridVisibility();
         },
         (cols, rows) => {
@@ -2440,6 +2444,7 @@ export function ThreadTerminalView({
       }
       containerElement.dataset.renderGridCols = String(terminal.cols);
       containerElement.dataset.renderGridRows = String(terminal.rows);
+      containerElement.dataset.replayHeld = "false";
       attachTerminalWheelLines(terminal);
       if (sessionRef.current.status !== "exited") {
         writeTerminalSessionStatusNotice({
@@ -2780,20 +2785,23 @@ export function ThreadTerminalView({
             if (message.session.status === "exited") {
               handleReplayPreviewExit();
             }
-            if (message.type === "session-updated" && !markerGridActive) {
-              if (outputPipeline) {
-                applyTerminalGridAndKeepViewport({
-                  pipeline: outputPipeline,
-                  cols,
-                  rows,
-                  onGridApplied: updateGridVisibility,
-                  restoreViewport: () => {
-                    if (hasRestoredViewport && !hasManualScrollIntent) {
-                      restoreViewport(true);
-                    }
-                  },
-                });
-              }
+            if (message.type === "attached" || !replayCompleted) {
+              captureLiveViewportBeforeGridResize();
+              activeTerminal.resize(cols, rows);
+              updateGridVisibility();
+              clearLiveViewportBeforeGridResize();
+            } else if (outputPipeline) {
+              applyTerminalGridAndKeepViewport({
+                pipeline: outputPipeline,
+                cols,
+                rows,
+                onGridApplied: updateGridVisibility,
+                restoreViewport: () => {
+                  if (hasRestoredViewport && !hasManualScrollIntent) {
+                    restoreViewport(true);
+                  }
+                },
+              });
             }
           }
           handleTerminalServerMessage({
@@ -2808,6 +2816,25 @@ export function ThreadTerminalView({
             terminalId: session.id,
             onOutputFrameParsed: () => {
               if (
+                !disposed &&
+                hasReceivedInitialAttach &&
+                outputPipeline &&
+                (activeTerminal.cols !== latestPtyGrid.cols ||
+                  activeTerminal.rows !== latestPtyGrid.rows)
+              ) {
+                applyTerminalGridAndKeepViewport({
+                  pipeline: outputPipeline,
+                  cols: latestPtyGrid.cols,
+                  rows: latestPtyGrid.rows,
+                  onGridApplied: updateGridVisibility,
+                  restoreViewport: () => {
+                    if (hasRestoredViewport && !hasManualScrollIntent) {
+                      restoreViewport(true);
+                    }
+                  },
+                });
+              }
+              if (
                 document.visibilityState !== "visible" ||
                 !containerHasSize ||
                 !isPanelOpenRef.current
@@ -2817,6 +2844,7 @@ export function ThreadTerminalView({
             },
             onReplayComplete: () => {
               replayCompleted = true;
+              containerElement.dataset.replayHeld = "false";
               activeTransport.resetRetryBackoff();
               for (const text of pendingExitNotices.splice(0)) {
                 routeQueuedExitNotice(text);
@@ -2869,6 +2897,7 @@ export function ThreadTerminalView({
             outputFrameId: currentOutputFrameId ?? undefined,
             onReplayStart: () => {
               replayStarted = true;
+              containerElement.dataset.replayHeld = "true";
               viewportReplaySaveGate.beginReplay();
               replayCompleted = false;
               replayPreviewExitApplied = false;
@@ -2923,7 +2952,7 @@ export function ThreadTerminalView({
             replayCheckpointSequence,
             writeExitNotice: routeExitNotice,
             outputBoundaries,
-            allowAttachedGrid: !markerGridActive,
+            allowAttachedGrid: false,
             shouldProcessOutput: () =>
               terminalVisible === true && isPanelOpenRef.current,
           });

@@ -3,6 +3,8 @@
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import * as rendererModule from "./terminal-webgl-renderer";
 import { FitAddon } from "@xterm/addon-fit";
+import { Terminal } from "@xterm/xterm";
+import { createTerminalGridMarker } from "@bb/domain";
 import { TerminalWebSocketTransport } from "@bb/client-core";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -267,6 +269,188 @@ describe("ThreadTerminalView terminal visibility and panel", () => {
     );
     expect(sizes().map((size) => size.cols)).toEqual([132, 44]);
   });
+
+  it.each([
+    {
+      name: "phone with a stale live marker",
+      fit: { cols: 44, rows: 40 },
+      attached: { cols: 125, rows: 44 },
+      live: { cols: 125, rows: 44 },
+    },
+    {
+      name: "phone with the current live marker",
+      fit: { cols: 44, rows: 40 },
+      attached: { cols: 125, rows: 44 },
+      live: { cols: 44, rows: 40 },
+    },
+    {
+      name: "desktop after a phone client",
+      fit: { cols: 125, rows: 44 },
+      attached: { cols: 44, rows: 40 },
+      live: { cols: 125, rows: 44 },
+    },
+  ])(
+    "applies the accepted grid to $name while replay is held",
+    async ({ fit, attached, live }) => {
+      const focusGuard = render(<button>Other input</button>);
+      focusGuard.getByRole("button").focus();
+      vi.stubGlobal("WebSocket", TestTerminalSocket);
+      vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
+        measureText: (text: string) => ({ width: text.length * 8 }),
+      } as unknown as CanvasRenderingContext2D);
+      vi.spyOn(
+        rendererModule,
+        "loadOptionalTerminalWebglAddon",
+      ).mockResolvedValue(null);
+      for (const dimension of ["clientWidth", "offsetWidth"] as const) {
+        vi.spyOn(HTMLElement.prototype, dimension, "get").mockImplementation(
+          function (this: HTMLElement) {
+            return this.classList.contains("xterm-char-measure-element")
+              ? 8
+              : 354;
+          },
+        );
+      }
+      for (const dimension of ["clientHeight", "offsetHeight"] as const) {
+        vi.spyOn(HTMLElement.prototype, dimension, "get").mockImplementation(
+          function (this: HTMLElement) {
+            return this.classList.contains("xterm-char-measure-element")
+              ? 18
+              : 504;
+          },
+        );
+      }
+      vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
+        width: 354,
+        height: 504,
+        top: 0,
+        left: 0,
+        right: 354,
+        bottom: 504,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      });
+      vi.spyOn(FitAddon.prototype, "proposeDimensions").mockReturnValue(fit);
+      const session = makeTerminalSession({
+        id: "term_existing_client_grid",
+        ...attached,
+        threadId: null,
+        status: "running",
+      });
+      const mounted = render(
+        <MemoryRouter>
+          <AppCommandProvider>
+            <ThreadTerminalView
+              autoFocus={false}
+              isPanelOpen
+              session={session}
+            />
+          </AppCommandProvider>
+        </MemoryRouter>,
+      );
+      const sizes = () =>
+        testState.socketMessages
+          .map((raw) => JSON.parse(raw))
+          .filter((message) => message.type === "resize");
+      await waitForReadinessCondition(() => {
+        expect(sizes()).toHaveLength(1);
+        expect(sizes()[0]).toMatchObject(fit);
+      }, "fresh client did not send one resize for its own container");
+      const socket = testState.sockets[0];
+      if (!socket) throw new Error("terminal socket is missing");
+      socket.receive({
+        type: "attached",
+        session,
+        replayStartSeq: 0,
+        nextSeq: 1,
+      });
+      let holdWrites = true;
+      const pendingWrites: Array<() => void> = [];
+      const write = Terminal.prototype.write;
+      vi.spyOn(Terminal.prototype, "write").mockImplementation(function (
+        this: Terminal,
+        data,
+        callback,
+      ) {
+        write.call(this, data, () => {
+          if (holdWrites && callback) pendingWrites.push(callback);
+          else callback?.();
+        });
+      });
+      const renderer = mounted.container.querySelector<HTMLElement>(
+        "[data-terminal-renderer]",
+      );
+      try {
+        socket.receive({
+          type: "output",
+          chunk: {
+            seq: 0,
+            dataBase64: btoa(
+              createTerminalGridMarker(attached) +
+                "replay\r\n" +
+                createTerminalGridMarker({ cols: 44, rows: 38 }),
+            ),
+          },
+        });
+        await waitForReadinessCondition(
+          () => expect(pendingWrites.length).toBeGreaterThan(0),
+          "historical replay did not reach the deferred parser callback",
+        );
+        socket.receive({ type: "features", resizeAcks: true });
+        socket.receive({
+          type: "session-updated",
+          session: { ...session, ...fit },
+        });
+        socket.receive({ type: "resize-applied", seq: 1 });
+        await waitFor(
+          () => {
+            expect(renderer?.dataset.renderGridCols).toBe(String(fit.cols));
+            expect(renderer?.dataset.renderGridRows).toBe(String(fit.rows));
+            expect(renderer?.dataset.ptyGridCols).toBe(String(fit.cols));
+            expect(renderer?.dataset.ptyGridRows).toBe(String(fit.rows));
+            expect(renderer?.dataset.replayHeld).toBe("true");
+          },
+          { timeout: 1000 },
+        );
+      } finally {
+        holdWrites = false;
+        for (const callback of pendingWrites.splice(0)) callback();
+      }
+      socket.receive({
+        type: "output",
+        chunk: {
+          seq: 1,
+          dataBase64: btoa(createTerminalGridMarker(live) + "tail\r\n"),
+        },
+      });
+      await waitForReadinessCondition(
+        () =>
+          expect(socket.sent.map((raw) => JSON.parse(raw))).toContainEqual({
+            type: "ack",
+            nextSeq: 2,
+          }),
+        "replay and buffered live output were not parsed",
+      );
+      await waitForReadinessCondition(() => {
+        expect(renderer?.dataset.replayHeld).toBe("false");
+        expect(renderer?.dataset.ptyGridCols).toBe(String(fit.cols));
+        expect(renderer?.dataset.ptyGridRows).toBe(String(fit.rows));
+        expect(renderer?.dataset.renderGridCols).toBe(String(fit.cols));
+        expect(renderer?.dataset.renderGridRows).toBe(String(fit.rows));
+      }, "buffered output replaced the accepted grid");
+      socket.receive({
+        type: "session-updated",
+        session: { ...session, cols: 41, rows: 36 },
+      });
+      await waitForReadinessCondition(() => {
+        expect(renderer?.dataset.ptyGridCols).toBe("41");
+        expect(renderer?.dataset.ptyGridRows).toBe("36");
+        expect(renderer?.dataset.renderGridCols).toBe("41");
+        expect(renderer?.dataset.renderGridRows).toBe("36");
+      }, "a remote client size update was suppressed after a grid marker");
+    },
+  );
 
   it("sends exactly one fitted resize when WebGL settles before the deadline", async () => {
     const focusGuard = render(<button>Other input</button>);
