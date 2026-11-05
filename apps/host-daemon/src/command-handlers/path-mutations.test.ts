@@ -234,20 +234,15 @@ describe("confined host path mutations", () => {
       await fs.writeFile(path.join(target, "old.txt"), "old");
       let injected = false;
       await expect(
-        removeHostPath(
-          {
-            type: "host.remove_path",
-            path: target,
-            rootPath: root,
-            recursive: true,
+        removeDirectoryAfterHolderRecheck({
+          directory: target,
+          action: "remove",
+          recursive: true,
+          afterHolderScan: async (quarantine) => {
+            await fs.writeFile(path.join(quarantine, "late.txt"), "keep");
+            injected = true;
           },
-          {
-            afterHolderScan: async (quarantine) => {
-              await fs.writeFile(path.join(quarantine, "late.txt"), "keep");
-              injected = true;
-            },
-          },
-        ),
+        }),
       ).rejects.toMatchObject({ code: "path_in_use" });
       expect(injected).toBe(true);
       await expect(

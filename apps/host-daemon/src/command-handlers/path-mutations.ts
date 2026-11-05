@@ -261,7 +261,6 @@ export async function moveHostPath(
 
 export async function removeHostPath(
   command: CommandOf<"host.remove_path">,
-  hooks: { afterHolderScan?: (quarantine: string) => Promise<void> } = {},
 ): Promise<HostDaemonOnlineRpcResult<"host.remove_path">> {
   refuseOnWindows(`remove ${command.path}`);
   const { target, root } = await requireExistingWithin(
@@ -280,7 +279,6 @@ export async function removeHostPath(
       directory: target,
       action: "remove",
       recursive: command.recursive,
-      afterHolderScan: hooks.afterHolderScan,
     });
   } else {
     await fs.rm(target, { recursive: command.recursive, force: false });
