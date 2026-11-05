@@ -17,7 +17,8 @@ import type { UploadedPromptAttachment } from "@bb/server-contract";
 import { Button } from "@bb/shared-ui/button";
 import {
   COMPOSER_SHELL_CLASS,
-  ComposerSubmitButton,
+  COMPOSER_SUBMIT_CLASS,
+  COMPOSER_SEND_ICON,
 } from "@bb/shared-ui/composer-primitives";
 import { Icon } from "@bb/shared-ui/icon";
 import { cn } from "@bb/shared-ui/lib/utils";
@@ -686,11 +687,17 @@ export function NativeTerminalPromptBar({
               )}
             </Button>
           ) : null}
-          <ComposerSubmitButton
+          <Button
+            type="submit"
+            variant="default"
+            size="icon"
+            className={COMPOSER_SUBMIT_CLASS}
             disabled={!canSend}
             aria-label={`Send to ${providerLabel}`}
             onMouseDown={(event) => event.preventDefault()}
-          />
+          >
+            <Icon name={COMPOSER_SEND_ICON} className="size-4" />
+          </Button>
         </div>
       </div>
     </form>
