@@ -2,7 +2,7 @@ import { prefetchTerminalScreen } from "@/components/thread/terminal/terminal-sc
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { PromptInput } from "@bb/domain";
 import type { NativeTerminalThread } from "@bb/server-contract";
-import { preloadNativeTerminalPanel } from "@/components/thread/terminal/native-terminal-panel-preload";
+import { LazyThreadTerminalPanel } from "@/components/secondary-panel/lazySecondaryPanelComponents";
 import { preloadTerminalModules } from "@/components/thread/terminal/terminal-modules";
 import { sdk } from "@/lib/sdk";
 import { applyNativeTerminalThreadView } from "../cache-owners/terminal-cache-owner";
@@ -17,7 +17,7 @@ export function useNativeTerminalThread(threadId: string) {
       if (view !== null) {
         if (view.terminal?.status === "running")
           prefetchTerminalScreen(view.terminal.id, threadId);
-        void preloadNativeTerminalPanel().catch(() => undefined);
+        void LazyThreadTerminalPanel.preload();
         preloadTerminalModules();
       }
       return view;

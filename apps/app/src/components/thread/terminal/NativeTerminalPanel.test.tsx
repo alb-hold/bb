@@ -4,8 +4,8 @@ import { afterEach, expect, it, vi } from "vitest";
 import { NativeTerminalPanel } from "./NativeTerminalPanel";
 
 const { load } = vi.hoisted(() => ({ load: vi.fn() }));
-vi.mock("./native-terminal-panel-preload", () => ({
-  preloadNativeTerminalPanel: load,
+vi.mock("@/lib/retryable-chunk-import", () => ({
+  loadChunkWithRetries: load,
 }));
 vi.mock("./terminal-screen-prefetch", () => ({
   prefetchTerminalScreen: vi.fn(() => Promise.resolve(null)),

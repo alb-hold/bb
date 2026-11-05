@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ComponentProps } from "react";
 import type { ThreadTerminalPanel } from "./ThreadTerminalPanel";
-import { preloadNativeTerminalPanel } from "./native-terminal-panel-preload";
+import { loadChunkWithRetries } from "@/lib/retryable-chunk-import";
 import { prefetchTerminalScreen } from "./terminal-screen-prefetch";
 import { mountTerminalScreenLoadingPreview } from "./terminal-screen-loading-preview";
 import { SplitLoadFailure } from "@/lib/define-split";
@@ -14,7 +14,7 @@ export function NativeTerminalPanel(props: ComponentProps<Panel>) {
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     let disposed = false;
-    void preloadNativeTerminalPanel()
+    void loadChunkWithRetries(() => import("./ThreadTerminalPanel"))
       .then((module) => {
         if (!disposed) setView(() => module.ThreadTerminalPanel);
       })

@@ -1,13 +1,12 @@
+import { prefetchTerminalScreen } from "@/components/thread/terminal/terminal-screen-prefetch";
 import { appQueryClient } from "./app-query-client";
 import { threadDetailBootstrapQueryOptions } from "@/hooks/queries/thread-queries";
 import { nativeTerminalThreadQueryKey } from "@/hooks/queries/query-keys";
 import { sdk } from "./sdk";
+import { LazyThreadTerminalPanel } from "@/components/secondary-panel/lazySecondaryPanelComponents";
+import { preloadTerminalModules } from "@/components/thread/terminal/terminal-modules";
 
 export function prefetchThreadOpen(threadId: string): void {
-  const warmup =
-    import("@/components/thread/terminal/native-terminal-warmup").catch(
-      () => null,
-    );
   void appQueryClient.prefetchQuery(
     threadDetailBootstrapQueryOptions(appQueryClient, threadId, {
       timelinePrefetch: true,
@@ -19,11 +18,10 @@ export function prefetchThreadOpen(threadId: string): void {
     queryFn: async ({ signal }) => {
       const view = await sdk.nativeTerminals.get({ threadId, signal });
       if (view !== null) {
-        const terminalId =
-          view.terminal?.status === "running" ? view.terminal.id : null;
-        void warmup
-          .then((module) => module?.warmNativeTerminal(terminalId, threadId))
-          .catch(() => undefined);
+        if (view.terminal?.status === "running")
+          prefetchTerminalScreen(view.terminal.id, threadId);
+        void LazyThreadTerminalPanel.preload();
+        preloadTerminalModules();
       }
       return view;
     },
