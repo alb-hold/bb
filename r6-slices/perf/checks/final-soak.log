@@ -1,0 +1,92 @@
+{ stage: 'snapshot-start' }
+{ stage: 'prototype-ready', available: true }
+{
+  navigation: 0,
+  distinctThreads: 0,
+  terminalVisits: 0,
+  panels: 0,
+  palettes: 0,
+  scrolls: 0,
+  liveXterm: 1,
+  liveWebGL: 1,
+  heapMiB: 44.284156799316406,
+  documents: 4,
+  nodes: 1438,
+  jsEventListeners: 809,
+  connected: 1298,
+  xtermDOM: 1,
+  canvas: 3,
+  path: '/projects/proj_38nn2cfvnd/threads/thr_ti5myaruiv'
+}
+{
+  navigation: 50,
+  distinctThreads: 40,
+  terminalVisits: 7,
+  panels: 2,
+  palettes: 2,
+  scrolls: 5,
+  liveXterm: 0,
+  liveWebGL: 0,
+  heapMiB: 62.9445915222168,
+  documents: 4,
+  nodes: 2656,
+  jsEventListeners: 1115,
+  connected: 2068,
+  xtermDOM: 0,
+  canvas: 0,
+  path: '/projects/proj_n2izyamrfz/threads/thr_8ixs4xd9wq'
+}
+{
+  navigation: 150,
+  distinctThreads: 56,
+  terminalVisits: 21,
+  panels: 6,
+  palettes: 6,
+  scrolls: 13,
+  liveXterm: 0,
+  liveWebGL: 0,
+  heapMiB: 66.15065383911133,
+  documents: 4,
+  nodes: 2656,
+  jsEventListeners: 1117,
+  connected: 2068,
+  xtermDOM: 0,
+  canvas: 0,
+  path: '/projects/proj_n2izyamrfz/threads/thr_8ixs4xd9wq'
+}
+{
+  navigation: 200,
+  distinctThreads: 56,
+  terminalVisits: 28,
+  panels: 8,
+  palettes: 8,
+  scrolls: 18,
+  liveXterm: 0,
+  liveWebGL: 0,
+  heapMiB: 65.85734176635742,
+  documents: 4,
+  nodes: 2672,
+  jsEventListeners: 1117,
+  connected: 2068,
+  xtermDOM: 0,
+  canvas: 0,
+  path: '/projects/proj_n2izyamrfz/threads/thr_8ixs4xd9wq'
+}
+{
+  navigation: 300,
+  distinctThreads: 56,
+  terminalVisits: 42,
+  panels: 12,
+  palettes: 12,
+  scrolls: 26,
+  liveXterm: 0,
+  liveWebGL: 0,
+  heapMiB: 66.78948974609375,
+  documents: 4,
+  nodes: 2656,
+  jsEventListeners: 1117,
+  connected: 2068,
+  xtermDOM: 0,
+  canvas: 0,
+  path: '/projects/proj_n2izyamrfz/threads/thr_8ixs4xd9wq'
+}

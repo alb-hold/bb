@@ -1,0 +1,16 @@
+{
+  "ref": "r6-perf-causal-attribution",
+  "answerSpace": [
+    "change-app",
+    "keep-app",
+    "insufficient-evidence"
+  ],
+  "verdict": "change-app",
+  "status": "held",
+  "evidence": [
+    "trace-summary.json",
+    "after/trace-summary.json",
+    "final-soak/broad-soak.json"
+  ],
+  "reason": "Three of four pre-change candidate >20ms tails include module evaluation; delaying the queue yields 18/18 <=16ms against 4/18 live controls. Memory threshold passes without a product memory fix."
+}

@@ -7,11 +7,27 @@ interface PluginFrontendBootScheduleDeps {
 }
 
 export const PLUGIN_FRONTEND_BOOT_TIMEOUT_MS = 1_500;
+const HOME_COMPOSER_SELECTOR = "textarea, [contenteditable=true]";
+
+export function whenHomeComposerInputOrTimeout(): Promise<void> {
+  if (window.location.pathname !== "/") return Promise.resolve();
+  const composer = document.querySelector(HOME_COMPOSER_SELECTOR);
+  if (!composer) return Promise.resolve();
+  return new Promise((resolve) => {
+    const finish = () => {
+      composer.removeEventListener("input", finish);
+      window.clearTimeout(timeout);
+      resolve();
+    };
+    const timeout = window.setTimeout(finish, 2_000);
+    composer.addEventListener("input", finish, { once: true });
+  });
+}
 
 export function whenHomeComposerMounted(): Promise<void> {
   if (
     window.location.pathname !== "/" ||
-    document.querySelector("textarea, [contenteditable=true]")
+    document.querySelector(HOME_COMPOSER_SELECTOR)
   )
     return Promise.resolve();
   return new Promise((resolve) => {
@@ -21,7 +37,7 @@ export function whenHomeComposerMounted(): Promise<void> {
       resolve();
     };
     const observer = new MutationObserver(() => {
-      if (document.querySelector("textarea, [contenteditable=true]")) finish();
+      if (document.querySelector(HOME_COMPOSER_SELECTOR)) finish();
     });
     const timeout = window.setTimeout(finish, PLUGIN_FRONTEND_BOOT_TIMEOUT_MS);
     observer.observe(document, { childList: true, subtree: true });

@@ -1,0 +1,18 @@
+{
+  "selfSizeDeltaByType": {
+    "native": 862413,
+    "string": 250760,
+    "number": 11316,
+    "synthetic": 0,
+    "object shape": -7340,
+    "closure": 44292,
+    "regexp": 0,
+    "bigint": 0,
+    "code": 255800,
+    "array": 45448,
+    "concatenated string": -2280,
+    "symbol": 0,
+    "sliced string": 40,
+    "object": 169556
+  }
+}

@@ -58,6 +58,7 @@ import { createRetryingModuleLoader } from "./plugin-frontend-lazy";
 import {
   requestBrowserIdle,
   whenHomeComposerMounted,
+  whenHomeComposerInputOrTimeout,
 } from "./plugin-frontend-boot-schedule";
 import { whenRouteContentPainted } from "./route-content-paint";
 import {
@@ -1125,6 +1126,7 @@ const browserReconcileDeps: PluginFrontendReconcileDeps = {
   waitForDeferredLoad: async () => {
     await whenRouteContentPainted();
     await whenHomeComposerMounted();
+    await whenHomeComposerInputOrTimeout();
     await new Promise<void>((resolve) =>
       requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
     );

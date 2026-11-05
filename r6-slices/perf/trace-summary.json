@@ -1,0 +1,1226 @@
+[
+  {
+    "file": "r6-slices/perf/raw/early-16800-0.json",
+    "busyMs": 16.628,
+    "threadCpuMs": 15.842,
+    "keyWindowMs": 67.209,
+    "scriptingWallMs": 10.25,
+    "styleMs": 0.486,
+    "layoutMs": 0.671,
+    "moduleEvaluationMs": 0.069,
+    "paintMs": 0.316,
+    "outsideTasksMs": 50.775,
+    "largestTasks": [
+      {
+        "wallMs": 9.315,
+        "cpuMs": 9.075,
+        "offsetMs": -0.095
+      },
+      {
+        "wallMs": 1.236,
+        "cpuMs": 1.163,
+        "offsetMs": 18.624
+      },
+      {
+        "wallMs": 0.893,
+        "cpuMs": 0.825,
+        "offsetMs": 9.224
+      },
+      {
+        "wallMs": 0.494,
+        "cpuMs": 0.49,
+        "offsetMs": 47.269
+      }
+    ]
+  },
+  {
+    "file": "r6-slices/perf/raw/early-16800-1.json",
+    "busyMs": 35.952,
+    "threadCpuMs": 35.115,
+    "keyWindowMs": 65.639,
+    "scriptingWallMs": 27.463,
+    "styleMs": 1.205,
+    "layoutMs": 0.602,
+    "moduleEvaluationMs": 3.503,
+    "paintMs": 0.356,
+    "outsideTasksMs": 29.853,
+    "largestTasks": [
+      {
+        "wallMs": 10.654,
+        "cpuMs": 10.614,
+        "offsetMs": 30.854
+      },
+      {
+        "wallMs": 9.141,
+        "cpuMs": 8.883,
+        "offsetMs": -0.109
+      },
+      {
+        "wallMs": 3.94,
+        "cpuMs": 3.937,
+        "offsetMs": 13.773
+      },
+      {
+        "wallMs": 1.979,
+        "cpuMs": 1.862,
+        "offsetMs": 11.608
+      }
+    ]
+  },
+  {
+    "file": "r6-slices/perf/raw/early-16800-2.json",
+    "busyMs": 22.009,
+    "threadCpuMs": 21.395,
+    "keyWindowMs": 55.276,
+    "scriptingWallMs": 16.487,
+    "styleMs": 0.448,
+    "layoutMs": 0.536,
+    "moduleEvaluationMs": 6.48,
+    "paintMs": 0.175,
+    "outsideTasksMs": 32.908,
+    "largestTasks": [
+      {
+        "wallMs": 9.548,
+        "cpuMs": 9.294,
+        "offsetMs": -0.099
+      },
+      {
+        "wallMs": 6.877,
+        "cpuMs": 6.874,
+        "offsetMs": 29.602
+      },
+      {
+        "wallMs": 1.176,
+        "cpuMs": 1.165,
+        "offsetMs": 40.424
+      },
+      {
+        "wallMs": 0.826,
+        "cpuMs": 0.757,
+        "offsetMs": 9.452
+      }
+    ]
+  },
+  {
+    "file": "r6-slices/perf/raw/early-16800-3.json",
+    "busyMs": 15.556,
+    "threadCpuMs": 14.966,
+    "keyWindowMs": 52.449,
+    "scriptingWallMs": 10.336,
+    "styleMs": 0.425,
+    "layoutMs": 0.645,
+    "moduleEvaluationMs": 0.408,
+    "paintMs": 0.33,
+    "outsideTasksMs": 36.965,
+    "largestTasks": [
+      {
+        "wallMs": 9.099,
+        "cpuMs": 8.863,
+        "offsetMs": -0.097
+      },
+      {
+        "wallMs": 1.254,
+        "cpuMs": 1.222,
+        "offsetMs": 40.073
+      },
+      {
+        "wallMs": 0.986,
+        "cpuMs": 0.902,
+        "offsetMs": 9.007
+      },
+      {
+        "wallMs": 0.529,
+        "cpuMs": 0.524,
+        "offsetMs": 46.485
+      }
+    ]
+  },
+  {
+    "file": "r6-slices/perf/raw/early-16800-4.json",
+    "busyMs": 17.043,
+    "threadCpuMs": 16.493,
+    "keyWindowMs": 52.043,
+    "scriptingWallMs": 12.251,
+    "styleMs": 0.419,
+    "layoutMs": 0.634,
+    "moduleEvaluationMs": 0.065,
+    "paintMs": 0.317,
+    "outsideTasksMs": 34.685,
+    "largestTasks": [
+      {
+        "wallMs": 9.112,
+        "cpuMs": 8.877,
+        "offsetMs": -0.087
+      },
+      {
+        "wallMs": 2.512,
+        "cpuMs": 2.49,
+        "offsetMs": 32.815
+      },
+      {
+        "wallMs": 1.214,
+        "cpuMs": 1.185,
+        "offsetMs": 40.751
+      },
+      {
+        "wallMs": 0.882,
+        "cpuMs": 0.819,
+        "offsetMs": 9.028
+      }
+    ]
+  },
+  {
+    "file": "r6-slices/perf/raw/early-16800-5.json",
+    "busyMs": 15.722,
+    "threadCpuMs": 15.161,
+    "keyWindowMs": 50.258,
+    "scriptingWallMs": 10.083,
+    "styleMs": 0.452,
+    "layoutMs": 0.65,
+    "moduleEvaluationMs": 0.277,
+    "paintMs": 0.315,
+    "outsideTasksMs": 34.091,
+    "largestTasks": [
+      {
+        "wallMs": 8.966,
+        "cpuMs": 8.734,
+        "offsetMs": -0.09
+      },
+      {
+        "wallMs": 1.208,
+        "cpuMs": 1.182,
+        "offsetMs": 47.711
+      },
+      {
+        "wallMs": 0.942,
+        "cpuMs": 0.872,
+        "offsetMs": 13.073
+      },
+      {
+        "wallMs": 0.628,
+        "cpuMs": 0.624,
+        "offsetMs": 20.053
+      }
+    ]
+  },
+  {
+    "file": "r6-slices/perf/raw/early-16800-6.json",
+    "busyMs": 17.156,
+    "threadCpuMs": 16.49,
+    "keyWindowMs": 51.48,
+    "scriptingWallMs": 10.905,
+    "styleMs": 0.354,
+    "layoutMs": 0.616,
+    "moduleEvaluationMs": 0.853,
+    "paintMs": 0.199,
+    "outsideTasksMs": 35.043,
+    "largestTasks": [
+      {
+        "wallMs": 9.156,
+        "cpuMs": 8.93,
+        "offsetMs": -0.1
+      },
+      {
+        "wallMs": 1.393,
+        "cpuMs": 1.293,
+        "offsetMs": 15.065
+      },
+      {
+        "wallMs": 0.696,
+        "cpuMs": 0.692,
+        "offsetMs": 40.356
+      },
+      {
+        "wallMs": 0.664,
+        "cpuMs": 0.661,
+        "offsetMs": 49.244
+      }
+    ]
+  },
+  {
+    "file": "r6-slices/perf/raw/early-16800-7.json",
+    "busyMs": 29.367,
+    "threadCpuMs": 28.754,
+    "keyWindowMs": 54.241,
+    "scriptingWallMs": 22.41,
+    "styleMs": 1.337,
+    "layoutMs": 0.552,
+    "moduleEvaluationMs": 6.989,
+    "paintMs": 0.182,
+    "outsideTasksMs": 24.959,
+    "largestTasks": [
+      {
+        "wallMs": 9.786,
+        "cpuMs": 9.522,
+        "offsetMs": -0.092
+      },
+      {
+        "wallMs": 5.176,
+        "cpuMs": 5.172,
+        "offsetMs": 48.951
+      },
+      {
+        "wallMs": 3.54,
+        "cpuMs": 3.534,
+        "offsetMs": 22.54
+      },
+      {
+        "wallMs": 2.724,
+        "cpuMs": 2.72,
+        "offsetMs": 17.971
+      }
+    ]
+  },
+  {
+    "file": "r6-slices/perf/raw/early-16800-8.json",
+    "busyMs": 16.686,
+    "threadCpuMs": 15.983,
+    "keyWindowMs": 51.885,
+    "scriptingWallMs": 11.051,
+    "styleMs": 0.483,
+    "layoutMs": 0.656,
+    "moduleEvaluationMs": 0.657,
+    "paintMs": 0.342,
+    "outsideTasksMs": 35.324,
+    "largestTasks": [
+      {
+        "wallMs": 9.787,
+        "cpuMs": 9.421,
+        "offsetMs": -0.269
+      },
+      {
+        "wallMs": 1.233,
+        "cpuMs": 1.199,
+        "offsetMs": 49.407
+      },
+      {
+        "wallMs": 1.019,
+        "cpuMs": 0.949,
+        "offsetMs": 15.153
+      },
+      {
+        "wallMs": 0.667,
+        "cpuMs": 0.663,
+        "offsetMs": 36.724
+      }
+    ]
+  },
+  {
+    "file": "r6-slices/perf/raw/early-16800-9.json",
+    "busyMs": 17.296,
+    "threadCpuMs": 16.72,
+    "keyWindowMs": 52.754,
+    "scriptingWallMs": 12.021,
+    "styleMs": 0.438,
+    "layoutMs": 0.623,
+    "moduleEvaluationMs": 0.048,
+    "paintMs": 0.32,
+    "outsideTasksMs": 35.527,
+    "largestTasks": [
+      {
+        "wallMs": 9.206,
+        "cpuMs": 8.975,
+        "offsetMs": -0.097
+      },
+      {
+        "wallMs": 2.017,
+        "cpuMs": 2.008,
+        "offsetMs": 22.299
+      },
+      {
+        "wallMs": 1.231,
+        "cpuMs": 1.201,
+        "offsetMs": 37.938
+      },
+      {
+        "wallMs": 0.888,
+        "cpuMs": 0.824,
+        "offsetMs": 9.112
+      }
+    ]
+  },
+  {
+    "file": "r6-slices/perf/raw/early-16800-10.json",
+    "busyMs": 15.937,
+    "threadCpuMs": 15.304,
+    "keyWindowMs": 50.981,
+    "scriptingWallMs": 10.136,
+    "styleMs": 0.464,
+    "layoutMs": 0.492,
+    "moduleEvaluationMs": 0.314,
+    "paintMs": 0.195,
+    "outsideTasksMs": 35.122,
+    "largestTasks": [
+      {
+        "wallMs": 9.117,
+        "cpuMs": 8.878,
+        "offsetMs": -0.095
+      },
+      {
+        "wallMs": 1.012,
+        "cpuMs": 0.91,
+        "offsetMs": 9.025
+      },
+      {
+        "wallMs": 0.623,
+        "cpuMs": 0.62,
+        "offsetMs": 35.68
+      },
+      {
+        "wallMs": 0.546,
+        "cpuMs": 0.542,
+        "offsetMs": 48.316
+      }
+    ]
+  },
+  {
+    "file": "r6-slices/perf/raw/early-16800-11.json",
+    "busyMs": 16.097,
+    "threadCpuMs": 15.36,
+    "keyWindowMs": 54.642,
+    "scriptingWallMs": 9.918,
+    "styleMs": 0.459,
+    "layoutMs": 0.641,
+    "moduleEvaluationMs": 0.038,
+    "paintMs": 0.329,
+    "outsideTasksMs": 39.336,
+    "largestTasks": [
+      {
+        "wallMs": 9.057,
+        "cpuMs": 8.823,
+        "offsetMs": -0.085
+      },
+      {
+        "wallMs": 1.193,
+        "cpuMs": 1.163,
+        "offsetMs": 44.883
+      },
+      {
+        "wallMs": 0.967,
+        "cpuMs": 0.89,
+        "offsetMs": 11.4
+      },
+      {
+        "wallMs": 0.542,
+        "cpuMs": 0.539,
+        "offsetMs": -0.699
+      }
+    ]
+  },
+  {
+    "file": "r6-slices/perf/raw/early-16800-12.json",
+    "busyMs": 12.354,
+    "threadCpuMs": 11.685,
+    "keyWindowMs": 55.192,
+    "scriptingWallMs": 8.883,
+    "styleMs": 0.357,
+    "layoutMs": 0.638,
+    "moduleEvaluationMs": 0.0,
+    "paintMs": 0.341,
+    "outsideTasksMs": 43.303,
+    "largestTasks": [
+      {
+        "wallMs": 8.415,
+        "cpuMs": 7.959,
+        "offsetMs": -0.388
+      },
+      {
+        "wallMs": 1.21,
+        "cpuMs": 1.181,
+        "offsetMs": 50.408
+      },
+      {
+        "wallMs": 1.177,
+        "cpuMs": 1.085,
+        "offsetMs": 17.064
+      },
+      {
+        "wallMs": 0.448,
+        "cpuMs": 0.443,
+        "offsetMs": 18.398
+      }
+    ]
+  },
+  {
+    "file": "r6-slices/perf/raw/early-16800-13.json",
+    "busyMs": 59.852,
+    "threadCpuMs": 58.84,
+    "keyWindowMs": 69.993,
+    "scriptingWallMs": 30.251,
+    "styleMs": 12.92,
+    "layoutMs": 4.295,
+    "moduleEvaluationMs": 3.016,
+    "paintMs": 0.344,
+    "outsideTasksMs": 17.293,
+    "largestTasks": [
+      {
+        "wallMs": 15.992,
+        "cpuMs": 15.639,
+        "offsetMs": 60.978
+      },
+      {
+        "wallMs": 11.542,
+        "cpuMs": 11.505,
+        "offsetMs": 26.678
+      },
+      {
+        "wallMs": 9.419,
+        "cpuMs": 9.178,
+        "offsetMs": -0.088
+      },
+      {
+        "wallMs": 8.365,
+        "cpuMs": 8.307,
+        "offsetMs": 38.226
+      }
+    ]
+  },
+  {
+    "file": "r6-slices/perf/raw/early-16800-14.json",
+    "busyMs": 26.93,
+    "threadCpuMs": 26.269,
+    "keyWindowMs": 60.089,
+    "scriptingWallMs": 21.095,
+    "styleMs": 0.487,
+    "layoutMs": 0.531,
+    "moduleEvaluationMs": 10.968,
+    "paintMs": 0.18,
+    "outsideTasksMs": 33.261,
+    "largestTasks": [
+      {
+        "wallMs": 9.586,
+        "cpuMs": 9.325,
+        "offsetMs": -0.099
+      },
+      {
+        "wallMs": 6.929,
+        "cpuMs": 6.917,
+        "offsetMs": 53.049
+      },
+      {
+        "wallMs": 4.867,
+        "cpuMs": 4.86,
+        "offsetMs": 29.071
+      },
+      {
+        "wallMs": 0.859,
+        "cpuMs": 0.781,
+        "offsetMs": 9.49
+      }
+    ]
+  },
+  {
+    "file": "r6-slices/perf/raw/early-16800-15.json",
+    "busyMs": 20.495,
+    "threadCpuMs": 25.154,
+    "keyWindowMs": 54.31,
+    "scriptingWallMs": 13.976,
+    "styleMs": 0.294,
+    "layoutMs": 0.449,
+    "moduleEvaluationMs": 4.221,
+    "paintMs": 0.178,
+    "outsideTasksMs": 34.161,
+    "largestTasks": [
+      {
+        "wallMs": 9.033,
+        "cpuMs": 8.795,
+        "offsetMs": -0.083
+      },
+      {
+        "wallMs": 3.649,
+        "cpuMs": 9.036,
+        "offsetMs": 50.558
+      },
+      {
+        "wallMs": 0.929,
+        "cpuMs": 0.838,
+        "offsetMs": 10.568
+      },
+      {
+        "wallMs": 0.677,
+        "cpuMs": 0.674,
+        "offsetMs": 39.966
+      }
+    ]
+  },
+  {
+    "file": "r6-slices/perf/raw/early-16800-16.json",
+    "busyMs": 14.643,
+    "threadCpuMs": 18.87,
+    "keyWindowMs": 52.624,
+    "scriptingWallMs": 9.893,
+    "styleMs": 0.47,
+    "layoutMs": 0.641,
+    "moduleEvaluationMs": 0.037,
+    "paintMs": 0.358,
+    "outsideTasksMs": 37.712,
+    "largestTasks": [
+      {
+        "wallMs": 10.157,
+        "cpuMs": 9.912,
+        "offsetMs": -0.271
+      },
+      {
+        "wallMs": 1.307,
+        "cpuMs": 1.274,
+        "offsetMs": 50.248
+      },
+      {
+        "wallMs": 0.442,
+        "cpuMs": 0.439,
+        "offsetMs": 37.931
+      },
+      {
+        "wallMs": 0.345,
+        "cpuMs": 0.34,
+        "offsetMs": 10.15
+      }
+    ]
+  },
+  {
+    "file": "r6-slices/perf/raw/early-16800-17.json",
+    "busyMs": 15.389,
+    "threadCpuMs": 14.785,
+    "keyWindowMs": 52.019,
+    "scriptingWallMs": 10.741,
+    "styleMs": 0.524,
+    "layoutMs": 0.655,
+    "moduleEvaluationMs": 0.532,
+    "paintMs": 0.341,
+    "outsideTasksMs": 35.149,
+    "largestTasks": [
+      {
+        "wallMs": 9.535,
+        "cpuMs": 9.293,
+        "offsetMs": -0.113
+      },
+      {
+        "wallMs": 0.945,
+        "cpuMs": 0.87,
+        "offsetMs": 9.425
+      },
+      {
+        "wallMs": 0.69,
+        "cpuMs": 0.686,
+        "offsetMs": 40.544
+      },
+      {
+        "wallMs": 0.528,
+        "cpuMs": 0.524,
+        "offsetMs": 17.799
+      }
+    ]
+  },
+  {
+    "file": "r6-slices/perf/raw/early-16830-0.json",
+    "busyMs": 14.398,
+    "threadCpuMs": 13.872,
+    "keyWindowMs": 50.707,
+    "scriptingWallMs": 9.321,
+    "styleMs": 0.485,
+    "layoutMs": 0.649,
+    "moduleEvaluationMs": 0.037,
+    "paintMs": 0.331,
+    "outsideTasksMs": 36.518,
+    "largestTasks": [
+      {
+        "wallMs": 8.57,
+        "cpuMs": 8.341,
+        "offsetMs": -0.09
+      },
+      {
+        "wallMs": 1.269,
+        "cpuMs": 1.235,
+        "offsetMs": 46.074
+      },
+      {
+        "wallMs": 0.962,
+        "cpuMs": 0.897,
+        "offsetMs": 12.63
+      },
+      {
+        "wallMs": 0.472,
+        "cpuMs": 0.468,
+        "offsetMs": 29.737
+      }
+    ]
+  },
+  {
+    "file": "r6-slices/perf/raw/early-16830-1.json",
+    "busyMs": 25.08,
+    "threadCpuMs": 24.434,
+    "keyWindowMs": 52.979,
+    "scriptingWallMs": 16.55,
+    "styleMs": 0.406,
+    "layoutMs": 0.499,
+    "moduleEvaluationMs": 5.794,
+    "paintMs": 0.354,
+    "outsideTasksMs": 28.896,
+    "largestTasks": [
+      {
+        "wallMs": 9.367,
+        "cpuMs": 9.11,
+        "offsetMs": -0.106
+      },
+      {
+        "wallMs": 6.157,
+        "cpuMs": 6.153,
+        "offsetMs": 25.75
+      },
+      {
+        "wallMs": 1.817,
+        "cpuMs": 1.809,
+        "offsetMs": 18.107
+      },
+      {
+        "wallMs": 1.268,
+        "cpuMs": 1.263,
+        "offsetMs": -1.376
+      }
+    ]
+  },
+  {
+    "file": "r6-slices/perf/raw/early-16830-2.json",
+    "busyMs": 14.504,
+    "threadCpuMs": 13.994,
+    "keyWindowMs": 53.264,
+    "scriptingWallMs": 9.777,
+    "styleMs": 0.464,
+    "layoutMs": 0.626,
+    "moduleEvaluationMs": 0.069,
+    "paintMs": 0.313,
+    "outsideTasksMs": 38.176,
+    "largestTasks": [
+      {
+        "wallMs": 9.005,
+        "cpuMs": 8.781,
+        "offsetMs": -0.104
+      },
+      {
+        "wallMs": 1.261,
+        "cpuMs": 1.233,
+        "offsetMs": 34.915
+      },
+      {
+        "wallMs": 0.897,
+        "cpuMs": 0.826,
+        "offsetMs": 8.905
+      },
+      {
+        "wallMs": 0.458,
+        "cpuMs": 0.454,
+        "offsetMs": 20.019
+      }
+    ]
+  },
+  {
+    "file": "r6-slices/perf/raw/early-16830-3.json",
+    "busyMs": 18.006,
+    "threadCpuMs": 17.122,
+    "keyWindowMs": 52.766,
+    "scriptingWallMs": 11.261,
+    "styleMs": 0.374,
+    "layoutMs": 0.666,
+    "moduleEvaluationMs": 0.758,
+    "paintMs": 0.364,
+    "outsideTasksMs": 34.528,
+    "largestTasks": [
+      {
+        "wallMs": 9.575,
+        "cpuMs": 9.33,
+        "offsetMs": -0.098
+      },
+      {
+        "wallMs": 1.3,
+        "cpuMs": 1.201,
+        "offsetMs": 23.244
+      },
+      {
+        "wallMs": 1.009,
+        "cpuMs": 0.931,
+        "offsetMs": 9.482
+      },
+      {
+        "wallMs": 0.67,
+        "cpuMs": 0.666,
+        "offsetMs": 50.699
+      }
+    ]
+  },
+  {
+    "file": "r6-slices/perf/raw/early-16830-4.json",
+    "busyMs": 16.184,
+    "threadCpuMs": 15.59,
+    "keyWindowMs": 50.597,
+    "scriptingWallMs": 10.111,
+    "styleMs": 0.44,
+    "layoutMs": 0.658,
+    "moduleEvaluationMs": 0.276,
+    "paintMs": 0.324,
+    "outsideTasksMs": 34.494,
+    "largestTasks": [
+      {
+        "wallMs": 9.019,
+        "cpuMs": 8.78,
+        "offsetMs": -0.093
+      },
+      {
+        "wallMs": 1.194,
+        "cpuMs": 1.165,
+        "offsetMs": 46.161
+      },
+      {
+        "wallMs": 0.985,
+        "cpuMs": 0.91,
+        "offsetMs": 12.827
+      },
+      {
+        "wallMs": 0.619,
+        "cpuMs": 0.616,
+        "offsetMs": 37.95
+      }
+    ]
+  },
+  {
+    "file": "r6-slices/perf/raw/early-16830-5.json",
+    "busyMs": 26.9,
+    "threadCpuMs": 24.044,
+    "keyWindowMs": 51.956,
+    "scriptingWallMs": 15.124,
+    "styleMs": 6.79,
+    "layoutMs": 4.463,
+    "moduleEvaluationMs": 0.339,
+    "paintMs": 1.924,
+    "outsideTasksMs": 15.288,
+    "largestTasks": [
+      {
+        "wallMs": 13.007,
+        "cpuMs": 12.883,
+        "offsetMs": 21.479
+      },
+      {
+        "wallMs": 4.365,
+        "cpuMs": 4.359,
+        "offsetMs": 10.607
+      },
+      {
+        "wallMs": 2.894,
+        "cpuMs": 0.742,
+        "offsetMs": 16.458
+      },
+      {
+        "wallMs": 1.419,
+        "cpuMs": 1.405,
+        "offsetMs": 19.357
+      }
+    ]
+  },
+  {
+    "file": "r6-slices/perf/raw/early-16830-6.json",
+    "busyMs": 15.996,
+    "threadCpuMs": 15.394,
+    "keyWindowMs": 52.452,
+    "scriptingWallMs": 10.296,
+    "styleMs": 0.422,
+    "layoutMs": 0.627,
+    "moduleEvaluationMs": 0.464,
+    "paintMs": 0.322,
+    "outsideTasksMs": 36.541,
+    "largestTasks": [
+      {
+        "wallMs": 9.008,
+        "cpuMs": 8.776,
+        "offsetMs": -0.102
+      },
+      {
+        "wallMs": 1.233,
+        "cpuMs": 1.203,
+        "offsetMs": 41.851
+      },
+      {
+        "wallMs": 0.924,
+        "cpuMs": 0.848,
+        "offsetMs": 8.909
+      },
+      {
+        "wallMs": 0.631,
+        "cpuMs": 0.628,
+        "offsetMs": 37.025
+      }
+    ]
+  },
+  {
+    "file": "r6-slices/perf/raw/early-16830-7.json",
+    "busyMs": 16.964,
+    "threadCpuMs": 16.28,
+    "keyWindowMs": 51.056,
+    "scriptingWallMs": 11.291,
+    "styleMs": 0.415,
+    "layoutMs": 0.699,
+    "moduleEvaluationMs": 0.849,
+    "paintMs": 0.393,
+    "outsideTasksMs": 33.174,
+    "largestTasks": [
+      {
+        "wallMs": 9.664,
+        "cpuMs": 9.427,
+        "offsetMs": -0.107
+      },
+      {
+        "wallMs": 1.291,
+        "cpuMs": 1.218,
+        "offsetMs": 24.933
+      },
+      {
+        "wallMs": 1.102,
+        "cpuMs": 1.02,
+        "offsetMs": 9.56
+      },
+      {
+        "wallMs": 0.666,
+        "cpuMs": 0.662,
+        "offsetMs": 38.313
+      }
+    ]
+  },
+  {
+    "file": "r6-slices/perf/raw/early-16830-8.json",
+    "busyMs": 14.87,
+    "threadCpuMs": 14.297,
+    "keyWindowMs": 50.062,
+    "scriptingWallMs": 9.631,
+    "styleMs": 0.469,
+    "layoutMs": 0.641,
+    "moduleEvaluationMs": 0.073,
+    "paintMs": 0.347,
+    "outsideTasksMs": 34.72,
+    "largestTasks": [
+      {
+        "wallMs": 8.739,
+        "cpuMs": 8.505,
+        "offsetMs": -0.152
+      },
+      {
+        "wallMs": 1.257,
+        "cpuMs": 1.225,
+        "offsetMs": 47.049
+      },
+      {
+        "wallMs": 1.026,
+        "cpuMs": 0.949,
+        "offsetMs": 12.041
+      },
+      {
+        "wallMs": 0.534,
+        "cpuMs": 0.531,
+        "offsetMs": 35.545
+      }
+    ]
+  },
+  {
+    "file": "r6-slices/perf/raw/early-16830-9.json",
+    "busyMs": 15.108,
+    "threadCpuMs": 19.648,
+    "keyWindowMs": 50.85,
+    "scriptingWallMs": 10.148,
+    "styleMs": 0.478,
+    "layoutMs": 0.471,
+    "moduleEvaluationMs": 0.2,
+    "paintMs": 0.197,
+    "outsideTasksMs": 36.12,
+    "largestTasks": [
+      {
+        "wallMs": 9.327,
+        "cpuMs": 14.264,
+        "offsetMs": -0.162
+      },
+      {
+        "wallMs": 0.978,
+        "cpuMs": 0.895,
+        "offsetMs": 11.03
+      },
+      {
+        "wallMs": 0.57,
+        "cpuMs": 0.568,
+        "offsetMs": 35.23
+      },
+      {
+        "wallMs": 0.468,
+        "cpuMs": 0.464,
+        "offsetMs": -0.632
+      }
+    ]
+  },
+  {
+    "file": "r6-slices/perf/raw/early-16830-10.json",
+    "busyMs": 18.103,
+    "threadCpuMs": 17.362,
+    "keyWindowMs": 50.827,
+    "scriptingWallMs": 11.32,
+    "styleMs": 0.416,
+    "layoutMs": 0.68,
+    "moduleEvaluationMs": 1.077,
+    "paintMs": 0.331,
+    "outsideTasksMs": 32.331,
+    "largestTasks": [
+      {
+        "wallMs": 9.474,
+        "cpuMs": 9.235,
+        "offsetMs": -0.095
+      },
+      {
+        "wallMs": 1.213,
+        "cpuMs": 1.139,
+        "offsetMs": 18.056
+      },
+      {
+        "wallMs": 1.103,
+        "cpuMs": 1.014,
+        "offsetMs": 9.383
+      },
+      {
+        "wallMs": 0.706,
+        "cpuMs": 0.699,
+        "offsetMs": 47.111
+      }
+    ]
+  },
+  {
+    "file": "r6-slices/perf/raw/early-16830-11.json",
+    "busyMs": 17.299,
+    "threadCpuMs": 16.643,
+    "keyWindowMs": 50.54,
+    "scriptingWallMs": 10.856,
+    "styleMs": 0.461,
+    "layoutMs": 0.666,
+    "moduleEvaluationMs": 0.82,
+    "paintMs": 0.333,
+    "outsideTasksMs": 33.525,
+    "largestTasks": [
+      {
+        "wallMs": 9.214,
+        "cpuMs": 8.979,
+        "offsetMs": -0.099
+      },
+      {
+        "wallMs": 1.258,
+        "cpuMs": 1.23,
+        "offsetMs": 41.417
+      },
+      {
+        "wallMs": 0.928,
+        "cpuMs": 0.86,
+        "offsetMs": 9.472
+      },
+      {
+        "wallMs": 0.71,
+        "cpuMs": 0.706,
+        "offsetMs": 31.153
+      }
+    ]
+  },
+  {
+    "file": "r6-slices/perf/raw/early-16830-12.json",
+    "busyMs": 24.221,
+    "threadCpuMs": 23.552,
+    "keyWindowMs": 55.753,
+    "scriptingWallMs": 17.716,
+    "styleMs": 0.503,
+    "layoutMs": 0.519,
+    "moduleEvaluationMs": 7.433,
+    "paintMs": 0.199,
+    "outsideTasksMs": 31.278,
+    "largestTasks": [
+      {
+        "wallMs": 9.712,
+        "cpuMs": 9.461,
+        "offsetMs": -0.107
+      },
+      {
+        "wallMs": 4.721,
+        "cpuMs": 4.718,
+        "offsetMs": 11.481
+      },
+      {
+        "wallMs": 3.454,
+        "cpuMs": 3.45,
+        "offsetMs": 33.428
+      },
+      {
+        "wallMs": 1.926,
+        "cpuMs": 1.814,
+        "offsetMs": 16.332
+      }
+    ]
+  },
+  {
+    "file": "r6-slices/perf/raw/early-16830-13.json",
+    "busyMs": 15.966,
+    "threadCpuMs": 15.307,
+    "keyWindowMs": 51.238,
+    "scriptingWallMs": 10.381,
+    "styleMs": 0.356,
+    "layoutMs": 0.628,
+    "moduleEvaluationMs": 0.529,
+    "paintMs": 0.313,
+    "outsideTasksMs": 35.047,
+    "largestTasks": [
+      {
+        "wallMs": 9.015,
+        "cpuMs": 8.777,
+        "offsetMs": -0.088
+      },
+      {
+        "wallMs": 1.201,
+        "cpuMs": 1.12,
+        "offsetMs": 20.626
+      },
+      {
+        "wallMs": 0.898,
+        "cpuMs": 0.83,
+        "offsetMs": 8.93
+      },
+      {
+        "wallMs": 0.665,
+        "cpuMs": 0.661,
+        "offsetMs": 44.886
+      }
+    ]
+  },
+  {
+    "file": "r6-slices/perf/raw/early-16830-14.json",
+    "busyMs": 15.506,
+    "threadCpuMs": 14.79,
+    "keyWindowMs": 51.54,
+    "scriptingWallMs": 10.378,
+    "styleMs": 0.449,
+    "layoutMs": 0.666,
+    "moduleEvaluationMs": 0.284,
+    "paintMs": 0.325,
+    "outsideTasksMs": 35.391,
+    "largestTasks": [
+      {
+        "wallMs": 9.359,
+        "cpuMs": 9.126,
+        "offsetMs": -0.092
+      },
+      {
+        "wallMs": 1.233,
+        "cpuMs": 1.204,
+        "offsetMs": 42.558
+      },
+      {
+        "wallMs": 0.906,
+        "cpuMs": 0.837,
+        "offsetMs": 9.269
+      },
+      {
+        "wallMs": 0.48,
+        "cpuMs": 0.478,
+        "offsetMs": 33.84
+      }
+    ]
+  },
+  {
+    "file": "r6-slices/perf/raw/early-16830-15.json",
+    "busyMs": 16.383,
+    "threadCpuMs": 15.708,
+    "keyWindowMs": 52.532,
+    "scriptingWallMs": 10.496,
+    "styleMs": 0.53,
+    "layoutMs": 0.658,
+    "moduleEvaluationMs": 0.495,
+    "paintMs": 0.354,
+    "outsideTasksMs": 35.389,
+    "largestTasks": [
+      {
+        "wallMs": 9.263,
+        "cpuMs": 8.997,
+        "offsetMs": -0.232
+      },
+      {
+        "wallMs": 0.93,
+        "cpuMs": 0.858,
+        "offsetMs": 9.035
+      },
+      {
+        "wallMs": 0.588,
+        "cpuMs": 0.584,
+        "offsetMs": 24.086
+      },
+      {
+        "wallMs": 0.515,
+        "cpuMs": 0.511,
+        "offsetMs": 41.125
+      }
+    ]
+  },
+  {
+    "file": "r6-slices/perf/raw/early-16830-16.json",
+    "busyMs": 14.696,
+    "threadCpuMs": 14.179,
+    "keyWindowMs": 52.24,
+    "scriptingWallMs": 10.296,
+    "styleMs": 0.455,
+    "layoutMs": 0.482,
+    "moduleEvaluationMs": 0.22,
+    "paintMs": 0.202,
+    "outsideTasksMs": 37.177,
+    "largestTasks": [
+      {
+        "wallMs": 9.281,
+        "cpuMs": 9.046,
+        "offsetMs": -0.103
+      },
+      {
+        "wallMs": 1.038,
+        "cpuMs": 0.965,
+        "offsetMs": 15.806
+      },
+      {
+        "wallMs": 0.547,
+        "cpuMs": 0.543,
+        "offsetMs": 38.587
+      },
+      {
+        "wallMs": 0.541,
+        "cpuMs": 0.536,
+        "offsetMs": 17.844
+      }
+    ]
+  },
+  {
+    "file": "r6-slices/perf/raw/early-16830-17.json",
+    "busyMs": 20.169,
+    "threadCpuMs": 19.446,
+    "keyWindowMs": 54.671,
+    "scriptingWallMs": 13.775,
+    "styleMs": 0.349,
+    "layoutMs": 0.623,
+    "moduleEvaluationMs": 4.201,
+    "paintMs": 0.315,
+    "outsideTasksMs": 34.587,
+    "largestTasks": [
+      {
+        "wallMs": 8.837,
+        "cpuMs": 8.596,
+        "offsetMs": -0.093
+      },
+      {
+        "wallMs": 4.036,
+        "cpuMs": 4.033,
+        "offsetMs": 50.53
+      },
+      {
+        "wallMs": 1.205,
+        "cpuMs": 1.12,
+        "offsetMs": 19.482
+      },
+      {
+        "wallMs": 0.864,
+        "cpuMs": 0.796,
+        "offsetMs": 8.747
+      }
+    ]
+  }
+]

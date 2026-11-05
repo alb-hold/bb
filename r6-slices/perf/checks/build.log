@@ -1,0 +1,50 @@
+heavy.sh: waiting for lock held by pid 71958 (pnpm exec turbo run build --filter=@bb/app)
+• turbo 2.10.12
+
+   • Packages in scope: @bb/app
+   • Running build in 1 packages
+   • Remote caching disabled, using shared worktree cache
+
+@bb/plugin-build:generate: cache hit, replaying logs cac61967fdba660b
+@bb/templates:generate:templates: cache hit, replaying logs 420c02ee020bbaa4
+@bb/plugin-build:generate:
+@bb/plugin-build:generate: > @bb/plugin-build@0.0.1 generate /Users/alexandrebrandizzi/projects/bb-fork-wt/ui-polish-overhaul/packages/plugin-build
+@bb/plugin-build:generate: > node ./scripts/generate-plugin-theme.mjs && node ./scripts/generate-runtime-export-manifest.mjs
+@bb/plugin-build:generate:
+@bb/plugin-build:generate: plugin-theme.generated.ts up to date
+@bb/plugin-build:generate: host-tailwind.css up to date
+@bb/plugin-build:generate: host-tailwind-version.ts up to date
+@bb/plugin-build:generate: wrote /Users/alexandrebrandizzi/projects/bb-fork-wt/ui-polish-overhaul/packages/plugin-build/src/generated/runtime-export-manifest.generated.ts (react@19.3.0)
+@bb/templates:generate:templates:
+@bb/templates:generate:templates: > @bb/templates@0.0.1 generate:templates /Users/alexandrebrandizzi/.bb/plugins/environment-git-worktree/host-data/worktrees/thr_9aq4gsjmf7-1/bb-fork/packages/templates
+@bb/templates:generate:templates: > node ./scripts/generate-templates.mjs
+@bb/templates:generate:templates:
+@bb/process-utils:generate:profile-worker: cache hit, replaying logs 4b7a807373f23e31
+@bb/process-utils:generate:profile-worker:
+@bb/process-utils:generate:profile-worker: > @bb/process-utils@0.0.1 generate:profile-worker /Users/alexandrebrandizzi/projects/bb-fork/packages/process-utils
+@bb/process-utils:generate:profile-worker: > node scripts/generate-profile-worker.mjs
+@bb/process-utils:generate:profile-worker:
+@bb/templates:generate:plugin-scaffold: cache hit, replaying logs f6372830cb434cdd
+@bb/templates:generate:plugin-scaffold:
+@bb/templates:generate:plugin-scaffold: > @bb/templates@0.0.1 generate:plugin-scaffold /Users/alexandrebrandizzi/projects/bb-fork/packages/templates
+@bb/templates:generate:plugin-scaffold: > node ./scripts/generate-plugin-scaffold.mjs
+@bb/templates:generate:plugin-scaffold:
+@bb/app:build: cache hit, replaying logs 88b3742694893c65
+@bb/app:build:
+@bb/app:build: > @bb/app@0.0.1 build /Users/alexandrebrandizzi/projects/bb-fork-wt/ui-polish-overhaul/apps/app
+@bb/app:build: > node scripts/generate-pwa-icons.mjs && vite build --logLevel warn && node ../../scripts/precompress-app-dist.mjs dist
+@bb/app:build:
+@bb/app:build:
+@bb/app:build:  WARN  advancedChunks option is deprecated, please use codeSplitting instead.
+@bb/app:build:
+@bb/app:build: React Compiler cache: 1513 hits, 9 misses
+@bb/app:build: [plugin builtin:vite-reporter]
+@bb/app:build: (!) Some chunks are larger than 500 kB after minification. Consider:
+@bb/app:build: - Using dynamic import() to code-split the application
+@bb/app:build: - Use build.rolldownOptions.output.codeSplitting to improve chunking: https://rolldown.rs/reference/OutputOptions.codeSplitting
+@bb/app:build: - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+@bb/app:build: precompressed 532 files (532 br, 532 gzip) in /Users/alexandrebrandizzi/projects/bb-fork-wt/ui-polish-overhaul/apps/app/dist
+
+ Tasks:    5 successful, 5 total
+Cached:    5 cached, 5 total
+  Time:    476ms >>> FULL TURBO

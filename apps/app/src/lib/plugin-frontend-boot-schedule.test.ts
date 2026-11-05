@@ -1,5 +1,65 @@
-import { describe, expect, it, vi } from "vitest";
-import { requestBrowserIdle, scheduleDeferredPluginFrontendBoot } from "./plugin-frontend-boot-schedule";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  requestBrowserIdle,
+  scheduleDeferredPluginFrontendBoot,
+  whenHomeComposerInputOrTimeout,
+} from "./plugin-frontend-boot-schedule";
+
+describe("whenHomeComposerInputOrTimeout", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  function setup(pathname = "/", mounted = true) {
+    vi.useFakeTimers();
+    const composer = new EventTarget();
+    vi.stubGlobal("window", {
+      location: { pathname },
+      setTimeout: globalThis.setTimeout,
+      clearTimeout: globalThis.clearTimeout,
+    });
+    vi.stubGlobal("document", {
+      querySelector: () => mounted ? composer : null,
+    });
+    return composer;
+  }
+
+  it("holds deferred boot until input and clears its fallback", async () => {
+    const composer = setup();
+    const ready = vi.fn();
+    void whenHomeComposerInputOrTimeout().then(ready);
+    await vi.advanceTimersByTimeAsync(1_999);
+    composer.dispatchEvent(new Event("focus"));
+    expect(ready).not.toHaveBeenCalled();
+    composer.dispatchEvent(new Event("input"));
+    await Promise.resolve();
+    expect(ready).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("releases after two seconds without input and removes its listener", async () => {
+    const composer = setup();
+    const remove = vi.spyOn(composer, "removeEventListener");
+    const ready = vi.fn();
+    void whenHomeComposerInputOrTimeout().then(ready);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(ready).toHaveBeenCalledOnce();
+    expect(remove).toHaveBeenCalledWith("input", expect.any(Function));
+    composer.dispatchEvent(new Event("input"));
+    await Promise.resolve();
+    expect(ready).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    { path: "/threads/thread", mounted: true },
+    { path: "/", mounted: false },
+  ])("does not delay $path with mounted=$mounted", async ({ path, mounted }) => {
+    setup(path, mounted);
+    await whenHomeComposerInputOrTimeout();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+});
 
 function makeHarness() {
   let resolvePainted: () => void = () => {};
