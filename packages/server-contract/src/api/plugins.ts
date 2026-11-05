@@ -1,5 +1,6 @@
 import {
   jsonValueSchema,
+  pluginFrontendInventorySchema,
   pluginCatalogCategoryIdSchema,
   pluginMarketplaceCategorySchema,
   pluginMarketplaceCollectionIdSchema,
@@ -188,6 +189,7 @@ export const pluginAppStateSchema = z.object({
       sdkVersion: z.string(),
       compatible: z.boolean(),
       runtimeSlots: z.array(z.string()),
+      frontendInventory: pluginFrontendInventorySchema.optional(),
     })
     .nullable(),
 });

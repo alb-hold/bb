@@ -1,4 +1,4 @@
-import type { MouseEvent } from "react";
+import { useEffect, type MouseEvent } from "react";
 import { cn } from "../../lib/utils";
 
 const OVERLAY_TRIGGER_CLASS_NAME = "select-none";
@@ -62,7 +62,11 @@ export function preventOverlayTriggerSelection(event: MouseEvent): void {
 
 let lastInputModality: "pointer" | "keyboard" = "pointer";
 
-if (typeof document !== "undefined") {
+let listenersInstalled = false;
+
+function installInputModalityListeners(): void {
+  if (listenersInstalled || typeof document === "undefined") return;
+  listenersInstalled = true;
   document.addEventListener(
     "keydown",
     () => {
@@ -81,4 +85,8 @@ if (typeof document !== "undefined") {
 
 export function isLastInputKeyboard(): boolean {
   return lastInputModality === "keyboard";
+}
+
+export function useOverlayTriggerModality(): void {
+  useEffect(installInputModalityListeners, []);
 }

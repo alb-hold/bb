@@ -16,6 +16,7 @@ import * as tailwindMerge from "tailwind-merge";
 import * as classVarianceAuthority from "class-variance-authority";
 import * as sharedUiIcon from "@bb/shared-ui/icon";
 import { createDebouncedCallbackScheduler } from "@bb/domain";
+import type { PluginFrontendInventory } from "@bb/domain";
 import { BbHttpError } from "@bb/sdk/browser";
 import { isCancelledError, type QueryClient } from "@tanstack/react-query";
 import { markEnabledPluginListStale } from "@/hooks/cache-owners/plugin-cache-owner";
@@ -41,14 +42,12 @@ import {
   retainPluginCss,
 } from "./plugin-css";
 import { frontendPriorityPluginIds } from "./plugin-surface-providers";
-import { prefetchPluginModule } from "./plugin-module-preload";
 import {
   collectPluginAppRegistrations,
   isPluginAppDefinition,
 } from "./plugin-app-definition";
 import { setPluginAssetIcons } from "@bb/shared-ui/icon-registry";
 import { setPluginLogoUrls, type PluginLogoUrls } from "./plugin-logos";
-import { createRetryingModuleLoader } from "./plugin-frontend-lazy";
 import {
   requestBrowserIdle,
   whenRouteSurfaceMounted,
@@ -82,6 +81,7 @@ interface PluginFrontendBundle {
   sdkVersion: string;
   compatible: boolean;
   runtimeSlots: string[];
+  frontendInventory?: PluginFrontendInventory;
 }
 
 export interface PluginFrontendCandidate {
@@ -89,7 +89,7 @@ export interface PluginFrontendCandidate {
   bundle: PluginFrontendBundle;
 }
 
-type PluginFrontendRecord =
+export type PluginFrontendRecord =
   | {
       pluginId: string;
       status: "loaded";
@@ -137,60 +137,28 @@ export type PluginFrontendDiagnostic =
       lastFailure: null;
     };
 
-interface PluginFrontendLoaderDeps {
+export interface PluginFrontendLoaderDeps {
   importModule: (url: string) => Promise<unknown>;
   prefetchModule: (url: string) => void;
   warn: (message: string) => void;
 }
 
-export async function loadPluginFrontend(
-  { pluginId, bundle }: PluginFrontendCandidate,
+export function loadPluginFrontend(
+  candidate: PluginFrontendCandidate,
   deps: PluginFrontendLoaderDeps,
 ): Promise<PluginFrontendRecord> {
-  if (!bundle.compatible) {
-    deps.warn(
-      `[plugin:${pluginId}] frontend bundle was built against plugin SDK ${bundle.sdkVersion} (incompatible major) — skipping until the plugin is updated`,
+  if (deferredHost !== null)
+    return deferredHost.loadPluginFrontend(
+      candidate,
+      deps,
+      installPluginRuntime,
     );
-    return {
-      pluginId,
-      status: "needs-update",
-      sdkMajor: bundle.sdkMajor,
-      sdkVersion: bundle.sdkVersion,
-    };
-  }
-  try {
-    const runtimeGroups = lazyRuntimeGroups.filter((group) =>
-      group.slots.some((slot) => bundle.runtimeSlots.includes(slot)),
-    );
-    if (runtimeGroups.length > 0) {
-      const slotsProvided = Promise.all(
-        runtimeGroups.map(async (group) => {
-          const slots = await group.load();
-          Object.assign(installPluginRuntime(), slots);
-        }),
-      );
-      deps.prefetchModule(bundle.jsUrl);
-      await slotsProvided;
-    }
-    const mod = await deps.importModule(bundle.jsUrl);
-    if (typeof mod !== "object" || mod === null) {
-      throw new Error("bundle did not evaluate to a module namespace");
-    }
-    return {
-      pluginId,
-      status: "loaded",
-      module: mod as Record<string, unknown>,
-    };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    deps.warn(
-      `[plugin:${pluginId}] frontend bundle failed to load: ${message}`,
-    );
-    return { pluginId, status: "failed", error: message };
-  }
+  return demandHost().then((host) =>
+    host.loadPluginFrontend(candidate, deps, installPluginRuntime),
+  );
 }
 
-interface BbPluginRuntime {
+export interface BbPluginRuntime {
   react: unknown;
   reactDom: unknown;
   reactDomClient: unknown;
@@ -248,55 +216,6 @@ export function installPluginRuntime(): BbPluginRuntime {
   };
   return host.__bbPluginRuntime;
 }
-
-const lazyRuntimeGroups = [
-  {
-    slots: ["radixAlertDialog"],
-    load: createRetryingModuleLoader(async () => ({
-      radixAlertDialog: await import("@radix-ui/react-alert-dialog"),
-    })),
-  },
-  {
-    slots: ["radixHoverCard"],
-    load: createRetryingModuleLoader(async () => ({
-      radixHoverCard: await import("@radix-ui/react-hover-card"),
-    })),
-  },
-  {
-    slots: ["radixMenubar"],
-    load: createRetryingModuleLoader(async () => ({
-      radixMenubar: await import("@radix-ui/react-menubar"),
-    })),
-  },
-  {
-    slots: ["radixNavigationMenu"],
-    load: createRetryingModuleLoader(async () => ({
-      radixNavigationMenu: await import("@radix-ui/react-navigation-menu"),
-    })),
-  },
-  {
-    slots: ["radixSelect"],
-    load: createRetryingModuleLoader(async () => ({
-      radixSelect: await import("@radix-ui/react-select"),
-    })),
-  },
-  {
-    slots: ["vaul"],
-    load: createRetryingModuleLoader(async () => ({
-      vaul: await import("vaul"),
-    })),
-  },
-  {
-    slots: ["pierreDiffs", "pierreDiffsReact"],
-    load: createRetryingModuleLoader(async () => {
-      const { pierreRuntimeSlots } = await import("./plugin-pierre-runtime");
-      return pierreRuntimeSlots;
-    }),
-  },
-] satisfies {
-  slots: (keyof BbPluginRuntime)[];
-  load: () => Promise<Partial<BbPluginRuntime>>;
-}[];
 
 async function fetchEnabledPluginList(queryClient: QueryClient) {
   for (;;) {
@@ -410,7 +329,7 @@ function appendPluginImportRetry(url: string, retryCount: number): string {
   return `${url}${url.includes("?") ? "&" : "?"}bb_retry=${retryCount}`;
 }
 
-interface PluginFrontendReconcileState {
+export interface PluginFrontendReconcileState {
   records: Map<string, PluginFrontendRecord>;
   appliedHashes: Map<string, string>;
   failedImportAttempts: Map<string, { hash: string; count: number }>;
@@ -737,6 +656,11 @@ async function activateContentScripts(
   }
 }
 
+let deferredHost: typeof import("./plugin-frontend-demand") | null = null;
+async function demandHost() {
+  return (deferredHost ??= await import("./plugin-frontend-demand"));
+}
+
 export async function reconcilePluginFrontends(
   state: PluginFrontendReconcileState,
   deps: PluginFrontendReconcileDeps,
@@ -764,7 +688,17 @@ export async function reconcilePluginFrontends(
   }
   let closeSlotBatch = deps.beginSlotBatch();
   try {
-    await reconcileCandidates(candidates, state, deps, () => {
+    const eager =
+      candidates.some(
+        (candidate) => candidate.bundle.frontendInventory !== undefined,
+      ) || deferredHost !== null
+        ? await (
+            await demandHost()
+          ).selectEagerFrontends(candidates, state, deps, (candidate) =>
+            reconcileCandidate(candidate, state, deps),
+          )
+        : candidates;
+    await reconcileCandidates(eager, state, deps, () => {
       closeSlotBatch();
       closeSlotBatch = deps.beginSlotBatch();
     });
@@ -1078,6 +1012,7 @@ export async function disposePluginFrontends(
     deps.applyCss(pluginId, null);
   }
   state.records.clear();
+  deferredHost?.disposeDeferredFrontends(state, deps);
   state.appliedHashes.clear();
   state.failedImportAttempts.clear();
   state.activeGenerations.clear();
@@ -1144,7 +1079,11 @@ const browserReconcileDeps: PluginFrontendReconcileDeps = {
   importRetryDelaysMs: PLUGIN_FRONTEND_IMPORT_RETRY_DELAYS_MS,
   applyCss: applyPluginCss,
   prefetchCss: prefetchPluginCss,
-  prefetchModule: prefetchPluginModule,
+  prefetchModule: (url) => {
+    void demandHost()
+      .then((host) => host.prefetchPluginModule(url))
+      .catch(() => {});
+  },
   retainCss: retainPluginCss,
   priorityPluginIds: () => frontendPriorityPluginIds(window.location.pathname),
   waitForDeferredLoad: async () => {
@@ -1184,41 +1123,18 @@ export function subscribePluginFrontendDiagnostics(
   };
 }
 
-interface PluginFrontendPageLifecycleDeps {
-  restore: () => void;
-  teardown: () => void;
-}
-
-export function createPluginFrontendPageLifecycle(
-  deps: PluginFrontendPageLifecycleDeps,
-): {
-  onPageHide: (event: { persisted: boolean }) => void;
-  onPageShow: (event: { persisted: boolean }) => void;
-} {
-  return {
-    onPageHide(event) {
-      if (event.persisted) return;
-      deps.teardown();
-    },
-    onPageShow(event) {
-      if (!event.persisted) return;
-      deps.restore();
-    },
-  };
-}
-
 let pageLifecycleListenersInstalled = false;
 
-function installPluginFrontendPageLifecycle(): void {
+async function installPluginFrontendPageLifecycle(): Promise<void> {
   if (pageLifecycleListenersInstalled) return;
-  pageLifecycleListenersInstalled = true;
-  const lifecycle = createPluginFrontendPageLifecycle({
+  const lifecycle = (await demandHost()).createPluginFrontendPageLifecycle({
     restore: () => schedulePluginFrontendReconcile(),
     teardown: () => {
       setPluginFrontendReconcilePending(true);
       void disposePluginFrontends(state, browserReconcileDeps);
     },
   });
+  pageLifecycleListenersInstalled = true;
   window.addEventListener("pagehide", (event) => lifecycle.onPageHide(event));
   window.addEventListener("pageshow", (event) => lifecycle.onPageShow(event));
 }
@@ -1226,7 +1142,7 @@ function installPluginFrontendPageLifecycle(): void {
 export function bootPluginFrontends(): Promise<void> {
   bootPromise ??= (async () => {
     installPluginRuntime();
-    installPluginFrontendPageLifecycle();
+    await installPluginFrontendPageLifecycle();
     await reconcilePluginFrontends(state, browserReconcileDeps);
     publishLoadFailed();
   })().catch((error: unknown) => {

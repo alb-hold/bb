@@ -19,6 +19,7 @@ import { renameIntoPlace } from "./rename-into-place.js";
 import { RUNTIME_EXPORT_MANIFEST } from "./generated/runtime-export-manifest.generated.js";
 import type { PluginBuildToolchain } from "./toolchain.js";
 import { createPluginArtifactMeta } from "./plugin-artifact-meta.js";
+import { buildFrontendInventory } from "./frontend-inventory.js";
 import {
   isRecord,
   readPluginPackageJsonFile,
@@ -587,6 +588,16 @@ export async function buildPluginApp(
       if (!isRecord(error) || error.code !== "ENOENT") throw error;
     }
     const runtimeSlots = bundledRuntimeSlots(bundle.metafile);
+    const inventoryStarted = performance.now();
+    const frontendInventory = await buildFrontendInventory({
+      rootDir,
+      jsPath: stagedJsPath,
+      runtimeSlots,
+      esbuild,
+    });
+    console.info(
+      `[plugin:${pluginId}] frontend inventory ${frontendInventory === null ? "eager" : "settings-only"} (${Math.round(performance.now() - inventoryStarted)}ms)`,
+    );
     const bundledInputs: ReadonlySet<string> =
       dependencySources.length > 0
         ? await bundledInputPaths(bundle.metafile, rootDir)
@@ -617,6 +628,7 @@ export async function buildPluginApp(
             bbVersion,
           }),
           runtimeSlots,
+          frontendInventory,
         },
         null,
         2,

@@ -58,7 +58,7 @@ function makeDeferredImports() {
       const [url, resolve] = [...resolvers][0]!;
       resolvers.delete(url);
       resolve();
-      for (let i = 0; i < 10; i += 1) await Promise.resolve();
+      await vi.dynamicImportSettled();
     },
   };
 }
@@ -125,17 +125,17 @@ describe("reconcilePluginFrontends load scheduling", () => {
           new Promise<void>((resolve) => idle.push(resolve)),
       }),
     );
-    for (let i = 0; i < 20; i += 1) await Promise.resolve();
+    await vi.dynamicImportSettled();
     expect(imports.started).toHaveLength(0);
     expect(idle).toHaveLength(1);
     for (let count = 1; count <= 3; count += 1) {
       idle.shift()!();
-      for (let i = 0; i < 20; i += 1) await Promise.resolve();
+      await vi.dynamicImportSettled();
       expect(imports.started).toHaveLength(count);
       expect(imports.pending()).toBe(1);
       expect(idle).toHaveLength(0);
       await imports.resolveNext();
-      for (let i = 0; i < 20; i += 1) await Promise.resolve();
+      await vi.dynamicImportSettled();
       expect(idle).toHaveLength(count < 3 ? 1 : 0);
     }
     await done;
@@ -159,7 +159,7 @@ describe("reconcilePluginFrontends load scheduling", () => {
         setRegistrations: registrations,
       }),
     );
-    for (let i = 0; i < 10; i += 1) await Promise.resolve();
+    await vi.dynamicImportSettled();
     expect(imports.started).toEqual([
       "/api/v1/plugins/composer/assets/app.js?h=h",
     ]);
@@ -172,7 +172,7 @@ describe("reconcilePluginFrontends load scheduling", () => {
       getPluginSlotSnapshot().homepageSections.map((slot) => slot.pluginId),
     ).toEqual(["composer"]);
     resume();
-    for (let i = 0; i < 10; i += 1) await Promise.resolve();
+    await vi.dynamicImportSettled();
     await imports.resolveNext();
     await done;
     expect(registrations.mock.calls.map(([id]) => id)).toEqual([
@@ -203,7 +203,7 @@ describe("reconcilePluginFrontends load scheduling", () => {
       },
     );
     const done = reconcilePluginFrontends(state, deps);
-    for (let i = 0; i < 10; i += 1) await Promise.resolve();
+    await vi.dynamicImportSettled();
 
     expect(imports.started).toEqual([
       "/api/v1/plugins/panel/assets/app.js?h=h",
@@ -255,7 +255,7 @@ describe("reconcilePluginFrontends load scheduling", () => {
         },
       ),
     );
-    for (let i = 0; i < 10; i += 1) await Promise.resolve();
+    await vi.dynamicImportSettled();
     expect(events).toEqual(["open batch"]);
 
     await imports.resolveNext();
@@ -299,7 +299,7 @@ describe("reconcilePluginFrontends load scheduling", () => {
         },
       ),
     );
-    for (let i = 0; i < 10; i += 1) await Promise.resolve();
+    await vi.dynamicImportSettled();
     expect(prefetchModule).not.toHaveBeenCalled();
 
     await imports.resolveNext();

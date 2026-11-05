@@ -26,7 +26,8 @@ vi.mock("@/lib/split-prefetch", () => ({
   holdSplitPreloads: () => mocks.releaseSplitPreloads,
 }));
 
-vi.mock("@/lib/plugin-frontend-lazy", () => ({
+vi.mock("@/lib/plugin-frontend-lazy", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/plugin-frontend-lazy")>()),
   bootPluginFrontends: mocks.bootPluginFrontends,
   preloadPluginFrontend: mocks.preloadPluginFrontend,
   whenPriorityPluginFrontendsLoaded: () => new Promise(() => {}),
@@ -41,7 +42,10 @@ import {
   usePluginFrontendBoot,
 } from "./usePluginFrontendBoot";
 
-const flushMicrotasks = () => act(async () => {});
+const flushMicrotasks = () =>
+  act(async () => {
+    await vi.dynamicImportSettled();
+  });
 
 beforeEach(() => {
   appQueryClient.setQueryData(
@@ -111,6 +115,43 @@ describe("usePluginFrontendBoot", () => {
       document.head.querySelectorAll("link[data-bb-plugin-css-prefetch]"),
     ).toHaveLength(3);
     expect(mocks.bootPluginFrontends).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not prefetch a settings-only bundle even when it is a remembered priority", async () => {
+    appQueryClient.setQueryData(
+      pluginListQueryOptions({ enabled: true }).queryKey,
+      [
+        makeInstalledPlugin({
+          id: "bb--composer",
+          enabled: true,
+          status: "running",
+          app: {
+            bundle: {
+              jsUrl: "/settings-only.js",
+              cssUrl: "/settings-only.css",
+              jsBytes: 100,
+              hash: "settings",
+              sdkMajor: 0,
+              sdkVersion: "0.0.0",
+              compatible: true,
+              runtimeSlots: [],
+              frontendInventory: {
+                version: 1,
+                settingsSections: [{ id: "settings" }],
+              },
+            },
+          },
+        }),
+      ],
+    );
+    renderHook(() => usePluginFrontendBoot());
+    await flushMicrotasks();
+    expect(
+      document.head.querySelector('link[href="/settings-only.js"]'),
+    ).toBeNull();
+    expect(
+      document.head.querySelector('link[href="/settings-only.css"]'),
+    ).toBeNull();
   });
 
   it("boots immediately on a plugin panel route: the plugin is the page", async () => {

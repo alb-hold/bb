@@ -16,6 +16,7 @@ import {
 import {
   blurActiveKeyboardInputBeforeOverlayOpen,
   isLastInputKeyboard,
+  useOverlayTriggerModality,
 } from "./overlay-trigger.js";
 import { useCloseWhenAnchorDetaches } from "./overlay-anchor.js";
 
@@ -35,12 +36,13 @@ interface CompactSelectContextValue {
 
 const CompactSelectContext =
   React.createContext<CompactSelectContextValue | null>(null);
-const SelectOverlayContext =
-  React.createContext<ResponsiveOverlayContextValue>({
+const SelectOverlayContext = React.createContext<ResponsiveOverlayContextValue>(
+  {
     isCompactViewport: false,
     open: false,
     onOpenChange: () => {},
-  });
+  },
+);
 const CompactSelectListContext = React.createContext(false);
 const CompactSelectGroupLabelContext = React.createContext<string | undefined>(
   undefined,
@@ -175,6 +177,7 @@ const SelectTrigger = React.forwardRef<
     { className, children, onClick, onKeyDown, onPointerDown, ...props },
     ref,
   ) => {
+    useOverlayTriggerModality();
     const compact = React.useContext(CompactSelectContext);
     const overlay = React.useContext(SelectOverlayContext);
     const anchorRef = useCloseWhenAnchorDetaches(

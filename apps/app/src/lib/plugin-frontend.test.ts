@@ -4,11 +4,11 @@ import * as jsxRuntime from "react/jsx-runtime";
 import clsx from "clsx";
 import { Icon } from "@bb/shared-ui/icon";
 import {
-  createPluginFrontendPageLifecycle,
   installPluginRuntime,
   loadPluginFrontend,
   type PluginFrontendCandidate,
 } from "./plugin-frontend";
+import { createPluginFrontendPageLifecycle } from "./plugin-frontend-demand";
 import { pluginSdkAppImplementation } from "./plugin-sdk-app-impl";
 import { useSidebarThreadPullRequest } from "./plugin-sidebar-hooks";
 

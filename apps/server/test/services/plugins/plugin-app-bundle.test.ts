@@ -106,6 +106,30 @@ describe("plugin app bundles (build policy, inventory, asset routes)", () => {
     await harness.cleanup();
   });
 
+  it("exposes build-recorded settings sections before the frontend is imported", async () => {
+    const rootDir = join(
+      harness.config.dataDir,
+      "fixtures",
+      "bb-plugin-settings-inventory",
+    );
+    await writeAppPluginFixture(rootDir, {
+      name: "bb-plugin-settings-inventory",
+      appSource: `export default { __bbPluginApp: true, setup(app) { app.slots.settingsSection({ id: "configuration", title: "Configuration", component() { return null; } }); } };`,
+    });
+    const entry = await harness.pluginService.installPath(rootDir);
+    expect(entry.status).toBe("running");
+    expect(entry.app.bundle?.frontendInventory).toEqual({
+      version: 1,
+      settingsSections: [{ id: "configuration", title: "Configuration" }],
+    });
+    const response = await harness.app.request(`${BASE}/api/v1/plugins`);
+    const body = await response.json();
+    expect(
+      body.plugins.find((plugin: { id: string }) => plugin.id === entry.id)?.app
+        .bundle.frontendInventory,
+    ).toEqual(entry.app.bundle?.frontendInventory);
+  });
+
   it("builds path installs at install time and serves hash-cached assets", async () => {
     const rootDir = join(harness.config.dataDir, "fixtures", "bb-plugin-appy");
     await writeAppPluginFixture(rootDir, {

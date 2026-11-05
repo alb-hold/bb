@@ -2,7 +2,11 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import semver from "semver";
-import { PLUGIN_SDK_MAJOR } from "@bb/domain";
+import {
+  PLUGIN_SDK_MAJOR,
+  parsePluginFrontendInventory,
+  type PluginFrontendInventory,
+} from "@bb/domain";
 import {
   assertValidPluginCompactIconSvg,
   assertValidPluginIconSvg,
@@ -21,6 +25,7 @@ interface PluginArtifactMeta {
     pluginSdkVersion: string;
   };
   runtimeSlots?: string[];
+  frontendInventory?: PluginFrontendInventory;
 }
 
 interface PluginArtifactMetaParseResult {
@@ -37,6 +42,7 @@ interface PluginAppBundleInfo {
   sdkVersion: string;
   compatible: boolean;
   runtimeSlots: string[];
+  frontendInventory?: PluginFrontendInventory;
 }
 
 interface PluginAppState {
@@ -202,6 +208,9 @@ function parsePluginArtifactMeta(raw: string): PluginArtifactMetaParseResult {
     };
   }
   let runtimeSlots: string[] | undefined;
+  const frontendInventory = parsePluginFrontendInventory(
+    meta.frontendInventory,
+  );
   if ("runtimeSlots" in meta) {
     if (
       !Array.isArray(meta.runtimeSlots) ||
@@ -224,6 +233,7 @@ function parsePluginArtifactMeta(raw: string): PluginArtifactMetaParseResult {
         sdkMajor: meta.sdkMajor,
         sdkVersion: meta.sdkVersion,
         ...(runtimeSlots !== undefined ? { runtimeSlots } : {}),
+        ...(frontendInventory !== null ? { frontendInventory } : {}),
       },
       error: null,
     };
@@ -281,6 +291,7 @@ function parsePluginArtifactMeta(raw: string): PluginArtifactMetaParseResult {
         pluginSdkVersion: builtWith.pluginSdkVersion,
       },
       ...(runtimeSlots !== undefined ? { runtimeSlots } : {}),
+      ...(frontendInventory !== null ? { frontendInventory } : {}),
     },
     error: null,
   };
@@ -389,6 +400,9 @@ export async function loadPluginAppBundle(
         sdkVersion: meta.sdkVersion,
         compatible: meta.sdkMajor === PLUGIN_SDK_MAJOR,
         runtimeSlots: meta.runtimeSlots ?? ALL_RUNTIME_SLOTS,
+        ...(meta.frontendInventory !== undefined
+          ? { frontendInventory: meta.frontendInventory }
+          : {}),
       },
     },
     assets: { jsPath, css, hash },

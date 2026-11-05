@@ -7,6 +7,7 @@ import {
   blurActiveKeyboardInputBeforeOverlayClose,
   blurActiveKeyboardInputWithin,
   getOverlayTriggerClassName,
+  useOverlayTriggerModality,
   preventOverlayTriggerSelection,
 } from "./overlay-trigger.js";
 import { useIsCompactViewport } from "./hooks/use-compact-viewport.js";
@@ -175,6 +176,7 @@ export const MobileTrigger = React.forwardRef<
     },
     ref,
   ) => {
+    useOverlayTriggerModality();
     const triggerClassName = getOverlayTriggerClassName(className);
     const handleClick: React.MouseEventHandler<HTMLButtonElement> = (e) => {
       onClick?.(e);
