@@ -137,7 +137,10 @@ export const ExecutionControls = memo(function ExecutionControls({
     handoff !== undefined;
 
   return (
-    <div className="flex min-w-0 max-w-full flex-wrap max-md:flex-nowrap max-md:flex-col max-md:items-start max-md:gap-y-0 items-center gap-x-1 gap-y-2">
+    <div
+      data-execution-controls=""
+      className="flex min-w-0 max-w-full flex-wrap max-md:flex-nowrap max-md:flex-col max-md:items-start max-md:gap-y-0 items-center gap-x-1 gap-y-2"
+    >
       {pending ? (
         <div
           role="status"
@@ -176,10 +179,7 @@ export const ExecutionControls = memo(function ExecutionControls({
           agentSections={agentOptions?.sections}
           onAgentOptionChange={agentOptions?.onChange}
           muted
-          className={cn(
-            "min-w-0 overflow-hidden",
-            pending !== undefined && "w-52",
-          )}
+          className="min-w-0 overflow-hidden"
           disabled={disabled}
           handoff={handoff}
         />
@@ -212,15 +212,7 @@ export const ExecutionControls = memo(function ExecutionControls({
               )}
             >
               <Icon name={choice.icon} className="size-3.5" />
-              <span
-                className={cn(
-                  choice.value !==
-                    (nativeTerminal.enabled ? "terminal" : "chat") &&
-                    "max-md:hidden",
-                )}
-              >
-                {choice.label}
-              </span>
+              <span>{choice.label}</span>
             </ToggleGroupItem>
           ))}
         </ToggleGroup>
