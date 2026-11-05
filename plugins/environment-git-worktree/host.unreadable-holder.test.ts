@@ -183,14 +183,11 @@ async function expectKept(
   expect(
     await git(fixture.sourcePath, "worktree", "list", "--porcelain"),
   ).toContain(await realpath(fixture.path));
-  const inspected = await fixture.harness.experimental_call("inspect", {
-    pathKey: input.pathKey,
-    path: input.path,
-  });
-  expect(inspected).toMatchObject({
+  const retried = await fixture.harness.experimental_call("remove", input);
+  expect(retried).toMatchObject({
     status: "retained",
     message: expect.stringContaining(
-      "could not check which programs are using it",
+      `process ${holderPid}`,
     ),
   });
   expect(isPidAlive(holderPid)).toBe(true);
