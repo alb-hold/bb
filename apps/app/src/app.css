@@ -881,6 +881,7 @@
     [data-sidebar="trigger"],
     [data-promptbox-plus-control] button,
     [data-compact-touch="voice"],
+    [data-compact-touch="picker"],
     [data-model-reasoning-trigger]
   ) {
     position: relative;

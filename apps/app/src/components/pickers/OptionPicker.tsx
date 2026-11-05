@@ -36,6 +36,7 @@ export interface PickerOption<T extends string> {
 
 interface OptionPickerProps<T extends string> {
   label: string;
+  iconOnly?: boolean;
   notice?: ReactNode;
   leading?: ReactNode;
   value?: T;
@@ -61,6 +62,7 @@ interface OptionPickerProps<T extends string> {
 
 export function OptionPicker<T extends string>({
   label,
+  iconOnly = false,
   notice,
   leading,
   value,
@@ -99,7 +101,8 @@ export function OptionPicker<T extends string>({
       type="button"
       variant="ghost"
       size="sm"
-      aria-label={label}
+      aria-label={iconOnly ? `${label}: ${selectedLabel}` : label}
+      data-compact-touch={iconOnly ? "picker" : undefined}
       disabled={disabled}
       className={cn(
         OPTION_BASE_CLASS_NAME,
@@ -114,7 +117,7 @@ export function OptionPicker<T extends string>({
     >
       <span className={OPTION_TRIGGER_CONTENT_CLASS_NAME} title={selectedTitle}>
         {leading ?? (SelectedIcon ? <SelectedIcon className="size-3.5 shrink-0" /> : null)}
-        {selectedCompactLabel ? (
+        {iconOnly ? null : selectedCompactLabel ? (
           <>
             <span className="min-w-0 truncate" data-promptbox-full-label="">
               {selectedLabel}
@@ -127,7 +130,7 @@ export function OptionPicker<T extends string>({
           <span className="min-w-0 truncate">{selectedLabel}</span>
         )}
       </span>
-      {disabled && !showChevronWhenDisabled ? null : (
+      {iconOnly || (disabled && !showChevronWhenDisabled) ? null : (
         <Icon
           name="ChevronDown"
           className={cn(

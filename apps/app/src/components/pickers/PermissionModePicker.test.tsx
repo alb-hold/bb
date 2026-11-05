@@ -1,10 +1,34 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PermissionModePicker } from "./PermissionModePicker";
 
 const originalWidth = window.innerWidth;
+
+it.each(["auto", "accept-edits", undefined] as const)("hides the compact warning for %s", (value) => {
+  render(<PermissionModePicker compactWarningOnly options={permissionOptions} value={value} supported onChange={() => {}} />);
+  expect(screen.queryByRole("button")).toBeNull();
+});
+
+it("hides the compact warning while pending, including a previously resolved full mode", () => {
+  const props = { compactWarningOnly: true, options: permissionOptions, supported: true, onChange: () => {} };
+  const view = render(<PermissionModePicker {...props} pending value="full" />);
+  expect(screen.queryByRole("button")).toBeNull();
+  view.rerender(<PermissionModePicker {...props} value="full" />);
+  expect(screen.getByRole("button", { name: "Permission mode: Full Access" })).toBeTruthy();
+  view.rerender(<PermissionModePicker {...props} pending value="auto" />);
+  expect(screen.queryByRole("button")).toBeNull();
+});
+
+it("opens the permission picker from the compact full access warning", async () => {
+  render(<PermissionModePicker compactWarningOnly options={permissionOptions} value="full" supported onChange={() => {}} />);
+  const trigger = screen.getByRole("button", { name: "Permission mode: Full Access" });
+  expect(trigger.getAttribute("data-compact-touch")).toBe("picker");
+  expect(trigger.querySelector('[data-icon="AlertTriangle"]')).not.toBeNull();
+  fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false, pointerType: "mouse" });
+  expect(await screen.findByRole("menuitem", { name: /Approve/ })).toBeTruthy();
+});
 
 const permissionOptions = [
   { value: "accept-edits", label: "Accept Edits" },
