@@ -255,7 +255,9 @@ function prepareMobileTerminal(): void {
   );
 }
 
-function renderMobileTerminal(): ReturnType<typeof makeTerminalSession> {
+function renderMobileTerminal(
+  native = false,
+): ReturnType<typeof makeTerminalSession> {
   const session = makeTerminalSession({
     id: "term_mobile_paste",
     status: "running",
@@ -265,7 +267,17 @@ function renderMobileTerminal(): ReturnType<typeof makeTerminalSession> {
   render(
     <MemoryRouter>
       <AppCommandProvider>
-        <ThreadTerminalView autoFocus={false} isPanelOpen session={session} />
+        {native ? (
+          <header>
+            <button aria-label="Search terminal output" />
+          </header>
+        ) : null}
+        <ThreadTerminalView
+          autoFocus={false}
+          isPanelOpen
+          session={session}
+          attentionShownAsBanner={native}
+        />
       </AppCommandProvider>
     </MemoryRouter>,
   );
@@ -280,6 +292,52 @@ function scrollTerminalAsUser(terminal: Terminal, line: number): void {
 }
 
 describe("ThreadTerminalView terminal viewport and focus", () => {
+  it.each([true, false])(
+    "leaves one header search action in a native pane with touch=%s",
+    async (touch) => {
+      prepareMobileTerminal();
+      testState.touchEnabled = touch;
+      vi.spyOn(FitAddon.prototype, "proposeDimensions").mockReturnValue({
+        cols: 40,
+        rows: 12,
+      });
+      renderMobileTerminal(true);
+      const textarea = await waitFor(() => {
+        const element = document.querySelector<HTMLTextAreaElement>(
+          ".xterm-helper-textarea",
+        );
+        expect(element).not.toBeNull();
+        return element!;
+      });
+      textarea.focus();
+      await waitFor(() => {
+        fireEvent.keyDown(textarea, {
+          key: "f",
+          ctrlKey: true,
+          shiftKey: true,
+        });
+        expect(
+          screen.getByRole("searchbox", { name: "Find in terminal" }),
+        ).toBeTruthy();
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Close search" }));
+      expect(
+        screen.getAllByRole("button", { name: "Search terminal output" }),
+      ).toHaveLength(1);
+      if (touch) {
+        expect(
+          screen
+            .getByRole("group", { name: "Terminal keyboard controls" })
+            .classList.contains("py-0"),
+        ).toBe(true);
+        expect(
+          screen
+            .getByRole("button", { name: "Escape" })
+            .classList.contains("h-11"),
+        ).toBe(true);
+      }
+    },
+  );
   it.each([360, 390])(
     "starts compact terminals at 13px at %s px",
     async (width) => {
