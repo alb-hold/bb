@@ -113,6 +113,7 @@ interface RemoveWorktreeArgs {
           entries: readonly string[],
         ) => Promise<void>;
         beforeEntryRemoval?: (entry: string) => Promise<void>;
+        beforeEntryRename?: (entry: string) => Promise<void>;
         afterEntryCheck?: (entry: string) => Promise<void>;
         afterEntryQuarantined?: (
           entry: string,
@@ -988,6 +989,7 @@ async function removeRegisteredWorktree(
         },
         afterDirectoryListed: args.testHooks?.afterDirectoryListed,
         beforeEntryRemoval: args.testHooks?.beforeEntryRemoval,
+        beforeEntryRename: args.testHooks?.beforeEntryRename,
         afterEntryCheck: args.testHooks?.afterEntryCheck,
         afterEntryQuarantined: args.testHooks?.afterEntryQuarantined,
       });
@@ -1008,6 +1010,7 @@ async function removeRegisteredWorktree(
         },
         afterDirectoryListed: args.testHooks?.afterDirectoryListed,
         beforeEntryRemoval: args.testHooks?.beforeEntryRemoval,
+        beforeEntryRename: args.testHooks?.beforeEntryRename,
         afterEntryCheck: args.testHooks?.afterEntryCheck,
         afterEntryQuarantined: args.testHooks?.afterEntryQuarantined,
       });

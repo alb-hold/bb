@@ -226,6 +226,7 @@ async function remove(
       entries: readonly string[],
     ) => Promise<void>;
     beforeEntryRemoval?: (entry: string) => Promise<void>;
+    beforeEntryRename?: (entry: string) => Promise<void>;
     afterEntryCheck?: (entry: string) => Promise<void>;
     afterEntryQuarantined?: (
       entry: string,
@@ -622,16 +623,26 @@ describe("real worktree teardown preservation", () => {
     ).resolves.toBe("during\n");
   });
 
-  it("retains a replacement entry created between inspection and unlink", async () => {
+  it("retains a same-size edit made after entry check and before rename", async () => {
     const worktree = await makeWorktree();
     useProcReaderForTests(descendantsOnly(hostProc, -1));
+    const entryPath = path.join(worktree.path, ".gitignore");
+    const originalStat = await fs.stat(entryPath);
     await expect(
       remove(worktree, {
         beforeEntryRename: async (entry) => {
-          if (!entry.endsWith("/README.md")) return;
-          const saved = path.join(path.dirname(entry), "saved-original");
-          await fs.rename(entry, saved);
-          await writeFile(entry, "replacement survives\n");
+          if (path.basename(entry) !== ".gitignore") return;
+          const handle = await fs.open(entry, "r+");
+          try {
+            await handle.writeFile(".xxx\n");
+          } finally {
+            await handle.close();
+          }
+          await utimes(
+            entry,
+            originalStat.atimeMs / 1000,
+            originalStat.mtimeMs / 1000,
+          );
         },
       }),
     ).rejects.toMatchObject({ code: "worktree_preserved" });
@@ -639,11 +650,11 @@ describe("real worktree teardown preservation", () => {
       access(path.join(worktree.path, ".git")),
     ).resolves.toBeUndefined();
     await expect(
-      readFile(path.join(worktree.path, "README.md"), "utf8"),
-    ).resolves.toBe("replacement survives\n");
-    await expect(
-      readFile(path.join(worktree.path, "saved-original"), "utf8"),
-    ).resolves.toBe("published\n");
+      readFile(entryPath, "utf8"),
+    ).resolves.toBe(".xxx\n");
+    await expect(git(worktree.path, "rev-parse", "--git-dir")).resolves.toMatch(
+      /worktrees/u,
+    );
   });
 
   it("retains a file modified after quarantine even when its mtime is restored", async () => {
