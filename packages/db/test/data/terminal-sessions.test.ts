@@ -357,7 +357,7 @@ describe("terminal sessions", () => {
     );
   });
 
-  it("marks a terminal dirty on first user input only", () => {
+  it("records the latest user input time", () => {
     const fixture = setup();
     const terminal = createStartingTerminal(fixture);
 
@@ -377,12 +377,16 @@ describe("terminal sessions", () => {
       lastUserInputAt: 10,
       updatedAt: 10,
     });
-    expect(secondInput).toBeNull();
+    expect(secondInput).toMatchObject({
+      id: terminal.id,
+      lastUserInputAt: 20,
+      updatedAt: 20,
+    });
     expect(listTerminalSessionsByThread(fixture.db, fixture.thread.id)).toEqual(
       [
         expect.objectContaining({
           id: terminal.id,
-          lastUserInputAt: 10,
+          lastUserInputAt: 20,
         }),
       ],
     );

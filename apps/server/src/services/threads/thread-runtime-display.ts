@@ -321,15 +321,17 @@ function nativeTerminalAttentionThreadIds(
 ): Set<string> {
   if (threadIds.length === 0) return new Set();
   const rows = db.$client
-    .prepare(`
+    .prepare(
+      `
     SELECT n.thread_id AS threadId
     FROM fork_native_terminal_threads n
     JOIN terminal_sessions t ON t.id = n.terminal_session_id AND t.status = 'running'
     LEFT JOIN fork_terminal_attention a ON a.terminal_session_id = t.id AND a.cleared_at IS NULL
     WHERE n.thread_id IN (SELECT value FROM json_each(?))
     AND (a.terminal_session_id IS NOT NULL OR
-      (n.native_session_id IS NULL AND t.last_user_input_at IS NULL AND t.created_at <= ?))
-  `)
+      (n.native_session_id IS NULL AND max(t.created_at, coalesce(t.last_user_input_at, 0)) <= ?))
+  `,
+    )
     .all(
       JSON.stringify(threadIds),
       Date.now() - NATIVE_TERMINAL_SETUP_DELAY_MS,

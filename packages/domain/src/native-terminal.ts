@@ -7,12 +7,16 @@ export const NATIVE_TERMINAL_ACTIVITY_FRESH_FOR_MS =
   NATIVE_TERMINAL_ACTIVITY_HEARTBEAT_INTERVAL_MS * 3;
 
 export function truncateNativeAssistantText(text: string): string | undefined {
-  const bytes = new TextEncoder().encode(text.trim().slice(-NATIVE_ASSISTANT_TEXT_MAX));
+  const bytes = new TextEncoder().encode(
+    text.trim().slice(-NATIVE_ASSISTANT_TEXT_MAX),
+  );
   let start = Math.max(0, bytes.length - NATIVE_ASSISTANT_TEXT_MAX);
   while (((bytes[start] ?? 0) & 0xc0) === 0x80) start += 1;
-  return new TextDecoder("utf-8", { fatal: false, ignoreBOM: true })
-    .decode(bytes.subarray(start))
-    .trim() || undefined;
+  return (
+    new TextDecoder("utf-8", { fatal: false, ignoreBOM: true })
+      .decode(bytes.subarray(start))
+      .trim() || undefined
+  );
 }
 
 const TEMPLATE_TOKEN = /\{([A-Za-z]+)\}/gu;
@@ -412,7 +416,11 @@ export function fillNativeTerminalTemplate(
 
 export const NATIVE_TERMINAL_SETUP_DELAY_MS = 12_000;
 
-export function nativeTerminalMayNeedSetup(args: {
+export function nativeTerminalMayNeedSetup({
+  nativeSessionId,
+  terminal,
+  now,
+}: {
   nativeSessionId: string | null;
   terminal: {
     status: string;
@@ -422,10 +430,10 @@ export function nativeTerminalMayNeedSetup(args: {
   now: number;
 }): boolean {
   return (
-    args.nativeSessionId === null &&
-    args.terminal !== null &&
-    args.terminal.status === "running" &&
-    args.terminal.lastUserInputAt === null &&
-    args.now - args.terminal.createdAt >= NATIVE_TERMINAL_SETUP_DELAY_MS
+    nativeSessionId === null &&
+    terminal !== null &&
+    terminal.status === "running" &&
+    now - Math.max(terminal.createdAt, terminal.lastUserInputAt ?? 0) >=
+      NATIVE_TERMINAL_SETUP_DELAY_MS
   );
 }

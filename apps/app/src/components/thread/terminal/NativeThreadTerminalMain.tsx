@@ -2,6 +2,9 @@ import {
   NATIVE_TERMINAL_SETUP_DELAY_MS,
   nativeTerminalMayNeedSetup,
 } from "@bb/domain";
+import { useQuery } from "@tanstack/react-query";
+import { sdk } from "@/lib/sdk";
+import { threadDefaultExecutionOptionsQueryKey } from "@/hooks/queries/query-keys";
 import { useEffect, useState, type FocusEvent } from "react";
 import { isRunningThreadRuntimeDisplayStatus } from "@bb/client-core";
 import { Button } from "@bb/shared-ui/button";
@@ -17,7 +20,6 @@ import {
 import { useThreadPendingInteractions } from "@/hooks/queries/thread-queries";
 import { useThreadTerminals } from "@/hooks/queries/thread-terminal-queries";
 import { useOptionalPaneContext } from "@/views/thread-detail/PaneContext";
-import { useThreadDefaultExecutionOptions } from "@/hooks/queries/thread-default-execution-options-query";
 import { formatModelLabel } from "@/hooks/useThreadCreationOptions";
 import { PERMISSION_MODE_OPTIONS } from "@/lib/permission-mode-options";
 import { reasoningLevelLabel } from "@/lib/reasoning-labels";
@@ -50,7 +52,22 @@ export function NativeThreadTerminalMain({
   threadIsProvisioning,
   view,
 }: NativeThreadTerminalMainProps) {
-  const thread = useThreadDefaultExecutionOptions(threadId).data;
+  const profile = useQuery({
+    queryKey: [
+      ...threadDefaultExecutionOptionsQueryKey(threadId),
+      "provider-report",
+    ],
+    queryFn: ({ signal }) => sdk.threads.executionProfile({ threadId, signal }),
+    staleTime: 30_000,
+  }).data;
+  const report = profile?.executed;
+  const liveReport =
+    view.nativeSessionId !== null &&
+    report &&
+    (!profile.lastRequested || profile.lastRequested.model === report.model)
+      ? report
+      : null;
+  const metadata = liveReport ?? profile?.nextTurn;
   const activityNotice = useNativeActivityNotice(runtime);
   const terminalsQuery = useThreadTerminals(threadId);
   const interactionsQuery = useThreadPendingInteractions(threadId);
@@ -69,29 +86,26 @@ export function NativeThreadTerminalMain({
   });
   const providerLabel = view.displayName;
   const executionLabel = [
-    thread?.model ? formatModelLabel(thread.model) : null,
-    thread?.reasoningLevel
-      ? reasoningLevelLabel(thread.reasoningLevel, undefined)
+    metadata?.model ? formatModelLabel(metadata.model) : null,
+    metadata?.reasoningLevel
+      ? reasoningLevelLabel(metadata.reasoningLevel, undefined)
       : null,
     PERMISSION_MODE_OPTIONS.find(
-      (option) => option.value === thread?.permissionMode,
+      (option) => option.value === metadata?.permissionMode,
     )?.label,
   ]
     .filter(Boolean)
     .join(" · ");
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
-    if (
-      view.nativeSessionId !== null ||
-      session?.status !== "running" ||
-      session.lastUserInputAt !== null
-    )
-      return;
+    if (view.nativeSessionId !== null || session?.status !== "running") return;
     const timer = window.setTimeout(
       () => setNow(Date.now()),
       Math.max(
         0,
-        session.createdAt + NATIVE_TERMINAL_SETUP_DELAY_MS - Date.now(),
+        Math.max(session.createdAt, session.lastUserInputAt ?? 0) +
+          NATIVE_TERMINAL_SETUP_DELAY_MS -
+          Date.now(),
       ),
     );
     return () => window.clearTimeout(timer);
@@ -178,7 +192,9 @@ export function NativeThreadTerminalMain({
         <NativeTerminalPromptBar
           projectId={projectId}
           executionLabel={
-            executionLabel ? `Default: ${executionLabel}` : undefined
+            executionLabel
+              ? `${liveReport ? "Live" : "Default"}: ${executionLabel}`
+              : undefined
           }
           providerLabel={providerLabel}
           threadId={threadId}

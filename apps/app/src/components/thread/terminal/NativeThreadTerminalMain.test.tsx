@@ -1,16 +1,35 @@
 // @vitest-environment jsdom
 
 import { act, cleanup, render, screen } from "@testing-library/react";
-import type { NativeTerminalThread } from "@bb/server-contract";
+import type {
+  ThreadExecutionProfileResponse,
+  NativeTerminalThread,
+} from "@bb/server-contract";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { NativeThreadTerminalMain } from "./NativeThreadTerminalMain";
 
 const hooks = vi.hoisted(() => ({
+  profile: vi.fn<() => { data: ThreadExecutionProfileResponse | null }>(() => ({
+    data: {
+      executed: null,
+      lastRequested: null,
+      nextTurn: {
+        model: "gpt-5",
+        reasoningLevel: "high",
+        permissionMode: "full",
+        serviceTier: "default",
+        source: "client/turn/start",
+      },
+      overrides: { model: null, reasoningLevel: null },
+    },
+  })),
   listTerminals: vi.fn(),
   preloadTerminalPanel: vi.fn(),
   refetchNative: vi.fn(),
   openNative: vi.fn(),
 }));
+
+vi.mock("@tanstack/react-query", () => ({ useQuery: hooks.profile }));
 
 vi.mock("@/components/secondary-panel/lazySecondaryPanelComponents", () => ({
   LazyThreadTerminalPanel: Object.assign(
@@ -93,6 +112,20 @@ const nativeView: NativeTerminalThread = {
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  hooks.profile.mockReturnValue({
+    data: {
+      executed: null,
+      lastRequested: null,
+      nextTurn: {
+        model: "gpt-5",
+        reasoningLevel: "high" as const,
+        permissionMode: "full" as const,
+        serviceTier: "default" as const,
+        source: "client/turn/start" as const,
+      },
+      overrides: { model: null, reasoningLevel: null },
+    },
+  });
   vi.useRealTimers();
 });
 
@@ -131,15 +164,80 @@ describe("NativeThreadTerminalMain", () => {
     terminal.lastUserInputAt = Date.now();
     rerender(<NativeThreadTerminalMain {...props} />);
     expect(screen.queryByText(/may be waiting for setup/)).toBeNull();
-    terminal.lastUserInputAt = null;
+    act(() => vi.advanceTimersByTime(11999));
+    expect(screen.queryByText(/may be waiting for setup/)).toBeNull();
+    act(() => vi.advanceTimersByTime(1));
+    expect(screen.queryByText(/may be waiting for setup/)).toBeTruthy();
     rerender(
       <NativeThreadTerminalMain
         {...props}
         view={{ ...props.view, nativeSessionId: "bound" }}
       />,
     );
+    act(() => vi.advanceTimersByTime(12000));
     expect(screen.queryByText(/may be waiting for setup/)).toBeNull();
   });
+
+  it.each([
+    ["gpt-6-sol", "gpt-6-sol", "session-native", "Live:"],
+    ["gpt-6-sol", "different-model", "session-native", "Default:"],
+    ["gpt-6-sol", "gpt-6-sol", null, "Default:"],
+  ])(
+    "labels provider reports without presenting stale or unbound reports as live (%s/%s/%s)",
+    (model, requested, nativeSessionId, label) => {
+      hooks.profile.mockReturnValue({
+        data: {
+          executed: {
+            model,
+            reasoningLevel: null,
+            permissionMode: null,
+            serviceTier: null,
+          },
+          lastRequested: {
+            model: requested,
+            reasoningLevel: "high",
+            permissionMode: "full",
+            serviceTier: "default",
+            source: "client/turn/start",
+          },
+          nextTurn: {
+            model: "gpt-5",
+            reasoningLevel: "high" as const,
+            permissionMode: "full" as const,
+            serviceTier: "default" as const,
+            source: "client/turn/start" as const,
+          },
+          overrides: { model: null, reasoningLevel: null },
+        },
+      });
+      const terminal = {
+        id: "term-live",
+        status: "running",
+        createdAt: Date.now(),
+        lastUserInputAt: null,
+      } as NonNullable<NativeTerminalThread["terminal"]>;
+      hooks.listTerminals.mockReturnValue({
+        data: { sessions: [terminal] },
+        dataUpdatedAt: 1,
+      });
+      render(
+        <NativeThreadTerminalMain
+          projectId="proj_native"
+          runtime={{ displayStatus: "idle" }}
+          threadId="thr_native"
+          threadIsProvisioning={false}
+          view={{ ...nativeView, nativeSessionId, terminal }}
+        />,
+      );
+      expect(screen.getByTestId("execution-defaults").textContent).toMatch(
+        new RegExp(`^${label}`),
+      );
+      if (label === "Live:")
+        expect(screen.getByTestId("execution-defaults").textContent).toContain(
+          "GPT-6-Sol",
+        );
+    },
+  );
 
   it("shows the exited terminal panel with an ended bar and Resume", () => {
     hooks.listTerminals.mockReturnValue({

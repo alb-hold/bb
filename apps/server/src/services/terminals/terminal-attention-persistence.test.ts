@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createMigratedConnection } from "@bb/db/testing";
 import {
   createConnection,
@@ -26,6 +26,8 @@ import {
 const harnesses: TestAppHarness[] = [];
 
 afterEach(async () => {
+  vi.restoreAllMocks();
+  vi.useRealTimers();
   for (const harness of harnesses.splice(0)) {
     await harness.cleanup();
   }
@@ -79,15 +81,65 @@ describe("terminal attention persistence", () => {
     expect(await waiting()).toBe(false);
     harness.db.$client
       .prepare(
-        "UPDATE terminal_sessions SET last_user_input_at = NULL WHERE id = ?",
+        "UPDATE terminal_sessions SET last_user_input_at = ? WHERE id = ?",
       )
-      .run(terminalId);
+      .run(Date.now() - 12000, terminalId);
     expect(await waiting()).toBe(true);
     recordNativeTerminalThreadSessionId(harness.db, {
       threadId,
       nativeSessionId: "bound-session",
     });
     expect(await waiting()).toBe(false);
+  });
+  it("records repeated input and delays notification until twelve quiet seconds, cancelling on binding", async () => {
+    const harness = await createTestAppHarness({
+      db: createMigratedConnection(),
+    });
+    harnesses.push(harness);
+    const { terminalId, threadId } = createAttentionTerminal(harness);
+    const thread = getThread(harness.db, threadId)!;
+    createNativeTerminalThread(harness.db, {
+      threadId,
+      providerId: thread.providerId,
+      nativeSessionId: null,
+      initialPrompt: null,
+      initialImages: [],
+      model: null,
+    });
+    setNativeTerminalThreadTerminal(harness.db, {
+      threadId,
+      terminalSessionId: terminalId,
+    });
+    vi.useFakeTimers();
+    const startedAt = Date.now();
+    const notify = vi.spyOn(harness.deps.hub, "notifyThread");
+    harness.deps.terminalSessions.recordDirectTerminalInput(terminalId);
+    vi.advanceTimersByTime(6000);
+    harness.deps.terminalSessions.recordDirectTerminalInput(terminalId);
+    expect(
+      harness.db.$client
+        .prepare(
+          "SELECT last_user_input_at AS at FROM terminal_sessions WHERE id = ?",
+        )
+        .get(terminalId),
+    ).toEqual({ at: startedAt + 6000 });
+    notify.mockClear();
+    vi.advanceTimersByTime(11999);
+    expect(notify).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(notify).toHaveBeenCalledWith(threadId, [
+      "terminals-changed",
+      "status-changed",
+    ]);
+    harness.deps.terminalSessions.recordDirectTerminalInput(terminalId);
+    recordNativeTerminalThreadSessionId(harness.db, {
+      threadId,
+      nativeSessionId: "bound-session",
+    });
+    notify.mockClear();
+    vi.advanceTimersByTime(12000);
+    expect(notify).not.toHaveBeenCalled();
+    vi.useRealTimers();
   });
   it("uses the public API host guard and rejects unknown clear targets", async () => {
     const harness = await createTestAppHarness();
