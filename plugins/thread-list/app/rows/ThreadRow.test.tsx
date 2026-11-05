@@ -523,12 +523,12 @@ afterEach(() => {
 });
 
 describe("ThreadRow", () => {
-  it("recovers title width without changing nesting indentation", () => {
+  it("preserves nesting indentation while keeping compact title spacing", () => {
     const view = renderThreadRow({ thread: createThread({ archivedAt: 1 }) });
     const row = view.container.querySelector<HTMLElement>(
       "[data-sidebar-rename-row]",
     );
-    expect(row?.style.paddingLeft).toBe("18px");
+    expect(row?.style.paddingLeft).toBe("22px");
     expect(row?.classList.contains("gap-1")).toBe(true);
   });
   it("renders bounded status chips and progress on the row", () => {
@@ -2404,8 +2404,11 @@ describe("ThreadRow", () => {
     expect(
       tier?.style.getPropertyValue("--bb-sidebar-sticky-parent-level"),
     ).toBe("1");
-    expect(tier?.style.paddingLeft).toBe("32px");
+    expect(tier?.style.paddingLeft).toBe("36px");
     expect(tier?.querySelector('[aria-hidden="true"].w-px')).not.toBeNull();
+    expect(
+      tier?.querySelector<HTMLElement>('[aria-hidden="true"].w-px')?.style.left,
+    ).toBe("30px");
   });
 
   it("keeps its active indicator and actions alongside a Command shortcut", () => {
