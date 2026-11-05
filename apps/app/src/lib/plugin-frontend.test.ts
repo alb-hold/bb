@@ -155,6 +155,22 @@ describe("installPluginRuntime", () => {
     expect((globalThis as RuntimeHost).__bbPluginRuntime).toBe(runtime);
   });
 
+  it("awaits lazy Radix runtimes before evaluating a requesting plugin", async () => {
+    const runtime = installPluginRuntime();
+    expect(runtime.radixSlot).toBeUndefined();
+    const importModule = vi.fn(async () => {
+      expect(runtime.radixSlot).toBeDefined();
+      expect(runtime.radixCheckbox).toBeDefined();
+      return { default: {} };
+    });
+    const result = await loadPluginFrontend(
+      candidate("shared", { runtimeSlots: ["radixSlot"] }),
+      { importModule, prefetchModule: vi.fn(), warn: vi.fn() },
+    );
+    expect(result.status).toBe("loaded");
+    expect(importModule).toHaveBeenCalledOnce();
+  });
+
   it("provides optional UI runtimes only for a bundle that requests them", async () => {
     installPluginRuntime();
     const runtime = (globalThis as RuntimeHost).__bbPluginRuntime as Record<

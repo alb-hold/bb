@@ -48,7 +48,6 @@ import {
 } from "./plugin-app-definition";
 import { setPluginAssetIcons } from "@bb/shared-ui/icon-registry";
 import { setPluginLogoUrls, type PluginLogoUrls } from "./plugin-logos";
-import { createRetryingModuleLoader } from "./plugin-frontend-lazy";
 import {
   requestBrowserIdle,
   whenRouteSurfaceMounted,
@@ -159,9 +158,14 @@ export async function loadPluginFrontend(
     };
   }
   try {
-    const runtimeGroups = lazyRuntimeGroups.filter((group) =>
-      group.slots.some((slot) => bundle.runtimeSlots.includes(slot)),
-    );
+    const runtimeGroups =
+      bundle.runtimeSlots.length === 0
+        ? []
+        : (
+            await import("./plugin-lazy-runtime-groups")
+          ).lazyRuntimeGroups.filter((group) =>
+            group.slots.some((slot) => bundle.runtimeSlots.includes(slot)),
+          );
     if (runtimeGroups.length > 0) {
       const slotsProvided = Promise.all(
         runtimeGroups.map(async (group) => {
@@ -190,7 +194,10 @@ export async function loadPluginFrontend(
   }
 }
 
-interface BbPluginRuntime {
+export interface BbPluginRuntime {
+  radixCheckbox?: unknown;
+  radixSlot?: unknown;
+  radixComposeRefs?: unknown;
   react: unknown;
   reactDom: unknown;
   reactDomClient: unknown;
@@ -248,55 +255,6 @@ export function installPluginRuntime(): BbPluginRuntime {
   };
   return host.__bbPluginRuntime;
 }
-
-const lazyRuntimeGroups = [
-  {
-    slots: ["radixAlertDialog"],
-    load: createRetryingModuleLoader(async () => ({
-      radixAlertDialog: await import("@radix-ui/react-alert-dialog"),
-    })),
-  },
-  {
-    slots: ["radixHoverCard"],
-    load: createRetryingModuleLoader(async () => ({
-      radixHoverCard: await import("@radix-ui/react-hover-card"),
-    })),
-  },
-  {
-    slots: ["radixMenubar"],
-    load: createRetryingModuleLoader(async () => ({
-      radixMenubar: await import("@radix-ui/react-menubar"),
-    })),
-  },
-  {
-    slots: ["radixNavigationMenu"],
-    load: createRetryingModuleLoader(async () => ({
-      radixNavigationMenu: await import("@radix-ui/react-navigation-menu"),
-    })),
-  },
-  {
-    slots: ["radixSelect"],
-    load: createRetryingModuleLoader(async () => ({
-      radixSelect: await import("@radix-ui/react-select"),
-    })),
-  },
-  {
-    slots: ["vaul"],
-    load: createRetryingModuleLoader(async () => ({
-      vaul: await import("vaul"),
-    })),
-  },
-  {
-    slots: ["pierreDiffs", "pierreDiffsReact"],
-    load: createRetryingModuleLoader(async () => {
-      const { pierreRuntimeSlots } = await import("./plugin-pierre-runtime");
-      return pierreRuntimeSlots;
-    }),
-  },
-] satisfies {
-  slots: (keyof BbPluginRuntime)[];
-  load: () => Promise<Partial<BbPluginRuntime>>;
-}[];
 
 async function fetchEnabledPluginList(queryClient: QueryClient) {
   for (;;) {
