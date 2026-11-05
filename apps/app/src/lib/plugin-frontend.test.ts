@@ -33,6 +33,76 @@ function candidate(
 }
 
 describe("loadPluginFrontend", () => {
+  afterEach(() => {
+    delete (globalThis as typeof globalThis & { __bbPluginRuntime?: unknown })
+      .__bbPluginRuntime;
+  });
+
+  it("contains a Zod facade load failure before evaluating either plugin", async () => {
+    vi.resetModules();
+    vi.doMock(
+      "../../../../packages/plugin-build/src/generated/zod-runtime.generated",
+      () => ({
+        get zodRuntimeSlots() {
+          throw new Error("facade chunk unavailable");
+        },
+      }),
+    );
+    const importModule = vi.fn();
+    try {
+      const results = await Promise.all(
+        ["first", "second"].map((id) =>
+          loadPluginFrontend(candidate(id, { runtimeSlots: ["zod"] }), {
+            importModule,
+            prefetchModule: vi.fn(),
+            warn: vi.fn(),
+          }),
+        ),
+      );
+      for (const result of results)
+        expect(result).toMatchObject({
+          status: "failed",
+          error:
+            'Cannot load "zod": shared runtime chunk failed: facade chunk unavailable',
+        });
+      expect(importModule).not.toHaveBeenCalled();
+      expect(installPluginRuntime().zod).toBeUndefined();
+    } finally {
+      vi.doUnmock(
+        "../../../../packages/plugin-build/src/generated/zod-runtime.generated",
+      );
+      vi.resetModules();
+    }
+  });
+
+  it("awaits one generated Zod subset for concurrent plugins and preserves host schema and error identity", async () => {
+    const hostZod = await import("zod");
+    const runtime = installPluginRuntime();
+    expect(runtime.zod).toBeUndefined();
+    const importModule = vi.fn(async () => {
+      const subset = runtime.zod as { z: { string: typeof hostZod.z.string } };
+      const schema = subset.z.string();
+      expect(schema.constructor).toBe(hostZod.ZodString);
+      expect(() => schema.parse(42)).toThrow(hostZod.ZodError);
+      expect(schema.parse("value")).toBe("value");
+      return { default: {} };
+    });
+    const results = await Promise.all(
+      ["first", "second"].map((id) =>
+        loadPluginFrontend(candidate(id, { runtimeSlots: ["zod"] }), {
+          importModule,
+          prefetchModule: vi.fn(),
+          warn: vi.fn(),
+        }),
+      ),
+    );
+    expect(results.map((result) => result.status)).toEqual([
+      "loaded",
+      "loaded",
+    ]);
+    expect(importModule).toHaveBeenCalledTimes(2);
+  });
+
   it("contains an import failure to its own plugin", async () => {
     const good = { default: {} };
     const importModule = vi.fn().mockImplementation(async (url: string) => {

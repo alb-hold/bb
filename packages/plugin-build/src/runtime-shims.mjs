@@ -54,6 +54,8 @@ export const SHARED_UI_VOICE_INPUT_TEXTAREA_SPECIFIER =
  *    stay within the host's major (tailwind-merge ^3, clsx ^2, cva ^0.7).
  */
 export const RUNTIME_SLOT_BY_SPECIFIER = Object.freeze({
+  zod: "zod",
+  "zod/v4": "zod",
   "@radix-ui/react-checkbox": "radixCheckbox",
   "@radix-ui/react-slot": "radixSlot",
   "@radix-ui/react-compose-refs": "radixComposeRefs",

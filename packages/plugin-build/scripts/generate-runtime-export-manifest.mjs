@@ -163,7 +163,12 @@ pushEntry(
   ),
 );
 for (const id of RUNTIME_MODULE_IDS) {
-  pushEntry(id, await namedExportsOf(id));
+  if (id === "zod" || id === "zod/v4") {
+    const names = JSON.parse(await readFile(path.join(scriptDir, "../src/generated/zod-admission.generated.json"), "utf8"));
+    pushEntry(id, [...names, "z"]);
+  } else {
+    pushEntry(id, await namedExportsOf(id));
+  }
 }
 for (const [id, entryPoint] of Object.entries(RUNTIME_SOURCE_MODULES)) {
   pushEntry(id, await sourceModuleExports(entryPoint));

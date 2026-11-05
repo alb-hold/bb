@@ -3,6 +3,20 @@ import { createRetryingModuleLoader } from "./plugin-frontend-lazy";
 
 export const lazyRuntimeGroups = [
   {
+    slots: ["zod"],
+    load: createRetryingModuleLoader(async () => {
+      try {
+        const { zodRuntimeSlots } =
+          await import("../../../../packages/plugin-build/src/generated/zod-runtime.generated");
+        return zodRuntimeSlots;
+      } catch (error) {
+        throw new Error(
+          `Cannot load "zod": shared runtime chunk failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }),
+  },
+  {
     slots: ["radixCheckbox", "radixSlot", "radixComposeRefs"],
     load: createRetryingModuleLoader(async () => {
       const { radixRuntimeSlots } = await import("./plugin-radix-runtime");
