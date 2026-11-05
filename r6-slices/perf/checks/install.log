@@ -115,13 +115,13 @@ Progress: resolved 2293, reused 0, downloaded 2262, added 2293, done
 .../node_modules/better-sqlite3 install: gyp info spawn args ]
 .../node_modules/@swc/core postinstall: Done
 .../node_modules/node-pty install$ node scripts/prebuild.js || node-gyp rebuild
-.../node_modules/node-pty install: [32m> Checking prebuilds...[0m
+.../node_modules/node-pty install: > Checking prebuilds...
 .../sharp@0.34.5/node_modules/sharp install: Done
 .../node_modules/node-pty install: Done
 .../node_modules/node-pty postinstall$ node scripts/post-install.js
 .../node_modules/electron-winstaller install$ node ./script/select-7z-arch.js
-.../node_modules/node-pty postinstall: [32m> Cleaning release folder...[0m
-.../node_modules/node-pty postinstall: [32m> Moving conpty.dll...[0m
+.../node_modules/node-pty postinstall: > Cleaning release folder...
+.../node_modules/node-pty postinstall: > Moving conpty.dll...
 .../node_modules/node-pty postinstall:   SKIPPED (not Windows)
 .../node_modules/node-pty postinstall: Done
 .../node_modules/electron-winstaller install: Selecting 7-Zip for arch arm64
@@ -211,7 +211,7 @@ Progress: resolved 2293, reused 0, downloaded 2262, added 2293, done
 .../node_modules/better-sqlite3 install: gyp info spawn args [ 'BUILDTYPE=Release', '-C', 'build' ]
 .../node_modules/better-sqlite3 install:   TOUCH Release/obj.target/better_sqlite3.stamp
 .../node_modules/better-sqlite3 install:   TOUCH Release/obj.target/test_extension.stamp
-.../node_modules/better-sqlite3 install: gyp info ok 
+.../node_modules/better-sqlite3 install: gyp info ok
 .../node_modules/better-sqlite3 install: Done
 .../node_modules/dtrace-provider install: -----------------------------------------------------------------
 .../node_modules/dtrace-provider install: Building dtrace-provider failed with exit code 1, falling back
@@ -221,7 +221,7 @@ Progress: resolved 2293, reused 0, downloaded 2262, added 2293, done
 .../node_modules/dtrace-provider install: installation failure.
 .../node_modules/dtrace-provider install: -----------------------------------------------------------------
 .../node_modules/dtrace-provider install:   TOUCH Release/obj.target/ndtp.stamp
-.../node_modules/dtrace-provider install: gyp info ok 
+.../node_modules/dtrace-provider install: gyp info ok
 .../node_modules/dtrace-provider install: Done
 .../node_modules/better-sqlite3 install:   LIBTOOL-STATIC Release/sqlite3.a
 .../node_modules/better-sqlite3 install:   CXX(target) Release/obj.target/better_sqlite3/src/better_sqlite3.o
@@ -250,7 +250,7 @@ Progress: resolved 2293, reused 0, downloaded 2262, added 2293, done
 .../node_modules/better-sqlite3 install:   CC(target) Release/obj.target/test_extension/deps/test_extension.o
 .../node_modules/better-sqlite3 install:   SOLINK_MODULE(target) Release/test_extension.node
 .../node_modules/better-sqlite3 install: rm ba23eeee118cd63e16015df367567cb043fed872.intermediate
-.../node_modules/better-sqlite3 install: gyp info ok 
+.../node_modules/better-sqlite3 install: gyp info ok
 .../node_modules/better-sqlite3 install: Done
 .../node_modules/@google/genai preinstall$ echo 'preinstall: no-op'
 .../node_modules/@google/genai preinstall: preinstall: no-op

@@ -6,47 +6,47 @@ remote-heavy: installing dependencies on hsrpc-wsl
    • Remote caching disabled
 
 //:ensure-native-modules: cache bypass, force executing d3b7263e69e696cb
-//:ensure-native-modules: 
+//:ensure-native-modules:
 //:ensure-native-modules: > bb@ ensure-native-modules /home/alex_/bb-remote-heavy/bb-fork-31f58c3c8d46
 //:ensure-native-modules: > node scripts/ensure-native-modules.mjs
-//:ensure-native-modules: 
+//:ensure-native-modules:
 //:ensure-native-modules: [ensure-native-modules] Detached hardlinked better-sqlite3 binary before verification
 @bb/plugin-build:generate: cache hit, replaying logs cac61967fdba660b
-@bb/plugin-build:generate: 
+@bb/plugin-build:generate:
 @bb/plugin-build:generate: > @bb/plugin-build@0.0.1 generate /home/alex_/bb-remote-heavy/bb-fork-31f58c3c8d46/packages/plugin-build
 @bb/plugin-build:generate: > node ./scripts/generate-plugin-theme.mjs && node ./scripts/generate-runtime-export-manifest.mjs
-@bb/plugin-build:generate: 
+@bb/plugin-build:generate:
 @bb/plugin-build:generate: wrote packages/plugin-build/src/generated/plugin-theme.generated.ts
 @bb/plugin-build:generate: wrote packages/plugin-build/src/generated/host-tailwind.css
 @bb/plugin-build:generate: wrote packages/plugin-build/src/generated/host-tailwind-version.ts
 @bb/plugin-build:generate: wrote /home/alex_/bb-remote-heavy/bb-fork-31f58c3c8d46/packages/plugin-build/src/generated/runtime-export-manifest.generated.ts (react@19.3.0)
 @bb/templates:generate:plugin-scaffold: cache hit, replaying logs f6372830cb434cdd
-@bb/templates:generate:plugin-scaffold: 
+@bb/templates:generate:plugin-scaffold:
 @bb/templates:generate:plugin-scaffold: > @bb/templates@0.0.1 generate:plugin-scaffold /home/alex_/bb-remote-heavy/bb-fork-31f58c3c8d46/packages/templates
 @bb/templates:generate:plugin-scaffold: > node ./scripts/generate-plugin-scaffold.mjs
-@bb/templates:generate:plugin-scaffold: 
+@bb/templates:generate:plugin-scaffold:
 @bb/templates:generate:templates: cache hit, replaying logs 420c02ee020bbaa4
-@bb/templates:generate:templates: 
+@bb/templates:generate:templates:
 @bb/templates:generate:templates: > @bb/templates@0.0.1 generate:templates /home/alex_/bb-remote-heavy/bb-fork-31f58c3c8d46/packages/templates
 @bb/templates:generate:templates: > node ./scripts/generate-templates.mjs
-@bb/templates:generate:templates: 
+@bb/templates:generate:templates:
 @bb/process-utils:generate:profile-worker: cache miss, executing 4b7a807373f23e31
-@bb/process-utils:generate:profile-worker: 
+@bb/process-utils:generate:profile-worker:
 @bb/process-utils:generate:profile-worker: > @bb/process-utils@0.0.1 generate:profile-worker /home/alex_/bb-remote-heavy/bb-fork-31f58c3c8d46/packages/process-utils
 @bb/process-utils:generate:profile-worker: > node scripts/generate-profile-worker.mjs
-@bb/process-utils:generate:profile-worker: 
+@bb/process-utils:generate:profile-worker:
 @bb/app:typecheck: cache miss, executing 64d21c0a55235ee0
-@bb/app:typecheck: 
+@bb/app:typecheck:
 @bb/app:typecheck: > @bb/app@0.0.1 typecheck /home/alex_/bb-remote-heavy/bb-fork-31f58c3c8d46/apps/app
 @bb/app:typecheck: > tsrs --noEmit && tsrs --noEmit -p tsconfig.node.json
-@bb/app:typecheck: 
+@bb/app:typecheck:
 @bb/app:typecheck: ../server/src/services/terminals/terminal-screen.ts(8,44): error TS2307: Cannot find module '../../generated/terminal-screen-worker.js' or its corresponding type declarations.
 @bb/app:typecheck:  ELIFECYCLE  Command failed with exit code 2.
 @bb/app:test: cache miss, executing c371181a1b8e50cb
 
  Tasks:    5 successful, 7 total
 Cached:    3 cached, 7 total
-  Time:    19.273s 
+  Time:    19.273s
 Failed:    @bb/app#typecheck
 
 @bb/app#typecheck:  ERROR  command (/home/alex_/bb-remote-heavy/bb-fork-31f58c3c8d46/apps/app) /usr/bin/pnpm run typecheck exited (2)
