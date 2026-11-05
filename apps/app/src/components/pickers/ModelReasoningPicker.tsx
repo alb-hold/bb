@@ -924,9 +924,7 @@ export function ModelReasoningPicker({
       : "",
   ].join("");
   const triggerAccessibleLabel = showCompactIconOnly
-    ? hasSelectedModel
-      ? `Provider, model and reasoning: ${selectedProviderLabel}: ${selectedModelLabel} · ${triggerReasoningLabel ?? reasoningLevelLabel(reasoningValue, undefined)} reasoning`
-      : "Model"
+    ? `Provider, model and reasoning: ${selectedProviderLabel}: ${selectedModelLabel || "Model"} · ${triggerReasoningLabel ?? reasoningLevelLabel(reasoningValue, undefined)} reasoning`
     : toggleShortcut
       ? `Provider, model and reasoning (${toggleShortcut.label})`
       : "Provider, model and reasoning";

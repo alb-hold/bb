@@ -944,7 +944,7 @@
     overflow: visible;
   }
 
-  [data-compact-touch-summary]::after {
+  button[data-compact-touch-summary]::after {
     inset-block: -4px var(--compact-touch-summary-end, -20px);
   }
 

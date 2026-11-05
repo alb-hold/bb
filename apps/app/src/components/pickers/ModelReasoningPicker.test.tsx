@@ -183,6 +183,7 @@ function renderPicker({
   modelIsLoading = false,
   modelLoadError = null,
   compact = false,
+  compactIconOnly = false,
   splitPane = false,
   muted = false,
   handoff,
@@ -209,6 +210,7 @@ function renderPicker({
   modelIsLoading?: boolean;
   modelLoadError?: SystemExecutionOptionsModelLoadError | null;
   compact?: boolean;
+  compactIconOnly?: boolean;
   splitPane?: boolean;
   muted?: boolean;
   handoff?: ModelReasoningPickerHandoff;
@@ -237,6 +239,7 @@ function renderPicker({
   const picker = (
     <div data-app-composer>
       <ModelReasoningPicker
+        compactIconOnly={compactIconOnly}
         providerOptions={pickerProviderOptions}
         providerRouting={providerRouting}
         selectedProviderId={selectedProviderId}
@@ -1680,4 +1683,15 @@ it.each([
   expect(trigger.querySelector('[data-icon="ChevronDown"]')).not.toBeNull();
   expect(trigger.querySelector('[data-icon="Bot"]')).not.toBeNull();
   expect(trigger.querySelector('[data-icon="Zap"]')).toBeNull();
+});
+
+it.each([false, true])("keeps provider, model and effort in compact accessible names while pending=%s", (modelIsLoading) => {
+  renderPicker({ compact: true, compactIconOnly: true, modelIsLoading, modelValue: "gpt-5.5" });
+  const trigger = screen.getByRole("button", { name: "Provider, model and reasoning: Codex: GPT-5.5 · Medium reasoning" });
+  expect(trigger.querySelector('[data-icon="ChevronDown"]')).not.toBeNull();
+});
+
+it("keeps provider and effort in the compact name before a model resolves", () => {
+  renderPicker({ compact: true, compactIconOnly: true, modelIsLoading: true, modelValue: "", modelOptions: [] });
+  expect(screen.getByRole("button", { name: "Provider, model and reasoning: Codex: Model · Medium reasoning" })).not.toBeNull();
 });

@@ -76,4 +76,5 @@ it("expands timeline hit areas without increasing their layout heights", () => {
   expect(timeline).toContain("inset-block: -12px -4px");
   expect(timeline).toContain("inset-block: -4px var(--compact-touch-summary-end, -20px)");
   expect(timeline).toContain("--compact-touch-summary-end: -4px");
+  expect(timeline).toContain("button[data-compact-touch-summary]::after");
 });
