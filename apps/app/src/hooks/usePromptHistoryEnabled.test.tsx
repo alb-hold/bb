@@ -36,8 +36,13 @@ afterEach(() => {
 describe("usePromptHistoryEnabled", () => {
   it("keeps the eager fetch on fine-pointer devices", () => {
     mockPointer(false);
-    const { result } = renderHook(() => usePromptHistoryEnabled());
+    const render = vi.fn(usePromptHistoryEnabled);
+    const { result } = renderHook(render);
     expect(result.current).toBe(true);
+    const renders = render.mock.calls.length;
+    dispatchKeyDown({ key: "a" });
+    expect(result.current).toBe(true);
+    expect(render).toHaveBeenCalledTimes(renders);
   });
 
   it("waits for a real keydown on coarse-pointer devices and ignores IME keys", () => {

@@ -94,6 +94,7 @@ function render(element: ReactNode) {
 }
 
 const mocks = vi.hoisted(() => ({
+  rootCompositionRenders: 0,
   unknownReasoning: false,
   promptBoxProps: [] as Array<Record<string, any>>,
   copyAttachments: vi.fn(),
@@ -3095,9 +3096,10 @@ describe("NewThreadComposer setSelection", () => {
         selectionScope="new-thread"
         onSubmit={() => undefined}
       >
-        {(composer) =>
-          composer.renderPromptBox({ mentionMenuPlacement: "bottom" })
-        }
+        {(composer) => {
+          mocks.rootCompositionRenders += 1;
+          return composer.renderPromptBox({ mentionMenuPlacement: "bottom" });
+        }}
       </NewThreadComposer>
     );
   }
@@ -3118,6 +3120,23 @@ describe("NewThreadComposer setSelection", () => {
     expect(host.setSelection).toBeDefined();
     return host;
   }
+
+  it("updates empty draft gating without rerendering root composition", async () => {
+    render(rootLikeElement("proj_1"));
+    await waitFor(() =>
+      expect(latestPromptBoxProps().disabledReason).toBe(
+        "Enter a prompt or attach a file.",
+      ),
+    );
+    const renders = mocks.rootCompositionRenders;
+    act(() => latestPromptBoxProps().onChange("a", []));
+    expect(latestPromptBoxProps().value).toBe("a");
+    expect(latestPromptBoxProps().disabled).toBe(false);
+    expect(mocks.rootCompositionRenders).toBe(renders);
+    act(() => latestPromptBoxProps().onChange("", []));
+    expect(latestPromptBoxProps().disabled).toBe(true);
+    expect(mocks.rootCompositionRenders).toBe(renders);
+  });
 
   it("tracks values changed through the visible model picker", async () => {
     render(rootLikeElement("proj_1"));

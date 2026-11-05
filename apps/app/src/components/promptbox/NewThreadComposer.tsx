@@ -113,7 +113,6 @@ import {
 import type { CommandSuggestionSource } from "@/hooks/useCommandSuggestions";
 import {
   usePromptDraftController,
-  usePromptDraftInputEmpty,
   usePromptDraftSnapshot,
   type PromptDraftController,
   type PromptDraftScope,
@@ -324,6 +323,7 @@ type LiveDraftNewThreadPromptBoxProps = Omit<
   history: Omit<NewThreadPromptBoxProps["history"], "currentDraft">;
   promptDraft: PromptDraftController;
   blockerReason: NewThreadBlockerReason | null;
+  allowEmpty: boolean;
 };
 
 function LiveDraftNewThreadPromptBox({
@@ -331,10 +331,16 @@ function LiveDraftNewThreadPromptBox({
   history,
   promptDraft,
   blockerReason,
+  allowEmpty,
   ...promptBoxProps
 }: LiveDraftNewThreadPromptBoxProps) {
   const draft = usePromptDraftSnapshot(promptDraft);
   const hasDraft = !isPromptDraftEmpty(draft);
+  const disabledReason =
+    promptBoxProps.disabledReason ??
+    (promptDraftToInput(draft).length === 0 && !allowEmpty
+      ? "Enter a prompt or attach a file."
+      : undefined);
   const reportedBlockers = useRef(new Set<NewThreadBlockerReason>());
   useEffect(() => {
     if (!hasDraft || blockerReason === null) return;
@@ -348,6 +354,8 @@ function LiveDraftNewThreadPromptBox({
   return (
     <NewThreadPromptBox
       {...promptBoxProps}
+      disabled={disabledReason !== undefined}
+      disabledReason={disabledReason}
       value={draft.text}
       mentionRanges={draft.mentions}
       history={{ ...history, currentDraft: draft }}
@@ -1655,7 +1663,6 @@ export function NewThreadComposer({
     () => promptHistoryEntriesToDrafts(projectPromptHistory),
     [projectPromptHistory],
   );
-  const promptInputEmpty = usePromptDraftInputEmpty(promptDraft);
   const agentProviders = useSystemProviders().data;
   const nativeTerminalAvailable =
     agentProviders?.find((provider) => provider.id === selectedProviderId)
@@ -1712,11 +1719,7 @@ export function NewThreadComposer({
   });
   const submissionReadinessReason = submissionBlocker?.message ?? null;
   const submissionBlockerReason = submissionBlocker?.reason ?? null;
-  const submitDisabledReason =
-    submissionReadinessReason ??
-    (promptInputEmpty && !nativeTerminal
-      ? "Enter a prompt or attach a file."
-      : null);
+  const submitDisabledReason = submissionReadinessReason;
   const submitDraft = useCallback(
     async (
       blockedReason: string | null,
@@ -2040,6 +2043,7 @@ export function NewThreadComposer({
       const disabledReason = options.blocker?.message ?? submitDisabledReason;
       return (
         <LiveDraftNewThreadPromptBox
+          allowEmpty={nativeTerminal}
           blockerReason={
             options.blocker ? options.blocker.reason : submissionBlockerReason
           }
