@@ -811,3 +811,8 @@
     transparent
   );
 }
+
+:where(.peer[data-state="expanded"][data-collapsible] ~ *)
+  :where([data-testid="root-compose-desktop-recents"]) {
+  display: none;
+}
