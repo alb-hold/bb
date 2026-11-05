@@ -14,16 +14,15 @@ function requestScreen(terminalId: string, threadId?: string) {
 export function prefetchTerminalScreen(
   terminalId: string,
   threadId?: string,
-): void {
+): ScreenRequest {
   const key = keyFor(terminalId, threadId);
   const cached = pending.get(key);
-  if (cached && Date.now() - cached.at < 5_000) return;
+  if (cached && Date.now() - cached.at < 5_000) return cached.request;
   pending.delete(key);
   if (pending.size >= 4) pending.delete(pending.keys().next().value!);
-  pending.set(key, {
-    at: Date.now(),
-    request: requestScreen(terminalId, threadId),
-  });
+  const request = requestScreen(terminalId, threadId);
+  pending.set(key, { at: Date.now(), request });
+  return request;
 }
 
 export function fetchTerminalScreen(

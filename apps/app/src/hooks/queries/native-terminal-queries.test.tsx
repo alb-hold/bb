@@ -12,8 +12,8 @@ const { preloadPanel, preloadModules } = vi.hoisted(() => ({
   preloadModules: vi.fn(),
 }));
 
-vi.mock("@/components/secondary-panel/lazySecondaryPanelComponents", () => ({
-  LazyThreadTerminalPanel: { preload: preloadPanel },
+vi.mock("@/components/thread/terminal/native-terminal-panel-preload", () => ({
+  preloadNativeTerminalPanel: preloadPanel,
 }));
 
 vi.mock("@/components/thread/terminal/terminal-modules", () => ({

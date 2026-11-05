@@ -19,8 +19,10 @@ it("shares navigation requests with the renderer and isolates sessions", async (
   vi.mocked(sdk.terminals.experimental_screen).mockResolvedValue({
     complete: false,
   } as never);
-  prefetchTerminalScreen("first", "thread");
-  await fetchTerminalScreen("first", "thread");
+  const early = prefetchTerminalScreen("first", "thread");
+  expect(prefetchTerminalScreen("first", "thread")).toBe(early);
+  expect(fetchTerminalScreen("first", "thread")).toBe(early);
+  await early;
   expect(sdk.terminals.experimental_screen).toHaveBeenCalledOnce();
   await fetchTerminalScreen("second", "thread");
   expect(sdk.terminals.experimental_screen).toHaveBeenCalledTimes(2);

@@ -3,7 +3,7 @@ import { appQueryClient } from "./app-query-client";
 import { threadDetailBootstrapQueryOptions } from "@/hooks/queries/thread-queries";
 import { nativeTerminalThreadQueryKey } from "@/hooks/queries/query-keys";
 import { sdk } from "./sdk";
-import { LazyThreadTerminalPanel } from "@/components/secondary-panel/lazySecondaryPanelComponents";
+import { preloadNativeTerminalPanel } from "@/components/thread/terminal/native-terminal-panel-preload";
 import { preloadTerminalModules } from "@/components/thread/terminal/terminal-modules";
 
 export function prefetchThreadOpen(threadId: string): void {
@@ -20,7 +20,7 @@ export function prefetchThreadOpen(threadId: string): void {
       if (view !== null) {
         if (view.terminal?.status === "running")
           prefetchTerminalScreen(view.terminal.id, threadId);
-        void LazyThreadTerminalPanel.preload();
+        void preloadNativeTerminalPanel().catch(() => undefined);
         preloadTerminalModules();
       }
       return view;

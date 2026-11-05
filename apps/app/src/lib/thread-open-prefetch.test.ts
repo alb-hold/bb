@@ -3,7 +3,7 @@ import { appQueryClient } from "./app-query-client";
 import { prefetchThreadOpen } from "./thread-open-prefetch";
 import { sdk } from "./sdk";
 import { preloadTerminalModules } from "@/components/thread/terminal/terminal-modules";
-import { LazyThreadTerminalPanel } from "@/components/secondary-panel/lazySecondaryPanelComponents";
+import { preloadNativeTerminalPanel } from "@/components/thread/terminal/native-terminal-panel-preload";
 
 vi.mock("./sdk", () => ({ sdk: { nativeTerminals: { get: vi.fn() } } }));
 vi.mock("@/hooks/queries/thread-queries", () => ({
@@ -20,8 +20,8 @@ vi.mock("@/hooks/queries/thread-queries", () => ({
 vi.mock("@/components/thread/terminal/terminal-modules", () => ({
   preloadTerminalModules: vi.fn(),
 }));
-vi.mock("@/components/secondary-panel/lazySecondaryPanelComponents", () => ({
-  LazyThreadTerminalPanel: { preload: vi.fn() },
+vi.mock("@/components/thread/terminal/native-terminal-panel-preload", () => ({
+  preloadNativeTerminalPanel: vi.fn(() => Promise.resolve()),
 }));
 
 afterEach(() => {
@@ -43,7 +43,7 @@ it("starts native discovery while thread bootstrap is pending and warms a native
   expect(
     appQueryClient.getQueryState(["bootstrap", "native"])?.fetchStatus,
   ).toBe("fetching");
-  expect(LazyThreadTerminalPanel.preload).toHaveBeenCalledOnce();
+  expect(preloadNativeTerminalPanel).toHaveBeenCalledOnce();
 });
 
 it("does not download xterm for a chat thread or repeat fresh discovery", async () => {
