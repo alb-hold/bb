@@ -29,6 +29,7 @@ function addPermissionModeCompactLabels(
 }
 
 export interface PermissionModePickerProps {
+  compactWarningOnly?: boolean;
   pending?: boolean;
   value?: PermissionMode;
   options: readonly PickerOption<PermissionMode>[];
@@ -51,6 +52,7 @@ export interface PermissionModePickerProps {
 }
 
 export function PermissionModePicker({
+  compactWarningOnly = false,
   pending = false,
   value,
   options,
@@ -74,6 +76,7 @@ export function PermissionModePicker({
   if (!pending && value !== undefined) lastValue.current = value;
   const displayValue = pending ? lastValue.current : value ?? lastValue.current;
   const showFullAccessWarning = displayValue === "full" && !displayOverride;
+  if (compactWarningOnly && (!showFullAccessWarning || pending)) return null;
   if (
     !pending &&
     (value === undefined ||
@@ -84,13 +87,14 @@ export function PermissionModePicker({
   }
   return (
     <OptionPicker
+      iconOnly={compactWarningOnly}
       label="Permission mode"
       value={displayValue}
       options={compactOptions}
       onChange={onChange}
       className={cn(
         LIST_HOVER_TRANSITION,
-        "min-w-28 justify-between",
+        compactWarningOnly ? "size-8 min-w-0 justify-center p-0" : "min-w-28 justify-between",
         showFullAccessWarning && "text-warning-text hover:text-warning-text data-[state=open]:text-warning-text",
         className,
       )}

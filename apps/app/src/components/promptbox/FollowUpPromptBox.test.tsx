@@ -97,6 +97,7 @@ vi.mock("@/components/promptbox/ComposerBox", async () => {
     ComposerBox: function ComposerBox({
       surface,
       executionControls,
+      compactBeforeSend,
       handoff,
       compact,
       onSubmit,
@@ -111,6 +112,7 @@ vi.mock("@/components/promptbox/ComposerBox", async () => {
     }: {
       surface: "thread" | "new-thread";
       executionControls?: ReactNode;
+      compactBeforeSend?: ReactNode;
       handoff?: ReactNode;
       compact?: {
         when: "always" | "narrow";
@@ -156,6 +158,7 @@ vi.mock("@/components/promptbox/ComposerBox", async () => {
           >
             {handoff}
             {executionControls}
+            {compactBeforeSend}
             <input
               aria-label="Follow-up prompt"
               ref={(node) => {
@@ -969,6 +972,7 @@ describe("FollowUpPromptBox", () => {
       "true",
     );
     expect(screen.getByText("Ask a follow-up")).toBeTruthy();
+    expect(mocks.permissionModePicker).toHaveBeenCalledWith(expect.objectContaining({ compactWarningOnly: true }));
     expect(screen.queryByText("Local environment")).toBeNull();
     expect(
       screen.queryByRole("button", { name: "Collapse prompt box" }),

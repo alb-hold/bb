@@ -54,6 +54,7 @@ describe("compact touch targets", () => {
     'data-sidebar="trigger"',
     'data-promptbox-plus-control',
     'data-compact-touch="voice"',
+    'data-compact-touch="picker"',
     'data-model-reasoning-trigger',
     'data-compact-touch-summary',
   ])("reserves a disjoint 44px target for %s only at compact widths", (selector) => {

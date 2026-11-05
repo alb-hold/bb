@@ -643,6 +643,7 @@ function FollowUpPromptBoxWithComposer({
   const permissionControl = useMemo(
     () => (
       <PermissionModePicker
+        compactWarningOnly={isPromptBoxCompact}
         pending={permission.pending}
         value={permission.value}
         options={permission.options}
@@ -655,6 +656,7 @@ function FollowUpPromptBoxWithComposer({
       />
     ),
     [
+      isPromptBoxCompact,
       permission.pending,
       permission.onChange,
       permission.options,
@@ -788,9 +790,10 @@ function FollowUpPromptBoxWithComposer({
         attachments={attachments}
         promptActions={promptActions}
         compactBeforeSend={
-          compactBeforeSend ? (
-            <CompactBeforeSendChip {...compactBeforeSend} />
-          ) : null
+          <>
+            {isPromptBoxCompact ? permissionControl : null}
+            {compactBeforeSend ? <CompactBeforeSendChip {...compactBeforeSend} /> : null}
+          </>
         }
         suppressPluginComposerCustomizations={
           suppressPluginComposerCustomizations || execution.pending
