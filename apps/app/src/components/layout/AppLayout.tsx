@@ -147,6 +147,18 @@ import { BackToAppCommandHandler } from "./BackToAppCommandHandler";
 import { HistoryCommandHandlers } from "./HistoryCommandHandlers";
 import { TerminalAttentionCommandHandler } from "./TerminalAttentionCommandHandler";
 
+const compactHomeHeaderImport =
+  typeof window !== "undefined" &&
+  typeof window.matchMedia === "function" &&
+  window.matchMedia("(max-width: 767px)").matches
+    ? import("./CompactHomeHeader")
+    : null;
+const CompactHomeHeader = lazy(() =>
+  (compactHomeHeaderImport ?? import("./CompactHomeHeader")).then((module) => ({
+    default: module.CompactHomeHeader,
+  })),
+);
+
 const ProjectPathDialog = lazy(() =>
   import("@/components/dialogs/ProjectPathDialog").then((module) => ({
     default: module.ProjectPathDialog,
@@ -891,6 +903,11 @@ function AppLayoutContent({ children }: AppLayoutProps) {
                     data-app-content-shell=""
                     className="relative flex h-full min-h-0 min-w-0 w-full flex-col pt-[env(safe-area-inset-top)] pr-[env(safe-area-inset-right)] pb-(--bb-content-bottom-inset) pl-[env(safe-area-inset-left)] [--bb-content-bottom-inset:var(--bb-safe-area-bottom,env(safe-area-inset-bottom))]"
                   >
+                    {isRootView && isCompactViewport ? (
+                      <Suspense fallback={null}>
+                        <CompactHomeHeader title={project?.name ?? "Home"} />
+                      </Suspense>
+                    ) : null}
                     {showHeader ? (
                       <AppHeader
                         resourceSection={

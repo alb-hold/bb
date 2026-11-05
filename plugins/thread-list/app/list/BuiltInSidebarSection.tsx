@@ -98,6 +98,11 @@ function BuiltInSidebarSection({
       id={id}
       label={label}
       stickyHeader={id !== "pinned"}
+      contentClassName={
+        id === "pinned"
+          ? "max-h-[28svh] overflow-y-auto data-[more-below]:[mask-image:linear-gradient(to_bottom,var(--ink)_calc(100%_-_1.5rem),transparent)]"
+          : undefined
+      }
       disabled={disabled}
       actions={actions}
       actionsOpen={actionsOpen}

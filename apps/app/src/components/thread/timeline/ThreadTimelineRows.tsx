@@ -2089,7 +2089,7 @@ function TimelineExpandableRowView({
       }
       forceExpanded={searchExpandedRowIds.has(row.id)}
       terminalAutoExpanded={terminalAutoExpandedRowIds.has(row.id)}
-      collapsedPreview={
+      summaryAdornment={
         row.kind === "turn" && row.status !== "pending" ? (
           <TooltipProvider>
             <ThreadTurnTokenSummary

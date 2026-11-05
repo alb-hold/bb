@@ -40,6 +40,7 @@ interface ExpandableTimelineRowProps {
   title: TimelineTitle;
   titleContent?: ReactNode;
   collapsedPreview?: ReactNode;
+  summaryAdornment?: ReactNode;
   expandable?: boolean;
   horizontalPadding?: TimelineRowHorizontalPadding;
   leadingIcon?: IconName;
@@ -136,6 +137,7 @@ function ExpandableTimelineRowComponent({
   renderBody,
   reasoningExpansionKey,
   summaryClassName,
+  summaryAdornment,
   terminalAutoExpanded = false,
   title,
   titleContent,
@@ -233,6 +235,7 @@ function ExpandableTimelineRowComponent({
           {titleContent ?? (
             <TimelineTitleView title={title} onTitleAction={onTitleAction} />
           )}
+          {summaryAdornment}
         </span>
       }
       summaryContentClassName={TIMELINE_ROW_HEADER_CONTENT_CLASS_NAME}

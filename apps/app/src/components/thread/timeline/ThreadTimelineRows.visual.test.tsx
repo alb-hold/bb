@@ -38,6 +38,11 @@ it("shows turn spend on the collapsed Worked for row in secondary status ink", (
     screen.getByText("Token breakdown fixture").closest("[aria-hidden=true]"),
   ).toBeNull();
   const label = screen.getByText("Worked for");
+  expect(
+    label
+      .closest("button")
+      ?.contains(screen.getByText("Token breakdown fixture")),
+  ).toBe(true);
   expect(PAST_ROW_DIM_CLASS_NAME).toBe("text-muted-foreground");
   expect(label.className).toContain("text-muted-foreground");
   const chevron = label.closest("button")?.querySelector("svg:last-child");

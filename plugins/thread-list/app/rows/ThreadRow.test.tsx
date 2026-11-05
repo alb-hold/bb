@@ -523,6 +523,14 @@ afterEach(() => {
 });
 
 describe("ThreadRow", () => {
+  it("recovers title width without changing nesting indentation", () => {
+    const view = renderThreadRow({ thread: createThread({ archivedAt: 1 }) });
+    const row = view.container.querySelector<HTMLElement>(
+      "[data-sidebar-rename-row]",
+    );
+    expect(row?.style.paddingLeft).toBe("18px");
+    expect(row?.classList.contains("gap-1")).toBe(true);
+  });
   it("renders bounded status chips and progress on the row", () => {
     const statuses = Object.fromEntries(
       Array.from({ length: 8 }, (_, index) => [
@@ -2396,7 +2404,7 @@ describe("ThreadRow", () => {
     expect(
       tier?.style.getPropertyValue("--bb-sidebar-sticky-parent-level"),
     ).toBe("1");
-    expect(tier?.style.paddingLeft).toBe("36px");
+    expect(tier?.style.paddingLeft).toBe("32px");
     expect(tier?.querySelector('[aria-hidden="true"].w-px')).not.toBeNull();
   });
 

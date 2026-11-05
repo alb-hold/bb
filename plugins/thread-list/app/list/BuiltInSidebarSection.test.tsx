@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, screen } from "@testing-library/react";
+import { cleanup, fireEvent, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { NO_COLLAPSED_CHILD_ACTIVITY } from "../model/thread-activity.js";
@@ -59,6 +59,25 @@ function BuiltInSectionsProbe({ showPinned }: { showPinned: boolean }) {
 afterEach(() => cleanup());
 
 describe("built-in sidebar section renderer", () => {
+  it("fades clipped pinned rows only while more content remains below", () => {
+    renderSections(<BuiltInSectionsProbe showPinned />);
+    const content = screen.getByText("Pinned content").parentElement;
+    if (!content) throw new Error("Expected pinned content viewport");
+    Object.defineProperties(content, {
+      clientHeight: { value: 224 },
+      scrollHeight: { value: 400 },
+    });
+    fireEvent.scroll(content);
+    expect(content.hasAttribute("data-more-below")).toBe(true);
+    expect(content.className).toContain("data-[more-below]:[mask-image:");
+    content.scrollTop = 176;
+    fireEvent.scroll(content);
+    expect(content.hasAttribute("data-more-below")).toBe(false);
+    expect(
+      screen.getByText("Threads content").parentElement?.hasAttribute("data-sidebar-section-scroll"),
+    ).toBe(false);
+  });
+
   it.each([false, true])(
     "keeps Pinned in normal flow without changing Threads stickiness (collapsed: %s)",
     (collapsed) => {
@@ -93,6 +112,14 @@ describe("built-in sidebar section renderer", () => {
         false,
       );
       expect(screen.queryByText("Pinned content") !== null).toBe(!collapsed);
+      if (!collapsed) {
+        expect(
+          screen.getByText("Pinned content").parentElement?.className,
+        ).toContain("max-h-[28svh]");
+        expect(
+          screen.getByText("Pinned content").parentElement?.className,
+        ).toContain("overflow-y-auto");
+      }
     },
   );
 

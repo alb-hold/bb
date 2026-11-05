@@ -266,6 +266,24 @@ afterEach(() => {
   window.sessionStorage.clear();
 });
 
+it("shows the compact home context and reuses new-thread navigation", async () => {
+  render(
+    <CompactViewportOverrideProvider isCompactViewport>
+      {layoutTree("/", <Link to="/projects/proj_one/threads/thr_one">Open seeded thread</Link>)}
+    </CompactViewportOverrideProvider>,
+  );
+  expect(await screen.findByText("Home")).toBeDefined();
+  const action = screen.getByRole("button", {
+    name: /^New thread$/,
+  });
+  fireEvent.click(action);
+  await waitFor(() =>
+    expect(screen.getByTestId("location").textContent).toBe("/"),
+  );
+  fireEvent.click(screen.getByRole("link", {name: "Open seeded thread"}));
+  await waitFor(() => expect(screen.queryByRole("button", {name: /^New thread$/})).toBeNull());
+});
+
 describe("canonical thread routes", () => {
   it.each([
     [
