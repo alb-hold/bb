@@ -232,30 +232,27 @@ describe("confined host path mutations", () => {
       const target = path.join(root, "late-data");
       await fs.mkdir(target);
       await fs.writeFile(path.join(target, "old.txt"), "old");
-      const originalRename = fs.rename.bind(fs);
       let injected = false;
-      vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
-        await originalRename(from, to);
-        if (String(from) !== target || injected) return;
-        await fs.writeFile(path.join(String(to), "late.txt"), "keep");
-        injected = true;
-      });
-      try {
-        await expect(
-          removeHostPath({
+      await expect(
+        removeHostPath(
+          {
             type: "host.remove_path",
             path: target,
             rootPath: root,
             recursive: true,
-          }),
-        ).rejects.toMatchObject({ code: "path_in_use" });
-        expect(injected).toBe(true);
-        await expect(
-          fs.readFile(path.join(target, "late.txt"), "utf8"),
-        ).resolves.toBe("keep");
-      } finally {
-        vi.restoreAllMocks();
-      }
+          },
+          {
+            afterHolderScan: async (quarantine) => {
+              await fs.writeFile(path.join(quarantine, "late.txt"), "keep");
+              injected = true;
+            },
+          },
+        ),
+      ).rejects.toMatchObject({ code: "path_in_use" });
+      expect(injected).toBe(true);
+      await expect(
+        fs.readFile(path.join(target, "late.txt"), "utf8"),
+      ).resolves.toBe("keep");
     },
   );
 
