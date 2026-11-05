@@ -177,7 +177,7 @@ describe("timeline item lifecycle row hydration", () => {
     vi.mocked(listStoredItemLifecycleRowsByItems).mockClear();
   });
 
-  it("keeps a completion that lands after the older page anchor", () => {
+  it("keeps an item completion after the older page anchor", () => {
     const { db, thread } = setup();
     seedTurn(
       db,
@@ -195,6 +195,16 @@ describe("timeline item lifecycle row hydration", () => {
     expect(cursor.anchorSeq).toBe(SELECTIVE_TURN_ROW_COUNT - PAGE_EVENT_BUDGET);
 
     const older = buildPage(db, thread, UNBOUNDED_EVENT_BUDGET, cursor);
+
+    expect(
+      older.rows.some(
+        (row) =>
+          row.kind === "work" &&
+          row.workKind === "command" &&
+          row.callId === "spanning" &&
+          row.status === "completed",
+      ),
+    ).toBe(true);
 
     const row = commandRow(older.rows, "spanning");
     expect(row.status).toBe("completed");

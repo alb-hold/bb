@@ -829,7 +829,9 @@ function ensureRejectedRequestTurnContextRows(
 function ensureTimelineSelectedItemLifecycleRows(
   db: DbConnection,
   args: TimelineWindowRowsArgs & {
+    beforeSequence: number | undefined;
     maxInlineOutputChars: InlineOutputCharLimit;
+    sequenceStart: number;
   },
 ): StoredEventRow[] {
   const items = new Map<string, ScopedItemRef>();
@@ -852,6 +854,10 @@ function ensureTimelineSelectedItemLifecycleRows(
   const lifecycleRows = listStoredItemLifecycleRowsByItems(db, {
     items: missingItems,
     maxInlineOutputChars: args.maxInlineOutputChars,
+    sequenceBounds: {
+      sequenceStart: args.sequenceStart,
+      beforeSequence: args.beforeSequence,
+    },
     threadId: args.threadId,
   });
   return mergeStoredEventRowsById([...args.rows, ...lifecycleRows]);
@@ -1198,6 +1204,8 @@ function selectStandardTimelineEventRows(
         maxInlineOutputChars,
         threadId: thread.id,
         rows: selectedRows,
+        sequenceStart,
+        beforeSequence,
       });
       selectedRows = ensureTimelineWindowParentedRows(db, {
         threadId: thread.id,
