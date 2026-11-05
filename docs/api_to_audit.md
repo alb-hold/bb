@@ -4838,3 +4838,7 @@ or names display Claude subscription. Without a provider name, missing
 subscriptions also display Claude subscription; other subscriptions are
 capitalized. Keep both
 helpers free of schema imports so app display does not eagerly load the parser.
+
+## Provider environment catalog identity
+
+`ExperimentalPluginProviderEnvEntry.internal_DO_NOT_USE_catalogIdentity` is server-only plumbing. Account Pooler is its only caller: it supplies a stable identity for catalog-only credentials that rotate on every resolution. Core hashes this identity instead of the credential value and strips the field before host-daemon RPCs. Routing endpoints and every unmarked environment value remain fingerprint inputs. Stabilization requires catalog identity invalidation and RPC stripping coverage; it is not a Plugin Guide surface.

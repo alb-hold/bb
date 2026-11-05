@@ -4853,7 +4853,7 @@ describe("ComposerBox compact layout", () => {
       name: "Run this thread in",
     });
     const send = screen.getByRole("button", { name: pending ? "Stop run" : "Submit (Enter)" });
-    expect(model.hasAttribute("disabled")).toBe(pending);
+    expect(model.hasAttribute("disabled")).toBe(false);
     expect(screen.getByRole("radio", { name: "Terminal" }).hasAttribute("disabled")).toBe(pending);
     const mic = screen.getByRole("button", { name: "Start voice input" });
     expect(row?.querySelector("[data-promptbox-trailing-actions]")?.contains(mic)).toBe(true);

@@ -1883,6 +1883,7 @@ export interface ExperimentalPluginProviderEnvContext {
 }
 
 export interface ExperimentalPluginProviderEnvEntry {
+  internal_DO_NOT_USE_catalogIdentity?: string;
   name: string;
   value: string | { serverPath: string };
   reason: string;

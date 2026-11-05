@@ -2462,6 +2462,10 @@ describe("Account Pool plugin", () => {
         name: "CODEX_POOL_AUTH_TOKEN",
         value: expect.any(String),
         reason: "Account Pooler token scoped to this machine",
+        internal_DO_NOT_USE_catalogIdentity: JSON.stringify([
+          "codex",
+          [[fixture.account.id, fixture.account.priority]],
+        ]),
       },
     ]);
     const token = entries.find(
@@ -2506,6 +2510,43 @@ describe("Account Pool plugin", () => {
     const token = entries.find(
       (entry) => entry.name === "ANTHROPIC_AUTH_TOKEN",
     )?.value;
+    expect(
+      entries.find((entry) => entry.name === "ANTHROPIC_AUTH_TOKEN")
+        ?.internal_DO_NOT_USE_catalogIdentity,
+    ).toBe(
+      JSON.stringify([
+        "claude",
+        [[fixture.account.id, fixture.account.priority]],
+      ]),
+    );
+    const second = await fixture.host.harness.behavior.resolveProviderEnv(
+      "claude-code",
+      { threadId: null, projectId: null, hostId: "host-one" },
+    );
+    const rotated = second.find(
+      (entry) => entry.name === "ANTHROPIC_AUTH_TOKEN",
+    );
+    expect(rotated?.value).not.toBe(token);
+    expect(rotated?.internal_DO_NOT_USE_catalogIdentity).toBe(
+      JSON.stringify([
+        "claude",
+        [[fixture.account.id, fixture.account.priority]],
+      ]),
+    );
+    await fixture.host.harness.behavior.callRpc("account.add", {
+      provider: "claude",
+      source: { kind: "api-key", apiKey: "sk-other-disposable" },
+      label: null,
+      priority: 101,
+    });
+    const changed = await fixture.host.harness.behavior.resolveProviderEnv(
+      "claude-code",
+      { threadId: null, projectId: null, hostId: "host-one" },
+    );
+    expect(
+      changed.find((entry) => entry.name === "ANTHROPIC_AUTH_TOKEN")
+        ?.internal_DO_NOT_USE_catalogIdentity,
+    ).not.toBe(rotated?.internal_DO_NOT_USE_catalogIdentity);
     expect(typeof token).toBe("string");
     expect(token).not.toBe(fixture.key);
     expect(getThread).not.toHaveBeenCalled();

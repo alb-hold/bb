@@ -69,6 +69,17 @@ export function listPluginInstructionContributions(): Array<{
   return contributions?.listInstructionContributions() ?? [];
 }
 
+export async function resolvePluginProviderCatalogEnv(args: {
+  providerId: string;
+  context: ExperimentalPluginProviderEnvContext;
+}) {
+  return (
+    contributions
+      ?.resolveProviderEnv?.(args)
+      .then((result) => result.entries) ?? []
+  );
+}
+
 export async function resolvePluginProviderEnv(args: {
   providerId: string;
   context: ExperimentalPluginProviderEnvContext;
