@@ -921,6 +921,7 @@ export function ModelReasoningPicker({
   const trigger = (
     <Button
       ref={triggerRef}
+      data-model-reasoning-trigger=""
       type="button"
       variant="ghost"
       size="sm"

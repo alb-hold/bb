@@ -83,10 +83,8 @@ describe("ExecutionControls", () => {
     expect(wrappingRow?.classList.contains("min-w-0")).toBe(true);
     expect(wrappingRow?.classList.contains("max-w-full")).toBe(true);
     expect(chip.classList.contains("overflow-hidden")).toBe(true);
-    expect(wrappingRow?.classList.contains("max-md:contents")).toBe(true);
-    expect(chip.classList.contains("max-md:row-start-1")).toBe(true);
-    expect(control.classList.contains("max-md:row-start-2")).toBe(true);
-    expect(control.classList.contains("max-md:col-start-2")).toBe(true);
+    expect(wrappingRow?.getAttribute("data-execution-controls-layout")).toBe("stacked");
+    expect(chip.hasAttribute("data-model-reasoning-trigger")).toBe(true);
     for (const name of ["Chat", "Terminal"]) {
       const choice = screen.getByRole("radio", { name });
       expect(choice.textContent).toBe(name);
@@ -230,8 +228,8 @@ describe("ExecutionControls", () => {
     expect(
       screen
         .getByRole("radiogroup", { name: "Run this thread in" })
-        .classList.contains("max-md:row-start-2"),
-    ).toBe(true);
+        .closest('[data-execution-controls-layout="stacked"]'),
+    ).not.toBeNull();
   });
 
   it("exposes the stored-model substitution on the model chip", () => {

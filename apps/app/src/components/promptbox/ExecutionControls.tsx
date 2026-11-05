@@ -140,9 +140,9 @@ export const ExecutionControls = memo(function ExecutionControls({
 
   return (
     <div
+      data-execution-controls-layout={nativeTerminal ? "stacked" : undefined}
       className={cn(
         "flex min-w-0 max-w-full flex-wrap items-center gap-x-1 gap-y-2",
-        nativeTerminal !== undefined && "max-md:contents",
       )}
     >
       {showModelPicker || pending ? (
@@ -175,7 +175,7 @@ export const ExecutionControls = memo(function ExecutionControls({
           agentSections={agentOptions?.sections}
           onAgentOptionChange={agentOptions?.onChange}
           muted
-          className="min-w-0 overflow-hidden max-md:col-span-full max-md:row-start-1 max-md:justify-self-start"
+          className="min-w-0 overflow-hidden"
           disabled={disabled || pending}
           handoff={handoff}
         />
@@ -192,7 +192,7 @@ export const ExecutionControls = memo(function ExecutionControls({
             }
           }}
           disabled={disabled || pending || nativeTerminal.disabled}
-          className="h-7 shrink-0 gap-0.5 rounded-md p-0.5 max-md:h-auto max-md:col-start-2 max-md:row-start-2 max-md:justify-self-start"
+          className="h-7 shrink-0 gap-0.5 rounded-md p-0.5"
         >
           {NATIVE_TERMINAL_CHOICES.map((choice) => (
             <ToggleGroupItem

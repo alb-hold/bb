@@ -174,3 +174,18 @@ it("owns the stacked action row through stable composer slots", () => {
   }
   expect(css).not.toContain('aria-label="Prompt actions"');
 });
+
+
+it("pins mobile pending controls to the same two rows in the eager stylesheet", () => {
+  const css = readFileSync("../../apps/app/src/app.css", "utf8");
+  for (const [selector, declarations] of [
+    ['[data-execution-controls-layout="stacked"]', ["display: contents"]],
+    ['[data-model-reasoning-trigger]', ["grid-column: 1 / -1", "grid-row: 1"]],
+    ['[data-native-terminal-toggle]', ["grid-column: 2", "grid-row: 2", "height: auto"]],
+    ['[data-native-terminal-toggle] > button', ["height: 2.75rem", "min-width: 2.75rem"]],
+  ] as const) {
+    const rule = css.slice(css.indexOf(selector + " {"));
+    const body = rule.slice(0, rule.indexOf("}"));
+    for (const declaration of declarations) expect(body).toContain(declaration);
+  }
+});

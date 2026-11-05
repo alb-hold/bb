@@ -842,4 +842,26 @@
     grid-column: 3;
     grid-row: 2;
   }
+
+  [data-promptbox-execution-layout="stacked"] [data-execution-controls-layout="stacked"] {
+    display: contents;
+  }
+
+  [data-execution-controls-layout="stacked"] [data-model-reasoning-trigger] {
+    grid-column: 1 / -1;
+    grid-row: 1;
+    justify-self: start;
+  }
+
+  [data-execution-controls-layout="stacked"] [data-native-terminal-toggle] {
+    grid-column: 2;
+    grid-row: 2;
+    justify-self: start;
+    height: auto;
+  }
+
+  [data-execution-controls-layout="stacked"] [data-native-terminal-toggle] > button {
+    height: 2.75rem;
+    min-width: 2.75rem;
+  }
 }
