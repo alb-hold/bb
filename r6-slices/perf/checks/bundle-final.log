@@ -1,0 +1,17 @@
+boot payload: 1571.9 KB raw / 385.1 KB brotli
+  budget:     1571.9 KB raw / 385.1 KB brotli
+  chunks:     3
+
+PluginFrontend closure: 565.5 KB raw / 178.0 KB brotli
+  budget:     661.1 KB raw / 206.6 KB brotli
+  chunks:     49 (beyond the boot payload)
+
+ThreadPage closure: 1627.0 KB raw / 475.7 KB brotli
+  budget:     2372.0 KB raw / 682.6 KB brotli
+  chunks:     96 (beyond the boot payload)
+
+NewThreadPage closure: 742.4 KB raw / 231.8 KB brotli
+  budget:     830.1 KB raw / 263.7 KB brotli
+  chunks:     70 (beyond the boot payload)
+
+Bundle budget OK.

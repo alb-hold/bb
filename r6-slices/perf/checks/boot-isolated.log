@@ -1,0 +1,56 @@
+• turbo 2.10.12
+
+   • Packages in scope: @bb/app
+   • Running test in 1 packages
+   • Remote caching disabled
+
+//:ensure-native-modules: cache bypass, force executing 2cd82b53968bb9d4
+@bb/plugin-build:generate: cache miss, executing b9cdf3b4ce356887
+@bb/templates:generate:templates: cache miss, executing ab361baef206ebc2
+@bb/templates:generate:plugin-scaffold: cache miss, executing 70aec0bd389081fd
+@bb/process-utils:generate:profile-worker: cache miss, executing 1856a8f62b2db5c4
+//:ensure-native-modules: 
+//:ensure-native-modules: > bb@ ensure-native-modules /home/alex_/bb-remote-heavy/bb-fork-31f58c3c8d46
+//:ensure-native-modules: > node scripts/ensure-native-modules.mjs
+//:ensure-native-modules: 
+@bb/templates:generate:templates: 
+@bb/templates:generate:templates: > @bb/templates@0.0.1 generate:templates /home/alex_/bb-remote-heavy/bb-fork-31f58c3c8d46/packages/templates
+@bb/templates:generate:templates: > node ./scripts/generate-templates.mjs
+@bb/templates:generate:templates: 
+@bb/plugin-build:generate: 
+@bb/plugin-build:generate: > @bb/plugin-build@0.0.1 generate /home/alex_/bb-remote-heavy/bb-fork-31f58c3c8d46/packages/plugin-build
+@bb/plugin-build:generate: > node ./scripts/generate-plugin-theme.mjs && node ./scripts/generate-runtime-export-manifest.mjs
+@bb/plugin-build:generate: 
+@bb/templates:generate:plugin-scaffold: 
+@bb/templates:generate:plugin-scaffold: > @bb/templates@0.0.1 generate:plugin-scaffold /home/alex_/bb-remote-heavy/bb-fork-31f58c3c8d46/packages/templates
+@bb/templates:generate:plugin-scaffold: > node ./scripts/generate-plugin-scaffold.mjs
+@bb/templates:generate:plugin-scaffold: 
+@bb/process-utils:generate:profile-worker: 
+@bb/process-utils:generate:profile-worker: > @bb/process-utils@0.0.1 generate:profile-worker /home/alex_/bb-remote-heavy/bb-fork-31f58c3c8d46/packages/process-utils
+@bb/process-utils:generate:profile-worker: > node scripts/generate-profile-worker.mjs
+@bb/process-utils:generate:profile-worker: 
+@bb/plugin-build:generate: plugin-theme.generated.ts up to date
+@bb/plugin-build:generate: host-tailwind.css up to date
+@bb/plugin-build:generate: host-tailwind-version.ts up to date
+@bb/plugin-build:generate: wrote /home/alex_/bb-remote-heavy/bb-fork-31f58c3c8d46/packages/plugin-build/src/generated/runtime-export-manifest.generated.ts (react@19.3.0)
+@bb/app:test: cache miss, executing 43146fcd22405e92
+@bb/app:test: 
+@bb/app:test: > @bb/app@0.0.1 test /home/alex_/bb-remote-heavy/bb-fork-31f58c3c8d46/apps/app
+@bb/app:test: > node scripts/generate-pwa-icons.mjs --check && vitest run --config vitest.config.ts "plugin-frontend-boot.test.ts" "--maxWorkers=1"
+@bb/app:test: 
+@bb/app:test: 
+@bb/app:test:  RUN  v4.1.1 /home/alex_/bb-remote-heavy/bb-fork-31f58c3c8d46/apps/app
+@bb/app:test: 
+@bb/app:test:  ✓  @bb/app:isolated  src/lib/plugin-frontend-boot.test.ts (1 test) 9060ms
+@bb/app:test:    ✓ reports a failed plugin frontend boot as failed until a retry succeeds  9057ms
+@bb/app:test: 
+@bb/app:test:  Test Files  1 passed (1)
+@bb/app:test:       Tests  1 passed (1)
+@bb/app:test:    Start at  01:34:29
+@bb/app:test:    Duration  10.61s (transform 6.54s, setup 265ms, import 167ms, tests 9.06s, environment 828ms)
+@bb/app:test: 
+
+ Tasks:    6 successful, 6 total
+Cached:    0 cached, 6 total
+  Time:    17.088s 
+

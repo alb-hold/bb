@@ -1,0 +1,163 @@
+{
+  "file": "r6-slices/perf/raw/broad-0.heapsnapshot",
+  "xtermWrappers": 1,
+  "terminalIds": [
+    673937
+  ],
+  "webglNative": {
+    "WebGLLoseContext": 1,
+    "WebGL2RenderingContext": 1,
+    "WebGLVertexArrayObject": 3,
+    "WebGLBuffer": 6,
+    "WebGLProgram": 2,
+    "WebGLUniformLocation": 4,
+    "WebGLTexture": 32,
+    "blink::DisallowNewWrapper<blink::BasicHeapHashSet<blink::internal::HeapCollectionType::kDisallowNew, cppgc::internal::BasicMember<blink::WebGLRenderingContextBase, cppgc::internal::WeakMemberTag, cppgc::internal::DijkstraWriteBarrierPolicy>>>": 1,
+    "blink::HeapHashTableBacking<blink::HashTable<cppgc::internal::BasicMember<blink::WebGLRenderingContextBase, cppgc::internal::WeakMemberTag, cppgc::internal::DijkstraWriteBarrierPolicy>, cppgc::internal::BasicMember<blink::WebGLRenderingContextBase, cppgc::internal::WeakMemberTag, cppgc::internal::DijkstraWriteBarrierPolicy>, blink::IdentityExtractor, blink::HashTraits<cppgc::internal::BasicMember<blink::WebGLRenderingContextBase, cppgc::internal::WeakMemberTag, cppgc::internal::DijkstraWriteBarrierPolicy>>, blink::HashTraits<cppgc::internal::BasicMember<blink::WebGLRenderingContextBase, cppgc::internal::WeakMemberTag, cppgc::internal::DijkstraWriteBarrierPolicy>>, blink::HeapAllocator>>": 1,
+    "WebGLTransformFeedback": 1,
+    "blink::HeapVectorBacking<cppgc::internal::BasicMember<blink::WebGLBuffer, cppgc::internal::StrongMemberTag, cppgc::internal::DijkstraWriteBarrierPolicy>>": 5,
+    "WebGLShader": 4,
+    "blink::HeapVectorBacking<cppgc::internal::BasicMember<blink::WebGLSampler, cppgc::internal::StrongMemberTag, cppgc::internal::DijkstraWriteBarrierPolicy>>": 1,
+    "blink::HeapVectorBacking<blink::WebGLRenderingContextBase::TextureUnitState>": 1,
+    "blink::HeapVectorBacking<cppgc::internal::BasicMember<blink::WebGLRenderingContextBase::ExtensionTracker, cppgc::internal::StrongMemberTag, cppgc::internal::DijkstraWriteBarrierPolicy>>": 1,
+    "blink::HeapHashTableBacking<blink::HashTable<cppgc::internal::BasicMember<blink::WebGLBuffer, cppgc::internal::WeakMemberTag, cppgc::internal::DijkstraWriteBarrierPolicy>, cppgc::internal::BasicMember<blink::WebGLBuffer, cppgc::internal::WeakMemberTag, cppgc::internal::DijkstraWriteBarrierPolicy>, blink::IdentityExtractor, blink::HashTraits<cppgc::internal::BasicMember<blink::WebGLBuffer, cppgc::internal::WeakMemberTag, cppgc::internal::DijkstraWriteBarrierPolicy>>, blink::HashTraits<cppgc::internal::BasicMember<blink::WebGLBuffer, cppgc::internal::WeakMemberTag, cppgc::internal::DijkstraWriteBarrierPolicy>>, blink::HeapAllocator>>": 1
+  },
+  "selfSizeByType": {
+    "synthetic": 0,
+    "native": 24704526,
+    "string": 2500188,
+    "object shape": 2450048,
+    "code": 20535704,
+    "array": 5410100,
+    "number": 75900,
+    "symbol": 5168,
+    "object": 8414484,
+    "closure": 4379536,
+    "concatenated string": 454680,
+    "regexp": 26280,
+    "sliced string": 21280,
+    "bigint": 728
+  },
+  "topSizes": [
+    [
+      "('native', 'system / ExternalStringData')",
+      14006036
+    ],
+    [
+      "('code', 'system / InstructionStream')",
+      6736480
+    ],
+    [
+      "('object', 'Object')",
+      3909072
+    ],
+    [
+      "('code', 'system / BytecodeArray')",
+      3131800
+    ],
+    [
+      "('array', '(object properties)')",
+      2394788
+    ],
+    [
+      "('array', '')",
+      1682276
+    ],
+    [
+      "('native', 'system / JSArrayBufferData')",
+      1576002
+    ],
+    [
+      "('closure', '')",
+      1452480
+    ],
+    [
+      "('object shape', 'system / Map')",
+      1321816
+    ],
+    [
+      "('code', 'system / TrustedByteArray')",
+      1250300
+    ],
+    [
+      "('array', '(object elements)')",
+      1134616
+    ],
+    [
+      "('object', 'Pi')",
+      1130688
+    ],
+    [
+      "('object shape', 'system / DescriptorArray')",
+      934988
+    ],
+    [
+      "('code', 'system / FeedbackCell')",
+      806016
+    ],
+    [
+      "('code', 'system / ScopeInfo')",
+      803712
+    ],
+    [
+      "('code', 'system / UncompiledDataWithoutPreparseData')",
+      752420
+    ],
+    [
+      "('object', 'Array')",
+      722376
+    ],
+    [
+      "('code', 'system / FeedbackVector')",
+      692948
+    ],
+    [
+      "('code', '(constant pool)')",
+      644484
+    ],
+    [
+      "('code', 'system / ObjectBoilerplateDescription')",
+      589256
+    ],
+    [
+      "('native', 'blink::StyleRule')",
+      494960
+    ],
+    [
+      "('code', 'system / FeedbackMetadata')",
+      456868
+    ],
+    [
+      "('concatenated string', '(concatenated string)')",
+      454680
+    ],
+    [
+      "('code', '(context local names)')",
+      450436
+    ],
+    [
+      "('closure', 'native_bind')",
+      396576
+    ],
+    [
+      "('code', 'system / SharedFunctionInfo')",
+      386832
+    ],
+    [
+      "('code', 'system / Code')",
+      373392
+    ],
+    [
+      "('native', 'system / FunctionTemplateInfo')",
+      363840
+    ],
+    [
+      "('native', 'system / PropertyArray')",
+      356456
+    ],
+    [
+      "('native', 'blink::CSSVariableData')",
+      350992
+    ]
+  ]
+}

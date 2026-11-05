@@ -1,0 +1,184 @@
+[
+  {
+    "newRetainer": {
+      "id": 4609883,
+      "type": "array",
+      "name": "",
+      "bytes": 32788
+    },
+    "pathToRoot": null
+  },
+  {
+    "newRetainer": {
+      "id": 4463339,
+      "type": "array",
+      "name": "",
+      "bytes": 16404
+    },
+    "pathToRoot": null
+  },
+  {
+    "newRetainer": {
+      "id": 4372577,
+      "type": "object",
+      "name": "system / Context / scope @2500093",
+      "bytes": 800
+    },
+    "pathToRoot": null
+  },
+  {
+    "newRetainer": {
+      "id": 4403315,
+      "type": "object",
+      "name": "system / Context / scope @2500093",
+      "bytes": 800
+    },
+    "pathToRoot": null
+  },
+  {
+    "newRetainer": {
+      "id": 384390,
+      "type": "native",
+      "name": "blink::HeapHashTableBacking<blink::HashTable<cppgc::internal::BasicMember<blink::ContextLifecycleObserver, cppgc::internal::WeakMemberTag, cppgc::internal::DijkstraWriteBarrierPolicy>, blink::KeyValuePair<cppgc::internal::BasicMember<blink::ContextLifecycleObserver, cppgc::internal::WeakMemberTag, cppgc::internal::DijkstraWriteBarrierPolicy>, unsigned int>, blink::KeyValuePairExtractor, blink::HashMapValueTraits<blink::HashTraits<cppgc::internal::BasicMember<blink::ContextLifecycleObserver, cppgc::internal::WeakMemberTag, cppgc::internal::DijkstraWriteBarrierPolicy>>, blink::HashTraits<unsigned int>>, blink::HashTraits<cppgc::internal::BasicMember<blink::ContextLifecycleObserver, cppgc::internal::WeakMemberTag, cppgc::internal::DijkstraWriteBarrierPolicy>>, blink::HeapAllocator>>",
+      "bytes": 65544
+    },
+    "pathToRoot": [
+      {
+        "via": "element:34",
+        "from": {
+          "id": 135731,
+          "type": "native",
+          "name": "Window / http://127.0.0.1:16830",
+          "bytes": 920
+        }
+      },
+      {
+        "via": "internal:global_proxy_object",
+        "from": {
+          "id": 7379,
+          "type": "native",
+          "name": "system / NativeContext / http://127.0.0.1:16830",
+          "bytes": 1244
+        }
+      },
+      {
+        "via": "internal:1 / blink::ScriptStateProtectingContext::context_",
+        "from": {
+          "id": 23,
+          "type": "synthetic",
+          "name": "(Global handles)",
+          "bytes": 0
+        }
+      },
+      {
+        "via": "element:10",
+        "from": {
+          "id": 3,
+          "type": "synthetic",
+          "name": "(GC roots)",
+          "bytes": 0
+        }
+      },
+      {
+        "via": "element:1",
+        "from": {
+          "id": 1,
+          "type": "synthetic",
+          "name": "",
+          "bytes": 0
+        }
+      }
+    ]
+  },
+  {
+    "newRetainer": {
+      "id": 340338,
+      "type": "native",
+      "name": "blink::HeapHashTableBacking<blink::HashTable<int, blink::KeyValuePair<int, cppgc::internal::BasicMember<blink::DOMTimer, cppgc::internal::StrongMemberTag, cppgc::internal::DijkstraWriteBarrierPolicy>>, blink::KeyValuePairExtractor, blink::HashMapValueTraits<blink::HashTraits<int>, blink::HashTraits<cppgc::internal::BasicMember<blink::DOMTimer, cppgc::internal::StrongMemberTag, cppgc::internal::DijkstraWriteBarrierPolicy>>>, blink::HashTraits<int>, blink::HeapAllocator>>",
+      "bytes": 32776
+    },
+    "pathToRoot": [
+      {
+        "via": "element:1",
+        "from": {
+          "id": 47458,
+          "type": "native",
+          "name": "blink::(anonymous namespace)::DOMTimerCoordinator",
+          "bytes": 56
+        }
+      },
+      {
+        "via": "element:11",
+        "from": {
+          "id": 155428,
+          "type": "native",
+          "name": "blink::HeapHashTableBacking<blink::HashTable<const char *, blink::KeyValuePair<const char *, cppgc::internal::BasicMember<blink::Supplement<blink::ExecutionContext>, cppgc::internal::StrongMemberTag, cppgc::internal::DijkstraWriteBarrierPolicy>>, blink::KeyValuePairExtractor, blink::HashMapValueTraits<blink::HashTraits<const char *>, blink::HashTraits<cppgc::internal::BasicMember<blink::Supplement<blink::ExecutionContext>, cppgc::internal::StrongMemberTag, cppgc::internal::DijkstraWriteBarrierPolicy>>>, blink::HashTraits<const char *>, blink::HeapAllocator>>",
+          "bytes": 520
+        }
+      },
+      {
+        "via": "element:35",
+        "from": {
+          "id": 135731,
+          "type": "native",
+          "name": "Window / http://127.0.0.1:16830",
+          "bytes": 920
+        }
+      },
+      {
+        "via": "internal:global_proxy_object",
+        "from": {
+          "id": 7379,
+          "type": "native",
+          "name": "system / NativeContext / http://127.0.0.1:16830",
+          "bytes": 1244
+        }
+      },
+      {
+        "via": "internal:1 / blink::ScriptStateProtectingContext::context_",
+        "from": {
+          "id": 23,
+          "type": "synthetic",
+          "name": "(Global handles)",
+          "bytes": 0
+        }
+      },
+      {
+        "via": "element:10",
+        "from": {
+          "id": 3,
+          "type": "synthetic",
+          "name": "(GC roots)",
+          "bytes": 0
+        }
+      },
+      {
+        "via": "element:1",
+        "from": {
+          "id": 1,
+          "type": "synthetic",
+          "name": "",
+          "bytes": 0
+        }
+      }
+    ]
+  },
+  {
+    "newRetainer": {
+      "id": 4048059,
+      "type": "string",
+      "name": "(string content omitted)",
+      "bytes": 11860
+    },
+    "pathToRoot": null
+  },
+  {
+    "newRetainer": {
+      "id": 4900871,
+      "type": "string",
+      "name": "(string content omitted)",
+      "bytes": 4024
+    },
+    "pathToRoot": null
+  }
+]

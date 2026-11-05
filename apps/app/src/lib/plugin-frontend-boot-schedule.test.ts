@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { requestBrowserIdle, scheduleDeferredPluginFrontendBoot, whenHomeComposerInputOrTimeout } from "./plugin-frontend-boot-schedule";
+import {
+  requestBrowserIdle,
+  scheduleDeferredPluginFrontendBoot,
+  whenHomeComposerInputOrTimeout,
+} from "./plugin-frontend-boot-schedule";
 
 describe("whenHomeComposerInputOrTimeout", () => {
   afterEach(() => {
@@ -15,7 +19,9 @@ describe("whenHomeComposerInputOrTimeout", () => {
       setTimeout: globalThis.setTimeout,
       clearTimeout: globalThis.clearTimeout,
     });
-    vi.stubGlobal("document", { querySelector: () => mounted ? composer : null });
+    vi.stubGlobal("document", {
+      querySelector: () => mounted ? composer : null,
+    });
     return composer;
   }
 
@@ -45,7 +51,10 @@ describe("whenHomeComposerInputOrTimeout", () => {
     expect(ready).toHaveBeenCalledOnce();
   });
 
-  it.each([["/threads/thread", true], ["/", false]])("does not delay %s with mounted=%s", async (path, mounted) => {
+  it.each([
+    { path: "/threads/thread", mounted: true },
+    { path: "/", mounted: false },
+  ])("does not delay $path with mounted=$mounted", async ({ path, mounted }) => {
     setup(path, mounted);
     await whenHomeComposerInputOrTimeout();
     expect(vi.getTimerCount()).toBe(0);

@@ -1,0 +1,10 @@
+[doctor] /Users/alexandrebrandizzi/.bb/plugins/environment-git-worktree/host-data/worktrees/thr_kfqi76gqgc-1/bb-fork@HEAD: stacks=node tests={'total': 2674, 'integration': 52, 'e2e': 10} ui=False service=False llm=False config=False
+  high   contract    no .verify/config.json: nothing defines 'done' for this repo
+         fix: verify.py init --write, then fill the todo stages
+  medium integration 77 test files skip themselves when an env var is missing
+         fix: run them in strict mode with the env provided; keep max_skipped: 0
+  medium rehearsal   data-moving code (pipeline, queue, worker) has no dry run on production-shaped data
+         fix: add a read-only dry-run command; see /Users/alexandrebrandizzi/.agents/skills/verify/templates/README.md#rehearsal
+  low    mutation    no mutation testing: test strength is unknown
+         fix: /Users/alexandrebrandizzi/.agents/skills/verify/templates/mutation
+[doctor] 4 findings

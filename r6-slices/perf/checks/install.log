@@ -1,0 +1,303 @@
+Scope: all 116 workspace projects
+(node:20735) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+Recreating /Users/alexandrebrandizzi/.bb/plugins/environment-git-worktree/host-data/worktrees/thr_kfqi76gqgc-1/bb-fork/node_modules
+Lockfile is up to date, resolution step is skipped
+Progress: resolved 1, reused 0, downloaded 0, added 0
+Packages: +2293
+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+Progress: resolved 2293, reused 0, downloaded 12, added 12
+Progress: resolved 2293, reused 0, downloaded 81, added 93
+Progress: resolved 2293, reused 0, downloaded 124, added 139
+Progress: resolved 2293, reused 0, downloaded 181, added 195
+Progress: resolved 2293, reused 0, downloaded 210, added 226
+Progress: resolved 2293, reused 0, downloaded 251, added 266
+Progress: resolved 2293, reused 0, downloaded 278, added 290
+Progress: resolved 2293, reused 0, downloaded 338, added 348
+Progress: resolved 2293, reused 0, downloaded 394, added 408
+Progress: resolved 2293, reused 0, downloaded 459, added 474
+Progress: resolved 2293, reused 0, downloaded 532, added 544
+Progress: resolved 2293, reused 0, downloaded 607, added 621
+Progress: resolved 2293, reused 0, downloaded 695, added 710
+Progress: resolved 2293, reused 0, downloaded 771, added 788
+Progress: resolved 2293, reused 0, downloaded 866, added 882
+Progress: resolved 2293, reused 0, downloaded 923, added 938
+Progress: resolved 2293, reused 0, downloaded 973, added 995
+Progress: resolved 2293, reused 0, downloaded 1057, added 1082
+Progress: resolved 2293, reused 0, downloaded 1145, added 1168
+Progress: resolved 2293, reused 0, downloaded 1211, added 1236
+Progress: resolved 2293, reused 0, downloaded 1262, added 1286
+Progress: resolved 2293, reused 0, downloaded 1315, added 1342
+Progress: resolved 2293, reused 0, downloaded 1383, added 1406
+Progress: resolved 2293, reused 0, downloaded 1420, added 1446
+Progress: resolved 2293, reused 0, downloaded 1427, added 1449
+Progress: resolved 2293, reused 0, downloaded 1465, added 1491
+Progress: resolved 2293, reused 0, downloaded 1501, added 1526
+Progress: resolved 2293, reused 0, downloaded 1517, added 1538
+Progress: resolved 2293, reused 0, downloaded 1525, added 1546
+Progress: resolved 2293, reused 0, downloaded 1541, added 1558
+Progress: resolved 2293, reused 0, downloaded 1549, added 1566
+Progress: resolved 2293, reused 0, downloaded 1581, added 1599
+Progress: resolved 2293, reused 0, downloaded 1649, added 1675
+Progress: resolved 2293, reused 0, downloaded 1714, added 1740
+Progress: resolved 2293, reused 0, downloaded 1763, added 1783
+Progress: resolved 2293, reused 0, downloaded 1814, added 1840
+Progress: resolved 2293, reused 0, downloaded 1858, added 1885
+Progress: resolved 2293, reused 0, downloaded 1902, added 1925
+Progress: resolved 2293, reused 0, downloaded 1968, added 1998
+Progress: resolved 2293, reused 0, downloaded 2022, added 2051
+Progress: resolved 2293, reused 0, downloaded 2045, added 2068
+Progress: resolved 2293, reused 0, downloaded 2066, added 2087
+Progress: resolved 2293, reused 0, downloaded 2095, added 2121
+Progress: resolved 2293, reused 0, downloaded 2105, added 2125
+Progress: resolved 2293, reused 0, downloaded 2109, added 2135
+Progress: resolved 2293, reused 0, downloaded 2118, added 2139
+Progress: resolved 2293, reused 0, downloaded 2133, added 2150
+Progress: resolved 2293, reused 0, downloaded 2155, added 2178
+Progress: resolved 2293, reused 0, downloaded 2195, added 2225
+Progress: resolved 2293, reused 0, downloaded 2218, added 2243
+Progress: resolved 2293, reused 0, downloaded 2221, added 2243
+Progress: resolved 2293, reused 0, downloaded 2232, added 2255
+Progress: resolved 2293, reused 0, downloaded 2249, added 2271
+Progress: resolved 2293, reused 0, downloaded 2257, added 2286
+Progress: resolved 2293, reused 0, downloaded 2260, added 2288
+Progress: resolved 2293, reused 0, downloaded 2260, added 2289
+Progress: resolved 2293, reused 0, downloaded 2261, added 2290
+Progress: resolved 2293, reused 0, downloaded 2261, added 2291
+Progress: resolved 2293, reused 0, downloaded 2261, added 2292
+Progress: resolved 2293, reused 0, downloaded 2262, added 2292
+Progress: resolved 2293, reused 0, downloaded 2262, added 2293
+Progress: resolved 2293, reused 0, downloaded 2262, added 2293, done
+.../esbuild@0.28.1/node_modules/esbuild postinstall$ node install.js
+.../node_modules/better-sqlite3 install$ prebuild-install || node-gyp rebuild --release
+.../node_modules/msw postinstall$ node -e "import('./config/scripts/postinstall.js').catch(() => void 0)"
+.../sharp@0.34.5/node_modules/sharp install$ node install/check.js || npm run build
+.../node_modules/workerd postinstall$ node install.js
+.../node_modules/msw postinstall: Done
+.../esbuild@0.28.1/node_modules/esbuild postinstall: Done
+.../node_modules/better-sqlite3 install: (node:54925) [DEP0176] DeprecationWarning: fs.R_OK is deprecated, use fs.constants.R_OK instead
+.../node_modules/better-sqlite3 install: (Use `node --trace-deprecation ...` to show where the warning was created)
+.../node_modules/better-sqlite3 install: prebuild-install warn install EPERM: operation not permitted, access '/Users/alexandrebrandizzi/.npm'
+.../node_modules/msw postinstall$ node -e "import('./config/scripts/postinstall.js').catch(() => void 0)"
+.../node_modules/better-sqlite3 install: gyp info it worked if it ends with ok
+.../node_modules/better-sqlite3 install: gyp info using node-gyp@10.2.0
+.../node_modules/better-sqlite3 install: gyp info using node@24.13.0 | darwin | arm64
+.../esbuild@0.25.12/node_modules/esbuild postinstall$ node install.js
+.../node_modules/msw postinstall: Done
+.../esbuild@0.25.12/node_modules/esbuild postinstall: Done
+.../node_modules/@swc/core postinstall$ node postinstall.js
+.../node_modules/better-sqlite3 install: gyp info find Python using Python version 3.14.7 found at "/opt/homebrew/opt/python@3.14/bin/python3.14"
+.../node_modules/workerd postinstall: Done
+.../node_modules/better-sqlite3 install: gyp info spawn /opt/homebrew/opt/python@3.14/bin/python3.14
+.../node_modules/better-sqlite3 install: gyp info spawn args [
+.../node_modules/better-sqlite3 install: gyp info spawn args '/Users/alexandrebrandizzi/.cache/node/corepack/v1/pnpm/9.15.0/dist/node_modules/node-gyp/gyp/gyp_main.py',
+.../node_modules/better-sqlite3 install: gyp info spawn args 'binding.gyp',
+.../node_modules/better-sqlite3 install: gyp info spawn args '-f',
+.../node_modules/better-sqlite3 install: gyp info spawn args 'make',
+.../node_modules/better-sqlite3 install: gyp info spawn args '-I',
+.../node_modules/better-sqlite3 install: gyp info spawn args '/Users/alexandrebrandizzi/.bb/plugins/environment-git-worktree/host-data/worktrees/thr_kfqi76gqgc-1/bb-fork/node_modules/.pnpm/better-sqlite3@12.10.0/node_modules/better-sqlite3/build/config.gypi',
+.../node_modules/better-sqlite3 install: gyp info spawn args '-I',
+.../node_modules/better-sqlite3 install: gyp info spawn args '/Users/alexandrebrandizzi/.cache/node/corepack/v1/pnpm/9.15.0/dist/node_modules/node-gyp/addon.gypi',
+.../node_modules/better-sqlite3 install: gyp info spawn args '-I',
+.../node_modules/better-sqlite3 install: gyp info spawn args '/Users/alexandrebrandizzi/Library/Caches/node-gyp/24.13.0/include/node/common.gypi',
+.../node_modules/better-sqlite3 install: gyp info spawn args '-Dlibrary=shared_library',
+.../node_modules/better-sqlite3 install: gyp info spawn args '-Dvisibility=default',
+.../node_modules/better-sqlite3 install: gyp info spawn args '-Dnode_root_dir=/Users/alexandrebrandizzi/Library/Caches/node-gyp/24.13.0',
+.../node_modules/better-sqlite3 install: gyp info spawn args '-Dnode_gyp_dir=/Users/alexandrebrandizzi/.cache/node/corepack/v1/pnpm/9.15.0/dist/node_modules/node-gyp',
+.../node_modules/better-sqlite3 install: gyp info spawn args '-Dnode_lib_file=/Users/alexandrebrandizzi/Library/Caches/node-gyp/24.13.0/<(target_arch)/node.lib',
+.../node_modules/better-sqlite3 install: gyp info spawn args '-Dmodule_root_dir=/Users/alexandrebrandizzi/.bb/plugins/environment-git-worktree/host-data/worktrees/thr_kfqi76gqgc-1/bb-fork/node_modules/.pnpm/better-sqlite3@12.10.0/node_modules/better-sqlite3',
+.../node_modules/better-sqlite3 install: gyp info spawn args '-Dnode_engine=v8',
+.../node_modules/better-sqlite3 install: gyp info spawn args '--depth=.',
+.../node_modules/better-sqlite3 install: gyp info spawn args '--no-parallel',
+.../node_modules/better-sqlite3 install: gyp info spawn args '--generator-output',
+.../node_modules/better-sqlite3 install: gyp info spawn args 'build',
+.../node_modules/better-sqlite3 install: gyp info spawn args '-Goutput_dir=.'
+.../node_modules/better-sqlite3 install: gyp info spawn args ]
+.../node_modules/@swc/core postinstall: Done
+.../node_modules/node-pty install$ node scripts/prebuild.js || node-gyp rebuild
+.../node_modules/node-pty install: [32m> Checking prebuilds...[0m
+.../sharp@0.34.5/node_modules/sharp install: Done
+.../node_modules/node-pty install: Done
+.../node_modules/node-pty postinstall$ node scripts/post-install.js
+.../node_modules/electron-winstaller install$ node ./script/select-7z-arch.js
+.../node_modules/node-pty postinstall: [32m> Cleaning release folder...[0m
+.../node_modules/node-pty postinstall: [32m> Moving conpty.dll...[0m
+.../node_modules/node-pty postinstall:   SKIPPED (not Windows)
+.../node_modules/node-pty postinstall: Done
+.../node_modules/electron-winstaller install: Selecting 7-Zip for arch arm64
+.../node_modules/electron-winstaller install: Done
+.../node_modules/@parcel/watcher install$ node scripts/build-from-source.js
+.../node_modules/@parcel/watcher install: Done
+.../node_modules/dtrace-provider install$ node-gyp rebuild || node suppress-error.js
+.../node_modules/dtrace-provider install: gyp info it worked if it ends with ok
+.../node_modules/dtrace-provider install: gyp info using node-gyp@10.2.0
+.../node_modules/dtrace-provider install: gyp info using node@24.13.0 | darwin | arm64
+.../core-js@3.49.0/node_modules/core-js postinstall$ node -e "try{require('./postinstall')}catch(e){}"
+.../core-js@3.49.0/node_modules/core-js postinstall: Done
+.../node_modules/better-sqlite3 install$ node-gyp rebuild
+.../node_modules/better-sqlite3 install: gyp info spawn make
+.../node_modules/better-sqlite3 install: gyp info spawn args [ 'BUILDTYPE=Release', '-C', 'build' ]
+.../node_modules/better-sqlite3 install:   TOUCH ba23eeee118cd63e16015df367567cb043fed872.intermediate
+.../node_modules/better-sqlite3 install:   ACTION deps_sqlite3_gyp_locate_sqlite3_target_copy_builtin_sqlite3 ba23eeee118cd63e16015df367567cb043fed872.intermediate
+.../node_modules/better-sqlite3 install: gyp info it worked if it ends with ok
+.../node_modules/better-sqlite3 install: gyp info using node-gyp@10.2.0
+.../node_modules/better-sqlite3 install: gyp info using node@24.13.0 | darwin | arm64
+.../node_modules/better-sqlite3 install:   TOUCH Release/obj.target/deps/locate_sqlite3.stamp
+.../node_modules/better-sqlite3 install:   CC(target) Release/obj.target/sqlite3/gen/sqlite3/sqlite3.o
+.../esbuild@0.18.20/node_modules/esbuild postinstall$ node install.js
+.../node_modules/dtrace-provider install: gyp info find Python using Python version 3.14.7 found at "/opt/homebrew/opt/python@3.14/bin/python3.14"
+.../esbuild@0.18.20/node_modules/esbuild postinstall: Done
+.../esbuild@0.19.12/node_modules/esbuild postinstall$ node install.js
+.../node_modules/dtrace-provider install: gyp info spawn /opt/homebrew/opt/python@3.14/bin/python3.14
+.../node_modules/dtrace-provider install: gyp info spawn args [
+.../node_modules/dtrace-provider install: gyp info spawn args '/Users/alexandrebrandizzi/.cache/node/corepack/v1/pnpm/9.15.0/dist/node_modules/node-gyp/gyp/gyp_main.py',
+.../node_modules/dtrace-provider install: gyp info spawn args 'binding.gyp',
+.../node_modules/dtrace-provider install: gyp info spawn args '-f',
+.../node_modules/dtrace-provider install: gyp info spawn args 'make',
+.../node_modules/dtrace-provider install: gyp info spawn args '-I',
+.../node_modules/dtrace-provider install: gyp info spawn args '/Users/alexandrebrandizzi/.bb/plugins/environment-git-worktree/host-data/worktrees/thr_kfqi76gqgc-1/bb-fork/node_modules/.pnpm/dtrace-provider@0.8.8/node_modules/dtrace-provider/build/config.gypi',
+.../node_modules/dtrace-provider install: gyp info spawn args '-I',
+.../node_modules/dtrace-provider install: gyp info spawn args '/Users/alexandrebrandizzi/.cache/node/corepack/v1/pnpm/9.15.0/dist/node_modules/node-gyp/addon.gypi',
+.../node_modules/dtrace-provider install: gyp info spawn args '-I',
+.../node_modules/dtrace-provider install: gyp info spawn args '/Users/alexandrebrandizzi/Library/Caches/node-gyp/24.13.0/include/node/common.gypi',
+.../node_modules/dtrace-provider install: gyp info spawn args '-Dlibrary=shared_library',
+.../node_modules/dtrace-provider install: gyp info spawn args '-Dvisibility=default',
+.../node_modules/dtrace-provider install: gyp info spawn args '-Dnode_root_dir=/Users/alexandrebrandizzi/Library/Caches/node-gyp/24.13.0',
+.../node_modules/dtrace-provider install: gyp info spawn args '-Dnode_gyp_dir=/Users/alexandrebrandizzi/.cache/node/corepack/v1/pnpm/9.15.0/dist/node_modules/node-gyp',
+.../node_modules/dtrace-provider install: gyp info spawn args '-Dnode_lib_file=/Users/alexandrebrandizzi/Library/Caches/node-gyp/24.13.0/<(target_arch)/node.lib',
+.../node_modules/dtrace-provider install: gyp info spawn args '-Dmodule_root_dir=/Users/alexandrebrandizzi/.bb/plugins/environment-git-worktree/host-data/worktrees/thr_kfqi76gqgc-1/bb-fork/node_modules/.pnpm/dtrace-provider@0.8.8/node_modules/dtrace-provider',
+.../node_modules/dtrace-provider install: gyp info spawn args '-Dnode_engine=v8',
+.../node_modules/dtrace-provider install: gyp info spawn args '--depth=.',
+.../node_modules/dtrace-provider install: gyp info spawn args '--no-parallel',
+.../node_modules/dtrace-provider install: gyp info spawn args '--generator-output',
+.../node_modules/dtrace-provider install: gyp info spawn args 'build',
+.../node_modules/dtrace-provider install: gyp info spawn args '-Goutput_dir=.'
+.../node_modules/dtrace-provider install: gyp info spawn args ]
+.../node_modules/better-sqlite3 install: gyp info find Python using Python version 3.14.7 found at "/opt/homebrew/opt/python@3.14/bin/python3.14"
+.../esbuild@0.19.12/node_modules/esbuild postinstall: Done
+.../node_modules/better-sqlite3 install: gyp info spawn /opt/homebrew/opt/python@3.14/bin/python3.14
+.../node_modules/better-sqlite3 install: gyp info spawn args [
+.../node_modules/better-sqlite3 install: gyp info spawn args '/Users/alexandrebrandizzi/.cache/node/corepack/v1/pnpm/9.15.0/dist/node_modules/node-gyp/gyp/gyp_main.py',
+.../node_modules/better-sqlite3 install: gyp info spawn args 'binding.gyp',
+.../node_modules/better-sqlite3 install: gyp info spawn args '-f',
+.../node_modules/better-sqlite3 install: gyp info spawn args 'make',
+.../node_modules/better-sqlite3 install: gyp info spawn args '-I',
+.../node_modules/better-sqlite3 install: gyp info spawn args '/Users/alexandrebrandizzi/.bb/plugins/environment-git-worktree/host-data/worktrees/thr_kfqi76gqgc-1/bb-fork/node_modules/.pnpm/better-sqlite3@13.0.3/node_modules/better-sqlite3/build/config.gypi',
+.../node_modules/better-sqlite3 install: gyp info spawn args '-I',
+.../node_modules/better-sqlite3 install: gyp info spawn args '/Users/alexandrebrandizzi/.cache/node/corepack/v1/pnpm/9.15.0/dist/node_modules/node-gyp/addon.gypi',
+.../node_modules/better-sqlite3 install: gyp info spawn args '-I',
+.../node_modules/better-sqlite3 install: gyp info spawn args '/Users/alexandrebrandizzi/Library/Caches/node-gyp/24.13.0/include/node/common.gypi',
+.../node_modules/better-sqlite3 install: gyp info spawn args '-Dlibrary=shared_library',
+.../node_modules/better-sqlite3 install: gyp info spawn args '-Dvisibility=default',
+.../node_modules/better-sqlite3 install: gyp info spawn args '-Dnode_root_dir=/Users/alexandrebrandizzi/Library/Caches/node-gyp/24.13.0',
+.../node_modules/better-sqlite3 install: gyp info spawn args '-Dnode_gyp_dir=/Users/alexandrebrandizzi/.cache/node/corepack/v1/pnpm/9.15.0/dist/node_modules/node-gyp',
+.../node_modules/better-sqlite3 install: gyp info spawn args '-Dnode_lib_file=/Users/alexandrebrandizzi/Library/Caches/node-gyp/24.13.0/<(target_arch)/node.lib',
+.../node_modules/better-sqlite3 install: gyp info spawn args '-Dmodule_root_dir=/Users/alexandrebrandizzi/.bb/plugins/environment-git-worktree/host-data/worktrees/thr_kfqi76gqgc-1/bb-fork/node_modules/.pnpm/better-sqlite3@13.0.3/node_modules/better-sqlite3',
+.../node_modules/better-sqlite3 install: gyp info spawn args '-Dnode_engine=v8',
+.../node_modules/better-sqlite3 install: gyp info spawn args '--depth=.',
+.../node_modules/better-sqlite3 install: gyp info spawn args '--no-parallel',
+.../node_modules/better-sqlite3 install: gyp info spawn args '--generator-output',
+.../node_modules/better-sqlite3 install: gyp info spawn args 'build',
+.../node_modules/better-sqlite3 install: gyp info spawn args '-Goutput_dir=.'
+.../node_modules/better-sqlite3 install: gyp info spawn args ]
+.../node_modules/cbor-extract install$ node-gyp-build-optional-packages
+.../node_modules/cbor-extract install: Done
+.../node_modules/protobufjs postinstall$ node scripts/postinstall
+.../node_modules/protobufjs postinstall: Done
+.../node_modules/dtrace-provider install: gyp info spawn make
+.../node_modules/dtrace-provider install: gyp info spawn args [ 'BUILDTYPE=Release', '-C', 'build' ]
+.../node_modules/dtrace-provider install:   ACTION binding_gyp_ndtp_target_build_ndtp .
+.../node_modules/better-sqlite3 install: gyp info spawn make
+.../node_modules/better-sqlite3 install: gyp info spawn args [ 'BUILDTYPE=Release', '-C', 'build' ]
+.../node_modules/better-sqlite3 install:   TOUCH Release/obj.target/better_sqlite3.stamp
+.../node_modules/better-sqlite3 install:   TOUCH Release/obj.target/test_extension.stamp
+.../node_modules/better-sqlite3 install: gyp info ok 
+.../node_modules/better-sqlite3 install: Done
+.../node_modules/dtrace-provider install: -----------------------------------------------------------------
+.../node_modules/dtrace-provider install: Building dtrace-provider failed with exit code 1, falling back
+.../node_modules/dtrace-provider install: on stub implementation.
+.../node_modules/dtrace-provider install: Re-run install with V set in your environment to see the build
+.../node_modules/dtrace-provider install: output, or NODE_DTRACE_PROVIDER_REQUIRE=hard to force an
+.../node_modules/dtrace-provider install: installation failure.
+.../node_modules/dtrace-provider install: -----------------------------------------------------------------
+.../node_modules/dtrace-provider install:   TOUCH Release/obj.target/ndtp.stamp
+.../node_modules/dtrace-provider install: gyp info ok 
+.../node_modules/dtrace-provider install: Done
+.../node_modules/better-sqlite3 install:   LIBTOOL-STATIC Release/sqlite3.a
+.../node_modules/better-sqlite3 install:   CXX(target) Release/obj.target/better_sqlite3/src/better_sqlite3.o
+.../node_modules/better-sqlite3 install: In file included from ../src/better_sqlite3.cpp:1:
+.../node_modules/better-sqlite3 install: In file included from /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/c++/v1/climits:43:
+.../node_modules/better-sqlite3 install: In file included from /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/c++/v1/__config:15:
+.../node_modules/better-sqlite3 install: /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/c++/v1/__configuration/availability.h:204:4: warning: "The selected platform is no longer supported by libc++." [-W#warnings]
+.../node_modules/better-sqlite3 install:   204 | #  warning "The selected platform is no longer supported by libc++."
+.../node_modules/better-sqlite3 install:       |    ^
+.../node_modules/better-sqlite3 install: ../src/better_sqlite3.cpp:48:1: warning: cast from 'void (*)(v8::Local<v8::Object>, v8::Local<v8::Value>, v8::Local<v8::Context>)' to 'node::addon_context_register_func' (aka 'void (*)(v8::Local<v8::Object>, v8::Local<v8::Value>, v8::Local<v8::Context>, void *)') converts to incompatible function type [-Wcast-function-type-mismatch]
+.../node_modules/better-sqlite3 install:    48 | NODE_MODULE_INIT(/* exports, context */) {
+.../node_modules/better-sqlite3 install:       | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+.../node_modules/better-sqlite3 install: /Users/alexandrebrandizzi/Library/Caches/node-gyp/24.13.0/include/node/node.h:1347:3: note: expanded from macro 'NODE_MODULE_INIT'
+.../node_modules/better-sqlite3 install:  1347 |   NODE_MODULE_CONTEXT_AWARE(NODE_GYP_MODULE_NAME,                     \
+.../node_modules/better-sqlite3 install:       |   ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+.../node_modules/better-sqlite3 install:  1348 |                             NODE_MODULE_INITIALIZER)                  \
+.../node_modules/better-sqlite3 install:       |                             ~~~~~~~~~~~~~~~~~~~~~~~~
+.../node_modules/better-sqlite3 install: /Users/alexandrebrandizzi/Library/Caches/node-gyp/24.13.0/include/node/node.h:1316:3: note: expanded from macro 'NODE_MODULE_CONTEXT_AWARE'
+.../node_modules/better-sqlite3 install:  1316 |   NODE_MODULE_CONTEXT_AWARE_X(modname, regfunc, NULL, 0)
+.../node_modules/better-sqlite3 install:       |   ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+.../node_modules/better-sqlite3 install: /Users/alexandrebrandizzi/Library/Caches/node-gyp/24.13.0/include/node/node.h:1298:7: note: expanded from macro 'NODE_MODULE_CONTEXT_AWARE_X'
+.../node_modules/better-sqlite3 install:  1298 |       (node::addon_context_register_func) (regfunc),                  \
+.../node_modules/better-sqlite3 install:       |       ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+.../node_modules/better-sqlite3 install: 2 warnings generated.
+.../node_modules/better-sqlite3 install:   SOLINK_MODULE(target) Release/better_sqlite3.node
+.../node_modules/better-sqlite3 install:   CC(target) Release/obj.target/test_extension/deps/test_extension.o
+.../node_modules/better-sqlite3 install:   SOLINK_MODULE(target) Release/test_extension.node
+.../node_modules/better-sqlite3 install: rm ba23eeee118cd63e16015df367567cb043fed872.intermediate
+.../node_modules/better-sqlite3 install: gyp info ok 
+.../node_modules/better-sqlite3 install: Done
+.../node_modules/@google/genai preinstall$ echo 'preinstall: no-op'
+.../node_modules/@google/genai preinstall: preinstall: no-op
+.../node_modules/@google/genai preinstall: Done
+ WARN  Failed to create bin at /Users/alexandrebrandizzi/.bb/plugins/environment-git-worktree/host-data/worktrees/thr_kfqi76gqgc-1/bb-fork/apps/desktop/node_modules/.bin/bb. ENOENT: no such file or directory, open '/Users/alexandrebrandizzi/.bb/plugins/environment-git-worktree/host-data/worktrees/thr_kfqi76gqgc-1/bb-fork/packages/bb-app/dist/bb.js'
+ WARN  Failed to create bin at /Users/alexandrebrandizzi/.bb/plugins/environment-git-worktree/host-data/worktrees/thr_kfqi76gqgc-1/bb-fork/apps/desktop/node_modules/.bin/bb-app. ENOENT: no such file or directory, open '/Users/alexandrebrandizzi/.bb/plugins/environment-git-worktree/host-data/worktrees/thr_kfqi76gqgc-1/bb-fork/packages/bb-app/dist/bb-app.js'
+ WARN  Failed to create bin at /Users/alexandrebrandizzi/.bb/plugins/environment-git-worktree/host-data/worktrees/thr_kfqi76gqgc-1/bb-fork/apps/desktop/node_modules/.bin/bb-host-daemon. ENOENT: no such file or directory, open '/Users/alexandrebrandizzi/.bb/plugins/environment-git-worktree/host-data/worktrees/thr_kfqi76gqgc-1/bb-fork/packages/bb-app/dist/bb-host-daemon.js'
+ WARN  Failed to create bin at /Users/alexandrebrandizzi/.bb/plugins/environment-git-worktree/host-data/worktrees/thr_kfqi76gqgc-1/bb-fork/apps/desktop/node_modules/.bin/bb-server. ENOENT: no such file or directory, open '/Users/alexandrebrandizzi/.bb/plugins/environment-git-worktree/host-data/worktrees/thr_kfqi76gqgc-1/bb-fork/packages/bb-app/dist/bb-server.js'
+ WARN  Failed to create bin at /Users/alexandrebrandizzi/.bb/plugins/environment-git-worktree/host-data/worktrees/thr_kfqi76gqgc-1/bb-fork/apps/host-daemon/node_modules/.bin/bb-script-archive-codex-tmp-bb-sessions. ENOENT: no such file or directory, open '/Users/alexandrebrandizzi/.bb/plugins/environment-git-worktree/host-data/worktrees/thr_kfqi76gqgc-1/bb-fork/packages/scripts/dist/commands/archive-codex-tmp-bb-sessions.js'
+ WARN  Failed to create bin at /Users/alexandrebrandizzi/.bb/plugins/environment-git-worktree/host-data/worktrees/thr_kfqi76gqgc-1/bb-fork/apps/host-daemon/node_modules/.bin/bb-script-reset-bb-data. ENOENT: no such file or directory, open '/Users/alexandrebrandizzi/.bb/plugins/environment-git-worktree/host-data/worktrees/thr_kfqi76gqgc-1/bb-fork/packages/scripts/dist/commands/reset-bb-data.js'
+ WARN  Failed to create bin at /Users/alexandrebrandizzi/.bb/plugins/environment-git-worktree/host-data/worktrees/thr_kfqi76gqgc-1/bb-fork/apps/host-daemon/node_modules/.bin/bb-script-run-cli. ENOENT: no such file or directory, open '/Users/alexandrebrandizzi/.bb/plugins/environment-git-worktree/host-data/worktrees/thr_kfqi76gqgc-1/bb-fork/packages/scripts/dist/commands/run-cli.js'
+ WARN  Failed to create bin at /Users/alexandrebrandizzi/.bb/plugins/environment-git-worktree/host-data/worktrees/thr_kfqi76gqgc-1/bb-fork/apps/server/node_modules/.bin/bb-script-archive-codex-tmp-bb-sessions. ENOENT: no such file or directory, open '/Users/alexandrebrandizzi/.bb/plugins/environment-git-worktree/host-data/worktrees/thr_kfqi76gqgc-1/bb-fork/packages/scripts/dist/commands/archive-codex-tmp-bb-sessions.js'
+ WARN  Failed to create bin at /Users/alexandrebrandizzi/.bb/plugins/environment-git-worktree/host-data/worktrees/thr_kfqi76gqgc-1/bb-fork/apps/server/node_modules/.bin/bb-script-reset-bb-data. ENOENT: no such file or directory, open '/Users/alexandrebrandizzi/.bb/plugins/environment-git-worktree/host-data/worktrees/thr_kfqi76gqgc-1/bb-fork/packages/scripts/dist/commands/reset-bb-data.js'
+ WARN  Failed to create bin at /Users/alexandrebrandizzi/.bb/plugins/environment-git-worktree/host-data/worktrees/thr_kfqi76gqgc-1/bb-fork/apps/server/node_modules/.bin/bb-script-run-cli. ENOENT: no such file or directory, open '/Users/alexandrebrandizzi/.bb/plugins/environment-git-worktree/host-data/worktrees/thr_kfqi76gqgc-1/bb-fork/packages/scripts/dist/commands/run-cli.js'
+
+devDependencies:
++ @vitest/coverage-v8 4.1.1
++ @vitest/utils 4.1.1
++ cross-env 10.1.0
++ dotenv-cli 11.0.0
++ esbuild 0.28.1
++ http-proxy-3 1.23.3
++ oxfmt 0.64.0
++ oxlint 1.79.0
++ rimraf 6.1.3
++ tsrs 0.18.0-ts7.1.0-dev.20260929
++ tsx 4.23.1
++ turbo 2.10.12
++ typescript <- @typescript/typescript6 6.0.2
++ vitest 4.1.1
+
+. prepare$ turbo run generate:templates generate:plugin-scaffold generate generate:bb-official-marketplace --filter=@bb/templates --filter=@bb/plugin-build --filter=@bb/server --output-logs=errors-only --summarize=false
+. prepare:    • Packages in scope: @bb/plugin-build, @bb/server, @bb/templates
+. prepare:    • Running generate:templates, generate:plugin-scaffold, generate, generate:bb-official-marketplace in 3 packages
+. prepare:    • Remote caching disabled, using shared worktree cache
+. prepare:  Tasks:    4 successful, 4 total
+. prepare: Cached:    4 cached, 4 total
+. prepare:   Time:    98ms >>> FULL TURBO
+. prepare: Done
+ WARN  Failed to create bin at /Users/alexandrebrandizzi/.bb/plugins/environment-git-worktree/host-data/worktrees/thr_kfqi76gqgc-1/bb-fork/apps/desktop/node_modules/.bin/bb-app. ENOENT: no such file or directory, open '/Users/alexandrebrandizzi/.bb/plugins/environment-git-worktree/host-data/worktrees/thr_kfqi76gqgc-1/bb-fork/apps/desktop/node_modules/bb-app/dist/bb-app.js'
+ WARN  Failed to create bin at /Users/alexandrebrandizzi/.bb/plugins/environment-git-worktree/host-data/worktrees/thr_kfqi76gqgc-1/bb-fork/apps/desktop/node_modules/.bin/bb-server. ENOENT: no such file or directory, open '/Users/alexandrebrandizzi/.bb/plugins/environment-git-worktree/host-data/worktrees/thr_kfqi76gqgc-1/bb-fork/apps/desktop/node_modules/bb-app/dist/bb-server.js'
+ WARN  Failed to create bin at /Users/alexandrebrandizzi/.bb/plugins/environment-git-worktree/host-data/worktrees/thr_kfqi76gqgc-1/bb-fork/apps/desktop/node_modules/.bin/bb. ENOENT: no such file or directory, open '/Users/alexandrebrandizzi/.bb/plugins/environment-git-worktree/host-data/worktrees/thr_kfqi76gqgc-1/bb-fork/apps/desktop/node_modules/bb-app/dist/bb.js'
+ WARN  Failed to create bin at /Users/alexandrebrandizzi/.bb/plugins/environment-git-worktree/host-data/worktrees/thr_kfqi76gqgc-1/bb-fork/apps/desktop/node_modules/.bin/bb-host-daemon. ENOENT: no such file or directory, open '/Users/alexandrebrandizzi/.bb/plugins/environment-git-worktree/host-data/worktrees/thr_kfqi76gqgc-1/bb-fork/apps/desktop/node_modules/bb-app/dist/bb-host-daemon.js'
+ WARN  Failed to create bin at /Users/alexandrebrandizzi/.bb/plugins/environment-git-worktree/host-data/worktrees/thr_kfqi76gqgc-1/bb-fork/apps/server/node_modules/.bin/bb-script-archive-codex-tmp-bb-sessions. ENOENT: no such file or directory, open '/Users/alexandrebrandizzi/.bb/plugins/environment-git-worktree/host-data/worktrees/thr_kfqi76gqgc-1/bb-fork/apps/server/node_modules/@bb/scripts/dist/commands/archive-codex-tmp-bb-sessions.js'
+ WARN  Failed to create bin at /Users/alexandrebrandizzi/.bb/plugins/environment-git-worktree/host-data/worktrees/thr_kfqi76gqgc-1/bb-fork/apps/server/node_modules/.bin/bb-script-run-cli. ENOENT: no such file or directory, open '/Users/alexandrebrandizzi/.bb/plugins/environment-git-worktree/host-data/worktrees/thr_kfqi76gqgc-1/bb-fork/apps/server/node_modules/@bb/scripts/dist/commands/run-cli.js'
+ WARN  Failed to create bin at /Users/alexandrebrandizzi/.bb/plugins/environment-git-worktree/host-data/worktrees/thr_kfqi76gqgc-1/bb-fork/apps/server/node_modules/.bin/bb-script-reset-bb-data. ENOENT: no such file or directory, open '/Users/alexandrebrandizzi/.bb/plugins/environment-git-worktree/host-data/worktrees/thr_kfqi76gqgc-1/bb-fork/apps/server/node_modules/@bb/scripts/dist/commands/reset-bb-data.js'
+ WARN  Failed to create bin at /Users/alexandrebrandizzi/.bb/plugins/environment-git-worktree/host-data/worktrees/thr_kfqi76gqgc-1/bb-fork/apps/host-daemon/node_modules/.bin/bb-script-archive-codex-tmp-bb-sessions. ENOENT: no such file or directory, open '/Users/alexandrebrandizzi/.bb/plugins/environment-git-worktree/host-data/worktrees/thr_kfqi76gqgc-1/bb-fork/apps/host-daemon/node_modules/@bb/scripts/dist/commands/archive-codex-tmp-bb-sessions.js'
+ WARN  Failed to create bin at /Users/alexandrebrandizzi/.bb/plugins/environment-git-worktree/host-data/worktrees/thr_kfqi76gqgc-1/bb-fork/apps/host-daemon/node_modules/.bin/bb-script-reset-bb-data. ENOENT: no such file or directory, open '/Users/alexandrebrandizzi/.bb/plugins/environment-git-worktree/host-data/worktrees/thr_kfqi76gqgc-1/bb-fork/apps/host-daemon/node_modules/@bb/scripts/dist/commands/reset-bb-data.js'
+ WARN  Failed to create bin at /Users/alexandrebrandizzi/.bb/plugins/environment-git-worktree/host-data/worktrees/thr_kfqi76gqgc-1/bb-fork/apps/host-daemon/node_modules/.bin/bb-script-run-cli. ENOENT: no such file or directory, open '/Users/alexandrebrandizzi/.bb/plugins/environment-git-worktree/host-data/worktrees/thr_kfqi76gqgc-1/bb-fork/apps/host-daemon/node_modules/@bb/scripts/dist/commands/run-cli.js'
+Done in 2m 31.5s
