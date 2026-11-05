@@ -3,6 +3,7 @@ import { isSidebarProjectThread } from "@bb/client-core";
 import { isThreadRead, type ThreadReadState } from "@bb/client-core";
 
 type FaviconSidebarThread = ThreadReadState &
+  Partial<Pick<ThreadListEntry, "listIndicator">> &
   Pick<
     ThreadListEntry,
     | "hasPendingInteraction"
@@ -25,7 +26,10 @@ function isUnreadSidebarThread(thread: FaviconSidebarThread): boolean {
 }
 
 function isPendingSidebarThread(thread: FaviconSidebarThread): boolean {
-  return isSidebarProjectThread(thread) && thread.hasPendingInteraction;
+  return (
+    isSidebarProjectThread(thread) &&
+    (thread.hasPendingInteraction || thread.listIndicator === "check-terminal")
+  );
 }
 
 function isPendingDelegatedChildOfCurrentThread(
@@ -35,7 +39,7 @@ function isPendingDelegatedChildOfCurrentThread(
   return (
     thread.parentThreadId === currentThreadId &&
     thread.originKind === null &&
-    thread.hasPendingInteraction
+    (thread.hasPendingInteraction || thread.listIndicator === "check-terminal")
   );
 }
 
@@ -54,6 +58,11 @@ export function shouldShowFaviconAttentionDot({
       );
     return (
       currentThreadHasPendingInteraction ||
+      sidebarThreads.some(
+        (candidate) =>
+          candidate.id === currentThreadId &&
+          candidate.listIndicator === "check-terminal",
+      ) ||
       childNeedsAttention ||
       Boolean(thread && !isThreadRead(thread))
     );
