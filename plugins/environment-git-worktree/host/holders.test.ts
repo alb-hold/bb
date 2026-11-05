@@ -109,7 +109,7 @@ describe("scanWorktreeHolders", () => {
   it.each([
     ["open file", { fdTargets: ["/work/tree/sub/open.txt"] }],
     ["executable", { exe: "/work/tree/sub/program" }],
-  ] as const)(
+  ])(
     "checks a foreign process's %s when the daemon runs as root",
     async (_kind, holder) => {
       const proc = fakeProc({
