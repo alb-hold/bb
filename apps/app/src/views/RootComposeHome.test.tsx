@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { readFileSync } from "node:fs";
 
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -69,12 +70,15 @@ describe("RootComposeHome", () => {
         screen.queryByTestId("root-compose-compact-leading-spacer"),
       ).toBeNull();
       expect(viewport.hasAttribute("data-more-below")).toBe(true);
+      expect(viewport.hasAttribute("data-more-above")).toBe(false);
       viewport.scrollTop = 348;
       fireEvent.scroll(viewport);
       expect(viewport.hasAttribute("data-more-below")).toBe(false);
+      expect(viewport.hasAttribute("data-more-above")).toBe(true);
       viewport.scrollTop = 0;
       fireEvent.scroll(viewport);
       expect(viewport.hasAttribute("data-more-below")).toBe(true);
+      expect(viewport.hasAttribute("data-more-above")).toBe(false);
     },
   );
 
@@ -206,4 +210,21 @@ describe("RootComposeHome", () => {
       content.lastElementChild?.contains(screen.getByTestId("recents")),
     ).toBe(true);
   });
+});
+
+it("never fades the first Recent title before scrolling", () => {
+  render(<RootComposeHome isCompact composer={<div />} compactScrollContent={<section data-root-compose-mobile-recents=""><div data-overflow-fade="below" /></section>} homepageSections={null} />);
+  const fade = document.querySelector('[data-root-compose-mobile-recents] [data-overflow-fade="below"]');
+  const viewport = screen.getByTestId("root-compose-compact-scroll-viewport");
+  const css = readFileSync("src/app.css", "utf8");
+  const rule = css.match(/([^{}]+)\{\s*visibility: hidden;\s*\}\s*$/);
+  expect(rule).not.toBeNull();
+  const selector = rule![1].trim();
+  expect(fade?.matches(selector)).toBe(true);
+  viewport.scrollTop = 30;
+  fireEvent.scroll(viewport);
+  expect(fade?.matches(selector)).toBe(false);
+  viewport.scrollTop = 0;
+  fireEvent.scroll(viewport);
+  expect(fade?.matches(selector)).toBe(true);
 });

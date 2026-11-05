@@ -870,3 +870,7 @@
     min-width: 2.75rem;
   }
 }
+
+[data-testid="root-compose-compact-scroll-viewport"]:not([data-more-above]) [data-root-compose-mobile-recents] [data-overflow-fade="below"] {
+  visibility: hidden;
+}

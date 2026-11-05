@@ -39,6 +39,7 @@ function useCompactHomeMetrics(isCompact: boolean) {
       return;
     }
     const updateScrollCue = () => {
+      scrollViewport.toggleAttribute("data-more-above", scrollViewport.scrollTop > 1);
       scrollViewport.toggleAttribute(
         "data-more-below",
         scrollViewport.scrollTop + scrollViewport.clientHeight <
