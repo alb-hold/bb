@@ -955,7 +955,12 @@ export function ModelReasoningPicker({
         className={OPTION_TRIGGER_CONTENT_CLASS_NAME}
         title={modelSubstitutionNote ?? triggerTitle}
       >
-        {TriggerIcon ? (
+        {selectedServiceTierOption ? (
+          <Icon
+            name={selectedServiceTierOption.icon ?? "Zap"}
+            className="size-4 shrink-0"
+          />
+        ) : TriggerIcon ? (
           <TriggerIcon className="size-4 shrink-0" />
         ) : (
           <Icon name="Bot" className="size-4 shrink-0" />

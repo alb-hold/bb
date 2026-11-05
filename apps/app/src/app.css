@@ -877,12 +877,10 @@
 
 @media (width < 48rem) {
   button:not([data-native-terminal-prompt] button):is(
-    [aria-label="Thread actions"],
-    [aria-label^="Show right panel"],
-    [aria-label^="Hide right panel"],
-    [aria-label^="Toggle sidebar"],
-    [aria-label="Prompt actions"],
-    [aria-label="Start voice input"],
+    [data-compact-touch="header"],
+    [data-sidebar="trigger"],
+    [data-promptbox-plus-control] button,
+    [data-compact-touch="voice"],
     [data-model-reasoning-trigger]
   ) {
     position: relative;
@@ -892,20 +890,16 @@
   }
 
   button:is(
-    [aria-label="Thread actions"],
-    [aria-label^="Show right panel"],
-    [aria-label^="Hide right panel"],
-    [aria-label^="Toggle sidebar"]
+    [data-compact-touch="header"],
+    [data-sidebar="trigger"]
   ) {
     margin-inline: -4px;
   }
 
   button:is(
-    [aria-label="Message actions"],
-    [aria-label="Copy message"],
-    [aria-label="Reply in side chat"],
-    [aria-label="Wrap lines"],
-    [aria-label="Copy code"],
+    [data-compact-touch="action"],
+    [data-compact-touch="action-menu"],
+    [data-compact-touch="code"],
     [data-compact-touch-summary]
   ) {
     position: relative;
@@ -914,11 +908,9 @@
   }
 
   button:is(
-    [aria-label="Message actions"],
-    [aria-label="Copy message"],
-    [aria-label="Reply in side chat"],
-    [aria-label="Wrap lines"],
-    [aria-label="Copy code"],
+    [data-compact-touch="action"],
+    [data-compact-touch="action-menu"],
+    [data-compact-touch="code"],
     [data-compact-touch-summary]
   )::after {
     content: "";
@@ -929,14 +921,13 @@
   }
 
   button:is(
-    [aria-label="Message actions"],
-    [aria-label="Copy message"],
-    [aria-label="Reply in side chat"]
+    [data-compact-touch="action"],
+    [data-compact-touch="action-menu"]
   )::after {
     inset-block: -12px -4px;
   }
 
-  button:is([aria-label="Wrap lines"], [aria-label="Copy code"])::after {
+  button[data-compact-touch="code"]::after {
     inset-block: 0 -24px;
   }
 

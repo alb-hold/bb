@@ -232,6 +232,7 @@ export function SplitWorkspaceSecondaryPanelHost({
             variant="ghost"
             size="icon"
             className={HEADER_ICON_BUTTON_CLASS}
+            data-compact-touch="header"
             aria-label={
               shortcut ? `${toggleLabel} (${shortcut.label})` : toggleLabel
             }

@@ -936,6 +936,7 @@ export function PluginPanelRightPanelHost({
                     isSidebarFramed && MACOS_TITLE_BAR_TRAILING_TOGGLE_CLASS,
                   )}
                   aria-label={toggleLabel}
+                  data-compact-touch="header"
                   aria-pressed={isOpen}
                   onPointerEnter={preloadThreadSecondaryPanel}
                   onFocus={preloadThreadSecondaryPanel}

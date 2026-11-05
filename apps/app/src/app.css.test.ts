@@ -47,20 +47,17 @@ describe("app.css sidebar drag cursor", () => {
 describe("compact touch targets", () => {
   const block = css.slice(css.lastIndexOf("@media (width < 48rem)"));
   it.each([
-    'aria-label="Message actions"',
-    'aria-label="Copy message"',
-    'aria-label="Reply in side chat"',
-    'aria-label="Wrap lines"',
-    'aria-label="Copy code"',
-    'aria-label="Thread actions"',
-    'aria-label="Show right panel"',
-    'aria-label="Toggle sidebar"',
-    'aria-label="Prompt actions"',
-    'aria-label="Start voice input"',
+    'data-compact-touch="action"',
+    'data-compact-touch="action-menu"',
+    'data-compact-touch="code"',
+    'data-compact-touch="header"',
+    'data-sidebar="trigger"',
+    'data-promptbox-plus-control',
+    'data-compact-touch="voice"',
     'data-model-reasoning-trigger',
     'data-compact-touch-summary',
   ])("reserves a disjoint 44px target for %s only at compact widths", (selector) => {
-    expect(block.replaceAll("^=", "=")).toContain(`[${selector}]`);
+    expect(block).toContain(`[${selector}]`);
     expect(block).toContain("min-inline-size: 44px");
     expect(block).toContain("min-block-size: 44px");
     expect(block).not.toMatch(/svg|data-icon-root/);
@@ -69,7 +66,8 @@ describe("compact touch targets", () => {
 
 it("expands timeline hit areas without increasing their layout heights", () => {
   const block = css.slice(css.lastIndexOf("@media (width < 48rem)"));
-  const timeline = block.slice(block.indexOf('[aria-label="Message actions"]'));
+  const timeline = block.slice(block.indexOf('[data-compact-touch="action"]'));
+  expect(block).not.toContain("aria-label");
   expect(timeline).not.toContain("min-block-size");
   expect(timeline).toContain('content: ""');
   expect(timeline).toContain("position: absolute");

@@ -789,6 +789,7 @@ function MarkdownCodeBlock({
                   type="button"
                   aria-pressed={softWrap}
                   aria-label={LINE_WRAP_LABEL}
+                  data-compact-touch="code"
                   onClick={() => {
                     setSoftWrap((value) => !value);
                   }}
@@ -800,7 +801,7 @@ function MarkdownCodeBlock({
               <TooltipContent side="bottom">{LINE_WRAP_LABEL}</TooltipContent>
             </Tooltip>
           </TooltipProvider>
-          <CopyButton text={codeText} label="Copy code" />
+          <CopyButton data-compact-touch="code" text={codeText} label="Copy code" />
         </div>
       </div>
       <pre

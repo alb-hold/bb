@@ -1461,7 +1461,7 @@ describe("ModelReasoningPicker service tiers", () => {
   it.each([
     ["fast", "Zap"],
     ["ultrafast", "provider-codex/ultrafast"],
-  ])("keeps provider identity for the %s tier", (tier, icon) => {
+  ])("shows the selected %s tier icon on the trigger", (tier, icon) => {
     setPluginAssetIcons(
       new Map([["provider-codex/ultrafast", "/icons/ultrafast.svg"]]),
     );
@@ -1480,7 +1480,7 @@ describe("ModelReasoningPicker service tiers", () => {
       node.getAttribute("data-icon"),
     );
     expect(icons).toContain("ChevronDown");
-    expect(icons).not.toContain(icon);
+    expect(icons).toContain(icon);
     expect(icons).not.toContain(
       icon === "Zap" ? "provider-codex/ultrafast" : "Zap",
     );
@@ -1677,7 +1677,7 @@ it.each([
   [false, true],
   [true, true],
 ])("keeps model identity and chevron with compact=%s pending=%s", (compact, modelIsLoading) => {
-  renderPicker({ compact, modelIsLoading, modelValue: "gpt-5.5", serviceTierOptions: [{ id: "fast", label: "Fast" }], serviceTierValue: "fast" });
+  renderPicker({ compact, modelIsLoading, modelValue: "gpt-5.5" });
   const trigger = screen.getByRole("button", { name: "Provider, model and reasoning" });
   expect(trigger.textContent).toContain("5.5");
   expect(trigger.querySelector('[data-icon="ChevronDown"]')).not.toBeNull();
@@ -1688,6 +1688,18 @@ it.each([
 it.each([false, true])("keeps provider, model and effort in compact accessible names while pending=%s", (modelIsLoading) => {
   renderPicker({ compact: true, compactIconOnly: true, modelIsLoading, modelValue: "gpt-5.5" });
   const trigger = screen.getByRole("button", { name: "Provider, model and reasoning: Codex: GPT-5.5 · Medium reasoning" });
+  expect(trigger.querySelector('[data-icon="ChevronDown"]')).not.toBeNull();
+});
+
+it.each([false, true])("keeps the selected tier cue with compact=%s", (compact) => {
+  renderPicker({
+    compact,
+    compactIconOnly: compact,
+    serviceTierOptions: [{ id: "fast", label: "Fast" }],
+    serviceTierValue: "fast",
+  });
+  const trigger = screen.getByRole("button", { name: /^Provider, model and reasoning/ });
+  expect(trigger.querySelector('[data-icon="Zap"]')).not.toBeNull();
   expect(trigger.querySelector('[data-icon="ChevronDown"]')).not.toBeNull();
 });
 
