@@ -6,6 +6,7 @@ import {
   createTerminalSession,
   getTerminalSession,
   listTerminalSessions,
+  TERMINAL_USER_INPUT_REFRESH_MS,
   updateTerminalSession,
   updateTerminalSessions,
 } from "../../src/data/terminal-sessions.js";
@@ -369,7 +370,7 @@ describe("terminal sessions", () => {
     const secondInput = markTerminalSessionUserInput(fixture.db, {
       terminalId: terminal.id,
       threadId: fixture.thread.id,
-      now: 20,
+      now: 10 + TERMINAL_USER_INPUT_REFRESH_MS,
     });
 
     expect(firstInput).toMatchObject({
@@ -379,14 +380,41 @@ describe("terminal sessions", () => {
     });
     expect(secondInput).toMatchObject({
       id: terminal.id,
-      lastUserInputAt: 20,
-      updatedAt: 20,
+      lastUserInputAt: 10 + TERMINAL_USER_INPUT_REFRESH_MS,
+      updatedAt: 10 + TERMINAL_USER_INPUT_REFRESH_MS,
     });
     expect(listTerminalSessionsByThread(fixture.db, fixture.thread.id)).toEqual(
       [
         expect.objectContaining({
           id: terminal.id,
-          lastUserInputAt: 20,
+          lastUserInputAt: 10 + TERMINAL_USER_INPUT_REFRESH_MS,
+        }),
+      ],
+    );
+  });
+
+  it("skips user input writes inside the refresh window so typing does not write per keystroke", () => {
+    const fixture = setup();
+    const terminal = createStartingTerminal(fixture);
+
+    markTerminalSessionUserInput(fixture.db, {
+      terminalId: terminal.id,
+      threadId: fixture.thread.id,
+      now: 10,
+    });
+    const typedAgain = markTerminalSessionUserInput(fixture.db, {
+      terminalId: terminal.id,
+      threadId: fixture.thread.id,
+      now: 10 + TERMINAL_USER_INPUT_REFRESH_MS - 1,
+    });
+
+    expect(typedAgain).toBeNull();
+    expect(listTerminalSessionsByThread(fixture.db, fixture.thread.id)).toEqual(
+      [
+        expect.objectContaining({
+          id: terminal.id,
+          lastUserInputAt: 10,
+          updatedAt: 10,
         }),
       ],
     );
