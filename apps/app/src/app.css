@@ -877,23 +877,82 @@
 
 @media (width < 48rem) {
   button:not([data-native-terminal-prompt] button):is(
-    [aria-label="Message actions"],
-    [aria-label="Copy message"],
-    [aria-label="Reply in side chat"],
-    [aria-label="Wrap lines"],
-    [aria-label="Copy code"],
     [aria-label="Thread actions"],
-    [aria-label="Show right panel"],
-    [aria-label="Hide right panel"],
-    [aria-label="Toggle sidebar"],
+    [aria-label^="Show right panel"],
+    [aria-label^="Hide right panel"],
+    [aria-label^="Toggle sidebar"],
     [aria-label="Prompt actions"],
     [aria-label="Start voice input"],
-    [data-model-reasoning-trigger],
-    [data-compact-touch-summary]
+    [data-model-reasoning-trigger]
   ) {
     position: relative;
     min-inline-size: 44px;
     min-block-size: 44px;
     flex-shrink: 0;
+  }
+
+  button:is(
+    [aria-label="Thread actions"],
+    [aria-label^="Show right panel"],
+    [aria-label^="Hide right panel"],
+    [aria-label^="Toggle sidebar"]
+  ) {
+    margin-inline: -4px;
+  }
+
+  button:is(
+    [aria-label="Message actions"],
+    [aria-label="Copy message"],
+    [aria-label="Reply in side chat"],
+    [aria-label="Wrap lines"],
+    [aria-label="Copy code"],
+    [data-compact-touch-summary]
+  ) {
+    position: relative;
+    min-inline-size: 44px;
+    flex-shrink: 0;
+  }
+
+  button:is(
+    [aria-label="Message actions"],
+    [aria-label="Copy message"],
+    [aria-label="Reply in side chat"],
+    [aria-label="Wrap lines"],
+    [aria-label="Copy code"],
+    [data-compact-touch-summary]
+  )::after {
+    content: "";
+    position: absolute;
+    inset-inline: 0;
+    inset-block: -12px;
+    pointer-events: auto;
+  }
+
+  button:is(
+    [aria-label="Message actions"],
+    [aria-label="Copy message"],
+    [aria-label="Reply in side chat"]
+  )::after {
+    inset-block: -12px -4px;
+  }
+
+  button:is([aria-label="Wrap lines"], [aria-label="Copy code"])::after {
+    inset-block: 0 -24px;
+  }
+
+  [data-compact-touch-summary] {
+    overflow: visible;
+  }
+
+  [data-compact-touch-summary]::after {
+    inset-block: -4px var(--compact-touch-summary-end, -20px);
+  }
+
+  [data-timeline-row-id]:has(
+    + [data-timeline-row-id] > [data-compact-touch-panel] > div >
+      [data-compact-touch-summary][aria-expanded="false"]
+  ) > [data-compact-touch-panel] > div >
+    [data-compact-touch-summary][aria-expanded="false"] {
+    --compact-touch-summary-end: -4px;
   }
 }

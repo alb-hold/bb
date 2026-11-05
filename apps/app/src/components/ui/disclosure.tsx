@@ -329,6 +329,7 @@ export function ExpandablePanel({
 
   return (
     <div
+      data-compact-touch-panel=""
       className={cn("rounded-md text-muted-foreground", className)}
       {...intentHandlers}
     >

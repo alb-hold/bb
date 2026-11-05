@@ -60,9 +60,20 @@ describe("compact touch targets", () => {
     'data-model-reasoning-trigger',
     'data-compact-touch-summary',
   ])("reserves a disjoint 44px target for %s only at compact widths", (selector) => {
-    expect(block).toContain(`[${selector}]`);
+    expect(block.replaceAll("^=", "=")).toContain(`[${selector}]`);
     expect(block).toContain("min-inline-size: 44px");
     expect(block).toContain("min-block-size: 44px");
     expect(block).not.toMatch(/svg|data-icon-root/);
   });
+});
+
+it("expands timeline hit areas without increasing their layout heights", () => {
+  const block = css.slice(css.lastIndexOf("@media (width < 48rem)"));
+  const timeline = block.slice(block.indexOf('[aria-label="Message actions"]'));
+  expect(timeline).not.toContain("min-block-size");
+  expect(timeline).toContain('content: ""');
+  expect(timeline).toContain("position: absolute");
+  expect(timeline).toContain("inset-block: -12px -4px");
+  expect(timeline).toContain("inset-block: -4px var(--compact-touch-summary-end, -20px)");
+  expect(timeline).toContain("--compact-touch-summary-end: -4px");
 });
