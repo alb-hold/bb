@@ -2903,6 +2903,7 @@ interface RowLayout {
     right: number;
   };
   link: { width: number };
+  statusGlyph: { kind: string | null; width: number; height: number; visible: boolean } | null;
   chip: { width: number; left: number; right: number } | null;
   bar: {
     width: number;
@@ -2926,10 +2927,20 @@ const box = (element) => {
 };
 const bar = document.querySelector("[role=progressbar]");
 const chip = document.querySelector("[data-sidebar-thread-status-chip]");
+const glyph = document.querySelector("[data-thread-status-glyph]");
+const statusSlot = document.querySelector("[data-sidebar-thread-trailing-indicator]");
+const visible = (element) => {
+  for (let node = element; node; node = node.parentElement) {
+    const style = getComputedStyle(node);
+    if (style.display === "none" || style.visibility === "hidden" || Number(style.opacity) === 0) return false;
+  }
+  return true;
+};
 const layout = {
   innerWidth: window.innerWidth,
   row: box(document.querySelector("[data-sidebar-rename-row]")),
   link: box(document.querySelector("[data-sidebar-thread-id]")),
+  statusGlyph: glyph && statusSlot ? { ...box(statusSlot), kind: glyph.getAttribute("data-thread-status-glyph"), visible: visible(glyph) } : null,
   chip: chip ? box(chip) : null,
   bar: bar
     ? {
@@ -3152,6 +3163,25 @@ describe.skipIf(
     { name: "desktop", width: 280, isCompact: false },
     { name: "compact 390px", width: 390, isCompact: true },
   ];
+
+  it.each([
+    { kind: "working", thread: { status: "active", runtimeStatus: "active" } },
+    { kind: "needs-input", thread: { hasPendingInteraction: true } },
+  ] as const)("keeps the $kind status slot visible at desktop width", async ({ kind, thread }) => {
+    const { container } = renderThreadRow({
+      thread: createThread(thread),
+      isCompactViewport: false,
+    });
+    const row = container.querySelector("[data-sidebar-rename-row]");
+    expect(row?.className).toContain("[--bb-sidebar-desktop-row-height:2.5rem]");
+    expect(row?.className).toContain("md:h-(--bb-sidebar-desktop-row-height)");
+    const layout = await measureRowLayout(container.innerHTML, 1280);
+    expect(layout.innerWidth).toBeGreaterThanOrEqual(768);
+    expect(layout.statusGlyph?.kind).toBe(kind);
+    expect(layout.statusGlyph?.visible).toBe(true);
+    expect(layout.statusGlyph?.width).toBeGreaterThan(0);
+    expect(layout.statusGlyph?.height).toBeGreaterThan(0);
+  });
 
   async function layoutFor(
     progress: { value: number; label?: string } | null,

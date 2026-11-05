@@ -14,6 +14,7 @@ import type {
 import type { CollapsedChildActivity } from "../model/thread-activity.js";
 import { PINNED_THREAD_PARENT_KEY } from "../dnd/useSectionThreadDnd.js";
 import type { ThreadSplitIndicatorTarget } from "./groupRollups.js";
+import { DESKTOP_THREAD_ROW_HEIGHT_VARIABLE_CLASS } from "../rows/thread-row-height.js";
 
 interface SortableSidebarSectionProps extends TopLevelSidebarSectionProps {
   disabled: boolean;
@@ -100,7 +101,7 @@ function BuiltInSidebarSection({
       stickyHeader={id !== "pinned"}
       contentClassName={
         id === "pinned"
-          ? "max-h-[calc(7*var(--bb-sidebar-row-height)_+_0.75rem)] md:max-h-[calc(7*2.5rem_+_0.75rem)] max-md:pointer-coarse:max-h-[calc(7*var(--bb-sidebar-row-height-coarse)_+_0.75rem)] overflow-y-auto"
+          ? `${DESKTOP_THREAD_ROW_HEIGHT_VARIABLE_CLASS} max-h-[calc(7*var(--bb-sidebar-row-height)_+_0.75rem)] md:max-h-[calc(7*var(--bb-sidebar-desktop-row-height)_+_0.75rem)] max-md:pointer-coarse:max-h-[calc(7*var(--bb-sidebar-row-height-coarse)_+_0.75rem)] overflow-y-auto`
           : undefined
       }
       disabled={disabled}

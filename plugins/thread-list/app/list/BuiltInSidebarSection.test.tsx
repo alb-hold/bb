@@ -94,7 +94,8 @@ describe("built-in sidebar section renderer", () => {
     fireEvent.scroll(content);
     expect(content.hasAttribute("data-more-below")).toBe(true);
     expect(content.className).not.toContain("mask-image");
-    expect(content.className).toContain("md:max-h-[calc(7*2.5rem_+_0.75rem)]");
+    expect(content.className).toContain("[--bb-sidebar-desktop-row-height:2.5rem]");
+    expect(content.className).toContain("md:max-h-[calc(7*var(--bb-sidebar-desktop-row-height)_+_0.75rem)]");
     content.scrollTop = 176;
     fireEvent.scroll(content);
     expect(content.hasAttribute("data-more-below")).toBe(false);

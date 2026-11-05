@@ -94,6 +94,7 @@ import type { ConsumeDragClickSuppression } from "@/components/ui/use-drag-click
 import { SidebarChildToggleChevron } from "./SidebarChildToggleChevron.js";
 import { useSidebarRename } from "./SidebarInlineRename.js";
 import { SidebarRowControls } from "./SidebarRowControls.js";
+import { DESKTOP_THREAD_ROW_HEIGHT_VARIABLE_CLASS } from "./thread-row-height.js";
 import {
   SIDEBAR_CONTROL_BUTTON_CLASS,
   SIDEBAR_ROW_BASE_CLASS,
@@ -828,7 +829,9 @@ function ThreadRowComponent({
     "group/thread-row cursor-pointer",
     SIDEBAR_ROW_BASE_CLASS,
     "gap-1",
-    !hasRowState && !showRowMetadata && "md:h-10 md:min-h-10",
+    DESKTOP_THREAD_ROW_HEIGHT_VARIABLE_CLASS,
+    !hasRowState && !showRowMetadata &&
+      "md:h-(--bb-sidebar-desktop-row-height) md:min-h-(--bb-sidebar-desktop-row-height)",
     LIST_HOVER_TRANSITION,
     parentOptions?.stickyLevel === undefined && "relative",
     hasRowState
