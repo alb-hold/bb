@@ -662,7 +662,73 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
     }, "hidden output was not replayed when the terminal became visible");
   });
 
-  it("does not repaint-nudge the initial terminal replay", async () => {
+  it.each([
+    { width: 390, cols: 45, rows: 37 },
+    { width: 360, cols: 41, rows: 33 },
+  ])(
+    "claims one final phone grid at $width px while the fit action disappears",
+    async ({ cols, rows }) => {
+      prepareMobileTerminal();
+      const guard = render(<button>Other input</button>);
+      guard.getByRole("button").focus();
+      vi.spyOn(FitAddon.prototype, "proposeDimensions").mockImplementation(
+        () => {
+          const fit = Array.from(document.querySelectorAll("button")).find(
+            (button) => button.textContent === "Fit to this screen",
+          );
+          const inFlow =
+            fit?.parentElement &&
+            getComputedStyle(fit.parentElement).position !== "absolute";
+          return { cols, rows: rows - (inFlow ? 2 : 0) };
+        },
+      );
+      const settled = vi.spyOn(
+        TerminalWebSocketTransport.prototype,
+        "markLayoutSettled",
+      );
+      const session = renderMobileTerminal({ cols: 132, rows: 41 });
+      await waitForReadinessCondition(
+        () => expect(settled).toHaveBeenCalled(),
+        "phone layout did not settle",
+      );
+      await waitForReadinessCondition(
+        () => expect(testState.sockets).toHaveLength(1),
+        "phone did not connect",
+      );
+      const socket = testState.sockets[0]!;
+      await socket.opened;
+      const resizes = () =>
+        socket.sent
+          .map((frame) => JSON.parse(frame))
+          .filter((frame) => frame.type === "resize");
+      await waitForReadinessCondition(
+        () => expect(resizes().length).toBeGreaterThan(0),
+        "phone did not send its fit",
+      );
+      expect(
+        resizes().every((frame) => frame.cols === cols && frame.rows === rows),
+      ).toBe(true);
+      socket.receive({
+        type: "attached",
+        session: { ...session, cols, rows },
+        replayStartSeq: 0,
+        nextSeq: 0,
+      });
+      await waitForReadinessCondition(
+        () => expect(pageText()).not.toContain("Fit to this screen"),
+        "fit action did not disappear after ownership fit",
+      );
+      expect(
+        resizes().every((frame) => frame.cols === cols && frame.rows === rows),
+      ).toBe(true);
+      fireEvent.focus(document.querySelector(".xterm-helper-textarea")!);
+      const claims = resizes().filter((frame) => frame.claim === true);
+      expect(claims).toHaveLength(1);
+      expect(claims[0]).toMatchObject({ cols, rows });
+    },
+  );
+
+  it("keeps the settled grid through initial replay and reconnect without a repaint nudge", async () => {
     prepareFirstAttachFontMetricsHarness();
     const markLayoutSettled =
       TerminalWebSocketTransport.prototype.markLayoutSettled;
@@ -775,36 +841,13 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0);
     });
-    expect(socketResizes()).toContainEqual({
-      type: "resize",
-      cols: 50,
-      rows: 47,
-      seq: 1,
-    });
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(REPAINT_RESTORE_DELAY_MS);
+      await vi.advanceTimersByTimeAsync(REPAINT_RESTORE_DELAY_MS + 1);
     });
-    expect(socketResizes().at(-1)).toEqual({
-      type: "resize",
-      cols: 50,
-      rows: 47,
-      seq: 1,
-    });
-    reconnectedSocket.receive({ type: "resize-applied", seq: 1 });
-    expect(socketResizes().at(-1)).toEqual({
-      type: "resize",
-      cols: 51,
-      rows: 47,
-      seq: 2,
-    });
+    expect(socketResizes().length).toBeGreaterThan(0);
     expect(
-      socketResizes()
-        .slice(-2)
-        .map(({ type, cols, rows }) => ({ type, cols, rows })),
-    ).toEqual([
-      { type: "resize", cols: 50, rows: 47 },
-      { type: "resize", cols: 51, rows: 47 },
-    ]);
+      socketResizes().every(({ cols, rows }) => cols === 51 && rows === 47),
+    ).toBe(true);
   });
 
   it("retries a replay attempt that outlasts the backstop and holds again for the next attempt", async () => {
@@ -1500,12 +1543,22 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
   });
 
   it("keeps the painted screen visible and partial output hidden after a stalled replay hold expires", async () => {
-    shortenReplayHoldTimeout(600);
+    let expireHold: (() => void) | undefined;
+    const setTimeout = window.setTimeout.bind(window);
+    vi.spyOn(window, "setTimeout").mockImplementation(((
+      handler: TimerHandler,
+      delay?: number,
+      ...args: unknown[]
+    ) => {
+      if (typeof handler === "function" && handler.name === "expireHold") {
+        expireHold = () => handler(...args);
+        return setTimeout(() => undefined, 0);
+      }
+      return setTimeout(handler, delay, ...args);
+    }) as typeof window.setTimeout);
     const { bufferText, preview } = await mountReplayWithUnusableSnapshot();
-    await waitForReadinessCondition(
-      () => expect(preview()?.dataset.terminalReplayHoldExpired).toBeDefined(),
-      "hold backstop did not fire for the stalled replay",
-    );
+    expect(expireHold).toBeDefined();
+    await act(async () => expireHold?.());
     expect(preview()?.dataset.terminalReplayHeld).toBeDefined();
     expect(preview()?.style.visibility).toBe("hidden");
     expect(pageText()).toContain("Reconnecting");

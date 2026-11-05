@@ -1950,6 +1950,44 @@ describe("terminal output encoding", () => {
     terminal.dispose();
   });
 
+  it.each(["history", "preview"] as const)(
+    "queues marker-heavy %s before parser completion",
+    async (target) => {
+      const resize = vi.fn();
+      const parsed = vi.fn();
+      const written: string[] = [];
+      const writeCallbacks: Array<() => void> = [];
+      const pipeline = createTerminalOutputPipeline(
+        {
+          resize,
+          write: (bytes, callback) => {
+            written.push(new TextDecoder().decode(bytes));
+            writeCallbacks.push(callback);
+          },
+        },
+        undefined,
+        undefined,
+        { resizeMarkerGrids: target !== "preview" },
+      );
+      for (let sequence = 0; sequence < 3_700; sequence += 1) {
+        pipeline.push(
+          Buffer.from(
+            `${createTerminalGridMarker({ cols: 125, rows: 44 })}${sequence}\r\n`,
+          ),
+          parsed,
+          target !== "history",
+        );
+      }
+      await Promise.resolve();
+      expect(written.join("")).toContain("3699\r\n");
+      expect(parsed).not.toHaveBeenCalled();
+      writeCallbacks.forEach((callback) => callback());
+      await Promise.resolve();
+      expect(parsed).toHaveBeenCalledTimes(3_700);
+      expect(resize).not.toHaveBeenCalled();
+    },
+  );
+
   it("waits for prior writes before resizing at a grid marker", async () => {
     const writeCallbacks: Array<() => void> = [];
     const resize = vi.fn();

@@ -110,12 +110,9 @@ export function createTerminalOutputPipeline(
           enqueue({ type: "write", bytes: operation.bytes });
         } else if (operation.type === "grid") {
           onGrid?.(operation.grid, applyScannedMarkerGrids);
-          enqueue({
-            type: "grid",
-            grid: operation.grid,
-            resize:
-              applyScannedMarkerGrids && (options.resizeMarkerGrids ?? true),
-          });
+          if (applyScannedMarkerGrids && (options.resizeMarkerGrids ?? true)) {
+            enqueue({ type: "grid", grid: operation.grid, resize: true });
+          }
         }
       }
       if (result.hasPending) {

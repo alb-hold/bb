@@ -193,6 +193,7 @@ export function mountTerminalReplayPreview({
   release(): void;
   showFallback(): void;
   hold(options: { countdown: boolean }): void;
+  noteProgress(): void;
   resize(cols: number, rows: number): Promise<void>;
   setPtyGrid(cols: number, rows: number): void;
   setLatestPtyGrid(cols: number, rows: number): void;
@@ -243,6 +244,7 @@ export function mountTerminalReplayPreview({
   let latestPtyGrid = { cols: terminal.cols, rows: terminal.rows };
   let shown = false;
   let held = holdUntilReleased;
+  let holdCountdown = holdUntilReleased;
   let holdTimeout: number | null = null;
   let snapshotWriteFinished = false;
   let authoritativeGridAvailable = false;
@@ -426,6 +428,9 @@ export function mountTerminalReplayPreview({
     preview.dataset.terminalReplayHoldExpired = "";
     onHoldExpired?.();
   };
+  const noteProgress = () => {
+    if (!disposed && held && holdCountdown) armHoldTimeout();
+  };
   if (held) armHoldTimeout();
   return {
     fallback: holdUntilReleased,
@@ -434,12 +439,14 @@ export function mountTerminalReplayPreview({
     hold({ countdown }) {
       if (disposed) return;
       held = true;
+      holdCountdown = countdown;
       preview.dataset.terminalReplayHeld = "";
       delete preview.dataset.terminalReplayHoldExpired;
       if (countdown) armHoldTimeout();
       else clearHoldTimeout();
       updateVisibility();
     },
+    noteProgress,
     resize(cols, rows) {
       if (disposed) return Promise.resolve();
       clearHandoffDeadline();
@@ -475,19 +482,24 @@ export function mountTerminalReplayPreview({
       handoffAtLatestGrid();
     },
     push(bytes, callback) {
+      noteProgress();
+      const onParsed = () => {
+        noteProgress();
+        callback();
+      };
       if (disposed) {
         callback();
       } else if (!snapshotWriteFinished) {
         outputPipeline.push(bytes, () => {
           snapshotWriteFinished = true;
           startHandoffDeadline();
-          callback();
+          onParsed();
           flushPendingWrites();
         });
       } else if (authoritativeGridAvailable) {
-        outputPipeline.push(bytes, callback);
+        outputPipeline.push(bytes, onParsed);
       } else {
-        pendingWrites.push({ bytes, callback });
+        pendingWrites.push({ bytes, callback: onParsed });
         pendingBytes += bytes.byteLength;
         if (pendingBytes > pendingBytesLimit) handoffAtLatestGrid();
       }

@@ -1820,6 +1820,7 @@ export function ThreadTerminalView({
       release(): void;
       showFallback(): void;
       hold(options: { countdown: boolean }): void;
+      noteProgress(): void;
       resize(cols: number, rows: number): Promise<void>;
       setFitGrid(cols: number, rows: number): void;
       setLatestPtyGrid(cols: number, rows: number): void;
@@ -2605,7 +2606,6 @@ export function ThreadTerminalView({
           writeTerminalStatus({ terminal: activeTerminal, text }),
       });
       let reconnecting = false;
-      let repaintAfterReconnect = false;
       let reconnectingNoticeVisible = false;
       let outputFrameId: number | null = null;
       const clearConnectionNoticeTimeout = () => {
@@ -2671,7 +2671,6 @@ export function ThreadTerminalView({
             setReplayNotice(paintedScreenKept ? "reconnecting" : null);
           }
           if (state === "reconnecting") {
-            repaintAfterReconnect = true;
             if (reconnecting) {
               return;
             }
@@ -2742,7 +2741,10 @@ export function ThreadTerminalView({
           }
           const currentOutputFrameId =
             message.type === "output" ? outputFrameId : null;
-          if (message.type === "output") outputFrameId = null;
+          if (message.type === "output") {
+            outputFrameId = null;
+            if (!replayCompleted) replayPreview?.noteProgress();
+          }
           if (
             message.type === "attached" ||
             message.type === "session-updated"
@@ -2860,14 +2862,8 @@ export function ThreadTerminalView({
                 onGridApplied: updateGridVisibility,
                 restoreViewport,
                 afterRestore: () => {
-                  if (
-                    !disposed &&
-                    sessionStatusRef.current === "running" &&
-                    repaintAfterReconnect
-                  ) {
-                    repaintAfterReconnect = false;
-                    activeTransport.requestRepaint();
-                  }
+                  if (!disposed)
+                    activeTerminal.refresh(0, activeTerminal.rows - 1);
                 },
               });
             },
@@ -3554,7 +3550,10 @@ export function ThreadTerminalView({
         </div>
       ) : null}
       {terminalReady && showFitControl ? (
-        <div className="flex shrink-0 items-center justify-end gap-2 px-2 py-1 text-xs">
+        <div
+          style={{ position: "absolute" }}
+          className={`right-2 z-10 flex items-center justify-end gap-2 rounded-md bg-sidebar px-2 py-1 text-xs shadow-sm ${connectionNoticeText === null ? "top-1" : "top-10"}`}
+        >
           <button
             type="button"
             className="shrink-0 rounded-md px-2 py-1 text-foreground hover:bg-state-hover"

@@ -537,6 +537,25 @@ describe("terminal replay preview", () => {
     }
   });
 
+  it("expires only after replay arrivals and parser progress both stop", async () => {
+    vi.useFakeTimers();
+    const expired = vi.fn();
+    const { cover, cleanup } = mountHeldPreview(expired);
+    cover.setPtyGrid(120, 36);
+    try {
+      for (let chunk = 0; chunk < 3; chunk += 1) {
+        await vi.advanceTimersByTimeAsync(4_000);
+        cover.push(Buffer.from(`frame ${chunk}\r\n`), () => undefined);
+        await vi.advanceTimersByTimeAsync(10);
+        expect(expired).not.toHaveBeenCalled();
+      }
+      await vi.advanceTimersByTimeAsync(5_001);
+      expect(expired).toHaveBeenCalledOnce();
+    } finally {
+      cleanup();
+    }
+  });
+
   it("does not count down while held without a countdown, and a normal release is not flagged", () => {
     vi.useFakeTimers();
     try {
