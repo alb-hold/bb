@@ -1,3 +1,4 @@
+import { Button } from "@bb/shared-ui/button";
 import { useMemo } from "react";
 import type { PermissionMode } from "@bb/domain";
 import { LIST_HOVER_TRANSITION } from "@bb/shared-ui/motion";
@@ -69,24 +70,25 @@ export function PermissionModePicker({
     () => addPermissionModeCompactLabels(options),
     [options],
   );
-  if (pending) {
+  if (pending && value === undefined) {
     return (
-      <div
-        role="status"
-        aria-label="Loading permission mode"
-        className={cn(
-          "flex h-6 w-28 shrink-0 items-center px-2 max-md:pointer-coarse:h-11",
-          className,
-        )}
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        disabled
+        className={className}
       >
-        <span aria-hidden className="h-3 w-full rounded-sm bg-state-hover" />
-      </div>
+        Permissions
+      </Button>
     );
   }
   if (
-    !supported ||
     value === undefined ||
-    (!showWhenSingleOption && options.length <= 1)
+    (!pending &&
+      (!supported ||
+        value === undefined ||
+        (!showWhenSingleOption && options.length <= 1)))
   ) {
     return null;
   }
@@ -96,15 +98,33 @@ export function PermissionModePicker({
       value={value}
       options={compactOptions}
       onChange={onChange}
-      className={cn(LIST_HOVER_TRANSITION, className)}
+      className={cn(
+        LIST_HOVER_TRANSITION,
+        value === "full" &&
+          !displayOverride &&
+          "rounded-md border border-warning-text/30 !text-muted-foreground hover:!text-warning-text",
+        className,
+      )}
       caretClassName="text-subtle-foreground/75"
       contentClassName="max-w-72"
       muted={muted}
       defaultOpen={defaultOpen}
       modal={modal}
       align={align}
-      displayOverride={displayOverride}
-      disabled={disabled || options.length <= 1}
+      displayOverride={
+        pending && !options.some((option) => option.value === value)
+          ? {
+              label:
+                value === "full"
+                  ? "Full Access"
+                  : value === "accept-edits"
+                    ? "Accept Edits"
+                    : "Approve for me",
+              compactLabel: getPermissionModeCompactLabel(value),
+            }
+          : displayOverride
+      }
+      disabled={disabled || pending || options.length <= 1}
       showChevronWhenDisabled={showChevronWhenDisabled}
     />
   );

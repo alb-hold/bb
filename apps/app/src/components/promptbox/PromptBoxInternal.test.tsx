@@ -3385,6 +3385,22 @@ describe("ComposerBox compact layout", () => {
     expect(document.querySelector("[data-promptbox-attachments]")).toBeNull();
   });
 
+  it.each(["new-thread", "thread"] as const)(
+    "uses the same idle send glyph on %s",
+    (surface) => {
+      render(
+        <ComposerBox
+          {...createPromptBoxProps()}
+          surface={surface}
+          voice={undefined}
+        />,
+      );
+      const submit = document.querySelector("[data-promptbox-submit-action]");
+      expect(submit?.querySelector('[data-icon="ArrowUp"]')).not.toBeNull();
+      expect(submit?.querySelector(".animate-spin")).toBeNull();
+    },
+  );
+
   it("shows attachment upload progress on the submit button", () => {
     const restoreMatchMedia = mockPointerCoarse(true);
     try {

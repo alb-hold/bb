@@ -2182,10 +2182,14 @@ export function NewThreadComposer({
           }}
           execution={{
             pending: projectDefaultsUnavailable || isLoadingModels,
-            ...(nativeTerminalAvailable
+            ...(nativeTerminalAvailable ||
+            agentProviders === undefined ||
+            projectDefaultsUnavailable ||
+            isLoadingModels
               ? {
                   nativeTerminal: {
-                    enabled: nativeTerminal,
+                    enabled: nativeTerminalRequested,
+                    disabled: !nativeTerminalAvailable,
                     onChange: setNativeTerminalRequested,
                   },
                 }
@@ -2302,6 +2306,8 @@ export function NewThreadComposer({
       textEffects,
       serviceTierOptions,
       nativeTerminal,
+      agentProviders,
+      nativeTerminalRequested,
       nativeTerminalAvailable,
       setNativeTerminalRequested,
       pickerSessionOptionSections,

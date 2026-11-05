@@ -31,7 +31,6 @@ import {
   COARSE_POINTER_TEXT_SM_CLASS,
 } from "@bb/shared-ui/coarse-pointer-sizing";
 import { Popover, PopoverContent, PopoverTrigger } from "@bb/shared-ui/popover";
-import { Skeleton } from "@bb/shared-ui/skeleton";
 import { LIST_HOVER_TRANSITION } from "@bb/shared-ui/motion";
 import { cn } from "@bb/shared-ui/lib/utils";
 import {
@@ -150,12 +149,10 @@ export function buildModelNavRows({
   isSearching: boolean;
   showMoreModels: boolean;
 }): ModelNavRow[] {
-  const rows: ModelNavRow[] = modelOptions.map(
-    (option): ModelNavRow => ({
-      kind: "model",
-      option,
-    }),
-  );
+  const rows: ModelNavRow[] = modelOptions.map((option): ModelNavRow => ({
+    kind: "model",
+    option,
+  }));
   if (moreModelOptions.length === 0) return rows;
 
   if (isSearching) {
@@ -333,7 +330,7 @@ export function ModelReasoningPicker({
         })
       : "Could not load models.";
   const triggerModelLabel = showLoadingTrigger
-    ? "Loading models..."
+    ? "Model"
     : hasSelectedModel
       ? stripModelBrandPrefix(
           selectedModelLabel,
@@ -910,7 +907,7 @@ export function ModelReasoningPicker({
   const TriggerIcon =
     hasSelectedModel || modelIsLoading ? ProviderIcon : undefined;
   const triggerTitleModelLabel = showLoadingTrigger
-    ? "Loading models..."
+    ? "Model"
     : selectedModelLoadFailed
       ? selectedModelLoadErrorText
       : triggerModelLabel;
@@ -951,30 +948,7 @@ export function ModelReasoningPicker({
         className={OPTION_TRIGGER_CONTENT_CLASS_NAME}
         title={modelSubstitutionNote ?? triggerTitle}
       >
-        {showLoadingTrigger ? (
-          <>
-            {TriggerIcon ? (
-              <TriggerIcon className="size-4 shrink-0" />
-            ) : (
-              <Icon
-                name="Spinner"
-                className="size-3.5 shrink-0 animate-spin text-muted-foreground"
-                aria-hidden
-              />
-            )}
-            <span className="sr-only">Loading models</span>
-            <Skeleton
-              aria-hidden
-              data-model-loading-placeholder="trigger-model"
-              className="h-3 w-10 shrink-0 rounded-sm"
-            />
-            <Skeleton
-              aria-hidden
-              data-model-loading-placeholder="trigger-reasoning"
-              className="h-3 w-8 shrink-0 rounded-sm"
-            />
-          </>
-        ) : selectedServiceTierOption ? (
+        {selectedServiceTierOption ? (
           <Icon
             name={selectedServiceTierOption.icon ?? "Zap"}
             className="size-3.5 shrink-0 fill-current text-subtle-foreground"
@@ -982,31 +956,29 @@ export function ModelReasoningPicker({
         ) : TriggerIcon ? (
           <TriggerIcon className="size-4 shrink-0" />
         ) : null}
-        {showLoadingTrigger ? null : (
-          <>
-            <span
-              className={cn(
-                "min-w-0 truncate",
-                triggerModelValueIsDestructive && "text-destructive-text",
-              )}
-            >
-              {triggerModelBase}
+        <>
+          <span
+            className={cn(
+              "min-w-0 truncate",
+              triggerModelValueIsDestructive && "text-destructive-text",
+            )}
+          >
+            {triggerModelBase}
+          </span>
+          {triggerModelTag ? (
+            <span className="shrink-0 text-subtle-foreground">
+              {triggerModelTag}
             </span>
-            {triggerModelTag ? (
-              <span className="shrink-0 text-subtle-foreground">
-                {triggerModelTag}
-              </span>
-            ) : null}
-            {triggerReasoningLabel ? (
-              <span
-                className="shrink-0 text-subtle-foreground"
-                data-promptbox-hide-compact=""
-              >
-                {triggerReasoningLabel}
-              </span>
-            ) : null}
-          </>
-        )}
+          ) : null}
+          {triggerReasoningLabel ? (
+            <span
+              className="shrink-0 text-subtle-foreground"
+              data-promptbox-hide-compact=""
+            >
+              {triggerReasoningLabel}
+            </span>
+          ) : null}
+        </>
       </span>
       {disabled ? null : (
         <Icon
@@ -1024,10 +996,6 @@ export function ModelReasoningPicker({
     </Button>
   );
 
-  if (disabled) {
-    return trigger;
-  }
-
   const showSearchInput =
     isCompactViewport ||
     (hasActiveModelOptions &&
@@ -1037,7 +1005,7 @@ export function ModelReasoningPicker({
         MODEL_SEARCH_MIN_OPTIONS);
 
   return (
-    <Popover open={open} onOpenChange={setOpen} modal={modal}>
+    <Popover open={open && !disabled} onOpenChange={setOpen} modal={modal}>
       <PopoverTrigger asChild>{trigger}</PopoverTrigger>
       <PopoverContent
         align={align}

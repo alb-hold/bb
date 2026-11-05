@@ -166,25 +166,34 @@ describe("ExecutionControls", () => {
     ).toBeNull();
   });
 
-  it("withholds a guessed model until thread execution options resolve", () => {
-    const props = makeExecutionControlsProps();
-    const { rerender } = renderExecutionControls({ ...props, pending: true });
-    expect(screen.queryByText("GPT-5")).toBeNull();
-    expect(
-      screen.queryByRole("button", { name: "Provider, model and reasoning" }),
-    ).toBeNull();
-    const placeholder = screen.getByRole("status", {
-      name: "Loading execution options",
+  it("keeps real execution controls mounted while their catalog resolves", () => {
+    const props = {
+      ...makeExecutionControlsProps(),
+      nativeTerminal: { enabled: true, onChange: vi.fn() },
+    };
+    const { container, rerender } = renderExecutionControls({
+      ...props,
+      pending: true,
     });
-    expect(placeholder.classList.contains("w-52")).toBe(true);
+    const model = screen.getByRole("button", {
+      name: "Provider, model and reasoning",
+    });
+    const terminal = screen.getByRole("radio", { name: "Terminal" });
+    expect(model.textContent).toContain("GPT-5");
+    expect(model.hasAttribute("disabled")).toBe(true);
+    expect(terminal.getAttribute("data-state")).toBe("on");
+    expect(
+      container.querySelector('[role="status"], [data-slot="skeleton"]'),
+    ).toBeNull();
     rerender(<ExecutionControls {...props} pending={false} />);
     expect(
-      screen
-        .getByRole("button", { name: "Provider, model and reasoning" })
-        .classList.contains("w-52"),
-    ).toBe(false);
-    expect(screen.queryByRole("status")).toBeNull();
-    expect(screen.getByText("GPT-5")).not.toBeNull();
+      screen.getByRole("button", { name: "Provider, model and reasoning" }),
+    ).toBe(model);
+    expect(screen.getByRole("radio", { name: "Terminal" })).toBe(terminal);
+    expect(model.hasAttribute("disabled")).toBe(false);
+    expect(
+      container.querySelector('[role="status"], [data-slot="skeleton"]'),
+    ).toBeNull();
   });
 
   it("exposes the stored-model substitution on the model chip", () => {

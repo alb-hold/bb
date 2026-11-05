@@ -542,7 +542,7 @@ describe("ModelReasoningPicker", () => {
     },
   );
 
-  it("holds the trigger and model-list layout with skeletons while loading", () => {
+  it("shows a neutral model label while the model list loads", () => {
     renderPicker({
       modelOptions: [],
       modelValue: "",
@@ -555,8 +555,9 @@ describe("ModelReasoningPicker", () => {
 
     expect(
       trigger.querySelectorAll("[data-model-loading-placeholder]"),
-    ).toHaveLength(2);
-    expect(trigger.textContent).not.toContain("Loading models...");
+    ).toHaveLength(0);
+    expect(trigger.textContent).toContain("Model");
+    expect(trigger.querySelector(".animate-spin")).toBeNull();
 
     fireEvent.click(trigger);
 

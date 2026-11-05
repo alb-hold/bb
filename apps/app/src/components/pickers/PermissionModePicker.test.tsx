@@ -16,7 +16,7 @@ afterEach(() => {
 });
 
 describe("PermissionModePicker", () => {
-  it("reserves the permission chip without disclosing an unresolved value", () => {
+  it("shows the stored permission with actions disabled until its options resolve", () => {
     render(
       <PermissionModePicker
         pending
@@ -26,12 +26,28 @@ describe("PermissionModePicker", () => {
         supported
       />,
     );
-    expect(screen.queryByText("Full Access")).toBeNull();
+    expect(screen.getByText("Full Access")).not.toBeNull();
+    const trigger = screen.getByRole("button", { name: "Permission mode" });
+    expect(trigger.textContent).toContain("Full Access");
+    expect(trigger.hasAttribute("disabled")).toBe(true);
     expect(
-      screen
-        .getByRole("status", { name: "Loading permission mode" })
-        .classList.contains("w-28"),
-    ).toBe(true);
+      trigger.querySelector('[data-slot="skeleton"], .bg-state-hover'),
+    ).toBeNull();
+  });
+
+  it("keeps full access legible with a quiet warning outline", () => {
+    render(
+      <PermissionModePicker
+        value="full"
+        options={permissionOptions}
+        onChange={() => {}}
+        supported
+      />,
+    );
+    const trigger = screen.getByRole("button", { name: "Permission mode" });
+    expect(trigger.textContent).toContain("Full Access");
+    expect(trigger.classList.contains("border-warning-text/30")).toBe(true);
+    expect(trigger.classList.contains("!text-muted-foreground")).toBe(true);
   });
 
   it("uses the same approve vocabulary for compact and wide labels", () => {

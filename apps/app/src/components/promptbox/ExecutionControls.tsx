@@ -86,6 +86,7 @@ export interface ExecutionPermissionConfig {
 
 export interface ExecutionNativeTerminalConfig {
   enabled: boolean;
+  disabled?: boolean;
   onChange: (enabled: boolean) => void;
 }
 
@@ -143,15 +144,7 @@ export const ExecutionControls = memo(function ExecutionControls({
         nativeTerminal !== undefined && "max-md:contents",
       )}
     >
-      {pending ? (
-        <div
-          role="status"
-          aria-label="Loading execution options"
-          className="flex h-6 w-52 min-w-0 max-w-full items-center px-2 max-md:h-11 max-md:col-span-full max-md:row-start-1 max-md:justify-self-start"
-        >
-          <span aria-hidden className="h-3 w-full rounded-sm bg-state-hover" />
-        </div>
-      ) : showModelPicker ? (
+      {showModelPicker || pending ? (
         <ModelReasoningPicker
           providerOptions={provider.options ?? []}
           providerRouting={providerRouting}
@@ -182,7 +175,7 @@ export const ExecutionControls = memo(function ExecutionControls({
           onAgentOptionChange={agentOptions?.onChange}
           muted
           className="min-w-0 overflow-hidden max-md:col-span-full max-md:row-start-1 max-md:justify-self-start"
-          disabled={disabled}
+          disabled={disabled || pending}
           handoff={handoff}
         />
       ) : null}
@@ -197,7 +190,7 @@ export const ExecutionControls = memo(function ExecutionControls({
               nativeTerminal.onChange(value === "terminal");
             }
           }}
-          disabled={disabled}
+          disabled={disabled || pending || nativeTerminal.disabled}
           className="h-7 shrink-0 gap-0.5 rounded-md p-0.5 max-md:h-auto max-md:col-start-2 max-md:row-start-2 max-md:justify-self-start"
         >
           {NATIVE_TERMINAL_CHOICES.map((choice) => (

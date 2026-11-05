@@ -1,4 +1,9 @@
 import {
+  COMPOSER_SHELL_CLASS,
+  COMPOSER_SEND_ICON,
+  ComposerSubmitButton,
+} from "@bb/shared-ui/composer-primitives";
+import {
   experimental_ComposerRoot as ComposerRoot,
   experimental_FailedVoiceRecordings as FailedVoiceRecordings,
   experimental_Icon as SdkIcon,
@@ -304,11 +309,9 @@ function PromptSubmitButton({
   );
   const suppressTouchClickRef = useRef(false);
   const button = (
-    <Button
+    <ComposerSubmitButton
       data-promptbox-submit-action=""
       type="submit"
-      size={isCompact ? "icon" : "sm"}
-      variant="default"
       aria-label={title}
       aria-busy={isBusy}
       disabled={!canSubmit}
@@ -364,7 +367,7 @@ function PromptSubmitButton({
       }}
       className={cn(
         className,
-        "rounded-full",
+        "size-9 pointer-coarse:size-11",
         label !== undefined && !isCompact && "size-auto h-8 gap-1.5 px-2.5",
       )}
     >
@@ -375,13 +378,13 @@ function PromptSubmitButton({
         />
       ) : (
         <>
-          <SdkIcon name={icon ?? "CornerDownLeft"} className="size-4" />
+          <SdkIcon name={icon ?? COMPOSER_SEND_ICON} className="size-4" />
           {label !== undefined && !isCompact ? (
             <span data-promptbox-submit-label="">{label}</span>
           ) : null}
         </>
       )}
-    </Button>
+    </ComposerSubmitButton>
   );
 
   if (!disabledReason) return button;
@@ -3331,7 +3334,8 @@ export function PromptBoxInternal({
         attachFilesWithHistory(Array.from(event.dataTransfer.files));
       }}
       className={cn(
-        "group/promptbox relative w-full rounded-xl border border-border bg-background shadow-lift",
+        "group/promptbox relative w-full",
+        COMPOSER_SHELL_CLASS,
         showCompactLayout && "overflow-hidden",
       )}
     >
@@ -3552,7 +3556,7 @@ export function PromptBoxInternal({
                     delivery={voice.delivery}
                     stream={voice.stream}
                     microphoneWarning={voice.microphoneWarning}
-                    submitIcon={submitIcon ?? "CornerDownLeft"}
+                    submitIcon={submitIcon ?? COMPOSER_SEND_ICON}
                     onConfirm={voice.stop}
                     onSend={voice.send}
                     onCancel={cancelVoiceInput}

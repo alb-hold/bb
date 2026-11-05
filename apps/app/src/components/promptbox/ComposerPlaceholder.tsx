@@ -1,28 +1,34 @@
 import type { HTMLAttributes } from "react";
 import { Button } from "@bb/shared-ui/button";
 import { cn } from "@bb/shared-ui/lib/utils";
-import { Skeleton } from "@bb/shared-ui/skeleton";
+import { COMPOSER_SHELL_CLASS } from "@bb/shared-ui/composer-primitives";
 
 export type ComposerLoadingShape = "thread" | "thread-compact" | "new-thread";
 
 const COMPOSER_LOADING_SHAPE_CLASS: Record<ComposerLoadingShape, string> = {
   thread: "h-[151px]",
   "thread-compact": "h-[50px]",
-  "new-thread": "h-32 max-md:pointer-coarse:h-34",
+  "new-thread": "h-32 max-md:pointer-coarse:h-[180px]",
 };
 
-export function ComposerLoadingSkeleton({
+export function ComposerLoadingControls({
   shape,
   ...props
-}: HTMLAttributes<HTMLDivElement> & { shape: ComposerLoadingShape }) {
+}: HTMLAttributes<HTMLButtonElement> & { shape: ComposerLoadingShape }) {
   return (
-    <Skeleton
+    <Button
       {...props}
+      disabled
+      variant="outline"
+      aria-busy="true"
       className={cn(
-        "w-full shrink-0 rounded-xl",
+        "w-full shrink-0 items-end justify-start p-3 text-muted-foreground",
+        COMPOSER_SHELL_CLASS,
         COMPOSER_LOADING_SHAPE_CLASS[shape],
       )}
-    />
+    >
+      {shape === "new-thread" ? "Model · Chat / Terminal" : "Composer"}
+    </Button>
   );
 }
 
@@ -39,7 +45,7 @@ export function ComposerPlaceholder({
 }) {
   if (state.kind === "loading") {
     return (
-      <ComposerLoadingSkeleton
+      <ComposerLoadingControls
         shape={state.shape}
         aria-label="Loading composer"
         data-composer-placeholder="loading"
@@ -57,27 +63,24 @@ export function ComposerPlaceholder({
       </div>
     );
   }
-  const alert =
-    state.kind === "failed"
-      ? {
-          message: "The composer couldn't load.",
-          action: "Retry",
-          onClick: state.onRetry,
-        }
-      : {
-          message: `${state.pluginTitle} stopped working.`,
-          action: "Reload",
-          onClick: state.onReload,
-        };
   return (
     <div
       role="alert"
       data-composer-placeholder={state.kind}
       className="flex items-center justify-between gap-2 rounded-xl border border-border bg-background px-3 py-2 text-sm text-muted-foreground"
     >
-      <span>{alert.message}</span>
-      <Button type="button" variant="outline" size="sm" onClick={alert.onClick}>
-        {alert.action}
+      <span>
+        {state.kind === "failed"
+          ? "The composer couldn't load."
+          : `${state.pluginTitle} stopped working.`}
+      </span>
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        onClick={state.kind === "failed" ? state.onRetry : state.onReload}
+      >
+        {state.kind === "failed" ? "Retry" : "Reload"}
       </Button>
     </div>
   );
