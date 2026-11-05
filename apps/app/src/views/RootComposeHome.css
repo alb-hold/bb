@@ -1,0 +1,7 @@
+:where([data-testid="root-compose-compact-scroll-viewport"][data-more-below]) {
+  mask-image: linear-gradient(
+    to bottom,
+    var(--ink) calc(100% - 24px),
+    transparent
+  );
+}

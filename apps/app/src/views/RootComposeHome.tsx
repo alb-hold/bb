@@ -10,6 +10,7 @@ import { PAGE_SHELL_CONTENT_STYLE } from "@/components/ui/page-shell-content-sty
 import { CONTENT_MEASURE_MAX_WIDTH_CLASS } from "@/lib/content-measure";
 import { ComposerMaxHeightContext } from "@/components/promptbox/composer-max-height";
 import { composerRootWithin } from "@/lib/pane-composer-focus";
+import "./RootComposeHome.css";
 const COMPACT_HOME_CHROME_OFFSET_PX = 56;
 const COMPACT_HOME_COLUMN_CLASS = `mx-auto w-full ${CONTENT_MEASURE_MAX_WIDTH_CLASS} px-4`;
 const ROOT_COMPOSE_MAX_WIDTH_CLASS = CONTENT_MEASURE_MAX_WIDTH_CLASS;
@@ -39,11 +40,11 @@ function useCompactHomeMetrics(isCompact: boolean) {
       return;
     }
     const updateScrollCue = () => {
-      scrollViewport.style.maskImage =
+      scrollViewport.toggleAttribute(
+        "data-more-below",
         scrollViewport.scrollTop + scrollViewport.clientHeight <
-        scrollViewport.scrollHeight - 1
-          ? "linear-gradient(to bottom, var(--ink) calc(100% - 24px), transparent)"
-          : "";
+          scrollViewport.scrollHeight - 1,
+      );
     };
     const measure = () => {
       const composerRoot = composerRootWithin(composer);
