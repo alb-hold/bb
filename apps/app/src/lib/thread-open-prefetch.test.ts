@@ -5,6 +5,7 @@ import { sdk } from "./sdk";
 const {
   preloadTerminalModules,
   preloadNativeTerminalPanel,
+  prefetchTerminalScreen,
   panelReady,
   releasePanel,
 } = vi.hoisted(() => {
@@ -17,6 +18,7 @@ const {
     releasePanel,
     preloadTerminalModules: vi.fn(),
     preloadNativeTerminalPanel: vi.fn(() => Promise.resolve()),
+    prefetchTerminalScreen: vi.fn(),
   };
 });
 
@@ -35,7 +37,8 @@ vi.mock("@/hooks/queries/thread-queries", () => ({
 vi.mock("@/components/thread/terminal/native-terminal-warmup", async () => {
   await panelReady;
   return {
-    warmNativeTerminal: () => {
+    warmNativeTerminal: (terminalId: string | null, threadId: string) => {
+      if (terminalId) prefetchTerminalScreen(terminalId, threadId);
       preloadTerminalModules();
       void preloadNativeTerminalPanel();
     },
@@ -83,4 +86,6 @@ it("does not download xterm for a chat thread or repeat fresh discovery", async 
   await Promise.resolve();
   expect(sdk.nativeTerminals.get).toHaveBeenCalledOnce();
   expect(preloadTerminalModules).not.toHaveBeenCalled();
+  expect(preloadNativeTerminalPanel).not.toHaveBeenCalled();
+  expect(prefetchTerminalScreen).not.toHaveBeenCalled();
 });

@@ -4,6 +4,10 @@ import { nativeTerminalThreadQueryKey } from "@/hooks/queries/query-keys";
 import { sdk } from "./sdk";
 
 export function prefetchThreadOpen(threadId: string): void {
+  const warmup =
+    import("@/components/thread/terminal/native-terminal-warmup").catch(
+      () => null,
+    );
   void appQueryClient.prefetchQuery(
     threadDetailBootstrapQueryOptions(appQueryClient, threadId, {
       timelinePrefetch: true,
@@ -17,10 +21,8 @@ export function prefetchThreadOpen(threadId: string): void {
       if (view !== null) {
         const terminalId =
           view.terminal?.status === "running" ? view.terminal.id : null;
-        void import("@/components/thread/terminal/native-terminal-warmup")
-          .then(({ warmNativeTerminal }) =>
-            warmNativeTerminal(terminalId, threadId),
-          )
+        void warmup
+          .then((module) => module?.warmNativeTerminal(terminalId, threadId))
           .catch(() => undefined);
       }
       return view;

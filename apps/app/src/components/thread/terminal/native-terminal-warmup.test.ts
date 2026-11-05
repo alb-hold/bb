@@ -13,6 +13,9 @@ vi.mock("./terminal-screen-prefetch", () => ({
 }));
 
 it("starts snapshot and xterm warmup without waiting for the panel download", () => {
+  expect(prefetchTerminalScreen).not.toHaveBeenCalled();
+  expect(preloadNativeTerminalPanel).not.toHaveBeenCalled();
+  expect(preloadTerminalModules).not.toHaveBeenCalled();
   warmNativeTerminal("terminal", "thread");
   expect(prefetchTerminalScreen).toHaveBeenCalledWith("terminal", "thread");
   expect(preloadNativeTerminalPanel).toHaveBeenCalledOnce();
