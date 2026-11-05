@@ -1,4 +1,3 @@
-import { NATIVE_TERMINAL_SETUP_DELAY_MS } from "@bb/domain";
 import {
   getEnvironment,
   getNativeTerminalThread,
@@ -328,14 +327,10 @@ function nativeTerminalAttentionThreadIds(
     JOIN terminal_sessions t ON t.id = n.terminal_session_id AND t.status = 'running'
     LEFT JOIN fork_terminal_attention a ON a.terminal_session_id = t.id AND a.cleared_at IS NULL
     WHERE n.thread_id IN (SELECT value FROM json_each(?))
-    AND (a.terminal_session_id IS NOT NULL OR
-      (n.native_session_id IS NULL AND max(t.created_at, coalesce(t.last_user_input_at, 0)) <= ?))
+    AND a.terminal_session_id IS NOT NULL
   `,
     )
-    .all(
-      JSON.stringify(threadIds),
-      Date.now() - NATIVE_TERMINAL_SETUP_DELAY_MS,
-    ) as Array<{ threadId: string }>;
+    .all(JSON.stringify(threadIds)) as Array<{ threadId: string }>;
   return new Set(rows.map((row) => row.threadId));
 }
 

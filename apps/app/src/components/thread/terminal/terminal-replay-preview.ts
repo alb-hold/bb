@@ -1,3 +1,4 @@
+import { trackTerminalScrollability } from "./terminal-scrollbar";
 import type { Terminal as XTermTerminal } from "@xterm/xterm";
 import type { TerminalGrid } from "@bb/domain";
 import { createTerminalOutputPipeline } from "./terminal-output-pipeline";
@@ -227,6 +228,7 @@ export function mountTerminalReplayPreview({
   parent.append(preview);
   terminal.options.disableStdin = true;
   terminal.open(preview);
+  trackTerminalScrollability(terminal);
   if (terminal.element) terminal.element.style.pointerEvents = "none";
   if (terminal.textarea) terminal.textarea.tabIndex = -1;
   if (

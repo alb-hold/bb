@@ -202,7 +202,7 @@ export function TerminalMobileControls({
         <div className="relative min-w-0 flex-1">
           <div
             data-terminal-key-scroller=""
-            className="flex flex-nowrap gap-1 overflow-x-auto touch-pan-x pr-5"
+            className="flex flex-nowrap gap-1 overflow-x-auto touch-pan-x"
           >
             <Key {...keyProps} label="Escape" onPress={() => onInput("\x1b")}>
               Esc
@@ -255,10 +255,6 @@ export function TerminalMobileControls({
               </Key>
             </div>
           </div>
-          <div
-            aria-hidden
-            className="pointer-events-none absolute inset-y-0 right-0 w-5 bg-gradient-to-l from-sidebar to-transparent"
-          />
         </div>
         <Key {...keyProps} label="Enter" onPress={() => onInput("\r")}>
           <Icon name="CornerDownLeft" className="size-4" />

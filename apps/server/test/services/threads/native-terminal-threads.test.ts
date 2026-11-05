@@ -91,7 +91,7 @@ async function createDisconnectedNativeThread(
 }
 
 describe("reopenNativeTerminalsAfterDaemonReconnect", () => {
-  it("notifies waiting surfaces after the setup delay only while the CLI is unbound and untouched", async () => {
+  it("refreshes only the quiet pane hint while the CLI is unbound and untouched", async () => {
     await withTestHarness({ seedFirstPartyProviders: false }, async (h) => {
       const host = upsertHost(h.db, noopNotifier, {
         id: "host-setup-cue",
@@ -145,10 +145,7 @@ describe("reopenNativeTerminalsAfterDaemonReconnect", () => {
         vi.spyOn(Date, "now").mockReturnValue(terminal.createdAt + 13000);
         notify.mockClear();
         callback();
-        expect(notify).toHaveBeenCalledWith(threadId, [
-          "terminals-changed",
-          "status-changed",
-        ]);
+        expect(notify).toHaveBeenCalledWith(threadId, ["terminals-changed"]);
         h.db.$client
           .prepare(
             "UPDATE terminal_sessions SET last_user_input_at = ? WHERE id = ?",

@@ -12,6 +12,7 @@ import {
   createPendingInteraction,
   createNativeTerminalThread,
   getNativeTerminalThread,
+  recordNativeTerminalThreadSessionId,
   upsertTerminalAttention,
   clearTerminalAttention,
   createProject,
@@ -1333,3 +1334,62 @@ it("keeps a native attention signal in both list and header state until input cl
   expect(list()[0]?.hasPendingInteraction).toBe(false);
   db.$client.close();
 });
+
+it.each(["bell", "osc-9", "osc-99", "osc-777"] as const)(
+  "keeps idle unbound CLIs neutral and preserves %s re-attention",
+  (kind) => {
+    const { db, hostId, hub } = setup();
+    const { thread } = createLiveNativeReportingThread({ db, hostId });
+    db.$client
+      .prepare(
+        "UPDATE fork_native_terminal_threads SET native_session_id = NULL WHERE thread_id = ?",
+      )
+      .run(thread.id);
+    const deps = { db, hub, providerRegistry };
+    const detail = () => toThreadResponseFromThread(deps, { thread });
+    const list = () =>
+      toThreadListEntryResponsesForTest(deps, {
+        threads: [createThreadListEntry({ thread, environmentHostId: hostId })],
+      });
+    expect(detail().hasPendingInteraction).toBe(false);
+    expect(list()[0]?.hasPendingInteraction).toBe(false);
+    const terminalId = getNativeTerminalThread(
+      db,
+      thread.id,
+    )!.terminalSessionId!;
+    upsertTerminalAttention(db, {
+      terminalSessionId: terminalId,
+      seq: 1,
+      daemonSeq: 1,
+      kind,
+      title: null,
+      body: null,
+      attentionAt: Date.now(),
+    });
+    expect(detail().hasPendingInteraction).toBe(true);
+    expect(list()[0]?.listIndicator).toBe("needs-input");
+    recordNativeTerminalThreadSessionId(db, {
+      threadId: thread.id,
+      nativeSessionId: "bound",
+    });
+    expect(detail().hasPendingInteraction).toBe(false);
+    expect(list()[0]?.hasPendingInteraction).toBe(false);
+    upsertTerminalAttention(db, {
+      terminalSessionId: terminalId,
+      seq: 2,
+      daemonSeq: 2,
+      kind,
+      title: null,
+      body: null,
+      attentionAt: Date.now(),
+    });
+    expect(detail().hasPendingInteraction).toBe(true);
+    expect(list()[0]?.listIndicator).toBe("needs-input");
+    recordNativeTerminalThreadSessionId(db, {
+      threadId: thread.id,
+      nativeSessionId: "bound",
+    });
+    expect(detail().hasPendingInteraction).toBe(true);
+    db.$client.close();
+  },
+);

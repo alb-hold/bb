@@ -56,8 +56,8 @@ vi.mock("@/hooks/queries/thread-queries", () => ({
 vi.mock("@/hooks/queries/thread-terminal-queries", () => ({
   useThreadTerminals: () => ({ data: undefined, dataUpdatedAt: 0 }),
 }));
-vi.mock("@/components/secondary-panel/lazySecondaryPanelComponents", () => ({
-  LazyThreadTerminalPanel: Object.assign(
+vi.mock("./NativeTerminalPanel", () => ({
+  NativeTerminalPanel: Object.assign(
     ({ autoFocus }: { autoFocus?: boolean }) => (
       <div data-testid="terminal" data-autofocus={String(autoFocus)} />
     ),
