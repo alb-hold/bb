@@ -1,5 +1,6 @@
 import {
   COMPOSER_SHELL_CLASS,
+  COMPOSER_SUBMIT_CLASS,
   COMPOSER_SEND_ICON,
   ComposerSubmitButton,
 } from "@bb/shared-ui/composer-primitives";
@@ -367,7 +368,7 @@ function PromptSubmitButton({
       }}
       className={cn(
         className,
-        "size-9 pointer-coarse:size-11",
+        COMPOSER_SUBMIT_CLASS,
         label !== undefined && !isCompact && "size-auto h-8 gap-1.5 px-2.5",
       )}
     >
