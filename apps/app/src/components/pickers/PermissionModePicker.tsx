@@ -51,7 +51,7 @@ export interface PermissionModePickerProps {
 }
 
 export function PermissionModePicker({
-  pending,
+  pending = false,
   value,
   options,
   onChange,
@@ -70,9 +70,9 @@ export function PermissionModePicker({
     () => addPermissionModeCompactLabels(options),
     [options],
   );
-  const lastValue = useRef<PermissionMode | undefined>(value);
-  if (value !== undefined) lastValue.current = value;
-  const displayValue = value ?? lastValue.current;
+  const lastValue = useRef<PermissionMode | undefined>(pending ? undefined : value);
+  if (!pending && value !== undefined) lastValue.current = value;
+  const displayValue = pending ? lastValue.current : value ?? lastValue.current;
   const showFullAccessWarning = displayValue === "full" && !displayOverride;
   if (
     !pending &&

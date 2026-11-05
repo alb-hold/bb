@@ -19,27 +19,29 @@ afterEach(() => {
 });
 
 describe("PermissionModePicker", () => {
-  it.each(["full", "accept-edits", "auto"] as const)(
-    "retains the known %s mode while disabling pending changes",
-    (value) => {
+  it.each([360, 390, 1280])(
+    "ignores provisional full access until permissions resolve at %s",
+    (width) => {
+      window.innerWidth = width;
       const { rerender } = render(
         <PermissionModePicker
           pending
-          value={value}
+          value="full"
           options={permissionOptions}
           onChange={() => {}}
           supported
         />,
       );
       const trigger = screen.getByRole("button", { name: "Permission mode" });
-      expect(trigger.textContent).toBe(({ full: "Full Access", "accept-edits": "Edits", auto: "Approve" }[value]));
+      expect(trigger.textContent).toBe("Permissions");
       expect(trigger.hasAttribute("disabled")).toBe(true);
-      expect(trigger.querySelector('[data-icon="AlertTriangle"]') !== null).toBe(value === "full");
+      expect(trigger.querySelector('[data-icon="AlertTriangle"]')).toBeNull();
       expect(
         trigger.querySelector('[data-slot="skeleton"], .bg-state-hover'),
       ).toBeNull();
       rerender(
         <PermissionModePicker
+          pending={false}
           value="auto"
           options={permissionOptions}
           onChange={() => {}}
@@ -119,7 +121,7 @@ it.each([360, 390, 1280])("retains the last permission label and chevron while p
   const view = render(<PermissionModePicker {...props} value="full" />);
   const before = screen.getByRole("button", { name: "Permission mode" });
   expect(before.textContent).toBe("Full Access");
-  view.rerender(<PermissionModePicker {...props} pending />);
+  view.rerender(<PermissionModePicker {...props} value="auto" pending />);
   const pending = screen.getByRole("button", { name: "Permission mode" });
   expect(pending.textContent).toBe("Full Access");
   expect(pending.querySelector('[data-icon="ChevronDown"]')).not.toBeNull();

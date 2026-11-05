@@ -10,6 +10,7 @@ import {
 } from "@testing-library/react";
 import type { PermissionMode, ProviderInfo } from "@bb/domain";
 import { makeProviderInfo } from "@bb/test-helpers/domain-fixtures";
+import { createDeferredPromise } from "@bb/test-helpers";
 import type { SystemExecutionOptionsResponse } from "@bb/server-contract";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { systemExecutionOptionsQueryKey } from "@/hooks/queries/query-keys";
@@ -108,6 +109,27 @@ afterEach(() => {
 });
 
 describe("PluginPermissionModePicker", () => {
+  it("keeps provisional full access neutral until routed permissions resolve", async () => {
+    const { wrapper } = createQueryClientTestHarness();
+    writeCachedProviderList(
+      providerListCacheKey({ environmentId: null, hostId: null }),
+      providers,
+    );
+    const response = createDeferredPromise<SystemExecutionOptionsResponse>();
+    vi.mocked(sdk.system.executionOptions).mockReturnValue(response.promise);
+    const onChange = vi.fn();
+    render(<PluginPermissionModePicker providerId="codex" value="full" onChange={onChange} />, { wrapper });
+    const trigger = await screen.findByRole("button", { name: "Permission mode" });
+    expect(trigger.textContent).toBe("Permissions");
+    expect(trigger.hasAttribute("disabled")).toBe(true);
+    expect(trigger.querySelector('[data-icon="AlertTriangle"]')).toBeNull();
+    expect(onChange).not.toHaveBeenCalled();
+    response.resolve(executionOptions("auto"));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Permission mode" }).textContent).toBe("Approve"));
+    expect(screen.getByRole("button", { name: "Permission mode" }).querySelector('[data-icon="AlertTriangle"]')).toBeNull();
+    expect(onChange).toHaveBeenCalledWith("auto");
+  });
+
   it("normalizes against provider capabilities and the routed machine ceiling", async () => {
     const { queryClient, wrapper } = createQueryClientTestHarness();
     cacheOptions(queryClient, "codex", "auto");
@@ -265,6 +287,8 @@ describe("PluginPermissionModePicker", () => {
     await waitFor(() =>
       expect(sdk.system.executionOptions).toHaveBeenCalledTimes(2),
     );
+    expect(trigger.textContent).toBe("Permissions");
+    expect(trigger.querySelector('[data-icon="AlertTriangle"]')).toBeNull();
     expect(onChange).not.toHaveBeenCalled();
   });
 });
