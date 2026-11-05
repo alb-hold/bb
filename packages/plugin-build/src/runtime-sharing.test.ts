@@ -134,6 +134,64 @@ it.each(["3.25.0", "0.0.0", "1.999.0"])(
 );
 
 it.each([
+  ["@radix-ui/react-slot", "Slot", "radixSlot"],
+  ["@radix-ui/react-checkbox", "Root", "radixCheckbox"],
+  ["@radix-ui/react-compose-refs", "composeRefs", "radixComposeRefs"],
+])("shares unresolved %s from the host", async (specifier, name, slot) => {
+  const dir = await mkdtemp(join(tmpdir(), "bb-runtime-missing-"));
+  directories.push(dir);
+  await expect(
+    build({
+      stdin: {
+        resolveDir: dir,
+        contents: `export { ${name} } from "${specifier}";`,
+      },
+      bundle: true,
+      write: false,
+      logLevel: "silent",
+    }),
+  ).rejects.toThrow(`Could not resolve "${specifier}"`);
+  const module = appRequire(specifier!);
+  host.__bbPluginRuntime = { [slot!]: module };
+  const result = await build({
+    stdin: {
+      resolveDir: dir,
+      contents: `export { ${name} } from "${specifier}";`,
+    },
+    bundle: true,
+    format: "cjs",
+    write: false,
+    logLevel: "silent",
+    plugins: [runtimeShimPlugin()],
+  });
+  expect(result.errors).toEqual([]);
+  const exports = {};
+  const plugin = new Function(
+    "exports",
+    "module",
+    `${result.outputFiles[0]!.text};return module.exports;`,
+  )(exports, { exports });
+  expect(plugin[name!]).toBe(module[name!]);
+});
+
+it("keeps unresolved Zod as a build error before admission", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "bb-zod-missing-"));
+  directories.push(dir);
+  await expect(
+    build({
+      stdin: {
+        resolveDir: dir,
+        contents: 'import { z } from "zod"; export const schema = z.string();',
+      },
+      bundle: true,
+      write: false,
+      logLevel: "silent",
+      plugins: [runtimeShimPlugin()],
+    }),
+  ).rejects.toThrow('Could not resolve "zod"');
+});
+
+it.each([
   ["3.25.0", "3.22.0", false],
   ["4.4.0", "4.3.6", false],
   ["4.3.7", "4.3.6", false],
