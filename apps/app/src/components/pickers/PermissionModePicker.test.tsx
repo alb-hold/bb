@@ -37,6 +37,7 @@ describe("PermissionModePicker", () => {
   it("uses the same approve vocabulary for compact and wide labels", () => {
     render(
       <PermissionModePicker
+        pending={false}
         value="auto"
         options={permissionOptions}
         onChange={() => {}}
@@ -44,6 +45,7 @@ describe("PermissionModePicker", () => {
       />,
     );
     const trigger = screen.getByRole("button", { name: "Permission mode" });
+    expect(trigger.classList.contains("w-28")).toBe(false);
     expect(trigger.textContent).toContain("Approve for me");
     expect(trigger.textContent).toContain("Approve");
     expect(trigger.textContent).not.toContain("Auto");

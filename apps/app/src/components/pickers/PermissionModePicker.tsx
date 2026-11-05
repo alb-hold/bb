@@ -96,11 +96,7 @@ export function PermissionModePicker({
       value={value}
       options={compactOptions}
       onChange={onChange}
-      className={cn(
-        LIST_HOVER_TRANSITION,
-        pending !== undefined && "w-28",
-        className,
-      )}
+      className={cn(LIST_HOVER_TRANSITION, className)}
       caretClassName="text-subtle-foreground/75"
       contentClassName="max-w-72"
       muted={muted}

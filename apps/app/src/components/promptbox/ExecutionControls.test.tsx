@@ -59,7 +59,7 @@ afterEach(() => {
 });
 
 describe("ExecutionControls", () => {
-  it("keeps the model chip bounded beside a terminal control that can wrap", () => {
+  it("keeps both execution labels visible beside a bounded model chip", () => {
     const props = makeExecutionControlsProps();
     renderExecutionControls({
       ...props,
@@ -83,15 +83,17 @@ describe("ExecutionControls", () => {
     expect(wrappingRow?.classList.contains("min-w-0")).toBe(true);
     expect(wrappingRow?.classList.contains("max-w-full")).toBe(true);
     expect(chip.classList.contains("overflow-hidden")).toBe(true);
-    expect(wrappingRow?.classList.contains("max-md:flex-nowrap")).toBe(true);
+    expect(wrappingRow?.classList.contains("max-md:contents")).toBe(true);
+    expect(chip.classList.contains("max-md:row-start-1")).toBe(true);
+    expect(control.classList.contains("max-md:row-start-2")).toBe(true);
+    expect(control.classList.contains("max-md:col-start-2")).toBe(true);
     for (const name of ["Chat", "Terminal"]) {
       const choice = screen.getByRole("radio", { name });
       expect(choice.textContent).toBe(name);
       expect(
         choice.querySelector("span")?.classList.contains("max-md:hidden"),
-      ).toBe(name !== "Chat");
+      ).toBe(false);
     }
-    expect(wrappingRow?.classList.contains("max-md:flex-col")).toBe(true);
     expect(chip.textContent).toContain("1M");
   });
 
@@ -113,7 +115,11 @@ describe("ExecutionControls", () => {
     expect(terminal.getAttribute("aria-description")).toBe(
       "Runs the provider's own CLI",
     );
-    expect(terminal.className).toContain("data-[state=on]:bg-foreground");
+    expect(terminal.className).toContain("max-md:h-11");
+    expect(terminal.className).toContain("max-md:before:inset-y-1.5");
+    expect(terminal.className).toContain(
+      "max-md:data-[state=on]:bg-transparent",
+    );
     expect(
       screen
         .getByRole("radiogroup", { name: "Run this thread in" })
@@ -148,7 +154,7 @@ describe("ExecutionControls", () => {
         .getByRole("radio", { name: "Chat" })
         .querySelector("span")
         ?.classList.contains("max-md:hidden"),
-    ).toBe(true);
+    ).toBe(false);
     fireEvent.click(screen.getByRole("radio", { name: "Terminal" }));
     expect(onChange).toHaveBeenCalledTimes(1);
     fireEvent.click(screen.getByRole("radio", { name: "Chat" }));
@@ -176,7 +182,7 @@ describe("ExecutionControls", () => {
       screen
         .getByRole("button", { name: "Provider, model and reasoning" })
         .classList.contains("w-52"),
-    ).toBe(true);
+    ).toBe(false);
     expect(screen.queryByRole("status")).toBeNull();
     expect(screen.getByText("GPT-5")).not.toBeNull();
   });

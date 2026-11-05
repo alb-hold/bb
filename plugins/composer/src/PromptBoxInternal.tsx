@@ -3452,7 +3452,9 @@ export function PromptBoxInternal({
               minHeight={minHeight}
               layout={surface === "new-thread" ? "root-compose" : "thread"}
               resolveMentionLink={mentionResolveLink}
-              userHeightPx={internal_DO_NOT_USE_composerSizing?.editorHeight ?? null}
+              userHeightPx={
+                internal_DO_NOT_USE_composerSizing?.editorHeight ?? null
+              }
             />
           </div>
 
@@ -3520,6 +3522,11 @@ export function PromptBoxInternal({
           <>
             <div
               data-promptbox-action-row=""
+              data-promptbox-execution-layout={
+                surface === "new-thread" && executionControls
+                  ? "stacked"
+                  : undefined
+              }
               className={cn(
                 "relative flex shrink-0 select-none flex-row flex-wrap items-center gap-3 pb-2 pl-3.5 pr-[13px] pt-1.5",
                 showCompactLayout && "flex-nowrap gap-0 p-0 pr-2",
@@ -3556,6 +3563,7 @@ export function PromptBoxInternal({
                 <div
                   data-promptbox-expanded-only=""
                   data-promptbox-standard-actions=""
+                  data-promptbox-leading-actions=""
                   className={cn(
                     "flex min-w-9 flex-1 flex-row items-center gap-1 transition-[opacity,transform] duration-[180ms] ease-[cubic-bezier(0.16,1,0.3,1)] motion-reduce:transition-none",
                     showVoiceActionGroup
@@ -3565,20 +3573,28 @@ export function PromptBoxInternal({
                   inert={showVoiceActionGroup ? true : undefined}
                   aria-live="polite"
                 >
-                  <ComposerPlusMenuSlot
-                    actions={promptActions}
-                    onAttach={
-                      onAttachFiles
-                        ? () => attachmentInputRef.current?.click()
-                        : undefined
-                    }
-                    onAction={applyPromptAction}
-                  />
-                  {executionControls}
+                  <div data-promptbox-plus-control="" className="contents">
+                    <ComposerPlusMenuSlot
+                      actions={promptActions}
+                      onAttach={
+                        onAttachFiles
+                          ? () => attachmentInputRef.current?.click()
+                          : undefined
+                      }
+                      onAction={applyPromptAction}
+                    />
+                  </div>
+                  <div
+                    data-promptbox-execution-controls=""
+                    className="contents"
+                  >
+                    {executionControls}
+                  </div>
                 </div>
               ) : null}
               <div
                 data-promptbox-standard-actions=""
+                data-promptbox-trailing-actions=""
                 className={cn(
                   "flex min-w-0 max-w-full shrink-0 flex-row flex-wrap items-center justify-end gap-1 transition-[opacity,transform] duration-[180ms] ease-[cubic-bezier(0.16,1,0.3,1)] motion-reduce:transition-none",
                   showVoiceActionGroup
