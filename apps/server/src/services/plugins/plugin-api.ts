@@ -1,5 +1,7 @@
-import { rpcInvalidationTags } from "@get-bb/plugin-sdk/internal/rpc-tags";
-import type { ContractTagDeclarations } from "@bb/domain";
+import {
+  rpcInvalidationTags,
+  type ContractTagDeclarations,
+} from "@get-bb/plugin-sdk/internal/rpc-tags";
 import {
   environmentCompositionSchema,
   validateServerAccessProviderDeclaration,
@@ -101,6 +103,7 @@ import {
   validatePluginEnvironmentProviderDeclaration,
   validatePluginMachineProviderDeclaration,
   providerAlreadyRegisteredMessage,
+  providerDeclarationIconRefusal,
   providerIconRefusalMessage,
   undeclaredIconProblem,
   validateProviderEnvContribution,
@@ -149,7 +152,7 @@ export type {
   PluginThreadEventPayloads,
 } from "@get-bb/plugin-sdk";
 
-class PluginContextStaleError extends Error {
+export class PluginContextStaleError extends Error {
   constructor(pluginId: string, apiMember: string) {
     super(
       `plugin "${pluginId}" used a stale API handle — it was reloaded or disabled; ` +
@@ -217,6 +220,7 @@ export interface PluginWebSocketRouteRecord {
 }
 
 export interface PluginRpcHandler {
+  whileWatched?: boolean;
   declarations: ContractTagDeclarations<unknown, unknown>;
   publication: ReturnType<typeof publishRpcMethod>;
   inputSchema: StandardSchemaV1;
@@ -509,6 +513,7 @@ function createStagedRegistrations<
 const PLUGIN_HOST_CALL_MAX_TIMEOUT_MS = 30 * 60_000;
 
 export function createPluginApi(options: {
+  recordPluginUse: () => void;
   pluginId: string;
   logger: ServerLogger;
   db: DbConnection;
@@ -525,6 +530,10 @@ export function createPluginApi(options: {
    */
   rpcCaller: PluginRpcCallerCredential;
   invalidateRpc: (tags: readonly string[] | null) => void;
+  whileRpcWatched?: (
+    method: string,
+    handler: Parameters<PluginRpc["experimental_whileWatched"]>[1],
+  ) => () => void;
   publishSignal: (channel: string, payload: unknown) => void;
   settingsChanged: () => void;
   reportNeedsConfiguration: (message: string) => void;
@@ -675,13 +684,18 @@ export function createPluginApi(options: {
   const backgroundServices: PluginBackgroundServiceRecord[] = [];
   const schedules: PluginScheduleRecord[] = [];
 
-  function assertLive(apiMember?: string): void {
-    if (invalidated) {
-      throw new PluginContextStaleError(
-        pluginId,
-        apiMember ?? inferPluginApiMember(),
-      );
+  const staleErrors = new Map<string, PluginContextStaleError>();
+  function stale(apiMember: string): PluginContextStaleError {
+    let error = staleErrors.get(apiMember);
+    if (error === undefined) {
+      error = new PluginContextStaleError(pluginId, apiMember);
+      staleErrors.set(apiMember, error);
     }
+    return error;
+  }
+
+  function assertLive(apiMember?: string): void {
+    if (invalidated) throw stale(apiMember ?? inferPluginApiMember());
   }
 
   const prefix = `[plugin:${pluginId}]`;
@@ -883,6 +897,17 @@ export function createPluginApi(options: {
   };
 
   const rpc: PluginRpc = {
+    experimental_whileWatched(method, handler) {
+      assertLive();
+      const record = rpcHandlers.get(method);
+      if (!record) throw new Error(`Unknown RPC method: ${method}`);
+      if (record.whileWatched)
+        throw new Error(`RPC producer already registered: ${method}`);
+      if (!options.whileRpcWatched)
+        throw new Error("RPC watching is unavailable");
+      record.whileWatched = true;
+      disposeHooks.push(options.whileRpcWatched(method, handler));
+    },
     experimental_invalidate(tags) {
       assertLive();
       optionsInvalidate(rpcInvalidationTags.parse(tags));
@@ -942,12 +967,13 @@ export function createPluginApi(options: {
   const providerRegistrations = createStagedRegistrations({
     validate: (declaration: PluginProviderDeclaration) => {
       const normalized = validatePluginProviderDeclaration(declaration);
-      const problem =
-        normalized.icon === undefined
-          ? null
-          : undeclaredIconProblem(pluginId, declaredIconNames, normalized.icon);
-      if (problem !== null) {
-        throw new Error(providerIconRefusalMessage(normalized.id, problem));
+      const refusal = providerDeclarationIconRefusal(
+        pluginId,
+        declaredIconNames,
+        normalized,
+      );
+      if (refusal !== null) {
+        throw new Error(refusal);
       }
       return normalized;
     },
@@ -1099,10 +1125,7 @@ export function createPluginApi(options: {
       };
       if (invalidated) {
         await lease.close();
-        throw new PluginContextStaleError(
-          pluginId,
-          "internal_DO_NOT_USE_openTunnelIngress",
-        );
+        throw stale("internal_DO_NOT_USE_openTunnelIngress");
       }
       openTunnelIngresses.add(close);
       disposeHooks.push(close);
@@ -1426,6 +1449,10 @@ export function createPluginApi(options: {
   };
 
   const api: BbPluginApi = {
+    internal_DO_NOT_USE_recordPluginUse() {
+      assertLive();
+      options.recordPluginUse();
+    },
     pluginId,
     log,
     settings,

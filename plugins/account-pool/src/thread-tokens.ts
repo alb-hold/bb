@@ -13,6 +13,7 @@ import type { HubTokenStore } from "./store.js";
 
 const THREAD_ROUTE_PREFIX = "scoped-route-";
 const LEGACY_THREAD_ROUTE_PREFIX = "thread-route-";
+const ACTOR_ROUTE_PREFIX = "scoped-actor-route-";
 const PROCESS_THREAD_ROUTE_PREFIX = "scoped-process-route-";
 const NESTED_ROUTE_PREFIX = "scoped-nested-route-";
 const PROCESS_NESTED_ROUTE_PREFIX = "scoped-process-nested-route-";
@@ -30,7 +31,34 @@ const DELETED_PENDING_PREFIX = "deleted-pending-";
 const DELETED_PENDING_NAME = /^deleted-pending-([a-f0-9]{64})-/u;
 const DELETED_THREAD_KEY = "deleted-thread:";
 
+const THREAD_SWEEP_STATE = "thread-sweep.json";
+const MAX_SWEEP_RETRIES = 256;
+
 const identifierSchema = z.string().regex(/^[A-Za-z0-9_-]+$/u);
+export const actorIdSchema = z.string().regex(/^[A-Za-z0-9_.:-]{1,128}$/u);
+const sweepRotationSchema = z
+  .object({
+    nextThreadId: identifierSchema,
+    endThreadId: identifierSchema,
+    startedAt: z.number().finite().nonnegative(),
+    warned: z.boolean(),
+    includeSuspended: z.boolean().default(false),
+  })
+  .strict();
+const sweepRetrySchema = z
+  .object({
+    threadId: identifierSchema,
+    attempts: z.number().int().positive(),
+    lastFailureAt: z.number().finite().nonnegative(),
+  })
+  .strict();
+const sweepStateSchema = z
+  .object({
+    rotation: sweepRotationSchema.nullable(),
+    retries: z.array(sweepRetrySchema).default([]),
+    retryOverflow: z.boolean().default(false),
+  })
+  .strict();
 const tokenSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/u);
 const digestSchema = z.string().regex(/^[a-f0-9]{64}$/u);
 const archiveStateSchema = z
@@ -55,6 +83,45 @@ const legacyRouteSchema = z
     hostTokenDigest: digestSchema,
   })
   .strict();
+
+const actorGenerationSchema = z.string().regex(/^[a-f0-9]{16}$/u);
+
+const legacyActorRouteSchema = z
+  .object({
+    hostId: identifierSchema,
+    threadId: identifierSchema,
+    actorId: actorIdSchema,
+    provider: providerSchema,
+    accountId: z.string().uuid().nullable(),
+    token: tokenSchema,
+    hostTokenDigest: digestSchema,
+  })
+  .strict();
+
+const actorRouteSchema = z
+  .object({
+    hostId: identifierSchema,
+    threadId: identifierSchema,
+    actorId: actorIdSchema,
+    provider: providerSchema,
+    accountId: z.string().uuid().nullable(),
+    tokenDigest: digestSchema,
+    generation: actorGenerationSchema,
+    hostTokenDigest: digestSchema,
+  })
+  .strict();
+
+const readableActorRouteSchema = z.union([
+  actorRouteSchema.transform((record) => ({ record, legacy: false })),
+  legacyActorRouteSchema.transform(({ token, ...rest }) => ({
+    record: {
+      ...rest,
+      tokenDigest: digest(token),
+      generation: actorGeneration(token),
+    },
+    legacy: true,
+  })),
+]);
 
 const legacyNestedRouteSchema = z
   .object({
@@ -110,6 +177,7 @@ const readableNestedRouteSchema = z.union([
 class CredentialScrubError extends Error {}
 
 type RouteRecord = z.infer<typeof routeSchema>;
+type ActorRouteRecord = z.infer<typeof actorRouteSchema>;
 type NestedRouteRecord = z.infer<typeof nestedRouteSchema>;
 type PriorCredential = z.infer<typeof priorCredentialSchema>;
 
@@ -117,16 +185,30 @@ export type ThreadRoute = Omit<
   RouteRecord,
   "token" | "tokenDigest" | "hostTokenDigest" | "lifetime" | "usedAt" | "priors"
 >;
+export type ActorRoute = Omit<
+  ActorRouteRecord,
+  "tokenDigest" | "generation" | "hostTokenDigest"
+>;
 export type NestedRoute = Omit<
   NestedRouteRecord,
   "token" | "tokenDigest" | "hostTokenDigest" | "lifetime" | "usedAt" | "priors"
 >;
 
+export { actorGenerationSchema };
+
+export type ActorRouteListing = ActorRoute & { generation: string };
+
+export class ActorRouteExistsError extends Error {}
+
+export function actorGeneration(token: string): string {
+  return digest(`actor-generation:${token}`).slice(0, 16);
+}
+
 export type ThreadLookup = (
   threadId: string,
   signal?: AbortSignal,
 ) => Promise<"live" | "archived" | "gone">;
-export const THREAD_STATE_LOOKUP_TIMEOUT_MS = 5_000;
+export const THREAD_STATE_LOOKUP_TIMEOUT_MS = 30_000;
 export const UNANSWERED_WARNING_MS = 60_000;
 export type DeletionRecords = Pick<PluginKvStorage, "set" | "list">;
 export type ThreadSweepOptions = {
@@ -137,11 +219,14 @@ export type ThreadSweepResult = {
   checked: number;
   revoked: number;
   failed: number;
+  deferred: number;
 };
 
 export class ThreadTokenStore {
   private readonly routes = new Map<string, RouteRecord>();
   private readonly tokenIndex = new Map<string, RouteRecord>();
+  private readonly actorRoutes = new Map<string, ActorRouteRecord>();
+  private readonly actorTokenIndex = new Map<string, ActorRouteRecord>();
   private readonly nestedRoutes = new Map<string, NestedRouteRecord>();
   private readonly nestedTokenIndex = new Map<string, NestedRouteRecord>();
   private readonly catalogTokenIndex = new Map<
@@ -169,7 +254,13 @@ export class ThreadTokenStore {
   private readonly corruptArchiveMarkers = new Set<string>();
   private readonly archiveDurabilityFailures = new Set<string>();
   private archiveMarkersLoaded = false;
-  private readonly lookupFailures = new Map<string, number>();
+  private sweepRotation: z.infer<typeof sweepRotationSchema> | null = null;
+  private sweepPersistenceFailed = false;
+  private sweepRetryOverflow = false;
+  private readonly sweepRetries = new Map<
+    string,
+    z.infer<typeof sweepRetrySchema>
+  >();
   private readonly archiveVersions = new Map<string, number>();
   private readonly lastSuspensions = new Map<string, number>();
   private readonly unansweredWarnings = new Map<string, number>();
@@ -185,6 +276,7 @@ export class ThreadTokenStore {
   >();
   private tail: Promise<void> = Promise.resolve();
   private readonly pendingPriorDrops = new WeakSet<object>();
+  private changeListener: (() => void) | null = null;
 
   constructor(
     private readonly directory: string,
@@ -195,6 +287,31 @@ export class ThreadTokenStore {
     private readonly warn: (message: string) => void = () => {},
     private readonly deletions?: DeletionRecords,
   ) {}
+
+  onCredentialsChanged(listener: () => void): void {
+    this.changeListener = listener;
+  }
+
+  private credentialsChanged(): void {
+    try {
+      this.changeListener?.();
+    } catch {
+      return;
+    }
+  }
+
+  async activeTokenDigests(hostId: string): Promise<string[]> {
+    const digests = new Set<string>();
+    for (const record of this.routes.values()) {
+      if (record.hostId !== hostId || record.provider !== "claude") continue;
+      if (await this.isArchived(record.threadId)) continue;
+      if (!this.expired(record)) digests.add(record.tokenDigest);
+      for (const prior of record.priors ?? [])
+        if (!this.credentialExpired({ record, prior }))
+          digests.add(prior.tokenDigest);
+    }
+    return [...digests];
+  }
 
   async initialize(hostIds: readonly string[]): Promise<void> {
     await fs.mkdir(this.directory, { recursive: true, mode: 0o700 });
@@ -233,6 +350,24 @@ export class ThreadTokenStore {
         if (error instanceof CredentialScrubError) throw error;
       });
     }
+    const sweepState = names.includes(THREAD_SWEEP_STATE)
+      ? await readRecord(
+          path.join(this.directory, THREAD_SWEEP_STATE),
+          sweepStateSchema,
+        ).catch(() => {
+          this.warn(
+            "Account Pooler could not read sweep progress; starting a fresh rotation.",
+          );
+          return null;
+        })
+      : null;
+    this.sweepRotation = sweepState?.rotation ?? null;
+    this.sweepRetryOverflow =
+      sweepState?.retryOverflow === true ||
+      (sweepState?.retries.length ?? 0) > MAX_SWEEP_RETRIES;
+    this.sweepRetries.clear();
+    for (const retry of (sweepState?.retries ?? []).slice(0, MAX_SWEEP_RETRIES))
+      this.sweepRetries.set(retry.threadId, retry);
   }
 
   private async loadDeletionRecords(): Promise<boolean> {
@@ -437,6 +572,39 @@ export class ThreadTokenStore {
         this.routes.set(this.routeMapKey(record), record);
         indexCredential(this.tokenIndex, record);
       } else await fs.rm(file, { force: true });
+    } else if (name.startsWith(ACTOR_ROUTE_PREFIX)) {
+      const loaded = await readRecord(file, readableActorRouteSchema);
+      const record = loaded === null ? null : loaded.record;
+      const archived =
+        record === null ? false : await this.isArchived(record.threadId);
+      if (
+        record !== null &&
+        archived &&
+        this.hasTransientArchiveReadFailure(record.threadId)
+      )
+        return;
+      if (
+        record !== null &&
+        !archived &&
+        this.fileEpoch(name) === this.archiveEpoch(record.threadId) &&
+        name === path.basename(this.actorFile(record)) &&
+        (await this.isLive(record, enrolled))
+      ) {
+        if (loaded?.legacy === true) {
+          try {
+            await this.persist(file, record);
+          } catch {
+            throw new CredentialScrubError(
+              "Account Pooler could not remove a persisted scoped credential.",
+            );
+          }
+        }
+        this.actorRoutes.set(
+          this.actorKey(record, record.hostTokenDigest),
+          record,
+        );
+        this.actorTokenIndex.set(record.tokenDigest, record);
+      } else await fs.rm(file, { force: true });
     } else if (
       name.startsWith(NESTED_ROUTE_PREFIX) ||
       name.startsWith(PROCESS_NESTED_ROUTE_PREFIX) ||
@@ -532,6 +700,7 @@ export class ThreadTokenStore {
       this.routes.set(key, record);
       indexCredential(this.tokenIndex, record);
       await this.reclaimDead(record);
+      this.credentialsChanged();
       return record.token;
     });
   }
@@ -589,6 +758,110 @@ export class ThreadTokenStore {
       indexCredential(this.nestedTokenIndex, record);
       await this.reclaimDead(record);
       return record.token;
+    });
+  }
+
+  async forActor(
+    route: ActorRoute,
+    hostToken: string,
+    options: { rotate?: boolean } = {},
+  ): Promise<{ token: string; generation: string }> {
+    const parsed = actorRouteSchema
+      .omit({ tokenDigest: true, generation: true, hostTokenDigest: true })
+      .parse(route);
+    const hostTokenDigest = digest(hostToken);
+    return this.serialize(async () => {
+      if (await this.isArchived(parsed.threadId))
+        throw new Error("Cannot mint a credential for an archived thread.");
+      const key = this.actorKey(parsed, hostTokenDigest);
+      const existing = this.actorRoutes.get(key);
+      if (existing !== undefined && options.rotate !== true)
+        throw new ActorRouteExistsError(
+          "An actor route for this thread and actor already exists.",
+        );
+      const token = randomBytes(32).toString("base64url");
+      const record: ActorRouteRecord = {
+        ...parsed,
+        hostTokenDigest,
+        tokenDigest: digest(token),
+        generation: actorGeneration(token),
+      };
+      await this.persist(this.actorFile(record), record);
+      if (existing !== undefined)
+        this.actorTokenIndex.delete(existing.tokenDigest);
+      this.actorRoutes.set(key, record);
+      this.actorTokenIndex.set(record.tokenDigest, record);
+      await this.reclaimDead(record);
+      return { token, generation: record.generation };
+    });
+  }
+
+  async authenticateActor(
+    token: string | null,
+    provider?: ThreadRoute["provider"],
+  ): Promise<ActorRoute | null> {
+    const record =
+      token === null || token.length !== 43
+        ? undefined
+        : this.actorTokenIndex.get(digest(token));
+    if (record === undefined) return null;
+    if (await this.isArchived(record.threadId)) return null;
+    if (provider !== undefined && provider !== record.provider) return null;
+    if (
+      !(await this.hosts.authenticateGeneration(
+        record.hostId,
+        record.hostTokenDigest,
+      ))
+    )
+      return null;
+    return {
+      hostId: record.hostId,
+      threadId: record.threadId,
+      actorId: record.actorId,
+      provider: record.provider,
+      accountId: record.accountId,
+    };
+  }
+
+  listActors(): ActorRouteListing[] {
+    const order = (route: ActorRoute) =>
+      [route.threadId, route.actorId, route.provider].join("|");
+    return [...this.actorRoutes.values()]
+      .map(({ hostId, threadId, actorId, provider, accountId, generation }) => ({
+        hostId,
+        threadId,
+        actorId,
+        provider,
+        accountId,
+        generation,
+      }))
+      .sort((a, b) => order(a).localeCompare(order(b)));
+  }
+
+  async revokeActor(filter: {
+    actorId: string;
+    threadId?: string;
+    generation?: string;
+  }): Promise<number> {
+    const actorId = actorIdSchema.parse(filter.actorId);
+    const generation =
+      filter.generation === undefined
+        ? undefined
+        : actorGenerationSchema.parse(filter.generation);
+    return this.serialize(async () => {
+      let revoked = 0;
+      for (const [key, record] of [...this.actorRoutes]) {
+        if (record.actorId !== actorId) continue;
+        if (filter.threadId !== undefined && record.threadId !== filter.threadId)
+          continue;
+        if (generation !== undefined && record.generation !== generation)
+          continue;
+        this.actorRoutes.delete(key);
+        this.actorTokenIndex.delete(record.tokenDigest);
+        await this.removeCredentialFile(this.actorFile(record));
+        revoked += 1;
+      }
+      return revoked;
     });
   }
 
@@ -691,6 +964,12 @@ export class ThreadTokenStore {
     return { hostId: record.hostId, threadId: record.threadId };
   }
 
+  async authenticateThreadProof(token: string | null): Promise<string | null> {
+    const route =
+      (await this.authenticate(token)) ?? (await this.authenticateNested(token));
+    return route?.threadId ?? null;
+  }
+
   async removeThread(threadId: string): Promise<void> {
     this.commitArchiveState(
       threadId,
@@ -745,6 +1024,14 @@ export class ThreadTokenStore {
         this.routes.delete(key);
         unindexCredential(this.tokenIndex, record);
         await this.removeProviderFiles(record, epoch).catch(() => undefined);
+      }
+      for (const [key, record] of this.actorRoutes) {
+        if (record.threadId !== threadId) continue;
+        this.actorRoutes.delete(key);
+        this.actorTokenIndex.delete(record.tokenDigest);
+        await this.removeCredentialFile(
+          this.actorFileAtEpoch(record, Math.max(0, nextEpoch - 1)),
+        ).catch(() => undefined);
       }
       for (const [key, record] of this.nestedRoutes) {
         if (record.threadId !== threadId) continue;
@@ -983,63 +1270,187 @@ export class ThreadTokenStore {
     options: ThreadSweepOptions = {},
   ): Promise<ThreadSweepResult> {
     await this.retryDeletionRecords();
-    const threadIds = new Set<string>();
-    for (const record of this.routes.values()) threadIds.add(record.threadId);
-    for (const record of this.nestedRoutes.values())
-      threadIds.add(record.threadId);
-    for (const threadId of this.lookupFailures.keys())
-      if (!threadIds.has(threadId)) this.lookupFailures.delete(threadId);
-    const ordered = [...threadIds].sort(
-      (left, right) =>
-        (this.lookupFailures.get(left) ?? 0) -
-          (this.lookupFailures.get(right) ?? 0) ||
-        Number(this.archivedThreads.has(left)) -
-          Number(this.archivedThreads.has(right)),
-    );
+    const routed = new Set<string>();
+    for (const record of this.routes.values()) routed.add(record.threadId);
+    for (const record of this.nestedRoutes.values()) routed.add(record.threadId);
+    for (const record of this.actorRoutes.values())
+      routed.add(record.threadId);
+    let pruned = false;
+    for (const id of this.sweepRetries.keys())
+      if (!routed.has(id)) {
+        this.sweepRetries.delete(id);
+        pruned = true;
+      }
+    if (pruned) await this.saveSweepRotation(this.sweepRotation);
     const result: ThreadSweepResult = {
-      checked: ordered.length,
+      checked: 0,
       revoked: 0,
       failed: 0,
+      deferred: 0,
     };
-    for (const threadId of ordered) {
-      if (options.signal?.aborted === true) {
-        result.failed += 1;
-        continue;
+    const cancelled = () => options.signal?.aborted === true;
+    const attempted = new Set<string>();
+    const failed = (threadId: string, retry: boolean) => {
+      const previous = this.sweepRetries.get(threadId);
+      if (previous !== undefined || this.sweepRetries.size < MAX_SWEEP_RETRIES) {
+        if (retry) this.sweepRetries.delete(threadId);
+        this.sweepRetries.set(threadId, {
+          threadId,
+          attempts: (previous?.attempts ?? 0) + 1,
+          lastFailureAt: this.now(),
+        });
+      } else this.sweepRetryOverflow = true;
+      result.failed += 1;
+    };
+    const check = async (threadId: string, retry = false): Promise<boolean> => {
+      attempted.add(threadId);
+      if (cancelled()) {
+        result.deferred += 1;
+        return false;
       }
+      result.checked += 1;
+      const timeoutMs = retry
+        ? (options.lookupTimeoutMs ?? this.lookupTimeoutMs)
+        : options.lookupTimeoutMs;
       const lookupSignals = [
         ...(options.signal === undefined ? [] : [options.signal]),
-        ...(options.lookupTimeoutMs === undefined
-          ? []
-          : [AbortSignal.timeout(options.lookupTimeoutMs)]),
+        ...(timeoutMs === undefined ? [] : [AbortSignal.timeout(timeoutMs)]),
       ];
       const lookupSignal =
         lookupSignals.length === 0 ? undefined : AbortSignal.any(lookupSignals);
       const version = this.archiveVersion(threadId);
+      let settled = false;
+      let status: Awaited<ReturnType<ThreadLookup>>;
       try {
-        const status = await untilAborted(
-          lookup(threadId, lookupSignal),
-          lookupSignal,
-        );
-        this.lookupFailures.delete(threadId);
-        if (status === "live") {
-          await this.restoreThread(threadId, version);
-          continue;
+        const operation = Promise.resolve()
+          .then(() => lookup(threadId, lookupSignal))
+          .then(
+            (value) => {
+              settled = true;
+              return value;
+            },
+            (error: unknown) => {
+              settled = true;
+              throw error;
+            },
+          );
+        status = await untilAborted(operation, lookupSignal);
+      } catch {
+        if (cancelled() && !settled) {
+          result.deferred += 1;
+          return false;
         }
-        if (status === "archived") {
+        failed(threadId, retry);
+        return true;
+      }
+      try {
+        if (status === "live") await this.restoreThread(threadId, version);
+        else if (status === "archived")
           await this.suspendThreadIfVersion(threadId, version);
-          continue;
-        }
-        if (await this.removeThreadIfVersion(threadId, version))
+        else if (await this.removeThreadIfVersion(threadId, version))
           result.revoked += 1;
       } catch {
-        this.lookupFailures.set(
-          threadId,
-          (this.lookupFailures.get(threadId) ?? 0) + 1,
+        failed(threadId, retry);
+        return true;
+      }
+      this.sweepRetries.delete(threadId);
+      return true;
+    };
+    const retries = [...this.sweepRetries.keys()].slice(0, 8);
+    await Promise.all(retries.map((id) => check(id, true)));
+    if (retries.length > 0) await this.saveSweepRotation(this.sweepRotation);
+    const pending = this.sweepRotation;
+    const needsSweep = (id: string) =>
+      this.sweepRetryOverflow ||
+      pending?.includeSuspended === true ||
+      this.sweepRetries.has(id) ||
+      !this.archivedThreads.has(id) ||
+      (pending !== null &&
+        id >= pending.nextThreadId &&
+        id <= pending.endThreadId);
+    const sorted = [...routed]
+      .filter((id) => needsSweep(id) && !attempted.has(id))
+      .sort();
+    if (this.sweepRotation === null && sorted.length > 0) {
+      const includeSuspended = this.sweepRetryOverflow;
+      this.sweepRetryOverflow = false;
+      await this.saveSweepRotation({
+        nextThreadId: sorted[0]!,
+        endThreadId: sorted[sorted.length - 1]!,
+        startedAt: this.now(),
+        warned: false,
+        includeSuspended,
+      });
+    }
+    const rotation = this.sweepRotation;
+    const ordered =
+      rotation === null
+        ? []
+        : sorted.filter(
+            (id) => id >= rotation.nextThreadId && id <= rotation.endThreadId,
+          );
+    let next = 0;
+    while (next < ordered.length && !cancelled()) {
+      const batch = ordered.slice(next, next + 32);
+      const completed = await Promise.all(batch.map((id) => check(id)));
+      const incomplete = completed.indexOf(false);
+      const resume = incomplete < 0 ? next + batch.length : next + incomplete;
+      next += batch.length;
+      if (rotation !== null) {
+        const nextThreadId = ordered[resume];
+        await this.saveSweepRotation(
+          nextThreadId === undefined ? null : { ...rotation, nextThreadId },
         );
-        result.failed += 1;
       }
     }
+    const unreached = new Set(ordered.slice(next));
+    for (const id of this.sweepRetries.keys())
+      if (!attempted.has(id)) unreached.add(id);
+    if (this.sweepRetryOverflow)
+      for (const id of routed) unreached.add(id);
+    result.deferred += unreached.size;
+    if (ordered.length === 0 && rotation !== null)
+      await this.saveSweepRotation(null);
+
     return result;
+  }
+
+  private async saveSweepRotation(
+    rotation: z.infer<typeof sweepRotationSchema> | null,
+  ): Promise<void> {
+    const previous = this.sweepRotation;
+    const warning =
+      previous !== null &&
+      !previous.warned &&
+      this.now() - previous.startedAt > 60 * 60 * 1000;
+    const saved =
+      rotation === null
+        ? null
+        : {
+            ...rotation,
+            warned: rotation.warned || warning || previous?.warned === true,
+          };
+    await this.serialize(async () => {
+      try {
+        await this.persist(path.join(this.directory, THREAD_SWEEP_STATE), {
+          rotation: saved,
+          retries: [...this.sweepRetries.values()],
+          retryOverflow: this.sweepRetryOverflow,
+        });
+        this.sweepPersistenceFailed = false;
+      } catch {
+        if (!this.sweepPersistenceFailed)
+          this.warn(
+            "Account Pooler could not save sweep progress; continuing with in-memory progress until storage recovers.",
+          );
+        this.sweepPersistenceFailed = true;
+      }
+      this.sweepRotation = saved;
+    });
+    if (warning)
+      this.warn(
+        "Account Pooler thread credential sweep rotation has taken more than one hour.",
+      );
   }
 
   async removeThreadIfVersion(
@@ -1081,6 +1492,7 @@ export class ThreadTokenStore {
     const version = this.archiveVersion(threadId) + 1;
     this.archiveVersions.set(threadId, version);
     if (suspends) this.lastSuspensions.set(threadId, version);
+    this.credentialsChanged();
     return version;
   }
 
@@ -1330,6 +1742,9 @@ export class ThreadTokenStore {
       ) ||
       [...this.nestedRoutes.values()].some(
         (record) => record.threadId === threadId,
+      ) ||
+      [...this.actorRoutes.values()].some(
+        (record) => record.threadId === threadId,
       )
     );
   }
@@ -1377,6 +1792,12 @@ export class ThreadTokenStore {
       ).catch(() => undefined);
       this.routes.delete(key);
       unindexCredential(this.tokenIndex, record);
+    }
+    for (const [key, record] of this.actorRoutes) {
+      if (!stale(record) || (await this.isGenerationLive(record))) continue;
+      await this.removeCredentialFile(this.actorFileAtEpoch(record, this.archiveEpoch(record.threadId))).catch(() => undefined);
+      this.actorRoutes.delete(key);
+      this.actorTokenIndex.delete(record.tokenDigest);
     }
     for (const [key, record] of this.nestedRoutes) {
       if (!stale(record) || (await this.isGenerationLive(record))) continue;
@@ -1514,6 +1935,7 @@ export class ThreadTokenStore {
         !name.startsWith(THREAD_ROUTE_PREFIX) &&
         !name.startsWith(PROCESS_THREAD_ROUTE_PREFIX) &&
         !name.startsWith(LEGACY_THREAD_ROUTE_PREFIX) &&
+        !name.startsWith(ACTOR_ROUTE_PREFIX) &&
         !name.startsWith(NESTED_ROUTE_PREFIX) &&
         !name.startsWith(PROCESS_NESTED_ROUTE_PREFIX) &&
         !name.startsWith(LEGACY_NESTED_ROUTE_PREFIX)
@@ -1538,6 +1960,7 @@ export class ThreadTokenStore {
         !name.startsWith(THREAD_ROUTE_PREFIX) &&
         !name.startsWith(PROCESS_THREAD_ROUTE_PREFIX) &&
         !name.startsWith(LEGACY_THREAD_ROUTE_PREFIX) &&
+        !name.startsWith(ACTOR_ROUTE_PREFIX) &&
         !name.startsWith(NESTED_ROUTE_PREFIX) &&
         !name.startsWith(PROCESS_NESTED_ROUTE_PREFIX) &&
         !name.startsWith(LEGACY_NESTED_ROUTE_PREFIX)
@@ -1710,6 +2133,7 @@ export class ThreadTokenStore {
       const index = use.nested ? this.nestedTokenIndex : this.tokenIndex;
       for (const prior of record.priors ?? []) index.delete(prior.tokenDigest);
       record.priors = undefined;
+      this.credentialsChanged();
       this.pendingPriorDrops.add(record);
       await this.persistCredential(
         use.nested ? this.nestedFile(use.record) : this.file(use.record),
@@ -1865,6 +2289,24 @@ export class ThreadTokenStore {
     return path.join(
       this.directory,
       `${LEGACY_THREAD_ROUTE_PREFIX}${this.key(route, route.hostTokenDigest)}.json`,
+    );
+  }
+
+  private actorKey(route: ActorRoute, hostTokenDigest: string): string {
+    return `${route.hostId}-${route.provider}-${route.threadId}-${digest(route.actorId).slice(0, 32)}-${hostTokenDigest}`;
+  }
+
+  private actorFile(route: ActorRoute & { hostTokenDigest: string }): string {
+    return this.actorFileAtEpoch(route, this.archiveEpoch(route.threadId));
+  }
+
+  private actorFileAtEpoch(
+    route: ActorRoute & { hostTokenDigest: string },
+    epoch: number,
+  ): string {
+    return path.join(
+      this.directory,
+      `${ACTOR_ROUTE_PREFIX}${this.actorKey(route, route.hostTokenDigest)}-v${epoch}.json`,
     );
   }
 

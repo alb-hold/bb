@@ -68,6 +68,7 @@ interface ResolveExistingThreadExecutionPlanArgs {
   executionSource: ThreadExecutionSource;
   hostId?: string | null;
   input: ExistingThreadExecutionInput;
+  inheritParentExecution?: boolean;
   projectDefaults?: ProjectExecutionDefaults | null;
   threadId: string;
 }
@@ -348,13 +349,29 @@ export async function resolveExistingThreadExecutionPlan(
     parentThread !== null
       ? getLastExecutionOptions(deps, parentThread.id)
       : null;
-  const model = resolveRequiredField<string>([
+  const inheritedParentModel =
+    args.inheritParentExecution === true &&
+    parentThread?.providerId === thread.providerId
+      ? parentExecution?.model
+      : undefined;
+  const inheritedParentReasoningLevel =
+    args.inheritParentExecution === true &&
+    parentThread?.providerId === thread.providerId
+      ? parentExecution?.reasoningLevel
+      : undefined;
+  const declaredChildModel =
     childThreadModel({
       parentThreadId:
         thread.parentThreadId ?? getThreadSpawner(deps.db, thread.id),
       declaredChildModel: deps.providerRegistry.get(thread.providerId)
         ?.childThreadModel,
-    }) ?? undefined,
+    }) ?? undefined;
+  const model = resolveRequiredField<string>([
+    declaredChildModel,
+    ...(args.input.model?.source === "explicit"
+      ? [args.input.model.value]
+      : []),
+    inheritedParentModel,
     args.input.model?.value,
     thread.modelOverride ?? undefined,
     lastExecution?.model,
@@ -391,6 +408,7 @@ export async function resolveExistingThreadExecutionPlan(
   const reasoningLevel = resolveFieldWithDefault<ReasoningLevel>(
     [
       args.input.reasoningLevel?.value,
+      inheritedParentReasoningLevel,
       thread.reasoningLevelOverride ?? undefined,
       lastExecution?.reasoningLevel,
       projectExecution?.reasoningLevel,

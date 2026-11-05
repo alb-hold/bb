@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+
+import { experimental_selectedSkillMentions as selectedSkillMentions } from "@get-bb/plugin-sdk/provider-bridge";
 import { ClaudeContextUsageCollector } from "./context-usage.js";
 import { readIsolatedClaudeContextUsage } from "./context-usage-probe.js";
 
@@ -35,7 +37,6 @@ import { randomUUID } from "node:crypto";
 import { join as joinPath, resolve as resolvePath } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import {
-  forkSession,
   type CanUseTool,
   type HookCallback,
   type OnElicitation,
@@ -64,6 +65,7 @@ import {
   type SdkSessionOptions,
 } from "./sdk-session.js";
 import { MissingClaudeCliError } from "./missing-cli-error.js";
+import { claudeConfigDirectory, forkClaudeSession } from "./session-fork.js";
 import {
   UNSHARED_CLAUDE_CODE_MODEL_CATALOG,
   createClaudeCodeBridgeModelListMemo,
@@ -111,6 +113,8 @@ import {
 import {
   createClaudeSkillPluginsRoot,
   ensureClaudeSkillPlugin,
+  filterClaudeSkillRoots,
+  claudeSkillsConfigDirectory,
 } from "./skill-plugins.js";
 import {
   buildBridgeMcpServer,
@@ -175,7 +179,19 @@ const promptInputItemSchema = z.discriminatedUnion("type", [
   }),
 ]);
 
-const CLAUDE_PROVIDER_SUBAGENT_TOOL_NAMES = new Set(["Agent", "Task"]);
+const CLAUDE_PROVIDER_SUBAGENT_TOOL_NAMES = new Set([
+  "Agent",
+  "Task",
+  "ListAgents",
+]);
+
+function subagentDisallowedTools(
+  providerSubagentsEnabled: boolean,
+): string[] | undefined {
+  return providerSubagentsEnabled
+    ? undefined
+    : [...CLAUDE_PROVIDER_SUBAGENT_TOOL_NAMES];
+}
 const CLAUDE_WORKFLOW_TOOL_NAME = "Workflow";
 
 interface BridgeEventNotification {
@@ -316,6 +332,7 @@ interface SessionConstructionConfig {
 }
 
 interface ClaudeLiveSessionSettings {
+  fullAccessApprovalsEnabled: boolean;
   memoryEnabled: boolean;
   model?: string;
   providerSubagentsEnabled: boolean;
@@ -505,7 +522,7 @@ function cancelPendingElicitationQuestions(
     pending.settle({ ok: false, message });
   }
 }
-let configuredSkillRoots: ClaudeCodeSkillRoot[] | null = null;
+let configuredSkillRoots: { id: string; path: string }[] | null = null;
 let skillPluginsRoot: string | null = null;
 let bridgeTempDir: string | null = null;
 let bridgeDataDir: string | null = null;
@@ -583,6 +600,34 @@ function applyChromeSetting(
   if (attachment.residentSession) {
     attachment.residentSession.restartBeforeNextTurn = {
       reason: CLAUDE_CHROME_SETTING_RESTART_REASON,
+      showRuntimeNote: false,
+    };
+  }
+}
+
+function applySubagentSetting(
+  attachment: ThreadAttachment,
+  enabled: boolean | undefined,
+): void {
+  if (
+    enabled === undefined ||
+    attachment.liveSettings.providerSubagentsEnabled === enabled
+  ) {
+    return;
+  }
+  const disallowedTools = subagentDisallowedTools(enabled);
+  if (disallowedTools === undefined) {
+    delete attachment.sessionOptions.disallowedTools;
+  } else {
+    attachment.sessionOptions.disallowedTools = disallowedTools;
+  }
+  attachment.liveSettings = {
+    ...attachment.liveSettings,
+    providerSubagentsEnabled: enabled,
+  };
+  if (attachment.residentSession) {
+    attachment.residentSession.restartBeforeNextTurn = {
+      reason: "Claude Code subagent setting changed",
       showRuntimeNote: false,
     };
   }
@@ -1182,6 +1227,7 @@ function toInitialLiveSessionSettings(
   params: SessionConstructionParams,
 ): ClaudeLiveSessionSettings {
   return {
+    fullAccessApprovalsEnabled: params.fullAccessApprovalsEnabled,
     memoryEnabled: params.memoryEnabled ?? true,
     ...(params.model !== undefined ? { model: params.model } : {}),
     providerSubagentsEnabled: params.providerSubagentsEnabled ?? true,
@@ -1200,6 +1246,8 @@ function withTurnLiveSessionSettings(
   const model = params.model ?? current.model;
   const reasoningLevel = params.reasoningLevel ?? current.reasoningLevel;
   return {
+    fullAccessApprovalsEnabled:
+      params.fullAccessApprovalsEnabled ?? current.fullAccessApprovalsEnabled,
     memoryEnabled: params.memoryEnabled ?? current.memoryEnabled,
     ...(model !== undefined ? { model } : {}),
     providerSubagentsEnabled:
@@ -1566,6 +1614,12 @@ function buildTrackedSessionOptions(
     env,
   );
   sessionOptions.permissionMode = params.permissionMode;
+  const disallowedTools = subagentDisallowedTools(
+    params.providerSubagentsEnabled ?? true,
+  );
+  if (disallowedTools !== undefined) {
+    sessionOptions.disallowedTools = disallowedTools;
+  }
   sessionOptions.hooks = buildSessionTrackingHooks(threadIdRef);
   sessionOptions.recordThreadId = () => threadIdRef.current;
   return sessionOptions;
@@ -2134,7 +2188,6 @@ function createForwardInteractiveRequest(
           threadId: args.threadId,
           providerThreadId: args.providerThreadId,
           turnId: null,
-          providerNativeIds: true,
           payload,
         },
       });
@@ -2195,7 +2248,6 @@ function createForwardUserQuestionRequest(
           threadId: args.threadId,
           providerThreadId: args.providerThreadId,
           turnId: null,
-          providerNativeIds: true,
           payload,
         },
       });
@@ -2339,7 +2391,8 @@ function createCanUseTool(threadIdRef: ThreadIdRef): CanUseTool {
 
     if (
       threadSession.attachment.permissionMode === "bypassPermissions" &&
-      !isBypassPermissionsAvailable()
+      (!isBypassPermissionsAvailable() ||
+        !threadSession.attachment.liveSettings.fullAccessApprovalsEnabled)
     ) {
       return {
         behavior: "allow",
@@ -2449,7 +2502,7 @@ async function handleRequest(request: ClaudeCodeJsonRpcRequest): Promise<void> {
       await handleThreadStart(
         request.id,
         claudeThreadStartParamsSchema.parse(
-          toClaudeSessionParams(request.params),
+          await toClaudeSessionParams(request.params),
         ),
       );
       break;
@@ -2457,7 +2510,7 @@ async function handleRequest(request: ClaudeCodeJsonRpcRequest): Promise<void> {
       await handleThreadResume(
         request.id,
         claudeThreadResumeParamsSchema.parse({
-          ...toClaudeSessionParams(request.params),
+          ...(await toClaudeSessionParams(request.params)),
           providerThreadId: request.params.providerThreadId,
         }),
       );
@@ -2466,7 +2519,7 @@ async function handleRequest(request: ClaudeCodeJsonRpcRequest): Promise<void> {
       await handleThreadFork(
         request.id,
         claudeThreadForkParamsSchema.parse({
-          ...toClaudeSessionParams(request.params),
+          ...(await toClaudeSessionParams(request.params)),
           sourceProviderThreadId: request.params.sourceProviderThreadId,
           ...(request.params.sourceProviderCheckpointId !== undefined
             ? {
@@ -2490,7 +2543,7 @@ async function handleRequest(request: ClaudeCodeJsonRpcRequest): Promise<void> {
       sendResult(request.id, await closeThreadForStop(request.params.threadId));
       break;
     case "skills/configure":
-      configuredSkillRoots = assembleSkillPlugins(request.params.roots);
+      configuredSkillRoots = request.params.roots;
       sendResult(request.id, { ok: true });
       break;
   }
@@ -2635,12 +2688,13 @@ async function handleThreadFork(
 
   let forkedProviderThreadId: string;
   try {
-    const forkResult = await forkSession(params.sourceProviderThreadId, {
-      ...(params.sourceProviderCheckpointId !== undefined
-        ? { upToMessageId: params.sourceProviderCheckpointId }
-        : {}),
+    forkedProviderThreadId = await forkClaudeSession({
+      configDirectory: claudeConfigDirectory(
+        buildSessionEnv(readConfigEnvOverrides(params.config)),
+      ),
+      sourceSessionId: params.sourceProviderThreadId,
+      upToMessageId: params.sourceProviderCheckpointId,
     });
-    forkedProviderThreadId = forkResult.sessionId;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     sendError(id, -32000, message);
@@ -2650,16 +2704,27 @@ async function handleThreadFork(
   attachThreadSession(id, params, forkedProviderThreadId, true);
 }
 
-function toClaudeSessionParams(
+async function toClaudeSessionParams(
   params: z.infer<typeof canonicalThreadStartParamsSchema>,
-): Record<string, unknown> {
+): Promise<Record<string, unknown>> {
+  const roots =
+    configuredSkillRoots === null
+      ? undefined
+      : assembleSkillPlugins(
+          await filterClaudeSkillRoots({
+            roots: configuredSkillRoots,
+            cwd: params.cwd,
+            pluginsRoot: requireSkillPluginsRoot(),
+            claudeDir: claudeSkillsConfigDirectory(),
+          }),
+        );
   return buildClaudeSessionParams({
     threadId: params.threadId,
     cwd: params.cwd,
     options: params.options,
     instructionMode: params.instructionMode,
     dynamicTools: params.dynamicTools,
-    skillRoots: configuredSkillRoots ?? undefined,
+    skillRoots: roots,
   });
 }
 
@@ -2681,6 +2746,7 @@ async function runTurnInput(
       applyTurnEnvironment(attachment, params.config);
     }
     applyChromeSetting(attachment, params.chromeEnabled);
+    applySubagentSetting(attachment, params.providerSubagentsEnabled);
     applyContextWindowSetting(attachment, params.disable1MContext);
     applyArtifactSetting(attachment, params.artifactsEnabled);
   }
@@ -2911,31 +2977,6 @@ function localAttachmentMarker(args: {
   return `[Attached ${args.kind}${namePart}${suffix}. It is on disk at ${args.path} — use the Read tool to view it.]`;
 }
 
-function normalizeClaudeSkillMentions(
-  entry: Extract<z.infer<typeof promptInputItemSchema>, { type: "text" }>,
-): string {
-  const replacements = new Set<number>();
-  for (const mention of entry.mentions) {
-    const resource = mention.resource;
-    if (
-      resource.kind === "command" &&
-      resource.source === "skill" &&
-      resource.trigger === "$" &&
-      typeof resource.name === "string" &&
-      mention.end <= entry.text.length &&
-      entry.text.slice(mention.start, mention.end) === `$${resource.name}`
-    ) {
-      replacements.add(mention.start);
-    }
-  }
-
-  let normalized = entry.text;
-  for (const start of replacements) {
-    normalized = `${normalized.slice(0, start)}/${normalized.slice(start + 1)}`;
-  }
-  return normalized;
-}
-
 function buildPromptText(input: unknown): string | undefined {
   if (typeof input === "string") {
     return input.length > 0 ? input : undefined;
@@ -2943,14 +2984,29 @@ function buildPromptText(input: unknown): string | undefined {
   if (!Array.isArray(input)) return undefined;
 
   const chunks: string[] = [];
+  const skills: {
+    chunkIndex: number;
+    start: number;
+    end: number;
+    name: string;
+  }[] = [];
   for (const item of input) {
     const parsed = promptInputItemSchema.safeParse(item);
     if (!parsed.success) continue;
     const entry = parsed.data;
     switch (entry.type) {
       case "text":
-        if (entry.text.length > 0)
-          chunks.push(normalizeClaudeSkillMentions(entry));
+        if (entry.text.length > 0) {
+          const chunkIndex = chunks.push(entry.text) - 1;
+          for (const mention of selectedSkillMentions(entry)) {
+            skills.push({
+              chunkIndex,
+              start: mention.start,
+              end: mention.end,
+              name: mention.resource.name,
+            });
+          }
+        }
         break;
       case "image":
         chunks.push(`[Attached image: ${entry.url}]`);
@@ -2970,6 +3026,20 @@ function buildPromptText(input: unknown): string | undefined {
         );
         break;
     }
+  }
+
+  const [skill] = skills;
+  if (skills.length === 1 && skill) {
+    const chunk = chunks[skill.chunkIndex]!;
+    chunks[skill.chunkIndex] =
+      `${chunk.slice(0, skill.start)}${chunk.slice(skill.end)}`;
+    const argumentsText = chunks.join("\n");
+    const separator = argumentsText.startsWith(" ") ? "" : " ";
+    return `/${skill.name}${argumentsText ? `${separator}${argumentsText}` : ""}`;
+  }
+  for (const { chunkIndex, start } of skills) {
+    const chunk = chunks[chunkIndex]!;
+    chunks[chunkIndex] = `${chunk.slice(0, start)}/${chunk.slice(start + 1)}`;
   }
 
   return chunks.length > 0 ? chunks.join("\n") : undefined;

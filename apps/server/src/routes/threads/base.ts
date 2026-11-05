@@ -1,5 +1,7 @@
+import { nativeThreadExitRuntime } from "../../services/threads/thread-runtime-display.js";
 import { countUnarchivedThreadDescendants } from "../../services/threads/thread-archive.js";
 import { eq } from "drizzle-orm";
+import { listThreadCascades } from "../../services/threads/thread-cascade.js";
 import { cancelAbandonedProviderCreations } from "../../services/threads/thread-environment-providers.js";
 import {
   THREAD_SEARCH_LIMIT_PER_GROUP_DEFAULT,
@@ -19,10 +21,12 @@ import {
   ensureSpendTables,
   listThreadMentionRowsByIds,
   listNonDeletedChildThreads,
+  listNativeTerminalThreadsByIds,
   listSpendRollupRows,
   listThreadsWithPendingInteractionState,
+  buildThreadListEnrichmentScope,
   markThreadDeleted,
-  listLifecycleThreadTree,
+  listThreadDeletionTree,
   listPluginThreadMetadata,
   queuedThreadMessages,
   listThreadAncestors,
@@ -34,6 +38,7 @@ import {
   type UpdateThreadInput,
 } from "@bb/db";
 import {
+  effectiveDisplayStatus,
   PROMPT_HISTORY_SEARCH_LIMIT_DEFAULT,
   PROMPT_HISTORY_SEARCH_LIMIT_MAX,
   type Environment,
@@ -54,6 +59,7 @@ import {
   type PluginThreadMetadataListResponse,
   type ThreadAncestorsListResponse,
   type ThreadDescendantsListResponse,
+  type ThreadCascadeListResponse,
   type ThreadRunningResponse,
   type ThreadSearchResponse,
   type ThreadWithIncludesResponse,
@@ -63,6 +69,11 @@ import {
 } from "@bb/server-contract";
 import type { Hono } from "hono";
 import type { AppDeps } from "../../types.js";
+import type { PluginService } from "../../services/plugins/plugin-service.js";
+import {
+  clearCurrentThreadListSlowQueryContext,
+  setCurrentThreadListSlowQueryContext,
+} from "../../services/system/event-loop-work.js";
 import { ApiError } from "../../errors.js";
 import {
   parseBoundedPositiveOptionalInteger,
@@ -72,12 +83,11 @@ import {
 import { searchPromptHistory } from "../../services/prompt-history-search.js";
 import {
   getNonDestroyedHostWithStatus,
-  requireEnvironment,
   requirePublicProject,
   requirePublicThread,
 } from "../../services/lib/entity-lookup.js";
 import { listRunningThreadsWithIntendedHosts } from "../../services/threads/dispatch-attempt.js";
-import { dispatchThreadRenameCommand } from "../../services/threads/thread-commands.js";
+import { syncThreadTitleToProvider } from "../../services/threads/thread-commands.js";
 import { requestThreadStorageDeletion } from "../../services/threads/thread-lifecycle.js";
 import { createThreadFromRequest } from "../../services/threads/thread-create.js";
 import { createThreadForkFromRequest } from "../../services/threads/thread-fork.js";
@@ -105,6 +115,9 @@ import {
 import { emitPluginThreadDeleted } from "../../services/plugins/plugin-thread-events.js";
 import { NotificationBuffer } from "../../services/lib/notification-buffer.js";
 import { getActiveTurnId } from "../../services/threads/thread-events.js";
+import { reconcileNativeThreadStatus } from "../../services/threads/native-thread-status.js";
+
+const NATIVE_STATUS_LIST_LIMIT = 8;
 
 function parseThreadIncludes(query: ThreadGetQuery): Set<ThreadIncludeOption> {
   const includes = new Set<ThreadIncludeOption>();
@@ -231,6 +244,10 @@ function buildThreadSearchGroupResponse(
 ): ThreadSearchResultGroupResponse {
   const threadEntries = toThreadListEntryResponses(deps, {
     threads: args.group.results.map((result) => result.thread),
+    scope: {
+      kind: "ids",
+      ids: args.group.results.map((result) => result.thread.id),
+    },
   });
   const threadEntriesById = new Map(
     threadEntries.map((thread) => [thread.id, thread]),
@@ -258,7 +275,11 @@ function buildThreadSearchResponse(
   };
 }
 
-export function registerThreadBaseRoutes(app: Hono, deps: AppDeps): void {
+export function registerThreadBaseRoutes(
+  app: Hono,
+  deps: AppDeps,
+  pluginService: Pick<PluginService, "resolveRpcCaller">,
+): void {
   const { get, post, patch, del } = typedRoutes<PublicApiSchema>(app, {
     onValidationError: (msg) => new ApiError(400, "invalid_request", msg),
   });
@@ -312,6 +333,12 @@ export function registerThreadBaseRoutes(app: Hono, deps: AppDeps): void {
     } satisfies ThreadDescendantsListResponse);
   });
 
+  post(routes.cascade, (context, payload) => {
+    return context.json({
+      threads: listThreadCascades(deps.db, payload.threadIds, payload.action),
+    } satisfies ThreadCascadeListResponse);
+  });
+
   post(routes.pluginMetadata.list, (context, payload) => {
     const { threads, corruptThreadIds } = listPluginThreadMetadata(
       deps.db,
@@ -332,48 +359,81 @@ export function registerThreadBaseRoutes(app: Hono, deps: AppDeps): void {
     );
   });
 
-  get(routes.list, (context, query) => {
+  get(routes.list, async (context, query) => {
     const { limit, offset } = parsePaginationQuery({
       limit: query.limit,
       offset: query.offset,
     });
-    if (query.projectId) {
-      requirePublicProject(deps.db, query.projectId);
-    }
-    if (query.sectionId && query.unsectioned === "true") {
-      throw new ApiError(
-        400,
-        "invalid_request",
-        "sectionId and unsectioned cannot be used together",
-      );
-    }
-    if (query.sectionId) {
-      requireThreadSection(deps, query.sectionId);
-    }
-    const threads = listThreadsWithPendingInteractionState(deps.db, {
-      ...(query.projectId ? { projectId: query.projectId } : {}),
-      ...(query.environmentId ? { environmentId: query.environmentId } : {}),
-      ...(query.hostId ? { hostId: query.hostId } : {}),
-      ...(query.parentThreadId ? { parentThreadId: query.parentThreadId } : {}),
-      ...(query.sourceThreadId ? { sourceThreadId: query.sourceThreadId } : {}),
-      ...(query.sectionId ? { sectionId: query.sectionId } : {}),
-      ...(query.unsectioned === "true" ? { unsectioned: true } : {}),
-      ...(query.originKind ? { originKind: query.originKind } : {}),
-      ...(query.originPluginId ? { originPluginId: query.originPluginId } : {}),
-      ...(query.threadIds === undefined
-        ? {}
-        : { threadIds: parseThreadListThreadIds(query.threadIds) }),
-      includeHidden: query.includeHidden === "true",
-      archived:
-        query.archived === undefined ? undefined : query.archived === "true",
-      hasParent:
-        query.hasParent === undefined ? undefined : query.hasParent === "true",
-      ...(limit !== undefined ? { limit } : {}),
-      ...(offset !== undefined ? { offset } : {}),
-    });
-    return context.json(
-      toThreadListEntryResponses(deps, { threads }) satisfies ThreadListEntry[],
+    setCurrentThreadListSlowQueryContext(
+      context,
+      query,
+      limit,
+      offset,
+      pluginService,
     );
+    try {
+      if (query.projectId) {
+        requirePublicProject(deps.db, query.projectId);
+      }
+      if (query.sectionId && query.unsectioned === "true") {
+        throw new ApiError(
+          400,
+          "invalid_request",
+          "sectionId and unsectioned cannot be used together",
+        );
+      }
+      if (query.sectionId) {
+        requireThreadSection(deps, query.sectionId);
+      }
+      const options = {
+        ...(query.projectId ? { projectId: query.projectId } : {}),
+        ...(query.environmentId ? { environmentId: query.environmentId } : {}),
+        ...(query.hostId ? { hostId: query.hostId } : {}),
+        ...(query.parentThreadId
+          ? { parentThreadId: query.parentThreadId }
+          : {}),
+        ...(query.sourceThreadId
+          ? { sourceThreadId: query.sourceThreadId }
+          : {}),
+        ...(query.sectionId ? { sectionId: query.sectionId } : {}),
+        ...(query.unsectioned === "true" ? { unsectioned: true } : {}),
+        ...(query.originKind ? { originKind: query.originKind } : {}),
+        ...(query.originPluginId
+          ? { originPluginId: query.originPluginId }
+          : {}),
+        ...(query.threadIds === undefined
+          ? {}
+          : { threadIds: parseThreadListThreadIds(query.threadIds) }),
+        includeHidden: query.includeHidden === "true",
+        archived:
+          query.archived === undefined ? undefined : query.archived === "true",
+        hasParent:
+          query.hasParent === undefined
+            ? undefined
+            : query.hasParent === "true",
+        ...(limit !== undefined ? { limit } : {}),
+        ...(offset !== undefined ? { offset } : {}),
+      };
+      const threads = listThreadsWithPendingInteractionState(deps.db, options);
+      void Promise.all(
+        threads
+          .slice(0, NATIVE_STATUS_LIST_LIMIT)
+          .map((thread) => reconcileNativeThreadStatus(deps, thread.id)),
+      ).catch((error) => {
+        deps.logger.debug(
+          { error },
+          "Native status list reconciliation failed",
+        );
+      });
+      return context.json(
+        toThreadListEntryResponses(deps, {
+          threads,
+          scope: buildThreadListEnrichmentScope(deps.db, options),
+        }) satisfies ThreadListEntry[],
+      );
+    } finally {
+      clearCurrentThreadListSlowQueryContext();
+    }
   });
 
   get(routes.searchPromptHistory, (context, query) => {
@@ -475,8 +535,10 @@ export function registerThreadBaseRoutes(app: Hono, deps: AppDeps): void {
     return context.json(toThreadResponseFromThread(deps, { thread }), 201);
   });
 
-  get(routes.get, (context, query) => {
-    const thread = requirePublicThread(deps.db, context.req.param("id"));
+  get(routes.get, async (context, query) => {
+    const threadId = context.req.param("id");
+    await reconcileNativeThreadStatus(deps, threadId);
+    const thread = requirePublicThread(deps.db, threadId);
     return context.json(
       buildThreadResponse(deps, {
         includes: parseThreadIncludes(query),
@@ -490,8 +552,19 @@ export function registerThreadBaseRoutes(app: Hono, deps: AppDeps): void {
     const children = listNonDeletedChildThreads(deps.db, {
       parentThreadId: thread.id,
     });
+    const nativeThreads = new Map(
+      listNativeTerminalThreadsByIds(
+        deps.db,
+        children.map((child) => child.id),
+      ).map((native) => [native.threadId, native]),
+    );
+    const displayChildren = children.map((child) => {
+      const native = nativeThreads.get(child.id);
+      const runtime = nativeThreadExitRuntime(child, native ?? null);
+      return { ...child, status: effectiveDisplayStatus(child, runtime) };
+    });
     const counts = { failed: 0, idle: 0, waiting: 0, working: 0 };
-    for (const child of children) {
+    for (const child of displayChildren) {
       if (child.status === "error") counts.failed += 1;
       else if (child.status === "idle") counts.idle += 1;
       else if (child.status === "pending") counts.waiting += 1;
@@ -512,7 +585,7 @@ export function registerThreadBaseRoutes(app: Hono, deps: AppDeps): void {
       nonDeletedChildCount,
       ...counts,
       totalTokens,
-      children: children.map(({ id, status, title }) => ({
+      children: displayChildren.map(({ id, status, title }) => ({
         id,
         status,
         title,
@@ -876,23 +949,8 @@ export function registerThreadBaseRoutes(app: Hono, deps: AppDeps): void {
       throw new ApiError(404, "thread_not_found", "Thread not found");
     }
 
-    if (
-      payload.title &&
-      payload.title !== thread.title &&
-      updated.environmentId
-    ) {
-      const environment = requireEnvironment(deps.db, updated.environmentId);
-      if (environment.status === "ready" && environment.path) {
-        dispatchThreadRenameCommand(deps, {
-          environment: {
-            id: environment.id,
-            hostId: environment.hostId,
-          },
-          providerId: updated.providerId,
-          threadId: updated.id,
-          title: payload.title,
-        });
-      }
+    if (payload.title && payload.title !== thread.title) {
+      syncThreadTitleToProvider(deps, updated);
     }
 
     if (
@@ -916,7 +974,7 @@ export function registerThreadBaseRoutes(app: Hono, deps: AppDeps): void {
       deps,
       thread,
     });
-    const dependents = listLifecycleThreadTree(deps.db, thread.id);
+    const dependents = listThreadDeletionTree(deps.db, thread.id);
     markThreadDeleted(deps.db, deps.hub, { threadId: thread.id });
     for (const dependent of dependents) {
       const deleted = getThread(deps.db, dependent.id);

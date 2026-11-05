@@ -139,7 +139,10 @@ describe("createClaudeCodeBridgeModelListMemo", () => {
 
   it("does not start a probe while the sign-in is due for renewal", async () => {
     const shared = memoryCatalog();
-    shared.entry = { savedAt: 0, discoveredModels: discovered("claude-sonnet-5") };
+    shared.entry = {
+      savedAt: 0,
+      discoveredModels: discovered("claude-sonnet-5"),
+    };
     const probe = vi.fn(() => Promise.resolve(discovered("claude-opus-5[1m]")));
     const listModels = createClaudeCodeBridgeModelListMemo({
       probe,

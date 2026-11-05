@@ -68,7 +68,6 @@ describe("presentation-driven timeline rows", () => {
       <ThreadTimelineRows
         threadId="thr_main"
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
         timelineRows={[row]}
         initialExpanded={new Set([row.id])}
         threadIsActive={false}
@@ -86,7 +85,6 @@ describe("presentation-driven timeline rows", () => {
       <ThreadTimelineRows
         threadId="thr_main"
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
         timelineRows={[
           toolRow({
             id: "tool_js",
@@ -127,7 +125,6 @@ describe("presentation-driven timeline rows", () => {
       <ThreadTimelineRows
         threadId="thr_main"
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
         timelineRows={[
           commandRow({
             id: "cmd_escaped",
@@ -181,7 +178,6 @@ describe("presentation-driven timeline rows", () => {
       <ThreadTimelineRows
         threadId="thr_main"
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
         timelineRows={[row]}
         threadIsActive={false}
       />,
@@ -195,7 +191,6 @@ describe("presentation-driven timeline rows", () => {
       <ThreadTimelineRows
         threadId="thr_main"
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
         timelineRows={[row]}
         threadIsActive={false}
       />,
@@ -209,7 +204,6 @@ describe("presentation-driven timeline rows", () => {
       <ThreadTimelineRows
         threadId="thr_main"
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
         timelineRows={[
           extensionRow({
             presentation: {
@@ -232,7 +226,6 @@ describe("presentation-driven timeline rows", () => {
       <ThreadTimelineRows
         threadId="thr_main"
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
         timelineRows={[row]}
         initialExpanded={new Set([row.id])}
         threadIsActive={false}
@@ -281,7 +274,6 @@ describe("plugin timeline renderers", () => {
       <ThreadTimelineRows
         threadId="thr_main"
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
         timelineRows={[row]}
         initialExpanded={new Set([row.id])}
         threadIsActive={false}
@@ -310,7 +302,6 @@ describe("plugin timeline renderers", () => {
       <ThreadTimelineRows
         threadId="thr_main"
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
         timelineRows={[row]}
         initialExpanded={new Set([row.id])}
         threadIsActive={false}
@@ -323,7 +314,6 @@ describe("plugin timeline renderers", () => {
       <ThreadTimelineRows
         threadId="thr_main"
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
         timelineRows={[row]}
         initialExpanded={new Set([row.id])}
         threadIsActive={false}
@@ -348,7 +338,6 @@ describe("plugin timeline renderers", () => {
       <ThreadTimelineRows
         threadId="thr_main"
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
         timelineRows={[row]}
         initialExpanded={new Set([row.id])}
         threadIsActive={false}

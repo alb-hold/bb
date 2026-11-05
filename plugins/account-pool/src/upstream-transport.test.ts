@@ -236,6 +236,81 @@ const droppedAddress = (index: number) => ({
   family: 4,
 });
 
+it.each(["direct TLS", "proxy CONNECT"])(
+  "bounds a stalled TLS connect in real time while the event loop is busy: %s",
+  async (mode) => {
+    const sockets = new Set<net.Socket>();
+    let received = "";
+    const server = net.createServer((socket) => {
+      sockets.add(socket);
+      socket.on("data", (data) => {
+        received += data.toString();
+      });
+      socket.on("close", () => sockets.delete(socket));
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    cleanups.push(async () => {
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    });
+    const address = server.address();
+    if (address === null || typeof address === "string")
+      throw new Error("No port");
+    if (mode === "proxy CONNECT") {
+      vi.stubEnv("NO_PROXY", "");
+      vi.stubEnv("no_proxy", "");
+      vi.stubEnv("HTTPS_PROXY", `http://127.0.0.1:${address.port}`);
+      vi.stubEnv("https_proxy", `http://127.0.0.1:${address.port}`);
+    }
+    const stall = setInterval(() => {
+      const until = performance.now() + 450;
+      while (performance.now() < until) {}
+    }, 600);
+    try {
+      const result = await timedFetch(
+        `https://127.0.0.1:${address.port}`,
+        stallingDualStackLookup,
+      );
+      console.log(
+        JSON.stringify({ scenario: mode, elapsedMs: result.elapsedMs }),
+      );
+      expect(result.text).toBeNull();
+      expect(transportErrorCode(result.error)).toBe("UND_ERR_CONNECT_TIMEOUT");
+      expect(result.elapsedMs).toBeGreaterThanOrEqual(CONNECT_TIMEOUT_MS - 200);
+      expect(result.elapsedMs).toBeLessThanOrEqual(CONNECT_SURFACE_LIMIT_MS);
+      if (mode === "proxy CONNECT") expect(received).toContain("CONNECT ");
+    } finally {
+      clearInterval(stall);
+    }
+  },
+  20_000,
+);
+
+it("keeps a connected response readable beyond the connect deadline", async () => {
+  const server = http.createServer((_request, response) => {
+    response.write("connected");
+    const timer = setTimeout(
+      () => response.end(" complete"),
+      CONNECT_TIMEOUT_MS + 200,
+    );
+    response.on("close", () => clearTimeout(timer));
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  cleanups.push(async () => {
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+  const address = server.address();
+  if (address === null || typeof address === "string")
+    throw new Error("No port");
+  const transport = createUpstreamTransport();
+  cleanups.push(transport.destroy);
+  const response = await transport.fetch(`http://127.0.0.1:${address.port}`);
+  expect(await response.text()).toBe("connected complete");
+}, 15_000);
+
 async function addressesAreSilentlyDropped(): Promise<boolean> {
   return new Promise((resolve) => {
     const socket = net.connect({

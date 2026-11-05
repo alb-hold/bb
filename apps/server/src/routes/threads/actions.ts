@@ -6,6 +6,7 @@ import {
   getThread,
   isNativeTerminalThread,
   listActiveVisiblePinnedThreadRootsWithPendingInteractionState,
+  buildPinnedRootThreadListEnrichmentScope,
   pinThread,
   reorderPinnedThread,
   reorderQueuedThreadMessage,
@@ -31,11 +32,13 @@ import type { AppDeps } from "../../types.js";
 import { ApiError } from "../../errors.js";
 import {
   emitPluginMessageCancelled,
+  emitPluginMessageQueued,
   emitPluginThreadUnarchived,
 } from "../../services/plugins/plugin-thread-events.js";
 import { toThreadQueuedMessage } from "../../services/threads/thread-queued-messages.js";
 import { retryFailedTurn } from "../../services/threads/turn-retry.js";
 import { resumeNativeTerminalAfterUnarchive } from "../../services/threads/native-terminal-threads.js";
+import { regenerateThreadTitle } from "../../services/threads/title-generation.js";
 import {
   requireConnectedHostSession,
   requirePublicThread,
@@ -51,8 +54,10 @@ import {
   holdQueuedMessageForEdit,
   releaseQueuedMessageEditHold,
   requestEditReleasedQueuedMessageDispatch,
+  resolveQueuedMessageExecutionChange,
   sendQueuedMessageNow,
 } from "../../services/threads/queued-messages.js";
+import { requestQueuedMessageDispatch } from "../../services/threads/queued-message-dispatch.js";
 import {
   ensureThreadIsNotAwaitingUserInteraction,
   ensureThreadIsWritable,
@@ -72,6 +77,7 @@ import { interruptNativeTerminalTurn } from "../../services/threads/native-termi
 import {
   buildThreadStatusChangeMetadata,
   getThreadPromptBannerActivity,
+  getThreadTimelineGoal,
   toThreadListEntryResponses,
   toThreadResponseFromThread,
 } from "../../services/threads/thread-runtime-display.js";
@@ -179,6 +185,7 @@ function buildActivePinnedThreadRootListResponse(
     threads: listActiveVisiblePinnedThreadRootsWithPendingInteractionState(
       deps.db,
     ),
+    scope: buildPinnedRootThreadListEnrichmentScope(deps.db),
   });
 }
 
@@ -326,15 +333,38 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
   patch(routes.updateQueuedMessage, async (context, payload) => {
     const thread = requirePublicThread(deps.db, context.req.param("id"));
     ensureThreadQueueIsWritable(thread);
-    const input = await resolvePromptAttachmentReferences({
-      db: deps.db,
-      dataDir: deps.config.dataDir,
-      input: payload.input,
-      projectId: thread.projectId,
-      hostId: threadTargetHostId(deps, thread),
+    if (
+      payload.sendAt !== undefined &&
+      payload.sendAt !== null &&
+      payload.sendAt <= Date.now()
+    ) {
+      throw new ApiError(
+        400,
+        "invalid_request",
+        "sendAt must be in the future; pass null to clear the send time",
+      );
+    }
+    const content =
+      payload.input === undefined
+        ? null
+        : await resolvePromptAttachmentReferences({
+            db: deps.db,
+            dataDir: deps.config.dataDir,
+            input: payload.input,
+            projectId: thread.projectId,
+            hostId: threadTargetHostId(deps, thread),
+          });
+    const execution = await resolveQueuedMessageExecutionChange(deps, {
+      expectedUpdatedAt: payload.expectedUpdatedAt,
+      queuedMessageId: context.req.param("queuedMessageId"),
+      request: payload,
+      thread,
     });
     const result = updateQueuedThreadMessage(deps.db, deps.hub, {
-      content: input,
+      content,
+      execution,
+      reschedule:
+        payload.sendAt === undefined ? null : { sendAt: payload.sendAt },
       expectedUpdatedAt: payload.expectedUpdatedAt,
       id: context.req.param("queuedMessageId"),
       threadId: thread.id,
@@ -356,13 +386,29 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
         "Queued message changed since editing began",
       );
     }
+    if (result.kind === "invalid_execution_options") {
+      throw new ApiError(
+        409,
+        "invalid_request",
+        "This queued message is grouped with messages that use different execution options; ungroup it first",
+      );
+    }
+    const queuedMessage = toThreadQueuedMessage(result.queuedMessage);
+    if (result.rescheduled) {
+      emitPluginMessageQueued(queuedMessage);
+    }
     if (result.releasedEditHold) {
       requestEditReleasedQueuedMessageDispatch(deps, {
-        queuedMessageId: result.queuedMessage.id,
+        queuedMessageId: queuedMessage.id,
+        threadId: thread.id,
+      });
+    } else if (result.rescheduled && queuedMessage.sendAt === null) {
+      requestQueuedMessageDispatch(deps, {
+        kind: "thread-ready",
         threadId: thread.id,
       });
     }
-    return context.json(toThreadQueuedMessage(result.queuedMessage));
+    return context.json(queuedMessage);
   });
 
   post(routes.holdQueuedMessageForEdit, (context) => {
@@ -474,9 +520,8 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
 
   post(routes.clearGoal, async (context) => {
     const thread = requirePublicThread(deps.db, context.req.param("id"));
-    const activity = getThreadPromptBannerActivity(deps, thread);
-    if (activity.activeGoalCount === 0) {
-      throw new ApiError(409, "invalid_request", "No active Goal to clear");
+    if (getThreadTimelineGoal(deps, thread) === null) {
+      throw new ApiError(409, "invalid_request", "No Goal to clear");
     }
     const environment = await requireThreadCommandEnvironment(deps, {
       thread,
@@ -508,19 +553,13 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
       timeoutMs: LIVE_DAEMON_COMMAND_TIMEOUT_MS,
     });
     const updatedThread = requirePublicThread(deps.db, thread.id);
-    const updatedActivity = getThreadPromptBannerActivity(deps, updatedThread);
-    if (updatedActivity.activeGoalCount > 0 && !result.cleared) {
+    if (getThreadTimelineGoal(deps, updatedThread) !== null) {
       throw new ApiError(
         409,
         "invalid_request",
-        "The provider did not clear the active Goal",
-      );
-    }
-    if (updatedActivity.activeGoalCount > 0) {
-      throw new ApiError(
-        409,
-        "invalid_request",
-        "The provider did not confirm that the active Goal was cleared",
+        result.cleared
+          ? "The provider did not confirm that the Goal was cleared"
+          : "The provider did not clear the Goal",
       );
     }
     return context.json({ ok: true });
@@ -528,46 +567,111 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
 
   post(routes.open, (context, payload) => {
     const publicThread = requirePublicThread(deps.db, context.req.param("id"));
-    const terminalActions = [payload.terminalAction, payload.terminalLayoutAction].filter(
-      (value) => value !== undefined,
-    );
+    const terminalActions = [
+      payload.terminalAction,
+      payload.terminalLayoutAction,
+    ].filter((value) => value !== undefined);
     for (const terminalAction of terminalActions) {
-      const terminal = deps.terminalSessions.getTerminal({ terminalId: terminalAction.terminalId });
-      if (terminal.threadId !== publicThread.id || publicThread.archivedAt !== null) {
-        throw new ApiError(404, "terminal_not_found", "Terminal session not found");
+      const terminal = deps.terminalSessions.getTerminal({
+        terminalId: terminalAction.terminalId,
+      });
+      if (
+        terminal.threadId !== publicThread.id ||
+        publicThread.archivedAt !== null
+      ) {
+        throw new ApiError(
+          404,
+          "terminal_not_found",
+          "Terminal session not found",
+        );
       }
-      if ("targetTerminalId" in terminalAction && terminalAction.targetTerminalId !== undefined) {
+      if (
+        "targetTerminalId" in terminalAction &&
+        terminalAction.targetTerminalId !== undefined
+      ) {
         const target = deps.terminalSessions.getTerminal({
           terminalId: terminalAction.targetTerminalId,
         });
         if (target.threadId !== publicThread.id) {
-          throw new ApiError(404, "terminal_not_found", "Terminal session not found");
+          throw new ApiError(
+            404,
+            "terminal_not_found",
+            "Terminal session not found",
+          );
         }
       }
-      if ("url" in terminalAction && terminalAction.action === "openBrowser" && terminalAction.url === undefined) {
-        throw new ApiError(400, "invalid_request", "A URL is required to open a browser tab");
+      if (
+        "url" in terminalAction &&
+        terminalAction.action === "openBrowser" &&
+        terminalAction.url === undefined
+      ) {
+        throw new ApiError(
+          400,
+          "invalid_request",
+          "A URL is required to open a browser tab",
+        );
       }
-      if ("url" in terminalAction && terminalAction.action === "focus" && terminalAction.url !== undefined) {
-        throw new ApiError(400, "invalid_request", "A URL is only valid for the openBrowser action");
+      if (
+        "url" in terminalAction &&
+        terminalAction.action === "focus" &&
+        terminalAction.url !== undefined
+      ) {
+        throw new ApiError(
+          400,
+          "invalid_request",
+          "A URL is only valid for the openBrowser action",
+        );
       }
     }
     if (payload.file !== null) {
       parseSafeRelativeRoutePath(payload.file.path);
     }
-    const deliveredClients = deps.hub.notifyThreadOpen(
-      { projectId: publicThread.projectId, threadId: publicThread.id },
-      {
-        split: payload.split ?? "replace",
-        file: payload.file,
-        ...(payload.terminalAction === undefined
-          ? {}
-          : { terminalAction: payload.terminalAction }),
-        ...(payload.terminalLayoutAction === undefined
-          ? {}
-          : { terminalLayoutAction: payload.terminalLayoutAction }),
-      },
+    const openTarget = {
+      projectId: publicThread.projectId,
+      threadId: publicThread.id,
+    };
+    const notification = {
+      split: payload.split ?? ("replace" as const),
+      file: payload.file,
+      ...(payload.terminalAction === undefined
+        ? {}
+        : { terminalAction: payload.terminalAction }),
+      ...(payload.terminalLayoutAction === undefined
+        ? {}
+        : { terminalLayoutAction: payload.terminalLayoutAction }),
+    };
+    if (payload.all === true && payload.callerThreadId !== undefined) {
+      throw new ApiError(
+        400,
+        "invalid_request",
+        "callerThreadId cannot be combined with all",
+      );
+    }
+    if (payload.all === true) {
+      return context.json({
+        deliveredClients: deps.hub.notifyThreadOpen(openTarget, notification),
+        skipReason: null,
+      });
+    }
+    if (payload.callerThreadId === undefined) {
+      return context.json({
+        deliveredClients: 0,
+        skipReason: "no_caller_thread" as const,
+      });
+    }
+    const callerThread = requirePublicThread(deps.db, payload.callerThreadId);
+    const deliveredClients = deps.hub.notifyThreadOpenToViewers(
+      openTarget,
+      notification,
+      callerThread.id,
     );
-    return context.json({ deliveredClients });
+    return context.json({
+      deliveredClients,
+      skipReason:
+        deliveredClients === 0
+          ? ("no_client_viewing_caller_thread" as const)
+          : null,
+    });
   });
 
   post(routes.paneAction, (context, payload) => {
@@ -598,6 +702,13 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
     if (!thread) {
       throw new ApiError(404, "thread_not_found", "Thread not found");
     }
+    return context.json(toThreadResponseFromThread(deps, { thread }));
+  });
+
+  post(routes.regenerateTitle, async (context) => {
+    const thread = await regenerateThreadTitle(deps, {
+      thread: requirePublicThread(deps.db, context.req.param("id")),
+    });
     return context.json(toThreadResponseFromThread(deps, { thread }));
   });
 

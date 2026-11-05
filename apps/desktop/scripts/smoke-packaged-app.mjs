@@ -49,8 +49,6 @@ function writeNotFound(response) {
 function createDesktopVersionFeed(platform, version) {
   return {
     schemaVersion: 1,
-    // The app rejects a feed whose channel is not its own, so a nightly
-    // packaged build must be smoked against a nightly feed.
     channel: releaseChannel,
     platform,
     version,
@@ -330,9 +328,6 @@ async function smokePackagedApp() {
   const childEnv = {
     ...process.env,
     BB_DATA_DIR: dataDir,
-    // The smoke server answers the bb probe, so a packaged build treats it as a
-    // foreign bb and asks before attaching. No one is here to click, so opt out
-    // and keep exercising the real attach path.
     BB_DESKTOP_ATTACH_WITHOUT_PROMPT: "1",
     BB_DESKTOP_OPEN_DEVTOOLS: "0",
     BB_DESKTOP_SMOKE_HIDE_WINDOWS: "1",

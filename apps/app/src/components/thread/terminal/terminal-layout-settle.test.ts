@@ -12,6 +12,7 @@ import {
 const FRAME_MS = 16;
 
 class SentSocket implements TerminalBrowserSocket {
+  readonly protocol = "bb.terminal.resize-echo.v1";
   onclose: ((event: CloseEvent) => void) | null = null;
   onerror: ((event: Event) => void) | null = null;
   onmessage: ((event: MessageEvent) => void) | null = null;

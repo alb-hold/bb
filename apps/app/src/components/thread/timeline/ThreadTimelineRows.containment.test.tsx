@@ -83,7 +83,6 @@ describe("ThreadTimelineRows row containment", () => {
             threadId="thr_main"
             timelineRows={rows}
             threadRuntimeDisplayStatus="idle"
-            workspaceRootPath={undefined}
             initialExpanded={new Set(["turn_1"])}
             threadIsActive={false}
           />
@@ -123,7 +122,6 @@ describe("ThreadTimelineRows row containment", () => {
             threadId="thr_main"
             timelineRows={rows}
             threadRuntimeDisplayStatus="active"
-            workspaceRootPath={undefined}
             initialExpanded={new Set(["turn_1"])}
             threadIsActive={false}
           />
@@ -177,7 +175,6 @@ describe("ThreadTimelineRows row containment", () => {
             threadId="thr_main"
             timelineRows={rows}
             threadRuntimeDisplayStatus="idle"
-            workspaceRootPath={undefined}
             initialExpanded={new Set()}
             threadIsActive={false}
           />

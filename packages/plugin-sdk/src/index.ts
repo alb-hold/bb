@@ -14,6 +14,11 @@ export * from "./host-contract.js";
 export type * from "./json-value.js";
 export * from "./rpc-contract.js";
 export { experimental_THREAD_ACTION_GROUPS } from "./thread-action-groups.js";
+export {
+  experimental_THREAD_CONTEXT_SEGMENT_GROUPS,
+  experimental_THREAD_INFO_ROW_GROUPS,
+  experimental_THREAD_INFO_SECTION_GROUPS,
+} from "./thread-info-groups.js";
 export type {
   ExperimentalDesktopBrowsersArea,
   ExperimentalDesktopBrowserScope,
@@ -23,3 +28,8 @@ export type {
 } from "@bb/sdk";
 
 export type * from "./machine-bootstrap.js";
+
+export {
+  claudeLocalPlanLabel as internal_DO_NOT_USE_claudeLocalPlanLabel,
+  claudeProfilePlanLabel as internal_DO_NOT_USE_claudeProfilePlanLabel,
+} from "./claude-plan-label.js";

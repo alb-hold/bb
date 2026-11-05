@@ -3,27 +3,40 @@ import { eq } from "drizzle-orm";
 import { describe, expect, it, vi } from "vitest";
 import {
   appendStoredThreadEvent,
+  archiveThread,
+  buildPinnedRootThreadListEnrichmentScope,
+  buildProjectThreadListEnrichmentScope,
+  buildThreadListEnrichmentScope,
   closeSession,
   createEnvironment,
+  createPendingInteraction,
   createNativeTerminalThread,
   createProject,
   createQueuedThreadMessage,
   createTerminalSession,
   createThread,
+  insertEvents,
   hostDaemonSessions,
   listQueuedThreadMessages,
   listThreadsWithPendingInteractionState,
+  listThreadsWithPendingInteractionStateForProjects,
+  listActiveVisiblePinnedThreadRootsWithPendingInteractionState,
   noopNotifier,
   openSession,
+  pinThread,
+  putThreadRowState,
+  searchThreadsWithPendingInteractionState,
   setNativeTerminalThreadTerminal,
   setQueuedThreadMessageFailureReason,
   stampNativeTerminalThreadActivity,
   upsertHost,
+  updateThread,
   type DbConnection,
   type ThreadWithPendingInteractionState,
 } from "@bb/db";
 import { createMigratedConnection } from "@bb/db/testing";
 import {
+  LOCAL_AGENT_TASK_TYPE,
   formatClientTurnRequestIdSuffix,
   threadScope,
   turnScope,
@@ -43,6 +56,7 @@ import {
 } from "../../../src/services/threads/thread-runtime-display.js";
 import { NotificationHub } from "../../../src/ws/hub.js";
 import { createTestProviderRegistry } from "../../helpers/provider-registry.js";
+import { toThreadListEntryResponsesForTest } from "../../helpers/thread-list-enrichment.js";
 
 const providerRegistry = await createTestProviderRegistry();
 
@@ -306,6 +320,205 @@ function createThreadListEntry(
 }
 
 describe("thread runtime display", () => {
+  it.each([false, true])(
+    "shares pending interaction state with thread reads: %s",
+    (pending) => {
+      const { db, hub, hostId } = setup();
+      try {
+        const { thread } = createThreadWithEnvironment({ db, hostId });
+        if (pending) {
+          createPendingInteraction(db, {
+            threadId: thread.id,
+            providerId: thread.providerId,
+            providerThreadId: "native-session",
+            providerRequestId: "native-question",
+            turnId: "turn-question",
+            payload: JSON.stringify({ method: "AskUserQuestion" }),
+          });
+        }
+        const deps = { db, hub, providerRegistry };
+        const [listed] = toThreadListEntryResponsesForTest(deps, {
+          threads: listThreadsWithPendingInteractionState(db, {
+            threadIds: [thread.id],
+          }),
+        });
+        const read = toThreadResponseFromThread(deps, { thread });
+        expect(listed?.hasPendingInteraction).toBe(pending);
+        expect(read).toHaveProperty(
+          "hasPendingInteraction",
+          listed?.hasPendingInteraction,
+        );
+        expect(listed?.listIndicator === "needs-input").toBe(pending);
+        expect(read.runtime.displayStatus).toBe(listed?.runtime.displayStatus);
+      } finally {
+        db.$client.close();
+      }
+    },
+  );
+
+  it("keeps scoped list enrichment byte-identical for archived goal and task events", () => {
+    const { db, hostId, hub } = setup();
+    const archived = createThreadWithEnvironment({
+      db,
+      hostId,
+      status: "idle",
+    });
+    const visible = createThreadWithEnvironment({ db, hostId, status: "idle" });
+    const hidden = createThreadWithEnvironment({ db, hostId, status: "idle" });
+    updateThread(db, noopNotifier, hidden.thread.id, { visibility: "hidden" });
+    updateThread(db, noopNotifier, archived.thread.id, {
+      title: "scopeidentity archived",
+    });
+    updateThread(db, noopNotifier, visible.thread.id, {
+      title: "scopeidentity active",
+    });
+    updateThread(db, noopNotifier, hidden.thread.id, {
+      title: "scopeidentity hidden",
+    });
+    appendStoredThreadEvent(db, noopNotifier, {
+      threadId: archived.thread.id,
+      scope: threadScope(),
+      type: "thread/goal/updated",
+      data: {
+        providerThreadId: "provider-archived-goal",
+        objective: "Finish archived work",
+        status: "active",
+        tokenBudget: null,
+        tokensUsed: 10,
+        timeUsedSeconds: 1,
+      },
+    });
+    insertEvents(db, noopNotifier, [
+      {
+        threadId: archived.thread.id,
+        sequence: 2,
+        scope: turnScope("turn-archived-task"),
+        type: "item/started",
+        itemId: "task-archived",
+        itemKind: "backgroundTask",
+        parentToolCallId: null,
+        data: JSON.stringify({
+          item: {
+            id: "task-archived",
+            type: "backgroundTask",
+            taskType: LOCAL_AGENT_TASK_TYPE,
+            description: "Archived task fixture",
+            status: "pending",
+            taskStatus: "running",
+            foreground: false,
+            skipTranscript: false,
+          },
+        }),
+      },
+      {
+        threadId: visible.thread.id,
+        sequence: 1,
+        scope: turnScope("turn-visible-task"),
+        type: "item/started",
+        itemId: "task-visible",
+        itemKind: "backgroundTask",
+        parentToolCallId: null,
+        data: JSON.stringify({
+          item: {
+            id: "task-visible",
+            type: "backgroundTask",
+            taskType: LOCAL_AGENT_TASK_TYPE,
+            description: "Active task fixture",
+            status: "pending",
+            taskStatus: "running",
+            foreground: false,
+            skipTranscript: false,
+          },
+        }),
+      },
+    ]);
+    createQueuedThreadMessage(db, noopNotifier, {
+      threadId: visible.thread.id,
+      content: [{ type: "text", text: "queued", mentions: [] }],
+      model: "gpt-5",
+      reasoningLevel: "medium",
+      permissionMode: "auto",
+      serviceTier: "default",
+      waitingOn: { kind: "thread-busy" },
+      sendAt: null,
+      payload: { kind: "inline" },
+      systemNotice: null,
+    });
+    putThreadRowState(db, visible.thread.id, {
+      statuses: { review: { value: "Ready" } },
+      progress: null,
+    });
+    archiveThread(db, noopNotifier, archived.thread.id);
+    const options = { includeHidden: true };
+    const threads = listThreadsWithPendingInteractionState(db, options);
+    const deps = { db, hub, providerRegistry };
+    const byIds = toThreadListEntryResponsesForTest(deps, { threads });
+    const byQuery = toThreadListEntryResponses(deps, {
+      threads,
+      scope: buildThreadListEnrichmentScope(db, options),
+    });
+    expect(JSON.stringify(byQuery)).toBe(JSON.stringify(byIds));
+    expect(
+      byQuery.find((entry) => entry.id === archived.thread.id)?.activity
+        .activeGoalCount,
+    ).toBe(1);
+    expect(
+      byQuery.find((entry) => entry.id === visible.thread.id)?.activity
+        .activeBackgroundAgentCount,
+    ).toBe(1);
+    expect(
+      byQuery.find((entry) => entry.id === visible.thread.id)?.queuedWork,
+    ).toBe("waiting");
+    expect(
+      byQuery.find((entry) => entry.id === visible.thread.id)?.rowState.statuses
+        .review?.value,
+    ).toBe("Ready");
+    expect(byQuery.some((entry) => entry.id === hidden.thread.id)).toBe(true);
+    expect(visible.thread.id).not.toBe(archived.thread.id);
+
+    const search = searchThreadsWithPendingInteractionState(db, {
+      query: "scopeidentity",
+      limitPerGroup: 10,
+    });
+    for (const group of [search.active, search.archived]) {
+      const threads = group.results.map((result) => result.thread);
+      const byIds = toThreadListEntryResponsesForTest(deps, { threads });
+      const bySearchScope = toThreadListEntryResponses(deps, {
+        threads,
+        scope: { kind: "ids", ids: threads.map((thread) => thread.id) },
+      });
+      expect(JSON.stringify(bySearchScope)).toBe(JSON.stringify(byIds));
+    }
+
+    const projectOptions = {
+      archived: false,
+      projectIds: [visible.project.id, hidden.project.id],
+    };
+    const projectThreads = listThreadsWithPendingInteractionStateForProjects(
+      db,
+      projectOptions,
+    );
+    const projectByIds = toThreadListEntryResponsesForTest(deps, {
+      threads: projectThreads,
+    });
+    const projectByScope = toThreadListEntryResponses(deps, {
+      threads: projectThreads,
+      scope: buildProjectThreadListEnrichmentScope(db, projectOptions),
+    });
+    expect(JSON.stringify(projectByScope)).toBe(JSON.stringify(projectByIds));
+
+    pinThread(db, noopNotifier, { threadId: visible.thread.id });
+    const pinnedThreads =
+      listActiveVisiblePinnedThreadRootsWithPendingInteractionState(db);
+    const pinnedByIds = toThreadListEntryResponsesForTest(deps, {
+      threads: pinnedThreads,
+    });
+    const pinnedByScope = toThreadListEntryResponses(deps, {
+      threads: pinnedThreads,
+      scope: buildPinnedRootThreadListEnrichmentScope(db),
+    });
+    expect(JSON.stringify(pinnedByScope)).toBe(JSON.stringify(pinnedByIds));
+  });
   it("applies one receipt freshness policy to native list and detail status", () => {
     const { db, hostId, hub } = setup();
     const session = openTestSession({ db, hostId });
@@ -348,55 +561,65 @@ describe("thread runtime display", () => {
       environmentHostId: hostId,
       thread: nativeTwo.thread,
     });
-    const oneNativeLookupStatements = countNativeActivityLookupStatements(
-      db,
-      () =>
-        toThreadListEntryResponses(
-          { db, hub, providerRegistry },
-          { now: 190_000, threads: [nativeEntry, ordinaryEntry] },
-        ),
-    );
-    const twoNativeLookupStatements = countNativeActivityLookupStatements(
-      db,
-      () =>
-        toThreadListEntryResponses(
-          { db, hub, providerRegistry },
-          {
-            now: 190_000,
-            threads: [nativeEntry, nativeTwoEntry, ordinaryEntry],
-          },
-        ),
-    );
+    const clock = vi.spyOn(Date, "now").mockReturnValue(190_000);
+    try {
+      const oneNativeLookupStatements = countNativeActivityLookupStatements(
+        db,
+        () =>
+          toThreadListEntryResponsesForTest(
+            { db, hub, providerRegistry },
+            { now: 190_000, threads: [nativeEntry, ordinaryEntry] },
+          ),
+      );
+      const twoNativeLookupStatements = countNativeActivityLookupStatements(
+        db,
+        () =>
+          toThreadListEntryResponsesForTest(
+            { db, hub, providerRegistry },
+            {
+              now: 190_000,
+              threads: [nativeEntry, nativeTwoEntry, ordinaryEntry],
+            },
+          ),
+      );
 
-    const fresh = toThreadListEntryResponses(
-      { db, hub, providerRegistry },
-      { now: 190_000, threads: [nativeEntry, nativeTwoEntry, ordinaryEntry] },
-    );
-    const stale = toThreadListEntryResponses(
-      { db, hub, providerRegistry },
-      { now: 190_001, threads: [nativeEntry, nativeTwoEntry, ordinaryEntry] },
-    );
-    const detail = toThreadResponseFromThread(
-      { db, hub, providerRegistry },
-      { now: 190_001, thread: native.thread },
-    );
+      const fresh = toThreadListEntryResponsesForTest(
+        { db, hub, providerRegistry },
+        { now: 190_000, threads: [nativeEntry, nativeTwoEntry, ordinaryEntry] },
+      );
+      clock.mockReturnValue(190_001);
+      const stale = toThreadListEntryResponsesForTest(
+        { db, hub, providerRegistry },
+        { now: 190_001, threads: [nativeEntry, nativeTwoEntry, ordinaryEntry] },
+      );
+      const detail = toThreadResponseFromThread(
+        { db, hub, providerRegistry },
+        { now: 190_001, thread: native.thread },
+      );
 
-    expect(fresh[0]?.runtime.nativeActivity?.confirmation).toBe("confirmed");
-    expect(fresh[0]?.nativeTerminal).toBe(true);
-    expect(fresh[0]?.listIndicator).toBe("working");
-    expect(fresh[1]?.runtime.nativeActivity?.confirmation).toBe("confirmed");
-    expect(fresh[1]?.listIndicator).toBe("working");
-    expect(stale[0]?.runtime.nativeActivity?.confirmation).toBe("unconfirmed");
-    expect(stale[0]?.listIndicator).toBe("none");
-    expect(stale[1]?.runtime.nativeActivity?.confirmation).toBe("unconfirmed");
-    expect(stale[1]?.listIndicator).toBe("none");
-    expect(detail.runtime.nativeActivity?.confirmation).toBe("unconfirmed");
-    expect(detail.nativeTerminal).toBe(true);
-    expect(stale[2]?.runtime.nativeActivity).toBeUndefined();
-    expect(stale[2]?.nativeTerminal).toBe(false);
-    expect(stale[2]?.listIndicator).toBe("working");
-    expect(oneNativeLookupStatements).toBe(1);
-    expect(twoNativeLookupStatements).toBe(oneNativeLookupStatements);
+      expect(fresh[0]?.runtime.nativeActivity?.confirmation).toBe("confirmed");
+      expect(fresh[0]?.nativeTerminal).toBe(true);
+      expect(fresh[0]?.listIndicator).toBe("working");
+      expect(fresh[1]?.runtime.nativeActivity?.confirmation).toBe("confirmed");
+      expect(fresh[1]?.listIndicator).toBe("working");
+      expect(stale[0]?.runtime.nativeActivity?.confirmation).toBe(
+        "unconfirmed",
+      );
+      expect(stale[0]?.listIndicator).toBe("activity-unreported");
+      expect(stale[1]?.runtime.nativeActivity?.confirmation).toBe(
+        "unconfirmed",
+      );
+      expect(stale[1]?.listIndicator).toBe("activity-unreported");
+      expect(detail.runtime.nativeActivity?.confirmation).toBe("unconfirmed");
+      expect(detail.nativeTerminal).toBe(true);
+      expect(stale[2]?.runtime.nativeActivity).toBeUndefined();
+      expect(stale[2]?.nativeTerminal).toBe(false);
+      expect(stale[2]?.listIndicator).toBe("working");
+      expect(oneNativeLookupStatements).toBe(1);
+      expect(twoNativeLookupStatements).toBe(oneNativeLookupStatements);
+    } finally {
+      clock.mockRestore();
+    }
   });
 
   it("projects native receipt freshness and edit policy through the plugin DTO", () => {
@@ -425,6 +648,7 @@ describe("thread runtime display", () => {
       lastEvidenceAt: 100_000,
       freshForMs: 90_000,
       confirmation: "confirmed",
+      evidenceKind: "holder-report",
     });
     expect(pluginFresh.runtime.nativeActivity).toEqual(
       detailFresh.runtime.nativeActivity,
@@ -433,6 +657,7 @@ describe("thread runtime display", () => {
       lastEvidenceAt: 100_000,
       freshForMs: 90_000,
       confirmation: "unconfirmed",
+      evidenceKind: "unknown",
     });
     expect(pluginExpired.runtime.nativeActivity).toEqual(
       detailExpired.runtime.nativeActivity,
@@ -629,7 +854,7 @@ describe("thread runtime display", () => {
 
     const providerIdByThreadId = new Map(
       [provided, checkout].flatMap(({ project }) =>
-        toThreadListEntryResponses(
+        toThreadListEntryResponsesForTest(
           { db, hub, providerRegistry },
           {
             now: 1_000,
@@ -668,7 +893,7 @@ describe("thread runtime display", () => {
       }),
     });
 
-    const [entry] = toThreadListEntryResponses(
+    const [entry] = toThreadListEntryResponsesForTest(
       { db, hub, providerRegistry },
       {
         threads: listThreadsWithPendingInteractionState(db, {
@@ -698,7 +923,7 @@ describe("thread runtime display", () => {
       status: "active",
     });
 
-    const entries = toThreadListEntryResponses(
+    const entries = toThreadListEntryResponsesForTest(
       { db, hub, providerRegistry },
       {
         now,
@@ -769,7 +994,7 @@ describe("thread runtime display", () => {
       retryDelaysMs: [],
     });
 
-    const entries = toThreadListEntryResponses(
+    const entries = toThreadListEntryResponsesForTest(
       { db, hub, providerRegistry },
       {
         now: 1_000,
@@ -807,6 +1032,7 @@ describe("thread runtime display", () => {
         {
           now: 1_000,
           threads,
+          scope: { kind: "ids", ids: threads.map((candidate) => candidate.id) },
         },
       ),
     ).toHaveLength(32_767);
@@ -965,7 +1191,7 @@ describe("thread runtime display", () => {
       },
     });
 
-    const entries = toThreadListEntryResponses(
+    const entries = toThreadListEntryResponsesForTest(
       { db, hub, providerRegistry },
       {
         threads: [
@@ -1026,3 +1252,53 @@ describe("thread runtime display", () => {
     });
   });
 });
+
+it.each([false, true])(
+  "projects clean=%s in plugin event DTOs and batches error-thread lookup",
+  (clean) => {
+    const { db, hostId, hub } = setup();
+    const threads = [
+      createThreadWithEnvironment({ db, hostId }),
+      createThreadWithEnvironment({ db, hostId }),
+    ].map(({ thread }) => ({ ...thread, status: "error" as const }));
+    for (const thread of threads) {
+      createNativeTerminalThread(db, {
+        threadId: thread.id,
+        providerId: thread.providerId,
+        nativeSessionId: `session-${thread.id}`,
+        initialPrompt: null,
+        initialImages: [],
+        model: null,
+      });
+      if (clean)
+        db.$client
+          .prepare(
+            "UPDATE fork_native_terminal_threads SET terminal_session_id = 'terminal', lost_idle_terminal_session_id = 'terminal' WHERE thread_id = ?",
+          )
+          .run(thread.id);
+    }
+    const entries = threads.map((thread) =>
+      createThreadListEntry({ environmentHostId: hostId, thread }),
+    );
+    expect(
+      countNativeActivityLookupStatements(db, () => {
+        const rows = toThreadListEntryResponsesForTest(
+          { db, hub, providerRegistry },
+          { threads: entries },
+        );
+        expect(rows.map((row) => row.runtime.nativeSessionExit)).toEqual([
+          clean ? "clean" : undefined,
+          clean ? "clean" : undefined,
+        ]);
+      }),
+    ).toBe(1);
+    for (const thread of threads) {
+      expect(
+        toPluginThreadDtoFromThread({ db, hub, providerRegistry }, { thread }),
+      ).toMatchObject({
+        status: clean ? "idle" : "error",
+        runtime: { displayStatus: clean ? "idle" : "error" },
+      });
+    }
+  },
+);

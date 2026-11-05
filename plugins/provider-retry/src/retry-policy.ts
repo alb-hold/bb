@@ -13,20 +13,29 @@ export const UNAVAILABLE_RETRY_BASE_MS = 60_000;
 
 export const MAX_RETRY_ATTEMPTS = 5;
 
+export const PROVIDER_PROCESS_EXITED_CODE = "provider_process_exited";
+
+export const PROVIDER_PROCESS_EXIT_MAX_ATTEMPTS = 2;
+
 export type RetryDeclineReason =
   | "not-retryable"
   | "no-rate-limit-state"
   | "not-resettable"
   | "beyond-maximum-wait"
   | "attempts-exhausted"
-  | "pool-unavailable";
+  | "pool-unavailable"
+  | "declined-by-sender";
 
 export type RetryDecision =
   | { kind: "decline"; reason: RetryDeclineReason }
   | {
       kind: "retry";
       sendAt: number;
-      reason: "Rate limited" | "Provider overloaded" | "Provider unavailable";
+      reason:
+        | "Rate limited"
+        | "Provider overloaded"
+        | "Provider unavailable"
+        | "Provider process exited";
     };
 
 export interface RetryPolicyInput {
@@ -107,6 +116,21 @@ export function decideRetry(input: RetryPolicyInput): RetryDecision {
         random: input.random,
       }),
       reason: "Provider overloaded",
+    };
+  }
+  if (failure.errorInfo?.providerCode === PROVIDER_PROCESS_EXITED_CODE) {
+    if (failure.attemptNumber >= PROVIDER_PROCESS_EXIT_MAX_ATTEMPTS) {
+      return { kind: "decline", reason: "attempts-exhausted" };
+    }
+    return {
+      kind: "retry",
+      sendAt: backoffSendAtMs({
+        baseMs: OVERLOAD_RETRY_BASE_MS,
+        attemptNumber: failure.attemptNumber,
+        now: input.now,
+        random: input.random,
+      }),
+      reason: "Provider process exited",
     };
   }
   if (!isRateLimitFailure(failure)) {

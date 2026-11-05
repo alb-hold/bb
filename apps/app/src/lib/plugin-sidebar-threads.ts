@@ -1,9 +1,10 @@
-import type { ThreadListEntry } from "@bb/domain";
+import { withEffectiveDisplayStatus, type ThreadListEntry } from "@bb/domain";
 import type { PluginSidebarThread } from "@get-bb/plugin-sdk";
 import {
   getThreadListIndicatorLabel,
   isNativeActivityUnconfirmed,
   isThreadRead,
+  nativeActivityEvidenceKind,
   resolveThreadListIndicator,
   threadListIndicatorStateForThread,
 } from "@bb/client-core";
@@ -22,6 +23,7 @@ export function toPluginSidebarThread(
   now = Date.now(),
   nativeActivityUnconfirmed = isNativeActivityUnconfirmed(entry.runtime, now),
 ): PluginSidebarThread {
+  entry = withEffectiveDisplayStatus(entry);
   const indicatorState = threadListIndicatorStateForThread(
     entry,
     false,
@@ -44,6 +46,7 @@ export function toPluginSidebarThread(
       titleResources,
     ),
     parentThreadId: entry.parentThreadId,
+    parentNotifications: entry.parentNotifications,
     lifecycleOwnerThreadId: entry.lifecycleOwnerThreadId,
     sourceThreadId: entry.sourceThreadId,
     sectionId: entry.sectionId,
@@ -61,9 +64,15 @@ export function toPluginSidebarThread(
             confirmation: nativeActivityUnconfirmed
               ? "unconfirmed"
               : "confirmed",
+            evidenceKind: nativeActivityEvidenceKind(
+              entry.runtime,
+              now,
+              nativeActivityUnconfirmed,
+            ),
           },
         }),
     queuedWork: entry.queuedWork,
+    experimental_queuedFailedCount: entry.queuedFailedCount,
     hasPendingInteraction: entry.hasPendingInteraction,
     activity: {
       workflows: entry.activity.activeWorkflowCount,
@@ -73,7 +82,10 @@ export function toPluginSidebarThread(
       goals: entry.activity.activeGoalCount,
     },
     indicator,
-    indicatorLabel: getThreadListIndicatorLabel(indicator),
+    indicatorLabel: getThreadListIndicatorLabel(
+      indicator,
+      entry.queuedFailedCount,
+    ),
     isUnread: !isThreadRead(entry),
     isPinned: entry.pinnedAt !== null,
     pinnedAt: entry.pinnedAt,

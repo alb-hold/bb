@@ -1,3 +1,4 @@
+import { createPluginDetailFixedPanelTab } from "@/lib/fixed-panel-tabs-state";
 import {
   useCallback,
   useEffect,
@@ -157,7 +158,8 @@ type SecondaryPanelTab =
   | AttachmentFilePreviewFixedPanelTab
   | BrowserFixedPanelTab
   | NewTabFixedPanelTab
-  | PluginPanelFixedPanelTab;
+  | PluginPanelFixedPanelTab
+  | Extract<FixedPanelTab, { kind: "plugin-detail" }>;
 
 interface StorageFileInventory {
   knownPaths: ReadonlySet<string>;
@@ -177,11 +179,13 @@ function isReopenableSecondaryPanelTab(
     case "thread-storage-file-preview":
     case "attachment-file-preview":
     case "browser":
+    case "plugin-detail":
     case "plugin-panel":
     case "new-tab":
       return true;
     case "thread-info":
     case "git-diff":
+    case "plugin-fixed":
     case "plugin-page-fixed":
     case "terminal":
       return false;
@@ -688,7 +692,8 @@ export function useThreadFileTabs({
           return true;
         }
         const entry = unresolvedEntries[0];
-        if (entry === undefined || storageFileExists === undefined) return false;
+        if (entry === undefined || storageFileExists === undefined)
+          return false;
         const storagePath = storagePathForRecentlyClosedPanelTab(
           entry.tab,
           resolvedFileOwnerThreadId,
@@ -743,6 +748,24 @@ export function useThreadFileTabs({
       storageInventory,
       updateFixedPanelTabsState,
     ],
+  );
+
+  const openPluginDetail = useCallback(
+    ({ detailKey, title }: { detailKey: string; title: string }) => {
+      const tab = createPluginDetailFixedPanelTab({ detailKey, title });
+      if (recentlyClosedPanelContextKey !== null) {
+        forgetClosedPanelTab(recentlyClosedPanelContextKey, tab.id);
+      }
+      updateFixedPanelTabsState((state) => {
+        const existing = findSecondaryPanelTab(state.secondary.tabs, tab.id);
+        return replaceNewTabWithSecondaryPanelTabInState({
+          state,
+          tab: existing ?? tab,
+        });
+      });
+      return tab;
+    },
+    [recentlyClosedPanelContextKey, updateFixedPanelTabsState],
   );
 
   const openPluginPanel = useCallback(
@@ -886,6 +909,7 @@ export function useThreadFileTabs({
     clearActiveFileTabs,
     closeTab,
     openPluginPanel,
+    openPluginDetail,
     openTab,
     orderedSecondaryFileTabs,
     reopenClosedTab,

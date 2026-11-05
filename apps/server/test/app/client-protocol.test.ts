@@ -40,11 +40,16 @@ describe("client websocket protocol", () => {
     });
   });
 
-  it("rejects subscribe messages whose target id is not a string", () => {
+  it("rejects a malformed known subscribe target", () => {
     const hub = new NotificationHub();
     const socket = createMockHubSocket();
 
     onClientSocketOpen(hub, socket);
+    onClientSocketMessage(
+      hub,
+      socket,
+      JSON.stringify({ type: "device-handoff-device", token: null }),
+    );
     onClientSocketMessage(
       hub,
       socket,
@@ -56,6 +61,67 @@ describe("client websocket protocol", () => {
     hub.notifyThread("thread-1", ["events-appended"]);
 
     expect(socket.closed).toEqual([{ code: 1008, reason: "invalid-message" }]);
+    expect(socket.messages).toHaveLength(1);
+    expect(JSON.parse(socket.messages[0]!).type).toBe(
+      "device-handoff-client-token",
+    );
+  });
+
+  it("subscribes the valid targets of a batch that also holds an oversized plugin read", () => {
+    const hub = new NotificationHub();
+    const socket = createMockHubSocket();
+    const watched: unknown[] = [];
+    hub.onWatchedTargets(["thread-detail", "plugin-read"], (change) => {
+      watched.push(change);
+    });
+    const thread = { kind: "thread-detail", threadId: "thread-1" };
+
+    onClientSocketOpen(hub, socket);
+    onClientSocketMessage(
+      hub,
+      socket,
+      JSON.stringify({
+        type: "subscribe",
+        targets: [
+          {
+            kind: "plugin-read",
+            pluginId: "usage",
+            method: "getUsage",
+            read: { input: "x".repeat(17_000) },
+          },
+          thread,
+        ],
+      }),
+    );
+    hub.notifyThread("thread-1", ["events-appended"]);
+
+    expect(socket.closed).toEqual([]);
+    expect(watched).toEqual([{ started: [thread], stopped: [] }]);
+    expect(socket.messages).toHaveLength(1);
+  });
+
+  it("rejects a batch containing a malformed known target", () => {
+    const hub = new NotificationHub();
+    const socket = createMockHubSocket();
+    const watched: unknown[] = [];
+    hub.onWatchedTargets(["thread-detail"], (change) => {
+      watched.push(change);
+    });
+    const thread = { kind: "thread-detail", threadId: "thread-1" };
+
+    onClientSocketOpen(hub, socket);
+    onClientSocketMessage(
+      hub,
+      socket,
+      JSON.stringify({
+        type: "subscribe",
+        targets: [{ kind: "thread-detail", threadId: 123 }, thread],
+      }),
+    );
+    hub.notifyThread("thread-1", ["events-appended"]);
+
+    expect(socket.closed).toEqual([{ code: 1008, reason: "invalid-message" }]);
+    expect(watched).toEqual([]);
     expect(applicationMessages(socket)).toHaveLength(0);
   });
 
@@ -171,6 +237,63 @@ describe("client websocket protocol", () => {
       { started: [target], stopped: [] },
       { started: [], stopped: [target] },
     ]);
+  });
+
+  it("records timeline tags from subscribe messages and keeps untagged subscriptions legacy", () => {
+    const hub = new NotificationHub();
+    const target = {
+      kind: "thread-timeline",
+      threadId: "thread-1",
+      segmentLimit: null,
+      deferContent: true,
+    } as const;
+    const key = "thread-timeline:thread-1:default:deferred";
+    const legacy = createMockHubSocket();
+    const pending = createMockHubSocket();
+    const tagged = createMockHubSocket();
+    const tagEvents: unknown[] = [];
+    hub.onThreadTimelineTag((changed) => tagEvents.push(changed));
+
+    onClientSocketMessage(
+      hub,
+      legacy,
+      JSON.stringify({ type: "subscribe", target }),
+    );
+    onClientSocketMessage(
+      hub,
+      pending,
+      JSON.stringify({
+        type: "subscribe",
+        target,
+        timelineTags: { [key]: null },
+      }),
+    );
+    onClientSocketMessage(
+      hub,
+      tagged,
+      JSON.stringify({ type: "subscribe", target, timelineTags: {} }),
+    );
+    onClientSocketMessage(
+      hub,
+      tagged,
+      JSON.stringify({
+        type: "subscribe",
+        targets: [target],
+        timelineTags: { [key]: "tag-1" },
+      }),
+    );
+
+    expect(
+      hub.listThreadTimelineSubscribers(target).map(({ baseline }) => baseline),
+    ).toEqual([
+      { kind: "legacy" },
+      { kind: "pending" },
+      { kind: "tag", tag: "tag-1" },
+    ]);
+    expect(tagEvents).toEqual([target]);
+    expect(
+      [legacy, pending, tagged].flatMap((socket) => socket.closed),
+    ).toEqual([]);
   });
 
   it("answers a ping with a pong on the same socket only", () => {

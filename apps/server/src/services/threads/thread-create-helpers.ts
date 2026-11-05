@@ -73,6 +73,7 @@ interface EnvironmentProvisionCommandArgs {
   initiator: EnvironmentProvisionCommandInitiator;
   path: string;
   setupScriptTimeoutMs: number | null;
+  setupOperationId: string | null;
 }
 
 export function buildEnvironmentProvisionCommand(
@@ -85,6 +86,10 @@ export function buildEnvironmentProvisionCommand(
     initiator: args.initiator,
     path: args.path,
     setupScriptTimeoutMs: args.setupScriptTimeoutMs,
+    setupOperation:
+      args.setupOperationId === null
+        ? null
+        : { id: args.setupOperationId, resumeOnly: false },
   };
 }
 

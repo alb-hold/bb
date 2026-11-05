@@ -43,7 +43,7 @@ function renderRow(row: TimelineRow, initialExpanded: ReadonlySet<string>) {
           threadId="thr_main"
           timelineRows={[row]}
           threadRuntimeDisplayStatus="idle"
-          workspaceRootPath={undefined}
+
           threadIsActive={false}
         />
       </Wrapper>
@@ -243,7 +243,7 @@ describe("deferred timeline details", () => {
             threadId="thr_main"
             timelineRows={rows}
             threadRuntimeDisplayStatus="idle"
-            workspaceRootPath={undefined}
+
             threadIsActive={false}
           />
         </Wrapper>

@@ -46,6 +46,7 @@ function createClaudeUserQuestionPayload(): UserQuestionPendingInteractionPayloa
           },
         ],
         allowFreeText: true,
+        required: true,
       },
     ],
   };
@@ -326,6 +327,7 @@ describe("claude-code interactive requests", () => {
             },
           ],
           allowFreeText: true,
+          required: true,
         },
       ],
     });
@@ -438,6 +440,7 @@ describe("claude-code interactive requests", () => {
                   },
                 ],
                 allowFreeText: true,
+                required: true,
               },
             ],
           },
@@ -534,6 +537,7 @@ describe("claude-code interactive requests", () => {
                   },
                 ],
                 allowFreeText: true,
+                required: true,
               },
             ],
           },
@@ -584,6 +588,7 @@ describe("claude-code interactive requests", () => {
                   },
                 ],
                 allowFreeText: true,
+                required: true,
               },
             ],
           },
@@ -695,6 +700,7 @@ describe("claude-code interactive requests", () => {
           shortLabel: "Target",
           multiSelect: false,
           allowFreeText: true,
+          required: true,
         },
       ],
     };
@@ -738,6 +744,7 @@ describe("claude-code interactive requests", () => {
             },
           ],
           allowFreeText: true,
+          required: true,
         },
       ],
     };

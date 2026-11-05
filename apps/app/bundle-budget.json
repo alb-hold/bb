@@ -138,6 +138,12 @@
     "them every week. The forbidden-package and split-boundary guards catch",
     "structural regressions.",
     "",
+    "On 2026-10-21 the plugin runtime stopped importing @pierre/diffs eagerly.",
+    "Bundles that import it get it before they evaluate; experimental_Diff",
+    "loads behind a split. The PluginFrontend closure, which every plugin",
+    "waits on, measures 528.9 KB raw / 165.3 KB brotli. Its limits sit 25%",
+    "above that, and the diff engine and Shiki are forbidden.",
+    "",
     "On 2026-10-16 the upstream-only build at 6d11205c grew the boot closure",
     "by 24,253 raw / 6,059 Brotli bytes over pre-sync ours fd175a7bd. The",
     "upstream changes include sidebar navigation provider/header/host",
@@ -149,10 +155,21 @@
     "(cfdb6459ad, 250-byte video-attachments module). PluginReplacementSlot",
     "is now loaded by React.lazy from the sidebar provider and header; its",
     "1,086-byte chunk is outside boot. The boot caps rose by only the measured",
-    "upstream-only delta, to 1,592,519 raw / 388,444 Brotli bytes."
+    "upstream-only delta, to 1,592,519 raw / 388,444 Brotli bytes.",
+    "",
+    "On 2026-10-29 the 0.48.0 upstream sync (merge CI build) measured the",
+    "boot payload at 1570.6 KB raw / 384.6 KB Brotli, 15.4 KB raw and 3.1 KB",
+    "Brotli over the caps. Clean builds on the same host: ours 92a7c2d5e3 at",
+    "1545.5 / 376.0 KB, upstream desktop-v0.48.0 (64248c32fa) alone at",
+    "1479.5 / 373.2 KB. The merge adds 25.1 KB raw / 8.6 KB Brotli to ours",
+    "while the beyond-boot ThreadPage closure shrinks 69 KB raw (1658.4 to",
+    "1589.6), so boot plus ThreadPage fell from 3203.9 to 3160.2 KB. Both",
+    "boot caps rose to the measured size plus under 1 KB: to 1,610,000 raw /",
+    "394,500 Brotli bytes. Code that moved between the entry chunk and the",
+    "thread route in the sync was not individually attributed."
   ],
-  "maxBootBytes": 1592519,
-  "maxBootBrotliBytes": 390656,
+  "maxBootBytes": 1610000,
+  "maxBootBrotliBytes": 394500,
   "forbiddenBootPackages": [
     "@dnd-kit/accessibility",
     "@dnd-kit/core",
@@ -316,6 +333,21 @@
     "rehype-sanitize": "src/components/ui/markdown-html.tsx"
   },
   "routeClosures": {
+    "PluginFrontend": {
+      "maxBytes": 676970,
+      "maxBrotliBytes": 211533,
+      "forbiddenPackages": [
+        "@pierre/diffs",
+        "@pierre/theming",
+        "@shikijs/core",
+        "@shikijs/engine-javascript",
+        "@shikijs/engine-oniguruma",
+        "@shikijs/langs",
+        "@shikijs/vscode-textmate",
+        "oniguruma-to-es",
+        "shiki"
+      ]
+    },
     "ThreadPage": {
       "maxBytes": 2428911,
       "maxBrotliBytes": 699019,

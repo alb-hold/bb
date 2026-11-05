@@ -37,8 +37,6 @@ export function createDesktopReleaseConfig(channel) {
       applicationName: "bb Nightly",
       artifactName: "bb-nightly-${version}-${arch}.${ext}",
       iconFileName: "icon-nightly.png",
-      // The Linux binary name must differ from stable so both channels can be
-      // installed at once without one shadowing the other on PATH.
       linuxExecutableName: "bb-nightly",
       macIconPath: "assets/icon-nightly.icns",
       releaseTag: "desktop-nightly",

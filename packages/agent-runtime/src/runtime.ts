@@ -846,7 +846,6 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
         bridgeLaunch: first.config.bridgeLaunch,
         capabilities: entry.capabilities,
         entry,
-        processKey: entry.processKey,
         providerId: entry.providerId,
         workerDir: args.dir,
       });
@@ -859,7 +858,10 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
         if (thread.providerThreadId !== null) {
           recordProviderThreadIdentity(proc, threadId, thread.providerThreadId);
         }
-        threadRuntimeConfigs.set(threadId, config);
+        threadRuntimeConfigs.set(threadId, {
+          ...config,
+          processKey: proc.processKey,
+        });
         pendingAdoptions.push({
           proc,
           threadId,
@@ -2699,7 +2701,13 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
       });
     },
 
-    async listModels({ providerId, bridgeLaunch, cwd, contributedEnv = [] }) {
+    async listModels({
+      providerId,
+      bridgeLaunch,
+      cwd,
+      selectedModel,
+      contributedEnv = [],
+    }) {
       await runtime.ensureProvider({ providerId, bridgeLaunch });
       const proc = providerProcesses.requireProviderProcess({
         processKey: resolveProviderProcessKey({ bridgeLaunch, providerId }),
@@ -2709,6 +2717,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
         commandType: "model/list",
         plan: proc.adapter.buildCommandPlan({
           type: "model/list",
+          ...(selectedModel === undefined ? {} : { selectedModel }),
           ...(cwd !== undefined ? { cwd } : {}),
           envVars: resolveContributedEnvironment(
             contributedEnv,

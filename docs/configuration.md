@@ -27,6 +27,66 @@ Launcher status output is plain when stdout is redirected, including in CI.
 Set `FORCE_COLOR=1` to request color or `NO_COLOR=1` to disable it; `NO_COLOR`
 takes precedence. In-place progress updates require a stdout TTY.
 
+## Outbound proxies and trusted certificates
+
+The packaged server and daemon launchers start bb's own Node processes with
+`--use-system-ca` and `--use-env-proxy`, and bb's forked workers and provider
+bridge workers inherit them.
+The flags are not exported as environment variables, so terminals, provider
+CLIs, and agent shells keep the Node networking defaults of the user's
+environment. `--use-system-ca` adds OS-managed certificate authorities to Node's
+bundled roots; `NODE_EXTRA_CA_CERTS` still adds a PEM bundle. Set
+`NODE_USE_SYSTEM_CA=0` or `NODE_USE_ENV_PROXY=0` before launch to opt out.
+
+Set `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY` (or their lowercase forms) in the
+launch environment or with `bb-app env set`. Proxy URLs need an `http://` or
+`https://` scheme: when any `HTTP_PROXY`/`HTTPS_PROXY` variable (either case)
+lacks one, such as `proxy.corp:3128`, bb starts that Node process without
+`--use-env-proxy` and prints a `BB_INVALID_PROXY_ENV` warning instead of letting
+Node fail at startup. bb checks this against each process's final environment,
+including forked and provider bridge workers that inherit the flag. When a
+process keeps `--use-env-proxy` with a proxy set, bb appends
+`localhost,127.0.0.1,::1,[::1]` to its existing `NO_PROXY`/`no_proxy` values
+(a `*` entry is left as is), so local bb connections stay direct; that process's
+children inherit those entries. Restart bb after changing these settings;
+existing sockets and workers keep their startup configuration.
+
+Built-in proxy support requires Node 22.21+ or 24.5+ (or Node 26); on older
+supported Node releases the launcher omits `--use-env-proxy`. Libraries that create their own agents
+or sockets can also bypass Node's global proxy support, including daemon
+WebSockets; these launch defaults do not configure those libraries or the OS
+proxy settings.
+
+## Host executable discovery
+
+Core process launches and the Plugin SDK process helpers share one resolver.
+It reads the user's login-shell PATH (or Windows user/machine registry PATH),
+and adds the running Node's directory and standard user tool directories to
+every child PATH. When the PATH is the one bb started with, the login-shell
+PATH comes first; when a caller passes a different PATH, its entries come first
+and the login-shell PATH and standard directories follow. Native provider
+installs in `~/.local/bin` and
+mise/asdf shim directories are available to services as well as terminal launches.
+Shell network settings are read alongside PATH; unrelated shell variables are
+not copied into child environments. Discovery runs in the background, bounded to
+three seconds per probe; launches use the latest completed snapshot and never
+wait for a probe. The server, daemon, and packaged desktop app start discovery
+at launch; the `bb` CLI does not.
+
+Missing-command errors and exit 127 start a background refresh, and later
+launches use its result; commands are never replayed automatically because an
+exit 127 can happen after an installation has already changed files. An
+unavailable running Node path is re-resolved before launching a worker, and
+replacement runtimes must match its native-module ABI and Electron/Node family.
+Scripts with a `#!/usr/bin/env node` line run with the `node` found on PATH.
+`npm` and `npx` run as found on PATH. Daemon self-update instead runs npm's
+JavaScript entry point with the Node installation that owns it, which avoids
+version-manager wrapper post-hooks; inside the Electron desktop runtime, bb
+never substitutes its own runtime for npm.
+
+Standalone machine bootstrap installers run before the shared runtime is
+installed, so their initial Node/package acquisition remains self-contained.
+
 ## Repository worktree hooks
 
 Commit `.bb-env-setup.sh` when a managed worktree needs repository setup.
@@ -216,7 +276,6 @@ for the command surface.
 | `showDiagnosticEvents`                                                     | `false` in all builds               | Settings → General → Privacy & diagnostics → Show diagnostic events. Shows provider environment resolution and raw provider events bb does not yet understand in the timeline. Warnings, errors, and model fallback stay visible. Hidden diagnostics do not count toward timeline event or byte limits.                                                                                                                                                                                                                                        |
 | `steerActiveThreadOnEnter`                                                 | `true`                              | Settings → General → Default thread followup behavior, when no typeahead suggestion is active. `true` ("Steer"): Enter sends to the agent during its current run and Mod+Enter queues the message until the agent stops; `false` ("Queue") swaps them. Installs with saved settings or work from before the setting were migrated once to `false`.                                                                                                                                                                                             |
 | `confirmThreadArchive`                                                     | `true`                              | Settings → General → Thread archive confirmation. `false` archives a thread and its children in the app without a confirmation popup; the toast still offers Undo. CLI and SDK archives never prompt.                                                                                                                                                                                                                                                                                                                                          |
-| `showGitChanges`                                                           | `true`                              | Settings → General → Show Git changes and Commit button. `false` hides the untracked, uncommitted, and committed file summary and expanded file list above every thread composer, that shelf's pull-request status and actions, and the Commit action in the thread header and overflow menu. Thread relationships and workspace warnings stay visible.                                                                                                                                                                                        |
 | `keepHistoryAfterContextClear`                                             | `false`                             | Settings → General → Show messages from before a context clear. When `false`, a thread's timeline, conversation outline, and message lookup start at its latest `Context cleared` boundary; `true` keeps earlier messages, which load on scroll and appear in the outline and `bb thread log --message`. Clearing always starts a fresh provider conversation and resets the context meter.                                                                                                                                                    |
 | `summarizeShellCommands`                                                   | `true`                              | Settings → General → Summarize shell commands. `true` titles a shell command that runs `ls`, `find`, `grep`, `rg`, `cat`, `head`, `tail`, `nl`, or `sed -n` with a summary such as `Searched for X`, and the row does not expand. `false` titles every shell command row with its command (`Running …`, `Ran …`), expands it to the command and its output, and counts it as a command in step summaries. Native read and search tool rows keep their titles.                                                                                  |
 | `streamerMode`                                                             | `false`                             | Settings → General. Hides every `customModels` entry from the web and mobile pickers, `bb provider models`, and `sdk.providers.models`, for example before a screen share. Entries stay in `config.json`; a thread that names a hidden model still runs, and default model resolution keeps the full list, so a provider whose only models are custom still starts. A composer whose stored selection is hidden falls back to the provider default and records it on the next send; reselect the custom model after turning streamer mode off. |
@@ -240,8 +299,11 @@ On Linux browsers with native primary-selection support, middle-click focuses
 the terminal and pastes the primary selection independently of this setting.
 Unsupported browsers never substitute unrelated regular clipboard contents.
 
-Older clients that omit `showGitChanges`, `keepHistoryAfterContextClear`,
-`summarizeShellCommands`, or `earlyAdopter` preserve the saved value. For older SDK callers, the
+Older clients that omit `keepHistoryAfterContextClear`,
+`summarizeShellCommands`, or `earlyAdopter` preserve the saved value. The
+former Show Git changes and Commit button switch is now
+[plugin settings](#git-and-github-pr-status-plugins), and the general-settings
+API rejects an update that still sends `showGitChanges`. For older SDK callers, the
 general-settings API still accepts and returns `showUnhandledProviderEvents` as
 a deprecated alias of `showDiagnosticEvents`, and an existing value is
 preserved; when a read-modify-write payload contains conflicting values, the one
@@ -275,16 +337,24 @@ lists what `bb project discover` and
 
 **Anonymous usage telemetry.** PostHog events carry a random install id, app
 version, install kind, platform, OS release, architecture, and Node version.
-The server sends `app_started`, `telemetry_disabled`, `thread_created`,
+The server sends events such as `app_started`, `telemetry_disabled`, `thread_created`,
 `user_message_sent`, `turn_finished`, and `plugin_installed`. The app reports setup-guide and
 first-send events through `POST /api/v1/system/telemetry/events`
-(`sdk.system.experimental_recordTelemetryEvent`): `onboarding_started`,
+(`sdk.system.experimental_recordTelemetryEvent`), such as `onboarding_started`,
 `onboarding_step_reached`, `onboarding_step_completed`,
 `onboarding_step_skipped`, `onboarding_finished`, `onboarding_agent_state`,
-`onboarding_sign_in`, and `new_thread_submit` (started, accepted, or failed).
-The route accepts only these events with fixed enums and booleans: no provider
-ids, account details, prompts, project or file names, terminal output, error
-messages, or session ids. Sign-in `exited` means the command exited before
+`onboarding_sign_in`, `new_thread_submit` (started, accepted, or failed),
+`plugin_creation_started` (no properties; sent when you choose New plugin in
+the app or run `bb plugin new`, so it records intent, not a finished plugin),
+and `release_notes_opened` from Settings → Updates (`view` `inline` when the
+notes open under the bb row, `web` for the full notes on getbb.app).
+`bb plugin new` sends `plugin_creation_started` with `app_surface` `api`, skips
+it inside a bb agent thread (so an agent acting on New plugin isn't counted
+twice), and skips it silently when no bb server answers within 2 seconds. The
+route accepts only allow-listed events and values, plus a
+`release_version` of digits and dots (such as `0.47.0`): no custom provider ids,
+account details, prompts, release-note text, project or file names, terminal
+output, error messages, or session ids. Sign-in `exited` means the command exited before
 readiness was observed, not that authentication succeeded; `new_thread_submit`
 `accepted` means the thread was created, not that the provider answered.
 By default (`BB_FF_INITIATOR_TELEMETRY=false` turns it off), `thread_created` and `user_message_sent` also carry
@@ -294,7 +364,7 @@ runs into an existing thread report `automation`. `bb thread spawn` run inside a
 sends that thread as `senderThreadId`; the new thread reports `agent` when the sender has a
 turn running, and `user` otherwise.
 
-`turn_finished` sends only `outcome` (`succeeded`, `failed`, or `stopped`),
+`turn_finished` sends `outcome` (`succeeded`, `failed`, or `stopped`),
 `error_category` (`none`, `auth`, `billing`, `rate_limit`, `limit_reached`,
 `provider_unavailable`, `start_failed`, `process_exited`, `host_lost`, or `other`),
 `provider` (a shipped built-in provider ID, otherwise `other`), and
@@ -305,8 +375,9 @@ telemetry is off and resumes at the next number when enabled again.
 ## AI services
 
 Thread titles (and the branch names built from them), commit messages, and
-voice transcripts come from AI services that plugins register. Each task
-(`thread-title`, `commit-message`, `voice`) is `automatic` (default), `off`,
+voice transcripts come from AI services that plugins register, as do dictation
+formatting and typing corrections in the native terminal composer. Each task
+(`thread-title`, `commit-message`, `voice`, `writing`) is `automatic` (default), `off`,
 or a service id; set it in Settings → AI services or with
 `bb settings ai-services set <task> <value> [--plugin <plugin-id>]` (see
 `bb guide customization`). Automatic tries bb cloud (the `bb-ai` plugin, for a
@@ -317,9 +388,182 @@ it fails, titles fall back to the start of the prompt and commits to
 `bb: automated commit`. `bb ai off|on` turns bb cloud off and on; see the
 `bb-cloud-ai` skill.
 
+The Claude Code provider plugin registers a `claude` service for
+`thread-title`, `commit-message`, and `writing`. It runs the primary machine's
+`claude` CLI with its own login (`claude auth login`), no tools, no user or
+project settings, CLAUDE.md or hooks, also when `CLAUDE_CONFIG_DIR` points the
+CLI at another config directory, no auto-memory (bb sets
+`CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` for it and passes no `--settings`), and no
+session history, trying Claude Haiku 5.5 and then Claude Sonnet 5.5. Managed
+settings that an administrator installs for the CLI still apply, as the CLI
+documents for `--setting-sources`, including any hooks they define: such a hook
+can run for this service, as for every `claude` command on that machine, and
+can read its prompt. bb leaves managed settings and their hooks in place
+because they are that machine's administrator policy, so where such a hook
+sends a prompt is up to that administrator.
+It reports ready when that login is valid or has a refresh token the CLI can
+renew with, and not ready, asking for `claude auth login`, when the login is
+signed out, its renewal was rejected, or its access token expired with
+nothing to renew it.
+The CLI gets only an allowlisted environment (path, home, user, temp, locale,
+XDG, `DBUS_SESSION_BUS_ADDRESS`, `CLAUDE_CONFIG_DIR`, which selects the CLI's
+config directory and so its login, `CLAUDE_CODE_OAUTH_TOKEN`, and the Windows
+system variables), plus `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`.
+`DBUS_SESSION_BUS_ADDRESS` lets the CLI on a Linux desktop reach the user's
+session bus, where the keyring that can hold its login lives; anything else on
+that bus is reachable too, with the same rights as the user bb runs as.
+`ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`,
+`NODE_OPTIONS`, other `CLAUDE_CODE_*` settings (bb's own value of
+`CLAUDE_CODE_DISABLE_AUTO_MEMORY` is replaced by 1), and the proxy and CA
+variables (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`,
+`NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `SSL_CERT_DIR`) in bb's environment
+never reach it, and the prompt cannot be redirected or intercepted through
+them. On a network that only allows HTTPS through a proxy, this service
+cannot reach Claude; pick Codex or bb cloud for the text tasks there.
+Claude does not transcribe audio, so `voice` still needs bb cloud or Codex.
+Because `provider-claude-code` sorts before `provider-codex`, automatic text
+tasks try Claude before Codex.
+
 The removed `BB_INFERENCE`, `BB_INFERENCE_FALLBACK`, and `BB_TRANSCRIPTION`
 keys are ignored with a warning in `~/.bb/config.json`, and `bb-app config set`
 refuses them.
+
+Writing assistance: the native terminal composer has a microphone and typing assistance. Dictation
+records phrase by phrase: each pause ends a short clip that is transcribed by the
+`voice` service and then punctuated and formatted by the `writing` service. The
+server passes each uploaded clip only to the `voice` service; formatting gets
+the transcript text, never audio. When transcribing a clip fails for any reason
+other than the daily limit, whether the upload failed or the server or the
+`voice` service failed after the clip arrived, the app sends the same clip once
+more automatically, so the `voice` service can receive it twice; after that the
+clip is sent again only if you choose Retry. A clip refused by the daily limit
+stops dictation and is not resent automatically. Cancelling dictation drops
+every clip still uploading or waiting; none of them is sent again. bb keeps no
+audio: the server holds a clip in memory for its request and writes it to
+neither disk nor the database (what the voice service's provider keeps is up to
+that provider). The server measures each
+clip from its encoded audio (WebM or Ogg with Opus, MP4 or M4A with AAC, MP3, or
+WAV): the longer of its summed audio frames and the playback timeline its
+timestamps describe, so a gap between timestamps counts as recorded time (for
+WAV, only the declared audio data counts, not metadata after it). Only that
+measured length counts against `dailyDictationMinutes`; the request carries no
+client-reported length. A clip it cannot measure (including an MP4 whose boxes
+nest more than 16 levels deep, or a streamed WAV whose data chunk declares size 0
+and is followed by bytes that read as another chunk header), an empty one, or one longer
+than 120 seconds is refused before transcription. An upload over 25 MiB
+(26214400 bytes), whether it declares its length or is sent chunked, is
+refused with 413 while it streams in, before the form is parsed. A formatted phrase that
+adds words the speaker did not say, changes a number, or drops a protected
+term is discarded in favor of the plain transcript. Typing assistance sends
+finished sentences that changed, with up to 500 characters of preceding
+text, after about a second of idle time. After about four seconds of idle
+time it also sends the unfinished last sentence, if it has at least five words
+and is outside a code fence, marked incomplete; fixes to an unfinished sentence
+are only suggested, never applied automatically. A long draft or dictation is checked a
+few sentences at a time, up to 500 characters per request, with the next part
+sent about a second after each reply; a single sentence is sent alone up to
+2,000 characters, and a longer one is not checked.
+
+Settings (stored server-side; also `bb settings writing`):
+
+| Setting                 | Default     | Meaning                                                                                                                                              |
+| ----------------------- | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `mode`                  | `prompt`    | `prompt`, `developer`, `natural`, `polished`, `verbatim`, `literal-code`                                                                             |
+| `typingCorrection`      | `automatic` | `automatic` applies only the fixes listed below and suggests the rest; `suggest`; `off`                                                              |
+| `dictationFormatting`   | `true`      | Format dictated phrases; off inserts transcripts as heard                                                                                            |
+| `vocabulary`            | `[]`        | Up to 200 terms sent as spelling hints with each request                                                                                             |
+| `dailyCorrectionLimit`  | `300`       | Writing requests per UTC day before assistance pauses                                                                                                |
+| `dailyDictationMinutes` | `60`        | Dictated minutes per UTC day before dictation stops; bb cloud also caps each account at $0.50 of AI usage per day, about 80 minutes of transcription |
+
+`bb settings writing vocabulary add|remove` and the Settings page edit the
+vocabulary on the server in one step, so concurrent edits keep each other's
+terms. Each edit says what to do with a term to remove that is not in the
+vocabulary (`ifMissing`). `bb settings writing vocabulary remove` sends
+`fail`: it changes nothing and fails, naming the missing term. The Settings
+page sends `ignore`: a term that is already gone is skipped and the rest of the
+edit applies. SDK callers choose either one. The vocabulary changes only
+through these edits (`writingAssistance.editVocabulary`):
+`writingAssistance.updateSettings` and `PUT /api/v1/writing-assistance/settings`
+reject a `vocabulary` field, and a settings update never rewrites the
+vocabulary.
+
+Automatic typing correction applies an edit by itself only when its meaning cannot
+change, whatever the AI service reports: capitalizing the first word of a
+sentence or the pronoun I, and spacing, inside a sentence that already ends
+with . ! or ? (any other change of case, such as turkey to Turkey, is only
+suggested), removing a word typed twice with only spaces between (not a tab or line break)
+when it is one of these words, which never stand twice in a row: the, a, an, I, we, they, he, she, our, your, their, of, and, or, but, if, and the Portuguese o, os, a, as, um, uma, de, da, dos, das, em, na, nas, e, ou, eu, ele, ela, nós, por, com (any
+other repeat can be meant and is only suggested: very very, had had, that that, not not, her her as in
+tell her her access, in in as in log in in five minutes, para para, and a pair split by punctuation
+such as so did I. I left), the lowercase article a to an or an to a (a capital A or An can be a label, so that change is only suggested), and accents on a fixed list of lowercase Portuguese words that are
+not words without them (nao, voce, tambem, entao, amanha; a capitalized Nao can be a name, so an accent on a capitalized word is only suggested). Spelling fixes, a
+missing final period, capitalization or spacing in text that does not end a
+sentence (such as a bare `return true`), other punctuation (commas, question marks), homophones such as its/it's, verb
+agreement (is/are/am, was/were, has/have, does/do and their negations, since the
+subject can be singular or plural, as in "The fish are nearby", and a verb's mood
+can change the meaning, as in "If he were there"), and tense or plural changes
+are offered as suggestions, as is any edit between quotation marks, even when
+the quotation spans lines or paragraphs ('the the', ‘the the’, “the the”,
+«o o», including quotes inside quotes such as “They said ‘the the’”). A
+quotation left open covers the rest of the text, across blank lines. A closing
+mark must match the opening one: “ closes „, ” closes “, » closes «, and
+‘quoted', 'quoted’ and „quoted” stay open. An apostrophe inside a word (don't) or after
+one (users', 5') is not a quotation mark unless it closes an open single
+quote. Code, paths, identifiers and
+vocabulary terms are never edited, and on a line containing any of
+= ; { } ( ) < > [ ] $ ` | \ / # " or --, a colon followed directly by text
+(10:30), a key: value line in any script (status: ready, größe: bereit, - name: x, "title": x), a line
+that starts with a shell command, builtin or keyword such as echo, git, npm, read, for or if (also after a $,
+%, > or # prompt or sudo), a line that starts with a hyphenated word, as every PowerShell
+command does (Write-Output, ConvertTo-Json, fetch-data, über-prüfen; also prose such as
+Well-known teams say), a line that starts with PowerShell's call or
+dot-source operator, & or . then a space (& Fetch-Data, . setup), a line that starts with an identifier written with an underscore or with a
+lowercase letter followed by a capital, in any script (fetch_data, \_fetch, größe_wert, fetchData, größeWert,
+FetchData; also words such as iPhone or McDonald), a line with a short flag such as -la, a line
+with a +, * or ^ between two operands (x + y, total * rate, n ^ k), a line that is only an
+arithmetic expression (price - discount., count % size), with operands in
+any script (α + β, größe * faktor), a line
+indented four spaces or a tab, or a ``` or ~~~ fence line or a line inside such a fence (closed
+only by a bare fence of the same character at least as long), every
+change, even capitalization, is only suggested. A line that starts with a plain word, such as a custom command named setup or
+notepad typed without a prompt, cannot be told from prose and is treated as prose. Dictation formatting follows the same rule:
+if the formatter changes a spoken word into another word, other than one of
+those accent restorations, the transcript is inserted
+as heard. Vocabulary terms are sent to transcription as hints, which make the
+expected spelling more likely but do not guarantee it; formatting may change
+their case or punctuation
+("next js" to "Next.js") but never their letters, since without a dictionary a
+misheard name cannot be told from a real word ("public" is never rewritten as
+a similar term). Formatting may not leave out any spoken word, including hesitation
+sounds such as uh, um or hmm, or one of two words said twice in a row ("the the"
+stays, because only the speaker knows whether it was meant) (a formatted phrase that does is discarded in favor
+of the plain transcript); it may leave out only a spoken self-correction (no wait, I mean, scratch that, actually,
+quer dizer, na verdade and the like) together with the phrase just before it
+that it replaces (one unbroken run of at most six words ending at the
+correction, no longer than what was said after it and starting with the same
+word (on monday no wait on tuesday), with nothing else near it left out; a phrase
+that replaces nothing, as in "no wait is required", is not a correction), spoken symbol names in literal-code
+mode when the reply writes that symbol where it was spoken ("run dash force" may become "run -force" but never "run force" or "run force-"), and for paren, bracket or brace only when every pair it opens is closed ("call foo paren" may become "call foo()" but never "call foo("), and the spoken numbers of a numbered list with the connectors (and, then, next, finally, e,
+depois, então) said just before an item number, as in "and then second"; the numbers may be
+ordinals (first, second, primeiro, segundo) or, when the transcript has a comma or colon right
+after each, counting words ("one, add users; two, remove keys", um, dois), one kind per list; a
+counting word without that pause, as in "one check auth two run tests", is never taken as a
+list number; a connector inside an item ("users and groups") always stays; leaving out any other word, a negation
+outside a self-correction phrase, or the minus sign of a number ("-5" never
+becomes "5", "-.5" never becomes ".5", and "-5 and 5" never becomes "5 and -5"), or adding, removing or moving a symbol next to a number, such as
+%, $, €, °, #, + or ~ ("5" never becomes "5%", and "5% and 5" never becomes
+"5 and 5%"), or changing what joins two numbers ("1-3" never becomes "1/3",
+and "10 30" never becomes "10:30"), inserts the transcript as heard. The spoken words must also keep the order they were said in,
+and no word, accented or not, may appear more times than it was said ("nao"
+never becomes "Não não."). A question stays a question: a
+sentence the transcript ended with a question mark keeps it, one it ended with
+a period or exclamation mark (including the full-width forms) is never turned into a question, and the tags né
+and eh are kept ("vai funcionar, né?" never becomes "Vai funcionar."). Only
+speech the transcript left unpunctuated may be punctuated as a question.
+
+Usage counts and the cost estimate use list prices and are not a bill: bb
+cloud has its own daily limit, Codex uses the primary machine's Codex
+login, and Claude uses the primary machine's Claude Code login. Typing and sending never wait for assistance.
 
 bb accepts voice recordings up to 25 MB; a service may set a lower limit, and
 Codex transcribes up to 20 MB and bb cloud up to 10 MB. With a ChatGPT
@@ -413,6 +657,10 @@ chat-pane focus). These start unassigned on Windows/Linux to preserve native
 Control-arrow editing. `pane.focus.previous` / `pane.focus.next` and
 `panel.fullScreen.toggle` start unassigned.
 
+`thread.rename`, `thread.archive`, `thread.markRead`, and `thread.pin` start
+unassigned and act on the focused pane's open thread; Mark read and Pin toggle
+like the matching thread menu item.
+
 | Area      | Command                                      | Default                     | Availability             |
 | --------- | -------------------------------------------- | --------------------------- | ------------------------ |
 | Palette   | Quick palette                                | `Mod+Shift+P`               | All clients              |
@@ -421,6 +669,8 @@ Control-arrow editing. `pane.focus.previous` / `pane.focus.next` and
 | Threads   | Search threads                               | `Mod+K`                     | All clients              |
 | Threads   | Rename focused thread                        | Unassigned                  | Thread view              |
 | Threads   | Archive focused thread                       | Unassigned                  | Thread view              |
+| Threads   | Mark focused thread read or unread           | Unassigned                  | Thread view              |
+| Threads   | Pin or unpin focused thread                  | Unassigned                  | Thread view              |
 | Threads   | Previous / next thread                       | Surface defaults above      | Desktop / web            |
 | Threads   | Open visible thread 1–9                      | Platform defaults above     | Web / desktop            |
 | Layout    | Previous / next chat pane                    | Unassigned                  | While split              |
@@ -439,6 +689,7 @@ Control-arrow editing. `pane.focus.previous` / `pane.focus.next` and
 | Panel     | Reopen closed tab                            | `Mod+Shift+T`               | Desktop                  |
 | Workspace | Quick open file / toggle diff                | `Mod+P` / `Mod+D`           | All clients              |
 | Workspace | Open terminal                                | `Mod+Shift+Enter`           | All clients              |
+| Terminal  | Find in scrollback                           | `Cmd+F` / `Ctrl+Shift+F`    | Terminal focus           |
 | Workspace | Open in preferred app                        | `Mod+O`                     | All clients              |
 | Composer  | Focus composer                               | `Mod+Shift+C`               | All clients              |
 | Composer  | Toggle model picker                          | `Mod+Shift+M`               | All clients              |
@@ -447,6 +698,15 @@ Control-arrow editing. `pane.focus.previous` / `pane.focus.next` and
 | Composer  | Cycle reasoning effort forward / backward    | `Alt+T` / `Alt+Shift+T`     | All clients              |
 | Browser   | Focus location / reload / find in page       | `Mod+L` / `Mod+R` / `Mod+F` | Desktop embedded browser |
 | Questions | Choose visible answer 1–9                    | `1` … `9`                   | While a question is open |
+| Questions | Next question or submit answers              | `Mod+Enter`                 | While a question is open |
+| Questions | Previous / next question                     | `ArrowLeft` / `ArrowRight`  | Focus in a question card |
+| Questions | Cancel question                              | `Mod+.`                     | While a question is open |
+
+Question shortcuts act on the open question card in the focused pane. They
+skip text fields outside the card, so the composer keeps its own keys;
+`Mod+Enter` and `Mod+.` also work from the card's own answer field, where
+`Enter` goes to the next question or submits and `Shift+Enter` adds a line.
+Previous / next need focus in the card, outside its answer field.
 
 The "Show keyboard hints when holding CMD / Control" preference defaults
 to on. Set it with
@@ -625,6 +885,27 @@ User-level skills live under `<dataDir>/skills/<name>/SKILL.md` (usually
 `skills/<name>/SKILL.md` (relocatable with the manifest's `bb.skills` field).
 Project skills override user skills, which override plugin skills, by name.
 
+All skill discovery uses the shared skills index. User roots, skill directories,
+and `SKILL.md` entries may be symlinks. Project skills and Markdown commands may
+follow links only within their workspace (or the repository boundary for an
+ancestor root). Traversal resolves real paths and stops cycles. Each recursive
+skill root reads at most 1,000 folders and each command root at most 1,000
+entries; files inside skill folders do not count. Supporting files in an
+injected skill tree must remain ordinary files and directories; linking the root
+or `SKILL.md` is supported.
+
+`bb skill list`, the SDK, and the Skills page collapse registrations that share a
+name and identical `SKILL.md` bytes, preferring provider-neutral and user-wide
+registrations. Different contents with the same name, and identical contents under
+different names, remain distinct. Previously issued registration IDs still address
+their original registration. Linked registrations are read-only in bb. Runtime
+catalogs collapse skills with the same name and identical trees, and Claude Code
+omits injected copies already visible under the same name in its native user or
+project roots. Selected Codex skills are sent as structured skill inputs with the
+path from Codex's active catalog, matched by catalog name or skill directory name,
+for both starting and steering a turn; a selected skill missing from that
+catalog is sent as plain text only.
+
 Top-level `sharedSkillRoots` in `~/.bb/config.json` adds one provider-neutral
 skill collection: `{"user": [...], "project": [...]}` relative paths, resolved
 from the home directory and the workspace. bb indexes them read-only and
@@ -755,22 +1036,23 @@ ui_preference_conflict`. Read and write them with `bb settings ui
 list|get|set|reset` or `sdk.system.uiPreferences` (see
 `bb guide customization`).
 
-| Key                           | Value                                                                                                                                                  |
-| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `sidebar.organizationMode`           | `project`, `chronological`, or `machine`                                                                         |
-| `sidebar.threadGrouping.environment` | `auto`, `true`, or `false`                                                                                       |
-| `sidebar.chronologicalSort`          | `updated`, `created`, `alpha`, or `none`                                                                         |
-| `sidebar.sectionOrder`               | Section id list for **By project**                                                                               |
-| `sidebar.manualSectionOrder`         | Section id list for **Manually**                                                                                 |
-| `sidebar.machineSectionOrder`        | Section id list for **By machine**                                                                               |
-| `sidebar.hiddenGroups`               | Legacy project, custom section, and machine ids migrated once into the Thread list plugin                        |
-| `sidebar.threadListProvider`  | Plugin key or `__automatic__` (default): the first installed thread list plugin other than the bundled `thread-list/thread-list`, else the bundled one |
-| `sidebar.navigationProvider`  | Plugin key or `__automatic__` (default): the first navigation from a plugin other than the bundled Navigation plugin, else its `navigation/rail`       |
-| `sidebar.pluginPanelOrder`    | Navigation destination order                                                                                                                           |
-| `sidebar.visiblePluginPanels` | Navigation destinations shown, or `null` for every destination                                                                                         |
-| `sidebar.footerOrder`         | Footer action order                                                                                                                                    |
-| `sidebar.hiddenFooterItems`   | Footer actions moved into More                                                                                                                         |
-| `infoPanel.collapsedSections` | Collapsed thread Info panel sections (`commits`, `uncommittedChanges`, `childThreads`, `forks`, `threadStorage`)                                       |
+| Key                                  | Value                                                                                                                                                     |
+| ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `sidebar.organizationMode`           | `project`, `chronological`, or `machine`                                                                                                                  |
+| `sidebar.threadGrouping.environment` | `auto`, `true`, or `false`                                                                                                                                |
+| `sidebar.chronologicalSort`          | `updated`, `created`, `alpha`, or `none`                                                                                                                  |
+| `sidebar.sectionOrder`               | Section id list for **By project**                                                                                                                        |
+| `sidebar.manualSectionOrder`         | Section id list for **Manually**                                                                                                                          |
+| `sidebar.machineSectionOrder`        | Section id list for **By machine**                                                                                                                        |
+| `sidebar.hiddenGroups`               | Legacy project, custom section, and machine ids migrated once into the Thread list plugin                                                                 |
+| `threadContextCard.pinned`           | `true` (default) keeps a thread pane's thread context card open beside the transcript when the pane is wide enough; `false` opens it only from the header |
+| `sidebar.threadListProvider`         | Plugin key or `__automatic__` (default): the first installed thread list plugin other than the bundled `thread-list/thread-list`, else the bundled one    |
+| `sidebar.navigationProvider`         | Plugin key or `__automatic__` (default): the first navigation from a plugin other than the bundled Navigation plugin, else its `navigation/rail`          |
+| `sidebar.pluginPanelOrder`           | Navigation destination order                                                                                                                              |
+| `sidebar.visiblePluginPanels`        | Navigation destinations shown, or `null` for every destination                                                                                            |
+| `sidebar.footerOrder`                | Footer action order                                                                                                                                       |
+| `sidebar.hiddenFooterItems`          | Footer actions moved into More                                                                                                                            |
+| `infoPanel.collapsedSections`        | Collapsed thread Info panel sections (`commits`, `uncommittedChanges`, `childThreads`, `forks`, `threadStorage`, or `<pluginId>/<sectionId>`)             |
 
 A legacy `__builtin__` thread list selection resolves to the bundled plugin.
 Footer IDs are `builtin:settings` (top list layout only), `builtin:mobile`,
@@ -1231,13 +1513,18 @@ bb stores only the experiments you set; the others follow the shipped default.
 The `earlyAdopter` general setting (the Become an early adopter banner on
 Settings → Experiments, `bb settings general earlyAdopter on`) switches the
 shipped default to the early adopter default: experiments marked Early adopter
-(currently `timelinePush` and `compactExpiredCache`) turn on, and the rest stay
-off. An experiment you set yourself keeps your value either way.
+(currently `applicationLinks`, `timelinePush`, `compactExpiredCache`,
+`pluginUpdates`, `sidebarMultiSelect`, `skipFocusedThreadNotifications`,
+`threadRowMetadata`, `unreadDividerAtAnswer`, and `websocketCompression`) turn
+on, and the rest stay off. An experiment you set yourself keeps your value
+either way.
 `/system/config` and `sdk.system.config()` return the resolved values in
 `experiments`.
 
-- `changelogPreview` shows the latest release notes as a dismissible card on
-  Settings → Updates.
+- `applicationLinks` (on for early adopters) enables explicit app links such as
+  `linear://` and `slack://` in rendered Markdown and the plugin
+  `navigate.openUrl` path. The viewing device asks before opening unless the
+  scheme was saved with Always allow. See [App links](#app-links).
 - `compactExpiredCache` (on for early adopters) reports `compactionOfferAt` on a thread's context
   usage (timeline `contextWindowUsage` and `bb thread context`) once the
   provider has reported a prompt-cache lifetime, the provider supports manual
@@ -1261,12 +1548,76 @@ off. An experiment you set yourself keeps your value either way.
   collection. The experiment itself applies live; turning it off restores
   normal logging and flushes the in-flight profile, keeping saved files. See
   [diagnostics](debugging-and-qa.md#opt-in-server-performance-diagnostics).
+- `pluginUpdates` (on for early adopters) adds a Plugins section to
+  Settings → Updates: one row per tracking plugin with an update (installed →
+  candidate version and an Update button), Update all for compatible updates,
+  and candidates blocked by `engines.bb` or `engines.bbPluginSdk` with the
+  reason. Opening the page re-checks tracking sources, and the sidebar updates
+  badge counts plugin updates. While it is off, the six-hourly background check,
+  `bb plugin outdated`, `bb plugin update`, and Settings → Installed plugins
+  work as before.
+- `sidebarMultiSelect` (on for early adopters) lets the built-in thread list
+  select several threads: Cmd/Ctrl+Shift-click toggles a row (starting from the
+  open thread), Shift-click selects the visible range from the last clicked row,
+  and a plain click, Cmd/Ctrl-click, Escape, or a click outside the sidebar
+  clears the selection.
+  Right-clicking a selected row offers Mark read/unread, Pin/Unpin,
+  Notifications, Move to section, Archive (Unarchive when every selected
+  thread is archived), and Delete for the whole selection. Archive and Delete
+  ask once for the whole selection, counting child threads that are not
+  selected, and act on the topmost selected threads; Archive skips the
+  question when the Archive confirmation setting is off. Dragging a selected row moves
+  every selected thread onto a section, under a thread, or into Pinned, or drops
+  them onto a composer as one mention per thread. Cmd/Ctrl-click still opens a
+  thread in a split. Plugins read it with
+  `experimental_useExperiment("sidebarMultiSelect")`.
+- `threadContextCard` moves a running thread's
+  details into the thread context card at the upper-right of its pane: bb's parent
+  thread and child threads, the Git plugin's changes, which open the Diff tab,
+  and GitHub PR Status's pull request. The context row above the
+  composer drops those segments and keeps other plugins' segments; the
+  project, environment, and branch stay below the composer, side chats keep
+  their context row, and a new thread's composer is unchanged.
+  A header button opens the card or pins it: a pinned card sits beside the
+  transcript in a wide pane and moves the transcript aside in a medium one,
+  and a narrow pane or window opens it over the transcript. Phones keep the
+  context row above the composer and show no card. Plugins read how a pane
+  shows thread context with `experimental_useThreadContextKind()`.
+- `threadRowMetadata` (on for early adopters) adds Metadata to the built-in
+  thread list's Organize → Rows menu. With it checked (`showRowMetadata`), plugins draw details such as
+  GitHub PR Status's pull request number on a line under each thread title.
+  While the experiment is off the sidebar ignores `showRowMetadata`. Plugins
+  read it with `experimental_useExperiment("threadRowMetadata")`.
+- `skipFocusedThreadNotifications` (on for early adopters) makes the
+  push-notifications plugin skip the web and desktop system notification for a
+  thread that is open in a visible, focused bb window or browser tab of the same
+  origin. Each such window holds a shared Web Lock for its thread, so the window
+  that claims a notification also sees threads focused in other windows. Other
+  threads, notifications without a thread, and mobile push are unaffected. The
+  plugin reads it with
+  `experimental_useExperiment("skipFocusedThreadNotifications")` and follows a
+  toggle live.
 - `timelinePush` makes an open thread view subscribe to its latest timeline
   window over the WebSocket (`thread-timeline` subscription target); the server
   pushes the full window once, then row deltas after new events, instead of the
   client refetching the latest window after every update. A missed push falls
   back to the delta request used when it is off. Open views follow a toggle
   live.
+- `unreadDividerAtAnswer` (on for early adopters) moves the NEW divider in an unread thread from the
+  first row after your read point to the answer of a turn that finished while
+  you were away: the turn's final assistant message, or the error that ended
+  it. The turn's tool calls and in-between notes stay above the divider. A
+  message that started a new turn keeps the divider above it, a turn that is
+  still running or has no answer keeps the old placement, and the divider never
+  lands on your own message. It applies the next time you open a thread.
+- `websocketCompression` (on for early adopters) lets the realtime client
+  WebSocket (`/ws`) negotiate `permessage-deflate`, so messages of 1 KB or more,
+  such as timeline pushes, are compressed (about 4x for timeline JSON). It
+  helps clients that reach the server over a network, including bb connect
+  next; the bb connect relay re-frames messages and does not carry it.
+  Terminal, host daemon, and plugin WebSockets are never compressed. The server
+  reads the experiment when a client connects, so a toggle applies when the
+  app reconnects.
 
 ## Thread Timeline Window
 
@@ -1352,22 +1703,40 @@ skills.
 
 ### Claude Code provider
 
-| Setting            | Default | Effect                                                                                                                                                                                                                                                                |
-| ------------------ | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `disable1MContext` | `false` | Sets `CLAUDE_CODE_DISABLE_1M_CONTEXT=1` (`0` when off).                                                                                                                                                                                                               |
-| `chromeEnabled`    | `false` | Starts Claude Code with `--chrome` for Claude in Chrome tools, which bb otherwise leaves off even when the interactive `claude` CLI enables them; the host needs the extension and a claude.ai login (API-key sessions stay off).                                     |
-| `artifactsEnabled` | `false` | Sets `CLAUDE_CODE_ARTIFACT=1` so Claude Code loads its Artifact tools (read, publish, and edit claude.ai artifacts), which it withholds from SDK sessions by default; when off, bb leaves any inherited value alone. Claude may publish private pages without asking. |
-| `sandboxEnabled`   | `true`  | Runs Bash in Claude Code's sandbox in Accept Edits and Approve for me modes; `false` uses Claude Code's own approvals and sandbox settings.                                                                                                                           |
+| Setting                      | Default | Effect                                                                                                                                                                                                                                                                |
+| ---------------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `subagentsDisabled`          | `false` | Removes native Agent, Task, and ListAgents tools from the model context. Changes restart Claude before the next turn, preserving the conversation.                                                                                                                    |
+| `disable1MContext`           | `false` | Sets `CLAUDE_CODE_DISABLE_1M_CONTEXT=1` (`0` when off).                                                                                                                                                                                                               |
+| `chromeEnabled`              | `false` | Starts Claude Code with `--chrome` for Claude in Chrome tools, which bb otherwise leaves off even when the interactive `claude` CLI enables them; the host needs the extension and a claude.ai login (API-key sessions stay off).                                     |
+| `artifactsEnabled`           | `false` | Sets `CLAUDE_CODE_ARTIFACT=1` so Claude Code loads its Artifact tools (read, publish, and edit claude.ai artifacts), which it withholds from SDK sessions by default; when off, bb leaves any inherited value alone. Claude may publish private pages without asking. |
+| `sandboxEnabled`             | `true`  | Runs Bash in Claude Code's sandbox in Accept Edits and Approve for me modes; `false` uses Claude Code's own approvals and sandbox settings.                                                                                                                           |
+| `fullAccessApprovalsEnabled` | `false` | Shows Claude Code's own prompts in Full Access (`permissions.ask` rules, PreToolUse hooks that answer `ask`, and built-in safety checks); `false` approves every request. Applies from the next turn without a restart.                                               |
 
-Set them with `bb plugin config provider-claude-code set <key> <value>`. A
-change restarts the thread's Claude process before its next turn, keeping the
-conversation. Memory, native subagents, and the Workflow tool are toggled on
+Set them with `bb plugin config provider-claude-code set <key> <value>`. Unless
+noted, a change restarts the thread's Claude process before its next turn,
+keeping the conversation. Memory, native subagents, and the Workflow tool are toggled on
 the provider's page in Settings → Providers (see `bb guide providers`).
 
 Two host-daemon environment variables reach the Claude Code bridge:
-`BB_CLAUDE_CODE_EXECUTABLE` picks the `claude` binary, and
-`CLAUDE_CODE_OAUTH_TOKEN` authenticates a machine with no interactive login,
-such as a CI runner (mint it with `claude setup-token`). See the
+`BB_CLAUDE_CODE_EXECUTABLE` picks the `claude` binary (otherwise bb uses
+`claude` from the host's PATH) for Claude threads and the Claude writing
+service alike; a request cannot choose it. Before the writing service sends
+text, it resolves that binary to its real file and refuses it unless the file,
+every link on the way to it (including a linked directory in its path) and
+every directory above them belong to the daemon's own account or root and no
+other account can change them. It then runs that resolved file, not the path
+it was given, so a link changed after the check cannot point the request at
+another binary. Group write
+counts as another account: a group-writable file is refused, and a directory
+that its group or any account can write counts only with the sticky bit, as
+`/tmp` has, so a binary under Homebrew's group-writable `/opt/homebrew/bin` is
+refused. On macOS an access control list entry that allows writing to any of
+them is refused too; on Linux an ACL that grants write shows in the group bits
+and is refused the same way.
+For the writing service the variable must be an absolute path. A refused
+binary shows the service as not ready with the reason, and no text is sent.
+Windows has no such ownership check. The other, `CLAUDE_CODE_OAUTH_TOKEN`, authenticates a
+machine with no interactive login, such as a CI runner (mint it with `claude setup-token`). See the
 `claude-code-provider` skill.
 
 ### Account Pooler [Experimental]
@@ -1494,6 +1863,33 @@ reloads before that turn. A failed reload is logged, the turn still runs, and
 the next turn tries again. An MCP sign-in that Codex keeps only in the OS
 keychain does not change these files, so it does not trigger a reload.
 
+### Git and GitHub PR Status plugins
+
+The builtin Git plugin's settings page has two switches:
+
+- `showGitChanges` (default `true`), Show Git changes above the composer.
+  `false` hides the untracked, uncommitted, and committed file summary,
+  expanded file list, and merge-base picker above every thread composer.
+- `showCommitButton` (default `false`), Show Commit button. `true` shows the
+  Commit action in the thread header and overflow menu when the workspace has
+  uncommitted changes.
+
+The builtin GitHub PR Status plugin's `showPullRequest` (default `true`) is
+Show pull request above the composer on its plugin page. `false` hides the pull
+request status, Mark ready and merge actions above every thread composer; the
+Info tab's Pull request row stays. Thread relationships and workspace warnings
+stay visible either way.
+
+```bash
+bb plugin config bb--git set showGitChanges false
+bb plugin config bb--git set showCommitButton true
+bb plugin config bb--github-pr-status set showPullRequest false
+```
+
+Upgrading copies the former Settings → General switch's saved value into
+`showGitChanges` and `showPullRequest`. The Commit button starts off for
+everyone.
+
 ### Ask User Question plugin
 
 The builtin Ask User Question plugin keeps an unanswered question card open for
@@ -1559,6 +1955,7 @@ row's Customize actions, or `bb thread-list prefs get|set|reset <key>`
 | `threadLifecycles`    | `["active"]`                      | `["active"]`, `["archived"]`, or both; empty and duplicate values are rejected                                                              |
 | `rowActions`          | `["bb--core/archive"]`            | Up to three thread action keys in display order; see below                                                                                  |
 | `showProviderIcons`   | `false`                           | Shows the provider icon before each thread title                                                                                            |
+| `showRowMetadata`     | `false`                           | Shows plugins' metadata on a line under each thread title; needs the `threadRowMetadata` experiment                                         |
 | `collapsed*`          | `[]`                              | Collapsed sections, projects, threads, environments, custom sections, and machines                                                          |
 
 `rowActions` keys are `bb--core/<id>` (`split`, `newThreadInEnvironment`,
@@ -1750,3 +2147,29 @@ metadata is preserved. This is a desktop-local preference, with no server
 settings CLI/SDK endpoint. Builds with tolerant readers ignore the field and
 may drop it on save; older strict readers can reject the whole file, so keep a
 backup before rolling back to a build predating the tolerant-reader fix #5286.
+
+## App links
+
+Enable App links in Settings → Experiments or run
+`bb settings experiment applicationLinks true`. The experiment is a server
+setting shared by its clients. Disable it with
+`bb settings experiment applicationLinks false`.
+
+Explicit Markdown links such as `[Review note](reflect://note/Project%20X)`
+become clickable while enabled. Bare custom-scheme text is not auto-linked.
+The shared web UI asks before opening an app on the viewing device; choose
+Always allow to remember that URL scheme. All clients save approvals in
+localStorage for this BB site on this device. They do not sync between devices,
+browsers, app profiles, or server addresses. Settings → General → Links → App links lists
+saved schemes; the trash button next to a scheme revokes it.
+The Plugin SDK can list and revoke through the same implementation; it cannot
+grant approval. There is no server-side or local-desktop-profile approval store.
+
+Desktop and mobile validate the URL again and hand it to the OS after the web
+UI approves it. Native code does not show a second confirmation or store
+permissions. Failed native launches do not save new approvals. Resetting
+approvals invalidates pending remember choices. Old native clients show an
+update message. Web browsers control their own handoff and may show a second
+prompt; BB cannot reliably detect missing apps in a browser. Executable web
+schemes, local-file launch schemes, and reserved editor-action schemes remain
+blocked.

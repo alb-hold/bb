@@ -3,7 +3,10 @@ export * from "./active-thinking.js";
 export * from "./acp-cli.js";
 export * from "./native-roots.js";
 export * from "./native-terminal.js";
+export * from "./native-terminal-activity.js";
 export * from "./ai-services.js";
+export * from "./writing-assistance.js";
+export * from "./dictation-segment.js";
 export * from "./app-settings.js";
 export * from "./ui-preferences.js";
 export * from "./app-keybindings.js";
@@ -62,6 +65,7 @@ export * from "./shared-types.js";
 export * from "./stored-thread-event.js";
 export * from "./terminal.js";
 export * from "./terminal-grid.js";
+export * from "./terminal-replay-parser.js";
 export * from "./thread-dynamic-context.js";
 export * from "./thread-event-scope.js";
 export * from "./thread-events.js";
@@ -87,7 +91,5 @@ export * from "./project-attachment.js";
 
 export * from "./mobile-app.js";
 export * from "./environment-removal.js";
-
-export type { ContractTagDeclarations } from "./contract-tags.js";
 
 export const ARCHIVE_UNDO_GRACE_MS = 30_000;

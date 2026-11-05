@@ -6,7 +6,8 @@ import {
   listEvents,
   threads,
 } from "@bb/db";
-import { describe, expect, it, vi } from "vitest";
+import type { HostDaemonRpcCommand } from "@bb/host-daemon-contract";
+import { describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { advanceEnvironmentProvisioning } from "../../src/services/environments/environment-engine.js";
 import { registerHostRpcResponder } from "../helpers/host-rpc.js";
@@ -107,7 +108,12 @@ describe("environment reprovisioning", () => {
   });
 });
 
-it("does not replace an unresolved RuntimeManager setup with a new successful attempt", async () => {
+const isAttach = (
+  command: HostDaemonRpcCommand,
+): command is Extract<HostDaemonRpcCommand, { type: "environment.attach" }> =>
+  command.type === "environment.attach";
+
+it("resumes an unresolved RuntimeManager setup without rerunning it and keeps the outcome unknown when the daemon cannot", async () => {
   await withTestHarness(async (harness) => {
     const { host, session } = seedHostSession(harness.deps, {
       id: "host-setup-retry",
@@ -135,11 +141,14 @@ it("does not replace an unresolved RuntimeManager setup with a new successful at
         startedAt: 1,
       })
       .run();
-    const attach = vi.fn(async () => ({ ok: true as const, result: {} }));
-    registerHostRpcResponder(harness, {
+    const responder = registerHostRpcResponder(harness, {
       hostId: host.id,
       sessionId: session.id,
-      handle: attach,
+      handle: () => ({
+        ok: false as const,
+        errorCode: "command_failed",
+        errorMessage: "The setup outcome is unknown after interruption",
+      }),
     });
     await advanceEnvironmentProvisioning(harness.deps, {
       environmentId: environment.id,
@@ -149,6 +158,7 @@ it("does not replace an unresolved RuntimeManager setup with a new successful at
           environmentId: environment.id,
           path: environment.path!,
           setupScriptTimeoutMs: 1000,
+          setupOperation: { id: "setup-op", resumeOnly: false },
           contributedEnv: [],
           initiator: null,
         },
@@ -157,10 +167,80 @@ it("does not replace an unresolved RuntimeManager setup with a new successful at
     await expect
       .poll(() => getEnvironment(harness.db, environment.id)?.status)
       .toBe("error");
-    expect(attach).not.toHaveBeenCalled();
+    expect(
+      responder.requests.map(({ command }) => command).filter(isAttach),
+    ).toMatchObject([{ setupOperation: { id, resumeOnly: true } }]);
     expect(
       harness.db.select().from(environmentHookOperations).get(),
     ).toMatchObject({ id, startedAt: 1, finishedAt: null });
+  });
+});
+
+it("resumes an unresolved setup on the daemon that still holds it instead of failing the thread", async () => {
+  await withTestHarness(async (harness) => {
+    const { host, session } = seedHostSession(harness.deps, {
+      id: "host-setup-rejoin",
+    });
+    const { project } = seedProjectWithSource(harness.deps, {
+      hostId: host.id,
+    });
+    const environment = seedEnvironment(harness.deps, {
+      hostId: host.id,
+      projectId: project.id,
+      status: "provisioning",
+      environmentProviderId: "git-worktree",
+      environmentProviderInstanceKey: "rejoin",
+      providerOwnsPath: true,
+    });
+    const id = `environment:${environment.id}:rejoin:setup`;
+    harness.db
+      .insert(environmentHookOperations)
+      .values({
+        id,
+        operationId: id,
+        hostId: host.id,
+        path: environment.path!,
+        kind: "setup",
+        startedAt: 1,
+      })
+      .run();
+    const responder = registerHostRpcResponder(harness, {
+      hostId: host.id,
+      sessionId: session.id,
+      handle: () => ({
+        ok: true as const,
+        result: {
+          path: environment.path!,
+          isGitRepo: false,
+          isWorktree: false,
+          branchName: null,
+          defaultBranch: null,
+        },
+      }),
+    });
+    await advanceEnvironmentProvisioning(harness.deps, {
+      environmentId: environment.id,
+      request: {
+        command: {
+          type: "environment.attach",
+          environmentId: environment.id,
+          path: environment.path!,
+          setupScriptTimeoutMs: 1000,
+          setupOperation: { id: "setup-op", resumeOnly: false },
+          contributedEnv: [],
+          initiator: null,
+        },
+      },
+    });
+    await expect
+      .poll(() => getEnvironment(harness.db, environment.id)?.status)
+      .toBe("ready");
+    expect(
+      responder.requests.map(({ command }) => command).filter(isAttach),
+    ).toMatchObject([{ setupOperation: { id, resumeOnly: true } }]);
+    expect(
+      harness.db.select().from(environmentHookOperations).get(),
+    ).toMatchObject({ id, startedAt: 1, finishedAt: expect.any(Number) });
   });
 });
 
@@ -188,19 +268,26 @@ it.each([
       const responder = registerHostRpcResponder(harness, {
         hostId: host.id,
         sessionId: session.id,
-        handle: () =>
-          fail
-            ? { ok: false, errorCode, errorMessage: "Setup failed" }
-            : {
-                ok: true,
-                result: {
-                  path: environment.path!,
-                  isGitRepo: false,
-                  isWorktree: false,
-                  branchName: null,
-                  defaultBranch: null,
+        handle: ({ command }) =>
+          command.type === "environment.attach" &&
+          command.setupOperation?.resumeOnly
+            ? {
+                ok: false,
+                errorCode: "command_failed",
+                errorMessage: "The setup outcome is unknown after interruption",
+              }
+            : fail
+              ? { ok: false, errorCode, errorMessage: "Setup failed" }
+              : {
+                  ok: true,
+                  result: {
+                    path: environment.path!,
+                    isGitRepo: false,
+                    isWorktree: false,
+                    branchName: null,
+                    defaultBranch: null,
+                  },
                 },
-              },
       });
       const request = {
         command: {
@@ -208,6 +295,7 @@ it.each([
           environmentId: environment.id,
           path: environment.path!,
           setupScriptTimeoutMs: 1000,
+          setupOperation: { id: "setup-op", resumeOnly: false },
           contributedEnv: [],
           initiator: null,
         },
@@ -238,10 +326,11 @@ it.each([
         .poll(() => getEnvironment(harness.db, environment.id)?.status)
         .toBe(retryable ? "ready" : "error");
       expect(
-        responder.requests.filter(
-          (request) => request.command.type === "environment.attach",
-        ),
-      ).toHaveLength(retryable ? 2 : 1);
+        responder.requests
+          .map(({ command }) => command)
+          .filter(isAttach)
+          .map((command) => command.setupOperation?.resumeOnly),
+      ).toEqual([false, !retryable]);
       if (retryable)
         expect(operation()).toMatchObject({
           finishedAt: expect.any(Number),

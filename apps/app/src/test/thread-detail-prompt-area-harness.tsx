@@ -15,19 +15,20 @@ import type {
 import type { ReactNode } from "react";
 import { vi } from "vitest";
 import type { PromptDraftAttachment } from "@bb/client-core";
-import type { TypeaheadConfig } from "@/components/promptbox/PromptBoxInternal";
+import type { TypeaheadConfig } from "@/components/promptbox/ComposerBox";
 import type { PluginComposerHost } from "@/components/plugin/plugin-composer-host";
 
 export const promptAreaMocks = {
+  unknownReasoning: false,
   cancelThreadPlanMutate: vi.fn(),
   clearThreadGoalMutate: vi.fn(),
-  createQueuedMessageMutateAsync: vi.fn(),
   createThreadMutateAsync: vi.fn(),
   defaultExecutionOptions: null as ResolvedThreadExecutionOptions | null,
   executionInputSources: {} as ExistingThreadExecutionInputSources,
   deleteQueuedMessageMutateAsync: vi.fn(),
   navigate: vi.fn(),
   pluginComposerHost: null as PluginComposerHost | null,
+  renderThreadContextBanner: false,
   composerSubmit: null as
     | ((extras?: ComposerSubmitExtras) => void | Promise<void>)
     | null,
@@ -167,7 +168,7 @@ vi.mock("@/components/promptbox/FollowUpPromptBox", async () => {
       };
       executionReadOnly?: boolean;
       pendingInteraction?: ReactNode;
-      permission: { value?: string };
+      permission: { value?: string; onChange?: (value: "full") => void };
       permissionReadOnly?: boolean;
       pluginComposerHost?: PluginComposerHost | null;
       sessionOptionsControl?: ReactNode;
@@ -220,11 +221,22 @@ vi.mock("@/components/promptbox/FollowUpPromptBox", async () => {
           {execution.providerRouting.environmentId}
         </div>
         <div data-testid="command-suggestions">
-          {typeahead.command?.suggestions
-            .map((command) => command.name)
-            .join(",")}
+          {`${typeahead.command.source.providerId}:${typeahead.command.source.commandScope}`}
         </div>
         <div data-testid="selected-model">{execution.model.active?.model}</div>
+        {execution.model.onChange ? (
+          <button
+            type="button"
+            onClick={() => execution.model.onChange?.("gpt-5-mini")}
+          >
+            Choose model gpt-5-mini
+          </button>
+        ) : null}
+        {permission.onChange ? (
+          <button type="button" onClick={() => permission.onChange?.("full")}>
+            Choose permission full
+          </button>
+        ) : null}
         <div data-testid="selected-reasoning">{execution.reasoning.value}</div>
         <button
           type="button"
@@ -508,18 +520,34 @@ vi.mock("@/components/promptbox/banner/ThreadGoalCard", () => ({
     ) : null,
 }));
 
-vi.mock("@/components/promptbox/banner/ThreadPromptContextBanner", () => ({
-  ThreadPromptContextBanner: ({
-    childThreadsSection,
-  }: {
-    childThreadsSection: { items: readonly unknown[] } | null;
-  }) =>
-    childThreadsSection ? (
-      <div data-testid="child-threads-banner">
-        {childThreadsSection.items.length} child threads
-      </div>
-    ) : null,
-}));
+vi.mock(
+  "@/components/promptbox/banner/ThreadPromptContextBanner",
+  async (importOriginal) => {
+    const actual =
+      await importOriginal<
+        typeof import("@/components/promptbox/banner/ThreadPromptContextBanner")
+      >();
+    return {
+      ...actual,
+      ThreadPromptContextBanner: (
+        props: Parameters<typeof actual.ThreadPromptContextBanner>[0],
+      ) =>
+        promptAreaMocks.renderThreadContextBanner ? (
+          <actual.ThreadPromptContextBanner {...props} />
+        ) : null,
+      ThreadChildThreadsBanner: (
+        props: Parameters<typeof actual.ThreadChildThreadsBanner>[0],
+      ) =>
+        promptAreaMocks.renderThreadContextBanner ? (
+          <actual.ThreadChildThreadsBanner {...props} />
+        ) : props.childThreads ? (
+          <div data-testid="child-threads-banner">
+            {props.childThreads.items.length} child threads
+          </div>
+        ) : null,
+    };
+  },
+);
 
 vi.mock("@/components/promptbox/banner/ThreadPromptModeCard", () => ({
   ThreadPromptModeCard: ({
@@ -589,32 +617,9 @@ vi.mock("@/components/ui/app-toast", () => ({
   appToast: { error: promptAreaMocks.toastError },
 }));
 
-vi.mock("@/hooks/useCommandSuggestions", () => ({
-  useCommandSuggestions: ({
-    providerId,
-    commandScope,
-  }: {
-    providerId: string;
-    commandScope: string;
-  }) => ({
-    hasMore: false,
-    isError: false,
-    isLoading: false,
-    isLoadingMore: false,
-    loadMore: vi.fn(),
-    suggestions: [{ name: `${providerId}:${commandScope}` }],
-    triggers: [],
-  }),
-}));
-
-vi.mock("@/hooks/usePromptMentions", () => ({
-  usePromptMentions: () => ({
-    isError: false,
-    isLoading: false,
-    setQuery: vi.fn(),
-    suggestions: [],
-  }),
-}));
+vi.mock("@/hooks/usePromptMentions", async () =>
+  (await import("@/test/fixtures/composer-search")).fakePromptMentionsModule(),
+);
 
 vi.mock("@/hooks/useThreadCreationOptions", async () => {
   const { useState } = await import("react");
@@ -648,7 +653,13 @@ vi.mock("@/hooks/useThreadCreationOptions", async () => {
           { value: "claude-code", label: "Claude Code" },
         ],
         reasoningLevel: "medium",
-        reasoningOptions: [],
+        reasoningOptions: promptAreaMocks.unknownReasoning
+          ? []
+          : [{ value: "medium", label: "Medium" }],
+        resolveReasoningForModel: (_model: string, reasoningLevel: string) => ({
+          reasoningLevel,
+          reasoningOptions: [{ value: reasoningLevel, label: reasoningLevel }],
+        }),
         selectedModel: explicitModel ?? (isClaude ? "claude-opus-5" : "gpt-5"),
         selectedProviderComposerActions: [],
         selectedProviderDisplayName: isClaude ? "Claude Code" : "Codex",
@@ -702,10 +713,6 @@ vi.mock("@/hooks/mutations/thread-runtime-mutations", () => ({
   useCreateThread: () => ({
     isPending: false,
     mutateAsync: promptAreaMocks.createThreadMutateAsync,
-  }),
-  useCreateThreadQueuedMessage: () => ({
-    isPending: false,
-    mutateAsync: promptAreaMocks.createQueuedMessageMutateAsync,
   }),
   useDeleteThreadQueuedMessage: () => ({
     isPending: false,

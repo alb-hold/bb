@@ -1,5 +1,5 @@
-import { eq, inArray, sql } from "drizzle-orm";
 import {
+  GIT_PLUGIN_ID,
   aiServiceSelectionSchema,
   AI_TASKS,
   appKeybindingOverridesSchema,
@@ -14,6 +14,7 @@ import {
   type AppKeybindingOverrides,
   type AppSettings,
 } from "@bb/domain";
+import { eq, inArray, sql } from "drizzle-orm";
 import type { DbConnection, DbQueryConnection } from "../connection.js";
 import { appSettingsValues } from "../schema.js";
 
@@ -99,6 +100,45 @@ export function setAppSettings(db: DbConnection, settings: AppSettings): void {
   });
 }
 
+const RETIRED_KEYBOARD_COMMAND_IDS: ReadonlyMap<string, string> = new Map([
+  ["diff.toggle", `plugin:${GIT_PLUGIN_ID}/toggle-diff`],
+]);
+
+function overrideSlot(entry: unknown): string | null {
+  if (
+    typeof entry !== "object" ||
+    entry === null ||
+    !("command" in entry) ||
+    typeof entry.command !== "string"
+  ) {
+    return null;
+  }
+  const platform =
+    "platform" in entry && typeof entry.platform === "string"
+      ? entry.platform
+      : "all";
+  return `${entry.command}:${platform}`;
+}
+
+function migrateRetiredKeyboardCommands(stored: unknown): unknown {
+  if (!Array.isArray(stored)) return stored;
+  const explicitSlots = new Set(stored.map(overrideSlot));
+  return stored.flatMap((entry: unknown) => {
+    if (
+      typeof entry !== "object" ||
+      entry === null ||
+      !("command" in entry) ||
+      typeof entry.command !== "string"
+    ) {
+      return [entry];
+    }
+    const replacement = RETIRED_KEYBOARD_COMMAND_IDS.get(entry.command);
+    if (replacement === undefined) return [entry];
+    const migrated = { ...entry, command: replacement };
+    return explicitSlots.has(overrideSlot(migrated)) ? [] : [migrated];
+  });
+}
+
 export function getAppKeybindingOverrides(
   db: DbConnection,
 ): AppKeybindingOverrides {
@@ -111,7 +151,9 @@ export function getAppKeybindingOverrides(
   if (row === undefined) {
     return [];
   }
-  return appKeybindingOverridesSchema.parse(parseStoredValue(row.value));
+  return appKeybindingOverridesSchema.parse(
+    migrateRetiredKeyboardCommands(parseStoredValue(row.value)),
+  );
 }
 
 export function setAppKeybindingOverrides(
@@ -240,6 +282,40 @@ export function forgetPluginProviders(
       .where(eq(appSettingsValues.key, pluginProviderCatalogKey(pluginId)))
       .run();
   });
+}
+
+function pluginRecommendationKey(pluginId: string): string {
+  return `pluginRecommendation:${pluginId}`;
+}
+
+export function getPluginRecommendationId(
+  db: DbConnection,
+  pluginId: string,
+): string | null {
+  const row = db
+    .select({ value: appSettingsValues.value })
+    .from(appSettingsValues)
+    .where(eq(appSettingsValues.key, pluginRecommendationKey(pluginId)))
+    .get();
+  const value = row === undefined ? undefined : parseStoredValue(row.value);
+  return typeof value === "string" ? value : null;
+}
+
+export function setPluginRecommendationId(
+  db: DbConnection,
+  pluginId: string,
+  recommendationId: string,
+): void {
+  writeValue(db, pluginRecommendationKey(pluginId), recommendationId, Date.now());
+}
+
+export function deletePluginRecommendationId(
+  db: DbConnection,
+  pluginId: string,
+): void {
+  db.delete(appSettingsValues)
+    .where(eq(appSettingsValues.key, pluginRecommendationKey(pluginId)))
+    .run();
 }
 
 export function claimInstallTurnNumber(db: DbQueryConnection, now: number): number {

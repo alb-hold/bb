@@ -8,12 +8,17 @@ import type {
   UpdateTerminalRequest,
 } from "@bb/server-contract";
 import { BbHttpError, sdk } from "@/lib/sdk";
+import { clearTerminalProgressForClosedSession } from "@/lib/terminal-progress-updates";
 import {
   applyTerminalSessionClose,
   applyTerminalSessionMissing,
   applyTerminalSessionUpsert,
 } from "../cache-owners/terminal-cache-owner";
-import { terminalsQueryKey, type TerminalQueryScope } from "./query-keys";
+import {
+  allTerminalsQueryKeyPrefix,
+  terminalsQueryKey,
+  type TerminalQueryScope,
+} from "./query-keys";
 import { requireEnabledQueryArg, type QueryOptions } from "./query-helpers";
 import { REALTIME_OWNED_NO_FOCUS_QUERY_POLICY } from "./query-policies";
 
@@ -23,6 +28,7 @@ interface RenameTerminalMutationRequest extends UpdateTerminalRequest {
 
 interface CloseTerminalMutationRequest {
   mode: CloseTerminalRequest["mode"];
+  reason?: CloseTerminalRequest["reason"];
   terminalId: string;
 }
 
@@ -109,12 +115,25 @@ export function useCloseTerminal() {
     meta: {
       errorMessage: "Failed to close terminal.",
     },
-    mutationFn: ({ mode, terminalId }: CloseTerminalMutationRequest) =>
-      sdk.terminals.close({ mode, terminalId }).catch((error: unknown) => {
+    mutationFn: ({ mode, reason, terminalId }: CloseTerminalMutationRequest) =>
+      sdk.terminals.close({ mode, reason, terminalId }).catch((error: unknown) => {
         if (error instanceof BbHttpError && error.status === 404) return null;
         throw error;
       }),
-    onSuccess: (session: TerminalSession | null, variables) => {
+    onSuccess: async (session: TerminalSession | null, variables) => {
+      const cachedSession = queryClient
+        .getQueriesData<TerminalListResponse>({
+          queryKey: allTerminalsQueryKeyPrefix(),
+        })
+        .flatMap(([, data]) => data?.sessions ?? [])
+        .find((candidate) => candidate.id === variables.terminalId);
+      await clearTerminalProgressForClosedSession({
+        session,
+        terminalId: variables.terminalId,
+        threadId: session?.threadId ?? cachedSession?.threadId ?? null,
+        updateThreadRowState: (request) =>
+          sdk.threads.experimental_updateRowState(request),
+      });
       if (session === null) {
         applyTerminalSessionMissing({
           queryClient,

@@ -1,9 +1,5 @@
-import type { EnvironmentRemoval } from "@bb/domain";
-import type { MachineBootstrapApi } from "./machine-bootstrap.js";
-import type Database from "better-sqlite3";
-import type { Context } from "hono";
-import type * as z from "zod";
 import type {
+  EnvironmentRemoval,
   Environment,
   Host,
   PermissionMode,
@@ -22,6 +18,10 @@ import type {
   ThreadTurnInitiator,
   WorkspaceProvisionType,
 } from "@bb/domain";
+import type { MachineBootstrapApi } from "./machine-bootstrap.js";
+import type Database from "better-sqlite3";
+import type { Context } from "hono";
+import type * as z from "zod";
 import type { ProviderFork } from "@bb/domain/provider-fork";
 import type {
   BbSdk,
@@ -255,6 +255,14 @@ export interface PluginTurnFailedEvent {
    * A policy caps its own retries by comparing against this.
    */
   attemptNumber: number;
+  /**
+   * The plugin that sent the failed turn's message through
+   * `bb.sdk.threads.send` or `bb.sdk.threads.spawn`, or null when a user, an
+   * agent, or core sent it. A retry is sent by core, so a retry's failure
+   * reports null. A retry policy uses this to ask the sender whether it
+   * wants the turn re-run.
+   */
+  originPluginId: string | null;
 }
 
 /**
@@ -881,6 +889,14 @@ export interface PluginHttp {
 }
 
 export interface PluginRpc {
+  /** Run a producer once per distinct watched read until its last client leaves. Register after the method. Abort stops the producer on unwatch or plugin disposal. */
+  experimental_whileWatched(
+    method: string,
+    handler: (
+      read: { input: JsonValue } | { key: string },
+      signal: AbortSignal,
+    ) => void | Promise<void>,
+  ): void;
   /** Refresh reads whose contract tags overlap this nonempty list. */
   experimental_invalidate(tags: readonly string[]): void;
   /** Refresh every read of this plugin, including untagged reads. */
@@ -893,7 +909,9 @@ export interface PluginRpc {
    * serialization. The response is `{ ok: true, result }` or
    * `{ ok: false, error: { code, message, issues? } }`. Each handler gets
    * the call's context as its second argument; `experimental_caller` names
-   * the plugin that called through `bb.sdk.plugins.callRpc`, or `client`.
+   * the plugin that called through `bb.sdk.plugins.callRpc`, or `client`,
+   * and `experimental_signal` aborts when the caller stops waiting or this
+   * plugin instance is reloaded, disabled or removed.
    */
   register<Contract extends PluginRpcContract>(
     contract: Contract,
@@ -960,7 +978,10 @@ export interface PluginCliContext {
   threadId?: string;
   projectId?: string;
   experimental_stdinInputs?: Readonly<Record<string, string>>;
-  /** Aborted when the invoking CLI HTTP request disconnects. */
+  /**
+   * Aborted when the invoking CLI HTTP request disconnects or this plugin
+   * instance is reloaded, disabled or removed.
+   */
   signal?: AbortSignal;
 }
 
@@ -1029,7 +1050,7 @@ export interface PluginCliResult {
  * Maximum combined UTF-8 bytes accepted from plugin CLI stdout and stderr.
  * This is the shared source of truth for production and the testing harness.
  */
-export const PLUGIN_CLI_OUTPUT_MAX_BYTES = 1024 * 1024;
+export const PLUGIN_CLI_OUTPUT_MAX_BYTES = 32 * 1024 * 1024;
 
 export interface PluginCliOutputLimitError {
   code: "plugin_cli_output_too_large";
@@ -1373,6 +1394,12 @@ export interface PluginProviderOptionDescriptor {
   id: string;
   label: string;
   description?: string;
+  /** Host glyph name (`"Zap"`) or declared icon (`"<pluginId>/<name>"`, an
+   * entry of this plugin's `bb.branding.experimental_icons`; any other plugin
+   * id or an undeclared name fails the load) shown beside a selected service
+   * tier. Host glyphs draw filled. Ignored for reasoning levels. Defaults to
+   * `"Zap"`. */
+  experimental_icon?: string;
 }
 
 /**
@@ -1684,7 +1711,12 @@ export interface PluginProviderDeclaration {
    *   `transcripts` file (`{yyyy}`, `{mm}`, `{dd}` cover the launch day and the
    *   day before) whose `header.match` fields equal the given strings, and
    *   binds the one whose `header.cwd` is the thread workspace and whose
-   *   `header.startedAt` follows the launch. Later launches use `resumeArgs`.
+   *   `header.startedAt` follows the launch. Optional `header.discoveryMatch`
+   *   fields must also equal the given strings, but only when binding a new
+   *   launch's session; a session is still found by its id without them, so a
+   *   session another client of the CLI created can be resumed. Declare it to
+   *   keep a session some other process started in the same workspace from
+   *   being bound. Later launches use `resumeArgs`.
    * - `activity` (optional): how bb learns that the CLI is working on a turn,
    *   so the thread shows as working, then as done, and gets a title from its
    *   first prompt. `hooks` adds `args` (with `{settings}` replaced by a JSON
@@ -2097,8 +2129,10 @@ export interface PluginAiServiceDeclaration {
   /** Shown in the picker; 1-64 characters. */
   readonly displayName: string;
   /**
-   * Answer one prompt with plain text. Offered for thread titles and commit
-   * messages. Declare `complete`, `transcribe`, or both.
+   * Answer one prompt with plain text. Offered for thread titles, commit
+   * messages, and writing assistance (JSON edit proposals and dictation
+   * formatting, validated by bb before use). Declare `complete`,
+   * `transcribe`, or both.
    */
   readonly complete?: (
     prompt: string,
@@ -2297,6 +2331,8 @@ export type PluginBbSdk = Omit<BbSdk, "threads"> & {
  * against.
  */
 export interface BbPluginApi {
+  /** Internal: counts one meaningful use of a first-party plugin's UI. */
+  internal_DO_NOT_USE_recordPluginUse(): void;
   /** The plugin's own id (namespaces storage, routes, commands). */
   readonly pluginId: string;
   /** Leveled, plugin-scoped logger. */

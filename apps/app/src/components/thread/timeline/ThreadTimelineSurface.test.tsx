@@ -10,7 +10,8 @@ import { conversationRow } from "@/test/fixtures/thread-timeline-rows";
 import { ThreadTimelineSurface } from "./ThreadTimelineSurface";
 import { createInertScrollPositionKeeper } from "@/test/scroll-position-keeper";
 
-vi.mock("@/hooks/queries/system-queries", () => ({
+vi.mock("@/hooks/queries/system-queries", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/hooks/queries/system-queries")>()),
   useSystemConfig: () => ({ data: undefined }),
 }));
 
@@ -51,7 +52,6 @@ describe("ThreadTimelineSurface load-older control", () => {
       getScrollElement: () => scrollElement,
       isAtBottom: false,
       scrollElementIntoView: vi.fn(),
-      scrollElementIntoViewClampedToMaxScroll: vi.fn(),
       captureScrollAnchor: vi.fn(),
       scrollToBottom: vi.fn(),
     };
@@ -72,7 +72,7 @@ describe("ThreadTimelineSurface load-older control", () => {
           threadRuntimeDisplayStatus="idle"
           timelineError={false}
           timelineRows={[]}
-          workspaceRootPath={undefined}
+
           threadIsActive={false}
         />
       </BottomAnchorContext.Provider>
@@ -104,7 +104,6 @@ describe("ThreadTimelineSurface catch-up indicator", () => {
     threadRuntimeDisplayStatus: "idle" as const,
     timelineError: false,
     timelineRows: [],
-    workspaceRootPath: undefined,
   };
 
   it("never shows loading for a catch-up that finishes within one second", async () => {
@@ -197,7 +196,6 @@ describe("ThreadTimelineSurface working indicator", () => {
     threadId: "running",
     threadRuntimeDisplayStatus: "active" as const,
     timelineError: false,
-    workspaceRootPath: undefined,
   };
   const loadedRows = [
     conversationRow({ id: "request", role: "user", seq: 1, text: "Go" }),

@@ -677,6 +677,7 @@ describe("the requested queue drain", () => {
       const queued = queueInputForStartingTurn(harness.deps, {
         claimed: null,
         input: {
+          deliveryMode: "steer",
           execution,
           executionInputSources: undefined,
           input: textInput("turn starting child send"),
@@ -1973,9 +1974,11 @@ describe("requesting a drain", () => {
         vi.useRealTimers();
       }
 
-      for (const thread of threads) {
-        expect(listQueuedThreadMessages(harness.db, thread.id)).toEqual([]);
-      }
+      await vi.waitFor(() => {
+        for (const thread of threads) {
+          expect(listQueuedThreadMessages(harness.db, thread.id)).toEqual([]);
+        }
+      });
     });
   });
 

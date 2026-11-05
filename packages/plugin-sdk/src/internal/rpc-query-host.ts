@@ -3,7 +3,7 @@ import type {
   ExperimentalRpcKeyedValue,
 } from "../rpc-contract.js";
 import { experimental_PluginRpcCallError } from "../rpc-contract.js";
-import { useCallback, useEffect, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import { useIsFetching, type QueryClient } from "@tanstack/react-query";
 import {
   invalidateTags,
@@ -19,7 +19,11 @@ import {
   useTaggedMutation,
   useQuerySelection,
 } from "@bb/query-tags";
-import { jsonValueSchema, type JsonValue } from "@bb/domain";
+import {
+  canonicalPluginReadInput,
+  jsonValueSchema,
+  type JsonValue,
+} from "@bb/domain";
 import { rpcResponseTags } from "./rpc-tags.js";
 import { z } from "zod";
 import type {
@@ -30,10 +34,15 @@ import type {
 } from "../app-contract.js";
 
 export interface RpcQueryHost {
-  pluginId: string;
+  pluginId: string | null;
   queryClient: QueryClient;
   call(pluginId: string, method: string, input: JsonValue): Promise<unknown>;
   subscribe(pluginId: string): () => void;
+  watch?(
+    pluginId: string,
+    method: string,
+    read: { input: JsonValue } | { key: string },
+  ): () => void;
 }
 interface RpcResponse {
   result: JsonValue;
@@ -55,6 +64,8 @@ const rpcQueryKey = (pluginId: string, method: string, input: JsonValue) => [
 ];
 const keyedQueryKey = (pluginId: string, method: string) =>
   rpcQueryKey(pluginId, method, { keyed: true });
+const keyListSchema = z.array(z.string());
+const jsonRecordSchema = z.record(z.string(), jsonValueSchema);
 const keyedCollections = new Map<string, KeyedCollection<unknown>>();
 function keyedCollection(pluginId: string, method: string) {
   const name = JSON.stringify([pluginId, method]);
@@ -130,6 +141,19 @@ async function callRpc(
   };
 }
 
+function resolvePluginId(
+  host: RpcQueryHost,
+  pluginId: string | undefined,
+): string {
+  const resolved = pluginId ?? host.pluginId;
+  if (resolved === null) {
+    throw new Error(
+      "plugin RPC hooks outside a plugin slot component need an explicit pluginId",
+    );
+  }
+  return resolved;
+}
+
 const tagsOf = (data: RpcResponse) => [
   ...data.tags,
   ...Object.values(data.keyTags).flat(),
@@ -153,10 +177,17 @@ export function createRpcQueryHooks(useHost: () => RpcQueryHost) {
     options,
   ) => {
     const host = useHost();
-    const pluginId = options.pluginId ?? host.pluginId;
+    const pluginId = resolvePluginId(host, options.pluginId);
     const input = jsonValueSchema.parse(options.input ?? null);
     const queryKey = rpcQueryKey(pluginId, options.method, input);
     useSubscription(host, pluginId, options.enabled ?? true);
+    const watchIdentity = canonicalPluginReadInput(input);
+    useEffect(() => {
+      if (options.enabled === false) return;
+      return host.watch?.(pluginId, options.method, {
+        input: jsonValueSchema.parse(JSON.parse(watchIdentity)),
+      });
+    }, [host, pluginId, options.method, watchIdentity, options.enabled]);
     const query = useTaggedQuery(
       {
         queryKey,
@@ -167,13 +198,7 @@ export function createRpcQueryHooks(useHost: () => RpcQueryHost) {
         }),
         queryFn: () =>
           runTaggedRead(host.queryClient, queryKey, async () =>
-            callRpc(
-              host,
-              pluginId,
-              options.contract,
-              options.method,
-              input,
-            ),
+            callRpc(host, pluginId, options.contract, options.method, input),
           ),
       },
       host.queryClient,
@@ -213,11 +238,11 @@ export function createRpcQueryHooks(useHost: () => RpcQueryHost) {
   > {
     type T = ExperimentalRpcKeyedValue<Contract[Method]>;
     const host = useHost();
-    const pluginId = options.pluginId ?? host.pluginId;
+    const pluginId = resolvePluginId(host, options.pluginId);
     const enabled = options.enabled ?? true;
     const identity = JSON.stringify([...new Set(options.keys)].sort());
     const keys = useMemo(
-      () => z.array(z.string()).parse(JSON.parse(identity)),
+      () => keyListSchema.parse(JSON.parse(identity)),
       [identity],
     );
     let cache = owners.get(host.queryClient);
@@ -243,9 +268,7 @@ export function createRpcQueryHooks(useHost: () => RpcQueryHost) {
           );
           return {
             ...response,
-            result: z
-              .record(z.string(), jsonValueSchema)
-              .parse(response.result),
+            result: jsonRecordSchema.parse(response.result),
           };
         },
       });
@@ -255,9 +278,7 @@ export function createRpcQueryHooks(useHost: () => RpcQueryHost) {
     useSubscription(host, pluginId, enabled && keys.length > 0);
     const subscribe = useCallback(
       (listener: () => void) =>
-        enabled && keys.length > 0
-          ? current.subscribe(keys, listener)
-          : () => {},
+        current.subscribe(enabled ? keys : [], listener),
       [current, keys, enabled],
     );
     const getSnapshot = useCallback(
@@ -292,12 +313,46 @@ export function createRpcQueryHooks(useHost: () => RpcQueryHost) {
       [keys, enabled, selectRows],
     );
     const query = useQuerySelection(subscribe, getSnapshot, select);
+    const watches = useMemo(
+      () => new Map<string, (() => void) | undefined>(),
+      [host, pluginId, options.method],
+    );
+    useEffect(
+      () => () => {
+        for (const release of watches.values()) release?.();
+        watches.clear();
+      },
+      [watches],
+    );
+    useEffect(() => {
+      const wanted = new Set(enabled ? keys : []);
+      for (const [key, release] of watches) {
+        if (wanted.has(key)) continue;
+        release?.();
+        watches.delete(key);
+      }
+      for (const key of wanted) {
+        if (!watches.has(key))
+          watches.set(key, host.watch?.(pluginId, options.method, { key }));
+      }
+    }, [host, pluginId, options.method, keys, enabled, watches]);
+    const heldKeys = useRef(keys);
+    useEffect(() => {
+      heldKeys.current = keys;
+    }, [keys]);
     const refetch = useCallback(async () => {
-      await current.observer.refetch();
+      await current.refresh(heldKeys.current);
     }, [current]);
+    const refetchKeys = useCallback(
+      async (requested: readonly string[]) => {
+        await current.refresh(requested.filter((key) => keys.includes(key)));
+      },
+      [current, keys],
+    );
     return {
       ...query,
       refetch,
+      refetchKeys,
     } as ExperimentalRpcKeyedQueryState<T, Selection>;
   }
   function experimental_useRpcMutation<
@@ -305,12 +360,13 @@ export function createRpcQueryHooks(useHost: () => RpcQueryHost) {
     Method extends keyof Contract & string = keyof Contract & string,
   >(options: ExperimentalRpcMutationOptions<Contract, Method>) {
     const host = useHost();
-    const pluginId = options.pluginId ?? host.pluginId;
+    const pluginId = resolvePluginId(host, options.pluginId);
     const mutation = useTaggedMutation<
       StandardSchemaV1InferInput<Contract[Method]["input"]>,
       PluginRpcResult<Contract[Method]>
     >({
       client: host.queryClient,
+      meta: { showErrorToast: false },
       invalidate: (tags) =>
         invalidateTags(host.queryClient, pluginTagScope(pluginId), tags),
       call: async (input) => {
@@ -363,19 +419,14 @@ export function createRpcQueryHooks(useHost: () => RpcQueryHost) {
   }
   function experimental_useRpcRefresh() {
     const host = useHost();
+    const pluginId = resolvePluginId(host, undefined);
     const isRefreshing =
-      useIsFetching(
-        { queryKey: ["plugin-rpc", host.pluginId] },
-        host.queryClient,
-      ) > 0;
+      useIsFetching({ queryKey: ["plugin-rpc", pluginId] }, host.queryClient) >
+      0;
     return {
       isRefreshing,
       refresh: () => {
-        void invalidateTags(
-          host.queryClient,
-          pluginTagScope(host.pluginId),
-          null,
-        );
+        void invalidateTags(host.queryClient, pluginTagScope(pluginId), null);
       },
     };
   }

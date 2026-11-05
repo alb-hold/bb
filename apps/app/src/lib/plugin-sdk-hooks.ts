@@ -1,5 +1,8 @@
 import { experimental_PluginRpcCallError } from "@get-bb/plugin-sdk";
-import { createRpcQueryHooks } from "@get-bb/plugin-sdk/internal/rpc-query-host";
+import {
+  createRpcQueryHooks,
+  type RpcQueryHost,
+} from "@get-bb/plugin-sdk/internal/rpc-query-host";
 import { subscribeComposerSubmitted } from "./composer-submissions";
 import {
   useCallback,
@@ -10,7 +13,11 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  useQuery,
+  useQueryClient,
+  type QueryClient,
+} from "@tanstack/react-query";
 import type {
   BbContext,
   ComposerView,
@@ -24,13 +31,14 @@ import type {
   PluginEnvironmentProvidersState,
   PluginProvidersState,
   PluginSettingsState,
-  ExperimentalAppPanel,
+  ExperimentalPanelController,
+  ExperimentalPanelTabs,
   ExperimentalFixedTabTargetState,
   ExperimentalPluginFixedTabReference,
   JsonValue,
 } from "@get-bb/plugin-sdk";
-import { jsonValueSchema } from "@bb/domain";
 import {
+  PluginContext,
   PluginSlotOwnershipContext,
   usePluginId,
 } from "@/components/plugin/plugin-context";
@@ -69,6 +77,11 @@ import { wsManager } from "@/lib/ws";
 import { pluginSdkSettingsQueryKey } from "@/hooks/queries/query-keys";
 import { useAppNavigationHost } from "@/lib/app-navigation-host";
 import {
+  createPluginPanelController,
+  withRetiredAppPanelMembers,
+} from "@/lib/plugin-panel-controller";
+import {
+  getThreadFixedTabOwnerId,
   getPluginFixedTabOwnerId,
   useAppFixedTabTarget,
 } from "@/lib/app-fixed-tab-navigation";
@@ -76,6 +89,7 @@ export {
   isAutomationEditRoutePath,
   useSdk,
   useBbNavigate,
+  usePluginCanOpenFileExternally,
 } from "./plugin-navigation-hooks";
 type FetchLike = (
   input: string,
@@ -321,39 +335,30 @@ export function useBbContext(): BbContext {
   );
 }
 
-
-function useExperimentalAppPanel(): ExperimentalAppPanel {
+function useExperimentalAppPanel(): ExperimentalPanelController {
   const pluginId = usePluginId();
-  const appNavigation = useAppNavigationHost();
-  const openFixedTab = useCallback<ExperimentalAppPanel["openFixedTab"]>(
-    (options) => {
-      const targetResult =
-        options.target === undefined
-          ? null
-          : jsonValueSchema.safeParse(options.target);
-      if (targetResult !== null && !targetResult.success) return false;
-      return appNavigation.openFixedTab({
-        surface: options.surface,
-        tab: {
-          ownerId: getPluginFixedTabOwnerId(pluginId, options.tab.panelId),
-          tabId: options.tab.id,
-        },
-        ...(targetResult?.success === true
-          ? { target: targetResult.data }
-          : {}),
-      });
-    },
-    [appNavigation, pluginId],
+  const { panel } = useAppNavigationHost();
+  return useMemo(
+    () =>
+      withRetiredAppPanelMembers(
+        createPluginPanelController(pluginId, () => panel),
+      ),
+    [panel, pluginId],
   );
-  return useMemo(() => ({ openFixedTab }), [openFixedTab]);
 }
 
 function useExperimentalFixedTabTarget<Target extends JsonValue>(
-  tab: ExperimentalPluginFixedTabReference<Target>,
+  tab:
+    | import("@get-bb/plugin-sdk").ExperimentalTabTargetReference<Target>
+    | ExperimentalPluginFixedTabReference<Target>,
 ): ExperimentalFixedTabTargetState<Target> | null {
   const pluginId = usePluginId();
   const state = useAppFixedTabTarget(
-    getPluginFixedTabOwnerId(pluginId, tab.panelId),
+    !("context" in tab)
+      ? getPluginFixedTabOwnerId(pluginId, tab.panelId)
+      : tab.context.kind === "thread"
+        ? getThreadFixedTabOwnerId(pluginId)
+        : getPluginFixedTabOwnerId(pluginId, tab.context.panelId),
     tab.id,
   );
   if (state === null || tab.experimental_target === undefined) return null;
@@ -369,9 +374,19 @@ function useExperimentalFixedTabTarget<Target extends JsonValue>(
   };
 }
 
+function useExperimentalPanelTabs(): ExperimentalPanelTabs {
+  const { panel } = useAppNavigationHost();
+  return useSyncExternalStore(
+    panel.subscribeTabs,
+    panel.getTabs,
+    panel.getTabs,
+  );
+}
+
 export {
   useExperimentalAppPanel as experimental_useAppPanel,
   useExperimentalFixedTabTarget as experimental_useFixedTabTarget,
+  useExperimentalPanelTabs as experimental_usePanelTabs,
 };
 
 function createComposerScopeOwnership(scopeKey: string) {
@@ -779,29 +794,51 @@ export function useComposers(): readonly PluginComposerApi[] {
   );
 }
 
+const rpcQueryHosts = new WeakMap<
+  QueryClient,
+  Map<string | null, RpcQueryHost>
+>();
+
+function rpcQueryHostFor(
+  pluginId: string | null,
+  queryClient: QueryClient,
+): RpcQueryHost {
+  let hosts = rpcQueryHosts.get(queryClient);
+  if (hosts === undefined) {
+    hosts = new Map();
+    rpcQueryHosts.set(queryClient, hosts);
+  }
+  const cached = hosts.get(pluginId);
+  if (cached !== undefined) return cached;
+  const host: RpcQueryHost = {
+    pluginId,
+    queryClient,
+    call: (id, method, input) => callPluginRpc(fetch, id, method, input),
+    watch: (id, method, read) => {
+      const target = {
+        kind: "plugin-read",
+        pluginId: id,
+        method,
+        read,
+      } as const;
+      wsManager.subscribe(target);
+      return () => wsManager.unsubscribe(target);
+    },
+    subscribe: (id) => {
+      const target = { kind: "plugin", pluginId: id } as const;
+      wsManager.subscribe(target);
+      return () => wsManager.unsubscribe(target);
+    },
+  };
+  hosts.set(pluginId, host);
+  return host;
+}
+
 export const {
   experimental_useRpcQuery,
   experimental_useRpcKeyedQuery,
   experimental_useRpcMutation,
   experimental_useRpcRefresh,
-} = createRpcQueryHooks(() => {
-  const pluginId = usePluginId();
-  const queryClient = useQueryClient();
-  return useMemo(
-    () => ({
-      pluginId,
-      queryClient,
-      call: (
-        id: string,
-        method: string,
-        input: import("@bb/domain").JsonValue,
-      ) => callPluginRpc(fetch, id, method, input),
-      subscribe: (id: string) => {
-        const target = { kind: "plugin", pluginId: id } as const;
-        wsManager.subscribe(target);
-        return () => wsManager.unsubscribe(target);
-      },
-    }),
-    [pluginId, queryClient],
-  );
-});
+} = createRpcQueryHooks(() =>
+  rpcQueryHostFor(useContext(PluginContext), useQueryClient()),
+);

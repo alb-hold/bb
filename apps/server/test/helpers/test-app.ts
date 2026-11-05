@@ -18,6 +18,7 @@ import {
 import { defaultFeatureFlags } from "@bb/domain";
 import { createMigratedConnection } from "@bb/db/testing";
 import { createApp } from "../../src/server.js";
+import type { ActiveThreadEventPruneRuntimeOptions } from "../../src/services/system/event-pruning.js";
 import { PendingInteractionLifecycle } from "../../src/services/interactions/pending-interactions.js";
 import { createMachineAuthService } from "../../src/services/machine-auth.js";
 import { createProviderRegistryService } from "../../src/services/providers/provider-registry.js";
@@ -28,6 +29,7 @@ import { buildPluginProviderRegistration } from "../../src/services/providers/pl
 import { SkillTreeRegistry } from "../../src/services/skills/injected-skills.js";
 import { PluginHostArtifactRegistry } from "../../src/services/plugins/plugin-host-artifact-registry.js";
 import { createProviderNativeRootsCache } from "../../src/services/providers/native-roots.js";
+import { createProviderLiveCommandsCache } from "../../src/services/providers/provider-live-commands.js";
 import { createAiServiceRegistry } from "../../src/services/ai/ai-service-registry.js";
 import {
   createAppUpdateService,
@@ -46,11 +48,12 @@ import { createNoopTelemetryService } from "../../src/services/system/telemetry.
 import { TerminalSessionLifecycle } from "../../src/services/terminals/terminal-session-lifecycle.js";
 import { createLifecycleDedupers } from "../../src/lifecycle-dedupers.js";
 import type { ServerAppDeps, ServerRuntimeConfig } from "../../src/types.js";
-import type { NotificationHub } from "../../src/ws/hub.js";
-import { NotificationHub as NotificationHubImpl } from "../../src/ws/hub.js";
+import {
+  type NotificationHub,
+  NotificationHub as NotificationHubImpl,
+} from "../../src/ws/hub.js";
 import { WatchInterestCoordinator } from "../../src/ws/watch-interests.js";
 import { HostSharedPortCoordinator } from "../../src/ws/host-shared-ports.js";
-import { WorkspaceReadCaches } from "../../src/services/environments/workspace-read-cache.js";
 import {
   PluginToolCallRegistry,
   setPluginToolCallRegistry,
@@ -79,7 +82,7 @@ export interface RunningTestServer extends TestAppHarness {
 
 export async function installTestBuiltinPlugin(
   harness: Pick<TestAppHarness, "pluginService">,
-  name: "keep-awake",
+  name: "keep-awake" | "git",
 ): Promise<void> {
   const entry = await harness.pluginService.install(`builtin:${name}`, {
     kind: "root",
@@ -100,6 +103,8 @@ export type TestAppHarnessConfigOverrides = Partial<ServerRuntimeConfig> & {
   terminalCloseTimeoutMs?: number;
   terminalOpenTimeoutMs?: number;
   nativeRootsClock?: () => number;
+  activeThreadPruneRuntime?: ActiveThreadEventPruneRuntimeOptions;
+  liveCommandsClock?: () => number;
   seedFirstPartyProviders?: boolean;
   tunnelIngressNow?: () => number;
   extraProviders?: readonly {
@@ -167,6 +172,8 @@ export async function createTestAppHarness(
     terminalCloseTimeoutMs,
     terminalOpenTimeoutMs = TEST_TERMINAL_RPC_TIMEOUT_MS,
     nativeRootsClock,
+    activeThreadPruneRuntime,
+    liveCommandsClock,
     seedFirstPartyProviders = true,
     tunnelIngressNow: _tunnelIngressNow,
     ...configOverrides
@@ -181,7 +188,6 @@ export async function createTestAppHarness(
   const hub = new NotificationHubImpl();
   const watchInterests = new WatchInterestCoordinator({ db, hub });
   const sharedPorts = new HostSharedPortCoordinator({ db, hub });
-  const workspaceReadCaches = new WorkspaceReadCaches({ hub });
   const providerRegistry = createProviderRegistryService({
     readUserProviderPreferences: () => {
       const settings = getAppSettings(db);
@@ -334,16 +340,22 @@ export async function createTestAppHarness(
     providerRegistry,
     pluginHostArtifacts,
     providerNativeRoots,
+    providerLiveCommands: createProviderLiveCommandsCache(
+      liveCommandsClock === undefined ? {} : { now: liveCommandsClock },
+    ),
     aiServices,
     skillTreeRegistry,
     telemetry,
     terminalSessions,
     watchInterests,
     sharedPorts,
-    workspaceReadCaches,
   };
-  const { app, pluginCatalogService, pluginService, serverMove } =
-    createApp(deps);
+  const { app, pluginCatalogService, pluginService, serverMove } = createApp(
+    deps,
+    activeThreadPruneRuntime === undefined
+      ? undefined
+      : { activeThreadPruneRuntime },
+  );
   installDefaultEnvironmentProviders();
 
   return {
@@ -412,9 +424,17 @@ export async function startTestServer(
     tunnelIngress,
   } = createApp(
     harness.deps,
-    overrides.tunnelIngressNow === undefined
+    overrides.activeThreadPruneRuntime === undefined &&
+      overrides.tunnelIngressNow === undefined
       ? undefined
-      : { tunnelIngressNow: overrides.tunnelIngressNow },
+      : {
+          ...(overrides.activeThreadPruneRuntime === undefined
+            ? {}
+            : { activeThreadPruneRuntime: overrides.activeThreadPruneRuntime }),
+          ...(overrides.tunnelIngressNow === undefined
+            ? {}
+            : { tunnelIngressNow: overrides.tunnelIngressNow }),
+        },
   );
   const server = serve(
     {

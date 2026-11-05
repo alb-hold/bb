@@ -1,5 +1,8 @@
 import { prepareCachedQuery } from "../connection.js";
-import { markThreadPruningPolicyWork } from "./thread-pruning-work.js";
+import {
+  markEveryThreadPruningPolicyWork,
+  markThreadPruningPolicyWork,
+} from "./thread-pruning-work.js";
 import { copyProjectAttachmentOwnership } from "./project-attachments.js";
 import {
   and,
@@ -32,6 +35,7 @@ import type {
 } from "@bb/domain";
 import {
   evaluateThreadLifecycleEvent,
+  effectiveDisplayStatus,
   threadSearchSourceKindSchema,
 } from "@bb/domain";
 import type { DbConnection, DbTransaction } from "../connection.js";
@@ -42,6 +46,7 @@ import {
   pendingInteractions,
   projects,
   terminalSessions,
+  forkNativeTerminalThreads,
   threadSearchSegments,
   threads,
 } from "../schema.js";
@@ -50,6 +55,7 @@ import { NON_TERMINAL_SESSION_STATUSES } from "./terminal-sessions.js";
 import { bumpThreadEventOwnershipEpoch } from "./event-rewrite-generation.js";
 import { createOrderKeyBetween } from "./order-keys.js";
 import { insertThreadPluginMetadata } from "./thread-plugin-metadata.js";
+import type { ThreadListEnrichmentScope } from "../thread-list-enrichment-scope.js";
 
 type ThreadWriteConnection = DbConnection | DbTransaction;
 
@@ -705,16 +711,19 @@ function statusTransitionNeedsAttention(args: StatusTransition): boolean {
   return args.currentStatus === "active" || args.currentStatus === "starting";
 }
 
-function buildListThreadsFilters(options: ListThreadsOptions) {
+function buildListThreadsFilters(
+  options: ListThreadsOptions,
+  threadIdsFilter = options.threadIds === undefined
+    ? undefined
+    : inArray(threads.id, [...options.threadIds]),
+) {
   return [
     options.projectId ? eq(threads.projectId, options.projectId) : undefined,
     options.environmentId
       ? eq(threads.environmentId, options.environmentId)
       : undefined,
     options.hostId ? eq(environments.hostId, options.hostId) : undefined,
-    options.threadIds === undefined
-      ? undefined
-      : inArray(threads.id, [...options.threadIds]),
+    threadIdsFilter,
     options.sectionId ? eq(threads.sectionId, options.sectionId) : undefined,
     options.unsectioned ? isNull(threads.sectionId) : undefined,
     nonDeletedThreads(),
@@ -742,11 +751,44 @@ function buildListThreadsFilters(options: ListThreadsOptions) {
   ].filter((value) => value !== undefined);
 }
 
+export function buildThreadListEnrichmentScope(
+  db: DbConnection,
+  options: ListThreadsOptions,
+): ThreadListEnrichmentScope {
+  let query = db
+    .select({ id: threads.id })
+    .from(threads)
+    .$dynamic();
+  if (options.hostId) {
+    query = query.leftJoin(
+      environments,
+      eq(threads.environmentId, environments.id),
+    );
+  }
+  query = query.where(
+    and(
+      ...buildListThreadsFilters(
+        options,
+        options.threadIds === undefined
+          ? undefined
+          : sql`${threads.id} IN (SELECT value FROM json_each(${JSON.stringify(options.threadIds)}))`,
+      ),
+    ),
+  );
+  if (options.limit !== undefined || options.offset !== undefined) {
+    query = query.orderBy(...buildListThreadsOrderBy(options));
+  }
+  if (options.limit !== undefined) query = query.limit(options.limit);
+  if (options.offset !== undefined) query = query.offset(options.offset);
+  return { kind: "query", ids: sql`${query}` };
+}
+
 function buildListThreadsForProjectsFilters(
   options: ListThreadsForProjectsOptions,
+  projectIdsFilter = inArray(threads.projectId, [...options.projectIds]),
 ) {
   return [
-    inArray(threads.projectId, [...options.projectIds]),
+    projectIdsFilter,
     eq(threads.visibility, "visible"),
     nonDeletedThreads(),
     options.archived === true
@@ -755,6 +797,34 @@ function buildListThreadsForProjectsFilters(
         ? isNull(threads.archivedAt)
         : undefined,
   ].filter((value) => value !== undefined);
+}
+
+export function buildProjectThreadListEnrichmentScope(
+  db: DbConnection,
+  options: ListThreadsForProjectsOptions,
+): ThreadListEnrichmentScope {
+  const query = db
+    .select({ id: threads.id })
+    .from(threads)
+    .where(
+      and(
+        ...buildListThreadsForProjectsFilters(
+          options,
+          sql`${threads.projectId} IN (SELECT value FROM json_each(${JSON.stringify(options.projectIds)}))`,
+        ),
+      ),
+    );
+  return { kind: "query", ids: sql`${query}` };
+}
+
+export function buildPinnedRootThreadListEnrichmentScope(
+  db: DbConnection,
+): ThreadListEnrichmentScope {
+  const query = db
+    .select({ id: threads.id })
+    .from(threads)
+    .where(liveThreads(pinnedThreadWhere()));
+  return { kind: "query", ids: sql`${query}` };
 }
 
 function buildActiveProjectThreadOrderBy() {
@@ -1264,6 +1334,16 @@ export function countThreads(
 ): CountThreadsResult {
   const needsEnvironmentJoin =
     options.hostId !== undefined || options.groupBy === "host";
+  const cleanExit = sql`EXISTS (
+    SELECT 1 FROM ${forkNativeTerminalThreads}
+    WHERE ${forkNativeTerminalThreads.threadId} = ${threads.id}
+      AND ${forkNativeTerminalThreads.providerId} = ${threads.providerId}
+      AND ${forkNativeTerminalThreads.lostIdleTerminalSessionId} IS NOT NULL
+      AND ${forkNativeTerminalThreads.lostIdleTerminalSessionId} = ${forkNativeTerminalThreads.terminalSessionId}
+  )`;
+  const displayStatus = sql`CASE WHEN ${threads.status} = 'error' AND ${cleanExit}
+    THEN ${effectiveDisplayStatus({ status: "error" }, { nativeSessionExit: "clean" })}
+    ELSE ${threads.status} END`;
   const filters = [
     nonDeletedThreads(),
     options.includeArchived === true ? undefined : isNull(threads.archivedAt),
@@ -1271,7 +1351,9 @@ export function countThreads(
       ? undefined
       : eq(threads.visibility, "visible"),
     options.status !== undefined
-      ? eq(threads.status, options.status)
+      ? (options.status === "idle" || options.status === "error"
+        ? eq(displayStatus, options.status)
+        : eq(threads.status, options.status))
       : undefined,
     options.providerId !== undefined
       ? eq(threads.providerId, options.providerId)
@@ -2146,8 +2228,19 @@ function lifecycleThreadTreeIdsForThread(threadId: string): SQL {
   return lifecycleThreadTreeIds(sql`SELECT ${threadId}`);
 }
 
-export function lifecycleThreadTreeIdsForProject(projectId: string): SQL {
-  return lifecycleThreadTreeIds(
+function deletionThreadTreeIds(seed: SQL): SQL {
+  return sql`(WITH RECURSIVE descendants(id) AS (
+    ${seed} UNION SELECT t.id FROM threads t JOIN descendants
+      ON t.lifecycle_owner_thread_id = descendants.id OR t.parent_thread_id = descendants.id
+  ) SELECT id FROM descendants)`;
+}
+
+function deletionThreadTreeIdsForThread(threadId: string): SQL {
+  return deletionThreadTreeIds(sql`SELECT ${threadId}`);
+}
+
+export function deletionThreadTreeIdsForProject(projectId: string): SQL {
+  return deletionThreadTreeIds(
     sql`SELECT id FROM threads WHERE project_id = ${projectId}`,
   );
 }
@@ -2163,11 +2256,11 @@ export function listLifecycleThreadDependents(
     .all();
 }
 
-export function listLifecycleThreadTree(db: DbQueryConnection, id: string) {
+export function listThreadDeletionTree(db: DbQueryConnection, id: string) {
   return db
     .select()
     .from(threads)
-    .where(inArray(threads.id, lifecycleThreadTreeIdsForThread(id)))
+    .where(inArray(threads.id, deletionThreadTreeIdsForThread(id)))
     .all();
 }
 
@@ -2184,7 +2277,7 @@ export function markThreadDeleted(
     })
     .where(
       and(
-        inArray(threads.id, lifecycleThreadTreeIdsForThread(args.threadId)),
+        inArray(threads.id, deletionThreadTreeIdsForThread(args.threadId)),
         isNull(threads.deletedAt),
       ),
     )
@@ -2235,10 +2328,9 @@ export function archiveThread(
       )
       .returning()
       .all();
-    markThreadPruningPolicyWork(
+    markEveryThreadPruningPolicyWork(
       tx,
       archived.map((thread) => thread.id),
-      "rate-limits",
     );
     return archived;
   });
@@ -2349,6 +2441,9 @@ export function applyThreadLifecycleEventInTransaction(
     };
   }
 
+  if (args.event.type === "run.failed") {
+    db.run(sql`UPDATE fork_native_terminal_threads SET lost_idle_terminal_session_id = NULL WHERE thread_id = ${args.threadId}`);
+  }
   const evaluation = evaluateThreadLifecycleEvent({
     event: args.event,
     thread,
@@ -2366,10 +2461,7 @@ export function applyThreadLifecycleEventInTransaction(
     status: evaluation.to,
     updatedAt: now,
   };
-  if (
-    evaluation.to === "active" ||
-    (evaluation.to === "idle" && thread.environmentId !== null)
-  ) {
+  if (evaluation.to === "idle" && thread.environmentId !== null) {
     set.startupContext = null;
   }
   if (
@@ -2396,6 +2488,15 @@ export function applyThreadLifecycleEventInTransaction(
       detail: `status changed from ${thread.status} while applying ${args.event.type}`,
       reason: "cas-conflict",
     };
+  }
+  if (args.event.type === "session.lost" && thread.status === "idle") {
+    db.run(sql`UPDATE fork_native_terminal_threads
+      SET lost_idle_terminal_session_id = (
+        SELECT id FROM terminal_sessions WHERE id = fork_native_terminal_threads.terminal_session_id
+          AND status = 'exited' AND close_reason = 'process-exit' AND exit_code = 0
+      ) WHERE thread_id = ${args.threadId}`);
+  } else {
+    db.run(sql`UPDATE fork_native_terminal_threads SET lost_idle_terminal_session_id = NULL WHERE thread_id = ${args.threadId}`);
   }
   return { applied: true, thread: updated };
 }
