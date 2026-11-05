@@ -2003,6 +2003,50 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
     expect(testState.sockets).toHaveLength(socketsBefore + 1);
   });
 
+  it("claims the terminal on the first key without remeasuring its grid on later keys", async () => {
+    prepareMobileTerminal();
+    stubVisibleIntersectionObserver();
+    testState.screen.mockResolvedValue(null);
+    const session = renderMobileTerminal();
+    await waitForReadinessCondition(
+      () => expect(testState.sockets).toHaveLength(1),
+      "terminal socket did not mount",
+    );
+    const socket = testState.sockets[0];
+    if (!socket) throw new Error("terminal socket is missing");
+    await waitForReadiness(socket.opened, "terminal socket did not open");
+    socket.receive({
+      type: "attached",
+      session,
+      replayStartSeq: 0,
+      nextSeq: 0,
+    });
+    const textarea = document.querySelector<HTMLTextAreaElement>(
+      ".xterm-helper-textarea",
+    );
+    if (!textarea) throw new Error("terminal input did not mount");
+    textarea.focus();
+    const bounds = vi.mocked(HTMLElement.prototype.getBoundingClientRect);
+    const key = () =>
+      fireEvent.keyDown(textarea, {
+        key: "ArrowLeft",
+        code: "ArrowLeft",
+        keyCode: 37,
+        which: 37,
+      });
+    bounds.mockClear();
+    key();
+    expect(bounds.mock.calls.length).toBeGreaterThan(0);
+    bounds.mockClear();
+    for (let i = 0; i < 40; i += 1) key();
+    expect(bounds).not.toHaveBeenCalled();
+    expect(
+      socket.sent
+        .map((message) => JSON.parse(message))
+        .filter((message) => message.type === "input"),
+    ).toHaveLength(41);
+  });
+
   it("backs off instead of spinning when the retried replay also stalls", async () => {
     shortenReplayHoldTimeout(600);
     let notifyRetry = () => {};

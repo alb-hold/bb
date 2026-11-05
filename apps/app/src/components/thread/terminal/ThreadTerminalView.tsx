@@ -3207,9 +3207,11 @@ export function ThreadTerminalView({
         onFilesDrop: (files) => handleFileDropRef.current?.(files),
       });
       terminalKeyDisposable = activeTerminal.onKey(() => {
-        terminalInputClaimed = true;
+        if (!terminalInputClaimed) {
+          terminalInputClaimed = true;
+          updateGridVisibility();
+        }
         clearAttentionOnInputRef.current();
-        updateGridVisibility();
       });
       terminalInputForwarding = attachTerminalInputForwarding({
         onData: (data, isUserInput) => {
