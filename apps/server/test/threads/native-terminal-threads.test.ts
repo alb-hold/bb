@@ -64,6 +64,7 @@ import { internalAuthHeaders } from "../helpers/commands.js";
 import { createProviderRegistryService } from "../../src/services/providers/provider-registry.js";
 import { createTestProviderRegistry } from "../helpers/provider-registry.js";
 import { recordNativeTerminalActivity } from "../../src/services/threads/native-terminal-activity.js";
+import { getLastThreadOutput } from "../../src/services/threads/thread-data.js";
 import { ApiError } from "../../src/errors.js";
 import { onDaemonSocketOpen } from "../../src/ws/daemon-protocol.js";
 import { resolvePendingThreadSessionOptions } from "../../src/services/threads/thread-session-options.js";
@@ -533,6 +534,27 @@ function startRecordedCli(
 }
 
 describe("native terminal threads", () => {
+  it("persists final assistant text received through native activity", async () => {
+    const fixture = await createFixture();
+    const { open, thread } = await openRunningNativeThread(fixture, {
+      providerId: "claude-code",
+      prompt: "answer the test prompt",
+    });
+    const credential = open.contributedEnv.find(
+      (entry) => entry.name === NATIVE_TOOL_CREDENTIAL_ENV,
+    )?.value;
+    recordNativeTerminalActivity(fixture.harness.deps, {
+      authorization: `Bearer ${credential}`,
+      confirms: true,
+      lastAssistantText: "persisted native final reply",
+      state: "working",
+      threadId: thread.id,
+    });
+    expect(getLastThreadOutput(fixture.harness.db, thread.id)).toBe(
+      "persisted native final reply",
+    );
+  });
+
   it("adopts a holder-backed shell after the server reloads its database", async () => {
     const fixture = await createFixture();
     const creating = postJson(fixture, "/terminals", {
