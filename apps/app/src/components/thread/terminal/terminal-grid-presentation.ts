@@ -149,16 +149,18 @@ export function terminalSurfacePresentation({
   fontSize,
   isOwner,
   running,
+  minimumFontSize = 12,
 }: {
   grid: TerminalGrid;
   fitGrid: TerminalGrid | null;
   fontSize: number;
   isOwner: boolean;
   running: boolean;
+  minimumFontSize?: number;
 }): { scale: number; panHorizontally: boolean; showFitControl: boolean } {
   const fittedScale =
     fitGrid === null ? 1 : terminalSurfaceScale(grid, fitGrid);
-  const scale = Math.max(fittedScale, Math.min(1, 12 / fontSize));
+  const scale = Math.max(fittedScale, Math.min(1, minimumFontSize / fontSize));
   const panHorizontally = scale > fittedScale;
   return {
     scale,

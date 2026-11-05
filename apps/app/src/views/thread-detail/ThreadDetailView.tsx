@@ -1833,6 +1833,7 @@ function ThreadDetailViewInternal(
       thread={threadActionTarget}
       threadTitle={threadTitle}
       needsInput={thread.nativeTerminal && thread.hasPendingInteraction}
+      hasNativeTerminal={nativeTerminalThread != null}
       checkTerminal={nativeTerminalThread?.terminal?.attention != null}
       contextCardButton={<ThreadContextCardHeaderButton />}
       workspaceOpenButton={workspaceOpenButton}

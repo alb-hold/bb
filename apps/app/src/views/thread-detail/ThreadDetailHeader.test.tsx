@@ -235,6 +235,20 @@ beforeEach(() => {
 });
 
 describe("ThreadDetailHeader", () => {
+  it("puts native terminal search in the thread header", () => {
+    const { container, rerender } = render(
+      <PaneContext.Provider value={PANE_CONTEXT}>
+        <ThreadDetailHeader actionsMenu={null} isSecondaryPanelOpen={false} onToggleSecondaryPanel={vi.fn()} thread={THREAD_TARGET} threadTitle="Terminal" hasNativeTerminal />
+      </PaneContext.Provider>,
+    );
+    expect(container.querySelector('header button[aria-label="Search terminal output"]')).not.toBeNull();
+    rerender(
+      <PaneContext.Provider value={PANE_CONTEXT}>
+        <ThreadDetailHeader actionsMenu={null} isSecondaryPanelOpen={false} onToggleSecondaryPanel={vi.fn()} thread={THREAD_TARGET} threadTitle="Chat" />
+      </PaneContext.Provider>,
+    );
+    expect(screen.queryByRole("button", { name: "Search terminal output" })).toBeNull();
+  });
   it.each([true, false])(
     "shows native pending input in the header: %s",
     (needsInput) => {

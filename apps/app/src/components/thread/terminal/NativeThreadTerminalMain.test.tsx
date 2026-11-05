@@ -135,7 +135,7 @@ afterEach(() => {
 });
 
 describe("NativeThreadTerminalMain", () => {
-  it("shows one honest banner for a plain signal and clears it on a session update", () => {
+  it("keeps the terminal layout unchanged when attention clears", () => {
     const terminal = {
       id: "term-live",
       status: "running",
@@ -157,15 +157,16 @@ describe("NativeThreadTerminalMain", () => {
     const { container, rerender } = render(
       <NativeThreadTerminalMain {...props} />,
     );
-    expect(screen.getByRole("status").textContent).toBe("Check terminal");
+    const layoutWithAttention = container.innerHTML;
+    expect(screen.queryByText("Check terminal")).toBeNull();
     expect(container.querySelector(".ring-attention")).toBeNull();
-    expect(screen.getByRole("status").querySelector("svg")).not.toBeNull();
     expect(
       screen.getByTestId("terminal-panel").getAttribute("data-attention-banner"),
     ).toBe("true");
     terminal.attention = null;
     rerender(<NativeThreadTerminalMain {...props} />);
     expect(screen.queryByText("Check terminal")).toBeNull();
+    expect(container.innerHTML).toBe(layoutWithAttention);
   });
   it("does not guess execution labels while its profile is unresolved", () => {
     hooks.profile.mockReturnValue({ data: null });

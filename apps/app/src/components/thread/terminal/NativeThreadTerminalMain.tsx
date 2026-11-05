@@ -8,7 +8,6 @@ import { threadDefaultExecutionOptionsQueryKey } from "@/hooks/queries/query-key
 import { useEffect, useState, type FocusEvent } from "react";
 import { isRunningThreadRuntimeDisplayStatus } from "@bb/client-core";
 import { Button } from "@bb/shared-ui/button";
-import { Icon } from "@bb/shared-ui/icon";
 import { useMediaQuery } from "@bb/shared-ui/hooks/use-media-query";
 import type { NativeTerminalThread } from "@bb/server-contract";
 import type { ThreadRuntimeState } from "@bb/domain";
@@ -160,23 +159,12 @@ export function NativeThreadTerminalMain({
         data-no-sidebar-swipe=""
         onFocus={onFocusWithin}
       >
-        {setupWaiting || session?.attention ? (
+        {setupWaiting ? (
           <div
             role="status"
-            className={`flex shrink-0 items-center gap-1.5 px-3 py-1 text-xs ${session?.attention ? "text-attention" : "text-muted-foreground"}`}
+            className="flex shrink-0 items-center gap-1.5 px-3 py-1 text-xs text-muted-foreground"
           >
-            {session?.attention ? (
-              <>
-                <Icon
-                  name="BellDot"
-                  className="size-3.5 shrink-0"
-                  aria-hidden="true"
-                />
-                Check terminal
-              </>
-            ) : (
-              `${providerLabel} hasn't started a session yet`
-            )}
+            {`${providerLabel} hasn't started a session yet`}
           </div>
         ) : null}
         <NativeTerminalWaitingBanner

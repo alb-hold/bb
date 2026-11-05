@@ -162,7 +162,9 @@ describe("NativeTerminalPromptBar", () => {
     expect(input.classList.contains("text-base")).toBe(true);
     expect(input.classList.contains("md:text-sm")).toBe(true);
     expect(input.classList.contains("placeholder:text-sm")).toBe(true);
-    expect(input.classList.contains("min-h-8")).toBe(true);
+    expect(input.classList.contains("min-h-7")).toBe(true);
+    expect(form.classList.contains("pt-1")).toBe(true);
+    expect(sendButton.classList.contains("pointer-coarse:size-11")).toBe(true);
     expect(
       screen.getByRole("button", { name: "Attach image" }).querySelector("svg"),
     ).not.toBeNull();

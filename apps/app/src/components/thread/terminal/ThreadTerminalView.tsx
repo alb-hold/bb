@@ -1293,8 +1293,8 @@ export function ThreadTerminalView({
   const [textSnapshotInitialLine, setTextSnapshotInitialLine] = useState<
     number | null
   >(null);
-  const [terminalFontSize, setTerminalFontSize] = useState(12);
-  const terminalFontSizeRef = useRef(12);
+  const [terminalFontSize, setTerminalFontSize] = useState(() => getMediaQuerySnapshot(COMPACT_VIEWPORT_QUERY) ? 13 : 12);
+  const terminalFontSizeRef = useRef(terminalFontSize);
   const longPressGestureRef = useRef<{
     cancel: () => void;
     move: (touches: readonly TerminalGestureTouch[]) => void;
@@ -1805,7 +1805,7 @@ export function ThreadTerminalView({
     const terminalFontOptions = {
       fontFamily: readTerminalFontFamily(),
       fontSize: Math.max(12, terminalFontSizeRef.current),
-      lineHeight: 1,
+      lineHeight: 1.12,
     };
     let retainedOutputReplayed = sessionStatusRef.current !== "exited";
     let retainedOutputGrid: TerminalGridSize | null = null;
@@ -1962,6 +1962,7 @@ export function ThreadTerminalView({
           fitGrid: localFitGrid,
           fontSize: terminalFontSizeRef.current,
           isOwner: ownsTerminal,
+          minimumFontSize: getMediaQuerySnapshot(COMPACT_VIEWPORT_QUERY) ? 13 : 12,
           running: sessionStatusRef.current === "running",
         });
         setShowFitControl(presentation.showFitControl);
@@ -3485,7 +3486,7 @@ export function ThreadTerminalView({
           <TerminalAttentionPane
             attention={session.attention}
             bannerOnly={attentionShownAsBanner}
-            className={`group/terminal-pane relative min-h-0 w-full flex-1 overflow-hidden bg-sidebar p-2 ${isTouchDevice ? (showFitControl || (retainNativeOutput && session.status === "exited") ? "touch-pan-x touch-pan-y" : "touch-pan-y") : ""}`}
+            className={`group/terminal-pane relative min-h-0 w-full flex-1 overflow-hidden bg-sidebar px-2 pt-2 ${isTouchDevice ? (showFitControl || (retainNativeOutput && session.status === "exited") ? "touch-pan-x touch-pan-y" : "touch-pan-y") : ""}`}
             onContextMenuCapture={captureTerminalContextMenu}
             onTouchStart={(event) => {
               stopRetainedHistoryTouchPropagation(event);
@@ -3534,6 +3535,7 @@ export function ThreadTerminalView({
               addon={terminalSearchAddon}
               terminal={terminalRef.current}
               touch={isTouchDevice}
+              hideTrigger={attentionShownAsBanner}
               open={terminalSearchOpen}
               onOpenChange={setTerminalSearchOpen}
             />
