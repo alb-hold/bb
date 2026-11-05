@@ -159,7 +159,9 @@ describe("NativeTerminalPromptBar", () => {
     const form = input.closest("form")!;
     expect(form.className).toContain("max-w-[var(--bb-content-measure,760px)]");
     expect(form.className).toContain("mx-auto");
-    expect(input.classList.contains("text-sm")).toBe(true);
+    expect(input.classList.contains("text-base")).toBe(true);
+    expect(input.classList.contains("md:text-sm")).toBe(true);
+    expect(input.classList.contains("placeholder:text-sm")).toBe(true);
     expect(input.classList.contains("min-h-8")).toBe(true);
     expect(
       screen.getByRole("button", { name: "Attach image" }).querySelector("svg"),

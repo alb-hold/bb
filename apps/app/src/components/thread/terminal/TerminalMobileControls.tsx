@@ -207,6 +207,16 @@ export function TerminalMobileControls({
             <Key {...keyProps} label="Escape" onPress={() => onInput("\x1b")}>
               Esc
             </Key>
+            <Key {...keyProps} label="Arrow up" onPress={() => onArrow("up")}>
+              <Icon name="ArrowUp" className="size-4" />
+            </Key>
+            <Key
+              {...keyProps}
+              label="Arrow down"
+              onPress={() => onArrow("down")}
+            >
+              <Icon name="ArrowDown" className="size-4" />
+            </Key>
             {searchAvailable ? (
               <Key
                 {...readOnlyKeyProps}
@@ -235,16 +245,6 @@ export function TerminalMobileControls({
                 onPress={() => onArrow("left")}
               >
                 <Icon name="ArrowLeft" className="size-4" />
-              </Key>
-              <Key
-                {...keyProps}
-                label="Arrow down"
-                onPress={() => onArrow("down")}
-              >
-                <Icon name="ArrowDown" className="size-4" />
-              </Key>
-              <Key {...keyProps} label="Arrow up" onPress={() => onArrow("up")}>
-                <Icon name="ArrowUp" className="size-4" />
               </Key>
               <Key
                 {...keyProps}

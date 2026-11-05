@@ -23,6 +23,35 @@ describe("native setup cue", () => {
       }),
     ).toBe(true);
   });
+  it("rearms twelve seconds after the latest input, unless the session binds", () => {
+    const afterInput = { ...terminal, lastUserInputAt: 20000 };
+    for (const [now, expected] of [
+      [31999, false],
+      [32000, true],
+    ] as const) {
+      expect(
+        nativeTerminalMayNeedSetup({
+          nativeSessionId: null,
+          terminal: afterInput,
+          now,
+        }),
+      ).toBe(expected);
+      expect(
+        nativeTerminalMayNeedSetup({
+          nativeSessionId: "bound",
+          terminal: afterInput,
+          now,
+        }),
+      ).toBe(false);
+    }
+    expect(
+      nativeTerminalMayNeedSetup({
+        nativeSessionId: null,
+        terminal: { ...terminal, lastUserInputAt: 500 },
+        now: 12999,
+      }),
+    ).toBe(false);
+  });
   it("clears on input or binding, and excludes absent and ended terminals", () => {
     for (const args of [
       { nativeSessionId: "bound", terminal },

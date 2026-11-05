@@ -42,6 +42,8 @@ import {
   TERMINAL_RETAINED_OUTPUT_BYTES,
 } from "@bb/db";
 import {
+  NATIVE_TERMINAL_SETUP_DELAY_MS,
+  nativeTerminalMayNeedSetup,
   findLastTerminalGridMarker,
   TERMINAL_DATA_MAX_BYTES,
   TERMINAL_GRID_OSC_PREFIX,
@@ -1977,12 +1979,9 @@ export class TerminalSessionLifecycle {
       );
     }
 
-    const markedInput =
-      current.lastUserInputAt === null
-        ? updateTerminalById(this.options.db, current.id, {
-            kind: "user-input",
-          })
-        : null;
+    const markedInput = updateTerminalById(this.options.db, current.id, {
+      kind: "user-input",
+    });
     const session = markedInput ?? current;
     if (markedInput) {
       this.notifyTerminalSessionChanged(markedInput);
@@ -2541,6 +2540,8 @@ export class TerminalSessionLifecycle {
       clearTimeout(pending.timer);
     }
     this.pendingHolderOutput.clear();
+    for (const timer of this.setupCueTimers.values()) clearTimeout(timer);
+    this.setupCueTimers.clear();
     this.terminalScreenStates.dispose();
   }
 
@@ -3133,12 +3134,9 @@ export class TerminalSessionLifecycle {
     if (current?.status !== "running") {
       return;
     }
-    const markedInput =
-      current.lastUserInputAt === null
-        ? updateTerminalById(this.options.db, current.id, {
-            kind: "user-input",
-          })
-        : null;
+    const markedInput = updateTerminalById(this.options.db, current.id, {
+      kind: "user-input",
+    });
     if (markedInput) {
       this.notifyTerminalSessionChanged(markedInput);
       this.options.hub.sendTerminalClientMessage(markedInput.id, {
@@ -4043,12 +4041,9 @@ export class TerminalSessionLifecycle {
       Date.now(),
     );
     this.applySharedTerminalSize(args);
-    const markedInput =
-      current.lastUserInputAt === null
-        ? updateTerminalById(this.options.db, current.id, {
-            kind: "user-input",
-          })
-        : null;
+    const markedInput = updateTerminalById(this.options.db, current.id, {
+      kind: "user-input",
+    });
     if (markedInput) {
       const session = this.toTerminalSession(markedInput);
       this.notifyTerminalSessionChanged(markedInput);
@@ -4935,7 +4930,54 @@ export class TerminalSessionLifecycle {
     this.exitListeners.add(listener);
   }
 
+  private readonly setupCueTimers = new Map<
+    string,
+    ReturnType<typeof setTimeout>
+  >();
+
   private notifyTerminalSessionChanged(session: TerminalSessionRow): void {
+    const previous = this.setupCueTimers.get(session.id);
+    if (previous) clearTimeout(previous);
+    this.setupCueTimers.delete(session.id);
+    if (
+      session.status === "running" &&
+      session.threadId !== null &&
+      session.lastUserInputAt !== null
+    ) {
+      const threadId = session.threadId;
+      const native = getNativeTerminalThread(this.options.db, threadId);
+      if (
+        native?.terminalSessionId === session.id &&
+        native.nativeSessionId === null
+      ) {
+        const timer = setTimeout(
+          () => {
+            this.setupCueTimers.delete(session.id);
+            const current = getNativeTerminalThread(this.options.db, threadId);
+            if (current?.terminalSessionId !== session.id) return;
+            if (
+              nativeTerminalMayNeedSetup({
+                nativeSessionId: current.nativeSessionId,
+                terminal: getTerminalById(this.options.db, session.id),
+                now: Date.now(),
+              })
+            )
+              this.options.hub.notifyThread(threadId, [
+                "terminals-changed",
+                "status-changed",
+              ]);
+          },
+          Math.max(
+            0,
+            Math.max(session.createdAt, session.lastUserInputAt) +
+              NATIVE_TERMINAL_SETUP_DELAY_MS -
+              Date.now(),
+          ),
+        );
+        timer.unref();
+        this.setupCueTimers.set(session.id, timer);
+      }
+    }
     if (session.threadId !== null) {
       this.options.hub.notifyThread(session.threadId, [
         "terminals-changed",

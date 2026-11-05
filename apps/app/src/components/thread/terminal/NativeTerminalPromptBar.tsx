@@ -601,7 +601,7 @@ export function NativeTerminalPromptBar({
           }}
           onKeyDown={onKeyDown}
           onPaste={onPaste}
-          className="max-h-48 min-h-8 w-full resize-none bg-transparent px-2 py-1 text-sm text-foreground field-sizing-content placeholder:text-muted-foreground focus-visible:outline-none"
+          className="max-h-48 min-h-8 w-full resize-none bg-transparent px-2 py-1 text-base md:text-sm text-foreground field-sizing-content placeholder:text-sm placeholder:text-muted-foreground focus-visible:outline-none"
         />
         <AssistStrip
           suggestions={assist.suggestions}

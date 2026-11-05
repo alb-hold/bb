@@ -39,7 +39,9 @@ describe("TerminalMobileControls", () => {
     });
     const buttons = Array.from(controls.querySelectorAll("button"));
 
-    expect(buttons.length).toBeGreaterThan(0);
+    expect(
+      buttons.slice(0, 3).map((button) => button.getAttribute("aria-label")),
+    ).toEqual(["Escape", "Arrow up", "Arrow down"]);
     expect(buttons[0]?.parentElement?.className.split(/\s+/u)).toEqual(
       expect.arrayContaining(["flex-nowrap", "overflow-x-auto"]),
     );
