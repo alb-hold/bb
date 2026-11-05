@@ -5,6 +5,7 @@ import {
   useContext,
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -14,6 +15,7 @@ import {
   type ReactNode,
 } from "react";
 import { useComposedRefs } from "@radix-ui/react-compose-refs";
+import { useStickyRowStateReport } from "../ui/stickyOffset.js";
 import { useAtomValue } from "jotai";
 import { Icon } from "@/components/ui/icon";
 import { useIsCompactViewport } from "@/components/ui/hooks/use-compact-viewport";
@@ -789,6 +791,28 @@ function ThreadRowComponent({
   const hasRowState =
     rowState !== null &&
     (Object.keys(rowState.statuses).length > 0 || rowProgress !== null);
+  const reportRowStateHeight = useStickyRowStateReport();
+  const rowStateRef = useRef<HTMLDivElement>(null);
+  const reportsRowState =
+    hasRowState && parentOptions?.stickyLevel !== undefined;
+  useLayoutEffect(() => {
+    const element =
+      rowStateRef.current?.closest<HTMLElement>("[data-sidebar-rename-row]") ??
+      null;
+    if (!reportsRowState || element === null || reportRowStateHeight === null) {
+      return;
+    }
+    const report = () =>
+      reportRowStateHeight(element.getBoundingClientRect().height);
+    report();
+    const observer =
+      typeof ResizeObserver === "undefined" ? null : new ResizeObserver(report);
+    observer?.observe(element);
+    return () => {
+      observer?.disconnect();
+      reportRowStateHeight(0);
+    };
+  }, [reportsRowState, reportRowStateHeight]);
   const rowFirstLineHeightClass = options.isCompact
     ? ROW_STATE_COMPACT_ROW_HEIGHT_CLASS
     : ROW_STATE_ROW_HEIGHT_CLASS;
@@ -811,7 +835,8 @@ function ThreadRowComponent({
       : options.isCompact
         ? COARSE_POINTER_COMPACT_ROW_HEIGHT_CLASS
         : COARSE_POINTER_ROW_HEIGHT_CLASS,
-    showRowMetadata &&
+    (showRowMetadata ||
+      (hasRowState && parentOptions?.stickyLevel !== undefined)) &&
       "h-auto min-h-[var(--bb-sidebar-row-height)] max-md:pointer-coarse:h-auto max-md:pointer-coarse:min-h-[var(--bb-sidebar-row-height-coarse)]",
     showActive
       ? SIDEBAR_ROW_SELECTED_STATE_CLASS
@@ -1186,6 +1211,7 @@ function ThreadRowComponent({
       </span>
       {rowState !== null && hasRowState ? (
         <div
+          ref={rowStateRef}
           data-sidebar-thread-row-state=""
           className="pointer-events-none relative z-[1] flex w-full min-w-0 basis-full flex-col gap-1 pl-6 pr-2 pb-1"
         >

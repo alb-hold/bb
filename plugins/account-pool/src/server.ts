@@ -32,6 +32,7 @@ import {
   ThreadTokenStore,
   type ThreadLookup,
 } from "./thread-tokens.js";
+import { ActorRouteIssuer } from "./actor-routes.js";
 import {
   AVAILABILITY_PATH,
   PARENT_TOKEN_ENV,
@@ -410,6 +411,13 @@ export function createAccountPoolPlugin(
         ),
       maxAffinityBindings: options.maxAffinityBindings,
       getParentRoute: proxyingParent,
+      onActorRequest: ({ provider, hostId, threadId, actorId }) => {
+        routing
+          .recordActorRouted({ provider, hostId, threadId, actorId })
+          .catch(() =>
+            bb.log.warn("Account Pooler could not record an actor route."),
+          );
+      },
       onUpstreamError: (provider, error) =>
         bb.log.warn(
           `Account Pooler ${provider} transport failed: ${transportErrorCode(error)}.`,
@@ -600,7 +608,6 @@ export function createAccountPoolPlugin(
       createBindingReadRpcHandlers(operations),
       { experimental_discoverable: true },
     );
-    registerPoolCli(bb, operations, login, codexLogin, config);
     const canServe = async (provider: PoolProvider): Promise<boolean> => {
       if (!(await operations.isRoutingEnabled(provider))) return false;
       if (proxyingParent() !== null && availability !== null) {
@@ -608,6 +615,95 @@ export function createAccountPoolPlugin(
       }
       return operations.hasUsableEnabledAccount(provider);
     };
+    const subscriptionCacheEntries = async (): Promise<PoolEnvEntry[]> =>
+      proxyingParent() === null &&
+      (await operations.routesOnlyApiKeys("claude"))
+        ? []
+        : [
+            {
+              name: "ENABLE_PROMPT_CACHING_1H",
+              value: "1",
+              reason:
+                "Claude Code uses a 5-minute prompt cache behind a custom base URL; subscription accounts get the 1-hour cache Claude Code uses for a direct subscription login",
+            },
+          ];
+    const claudePolicyEntries = async (): Promise<PoolEnvEntry[]> => [
+      {
+        name: "ENABLE_TOOL_SEARCH",
+        value: "true",
+        reason:
+          "Claude Code turns tool search off behind a custom base URL; the hub forwards tool_reference blocks",
+      },
+      {
+        name: "_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL",
+        value: "1",
+        reason:
+          "Claude Code limits Opus to a 200k context window behind a custom base URL; the hub forwards to Anthropic's API",
+      },
+      ...(await subscriptionCacheEntries()),
+    ];
+    const actorRoutes = new ActorRouteIssuer({
+      threadTokens,
+      hubTokens,
+      getThread: async (threadId) => {
+        try {
+          const thread = await bb.sdk.threads.get({
+            threadId,
+            include: "environment",
+          });
+          const hostId =
+            "environment" in thread ? thread.environment?.hostId : undefined;
+          return {
+            archived: thread.archivedAt !== null || thread.deletedAt !== null,
+            hostId: typeof hostId === "string" && hostId !== "" ? hostId : null,
+          };
+        } catch (error) {
+          if (isThreadNotFound(error)) return null;
+          throw error;
+        }
+      },
+      enrolledHostIds: async () =>
+        (await bb.sdk.hosts.list()).map((host) => host.id),
+      isBypassed: (threadId) => routing.isBypassed(threadId),
+      resolveAccountId: async (threadId, provider) =>
+        proxyingParent() === null
+          ? await routing.selectedAccount(threadId, provider)
+          : null,
+      canServe,
+      launchEnv: async (provider) =>
+        provider === "claude"
+          ? (await claudePolicyEntries()).flatMap((entry) =>
+              typeof entry.value === "string"
+                ? [{ name: entry.name, value: entry.value }]
+                : [],
+            )
+          : [],
+      hubUrl: () =>
+        `${bb.server.loopbackBaseUrl.replace(/\/+$/u, "")}${HUB_BASE_PATH}`,
+      lastRoutedAt: (route) =>
+        routing.actorLastRoutedAt({
+          threadId: route.threadId,
+          actorId: route.actorId,
+          provider: route.provider,
+        }),
+      forgetRouted: (actorId, threadId) =>
+        routing.removeActorRouted({
+          actorId,
+          ...(threadId === null ? {} : { threadId }),
+        }),
+      recordRouted: async (threadId, hostId, provider) => {
+        if (provider === "claude") await routing.recordRouted(threadId, hostId);
+      },
+      onIssued: (route, rotated) =>
+        bb.log.info(
+          `Account Pooler ${rotated ? "rotated" : "issued"} ${route.provider} route for thread ${route.threadId} actor ${route.actorId}.`,
+        ),
+      onRevoked: (actorId, threadId, count) =>
+        bb.log.info(
+          `Account Pooler revoked ${count} route${count === 1 ? "" : "s"} for actor ${actorId}${threadId === null ? "" : ` on thread ${threadId}`}.`,
+        ),
+    });
+    registerPoolCli(bb, operations, login, codexLogin, config, actorRoutes);
     const markerEntries = (token: string): PoolEnvEntry[] => [
       {
         name: PARENT_URL_ENV,
@@ -770,18 +866,6 @@ export function createAccountPoolPlugin(
         await bb.storage.kv.delete(`retry-route:${context.threadId}`);
         return unrouted();
       };
-    const subscriptionCacheEntries = async (): Promise<PoolEnvEntry[]> =>
-      proxyingParent() === null &&
-      (await operations.routesOnlyApiKeys("claude"))
-        ? []
-        : [
-            {
-              name: "ENABLE_PROMPT_CACHING_1H",
-              value: "1",
-              reason:
-                "Claude Code uses a 5-minute prompt cache behind a custom base URL; subscription accounts get the 1-hour cache Claude Code uses for a direct subscription login",
-            },
-          ];
     const isServingHealthily = async (
       provider: PoolProvider,
     ): Promise<boolean> => {
@@ -833,19 +917,7 @@ export function createAccountPoolPlugin(
             reason:
               "Claude Code otherwise refreshes this machine's own Claude login while routed, which can spend its single-use refresh token and sign it out",
           },
-          {
-            name: "ENABLE_TOOL_SEARCH",
-            value: "true",
-            reason:
-              "Claude Code turns tool search off behind a custom base URL; the hub forwards tool_reference blocks",
-          },
-          {
-            name: "_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL",
-            value: "1",
-            reason:
-              "Claude Code limits Opus to a 200k context window behind a custom base URL; the hub forwards to Anthropic's API",
-          },
-          ...(await subscriptionCacheEntries()),
+          ...(await claudePolicyEntries()),
           ...(proxy === null
             ? hasConfiguredParentPool
               ? ARTIFACT_PROXY_ENV.map((name) => ({

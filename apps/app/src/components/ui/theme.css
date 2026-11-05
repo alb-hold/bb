@@ -439,7 +439,8 @@
     --bb-sidebar-sticky-tier-top: calc(
       var(--bb-sidebar-sticky-parent-base-top) +
         var(--bb-sidebar-sticky-parent-level, 0) *
-        var(--bb-sidebar-sticky-parent-stride)
+        var(--bb-sidebar-sticky-parent-stride) +
+        var(--bb-sidebar-sticky-parent-offset, 0px)
     );
     --bb-sidebar-sticky-tier-height: var(--bb-sidebar-sticky-row-height);
     /* Shallower ancestors win the overlap, so z-index descends with depth. */
