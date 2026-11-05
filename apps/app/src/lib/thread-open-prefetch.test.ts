@@ -32,16 +32,15 @@ vi.mock("@/hooks/queries/thread-queries", () => ({
     ...options,
   }),
 }));
-vi.mock("@/components/thread/terminal/terminal-modules", () => ({
-  preloadTerminalModules,
-}));
-vi.mock(
-  "@/components/thread/terminal/native-terminal-panel-preload",
-  async () => {
-    await panelReady;
-    return { preloadNativeTerminalPanel };
-  },
-);
+vi.mock("@/components/thread/terminal/native-terminal-warmup", async () => {
+  await panelReady;
+  return {
+    warmNativeTerminal: () => {
+      preloadTerminalModules();
+      void preloadNativeTerminalPanel();
+    },
+  };
+});
 
 afterEach(() => {
   appQueryClient.clear();
@@ -58,7 +57,10 @@ it("starts native discovery while bootstrap and terminal panel imports are pendi
     terminal: null,
   });
   prefetchThreadOpen("native");
-  await vi.waitFor(() => expect(preloadTerminalModules).toHaveBeenCalledOnce());
+  await vi.waitFor(() =>
+    expect(sdk.nativeTerminals.get).toHaveBeenCalledOnce(),
+  );
+  expect(preloadTerminalModules).not.toHaveBeenCalled();
   expect(sdk.nativeTerminals.get).toHaveBeenCalledOnce();
   expect(preloadNativeTerminalPanel).not.toHaveBeenCalled();
   expect(

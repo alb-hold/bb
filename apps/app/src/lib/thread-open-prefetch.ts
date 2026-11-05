@@ -17,19 +17,10 @@ export function prefetchThreadOpen(threadId: string): void {
       if (view !== null) {
         const terminalId =
           view.terminal?.status === "running" ? view.terminal.id : null;
-        if (terminalId)
-          void import("@/components/thread/terminal/terminal-screen-prefetch")
-            .then(({ prefetchTerminalScreen }) =>
-              prefetchTerminalScreen(terminalId, threadId),
-            )
-            .catch(() => undefined);
-        void import("@/components/thread/terminal/native-terminal-panel-preload")
-          .then(({ preloadNativeTerminalPanel }) =>
-            preloadNativeTerminalPanel(),
+        void import("@/components/thread/terminal/native-terminal-warmup")
+          .then(({ warmNativeTerminal }) =>
+            warmNativeTerminal(terminalId, threadId),
           )
-          .catch(() => undefined);
-        void import("@/components/thread/terminal/terminal-modules")
-          .then(({ preloadTerminalModules }) => preloadTerminalModules())
           .catch(() => undefined);
       }
       return view;
