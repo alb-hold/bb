@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useContext, useLayoutEffect, useRef } from "react";
 import { RootComposeHome } from "./RootComposeHome";
@@ -40,6 +40,54 @@ function renderCompactHome() {
 }
 
 describe("RootComposeHome", () => {
+  it.each([390, 360])(
+    "cues more recents below the scroll edge at %ipx and clears the cue at the end",
+    (width) => {
+      vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(
+        width,
+      );
+      vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(
+        function (this: HTMLElement) {
+          return this.dataset.testid === "root-compose-compact-composer"
+            ? 236
+            : 844;
+        },
+      );
+      vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(
+        552,
+      );
+      vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockReturnValue(
+        900,
+      );
+      renderCompactHome();
+      const viewport = screen.getByTestId(
+        "root-compose-compact-scroll-viewport",
+      );
+      expect(viewport.style.top).toBe("56px");
+      expect(viewport.style.bottom).toBe("236px");
+      expect(
+        screen.queryByTestId("root-compose-compact-leading-spacer"),
+      ).toBeNull();
+      expect(viewport.style.maskImage).toContain("24px");
+      viewport.scrollTop = 348;
+      fireEvent.scroll(viewport);
+      expect(viewport.style.maskImage).toBe("");
+      viewport.scrollTop = 0;
+      fireEvent.scroll(viewport);
+      expect(viewport.style.maskImage).toContain("24px");
+    },
+  );
+
+  it("leaves a short recents list unmasked", () => {
+    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(552);
+    vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockReturnValue(552);
+    renderCompactHome();
+    expect(
+      screen.getByTestId("root-compose-compact-scroll-viewport").style
+        .maskImage,
+    ).toBe("");
+  });
+
   it("centres the desktop composer without pinning tall content offscreen", () => {
     render(
       <RootComposeHome

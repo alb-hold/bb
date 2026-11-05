@@ -38,6 +38,13 @@ function useCompactHomeMetrics(isCompact: boolean) {
     if (!region || !composer || !scrollViewport || !scrollContent) {
       return;
     }
+    const updateScrollCue = () => {
+      scrollViewport.style.maskImage =
+        scrollViewport.scrollTop + scrollViewport.clientHeight <
+        scrollViewport.scrollHeight - 1
+          ? "linear-gradient(to bottom, var(--ink) calc(100% - 24px), transparent)"
+          : "";
+    };
     const measure = () => {
       const composerRoot = composerRootWithin(composer);
       if (composerRoot) {
@@ -51,14 +58,23 @@ function useCompactHomeMetrics(isCompact: boolean) {
       }
       const composerHeight = composer.offsetHeight;
       scrollViewport.style.bottom = `${composerHeight}px`;
+      updateScrollCue();
     };
     measure();
-    if (typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(measure);
-    observer.observe(region);
-    observer.observe(composer);
-    observer.observe(scrollContent);
-    return () => observer.disconnect();
+    scrollViewport.addEventListener("scroll", updateScrollCue, {
+      passive: true,
+    });
+    const observer =
+      typeof ResizeObserver === "undefined"
+        ? null
+        : new ResizeObserver(measure);
+    observer?.observe(region);
+    observer?.observe(composer);
+    observer?.observe(scrollContent);
+    return () => {
+      observer?.disconnect();
+      scrollViewport.removeEventListener("scroll", updateScrollCue);
+    };
   }, [isCompact]);
 
   return {
