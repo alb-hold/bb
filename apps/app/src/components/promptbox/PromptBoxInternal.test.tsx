@@ -40,6 +40,7 @@ import {
   useState,
   type ComponentType,
   type ComponentProps,
+  type ReactNode,
   type RefObject,
 } from "react";
 import {
@@ -64,7 +65,7 @@ import {
   clearLocalAttachmentPreviews,
   registerLocalAttachmentPreview,
 } from "@/lib/attachment-local-previews";
-import { registerComposerPlugin } from "@/test/fixtures/composer-plugin";
+import { composerPluginModule, registerComposerPlugin } from "@/test/fixtures/composer-plugin";
 import { ComposerTestProviders } from "@/test/fixtures/composer-test-providers";
 import { ThreadTitleMentionResourcesProvider } from "@/components/thread/ThreadTitleMentions";
 import { ThreadContextWindowIndicator } from "@/components/thread/timeline/ThreadContextWindowIndicator";
@@ -73,7 +74,7 @@ import {
   promptInputToDraft,
   type PromptDraftState,
 } from "@bb/client-core";
-import type { ComposerSubmitOptions } from "@get-bb/plugin-sdk/app";
+import type { ComposerSubmitOptions, ExperimentalComposerInput } from "@get-bb/plugin-sdk/app";
 import { createCoreComposerActions } from "@/lib/plugin-composer-handle";
 import {
   getComposerInputLock,
@@ -727,8 +728,11 @@ beforeEach(async () => {
 });
 
 describe("suppressPromptEditorAnchorActivation", () => {
-  it("keeps editor props stable while publishing typed drafts", async () => {
+  it("commits once per typed draft while keeping editor props stable", async () => {
     const changed = vi.fn();
+    const module = await composerPluginModule<{ PromptBoxInternal: (props: ExperimentalComposerInput) => ReactNode }>("PromptBoxInternal.tsx");
+    const renderedInner = vi.spyOn(module, "PromptBoxInternal");
+    onTestFinished(() => renderedInner.mockRestore());
     function TypingComposer() {
       const [value, setValue] = useState("Draft");
       return (
@@ -749,10 +753,12 @@ describe("suppressPromptEditorAnchorActivation", () => {
     if (!editor) throw new Error("Editor was not mounted");
     const editorProps = editor.options.editorProps;
     for (const text of ["a", "b", "c"]) {
+      renderedInner.mockClear();
       await act(async () => {
         editor.commands.insertContent(text);
       });
       expect(editor.options.editorProps).toBe(editorProps);
+      expect(renderedInner).toHaveBeenCalledTimes(1);
     }
     expect(editor.getText()).toContain("abc");
     expect(changed).toHaveBeenLastCalledWith(editor.getText());
