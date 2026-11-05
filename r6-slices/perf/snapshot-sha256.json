@@ -1,8 +1,0 @@
-{
-  "r6-slices/perf/raw/broad-300.heapsnapshot": "0889eb0c62028e1fa80f1a0f8f400a876fe6e363fe1a38b9dc9c2f8a8e7c420e",
-  "r6-slices/perf/raw/broad-0.heapsnapshot": "f634fc08e1b4d841cb5fed09a486171221713c6aa58e4cdd634129f8ccc1c266",
-  "r6-slices/perf/raw/broad-150.heapsnapshot": "9e6e6d6253fbb0fd8449ec55d933560f555f89412cccabcd5dbcd94f2bee9d33",
-  "r6-slices/perf/final-soak/raw/broad-300.heapsnapshot": "0d79cc6e0f142882b8153cef81ee9ac15b42fd057227646dcc53fc648202bcfd",
-  "r6-slices/perf/final-soak/raw/broad-0.heapsnapshot": "204f4a0d8b34f6209c37f8556386b6e26850bb1482f0e7d0f9b32f8dd6f167d1",
-  "r6-slices/perf/final-soak/raw/broad-150.heapsnapshot": "7358ffbba5940d5cebc9681c430ac13377376196ee827368cc80984cf0a06b74"
-}

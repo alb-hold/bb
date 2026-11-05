@@ -1,7 +1,0 @@
-{
-  "ok": true,
-  "operation": "claim_e2e_complete",
-  "reasoning_effort_observed": "high",
-  "reasoning_invariant": true,
-  "failures": []
-}
