@@ -4,6 +4,8 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PermissionModePicker } from "./PermissionModePicker";
 
+const originalWidth = window.innerWidth;
+
 const permissionOptions = [
   { value: "accept-edits", label: "Accept Edits" },
   { value: "auto", label: "Approve for me" },
@@ -12,6 +14,7 @@ const permissionOptions = [
 
 afterEach(() => {
   cleanup();
+  window.innerWidth = originalWidth;
   vi.clearAllMocks();
 });
 
