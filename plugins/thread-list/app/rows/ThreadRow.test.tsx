@@ -41,7 +41,7 @@ import {
   type TestThreadActionsResolver,
   type TestThreadBulkActionsResolver,
 } from "@get-bb/plugin-sdk/testing/app";
-import { NO_COLLAPSED_CHILD_ACTIVITY } from "../model/thread-activity.js";
+import { NO_COLLAPSED_CHILD_ACTIVITY, getCollapsedChildActivity } from "../model/thread-activity.js";
 import {
   threadListPullRequestRpcContract,
   type ThreadListPullRequest,
@@ -2050,6 +2050,14 @@ describe("ThreadRow", () => {
     expect(screen.getByRole("img", { name: "Check terminal" })).toBeTruthy();
     expect(screen.getByText("Check terminal")).toBeTruthy();
     expect(screen.queryByText("Needs input")).toBeNull();
+  });
+
+  it.each([false, true])("shows a collapsed child's signal, with real questions first: %s", (withQuestion) => {
+    const children = [createThread({ id: "signal", indicator: "check-terminal", hasPendingInteraction: false })];
+    if (withQuestion) children.push(createThread({ id: "question", hasPendingInteraction: true }));
+    renderThreadRow({ thread: createThread({ lastReadAt: 1, latestAttentionAt: 1 }), options: { kind: "parent", depth: 1, isCompact: false, isCollapsed: true, childCount: children.length, childActivity: getCollapsedChildActivity(children), onToggleCollapsed: vi.fn() } });
+    expect(renderedIndicators()).toEqual([withQuestion ? "needs-input" : "check-terminal"]);
+    expect(screen.getByRole("img", { name: withQuestion ? "Needs input" : "Check terminal" })).toBeTruthy();
   });
 
   it("shows the needs-input indicator when the thread needs user input", () => {

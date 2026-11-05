@@ -518,6 +518,12 @@ describe("thread-activity", () => {
   });
 
   describe("getCollapsedChildActivity", () => {
+    it("keeps child terminal attention separate from real questions", () => {
+      const signal = makeChild({ indicator: "check-terminal", hasPendingInteraction: false });
+      expect(getCollapsedChildActivity([signal])).toMatchObject({ terminalAttention: true, pending: false });
+      expect(getCollapsedChildActivity([signal, pendingChild])).toMatchObject({ terminalAttention: true, pending: true });
+      expect(getCollapsedChildActivity([])).toMatchObject({ terminalAttention: false, pending: false });
+    });
     it("lists every aggregated thread for per-row draft lookups", () => {
       expect(
         getCollapsedChildActivity([busyChild, pendingChild]),

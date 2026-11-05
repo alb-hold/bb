@@ -307,6 +307,7 @@ export function CollapsedThreadStatusGlyph({
   const hasUnsubmittedDraft = useThreadsHaveDraft(activity.threadIds);
   const statusProps: ThreadListIndicatorState = {
     hasPendingInteraction: activity.pending,
+    hasTerminalAttention: activity.terminalAttention,
     hasUnsubmittedDraft,
     hasUnreadError: activity.unreadError,
     hasUnreadSuccess: activity.unread,
@@ -705,7 +706,8 @@ function ThreadRowComponent({
     hasHiddenChildren ? childActivity.threadIds : NO_THREAD_IDS,
   );
   const trailingIndicatorState: ThreadListIndicatorState = {
-    hasTerminalAttention: threadStatus.hasTerminalAttention,
+    hasTerminalAttention: threadStatus.hasTerminalAttention ||
+      (hasHiddenChildren && childActivity.terminalAttention),
     hasPendingInteraction:
       threadStatus.hasPendingInteraction ||
       (hasHiddenChildren && childActivity.pending),

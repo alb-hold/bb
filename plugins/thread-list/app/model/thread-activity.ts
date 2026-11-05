@@ -283,6 +283,7 @@ export function threadListIndicatorStateForThread(
 export interface CollapsedChildActivity {
   threadIds: readonly string[];
   pending: boolean;
+  terminalAttention: boolean;
   working: boolean;
   runtimeWorking: boolean;
   workflow: boolean;
@@ -297,6 +298,7 @@ export interface CollapsedChildActivity {
 export const NO_COLLAPSED_CHILD_ACTIVITY: CollapsedChildActivity = {
   threadIds: [],
   pending: false,
+  terminalAttention: false,
   working: false,
   runtimeWorking: false,
   workflow: false,
@@ -310,13 +312,14 @@ export const NO_COLLAPSED_CHILD_ACTIVITY: CollapsedChildActivity = {
 
 type ThreadActivityShape = ThreadStatusShape &
   ThreadRuntimeShape &
-  Pick<PluginSidebarThread, "id" | "activity" | "hasPendingInteraction">;
+  Pick<PluginSidebarThread, "id" | "activity" | "hasPendingInteraction" | "indicator">;
 
 export function getCollapsedChildActivity(
   threads: readonly ThreadActivityShape[],
 ): CollapsedChildActivity {
   const threadIds: string[] = [];
   let pending = false;
+  let terminalAttention = false;
   let working = false;
   let runtimeWorking = false;
   let workflow = false;
@@ -338,6 +341,7 @@ export function getCollapsedChildActivity(
     if (thread.hasPendingInteraction) {
       pending = true;
     }
+    if (thread.indicator === "check-terminal") terminalAttention = true;
     if (isBusyThread(thread)) working = true;
     if (isRuntimeBusyThread(thread)) runtimeWorking = true;
     if (hasActiveWorkflowActivity(thread)) workflow = true;
@@ -349,6 +353,7 @@ export function getCollapsedChildActivity(
   return {
     threadIds,
     pending,
+    terminalAttention,
     working,
     runtimeWorking,
     workflow,
