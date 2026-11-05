@@ -83,7 +83,10 @@ describe("ExecutionControls", () => {
     expect(wrappingRow?.classList.contains("min-w-0")).toBe(true);
     expect(wrappingRow?.classList.contains("max-w-full")).toBe(true);
     expect(chip.classList.contains("overflow-hidden")).toBe(true);
-    expect(wrappingRow?.classList.contains("max-md:flex-nowrap")).toBe(true);
+    expect(wrappingRow?.classList.contains("max-md:contents")).toBe(true);
+    expect(chip.classList.contains("max-md:row-start-1")).toBe(true);
+    expect(control.classList.contains("max-md:row-start-2")).toBe(true);
+    expect(control.classList.contains("max-md:col-start-2")).toBe(true);
     for (const name of ["Chat", "Terminal"]) {
       const choice = screen.getByRole("radio", { name });
       expect(choice.textContent).toBe(name);
@@ -91,7 +94,6 @@ describe("ExecutionControls", () => {
         choice.querySelector("span")?.classList.contains("max-md:hidden"),
       ).toBe(false);
     }
-    expect(wrappingRow?.classList.contains("max-md:flex-col")).toBe(true);
     expect(chip.textContent).toContain("1M");
   });
 
@@ -114,6 +116,10 @@ describe("ExecutionControls", () => {
       "Runs the provider's own CLI",
     );
     expect(terminal.className).toContain("max-md:h-11");
+    expect(terminal.className).toContain("max-md:before:inset-y-1.5");
+    expect(terminal.className).toContain(
+      "max-md:data-[state=on]:bg-transparent",
+    );
     expect(
       screen
         .getByRole("radiogroup", { name: "Run this thread in" })

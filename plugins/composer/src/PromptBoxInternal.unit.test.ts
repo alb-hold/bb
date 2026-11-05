@@ -8,10 +8,7 @@ import {
 } from "./PromptBoxInternal";
 
 it("gives the primary voice action the same round shape as submit", () => {
-  const source = readFileSync(
-    "src/PromptBoxInternal.tsx",
-    "utf8",
-  );
+  const source = readFileSync("src/PromptBoxInternal.tsx", "utf8");
   const primaryVoice = source.slice(
     source.indexOf(") : showVoiceAsPrimaryAction ? ("),
   );
@@ -148,4 +145,30 @@ describe("arePromptEditorValuesEqual", () => {
       ),
     ).toBe(true);
   });
+});
+
+it("owns the stacked action row through stable composer slots", () => {
+  const source = readFileSync("src/PromptBoxInternal.tsx", "utf8");
+  const css = readFileSync("src/composer.css", "utf8");
+  expect(source).toContain("data-promptbox-execution-layout=");
+  expect(source).toContain('surface === "new-thread" && executionControls');
+  for (const slot of [
+    "leading-actions",
+    "plus-control",
+    "execution-controls",
+    "trailing-actions",
+  ]) {
+    expect(source).toContain(`data-promptbox-${slot}=""`);
+  }
+  for (const [slot, column] of [
+    ["plus-control", "1"],
+    ["trailing-actions", "3"],
+  ]) {
+    const rule = css.match(
+      new RegExp(`\\[data-promptbox-${slot}\\]\\s*\\{([^}]+)`),
+    )?.[1];
+    expect(rule).toContain(`grid-column: ${column}`);
+    expect(rule).toContain("grid-row: 2");
+  }
+  expect(css).not.toContain('aria-label="Prompt actions"');
 });

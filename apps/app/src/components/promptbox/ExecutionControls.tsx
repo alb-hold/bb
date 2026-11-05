@@ -138,14 +138,16 @@ export const ExecutionControls = memo(function ExecutionControls({
 
   return (
     <div
-      data-execution-controls=""
-      className="flex min-w-0 max-w-full flex-wrap max-md:flex-nowrap max-md:flex-col max-md:items-start max-md:gap-y-0 items-center gap-x-1 gap-y-2"
+      className={cn(
+        "flex min-w-0 max-w-full flex-wrap items-center gap-x-1 gap-y-2",
+        nativeTerminal !== undefined && "max-md:contents",
+      )}
     >
       {pending ? (
         <div
           role="status"
           aria-label="Loading execution options"
-          className="flex h-6 w-52 min-w-0 max-w-full items-center px-2 max-md:h-11"
+          className="flex h-6 w-52 min-w-0 max-w-full items-center px-2 max-md:h-11 max-md:col-span-full max-md:row-start-1 max-md:justify-self-start"
         >
           <span aria-hidden className="h-3 w-full rounded-sm bg-state-hover" />
         </div>
@@ -179,7 +181,7 @@ export const ExecutionControls = memo(function ExecutionControls({
           agentSections={agentOptions?.sections}
           onAgentOptionChange={agentOptions?.onChange}
           muted
-          className="min-w-0 overflow-hidden"
+          className="min-w-0 overflow-hidden max-md:col-span-full max-md:row-start-1 max-md:justify-self-start"
           disabled={disabled}
           handoff={handoff}
         />
@@ -196,7 +198,7 @@ export const ExecutionControls = memo(function ExecutionControls({
             }
           }}
           disabled={disabled}
-          className="h-7 shrink-0 gap-0.5 rounded-md p-0.5 max-md:h-auto"
+          className="h-7 shrink-0 gap-0.5 rounded-md p-0.5 max-md:h-auto max-md:col-start-2 max-md:row-start-2 max-md:justify-self-start"
         >
           {NATIVE_TERMINAL_CHOICES.map((choice) => (
             <ToggleGroupItem
@@ -207,12 +209,12 @@ export const ExecutionControls = memo(function ExecutionControls({
               aria-label={choice.label}
               className={cn(
                 "h-6 min-w-0 gap-1 whitespace-nowrap rounded-sm px-1.5 text-xs font-normal text-muted-foreground shadow-none hover:bg-state-hover hover:text-foreground data-[state=on]:bg-foreground data-[state=on]:text-background data-[state=on]:font-medium data-[state=on]:hover:bg-foreground",
-                "max-md:h-11 max-md:min-w-11 max-md:text-sm",
+                "relative max-md:h-11 max-md:min-w-11 max-md:text-sm max-md:data-[state=on]:bg-transparent max-md:data-[state=on]:text-foreground max-md:data-[state=on]:hover:bg-transparent max-md:before:absolute max-md:before:inset-x-0 max-md:before:inset-y-1.5 max-md:before:rounded-md max-md:data-[state=on]:before:bg-state-hover",
                 LIST_HOVER_TRANSITION,
               )}
             >
-              <Icon name={choice.icon} className="size-3.5" />
-              <span>{choice.label}</span>
+              <Icon name={choice.icon} className="relative size-3.5" />
+              <span className="relative">{choice.label}</span>
             </ToggleGroupItem>
           ))}
         </ToggleGroup>

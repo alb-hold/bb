@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { Provider, createStore, getDefaultStore } from "jotai";
+import { ExecutionControls } from "./ExecutionControls";
 import {
   COMPOSER_EDITOR_HEIGHT_STORAGE_KEY,
   composerEditorHeightAtom,
@@ -4729,6 +4730,65 @@ describe("ComposerBox compact layout", () => {
     } finally {
       window.matchMedia = originalMatchMedia;
     }
+  });
+
+  it("places the home model above the Plus, execution toggle and send row", () => {
+    render(
+      <ComposerBox
+        {...createPromptBoxProps({
+          surface: "new-thread",
+          attachments: { onAttachFiles: vi.fn() },
+          promptActions,
+          executionControls: (
+            <ExecutionControls
+              provider={{ selectedId: "codex" }}
+              model={{
+                selected: "gpt-6.1-sol",
+                options: [{ value: "gpt-6.1-sol", label: "GPT-6.1-Sol" }],
+                moreOptions: [],
+                isLoading: false,
+                loadFailed: false,
+                onChange: vi.fn(),
+              }}
+              reasoning={{
+                value: "medium",
+                options: [{ value: "medium", label: "Medium" }],
+                onChange: vi.fn(),
+              }}
+              nativeTerminal={{ enabled: true, onChange: vi.fn() }}
+            />
+          ),
+        })}
+      />,
+    );
+    const row = document.querySelector(
+      '[data-promptbox-execution-layout="stacked"]',
+    );
+    expect(row).not.toBeNull();
+    const plus = screen.getByRole("button", { name: "Prompt actions" });
+    const model = screen.getByRole("button", {
+      name: "Provider, model and reasoning",
+    });
+    const toggle = screen.getByRole("radiogroup", {
+      name: "Run this thread in",
+    });
+    const send = screen.getByRole("button", { name: "Submit (Enter)" });
+    expect(
+      row?.querySelector("[data-promptbox-plus-control]")?.contains(plus),
+    ).toBe(true);
+    expect(
+      row?.querySelector("[data-promptbox-trailing-actions]")?.contains(send),
+    ).toBe(true);
+    const controls = row?.querySelector("[data-promptbox-execution-controls]");
+    expect(controls?.contains(model)).toBe(true);
+    expect(controls?.contains(toggle)).toBe(true);
+    expect(model.classList.contains("max-md:row-start-1")).toBe(true);
+    expect(model.classList.contains("max-md:col-span-full")).toBe(true);
+    expect(toggle.classList.contains("max-md:row-start-2")).toBe(true);
+    expect(toggle.classList.contains("max-md:col-start-2")).toBe(true);
+    expect(model.parentElement?.classList.contains("max-md:contents")).toBe(
+      true,
+    );
   });
 
   it("keeps prompt actions in the full mobile layout", () => {
