@@ -726,6 +726,37 @@ beforeEach(async () => {
 });
 
 describe("suppressPromptEditorAnchorActivation", () => {
+  it("keeps editor props stable while publishing typed drafts", async () => {
+    const changed = vi.fn();
+    function TypingComposer() {
+      const [value, setValue] = useState("Draft");
+      return (
+        <ComposerBox
+          {...createPromptBoxProps({
+            value,
+            onChange: (text) => {
+              changed(text);
+              setValue(text);
+            },
+          })}
+        />
+      );
+    }
+    render(<TypingComposer />);
+    const element = getPromptEditorElement() as TiptapEditorHTMLElement;
+    const editor = element.editor;
+    if (!editor) throw new Error("Editor was not mounted");
+    const editorProps = editor.options.editorProps;
+    for (const text of ["a", "b", "c"]) {
+      await act(async () => {
+        editor.commands.insertContent(text);
+      });
+      expect(editor.options.editorProps).toBe(editorProps);
+    }
+    expect(editor.getText()).toContain("abc");
+    expect(changed).toHaveBeenLastCalledWith(editor.getText());
+  });
+
   it("restores the editor selection when pane navigation returns focus", async () => {
     render(
       <ComposerBox {...createPromptBoxProps({ value: "Retained draft" })} />,
