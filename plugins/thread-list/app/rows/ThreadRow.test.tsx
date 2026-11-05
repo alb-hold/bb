@@ -8,7 +8,7 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { execFile } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -1652,6 +1652,66 @@ describe("ThreadRow", () => {
     },
   );
 
+  it.each([
+    { name: "desktop", isCompactViewport: false },
+    { name: "compact", isCompactViewport: true },
+  ])(
+    "opens the row's context menu from a status chip of a sticky parent on $name",
+    async ({ isCompactViewport }) => {
+      renderThreadRow({
+        thread: createThread({
+          experimental_rowState: {
+            statuses: { task: { value: "Running" } },
+            progress: null,
+          },
+        }),
+        isCompactViewport,
+        options: {
+          kind: "parent",
+          depth: 1,
+          isCompact: isCompactViewport,
+          isCollapsed: false,
+          childCount: 1,
+          childActivity: NO_COLLAPSED_CHILD_ACTIVITY,
+          stickyLevel: 0,
+          onToggleCollapsed: vi.fn(),
+        },
+      });
+      const chip = document.querySelector("[data-sidebar-thread-status-chip]");
+      if (chip === null) throw new Error("status chip missing");
+      fireEvent.contextMenu(chip);
+
+      expect(
+        await screen.findByRole("menuitem", { name: "Rename" }),
+      ).toBeTruthy();
+    },
+  );
+
+  it("keeps a sticky parent's row state inside the row node that carries the drag and drop bindings", () => {
+    renderThreadRow({
+      thread: createThread({
+        experimental_rowState: {
+          statuses: { task: { value: "Running" } },
+          progress: { value: 0.5 },
+        },
+      }),
+      options: {
+        kind: "parent",
+        depth: 1,
+        isCompact: false,
+        isCollapsed: false,
+        childCount: 1,
+        childActivity: NO_COLLAPSED_CHILD_ACTIVITY,
+        stickyLevel: 0,
+        onToggleCollapsed: vi.fn(),
+      },
+    });
+
+    const row = document.querySelector("[data-sidebar-rename-row]");
+    const rowState = document.querySelector("[data-sidebar-thread-row-state]");
+    expect(row?.contains(rowState ?? null)).toBe(true);
+  });
+
   it.each(RENAME_PRESENTATION_CASES)(
     "presents rename from the menu, a row action, and double click for compact=$compact coarse=$coarse",
     async ({ compact, coarse, menu, direct, doubleClick }) => {
@@ -2839,6 +2899,166 @@ ${pluginCss ?? ""}
   }
 }
 
+interface StickyParentLayout {
+  tier: { top: number; bottom: number; height: number };
+  rowState: { top: number; bottom: number };
+  next: { top: number };
+  rowStateHitsRow: boolean;
+}
+
+const STICKY_MEASURE_SCRIPT = `
+const box = (element) => {
+  const rect = element.getBoundingClientRect();
+  return { top: rect.top, bottom: rect.bottom, height: rect.height };
+};
+const rowStateElement = document.querySelector("[data-sidebar-thread-row-state]");
+const rowStateBox = rowStateElement.getBoundingClientRect();
+const hit = document.elementFromPoint(
+  rowStateBox.left + rowStateBox.width / 2,
+  rowStateBox.top + rowStateBox.height / 2,
+);
+document.getElementById("layout").textContent = JSON.stringify({
+  tier: box(document.querySelector("[data-sidebar-sticky-tier]")),
+  rowState: box(rowStateElement),
+  next: box(document.getElementById("next-row")),
+  rowStateHitsRow: hit !== null && hit.closest("[data-sidebar-rename-row]") !== null,
+});
+`;
+
+async function measureStickyParentLayout(
+  rowHtml: string,
+  viewportWidth: number,
+): Promise<StickyParentLayout> {
+  const dir = await mkdtemp(join(tmpdir(), "bb-sticky-layout-"));
+  try {
+    const page = join(dir, "sticky.html");
+    const themeCss = await readFile(
+      join(process.cwd(), "../../apps/app/src/components/ui/theme.css"),
+      "utf8",
+    );
+    await writeFile(
+      page,
+      `<!doctype html><html><head><meta name="viewport" content="width=device-width"><style>
+@layer theme, base, components, utilities;
+:root{--bb-sidebar-row-height:1.75rem;--bb-sidebar-row-height-coarse:2.5rem;--sidebar:#fafafa;--sidebar-accent:#e4e4e7;--timeline-accent:#2563eb}
+*,::before,::after{box-sizing:border-box}
+body{margin:0}
+${pluginCss ?? ""}
+${themeCss}
+[data-sidebar-sticky-stack] [data-sidebar-sticky-tier]{top:auto}
+</style></head><body>
+<div data-bb-plugin-root style="width:${viewportWidth}px">
+<div data-sidebar-sticky-stack>${rowHtml}<div id="next-row" style="height:1.75rem">Next row</div></div>
+</div>
+<pre id="layout"></pre>
+<script>${STICKY_MEASURE_SCRIPT}</script>
+</body></html>`,
+    );
+    const { stdout } = await execFileAsync(chromiumPath ?? "", [
+      "--headless",
+      "--no-sandbox",
+      "--disable-gpu",
+      ...CHROMIUM_QUIET_FLAGS,
+      "--hide-scrollbars",
+      `--window-size=${viewportWidth},900`,
+      "--virtual-time-budget=2000",
+      "--dump-dom",
+      `file://${page}`,
+    ]);
+    const match = /<pre id="layout">([^<]*)<\/pre>/.exec(stdout);
+    if (match?.[1] === undefined) throw new Error(stdout.slice(0, 500));
+    return JSON.parse(match[1].replaceAll("&quot;", '"')) as StickyParentLayout;
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+interface NestedPinLayout {
+  rowStateHeight: number;
+  tier0: { top: number; bottom: number };
+  tier1: { top: number; bottom: number };
+  tier1Visible: boolean;
+}
+
+const NESTED_PIN_SCRIPT = `
+const scroller = document.getElementById("scroller");
+const tier0 = document.querySelector("[data-sidebar-sticky-tier]:not(#tier1)");
+const tier1 = document.getElementById("tier1");
+const rowState = tier0.querySelector("[data-sidebar-thread-row-state]");
+const rowStateHeight = rowState.getBoundingClientRect().height;
+const growingRowHeight = rowState.closest("[data-sidebar-rename-row]").getBoundingClientRect().height;
+tier1.style.setProperty("--bb-sidebar-sticky-parent-offset", "calc(" + growingRowHeight + "px - 1 * var(--bb-sidebar-sticky-row-height))");
+scroller.scrollTop = 400;
+const origin = scroller.getBoundingClientRect().top;
+const box = (element) => {
+  const rect = element.getBoundingClientRect();
+  return { top: rect.top - origin, bottom: rect.bottom - origin };
+};
+const tier1Box = tier1.getBoundingClientRect();
+const hit = document.elementFromPoint(tier1Box.left + 40, tier1Box.top + tier1Box.height / 2);
+document.getElementById("layout").textContent = JSON.stringify({
+  rowStateHeight,
+  tier0: box(tier0),
+  tier1: box(tier1),
+  tier1Visible: hit !== null && tier1.contains(hit),
+});
+`;
+
+async function measureNestedPinLayout(
+  rowHtml: string,
+  viewportWidth: number,
+): Promise<NestedPinLayout> {
+  const dir = await mkdtemp(join(tmpdir(), "bb-nested-pin-"));
+  try {
+    const page = join(dir, "nested.html");
+    const themeCss = await readFile(
+      join(process.cwd(), "../../apps/app/src/components/ui/theme.css"),
+      "utf8",
+    );
+    const children = Array.from(
+      { length: 30 },
+      (_, index) => `<div style="height:1.75rem">child ${index}</div>`,
+    ).join("");
+    await writeFile(
+      page,
+      `<!doctype html><html><head><meta name="viewport" content="width=device-width"><style>
+@layer theme, base, components, utilities;
+:root{--bb-sidebar-row-height:1.75rem;--bb-sidebar-row-height-coarse:2.5rem;--sidebar:#fafafa;--sidebar-accent:#e4e4e7;--timeline-accent:#2563eb}
+*,::before,::after{box-sizing:border-box}
+body{margin:0}
+${pluginCss ?? ""}
+${themeCss}
+[data-testid][data-thread-id],.group0>div:first-child{display:contents}
+</style></head><body>
+<div data-bb-plugin-root style="width:${viewportWidth}px">
+<div id="scroller" style="height:240px;overflow:auto">
+<div data-sidebar-sticky-stack style="--bb-sidebar-sticky-parent-base-top:0px">
+<div class="group0">${rowHtml}<div><div>
+<div data-sidebar-sticky-tier="parent" id="tier1" class="bg-sidebar" style="--bb-sidebar-sticky-parent-level:1">Level-1 parent</div>${children}</div>${children}</div></div>
+</div></div></div>
+<pre id="layout"></pre>
+<script>${NESTED_PIN_SCRIPT}</script>
+</body></html>`,
+    );
+    const { stdout } = await execFileAsync(chromiumPath ?? "", [
+      "--headless",
+      "--no-sandbox",
+      "--disable-gpu",
+      ...CHROMIUM_QUIET_FLAGS,
+      "--hide-scrollbars",
+      `--window-size=${viewportWidth},400`,
+      "--virtual-time-budget=2000",
+      "--dump-dom",
+      `file://${page}`,
+    ]);
+    const match = /<pre id="layout">([^<]*)<\/pre>/.exec(stdout);
+    if (match?.[1] === undefined) throw new Error(stdout.slice(0, 500));
+    return JSON.parse(match[1].replaceAll("&quot;", '"')) as NestedPinLayout;
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
 describe.skipIf(
   pluginCss === null || (chromiumPath === null && !process.env.CI),
 )("ThreadRow row-state layout", () => {
@@ -2954,6 +3174,84 @@ describe.skipIf(
       expect(layout.chip?.width).toBeGreaterThan(layout.row.width / 2);
       expect(layout.chip?.left).toBeGreaterThanOrEqual(layout.row.left);
       expect(layout.chip?.right).toBeLessThanOrEqual(layout.row.right);
+    },
+  );
+
+  it.each(VIEWPORTS)(
+    "keeps a sticky parent row's state inside the row, clear of the next row and under the pointer on $name",
+    async (viewport) => {
+      const { container } = renderThreadRow({
+        thread: createThread({
+          experimental_rowState: {
+            statuses: {
+              task: { value: "WT-GUARD preserve recoverable work" },
+              build: { value: "#138 f49bb0e9 OPEN: chain138.out:unit EXIT=0" },
+            },
+            progress: { value: 0.6, label: "#138 merge pipeline" },
+          },
+        }),
+        isCompactViewport: viewport.isCompact,
+        options: {
+          kind: "parent",
+          depth: 1,
+          isCompact: viewport.isCompact,
+          isCollapsed: false,
+          childCount: 1,
+          childActivity: NO_COLLAPSED_CHILD_ACTIVITY,
+          stickyLevel: 0,
+          onToggleCollapsed: vi.fn(),
+        },
+      });
+      const layout = await measureStickyParentLayout(
+        container.innerHTML,
+        viewport.width,
+      );
+
+      expect(layout.rowState.top).toBeGreaterThanOrEqual(layout.tier.top - 0.5);
+      expect(layout.rowState.bottom).toBeLessThanOrEqual(
+        layout.tier.bottom + 0.5,
+      );
+      expect(layout.tier.bottom).toBeLessThanOrEqual(layout.next.top + 0.5);
+      expect(layout.rowStateHitsRow).toBe(true);
+    },
+  );
+
+  it.each(VIEWPORTS)(
+    "keeps a nested sticky parent visible below a pinned parent that has row state on $name",
+    async (viewport) => {
+      const { container } = renderThreadRow({
+        thread: createThread({
+          experimental_rowState: {
+            statuses: {
+              task: { value: "WT-GUARD preserve recoverable work" },
+              build: { value: "#138 f49bb0e9 OPEN: chain138.out:unit EXIT=0" },
+            },
+            progress: { value: 0.6, label: "#138 merge pipeline" },
+          },
+        }),
+        isCompactViewport: viewport.isCompact,
+        options: {
+          kind: "parent",
+          depth: 1,
+          isCompact: viewport.isCompact,
+          isCollapsed: false,
+          childCount: 1,
+          childActivity: NO_COLLAPSED_CHILD_ACTIVITY,
+          stickyLevel: 0,
+          onToggleCollapsed: vi.fn(),
+        },
+      });
+      const layout = await measureNestedPinLayout(
+        container.innerHTML,
+        viewport.width,
+      );
+
+      expect(layout.rowStateHeight).toBeGreaterThan(40);
+      expect(layout.tier1.top).toBeGreaterThanOrEqual(
+        layout.tier0.bottom - 0.5,
+      );
+      expect(layout.tier1.top).toBeLessThanOrEqual(layout.tier0.bottom + 4);
+      expect(layout.tier1Visible).toBe(true);
     },
   );
 

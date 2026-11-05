@@ -1,6 +1,7 @@
 import * as React from "react";
 import { cn } from "@/lib/utils";
 import { Skeleton } from "@/components/ui/skeleton";
+import { stickyOffsetCss, useStickyOffset } from "./stickyOffset.js";
 
 export const SIDEBAR_CONTENT_SELECTOR = '[data-sidebar="content"]';
 
@@ -55,6 +56,7 @@ interface SidebarStickyTierProps extends React.ComponentProps<"div"> {
 
 type SidebarStickyParentLevelStyle = React.CSSProperties & {
   "--bb-sidebar-sticky-parent-level": number;
+  "--bb-sidebar-sticky-parent-offset": string;
 };
 
 export const SidebarStickyStack = React.forwardRef<
@@ -77,11 +79,13 @@ export const SidebarStickyTier = React.forwardRef<
   HTMLDivElement,
   SidebarStickyTierProps
 >(({ children, className, tier, level, style, ...props }, ref) => {
+  const stickyOffset = useStickyOffset();
   const tierStyle =
     tier === "parent" && level !== undefined
       ? ({
           ...style,
           "--bb-sidebar-sticky-parent-level": level,
+          "--bb-sidebar-sticky-parent-offset": stickyOffsetCss(stickyOffset),
         } satisfies SidebarStickyParentLevelStyle)
       : style;
   return (
