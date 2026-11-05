@@ -125,6 +125,7 @@ import {
   useThreadQueuedMessages,
   useThreadPromptHistory,
 } from "@/hooks/queries/thread-panel-queries";
+import { PERMISSION_MODE_OPTIONS } from "@/lib/permission-mode-options";
 import { useThreadDefaultExecutionOptions } from "@/hooks/queries/thread-default-execution-options-query";
 import {
   getMutationErrorMessage,
@@ -217,6 +218,7 @@ interface ThreadDetailPromptAreaProps {
   activePromptMode: ThreadTimelineActivePromptMode | null;
   goal: ThreadTimelineGoal | null;
   providerCommands: readonly ProviderCommand[] | null;
+  executionOptionsPending: boolean;
   sessionOptions: readonly ThreadTimelineSessionOption[] | null;
   modelFallback: ThreadTimelineModelFallback | null;
   activeWorkflows: TimelineWorkflowWorkRow[];
@@ -430,6 +432,7 @@ export function ThreadDetailPromptArea({
   goal,
   providerCommands,
   sessionOptions,
+  executionOptionsPending,
   modelFallback,
   activeWorkflows,
   activeBackgroundCommands,
@@ -704,6 +707,7 @@ export function ThreadDetailPromptArea({
     moreModelOptions,
     isLoadingModels,
     modelCatalogIsSettled,
+    modelCatalogIsVerified,
     modelLoadFailed,
     modelLoadError,
     reasoningOptions,
@@ -729,6 +733,20 @@ export function ThreadDetailPromptArea({
     initialPermissionMode: defaultExecutionOptions?.permissionMode,
     initialEnvironmentSelectionValue: thread.environmentId ?? undefined,
   });
+  const [catalogWaitExpiredFor, setCatalogWaitExpiredFor] = useState<
+    string | null
+  >(null);
+  useEffect(() => {
+    if (modelCatalogIsSettled && !executionOptionsPending) return;
+    const timer = window.setTimeout(
+      () => setCatalogWaitExpiredFor(thread.id),
+      5000,
+    );
+    return () => window.clearTimeout(timer);
+  }, [modelCatalogIsSettled, executionOptionsPending, thread.id]);
+  const catalogPending =
+    (!modelCatalogIsSettled || executionOptionsPending) &&
+    catalogWaitExpiredFor !== thread.id;
   const isPermissionSnapshot = permissionPolicy === "snapshot";
   const permissionMode = isPermissionSnapshot
     ? (defaultExecutionOptions?.permissionMode ?? selectedPermissionMode)
@@ -1570,6 +1588,9 @@ export function ThreadDetailPromptArea({
   ]);
   const bottomExecutionConfig = useMemo(
     () => ({
+      pending:
+        (!hasConcreteDefaultExecutionOptions || catalogPending) &&
+        !isHandoffSelection,
       providerRouting:
         thread.environmentId === null
           ? executionOptionsRouting
@@ -1581,9 +1602,14 @@ export function ThreadDetailPromptArea({
         hasMultiple: hasMultipleProviders,
       },
       model: {
-        active: effectiveSelectedModel
-          ? { model: effectiveSelectedModel }
-          : null,
+        active:
+          !modelCatalogIsVerified &&
+          !isHandoffSelection &&
+          defaultExecutionOptions?.model
+            ? { model: defaultExecutionOptions.model }
+            : effectiveSelectedModel
+              ? { model: effectiveSelectedModel }
+              : null,
         selected: selectedModel,
         options: modelOptions,
         moreOptions: moreModelOptions,
@@ -1621,6 +1647,10 @@ export function ThreadDetailPromptArea({
           }),
     }),
     [
+      hasConcreteDefaultExecutionOptions,
+      modelCatalogIsVerified,
+      catalogPending,
+      defaultExecutionOptions,
       pickerSessionOptionSections,
       sessionOptionChoices.choose,
       effectiveSelectedModel,
@@ -1667,6 +1697,7 @@ export function ThreadDetailPromptArea({
     if (!inlineEditingQueuedMessage) return null;
     return {
       ...compactExecutionConfig,
+      pending: false,
       model: {
         ...compactExecutionConfig.model,
         active: { model: inlineEditingQueuedMessage.model },
@@ -1717,14 +1748,27 @@ export function ThreadDetailPromptArea({
 
   const bottomPermissionConfig = useMemo(
     () => ({
-      value: hasConcreteDefaultExecutionOptions ? permissionMode : undefined,
-      options: hasConcreteDefaultExecutionOptions ? permissionModeOptions : [],
+      pending: !hasConcreteDefaultExecutionOptions || catalogPending,
+      value: hasConcreteDefaultExecutionOptions
+        ? modelCatalogIsVerified
+          ? permissionMode
+          : defaultExecutionOptions?.permissionMode
+        : undefined,
+      options: hasConcreteDefaultExecutionOptions
+        ? modelCatalogIsVerified
+          ? permissionModeOptions
+          : PERMISSION_MODE_OPTIONS
+        : [],
       onChange: setPermissionMode,
       supported:
-        hasConcreteDefaultExecutionOptions && supportsPermissionModeSelection,
+        hasConcreteDefaultExecutionOptions &&
+        (!modelCatalogIsVerified || supportsPermissionModeSelection),
     }),
     [
       hasConcreteDefaultExecutionOptions,
+      modelCatalogIsVerified,
+      catalogPending,
+      defaultExecutionOptions,
       permissionMode,
       permissionModeOptions,
       setPermissionMode,
@@ -1736,6 +1780,7 @@ export function ThreadDetailPromptArea({
       inlineEditingQueuedMessage
         ? {
             ...bottomPermissionConfig,
+            pending: false,
             value: inlineEditingQueuedMessage.permissionMode,
             onChange: isPermissionSnapshot
               ? ignorePermissionModeChange
@@ -2407,7 +2452,7 @@ export function ThreadDetailPromptArea({
       }
       execution={bottomExecutionConfig}
       permission={bottomPermissionConfig}
-      permissionReadOnly={isPermissionSnapshot}
+      permissionReadOnly={isPermissionSnapshot || !modelCatalogIsVerified}
       sessionOptionsControl={sessionOptionsControl}
       typeahead={typeaheadConfig}
       promptActions={promptActions}

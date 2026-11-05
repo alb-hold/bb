@@ -28,6 +28,7 @@ function addPermissionModeCompactLabels(
 }
 
 export interface PermissionModePickerProps {
+  pending?: boolean;
   value?: PermissionMode;
   options: readonly PickerOption<PermissionMode>[];
   onChange: (value: PermissionMode) => void;
@@ -49,6 +50,7 @@ export interface PermissionModePickerProps {
 }
 
 export function PermissionModePicker({
+  pending,
   value,
   options,
   onChange,
@@ -67,6 +69,20 @@ export function PermissionModePicker({
     () => addPermissionModeCompactLabels(options),
     [options],
   );
+  if (pending) {
+    return (
+      <div
+        role="status"
+        aria-label="Loading permission mode"
+        className={cn(
+          "flex h-6 w-28 shrink-0 items-center px-2 max-md:w-16 max-md:pointer-coarse:h-11",
+          className,
+        )}
+      >
+        <span aria-hidden className="h-3 w-full rounded-sm bg-state-hover" />
+      </div>
+    );
+  }
   if (
     !supported ||
     value === undefined ||
@@ -80,7 +96,11 @@ export function PermissionModePicker({
       value={value}
       options={compactOptions}
       onChange={onChange}
-      className={cn(LIST_HOVER_TRANSITION, className)}
+      className={cn(
+        LIST_HOVER_TRANSITION,
+        pending !== undefined && "w-28 max-md:w-16",
+        className,
+      )}
       caretClassName="text-subtle-foreground/75"
       contentClassName="max-w-72"
       muted={muted}

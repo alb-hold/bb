@@ -2109,6 +2109,7 @@ export function NewThreadComposer({
               disabled: locks.environment,
             },
             permission: {
+              pending: projectDefaultsUnavailable || isLoadingModels,
               value: permissionMode,
               options: permissionModeOptions,
               onChange: handlePermissionChange,
@@ -2180,6 +2181,7 @@ export function NewThreadComposer({
             showChevronWhenDisabled: !locks.project,
           }}
           execution={{
+            pending: projectDefaultsUnavailable || isLoadingModels,
             ...(nativeTerminalAvailable
               ? {
                   nativeTerminal: {
@@ -2231,6 +2233,7 @@ export function NewThreadComposer({
     },
     [
       activeModel,
+      projectDefaultsUnavailable,
       attachmentError,
       commandSource,
       defaultMentionLinkResolver,

@@ -16,6 +16,24 @@ afterEach(() => {
 });
 
 describe("PermissionModePicker", () => {
+  it("reserves the permission chip without disclosing an unresolved value", () => {
+    render(
+      <PermissionModePicker
+        pending
+        value="full"
+        options={[]}
+        onChange={() => {}}
+        supported
+      />,
+    );
+    expect(screen.queryByText("Full Access")).toBeNull();
+    expect(
+      screen
+        .getByRole("status", { name: "Loading permission mode" })
+        .classList.contains("w-28"),
+    ).toBe(true);
+  });
+
   it("uses the same approve vocabulary for compact and wide labels", () => {
     render(
       <PermissionModePicker

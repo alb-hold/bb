@@ -127,6 +127,7 @@ function buildPromptArea({
       <ShellProbe />
       <PublishedHostDraftProbe />
       <ThreadDetailPromptArea
+        executionOptionsPending={false}
         activeBackgroundCommands={[]}
         activePromptMode={null}
         activeWorkflows={[]}

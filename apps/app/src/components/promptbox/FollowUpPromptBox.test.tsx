@@ -707,6 +707,32 @@ describe("FollowUpPromptBox", () => {
     },
   );
 
+  it("restores plugin customizations after execution resolves without replacing the editor or its draft", () => {
+    const props = createFollowUpPromptBoxProps({ kind: "ready" });
+    const { rerender } = render(
+      <FollowUpPromptBox
+        {...props}
+        execution={{ ...props.execution, pending: true }}
+      />,
+    );
+    const box = screen.getByTestId("prompt-box");
+    const input = screen.getByLabelText(
+      "Follow-up prompt",
+    ) as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: "Keep this draft" } });
+    expect(box.dataset.pluginCustomizationsSuppressed).toBe("true");
+    rerender(
+      <FollowUpPromptBox
+        {...props}
+        execution={{ ...props.execution, pending: false }}
+      />,
+    );
+    expect(screen.getByLabelText("Follow-up prompt")).toBe(input);
+    expect(input.value).toBe("Keep this draft");
+    expect(screen.getByTestId("prompt-box")).toBe(box);
+    expect(box.dataset.pluginCustomizationsSuppressed).toBe("false");
+  });
+
   it("forwards customization suppression changes without remounting the composer", () => {
     const props = createFollowUpPromptBoxProps({ kind: "ready" });
     const { rerender } = render(
