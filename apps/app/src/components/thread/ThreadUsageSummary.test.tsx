@@ -55,6 +55,26 @@ describe("thread usage summary", () => {
     expect(await screen.findAllByText("2,843,776")).not.toHaveLength(0);
   });
 
+  it.each([true, false])(
+    "uses UI type with tabular numerals for compact=%s",
+    (compact) => {
+      const { container } = render(
+        <TooltipProvider>
+          <ThreadTurnTokenSummary
+            compact={compact}
+            openAnalysisOnClick={false}
+            threadId="parent"
+            turnId="da385f7e5d-t1"
+          />
+        </TooltipProvider>,
+      );
+      const summary = container.querySelector("[data-thread-turn-tokens]")!;
+      expect(summary.classList.contains("font-sans")).toBe(true);
+      expect(summary.classList.contains("tabular-nums")).toBe(true);
+      expect(summary.classList.contains("font-mono")).toBe(false);
+    },
+  );
+
   it("does not invent a collapsed total when only partial usage is reported", () => {
     useThreadSpendSummary.mockReturnValue({
       data: {

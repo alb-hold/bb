@@ -1540,6 +1540,7 @@ function RootComposeSurface({
                 isCompactHomeLayout={isCompactViewport}
                 compactScrollContent={
                   <RootComposeMobileRecents
+                    maxRows={isCompactViewport ? undefined : 3}
                     highlightedThreadId={lastCreatedThreadId}
                     projectNamesById={mobileRecentProjectNamesById}
                     providersById={mobileRecentProvidersById}

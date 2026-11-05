@@ -53,8 +53,7 @@ import { usePromptDraftInputThreadIds } from "@/hooks/usePromptDraftStorage";
 import { useSecondTick } from "@/hooks/useSecondTick";
 import { mobileRecentsCollapsedThreadIdsAtom } from "./mobile-recents-collapse";
 
-export const MOBILE_RECENT_ROW_HEIGHT_PX = 60;
-export const MOBILE_RECENT_LABEL_HEIGHT_PX = 24;
+const MOBILE_RECENT_ROW_HEIGHT_PX = 60;
 
 const MOBILE_RECENT_ROW_HEIGHT_CLASS = "h-15";
 
@@ -123,6 +122,7 @@ function getMobileRecentThreadMetadata({
 }
 
 interface RootComposeMobileRecentsProps {
+  maxRows?: number;
   highlightedThreadId: string | null;
   projectNamesById: ReadonlyMap<string, string>;
   providersById: ReadonlyMap<string, ProviderInfo>;
@@ -442,6 +442,7 @@ function MobileRecentThreadRow({
 }
 
 export function RootComposeMobileRecents({
+  maxRows,
   highlightedThreadId,
   projectNamesById,
   providersById,
@@ -493,8 +494,8 @@ export function RootComposeMobileRecents({
   );
   const hasMountedAllRows = useDeferredValue(true, false);
   const renderedThreads = hasMountedAllRows
-    ? recentThreads
-    : recentThreads.slice(0, getFirstPaintMobileRecentRowCount());
+    ? recentThreads.slice(0, maxRows)
+    : recentThreads.slice(0, maxRows ?? getFirstPaintMobileRecentRowCount());
 
   if (!showCreatingRow && recentThreads.length === 0) {
     return null;
@@ -504,7 +505,6 @@ export function RootComposeMobileRecents({
     <section
       data-root-compose-mobile-recents=""
       aria-labelledby="root-compose-mobile-recents"
-      className="md:hidden"
     >
       <div className="sticky top-0 z-10 mb-1 bg-background px-2">
         <h2

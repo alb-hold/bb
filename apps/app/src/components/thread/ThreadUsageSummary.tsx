@@ -237,7 +237,7 @@ export function ThreadTurnTokenSummary({
   );
   const summaryClassName = compact
     ? "inline-flex shrink-0 items-center whitespace-nowrap font-sans text-xs tabular-nums text-muted-foreground"
-    : "thread-turn-token-breakdown min-w-0 flex-1 flex-wrap items-center gap-x-1 whitespace-normal rounded-md border-0 bg-transparent p-0 text-left font-mono text-xs tabular-nums tracking-tight text-muted-foreground";
+    : "thread-turn-token-breakdown min-w-0 flex-1 flex-wrap items-center gap-x-1 whitespace-normal rounded-md border-0 bg-transparent p-0 text-left font-sans text-xs tabular-nums text-muted-foreground";
   return (
     <Tooltip>
       <TooltipTrigger asChild>

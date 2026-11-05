@@ -501,6 +501,36 @@ describe("mobile recent thread rows", () => {
 });
 
 describe("RootComposeMobileRecents", () => {
+  it("limits desktop Recent to three rows and omits an empty group", () => {
+    const props = {
+      highlightedThreadId: null,
+      projectNamesById: new Map<string, string>(),
+      providersById: new Map(),
+      showCreatingRow: false,
+      maxRows: 3,
+    };
+    const { rerender } = render(
+      <TestProviders>
+        <RootComposeMobileRecents
+          {...props}
+          threads={Array.from({ length: 6 }, (_, i) =>
+            makeThread({ id: `recent-${i}`, title: `Recent ${i}` }),
+          )}
+        />
+      </TestProviders>,
+    );
+    expect(screen.getAllByRole("link")).toHaveLength(3);
+    expect(
+      screen.getByText("Recent").closest("section")?.className,
+    ).not.toContain("md:hidden");
+    rerender(
+      <TestProviders>
+        <RootComposeMobileRecents {...props} threads={[]} />
+      </TestProviders>,
+    );
+    expect(screen.queryByText("Recent")).toBeNull();
+  });
+
   it("opens thread actions on a long press without following the thread link", async () => {
     vi.useFakeTimers();
     const thread = makeThread();

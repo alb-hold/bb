@@ -57,6 +57,22 @@ describe("RootComposeHome", () => {
     expect(column.className).toContain("shrink-0");
     expect(column.parentElement?.className).toContain("overflow-y-auto");
   });
+  it("renders desktop Recent below the composer", () => {
+    render(
+      <RootComposeHome
+        isCompact={false}
+        composer={<div data-testid="composer" />}
+        compactScrollContent={<div data-testid="recents" />}
+        homepageSections={null}
+      />,
+    );
+    const group = screen.getByTestId("root-compose-desktop-recents");
+    expect(group.contains(screen.getByTestId("recents"))).toBe(true);
+    expect(group.previousElementSibling).toBe(
+      screen.getByTestId("root-compose-compact-composer"),
+    );
+  });
+
   it("keeps mobile recents separate from the composer and desktop anchor", () => {
     renderCompactHome();
 
@@ -86,10 +102,9 @@ describe("RootComposeHome", () => {
 
     renderCompactHome();
 
-    const leadingSpacer = screen.getByTestId(
-      "root-compose-compact-leading-spacer",
-    );
-    expect(leadingSpacer.style.height).toBe("164px");
+    expect(
+      screen.queryByTestId("root-compose-compact-leading-spacer"),
+    ).toBeNull();
     expect(
       screen.getByTestId("root-compose-compact-scroll-viewport").style.bottom,
     ).toBe("188px");
@@ -128,16 +143,16 @@ describe("RootComposeHome", () => {
     const content = screen.getByTestId("root-compose-compact-scroll-content");
     expect(viewport.style.top).toBe("56px");
     expect(content.firstElementChild).toBe(
-      screen.getByTestId("root-compose-compact-leading-spacer"),
+      screen.getByTestId("recents").parentElement,
     );
   });
 
-  it("rests a list that fits on the composer instead of the band top", () => {
+  it("starts even a short list under the header", () => {
     renderCompactHome();
 
     const content = screen.getByTestId("root-compose-compact-scroll-content");
     expect(content.className).toContain("min-h-full");
-    expect(content.className).toContain("justify-end");
+    expect(content.className).not.toContain("justify-end");
     expect(
       content.lastElementChild?.contains(screen.getByTestId("recents")),
     ).toBe(true);

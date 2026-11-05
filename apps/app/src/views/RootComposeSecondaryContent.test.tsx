@@ -194,7 +194,7 @@ afterEach(() => {
 });
 
 describe("RootComposeSecondaryContent desktop layout", () => {
-  it("mounts compact scroll content only while the compact home layout is active and keeps the composer mounted", () => {
+  it("moves Recent between desktop and compact layouts while keeping the composer mounted", () => {
     const compactContent = (
       <ul data-testid="compact-recents">
         {Array.from({ length: 1000 }, (_, index) => (
@@ -218,7 +218,11 @@ describe("RootComposeSecondaryContent desktop layout", () => {
     const view = render(content(false));
     const composer = screen.getByTestId("root-compose-content");
 
-    expect(screen.queryByTestId("compact-recents")).toBeNull();
+    expect(
+      screen
+        .getByTestId("root-compose-desktop-recents")
+        .contains(screen.getByTestId("compact-recents")),
+    ).toBe(true);
     expect(screen.getByTestId("plugin-homepage-sections")).not.toBeNull();
 
     view.rerender(content(true));
@@ -229,7 +233,11 @@ describe("RootComposeSecondaryContent desktop layout", () => {
 
     view.rerender(content(false));
 
-    expect(screen.queryByTestId("compact-recents")).toBeNull();
+    expect(
+      screen
+        .getByTestId("root-compose-desktop-recents")
+        .contains(screen.getByTestId("compact-recents")),
+    ).toBe(true);
     expect(screen.getByTestId("root-compose-content")).toBe(composer);
     expect(screen.getByTestId("plugin-homepage-sections")).not.toBeNull();
   });

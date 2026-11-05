@@ -1,30 +1,18 @@
-import { describe, expect, it } from "vitest";
-import { getCompactHomeLeadingSpace } from "./RootComposeHome";
-import {
-  MOBILE_RECENT_LABEL_HEIGHT_PX,
-  MOBILE_RECENT_ROW_HEIGHT_PX,
-} from "./RootComposeMobileRecents";
+import { expect, it } from "vitest";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { RootComposeHome } from "./RootComposeHome";
 
-describe("getCompactHomeLeadingSpace", () => {
-  it("rests the list low so 7 rows show above the composer before scrolling", () => {
-    const restingBandPx =
-      7 * MOBILE_RECENT_ROW_HEIGHT_PX + MOBILE_RECENT_LABEL_HEIGHT_PX;
-
-    expect(
-      56 +
-        getCompactHomeLeadingSpace({
-          regionHeight: 852,
-          composerHeight: 188,
-        }),
-    ).toBe(852 - 188 - restingBandPx);
-  });
-
-  it("keeps one row of leading space when the region is too short for the band", () => {
-    expect(
-      getCompactHomeLeadingSpace({
-        regionHeight: 420,
-        composerHeight: 188,
-      }),
-    ).toBe(MOBILE_RECENT_ROW_HEIGHT_PX);
-  });
+it("starts phone Recent at the header without a leading spacer", () => {
+  const markup = renderToStaticMarkup(
+    createElement(RootComposeHome, {
+      isCompact: true,
+      composer: "Composer",
+      compactScrollContent: "Recent",
+      homepageSections: null,
+    }),
+  );
+  expect(markup).not.toContain("leading-spacer");
+  expect(markup).not.toContain("justify-end");
+  expect(markup).toContain("top:56px");
 });

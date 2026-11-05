@@ -1,37 +1,18 @@
-import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import {
+  useDeferredValue,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { cn } from "@bb/shared-ui/lib/utils";
 import { PAGE_SHELL_CONTENT_STYLE } from "@/components/ui/page-shell-content-style.js";
 import { CONTENT_MEASURE_MAX_WIDTH_CLASS } from "@/lib/content-measure";
 import { ComposerMaxHeightContext } from "@/components/promptbox/composer-max-height";
 import { composerRootWithin } from "@/lib/pane-composer-focus";
-import {
-  MOBILE_RECENT_LABEL_HEIGHT_PX,
-  MOBILE_RECENT_ROW_HEIGHT_PX,
-} from "./RootComposeMobileRecents";
-
 const COMPACT_HOME_CHROME_OFFSET_PX = 56;
 const COMPACT_HOME_COLUMN_CLASS = `mx-auto w-full ${CONTENT_MEASURE_MAX_WIDTH_CLASS} px-4`;
 const ROOT_COMPOSE_MAX_WIDTH_CLASS = CONTENT_MEASURE_MAX_WIDTH_CLASS;
-const COMPACT_HOME_REST_VISIBLE_ROWS = 7;
-const COMPACT_HOME_REST_BAND_PX =
-  COMPACT_HOME_REST_VISIBLE_ROWS * MOBILE_RECENT_ROW_HEIGHT_PX +
-  MOBILE_RECENT_LABEL_HEIGHT_PX;
-
-export function getCompactHomeLeadingSpace({
-  regionHeight,
-  composerHeight,
-}: {
-  regionHeight: number;
-  composerHeight: number;
-}): number {
-  return Math.max(
-    MOBILE_RECENT_ROW_HEIGHT_PX,
-    regionHeight -
-      composerHeight -
-      COMPACT_HOME_REST_BAND_PX -
-      COMPACT_HOME_CHROME_OFFSET_PX,
-  );
-}
 
 interface RootComposeHomeProps {
   isCompact: boolean;
@@ -46,7 +27,6 @@ function useCompactHomeMetrics(isCompact: boolean) {
   const composerRef = useRef<HTMLDivElement>(null);
   const scrollViewportRef = useRef<HTMLDivElement>(null);
   const scrollContentRef = useRef<HTMLDivElement>(null);
-  const leadingSpacerRef = useRef<HTMLDivElement>(null);
   const [composerMaxHeight, setComposerMaxHeight] = useState<number>();
 
   useLayoutEffect(() => {
@@ -55,14 +35,7 @@ function useCompactHomeMetrics(isCompact: boolean) {
     const composer = composerRef.current;
     const scrollViewport = scrollViewportRef.current;
     const scrollContent = scrollContentRef.current;
-    const leadingSpacer = leadingSpacerRef.current;
-    if (
-      !region ||
-      !composer ||
-      !scrollViewport ||
-      !scrollContent ||
-      !leadingSpacer
-    ) {
+    if (!region || !composer || !scrollViewport || !scrollContent) {
       return;
     }
     const measure = () => {
@@ -77,10 +50,6 @@ function useCompactHomeMetrics(isCompact: boolean) {
         );
       }
       const composerHeight = composer.offsetHeight;
-      leadingSpacer.style.height = `${getCompactHomeLeadingSpace({
-        regionHeight: region.offsetHeight,
-        composerHeight,
-      })}px`;
       scrollViewport.style.bottom = `${composerHeight}px`;
     };
     measure();
@@ -97,7 +66,6 @@ function useCompactHomeMetrics(isCompact: boolean) {
     composerRef,
     scrollViewportRef,
     scrollContentRef,
-    leadingSpacerRef,
     composerMaxHeight,
   };
 }
@@ -114,9 +82,10 @@ export function RootComposeHome({
     composerRef,
     scrollViewportRef,
     scrollContentRef,
-    leadingSpacerRef,
     composerMaxHeight,
   } = useCompactHomeMetrics(isCompact);
+
+  const showDesktopRecents = useDeferredValue(true, false);
 
   return (
     <div
@@ -152,13 +121,8 @@ export function RootComposeHome({
             <div
               ref={scrollContentRef}
               data-testid="root-compose-compact-scroll-content"
-              className="flex min-h-full flex-col justify-end"
+              className="flex min-h-full flex-col"
             >
-              <div
-                ref={leadingSpacerRef}
-                aria-hidden
-                data-testid="root-compose-compact-leading-spacer"
-              />
               <div className={COMPACT_HOME_COLUMN_CLASS}>
                 {compactScrollContent}
                 {homepageSections}
@@ -196,6 +160,11 @@ export function RootComposeHome({
             </div>
           </div>
         </div>
+        {!isCompact && showDesktopRecents ? (
+          <div className="mt-6 empty:hidden" data-testid="root-compose-desktop-recents">
+            {compactScrollContent}
+          </div>
+        ) : null}
         {isCompact ? null : homepageSections}
       </div>
     </div>
