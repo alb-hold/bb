@@ -676,8 +676,9 @@ function timelineRowsListGapClassName(
 ): string {
   switch (spacing) {
     case "top-level":
-    case "nested":
       return "gap-2";
+    case "nested":
+      return "gap-1";
     case "bundle":
       return "gap-0";
   }

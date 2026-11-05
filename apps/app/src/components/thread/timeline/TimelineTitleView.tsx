@@ -338,7 +338,7 @@ export function TimelineTitleView({
   return (
     <span
       className={cn(
-        "min-w-0 max-w-full text-sm leading-5",
+        "min-w-0 max-w-full text-xs leading-5",
         wrap
           ? "whitespace-pre-wrap [overflow-wrap:anywhere]"
           : "inline-flex items-baseline gap-1 overflow-hidden whitespace-nowrap",

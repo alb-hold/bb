@@ -100,7 +100,7 @@ function BuiltInSidebarSection({
       stickyHeader={id !== "pinned"}
       contentClassName={
         id === "pinned"
-          ? "max-h-[calc(7*var(--bb-sidebar-row-height)_+_0.75rem)] max-md:pointer-coarse:max-h-[calc(7*var(--bb-sidebar-row-height-coarse)_+_0.75rem)] overflow-y-auto data-[more-below]:[mask-image:linear-gradient(to_bottom,var(--ink)_calc(100%_-_1.5rem),transparent)]"
+          ? "max-h-[calc(7*var(--bb-sidebar-row-height)_+_0.75rem)] md:max-h-[calc(7*2.5rem_+_0.75rem)] max-md:pointer-coarse:max-h-[calc(7*var(--bb-sidebar-row-height-coarse)_+_0.75rem)] overflow-y-auto"
           : undefined
       }
       disabled={disabled}

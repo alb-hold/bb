@@ -532,6 +532,24 @@ afterEach(() => {
 });
 
 describe("ThreadRow", () => {
+  it("shows project and age context without requiring plugin metadata", () => {
+    const updatedAt = Date.now() - 120_000;
+    const view = renderThreadRow({
+      thread: createThread({ projectId: "proj_context", updatedAt, archivedAt: 1 }),
+      projects: [{ id: "proj_context", name: "Orbital", isPersonal: false, href: "/", settingsHref: "/" }],
+    });
+    const context = view.container.querySelector("[data-sidebar-thread-context]");
+    expect(context?.textContent).toBe("Orbital·2m");
+    expect(context?.querySelector("time")?.dateTime).toBe(new Date(updatedAt).toISOString());
+    expect(view.container.querySelector("[data-thread-row-metadata]")).toBeNull();
+    expect(screen.queryByRole("img", { name: "Native terminal", hidden: true })).toBeNull();
+  });
+
+  it("keeps age context when the project is unavailable", () => {
+    const view = renderThreadRow({ thread: createThread({ updatedAt: Date.now(), archivedAt: 1 }) });
+    expect(view.container.querySelector("[data-sidebar-thread-context]")?.textContent).toBe("now");
+  });
+
   it("shares the metadata experiment subscription with sibling rows", () => {
     const subscribe = vi.spyOn(pluginSdk, "experimental_useExperiment");
     renderThreadRow({
@@ -918,6 +936,7 @@ describe("ThreadRow", () => {
     const queued = container.querySelector(
       '[data-thread-status-glyph="queued-failed"]',
     );
+    expect(screen.getByRole("img", { name: "Native terminal", hidden: true })).toBeTruthy();
     expect(queued?.getAttribute("data-queued-failed-count")).toBe("4");
     expect(
       container.querySelector("[data-sidebar-native-activity-warning]"),
