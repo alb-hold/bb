@@ -2938,6 +2938,11 @@ export function ThreadTerminalView({
       claimSizeRef.current = () => {
         terminalInputClaimed = true;
         activeTerminal.focus();
+        clearTimeout(rendererDeadline);
+        initialRendererSettled = true;
+        initialLayoutSettled = true;
+        webglLineHeight = activeTerminal.options.lineHeight ?? 1;
+        activeTransport.markLayoutSettled();
         activeTransport.claimSize();
         fitTerminal();
       };
