@@ -209,6 +209,21 @@ describe("scanProcessesWithCwdUnder", () => {
     expect(scan).toMatchObject({ status: "unknown" });
   });
 
+  it("returns unknown when ACL inspection fails on a restrictive mode", async () => {
+    const base = await dir();
+    const scan = await scanProcessesWithCwdUnder(
+      { directories: [base] },
+      {
+        ...fakeLinux({ 10: denied() }, { 10: 1001 }),
+        filesystemGid: async () => 1001,
+        supplementaryGroups: async () => [],
+        statAccess: async () => ({ uid: 1000, gid: 2000, mode: 0o700 }),
+        hasExtendedAcl: async () => null,
+      },
+    );
+    expect(scan).toMatchObject({ status: "unknown" });
+  });
+
   it("clears a foreign process whose cwd is unreadable and no path component grants traversal", async () => {
     const base = await dir();
     const scan = await scanProcessesWithCwdUnder(

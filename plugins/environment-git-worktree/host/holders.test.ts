@@ -489,6 +489,24 @@ describe("the Linux process-list visibility rule", () => {
     });
   });
 
+  it("is uncertain when ACL inspection fails on a restrictive mode", async () => {
+    const proc = fakeProc({
+      worktreeMode: 0o700,
+      extendedAcl: null,
+      processes: {
+        101: {
+          uid: 1001,
+          gidValues: [1001, 1001, 1001, 1001],
+          groups: [],
+          cwdDenied: true,
+        },
+      },
+    });
+    expect(await scanLinux("/work/tree", proc, 4242)).toMatchObject({
+      status: "uncertain",
+    });
+  });
+
   it("is clear when an unreadable foreign cwd cannot reach the worktree and skips root and system UIDs", async () => {
     const inaccessible = fakeProc({
       worktreeMode: 0o700,
