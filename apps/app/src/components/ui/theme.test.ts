@@ -489,3 +489,56 @@ describe("theme.css shimmer paint scope", () => {
     expect(rule).toMatch(/-webkit-mask-image:\s*none;/);
   });
 });
+
+describe("composer and navigation contrast", () => {
+  const source = (path: string) =>
+    readFileSync(join(dirname(fileURLToPath(import.meta.url)), path), "utf8");
+  const slot = source(
+    "../../../../../plugins/composer/src/ComposerEditorSlot.tsx",
+  );
+  const recents = source("../../views/RootComposeMobileRecents.tsx");
+  const chrome = source(
+    "../../../../../packages/shared-ui/src/components/ui/chrome-style-tokens.ts",
+  );
+  const opacity =
+    Number(slot.match(/::before\]:opacity-(\d+)/)?.[1] ?? 100) / 100;
+  const recentOpacity = recents.includes('"text-subtle-foreground"')
+    ? 1
+    : Number(chrome.match(/text-subtle-foreground\/(\d+)/)?.[1] ?? 100) / 100;
+  const blend = (fg: OklchColor, bg: OklchColor, alpha: number): OklchColor => {
+    const encode = (v: number) =>
+      v <= 0.0031308 ? 12.92 * v : 1.055 * v ** (1 / 2.4) - 0.055;
+    const decode = (v: number) =>
+      v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+    const channel =
+      encode(fg.lightness ** 3) * alpha +
+      encode(bg.lightness ** 3) * (1 - alpha);
+    return { ...fg, lightness: Math.cbrt(decode(channel)) };
+  };
+  for (const mode of MODES) {
+    const block = modeBlock(mode);
+    const canvas = parseOklch(variableValue(block, "canvas"));
+    const ink = parseOklch(variableValue(block, "ink"));
+    const subtle = parseOklch(variableValue(block, "subtle-foreground"));
+    const muted = parseOklch(variableValue(block, "muted-foreground"));
+    const share = rampSteps(block).get("sidebar")! / 100;
+    const sidebar = {
+      ...canvas,
+      lightness: ink.lightness * share + canvas.lightness * (1 - share),
+    };
+    it(`${mode} composer placeholder reaches 4.5:1 after opacity`, () => {
+      expect(
+        contrastRatio(blend(subtle, canvas, opacity), canvas),
+      ).toBeGreaterThanOrEqual(4.5);
+    });
+    it(`${mode} Recent heading reaches 4.5:1 after color alpha`, () => {
+      expect(
+        contrastRatio(blend(subtle, canvas, recentOpacity), canvas),
+      ).toBeGreaterThanOrEqual(4.5);
+    });
+    it(`${mode} rail icons and sidebar labels retain their contrast floors`, () => {
+      expect(contrastRatio(muted, sidebar)).toBeGreaterThanOrEqual(4.5);
+      expect(contrastRatio(subtle, sidebar)).toBeGreaterThanOrEqual(3);
+    });
+  }
+});

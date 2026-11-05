@@ -509,7 +509,7 @@ export function RootComposeMobileRecents({
       <div className="sticky top-0 z-10 mb-1 bg-background px-2 py-2">
         <h2
           id="root-compose-mobile-recents"
-          className={CHROME_SECTION_LABEL_CLASS}
+          className={cn(CHROME_SECTION_LABEL_CLASS, "text-subtle-foreground")}
         >
           Recent
         </h2>
