@@ -495,6 +495,7 @@ describe("bb thread list command output", () => {
 
   it.each([
     ["needs-input", "Needs input"],
+    ["check-terminal", "Check terminal"],
     ["working", "Working"],
     ["woke", "Woke"],
     ["done-unread", "Done"],
