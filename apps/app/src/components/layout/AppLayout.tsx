@@ -1,4 +1,3 @@
-import { CompactHomeHeader } from "./CompactHomeHeader";
 import { useCorePageTitle } from "./core-page-title";
 import { type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import {
@@ -147,6 +146,18 @@ import { useSetRootComposeProjectId } from "@/lib/root-compose-selection";
 import { BackToAppCommandHandler } from "./BackToAppCommandHandler";
 import { HistoryCommandHandlers } from "./HistoryCommandHandlers";
 import { TerminalAttentionCommandHandler } from "./TerminalAttentionCommandHandler";
+
+const compactHomeHeaderImport =
+  typeof window !== "undefined" &&
+  typeof window.matchMedia === "function" &&
+  window.matchMedia("(max-width: 767px)").matches
+    ? import("./CompactHomeHeader")
+    : null;
+const CompactHomeHeader = lazy(() =>
+  (compactHomeHeaderImport ?? import("./CompactHomeHeader")).then((module) => ({
+    default: module.CompactHomeHeader,
+  })),
+);
 
 const ProjectPathDialog = lazy(() =>
   import("@/components/dialogs/ProjectPathDialog").then((module) => ({
@@ -893,7 +904,9 @@ function AppLayoutContent({ children }: AppLayoutProps) {
                     className="relative flex h-full min-h-0 min-w-0 w-full flex-col pt-[env(safe-area-inset-top)] pr-[env(safe-area-inset-right)] pb-(--bb-content-bottom-inset) pl-[env(safe-area-inset-left)] [--bb-content-bottom-inset:var(--bb-safe-area-bottom,env(safe-area-inset-bottom))]"
                   >
                     {isRootView && isCompactViewport ? (
-                      <CompactHomeHeader title={project?.name ?? "Home"} />
+                      <Suspense fallback={null}>
+                        <CompactHomeHeader title={project?.name ?? "Home"} />
+                      </Suspense>
                     ) : null}
                     {showHeader ? (
                       <AppHeader

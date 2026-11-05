@@ -272,7 +272,7 @@ it("shows the compact home context and reuses new-thread navigation", async () =
       {layoutTree("/", <Link to="/projects/proj_one/threads/thr_one">Open seeded thread</Link>)}
     </CompactViewportOverrideProvider>,
   );
-  expect(screen.getByText("Home")).toBeDefined();
+  expect(await screen.findByText("Home")).toBeDefined();
   const action = screen.getByRole("button", {
     name: /^New thread$/,
   });
