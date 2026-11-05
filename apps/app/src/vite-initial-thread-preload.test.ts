@@ -29,7 +29,7 @@ function bootstrap(pathname: string, view: unknown, ok = true) {
   runInNewContext(tags[0]!.children, { document, location: { pathname }, fetch, setTimeout, clearTimeout: timer });
   return { links, fetch, tags, setTimeout, timer, fallback: () => fallback(), respond: async () => {
     resolve({ ok, json: async () => view });
-    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => globalThis.setTimeout(r, 0));
   } };
 }
 
