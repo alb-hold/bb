@@ -2347,14 +2347,13 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
       const opened = new Promise<void>((resolve) => {
         resolveOpened = resolve;
       });
-      vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
-        this: Terminal,
-        element,
-      ) {
-        mounted.current = this;
-        open.call(this, element);
-        resolveOpened();
-      });
+      vi.spyOn(Terminal.prototype, "open").mockImplementation(
+        function (this: Terminal, element) {
+          mounted.current = this;
+          open.call(this, element);
+          resolveOpened();
+        },
+      );
       vi.spyOn(FitAddon.prototype, "proposeDimensions").mockImplementation(
         () => ({
           cols: 40,
@@ -2364,7 +2363,9 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
       const resizes = () =>
         testState.socketMessages
           .map((message) => JSON.parse(message))
-          .filter((message) => message.type === "resize" && message.claim !== true);
+          .filter(
+            (message) => message.type === "resize" && message.claim !== true,
+          );
       const settled = vi.spyOn(
         TerminalWebSocketTransport.prototype,
         "markLayoutSettled",
