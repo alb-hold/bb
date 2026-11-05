@@ -68,13 +68,13 @@ describe("RootComposeHome", () => {
       expect(
         screen.queryByTestId("root-compose-compact-leading-spacer"),
       ).toBeNull();
-      expect(viewport.style.maskImage).toContain("24px");
+      expect(viewport.hasAttribute("data-more-below")).toBe(true);
       viewport.scrollTop = 348;
       fireEvent.scroll(viewport);
-      expect(viewport.style.maskImage).toBe("");
+      expect(viewport.hasAttribute("data-more-below")).toBe(false);
       viewport.scrollTop = 0;
       fireEvent.scroll(viewport);
-      expect(viewport.style.maskImage).toContain("24px");
+      expect(viewport.hasAttribute("data-more-below")).toBe(true);
     },
   );
 
@@ -83,9 +83,10 @@ describe("RootComposeHome", () => {
     vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockReturnValue(552);
     renderCompactHome();
     expect(
-      screen.getByTestId("root-compose-compact-scroll-viewport").style
-        .maskImage,
-    ).toBe("");
+      screen
+        .getByTestId("root-compose-compact-scroll-viewport")
+        .hasAttribute("data-more-below"),
+    ).toBe(false);
   });
 
   it("centres the desktop composer without pinning tall content offscreen", () => {
