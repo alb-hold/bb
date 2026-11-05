@@ -85,7 +85,7 @@ describe("PermissionModePicker", () => {
       />,
     );
     const trigger = screen.getByRole("button", { name: "Permission mode" });
-    expect(trigger.classList.contains("w-28")).toBe(true);
+    expect(trigger.classList.contains("min-w-28")).toBe(true);
     expect(trigger.textContent).toBe("Approve");
     expect(trigger.textContent).toContain("Approve");
     expect(trigger.textContent).not.toContain("Auto");
@@ -121,6 +121,9 @@ it.each([360, 390, 1280])("retains the last permission label and chevron while p
   const view = render(<PermissionModePicker {...props} value="full" />);
   const before = screen.getByRole("button", { name: "Permission mode" });
   expect(before.textContent).toBe("Full Access");
+  expect(before.classList.contains("w-fit")).toBe(true);
+  expect(before.classList.contains("min-w-28")).toBe(true);
+  expect(before.classList.contains("w-28")).toBe(false);
   view.rerender(<PermissionModePicker {...props} value="auto" pending />);
   const pending = screen.getByRole("button", { name: "Permission mode" });
   expect(pending.textContent).toBe("Full Access");
@@ -135,7 +138,7 @@ it.each([360, 390, 1280])("keeps an unknown mode neutral and reserves its resolv
   const trigger = screen.getByRole("button", { name: "Permission mode" });
   expect(trigger.textContent).toBe("Permissions");
   expect(trigger.hasAttribute("disabled")).toBe(true);
-  expect(trigger.classList.contains("w-28")).toBe(true);
+  expect(trigger.classList.contains("min-w-28")).toBe(true);
   expect(trigger.querySelector('[data-icon="ChevronDown"]')).not.toBeNull();
   expect(trigger.querySelector('[data-icon="AlertTriangle"]')).toBeNull();
   expect(trigger.className).not.toContain("text-warning-text");
@@ -143,7 +146,7 @@ it.each([360, 390, 1280])("keeps an unknown mode neutral and reserves its resolv
   view.rerender(<PermissionModePicker options={permissionOptions} value="full" onChange={onChange} supported />);
   const resolved = screen.getByRole("button", { name: "Permission mode" });
   expect(resolved.textContent).toBe("Full Access");
-  expect(resolved.classList.contains("w-28")).toBe(true);
+  expect(resolved.classList.contains("min-w-28")).toBe(true);
   expect(resolved.querySelector('[data-icon="AlertTriangle"]')).not.toBeNull();
   view.rerender(<PermissionModePicker options={[]} pending onChange={onChange} supported />);
   const pending = screen.getByRole("button", { name: "Permission mode" });

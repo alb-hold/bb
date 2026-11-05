@@ -90,7 +90,7 @@ export function PermissionModePicker({
       onChange={onChange}
       className={cn(
         LIST_HOVER_TRANSITION,
-        "w-28 justify-between",
+        "min-w-28 justify-between",
         showFullAccessWarning && "text-warning-text hover:text-warning-text data-[state=open]:text-warning-text",
         className,
       )}
