@@ -201,6 +201,7 @@ interface ModelReasoningPickerProps {
   commandShortcutsEnabled?: boolean;
   serviceTierSupportByProvider?: Record<string, boolean>;
   className?: string;
+  compactIconOnly?: boolean;
   muted?: boolean;
   modal?: boolean;
   align?: "start" | "center" | "end";
@@ -236,6 +237,7 @@ export function ModelReasoningPicker({
   commandShortcutsEnabled = true,
   serviceTierSupportByProvider,
   className,
+  compactIconOnly = false,
   muted,
   modal = true,
   align = "start",
@@ -909,6 +911,8 @@ export function ModelReasoningPicker({
 
   const TriggerIcon =
     hasSelectedModel || modelIsLoading ? ProviderIcon : undefined;
+  const showCompactIconOnly =
+    compactIconOnly && isCompactViewport && TriggerIcon !== undefined;
   const triggerTitleModelLabel = showLoadingTrigger
     ? "Model"
     : selectedModelLoadFailed
@@ -921,6 +925,11 @@ export function ModelReasoningPicker({
       ? ` (${selectedServiceTierOption.label} mode)`
       : "",
   ].join("");
+  const triggerAccessibleLabel = showCompactIconOnly
+    ? `Provider, model and reasoning: ${selectedProviderLabel}: ${selectedModelLabel} · ${triggerReasoningLabel ?? reasoningLevelLabel(reasoningValue, undefined)} reasoning`
+    : toggleShortcut
+      ? `Provider, model and reasoning (${toggleShortcut.label})`
+      : "Provider, model and reasoning";
   const trigger = (
     <Button
       ref={triggerRef}
@@ -928,11 +937,7 @@ export function ModelReasoningPicker({
       type="button"
       variant="ghost"
       size="sm"
-      aria-label={
-        toggleShortcut
-          ? `Provider, model and reasoning (${toggleShortcut.label})`
-          : "Provider, model and reasoning"
-      }
+      aria-label={triggerAccessibleLabel}
       aria-description={modelSubstitutionNote}
       aria-keyshortcuts={toggleShortcut?.ariaKeyshortcuts}
       disabled={disabled}
@@ -960,29 +965,31 @@ export function ModelReasoningPicker({
         ) : TriggerIcon ? (
           <TriggerIcon className="size-4 shrink-0" />
         ) : null}
-        <>
-          <span
-            className={cn(
-              "min-w-0 truncate",
-              triggerModelValueIsDestructive && "text-destructive-text",
-            )}
-          >
-            {triggerModelBase}
-          </span>
-          {triggerModelTag ? (
-            <span className="shrink-0 text-subtle-foreground">
-              {triggerModelTag}
-            </span>
-          ) : null}
-          {triggerReasoningLabel ? (
+        {showCompactIconOnly ? null : (
+          <>
             <span
-              className="shrink-0 text-subtle-foreground"
-              data-promptbox-hide-compact=""
+              className={cn(
+                "min-w-0 truncate",
+                triggerModelValueIsDestructive && "text-destructive-text",
+              )}
             >
-              {triggerReasoningLabel}
+              {triggerModelBase}
             </span>
-          ) : null}
-        </>
+            {triggerModelTag ? (
+              <span className="shrink-0 text-subtle-foreground">
+                {triggerModelTag}
+              </span>
+            ) : null}
+            {triggerReasoningLabel ? (
+              <span
+                className="shrink-0 text-subtle-foreground"
+                data-promptbox-hide-compact=""
+              >
+                {triggerReasoningLabel}
+              </span>
+            ) : null}
+          </>
+        )}
       </span>
       {disabled ? null : (
         <Icon
