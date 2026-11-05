@@ -450,6 +450,7 @@ describe("ThreadDetailHeader", () => {
     );
     const view = render(header(false));
     const toggle = screen.getByRole("button", { name: "Show right panel" });
+    expect(toggle.getAttribute("data-compact-touch")).toBe("header");
     expect(toggle.hasAttribute("inert")).toBe(false);
 
     view.rerender(header(true));

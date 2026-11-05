@@ -481,6 +481,7 @@ function ThreadSecondaryPanelContent({
         isPanelInFrame && MACOS_TITLE_BAR_TRAILING_TOGGLE_CLASS,
       )}
       onClick={onClose}
+      data-compact-touch="header"
       aria-label={
         togglePanelShortcut
           ? `${HIDE_PANEL_LABEL} (${togglePanelShortcut.label})`

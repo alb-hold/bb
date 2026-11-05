@@ -99,6 +99,7 @@ export function CollapsibleHeader({
   return (
     <button
       type="button"
+      data-compact-touch-summary=""
       aria-expanded={isExpanded}
       onClick={onToggle}
       className={rootClassName}
@@ -328,6 +329,7 @@ export function ExpandablePanel({
 
   return (
     <div
+      data-compact-touch-panel=""
       className={cn("rounded-md text-muted-foreground", className)}
       {...intentHandlers}
     >

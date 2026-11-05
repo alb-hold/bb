@@ -35,6 +35,7 @@ it.each(["warning", "context menu", "keyboard"])(
           : "Start voice input",
     });
     expect(container.querySelectorAll("button")).toHaveLength(1);
+    expect(mic.getAttribute("data-compact-touch")).toBe("voice");
     expect(screen.queryByRole("button", { name: "System default" })).toBeNull();
     if (method === "warning") fireEvent.click(mic);
     if (method === "context menu") fireEvent.contextMenu(mic);

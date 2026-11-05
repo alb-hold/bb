@@ -43,3 +43,46 @@ describe("app.css sidebar drag cursor", () => {
     expect(block).toMatch(/cursor:\s*grabbing !important;/);
   });
 });
+
+describe("compact touch targets", () => {
+  const block = css.slice(css.lastIndexOf("@media (width < 48rem)"));
+  it.each([
+    'data-compact-touch="action"',
+    'data-compact-touch="action-menu"',
+    'data-compact-touch="code"',
+    'data-compact-touch="header"',
+    'data-sidebar="trigger"',
+    'data-promptbox-plus-control',
+    'data-compact-touch="voice"',
+    'data-model-reasoning-trigger',
+    'data-compact-touch-summary',
+  ])("reserves a disjoint 44px target for %s only at compact widths", (selector) => {
+    expect(block).toContain(`[${selector}]`);
+    expect(block).toContain("min-inline-size: 44px");
+    expect(block).toContain("min-block-size: 44px");
+    expect(block).not.toMatch(/svg|data-icon-root/);
+  });
+});
+
+it("expands timeline hit areas without increasing their layout heights", () => {
+  const block = css.slice(css.lastIndexOf("@media (width < 48rem)"));
+  const timeline = block.slice(block.indexOf('[data-compact-touch="action"]'));
+  expect(block).not.toContain("aria-label");
+  expect(timeline).not.toContain("min-block-size");
+  expect(timeline).toContain('content: ""');
+  expect(timeline).toContain("position: absolute");
+  expect(timeline).toContain("inset-block: -12px -4px");
+  expect(timeline).toContain("inset-block: -4px var(--compact-touch-summary-end, -20px)");
+  expect(timeline).toContain("--compact-touch-summary-end: -4px");
+  expect(timeline).toContain("button[data-compact-touch-summary]::after");
+});
+
+it("keeps the last summary hit area inside the animated clip without adding layout height", () => {
+  const block = css.slice(css.lastIndexOf("@media (width < 48rem)"));
+  expect(block).toMatch(
+    /\[data-compact-touch-height\]:has\(\[data-compact-touch-summary\]\)\s*\{\s*margin-block-end: -20px;\s*\}/,
+  );
+  expect(block).toMatch(
+    /\[data-compact-touch-height\]:has\(\[data-compact-touch-summary\]\) > div\s*\{\s*padding-block-end: 20px;\s*\}/,
+  );
+});

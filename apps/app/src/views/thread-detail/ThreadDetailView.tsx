@@ -1792,6 +1792,7 @@ function ThreadDetailViewInternal(
                 HEADER_ICON_BUTTON_CLASS,
               )}
               aria-label="Thread actions"
+              data-compact-touch="header"
               onClick={(event) => {
                 triggerProps.onClick?.(event);
                 event.stopPropagation();

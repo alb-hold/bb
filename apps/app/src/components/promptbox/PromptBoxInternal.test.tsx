@@ -4877,7 +4877,10 @@ describe("ComposerBox compact layout", () => {
     }
     const style = document.createElement("style");
     const appCss = readFileSync("src/app.css", "utf8");
-    style.textContent = appCss.slice(appCss.lastIndexOf("@media (width < 48rem)"));
+    const layoutSelector = '[data-promptbox]:not([data-promptbox-voice-active]) [data-promptbox-execution-layout="stacked"]';
+    const layoutStart = appCss.indexOf(layoutSelector);
+    expect(layoutStart).toBeGreaterThan(-1);
+    style.textContent = appCss.slice(appCss.lastIndexOf("@media (width < 48rem)", layoutStart));
     document.head.append(style);
     try {
       const media = Array.from(style.sheet?.cssRules ?? []).find(

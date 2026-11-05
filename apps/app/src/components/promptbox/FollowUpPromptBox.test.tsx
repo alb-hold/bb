@@ -907,6 +907,15 @@ describe("FollowUpPromptBox", () => {
     },
   );
 
+  it("forwards pending permission values without marking them resolved", () => {
+    const props = createFollowUpPromptBoxProps({ kind: "ready" });
+    props.permission = { ...props.permission, pending: true, value: "full" };
+    const view = render(<FollowUpPromptBox {...props} />);
+    expect(mocks.permissionModePicker).toHaveBeenLastCalledWith(expect.objectContaining({ pending: true, value: "full" }));
+    view.rerender(<FollowUpPromptBox {...props} permission={{ ...props.permission, pending: false, value: "auto" }} />);
+    expect(mocks.permissionModePicker).toHaveBeenLastCalledWith(expect.objectContaining({ pending: false, value: "auto" }));
+  });
+
   it("disables the permission picker while plan mode is active", () => {
     const props = createFollowUpPromptBoxProps({
       kind: "queue",

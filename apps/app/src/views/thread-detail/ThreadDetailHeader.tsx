@@ -350,6 +350,7 @@ export function ThreadDetailHeader({
               !showRightPanelToggle && "hidden",
             )}
             inert={!showRightPanelToggle}
+            data-compact-touch="header"
             aria-label={
               panelShortcut
                 ? `${rightPanelLabel} (${panelShortcut.label})`

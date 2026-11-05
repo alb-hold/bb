@@ -909,8 +909,7 @@ export function ModelReasoningPicker({
     el?.scrollIntoView({ block: "nearest" });
   }, [highlightedIndex, navId]);
 
-  const TriggerIcon =
-    hasSelectedModel || modelIsLoading ? ProviderIcon : undefined;
+  const TriggerIcon = ProviderIcon;
   const showCompactIconOnly = compactIconOnly && isCompactViewport;
   const triggerTitleModelLabel = showLoadingTrigger
     ? "Model"
@@ -925,9 +924,7 @@ export function ModelReasoningPicker({
       : "",
   ].join("");
   const triggerAccessibleLabel = showCompactIconOnly
-    ? hasSelectedModel
-      ? `Provider, model and reasoning: ${selectedProviderLabel}: ${selectedModelLabel} · ${triggerReasoningLabel ?? reasoningLevelLabel(reasoningValue, undefined)} reasoning`
-      : "Model"
+    ? `Provider, model and reasoning: ${selectedProviderLabel}: ${selectedModelLabel || "Model"} · ${triggerReasoningLabel ?? reasoningLevelLabel(reasoningValue, undefined)} reasoning`
     : toggleShortcut
       ? `Provider, model and reasoning (${toggleShortcut.label})`
       : "Provider, model and reasoning";
@@ -965,9 +962,9 @@ export function ModelReasoningPicker({
           />
         ) : TriggerIcon ? (
           <TriggerIcon className="size-4 shrink-0" />
-        ) : showCompactIconOnly ? (
-          <Icon name="Cpu" className="size-4 shrink-0" />
-        ) : null}
+        ) : (
+          <Icon name="Bot" className="size-4 shrink-0" />
+        )}
         {showCompactIconOnly ? null : (
           <>
             <span
@@ -994,15 +991,13 @@ export function ModelReasoningPicker({
           </>
         )}
       </span>
-      {disabled && !showCompactIconOnly ? null : (
-        <Icon
-          name="ChevronDown"
-          className={cn(
-            "size-3.5 shrink-0",
-            muted ? "text-subtle-foreground/75" : "text-muted-foreground",
-          )}
-        />
-      )}
+      <Icon
+        name="ChevronDown"
+        className={cn(
+          "size-3.5 shrink-0",
+          muted ? "text-subtle-foreground/75" : "text-muted-foreground",
+        )}
+      />
       <AppCommandShortcutHint
         shortcut={disabled ? null : toggleShortcut}
         className="ml-1"

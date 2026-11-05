@@ -37,7 +37,8 @@ export interface PickerOption<T extends string> {
 interface OptionPickerProps<T extends string> {
   label: string;
   notice?: ReactNode;
-  value: T;
+  leading?: ReactNode;
+  value?: T;
   options: readonly PickerOption<T>[];
   onChange: (value: T) => void;
   className?: string;
@@ -61,6 +62,7 @@ interface OptionPickerProps<T extends string> {
 export function OptionPicker<T extends string>({
   label,
   notice,
+  leading,
   value,
   options,
   onChange,
@@ -111,7 +113,7 @@ export function OptionPicker<T extends string>({
       )}
     >
       <span className={OPTION_TRIGGER_CONTENT_CLASS_NAME} title={selectedTitle}>
-        {SelectedIcon ? <SelectedIcon className="size-3.5 shrink-0" /> : null}
+        {leading ?? (SelectedIcon ? <SelectedIcon className="size-3.5 shrink-0" /> : null)}
         {selectedCompactLabel ? (
           <>
             <span className="min-w-0 truncate" data-promptbox-full-label="">
