@@ -186,7 +186,7 @@ describe("ExecutionControls", () => {
     const note = "gpt-5.2-codex isn't available; using GPT-5";
     renderExecutionControls({
       ...props,
-      model: { ...props.model, substitutionNote: note },
+      model: { ...props.model, unavailableModel: "gpt-5.2-codex" },
     });
     const chip = screen.getByRole("button", {
       name: "Provider, model and reasoning",

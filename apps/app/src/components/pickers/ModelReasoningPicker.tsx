@@ -183,7 +183,7 @@ interface ModelReasoningPickerProps {
   onProviderPreviewResolved?: (value: ResolvedProviderPreview) => void;
   requireVerifiedProviderPreview?: boolean;
   hasMultipleProviders: boolean;
-  modelSubstitutionNote?: string;
+  unavailableModel?: string;
   modelValue: string;
   modelOptions: readonly ModelPickerOption[];
   moreModelOptions?: readonly ModelPickerOption[];
@@ -219,7 +219,7 @@ export function ModelReasoningPicker({
   requireVerifiedProviderPreview = false,
   hasMultipleProviders,
   modelValue,
-  modelSubstitutionNote,
+  unavailableModel,
   modelOptions,
   moreModelOptions = [],
   modelIsLoading = false,
@@ -298,6 +298,9 @@ export function ModelReasoningPicker({
   const selectedModelLabel = (formatModelLabel ?? formatFallbackModelLabel)(
     selectedModelOption?.label ?? modelValue,
   );
+  const modelSubstitutionNote = unavailableModel
+    ? `${unavailableModel} isn't available; using ${selectedModelLabel}`
+    : undefined;
   const hasSelectedModel = selectedModelLabel.trim().length > 0;
   const showLoadingTrigger = modelIsLoading && !hasSelectedModel;
   const selectedProviderLabel = selectedProvider?.label ?? selectedProviderId;

@@ -13,7 +13,7 @@ import type {
   SystemExecutionOptionsModelLoadError,
   SystemProvidersQuery,
 } from "@bb/server-contract";
-import { formatModelLabel } from "@/hooks/useThreadCreationOptions";
+import { formatModelLabel } from "@/hooks/thread-creation-options/selection-state";
 import {
   ModelReasoningPicker,
   type ModelReasoningPickerHandoff,
@@ -36,7 +36,7 @@ interface ExecutionProviderConfig {
 }
 
 interface ExecutionModelConfig {
-  substitutionNote?: string;
+  unavailableModel?: string;
   active?: { model: string } | null;
   selected: string;
   options: readonly ModelPickerOption[];
@@ -154,7 +154,7 @@ export const ExecutionControls = memo(function ExecutionControls({
           onSelectedProviderChange={provider.onChange}
           hasMultipleProviders={provider.hasMultiple ?? false}
           modelValue={model.active?.model ?? model.selected}
-          modelSubstitutionNote={model.substitutionNote}
+          unavailableModel={model.unavailableModel}
           modelOptions={model.options}
           moreModelOptions={model.moreOptions}
           modelIsLoading={model.isLoading}

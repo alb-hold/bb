@@ -1087,13 +1087,13 @@ describe("ThreadDetailPromptArea", () => {
     mocks.defaultExecutionOptions = { model: "gpt-5.2-codex", permissionMode: "full", reasoningLevel: "medium", serviceTier: "default", source: "client/turn/requested" };
     renderPromptArea();
     expect(screen.getByTestId("selected-model").textContent).toBe("gpt-5");
-    expect(screen.getByTestId("selected-model").title).toBe("gpt-5.2-codex isn't available; using GPT-5");
+    expect(screen.getByTestId("selected-model").dataset.unavailableModel).toBe("gpt-5.2-codex");
   });
 
   it("does not report substitution when the stored model remains selected", () => {
     renderPromptArea();
     expect(screen.getByTestId("selected-model").textContent).toBe("gpt-5");
-    expect(screen.getByTestId("selected-model").title).toBe("");
+    expect(screen.getByTestId("selected-model").dataset.unavailableModel).toBeUndefined();
   });
 
   it("uses the real thread cache keys immediately", () => {
