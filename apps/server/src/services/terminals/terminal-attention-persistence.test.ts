@@ -87,6 +87,43 @@ describe("terminal attention persistence", () => {
       ).not.toBeNull();
     },
   );
+  it("keeps attention and input time when a user frame is empty or not delivered", async () => {
+    const harness = await createTestAppHarness({
+      db: createMigratedConnection(),
+    });
+    harnesses.push(harness);
+    const { terminalId } = createAttentionTerminal(harness);
+    harness.deps.terminalSessions.notifyTerminal({
+      terminalId,
+      payload: { title: "Approval" },
+    });
+    const sent = vi
+      .spyOn(harness.hub, "sendDaemonSessionMessage")
+      .mockReturnValue(true);
+    const socket = { close() {}, send() {} };
+    const inputTime = () =>
+      harness.db.$client
+        .prepare(
+          "SELECT last_user_input_at AS at FROM terminal_sessions WHERE id = ?",
+        )
+        .get(terminalId);
+    const before = inputTime();
+    harness.deps.terminalSessions.handleBrowserTerminalMessage({
+      terminalId,
+      socket,
+      message: { type: "input", dataBase64: "", isUserInput: true },
+    });
+    expect(inputTime()).toEqual(before);
+    expect(getTerminalAttention(harness.db, terminalId)?.clearedAt).toBeNull();
+    sent.mockReturnValue(false);
+    harness.deps.terminalSessions.handleBrowserTerminalMessage({
+      terminalId,
+      socket,
+      message: { type: "input", dataBase64: "eA==", isUserInput: true },
+    });
+    expect(inputTime()).toEqual(before);
+    expect(getTerminalAttention(harness.db, terminalId)?.clearedAt).toBeNull();
+  });
   it("keeps an unbound idle CLI neutral before and after input and binding", async () => {
     const harness = await createTestAppHarness({
       db: createMigratedConnection(),
@@ -475,6 +512,7 @@ describe("terminal attention persistence", () => {
       socket: { close() {}, send() {} },
       message: { type: "visibility", visible: true },
     });
+    await new Promise((resolve) => setTimeout(resolve, 2));
 
     harness.deps.terminalSessions.notifyTerminal({
       terminalId,

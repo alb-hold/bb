@@ -4041,9 +4041,6 @@ export class TerminalSessionLifecycle {
       Date.now(),
     );
     this.applySharedTerminalSize(args);
-    if (args.message.isUserInput !== false) {
-      this.recordDirectTerminalInput(current.id);
-    }
     const sent = this.options.hub.sendDaemonSessionMessage(
       current.daemonSessionId,
       {
@@ -4061,6 +4058,11 @@ export class TerminalSessionLifecycle {
       this.disconnectDaemonSessionTerminals({
         daemonSessionId: current.daemonSessionId,
       });
+    } else if (
+      args.message.isUserInput !== false &&
+      args.message.dataBase64.length > 0
+    ) {
+      this.recordDirectTerminalInput(current.id);
     }
   }
 
