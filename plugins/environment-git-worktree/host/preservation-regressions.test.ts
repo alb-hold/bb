@@ -93,6 +93,58 @@ function foreignUnreadableCwdProc(
   };
 }
 
+function rootDaemonHolderProc(
+  pid: number,
+  worktreePath: string,
+  holder: "fd" | "exe",
+): ProcReader {
+  let mount: string | undefined;
+  const base = `/proc/${pid}`;
+  return {
+    ...hostProc,
+    readFile: async (target) => {
+      if (target === "/proc/self/status")
+        return `Name:\tnode\nState:\tR (running)\nNSpid:\t${process.pid}\nUid:\t0\t0\t0\t0\nGid:\t0\t0\t0\t0\nGroups:\t0\n`;
+      if (target === `${base}/status`)
+        return `Name:\tforeign\nState:\tS (sleeping)\nUid:\t501\t501\t501\t501\nGid:\t501\t501\t501\t501\nGroups:\t501\nCapEff:\t0000000000000000\n`;
+      if (target === `${base}/comm`) return "foreign-holder\n";
+      if (target === `${base}/maps`) return "";
+      return hostProc.readFile(target);
+    },
+    readdir: async (target) => {
+      if (target === "/proc") return [String(process.pid), String(pid)];
+      if (target === `${base}/task`) return [String(pid)];
+      if (target === `${base}/fd`) return holder === "fd" ? ["3"] : [];
+      return hostProc.readdir(target);
+    },
+    readlink: async (target) => {
+      if (target === "/proc/self/ns/mnt") {
+        mount ??= await hostProc.readlink(target);
+        return mount;
+      }
+      if (
+        target === `${base}/ns/mnt` ||
+        target === `${base}/task/${pid}/ns/mnt`
+      ) {
+        mount ??= await hostProc.readlink("/proc/self/ns/mnt");
+        return mount;
+      }
+      if (target === "/proc/self/root" || target === `${base}/root`) return "/";
+      if (target === `${base}/cwd` || target === `${base}/task/${pid}/cwd`)
+        return "/tmp";
+      if (target === `${base}/exe`)
+        return holder === "exe"
+          ? path.join(worktreePath, "README.md")
+          : "/usr/bin/node";
+      if (target === `${base}/fd/3`)
+        return holder === "fd"
+          ? path.join(worktreePath, "README.md")
+          : "/dev/null";
+      return hostProc.readlink(target);
+    },
+  };
+}
+
 async function git(cwd: string, ...args: string[]): Promise<string> {
   const result = await execFile("git", args, { cwd });
   return result.stdout;
@@ -190,6 +242,29 @@ afterEach(async () => {
 });
 
 describe("real worktree teardown preservation", () => {
+  it.each(["fd", "exe"] as const)(
+    "retains a clean worktree for a foreign root-visible process with its %s inside",
+    async (holder) => {
+      const worktree = await makeWorktree();
+      const pid = 4_000_000_101;
+      useProcReaderForTests(rootDaemonHolderProc(pid, worktree.path, holder));
+      const signal = vi.spyOn(process, "kill");
+      const scan = await scanWorktreeHolders(worktree.path);
+      expect(scan).toMatchObject({
+        status: "held",
+        holders: [{ pid, through: "open file" }],
+      });
+      await expect(remove(worktree)).rejects.toMatchObject({
+        code: "worktree_preserved",
+      });
+      expect(signal).not.toHaveBeenCalled();
+      await expect(access(worktree.path)).resolves.toBeUndefined();
+      await expect(
+        readFile(path.join(worktree.path, "README.md"), "utf8"),
+      ).resolves.toBe("published\n");
+    },
+  );
+
   it.each([
     [
       "modified",
@@ -609,7 +684,7 @@ describe("real worktree teardown preservation", () => {
       }),
     ).rejects.toMatchObject({ code: "worktree_preserved" });
 
-    expect(injected, checkedEntries.join("\n")).toBe(true);
+    expect(injected).toBe(true);
     await expect(
       readFile(path.join(worktree.path, ".gitignore"), "utf8"),
     ).resolves.toBe(".xxx\n");
@@ -620,6 +695,35 @@ describe("real worktree teardown preservation", () => {
     const after = await fs.stat(path.join(worktree.path, ".gitignore"));
     expect(after.mtimeMs).toBeCloseTo(originalTimes.mtimeMs, 0);
   });
+
+  removeDirectoryTreeTest(
+    "retains a same-size edit with restored mtime between precise entry snapshots",
+    async () => {
+      const worktree = await makeWorktree();
+      const entry = path.join(worktree.path, ".gitignore");
+      const original = await fs.stat(entry);
+      let injected = false;
+      const edited = ".xxx\n";
+      const result = await removeDirectoryTree(worktree.path, {
+        startedAt: Number.MAX_SAFE_INTEGER,
+        afterEntryCheck: async (checkedEntry) => {
+          if (!checkedEntry.endsWith("/.gitignore")) return;
+          injected = true;
+          const before = await fs.stat(entry, { bigint: true });
+          expect(Buffer.byteLength(edited)).toBe(Number(before.size));
+          await writeFile(entry, edited);
+          await utimes(entry, original.atimeMs / 1000, original.mtimeMs / 1000);
+        },
+      });
+
+      expect(injected).toBe(true);
+      expect(result).toBe("retained");
+      await expect(readFile(entry, "utf8")).resolves.toBe(edited);
+      await expect(
+        git(worktree.path, "rev-parse", "--git-dir"),
+      ).resolves.toMatch(/worktrees/u);
+    },
+  );
 
   it("retains a replacement directory created before directory removal", async () => {
     const worktree = await makeWorktree();
@@ -745,7 +849,7 @@ describe("real worktree teardown preservation", () => {
     },
   );
 
-  it("retains late data after removing an earlier clean entry", async () => {
+  it("retains a new sibling after an earlier child is removed and keeps the git marker usable", async () => {
     const worktree = await makeWorktree();
     useProcReaderForTests(descendantsOnly(hostProc, -1));
     const lateDirectory = path.join(worktree.path, "late-dir");
@@ -761,25 +865,25 @@ describe("real worktree teardown preservation", () => {
     );
     await git(worktree.path, "push", "origin", "feature");
     let injected = false;
-    await expect(
-      remove(worktree, {
-        beforeEntryRemoval: async (entry) => {
-          if (!entry.endsWith("late-dir/b-trigger.txt") || injected) return;
-          injected = true;
-          await writeFile(
-            path.join(path.dirname(entry), "late-file.txt"),
-            "kept\n",
-          );
-        },
-      }),
-    ).rejects.toMatchObject({
-      code: "worktree_preserved",
-      message: expect.stringContaining("may be partially removed"),
+    const result = await removeDirectoryTree(worktree.path, {
+      startedAt: Number.MAX_SAFE_INTEGER,
+      beforeEntryRemoval: async (entry) => {
+        if (!entry.endsWith("late-dir/b-trigger.txt") || injected) return;
+        injected = true;
+        await writeFile(
+          path.join(path.dirname(entry), "late-file.txt"),
+          "kept\n",
+        );
+      },
     });
+    expect(result).toBe("retained");
     expect(injected).toBe(true);
     await expect(
       access(path.join(worktree.path, ".git")),
     ).resolves.toBeUndefined();
+    await expect(git(worktree.path, "rev-parse", "--git-dir")).resolves.toMatch(
+      /worktrees/u,
+    );
     await expect(
       readFile(path.join(worktree.path, "README.md"), "utf8"),
     ).resolves.toBe("published\n");

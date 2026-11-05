@@ -244,64 +244,69 @@ async function scanLinuxProcess(
     if (foreignUid === undefined || (foreignUid < 1000 && self.uid !== 0))
       return { otherUser: true };
     const cwd = await readOptional(() => proc.readlink(`${base}/cwd`));
-    if ("value" in cwd)
-      return isUnder(cwd.value, directory)
-        ? { pid, command: null, through: "working folder" }
-        : { otherUser: true };
-    if (!("failed" in cwd)) return null;
-    if (cwd.failed !== "EACCES" && cwd.failed !== "EPERM") {
-      return {
-        uncertain: `process ${pid} cwd is unreadable (${cwd.failed})`,
-      };
+    if ("value" in cwd) {
+      if (isUnder(cwd.value, directory))
+        return { pid, command: null, through: "working folder" };
+      if (self.uid !== 0) return { otherUser: true };
     }
-    const capabilities = /^CapEff:\s*([0-9a-f]+)/imu.exec(status.value)?.[1];
-    if (capabilities === undefined) {
-      return {
-        uncertain: `process ${pid} cwd capabilities could not be read`,
-      };
-    }
-    const effectiveCapabilities = BigInt(`0x${capabilities}`);
-    const dacCapabilities = (1n << 1n) | (1n << 2n);
-    if ((effectiveCapabilities & dacCapabilities) !== 0n) {
-      return {
-        uncertain: `process ${pid} has a DAC override capability and its cwd is unreadable`,
-      };
-    }
-    let cursor = path.resolve(directory);
-    while (true) {
-      const access = await readOptional(() => proc.statAccess(cursor));
-      if (!("value" in access))
+    if ("gone" in cwd) return null;
+    if (!("failed" in cwd)) {
+      if (self.uid !== 0) return null;
+    } else {
+      if (cwd.failed !== "EACCES" && cwd.failed !== "EPERM") {
         return {
-          uncertain: `process ${pid} cwd reachability could not be determined`,
+          uncertain: `process ${pid} cwd is unreadable (${cwd.failed})`,
         };
-      const accessArgs = {
-        processUid: foreignUid,
-        processFilesystemGid: gids[3],
-        processSupplementaryGroups: supplementaryGroups,
-        directoryUid: access.value.uid,
-        directoryGid: access.value.gid,
-        mode: access.value.mode,
-      };
-      let canSearch = linuxDirectoryModeAllowsTraversal(accessArgs);
-      if (!canSearch) {
-        let acl = context.acls.get(cursor);
-        if (acl === undefined) {
-          acl = proc.hasExtendedAcl(cursor);
-          context.acls.set(cursor, acl);
-        }
-        canSearch = linuxDirectoryIsTraversable({
-          ...accessArgs,
-          hasExtendedAcl: await acl,
-        });
       }
-      if (!canSearch) return { otherUser: true };
-      const parent = path.dirname(cursor);
-      if (parent === cursor) break;
-      cursor = parent;
+      const capabilities = /^CapEff:\s*([0-9a-f]+)/imu.exec(status.value)?.[1];
+      if (capabilities === undefined) {
+        return {
+          uncertain: `process ${pid} cwd capabilities could not be read`,
+        };
+      }
+      const effectiveCapabilities = BigInt(`0x${capabilities}`);
+      const dacCapabilities = (1n << 1n) | (1n << 2n);
+      if ((effectiveCapabilities & dacCapabilities) !== 0n) {
+        return {
+          uncertain: `process ${pid} has a DAC override capability and its cwd is unreadable`,
+        };
+      }
+      let cursor = path.resolve(directory);
+      while (true) {
+        const access = await readOptional(() => proc.statAccess(cursor));
+        if (!("value" in access))
+          return {
+            uncertain: `process ${pid} cwd reachability could not be determined`,
+          };
+        const accessArgs = {
+          processUid: foreignUid,
+          processFilesystemGid: gids[3],
+          processSupplementaryGroups: supplementaryGroups,
+          directoryUid: access.value.uid,
+          directoryGid: access.value.gid,
+          mode: access.value.mode,
+        };
+        let canSearch = linuxDirectoryModeAllowsTraversal(accessArgs);
+        if (!canSearch) {
+          let acl = context.acls.get(cursor);
+          if (acl === undefined) {
+            acl = proc.hasExtendedAcl(cursor);
+            context.acls.set(cursor, acl);
+          }
+          canSearch = linuxDirectoryIsTraversable({
+            ...accessArgs,
+            hasExtendedAcl: await acl,
+          });
+        }
+        if (!canSearch) return { otherUser: true };
+        const parent = path.dirname(cursor);
+        if (parent === cursor) break;
+        cursor = parent;
+      }
+      return {
+        uncertain: `process ${pid} cwd is unreadable for foreign uid ${foreignUid}`,
+      };
     }
-    return {
-      uncertain: `process ${pid} cwd is unreadable for foreign uid ${foreignUid}`,
-    };
   }
 
   const comm = await readOptional(() => proc.readFile(`${base}/comm`));

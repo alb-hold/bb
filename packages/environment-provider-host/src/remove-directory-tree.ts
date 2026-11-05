@@ -268,12 +268,21 @@ export async function removeDirectoryTree(
         return "retained";
       }
       await hooks.beforeEntryRemoval?.(entry);
-      let checkedInfo;
+      let checkedPreciseInfo;
       try {
-        checkedInfo = await lstat(anchoredEntry);
+        checkedPreciseInfo = await lstat(anchoredEntry, { bigint: true });
       } catch {
         return "retained";
       }
+      const checkedInfo = {
+        dev: Number(checkedPreciseInfo.dev),
+        ino: Number(checkedPreciseInfo.ino),
+        ctimeMs: Number(checkedPreciseInfo.ctimeNs) / 1_000_000,
+        mtimeMs: Number(checkedPreciseInfo.mtimeNs) / 1_000_000,
+        size: Number(checkedPreciseInfo.size),
+        ctimeNs: checkedPreciseInfo.ctimeNs,
+        mtimeNs: checkedPreciseInfo.mtimeNs,
+      };
       if (
         checkedInfo.dev !== info.dev ||
         checkedInfo.ino !== info.ino ||
@@ -282,17 +291,30 @@ export async function removeDirectoryTree(
         return "retained";
       }
       await hooks.afterEntryCheck?.(entry);
-      let beforeQuarantineInfo;
+      let beforeQuarantinePreciseInfo;
       try {
-        beforeQuarantineInfo = await lstat(anchoredEntry);
+        beforeQuarantinePreciseInfo = await lstat(anchoredEntry, {
+          bigint: true,
+        });
       } catch {
         return "retained";
       }
+      const beforeQuarantineInfo = {
+        dev: Number(beforeQuarantinePreciseInfo.dev),
+        ino: Number(beforeQuarantinePreciseInfo.ino),
+        ctimeMs: Number(beforeQuarantinePreciseInfo.ctimeNs) / 1_000_000,
+        mtimeMs: Number(beforeQuarantinePreciseInfo.mtimeNs) / 1_000_000,
+        size: Number(beforeQuarantinePreciseInfo.size),
+        ctimeNs: beforeQuarantinePreciseInfo.ctimeNs,
+        mtimeNs: beforeQuarantinePreciseInfo.mtimeNs,
+      };
       if (
         beforeQuarantineInfo.dev !== checkedInfo.dev ||
         beforeQuarantineInfo.ino !== checkedInfo.ino ||
         beforeQuarantineInfo.ctimeMs !== checkedInfo.ctimeMs ||
         beforeQuarantineInfo.mtimeMs !== checkedInfo.mtimeMs ||
+        beforeQuarantineInfo.ctimeNs !== checkedInfo.ctimeNs ||
+        beforeQuarantineInfo.mtimeNs !== checkedInfo.mtimeNs ||
         beforeQuarantineInfo.size !== checkedInfo.size
       ) {
         return "retained";
@@ -312,26 +334,46 @@ export async function removeDirectoryTree(
       };
       try {
         await rename(anchoredEntry, quarantined);
-        const movedInfo = await lstat(quarantined);
+        const movedPreciseInfo = await lstat(quarantined, { bigint: true });
+        const movedInfo = {
+          dev: Number(movedPreciseInfo.dev),
+          ino: Number(movedPreciseInfo.ino),
+          ctimeMs: Number(movedPreciseInfo.ctimeNs) / 1_000_000,
+          mtimeMs: Number(movedPreciseInfo.mtimeNs) / 1_000_000,
+          size: Number(movedPreciseInfo.size),
+          ctimeNs: movedPreciseInfo.ctimeNs,
+          mtimeNs: movedPreciseInfo.mtimeNs,
+        };
         if (
           movedInfo.dev !== checkedInfo.dev ||
           movedInfo.ino !== checkedInfo.ino ||
-          movedInfo.mtimeMs !== checkedInfo.mtimeMs ||
+          movedPreciseInfo.mtimeNs !== checkedInfo.mtimeNs ||
           movedInfo.size !== checkedInfo.size
         ) {
           await restoreQuarantine();
           return "retained";
         }
-        const movedPreciseInfo = await lstat(quarantined, { bigint: true });
         await hooks.afterEntryQuarantined?.(entry, quarantined);
-        const finalInfo = await lstat(quarantined);
         const finalPreciseInfo = await lstat(quarantined, { bigint: true });
+        const finalInfo = {
+          dev: Number(finalPreciseInfo.dev),
+          ino: Number(finalPreciseInfo.ino),
+          ctimeMs: Number(finalPreciseInfo.ctimeNs) / 1_000_000,
+          mtimeMs: Number(finalPreciseInfo.mtimeNs) / 1_000_000,
+          size: Number(finalPreciseInfo.size),
+          ctimeNs: finalPreciseInfo.ctimeNs,
+          mtimeNs: finalPreciseInfo.mtimeNs,
+        };
         if (
           finalInfo.dev !== movedInfo.dev ||
           finalInfo.ino !== movedInfo.ino ||
           finalInfo.ctimeMs !== movedInfo.ctimeMs ||
           finalInfo.mtimeMs !== movedInfo.mtimeMs ||
-          finalPreciseInfo.ctimeNs !== movedPreciseInfo.ctimeNs
+          finalPreciseInfo.ctimeNs !== movedPreciseInfo.ctimeNs ||
+          finalPreciseInfo.mtimeNs !== movedPreciseInfo.mtimeNs ||
+          Number(finalPreciseInfo.dev) !== movedInfo.dev ||
+          Number(finalPreciseInfo.ino) !== movedInfo.ino ||
+          Number(finalPreciseInfo.size) !== movedInfo.size
         ) {
           await restoreQuarantine();
           return "retained";

@@ -106,6 +106,25 @@ describe("scanWorktreeHolders", () => {
     });
   });
 
+  it.each([
+    ["open file", { fdTargets: ["/work/tree/sub/open.txt"] }],
+    ["executable", { exe: "/work/tree/sub/program" }],
+  ] as const)(
+    "checks a foreign process's %s when the daemon runs as root",
+    async (_kind, holder) => {
+      const proc = fakeProc({
+        self: { uid: 0 },
+        processes: {
+          101: { uid: 1001, cwd: "/home/other", ...holder },
+        },
+      });
+      await expect(scanLinux("/work/tree", proc, 4242)).resolves.toMatchObject({
+        status: "held",
+        holders: [{ pid: 101, through: "open file" }],
+      });
+    },
+  );
+
   it("is inconclusive, not clear, where the platform cannot be inspected", async () => {
     Object.defineProperty(process, "platform", { value: "win32" });
     const scan = await scanWorktreeHolders(await makeDirectory());
@@ -322,6 +341,8 @@ function fakeProc(options: {
     if (process.cwdDenied === true) denied.add(`${base}/cwd`);
     links.set(`${base}/ns/mnt`, process.mount ?? options.ownMount ?? "mnt:[1]");
     links.set(`${base}/root`, process.root ?? "/");
+    if (process.cwdDenied !== true)
+      links.set(`${base}/cwd`, process.cwd ?? "/home/other");
     dirs.set(`${base}/task`, [key]);
     links.set(
       `${base}/task/${key}/ns/mnt`,
