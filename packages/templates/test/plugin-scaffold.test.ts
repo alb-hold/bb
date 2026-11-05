@@ -84,7 +84,14 @@ describe("scaffoldPlugin SDK dependency", () => {
     expect(components.registries["@bb"]).toBe(
       "https://raw.githubusercontent.com/get-bb/bb/desktop-v0.9.0/packages/plugin-registry/r/{name}.json",
     );
-    expect(pkg.dependencies["@radix-ui/react-checkbox"]).toBeDefined();
+    for (const name of [
+      "@radix-ui/react-checkbox",
+      "@radix-ui/react-slot",
+      "@radix-ui/react-compose-refs",
+    ]) {
+      expect(pkg.dependencies[name]).toBeUndefined();
+      expect(pkg.devDependencies[name]).toBeDefined();
+    }
     await access(join(targetDir, "components", "ui", "checkbox.tsx"));
   });
 

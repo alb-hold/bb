@@ -309,7 +309,12 @@ export function runtimeShimPlugin(
               ? await installedPackageVersion(resolved.path, args.path)
               : null;
           const hostVersion = RUNTIME_PACKAGE_VERSIONS[args.path];
-          if (!canShareRuntimeVersion(version, hostVersion)) {
+          if (
+            !canShareRuntimeVersion(version, hostVersion) &&
+            (resolved.errors.length === 0 ||
+              args.path === "zod" ||
+              args.path === "zod/v4")
+          ) {
             return {
               path: resolved.path,
               errors: resolved.errors,

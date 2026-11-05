@@ -119,18 +119,11 @@ export const RUNTIME_SHIM_NPM_SPECIFIERS = Object.freeze(
   ),
 );
 
-/**
- * The npm packages a plugin must declare as type-only devDependencies (at the
- * host's version) for its shimmed imports to typecheck: every shimmed npm
- * package except React, whose declarations ship separately as `@types/react`
- * and `@types/react-dom` and which the scaffold pins on its own. `bb plugin
- * build` never bundles any of these, so none belongs in `dependencies`.
- */
 export const SHIMMED_TYPE_PACKAGES = Object.freeze(
   [
     ...new Set(
       RUNTIME_SHIM_NPM_SPECIFIERS.map(packageNameOf).filter(
-        (name) => name !== "react" && name !== "react-dom",
+        (name) => name !== "react" && name !== "react-dom" && name !== "zod",
       ),
     ),
   ].sort(),
