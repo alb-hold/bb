@@ -1,4 +1,3 @@
-import { clearTerminalAttention } from "./fork-terminal-attention.js";
 import { sql } from "drizzle-orm";
 import type { DbConnection, DbQueryConnection } from "./connection.js";
 
@@ -494,8 +493,6 @@ export function recordNativeTerminalThreadSessionId(
         `UPDATE fork_native_terminal_threads SET native_session_id = ?, updated_at = ? WHERE thread_id = ?`,
       )
       .run(args.nativeSessionId, Date.now(), args.threadId);
-    if (current.terminalSessionId !== null)
-      clearTerminalAttention(db, current.terminalSessionId, Date.now());
     return { kind: "recorded" };
   })();
 }

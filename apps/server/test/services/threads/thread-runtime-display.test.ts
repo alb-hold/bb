@@ -1336,7 +1336,7 @@ it("keeps a native attention signal in both list and header state until input cl
 });
 
 it.each(["bell", "osc-9", "osc-99", "osc-777"] as const)(
-  "keeps idle unbound CLIs neutral and preserves %s re-attention",
+  "keeps idle unbound CLIs neutral and holds pre-binding %s attention until input",
   (kind) => {
     const { db, hostId, hub } = setup();
     const { thread } = createLiveNativeReportingThread({ db, hostId });
@@ -1372,6 +1372,9 @@ it.each(["bell", "osc-9", "osc-99", "osc-777"] as const)(
       threadId: thread.id,
       nativeSessionId: "bound",
     });
+    expect(detail().hasPendingInteraction).toBe(true);
+    expect(list()[0]?.listIndicator).toBe("needs-input");
+    clearTerminalAttention(db, terminalId, Date.now());
     expect(detail().hasPendingInteraction).toBe(false);
     expect(list()[0]?.hasPendingInteraction).toBe(false);
     upsertTerminalAttention(db, {
