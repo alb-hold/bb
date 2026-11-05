@@ -1330,6 +1330,8 @@ describe("nested sticky parents with row state", () => {
 const execFileAsync = promisify(execFile);
 const chromiumPath = inject("threadListChromiumPath");
 const pluginCss = inject("threadListPluginCss");
+const CHROMIUM_LAUNCH_TIMEOUT_MS = 60_000;
+const NESTED_PIN_TEST_TIMEOUT_MS = 120_000;
 
 interface NestedPinMeasurement {
   tierCount: number;
@@ -1339,36 +1341,46 @@ interface NestedPinMeasurement {
   tier1Visible: boolean;
 }
 
-const NESTED_PIN_MEASURE_SCRIPT = `
-const scroller = document.getElementById("scroller");
-scroller.scrollTop = 400;
-const origin = scroller.getBoundingClientRect().top;
-const tiers = Array.from(document.querySelectorAll('[data-sidebar-sticky-tier="parent"]'));
-const box = (element) => {
-  const rect = element.getBoundingClientRect();
-  return { top: rect.top - origin, bottom: rect.bottom - origin };
-};
-const rowState = tiers[0].querySelector("[data-sidebar-thread-row-state]");
-const growingRow = rowState ? rowState.closest("[data-sidebar-rename-row]") : null;
-let tier1Visible = false;
-if (tiers[1]) {
-  const rect = tiers[1].getBoundingClientRect();
-  const hit = document.elementFromPoint(rect.left + 40, rect.top + rect.height / 2);
-  tier1Visible = hit !== null && tiers[1].contains(hit);
+interface NestedPinSnapshot {
+  html: string;
+  width: number;
 }
-document.getElementById("layout").textContent = JSON.stringify({
-  tierCount: tiers.length,
-  rowHeight: growingRow ? growingRow.getBoundingClientRect().height : null,
-  tier0: box(tiers[0]),
-  tier1: tiers[1] ? box(tiers[1]) : null,
-  tier1Visible,
-});
+
+const NESTED_PIN_MEASURE_SCRIPT = `
+const results = [];
+for (const section of document.querySelectorAll("section.snapshot")) {
+  section.style.display = "block";
+  const scroller = section.querySelector(".scroller");
+  scroller.scrollTop = 400;
+  const origin = scroller.getBoundingClientRect().top;
+  const tiers = Array.from(section.querySelectorAll('[data-sidebar-sticky-tier="parent"]'));
+  const box = (element) => {
+    const rect = element.getBoundingClientRect();
+    return { top: rect.top - origin, bottom: rect.bottom - origin };
+  };
+  const rowState = tiers[0].querySelector("[data-sidebar-thread-row-state]");
+  const growingRow = rowState ? rowState.closest("[data-sidebar-rename-row]") : null;
+  let tier1Visible = false;
+  if (tiers[1]) {
+    const rect = tiers[1].getBoundingClientRect();
+    const hit = document.elementFromPoint(rect.left + 40, rect.top + rect.height / 2);
+    tier1Visible = hit !== null && tiers[1].contains(hit);
+  }
+  results.push({
+    tierCount: tiers.length,
+    rowHeight: growingRow ? growingRow.getBoundingClientRect().height : null,
+    tier0: box(tiers[0]),
+    tier1: tiers[1] ? box(tiers[1]) : null,
+    tier1Visible,
+  });
+  section.style.display = "none";
+}
+document.getElementById("layout").textContent = JSON.stringify(results);
 `;
 
 async function measureNestedPins(
-  treeHtml: string,
-  viewportWidth: number,
-): Promise<NestedPinMeasurement> {
+  snapshots: readonly NestedPinSnapshot[],
+): Promise<NestedPinMeasurement[]> {
   const dir = await mkdtemp(join(tmpdir(), "bb-nested-dynamic-"));
   try {
     const page = join(dir, "nested.html");
@@ -1376,6 +1388,15 @@ async function measureNestedPins(
       join(process.cwd(), "../../apps/app/src/components/ui/theme.css"),
       "utf8",
     );
+    const sections = snapshots
+      .map(
+        ({ html, width }) => `<section class="snapshot" style="display:none">
+<div data-bb-plugin-root style="width:${width}px">
+<div class="scroller" style="height:240px;overflow:auto">
+<div data-sidebar-sticky-stack style="--bb-sidebar-sticky-parent-base-top:0px">${html}</div>
+</div></div></section>`,
+      )
+      .join("\n");
     await writeFile(
       page,
       `<!doctype html><html><head><meta name="viewport" content="width=device-width"><style>
@@ -1386,33 +1407,35 @@ body{margin:0}
 ${pluginCss ?? ""}
 ${themeCss}
 </style></head><body>
-<div data-bb-plugin-root style="width:${viewportWidth}px">
-<div id="scroller" style="height:240px;overflow:auto">
-<div data-sidebar-sticky-stack style="--bb-sidebar-sticky-parent-base-top:0px">${treeHtml}</div>
-</div></div>
+${sections}
 <pre id="layout"></pre>
 <script>${NESTED_PIN_MEASURE_SCRIPT}</script>
 </body></html>`,
     );
-    const { stdout } = await execFileAsync(chromiumPath ?? "", [
-      "--headless",
-      "--no-sandbox",
-      "--disable-gpu",
-      "--disable-dev-shm-usage",
-      "--disable-extensions",
-      "--disable-background-networking",
-      "--no-first-run",
-      "--hide-scrollbars",
-      `--window-size=${viewportWidth},400`,
-      "--virtual-time-budget=2000",
-      "--dump-dom",
-      `file://${page}`,
-    ]);
+    const windowWidth = Math.max(...snapshots.map(({ width }) => width));
+    const { stdout } = await execFileAsync(
+      chromiumPath ?? "",
+      [
+        "--headless",
+        "--no-sandbox",
+        "--disable-gpu",
+        "--disable-dev-shm-usage",
+        "--disable-extensions",
+        "--disable-background-networking",
+        "--no-first-run",
+        "--hide-scrollbars",
+        `--window-size=${windowWidth},400`,
+        "--virtual-time-budget=2000",
+        "--dump-dom",
+        `file://${page}`,
+      ],
+      { timeout: CHROMIUM_LAUNCH_TIMEOUT_MS },
+    );
     const match = /<pre id="layout">([^<]*)<\/pre>/.exec(stdout);
     if (match?.[1] === undefined) throw new Error(stdout.slice(0, 500));
     return JSON.parse(
       match[1].replaceAll("&quot;", '"'),
-    ) as NestedPinMeasurement;
+    ) as NestedPinMeasurement[];
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -1544,100 +1567,125 @@ describe.skipIf(
       );
     }
 
-    async function settle(
-      container: HTMLElement,
-      viewport: (typeof VIEWPORTS)[number],
-    ): Promise<NestedPinMeasurement> {
-      for (let attempt = 0; attempt < 4; attempt++) {
-        const measured = await measureNestedPins(
-          container.innerHTML,
-          viewport.width,
-        );
-        if (
-          measured.rowHeight === null ||
-          measured.rowHeight === layoutRowHeight
-        ) {
-          return measured;
-        }
-        layoutRowHeight = measured.rowHeight;
-        ResizeObserverStub.fireAll();
-      }
-      throw new Error("row height did not settle");
-    }
-
-    function expectPinnedBelow(measured: NestedPinMeasurement) {
-      expect(measured.tier1).not.toBeNull();
-      const tier1 = measured.tier1 ?? { top: Number.NaN, bottom: Number.NaN };
-      expect(tier1.top).toBeGreaterThanOrEqual(measured.tier0.bottom - 0.5);
-      expect(tier1.top).toBeLessThanOrEqual(measured.tier0.bottom + 4);
-      expect(measured.tier1Visible).toBe(true);
+    function expectPinnedBelow(measured: NestedPinMeasurement | undefined) {
+      expect(measured?.tier1).toBeTruthy();
+      const tier1 = measured?.tier1 ?? {
+        top: Number.NaN,
+        bottom: Number.NaN,
+      };
+      const tier0Bottom = measured?.tier0.bottom ?? Number.NaN;
+      expect(tier1.top).toBeGreaterThanOrEqual(tier0Bottom - 0.5);
+      expect(tier1.top).toBeLessThanOrEqual(tier0Bottom + 4);
+      expect(measured?.tier1Visible).toBe(true);
     }
 
     it.each(VIEWPORTS)(
       "keeps level 1 pinned at the bottom of level 0 through first render, growth, removal and collapse on $name",
+      { timeout: NESTED_PIN_TEST_TIMEOUT_MS },
       async (viewport) => {
         installLayoutDoubles();
         const store = createStore();
-        const initial = buildNode(ONE_STATUS);
+        const one = buildNode(ONE_STATUS);
+        const two = buildNode(TWO_STATUSES);
+        const none = buildNode(null);
+        const snapshot = (container: HTMLElement): NestedPinSnapshot => ({
+          html: container.innerHTML,
+          width: viewport.width,
+        });
 
-        const calibration = renderTree(tree(initial.node, viewport, false), {
-          threads: initial.threads,
+        const oneCalibration = renderTree(tree(one.node, viewport, false), {
+          threads: one.threads,
           store,
         });
-        const calibrated = await measureNestedPins(
-          calibration.container.innerHTML,
-          viewport.width,
-        );
-        expect(calibrated.rowHeight).toBeGreaterThan(40);
+        const oneCalibrationSnapshot = snapshot(oneCalibration.container);
         cleanup();
+        const twoCalibration = renderTree(tree(two.node, viewport, false), {
+          threads: two.threads,
+          store,
+        });
+        const twoCalibrationSnapshot = snapshot(twoCalibration.container);
+        cleanup();
+        const [oneCalibrated, twoCalibrated] = await measureNestedPins([
+          oneCalibrationSnapshot,
+          twoCalibrationSnapshot,
+        ]);
+        const oneHeight = oneCalibrated?.rowHeight ?? 0;
+        const twoHeight = twoCalibrated?.rowHeight ?? 0;
+        expect(oneHeight).toBeGreaterThan(40);
+        expect(twoHeight).toBeGreaterThan(oneHeight);
 
-        layoutRowHeight = calibrated.rowHeight ?? 0;
-        const firstRender = renderTree(tree(initial.node, viewport, false), {
-          threads: initial.threads,
+        layoutRowHeight = oneHeight;
+        const rendered = renderTree(tree(one.node, viewport, false), {
+          threads: one.threads,
           store,
         });
         const rerenderTree = (
           node: ReturnType<typeof buildNode>["node"],
           collapsed: boolean,
         ) =>
-          firstRender.lifecycle.rerender(
+          rendered.lifecycle.rerender(
             <Harness store={store}>{tree(node, viewport, collapsed)}</Harness>,
           );
-        const first = await measureNestedPins(
-          firstRender.container.innerHTML,
-          viewport.width,
-        );
-        expect(first.rowHeight).toBe(layoutRowHeight);
-        expectPinnedBelow(first);
-        const oneStatusBottom = first.tier0.bottom;
+        const firstSnapshot = snapshot(rendered.container);
 
-        const grown = buildNode(TWO_STATUSES);
-        rerenderTree(grown.node, false);
-        const afterGrowth = await settle(firstRender.container, viewport);
-        expect(afterGrowth.tier0.bottom).toBeGreaterThan(oneStatusBottom);
+        rerenderTree(two.node, false);
+        layoutRowHeight = twoHeight;
+        ResizeObserverStub.fireAll();
+        const growthSnapshot = snapshot(rendered.container);
+
+        rerenderTree(none.node, false);
+        const removalSnapshot = snapshot(rendered.container);
+
+        rerenderTree(one.node, false);
+        layoutRowHeight = oneHeight;
+        ResizeObserverStub.fireAll();
+        const restoredSnapshot = snapshot(rendered.container);
+
+        rerenderTree(one.node, true);
+        const collapsedSnapshot = snapshot(rendered.container);
+
+        rerenderTree(one.node, false);
+        ResizeObserverStub.fireAll();
+        const expandedSnapshot = snapshot(rendered.container);
+
+        const [
+          first,
+          afterGrowth,
+          afterRemoval,
+          restored,
+          collapsed,
+          expanded,
+        ] = await measureNestedPins([
+          firstSnapshot,
+          growthSnapshot,
+          removalSnapshot,
+          restoredSnapshot,
+          collapsedSnapshot,
+          expandedSnapshot,
+        ]);
+
+        expect(first?.rowHeight).toBe(oneHeight);
+        expectPinnedBelow(first);
+
+        expect(afterGrowth?.rowHeight).toBe(twoHeight);
+        expect(afterGrowth?.tier0.bottom ?? 0).toBeGreaterThan(
+          first?.tier0.bottom ?? Number.POSITIVE_INFINITY,
+        );
         expectPinnedBelow(afterGrowth);
 
-        const removed = buildNode(null);
-        rerenderTree(removed.node, false);
-        const afterRemoval = await settle(firstRender.container, viewport);
-        expect(afterRemoval.tier0.bottom - afterRemoval.tier0.top).toBeLessThan(
-          45,
-        );
+        expect(
+          (afterRemoval?.tier0.bottom ?? Number.NaN) -
+            (afterRemoval?.tier0.top ?? Number.NaN),
+        ).toBeLessThan(45);
         expectPinnedBelow(afterRemoval);
 
-        const restored = buildNode(ONE_STATUS);
-        rerenderTree(restored.node, false);
-        expectPinnedBelow(await settle(firstRender.container, viewport));
+        expect(restored?.rowHeight).toBe(oneHeight);
+        expectPinnedBelow(restored);
 
-        rerenderTree(restored.node, true);
-        const collapsed = await measureNestedPins(
-          firstRender.container.innerHTML,
-          viewport.width,
-        );
-        expect(collapsed.tierCount).toBe(1);
+        expect(collapsed?.tierCount).toBe(1);
 
-        rerenderTree(restored.node, false);
-        expectPinnedBelow(await settle(firstRender.container, viewport));
+        expect(expanded?.rowHeight).toBe(oneHeight);
+        expectPinnedBelow(expanded);
       },
     );
   },
