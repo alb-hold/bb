@@ -5,6 +5,7 @@ import { getNativeShell } from "@/lib/native-shell/native-shell";
 import type { TerminalNavigationKey } from "./terminal-mobile-input";
 
 interface TerminalMobileControlsProps {
+  className?: string;
   controlActive: boolean;
   disabled: boolean;
   readOnlyDisabled?: boolean;
@@ -62,6 +63,7 @@ function Key({
 }
 
 export function TerminalMobileControls({
+  className,
   controlActive,
   disabled,
   readOnlyDisabled = disabled,
@@ -85,7 +87,10 @@ export function TerminalMobileControls({
       role="group"
       aria-label="Terminal keyboard controls"
       data-terminal-mobile-controls=""
-      className="shrink-0 border-t border-border/50 bg-sidebar px-2 py-1"
+      className={cn(
+        "shrink-0 border-t border-border/50 bg-sidebar px-2 py-1",
+        className,
+      )}
     >
       {expanded ? (
         <div className="mb-1 flex flex-wrap gap-1">

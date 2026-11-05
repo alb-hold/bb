@@ -3635,6 +3635,7 @@ export function ThreadTerminalView({
       </ContextMenu>
       {isTouchDevice ? (
         <TerminalMobileControls
+          className={attentionShownAsBanner ? "py-0" : undefined}
           controlActive={controlActive}
           disabled={!terminalReady || session.status !== "running"}
           readOnlyDisabled={!terminalReady}
@@ -3668,7 +3669,9 @@ export function ThreadTerminalView({
             else terminal.focus();
           }}
           onSearch={() => setTerminalSearchOpen(true)}
-          searchAvailable={terminalSearchAddon !== null}
+          searchAvailable={
+            terminalSearchAddon !== null && !attentionShownAsBanner
+          }
           onPaste={() => {
             changeControlActive(false);
             pasteFromClipboard();
