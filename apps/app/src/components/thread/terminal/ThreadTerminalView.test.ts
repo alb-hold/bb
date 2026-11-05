@@ -3097,3 +3097,128 @@ describe("exited native retained output", () => {
     },
   );
 });
+
+describe("terminal output write barriers", () => {
+  function heldWriter() {
+    const callbacks: Array<() => void> = [];
+    const events: string[] = [];
+    const pipeline = createTerminalOutputPipeline({
+      write: (bytes, callback) => {
+        events.push(`write:${new TextDecoder().decode(bytes)}`);
+        callbacks.push(callback);
+      },
+      resize: (cols, rows) => events.push(`resize:${cols}x${rows}`),
+    });
+    return { callbacks, events, pipeline };
+  }
+
+  it("acknowledges only completed prefixes across callback bursts", async () => {
+    const { callbacks, pipeline } = heldWriter();
+    const acknowledged: number[] = [];
+    for (let index = 0; index < 6; index += 1) {
+      pipeline.push(Buffer.from("x"), () => acknowledged.push(index));
+    }
+    expect(acknowledged).toEqual([]);
+    callbacks[0]!();
+    callbacks[1]!();
+    await vi.waitFor(() => expect(acknowledged).toEqual([0, 1]));
+    callbacks[2]!();
+    callbacks[3]!();
+    await vi.waitFor(() => expect(acknowledged).toEqual([0, 1, 2, 3]));
+    callbacks[4]!();
+    callbacks[5]!();
+    await vi.waitFor(() => expect(acknowledged).toEqual([0, 1, 2, 3, 4, 5]));
+  });
+
+  it("resizes after earlier writes and before later writes", async () => {
+    const { callbacks, events, pipeline } = heldWriter();
+    pipeline.push(Buffer.from("a"), () => events.push("ack:a"));
+    pipeline.push(Buffer.from("b"), () => events.push("ack:b"));
+    pipeline.setGrid(90, 30, () => events.push("grid"));
+    pipeline.push(Buffer.from("c"), () => events.push("ack:c"));
+    callbacks[0]!();
+    await vi.waitFor(() => expect(events).toContain("ack:a"));
+    expect(events).toEqual(["write:a", "write:b", "ack:a"]);
+    callbacks[1]!();
+    await vi.waitFor(() => expect(callbacks).toHaveLength(3));
+    expect(events).toEqual([
+      "write:a",
+      "write:b",
+      "ack:a",
+      "ack:b",
+      "resize:90x30",
+      "grid",
+      "write:c",
+    ]);
+    callbacks[2]!();
+    await vi.waitFor(() => expect(events.at(-1)).toBe("ack:c"));
+  });
+
+  it("preserves interleaved empty acknowledgements, markers and explicit grids", async () => {
+    const { callbacks, events, pipeline } = heldWriter();
+    pipeline.push(Buffer.from("a"), () => events.push("ack:a"));
+    pipeline.push(new Uint8Array(), () => events.push("ack:empty"));
+    pipeline.push(
+      Buffer.from(`${createTerminalGridMarker({ cols: 40, rows: 10 })}b`),
+      () => events.push("ack:b"),
+    );
+    pipeline.setGrid(80, 20, () => events.push("grid"));
+    pipeline.push(Buffer.from("c"), () => events.push("ack:c"));
+    callbacks[0]!();
+    await vi.waitFor(() => expect(callbacks).toHaveLength(2));
+    callbacks[1]!();
+    await vi.waitFor(() => expect(callbacks).toHaveLength(3));
+    callbacks[2]!();
+    await vi.waitFor(() => expect(events.at(-1)).toBe("ack:c"));
+    expect(events).toEqual([
+      "write:a",
+      "ack:a",
+      "ack:empty",
+      "resize:40x10",
+      "write:b",
+      "ack:b",
+      "resize:80x20",
+      "grid",
+      "write:c",
+      "ack:c",
+    ]);
+  });
+
+  it("bounds barrier work while 5000 held writes drain in FIFO order", async () => {
+    const callbacks: Array<() => void> = [];
+    const acknowledged: number[] = [];
+    const pipeline = createTerminalOutputPipeline({
+      write: (_bytes, callback) => callbacks.push(callback),
+      resize: () => undefined,
+    });
+    const all = vi.spyOn(Promise, "all");
+    let allCalls = 0;
+    let finish!: () => void;
+    const finished = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    try {
+      pipeline.push(Buffer.from("first"), () => acknowledged.push(0));
+      pipeline.setGrid(80, 24);
+      for (let index = 1; index < 5000; index += 1) {
+        pipeline.push(Buffer.from("x"), () => {
+          acknowledged.push(index);
+          if (index === 4999) finish();
+        });
+      }
+      callbacks[0]!();
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      for (let index = 1; index < callbacks.length; index += 1)
+        callbacks[index]!();
+      await finished;
+      allCalls = all.mock.calls.length;
+    } finally {
+      all.mockRestore();
+    }
+    expect(callbacks).toHaveLength(5000);
+    expect(acknowledged).toEqual(
+      Array.from({ length: 5000 }, (_, index) => index),
+    );
+    expect(allCalls).toBe(0);
+  });
+});

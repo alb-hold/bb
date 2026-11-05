@@ -34,10 +34,11 @@ export function createTerminalOutputPipeline(
   setGrid(cols: number, rows: number, callback?: () => void): void;
 } {
   const scanner = createTerminalGridByteMarkerScanner();
-  const operations: Operation[] = [];
+  const operations: Array<Operation | undefined> = [];
+  let operationHead = 0;
   const callbacksHeldForMarker: Array<() => void> = [];
   let draining = false;
-  let pendingWrites: Promise<void>[] = [];
+  let lastWrite = Promise.resolve();
   let pendingMarkerGridsApply = true;
 
   const enqueue = (operation: Operation) => {
@@ -63,23 +64,18 @@ export function createTerminalOutputPipeline(
     if (draining) return;
     draining = true;
     try {
-      while (operations.length > 0) {
-        const operation = operations.shift();
+      while (operationHead < operations.length) {
+        const operation = operations[operationHead];
+        operations[operationHead++] = undefined;
         if (operation === undefined) continue;
         if (operation.type === "write") {
-          const write = new Promise<void>((resolve) => {
+          lastWrite = new Promise<void>((resolve) => {
             terminal.write(operation.bytes, resolve);
-          });
-          pendingWrites.push(write);
-          void write.then(() => {
-            pendingWrites = pendingWrites.filter(
-              (pending) => pending !== write,
-            );
           });
           continue;
         }
         if (operation.type === "grid") {
-          await Promise.all(pendingWrites);
+          await lastWrite;
           if (operation.resize) {
             options.beforeResize?.();
             terminal.resize(operation.grid.cols, operation.grid.rows);
@@ -89,12 +85,15 @@ export function createTerminalOutputPipeline(
           operation.callback?.();
           continue;
         }
-        const writeBarrier = [...pendingWrites];
-        void Promise.all(writeBarrier).then(operation.callback);
+        void lastWrite.then(operation.callback);
       }
     } finally {
+      if (operationHead === operations.length) {
+        operations.length = 0;
+        operationHead = 0;
+      }
       draining = false;
-      if (operations.length > 0) void drain();
+      if (operationHead < operations.length) void drain();
     }
   };
 
