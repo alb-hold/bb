@@ -71,7 +71,12 @@ describe("ExecutionControls", () => {
             {...props}
             pending
             provider={{ options: [], selectedId: "" }}
-            model={{ ...props.model, selected: "", options: [], isLoading: true }}
+            model={{
+              ...props.model,
+              selected: "",
+              options: [],
+              isLoading: true,
+            }}
             nativeTerminal={{ enabled: true, onChange: vi.fn() }}
           />
         </div>
@@ -82,8 +87,12 @@ describe("ExecutionControls", () => {
     const chip = screen.getByRole("button", { name: "Model" });
     expect(chip.textContent).toBe("");
     expect(chip.querySelectorAll("[data-icon-root]").length).toBe(2);
-    expect(chip.hasAttribute("disabled")).toBe(true);
-    expect(chip.closest("[data-execution-controls-layout]")?.getAttribute("data-execution-controls-layout")).toBe("stacked");
+    expect(chip.hasAttribute("disabled")).toBe(false);
+    expect(
+      chip
+        .closest("[data-execution-controls-layout]")
+        ?.getAttribute("data-execution-controls-layout"),
+    ).toBe("stacked");
     expect(screen.getByRole("radio", { name: "Chat" })).toBeTruthy();
     expect(screen.getByRole("radio", { name: "Terminal" })).toBeTruthy();
   });
@@ -97,11 +106,13 @@ describe("ExecutionControls", () => {
           {...props}
           provider={{
             ...props.provider,
-            options: [{
-              value: "codex",
-              label: "Codex",
-              icon: () => <Icon name="Terminal" />,
-            }],
+            options: [
+              {
+                value: "codex",
+                label: "Codex",
+                icon: () => <Icon name="Terminal" />,
+              },
+            ],
           }}
           model={{
             ...props.model,
@@ -149,7 +160,9 @@ describe("ExecutionControls", () => {
     expect(wrappingRow?.classList.contains("min-w-0")).toBe(true);
     expect(wrappingRow?.classList.contains("max-w-full")).toBe(true);
     expect(chip.classList.contains("overflow-hidden")).toBe(true);
-    expect(wrappingRow?.getAttribute("data-execution-controls-layout")).toBe("stacked");
+    expect(wrappingRow?.getAttribute("data-execution-controls-layout")).toBe(
+      "stacked",
+    );
     expect(chip.hasAttribute("data-model-reasoning-trigger")).toBe(true);
     for (const name of ["Chat", "Terminal"]) {
       const choice = screen.getByRole("radio", { name });
@@ -245,7 +258,7 @@ describe("ExecutionControls", () => {
     });
     const terminal = screen.getByRole("radio", { name: "Terminal" });
     expect(model.textContent).toContain("GPT-5");
-    expect(model.hasAttribute("disabled")).toBe(true);
+    expect(model.hasAttribute("disabled")).toBe(false);
     expect(terminal.getAttribute("data-state")).toBe("on");
     expect(
       container.querySelector('[role="status"], [data-slot="skeleton"]'),
@@ -259,6 +272,26 @@ describe("ExecutionControls", () => {
     expect(
       container.querySelector('[role="status"], [data-slot="skeleton"]'),
     ).toBeNull();
+  });
+
+  it("opens with the last selection while models are loading", async () => {
+    const props = makeExecutionControlsProps();
+    renderExecutionControls({
+      ...props,
+      pending: true,
+      model: {
+        ...props.model,
+        options: [],
+        isLoading: true,
+      },
+    });
+    const trigger = screen.getByRole("button", {
+      name: "Provider, model and reasoning",
+    });
+    expect(trigger.hasAttribute("disabled")).toBe(false);
+    expect(trigger.textContent).toContain("GPT-5");
+    fireEvent.click(trigger);
+    expect(await screen.findByLabelText("Loading models")).toBeTruthy();
   });
 
   it("retains the mode control geometry when the resolved provider cannot run terminals", () => {

@@ -30,7 +30,7 @@ import {
   expectedFallbackErrorLogFields,
   runtimeErrorLogFields,
 } from "../lib/error-log-fields.js";
-import { resolvePluginProviderEnv } from "../plugins/plugin-agent-contributions.js";
+import { resolvePluginProviderCatalogEnv } from "../plugins/plugin-agent-contributions.js";
 import {
   requireBridgeLaunchForProviderId,
   resolveBridgeLaunchForProviderId,
@@ -192,7 +192,7 @@ async function resolveCatalogLaunch(args: {
   bridgeLaunch: HostDaemonBridgeLaunch;
 }): Promise<CatalogLaunch> {
   const { bridgeLaunch } = args;
-  const contributedEnv = await resolvePluginProviderEnv({
+  const contributedEnv = await resolvePluginProviderCatalogEnv({
     providerId: args.providerId,
     context: { threadId: null, projectId: null, hostId: args.hostId },
   });
@@ -204,11 +204,23 @@ async function resolveCatalogLaunch(args: {
         bridgeLaunch.source,
         bridgeLaunch.providerOptions,
         bridgeLaunch.envPassthrough,
-        contributedEnv.map((entry) => [entry.name, entry.value]),
+        contributedEnv.map((entry) => [
+          entry.name,
+          entry.internal_DO_NOT_USE_catalogIdentity ?? entry.value,
+        ]),
       ]),
     )
     .digest("hex");
-  return { bridgeLaunch, contributedEnv, fingerprint };
+  return {
+    bridgeLaunch,
+    contributedEnv: contributedEnv.map(({ name, value, source, reason }) => ({
+      name,
+      value,
+      source,
+      reason,
+    })),
+    fingerprint,
+  };
 }
 
 function parseStoredModels(json: string): AvailableModel[] | null {
@@ -235,7 +247,9 @@ function keepDiscoveredReasoning(
   );
   return models.map((model) => {
     const source =
-      model.reasoningDiscovery === "unknown" ? known.get(model.model) : undefined;
+      model.reasoningDiscovery === "unknown"
+        ? known.get(model.model)
+        : undefined;
     return source === undefined
       ? model
       : {

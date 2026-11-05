@@ -310,6 +310,100 @@ describe("appendCustomModels", () => {
 });
 
 describe("resolveSystemExecutionOptions", () => {
+  it("serves warm picker options without awaiting an in-flight health probe", async () => {
+    await withTestHarness(async (harness) => {
+      const { host, session } = seedHostSession(harness.deps, {
+        id: "host-slow-health-picker",
+      });
+      registerHostRpcResponder(harness, {
+        hostId: host.id,
+        sessionId: session.id,
+        handle: (request) =>
+          request.command.type === "provider.health"
+            ? { ok: true, result: providerDiscoveryHealth(true) }
+            : {
+                ok: true,
+                result: {
+                  models: [availableModelFixture({ model: "cached-model" })],
+                  selectedOnlyModels: [],
+                },
+              },
+      });
+      const url = `/api/v1/system/execution-options?hostId=${host.id}&providerId=codex`;
+      const first = await harness.app.request(url);
+      const expected = await first.json();
+      const slow = createDeferredPromise<"ready">();
+      for (const registration of harness.deps.providerRegistry.list()) {
+        harness.deps.providerRegistry.rememberProviderHealthStatus(
+          { hostId: host.id, providerId: registration.info.id },
+          slow.promise,
+        );
+      }
+      try {
+        const response = await harness.app.request(url);
+        expect(response.status).toBe(200);
+        expect(await response.json()).toEqual(expected);
+      } finally {
+        slow.resolve("ready");
+      }
+    });
+  });
+
+  it("invalidates a cold picker when pending health settles signed out", async () => {
+    await withTestHarness(async (harness) => {
+      const { host, session } = seedHostSession(harness.deps, {
+        id: "host-cold-health-picker",
+      });
+      registerHostRpcResponder(harness, {
+        hostId: host.id,
+        sessionId: session.id,
+        handle: (request) =>
+          request.command.type === "provider.health"
+            ? { ok: true, result: providerDiscoveryHealth(false) }
+            : {
+                ok: true,
+                result: {
+                  models: [availableModelFixture({ model: "test-model" })],
+                  selectedOnlyModels: [],
+                },
+              },
+      });
+      const pending = createDeferredPromise<"unauthenticated">();
+      harness.deps.providerRegistry.rememberProviderHealthStatus(
+        { hostId: host.id, providerId: "codex" },
+        pending.promise,
+      );
+      const notify = vi.spyOn(harness.hub, "notifyHost");
+      const url = `/api/v1/system/execution-options?hostId=${host.id}`;
+      try {
+        const first = await harness.app.request(url);
+        expect(await first.json()).toMatchObject({
+          providers: expect.arrayContaining([
+            expect.objectContaining({ id: "codex" }),
+          ]),
+        });
+        pending.resolve("unauthenticated");
+        await vi.waitFor(() =>
+          expect(notify).toHaveBeenCalledWith(host.id, [
+            "provider-model-catalog-changed",
+          ]),
+        );
+        const second = await harness.app.request(url);
+        const body = await second.json();
+        expect(
+          body.providers.map((provider: { id: string }) => provider.id),
+        ).not.toContain("codex");
+        notify.mockClear();
+        for (let index = 0; index < 3; index += 1) {
+          expect((await harness.app.request(url)).status).toBe(200);
+        }
+        expect(notify).not.toHaveBeenCalled();
+      } finally {
+        pending.resolve("unauthenticated");
+      }
+    });
+  });
+
   it("keeps an unavailable provider in the roster and returns its picker error without probing it", async () => {
     await withTestHarness(
       { seedFirstPartyProviders: false },
@@ -1533,6 +1627,7 @@ describe("resolveSystemExecutionOptions provider model catalog", () => {
         expect(await listIds()).toContain("acp-opencode");
         const probeCount = healthCount();
         expect(probeCount).toBeGreaterThan(1);
+        const notify = vi.spyOn(harness.hub, "notifyHost");
 
         vi.setSystemTime(1_800_000_000_000 + 5 * 60_000);
         expired = true;
@@ -1542,11 +1637,21 @@ describe("resolveSystemExecutionOptions provider model catalog", () => {
         });
         expect(await listIds()).toContain("acp-opencode");
         expect(healthCount()).toBe(2 * probeCount);
+        expect(
+          harness.deps.providerRegistry.peekProviderHealthStatus({
+            hostId: host.id,
+            providerId: "acp-opencode",
+          }),
+        ).toBe("ready");
+        notify.mockClear();
 
         heldHealth.resolve();
         await vi.waitFor(async () => {
           expect(await listIds()).not.toContain("acp-opencode");
         });
+        expect(notify).toHaveBeenCalledWith(host.id, [
+          "provider-model-catalog-changed",
+        ]);
         expect(healthCount()).toBe(2 * probeCount);
       } finally {
         vi.useRealTimers();
@@ -1568,7 +1673,10 @@ describe("providers a thread can actually start on", () => {
         if (request.command.type === "provider.health") {
           const providerId = request.command.providerId;
           if (providerId === "acp-cursor") {
-            return { ok: true, result: providerHealthStatus("unauthenticated") };
+            return {
+              ok: true,
+              result: providerHealthStatus("unauthenticated"),
+            };
           }
           if (providerId === "acp-opencode") {
             return { ok: true, result: providerHealthStatus("ready") };

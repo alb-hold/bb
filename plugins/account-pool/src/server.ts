@@ -809,7 +809,22 @@ export function createAccountPoolPlugin(
             provider,
             hostToken,
           );
-          return serving(token, "machine");
+          const catalogIdentity = JSON.stringify([
+            provider,
+            (await accounts.list())
+              .filter(
+                (account) => account.provider === provider && account.enabled,
+              )
+              .map((account) => [account.id, account.priority]),
+          ]);
+          return (await serving(token, "machine")).map((entry) =>
+            typeof entry.value === "string" && entry.value === token
+              ? {
+                  ...entry,
+                  internal_DO_NOT_USE_catalogIdentity: catalogIdentity,
+                }
+              : entry,
+          );
         }
         const archive = await checkArchived(context.threadId);
         if (archive.status === "archived") return unrouted();

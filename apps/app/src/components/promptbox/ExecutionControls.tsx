@@ -177,7 +177,7 @@ export const ExecutionControls = memo(function ExecutionControls({
           muted
           compactIconOnly={nativeTerminal !== undefined}
           className="min-w-0 overflow-hidden"
-          disabled={disabled || pending}
+          disabled={disabled}
           handoff={handoff}
         />
       ) : null}

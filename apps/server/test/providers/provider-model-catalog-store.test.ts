@@ -521,11 +521,14 @@ describe("provider model catalog store", () => {
     });
   });
 
-  it("lists models with the provider's plugin environment and refetches when that environment changes", async () => {
+  it("ignores rotating pool credentials but refetches when catalog routing changes", async () => {
     await withTestHarness(async (harness) => {
       const host = setupCatalogHost(harness, { id: "host-catalog-env" });
+      const logs = [vi.spyOn(harness.deps.logger, "info"), vi.spyOn(harness.deps.logger, "warn"), vi.spyOn(harness.deps.logger, "error")];
       const contexts: unknown[] = [];
       let poolToken: string | null = "token-a";
+      let catalogPath = "/pool/v1";
+      let accountIdentity = "account-a";
       setPluginAgentContributions({
         listSkillRootContributions: () => [],
         listAgentTools: () => [],
@@ -542,13 +545,14 @@ describe("provider model catalog store", () => {
                 : [
                     {
                       name: "CODEX_OPENAI_BASE_URL",
-                      value: { serverPath: "/pool/v1" },
+                      value: { serverPath: catalogPath },
                       source: { plugin: "account-pool" },
                       reason: "pooled",
                     },
                     {
                       name: "CODEX_POOL_AUTH_TOKEN",
                       value: poolToken,
+                      internal_DO_NOT_USE_catalogIdentity: accountIdentity,
                       source: { plugin: "account-pool" },
                       reason: "pooled",
                     },
@@ -561,9 +565,26 @@ describe("provider model catalog store", () => {
         await host.read("codex");
         poolToken = "token-b";
         await host.read("codex");
+        expect(host.listRequests("codex")).toHaveLength(1);
+        const logged = JSON.stringify(logs.map((log) => log.mock.calls));
+        expect(logged).not.toContain("token-a");
+        expect(logged).not.toContain("token-b");
+        catalogPath = "/pool/v2";
+        await host.read("codex");
+        accountIdentity = "account-b";
+        await host.read("codex");
         poolToken = null;
         await host.read("codex");
 
+        expect(
+          host
+            .listRequests("codex")
+            .every((command) =>
+              command.contributedEnv.every(
+                (entry) => !("internal_DO_NOT_USE_catalogIdentity" in entry),
+              ),
+            ),
+        ).toBe(true);
         expect(contexts[0]).toEqual({
           threadId: null,
           projectId: null,
@@ -577,7 +598,8 @@ describe("provider model catalog store", () => {
             ),
         ).toEqual([
           [{ serverPath: "/pool/v1" }, "token-a"],
-          [{ serverPath: "/pool/v1" }, "token-b"],
+          [{ serverPath: "/pool/v2" }, "token-b"],
+          [{ serverPath: "/pool/v2" }, "token-b"],
           [],
         ]);
       } finally {
