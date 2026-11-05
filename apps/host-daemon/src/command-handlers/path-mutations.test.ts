@@ -17,7 +17,7 @@ import {
   scanWorktreeHolders,
   useProcReaderForTests,
   type ProcReader,
-} from "@bb/process-utils/worktree-holders";
+} from "@bb/process-utils";
 
 const roots: string[] = [];
 const hasHeldDirectoryRemoval = existsSync(

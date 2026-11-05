@@ -1,4 +1,4 @@
-import { scanWorktreeHolders } from "@bb/process-utils/worktree-holders";
+import { scanWorktreeHolders } from "@bb/process-utils";
 import { CommandDispatchError } from "../command-dispatch-support.js";
 
 export async function refuseWhileHeld(args: {

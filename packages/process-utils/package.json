@@ -13,11 +13,6 @@
       "types": "./src/host-process.ts",
       "default": "./src/host-process.ts"
     },
-    "./worktree-holders": {
-      "source": "./src/worktree-holders.ts",
-      "types": "./src/worktree-holders.ts",
-      "default": "./src/worktree-holders.ts"
-    },
     "./session-agent-comms": {
       "source": "./src/session-agent-comms.ts",
       "types": "./src/session-agent-comms.ts",
