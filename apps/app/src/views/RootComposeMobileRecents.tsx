@@ -53,9 +53,9 @@ import { usePromptDraftInputThreadIds } from "@/hooks/usePromptDraftStorage";
 import { useSecondTick } from "@/hooks/useSecondTick";
 import { mobileRecentsCollapsedThreadIdsAtom } from "./mobile-recents-collapse";
 
-const MOBILE_RECENT_ROW_HEIGHT_PX = 60;
+const MOBILE_RECENT_ROW_HEIGHT_PX = 52;
 
-const MOBILE_RECENT_ROW_HEIGHT_CLASS = "h-15";
+const MOBILE_RECENT_ROW_HEIGHT_CLASS = "h-13";
 
 type ThreadListEntryComparator = (
   left: ThreadListEntry,
@@ -319,7 +319,7 @@ function MobileRecentThreadRow({
   const providerTile = (
     <span
       className={cn(
-        "flex size-7 shrink-0 items-center justify-center rounded-md border border-border-seam bg-surface-raised",
+        "flex size-4 shrink-0 items-center justify-center text-muted-foreground",
         depth > 0 && "opacity-60",
       )}
     >

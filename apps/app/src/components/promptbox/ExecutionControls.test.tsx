@@ -87,6 +87,7 @@ describe("ExecutionControls", () => {
     expect(chip.hasAttribute("data-model-reasoning-trigger")).toBe(true);
     for (const name of ["Chat", "Terminal"]) {
       const choice = screen.getByRole("radio", { name });
+      expect(choice.className).toContain("data-[state=on]:bg-accent");
       expect(choice.textContent).toBe(name);
       expect(
         choice.querySelector("span")?.classList.contains("max-md:hidden"),

@@ -833,29 +833,34 @@
   [data-promptbox-execution-layout="stacked"] [data-promptbox-plus-control] {
     display: flex;
     grid-column: 1;
-    grid-row: 2;
+    grid-row: 1;
     align-items: center;
     justify-content: center;
   }
 
   [data-promptbox-execution-layout="stacked"] > [data-promptbox-trailing-actions] {
     grid-column: 3;
-    grid-row: 2;
+    grid-row: 1;
   }
 
   [data-promptbox-execution-layout="stacked"] [data-execution-controls-layout="stacked"] {
-    display: contents;
+    display: flex;
+    grid-column: 2;
+    grid-row: 1;
+    min-width: 0;
+    flex-wrap: nowrap;
+    gap: 0;
   }
 
   [data-execution-controls-layout="stacked"] [data-model-reasoning-trigger] {
-    grid-column: 1 / -1;
-    grid-row: 1;
-    justify-self: start;
+    min-width: 0;
+    flex: 1 1 0%;
+    overflow: hidden;
   }
 
   [data-execution-controls-layout="stacked"] [data-native-terminal-toggle] {
     grid-column: 2;
-    grid-row: 2;
+    grid-row: 1;
     justify-self: start;
     height: auto;
   }

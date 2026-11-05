@@ -4797,7 +4797,7 @@ describe("ComposerBox compact layout", () => {
     }
   });
 
-  it("places the home model above the Plus, execution toggle and send row", () => {
+  it("keeps the home model inline with Plus, execution toggle and send", () => {
     render(
       <ComposerBox
         {...createPromptBoxProps({
@@ -4870,21 +4870,22 @@ describe("ComposerBox compact layout", () => {
           .map((rule) => rule.style.getPropertyValue(property))
           .filter(Boolean)
           .at(-1);
-      expect(declaration(model, "grid-column")).toBe("1 / -1");
-      expect(declaration(model, "grid-row")).toBe("1");
+      expect(declaration(model, "flex")).toBe("1 1 0%");
+      expect(declaration(model, "overflow")).toBe("hidden");
       for (const [slot, column] of [
         [row?.querySelector("[data-promptbox-plus-control]"), "1"],
-        [toggle, "2"],
+        [model.parentElement, "2"],
         [row?.querySelector("[data-promptbox-trailing-actions]"), "3"],
       ] as const) {
         expect(slot).not.toBeNull();
         if (slot == null) throw new Error("Missing action-row slot");
         expect(declaration(slot, "grid-column")).toBe(column);
-        expect(declaration(slot, "grid-row")).toBe("2");
+        expect(declaration(slot, "grid-row")).toBe("1");
       }
       if (model.parentElement === null)
         throw new Error("Missing execution controls");
-      expect(declaration(model.parentElement, "display")).toBe("contents");
+      expect(declaration(model.parentElement, "display")).toBe("flex");
+      expect(declaration(model.parentElement, "flex-wrap")).toBe("nowrap");
     } finally {
       style.remove();
     }

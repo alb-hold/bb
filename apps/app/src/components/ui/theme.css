@@ -905,7 +905,7 @@
   --ansi-5: #c85ac8;
   --ansi-6: #11a8cd;
   --ansi-7: #e5e5e5;
-  --ansi-8: var(--muted);
+  --ansi-8: color-mix(in oklch, var(--ink) 35%, var(--canvas));
   --ansi-9: #ff6f6f;
   --ansi-10: #23d18b;
   --ansi-11: #f5f543;

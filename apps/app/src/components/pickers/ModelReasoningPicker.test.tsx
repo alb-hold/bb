@@ -5,6 +5,7 @@ import {
   cleanup,
   fireEvent,
   render,
+  renderHook,
   screen,
 } from "@testing-library/react";
 import type {
@@ -22,6 +23,7 @@ import type {
 } from "@bb/server-contract";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { systemExecutionOptionsQueryKey } from "@/hooks/queries/query-keys";
+import { usePromptBoxModelPreference } from "@/hooks/thread-creation-options/persisted-selection-fields";
 import { sdk } from "@/lib/sdk";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
 import { CompactViewportOverrideProvider } from "@bb/shared-ui/hooks/use-compact-viewport";
@@ -1652,4 +1654,15 @@ describe("ModelReasoningPicker service tiers", () => {
     ).toBeTruthy();
     expect(screen.queryByRole("radiogroup", { name: "Speed" })).toBeNull();
   });
+});
+
+it("uses the persisted model when the home selection is still loading", () => {
+  const { result } = renderHook(() => usePromptBoxModelPreference("codex"));
+  act(() => result.current.setValue("gpt-5.5"));
+  try {
+    renderPicker({ modelValue: "", modelOptions: [], modelIsLoading: true });
+    expect(screen.getByRole("button", { name: "Provider, model and reasoning" }).textContent).toContain("5.5");
+  } finally {
+    act(() => result.current.setValue(""));
+  }
 });

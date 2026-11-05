@@ -1,3 +1,4 @@
+import { usePromptBoxModelPreference } from "@/hooks/thread-creation-options/persisted-selection-fields";
 import {
   useCallback,
   useEffect,
@@ -291,9 +292,11 @@ export function ModelReasoningPicker({
     (p) => p.value === selectedProviderId,
   );
   const ProviderIcon = selectedProvider?.icon;
-  const selectedModelOption = modelOptions.find((m) => m.value === modelValue);
+  const { value: rememberedModel } = usePromptBoxModelPreference(selectedProviderId);
+  const displayModel = modelValue || (modelIsLoading ? rememberedModel : "");
+  const selectedModelOption = modelOptions.find((m) => m.value === displayModel);
   const selectedModelLabel = (formatModelLabel ?? formatFallbackModelLabel)(
-    selectedModelOption?.label ?? modelValue,
+    selectedModelOption?.label ?? displayModel,
   );
   const modelSubstitutionNote = unavailableModel
     ? `${unavailableModel} isn't available; using ${selectedModelLabel}`
