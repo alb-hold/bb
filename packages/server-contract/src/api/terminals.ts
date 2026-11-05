@@ -295,6 +295,7 @@ export const terminalClientMessageSchema = z.discriminatedUnion("type", [
     .object({
       type: z.literal("input"),
       dataBase64: terminalDataBase64Schema,
+      isUserInput: z.boolean().optional(),
     })
     .strict(),
   z

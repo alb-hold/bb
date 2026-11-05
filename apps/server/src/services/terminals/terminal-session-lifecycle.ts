@@ -4041,16 +4041,8 @@ export class TerminalSessionLifecycle {
       Date.now(),
     );
     this.applySharedTerminalSize(args);
-    const markedInput = updateTerminalById(this.options.db, current.id, {
-      kind: "user-input",
-    });
-    if (markedInput) {
-      const session = this.toTerminalSession(markedInput);
-      this.notifyTerminalSessionChanged(markedInput);
-      this.options.hub.sendTerminalClientMessage(markedInput.id, {
-        type: "session-updated",
-        session,
-      });
+    if (args.message.isUserInput !== false) {
+      this.recordDirectTerminalInput(current.id);
     }
     const sent = this.options.hub.sendDaemonSessionMessage(
       current.daemonSessionId,
@@ -4069,8 +4061,6 @@ export class TerminalSessionLifecycle {
       this.disconnectDaemonSessionTerminals({
         daemonSessionId: current.daemonSessionId,
       });
-    } else if (args.message.dataBase64.length > 0) {
-      emitPluginTerminalInput(this.toTerminalSession(markedInput ?? current));
     }
   }
 

@@ -1,3 +1,4 @@
+import { TerminalWebSocketTransport } from "@bb/client-core";
 import { createTerminalGridMarker, TERMINAL_DATA_MAX_BYTES } from "@bb/domain";
 import type {
   TerminalServerMessage,
@@ -1705,9 +1706,9 @@ describe("terminal output encoding", () => {
         hiddenTerminal.buffer.active.getLine(index)?.translateToString(),
     );
     expect(replayedLines).toEqual(visibleLines);
-    expect(hiddenTerminal.buffer.active.getLine(0)?.getCell(7)?.getFgColor()).toBe(
-      1,
-    );
+    expect(
+      hiddenTerminal.buffer.active.getLine(0)?.getCell(7)?.getFgColor(),
+    ).toBe(1);
     visibleTerminal.dispose();
     hiddenTerminal.dispose();
   });
@@ -1756,9 +1757,7 @@ describe("terminal output encoding", () => {
     expect(terminal.buffer.active.getLine(0)?.translateToString()).toContain(
       "OK",
     );
-    expect(terminal.buffer.active.getLine(0)?.getCell(0)?.getFgColor()).toBe(
-      1,
-    );
+    expect(terminal.buffer.active.getLine(0)?.getCell(0)?.getFgColor()).toBe(1);
     expect(acknowledged).toEqual([1, 2]);
     terminal.dispose();
   });
@@ -2552,6 +2551,53 @@ describe("terminal output encoding", () => {
     terminal.dispose();
   });
 
+  it("sends xterm CPR replies as non-user frames and leaves typed keys as user frames", async () => {
+    const terminal = new Terminal({ cols: 80, rows: 24 });
+    const frames: string[] = [];
+    const socket = {
+      readyState: 1,
+      bufferedAmount: 0,
+      protocol: "",
+      onopen: null,
+      onclose: null,
+      onerror: null,
+      onmessage: null,
+      close() {},
+      send: (data: string) => frames.push(data),
+    };
+    const transport = new TerminalWebSocketTransport({
+      url: "ws://localhost/ws/terminals/test",
+      createSocket: () => socket,
+      shouldReconnect: () => false,
+      onMessage() {},
+    });
+    transport.start();
+    const forwarding = attachTerminalInputForwarding({
+      terminal,
+      onData: (data, isUserInput) =>
+        forwardTerminalData({
+          data,
+          isUserInput,
+          onInput: (bytes, at, user) => transport.sendInput(bytes, at, user),
+          replayWriteState: { suppressedWriteCount: 0 },
+          sessionStatus: "running",
+        }),
+    });
+    await writeTerminal(terminal, "\x1b[6n");
+    terminal.input("x", true);
+    expect(frames.map((frame) => JSON.parse(frame))).toContainEqual({
+      type: "input",
+      dataBase64: Buffer.from("\x1b[1;1R").toString("base64"),
+      isUserInput: false,
+    });
+    expect(frames.map((frame) => JSON.parse(frame))).toContainEqual({
+      type: "input",
+      dataBase64: "eA==",
+    });
+    forwarding.dispose();
+    transport.dispose();
+    terminal.dispose();
+  });
   it("keeps keystrokes typed while replayed output is still parsing, and still drops the replay's protocol replies", async () => {
     const terminal = new Terminal({ cols: 80, rows: 24 });
     const sent: string[] = [];
@@ -2833,7 +2879,9 @@ describe("buildTerminalThemeFromCssColors", () => {
     expect(theme.background).toBe("--sidebar");
     expect(theme.cursorAccent).toBe("--sidebar");
     expect(theme.scrollbarSliderBackground).toBe("--terminal-scrollbar");
-    expect(theme.scrollbarSliderHoverBackground).toBe("--terminal-scrollbar-hover");
+    expect(theme.scrollbarSliderHoverBackground).toBe(
+      "--terminal-scrollbar-hover",
+    );
   });
 });
 

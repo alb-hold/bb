@@ -591,7 +591,11 @@ interface ForwardTerminalDataArgs {
   data: string;
   inputEventAt?: number;
   isUserInput: boolean;
-  onInput: (dataBase64: string, inputEventAt?: number) => void;
+  onInput: (
+    dataBase64: string,
+    inputEventAt?: number,
+    isUserInput?: boolean,
+  ) => void;
   onUserInput?: () => void;
   replayWriteState: TerminalReplayWriteState;
   sessionStatus: TerminalSession["status"];
@@ -698,9 +702,9 @@ export function forwardTerminalData({
   }
 
   for (const dataBase64 of encodeTerminalInputChunks(input)) {
-    onInput(dataBase64, inputEventAt);
+    onInput(dataBase64, inputEventAt, isUserInput);
   }
-  onUserInput?.();
+  if (isUserInput) onUserInput?.();
 }
 
 export function subscribeToTerminalUserInput(
@@ -3051,8 +3055,11 @@ export function ThreadTerminalView({
           }),
         requestFrame: (callback) => window.requestAnimationFrame(callback),
       });
-      const sendTerminalInput = (dataBase64: string, inputEventAt?: number) =>
-        activeTransport.sendInput(dataBase64, inputEventAt);
+      const sendTerminalInput = (
+        dataBase64: string,
+        inputEventAt?: number,
+        isUserInput = true,
+      ) => activeTransport.sendInput(dataBase64, inputEventAt, isUserInput);
       handleFileDropRef.current = (files) => {
         const desktop = window.bbDesktop;
         handleTerminalFileDrop({

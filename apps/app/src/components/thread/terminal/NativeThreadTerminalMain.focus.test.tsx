@@ -171,23 +171,26 @@ describe("NativeThreadTerminalMain focus", () => {
   });
 });
 
-it("shows uncleared terminal attention without requiring a structured question", () => {
-  render(
-    <NativeThreadTerminalMain
-      projectId="proj_1"
-      threadId="thr_1"
-      threadIsProvisioning={false}
-      view={{
-        ...view,
-        terminal: {
-          ...view.terminal!,
-          attention: { at: 10, kind: "bell", seq: 1 },
-        },
-      }}
-      runtime={{ displayStatus: "idle" }}
-    />,
-  );
-  expect(screen.getByRole("status").textContent).toBe(
-    "Terminal needs attention",
-  );
-});
+it.each(["active", "idle"] as const)(
+  "describes an unlabelled signal truthfully while %s",
+  (displayStatus) => {
+    render(
+      <NativeThreadTerminalMain
+        projectId="proj_1"
+        threadId="thr_1"
+        threadIsProvisioning={false}
+        view={{
+          ...view,
+          terminal: {
+            ...view.terminal!,
+            attention: { at: 10, kind: "bell", seq: 1 },
+          },
+        }}
+        runtime={{ displayStatus }}
+      />,
+    );
+    expect(screen.getByRole("status").textContent).toBe(
+      "Codex signaled. Check the terminal.",
+    );
+  },
+);

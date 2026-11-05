@@ -165,7 +165,7 @@ export function NativeThreadTerminalMain({
             className={`shrink-0 px-3 py-1 text-xs ${session?.attention ? "text-attention" : "text-muted-foreground"}`}
           >
             {session?.attention
-              ? "Terminal needs attention"
+              ? `${providerLabel} signaled. Check the terminal.`
               : `${providerLabel} hasn't started a session yet`}
           </div>
         ) : null}

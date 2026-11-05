@@ -232,7 +232,11 @@ export class TerminalWebSocketTransport {
     this.retryStreak = 0;
   }
 
-  sendInput(dataBase64: string, inputEventAt?: number): boolean {
+  sendInput(
+    dataBase64: string,
+    inputEventAt?: number,
+    isUserInput = true,
+  ): boolean {
     const tracksInputTiming =
       this.options.onInputAccepted !== undefined ||
       this.options.onInputSent !== undefined;
@@ -240,6 +244,7 @@ export class TerminalWebSocketTransport {
     const payload = JSON.stringify({
       type: "input",
       dataBase64,
+      isUserInput: isUserInput ? undefined : false,
     });
     const serializedAt = tracksInputTiming ? this.now() : 0;
     const pending = {
