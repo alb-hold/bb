@@ -13,6 +13,8 @@ import {
 } from "./path-mutations.js";
 import { removeDirectoryAfterHolderRecheck } from "./remove-held-directory.js";
 import {
+  hostCwdScanIo,
+  useCwdScanIoForTests,
   hostProc,
   scanWorktreeHolders,
   useProcReaderForTests,
@@ -33,6 +35,7 @@ async function makeRoot(): Promise<string> {
 }
 
 afterEach(async () => {
+  useCwdScanIoForTests(null);
   useProcReaderForTests(null);
   await Promise.all(
     roots
@@ -87,6 +90,10 @@ describe("confined host path mutations", () => {
             : hostProc.lstatId(name),
         };
       useProcReaderForTests(proc);
+      useCwdScanIoForTests({
+        ...hostCwdScanIo,
+        listProcessIds: async () => [String(process.pid)],
+      });
 
       await expect(
         removeDirectoryAfterHolderRecheck({
