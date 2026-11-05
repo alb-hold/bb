@@ -17,6 +17,11 @@
       "source": "./src/session-agent-comms.ts",
       "types": "./src/session-agent-comms.ts",
       "default": "./src/session-agent-comms.ts"
+    },
+    "./linux-path-access": {
+      "source": "./src/linux-path-access.ts",
+      "types": "./src/linux-path-access.ts",
+      "default": "./src/linux-path-access.ts"
     }
   },
   "types": "./src/index.ts",

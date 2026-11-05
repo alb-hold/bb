@@ -2,6 +2,10 @@ import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { UNREADABLE_SESSION_AGENT_COMMS } from "@bb/process-utils/session-agent-comms";
+import {
+  linuxDirectoryIsTraversable,
+  parseLinuxSupplementaryGroups,
+} from "@bb/process-utils/linux-path-access";
 
 const LSOF_TIMEOUT_MS = 30_000;
 const LINUX_SCAN_CONCURRENCY = 32;
@@ -224,6 +228,7 @@ async function scanLinuxProcess(
     return unreadable(`process ${pid} status`, status.failed);
   const uids = parseStatusNumbers(status.value, "Uid");
   const gids = parseStatusNumbers(status.value, "Gid");
+  const supplementaryGroups = parseLinuxSupplementaryGroups(status.value);
   if (uids === null || uids[3] === undefined)
     return notVouchable(`process ${pid} owner could not be read`);
   if (gids === null || gids[3] === undefined)
@@ -264,11 +269,14 @@ async function scanLinuxProcess(
         return {
           uncertain: `process ${pid} cwd reachability could not be determined`,
         };
-      const permissions = access.value.mode & 0o777;
-      const canSearch =
-        access.value.uid === foreignUid
-          ? (permissions & 0o100) !== 0
-          : (permissions & 0o011) !== 0;
+      const canSearch = linuxDirectoryIsTraversable({
+        processUid: foreignUid,
+        processFilesystemGid: gids[3],
+        processSupplementaryGroups: supplementaryGroups,
+        directoryUid: access.value.uid,
+        directoryGid: access.value.gid,
+        mode: access.value.mode,
+      });
       if (!canSearch) return { otherUser: true };
       const parent = path.dirname(cursor);
       if (parent === cursor) break;
@@ -309,14 +317,20 @@ async function scanLinuxProcess(
       context.tree,
     );
   }
-  if (result === null || !("unknown" in result) || !result.vouchable)
-    return result;
-  if (
+  const credentialsDiffer =
     uids[0] !== uids[3] ||
     uids[1] !== uids[3] ||
     gids[0] !== gids[3] ||
-    gids[1] !== gids[3]
-  ) {
+    gids[1] !== gids[3];
+  if (credentialsDiffer && result === null) {
+    return {
+      unknown: `process ${pid} has unreadable holder paths and credentials differ from its filesystem UID`,
+      vouchable: false,
+    };
+  }
+  if (result === null || !("unknown" in result) || !result.vouchable)
+    return result;
+  if (credentialsDiffer) {
     return {
       unknown: `${result.unknown}, process credentials differ from its filesystem UID`,
       vouchable: false,

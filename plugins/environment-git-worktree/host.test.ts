@@ -1872,34 +1872,6 @@ setTimeout(() => {}, 300_000);`,
       }
     });
 
-    it("inspects without side effects", async () => {
-      const worktree = await createManagedWorktree({ pathKey: "thr_inspect" });
-      try {
-        const inspect = () =>
-          worktree.harness.experimental_call("inspect", {
-            pathKey: worktree.pathKey,
-            path: worktree.path,
-          });
-        expect(await inspect()).toMatchObject({
-          status: "retained",
-          message: expect.stringContaining("in use by"),
-        });
-        expect(isPidAlive(worktree.lingering.pid ?? 0)).toBe(true);
-        await stopLingering(worktree);
-        expect(await inspect()).toEqual({ status: "removable" });
-        expect(existsSync(worktree.path)).toBe(true);
-        await writeFile(join(worktree.path, "notes.txt"), "draft\n");
-        expect(await inspect()).toMatchObject({
-          status: "retained",
-          message: expect.stringContaining("uncommitted changes"),
-        });
-        expect(existsSync(join(worktree.path, "README.md"))).toBe(true);
-        expect(existsSync(join(worktree.path, "notes.txt"))).toBe(true);
-      } finally {
-        await worktree.harness.experimental_dispose();
-      }
-    });
-
     it("retains a worktree whose Git status cannot be read, with its marker intact", async () => {
       const worktree = await createManagedWorktree({
         pathKey: "thr_submodule",

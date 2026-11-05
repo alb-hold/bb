@@ -3,6 +3,10 @@ import path from "node:path";
 import { resolveSweepDirectory } from "./cwd-processes.js";
 import { spawnPortableOutputProcess } from "./spawn.js";
 import { UNREADABLE_SESSION_AGENT_COMMS } from "./session-agent-comms.js";
+import {
+  linuxDirectoryIsTraversable,
+  parseLinuxSupplementaryGroups,
+} from "./linux-path-access.js";
 
 export interface CwdHolder {
   pid: number;
@@ -43,8 +47,9 @@ export interface CwdScanIo {
   effectiveGid(pid: number): Promise<number>;
   filesystemUid(pid: number): Promise<number>;
   filesystemGid?(pid: number): Promise<number>;
+  supplementaryGroups?(pid: number): Promise<number[] | null>;
   effectiveCapabilities?(pid: number): Promise<bigint>;
-  statAccess?(path: string): Promise<{ uid: number; mode: number }>;
+  statAccess?(path: string): Promise<{ uid: number; gid: number; mode: number }>;
   readComm(pid: number): Promise<string>;
   runLsof(
     timeoutMs: number,
@@ -166,6 +171,8 @@ export const hostCwdScanIo: CwdScanIo = {
     parseFilesystemUid(await readFile(`/proc/${pid}/status`, "utf8")),
   filesystemGid: async (pid) =>
     parseFilesystemGid(await readFile(`/proc/${pid}/status`, "utf8")),
+  supplementaryGroups: async (pid) =>
+    parseLinuxSupplementaryGroups(await readFile(`/proc/${pid}/status`, "utf8")),
   effectiveCapabilities: async (pid) => {
     const status = await readFile(`/proc/${pid}/status`, "utf8");
     const capabilities = /^CapEff:\s*([0-9a-f]+)/imu.exec(status)?.[1];
@@ -175,7 +182,7 @@ export const hostCwdScanIo: CwdScanIo = {
   },
   statAccess: async (path) => {
     const info = await stat(path);
-    return { uid: info.uid, mode: info.mode };
+    return { uid: info.uid, gid: info.gid, mode: info.mode };
   },
   readComm: async (pid) => {
     const text = await readFile(`/proc/${pid}/stat`, "utf8");
@@ -280,21 +287,34 @@ async function foreignUidCanReachTarget(args: {
     return GONE.has(codeOf(error)) ? false : null;
   }
   if ((capabilities & ((1n << 1n) | (1n << 2n))) !== 0n) return true;
+  let filesystemGid: number | null = null;
+  let supplementaryGroups: number[] | null = null;
+  try {
+    if (args.io.filesystemGid !== undefined)
+      filesystemGid = await args.io.filesystemGid(args.pid);
+    if (args.io.supplementaryGroups !== undefined)
+      supplementaryGroups = await args.io.supplementaryGroups(args.pid);
+  } catch (error) {
+    if (GONE.has(codeOf(error))) return false;
+  }
   for (const directory of args.directories) {
     let cursor = directory;
     while (true) {
-      let access: { uid: number; mode: number };
+      let access: { uid: number; gid: number; mode: number };
       try {
         access = await args.io.statAccess(cursor);
       } catch (error) {
         if (GONE.has(codeOf(error))) break;
         return null;
       }
-      const permissions = access.mode & 0o777;
-      const canSearch =
-        access.uid === args.uid
-          ? (permissions & 0o100) !== 0
-          : (permissions & 0o011) !== 0;
+      const canSearch = linuxDirectoryIsTraversable({
+        processUid: args.uid,
+        processFilesystemGid: filesystemGid,
+        processSupplementaryGroups: supplementaryGroups,
+        directoryUid: access.uid,
+        directoryGid: access.gid,
+        mode: access.mode,
+      });
       if (!canSearch) break;
       const parent = path.dirname(cursor);
       if (parent === cursor) return true;

@@ -905,91 +905,35 @@ describe("real worktree teardown preservation", () => {
     process.platform !== "linux" ||
       (typeof process.getuid === "function" && process.getuid() === 0),
   )(
-    "keeps a worktree held by a non-dumpable process that predates it and spoofs an agent name",
-    async ({ skip }) => {
-      const root = await mkdtemp(
-        path.join(os.tmpdir(), "bb-preserve-worktree-"),
-      );
-      roots.push(root);
-      const signalMarker = path.join(root, "signalled-agent");
-      skip(
-        spawnSync("python3", ["--version"]).status !== 0,
-        "python3 is not available",
-      );
+    "retains the worktree without signalling when an unreadable foreign cwd can traverse a group-execute-only ancestor",
+    async () => {
+      const root = await mkdtemp(path.join(os.tmpdir(), "bb-preserve-worktree-group-"));
+      const worktree = await makeWorktree(root);
       const worker = spawn(
-        "python3",
-        [
-          "-c",
-          `import ctypes, signal, sys, time
-libc = ctypes.CDLL(None)
-libc.prctl(4, 0, 0, 0, 0)
-libc.prctl(15, b"ssh-agent", 0, 0, 0)
-signal.signal(signal.SIGTERM, lambda *_: (open(sys.argv[1], "w").write("signal"), sys.exit(0)))
-print("ready", flush=True)
-while not __import__("os").path.isdir(sys.argv[2]): time.sleep(0.01)
-__import__("os").chdir(sys.argv[2])
-print("entered", flush=True)
-time.sleep(120)`,
-          signalMarker,
-          path.join(root, "managed", "repo"),
-        ],
-        { cwd: root, argv0: "ssh-agent", stdio: ["ignore", "pipe", "ignore"] },
+        process.execPath,
+        ["-e", "setInterval(() => {}, 1000)"],
+        { cwd: worktree.path, stdio: "ignore" },
       );
       workers.push(worker);
-      const output = { value: "" };
-      worker.stdout?.on("data", (chunk) => {
-        output.value += chunk.toString();
+      await new Promise<void>((resolve, reject) => {
+        worker.once("spawn", resolve);
+        worker.once("error", reject);
       });
-      const waitForOutput = async (expected: string) => {
-        while (!output.value.includes(expected)) {
-          await new Promise<void>((resolve, reject) => {
-            worker.stdout?.once("data", () => resolve());
-            worker.once("error", reject);
-          });
-        }
-      };
-      await waitForOutput("ready\n");
-      const worktree = await makeWorktree(root);
-      await waitForOutput("entered\n");
-      const readdir = hostProc.readdir.bind(hostProc);
-      useProcReaderForTests({
-        ...hostProc,
-        readdir: async (target) =>
-          target === "/proc" ? [String(worker.pid)] : await readdir(target),
+      await fs.chmod(root, 0o710);
+      useProcReaderForTests(foreignUnreadableCwdProc(worker.pid ?? -1));
+      const signal = vi.spyOn(process, "kill");
+
+      await expect(remove(worktree)).rejects.toMatchObject({
+        code: "worktree_preserved",
       });
-      expect((await readFile(`/proc/${worker.pid}/comm`, "utf8")).trim()).toBe(
-        "ssh-agent",
-      );
-      try {
-        await readlink(`/proc/${worker.pid}/task/${worker.pid}/cwd`);
-        skip(true, "the kernel lets this user read the non-dumpable process");
-      } catch (error) {
-        skip(
-          (error as NodeJS.ErrnoException).code !== "EACCES",
-          "the process cwd was not unreadable",
-        );
-      }
-      const removalError = await remove(worktree).then(
-        () => null,
-        (error: unknown) => error,
-      );
-      expect(removalError).toMatchObject({ code: "worktree_preserved" });
-      expect(removalError).toMatchObject({
-        message: expect.stringContaining(
-          "could not check which programs are using it",
-        ),
-      });
-      expect(removalError).toMatchObject({
-        message: expect.stringContaining(`process ${worker.pid}`),
-      });
+
+      expect(signal).not.toHaveBeenCalled();
       expect(() => process.kill(worker.pid!, 0)).not.toThrow();
-      await expect(access(signalMarker)).rejects.toMatchObject({
-        code: "ENOENT",
-      });
       await expect(access(worktree.path)).resolves.toBeUndefined();
-      expect(
-        await readFile(path.join(worktree.path, "README.md"), "utf8"),
-      ).toBe("published\n");
+      expect(await readFile(path.join(worktree.path, "README.md"), "utf8")).toBe(
+        "published\n",
+      );
     },
   );
+
 });

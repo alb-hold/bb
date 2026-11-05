@@ -125,6 +125,7 @@ interface FakeProcess {
   uid?: number;
   uidValues?: [number, number, number, number];
   gidValues?: [number, number, number, number];
+  groups?: number[];
   state?: string;
   comm?: string;
   mount?: string;
@@ -181,6 +182,7 @@ function fakeProc(options: {
   createdMs?: number | null;
   noBoot?: boolean;
   worktreeMode?: number;
+  worktreeGid?: number;
 }): ProcReader {
   const self = options.self ?? {};
   const files = new Map<string, string>();
@@ -211,7 +213,7 @@ function fakeProc(options: {
     const base = `/proc/${key}`;
     files.set(
       `${base}/status`,
-      `Name:\t${process.name ?? "x"}\nState:\t${process.state ?? "S (sleeping)"}\nUid:\t${(process.uidValues ?? [process.uid ?? 1000, process.uid ?? 1000, process.uid ?? 1000, process.uid ?? 1000]).join("\t")}\nGid:\t${(process.gidValues ?? [1000, 1000, 1000, 1000]).join("\t")}\nCapEff:\t${process.capEff ?? "0000000000000000"}\n`,
+      `Name:\t${process.name ?? "x"}\nState:\t${process.state ?? "S (sleeping)"}\nUid:\t${(process.uidValues ?? [process.uid ?? 1000, process.uid ?? 1000, process.uid ?? 1000, process.uid ?? 1000]).join("\t")}\nGid:\t${(process.gidValues ?? [1000, 1000, 1000, 1000]).join("\t")}\nGroups:\t${(process.groups ?? []).join(" ")}\nCapEff:\t${process.capEff ?? "0000000000000000"}\n`,
     );
     files.set(`${base}/comm`, `${process.comm ?? "node"}\n`);
     files.set(
@@ -274,7 +276,7 @@ function fakeProc(options: {
     statId: async (path) => ids.get(path) ?? fail(path),
     statAccess: async (path) => ({
       uid: 0,
-      gid: 0,
+      gid: path === "/work/tree" ? (options.worktreeGid ?? 0) : 0,
       mode: path === "/work/tree" ? (options.worktreeMode ?? 0o755) : 0o755,
     }),
     creationMs: async () => {
@@ -397,18 +399,18 @@ describe("the Linux process-list visibility rule", () => {
   });
 
   it.each([
-    ["group execute", 0o710],
-    ["other execute", 0o711],
-  ])(
-    "is uncertain for a foreign UID with %s despite group exclusion",
-    async (_name, mode) => {
+    ["group execute outside the process groups", 0o710, "clear"],
+    ["other execute", 0o711, "uncertain"],
+  ] as const)(
+    "classifies a foreign UID with %s by its directory reachability",
+    async (_name, mode, expected) => {
       const proc = fakeProc({
         worktreeMode: mode,
         self: { groups: [1000] },
         processes: { 101: { uid: 1001, cwdDenied: true } },
       });
       expect(await scanLinux("/work/tree", proc, 4242)).toMatchObject({
-        status: "uncertain",
+        status: expected,
       });
     },
   );
@@ -426,6 +428,44 @@ describe("the Linux process-list visibility rule", () => {
       });
     },
   );
+
+  it.each([
+    ["filesystem GID", [1001, 1001, 1001, 2000] as [number, number, number, number], []],
+    ["supplementary group", [1001, 1001, 1001, 1001] as [number, number, number, number], [2000]],
+  ])(
+    "is uncertain for a foreign UID in the directory %s with group-execute-only access",
+    async (_name, gidValues, groups) => {
+      const proc = fakeProc({
+        worktreeMode: 0o710,
+        worktreeGid: 2000,
+        processes: {
+          101: { uid: 1001, gidValues, groups, cwdDenied: true },
+        },
+      });
+      expect(await scanLinux("/work/tree", proc, 4242)).toMatchObject({
+        status: "uncertain",
+        reason: expect.stringContaining("foreign uid 1001"),
+      });
+    },
+  );
+
+  it("is clear for a foreign UID outside the directory group when only group execute is set", async () => {
+    const proc = fakeProc({
+      worktreeMode: 0o710,
+      worktreeGid: 2000,
+      processes: {
+        101: {
+          uid: 1001,
+          gidValues: [1001, 1001, 1001, 1001],
+          groups: [],
+          cwdDenied: true,
+        },
+      },
+    });
+    expect(await scanLinux("/work/tree", proc, 4242)).toEqual({
+      status: "clear",
+    });
+  });
 
   it("is clear when an unreadable foreign cwd cannot reach the worktree and skips root and system UIDs", async () => {
     const inaccessible = fakeProc({

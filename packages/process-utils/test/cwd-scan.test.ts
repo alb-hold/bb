@@ -27,7 +27,7 @@ function fakeLinux(
   comms: Record<number, string> = {},
 ): CwdScanIo & {
   effectiveCapabilities(pid: number): Promise<bigint>;
-  statAccess(path: string): Promise<{ uid: number; mode: number }>;
+  statAccess(path: string): Promise<{ uid: number; gid: number; mode: number }>;
 } {
   const io: CwdScanIo = {
     platform: "linux",
@@ -47,6 +47,7 @@ function fakeLinux(
     effectiveGid: async () => 1000,
     filesystemUid: async (pid) => owners[pid] ?? 1000,
     filesystemGid: async () => 1000,
+    supplementaryGroups: async () => [],
     readComm: async (pid) => comms[pid] ?? "node",
     runLsof: async () => {
       throw new Error("unused");
@@ -54,10 +55,10 @@ function fakeLinux(
   };
   return Object.assign(io, {
     effectiveCapabilities: async () => 0n,
-    statAccess: async () => ({ uid: 0, mode: 0o711 }),
+    statAccess: async () => ({ uid: 0, gid: 0, mode: 0o711 }),
   }) as CwdScanIo & {
     effectiveCapabilities(pid: number): Promise<bigint>;
-    statAccess(path: string): Promise<{ uid: number; mode: number }>;
+    statAccess(path: string): Promise<{ uid: number; gid: number; mode: number }>;
   };
 }
 
@@ -139,7 +140,6 @@ describe("scanProcessesWithCwdUnder", () => {
   });
 
   it.each([
-    ["group execute outside the group", 0o710, 0],
     ["other execute", 0o711, 0],
     ["DAC override capability", 0o700, 2],
     ["DAC read-search capability", 0o700, 4],
@@ -152,12 +152,46 @@ describe("scanProcessesWithCwdUnder", () => {
         {
           ...fakeLinux({ 10: denied() }, { 10: 1001 }),
           effectiveCapabilities: async () => BigInt(capability),
-          statAccess: async () => ({ uid: 1000, mode }),
+          statAccess: async () => ({ uid: 1000, gid: 2000, mode }),
         },
       );
       expect(scan).toMatchObject({ status: "unknown" });
     },
   );
+
+  it.each([
+    ["filesystem GID", 2000, []],
+    ["supplementary group", 1000, [2000]],
+  ])(
+    "returns unknown when a foreign UID belongs to a group-executable directory through its %s",
+    async (_name, filesystemGid, groups) => {
+      const base = await dir();
+      const scan = await scanProcessesWithCwdUnder(
+        { directories: [base] },
+        {
+          ...fakeLinux({ 10: denied() }, { 10: 1001 }),
+          filesystemGid: async () => filesystemGid,
+          supplementaryGroups: async () => groups,
+          statAccess: async () => ({ uid: 1000, gid: 2000, mode: 0o710 }),
+        },
+      );
+      expect(scan).toMatchObject({ status: "unknown" });
+    },
+  );
+
+  it("clears a foreign UID outside the directory group when only group execute is set", async () => {
+    const base = await dir();
+    const scan = await scanProcessesWithCwdUnder(
+      { directories: [base] },
+      {
+        ...fakeLinux({ 10: denied() }, { 10: 1001 }),
+        filesystemGid: async () => 1001,
+        supplementaryGroups: async () => [],
+        statAccess: async () => ({ uid: 1000, gid: 2000, mode: 0o710 }),
+      },
+    );
+    expect(scan).toMatchObject({ status: "clear", excludedOtherUsers: 1 });
+  });
 
   it("clears a foreign process whose cwd is unreadable and no path component grants traversal", async () => {
     const base = await dir();
@@ -168,6 +202,7 @@ describe("scanProcessesWithCwdUnder", () => {
         effectiveCapabilities: async () => 0n,
         statAccess: async (target) => ({
           uid: target === base ? 1000 : 0,
+          gid: 0,
           mode: target === base ? 0o700 : 0o711,
         }),
       },
@@ -420,7 +455,7 @@ describe("scanProcessesWithCwdUnder", () => {
           filesystemUid: async () => 1000,
           realUid: async (pid) => (pid === 10 ? 1002 : 1000),
           effectiveUid: async (pid) => (pid === 10 ? 1001 : 1000),
-          statAccess: async () => ({ uid: 1000, mode: 0o700 }),
+          statAccess: async () => ({ uid: 1000, gid: 1000, mode: 0o700 }),
         },
       );
       expect(scan).toMatchObject({ status: "unknown" });
@@ -451,7 +486,7 @@ describe("scanProcessesWithCwdUnder", () => {
           filesystemUid: async (pid) => (pid === 10 ? 1000 : 1000),
           realUid: async (pid) => (pid === 10 ? 1001 : 1000),
           effectiveUid: async (pid) => (pid === 10 ? 1001 : 1000),
-          statAccess: async () => ({ uid: 1000, mode: 0o700 }),
+          statAccess: async () => ({ uid: 1000, gid: 1000, mode: 0o700 }),
         },
       );
       expect(scan.status).toBe("unknown");
