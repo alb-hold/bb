@@ -1180,95 +1180,147 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
     ).toBeNull();
   });
 
-  it("replaces the loading snapshot with replay history exactly once", async () => {
-    prepareMobileTerminal();
-    stubVisibleIntersectionObserver();
-    vi.spyOn(FitAddon.prototype, "proposeDimensions").mockReturnValue({
-      cols: 40,
-      rows: 12,
-    });
-    const modules = terminalModules.importTerminalModules();
-    let finishModules!: () => void;
-    vi.spyOn(terminalModules, "importTerminalModules").mockImplementationOnce(
-      () =>
-        new Promise((resolve) => {
-          finishModules = () => {
-            void modules.then(resolve);
-          };
-        }),
-    );
-    testState.screen.mockResolvedValue({
-      rows: ["snapshot text"],
-      cursor: { col: 0, row: 0 },
-      cols: 40,
-      gridRows: 12,
-      complete: true,
-      truncated: false,
-      checkpointSeq: 1,
-      dataBase64: btoa("snapshot text"),
-    });
-    const terminals: Terminal[] = [];
-    const open = Terminal.prototype.open;
-    vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
-      this: Terminal,
-      element: HTMLElement,
-    ) {
-      terminals.push(this);
-      open.call(this, element);
-    });
-    const session = renderMobileTerminal();
-    await waitFor(() =>
-      expect(
-        document.querySelector("[data-terminal-screen-loading-preview]")
-          ?.textContent,
-      ).toBe("snapshot text"),
-    );
-    expect(testState.sockets).toHaveLength(0);
-    const previewFontSize = document.querySelector<HTMLElement>(
-      "[data-terminal-screen-loading-preview]",
-    )!.style.fontSize;
-    finishModules();
-    await waitFor(() => expect(testState.sockets).toHaveLength(1), {
-      timeout: 20_000,
-    });
-    await waitFor(() =>
+  it.each([40, 30])(
+    "replaces a %i-column loading snapshot with replay history exactly once",
+    async (snapshotCols) => {
+      prepareMobileTerminal();
+      stubVisibleIntersectionObserver();
+      vi.spyOn(FitAddon.prototype, "proposeDimensions").mockReturnValue({
+        cols: 40,
+        rows: 12,
+      });
+      const modules = terminalModules.importTerminalModules();
+      let finishModules!: () => void;
+      vi.spyOn(terminalModules, "importTerminalModules").mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finishModules = () => {
+              void modules.then(resolve);
+            };
+          }),
+      );
+      testState.screen.mockResolvedValue({
+        rows: ["snapshot text"],
+        cursor: { col: 0, row: 0 },
+        cols: snapshotCols,
+        gridRows: 12,
+        complete: true,
+        truncated: false,
+        checkpointSeq: 1,
+        dataBase64: btoa("snapshot text"),
+      });
+      const terminals: Terminal[] = [];
+      const open = Terminal.prototype.open;
+      vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
+        this: Terminal,
+        element: HTMLElement,
+      ) {
+        terminals.push(this);
+        open.call(this, element);
+      });
+      const session = renderMobileTerminal();
+      await waitFor(() =>
+        expect(
+          document.querySelector("[data-terminal-screen-loading-preview]")
+            ?.textContent,
+        ).toBe("snapshot text"),
+      );
+      expect(testState.sockets).toHaveLength(0);
+      const previewFontSize = document.querySelector<HTMLElement>(
+        "[data-terminal-screen-loading-preview]",
+      )!.style.fontSize;
+      const snapshotElement = document.querySelector<HTMLElement>(
+        "[data-terminal-screen-loading-preview]",
+      )!;
+      const removeSnapshot = vi.spyOn(snapshotElement, "remove");
+      finishModules();
+      await waitFor(() => expect(testState.sockets).toHaveLength(1), {
+        timeout: 20_000,
+      });
+      if (snapshotCols === 40) {
+        await waitFor(() =>
+          expect(
+            document.querySelector("[data-terminal-screen-loading-preview]"),
+          ).toBeNull(),
+        );
+      } else {
+        expect(
+          document.querySelector("[data-terminal-screen-loading-preview]")
+            ?.textContent,
+        ).toBe("snapshot text");
+      }
+      const preview = document.querySelector<HTMLElement>(
+        "[data-terminal-replay-preview]",
+      );
+      if (snapshotCols === 40)
+        expect(preview?.style.visibility).toBe("visible");
+      const socket = testState.sockets[0]!;
+      await waitForReadiness(socket.opened, "socket did not open");
+      await waitForReadinessCondition(
+        () =>
+          expect(
+            socket.sent.some((frame) => JSON.parse(frame).type === "resize"),
+          ).toBe(true),
+        "terminal fit did not settle",
+      );
+      socket.receive({
+        type: "attached",
+        session,
+        replayStartSeq: 0,
+        nextSeq: 2,
+      });
+      if (snapshotCols !== 40) {
+        expect(
+          document.querySelector("[data-terminal-screen-loading-preview]")
+            ?.textContent,
+        ).toBe("snapshot text");
+        expect(pageText()).not.toContain("Reconnecting");
+        vi.useFakeTimers();
+        await act(() => vi.advanceTimersByTimeAsync(600));
+        vi.useRealTimers();
+        expect(snapshotElement.isConnected).toBe(true);
+        expect(snapshotElement.style.whiteSpace).toBe("pre");
+        expect(removeSnapshot).not.toHaveBeenCalled();
+      }
+      socket.receive({
+        type: "output",
+        chunk: { seq: 0, dataBase64: btoa("older scrollback\r\n") },
+      });
+      socket.receive({
+        type: "output",
+        chunk: { seq: 1, dataBase64: btoa("snapshot text\r\n") },
+      });
+      await waitFor(() =>
+        expect(
+          document.querySelector("[data-terminal-replay-preview]"),
+        ).toBeNull(),
+      );
+      const terminal = terminals[0]!;
+      expect(previewFontSize).toBe(`${terminal.options.fontSize}px`);
+      const text = Array.from(
+        { length: terminal.buffer.active.length },
+        (_, i) => terminal.buffer.active.getLine(i)?.translateToString(true),
+      ).join("\n");
+      expect(text).toContain("older scrollback");
+      expect(text.match(/snapshot text/g)).toHaveLength(1);
+      expect(text.indexOf("older scrollback")).toBeLessThan(
+        text.indexOf("snapshot text"),
+      );
       expect(
         document.querySelector("[data-terminal-screen-loading-preview]"),
-      ).toBeNull(),
-    );
-    const preview = document.querySelector<HTMLElement>(
-      "[data-terminal-replay-preview]",
-    );
-    expect(preview?.style.visibility).toBe("visible");
-    const socket = testState.sockets[0]!;
-    await waitForReadiness(socket.opened, "socket did not open");
-    socket.receive({
-      type: "attached",
-      session,
-      replayStartSeq: 0,
-      nextSeq: 2,
-    });
-    socket.receive({
-      type: "output",
-      chunk: { seq: 0, dataBase64: btoa("older scrollback\r\n") },
-    });
-    socket.receive({
-      type: "output",
-      chunk: { seq: 1, dataBase64: btoa("snapshot text\r\n") },
-    });
-    await waitFor(() =>
+      ).toBeNull();
+      expect(removeSnapshot).toHaveBeenCalledOnce();
+      expect(testState.sockets).toHaveLength(1);
+      expect(socket.closeCalls).toHaveLength(0);
+      const resizes = socket.sent
+        .map((frame) => JSON.parse(frame))
+        .filter((frame) => frame.type === "resize");
+      expect(resizes.filter((frame) => frame.claim === true)).toHaveLength(1);
       expect(
-        document.querySelector("[data-terminal-replay-preview]"),
-      ).toBeNull(),
-    );
-    const terminal = terminals[0]!;
-    expect(previewFontSize).toBe(`${terminal.options.fontSize}px`);
-    const text = Array.from({ length: terminal.buffer.active.length }, (_, i) =>
-      terminal.buffer.active.getLine(i)?.translateToString(true),
-    ).join("\n");
-    expect(text).toContain("older scrollback");
-    expect(text.match(/snapshot text/g)).toHaveLength(1);
-  });
+        resizes.every((frame) => frame.cols === 40 && frame.rows === 12),
+      ).toBe(true);
+    },
+  );
 
   it("removes the loading snapshot when terminal modules fail", async () => {
     prepareMobileTerminal();
@@ -2403,14 +2455,13 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
       const opened = new Promise<void>((resolve) => {
         resolveOpened = resolve;
       });
-      vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
-        this: Terminal,
-        element,
-      ) {
-        mounted.current = this;
-        open.call(this, element);
-        resolveOpened();
-      });
+      vi.spyOn(Terminal.prototype, "open").mockImplementation(
+        function (this: Terminal, element) {
+          mounted.current = this;
+          open.call(this, element);
+          resolveOpened();
+        },
+      );
       vi.spyOn(FitAddon.prototype, "proposeDimensions").mockImplementation(
         () => ({
           cols: 40,
@@ -2892,17 +2943,15 @@ describe("terminal first paint", () => {
     vi.stubGlobal("innerWidth", 390);
     const paintOpacities: string[] = [];
     const write = Terminal.prototype.write;
-    vi.spyOn(Terminal.prototype, "write").mockImplementation(function (
-      this: Terminal,
-      data,
-      callback,
-    ) {
-      paintOpacities.push(
-        document.querySelector<HTMLElement>("[data-terminal-renderer]")!.style
-          .opacity,
-      );
-      write.call(this, data, callback);
-    });
+    vi.spyOn(Terminal.prototype, "write").mockImplementation(
+      function (this: Terminal, data, callback) {
+        paintOpacities.push(
+          document.querySelector<HTMLElement>("[data-terminal-renderer]")!.style
+            .opacity,
+        );
+        write.call(this, data, callback);
+      },
+    );
     let finishOutput!: (value: {
       chunks: { seq: number; dataBase64: string }[];
       nextSeq: number;
@@ -3033,13 +3082,12 @@ describe("terminal first paint recovery", () => {
     );
     const mounted: { current: Terminal | null } = { current: null };
     const open = Terminal.prototype.open;
-    vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
-      this: Terminal,
-      container,
-    ) {
-      mounted.current ??= this;
-      open.call(this, container);
-    });
+    vi.spyOn(Terminal.prototype, "open").mockImplementation(
+      function (this: Terminal, container) {
+        mounted.current ??= this;
+        open.call(this, container);
+      },
+    );
     let resolveOutput!: (output: {
       chunks: { seq: number; dataBase64: string }[];
       nextSeq: number;

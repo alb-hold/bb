@@ -1792,10 +1792,13 @@ export function ThreadTerminalView({
     const pendingExitNotices: string[] = [];
     let replayCheckpointSequence: number | null = null;
     let localFitGrid: TerminalGridSize | null = null;
-    let removeScreenLoadingPreview: (() => void) | null = null;
+    let screenLoadingPreview: ReturnType<
+      typeof mountTerminalScreenLoadingPreview
+    > | null = null;
+    let keepScreenLoadingPreview = false;
     const clearScreenLoadingPreview = () => {
-      removeScreenLoadingPreview?.();
-      removeScreenLoadingPreview = null;
+      screenLoadingPreview?.dispose();
+      screenLoadingPreview = null;
     };
     const terminalFontOptions = {
       fontFamily: readTerminalFontFamily(),
@@ -2012,15 +2015,16 @@ export function ThreadTerminalView({
       void screenPromise.then((snapshot) => {
         if (
           disposed ||
-          modulesReady ||
           snapshot == null ||
           !snapshot.complete ||
-          snapshot.truncated ||
-          snapshot.cols !== latestPtyGrid.cols ||
-          snapshot.gridRows !== latestPtyGrid.rows
+          snapshot.truncated
         )
           return;
-        removeScreenLoadingPreview = mountTerminalScreenLoadingPreview({
+        keepScreenLoadingPreview =
+          snapshot.cols !== latestPtyGrid.cols ||
+          snapshot.gridRows !== latestPtyGrid.rows;
+        if (modulesReady && !keepScreenLoadingPreview) return;
+        screenLoadingPreview = mountTerminalScreenLoadingPreview({
           container: containerElement,
           snapshot,
           ...terminalFontOptions,
@@ -2444,6 +2448,7 @@ export function ThreadTerminalView({
         });
       }
       const fitTerminal = () => {
+        screenLoadingPreview?.refresh(terminal?.options.lineHeight ?? 1);
         updateGridVisibility();
         if (!fitAddon || !terminal) {
           return;
@@ -2839,6 +2844,8 @@ export function ThreadTerminalView({
             },
             onReplayComplete: () => {
               replayCompleted = true;
+              keepScreenLoadingPreview = false;
+              clearScreenLoadingPreview();
               containerElement.dataset.replayHeld = "false";
               activeTransport.resetRetryBackoff();
               for (const text of pendingExitNotices.splice(0)) {
@@ -3252,7 +3259,9 @@ export function ThreadTerminalView({
 
     void mountTerminal(container)
       .then(() => {
-        window.requestAnimationFrame(clearScreenLoadingPreview);
+        window.requestAnimationFrame(() => {
+          if (!keepScreenLoadingPreview) clearScreenLoadingPreview();
+        });
       })
       .catch((error) => {
         clearScreenLoadingPreview();

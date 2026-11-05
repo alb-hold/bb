@@ -7,7 +7,7 @@ it("shows literal snapshot rows outside xterm and removes them without changing 
   const container = document.createElement("div");
   container.textContent = "replayed history";
   parent.append(container);
-  const remove = mountTerminalScreenLoadingPreview({
+  const preview = mountTerminalScreenLoadingPreview({
     container,
     fontFamily: "monospace",
     fontSize: 18,
@@ -28,8 +28,14 @@ it("shows literal snapshot rows outside xterm and removes them without changing 
   expect(parent.querySelector("pre")?.style.fontSize).toBe("18px");
   expect(parent.querySelector("pre")?.style.lineHeight).toBe("32px");
   expect(container.textContent).toBe("replayed history");
-  remove();
-  remove();
+  expect(parent.querySelector("pre")?.style.whiteSpace).toBe("pre");
+  preview.refresh(1);
+  expect(parent.querySelector("pre")?.style.lineHeight).toBe("21px");
+  expect(parent.querySelector("pre")?.textContent).toContain(
+    "<script>literal</script>",
+  );
+  preview.dispose();
+  preview.dispose();
   expect(parent.querySelector("pre")).toBeNull();
   expect(container.textContent).toBe("replayed history");
 });
