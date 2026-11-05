@@ -1,4 +1,4 @@
-import { forwardRef } from "react";
+import type { Ref } from "react";
 import { Button, type ButtonProps } from "./button";
 import { Icon } from "./icon";
 import { cn } from "../../lib/utils";
@@ -11,8 +11,13 @@ export const COMPOSER_SUBMIT_CLASS =
 
 export const COMPOSER_SEND_ICON = "ArrowUp";
 
-export const ComposerSubmitButton = forwardRef<HTMLButtonElement, ButtonProps>(
-  ({ className, children, ...props }, ref) => (
+export function ComposerSubmitButton({
+  className,
+  children,
+  ref,
+  ...props
+}: ButtonProps & { ref?: Ref<HTMLButtonElement> }) {
+  return (
     <Button
       ref={ref}
       type="submit"
@@ -23,6 +28,5 @@ export const ComposerSubmitButton = forwardRef<HTMLButtonElement, ButtonProps>(
     >
       {children ?? <Icon name={COMPOSER_SEND_ICON} className="size-4" />}
     </Button>
-  ),
-);
-ComposerSubmitButton.displayName = "ComposerSubmitButton";
+  );
+}
