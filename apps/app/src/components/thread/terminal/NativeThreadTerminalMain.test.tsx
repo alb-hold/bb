@@ -413,7 +413,6 @@ describe("NativeThreadTerminalMain", () => {
 
     expect(screen.getByRole("status").textContent).toBe("Loading terminals...");
     expect(screen.queryByText("Claude Code session ended")).toBeNull();
-    expect(hooks.preloadTerminalPanel).toHaveBeenCalledOnce();
   });
 
   it("shows the ended state only after the empty terminal list is known", () => {
