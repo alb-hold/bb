@@ -121,7 +121,11 @@ function changedSince(
   info: { ctimeMs: number; mtimeMs: number },
   startedAt: number,
 ): boolean {
-  return info.ctimeMs >= startedAt || info.mtimeMs >= startedAt;
+  const earliestChangedAt = startedAt - 100;
+  return (
+    info.ctimeMs >= earliestChangedAt ||
+    info.mtimeMs >= earliestChangedAt
+  );
 }
 
 function errorCode(error: unknown): string | null {
