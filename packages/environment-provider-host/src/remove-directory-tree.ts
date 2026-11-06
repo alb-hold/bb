@@ -505,7 +505,7 @@ export async function removeDirectoryTree(
                     fileHandle,
                     originalMode,
                   );
-            hooks.onRetainedPath?.(anchoredEntry);
+            hooks.onRetainedPath?.(entry);
             hooks.onRetainedPath?.(
               path.join(path.dirname(entry), path.basename(recoveredPath)),
             );
@@ -549,6 +549,7 @@ export async function removeDirectoryTree(
               );
             } catch {}
           }
+          hooks.onRetainedPath?.(entry);
           hooks.onRetainedPath?.(
             path.join(path.dirname(entry), path.basename(quarantined)),
           );
@@ -960,11 +961,11 @@ export async function removeDirectoryTree(
           quarantineRestored || !rootQuarantined ? anchoredEntry : quarantined,
         );
         if (racedGitMarkerDestination !== null) {
-          hooks.onRetainedPath?.(
-            quarantineRestored
-              ? path.join(anchoredEntry, ".git")
-              : racedGitMarkerDestination,
-          );
+          const retainedRootPath =
+            quarantineRestored || !rootQuarantined
+              ? entry
+              : path.join(path.dirname(entry), path.basename(quarantined));
+          hooks.onRetainedPath?.(path.join(retainedRootPath, ".git"));
         }
         if (recoveredGitMarkerPath !== null) {
           const recoveredMarkerParent =
