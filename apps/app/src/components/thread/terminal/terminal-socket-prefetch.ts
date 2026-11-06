@@ -1,3 +1,4 @@
+import { markTerminalPerformance } from "@/lib/terminal-performance";
 import type { TerminalBrowserSocket } from "@bb/client-core";
 import {
   TERMINAL_REPLAY_BATCH_WEBSOCKET_PROTOCOL,
@@ -28,7 +29,7 @@ class BufferedTerminalSocket implements TerminalBrowserSocket {
     private readonly forget: () => void,
   ) {
     this.socket = new WebSocket(url, protocols);
-    performance.mark?.("terminal-socket-created");
+    markTerminalPerformance("terminal-socket-created");
     this.timer = setTimeout(() => this.close(), 10_000);
     this.socket.onopen = (event) => this.deliver(() => this.onopen?.(event));
     this.socket.onmessage = (event) => {
