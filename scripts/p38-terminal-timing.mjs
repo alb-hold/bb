@@ -117,6 +117,14 @@ try {
       (frame) => frame.type === "ack" && frame.nextSeq >= socket.nextSeq,
     );
     const parsed = state.parsed === null ? (ack?.at ?? null) : state.parsed;
+    if (
+      sockets.length !== 1 ||
+      parsed === null ||
+      socket?.lastByte === null ||
+      state.restoring ||
+      state.previewPresent
+    )
+      verdict = "FAIL";
     records.push({
       run,
       cache: run === 0 ? "cold-context" : "warm-context-new-page",
