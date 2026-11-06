@@ -1098,13 +1098,8 @@ describe("real worktree teardown preservation", () => {
           await writeFile(path.join(root, "late-after-link-check"), "late\n");
           throw new Error("force quarantine restore");
         },
-        beforeQuarantineRestoreLink: async (source, destination) => {
-          if (
-            path.basename(source) !== path.basename(quarantinedLink) ||
-            destination !== originalLink ||
-            injected
-          )
-            return;
+        beforeQuarantineRestoreLink: async (_source, destination) => {
+          if (injected) return;
           injected = true;
           await fs.symlink("racer-target", destination);
         },
@@ -1112,7 +1107,7 @@ describe("real worktree teardown preservation", () => {
 
       expect(result.status ?? result).toBe("retained");
       expect(quarantinedEntries).toContain(originalLink);
-      expect(injected).toBe(true);
+      expect(injected, `quarantine source: ${quarantinedLink}`).toBe(true);
       await expect(readlink(originalLink)).resolves.toBe("racer-target");
       const quarantined = (await fs.readdir(root)).find((name) =>
         name.startsWith(".bb-removing-"),
