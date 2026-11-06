@@ -506,7 +506,9 @@ export async function removeDirectoryTree(
                     originalMode,
                   );
             hooks.onRetainedPath?.(anchoredEntry);
-            hooks.onRetainedPath?.(recoveredPath);
+            hooks.onRetainedPath?.(
+              path.join(path.dirname(entry), path.basename(recoveredPath)),
+            );
             hooks.onRetainedPath?.(
               path.join(path.dirname(entry), path.basename(quarantined)),
             );
@@ -542,7 +544,9 @@ export async function removeDirectoryTree(
                       fileHandle,
                       originalMode,
                     );
-              hooks.onRetainedPath?.(recoveredPath);
+              hooks.onRetainedPath?.(
+                path.join(path.dirname(entry), path.basename(recoveredPath)),
+              );
             } catch {}
           }
           hooks.onRetainedPath?.(
@@ -962,8 +966,18 @@ export async function removeDirectoryTree(
               : racedGitMarkerDestination,
           );
         }
-        if (recoveredGitMarkerPath !== null)
-          hooks.onRetainedPath?.(recoveredGitMarkerPath);
+        if (recoveredGitMarkerPath !== null) {
+          const recoveredMarkerParent =
+            quarantineRestored || !rootQuarantined
+              ? entry
+              : path.join(path.dirname(entry), path.basename(quarantined));
+          hooks.onRetainedPath?.(
+            path.join(
+              recoveredMarkerParent,
+              path.basename(recoveredGitMarkerPath),
+            ),
+          );
+        }
         if (directoryModeChanged)
           await directory.chmod(Number(originalDirectoryMode));
         return "retained";
