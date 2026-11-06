@@ -66,6 +66,7 @@ it.each(["threads", "pinned"])(
       activeThreadId: null,
       activeProjectId: null,
       isCompactViewport: false,
+      experimental_isVisible: true,
       onNavigate: vi.fn(),
       searchQuery: "",
     };

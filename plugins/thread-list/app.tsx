@@ -15,7 +15,7 @@ import { SidebarRowMetadataExperiment } from "./app/list/SidebarRowMetadataExper
 function ThreadList({
   activeThreadId,
   isCompactViewport,
-  experimental_isVisible = true,
+  experimental_isVisible,
   onNavigate,
 }: PluginThreadListProps) {
   useSidebarThreadReveal();

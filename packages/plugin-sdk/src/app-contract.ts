@@ -502,7 +502,7 @@ export interface PluginThreadListProps {
   activeProjectId: string | null;
   /** True on phone-width viewports and coarse pointers. */
   isCompactViewport: boolean;
-  /** Whether the host currently shows the list; false in a closed drawer or collapsed sidebar. */
+  /** Whether the host currently shows the list; false in a closed drawer or collapsed sidebar. Older hosts omit this, so visibility is unknown. */
   experimental_isVisible?: boolean;
   /**
    * Call after the user opens a thread. It closes the mobile sidebar drawer.
