@@ -113,6 +113,19 @@ function createExitHandler(
 describe("terminal replay preview", () => {
   it("follows a phone font change and matches fractional DOM cells to the live renderer before showing", async () => {
     installPreviewCanvasContext();
+    const setSpacing = Object.getOwnPropertyDescriptor(
+      CSSStyleDeclaration.prototype,
+      "letterSpacing",
+    )!.set!;
+    const spacingSetter = vi
+      .spyOn(CSSStyleDeclaration.prototype, "letterSpacing", "set")
+      .mockImplementation(function (this: CSSStyleDeclaration, value: string) {
+        const numeric = parseFloat(value);
+        setSpacing.call(
+          this,
+          Number.isFinite(numeric) ? `${Number(numeric.toFixed(6))}px` : value,
+        );
+      });
     const characterWidth = (element: HTMLElement) =>
       parseFloat(getComputedStyle(element).fontSize) === 13 ? 7.82 : 7;
     const width = vi
@@ -217,6 +230,7 @@ describe("terminal replay preview", () => {
       bounds.mockRestore();
       width.mockRestore();
       height.mockRestore();
+      spacingSetter.mockRestore();
     }
   });
 

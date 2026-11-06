@@ -299,7 +299,11 @@ export function mountTerminalReplayPreview({
     for (const { element, source, cellsPerCharacter } of spacing) {
       const applied = `${(parseFloat(source) || 0) + residual * cellsPerCharacter}px`;
       element.style.letterSpacing = applied;
-      originalSpacing.set(element, { source, applied, cellsPerCharacter });
+      originalSpacing.set(element, {
+        source,
+        applied: element.style.letterSpacing,
+        cellsPerCharacter,
+      });
     }
     screen.style.width = `${cellWidth * terminal.cols}px`;
     for (const row of rows.children) {
