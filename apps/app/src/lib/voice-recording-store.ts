@@ -126,6 +126,12 @@ function hydrate(key: string): void {
   });
 }
 
+export async function hasFailedVoiceRecordings(key: string): Promise<boolean> {
+  hydrate(key);
+  await databaseQueue;
+  return readSnapshot(key).length > 0;
+}
+
 export function useFailedVoiceRecordings(
   key: string,
 ): readonly FailedVoiceRecording[] {

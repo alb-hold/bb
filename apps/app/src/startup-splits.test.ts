@@ -84,6 +84,8 @@ it("keeps hidden panels, SDK UI, menu bodies and extended glyphs outside their s
     home: [
       "src/components/promptbox/ProgressiveComposer.tsx",
       "src/views/RootComposePanelTabContent.tsx",
+      "src/components/ui/bottom-anchored-scroll-body.tsx",
+      "src/components/ui/scroll-position-keeper.ts",
       "src/hooks/useVoiceInput.ts",
       "src/components/pickers/ModelReasoningPickerBody.tsx",
     ],
@@ -99,6 +101,7 @@ it("keeps hidden panels, SDK UI, menu bodies and extended glyphs outside their s
       "src/components/pickers/ModelReasoningPickerBody.tsx",
     ],
     sdk: [
+      "src/components/plugin/PluginThreadContextCard.tsx",
       "src/components/plugin/PluginNewThreadComposer.tsx",
       "src/components/plugin/PluginProviderModelPicker.tsx",
       "src/components/plugin/PluginPermissionModePicker.tsx",
@@ -110,7 +113,11 @@ it("keeps hidden panels, SDK UI, menu bodies and extended glyphs outside their s
       "src/components/thread/ThreadActionMenuItems.tsx",
     ],
     picker: ["src/components/pickers/OptionPickerItems.tsx"],
-    workspace: ["../../packages/shared-ui/src/components/ui/icon-extended.tsx"],
+    workspace: [
+      "../../packages/shared-ui/src/components/ui/icon-extended.tsx",
+      "src/components/ui/bottom-anchored-scroll-body.tsx",
+      "src/components/ui/scroll-position-keeper.ts",
+    ],
     icons: ["../../packages/shared-ui/src/components/ui/icon-extended.tsx"],
   };
   for (const [entry, source] of Object.entries(entries)) {

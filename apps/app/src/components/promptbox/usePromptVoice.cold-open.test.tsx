@@ -56,6 +56,9 @@ function Composer() {
 
 it("records on the first press after the runtime download completes", async () => {
   render(<Composer />);
+  vi.useFakeTimers();
+  await act(async () => vi.advanceTimersByTimeAsync(10_000));
+  vi.useRealTimers();
   expect(download.imports).toBe(0);
   fireEvent.click(screen.getByRole("button", { name: "Mic" }));
   await waitFor(() => expect(download.imports).toBe(1));

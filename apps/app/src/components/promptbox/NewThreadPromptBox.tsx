@@ -308,6 +308,9 @@ const DefaultNewThreadComposer = memo(function DefaultNewThreadComposer({
       data-app-composer=""
       data-app-composer-role="primary"
       data-promptbox-shell=""
+      data-native-terminal={
+        execution.nativeTerminal?.enabled ? "true" : "false"
+      }
       className="w-full"
     >
       <div

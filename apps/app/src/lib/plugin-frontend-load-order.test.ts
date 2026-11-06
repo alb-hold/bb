@@ -114,6 +114,21 @@ describe("orderPluginFrontendCandidates", () => {
 });
 
 describe("reconcilePluginFrontends load scheduling", () => {
+  it("does not start an unused deferred wait when only home plugins are installed", async () => {
+    const waitForDeferredLoad = vi.fn(() => new Promise<void>(() => {}));
+    const importModule = vi.fn(async () => pluginModule());
+    await reconcilePluginFrontends(
+      createPluginFrontendReconcileState(),
+      makeDeps([candidate("thread-list", 263_000)], {
+        priorityPluginIds: () => ["thread-list"],
+        waitForDeferredLoad,
+        importModule,
+      }),
+    );
+    expect(importModule).toHaveBeenCalledOnce();
+    expect(waitForDeferredLoad).not.toHaveBeenCalled();
+  });
+
   it("paints the home input before importing its rich renderer while loading the sidebar in parallel", async () => {
     const imports: string[] = [];
     let paint = () => {};

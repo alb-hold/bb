@@ -164,3 +164,25 @@ it("starts destination code before the workspace settles and keeps thread code o
     downloads.workspace.resolve();
   });
 });
+
+it("warms a thread reached through browser history without row intent", async () => {
+  downloads.prefetch.mockClear();
+  function Back() {
+    const navigate = useNavigate();
+    return <button onClick={() => void navigate(-1)}>Back to thread</button>;
+  }
+  render(
+    <MemoryRouter
+      initialEntries={["/threads/history", "/settings"]}
+      initialIndex={1}
+    >
+      <Back />
+      <AppRoutes />
+    </MemoryRouter>,
+  );
+  expect(downloads.prefetch).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Back to thread" }));
+  await waitFor(() =>
+    expect(downloads.prefetch).toHaveBeenCalledWith("history"),
+  );
+});

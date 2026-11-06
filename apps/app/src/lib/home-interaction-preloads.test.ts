@@ -22,19 +22,20 @@ afterEach(() => {
 });
 
 it.each([true, false])(
-  "warms every deferred home interaction only after readiness, paint and idle (native idle=%s)",
+  "warms the first-click model picker only after readiness, paint and idle (native idle=%s)",
   async (nativeIdle) => {
     vi.resetModules();
-    const { HOME_INTERACTION_SPLITS, scheduleHomeInteractionPreloads } =
-      await import("./home-interaction-preloads");
+    const {
+      HOME_INTERACTION_SPLITS,
+      HOME_SETTLED_SPLITS,
+      scheduleHomeInteractionPreloads,
+    } = await import("./home-interaction-preloads");
     expect(HOME_INTERACTION_SPLITS).toEqual([
-      "thread-detail",
-      "root-compose-panel-tab-content",
-      "thread-action-menu-items",
-      "prompt-voice-runtime",
       "model-reasoning-picker-body",
       "model-reasoning-menu",
-      "extended-icons",
+    ]);
+    expect(HOME_SETTLED_SPLITS).toEqual([
+      "thread-detail",
       "thread-terminal",
       "terminal-runtime",
       "terminal-fit",
@@ -140,7 +141,7 @@ it.each(["hidden", "empty"])(
     const { scheduleHomeInteractionPreloads } =
       await import("./home-interaction-preloads");
     document.body.innerHTML =
-      '<textarea></textarea><div data-sidebar-thread-id="thread"></div><script id="bb-prefetch-thread-detail" type="application/json">["/assets/thread-detail.js"]</script>';
+      '<textarea></textarea><div data-sidebar-thread-id="thread"></div><script id="bb-prefetch-model-reasoning-picker-body" type="application/json">["/assets/model-reasoning-picker-body.js"]</script>';
     const input = document.querySelector("textarea")!;
     input.checkVisibility = () => true;
     if (state === "hidden") input.style.visibility = "hidden";
@@ -170,7 +171,7 @@ it.each(["hidden", "empty"])(
     expect(fetch).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1_250);
     expect(fetch).toHaveBeenCalledExactlyOnceWith(
-      expect.stringContaining("/assets/thread-detail.js"),
+      expect.stringContaining("/assets/model-reasoning-picker-body.js"),
       { cache: "force-cache", priority: "low" },
     );
   },
@@ -182,7 +183,7 @@ it("cancels the post-ready delay before an idle fallback can start", async () =>
   const { scheduleHomeInteractionPreloads } =
     await import("./home-interaction-preloads");
   document.body.innerHTML =
-    '<textarea></textarea><div data-sidebar-thread-id="thread"></div><script id="bb-prefetch-thread-detail" type="application/json">["/assets/thread-detail.js"]</script>';
+    '<textarea></textarea><div data-sidebar-thread-id="thread"></div><script id="bb-prefetch-model-reasoning-picker-body" type="application/json">["/assets/model-reasoning-picker-body.js"]</script>';
   vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) =>
     window.setTimeout(() => callback(0), 16),
   );

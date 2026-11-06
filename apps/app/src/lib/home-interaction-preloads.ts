@@ -1,14 +1,15 @@
 import { requestBrowserIdle } from "./plugin-frontend-boot-schedule";
 import { downloadSplit } from "./split-prefetch";
+import { scheduleSettledSplitDownloads } from "./settled-split-downloads";
+import { markHomeComposerReady } from "./home-composer-ready";
 
 export const HOME_INTERACTION_SPLITS = [
-  "thread-detail",
-  "root-compose-panel-tab-content",
-  "thread-action-menu-items",
-  "prompt-voice-runtime",
   "model-reasoning-picker-body",
   "model-reasoning-menu",
-  "extended-icons",
+] as const;
+
+export const HOME_SETTLED_SPLITS = [
+  "thread-detail",
   "thread-terminal",
   "terminal-runtime",
   "terminal-fit",
@@ -25,6 +26,7 @@ export function scheduleHomeInteractionPreloads(): () => void {
   let readyDelay: number | null = null;
   let cancelIdle: (() => void) | null = null;
   let observer: MutationObserver | null = null;
+  let cancelSettled: (() => void) | null = null;
   const mounted = (selector: string) =>
     [...document.querySelectorAll<HTMLElement>(selector)].some((element) => {
       const visibility = getComputedStyle(element).visibility;
@@ -50,7 +52,8 @@ export function scheduleHomeInteractionPreloads(): () => void {
         if (stopped || !ready()) return;
         observer?.disconnect();
         observer = null;
-        performance.mark("app-home-composer-ready");
+        markHomeComposerReady();
+        cancelSettled = scheduleSettledSplitDownloads(HOME_SETTLED_SPLITS, ready);
         readyDelay = window.setTimeout(() => {
           readyDelay = null;
           if (stopped || !ready()) return;
@@ -76,5 +79,6 @@ export function scheduleHomeInteractionPreloads(): () => void {
     if (frame !== null) cancelAnimationFrame(frame);
     if (readyDelay !== null) window.clearTimeout(readyDelay);
     cancelIdle?.();
+    cancelSettled?.();
   };
 }

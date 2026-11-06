@@ -74,15 +74,21 @@ export function usePromptVoice(
   useEffect(() => {
     mounted.current = true;
     const waiters = waiting.current;
-    const timer = window.setTimeout(() => {
-      void preloadPromptVoiceRuntime().catch(() => undefined);
-    }, 1500);
+    let cancelled = false;
+    if (recordingKey !== null) {
+      void import("@/lib/voice-recording-store")
+        .then((store) => store.hasFailedVoiceRecordings(recordingKey))
+        .then((hasRecordings) => {
+          if (!cancelled && hasRecordings) return preloadPromptVoiceRuntime();
+        })
+        .catch(() => undefined);
+    }
     return () => {
+      cancelled = true;
       mounted.current = false;
-      window.clearTimeout(timer);
       for (const resolve of waiters.splice(0)) resolve(null);
     };
-  }, []);
+  }, [recordingKey]);
   const waitForVoice = useCallback(async () => {
     try {
       await preloadPromptVoiceRuntime();
@@ -136,14 +142,13 @@ export function usePromptVoice(
     stream: voice?.stream ?? null,
     failedRecordings: voice?.failedRecordings ?? [],
     ...actions,
-    runtime:
-      !runtimeReady ? null : (
-        <LoadedPromptVoiceRuntime
-          target={target}
-          promptBoxRef={promptBoxRef}
-          recordingKey={recordingKey}
-          publish={publish}
-        />
-      ),
+    runtime: !runtimeReady ? null : (
+      <LoadedPromptVoiceRuntime
+        target={target}
+        promptBoxRef={promptBoxRef}
+        recordingKey={recordingKey}
+        publish={publish}
+      />
+    ),
   };
 }

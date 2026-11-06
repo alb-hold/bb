@@ -53,13 +53,8 @@ import {
 } from "./plugin-app-definition";
 import { setPluginAssetIcons } from "@bb/shared-ui/icon-registry";
 import { setPluginLogoUrls, type PluginLogoUrls } from "./plugin-logos";
-import {
-  requestBrowserIdle,
-  whenRouteSurfaceMounted,
-  whenHomeComposerReady,
-  whenHomeComposerInputOrTimeout,
-} from "./plugin-frontend-boot-schedule";
-import { whenRouteContentPainted } from "./route-content-paint";
+import { whenHomeComposerReady } from "./plugin-frontend-boot-schedule";
+import { createDeferredPluginFrontendSchedule } from "./deferred-plugin-frontend-schedule";
 import {
   pluginSdkAppImplementation,
   retiredPluginSdkAppMembers,
@@ -767,9 +762,13 @@ async function reconcileCandidates(
   const priorityReady = new Promise<void>((resolve) => {
     releasePriority = resolve;
   });
-  const deferredReady = deps.waitForDeferredLoad
-    ? priorityReady.then(deps.waitForDeferredLoad)
-    : Promise.resolve();
+  const hasDeferredCandidates = ordered.some(
+    (candidate) => !priorityPluginIds.includes(candidate.pluginId),
+  );
+  const deferredReady =
+    deps.waitForDeferredLoad && hasDeferredCandidates
+      ? priorityReady.then(deps.waitForDeferredLoad)
+      : Promise.resolve();
   const prefetched = new Set<string>();
   const prefetchAhead = () => {
     if (pendingPriority > 0) return;
@@ -1117,6 +1116,7 @@ function publishBrowserDiagnostics(): void {
 const PLUGIN_SLOT_BATCH_MAX_HOLD_MS = 150;
 
 const PLUGIN_FRONTEND_IMPORT_RETRY_DELAYS_MS = [500, 2_000];
+const deferredFrontendSchedule = createDeferredPluginFrontendSchedule();
 
 const browserReconcileDeps: PluginFrontendReconcileDeps = {
   fetchCandidates: fetchFrontendCandidates,
@@ -1134,17 +1134,8 @@ const browserReconcileDeps: PluginFrontendReconcileDeps = {
       requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
     );
   },
-  waitForDeferredLoad: async () => {
-    await whenRouteContentPainted();
-    await whenRouteSurfaceMounted();
-    await whenHomeComposerInputOrTimeout();
-    await new Promise<void>((resolve) =>
-      requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
-    );
-    await new Promise<void>((resolve) => requestBrowserIdle(resolve));
-  },
-  yieldBetweenDeferredLoads: () =>
-    new Promise<void>((resolve) => requestBrowserIdle(resolve)),
+  waitForDeferredLoad: deferredFrontendSchedule.waitForDeferredLoad,
+  yieldBetweenDeferredLoads: deferredFrontendSchedule.yieldBetweenDeferredLoads,
   resetCrashedSlots: resetCrashedPluginSlots,
   setRegistrations: setPluginSlotRegistrations,
   removeRegistrations: removePluginSlotRegistrations,
@@ -1216,12 +1207,14 @@ export function bootPluginFrontends(): Promise<void> {
     installPluginFrontendPageLifecycle();
     await reconcilePluginFrontends(state, browserReconcileDeps);
     publishLoadFailed();
-  })().catch((error: unknown) => {
-    setPluginFrontendLoadFailed(true);
-    console.warn(
-      `plugin frontend boot failed: ${error instanceof Error ? error.message : String(error)}`,
-    );
-  });
+  })()
+    .catch((error: unknown) => {
+      setPluginFrontendLoadFailed(true);
+      console.warn(
+        `plugin frontend boot failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    })
+    .finally(deferredFrontendSchedule.dispose);
   return bootPromise;
 }
 
@@ -1245,6 +1238,7 @@ async function runLiveReconcile(): Promise<void> {
       `plugin frontend reconcile failed: ${error instanceof Error ? error.message : String(error)}`,
     );
   } finally {
+    deferredFrontendSchedule.dispose();
     setPluginFrontendReconcilePending(false);
   }
 }

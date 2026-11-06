@@ -180,8 +180,8 @@
     "66 over the lowered cap. The Brotli cap returns to the 394,500 set by the",
     "0.48.0 sync; neither cap is above the base."
   ],
-  "maxBootBytes": 1580000,
-  "maxBootBrotliBytes": 392000,
+  "maxBootBytes": 1579000,
+  "maxBootBrotliBytes": 390000,
   "forbiddenBootPackages": [
     "@dnd-kit/accessibility",
     "@dnd-kit/core",
@@ -452,6 +452,26 @@
     ],
     "src/hooks/usePromptHistoryEnabled.ts": [
       "ThreadPage"
+    ],
+    "src/components/plugin/PluginThreadContextCard.tsx": [
+      "boot",
+      "NewThreadPage",
+      "PluginFrontend"
+    ],
+    "src/components/ui/page-shell.tsx": [
+      "boot",
+      "NewThreadPage",
+      "PluginFrontend"
+    ],
+    "src/components/ui/bottom-anchored-scroll-body.tsx": [
+      "boot",
+      "NewThreadPage",
+      "PluginFrontend"
+    ],
+    "src/components/ui/scroll-position-keeper.ts": [
+      "boot",
+      "NewThreadPage",
+      "PluginFrontend"
     ]
   },
   "onDemandPackages": {
@@ -463,8 +483,8 @@
   },
   "routeClosures": {
     "PluginFrontend": {
-      "maxBytes": 267000,
-      "maxBrotliBytes": 95000,
+      "maxBytes": 255000,
+      "maxBrotliBytes": 92000,
       "forbiddenPackages": [
         "@radix-ui/react-hover-card",
         "@radix-ui/react-menubar",
@@ -483,8 +503,8 @@
       ]
     },
     "ThreadPage": {
-      "maxBytes": 1356000,
-      "maxBrotliBytes": 420000,
+      "maxBytes": 1302000,
+      "maxBrotliBytes": 400000,
       "forbiddenPackages": [
         "@dnd-kit/accessibility",
         "@dnd-kit/core",
@@ -519,8 +539,8 @@
       ]
     },
     "NewThreadPage": {
-      "maxBytes": 645000,
-      "maxBrotliBytes": 220000,
+      "maxBytes": 608000,
+      "maxBrotliBytes": 211000,
       "forbiddenPackages": [
         "@dnd-kit/accessibility",
         "@dnd-kit/core",

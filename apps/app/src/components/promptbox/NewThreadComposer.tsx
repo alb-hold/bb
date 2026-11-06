@@ -63,6 +63,7 @@ import {
 import { providerInputsControlRequired } from "@/components/pickers/environment-provider-inputs";
 import { useMachineProviderInputs } from "@/components/pickers/machine-provider-inputs";
 import { formatModelLoadErrorText } from "@/components/pickers/model-load-error-message";
+import { prefetchThreadViewOnIntent } from "@/hooks/useThreadOpenIntent";
 import {
   buildSessionOptionMenuSections,
   declaredSessionOptionViews,
@@ -1852,9 +1853,11 @@ export function NewThreadComposer({
   );
 
   const handleSubmit = useCallback(
-    (blockedReason: string | null, extras: ComposerSubmitExtras = {}) =>
-      submitDraft(blockedReason, extras),
-    [submitDraft],
+    (blockedReason: string | null, extras: ComposerSubmitExtras = {}) => {
+      prefetchThreadViewOnIntent(nativeTerminal);
+      return submitDraft(blockedReason, extras);
+    },
+    [submitDraft, nativeTerminal],
   );
 
   const handleProviderChange = useDraftPreservingOptionChange(
