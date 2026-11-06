@@ -159,13 +159,13 @@ describe("scaffold dependency classification", () => {
     expect(missing).toEqual([]);
   });
 
-  it("keeps host-provided packages out of dependencies", async () => {
+  it("keeps host-provided packages except version-admitted Zod out of dependencies", async () => {
     const { dependencies } = await scaffoldWithDependencies(workDir);
 
     expect(
       dependencies.filter(
         (name) =>
-          SHIMMED_TYPE_PACKAGES.includes(name) ||
+          (name !== "zod" && name in RUNTIME_SLOT_BY_SPECIFIER) ||
           PLUGIN_SERVER_EXTERNALS.includes(name),
       ),
     ).toEqual([]);
