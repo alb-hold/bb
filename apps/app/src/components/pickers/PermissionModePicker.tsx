@@ -74,7 +74,16 @@ export function PermissionModePicker({
   );
   const lastValue = useRef<PermissionMode | undefined>(value);
   if (!pending && value !== undefined) lastValue.current = value;
-  const displayValue = pending ? lastValue.current : value ?? lastValue.current;
+  const displayValue = pending
+    ? lastValue.current
+    : (value ?? lastValue.current);
+  const modeLabel =
+    compactOptions.find((option) => option.value === displayValue)?.label ??
+    (displayValue === undefined
+      ? "Permissions"
+      : getPermissionModeCompactLabel(displayValue));
+  const compactLabel =
+    displayOverride?.compactLabel ?? displayOverride?.label ?? modeLabel;
   const showFullAccessWarning = displayValue === "full" && !displayOverride;
   if (
     !pending &&
@@ -93,12 +102,23 @@ export function PermissionModePicker({
       onChange={onChange}
       className={cn(
         LIST_HOVER_TRANSITION,
-        isCompactViewport ? "size-8 min-w-0 justify-center p-0" : "w-44 shrink-0 justify-start",
-        pending && displayValue === undefined && !isCompactViewport && "[&>span]:invisible animate-pulse bg-state-hover",
-        showFullAccessWarning && "text-warning-text hover:text-warning-text data-[state=open]:text-warning-text",
+        isCompactViewport
+          ? "h-8 w-auto min-w-0 shrink-0 justify-center px-1.5"
+          : "w-44 shrink-0 justify-start",
+        pending &&
+          displayValue === undefined &&
+          !isCompactViewport &&
+          "[&>span]:invisible animate-pulse bg-state-hover",
+        showFullAccessWarning &&
+          "text-warning-text hover:text-warning-text data-[state=open]:text-warning-text",
         className,
       )}
-      leading={<><Icon name="SecurityCheck" className="size-3.5 shrink-0" />{isCompactViewport ? null : <span>Permissions:</span>}</>}
+      leading={
+        <>
+          <Icon name="SecurityCheck" className="size-3.5 shrink-0" />
+          <span>{isCompactViewport ? compactLabel : "Permissions:"}</span>
+        </>
+      }
       caretClassName="ml-auto text-subtle-foreground/75"
       contentClassName="max-w-72"
       muted={muted}
@@ -109,10 +129,7 @@ export function PermissionModePicker({
         displayOverride ??
         (pending
           ? {
-              label: displayValue === undefined
-                ? "Permissions"
-                : compactOptions.find((option) => option.value === displayValue)
-                    ?.label ?? getPermissionModeCompactLabel(displayValue),
+              label: modeLabel,
             }
           : undefined)
       }
