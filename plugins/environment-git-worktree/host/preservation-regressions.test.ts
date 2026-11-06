@@ -1120,6 +1120,7 @@ describe("real worktree teardown preservation", () => {
       if (typeof result !== "string") {
         expect(result.retainedPaths).toContain(originalLink);
         expect(result.retainedPaths).toContain(path.join(root, quarantined!));
+        expect(quarantined).toMatch(/^\.bb-removing-/u);
       }
     },
   );
@@ -1177,10 +1178,14 @@ describe("real worktree teardown preservation", () => {
         "published\n",
       );
       expect((await fs.stat(recoveredPath!)).mode & 0o7777).toBe(originalMode);
-      expect(result.retainedPaths).toContain(
-        path.join(worktree.path, "README.md"),
+      expect(result.retainedPaths).toEqual(
+        expect.arrayContaining([
+          recoveredPath,
+          path.join(worktree.path, "README.md"),
+          racerSource,
+        ]),
       );
-      expect(result.retainedPaths).toContain(racerSource);
+      expect(path.basename(racerSource)).toMatch(/^\.bb-removing-/u);
     },
   );
 
@@ -1232,8 +1237,10 @@ describe("real worktree teardown preservation", () => {
       }
       await expect(readFile(recoveredPath!)).resolves.toEqual(originalMarker);
       expect((await fs.stat(recoveredPath!)).mode & 0o7777).toBe(originalMode);
-      expect(result.retainedPaths).toContain(markerPath);
-      expect(result.retainedPaths).toContain(racerSource);
+      expect(result.retainedPaths).toEqual(
+        expect.arrayContaining([recoveredPath, markerPath, racerSource]),
+      );
+      expect(path.basename(racerSource)).toMatch(/^\.bb-gitfile-/u);
     },
   );
 

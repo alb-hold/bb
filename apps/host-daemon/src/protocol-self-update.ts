@@ -62,6 +62,7 @@ interface CreateProtocolSelfUpdaterOptions {
   logger: HostDaemonLogger;
   serverHeaders: Record<string, string>;
   serverUrl: string;
+  currentProtocolVersion?: number;
   fetchFn?: FetchFn;
   installTarball?: ProtocolSelfUpdateInstaller;
   runProcess?: SelfUpdateProcessRunner;
@@ -248,6 +249,8 @@ export function createProtocolSelfUpdater(
         options.runProcess ?? defaultRunProcess,
       ));
   const now = options.now ?? Date.now;
+  const currentProtocolVersion =
+    options.currentProtocolVersion ?? HOST_DAEMON_PROTOCOL_VERSION;
   const attemptPath = join(options.dataDir, ATTEMPT_FILE_NAME);
   const installedArtifactDigestPath = join(
     options.dataDir,
@@ -260,7 +263,7 @@ export function createProtocolSelfUpdater(
     ): Promise<ProtocolSelfUpdateResult> {
       if (!options.enabled) {
         options.logger.error(
-          { daemonProtocolVersion: HOST_DAEMON_PROTOCOL_VERSION },
+          { daemonProtocolVersion: currentProtocolVersion },
           "Daemon auto-update is disabled; install the server's bb-app package manually.",
         );
         return "skipped";
@@ -285,14 +288,14 @@ export function createProtocolSelfUpdater(
           );
         }
         const server = parseUpdateVersion(await versionResponse.json());
-        if (server.protocolVersion <= HOST_DAEMON_PROTOCOL_VERSION) {
+        if (server.protocolVersion <= currentProtocolVersion) {
           options.logger.error(
             {
-              daemonProtocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
+              daemonProtocolVersion: currentProtocolVersion,
               serverProtocolVersion: server.protocolVersion,
               serverVersion: server.version,
             },
-            server.protocolVersion < HOST_DAEMON_PROTOCOL_VERSION
+            server.protocolVersion < currentProtocolVersion
               ? "Server protocol is older than this daemon; refusing to downgrade."
               : "Protocol mismatch did not require an upgrade; refusing to reinstall.",
           );
@@ -386,7 +389,7 @@ export function createProtocolSelfUpdater(
 
         options.logger.info(
           {
-            daemonProtocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
+            daemonProtocolVersion: currentProtocolVersion,
             serverProtocolVersion: server.protocolVersion,
             serverVersion: server.version,
           },
