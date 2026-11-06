@@ -103,5 +103,5 @@ export const SIDEBAR_RAIL_BUTTON_CLASS = cn(
 export const SIDEBAR_FOOTER_ACTION_CLASS = cn(
   COARSE_POINTER_ROW_HEIGHT_CLASS,
   COARSE_POINTER_CHILD_ICON_BUTTON_CLASS,
-  "text-muted-foreground hover:text-sidebar-foreground [&_[data-icon-root]]:size-4",
+  "items-center justify-center text-muted-foreground hover:text-sidebar-foreground [&_[data-icon-root]]:size-(--bb-sidebar-control-icon-size)",
 );

@@ -700,3 +700,66 @@ describe("user message overflow", () => {
     },
   );
 });
+
+function renderTouchActions(mobileActionDisplay: "inline" | "overflow") {
+  vi.spyOn(window, "matchMedia").mockImplementation((query) => ({
+    matches: true,
+    media: query,
+    onchange: null,
+    addListener() {},
+    removeListener() {},
+    addEventListener() {},
+    removeEventListener() {},
+    dispatchEvent: () => false,
+  }));
+  const view = render(
+    <MemoryRouter>
+      <ConversationMessageContent
+        role="assistant"
+        attachments={null}
+        id="msg_actions"
+        threadId="thr_actions"
+        turnId="turn_actions"
+        showActions
+        mobileActionDisplay={mobileActionDisplay}
+        streaming={false}
+        timestamp={0}
+        text="Older answer with [a link](https://example.com)."
+      />
+    </MemoryRouter>,
+  );
+  const message = view.container.querySelector<HTMLElement>("[data-touch-actions-visible]")!;
+  return { ...view, message };
+}
+
+it("reveals older message actions on a deliberate tap and hides them on a second tap", () => {
+  const { message } = renderTouchActions("overflow");
+  expect(message.dataset.touchActionsVisible).toBe("false");
+  fireEvent.click(message);
+  expect(message.dataset.touchActionsVisible).toBe("true");
+  expect(screen.getByRole("button", { name: "Copy message" })).toBeTruthy();
+  fireEvent.click(message);
+  expect(message.dataset.touchActionsVisible).toBe("false");
+});
+
+it("keeps latest assistant actions visible when its message is tapped", () => {
+  const { message } = renderTouchActions("inline");
+  expect(message.dataset.touchActionsVisible).toBe("true");
+  fireEvent.click(message);
+  expect(message.dataset.touchActionsVisible).toBe("true");
+});
+
+it("does not reveal older actions during selection or link and control taps", () => {
+  const { message } = renderTouchActions("overflow");
+  const selection = window.getSelection()!;
+  const range = document.createRange();
+  range.selectNodeContents(message);
+  selection.addRange(range);
+  fireEvent.click(message);
+  expect(message.dataset.touchActionsVisible).toBe("false");
+  selection.removeAllRanges();
+  fireEvent.click(screen.getByRole("link", { name: "a link" }));
+  expect(message.dataset.touchActionsVisible).toBe("false");
+  fireEvent.click(screen.getByRole("button", { name: "Copy message" }));
+  expect(message.dataset.touchActionsVisible).toBe("false");
+});

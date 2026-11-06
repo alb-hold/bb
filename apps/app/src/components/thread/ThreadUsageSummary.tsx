@@ -186,7 +186,7 @@ export function ThreadTurnTokenSummary({
       ? turn.cachedInputTokens
       : null;
   const summaryContent = compact ? (
-    <span data-token-part="total">Σ {compactTokens(turn.totalTokens)}</span>
+    <span data-token-part="total">{compactTokens(turn.totalTokens)} tokens</span>
   ) : (
     <>
       {hasTokens(turn.inputTokens) ? (
@@ -214,7 +214,7 @@ export function ThreadTurnTokenSummary({
           {hasTotalTokens && tightSummaryValue !== null ? (
             <span data-token-part="total">
               <span data-token-total-full>
-                Σ {formatCompact(tightSummaryValue)}
+                {formatCompact(tightSummaryValue)} tokens
               </span>
               <span
                 data-token-total-tight

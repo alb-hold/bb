@@ -4,6 +4,8 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type MouseEvent,
+  type PointerEvent,
   type ReactNode,
 } from "react";
 import type {
@@ -334,13 +336,38 @@ function buildAddToChatAttachments(
   ];
 }
 
+function useTouchMessageActions(alwaysVisible: boolean) {
+  const [revealed, setRevealed] = useState(false);
+  const pointerStart = useRef<{ x: number; y: number; selecting: boolean } | null>(null);
+  return {
+    "data-touch-actions-visible": alwaysVisible || revealed ? "true" : "false",
+    onPointerDown: (event: PointerEvent<HTMLDivElement>) => {
+      pointerStart.current = {
+        x: event.clientX,
+        y: event.clientY,
+        selecting: (window.getSelection()?.toString().length ?? 0) > 0,
+      };
+    },
+    onClick: (event: MouseEvent<HTMLDivElement>) => {
+      const target = event.target;
+      const start = pointerStart.current;
+      if (!window.matchMedia("(pointer: coarse), (width <= 480px)").matches ||
+        !(target instanceof Element) ||
+        target.closest('a, button, input, textarea, select, [role="button"], [contenteditable="true"]') ||
+        (window.getSelection()?.toString().length ?? 0) > 0 ||
+        start?.selecting ||
+        (start && Math.hypot(event.clientX - start.x, event.clientY - start.y) > 8)) return;
+      setRevealed((value) => !value);
+    },
+  };
+}
+
 function UserConversationMessage({
   actionMetadata,
   addToChatAttachments,
   attachmentItems,
   initiator,
   mentions,
-  mobileActionDisplay,
   onAddToChat,
   onCopyLink,
   onEdit,
@@ -359,6 +386,7 @@ function UserConversationMessage({
   threadId,
   turnRequest,
 }: UserConversationMessageProps) {
+  const touchActions = useTouchMessageActions(false);
   const linkRouting = useMessageLinkRouting(threadId);
   const automationDue =
     initiator === "user" ? parseAutomationDueMessage(text) : null;
@@ -437,7 +465,7 @@ function UserConversationMessage({
 
   return (
     <div className="@container w-full" data-message-column="">
-      <div className="group/message ml-auto flex w-fit max-w-[70%] flex-col items-end">
+      <div {...touchActions} className="group/message ml-auto flex w-fit max-w-[70%] flex-col items-end">
         {requestLabel ? (
           <div className="mb-1 flex items-center justify-end gap-2">
             <TurnRequestLabel
@@ -471,7 +499,7 @@ function UserConversationMessage({
             timestamp={timestamp}
             messageText={messageText}
             alignment="end"
-            mobileActionDisplay={mobileActionDisplay}
+            mobileActionDisplay="inline"
             addToChatAttachments={addToChatAttachments}
             copyImageUrl={
               attachmentItems.imageItems.find(
@@ -520,6 +548,7 @@ function AssistantConversationMessage({
       });
     }
   }, [id, streaming, text, threadId]);
+  const touchActions = useTouchMessageActions(mobileActionDisplay === "inline");
   const { split: streamingSplit, liveMarkdown } = useMemo(
     () => resolveStreamingMarkdown(text, streaming),
     [streaming, text],
@@ -625,6 +654,7 @@ function AssistantConversationMessage({
         PROSE_COLUMN_INSET_CLASS,
       )}
       data-message-column=""
+      {...touchActions}
     >
       <SelectableMessageProse onSelect={onSelectProse}>
         {codeFenceRendererRegistry === null ? (
@@ -650,7 +680,7 @@ function AssistantConversationMessage({
           timestamp={timestamp}
           messageText={text}
           alignment="start"
-          mobileActionDisplay={mobileActionDisplay}
+          mobileActionDisplay="inline"
           addToChatAttachments={addToChatAttachments}
           copyImageUrl={
             attachmentItems.imageItems.find(

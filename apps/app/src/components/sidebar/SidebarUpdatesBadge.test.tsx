@@ -185,6 +185,10 @@ describe("SidebarUpdatesBadge", () => {
 
     const badge = screen.getByTestId("sidebar-updates-badge-bb");
     expect(badge.classList.contains("text-muted-foreground")).toBe(true);
+    const glyph = badge.querySelector("[data-icon-root]");
+    expect(glyph?.classList.contains("text-muted-foreground")).toBe(true);
+    expect(glyph?.classList.contains("size-4")).toBe(true);
+    expect(glyph?.getAttribute("style")).toBeNull();
     expect(badge.classList.contains("rounded-full")).toBe(false);
     expect(screen.queryByTestId("sidebar-updates-badge-providers")).toBeNull();
   });

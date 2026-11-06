@@ -291,6 +291,16 @@ describe("theme.css neutral ramp", () => {
 });
 
 describe("theme.css Cadence text tokens", () => {
+  it("keeps the smallest host tier authoritative over plugin theme layers without enlarging phones", () => {
+    const host = css.match(/\n:root \{([^}]+)\}/)?.[1];
+    expect(host).toMatch(/--text-2xs:\s*0\.6875rem;/);
+    const touch = css.match(
+      /@media \(max-width: 767px\) and \(pointer: coarse\) \{\s*:root \{([^}]+)\}/,
+    )?.[1];
+    expect(touch).toMatch(/--text-2xs:\s*0\.6875rem;/);
+    expect(touch).toMatch(/--text-xs:\s*0\.875rem;/);
+  });
+
   it("registers Cadence color and type utilities with Tailwind", () => {
     expect(css).toMatch(
       /--color-readback-foreground:\s*var\(--readback-foreground\);/,
@@ -299,7 +309,7 @@ describe("theme.css Cadence text tokens", () => {
     expect(css).toMatch(
       /--color-destructive-text:\s*var\(--destructive-text\);/,
     );
-    expect(css).toMatch(/--text-2xs:\s*0\.625rem;/);
+    expect(css).toMatch(/--text-2xs:\s*0\.6875rem;/);
     expect(css).toMatch(/--text-2xs--line-height:\s*0\.875rem;/);
   });
 
@@ -545,6 +555,8 @@ describe("composer and navigation contrast", () => {
 
 it("keeps terminal bright-black output distinct from the canvas in both themes", () => {
   for (const mode of ["dark", "light"] as const) {
-    expect(modeBlock(mode)).toContain("--ansi-8: color-mix(in oklch, var(--ink) 70%, var(--canvas))");
+    expect(modeBlock(mode)).toContain(
+      "--ansi-8: color-mix(in oklch, var(--ink) 70%, var(--canvas))",
+    );
   }
 });

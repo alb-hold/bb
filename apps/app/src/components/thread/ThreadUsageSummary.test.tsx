@@ -47,7 +47,7 @@ describe("thread usage summary", () => {
       </TooltipProvider>,
     );
     const summary = container.querySelector("[data-thread-turn-tokens]")!;
-    expect(summary.textContent).toBe("Σ 2.8M");
+    expect(summary.textContent).toBe("2.8M tokens");
     expect(summary.querySelectorAll("[data-token-part]")).toHaveLength(1);
     expect(summary.className).toContain("font-sans");
     fireEvent.pointerMove(summary);
@@ -103,7 +103,7 @@ describe("thread usage summary", () => {
     );
     expect(
       container.querySelector("[data-thread-turn-tokens]")?.textContent,
-    ).toBe("Σ unavailable");
+    ).toBe("unavailable tokens");
   });
 
   it("keeps token-summary taps above the composer resize handle on short viewports", () => {
@@ -379,7 +379,7 @@ describe("thread usage summary", () => {
 
     expect(container.querySelector("[data-thread-turn-tokens]")).toBeTruthy();
     expect(screen.getByText(/cached 2\.8M/)).toBeTruthy();
-    expect(screen.getByText("Σ 2.8M")).toBeTruthy();
+    expect(screen.getByText("2.8M tokens")).toBeTruthy();
     expect(
       container.querySelector("[data-token-total-tight]")?.textContent,
     ).toBe("3M");
@@ -497,7 +497,7 @@ describe("thread usage summary", () => {
 
     expect(screen.getByText("reason 10")).toBeTruthy();
     expect(screen.getByText("cached 20")).toBeTruthy();
-    expect(screen.getByText("Σ 220")).toBeTruthy();
+    expect(screen.getByText("220 tokens")).toBeTruthy();
   });
 
   it("keeps a compact desktop summary while preserving the full details popup", async () => {
@@ -625,7 +625,7 @@ describe("thread usage summary", () => {
       tokenSummary?.querySelector('[data-token-part="reasoning"]'),
     ).toBeNull();
     expect(tokenSummary?.textContent).toContain("cached 20");
-    expect(tokenSummary?.textContent).toContain("Σ 220");
+    expect(tokenSummary?.textContent).toContain("220 tokens");
     fireEvent.pointerMove(tokenSummary!);
     expect((await screen.findAllByText("Not reported")).length).toBeGreaterThan(
       0,
@@ -706,7 +706,7 @@ describe("thread usage summary", () => {
     );
 
     expect(await screen.findByText(/Ran 1 agent/)).toBeTruthy();
-    expect(screen.queryByText(/Σ unavailable/)).toBeNull();
+    expect(screen.queryByText(/unavailable tokens/)).toBeNull();
   });
 
   it("keeps the compact agent chip short and opens the full breakdown in a drawer", async () => {

@@ -65,6 +65,21 @@ describe("compact touch targets", () => {
   });
 });
 
+it("keeps summary rows compact and splits invisible extensions between neighbours", () => {
+  const block = css.slice(css.lastIndexOf("@media (width < 48rem)"), css.indexOf("@media (width <= 480px)"));
+  expect(block).not.toMatch(
+    /button\[data-compact-touch-summary\]\s*\{\s*min-block-size:/,
+  );
+  expect(block).toContain("var(--compact-touch-summary-start, -12px)");
+  expect(block).toContain("var(--compact-touch-summary-end, -12px)");
+  expect(block).toContain(
+    "--compact-touch-summary-start: var(--compact-touch-summary-half-gap)",
+  );
+  expect(block).toContain(
+    "--compact-touch-summary-end: var(--compact-touch-summary-next-half-gap, var(--compact-touch-summary-half-gap))",
+  );
+});
+
 it("expands timeline hit areas without increasing their layout heights", () => {
   const block = css.slice(css.lastIndexOf("@media (width < 48rem)"), css.indexOf("@media (width <= 480px)"));
   const timeline = block.slice(block.indexOf('[data-compact-touch="action"]'));
@@ -73,18 +88,18 @@ it("expands timeline hit areas without increasing their layout heights", () => {
   expect(timeline).toContain('content: ""');
   expect(timeline).toContain("position: absolute");
   expect(timeline).toContain("inset-block: -12px -4px");
-  expect(timeline).toContain("inset-block: -4px var(--compact-touch-summary-end, -20px)");
-  expect(timeline).toContain("--compact-touch-summary-end: -4px");
+  expect(timeline).toContain("inset-block: var(--compact-touch-summary-start, -12px)");
+  expect(timeline).toContain("--compact-touch-summary-half-gap: -4px");
   expect(timeline).toContain("button[data-compact-touch-summary]::after");
 });
 
 it("keeps the last summary hit area inside the animated clip without adding layout height", () => {
   const block = css.slice(css.lastIndexOf("@media (width < 48rem)"), css.indexOf("@media (width <= 480px)"));
   expect(block).toMatch(
-    /\[data-compact-touch-height\]:has\(\[data-compact-touch-summary\]\)\s*\{\s*margin-block-end: -20px;\s*\}/,
+    /\[data-compact-touch-height\]:has\(\[data-compact-touch-summary\]\)\s*\{\s*margin-block: -12px;\s*\}/,
   );
   expect(block).toMatch(
-    /\[data-compact-touch-height\]:has\(\[data-compact-touch-summary\]\) > div\s*\{\s*padding-block-end: 20px;\s*\}/,
+    /\[data-compact-touch-height\]:has\(\[data-compact-touch-summary\]\) > div\s*\{\s*padding-block: 12px;\s*\}/,
   );
 });
 
