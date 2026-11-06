@@ -912,7 +912,7 @@
     animation: none;
   }
   [data-execution-controls-layout="stacked"] [data-native-terminal-toggle] {
-    width: max-content;
+    width: 10.5rem;
     flex: 0 0 auto;
     padding: 0;
     margin-inline: 0.25rem;
@@ -929,6 +929,15 @@
 }
 
 @media (width < 48rem) and (pointer: coarse) {
+  [data-sidebar="footer"] [data-sidebar="menu-item"] {
+    min-block-size: 44px;
+  }
+
+  [data-sidebar="footer"] [data-sidebar="menu-button"] {
+    min-inline-size: 44px;
+    min-block-size: 44px;
+  }
+
   button:not([data-native-terminal-prompt] button):is(
       [data-compact-touch="header"],
       [data-sidebar="trigger"],

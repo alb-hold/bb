@@ -407,78 +407,80 @@ export function ProgressiveComposer({
                       onDiscard={props.voice.discard}
                     />
                   )}
-                  <div
-                    data-promptbox-editor-scroll=""
-                    className={cn(
-                      "w-full overflow-y-auto bg-transparent px-4 pb-1 pr-14 pt-3 outline-none leading-relaxed",
-                      COARSE_POINTER_TEXT_BASE_CLASS,
-                    )}
-                    style={{
-                      minHeight:
-                        !props.value &&
-                        api.input.internal_DO_NOT_USE_composerSizing
-                          ?.editorHeight == null
-                          ? 44
-                          : resolveComposerEditorMinHeightCss({
-                              floorPx: props.minHeight ?? 68,
-                              userHeightPx:
-                                api.input.internal_DO_NOT_USE_composerSizing
-                                  ?.editorHeight ?? null,
-                              layout: "root-compose",
-                            }),
-                      maxHeight:
-                        "min(calc(70dvh - 3rem), var(--composer-editor-available-height, 100dvh))",
-                    }}
-                  >
-                    <textarea
-                      ref={inputRef}
-                      id={props.id}
-                      value={props.value}
-                      placeholder={
-                        props.placeholder ??
-                        "Ask anything. @ to mention files, folders, or sections"
-                      }
-                      aria-label={
-                        props.placeholder ??
-                        "Ask anything. @ to mention files, folders, or sections"
-                      }
-                      rows={1}
-                      className="block w-full resize-none border-0 bg-transparent p-0 leading-[1.7] outline-none placeholder:font-light placeholder:text-subtle-foreground"
-                      disabled={api.inputLocked}
-                      onChange={(event) => commit(event.target.value)}
-                      onCompositionStart={() => {
-                        composing.current = true;
+                  <div data-promptbox-input-region="" className="relative">
+                    <div
+                      data-promptbox-editor-scroll=""
+                      className={cn(
+                        "w-full overflow-y-auto bg-transparent px-4 pb-1 pr-14 pt-3 outline-none leading-relaxed",
+                        COARSE_POINTER_TEXT_BASE_CLASS,
+                      )}
+                      style={{
+                        minHeight:
+                          !props.value &&
+                          api.input.internal_DO_NOT_USE_composerSizing
+                            ?.editorHeight == null
+                            ? 44
+                            : resolveComposerEditorMinHeightCss({
+                                floorPx: props.minHeight ?? 68,
+                                userHeightPx:
+                                  api.input.internal_DO_NOT_USE_composerSizing
+                                    ?.editorHeight ?? null,
+                                layout: "root-compose",
+                              }),
+                        maxHeight:
+                          "min(calc(70dvh - 3rem), var(--composer-editor-available-height, 100dvh))",
                       }}
-                      onCompositionEnd={() => {
-                        composing.current = false;
-                        schedule();
-                      }}
-                      onPaste={(event) => {
-                        if (
-                          event.clipboardData.files.length &&
-                          props.attachments?.onAttachFiles
-                        ) {
+                    >
+                      <textarea
+                        ref={inputRef}
+                        id={props.id}
+                        value={props.value}
+                        placeholder={
+                          props.placeholder ??
+                          "Ask anything. @ to mention files, folders, or sections"
+                        }
+                        aria-label={
+                          props.placeholder ??
+                          "Ask anything. @ to mention files, folders, or sections"
+                        }
+                        rows={1}
+                        className="block w-full resize-none border-0 bg-transparent p-0 leading-[1.7] outline-none placeholder:font-light placeholder:text-subtle-foreground"
+                        disabled={api.inputLocked}
+                        onChange={(event) => commit(event.target.value)}
+                        onCompositionStart={() => {
+                          composing.current = true;
+                        }}
+                        onCompositionEnd={() => {
+                          composing.current = false;
+                          schedule();
+                        }}
+                        onPaste={(event) => {
+                          if (
+                            event.clipboardData.files.length &&
+                            props.attachments?.onAttachFiles
+                          ) {
+                            event.preventDefault();
+                            void attachFiles([...event.clipboardData.files]);
+                          }
+                        }}
+                        onKeyDown={(event) => {
+                          if (event.key === "Escape") {
+                            props.onEscape?.();
+                            return;
+                          }
+                          if (
+                            event.key !== "Enter" ||
+                            event.shiftKey ||
+                            composing.current ||
+                            event.nativeEvent.isComposing ||
+                            event.keyCode === 229
+                          )
+                            return;
                           event.preventDefault();
-                          void attachFiles([...event.clipboardData.files]);
-                        }
-                      }}
-                      onKeyDown={(event) => {
-                        if (event.key === "Escape") {
-                          props.onEscape?.();
-                          return;
-                        }
-                        if (
-                          event.key !== "Enter" ||
-                          event.shiftKey ||
-                          composing.current ||
-                          event.nativeEvent.isComposing ||
-                          event.keyCode === 229
-                        )
-                          return;
-                        event.preventDefault();
-                        submit(event.metaKey || event.ctrlKey);
-                      }}
-                    />
+                          submit(event.metaKey || event.ctrlKey);
+                        }}
+                      />
+                    </div>
                   </div>
                   <StartupAttachments onPreviewChange={previewChanged} />
                   {(props.attachments?.error ?? attachmentError) && (
