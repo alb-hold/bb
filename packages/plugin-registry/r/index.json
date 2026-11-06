@@ -138,6 +138,10 @@
       "type": "registry:ui"
     },
     {
+      "name": "info-list-row",
+      "type": "registry:ui"
+    },
+    {
       "name": "inline-rename",
       "type": "registry:ui"
     },
