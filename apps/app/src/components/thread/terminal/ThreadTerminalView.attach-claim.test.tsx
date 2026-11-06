@@ -15,6 +15,7 @@ import { makeTerminalSession } from "@/test/fixtures/terminal-sessions";
 import { wsManager } from "@/lib/ws";
 import { AppCommandProvider } from "@/components/commands/AppCommandProvider";
 import { ThreadTerminalView } from "./ThreadTerminalView";
+import { importTerminalModules } from "./terminal-modules";
 
 const testState = vi.hoisted(() => ({
   calls: [] as string[],
@@ -192,9 +193,11 @@ vi.setConfig({ testTimeout: 30_000 });
 
 
 describe("native terminal attach claim timing", () => {
-  it.each([44, 125])(
-    "claims the fitted %i-column grid within 100 ms of attach while the renderer is pending",
-    async (cols) => {
+  it.each([44, 125].flatMap((cols) => ["ready", "pending", "delayed"].map((pendingScreen) => ({ cols, pendingScreen }))))(
+    "claims the fitted $cols-column grid without awaiting the renderer or screen (pending screen: $pendingScreen)",
+    async ({ cols, pendingScreen }) => {
+      if (pendingScreen === "pending") testState.screen.mockReturnValue(new Promise(() => undefined));
+      if (pendingScreen === "delayed") testState.screen.mockImplementation(() => new Promise((resolve) => setTimeout(() => resolve(null), 700)));
       vi.stubGlobal("WebSocket", TestTerminalSocket);
       const focusGuard = render(<button>Other input</button>);
       focusGuard.getByRole("button").focus();
@@ -253,12 +256,18 @@ describe("native terminal attach claim timing", () => {
         threadId: null,
         status: "running",
       });
+      await importTerminalModules();
       vi.useFakeTimers();
       testState.deferSocketOpen = true;
+      let adoptedAt: number | undefined;
+      const originalStart = TerminalWebSocketTransport.prototype.start;
       const startTransport = vi.spyOn(
         TerminalWebSocketTransport.prototype,
         "start",
-      );
+      ).mockImplementation(function (this: TerminalWebSocketTransport) {
+        adoptedAt ??= Date.now();
+        originalStart.call(this);
+      });
       render(
         <MemoryRouter>
           <AppCommandProvider>
@@ -272,7 +281,7 @@ describe("native terminal attach claim timing", () => {
           </AppCommandProvider>
         </MemoryRouter>,
       );
-      await vi.waitFor(() => expect(startTransport).toHaveBeenCalled(), { interval: 1 });
+      await vi.waitFor(() => expect(testState.sockets).toHaveLength(1), { interval: 1 });
       const attachedAt = Date.now();
       let claimAt: number | undefined;
       const socket = testState.sockets[0]!;
@@ -288,7 +297,7 @@ describe("native terminal attach claim timing", () => {
         replayStartSeq: 0,
         nextSeq: 0,
       });
-      for (let frame = 0; frame < 40; frame += 1) {
+      for (let frame = 0; frame < 50; frame += 1) {
         await act(async () => {
           await vi.advanceTimersByTimeAsync(16);
           const pending = [...frames.values()];
@@ -296,11 +305,16 @@ describe("native terminal attach claim timing", () => {
           for (const callback of pending) callback(performance.now());
         });
       }
+      expect(startTransport).toHaveBeenCalledOnce();
+      expect(adoptedAt).toBeDefined();
+      expect(claimAt).toBeDefined();
+      expect(claimAt! - adoptedAt!).toBeLessThanOrEqual(16);
       const claims = socket.sent
         .map((raw) => JSON.parse(raw))
         .filter((message) => message.type === "resize");
-      console.info("P69 attach-to-claim", {
+      console.info("P72 prefetched attach-to-claim", {
         cols,
+        adoptionToClaimMilliseconds: claimAt === undefined || adoptedAt === undefined ? null : claimAt - adoptedAt,
         viewMilliseconds: resizeAt === undefined ? null : resizeAt - attachedAt,
         wireMilliseconds: claimAt === undefined ? null : claimAt - attachedAt,
       });
