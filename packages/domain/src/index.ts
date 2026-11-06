@@ -93,3 +93,5 @@ export * from "./mobile-app.js";
 export * from "./environment-removal.js";
 
 export const ARCHIVE_UNDO_GRACE_MS = 30_000;
+
+export * from "./terminal-default-colors.js";

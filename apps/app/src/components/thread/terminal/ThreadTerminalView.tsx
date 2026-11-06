@@ -1,3 +1,4 @@
+import { TERMINAL_DEFAULT_COLORS, terminalRgbCss } from "@bb/domain";
 import { mountTerminalScreenLoadingPreview } from "./terminal-screen-loading-preview";
 import { trackTerminalScrollability } from "./terminal-scrollbar";
 import { fetchTerminalScreen } from "./terminal-screen-prefetch";
@@ -432,8 +433,12 @@ export function buildTerminalThemeFromCssColors(
   get: TerminalCssVariableReader,
 ): ITheme {
   return {
-    background: get("--sidebar"),
-    foreground: get("--foreground"),
+    background:
+      get("--sidebar") ??
+      terminalRgbCss(TERMINAL_DEFAULT_COLORS.dark.background),
+    foreground:
+      get("--foreground") ??
+      terminalRgbCss(TERMINAL_DEFAULT_COLORS.dark.foreground),
     cursor: get("--foreground"),
     cursorAccent: get("--sidebar"),
     scrollbarSliderBackground: get("--terminal-scrollbar"),

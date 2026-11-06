@@ -3,6 +3,8 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { TERMINAL_DEFAULT_COLORS, terminalRgbCss } from "@bb/domain";
+import { TerminalColorQueries } from "../../../../../host-daemon/src/terminals/terminal-color-queries.js";
 import { Terminal } from "@xterm/xterm";
 import { afterEach, expect, it, vi } from "vitest";
 import { waitFor } from "@testing-library/react";
@@ -78,9 +80,13 @@ afterEach(() => {
   document.body.replaceChildren();
 });
 
-it.each(["light", "dark"] as const)(
-  "forwards true %s theme OSC 10/11 replies to the CLI, suppressing historical queries",
-  async (mode) => {
+it.each(
+  (["light", "dark"] as const).flatMap((mode) =>
+    ["\x07", "\x1b\\"].map((terminator) => ({ mode, terminator })),
+  ),
+)(
+  "forwards $mode theme OSC 10/11 with $terminator, suppressing historical queries",
+  async ({ mode, terminator }) => {
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
       measureText: (text: string) => ({ width: text.length * 9 }),
     } as unknown as CanvasRenderingContext2D);
@@ -88,7 +94,9 @@ it.each(["light", "dark"] as const)(
       ...TERMINAL_THEME_OPTIONS,
       ...TERMINAL_CELL_OPTIONS,
       theme: buildTerminalThemeFromCssColors((name) =>
-        name.startsWith("--terminal-scrollbar") ? undefined : themeColor(mode, name),
+        name.startsWith("--terminal-scrollbar")
+          ? undefined
+          : themeColor(mode, name),
       ),
     });
     const container = document.createElement("div");
@@ -98,21 +106,44 @@ it.each(["light", "dark"] as const)(
     const replayWriteState = { suppressedWriteCount: 0 };
     const subscription = attachTerminalInputForwarding({
       terminal,
-      onData: (data, isUserInput) => forwardTerminalData({
-        data, isUserInput, onInput, replayWriteState, sessionStatus: "running",
-      }),
+      onData: (data, isUserInput) =>
+        forwardTerminalData({
+          data,
+          isUserInput,
+          onInput,
+          replayWriteState,
+          sessionStatus: "running",
+        }),
     });
-    const query = "\x1b]10;?\x07\x1b]11;?\x1b\\";
+    const query = `\x1b]10;?${terminator}\x1b]11;?${terminator}`;
     try {
       await new Promise<void>((resolve) => terminal.write(query, resolve));
       const replies = onInput.mock.calls.map(([data]) => atob(data));
-      const rgb = (name: string) => (themeColor(mode, name).match(/\d+/g) ?? [])
-        .map((channel) => Number(channel).toString(16).padStart(2, "0").repeat(2)).join("/");
+      const rgb = (name: string) =>
+        (themeColor(mode, name).match(/\d+/g) ?? [])
+          .map((channel) =>
+            Number(channel).toString(16).padStart(2, "0").repeat(2),
+          )
+          .join("/");
       expect(replies).toEqual([
         `\x1b]10;rgb:${rgb("--foreground")}\x1b\\`,
         `\x1b]11;rgb:${rgb("--sidebar")}\x1b\\`,
       ]);
-      expect(onInput.mock.calls.every(([, , user]) => user === false)).toBe(true);
+      const palette = TERMINAL_DEFAULT_COLORS[mode];
+      expect(terminalRgbCss(palette.foreground)).toBe(
+        themeColor(mode, "--foreground"),
+      );
+      expect(terminalRgbCss(palette.background)).toBe(
+        themeColor(mode, "--sidebar"),
+      );
+      const hostReplies: string[] = [];
+      new TerminalColorQueries(palette).push(query, (reply) => {
+        hostReplies.push(reply);
+      });
+      expect(hostReplies).toEqual(replies);
+      expect(onInput.mock.calls.every(([, , user]) => user === false)).toBe(
+        true,
+      );
       onInput.mockClear();
       replayWriteState.suppressedWriteCount = 1;
       await new Promise<void>((resolve) => terminal.write(query, resolve));

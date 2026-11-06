@@ -1031,6 +1031,29 @@ describe("public terminal routes", () => {
     ]);
   });
 
+  it("passes the native launch palette through to terminal.open", async () => {
+    const fixture = await createTerminalRouteFixture();
+    harnesses.push(fixture.harness);
+    const defaultColors = {
+      foreground: [220, 230, 240],
+      background: [25, 30, 35],
+    } satisfies import("@bb/domain").TerminalDefaultColors;
+    const opened = fixture.harness.deps.terminalSessions.createTerminal({
+      defaultColors,
+      payload: {
+        cols: 100,
+        rows: 30,
+        target: { kind: "thread", threadId: fixture.thread.id },
+      },
+    });
+    const message = await waitForDaemonMessage(fixture.socket);
+    if (message.type !== "terminal.open")
+      throw new Error("Expected terminal.open");
+    expect(message.defaultColors).toEqual(defaultColors);
+    acknowledgeTerminalOpen(fixture, message, "/tmp");
+    await opened;
+  });
+
   it("allows the same public API caller to open a host path and a workspace cwd", async () => {
     const fixture = await createTerminalRouteFixture();
     harnesses.push(fixture.harness);
@@ -1038,6 +1061,7 @@ describe("public terminal routes", () => {
     const hostPath = await startPendingStandaloneTerminalOpen(fixture, {
       cwd: "/tmp",
     });
+    expect(hostPath.openMessage.defaultColors).toBeUndefined();
     expect(hostPath.openMessage.target).toEqual({
       kind: "host_path",
       cwd: "/tmp",

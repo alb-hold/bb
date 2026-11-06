@@ -1,3 +1,4 @@
+import { TERMINAL_DEFAULT_COLORS } from "@bb/domain";
 import {
   NATIVE_TERMINAL_SETUP_DELAY_MS,
   nativeTerminalMayNeedSetup,
@@ -498,6 +499,7 @@ async function openNativeTerminalOnce(
     clearNativeTerminalThreadEvidence(deps.db, thread.id);
     const terminal = await deps.terminalSessions
       .createTerminal({
+        defaultColors: TERMINAL_DEFAULT_COLORS.dark,
         ...(args.repaintOnAttach
           ? {
               onTerminalStarted: (terminalId: string) =>
@@ -558,9 +560,7 @@ async function openNativeTerminalOnce(
             now: Date.now(),
           })
         )
-          deps.hub.notifyThread(thread.id, [
-            "terminals-changed",
-          ]);
+          deps.hub.notifyThread(thread.id, ["terminals-changed"]);
       } catch (error) {
         if (!isClosedDatabaseConnectionError(error)) {
           deps.logger.warn(

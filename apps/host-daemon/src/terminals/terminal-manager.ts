@@ -1,3 +1,4 @@
+import { TerminalColorQueries } from "./terminal-color-queries.js";
 import {
   prepareHostPtyCommand,
   hostToolchain,
@@ -196,6 +197,7 @@ interface TerminalSession {
   attentionParserState: TerminalAttentionParserState;
   gridMarkerEmitted: boolean;
   outputFlushCancel: (() => void) | null;
+  colorQueries: TerminalColorQueries | null;
   pendingPrimaryDeviceAttributesQuery: PendingPrimaryDeviceAttributesQuery;
   pty: TerminalPtyProcess;
   gridMarkerScanner: ReturnType<typeof createTerminalGridMarkerScanner>;
@@ -818,6 +820,9 @@ export class TerminalManager {
         gridMarkerEmitted: false,
         gridMarkerBeforeScrollback: null,
         outputFlushCancel: null,
+        colorQueries: message.defaultColors
+          ? new TerminalColorQueries(message.defaultColors)
+          : null,
         pendingPrimaryDeviceAttributesQuery: "",
         pty,
         gridMarkerScanner: createTerminalGridMarkerScanner(),
@@ -1179,6 +1184,9 @@ export class TerminalManager {
       session.gridMarkerEmitted = true;
     }
 
+    data =
+      session.colorQueries?.push(data, (reply) => session.pty.write(reply)) ??
+      data;
     const result = consumePrimaryDeviceAttributesQueries(
       session.pendingPrimaryDeviceAttributesQuery,
       data,
@@ -1503,6 +1511,10 @@ export class TerminalManager {
     this.bufferTerminalContent(
       args.session,
       args.session.gridMarkerScanner.flush(),
+    );
+    this.bufferTerminalOutput(
+      args.session,
+      args.session.colorQueries?.flush() ?? "",
     );
     this.flushTerminalOutput(args.session);
     this.disableOutputFlow(args.session);

@@ -430,10 +430,12 @@ function shellQuote(value: string): string {
 async function openTerminal(
   harness: TerminalManagerHarness,
   contributedEnv: import("@bb/host-daemon-contract").HostDaemonContributedEnvEntry[] = [],
+  defaultColors?: import("@bb/domain").TerminalDefaultColors,
 ): Promise<FakeTerminalPty> {
   await harness.manager.handleMessage({
     type: "terminal.open",
     contributedEnv,
+    ...(defaultColors ? { defaultColors } : {}),
     requestId: "open-1",
     terminalId: "term-1",
     threadId: "thr-1",
@@ -1852,6 +1854,73 @@ describe("TerminalManager", () => {
         terminalId: "term-1",
       }),
     );
+  });
+
+  it("answers live color queries once across multiple attaches and excludes them from replay", async () => {
+    const harness = createHarness();
+    const pty = await openTerminal(harness, [], {
+      foreground: [190, 128, 1],
+      background: [24, 32, 48],
+    });
+    pty.emitData("\x1b]11;?\x07");
+    expect(pty.writeCalls).toEqual(["\x1b]11;rgb:1818/2020/3030\x1b\\"]);
+    for (const [index, query] of [
+      "\x1b]10;?\x07",
+      "\x1b]11;?\x1b\\",
+    ].entries()) {
+      pty.emitData(`before${query.slice(0, 4)}`);
+      await harness.manager.handleMessage({
+        type: "terminal.attach",
+        requestId: `attach-${index}`,
+        terminalId: "term-1",
+        sinceSeq: 0,
+        tailBytes: 4096,
+      });
+      pty.emitData(`${query.slice(4)}after`);
+    }
+    await harness.manager.handleMessage({
+      type: "terminal.attach",
+      requestId: "replay-colors",
+      terminalId: "term-1",
+      sinceSeq: 0,
+      tailBytes: 4096,
+    });
+    expect(pty.writeCalls).toEqual([
+      "\x1b]11;rgb:1818/2020/3030\x1b\\",
+      "\x1b]10;rgb:bebe/8080/0101\x1b\\",
+      "\x1b]11;rgb:1818/2020/3030\x1b\\",
+    ]);
+    expect(collectTerminalOutput(harness.messages)).toBe(
+      "beforeafterbeforeafter",
+    );
+    const replay = harness.messages.find(
+      (message) =>
+        message.type === "terminal.replay" &&
+        message.requestId === "replay-colors",
+    );
+    if (replay?.type !== "terminal.replay") throw new Error("Missing replay");
+    expect(
+      replay.chunks
+        .map((chunk) => Buffer.from(chunk.dataBase64, "base64").toString())
+        .join(""),
+    ).toBe("beforeafterbeforeafter");
+    expect(pty.writeCalls).toHaveLength(3);
+  });
+
+  it("leaves color queries unchanged without an explicit launch palette", async () => {
+    const harness = createHarness();
+    const pty = await openTerminal(harness);
+    const query = "\x1b]10;?\x07\x1b]11;?\x1b\\";
+    pty.emitData(query);
+    await harness.manager.handleMessage({
+      type: "terminal.attach",
+      requestId: "generic-colors",
+      terminalId: "term-1",
+      sinceSeq: 0,
+      tailBytes: 4096,
+    });
+    expect(pty.writeCalls).toEqual([]);
+    expect(collectTerminalOutput(harness.messages)).toBe(query);
   });
 
   it("answers primary device attribute queries without replaying them", async () => {
