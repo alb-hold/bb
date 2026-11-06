@@ -261,9 +261,9 @@ describe("ThreadDetailHeader", () => {
         </PaneContext.Provider>
       </AppCommandProvider>,
     );
-    fireEvent.click(
-      screen.getByRole("button", { name: "Search terminal output" }),
-    );
+    const search = screen.getByRole("button", { name: "Search terminal output" });
+    expect(search.getAttribute("data-compact-touch")).toBe("header");
+    fireEvent.click(search);
     expect(find).toHaveBeenCalledWith(
       container.querySelector("[data-terminal-renderer]"),
     );

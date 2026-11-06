@@ -60,3 +60,13 @@
     display: inline;
   }
 }
+
+@media (pointer: coarse), (width <= 480px) {
+  [data-touch-actions-visible="false"] [data-message-action-slot] {
+    display: none;
+  }
+
+  [data-touch-actions-visible="true"] [data-message-action-row] button {
+    opacity: 1;
+  }
+}

@@ -299,7 +299,7 @@ describe("theme.css Cadence text tokens", () => {
     expect(css).toMatch(
       /--color-destructive-text:\s*var\(--destructive-text\);/,
     );
-    expect(css).toMatch(/--text-2xs:\s*0\.625rem;/);
+    expect(css).toMatch(/--text-2xs:\s*0\.75rem;/);
     expect(css).toMatch(/--text-2xs--line-height:\s*0\.875rem;/);
   });
 

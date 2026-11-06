@@ -1015,7 +1015,7 @@ function ConversationRow({
       }
       turnTokenSummary={turnTokenSummary}
       mobileActionDisplay={
-        row.id === latestActionableMessageId ? "inline" : "overflow"
+        row.role === "assistant" && row.id === latestActionableMessageId ? "inline" : "overflow"
       }
       streaming={
         row.role === "assistant" && row.id === streamingAssistantMessageId

@@ -65,27 +65,12 @@ describe("compact touch targets", () => {
   });
 });
 
-it("expands timeline hit areas without increasing their layout heights", () => {
+it("gives stacked summaries disjoint 44px targets instead of borrowing adjacent hit areas", () => {
   const block = css.slice(css.lastIndexOf("@media (width < 48rem)"));
-  const timeline = block.slice(block.indexOf('[data-compact-touch="action"]'));
-  expect(block).not.toContain("aria-label");
-  expect(timeline).not.toContain("min-block-size");
-  expect(timeline).toContain('content: ""');
-  expect(timeline).toContain("position: absolute");
-  expect(timeline).toContain("inset-block: -12px -4px");
-  expect(timeline).toContain("inset-block: -4px var(--compact-touch-summary-end, -20px)");
-  expect(timeline).toContain("--compact-touch-summary-end: -4px");
-  expect(timeline).toContain("button[data-compact-touch-summary]::after");
-});
-
-it("keeps the last summary hit area inside the animated clip without adding layout height", () => {
-  const block = css.slice(css.lastIndexOf("@media (width < 48rem)"));
-  expect(block).toMatch(
-    /\[data-compact-touch-height\]:has\(\[data-compact-touch-summary\]\)\s*\{\s*margin-block-end: -20px;\s*\}/,
-  );
-  expect(block).toMatch(
-    /\[data-compact-touch-height\]:has\(\[data-compact-touch-summary\]\) > div\s*\{\s*padding-block-end: 20px;\s*\}/,
-  );
+  expect(block).toMatch(/button\[data-compact-touch-summary\]\s*\{\s*min-block-size: 44px;/);
+  expect(block).toMatch(/button\[data-compact-touch-summary\]::after\s*\{\s*inset-block: 0;/);
+  expect(block).not.toContain("--compact-touch-summary-end");
+  expect(block).not.toContain("margin-block-end: -20px");
 });
 
 it("limits compact pseudo-element hit areas to coarse pointers", () => {

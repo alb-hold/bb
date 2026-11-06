@@ -3181,6 +3181,20 @@ describe.skipIf(
     expect(chromiumPath).not.toBeNull();
   });
 
+  it("keeps desktop sidebar row height when the smallest text advances one tier", async () => {
+    vi.spyOn(pluginSdk, "experimental_useExperiment").mockReturnValue(true);
+    const { container } = renderThreadRow({
+      thread: createThread(),
+      isCompactViewport: false,
+    });
+    const html = container.innerHTML;
+    const before = await measureRowLayout(`<style>:root{--text-2xs:0.625rem;--text-2xs--line-height:0.875rem}</style>${html}`, 1280);
+    const after = await measureRowLayout(`<style>:root{--text-2xs:0.75rem;--text-2xs--line-height:0.875rem}</style>${html}`, 1280);
+    expect(after.row.height - before.row.height).toBeLessThanOrEqual(1);
+    expect(after.row.height).toBeGreaterThan(0);
+    await writeFile(join(tmpdir(), "p36-sidebar-af0afa41bfdb.json"), JSON.stringify({ before: before.row.height, after: after.row.height }));
+  });
+
   const VIEWPORTS = [
     { name: "desktop", width: 280, isCompact: false },
     { name: "compact 390px", width: 390, isCompact: true },
