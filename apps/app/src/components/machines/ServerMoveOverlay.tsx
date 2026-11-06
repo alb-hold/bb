@@ -32,7 +32,7 @@ const ServerMoveOverlayView = defineSplit<
       (module) => module.ServerMoveOverlayView,
     ),
   loading: () => null,
-  tier: "preload",
+  tier: "intent",
 });
 
 function assignWindowLocation(url: string): void {

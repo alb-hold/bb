@@ -42,7 +42,7 @@ const ThreadSearchPaletteMode = defineSplit({
       (module) => module.ThreadSearchPaletteMode,
     ),
   loading: (props) => <ThreadSearchPalettePlaceholder {...props} />,
-  tier: "preload",
+  tier: "intent",
 });
 
 const THREAD_SEARCH_ACTION_ID = paletteActionIdForCommand("thread.search");
