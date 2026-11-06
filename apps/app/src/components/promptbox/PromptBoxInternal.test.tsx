@@ -4975,18 +4975,18 @@ describe("ComposerBox compact layout", () => {
       return;
     }
     const style = document.createElement("style");
-    const appCss = readFileSync("src/app.css", "utf8");
+    const appCss = readFileSync("src/app.css", "utf8").replace(/\s+/g, " ");
     const layoutSelector = '[data-promptbox]:not([data-promptbox-voice-active]) [data-promptbox-execution-layout="stacked"]';
     const layoutStart = appCss.indexOf(layoutSelector);
     expect(layoutStart).toBeGreaterThan(-1);
     style.textContent = appCss.slice(appCss.lastIndexOf("@media (width < 48rem)", layoutStart));
     document.head.append(style);
     try {
-      const media = Array.from(style.sheet?.cssRules ?? []).find(
-        (rule): rule is CSSMediaRule => "media" in rule && "cssRules" in rule,
+      const media = Array.from(style.sheet?.cssRules ?? []).filter(
+        (rule): rule is CSSMediaRule => "media" in rule && "cssRules" in rule && "conditionText" in rule && rule.conditionText === "(width < 48rem)",
       );
-      expect(media?.conditionText).toBe("(width < 48rem)");
-      const rules = Array.from(media?.cssRules ?? []).filter(
+      expect(media.length).toBeGreaterThan(0);
+      const rules = media.flatMap((rule) => Array.from(rule.cssRules)).filter(
         (rule): rule is CSSStyleRule => "selectorText" in rule && "style" in rule,
       );
       const declaration = (element: Element, property: string) =>
@@ -5000,13 +5000,18 @@ describe("ComposerBox compact layout", () => {
       for (const [slot, column] of [
         [row?.querySelector("[data-promptbox-plus-control]"), "1"],
         [model.parentElement, "2"],
-        [row?.querySelector("[data-promptbox-trailing-actions]"), "3"],
       ] as const) {
         expect(slot).not.toBeNull();
         if (slot == null) throw new Error("Missing action-row slot");
         expect(declaration(slot, "grid-column")).toBe(column);
         expect(declaration(slot, "grid-row")).toBe("1");
       }
+      const trailing = row?.querySelector("[data-promptbox-trailing-actions]");
+      if (!trailing || !row) throw new Error("Missing composer actions");
+      expect(declaration(row, "grid-template-columns")).toBe("2.75rem minmax(0, 1fr)");
+      expect(declaration(trailing, "position")).toBe("absolute");
+      expect(declaration(trailing, "bottom")).toBe("100%");
+      expect(declaration(trailing, "right")).toBe("0.25rem");
       if (model.parentElement === null)
         throw new Error("Missing execution controls");
       expect(declaration(model.parentElement, "display")).toBe("flex");
