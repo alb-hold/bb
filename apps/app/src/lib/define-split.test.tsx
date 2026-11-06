@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { useLayoutEffect } from "react";
+import { useEffect, useLayoutEffect, useState } from "react";
 import {
   act,
   cleanup,
@@ -16,6 +16,63 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.useRealTimers();
   vi.unstubAllGlobals();
+});
+
+it("commits resolved content within three renders while a sibling keeps issuing Default updates", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", false);
+  let complete = () => {};
+  const finished = new Promise<void>((resolve) => {
+    complete = resolve;
+  });
+  let release = () => {};
+  const ready = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let renders = 0;
+  let committed = false;
+  function Composer() {
+    renders++;
+    useLayoutEffect(() => {
+      committed = true;
+    }, []);
+    return <textarea aria-label="Cold composer" />;
+  }
+  const Split = defineSplit({
+    id: "cold-composer-under-updates",
+    tier: "intent",
+    load: async () => {
+      await ready;
+      return Composer;
+    },
+    loading: () => <p>Loading composer</p>,
+  });
+  function UpdatingSidebar() {
+    const [pass, setPass] = useState(0);
+    useLayoutEffect(() => {
+      if (pass === 24) complete();
+    }, [pass]);
+    useEffect(() => {
+      if (pass === 24) return;
+      const timer = setTimeout(() => {
+        if (pass === 0) release();
+        setPass(pass + 1);
+      }, 0);
+      return () => clearTimeout(timer);
+    }, [pass]);
+    return <p>Sidebar pass {pass}</p>;
+  }
+  render(
+    <>
+      <Split />
+      <UpdatingSidebar />
+    </>,
+  );
+  expect(screen.getByText("Loading composer")).toBeTruthy();
+  await finished;
+  expect(screen.getByText("Sidebar pass 24")).toBeTruthy();
+  expect(committed).toBe(true);
+  expect(screen.getByRole("textbox", { name: "Cold composer" })).toBeTruthy();
+  expect(renders).toBeLessThanOrEqual(3);
 });
 
 it("downloads bytes without importing and shares an in-flight download with first use", async () => {
@@ -163,6 +220,38 @@ it("recovers from a rejected speculative preload when the feature is opened", as
   await Split.preload();
   render(<Split />);
   expect(await screen.findByText("Ready after preload failure")).toBeTruthy();
+});
+
+it("keeps a render failure local and retries the cached component", async () => {
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  let broken = true;
+  const load = vi.fn(
+    async () =>
+      function Editor() {
+        if (broken) throw new Error("Editor failed to render");
+        return <input aria-label="Recovered editor" />;
+      },
+  );
+  const Split = defineSplit({
+    id: "render-retry",
+    load,
+    loading: () => <p>Loading editor</p>,
+    tier: "intent",
+  });
+  render(
+    <>
+      <p>Shell stays</p>
+      <Split />
+    </>,
+  );
+  expect(await screen.findByRole("alert")).toBeTruthy();
+  expect(screen.getByText("Shell stays")).toBeTruthy();
+  broken = false;
+  fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+  expect(
+    screen.getByRole("textbox", { name: "Recovered editor" }),
+  ).toBeTruthy();
+  expect(load).toHaveBeenCalledOnce();
 });
 
 it.each(["preload", "previous mount"])(
