@@ -4,7 +4,9 @@ import {
   getThread,
   listEvents,
   markThreadDeleted,
+  threads,
 } from "@bb/db";
+import { eq } from "drizzle-orm";
 import type { EnvironmentRow } from "@bb/db";
 import type { Thread } from "@bb/domain";
 import { describe, expect, it, vi } from "vitest";
@@ -123,6 +125,11 @@ describe("thread stop dispatch", () => {
           value: 8,
           providerBacked: true,
         });
+        harness.db
+          .update(threads)
+          .set({ status: "idle" })
+          .where(eq(threads.id, thread.id))
+          .run();
         markThreadDeleted(harness.db, harness.hub, { threadId: thread.id });
 
         requestThreadStorageDeletion(harness.deps, thread, environment);
