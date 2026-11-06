@@ -581,7 +581,7 @@ describe("ModelReasoningPicker", () => {
     },
   );
 
-  it("reserves a fixed-width skeleton while the model list loads", () => {
+  it("shows Model in the reserved control while the model list loads", () => {
     renderPicker({
       modelOptions: [],
       modelValue: "",
@@ -597,7 +597,8 @@ describe("ModelReasoningPicker", () => {
     ).toHaveLength(0);
     expect(trigger.textContent).toContain("Model");
     expect(trigger.className).toContain("w-44");
-    expect(trigger.className).toContain("[&>span]:invisible");
+    expect(trigger.className).not.toContain("invisible");
+    expect(trigger.textContent).not.toContain("No models available");
     expect(trigger.querySelector(".animate-spin")).toBeNull();
 
     fireEvent.click(trigger);

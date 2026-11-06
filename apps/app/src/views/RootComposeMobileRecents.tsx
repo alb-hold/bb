@@ -17,7 +17,6 @@ import { CHROME_SECTION_LABEL_CLASS } from "@bb/shared-ui/chrome-style-tokens";
 import {
   COARSE_POINTER_ICON_SIZE_CLASS,
   COARSE_POINTER_TEXT_BASE_CLASS,
-  COARSE_POINTER_TEXT_SM_CLASS,
 } from "@bb/shared-ui/coarse-pointer-sizing";
 import { Icon } from "@bb/shared-ui/icon";
 import { OverflowFade } from "@bb/shared-ui/overflow-fade";
@@ -36,7 +35,7 @@ import {
   ThreadTitle,
   useThreadTitleDisplayText,
 } from "@/components/thread/ThreadTitleMentions";
-import { formatRelativeTime } from "@/lib/relative-time";
+import { formatCompactRelativeTime } from "@bb/shared-ui/info-list-row";
 import {
   findEnvironmentDisplayProvider,
   getEnvironmentDisplayIconName,
@@ -112,7 +111,7 @@ function getMobileRecentThreadMetadata({
     workspaceName !== null && repeatsProjectName(workspaceName, projectName)
       ? null
       : workspaceName,
-    formatRelativeTime({
+    formatCompactRelativeTime({
       timestamp: thread.latestAttentionAt,
       now: Date.now(),
     }),
@@ -410,8 +409,7 @@ function MobileRecentThreadRow({
             </span>
             <span
               className={cn(
-                "flex min-w-0 items-center gap-1.5 leading-4 text-muted-foreground",
-                COARSE_POINTER_TEXT_SM_CLASS,
+                "flex min-w-0 items-center gap-1.5 leading-4 text-muted-foreground text-xs",
               )}
               title={metadataText}
             >

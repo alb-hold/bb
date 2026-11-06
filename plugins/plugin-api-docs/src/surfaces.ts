@@ -221,7 +221,7 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
           "Switch this device to another of its bb servers, in bb Desktop and the mobile app",
         ],
         reference: [
-          "The footer places host actions first, then More, then plugin items on every viewport. Saved order applies within each group, keeping host controls stable while plugins load.",
+          "The footer places host actions first, then More, then plugin items on every viewport. Saved order applies within each group, keeping host controls stable while plugins load. Saved plugin positions reserve empty slots until registration; newly discovered plugins append without moving existing icons.",
         ],
         apiSymbols: [
           "ExperimentalSidebarFooter",

@@ -1,4 +1,4 @@
-import { type RefObject, useLayoutEffect } from "react";
+import { type RefObject, useLayoutEffect, useState } from "react";
 import { atom, useAtom, useAtomValue, useSetAtom } from "jotai";
 import {
   usePluginSlots,
@@ -81,15 +81,13 @@ export function useSidebarFooterPreferences() {
       label: "Mobile apps",
       icon: "Smartphone",
     },
-    ...sidebarFooterItems.map(
-      (slot): FooterItem => ({
-        kind: "plugin",
-        key: footerPreferenceKey(slot),
-        label: slot.label,
-        icon: slot.icon,
-        slot,
-      }),
-    ),
+    ...sidebarFooterItems.map((slot): FooterItem => ({
+      kind: "plugin",
+      key: footerPreferenceKey(slot),
+      label: slot.label,
+      icon: slot.icon,
+      slot,
+    })),
     {
       kind: "builtin",
       id: "report-bug",
@@ -103,30 +101,66 @@ export function useSidebarFooterPreferences() {
     storedOrder: order,
     getId: (item) => item.key,
   });
+  const [pluginOrder, setPluginOrder] = useState(() => ({
+    order,
+    keys: order.filter((key) => key.startsWith("plugin:")),
+  }));
+  const knownPluginKeys =
+    pluginOrder.order === order
+      ? pluginOrder.keys
+      : order.filter((key) => key.startsWith("plugin:"));
+  const allPluginKeys = [
+    ...new Set([
+      ...knownPluginKeys,
+      ...ordered
+        .filter((item) => item.kind === "plugin")
+        .map((item) => item.key),
+    ]),
+  ];
+  if (
+    pluginOrder.order !== order ||
+    allPluginKeys.length !== pluginOrder.keys.length
+  ) {
+    setPluginOrder({ order, keys: allPluginKeys });
+  }
+  const pluginKeys = allPluginKeys.filter((key) => !hidden.includes(key));
   const isPrefixItem = (item: FooterItem) => item.kind === "builtin";
   const prioritized = [
     ...ordered.filter(isPrefixItem),
-    ...ordered.filter((item) => !isPrefixItem(item)),
+    ...ordered
+      .filter((item) => !isPrefixItem(item))
+      .sort((a, b) => pluginKeys.indexOf(a.key) - pluginKeys.indexOf(b.key)),
   ];
-  const footer = prioritized
-    .filter(
-      (item) =>
-        !hidden.includes(item.key) &&
-        (item.kind === "plugin" ||
-          item.key === "builtin:settings" ||
-          item.key === "builtin:report-bug" ||
-          order.length > 0 ||
-          hidden.length > 0),
-    )
-    .slice(0, capacity ?? undefined);
+  const eligible = prioritized.filter(
+    (item) =>
+      !hidden.includes(item.key) &&
+      (item.kind === "plugin" ||
+        item.key === "builtin:settings" ||
+        item.key === "builtin:report-bug" ||
+        order.length > 0 ||
+        hidden.length > 0),
+  );
+  const prefix = eligible.filter(isPrefixItem).slice(0, capacity ?? undefined);
+  const reservedPluginKeys = pluginKeys.slice(
+    0,
+    capacity === null ? undefined : Math.max(0, capacity - prefix.length),
+  );
+  const footer = [
+    ...prefix,
+    ...eligible.filter(
+      (item) => item.kind === "plugin" && reservedPluginKeys.includes(item.key),
+    ),
+  ];
   const more = ordered.filter((item) => !footer.includes(item));
-  const isFull = capacity !== null && footer.length >= capacity;
+  const isFull =
+    capacity !== null && prefix.length + reservedPluginKeys.length >= capacity;
   return {
     items: ordered,
     hidden,
     footer,
     footerPrefix: footer.filter(isPrefixItem),
     footerSuffix: footer.filter((item) => !isPrefixItem(item)),
+    pluginKeys: reservedPluginKeys,
     more,
     capacity,
     isFull,
