@@ -58,7 +58,9 @@ it.each(["", "A phone draft that keeps its wrapping through hydration"])(
         removeEventListener() {},
       })),
     );
-    onTestFinished(() => vi.unstubAllGlobals());
+    onTestFinished(() => {
+      vi.unstubAllGlobals();
+    });
     const style = document.createElement("style");
     const css = readFileSync("src/app.css", "utf8");
     style.textContent = css.slice(
@@ -96,6 +98,7 @@ it.each(["", "A phone draft that keeps its wrapping through hydration"])(
           onChange={setValue}
           onSubmit={() => {}}
           placeholder="Ask anything."
+          mentionMenuPlacement="bottom"
           typeahead={testTypeaheadConfig()}
           executionControls={
             <ExecutionControls
