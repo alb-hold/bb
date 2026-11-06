@@ -16,6 +16,37 @@ const themeCss = await readFile(
   new URL("../../../../apps/app/src/components/ui/theme.css", import.meta.url),
   "utf8",
 );
+const disclosureSource = await readFile(
+  new URL(
+    "../../../../apps/app/src/components/ui/disclosure.tsx",
+    import.meta.url,
+  ),
+  "utf8",
+);
+const tailwindTheme = await readFile(
+  new URL(
+    "../../../../apps/app/node_modules/tailwindcss/theme.css",
+    import.meta.url,
+  ),
+  "utf8",
+);
+const panelClass = z
+  .string()
+  .parse(
+    disclosureSource.match(/<div className="(group\/timeline-row[^"]*)"/)?.[1],
+  );
+const paddingSteps = Number(
+  z.string().parse(panelClass.match(/max-md:pointer-coarse:py-(\d+)/)?.[1]),
+);
+const spacing = z
+  .string()
+  .parse(tailwindTheme.match(/--spacing:\s*([^;]+);/)?.[1]);
+const breakpoint = z
+  .string()
+  .parse(tailwindTheme.match(/--breakpoint-md:\s*([^;]+);/)?.[1]);
+const panelCss = `@media (width < ${breakpoint}) and (pointer: coarse) {
+  [class="${panelClass}"] { padding-block: calc(${spacing} * ${paddingSteps}); }
+}`;
 const typographyCss = `${themeCss.match(/\n:root \{[^}]+\}/)?.[0]}${themeCss.match(/@media \(max-width: 767px\) and \(pointer: coarse\) \{\s*:root \{[^}]+\}\s*\}/)?.[0]}`;
 const touchCss = appCss.slice(
   appCss.indexOf("@media (width < 48rem) and (pointer: coarse)"),
@@ -23,7 +54,9 @@ const touchCss = appCss.slice(
 
 it.each(
   [360, 390, 1280].flatMap((width) =>
-    [0, 8].flatMap((gap) => [2, 3, 4].map((count) => ({ width, gap, count }))),
+    [0, 4, 8].flatMap((gap) =>
+      [2, 3, 4].map((count) => ({ width, gap, count })),
+    ),
   ),
 )(
   "preserves the smallest host tier and compact summary geometry for $count rows at $width px with a $gap px gap",
@@ -35,7 +68,7 @@ it.each(
       await writeFile(
         file,
         `<!doctype html><meta name="viewport" content="width=device-width"><style>
-:root { --text-xs:0.75rem }
+:root { --text-xs:0.75rem; --spacing:${spacing} }
 ${typographyCss}
 @layer theme { :root { --text-2xs:0.625rem } }
 body { margin:0; width:${width}px } button { box-sizing:border-box; border:0 }
@@ -47,13 +80,15 @@ header button { width:36px; height:36px }
 [data-compact-touch-height] > div { display:flow-root }
 [data-timeline-items] { display:flex; flex-direction:column; gap:${gap}px }
 ${touchCss}
+${panelCss}
 </style><header><button data-compact-touch="header">Actions</button><button data-compact-touch="header" data-terminal-search-trigger aria-label="Search terminal output">Search</button><button data-compact-touch="header">Panel</button></header><div style="height:32px"></div>
-<div data-compact-touch-height><div><div data-timeline-row-list="${gap === 0 ? "bundle" : "top-level"}"><div data-timeline-items>
+<div data-compact-touch-height><div><div data-timeline-row-list="${gap === 0 ? "bundle" : gap === 4 ? "nested" : "top-level"}"><div data-timeline-items>
 <div data-message-action-slot><button data-compact-touch="action" aria-label="Copy previous message">Copy</button></div>
-${Array.from({ length: count }, (_, index) => `<div data-timeline-row-id="row-${index}"><div data-compact-touch-panel><div><button data-compact-touch-summary aria-expanded="false" style="height:${index % 2 === 0 ? 20 : 23}px">Ran ${index + 1} command</button></div></div></div>`).join("")}
+${Array.from({ length: count }, (_, index) => `<div data-timeline-row-id="row-${index}"><div data-compact-touch-panel><div class="${panelClass}"><button data-compact-touch-summary aria-expanded="false" style="height:${index % 2 === 0 ? 20 : 23}px">Ran ${index + 1} command</button></div></div></div>`).join("")}
 <div data-message-action-slot><button data-compact-touch="action" aria-label="Copy next message">Copy</button></div>
 </div></div></div></div>
 <pre id="result"></pre><script>
+const panelPadding = parseFloat(getComputedStyle(document.querySelector('[data-compact-touch-panel] > div')).paddingTop);
 const box = el => { const r = el.getBoundingClientRect(); return {x:r.x,y:r.y,width:r.width,height:r.height,fontSize:getComputedStyle(el).fontSize} };
 const probe = el => { const r = el.getBoundingClientRect(), x = r.x+r.width/2, y = r.y+r.height/2;
 return [[x,y-21],[x,y+21],[x-21,y],[x+21,y]].map(([x,y]) => el.contains(document.elementFromPoint(x,y))); };
@@ -62,13 +97,14 @@ const search = document.querySelector('[aria-label="Search terminal output"]');
 const boundaryHits = summaries.slice(0,-1).flatMap((el,index) => { const first = el.getBoundingClientRect(), second = summaries[index+1].getBoundingClientRect(); const midpoint = (first.bottom + second.top)/2, x=first.x+first.width/2; return [el.contains(document.elementFromPoint(x,midpoint-1)),summaries[index+1].contains(document.elementFromPoint(x,midpoint+1))]; });
 const drawnHits = summaries.every(el => { const r = el.getBoundingClientRect(); return [r.top+1,r.bottom-1].every(y => el.contains(document.elementFromPoint(r.x+r.width/2,y))); });
 const adjacentControls = [...document.querySelectorAll('[data-message-action-slot] button')].map((el,index) => {const r=el.getBoundingClientRect();return el.contains(document.elementFromPoint(r.x+r.width/2,index===0?r.bottom-1:r.top+1));});
-document.querySelector('#result').textContent = JSON.stringify({smallestType:getComputedStyle(document.documentElement).getPropertyValue("--text-2xs"),drawnHits,adjacentControls,coarse:matchMedia('(pointer: coarse)').matches, boundaryHits, summaries:summaries.map(el => ({...box(el),hits:probe(el)})),search:{...box(search),hits:probe(search)}});
+document.querySelector('#result').textContent = JSON.stringify({panelPadding,smallestType:getComputedStyle(document.documentElement).getPropertyValue("--text-2xs"),drawnHits,adjacentControls,coarse:matchMedia('(pointer: coarse)').matches, boundaryHits, summaries:summaries.map(el => ({...box(el),hits:probe(el)})),search:{...box(search),hits:probe(search)}});
 </script>`,
       );
       const { stdout } = await execFileAsync(
         chromiumPath!,
         [
           "--headless",
+          `--user-data-dir=${join(dir, "profile")}`,
           "--no-sandbox",
           "--disable-gpu",
           "--disable-dev-shm-usage",
@@ -94,6 +130,7 @@ document.querySelector('#result').textContent = JSON.stringify({smallestType:get
       });
       const result = z
         .object({
+          panelPadding: z.number(),
           smallestType: z.string(),
           drawnHits: z.boolean(),
           adjacentControls: z.array(z.boolean()),
@@ -121,10 +158,12 @@ document.querySelector('#result').textContent = JSON.stringify({smallestType:get
         expect(summary.height).toBeLessThanOrEqual(24);
       }
       if (width < 480) expect(result.boundaryHits.every(Boolean)).toBe(true);
-      expect(result.summaries[1].y - result.summaries[0].y).toBe(20 + gap);
+      expect(result.summaries[1].y - result.summaries[0].y).toBe(
+        20 + gap + 2 * result.panelPadding,
+      );
       if (count > 2)
         expect(result.summaries[2].y - result.summaries[1].y).toBe(
-          23 + (width < 480 ? 24 : gap),
+          23 + gap + 2 * result.panelPadding,
         );
       expect(result.search.height).toBe(width < 480 ? 44 : 36);
       expect(result.search.width).toBe(width < 480 ? 44 : 36);

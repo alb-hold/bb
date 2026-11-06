@@ -3163,6 +3163,7 @@ ${pluginCss ?? ""}
     );
     const { stdout } = await execFileAsync(chromiumPath ?? "", [
       "--headless",
+      `--user-data-dir=${join(dir, "profile")}`,
       "--no-sandbox",
       "--disable-gpu",
       ...CHROMIUM_QUIET_FLAGS,
@@ -3237,6 +3238,7 @@ ${themeCss}
     );
     const { stdout } = await execFileAsync(chromiumPath ?? "", [
       "--headless",
+      `--user-data-dir=${join(dir, "profile")}`,
       "--no-sandbox",
       "--disable-gpu",
       ...CHROMIUM_QUIET_FLAGS,
@@ -3323,6 +3325,7 @@ ${themeCss}
     );
     const { stdout } = await execFileAsync(chromiumPath ?? "", [
       "--headless",
+      `--user-data-dir=${join(dir, "profile")}`,
       "--no-sandbox",
       "--disable-gpu",
       ...CHROMIUM_QUIET_FLAGS,

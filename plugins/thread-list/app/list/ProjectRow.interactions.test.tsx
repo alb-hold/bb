@@ -1417,6 +1417,7 @@ ${sections}
       chromiumPath ?? "",
       [
         "--headless",
+        `--user-data-dir=${join(dir, "profile")}`,
         "--no-sandbox",
         "--disable-gpu",
         "--disable-dev-shm-usage",

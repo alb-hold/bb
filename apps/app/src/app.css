@@ -1009,6 +1009,22 @@
     inset-block: calc((100% - 44px) / 2);
   }
 
+  [data-timeline-row-list="top-level"] > [data-timeline-items] {
+    --compact-summary-gap: calc(var(--spacing) * 2);
+  }
+
+  [data-timeline-row-list="nested"] > [data-timeline-items] {
+    --compact-summary-gap: var(--spacing);
+  }
+
+  [data-timeline-row-list="bundle"] > [data-timeline-items] {
+    --compact-summary-gap: 0px;
+  }
+
+  button[data-compact-touch-summary]::after {
+    inset-block: calc(-12px - var(--compact-summary-gap, 0px) / 2);
+  }
+
   [data-compact-touch-summary] {
     overflow: visible;
   }
