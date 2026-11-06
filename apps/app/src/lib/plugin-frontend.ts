@@ -56,6 +56,7 @@ import { setPluginLogoUrls, type PluginLogoUrls } from "./plugin-logos";
 import {
   requestBrowserIdle,
   whenRouteSurfaceMounted,
+  whenHomeComposerReady,
   whenHomeComposerInputOrTimeout,
 } from "./plugin-frontend-boot-schedule";
 import { whenRouteContentPainted } from "./route-content-paint";
@@ -431,6 +432,7 @@ export interface PluginFrontendReconcileDeps {
   warn: (message: string) => void;
   priorityPluginIds: () => readonly string[];
   waitForDeferredLoad?: () => Promise<void>;
+  waitForComposerPaint?: () => Promise<void>;
   yieldBetweenDeferredLoads?: () => Promise<void>;
   mountTimeoutMs?: number;
   cssReadyTimeoutMs?: number;
@@ -819,7 +821,9 @@ async function reconcileCandidates(
       untaken = index + 1;
       prefetchAhead();
       try {
-        await reconcileCandidate(candidate, state, deps);
+        if (candidate.pluginId === "bb--composer" && deps.waitForComposerPaint)
+          await deps.waitForComposerPaint();
+        if (!state.tornDown) await reconcileCandidate(candidate, state, deps);
       } finally {
         if (priorityPluginIds.includes(candidate.pluginId)) {
           pendingPriority -= 1;
@@ -1123,6 +1127,13 @@ const browserReconcileDeps: PluginFrontendReconcileDeps = {
   prefetchModule: prefetchPluginModule,
   retainCss: retainPluginCss,
   priorityPluginIds: () => frontendPriorityPluginIds(window.location.pathname),
+  waitForComposerPaint: async () => {
+    if (window.location.pathname !== "/") return;
+    await whenHomeComposerReady();
+    await new Promise<void>((resolve) =>
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+    );
+  },
   waitForDeferredLoad: async () => {
     await whenRouteContentPainted();
     await whenRouteSurfaceMounted();

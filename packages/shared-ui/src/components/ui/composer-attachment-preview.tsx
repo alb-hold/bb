@@ -1,0 +1,280 @@
+import { VideoThumbnail } from "./video-thumbnail";
+import { useEffect, useState } from "react";
+import {
+  type ComposerAttachment,
+  type ExperimentalComposerPendingUpload as PendingAttachmentUpload,
+  type ExperimentalComposerRendererApi,
+} from "@get-bb/plugin-sdk/app";
+function isImageAttachment(attachment: ComposerAttachment): boolean {
+  return (
+    attachment.type === "localImage" ||
+    attachment.mimeType?.toLowerCase().startsWith("image/") === true
+  );
+}
+function isVideoAttachment({
+  path,
+  mimeType,
+}: {
+  path: string;
+  mimeType?: string;
+}): boolean {
+  return (
+    mimeType?.toLowerCase().startsWith("video/") === true ||
+    /\.(mp4|m4v|mov|webm|ogv|ogg)(?:[?#].*)?$/i.test(path)
+  );
+}
+import { Icon } from "./icon";
+
+const FILE_ATTACHMENT_PILL_CLASS =
+  "inline-flex max-w-full items-center gap-1 rounded-full border border-border bg-surface-recessed px-2 py-0.5 text-xs text-muted-foreground";
+
+export interface ComposerAttachmentPreviewProps {
+  attachments: readonly ComposerAttachment[];
+  pendingUploads?: readonly PendingAttachmentUpload[];
+  compact?: boolean;
+  attachmentProjectId?: string;
+  onOpenImage: (index: number) => void;
+  attachmentSrc: ExperimentalComposerRendererApi["attachmentSrc"];
+  resolveMentionLink: ExperimentalComposerRendererApi["input"]["resolveMentionLink"];
+  onRemoveAttachment?: (path: string) => void;
+}
+
+function isImageUpload(upload: PendingAttachmentUpload): boolean {
+  return (
+    upload.file.type.startsWith("image/") ||
+    isVideoAttachment({ path: upload.file.name, mimeType: upload.file.type })
+  );
+}
+
+function ImageUploadPreview({ file }: { file: File }) {
+  const [previewUrl, setPreviewUrl] = useState<string>();
+  useEffect(() => {
+    const url = URL.createObjectURL(file);
+    setPreviewUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [file]);
+
+  return (
+    <div
+      role="status"
+      aria-label={`Uploading ${file.name}`}
+      className="relative shrink-0 overflow-hidden rounded-md border border-border bg-surface-recessed"
+    >
+      <span className="block h-16 w-24">
+        {previewUrl ? (
+          isVideoAttachment({ path: file.name, mimeType: file.type }) ? (
+            <VideoThumbnail src={previewUrl} className="opacity-50" />
+          ) : (
+            <img
+              src={previewUrl}
+              alt=""
+              className="size-full object-cover opacity-50"
+            />
+          )
+        ) : null}
+      </span>
+      <span className="absolute inset-x-0 bottom-0 flex items-center justify-center gap-1 bg-background/90 py-1 text-xs text-foreground">
+        <Icon
+          name="Loading"
+          className="size-3 animate-spin motion-reduce:animate-none"
+        />
+        Uploading
+      </span>
+    </div>
+  );
+}
+
+function FileAttachmentName({
+  name,
+  path,
+  resolveMentionLink,
+}: {
+  name: string;
+  path: string;
+  resolveMentionLink: ComposerAttachmentPreviewProps["resolveMentionLink"];
+}) {
+  const open = resolveMentionLink({ kind: "attachment", path, label: name });
+  if (!open) {
+    return <span className="truncate">{name}</span>;
+  }
+  return (
+    <button
+      type="button"
+      onMouseDown={(event) => event.preventDefault()}
+      onClick={open}
+      className="truncate hover:underline focus-visible:outline-none focus-visible:underline"
+    >
+      {name}
+    </button>
+  );
+}
+
+function FileUploadPreview({ file }: { file: File }) {
+  return (
+    <span
+      role="status"
+      aria-label={`Uploading ${file.name}`}
+      className={FILE_ATTACHMENT_PILL_CLASS}
+    >
+      <span className="truncate">{file.name}</span>
+      <span className="inline-flex size-4 shrink-0 items-center justify-center">
+        <Icon
+          name="Loading"
+          className="size-3 animate-spin motion-reduce:animate-none"
+        />
+      </span>
+    </span>
+  );
+}
+
+export function ComposerAttachmentPreview({
+  attachments,
+  pendingUploads = [],
+  compact = false,
+  attachmentProjectId,
+  onOpenImage,
+  attachmentSrc,
+  resolveMentionLink,
+  onRemoveAttachment,
+}: ComposerAttachmentPreviewProps) {
+  const imageAttachments = attachments.filter(
+    (attachment) =>
+      isImageAttachment(attachment) || isVideoAttachment(attachment),
+  );
+  const nonImageAttachments = attachments.filter(
+    (attachment) =>
+      !isImageAttachment(attachment) && !isVideoAttachment(attachment),
+  );
+  const imageUploads = pendingUploads.filter(isImageUpload);
+  const fileUploads = pendingUploads.filter((upload) => !isImageUpload(upload));
+  const attachmentImageItems = imageAttachments.map((attachment) => ({
+    mediaType: isVideoAttachment(attachment)
+      ? ("video" as const)
+      : ("image" as const),
+    alt: attachment.name,
+    src: attachmentSrc(
+      attachment.path,
+      attachment.sourceProjectId ?? attachmentProjectId,
+    ),
+  }));
+  const attachmentCount = attachments.length;
+  const uploadingCount = pendingUploads.length;
+  if (attachmentCount + uploadingCount === 0) {
+    return null;
+  }
+
+  return (
+    <>
+      {compact ? (
+        <span
+          data-promptbox-attachments=""
+          role={uploadingCount > 0 ? "status" : "img"}
+          aria-label={[
+            attachmentCount > 0
+              ? `${attachmentCount} ${attachmentCount === 1 ? "attachment" : "attachments"}`
+              : null,
+            uploadingCount > 0 ? `${uploadingCount} uploading` : null,
+          ]
+            .filter(Boolean)
+            .join(", ")}
+          className="ml-3 inline-flex h-7 shrink-0 items-center gap-0.5 rounded-md bg-surface-recessed px-1.5 text-xs text-muted-foreground"
+        >
+          <Icon name="Paperclip" className="size-3.5" />
+          <span aria-hidden="true">{attachmentCount + uploadingCount}</span>
+          {uploadingCount > 0 ? (
+            <Icon
+              name="Loading"
+              className="size-3.5 animate-spin motion-reduce:animate-none"
+            />
+          ) : null}
+        </span>
+      ) : (
+        <div className="mx-3 mb-1 mt-1">
+          {imageAttachments.length > 0 || imageUploads.length > 0 ? (
+            <div className="mb-1.5 flex flex-wrap gap-2">
+              {imageAttachments.map((attachment, index) => (
+                <div key={`${attachment.path}-${index}`} className="relative">
+                  <button
+                    type="button"
+                    className="block cursor-zoom-in overflow-hidden rounded-md border border-border bg-surface-recessed"
+                    onClick={() => onOpenImage(index)}
+                    aria-label={attachment.name}
+                  >
+                    {isVideoAttachment(attachment) ? (
+                      <VideoThumbnail src={attachmentImageItems[index]!.src} />
+                    ) : (
+                      <img
+                        src={attachmentImageItems[index]?.src}
+                        alt={attachment.name}
+                        className="h-16 w-24 object-cover"
+                        loading="lazy"
+                        decoding="async"
+                      />
+                    )}
+                  </button>
+                  {onRemoveAttachment ? (
+                    <button
+                      type="button"
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={(event) => {
+                        event.currentTarget.blur();
+                        onRemoveAttachment(attachment.path);
+                      }}
+                      className="group/attachment-remove-image absolute right-1 top-1 z-10 inline-flex size-4 items-center justify-center rounded-full text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring max-md:pointer-coarse:-right-1 max-md:pointer-coarse:-top-1 max-md:pointer-coarse:size-7"
+                      aria-label={`Remove ${attachment.name}`}
+                    >
+                      <span className="inline-flex size-4 items-center justify-center rounded-full bg-black/55 transition-colors group-hover/attachment-remove-image:bg-black/70">
+                        <Icon name="X" className="size-3" />
+                      </span>
+                    </button>
+                  ) : null}
+                </div>
+              ))}
+              {imageUploads.map((upload) => (
+                <ImageUploadPreview key={upload.id} file={upload.file} />
+              ))}
+            </div>
+          ) : null}
+
+          {nonImageAttachments.length > 0 || fileUploads.length > 0 ? (
+            <div className="flex flex-wrap gap-1.5">
+              {nonImageAttachments.map((attachment) => (
+                <span
+                  key={attachment.path}
+                  className={FILE_ATTACHMENT_PILL_CLASS}
+                >
+                  <FileAttachmentName
+                    name={attachment.name}
+                    path={attachment.path}
+                    resolveMentionLink={resolveMentionLink}
+                  />
+                  {onRemoveAttachment ? (
+                    <span className="relative size-4 shrink-0">
+                      <button
+                        type="button"
+                        onMouseDown={(event) => event.preventDefault()}
+                        onClick={(event) => {
+                          event.currentTarget.blur();
+                          onRemoveAttachment(attachment.path);
+                        }}
+                        className="group/attachment-remove-file absolute left-1/2 top-1/2 inline-flex size-4 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-md focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring max-md:pointer-coarse:size-7"
+                        aria-label={`Remove ${attachment.name}`}
+                      >
+                        <span className="inline-flex size-4 items-center justify-center rounded transition-colors group-hover/attachment-remove-file:bg-state-hover">
+                          <Icon name="X" className="size-3" />
+                        </span>
+                      </button>
+                    </span>
+                  ) : null}
+                </span>
+              ))}
+              {fileUploads.map((upload) => (
+                <FileUploadPreview key={upload.id} file={upload.file} />
+              ))}
+            </div>
+          ) : null}
+        </div>
+      )}
+    </>
+  );
+}

@@ -114,6 +114,39 @@ describe("orderPluginFrontendCandidates", () => {
 });
 
 describe("reconcilePluginFrontends load scheduling", () => {
+  it("paints the home input before importing its rich renderer while loading the sidebar in parallel", async () => {
+    const imports: string[] = [];
+    let paint = () => {};
+    const painted = new Promise<void>((resolve) => {
+      paint = resolve;
+    });
+    const prefetchModule = vi.fn();
+    const done = reconcilePluginFrontends(
+      createPluginFrontendReconcileState(),
+      makeDeps(
+        [candidate("bb--composer", 424_000), candidate("thread-list", 263_000)],
+        {
+          priorityPluginIds: () => ["bb--composer", "thread-list"],
+          waitForComposerPaint: () => painted,
+          prefetchModule,
+          importModule: async (url) => {
+            imports.push(url);
+            return pluginModule();
+          },
+        },
+      ),
+    );
+    for (let index = 0; index < 20; index++) await Promise.resolve();
+    expect(imports).toEqual([expect.stringContaining("thread-list")]);
+    expect(prefetchModule.mock.calls.flat()).not.toContainEqual(
+      expect.stringContaining("bb--composer"),
+    );
+    paint();
+    await done;
+    expect(imports).toHaveLength(2);
+    expect(imports[1]).toContain("bb--composer");
+  });
+
   it("yields before each deferred bundle and never overlaps their evaluations", async () => {
     const imports = makeDeferredImports();
     const idle: (() => void)[] = [];

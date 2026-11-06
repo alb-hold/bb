@@ -1,5 +1,20 @@
 # APIs To Audit
 
+## `ExperimentalComposerInput.experimental_startupHandoff`
+
+The host can accept input before a composer renderer has downloaded. A renderer
+attaches its synchronous acceptance callback when its editor is mounted. The host
+calls it once with the latest canonical draft, text offsets for the selection's
+anchor and head, focus ownership, and scroll position. The host waits for IME
+composition to finish and reads the input at the actual handoff. Detaching removes
+only that callback. Renderers without this optional contract retain their ordinary
+mount behavior.
+
+Core's `ProgressiveComposer` and the built-in composer use this same path. The
+Plugin Guide's composer replacement surface documents it. Stabilization requires
+auditing IME, backward selections, focus, attachment drafts, and geometry across
+desktop and compact layouts, including replacement renderers.
+
 Every public plugin API member ships with an `experimental_` prefix and an
 entry here (see [AGENTS.md](../AGENTS.md), "CLI And Plugin API"). Each entry
 summarizes the API, names where its behavior is documented, and lists what

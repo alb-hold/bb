@@ -7,6 +7,7 @@ it("keeps hidden panels, SDK UI, menu bodies and extended glyphs outside their s
   const entries = {
     home: "src/views/RootComposeView.tsx",
     threadRoute: "src/views/thread-detail/ThreadDetailView.tsx",
+    composer: "src/components/promptbox/ComposerBox.tsx",
     model: "src/components/pickers/ModelReasoningPicker.tsx",
     voice: "src/components/promptbox/usePromptVoice.tsx",
     boot: "src/main.tsx",
@@ -30,6 +31,14 @@ it("keeps hidden panels, SDK UI, menu bodies and extended glyphs outside their s
       "@bb/shared-ui/icon-extended": resolve(
         app,
         "../../packages/shared-ui/src/components/ui/icon-extended.tsx",
+      ),
+      "@bb/shared-ui/composer-primitives": resolve(
+        app,
+        "../../packages/shared-ui/src/components/ui/composer-primitives.tsx",
+      ),
+      "@bb/shared-ui/composer-attachment-preview": resolve(
+        app,
+        "../../packages/shared-ui/src/components/ui/composer-attachment-preview.tsx",
       ),
     },
     write: false,
@@ -68,7 +77,12 @@ it("keeps hidden panels, SDK UI, menu bodies and extended glyphs outside their s
       "src/hooks/useThreadCreationOptions.ts",
       "src/hooks/usePromptHistoryEnabled.ts",
     ],
+    composer: [
+      "../../plugins/composer/src/PromptBoxInternal.tsx",
+      "src/components/promptbox/ProgressiveComposer.tsx",
+    ],
     home: [
+      "src/components/promptbox/ProgressiveComposer.tsx",
       "src/views/RootComposePanelTabContent.tsx",
       "src/hooks/useVoiceInput.ts",
       "src/components/pickers/ModelReasoningPickerBody.tsx",
@@ -79,6 +93,8 @@ it("keeps hidden panels, SDK UI, menu bodies and extended glyphs outside their s
       "src/components/promptbox/usePromptVoiceRuntime.tsx",
     ],
     boot: [
+      "src/components/promptbox/ProgressiveComposer.tsx",
+      "../../packages/shared-ui/src/components/ui/composer-attachment-preview.tsx",
       "src/hooks/useVoiceInput.ts",
       "src/components/pickers/ModelReasoningPickerBody.tsx",
     ],

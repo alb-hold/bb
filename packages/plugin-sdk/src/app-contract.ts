@@ -2941,6 +2941,17 @@ export interface ExperimentalComposerInput {
   onEscape?(): void;
   placeholder?: string;
   autoFocus?: boolean;
+  experimental_startupHandoff?: {
+    attach(
+      accept: (snapshot: {
+        draft: ComposerDraft;
+        anchor: number;
+        head: number;
+        focused: boolean;
+        scrollTop: number;
+      }) => void,
+    ): () => void;
+  };
   /** bb's model, reasoning effort and mode controls for this composer. */
   executionControls?: ReactNode;
   /** The "Handoff to new thread" banner, while a handoff is active. */

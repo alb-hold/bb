@@ -636,6 +636,7 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
           "Search bb's @-mentions and commands, and keep bb's pills, attachments, history and voice input",
           "Place bb's model, mode and handoff controls where it wants them",
           "Keep other plugins' actions, popups and menu entries working inside it",
+          "Accept startup input through ExperimentalComposerInput.experimental_startupHandoff: attach a synchronous callback after mounting the editor, restore its draft and text selection, and focus only when the snapshot owns focus",
         ],
         apiSymbols: [
           "ExperimentalComposerRegistration",

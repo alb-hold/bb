@@ -42,8 +42,34 @@ export function whenRouteSurfaceMounted(): Promise<void> {
       : /^(?:\/projects\/[^/]+)?\/threads\/[^/]+\/?$/.test(pathname)
         ? THREAD_CONTENT_SELECTOR
         : null;
-  if (selector === null || hasMountedSurface(selector))
-    return Promise.resolve();
+  if (selector === null) return Promise.resolve();
+  return whenSurfaceMounted(
+    pathname,
+    () => hasMountedSurface(selector),
+    pathname === "/"
+      ? PLUGIN_FRONTEND_BOOT_TIMEOUT_MS
+      : PLUGIN_FRONTEND_THREAD_SURFACE_TIMEOUT_MS,
+  );
+}
+
+export function whenHomeComposerReady(): Promise<void> {
+  const pathname = window.location.pathname;
+  if (pathname !== "/") return Promise.resolve();
+  return whenSurfaceMounted(
+    pathname,
+    () =>
+      hasMountedSurface(HOME_COMPOSER_SELECTOR) &&
+      hasMountedSurface("[data-sidebar-thread-id]"),
+    PLUGIN_FRONTEND_BOOT_TIMEOUT_MS,
+  );
+}
+
+function whenSurfaceMounted(
+  pathname: string,
+  isReady: () => boolean,
+  timeoutMs: number,
+): Promise<void> {
+  if (isReady()) return Promise.resolve();
   return new Promise((resolve) => {
     const finish = () => {
       observer.disconnect();
@@ -51,15 +77,9 @@ export function whenRouteSurfaceMounted(): Promise<void> {
       resolve();
     };
     const observer = new MutationObserver(() => {
-      if (window.location.pathname !== pathname || hasMountedSurface(selector))
-        finish();
+      if (window.location.pathname !== pathname || isReady()) finish();
     });
-    const timeout = window.setTimeout(
-      finish,
-      pathname === "/"
-        ? PLUGIN_FRONTEND_BOOT_TIMEOUT_MS
-        : PLUGIN_FRONTEND_THREAD_SURFACE_TIMEOUT_MS,
-    );
+    const timeout = window.setTimeout(finish, timeoutMs);
     observer.observe(document, {
       childList: true,
       subtree: true,

@@ -89,6 +89,7 @@ import {
 import { blurActiveKeyboardInputWithin } from "@/components/ui/overlay-trigger";
 import { cn } from "@/lib/utils";
 import { AttachmentPreview } from "./AttachmentPreview";
+import { applyStartupHandoff } from "./startup-handoff";
 import { areDraftsEqual, isDraftEmpty } from "./composer-draft";
 import {
   commandMentionTarget,
@@ -1017,6 +1018,7 @@ export function PromptBoxInternal({
   onEscape,
   placeholder = "Ask anything. @ to mention files, folders, or sections",
   autoFocus = true,
+  experimental_startupHandoff,
   handoff,
   executionControls,
   compactBeforeSend,
@@ -1140,6 +1142,7 @@ export function PromptBoxInternal({
       JSON.stringify(compactPlaceholder),
     );
   }, [compactPlaceholder]);
+  const startupPending = useRef(experimental_startupHandoff !== undefined);
   const editorRef = useRef<Editor | null>(null);
   const pasteWithoutFormattingRef = useRef(false);
   const editorScrollContainerRef = useRef<HTMLDivElement>(null);
@@ -1373,6 +1376,9 @@ export function PromptBoxInternal({
   const decorationSourcesRef = useRef(decorationSources);
   decorationSourcesRef.current = decorationSources;
   const focusScopeKey = history?.resetKey;
+  const startupFocusScope = useRef(
+    experimental_startupHandoff ? { key: focusScopeKey } : null,
+  );
   const onChangeRef = useRef(onChange);
 
   useEffect(() => {
@@ -1606,6 +1612,7 @@ export function PromptBoxInternal({
 
   const syncTriggerState = useCallback(
     (editor: Editor) => {
+      if (startupPending.current) return;
       if (
         composerMenuRef.current?.kind === "plugin" &&
         composerMenuRef.current.open
@@ -2096,6 +2103,13 @@ export function PromptBoxInternal({
 
   useEffect(() => {
     if (!editor) return;
+    if (
+      startupFocusScope.current?.key === focusScopeKey &&
+      startupFocusScope.current !== null &&
+      autoFocus !== false
+    )
+      return;
+    startupFocusScope.current = null;
     if (!autoFocus) {
       if (editor.view.dom.contains(document.activeElement)) {
         blurPromptEditor(editor);
@@ -2120,7 +2134,13 @@ export function PromptBoxInternal({
 
     const handle = window.requestAnimationFrame(focusEditor);
     return () => window.cancelAnimationFrame(handle);
-  }, [autoFocus, editor, focusScopeKey, scheduleRevealEditorSelection]);
+  }, [
+    autoFocus,
+    editor,
+    experimental_startupHandoff,
+    focusScopeKey,
+    scheduleRevealEditorSelection,
+  ]);
 
   useEffect(() => {
     mentionRangesRef.current = mentionRanges;
@@ -2162,6 +2182,26 @@ export function PromptBoxInternal({
     syncTriggerState,
     value,
   ]);
+
+  useLayoutEffect(() => {
+    if (!editor || !experimental_startupHandoff) return;
+    return experimental_startupHandoff.attach((snapshot) => {
+      if (editor.isDestroyed) return;
+      try {
+        skipEditorChangeRef.current = true;
+        const nextValue = applyStartupHandoff(editor, snapshot);
+        lastSyncedEditorValueRef.current = nextValue;
+        valueRef.current = nextValue.text;
+        mentionRangesRef.current = nextValue.mentions;
+      } finally {
+        skipEditorChangeRef.current = false;
+      }
+      startupPending.current = false;
+      if (editorScrollContainerRef.current)
+        editorScrollContainerRef.current.scrollTop = snapshot.scrollTop;
+      syncTriggerState(editor);
+    });
+  }, [editor, experimental_startupHandoff, syncTriggerState]);
 
   useLayoutEffect(() => {
     scheduleRevealEditorSelection();
