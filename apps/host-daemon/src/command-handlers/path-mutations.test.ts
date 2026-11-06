@@ -75,7 +75,7 @@ describe("confined host path mutations", () => {
       const signal = vi.spyOn(process, "kill");
       const pid = 410104;
       const base = `/proc/${pid}`;
-      const selfUid = 2000;
+      const selfUid: number = 2000;
       const selfGid = 2000;
       const foreignUid = selfUid === 60_000 ? 60_001 : 60_000;
       const accessPaths: string[] = [];
