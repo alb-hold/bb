@@ -3,7 +3,7 @@ import {
   PluginSlotMount,
   resetCrashedPluginSlots,
 } from "@/components/plugin/PluginSlotMount";
-import { useSidebar } from "@/components/ui/sidebar.js";
+import { useIsSidebarShowing, useSidebar } from "@/components/ui/sidebar.js";
 import { useRouteState } from "@/hooks/useRouteState";
 import type { ResolvedReplacement } from "@/lib/plugin-slot-resolvers";
 import type { PluginThreadListSlot } from "@/lib/plugin-slots";
@@ -28,6 +28,7 @@ export function PluginThreadList({
 }: PluginThreadListProps) {
   const { projectId, threadId } = useRouteState();
   const { isCompactViewport } = useSidebar();
+  const isVisible = useIsSidebarShowing();
   const bootSettled = usePluginFrontendsSettled();
   const loadFailed = usePluginFrontendLoadFailed();
   const [attempt, setAttempt] = useState(0);
@@ -84,6 +85,7 @@ export function PluginThreadList({
         activeThreadId={threadId ?? null}
         activeProjectId={projectId ?? null}
         isCompactViewport={isCompactViewport}
+        experimental_isVisible={isVisible}
         onNavigate={onNavigate}
         searchQuery=""
       />
