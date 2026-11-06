@@ -511,3 +511,23 @@ describe("split boundaries", () => {
     },
   );
 });
+
+describe("workspace module boot boundaries", () => {
+  it.each([true, false])("rejects a strict schema in boot: %s", async (eager) => {
+    const module = "../../packages/server-contract/src/api/threads.ts";
+    const input = [
+      chunk("assets/index.js", { isEntry: true, imports: eager ? ["assets/schema.js"] : [] }),
+      chunk("assets/schema.js", { modules: { [resolve(import.meta.dirname, "../../../packages/server-contract/src/api/threads.ts")]: { renderedLength: 100 } } }),
+    ];
+    const stats = computeBundleStats(input, {}, () => {});
+    if (stats === null) throw new Error("missing stats");
+    const result = await runCheck(await writeFixture({
+      maxBootBytes: 10000,
+      maxBootBrotliBytes: 1000,
+      forbiddenBootPackages: [],
+      forbiddenBootModules: [module],
+    }, stats, input.map((entry) => entry.fileName)));
+    expect(result.code).toBe(eager ? 1 : 0);
+    if (eager) expect(result.output).toContain(`${module} is eager in boot`);
+  });
+});

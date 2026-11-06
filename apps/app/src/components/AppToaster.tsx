@@ -1,10 +1,8 @@
 import { useEffect, useSyncExternalStore } from "react";
 import { defineSplit } from "@/lib/define-split";
-import { queueSplitPreload } from "@/lib/split-prefetch";
 import {
   isToasterRequested,
   markToasterUnavailable,
-  requestToaster,
   subscribeToasterRequest,
 } from "./ui/app-toast-runtime";
 
@@ -21,8 +19,6 @@ const AppToasterSplit = defineSplit({
   error: ToasterUnavailable,
   tier: "intent",
 });
-
-queueSplitPreload(async () => requestToaster());
 
 export function AppToaster() {
   const requested = useSyncExternalStore(

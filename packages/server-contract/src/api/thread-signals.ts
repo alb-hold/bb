@@ -23,6 +23,21 @@ export const threadOpenSignalLenientSchema = z.object({
   threadId: z.string(),
   split: threadOpenSplitSchema,
   file: threadOpenFileLenientSchema.nullable(),
+  terminalAction: z
+    .object({
+      action: z.enum(["focus", "openBrowser"]),
+      terminalId: z.string(),
+      url: z.string().optional(),
+    })
+    .optional(),
+  terminalLayoutAction: z
+    .object({
+      action: z.enum(["split", "move"]),
+      side: z.enum(["right", "left", "up", "down"]).optional(),
+      targetTerminalId: z.string().optional(),
+      terminalId: z.string(),
+    })
+    .optional(),
 });
 
 export const threadPaneActionSchema = z.enum([

@@ -1,14 +1,16 @@
 import {
   THREAD_TIMELINE_WINDOW_FIELD_KEYS,
   TIMELINE_PAGE_FIELD_KEYS,
-  type ThreadTimelineDeltaResponse,
-  type ThreadTimelineReadResponse,
-  type ThreadTimelineResponse,
-  type TimelineDelta,
-  type TimelineDeltaFields,
-  type TimelinePageMetadata,
-  type TimelinePagePatch,
-  type TimelineRowOrder,
+} from "./api/thread-timeline-fields.js";
+import type {
+  ThreadTimelineDeltaResponse,
+  ThreadTimelineReadResponse,
+  ThreadTimelineResponse,
+  TimelineDelta,
+  TimelineDeltaFields,
+  TimelinePageMetadata,
+  TimelinePagePatch,
+  TimelineRowOrder,
 } from "./api/threads.js";
 import type { TimelineRow } from "./thread-timeline.js";
 

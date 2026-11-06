@@ -17,12 +17,19 @@ import {
 } from "@bb/domain";
 import { AppCommandProvider, useAppCommandHandler } from "./AppCommandProvider";
 import { CommandPalette } from "./CommandPalette";
+import { startSplitPreloading } from "@/lib/split-prefetch";
 
 const body = vi.hoisted(() => ({
   imports: 0,
   release: async () => {},
 }));
 const calls = vi.hoisted(() => [] as AppCommandId[]);
+const searchImports = vi.hoisted(() => vi.fn());
+
+vi.mock("./ThreadSearchPaletteMode", async (original) => {
+  searchImports();
+  return original();
+});
 
 vi.mock("./CommandPaletteBody", async (importOriginal) => {
   body.imports += 1;
@@ -123,8 +130,12 @@ it("stays usable before its body downloads on first open and keeps typed text", 
   );
   const origin = screen.getByRole("button", { name: "origin" });
   origin.focus();
-  await act(async () => {});
+  startSplitPreloading();
+  await act(async () => {
+    await new Promise((resolve) => window.setTimeout(resolve, 1200));
+  });
   expect(body.imports).toBe(0);
+  expect(searchImports).not.toHaveBeenCalled();
 
   press("p");
   fireEvent.keyDown(await loadingInput(), { key: "Escape" });

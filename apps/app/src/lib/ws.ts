@@ -2,21 +2,23 @@ import ReconnectingWebSocket from "partysocket/ws";
 import {
   realtimeSubscriptionTargetSchema,
   type ThreadTimelineSubscriptionTarget,
-} from "@bb/domain";
-import {
   changedMessageLenientSchema,
-  pluginSignalLenientSchema,
   pongMessageLenientSchema,
   realtimeSubscriptionTargetKey,
+} from "@bb/domain";
+import { pluginSignalLenientSchema } from "@bb/server-contract/api/shared";
+import {
   threadOpenSignalLenientSchema,
   threadPaneActionSignalLenientSchema,
+  threadTimelineSignalLenientSchema,
+} from "@bb/server-contract/api/thread-signals";
+import {
   deviceHandoffSignalLenientSchema,
   deviceHandoffExpiredSignalLenientSchema,
   deviceHandoffAcknowledgedSignalLenientSchema,
   deviceHandoffClientTokenSignalLenientSchema,
-  DEVICE_HANDOFF_DEVICE_STORAGE_KEY,
-  threadTimelineSignalLenientSchema,
-} from "@bb/server-contract";
+} from "@bb/server-contract/api/device-handoff";
+import { DEVICE_HANDOFF_DEVICE_STORAGE_KEY } from "@bb/server-contract/device-handoff-identity";
 import type {
   ClientMessage,
   ChangedMessage,

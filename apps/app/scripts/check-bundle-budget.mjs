@@ -86,6 +86,23 @@ const brotliSizeOf = (fileName) => {
   return fs.existsSync(brotliPath) ? fs.statSync(brotliPath).size : null;
 };
 
+if (
+  budget.forbiddenBootModules?.length > 0 &&
+  stats.chunks.some((chunk) => !Array.isArray(chunk.modules))
+) {
+  die("bundle-stats.json is missing modules; rebuild before checking workspace boundaries.");
+}
+
+for (const module of budget.forbiddenBootModules ?? []) {
+  const bootFiles = new Set(stats.bootChunks.map((chunk) => chunk.fileName));
+  const offenders = stats.chunks.filter((chunk) =>
+    bootFiles.has(chunk.fileName) && chunk.modules?.some((entry) => entry.id === module),
+  );
+  if (offenders.length > 0) {
+    failures.push(`${module} is eager in boot: ${offenders.map((chunk) => chunk.fileName).join(", ")}`);
+  }
+}
+
 const boot = measureClosure(
   stats.bootChunks,
   budget.forbiddenBootPackages,
