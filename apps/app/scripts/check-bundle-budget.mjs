@@ -90,16 +90,37 @@ if (
   budget.forbiddenBootModules?.length > 0 &&
   stats.chunks.some((chunk) => !Array.isArray(chunk.modules))
 ) {
-  die("bundle-stats.json is missing modules; rebuild before checking workspace boundaries.");
+  die(
+    "bundle-stats.json is missing modules; rebuild before checking workspace boundaries.",
+  );
 }
 
 for (const module of budget.forbiddenBootModules ?? []) {
   const bootFiles = new Set(stats.bootChunks.map((chunk) => chunk.fileName));
-  const offenders = stats.chunks.filter((chunk) =>
-    bootFiles.has(chunk.fileName) && chunk.modules?.some((entry) => entry.id === module),
+  const offenders = stats.chunks.filter(
+    (chunk) =>
+      bootFiles.has(chunk.fileName) &&
+      chunk.modules?.some((entry) => entry.id === module),
   );
   if (offenders.length > 0) {
-    failures.push(`${module} is eager in boot: ${offenders.map((chunk) => chunk.fileName).join(", ")}`);
+    failures.push(
+      `${module} is eager in boot: ${offenders.map((chunk) => chunk.fileName).join(", ")}`,
+    );
+  }
+}
+
+for (const [prefix, forbidden] of Object.entries(
+  budget.forbiddenChunkPackages ?? {},
+)) {
+  const chunks = stats.chunks.filter((chunk) =>
+    chunk.fileName.startsWith(prefix),
+  );
+  if (chunks.length === 0) failures.push(`Missing protected chunk ${prefix}.`);
+  for (const chunk of chunks) {
+    for (const pkg of forbidden) {
+      if (chunk.packages.includes(pkg))
+        failures.push(`${pkg} must stay outside ${prefix}: ${chunk.fileName}.`);
+    }
   }
 }
 

@@ -44,6 +44,9 @@ describe("Icon core/extended split", () => {
   it("renders the home, chat and terminal controls without loading the extended registry", async () => {
     const { icon, registry } = await freshIconModules();
     const names = [
+      "FolderMinus",
+      "SecurityCheck",
+      "Plug02",
       "ArrowUp",
       "ArrowDown",
       "Brain",

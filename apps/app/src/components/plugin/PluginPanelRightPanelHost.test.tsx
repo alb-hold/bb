@@ -1466,7 +1466,7 @@ describe("PluginPanelRightPanelHost", () => {
       await screen.findByRole("button", { name: "Machine" }),
       { button: 0 },
     );
-    fireEvent.click(screen.getByRole("menuitem", { name: /Laptop/u }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: /Laptop/u }));
     fireEvent.click(screen.getByRole("button", { name: "Start terminal" }));
 
     await waitFor(() =>

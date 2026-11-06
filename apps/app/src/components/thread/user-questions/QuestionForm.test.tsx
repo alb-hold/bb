@@ -5,7 +5,15 @@ import {
   fireEvent,
   render as renderReact,
 } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import { useVoiceInput } from "@/hooks/useVoiceInput";
 import { QuestionForm } from "@bb/shared-ui/question-form";
 import type {
@@ -14,6 +22,9 @@ import type {
 } from "@bb/shared-ui/question-form-state";
 import { ThreadQuestionFormHost } from "./ThreadQuestionFormHost";
 import { AppCommandProvider } from "@/components/commands/AppCommandProvider";
+import { preloadPromptVoiceRuntime } from "@/components/promptbox/usePromptVoice";
+beforeAll(() => preloadPromptVoiceRuntime());
+
 type InteractionPayload = { questions: Question[] };
 type InteractionResponse = { answers: Record<string, QuestionAnswer> };
 

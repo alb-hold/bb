@@ -180,8 +180,8 @@
     "66 over the lowered cap. The Brotli cap returns to the 394,500 set by the",
     "0.48.0 sync; neither cap is above the base."
   ],
-  "maxBootBytes": 1598045,
-  "maxBootBrotliBytes": 392322,
+  "maxBootBytes": 1580000,
+  "maxBootBrotliBytes": 392000,
   "forbiddenBootPackages": [
     "@dnd-kit/accessibility",
     "@dnd-kit/core",
@@ -219,33 +219,57 @@
     "../../packages/plugin-build/src/generated/zod-runtime.generated.ts": [
       "boot"
     ],
-    "src/lib/plugin-radix-runtime.ts": ["boot"],
+    "src/lib/plugin-radix-runtime.ts": [
+      "boot"
+    ],
     "../../plugins/composer/src/mentions/pasted-thread-links.ts": [
       "boot",
       "ThreadPage",
       "NewThreadPage",
       "PluginFrontend"
     ],
-    "src/components/dialogs/ThreadDeleteDialog.tsx": ["boot"],
-    "src/components/notifications/NotificationCenterView.tsx": ["boot"],
-    "src/components/device-handoff/DeviceHandoffSheet.tsx": ["boot"],
-    "src/components/dialogs/ProviderCliInstallLogDialog.tsx": ["boot"],
-    "src/views/AuthCallbackView.tsx": ["boot"],
-    "src/components/tools/ResourceSidebar.tsx": ["boot"],
-    "src/components/settings/SettingsSidebar.tsx": ["boot"],
+    "src/components/dialogs/ThreadDeleteDialog.tsx": [
+      "boot"
+    ],
+    "src/components/notifications/NotificationCenterView.tsx": [
+      "boot"
+    ],
+    "src/components/device-handoff/DeviceHandoffSheet.tsx": [
+      "boot"
+    ],
+    "src/components/dialogs/ProviderCliInstallLogDialog.tsx": [
+      "boot"
+    ],
+    "src/views/AuthCallbackView.tsx": [
+      "boot"
+    ],
+    "src/components/tools/ResourceSidebar.tsx": [
+      "boot"
+    ],
+    "src/components/settings/SettingsSidebar.tsx": [
+      "boot"
+    ],
     "src/components/dialogs/RemotePathBrowser.tsx": [
       "boot",
       "ThreadPage",
       "NewThreadPage"
     ],
-    "src/lib/plugin-sdk-hooks.ts": ["boot"],
-    "src/lib/plugin-sidebar-hooks.ts": ["boot"],
+    "src/lib/plugin-sdk-hooks.ts": [
+      "boot"
+    ],
+    "src/lib/plugin-sidebar-hooks.ts": [
+      "boot"
+    ],
     "src/components/promptbox/MicrophonePreferences.tsx": [
       "boot",
       "ThreadPage",
       "NewThreadPage"
     ],
-    "src/components/code/BbDiff.tsx": ["boot", "ThreadPage", "NewThreadPage"],
+    "src/components/code/BbDiff.tsx": [
+      "boot",
+      "ThreadPage",
+      "NewThreadPage"
+    ],
     "src/components/code/BbSourceCode.tsx": [
       "boot",
       "ThreadPage",
@@ -301,8 +325,12 @@
       "ThreadPage",
       "NewThreadPage"
     ],
-    "src/lib/themes/conductor.ts": ["boot"],
-    "src/lib/themes/conductor-black.ts": ["boot"],
+    "src/lib/themes/conductor.ts": [
+      "boot"
+    ],
+    "src/lib/themes/conductor-black.ts": [
+      "boot"
+    ],
     "src/components/dialogs/ProjectPathDialog.tsx": [
       "boot",
       "ThreadPage",
@@ -350,7 +378,10 @@
       "NewThreadPage",
       "PluginFrontend"
     ],
-    "src/views/RootComposeView.tsx": ["boot", "ThreadPage"],
+    "src/views/RootComposeView.tsx": [
+      "boot",
+      "ThreadPage"
+    ],
     "src/views/RootComposePanelTabContent.tsx": [
       "boot",
       "NewThreadPage",
@@ -380,13 +411,29 @@
       "boot",
       "PluginFrontend"
     ],
-    "src/components/plugin/PluginBranchPicker.tsx": ["boot", "PluginFrontend"],
-    "src/components/ui/image-lightbox.tsx": ["boot", "PluginFrontend"],
+    "src/components/plugin/PluginBranchPicker.tsx": [
+      "boot",
+      "PluginFrontend"
+    ],
+    "src/components/ui/image-lightbox.tsx": [
+      "boot",
+      "PluginFrontend"
+    ],
     "../../packages/shared-ui/src/components/ui/icon-extended.tsx": [
       "boot",
       "NewThreadPage",
       "PluginFrontend",
       "ThreadPage"
+    ],
+    "src/hooks/useVoiceInput.ts": [
+      "boot",
+      "NewThreadPage",
+      "PluginFrontend"
+    ],
+    "src/components/pickers/ModelReasoningPickerBody.tsx": [
+      "boot",
+      "NewThreadPage",
+      "PluginFrontend"
     ]
   },
   "onDemandPackages": {
@@ -398,8 +445,8 @@
   },
   "routeClosures": {
     "PluginFrontend": {
-      "maxBytes": 281000,
-      "maxBrotliBytes": 100000,
+      "maxBytes": 267000,
+      "maxBrotliBytes": 95000,
       "forbiddenPackages": [
         "@radix-ui/react-hover-card",
         "@radix-ui/react-menubar",
@@ -454,8 +501,8 @@
       ]
     },
     "NewThreadPage": {
-      "maxBytes": 670000,
-      "maxBrotliBytes": 230000,
+      "maxBytes": 645000,
+      "maxBrotliBytes": 220000,
       "forbiddenPackages": [
         "@dnd-kit/accessibility",
         "@dnd-kit/core",
@@ -495,5 +542,10 @@
     "../../packages/server-contract/src/thread-timeline.ts",
     "../../packages/domain/src/provider-event.ts",
     "../../packages/domain/src/pending-interactions.ts"
-  ]
+  ],
+  "forbiddenChunkPackages": {
+    "assets/boot-vendor": [
+      "@hugeicons/core-free-icons"
+    ]
+  }
 }

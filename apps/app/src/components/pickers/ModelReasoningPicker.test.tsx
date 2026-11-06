@@ -37,6 +37,7 @@ import {
   ModelReasoningPicker,
   type ModelReasoningPickerHandoff,
 } from "./ModelReasoningPicker";
+import { ModelReasoningPickerBody } from "./ModelReasoningPickerBodySplit";
 import { ModelReasoningMenu } from "./ModelReasoningMenuSplit";
 import type { PickerOption } from "./OptionPicker";
 import type { ProviderPickerOption } from "./model-brand-prefix";
@@ -301,7 +302,40 @@ afterEach(() => {
 });
 
 describe("ModelReasoningPicker", () => {
-  beforeAll(() => ModelReasoningMenu.preload());
+  beforeAll(() =>
+    Promise.all([
+      ModelReasoningMenu.preload(),
+      ModelReasoningPickerBody.preload(),
+    ]),
+  );
+
+  it("keeps closed provider shortcuts in the active handoff before the menu mounts", () => {
+    const onStart = vi.fn();
+    const onSelect = vi.fn();
+    const { onSelectedProviderChange } = renderPicker({
+      handoff: {
+        active: true,
+        sourceProviderId: "codex",
+        onStart,
+        onExit: vi.fn(),
+        onSelect,
+      },
+    });
+    const trigger = screen.getByRole("button", {
+      name: "Provider, model and reasoning",
+    });
+    act(() => {
+      expect(
+        commandHandlers.get("modelPicker.cycleProvider")?.({ target: trigger }),
+      ).toBe(true);
+    });
+    expect(onStart).toHaveBeenCalledTimes(1);
+    expect(onSelectedProviderChange).not.toHaveBeenCalled();
+    act(() => {
+      commandHandlers.get("modelPicker.cycleModel")?.({ target: trigger });
+    });
+    expect(onSelect).not.toHaveBeenCalled();
+  });
 
   it.each([
     ["ArrowRight", "medium", "high"],
@@ -1368,7 +1402,12 @@ describe("buildModelNavRows", () => {
 });
 
 describe("ModelReasoningPicker service tiers", () => {
-  beforeAll(() => ModelReasoningMenu.preload());
+  beforeAll(() =>
+    Promise.all([
+      ModelReasoningMenu.preload(),
+      ModelReasoningPickerBody.preload(),
+    ]),
+  );
   afterEach(() => setPluginAssetIcons(new Map()));
 
   const fast = { id: "fast", label: "Fast", description: "1.5x speed" };
@@ -1667,7 +1706,10 @@ it("uses the persisted model when the home selection is still loading", () => {
   act(() => result.current.setValue("gpt-5.5"));
   try {
     renderPicker({ modelValue: "", modelOptions: [], modelIsLoading: true });
-    expect(screen.getByRole("button", { name: "Provider, model and reasoning" }).textContent).toContain("5.5");
+    expect(
+      screen.getByRole("button", { name: "Provider, model and reasoning" })
+        .textContent,
+    ).toContain("5.5");
   } finally {
     act(() => result.current.setValue(""));
   }
@@ -1678,47 +1720,107 @@ it.each([
   [true, false],
   [false, true],
   [true, true],
-])("keeps model identity and chevron with compact=%s pending=%s", (compact, modelIsLoading) => {
-  renderPicker({ compact, modelIsLoading, modelValue: "gpt-5.5" });
-  const trigger = screen.getByRole("button", { name: "Provider, model and reasoning" });
-  expect(trigger.textContent).toContain("5.5");
-  expect(trigger.querySelector('[data-icon="ChevronDown"]')).not.toBeNull();
-  expect(trigger.querySelector('[data-icon="Bot"]')).not.toBeNull();
-  expect(trigger.querySelector('[data-icon="Zap"]')).toBeNull();
-});
+])(
+  "keeps model identity and chevron with compact=%s pending=%s",
+  (compact, modelIsLoading) => {
+    renderPicker({ compact, modelIsLoading, modelValue: "gpt-5.5" });
+    const trigger = screen.getByRole("button", {
+      name: "Provider, model and reasoning",
+    });
+    expect(trigger.textContent).toContain("5.5");
+    expect(trigger.querySelector('[data-icon="ChevronDown"]')).not.toBeNull();
+    expect(trigger.querySelector('[data-icon="Bot"]')).not.toBeNull();
+    expect(trigger.querySelector('[data-icon="Zap"]')).toBeNull();
+  },
+);
 
-it.each([false, true])("keeps provider, model and effort in compact accessible names while pending=%s", (modelIsLoading) => {
-  renderPicker({ compact: true, compactIconOnly: true, modelIsLoading, modelValue: "gpt-5.5" });
-  const trigger = screen.getByRole("button", { name: "Provider, model and reasoning: Codex: GPT-5.5 · Medium reasoning" });
-  expect(trigger.querySelector('[data-icon="ChevronDown"]')).not.toBeNull();
-});
+it.each([false, true])(
+  "keeps provider, model and effort in compact accessible names while pending=%s",
+  (modelIsLoading) => {
+    renderPicker({
+      compact: true,
+      compactIconOnly: true,
+      modelIsLoading,
+      modelValue: "gpt-5.5",
+    });
+    const trigger = screen.getByRole("button", {
+      name: "Provider, model and reasoning: Codex: GPT-5.5 · Medium reasoning",
+    });
+    expect(trigger.querySelector('[data-icon="ChevronDown"]')).not.toBeNull();
+  },
+);
 
-it.each([false, true])("keeps the selected tier cue with compact=%s", (compact) => {
-  renderPicker({
-    compact,
-    compactIconOnly: compact,
-    serviceTierOptions: [{ id: "fast", label: "Fast" }],
-    serviceTierValue: "fast",
-  });
-  const trigger = screen.getByRole("button", { name: /^Provider, model and reasoning/ });
-  expect(trigger.querySelector('[data-icon="Zap"]')).not.toBeNull();
-  expect(trigger.querySelector('[data-icon="Zap"]')?.classList.contains("size-3.5")).toBe(true);
-  expect(trigger.querySelector('[data-icon="Zap"]')?.classList.contains("fill-current")).toBe(true);
-  expect(trigger.querySelector('[data-icon="Zap"]')?.classList.contains("text-subtle-foreground")).toBe(true);
-  expect(trigger.querySelector('[data-icon="ChevronDown"]')).not.toBeNull();
-});
+it.each([false, true])(
+  "keeps the selected tier cue with compact=%s",
+  (compact) => {
+    renderPicker({
+      compact,
+      compactIconOnly: compact,
+      serviceTierOptions: [{ id: "fast", label: "Fast" }],
+      serviceTierValue: "fast",
+    });
+    const trigger = screen.getByRole("button", {
+      name: /^Provider, model and reasoning/,
+    });
+    expect(trigger.querySelector('[data-icon="Zap"]')).not.toBeNull();
+    expect(
+      trigger
+        .querySelector('[data-icon="Zap"]')
+        ?.classList.contains("size-3.5"),
+    ).toBe(true);
+    expect(
+      trigger
+        .querySelector('[data-icon="Zap"]')
+        ?.classList.contains("fill-current"),
+    ).toBe(true);
+    expect(
+      trigger
+        .querySelector('[data-icon="Zap"]')
+        ?.classList.contains("text-subtle-foreground"),
+    ).toBe(true);
+    expect(trigger.querySelector('[data-icon="ChevronDown"]')).not.toBeNull();
+  },
+);
 
 it("keeps provider and effort in the compact name before a model resolves", () => {
-  renderPicker({ compact: true, compactIconOnly: true, modelIsLoading: true, modelValue: "", modelOptions: [] });
-  expect(screen.getByRole("button", { name: "Provider, model and reasoning: Codex: Model · Medium reasoning" })).not.toBeNull();
+  renderPicker({
+    compact: true,
+    compactIconOnly: true,
+    modelIsLoading: true,
+    modelValue: "",
+    modelOptions: [],
+  });
+  expect(
+    screen.getByRole("button", {
+      name: "Provider, model and reasoning: Codex: Model · Medium reasoning",
+    }),
+  ).not.toBeNull();
 });
 
 it("uses Model for an unresolved compact picker without a provider", () => {
-  renderPicker({ compact: true, compactIconOnly: true, selectedProviderId: "", pickerProviderOptions: [], modelValue: "", modelOptions: [], modelIsLoading: true });
+  renderPicker({
+    compact: true,
+    compactIconOnly: true,
+    selectedProviderId: "",
+    pickerProviderOptions: [],
+    modelValue: "",
+    modelOptions: [],
+    modelIsLoading: true,
+  });
   expect(screen.getByRole("button", { name: "Model" })).not.toBeNull();
 });
 
 it("omits an empty provider segment from the resolved compact name", () => {
-  renderPicker({ compact: true, compactIconOnly: true, selectedProviderId: "", pickerProviderOptions: [], modelValue: "gpt-5.5" });
-  expect(screen.getByRole("button", { name: "Provider, model and reasoning: GPT-5.5 · Medium reasoning" })).not.toBeNull();
+  renderPicker({
+    compact: true,
+    compactIconOnly: true,
+    selectedProviderId: "",
+    pickerProviderOptions: [],
+    modelValue: "gpt-5.5",
+  });
+  expect(
+    screen.getByRole("button", {
+      name: "Provider, model and reasoning: GPT-5.5 · Medium reasoning",
+    }),
+  ).not.toBeNull();
 });

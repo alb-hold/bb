@@ -42,7 +42,6 @@ import FileEmpty02Icon from "@hugeicons/core-free-icons/FileEmpty02Icon";
 import FileQuestionMarkIcon from "@hugeicons/core-free-icons/FileQuestionMarkIcon";
 import Folder02Icon from "@hugeicons/core-free-icons/Folder02Icon";
 import FolderEditIcon from "@hugeicons/core-free-icons/FolderEditIcon";
-import FolderRemoveIcon from "@hugeicons/core-free-icons/FolderRemoveIcon";
 import GitForkIcon from "@hugeicons/core-free-icons/GitForkIcon";
 import GitMergeIcon from "@hugeicons/core-free-icons/GitMergeIcon";
 import GitPullRequestClosedIcon from "@hugeicons/core-free-icons/GitPullRequestClosedIcon";
@@ -70,12 +69,10 @@ import MoveToIcon from "@hugeicons/core-free-icons/MoveToIcon";
 import News01Icon from "@hugeicons/core-free-icons/News01Icon";
 import PackageReceiveIcon from "@hugeicons/core-free-icons/PackageReceiveIcon";
 import PinOffIcon from "@hugeicons/core-free-icons/PinOffIcon";
-import Plug02Icon from "@hugeicons/core-free-icons/Plug02Icon";
 import PlusMinusSquare01Icon from "@hugeicons/core-free-icons/PlusMinusSquare01Icon";
 import PuzzleIcon from "@hugeicons/core-free-icons/PuzzleIcon";
 import Refresh01Icon from "@hugeicons/core-free-icons/Refresh01Icon";
 import RepeatIcon from "@hugeicons/core-free-icons/RepeatIcon";
-import SecurityCheckIcon from "@hugeicons/core-free-icons/SecurityCheckIcon";
 import SentIcon from "@hugeicons/core-free-icons/SentIcon";
 import SidebarBottomIcon from "@hugeicons/core-free-icons/SidebarBottomIcon";
 import SmartPhone01Icon from "@hugeicons/core-free-icons/SmartPhone01Icon";
@@ -259,7 +256,6 @@ export const EXTENDED_ICON_MAP: ExtendedIconMap = {
   FileText: File01Icon,
   FolderOpen: Folder02Icon,
   FolderEdit: FolderEditIcon,
-  FolderMinus: FolderRemoveIcon,
   Fork: GitForkIcon,
   GitMerge: GitMergeIcon,
   GitPullRequest: GitPullRequestIcon,
@@ -287,10 +283,8 @@ export const EXTENDED_ICON_MAP: ExtendedIconMap = {
   Palette: PaletteStrokeRoundedIcon,
   PanelBottom: SidebarBottomIcon,
   PinOff: PinOffIcon,
-  Plug02: Plug02Icon,
   Puzzle: PuzzleIcon,
   Repeat: RepeatIcon,
-  SecurityCheck: SecurityCheckIcon,
   RotateCcw: Refresh01Icon,
   Rows2: LayoutTwoRowIcon,
   Sent: SentIcon,

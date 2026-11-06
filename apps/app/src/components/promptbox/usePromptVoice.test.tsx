@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { transcribeVoiceInput } from "@/lib/api";
 import { useVoiceInput } from "@/hooks/useVoiceInput";
 import type { PromptBoxHandle } from "./ComposerBox";
-import { usePromptVoice } from "./usePromptVoice";
+import { usePromptVoiceRuntime as usePromptVoice } from "./usePromptVoiceRuntime";
 import type { PromptDraftState } from "@bb/client-core";
 
 vi.mock("@/lib/api", () => ({

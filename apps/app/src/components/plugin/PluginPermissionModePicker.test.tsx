@@ -158,7 +158,7 @@ describe("PluginPermissionModePicker", () => {
       screen.getByRole("button", { name: "Permissions" }),
       { button: 0 },
     );
-    const full = screen.getByRole("menuitem", { name: /Full Access/ });
+    const full = await screen.findByRole("menuitem", { name: /Full Access/ });
     expect(full.getAttribute("data-disabled")).not.toBeNull();
     expect(full.textContent).toContain("selected machine's permission limit");
   });

@@ -186,6 +186,7 @@ export interface PromptVoiceConfig extends Omit<
   "unsupportedMessage"
 > {
   unsupportedReason?: VoiceUnsupportedReason | null;
+  runtime?: ReactNode;
 }
 
 export interface PromptBoxSubmissionConfig extends Omit<
@@ -766,6 +767,7 @@ export function ComposerBox(props: ComposerBoxProps) {
   const Composer = registration.component;
   return (
     <ComposerRendererHostProvider {...props}>
+      {props.voice?.runtime}
       <div data-composer-box="" className="w-full">
         <PluginSlotMount
           key={`${registration.pluginId}/${registration.id}/${registration.generation}/${attempt}`}

@@ -6,6 +6,9 @@ it("keeps hidden panels, SDK UI, menu bodies and extended glyphs outside their s
   const app = resolve(import.meta.dirname, "..");
   const entries = {
     home: "src/views/RootComposeView.tsx",
+    model: "src/components/pickers/ModelReasoningPicker.tsx",
+    voice: "src/components/promptbox/usePromptVoice.tsx",
+    boot: "src/main.tsx",
     sdk: "src/lib/plugin-sdk-app-impl.tsx",
     thread: "src/components/thread/ThreadActionsMenu.tsx",
     picker: "src/components/pickers/OptionPicker.tsx",
@@ -34,6 +37,7 @@ it("keeps hidden panels, SDK UI, menu bodies and extended glyphs outside their s
     outdir: "startup-graph",
     loader: {
       ".css": "empty",
+      ".md": "text",
       ".svg": "empty",
       ".png": "empty",
       ".woff2": "empty",
@@ -55,7 +59,20 @@ it("keeps hidden panels, SDK UI, menu bodies and extended glyphs outside their s
     return seen;
   };
   const forbidden = {
-    home: ["src/views/RootComposePanelTabContent.tsx"],
+    home: [
+      "src/views/RootComposePanelTabContent.tsx",
+      "src/hooks/useVoiceInput.ts",
+      "src/components/pickers/ModelReasoningPickerBody.tsx",
+    ],
+    model: ["src/components/pickers/ModelReasoningPickerBody.tsx"],
+    voice: [
+      "src/hooks/useVoiceInput.ts",
+      "src/components/promptbox/usePromptVoiceRuntime.tsx",
+    ],
+    boot: [
+      "src/hooks/useVoiceInput.ts",
+      "src/components/pickers/ModelReasoningPickerBody.tsx",
+    ],
     sdk: [
       "src/components/plugin/PluginNewThreadComposer.tsx",
       "src/components/plugin/PluginProviderModelPicker.tsx",

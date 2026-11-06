@@ -39,6 +39,12 @@ export const sharedViteConfig = {
         advancedChunks: {
           groups: [
             {
+              name: "boot-icons",
+              test: /@hugeicons[\/]core-free-icons/,
+              tags: ["$initial"],
+              priority: 3,
+            },
+            {
               name: "boot-vendor",
               test: /node_modules/,
               tags: ["$initial"],

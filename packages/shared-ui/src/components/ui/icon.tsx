@@ -1,3 +1,6 @@
+import Plug02Icon from "@hugeicons/core-free-icons/Plug02Icon";
+import SecurityCheckIcon from "@hugeicons/core-free-icons/SecurityCheckIcon";
+import FolderRemoveIcon from "@hugeicons/core-free-icons/FolderRemoveIcon";
 import UserIcon from "@hugeicons/core-free-icons/UserIcon";
 import SquareIcon from "@hugeicons/core-free-icons/SquareIcon";
 import PlusSignIcon from "@hugeicons/core-free-icons/PlusSignIcon";
@@ -177,6 +180,9 @@ const SectionMoveStrokeRoundedIcon: IconSvgElement = [
 ];
 
 const CORE_ICON_MAP = {
+  Plug02: Plug02Icon,
+  SecurityCheck: SecurityCheckIcon,
+  FolderMinus: FolderRemoveIcon,
   UserRound: UserIcon,
   Square: SquareIcon,
   Plus: PlusSignIcon,

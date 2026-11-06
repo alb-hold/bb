@@ -985,6 +985,9 @@ describe("PluginNewThreadComposer seeding", () => {
     await registerComposerPlugin();
     const voiceInput = await import("@/hooks/useVoiceInput");
     const voice = vi.spyOn(voiceInput, "useVoiceInput");
+    const { preloadPromptVoiceRuntime } =
+      await import("@/components/promptbox/usePromptVoice");
+    await preloadPromptVoiceRuntime();
     const submitted = vi.fn();
     render(
       <Provider>

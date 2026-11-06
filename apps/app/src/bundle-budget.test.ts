@@ -522,21 +522,84 @@ describe("split boundaries", () => {
 });
 
 describe("workspace module boot boundaries", () => {
-  it.each([true, false])("rejects a strict schema in boot: %s", async (eager) => {
-    const module = "../../packages/server-contract/src/api/threads.ts";
-    const input = [
-      chunk("assets/index.js", { isEntry: true, imports: eager ? ["assets/schema.js"] : [] }),
-      chunk("assets/schema.js", { modules: { [resolve(import.meta.dirname, "../../../packages/server-contract/src/api/threads.ts")]: { renderedLength: 100 } } }),
-    ];
-    const stats = computeBundleStats(input, {}, () => {});
-    if (stats === null) throw new Error("missing stats");
-    const result = await runCheck(await writeFixture({
-      maxBootBytes: 10000,
-      maxBootBrotliBytes: 1000,
-      forbiddenBootPackages: [],
-      forbiddenBootModules: [module],
-    }, stats, input.map((entry) => entry.fileName)));
-    expect(result.code).toBe(eager ? 1 : 0);
-    if (eager) expect(result.output).toContain(`${module} is eager in boot`);
-  });
+  it.each([true, false])(
+    "rejects a strict schema in boot: %s",
+    async (eager) => {
+      const module = "../../packages/server-contract/src/api/threads.ts";
+      const input = [
+        chunk("assets/index.js", {
+          isEntry: true,
+          imports: eager ? ["assets/schema.js"] : [],
+        }),
+        chunk("assets/schema.js", {
+          modules: {
+            [resolve(
+              import.meta.dirname,
+              "../../../packages/server-contract/src/api/threads.ts",
+            )]: { renderedLength: 100 },
+          },
+        }),
+      ];
+      const stats = computeBundleStats(input, {}, () => {});
+      if (stats === null) throw new Error("missing stats");
+      const result = await runCheck(
+        await writeFixture(
+          {
+            maxBootBytes: 10000,
+            maxBootBrotliBytes: 1000,
+            forbiddenBootPackages: [],
+            forbiddenBootModules: [module],
+          },
+          stats,
+          input.map((entry) => entry.fileName),
+        ),
+      );
+      expect(result.code).toBe(eager ? 1 : 0);
+      if (eager) expect(result.output).toContain(`${module} is eager in boot`);
+    },
+  );
+});
+
+describe("boot vendor glyph boundary", () => {
+  it.each([true, false])(
+    "rejects glyphs promoted into boot-vendor: %s",
+    async (promoted) => {
+      const input = [
+        chunk("assets/index.js", {
+          isEntry: true,
+          imports: ["assets/boot-vendor.js", "assets/boot-icons.js"],
+        }),
+        chunk("assets/boot-vendor.js", {
+          moduleIds: promoted
+            ? ["/repo/node_modules/@hugeicons/core-free-icons/index.js"]
+            : ["/repo/node_modules/react/index.js"],
+        }),
+        chunk("assets/boot-icons.js", {
+          moduleIds: promoted
+            ? []
+            : ["/repo/node_modules/@hugeicons/core-free-icons/index.js"],
+        }),
+      ];
+      const stats = computeBundleStats(input, {}, () => {});
+      if (stats === null) throw new Error("missing stats");
+      const result = await runCheck(
+        await writeFixture(
+          {
+            ...passingBudget,
+            routeClosures: {},
+            forbiddenChunkPackages: {
+              "assets/boot-vendor": ["@hugeicons/core-free-icons"],
+            },
+          },
+          stats,
+          input.map((entry) => entry.fileName),
+        ),
+      );
+      expect(result.code).toBe(promoted ? 1 : 0);
+      if (promoted)
+        expect(result.output).toContain(
+          "@hugeicons/core-free-icons must stay outside assets/boot-vendor",
+        );
+    },
+  );
 });
