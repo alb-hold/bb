@@ -69,7 +69,7 @@ export function traceStartupReactUpdates() {
       if (typeof original[name] !== "function") continue;
       traced[name] = (...args: unknown[]) => {
         const [state, dispatch] = original[name](...args);
-        return [state, setter(dispatch, stack())];
+        return [state, setter(dispatch, name)];
       };
     }
     if (typeof original.useSyncExternalStore === "function")
@@ -78,7 +78,7 @@ export function traceStartupReactUpdates() {
         read: Function,
         server: Function | undefined,
       ) => {
-        const owner = stack();
+        const owner = read.toString().slice(0, 400);
         return original.useSyncExternalStore(
           subscriber(subscribe, owner),
           getter(read, owner),
