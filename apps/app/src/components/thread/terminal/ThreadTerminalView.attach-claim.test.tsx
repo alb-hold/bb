@@ -1,0 +1,316 @@
+// @vitest-environment jsdom
+
+import {
+  act,
+  cleanup,
+  render,
+} from "@testing-library/react";
+import * as rendererModule from "./terminal-webgl-renderer";
+import { FitAddon } from "@xterm/addon-fit";
+import "@xterm/xterm";
+import { TerminalWebSocketTransport } from "@bb/client-core";
+import { MemoryRouter } from "react-router-dom";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { makeTerminalSession } from "@/test/fixtures/terminal-sessions";
+import { wsManager } from "@/lib/ws";
+import { AppCommandProvider } from "@/components/commands/AppCommandProvider";
+import { ThreadTerminalView } from "./ThreadTerminalView";
+
+const testState = vi.hoisted(() => ({
+  calls: [] as string[],
+  clearAttention: vi.fn(),
+  deferSocketOpen: false,
+  mediaQueryListeners: new Set<() => void>(),
+  touchEnabled: false,
+  toastError: vi.fn(),
+  sockets: [] as TestTerminalSocket[],
+  socketCreated: null as (() => void) | null,
+  socketMessages: [] as string[],
+  socketUrls: [] as string[],
+  screen: vi.fn(),
+  output: vi.fn(),
+}));
+
+class TestTerminalSocket {
+  readonly protocol = "bb.terminal.resize-echo.v1";
+  static readonly CLOSED = 3;
+  static readonly CONNECTING = 0;
+  static readonly OPEN = 1;
+  bufferedAmount = 0;
+  onclose: ((event: CloseEvent) => void) | null = null;
+  onerror: ((event: Event) => void) | null = null;
+  onmessage: ((event: MessageEvent) => void) | null = null;
+  onopen: ((event: Event) => void) | null = null;
+  readyState = TestTerminalSocket.CONNECTING;
+  readonly opened: Promise<void>;
+  readonly sent: string[] = [];
+  private resolveOpened!: () => void;
+
+  constructor(url: string) {
+    testState.socketUrls.push(url);
+    testState.sockets.push(this);
+    testState.socketCreated?.();
+    testState.socketCreated = null;
+    this.opened = new Promise((resolve) => {
+      this.resolveOpened = resolve;
+    });
+    if (!testState.deferSocketOpen) {
+      queueMicrotask(() => this.open());
+    }
+  }
+
+  open(): void {
+    this.readyState = TestTerminalSocket.OPEN;
+    this.onopen?.(new Event("open"));
+    this.resolveOpened();
+  }
+
+  close(): void {
+    this.readyState = TestTerminalSocket.CLOSED;
+  }
+
+  disconnect(): void {
+    this.readyState = TestTerminalSocket.CLOSED;
+    this.onclose?.({ code: 1006, reason: "test disconnect" } as CloseEvent);
+  }
+
+  send(data: string): void {
+    this.sent.push(data);
+    testState.socketMessages.push(data);
+  }
+
+  receive(message: unknown): void {
+    this.onmessage?.(
+      new MessageEvent("message", { data: JSON.stringify(message) }),
+    );
+  }
+}
+
+vi.mock("@/lib/sdk", () => ({
+  sdk: {
+    terminals: {
+      experimental_screen: testState.screen,
+      output: testState.output,
+      experimental_attention: {
+        clear: testState.clearAttention,
+      },
+    },
+  },
+}));
+
+vi.mock("@/components/ui/app-toast", () => ({
+  appToast: { error: testState.toastError },
+}));
+
+vi.mock("@bb/shared-ui/hooks/use-media-query", async (importOriginal) => {
+  const { useSyncExternalStore } = await import("react");
+  const actual =
+    await importOriginal<
+      typeof import("@bb/shared-ui/hooks/use-media-query")
+    >();
+  return {
+    ...actual,
+    useMediaQuery: (query: string) => {
+      const touchEnabled = useSyncExternalStore(
+        (notify) => {
+          testState.mediaQueryListeners.add(notify);
+          return () => testState.mediaQueryListeners.delete(notify);
+        },
+        () => testState.touchEnabled,
+        () => false,
+      );
+      const actualValue = actual.useMediaQuery(query);
+      return query === "(pointer: coarse)" ? touchEnabled : actualValue;
+    },
+  };
+});
+
+vi.mock("@/hooks/queries/system-queries", () => ({
+  useSystemConfig: () => ({
+    data: {
+      generalSettings: { showKeyboardHints: false },
+      keybindings: [],
+    },
+  }),
+}));
+
+vi.mock("@/hooks/usePluginCommandBindings", () => ({
+  usePluginCommandBindings: () => ({
+    commands: [],
+    defaults: [],
+    keybindings: [
+      {
+        command: "thread.search",
+        desktopOnly: false,
+        shortcut: {
+          key: "k",
+          mod: false,
+          meta: false,
+          control: true,
+          alt: false,
+          shift: false,
+        },
+        when: { all: ["mainSurface"], none: ["terminalFocus"] },
+      },
+    ],
+  }),
+}));
+
+afterEach(() => {
+  vi.useRealTimers();
+  cleanup();
+  sessionStorage.removeItem("bb:terminal-viewport:term_mobile_paste");
+  sessionStorage.removeItem("bb:terminal-viewport:term_existing_client_grid");
+  Reflect.set(wsManager, "deviceHandoffClientToken", null);
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+  if (originalClipboardDescriptor === undefined) {
+    Reflect.deleteProperty(navigator, "clipboard");
+  } else {
+    Object.defineProperty(navigator, "clipboard", originalClipboardDescriptor);
+  }
+  testState.calls.length = 0;
+  testState.sockets.length = 0;
+  testState.socketCreated = null;
+  testState.deferSocketOpen = false;
+  testState.socketMessages.length = 0;
+  testState.socketUrls.length = 0;
+  testState.clearAttention.mockReset();
+  testState.screen.mockReset();
+  testState.output.mockReset();
+  testState.toastError.mockReset();
+  testState.touchEnabled = false;
+  testState.mediaQueryListeners.clear();
+});
+
+const originalClipboardDescriptor = Object.getOwnPropertyDescriptor(
+  navigator,
+  "clipboard",
+);
+
+vi.setConfig({ testTimeout: 30_000 });
+
+
+describe("native terminal attach claim timing", () => {
+  it.each([44, 125])(
+    "claims the fitted %i-column grid within 100 ms of attach while the renderer is pending",
+    async (cols) => {
+      vi.stubGlobal("WebSocket", TestTerminalSocket);
+      const focusGuard = render(<button>Other input</button>);
+      focusGuard.getByRole("button").focus();
+      vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
+        measureText: (text: string) => ({ width: text.length * 8 }),
+      } as unknown as CanvasRenderingContext2D);
+      for (const dimension of [
+        "clientWidth",
+        "offsetWidth",
+        "clientHeight",
+        "offsetHeight",
+      ] as const) {
+        vi.spyOn(HTMLElement.prototype, dimension, "get").mockReturnValue(354);
+      }
+      vi.spyOn(
+        rendererModule,
+        "loadOptionalTerminalWebglAddon",
+      ).mockReturnValue(new Promise(() => undefined));
+      vi.spyOn(FitAddon.prototype, "proposeDimensions").mockReturnValue({
+        cols,
+        rows: 36,
+      });
+      vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
+        width: 354,
+        height: 504,
+        top: 0,
+        left: 0,
+        right: 354,
+        bottom: 504,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      });
+      const frames = new Map<number, FrameRequestCallback>();
+      let frameId = 0;
+      vi.spyOn(window, "requestAnimationFrame").mockImplementation(
+        (callback) => {
+          frames.set(++frameId, callback);
+          return frameId;
+        },
+      );
+      vi.spyOn(window, "cancelAnimationFrame").mockImplementation((id) => {
+        frames.delete(id);
+      });
+      let resizeAt: number | undefined;
+      const originalSendResize = TerminalWebSocketTransport.prototype.sendResize;
+      const sendResize = vi.spyOn(
+        TerminalWebSocketTransport.prototype,
+        "sendResize",
+      ).mockImplementation(function (this: TerminalWebSocketTransport, cols, rows, claim) {
+        if (claim) resizeAt ??= Date.now();
+        originalSendResize.call(this, cols, rows, claim);
+      });
+      const session = makeTerminalSession({
+        id: "term_existing_client_grid",
+        threadId: null,
+        status: "running",
+      });
+      vi.useFakeTimers();
+      testState.deferSocketOpen = true;
+      const startTransport = vi.spyOn(
+        TerminalWebSocketTransport.prototype,
+        "start",
+      );
+      render(
+        <MemoryRouter>
+          <AppCommandProvider>
+            <div data-native-terminal-thread="codex">
+              <ThreadTerminalView
+                autoFocus={false}
+                isPanelOpen
+                session={session}
+              />
+            </div>
+          </AppCommandProvider>
+        </MemoryRouter>,
+      );
+      await vi.waitFor(() => expect(startTransport).toHaveBeenCalled(), { interval: 1 });
+      const attachedAt = Date.now();
+      let claimAt: number | undefined;
+      const socket = testState.sockets[0]!;
+      const send = socket.send.bind(socket);
+      vi.spyOn(socket, "send").mockImplementation((data) => {
+        if (JSON.parse(data).claim) claimAt ??= Date.now();
+        send(data);
+      });
+      socket.open();
+      socket.receive({
+        type: "attached",
+        session,
+        replayStartSeq: 0,
+        nextSeq: 0,
+      });
+      for (let frame = 0; frame < 40; frame += 1) {
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(16);
+          const pending = [...frames.values()];
+          frames.clear();
+          for (const callback of pending) callback(performance.now());
+        });
+      }
+      const claims = socket.sent
+        .map((raw) => JSON.parse(raw))
+        .filter((message) => message.type === "resize");
+      console.info("P69 attach-to-claim", {
+        cols,
+        viewMilliseconds: resizeAt === undefined ? null : resizeAt - attachedAt,
+        wireMilliseconds: claimAt === undefined ? null : claimAt - attachedAt,
+      });
+      expect(sendResize.mock.calls.some((args) => args[2] === true)).toBe(true);
+      expect(resizeAt).toBeDefined();
+      expect(resizeAt! - attachedAt).toBeLessThanOrEqual(100);
+      expect(claimAt).toBe(resizeAt);
+      expect(claimAt! - attachedAt).toBeLessThanOrEqual(100);
+      expect(claims).toEqual([{ type: "resize", cols, rows: 36, claim: true }]);
+    },
+  );
+
+});
