@@ -22,7 +22,8 @@ import {
   type PluginBuildToolchain,
 } from "@bb/plugin-build";
 import { definePluginApp } from "../../../app/src/lib/plugin-app-definition.js";
-import { lazyRuntimeGroups } from "../../../app/src/lib/plugin-lazy-runtime-groups.js";
+import { radixRuntimeSlots } from "../../../app/src/lib/plugin-radix-runtime.js";
+import { zodRuntimeSlots } from "../../../../packages/plugin-build/src/generated/zod-runtime.generated.js";
 function testToolchain() {
   return resolvePluginBuildToolchain(join(tmpdir(), "bb-toolchain-unused"));
 }
@@ -343,16 +344,11 @@ describe("buildPluginApp", () => {
     const appRequire = createRequire(
       new URL("../../../app/package.json", import.meta.url),
     );
-    const hostModules: Record<string, unknown> = Object.assign(
-      { pluginSdkApp: { definePluginApp } },
-      ...(await Promise.all(
-        lazyRuntimeGroups
-          .filter((group) =>
-            group.slots.some((slot) => meta.runtimeSlots.includes(slot)),
-          )
-          .map((group) => group.load()),
-      )),
-    );
+    const hostModules: Record<string, unknown> = {
+      ...radixRuntimeSlots,
+      ...zodRuntimeSlots,
+      pluginSdkApp: { definePluginApp },
+    };
     const runtime = Object.fromEntries(
       meta.runtimeSlots.map((slot) => {
         const specifier = Object.entries(RUNTIME_SLOT_BY_SPECIFIER).find(
