@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { useEffect, useLayoutEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useLayoutEffect, useState } from "react";
 import {
   act,
   cleanup,
@@ -252,6 +252,41 @@ it("keeps a render failure local and retries the cached component", async () => 
     screen.getByRole("textbox", { name: "Recovered editor" }),
   ).toBeTruthy();
   expect(load).toHaveBeenCalledOnce();
+});
+
+it("contains a ready view's nested suspension without replacing its parent", async () => {
+  let release = () => {};
+  const ready = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const Child = lazy(async () => {
+    await ready;
+    return { default: () => <input aria-label="Nested editor" /> };
+  });
+  const Split = defineSplit({
+    id: "nested-suspension",
+    load: async () => () => <Child />,
+    loading: () => <p>Loading inside split</p>,
+    tier: "intent",
+  });
+  await Split.preload();
+  const parentFallback = vi.fn();
+  function ParentLoading() {
+    useLayoutEffect(parentFallback, []);
+    return <p>Whole page loading</p>;
+  }
+  render(
+    <Suspense fallback={<ParentLoading />}>
+      <p>Shell stays</p>
+      <Split />
+    </Suspense>,
+  );
+  expect(screen.getByText("Shell stays")).toBeTruthy();
+  expect(screen.getByText("Loading inside split")).toBeTruthy();
+  expect(parentFallback).not.toHaveBeenCalled();
+  await act(async () => release());
+  expect(screen.getByRole("textbox", { name: "Nested editor" })).toBeTruthy();
+  expect(parentFallback).not.toHaveBeenCalled();
 });
 
 it.each(["preload", "previous mount"])(

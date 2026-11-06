@@ -5,6 +5,7 @@ import {
 } from "./split-prefetch";
 import {
   Component,
+  Suspense,
   useEffect,
   useState,
   type ComponentType,
@@ -130,7 +131,9 @@ export function defineSplit<P extends object>({
         fallback={<ErrorView {...props} retry={retry} />}
       >
         {attempt.status === "ready" ? (
-          <attempt.View {...props} />
+          <Suspense fallback={<Loading {...props} />}>
+            <attempt.View {...props} />
+          </Suspense>
         ) : attempt.status === "failed" ? (
           <ErrorView {...props} retry={retry} />
         ) : (
