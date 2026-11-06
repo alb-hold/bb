@@ -509,6 +509,23 @@ describe("the Linux process-list visibility rule", () => {
     });
   });
 
+  it("inspects an unrelated readable same-user process without making the scan uncertain", async () => {
+    const proc = fakeProc({
+      self: { uid: 2000 },
+      worktreeUid: 2000,
+      processes: {
+        201: {
+          uid: 2000,
+          cwd: "/home/other",
+          exe: "/usr/bin/node",
+        },
+      },
+    });
+    await expect(scanLinux("/work/tree", proc, 4242)).resolves.toEqual({
+      status: "clear",
+    });
+  });
+
   it("is uncertain for an unreadable foreign regular-user cwd when it can reach the worktree", async () => {
     const proc = fakeProc({
       self: { uid: 1000 },

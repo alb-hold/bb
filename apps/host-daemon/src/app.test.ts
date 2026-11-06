@@ -475,6 +475,13 @@ describe("createHostDaemonApp", () => {
         errorCode: "path_in_use",
         errorMessage: expect.stringContaining(`Preserved entries: ${target}`),
       });
+      if (response.type !== "host-rpc.response" || response.ok)
+        throw new Error("Expected a failed host RPC response");
+      const returnedPaths = response.errorMessage
+        ?.split("Preserved entries: ")[1]
+        ?.replace(/\.$/u, "")
+        .split(", ");
+      expect(returnedPaths).toEqual([target]);
       await expect(
         fs.readFile(path.join(target, "late.txt"), "utf8"),
       ).resolves.toBe("retained");
