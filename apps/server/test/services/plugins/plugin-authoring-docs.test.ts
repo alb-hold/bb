@@ -377,6 +377,7 @@ const FRONTEND_SLOT_PROP_FIELDS = {
     "activeThreadId",
     "activeProjectId",
     "isCompactViewport",
+    "experimental_isVisible",
     "onNavigate",
     "searchQuery",
   ],
