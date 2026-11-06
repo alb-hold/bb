@@ -642,6 +642,21 @@ const hostDaemonTerminalOpenTargetSchema = z.discriminatedUnion("kind", [
 const hostDaemonTerminalOpenMessageSchema = z
   .object({
     type: z.literal("terminal.open"),
+    defaultColors: z
+      .object({
+        foreground: z.tuple([
+          z.number().int().min(0).max(255),
+          z.number().int().min(0).max(255),
+          z.number().int().min(0).max(255),
+        ]),
+        background: z.tuple([
+          z.number().int().min(0).max(255),
+          z.number().int().min(0).max(255),
+          z.number().int().min(0).max(255),
+        ]),
+      })
+      .strict()
+      .optional(),
     contributedEnv: z.array(hostDaemonContributedEnvEntrySchema).default([]),
     requestId: terminalRequestIdSchema,
     terminalId: terminalIdSchema,

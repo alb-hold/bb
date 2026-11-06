@@ -1031,6 +1031,47 @@ describe("public terminal routes", () => {
     ]);
   });
 
+  it("passes the native launch palette through to terminal.open", async () => {
+    const fixture = await createTerminalRouteFixture();
+    harnesses.push(fixture.harness);
+    const defaultColors = {
+      foreground: [220, 230, 240],
+      background: [25, 30, 35],
+    } satisfies import("@bb/domain").TerminalDefaultColors;
+    const opened = fixture.harness.deps.terminalSessions.createTerminal({
+      defaultColors,
+      payload: {
+        cols: 100,
+        rows: 30,
+        target: { kind: "thread", threadId: fixture.thread.id },
+      },
+    });
+    const message = await waitForDaemonMessage(fixture.socket);
+    if (message.type !== "terminal.open")
+      throw new Error("Expected terminal.open");
+    expect(message.defaultColors).toEqual(defaultColors);
+    acknowledgeTerminalOpen(fixture, message, "/tmp");
+    await opened;
+  });
+
+  it.each(["generic", "native"] as const)("reopens a %s holder with only the native launch palette after daemon restart", async (kind) => {
+    const fixture = await createTerminalRouteFixture();
+    harnesses.push(fixture.harness);
+    const terminal = kind === "native" ? createDisconnectedNativeTerminal(fixture, "disconnected") : createTerminalSession(fixture.harness.db, { cols: 80, rows: 24, daemonSessionId: null, environmentId: fixture.environment.id, hostId: fixture.host.id, initialCwd: "/tmp", status: "disconnected", threadId: fixture.thread.id, title: "Generic" });
+    updateTerminalSession(fixture.harness.db, { scope: { kind: "terminal", terminalId: terminal.id }, update: { kind: "holder-backed" } });
+    const messages: TerminalOpenMessage[] = [];
+    vi.spyOn(fixture.harness.hub, "sendDaemonSessionMessage").mockImplementation((sessionId, message) => {
+      if (message.type === "terminal.open") {
+        messages.push(message);
+        fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({ hostId: fixture.host.id, sessionId, message: { type: "terminal.opened", requestId: message.requestId, terminalId: message.terminalId, cols: message.cols, rows: message.rows, shell: "/bin/sh", title: "Reopened", initialCwd: "/tmp" } });
+      }
+      return true;
+    });
+    await fixture.harness.deps.terminalSessions.reconcileDisconnectedHostTerminals({ daemonSessionId: fixture.session.id, hostId: fixture.host.id });
+    expect(messages).toHaveLength(1);
+    expect(messages[0].defaultColors).toEqual(kind === "native" ? { foreground: [193, 193, 193], background: [27, 27, 27] } : undefined);
+  });
+
   it("allows the same public API caller to open a host path and a workspace cwd", async () => {
     const fixture = await createTerminalRouteFixture();
     harnesses.push(fixture.harness);
@@ -1038,6 +1079,7 @@ describe("public terminal routes", () => {
     const hostPath = await startPendingStandaloneTerminalOpen(fixture, {
       cwd: "/tmp",
     });
+    expect(hostPath.openMessage.defaultColors).toBeUndefined();
     expect(hostPath.openMessage.target).toEqual({
       kind: "host_path",
       cwd: "/tmp",

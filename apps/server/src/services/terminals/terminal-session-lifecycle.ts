@@ -1,3 +1,7 @@
+import {
+  TERMINAL_DEFAULT_COLORS,
+  type TerminalDefaultColors,
+} from "@bb/domain";
 import { emitPluginTerminalInput } from "../plugins/plugin-thread-events.js";
 import {
   mergeHostAndProviderEnvironment,
@@ -379,6 +383,7 @@ interface ListTerminalsArgs {
 }
 
 interface CreateTerminalArgs {
+  defaultColors?: TerminalDefaultColors;
   onTerminalStarted?: (terminalId: string) => void;
   payload: CreateTerminalRequest;
   extraContributedEnv?: HostDaemonContributedEnvEntry[];
@@ -398,6 +403,7 @@ interface TerminalCreatePayload {
 }
 
 interface CreateTerminalForTargetArgs {
+  defaultColors?: TerminalDefaultColors;
   extraContributedEnv: HostDaemonContributedEnvEntry[];
   onTerminalStarted?: (terminalId: string) => void;
   payload: TerminalCreatePayload;
@@ -1446,6 +1452,7 @@ export class TerminalSessionLifecycle {
         ? this.resolveThreadTerminalCreateTarget(target.threadId)
         : target;
     return this.createTerminalForTarget({
+      ...(args.defaultColors ? { defaultColors: args.defaultColors } : {}),
       extraContributedEnv: args.extraContributedEnv ?? [],
       ...(args.onTerminalStarted === undefined
         ? {}
@@ -1518,6 +1525,7 @@ export class TerminalSessionLifecycle {
     const requestId = randomUUID();
     const openMessage: HostDaemonServerWsMessage = {
       type: "terminal.open",
+      ...(args.defaultColors ? { defaultColors: args.defaultColors } : {}),
       contributedEnv: mergeHostAndProviderEnvironment(
         await resolveHostEnvironment(this.options, {
           hostId: launchTarget.hostId,
@@ -2905,6 +2913,11 @@ export class TerminalSessionLifecycle {
         }
         const openMessage: HostDaemonServerWsMessage = {
           type: "terminal.open",
+          ...(reconnected.threadId !== null &&
+          getNativeTerminalThread(this.options.db, reconnected.threadId)
+            ?.terminalSessionId === reconnected.id
+            ? { defaultColors: TERMINAL_DEFAULT_COLORS.dark }
+            : {}),
           contributedEnv,
           requestId,
           terminalId: reconnected.id,
