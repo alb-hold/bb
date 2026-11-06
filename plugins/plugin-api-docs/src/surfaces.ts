@@ -639,6 +639,7 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
         ],
         reference: [
           "Accept startup input through ExperimentalComposerInput.experimental_startupHandoff: attach a synchronous callback after mounting the editor, restore its draft and text selection, and focus only when the snapshot owns focus",
+          "Report a blocked primary submission through ExperimentalComposerSubmission.experimental_onBlockedSubmit after IME, newline and suggestion handling. The host may retain the draft and submit once options resolve; this callback never bypasses submission checks.",
         ],
         apiSymbols: [
           "ExperimentalComposerRegistration",
@@ -646,6 +647,7 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
           "experimental_useComposerRenderer",
           "ExperimentalComposerRendererApi",
           "ExperimentalComposerInput",
+          "ExperimentalComposerSubmission",
           "ExperimentalComposerView",
           "experimental_ComposerRoot",
           "ExperimentalComposerRootProps",

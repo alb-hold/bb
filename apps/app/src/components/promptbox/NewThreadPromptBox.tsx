@@ -50,6 +50,7 @@ import {
 } from "@/components/promptbox/ComposerBox";
 import { usePromptModePermissionDisplay } from "@/components/promptbox/usePromptModePermissionDisplay";
 import { usePromptVoice } from "@/components/promptbox/usePromptVoice";
+import { PendingComposerSubmission } from "./PendingComposerSubmission";
 import {
   EnvironmentPickerUI,
   type EnvironmentPickerMachines,
@@ -316,40 +317,57 @@ const DefaultNewThreadComposer = memo(function DefaultNewThreadComposer({
           {modeConfig.banner}
         </ComposerBannersSlot>
       </div>
-      <ComposerBox
-        suppressPluginComposerCustomizations={execution.pending}
-        id={id}
-        promptBoxRef={promptBoxRef}
-        value={value}
-        mentionRanges={mentionRanges}
-        onChange={onChange}
+      <PendingComposerSubmission
+        text={value}
+        resetKey={history.resetKey}
+        loading={Boolean(execution.pending || execution.model.isLoading)}
+        disabled={disabled}
+        failed={execution.model.loadFailed}
+        isSubmitting={isSubmitting}
+        pendingUploads={Boolean(
+          attachments.pendingUploads?.length || attachments.isAttaching,
+        )}
+        disabledReason={disabledReason}
         onSubmit={onSubmit}
-        textEffects={textEffects}
-        onComposerLayoutChange={onComposerLayoutChange}
-        history={{
-          ...history,
-          promptHistorySearch: {
-            projectId: project?.value ?? PERSONAL_PROJECT_ID,
-          },
-        }}
-        typeahead={typeahead}
-        mentionMenuPlacement={mentionMenuPlacement}
-        attachments={attachments}
-        promptActions={promptActions}
-        voice={voice}
-        submission={{
-          isSubmitting,
-          disabled,
-          disabledReason,
-          title: submitTitle,
-        }}
-        autoFocus={autoFocus}
-        onFocusCommand={onFocusCommand}
-        surface="new-thread"
-        minHeight={NEW_THREAD_PROMPT_BOX_MIN_HEIGHT}
-        placeholder={placeholder}
-        executionControls={<ExecutionControls {...execution} />}
-      />
+      >
+        {(onBlockedSubmit) => (
+          <ComposerBox
+            suppressPluginComposerCustomizations={execution.pending}
+            id={id}
+            promptBoxRef={promptBoxRef}
+            value={value}
+            mentionRanges={mentionRanges}
+            onChange={onChange}
+            onSubmit={onSubmit}
+            textEffects={textEffects}
+            onComposerLayoutChange={onComposerLayoutChange}
+            history={{
+              ...history,
+              promptHistorySearch: {
+                projectId: project?.value ?? PERSONAL_PROJECT_ID,
+              },
+            }}
+            typeahead={typeahead}
+            mentionMenuPlacement={mentionMenuPlacement}
+            attachments={attachments}
+            promptActions={promptActions}
+            voice={voice}
+            submission={{
+              isSubmitting,
+              experimental_onBlockedSubmit: onBlockedSubmit,
+              disabled,
+              disabledReason,
+              title: submitTitle,
+            }}
+            autoFocus={autoFocus}
+            onFocusCommand={onFocusCommand}
+            surface="new-thread"
+            minHeight={NEW_THREAD_PROMPT_BOX_MIN_HEIGHT}
+            placeholder={placeholder}
+            executionControls={<ExecutionControls {...execution} />}
+          />
+        )}
+      </PendingComposerSubmission>
       <div
         data-new-thread-footer=""
         className="mt-1 flex select-none items-center justify-between gap-2 px-3.5 max-md:mt-0 max-md:gap-1 max-md:px-1"

@@ -250,8 +250,11 @@ export function ProgressiveComposer({
       const input = inputRef.current;
       if (!input) return;
       const latest = current.current;
+      if (latest.submission?.disabled) {
+        latest.submission.experimental_onBlockedSubmit?.();
+        return;
+      }
       if (
-        latest.submission?.disabled ||
         latest.submission?.isSubmitting ||
         attaching ||
         (!fromVoice &&

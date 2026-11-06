@@ -23,6 +23,7 @@ import {
   type PromptBoxHandle,
   type PromptVoiceConfig,
 } from "./ComposerBox";
+import { PendingComposerSubmission } from "./PendingComposerSubmission";
 import { registerComposerPlugin } from "@/test/fixtures/composer-plugin";
 import {
   composerSearchQueries,
@@ -380,3 +381,104 @@ it("normalizes and sends a voice result while transcription is finishing before 
   expect(input.value).toBe("");
   client.clear();
 });
+
+it.each(["plain", "rich"] as const)(
+  "sends exactly once when options resolve after Enter in the %s editor",
+  async (phase) => {
+    const sent = vi.fn();
+    const options = { resolve: () => {} };
+    function Host() {
+      const [value, setValue] = useState("early words more");
+      const [ready, setReady] = useState(false);
+      options.resolve = () => setReady(true);
+      const submit = () => {
+        sent(value);
+        setValue("");
+      };
+      return (
+        <PendingComposerSubmission
+          text={value}
+          loading={!ready}
+          disabled={!ready}
+          failed={false}
+          isSubmitting={false}
+          pendingUploads={false}
+          disabledReason={ready ? undefined : "Loading model and options."}
+          onSubmit={submit}
+        >
+          {(onBlockedSubmit) => (
+            <ComposerBox
+              surface="new-thread"
+              value={value}
+              mentionRanges={[]}
+              onChange={setValue}
+              onSubmit={submit}
+              submission={{
+                disabled: !ready,
+                experimental_onBlockedSubmit: onBlockedSubmit,
+              }}
+              placeholder="Ask anything."
+              mentionMenuPlacement="bottom"
+              typeahead={testTypeaheadConfig()}
+            />
+          )}
+        </PendingComposerSubmission>
+      );
+    }
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const view = render(
+      <QueryClientProvider client={client}>
+        <Provider>
+          <MemoryRouter>
+            <TooltipProvider>
+              <Host />
+            </TooltipProvider>
+          </MemoryRouter>
+        </Provider>
+      </QueryClientProvider>,
+    );
+    const input = await screen.findByRole<HTMLTextAreaElement>("textbox", {
+      name: "Ask anything.",
+    });
+    input.focus();
+    if (phase === "rich") {
+      await act(registerComposerPlugin);
+      await waitFor(() =>
+        expect(view.container.querySelector("textarea")).toBeNull(),
+      );
+    }
+    const target =
+      phase === "plain"
+        ? input
+        : view.container.querySelector<HTMLElement>(".ProseMirror")!;
+    fireEvent.keyDown(target, { key: "Enter" });
+    fireEvent.keyDown(target, { key: "Enter", repeat: true });
+    expect(sent).not.toHaveBeenCalled();
+    expect(screen.getByRole("status").textContent).toContain(
+      "Your message will send when ready",
+    );
+    if (phase === "plain") {
+      expect(input.value).toBe("early words more");
+      await act(registerComposerPlugin);
+      await waitFor(() =>
+        expect(view.container.querySelector("textarea")).toBeNull(),
+      );
+    }
+    expect(view.container.querySelector(".ProseMirror")?.textContent).toBe(
+      "early words more",
+    );
+    expect(sent).not.toHaveBeenCalled();
+    act(options.resolve);
+    await waitFor(() =>
+      expect(sent).toHaveBeenCalledExactlyOnceWith("early words more"),
+    );
+    expect(screen.queryByRole("status")).toBeNull();
+    const editor = view.container.querySelector<HTMLElement>(".ProseMirror")!;
+    await waitFor(() => expect(editor.textContent).toBe(""));
+    fireEvent.keyDown(editor, { key: "Enter" });
+    expect(sent).toHaveBeenCalledTimes(1);
+    client.clear();
+  },
+);

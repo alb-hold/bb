@@ -1067,6 +1067,7 @@ export function PromptBoxInternal({
     enter: primarySubmitAction,
     modifier: modifierSubmitAction,
     showModifierInMenu,
+    experimental_onBlockedSubmit,
   } = submission;
   const onSubmit = primarySubmitAction.run;
   const onModifierSubmit = modifierSubmitAction?.run;
@@ -3008,12 +3009,15 @@ export function PromptBoxInternal({
   const submitPrompt = useCallback(() => {
     const shouldBlurAfterSubmit = blurAfterPointerSubmitRef.current;
     blurAfterPointerSubmitRef.current = false;
-    if (!canPrimarySubmit) return;
+    if (!canPrimarySubmit) {
+      experimental_onBlockedSubmit?.();
+      return;
+    }
     dispatchSubmit();
     if (shouldBlurAfterSubmit) {
       blurPromptEditor(editorRef.current);
     }
-  }, [canPrimarySubmit, dispatchSubmit]);
+  }, [canPrimarySubmit, dispatchSubmit, experimental_onBlockedSubmit]);
 
   useLayoutEffect(() => {
     const baseline = voiceSubmitBaselineRef.current;

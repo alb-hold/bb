@@ -2706,6 +2706,7 @@ export interface ExperimentalComposerAction {
 
 /** Submit-button state and actions the host computes for a composer. */
 export interface ExperimentalComposerSubmission {
+  experimental_onBlockedSubmit?(): void;
   isSubmitting?: boolean;
   disabled?: boolean;
   disabledReason?: string;

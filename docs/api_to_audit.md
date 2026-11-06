@@ -1,5 +1,18 @@
 # APIs To Audit
 
+## `ExperimentalComposerSubmission.experimental_onBlockedSubmit`
+
+A renderer reports a primary submission attempt that its readiness checks block.
+This callback does not submit or relax those checks. Core's plain and rich editors
+use it after their IME, newline and suggestion handling. The new-thread host queues
+an intent while model or options loading blocks submission, retains the visible
+draft, and sends once through its existing submit action when ready. Editing,
+Escape, a draft-scope change or model-load failure cancels the intent.
+
+The Plugin Guide documents this on the composer replacement surface. Stabilization
+requires auditing repeated Enter, loading failures, replacement renderers, and
+intents that span the plain-to-rich handoff.
+
 ## `ExperimentalComposerInput.experimental_startupHandoff`
 
 The host can accept input before a composer renderer has downloaded. A renderer
