@@ -1,5 +1,4 @@
 import { createContext, useContext, useLayoutEffect, useState } from "react";
-import { flushSync } from "react-dom";
 import { useSidebarContentElementRef } from "../ui/sidebar.js";
 
 export const SidebarListVisibleContext = createContext<boolean | undefined>(
@@ -20,7 +19,7 @@ export function useSidebarListShown(): boolean {
     }
     const observer = new ResizeObserver((entries) => {
       const entry = entries.find((entry) => entry.target === element);
-      if (entry) flushSync(() => setShown(entry.contentRect.height > 0));
+      if (entry) setShown(entry.contentRect.height > 0);
     });
     observer.observe(element);
     return () => observer.disconnect();

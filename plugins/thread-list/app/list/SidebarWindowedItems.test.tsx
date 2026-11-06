@@ -189,6 +189,21 @@ afterEach(() => {
 });
 
 describe("SidebarWindowedItems", () => {
+  it("batches a viewport resize storm without committing rows inside observer delivery", () => {
+    vi.mocked(HTMLElement.prototype.getBoundingClientRect).mockReturnValue(
+      VIEWPORT_RECT,
+    );
+    renderList({ current: scrollElement });
+    expect(screen.queryByTestId("real-item-0")).toBeNull();
+    act(() => {
+      for (let index = 0; index < 20; index++) {
+        emitViewportResize(scrollElement, 500 + index);
+        expect(screen.queryByTestId("real-item-0")).toBeNull();
+      }
+    });
+    expect(screen.getAllByTestId(/^real-item-/)).toHaveLength(3);
+  });
+
   it("does not read layout while committing the initial window", () => {
     const rect = vi.mocked(HTMLElement.prototype.getBoundingClientRect);
     renderList({ current: scrollElement });

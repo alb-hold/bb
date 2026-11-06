@@ -8,7 +8,6 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { flushSync } from "react-dom";
 import {
   SIDEBAR_CONTENT_SELECTOR,
   useSidebarContentElementRef,
@@ -230,14 +229,14 @@ export function SidebarWindowedItems({
               entry.target === scrollElement && entry.contentRect.height > 0,
           )
         ) {
-          flushSync(promoteVisible);
+          promoteVisible();
         }
       });
       resizeObserver.observe(scrollElement);
     } else {
       frame = requestAnimationFrame(() => {
         if (!scrollElement || scrollElement.clientHeight > 0) {
-          flushSync(promoteVisible);
+          promoteVisible();
         }
       });
     }

@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -116,7 +117,7 @@ describe("SidebarNavigationHeader", () => {
     expect(screen.getByTestId("header-size").textContent).toBe("0/28");
   });
 
-  it("renders a new width in the same frame the slot resizes", async () => {
+  it("batches resized header content after observer delivery", async () => {
     vi.stubGlobal(
       "ResizeObserver",
       class {
@@ -133,12 +134,15 @@ describe("SidebarNavigationHeader", () => {
       expect(document.querySelector("[data-bb-plugin-root]")).not.toBeNull(),
     );
 
-    for (const callback of resizeCallbacks) {
-      callback(
-        [{ contentRect: { width: 132 } } as ResizeObserverEntry],
-        {} as ResizeObserver,
-      );
-    }
+    act(() => {
+      for (const callback of resizeCallbacks) {
+        callback(
+          [{ contentRect: { width: 132 } } as ResizeObserverEntry],
+          {} as ResizeObserver,
+        );
+        expect(screen.getByTestId("header-size").textContent).toBe("0/28");
+      }
+    });
 
     expect(screen.getByTestId("header-size").textContent).toBe("132/28");
   });

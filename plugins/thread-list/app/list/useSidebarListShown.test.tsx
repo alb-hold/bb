@@ -36,7 +36,7 @@ it("falls back to observer visibility when an older host omits visibility", () =
     </SidebarContentElementContext.Provider>,
   );
   expect(screen.queryByText("pinned rows")).toBeNull();
-  act(() =>
+  act(() => {
     resize?.(
       [
         {
@@ -48,10 +48,11 @@ it("falls back to observer visibility when an older host omits visibility", () =
         },
       ],
       {} as ResizeObserver,
-    ),
-  );
+    );
+    expect(screen.queryByText("pinned rows")).toBeNull();
+  });
   expect(screen.getByText("pinned rows")).toBeTruthy();
-  act(() =>
+  act(() => {
     resize?.(
       [
         {
@@ -63,8 +64,9 @@ it("falls back to observer visibility when an older host omits visibility", () =
         },
       ],
       {} as ResizeObserver,
-    ),
-  );
+    );
+    expect(screen.getByText("pinned rows")).toBeTruthy();
+  });
   expect(screen.queryByText("pinned rows")).toBeNull();
 });
 
