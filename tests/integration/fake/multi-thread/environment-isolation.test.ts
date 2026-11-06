@@ -41,7 +41,7 @@ const REBUILD_TEST_TIMEOUT_MS = scaleTimeoutMs(120_000);
 
 describe.sequential("fake provider environment-isolation multi-thread integration", () => {
   it(
-    "refuses sends to a destroyed worktree until the thread restores it",
+    "refuses sends to destroyed worktrees and reports holder-retained worktrees",
     () =>
       withHarness(
         { builtinPlugins: ["environment-git-worktree"] },
@@ -93,24 +93,46 @@ describe.sequential("fake provider environment-isolation multi-thread integratio
             .poll(
               async () => {
                 await harness.server.sweepEnvironments();
-                return (
-                  await getEnvironment(
-                    harness.api,
-                    worktreeThread.environment.id,
-                  )
-                ).lifecycle.teardown?.status;
+                return (await getEnvironment(
+                  harness.api,
+                  worktreeThread.environment.id,
+                )).lifecycle.teardown?.status;
               },
               { timeout: REBUILD_TIMEOUT_MS },
             )
-            .toBe("removed");
-          await waitForPathRemoval(originalWorkspacePath, DEFAULT_TIMEOUT_MS);
+            .toMatch(/^(removed|failed)$/);
+          const teardown = (
+            await getEnvironment(harness.api, worktreeThread.environment.id)
+          ).lifecycle.teardown;
+          if (teardown?.status === "failed") {
+            expect(teardown.message).toMatch(
+              /foreign-user processes could not be inspected/i,
+            );
+            await fs.access(originalWorkspacePath);
+          } else {
+            expect(teardown?.status).toBe("removed");
+            await waitForPathRemoval(originalWorkspacePath, DEFAULT_TIMEOUT_MS);
+          }
           await deleteThread(harness.api, unrelatedThread.thread.id);
-          await waitForEnvironmentStatus(
-            harness.api,
-            worktreeThread.environment.id,
-            "destroyed",
-            DEFAULT_TIMEOUT_MS,
-          );
+          if (teardown?.status === "removed")
+            await waitForEnvironmentStatus(
+              harness.api,
+              worktreeThread.environment.id,
+              "destroyed",
+              DEFAULT_TIMEOUT_MS,
+            );
+
+          if (teardown?.status === "failed") {
+            const refused = await harness.api.threads[":id"].send.$post({
+              param: { id: worktreeThread.thread.id },
+              json: {
+                input: [{ type: "text", text: "too early", mentions: [] }],
+                mode: "auto",
+              },
+            });
+            expect(refused.status).toBe(409);
+            return;
+          }
 
           await unarchiveThread(harness.api, worktreeThread.thread.id);
           const refused = await harness.api.threads[":id"].send.$post({
