@@ -84,6 +84,34 @@ function openDesktopMenu() {
 }
 
 describe("MessageActionBar", () => {
+  it("keeps revealed phone action extensions unclipped and disjoint", () => {
+    mockMobileCoarsePointer();
+    const { container } = render(
+      <div data-touch-actions-visible="true">
+        <MessageActionBar
+          timestamp={TIMESTAMP}
+          messageText="An answer."
+          alignment="start"
+          mobileActionDisplay="inline"
+        />
+      </div>,
+    );
+    const trigger = screen.getByRole("button", { name: "Message actions" });
+    expect(trigger.getAttribute("data-compact-touch")).toBe("action-menu");
+    expect(trigger.classList.contains("max-md:pointer-coarse:ml-0")).toBe(true);
+    for (
+      let node: HTMLElement | null = trigger;
+      node && node !== container;
+      node = node.parentElement
+    ) {
+      expect(node.className).not.toMatch(
+        /(?:^| )overflow-(?:hidden|clip)(?: |$)/,
+      );
+      expect(node.style.overflow).not.toMatch(/hidden|clip/);
+      expect(node.style.clipPath).toBe("");
+    }
+  });
+
   it("places the token summary in the message action row", () => {
     const { container } = render(
       <MessageActionBar
@@ -102,7 +130,11 @@ describe("MessageActionBar", () => {
     expect(tokenSummary).toBeTruthy();
     expect(tokenSummary?.parentElement).toBe(actionButton.parentElement);
     expect(actionButton.getAttribute("data-compact-touch")).toBe("action-menu");
-    expect(screen.getByRole("button", { name: "Copy message" }).getAttribute("data-compact-touch")).toBe("action");
+    expect(
+      screen
+        .getByRole("button", { name: "Copy message" })
+        .getAttribute("data-compact-touch"),
+    ).toBe("action");
   });
 
   it("uses the nearest thread window as the tooltip collision boundary", () => {

@@ -283,6 +283,46 @@ describe("ExpandablePanel deferred body realization", () => {
   });
 });
 
+it.each(["Ran 1 command", "Ran 1 tool"])(
+  "reserves an unclipped touch extension for %s between adjacent panels",
+  (summary) => {
+    vi.stubGlobal("ResizeObserver", ResizeObserverStub);
+    const { container } = render(
+      <div data-timeline-items="">
+        {[summary, "Next tool"].map((label) => (
+          <div data-timeline-row-id={label} key={label}>
+            <ExpandablePanel
+              isExpanded={false}
+              summaryContent={label}
+              headerToneClass="text-muted-foreground"
+              onToggle={vi.fn()}
+            >
+              Expanded body
+            </ExpandablePanel>
+          </div>
+        ))}
+      </div>,
+    );
+    const header = screen.getByRole("button", { name: summary });
+    expect(header.hasAttribute("data-compact-touch-summary")).toBe(true);
+    expect(header.classList.contains("overflow-visible")).toBe(true);
+    expect(
+      header.parentElement?.classList.contains("max-md:pointer-coarse:py-3"),
+    ).toBe(true);
+    for (
+      let node: HTMLElement | null = header;
+      node && node !== container;
+      node = node.parentElement
+    ) {
+      expect(node.className).not.toMatch(
+        /(?:^| )overflow-(?:hidden|clip)(?: |$)/,
+      );
+      expect(node.style.overflow).not.toMatch(/hidden|clip/);
+      expect(node.style.clipPath).toBe("");
+    }
+  },
+);
+
 it.each(["Ran 1 command", "Ran 1 tool", "Worked for 1s"])(
   "shows a secondary-ink chevron at rest for %s and rotates it when opened",
   (summary) => {

@@ -101,7 +101,7 @@ const TOUCH_ACTION_WIDTH_PX = 28;
 const ACTION_ROW_GAP_PX = 8;
 const OVERFLOW_TRIGGER_GAP_PX = 4;
 const FOOTER_ADORNMENT_RESERVE_PX = 56;
-const OVERFLOW_TRIGGER_TIGHTEN_CLASS = "-ml-1";
+const OVERFLOW_TRIGGER_TIGHTEN_CLASS = "-ml-1 max-md:pointer-coarse:ml-0";
 
 interface MessageActionRowLayout {
   inlineCount: number;

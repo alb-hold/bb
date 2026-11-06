@@ -71,22 +71,14 @@ describe("compact touch targets", () => {
   );
 });
 
-it("keeps summary rows compact and splits invisible extensions between neighbours", () => {
+it("keeps disclosure extensions at their full height between neighbours", () => {
   const block = css.slice(
     css.lastIndexOf("@media (width < 48rem)"),
     css.indexOf("@media (width <= 480px)"),
   );
-  expect(block).not.toMatch(
-    /button\[data-compact-touch-summary\]\s*\{\s*min-block-size:/,
-  );
-  expect(block).toContain("var(--compact-touch-summary-start, -12px)");
-  expect(block).toContain("var(--compact-touch-summary-end, -12px)");
-  expect(block).toContain(
-    "--compact-touch-summary-start: var(--compact-touch-summary-half-gap)",
-  );
-  expect(block.replace(/\s/g, "")).toContain(
-    "--compact-touch-summary-end:var(--compact-touch-summary-next-half-gap,var(--compact-touch-summary-half-gap))",
-  );
+  expect(block).not.toContain("--compact-touch-summary-start");
+  expect(block).not.toContain("--compact-touch-summary-end");
+  expect(block).not.toContain("--compact-touch-summary-half-gap");
 });
 
 it("expands timeline hit areas without increasing their layout heights", () => {
@@ -100,11 +92,7 @@ it("expands timeline hit areas without increasing their layout heights", () => {
   expect(timeline).toContain('content: ""');
   expect(timeline).toContain("position: absolute");
   expect(timeline).toContain("inset-block: calc((100% - 44px) / 2)");
-  expect(timeline).toContain(
-    "inset-block: var(--compact-touch-summary-start, -12px)",
-  );
-  expect(timeline).toContain("--compact-touch-summary-half-gap: -4px");
-  expect(timeline).toContain("button[data-compact-touch-summary]::after");
+  expect(timeline).toContain("inset-block: -12px");
 });
 
 it("keeps the last summary hit area inside the animated clip without adding layout height", () => {
