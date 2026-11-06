@@ -136,6 +136,7 @@ vi.mock("@/hooks/queries/system-queries", () => ({
   useSystemExecutionOptions: () => ({
     data: undefined,
     isLoading: true,
+    isPending: true,
     isError: false,
     isPlaceholderData: false,
   }),
