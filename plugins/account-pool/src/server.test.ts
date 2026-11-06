@@ -85,6 +85,7 @@ interface Fixture {
 }
 
 const CHILD_PROCESS_START_TIMEOUT_MS = 15_000;
+const CHILD_PROCESS_TEST_TIMEOUT_MS = CHILD_PROCESS_START_TIMEOUT_MS + 15_000;
 
 async function waitForChildProcessStart(assertStarted: () => void): Promise<void> {
   await vi.waitFor(assertStarted, { timeout: CHILD_PROCESS_START_TIMEOUT_MS, interval: 25 });
@@ -15325,7 +15326,7 @@ describe("Actor route issuer", () => {
     expect(JSON.parse(secondRevoke.stdout)).toEqual({ ok: true, revoked: 0 });
     expect(await fixture.host.bb.storage.kv.list("actor-routed:")).toEqual([]);
     expect(await send(rotated)).toBe(401);
-  });
+  }, CHILD_PROCESS_TEST_TIMEOUT_MS);
 
   it("rejects a token minted before a machine token rotation once the grace period ends, and routes the new one", async () => {
     let clock = 1_800_000_000_000;
@@ -15726,7 +15727,7 @@ else {
     expect(await hubSend(rotated.token)).toBe(200);
     const routes = (await listRoutes()) as Array<{ generation: string }>;
     expect(routes.map((route) => route.generation)).toEqual([rotated.generation]);
-  });
+  }, CHILD_PROCESS_TEST_TIMEOUT_MS);
 
   it("revokes when the command cannot be launched", async () => {
     const { run, listRoutes } = await harness();
@@ -15752,7 +15753,7 @@ else {
     }
     const source = await fs.readFile(launcher, "utf8");
     expect(source).not.toMatch(/\b(pkill|pgrep|killall)\b/u);
-  });
+  }, CHILD_PROCESS_TEST_TIMEOUT_MS);
 
   it("returns the child's own status code", async () => {
     const { run, hubSend, readToken, listRoutes } = await harness();
@@ -15782,7 +15783,7 @@ else {
     expect(await listRoutes()).toEqual([]);
     expect(readToken).toBeDefined();
     expect(hubSend).toBeDefined();
-  });
+  }, CHILD_PROCESS_TEST_TIMEOUT_MS);
 
   it.skipIf(process.env.POOL_E2E_BB_CLI === undefined)(
     "drives the real bb CLI: the proof travels on stdin, never in argv or the child env",
