@@ -2380,6 +2380,84 @@ describe("ThreadRow", () => {
     ).not.toBeNull();
   });
 
+  it.each([false, true])(
+    "reserves stable row metrics across late metadata registration (compact: %s)",
+    (isCompact) => {
+      let registered = false;
+      vi.spyOn(pluginSdk, "experimental_ThreadRowMetadata").mockImplementation(
+        () =>
+          registered ? (
+            <span data-thread-row-metadata="" data-has-items="">
+              <span className="text-xs leading-3.5">#10843</span>
+            </span>
+          ) : null,
+      );
+      getDefaultStore().set(sidebarShowRowMetadataAtom, true);
+      const thread = createThread();
+      const slot = renderThreadRow({
+        thread,
+        experiments: ["threadRowMetadata"],
+        options: { ...DEFAULT_OPTIONS, isCompact },
+      });
+      const link = screen.getByRole("link", { name: "Open Thread" });
+      const row = link.closest<HTMLElement>("[data-sidebar-rename-row]")!;
+      const content = link.parentElement!;
+      const title = row.querySelector(".bb-thread-title")!;
+      const reservation = content.lastElementChild!;
+      const before = [
+        row.className,
+        content.className,
+        title.className,
+        reservation.className,
+      ];
+      expect(content.classList.contains("py-1.25")).toBe(true);
+      expect(content.classList.contains("[&_.bb-thread-title]:leading-4")).toBe(
+        true,
+      );
+      expect(content.className).not.toContain("data-has-items");
+      expect(reservation.classList.contains("basis-full")).toBe(true);
+      expect(reservation.classList.contains("h-3.5")).toBe(true);
+      expect(reservation.classList.contains("shrink-0")).toBe(true);
+      expect(reservation.classList.contains("overflow-hidden")).toBe(true);
+      expect(reservation.childElementCount).toBe(0);
+      expect(row.className).toContain(
+        "max-md:pointer-coarse:min-h-[var(--bb-sidebar-row-height-coarse)]",
+      );
+
+      registered = true;
+      slot.rerenderThreadRow({ ...thread });
+      expect(reservation.querySelector("[data-has-items]")).not.toBeNull();
+      expect(content.lastElementChild).toBe(reservation);
+      expect([
+        row.className,
+        content.className,
+        title.className,
+        reservation.className,
+      ]).toEqual(before);
+      const clickLink = vi.spyOn(link, "click");
+      fireEvent.click(row);
+      expect(clickLink).toHaveBeenCalledOnce();
+
+      registered = false;
+      slot.rerenderThreadRow({ ...thread });
+      expect(reservation.childElementCount).toBe(0);
+      expect([
+        row.className,
+        content.className,
+        title.className,
+        reservation.className,
+      ]).toEqual(before);
+
+      act(() => getDefaultStore().set(sidebarShowRowMetadataAtom, false));
+      expect(reservation.isConnected).toBe(false);
+      expect(content.classList.contains("py-1.25")).toBe(false);
+      expect(content.classList.contains("[&_.bb-thread-title]:leading-4")).toBe(
+        false,
+      );
+      expect(row.className).toContain("md:h-(--bb-sidebar-desktop-row-height)");
+    },
+  );
+
   it("ignores the Metadata preference while its experiment is off", () => {
     getDefaultStore().set(sidebarShowRowMetadataAtom, true);
     const slot = renderThreadRow();
