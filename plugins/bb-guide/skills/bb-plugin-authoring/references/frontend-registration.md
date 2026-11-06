@@ -350,10 +350,9 @@ Plugins. If the active component throws, bb shows a "stopped working"
 placeholder with a Reload button plus one toast; nothing else in the sidebar
 is affected.
 
-Call `onNavigate` after opening a thread to close the mobile drawer. The deprecated
-`searchQuery` is always `""`. `experimental_isVisible` is true when shown and false
-in a closed compact drawer or collapsed desktop sidebar. Older hosts omit it;
-keep a visibility observer fallback for `undefined`. The component receives:
+Call `onNavigate` after opening a thread to close the mobile drawer. The deprecated `searchQuery` is always `""`.
+`experimental_isVisible` is true when shown and false in a closed compact drawer or collapsed desktop sidebar.
+Older hosts omit it; keep a visibility observer fallback for `undefined`. The component receives:
 
 ```ts
 interface PluginThreadListProps {
