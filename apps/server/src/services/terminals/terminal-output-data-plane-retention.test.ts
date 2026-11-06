@@ -46,6 +46,8 @@ import {
   TerminalScreenState,
 } from "./terminal-screen-state.js";
 
+import { TerminalBoundedReplay } from "./terminal-bounded-replay.js";
+
 const replayYieldControl = vi.hoisted(() => ({
   intercept: null as (() => Promise<void>) | null,
 }));
@@ -260,6 +262,125 @@ function seedMaintainedScreen(fixture: Awaited<ReturnType<typeof setup>>) {
   });
   return Reflect.get(fixture.terminalSessions, "terminalScreenStates");
 }
+
+it.each(["redraw", "scrollback"])(
+  "attaches with bounded %s and continues at the original live sequence",
+  async (kind) => {
+    const fixture = await setup();
+    const socket = new FakeSocket();
+    const firstSeq = 6911;
+    const chunks = Array.from({ length: 256 }, (_, seq) => ({
+      seq: firstSeq + seq,
+      dataBase64: Buffer.from(
+        kind === "redraw"
+          ? `\x1b[H${`\x1b[2Kframe ${seq}\r`.repeat(1000)}\x1b[Hfinal ${seq}`
+          : `${`row ${seq} ${"x".repeat(60)}\r\n`.repeat(120)}final ${seq}\r\n`,
+      ).toString("base64"),
+    }));
+    const compact = TerminalBoundedReplay.prototype.compact;
+    const during = {
+      seq: firstSeq + chunks.length,
+      dataBase64: Buffer.from("during compaction").toString("base64"),
+    };
+    const compactSpy = vi
+      .spyOn(TerminalBoundedReplay.prototype, "compact")
+      .mockImplementationOnce(async function (this: TerminalBoundedReplay, args) {
+        const replay = await compact.call(this, args);
+        fixture.terminalSessions.handleDaemonTerminalMessage({
+          hostId: fixture.host.id,
+          sessionId: fixture.session.id,
+          message: {
+            type: "terminal.output",
+            terminalId: fixture.terminal.id,
+            chunk: during,
+          },
+        });
+        return replay;
+      });
+    try {
+      fixture.terminalSessions.recordDirectTerminalOutputBatch({
+        daemonSessionId: fixture.session.id,
+        terminalId: fixture.terminal.id,
+        chunks,
+      });
+      let replayWork: void | Promise<void> = undefined;
+      fixture.hub.registerDaemon(fixture.session.id, fixture.host.id, {
+        close() {},
+        send(data: string) {
+          const request = JSON.parse(data) as {
+            type: string;
+            requestId: string;
+          };
+          if (request.type !== "terminal.attach") return;
+          replayWork = fixture.terminalSessions.handleDaemonTerminalMessage({
+            hostId: fixture.host.id,
+            sessionId: fixture.session.id,
+            message: {
+              type: "terminal.replay",
+              requestId: request.requestId,
+              terminalId: fixture.terminal.id,
+              replayStartSeq: firstSeq,
+              nextSeq: firstSeq + chunks.length,
+              chunks,
+            },
+          });
+        },
+      });
+      fixture.terminalSessions.attachBrowserTerminal({
+        socket,
+        sinceSeq: 0,
+        terminalId: fixture.terminal.id,
+        outputAcks: false,
+        resizeAcks: false,
+      });
+      await replayWork;
+      const frames = socket.sent.map((frame) => JSON.parse(frame));
+      const output = frames.slice(1, -1).map((frame) => frame.chunk);
+      expect(frames.at(-1)).toMatchObject({ type: "output", chunk: during });
+      expect(frames[0]).toMatchObject({
+        type: "attached",
+        replayStartSeq: firstSeq + 256 - output.length,
+        nextSeq: firstSeq + 257,
+      });
+      expect(output.map((chunk) => chunk.seq)).toEqual(
+        Array.from(
+          { length: output.length },
+          (_, i) => firstSeq + 256 - output.length + i,
+        ),
+      );
+      expect(output.length).toBeLessThanOrEqual(kind === "redraw" ? 1 : 20);
+      if (kind === "scrollback") expect(output.length).toBeGreaterThan(1);
+      for (const chunk of output)
+        expect(
+          Buffer.byteLength(chunk.dataBase64, "base64"),
+        ).toBeLessThanOrEqual(64 * 1024);
+      expect(textFrom(output)).toContain("final 255");
+      process.stdout.write(
+        `${JSON.stringify({ kind, rawBytes: chunks.reduce((n, chunk) => n + Buffer.byteLength(chunk.dataBase64, "base64"), 0), replayBytes: Buffer.byteLength(textFrom(output)), replayChunks: output.length })}\n`,
+      );
+      fixture.terminalSessions.handleDaemonTerminalMessage({
+        hostId: fixture.host.id,
+        sessionId: fixture.session.id,
+        message: {
+          type: "terminal.output",
+          terminalId: fixture.terminal.id,
+          chunk: {
+            seq: firstSeq + 257,
+            dataBase64: Buffer.from("live suffix").toString("base64"),
+          },
+        },
+      });
+      expect(JSON.parse(socket.sent.at(-1)!)).toMatchObject({
+        type: "output",
+        chunk: { seq: firstSeq + 257 },
+      });
+    } finally {
+      compactSpy.mockRestore();
+      fixture.child.shutdown();
+    }
+  },
+  30_000,
+);
 
 async function retainReplayAcrossLifecycleTransition(args: {
   setup: {

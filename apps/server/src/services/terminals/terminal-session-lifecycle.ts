@@ -82,6 +82,7 @@ import type {
   UpdateTerminalRequest,
 } from "@bb/server-contract";
 import { ApiError } from "../../errors.js";
+import { TerminalBoundedReplay } from "./terminal-bounded-replay.js";
 import type { AppDeps, ServerLogger } from "../../types.js";
 import { assertUsableHostId } from "../hosts/primary-host.js";
 import {
@@ -223,6 +224,12 @@ interface PendingTerminalCloseKey extends PendingRpcKey {
 interface PendingTerminalAttachKey extends PendingTerminalRpcKey {
   handoffOwnerToken?: string;
   socket: TerminalClientSocket;
+  sinceSeq: number;
+}
+
+interface ReplayLiveOutput {
+  chunks: TerminalOutputChunk[];
+  bytes: number;
 }
 
 interface RejectPendingOpenForTerminalArgs {
@@ -911,6 +918,8 @@ export class TerminalSessionLifecycle {
   private readonly outputFlow: TerminalOutputFlowControl;
   private readonly outputSequenceRebase = new TerminalOutputSequenceRebase();
   private readonly terminalScreenStates = new TerminalScreenStateCache();
+  private readonly boundedReplay = new TerminalBoundedReplay();
+  private readonly replayLiveOutput = new Map<string, Set<ReplayLiveOutput>>();
   private readonly terminalScreenStateRebuilds = new Map<
     string,
     TerminalScreenStateRebuild
@@ -2563,6 +2572,7 @@ export class TerminalSessionLifecycle {
     for (const timer of this.setupCueTimers.values()) clearTimeout(timer);
     this.setupCueTimers.clear();
     this.terminalScreenStates.dispose();
+    this.boundedReplay.clear();
   }
 
   flushAllRetainedOutput(): void {
@@ -3239,6 +3249,7 @@ export class TerminalSessionLifecycle {
       rpcKey: terminalRpcKey(current.daemonSessionId, current.id, requestId),
       socket: args.socket,
       terminalId: current.id,
+      sinceSeq: args.sinceSeq,
     };
     void this.pendingAttaches
       .claim(pendingAttach)
@@ -3820,8 +3831,67 @@ export class TerminalSessionLifecycle {
         );
       }
     }
-    const message = { ...replayHeader, chunks: rebasedChunks };
+    let attachMessage = { ...replayHeader, chunks: rebasedChunks };
     const pendingAttach = this.pendingAttaches.keyFor(rpcKey);
+    if (pendingAttach?.sinceSeq === 0 && current !== null) {
+      const live: ReplayLiveOutput = { chunks: [], bytes: 0 };
+      const listeners = this.replayLiveOutput.get(current.id) ?? new Set();
+      listeners.add(live);
+      this.replayLiveOutput.set(current.id, listeners);
+      const replay = await this.boundedReplay
+        .compact({
+          ...attachMessage,
+          terminalId: current.id,
+          daemonSessionId: args.sessionId,
+          cols: current.cols,
+          rows: current.rows,
+        })
+        .finally(() => {
+          listeners.delete(live);
+          if (listeners.size === 0) this.replayLiveOutput.delete(current.id);
+        });
+      if (!checkReplayAfterYield()) return;
+      if (live.bytes > TERMINAL_SCROLLBACK_MAX_BYTES) {
+        this.pendingAttaches.cancel(rpcKey);
+        pendingAttach.socket.close(1013, "replay-buffer-overflow");
+        return;
+      }
+      const latestGrid = getTerminalById(this.options.db, current.id);
+      if (
+        latestGrid === null ||
+        latestGrid.hostId !== current.hostId ||
+        (latestGrid.daemonSessionId !== null &&
+          latestGrid.daemonSessionId !== args.sessionId) ||
+        this.outputSequenceRebase.baseFor(sourceMessage.terminalId) !==
+          replayOffset
+      ) {
+        const error = new ApiError(
+          409,
+          "terminal_replaced",
+          "Terminal session was replaced while replaying output",
+        );
+        this.pendingAttaches.fail(rpcKey, error);
+        this.pendingOutputReads.fail(rpcKey, error);
+        this.pendingCatchUps.fail(rpcKey, error);
+        return;
+      }
+      if (
+        !replayOwnershipChanged &&
+        latestGrid?.cols === current.cols &&
+        latestGrid.rows === current.rows
+      )
+        attachMessage = { ...replayHeader, ...replay };
+      const suffix = live.chunks.filter(
+        (chunk) => chunk.seq >= attachMessage.nextSeq,
+      );
+      if (suffix.length > 0)
+        attachMessage = {
+          ...attachMessage,
+          chunks: [...attachMessage.chunks, ...suffix],
+          nextSeq: suffix.at(-1)!.seq + 1,
+        };
+    }
+    const message = { ...replayHeader, chunks: rebasedChunks };
     const path = pendingAttach
       ? this.directOutputSockets.has(pendingAttach.socket)
         ? "data-plane"
@@ -3832,7 +3902,9 @@ export class TerminalSessionLifecycle {
           ? "catch-up"
           : "unmatched";
     const callers = [
-      this.pendingAttaches.settle(rpcKey, message) ? "terminal-attach" : null,
+      this.pendingAttaches.settle(rpcKey, attachMessage)
+        ? "terminal-attach"
+        : null,
       this.pendingOutputReads.settle(rpcKey, message) ? "output-read" : null,
       this.pendingCatchUps.settle(rpcKey, message) ? "catch-up" : null,
     ].filter((caller): caller is string => caller !== null);
@@ -4685,6 +4757,11 @@ export class TerminalSessionLifecycle {
       return;
     }
     this.setForwardedNextSeq(terminalId, chunk.seq + 1);
+    for (const live of this.replayLiveOutput.get(terminalId) ?? []) {
+      live.bytes += Buffer.byteLength(chunk.dataBase64, "base64");
+      if (live.bytes <= TERMINAL_SCROLLBACK_MAX_BYTES)
+        live.chunks.push(toTerminalOutputChunk(chunk));
+    }
     this.options.hub.sendTerminalClientMessage(terminalId, {
       type: "output",
       chunk: toTerminalOutputChunk(chunk),

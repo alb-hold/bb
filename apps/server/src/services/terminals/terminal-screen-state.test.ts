@@ -52,6 +52,142 @@ function bufferState(terminal: Terminal) {
   };
 }
 
+it("bounds browser replay while retaining the full scrollback and wrapped cells", async () => {
+  const state = new TerminalScreenState(40, 5, true);
+  const full = create(40, 5, 10_000);
+  const restored = create(40, 5, 10_000);
+  const history = Array.from(
+    { length: 32_000 },
+    (_, i) =>
+      `\x1b[38;5;${i % 16}mrow ${i} 界 ${"x".repeat(i % 50)}\x1b[0m\r\n`,
+  ).join("");
+  state.push(0, Buffer.from(history));
+  await write(full, history);
+  const snapshot = await state.replaySnapshot();
+  expect(snapshot).not.toBeNull();
+  if (snapshot === null) throw new Error("no replay snapshot");
+  const data = Buffer.from(snapshot.dataBase64, "base64").toString();
+  expect(Buffer.byteLength(data)).toBeLessThan(Buffer.byteLength(history) / 2);
+  await write(restored, data);
+  const allCells = (terminal: Terminal) => {
+    const buffer = terminal.buffer.active;
+    return Array.from({ length: buffer.length }, (_, y) => {
+      const line = buffer.getLine(y);
+      return {
+        wrapped: line?.isWrapped,
+        cells: Array.from({ length: terminal.cols }, (_, x) => {
+          const cell = line?.getCell(x);
+          return [
+            cell?.getChars() || (cell?.getWidth() === 1 ? " " : ""),
+            cell?.getWidth(),
+            cell?.getFgColor(),
+            cell?.getBgColor(),
+          ];
+        }),
+      };
+    });
+  };
+  expect(allCells(restored)).toEqual(allCells(full));
+  expect(bufferState(restored)).toEqual(bufferState(full));
+  const suffix = "\x1b[31mcontinued 界\r\nnext";
+  await write(full, suffix);
+  await write(restored, suffix);
+  expect(allCells(restored)).toEqual(allCells(full));
+  state.dispose();
+  full.dispose();
+  restored.dispose();
+}, 30_000);
+
+it.each([
+  "\x1b[?1049h",
+  "\x1b7",
+  "\x1b[3g",
+  "\x1b(0",
+  "\x1b]4;1;red\x07",
+  "\x1b[?1006h",
+  "\x1b[31",
+  "\x1b]133;A\x07",
+  "bare\nlinefeed",
+])("keeps raw replay for state requiring %j", async (sequence) => {
+  const state = new TerminalScreenState(40, 5, true);
+  const middle = Math.ceil(sequence.length / 2);
+  state.push(0, Buffer.from(`hello${sequence.slice(0, middle)}`));
+  state.push(1, Buffer.from(sequence.slice(middle)));
+  expect(await state.replaySnapshot()).toBeNull();
+  state.dispose();
+});
+
+it("restores cwd, title, links, modes and the active pen before further output", async () => {
+  const state = new TerminalScreenState(40, 5, true);
+  const full = create();
+  const restored = create();
+  const prefix =
+    "\x1b]0;old\x07\x1b]2;other\x07\x1b]0;latest\x07\x1b]7;file:///tmp/project\x07\x1b[?2004h\x1b[?1h\x1b[4:3;32m\x1b]8;;https://example.test\x1b\\linked";
+  state.push(0, Buffer.from(prefix));
+  await write(full, prefix);
+  const snapshot = await state.replaySnapshot();
+  if (snapshot === null) throw new Error("no replay snapshot");
+  const cwd: string[] = [];
+  const titles: string[] = [];
+  restored.parser.registerOscHandler(7, (data) => {
+    cwd.push(data);
+    return false;
+  });
+  restored.onTitleChange((title) => titles.push(title));
+  await write(restored, Buffer.from(snapshot.dataBase64, "base64").toString());
+  const suffix = " more\x1b]8;;\x1b\\ plain\r\nnext";
+  await write(full, suffix);
+  await write(restored, suffix);
+  expect(visibleState(restored)).toEqual(visibleState(full));
+  expect(restored.modes).toEqual(full.modes);
+  expect(cwd).toEqual(["file:///tmp/project"]);
+  expect(titles.at(-1)).toBe("latest");
+  state.dispose();
+  full.dispose();
+  restored.dispose();
+});
+
+it("continues inside scrolling margins with origin mode and the current cursor style", async () => {
+  const state = new TerminalScreenState(40, 5, true);
+  const full = create();
+  const restored = create();
+  const prefix =
+    "one\r\ntwo\r\nthree\r\nfour\r\nfive\x1b[2;4r\x1b[?6h\x1b[2;3H\x1bM\x1b[3 q\x1b[32m";
+  state.push(0, Buffer.from(prefix));
+  await write(full, prefix);
+  const snapshot = await state.replaySnapshot();
+  if (snapshot === null) throw new Error("no replay snapshot");
+  await write(restored, Buffer.from(snapshot.dataBase64, "base64").toString());
+  expect(visibleState(restored)).toEqual(visibleState(full));
+  const suffix = "\r\nnew\r\nmore\r\nbottom\x1bM";
+  await write(full, suffix);
+  await write(restored, suffix);
+  expect(visibleState(restored)).toEqual(visibleState(full));
+  expect(restored.options.cursorStyle).toBe(full.options.cursorStyle);
+  expect(restored.modes).toEqual(full.modes);
+  state.dispose();
+  full.dispose();
+  restored.dispose();
+});
+
+it("keeps a wrapped first row after the preceding row has left scrollback", async () => {
+  const state = new TerminalScreenState(40, 5, true);
+  const full = create(40, 5, 10_000);
+  const restored = create(40, 5, 10_000);
+  const data = `${"x".repeat(40 * 20_000)}tail`;
+  state.push(0, Buffer.from(data));
+  await write(full, data);
+  expect(full.buffer.active.getLine(0)?.isWrapped).toBe(true);
+  const snapshot = await state.replaySnapshot();
+  if (snapshot === null) throw new Error("no replay snapshot");
+  await write(restored, Buffer.from(snapshot.dataBase64, "base64").toString());
+  expect(restored.buffer.active.getLine(0)?.isWrapped).toBe(true);
+  expect(bufferState(restored)).toEqual(bufferState(full));
+  state.dispose();
+  full.dispose();
+  restored.dispose();
+});
+
 describe("TerminalScreenState", () => {
   it("reconstructs the full replay's visible cells and cursor from snapshot plus ordered suffix", async () => {
     const before =
@@ -110,8 +246,9 @@ describe("TerminalScreenState", () => {
   });
 
   it("preserves the older-history seam when a lazy history page meets the snapshot and suffix", async () => {
-    const olderRows = Array.from({ length: 2_005 }, (_, index) =>
-      `history-${index + 1}`,
+    const olderRows = Array.from(
+      { length: 2_005 },
+      (_, index) => `history-${index + 1}`,
     );
     const olderLines = `${olderRows.join("\r\n")}\r\n`;
     const before = "\u001b[2J\u001b[Hscreen 界🙂\u001b[5;20H99%";
@@ -135,10 +272,7 @@ describe("TerminalScreenState", () => {
     expect(visibleState(resumed)).toEqual(visibleState(fullReplay));
 
     const droppedAtSeam = create(40, 5, 10_000);
-    await write(
-      droppedAtSeam,
-      `${olderRows.slice(0, -1).join("\r\n")}\r\n`,
-    );
+    await write(droppedAtSeam, `${olderRows.slice(0, -1).join("\r\n")}\r\n`);
     await write(
       droppedAtSeam,
       Buffer.from(snapshot.dataBase64, "base64").toString(),
