@@ -846,6 +846,7 @@ function ThreadRowComponent({
     (showRowMetadata ||
       (hasRowState && parentOptions?.stickyLevel !== undefined)) &&
       "h-auto min-h-[var(--bb-sidebar-row-height)] max-md:pointer-coarse:h-auto max-md:pointer-coarse:min-h-[var(--bb-sidebar-row-height-coarse)]",
+    showRowMetadata && "max-md:pointer-coarse:min-h-11",
     showActive
       ? SIDEBAR_ROW_SELECTED_STATE_CLASS
       : SIDEBAR_ROW_INTERACTIVE_STATE_CLASS,

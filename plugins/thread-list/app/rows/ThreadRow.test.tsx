@@ -2420,9 +2420,7 @@ describe("ThreadRow", () => {
       expect(reservation.classList.contains("shrink-0")).toBe(true);
       expect(reservation.classList.contains("overflow-hidden")).toBe(true);
       expect(reservation.childElementCount).toBe(0);
-      expect(row.className).toContain(
-        "max-md:pointer-coarse:min-h-[var(--bb-sidebar-row-height-coarse)]",
-      );
+      expect(row.className).toContain("max-md:pointer-coarse:min-h-11");
 
       registered = true;
       slot.rerenderThreadRow({ ...thread });
@@ -2455,6 +2453,7 @@ describe("ThreadRow", () => {
         false,
       );
       expect(row.className).toContain("md:h-(--bb-sidebar-desktop-row-height)");
+      expect(row.className).not.toContain("max-md:pointer-coarse:min-h-11");
     },
   );
 
