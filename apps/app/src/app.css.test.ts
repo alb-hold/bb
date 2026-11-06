@@ -45,28 +45,37 @@ describe("app.css sidebar drag cursor", () => {
 });
 
 describe("compact touch targets", () => {
-  const block = css.slice(css.lastIndexOf("@media (width < 48rem)"), css.indexOf("@media (width <= 480px)"));
+  const block = css.slice(
+    css.lastIndexOf("@media (width < 48rem)"),
+    css.indexOf("@media (width <= 480px)"),
+  );
   it.each([
     'data-compact-touch="action"',
     'data-compact-touch="action-menu"',
     'data-compact-touch="code"',
     'data-compact-touch="header"',
     'data-sidebar="trigger"',
-    'data-promptbox-plus-control',
+    "data-promptbox-plus-control",
     'data-compact-touch="voice"',
     'data-compact-touch="picker"',
-    'data-model-reasoning-trigger',
-    'data-compact-touch-summary',
-  ])("reserves a disjoint 44px target for %s only at compact widths", (selector) => {
-    expect(block).toContain(`[${selector}]`);
-    expect(block).toContain("min-inline-size: 44px");
-    expect(block).toContain("min-block-size: 44px");
-    expect(block).not.toMatch(/svg|data-icon-root/);
-  });
+    "data-model-reasoning-trigger",
+    "data-compact-touch-summary",
+  ])(
+    "reserves a disjoint 44px target for %s only at compact widths",
+    (selector) => {
+      expect(block).toContain(`[${selector}]`);
+      expect(block).toContain("min-inline-size: 44px");
+      expect(block).toContain("min-block-size: 44px");
+      expect(block).not.toMatch(/svg|data-icon-root/);
+    },
+  );
 });
 
 it("keeps summary rows compact and splits invisible extensions between neighbours", () => {
-  const block = css.slice(css.lastIndexOf("@media (width < 48rem)"), css.indexOf("@media (width <= 480px)"));
+  const block = css.slice(
+    css.lastIndexOf("@media (width < 48rem)"),
+    css.indexOf("@media (width <= 480px)"),
+  );
   expect(block).not.toMatch(
     /button\[data-compact-touch-summary\]\s*\{\s*min-block-size:/,
   );
@@ -75,26 +84,34 @@ it("keeps summary rows compact and splits invisible extensions between neighbour
   expect(block).toContain(
     "--compact-touch-summary-start: var(--compact-touch-summary-half-gap)",
   );
-  expect(block).toContain(
-    "--compact-touch-summary-end: var(--compact-touch-summary-next-half-gap, var(--compact-touch-summary-half-gap))",
+  expect(block.replace(/\s/g, "")).toContain(
+    "--compact-touch-summary-end:var(--compact-touch-summary-next-half-gap,var(--compact-touch-summary-half-gap))",
   );
 });
 
 it("expands timeline hit areas without increasing their layout heights", () => {
-  const block = css.slice(css.lastIndexOf("@media (width < 48rem)"), css.indexOf("@media (width <= 480px)"));
+  const block = css.slice(
+    css.lastIndexOf("@media (width < 48rem)"),
+    css.indexOf("@media (width <= 480px)"),
+  );
   const timeline = block.slice(block.indexOf('[data-compact-touch="action"]'));
   expect(block).not.toContain("aria-label");
   expect(timeline).not.toContain("min-block-size");
   expect(timeline).toContain('content: ""');
   expect(timeline).toContain("position: absolute");
-  expect(timeline).toContain("inset-block: -12px -4px");
-  expect(timeline).toContain("inset-block: var(--compact-touch-summary-start, -12px)");
+  expect(timeline).toContain("inset-block: calc((100% - 44px) / 2)");
+  expect(timeline).toContain(
+    "inset-block: var(--compact-touch-summary-start, -12px)",
+  );
   expect(timeline).toContain("--compact-touch-summary-half-gap: -4px");
   expect(timeline).toContain("button[data-compact-touch-summary]::after");
 });
 
 it("keeps the last summary hit area inside the animated clip without adding layout height", () => {
-  const block = css.slice(css.lastIndexOf("@media (width < 48rem)"), css.indexOf("@media (width <= 480px)"));
+  const block = css.slice(
+    css.lastIndexOf("@media (width < 48rem)"),
+    css.indexOf("@media (width <= 480px)"),
+  );
   expect(block).toMatch(
     /\[data-compact-touch-height\]:has\(\[data-compact-touch-summary\]\)\s*\{\s*margin-block: -12px;\s*\}/,
   );
@@ -109,4 +126,38 @@ it("limits compact pseudo-element hit areas to coarse pointers", () => {
 
 it("reserves an 8px action gap", () => {
   expect(css).toContain("column-gap: 0.5rem");
+});
+
+it("keeps the home execution controls on one row with voice beside the input", () => {
+  expect(css).toContain("grid-template-columns: 2.75rem minmax(0, 1fr)");
+  expect(css).not.toMatch(/data-promptbox-trailing-actions[^}]*grid-row: 2/s);
+  expect(css).toContain("bottom: 100%");
+  expect(css).toContain("padding-inline-end: 3rem");
+});
+it("centres code hit extensions and reserves space for message action extensions", () => {
+  expect(css).toMatch(
+    /button\[data-compact-touch="code"\]::after\s*\{\s*inset-block: calc\(\(100% - 44px\) \/ 2\);/,
+  );
+  expect(css).toMatch(
+    /\[data-message-action-slot\]\s*\{\s*padding-block: 0.75rem;/,
+  );
+  expect(css).toMatch(/\[data-code-actions\]\s*\{\s*min-height: 2.75rem;/);
+});
+
+it("limits tap-reveal to phones with coarse pointers while retaining accessible actions", () => {
+  const actionsCss = readFileSync(
+    join(
+      dirname(fileURLToPath(import.meta.url)),
+      "components/thread/timeline/message-action-bar.css",
+    ),
+    "utf8",
+  );
+  expect(actionsCss).toContain("@media (width < 48rem) and (pointer: coarse)");
+  expect(actionsCss).toContain(
+    '[data-touch-actions-visible="false"]:not(:focus-within)',
+  );
+  expect(actionsCss).toContain("clip-path: inset(50%)");
+  expect(
+    actionsCss.slice(actionsCss.indexOf("@media (width < 48rem)")),
+  ).not.toContain("display: none");
 });

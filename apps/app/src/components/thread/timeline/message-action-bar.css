@@ -61,9 +61,15 @@
   }
 }
 
-@media (pointer: coarse), (width <= 480px) {
-  [data-touch-actions-visible="false"] [data-message-action-slot] {
-    display: none;
+@media (width < 48rem) and (pointer: coarse) {
+  [data-touch-actions-visible="false"]:not(:focus-within)
+    [data-message-action-slot] {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
   }
 
   [data-touch-actions-visible="true"] [data-message-action-row] button {

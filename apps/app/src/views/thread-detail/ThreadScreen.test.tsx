@@ -442,3 +442,12 @@ describe("ThreadScreen panel ongoing indicator", () => {
     expect(indicator()).toEqual({ label: undefined, show: false });
   });
 });
+
+it("keeps the first phone disclosure hit area below the header", () => {
+  renderScreen({ kind: "page" });
+  const shell = mocks.pageShellProps.at(-1)!;
+  expect(shell.scrollAreaClassName).toContain(
+    "max-md:pointer-coarse:scroll-pt-7",
+  );
+  expect(shell.contentClassName).toContain("max-md:pointer-coarse:pt-7");
+});

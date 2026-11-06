@@ -391,7 +391,7 @@ function useTouchMessageActions(alwaysVisible: boolean) {
       const target = event.target;
       const start = pointerStart.current;
       if (
-        !window.matchMedia("(pointer: coarse), (width <= 480px)").matches ||
+        !window.matchMedia("(width < 48rem) and (pointer: coarse)").matches ||
         !(target instanceof Element) ||
         target.closest(
           'a, button, input, textarea, select, [role="button"], [contenteditable="true"]',
