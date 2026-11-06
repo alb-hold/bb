@@ -1,11 +1,19 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  render,
+  renderHook,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import type {
   SystemExecutionOptionsResponse,
   SystemProviderStatesResponse,
 } from "@bb/server-contract";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ExecutionControls } from "@/components/promptbox/ExecutionControls";
 import { sdk } from "@/lib/sdk";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
 import type { ProviderModelCatalogScope } from "@bb/domain";
@@ -340,6 +348,64 @@ afterEach(() => {
 });
 
 describe("useThreadCreationOptions", () => {
+  it("settles a disabled catalog instead of staying loading forever", async () => {
+    const catalog = createDeferredPromise<SystemExecutionOptionsResponse>();
+    vi.mocked(sdk.system.executionOptions).mockReturnValue(catalog.promise);
+    const { wrapper } = createQueryClientTestHarness();
+    function Controls({ enabled }: { enabled: boolean }) {
+      const options = useThreadCreationOptions({
+        enabled,
+        initialProviderId: GLOBAL_PROVIDER_ID,
+      });
+      return (
+        <ExecutionControls
+          provider={{
+            selectedId: options.selectedProviderId,
+            options: options.providerOptions,
+          }}
+          model={{
+            selected: options.selectedModel,
+            options: options.modelOptions,
+            moreOptions: options.moreModelOptions,
+            isLoading: options.isLoadingModels,
+            loadFailed: options.modelLoadFailed,
+            onChange: options.setSelectedModel,
+          }}
+          reasoning={{
+            value: options.reasoningLevel,
+            options: options.reasoningOptions,
+            onChange: options.setReasoningLevel,
+          }}
+        />
+      );
+    }
+    const view = render(<Controls enabled={false} />, { wrapper });
+    expect(screen.getByText("No models available")).toBeTruthy();
+    expect(sdk.system.executionOptions).not.toHaveBeenCalled();
+
+    view.rerender(<Controls enabled />);
+    await waitFor(() => expect(sdk.system.executionOptions).toHaveBeenCalled());
+    expect(screen.queryByText("No models available")).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Provider, model and reasoning" })
+        .textContent,
+    ).toBe("Model");
+
+    view.rerender(<Controls enabled={false} />);
+    expect(screen.getByText("No models available")).toBeTruthy();
+    view.rerender(<Controls enabled />);
+
+    await act(async () =>
+      catalog.resolve({
+        ...executionOptionsResponse(),
+        providers: executionOptionsResponse().providers.slice(0, 1),
+        models: [],
+        selectedOnlyModels: [],
+      }),
+    );
+    expect(await screen.findByText("No models available")).toBeTruthy();
+  });
+
   it("sends the catalog substitute when a verified catalog omits the stored model", async () => {
     const catalog = createDeferredPromise<SystemExecutionOptionsResponse>();
     vi.mocked(sdk.system.executionOptions).mockReturnValue(catalog.promise);

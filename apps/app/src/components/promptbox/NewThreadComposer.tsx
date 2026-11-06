@@ -623,6 +623,10 @@ export function NewThreadComposer({
     return candidateKnown ? requestedCandidate : PERSONAL_PROJECT_ID;
   }, [candidateKnown, projects, replayKnowsCandidate, requestedCandidate]);
   const isProjectless = isProjectlessProjectId(projectId);
+  const projectPickerIsLoading =
+    !sidebarNavigationQuery.isSuccess ||
+    !replayKnowsCandidate ||
+    (sidebarNavigationQuery.isPlaceholderData && isProjectless);
   const currentProject = useMemo(() => {
     if (isProjectless) {
       const personalProject = sidebarNavigationQuery.data?.personalProject;
@@ -1009,6 +1013,8 @@ export function NewThreadComposer({
     sessionOptionSelections,
     setSessionOption,
   } = creationOptions;
+  const modelPickerIsLoading =
+    projectDefaultsState.status === "pending" || isLoadingModels;
   const selectedThreadModel = activeModel?.model ?? selectedModel;
   const canSubmitPendingCatalog =
     isLoadingModels &&
@@ -2194,7 +2200,7 @@ export function NewThreadComposer({
             onChange: handleProjectChange,
             allowNoProject: options.allowNoProject,
             createProject: options.createProject,
-            isLoading: !sidebarNavigationSettled,
+            isLoading: projectPickerIsLoading,
             disabled:
               locks.project ||
               isUploading ||
@@ -2230,7 +2236,7 @@ export function NewThreadComposer({
               selected: selectedModel,
               options: modelOptions,
               moreOptions: moreModelOptions,
-              isLoading: isLoadingModels,
+              isLoading: modelPickerIsLoading,
               loadFailed: modelLoadFailed,
               loadError: modelLoadError,
               onChange: handleModelChange,
@@ -2291,6 +2297,7 @@ export function NewThreadComposer({
       modelLoadError,
       modelLoadFailed,
       modelOptions,
+      modelPickerIsLoading,
       moreModelOptions,
       permissionMode,
       permissionModeOptions,
@@ -2314,7 +2321,7 @@ export function NewThreadComposer({
       selectedProviderId,
       serviceTier,
       serviceTierSupportByProvider,
-      sidebarNavigationSettled,
+      projectPickerIsLoading,
       supportsPermissionModeSelection,
       supportsServiceTier,
       submitDisabledReason,

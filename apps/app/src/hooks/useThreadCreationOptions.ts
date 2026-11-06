@@ -450,7 +450,7 @@ export function useThreadCreationOptions(
   const isLoadingModels =
     executionOptionsQueryEnabled &&
     (isResolvingReadyProvider ||
-      executionOptionsQuery.isLoading ||
+      executionOptionsQuery.isPending ||
       (executionOptionsQuery.isPlaceholderData &&
         (executionOptionsQuery.data?.models.length ?? 0) === 0));
   const modelLoadError =

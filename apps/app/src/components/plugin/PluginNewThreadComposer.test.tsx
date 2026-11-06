@@ -117,6 +117,7 @@ const mocks = vi.hoisted(() => ({
   projectThreads: [] as ThreadListEntry[],
   sidebarNavigationSettled: true,
   sidebarNavigationReplayed: false,
+  projectsEmpty: false,
   extraProjects: [] as Array<Record<string, unknown>>,
   promptHistoryQueryOptions: [] as Array<{ enabled?: boolean } | undefined>,
   environmentProviders: [] as unknown[],
@@ -293,11 +294,13 @@ vi.mock("@/hooks/queries/sidebar-navigation-query", () => ({
       ? {
           data: {
             sections: [],
-            projects: [
-              { ...PROJECT, threads: mocks.projectThreads },
-              OTHER_PROJECT,
-              ...mocks.extraProjects,
-            ],
+            projects: mocks.projectsEmpty
+              ? []
+              : [
+                  { ...PROJECT, threads: mocks.projectThreads },
+                  OTHER_PROJECT,
+                  ...mocks.extraProjects,
+                ],
             personalProject: makeProjectWithThreadsResponse({
               id: "personal",
               kind: "personal",
@@ -369,11 +372,12 @@ vi.mock("@/hooks/queries/system-queries", async (importOriginal) => ({
       },
     },
   }),
-  useSystemExecutionOptions: () =>
-    mocks.modelsLoading
+  useSystemExecutionOptions: ({ enabled }: { enabled?: boolean } = {}) =>
+    enabled === false || mocks.modelsLoading
       ? {
           data: undefined,
-          isLoading: true,
+          isLoading: enabled !== false,
+          isPending: true,
           isError: false,
           isPlaceholderData: false,
         }
@@ -439,6 +443,7 @@ vi.mock("@/hooks/queries/system-queries", async (importOriginal) => ({
             modelLoadError: null,
           },
           isLoading: false,
+          isPending: false,
           isError: false,
           isPlaceholderData: false,
         },
@@ -489,7 +494,12 @@ vi.mock("@/hooks/queries/project-queries", () => ({
 }));
 
 vi.mock("@/hooks/queries/project-default-execution-options-query", () => ({
-  useProjectDefaultExecutionOptions: () => ({ data: undefined }),
+  useProjectDefaultExecutionOptions: () => ({
+    data: null,
+    isSuccess: true,
+    isError: false,
+    isPlaceholderData: false,
+  }),
 }));
 
 vi.mock("@/hooks/mutations/project-mutations", () => ({
@@ -782,6 +792,7 @@ describe("PluginNewThreadComposer seeding", () => {
     mocks.projectThreads = [];
     mocks.sidebarNavigationSettled = true;
     mocks.sidebarNavigationReplayed = false;
+    mocks.projectsEmpty = false;
     mocks.extraProjects = [];
     mocks.plugins = [];
     mocks.serverAccessReady = true;
@@ -807,11 +818,12 @@ describe("PluginNewThreadComposer seeding", () => {
 
   afterEach(() => {
     mocks.unknownReasoning = false;
+    mocks.projectsEmpty = false;
     cleanup();
     vi.restoreAllMocks();
   });
 
-  function newThreadElement(projectId: string) {
+  function newThreadElement(projectId: string, allowNoProject = false) {
     return (
       <Provider>
         <MemoryRouter>
@@ -823,7 +835,10 @@ describe("PluginNewThreadComposer seeding", () => {
             onSubmit={() => undefined}
           >
             {(composer) =>
-              composer.renderPromptBox({ mentionMenuPlacement: "bottom" })
+              composer.renderPromptBox({
+                mentionMenuPlacement: "bottom",
+                allowNoProject,
+              })
             }
           </NewThreadComposer>
         </MemoryRouter>
@@ -2095,6 +2110,47 @@ describe("PluginNewThreadComposer seeding", () => {
     expect(panel.secondary.activeTabId).toBe(panel.secondary.tabs[0].id);
     view.unmount();
     expect(getFocusedAppPanelController()).toBeNull();
+  });
+
+  it("avoids a false empty model label while project defaults are pending", async () => {
+    mocks.realPromptBox = true;
+    mocks.sidebarNavigationSettled = false;
+    const view = render(newThreadElement("proj_1"));
+    const trigger = await screen.findByRole("button", {
+      name: "Provider, model and reasoning",
+    });
+    expect(trigger.textContent).toBe("Model");
+    expect(screen.queryByText("No models available")).toBeNull();
+
+    mocks.sidebarNavigationSettled = true;
+    view.rerender(newThreadElement("proj_1"));
+    await waitFor(() => expect(trigger.textContent).toContain("5.6"));
+    expect(screen.queryByText("No models available")).toBeNull();
+  });
+
+  it("avoids a false empty project label until sidebar bootstrap succeeds without replay data", async () => {
+    mocks.realPromptBox = true;
+    mocks.projectsEmpty = true;
+    mocks.sidebarNavigationSettled = false;
+    const view = render(newThreadElement(PERSONAL_PROJECT_ID, true));
+    expect(
+      await screen.findByRole("button", { name: "Project: Loading projects…" }),
+    ).toBeTruthy();
+    expect(screen.queryAllByText("No project")).toHaveLength(0);
+
+    mocks.sidebarNavigationSettled = true;
+    mocks.sidebarNavigationReplayed = true;
+    view.rerender(newThreadElement(PERSONAL_PROJECT_ID, true));
+    expect(screen.queryAllByText("No project")).toHaveLength(0);
+    expect(
+      screen.getByRole("button", { name: "Project: Loading projects…" }),
+    ).toBeTruthy();
+
+    mocks.sidebarNavigationReplayed = false;
+    view.rerender(newThreadElement(PERSONAL_PROJECT_ID, true));
+    expect(
+      await screen.findByRole("button", { name: "Project: No project" }),
+    ).toBeTruthy();
   });
 
   it("renders the root composer with a loading project picker before the sidebar bootstrap settles", () => {
