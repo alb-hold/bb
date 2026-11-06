@@ -1,5 +1,14 @@
 import { constants } from "node:fs";
-import { lstat, open, readdir, rename, rmdir, stat, unlink } from "node:fs/promises";
+import {
+  link,
+  lstat,
+  open,
+  readdir,
+  rename,
+  rmdir,
+  stat,
+  unlink,
+} from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 
