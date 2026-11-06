@@ -1,3 +1,10 @@
+import {
+  PluginBranchPicker,
+  PluginNewThreadComposer,
+  ImageLightbox,
+  PluginProviderModelPicker,
+  PluginPermissionModePicker,
+} from "./plugin-sdk-lazy-components";
 import { applicationLinkApprovals } from "./application-url";
 import {
   LazyPluginMarkdown,
@@ -12,12 +19,10 @@ import type {
   PluginSdkApp,
 } from "@get-bb/plugin-sdk";
 import { useSyncExternalStore } from "react";
-import { PluginBranchPicker } from "@/components/plugin/PluginBranchPicker";
 import {
   usePluginBranches,
   usePluginCheckoutState,
 } from "@/components/plugin/usePluginBranchPickerState";
-import { PluginNewThreadComposer } from "@/components/plugin/PluginNewThreadComposer";
 import { useComposerRendererApi } from "@/components/promptbox/ComposerBox";
 import {
   ComposerRoot,
@@ -31,7 +36,6 @@ import { VoiceInputButton } from "@/components/promptbox/VoiceInputButton";
 import { VoiceRecordingBar } from "@/components/promptbox/VoiceRecordingBar";
 import { FailedVoiceRecordings } from "@/components/promptbox/FailedVoiceRecordings";
 import { AppCommandShortcutHint } from "@/components/commands/AppCommandShortcutHint";
-import { ImageLightbox } from "@/components/ui/image-lightbox";
 import { ComposerMentionIcon } from "@/components/promptbox/mentions/PromptMentionIcon";
 import {
   describePromptMention,
@@ -44,8 +48,6 @@ import {
   useThreadTitleDisplayText,
 } from "@/components/thread/ThreadTitleMentions";
 import { VoiceInputTextarea } from "@/components/promptbox/VoiceInputTextarea";
-import { PluginProviderModelPicker } from "@/components/plugin/PluginProviderModelPicker";
-import { PluginPermissionModePicker } from "@/components/plugin/PluginPermissionModePicker";
 import { LazyPluginThreadChat } from "@/components/plugin/LazyPluginThreadChat";
 import { PluginThreadTitle } from "@/components/plugin/PluginThreadTitle";
 import { ThreadStatusGlyph } from "@/components/thread/ThreadStatusGlyph";

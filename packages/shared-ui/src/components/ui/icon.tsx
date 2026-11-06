@@ -1,3 +1,25 @@
+import UserIcon from "@hugeicons/core-free-icons/UserIcon";
+import SquareIcon from "@hugeicons/core-free-icons/SquareIcon";
+import PlusSignIcon from "@hugeicons/core-free-icons/PlusSignIcon";
+import PlayIcon from "@hugeicons/core-free-icons/PlayIcon";
+import PinIcon from "@hugeicons/core-free-icons/PinIcon";
+import PauseIcon from "@hugeicons/core-free-icons/PauseIcon";
+import AttachmentIcon from "@hugeicons/core-free-icons/AttachmentIcon";
+import SidebarRightIcon from "@hugeicons/core-free-icons/SidebarRightIcon";
+import MinusSignIcon from "@hugeicons/core-free-icons/MinusSignIcon";
+import Mic02Icon from "@hugeicons/core-free-icons/Mic02Icon";
+import Mail02Icon from "@hugeicons/core-free-icons/Mail02Icon";
+import KeyboardIcon from "@hugeicons/core-free-icons/KeyboardIcon";
+import GitBranchIcon from "@hugeicons/core-free-icons/GitBranchIcon";
+import ViewOffIcon from "@hugeicons/core-free-icons/ViewOffIcon";
+import LayoutTwoColumnIcon from "@hugeicons/core-free-icons/Layout2ColumnIcon";
+import Clock01Icon from "@hugeicons/core-free-icons/Clock01Icon";
+import ArrowUp01Icon from "@hugeicons/core-free-icons/ArrowUp01Icon";
+import BrowserIcon from "@hugeicons/core-free-icons/BrowserIcon";
+import BrainIcon from "@hugeicons/core-free-icons/BrainIcon";
+import ArrowUpRight01Icon from "@hugeicons/core-free-icons/ArrowUpRight01Icon";
+import ArrowUp02Icon from "@hugeicons/core-free-icons/ArrowUp02Icon";
+import ArrowDown02Icon from "@hugeicons/core-free-icons/ArrowDown02Icon";
 import {
   Component,
   createContext,
@@ -155,6 +177,28 @@ const SectionMoveStrokeRoundedIcon: IconSvgElement = [
 ];
 
 const CORE_ICON_MAP = {
+  UserRound: UserIcon,
+  Square: SquareIcon,
+  Plus: PlusSignIcon,
+  Play: PlayIcon,
+  Pin: PinIcon,
+  Pause: PauseIcon,
+  Paperclip: AttachmentIcon,
+  PanelRight: SidebarRightIcon,
+  Minus: MinusSignIcon,
+  Mic: Mic02Icon,
+  Mail: Mail02Icon,
+  Keyboard: KeyboardIcon,
+  GitBranch: GitBranchIcon,
+  EyeOff: ViewOffIcon,
+  Columns2: LayoutTwoColumnIcon,
+  Clock: Clock01Icon,
+  ChevronUp: ArrowUp01Icon,
+  Browser: BrowserIcon,
+  Brain: BrainIcon,
+  ArrowUpRight: ArrowUpRight01Icon,
+  ArrowUp: ArrowUp02Icon,
+  ArrowDown: ArrowDown02Icon,
   AlertCircle: AlertCircleIcon,
   AlertTriangle: Alert02Icon,
   Archive: Archive03Icon,

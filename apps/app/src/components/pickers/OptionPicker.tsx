@@ -1,16 +1,12 @@
-import type { ComponentType, ReactElement, ReactNode } from "react";
 import { Button } from "@bb/shared-ui/button";
-import { Icon } from "@bb/shared-ui/icon";
-import { COARSE_POINTER_ICON_SIZE_CLASS } from "@bb/shared-ui/coarse-pointer-sizing";
 import {
   DropdownMenu,
   DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
   DropdownMenuTrigger,
 } from "@bb/shared-ui/dropdown-menu";
-import { LIST_HOVER_TRANSITION } from "@bb/shared-ui/motion";
+import { Icon } from "@bb/shared-ui/icon";
 import { cn } from "@bb/shared-ui/lib/utils";
+import { LIST_HOVER_TRANSITION } from "@bb/shared-ui/motion";
 import {
   OPTION_BASE_CLASS_NAME,
   OPTION_INTERACTIVE_CLASS_NAME,
@@ -18,6 +14,8 @@ import {
   OPTION_MUTED_CLASS_NAME,
   OPTION_TRIGGER_CONTENT_CLASS_NAME,
 } from "@bb/shared-ui/option-display";
+import type { ComponentType, ReactElement, ReactNode } from "react";
+import { OptionPickerItems } from "./OptionPickerItemsSplit";
 
 const OPTION_WARNING_TEXT_CLASS_NAME = "text-warning-text";
 const OPTION_WARNING_INTERACTIVE_CLASS_NAME =
@@ -116,7 +114,10 @@ export function OptionPicker<T extends string>({
       )}
     >
       <span className={OPTION_TRIGGER_CONTENT_CLASS_NAME} title={selectedTitle}>
-        {leading ?? (SelectedIcon ? <SelectedIcon className="size-3.5 shrink-0" /> : null)}
+        {leading ??
+          (SelectedIcon ? (
+            <SelectedIcon className="size-3.5 shrink-0" />
+          ) : null)}
         {iconOnly ? null : selectedCompactLabel ? (
           <>
             <span className="min-w-0 truncate" data-promptbox-full-label="">
@@ -148,64 +149,24 @@ export function OptionPicker<T extends string>({
 
   return (
     <DropdownMenu defaultOpen={defaultOpen} modal={modal}>
-      <DropdownMenuTrigger asChild>{trigger}</DropdownMenuTrigger>
+      <DropdownMenuTrigger asChild {...OptionPickerItems.intentProps}>
+        {trigger}
+      </DropdownMenuTrigger>
       <DropdownMenuContent
         align={align}
         className={cn(OPTION_MENU_CONTENT_CLASS_NAME, contentClassName)}
         mobileTitle={label}
       >
-        <DropdownMenuLabel>{label}</DropdownMenuLabel>
-        {notice}
-        {options.map((option) => {
-          const OptionIcon = option.icon;
-          return (
-            <DropdownMenuItem
-              key={option.value}
-              disabled={option.disabled}
-              onSelect={() => onChange(option.value)}
-              className={cn(
-                "flex items-start justify-between gap-3 whitespace-normal",
-                LIST_HOVER_TRANSITION,
-              )}
-            >
-              <span
-                className={cn(
-                  "flex min-w-0 flex-1 items-start gap-2",
-                  option.tone === "warning" && "text-warning-text",
-                )}
-              >
-                {OptionIcon ? (
-                  <OptionIcon className="size-4 shrink-0 max-md:pointer-coarse:mt-0.5" />
-                ) : null}
-                <span className="min-w-0 flex-1">
-                  <span
-                    className="block whitespace-normal break-words font-medium"
-                    title={option.label}
-                  >
-                    {option.label}
-                  </span>
-                  {option.disabled && option.disabledReason ? (
-                    <span className="mt-0.5 block whitespace-normal break-words text-xs leading-snug text-muted-foreground">
-                      {option.disabledReason}
-                    </span>
-                  ) : option.description ? (
-                    <span className="mt-0.5 block whitespace-normal break-words text-xs leading-snug text-muted-foreground">
-                      {option.description}
-                    </span>
-                  ) : null}
-                </span>
-              </span>
-              <Icon
-                name="Check"
-                className={cn(
-                  COARSE_POINTER_ICON_SIZE_CLASS,
-                  "shrink-0",
-                  option.value === value ? "opacity-100" : "opacity-0",
-                )}
-              />
-            </DropdownMenuItem>
-          );
-        })}
+        <OptionPickerItems
+          label={label}
+          notice={notice}
+          options={options}
+          onChange={(next) => {
+            const option = options.find((option) => option.value === next);
+            if (option) onChange(option.value);
+          }}
+          value={value}
+        />
       </DropdownMenuContent>
     </DropdownMenu>
   );

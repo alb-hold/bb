@@ -1,4 +1,9 @@
-import { useState, type ComponentProps, type ReactNode } from "react";
+import {
+  useEffect,
+  useState,
+  type ComponentProps,
+  type ReactNode,
+} from "react";
 import { Skeleton } from "@bb/shared-ui/skeleton";
 import { COARSE_POINTER_HEADER_ICON_BUTTON_CLASS } from "@bb/shared-ui/coarse-pointer-sizing";
 import { cn } from "@bb/shared-ui/lib/utils";
@@ -89,6 +94,10 @@ export function RootComposeSecondaryContent({
   onToggleSecondaryPanel,
   secondaryPanel,
 }: RootComposeSecondaryContentProps) {
+  const [panelRealized, setPanelRealized] = useState(isSecondaryPanelOpen);
+  useEffect(() => {
+    if (isSecondaryPanelOpen) setPanelRealized(true);
+  }, [isSecondaryPanelOpen]);
   const paneContext = useOptionalPaneContext();
   const secondaryPanelHost = paneContext?.secondaryPanelHost ?? null;
   const composerHost = usePluginComposerHost();
@@ -154,27 +163,29 @@ export function RootComposeSecondaryContent({
           canShowNativeBrowserView,
           onToggleMainCollapse,
           resizablePanelId,
-        }) => (
-          <LazyThreadSecondaryPanel
-            {...threadSecondaryPanelProps}
-            drawerFallback={<DrawerPanelLoadingSkeleton />}
-            renderBrowserDeck={(activeBrowserTabId, pane) =>
-              renderBrowserDeck?.({
-                activeBrowserTabId,
-                canHandleBrowserCommands:
-                  canShowNativeBrowserView && pane.isFocused,
-                canShowNativeBrowserView,
-                onNativeFocus: pane.onFocusPane,
-              })
-            }
-            renderAsDrawer={presentation === "drawer"}
-            isConversationCollapsed={false}
-            onToggleConversationCollapse={onToggleMainCollapse}
-            showNewTabButton
-            resizablePanelId={resizablePanelId}
-            isAtWindowTop={paneContext?.isTopRow !== false}
-          />
-        )}
+        }) =>
+          isSecondaryPanelOpen || panelRealized ? (
+            <LazyThreadSecondaryPanel
+              {...threadSecondaryPanelProps}
+              drawerFallback={<DrawerPanelLoadingSkeleton />}
+              renderBrowserDeck={(activeBrowserTabId, pane) =>
+                renderBrowserDeck?.({
+                  activeBrowserTabId,
+                  canHandleBrowserCommands:
+                    canShowNativeBrowserView && pane.isFocused,
+                  canShowNativeBrowserView,
+                  onNativeFocus: pane.onFocusPane,
+                })
+              }
+              renderAsDrawer={presentation === "drawer"}
+              isConversationCollapsed={false}
+              onToggleConversationCollapse={onToggleMainCollapse}
+              showNewTabButton
+              resizablePanelId={resizablePanelId}
+              isAtWindowTop={paneContext?.isTopRow !== false}
+            />
+          ) : null
+        }
       />
     </div>
   );

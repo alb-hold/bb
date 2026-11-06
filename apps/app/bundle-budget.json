@@ -233,7 +233,11 @@
     "src/views/AuthCallbackView.tsx": ["boot"],
     "src/components/tools/ResourceSidebar.tsx": ["boot"],
     "src/components/settings/SettingsSidebar.tsx": ["boot"],
-    "src/components/dialogs/RemotePathBrowser.tsx": ["boot"],
+    "src/components/dialogs/RemotePathBrowser.tsx": [
+      "boot",
+      "ThreadPage",
+      "NewThreadPage"
+    ],
     "src/lib/plugin-sdk-hooks.ts": ["boot"],
     "src/lib/plugin-sidebar-hooks.ts": ["boot"],
     "src/components/promptbox/MicrophonePreferences.tsx": [
@@ -304,11 +308,6 @@
       "ThreadPage",
       "NewThreadPage"
     ],
-    "src/components/dialogs/RemotePathBrowser.tsx": [
-      "boot",
-      "ThreadPage",
-      "NewThreadPage"
-    ],
     "src/components/thread/terminal/ThreadTerminalPanel.tsx": [
       "boot",
       "ThreadPage",
@@ -351,7 +350,44 @@
       "NewThreadPage",
       "PluginFrontend"
     ],
-    "src/views/RootComposeView.tsx": ["boot", "ThreadPage"]
+    "src/views/RootComposeView.tsx": ["boot", "ThreadPage"],
+    "src/views/RootComposePanelTabContent.tsx": [
+      "boot",
+      "NewThreadPage",
+      "PluginFrontend"
+    ],
+    "src/components/thread/ThreadMenuItems.tsx": [
+      "boot",
+      "NewThreadPage",
+      "PluginFrontend",
+      "ThreadPage"
+    ],
+    "src/components/pickers/OptionPickerItems.tsx": [
+      "boot",
+      "NewThreadPage",
+      "PluginFrontend",
+      "ThreadPage"
+    ],
+    "src/components/plugin/PluginNewThreadComposer.tsx": [
+      "boot",
+      "PluginFrontend"
+    ],
+    "src/components/plugin/PluginProviderModelPicker.tsx": [
+      "boot",
+      "PluginFrontend"
+    ],
+    "src/components/plugin/PluginPermissionModePicker.tsx": [
+      "boot",
+      "PluginFrontend"
+    ],
+    "src/components/plugin/PluginBranchPicker.tsx": ["boot", "PluginFrontend"],
+    "src/components/ui/image-lightbox.tsx": ["boot", "PluginFrontend"],
+    "../../packages/shared-ui/src/components/ui/icon-extended.tsx": [
+      "boot",
+      "NewThreadPage",
+      "PluginFrontend",
+      "ThreadPage"
+    ]
   },
   "onDemandPackages": {
     "ansi-to-html": "src/components/thread/timeline/TerminalOutputBlock.tsx",
@@ -362,8 +398,8 @@
   },
   "routeClosures": {
     "PluginFrontend": {
-      "maxBytes": 505290,
-      "maxBrotliBytes": 162937,
+      "maxBytes": 281000,
+      "maxBrotliBytes": 100000,
       "forbiddenPackages": [
         "@radix-ui/react-hover-card",
         "@radix-ui/react-menubar",
@@ -382,8 +418,8 @@
       ]
     },
     "ThreadPage": {
-      "maxBytes": 2428911,
-      "maxBrotliBytes": 699019,
+      "maxBytes": 1660000,
+      "maxBrotliBytes": 505000,
       "forbiddenPackages": [
         "@dnd-kit/accessibility",
         "@dnd-kit/core",
@@ -418,8 +454,8 @@
       ]
     },
     "NewThreadPage": {
-      "maxBytes": 850000,
-      "maxBrotliBytes": 270000,
+      "maxBytes": 670000,
+      "maxBrotliBytes": 230000,
       "forbiddenPackages": [
         "@dnd-kit/accessibility",
         "@dnd-kit/core",

@@ -131,6 +131,7 @@ import {
   RootComposeSecondaryContent,
   useRootComposePinnedPanelToggleBoxClassName,
 } from "./RootComposeSecondaryContent";
+import { RootComposePanelTabContent } from "./RootComposePanelTabContentSplit";
 import { RootComposeMobileRecents } from "./RootComposeMobileRecents";
 import {
   shouldLoadThreadStorageFileList,
@@ -173,9 +174,8 @@ import { usePluginDetailTabOpener } from "@/components/plugin/plugin-detail-navi
 import { RootComposePanelCommandHandlers } from "./RootComposePanelCommandHandlers";
 import {
   ROOT_COMPOSE_FIXED_PANEL_STATE_ID,
-  RootComposePanelTabContent,
   type RootComposeTerminalTarget,
-} from "./RootComposePanelTabContent";
+} from "./root-compose-panel-types";
 
 const ROOT_COMPOSE_SIDEBAR_ACTION_ALIGNED_TOP_PADDING_CLASS = "pt-14";
 
@@ -267,6 +267,10 @@ export function RootComposeRightPanelToggle({
   isOpen,
   onToggle,
 }: RootComposeRightPanelToggleProps) {
+  const warmPanel = () => {
+    preloadThreadSecondaryPanel();
+    void RootComposePanelTabContent.preload();
+  };
   const shortcut = useAppCommandShortcut("panel.toggle");
   const rightPanelLabel = isOpen ? "Hide right panel" : "Show right panel";
   const rightPanelIconName = RIGHT_PANEL_TOGGLE_ICON_NAME;
@@ -276,16 +280,19 @@ export function RootComposeRightPanelToggle({
       type="button"
       variant="ghost"
       size="icon"
-      className={cn(HEADER_ICON_BUTTON_CLASS, "relative max-md:size-11 max-md:pointer-coarse:size-11")}
+      className={cn(
+        HEADER_ICON_BUTTON_CLASS,
+        "relative max-md:size-11 max-md:pointer-coarse:size-11",
+      )}
       data-compact-touch="header"
       aria-label={
         shortcut ? `${rightPanelLabel} (${shortcut.label})` : rightPanelLabel
       }
       aria-keyshortcuts={shortcut?.ariaKeyshortcuts}
       aria-expanded={isOpen}
-      onPointerEnter={preloadThreadSecondaryPanel}
-      onFocus={preloadThreadSecondaryPanel}
-      onPointerDown={preloadThreadSecondaryPanel}
+      onPointerEnter={warmPanel}
+      onFocus={warmPanel}
+      onPointerDown={warmPanel}
       onClick={onToggle}
     >
       <Icon name={rightPanelIconName} />

@@ -170,7 +170,7 @@ function renderRootCompose(args: RenderRootComposeArgs) {
               renderArgs.isSecondaryPanelOpen,
             )}
           >
-            <div data-testid="root-compose-content" />
+            <div data-testid="root-compose-content" tabIndex={0} />
           </RootComposeSecondaryContent>
         </CompactViewportOverrideProvider>
       </Provider>,
@@ -194,6 +194,29 @@ afterEach(() => {
 });
 
 describe("RootComposeSecondaryContent desktop layout", () => {
+  it("realizes the first opened panel while preserving the composer node and focus", async () => {
+    const view = renderRootCompose({
+      isCompactViewport: false,
+      isSecondaryPanelOpen: false,
+    });
+    const composer = screen.getByTestId("root-compose-content");
+    composer.focus();
+    expect(screen.queryByTestId("inline-secondary-panel")).toBeNull();
+    view.rerenderWith({ isSecondaryPanelOpen: true });
+    expect(
+      (await screen.findByTestId("inline-secondary-panel")).getAttribute(
+        "data-open",
+      ),
+    ).toBe("true");
+    expect(screen.getByTestId("root-compose-content")).toBe(composer);
+    expect(document.activeElement).toBe(composer);
+    view.rerenderWith({ isSecondaryPanelOpen: false });
+    expect(
+      screen.getByTestId("inline-secondary-panel").getAttribute("data-open"),
+    ).toBe("false");
+    expect(screen.getByTestId("root-compose-content")).toBe(composer);
+  });
+
   it("moves Recent between desktop and compact layouts while keeping the composer mounted", () => {
     const compactContent = (
       <ul data-testid="compact-recents">
@@ -211,7 +234,7 @@ describe("RootComposeSecondaryContent desktop layout", () => {
           onToggleSecondaryPanel={noop}
           secondaryPanel={createSecondaryPanel(false)}
         >
-          <div data-testid="root-compose-content" />
+          <div data-testid="root-compose-content" tabIndex={0} />
         </RootComposeSecondaryContent>
       </CompactViewportOverrideProvider>
     );
