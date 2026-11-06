@@ -194,49 +194,28 @@ export const NewThreadPromptBoxUI = memo(function NewThreadPromptBoxUI(
 const subscribeToNoDraft = () => () => {};
 const getNoDraft = () => null;
 
-function LiveNewThreadComposer({
-  id,
-  value: initialValue,
-  mentionRanges: initialMentions,
-  onChange,
-  onSubmit,
-  isSubmitting,
-  disabled,
-  disabledReason,
-  autoFocus,
-  pluginComposerHost,
-  textEffects,
-  placeholder: placeholderOverride,
-  history: initialHistory,
-  typeahead,
-  attachments: initialAttachments,
-  promptActions,
-  mentionMenuPlacement,
-  modeConfig,
-  project,
-  execution,
-  draftSource,
-  promptBoxRef,
-  voice,
-  focusDefault,
-}: NewThreadPromptBoxUIProps & {
-  promptBoxRef: RefObject<PromptBoxHandle | null>;
-  voice: ReturnType<typeof usePromptVoice>;
-  focusDefault: () => boolean;
-}) {
+function LiveNewThreadComposer(
+  props: NewThreadPromptBoxUIProps & {
+    promptBoxRef: RefObject<PromptBoxHandle | null>;
+    voice: ReturnType<typeof usePromptVoice>;
+    focusDefault: () => boolean;
+  },
+) {
+  "use no memo";
+  const { draftSource, pluginComposerHost, execution, focusDefault } = props;
   const draft = useSyncExternalStore(
     draftSource?.subscribe ?? subscribeToNoDraft,
     draftSource?.getCurrent ?? getNoDraft,
     draftSource?.getCurrent ?? getNoDraft,
   );
-  const value = draft?.text ?? initialValue;
-  const mentionRanges = draft?.mentions ?? initialMentions;
+  const value = draft?.text ?? props.value;
+  const mentionRanges = draft?.mentions ?? props.mentionRanges;
   const history = draft
-    ? { ...initialHistory, currentDraft: draft }
-    : initialHistory;
+    ? { ...props.history, currentDraft: draft }
+    : props.history;
   const attachments = draft
-    ? { ...initialAttachments, items: draft.attachments }
-    : initialAttachments;
+    ? { ...props.attachments, items: draft.attachments }
+    : props.attachments;
   const attachmentCount = attachments.items?.length ?? 0;
   const [composerLayout, setComposerLayout] =
     useState<ComposerView["layout"]>("expanded");
@@ -246,7 +225,7 @@ function LiveNewThreadComposer({
     text: value,
     attachmentCount,
     isRunning: false,
-    isSubmitting,
+    isSubmitting: props.isSubmitting,
   });
   const controller = useComposerExtensionController({
     host: execution.pending ? null : (pluginComposerHost ?? null),
@@ -259,27 +238,11 @@ function LiveNewThreadComposer({
       controller={controller}
       defaultRenderer={
         <DefaultNewThreadComposer
-          id={id}
+          {...props}
           value={value}
           mentionRanges={mentionRanges}
-          onChange={onChange}
-          onSubmit={onSubmit}
-          promptBoxRef={promptBoxRef}
-          isSubmitting={isSubmitting}
-          disabled={disabled}
-          disabledReason={disabledReason}
-          autoFocus={autoFocus}
-          textEffects={textEffects}
-          placeholder={placeholderOverride}
           history={history}
-          typeahead={typeahead}
           attachments={attachments}
-          promptActions={promptActions}
-          mentionMenuPlacement={mentionMenuPlacement}
-          modeConfig={modeConfig}
-          project={project}
-          execution={execution}
-          voice={voice}
           onComposerLayoutChange={setComposerLayout}
           onFocusCommand={controller.focus}
         />
