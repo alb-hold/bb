@@ -9,6 +9,40 @@ let root: object | null = null;
 export function traceStartupRoot(value: object, container: HTMLElement) {
   const internal: unknown = Reflect.get(value, "_internalRoot");
   if (typeof internal === "object" && internal !== null) root = internal;
+  if (root) {
+    let cache: unknown = Reflect.get(root, "pingCache");
+    const ids = new WeakMap<object, number>();
+    let nextId = 0;
+    const record = (phase: string, wakeable: unknown) => {
+      if (!recording || typeof wakeable !== "object" || wakeable === null)
+        return;
+      let id = ids.get(wakeable);
+      if (id === undefined) ids.set(wakeable, (id = ++nextId));
+      performance.mark(`p41-wakeable:${phase}`, {
+        detail: {
+          id,
+          status: Reflect.get(wakeable, "status"),
+          pendingLanes: root && Reflect.get(root, "pendingLanes"),
+        },
+      });
+    };
+    Object.defineProperty(root, "pingCache", {
+      configurable: true,
+      get: () => cache,
+      set: (next: unknown) => {
+        cache = next;
+        if (typeof next !== "object" || next === null) return;
+        for (const key of ["set", "delete"]) {
+          const original: unknown = Reflect.get(next, key);
+          if (typeof original !== "function") continue;
+          Reflect.set(next, key, (...args: unknown[]) => {
+            record(key, args[0]);
+            return Reflect.apply(original, next, args);
+          });
+        }
+      },
+    });
+  }
   let previous = 0;
   const observer = new MutationObserver(() => {
     const total = container.querySelectorAll("[data-sidebar-thread-id]").length;
