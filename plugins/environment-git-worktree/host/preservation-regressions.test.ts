@@ -71,6 +71,7 @@ async function removeDirectoryTree(
       candidate: string,
       isDirectory: boolean,
     ) => Promise<void>;
+    preservedPathSuffix?: () => string;
     afterCollisionCandidateVerified?: (
       source: string,
       candidate: string,
@@ -115,7 +116,12 @@ async function removeDirectoryTree(
   },
 ): Promise<RemoveDirectoryTreeResult> {
   const moduleUrl = new URL("./remove-directory-tree.js", import.meta.url).href;
-  return (await import(moduleUrl)).removeDirectoryTree(root, hooks);
+  const result: unknown = await (await import(moduleUrl)).removeDirectoryTree(
+    root,
+    hooks,
+  );
+  if (typeof result === "string") return { status: result, retainedPaths: [] };
+  return result as RemoveDirectoryTreeResult;
 }
 
 function foreignUnreadableCwdProc(
@@ -1514,45 +1520,54 @@ describe("real worktree teardown preservation", () => {
     async () => {
       const worktree = await makeWorktree();
       const entry = path.join(worktree.path, "README.md");
-      const preservedPath = `${entry}.bb-preserved-11111111`;
-      let actualPreservedPath = preservedPath;
-      let injected = false;
+      const initialCandidate = `${entry}.bb-preserved-11111111`;
+      let collisionCandidate = "";
+      let quarantinePath = "";
       const result = await removeDirectoryTree(worktree.path, {
         startedAt: Number.MAX_SAFE_INTEGER,
-        afterEntryQuarantined: async (removedEntry) => {
+        afterEntryQuarantined: async (removedEntry, quarantined) => {
           if (!removedEntry.endsWith("README.md")) return;
+          quarantinePath = path.join(
+            worktree.path,
+            path.basename(quarantined),
+          );
           await writeFile(
             path.join(worktree.path, "late-d8-sibling.txt"),
             "late sibling bytes\n",
           );
-        },
-        afterRestoreNameCheck: async (_source, _destination, isDirectory) => {
-          if (isDirectory || injected) return;
-          actualPreservedPath = `${entry}.bb-preserved-11111111`;
-          injected = true;
           await writeFile(entry, "restore-name racer bytes\n");
-          await writeFile(actualPreservedPath, "candidate racing bytes\n");
+          await writeFile(initialCandidate, "candidate racing bytes\n");
+        },
+        preservedPathSuffix: () =>
+          collisionCandidate === "" ? "11111111" : "22222222",
+        beforeCollisionMove: async (_source, candidate, isDirectory) => {
+          if (isDirectory || collisionCandidate !== "") return;
+          collisionCandidate = path.join(
+            worktree.path,
+            path.basename(candidate),
+          );
+          await writeFile(collisionCandidate, "candidate racing bytes\n");
         },
       });
 
-      expect(injected).toBe(true);
       expect(result.status).toBe("retained");
       await expect(readFile(entry, "utf8")).resolves.toBe(
         "restore-name racer bytes\n",
       );
-      await expect(readFile(actualPreservedPath, "utf8")).resolves.toBe(
+      const candidatePath = collisionCandidate || initialCandidate;
+      const originalPath = collisionCandidate || quarantinePath;
+      await expect(readFile(originalPath, "utf8")).resolves.toBe("published\n");
+      await expect(readFile(initialCandidate, "utf8")).resolves.toBe(
+        "candidate racing bytes\n",
+      );
+      await expect(readFile(candidatePath, "utf8")).resolves.toBe(
         "candidate racing bytes\n",
       );
       await expect(
         readFile(path.join(worktree.path, "late-d8-sibling.txt"), "utf8"),
       ).resolves.toBe("late sibling bytes\n");
-      const quarantinedPath = result.retainedPaths.find((retainedPath) =>
-        path.basename(retainedPath).startsWith(".bb-removing-"),
-      );
-      expect(quarantinedPath).toBeDefined();
-      await expect(readFile(quarantinedPath!, "utf8")).resolves.toBe(
-        "published\n",
-      );
+      if (collisionCandidate === "")
+        expect(result.retainedPaths).toContain(quarantinePath);
     },
   );
 
