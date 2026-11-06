@@ -1051,7 +1051,7 @@ describe("PluginPanelRightPanelHost", () => {
     expect(
       screen
         .getByRole("button", { name: "Navigation" })
-        .querySelector('[data-icon="ChevronLeft"]'),
+        .querySelector('[data-icon="PanelRight"]'),
     ).not.toBeNull();
     expect(screen.queryByText("Details for task/123")).toBeNull();
 
