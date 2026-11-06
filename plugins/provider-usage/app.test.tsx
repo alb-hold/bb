@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { UsageProvider } from "./usage-schema.js";
 import type { PluginSidebarThread } from "@get-bb/plugin-sdk/app";
@@ -314,6 +314,9 @@ function selectMachine(
 describe("provider usage footer disclosure", () => {
   it("aggregates every machine", async () => {
     const { item, slot, fetchMock } = await setupUsageDisclosure();
+    expect(slot.getByRole("tabpanel").parentElement!.className).toContain(
+      "max-md:pointer-coarse:h-48",
+    );
     expect(item).toMatchObject({
       kind: "disclosure",
       id: "usage",
@@ -749,4 +752,31 @@ it("keeps a measured refresh when an older snapshot response arrives late", asyn
   expect(slot.queryByText("Usage not reported.")).toBeNull();
   expect(slot.getByText("37%")).toBeTruthy();
   await mounted.lifecycle.dispose();
+});
+
+it("reserves the phone disclosure height during loading and after an empty response", async () => {
+  const { ProviderUsageStatusContent } = await import("./app");
+  const props = {
+    pluginId: "bb--provider-usage",
+    dismiss: vi.fn(),
+    threadMachineId: null,
+    refreshEnabled: false,
+  };
+  const view = render(
+    <ProviderUsageStatusContent
+      {...props}
+      snapshot={{ data: null, error: null, isRefreshing: true }}
+    />,
+  );
+  const panel = view.getByRole("tabpanel").parentElement!;
+  expect(panel.className).toContain("max-md:pointer-coarse:h-48");
+  expect(view.getByRole("status")).toBeTruthy();
+  view.rerender(
+    <ProviderUsageStatusContent
+      {...props}
+      snapshot={{ data: { machines: [] }, error: null, isRefreshing: false }}
+    />,
+  );
+  expect(view.getByRole("tabpanel").parentElement).toBe(panel);
+  expect(panel.className).toContain("max-md:pointer-coarse:h-48");
 });

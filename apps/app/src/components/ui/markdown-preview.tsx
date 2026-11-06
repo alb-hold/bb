@@ -773,9 +773,10 @@ function MarkdownCodeBlock({
   }
 
   return (
-    <div className="my-2 overflow-hidden rounded-md border border-border bg-surface-recessed">
+    <div className="my-2 overflow-visible rounded-md border border-border bg-surface-recessed">
       <div
         data-clipboard-ignore
+        data-code-actions=""
         className="flex items-center justify-between pl-3 pr-1.5 pt-1.5"
       >
         <span className="font-mono text-xs uppercase text-muted-foreground">
@@ -801,7 +802,11 @@ function MarkdownCodeBlock({
               <TooltipContent side="bottom">{LINE_WRAP_LABEL}</TooltipContent>
             </Tooltip>
           </TooltipProvider>
-          <CopyButton data-compact-touch="code" text={codeText} label="Copy code" />
+          <CopyButton
+            data-compact-touch="code"
+            text={codeText}
+            label="Copy code"
+          />
         </div>
       </div>
       <pre

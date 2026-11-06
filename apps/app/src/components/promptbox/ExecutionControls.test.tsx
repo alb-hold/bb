@@ -538,3 +538,25 @@ describe("ExecutionControls", () => {
     expect(trigger.textContent).not.toContain("Failed to load models");
   });
 });
+
+it.each([false, true])(
+  "keeps phone mode selection distinct with loading=%s",
+  (loading) => {
+    const props = makeExecutionControlsProps();
+    const { container } = renderExecutionControls({
+      ...props,
+      pending: loading,
+      model: { ...props.model, isLoading: loading },
+      nativeTerminal: { enabled: true, onChange: vi.fn() },
+    });
+    const pill = container.querySelector("[data-model-reasoning-trigger]")!;
+    expect(pill.className).toContain("max-md:h-11");
+    expect(pill.className).toContain("max-md:rounded-md");
+    expect(pill.className).toContain("max-md:bg-transparent");
+    const terminal = screen.getByRole("radio", { name: "Terminal" });
+    expect(terminal.getAttribute("data-state")).toBe("on");
+    expect(terminal.className).toContain("max-md:h-11");
+    expect(terminal.className).toContain("max-md:px-2");
+    expect(terminal.parentElement!.className).toContain("w-max");
+  },
+);

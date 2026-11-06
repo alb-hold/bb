@@ -695,8 +695,8 @@ export function ThreadScreen({
             }
             scrollContentInsetEndPx={contextCardInset}
             shellClassName="!mx-0 !mt-0 md:!mx-0 md:!mt-0"
-            scrollAreaClassName="scroll-pt-4"
-            contentClassName="gap-2 pt-4"
+            scrollAreaClassName="scroll-pt-4 max-md:pointer-coarse:scroll-pt-7"
+            contentClassName="gap-2 pt-4 max-md:pointer-coarse:pt-7"
             footerClassName="chat-prompt-box"
             footer={promptArea}
             scrollOverlay={
@@ -795,9 +795,14 @@ function ThreadScreenPanelShell({
     >
       <BottomAnchoredScrollBody
         key={threadId}
-        scrollAreaClassName={cn(surfaceClassName, "scroll-pt-4")}
+        scrollAreaClassName={cn(
+          surfaceClassName,
+          "scroll-pt-4 max-md:pointer-coarse:scroll-pt-7",
+        )}
         contentClassName={
-          measure === "page" ? "!pb-3 !pt-4" : "!px-2 !pb-3 !pt-4"
+          measure === "page"
+            ? "!pb-3 !pt-4 max-md:pointer-coarse:!pt-7"
+            : "!px-2 !pb-3 !pt-4 max-md:pointer-coarse:!pt-7"
         }
         maxWidthClassName={maxWidthClassName}
         footer={footer}
