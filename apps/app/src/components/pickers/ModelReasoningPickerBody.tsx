@@ -542,7 +542,7 @@ export function ModelReasoningPickerBody({
           isEditableKeyboardTarget(target),
       };
     },
-    [disabled, isFocusedPane, isSplitPane],
+    [disabled, isFocusedPane, isSplitPane, triggerRef],
   );
   useAppCommandContext(
     "modelPickerOpen",

@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Icon } from "@bb/shared-ui/icon";
 import { cn } from "@bb/shared-ui/lib/utils";
 import { getNativeShell } from "@/lib/native-shell/native-shell";
@@ -81,7 +81,7 @@ export function TerminalMobileControls({
   const [expanded, setExpanded] = useState(false);
   const [secondaryKeysInline, setSecondaryKeysInline] = useState(false);
   const scrollerRef = useRef<HTMLDivElement>(null);
-  const updateOverflow = () => {
+  const updateOverflow = useCallback(() => {
     const scroller = scrollerRef.current;
     if (!scroller) return;
     setSecondaryKeysInline(
@@ -96,7 +96,7 @@ export function TerminalMobileControls({
       left || right
         ? `linear-gradient(to right, ${left ? "transparent, var(--ink) 16px" : "var(--ink)"}, ${right ? "var(--ink) calc(100% - 16px), transparent" : "var(--ink)"})`
         : "none";
-  };
+  }, [searchAvailable]);
   useLayoutEffect(() => {
     updateOverflow();
     const scroller = scrollerRef.current;
@@ -104,7 +104,7 @@ export function TerminalMobileControls({
     const observer = new ResizeObserver(updateOverflow);
     observer.observe(scroller);
     return () => observer.disconnect();
-  }, [searchAvailable]);
+  }, [updateOverflow]);
   const keyProps = { disabled };
   const readOnlyKeyProps = { disabled: readOnlyDisabled };
   const readOnlyExited = disabled && !readOnlyDisabled;
