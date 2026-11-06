@@ -45,6 +45,7 @@ afterEach(() => {
   focusManager.setFocused(undefined);
   cleanup();
   vi.restoreAllMocks();
+  vi.useRealTimers();
   vi.unstubAllGlobals();
 });
 
@@ -1522,6 +1523,7 @@ describe("SkillDetailDialogView", () => {
       providerIcon: "bb",
     },
   ])("presents $skill.name as plugin-provided", async (example) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     renderSkillDetailDialog(example.skill);
 
     const included = screen.getByLabelText(example.accessibleLabel);
@@ -1530,7 +1532,8 @@ describe("SkillDetailDialogView", () => {
       screen.queryByRole("button", { name: `${example.skill.name} actions` }),
     ).toBeNull();
     fireEvent.pointerMove(included);
-    const tooltip = await screen.findByRole("tooltip");
+    await act(async () => vi.advanceTimersByTimeAsync(250));
+    const tooltip = screen.getByRole("tooltip");
     expect(tooltip.textContent).toContain("Included with");
     expect(tooltip.textContent).toContain(example.tooltipName);
     const providerIcon = tooltip.querySelector(
