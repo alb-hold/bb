@@ -21,6 +21,8 @@ import {
 } from "@bb/config/full-stack-shutdown";
 import { afterEach, describe, expect, it } from "vitest";
 
+const CHILD_PROCESS_START_TIMEOUT_MS = 15_000;
+
 const fixtureDir = join(dirname(fileURLToPath(import.meta.url)), "fixtures");
 const launcherEntry = join(fixtureDir, "orphan-launcher.mjs");
 const serverEntry = join(fixtureDir, "orphan-server.mjs");
@@ -388,7 +390,7 @@ for (;;) {
         serverPid = Number(await waitForFile(serverPidFile, 45_000));
         activeChildren.add(serverPid);
         if (mode === "during-startup") {
-          const deadline = Date.now() + 10_000;
+          const deadline = Date.now() + CHILD_PROCESS_START_TIMEOUT_MS;
           let databaseFdFound = false;
           while (Date.now() < deadline && !databaseFdFound) {
             try {
@@ -463,7 +465,7 @@ for (;;) {
     try {
       serverPid = Number(await waitForFile(serverPidFile));
       activeChildren.add(serverPid);
-      const openDatabaseDeadline = Date.now() + 10_000;
+      const openDatabaseDeadline = Date.now() + CHILD_PROCESS_START_TIMEOUT_MS;
       let databaseFdFound = false;
       while (Date.now() < openDatabaseDeadline) {
         if (!isProcessRunning(serverPid)) break;

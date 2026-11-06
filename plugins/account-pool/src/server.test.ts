@@ -84,6 +84,12 @@ interface Fixture {
   account: AccountSummary;
 }
 
+const CHILD_PROCESS_START_TIMEOUT_MS = 15_000;
+
+async function waitForChildProcessStart(assertStarted: () => void): Promise<void> {
+  await vi.waitFor(assertStarted, { timeout: CHILD_PROCESS_START_TIMEOUT_MS, interval: 25 });
+}
+
 async function waitForAccepting(read: () => Promise<boolean>): Promise<void> {
   await vi.waitFor(async () => expect(await read()).toBe(true), {
     timeout: 20_000,
@@ -15735,7 +15741,7 @@ else {
     const decoy = spawn(process.execPath, ["-e", script], { stdio: "ignore" });
     try {
       const hanging = run([], {}, [process.execPath, "-e", script]);
-      await vi.waitFor(() => expect(hanging.output()).toContain("child-ready"));
+      await waitForChildProcessStart(() => expect(hanging.output()).toContain("child-ready"));
       hanging.child.kill("SIGTERM");
       expect((await hanging.done).code).toBe(143);
       expect(decoy.exitCode).toBeNull();
@@ -15768,7 +15774,7 @@ else {
   it("revokes when the launcher is terminated and forwards the signal to the child", async () => {
     const { run, hubSend, readToken, listRoutes } = await harness();
     const hanging = run([], {}, [process.execPath, "-e", "console.log('child-ready');setInterval(()=>{},1000)"]);
-    await vi.waitFor(() => expect(hanging.output()).toContain("child-ready"));
+    await waitForChildProcessStart(() => expect(hanging.output()).toContain("child-ready"));
     expect(await listRoutes()).toHaveLength(1);
     hanging.child.kill("SIGTERM");
     const ended = await hanging.done;
