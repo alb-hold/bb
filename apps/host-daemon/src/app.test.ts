@@ -37,6 +37,7 @@ import type { FetchFn } from "./server-client.js";
 import type { CreateReconnectingWebSocket } from "./server-connection.js";
 import type { ReconnectingWebSocketLike } from "./server-connection-support.js";
 import { MACHINE_SUSPENSION_MARKER } from "./suspension-marker.js";
+import { hostProc, useProcReaderForTests } from "@bb/process-utils";
 
 interface RecordedFetchRequest {
   body: string | null;
@@ -429,6 +430,62 @@ async function createAppFixture(
 }
 
 describe("createHostDaemonApp", () => {
+  it("returns retained paths in the recursive removal RPC response", async () => {
+    const { app } = await createAppFixture();
+    const root = await makeTempDir("bb-host-daemon-retained-rpc-");
+    const target = path.join(root, "retained-paths");
+    await fs.mkdir(target);
+    await fs.writeFile(path.join(target, "before.txt"), "before");
+    const originalLstat = fs.lstat.bind(fs);
+    let injected = false;
+    const lstatSpy = vi.spyOn(fs, "lstat").mockImplementation(async (name) => {
+      const info = await originalLstat(name);
+      const candidate = String(name);
+      if (
+        !injected &&
+        path.dirname(candidate) === root &&
+        path.basename(candidate).startsWith(".retained-paths.removing-")
+      ) {
+        injected = true;
+        await fs.writeFile(path.join(candidate, "late.txt"), "retained");
+      }
+      return info;
+    });
+
+    try {
+      useProcReaderForTests({
+        ...hostProc,
+        readdir: async (name) =>
+          name === "/proc" ? [String(process.pid)] : hostProc.readdir(name),
+      });
+      const response = await app.router.handleOnlineRpcRequest({
+        type: "host-rpc.request",
+        requestId: "retained-paths-rpc",
+        command: {
+          type: "host.remove_path",
+          path: target,
+          rootPath: root,
+          recursive: true,
+        },
+      });
+      expect(injected).toBe(true);
+      expect(response).toMatchObject({
+        type: "host-rpc.response",
+        ok: false,
+        errorCode: "path_in_use",
+        errorMessage: expect.stringContaining(`Preserved entries: ${target}`),
+      });
+      await expect(
+        fs.readFile(path.join(target, "late.txt"), "utf8"),
+      ).resolves.toBe("retained");
+    } finally {
+      lstatSpy.mockRestore();
+      useProcReaderForTests(null);
+      await app.daemon.shutdown("test", 0);
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("installs machine variables into the daemon and child processes before work, then removes overrides live", async () => {
     vi.stubEnv("MACHINE_DAEMON_TEST", "original");
     let socket: ReconnectingWebSocketLike | undefined;

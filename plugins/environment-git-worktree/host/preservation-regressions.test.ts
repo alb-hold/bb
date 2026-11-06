@@ -20,6 +20,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { RemoveDirectoryTreeResult } from "bb-environment-provider-host/remove-directory-tree";
 import {
   hostProc,
   scanWorktreeHolders,
@@ -85,7 +86,7 @@ async function removeDirectoryTree(
     onRetainedPath?: (retainedPath: string) => void;
     afterRootMarkerDetached?: (root: string) => Promise<void>;
   },
-) {
+): Promise<RemoveDirectoryTreeResult> {
   const moduleUrl = new URL("./remove-directory-tree.js", import.meta.url).href;
   return (await import(moduleUrl)).removeDirectoryTree(root, hooks);
 }
