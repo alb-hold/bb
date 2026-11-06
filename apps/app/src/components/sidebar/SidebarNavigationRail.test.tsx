@@ -357,6 +357,15 @@ afterEach(() => {
 });
 
 describe("Rail", () => {
+  it.each(["Home", "Plugins", "Skills", "Docs", "More", "Settings"])(
+    "gives %s a matching keyboard tooltip and accessible name", async (label) => {
+      renderRail(THREAD_PATH);
+      fireEvent.keyDown(document.body, { key: "Tab" });
+      act(() => railButton(label).focus());
+      expect((await screen.findByRole("tooltip")).textContent).toBe(label);
+    },
+  );
+
   it.each([{ metaKey: true }, { ctrlKey: true }])(
     "opens Settings in a browser tab with %j even when already active",
     (modifier) => {

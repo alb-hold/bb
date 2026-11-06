@@ -373,6 +373,32 @@ describe("MarkdownPreview", () => {
     expect(container.querySelector("ol")?.getAttribute("start")).toBe("2");
   });
 
+  it.each([
+    ["", null],
+    ["ts", "ts"],
+    ["text", "text"],
+  ])(
+    "labels runner output only with the declared fence language %s",
+    (fence, label) => {
+      const { container } = render(
+        <MarkdownPreview
+          content={
+            "```" +
+            fence +
+            "\n ✓ tests/example.test.ts (3 tests)\n Test Files  1 passed\n```"
+          }
+        />,
+      );
+      expect(container.querySelector("pre code")?.textContent).toContain(
+        "1 passed",
+      );
+      expect(
+        container.querySelector("pre")?.previousElementSibling?.querySelector("span")?.textContent || null,
+      ).toBe(label);
+      expect(screen.getByRole("button", { name: "Copy code" })).toBeDefined();
+    },
+  );
+
   it("HTML-escapes fenced code so it cannot inject markup", () => {
     const { container } = render(
       <MarkdownPreview

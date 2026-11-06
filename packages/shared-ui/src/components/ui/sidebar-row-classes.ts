@@ -37,7 +37,7 @@ export const SIDEBAR_ROW_TEXT_CLASS = "text-sidebar-foreground";
 export const SIDEBAR_GROUP_TEXT_CLASS = "text-muted-foreground";
 
 export const SIDEBAR_CONTROL_TONE_CLASS =
-  "text-subtle-foreground hover:text-muted-foreground data-[state=open]:text-muted-foreground";
+  "text-foreground hover:text-foreground data-[state=open]:text-foreground";
 
 export const SIDEBAR_CONTROL_STATE_CLASS = `${SIDEBAR_CONTROL_TONE_CLASS} hover:bg-state-hover active:bg-state-active data-[state=open]:bg-state-active data-[state=open]:hover:bg-state-active`;
 

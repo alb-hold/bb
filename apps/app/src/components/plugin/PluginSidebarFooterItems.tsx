@@ -383,7 +383,7 @@ export function PluginSidebarFooterItems({
                   ref={moreRef}
                   id={SIDEBAR_FOOTER_MORE_ID}
                   aria-label="More footer actions"
-                  tooltip={{ children: "More", hidden: false, side: "top" }}
+                  tooltip={{ children: "More footer actions", hidden: false, side: "top" }}
                   className={SIDEBAR_FOOTER_ACTION_CLASS}
                 >
                   <Icon name="MoreHorizontal" />

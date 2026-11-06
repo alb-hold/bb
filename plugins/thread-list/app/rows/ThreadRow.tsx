@@ -1022,10 +1022,10 @@ function ThreadRowComponent({
               title={labelTitle}
               onDoubleClick={startTitleEditing}
             >
-              <span className="bb-thread-title block min-w-0 flex-1 truncate">
+              <span className="bb-thread-title block min-w-0 flex-1 truncate max-md:font-normal">
                 <ThreadTitle threadId={thread.id} />
               </span>
-              <span data-sidebar-thread-context="" className="hidden min-w-0 items-center gap-1 truncate text-2xs leading-4 text-muted-foreground md:flex">
+              <span data-sidebar-thread-context="" className="hidden min-w-0 items-center gap-1 truncate text-2xs font-normal leading-4 text-subtle-foreground md:flex">
                 <span role="img" aria-label={thread.experimental_nativeActivity !== undefined ? "Native terminal" : thread.environment?.isWorktree ? "Worktree" : "Workspace"}><Icon name={thread.experimental_nativeActivity !== undefined ? "Terminal" : thread.environment?.isWorktree ? "FolderGit" : "Folder"} className="size-3 shrink-0" aria-hidden /></span>
                 {showProjectName && projectName ? <span className="truncate">{projectName} ·</span> : null}
                 <InfoRowTime timestamp={thread.updatedAt} />
