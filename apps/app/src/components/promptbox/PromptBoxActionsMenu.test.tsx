@@ -6,6 +6,8 @@ import type {
   PluginComposerApi,
   PluginComposerScope,
 } from "@get-bb/plugin-sdk";
+import { CHROME_SUBTLE_ICON_BUTTON_FOREGROUND_CLASS } from "@bb/shared-ui/chrome-style-tokens";
+
 import {
   act,
   cleanup,
@@ -100,7 +102,9 @@ describe("PromptBoxActionsMenu", () => {
     render(<PromptBoxActionsMenu onAction={() => {}} onAttach={onAttach} />);
 
     const trigger = screen.getByRole("button", { name: "Prompt actions" });
-    expect(trigger.classList).toContain("text-subtle-foreground/75");
+    for (const token of CHROME_SUBTLE_ICON_BUTTON_FOREGROUND_CLASS.split(" ")) {
+      expect(trigger.classList).toContain(token);
+    }
     expect(trigger.querySelector('[data-icon="Plus"]')).not.toBeNull();
     expect(trigger.querySelector('[data-icon="Spinner"]')).toBeNull();
     fireEvent.pointerDown(trigger, { button: 0 });
