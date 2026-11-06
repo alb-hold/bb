@@ -275,7 +275,7 @@ export function AppSidebar({
     >
       <SidebarMenu
         className={cn(
-          "flex-row items-center gap-1",
+          "flex-row items-center gap-1 max-md:pointer-coarse:min-h-11",
           isFooterCustomizing && "hidden",
         )}
       >

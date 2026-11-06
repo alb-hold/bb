@@ -141,6 +141,17 @@ afterEach(() => {
 });
 
 describe("AppSidebar", () => {
+  it.each([false, true])(
+    "reserves the plugin touch-target height before footer plugins load (framed: %s)",
+    (framed) => {
+      renderSidebar("navigation/top-list", framed);
+
+      const menu = footer().querySelector('[data-sidebar="menu"]');
+      expect(menu?.classList.contains("max-md:pointer-coarse:min-h-11")).toBe(true);
+      expect(screen.queryByRole("button", { name: "Provider usage" })).toBeNull();
+    },
+  );
+
   it("uses only the small top inset when framed navigation has no header controls", () => {
     renderSidebar("navigation/top-list", true);
 

@@ -5006,8 +5006,8 @@ describe("ComposerBox compact layout", () => {
       if (!trailing || !row) throw new Error("Missing composer actions");
       expect(declaration(row, "grid-template-columns")).toBe("2.75rem minmax(0, 1fr)");
       expect(declaration(trailing, "position")).toBe("absolute");
-      expect(declaration(trailing, "bottom")).toBe("100%");
-      expect(declaration(trailing, "right")).toBe("0.25rem");
+      expect(declaration(trailing, "bottom")).toBe("calc(100% - 0.5rem)");
+      expect(declaration(trailing, "right")).toBe("0.5rem");
       if (model.parentElement === null)
         throw new Error("Missing execution controls");
       expect(declaration(model.parentElement, "display")).toBe("flex");
