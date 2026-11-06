@@ -1839,6 +1839,10 @@ export function ThreadTerminalView({
     const pendingExitNotices: string[] = [];
     let replayCheckpointSequence: number | null = null;
     let localFitGrid: TerminalGridSize | null = null;
+    let claimedFitGrid: TerminalGridSize | null = null;
+    let replayRevealFrame: number | null = null;
+    let replayRevealTimeout: ReturnType<typeof setTimeout> | null = null;
+    let replayRevealGeneration = 0;
     let screenLoadingPreview: ReturnType<
       typeof mountTerminalScreenLoadingPreview
     > | null = null;
@@ -2007,7 +2011,11 @@ export function ThreadTerminalView({
         setShowFitControl(presentation.showFitControl);
         containerElement.dataset.ptyGridCols = String(latestPtyGrid.cols);
         containerElement.dataset.ptyGridRows = String(latestPtyGrid.rows);
-        if (replayPreview !== null && !replayCompleted) return;
+        if (
+          (replayPreview !== null && !replayCompleted) ||
+          (retainNativeOutput && containerElement.dataset.replayHeld === "true")
+        )
+          return;
         containerElement.style.opacity = "0";
         const scrollRetainedOutput =
           retainedOutputGrid !== null
@@ -2471,7 +2479,10 @@ export function ThreadTerminalView({
       }
       containerElement.dataset.renderGridCols = String(terminal.cols);
       containerElement.dataset.renderGridRows = String(terminal.rows);
-      containerElement.dataset.replayHeld = "false";
+      containerElement.dataset.replayHeld =
+        retainNativeOutput && sessionStatusRef.current !== "exited"
+          ? "true"
+          : "false";
       attachTerminalWheelLines(terminal);
       if (sessionRef.current.status !== "exited") {
         writeTerminalSessionStatusNotice({
@@ -2512,6 +2523,16 @@ export function ThreadTerminalView({
         updateGridVisibility();
         if (initialRendererSettled && initialLayoutSettled) {
           transport?.sendResize(fitted.cols, fitted.rows);
+          if (
+            retainNativeOutput &&
+            containerElement.dataset.replayHeld === "true" &&
+            transport !== null &&
+            (claimedFitGrid?.cols !== fitted.cols ||
+              claimedFitGrid.rows !== fitted.rows)
+          ) {
+            transport.claimSize();
+            claimedFitGrid = { ...fitted };
+          }
         }
       };
       const scheduleFit: TerminalFitScheduler = () => {
@@ -2669,6 +2690,13 @@ export function ThreadTerminalView({
         replayWrite?: { bytes: Uint8Array; sourceBytes: Uint8Array },
       ) => {
         if (message.type === "attached") {
+          replayRevealGeneration += 1;
+          claimedFitGrid = null;
+          if (replayRevealFrame !== null)
+            window.cancelAnimationFrame(replayRevealFrame);
+          if (replayRevealTimeout !== null) clearTimeout(replayRevealTimeout);
+          replayRevealFrame = null;
+          replayRevealTimeout = null;
           replayTimingNextSeq = message.nextSeq;
           replayTimingFirstFrame = false;
         }
@@ -2826,40 +2854,96 @@ export function ThreadTerminalView({
           },
           onReplayComplete: () => {
             replayCompleted = true;
-            pendingReplayRevealRef.current = session.id;
-            performance.mark("terminal-replay-parsed", {
-              detail: { terminalId: session.id },
-            });
-            setRestoringSession(false);
-            keepScreenLoadingPreview = false;
-            clearScreenLoadingPreview();
-            containerElement.dataset.replayHeld = "false";
-            activeTransport.resetRetryBackoff();
-            for (const text of pendingExitNotices.splice(0)) {
-              routeQueuedExitNotice(text);
-            }
-            completeTerminalReplayPreview({
-              hasPendingExit: exitedBeforeReplayCompleted,
-              markExitApplied: () => {
-                replayPreviewExitApplied = true;
-              },
-              clearPendingExit: () => {
-                exitedBeforeReplayCompleted = false;
-              },
-              releasePreview: releaseReplayPreview,
-              processExited: () => replayPreview?.processExited(),
-            });
-            applyTerminalGridBeforeViewportRestore({
-              pipeline: outputPipeline,
-              cols: latestPtyGrid.cols,
-              rows: latestPtyGrid.rows,
-              onGridApplied: updateGridVisibility,
-              restoreViewport,
-              afterRestore: () => {
-                if (!disposed)
-                  activeTerminal.refresh(0, activeTerminal.rows - 1);
-              },
-            });
+            const generation = ++replayRevealGeneration;
+            const revealReplay = () => {
+              if (disposed || generation !== replayRevealGeneration) return;
+              if (replayRevealFrame !== null) {
+                window.cancelAnimationFrame(replayRevealFrame);
+                replayRevealFrame = null;
+              }
+              if (replayRevealTimeout !== null) {
+                clearTimeout(replayRevealTimeout);
+                replayRevealTimeout = null;
+              }
+              if (disposed) return;
+              pendingReplayRevealRef.current = session.id;
+              performance.mark("terminal-replay-parsed", {
+                detail: { terminalId: session.id },
+              });
+              setRestoringSession(false);
+              keepScreenLoadingPreview = false;
+              clearScreenLoadingPreview();
+              containerElement.dataset.replayHeld = "false";
+              activeTransport.resetRetryBackoff();
+              for (const text of pendingExitNotices.splice(0)) {
+                routeQueuedExitNotice(text);
+              }
+              completeTerminalReplayPreview({
+                hasPendingExit: exitedBeforeReplayCompleted,
+                markExitApplied: () => {
+                  replayPreviewExitApplied = true;
+                },
+                clearPendingExit: () => {
+                  exitedBeforeReplayCompleted = false;
+                },
+                releasePreview: releaseReplayPreview,
+                processExited: () => replayPreview?.processExited(),
+              });
+              applyTerminalGridBeforeViewportRestore({
+                pipeline: outputPipeline,
+                cols: latestPtyGrid.cols,
+                rows: latestPtyGrid.rows,
+                onGridApplied: updateGridVisibility,
+                restoreViewport,
+                afterRestore: () => {
+                  if (!disposed)
+                    activeTerminal.refresh(0, activeTerminal.rows - 1);
+                },
+              });
+            };
+            if (retainNativeOutput && sessionStatusRef.current !== "exited") {
+              replayPreview?.hold({ countdown: false });
+              const waitForFittedGrid = () => {
+                replayRevealFrame = null;
+                if (disposed || generation !== replayRevealGeneration) return;
+                fitTerminal();
+                const fit = localFitGrid;
+                if (
+                  fit !== null &&
+                  claimedFitGrid?.cols === fit.cols &&
+                  claimedFitGrid.rows === fit.rows &&
+                  latestPtyGrid.cols === fit.cols &&
+                  latestPtyGrid.rows === fit.rows &&
+                  activeTerminal.cols === fit.cols &&
+                  activeTerminal.rows === fit.rows &&
+                  outputPipeline !== null
+                ) {
+                  outputPipeline.setGrid(fit.cols, fit.rows, () => {
+                    if (disposed || generation !== replayRevealGeneration)
+                      return;
+                    if (
+                      localFitGrid?.cols === fit.cols &&
+                      localFitGrid.rows === fit.rows &&
+                      latestPtyGrid.cols === fit.cols &&
+                      latestPtyGrid.rows === fit.rows
+                    )
+                      revealReplay();
+                    else
+                      replayRevealFrame =
+                        window.requestAnimationFrame(waitForFittedGrid);
+                  });
+                  return;
+                }
+                replayRevealFrame =
+                  window.requestAnimationFrame(waitForFittedGrid);
+              };
+              if (replayRevealFrame !== null)
+                window.cancelAnimationFrame(replayRevealFrame);
+              if (replayRevealTimeout !== null)
+                clearTimeout(replayRevealTimeout);
+              replayRevealTimeout = setTimeout(revealReplay, 15_000);
+              waitForFittedGrid();
+            } else revealReplay();
           },
           onSessionChange: onSessionChangeRef.current,
           onOutputStart: recordOutputStart,
@@ -3398,6 +3482,9 @@ export function ThreadTerminalView({
       stopWatchingLayout?.();
       detachViewportListeners?.();
       sizeClaims?.dispose();
+      if (replayRevealFrame !== null)
+        window.cancelAnimationFrame(replayRevealFrame);
+      if (replayRevealTimeout !== null) clearTimeout(replayRevealTimeout);
       sizeClaims = null;
       if (resizeAnimationFrame !== null) {
         window.cancelAnimationFrame(resizeAnimationFrame);

@@ -1020,6 +1020,151 @@ describe("ThreadTerminalView terminal visibility and panel", () => {
     });
   });
 
+  it("holds native replay until a delayed first fit is claimed and applied", async () => {
+    vi.stubGlobal("WebSocket", TestTerminalSocket);
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        constructor(private readonly callback: ResizeObserverCallback) {}
+
+        disconnect(): void {}
+
+        observe(target: Element): void {
+          this.callback(
+            [
+              {
+                target,
+                contentRect: { width: 354, height: 504 },
+              } as ResizeObserverEntry,
+            ],
+            this as unknown as ResizeObserver,
+          );
+        }
+
+        unobserve(): void {}
+      },
+    );
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
+      measureText: (text: string) => ({ width: text.length * 9 }),
+    } as unknown as CanvasRenderingContext2D);
+    vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(
+      function offsetWidth(this: HTMLElement) {
+        return this.classList.contains("xterm-char-measure-element") ? 9 : 354;
+      },
+    );
+    vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(
+      function offsetHeight(this: HTMLElement) {
+        return this.classList.contains("xterm-char-measure-element") ? 18 : 504;
+      },
+    );
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(
+      function clientWidth(this: HTMLElement) {
+        return this.classList.contains("xterm-char-measure-element") ? 9 : 354;
+      },
+    );
+    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(
+      function clientHeight(this: HTMLElement) {
+        return this.classList.contains("xterm-char-measure-element") ? 18 : 504;
+      },
+    );
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+      function getBoundingClientRect(this: HTMLElement) {
+        return new DOMRect(0, 0, this.clientWidth, this.clientHeight);
+      },
+    );
+    const originalProposeDimensions = FitAddon.prototype.proposeDimensions;
+    let fitDimensionsAvailable = false;
+    let unavailableFitMeasurements = 0;
+    let resolveUnavailableFitMeasurements!: () => void;
+    const unavailableFitMeasurementsReady = new Promise<void>((resolve) => {
+      resolveUnavailableFitMeasurements = resolve;
+    });
+    vi.spyOn(FitAddon.prototype, "proposeDimensions").mockImplementation(
+      function proposeDimensions(this: FitAddon) {
+        if (fitDimensionsAvailable) {
+          return originalProposeDimensions.call(this);
+        }
+        unavailableFitMeasurements += 1;
+        if (unavailableFitMeasurements === 2) {
+          resolveUnavailableFitMeasurements();
+        }
+        return undefined;
+      },
+    );
+
+    const session = makeTerminalSession({
+      id: "term_delayed_native_fit",
+      status: "running",
+      cols: 120,
+      rows: 36,
+    });
+    const mounted = render(
+      <MemoryRouter>
+        <AppCommandProvider>
+          <ThreadTerminalView
+            autoFocus={false}
+            isPanelOpen
+            retainNativeOutput
+            session={session}
+          />
+        </AppCommandProvider>
+      </MemoryRouter>,
+    );
+    await waitForReadiness(
+      unavailableFitMeasurementsReady,
+      "fit was not deferred",
+    );
+    await waitForReadinessCondition(
+      () => expect(testState.sockets).toHaveLength(1),
+      "socket missing",
+    );
+    const socket = testState.sockets[0]!;
+    await socket.opened;
+    const renderer = mounted.container.querySelector<HTMLElement>(
+      "[data-terminal-renderer]",
+    )!;
+    socket.receive({
+      type: "attached",
+      session,
+      replayStartSeq: 0,
+      nextSeq: 1,
+    });
+    socket.receive({
+      type: "output",
+      chunk: { seq: 0, dataBase64: btoa("restored output\r\n") },
+    });
+    await waitForReadinessCondition(() => {
+      expect(socket.sent.map((raw) => JSON.parse(raw))).toContainEqual({
+        type: "ack",
+        nextSeq: 1,
+      });
+    }, "replay did not drain");
+    expect(renderer.dataset.replayHeld).toBe("true");
+    fitDimensionsAvailable = true;
+    fireEvent(window, new Event("resize"));
+    let claimed: { cols: number; rows: number } | undefined;
+    await waitForReadinessCondition(() => {
+      claimed = socket.sent
+        .map((raw) => JSON.parse(raw))
+        .find((message) => message.type === "resize" && message.claim === true);
+      expect(claimed).toBeDefined();
+    }, "fitted resize was not claimed");
+    expect(renderer.dataset.replayHeld).toBe("true");
+    socket.receive({
+      type: "session-updated",
+      session: { ...session, ...claimed },
+    });
+    await waitForReadinessCondition(() => {
+      expect(renderer.dataset.renderGridCols).toBe(
+        renderer.dataset.fitGridCols,
+      );
+      expect(renderer.dataset.renderGridRows).toBe(
+        renderer.dataset.fitGridRows,
+      );
+      expect(renderer.dataset.replayHeld).toBe("false");
+    }, "fitted replay was not revealed");
+  });
+
   it("waits for fit dimensions before settling the initial main-pane layout", async () => {
     vi.stubGlobal("WebSocket", TestTerminalSocket);
     vi.stubGlobal(
