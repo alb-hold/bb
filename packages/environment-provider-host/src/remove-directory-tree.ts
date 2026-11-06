@@ -135,6 +135,22 @@ function errorCode(error: unknown): string | null {
     : null;
 }
 
+function matchesQuarantinedNames(
+  actual: readonly string[],
+  expected: ReadonlySet<string>,
+  originalName: string,
+  quarantinedName: string,
+): boolean {
+  if (!expected.has(originalName)) return false;
+  const afterRename = new Set(expected);
+  afterRename.delete(originalName);
+  afterRename.add(quarantinedName);
+  return (
+    actual.length === afterRename.size &&
+    actual.every((name) => afterRename.has(name))
+  );
+}
+
 export async function removeDirectoryTree(
   root: string,
   hooks: RemoveDirectoryTreeHooks = {},
@@ -299,132 +315,155 @@ export async function removeDirectoryTree(
       } catch {
         return "retained";
       }
-      const checkedInfo = {
-        dev: Number(checkedPreciseInfo.dev),
-        ino: Number(checkedPreciseInfo.ino),
-        ctimeMs: Number(checkedPreciseInfo.ctimeNs) / 1_000_000,
-        mtimeMs: Number(checkedPreciseInfo.mtimeNs) / 1_000_000,
-        size: Number(checkedPreciseInfo.size),
-        ctimeNs: checkedPreciseInfo.ctimeNs,
-        mtimeNs: checkedPreciseInfo.mtimeNs,
-      };
       if (
-        checkedInfo.dev !== info.dev ||
-        checkedInfo.ino !== info.ino ||
-        changedSince(checkedInfo, startedAt)
+        Number(checkedPreciseInfo.dev) !== info.dev ||
+        Number(checkedPreciseInfo.ino) !== info.ino ||
+        changedSince(
+          {
+            ctimeMs: Number(checkedPreciseInfo.ctimeNs) / 1_000_000,
+            mtimeMs: Number(checkedPreciseInfo.mtimeNs) / 1_000_000,
+          },
+          startedAt,
+        )
       ) {
         return "retained";
       }
       await hooks.afterEntryCheck?.(entry);
-      let beforeQuarantinePreciseInfo;
+      let beforeChmodInfo;
       try {
-        beforeQuarantinePreciseInfo = await lstat(anchoredEntry, {
-          bigint: true,
-        });
-      } catch {
-        return "retained";
-      }
-      const beforeQuarantineInfo = {
-        dev: Number(beforeQuarantinePreciseInfo.dev),
-        ino: Number(beforeQuarantinePreciseInfo.ino),
-        ctimeMs: Number(beforeQuarantinePreciseInfo.ctimeNs) / 1_000_000,
-        mtimeMs: Number(beforeQuarantinePreciseInfo.mtimeNs) / 1_000_000,
-        size: Number(beforeQuarantinePreciseInfo.size),
-        ctimeNs: beforeQuarantinePreciseInfo.ctimeNs,
-        mtimeNs: beforeQuarantinePreciseInfo.mtimeNs,
-      };
-      if (
-        beforeQuarantineInfo.dev !== checkedInfo.dev ||
-        beforeQuarantineInfo.ino !== checkedInfo.ino ||
-        beforeQuarantineInfo.ctimeMs !== checkedInfo.ctimeMs ||
-        beforeQuarantineInfo.mtimeMs !== checkedInfo.mtimeMs ||
-        beforeQuarantineInfo.ctimeNs !== checkedInfo.ctimeNs ||
-        beforeQuarantineInfo.mtimeNs !== checkedInfo.mtimeNs ||
-        beforeQuarantineInfo.size !== checkedInfo.size
-      ) {
-        return "retained";
-      }
-      await hooks.beforeEntryRename?.(entry);
-      let beforeRenamePreciseInfo;
-      try {
-        beforeRenamePreciseInfo = await lstat(anchoredEntry, { bigint: true });
+        beforeChmodInfo = await lstat(anchoredEntry, { bigint: true });
       } catch {
         return "retained";
       }
       if (
-        beforeRenamePreciseInfo.dev !== beforeQuarantinePreciseInfo.dev ||
-        beforeRenamePreciseInfo.ino !== beforeQuarantinePreciseInfo.ino ||
-        beforeRenamePreciseInfo.ctimeNs !== beforeQuarantinePreciseInfo.ctimeNs ||
-        beforeRenamePreciseInfo.mtimeNs !== beforeQuarantinePreciseInfo.mtimeNs ||
-        beforeRenamePreciseInfo.size !== beforeQuarantinePreciseInfo.size
+        beforeChmodInfo.dev !== checkedPreciseInfo.dev ||
+        beforeChmodInfo.ino !== checkedPreciseInfo.ino ||
+        beforeChmodInfo.ctimeNs !== checkedPreciseInfo.ctimeNs ||
+        beforeChmodInfo.mtimeNs !== checkedPreciseInfo.mtimeNs ||
+        beforeChmodInfo.size !== checkedPreciseInfo.size ||
+        beforeChmodInfo.mode !== checkedPreciseInfo.mode
       ) {
         return "retained";
       }
+      const originalMode = checkedPreciseInfo.mode & 0o7777n;
+      const strippedMode = checkedPreciseInfo.isFile()
+        ? originalMode & ~0o222n
+        : originalMode;
+      let fileHandle: Awaited<ReturnType<typeof open>> | null = null;
+      let modeChanged = false;
       const quarantined = path.join(
         parentDirectory,
         `.bb-removing-${randomUUID()}`,
       );
       const restoreQuarantine = async (): Promise<boolean> => {
+        let restored = false;
         try {
-          await link(quarantined, anchoredEntry);
-          await unlink(quarantined);
-          return true;
-        } catch {
-          return false;
+          await lstat(anchoredEntry);
+        } catch (error) {
+          if (errorCode(error) === "ENOENT") {
+            try {
+              await rename(quarantined, anchoredEntry);
+              restored = true;
+            } catch {
+              restored = false;
+            }
+          }
         }
+        if (modeChanged && fileHandle !== null) {
+          try {
+            await fileHandle.chmod(Number(originalMode));
+          } catch {
+            return false;
+          }
+        }
+        return restored;
       };
       try {
-        await rename(anchoredEntry, quarantined);
-        const movedPreciseInfo = await lstat(quarantined, { bigint: true });
-        const movedInfo = {
-          dev: Number(movedPreciseInfo.dev),
-          ino: Number(movedPreciseInfo.ino),
-          ctimeMs: Number(movedPreciseInfo.ctimeNs) / 1_000_000,
-          mtimeMs: Number(movedPreciseInfo.mtimeNs) / 1_000_000,
-          size: Number(movedPreciseInfo.size),
-          ctimeNs: movedPreciseInfo.ctimeNs,
-          mtimeNs: movedPreciseInfo.mtimeNs,
-        };
+        if (checkedPreciseInfo.isFile()) {
+          fileHandle = await open(
+            anchoredEntry,
+            constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
+          );
+          const openedInfo = await fileHandle.stat({ bigint: true });
+          if (
+            openedInfo.dev !== checkedPreciseInfo.dev ||
+            openedInfo.ino !== checkedPreciseInfo.ino ||
+            openedInfo.size !== checkedPreciseInfo.size ||
+            openedInfo.mtimeNs !== checkedPreciseInfo.mtimeNs ||
+            openedInfo.ctimeNs !== checkedPreciseInfo.ctimeNs ||
+            openedInfo.mode !== checkedPreciseInfo.mode
+          ) {
+            await fileHandle.close();
+            fileHandle = null;
+            return "retained";
+          }
+          await fileHandle.chmod(Number(strippedMode));
+          modeChanged = strippedMode !== originalMode;
+        } else if (!checkedPreciseInfo.isSymbolicLink()) {
+          return "retained";
+        }
+        const afterChmodInfo = await lstat(anchoredEntry, { bigint: true });
         if (
-          movedInfo.dev !== checkedInfo.dev ||
-          movedInfo.ino !== checkedInfo.ino ||
-          movedPreciseInfo.ctimeNs < beforeRenamePreciseInfo.ctimeNs ||
-          movedPreciseInfo.mtimeNs !== checkedInfo.mtimeNs ||
-          movedInfo.size !== checkedInfo.size
+          afterChmodInfo.dev !== checkedPreciseInfo.dev ||
+          afterChmodInfo.ino !== checkedPreciseInfo.ino ||
+          afterChmodInfo.size !== checkedPreciseInfo.size ||
+          afterChmodInfo.mtimeNs !== checkedPreciseInfo.mtimeNs ||
+          (afterChmodInfo.mode & 0o7777n) !== strippedMode ||
+          afterChmodInfo.ctimeNs < checkedPreciseInfo.ctimeNs
         ) {
           await restoreQuarantine();
           return "retained";
         }
-        await hooks.afterEntryQuarantined?.(entry, quarantined);
-        const finalPreciseInfo = await lstat(quarantined, { bigint: true });
-        const finalInfo = {
-          dev: Number(finalPreciseInfo.dev),
-          ino: Number(finalPreciseInfo.ino),
-          ctimeMs: Number(finalPreciseInfo.ctimeNs) / 1_000_000,
-          mtimeMs: Number(finalPreciseInfo.mtimeNs) / 1_000_000,
-          size: Number(finalPreciseInfo.size),
-          ctimeNs: finalPreciseInfo.ctimeNs,
-          mtimeNs: finalPreciseInfo.mtimeNs,
+        await hooks.beforeEntryRename?.(entry);
+        await rename(anchoredEntry, quarantined);
+        const verifyMovedEntry = async (): Promise<boolean> => {
+          if (expectedSiblingNames !== undefined) {
+            let siblingNames: string[];
+            try {
+              siblingNames = await readdir(parentDirectory);
+            } catch {
+              return false;
+            }
+            if (
+              !matchesQuarantinedNames(
+                siblingNames,
+                expectedSiblingNames,
+                path.basename(anchoredEntry),
+                path.basename(quarantined),
+              )
+            )
+              return false;
+          }
+          let movedInfo;
+          try {
+            movedInfo = await lstat(quarantined, { bigint: true });
+          } catch {
+            return false;
+          }
+          return (
+            movedInfo.dev === checkedPreciseInfo.dev &&
+            movedInfo.ino === checkedPreciseInfo.ino &&
+            movedInfo.size === checkedPreciseInfo.size &&
+            movedInfo.mtimeNs === checkedPreciseInfo.mtimeNs &&
+            (movedInfo.mode & 0o7777n) === strippedMode
+          );
         };
-        if (
-          finalInfo.dev !== movedInfo.dev ||
-          finalInfo.ino !== movedInfo.ino ||
-          finalInfo.ctimeMs !== movedInfo.ctimeMs ||
-          finalInfo.mtimeMs !== movedInfo.mtimeMs ||
-          finalPreciseInfo.ctimeNs !== movedPreciseInfo.ctimeNs ||
-          finalPreciseInfo.mtimeNs !== movedPreciseInfo.mtimeNs ||
-          Number(finalPreciseInfo.dev) !== movedInfo.dev ||
-          Number(finalPreciseInfo.ino) !== movedInfo.ino ||
-          Number(finalPreciseInfo.size) !== movedInfo.size
-        ) {
+        if (!(await verifyMovedEntry())) {
+          await restoreQuarantine();
+          return "retained";
+        }
+        await hooks.afterEntryQuarantined?.(entry, quarantined);
+        if (!(await verifyMovedEntry())) {
           await restoreQuarantine();
           return "retained";
         }
         await unlink(quarantined);
         return "removed";
-      } catch (error) {
+      } catch {
         await restoreQuarantine();
-        return errorCode(error) === "ENOENT" ? "removed" : "retained";
+        return "retained";
+      } finally {
+        await fileHandle?.close();
       }
     }
     const directory = await openDirectory(anchoredEntry);
@@ -559,6 +598,53 @@ export async function removeDirectoryTree(
       }
       if (!sameDirectory(openedInfo, checkedDirectoryInfo)) return "retained";
       await hooks.afterEntryCheck?.(entry);
+      let checkedDirectoryPreciseInfo;
+      try {
+        checkedDirectoryPreciseInfo = await lstat(anchoredEntry, {
+          bigint: true,
+        });
+      } catch {
+        return "retained";
+      }
+      if (
+        checkedDirectoryPreciseInfo.dev !== BigInt(openedInfo.dev) ||
+        checkedDirectoryPreciseInfo.ino !== BigInt(openedInfo.ino)
+      )
+        return "retained";
+      const originalDirectoryMode = checkedDirectoryPreciseInfo.mode & 0o7777n;
+      const strippedDirectoryMode = rootEntry
+        ? originalDirectoryMode
+        : originalDirectoryMode & ~0o222n;
+      let directoryModeChanged = false;
+      try {
+        await directory.chmod(Number(strippedDirectoryMode));
+        directoryModeChanged = strippedDirectoryMode !== originalDirectoryMode;
+      } catch {
+        return "retained";
+      }
+      let afterChmodDirectoryInfo;
+      try {
+        afterChmodDirectoryInfo = await lstat(anchoredEntry, {
+          bigint: true,
+        });
+      } catch {
+        if (directoryModeChanged)
+          await directory.chmod(Number(originalDirectoryMode));
+        return "retained";
+      }
+      if (
+        afterChmodDirectoryInfo.dev !== checkedDirectoryPreciseInfo.dev ||
+        afterChmodDirectoryInfo.ino !== checkedDirectoryPreciseInfo.ino ||
+        afterChmodDirectoryInfo.size !== checkedDirectoryPreciseInfo.size ||
+        afterChmodDirectoryInfo.mtimeNs !==
+          checkedDirectoryPreciseInfo.mtimeNs ||
+        (afterChmodDirectoryInfo.mode & 0o7777n) !== strippedDirectoryMode ||
+        afterChmodDirectoryInfo.ctimeNs < checkedDirectoryPreciseInfo.ctimeNs
+      ) {
+        if (directoryModeChanged)
+          await directory.chmod(Number(originalDirectoryMode));
+        return "retained";
+      }
       const quarantined = path.join(
         parentDirectory,
         `.bb-removing-${randomUUID()}`,
@@ -575,11 +661,16 @@ export async function removeDirectoryTree(
       let rootQuarantined = false;
       const restoreQuarantine = async (): Promise<boolean> => {
         try {
-          await rename(quarantined, anchoredEntry);
-          rootQuarantined = false;
-          return true;
-        } catch {
+          await lstat(anchoredEntry);
           return false;
+        } catch {
+          try {
+            await rename(quarantined, anchoredEntry);
+            rootQuarantined = false;
+            return true;
+          } catch {
+            return false;
+          }
         }
       };
       const restoreGitMarker = async (rootPath: string): Promise<boolean> => {
@@ -596,12 +687,32 @@ export async function removeDirectoryTree(
       const retain = async (): Promise<RemoveDirectoryTreeResult> => {
         await restoreGitMarker(rootQuarantined ? quarantined : anchoredEntry);
         if (rootQuarantined) await restoreQuarantine();
+        if (directoryModeChanged)
+          await directory.chmod(Number(originalDirectoryMode));
         return "retained";
       };
       try {
+        await hooks.beforeEntryRename?.(entry);
         await rename(anchoredEntry, quarantined);
         rootQuarantined = true;
-        const movedInfo = await lstat(quarantined);
+        if (expectedSiblingNames !== undefined) {
+          let siblingNames: string[];
+          try {
+            siblingNames = await readdir(parentDirectory);
+          } catch {
+            return await retain();
+          }
+          if (
+            !matchesQuarantinedNames(
+              siblingNames,
+              expectedSiblingNames,
+              path.basename(anchoredEntry),
+              path.basename(quarantined),
+            )
+          )
+            return await retain();
+        }
+        const movedInfo = await lstat(quarantined, { bigint: true });
         let movedEntries: string[];
         try {
           movedEntries = await readdir(directoryPath);
@@ -609,8 +720,11 @@ export async function removeDirectoryTree(
           return await retain();
         }
         if (
-          !sameDirectory(openedInfo, movedInfo) ||
-          movedInfo.mtimeMs !== checkedDirectoryInfo.mtimeMs ||
+          movedInfo.dev !== checkedDirectoryPreciseInfo.dev ||
+          movedInfo.ino !== checkedDirectoryPreciseInfo.ino ||
+          movedInfo.size !== checkedDirectoryPreciseInfo.size ||
+          movedInfo.mtimeNs !== checkedDirectoryPreciseInfo.mtimeNs ||
+          (movedInfo.mode & 0o7777n) !== strippedDirectoryMode ||
           movedEntries.some((name) => name !== ".git") ||
           (rootGitMarker === null && movedEntries.length > 0) ||
           (rootGitMarker !== null &&

@@ -656,6 +656,11 @@ describe("real worktree teardown preservation", () => {
       remove(worktree, {
         beforeEntryRename: async (entry) => {
           if (path.basename(entry) !== ".gitignore") return;
+          expect((await fs.stat(entry)).mode & 0o222).toBe(0);
+          await expect(fs.open(entry, "r+")).rejects.toMatchObject({
+            code: "EACCES",
+          });
+          await fs.chmod(entry, originalStat.mode & 0o7777);
           const handle = await fs.open(entry, "r+");
           try {
             await handle.writeFile(".xxx\n");
@@ -673,20 +678,109 @@ describe("real worktree teardown preservation", () => {
     await expect(
       access(path.join(worktree.path, ".git")),
     ).resolves.toBeUndefined();
-    await expect(
-      readFile(entryPath, "utf8"),
-    ).resolves.toBe(".xxx\n");
+    await expect(readFile(entryPath, "utf8")).resolves.toBe(".xxx\n");
+    expect((await fs.stat(entryPath)).mode & 0o7777).toBe(
+      originalStat.mode & 0o7777,
+    );
     await expect(git(worktree.path, "rev-parse", "--git-dir")).resolves.toMatch(
       /worktrees/u,
     );
   });
 
-  it("retains a file modified after quarantine even when its mtime is restored", async () => {
+  it("restores the selected file and modes when a sibling appears before quarantine", async () => {
+    const worktree = await makeWorktree();
+    useProcReaderForTests(descendantsOnly(hostProc, -1));
+    const lateDirectory = path.join(worktree.path, "late-dir");
+    await mkdir(lateDirectory);
+    await writeFile(path.join(lateDirectory, "a-old.txt"), "old\n");
+    await writeFile(path.join(lateDirectory, "b-trigger.txt"), "trigger\n");
+    await writeFile(path.join(lateDirectory, "c-remaining.txt"), "remaining\n");
+    await fs.chmod(path.join(lateDirectory, "a-old.txt"), 0o600);
+    await fs.chmod(path.join(lateDirectory, "b-trigger.txt"), 0o640);
+    await fs.chmod(path.join(lateDirectory, "c-remaining.txt"), 0o604);
+    await git(worktree.path, "add", "late-dir");
+    await git(worktree.path, "commit", "-m", "published quarantine siblings");
+    await git(worktree.path, "push", "origin", "feature");
+    let injected = false;
+    const result = await removeDirectoryTree(worktree.path, {
+      startedAt: Number.MAX_SAFE_INTEGER,
+      beforeEntryRename: async (entry) => {
+        if (!entry.endsWith("late-dir/b-trigger.txt") || injected) return;
+        injected = true;
+        await writeFile(path.join(lateDirectory, "late-file.txt"), "kept\n");
+      },
+    });
+
+    expect(result).toBe("retained");
+    expect(injected).toBe(true);
+    await expect(
+      access(path.join(lateDirectory, "a-old.txt")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(
+      readFile(path.join(lateDirectory, "b-trigger.txt"), "utf8"),
+    ).resolves.toBe("trigger\n");
+    await expect(
+      readFile(path.join(lateDirectory, "c-remaining.txt"), "utf8"),
+    ).resolves.toBe("remaining\n");
+    await expect(
+      readFile(path.join(lateDirectory, "late-file.txt"), "utf8"),
+    ).resolves.toBe("kept\n");
+    expect(
+      await fs
+        .stat(path.join(lateDirectory, "b-trigger.txt"))
+        .then((s) => s.mode & 0o7777),
+    ).toBe(0o640);
+    expect(
+      await fs
+        .stat(path.join(lateDirectory, "c-remaining.txt"))
+        .then((s) => s.mode & 0o7777),
+    ).toBe(0o604);
+    expect(
+      (await fs.readdir(lateDirectory)).filter((name) =>
+        name.startsWith(".bb-removing-"),
+      ),
+    ).toEqual([]);
+    await expect(git(worktree.path, "rev-parse", "--git-dir")).resolves.toMatch(
+      /worktrees/u,
+    );
+  });
+
+  it("leaves no quarantine entries after clean removal", async () => {
+    const worktree = await makeWorktree();
+    useProcReaderForTests(descendantsOnly(hostProc, -1));
+    const parent = path.dirname(worktree.path);
+    const renamedEntries: string[] = [];
+    const result = await removeDirectoryTree(worktree.path, {
+      startedAt: Number.MAX_SAFE_INTEGER,
+      afterEntryCheck: async (entry) => {
+        renamedEntries.push(`checked:${path.basename(entry)}`);
+      },
+      beforeEntryRename: async (entry) => {
+        renamedEntries.push(`rename:${path.basename(entry)}`);
+      },
+      afterEntryQuarantined: async (entry) => {
+        renamedEntries.push(`quarantined:${path.basename(entry)}`);
+      },
+    });
+    expect(result, renamedEntries.join("\n")).toBe("removed");
+    await expect(access(worktree.path)).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    const siblings = await fs.readdir(parent);
+    expect(siblings.filter((name) => name.startsWith(".bb-removing-"))).toEqual(
+      [],
+    );
+    expect(siblings.filter((name) => name.startsWith(".bb-gitfile-"))).toEqual(
+      [],
+    );
+  });
+
+  it("retains a file modified after quarantine when its mtime changes", async () => {
     const worktree = await makeWorktree();
     useProcReaderForTests(descendantsOnly(hostProc, -1));
     const state: {
       handle?: Awaited<ReturnType<typeof fs.open>>;
-      originalTimes?: { atimeMs: number; mtimeMs: number };
+      originalTimes?: { atimeMs: number; mtimeMs: number; mode: number };
     } = {};
     try {
       await expect(
@@ -697,17 +791,10 @@ describe("real worktree teardown preservation", () => {
             state.handle = opened;
             state.originalTimes = await opened.stat();
           },
-          afterEntryQuarantined: async (entry, quarantined) => {
+          afterEntryQuarantined: async (entry) => {
             const opened = state.handle;
-            const times = state.originalTimes;
             if (!entry.endsWith("/README.md") || opened === undefined) return;
             await opened.writeFile("late-data\n");
-            if (times === undefined) throw new Error("missing file stat");
-            await utimes(
-              quarantined,
-              times.atimeMs / 1000,
-              times.mtimeMs / 1000,
-            );
           },
         }),
       ).rejects.toMatchObject({ code: "worktree_preserved" });
@@ -720,7 +807,8 @@ describe("real worktree teardown preservation", () => {
     const originalTimes = state.originalTimes;
     if (originalTimes === undefined) throw new Error("missing file stat");
     const restoredStat = await fs.stat(path.join(worktree.path, "README.md"));
-    expect(restoredStat.mtimeMs).toBeCloseTo(originalTimes.mtimeMs, 0);
+    expect(restoredStat.mtimeMs).not.toBe(originalTimes.mtimeMs);
+    expect(restoredStat.mode & 0o7777).toBe(originalTimes.mode & 0o7777);
   });
 
   it("retains an in-place edit made after entry check even when its mtime is restored", async () => {
@@ -995,7 +1083,10 @@ describe("real worktree teardown preservation", () => {
     await mkdir(path.join(lateDirectory, "a-old-dir"));
     await writeFile(path.join(lateDirectory, "a-old-dir", "old.txt"), "old\n");
     await mkdir(path.join(lateDirectory, "b-dir"));
-    await writeFile(path.join(lateDirectory, "b-dir", "inside.txt"), "inside\n");
+    await writeFile(
+      path.join(lateDirectory, "b-dir", "inside.txt"),
+      "inside\n",
+    );
     await writeFile(path.join(lateDirectory, "c-remaining.txt"), "remaining\n");
     await git(worktree.path, "add", "late-dir");
     await git(worktree.path, "commit", "-m", "published directory children");
@@ -1021,12 +1112,57 @@ describe("real worktree teardown preservation", () => {
     await expect(
       readFile(path.join(lateDirectory, "c-remaining.txt"), "utf8"),
     ).resolves.toBe("remaining\n");
-    await expect(access(path.join(lateDirectory, "a-old-dir"))).rejects.toMatchObject({
+    await expect(
+      access(path.join(lateDirectory, "a-old-dir")),
+    ).rejects.toMatchObject({
       code: "ENOENT",
     });
     await expect(git(worktree.path, "rev-parse", "--git-dir")).resolves.toMatch(
       /worktrees/u,
     );
+  });
+
+  it("restores a directory child's mode when a sibling appears at quarantine", async () => {
+    const worktree = await makeWorktree();
+    useProcReaderForTests(descendantsOnly(hostProc, -1));
+    const lateDirectory = path.join(worktree.path, "late-dir");
+    await mkdir(lateDirectory);
+    await mkdir(path.join(lateDirectory, "a-old-dir"));
+    await writeFile(path.join(lateDirectory, "a-old-dir", "old.txt"), "old\n");
+    await mkdir(path.join(lateDirectory, "b-dir"));
+    await fs.chmod(path.join(lateDirectory, "b-dir"), 0o750);
+    await git(worktree.path, "add", "late-dir");
+    await git(worktree.path, "commit", "-m", "published directory quarantine");
+    await git(worktree.path, "push", "origin", "feature");
+    let injected = false;
+    const result = await removeDirectoryTree(worktree.path, {
+      startedAt: Number.MAX_SAFE_INTEGER,
+      beforeEntryRename: async (entry) => {
+        if (!entry.endsWith("late-dir/b-dir") || injected) return;
+        injected = true;
+        await writeFile(path.join(lateDirectory, "late-file.txt"), "kept\n");
+      },
+    });
+
+    expect(result).toBe("retained");
+    expect(injected).toBe(true);
+    await expect(
+      access(path.join(lateDirectory, "a-old-dir")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(
+      access(path.join(lateDirectory, "b-dir")),
+    ).resolves.toBeUndefined();
+    expect(
+      (await fs.stat(path.join(lateDirectory, "b-dir"))).mode & 0o7777,
+    ).toBe(0o750);
+    await expect(
+      readFile(path.join(lateDirectory, "late-file.txt"), "utf8"),
+    ).resolves.toBe("kept\n");
+    expect(
+      (await fs.readdir(lateDirectory)).filter((name) =>
+        name.startsWith(".bb-removing-"),
+      ),
+    ).toEqual([]);
   });
 
   it("removes a clean worktree on macOS when lsof reports no open paths", async () => {
