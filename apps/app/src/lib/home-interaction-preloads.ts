@@ -1,6 +1,9 @@
 import { requestBrowserIdle } from "./plugin-frontend-boot-schedule";
 import { downloadSplit } from "./split-prefetch";
-import { scheduleSettledSplitDownloads } from "./settled-split-downloads";
+import {
+  createSettledWorkSchedule,
+  scheduleSettledSplitDownloads,
+} from "./settled-split-downloads";
 import { markHomeComposerReady } from "./home-composer-ready";
 
 export const HOME_INTERACTION_SPLITS = [
@@ -21,6 +24,7 @@ export const HOME_SETTLED_SPLITS = [
 
 export function scheduleHomeInteractionPreloads(): () => void {
   if (window.location.pathname !== "/") return () => {};
+  const activity = createSettledWorkSchedule(() => true);
   let stopped = false;
   let frame: number | null = null;
   let readyDelay: number | null = null;
@@ -53,7 +57,10 @@ export function scheduleHomeInteractionPreloads(): () => void {
         observer?.disconnect();
         observer = null;
         markHomeComposerReady();
-        cancelSettled = scheduleSettledSplitDownloads(HOME_SETTLED_SPLITS, ready);
+        cancelSettled = scheduleSettledSplitDownloads(
+          HOME_SETTLED_SPLITS,
+          ready,
+        );
         readyDelay = window.setTimeout(() => {
           readyDelay = null;
           if (stopped || !ready()) return;
@@ -75,6 +82,7 @@ export function scheduleHomeInteractionPreloads(): () => void {
   check();
   return () => {
     stopped = true;
+    activity.cancel();
     observer?.disconnect();
     if (frame !== null) cancelAnimationFrame(frame);
     if (readyDelay !== null) window.clearTimeout(readyDelay);

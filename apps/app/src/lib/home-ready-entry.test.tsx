@@ -63,7 +63,8 @@ vi.mock("./stale-chunk-recovery", () => ({
 vi.mock("./stylesheet-property-registry", () => ({
   moveStylesheetPropertiesToRegistry: vi.fn(),
 }));
-vi.mock("./settled-split-downloads", () => ({
+vi.mock("./settled-split-downloads", async (original) => ({
+  ...(await original<typeof import("./settled-split-downloads")>()),
   scheduleSettledSplitDownloads: vi.fn(() => () => {}),
 }));
 

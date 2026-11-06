@@ -141,6 +141,8 @@ interface PluginFrontendLoaderDeps {
   importModule: (url: string) => Promise<unknown>;
   prefetchModule: (url: string) => void;
   warn: (message: string) => void;
+  prepareDeferredRuntime?: (id: string) => Promise<void>;
+  runDeferredWork?: <T>(work: () => Promise<T>) => Promise<T | undefined>;
 }
 
 export async function loadPluginFrontend(
@@ -165,7 +167,10 @@ export async function loadPluginFrontend(
     if (runtimeGroups.length > 0) {
       const slotsProvided = Promise.all(
         runtimeGroups.map(async (group) => {
-          const slots = await group.load();
+          await deps.prepareDeferredRuntime?.(group.id);
+          const slots = deps.runDeferredWork
+            ? await deps.runDeferredWork<Partial<BbPluginRuntime>>(group.load)
+            : await group.load();
           Object.assign(installPluginRuntime(), slots);
         }),
       );
@@ -430,6 +435,9 @@ export interface PluginFrontendReconcileDeps {
   waitForComposerPaint?: () => Promise<void>;
   yieldBetweenDeferredLoads?: () => Promise<void>;
   downloadDeferredModule?: (url: string) => Promise<void>;
+  runDeferredWork?: <T>(work: () => Promise<T>) => Promise<T | undefined>;
+  prepareDeferredRuntime?: (id: string) => Promise<void>;
+  beforePublish?: () => Promise<void>;
   mountTimeoutMs?: number;
   cssReadyTimeoutMs?: number;
   diagnosticsChanged?: () => void;
@@ -814,12 +822,15 @@ async function reconcileCandidates(
               await reconcileCandidate(candidate, state, {
                 ...deps,
                 prefetchModule: () => {},
+                beforePublish: deps.yieldBetweenDeferredLoads,
                 importModule: async (url) => {
                   if (deps.downloadDeferredModule) {
                     await deps.downloadDeferredModule(url);
                     await deps.yieldBetweenDeferredLoads?.();
                   }
-                  return deps.importModule(url);
+                  return deps.runDeferredWork
+                    ? deps.runDeferredWork(() => deps.importModule(url))
+                    : deps.importModule(url);
                 },
               });
           } finally {
@@ -890,6 +901,12 @@ async function reconcileCandidate(
         importModule: deps.importModule,
         prefetchModule: deps.prefetchModule,
         warn: deps.warn,
+        ...(deps.beforePublish
+          ? {
+              prepareDeferredRuntime: deps.prepareDeferredRuntime,
+              runDeferredWork: deps.runDeferredWork,
+            }
+          : {}),
       },
     );
   if (candidate.bundle.cssUrl !== null)
@@ -968,6 +985,7 @@ async function reconcileCandidate(
   const generation = (state.generationByPluginId.get(pluginId) ?? 0) + 1;
   state.generationByPluginId.set(pluginId, generation);
   await applyCssBeforePublish(pluginId, candidate.bundle.cssUrl, deps);
+  await deps.beforePublish?.();
   const replacesActiveGeneration = state.activeGenerations.has(pluginId);
   const cssRelease =
     collected.contentScripts.length > 0 ? deps.retainCss(pluginId) : null;
@@ -1148,6 +1166,8 @@ const browserReconcileDeps: PluginFrontendReconcileDeps = {
   waitForDeferredLoad: deferredFrontendSchedule.waitForDeferredLoad,
   yieldBetweenDeferredLoads: deferredFrontendSchedule.yieldBetweenDeferredLoads,
   downloadDeferredModule: deferredFrontendSchedule.downloadDeferredModule,
+  runDeferredWork: deferredFrontendSchedule.runDeferredWork,
+  prepareDeferredRuntime: deferredFrontendSchedule.prepareDeferredRuntime,
   resetCrashedSlots: resetCrashedPluginSlots,
   setRegistrations: setPluginSlotRegistrations,
   removeRegistrations: removePluginSlotRegistrations,

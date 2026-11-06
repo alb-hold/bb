@@ -3,8 +3,12 @@ import { renderHook, fireEvent, cleanup } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { useThreadOpenIntent } from "./useThreadOpenIntent";
 import { prefetchThreadOpen } from "@/lib/thread-open-prefetch";
+import { warmSplitWhenQuiet } from "@/lib/settled-split-downloads";
 import { LazyThreadDetailView } from "@/views/thread-detail/LazyThreadDetailView";
 
+vi.mock("@/lib/settled-split-downloads", () => ({
+  warmSplitWhenQuiet: vi.fn(),
+}));
 vi.mock("@/lib/thread-open-prefetch", () => ({ prefetchThreadOpen: vi.fn() }));
 vi.mock("@/views/thread-detail/LazyThreadDetailView", () => ({
   LazyThreadDetailView: { preload: vi.fn() },
@@ -72,7 +76,17 @@ it.each(["focus", "input", "submit"])(
       fireEvent.focusIn(input);
     } else if (event === "input") fireEvent.input(input);
     else fireEvent.submit(document.querySelector("form")!);
-    expect(LazyThreadDetailView.preload).toHaveBeenCalledOnce();
+    if (event === "submit")
+      expect(LazyThreadDetailView.preload).toHaveBeenCalledOnce();
+    else {
+      expect(LazyThreadDetailView.preload).not.toHaveBeenCalled();
+      expect(warmSplitWhenQuiet).toHaveBeenCalledWith(
+        "thread-detail",
+        expect.any(Function),
+      );
+      await vi.mocked(warmSplitWhenQuiet).mock.calls[0]![1]();
+      expect(LazyThreadDetailView.preload).toHaveBeenCalledOnce();
+    }
     await Promise.resolve();
     expect(terminal).not.toHaveBeenCalled();
   },
@@ -87,7 +101,21 @@ it("warms terminal modules for explicit native-terminal composer intent", async 
   document.body.innerHTML =
     '<div data-app-composer="" data-native-terminal="true"><textarea></textarea></div>';
   fireEvent.input(document.querySelector("textarea")!);
-  await vi.waitFor(() => expect(terminal).toHaveBeenCalledOnce());
+  expect(terminal).not.toHaveBeenCalled();
+  expect(warmSplitWhenQuiet).toHaveBeenCalledWith(
+    "thread-terminal",
+    expect.any(Function),
+  );
+  for (const [, load] of vi.mocked(warmSplitWhenQuiet).mock.calls) await load();
+  expect(terminal).not.toHaveBeenCalled();
+  expect(warmSplitWhenQuiet).toHaveBeenCalledWith(
+    "terminal-runtime",
+    expect.any(Function),
+  );
+  expect(warmSplitWhenQuiet).toHaveBeenCalledWith(
+    "terminal-fit",
+    expect.any(Function),
+  );
   expect(LazyThreadDetailView.preload).toHaveBeenCalledOnce();
 });
 

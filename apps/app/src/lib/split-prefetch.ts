@@ -1,3 +1,5 @@
+import { createSettledWorkSchedule } from "./input-idle-work";
+
 const requested = new Set<string>();
 
 function splitAssets(id: string): string[] {
@@ -36,14 +38,33 @@ const downloads = new Map<string, Promise<void>>();
 export async function downloadSplitInBackground(
   id: string,
   whenIdle: () => Promise<boolean>,
+  run = async (work: () => Promise<void>) => {
+    if (await whenIdle()) await work();
+  },
 ): Promise<void> {
   for (const path of splitAssets(id)) {
     const url = new URL(path, document.baseURI).href;
     if (importing.has(id)) return;
     if (requested.has(url) || performance.getEntriesByName(url).length > 0)
       continue;
-    if (!(await whenIdle()) || importing.has(id)) return;
-    await downloadAsset(path);
+    await run(async () => {
+      if (!importing.has(id)) await downloadAsset(path);
+    });
+  }
+}
+
+export async function prepareBackgroundSplit(
+  id: string,
+  run: (work: () => Promise<void>) => Promise<void>,
+): Promise<void> {
+  await downloadSplitInBackground(id, async () => true, run);
+  for (const path of splitAssets(id)) {
+    const url = new URL(path, document.baseURI).href;
+    if (importing.has(id)) return;
+    if (requested.has(url))
+      await run(async () => {
+        await import(/* @vite-ignore */ url);
+      });
   }
 }
 
@@ -108,11 +129,21 @@ export function holdSplitPreloads(): () => void {
 }
 
 function drainPreloadQueue() {
-  drainScheduled = false;
-  if (pendingCriticalLoads > 0 || preloadHolds > 0) return;
-  const warmers = [...preloadQueue];
-  preloadQueue.clear();
-  for (const warm of warmers) void warm();
+  if (pendingCriticalLoads > 0 || preloadHolds > 0) {
+    drainScheduled = false;
+    return;
+  }
+  const schedule = createSettledWorkSchedule(() => true);
+  const warm = preloadQueue.values().next().value;
+  if (warm) preloadQueue.delete(warm);
+  void schedule
+    .run(warm ?? (() => Promise.resolve()))
+    .catch(() => undefined)
+    .finally(() => {
+      schedule.cancel();
+      drainScheduled = false;
+      scheduleDrain();
+    });
 }
 
 function scheduleDrain() {

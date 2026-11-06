@@ -1,6 +1,8 @@
 import { useEffect } from "react";
 import { LazyThreadDetailView } from "@/views/thread-detail/LazyThreadDetailView";
 import { downloadSplit } from "@/lib/split-prefetch";
+import { warmSplitWhenQuiet } from "@/lib/settled-split-downloads";
+import { HOME_SETTLED_SPLITS } from "@/lib/home-interaction-preloads";
 
 export function prefetchThreadViewOnIntent(nativeTerminal = false): void {
   void LazyThreadDetailView.preload();
@@ -56,12 +58,21 @@ export function useThreadOpenIntent(): void {
             (event.type === "focusin" ||
               event.type === "pointerdown" ||
               event.type === "touchstart")))
-      )
-        prefetchThreadViewOnIntent(
+      ) {
+        const nativeTerminal =
           event.target
             .closest("[data-app-composer]")
-            ?.getAttribute("data-native-terminal") === "true",
-        );
+            ?.getAttribute("data-native-terminal") === "true";
+        if (event.type === "submit") prefetchThreadViewOnIntent(nativeTerminal);
+        else {
+          warmSplitWhenQuiet("thread-detail", () =>
+            LazyThreadDetailView.preload(),
+          );
+          if (nativeTerminal)
+            for (const id of HOME_SETTLED_SPLITS.slice(1))
+              warmSplitWhenQuiet(id, async () => {});
+        }
+      }
     };
     document.addEventListener("pointerover", intent);
     document.addEventListener("focusin", intent);

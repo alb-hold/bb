@@ -101,16 +101,15 @@ async function start(
   return { imports, prefetch, done, markHomeComposerReady };
 }
 
-it("keeps non-home plugin downloads behind ready, a long settle and idle", async () => {
+it("keeps non-home plugin downloads behind ready and input-aware idle", async () => {
   const h = await start();
   expect(h.imports.mock.calls.flat()).toEqual(["/plugins/thread-list.js"]);
   await vi.advanceTimersByTimeAsync(12_000);
   expect(h.imports).toHaveBeenCalledTimes(1);
   expect(h.prefetch).not.toHaveBeenCalled();
   h.markHomeComposerReady();
-  await vi.advanceTimersByTimeAsync(14_999);
   expect(h.imports).toHaveBeenCalledTimes(1);
-  await vi.advanceTimersByTimeAsync(10);
+  await vi.advanceTimersByTimeAsync(100);
   await h.done;
   expect(h.imports.mock.calls.flat()).toEqual([
     "/plugins/thread-list.js",
@@ -130,7 +129,7 @@ it("paces evaluations and yields the next bundle while the user types", async ()
       }),
   );
   h.markHomeComposerReady();
-  await vi.advanceTimersByTimeAsync(15_010);
+  await vi.advanceTimersByTimeAsync(100);
   expect(h.imports).toHaveBeenCalledTimes(2);
   document
     .querySelector("textarea")!
@@ -138,7 +137,7 @@ it("paces evaluations and yields the next bundle while the user types", async ()
   finish();
   await vi.advanceTimersByTimeAsync(999);
   expect(h.imports).toHaveBeenCalledTimes(2);
-  await vi.advanceTimersByTimeAsync(5);
+  await vi.advanceTimersByTimeAsync(100);
   await h.done;
   expect(h.imports).toHaveBeenCalledTimes(3);
 });
@@ -150,7 +149,7 @@ it("can release on explicit composer input when an empty sidebar has no ready ma
     .dispatchEvent(new Event("input", { bubbles: true }));
   await vi.advanceTimersByTimeAsync(999);
   expect(h.imports).toHaveBeenCalledTimes(1);
-  await vi.advanceTimersByTimeAsync(10);
+  await vi.advanceTimersByTimeAsync(100);
   await h.done;
   expect(h.imports).toHaveBeenCalledTimes(3);
 });
@@ -161,7 +160,6 @@ it.each([false, true])(
     const h = await start();
     if (marked) {
       h.markHomeComposerReady();
-      await vi.advanceTimersByTimeAsync(100);
     }
     window.history.pushState(null, "", "/threads/terminal");
     document.body.replaceChildren();
@@ -185,7 +183,7 @@ it("waits for input quiet again when a deferred download completes during typing
   );
   const h = await start({ downloadDeferredModule: download });
   h.markHomeComposerReady();
-  await vi.advanceTimersByTimeAsync(15_010);
+  await vi.advanceTimersByTimeAsync(100);
   expect(download).toHaveBeenCalledExactlyOnceWith("/plugins/git.js");
   expect(h.imports).toHaveBeenCalledTimes(1);
   document
@@ -195,7 +193,7 @@ it("waits for input quiet again when a deferred download completes during typing
   finish();
   await vi.advanceTimersByTimeAsync(999);
   expect(h.imports).toHaveBeenCalledTimes(1);
-  await vi.advanceTimersByTimeAsync(10);
+  await vi.advanceTimersByTimeAsync(100);
   await h.done;
   expect(h.imports.mock.calls.flat()).toEqual([
     "/plugins/thread-list.js",
@@ -218,12 +216,12 @@ it("gates cache-busting retries after input during a failed import", async () =>
     throw new TypeError("Failed to fetch dynamically imported module");
   });
   h.markHomeComposerReady();
-  await vi.advanceTimersByTimeAsync(15_010);
+  await vi.advanceTimersByTimeAsync(100);
   expect(h.imports).toHaveBeenCalledTimes(2);
   await vi.advanceTimersByTimeAsync(900);
   expect(h.imports).toHaveBeenCalledTimes(2);
   h.imports.mockResolvedValue(module);
-  await vi.advanceTimersByTimeAsync(110);
+  await vi.advanceTimersByTimeAsync(210);
   await h.done;
   expect(h.imports).toHaveBeenCalledTimes(4);
   expect(download.mock.calls.flat()).toEqual([
@@ -250,7 +248,7 @@ it.each(["network", "status", "body"])(
     vi.stubGlobal("fetch", fetch);
     const h = await start();
     h.markHomeComposerReady();
-    await vi.advanceTimersByTimeAsync(15_030);
+    await vi.advanceTimersByTimeAsync(100);
     await h.done;
     expect(h.imports.mock.calls.flat()).toEqual([
       "/plugins/thread-list.js",
@@ -270,7 +268,7 @@ it.each(["network", "status", "body"])(
 it("keeps deferred runtime-slot bundles out of eager modulepreload compilation", async () => {
   const h = await start({}, ["radixCheckbox"]);
   h.markHomeComposerReady();
-  await vi.advanceTimersByTimeAsync(15_030);
+  await vi.advanceTimersByTimeAsync(100);
   expect(h.prefetch).not.toHaveBeenCalled();
   await vi.waitFor(() => expect(h.imports).toHaveBeenCalledTimes(3), {
     timeout: 10_000,

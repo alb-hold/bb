@@ -184,6 +184,9 @@ describe("reconcilePluginFrontends load scheduling", () => {
       expect(idle).toHaveLength(0);
       await imports.resolveNext();
       for (let i = 0; i < 20; i += 1) await Promise.resolve();
+      expect(idle).toHaveLength(1);
+      idle.shift()!();
+      for (let i = 0; i < 20; i += 1) await Promise.resolve();
       expect(idle).toHaveLength(count < 3 ? 1 : 0);
     }
     await done;
