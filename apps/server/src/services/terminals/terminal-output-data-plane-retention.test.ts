@@ -263,7 +263,7 @@ function seedMaintainedScreen(fixture: Awaited<ReturnType<typeof setup>>) {
   return Reflect.get(fixture.terminalSessions, "terminalScreenStates");
 }
 
-it.each(["redraw", "scrollback", "early-live", "overflow"])(
+it.each(["redraw", "scrollback", "early-live", "overflow", "cli"])(
   "attaches with bounded %s and continues at the original live sequence",
   async (kind) => {
     const fixture = await setup();
@@ -385,11 +385,21 @@ it.each(["redraw", "scrollback", "early-live", "overflow"])(
         socket,
         sinceSeq: 0,
         terminalId: fixture.terminal.id,
+        rawReplay: kind === "cli",
         outputAcks: false,
         resizeAcks: false,
       });
       await replayWork;
       const frames = socket.sent.map((frame) => JSON.parse(frame));
+      if (kind === "cli") {
+        expect(frames[0]).toMatchObject({
+          type: "attached",
+          replayStartSeq: firstSeq,
+        });
+        expect(frames.slice(1).map((frame) => frame.chunk)).toEqual(chunks);
+        expect(compactSpy).not.toHaveBeenCalled();
+        return;
+      }
       if (kind === "overflow") {
         expect(frames[0]).toMatchObject({
           type: "attached",
@@ -412,8 +422,8 @@ it.each(["redraw", "scrollback", "early-live", "overflow"])(
           (_, i) => firstSeq + 256 - output.length + i,
         ),
       );
-      expect(output.length).toBeLessThanOrEqual(kind !== "scrollback" ? 1 : 20);
-      if (kind === "scrollback") expect(output.length).toBeGreaterThan(1);
+      if (kind === "scrollback") expect(output).toEqual(chunks);
+      else expect(output).toHaveLength(1);
       for (const chunk of output)
         expect(
           Buffer.byteLength(chunk.dataBase64, "base64"),

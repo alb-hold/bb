@@ -277,6 +277,7 @@ interface ResolvedTerminalLaunchTarget {
 }
 
 interface AttachBrowserTerminalArgs {
+  rawReplay?: boolean;
   handoffOwnerToken?: string;
   outputAcks: boolean;
   resizeAcks: boolean;
@@ -918,6 +919,7 @@ export class TerminalSessionLifecycle {
   private readonly outputFlow: TerminalOutputFlowControl;
   private readonly outputSequenceRebase = new TerminalOutputSequenceRebase();
   private readonly terminalScreenStates = new TerminalScreenStateCache();
+  private readonly rawReplaySockets = new WeakSet<TerminalClientSocket>();
   private readonly boundedReplay = new TerminalBoundedReplay();
   private readonly replayLiveOutput = new Map<string, Set<ReplayLiveOutput>>();
   private readonly terminalScreenStateRebuilds = new Map<
@@ -3182,6 +3184,7 @@ export class TerminalSessionLifecycle {
   }
 
   attachBrowserTerminal(args: AttachBrowserTerminalArgs): void {
+    if (args.rawReplay) this.rawReplaySockets.add(args.socket);
     if (args.outputAcks) {
       this.outputAckSocketVisibility.set(args.socket, true);
     }
@@ -3868,7 +3871,11 @@ export class TerminalSessionLifecycle {
       }
     }
     let attachMessage = { ...replayHeader, chunks: rebasedChunks };
-    if (pendingAttach?.sinceSeq === 0 && current !== null) {
+    if (
+      pendingAttach?.sinceSeq === 0 &&
+      current !== null &&
+      !this.rawReplaySockets.has(pendingAttach.socket)
+    ) {
       const replay = this.boundedReplay.forAttach({
         ...attachMessage,
         terminalId: current.id,

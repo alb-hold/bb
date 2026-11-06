@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { Terminal } from "@xterm/headless";
 import { TerminalScreenState } from "./terminal-screen-state.js";
@@ -335,4 +335,46 @@ it("retains OSC 9 progress without re-firing later notifications", async () => {
   expect(events).toEqual(["4;1;50"]);
   state.dispose();
   restored.dispose();
+});
+
+it("stops history serialization once the replay byte budget is reached", async () => {
+  const state = new TerminalScreenState(120, 24, true);
+  try {
+    state.push(
+      0,
+      Buffer.from(
+        Array.from(
+          { length: 200 },
+          () => "\x1b[31ma\x1b[32mb".repeat(50) + "\r\n",
+        ).join(""),
+      ),
+    );
+    expect(await state.replaySnapshot(1024)).toBeNull();
+  } finally {
+    state.dispose();
+  }
+});
+
+it("completes dense SGR serialization with bounded base64 encoding batches", async () => {
+  const state = new TerminalScreenState(120, 24, true);
+  const data = Buffer.from(
+    ("\x1b[31ma\x1b[32mb".repeat(60) + "\r\n").repeat(200),
+  );
+  state.push(0, data);
+  const encode = vi.spyOn(Buffer.prototype, "toString");
+  try {
+    const snapshot = await state.replaySnapshot(data.length * 4);
+    expect(snapshot).not.toBeNull();
+    const sizes = encode.mock.calls.flatMap((call, index) => {
+      const context = encode.mock.contexts[index];
+      return call[0] === "base64" && Buffer.isBuffer(context)
+        ? [context.length]
+        : [];
+    });
+    expect(sizes.length).toBeGreaterThan(1);
+    expect(Math.max(...sizes)).toBeLessThanOrEqual(64 * 1024);
+  } finally {
+    encode.mockRestore();
+    state.dispose();
+  }
 });
