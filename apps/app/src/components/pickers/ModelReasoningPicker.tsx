@@ -385,7 +385,8 @@ export function ModelReasoningPicker(props: ModelReasoningPickerProps) {
       variant="ghost"
       size="sm"
       aria-label={triggerAccessibleLabel}
-      aria-description={modelSubstitutionNote}
+      aria-description={modelSubstitutionNote ?? triggerTitle}
+      title={modelSubstitutionNote ?? triggerTitle}
       aria-keyshortcuts={toggleShortcut?.ariaKeyshortcuts}
       disabled={disabled}
       onPointerEnter={warmPicker}

@@ -176,7 +176,7 @@ export const ExecutionControls = memo(function ExecutionControls({
           onAgentOptionChange={agentOptions?.onChange}
           muted
           compactIconOnly={false}
-          className="w-44 shrink-0 min-w-0 overflow-hidden"
+          className="w-max min-w-44 max-w-full overflow-hidden"
           disabled={disabled}
           handoff={handoff}
         />

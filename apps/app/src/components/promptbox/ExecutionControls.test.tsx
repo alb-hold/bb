@@ -62,37 +62,50 @@ afterEach(() => {
 });
 
 describe("ExecutionControls", () => {
-  it("reserves the same model width while loading and after resolving the toolbar", () => {
-    const props = makeExecutionControlsProps();
-    const { wrapper } = createQueryClientTestHarness();
-    const content = (loading: boolean) => (
-      <ExecutionControls
-        {...props}
-        model={
-          loading
-            ? { ...props.model, selected: "", options: [], isLoading: true }
-            : {
-                ...props.model,
-                selected: "gpt-6.1-sol",
-                options: [{ value: "gpt-6.1-sol", label: "GPT-6.1-Sol" }],
-              }
-        }
-        nativeTerminal={{ enabled: false, onChange: vi.fn() }}
-      />
-    );
-    const { rerender } = render(content(true), { wrapper });
-    const trigger = screen.getByRole("button", {
-      name: "Provider, model and reasoning",
-    });
-    const widthContract = () => {
-      expect(trigger.classList.contains("w-44")).toBe(true);
-      expect(trigger.classList.contains("shrink-0")).toBe(true);
-    };
-    widthContract();
-    rerender(content(false));
-    expect(trigger.textContent).toContain("6.1-Sol");
-    widthContract();
-  });
+  it.each([
+    "GPT-6.1-Sol",
+    "Opus 5.5 (1M)",
+    "Organization Custom ACP Production Model",
+  ])(
+    "reserves a shared minimum width and exposes the full selection for %s",
+    (label) => {
+      const props = makeExecutionControlsProps();
+      const { wrapper } = createQueryClientTestHarness();
+      const content = (loading: boolean) => (
+        <ExecutionControls
+          {...props}
+          model={
+            loading
+              ? { ...props.model, selected: "", options: [], isLoading: true }
+              : {
+                  ...props.model,
+                  selected: "gpt-6.1-sol",
+                  options: [{ value: "gpt-6.1-sol", label }],
+                }
+          }
+          nativeTerminal={{ enabled: false, onChange: vi.fn() }}
+        />
+      );
+      const { rerender } = render(content(true), { wrapper });
+      const trigger = screen.getByRole("button", {
+        name: "Provider, model and reasoning",
+      });
+      const widthContract = () => {
+        expect(trigger.classList.contains("min-w-44")).toBe(true);
+        expect(trigger.classList.contains("w-max")).toBe(true);
+        expect(trigger.classList.contains("shrink-0")).toBe(false);
+      };
+      widthContract();
+      rerender(content(false));
+      expect(trigger.getAttribute("title")).toContain(
+        label.replace("GPT-", ""),
+      );
+      expect(trigger.getAttribute("aria-description")).toContain(
+        "Medium reasoning",
+      );
+      widthContract();
+    },
+  );
 
   it.each([320, 360, 390])(
     "keeps Terminal and Chat labels visible at %i px",
@@ -249,7 +262,7 @@ describe("ExecutionControls", () => {
           model={{
             ...props.model,
             selected: "gpt-6.1-sol",
-            options: [{ value: "gpt-6.1-sol", label: "GPT-6.1-Sol" }],
+            options: [{ value: "gpt-6.1-sol", label }],
           }}
           nativeTerminal={{ enabled: true, onChange: vi.fn() }}
         />
