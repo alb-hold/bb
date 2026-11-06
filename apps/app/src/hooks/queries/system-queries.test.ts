@@ -104,6 +104,33 @@ afterEach(() => {
 });
 
 describe("useSystemProviderInfo", () => {
+  it("does not poll a settled catalog during twelve seconds of composer renders", async () => {
+    vi.useFakeTimers();
+    const { queryClient } = createQueryClientTestHarness();
+    vi.mocked(sdk.system.executionOptions).mockResolvedValue(
+      EXECUTION_OPTIONS_RESPONSE,
+    );
+    try {
+      const options = liveSystemExecutionOptionsQueryOptions({
+        providerId: "codex",
+      });
+      const observer = observe(queryClient, options);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(observer.getCurrentResult().isSuccess).toBe(true);
+      for (let index = 0; index < 15; index += 1) {
+        observer.setOptions(
+          liveSystemExecutionOptionsQueryOptions({ providerId: "codex" }),
+        );
+        await vi.advanceTimersByTimeAsync(800);
+      }
+      expect(sdk.system.executionOptions).toHaveBeenCalledTimes(1);
+    } finally {
+      stopObserving();
+      queryClient.clear();
+      vi.useRealTimers();
+    }
+  });
+
   it("uses capabilities already loaded by the composer while the provider roster loads", async () => {
     const provider = makeProviderInfo({
       id: "codex",

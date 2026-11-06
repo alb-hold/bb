@@ -175,7 +175,7 @@ vi.mock("@/components/promptbox/FollowUpPromptBox", async () => {
       };
       executionReadOnly?: boolean;
       pendingInteraction?: ReactNode;
-      permission: { value?: string; onChange?: (value: "full") => void };
+      permission: { pending?: boolean; value?: string; onChange?: (value: "full") => void };
       permissionReadOnly?: boolean;
       pluginComposerHost?: PluginComposerHost | null;
       sessionOptionsControl?: ReactNode;
@@ -244,7 +244,7 @@ vi.mock("@/components/promptbox/FollowUpPromptBox", async () => {
           </button>
         ) : null}
         {permission.onChange ? (
-          <button type="button" onClick={() => permission.onChange?.("full")}>
+          <button type="button" disabled={permission.pending} onClick={() => permission.onChange?.("full")}>
             Choose permission full
           </button>
         ) : null}

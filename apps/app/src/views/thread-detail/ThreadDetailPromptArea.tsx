@@ -737,15 +737,15 @@ export function ThreadDetailPromptArea({
     string | null
   >(null);
   useEffect(() => {
-    if (modelCatalogIsSettled && !executionOptionsPending) return;
+    if (modelCatalogIsSettled) return;
     const timer = window.setTimeout(
       () => setCatalogWaitExpiredFor(thread.id),
       5000,
     );
     return () => window.clearTimeout(timer);
-  }, [modelCatalogIsSettled, executionOptionsPending, thread.id]);
+  }, [modelCatalogIsSettled, thread.id]);
   const catalogPending =
-    (!modelCatalogIsSettled || executionOptionsPending) &&
+    !modelCatalogIsSettled &&
     catalogWaitExpiredFor !== thread.id;
   const isPermissionSnapshot = permissionPolicy === "snapshot";
   const permissionMode = isPermissionSnapshot

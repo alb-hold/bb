@@ -1054,11 +1054,12 @@ describe("ThreadDetailPromptArea", () => {
     );
   });
 
-  it("withholds endpoint defaults while live session selections are loading", () => {
-    const { rerender } = renderPromptArea({ executionOptionsPending: true });
-    expect(screen.getByTestId("selected-model").textContent).toBe("Loading execution options");
-    rerender(buildPromptAreaElement({ executionOptionsPending: false }));
+  it("keeps loaded composer controls usable while live session selections refresh", () => {
+    const { rerender } = renderPromptArea();
     expect(screen.getByTestId("selected-model").textContent).toBe("gpt-5");
+    rerender(buildPromptAreaElement({ executionOptionsPending: true }));
+    expect(screen.getByTestId("selected-model").textContent).toBe("gpt-5");
+    expect(screen.getByRole("button", { name: "Choose permission full" }).hasAttribute("disabled")).toBe(false);
   });
 
   it("shows stored execution when an offline, failed, or absent catalog settles unverified", () => {

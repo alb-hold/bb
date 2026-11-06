@@ -171,8 +171,12 @@ export function ModelReasoningPicker(props: ModelReasoningPickerProps) {
           : "Select model";
   const triggerModelValueIsDestructive =
     triggerModelLabel === FAILED_TO_LOAD_MODELS_LABEL;
+  const compactModelLabel =
+    isCompactViewport && hasSelectedModel
+      ? triggerModelLabel.replace(/^GPT-/i, "")
+      : triggerModelLabel;
   const { base: triggerModelBase, tag: triggerModelTag } =
-    splitModelLabelTag(triggerModelLabel);
+    splitModelLabelTag(compactModelLabel);
 
   const selectedReasoningOption = reasoningOptions.find(
     (r) => r.value === reasoningValue,
@@ -350,7 +354,7 @@ export function ModelReasoningPicker(props: ModelReasoningPickerProps) {
     ? "Model"
     : selectedModelLoadFailed
       ? selectedModelLoadErrorText
-      : triggerModelLabel;
+      : selectedModelLabel || triggerModelLabel;
   const triggerTitle = [
     [selectedProviderLabel, triggerTitleModelLabel]
       .filter((label) => label.trim().length > 0)
@@ -377,11 +381,12 @@ export function ModelReasoningPicker(props: ModelReasoningPickerProps) {
         ]
           .filter(Boolean)
           .join(" · ")}`;
-  const triggerAccessibleLabel = showCompactIconOnly
-    ? compactAccessibleLabel
-    : toggleShortcut
-      ? `Provider, model and reasoning (${toggleShortcut.label})`
-      : "Provider, model and reasoning";
+  const triggerAccessibleLabel =
+    showCompactIconOnly || (isCompactViewport && hasSelectedModel)
+      ? compactAccessibleLabel
+      : toggleShortcut
+        ? `Provider, model and reasoning (${toggleShortcut.label})`
+        : "Provider, model and reasoning";
   const trigger = (
     <Button
       ref={triggerRef}
@@ -428,7 +433,10 @@ export function ModelReasoningPicker(props: ModelReasoningPickerProps) {
             <span
               data-model-name=""
               className={cn(
-                "min-w-0 truncate",
+                "min-w-0",
+                isCompactViewport
+                  ? "whitespace-normal break-words"
+                  : "truncate",
                 triggerModelValueIsDestructive && "text-destructive-text",
               )}
             >
@@ -442,7 +450,7 @@ export function ModelReasoningPicker(props: ModelReasoningPickerProps) {
                 {triggerModelTag}
               </span>
             ) : null}
-            {triggerReasoningLabel ? (
+            {triggerReasoningLabel && !isCompactViewport ? (
               <span
                 className="shrink-0 text-subtle-foreground"
                 data-promptbox-hide-compact=""
