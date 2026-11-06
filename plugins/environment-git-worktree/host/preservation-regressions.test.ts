@@ -2391,6 +2391,32 @@ describe("real worktree teardown preservation", () => {
     },
   );
 
+  removeDirectoryTreeTest(
+    "keeps Git usable when a racing marker source prevents restoration",
+    async () => {
+      const worktree = await makeWorktree();
+      let sourceReplaced = false;
+      const result = await removeDirectoryTree(worktree.path, {
+        startedAt: Number.MAX_SAFE_INTEGER,
+        afterRootMarkerDetached: async (root) => {
+          await writeFile(path.join(root, "late-marker-data.txt"), "late\n");
+        },
+        beforeGitMarkerRestoreLink: async (source) => {
+          if (sourceReplaced) return;
+          sourceReplaced = true;
+          await fs.unlink(source);
+          await writeFile(source, "racing marker bytes\n");
+        },
+      });
+
+      expect(result.status).toBe("retained");
+      expect(sourceReplaced).toBe(true);
+      await expect(
+        git(worktree.path, "rev-parse", "--git-dir"),
+      ).resolves.toMatch(/worktrees/u);
+    },
+  );
+
   it.skipIf(
     process.platform !== "linux" ||
       (typeof process.getuid === "function" && process.getuid() === 0),
