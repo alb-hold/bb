@@ -1111,7 +1111,16 @@ describe("real worktree teardown preservation", () => {
       const recoveredPath = retainedPaths.find((retainedPath) =>
         path.basename(retainedPath).startsWith(".bb-recovered-"),
       );
-      expect(recoveredPath).toBeDefined();
+      if (recoveredPath === undefined) {
+        const visibleBytes = await Promise.all([
+          readFile(path.join(worktree.path, "README.md")),
+          readFile(racerSource),
+        ]);
+        expect(
+          visibleBytes.some((bytes) => bytes.equals(Buffer.from("published\n"))),
+        ).toBe(true);
+        throw new Error("Recovered original path was not reported");
+      }
       await expect(readFile(recoveredPath!, "utf8")).resolves.toBe("published\n");
       expect((await fs.stat(recoveredPath!)).mode & 0o7777).toBe(originalMode);
       expect(retainedPaths).toContain(path.join(worktree.path, "README.md"));
@@ -1156,7 +1165,16 @@ describe("real worktree teardown preservation", () => {
       const recoveredPath = retainedPaths.find((retainedPath) =>
         path.basename(retainedPath).startsWith(".bb-recovered-"),
       );
-      expect(recoveredPath).toBeDefined();
+      if (recoveredPath === undefined) {
+        const visibleBytes = await Promise.all([
+          readFile(markerPath),
+          readFile(racerSource),
+        ]);
+        expect(visibleBytes.some((bytes) => bytes.equals(originalMarker))).toBe(
+          true,
+        );
+        throw new Error("Recovered original path was not reported");
+      }
       await expect(readFile(recoveredPath!)).resolves.toEqual(originalMarker);
       expect((await fs.stat(recoveredPath!)).mode & 0o7777).toBe(originalMode);
       expect(retainedPaths).toContain(markerPath);
