@@ -462,12 +462,16 @@ export function ModelReasoningPicker(props: ModelReasoningPickerProps) {
 
   return (
     <Popover open={open && !disabled} onOpenChange={setOpen} modal={modal}>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <PopoverTrigger asChild>{trigger}</PopoverTrigger>
-        </TooltipTrigger>
-        <TooltipContent>{modelSubstitutionNote ?? triggerTitle}</TooltipContent>
-      </Tooltip>
+      <TooltipProvider>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <PopoverTrigger asChild>{trigger}</PopoverTrigger>
+          </TooltipTrigger>
+          <TooltipContent>
+            {modelSubstitutionNote ?? triggerTitle}
+          </TooltipContent>
+        </Tooltip>
+      </TooltipProvider>
       <ModelReasoningPickerBody
         initialPreviewProviderId={startupProvider}
         initialReasoningLevel={startupReasoning}
