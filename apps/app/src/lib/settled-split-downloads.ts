@@ -1,11 +1,10 @@
 import { requestBrowserIdle } from "./plugin-frontend-boot-schedule";
 import { downloadSplitInBackground } from "./split-prefetch";
 
-export function scheduleSettledSplitDownloads(
-  ids: readonly string[],
+export function createSettledWorkSchedule(
   isActive: () => boolean,
-): () => void {
-  const settledAt = Date.now() + 15_000;
+  settledAt = Date.now() + 15_000,
+): { whenIdle: () => Promise<boolean>; cancel: () => void } {
   let lastInput = 0;
   let stopped = false;
   let timer: number | null = null;
@@ -46,13 +45,7 @@ export function scheduleSettledSplitDownloads(
       resume = resolve;
       schedule();
     });
-  void (async () => {
-    for (const id of ids) {
-      if (stopped || !isActive()) return;
-      await downloadSplitInBackground(id, whenIdle);
-    }
-  })().catch(() => undefined);
-  return () => {
+  const cancel = () => {
     stopped = true;
     clear();
     resume?.(false);
@@ -60,4 +53,21 @@ export function scheduleSettledSplitDownloads(
     for (const event of events)
       document.removeEventListener(event, input, { capture: true });
   };
+  return { whenIdle, cancel };
+}
+
+export function scheduleSettledSplitDownloads(
+  ids: readonly string[],
+  isActive: () => boolean,
+): () => void {
+  const schedule = createSettledWorkSchedule(isActive);
+  void (async () => {
+    for (const id of ids) {
+      if (!isActive()) return;
+      await downloadSplitInBackground(id, schedule.whenIdle);
+    }
+  })()
+    .catch(() => undefined)
+    .finally(schedule.cancel);
+  return schedule.cancel;
 }

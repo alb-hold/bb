@@ -1,6 +1,7 @@
 import { requestBrowserIdle } from "./plugin-frontend-boot-schedule";
 import { downloadSplit } from "./split-prefetch";
 import { scheduleSettledSplitDownloads } from "./settled-split-downloads";
+import { markHomeComposerReady } from "./home-composer-ready";
 
 export const HOME_INTERACTION_SPLITS = [
   "model-reasoning-picker-body",
@@ -51,7 +52,7 @@ export function scheduleHomeInteractionPreloads(): () => void {
         if (stopped || !ready()) return;
         observer?.disconnect();
         observer = null;
-        performance.mark("app-home-composer-ready");
+        markHomeComposerReady();
         cancelSettled = scheduleSettledSplitDownloads(HOME_SETTLED_SPLITS, ready);
         readyDelay = window.setTimeout(() => {
           readyDelay = null;

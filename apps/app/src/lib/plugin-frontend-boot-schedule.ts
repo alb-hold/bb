@@ -19,21 +19,6 @@ function hasMountedSurface(selector: string): boolean {
   );
 }
 
-export function whenHomeComposerInputOrTimeout(): Promise<void> {
-  if (window.location.pathname !== "/") return Promise.resolve();
-  const composer = document.querySelector(HOME_COMPOSER_SELECTOR);
-  if (!composer) return Promise.resolve();
-  return new Promise((resolve) => {
-    const finish = () => {
-      composer.removeEventListener("input", finish);
-      window.clearTimeout(timeout);
-      resolve();
-    };
-    const timeout = window.setTimeout(finish, 2_000);
-    composer.addEventListener("input", finish, { once: true });
-  });
-}
-
 export function whenRouteSurfaceMounted(): Promise<void> {
   const pathname = window.location.pathname;
   const selector =
