@@ -65,25 +65,15 @@ describe("compact touch targets", () => {
   });
 });
 
-it("expands timeline hit areas without increasing their layout heights", () => {
-  const block = css.slice(css.lastIndexOf("@media (width < 48rem)"));
-  const timeline = block.slice(block.indexOf('[data-compact-touch="action"]'));
-  expect(block).not.toContain("aria-label");
-  expect(timeline).not.toContain("min-block-size");
-  expect(timeline).toContain('content: ""');
-  expect(timeline).toContain("position: absolute");
-  expect(timeline).toContain("inset-block: -12px -4px");
-  expect(timeline).toContain("inset-block: -4px var(--compact-touch-summary-end, -20px)");
-  expect(timeline).toContain("--compact-touch-summary-end: -4px");
-  expect(timeline).toContain("button[data-compact-touch-summary]::after");
+it("uses real coarse-pointer targets without overlapping pseudo elements", () => {
+  const block = css.slice(css.lastIndexOf("@media (pointer: coarse)"));
+  expect(block).toContain("min-block-size: 44px");
+  expect(block).toContain("min-inline-size: 44px");
+  expect(block).not.toContain("::after");
 });
 
-it("keeps the last summary hit area inside the animated clip without adding layout height", () => {
-  const block = css.slice(css.lastIndexOf("@media (width < 48rem)"));
-  expect(block).toMatch(
-    /\[data-compact-touch-height\]:has\(\[data-compact-touch-summary\]\)\s*\{\s*margin-block-end: -20px;\s*\}/,
-  );
-  expect(block).toMatch(
-    /\[data-compact-touch-height\]:has\(\[data-compact-touch-summary\]\) > div\s*\{\s*padding-block-end: 20px;\s*\}/,
-  );
+it("collapses terminal segment labels first and reserves an 8px action gap", () => {
+  expect(css).toContain("@media (width <= 360px)");
+  expect(css).toMatch(/\[data-native-terminal-toggle\] > button > span\s*{\s*display: none/);
+  expect(css).toContain("column-gap: 0.5rem");
 });

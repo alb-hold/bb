@@ -12,7 +12,8 @@ import {
   type KeyboardEvent,
   type PointerEvent,
 } from "react";
-import type { PromptInput } from "@bb/domain";
+import { getPermissionModeCompactLabel } from "@/components/pickers/PermissionModePicker";
+import type { PermissionMode, PromptInput } from "@bb/domain";
 import type { UploadedPromptAttachment } from "@bb/server-contract";
 import { Button } from "@bb/shared-ui/button";
 import {
@@ -50,6 +51,8 @@ interface NativeTerminalPromptBarProps {
   providerLabel: string;
   threadId: string;
   executionLabel?: string;
+  modelLabel?: string;
+  permissionMode?: PermissionMode;
 }
 
 const PUSH_TO_TALK_HOLD_MS = 350;
@@ -101,6 +104,8 @@ export function NativeTerminalPromptBar({
   projectId,
   providerLabel,
   executionLabel,
+  modelLabel,
+  permissionMode,
   threadId,
 }: NativeTerminalPromptBarProps) {
   const inputId = useId();
@@ -555,10 +560,7 @@ export function NativeTerminalPromptBar({
           COMPOSER_SHELL_CLASS,
           "flex flex-col px-1.5 py-0.5 transition-[border-color,box-shadow] duration-200 focus-within:border-ring/60 motion-reduce:transition-none",
           recording && "border-destructive/40",
-          !text &&
-            !focused &&
-            dictation.phase === "idle" &&
-            "max-md:grid max-md:grid-cols-[minmax(0,1fr)_auto] max-md:items-center",
+
         )}
         data-native-composer=""
         onDragOver={onDragOver}
@@ -659,7 +661,10 @@ export function NativeTerminalPromptBar({
           >
             <Icon name="Plus" className="size-4" />
           </Button>
-          <div className="flex-1" />
+          <div aria-label="Terminal model and permissions" className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 text-xs text-muted-foreground">
+            {modelLabel ? <span className="truncate" title={modelLabel}>{modelLabel}</span> : null}
+            {permissionMode ? <span className="inline-flex items-center gap-1"><Icon name="SecurityCheck" className="size-3.5 shrink-0" />Permissions: {getPermissionModeCompactLabel(permissionMode)}</span> : null}
+          </div>
           {voiceAvailable ? (
             <Button
               type="button"

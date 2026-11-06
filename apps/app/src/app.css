@@ -822,7 +822,7 @@
     display: grid;
     grid-template-columns: 2.75rem minmax(0, 1fr) auto;
     align-items: center;
-    column-gap: 0.25rem;
+    column-gap: 0.5rem;
     row-gap: 0;
   }
 
@@ -897,62 +897,23 @@
     margin-inline: -4px;
   }
 
+}
+
+@media (pointer: coarse) {
   button:is(
     [data-compact-touch="action"],
     [data-compact-touch="action-menu"],
     [data-compact-touch="code"],
     [data-compact-touch-summary]
   ) {
-    position: relative;
     min-inline-size: 44px;
+    min-block-size: 44px;
     flex-shrink: 0;
   }
+}
 
-  button:is(
-    [data-compact-touch="action"],
-    [data-compact-touch="action-menu"],
-    [data-compact-touch="code"],
-    [data-compact-touch-summary]
-  )::after {
-    content: "";
-    position: absolute;
-    inset-inline: 0;
-    inset-block: -12px;
-    pointer-events: auto;
-  }
-
-  button:is(
-    [data-compact-touch="action"],
-    [data-compact-touch="action-menu"]
-  )::after {
-    inset-block: -12px -4px;
-  }
-
-  button[data-compact-touch="code"]::after {
-    inset-block: 0 -24px;
-  }
-
-  [data-compact-touch-summary] {
-    overflow: visible;
-  }
-
-  [data-compact-touch-height]:has([data-compact-touch-summary]) {
-    margin-block-end: -20px;
-  }
-
-  [data-compact-touch-height]:has([data-compact-touch-summary]) > div {
-    padding-block-end: 20px;
-  }
-
-  button[data-compact-touch-summary]::after {
-    inset-block: -4px var(--compact-touch-summary-end, -20px);
-  }
-
-  [data-timeline-row-id]:has(
-    + [data-timeline-row-id] > [data-compact-touch-panel] > div >
-      [data-compact-touch-summary][aria-expanded="false"]
-  ) > [data-compact-touch-panel] > div >
-    [data-compact-touch-summary][aria-expanded="false"] {
-    --compact-touch-summary-end: -4px;
+@media (width <= 360px) {
+  [data-native-terminal-toggle] > button > span {
+    display: none;
   }
 }

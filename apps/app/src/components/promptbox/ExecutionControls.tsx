@@ -175,7 +175,7 @@ export const ExecutionControls = memo(function ExecutionControls({
           agentSections={agentOptions?.sections}
           onAgentOptionChange={agentOptions?.onChange}
           muted
-          compactIconOnly={nativeTerminal !== undefined}
+          compactIconOnly={false}
           className="min-w-0 overflow-hidden"
           disabled={disabled}
           handoff={handoff}

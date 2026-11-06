@@ -157,7 +157,7 @@ export function RootComposeHome({
           }
         >
           {!isCompact ? (
-            <p className="mb-6 text-center text-base font-medium text-foreground">
+            <p className="mb-6 text-center text-lg font-medium text-foreground">
               Start a new thread
             </p>
           ) : null}

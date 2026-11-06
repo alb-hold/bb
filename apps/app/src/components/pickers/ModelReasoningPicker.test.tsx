@@ -547,7 +547,7 @@ describe("ModelReasoningPicker", () => {
     },
   );
 
-  it("shows a neutral model label while the model list loads", () => {
+  it("reserves a fixed-width skeleton while the model list loads", () => {
     renderPicker({
       modelOptions: [],
       modelValue: "",
@@ -562,6 +562,8 @@ describe("ModelReasoningPicker", () => {
       trigger.querySelectorAll("[data-model-loading-placeholder]"),
     ).toHaveLength(0);
     expect(trigger.textContent).toContain("Model");
+    expect(trigger.className).toContain("w-44");
+    expect(trigger.className).toContain("[&>span]:invisible");
     expect(trigger.querySelector(".animate-spin")).toBeNull();
 
     fireEvent.click(trigger);

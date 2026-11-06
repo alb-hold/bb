@@ -775,7 +775,7 @@ describe("PluginPanelRightPanelHost", () => {
       const showButton = await screen.findByRole("button", {
         name: "Show right panel",
       });
-      expect(showButton.querySelector('[data-icon="PanelRight"]')).toBeTruthy();
+      expect(showButton.querySelector('[data-icon="ChevronLeft"]')).toBeTruthy();
     },
   );
 
@@ -1051,7 +1051,7 @@ describe("PluginPanelRightPanelHost", () => {
     expect(
       screen
         .getByRole("button", { name: "Navigation" })
-        .querySelector('[data-icon="PanelRight"]'),
+        .querySelector('[data-icon="ChevronLeft"]'),
     ).not.toBeNull();
     expect(screen.queryByText("Details for task/123")).toBeNull();
 

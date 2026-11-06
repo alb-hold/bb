@@ -61,6 +61,11 @@ export function NativeThreadTerminalMain({
     staleTime: 30_000,
   }).data;
   const report = profile?.executed;
+  const context = profile?.nextTurn ?? report;
+  const modelLabel = [
+    context?.model ? formatModelLabel(context.model) : null,
+    context?.reasoningLevel ? reasoningLevelLabel(context.reasoningLevel, undefined) : null,
+  ].filter(Boolean).join(" · ");
   const formatExecution = (metadata: typeof report) =>
     [
       metadata?.model ? formatModelLabel(metadata.model) : null,
@@ -190,6 +195,8 @@ export function NativeThreadTerminalMain({
         />
         <NativeTerminalPromptBar
           projectId={projectId}
+          modelLabel={modelLabel}
+          permissionMode={context?.permissionMode ?? undefined}
           executionLabel={executionLabel || undefined}
           providerLabel={providerLabel}
           threadId={threadId}

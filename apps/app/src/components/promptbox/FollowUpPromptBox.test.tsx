@@ -972,7 +972,7 @@ describe("FollowUpPromptBox", () => {
       "true",
     );
     expect(screen.getByText("Ask a follow-up")).toBeTruthy();
-    expect(mocks.permissionModePicker).toHaveBeenCalledWith(expect.objectContaining({ compactWarningOnly: true }));
+    expect(mocks.permissionModePicker).toHaveBeenCalledWith(expect.not.objectContaining({ compactWarningOnly: true }));
     expect(screen.queryByText("Local environment")).toBeNull();
     expect(
       screen.queryByRole("button", { name: "Collapse prompt box" }),

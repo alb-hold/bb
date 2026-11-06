@@ -119,14 +119,14 @@ describe("PluginPermissionModePicker", () => {
     vi.mocked(sdk.system.executionOptions).mockReturnValue(response.promise);
     const onChange = vi.fn();
     render(<PluginPermissionModePicker providerId="codex" value="full" onChange={onChange} />, { wrapper });
-    const trigger = await screen.findByRole("button", { name: "Permission mode" });
-    expect(trigger.textContent).toBe("Permissions");
+    const trigger = await screen.findByRole("button", { name: "Permissions" });
+    expect(trigger.textContent).toContain("Permissions:");
     expect(trigger.hasAttribute("disabled")).toBe(true);
     expect(trigger.querySelector('[data-icon="AlertTriangle"]')).toBeNull();
     expect(onChange).not.toHaveBeenCalled();
     response.resolve(executionOptions("auto"));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Permission mode" }).textContent).toBe("Approve"));
-    expect(screen.getByRole("button", { name: "Permission mode" }).querySelector('[data-icon="AlertTriangle"]')).toBeNull();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Permissions" }).textContent).toBe("Permissions:Approve"));
+    expect(screen.getByRole("button", { name: "Permissions" }).querySelector('[data-icon="AlertTriangle"]')).toBeNull();
     expect(onChange).toHaveBeenCalledWith("auto");
   });
 
@@ -155,7 +155,7 @@ describe("PluginPermissionModePicker", () => {
     await waitFor(() => expect(onChange).toHaveBeenCalledWith("auto"));
 
     fireEvent.pointerDown(
-      screen.getByRole("button", { name: "Permission mode" }),
+      screen.getByRole("button", { name: "Permissions" }),
       { button: 0 },
     );
     const full = screen.getByRole("menuitem", { name: /Full Access/ });
@@ -247,7 +247,7 @@ describe("PluginPermissionModePicker", () => {
       { wrapper },
     );
 
-    const trigger = screen.getByRole("button", { name: "Permission mode" });
+    const trigger = screen.getByRole("button", { name: "Permissions" });
     expect(trigger.textContent).toContain("Full Access");
     expect(trigger.hasAttribute("disabled")).toBe(true);
   });
@@ -281,13 +281,13 @@ describe("PluginPermissionModePicker", () => {
     );
 
     const trigger = await screen.findByRole("button", {
-      name: "Permission mode",
+      name: "Permissions",
     });
     expect(trigger.hasAttribute("disabled")).toBe(true);
     await waitFor(() =>
       expect(sdk.system.executionOptions).toHaveBeenCalledTimes(2),
     );
-    expect(trigger.textContent).toBe("Permissions");
+    expect(trigger.textContent).toContain("Permissions:");
     expect(trigger.querySelector('[data-icon="AlertTriangle"]')).toBeNull();
     expect(onChange).not.toHaveBeenCalled();
   });
