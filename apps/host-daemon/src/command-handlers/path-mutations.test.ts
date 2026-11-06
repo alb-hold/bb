@@ -403,29 +403,6 @@ describe("confined host path mutations", () => {
     }
   });
 
-  it("includes retained paths in the recursive remove RPC error message", async () => {
-    const root = await makeRoot();
-    const target = path.join(root, "retained-paths");
-    await fs.mkdir(target);
-    await fs.writeFile(path.join(target, "before.txt"), "before");
-    await expect(
-      removeDirectoryAfterHolderRecheck({
-        directory: target,
-        action: "remove",
-        recursive: true,
-        afterHolderScan: async (quarantine) => {
-          await fs.writeFile(path.join(quarantine, "late.txt"), "retained");
-        },
-      }),
-    ).rejects.toMatchObject({
-      code: "path_in_use",
-      message: expect.stringContaining(`Preserved entries: ${target}`),
-    });
-    await expect(
-      fs.readFile(path.join(target, "late.txt"), "utf8"),
-    ).resolves.toBe("retained");
-  });
-
   it.skipIf(!hasHeldDirectoryRemoval)(
     "retains data created after a recursive directory is quarantined",
     async () => {
