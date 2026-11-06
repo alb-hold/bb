@@ -113,12 +113,15 @@ function createExitHandler(
 describe("terminal replay preview", () => {
   it("follows a phone font change and matches fractional DOM cells to the live renderer before showing", async () => {
     installPreviewCanvasContext();
+    const stylePrototype: CSSStyleDeclaration = Object.getPrototypeOf(
+      document.createElement("div").style,
+    );
     const setSpacing = Object.getOwnPropertyDescriptor(
-      CSSStyleDeclaration.prototype,
+      stylePrototype,
       "letterSpacing",
     )!.set!;
     const spacingSetter = vi
-      .spyOn(CSSStyleDeclaration.prototype, "letterSpacing", "set")
+      .spyOn(stylePrototype, "letterSpacing", "set")
       .mockImplementation(function (this: CSSStyleDeclaration, value: string) {
         const numeric = parseFloat(value);
         setSpacing.call(
