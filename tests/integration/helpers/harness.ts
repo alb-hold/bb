@@ -57,7 +57,6 @@ import { HostSharedPortCoordinator } from "../../../apps/server/src/ws/host-shar
 import { NotificationHub } from "../../../apps/server/src/ws/hub.js";
 import { WatchInterestCoordinator } from "../../../apps/server/src/ws/watch-interests.js";
 import { createPublicApiClient } from "@bb/server-contract";
-import type { WorktreeHolderScan } from "@bb/process-utils";
 import { resolveProjectEnvCandidates } from "@bb/test-helpers";
 import { waitForHostConnected } from "./assertions.js";
 import { createIntegrationFetch } from "./fetch.js";
@@ -82,6 +81,9 @@ const TEST_SERVER_HOST = "127.0.0.1";
 let loadedProjectEnvPath: string | null | undefined;
 
 type PublicApiClient = ReturnType<typeof createPublicApiClient>;
+type WorktreeHolderScan = NonNullable<
+  Parameters<typeof createHostDaemonApp>[0]["testWorktreeHolderScan"]
+>;
 
 const testLogger: ServerLogger = {
   debug(): void {},
