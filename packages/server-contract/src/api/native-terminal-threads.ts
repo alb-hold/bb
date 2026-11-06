@@ -13,6 +13,7 @@ export const nativeTerminalThreadSchema = z.object({
   threadId: z.string().min(1),
   providerId: z.string().min(1),
   displayName: z.string().min(1),
+  model: z.string().nullable(),
   nativeSessionId: z.string().min(1).nullable(),
   canReturnToChat: z.boolean(),
   terminal: terminalSessionSchema.nullable(),

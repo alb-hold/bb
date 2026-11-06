@@ -12,8 +12,7 @@ import {
   type KeyboardEvent,
   type PointerEvent,
 } from "react";
-import { getPermissionModeCompactLabel } from "@/components/pickers/PermissionModePicker";
-import type { PermissionMode, PromptInput } from "@bb/domain";
+import type { PromptInput } from "@bb/domain";
 import type { UploadedPromptAttachment } from "@bb/server-contract";
 import { Button } from "@bb/shared-ui/button";
 import {
@@ -52,7 +51,6 @@ interface NativeTerminalPromptBarProps {
   threadId: string;
   executionLabel?: string;
   modelLabel?: string;
-  permissionMode?: PermissionMode;
 }
 
 const PUSH_TO_TALK_HOLD_MS = 350;
@@ -105,7 +103,6 @@ export function NativeTerminalPromptBar({
   providerLabel,
   executionLabel,
   modelLabel,
-  permissionMode,
   threadId,
 }: NativeTerminalPromptBarProps) {
   const inputId = useId();
@@ -661,10 +658,11 @@ export function NativeTerminalPromptBar({
           >
             <Icon name="Plus" className="size-4" />
           </Button>
-          <div aria-label="Terminal model and permissions" className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 text-xs text-muted-foreground">
-            {modelLabel ? <span className="truncate" title={modelLabel}>{modelLabel}</span> : null}
-            {permissionMode ? <span className="inline-flex items-center gap-1"><Icon name="SecurityCheck" className="size-3.5 shrink-0" />Permissions: {getPermissionModeCompactLabel(permissionMode)}</span> : null}
-          </div>
+          {modelLabel ? (
+            <div aria-label="Terminal model" className="min-w-0 flex-1 truncate text-xs text-muted-foreground" title={modelLabel}>
+              {modelLabel}
+            </div>
+          ) : <div className="flex-1" />}
           {voiceAvailable ? (
             <Button
               type="button"

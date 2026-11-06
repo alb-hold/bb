@@ -102,7 +102,7 @@ vi.mock("@/lib/attachment-local-previews", () => ({
   registerLocalAttachmentPreview: vi.fn(),
 }));
 
-function renderBar(executionLabel = "Native CLI · GPT-5 · Full access") {
+function renderBar(executionLabel = "Native CLI · GPT-5 · Full access", modelLabel: string | undefined = "GPT-5") {
   const { wrapper: Wrapper, queryClient } = createQueryClientTestHarness();
   render(
     <Wrapper>
@@ -110,8 +110,7 @@ function renderBar(executionLabel = "Native CLI · GPT-5 · Full access") {
         projectId="proj-n"
         providerLabel="Native CLI"
         executionLabel={executionLabel}
-        modelLabel="GPT-5 · Medium"
-        permissionMode="auto"
+        modelLabel={modelLabel}
         threadId="thr-n"
       />
     </Wrapper>,
@@ -1262,11 +1261,16 @@ describe(
   },
 );
 
-it("shows read-only model and permission context beside attachment controls", () => {
+it("shows read-only model context beside attachment controls", () => {
   renderBar();
-  const chips = screen.getByLabelText("Terminal model and permissions");
-  expect(chips.textContent).toContain("GPT-5 · Medium");
-  expect(chips.textContent).toContain("Permissions: Approve");
+  const chips = screen.getByLabelText("Terminal model");
+  expect(chips.textContent).toBe("GPT-5");
   expect(chips.querySelector("button")).toBeNull();
-  expect(chips.querySelector('[data-icon="SecurityCheck"]')).not.toBeNull();
+  expect(screen.queryByText(/Permissions:/)).toBeNull();
+});
+
+it("omits the model chip container when the native record has no model", () => {
+  renderBar("Native CLI", "");
+  expect(screen.queryByLabelText("Terminal model")).toBeNull();
+  expect(screen.queryByLabelText("Terminal model and permissions")).toBeNull();
 });

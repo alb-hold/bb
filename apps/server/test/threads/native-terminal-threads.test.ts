@@ -2680,6 +2680,9 @@ describe("native terminal threads", () => {
       const record = getNativeTerminalThread(fixture.harness.db, thread.id);
       expect(record?.providerId).toBe("claude-code");
       expect(record?.model).toBe(model);
+      const nativeResponse = await fixture.harness.app.request(`/api/v1/threads/${thread.id}/native-terminal`);
+      expect(nativeResponse.status).toBe(200);
+      expect(nativeTerminalThreadSchema.parse(await readJson(nativeResponse)).model).toBe(model);
       expect(
         resolvePendingThreadSessionOptions(fixture.harness.db, thread.id),
       ).toEqual({});
