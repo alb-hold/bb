@@ -2381,17 +2381,49 @@ describe("ThreadRow", () => {
   });
 
   it.each([false, true])(
+    "keeps empty metadata rows dense (compact: %s)",
+    (isCompact) => {
+      vi.spyOn(
+        pluginSdk,
+        "experimental_ThreadRowMetadata",
+        "get",
+      ).mockReturnValue(() => <span data-thread-row-metadata="" />);
+      getDefaultStore().set(sidebarShowRowMetadataAtom, true);
+      const slot = renderThreadRow({
+        experiments: ["threadRowMetadata"],
+        options: { ...DEFAULT_OPTIONS, isCompact },
+      });
+      const link = screen.getByRole("link", { name: "Open Thread" });
+      const content = link.parentElement!;
+      const reservation = content.lastElementChild!;
+      expect(content.classList.contains("py-1.25")).toBe(false);
+      expect(content.classList.contains("[&_.bb-thread-title]:leading-4")).toBe(
+        false,
+      );
+      expect(reservation.classList.contains("flex")).toBe(false);
+      expect(reservation.classList.contains("hidden")).toBe(true);
+      expect(
+        reservation.classList.contains("has-[[data-reserve-line]]:flex"),
+      ).toBe(true);
+      slot.unmount();
+    },
+  );
+
+  it.each([false, true])(
     "reserves stable row metrics across late metadata registration (compact: %s)",
     (isCompact) => {
       let registered = false;
-      vi.spyOn(pluginSdk, "experimental_ThreadRowMetadata", "get").mockReturnValue(
-        () =>
-          registered ? (
-            <span data-thread-row-metadata="" data-has-items="">
-              <span className="text-xs leading-3.5">#10843</span>
-            </span>
-          ) : null,
-      );
+      vi.spyOn(
+        pluginSdk,
+        "experimental_ThreadRowMetadata",
+        "get",
+      ).mockReturnValue(() => (
+        <span data-thread-row-metadata="" data-reserve-line="">
+          {registered ? (
+            <span className="text-xs leading-3.5">#10843</span>
+          ) : null}
+        </span>
+      ));
       getDefaultStore().set(sidebarShowRowMetadataAtom, true);
       const thread = createThread();
       const slot = renderThreadRow({
@@ -2410,21 +2442,25 @@ describe("ThreadRow", () => {
         title.className,
         reservation.className,
       ];
-      expect(content.classList.contains("py-1.25")).toBe(true);
-      expect(content.classList.contains("[&_.bb-thread-title]:leading-4")).toBe(
-        true,
-      );
+      expect(
+        content.classList.contains("has-[[data-reserve-line]]:py-1.25"),
+      ).toBe(true);
+      expect(
+        content.classList.contains(
+          "has-[[data-reserve-line]]:[&_.bb-thread-title]:leading-4",
+        ),
+      ).toBe(true);
       expect(content.className).not.toContain("data-has-items");
       expect(reservation.classList.contains("basis-full")).toBe(true);
       expect(reservation.classList.contains("h-3.5")).toBe(true);
       expect(reservation.classList.contains("shrink-0")).toBe(true);
       expect(reservation.classList.contains("overflow-hidden")).toBe(true);
-      expect(reservation.childElementCount).toBe(0);
+      expect(reservation.textContent).toBe("");
       expect(row.className).toContain("max-md:pointer-coarse:min-h-11");
 
       registered = true;
       slot.rerenderThreadRow({ ...thread });
-      expect(reservation.querySelector("[data-has-items]")).not.toBeNull();
+      expect(reservation.querySelector("[data-reserve-line]")).not.toBeNull();
       expect(content.lastElementChild).toBe(reservation);
       expect([
         row.className,
@@ -2438,7 +2474,7 @@ describe("ThreadRow", () => {
 
       registered = false;
       slot.rerenderThreadRow({ ...thread });
-      expect(reservation.childElementCount).toBe(0);
+      expect(reservation.textContent).toBe("");
       expect([
         row.className,
         content.className,
