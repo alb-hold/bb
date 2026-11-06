@@ -1522,6 +1522,7 @@ describe("real worktree teardown preservation", () => {
       const entry = path.join(worktree.path, "README.md");
       const initialCandidate = `${entry}.bb-preserved-11111111`;
       let collisionCandidate = "";
+      let suffixAttempt = 0;
       let quarantinePath = "";
       const result = await removeDirectoryTree(worktree.path, {
         startedAt: Number.MAX_SAFE_INTEGER,
@@ -1539,7 +1540,7 @@ describe("real worktree teardown preservation", () => {
           await writeFile(initialCandidate, "candidate racing bytes\n");
         },
         preservedPathSuffix: () =>
-          collisionCandidate === "" ? "11111111" : "22222222",
+          suffixAttempt++ === 0 ? "11111111" : "22222222",
         beforeCollisionMove: async (_source, candidate, isDirectory) => {
           if (isDirectory || collisionCandidate !== "") return;
           collisionCandidate = path.join(
