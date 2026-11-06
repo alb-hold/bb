@@ -24,6 +24,7 @@ import {
   OPTION_MUTED_CLASS_NAME,
   OPTION_TRIGGER_CONTENT_CLASS_NAME,
 } from "@bb/shared-ui/option-display";
+import { Tooltip, TooltipTrigger, TooltipContent } from "@bb/shared-ui/tooltip";
 import { Popover, PopoverTrigger } from "@bb/shared-ui/popover";
 import {
   useCallback,
@@ -386,7 +387,6 @@ export function ModelReasoningPicker(props: ModelReasoningPickerProps) {
       size="sm"
       aria-label={triggerAccessibleLabel}
       aria-description={modelSubstitutionNote ?? triggerTitle}
-      title={modelSubstitutionNote ?? triggerTitle}
       aria-keyshortcuts={toggleShortcut?.ariaKeyshortcuts}
       disabled={disabled}
       onPointerEnter={warmPicker}
@@ -405,10 +405,7 @@ export function ModelReasoningPicker(props: ModelReasoningPickerProps) {
         className,
       )}
     >
-      <span
-        className={OPTION_TRIGGER_CONTENT_CLASS_NAME}
-        title={modelSubstitutionNote ?? triggerTitle}
-      >
+      <span className={OPTION_TRIGGER_CONTENT_CLASS_NAME}>
         {selectedServiceTierOption ? (
           <Icon
             name={selectedServiceTierOption.icon ?? "Zap"}
@@ -465,7 +462,12 @@ export function ModelReasoningPicker(props: ModelReasoningPickerProps) {
 
   return (
     <Popover open={open && !disabled} onOpenChange={setOpen} modal={modal}>
-      <PopoverTrigger asChild>{trigger}</PopoverTrigger>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <PopoverTrigger asChild>{trigger}</PopoverTrigger>
+        </TooltipTrigger>
+        <TooltipContent>{modelSubstitutionNote ?? triggerTitle}</TooltipContent>
+      </Tooltip>
       <ModelReasoningPickerBody
         initialPreviewProviderId={startupProvider}
         initialReasoningLevel={startupReasoning}

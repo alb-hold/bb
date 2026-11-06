@@ -97,7 +97,7 @@ describe("ExecutionControls", () => {
       };
       widthContract();
       rerender(content(false));
-      expect(trigger.getAttribute("title")).toContain(
+      expect(trigger.getAttribute("aria-description")).toContain(
         label.replace("GPT-", ""),
       );
       expect(trigger.getAttribute("aria-description")).toContain(
