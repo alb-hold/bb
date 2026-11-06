@@ -124,14 +124,14 @@ interface RemoveWorktreeArgs {
           source: string,
           pin: string,
         ) => Promise<void>;
-        beforePinnedRecoveryLink?: (
-          pin: string,
-          destination: string,
-        ) => Promise<void>;
-        beforeRecoveryCopy?: (
-          source: string,
-          destination: string,
-        ) => Promise<void>;
+        recoveryLink?: (pin: string, destination: string) => Promise<void>;
+        recoveryWrite?: (
+          destination: Awaited<ReturnType<typeof fs.open>>,
+          buffer: Buffer,
+          offset: number,
+          length: number,
+          position: number,
+        ) => Promise<{ bytesWritten: number }>;
         beforePinCleanup?: (pin: string, restoredPath: string) => Promise<void>;
         createPinSuffix?: () => string;
       }
@@ -1008,8 +1008,8 @@ async function removeRegisteredWorktree(
         afterEntryCheck: args.testHooks?.afterEntryCheck,
         afterEntryQuarantined: args.testHooks?.afterEntryQuarantined,
         beforeQuarantinePinLink: args.testHooks?.beforeQuarantinePinLink,
-        beforePinnedRecoveryLink: args.testHooks?.beforePinnedRecoveryLink,
-        beforeRecoveryCopy: args.testHooks?.beforeRecoveryCopy,
+        recoveryLink: args.testHooks?.recoveryLink,
+        recoveryWrite: args.testHooks?.recoveryWrite,
         beforePinCleanup: args.testHooks?.beforePinCleanup,
         createPinSuffix: args.testHooks?.createPinSuffix,
       });
