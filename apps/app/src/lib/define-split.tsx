@@ -135,9 +135,9 @@ export function defineSplit<P extends object>({
             <attempt.View {...props} />
           </Suspense>
         ) : attempt.status === "failed" ? (
-          <ErrorView {...props} retry={retry} />
+          <ErrorView key="failed" {...props} retry={retry} />
         ) : (
-          <Loading {...props} />
+          <Loading key="loading" {...props} />
         )}
       </SplitErrorBoundary>
     );
