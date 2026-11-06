@@ -160,6 +160,11 @@ describe("TerminalWebSocketTransport", () => {
     expect(socket.sent.map((payload) => JSON.parse(payload)).slice(1)).toEqual([
       { type: "resize", cols: 46, rows: 38 },
     ]);
+    transport.sendResize(47, 38, true);
+    transport.sendResize(47, 38, true);
+    expect(socket.sent.map((payload) => JSON.parse(payload)).slice(2)).toEqual([
+      { type: "resize", cols: 47, rows: 38, claim: true },
+    ]);
     transport.dispose();
   });
 

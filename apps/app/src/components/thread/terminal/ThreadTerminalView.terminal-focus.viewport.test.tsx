@@ -1104,7 +1104,8 @@ describe("ThreadTerminalView terminal viewport and focus", () => {
               type?: string;
             },
         )
-        .filter((message) => message.type === "resize");
+        .filter((message) => message.type === "resize")
+        .map(({ type, cols, rows }) => ({ type, cols, rows }));
 
     await waitForReadinessCondition(
       () => expect(resizeMessages()).toHaveLength(1),

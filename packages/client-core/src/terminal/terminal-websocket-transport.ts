@@ -365,10 +365,12 @@ export class TerminalWebSocketTransport {
     this.connect("reconnecting");
   }
 
-  sendResize(cols: number, rows: number): void {
+  sendResize(cols: number, rows: number, claim = false): void {
     if (this.lastResize?.cols === cols && this.lastResize.rows === rows) {
+      if (claim) this.claimSize();
       return;
     }
+    if (claim) this.pendingSizeClaim = true;
     this.lastResize = { cols, rows };
     if (this.pendingSizeClaim) this.claimSize();
     this.cancelRepaintRestore();

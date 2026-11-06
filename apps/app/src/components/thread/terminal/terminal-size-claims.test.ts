@@ -69,7 +69,7 @@ describe("terminal size claims", () => {
             hub.recordTerminalClientSize(
               terminalId,
               desktopSocket,
-              message,
+              { cols: message.cols, rows: message.rows },
               Date.now(),
               message.claim === true,
             );
