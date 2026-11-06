@@ -69,6 +69,14 @@ async function removeDirectoryTree(
       destination: string,
       isDirectory: boolean,
     ) => Promise<void>;
+    beforeQuarantineRestoreLink?: (
+      source: string,
+      destination: string,
+    ) => Promise<void>;
+    beforeGitMarkerRestoreLink?: (
+      source: string,
+      destination: string,
+    ) => Promise<void>;
     afterGitMarkerLinked?: (source: string, destination: string) => Promise<void>;
     readDirectoryNames?: (directory: string) => Promise<string[]>;
     onRetainedPath?: (retainedPath: string) => void;
@@ -1062,6 +1070,93 @@ describe("real worktree teardown preservation", () => {
       const duplicateInfo = await fs.lstat(duplicateMarkerPath);
       expect(duplicateInfo.ino).toBe(markerInfo.ino);
       expect(duplicateInfo.dev).toBe(markerInfo.dev);
+    },
+  );
+
+  removeDirectoryTreeTest(
+    "recovers the held file when its quarantine source is replaced before restore",
+    async () => {
+      const worktree = await makeWorktree();
+      const originalMode = (await fs.stat(path.join(worktree.path, "README.md")))
+        .mode & 0o7777;
+      let replaced = false;
+      let racerSource = "";
+      const retainedPaths: string[] = [];
+      const result = await removeDirectoryTree(worktree.path, {
+        startedAt: Number.MAX_SAFE_INTEGER,
+        afterEntryQuarantined: async (entry) => {
+          if (!entry.endsWith("README.md")) return;
+          await writeFile(
+            path.join(worktree.path, "late-after-check.txt"),
+            "late\n",
+          );
+        },
+        beforeQuarantineRestoreLink: async (source, destination) => {
+          if (!destination.endsWith("README.md") || replaced) return;
+          replaced = true;
+          racerSource = source;
+          await fs.unlink(source);
+          await writeFile(source, "racing quarantine bytes\n");
+        },
+        onRetainedPath: (retainedPath) => retainedPaths.push(retainedPath),
+      });
+
+      expect(result).toBe("retained");
+      expect(replaced).toBe(true);
+      await expect(readFile(path.join(worktree.path, "README.md"), "utf8"))
+        .resolves.toBe("racing quarantine bytes\n");
+      await expect(readFile(racerSource, "utf8")).resolves.toBe(
+        "racing quarantine bytes\n",
+      );
+      const recoveredPath = retainedPaths.find((retainedPath) =>
+        path.basename(retainedPath).startsWith(".bb-recovered-"),
+      );
+      expect(recoveredPath).toBeDefined();
+      await expect(readFile(recoveredPath!, "utf8")).resolves.toBe("published\n");
+      expect((await fs.stat(recoveredPath!)).mode & 0o7777).toBe(originalMode);
+      expect(retainedPaths).toContain(path.join(worktree.path, "README.md"));
+    },
+  );
+
+  removeDirectoryTreeTest(
+    "recovers the held git marker when its quarantine source is replaced before restore",
+    async () => {
+      const worktree = await makeWorktree();
+      const markerPath = path.join(worktree.path, ".git");
+      const originalMarker = await readFile(markerPath);
+      const originalMode = (await fs.stat(markerPath)).mode & 0o7777;
+      let replaced = false;
+      let racerSource = "";
+      const retainedPaths: string[] = [];
+      const result = await removeDirectoryTree(worktree.path, {
+        startedAt: Number.MAX_SAFE_INTEGER,
+        afterRootMarkerDetached: async (root) => {
+          await writeFile(path.join(root, "late-after-marker.txt"), "late\n");
+        },
+        beforeGitMarkerRestoreLink: async (source) => {
+          if (replaced) return;
+          replaced = true;
+          racerSource = source;
+          await fs.unlink(source);
+          await writeFile(source, "racing git marker bytes\n");
+        },
+        onRetainedPath: (retainedPath) => retainedPaths.push(retainedPath),
+      });
+
+      expect(result).toBe("retained");
+      await expect(readFile(markerPath, "utf8")).resolves.toBe(
+        "racing git marker bytes\n",
+      );
+      await expect(readFile(racerSource, "utf8")).resolves.toBe(
+        "racing git marker bytes\n",
+      );
+      const recoveredPath = retainedPaths.find((retainedPath) =>
+        path.basename(retainedPath).startsWith(".bb-recovered-"),
+      );
+      expect(recoveredPath).toBeDefined();
+      await expect(readFile(recoveredPath!)).resolves.toEqual(originalMarker);
+      expect((await fs.stat(recoveredPath!)).mode & 0o7777).toBe(originalMode);
+      expect(retainedPaths).toContain(markerPath);
     },
   );
 
