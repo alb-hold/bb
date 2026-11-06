@@ -1,6 +1,7 @@
 import { AbortError } from "p-retry";
 import { describe, expect, it, vi } from "vitest";
 import type { PendingInteractionCreate } from "@bb/domain";
+import { HOST_DAEMON_PROTOCOL_VERSION } from "@bb/host-daemon-contract";
 import { HOST_ARTIFACT_MAX_BYTES } from "@bb/host-daemon-contract/protocol";
 import {
   createServerClient,
@@ -47,6 +48,52 @@ async function readText(source: AsyncIterable<Uint8Array>): Promise<string> {
 }
 
 describe("createServerClient", () => {
+  it("sends the compiled daemon protocol version on session open", async () => {
+    let requestProtocolVersion: number | undefined;
+    const fetchFn = vi.fn<FetchFn>(async (_input, init) => {
+      const payload: unknown = JSON.parse(String(init?.body));
+      if (
+        payload === null ||
+        typeof payload !== "object" ||
+        !("protocolVersion" in payload) ||
+        typeof payload.protocolVersion !== "number"
+      )
+        throw new Error("session request omitted protocolVersion");
+      requestProtocolVersion = payload.protocolVersion;
+      return Response.json(
+        {
+          sessionId: "session-1",
+          machineEnvironment: { revision: 0, entries: [] },
+          idleProviderSessionTimeoutMinutes: 30,
+          heartbeatIntervalMs: 5_000,
+          leaseTimeoutMs: 30_000,
+        },
+        { status: 201 },
+      );
+    });
+    const client = createServerClient({
+      fetchFn,
+      getSessionId: () => "",
+      hostKey: "host-key",
+      logger: createLogger(),
+      serverUrl: "https://bb.example.test",
+    });
+
+    await client.openSession({
+      hostId: "host-1",
+      hostName: "Host",
+      dataDir: "/tmp/bb",
+      instanceId: "instance-1",
+      localApiPort: null,
+      activeThreads: [],
+      undeliveredEventThreadIds: [],
+      loadedEnvironments: [],
+      adoptedThreads: [],
+    });
+
+    expect(requestProtocolVersion).toBe(HOST_DAEMON_PROTOCOL_VERSION);
+  });
+
   it("narrows a protocol update retry request from error details", async () => {
     const fetchFn = vi.fn<FetchFn>(async () =>
       Response.json(

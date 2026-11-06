@@ -1,20 +1,10 @@
 import { upsertHost } from "@bb/db";
 import { HOST_DAEMON_PROTOCOL_VERSION } from "@bb/host-daemon-contract";
 import { describe, expect, it } from "vitest";
-import { createServerClient } from "../../../host-daemon/src/server-client.js";
 import {
   createTestDaemonHostKey,
   startTestServer,
 } from "../helpers/test-app.js";
-
-function createLogger() {
-  return {
-    debug() {},
-    error() {},
-    info() {},
-    warn() {},
-  };
-}
 
 function sessionArgs(hostId: string) {
   return {
@@ -37,33 +27,22 @@ describe("production daemon protocol wiring", () => {
     try {
       const hostKey = createTestDaemonHostKey({ hostId });
       upsertHost(server.db, server.hub, { id: hostId, name: "Protocol Host" });
-      let requestProtocolVersion: number | undefined;
-      const client = createServerClient({
-        fetchFn: async (input, init) => {
-          const url = input instanceof URL ? input.href : String(input);
-          if (url.endsWith("/internal/session/open")) {
-            const payload: unknown = JSON.parse(String(init?.body));
-            if (
-              payload === null ||
-              typeof payload !== "object" ||
-              !("protocolVersion" in payload) ||
-              typeof payload.protocolVersion !== "number"
-            )
-              throw new Error("session request omitted protocolVersion");
-            requestProtocolVersion = payload.protocolVersion;
-          }
-          return fetch(input, init);
+      const response = await fetch(`${server.baseUrl}/internal/session/open`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${hostKey}`,
+          "content-type": "application/json",
         },
-        getSessionId: () => "",
-        hostKey,
-        logger: createLogger(),
-        serverUrl: server.baseUrl,
+        body: JSON.stringify({
+          ...sessionArgs(hostId),
+          hasMachineCredential: false,
+          platform: "linux",
+          protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
+        }),
       });
 
-      const response = await client.openSession(sessionArgs(hostId));
-
-      expect(requestProtocolVersion).toBe(HOST_DAEMON_PROTOCOL_VERSION);
-      expect(response.sessionId).not.toBe("");
+      expect(response.status).toBe(201);
+      expect((await response.json()).sessionId).not.toBe("");
     } finally {
       await server.close();
     }
