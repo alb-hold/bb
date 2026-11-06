@@ -3218,7 +3218,7 @@ export function ThreadTerminalView({
         initialRendererSettled = true;
         initialLayoutSettled = true;
         activeTransport.markLayoutSettled();
-        activeTransport.claimSize();
+        activeTransport.claimSize(true);
         fitTerminal();
       };
       retryStalledReplay = () => {
@@ -3232,7 +3232,7 @@ export function ThreadTerminalView({
       fitTerminal();
       reportDocumentVisibility();
       sizeClaims = listenForTerminalSizeClaims({
-        claim: () => activeTransport.claimSize(),
+        claim: (reclaim) => activeTransport.claimSize(reclaim),
         element: containerElement,
         textarea: activeTerminal.textarea,
       });

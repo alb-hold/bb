@@ -783,10 +783,10 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
               type?: string;
             },
         )
-        .filter(
-          (message) => message.type === "resize" && message.claim !== true,
-        );
-    expect(resizeMessages()).toEqual([{ type: "resize", cols: 51, rows: 47 }]);
+        .filter((message) => message.type === "resize");
+    expect(resizeMessages()).toEqual([
+      { type: "resize", cols: 51, rows: 47, claim: true },
+    ]);
 
     const session = makeTerminalSession({
       id: "term_first_attach_font_metrics",
@@ -801,11 +801,15 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
       replayStartSeq: 0,
       nextSeq: 0,
     });
-    expect(resizeMessages()).toEqual([{ type: "resize", cols: 51, rows: 47 }]);
+    expect(resizeMessages()).toEqual([
+      { type: "resize", cols: 51, rows: 47, claim: true },
+    ]);
     await act(async () => {
       await vi.advanceTimersByTimeAsync(REPAINT_RESTORE_DELAY_MS + 1);
     });
-    expect(resizeMessages()).toEqual([{ type: "resize", cols: 51, rows: 47 }]);
+    expect(resizeMessages()).toEqual([
+      { type: "resize", cols: 51, rows: 47, claim: true },
+    ]);
     vi.useRealTimers();
 
     testState.deferSocketOpen = true;
@@ -2570,9 +2574,7 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
       const resizes = () =>
         testState.socketMessages
           .map((message) => JSON.parse(message))
-          .filter(
-            (message) => message.type === "resize" && message.claim !== true,
-          );
+          .filter((message) => message.type === "resize");
       const settled = vi.spyOn(
         TerminalWebSocketTransport.prototype,
         "markLayoutSettled",
@@ -2661,7 +2663,7 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
         expect(
           testState.socketMessages.some((raw) => {
             const message = JSON.parse(raw);
-            return message.type === "resize" && message.claim !== true;
+            return message.type === "resize";
           }),
         ).toBe(true),
       "terminal did not fit before WebGL resolution",
@@ -2837,7 +2839,9 @@ describe("terminal first paint", () => {
     await waitForReadinessCondition(() => {
       expect(
         testState.socketMessages.map((message) => JSON.parse(message)),
-      ).toContainEqual({ type: "resize", cols: 51, rows: 47 });
+      ).toContainEqual(
+        expect.objectContaining({ type: "resize", cols: 51, rows: 47 }),
+      );
     }, "live terminal did not send the phone fit");
     socket.receive({
       type: "attached",
