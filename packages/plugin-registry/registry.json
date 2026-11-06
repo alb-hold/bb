@@ -21,6 +21,7 @@
     "collapsible",
     "command",
     "compact-long-press-menu",
+    "composer-primitives",
     "confirm-delete-dialog",
     "context-menu",
     "context-selection",

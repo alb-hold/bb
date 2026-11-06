@@ -1,0 +1,20 @@
+{
+  "$schema": "https://ui.shadcn.com/schema/registry-item.json",
+  "name": "composer-primitives",
+  "type": "registry:ui",
+  "title": "composer-primitives",
+  "description": "BB ui \"composer-primitives\" — vendored from the BB app's own source (version-matched to this BB release).",
+  "registryDependencies": [
+    "@bb/button",
+    "@bb/icon",
+    "@bb/utils"
+  ],
+  "files": [
+    {
+      "path": "registry/components/ui/composer-primitives.tsx",
+      "content": "import type { Ref } from \"react\";\nimport { Button, type ButtonProps } from \"./button\";\nimport { Icon } from \"./icon\";\nimport { cn } from \"../../lib/utils\";\n\nexport const COMPOSER_SHELL_CLASS =\n  \"rounded-xl border border-border bg-background shadow-lift\";\n\nexport const COMPOSER_SUBMIT_CLASS =\n  \"size-9 shrink-0 rounded-full p-0 pointer-coarse:size-11 disabled:opacity-50\";\n\nexport const COMPOSER_SEND_ICON = \"ArrowUp\";\n\nexport function ComposerSubmitButton({\n  className,\n  children,\n  ref,\n  ...props\n}: ButtonProps & { ref?: Ref<HTMLButtonElement> }) {\n  return (\n    <Button\n      ref={ref}\n      type=\"submit\"\n      variant=\"default\"\n      size=\"icon\"\n      {...props}\n      className={cn(COMPOSER_SUBMIT_CLASS, className)}\n    >\n      {children ?? <Icon name={COMPOSER_SEND_ICON} className=\"size-4\" />}\n    </Button>\n  );\n}\n",
+      "type": "registry:ui",
+      "target": "components/ui/composer-primitives.tsx"
+    }
+  ]
+}

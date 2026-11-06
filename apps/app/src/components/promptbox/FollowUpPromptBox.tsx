@@ -655,7 +655,6 @@ function FollowUpPromptBoxWithComposer({
       />
     ),
     [
-      isPromptBoxCompact,
       permission.pending,
       permission.onChange,
       permission.options,

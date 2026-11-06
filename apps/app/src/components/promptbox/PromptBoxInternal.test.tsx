@@ -7043,7 +7043,9 @@ describe("pending text submission", () => {
       }));
       function Harness() {
         const draft = usePromptDraftStorage(scope);
-        storageKey = draft.storageKey;
+        useLayoutEffect(() => {
+          storageKey = draft.storageKey;
+        }, [draft.storageKey]);
         return (
           <ComposerBox
             {...createPromptBoxProps({

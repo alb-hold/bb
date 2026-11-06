@@ -6,6 +6,7 @@ import {
   useState,
   useSyncExternalStore,
   type RefObject,
+  type ComponentProps,
 } from "react";
 import {
   readVoiceSupportEnvironment,
@@ -23,7 +24,20 @@ const subscribe = (listener: () => void) => {
   listeners.add(listener);
   return () => listeners.delete(listener);
 };
-const getRuntime = () => runtime;
+const getRuntime = () => runtime !== null;
+
+function LoadedPromptVoiceRuntime(props: ComponentProps<Runtime>) {
+  const RuntimeComponent = runtime;
+  return RuntimeComponent === null ? null : <RuntimeComponent {...props} />;
+}
+
+function createDraftTarget(recordingKey: string | null): {
+  current: PromptVoiceDraftTarget | undefined;
+  recordingKey: string | null;
+} {
+  const current: PromptVoiceDraftTarget | undefined = undefined;
+  return { current, recordingKey };
+}
 
 export function preloadPromptVoiceRuntime(): Promise<void> {
   pending ??= import("./usePromptVoiceRuntime")
@@ -43,8 +57,8 @@ export function usePromptVoice(
   draft: PromptVoiceDraftTarget | undefined,
   recordingKey: string | null,
 ): PromptVoiceConfig {
-  const Runtime = useSyncExternalStore(subscribe, getRuntime, getRuntime);
-  const target = useMemo(() => ({ current: draft }), [recordingKey]);
+  const runtimeReady = useSyncExternalStore(subscribe, getRuntime, getRuntime);
+  const target = useMemo(() => createDraftTarget(recordingKey), [recordingKey]);
   target.current = draft;
   const current = useRef<PromptVoiceConfig | null>(null);
   const waiting = useRef<((voice: PromptVoiceConfig | null) => void)[]>([]);
@@ -59,13 +73,14 @@ export function usePromptVoice(
   }, []);
   useEffect(() => {
     mounted.current = true;
+    const waiters = waiting.current;
     const timer = window.setTimeout(() => {
       void preloadPromptVoiceRuntime().catch(() => undefined);
     }, 1500);
     return () => {
       mounted.current = false;
       window.clearTimeout(timer);
-      for (const resolve of waiting.current.splice(0)) resolve(null);
+      for (const resolve of waiters.splice(0)) resolve(null);
     };
   }, []);
   const waitForVoice = useCallback(async () => {
@@ -122,8 +137,8 @@ export function usePromptVoice(
     failedRecordings: voice?.failedRecordings ?? [],
     ...actions,
     runtime:
-      Runtime === null ? null : (
-        <Runtime
+      !runtimeReady ? null : (
+        <LoadedPromptVoiceRuntime
           target={target}
           promptBoxRef={promptBoxRef}
           recordingKey={recordingKey}

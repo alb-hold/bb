@@ -3,7 +3,7 @@ import {
   COMPOSER_SUBMIT_CLASS,
   COMPOSER_SEND_ICON,
   ComposerSubmitButton,
-} from "@bb/shared-ui/composer-primitives";
+} from "@/components/ui/composer-primitives";
 import {
   experimental_ComposerRoot as ComposerRoot,
   experimental_FailedVoiceRecordings as FailedVoiceRecordings,
@@ -1068,6 +1068,8 @@ export function PromptBoxInternal({
   } = submission;
   const onSubmit = primarySubmitAction.run;
   const onModifierSubmit = modifierSubmitAction?.run;
+  const modifierSubmitAriaKeyshortcuts =
+    modifierSubmitAction?.shortcut.ariaKeyshortcuts;
   const {
     items: attachments = [],
     pendingUploads,
@@ -1710,10 +1712,9 @@ export function PromptBoxInternal({
       attributes: {
         "aria-label": effectivePlaceholder,
         "data-placeholder": effectivePlaceholder,
-        ...(modifierSubmitAction
+        ...(modifierSubmitAriaKeyshortcuts !== undefined
           ? {
-              "aria-keyshortcuts":
-                modifierSubmitAction.shortcut.ariaKeyshortcuts,
+              "aria-keyshortcuts": modifierSubmitAriaKeyshortcuts,
             }
           : {}),
         autocomplete: "off",
@@ -1983,7 +1984,7 @@ export function PromptBoxInternal({
       editorEnterKeyHint,
       id,
       isIPadOSWebKitDevice,
-      modifierSubmitAction?.shortcut.ariaKeyshortcuts,
+      modifierSubmitAriaKeyshortcuts,
       postCompositionKeyDownEvents,
       promptActions,
     ],
