@@ -262,7 +262,7 @@ describe("ExecutionControls", () => {
           model={{
             ...props.model,
             selected: "gpt-6.1-sol",
-            options: [{ value: "gpt-6.1-sol", label }],
+            options: [{ value: "gpt-6.1-sol", label: "GPT-6.1-Sol" }],
           }}
           nativeTerminal={{ enabled: true, onChange: vi.fn() }}
         />
