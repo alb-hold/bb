@@ -35,6 +35,7 @@ export function usePluginFrontendBoot(): void {
       .then((plugins) => {
         if (cancelled) return;
         for (const pluginId of priorityPluginIds) {
+          if (pathname === "/" && pluginId === "bb--composer") continue;
           const plugin = plugins.find((candidate) => candidate.id === pluginId);
           if (
             !plugin?.enabled ||

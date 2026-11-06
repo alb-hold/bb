@@ -77,27 +77,36 @@ afterEach(() => {
 });
 
 describe("usePluginFrontendBoot", () => {
-  it("downloads priority bundles and starts the runtime before route paint", async () => {
-    const runtimeRequests: { slots: string[]; precedingBundles: string[] }[] =
-      [];
-    mocks.prefetchPluginRuntimeSlots.mockImplementation((slots: string[]) => {
-      runtimeRequests.push({
-        slots,
-        precedingBundles: [
-          ...document.head.querySelectorAll('link[rel="modulepreload"]'),
-        ].map((link) => link.getAttribute("href")!),
+  it.each(["/", "/threads/thr_one"])(
+    "downloads shell bundles before paint on %s without eagerly fetching the home rich editor",
+    async (pathname) => {
+      window.history.replaceState(null, "", pathname);
+      const deferredComposer = pathname === "/";
+      const bundleSuffix = deferredComposer ? "home" : "thread";
+      const runtimeRequests: { slots: string[]; precedingBundles: string[] }[] =
+        [];
+      mocks.prefetchPluginRuntimeSlots.mockImplementation((slots: string[]) => {
+        runtimeRequests.push({
+          slots,
+          precedingBundles: [
+            ...document.head.querySelectorAll('link[rel="modulepreload"]'),
+          ].map((link) => link.getAttribute("href")!),
+        });
       });
-    });
-    const plugins = ["bb--composer", "thread-list", "navigation", "other"].map(
-      (id) =>
+      const plugins = [
+        "bb--composer",
+        "thread-list",
+        "navigation",
+        "other",
+      ].map((id) =>
         makeInstalledPlugin({
           id,
           enabled: true,
           status: "running",
           app: {
             bundle: {
-              jsUrl: `/plugins/${id}.js`,
-              cssUrl: `/plugins/${id}.css`,
+              jsUrl: `/plugins/${id}-${bundleSuffix}.js`,
+              cssUrl: `/plugins/${id}-${bundleSuffix}.css`,
               jsBytes: 100,
               hash: id,
               sdkMajor: 0,
@@ -112,41 +121,48 @@ describe("usePluginFrontendBoot", () => {
             },
           },
         }),
-    );
-    appQueryClient.setQueryData(
-      pluginListQueryOptions({ enabled: true }).queryKey,
-      plugins,
-    );
-    renderHook(() => usePluginFrontendBoot());
-    await flushMicrotasks();
-    expect(
-      [...document.head.querySelectorAll('link[rel="modulepreload"]')].map(
-        (link) => link.getAttribute("href"),
-      ),
-    ).toEqual([
-      "/plugins/bb--composer.js",
-      "/plugins/thread-list.js",
-      "/plugins/navigation.js",
-    ]);
-    expect(
-      document.head.querySelectorAll("link[data-bb-plugin-css-prefetch]"),
-    ).toHaveLength(3);
-    expect(mocks.bootPluginFrontends).toHaveBeenCalledTimes(1);
-    expect(runtimeRequests).toEqual([
-      { slots: ["zod"], precedingBundles: [] },
-      {
-        slots: ["zod", "radixCheckbox"],
-        precedingBundles: ["/plugins/bb--composer.js"],
-      },
-      {
-        slots: ["react"],
-        precedingBundles: [
-          "/plugins/bb--composer.js",
-          "/plugins/thread-list.js",
-        ],
-      },
-    ]);
-  });
+      );
+      appQueryClient.setQueryData(
+        pluginListQueryOptions({ enabled: true }).queryKey,
+        plugins,
+      );
+      renderHook(() => usePluginFrontendBoot());
+      await flushMicrotasks();
+      expect(
+        [...document.head.querySelectorAll('link[rel="modulepreload"]')].map(
+          (link) => link.getAttribute("href"),
+        ),
+      ).toEqual([
+        ...(deferredComposer
+          ? []
+          : [`/plugins/bb--composer-${bundleSuffix}.js`]),
+        `/plugins/thread-list-${bundleSuffix}.js`,
+        `/plugins/navigation-${bundleSuffix}.js`,
+      ]);
+      expect(
+        document.head.querySelectorAll("link[data-bb-plugin-css-prefetch]"),
+      ).toHaveLength(deferredComposer ? 2 : 3);
+      expect(mocks.bootPluginFrontends).toHaveBeenCalledTimes(1);
+      expect(runtimeRequests).toEqual([
+        ...(deferredComposer ? [] : [{ slots: ["zod"], precedingBundles: [] }]),
+        {
+          slots: ["zod", "radixCheckbox"],
+          precedingBundles: deferredComposer
+            ? []
+            : [`/plugins/bb--composer-${bundleSuffix}.js`],
+        },
+        {
+          slots: ["react"],
+          precedingBundles: [
+            ...(deferredComposer
+              ? []
+              : [`/plugins/bb--composer-${bundleSuffix}.js`]),
+            `/plugins/thread-list-${bundleSuffix}.js`,
+          ],
+        },
+      ]);
+    },
+  );
 
   it("boots immediately on a plugin panel route: the plugin is the page", async () => {
     window.history.replaceState(null, "", "/plugins/tasks/board");

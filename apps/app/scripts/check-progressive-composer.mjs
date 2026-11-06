@@ -43,12 +43,13 @@ async function geometry(page) {
         plain.selectionDirection === "backward"
           ? plain.selectionStart
           : plain.selectionEnd;
-      mirror.append(document.createTextNode(plain.value.slice(0, head)));
-      const marker = document.createElement("span");
-      marker.textContent = "\u200b";
-      mirror.append(marker);
+      const text = document.createTextNode(plain.value);
+      mirror.append(text);
       document.body.append(mirror);
-      caret = rect(marker);
+      const range = document.createRange();
+      range.setStart(text, head);
+      range.collapse(true);
+      caret = rect(range);
       mirror.remove();
       selection = {
         anchor:

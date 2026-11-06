@@ -1,7 +1,5 @@
 // @vitest-environment jsdom
 
-import { createPortal } from "react-dom";
-
 import { useLayoutEffect, useRef, useState } from "react";
 import { Provider } from "jotai";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -24,6 +22,7 @@ import {
   type PromptVoiceConfig,
 } from "./ComposerBox";
 import { PendingComposerSubmission } from "./PendingComposerSubmission";
+import { ExecutionControls } from "./ExecutionControls";
 import { registerComposerPlugin } from "@/test/fixtures/composer-plugin";
 import {
   composerSearchQueries,
@@ -158,26 +157,36 @@ it("hands a live home draft to the actual plugin with its selection and working 
 it("keeps the first opened control and its typed search alive across the swap", async () => {
   let mounts = 0;
   function Controls() {
-    const [open, setOpen] = useState(false);
-    const [search, setSearch] = useState("");
     useLayoutEffect(() => {
       mounts++;
     }, []);
     return (
-      <>
-        <button type="button" onClick={() => setOpen(true)}>
-          Pick model
-        </button>
-        {open &&
-          createPortal(
-            <input
-              aria-label="Find model"
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
-            />,
-            document.body,
-          )}
-      </>
+      <ExecutionControls
+        provider={{
+          selectedId: "codex",
+          options: [{ value: "codex", label: "Codex" }],
+        }}
+        model={{
+          selected: "gpt-5.5",
+          options: [
+            { value: "gpt-5.5", label: "GPT-5.5" },
+            { value: "o4-mini", label: "o4-mini" },
+            { value: "gpt-5.2", label: "GPT-5.2" },
+            { value: "gpt-4.1", label: "GPT-4.1" },
+            { value: "o3", label: "o3" },
+            { value: "sonnet", label: "Sonnet" },
+          ],
+          moreOptions: [],
+          isLoading: false,
+          loadFailed: false,
+          onChange: () => {},
+        }}
+        reasoning={{
+          value: "medium",
+          options: [{ value: "medium", label: "Medium" }],
+          onChange: () => {},
+        }}
+      />
     );
   }
   function Host() {
@@ -210,18 +219,21 @@ it("keeps the first opened control and its typed search alive across the swap", 
       </Provider>
     </QueryClientProvider>,
   );
-  fireEvent.click(screen.getByRole("button", { name: "Pick model" }));
-  const search = screen.getByRole<HTMLInputElement>("textbox", {
-    name: "Find model",
+  const trigger = await screen.findByRole("button", {
+    name: "Provider, model and reasoning",
   });
+  expect(view.container.querySelector("[contenteditable=true]")).toBeNull();
+  fireEvent.click(trigger);
+  const search =
+    await screen.findByPlaceholderText<HTMLInputElement>("Search models");
   search.focus();
-  fireEvent.change(search, { target: { value: "typed before rich" } });
+  fireEvent.change(search, { target: { value: "o4-mini" } });
   await act(registerComposerPlugin);
   await waitFor(() =>
     expect(view.container.querySelector("textarea")).toBeNull(),
   );
-  expect(screen.getByRole("textbox", { name: "Find model" })).toBe(search);
-  expect(search.value).toBe("typed before rich");
+  expect(screen.getByPlaceholderText("Search models")).toBe(search);
+  expect(search.value).toBe("o4-mini");
   expect(document.activeElement).toBe(search);
   expect(mounts).toBe(1);
   client.clear();
