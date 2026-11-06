@@ -19,6 +19,7 @@ import {
 import { getProjectScopedStorageKey } from "@/lib/project-scoped-storage";
 import { buildAutoFollowUpRequest } from "@bb/client-core";
 import { useThreadCreationOptions } from "./useThreadCreationOptions";
+import { invalidateSystemExecutionOptions } from "./cache-owners/system-cache-effects";
 import {
   providerListCacheKey,
   writeCachedProviderList,
@@ -1807,6 +1808,115 @@ describe("useThreadCreationOptions", () => {
         }),
       );
     });
+  });
+
+  it("loads the cold home catalog once after ready-provider discovery", async () => {
+    const discovery = createDeferredPromise<SystemProviderStatesResponse>();
+    const catalog = createDeferredPromise<SystemExecutionOptionsResponse>();
+    vi.mocked(sdk.system.providerStates).mockReturnValue(discovery.promise);
+    vi.mocked(sdk.system.executionOptions).mockReturnValue(catalog.promise);
+    const { wrapper, queryClient } = createQueryClientTestHarness();
+    const { result, rerender } = renderHook(
+      () =>
+        useThreadCreationOptions({
+          preferReadyProviderWhenUnset: true,
+          resolveProviderRouting: () => ({ hostId: "home-host" }),
+        }),
+      { wrapper },
+    );
+
+    await waitFor(() =>
+      expect(sdk.system.providerStates).toHaveBeenCalledTimes(1),
+    );
+    expect(sdk.system.executionOptions).not.toHaveBeenCalled();
+    expect(result.current.isLoadingModels).toBe(true);
+    await act(async () =>
+      discovery.resolve(readyProviderStates(GLOBAL_PROVIDER_ID)),
+    );
+    await waitFor(() =>
+      expect(sdk.system.executionOptions).toHaveBeenCalledTimes(1),
+    );
+    const request = vi.mocked(sdk.system.executionOptions).mock.calls[0]?.[0];
+    expect(request).toMatchObject({
+      hostId: "home-host",
+      providerId: GLOBAL_PROVIDER_ID,
+    });
+    act(() => {
+      for (let index = 0; index < 5; index++) {
+        void invalidateSystemExecutionOptions({
+          queryClient,
+          hostId: "home-host",
+        });
+      }
+    });
+    rerender();
+    expect(sdk.system.executionOptions).toHaveBeenCalledTimes(1);
+    expect(request?.signal?.aborted).toBe(false);
+    await act(async () => catalog.resolve(executionOptionsResponse()));
+    await waitFor(() =>
+      expect(result.current.activeModel?.displayName).toBe("Global Model"),
+    );
+    expect(result.current.modelCatalogIsVerified).toBe(true);
+    rerender();
+    expect(sdk.system.executionOptions).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["empty", "failed"])(
+    "loads server defaults when ready-provider discovery is %s",
+    async (status) => {
+      if (status === "failed") {
+        vi.mocked(sdk.system.providerStates).mockRejectedValue(
+          new Error("offline"),
+        );
+      }
+      const { wrapper } = createQueryClientTestHarness();
+      const { result } = renderHook(
+        () => useThreadCreationOptions({ preferReadyProviderWhenUnset: true }),
+        { wrapper },
+      );
+      await waitFor(() =>
+        expect(result.current.modelCatalogIsVerified).toBe(true),
+      );
+      expect(result.current.activeModel?.displayName).toBe("Global Model");
+      expect(sdk.system.executionOptions).toHaveBeenCalledTimes(1);
+      expect(sdk.system.executionOptions).toHaveBeenCalledWith(
+        expect.objectContaining({ providerId: undefined }),
+      );
+    },
+  );
+
+  it("keeps an active catalog refresh through repeated host notifications", async () => {
+    const { wrapper, queryClient } = createQueryClientTestHarness();
+    const { result } = renderHook(
+      () => useThreadCreationOptions({ initialProviderId: GLOBAL_PROVIDER_ID }),
+      { wrapper },
+    );
+    await waitFor(() =>
+      expect(result.current.modelCatalogIsVerified).toBe(true),
+    );
+    const refresh = createDeferredPromise<SystemExecutionOptionsResponse>();
+    vi.mocked(sdk.system.executionOptions).mockReturnValue(refresh.promise);
+    act(() => {
+      void invalidateSystemExecutionOptions({
+        queryClient,
+        hostId: "home-host",
+      });
+    });
+    await waitFor(() =>
+      expect(sdk.system.executionOptions).toHaveBeenCalledTimes(2),
+    );
+    const request = vi.mocked(sdk.system.executionOptions).mock.calls[1]?.[0];
+    act(() => {
+      for (let index = 0; index < 5; index++) {
+        void invalidateSystemExecutionOptions({
+          queryClient,
+          hostId: "home-host",
+        });
+      }
+    });
+    expect(request?.signal?.aborted).toBe(false);
+    expect(sdk.system.executionOptions).toHaveBeenCalledTimes(2);
+    await act(async () => refresh.resolve(executionOptionsResponse()));
   });
 
   it("latches the initial ready provider instead of resolving it again after a machine switch", async () => {
