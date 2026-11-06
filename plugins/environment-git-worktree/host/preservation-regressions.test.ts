@@ -64,6 +64,12 @@ async function removeDirectoryTree(
       quarantined: string,
     ) => Promise<void>;
     afterParentVerified?: (entry: string, quarantined: string) => Promise<void>;
+    afterRestoreNameCheck?: (
+      source: string,
+      destination: string,
+      isDirectory: boolean,
+    ) => Promise<void>;
+    afterGitMarkerLinked?: (source: string, destination: string) => Promise<void>;
     readDirectoryNames?: (directory: string) => Promise<string[]>;
     onRetainedPath?: (retainedPath: string) => void;
     afterRootMarkerDetached?: (root: string) => Promise<void>;
@@ -1017,11 +1023,16 @@ describe("real worktree teardown preservation", () => {
     async () => {
       const worktree = await makeWorktree();
       let injected = false;
+      let duplicateMarkerPath = "";
       const result = await removeDirectoryTree(worktree.path, {
         startedAt: Date.now() + 10_000,
         afterRootMarkerDetached: async (root) => {
           injected = true;
           await writeFile(path.join(root, "late-after-marker.txt"), "late\n");
+        },
+        onRetainedPath: (retainedPath) => {
+          if (path.basename(retainedPath).startsWith(".bb-gitfile-"))
+            duplicateMarkerPath = retainedPath;
         },
       });
 
@@ -1036,11 +1047,151 @@ describe("real worktree teardown preservation", () => {
       await expect(
         readFile(path.join(worktree.path, "late-after-marker.txt"), "utf8"),
       ).resolves.toBe("late\n");
+      expect(duplicateMarkerPath).not.toBe("");
+      const markerInfo = await fs.lstat(path.join(worktree.path, ".git"));
+      const duplicateInfo = await fs.lstat(duplicateMarkerPath);
+      expect(duplicateInfo.ino).toBe(markerInfo.ino);
+      expect(duplicateInfo.dev).toBe(markerInfo.dev);
+    },
+  );
+
+  removeDirectoryTreeTest(
+    "keeps a file restore racer beside the quarantined original",
+    async () => {
+      const worktree = await makeWorktree();
+      let injected = false;
+      const retainedPaths: string[] = [];
+      const result = await removeDirectoryTree(worktree.path, {
+        startedAt: Number.MAX_SAFE_INTEGER,
+        afterEntryQuarantined: async (entry) => {
+          if (!entry.endsWith("README.md")) return;
+          await writeFile(
+            path.join(worktree.path, "late-after-check.txt"),
+            "late\n",
+          );
+        },
+        afterRestoreNameCheck: async (_source, destination, isDirectory) => {
+          if (isDirectory || !destination.endsWith("README.md") || injected)
+            return;
+          injected = true;
+          await writeFile(destination, "racing file bytes\n");
+        },
+        onRetainedPath: (retainedPath) => retainedPaths.push(retainedPath),
+      });
+
+      expect(result).toBe("retained");
+      expect(injected).toBe(true);
+      const quarantinePath = retainedPaths.find((retainedPath) =>
+        path.basename(retainedPath).startsWith(".bb-removing-"),
+      );
+      expect(quarantinePath).toBeDefined();
+      const absoluteQuarantinePath = path.join(
+        worktree.path,
+        path.basename(quarantinePath!),
+      );
+      await expect(readFile(path.join(worktree.path, "README.md"), "utf8"))
+        .resolves.toBe("racing file bytes\n");
+      await expect(readFile(absoluteQuarantinePath, "utf8")).resolves.toBe(
+        "published\n",
+      );
+      await expect(access(absoluteQuarantinePath)).resolves.toBeUndefined();
+    },
+  );
+
+  removeDirectoryTreeTest(
+    "keeps a git marker path racer after restoring the marker link",
+    async () => {
+      const worktree = await makeWorktree();
+      const originalMarker = await readFile(path.join(worktree.path, ".git"));
+      let heldPath = "";
+      const retainedPaths: string[] = [];
+      const result = await removeDirectoryTree(worktree.path, {
+        startedAt: Date.now() + 10_000,
+        afterRootMarkerDetached: async (root) => {
+          await writeFile(path.join(root, "late-after-marker.txt"), "late\n");
+        },
+        afterGitMarkerLinked: async (source) => {
+          heldPath = source;
+          await fs.unlink(source);
+          await writeFile(source, "racing marker path bytes\n");
+        },
+        onRetainedPath: (retainedPath) => retainedPaths.push(retainedPath),
+      });
+
+      expect(result).toBe("retained");
+      expect(heldPath).not.toBe("");
+      const absoluteHeldPath = path.join(
+        path.dirname(worktree.path),
+        path.basename(heldPath),
+      );
+      expect(retainedPaths).toContain(absoluteHeldPath);
+      await expect(readFile(path.join(worktree.path, ".git"))).resolves.toEqual(
+        originalMarker,
+      );
+      await expect(readFile(absoluteHeldPath, "utf8")).resolves.toBe(
+        "racing marker path bytes\n",
+      );
+      await expect(
+        git(worktree.path, "rev-parse", "--git-dir"),
+      ).resolves.toMatch(/worktrees/u);
+    },
+  );
+
+  removeDirectoryTreeTest(
+    "retains a quarantined directory when a non-empty restore racer appears",
+    async () => {
+      const worktree = await makeWorktree();
+      const directory = path.join(worktree.path, "restore-race-dir");
+      await mkdir(directory);
+      await writeFile(path.join(directory, "original.txt"), "original\n");
+      await fs.chmod(directory, 0o750);
+      const originalMode = (await fs.stat(directory)).mode & 0o7777;
+      let injected = false;
+      let quarantinePath = "";
+      const result = await removeDirectoryTree(worktree.path, {
+        startedAt: Number.MAX_SAFE_INTEGER,
+        afterEntryQuarantined: async (entry) => {
+          if (!entry.endsWith("restore-race-dir")) return;
+          await writeFile(
+            path.join(worktree.path, "late-after-directory.txt"),
+            "late\n",
+          );
+        },
+        afterRestoreNameCheck: async (_source, destination, isDirectory) => {
+          if (
+            !isDirectory ||
+            !destination.endsWith("restore-race-dir") ||
+            injected
+          )
+            return;
+          injected = true;
+          await mkdir(destination);
+          await writeFile(path.join(destination, "racer.txt"), "racer\n");
+        },
+        onRetainedPath: (retainedPath) => {
+          if (path.basename(retainedPath).startsWith(".bb-removing-"))
+            quarantinePath = retainedPath;
+        },
+      });
+
+      expect(result).toBe("retained");
+      expect(injected).toBe(true);
+      expect(quarantinePath).not.toBe("");
+      expect(await fs.readdir(worktree.path)).toContain(
+        path.basename(quarantinePath),
+      );
+      await expect(fs.readdir(quarantinePath)).resolves.toEqual([]);
+      await expect(readFile(path.join(directory, "racer.txt"), "utf8"))
+        .resolves.toBe("racer\n");
+      await expect(
+        readFile(path.join(worktree.path, "late-after-directory.txt"), "utf8"),
+      ).resolves.toBe("late\n");
       expect(
-        (await fs.readdir(path.dirname(worktree.path))).filter((name) =>
-          name.startsWith(".bb-gitfile-"),
-        ),
-      ).toEqual([]);
+        (await fs.stat(quarantinePath)).mode & 0o7777,
+      ).toBe(originalMode);
+      await expect(
+        git(worktree.path, "rev-parse", "--git-dir"),
+      ).resolves.toMatch(/worktrees/u);
     },
   );
 

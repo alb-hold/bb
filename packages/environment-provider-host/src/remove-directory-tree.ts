@@ -25,6 +25,12 @@ export interface RemoveDirectoryTreeHooks {
   afterEntryCheck?: (entry: string) => Promise<void>;
   afterEntryQuarantined?: (entry: string, quarantined: string) => Promise<void>;
   afterParentVerified?: (entry: string, quarantined: string) => Promise<void>;
+  afterRestoreNameCheck?: (
+    source: string,
+    destination: string,
+    isDirectory: boolean,
+  ) => Promise<void>;
+  afterGitMarkerLinked?: (source: string, destination: string) => Promise<void>;
   readDirectoryNames?: (directory: string) => Promise<string[]>;
   onRetainedPath?: (retainedPath: string) => void;
   afterRootMarkerDetached?: (root: string) => Promise<void>;
@@ -385,7 +391,15 @@ export async function removeDirectoryTree(
           }
         }
         try {
-          await rename(quarantined, anchoredEntry);
+          await hooks.afterRestoreNameCheck?.(
+            quarantined,
+            anchoredEntry,
+            false,
+          );
+          await link(quarantined, anchoredEntry);
+          hooks.onRetainedPath?.(
+            path.join(path.dirname(entry), path.basename(quarantined)),
+          );
           return true;
         } catch {
           hooks.onRetainedPath?.(
@@ -712,6 +726,11 @@ export async function removeDirectoryTree(
           }
         }
         try {
+          await hooks.afterRestoreNameCheck?.(
+            quarantined,
+            anchoredEntry,
+            true,
+          );
           await rename(quarantined, anchoredEntry);
           rootQuarantined = false;
           return true;
@@ -724,12 +743,18 @@ export async function removeDirectoryTree(
       };
       const restoreGitMarker = async (rootPath: string): Promise<boolean> => {
         if (!gitMarkerHeld || heldGitMarker === null) return true;
+        const destination = path.join(rootPath, ".git");
         try {
-          await link(heldGitMarker, path.join(rootPath, ".git"));
-          await unlink(heldGitMarker);
-          gitMarkerHeld = false;
+          await link(heldGitMarker, destination);
+          hooks.onRetainedPath?.(
+            path.join(path.dirname(entry), path.basename(heldGitMarker)),
+          );
+          await hooks.afterGitMarkerLinked?.(heldGitMarker, destination);
           return true;
         } catch {
+          hooks.onRetainedPath?.(
+            path.join(path.dirname(entry), path.basename(heldGitMarker)),
+          );
           return false;
         }
       };
