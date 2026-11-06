@@ -95,11 +95,14 @@ async function removeDirectoryTree(
       destination: string,
     ) => Promise<void>;
     beforeQuarantinePinLink?: (source: string, pin: string) => Promise<void>;
-    beforePinnedRecoveryLink?: (
-      pin: string,
-      destination: string,
-    ) => Promise<void>;
-    beforeRecoveryCopy?: (source: string, destination: string) => Promise<void>;
+    recoveryLink?: (pin: string, destination: string) => Promise<void>;
+    recoveryWrite?: (
+      destination: Awaited<ReturnType<typeof fs.open>>,
+      buffer: Buffer,
+      offset: number,
+      length: number,
+      position: number,
+    ) => Promise<{ bytesWritten: number }>;
     beforePinCleanup?: (pin: string, restoredPath: string) => Promise<void>;
     createPinSuffix?: () => string;
     afterGitMarkerLinked?: (
@@ -323,11 +326,14 @@ async function remove(
       quarantined: string,
     ) => Promise<void>;
     beforeQuarantinePinLink?: (source: string, pin: string) => Promise<void>;
-    beforePinnedRecoveryLink?: (
-      pin: string,
-      destination: string,
-    ) => Promise<void>;
-    beforeRecoveryCopy?: (source: string, destination: string) => Promise<void>;
+    recoveryLink?: (pin: string, destination: string) => Promise<void>;
+    recoveryWrite?: (
+      destination: Awaited<ReturnType<typeof fs.open>>,
+      buffer: Buffer,
+      offset: number,
+      length: number,
+      position: number,
+    ) => Promise<{ bytesWritten: number }>;
     beforePinCleanup?: (pin: string, restoredPath: string) => Promise<void>;
     createPinSuffix?: () => string;
   },
@@ -861,9 +867,15 @@ describe("real worktree teardown preservation", () => {
     );
   });
 
-  it("retains a file modified after quarantine when its mtime changes", async () => {
+  it("retains a file modified after quarantine when its mtime is restored", async () => {
     const worktree = await makeWorktree();
     useProcReaderForTests(descendantsOnly(hostProc, -1));
+    const stableMtime = Math.floor(Date.now() / 1000) - 10;
+    await utimes(
+      path.join(worktree.path, "README.md"),
+      stableMtime,
+      stableMtime,
+    );
     const state: {
       handle?: Awaited<ReturnType<typeof fs.open>>;
       originalTimes?: { atimeMs: number; mtimeMs: number; mode: number };
@@ -877,10 +889,18 @@ describe("real worktree teardown preservation", () => {
             state.handle = opened;
             state.originalTimes = await opened.stat();
           },
-          afterEntryQuarantined: async (entry) => {
+          afterEntryQuarantined: async (entry, quarantined) => {
             const opened = state.handle;
             if (!entry.endsWith("/README.md") || opened === undefined) return;
             await opened.writeFile("late-data\n");
+            const originalTimes = state.originalTimes;
+            if (originalTimes === undefined)
+              throw new Error("missing original file times");
+            await utimes(
+              quarantined,
+              originalTimes.atimeMs / 1000,
+              originalTimes.mtimeMs / 1000,
+            );
           },
         }),
       ).rejects.toMatchObject({ code: "worktree_preserved" });
@@ -893,7 +913,7 @@ describe("real worktree teardown preservation", () => {
     const originalTimes = state.originalTimes;
     if (originalTimes === undefined) throw new Error("missing file stat");
     const restoredStat = await fs.stat(path.join(worktree.path, "README.md"));
-    expect(restoredStat.mtimeMs).not.toBe(originalTimes.mtimeMs);
+    expect(restoredStat.mtimeMs).toBeCloseTo(originalTimes.mtimeMs, 0);
     expect(restoredStat.mode & 0o7777).toBe(originalTimes.mode & 0o7777);
   });
 
@@ -1486,6 +1506,41 @@ describe("real worktree teardown preservation", () => {
       await expect(
         git(worktree.path, "rev-parse", "--git-dir"),
       ).resolves.toMatch(/worktrees/u);
+    },
+  );
+
+  removeDirectoryTreeTest(
+    "preserves a racing preserved-path candidate without replacing it",
+    async () => {
+      const worktree = await makeWorktree();
+      const entry = path.join(worktree.path, "README.md");
+      const preservedPath = `${entry}.bb-preserved-11111111`;
+      let injected = false;
+      const result = await removeDirectoryTree(worktree.path, {
+        startedAt: Number.MAX_SAFE_INTEGER,
+        afterEntryQuarantined: async (removedEntry) => {
+          if (!removedEntry.endsWith("README.md") || injected) return;
+          injected = true;
+          await writeFile(entry, "restore-name racer bytes\n");
+          await writeFile(preservedPath, "candidate racing bytes\n");
+        },
+      });
+
+      expect(injected).toBe(true);
+      expect(result.status).toBe("retained");
+      await expect(readFile(entry, "utf8")).resolves.toBe(
+        "restore-name racer bytes\n",
+      );
+      await expect(readFile(preservedPath, "utf8")).resolves.toBe(
+        "candidate racing bytes\n",
+      );
+      const quarantinedPath = result.retainedPaths.find((retainedPath) =>
+        path.basename(retainedPath).startsWith(".bb-removing-"),
+      );
+      expect(quarantinedPath).toBeDefined();
+      await expect(readFile(quarantinedPath!, "utf8")).resolves.toBe(
+        "published\n",
+      );
     },
   );
 
@@ -2218,8 +2273,15 @@ describe("real worktree teardown preservation", () => {
             await writeFile(quarantined, "racer bytes\n");
             await fs.chmod(root, 0o555);
           },
-          beforeRecoveryCopy: async () => {
+          recoveryWrite: async (
+            destination,
+            buffer,
+            offset,
+            length,
+            position,
+          ) => {
             copyAttempted = true;
+            return destination.write(buffer, offset, length, position);
           },
         });
       } catch (caught) {
@@ -2366,7 +2428,7 @@ describe("real worktree teardown preservation", () => {
   );
 
   removeDirectoryTreeTest(
-    "retains the original pin and worktree when pinned recovery link fails",
+    "retains the original pin and worktree when the recovery link syscall fails",
     async () => {
       const root = await mkdtemp(
         path.join(os.tmpdir(), "bb-preserve-pin-link-failed-"),
@@ -2385,16 +2447,17 @@ describe("real worktree teardown preservation", () => {
             if (!entry.endsWith("a-payload.txt")) return;
             await writeFile(path.join(root, "late-sibling.txt"), "late\n");
             await writeFile(entry, "racing bytes\n");
+            await fs.chmod(root, 0o555);
           },
-          beforePinnedRecoveryLink: async () => {
+          recoveryLink: async (pin, destination) => {
             injected = true;
-            throw Object.assign(new Error("injected recovery link failure"), {
-              code: "EIO",
-            });
+            await fs.link(pin, destination);
           },
         });
       } catch (caught) {
         error = caught;
+      } finally {
+        await fs.chmod(root, 0o755);
       }
 
       expect(injected).toBe(true);
@@ -2414,13 +2477,14 @@ describe("real worktree teardown preservation", () => {
       await expect(readFile(originalPath, "utf8")).resolves.toBe(
         "racing bytes\n",
       );
-      await expect(readFile(path.join(root, "late-sibling.txt"), "utf8"))
-        .resolves.toBe("late\n");
+      await expect(
+        readFile(path.join(root, "late-sibling.txt"), "utf8"),
+      ).resolves.toBe("late\n");
     },
   );
 
   removeDirectoryTreeTest(
-    "retains the original pin and worktree when recovery copy fails",
+    "cleans a partial recovery copy when a later write syscall fails",
     async () => {
       const root = await mkdtemp(
         path.join(os.tmpdir(), "bb-preserve-pin-copy-failed-"),
@@ -2428,9 +2492,11 @@ describe("real worktree teardown preservation", () => {
       roots.push(root);
       const originalPath = path.join(root, "a-payload.txt");
       const siblingPath = path.join(root, "z-sibling.txt");
-      await writeFile(originalPath, "original bytes\n");
+      const originalBytes = Buffer.alloc(160 * 1024, 0x61);
+      await writeFile(originalPath, originalBytes);
       await writeFile(siblingPath, "sibling bytes\n");
       let copyAttempted = false;
+      let writes = 0;
       let error: unknown;
       try {
         await removeDirectoryTree(root, {
@@ -2440,16 +2506,26 @@ describe("real worktree teardown preservation", () => {
             await writeFile(path.join(root, "late-sibling.txt"), "late\n");
             await writeFile(entry, "racing bytes\n");
           },
-          beforePinnedRecoveryLink: async () => {
-            throw Object.assign(new Error("force copy fallback"), {
-              code: "EPERM",
-            });
+          recoveryLink: async (pin, destination) => {
+            await fs.link(
+              pin,
+              path.join(
+                "/dev/shm",
+                `${path.basename(destination)}-${process.pid}`,
+              ),
+            );
           },
-          beforeRecoveryCopy: async () => {
+          recoveryWrite: async (
+            destination,
+            buffer,
+            offset,
+            length,
+            position,
+          ) => {
             copyAttempted = true;
-            throw Object.assign(new Error("injected recovery copy failure"), {
-              code: "ENOSPC",
-            });
+            writes += 1;
+            if (writes === 2) await destination.close();
+            return destination.write(buffer, offset, length, position);
           },
         });
       } catch (caught) {
@@ -2463,7 +2539,7 @@ describe("real worktree teardown preservation", () => {
       );
       expect(pinPath).toBeDefined();
       await expect(readFile(pinPath!, "utf8")).resolves.toBe(
-        "original bytes\n",
+        originalBytes.toString(),
       );
       expect(error instanceof Error ? error.message : "").toContain(pinPath);
       await expect(access(root)).resolves.toBeUndefined();
@@ -2473,8 +2549,17 @@ describe("real worktree teardown preservation", () => {
       await expect(readFile(originalPath, "utf8")).resolves.toBe(
         "racing bytes\n",
       );
-      await expect(readFile(path.join(root, "late-sibling.txt"), "utf8"))
-        .resolves.toBe("late\n");
+      await expect(
+        readFile(path.join(root, "late-sibling.txt"), "utf8"),
+      ).resolves.toBe("late\n");
+      expect(writes).toBe(2);
+      await expect(
+        fs
+          .readdir(root)
+          .then((names) =>
+            names.some((name) => name.startsWith(".bb-recovered-")),
+          ),
+      ).resolves.toBe(false);
     },
   );
 

@@ -43,11 +43,14 @@ export interface RemoveDirectoryTreeHooks {
   ) => Promise<void>;
   afterGitMarkerLinked?: (source: string, destination: string) => Promise<void>;
   beforeQuarantinePinLink?: (source: string, pin: string) => Promise<void>;
-  beforePinnedRecoveryLink?: (
-    pin: string,
-    destination: string,
-  ) => Promise<void>;
-  beforeRecoveryCopy?: (source: string, destination: string) => Promise<void>;
+  recoveryLink?: (pin: string, destination: string) => Promise<void>;
+  recoveryWrite?: (
+    destination: FileHandle,
+    buffer: Buffer,
+    offset: number,
+    length: number,
+    position: number,
+  ) => Promise<{ bytesWritten: number }>;
   beforePinCleanup?: (pin: string, restoredPath: string) => Promise<void>;
   createPinSuffix?: () => string;
   readDirectoryNames?: (directory: string) => Promise<string[]>;
@@ -148,42 +151,62 @@ async function recoverFileFromHandle(
   source: FileHandle,
   mode: bigint,
   hooks: RemoveDirectoryTreeHooks,
-  sourcePath: string,
 ): Promise<string> {
   return createRecoveredEntry(parentDirectory, async (candidate) => {
-    await hooks.beforeRecoveryCopy?.(sourcePath, candidate);
     const destination = await open(candidate, "wx+", Number(mode));
-    try {
-      const buffer = Buffer.alloc(64 * 1024);
-      let position = 0;
-      while (true) {
-        const { bytesRead } = await source.read(
+    await copyRecoveredFile(destination, source, mode, candidate, hooks);
+  });
+}
+
+async function copyRecoveredFile(
+  destination: FileHandle,
+  source: FileHandle,
+  mode: bigint,
+  candidate: string,
+  hooks: RemoveDirectoryTreeHooks,
+): Promise<void> {
+  const destinationInfo = await destination.stat({ bigint: true });
+  try {
+    const buffer = Buffer.alloc(64 * 1024);
+    let position = 0;
+    while (true) {
+      const { bytesRead } = await source.read(
+        buffer,
+        0,
+        buffer.length,
+        position,
+      );
+      if (bytesRead === 0) break;
+      let written = 0;
+      while (written < bytesRead) {
+        const result = await (hooks.recoveryWrite?.(
+          destination,
           buffer,
-          0,
-          buffer.length,
-          position,
-        );
-        if (bytesRead === 0) break;
-        let written = 0;
-        while (written < bytesRead) {
-          const result = await destination.write(
+          written,
+          bytesRead - written,
+          position + written,
+        ) ??
+          destination.write(
             buffer,
             written,
             bytesRead - written,
             position + written,
-          );
-          if (result.bytesWritten === 0)
-            throw new Error("Could not write recovered file contents");
-          written += result.bytesWritten;
-        }
-        position += bytesRead;
+          ));
+        if (result.bytesWritten === 0)
+          throw new Error("Could not write recovered file contents");
+        written += result.bytesWritten;
       }
-      await destination.chmod(Number(mode));
-      await verifyFileContents(destination, source);
-    } finally {
-      await destination.close();
+      position += bytesRead;
     }
-  });
+    await destination.chmod(Number(mode));
+    await verifyFileContents(destination, source);
+  } catch (error) {
+    await destination.close().catch(() => undefined);
+    await removePathIfSame(candidate, destinationInfo).catch(() => false);
+    throw error;
+  } finally {
+    await destination.close().catch(() => undefined);
+  }
 }
 
 async function hashFileHandle(
@@ -308,43 +331,12 @@ async function recoverFileFromPin(
 ): Promise<string> {
   return createRecoveredEntry(parentDirectory, async (candidate) => {
     try {
-      await hooks.beforePinnedRecoveryLink?.(pin, candidate);
-      await link(pin, candidate);
+      await (hooks.recoveryLink?.(pin, candidate) ?? link(pin, candidate));
     } catch (error) {
       if (!["EXDEV", "EPERM", "EMLINK"].includes(errorCode(error) ?? ""))
         throw error;
-      await hooks.beforeRecoveryCopy?.(pin, candidate);
       const destination = await open(candidate, "wx+", Number(mode));
-      try {
-        const buffer = Buffer.alloc(64 * 1024);
-        let position = 0;
-        while (true) {
-          const { bytesRead } = await source.read(
-            buffer,
-            0,
-            buffer.length,
-            position,
-          );
-          if (bytesRead === 0) break;
-          let written = 0;
-          while (written < bytesRead) {
-            const result = await destination.write(
-              buffer,
-              written,
-              bytesRead - written,
-              position + written,
-            );
-            if (result.bytesWritten === 0)
-              throw new Error("Could not write recovered file contents");
-            written += result.bytesWritten;
-          }
-          position += bytesRead;
-        }
-        await destination.chmod(Number(mode));
-        await verifyFileContents(destination, source);
-      } finally {
-        await destination.close();
-      }
+      await copyRecoveredFile(destination, source, mode, candidate, hooks);
       return;
     }
     const [pinInfo, candidateInfo, heldInfo] = await Promise.all([
@@ -917,7 +909,6 @@ export async function removeDirectoryTree(
                     fileHandle,
                     originalMode,
                     hooks,
-                    quarantined,
                   );
           } catch (error) {
             const displayedQuarantine = displayPath(quarantined);
@@ -942,7 +933,10 @@ export async function removeDirectoryTree(
         }
         recoveryPin = pinResult.pin;
         activePins.add(recoveryPin);
-        const verifyMovedEntry = async (): Promise<boolean> => {
+        let quarantinedCtimeNs: bigint | null = null;
+        const verifyMovedEntry = async (
+          expectedCtimeNs: bigint | null = null,
+        ): Promise<boolean> => {
           if (expectedSiblingNames !== undefined) {
             let siblingNames: string[];
             try {
@@ -969,6 +963,8 @@ export async function removeDirectoryTree(
           } catch {
             return false;
           }
+          if (expectedCtimeNs === null) quarantinedCtimeNs = movedInfo.ctimeNs;
+          else if (movedInfo.ctimeNs !== expectedCtimeNs) return false;
           return (
             movedInfo.dev === checkedPreciseInfo.dev &&
             movedInfo.ino === checkedPreciseInfo.ino &&
@@ -982,7 +978,7 @@ export async function removeDirectoryTree(
           return retainedEntry();
         }
         await hooks.afterEntryQuarantined?.(entry, quarantined);
-        if (!(await verifyMovedEntry())) {
+        if (!(await verifyMovedEntry(quarantinedCtimeNs))) {
           await restoreQuarantine();
           return retainedEntry();
         }
@@ -1468,7 +1464,6 @@ export async function removeDirectoryTree(
               heldGitMarkerHandle,
               heldGitMarkerMode,
               hooks,
-              rootGitMarker,
             );
             reportRetainedPath(recoveredPath);
             throw new RetainedRecoveryError(
