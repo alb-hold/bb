@@ -88,8 +88,8 @@ vi.mock("@/components/ui/page-shell.js", () => ({
   },
 }));
 
-vi.mock("./ThreadDetailPromptArea", () => ({
-  ThreadDetailPromptArea: (props: Record<string, unknown>) => {
+vi.mock("./DeferredThreadDetailPromptArea", () => ({
+  DeferredThreadDetailPromptArea: (props: Record<string, unknown>) => {
     mocks.promptAreaProps.push(props);
     return <div data-testid="prompt-area" />;
   },

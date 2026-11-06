@@ -92,12 +92,12 @@ vi.mock("./ThreadDetailSecondaryContent", async () => {
   };
 });
 vi.mock("./ThreadDetailHeader", () => ({ ThreadDetailHeader: () => null }));
-vi.mock("./ThreadDetailPromptArea", async () => {
+vi.mock("./DeferredThreadDetailPromptArea", async () => {
   const { PluginContext } = await import("@/components/plugin/plugin-context");
   const { ContractPanelProbe } =
     await import("@/test/panel-controller-contract");
   return {
-    ThreadDetailPromptArea: () => (
+    DeferredThreadDetailPromptArea: () => (
       <PluginContext.Provider value={CONTRACT_PLUGIN_ID}>
         <ContractPanelProbe probe={fixtures.probe} />
       </PluginContext.Provider>

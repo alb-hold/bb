@@ -434,6 +434,24 @@
       "boot",
       "NewThreadPage",
       "PluginFrontend"
+    ],
+    "src/views/thread-detail/ThreadDetailPromptArea.tsx": [
+      "ThreadPage"
+    ],
+    "src/components/pickers/ModelReasoningPicker.tsx": [
+      "ThreadPage"
+    ],
+    "src/components/pickers/PermissionModePicker.tsx": [
+      "ThreadPage"
+    ],
+    "src/components/promptbox/usePromptVoice.tsx": [
+      "ThreadPage"
+    ],
+    "src/hooks/useThreadCreationOptions.ts": [
+      "ThreadPage"
+    ],
+    "src/hooks/usePromptHistoryEnabled.ts": [
+      "ThreadPage"
     ]
   },
   "onDemandPackages": {
@@ -465,8 +483,8 @@
       ]
     },
     "ThreadPage": {
-      "maxBytes": 1660000,
-      "maxBrotliBytes": 505000,
+      "maxBytes": 1356000,
+      "maxBrotliBytes": 420000,
       "forbiddenPackages": [
         "@dnd-kit/accessibility",
         "@dnd-kit/core",

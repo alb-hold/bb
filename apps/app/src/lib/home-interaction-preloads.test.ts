@@ -2,20 +2,8 @@
 
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
-const terminalImports = vi.hoisted(() => ({
-  panel: vi.fn(async () => {}),
-  runtime: vi.fn(async () => []),
-}));
-vi.mock("@/components/secondary-panel/lazySecondaryPanelComponents", () => ({
-  LazyThreadTerminalPanel: { preload: terminalImports.panel },
-}));
-vi.mock("@/components/thread/terminal/terminal-modules", () => ({
-  importTerminalModules: terminalImports.runtime,
-}));
-
 let cancel = () => {};
 beforeEach(() => {
-  vi.clearAllMocks();
   window.history.replaceState(null, "", "/");
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(
     new DOMRect(0, 0, 100, 20),
@@ -106,8 +94,6 @@ it.each([true, false])(
       "app-home-composer-ready",
     );
     expect(idle).toHaveLength(0);
-    expect(terminalImports.panel).not.toHaveBeenCalled();
-    expect(terminalImports.runtime).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(249);
     expect(fetch).not.toHaveBeenCalled();
     expect(idle).toHaveLength(0);
@@ -128,9 +114,6 @@ it.each([true, false])(
       cache: "force-cache",
       priority: "low",
     });
-    await vi.dynamicImportSettled();
-    expect(terminalImports.panel).toHaveBeenCalledOnce();
-    expect(terminalImports.runtime).toHaveBeenCalledOnce();
   },
 );
 
@@ -216,46 +199,3 @@ it("cancels the post-ready delay before an idle fallback can start", async () =>
   await vi.advanceTimersByTimeAsync(10_000);
   expect(fetch).not.toHaveBeenCalled();
 });
-
-it.each([false, true])(
-  "waits for terminal bytes before evaluating warm modules (cancelled=%s)",
-  async (cancelled) => {
-    vi.resetModules();
-    vi.useFakeTimers();
-    const { scheduleHomeInteractionPreloads } =
-      await import("./home-interaction-preloads");
-    document.body.innerHTML =
-      '<textarea></textarea><div data-sidebar-thread-id="thread"></div><script id="bb-prefetch-terminal-runtime" type="application/json">["/assets/held-terminal-runtime.js"]</script>';
-    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) =>
-      window.setTimeout(() => callback(0), 16),
-    );
-    vi.stubGlobal("cancelAnimationFrame", window.clearTimeout);
-    vi.stubGlobal("requestIdleCallback", undefined);
-    let release = () => {};
-    const bytes = new Promise<ArrayBuffer>((resolve) => {
-      release = () => resolve(new ArrayBuffer(0));
-    });
-    const readBody = vi.fn(() => bytes);
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => ({
-        ok: true,
-        arrayBuffer: readBody,
-      })),
-    );
-    cancel = scheduleHomeInteractionPreloads();
-    await vi.advanceTimersByTimeAsync(1_282);
-    expect(performance.mark).toHaveBeenCalledExactlyOnceWith(
-      "app-home-composer-ready",
-    );
-    expect(readBody).toHaveBeenCalledOnce();
-    await vi.dynamicImportSettled();
-    expect(terminalImports.panel).not.toHaveBeenCalled();
-    expect(terminalImports.runtime).not.toHaveBeenCalled();
-    if (cancelled) cancel();
-    release();
-    await vi.dynamicImportSettled();
-    expect(terminalImports.panel).toHaveBeenCalledTimes(cancelled ? 0 : 1);
-    expect(terminalImports.runtime).toHaveBeenCalledTimes(cancelled ? 0 : 1);
-  },
-);

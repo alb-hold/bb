@@ -35,11 +35,7 @@ import {
   type RefObject,
 } from "react";
 import { NavLink } from "react-router-dom";
-import type {
-  EnvironmentStatus,
-  PendingInteraction,
-  ThreadRuntimeDisplayStatus,
-} from "@bb/domain";
+import type { EnvironmentStatus, PendingInteraction } from "@bb/domain";
 import {
   PromptStackCard,
   PROMPT_STACK_CARD_HEADER_BUTTON_CLASS,
@@ -117,14 +113,7 @@ export interface ThreadPromptEnvironmentGoneSection {
   restorePending?: boolean;
 }
 
-const THREAD_BANNER_ACTIVE_CHILD_RUNTIME_STATUSES: ReadonlySet<ThreadRuntimeDisplayStatus> =
-  new Set(["active", "provisioning", "starting", "waiting-for-host"]);
-
-export function isThreadDisplayStatusBannerActive(
-  status: ThreadRuntimeDisplayStatus,
-): boolean {
-  return THREAD_BANNER_ACTIVE_CHILD_RUNTIME_STATUSES.has(status);
-}
+export { isThreadDisplayStatusBannerActive } from "./thread-banner-active-status";
 
 export interface CoreThreadContext {
   parentThread: ThreadPromptParentThreadSection | null;
