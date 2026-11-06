@@ -672,6 +672,7 @@ describe("real worktree teardown preservation", () => {
             originalStat.atimeMs / 1000,
             originalStat.mtimeMs / 1000,
           );
+          await fs.chmod(entry, originalStat.mode & ~0o222);
         },
       }),
     ).rejects.toMatchObject({ code: "worktree_preserved" });

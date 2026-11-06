@@ -415,6 +415,24 @@ export async function removeDirectoryTree(
           return "retained";
         }
         await hooks.beforeEntryRename?.(entry);
+        let beforeRenameInfo;
+        try {
+          beforeRenameInfo = await lstat(anchoredEntry, { bigint: true });
+        } catch {
+          await restoreQuarantine();
+          return "retained";
+        }
+        if (
+          beforeRenameInfo.dev !== afterChmodInfo.dev ||
+          beforeRenameInfo.ino !== afterChmodInfo.ino ||
+          beforeRenameInfo.size !== afterChmodInfo.size ||
+          beforeRenameInfo.mtimeNs !== afterChmodInfo.mtimeNs ||
+          beforeRenameInfo.ctimeNs !== afterChmodInfo.ctimeNs ||
+          (beforeRenameInfo.mode & 0o7777n) !== strippedMode
+        ) {
+          await restoreQuarantine();
+          return "retained";
+        }
         await rename(anchoredEntry, quarantined);
         const verifyMovedEntry = async (): Promise<boolean> => {
           if (expectedSiblingNames !== undefined) {
@@ -693,6 +711,26 @@ export async function removeDirectoryTree(
       };
       try {
         await hooks.beforeEntryRename?.(entry);
+        let beforeRenameDirectoryInfo;
+        try {
+          beforeRenameDirectoryInfo = await lstat(anchoredEntry, {
+            bigint: true,
+          });
+        } catch {
+          return await retain();
+        }
+        if (
+          beforeRenameDirectoryInfo.dev !== afterChmodDirectoryInfo.dev ||
+          beforeRenameDirectoryInfo.ino !== afterChmodDirectoryInfo.ino ||
+          beforeRenameDirectoryInfo.size !== afterChmodDirectoryInfo.size ||
+          beforeRenameDirectoryInfo.mtimeNs !==
+            afterChmodDirectoryInfo.mtimeNs ||
+          beforeRenameDirectoryInfo.ctimeNs !==
+            afterChmodDirectoryInfo.ctimeNs ||
+          (beforeRenameDirectoryInfo.mode & 0o7777n) !==
+            strippedDirectoryMode
+        )
+          return await retain();
         await rename(anchoredEntry, quarantined);
         rootQuarantined = true;
         if (expectedSiblingNames !== undefined) {
