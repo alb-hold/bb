@@ -1,15 +1,5 @@
 import { constants } from "node:fs";
-import {
-  link,
-  lstat,
-  mkdir,
-  open,
-  readdir,
-  rename,
-  rmdir,
-  stat,
-  unlink,
-} from "node:fs/promises";
+import { lstat, open, readdir, rename, stat, unlink } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 
@@ -26,12 +16,6 @@ export interface RemoveDirectoryTreeHooks {
   afterEntryCheck?: (entry: string) => Promise<void>;
   afterEntryQuarantined?: (entry: string, quarantined: string) => Promise<void>;
   afterParentVerified?: (entry: string, quarantined: string) => Promise<void>;
-  beforePreservedPathMove?: (
-    source: string,
-    candidate: string,
-    isDirectory: boolean,
-  ) => Promise<void>;
-  preservedPathSuffix?: () => string;
   readDirectoryNames?: (directory: string) => Promise<string[]>;
   onRetainedPath?: (retainedPath: string) => void;
   afterRootMarkerDetached?: (root: string) => Promise<void>;
@@ -145,116 +129,6 @@ function errorCode(error: unknown): string | null {
     : null;
 }
 
-type NoReplaceMoveResult = "moved" | "exists" | "failed";
-
-async function moveToOwnedPath(
-  source: string,
-  target: string,
-  isDirectory: boolean,
-  hooks: RemoveDirectoryTreeHooks,
-): Promise<NoReplaceMoveResult> {
-  let sourceInfo;
-  try {
-    sourceInfo = await lstat(source, { bigint: true });
-  } catch {
-    return "failed";
-  }
-  try {
-    await lstat(target);
-    return "exists";
-  } catch (error) {
-    if (errorCode(error) !== "ENOENT") return "failed";
-  }
-  await hooks.beforePreservedPathMove?.(source, target, isDirectory);
-  if (!isDirectory) {
-    try {
-      await link(source, target);
-    } catch (error) {
-      return errorCode(error) === "EEXIST" ? "exists" : "failed";
-    }
-    let targetInfo;
-    try {
-      targetInfo = await lstat(target, { bigint: true });
-    } catch {
-      return "failed";
-    }
-    if (targetInfo.dev !== sourceInfo.dev || targetInfo.ino !== sourceInfo.ino)
-      return "failed";
-    try {
-      await unlink(source);
-      return "moved";
-    } catch {
-      return "failed";
-    }
-  }
-  try {
-    await mkdir(target);
-  } catch (error) {
-    return errorCode(error) === "EEXIST" ? "exists" : "failed";
-  }
-  let placeholderInfo;
-  try {
-    placeholderInfo = await lstat(target, { bigint: true });
-    if (!placeholderInfo.isDirectory()) return "failed";
-    const entries = await readdir(target);
-    const finalPlaceholderInfo = await lstat(target, { bigint: true });
-    const finalSourceInfo = await lstat(source, { bigint: true });
-    if (
-      entries.length !== 0 ||
-      placeholderInfo.dev !== finalPlaceholderInfo.dev ||
-      placeholderInfo.ino !== finalPlaceholderInfo.ino ||
-      sourceInfo.dev !== finalSourceInfo.dev ||
-      sourceInfo.ino !== finalSourceInfo.ino
-    ) {
-      const current = await lstat(target, { bigint: true }).catch(() => null);
-      if (
-        current !== null &&
-        current.dev === placeholderInfo.dev &&
-        current.ino === placeholderInfo.ino &&
-        (await readdir(target).catch(() => ["unknown"])).length === 0
-      )
-        await rmdir(target).catch(() => undefined);
-      return "failed";
-    }
-    await rename(source, target);
-    return "moved";
-  } catch {
-    if (placeholderInfo !== undefined) {
-      try {
-        const current = await lstat(target, { bigint: true });
-        if (
-          current.dev === placeholderInfo.dev &&
-          current.ino === placeholderInfo.ino &&
-          (await readdir(target)).length === 0
-        )
-          await rmdir(target);
-      } catch {
-        return "failed";
-      }
-    }
-    return "failed";
-  }
-}
-
-async function moveToPreservedPath(
-  source: string,
-  original: string,
-  isDirectory: boolean,
-  hooks: RemoveDirectoryTreeHooks,
-): Promise<string | null> {
-  for (let attempt = 0; attempt < 8; attempt += 1) {
-    const suffix = hooks.preservedPathSuffix?.() ?? randomUUID().slice(0, 8);
-    if (!/^[0-9a-f]{8}$/u.test(suffix)) return null;
-    const preserved = path.join(
-      path.dirname(original),
-      `${path.basename(original)}.bb-preserved-${suffix}`,
-    );
-    const result = await moveToOwnedPath(source, preserved, isDirectory, hooks);
-    if (result === "moved") return preserved;
-    if (result === "failed") return null;
-  }
-  return null;
-}
 function matchesQuarantinedNames(
   actual: readonly string[],
   expected: ReadonlySet<string>,
@@ -477,38 +351,31 @@ export async function removeDirectoryTree(
         `.bb-removing-${randomUUID()}`,
       );
       const restoreQuarantine = async (): Promise<boolean> => {
-        const isDirectory = checkedPreciseInfo.isDirectory();
-        const restored =
-          (await moveToOwnedPath(
-            quarantined,
-            anchoredEntry,
-            isDirectory,
-            hooks,
-          )) === "moved";
-        const retainedPath = restored
-          ? null
-          : ((await moveToPreservedPath(
-              quarantined,
-              anchoredEntry,
-              isDirectory,
-              hooks,
-            )) ?? quarantined);
         if (modeChanged && fileHandle !== null) {
           try {
             await fileHandle.chmod(Number(originalMode));
           } catch {
-            if (retainedPath !== null)
-              hooks.onRetainedPath?.(
-                path.join(path.dirname(entry), path.basename(retainedPath)),
-              );
+            hooks.onRetainedPath?.(quarantined);
             return false;
           }
         }
-        if (retainedPath !== null)
-          hooks.onRetainedPath?.(
-            path.join(path.dirname(entry), path.basename(retainedPath)),
-          );
-        return restored || retainedPath !== quarantined;
+        try {
+          await lstat(anchoredEntry);
+          hooks.onRetainedPath?.(quarantined);
+          return false;
+        } catch (error) {
+          if (errorCode(error) !== "ENOENT") {
+            hooks.onRetainedPath?.(quarantined);
+            return false;
+          }
+        }
+        try {
+          await rename(quarantined, anchoredEntry);
+          return true;
+        } catch {
+          hooks.onRetainedPath?.(quarantined);
+          return false;
+        }
       };
       try {
         if (checkedPreciseInfo.isFile()) {
@@ -875,8 +742,7 @@ export async function removeDirectoryTree(
             afterChmodDirectoryInfo.mtimeNs ||
           beforeRenameDirectoryInfo.ctimeNs !==
             afterChmodDirectoryInfo.ctimeNs ||
-          (beforeRenameDirectoryInfo.mode & 0o7777n) !==
-            strippedDirectoryMode
+          (beforeRenameDirectoryInfo.mode & 0o7777n) !== strippedDirectoryMode
         )
           return await retain();
         await rename(anchoredEntry, quarantined);
