@@ -3585,6 +3585,42 @@ export class TerminalSessionLifecycle {
     replaySession: TerminalSessionRow | null,
     replayOffset: number,
   ): Promise<void> {
+    const earlyKey = terminalResponseRpcKey(args.sessionId, args.message);
+    const pendingAttach = this.pendingAttaches.keyFor(earlyKey);
+    const live: ReplayLiveOutput = { chunks: [], bytes: 0 };
+    const listeners =
+      replaySession && pendingAttach?.sinceSeq === 0
+        ? (this.replayLiveOutput.get(replaySession.id) ??
+          new Set<ReplayLiveOutput>())
+        : null;
+    if (listeners && replaySession) {
+      listeners.add(live);
+      this.replayLiveOutput.set(replaySession.id, listeners);
+    }
+    try {
+      await this.deliverTerminalReplay(
+        args,
+        replaySession,
+        replayOffset,
+        pendingAttach,
+        live,
+      );
+    } finally {
+      if (listeners && replaySession) {
+        listeners.delete(live);
+        if (listeners.size === 0)
+          this.replayLiveOutput.delete(replaySession.id);
+      }
+    }
+  }
+
+  private async deliverTerminalReplay(
+    args: HandleDaemonTerminalMessageArgs & { message: TerminalReplayMessage },
+    replaySession: TerminalSessionRow | null,
+    replayOffset: number,
+    pendingAttach: PendingTerminalAttachKey | null,
+    live: ReplayLiveOutput,
+  ): Promise<void> {
     const sourceMessage = args.message;
     const attributionAlreadyRecorded = this.forgetAttributedAttachFailure(
       terminalResponseRpcKey(args.sessionId, sourceMessage),
@@ -3832,30 +3868,15 @@ export class TerminalSessionLifecycle {
       }
     }
     let attachMessage = { ...replayHeader, chunks: rebasedChunks };
-    const pendingAttach = this.pendingAttaches.keyFor(rpcKey);
     if (pendingAttach?.sinceSeq === 0 && current !== null) {
-      const live: ReplayLiveOutput = { chunks: [], bytes: 0 };
-      const listeners = this.replayLiveOutput.get(current.id) ?? new Set();
-      listeners.add(live);
-      this.replayLiveOutput.set(current.id, listeners);
-      const replay = await this.boundedReplay
-        .compact({
-          ...attachMessage,
-          terminalId: current.id,
-          daemonSessionId: args.sessionId,
-          cols: current.cols,
-          rows: current.rows,
-        })
-        .finally(() => {
-          listeners.delete(live);
-          if (listeners.size === 0) this.replayLiveOutput.delete(current.id);
-        });
+      const replay = this.boundedReplay.forAttach({
+        ...attachMessage,
+        terminalId: current.id,
+        daemonSessionId: args.sessionId,
+        cols: current.cols,
+        rows: current.rows,
+      });
       if (!checkReplayAfterYield()) return;
-      if (live.bytes > TERMINAL_SCROLLBACK_MAX_BYTES) {
-        this.pendingAttaches.cancel(rpcKey);
-        pendingAttach.socket.close(1013, "replay-buffer-overflow");
-        return;
-      }
       const latestGrid = getTerminalById(this.options.db, current.id);
       if (
         latestGrid === null ||
@@ -3876,14 +3897,15 @@ export class TerminalSessionLifecycle {
         return;
       }
       if (
+        live.bytes <= TERMINAL_SCROLLBACK_MAX_BYTES &&
         !replayOwnershipChanged &&
         latestGrid?.cols === current.cols &&
         latestGrid.rows === current.rows
       )
         attachMessage = { ...replayHeader, ...replay };
-      const suffix = live.chunks.filter(
-        (chunk) => chunk.seq >= attachMessage.nextSeq,
-      );
+      const suffix = (
+        live.bytes > TERMINAL_SCROLLBACK_MAX_BYTES ? [] : live.chunks
+      ).filter((chunk) => chunk.seq >= attachMessage.nextSeq);
       if (suffix.length > 0)
         attachMessage = {
           ...attachMessage,

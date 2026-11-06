@@ -296,3 +296,43 @@ describe("TerminalScreenState", () => {
     duplicatedAtSeam.dispose();
   });
 });
+
+it.each(["", "\x1b[48;5;8m\x1b[K\x1b[0m"])(
+  "preserves trimmed rows and wrapped reflow after narrowing a compacted replay %j",
+  async (background) => {
+    const state = new TerminalScreenState(40, 5, true);
+    const full = create();
+    const restored = create();
+    const input = `short${background}\r\n${"wrapped".repeat(9)}\r\nlast`;
+    state.push(0, Buffer.from(input));
+    await write(full, input);
+    const snapshot = await state.replaySnapshot();
+    expect(snapshot).not.toBeNull();
+    await write(
+      restored,
+      Buffer.from(snapshot!.dataBase64, "base64").toString(),
+    );
+    full.resize(20, 5);
+    restored.resize(20, 5);
+    expect(bufferState(restored)).toEqual(bufferState(full));
+    state.dispose();
+    full.dispose();
+    restored.dispose();
+  },
+);
+
+it("retains OSC 9 progress without re-firing later notifications", async () => {
+  const state = new TerminalScreenState(40, 5, true);
+  state.push(0, Buffer.from("\x1b]9;4;1;50\x07\x1b]9;notification\x07done"));
+  const snapshot = await state.replaySnapshot();
+  const restored = create();
+  const events: string[] = [];
+  restored.parser.registerOscHandler(9, (payload) => {
+    events.push(payload);
+    return true;
+  });
+  await write(restored, Buffer.from(snapshot!.dataBase64, "base64").toString());
+  expect(events).toEqual(["4;1;50"]);
+  state.dispose();
+  restored.dispose();
+});

@@ -265,13 +265,10 @@ function visibleSolidRows(terminal: HeadlessTerminal): string[] {
   return rows;
 }
 
-function serializeVisibleScreen(
+function* serializeScreenRows(
   terminal: HeadlessTerminal,
   history = false,
-): {
-  data: Buffer;
-  response: TerminalScreenResponse;
-} {
+): Generator<void, { data: Buffer; response: TerminalScreenResponse }> {
   const buffer = terminal.buffer.active;
   const rows: string[] = [];
   const parts = [
@@ -281,6 +278,7 @@ function serializeVisibleScreen(
   const endRow = buffer.baseY + terminal.rows;
   if (history && buffer.getLine(0)?.isWrapped)
     parts.push(" ".repeat(terminal.cols));
+  const reusableCell = buffer.getNullCell();
   for (let row = firstRow; row < endRow; row += 1) {
     const line = buffer.getLine(row);
     let text = "";
@@ -288,8 +286,20 @@ function serializeVisibleScreen(
     let activeUrlId = 0;
     if (!history) parts.push(`${ESC}[${row - buffer.baseY + 1};1H`);
     else if (row > 0 && !line?.isWrapped) parts.push("\r\n");
-    for (let col = 0; col < terminal.cols; col += 1) {
-      const cell = line?.getCell(col);
+    let width = terminal.cols;
+    if (!buffer.getLine(row + 1)?.isWrapped) {
+      while (width > 0) {
+        const cell = line?.getCell(width - 1, reusableCell);
+        if (
+          cell &&
+          (cell.getChars() !== "" || cell.isBgRGB() || cell.isBgPalette())
+        )
+          break;
+        width -= 1;
+      }
+    }
+    for (let col = 0; col < width; col += 1) {
+      const cell = line?.getCell(col, reusableCell);
       if (cell === undefined || cell.getWidth() === 0) continue;
       const chars = cell.getChars() || " ";
       text += chars;
@@ -306,10 +316,13 @@ function serializeVisibleScreen(
         parts.push(sgr);
         previousSgr = sgr;
       }
-      parts.push(chars);
+      if (cell.getChars() === "" && !buffer.getLine(row + 1)?.isWrapped)
+        parts.push(`${ESC}[X${ESC}[C`);
+      else parts.push(chars);
     }
     if (activeUrlId !== 0) parts.push(HYPERLINK_CLOSE);
     if (row >= buffer.baseY) rows.push(text.trimEnd());
+    if ((row - firstRow + 1) % 8 === 0) yield;
   }
   const cursorCell = buffer
     .getLine(buffer.baseY + buffer.cursorY)
@@ -340,6 +353,23 @@ function serializeVisibleScreen(
   };
 }
 
+function serializeVisibleScreen(terminal: HeadlessTerminal) {
+  const rows = serializeScreenRows(terminal);
+  let result = rows.next();
+  while (!result.done) result = rows.next();
+  return result.value;
+}
+
+async function serializeHistory(terminal: HeadlessTerminal) {
+  const rows = serializeScreenRows(terminal, true);
+  let result = rows.next();
+  while (!result.done) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    result = rows.next();
+  }
+  return result.value;
+}
+
 export class TerminalScreenState {
   private readonly terminal: HeadlessTerminal;
   private readonly pendingWork: Array<
@@ -364,6 +394,7 @@ export class TerminalScreenState {
   private replayPreviousByte = 0;
   private readonly replayMetadata = new Map<number, string>();
   private replayCursorStyle = "";
+  private replayBatchBytes = 8 * 1024;
 
   constructor(
     cols: number,
@@ -384,7 +415,7 @@ export class TerminalScreenState {
       this.terminal.parser.registerOscHandler(identifier, (payload) => {
         if (payload.length > TERMINAL_SCREEN_STATE_PARTIAL_SEQUENCE_LIMIT)
           this.replayCompatible = false;
-        else {
+        else if (identifier !== 9 || payload.startsWith("4;")) {
           this.replayMetadata.delete(identifier);
           this.replayMetadata.set(
             identifier,
@@ -491,6 +522,7 @@ export class TerminalScreenState {
         advanceTerminalReplayParserByte(state, byte);
       }
     }
+    if (this.captureReplay) return;
     const scan = { ...this.parserState };
     advanceTerminalReplayParserBytes(this.parserState, data);
     if (isTerminalReplaySafeBoundary(this.parserState)) {
@@ -584,12 +616,55 @@ export class TerminalScreenState {
                   setImmediate(drain);
                   return;
                 }
-                const data =
+                let data =
                   next.kind === "base64"
                     ? Buffer.from(next.data, "base64")
                     : next.data;
+                if (this.captureReplay) {
+                  const batch = [data];
+                  let bytes = data.byteLength;
+                  while (this.pendingWork.length > 0) {
+                    const queued = this.pendingWork[0];
+                    if (!queued || queued.kind === "resize") break;
+                    const size =
+                      queued.kind === "base64"
+                        ? Buffer.byteLength(queued.data, "base64")
+                        : queued.data.byteLength;
+                    if (bytes + size > this.replayBatchBytes) break;
+                    this.pendingWork.shift();
+                    this.pendingWorkBytes -=
+                      queued.kind === "base64"
+                        ? Buffer.byteLength(queued.data, "utf8")
+                        : size;
+                    batch.push(
+                      queued.kind === "base64"
+                        ? Buffer.from(queued.data, "base64")
+                        : queued.data,
+                    );
+                    bytes += size;
+                  }
+                  if (batch.length > 1) data = Buffer.concat(batch);
+                }
+                const started = performance.now();
                 this.trackPartialSequence(data);
+                if (this.captureReplay && !this.replayCompatible) {
+                  setImmediate(drain);
+                  return;
+                }
                 this.terminal.write(data, () => {
+                  if (this.captureReplay) {
+                    const elapsed = performance.now() - started;
+                    if (elapsed > 8)
+                      this.replayBatchBytes = Math.max(
+                        8 * 1024,
+                        Math.floor(this.replayBatchBytes / 2),
+                      );
+                    else if (elapsed < 4)
+                      this.replayBatchBytes = Math.min(
+                        64 * 1024,
+                        this.replayBatchBytes + 8 * 1024,
+                      );
+                  }
                   setImmediate(drain);
                 });
               } catch (error) {
@@ -634,7 +709,7 @@ export class TerminalScreenState {
       this.disposed ||
       !this.valid ||
       !this.replayCompatible ||
-      !isTerminalReplaySafeBoundary(this.parserState) ||
+      !isTerminalReplaySafeBoundary(this.replayParser) ||
       this.terminal.buffer.active.type !== "normal" ||
       (this.terminal.buffer.active.getLine(0)?.isWrapped &&
         this.terminal.buffer.active.baseY !== 10_000) ||
@@ -653,7 +728,7 @@ export class TerminalScreenState {
     return {
       checkpointSeq: this.nextSeq,
       dataBase64: Buffer.concat([
-        serializeVisibleScreen(this.terminal, true).data,
+        (await serializeHistory(this.terminal)).data,
         encodeUtf8(
           `${ESC}[?6l${ESC}[${top + 1};${bottom + 1}r${restoreModes(this.terminal)}${ESC}[${row + 1};${buffer.cursorX + 1}H`,
         ),
