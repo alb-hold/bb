@@ -400,3 +400,77 @@ describe("usePromptDraftController", () => {
     expect(result.current.text).toBe("typed");
   });
 });
+
+describe("home composer replacement persistence", () => {
+  it("keeps typing synchronous in memory, debounces disk, and flushes the latest text on pagehide", async () => {
+    const { createCoreComposerActions } =
+      await import("@/lib/plugin-composer-handle");
+    vi.useFakeTimers();
+    const scope = uniqueScope();
+    const { result } = renderHook(() => usePromptDraftStorage(scope));
+    const actions = createCoreComposerActions({
+      getCurrent: () => result.current.getCurrent(),
+      setDraft: (next) => result.current.setDraft(next),
+      setTextAndMentions: (text, mentions) =>
+        result.current.setTextAndMentions(text, mentions),
+      focus: () => {},
+    });
+    act(() => {
+      actions.replace({ text: "first key", mentions: [] });
+      actions.replace({ text: "latest text", mentions: [] });
+    });
+    expect(actions.draft.text).toBe("latest text");
+    expect(window.localStorage.getItem(result.current.storageKey)).toBeNull();
+    act(() => window.dispatchEvent(new Event("pagehide")));
+    expect(window.localStorage.getItem(result.current.storageKey)).toBe(
+      storedDraft("latest text"),
+    );
+    act(() => vi.advanceTimersByTime(250));
+    expect(window.localStorage.getItem(result.current.storageKey)).toBe(
+      storedDraft("latest text"),
+    );
+  });
+});
+
+describe("pending composer text lifecycle", () => {
+  it("flushes the previous thread on switch and the current thread on unmount", () => {
+    vi.useFakeTimers();
+    const first = uniqueScope();
+    const second = uniqueScope();
+    const { result, rerender, unmount } = renderHook(
+      ({ scope }) => usePromptDraftStorage(scope),
+      { initialProps: { scope: first } },
+    );
+    const firstKey = result.current.storageKey;
+    act(() => result.current.setTextAndMentions("first thread latest", []));
+    expect(window.localStorage.getItem(firstKey)).toBeNull();
+    rerender({ scope: second });
+    expect(window.localStorage.getItem(firstKey)).toBe(
+      storedDraft("first thread latest"),
+    );
+    expect(result.current.text).toBe("");
+    const secondKey = result.current.storageKey;
+    act(() => result.current.setTextAndMentions("second thread latest", []));
+    unmount();
+    expect(window.localStorage.getItem(secondKey)).toBe(
+      storedDraft("second thread latest"),
+    );
+    act(() => vi.advanceTimersByTime(250));
+    expect(window.localStorage.getItem(firstKey)).toBe(
+      storedDraft("first thread latest"),
+    );
+  });
+
+  it.each(["blur", "focusout"])("flushes the latest text on %s", (event) => {
+    vi.useFakeTimers();
+    const scope = uniqueScope();
+    const { result } = renderHook(() => usePromptDraftStorage(scope));
+    act(() => result.current.setTextAndMentions("latest before blur", []));
+    act(() =>
+      (event === "blur" ? window : document).dispatchEvent(new Event(event)),
+    );
+    expect(window.localStorage.getItem(result.current.storageKey)).toBe(
+      storedDraft("latest before blur"),
+    );
+  });
+});

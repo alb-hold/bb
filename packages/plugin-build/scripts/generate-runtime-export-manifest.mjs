@@ -41,6 +41,23 @@ const RUNTIME_MODULE_IDS = RUNTIME_SHIM_NPM_SPECIFIERS;
  * export lists come from esbuild metadata like the SDK facade's.
  */
 const RUNTIME_SOURCE_MODULES = {
+  "@bb/shared-ui/dropdown-menu": path.join(
+    scriptDir,
+    "../../shared-ui/src/components/ui/dropdown-menu.tsx",
+  ),
+  "@bb/shared-ui/dialog": path.join(
+    scriptDir,
+    "../../shared-ui/src/components/ui/dialog.tsx",
+  ),
+  "@bb/shared-ui/context-menu": path.join(
+    scriptDir,
+    "../../shared-ui/src/components/ui/context-menu.tsx",
+  ),
+  "@bb/shared-ui/responsive-overlay": path.join(
+    scriptDir,
+    "../../shared-ui/src/components/ui/responsive-overlay.tsx",
+  ),
+
   "@bb/shared-ui/question-form-host": path.join(
     scriptDir,
     "..",
@@ -164,7 +181,12 @@ pushEntry(
 );
 for (const id of RUNTIME_MODULE_IDS) {
   if (id === "zod" || id === "zod/v4") {
-    const names = JSON.parse(await readFile(path.join(scriptDir, "../src/generated/zod-admission.generated.json"), "utf8"));
+    const names = JSON.parse(
+      await readFile(
+        path.join(scriptDir, "../src/generated/zod-admission.generated.json"),
+        "utf8",
+      ),
+    );
     pushEntry(id, [...names, "z"]);
   } else {
     pushEntry(id, await namedExportsOf(id));

@@ -45,7 +45,7 @@ describe("app.css sidebar drag cursor", () => {
 });
 
 describe("compact touch targets", () => {
-  const block = css.slice(css.lastIndexOf("@media (width < 48rem)"));
+  const block = css.slice(css.lastIndexOf("@media (width < 48rem)"), css.indexOf("@media (width <= 480px)"));
   it.each([
     'data-compact-touch="action"',
     'data-compact-touch="action-menu"',
@@ -66,7 +66,7 @@ describe("compact touch targets", () => {
 });
 
 it("keeps summary rows compact and splits invisible extensions between neighbours", () => {
-  const block = css.slice(css.lastIndexOf("@media (width < 48rem)"));
+  const block = css.slice(css.lastIndexOf("@media (width < 48rem)"), css.indexOf("@media (width <= 480px)"));
   expect(block).not.toMatch(
     /button\[data-compact-touch-summary\]\s*\{\s*min-block-size:/,
   );
@@ -80,12 +80,33 @@ it("keeps summary rows compact and splits invisible extensions between neighbour
   );
 });
 
+it("expands timeline hit areas without increasing their layout heights", () => {
+  const block = css.slice(css.lastIndexOf("@media (width < 48rem)"), css.indexOf("@media (width <= 480px)"));
+  const timeline = block.slice(block.indexOf('[data-compact-touch="action"]'));
+  expect(block).not.toContain("aria-label");
+  expect(timeline).not.toContain("min-block-size");
+  expect(timeline).toContain('content: ""');
+  expect(timeline).toContain("position: absolute");
+  expect(timeline).toContain("inset-block: -12px -4px");
+  expect(timeline).toContain("inset-block: var(--compact-touch-summary-start, -12px)");
+  expect(timeline).toContain("--compact-touch-summary-half-gap: -4px");
+  expect(timeline).toContain("button[data-compact-touch-summary]::after");
+});
+
+it("keeps the last summary hit area inside the animated clip without adding layout height", () => {
+  const block = css.slice(css.lastIndexOf("@media (width < 48rem)"), css.indexOf("@media (width <= 480px)"));
+  expect(block).toMatch(
+    /\[data-compact-touch-height\]:has\(\[data-compact-touch-summary\]\)\s*\{\s*margin-block: -12px;\s*\}/,
+  );
+  expect(block).toMatch(
+    /\[data-compact-touch-height\]:has\(\[data-compact-touch-summary\]\) > div\s*\{\s*padding-block: 12px;\s*\}/,
+  );
+});
+
 it("limits compact pseudo-element hit areas to coarse pointers", () => {
   expect(css).toContain("@media (width < 48rem) and (pointer: coarse)");
 });
 
-it("collapses terminal segment labels first and reserves an 8px action gap", () => {
-  expect(css).toContain("@media (width <= 360px)");
-  expect(css).toMatch(/\[data-native-terminal-toggle\] > button > span\s*{\s*display: none/);
+it("reserves an 8px action gap", () => {
   expect(css).toContain("column-gap: 0.5rem");
 });

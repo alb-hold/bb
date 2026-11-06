@@ -54,6 +54,14 @@ export {
 
 const SHARED_UI_SOURCE_IMPORTER = /[\\/]shared-ui[\\/]src[\\/]/;
 const SHARED_UI_RUNTIME_MODULES: ReadonlyMap<string, string> = new Map([
+  ["/shared-ui/src/components/ui/dropdown-menu", "@bb/shared-ui/dropdown-menu"],
+  ["/shared-ui/src/components/ui/dialog", "@bb/shared-ui/dialog"],
+  ["/shared-ui/src/components/ui/context-menu", "@bb/shared-ui/context-menu"],
+  [
+    "/shared-ui/src/components/ui/responsive-overlay",
+    "@bb/shared-ui/responsive-overlay",
+  ],
+
   ["/shared-ui/src/components/ui/icon", SHARED_UI_ICON_SPECIFIER],
   [
     "/shared-ui/src/components/ui/question-form-host",
@@ -145,7 +153,7 @@ async function shimModuleSource(
     `const runtime = globalThis.__bbPluginRuntime;`,
     `if (runtime == null || runtime.${slot} == null) {`,
     `  throw new Error(${JSON.stringify(
-      `Cannot load "${specifier}": this bundle must be loaded by the BB app, which provides the shared plugin runtime (globalThis.__bbPluginRuntime).`,
+      `Cannot load "${specifier}": missing shared plugin runtime slot "${slot}". Update the BB host before loading this plugin.`,
     )});`,
     `}`,
     `const mod = runtime.${slot};`,
@@ -344,13 +352,20 @@ export function runtimeShimPlugin(
       build.onResolve(
         {
           filter:
-            /(^|\/)(icon|question-form-host|voice-input-textarea)(\.[jt]sx?)?$/,
+            /(^|\/)(icon|question-form-host|voice-input-textarea|dropdown-menu|dialog|context-menu|responsive-overlay)(\.[jt]sx?)?$/,
         },
         (args) => {
-          if (args.namespace !== "file" || !args.path.startsWith(".")) {
+          if (args.namespace !== "file" && args.namespace !== "") {
             return undefined;
           }
-          const specifier = sharedUiRuntimeModuleFor(args.path, args.importer);
+          const alias = args.path.replace("@/components/ui/", "@bb/shared-ui/");
+          const specifier =
+            args.path.startsWith("@/components/ui/") &&
+            RUNTIME_SLOT_BY_SPECIFIER[alias]
+              ? alias
+              : args.path.startsWith(".")
+                ? sharedUiRuntimeModuleFor(args.path, args.importer)
+                : null;
           return specifier === null
             ? undefined
             : { path: specifier, namespace: SHIM_NAMESPACE };
@@ -698,6 +713,10 @@ export async function buildPluginApp(
     } catch (error) {
       if (!isRecord(error) || error.code !== "ENOENT") throw error;
     }
+    await writeFile(
+      join(distDir, "app.metafile.json"),
+      JSON.stringify(bundle.metafile, null, 2),
+    );
     const runtimeSlots = bundledRuntimeSlots(bundle.metafile);
     const bundledInputs: ReadonlySet<string> =
       dependencySources.length > 0

@@ -1,3 +1,4 @@
+import { flushPendingPromptDraftPersists } from "@/hooks/usePromptDraftStorage";
 import { createCoreComposerActions } from "@/lib/plugin-composer-handle";
 import { useAtom } from "jotai";
 import { atomWithStorage } from "jotai/utils";
@@ -1725,6 +1726,7 @@ export function NewThreadComposer({
       blockedReason: string | null,
       { sendAt, pluginSubmission }: ComposerSubmitExtras,
     ) => {
+      flushPendingPromptDraftPersists();
       const submittedDraft = promptDraft.getCurrent();
       const input = promptDraftToInput(submittedDraft);
       if (
@@ -2013,6 +2015,7 @@ export function NewThreadComposer({
       getSelection,
       subscribeSelection,
       setDraft: promptDraft.setDraft,
+      setTextAndMentions: promptDraft.setTextAndMentions,
       focus: focusPromptBox,
       sendsOnEnter: true,
       setSelection,
@@ -2023,6 +2026,7 @@ export function NewThreadComposer({
       projectId,
       promptDraft.getCurrent,
       promptDraft.setDraft,
+      promptDraft.setTextAndMentions,
       promptDraft.storageKey,
       promptDraft.subscribe,
       setSelection,

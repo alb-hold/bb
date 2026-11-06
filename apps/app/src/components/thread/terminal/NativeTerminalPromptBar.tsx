@@ -109,7 +109,7 @@ export function NativeTerminalPromptBar({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [text, setText] = useState("");
-  const [focused, setFocused] = useState(false);
+  const [wraps, setWraps] = useState(false);
   const textRef = useRef("");
   const programmaticRef = useRef(false);
   const composingRef = useRef(false);
@@ -497,12 +497,54 @@ export function NativeTerminalPromptBar({
     element.setSelectionRange(selection[0], selection[1]);
   }, [text]);
 
-  useLayoutEffect(() => {
+  const measureInput = useCallback(() => {
     const element = textareaRef.current;
-    if (element === null || supportsFieldSizing) return;
-    element.style.height = "auto";
-    element.style.height = `${Math.min(element.scrollHeight, MAX_TEXTAREA_HEIGHT_PX)}px`;
+    const shell = element?.closest<HTMLElement>("[data-native-composer]");
+    const actions = shell?.querySelector<HTMLElement>("[data-native-composer-actions]");
+    if (!element || !shell || !actions) return;
+    const style = getComputedStyle(element);
+    const shellStyle = getComputedStyle(shell);
+    const buttons = Array.from(actions.querySelectorAll("button"));
+    const actionsWidth = buttons.reduce((sum, button) => sum + Math.max(44, button.getBoundingClientRect().width), 0) +
+      Math.max(0, buttons.length - 1) * 4;
+    const width = shell.clientWidth - parseFloat(shellStyle.paddingLeft || "0") -
+      parseFloat(shellStyle.paddingRight || "0") - actionsWidth;
+    const previousWidth = element.style.width;
+    const previousHeight = element.style.height;
+    const previousMinHeight = element.style.minHeight;
+    element.style.width = `${Math.max(1, width)}px`;
+    element.style.minHeight = "0";
+    element.style.height = "0";
+    const lineHeight = parseFloat(style.lineHeight) || 24;
+    const padding = parseFloat(style.paddingTop || "0") + parseFloat(style.paddingBottom || "0");
+    setWraps(text.includes("\n") || element.scrollHeight > lineHeight + padding + 1);
+    element.style.width = previousWidth;
+    element.style.minHeight = previousMinHeight;
+    element.style.height = previousHeight;
+    if (!supportsFieldSizing) {
+      element.style.height = "auto";
+      element.style.height = `${Math.min(element.scrollHeight, MAX_TEXTAREA_HEIGHT_PX)}px`;
+    }
   }, [text]);
+
+  useLayoutEffect(measureInput, [measureInput]);
+
+  useLayoutEffect(() => {
+    const shell = textareaRef.current?.closest<HTMLElement>("[data-native-composer]");
+    if (!shell) return;
+    let previousWidth = shell.clientWidth;
+    const observer = new ResizeObserver(() => {
+      if (shell.clientWidth === previousWidth) return;
+      previousWidth = shell.clientWidth;
+      measureInput();
+    });
+    observer.observe(shell);
+    return () => observer.disconnect();
+  }, [measureInput]);
+
+  const inline = !wraps && attachments.length === 0 && pendingUploads === 0 &&
+    attachError === null && !dictating && assist.suggestions.length === 0 &&
+    assist.recent === null && !assist.pending;
 
   const recording =
     dictation.phase === "recording" || dictation.phase === "starting";
@@ -560,6 +602,7 @@ export function NativeTerminalPromptBar({
 
         )}
         data-native-composer=""
+        data-native-composer-inline={inline ? "" : undefined}
         onDragOver={onDragOver}
         onDrop={onDrop}
       >
@@ -601,10 +644,8 @@ export function NativeTerminalPromptBar({
               ? "Starting microphone…"
               : recording
                 ? "Listening…"
-                : "To terminal above"
+                : `Send to ${providerLabel}…`
           }
-          onFocus={() => setFocused(true)}
-          onBlur={() => setFocused(false)}
           onChange={(event) => {
             applyValue(event.target.value, programmaticRef.current);
           }}
@@ -618,9 +659,6 @@ export function NativeTerminalPromptBar({
           onPaste={onPaste}
           className={cn(
             "max-h-48 min-h-7 min-w-0 w-full resize-none bg-transparent px-2 py-1 text-base md:text-sm text-foreground field-sizing-content placeholder:text-sm placeholder:text-muted-foreground focus-visible:outline-none",
-            !text &&
-              !focused &&
-              "max-md:h-11 max-md:whitespace-nowrap max-md:overflow-hidden",
           )}
         />
         <AssistStrip
@@ -634,7 +672,7 @@ export function NativeTerminalPromptBar({
           onDismiss={assist.dismissSuggestion}
           onUndo={assist.undoRecent}
         />
-        <div className="flex shrink-0 items-center gap-1">
+        <div data-native-composer-actions="" className="flex shrink-0 items-center gap-1">
           <input
             ref={fileInputRef}
             type="file"

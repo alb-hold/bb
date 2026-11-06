@@ -2,6 +2,13 @@
 import { installTestPluginRuntime } from "@get-bb/plugin-sdk/testing/app";
 
 installTestPluginRuntime();
+const host = globalThis as typeof globalThis & {
+  __bbPluginRuntime: {
+    pluginSdkApp: import("@get-bb/plugin-sdk/app").PluginSdkApp;
+  };
+};
+host.__bbPluginRuntime.pluginSdkApp.internal_DO_NOT_USE_loadComposerPasteParser =
+  () => import("./src/mentions/pasted-thread-links");
 
 if (typeof window !== "undefined" && !window.ResizeObserver) {
   window.ResizeObserver = class ResizeObserverPolyfill {

@@ -539,6 +539,22 @@ afterEach(() => {
 
 describe("ThreadRow", () => {
   it.each([
+    ["Workspace", createThread({ environment: null })],
+    ["Workspace", createThread({ environment: makeSidebarEnvironment({ isWorktree: false }) })],
+    ["Worktree", createThread({ environment: makeSidebarEnvironment({ isWorktree: true }) })],
+    ["Native terminal", createThread({ experimental_nativeActivity: { lastEvidenceAt: null, freshForMs: 90_000, confirmation: "unconfirmed", evidenceKind: "unknown" } })],
+  ] as const)("keeps one muted leading metadata glyph slot for %s", (label, thread) => {
+    const view = renderThreadRow({ thread });
+    const context = view.container.querySelector("[data-sidebar-thread-context]");
+    const slot = context?.firstElementChild;
+    expect(context?.classList.contains("text-muted-foreground")).toBe(true);
+    expect(slot?.getAttribute("role")).toBe("img");
+    expect(slot?.getAttribute("aria-label")).toBe(label);
+    expect(context?.querySelectorAll('[role="img"]')).toHaveLength(1);
+    expect(slot?.querySelector("[data-icon-root]")?.classList.contains("size-3")).toBe(true);
+  });
+
+  it.each([
     ["project:proj_context", "2m"],
     ["project:proj_other", "Orbital ·2m"],
     ["threads", "Orbital ·2m"],

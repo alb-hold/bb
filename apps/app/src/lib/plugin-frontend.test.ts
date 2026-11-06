@@ -189,6 +189,10 @@ describe("installPluginRuntime", () => {
     expect(Object.keys(runtime).sort()).toEqual([
       "classVarianceAuthority",
       "clsx",
+      "internal_DO_NOT_USE_context_menu",
+      "internal_DO_NOT_USE_dialog",
+      "internal_DO_NOT_USE_dropdown_menu",
+      "internal_DO_NOT_USE_responsive_overlay",
       "jsxDevRuntime",
       "jsxRuntime",
       "pluginSdkApp",
@@ -348,3 +352,32 @@ describe("createPluginFrontendPageLifecycle", () => {
     expect(deps.restore).not.toHaveBeenCalled();
   });
 });
+
+it.each([
+  ["bb--composer", "internal_DO_NOT_USE_dropdown_menu"],
+  ["bb--composer", "internal_DO_NOT_USE_responsive_overlay"],
+  ["thread-list", "internal_DO_NOT_USE_context_menu"],
+  ["thread-list", "internal_DO_NOT_USE_dialog"],
+  ["thread-list", "internal_DO_NOT_USE_dropdown_menu"],
+])(
+  "contains missing %s slot %s before evaluation",
+  async (pluginId, slot) => {
+    Reflect.deleteProperty(installPluginRuntime(), slot);
+    const importModule = vi.fn();
+    const result = await loadPluginFrontend(
+      candidate(pluginId, { runtimeSlots: [slot] }),
+      {
+        importModule,
+        prefetchModule: vi.fn(),
+        warn: vi.fn(),
+      },
+    );
+    expect(result).toMatchObject({
+      status: "failed",
+      error: expect.stringContaining("Update the BB host"),
+    });
+    expect(importModule).not.toHaveBeenCalled();
+    delete (globalThis as typeof globalThis & { __bbPluginRuntime?: unknown })
+      .__bbPluginRuntime;
+  },
+);
