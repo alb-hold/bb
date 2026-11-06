@@ -1084,23 +1084,33 @@ describe("real worktree teardown preservation", () => {
       const originalLink = path.join(worktree.path, "original-link");
       await fs.symlink("README.md", originalLink);
       let injected = false;
+      let quarantinedLink = "";
+      const quarantinedEntries: string[] = [];
       const result = await removeDirectoryTree(worktree.path, {
         startedAt: Number.MAX_SAFE_INTEGER,
-        afterEntryQuarantined: async (entry) => {
-          if (entry !== originalLink) return;
+        afterEntryQuarantined: async (entry, quarantined) => {
+          quarantinedEntries.push(entry);
+          if (path.basename(entry) !== "original-link") return;
+          quarantinedLink = quarantined;
           await writeFile(
             path.join(worktree.path, "late-after-link-check"),
             "late\n",
           );
         },
-        afterRestoreNameCheck: async (_source, destination, isDirectory) => {
-          if (isDirectory || destination !== originalLink || injected) return;
+        beforeQuarantineRestoreLink: async (source, destination) => {
+          if (
+            path.basename(source) !== path.basename(quarantinedLink) ||
+            destination !== originalLink ||
+            injected
+          )
+            return;
           injected = true;
           await fs.symlink("racer-target", destination);
         },
       });
 
       expect(result.status ?? result).toBe("retained");
+      expect(quarantinedEntries).toContain(originalLink);
       expect(injected).toBe(true);
       await expect(readlink(originalLink)).resolves.toBe("racer-target");
       const quarantined = (await fs.readdir(worktree.path)).find((name) =>
