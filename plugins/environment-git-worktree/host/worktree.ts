@@ -1085,10 +1085,7 @@ async function removeRegisteredWorktree(
             ? `${identity.path}${retainedPath.slice(quarantinedPath.length)}`
             : retainedPath,
         );
-        throw new RetainedRecoveryError(
-          error.message.replaceAll(quarantinedPath, identity.path),
-          retainedPaths,
-        );
+        throw worktreePreservedError(identity.path, retainedPaths);
       }
       throw error;
     }
