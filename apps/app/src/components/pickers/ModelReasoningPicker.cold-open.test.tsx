@@ -72,7 +72,7 @@ it("keeps search typing and keyboard selection across the first menu download", 
     screen.getByRole("button", { name: "Provider, model and reasoning" }),
   );
   await waitFor(() => expect(menu.imports).toBe(1));
-  const search = screen.getByPlaceholderText("Search models");
+  const search = await screen.findByPlaceholderText("Search models");
   await waitFor(() => expect(document.activeElement).toBe(search));
   expect(
     screen.getByRole("status", { name: "Loading model picker" }),
