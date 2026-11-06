@@ -372,11 +372,11 @@ vi.mock("@/hooks/queries/system-queries", async (importOriginal) => ({
       },
     },
   }),
-  useSystemExecutionOptions: () =>
-    mocks.modelsLoading
+  useSystemExecutionOptions: ({ enabled }: { enabled?: boolean } = {}) =>
+    enabled === false || mocks.modelsLoading
       ? {
           data: undefined,
-          isLoading: true,
+          isLoading: enabled !== false,
           isPending: true,
           isError: false,
           isPlaceholderData: false,
@@ -494,7 +494,12 @@ vi.mock("@/hooks/queries/project-queries", () => ({
 }));
 
 vi.mock("@/hooks/queries/project-default-execution-options-query", () => ({
-  useProjectDefaultExecutionOptions: () => ({ data: undefined }),
+  useProjectDefaultExecutionOptions: () => ({
+    data: null,
+    isSuccess: true,
+    isError: false,
+    isPlaceholderData: false,
+  }),
 }));
 
 vi.mock("@/hooks/mutations/project-mutations", () => ({
@@ -2105,6 +2110,22 @@ describe("PluginNewThreadComposer seeding", () => {
     expect(panel.secondary.activeTabId).toBe(panel.secondary.tabs[0].id);
     view.unmount();
     expect(getFocusedAppPanelController()).toBeNull();
+  });
+
+  it("avoids a false empty model label while project defaults are pending", async () => {
+    mocks.realPromptBox = true;
+    mocks.sidebarNavigationSettled = false;
+    const view = render(newThreadElement("proj_1"));
+    const trigger = await screen.findByRole("button", {
+      name: "Provider, model and reasoning",
+    });
+    expect(trigger.textContent).toBe("Model");
+    expect(screen.queryByText("No models available")).toBeNull();
+
+    mocks.sidebarNavigationSettled = true;
+    view.rerender(newThreadElement("proj_1"));
+    await waitFor(() => expect(trigger.textContent).toContain("5.6"));
+    expect(screen.queryByText("No models available")).toBeNull();
   });
 
   it("avoids a false empty project label until sidebar bootstrap succeeds without replay data", async () => {

@@ -348,7 +348,7 @@ afterEach(() => {
 });
 
 describe("useThreadCreationOptions", () => {
-  it("avoids a false empty model label while catalog discovery is pending", async () => {
+  it("settles a disabled catalog instead of staying loading forever", async () => {
     const catalog = createDeferredPromise<SystemExecutionOptionsResponse>();
     vi.mocked(sdk.system.executionOptions).mockReturnValue(catalog.promise);
     const { wrapper } = createQueryClientTestHarness();
@@ -380,11 +380,7 @@ describe("useThreadCreationOptions", () => {
       );
     }
     const view = render(<Controls enabled={false} />, { wrapper });
-    expect(screen.queryByText("No models available")).toBeNull();
-    expect(
-      screen.getByRole("button", { name: "Provider, model and reasoning" })
-        .textContent,
-    ).toBe("Model");
+    expect(screen.getByText("No models available")).toBeTruthy();
     expect(sdk.system.executionOptions).not.toHaveBeenCalled();
 
     view.rerender(<Controls enabled />);
@@ -394,6 +390,10 @@ describe("useThreadCreationOptions", () => {
       screen.getByRole("button", { name: "Provider, model and reasoning" })
         .textContent,
     ).toBe("Model");
+
+    view.rerender(<Controls enabled={false} />);
+    expect(screen.getByText("No models available")).toBeTruthy();
+    view.rerender(<Controls enabled />);
 
     await act(async () =>
       catalog.resolve({

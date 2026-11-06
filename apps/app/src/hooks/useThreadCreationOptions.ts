@@ -448,10 +448,11 @@ export function useThreadCreationOptions(
   const systemConfig = useSystemConfig();
   const providers = executionOptionsQuery.data?.providers ?? EMPTY_PROVIDERS;
   const isLoadingModels =
-    isResolvingReadyProvider ||
-    executionOptionsQuery.isPending ||
-    (executionOptionsQuery.isPlaceholderData &&
-      (executionOptionsQuery.data?.models.length ?? 0) === 0);
+    executionOptionsQueryEnabled &&
+    (isResolvingReadyProvider ||
+      executionOptionsQuery.isPending ||
+      (executionOptionsQuery.isPlaceholderData &&
+        (executionOptionsQuery.data?.models.length ?? 0) === 0));
   const modelLoadError =
     executionOptionsQuery.data?.modelLoadError ?? NO_MODEL_LOAD_ERROR;
   const modelLoadFailed =

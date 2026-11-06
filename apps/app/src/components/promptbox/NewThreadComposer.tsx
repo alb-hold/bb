@@ -1013,6 +1013,8 @@ export function NewThreadComposer({
     sessionOptionSelections,
     setSessionOption,
   } = creationOptions;
+  const modelPickerIsLoading =
+    projectDefaultsState.status === "pending" || isLoadingModels;
   const selectedThreadModel = activeModel?.model ?? selectedModel;
   const canSubmitPendingCatalog =
     isLoadingModels &&
@@ -2234,7 +2236,7 @@ export function NewThreadComposer({
               selected: selectedModel,
               options: modelOptions,
               moreOptions: moreModelOptions,
-              isLoading: isLoadingModels,
+              isLoading: modelPickerIsLoading,
               loadFailed: modelLoadFailed,
               loadError: modelLoadError,
               onChange: handleModelChange,
@@ -2295,6 +2297,7 @@ export function NewThreadComposer({
       modelLoadError,
       modelLoadFailed,
       modelOptions,
+      modelPickerIsLoading,
       moreModelOptions,
       permissionMode,
       permissionModeOptions,
