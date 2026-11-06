@@ -53,6 +53,7 @@ export interface RemoveDirectoryTreeHooks {
   ) => Promise<{ bytesWritten: number }>;
   beforePinCleanup?: (pin: string, restoredPath: string) => Promise<void>;
   createPinSuffix?: () => string;
+  createRecoverySuffix?: () => string;
   readDirectoryNames?: (directory: string) => Promise<string[]>;
   onRetainedPath?: (retainedPath: string) => void;
   afterRootMarkerDetached?: (root: string) => Promise<void>;
@@ -132,9 +133,16 @@ function sameDirectory(
 async function createRecoveredEntry(
   parentDirectory: string,
   create: (candidate: string) => Promise<void>,
+  hooks: RemoveDirectoryTreeHooks,
 ): Promise<string> {
   for (let attempt = 0; attempt < 64; attempt += 1) {
-    const suffix = randomUUID().replaceAll("-", "").slice(0, 8);
+    const suffix =
+      hooks.createRecoverySuffix?.() ??
+      randomUUID().replaceAll("-", "").slice(0, 8);
+    if (!/^[0-9a-f]{8}$/iu.test(suffix))
+      throw new Error(
+        "Recovery suffix must contain eight hexadecimal characters",
+      );
     const candidate = path.join(parentDirectory, `.bb-recovered-${suffix}`);
     try {
       await create(candidate);
@@ -152,10 +160,14 @@ async function recoverFileFromHandle(
   mode: bigint,
   hooks: RemoveDirectoryTreeHooks,
 ): Promise<string> {
-  return createRecoveredEntry(parentDirectory, async (candidate) => {
-    const destination = await open(candidate, "wx+", Number(mode));
-    await copyRecoveredFile(destination, source, mode, candidate, hooks);
-  });
+  return createRecoveredEntry(
+    parentDirectory,
+    async (candidate) => {
+      const destination = await open(candidate, "wx+", Number(mode));
+      await copyRecoveredFile(destination, source, mode, candidate, hooks);
+    },
+    hooks,
+  );
 }
 
 async function copyRecoveredFile(
@@ -329,47 +341,56 @@ async function recoverFileFromPin(
   mode: bigint,
   hooks: RemoveDirectoryTreeHooks,
 ): Promise<string> {
-  return createRecoveredEntry(parentDirectory, async (candidate) => {
-    try {
-      await (hooks.recoveryLink?.(pin, candidate) ?? link(pin, candidate));
-    } catch (error) {
-      if (!["EXDEV", "EPERM", "EMLINK"].includes(errorCode(error) ?? ""))
-        throw error;
-      const destination = await open(candidate, "wx+", Number(mode));
-      await copyRecoveredFile(destination, source, mode, candidate, hooks);
-      return;
-    }
-    const [pinInfo, candidateInfo, heldInfo] = await Promise.all([
-      lstat(pin, { bigint: true }),
-      lstat(candidate, { bigint: true }),
-      source.stat({ bigint: true }),
-    ]);
-    if (
-      pinInfo.dev !== heldInfo.dev ||
-      pinInfo.ino !== heldInfo.ino ||
-      candidateInfo.dev !== heldInfo.dev ||
-      candidateInfo.ino !== heldInfo.ino
-    )
-      throw new Error(`Recovery pin identity changed at ${pin}`);
-    const recovered = await open(
-      candidate,
-      constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
-    );
-    try {
-      await verifyFileContents(recovered, source);
-    } finally {
-      await recovered.close();
-    }
-  });
+  return createRecoveredEntry(
+    parentDirectory,
+    async (candidate) => {
+      try {
+        await (hooks.recoveryLink?.(pin, candidate) ?? link(pin, candidate));
+      } catch (error) {
+        if (!["EXDEV", "EPERM", "EMLINK"].includes(errorCode(error) ?? ""))
+          throw error;
+        const destination = await open(candidate, "wx+", Number(mode));
+        await copyRecoveredFile(destination, source, mode, candidate, hooks);
+        return;
+      }
+      const [pinInfo, candidateInfo, heldInfo] = await Promise.all([
+        lstat(pin, { bigint: true }),
+        lstat(candidate, { bigint: true }),
+        source.stat({ bigint: true }),
+      ]);
+      if (
+        pinInfo.dev !== heldInfo.dev ||
+        pinInfo.ino !== heldInfo.ino ||
+        candidateInfo.dev !== heldInfo.dev ||
+        candidateInfo.ino !== heldInfo.ino
+      )
+        throw new Error(`Recovery pin identity changed at ${pin}`);
+      const recovered = await open(
+        candidate,
+        constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
+      );
+      try {
+        await verifyFileContents(recovered, source);
+      } finally {
+        await recovered.close();
+      }
+    },
+    hooks,
+  );
 }
 
 async function recoverSymlink(
   parentDirectory: string,
   target: string,
+  hooks: RemoveDirectoryTreeHooks,
 ): Promise<string> {
-  return createRecoveredEntry(parentDirectory, async (candidate) => {
-    await symlink(target, candidate);
-  });
+  return createRecoveredEntry(
+    parentDirectory,
+    async (candidate) => {
+      await symlink(target, candidate);
+    },
+    hooks,
+  );
 }
 
 export async function directoryTreeChangedSince(
@@ -752,6 +773,7 @@ export async function removeDirectoryTree(
             recoveredPath = await recoverSymlink(
               parentDirectory,
               symbolicLinkTarget ?? "",
+              hooks,
             );
             if ((await readlink(recoveredPath)) !== symbolicLinkTarget)
               throw new Error("Recovered symbolic link target did not match");
@@ -903,6 +925,7 @@ export async function removeDirectoryTree(
                 ? await recoverSymlink(
                     parentDirectory,
                     symbolicLinkTarget ?? "",
+                    hooks,
                   )
                 : await recoverFileFromHandle(
                     parentDirectory,

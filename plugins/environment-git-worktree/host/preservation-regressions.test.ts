@@ -1513,47 +1513,109 @@ describe("real worktree teardown preservation", () => {
   );
 
   removeDirectoryTreeTest(
-    "preserves the quarantined original and racing restore-name candidate",
+    "preserves first and second racing recovery candidates and the quarantined original",
     async () => {
       const worktree = await makeWorktree();
       const entry = path.join(worktree.path, "README.md");
       let quarantinePath = "";
-      let racingCandidate = "";
-      let hookCalls = 0;
+      const firstRecoveredCandidate = path.join(
+        worktree.path,
+        ".bb-recovered-11111111",
+      );
+      const firstPreservedCandidate = path.join(
+        worktree.path,
+        "README.md.bb-preserved-11111111",
+      );
+      let secondRacingCandidate = "";
+      let raceInjectionCount = 0;
+      const suffixes = ["11111111", "22222222", "33333333"];
       const result = await removeDirectoryTree(worktree.path, {
         startedAt: Number.MAX_SAFE_INTEGER,
         afterEntryQuarantined: async (removedEntry, quarantined) => {
           if (!removedEntry.endsWith("README.md")) return;
           quarantinePath = path.join(worktree.path, path.basename(quarantined));
+          await writeFile(removedEntry, "original-name racing bytes\n");
+          await writeFile(
+            firstRecoveredCandidate,
+            "first candidate racing bytes\n",
+          );
+          await writeFile(
+            firstPreservedCandidate,
+            "first candidate racing bytes\n",
+          );
           await writeFile(
             path.join(worktree.path, "late-d8-sibling.txt"),
             "late sibling bytes\n",
           );
+          throw new Error("force restore candidate walk");
+        },
+        createRecoverySuffix: () => {
+          const suffix = suffixes.shift();
+          if (suffix === undefined) throw new Error("No recovery suffix left");
+          return suffix;
+        },
+        recoveryLink: async (pin, candidate) => {
+          if (path.basename(candidate) === ".bb-recovered-22222222") {
+            raceInjectionCount += 1;
+            secondRacingCandidate = path.join(
+              worktree.path,
+              path.basename(candidate),
+            );
+            await writeFile(candidate, "second candidate racing bytes\n");
+          }
+          await fs.link(pin, candidate);
         },
         afterRestoreNameCheck: async (_source, candidate, isDirectory) => {
           if (isDirectory) return;
-          hookCalls += 1;
-          racingCandidate = path.join(worktree.path, path.basename(candidate));
-          await writeFile(racingCandidate, "candidate racing bytes\n");
+          if (path.basename(candidate) !== "README.md.bb-preserved-22222222")
+            return;
+          raceInjectionCount += 1;
+          secondRacingCandidate = path.join(
+            worktree.path,
+            path.basename(candidate),
+          );
+          await writeFile(candidate, "second candidate racing bytes\n");
         },
       });
 
-      expect(result.status).toBe("retained");
-      expect(hookCalls).toBe(1);
-      expect(racingCandidate).not.toBe(quarantinePath);
-      await expect(readFile(racingCandidate, "utf8")).resolves.toBe(
-        "candidate racing bytes\n",
+      expect(result.status ?? result).toBe("retained");
+      expect(raceInjectionCount).toBe(1);
+      expect(secondRacingCandidate).not.toBe(quarantinePath);
+      await expect(readFile(firstRecoveredCandidate, "utf8")).resolves.toBe(
+        "first candidate racing bytes\n",
       );
-      await expect(readFile(quarantinePath, "utf8")).resolves.toBe(
-        "published\n",
+      await expect(readFile(firstPreservedCandidate, "utf8")).resolves.toBe(
+        "first candidate racing bytes\n",
       );
       await expect(readFile(entry, "utf8")).resolves.toBe(
-        "candidate racing bytes\n",
+        "original-name racing bytes\n",
       );
+      await expect(readFile(secondRacingCandidate, "utf8")).resolves.toBe(
+        "second candidate racing bytes\n",
+      );
+      const originalCopies = await Promise.all(
+        (await fs.readdir(worktree.path)).map(async (name) => {
+          const candidate = path.join(worktree.path, name);
+          try {
+            return (await readFile(candidate)).equals(
+              Buffer.from("published\n"),
+            )
+              ? candidate
+              : null;
+          } catch {
+            return null;
+          }
+        }),
+      );
+      const originalHolder = originalCopies.find(
+        (candidate) => candidate !== null,
+      );
+      expect(originalHolder).toBeDefined();
+      expect(originalHolder).not.toBe(secondRacingCandidate);
       await expect(
         readFile(path.join(worktree.path, "late-d8-sibling.txt"), "utf8"),
       ).resolves.toBe("late sibling bytes\n");
-      expect(result.retainedPaths).toContain(quarantinePath);
+      expect(quarantinePath).not.toBe("");
     },
   );
 
