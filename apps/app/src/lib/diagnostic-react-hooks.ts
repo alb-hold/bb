@@ -2,7 +2,62 @@ import * as React from "react";
 
 type Dispatcher = Record<string, (...args: any[]) => any>;
 
+let recording = false;
+let finished = false;
+let root: object | null = null;
+
+export function traceStartupRoot(value: object, container: HTMLElement) {
+  const internal: unknown = Reflect.get(value, "_internalRoot");
+  if (typeof internal === "object" && internal !== null) root = internal;
+  let previous = 0;
+  const observer = new MutationObserver(() => {
+    const total = container.querySelectorAll("[data-sidebar-thread-id]").length;
+    if (recording && previous !== total)
+      performance.mark("p41-sidebar-rows-commit", {
+        detail: { previous, total },
+      });
+    previous = total;
+    if (finished) observer.disconnect();
+  });
+  observer.observe(container, { childList: true, subtree: true });
+}
+
+export function markStartupReactWork(label: string) {
+  const internals: unknown = Reflect.get(
+    React,
+    "__CLIENT_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE",
+  );
+  performance.mark(`p41-react-work:${label}`, {
+    detail: {
+      transition:
+        typeof internals === "object" && internals !== null
+          ? Reflect.get(internals, "T") !== null
+          : null,
+      pendingLanes: root && Reflect.get(root, "pendingLanes"),
+      callbackPriority: root && Reflect.get(root, "callbackPriority"),
+      suspendedLanes: root && Reflect.get(root, "suspendedLanes"),
+      pingedLanes: root && Reflect.get(root, "pingedLanes"),
+    },
+  });
+}
+
+export function beginStartupComposerTrace() {
+  if (!recording && !finished) {
+    recording = true;
+    performance.mark("p41-cb:window-start");
+  }
+  markStartupReactWork("composer-box");
+}
+
+export function finishStartupComposerTrace() {
+  markStartupReactWork("plain-commit");
+  recording = false;
+  finished = true;
+  performance.mark("p41-cb:window-end");
+}
+
 export function traceStartupReactUpdates() {
+  Error.stackTraceLimit = 80;
   const internals: unknown = Reflect.get(
     React,
     "__CLIENT_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE",
@@ -15,15 +70,18 @@ export function traceStartupReactUpdates() {
   let dispatcher: unknown = Reflect.get(internals, "H");
   let count = 0;
   const mark = (kind: string, detail: string) => {
-    if (count++ < 1200) performance.mark(`p41-cb:${kind}`, { detail });
+    if (recording && count++ < 2400)
+      performance.mark(`p41-cb:${kind}`, { detail });
   };
   const stack = () =>
-    new Error().stack?.split("\n").slice(2, 12).join("\n") ?? "";
+    new Error().stack?.split("\n").slice(2, 82).join("\n") ?? "";
   const setter = (dispatch: Function, owner: string) => {
     let traced = setters.get(dispatch);
     if (!traced) {
+      const creation = new Error();
       traced = (...args: unknown[]) => {
-        mark("state", `${owner}\nCALL\n${stack()}`);
+        if (recording)
+          mark("state", `${owner}\nOWNER\n${creation.stack}\nCALL\n${stack()}`);
         return dispatch(...args);
       };
       setters.set(dispatch, traced);
@@ -37,7 +95,7 @@ export function traceStartupReactUpdates() {
       let previous: unknown;
       traced = () => {
         const next = read();
-        if (seen && !Object.is(previous, next))
+        if (recording && seen && !Object.is(previous, next))
           mark("snapshot-change", `${owner}\nREAD\n${stack()}`);
         seen = true;
         previous = next;
@@ -52,7 +110,7 @@ export function traceStartupReactUpdates() {
     if (!traced) {
       traced = (notify: () => void) =>
         subscribe(() => {
-          mark("store-emit", `${owner}\nEMIT\n${stack()}`);
+          if (recording) mark("store-emit", `${owner}\nEMIT\n${stack()}`);
           notify();
         });
       subscribers.set(subscribe, traced);
@@ -90,7 +148,7 @@ export function traceStartupReactUpdates() {
         try {
           return original.use(...args);
         } catch (error) {
-          mark("use-throw", stack());
+          if (recording) mark("use-throw", stack());
           throw error;
         }
       };

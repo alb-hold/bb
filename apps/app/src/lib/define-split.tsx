@@ -13,6 +13,7 @@ import {
   type ReactNode,
 } from "react";
 import { loadChunkWithRetries } from "./retryable-chunk-import";
+import { markStartupReactWork } from "./diagnostic-react-hooks";
 
 export type SplitTier = "preload" | "intent";
 
@@ -94,6 +95,8 @@ export function defineSplit<P extends object>({
   }
 
   function SplitContent(props: P) {
+    if (id === "root-compose" || id === "progressive-composer")
+      markStartupReactWork(id);
     performance.mark(`p41-split-render:${id}:${loaded !== null}`);
     useLayoutEffect(() => {
       performance.mark(`p41-split-commit:${id}`);

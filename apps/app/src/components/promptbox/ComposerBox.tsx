@@ -1,4 +1,5 @@
 import { ProgressiveComposer } from "./ProgressiveComposerSplit";
+import { beginStartupComposerTrace } from "@/lib/diagnostic-react-hooks";
 import { flushPendingPromptDraftPersists } from "@/hooks/usePromptDraftStorage";
 import {
   createContext,
@@ -673,8 +674,10 @@ export function ComposerRendererHostProvider({
 }
 
 export function ComposerBox(props: ComposerBoxProps) {
-  if (props.surface === "new-thread")
+  if (props.surface === "new-thread") {
+    beginStartupComposerTrace();
     performance.mark("p41-composer-box-render");
+  }
   const replacement = useComposerReplacement();
   const bootSettled = usePluginFrontendsSettled();
   const loadFailed = usePluginFrontendLoadFailed();
