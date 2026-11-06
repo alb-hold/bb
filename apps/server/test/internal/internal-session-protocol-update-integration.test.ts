@@ -3,17 +3,6 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { upsertHost } from "@bb/db";
-import type { HostDaemonLogger } from "../../../host-daemon/src/logger.js";
-import { createProtocolSelfUpdater } from "../../../host-daemon/src/protocol-self-update.js";
-import {
-  createServerClient,
-  type FetchFn,
-} from "../../../host-daemon/src/server-client.js";
-import { ServerConnection } from "../../../host-daemon/src/server-connection.js";
-import type {
-  CreateReconnectingWebSocket,
-  ReconnectingWebSocketLike,
-} from "../../../host-daemon/src/server-connection-support.js";
 import { HOST_DAEMON_PROTOCOL_VERSION } from "@bb/host-daemon-contract";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -23,25 +12,52 @@ import {
 
 const dataDirs: string[] = [];
 
+interface TestServerClient {
+  openSession(args: Record<string, unknown>): Promise<{ sessionId: string }>;
+}
+
+interface TestProtocolSelfUpdater {
+  handleProtocolMismatch(options?: { force?: boolean }): Promise<string>;
+}
+
+interface TestConnection {
+  start(): Promise<{ sessionId: string }>;
+  shutdown(): Promise<void>;
+}
+
+type TestFetchFn = (...args: Parameters<typeof fetch>) => ReturnType<typeof fetch>;
+
+interface TestSocket {
+  readonly bufferedAmount: number;
+  readonly readyState: number;
+  onopen: ((event: unknown) => void) | null;
+  onmessage: ((event: unknown) => void) | null;
+  onclose: ((event: unknown) => void) | null;
+  onerror: ((event: unknown) => void) | null;
+  send(data: string): void;
+  close(code?: number, reason?: string): void;
+  reconnect(code?: number, reason?: string): void;
+}
+
 function createLogger() {
   return {
     debug: vi.fn(),
     error: vi.fn(),
     info: vi.fn(),
     warn: vi.fn(),
-  } satisfies HostDaemonLogger;
+  };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function createReconnectSocket(): CreateReconnectingWebSocket {
-  return (urlProvider) => {
+function createReconnectSocket() {
+  return (urlProvider: () => Promise<string>): TestSocket => {
     let readyState = 0;
     let closed = false;
     let attempts = 0;
-    const socket: ReconnectingWebSocketLike = {
+    const socket: TestSocket = {
       get bufferedAmount() {
         return 0;
       },
@@ -87,6 +103,15 @@ afterEach(async () => {
 
 describe("integrated daemon protocol update", () => {
   it("updates a 260 daemon from the mismatch response, then reconnects and opens a 261 session", async () => {
+    const clientModule = await vi.importActual<{
+      createServerClient(options: Record<string, unknown>): TestServerClient;
+    }>("../../../host-daemon/src/server-client.js");
+    const updaterModule = await vi.importActual<{
+      createProtocolSelfUpdater(options: Record<string, unknown>): TestProtocolSelfUpdater;
+    }>("../../../host-daemon/src/protocol-self-update.js");
+    const connectionModule = await vi.importActual<{
+      ServerConnection: new (options: Record<string, unknown>) => TestConnection;
+    }>("../../../host-daemon/src/server-connection.js");
     const server = await startTestServer();
     const hostId = "host-protocol-update-integration";
     const hostKey = createTestDaemonHostKey({ hostId });
@@ -99,11 +124,11 @@ describe("integrated daemon protocol update", () => {
     const installed: string[] = [];
     const tarball = Buffer.from("test-host-package");
     const digest = createHash("sha256").update(tarball).digest("hex");
-    const updater = createProtocolSelfUpdater({
+    const updater = updaterModule.createProtocolSelfUpdater({
       currentProtocolVersion: 260,
       dataDir,
       enabled: true,
-      fetchFn: async (input) => {
+      fetchFn: async (input: RequestInfo | URL) => {
         if (String(input).endsWith("/install/version")) {
           return Response.json({ version: "9.0.0-test", protocolVersion: 261 });
         }
@@ -115,7 +140,7 @@ describe("integrated daemon protocol update", () => {
           },
         });
       },
-      installTarball: async (tarballPath) => {
+      installTarball: async (tarballPath: string) => {
         installed.push(tarballPath);
       },
       logger,
@@ -127,7 +152,7 @@ describe("integrated daemon protocol update", () => {
     let sessionId = "";
     let mismatchResponse: Record<string, unknown> | null = null;
     const openedProtocols: number[] = [];
-    const fetchFn: FetchFn = async (input, init) => {
+    const fetchFn: TestFetchFn = async (input, init) => {
       const inputUrl = input instanceof URL ? input.href : String(input);
       if (!inputUrl.endsWith("/internal/session/open")) return fetch(input, init);
       const parsed: unknown = JSON.parse(String(init?.body));
@@ -145,7 +170,7 @@ describe("integrated daemon protocol update", () => {
       }
       return response;
     };
-    const serverClient = createServerClient({
+    const serverClient = clientModule.createServerClient({
       getSessionId: () => sessionId,
       hostKey,
       logger,
@@ -153,7 +178,7 @@ describe("integrated daemon protocol update", () => {
       fetchFn,
     });
     let installedCallbackCount = 0;
-    const connection = new ServerConnection({
+    const connection = new connectionModule.ServerConnection({
       createWebSocket: createReconnectSocket(),
       dataDir,
       hostId,
@@ -168,7 +193,7 @@ describe("integrated daemon protocol update", () => {
       protocolSelfUpdater: updater,
       serverClient,
       serverUrl: server.baseUrl,
-      setSession: (session) => {
+      setSession: (session: { sessionId: string } | null) => {
         sessionId = session?.sessionId ?? "";
       },
       startupTimeoutMs: 5_000,
