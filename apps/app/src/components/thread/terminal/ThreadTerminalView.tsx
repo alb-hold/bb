@@ -1,3 +1,8 @@
+import {
+  createPrefetchedTerminalSocket,
+  prefetchTerminalSocket,
+  discardPrefetchedTerminalSocket,
+} from "./terminal-socket-prefetch";
 import { mountTerminalScreenLoadingPreview } from "./terminal-screen-loading-preview";
 import { trackTerminalScrollability } from "./terminal-scrollbar";
 import { fetchTerminalScreen } from "./terminal-screen-prefetch";
@@ -1690,6 +1695,13 @@ export function ThreadTerminalView({
     const activeElementAtMount = document.activeElement;
     container.style.containerType = "inline-size";
 
+    const earlySocketUrl = buildTerminalWebSocketUrl({
+      handoffOwnerToken:
+        wsManager.getDeviceHandoffClientToken() ?? handoffOwnerToken,
+      terminalId: session.id,
+    });
+    if (sessionStatusRef.current === "running")
+      prefetchTerminalSocket(earlySocketUrl);
     let disposed = false;
     let transport: TerminalWebSocketTransport | null = null;
     let terminal: XTermTerminal | null = null;
@@ -1826,9 +1838,8 @@ export function ThreadTerminalView({
     let terminalInputClaimed = false;
     let detachPointerCoordinates: (() => void) | null = null;
     let detachGridVisibilityListeners: (() => void) | null = null;
-    let replayPreview: ReturnType<
-      typeof mountTerminalReplayPreview
-    > | null = null;
+    let replayPreview: ReturnType<typeof mountTerminalReplayPreview> | null =
+      null;
     const flushPendingExitNotices = () => {
       if (terminal === null || pendingExitNotices.length === 0) return;
       for (const text of pendingExitNotices.splice(0)) {
@@ -2629,6 +2640,7 @@ export function ThreadTerminalView({
         outputLineAnchorTracker.reset();
       };
       const activeTransport = new TerminalWebSocketTransport({
+        createSocket: createPrefetchedTerminalSocket,
         terminalId: session.id,
         now: () => performance.now(),
         onInputAccepted: recordTerminalInputAccepted,
@@ -2841,6 +2853,9 @@ export function ThreadTerminalView({
             },
             onReplayComplete: () => {
               replayCompleted = true;
+              performance.mark("terminal-replay-parsed", {
+                detail: { terminalId: session.id },
+              });
               setRestoringSession(false);
               keepScreenLoadingPreview = false;
               clearScreenLoadingPreview();
@@ -3267,6 +3282,7 @@ export function ThreadTerminalView({
     }
 
     void mountTerminal(container).catch((error) => {
+      discardPrefetchedTerminalSocket(earlySocketUrl);
       clearScreenLoadingPreview();
       if (!disposed) {
         setRestoringSession(false);
@@ -3335,6 +3351,7 @@ export function ThreadTerminalView({
         reportDocumentVisibility,
       );
       transport?.dispose();
+      discardPrefetchedTerminalSocket(earlySocketUrl);
       webglVisibilityRef.current?.dispose();
       webglVisibilityRef.current = null;
       webglRenderer?.dispose();

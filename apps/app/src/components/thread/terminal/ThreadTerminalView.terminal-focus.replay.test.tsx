@@ -1173,7 +1173,8 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
         ).toBe("early snapshot"),
       "snapshot remained hidden behind module loading",
     );
-    expect(testState.sockets).toHaveLength(0);
+    expect(testState.sockets).toHaveLength(1);
+    expect(testState.sockets[0]!.sent).toEqual([]);
     cleanup();
     expect(
       document.querySelector("[data-terminal-screen-loading-preview]"),
@@ -1225,7 +1226,8 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
             ?.textContent,
         ).toBe("snapshot text"),
       );
-      expect(testState.sockets).toHaveLength(0);
+      expect(testState.sockets).toHaveLength(1);
+      expect(testState.sockets[0]!.sent).toEqual([]);
       expect(pageText()).toContain("Restoring session…");
       expect(pageText()).not.toContain("Fit to this screen");
       const previewFontSize = document.querySelector<HTMLElement>(
@@ -1236,13 +1238,22 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
       )!;
       const removeSnapshot = vi.spyOn(snapshotElement, "remove");
       finishModules();
-      await waitFor(() => expect(testState.sockets).toHaveLength(1), {
-        timeout: 20_000,
-      });
+      await waitFor(
+        () => expect(document.querySelector(".xterm")).not.toBeNull(),
+        {
+          timeout: 20_000,
+        },
+      );
       expect(
         document.querySelector("[data-terminal-screen-loading-preview]")
           ?.textContent,
       ).toBe("snapshot text");
+      if (snapshotCols === 40)
+        await waitFor(() =>
+          expect(
+            document.querySelector("[data-terminal-replay-preview]"),
+          ).not.toBeNull(),
+        );
       const preview = document.querySelector<HTMLElement>(
         "[data-terminal-replay-preview]",
       );
@@ -1276,7 +1287,9 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
       expect(pageText()).toContain("Restoring session…");
       expect(pageText()).not.toContain("Fit to this screen");
       expect(
-        document.querySelector("[data-terminal-restoring]")?.getAttribute("role"),
+        document
+          .querySelector("[data-terminal-restoring]")
+          ?.getAttribute("role"),
       ).toBe("status");
       expect(snapshotElement.isConnected).toBe(true);
       expect(snapshotElement.style.whiteSpace).toBe("pre");
@@ -1354,7 +1367,9 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
       ).toBeNull(),
     );
     expect(document.body.textContent).toContain("renderer unavailable");
-    expect(testState.sockets).toHaveLength(0);
+    expect(testState.sockets[0]!.readyState).toBe(TestTerminalSocket.CLOSED);
+    expect(testState.sockets).toHaveLength(1);
+    expect(testState.sockets[0]!.sent).toEqual([]);
   });
 
   async function mountReplayWithUnusableSnapshot() {
