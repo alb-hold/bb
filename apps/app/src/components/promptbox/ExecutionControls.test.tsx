@@ -15,6 +15,7 @@ import {
 } from "./ExecutionControls";
 import { ModelReasoningMenu } from "@/components/pickers/ModelReasoningMenuSplit";
 import { Icon } from "@bb/shared-ui/icon";
+import { readFileSync } from "node:fs";
 import { CompactViewportOverrideProvider } from "@bb/shared-ui/hooks/use-compact-viewport";
 
 function makeExecutionControlsProps(
@@ -61,6 +62,72 @@ afterEach(() => {
 });
 
 describe("ExecutionControls", () => {
+  it.each([320, 360, 390])("keeps Terminal and Chat labels visible at %i px", (width) => {
+    const css = readFileSync("src/app.css", "utf8");
+    const style = document.createElement("style");
+    const media = /@media \(width <= (\d+)px\) \{/g;
+    for (const match of css.matchAll(media)) {
+      if (width > Number(match[1])) continue;
+      const start = match.index! + match[0].length;
+      let end = start;
+      let depth = 1;
+      while (depth > 0 && end < css.length) {
+        if (css[end] === "{") depth++;
+        if (css[end] === "}") depth--;
+        end++;
+      }
+      style.textContent += css.slice(start, end - 1);
+    }
+    document.head.append(style);
+    try {
+      renderExecutionControls({ ...makeExecutionControlsProps(), nativeTerminal: { enabled: true, onChange: vi.fn() } });
+      for (const label of ["Terminal", "Chat"]) {
+        const button = screen.getByRole("radio", { name: label });
+        const text = within(button).getByText(label);
+        expect(getComputedStyle(text).display).not.toBe("none");
+        expect(getComputedStyle(text).visibility).not.toBe("hidden");
+      }
+    } finally {
+      style.remove();
+    }
+  });
+
+  it("paints the loading model at 390px and resolves without remounting across phone widths", () => {
+    const props = makeExecutionControlsProps();
+    const { wrapper } = createQueryClientTestHarness();
+    const css = readFileSync("src/app.css", "utf8");
+    const style = document.createElement("style");
+    style.textContent = '[data-model-reasoning-trigger] > span { visibility: hidden; }' +
+      css.slice(css.lastIndexOf("@media (width <= 480px) {")).replace("@media (width <= 480px) {", "").replace(/}\s*$/, "");
+    document.head.append(style);
+    const content = (width: number, loading: boolean) => (
+      <CompactViewportOverrideProvider isCompactViewport>
+        <div style={{ width }}>
+          <ExecutionControls
+            {...props}
+            provider={{ ...props.provider, options: [{ value: "codex", label: "Codex", icon: () => <Icon name="Terminal" /> }] }}
+            model={loading ? { ...props.model, selected: "", options: [], isLoading: true } : props.model}
+            nativeTerminal={{ enabled: true, onChange: vi.fn() }}
+          />
+        </div>
+      </CompactViewportOverrideProvider>
+    );
+    try {
+      const { rerender } = render(content(390, true), { wrapper });
+      const trigger = screen.getByRole("button", { name: "Provider, model and reasoning" });
+      expect(trigger.textContent).toBe("Model");
+      expect(getComputedStyle(trigger.querySelector(":scope > span")!).visibility).toBe("visible");
+      expect(trigger.querySelectorAll("[data-icon-root]")).toHaveLength(2);
+      rerender(content(360, true));
+      expect(screen.getByRole("button", { name: "Provider, model and reasoning" })).toBe(trigger);
+      rerender(content(390, false));
+      expect(screen.getByRole("button", { name: "Provider, model and reasoning" })).toBe(trigger);
+      expect(trigger.textContent).toContain("GPT-5");
+    } finally {
+      style.remove();
+    }
+  });
+
   it("keeps the unresolved model glyph and chevron in a 360px compact composer", () => {
     const props = makeExecutionControlsProps();
     const { wrapper } = createQueryClientTestHarness();

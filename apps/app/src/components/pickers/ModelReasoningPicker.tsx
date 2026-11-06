@@ -942,6 +942,7 @@ export function ModelReasoningPicker({
     <Button
       ref={triggerRef}
       data-model-reasoning-trigger=""
+      data-model-loading={showLoadingTrigger ? "" : undefined}
       type="button"
       variant="ghost"
       size="sm"
@@ -979,6 +980,7 @@ export function ModelReasoningPicker({
         {showCompactIconOnly ? null : (
           <>
             <span
+              data-model-name=""
               className={cn(
                 "min-w-0 truncate",
                 triggerModelValueIsDestructive && "text-destructive-text",
@@ -987,7 +989,7 @@ export function ModelReasoningPicker({
               {triggerModelBase}
             </span>
             {triggerModelTag ? (
-              <span className="shrink-0 text-subtle-foreground">
+              <span data-model-tag="" className="shrink-0 text-subtle-foreground">
                 {triggerModelTag}
               </span>
             ) : null}
