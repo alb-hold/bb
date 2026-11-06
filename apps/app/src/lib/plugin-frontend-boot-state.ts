@@ -10,7 +10,6 @@ let loadFailed = false;
 const listeners = new Set<() => void>();
 
 function notify(): void {
-  performance.mark("p41-plugin-boot-change");
   for (const listener of listeners) listener();
 }
 

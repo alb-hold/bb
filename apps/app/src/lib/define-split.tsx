@@ -7,13 +7,11 @@ import {
   Component,
   lazy,
   Suspense,
-  useLayoutEffect,
   useState,
   type ComponentType,
   type ReactNode,
 } from "react";
 import { loadChunkWithRetries } from "./retryable-chunk-import";
-import { markStartupReactWork } from "./diagnostic-react-hooks";
 
 export type SplitTier = "preload" | "intent";
 
@@ -79,28 +77,14 @@ export function defineSplit<P extends object>({
       });
     return pending;
   };
-  const renderModule = () => {
-    performance.mark(`p41-split-read:${id}:${loaded !== null}`);
-    return trackCriticalLoad(loadModule());
-  };
+  const renderModule = () => trackCriticalLoad(loadModule());
   const warm = async () => {
     await loadModule().catch(() => undefined);
   };
   const onIntent = () => warm().catch(() => undefined);
   if (tier === "preload") queueSplitPreload(warm);
 
-  function DiagnosticLoading(props: P) {
-    performance.mark(`p41-split-fallback:${id}`);
-    return <Loading {...props} />;
-  }
-
   function SplitContent(props: P) {
-    if (id === "root-compose" || id === "progressive-composer")
-      markStartupReactWork(id);
-    performance.mark(`p41-split-render:${id}:${loaded !== null}`);
-    useLayoutEffect(() => {
-      performance.mark(`p41-split-commit:${id}`);
-    }, []);
     const [attempt, setAttempt] = useState(() => ({
       number: 0,
       View: loaded ?? lazy(renderModule),
@@ -117,7 +101,7 @@ export function defineSplit<P extends object>({
         key={attempt.number}
         fallback={<ErrorView {...props} retry={retry} />}
       >
-        <Suspense fallback={<DiagnosticLoading {...props} />}>
+        <Suspense fallback={<Loading {...props} />}>
           <View {...props} />
         </Suspense>
       </SplitErrorBoundary>

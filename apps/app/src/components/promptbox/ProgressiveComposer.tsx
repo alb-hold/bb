@@ -1,4 +1,3 @@
-import { finishStartupComposerTrace } from "@/lib/diagnostic-react-hooks";
 import { createPortal } from "react-dom";
 import {
   useCallback,
@@ -111,11 +110,6 @@ export function ProgressiveComposer({
     controls: ReactNode,
   ) => ReactNode;
 }) {
-  performance.mark("p41-plain-render");
-  useLayoutEffect(() => {
-    performance.mark("p41-plain-input-commit");
-    finishStartupComposerTrace();
-  }, []);
   const [rich, setRich] = useState(false);
   const [controlsNode] = useState(() => {
     const node = document.createElement("div");

@@ -1,5 +1,4 @@
 import { ProgressiveComposer } from "./ProgressiveComposerSplit";
-import { beginStartupComposerTrace } from "@/lib/diagnostic-react-hooks";
 import { flushPendingPromptDraftPersists } from "@/hooks/usePromptDraftStorage";
 import {
   createContext,
@@ -649,13 +648,8 @@ export function ComposerRendererHostProvider({
   children,
   ...props
 }: ComposerBoxProps & { children: ReactNode }) {
-  performance.mark("p41-composer-host-render");
   const { api, boxHost, rootHost, contributions, typeahead } =
     useComposerRendererHostApi(props);
-  performance.mark("p41-composer-host-hooks-complete");
-  useLayoutEffect(() => {
-    performance.mark("p41-composer-host-commit");
-  }, []);
   return (
     <ComposerRendererContext.Provider value={api}>
       <ComposerRootHostContext.Provider value={rootHost}>
@@ -674,10 +668,6 @@ export function ComposerRendererHostProvider({
 }
 
 export function ComposerBox(props: ComposerBoxProps) {
-  if (props.surface === "new-thread") {
-    beginStartupComposerTrace();
-    performance.mark("p41-composer-box-render");
-  }
   const replacement = useComposerReplacement();
   const bootSettled = usePluginFrontendsSettled();
   const loadFailed = usePluginFrontendLoadFailed();

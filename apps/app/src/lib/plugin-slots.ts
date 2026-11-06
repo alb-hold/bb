@@ -140,7 +140,8 @@ export interface PluginThreadContextSegmentSlot
 export interface PluginThreadInfoRowSlot
   extends ExperimentalThreadInfoRowRegistration, PluginSlotBase {}
 export interface PluginThreadRowMetadataSlot
-  extends ExperimentalThreadRowMetadataRegistration<unknown>, PluginSlotBase {}
+  extends ExperimentalThreadRowMetadataRegistration<unknown>,
+    PluginSlotBase {}
 export interface PluginThreadInfoSectionSlot
   extends ExperimentalThreadInfoSectionRegistration, PluginSlotBase {}
 export interface PluginThreadContextCardRowSlot
@@ -541,7 +542,6 @@ function flushChange(): void {
 }
 
 function emitChange(): void {
-  performance.mark("p41-plugin-slots-change");
   snapshotStale = true;
   if (openBatchDepth === 0) {
     flushChange();

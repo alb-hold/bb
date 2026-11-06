@@ -1,8 +1,4 @@
 import { StrictMode } from "react";
-import {
-  traceStartupReactUpdates,
-  traceStartupRoot,
-} from "./lib/diagnostic-react-hooks";
 import { createRoot } from "react-dom/client";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter } from "react-router-dom";
@@ -24,15 +20,11 @@ import { moveStylesheetPropertiesToRegistry } from "./lib/stylesheet-property-re
 import "./app.css";
 
 performance.mark("app-boot-started");
-traceStartupReactUpdates();
-appQueryClient.getQueryCache().subscribe((event) => {
-  performance.mark(`p41-query:${event.type}:${event.query.queryHash}`);
-});
 
 installStaleChunkRecovery();
 installForeignDomMutationGuard();
 
-Error.stackTraceLimit = 80;
+Error.stackTraceLimit = 50;
 
 installAppQueryClientBrowserEvents(appQueryClient);
 registerProviderCliInstallQueryClient(appQueryClient);
@@ -46,8 +38,7 @@ if (typeof CSS.registerProperty === "function") {
   moveStylesheetPropertiesToRegistry(document.styleSheets, CSS);
 }
 
-const container = document.getElementById("root")!;
-const root = createRoot(container, {
+createRoot(document.getElementById("root")!, {
   onUncaughtError: (error, errorInfo) => {
     console.error(
       "[bb] uncaught render error — the app root was torn down",
@@ -55,9 +46,7 @@ const root = createRoot(container, {
       errorInfo.componentStack,
     );
   },
-});
-traceStartupRoot(root, container);
-root.render(
+}).render(
   <StrictMode>
     <AppErrorBoundary>
       <QueryClientProvider client={appQueryClient}>
