@@ -1096,6 +1096,7 @@ describe("real worktree teardown preservation", () => {
           if (path.basename(entry) !== "original-link") return;
           quarantinedLink = quarantined;
           await writeFile(path.join(root, "late-after-link-check"), "late\n");
+          throw new Error("force quarantine restore");
         },
         beforeQuarantineRestoreLink: async (source, destination) => {
           if (
