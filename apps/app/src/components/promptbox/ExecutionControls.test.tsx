@@ -92,6 +92,42 @@ describe("ExecutionControls", () => {
     }
   });
 
+  it("paints the loading model at 390px and resolves without remounting across phone widths", () => {
+    const props = makeExecutionControlsProps();
+    const { wrapper } = createQueryClientTestHarness();
+    const css = readFileSync("src/app.css", "utf8");
+    const style = document.createElement("style");
+    style.textContent = '[data-model-reasoning-trigger] > span { visibility: hidden; }' +
+      css.slice(css.lastIndexOf("@media (width <= 480px) {")).replace("@media (width <= 480px) {", "").replace(/}\s*$/, "");
+    document.head.append(style);
+    const content = (width: number, loading: boolean) => (
+      <CompactViewportOverrideProvider isCompactViewport>
+        <div style={{ width }}>
+          <ExecutionControls
+            {...props}
+            provider={{ ...props.provider, options: [{ value: "codex", label: "Codex", icon: () => <Icon name="Terminal" /> }] }}
+            model={loading ? { ...props.model, selected: "", options: [], isLoading: true } : props.model}
+            nativeTerminal={{ enabled: true, onChange: vi.fn() }}
+          />
+        </div>
+      </CompactViewportOverrideProvider>
+    );
+    try {
+      const { rerender } = render(content(390, true), { wrapper });
+      const trigger = screen.getByRole("button", { name: "Provider, model and reasoning" });
+      expect(trigger.textContent).toBe("Model");
+      expect(getComputedStyle(trigger.querySelector(":scope > span")!).visibility).toBe("visible");
+      expect(trigger.querySelectorAll("[data-icon-root]")).toHaveLength(2);
+      rerender(content(360, true));
+      expect(screen.getByRole("button", { name: "Provider, model and reasoning" })).toBe(trigger);
+      rerender(content(390, false));
+      expect(screen.getByRole("button", { name: "Provider, model and reasoning" })).toBe(trigger);
+      expect(trigger.textContent).toContain("GPT-5");
+    } finally {
+      style.remove();
+    }
+  });
+
   it("keeps the unresolved model glyph and chevron in a 360px compact composer", () => {
     const props = makeExecutionControlsProps();
     const { wrapper } = createQueryClientTestHarness();

@@ -942,6 +942,7 @@ export function ModelReasoningPicker({
     <Button
       ref={triggerRef}
       data-model-reasoning-trigger=""
+      data-model-loading={showLoadingTrigger ? "" : undefined}
       type="button"
       variant="ghost"
       size="sm"

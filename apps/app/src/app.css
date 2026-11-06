@@ -1006,6 +1006,10 @@
     min-width: 7ch;
   }
 
+  [data-model-reasoning-trigger][data-model-loading] > span {
+    visibility: visible;
+  }
+
   [data-execution-controls-layout="stacked"] [data-model-tag],
   [data-execution-controls-layout="stacked"] [data-promptbox-hide-compact] {
     display: none;

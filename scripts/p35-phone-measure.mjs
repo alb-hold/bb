@@ -24,11 +24,29 @@ try {
         if (message.type === 'resize') resizes.push({ at: Date.now(), url: socket.url(), ...message });
       } catch {}
     }));
+    const navigationStarted = Date.now();
     await page.goto(url);
     await page.locator('[data-native-terminal-prompt], [data-native-terminal-toggle]').first().waitFor();
     for (const width of [390, 360, 320]) {
       const resizeStart = resizes.length;
       await page.setViewportSize({ width, height: 844 });
+      const resolutionStarted = Date.now();
+      let modelResolved = false;
+      let modelPresent = false;
+      do {
+        const modelState = await page.evaluate(() => {
+          const trigger = document.querySelector('[data-model-reasoning-trigger]');
+          const model = trigger?.querySelector('[data-model-name], :scope > span > span.truncate');
+          const text = model?.textContent?.trim() ?? '';
+          return { present: trigger !== null, resolved: text.length > 0 && !['Model', 'Select model', 'Loading…'].includes(text) && !trigger?.hasAttribute('data-model-loading') };
+        });
+        modelPresent = modelState.present;
+        modelResolved = modelState.resolved;
+        if (!modelPresent || modelResolved) break;
+        await new Promise(resolve => setTimeout(resolve, 100));
+      } while (Date.now() - resolutionStarted < 15_000);
+      const modelWaitMs = Date.now() - resolutionStarted;
+      const modelResolvedAfterNavigationMs = modelResolved ? Date.now() - navigationStarted : null;
       const samples = [];
       for (let index = 0; index < 12; index++) {
         await new Promise(resolve => setTimeout(resolve, 250));
@@ -66,7 +84,7 @@ try {
           };
         }));
       }
-      const result = { revision, url, width, samples, resizes: resizes.slice(resizeStart) };
+      const result = { revision, url, width, modelPresent, modelResolved, modelWaitMs, modelResolvedAfterNavigationMs, samples, resizes: resizes.slice(resizeStart) };
       results.push(result);
       await page.screenshot({ path: path.join(output, `${revision}-${width}.png`), fullPage: true });
       console.log(JSON.stringify(result));
