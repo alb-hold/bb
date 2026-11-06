@@ -560,7 +560,9 @@ async function openNativeTerminalOnce(
             now: Date.now(),
           })
         )
-          deps.hub.notifyThread(thread.id, ["terminals-changed"]);
+          deps.hub.notifyThread(thread.id, [
+            "terminals-changed",
+          ]);
       } catch (error) {
         if (!isClosedDatabaseConnectionError(error)) {
           deps.logger.warn(

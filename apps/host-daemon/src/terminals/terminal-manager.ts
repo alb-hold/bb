@@ -1,4 +1,4 @@
-import { TerminalColorQueries } from "./terminal-color-queries.js";
+import { TerminalColorQueries } from "@bb/domain";
 import {
   prepareHostPtyCommand,
   hostToolchain,
