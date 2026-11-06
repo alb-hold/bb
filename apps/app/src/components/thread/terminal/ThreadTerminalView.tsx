@@ -1713,7 +1713,6 @@ export function ThreadTerminalView({
       return;
     }
     const holdForFittedGrid =
-      retainNativeOutput ||
       container.closest("[data-native-terminal-thread]") !== null;
     setRestoringSession(sessionStatusRef.current === "running");
 
