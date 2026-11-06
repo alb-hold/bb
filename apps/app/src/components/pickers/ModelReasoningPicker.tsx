@@ -410,7 +410,10 @@ export function ModelReasoningPicker(props: ModelReasoningPickerProps) {
         className,
       )}
     >
-      <span className={OPTION_TRIGGER_CONTENT_CLASS_NAME}>
+      <span
+        className={OPTION_TRIGGER_CONTENT_CLASS_NAME}
+        title={modelSubstitutionNote ?? triggerTitle}
+      >
         {selectedServiceTierOption ? (
           <Icon
             name={selectedServiceTierOption.icon ?? "Zap"}
