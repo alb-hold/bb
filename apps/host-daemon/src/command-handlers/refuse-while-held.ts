@@ -7,7 +7,7 @@ export async function refuseWhileHeld(args: {
 }): Promise<void> {
   const scan = await scanWorktreeHolders(args.directory);
   if (scan.status === "clear") return;
-  if (scan.status === "unknown") {
+  if (scan.status === "unknown" || scan.status === "uncertain") {
     throw new CommandDispatchError(
       "path_in_use",
       `Refusing to ${args.action} ${args.directory}: whether a process is still using it could not be established (${scan.reason}). Nothing was stopped and nothing was removed.`,

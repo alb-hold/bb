@@ -16,7 +16,6 @@ import {
   hostCwdScanIo,
   useCwdScanIoForTests,
   hostProc,
-  scanWorktreeHolders,
   useProcReaderForTests,
   type ProcReader,
 } from "@bb/process-utils";
