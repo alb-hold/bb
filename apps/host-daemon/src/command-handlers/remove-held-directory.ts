@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
+import type { WorktreeHolderScan } from "@bb/process-utils";
 import { removeDirectoryTree } from "bb-environment-provider-host/remove-directory-tree";
 import { refuseWhileHeld } from "./refuse-while-held.js";
 import { CommandDispatchError } from "../command-dispatch-support.js";
@@ -11,6 +12,7 @@ export async function removeDirectoryAfterHolderRecheck(args: {
   force?: boolean;
   recursive?: boolean;
   afterHolderScan?: (quarantine: string) => Promise<void>;
+  testWorktreeHolderScan?: WorktreeHolderScan;
 }): Promise<void> {
   const previousQuarantine = await findPreviousQuarantine(args.directory);
   if (previousQuarantine !== null) {
@@ -44,7 +46,13 @@ export async function removeDirectoryAfterHolderRecheck(args: {
   }
   try {
     const rootInfo = await fs.lstat(quarantine);
-    await refuseWhileHeld({ directory: quarantine, action: args.action });
+    await refuseWhileHeld({
+      directory: quarantine,
+      action: args.action,
+      ...(args.testWorktreeHolderScan === undefined
+        ? {}
+        : { testWorktreeHolderScan: args.testWorktreeHolderScan }),
+    });
     await args.afterHolderScan?.(quarantine);
     if (args.recursive === true) {
       const removal = await removeDirectoryTree(quarantine, {

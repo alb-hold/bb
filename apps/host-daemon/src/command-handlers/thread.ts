@@ -70,6 +70,9 @@ export async function deleteThreadStorage(
     action: "delete thread storage",
     force: true,
     recursive: true,
+    ...(options.testWorktreeHolderScan === undefined
+      ? {}
+      : { testWorktreeHolderScan: options.testWorktreeHolderScan }),
   });
 }
 

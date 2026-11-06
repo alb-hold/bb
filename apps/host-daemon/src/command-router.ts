@@ -62,6 +62,7 @@ interface ReadWriteLaneIdleArgs {
 type CommandRouterTask = Promise<HostDaemonCommandResultForCommand>;
 
 export interface CommandRouterOptions {
+  testWorktreeHolderScan?: CommandDispatchOptions["testWorktreeHolderScan"];
   emitEnvironmentHookProgress?: CommandDispatchOptions["emitEnvironmentHookProgress"];
   desktopBrowserBroker?: CommandDispatchOptions["desktopBrowserBroker"];
   terminalDataSocket?: CommandDispatchOptions["terminalDataSocket"];
@@ -303,6 +304,7 @@ export class CommandRouter {
 
   private createDispatchOptions(): CommandDispatchOptions {
     return {
+      testWorktreeHolderScan: this.options.testWorktreeHolderScan,
       fetchProjectAttachment: this.options.fetchProjectAttachment,
       skillTreeTransport: this.options.skillTreeTransport,
       fetchPluginHostArtifact: this.options.fetchPluginHostArtifact,

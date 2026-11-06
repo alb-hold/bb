@@ -57,6 +57,7 @@ import { HostSharedPortCoordinator } from "../../../apps/server/src/ws/host-shar
 import { NotificationHub } from "../../../apps/server/src/ws/hub.js";
 import { WatchInterestCoordinator } from "../../../apps/server/src/ws/watch-interests.js";
 import { createPublicApiClient } from "@bb/server-contract";
+import type { WorktreeHolderScan } from "@bb/process-utils";
 import { resolveProjectEnvCandidates } from "@bb/test-helpers";
 import { waitForHostConnected } from "./assertions.js";
 import { createIntegrationFetch } from "./fetch.js";
@@ -123,6 +124,7 @@ interface CreateHarnessOptions {
   bindHost?: "127.0.0.1" | "0.0.0.0";
   staticDir?: string;
   builtinPlugins?: readonly string[];
+  testWorktreeHolderScan?: WorktreeHolderScan;
 }
 
 export type WithHarnessCallback<T> = (
@@ -380,6 +382,7 @@ async function startIntegrationServer(
 async function startHarnessDaemon(
   dataDir: string,
   server: RunningTestServer,
+  testWorktreeHolderScan?: WorktreeHolderScan,
 ): Promise<HarnessDaemonResources> {
   const releaseLock = await acquireDaemonLock(dataDir);
 
@@ -391,6 +394,9 @@ async function startHarnessDaemon(
     await persistHostId({ dataDir, hostId: identity.hostId });
     const daemonApp = await createHostDaemonApp({
       dataDir,
+      ...(testWorktreeHolderScan === undefined
+        ? {}
+        : { testWorktreeHolderScan }),
       hostKey,
       hostId: identity.hostId,
       hostName: identity.hostName,
@@ -468,7 +474,11 @@ export async function createIntegrationHarness(
       return;
     }
 
-    daemonResources = await startHarnessDaemon(daemonDataDir, server);
+    daemonResources = await startHarnessDaemon(
+      daemonDataDir,
+      server,
+      options.testWorktreeHolderScan,
+    );
     if (daemonResources.hostId !== harness.hostId) {
       const mismatchedResources = daemonResources;
       daemonResources = null;
@@ -538,7 +548,11 @@ export async function createIntegrationHarness(
     const api = createPublicApiClient(server.baseUrl, {
       fetch: createIntegrationFetch(),
     });
-    daemonResources = await startHarnessDaemon(daemonDataDir, server);
+    daemonResources = await startHarnessDaemon(
+      daemonDataDir,
+      server,
+      options.testWorktreeHolderScan,
+    );
     await waitForHostConnected(api);
     await persistHostId({
       dataDir: server.config.dataDir,

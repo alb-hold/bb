@@ -1,5 +1,6 @@
 import path from "node:path";
 import { HOST_DAEMON_RESTART_EXIT_CODE } from "@bb/config/machine-service";
+import type { WorktreeHolderScan } from "@bb/process-utils";
 import { startDesktopBrowserBroker } from "./desktop-browser-broker.js";
 import { MachineEnvironment } from "./machine-environment.js";
 import { CommandRouter } from "./command-router.js";
@@ -108,6 +109,7 @@ interface StartIdleProviderSessionReaperArgs {
 }
 
 interface CreateHostDaemonAppOptions {
+  testWorktreeHolderScan?: WorktreeHolderScan;
   dataDir: string;
   serverUrl: string;
   hostKey: string;
@@ -802,6 +804,7 @@ export async function createHostDaemonApp(
   });
   const pluginHostManager = new PluginHostManager({
     dataDir: options.dataDir,
+    testWorktreeHolderScan: options.testWorktreeHolderScan,
     hostWatcher: options.hostWatcher,
     logger: options.logger,
     shellEnv: () => runtimeManager.getShellEnv(),
@@ -858,6 +861,7 @@ export async function createHostDaemonApp(
   });
 
   const router = new CommandRouter({
+    testWorktreeHolderScan: options.testWorktreeHolderScan,
     emitEnvironmentHookProgress: (message) => sendServerMessage(message),
     desktopBrowserBroker,
     terminalDataSocket,

@@ -1,11 +1,16 @@
-import { scanWorktreeHolders } from "@bb/process-utils";
+import {
+  scanWorktreeHolders,
+  type WorktreeHolderScan,
+} from "@bb/process-utils";
 import { CommandDispatchError } from "../command-dispatch-support.js";
 
 export async function refuseWhileHeld(args: {
   directory: string;
   action: string;
+  testWorktreeHolderScan?: WorktreeHolderScan;
 }): Promise<void> {
-  const scan = await scanWorktreeHolders(args.directory);
+  const scan =
+    args.testWorktreeHolderScan ?? (await scanWorktreeHolders(args.directory));
   if (scan.status === "clear") return;
   if (scan.status === "unknown" || scan.status === "uncertain") {
     throw new CommandDispatchError(

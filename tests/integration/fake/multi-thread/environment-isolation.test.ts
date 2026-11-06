@@ -1,5 +1,5 @@
 import { eq } from "drizzle-orm";
-import { environments } from "@bb/db";
+import { environments, threads } from "@bb/db";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -41,10 +41,13 @@ const REBUILD_TEST_TIMEOUT_MS = scaleTimeoutMs(120_000);
 
 describe.sequential("fake provider environment-isolation multi-thread integration", () => {
   it(
-    "refuses sends to destroyed worktrees and reports holder-retained worktrees",
+    "refuses sends to a destroyed worktree until the thread restores it",
     () =>
       withHarness(
-        { builtinPlugins: ["environment-git-worktree"] },
+        {
+          builtinPlugins: ["environment-git-worktree"],
+          testWorktreeHolderScan: { status: "clear" },
+        },
         async (harness) => {
           const project = await createProjectFixture(harness, {
             name: "Rebuild Managed Worktree",
@@ -93,46 +96,24 @@ describe.sequential("fake provider environment-isolation multi-thread integratio
             .poll(
               async () => {
                 await harness.server.sweepEnvironments();
-                return (await getEnvironment(
-                  harness.api,
-                  worktreeThread.environment.id,
-                )).lifecycle.teardown?.status;
+                return (
+                  await getEnvironment(
+                    harness.api,
+                    worktreeThread.environment.id,
+                  )
+                ).lifecycle.teardown?.status;
               },
               { timeout: REBUILD_TIMEOUT_MS },
             )
-            .toMatch(/^(removed|failed)$/);
-          const teardown = (
-            await getEnvironment(harness.api, worktreeThread.environment.id)
-          ).lifecycle.teardown;
-          if (teardown?.status === "failed") {
-            expect(teardown.message).toMatch(
-              /foreign-user processes could not be inspected/i,
-            );
-            await fs.access(originalWorkspacePath);
-          } else {
-            expect(teardown?.status).toBe("removed");
-            await waitForPathRemoval(originalWorkspacePath, DEFAULT_TIMEOUT_MS);
-          }
+            .toBe("removed");
+          await waitForPathRemoval(originalWorkspacePath, DEFAULT_TIMEOUT_MS);
           await deleteThread(harness.api, unrelatedThread.thread.id);
-          if (teardown?.status === "removed")
-            await waitForEnvironmentStatus(
-              harness.api,
-              worktreeThread.environment.id,
-              "destroyed",
-              DEFAULT_TIMEOUT_MS,
-            );
-
-          if (teardown?.status === "failed") {
-            const refused = await harness.api.threads[":id"].send.$post({
-              param: { id: worktreeThread.thread.id },
-              json: {
-                input: [{ type: "text", text: "too early", mentions: [] }],
-                mode: "auto",
-              },
-            });
-            expect(refused.status).toBe(409);
-            return;
-          }
+          await waitForEnvironmentStatus(
+            harness.api,
+            worktreeThread.environment.id,
+            "destroyed",
+            DEFAULT_TIMEOUT_MS,
+          );
 
           await unarchiveThread(harness.api, worktreeThread.thread.id);
           const refused = await harness.api.threads[":id"].send.$post({
@@ -182,6 +163,107 @@ describe.sequential("fake provider environment-isolation multi-thread integratio
           expect(
             await getThreadOutput(harness.api, worktreeThread.thread.id),
           ).toContain("rebuild after archive");
+        },
+      ),
+    REBUILD_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "schedules retirement and retains worktree data when holder inspection is uncertain",
+    () =>
+      withHarness(
+        {
+          builtinPlugins: ["environment-git-worktree"],
+          testWorktreeHolderScan: {
+            status: "uncertain",
+            reason:
+              "foreign-user processes could not be inspected (pid 1120 uid 100069)",
+          },
+        },
+        async (harness) => {
+          const project = await createProjectFixture(harness, {
+            name: "Retained Managed Worktree",
+          });
+          const worktreeThread = await createReadyHostThread(harness, {
+            projectId: project.id,
+            timeoutMs: DEFAULT_TIMEOUT_MS,
+            workspace: { type: "managed-worktree" },
+          });
+          const siblingThread = await createReadyReuseThread(harness, {
+            environmentId: worktreeThread.environment.id,
+            projectId: project.id,
+            timeoutMs: DEFAULT_TIMEOUT_MS,
+          });
+          const worktreePath = worktreeThread.environment.path;
+          if (!worktreePath) {
+            throw new Error("Managed worktree path was not assigned");
+          }
+
+          await archiveThread(harness.api, worktreeThread.thread.id);
+          await deleteThread(harness.api, siblingThread.thread.id);
+          expect(
+            harness.db
+              .select({ archivedAt: threads.archivedAt })
+              .from(threads)
+              .where(eq(threads.id, worktreeThread.thread.id))
+              .get()?.archivedAt,
+          ).toEqual(expect.any(Number));
+          expect(
+            harness.db
+              .select({ deletedAt: threads.deletedAt })
+              .from(threads)
+              .where(eq(threads.id, siblingThread.thread.id))
+              .get()?.deletedAt,
+          ).toEqual(expect.any(Number));
+          await expect
+            .poll(
+              async () =>
+                (
+                  await getEnvironment(
+                    harness.api,
+                    worktreeThread.environment.id,
+                  )
+                ).lifecycle.phase,
+              { timeout: DEFAULT_TIMEOUT_MS },
+            )
+            .toBe("retiring");
+          await fs.access(worktreePath);
+
+          harness.db
+            .update(environments)
+            .set({ retireAt: Date.now() - 1 })
+            .where(eq(environments.id, worktreeThread.environment.id))
+            .run();
+          await expect
+            .poll(
+              async () => {
+                await harness.server.sweepEnvironments();
+                return (
+                  await getEnvironment(
+                    harness.api,
+                    worktreeThread.environment.id,
+                  )
+                ).lifecycle.teardown?.status;
+              },
+              { timeout: REBUILD_TIMEOUT_MS },
+            )
+            .toBe("failed");
+          const teardown = (
+            await getEnvironment(harness.api, worktreeThread.environment.id)
+          ).lifecycle.teardown;
+          expect(teardown?.message).toContain(
+            "foreign-user processes could not be inspected (pid 1120 uid 100069)",
+          );
+          await fs.access(worktreePath);
+
+          const refused = await harness.api.threads[":id"].send.$post({
+            param: { id: worktreeThread.thread.id },
+            json: {
+              input: [{ type: "text", text: "too early", mentions: [] }],
+              mode: "auto",
+            },
+          });
+          expect(refused.status).toBe(409);
         },
       ),
     REBUILD_TEST_TIMEOUT_MS,
