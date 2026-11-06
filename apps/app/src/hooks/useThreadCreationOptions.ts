@@ -52,6 +52,7 @@ import { useProjectDefaultExecutionOptions } from "./queries/project-default-exe
 import {
   useKnownProviderModelCatalogScope,
   useSystemProviderStates,
+  useSystemProviders,
   useSystemConfig,
   useSystemExecutionOptions,
 } from "./queries/system-queries";
@@ -461,10 +462,18 @@ export function useThreadCreationOptions(
     executionOptionsQuery.isError ||
     (executionOptionsQuery.data !== undefined &&
       !executionOptionsQuery.isPlaceholderData);
-  const permissionModeIsVerified =
+  const catalogPermissionsAreVerified =
     executionOptionsQuery.data !== undefined &&
     !executionOptionsQuery.isPlaceholderData &&
     !executionOptionsQuery.isError;
+  const providersQuery = useSystemProviders({
+    ...(executionOptionsRouting.environmentId !== undefined
+      ? { environmentId: executionOptionsRouting.environmentId }
+      : executionOptionsRouting.hostId !== undefined
+        ? { hostId: executionOptionsRouting.hostId }
+        : {}),
+    enabled: executionOptionsQueryEnabled && !catalogPermissionsAreVerified,
+  });
   const hasMultipleProviders = providers.length >= 2;
 
   const effectiveProviderId = useMemo(() => {
@@ -657,8 +666,15 @@ export function useThreadCreationOptions(
   const supportsServiceTier =
     allowFastServiceTier &&
     (activeProviderCapabilities?.supportsServiceTier ?? false);
+  const permissionProvider =
+    selectedProviderInfo ??
+    (!providersQuery.isPlaceholderData && !providersQuery.isError
+      ? providersQuery.data?.find(
+          (provider) => provider.id === effectiveProviderId,
+        )
+      : undefined);
   const permissionModes: readonly PermissionMode[] =
-    activeProviderCapabilities?.permissionModes ??
+    permissionProvider?.capabilities.permissionModes ??
     DEFAULT_SUPPORTED_PERMISSION_MODES;
   const supportsPermissionModeSelection = permissionModes.length > 1;
   const routedHostCeiling = useMemo(() => {
@@ -682,6 +698,11 @@ export function useThreadCreationOptions(
     : executionOptionsQuery.data?.permissionCeiling;
   const permissionCeiling: PermissionMode =
     routedCeiling ?? routedHostCeiling ?? "full";
+  const permissionModeIsVerified =
+    permissionProvider !== undefined &&
+    (catalogPermissionsAreVerified ||
+      (executionOptionsRouting.environmentId === undefined &&
+        routedHostCeiling !== null));
   const allowedPermissionModes = useMemo(
     () =>
       permissionModes.filter(
