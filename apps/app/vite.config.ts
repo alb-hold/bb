@@ -24,6 +24,25 @@ export const sharedViteConfig = {
     fontPreload(),
     initialThreadPreload(),
     splitPrefetch({
+      "thread-detail": "src/views/thread-detail/ThreadDetailView.tsx",
+      "root-compose-panel-tab-content":
+        "src/views/RootComposePanelTabContent.tsx",
+      "thread-action-menu-items": "src/components/thread/ThreadMenuItems.tsx",
+      "prompt-voice-runtime":
+        "src/components/promptbox/usePromptVoiceRuntime.tsx",
+      "model-reasoning-picker-body":
+        "src/components/pickers/ModelReasoningPickerBody.tsx",
+      "model-reasoning-menu": "src/components/pickers/ModelReasoningMenu.tsx",
+      "extended-icons":
+        "packages/shared-ui/src/components/ui/icon-extended.tsx",
+      "thread-terminal":
+        "src/components/thread/terminal/ThreadTerminalPanel.tsx",
+      "terminal-runtime": "@xterm/xterm/lib/xterm.mjs",
+      "terminal-fit": "@xterm/addon-fit/lib/addon-fit.mjs",
+      "terminal-unicode": "@xterm/addon-unicode11/lib/addon-unicode11.mjs",
+      "terminal-webgl": "@xterm/addon-webgl/lib/addon-webgl.mjs",
+      "terminal-search": "@xterm/addon-search/lib/addon-search.mjs",
+      "terminal-web-links": "@xterm/addon-web-links/lib/addon-web-links.mjs",
       "markdown-html": "src/components/ui/markdown-html.tsx",
       "queued-messages-list":
         "src/components/promptbox/banner/QueuedMessagesList.tsx",
