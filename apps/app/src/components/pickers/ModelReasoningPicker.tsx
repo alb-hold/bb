@@ -24,7 +24,12 @@ import {
   OPTION_MUTED_CLASS_NAME,
   OPTION_TRIGGER_CONTENT_CLASS_NAME,
 } from "@bb/shared-ui/option-display";
-import { Tooltip, TooltipTrigger, TooltipContent } from "@bb/shared-ui/tooltip";
+import {
+  Tooltip,
+  TooltipTrigger,
+  TooltipContent,
+  TooltipProvider,
+} from "@bb/shared-ui/tooltip";
 import { Popover, PopoverTrigger } from "@bb/shared-ui/popover";
 import {
   useCallback,
