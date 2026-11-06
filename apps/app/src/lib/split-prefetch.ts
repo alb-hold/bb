@@ -1,34 +1,51 @@
 const requested = new Set<string>();
 
-async function downloadSplitAssets(id: string): Promise<void> {
+function splitAssets(id: string): string[] {
   const data = document.getElementById(`bb-prefetch-${id}`)?.textContent;
-  if (!data) return;
+  if (!data) return [];
   const urls: unknown = JSON.parse(data);
   if (!Array.isArray(urls) || !urls.every((url) => typeof url === "string"))
+    return [];
+  return urls;
+}
+
+async function downloadAsset(path: string): Promise<void> {
+  const url = new URL(path, document.baseURI).href;
+  if (requested.has(url) || performance.getEntriesByName(url).length > 0)
     return;
-  await Promise.all(
-    urls.map(async (path: string) => {
-      const url = new URL(path, document.baseURI).href;
-      if (requested.has(url) || performance.getEntriesByName(url).length > 0)
-        return;
-      requested.add(url);
-      try {
-        const response = await fetch(url, {
-          cache: "force-cache",
-          priority: "low",
-        });
-        if (!response.ok)
-          throw new Error(`Prefetch failed: ${response.status}`);
-        await response.arrayBuffer();
-      } catch {
-        requested.delete(url);
-      }
-    }),
-  );
+  requested.add(url);
+  try {
+    const response = await fetch(url, {
+      cache: "force-cache",
+      priority: "low",
+    });
+    if (!response.ok) throw new Error(`Prefetch failed: ${response.status}`);
+    await response.arrayBuffer();
+  } catch {
+    requested.delete(url);
+  }
+}
+
+async function downloadSplitAssets(id: string): Promise<void> {
+  await Promise.all(splitAssets(id).map(downloadAsset));
 }
 
 const importing = new Set<string>();
 const downloads = new Map<string, Promise<void>>();
+
+export async function downloadSplitInBackground(
+  id: string,
+  whenIdle: () => Promise<boolean>,
+): Promise<void> {
+  for (const path of splitAssets(id)) {
+    const url = new URL(path, document.baseURI).href;
+    if (importing.has(id)) return;
+    if (requested.has(url) || performance.getEntriesByName(url).length > 0)
+      continue;
+    if (!(await whenIdle()) || importing.has(id)) return;
+    await downloadAsset(path);
+  }
+}
 
 export function prepareSplitImport(id: string): Promise<void> {
   importing.add(id);

@@ -40,6 +40,11 @@ import {
   setPluginLogoUrls,
 } from "@/lib/plugin-logos";
 import { CommandPalette } from "./CommandPalette";
+import { prefetchThreadViewOnIntent } from "@/hooks/useThreadOpenIntent";
+
+vi.mock("@/hooks/useThreadOpenIntent", () => ({
+  prefetchThreadViewOnIntent: vi.fn(),
+}));
 import {
   resetPluginThreadRowStatusesForTest,
   setPluginThreadRowStatus,
@@ -499,6 +504,18 @@ afterEach(() => {
 });
 
 describe("CommandPalette", () => {
+  it.each(["palette", "search"])(
+    "warms thread navigation when %s opens",
+    async (mode) => {
+      vi.mocked(prefetchThreadViewOnIntent).mockClear();
+      renderPalette();
+      if (mode === "palette") openPalette();
+      else openThreadSearch();
+      await waitFor(() =>
+        expect(prefetchThreadViewOnIntent).toHaveBeenCalledOnce(),
+      );
+    },
+  );
   it("closes direct thread search on Escape and restores terminal focus", async () => {
     const frames: FrameRequestCallback[] = [];
     vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {

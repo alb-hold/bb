@@ -71,4 +71,9 @@ it("keeps reasoning keys available and opens on the first click while the body d
   );
   await waitFor(() => expect(document.activeElement).toBe(search));
   expect(trigger.getAttribute("aria-expanded")).toBe("true");
+  fireEvent.keyDown(search, { key: "Escape" });
+  await waitFor(() =>
+    expect(trigger.getAttribute("aria-expanded")).toBe("false"),
+  );
+  await waitFor(() => expect(document.activeElement).toBe(trigger));
 });

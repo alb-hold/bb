@@ -46,6 +46,8 @@ it("restores a recording that never finished transcribing after a reload", async
   );
 
   const after = await loadFreshStore();
+  expect(await after.hasFailedVoiceRecordings("thread/empty")).toBe(false);
+  expect(await after.hasFailedVoiceRecordings("thread/thr_1")).toBe(true);
   const { result } = renderHook(() =>
     after.useFailedVoiceRecordings("thread/thr_1"),
   );

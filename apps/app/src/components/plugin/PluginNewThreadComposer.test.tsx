@@ -62,6 +62,11 @@ import type { PromptDraftAttachment, PromptDraftState } from "@bb/client-core";
 import { makeProjectWithThreadsResponse } from "@/test/fixtures/projects";
 import { RootComposeView } from "@/views/RootComposeView";
 import { DefaultPaneContextProvider } from "@/views/thread-detail/PaneContext";
+import { prefetchThreadViewOnIntent } from "@/hooks/useThreadOpenIntent";
+
+vi.mock("@/hooks/useThreadOpenIntent", () => ({
+  prefetchThreadViewOnIntent: vi.fn(),
+}));
 import { ROOT_COMPOSE_FIXED_PANEL_STATE_ID } from "@/views/RootComposePanelTabContent";
 import { resetFixedPanelTabsStateForTest } from "@/lib/fixed-panel-tabs";
 import {
@@ -1323,7 +1328,8 @@ describe("PluginNewThreadComposer seeding", () => {
     });
   });
 
-  it("submits an initial thread token with its resolved mention range", async () => {
+  it("warms the destination on submit and sends an initial thread token with its resolved mention range", async () => {
+    vi.mocked(prefetchThreadViewOnIntent).mockClear();
     const threadId = "thr_abcdefghij";
     mocks.projectThreads = [
       makeThreadListEntry({
@@ -1349,6 +1355,7 @@ describe("PluginNewThreadComposer seeding", () => {
       expect(latestPromptBoxProps().disabled).toBe(false);
     });
     await submit();
+    expect(prefetchThreadViewOnIntent).toHaveBeenCalledWith(false);
     expect(onSubmit).toHaveBeenCalledOnce();
     expect(onSubmit.mock.calls[0]?.[0].input).toEqual([
       {
