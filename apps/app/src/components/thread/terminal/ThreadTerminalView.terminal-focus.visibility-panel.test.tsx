@@ -955,6 +955,7 @@ describe("ThreadTerminalView terminal visibility and panel", () => {
       (button) => button.textContent === "Fit to this screen",
     );
     expect(fitControl).toBeDefined();
+    expect(fitControl?.getAttribute("data-compact-touch")).toBe("code");
     fireEvent.click(fitControl!);
     expect(testState.clearAttention).not.toHaveBeenCalled();
     await waitForReadinessCondition(() => {

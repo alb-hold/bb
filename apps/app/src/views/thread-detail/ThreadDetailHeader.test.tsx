@@ -261,7 +261,9 @@ describe("ThreadDetailHeader", () => {
         </PaneContext.Provider>
       </AppCommandProvider>,
     );
-    const search = screen.getByRole("button", { name: "Search terminal output" });
+    const search = screen.getByRole("button", {
+      name: "Search terminal output",
+    });
     expect(search.getAttribute("data-compact-touch")).toBe("header");
     fireEvent.click(search);
     expect(find).toHaveBeenCalledWith(
@@ -1151,9 +1153,15 @@ describe("ThreadDetailHeader", () => {
   );
 });
 
-it.each([false, true])(
-  "keeps real input ahead of a terminal signal: %s",
-  (needsInput) => {
+it.each([
+  { needsInput: false, compact: false },
+  { needsInput: true, compact: false },
+  { needsInput: false, compact: true },
+  { needsInput: true, compact: true },
+])(
+  "keeps real input ahead of a terminal signal: $needsInput compact=$compact",
+  ({ needsInput, compact }) => {
+    viewportState.isCompactViewport = compact;
     const { container } = render(
       <PaneContext.Provider value={PANE_CONTEXT}>
         <ThreadDetailHeader

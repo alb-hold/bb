@@ -336,8 +336,8 @@ describe("ThreadTerminalView terminal viewport and focus", () => {
       }
     },
   );
-  it.each([360, 390])(
-    "starts compact terminals at 13px at %s px",
+  it.each([360, 390, 767, 768, 1440])(
+    "starts terminals at 13px at %s px",
     async (width) => {
       prepareMobileTerminal();
       vi.stubGlobal("matchMedia", (query: string) => ({
@@ -1039,7 +1039,7 @@ describe("ThreadTerminalView terminal viewport and focus", () => {
         const fontSize = Number(
           document
             .querySelector("[data-terminal-renderer]")
-            ?.getAttribute("data-terminal-font-size") ?? 12,
+            ?.getAttribute("data-terminal-font-size") ?? 13,
         );
         return {
           cols: Math.round(612 / fontSize),
@@ -1068,7 +1068,7 @@ describe("ThreadTerminalView terminal viewport and focus", () => {
     const pane = document.querySelector(".group\\/terminal-pane");
     const fontSizeNode = document.querySelector("[data-terminal-renderer]");
     expect(pane).not.toBeNull();
-    expect(fontSizeNode?.getAttribute("data-terminal-font-size")).toBe("12");
+    expect(fontSizeNode?.getAttribute("data-terminal-font-size")).toBe("13");
 
     const dispatchTouches = (
       type: "touchstart" | "touchmove" | "touchend",
@@ -1121,13 +1121,13 @@ describe("ThreadTerminalView terminal viewport and focus", () => {
     }
     dispatchTouches("touchend", 150, true);
     await waitFor(() =>
-      expect(fontSizeNode?.getAttribute("data-terminal-font-size")).toBe("18"),
+      expect(fontSizeNode?.getAttribute("data-terminal-font-size")).toBe("20"),
     );
     await waitFor(() => expect(resizeMessages()).toHaveLength(2));
     expect(resizeMessages().at(-1)).toEqual({
       type: "resize",
-      cols: 34,
-      rows: 31,
+      cols: 31,
+      rows: 28,
     });
 
     dispatchTouches("touchstart", 150);
@@ -1136,7 +1136,7 @@ describe("ThreadTerminalView terminal viewport and focus", () => {
     }
     dispatchTouches("touchend", 100, true);
     await waitFor(() =>
-      expect(fontSizeNode?.getAttribute("data-terminal-font-size")).toBe("12"),
+      expect(fontSizeNode?.getAttribute("data-terminal-font-size")).toBe("13"),
     );
     await waitFor(() => expect(resizeMessages()).toHaveLength(3));
     expect(resizeMessages().at(-1)).toEqual(originalGrid);

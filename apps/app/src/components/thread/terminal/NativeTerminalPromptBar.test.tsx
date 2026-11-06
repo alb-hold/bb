@@ -179,7 +179,7 @@ describe("NativeTerminalPromptBar", () => {
 
   it("labels the terminal destination and keeps execution details read-only", () => {
     const { input } = renderBar();
-    expect(input.placeholder).toBe("Send to Native CLI…");
+    expect(input.placeholder).toBe("Type to Native CLI’s terminal…");
     expect(
       screen.getByText("Native CLI · GPT-5 · Full access").className,
     ).toContain("truncate");
@@ -227,7 +227,7 @@ describe("NativeTerminalPromptBar", () => {
 
   it.each(["Codex", "Claude Code"])("uses provider metadata in the %s placeholder", (providerLabel) => {
     const { input } = renderBar("", "", providerLabel);
-    expect(input.placeholder).toBe(`Send to ${providerLabel}…`);
+    expect(input.placeholder).toBe(`Type to ${providerLabel}’s terminal…`);
   });
   it.each(["Native CLI", " Native CLI ", ""])(
     "omits redundant execution text %j",
