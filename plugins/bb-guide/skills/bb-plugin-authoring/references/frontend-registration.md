@@ -357,6 +357,7 @@ interface PluginThreadListProps {
   activeThreadId: string | null;
   activeProjectId: string | null;
   isCompactViewport: boolean;
+  experimental_isVisible?: boolean;
   /** Closes the mobile drawer. Always call it after opening a thread. */
   onNavigate: () => void;
   /** Deprecated compatibility value for the removed sidebar search field.
@@ -364,6 +365,10 @@ interface PluginThreadListProps {
   searchQuery: string;
 }
 ```
+
+`experimental_isVisible` is true when the host shows the list and false in a
+closed compact drawer or collapsed desktop sidebar. Older hosts omit it, so
+`undefined` means visibility is unknown; retain a visibility observer fallback.
 
 **Reading and acting on threads.** One hook reads the list; writes go through
 the plugin SDK and navigation:
