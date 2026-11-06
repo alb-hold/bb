@@ -265,11 +265,19 @@ export function mountTerminalReplayPreview({
     { source: string; applied: string; cellsPerCharacter: number }
   >();
   const matchCellWidth = () => {
+    if (held || !readyToPaint()) return;
     const dimensions = terminal.dimensions;
     const screen =
       terminal.element?.querySelector<HTMLElement>(".xterm-screen");
     const rows = terminal.element?.querySelector<HTMLElement>(".xterm-rows");
-    if (!screen || !rows || !dimensions || cellWidth <= 0) return;
+    if (
+      !screen ||
+      !rows ||
+      !dimensions ||
+      dimensions.css.cell.width <= 0 ||
+      cellWidth <= 0
+    )
+      return;
     const residual = cellWidth - dimensions.css.cell.width;
     const elements = [
       rows,
