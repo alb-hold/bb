@@ -111,6 +111,105 @@ function createExitHandler(
 }
 
 describe("terminal replay preview", () => {
+  it("follows a phone font change and matches fractional DOM cells to the live renderer before showing", async () => {
+    installPreviewCanvasContext();
+    const characterWidth = (element: HTMLElement) =>
+      parseFloat(getComputedStyle(element).fontSize) === 13 ? 7.82 : 7;
+    const width = vi
+      .spyOn(HTMLElement.prototype, "offsetWidth", "get")
+      .mockImplementation(function (this: HTMLElement) {
+        return this.classList.contains("xterm-char-measure-element")
+          ? characterWidth(this)
+          : 0;
+      });
+    const height = vi
+      .spyOn(HTMLElement.prototype, "offsetHeight", "get")
+      .mockImplementation(function (this: HTMLElement) {
+        return this.classList.contains("xterm-char-measure-element") ? 15 : 0;
+      });
+    const bounds = vi
+      .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+      .mockImplementation(function (this: HTMLElement) {
+        if (this.classList.contains("xterm-char-measure-element"))
+          return new DOMRect(0, 0, characterWidth(this), 15);
+        if (this.classList.contains("xterm-screen")) {
+          const preview = this.closest("[data-terminal-replay-preview]");
+          return new DOMRect(
+            16,
+            56,
+            preview ? parseFloat(this.style.width) : 357,
+            parseFloat(this.style.height),
+          );
+        }
+        return new DOMRect();
+      });
+    const parent = document.createElement("div");
+    const container = document.createElement("div");
+    Object.defineProperties(container, {
+      clientWidth: { value: 374 },
+      clientHeight: { value: 682 },
+    });
+    parent.append(container);
+    document.body.append(parent);
+    const live = new Terminal({
+      cols: 51,
+      rows: 42,
+      fontSize: 12,
+      lineHeight: 1,
+    });
+    live.open(container);
+    const preview = new Terminal({
+      cols: 51,
+      rows: 42,
+      fontSize: 12,
+      lineHeight: 1,
+    });
+    let ready = false;
+    const cover = mountTerminalReplayPreview({
+      container,
+      initialFitGrid: { cols: 51, rows: 42 },
+      isOwner: () => false,
+      liveTerminal: live,
+      readyToPaint: () => ready,
+      terminal: preview,
+    });
+    try {
+      await new Promise<void>((resolve) =>
+        cover.push(Buffer.from("phone snapshot"), resolve),
+      );
+      const element = parent.querySelector<HTMLElement>(
+        "[data-terminal-replay-preview]",
+      )!;
+      expect(element.style.visibility).toBe("hidden");
+      live.options.fontSize = 13;
+      live.options.lineHeight = 1.12;
+      ready = true;
+      cover.setFitGrid(51, 42);
+      expect(preview.options.fontSize).toBe(13);
+      expect(preview.options.lineHeight).toBe(1.12);
+      expect(preview.options.letterSpacing).toBeCloseTo(-0.82, 1);
+      expect(element.style.visibility).toBe("visible");
+      expect(preview.element?.style.transform).toBe("none");
+      const screen =
+        preview.element!.querySelector<HTMLElement>(".xterm-screen")!;
+      expect(screen.getBoundingClientRect().width).toBe(357);
+      const rows = preview.element!.querySelector<HTMLElement>(".xterm-rows")!;
+      const spacing = rows.style.letterSpacing;
+      cover.setFitGrid(51, 42);
+      expect(rows.style.letterSpacing).toBe(spacing);
+      expect(screen.getBoundingClientRect().width).toBe(357);
+      expect(preview.cols).toBe(51);
+      expect(preview.rows).toBe(42);
+    } finally {
+      cover.dispose();
+      live.dispose();
+      parent.remove();
+      bounds.mockRestore();
+      width.mockRestore();
+      height.mockRestore();
+    }
+  });
+
   it.each([44, 60])(
     "matches live cell metrics and origin while clipping a %s-row snapshot",
     async (rows) => {

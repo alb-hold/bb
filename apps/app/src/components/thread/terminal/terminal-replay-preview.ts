@@ -259,6 +259,46 @@ export function mountTerminalReplayPreview({
   let pendingBytes = 0;
   let handoffDeadline: number | null = null;
   const pendingBytesLimit = 256 * 1024;
+  let cellWidth = 0;
+  const originalSpacing = new WeakMap<
+    HTMLElement,
+    { source: string; applied: string; cellsPerCharacter: number }
+  >();
+  const matchCellWidth = () => {
+    const dimensions = terminal.dimensions;
+    const screen =
+      terminal.element?.querySelector<HTMLElement>(".xterm-screen");
+    const rows = terminal.element?.querySelector<HTMLElement>(".xterm-rows");
+    if (!screen || !rows || !dimensions || cellWidth <= 0) return;
+    const residual = cellWidth - dimensions.css.cell.width;
+    const elements = [
+      rows,
+      ...rows.querySelectorAll<HTMLElement>("span[style*='letter-spacing']"),
+    ];
+    const spacing = elements.map((element) => {
+      const previous = originalSpacing.get(element);
+      const unchanged = element.style.letterSpacing === previous?.applied;
+      const source = unchanged ? previous.source : element.style.letterSpacing;
+      const cellsPerCharacter = unchanged
+        ? previous.cellsPerCharacter
+        : element === rows
+          ? 1
+          : element.getBoundingClientRect().width /
+            dimensions.css.cell.width /
+            Math.max(1, Array.from(element.textContent ?? "").length);
+      return { element, source, cellsPerCharacter };
+    });
+    for (const { element, source, cellsPerCharacter } of spacing) {
+      const applied = `${(parseFloat(source) || 0) + residual * cellsPerCharacter}px`;
+      element.style.letterSpacing = applied;
+      originalSpacing.set(element, { source, applied, cellsPerCharacter });
+    }
+    screen.style.width = `${cellWidth * terminal.cols}px`;
+    for (const row of rows.children) {
+      if (row instanceof HTMLElement)
+        row.style.width = `${cellWidth * terminal.cols}px`;
+    }
+  };
   const updateSurfaceLayout = () => {
     preview.style.top = `${container.offsetTop}px`;
     preview.style.left = `${container.offsetLeft}px`;
@@ -268,6 +308,21 @@ export function mountTerminalReplayPreview({
       terminal.options.fontFamily = liveTerminal.options.fontFamily;
       terminal.options.fontSize = liveTerminal.options.fontSize;
       terminal.options.lineHeight = liveTerminal.options.lineHeight;
+      if (readyToPaint()) {
+        const liveScreen =
+          liveTerminal.element?.querySelector<HTMLElement>(".xterm-screen");
+        cellWidth =
+          (liveScreen?.getBoundingClientRect().width ?? 0) / liveTerminal.cols;
+        const dimensions = terminal.dimensions;
+        if (cellWidth > 0 && dimensions) {
+          const dpr = window.devicePixelRatio || 1;
+          const unspacedWidth =
+            dimensions.css.cell.width -
+            Math.round(terminal.options.letterSpacing ?? 0) / dpr;
+          terminal.options.letterSpacing = (cellWidth - unspacedWidth) * dpr;
+          matchCellWidth();
+        }
+      }
     }
     if (terminal.element) {
       terminal.element.style.transform = "none";
@@ -299,6 +354,7 @@ export function mountTerminalReplayPreview({
   );
 
   let disposed = false;
+  const renderSubscription = terminal.onRender(matchCellWidth);
   const resizeObserver = new ResizeObserver(updateVisibility);
   resizeObserver.observe(container);
   window.addEventListener("resize", updateVisibility);
@@ -515,6 +571,7 @@ export function mountTerminalReplayPreview({
       document.removeEventListener("focusout", refreshVisibility);
       window.removeEventListener("resize", updateVisibility);
       resizeObserver.disconnect();
+      renderSubscription.dispose();
       window.removeEventListener("focus", refreshVisibility);
       window.removeEventListener("blur", refreshVisibility);
       terminal.dispose();
