@@ -15311,7 +15311,7 @@ describe("Actor route issuer", () => {
     expect(rotated).not.toBe(first);
     expect(await send(first)).toBe(401);
     expect(await send(rotated)).toBe(200);
-    await vi.waitFor(async () => {
+    await waitForChildProcessStart(async () => {
       const listed = JSON.parse((await cli(["route", "list", "--json"])).stdout) as {
         routes: Array<{ lastRoutedAt: number | null }>;
       };
@@ -15711,7 +15711,7 @@ else {
     const waitForFile =
       "const f=process.argv[1];console.log('child-ready');setInterval(()=>{if(require('node:fs').existsSync(f))process.exit(0)},50)";
     const launchA = run(["--actor", "shared-actor"], {}, [process.execPath, "-e", waitForFile, release]);
-    await vi.waitFor(() => expect(launchA.output()).toContain("child-ready"));
+    await waitForChildProcessStart(() => expect(launchA.output()).toContain("child-ready"));
     const rotated = JSON.parse(
       (
         await threadCli([
