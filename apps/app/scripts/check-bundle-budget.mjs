@@ -174,8 +174,10 @@ if (
 for (const [module, protectedClosures] of Object.entries(
   budget.splitBoundaries ?? {},
 )) {
-  const gates = stats.chunks.filter((chunk) =>
-    chunk.appModules.includes(module),
+  const gates = stats.chunks.filter(
+    (chunk) =>
+      chunk.appModules.includes(module) ||
+      chunk.modules?.some((entry) => entry.id === module),
   );
   if (gates.length === 0) {
     failures.push(

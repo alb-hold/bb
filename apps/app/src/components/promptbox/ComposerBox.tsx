@@ -1,3 +1,4 @@
+import { flushPendingPromptDraftPersists } from "@/hooks/usePromptDraftStorage";
 import {
   createContext,
   useCallback,
@@ -246,6 +247,7 @@ function composerSubmission(
   const runReported =
     (handler: () => void | Promise<void>): ExperimentalComposerAction["run"] =>
     () => {
+      flushPendingPromptDraftPersists();
       void Promise.resolve(handler()).catch(ignoreReportedSubmitError);
     };
   const draft = {
@@ -489,6 +491,7 @@ function useComposerRendererHostApi({
       if (host?.sendsOnEnter !== true) {
         throw new Error("This composer cannot submit programmatically.");
       }
+      flushPendingPromptDraftPersists();
       const current = host.getCurrent();
       if (
         current.text.trim().length === 0 &&
@@ -526,6 +529,7 @@ function useComposerRendererHostApi({
     }),
     getCurrent: () => draft,
     subscribeDraft,
+    setTextAndMentions: onChange,
     setDraft: (next) => {
       onChange(next.text, next.mentions);
       if (next.attachments !== draft.attachments) {

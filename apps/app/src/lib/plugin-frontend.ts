@@ -1,3 +1,7 @@
+import * as internal_DO_NOT_USE_dropdown_menu from "@bb/shared-ui/dropdown-menu";
+import * as internal_DO_NOT_USE_dialog from "@bb/shared-ui/dialog";
+import * as internal_DO_NOT_USE_context_menu from "@bb/shared-ui/context-menu";
+import * as internal_DO_NOT_USE_responsive_overlay from "@bb/shared-ui/responsive-overlay";
 import * as questionFormHost from "@bb/shared-ui/question-form-host";
 import * as voiceInputTextarea from "@bb/shared-ui/voice-input-textarea";
 import * as react from "react";
@@ -42,6 +46,7 @@ import {
 } from "./plugin-css";
 import { frontendPriorityPluginIds } from "./plugin-surface-providers";
 import { prefetchPluginModule } from "./plugin-module-preload";
+import { lazyRuntimeGroups } from "./plugin-lazy-runtime-groups";
 import {
   collectPluginAppRegistrations,
   isPluginAppDefinition,
@@ -158,14 +163,9 @@ export async function loadPluginFrontend(
     };
   }
   try {
-    const runtimeGroups =
-      bundle.runtimeSlots.length === 0
-        ? []
-        : (
-            await import("./plugin-lazy-runtime-groups")
-          ).lazyRuntimeGroups.filter((group) =>
-            group.slots.some((slot) => bundle.runtimeSlots.includes(slot)),
-          );
+    const runtimeGroups = lazyRuntimeGroups.filter((group) =>
+      group.slots.some((slot) => bundle.runtimeSlots.includes(slot)),
+    );
     if (runtimeGroups.length > 0) {
       const slotsProvided = Promise.all(
         runtimeGroups.map(async (group) => {
@@ -176,6 +176,14 @@ export async function loadPluginFrontend(
       deps.prefetchModule(bundle.jsUrl);
       await slotsProvided;
     }
+    const runtime = installPluginRuntime();
+    const missingSlot = bundle.runtimeSlots.find(
+      (slot) => Reflect.get(runtime, slot) == null,
+    );
+    if (missingSlot)
+      throw new Error(
+        `Update the BB host: missing shared runtime slot ${missingSlot}`,
+      );
     const mod = await deps.importModule(bundle.jsUrl);
     if (typeof mod !== "object" || mod === null) {
       throw new Error("bundle did not evaluate to a module namespace");
@@ -195,6 +203,11 @@ export async function loadPluginFrontend(
 }
 
 export interface BbPluginRuntime {
+  internal_DO_NOT_USE_dropdown_menu: unknown;
+  internal_DO_NOT_USE_dialog: unknown;
+  internal_DO_NOT_USE_context_menu: unknown;
+  internal_DO_NOT_USE_responsive_overlay: unknown;
+
   zod?: unknown;
   radixCheckbox?: unknown;
   radixSlot?: unknown;
@@ -232,6 +245,10 @@ type RuntimeHost = typeof globalThis & { __bbPluginRuntime?: BbPluginRuntime };
 export function installPluginRuntime(): BbPluginRuntime {
   const host = globalThis as RuntimeHost;
   host.__bbPluginRuntime ??= {
+    internal_DO_NOT_USE_dropdown_menu,
+    internal_DO_NOT_USE_dialog,
+    internal_DO_NOT_USE_context_menu,
+    internal_DO_NOT_USE_responsive_overlay,
     react,
     reactDom,
     reactDomClient,

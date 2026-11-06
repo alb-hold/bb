@@ -216,6 +216,16 @@
     "sonner"
   ],
   "splitBoundaries": {
+    "../../packages/plugin-build/src/generated/zod-runtime.generated.ts": [
+      "boot"
+    ],
+    "src/lib/plugin-radix-runtime.ts": ["boot"],
+    "../../plugins/composer/src/mentions/pasted-thread-links.ts": [
+      "boot",
+      "ThreadPage",
+      "NewThreadPage",
+      "PluginFrontend"
+    ],
     "src/components/dialogs/ThreadDeleteDialog.tsx": ["boot"],
     "src/components/notifications/NotificationCenterView.tsx": ["boot"],
     "src/components/device-handoff/DeviceHandoffSheet.tsx": ["boot"],
@@ -352,7 +362,7 @@
   },
   "routeClosures": {
     "PluginFrontend": {
-      "maxBytes": 505525,
+      "maxBytes": 505290,
       "maxBrotliBytes": 162937,
       "forbiddenPackages": [
         "@radix-ui/react-hover-card",
@@ -445,9 +455,9 @@
     }
   },
   "forbiddenBootModules": [
-      "../../packages/server-contract/src/api/threads.ts",
-      "../../packages/server-contract/src/thread-timeline.ts",
-      "../../packages/domain/src/provider-event.ts",
-      "../../packages/domain/src/pending-interactions.ts"
+    "../../packages/server-contract/src/api/threads.ts",
+    "../../packages/server-contract/src/thread-timeline.ts",
+    "../../packages/domain/src/provider-event.ts",
+    "../../packages/domain/src/pending-interactions.ts"
   ]
 }

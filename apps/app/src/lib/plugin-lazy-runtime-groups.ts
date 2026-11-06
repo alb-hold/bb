@@ -70,3 +70,10 @@ export const lazyRuntimeGroups = [
   slots: (keyof BbPluginRuntime)[];
   load: () => Promise<Partial<BbPluginRuntime>>;
 }[];
+
+export function prefetchPluginRuntimeSlots(slots: readonly string[]): void {
+  for (const group of lazyRuntimeGroups) {
+    if (group.slots.some((slot) => slots.includes(slot)))
+      void group.load().catch(() => {});
+  }
+}
