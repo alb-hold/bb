@@ -373,9 +373,7 @@ export function PluginSidebarFooterItems({
       )}
       <SidebarMenuItem className="min-w-8 flex-1 max-md:pointer-coarse:min-w-9">
         <SidebarMenu ref={menuRef} className="flex-row items-center gap-1">
-          {visible
-            .filter((item) => !isCompactViewport || item.kind === "builtin")
-            .map(renderItem)}
+          {preferences.footerPrefix.filter(isAvailable).map(renderItem)}
           <SidebarMenuItem className="min-w-0 shrink-0">
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -427,8 +425,7 @@ export function PluginSidebarFooterItems({
               </DropdownMenuContent>
             </DropdownMenu>
           </SidebarMenuItem>
-          {isCompactViewport &&
-            visible.filter((item) => item.kind === "plugin").map(renderItem)}
+          {preferences.footerSuffix.filter(isAvailable).map(renderItem)}
         </SidebarMenu>
       </SidebarMenuItem>
     </>

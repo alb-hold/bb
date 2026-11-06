@@ -1,5 +1,4 @@
 import { type RefObject, useLayoutEffect } from "react";
-import { useIsCompactViewport } from "@bb/shared-ui/hooks/use-compact-viewport";
 import { atom, useAtom, useAtomValue, useSetAtom } from "jotai";
 import {
   usePluginSlots,
@@ -72,7 +71,6 @@ export function useSidebarFooterPreferences() {
   const [order, setOrder] = useAtom(sidebarFooterOrderAtom);
   const [hidden, setHidden] = useAtom(sidebarFooterHiddenAtom);
   const capacity = useAtomValue(sidebarFooterCapacityAtom);
-  const compact = useIsCompactViewport();
   const hasRail = useSidebarNavigationPlacement() === "rail";
   const items: FooterItem[] = [
     ...(hasRail ? [] : [SETTINGS_FOOTER_ITEM]),
@@ -105,12 +103,11 @@ export function useSidebarFooterPreferences() {
     storedOrder: order,
     getId: (item) => item.key,
   });
-  const prioritized = compact
-    ? [
-        ...ordered.filter((item) => item.kind === "builtin"),
-        ...ordered.filter((item) => item.kind === "plugin"),
-      ]
-    : ordered;
+  const isPrefixItem = (item: FooterItem) => item.kind === "builtin";
+  const prioritized = [
+    ...ordered.filter(isPrefixItem),
+    ...ordered.filter((item) => !isPrefixItem(item)),
+  ];
   const footer = prioritized
     .filter(
       (item) =>
@@ -128,6 +125,8 @@ export function useSidebarFooterPreferences() {
     items: ordered,
     hidden,
     footer,
+    footerPrefix: footer.filter(isPrefixItem),
+    footerSuffix: footer.filter((item) => !isPrefixItem(item)),
     more,
     capacity,
     isFull,

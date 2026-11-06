@@ -439,7 +439,7 @@ describe("Rail", () => {
     expect(railButton("Automations")).toBeDefined();
   });
 
-  it("draws a remembered plugin panel before boot and keeps the same button when the plugin registers", async () => {
+  it("keeps remembered desktop slots as panels register and appends unseen panels after More", async () => {
     resetPluginSlotStoreForTest();
     resetPluginFrontendBootStateForTest();
     await registerNavigationPlugin();
@@ -451,9 +451,19 @@ describe("Rail", () => {
         title: "Demo board",
         icon: "columns",
       },
+      {
+        pluginId: "demo",
+        id: "notes",
+        path: "notes",
+        title: "Demo notes",
+        icon: "BookOpen",
+      },
     ]);
     renderRail(THREAD_PATH);
     const remembered = railButton("Demo board");
+    const initialLabels = railLabels();
+    expect(initialLabels.indexOf("Demo board")).toBeLessThan(initialLabels.indexOf("More"));
+    expect(initialLabels.indexOf("Demo notes")).toBeLessThan(initialLabels.indexOf("More"));
 
     act(() => {
       setPluginSlotRegistrations(
@@ -461,10 +471,24 @@ describe("Rail", () => {
         registrationSet({
           navPanels: [
             {
+              id: "notes",
+              title: "Demo notes",
+              icon: "BookOpen",
+              path: "notes",
+              component: () => null,
+            },
+            {
               id: "board",
               title: "Demo board",
               icon: "columns",
               path: "board",
+              component: () => null,
+            },
+            {
+              id: "archive",
+              title: "Demo archive",
+              icon: "Archive",
+              path: "archive",
               component: () => null,
             },
           ],
@@ -474,6 +498,8 @@ describe("Rail", () => {
     });
 
     expect(railButton("Demo board")).toBe(remembered);
+    expect(railLabels().filter((label) => label !== "Demo archive")).toEqual(initialLabels);
+    expect(railLabels().indexOf("Demo archive")).toBeGreaterThan(railLabels().indexOf("More"));
   });
 
   it("drops a remembered plugin panel that never registers once frontends have settled", async () => {

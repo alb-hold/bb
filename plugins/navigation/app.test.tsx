@@ -138,6 +138,18 @@ function withBadge(
 afterEach(cleanup);
 
 describe("Rail", () => {
+  it("preserves cached desktop slots and appends unseen destinations after More", () => {
+    const items = [NEW_THREAD, SEARCH, PLUGINS, { ...DOCS, isLoading: true }];
+    const view = renderRail(items);
+    expect(railLabels()).toEqual(["Home", "Plugins", "Docs", "More"]);
+    items[3] = DOCS;
+    items.push(ALERTS);
+    const RailComponent = rail!.component;
+    view.rerender(<RailComponent {...props("rail")} />);
+    expect(railLabels()).toEqual(["Home", "Plugins", "Docs", "More", "Alerts"]);
+    expect(screen.getByRole("button", { name: "Docs" }).getAttribute("aria-busy")).toBeNull();
+  });
+
   it("keeps the phone host destinations and More fixed as plugin panels arrive", () => {
     const prefix = ["Home", "Plugins", "More"];
     renderRail([NEW_THREAD, SEARCH, PLUGINS], null, true);

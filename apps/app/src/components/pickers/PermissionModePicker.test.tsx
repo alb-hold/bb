@@ -11,6 +11,25 @@ const options = [
 ] as const;
 afterEach(cleanup);
 
+it("reserves the same desktop width while defaults and capabilities settle", () => {
+  const onChange = vi.fn();
+  const view = render(<PermissionModePicker value="auto" options={[]} pending supported showChevronWhenDisabled={false} onChange={onChange} />);
+  const assertWidth = () => expect(screen.getByRole("button", { name: "Permissions" }).classList.contains("w-44")).toBe(true);
+  assertWidth();
+  expect(screen.getByRole("button", { name: "Permissions" }).querySelector('[data-icon="ChevronDown"]')).toBeNull();
+  view.rerender(<PermissionModePicker value="auto" options={options} supported showChevronWhenDisabled={false} onChange={onChange} />);
+  assertWidth();
+  expect(screen.getByRole("button", { name: "Permissions" }).textContent).toBe("Permissions:Approve");
+  expect(screen.getByRole("button", { name: "Permissions" }).querySelector('[data-icon="ChevronDown"]')).not.toBeNull();
+  for (const value of ["full", "auto", "accept-edits"] as const) {
+    view.rerender(<PermissionModePicker value={value} options={options} supported onChange={onChange} />);
+    assertWidth();
+  }
+  view.rerender(<PermissionModePicker options={[]} pending supported onChange={onChange} />);
+  assertWidth();
+  expect(onChange).not.toHaveBeenCalled();
+});
+
 it.each(["auto", "accept-edits", "full"] as const)("names permissions and shows the shared shield for %s", (value) => {
   render(<PermissionModePicker value={value} options={options} supported onChange={() => {}} />);
   const trigger = screen.getByRole("button", { name: "Permissions" });
@@ -38,7 +57,7 @@ it("uses the initial cached mode before options resolve", () => {
 
 it("reserves a skeleton when no cached mode exists", () => {
   render(<PermissionModePicker options={[]} pending supported onChange={() => {}} />);
-  expect(screen.getByRole("button", { name: "Permissions" }).className).toContain("w-40");
+  expect(screen.getByRole("button", { name: "Permissions" }).className).toContain("w-44");
   expect(screen.getByRole("button", { name: "Permissions" }).className).toContain("[&>span]:invisible");
 });
 
@@ -69,6 +88,7 @@ it.each(["auto", "accept-edits", "full"] as const)("keeps the mobile %s trigger 
   expect(trigger.textContent).toBe("");
   expect(trigger.getAttribute("data-compact-touch")).toBe("picker");
   expect(trigger.classList.contains("min-w-28")).toBe(false);
+  expect(trigger.classList.contains("w-44")).toBe(false);
   expect(trigger.querySelector('[data-icon="SecurityCheck"]')).not.toBeNull();
   expect(trigger.classList.contains("text-warning-text")).toBe(value === "full");
 });

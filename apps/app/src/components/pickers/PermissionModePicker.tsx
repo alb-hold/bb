@@ -93,13 +93,13 @@ export function PermissionModePicker({
       onChange={onChange}
       className={cn(
         LIST_HOVER_TRANSITION,
-        isCompactViewport ? "size-8 min-w-0 justify-center p-0" : "min-w-28 justify-between",
-        pending && displayValue === undefined && !isCompactViewport && "w-40 [&>span]:invisible animate-pulse bg-state-hover",
+        isCompactViewport ? "size-8 min-w-0 justify-center p-0" : "w-44 shrink-0 justify-start",
+        pending && displayValue === undefined && !isCompactViewport && "[&>span]:invisible animate-pulse bg-state-hover",
         showFullAccessWarning && "text-warning-text hover:text-warning-text data-[state=open]:text-warning-text",
         className,
       )}
       leading={<><Icon name="SecurityCheck" className="size-3.5 shrink-0" />{isCompactViewport ? null : <span>Permissions:</span>}</>}
-      caretClassName="text-subtle-foreground/75"
+      caretClassName="ml-auto text-subtle-foreground/75"
       contentClassName="max-w-72"
       muted={muted}
       defaultOpen={defaultOpen}

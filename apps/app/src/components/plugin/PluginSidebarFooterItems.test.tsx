@@ -155,7 +155,7 @@ describe("PluginSidebarFooterItems", () => {
     [false, null],
     [false, 1],
   ] as const)(
-    "keeps the phone host prefix stable when a plugin arrives (compact=%s, capacity=%s)",
+    "keeps the host prefix stable when a plugin arrives (compact=%s, capacity=%s)",
     (compact, capacity) => {
       const store = createStore();
       store.set(sidebarFooterCapacityAtom, capacity);
@@ -193,15 +193,9 @@ describe("PluginSidebarFooterItems", () => {
           ),
         ),
       );
-      expect(labels()).toEqual(
-        compact
-          ? capacity === null
-            ? ["Report a bug", "More footer actions", "Garden notes"]
-            : ["Report a bug", "More footer actions"]
-          : capacity === null
-            ? ["Garden notes", "Report a bug", "More footer actions"]
-            : ["Garden notes", "More footer actions"],
-      );
+      expect(labels()).toEqual(capacity === null
+        ? ["Report a bug", "More footer actions", "Garden notes"]
+        : ["Report a bug", "More footer actions"]);
     },
   );
 
@@ -352,16 +346,16 @@ describe("PluginSidebarFooterItems", () => {
       );
     expect(footerIcons()).toEqual([
       "builtin:mobile",
+      "builtin:report-bug",
       "plugin:example/one",
       "plugin:example/two",
       "plugin:example/three",
-      "plugin:example/four",
     ]);
     expect(document.activeElement).toBe(
       screen.getByRole("button", { name: "Remove Mobile apps from footer" }),
     );
     expect(
-      screen.getByRole("button", { name: "Add Report a bug to footer" }),
+      screen.getByRole("button", { name: "Add Action four to footer" }),
     ).toHaveProperty("disabled", true);
 
     fireEvent.click(
@@ -369,14 +363,14 @@ describe("PluginSidebarFooterItems", () => {
     );
     expect(store.get(sidebarFooterHiddenAtom)).toEqual([
       "plugin:unloaded/action",
-      "builtin:report-bug",
+      "plugin:example/four",
       "plugin:example/two",
     ]);
     expect(footerIcons()).toEqual([
       "builtin:mobile",
+      "builtin:report-bug",
       "plugin:example/one",
       "plugin:example/three",
-      "plugin:example/four",
     ]);
 
     fireEvent.click(
@@ -384,27 +378,27 @@ describe("PluginSidebarFooterItems", () => {
     );
     expect(footerIcons()).toEqual([
       "builtin:mobile",
+      "builtin:report-bug",
       "plugin:example/one",
       "plugin:example/three",
-      "plugin:example/four",
       "plugin:example/two",
     ]);
     expect(
-      screen.getByRole("button", { name: "Add Report a bug to footer" }),
+      screen.getByRole("button", { name: "Add Action four to footer" }),
     ).toHaveProperty("disabled", true);
 
     act(() => store.set(sidebarFooterCapacityAtom, 6));
     expect(footerIcons()).toHaveLength(5);
     fireEvent.click(
-      screen.getByRole("button", { name: "Add Report a bug to footer" }),
+      screen.getByRole("button", { name: "Add Action four to footer" }),
     );
     expect(footerIcons()).toEqual([
       "builtin:mobile",
+      "builtin:report-bug",
       "plugin:example/one",
       "plugin:example/three",
-      "plugin:example/four",
       "plugin:example/two",
-      "builtin:report-bug",
+      "plugin:example/four",
     ]);
     expect(store.get(sidebarFooterHiddenAtom)).toEqual([
       "plugin:unloaded/action",
@@ -862,7 +856,7 @@ describe("PluginSidebarFooterItems", () => {
     ]);
   });
 
-  it("orders built-in and plugin shortcuts together and keeps all-hidden actions reachable", async () => {
+  it("keeps stored order within host and plugin groups and all-hidden actions reachable", async () => {
     const run = vi.fn();
     setPluginSlotRegistrations(
       "example",
@@ -905,8 +899,8 @@ describe("PluginSidebarFooterItems", () => {
       ),
     ).toEqual([
       "builtin:report-bug",
-      "plugin:example/action",
       "builtin:mobile",
+      "plugin:example/action",
     ]);
     expect(
       screen.getByRole("link", { name: "Mobile apps" }).getAttribute("href"),
