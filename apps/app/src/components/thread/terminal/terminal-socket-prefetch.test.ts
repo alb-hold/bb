@@ -1,4 +1,8 @@
+// @vitest-environment jsdom
+
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { rememberTerminalGrid } from "./terminal-grid-cache";
+import { makeTerminalSession } from "@/test/fixtures/terminal-sessions";
 import { TerminalWebSocketTransport } from "@bb/client-core";
 import {
   createPrefetchedTerminalSocket,
@@ -10,6 +14,7 @@ const url = "ws://localhost/api/terminals/term/socket";
 const fullUrl = `${url}?sinceSeq=0&outputAcks=1&resizeAcks=1`;
 
 class Socket {
+  static readonly OPEN = 1;
   static instances: Socket[] = [];
   readyState = 0;
   protocol = "";
@@ -38,6 +43,7 @@ class Socket {
 }
 
 beforeEach(() => {
+  localStorage.clear();
   vi.useFakeTimers();
   Socket.instances = [];
   vi.stubGlobal("WebSocket", Socket);
@@ -46,7 +52,77 @@ afterEach(() => {
   discardPrefetchedTerminalSocket(url);
   vi.unstubAllGlobals();
   vi.useRealTimers();
+  vi.restoreAllMocks();
 });
+
+it.each(
+  [44, 125].flatMap((cols) =>
+    ["miss", "match", "mismatch"].map((kind) => ({ cols, kind })),
+  ),
+)(
+  "claims a cached $cols-column grid before adoption ($kind)",
+  async ({ cols, kind }) => {
+    if (kind !== "miss") {
+      const container = document.createElement("div");
+      vi.spyOn(container, "getBoundingClientRect").mockReturnValue(
+        new DOMRect(0, 0, 936, 662),
+      );
+      rememberTerminalGrid("term", container, 13, { cols, rows: 38 });
+    }
+    prefetchTerminalSocket(url);
+    const native = Socket.instances[0]!;
+    native.open();
+    native.message("not json");
+    const attachedAt = Date.now();
+    native.message(
+      JSON.stringify({
+        type: "attached",
+        session: makeTerminalSession({ id: "term", status: "running" }),
+        replayStartSeq: 0,
+        nextSeq: 0,
+      }),
+    );
+    const frames = () =>
+      native.sent
+        .map((raw) => JSON.parse(raw))
+        .filter((frame) => frame.type === "resize");
+    expect(frames()).toEqual(
+      kind === "miss" ? [] : [{ type: "resize", cols, rows: 38, claim: true }],
+    );
+    expect(Date.now() - attachedAt).toBeLessThanOrEqual(5);
+    await vi.advanceTimersByTimeAsync(700);
+    const transport = new TerminalWebSocketTransport({
+      url,
+      createSocket: createPrefetchedTerminalSocket,
+      onMessage: () => {},
+      shouldReconnect: () => true,
+    });
+    const fittedCols = kind === "mismatch" ? cols + 1 : cols;
+    transport.sendResize(fittedCols, 38, true);
+    transport.markLayoutSettled();
+    transport.start();
+    vi.runAllTicks();
+    await Promise.resolve();
+    transport.sendResize(fittedCols, 38);
+    transport.markLayoutSettled();
+    expect(frames()).toHaveLength(kind === "mismatch" ? 2 : 1);
+    expect(frames().at(-1)).toEqual({
+      type: "resize",
+      cols: fittedCols,
+      rows: 38,
+      claim: true,
+    });
+    transport.claimSize();
+    expect(frames()).toHaveLength(kind === "mismatch" ? 3 : 2);
+    expect(frames().at(-1)).toEqual({
+      type: "resize",
+      cols: fittedCols,
+      rows: 38,
+      claim: true,
+    });
+    transport.dispose();
+  },
+);
 
 it("buffers split control sequences and a live write during replay in exact wire order", async () => {
   prefetchTerminalSocket(url);

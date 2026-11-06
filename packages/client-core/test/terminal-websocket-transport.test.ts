@@ -11,6 +11,7 @@ import {
 } from "../src/terminal/terminal-websocket-transport.js";
 
 class FakeTerminalBrowserSocket implements TerminalBrowserSocket {
+  initialSizeClaim?: { cols: number; rows: number };
   bufferedAmount: number | undefined = 0;
   closeCalls: Array<{ code?: number; reason?: string }> = [];
   onclose: ((event: CloseEvent) => void) | null = null;
@@ -139,6 +140,43 @@ afterEach(() => {
 });
 
 describe("TerminalWebSocketTransport", () => {
+  it("deduplicates a corrective fit made between adoption and buffered open delivery", () => {
+    vi.useFakeTimers();
+    const socket = new FakeTerminalBrowserSocket();
+    socket.initialSizeClaim = { cols: 45, rows: 38 };
+    socket.readyState = 1;
+    const { transport } = createHarness({ createSocket: () => socket });
+    transport.start();
+    transport.sendResize(46, 38, true);
+    transport.markLayoutSettled();
+    socket.open();
+    expect(socket.sent.map((payload) => JSON.parse(payload))).toEqual([
+      { type: "resize", cols: 46, rows: 38, claim: true },
+    ]);
+    transport.dispose();
+  });
+
+  it.each([false, true])(
+    "preserves explicit cached-grid reclaim queued before open: %s",
+    (explicit) => {
+      vi.useFakeTimers();
+      const socket = new FakeTerminalBrowserSocket();
+      socket.initialSizeClaim = { cols: 45, rows: 38 };
+      const { transport } = createHarness({ createSocket: () => socket });
+      transport.sendResize(45, 38, true);
+      if (explicit) transport.claimSize();
+      transport.markLayoutSettled();
+      transport.start();
+      socket.open();
+      expect(socket.sent.map((payload) => JSON.parse(payload))).toEqual(
+        explicit ? [{ type: "resize", cols: 45, rows: 38, claim: true }] : [],
+      );
+      transport.claimSize();
+      expect(socket.sent).toHaveLength(explicit ? 2 : 1);
+      transport.dispose();
+    },
+  );
+
   it("sends one claimed grid through open, passive fits and restore hold release", () => {
     vi.useFakeTimers();
     const { transport, sockets } = createHarness();

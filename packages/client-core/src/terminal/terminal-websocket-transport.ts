@@ -30,6 +30,7 @@ export type TerminalSocketConnectionState =
   | "closed";
 
 export interface TerminalBrowserSocket {
+  readonly initialSizeClaim?: { cols: number; rows: number };
   bufferedAmount?: number;
   close(code?: number, reason?: string): void;
   onclose: ((event: CloseEvent) => void) | null;
@@ -373,7 +374,7 @@ export class TerminalWebSocketTransport {
     }
     if (claim) this.pendingSizeClaim = true;
     this.lastResize = { cols, rows };
-    if (this.pendingSizeClaim) this.claimSize();
+    if (this.pendingSizeClaim) this.claimSize(false);
     this.cancelRepaintRestore();
     const socket = this.socket;
     if (
@@ -409,9 +410,11 @@ export class TerminalWebSocketTransport {
   }
 
   private pendingSizeClaim = false;
+  private pendingSizeReclaim = false;
 
   claimSize(reclaim = true): void {
     this.pendingSizeClaim = true;
+    this.pendingSizeReclaim ||= reclaim;
     const socket = this.socket;
     if (
       this.lastResize === null ||
@@ -425,8 +428,9 @@ export class TerminalWebSocketTransport {
       this.lastResize,
       undefined,
       true,
-      reclaim,
+      this.pendingSizeReclaim,
     );
+    if (!this.pendingSizeClaim) this.pendingSizeReclaim = false;
   }
 
   private setRepaintFinalSeq(seq: number | null): void {
@@ -631,7 +635,9 @@ export class TerminalWebSocketTransport {
       return;
     }
     if (this.lastSentResize?.claim) this.pendingSizeClaim = true;
-    this.lastSentResize = null;
+    this.lastSentResize = socket.initialSizeClaim
+      ? { ...socket.initialSizeClaim, claim: true, seq: null }
+      : null;
     this.socket = socket;
     this.ackedResizeSeq = 0;
     this.nextResizeSeq = 0;
@@ -664,7 +670,7 @@ export class TerminalWebSocketTransport {
         JSON.stringify({ type: "visibility", visible: this.visible }),
       );
     }
-    if (this.pendingSizeClaim) this.claimSize();
+    if (this.pendingSizeClaim) this.claimSize(false);
     this.beginResizeSettle(socket);
     this.flushInputs();
   }

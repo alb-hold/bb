@@ -1,4 +1,7 @@
 import { markTerminalPerformance } from "@/lib/terminal-performance";
+import { rememberTerminalGrid } from "./terminal-grid-cache";
+import { readTerminalFontFamily } from "./terminal-font";
+export { resolveTerminalFontFamily, TERMINAL_FONT_FAMILY } from "./terminal-font";
 import {
   createPrefetchedTerminalSocket,
   prefetchTerminalSocket,
@@ -186,9 +189,6 @@ export {
   loadTerminalWebglRenderer,
 } from "./terminal-webgl-renderer";
 
-export const TERMINAL_FONT_FAMILY =
-  '"JetBrainsMono Nerd Font Mono", "MesloLGS NF", "Symbols Nerd Font Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace';
-const TERMINAL_FONT_CSS_VARIABLE = "--font-terminal";
 const CLIPBOARD_BLOCKED_MESSAGE =
   "This connection can’t read the clipboard. Long-press a message box and choose Paste.";
 const TERMINAL_UNICODE_VERSION = "11";
@@ -428,13 +428,6 @@ export const TERMINAL_CELL_OPTIONS = {
   cursorStyle: "block" as const,
 };
 
-export function resolveTerminalFontFamily(
-  get: TerminalCssVariableReader,
-): string {
-  const value = get(TERMINAL_FONT_CSS_VARIABLE)?.trim();
-  return value || TERMINAL_FONT_FAMILY;
-}
-
 export function buildTerminalThemeFromCssColors(
   get: TerminalCssVariableReader,
 ): ITheme {
@@ -480,15 +473,6 @@ function buildTerminalTheme(): ITheme {
   const theme = buildTerminalThemeFromCssColors(get);
   probe.remove();
   return theme;
-}
-
-function readTerminalFontFamily(): string {
-  if (typeof document === "undefined") {
-    return TERMINAL_FONT_FAMILY;
-  }
-  return resolveTerminalFontFamily((name) =>
-    getComputedStyle(document.documentElement).getPropertyValue(name),
-  );
 }
 
 export function applyTerminalFontFamily(
@@ -2617,6 +2601,15 @@ export function ThreadTerminalView({
         }
         updateGridVisibility();
         if (initialLayoutSettled && (holdForFittedGrid || initialRendererSettled)) {
+          if (holdForFittedGrid && sessionStatusRef.current === "running") {
+            rememberTerminalGrid(
+              session.id,
+              containerElement,
+              terminal.options.fontSize ?? 13,
+              fitted,
+              terminal.options.fontFamily ?? readTerminalFontFamily(),
+            );
+          }
           const claimFit =
             holdForFittedGrid &&
             (containerElement.dataset.replayHeld === "true" ||
@@ -3882,6 +3875,7 @@ export function ThreadTerminalView({
               data-terminal-renderer="dom"
               data-terminal-context-loss-count="0"
               data-terminal-font-size={terminalFontSize}
+              data-terminal-grid-cache-id={session.id}
               className="box-border h-full min-h-0 w-full overflow-hidden pl-2"
             />
             <TerminalCommandGutter

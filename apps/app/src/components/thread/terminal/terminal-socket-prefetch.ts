@@ -1,9 +1,11 @@
 import { markTerminalPerformance } from "@/lib/terminal-performance";
 import type { TerminalBrowserSocket } from "@bb/client-core";
+import { readCachedTerminalGrid } from "./terminal-grid-cache";
 import {
   TERMINAL_REPLAY_BATCH_WEBSOCKET_PROTOCOL,
   TERMINAL_LEGACY_WEBSOCKET_PROTOCOL,
   TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL,
+  terminalServerMessageSchema,
 } from "@bb/server-contract";
 
 const pending = new Map<string, BufferedTerminalSocket>();
@@ -20,6 +22,9 @@ class BufferedTerminalSocket implements TerminalBrowserSocket {
   private queue: Delivery[] = [];
   private bytes = 0;
   private adopted = false;
+  private adopting = false;
+  private awaitingAttach = true;
+  initialSizeClaim: { cols: number; rows: number } | undefined;
   private timer: ReturnType<typeof setTimeout>;
   private readonly socket: WebSocket;
 
@@ -39,6 +44,27 @@ class BufferedTerminalSocket implements TerminalBrowserSocket {
         if (this.bytes > MAX_BYTES || this.queue.length >= 8192) {
           this.close();
           return;
+        }
+        if (
+          !this.adopting &&
+          this.awaitingAttach &&
+          typeof event.data === "string"
+        ) {
+          try {
+            const message = terminalServerMessageSchema.safeParse(
+              JSON.parse(event.data),
+            );
+            if (message.success && message.data.type === "attached") {
+              this.awaitingAttach = false;
+              const grid = readCachedTerminalGrid(message.data.session.id);
+              if (grid && this.socket.readyState === WebSocket.OPEN) {
+                this.socket.send(
+                  JSON.stringify({ type: "resize", ...grid, claim: true }),
+                );
+                this.initialSizeClaim = grid;
+              }
+            }
+          } catch {}
         }
       }
       this.deliver(() => this.onmessage?.(event));
@@ -67,6 +93,7 @@ class BufferedTerminalSocket implements TerminalBrowserSocket {
   }
 
   adopt() {
+    this.adopting = true;
     clearTimeout(this.timer);
     this.forget();
     queueMicrotask(() => {

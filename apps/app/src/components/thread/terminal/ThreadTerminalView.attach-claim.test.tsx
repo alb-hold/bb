@@ -1,10 +1,6 @@
 // @vitest-environment jsdom
 
-import {
-  act,
-  cleanup,
-  render,
-} from "@testing-library/react";
+import { act, cleanup, render } from "@testing-library/react";
 import * as rendererModule from "./terminal-webgl-renderer";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm";
@@ -16,6 +12,15 @@ import { wsManager } from "@/lib/ws";
 import { AppCommandProvider } from "@/components/commands/AppCommandProvider";
 import { ThreadTerminalView } from "./ThreadTerminalView";
 import { importTerminalModules } from "./terminal-modules";
+import {
+  readCachedTerminalGrid,
+  rememberTerminalGrid,
+} from "./terminal-grid-cache";
+import {
+  prefetchTerminalSocket,
+  discardPrefetchedTerminalSocket,
+} from "./terminal-socket-prefetch";
+import { buildTerminalWebSocketUrl } from "./terminal-websocket-url";
 
 const testState = vi.hoisted(() => ({
   calls: [] as string[],
@@ -158,8 +163,10 @@ vi.mock("@/hooks/usePluginCommandBindings", () => ({
 }));
 
 afterEach(() => {
+  localStorage.clear();
   vi.useRealTimers();
   cleanup();
+  for (const url of testState.socketUrls) discardPrefetchedTerminalSocket(url);
   sessionStorage.removeItem("bb:terminal-viewport:term_mobile_paste");
   sessionStorage.removeItem("bb:terminal-viewport:term_existing_client_grid");
   Reflect.set(wsManager, "deviceHandoffClientToken", null);
@@ -191,13 +198,27 @@ const originalClipboardDescriptor = Object.getOwnPropertyDescriptor(
 
 vi.setConfig({ testTimeout: 30_000 });
 
-
 describe("native terminal attach claim timing", () => {
-  it.each([44, 125].flatMap((cols) => ["ready", "pending", "delayed"].map((pendingScreen) => ({ cols, pendingScreen }))))(
-    "claims the fitted $cols-column grid without awaiting the renderer or screen (pending screen: $pendingScreen)",
-    async ({ cols, pendingScreen }) => {
-      if (pendingScreen === "pending") testState.screen.mockReturnValue(new Promise(() => undefined));
-      if (pendingScreen === "delayed") testState.screen.mockImplementation(() => new Promise((resolve) => setTimeout(() => resolve(null), 700)));
+  it.each(
+    [44, 125].flatMap((cols) =>
+      ["ready", "pending", "delayed"].flatMap((pendingScreen) =>
+        ["miss", "match", "mismatch"].map((cacheMode) => ({
+          cols,
+          pendingScreen,
+          cacheMode,
+        })),
+      ),
+    ),
+  )(
+    "claims the fitted $cols-column grid (screen: $pendingScreen, cache: $cacheMode)",
+    async ({ cols, pendingScreen, cacheMode }) => {
+      localStorage.clear();
+      if (pendingScreen === "pending")
+        testState.screen.mockReturnValue(new Promise(() => undefined));
+      if (pendingScreen === "delayed")
+        testState.screen.mockImplementation(
+          () => new Promise((resolve) => setTimeout(() => resolve(null), 700)),
+        );
       vi.stubGlobal("WebSocket", TestTerminalSocket);
       const focusGuard = render(<button>Other input</button>);
       focusGuard.getByRole("button").focus();
@@ -243,14 +264,16 @@ describe("native terminal attach claim timing", () => {
         frames.delete(id);
       });
       let resizeAt: number | undefined;
-      const originalSendResize = TerminalWebSocketTransport.prototype.sendResize;
-      const sendResize = vi.spyOn(
-        TerminalWebSocketTransport.prototype,
-        "sendResize",
-      ).mockImplementation(function (this: TerminalWebSocketTransport, cols, rows, claim) {
-        if (claim) resizeAt ??= Date.now();
-        originalSendResize.call(this, cols, rows, claim);
-      });
+      const originalSendResize =
+        TerminalWebSocketTransport.prototype.sendResize;
+      const sendResize = vi
+        .spyOn(TerminalWebSocketTransport.prototype, "sendResize")
+        .mockImplementation(
+          function (this: TerminalWebSocketTransport, cols, rows, claim) {
+            if (claim) resizeAt ??= Date.now();
+            originalSendResize.call(this, cols, rows, claim);
+          },
+        );
       const session = makeTerminalSession({
         id: "term_existing_client_grid",
         threadId: null,
@@ -261,27 +284,26 @@ describe("native terminal attach claim timing", () => {
       testState.deferSocketOpen = true;
       let adoptedAt: number | undefined;
       const originalStart = TerminalWebSocketTransport.prototype.start;
-      const startTransport = vi.spyOn(
-        TerminalWebSocketTransport.prototype,
-        "start",
-      ).mockImplementation(function (this: TerminalWebSocketTransport) {
-        adoptedAt ??= Date.now();
-        originalStart.call(this);
-      });
-      render(
-        <MemoryRouter>
-          <AppCommandProvider>
-            <div data-native-terminal-thread="codex">
-              <ThreadTerminalView
-                autoFocus={false}
-                isPanelOpen
-                session={session}
-              />
-            </div>
-          </AppCommandProvider>
-        </MemoryRouter>,
+      const startTransport = vi
+        .spyOn(TerminalWebSocketTransport.prototype, "start")
+        .mockImplementation(function (this: TerminalWebSocketTransport) {
+          adoptedAt ??= Date.now();
+          originalStart.call(this);
+        });
+      const cachedCols = cacheMode === "mismatch" ? cols + 1 : cols;
+      if (cacheMode !== "miss") {
+        rememberTerminalGrid(session.id, document.createElement("div"), 13, {
+          cols: cachedCols,
+          rows: 36,
+        });
+      }
+      prefetchTerminalSocket(
+        buildTerminalWebSocketUrl({
+          terminalId: session.id,
+          handoffOwnerToken: wsManager.getDeviceHandoffClientToken(),
+        }),
       );
-      await vi.waitFor(() => expect(testState.sockets).toHaveLength(1), { interval: 1 });
+      expect(testState.sockets).toHaveLength(1);
       const attachedAt = Date.now();
       let claimAt: number | undefined;
       const socket = testState.sockets[0]!;
@@ -297,6 +319,30 @@ describe("native terminal attach claim timing", () => {
         replayStartSeq: 0,
         nextSeq: 0,
       });
+      expect(
+        document.querySelector("[data-terminal-grid-cache-id]"),
+      ).toBeNull();
+      if (cacheMode === "miss") {
+        expect(claimAt).toBeUndefined();
+      } else {
+        expect(claimAt! - attachedAt).toBeLessThanOrEqual(5);
+        expect(startTransport).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(700);
+      }
+      const renderedAt = Date.now();
+      render(
+        <MemoryRouter>
+          <AppCommandProvider>
+            <div data-native-terminal-thread="codex">
+              <ThreadTerminalView
+                autoFocus={false}
+                isPanelOpen
+                session={session}
+              />
+            </div>
+          </AppCommandProvider>
+        </MemoryRouter>,
+      );
       for (let frame = 0; frame < 50; frame += 1) {
         await act(async () => {
           await vi.advanceTimersByTimeAsync(16);
@@ -306,25 +352,38 @@ describe("native terminal attach claim timing", () => {
         });
       }
       expect(startTransport).toHaveBeenCalledOnce();
+      expect(testState.socketUrls).toHaveLength(1);
       expect(adoptedAt).toBeDefined();
       expect(claimAt).toBeDefined();
       expect(claimAt! - adoptedAt!).toBeLessThanOrEqual(16);
       const claims = socket.sent
         .map((raw) => JSON.parse(raw))
         .filter((message) => message.type === "resize");
-      console.info("P72 prefetched attach-to-claim", {
+      console.info("P74 prefetched attach-to-claim", {
         cols,
-        adoptionToClaimMilliseconds: claimAt === undefined || adoptedAt === undefined ? null : claimAt - adoptedAt,
+        cacheMode,
+        adoptionToClaimMilliseconds:
+          claimAt === undefined || adoptedAt === undefined
+            ? null
+            : claimAt - adoptedAt,
         viewMilliseconds: resizeAt === undefined ? null : resizeAt - attachedAt,
         wireMilliseconds: claimAt === undefined ? null : claimAt - attachedAt,
       });
       expect(sendResize.mock.calls.some((args) => args[2] === true)).toBe(true);
       expect(resizeAt).toBeDefined();
-      expect(resizeAt! - attachedAt).toBeLessThanOrEqual(100);
-      expect(claimAt).toBe(resizeAt);
+      expect(resizeAt! - renderedAt).toBeLessThanOrEqual(100);
+      if (cacheMode === "miss") expect(claimAt).toBe(resizeAt);
       expect(claimAt! - attachedAt).toBeLessThanOrEqual(100);
-      expect(claims).toEqual([{ type: "resize", cols, rows: 36, claim: true }]);
+      const measured = { type: "resize", cols, rows: 36, claim: true };
+      expect(claims).toEqual(
+        cacheMode === "mismatch"
+          ? [
+              { type: "resize", cols: cachedCols, rows: 36, claim: true },
+              measured,
+            ]
+          : [measured],
+      );
+      expect(readCachedTerminalGrid(session.id)).toEqual({ cols, rows: 36 });
     },
   );
-
 });
