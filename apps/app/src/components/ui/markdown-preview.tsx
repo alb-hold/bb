@@ -793,15 +793,21 @@ function MarkdownCodeBlock({
                   onClick={() => {
                     setSoftWrap((value) => !value);
                   }}
-                  className="inline-flex size-5 cursor-pointer items-center justify-center text-muted-foreground transition-colors hover:text-foreground aria-pressed:text-foreground"
+                  className="inline-flex size-5 cursor-pointer items-center justify-center text-foreground transition-colors hover:text-foreground aria-pressed:text-foreground"
                 >
-                  <Icon name="TextWrap" className="size-3" />
+                  <Icon name="TextWrap" className="size-3.5" />
                 </button>
               </TooltipTrigger>
               <TooltipContent side="bottom">{LINE_WRAP_LABEL}</TooltipContent>
             </Tooltip>
           </TooltipProvider>
-          <CopyButton data-compact-touch="code" text={codeText} label="Copy code" />
+          <CopyButton
+            data-compact-touch="code"
+            text={codeText}
+            label="Copy code"
+            className="text-foreground"
+            iconClassName="size-3.5"
+          />
         </div>
       </div>
       <pre

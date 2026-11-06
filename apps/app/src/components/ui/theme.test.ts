@@ -563,3 +563,26 @@ it("keeps terminal bright-black output distinct from the canvas in both themes",
     );
   }
 });
+
+describe("sidebar and timeline metadata contrast", () => {
+  for (const mode of MODES) {
+    const block = modeBlock(mode);
+    const canvas = parseOklch(variableValue(block, "canvas"));
+    const ink = parseOklch(variableValue(block, "ink"));
+    for (const background of ["canvas", "sidebar", "sidebar-accent"]) {
+      const share =
+        background === "canvas" ? 0 : rampSteps(block).get(background)! / 100;
+      const surface = {
+        ...canvas,
+        lightness: ink.lightness * share + canvas.lightness * (1 - share),
+      };
+      for (const token of ["subtle-foreground", "muted-foreground"]) {
+        it(`${mode} ${token} metadata reaches 4.5:1 on ${background}`, () => {
+          expect(
+            contrastRatio(parseOklch(variableValue(block, token)), surface),
+          ).toBeGreaterThanOrEqual(4.5);
+        });
+      }
+    }
+  }
+});

@@ -136,6 +136,41 @@ function FooterPreferencesProbe() {
 }
 
 describe("PluginSidebarFooterItems", () => {
+  it.each(["Provider usage", "Report a bug", "More footer actions"])(
+    "gives %s a matching accessible name and keyboard tooltip",
+    async (label) => {
+      setPluginSlotRegistrations(
+        "usage",
+        collectPluginAppRegistrations(
+          definePluginApp((app) => {
+            app.experimental_sidebarFooter.register({
+              kind: "action",
+              id: "usage",
+              label: "Provider usage",
+              icon: "ChartColumn",
+              onActivate: vi.fn(),
+            });
+          }),
+        ),
+      );
+      renderWithProviders(
+        <SidebarMenu>
+          <PluginSidebarFooterItems
+            activeDisclosureKey={null}
+            onDisclosureCommand={vi.fn()}
+            onCustomize={vi.fn()}
+            builtInActions={[{ id: "report-bug", onActivate: vi.fn() }]}
+          />
+        </SidebarMenu>,
+        createStore(),
+      );
+      const trigger = screen.getByRole("button", { name: label });
+      fireEvent.keyDown(document.body, { key: "Tab" });
+      act(() => trigger.focus());
+      expect((await screen.findByRole("tooltip")).textContent).toBe(label);
+    },
+  );
+
   it.each(["order", "hidden"])("preserves an existing profile with saved %s", (kind) => {
     const store = createStore();
     if (kind === "order") store.set(sidebarFooterOrderAtom, ["builtin:report-bug", "builtin:mobile"]);

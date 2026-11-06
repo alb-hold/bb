@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -180,7 +181,7 @@ describe("SidebarUpdatesBadge", () => {
     expect(result.container.innerHTML).toBe("");
   });
 
-  it("shows only the bb chip for a bb-only update", () => {
+  it("shows only the bb chip for a bb-only update", async () => {
     renderBadge({ appUpdateAvailable: true });
 
     const badge = screen.getByTestId("sidebar-updates-badge-bb");
@@ -191,6 +192,10 @@ describe("SidebarUpdatesBadge", () => {
     expect(glyph?.getAttribute("style")).toBeNull();
     expect(badge.classList.contains("rounded-full")).toBe(false);
     expect(screen.queryByTestId("sidebar-updates-badge-providers")).toBeNull();
+    expect(screen.getByRole("link", { name: "bb update available" })).toBe(badge);
+    fireEvent.keyDown(document.body, { key: "Tab" });
+    act(() => badge.focus());
+    expect((await screen.findByRole("tooltip")).textContent).toBe("bb update available");
   });
 
   it("counts plugin updates but not blocked plugin candidates", () => {
