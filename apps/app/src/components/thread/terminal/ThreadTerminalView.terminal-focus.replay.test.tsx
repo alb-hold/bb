@@ -1252,8 +1252,6 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
       const preview = document.querySelector<HTMLElement>(
         "[data-terminal-replay-preview]",
       );
-      if (snapshotCols === 40)
-        expect(preview?.style.visibility).toBe("visible");
       const socket = testState.sockets[0]!;
       await waitForReadiness(socket.opened, "socket did not open");
       await waitForReadinessCondition(
@@ -1263,6 +1261,8 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
           ).toBe(true),
         "terminal fit did not settle",
       );
+      if (snapshotCols === 40)
+        await waitFor(() => expect(preview?.style.visibility).toBe("visible"));
       socket.receive({
         type: "attached",
         session,

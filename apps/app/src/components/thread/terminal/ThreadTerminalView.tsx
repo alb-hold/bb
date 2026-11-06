@@ -1937,6 +1937,7 @@ export function ThreadTerminalView({
       containerElement: HTMLDivElement,
     ): Promise<void> {
       containerElement.style.opacity = "0";
+      const paddingLeft = getComputedStyle(containerElement).paddingLeft;
       const updateGridVisibility = () => {
         if (terminal === null) {
           return;
@@ -2520,6 +2521,7 @@ export function ThreadTerminalView({
             return;
           }
           forceTerminalFontMeasurement(terminal);
+          replayPreview?.refreshFonts();
           scheduleFit();
         });
       }
@@ -2919,6 +2921,11 @@ export function ThreadTerminalView({
                     document.hasFocus() &&
                     activeTerminal.element?.contains(document.activeElement) ===
                       true,
+                  liveTerminal: activeTerminal,
+                  paddingLeft,
+                  readyToPaint: () =>
+                    initialRendererSettled &&
+                    document.fonts?.status !== "loading",
                   terminal: previewTerminal,
                 });
                 replayPreview.setPtyGrid(replayGrid.cols, replayGrid.rows);
@@ -3099,6 +3106,10 @@ export function ThreadTerminalView({
                 document.hasFocus() &&
                 activeTerminal.element?.contains(document.activeElement) ===
                   true,
+              liveTerminal: activeTerminal,
+              paddingLeft,
+              readyToPaint: () =>
+                initialRendererSettled && document.fonts?.status !== "loading",
               terminal: previewTerminal,
             });
             replayCheckpointSequence = snapshot.checkpointSeq;
