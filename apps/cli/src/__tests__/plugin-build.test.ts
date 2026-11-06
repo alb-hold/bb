@@ -21,9 +21,6 @@ import {
   resolvePluginBuildToolchain,
   type PluginBuildToolchain,
 } from "@bb/plugin-build";
-import { definePluginApp } from "../../../app/src/lib/plugin-app-definition.js";
-import { radixRuntimeSlots } from "../../../app/src/lib/plugin-radix-runtime.js";
-import { zodRuntimeSlots } from "../../../../packages/plugin-build/src/generated/zod-runtime.generated.js";
 function testToolchain() {
   return resolvePluginBuildToolchain(join(tmpdir(), "bb-toolchain-unused"));
 }
@@ -345,9 +342,9 @@ describe("buildPluginApp", () => {
       new URL("../../../app/package.json", import.meta.url),
     );
     const hostModules: Record<string, unknown> = {
-      ...radixRuntimeSlots,
-      ...zodRuntimeSlots,
-      pluginSdkApp: { definePluginApp },
+      pluginSdkApp: {
+        definePluginApp: (setup: unknown) => ({ __bbPluginApp: true, setup }),
+      },
     };
     const runtime = Object.fromEntries(
       meta.runtimeSlots.map((slot) => {
