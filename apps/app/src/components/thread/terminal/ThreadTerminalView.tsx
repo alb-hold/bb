@@ -1308,6 +1308,9 @@ export function ThreadTerminalView({
     useState<TerminalLinkTarget | null>(null);
   const [connectionNotice, setConnectionNotice] =
     useState<TerminalConnectionNotice | null>(null);
+  const [restoringSession, setRestoringSession] = useState(
+    session.status === "running",
+  );
   const [replayNotice, setReplayNotice] = useState<TerminalReplayNotice | null>(
     null,
   );
@@ -1682,6 +1685,7 @@ export function ThreadTerminalView({
     if (!container) {
       return;
     }
+    setRestoringSession(sessionStatusRef.current === "running");
 
     const activeElementAtMount = document.activeElement;
     container.style.containerType = "inline-size";
@@ -1837,6 +1841,8 @@ export function ThreadTerminalView({
     const releaseReplayPreview = () => {
       paintedScreenKept = false;
       replayPreview?.release();
+      clearScreenLoadingPreview();
+      setRestoringSession(false);
       setReplayNotice(null);
     };
     let exitedBeforeReplayCompleted = false;
@@ -2010,6 +2016,7 @@ export function ThreadTerminalView({
       void screenPromise.then((snapshot) => {
         if (
           disposed ||
+          replayCompleted ||
           snapshot == null ||
           !snapshot.complete ||
           snapshot.truncated
@@ -2834,6 +2841,7 @@ export function ThreadTerminalView({
             },
             onReplayComplete: () => {
               replayCompleted = true;
+              setRestoringSession(false);
               keepScreenLoadingPreview = false;
               clearScreenLoadingPreview();
               containerElement.dataset.replayHeld = "false";
@@ -2879,6 +2887,7 @@ export function ThreadTerminalView({
             outputFrameId: currentOutputFrameId ?? undefined,
             onReplayStart: () => {
               replayStarted = true;
+              setRestoringSession(true);
               containerElement.dataset.replayHeld = "true";
               viewportReplaySaveGate.beginReplay();
               replayCompleted = false;
@@ -3257,19 +3266,14 @@ export function ThreadTerminalView({
       );
     }
 
-    void mountTerminal(container)
-      .then(() => {
-        window.requestAnimationFrame(() => {
-          if (!keepScreenLoadingPreview) clearScreenLoadingPreview();
-        });
-      })
-      .catch((error) => {
-        clearScreenLoadingPreview();
-        if (!disposed) {
-          container.textContent =
-            error instanceof Error ? error.message : String(error);
-        }
-      });
+    void mountTerminal(container).catch((error) => {
+      clearScreenLoadingPreview();
+      if (!disposed) {
+        setRestoringSession(false);
+        container.textContent =
+          error instanceof Error ? error.message : String(error);
+      }
+    });
 
     return () => {
       disposed = true;
@@ -3435,7 +3439,9 @@ export function ThreadTerminalView({
             ? "Reconnecting…"
             : replayNotice === "unavailable"
               ? "Terminal output unavailable"
-              : null;
+              : restoringSession
+                ? "Restoring session…"
+                : null;
   useEffect(() => {
     webglVisibilityRef.current?.sync();
     terminalVisibilityReporterRef.current?.();
@@ -3552,13 +3558,16 @@ export function ThreadTerminalView({
       {connectionNoticeText !== null ? (
         <div
           role="status"
+          data-terminal-restoring={
+            connectionNoticeText === "Restoring session…" ? "" : undefined
+          }
           style={{ position: "absolute" }}
-          className="pointer-events-none right-2 top-1 z-10 max-w-full rounded-md bg-sidebar px-2 py-1 text-xs text-foreground shadow-sm"
+          className={`pointer-events-none right-2 top-1 z-10 max-w-full rounded-md bg-sidebar px-2 py-1 text-xs shadow-sm ${connectionNoticeText === "Restoring session…" ? "text-muted-foreground" : "text-foreground"}`}
         >
           {connectionNoticeText}
         </div>
       ) : null}
-      {terminalReady && showFitControl ? (
+      {terminalReady && !restoringSession && showFitControl ? (
         <div
           style={{ position: "absolute" }}
           className={`right-2 z-10 flex items-center justify-end gap-2 rounded-md bg-sidebar px-2 py-1 text-xs shadow-sm ${connectionNoticeText === null ? "top-1" : "top-10"}`}
