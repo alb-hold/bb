@@ -1,9 +1,12 @@
 import {
+  useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
   type CSSProperties,
+  type FocusEvent,
+  type KeyboardEvent,
   type MouseEvent,
   type PointerEvent,
   type ReactNode,
@@ -338,9 +341,45 @@ function buildAddToChatAttachments(
 
 function useTouchMessageActions(alwaysVisible: boolean) {
   const [revealed, setRevealed] = useState(false);
-  const pointerStart = useRef<{ x: number; y: number; selecting: boolean } | null>(null);
+  const messageRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!revealed) return;
+    const dismiss = (event: globalThis.PointerEvent) => {
+      if (
+        event.target instanceof Node &&
+        !messageRef.current?.contains(event.target)
+      ) {
+        setRevealed(false);
+      }
+    };
+    document.addEventListener("pointerdown", dismiss, true);
+    return () => document.removeEventListener("pointerdown", dismiss, true);
+  }, [revealed]);
+  const pointerStart = useRef<{
+    x: number;
+    y: number;
+    selecting: boolean;
+  } | null>(null);
   return {
+    ref: messageRef,
+    tabIndex: 0,
+    role: "group",
+    "aria-label": "Message",
+    "aria-description":
+      "Press Enter to show message actions; Escape to dismiss",
     "data-touch-actions-visible": alwaysVisible || revealed ? "true" : "false",
+    onBlur: (event: FocusEvent<HTMLDivElement>) => {
+      if (!event.currentTarget.contains(event.relatedTarget))
+        setRevealed(false);
+    },
+    onKeyDown: (event: KeyboardEvent<HTMLDivElement>) => {
+      if (event.target !== event.currentTarget) return;
+      if (event.key === "Escape") setRevealed(false);
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        setRevealed(true);
+      }
+    },
     onPointerDown: (event: PointerEvent<HTMLDivElement>) => {
       pointerStart.current = {
         x: event.clientX,
@@ -351,12 +390,18 @@ function useTouchMessageActions(alwaysVisible: boolean) {
     onClick: (event: MouseEvent<HTMLDivElement>) => {
       const target = event.target;
       const start = pointerStart.current;
-      if (!window.matchMedia("(pointer: coarse), (width <= 480px)").matches ||
+      if (
+        !window.matchMedia("(pointer: coarse), (width <= 480px)").matches ||
         !(target instanceof Element) ||
-        target.closest('a, button, input, textarea, select, [role="button"], [contenteditable="true"]') ||
+        target.closest(
+          'a, button, input, textarea, select, [role="button"], [contenteditable="true"]',
+        ) ||
         (window.getSelection()?.toString().length ?? 0) > 0 ||
         start?.selecting ||
-        (start && Math.hypot(event.clientX - start.x, event.clientY - start.y) > 8)) return;
+        (start &&
+          Math.hypot(event.clientX - start.x, event.clientY - start.y) > 8)
+      )
+        return;
       setRevealed((value) => !value);
     },
   };
@@ -465,7 +510,10 @@ function UserConversationMessage({
 
   return (
     <div className="@container w-full" data-message-column="">
-      <div {...touchActions} className="group/message ml-auto flex w-fit max-w-[70%] flex-col items-end">
+      <div
+        {...touchActions}
+        className="group/message focus-visible:outline-2 focus-visible:outline-ring ml-auto flex w-fit max-w-[70%] flex-col items-end"
+      >
         {requestLabel ? (
           <div className="mb-1 flex items-center justify-end gap-2">
             <TurnRequestLabel
@@ -650,7 +698,7 @@ function AssistantConversationMessage({
   return (
     <div
       className={cn(
-        "group/message w-full text-sm font-normal leading-relaxed",
+        "group/message focus-visible:outline-2 focus-visible:outline-ring w-full text-sm font-normal leading-relaxed",
         PROSE_COLUMN_INSET_CLASS,
       )}
       data-message-column=""

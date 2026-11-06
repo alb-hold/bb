@@ -538,6 +538,21 @@ afterEach(() => {
 });
 
 describe("ThreadRow", () => {
+  it("renders terminal attention delivered by the host and clears it with the state", () => {
+    const view = renderThreadRow({
+      thread: createThread({ indicator: "check-terminal" }),
+    });
+    expect(screen.getByRole("img", { name: "Check terminal" })).toBeTruthy();
+    expect(
+      view.container.querySelector(
+        '[data-thread-status-glyph="check-terminal"]',
+      ),
+    ).not.toBeNull();
+    view.unmount();
+    renderThreadRow({ thread: createThread({ indicator: "none" }) });
+    expect(screen.queryByRole("img", { name: "Check terminal" })).toBeNull();
+  });
+
   it.each([
     ["Workspace", createThread({ environment: null })],
     ["Workspace", createThread({ environment: makeSidebarEnvironment({ isWorktree: false }) })],

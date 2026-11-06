@@ -19,7 +19,7 @@ import { useSidebarRowMetadataExperiment } from "../list/SidebarRowMetadataExper
 import { useStickyRowStateReport } from "../ui/stickyOffset.js";
 import { useAtomValue } from "jotai";
 import { Icon } from "@/components/ui/icon";
-import { InfoRowTime } from "@bb/shared-ui/info-list-row";
+import { InfoRowTime } from "@/components/ui/info-list-row";
 import { useIsCompactViewport } from "@/components/ui/hooks/use-compact-viewport";
 import {
   Tooltip,

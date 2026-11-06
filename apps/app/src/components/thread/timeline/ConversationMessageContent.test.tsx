@@ -1,7 +1,13 @@
 // @vitest-environment jsdom
 
 import { LazyMarkdownHtml } from "@/components/ui/lazy-markdown-html";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+} from "@testing-library/react";
 import type { ThreadListEntry } from "@bb/domain";
 import { beforeAll, afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
@@ -728,7 +734,9 @@ function renderTouchActions(mobileActionDisplay: "inline" | "overflow") {
       />
     </MemoryRouter>,
   );
-  const message = view.container.querySelector<HTMLElement>("[data-touch-actions-visible]")!;
+  const message = view.container.querySelector<HTMLElement>(
+    "[data-touch-actions-visible]",
+  )!;
   return { ...view, message };
 }
 
@@ -761,5 +769,23 @@ it("does not reveal older actions during selection or link and control taps", ()
   fireEvent.click(screen.getByRole("link", { name: "a link" }));
   expect(message.dataset.touchActionsVisible).toBe("false");
   fireEvent.click(screen.getByRole("button", { name: "Copy message" }));
+  expect(message.dataset.touchActionsVisible).toBe("false");
+});
+
+it("dismisses older actions on outside tap and keeps them keyboard reachable", () => {
+  const { message } = renderTouchActions("overflow");
+  fireEvent.click(message);
+  expect(message.dataset.touchActionsVisible).toBe("true");
+  const outside = document.createElement("button");
+  outside.addEventListener("pointerdown", (event) => event.stopPropagation());
+  document.body.append(outside);
+  fireEvent.pointerDown(outside);
+  outside.remove();
+  expect(message.dataset.touchActionsVisible).toBe("false");
+  expect(message.tabIndex).toBe(0);
+  act(() => message.focus());
+  fireEvent.keyDown(message, { key: "Enter" });
+  expect(message.dataset.touchActionsVisible).toBe("true");
+  fireEvent.keyDown(message, { key: "Escape" });
   expect(message.dataset.touchActionsVisible).toBe("false");
 });

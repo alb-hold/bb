@@ -1096,3 +1096,27 @@
     padding-inline: 0.25rem;
   }
 }
+
+:where(.bb-sidebar-chrome-icon) [data-icon-root] {
+  width: var(--bb-sidebar-control-icon-size);
+  height: var(--bb-sidebar-control-icon-size);
+  flex-shrink: 0;
+  align-self: center;
+  stroke-width: 1.5;
+  color: inherit;
+}
+
+:where(.bb-sidebar-chrome-icon) [data-icon-root] svg {
+  width: 100%;
+  height: 100%;
+  color: inherit;
+  stroke-width: 1.5;
+}
+
+:where(.bb-sidebar-chrome-icon) [data-icon-root] [fill]:not([fill="none"]) {
+  fill: currentColor;
+}
+
+:where(.bb-sidebar-chrome-icon) [data-icon-root] [stroke]:not([stroke="none"]) {
+  stroke: currentColor;
+}

@@ -63,7 +63,7 @@ export function formatWorkspaceCheckoutDisplay({
         copyValue: null,
         label:
           checkout.branchName !== null
-            ? `${checkout.branchName} (empty)`
+            ? `${checkout.branchName} · no commits`
             : "empty repo",
         rowLabel: "Checkout",
         title:

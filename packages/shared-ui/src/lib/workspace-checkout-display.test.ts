@@ -61,7 +61,7 @@ describe("formatWorkspaceCheckoutDisplay", () => {
       }),
     ).toMatchObject({
       copyValue: null,
-      label: "main (empty)",
+      label: "main · no commits",
       rowLabel: "Checkout",
       title: "Empty branch: main",
     });
