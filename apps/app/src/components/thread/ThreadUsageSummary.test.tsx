@@ -55,6 +55,53 @@ describe("thread usage summary", () => {
     expect(await screen.findAllByText("2,843,776")).not.toHaveLength(0);
   });
 
+  it.each([
+    [186_800, 2_100, ["total", "input", "output", "reasoning", "cached"]],
+    [0, 2_100, ["total", "input", "output", "reasoning"]],
+    [186_800, 0, ["total", "input", "output", "cached"]],
+    [0, null, ["total", "input", "output"]],
+  ])(
+    "keeps total first with cached=%s and reasoning=%s",
+    (cachedInputTokens, reasoningOutputTokens, expected) => {
+      useThreadSpendSummary.mockReturnValue({
+        data: {
+          total: { reasoningOutputTokens },
+          turns: [
+            {
+              turnId: "phone",
+              inputTokens: 201_300,
+              outputTokens: 6_200,
+              cachedInputTokens,
+              reasoningOutputTokens,
+              totalTokens: 207_500,
+            },
+          ],
+        },
+      });
+      const { container } = render(
+        <TooltipProvider>
+          <ThreadTurnTokenSummary
+            openAnalysisOnClick={false}
+            threadId="parent"
+            turnId="phone"
+          />
+        </TooltipProvider>,
+      );
+      const summary = container.querySelector("[data-thread-turn-tokens]")!;
+      expect(
+        [...summary.querySelectorAll("[data-token-part]")].map((part) =>
+          part.getAttribute("data-token-part"),
+        ),
+      ).toEqual(expected);
+      expect(
+        summary.querySelector("[data-token-total-full]")?.textContent,
+      ).toBe("207.5K tokens");
+      expect(
+        summary.querySelector("[data-token-total-tight]")?.textContent,
+      ).toBe("208K tokens");
+    },
+  );
+
   it.each([true, false])(
     "uses UI type with tabular numerals for compact=%s",
     (compact) => {
@@ -382,7 +429,7 @@ describe("thread usage summary", () => {
     expect(screen.getByText("2.8M tokens")).toBeTruthy();
     expect(
       container.querySelector("[data-token-total-tight]")?.textContent,
-    ).toBe("3M");
+    ).toBe("3M tokens");
     expect(screen.queryByText(/Thread tokens/)).toBeNull();
     fireEvent.pointerMove(
       container.querySelector("[data-thread-turn-tokens]")!,
@@ -496,8 +543,12 @@ describe("thread usage summary", () => {
     );
 
     expect(screen.getByText("reason 10")).toBeTruthy();
-    expect(screen.getByText("cached 20")).toBeTruthy();
-    expect(screen.getByText("220 tokens")).toBeTruthy();
+    expect(
+      screen.getByText("cached 20", { selector: "[data-token-cached-full]" }),
+    ).toBeTruthy();
+    expect(
+      screen.getByText("220 tokens", { selector: "[data-token-total-full]" }),
+    ).toBeTruthy();
   });
 
   it("keeps a compact desktop summary while preserving the full details popup", async () => {
@@ -679,7 +730,7 @@ describe("thread usage summary", () => {
     expect(container.querySelector("[data-token-total-full]")).toBeNull();
     expect(
       container.querySelector("[data-token-total-tight]")?.textContent,
-    ).toBe("687M");
+    ).toBe("cached 687M");
     expect(
       container.querySelector("[data-thread-turn-tokens]")?.textContent,
     ).toContain("cached 686.7M");

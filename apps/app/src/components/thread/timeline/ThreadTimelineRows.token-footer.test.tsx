@@ -112,19 +112,24 @@ describe("ThreadTimelineRows token footer", () => {
     expect(screen.getByText("466.6K tokens")).toBeTruthy();
     expect(
       container.querySelector("[data-token-total-tight]")?.textContent,
-    ).toBe("467K");
+    ).toBe("467K tokens");
     const breakdown = container.querySelector("[data-thread-turn-tokens]");
     expect(breakdown?.getAttribute("class")).toContain("flex-wrap");
     expect(breakdown?.getAttribute("class")).toContain("whitespace-normal");
-    const trailingGroup = container.querySelector(
-      "[data-token-trailing-group]",
-    );
     expect(
-      trailingGroup?.querySelector('[data-token-part="cached"]'),
-    ).toBeTruthy();
+      [...breakdown!.querySelectorAll("[data-token-part]")].map((part) =>
+        part.getAttribute("data-token-part"),
+      ),
+    ).toEqual(["total", "input", "output", "cached"]);
+    expect(breakdown?.closest("[data-message-action-row]")).toBeNull();
     expect(
-      trailingGroup?.querySelector('[data-token-part="total"]'),
-    ).toBeTruthy();
+      breakdown?.parentElement?.hasAttribute("data-message-action-slot"),
+    ).toBe(true);
+    expect(
+      breakdown?.parentElement?.parentElement?.hasAttribute(
+        "data-message-column",
+      ),
+    ).toBe(true);
   });
 
   it("shows Codex spend on a collapsed turn row when the timeline also has its assistant row", () => {
@@ -307,6 +312,16 @@ describe("ThreadTimelineRows token footer", () => {
       /\[data-thread-turn-tokens\]\s*\[data-token-part="(?:reasoning|output|input|cached)"\]\s*\{\s*display:\s*none\s*;/,
     );
     expect(actionBarStyles).toContain("flex-wrap: wrap");
+    expect(actionBarStyles).toContain(
+      "[data-token-part] + [data-token-part]::before",
+    );
+    expect(actionBarStyles).toContain('content: "·"');
+    expect(actionBarStyles).toMatch(
+      /\[data-touch-actions-visible="false"\]:not\(:focus-within\)\s+\[data-message-action-row\]/,
+    );
+    expect(actionBarStyles).not.toMatch(
+      /\[data-touch-actions-visible="false"\]:not\(:focus-within\)\s+\[data-message-action-slot\]/,
+    );
   });
 
   it("renders captured reasoning tokens on a wide flat Claude response", () => {

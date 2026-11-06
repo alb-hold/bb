@@ -179,16 +179,25 @@ export function ThreadTurnTokenSummary({
     ? getTurnWeatherMetrics(data).get(turnId)
     : undefined;
   const formatCompact = (value: number) => compactTokens(value);
-  const hasTotalTokens = hasTokens(turn.totalTokens);
-  const tightSummaryValue = hasTotalTokens
-    ? turn.totalTokens
-    : hasTokens(turn.cachedInputTokens)
-      ? turn.cachedInputTokens
-      : null;
   const summaryContent = compact ? (
-    <span data-token-part="total">{compactTokens(turn.totalTokens)} tokens</span>
+    <span data-token-part="total">
+      {compactTokens(turn.totalTokens)} tokens
+    </span>
   ) : (
     <>
+      {hasTokens(turn.totalTokens) ? (
+        <span data-token-part="total" className="font-medium">
+          <span data-token-total-full>
+            {formatCompact(turn.totalTokens)} tokens
+          </span>
+          <span
+            data-token-total-tight
+            aria-label={`Total ${exactTokens(turn.totalTokens)} tokens`}
+          >
+            {compactTokens(turn.totalTokens, 0)} tokens
+          </span>
+        </span>
+      ) : null}
       {hasTokens(turn.inputTokens) ? (
         <span data-token-part="input">
           in {formatCompact(turn.inputTokens)}
@@ -204,40 +213,24 @@ export function ThreadTurnTokenSummary({
           reason {formatCompact(reasoningDisplayValue)}
         </span>
       ) : null}
-      {hasTokens(turn.cachedInputTokens) || tightSummaryValue !== null ? (
-        <span data-token-trailing-group="">
-          {hasTokens(turn.cachedInputTokens) ? (
-            <span data-token-part="cached">
-              cached {formatCompact(turn.cachedInputTokens)}
-            </span>
-          ) : null}
-          {hasTotalTokens && tightSummaryValue !== null ? (
-            <span data-token-part="total">
-              <span data-token-total-full>
-                {formatCompact(tightSummaryValue)} tokens
-              </span>
-              <span
-                data-token-total-tight
-                aria-label={`Total ${exactTokens(tightSummaryValue)} tokens`}
-              >
-                {compactTokens(tightSummaryValue, 0)}
-              </span>
-            </span>
-          ) : tightSummaryValue !== null ? (
-            <span
-              data-token-total-tight
-              aria-label={`Cached ${exactTokens(tightSummaryValue)} tokens`}
-            >
-              {compactTokens(tightSummaryValue, 0)}
-            </span>
-          ) : null}
+      {hasTokens(turn.cachedInputTokens) ? (
+        <span data-token-part="cached">
+          <span data-token-cached-full>
+            cached {formatCompact(turn.cachedInputTokens)}
+          </span>
+          <span
+            data-token-total-tight
+            aria-label={`Cached ${exactTokens(turn.cachedInputTokens)} tokens`}
+          >
+            cached {compactTokens(turn.cachedInputTokens, 0)}
+          </span>
         </span>
       ) : null}
     </>
   );
   const summaryClassName = compact
     ? "inline-flex shrink-0 items-center whitespace-nowrap font-sans text-xs tabular-nums text-muted-foreground"
-    : "thread-turn-token-breakdown min-w-0 flex-1 flex-wrap items-center gap-x-1 whitespace-normal rounded-md border-0 bg-transparent p-0 text-left font-sans text-xs tabular-nums text-muted-foreground";
+    : "thread-turn-token-breakdown w-full min-w-0 flex-wrap items-center gap-x-1 whitespace-normal rounded-md border-0 bg-transparent p-0 text-left font-sans text-xs tabular-nums text-muted-foreground";
   return (
     <Tooltip>
       <TooltipTrigger asChild>

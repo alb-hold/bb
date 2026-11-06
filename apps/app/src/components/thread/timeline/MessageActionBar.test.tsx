@@ -112,30 +112,53 @@ describe("MessageActionBar", () => {
     }
   });
 
-  it("places the token summary in the message action row", () => {
-    const { container } = render(
-      <MessageActionBar
-        timestamp={TIMESTAMP}
-        messageText="An answer."
-        alignment="start"
-        mobileActionDisplay="inline"
-        footerAdornment={<span data-thread-turn-tokens>Σ 2.8M</span>}
-      />,
-    );
-    const tokenSummary = container.querySelector("[data-thread-turn-tokens]");
-    const actionButton = screen.getByRole("button", {
-      name: "Message actions",
-    });
+  it.each([
+    [360, "idle"],
+    [390, "touch"],
+    [390, "focus"],
+    [1280, "idle"],
+    [1280, "hover"],
+    [1280, "focus"],
+  ])(
+    "aligns the token summary with the message column at %s px with %s actions",
+    (width, state) => {
+      const { container } = render(
+        <div
+          style={{ width }}
+          data-touch-actions-visible={state === "touch" ? "true" : "false"}
+        >
+          <MessageActionBar
+            timestamp={TIMESTAMP}
+            messageText="An answer."
+            alignment="start"
+            mobileActionDisplay="inline"
+            footerAdornment={<span data-thread-turn-tokens>Σ 2.8M</span>}
+          />
+        </div>,
+      );
+      const tokenSummary = container.querySelector("[data-thread-turn-tokens]");
+      const actionButton = screen.getByRole("button", {
+        name: "Message actions",
+      });
 
-    expect(tokenSummary).toBeTruthy();
-    expect(tokenSummary?.parentElement).toBe(actionButton.parentElement);
-    expect(actionButton.getAttribute("data-compact-touch")).toBe("action-menu");
-    expect(
-      screen
-        .getByRole("button", { name: "Copy message" })
-        .getAttribute("data-compact-touch"),
-    ).toBe("action");
-  });
+      if (state === "hover") fireEvent.mouseEnter(actionButton.parentElement!);
+      if (state === "focus") actionButton.focus();
+      expect(tokenSummary).toBeTruthy();
+      expect(tokenSummary?.parentElement).toBe(
+        container.querySelector("[data-message-action-slot]"),
+      );
+      expect(tokenSummary?.closest("[data-message-action-row]")).toBeNull();
+      expect(tokenSummary?.parentElement?.className).not.toMatch(/-m[ls]-/);
+      expect(actionButton.getAttribute("data-compact-touch")).toBe(
+        "action-menu",
+      );
+      expect(
+        screen
+          .getByRole("button", { name: "Copy message" })
+          .getAttribute("data-compact-touch"),
+      ).toBe("action");
+    },
+  );
 
   it("uses the nearest thread window as the tooltip collision boundary", () => {
     const threadWindow = document.createElement("div");

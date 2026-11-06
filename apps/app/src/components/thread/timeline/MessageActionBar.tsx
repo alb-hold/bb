@@ -100,7 +100,6 @@ const DESKTOP_ACTION_WIDTH_PX = 20;
 const TOUCH_ACTION_WIDTH_PX = 28;
 const ACTION_ROW_GAP_PX = 8;
 const OVERFLOW_TRIGGER_GAP_PX = 4;
-const FOOTER_ADORNMENT_RESERVE_PX = 56;
 const OVERFLOW_TRIGGER_TIGHTEN_CLASS = "-ml-1 max-md:pointer-coarse:ml-0";
 
 interface MessageActionRowLayout {
@@ -423,10 +422,7 @@ export function MessageActionBar({
   ];
   const layout = computeMessageActionRowLayout({
     actionCount: inlineCandidates.length,
-    availableWidth:
-      footerAdornment && availableWidth !== undefined
-        ? Math.max(0, availableWidth - FOOTER_ADORNMENT_RESERVE_PX)
-        : availableWidth,
+    availableWidth,
     actionWidth: isCompactTouch
       ? TOUCH_ACTION_WIDTH_PX
       : DESKTOP_ACTION_WIDTH_PX,
@@ -490,7 +486,6 @@ export function MessageActionBar({
               ))
           )}
           {alignment === "end" ? metadata : null}
-          {footerAdornment}
           <DropdownMenu onOpenChange={setIsMenuOpen}>
             <DropdownMenuTrigger asChild>
               <button
@@ -520,6 +515,7 @@ export function MessageActionBar({
           </DropdownMenu>
           {alignment === "start" ? metadata : null}
         </div>
+        {footerAdornment}
       </div>
     </TooltipProvider>
   );
