@@ -151,6 +151,7 @@ export class TerminalWebSocketTransport {
     seq: number | null;
   } | null = null;
   private nextOutputSeq = 0;
+  private hasAttached = false;
   private replayEndNextSeq = 0;
   private pendingOutputAckNextSeq: number | null = null;
   private pendingInputBytes = 0;
@@ -813,6 +814,9 @@ export class TerminalWebSocketTransport {
       return;
     }
     if (message.type === "attached") {
+      if (!this.hasAttached && this.nextOutputSeq === 0)
+        this.nextOutputSeq = message.replayStartSeq;
+      this.hasAttached = true;
       this.replayEndNextSeq = message.nextSeq;
       this.reconnectAttempt = 0;
       this.options.onConnectionState?.("attached");

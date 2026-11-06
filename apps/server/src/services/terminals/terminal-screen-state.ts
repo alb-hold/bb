@@ -265,21 +265,41 @@ function visibleSolidRows(terminal: HeadlessTerminal): string[] {
   return rows;
 }
 
-function serializeVisibleScreen(terminal: HeadlessTerminal): {
-  data: Buffer;
-  response: TerminalScreenResponse;
-} {
+function* serializeScreenRows(
+  terminal: HeadlessTerminal,
+  history = false,
+): Generator<void, { data: Buffer; response: TerminalScreenResponse }> {
   const buffer = terminal.buffer.active;
   const rows: string[] = [];
-  const parts = [`${ESC}[?6l${ESC}[?7l${ESC}[?25l${ESC}[2J`];
-  for (let row = 0; row < terminal.rows; row += 1) {
-    const line = buffer.getLine(buffer.baseY + row);
+  const parts = [
+    history ? `${ESC}c${ESC}[?25l` : `${ESC}[?6l${ESC}[?7l${ESC}[?25l${ESC}[2J`,
+  ];
+  const firstRow = history ? 0 : buffer.baseY;
+  const endRow = buffer.baseY + terminal.rows;
+  if (history && buffer.getLine(0)?.isWrapped)
+    parts.push(" ".repeat(terminal.cols));
+  const reusableCell = buffer.getNullCell();
+  for (let row = firstRow; row < endRow; row += 1) {
+    const line = buffer.getLine(row);
     let text = "";
     let previousSgr = "";
     let activeUrlId = 0;
-    parts.push(`${ESC}[${row + 1};1H`);
-    for (let col = 0; col < terminal.cols; col += 1) {
-      const cell = line?.getCell(col);
+    if (!history) parts.push(`${ESC}[${row - buffer.baseY + 1};1H`);
+    else if (row > 0 && !line?.isWrapped) parts.push("\r\n");
+    let width = terminal.cols;
+    if (!buffer.getLine(row + 1)?.isWrapped) {
+      while (width > 0) {
+        const cell = line?.getCell(width - 1, reusableCell);
+        if (
+          cell &&
+          (cell.getChars() !== "" || cell.isBgRGB() || cell.isBgPalette())
+        )
+          break;
+        width -= 1;
+      }
+    }
+    for (let col = 0; col < width; col += 1) {
+      const cell = line?.getCell(col, reusableCell);
       if (cell === undefined || cell.getWidth() === 0) continue;
       const chars = cell.getChars() || " ";
       text += chars;
@@ -296,10 +316,13 @@ function serializeVisibleScreen(terminal: HeadlessTerminal): {
         parts.push(sgr);
         previousSgr = sgr;
       }
-      parts.push(chars);
+      if (cell.getChars() === "" && !buffer.getLine(row + 1)?.isWrapped)
+        parts.push(`${ESC}[X${ESC}[C`);
+      else parts.push(chars);
     }
     if (activeUrlId !== 0) parts.push(HYPERLINK_CLOSE);
-    rows.push(text.trimEnd());
+    if (row >= buffer.baseY) rows.push(text.trimEnd());
+    if ((row - firstRow + 1) % 8 === 0) yield;
   }
   const cursorCell = buffer
     .getLine(buffer.baseY + buffer.cursorY)
@@ -330,6 +353,23 @@ function serializeVisibleScreen(terminal: HeadlessTerminal): {
   };
 }
 
+function serializeVisibleScreen(terminal: HeadlessTerminal) {
+  const rows = serializeScreenRows(terminal);
+  let result = rows.next();
+  while (!result.done) result = rows.next();
+  return result.value;
+}
+
+async function serializeHistory(terminal: HeadlessTerminal) {
+  const rows = serializeScreenRows(terminal, true);
+  let result = rows.next();
+  while (!result.done) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    result = rows.next();
+  }
+  return result.value;
+}
+
 export class TerminalScreenState {
   private readonly terminal: HeadlessTerminal;
   private readonly pendingWork: Array<
@@ -348,18 +388,43 @@ export class TerminalScreenState {
   private readonly parserState = createTerminalReplayParserState();
   private partialSequence: Uint8Array = new Uint8Array(0);
   private partialSequenceOverflow = false;
+  private replayCompatible = true;
+  private readonly replayParser = createTerminalReplayParserState();
+  private replayOscCommand = "";
+  private replayPreviousByte = 0;
+  private readonly replayMetadata = new Map<number, string>();
+  private replayCursorStyle = "";
+  private replayBatchBytes = 8 * 1024;
 
-  constructor(cols: number, rows: number) {
+  constructor(
+    cols: number,
+    rows: number,
+    private readonly captureReplay = false,
+  ) {
     this.cols = cols;
     this.rows = rows;
     this.terminal = new Terminal({
       allowProposedApi: true,
       cols,
       rows,
-      scrollback: TERMINAL_SCREEN_STATE_SCROLLBACK,
+      scrollback: captureReplay ? 10_000 : TERMINAL_SCREEN_STATE_SCROLLBACK,
     });
     this.terminal.loadAddon(new Unicode11Addon());
     this.terminal.unicode.activeVersion = "11";
+    for (const identifier of captureReplay ? [0, 1, 2, 7, 9] : []) {
+      this.terminal.parser.registerOscHandler(identifier, (payload) => {
+        if (payload.length > TERMINAL_SCREEN_STATE_PARTIAL_SEQUENCE_LIMIT)
+          this.replayCompatible = false;
+        else if (identifier !== 9 || payload.startsWith("4;")) {
+          this.replayMetadata.delete(identifier);
+          this.replayMetadata.set(
+            identifier,
+            `${ESC}]${identifier};${payload}${ESC}\\`,
+          );
+        }
+        return false;
+      });
+    }
   }
 
   push(seq: number, data: Uint8Array): void {
@@ -383,6 +448,81 @@ export class TerminalScreenState {
   }
 
   private trackPartialSequence(data: Uint8Array): void {
+    if (this.captureReplay && this.replayCompatible) {
+      for (const byte of data) {
+        const state = this.replayParser;
+        if (
+          state.escape === "none" &&
+          state.controlString === null &&
+          state.utf8Remaining === 0 &&
+          byte >= 0x20 &&
+          byte <= 0x7e
+        ) {
+          this.replayPreviousByte = byte;
+          continue;
+        }
+        if (state.controlString === "osc") {
+          if (this.replayOscCommand !== ";") {
+            if (byte === 0x3b) {
+              if (
+                !["0", "1", "2", "7", "8", "9", "7791"].includes(
+                  this.replayOscCommand,
+                )
+              )
+                this.replayCompatible = false;
+              this.replayOscCommand = ";";
+            } else if (this.replayOscCommand.length < 8)
+              this.replayOscCommand += String.fromCharCode(byte);
+            else this.replayCompatible = false;
+          }
+          advanceTerminalReplayParserByte(state, byte);
+          if (!this.replayCompatible) break;
+          continue;
+        }
+        this.replayOscCommand = "";
+        const escapeSupported =
+          state.escape !== "escape" ||
+          [0x5b, 0x5d, 0x3d, 0x3e, 0x63, 0x4d, 0x44, 0x45].includes(byte);
+        const modeSupported =
+          (byte !== 0x68 && byte !== 0x6c) ||
+          /^\?(?:(?:1|6|7|25|45|1000|1002|1003|1004|2004|2026|9001);?)+$/u.test(
+            state.csiParameters,
+          ) ||
+          state.csiParameters === "4";
+        const cursorStyle =
+          state.escape === "csi" &&
+          byte === 0x71 &&
+          /^[0-6]? $/u.test(state.csiParameters);
+        if (cursorStyle)
+          this.replayCursorStyle = `${ESC}[${state.csiParameters}q`;
+        const csiSupported =
+          state.escape !== "csi" ||
+          byte < 0x40 ||
+          byte > 0x7e ||
+          cursorStyle ||
+          ("ABCDEFGHJKLMPSTXZ`abcdefhlmnr".includes(
+            String.fromCharCode(byte),
+          ) &&
+            modeSupported &&
+            /^[?0-9;:]*$/u.test(state.csiParameters));
+        if (
+          !escapeSupported ||
+          !csiSupported ||
+          state.escape === "csi-ignore" ||
+          byte === 0x0e ||
+          byte === 0x0f ||
+          byte === 0x0b ||
+          byte === 0x0c ||
+          (state.utf8Remaining === 0 && byte >= 0x80 && byte <= 0x9f) ||
+          (byte === 0x0a && this.replayPreviousByte !== 0x0d)
+        )
+          this.replayCompatible = false;
+        if (!this.replayCompatible) break;
+        this.replayPreviousByte = byte;
+        advanceTerminalReplayParserByte(state, byte);
+      }
+    }
+    if (this.captureReplay) return;
     const scan = { ...this.parserState };
     advanceTerminalReplayParserBytes(this.parserState, data);
     if (isTerminalReplaySafeBoundary(this.parserState)) {
@@ -476,12 +616,55 @@ export class TerminalScreenState {
                   setImmediate(drain);
                   return;
                 }
-                const data =
+                let data =
                   next.kind === "base64"
                     ? Buffer.from(next.data, "base64")
                     : next.data;
+                if (this.captureReplay) {
+                  const batch = [data];
+                  let bytes = data.byteLength;
+                  while (this.pendingWork.length > 0) {
+                    const queued = this.pendingWork[0];
+                    if (!queued || queued.kind === "resize") break;
+                    const size =
+                      queued.kind === "base64"
+                        ? Buffer.byteLength(queued.data, "base64")
+                        : queued.data.byteLength;
+                    if (bytes + size > this.replayBatchBytes) break;
+                    this.pendingWork.shift();
+                    this.pendingWorkBytes -=
+                      queued.kind === "base64"
+                        ? Buffer.byteLength(queued.data, "utf8")
+                        : size;
+                    batch.push(
+                      queued.kind === "base64"
+                        ? Buffer.from(queued.data, "base64")
+                        : queued.data,
+                    );
+                    bytes += size;
+                  }
+                  if (batch.length > 1) data = Buffer.concat(batch);
+                }
+                const started = performance.now();
                 this.trackPartialSequence(data);
+                if (this.captureReplay && !this.replayCompatible) {
+                  setImmediate(drain);
+                  return;
+                }
                 this.terminal.write(data, () => {
+                  if (this.captureReplay) {
+                    const elapsed = performance.now() - started;
+                    if (elapsed > 8)
+                      this.replayBatchBytes = Math.max(
+                        8 * 1024,
+                        Math.floor(this.replayBatchBytes / 2),
+                      );
+                    else if (elapsed < 4)
+                      this.replayBatchBytes = Math.min(
+                        64 * 1024,
+                        this.replayBatchBytes + 8 * 1024,
+                      );
+                  }
                   setImmediate(drain);
                 });
               } catch (error) {
@@ -513,6 +696,45 @@ export class TerminalScreenState {
         ? snapshot.data
         : Buffer.concat([snapshot.data, this.partialSequence])
       ).toString("base64"),
+    };
+  }
+
+  async replaySnapshot(): Promise<{
+    checkpointSeq: number;
+    dataBase64: string;
+  } | null> {
+    await this.pending;
+    if (
+      !this.captureReplay ||
+      this.disposed ||
+      !this.valid ||
+      !this.replayCompatible ||
+      !isTerminalReplaySafeBoundary(this.replayParser) ||
+      this.terminal.buffer.active.type !== "normal" ||
+      (this.terminal.buffer.active.getLine(0)?.isWrapped &&
+        this.terminal.buffer.active.baseY !== 10_000) ||
+      this.terminal.buffer.active.cursorX >= this.terminal.cols
+    )
+      return null;
+    const internalBuffer = readObject(
+      readObject(readObject(this.terminal, "_core"), "_bufferService"),
+      "buffer",
+    );
+    const top = readObject(internalBuffer, "scrollTop");
+    const bottom = readObject(internalBuffer, "scrollBottom");
+    if (typeof top !== "number" || typeof bottom !== "number") return null;
+    const buffer = this.terminal.buffer.active;
+    const row = buffer.cursorY - (this.terminal.modes.originMode ? top : 0);
+    return {
+      checkpointSeq: this.nextSeq,
+      dataBase64: Buffer.concat([
+        (await serializeHistory(this.terminal)).data,
+        encodeUtf8(
+          `${ESC}[?6l${ESC}[${top + 1};${bottom + 1}r${restoreModes(this.terminal)}${ESC}[${row + 1};${buffer.cursorX + 1}H`,
+        ),
+        encodeUtf8([...this.replayMetadata.values()].join("")),
+        encodeUtf8(this.replayCursorStyle),
+      ]).toString("base64"),
     };
   }
 

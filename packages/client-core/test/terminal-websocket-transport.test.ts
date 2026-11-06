@@ -660,7 +660,7 @@ describe("TerminalWebSocketTransport", () => {
     harness.transport.dispose();
   });
 
-  it("reports an explicit replay truncation before accepting available output", () => {
+  it("adopts a compacted first replay without resetting output", () => {
     const gaps = vi.fn<(expectedSeq: number, receivedSeq: number) => void>();
     const harness = createHarness({ onSequenceGap: gaps });
 
@@ -681,13 +681,34 @@ describe("TerminalWebSocketTransport", () => {
       },
     });
 
-    expect(gaps).toHaveBeenCalledOnce();
-    expect(gaps).toHaveBeenCalledWith(0, 5);
+    expect(gaps).not.toHaveBeenCalled();
     expect(
       harness.messages
         .filter((message) => message.type === "output")
         .map((message) => message.chunk.seq),
     ).toEqual([5]);
+    harness.transport.dispose();
+  });
+
+  it("reports a replay gap after an empty first attach", () => {
+    const gaps = vi.fn();
+    const harness = createHarness({ onSequenceGap: gaps });
+    harness.transport.start();
+    const socket = harness.sockets[0]!;
+    socket.open();
+    socket.receive({
+      type: "attached",
+      session: terminalSession(),
+      replayStartSeq: 0,
+      nextSeq: 0,
+    });
+    socket.receive({
+      type: "attached",
+      session: terminalSession(),
+      replayStartSeq: 5,
+      nextSeq: 8,
+    });
+    expect(gaps).toHaveBeenCalledWith(0, 5);
     harness.transport.dispose();
   });
 
