@@ -376,7 +376,7 @@ export function mountTerminalReplayPreview({
   document.addEventListener("focusout", refreshVisibility);
   window.addEventListener("focus", refreshVisibility);
   window.addEventListener("blur", refreshVisibility);
-  if (fitGrid !== null && fitGrid.rows > terminal.rows) {
+  if (readyToPaint() && fitGrid !== null && fitGrid.rows > terminal.rows) {
     terminal.resize(snapshotGrid.cols, fitGrid.rows);
   }
   updateVisibility();
@@ -469,7 +469,11 @@ export function mountTerminalReplayPreview({
     setFitGrid(cols, rows) {
       if (disposed) return;
       fitGrid = { cols, rows };
-      if (terminal.cols === snapshotGrid.cols && rows > terminal.rows) {
+      if (
+        readyToPaint() &&
+        terminal.cols === snapshotGrid.cols &&
+        rows > terminal.rows
+      ) {
         terminal.resize(snapshotGrid.cols, rows);
       }
       updateVisibility();

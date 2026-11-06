@@ -172,13 +172,15 @@ describe("terminal replay preview", () => {
       let ready = false;
       const cover = mountTerminalReplayPreview({
         container,
-        initialFitGrid: { cols: 125, rows: 44 },
+        initialFitGrid: { cols: 125, rows: 47 },
         isOwner: () => false,
         liveTerminal: live,
         readyToPaint: () => ready,
         terminal: preview,
       });
       try {
+        cover.setFitGrid(125, 47);
+        expect(preview.rows).toBe(rows);
         await new Promise<void>((resolve) =>
           cover.push(Buffer.from("snapshot"), resolve),
         );
