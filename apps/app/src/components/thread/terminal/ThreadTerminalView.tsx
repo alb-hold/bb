@@ -1,3 +1,4 @@
+import { markTerminalPerformance } from "@/lib/terminal-performance";
 import {
   createPrefetchedTerminalSocket,
   prefetchTerminalSocket,
@@ -1340,7 +1341,7 @@ export function ThreadTerminalView({
         "[data-terminal-screen-loading-preview], [data-terminal-restoring]",
       )
     ) {
-      performance.mark("terminal-replay-revealed", {
+      markTerminalPerformance("terminal-replay-revealed", {
         detail: { terminalId: session.id },
       });
       pendingReplayRevealRef.current = null;
@@ -2805,13 +2806,13 @@ export function ThreadTerminalView({
         ) {
           if (!replayTimingFirstFrame) {
             replayTimingFirstFrame = true;
-            performance.mark("terminal-replay-first-frame-received", {
+            markTerminalPerformance("terminal-replay-first-frame-received", {
               startTime: messageEventTimestamp,
               detail: { terminalId: session.id },
             });
           }
           if (message.chunk.seq + 1 === replayTimingNextSeq) {
-            performance.mark("terminal-replay-last-frame-received", {
+            markTerminalPerformance("terminal-replay-last-frame-received", {
               startTime: messageEventTimestamp,
               detail: { terminalId: session.id },
             });
@@ -2919,7 +2920,7 @@ export function ThreadTerminalView({
               message.type === "output" &&
               message.chunk.seq + 1 === replayTimingNextSeq
             ) {
-              performance.mark("terminal-replay-primary-xterm-parsed", {
+              markTerminalPerformance("terminal-replay-primary-xterm-parsed", {
                 detail: { terminalId: session.id },
               });
             }
@@ -2954,7 +2955,7 @@ export function ThreadTerminalView({
             replayCompleted = true;
             const revealReplay = () => {
               pendingReplayRevealRef.current = session.id;
-              performance.mark("terminal-replay-parsed", {
+              markTerminalPerformance("terminal-replay-parsed", {
                 detail: { terminalId: session.id },
               });
               setRestoringSession(false);
@@ -2999,7 +3000,7 @@ export function ThreadTerminalView({
           onOutputStart: recordOutputStart,
           onOutputParsed: (sequence) => {
             if (sequence + 1 === replayTimingNextSeq) {
-              performance.mark("terminal-replay-last-xterm-callback", {
+              markTerminalPerformance("terminal-replay-last-xterm-callback", {
                 detail: { terminalId: session.id },
               });
             }
@@ -3089,7 +3090,7 @@ export function ThreadTerminalView({
           message.type === "output" &&
           message.chunk.seq + 1 === replayTimingNextSeq
         ) {
-          performance.mark("terminal-replay-last-frame-dispatched", {
+          markTerminalPerformance("terminal-replay-last-frame-dispatched", {
             detail: { terminalId: session.id },
           });
         }

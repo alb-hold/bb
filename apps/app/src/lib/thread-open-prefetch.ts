@@ -1,3 +1,4 @@
+import { markTerminalPerformance } from "@/lib/terminal-performance";
 import type { NativeTerminalThread } from "@bb/server-contract";
 import { prefetchTerminalSocket } from "@/components/thread/terminal/terminal-socket-prefetch";
 import { buildTerminalWebSocketUrl } from "@/components/thread/terminal/terminal-websocket-url";
@@ -21,9 +22,9 @@ export function prefetchThreadOpen(threadId: string): void {
       queryKey: nativeTerminalThreadQueryKey(threadId),
       staleTime: Infinity,
       queryFn: async ({ signal }) => {
-        performance.mark?.("terminal-native-metadata-requested");
+        markTerminalPerformance("terminal-native-metadata-requested");
         const view = await sdk.nativeTerminals.get({ threadId, signal });
-        performance.mark?.("terminal-native-metadata-received");
+        markTerminalPerformance("terminal-native-metadata-received");
         if (view !== null) {
           if (view.terminal?.status === "running")
             prefetchTerminalScreen(view.terminal.id, threadId);
