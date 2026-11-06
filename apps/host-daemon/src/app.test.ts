@@ -479,7 +479,7 @@ describe("createHostDaemonApp", () => {
         throw new Error("Expected a failed host RPC response");
       const returnedPaths = response.errorMessage
         ?.split("Preserved entries: ")[1]
-        ?.replace(/\.$/u, "")
+        ?.replace(/\. Nothing was stopped\.$/u, "")
         .split(", ");
       expect(returnedPaths).toEqual([target]);
       await expect(
