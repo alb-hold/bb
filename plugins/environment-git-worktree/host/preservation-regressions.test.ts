@@ -1094,7 +1094,7 @@ describe("real worktree teardown preservation", () => {
         beforeQuarantineRestoreLink: async (source, destination) => {
           if (!destination.endsWith("README.md") || replaced) return;
           replaced = true;
-          racerSource = source;
+          racerSource = path.join(worktree.path, path.basename(source));
           await fs.unlink(source);
           await writeFile(source, "racing quarantine bytes\n");
         },
@@ -1136,7 +1136,10 @@ describe("real worktree teardown preservation", () => {
         beforeGitMarkerRestoreLink: async (source) => {
           if (replaced) return;
           replaced = true;
-          racerSource = source;
+          racerSource = path.join(
+            path.dirname(worktree.path),
+            path.basename(source),
+          );
           await fs.unlink(source);
           await writeFile(source, "racing git marker bytes\n");
         },
