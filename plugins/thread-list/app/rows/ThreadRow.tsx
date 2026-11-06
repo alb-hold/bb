@@ -846,6 +846,7 @@ function ThreadRowComponent({
     (showRowMetadata ||
       (hasRowState && parentOptions?.stickyLevel !== undefined)) &&
       "h-auto min-h-[var(--bb-sidebar-row-height)] max-md:pointer-coarse:h-auto max-md:pointer-coarse:min-h-[var(--bb-sidebar-row-height-coarse)]",
+    showRowMetadata && "max-md:pointer-coarse:min-h-11",
     showActive
       ? SIDEBAR_ROW_SELECTED_STATE_CLASS
       : SIDEBAR_ROW_INTERACTIVE_STATE_CLASS,
@@ -924,7 +925,7 @@ function ThreadRowComponent({
           hasRowState && rowFirstLineHeightClass,
           hasVisibleStatus && "gap-1",
           showRowMetadata &&
-            "flex-wrap content-center gap-y-0 py-1 has-[[data-thread-row-metadata][data-has-items]]:py-1.25 has-[[data-thread-row-metadata][data-has-items]]:[&_.bb-thread-title]:leading-4",
+            "flex-wrap content-center gap-y-0 py-1.25 [&_.bb-thread-title]:leading-4",
           !isActionsOpen &&
             "group-data-[sidebar-touch-armed=true]/thread-row:hidden",
           !isEditing &&
@@ -1068,7 +1069,7 @@ function ThreadRowComponent({
         {!showRowMetadata || isEditing || isCustomizingActions ? null : (
           <span
             className={cn(
-              "mt-px flex min-w-0 basis-full",
+              "mt-px flex h-3.5 min-w-0 shrink-0 basis-full overflow-hidden",
               provider !== undefined && "pl-6",
             )}
           >
