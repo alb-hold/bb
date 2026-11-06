@@ -94,6 +94,30 @@ function foreignUnreadableCwdProc(
   };
 }
 
+function foreignReadableOutsideCwdProc(pid: number): ProcReader {
+  const foreignUid = 60_000;
+  const foreignGid = 61_000;
+  return {
+    ...hostProc,
+    readlink: async (target) =>
+      target === `/proc/${pid}/cwd` ||
+      (target.startsWith(`/proc/${pid}/task/`) && target.endsWith("/cwd"))
+        ? "/tmp"
+        : hostProc.readlink(target),
+    readFile: async (target) => {
+      if (target === "/proc/self/status")
+        return `Name:\tnode\nState:\tR (running)\nNSpid:\t${process.pid}\nUid:\t2000\t2000\t2000\t2000\nGid:\t2000\t2000\t2000\t2000\nGroups:\t2000\n`;
+      if (target === `/proc/${pid}/status`)
+        return `Name:\tforeign\nState:\tS (sleeping)\nUid:\t${foreignUid}\t${foreignUid}\t${foreignUid}\t${foreignUid}\nGid:\t${foreignGid}\t${foreignGid}\t${foreignGid}\t${foreignGid}\nGroups:\t${foreignGid}\nCapEff:\t0000000000000000\n`;
+      return hostProc.readFile(target);
+    },
+    readdir: async (target) =>
+      target === "/proc"
+        ? [String(process.pid), String(pid)]
+        : hostProc.readdir(target),
+  };
+}
+
 function rootDaemonHolderProc(
   pid: number,
   worktreePath: string,
@@ -928,6 +952,7 @@ describe("real worktree teardown preservation", () => {
       startedAt: Number.MAX_SAFE_INTEGER,
       beforeEntryRemoval: async (entry) => {
         if (!entry.endsWith("late-dir/b-trigger.txt") || injected) return;
+        expect(existsSync(path.join(lateDirectory, "a-old.txt"))).toBe(false);
         injected = true;
         await writeFile(
           path.join(path.dirname(entry), "late-file.txt"),
@@ -1199,6 +1224,44 @@ describe("real worktree teardown preservation", () => {
       await expect(remove(worktree)).rejects.toMatchObject({
         code: "worktree_preserved",
       });
+      await expect(access(worktree.path)).resolves.toBeUndefined();
+      await expect(
+        readFile(path.join(worktree.path, "README.md"), "utf8"),
+      ).resolves.toBe("published\n");
+    },
+  );
+
+  it.skipIf(process.platform !== "linux")(
+    "removes a worktree inaccessible to a foreign uid with a readable outside cwd",
+    async () => {
+      const root = await mkdtemp(path.join("/tmp", "bb-preserve-worktree-"));
+      const worktree = await makeWorktree(root);
+      await fs.chmod(root, 0o755);
+      await fs.chmod(worktree.path, 0o700);
+      useProcReaderForTests(foreignReadableOutsideCwdProc(100102));
+      const signal = vi.spyOn(process, "kill");
+
+      await remove(worktree);
+      expect(signal).not.toHaveBeenCalled();
+      await expect(access(worktree.path)).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+    },
+  );
+
+  it.skipIf(process.platform !== "linux")(
+    "retains a worktree reachable by a foreign uid with a readable outside cwd without signalling a process",
+    async () => {
+      const root = await mkdtemp(path.join("/tmp", "bb-preserve-worktree-"));
+      const worktree = await makeWorktree(root);
+      await fs.chmod(root, 0o755);
+      useProcReaderForTests(foreignReadableOutsideCwdProc(100101));
+      const signal = vi.spyOn(process, "kill");
+
+      await expect(remove(worktree)).rejects.toMatchObject({
+        code: "worktree_preserved",
+      });
+      expect(signal).not.toHaveBeenCalled();
       await expect(access(worktree.path)).resolves.toBeUndefined();
       await expect(
         readFile(path.join(worktree.path, "README.md"), "utf8"),

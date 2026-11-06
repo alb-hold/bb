@@ -204,6 +204,46 @@ interface LinuxProcessIdentity {
   gids: number[];
 }
 
+async function foreignUidCanReachDirectory(
+  proc: ProcReader,
+  directory: string,
+  foreignUid: number,
+  foreignGid: number,
+  supplementaryGroups: number[],
+  context: ScanContext,
+): Promise<boolean | null> {
+  let cursor = path.resolve(directory);
+  while (true) {
+    const access = await readOptional(() => proc.statAccess(cursor));
+    if (!("value" in access)) return null;
+    const accessArgs = {
+      processUid: foreignUid,
+      processFilesystemGid: foreignGid,
+      processSupplementaryGroups: supplementaryGroups,
+      directoryUid: access.value.uid,
+      directoryGid: access.value.gid,
+      mode: access.value.mode,
+    };
+    let canSearch = linuxDirectoryModeAllowsTraversal(accessArgs);
+    if (!canSearch) {
+      let acl = context.acls.get(cursor);
+      if (acl === undefined) {
+        acl = proc.hasExtendedAcl(cursor);
+        context.acls.set(cursor, acl);
+      }
+      canSearch = linuxDirectoryIsTraversable({
+        ...accessArgs,
+        hasExtendedAcl: await acl,
+      });
+    }
+    if (!canSearch) return false;
+    const parent = path.dirname(cursor);
+    if (parent === cursor) break;
+    cursor = parent;
+  }
+  return true;
+}
+
 function parseStatusNumbers(status: string, key: string): number[] | null {
   for (const line of status.split("\n")) {
     if (!line.startsWith(`${key}:`)) continue;
@@ -247,7 +287,20 @@ async function scanLinuxProcess(
     if ("value" in cwd) {
       if (isUnder(cwd.value, directory))
         return { pid, command: null, through: "working folder" };
-      if (self.uid !== 0) return { otherUser: true };
+      if (self.uid !== 0) {
+        const reachable = await foreignUidCanReachDirectory(
+          proc,
+          directory,
+          foreignUid,
+          gids[3],
+          supplementaryGroups,
+          context,
+        );
+        if (reachable === false) return { otherUser: true };
+        return {
+          uncertain: `process ${pid} foreign uid ${foreignUid} may reach the worktree`,
+        };
+      }
     }
     if ("gone" in cwd) return null;
     if (!("failed" in cwd)) {
@@ -271,38 +324,19 @@ async function scanLinuxProcess(
           uncertain: `process ${pid} has a DAC override capability and its cwd is unreadable`,
         };
       }
-      let cursor = path.resolve(directory);
-      while (true) {
-        const access = await readOptional(() => proc.statAccess(cursor));
-        if (!("value" in access))
-          return {
-            uncertain: `process ${pid} cwd reachability could not be determined`,
-          };
-        const accessArgs = {
-          processUid: foreignUid,
-          processFilesystemGid: gids[3],
-          processSupplementaryGroups: supplementaryGroups,
-          directoryUid: access.value.uid,
-          directoryGid: access.value.gid,
-          mode: access.value.mode,
+      const reachable = await foreignUidCanReachDirectory(
+        proc,
+        directory,
+        foreignUid,
+        gids[3],
+        supplementaryGroups,
+        context,
+      );
+      if (reachable === false) return { otherUser: true };
+      if (reachable === null)
+        return {
+          uncertain: `process ${pid} cwd reachability could not be determined`,
         };
-        let canSearch = linuxDirectoryModeAllowsTraversal(accessArgs);
-        if (!canSearch) {
-          let acl = context.acls.get(cursor);
-          if (acl === undefined) {
-            acl = proc.hasExtendedAcl(cursor);
-            context.acls.set(cursor, acl);
-          }
-          canSearch = linuxDirectoryIsTraversable({
-            ...accessArgs,
-            hasExtendedAcl: await acl,
-          });
-        }
-        if (!canSearch) return { otherUser: true };
-        const parent = path.dirname(cursor);
-        if (parent === cursor) break;
-        cursor = parent;
-      }
       return {
         uncertain: `process ${pid} cwd is unreadable for foreign uid ${foreignUid}`,
       };

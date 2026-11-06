@@ -125,6 +125,34 @@ describe("scanWorktreeHolders", () => {
     },
   );
 
+  it("treats a non-root foreign process with an outside cwd as uncertain when it can traverse the worktree", async () => {
+    const proc = fakeProc({
+      self: { uid: 2000 },
+      worktreeUid: 2000,
+      worktreeMode: 0o755,
+      processes: {
+        102: { uid: 60000, cwd: "/home/other", fdTargets: ["/work/tree/file"] },
+      },
+    });
+    await expect(scanLinux("/work/tree", proc, 4242)).resolves.toMatchObject({
+      status: "uncertain",
+    });
+  });
+
+  it("clears a non-root foreign process with an outside cwd when it cannot traverse the worktree", async () => {
+    const proc = fakeProc({
+      self: { uid: 2000 },
+      worktreeUid: 2000,
+      worktreeMode: 0o700,
+      processes: {
+        103: { uid: 60000, cwd: "/home/other", fdTargets: ["/work/tree/file"] },
+      },
+    });
+    await expect(scanLinux("/work/tree", proc, 4242)).resolves.toEqual({
+      status: "clear",
+    });
+  });
+
   it("is inconclusive, not clear, where the platform cannot be inspected", async () => {
     Object.defineProperty(process, "platform", { value: "win32" });
     const scan = await scanWorktreeHolders(await makeDirectory());
@@ -291,6 +319,7 @@ function fakeProc(options: {
   processes?: Record<number, FakeProcess>;
   createdMs?: number | null;
   noBoot?: boolean;
+  worktreeUid?: number;
   worktreeMode?: number;
   worktreeGid?: number;
   extendedAcl?: boolean | null;
@@ -388,7 +417,7 @@ function fakeProc(options: {
     lstatId: async (path) => ids.get(path) ?? fail(path),
     statId: async (path) => ids.get(path) ?? fail(path),
     statAccess: async (path) => ({
-      uid: 0,
+      uid: path === "/work/tree" ? (options.worktreeUid ?? 0) : 0,
       gid: path === "/work/tree" ? (options.worktreeGid ?? 0) : 0,
       mode: path === "/work/tree" ? (options.worktreeMode ?? 0o755) : 0o755,
     }),

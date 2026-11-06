@@ -14,8 +14,11 @@ import {
 import { removeDirectoryAfterHolderRecheck } from "./remove-held-directory.js";
 import {
   hostCwdScanIo,
+  linuxVisibilityProblem,
   useCwdScanIoForTests,
   hostProc,
+  scanLinux,
+  scanWorktreeHolders,
   useProcReaderForTests,
   type ProcReader,
 } from "@bb/process-utils";
@@ -57,6 +60,76 @@ afterEach(async () => {
 });
 
 describe("confined host path mutations", () => {
+  it.skipIf(!hasHeldDirectoryRemoval || process.platform !== "linux")(
+    "refuses daemon removal for a foreign uid with a readable outside cwd and reachable worktree",
+    async () => {
+      const root = await fs.mkdtemp(
+        path.join("/tmp", "bb-path-mutations-nonroot-"),
+      );
+      roots.push(root);
+      await fs.chmod(root, 0o755);
+      const target = path.join(root, "foreign-holder-nonroot");
+      await fs.mkdir(target);
+      await fs.chmod(target, 0o755);
+      await fs.writeFile(path.join(target, "data.txt"), "keep");
+      const signal = vi.spyOn(process, "kill");
+      const pid = 410104;
+      const base = `/proc/${pid}`;
+      const selfUid = 2000;
+      const selfGid = 2000;
+      const foreignUid = selfUid === 60_000 ? 60_001 : 60_000;
+      const accessPaths: string[] = [];
+      const proc: ProcReader = {
+        ...hostProc,
+        readFile: async (name) => {
+          if (name === "/proc/self/status")
+            return `Name:\tnode\nState:\tR (running)\nNSpid:\t${process.pid}\nUid:\t${selfUid}\t${selfUid}\t${selfUid}\t${selfUid}\nGid:\t${selfGid}\t${selfGid}\t${selfGid}\t${selfGid}\nGroups:\t${selfGid}\n`;
+          if (name === `${base}/status`)
+            return `Name:\tforeign\nState:\tS (sleeping)\nUid:\t${foreignUid}\t${foreignUid}\t${foreignUid}\t${foreignUid}\nGid:\t60001\t60001\t60001\t60001\nGroups:\t60001\nCapEff:\t0000000000000000\n`;
+          return hostProc.readFile(name);
+        },
+        readdir: async (name) =>
+          name === "/proc"
+            ? [String(process.pid), String(pid)]
+            : hostProc.readdir(name),
+        readlink: async (name) =>
+          name === `${base}/cwd` ? "/tmp/outside" : hostProc.readlink(name),
+        statAccess: async (name) => {
+          accessPaths.push(name);
+          return hostProc.statAccess(name);
+        },
+      };
+      useProcReaderForTests(proc);
+      useCwdScanIoForTests({
+        ...hostCwdScanIo,
+        listProcessIds: async () => [String(process.pid)],
+      });
+
+      await expect(linuxVisibilityProblem(proc)).resolves.toMatchObject({
+        problem: null,
+        self: { uid: selfUid },
+      });
+      expect((await fs.stat(target)).mode & 0o777).toBe(0o755);
+      const scan = await scanLinux(target, proc);
+      expect(accessPaths).toContain(target);
+      expect(scan).toMatchObject({ status: "uncertain" });
+      await expect(scanWorktreeHolders(target)).resolves.toMatchObject({
+        status: "uncertain",
+      });
+
+      await expect(
+        removeDirectoryAfterHolderRecheck({
+          directory: target,
+          action: "remove",
+          recursive: true,
+        }),
+      ).rejects.toMatchObject({ code: "path_in_use" });
+
+      expect(signal).not.toHaveBeenCalled();
+      await expect(fs.readFile(path.join(target, "data.txt"), "utf8")).resolves.toBe("keep");
+    },
+  );
+
   it.skipIf(!hasHeldDirectoryRemoval || process.platform !== "linux")(
     "refuses recursive removal when the shared fd and executable scan finds a foreign holder",
     async () => {
