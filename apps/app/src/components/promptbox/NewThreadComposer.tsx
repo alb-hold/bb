@@ -25,6 +25,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type ReactNode,
 } from "react";
 import { useNavigate } from "react-router-dom";
@@ -114,7 +115,6 @@ import {
 import type { CommandSuggestionSource } from "@/hooks/useCommandSuggestions";
 import {
   usePromptDraftController,
-  usePromptDraftSnapshot,
   type PromptDraftController,
   type PromptDraftScope,
 } from "@/hooks/usePromptDraftStorage";
@@ -335,7 +335,12 @@ function LiveDraftNewThreadPromptBox({
   allowEmpty,
   ...promptBoxProps
 }: LiveDraftNewThreadPromptBoxProps) {
-  const draft = usePromptDraftSnapshot(promptDraft);
+  const getEmptyState = useCallback(() => {
+    const draft = promptDraft.getCurrent();
+    return `${isPromptDraftEmpty(draft)}/${draft.text.trim().length === 0 && draft.attachments.length === 0}`;
+  }, [promptDraft]);
+  useSyncExternalStore(promptDraft.subscribe, getEmptyState, getEmptyState);
+  const draft = promptDraft.getCurrent();
   const hasDraft = !isPromptDraftEmpty(draft);
   const disabledReason =
     promptBoxProps.disabledReason ??
@@ -355,6 +360,7 @@ function LiveDraftNewThreadPromptBox({
   return (
     <NewThreadPromptBox
       {...promptBoxProps}
+      draftSource={promptDraft}
       disabled={disabledReason !== undefined}
       disabledReason={disabledReason}
       value={draft.text}

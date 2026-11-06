@@ -1,4 +1,10 @@
-import type { RefObject } from "react";
+import {
+  memo,
+  useCallback,
+  useMemo,
+  type KeyboardEvent,
+  type RefObject,
+} from "react";
 import { EditorContent, type Editor } from "@tiptap/react";
 import { COARSE_POINTER_TEXT_BASE_CLASS } from "@/components/ui/coarse-pointer-sizing";
 import { cn } from "@/lib/utils";
@@ -21,8 +27,9 @@ export function blurPromptEditor(editor: Editor | null | undefined): void {
   window.getSelection()?.removeAllRanges();
 }
 
-export function ComposerEditorSlot({
+export const ComposerEditorSlot = memo(function ComposerEditorSlot({
   editor,
+  empty,
   scrollContainerRef,
   inputLocked,
   isCompactLayout,
@@ -32,6 +39,7 @@ export function ComposerEditorSlot({
   userHeightPx,
 }: {
   editor: Editor | null;
+  empty: boolean;
   scrollContainerRef: RefObject<HTMLDivElement | null>;
   inputLocked: boolean;
   isCompactLayout: boolean;
@@ -40,11 +48,34 @@ export function ComposerEditorSlot({
   resolveMentionLink: PromptMentionLinkResolver | undefined;
   userHeightPx: number | null;
 }) {
+  const handleKeyDown = useCallback(
+    (event: KeyboardEvent<HTMLDivElement>) => {
+      if (event.key !== "Escape" || editor === null || editor.isEditable)
+        return;
+      event.preventDefault();
+      blurPromptEditor(editor);
+    },
+    [editor],
+  );
+  const style = useMemo(
+    () => ({
+      minHeight: isCompactLayout
+        ? "48px"
+        : `var(${COMPOSER_EDITOR_PREVIEW_HEIGHT_CSS_VARIABLE}, ${resolveComposerEditorMinHeightCss({ floorPx: minHeight, userHeightPx, layout })})`,
+      height: isCompactLayout ? "48px" : undefined,
+      maxHeight: isCompactLayout
+        ? "48px"
+        : `min(${getComposerEditorMaxHeightCss(layout)}, var(${COMPOSER_EDITOR_AVAILABLE_HEIGHT_PROPERTY}, 100dvh))`,
+    }),
+    [isCompactLayout, minHeight, userHeightPx, layout],
+  );
   return (
     <div
       ref={scrollContainerRef}
       data-promptbox-editor-scroll=""
-      data-compact-empty-editor={userHeightPx === null && (editor?.isEmpty ?? true) ? "" : undefined}
+      data-compact-empty-editor={
+        userHeightPx === null && empty ? "" : undefined
+      }
       aria-busy={inputLocked || undefined}
       className={cn(
         "w-full overflow-y-auto bg-transparent px-4 pb-1 pr-14 pt-3 outline-none",
@@ -52,31 +83,12 @@ export function ComposerEditorSlot({
         "leading-relaxed",
         isCompactLayout && "h-12 overflow-hidden pb-0 pr-2 pt-0",
       )}
-      style={{
-        minHeight: isCompactLayout
-          ? "48px"
-          : `var(${COMPOSER_EDITOR_PREVIEW_HEIGHT_CSS_VARIABLE}, ${resolveComposerEditorMinHeightCss(
-              {
-                floorPx: minHeight,
-                userHeightPx,
-                layout,
-              },
-            )})`,
-        height: isCompactLayout ? "48px" : undefined,
-        maxHeight: isCompactLayout
-          ? "48px"
-: `min(${getComposerEditorMaxHeightCss(layout)}, var(${COMPOSER_EDITOR_AVAILABLE_HEIGHT_PROPERTY}, 100dvh))`,
-      }}
+      style={style}
     >
       <PromptMentionLinkContext.Provider value={resolveMentionLink ?? null}>
         <EditorContent
           editor={editor}
-          onKeyDown={(event) => {
-            if (event.key !== "Escape") return;
-            if (editor === null || editor.isEditable) return;
-            event.preventDefault();
-            blurPromptEditor(editor);
-          }}
+          onKeyDown={handleKeyDown}
           data-promptbox-editor-content=""
           data-promptbox-compact-content={isCompactLayout ? "" : undefined}
           className={cn(
@@ -95,4 +107,4 @@ export function ComposerEditorSlot({
       </PromptMentionLinkContext.Provider>
     </div>
   );
-}
+});

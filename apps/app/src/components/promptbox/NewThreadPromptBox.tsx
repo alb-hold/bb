@@ -5,6 +5,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type ReactNode,
   type RefObject,
 } from "react";
@@ -74,6 +75,7 @@ import {
 import { useSystemConfig } from "@/hooks/queries/system-queries";
 import { useSystemMachineProviders } from "@/hooks/queries/machine-provider-queries";
 import { useHostDaemon } from "@/hooks/useHostDaemon";
+import type { PromptDraftController } from "@/hooks/usePromptDraftStorage";
 
 const NEW_THREAD_PROMPT_BOX_MIN_HEIGHT = 80;
 
@@ -125,6 +127,7 @@ export interface NewThreadModeConfig {
 }
 
 interface NewThreadPromptBoxUIProps {
+  draftSource?: Pick<PromptDraftController, "getCurrent" | "subscribe">;
   id?: string;
 
   value: string;
@@ -158,29 +161,10 @@ function getNewThreadPromptPlaceholder(isProjectless: boolean): string {
     : "Ask anything. @ to mention files, folders, or sections";
 }
 
-export const NewThreadPromptBoxUI = memo(function NewThreadPromptBoxUI({
-  id,
-  value,
-  mentionRanges,
-  onChange,
-  onSubmit,
-  focusRequest,
-  isSubmitting,
-  disabled,
-  disabledReason,
-  autoFocus,
-  pluginComposerHost,
-  textEffects,
-  placeholder: placeholderOverride,
-  history,
-  typeahead,
-  attachments,
-  promptActions,
-  mentionMenuPlacement,
-  modeConfig,
-  project,
-  execution,
-}: NewThreadPromptBoxUIProps) {
+export const NewThreadPromptBoxUI = memo(function NewThreadPromptBoxUI(
+  props: NewThreadPromptBoxUIProps,
+) {
+  const { focusRequest, pluginComposerHost, onSubmit } = props;
   const promptBoxRef = useRef<PromptBoxHandle>(null);
   useEffect(() => {
     if (focusRequest === undefined) return;
@@ -197,6 +181,62 @@ export const NewThreadPromptBoxUI = memo(function NewThreadPromptBoxUI({
       : undefined,
     pluginComposerHost ? composerScopeIdentity(pluginComposerHost.scope) : null,
   );
+  return (
+    <LiveNewThreadComposer
+      {...props}
+      promptBoxRef={promptBoxRef}
+      voice={voice}
+      focusDefault={focusDefault}
+    />
+  );
+});
+
+const subscribeToNoDraft = () => () => {};
+const getNoDraft = () => null;
+
+function LiveNewThreadComposer({
+  id,
+  value: initialValue,
+  mentionRanges: initialMentions,
+  onChange,
+  onSubmit,
+  isSubmitting,
+  disabled,
+  disabledReason,
+  autoFocus,
+  pluginComposerHost,
+  textEffects,
+  placeholder: placeholderOverride,
+  history: initialHistory,
+  typeahead,
+  attachments: initialAttachments,
+  promptActions,
+  mentionMenuPlacement,
+  modeConfig,
+  project,
+  execution,
+  draftSource,
+  promptBoxRef,
+  voice,
+  focusDefault,
+}: NewThreadPromptBoxUIProps & {
+  promptBoxRef: RefObject<PromptBoxHandle | null>;
+  voice: ReturnType<typeof usePromptVoice>;
+  focusDefault: () => boolean;
+}) {
+  const draft = useSyncExternalStore(
+    draftSource?.subscribe ?? subscribeToNoDraft,
+    draftSource?.getCurrent ?? getNoDraft,
+    draftSource?.getCurrent ?? getNoDraft,
+  );
+  const value = draft?.text ?? initialValue;
+  const mentionRanges = draft?.mentions ?? initialMentions;
+  const history = draft
+    ? { ...initialHistory, currentDraft: draft }
+    : initialHistory;
+  const attachments = draft
+    ? { ...initialAttachments, items: draft.attachments }
+    : initialAttachments;
   const attachmentCount = attachments.items?.length ?? 0;
   const [composerLayout, setComposerLayout] =
     useState<ComposerView["layout"]>("expanded");
@@ -246,7 +286,7 @@ export const NewThreadPromptBoxUI = memo(function NewThreadPromptBoxUI({
       }
     />
   );
-});
+}
 
 interface DefaultNewThreadComposerProps extends Omit<
   NewThreadPromptBoxUIProps,
