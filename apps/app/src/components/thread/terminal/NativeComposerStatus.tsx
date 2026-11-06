@@ -1,3 +1,8 @@
+import {
+  getThreadListIndicatorLabel,
+  type ThreadListIndicatorKind,
+} from "@bb/client-core";
+import { ThreadStatusGlyph } from "../ThreadStatusGlyph";
 import { useEffect, useState } from "react";
 import { Icon } from "@bb/shared-ui/icon";
 import { cn } from "@bb/shared-ui/lib/utils";
@@ -209,6 +214,29 @@ export function AssistStrip({
           </button>
         </span>
       ))}
+    </div>
+  );
+}
+
+export function NativeTerminalActivity({
+  indicator,
+}: {
+  indicator: ThreadListIndicatorKind;
+}) {
+  return (
+    <div
+      role="status"
+      aria-label="Terminal activity"
+      className="flex h-6 shrink-0 items-center gap-1.5 overflow-hidden px-4 text-xs text-muted-foreground md:hidden"
+    >
+      <ThreadStatusGlyph
+        indicator={indicator}
+        size="compact"
+        hideAccessibleLabel
+      />
+      <span className="truncate">
+        {getThreadListIndicatorLabel(indicator) ?? "Idle"}
+      </span>
     </div>
   );
 }

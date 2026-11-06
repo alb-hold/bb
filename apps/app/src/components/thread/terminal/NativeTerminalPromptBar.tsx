@@ -109,7 +109,6 @@ export function NativeTerminalPromptBar({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [text, setText] = useState("");
-  const [wraps, setWraps] = useState(false);
   const textRef = useRef("");
   const programmaticRef = useRef(false);
   const composingRef = useRef(false);
@@ -499,28 +498,11 @@ export function NativeTerminalPromptBar({
 
   const measureInput = useCallback(() => {
     const element = textareaRef.current;
-    const shell = element?.closest<HTMLElement>("[data-native-composer]");
-    const actions = shell?.querySelector<HTMLElement>("[data-native-composer-actions]");
-    if (!element || !shell || !actions) return;
-    const style = getComputedStyle(element);
-    const shellStyle = getComputedStyle(shell);
-    const buttons = Array.from(actions.querySelectorAll("button"));
-    const actionsWidth = buttons.reduce((sum, button) => sum + Math.max(44, button.getBoundingClientRect().width), 0) +
-      Math.max(0, buttons.length - 1) * 4;
-    const width = shell.clientWidth - parseFloat(shellStyle.paddingLeft || "0") -
-      parseFloat(shellStyle.paddingRight || "0") - actionsWidth;
-    const previousWidth = element.style.width;
-    const previousHeight = element.style.height;
-    const previousMinHeight = element.style.minHeight;
-    element.style.width = `${Math.max(1, width)}px`;
-    element.style.minHeight = "0";
-    element.style.height = "0";
-    const lineHeight = parseFloat(style.lineHeight) || 24;
-    const padding = parseFloat(style.paddingTop || "0") + parseFloat(style.paddingBottom || "0");
-    setWraps(text.includes("\n") || element.scrollHeight > lineHeight + padding + 1);
-    element.style.width = previousWidth;
-    element.style.minHeight = previousMinHeight;
-    element.style.height = previousHeight;
+    if (!element) return;
+    if (text.length === 0) {
+      element.style.height = "";
+      return;
+    }
     if (!supportsFieldSizing) {
       element.style.height = "auto";
       element.style.height = `${Math.min(element.scrollHeight, MAX_TEXTAREA_HEIGHT_PX)}px`;
@@ -530,7 +512,9 @@ export function NativeTerminalPromptBar({
   useLayoutEffect(measureInput, [measureInput]);
 
   useLayoutEffect(() => {
-    const shell = textareaRef.current?.closest<HTMLElement>("[data-native-composer]");
+    const shell = textareaRef.current?.closest<HTMLElement>(
+      "[data-native-composer]",
+    );
     if (!shell) return;
     let previousWidth = shell.clientWidth;
     const observer = new ResizeObserver(() => {
@@ -541,10 +525,6 @@ export function NativeTerminalPromptBar({
     observer.observe(shell);
     return () => observer.disconnect();
   }, [measureInput]);
-
-  const inline = !wraps && attachments.length === 0 && pendingUploads === 0 &&
-    attachError === null && !dictating && assist.suggestions.length === 0 &&
-    assist.recent === null && !assist.pending;
 
   const recording =
     dictation.phase === "recording" || dictation.phase === "starting";
@@ -599,10 +579,8 @@ export function NativeTerminalPromptBar({
           COMPOSER_SHELL_CLASS,
           "flex flex-col px-1.5 py-0.5 transition-[border-color,box-shadow] duration-200 focus-within:border-ring/60 motion-reduce:transition-none",
           recording && "border-destructive/40",
-
         )}
         data-native-composer=""
-        data-native-composer-inline={inline ? "" : undefined}
         onDragOver={onDragOver}
         onDrop={onDrop}
       >
@@ -624,7 +602,10 @@ export function NativeTerminalPromptBar({
             aria-label="Terminal execution"
             className="col-span-2 truncate px-2 text-xs leading-tight text-muted-foreground"
           >
-            <span className="block truncate" title={executionLabel ?? providerLabel}>
+            <span
+              className="block truncate"
+              title={executionLabel ?? providerLabel}
+            >
               {executionLabel}
             </span>
           </div>
@@ -645,7 +626,7 @@ export function NativeTerminalPromptBar({
               ? "Starting microphone…"
               : recording
                 ? "Listening…"
-                : `Type to ${providerLabel}’s terminal…`
+                : `Message ${providerLabel}…`
           }
           onChange={(event) => {
             applyValue(event.target.value, programmaticRef.current);
@@ -659,7 +640,7 @@ export function NativeTerminalPromptBar({
           onKeyDown={onKeyDown}
           onPaste={onPaste}
           className={cn(
-            "max-h-48 min-h-7 min-w-0 w-full resize-none bg-transparent px-2 py-1 text-base md:text-sm text-foreground field-sizing-content placeholder:text-sm placeholder:text-muted-foreground focus-visible:outline-none",
+            "max-h-48 min-h-7 max-md:min-h-11 min-w-0 w-full resize-none bg-transparent px-2 py-1 text-base md:text-sm text-foreground field-sizing-content placeholder:text-sm placeholder:text-muted-foreground focus-visible:outline-none",
           )}
         />
         <AssistStrip
@@ -673,7 +654,10 @@ export function NativeTerminalPromptBar({
           onDismiss={assist.dismissSuggestion}
           onUndo={assist.undoRecent}
         />
-        <div data-native-composer-actions="" className="flex shrink-0 items-center gap-1">
+        <div
+          data-native-composer-actions=""
+          className="flex shrink-0 items-center gap-1"
+        >
           <input
             ref={fileInputRef}
             type="file"
@@ -698,10 +682,15 @@ export function NativeTerminalPromptBar({
             <Icon name="Plus" className="size-4" />
           </Button>
           {modelLabel ? (
-            <div aria-label="Terminal model" className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
+            <div
+              aria-label="Terminal model"
+              className="min-w-0 flex-1 truncate text-xs text-muted-foreground"
+            >
               <span title={modelLabel}>{modelLabel}</span>
             </div>
-          ) : <div className="flex-1" />}
+          ) : (
+            <div className="flex-1" />
+          )}
           {voiceAvailable ? (
             <Button
               type="button"

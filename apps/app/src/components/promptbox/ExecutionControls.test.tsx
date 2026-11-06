@@ -62,6 +62,20 @@ afterEach(() => {
 });
 
 describe("ExecutionControls", () => {
+  it("gives selected terminal a foreground label and visible border", () => {
+    renderExecutionControls({
+      ...makeExecutionControlsProps(),
+      nativeTerminal: { enabled: true, onChange: vi.fn() },
+    });
+    const terminal = screen.getByRole("radio", { name: "Terminal" });
+    expect(terminal.getAttribute("data-state")).toBe("on");
+    expect(terminal.className).toContain("data-[state=on]:text-foreground");
+    expect(terminal.className).toContain(
+      "data-[state=on]:border-foreground/60",
+    );
+    expect(terminal.hasAttribute("disabled")).toBe(false);
+  });
+
   it.each([
     "GPT-6.1-Sol",
     "Opus 5.5 (1M)",

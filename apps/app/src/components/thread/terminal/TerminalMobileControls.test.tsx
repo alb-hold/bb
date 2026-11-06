@@ -37,6 +37,9 @@ describe("TerminalMobileControls", () => {
     const controls = screen.getByRole("group", {
       name: "Terminal keyboard controls",
     });
+    expect(
+      screen.getByRole("button", { name: "More terminal keys" }).textContent,
+    ).toBe("Keys");
     const buttons = Array.from(controls.querySelectorAll("button"));
     expect(controls.querySelector(".bg-gradient-to-l")).toBeNull();
 
@@ -74,7 +77,9 @@ describe("TerminalMobileControls", () => {
     fireEvent.click(interrupt);
     expect(onInput).toHaveBeenCalledExactlyOnceWith("\x03");
     expect(screen.queryByRole("button", { name: "Shift Tab" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Function key F2" })).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "Function key F2" }),
+    ).toBeNull();
   });
 
   it("shows an overflow cue only on edges with hidden keys", () => {
@@ -110,7 +115,9 @@ describe("TerminalMobileControls", () => {
     fireEvent.click(screen.getByRole("button", { name: "More terminal keys" }));
 
     expect(screen.getByRole("button", { name: "Shift Tab" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Function key F2" }).textContent).toBe("F2");
+    expect(
+      screen.getByRole("button", { name: "Function key F2" }).textContent,
+    ).toBe("F2");
   });
 
   it.each([

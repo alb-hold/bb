@@ -103,7 +103,11 @@ vi.mock("@/lib/attachment-local-previews", () => ({
   registerLocalAttachmentPreview: vi.fn(),
 }));
 
-function renderBar(executionLabel = "Native CLI · GPT-5 · Full access", modelLabel: string | undefined = "GPT-5", providerLabel = "Native CLI") {
+function renderBar(
+  executionLabel = "Native CLI · GPT-5 · Full access",
+  modelLabel: string | undefined = "GPT-5",
+  providerLabel = "Native CLI",
+) {
   const { wrapper: Wrapper, queryClient } = createQueryClientTestHarness();
   render(
     <Wrapper>
@@ -121,7 +125,9 @@ function renderBar(executionLabel = "Native CLI · GPT-5 · Full access", modelL
     input: screen.getByLabelText(
       `Send to ${providerLabel} terminal`,
     ) as HTMLTextAreaElement,
-    sendButton: screen.getByRole("button", { name: `Send to ${providerLabel}` }),
+    sendButton: screen.getByRole("button", {
+      name: `Send to ${providerLabel}`,
+    }),
   };
 }
 
@@ -179,56 +185,49 @@ describe("NativeTerminalPromptBar", () => {
 
   it("labels the terminal destination and keeps execution details read-only", () => {
     const { input } = renderBar();
-    expect(input.placeholder).toBe("Type to Native CLI’s terminal…");
+    expect(input.placeholder).toBe("Message Native CLI…");
     expect(
       screen.getByText("Native CLI · GPT-5 · Full access").className,
     ).toContain("truncate");
   });
-  it("keeps empty and single-line drafts inline, then expands when text wraps", () => {
-    let height = 24;
-    const scrollHeight = vi.spyOn(HTMLTextAreaElement.prototype, "scrollHeight", "get").mockImplementation(() => height);
-    const { input } = renderBar();
-    const shell = input.closest("[data-native-composer]")!;
-    const phoneStyle = document.createElement("style");
-    const css = readFileSync("src/app.css", "utf8");
-    phoneStyle.textContent = css.slice(css.lastIndexOf("@media (width <= 480px) {")).replace("@media (width <= 480px) {", "").replace(/}\s*$/, "");
-    document.head.append(phoneStyle);
-    expect(getComputedStyle(shell).display).toBe("grid");
-    expect(shell.hasAttribute("data-native-composer-inline")).toBe(true);
-    fireEvent.focus(input);
-    expect(shell.hasAttribute("data-native-composer-inline")).toBe(true);
-    fireEvent.change(input, { target: { value: "short" } });
-    expect(shell.hasAttribute("data-native-composer-inline")).toBe(true);
-    height = 48;
-    fireEvent.change(input, { target: { value: "a draft that wraps at the compact input width" } });
-    expect(shell.hasAttribute("data-native-composer-inline")).toBe(false);
-    expect(getComputedStyle(shell).display).not.toBe("grid");
-    height = 24;
-    fireEvent.change(input, { target: { value: "" } });
-    expect(shell.hasAttribute("data-native-composer-inline")).toBe(true);
-    fireEvent.change(input, { target: { value: "first\nsecond" } });
-    expect(shell.hasAttribute("data-native-composer-inline")).toBe(false);
-    phoneStyle.remove();
-    scrollHeight.mockRestore();
-  });
+  it.each([360, 390])(
+    "keeps a two-row phone structure at %i px regardless of placeholder wrapping",
+    (width) => {
+      const scrollHeight = vi
+        .spyOn(HTMLTextAreaElement.prototype, "scrollHeight", "get")
+        .mockReturnValue(width === 360 ? 48 : 24);
+      const { input } = renderBar("", "", "Codex");
+      const shell = input.closest("[data-native-composer]")!;
+      const phoneStyle = document.createElement("style");
+      const css = readFileSync("src/app.css", "utf8");
+      phoneStyle.textContent = css
+        .slice(css.lastIndexOf("@media (width <= 480px) {"))
+        .replace("@media (width <= 480px) {", "")
+        .replace(/}\s*$/, "");
+      document.head.append(phoneStyle);
+      try {
+        expect(getComputedStyle(shell).display).not.toBe("grid");
+        expect(shell.classList.contains("flex-col")).toBe(true);
+        expect(shell.hasAttribute("data-native-composer-inline")).toBe(false);
+        expect(input.placeholder).toBe("Message Codex…");
+        fireEvent.change(input, { target: { value: "short" } });
+        expect(shell.hasAttribute("data-native-composer-inline")).toBe(false);
+        fireEvent.change(input, { target: { value: "first\nsecond" } });
+        expect(shell.hasAttribute("data-native-composer-inline")).toBe(false);
+      } finally {
+        phoneStyle.remove();
+        scrollHeight.mockRestore();
+      }
+    },
+  );
 
-  it("expands for attachments and returns inline after removal", async () => {
-    upload.mockResolvedValue({ type: "localImage", path: "/tmp/a.png", name: "a.png" });
-    const { input } = renderBar();
-    const shell = input.closest("[data-native-composer]")!;
-    const fileInput = screen.getByLabelText("Attach images for Native CLI");
-    fireEvent.change(fileInput, { target: { files: [new File(["image"], "a.png", { type: "image/png" })] } });
-    expect(shell.hasAttribute("data-native-composer-inline")).toBe(false);
-    const remove = await screen.findByRole("button", { name: "Remove a.png" });
-    expect(shell.hasAttribute("data-native-composer-inline")).toBe(false);
-    fireEvent.click(remove);
-    expect(shell.hasAttribute("data-native-composer-inline")).toBe(true);
-  });
-
-  it.each(["Codex", "Claude Code"])("uses provider metadata in the %s placeholder", (providerLabel) => {
-    const { input } = renderBar("", "", providerLabel);
-    expect(input.placeholder).toBe(`Type to ${providerLabel}’s terminal…`);
-  });
+  it.each(["Codex", "Claude Code"])(
+    "uses provider metadata in the %s placeholder",
+    (providerLabel) => {
+      const { input } = renderBar("", "", providerLabel);
+      expect(input.placeholder).toBe(`Message ${providerLabel}…`);
+    },
+  );
   it.each(["Native CLI", " Native CLI ", ""])(
     "omits redundant execution text %j",
     (label) => {

@@ -189,6 +189,8 @@ it.each(["active", "idle"] as const)(
         runtime={{ displayStatus }}
       />,
     );
-    expect(screen.queryByText("Check terminal")).toBeNull();
+    expect(
+      screen.getByRole("status", { name: "Terminal activity" }).textContent,
+    ).toBe("Check terminal");
   },
 );

@@ -23,6 +23,7 @@ const hooks = vi.hoisted(() => ({
       overrides: { model: null, reasoningLevel: null },
     },
   })),
+  waiting: false,
   listTerminals: vi.fn(),
   preloadTerminalPanel: vi.fn(),
   refetchNative: vi.fn(),
@@ -74,7 +75,37 @@ vi.mock("@/hooks/queries/thread-default-execution-options-query", () => ({
   }),
 }));
 vi.mock("@/hooks/queries/thread-queries", () => ({
-  useThreadPendingInteractions: () => ({ data: [] }),
+  useThreadPendingInteractions: () => ({
+    data: hooks.waiting
+      ? [
+          {
+            id: "interaction",
+            threadId: "thr_native",
+            turnId: "turn",
+            status: "pending",
+            statusReason: null,
+            createdAt: 1,
+            resolvedAt: null,
+            resolution: null,
+            providerId: "codex",
+            providerThreadId: "session",
+            providerRequestId: "request",
+            payload: {
+              kind: "user_question",
+              questions: [
+                {
+                  id: "q",
+                  prompt: "Continue?",
+                  multiSelect: false,
+                  allowFreeText: true,
+                  required: true,
+                },
+              ],
+            },
+          },
+        ]
+      : [],
+  }),
 }));
 
 vi.mock("@/hooks/useNativeActivityUnconfirmed", () => ({
@@ -102,7 +133,14 @@ vi.mock("./NativeTerminalPromptBar", () => ({
   }: {
     executionLabel?: string;
     modelLabel?: string;
-  }) => <><div data-testid="execution-defaults">{executionLabel}</div>{modelLabel ? <span aria-label="Terminal model">{modelLabel}</span> : null}</>,
+  }) => (
+    <>
+      <div data-testid="execution-defaults">{executionLabel}</div>
+      {modelLabel ? (
+        <span aria-label="Terminal model">{modelLabel}</span>
+      ) : null}
+    </>
+  ),
 }));
 
 vi.mock("./NativeActivityNotice", () => ({ NativeActivityNotice: () => null }));
@@ -119,6 +157,7 @@ const nativeView: NativeTerminalThread = {
 
 afterEach(() => {
   cleanup();
+  hooks.waiting = false;
   vi.clearAllMocks();
   hooks.profile.mockReturnValue({
     data: {
@@ -138,6 +177,43 @@ afterEach(() => {
 });
 
 describe("NativeThreadTerminalMain", () => {
+  it.each([
+    ["active", "Working"],
+    ["idle", "Idle"],
+    ["idle", "Check terminal"],
+    ["idle", "Needs input"],
+  ] as const)(
+    "shows %s activity in a stable compact header",
+    (displayStatus, label) => {
+      hooks.waiting = label === "Needs input";
+      const terminal = {
+        id: "term-live",
+        status: "running",
+        createdAt: Date.now(),
+        lastUserInputAt: null,
+        attention:
+          label === "Check terminal" ? { at: 10, kind: "bell", seq: 1 } : null,
+      } as NonNullable<NativeTerminalThread["terminal"]>;
+      hooks.listTerminals.mockReturnValue({
+        data: { sessions: [terminal] },
+        dataUpdatedAt: 1,
+      });
+      render(
+        <NativeThreadTerminalMain
+          projectId="proj_native"
+          runtime={{ displayStatus }}
+          threadId="thr_native"
+          threadIsProvisioning={false}
+          view={{ ...nativeView, terminal }}
+        />,
+      );
+      const status = screen.getByRole("status", { name: "Terminal activity" });
+      expect(status.textContent).toBe(label);
+      expect(status.classList.contains("h-6")).toBe(true);
+      expect(status.classList.contains("md:hidden")).toBe(true);
+    },
+  );
+
   it("keeps the terminal layout unchanged when attention clears", () => {
     const terminal = {
       id: "term-live",
@@ -160,8 +236,15 @@ describe("NativeThreadTerminalMain", () => {
     const { container, rerender } = render(
       <NativeThreadTerminalMain {...props} />,
     );
-    const layoutWithAttention = container.innerHTML;
-    expect(screen.queryByText("Check terminal")).toBeNull();
+    const layout = () =>
+      Array.from(container.firstElementChild!.children).map((element) => [
+        element.tagName,
+        element.className,
+      ]);
+    const layoutWithAttention = layout();
+    expect(
+      screen.getByRole("status", { name: "Terminal activity" }).textContent,
+    ).toBe("Check terminal");
     expect(container.querySelector(".ring-attention")).toBeNull();
     expect(
       screen
@@ -171,7 +254,7 @@ describe("NativeThreadTerminalMain", () => {
     terminal.attention = null;
     rerender(<NativeThreadTerminalMain {...props} />);
     expect(screen.queryByText("Check terminal")).toBeNull();
-    expect(container.innerHTML).toBe(layoutWithAttention);
+    expect(layout()).toEqual(layoutWithAttention);
   });
   it("does not guess execution labels while its profile is unresolved", () => {
     hooks.profile.mockReturnValue({ data: null });
@@ -629,15 +712,25 @@ it.each(["gpt-6.1-sol", null])(
         runtime={{ displayStatus: "idle" }}
         threadId="thr_native"
         threadIsProvisioning={false}
-        view={{ ...nativeView, providerId: "codex", displayName: "Codex", model, terminal }}
+        view={{
+          ...nativeView,
+          providerId: "codex",
+          displayName: "Codex",
+          model,
+          terminal,
+        }}
       />,
     );
     expect(screen.getByTestId("terminal-panel")).toBeTruthy();
     if (model) {
-      expect(screen.getByLabelText("Terminal model").textContent).toBe("GPT-6.1-Sol");
+      expect(screen.getByLabelText("Terminal model").textContent).toBe(
+        "GPT-6.1-Sol",
+      );
     } else {
       expect(screen.queryByLabelText("Terminal model")).toBeNull();
     }
-    expect(screen.queryByLabelText("Terminal model and permissions")).toBeNull();
+    expect(
+      screen.queryByLabelText("Terminal model and permissions"),
+    ).toBeNull();
   },
 );
