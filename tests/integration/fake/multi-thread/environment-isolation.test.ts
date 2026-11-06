@@ -39,6 +39,21 @@ import {
 const REBUILD_TIMEOUT_MS = scaleTimeoutMs(30_000);
 const REBUILD_TEST_TIMEOUT_MS = scaleTimeoutMs(120_000);
 
+async function publishHarnessRepo(
+  harness: Parameters<typeof createProjectFixture>[0],
+): Promise<void> {
+  const remotePath = path.join(harness.daemonDataDir, "test-origin.git");
+  await runGit({ cwd: harness.repoDir, args: ["init", "--bare", remotePath] });
+  await runGit({
+    cwd: harness.repoDir,
+    args: ["remote", "add", "origin", remotePath],
+  });
+  await runGit({
+    cwd: harness.repoDir,
+    args: ["push", "--set-upstream", "origin", "main"],
+  });
+}
+
 describe.sequential("fake provider environment-isolation multi-thread integration", () => {
   it(
     "refuses sends to a destroyed worktree until the thread restores it",
@@ -49,6 +64,7 @@ describe.sequential("fake provider environment-isolation multi-thread integratio
           testWorktreeHolderScan: { status: "clear" },
         },
         async (harness) => {
+          await publishHarnessRepo(harness);
           const project = await createProjectFixture(harness, {
             name: "Rebuild Managed Worktree",
           });
@@ -181,6 +197,7 @@ describe.sequential("fake provider environment-isolation multi-thread integratio
           },
         },
         async (harness) => {
+          await publishHarnessRepo(harness);
           const project = await createProjectFixture(harness, {
             name: "Retained Managed Worktree",
           });
