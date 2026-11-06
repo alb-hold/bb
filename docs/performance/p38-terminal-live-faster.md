@@ -29,3 +29,5 @@ Older history must replay in a separate background terminal/archive. Xterm's pub
 ## Measurement handoff
 
 Run `node scripts/p38-terminal-timing.mjs webkit SEEDED_THREAD_URL output.json` and repeat with `chromium` for both baseline and candidate dist. The script only navigates, waits, evaluates and observes WebSocket frames. It never clicks, types, presses or injects input. It stores frame metadata, resource timings, grids, replay checkpoint endpoints and acknowledgements without retained terminal text or handoff tokens. Use three independent script invocations per build for three cold-context runs and interleave baseline/candidate. Warm runs reuse the context cache but use a fresh page. Baseline parsing uses the final output acknowledgement when the explicit candidate parser mark is unavailable.
+
+The runner supplies Playwright and browser binaries. When installed outside this checkout, set `P38_PLAYWRIGHT_MODULE` to its absolute ESM entry path. No repository dependency is added.

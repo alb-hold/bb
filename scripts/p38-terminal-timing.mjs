@@ -1,4 +1,6 @@
-import { chromium, webkit } from "playwright";
+const { chromium, webkit } = await import(
+  process.env.P38_PLAYWRIGHT_MODULE ?? "playwright"
+);
 import { writeFile } from "node:fs/promises";
 
 const [engine = "webkit", target, output = "p38-timing.json"] =
