@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -13,6 +14,12 @@ import { AppFileExternalNavigationHost } from "./AppFileExternalNavigationHost";
 
 const openPreferred = vi.hoisted(() => vi.fn());
 const recordAccepted = vi.fn();
+
+async function loadDispatcher() {
+  await act(async () => {
+    await import("./AppFileExternalNavigationDispatcher");
+  });
+}
 
 vi.mock("@/hooks/useLiveFileOpenTargets", () => ({
   useLiveFileOpenTargets: () => ({
@@ -84,6 +91,7 @@ describe("AppFileExternalNavigationHost", () => {
       </AppFileExternalNavigationHost>,
     );
     fireEvent.click(screen.getByRole("button", { name: "Open external" }));
+    await loadDispatcher();
     await waitFor(
       () =>
         expect(openPreferred).toHaveBeenCalledWith({
@@ -102,6 +110,7 @@ describe("AppFileExternalNavigationHost", () => {
       </AppFileExternalNavigationHost>,
     );
     fireEvent.click(screen.getByRole("button", { name: "Open two external" }));
+    await loadDispatcher();
 
     expect(recordAccepted).toHaveBeenCalledWith(true, true);
     await waitFor(() => expect(openPreferred).toHaveBeenCalledTimes(2), {

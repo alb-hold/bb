@@ -1,13 +1,15 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TimelineCommandWorkRow } from "@bb/server-contract";
+import { createDeferredPromise } from "@bb/test-helpers";
 import { commandRow } from "@/test/fixtures/thread-timeline-rows";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
 import { sdk } from "@/lib/sdk";
 import { ThreadTimelineRows } from "./ThreadTimelineRows";
+import { LazyTerminalOutputBlock } from "./LazyTerminalOutputBlock";
 
 vi.mock("@/lib/sdk", () => ({
   sdk: { threads: { timelineTurnSummaryDetails: vi.fn() } },
@@ -67,22 +69,27 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
 });
 
 describe("previewed command output", () => {
   it("shows the preview with a retry when the full-output load fails", async () => {
-    timelineTurnSummaryDetails.mockRejectedValue(new Error("boom"));
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const request = createDeferredPromise<never>();
+    timelineTurnSummaryDetails.mockReturnValue(request.promise);
     const view = renderExpandedRow(previewedCommandRow());
 
-    await waitFor(() => {
-      expect(timelineTurnSummaryDetails).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      await LazyTerminalOutputBlock.preload();
+      await vi.advanceTimersByTimeAsync(0);
     });
-    await waitFor(() => {
-      expect(screen.getByRole("button", { name: /retry/i })).toBeTruthy();
+    expect(timelineTurnSummaryDetails).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      request.reject(new Error("boom"));
+      await vi.advanceTimersByTimeAsync(0);
     });
-    await waitFor(() => {
-      expect(view.container.textContent).toContain("characters omitted");
-    });
+    expect(screen.getByRole("button", { name: /retry/i })).toBeTruthy();
+    expect(view.container.textContent).toContain("characters omitted");
     expect(
       screen.getByTestId("timeline-output-preview-note").textContent,
     ).toContain("Failed to load the full output");

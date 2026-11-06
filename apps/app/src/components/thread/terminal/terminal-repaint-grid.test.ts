@@ -1,4 +1,5 @@
 import {
+  REPAINT_RESTORE_DELAY_MS,
   TerminalWebSocketTransport,
   type TerminalBrowserSocket,
 } from "@bb/client-core";
@@ -169,6 +170,8 @@ async function cleanReferenceScreen(): Promise<string> {
 }
 
 describe("replay repaint nudge", () => {
+  afterEach(() => vi.useRealTimers());
+
   it("leaves a full-width inline TUI exactly as a clean draw after the return nudge", async () => {
     const terminal = newTerminal();
     let sharedSize: { cols: number; rows: number } | null = null;
@@ -215,11 +218,10 @@ describe("replay repaint nudge", () => {
     );
     transport.markLayoutSettled();
 
+    vi.useFakeTimers();
     pty.draw();
-    transport.requestRepaint();
     let applied = 0;
-    await vi.waitFor(
-      () => {
+    const applyResizes = () => {
       for (const resize of socket.resizes.slice(applied)) {
         pty.resize(resize.cols, resize.rows, resize.seq);
         if (resize.seq !== undefined) {
@@ -231,21 +233,27 @@ describe("replay repaint nudge", () => {
         }
       }
       applied = socket.resizes.length;
-        expect(socket.resizes.at(-1)).toMatchObject({
-          cols: FITTED_COLS,
-          rows: FITTED_ROWS,
-        });
-      },
-      { interval: 70 },
-    );
-    await writeAndWait(terminal, "");
+    };
+    transport.requestRepaint();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(socket.resizes.at(-1)).toMatchObject({
+      cols: FITTED_COLS - 1,
+      rows: FITTED_ROWS,
+    });
+    applyResizes();
+    await vi.advanceTimersByTimeAsync(REPAINT_RESTORE_DELAY_MS);
+    applyResizes();
+    const drained = writeAndWait(terminal, "");
+    await vi.advanceTimersByTimeAsync(10);
+    await drained;
+    transport.dispose();
+    vi.useRealTimers();
 
     expect(socket.resizes.at(-1)).toMatchObject({
       cols: FITTED_COLS,
       rows: FITTED_ROWS,
     });
     expect(screenText(terminal)).toBe(await cleanReferenceScreen());
-    transport.dispose();
   });
 });
 

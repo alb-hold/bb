@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -33,7 +34,8 @@ it("opens the lazy SDK lightbox and restores focus to its trigger after closing"
   const trigger = screen.getByRole("button", { name: "Preview attachment" });
   trigger.focus();
   fireEvent.click(trigger);
-  const dialog = await screen.findByRole("dialog", {
+  await act(async () => ImageLightbox.preload());
+  const dialog = screen.getByRole("dialog", {
     name: "Attachment preview",
   });
   expect(document.activeElement).toBe(dialog);

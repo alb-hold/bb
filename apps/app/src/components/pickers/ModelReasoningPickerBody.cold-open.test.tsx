@@ -10,6 +10,7 @@ import {
 } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { ModelReasoningPicker } from "./ModelReasoningPicker";
+import { ModelReasoningPickerBody } from "./ModelReasoningPickerBodySplit";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
 
 const download = vi.hoisted(() => ({ imports: 0, release: () => {} }));
@@ -20,7 +21,11 @@ vi.mock("./ModelReasoningPickerBody", async (original) => {
   });
   return original();
 });
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+  vi.useRealTimers();
+});
 
 it("keeps reasoning keys available and opens on the first click while the body downloads", async () => {
   const reasoning = vi.fn();
@@ -63,12 +68,32 @@ it("keeps reasoning keys available and opens on the first click while the body d
   expect(
     await screen.findByRole("status", { name: "Loading model picker" }),
   ).toBeTruthy();
-  await act(async () => download.release());
-  const search = await screen.findByPlaceholderText(
-    "Search models",
-    {},
-    { timeout: 10000 },
-  );
-  await waitFor(() => expect(document.activeElement).toBe(search));
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const frames = new Map<number, FrameRequestCallback>();
+  let frameId = 0;
+  vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+    frames.set(++frameId, callback);
+    return frameId;
+  });
+  vi.spyOn(window, "cancelAnimationFrame").mockImplementation((id) => {
+    frames.delete(id);
+  });
+  await act(async () => {
+    download.release();
+    await ModelReasoningPickerBody.preload();
+  });
+  const search = screen.getByPlaceholderText("Search models");
+  act(() => {
+    const pending = [...frames.values()];
+    frames.clear();
+    for (const callback of pending) callback(performance.now());
+  });
+  expect(document.activeElement).toBe(search);
+  await act(async () => vi.advanceTimersByTimeAsync(0));
+  expect(document.activeElement).toBe(search);
   expect(trigger.getAttribute("aria-expanded")).toBe("true");
+  fireEvent.keyDown(search, { key: "Escape" });
+  await act(async () => vi.advanceTimersByTimeAsync(0));
+  expect(trigger.getAttribute("aria-expanded")).toBe("false");
+  expect(document.activeElement).toBe(trigger);
 });
