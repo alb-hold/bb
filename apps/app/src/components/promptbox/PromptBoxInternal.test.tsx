@@ -1,4 +1,6 @@
 // @vitest-environment jsdom
+import { CHROME_SUBTLE_ICON_BUTTON_FOREGROUND_CLASS } from "@bb/shared-ui/chrome-style-tokens";
+
 import { getPromptDraftAccessor, usePromptDraftStorage } from "@/hooks/usePromptDraftStorage";
 import { readFileSync } from "node:fs";
 import { Provider, createStore, getDefaultStore } from "jotai";
@@ -3100,7 +3102,9 @@ describe("ComposerBox size controls", () => {
     const collapseButton = screen.getByRole("button", {
       name: "Collapse prompt box",
     });
-    expect(collapseButton.classList).toContain("text-subtle-foreground/75");
+    for (const token of CHROME_SUBTLE_ICON_BUTTON_FOREGROUND_CLASS.split(" ")) {
+      expect(collapseButton.classList).toContain(token);
+    }
     expect(collapseButton.classList).toContain("w-6");
     expect(collapseButton.classList).toContain("px-0");
     expect(collapseButton.parentElement?.classList).toContain("right-[13px]");
