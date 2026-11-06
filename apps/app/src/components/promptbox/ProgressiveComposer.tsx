@@ -110,6 +110,10 @@ export function ProgressiveComposer({
     controls: ReactNode,
   ) => ReactNode;
 }) {
+  performance.mark("p41-plain-render");
+  useLayoutEffect(() => {
+    performance.mark("p41-plain-input-commit");
+  }, []);
   const [rich, setRich] = useState(false);
   const [controlsNode] = useState(() => {
     const node = document.createElement("div");

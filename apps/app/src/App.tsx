@@ -345,6 +345,7 @@ export function AppRoutes() {
     if (!isRootComposeView) return;
     void appQueryClient.prefetchQuery(environmentProvidersQueryOptions({}));
     void appQueryClient.prefetchQuery(machineProvidersQueryOptions());
+    performance.mark("p41-home-preload-effect");
     void ProgressiveComposer.preload();
     void trackCriticalLoad(LazyRootComposeView.preload());
   }, [isRootComposeView]);
