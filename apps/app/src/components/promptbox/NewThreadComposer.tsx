@@ -1010,6 +1010,13 @@ export function NewThreadComposer({
     setSessionOption,
   } = creationOptions;
   const selectedThreadModel = activeModel?.model ?? selectedModel;
+  const canSubmitPendingCatalog =
+    isLoadingModels &&
+    projectDefaultsState.status === "resolved" &&
+    projectDefaults !== null &&
+    projectDefaults !== undefined &&
+    projectDefaults.providerId === selectedProviderId &&
+    projectDefaults.model === selectedThreadModel;
   const placedSessionOptions = useMemo(
     () =>
       splitSessionOptionsByPlacement(
@@ -1713,7 +1720,7 @@ export function NewThreadComposer({
     environmentSetupRequiredReason:
       environmentSetupRequiredReason ?? machineServerAccessReason,
     isCopyingAttachments,
-    isLoadingModels,
+    isLoadingModels: isLoadingModels && !canSubmitPendingCatalog,
     isSubmitting,
     isUploading,
     modelLoadError,
@@ -1757,6 +1764,9 @@ export function NewThreadComposer({
       const sources: CreateExecutionInputSources = {
         ...executionInputSources,
         ...seededExecutionInputSources,
+        ...(canSubmitPendingCatalog
+          ? { providerId: "explicit", model: "explicit" }
+          : {}),
       };
       const creationData = getComposerCreateData(promptDraft.storageKey);
       const request: NewThreadComposerSubmission = {
@@ -1820,6 +1830,7 @@ export function NewThreadComposer({
       onSubmit,
       permissionMode,
       projectDefaultsUnavailable,
+      canSubmitPendingCatalog,
       projectId,
       promptDraft,
       reasoningLevel,

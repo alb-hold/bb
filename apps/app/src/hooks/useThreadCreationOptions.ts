@@ -476,12 +476,13 @@ export function useThreadCreationOptions(
   const effectiveProviderId = useMemo(() => {
     if (
       rawSelectedProviderId &&
-      providers.some((provider) => provider.id === rawSelectedProviderId)
+      ((scope === "new-thread" && !modelCatalogIsVerified) ||
+        providers.some((provider) => provider.id === rawSelectedProviderId))
     ) {
       return rawSelectedProviderId;
     }
     return providers[0]?.id ?? "";
-  }, [providers, rawSelectedProviderId]);
+  }, [modelCatalogIsVerified, providers, rawSelectedProviderId, scope]);
 
   const { setValue: setStoredSelectedModel, value: storedSelectedModel } =
     usePromptBoxModelPreference(effectiveProviderId);
@@ -792,13 +793,18 @@ export function useThreadCreationOptions(
     serviceTierOptions,
   ]);
 
-  const permissionMode = resolvePermissionModeSelection({
-    rawPermissionMode,
-    permissionModes:
-      allowedPermissionModes.length > 0
-        ? allowedPermissionModes
-        : permissionModes,
-  });
+  const permissionMode =
+    !permissionModeIsVerified &&
+    permissionModeRank(rawPermissionMode) <=
+      permissionModeRank(permissionCeiling)
+      ? rawPermissionMode
+      : resolvePermissionModeSelection({
+          rawPermissionMode,
+          permissionModes:
+            allowedPermissionModes.length > 0
+              ? allowedPermissionModes
+              : permissionModes,
+        });
   const environmentSelectionValue = rawEnvironmentSelectionValue;
   const touchedFieldsPendingReset =
     usesLocalThreadSelections && threadResetKeyRef.current !== resetKey;
