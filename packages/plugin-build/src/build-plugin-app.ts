@@ -151,7 +151,10 @@ async function shimModuleSource(
   const names = await shimExportsOf(specifier, pluginSdkAppModuleUrl);
   return [
     `const runtime = globalThis.__bbPluginRuntime;`,
-    `if (runtime == null || runtime.${slot} == null) {`,
+    `if (runtime == null) {`,
+    `  throw new Error("Plugins must be loaded by the BB app.");`,
+    `}`,
+    `if (runtime.${slot} == null) {`,
     `  throw new Error(${JSON.stringify(
       `Cannot load "${specifier}": missing shared plugin runtime slot "${slot}". Update the BB host before loading this plugin.`,
     )});`,
@@ -713,10 +716,6 @@ export async function buildPluginApp(
     } catch (error) {
       if (!isRecord(error) || error.code !== "ENOENT") throw error;
     }
-    await writeFile(
-      join(distDir, "app.metafile.json"),
-      JSON.stringify(bundle.metafile, null, 2),
-    );
     const runtimeSlots = bundledRuntimeSlots(bundle.metafile);
     const bundledInputs: ReadonlySet<string> =
       dependencySources.length > 0

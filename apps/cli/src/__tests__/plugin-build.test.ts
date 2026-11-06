@@ -342,6 +342,7 @@ describe("buildPluginApp", () => {
       new URL("../../../app/package.json", import.meta.url),
     );
     const hostModules: Record<string, unknown> = {
+      sharedUiIcon: { Icon: () => null, ICON_NAMES: [] },
       pluginSdkApp: {
         definePluginApp: (setup: unknown) => ({ __bbPluginApp: true, setup }),
       },
