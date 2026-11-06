@@ -1817,20 +1817,9 @@ export function ThreadTerminalView({
     let terminalInputClaimed = false;
     let detachPointerCoordinates: (() => void) | null = null;
     let detachGridVisibilityListeners: (() => void) | null = null;
-    let replayPreview: {
-      dispose(): void;
-      readonly fallback: boolean;
-      release(): void;
-      showFallback(): void;
-      hold(options: { countdown: boolean }): void;
-      noteProgress(): void;
-      resize(cols: number, rows: number): Promise<void>;
-      setFitGrid(cols: number, rows: number): void;
-      setLatestPtyGrid(cols: number, rows: number): void;
-      setPtyGrid(cols: number, rows: number): void;
-      processExited(): void;
-      push(bytes: Uint8Array, callback: () => void): void;
-    } | null = null;
+    let replayPreview: ReturnType<
+      typeof mountTerminalReplayPreview
+    > | null = null;
     const flushPendingExitNotices = () => {
       if (terminal === null || pendingExitNotices.length === 0) return;
       for (const text of pendingExitNotices.splice(0)) {
