@@ -415,6 +415,12 @@ type TerminalCssVariableReader = (name: string) => string | undefined;
 
 export const TERMINAL_THEME_OPTIONS = { minimumContrastRatio: 7 };
 
+export const TERMINAL_CELL_OPTIONS = {
+  lineHeight: 1.12,
+  cursorBlink: false,
+  cursorStyle: "block" as const,
+};
+
 export function resolveTerminalFontFamily(
   get: TerminalCssVariableReader,
 ): string {
@@ -1302,6 +1308,9 @@ export function ThreadTerminalView({
     useState<TerminalLinkTarget | null>(null);
   const [connectionNotice, setConnectionNotice] =
     useState<TerminalConnectionNotice | null>(null);
+  const [restoringSession, setRestoringSession] = useState(
+    session.status === "running",
+  );
   const [replayNotice, setReplayNotice] = useState<TerminalReplayNotice | null>(
     null,
   );
@@ -1676,6 +1685,7 @@ export function ThreadTerminalView({
     if (!container) {
       return;
     }
+    setRestoringSession(sessionStatusRef.current === "running");
 
     const activeElementAtMount = document.activeElement;
     container.style.containerType = "inline-size";
@@ -1803,9 +1813,8 @@ export function ThreadTerminalView({
     const terminalFontOptions = {
       fontFamily: readTerminalFontFamily(),
       fontSize: Math.max(12, terminalFontSizeRef.current),
-      lineHeight: 1,
+      ...TERMINAL_CELL_OPTIONS,
     };
-    let webglLineHeight = 1.12;
     let initialRendererSettled = retainNativeOutput;
     let initialLayoutSettled = false;
     let retainedOutputReplayed = sessionStatusRef.current !== "exited";
@@ -1832,6 +1841,8 @@ export function ThreadTerminalView({
     const releaseReplayPreview = () => {
       paintedScreenKept = false;
       replayPreview?.release();
+      clearScreenLoadingPreview();
+      setRestoringSession(false);
       setReplayNotice(null);
     };
     let exitedBeforeReplayCompleted = false;
@@ -2005,6 +2016,7 @@ export function ThreadTerminalView({
       void screenPromise.then((snapshot) => {
         if (
           disposed ||
+          replayCompleted ||
           snapshot == null ||
           !snapshot.complete ||
           snapshot.truncated
@@ -2041,7 +2053,6 @@ export function ThreadTerminalView({
         ...TERMINAL_THEME_OPTIONS,
         allowProposedApi: TERMINAL_ALLOW_PROPOSED_API,
         convertEol: true,
-        cursorBlink: true,
         ...terminalFontOptions,
         linkHandler: osc8LinkHandler,
         scrollback: 10_000,
@@ -2250,10 +2261,6 @@ export function ThreadTerminalView({
               visible: false,
               onRendererChange: (renderer) => {
                 if (disposed || terminal === null) return;
-                const lineHeight = renderer === "webgl" ? webglLineHeight : 1;
-                if (terminal.options.lineHeight !== lineHeight) {
-                  terminal.options.lineHeight = lineHeight;
-                }
                 scheduleFitRef.current?.();
                 if (renderer === "webgl" && !initialRendererSettled)
                   settleInitialRenderer();
@@ -2484,7 +2491,6 @@ export function ThreadTerminalView({
         if (disposed || terminal === null) return;
         clearTimeout(rendererDeadline);
         initialRendererSettled = true;
-        webglLineHeight = terminal.options.lineHeight ?? 1;
         fitTerminal();
       }
       if (!retainNativeOutput) {
@@ -2835,6 +2841,7 @@ export function ThreadTerminalView({
             },
             onReplayComplete: () => {
               replayCompleted = true;
+              setRestoringSession(false);
               keepScreenLoadingPreview = false;
               clearScreenLoadingPreview();
               containerElement.dataset.replayHeld = "false";
@@ -2880,6 +2887,7 @@ export function ThreadTerminalView({
             outputFrameId: currentOutputFrameId ?? undefined,
             onReplayStart: () => {
               replayStarted = true;
+              setRestoringSession(true);
               containerElement.dataset.replayHeld = "true";
               viewportReplaySaveGate.beginReplay();
               replayCompleted = false;
@@ -2967,7 +2975,6 @@ export function ThreadTerminalView({
         clearTimeout(rendererDeadline);
         initialRendererSettled = true;
         initialLayoutSettled = true;
-        webglLineHeight = activeTerminal.options.lineHeight ?? 1;
         activeTransport.markLayoutSettled();
         activeTransport.claimSize();
         fitTerminal();
@@ -3259,19 +3266,14 @@ export function ThreadTerminalView({
       );
     }
 
-    void mountTerminal(container)
-      .then(() => {
-        window.requestAnimationFrame(() => {
-          if (!keepScreenLoadingPreview) clearScreenLoadingPreview();
-        });
-      })
-      .catch((error) => {
-        clearScreenLoadingPreview();
-        if (!disposed) {
-          container.textContent =
-            error instanceof Error ? error.message : String(error);
-        }
-      });
+    void mountTerminal(container).catch((error) => {
+      clearScreenLoadingPreview();
+      if (!disposed) {
+        setRestoringSession(false);
+        container.textContent =
+          error instanceof Error ? error.message : String(error);
+      }
+    });
 
     return () => {
       disposed = true;
@@ -3437,7 +3439,9 @@ export function ThreadTerminalView({
             ? "Reconnecting…"
             : replayNotice === "unavailable"
               ? "Terminal output unavailable"
-              : null;
+              : restoringSession
+                ? "Restoring session…"
+                : null;
   useEffect(() => {
     webglVisibilityRef.current?.sync();
     terminalVisibilityReporterRef.current?.();
@@ -3554,13 +3558,16 @@ export function ThreadTerminalView({
       {connectionNoticeText !== null ? (
         <div
           role="status"
+          data-terminal-restoring={
+            connectionNoticeText === "Restoring session…" ? "" : undefined
+          }
           style={{ position: "absolute" }}
-          className="pointer-events-none right-2 top-1 z-10 max-w-full rounded-md bg-sidebar px-2 py-1 text-xs text-foreground shadow-sm"
+          className={`pointer-events-none right-2 top-1 z-10 max-w-full rounded-md bg-sidebar px-2 py-1 text-xs shadow-sm ${connectionNoticeText === "Restoring session…" ? "text-muted-foreground" : "text-foreground"}`}
         >
           {connectionNoticeText}
         </div>
       ) : null}
-      {terminalReady && showFitControl ? (
+      {terminalReady && !restoringSession && showFitControl ? (
         <div
           style={{ position: "absolute" }}
           className={`right-2 z-10 flex items-center justify-end gap-2 rounded-md bg-sidebar px-2 py-1 text-xs shadow-sm ${connectionNoticeText === null ? "top-1" : "top-10"}`}

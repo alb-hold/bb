@@ -562,7 +562,12 @@ async function openNativeTerminalOnce(
             "terminals-changed",
           ]);
       } catch (error) {
-        if (!isClosedDatabaseConnectionError(error)) throw error;
+        if (!isClosedDatabaseConnectionError(error)) {
+          deps.logger.warn(
+            { err: error, threadId: thread.id },
+            "Failed to check native terminal setup",
+          );
+        }
       }
     };
     setTimeout(checkSetup, NATIVE_TERMINAL_SETUP_DELAY_MS).unref();

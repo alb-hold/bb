@@ -1226,6 +1226,8 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
         ).toBe("snapshot text"),
       );
       expect(testState.sockets).toHaveLength(0);
+      expect(pageText()).toContain("Restoring session…");
+      expect(pageText()).not.toContain("Fit to this screen");
       const previewFontSize = document.querySelector<HTMLElement>(
         "[data-terminal-screen-loading-preview]",
       )!.style.fontSize;
@@ -1237,18 +1239,10 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
       await waitFor(() => expect(testState.sockets).toHaveLength(1), {
         timeout: 20_000,
       });
-      if (snapshotCols === 40) {
-        await waitFor(() =>
-          expect(
-            document.querySelector("[data-terminal-screen-loading-preview]"),
-          ).toBeNull(),
-        );
-      } else {
-        expect(
-          document.querySelector("[data-terminal-screen-loading-preview]")
-            ?.textContent,
-        ).toBe("snapshot text");
-      }
+      expect(
+        document.querySelector("[data-terminal-screen-loading-preview]")
+          ?.textContent,
+      ).toBe("snapshot text");
       const preview = document.querySelector<HTMLElement>(
         "[data-terminal-replay-preview]",
       );
@@ -1269,19 +1263,24 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
         replayStartSeq: 0,
         nextSeq: 2,
       });
-      if (snapshotCols !== 40) {
-        expect(
-          document.querySelector("[data-terminal-screen-loading-preview]")
-            ?.textContent,
-        ).toBe("snapshot text");
-        expect(pageText()).not.toContain("Reconnecting");
-        vi.useFakeTimers();
-        await act(() => vi.advanceTimersByTimeAsync(600));
-        vi.useRealTimers();
-        expect(snapshotElement.isConnected).toBe(true);
-        expect(snapshotElement.style.whiteSpace).toBe("pre");
-        expect(removeSnapshot).not.toHaveBeenCalled();
-      }
+      await waitFor(() => expect(pageText()).toContain("Restoring session…"));
+      expect(pageText()).not.toContain("Fit to this screen");
+      expect(
+        document.querySelector("[data-terminal-screen-loading-preview]")
+          ?.textContent,
+      ).toBe("snapshot text");
+      expect(pageText()).not.toContain("Reconnecting");
+      vi.useFakeTimers();
+      await act(() => vi.advanceTimersByTimeAsync(3700));
+      vi.useRealTimers();
+      expect(pageText()).toContain("Restoring session…");
+      expect(pageText()).not.toContain("Fit to this screen");
+      expect(
+        document.querySelector("[data-terminal-restoring]")?.getAttribute("role"),
+      ).toBe("status");
+      expect(snapshotElement.isConnected).toBe(true);
+      expect(snapshotElement.style.whiteSpace).toBe("pre");
+      expect(removeSnapshot).not.toHaveBeenCalled();
       socket.receive({
         type: "output",
         chunk: { seq: 0, dataBase64: btoa("older scrollback\r\n") },
@@ -1310,6 +1309,7 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
         document.querySelector("[data-terminal-screen-loading-preview]"),
       ).toBeNull();
       expect(removeSnapshot).toHaveBeenCalledOnce();
+      expect(pageText()).not.toContain("Restoring session…");
       expect(testState.sockets).toHaveLength(1);
       expect(socket.closeCalls).toHaveLength(0);
       const resizes = socket.sent
@@ -2560,12 +2560,10 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
           }),
       );
       expect(resizes()).toHaveLength(1);
-      expect(mounted.current?.options.lineHeight).toBe(
-        outcome === "ready" || outcome === "visibility" ? 1.12 : 1,
-      );
+      expect(mounted.current?.options.lineHeight).toBe(1.12);
       if (outcome === "ready") {
         act(() => loseContext());
-        expect(mounted.current?.options.lineHeight).toBe(1);
+        expect(mounted.current?.options.lineHeight).toBe(1.12);
       }
     },
   );
@@ -2613,7 +2611,7 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
     );
     const terminal = mountedTerminal.current;
     if (!terminal) throw new Error("terminal did not mount");
-    expect(terminal.options.lineHeight).toBe(1);
+    expect(terminal.options.lineHeight).toBe(1.12);
     await waitForReadinessCondition(
       () =>
         expect(
@@ -2661,7 +2659,7 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
         ).toBe("webgl"),
       "WebGL renderer did not attach after replay",
     );
-    expect(terminal.options.lineHeight).toBe(1);
+    expect(terminal.options.lineHeight).toBe(1.12);
     expect({
       cols: terminal.cols,
       rows: terminal.rows,
@@ -2672,7 +2670,7 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
       retainedLine: terminal.buffer.active.getLine(5)?.translateToString(true),
     }).toEqual(before);
     act(() => loseContext());
-    expect(terminal.options.lineHeight).toBe(1);
+    expect(terminal.options.lineHeight).toBe(1.12);
   }, 30_000);
 
   it("keeps the DOM renderer and replay working when WebGL import fails", async () => {
