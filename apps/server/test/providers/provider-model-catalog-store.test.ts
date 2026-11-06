@@ -521,10 +521,50 @@ describe("provider model catalog store", () => {
     });
   });
 
+  it.each(["refresh", "session"])(
+    "retries a superseded reader against the current launch after a %s catalog",
+    async (replacement) => {
+      await withTestHarness(async (harness) => {
+        const host = setupCatalogHost(harness, {
+          id: "host-catalog-superseded",
+        });
+        const held = createDeferredPromise<HostRpcHandlerResult>();
+        host.setAnswer(() => held.promise);
+        const pending = host.read("codex");
+        await vi.waitFor(() => expect(host.listRequests()).toHaveLength(1));
+        const artifact = harness.deps.pluginHostArtifacts.get("provider-codex");
+        if (artifact === undefined) throw new Error("Missing codex artifact");
+        harness.deps.pluginHostArtifacts.set("provider-codex", {
+          ...artifact,
+          digest: "b".repeat(64),
+        });
+        host.setAnswer(() => catalogAnswer(modelList("current-model")));
+        if (replacement === "refresh") {
+          expect(modelIds(await host.read("codex"))).toEqual(["current-model"]);
+        } else {
+          await host.store.remember(harness.deps, {
+            hostId: host.hostId,
+            provider: requireRegistration(harness, "codex").info,
+            cwd: null,
+            models: modelList("current-model"),
+            selectedOnlyModels: [],
+          });
+        }
+        held.resolve(catalogAnswer(modelList("superseded-model")));
+        const response = await pending;
+        expect(response.modelLoadError).toBeNull();
+        expect(modelIds(response)).toEqual(["current-model"]);
+        expect(host.listRequests()).toHaveLength(
+          replacement === "refresh" ? 2 : 1,
+        );
+      });
+    },
+  );
+
   it("ignores rotating pool credentials but refetches when catalog routing changes", async () => {
     await withTestHarness(async (harness) => {
       const host = setupCatalogHost(harness, { id: "host-catalog-env" });
-      const logs = [vi.spyOn(harness.deps.logger, "info"), vi.spyOn(harness.deps.logger, "warn"), vi.spyOn(harness.deps.logger, "error")];
+      const logLines = captureLogLines(harness);
       const contexts: unknown[] = [];
       let poolToken: string | null = "token-a";
       let catalogPath = "/pool/v1";
@@ -562,11 +602,34 @@ describe("provider model catalog store", () => {
       });
       try {
         await host.read("codex");
-        await host.read("codex");
-        poolToken = "token-b";
-        await host.read("codex");
+        await settleTimers();
+        const pushes = capturePushes(harness);
+        for (let index = 0; index < 10; index += 1) {
+          poolToken = `token-rotated-${index}`;
+          const response = await host.read("codex");
+          expect(response.modelLoadError).toBeNull();
+          expect(modelIds(response)).toEqual(["codex-model"]);
+        }
         expect(host.listRequests("codex")).toHaveLength(1);
-        const logged = JSON.stringify(logs.map((log) => log.mock.calls));
+        host.clock.now += MINUTE;
+        const held = createDeferredPromise<HostRpcHandlerResult>();
+        host.setAnswer(() => held.promise);
+        expect(modelIds(await host.read("codex"))).toEqual(["codex-model"]);
+        await vi.waitFor(() => expect(host.listRequests()).toHaveLength(2));
+        poolToken = "token-b";
+        expect((await host.read("codex")).modelLoadError).toBeNull();
+        held.resolve(catalogAnswer(modelList("codex-model")));
+        await vi.waitFor(() => expect(logLines(SETTLED)).toHaveLength(2));
+        await settleTimers();
+        expect(pushes).toEqual([]);
+        expect(logLines(SETTLED).map(({ changed }) => changed)).toEqual([
+          true,
+          false,
+        ]);
+        expect((await host.read("codex")).modelLoadError).toBeNull();
+        expect(host.listRequests("codex")).toHaveLength(2);
+        host.setAnswer(() => catalogAnswer(modelList("codex-model")));
+        const logged = JSON.stringify(logLines(SETTLED));
         expect(logged).not.toContain("token-a");
         expect(logged).not.toContain("token-b");
         catalogPath = "/pool/v2";
@@ -598,6 +661,7 @@ describe("provider model catalog store", () => {
             ),
         ).toEqual([
           [{ serverPath: "/pool/v1" }, "token-a"],
+          [{ serverPath: "/pool/v1" }, "token-rotated-9"],
           [{ serverPath: "/pool/v2" }, "token-b"],
           [{ serverPath: "/pool/v2" }, "token-b"],
           [],
