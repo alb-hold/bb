@@ -139,6 +139,26 @@ afterEach(() => {
 });
 
 describe("TerminalWebSocketTransport", () => {
+  it("reports the original event timestamp before decoding and ignores stale sockets", () => {
+    const seen: number[] = [];
+    const harness = createHarness({
+      onMessageEvent: (timestamp) => seen.push(timestamp),
+    });
+    harness.transport.start();
+    const socket = harness.sockets[0]!;
+    socket.open();
+    const event = new MessageEvent("message", {
+      data: JSON.stringify({ type: "pong" }),
+    });
+    socket.onmessage?.(event);
+    expect(seen).toEqual([event.timeStamp]);
+    expect(harness.messages).toEqual([{ type: "pong" }]);
+    const receive = socket.onmessage;
+    harness.transport.dispose();
+    receive?.(event);
+    expect(seen).toEqual([event.timeStamp]);
+  });
+
   it("validates the input classification at the browser boundary", () => {
     const input = { type: "input", dataBase64: "eA==" };
     expect(terminalClientMessageSchema.safeParse(input).success).toBe(true);
@@ -480,6 +500,56 @@ describe("TerminalWebSocketTransport", () => {
     expect(
       harness.sockets[0]?.sent.map((payload) => JSON.parse(payload)),
     ).toEqual([{ type: "ack", nextSeq: 3 }]);
+    harness.transport.dispose();
+  });
+
+  it("expands negotiated batches in order and only acknowledges bytes the consumer parsed", async () => {
+    const harness = createHarness();
+    harness.transport.start();
+    const socket = harness.sockets[0]!;
+    socket.protocol = "bb.terminal.replay-batch.v1";
+    socket.open();
+    const chunks = [0, 1, 2].map((seq) => ({ seq, dataBase64: "YQ==" }));
+    socket.receive({ type: "output-batch", chunks });
+    socket.receive({ type: "output", chunk: { seq: 3, dataBase64: "Yg==" } });
+    expect(
+      harness.messages
+        .filter((message) => message.type === "output")
+        .map((message) => message.chunk.seq),
+    ).toEqual([0, 1, 2, 3]);
+    await Promise.resolve();
+    expect(socket.sent).toEqual([]);
+    harness.transport.acknowledgeOutput(2);
+    await Promise.resolve();
+    expect(socket.sent.map((data) => JSON.parse(data))).toEqual([
+      { type: "ack", nextSeq: 2 },
+    ]);
+    socket.receive({
+      type: "output-batch",
+      chunks: [chunks[2]!, { seq: 4, dataBase64: "Yw==" }],
+    });
+    expect(
+      harness.messages
+        .filter((message) => message.type === "output")
+        .map((message) => message.chunk.seq),
+    ).toEqual([0, 1, 2, 3, 4]);
+    harness.transport.dispose();
+  });
+
+  it("rejects batches when an old server selected a legacy protocol", () => {
+    const invalid = vi.fn();
+    const harness = createHarness({ onInvalidMessage: invalid });
+    harness.transport.start();
+    const socket = harness.sockets[0]!;
+    socket.open();
+    socket.receive({
+      type: "output-batch",
+      chunks: [{ seq: 0, dataBase64: "YQ==" }],
+    });
+    expect(invalid).toHaveBeenCalledOnce();
+    expect(harness.messages).toEqual([]);
+    socket.receive({ type: "output", chunk: { seq: 0, dataBase64: "YQ==" } });
+    expect(harness.messages).toHaveLength(1);
     harness.transport.dispose();
   });
 
@@ -1030,6 +1100,7 @@ describe("TerminalWebSocketTransport", () => {
       expect(harness.protocols[0]).toEqual([
         "bb.terminal.v1",
         "bb.terminal.resize-echo.v1",
+        "bb.terminal.replay-batch.v1",
       ]);
       harness.transport.dispose();
     });
@@ -1522,5 +1593,70 @@ describe("TerminalWebSocketTransport", () => {
       ]);
       harness.transport.dispose();
     });
+  });
+});
+
+describe("negotiated replay delivery", () => {
+  it("delivers replay once per batch and preserves live callbacks and parsed-only acks", async () => {
+    const batches: number[][] = [];
+    const harness = createHarness({
+      onReplayBatch: (chunks) => batches.push(chunks.map((chunk) => chunk.seq)),
+    });
+    harness.transport.start();
+    const socket = harness.sockets[0]!;
+    socket.protocol = "bb.terminal.replay-batch.v1";
+    socket.open();
+    socket.receive({
+      type: "attached",
+      session: terminalSession(),
+      replayStartSeq: 0,
+      nextSeq: 3,
+    });
+    socket.receive({
+      type: "output-batch",
+      chunks: [0, 1, 2].map((seq) => ({ seq, dataBase64: "YQ==" })),
+    });
+    socket.receive({ type: "output", chunk: { seq: 3, dataBase64: "Yg==" } });
+    expect(batches).toEqual([[0, 1, 2]]);
+    expect(harness.messages.map((message) => message.type)).toEqual([
+      "attached",
+      "output",
+    ]);
+    expect(socket.sent).toEqual([]);
+    harness.transport.acknowledgeOutput(3);
+    await Promise.resolve();
+    expect(socket.sent.map((frame) => JSON.parse(frame))).toEqual([
+      { type: "ack", nextSeq: 3 },
+    ]);
+    harness.transport.dispose();
+  });
+
+  it("deduplicates and flushes replay before gaps and live output in a mixed frame", () => {
+    const events: unknown[] = [];
+    const harness = createHarness({
+      onReplayBatch: (chunks) => events.push(chunks.map((chunk) => chunk.seq)),
+      onSequenceGap: (expected, actual) =>
+        events.push(["gap", expected, actual]),
+      onMessage: (message) =>
+        events.push(
+          message.type === "output" ? message.chunk.seq : message.type,
+        ),
+    });
+    harness.transport.start();
+    const socket = harness.sockets[0]!;
+    socket.protocol = "bb.terminal.replay-batch.v1";
+    socket.open();
+    socket.receive({
+      type: "attached",
+      session: terminalSession(),
+      replayStartSeq: 0,
+      nextSeq: 4,
+    });
+    socket.receive({
+      type: "output-batch",
+      chunks: [0, 0, 2, 3, 4].map((seq) => ({ seq, dataBase64: "YQ==" })),
+    });
+    expect(events).toEqual(["attached", [0], ["gap", 1, 2], [2, 3], 4]);
+    harness.transport.dispose();
   });
 });

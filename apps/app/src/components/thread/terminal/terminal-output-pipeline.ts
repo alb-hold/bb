@@ -107,7 +107,16 @@ export function createTerminalOutputPipeline(
         : true;
       for (const operation of result.operations) {
         if (operation.type === "bytes" && operation.bytes.length > 0) {
-          enqueue({ type: "write", bytes: operation.bytes });
+          for (
+            let offset = 0;
+            offset < operation.bytes.length;
+            offset += 16 * 1024
+          ) {
+            enqueue({
+              type: "write",
+              bytes: operation.bytes.subarray(offset, offset + 16 * 1024),
+            });
+          }
         } else if (operation.type === "grid") {
           onGrid?.(operation.grid, applyScannedMarkerGrids);
           if (applyScannedMarkerGrids && (options.resizeMarkerGrids ?? true)) {

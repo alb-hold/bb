@@ -1,6 +1,9 @@
 import { once } from "node:events";
 import { Socket, type AddressInfo } from "node:net";
-import type { TerminalSession } from "@bb/server-contract";
+import {
+  TERMINAL_REPLAY_BATCH_WEBSOCKET_PROTOCOL,
+  type TerminalSession,
+} from "@bb/server-contract";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket, { WebSocketServer } from "ws";
 import {
@@ -48,6 +51,7 @@ function chunk(seq: number, text = `out-${seq}`) {
 }
 
 class FakeSocket implements TerminalDataPlaneSocket {
+  protocol: string | undefined;
   bufferedAmount = 0;
   readonly closes: Array<{
     code: number | undefined;
@@ -561,6 +565,55 @@ describe("terminal data plane child", () => {
       nextSeq: 3,
     });
     expect(socket.outputSeqs()).toEqual([0, 1, 2, 3, 4]);
+    expect(ofType(harness, "browser.resync")).toEqual([]);
+  });
+
+  it("flushes negotiated replay batches before buffered and subsequent live output", async () => {
+    const harness = createHarness();
+    const socket = await attachBrowser(harness, {
+      attachId: "a1",
+      terminalId: "term_a",
+      outputAcks: true,
+    });
+    socket.protocol = TERMINAL_REPLAY_BATCH_WEBSOCKET_PROTOCOL;
+    main(harness, {
+      v,
+      type: "terminal.output",
+      terminalId: "term_a",
+      chunk: chunk(201),
+    });
+    const chunks = Array.from({ length: 201 }, (_, seq) =>
+      chunk(seq, "a".repeat(1024)),
+    );
+    replay(harness, {
+      attachId: "a1",
+      terminalId: "term_a",
+      chunks,
+      nextSeq: 201,
+    });
+    main(harness, {
+      v,
+      type: "terminal.output",
+      terminalId: "term_a",
+      chunk: chunk(202),
+    });
+    const frames = socket.frames();
+    expect(frames[0]?.type).toBe("attached");
+    const output = frames.flatMap((frame) =>
+      frame.type === "output-batch"
+        ? frame.chunks
+        : frame.type === "output"
+          ? [frame.chunk]
+          : [],
+    );
+    expect(output).toEqual([...chunks, chunk(201), chunk(202)]);
+    expect(
+      frames.filter((frame) => frame.type === "output-batch").length,
+    ).toBeGreaterThan(1);
+    expect(frames.slice(-2).map((frame) => frame.type)).toEqual([
+      "output",
+      "output",
+    ]);
     expect(ofType(harness, "browser.resync")).toEqual([]);
   });
 

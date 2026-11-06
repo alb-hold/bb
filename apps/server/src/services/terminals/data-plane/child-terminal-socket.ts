@@ -86,6 +86,12 @@ export class ChildTerminalSocket {
         };
         queueMicrotask(() => this.flushReplay());
         return;
+      case "output-batch":
+        for (const chunk of message.chunks) {
+          if (this.collecting !== null) this.collecting.chunks.push(chunk);
+          else this.sink.relayOutput(this.terminalId, chunk);
+        }
+        return;
       case "output":
         if (this.collecting !== null) {
           this.collecting.chunks.push(message.chunk);
@@ -101,8 +107,7 @@ export class ChildTerminalSocket {
         }
         this.sink.broadcast(this.terminalId, message, data.length);
         return;
-      case "session-updated":
-      {
+      case "session-updated": {
         const resizeSeq = message.resizeSeq;
         if (typeof resizeSeq === "number") {
           this.sink.reply(this.attachId, {
