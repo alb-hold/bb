@@ -733,6 +733,7 @@ describe("real worktree teardown preservation", () => {
     await git(worktree.path, "commit", "-m", "published quarantine siblings");
     await git(worktree.path, "push", "origin", "feature");
     let injected = false;
+    const retainedPaths: string[] = [];
     const result = await removeDirectoryTree(worktree.path, {
       startedAt: Number.MAX_SAFE_INTEGER,
       beforeEntryRename: async (entry) => {
@@ -740,6 +741,7 @@ describe("real worktree teardown preservation", () => {
         injected = true;
         await writeFile(path.join(lateDirectory, "late-file.txt"), "kept\n");
       },
+      onRetainedPath: (retainedPath) => retainedPaths.push(retainedPath),
     });
 
     expect(result).toBe("retained");
@@ -766,11 +768,19 @@ describe("real worktree teardown preservation", () => {
         .stat(path.join(lateDirectory, "c-remaining.txt"))
         .then((s) => s.mode & 0o7777),
     ).toBe(0o604);
-    expect(
-      (await fs.readdir(lateDirectory)).filter((name) =>
-        name.startsWith(".bb-removing-"),
-      ),
-    ).toEqual([]);
+    const duplicateName = (await fs.readdir(lateDirectory)).find((name) =>
+      name.startsWith(".bb-removing-"),
+    );
+    expect(duplicateName).toBeDefined();
+    const duplicatePath = path.join(lateDirectory, duplicateName!);
+    expect(retainedPaths).toContain(duplicatePath);
+    const restoredInfo = await fs.stat(
+      path.join(lateDirectory, "b-trigger.txt"),
+    );
+    const duplicateInfo = await fs.stat(duplicatePath);
+    expect(duplicateInfo.ino).toBe(restoredInfo.ino);
+    expect(duplicateInfo.dev).toBe(restoredInfo.dev);
+    await expect(readFile(duplicatePath, "utf8")).resolves.toBe("trigger\n");
     await expect(git(worktree.path, "rev-parse", "--git-dir")).resolves.toMatch(
       /worktrees/u,
     );
@@ -1622,11 +1632,18 @@ describe("real worktree teardown preservation", () => {
     await expect(
       readFile(path.join(lateDirectory, "late-file.txt"), "utf8"),
     ).resolves.toBe("kept\n");
-    expect(
-      (await fs.readdir(lateDirectory)).filter((name) =>
-        name.startsWith(".bb-removing-"),
-      ),
-    ).toEqual([]);
+    const duplicateNames = (await fs.readdir(lateDirectory)).filter((name) =>
+      name.startsWith(".bb-removing-"),
+    );
+    expect(duplicateNames).toHaveLength(1);
+    const duplicatePath = path.join(lateDirectory, duplicateNames[0]);
+    expect(retainedPaths).toContain(duplicatePath);
+    const restoredInfo = await fs.stat(
+      path.join(lateDirectory, "b-trigger.txt"),
+    );
+    const duplicateInfo = await fs.stat(duplicatePath);
+    expect(duplicateInfo.ino).toBe(restoredInfo.ino);
+    expect(duplicateInfo.dev).toBe(restoredInfo.dev);
   });
 
   it("removes a clean worktree on macOS when lsof reports no open paths", async () => {
