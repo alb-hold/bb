@@ -63,7 +63,7 @@ afterEach(() => {
 
 describe("ExecutionControls", () => {
   it.each([320, 360, 390])("keeps Terminal and Chat labels visible at %i px", (width) => {
-    const css = readFileSync(new URL("../../app.css", import.meta.url), "utf8");
+    const css = readFileSync("src/app.css", "utf8");
     const style = document.createElement("style");
     const media = /@media \(width <= (\d+)px\) \{/g;
     for (const match of css.matchAll(media)) {

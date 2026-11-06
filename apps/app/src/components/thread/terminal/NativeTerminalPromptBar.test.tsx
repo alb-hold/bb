@@ -190,7 +190,7 @@ describe("NativeTerminalPromptBar", () => {
     const { input } = renderBar();
     const shell = input.closest("[data-native-composer]")!;
     const phoneStyle = document.createElement("style");
-    const css = readFileSync(new URL("../../../app.css", import.meta.url), "utf8");
+    const css = readFileSync("src/app.css", "utf8");
     phoneStyle.textContent = css.slice(css.lastIndexOf("@media (width <= 480px) {")).replace("@media (width <= 480px) {", "").replace(/}\s*$/, "");
     document.head.append(phoneStyle);
     expect(getComputedStyle(shell).display).toBe("grid");
