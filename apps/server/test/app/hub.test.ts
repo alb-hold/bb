@@ -1,4 +1,5 @@
 import { Buffer } from "node:buffer";
+import { TERMINAL_REPLAY_BATCH_WEBSOCKET_PROTOCOL } from "@bb/server-contract";
 import {
   ENVIRONMENT_CHANGE_KINDS,
   HOST_CHANGE_KINDS,
@@ -210,15 +211,48 @@ describe("NotificationHub", () => {
     const phone = createMockHubSocket();
     hub.registerTerminalClient("term-legacy", desktop);
     hub.registerTerminalClient("term-legacy", phone);
-    hub.recordTerminalClientSize("term-legacy", desktop, { cols: 120, rows: 40 }, 1000);
-    hub.recordTerminalClientSize("term-legacy", phone, { cols: 80, rows: 20 }, 1000);
-    expect(hub.terminalSharedSize("term-legacy", 1000)).toEqual({ cols: 80, rows: 20 });
-    hub.recordTerminalClientSize("term-legacy", phone, { cols: 70, rows: 15 }, 1001);
-    expect(hub.terminalSharedSize("term-legacy", 1001)).toEqual({ cols: 70, rows: 15 });
-    hub.recordTerminalClientSize("term-legacy", desktop, { cols: 120, rows: 40 }, 1002, true);
-    expect(hub.terminalSharedSize("term-legacy", 1002)).toEqual({ cols: 120, rows: 40 });
+    hub.recordTerminalClientSize(
+      "term-legacy",
+      desktop,
+      { cols: 120, rows: 40 },
+      1000,
+    );
+    hub.recordTerminalClientSize(
+      "term-legacy",
+      phone,
+      { cols: 80, rows: 20 },
+      1000,
+    );
+    expect(hub.terminalSharedSize("term-legacy", 1000)).toEqual({
+      cols: 80,
+      rows: 20,
+    });
+    hub.recordTerminalClientSize(
+      "term-legacy",
+      phone,
+      { cols: 70, rows: 15 },
+      1001,
+    );
+    expect(hub.terminalSharedSize("term-legacy", 1001)).toEqual({
+      cols: 70,
+      rows: 15,
+    });
+    hub.recordTerminalClientSize(
+      "term-legacy",
+      desktop,
+      { cols: 120, rows: 40 },
+      1002,
+      true,
+    );
+    expect(hub.terminalSharedSize("term-legacy", 1002)).toEqual({
+      cols: 120,
+      rows: 40,
+    });
     hub.unregisterTerminalClientSocket(desktop);
-    expect(hub.terminalSharedSize("term-legacy", 1003)).toEqual({ cols: 70, rows: 15 });
+    expect(hub.terminalSharedSize("term-legacy", 1003)).toEqual({
+      cols: 70,
+      rows: 15,
+    });
   });
 
   it("gives terminal size to the visible client that claimed focus", () => {
@@ -239,7 +273,10 @@ describe("NotificationHub", () => {
       true,
     );
     hub.recordTerminalClientSize("term-1", phone, { cols: 80, rows: 20 }, now);
-    expect(hub.terminalSharedSize("term-1", now)).toEqual({ cols: 160, rows: 48 });
+    expect(hub.terminalSharedSize("term-1", now)).toEqual({
+      cols: 160,
+      rows: 48,
+    });
     hub.recordTerminalClientSize(
       "term-1",
       phone,
@@ -264,7 +301,10 @@ describe("NotificationHub", () => {
     });
 
     hub.recordTerminalClientVisibility("term-1", phone, false, now + 2);
-    expect(hub.terminalSharedSize("term-1", now + 2)).toEqual({ cols: 160, rows: 48 });
+    expect(hub.terminalSharedSize("term-1", now + 2)).toEqual({
+      cols: 160,
+      rows: 48,
+    });
     hub.recordTerminalClientSize(
       "term-1",
       phone,
@@ -272,7 +312,10 @@ describe("NotificationHub", () => {
       now + 2,
       true,
     );
-    expect(hub.terminalSharedSize("term-1", now + 2)).toEqual({ cols: 160, rows: 48 });
+    expect(hub.terminalSharedSize("term-1", now + 2)).toEqual({
+      cols: 160,
+      rows: 48,
+    });
     hub.recordTerminalClientVisibility("term-1", phone, true, now + 3);
     hub.recordTerminalClientSize(
       "term-1",
@@ -290,7 +333,10 @@ describe("NotificationHub", () => {
     hub.recordTerminalClientHeartbeat("term-1", phone, now + 3);
     const later = now + 3 + TERMINAL_CLIENT_STALE_MS + 1;
     hub.recordTerminalClientHeartbeat("term-1", desktop, later);
-    expect(hub.terminalSharedSize("term-1", later)).toEqual({ cols: 160, rows: 48 });
+    expect(hub.terminalSharedSize("term-1", later)).toEqual({
+      cols: 160,
+      rows: 48,
+    });
 
     hub.recordTerminalClientHeartbeat("term-1", phone, later);
     hub.recordTerminalClientSize(
@@ -328,9 +374,26 @@ describe("NotificationHub", () => {
       { cols: 55, rows: 16 },
       1_000_001,
     );
-    hub.recordTerminalClientSize("term-private-output", phone, { cols: 55, rows: 41 }, 1_000_002);
-    hub.recordTerminalClientSize("term-private-output", phone, { cols: 55, rows: 41 }, 1_000_003, true);
-    hub.recordTerminalClientSize("term-private-output", phone, { cols: 55, rows: 41 }, 1_000_004, true);
+    hub.recordTerminalClientSize(
+      "term-private-output",
+      phone,
+      { cols: 55, rows: 41 },
+      1_000_002,
+    );
+    hub.recordTerminalClientSize(
+      "term-private-output",
+      phone,
+      { cols: 55, rows: 41 },
+      1_000_003,
+      true,
+    );
+    hub.recordTerminalClientSize(
+      "term-private-output",
+      phone,
+      { cols: 55, rows: 41 },
+      1_000_004,
+      true,
+    );
 
     expect(changes).toEqual([
       {
@@ -458,6 +521,63 @@ describe("NotificationHub", () => {
         chunk: { seq: 1, dataBase64: "Yg==" },
       },
     ]);
+  });
+
+  it("drains negotiated replay batches before live output for a slow browser", () => {
+    vi.useFakeTimers();
+    const hub = new NotificationHub();
+    const socket = {
+      ...createMockHubSocket(),
+      protocol: TERMINAL_REPLAY_BATCH_WEBSOCKET_PROTOCOL,
+      raw: { bufferedAmount: 2 * 1024 * 1024 },
+    };
+    hub.registerTerminalClient("term-1", socket);
+    const chunks = Array.from({ length: 200 }, (_, seq) => ({
+      seq,
+      dataBase64: Buffer.alloc(1024).toString("base64"),
+    }));
+    hub.sendTerminalReplay(socket, chunks);
+    hub.sendTerminalClientMessage("term-1", {
+      type: "output",
+      chunk: { seq: 200, dataBase64: "YQ==" },
+    });
+    vi.advanceTimersByTime(100);
+    expect(socket.messages).toEqual([]);
+    socket.raw.bufferedAmount = 0;
+    vi.advanceTimersByTime(10);
+    const frames = socket.messages.map((frame) => JSON.parse(frame));
+    expect(
+      frames.filter((frame) => frame.type === "output-batch").length,
+    ).toBeGreaterThan(1);
+    expect(
+      frames.flatMap((frame) =>
+        frame.type === "output-batch" ? frame.chunks : [frame.chunk],
+      ),
+    ).toEqual([...chunks, { seq: 200, dataBase64: "YQ==" }]);
+    expect(frames.at(-1).type).toBe("output");
+  });
+
+  it("retains the bounded backlog cap for batched replay to a stalled client", () => {
+    vi.useFakeTimers();
+    const hub = new NotificationHub();
+    const socket = {
+      ...createMockHubSocket(),
+      protocol: TERMINAL_REPLAY_BATCH_WEBSOCKET_PROTOCOL,
+      raw: { bufferedAmount: 2 * 1024 * 1024 },
+    };
+    hub.registerTerminalClient("term-1", socket);
+    hub.sendTerminalReplay(
+      socket,
+      Array.from({ length: 512 }, (_, seq) => ({
+        seq,
+        dataBase64: Buffer.alloc(65536).toString("base64"),
+      })),
+    );
+    expect(socket.closed).toContainEqual({
+      code: 1013,
+      reason: "terminal-backpressure",
+    });
+    expect(socket.messages).toEqual([]);
   });
 
   it("isolates a throwing terminal browser socket from healthy clients", () => {

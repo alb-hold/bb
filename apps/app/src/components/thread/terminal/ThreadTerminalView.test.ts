@@ -2145,9 +2145,11 @@ describe("terminal output encoding", () => {
     const pipeline = createTerminalOutputPipeline(terminal);
     let callbacks = 0;
     let writeCalls = 0;
+    const writeSizes: number[] = [];
     const originalWrite = terminal.write.bind(terminal);
     terminal.write = ((data: string | Uint8Array, callback?: () => void) => {
       writeCalls += 1;
+      writeSizes.push(data.length);
       originalWrite(data, () => {
         callbacks += 1;
         callback?.();
@@ -2164,9 +2166,10 @@ describe("terminal output encoding", () => {
       ),
     );
     expect(callbacks).toBe(0);
-    expect(writeCalls).toBe(32);
+    expect(writeCalls).toBe(128);
+    expect(writeSizes.every((size) => size <= 16384)).toBe(true);
     await settled;
-    expect(callbacks).toBe(32);
+    expect(callbacks).toBe(128);
     terminal.dispose();
   });
 
@@ -3255,5 +3258,77 @@ describe("terminal output write barriers", () => {
       Array.from({ length: 5000 }, (_, index) => index),
     );
     expect(allCalls).toBe(0);
+  });
+});
+
+describe("bounded replay writes", () => {
+  it("acks only after parsing a coalesced replay and orders a live write after it", async () => {
+    const { terminalReplayWrites } = await import("./terminal-replay-writes");
+    const terminal = new Terminal({ cols: 80, rows: 24, scrollback: 1000 });
+    const writes: number[] = [];
+    const originalWrite = terminal.write.bind(terminal);
+    vi.spyOn(terminal, "write").mockImplementation((data, callback) => {
+      writes.push(typeof data === "string" ? data.length : data.byteLength);
+      originalWrite(data, callback);
+    });
+    const pipeline = createTerminalOutputPipeline(terminal);
+    const acknowledgeOutput = vi.fn();
+    const onOutputParsed = vi.fn();
+    let replayNextSeq: number | null = 33;
+    const replayWriteState = { suppressedWriteCount: 0 };
+    let complete!: () => void;
+    const parsed = new Promise<void>((resolve) => {
+      complete = resolve;
+    });
+    const shared = {
+      acknowledgeOutput,
+      onOutputParsed,
+      pipeline,
+      terminal,
+      replayWriteState,
+      onReplayComplete: vi.fn(),
+      setReplayNextSeq: (next: number | null) => {
+        replayNextSeq = next;
+      },
+    };
+    const chunks = Array.from({ length: 33 }, (_, seq) => ({
+      seq,
+      dataBase64: Buffer.from("replay\r\n".repeat(128)).toString("base64"),
+    }));
+    for (const write of terminalReplayWrites(chunks)) {
+      handleTerminalServerMessage({
+        ...shared,
+        replayNextSeq,
+        message: { type: "output", chunk: write.chunk },
+        replayWrite: write,
+      });
+    }
+    handleTerminalServerMessage({
+      ...shared,
+      replayNextSeq,
+      message: {
+        type: "output",
+        chunk: { seq: 33, dataBase64: Buffer.from("LIVE").toString("base64") },
+      },
+      acknowledgeOutput: (next) => {
+        acknowledgeOutput(next);
+        complete();
+      },
+    });
+    expect(acknowledgeOutput).not.toHaveBeenCalled();
+    await parsed;
+    expect(writes.every((size) => size <= 16384)).toBe(true);
+    expect(writes.length).toBeLessThan(10);
+    expect(acknowledgeOutput.mock.calls.map((call) => call[0])).toEqual([
+      16, 32, 33, 34,
+    ]);
+    expect(onOutputParsed).toHaveBeenCalledTimes(4);
+    expect(shared.onReplayComplete).toHaveBeenCalledTimes(1);
+    expect(
+      terminal.buffer.active
+        .getLine(terminal.buffer.active.baseY + terminal.buffer.active.cursorY)
+        ?.translateToString(true),
+    ).toBe("LIVE");
+    terminal.dispose();
   });
 });

@@ -20,7 +20,9 @@ export function useNativeTerminalThread(threadId: string) {
   const query = useQuery<NativeTerminalThread | null>({
     queryKey: nativeTerminalThreadQueryKey(threadId),
     queryFn: async ({ signal }) => {
+      performance.mark?.("terminal-native-metadata-requested");
       const view = await sdk.nativeTerminals.get({ threadId, signal });
+      performance.mark?.("terminal-native-metadata-received");
       if (view !== null) {
         if (view.terminal?.status === "running")
           prefetchTerminalScreen(view.terminal.id, threadId);

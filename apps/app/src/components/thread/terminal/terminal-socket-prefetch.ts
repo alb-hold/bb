@@ -1,5 +1,6 @@
 import type { TerminalBrowserSocket } from "@bb/client-core";
 import {
+  TERMINAL_REPLAY_BATCH_WEBSOCKET_PROTOCOL,
   TERMINAL_LEGACY_WEBSOCKET_PROTOCOL,
   TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL,
 } from "@bb/server-contract";
@@ -27,6 +28,7 @@ class BufferedTerminalSocket implements TerminalBrowserSocket {
     private readonly forget: () => void,
   ) {
     this.socket = new WebSocket(url, protocols);
+    performance.mark?.("terminal-socket-created");
     this.timer = setTimeout(() => this.close(), 10_000);
     this.socket.onopen = (event) => this.deliver(() => this.onopen?.(event));
     this.socket.onmessage = (event) => {
@@ -106,6 +108,7 @@ export function prefetchTerminalSocket(url: string): void {
       [
         TERMINAL_LEGACY_WEBSOCKET_PROTOCOL,
         TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL,
+        TERMINAL_REPLAY_BATCH_WEBSOCKET_PROTOCOL,
       ],
       () => {
         if (pending.get(key) === socket) pending.delete(key);

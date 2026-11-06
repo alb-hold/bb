@@ -2,7 +2,9 @@ import { getTerminalBase64DecodedByteLength } from "@bb/domain";
 import {
   TERMINAL_LEGACY_WEBSOCKET_PROTOCOL,
   TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL,
+  TERMINAL_REPLAY_BATCH_WEBSOCKET_PROTOCOL,
   terminalServerMessageSchema,
+  type TerminalOutputChunk,
   type TerminalServerMessage,
 } from "@bb/server-contract";
 
@@ -73,6 +75,7 @@ function terminalSocketProtocols(): string[] {
   return [
     TERMINAL_LEGACY_WEBSOCKET_PROTOCOL,
     TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL,
+    TERMINAL_REPLAY_BATCH_WEBSOCKET_PROTOCOL,
   ];
 }
 
@@ -117,6 +120,7 @@ export interface TerminalWebSocketTransportOptions {
   onOutputFrameReceived?: (terminalId: string, timestamp: number) => void;
   onInvalidMessage?: () => void;
   onMessageEvent?: (timestamp: number) => void;
+  onReplayBatch?: (chunks: readonly TerminalOutputChunk[]) => void;
   onMessage: (message: TerminalServerMessage) => void;
   onRepaintNudgeSizeReleased?: (size: { cols: number; rows: number }) => void;
   onSequenceGap?: (expectedSeq: number, receivedSeq: number) => void;
@@ -141,6 +145,7 @@ export class TerminalWebSocketTransport {
   private lastPongAt = 0;
   private lastResize: { cols: number; rows: number } | null = null;
   private nextOutputSeq = 0;
+  private replayEndNextSeq = 0;
   private pendingOutputAckNextSeq: number | null = null;
   private pendingInputBytes = 0;
   private readonly pendingInputs: PendingTerminalInput[] = [];
@@ -620,7 +625,8 @@ export class TerminalWebSocketTransport {
     }
     this.lastPongAt = this.now();
     this.resizeEchoSeqConfirmed =
-      socket.protocol === TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL;
+      socket.protocol === TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL ||
+      socket.protocol === TERMINAL_REPLAY_BATCH_WEBSOCKET_PROTOCOL;
     this.startHeartbeat(socket);
     if (this.visibilityReported) {
       this.trySend(
@@ -721,6 +727,52 @@ export class TerminalWebSocketTransport {
       return;
     }
     const message = parsed.data;
+    if (message.type === "output-batch") {
+      if (socket.protocol !== TERMINAL_REPLAY_BATCH_WEBSOCKET_PROTOCOL) {
+        this.options.onInvalidMessage?.();
+        return;
+      }
+      let accepted: TerminalOutputChunk[] = [];
+      const flush = () => {
+        if (accepted.length === 0) return;
+        this.options.onOutputFrameReceived?.(
+          this.options.terminalId ?? "",
+          receivedAt,
+        );
+        this.options.onReplayBatch?.(accepted);
+        accepted = [];
+      };
+      for (const chunk of message.chunks) {
+        if (this.disposed || this.socket !== socket) return;
+        if (!this.options.onReplayBatch || chunk.seq >= this.replayEndNextSeq) {
+          flush();
+          this.handleServerMessage(
+            socket,
+            { type: "output", chunk },
+            receivedAt,
+          );
+          continue;
+        }
+        if (chunk.seq < this.nextOutputSeq) continue;
+        if (chunk.seq > this.nextOutputSeq) {
+          flush();
+          this.options.onSequenceGap?.(this.nextOutputSeq, chunk.seq);
+        }
+        this.nextOutputSeq = chunk.seq + 1;
+        accepted.push(chunk);
+      }
+      flush();
+      return;
+    }
+    this.handleServerMessage(socket, message, receivedAt);
+  }
+
+  private handleServerMessage(
+    socket: TerminalBrowserSocket,
+    message: Exclude<TerminalServerMessage, { type: "output-batch" }>,
+    receivedAt: number,
+  ): void {
+    if (this.disposed || this.socket !== socket) return;
     if (message.type === "pong") {
       this.lastPongAt = this.now();
     }
@@ -733,6 +785,7 @@ export class TerminalWebSocketTransport {
       return;
     }
     if (message.type === "attached") {
+      this.replayEndNextSeq = message.nextSeq;
       this.reconnectAttempt = 0;
       this.options.onConnectionState?.("attached");
     }

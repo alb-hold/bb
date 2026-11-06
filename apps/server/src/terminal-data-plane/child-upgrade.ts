@@ -1,7 +1,10 @@
 import { IncomingMessage, type IncomingHttpHeaders } from "node:http";
 import type { Socket } from "node:net";
 import { WebSocketServer, type WebSocket } from "ws";
-import { TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL } from "@bb/server-contract";
+import {
+  TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL,
+  TERMINAL_REPLAY_BATCH_WEBSOCKET_PROTOCOL,
+} from "@bb/server-contract";
 import type { TerminalDataPlaneHandoffRequest } from "./ipc-contract.js";
 
 export const TERMINAL_DATA_PLANE_MAX_FRAME_BYTES = 1024 * 1024;
@@ -25,9 +28,11 @@ export function createTerminalDataPlaneUpgrade(): (
 ) => Promise<WebSocket> {
   const server = new WebSocketServer({
     handleProtocols: (protocols) =>
-      protocols.has(TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL)
-        ? TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL
-        : (protocols.values().next().value ?? false),
+      protocols.has(TERMINAL_REPLAY_BATCH_WEBSOCKET_PROTOCOL)
+        ? TERMINAL_REPLAY_BATCH_WEBSOCKET_PROTOCOL
+        : protocols.has(TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL)
+          ? TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL
+          : (protocols.values().next().value ?? false),
     maxPayload: TERMINAL_DATA_PLANE_MAX_FRAME_BYTES,
     noServer: true,
     perMessageDeflate: false,

@@ -4736,12 +4736,10 @@ export class TerminalSessionLifecycle {
       replayStartSeq: message.replayStartSeq,
       nextSeq: message.nextSeq,
     });
-    for (const chunk of message.chunks) {
-      this.options.hub.sendTerminalSocketMessage(pending.socket, {
-        type: "output",
-        chunk: toTerminalOutputChunk(chunk),
-      });
-    }
+    this.options.hub.sendTerminalReplay(
+      pending.socket,
+      message.chunks.map(toTerminalOutputChunk),
+    );
     this.repaintReopenedNativeTerminal(current);
   }
 

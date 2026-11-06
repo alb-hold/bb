@@ -374,13 +374,12 @@ describe("ThreadTerminalView terminal viewport and focus", () => {
     });
     let terminal: Terminal | null = null;
     const open = Terminal.prototype.open;
-    vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
-      this: Terminal,
-      element,
-    ) {
-      terminal = this;
-      open.call(this, element);
-    });
+    vi.spyOn(Terminal.prototype, "open").mockImplementation(
+      function (this: Terminal, element) {
+        terminal = this;
+        open.call(this, element);
+      },
+    );
     renderMobileTerminal();
     await waitFor(() => expect(terminal?.options.lineHeight).toBe(1.12));
   });
@@ -864,96 +863,117 @@ describe("ThreadTerminalView terminal viewport and focus", () => {
     );
   });
 
-  it("keeps a restored scrolled-up content line through the component column reflow", async () => {
-    prepareMobileTerminal();
-    let fitCols = 40;
-    vi.spyOn(FitAddon.prototype, "proposeDimensions").mockImplementation(
-      () => ({ cols: fitCols, rows: 12 }),
-    );
-    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
-      queueMicrotask(() => callback(0));
-      return 1;
-    });
-    vi.stubGlobal("cancelAnimationFrame", vi.fn());
-    let mountedTerminal: Terminal | null = null;
-    const openTerminal = Terminal.prototype.open;
-    vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
-      this: Terminal,
-      element: HTMLElement,
-    ) {
-      mountedTerminal ??= this;
-      openTerminal.call(this, element);
-    });
-    const getTerminal = () => {
-      if (!mountedTerminal) throw new Error("terminal was not mounted");
-      return mountedTerminal;
-    };
-    sessionStorage.setItem(
-      "bb:terminal-viewport:term_mobile_paste",
-      JSON.stringify({
-        distanceFromTail: 388,
-        lineOffset: 100,
-        outputSequence: 0,
-      }),
-    );
-    const session = renderMobileTerminal();
-    await waitForReadinessCondition(
-      () => expect(testState.sockets).toHaveLength(1),
-      "terminal socket was not created within 5000 ms",
-    );
-    const socket = testState.sockets[0];
-    if (!socket) throw new Error("terminal socket was not created");
-    socket.receive({
-      type: "attached",
-      session,
-      replayStartSeq: 0,
-      nextSeq: 1,
-    });
-    const output = Array.from({ length: 500 }, (_, index) => {
-      const number = String(index + 1).padStart(5, "0");
-      return `line ${number} ${"0123456789".repeat(2)}01234567`;
-    }).join("\r\n");
-    socket.receive({
-      type: "output",
-      chunk: { seq: 0, dataBase64: btoa(output) },
-    });
-    await waitForReadinessCondition(
-      () => expect(getTerminal().buffer.active.baseY).toBeGreaterThan(0),
-      "terminal output was not parsed within 5000 ms",
-    );
-    await waitForReadinessCondition(
-      () =>
-        expect(
-          testState.socketMessages.map((message) => JSON.parse(message)),
-        ).toContainEqual({ type: "ack", nextSeq: 1 }),
-      "saved viewport replay was not acknowledged within 5000 ms",
-    );
-    const lineBefore = getTerminal()
-      .buffer.active.getLine(getTerminal().buffer.active.viewportY)
-      ?.translateToString(true);
-    expect(lineBefore).toMatch(/^line \d{5} /);
-    expect(lineBefore?.length).toBeGreaterThan(20);
-    expect(getTerminal().buffer.active.viewportY).toBeLessThan(
-      getTerminal().buffer.active.baseY,
-    );
-    fitCols = 20;
-    act(() => getTerminal().resize(20, 12));
-    await waitForReadinessCondition(
-      () => expect(getTerminal().cols).toBe(20),
-      "component column reflow was not applied within 5000 ms",
-    );
+  it.each(["legacy", "batch"])(
+    "keeps a saved anchor through %s replay and column reflow",
+    async (mode) => {
+      prepareMobileTerminal();
+      let fitCols = 40;
+      vi.spyOn(FitAddon.prototype, "proposeDimensions").mockImplementation(
+        () => ({ cols: fitCols, rows: 12 }),
+      );
+      vi.stubGlobal(
+        "requestAnimationFrame",
+        (callback: FrameRequestCallback) => {
+          queueMicrotask(() => callback(0));
+          return 1;
+        },
+      );
+      vi.stubGlobal("cancelAnimationFrame", vi.fn());
+      let mountedTerminal: Terminal | null = null;
+      const openTerminal = Terminal.prototype.open;
+      vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
+        this: Terminal,
+        element: HTMLElement,
+      ) {
+        mountedTerminal ??= this;
+        openTerminal.call(this, element);
+      });
+      const getTerminal = () => {
+        if (!mountedTerminal) throw new Error("terminal was not mounted");
+        return mountedTerminal;
+      };
+      sessionStorage.setItem(
+        "bb:terminal-viewport:term_mobile_paste",
+        JSON.stringify({
+          distanceFromTail: 388,
+          lineOffset: 100,
+          outputSequence: mode === "batch" ? 1 : 0,
+        }),
+      );
+      const session = renderMobileTerminal();
+      await waitForReadinessCondition(
+        () => expect(testState.sockets).toHaveLength(1),
+        "terminal socket was not created within 5000 ms",
+      );
+      const socket = testState.sockets[0];
+      if (!socket) throw new Error("terminal socket was not created");
+      if (mode === "batch")
+        Object.defineProperty(socket, "protocol", {
+          value: "bb.terminal.replay-batch.v1",
+        });
+      socket.receive({
+        type: "attached",
+        session,
+        replayStartSeq: 0,
+        nextSeq: mode === "batch" ? 3 : 1,
+      });
+      const output = Array.from({ length: 500 }, (_, index) => {
+        const number = String(index + 1).padStart(5, "0");
+        return `line ${number} ${"0123456789".repeat(2)}01234567`;
+      }).join("\r\n");
+      socket.receive(
+        mode === "batch"
+          ? {
+              type: "output-batch",
+              chunks: [
+                { seq: 0, dataBase64: btoa("before anchor\r\n") },
+                { seq: 1, dataBase64: btoa(output) },
+                { seq: 2, dataBase64: btoa("\r\nafter anchor") },
+              ],
+            }
+          : {
+              type: "output",
+              chunk: { seq: 0, dataBase64: btoa(output) },
+            },
+      );
+      await waitForReadinessCondition(
+        () => expect(getTerminal().buffer.active.baseY).toBeGreaterThan(0),
+        "terminal output was not parsed within 5000 ms",
+      );
+      await waitForReadinessCondition(
+        () =>
+          expect(
+            testState.socketMessages.map((message) => JSON.parse(message)),
+          ).toContainEqual({ type: "ack", nextSeq: mode === "batch" ? 3 : 1 }),
+        "saved viewport replay was not acknowledged within 5000 ms",
+      );
+      const lineBefore = getTerminal()
+        .buffer.active.getLine(getTerminal().buffer.active.viewportY)
+        ?.translateToString(true);
+      expect(lineBefore).toMatch(/^line \d{5} /);
+      expect(lineBefore?.length).toBeGreaterThan(20);
+      expect(getTerminal().buffer.active.viewportY).toBeLessThan(
+        getTerminal().buffer.active.baseY,
+      );
+      fitCols = 20;
+      act(() => getTerminal().resize(20, 12));
+      await waitForReadinessCondition(
+        () => expect(getTerminal().cols).toBe(20),
+        "component column reflow was not applied within 5000 ms",
+      );
 
-    await waitForReadinessCondition(
-      () =>
-        expect(
-          getTerminal()
-            .buffer.active.getLine(getTerminal().buffer.active.viewportY)
-            ?.translateToString(true)
-            ?.match(/^line (\d{5}) /)?.[1],
-        ).toBe(lineBefore?.match(/^line (\d{5}) /)?.[1]),
-      "component did not restore the scrolled line after shared column reflow",
-    );
-  });
+      await waitForReadinessCondition(
+        () =>
+          expect(
+            getTerminal()
+              .buffer.active.getLine(getTerminal().buffer.active.viewportY)
+              ?.translateToString(true)
+              ?.match(/^line (\d{5}) /)?.[1],
+          ).toBe(lineBefore?.match(/^line (\d{5}) /)?.[1]),
+        "component did not restore the scrolled line after shared column reflow",
+      );
+    },
+  );
 
   it("uses gesture-start scale for uneven multi-frame pinch gestures", async () => {
     vi.stubGlobal("WebSocket", TestTerminalSocket);

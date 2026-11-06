@@ -9,7 +9,56 @@ import {
   TERMINAL_GRID_OSC_IDENTIFIER,
 } from "../src/index.js";
 
+const encode = (text: string) => new TextEncoder().encode(text);
+const combine = (parts: Uint8Array[]) =>
+  Uint8Array.from(parts.flatMap((part) => [...part]));
+
 describe("terminal grid markers", () => {
+  it("preserves ordered binary spans and incomplete or invalid markers under every split", () => {
+    const marker = createTerminalGridMarker({ cols: 120, rows: 36 });
+    const invalid = "\u001b]7791;bb-grid;501;201\u0007";
+    const text = `before\u001b[31m${marker}after${invalid}${marker}\u001b]7791;bb-grid;12`;
+    const bytes = Uint8Array.from([...encode(text), 0xff, 0x80]);
+    const expected = combine([
+      encode(`before\u001b[31mafter${invalid}\u001b]7791;bb-grid;12`),
+      Uint8Array.of(0xff, 0x80),
+    ]);
+    for (let split = 0; split <= bytes.length; split++) {
+      const scanner = createTerminalGridByteMarkerScanner();
+      const first = scanner.pushOperations(bytes.subarray(0, split));
+      const second = scanner.pushOperations(bytes.subarray(split));
+      const operations = [...first.operations, ...second.operations];
+      expect(
+        combine([
+          ...operations.flatMap((operation) =>
+            operation.type === "bytes" ? [operation.bytes] : [],
+          ),
+          scanner.flush(),
+        ]),
+      ).toEqual(expected);
+      expect(
+        operations.flatMap((operation) =>
+          operation.type === "grid" ? [operation.grid] : [],
+        ),
+      ).toEqual([
+        { cols: 120, rows: 36 },
+        { cols: 120, rows: 36 },
+      ]);
+    }
+  });
+
+  it("holds a marker one byte at a time and flushes an unfinished candidate", () => {
+    const scanner = createTerminalGridByteMarkerScanner();
+    const grids = [];
+    for (const byte of encode(createTerminalGridMarker({ cols: 1, rows: 1 }))) {
+      grids.push(...scanner.pushOperations(Uint8Array.of(byte)).operations);
+    }
+    expect(grids).toEqual([{ type: "grid", grid: { cols: 1, rows: 1 } }]);
+    scanner.pushOperations(encode("\u001b]7791;bb-grid;120;"));
+    expect(new TextDecoder().decode(scanner.flush())).toBe(
+      "\u001b]7791;bb-grid;120;",
+    );
+  });
   it("parses namespaced grid payloads within the terminal bounds", () => {
     expect(TERMINAL_GRID_OSC_IDENTIFIER).toBe(7791);
     expect(parseTerminalGridMarker("bb-grid;120;36")).toEqual({

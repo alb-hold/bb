@@ -14,13 +14,12 @@ import { initializeFavicon } from "./lib/favicon-color-preference";
 import { installForeignDomMutationGuard } from "./lib/foreign-dom-mutation-guard";
 import { installAppQueryClientBrowserEvents } from "./lib/query-client";
 import { appQueryClient } from "./lib/app-query-client";
-import {
-  applyAppFrameGeometry,
-  getBbDesktopInfo,
-} from "./lib/bb-desktop";
+import { applyAppFrameGeometry, getBbDesktopInfo } from "./lib/bb-desktop";
 import { installStaleChunkRecovery } from "./lib/stale-chunk-recovery";
 import { moveStylesheetPropertiesToRegistry } from "./lib/stylesheet-property-registry";
 import "./app.css";
+
+performance.mark("app-boot-started");
 
 installStaleChunkRecovery();
 installForeignDomMutationGuard();

@@ -1,5 +1,8 @@
 import { z } from "zod";
 import {
+  TERMINAL_DATA_MAX_BASE64_LENGTH,
+  TERMINAL_DATA_MAX_BYTES,
+  getTerminalBase64DecodedByteLength,
   GENERATED_ID_ALPHABET,
   GENERATED_ID_SUFFIX_LENGTH,
   terminalColsSchema,
@@ -275,6 +278,54 @@ export const terminalWebSocketQuerySchema = z
 export const TERMINAL_LEGACY_WEBSOCKET_PROTOCOL = "bb.terminal.v1";
 export const TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL =
   "bb.terminal.resize-echo.v1";
+export const TERMINAL_REPLAY_BATCH_WEBSOCKET_PROTOCOL =
+  "bb.terminal.replay-batch.v1";
+export const TERMINAL_REPLAY_BATCH_MAX_BYTES = 128 * 1024;
+
+const terminalReplayBatchSchema = z
+  .object({
+    type: z.literal("output-batch"),
+    chunks: z
+      .array(
+        z
+          .object({
+            seq: z.number().int().nonnegative(),
+            dataBase64: z
+              .string()
+              .max(TERMINAL_DATA_MAX_BASE64_LENGTH)
+              .refine((value) => {
+                if (
+                  value.length % 4 !== 0 ||
+                  getTerminalBase64DecodedByteLength(value) >
+                    TERMINAL_DATA_MAX_BYTES
+                )
+                  return false;
+                const padding = value.indexOf("=");
+                return (
+                  padding < 0 ||
+                  padding === value.length - 1 ||
+                  (padding === value.length - 2 && value.endsWith("=="))
+                );
+              }),
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(512),
+  })
+  .strict()
+  .refine(
+    (message) =>
+      /^[A-Za-z0-9+/=]*$/u.test(
+        message.chunks.map((chunk) => chunk.dataBase64).join(""),
+      ),
+    "Invalid replay bytes",
+  )
+  .refine(
+    (message) =>
+      JSON.stringify(message).length <= TERMINAL_REPLAY_BATCH_MAX_BYTES,
+    "Terminal replay batch exceeds its frame budget",
+  );
 
 export const terminalOutputResponseSchema = z
   .object({
@@ -328,6 +379,7 @@ export const terminalClientMessageSchema = z.discriminatedUnion("type", [
 export type TerminalClientMessage = z.infer<typeof terminalClientMessageSchema>;
 
 export const terminalServerMessageSchema = z.discriminatedUnion("type", [
+  terminalReplayBatchSchema,
   z
     .object({
       type: z.literal("attached"),
