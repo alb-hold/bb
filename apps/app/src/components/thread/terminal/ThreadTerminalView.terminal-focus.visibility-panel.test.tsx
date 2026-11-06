@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import * as rendererModule from "./terminal-webgl-renderer";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
@@ -1021,194 +1021,303 @@ describe("ThreadTerminalView terminal visibility and panel", () => {
     });
   });
 
-  it.each([false, true])(
-    "holds native replay until a delayed first fit is claimed and applied (zero width: %s)",
-    async (startsHidden) => {
-      let paneWidth = startsHidden ? 0 : 354;
-      const notifySize: Array<() => void> = [];
-      vi.stubGlobal("WebSocket", TestTerminalSocket);
-      vi.stubGlobal(
-        "ResizeObserver",
-        class {
-          constructor(private readonly callback: ResizeObserverCallback) {}
+  it.each([
+    {
+      startsHidden: false,
+      beforeAttach: true,
+      expireHold: false,
+      name: "holds live native grid before attach",
+    },
+    {
+      startsHidden: true,
+      beforeAttach: true,
+      expireHold: false,
+      name: "holds live native grid before attach at zero width",
+    },
+    {
+      startsHidden: false,
+      beforeAttach: false,
+      expireHold: false,
+      name: "keeps revealed native grid visible while resizing",
+    },
+    {
+      startsHidden: false,
+      beforeAttach: true,
+      expireHold: true,
+      name: "releases the native grid hold when fitting never succeeds",
+    },
+  ])("$name", async ({ startsHidden, beforeAttach, expireHold }) => {
+    const timeouts = vi.spyOn(globalThis, "setTimeout");
+    let paneWidth = startsHidden ? 0 : 1280;
+    const notifySize: Array<() => void> = [];
+    vi.stubGlobal("WebSocket", TestTerminalSocket);
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        private active = true;
+        constructor(private readonly callback: ResizeObserverCallback) {}
 
-          disconnect(): void {}
+        disconnect(): void {
+          this.active = false;
+        }
 
-          observe(target: Element): void {
-            const notify = () =>
-              this.callback(
-                [
-                  {
-                    target,
-                    contentRect: { width: paneWidth, height: 504 },
-                  } as ResizeObserverEntry,
-                ],
-                this as unknown as ResizeObserver,
-              );
-            notifySize.push(notify);
-            notify();
-          }
+        observe(target: Element): void {
+          const notify = () =>
+            this.active &&
+            this.callback(
+              [
+                {
+                  target,
+                  contentRect: { width: paneWidth, height: 504 },
+                } as ResizeObserverEntry,
+              ],
+              this as unknown as ResizeObserver,
+            );
+          notifySize.push(notify);
+          notify();
+        }
 
-          unobserve(): void {}
-        },
-      );
-      vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
-        measureText: (text: string) => ({ width: text.length * 9 }),
-      } as unknown as CanvasRenderingContext2D);
-      vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(
-        function offsetWidth(this: HTMLElement) {
-          return this.classList.contains("xterm-char-measure-element")
-            ? 9
-            : paneWidth;
-        },
-      );
-      vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(
-        function offsetHeight(this: HTMLElement) {
-          return this.classList.contains("xterm-char-measure-element")
-            ? 18
-            : 504;
-        },
-      );
-      vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(
-        function clientWidth(this: HTMLElement) {
-          return this.classList.contains("xterm-char-measure-element")
-            ? 9
-            : paneWidth;
-        },
-      );
-      vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(
-        function clientHeight(this: HTMLElement) {
-          return this.classList.contains("xterm-char-measure-element")
-            ? 18
-            : 504;
-        },
-      );
-      vi.spyOn(
-        HTMLElement.prototype,
-        "getBoundingClientRect",
-      ).mockImplementation(function getBoundingClientRect(this: HTMLElement) {
-        return new DOMRect(0, 0, this.clientWidth, this.clientHeight);
+        unobserve(): void {}
+      },
+    );
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
+      measureText: (text: string) => ({ width: text.length * 9 }),
+    } as unknown as CanvasRenderingContext2D);
+    vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(
+      function offsetWidth(this: HTMLElement) {
+        return this.classList.contains("xterm-char-measure-element")
+          ? 9
+          : paneWidth;
+      },
+    );
+    vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(
+      function offsetHeight(this: HTMLElement) {
+        return this.classList.contains("xterm-char-measure-element") ? 18 : 504;
+      },
+    );
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(
+      function clientWidth(this: HTMLElement) {
+        return this.classList.contains("xterm-char-measure-element")
+          ? 9
+          : paneWidth;
+      },
+    );
+    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(
+      function clientHeight(this: HTMLElement) {
+        return this.classList.contains("xterm-char-measure-element") ? 18 : 504;
+      },
+    );
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+      function getBoundingClientRect(this: HTMLElement) {
+        return new DOMRect(
+          0,
+          0,
+          this.classList.contains("xterm-screen") ? 1280 : this.clientWidth,
+          this.clientHeight,
+        );
+      },
+    );
+    let fitDimensionsAvailable = false;
+    let unavailableFitMeasurements = 0;
+    let resolveUnavailableFitMeasurements!: () => void;
+    const unavailableFitMeasurementsReady = new Promise<void>((resolve) => {
+      resolveUnavailableFitMeasurements = resolve;
+    });
+    const propose = vi
+      .spyOn(FitAddon.prototype, "proposeDimensions")
+      .mockImplementation(function proposeDimensions(this: FitAddon) {
+        if (fitDimensionsAvailable) {
+          return paneWidth > 500
+            ? { cols: 125, rows: 41 }
+            : { cols: 44, rows: 38 };
+        }
+        unavailableFitMeasurements += 1;
+        if (unavailableFitMeasurements === 2) {
+          resolveUnavailableFitMeasurements();
+        }
+        return undefined;
       });
-      const originalProposeDimensions = FitAddon.prototype.proposeDimensions;
-      let fitDimensionsAvailable = false;
-      let unavailableFitMeasurements = 0;
-      let resolveUnavailableFitMeasurements!: () => void;
-      const unavailableFitMeasurementsReady = new Promise<void>((resolve) => {
-        resolveUnavailableFitMeasurements = resolve;
-      });
-      const propose = vi
-        .spyOn(FitAddon.prototype, "proposeDimensions")
-        .mockImplementation(function proposeDimensions(this: FitAddon) {
-          if (fitDimensionsAvailable) {
-            return originalProposeDimensions.call(this);
-          }
-          unavailableFitMeasurements += 1;
-          if (unavailableFitMeasurements === 2) {
-            resolveUnavailableFitMeasurements();
-          }
-          return undefined;
-        });
 
-      const session = makeTerminalSession({
-        id: "term_delayed_native_fit",
-        status: "running",
-        cols: 120,
-        rows: 36,
-      });
-      const mounted = render(
-        <MemoryRouter>
-          <AppCommandProvider>
+    const session = makeTerminalSession({
+      id: "term_delayed_native_fit",
+      status: "running",
+      cols: 120,
+      rows: 36,
+    });
+    testState.deferSocketOpen = true;
+    const mounted = render(
+      <MemoryRouter>
+        <AppCommandProvider>
+          <div data-native-terminal-thread="codex">
             <ThreadTerminalView
               autoFocus={false}
               isPanelOpen
-              retainNativeOutput
+              attentionShownAsBanner
               session={session}
             />
-          </AppCommandProvider>
-        </MemoryRouter>,
+          </div>
+        </AppCommandProvider>
+      </MemoryRouter>,
+    );
+    if (!startsHidden)
+      await waitForReadiness(
+        unavailableFitMeasurementsReady,
+        "fit was not deferred",
       );
-      if (!startsHidden)
-        await waitForReadiness(
-          unavailableFitMeasurementsReady,
-          "fit was not deferred",
-        );
+    await waitForReadinessCondition(
+      () => expect(testState.sockets).toHaveLength(1),
+      "socket missing",
+    );
+    let socket = testState.sockets[0]!;
+
+    const renderer = mounted.container.querySelector<HTMLElement>(
+      "[data-terminal-renderer]",
+    )!;
+    await waitForReadinessCondition(
+      () => expect(renderer.dataset.renderGridCols).toBe("80"),
+      "terminal did not mount at the default renderer grid",
+    );
+    if (expireHold) {
+      expect(renderer.dataset.replayHeld).toBe("true");
+      expect(renderer.style.opacity).toBe("0");
+      const timeout = timeouts.mock.calls.find(
+        ([, delay]) => delay === 15_000,
+      )?.[0];
+      if (typeof timeout !== "function") throw new Error("hold timeout missing");
+      act(() => timeout());
+      expect(renderer.dataset.replayHeld).toBe("false");
+      expect(renderer.style.opacity).toBe("");
+      return;
+    }
+    if (!startsHidden) {
+      fitDimensionsAvailable = true;
+      fireEvent(window, new Event("resize"));
       await waitForReadinessCondition(
-        () => expect(testState.sockets).toHaveLength(1),
-        "socket missing",
+        () => expect(renderer.dataset.fitGridCols).toBe("125"),
+        "first fit was not measured before attach",
       );
-      let socket = testState.sockets[0]!;
+    }
+    expect(renderer.dataset.renderGridCols).toBe("80");
+    expect(renderer.dataset.renderGridRows).toBe("24");
+    expect(renderer.dataset.ptyGridCols).toBe("120");
+    expect(renderer.dataset.ptyGridRows).toBe("36");
+    if (beforeAttach) {
+      expect(renderer.dataset.replayHeld).toBe("true");
+      expect(renderer.style.opacity).toBe("0");
+    }
+    socket.open();
+    await socket.opened;
+    socket.receive({
+      type: "attached",
+      session,
+      replayStartSeq: 0,
+      nextSeq: startsHidden ? 0 : 1,
+    });
+    if (!startsHidden) {
+      socket.receive({
+        type: "output",
+        chunk: { seq: 0, dataBase64: btoa("restored output\r\n") },
+      });
+      await waitForReadinessCondition(() => {
+        expect(socket.sent.map((raw) => JSON.parse(raw))).toContainEqual({
+          type: "ack",
+          nextSeq: 1,
+        });
+      }, "replay did not drain");
+    } else {
+      await new Promise<void>((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+      );
+      expect(propose).not.toHaveBeenCalled();
+    }
+    expect(renderer.dataset.replayHeld).toBe("true");
+    paneWidth = 1280;
+    fitDimensionsAvailable = true;
+    for (const notify of notifySize) notify();
+    fireEvent(window, new Event("resize"));
+    if (startsHidden) {
+      await waitForReadinessCondition(
+        () => expect(testState.sockets).toHaveLength(2),
+        "visible terminal did not reconnect for replay",
+      );
+      socket = testState.sockets[1]!;
+      socket.open();
       await socket.opened;
-      const renderer = mounted.container.querySelector<HTMLElement>(
-        "[data-terminal-renderer]",
-      )!;
       socket.receive({
         type: "attached",
         session,
         replayStartSeq: 0,
-        nextSeq: startsHidden ? 0 : 1,
+        nextSeq: 0,
       });
-      if (!startsHidden) {
-        socket.receive({
-          type: "output",
-          chunk: { seq: 0, dataBase64: btoa("restored output\r\n") },
-        });
-        await waitForReadinessCondition(() => {
-          expect(socket.sent.map((raw) => JSON.parse(raw))).toContainEqual({
-            type: "ack",
-            nextSeq: 1,
-          });
-        }, "replay did not drain");
-      } else {
-        await new Promise<void>((resolve) =>
-          requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
-        );
-        expect(propose).not.toHaveBeenCalled();
-      }
-      expect(renderer.dataset.replayHeld).toBe("true");
-      paneWidth = 354;
-      fitDimensionsAvailable = true;
+    }
+    let claimed: { cols: number; rows: number } | undefined;
+    await waitForReadinessCondition(() => {
+      claimed = socket.sent
+        .map((raw) => JSON.parse(raw))
+        .find((message) => message.type === "resize" && message.claim === true);
+      expect(claimed).toBeDefined();
+      expect(claimed?.cols).toBe(125);
+    }, "fitted resize was not claimed");
+    expect(renderer.dataset.replayHeld).toBe("true");
+    socket.receive({
+      type: "session-updated",
+      session: { ...session, ...claimed },
+    });
+    await waitForReadinessCondition(() => {
+      expect(renderer.dataset.renderGridCols).toBe(
+        renderer.dataset.fitGridCols,
+      );
+      expect(renderer.dataset.renderGridRows).toBe(
+        renderer.dataset.fitGridRows,
+      );
+      expect(renderer.dataset.replayHeld).toBe("false");
+    }, "fitted replay was not revealed");
+    if (beforeAttach) return;
+    expect(renderer.dataset.renderGridCols).toBe("125");
+    expect(renderer.dataset.renderGridRows).toBe("41");
+    expect(renderer.style.opacity).toBe("");
+    const opacities: string[] = [];
+    const observer = new MutationObserver(() =>
+      opacities.push(renderer.style.opacity),
+    );
+    observer.observe(renderer, {
+      attributes: true,
+      attributeFilter: ["style", "data-replay-held"],
+    });
+    try {
+      paneWidth = 390;
       for (const notify of notifySize) notify();
-      fireEvent(window, new Event("resize"));
-      if (startsHidden) {
-        await waitForReadinessCondition(
-          () => expect(testState.sockets).toHaveLength(2),
-          "visible terminal did not reconnect for replay",
-        );
-        socket = testState.sockets[1]!;
-        await socket.opened;
-        socket.receive({
-          type: "attached",
-          session,
-          replayStartSeq: 0,
-          nextSeq: 0,
-        });
-      }
-      let claimed: { cols: number; rows: number } | undefined;
       await waitForReadinessCondition(() => {
-        claimed = socket.sent
-          .map((raw) => JSON.parse(raw))
-          .find(
-            (message) => message.type === "resize" && message.claim === true,
-          );
-        expect(claimed).toBeDefined();
-        expect(claimed?.cols).toBeLessThan(session.cols);
-      }, "fitted resize was not claimed");
-      expect(renderer.dataset.replayHeld).toBe("true");
+        expect(renderer.dataset.fitGridCols).toBe("44");
+        expect(renderer.dataset.fitGridRows).toBe("38");
+      }, "phone fit was not measured");
+      expect(renderer.style.opacity).toBe("");
+      expect(renderer.dataset.replayHeld).toBe("false");
+      expect(opacities).not.toContain("0");
+      const surface = renderer.querySelector<HTMLElement>(".xterm")!;
+      expect(surface.style.maxWidth).toBe("100%");
+      expect(surface.style.overflow).toBe("hidden");
+      expect(surface.style.transform).toBe("scale(1)");
+      expect(renderer.style.overflowX).not.toBe("auto");
+      expect(renderer.classList.contains("overflow-hidden")).toBe(true);
+      expect(
+        renderer.parentElement?.classList.contains("overflow-hidden"),
+      ).toBe(true);
       socket.receive({
         type: "session-updated",
-        session: { ...session, ...claimed },
+        session: { ...session, cols: 44, rows: 38 },
       });
       await waitForReadinessCondition(() => {
-        expect(renderer.dataset.renderGridCols).toBe(
-          renderer.dataset.fitGridCols,
-        );
-        expect(renderer.dataset.renderGridRows).toBe(
-          renderer.dataset.fitGridRows,
-        );
-        expect(renderer.dataset.replayHeld).toBe("false");
-      }, "fitted replay was not revealed");
-    },
-  );
+        expect(renderer.dataset.renderGridCols).toBe("44");
+        expect(renderer.dataset.renderGridRows).toBe("38");
+      }, "phone grid was not applied");
+      expect(renderer.style.opacity).toBe("");
+      expect(renderer.dataset.replayHeld).toBe("false");
+      expect(opacities).not.toContain("0");
+    } finally {
+      observer.disconnect();
+    }
+  });
 
   it("waits for fit dimensions before settling the initial main-pane layout", async () => {
     vi.stubGlobal("WebSocket", TestTerminalSocket);

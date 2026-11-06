@@ -1710,6 +1710,8 @@ export function ThreadTerminalView({
     if (!container) {
       return;
     }
+    const holdForFittedGrid =
+      container.closest("[data-native-terminal-thread]") !== null;
     setRestoringSession(sessionStatusRef.current === "running");
 
     const activeElementAtMount = document.activeElement;
@@ -1841,6 +1843,10 @@ export function ThreadTerminalView({
     let checkReplayReveal: (() => void) | null = null;
     let replayRevealTimeout: ReturnType<typeof setTimeout> | null = null;
     let replayRevealGeneration = 0;
+    let completeReplayReveal: (() => void) | null = null;
+    let fittedGridHeld = false;
+    let fittedGridRevealed = false;
+    let fittedGridFallback = false;
     let screenLoadingPreview: ReturnType<
       typeof mountTerminalScreenLoadingPreview
     > | null = null;
@@ -1976,6 +1982,82 @@ export function ThreadTerminalView({
     ): Promise<void> {
       containerElement.style.opacity = "0";
       const paddingLeft = getComputedStyle(containerElement).paddingLeft;
+      const needsFittedGrid = () =>
+        holdForFittedGrid && sessionStatusRef.current !== "exited";
+      const fittedGridReady = () => {
+        const fit = localFitGrid;
+        return (
+          fit !== null &&
+          fit.cols > 0 &&
+          fit.rows > 0 &&
+          containerHasSize &&
+          hasReceivedInitialAttach &&
+          replayCompleted &&
+          initialRendererSettled &&
+          initialLayoutSettled &&
+          claimedFitGrid?.cols === fit.cols &&
+          claimedFitGrid.rows === fit.rows &&
+          latestPtyGrid.cols === fit.cols &&
+          latestPtyGrid.rows === fit.rows &&
+          terminal?.cols === fit.cols &&
+          terminal.rows === fit.rows
+        );
+      };
+      const holdFittedGrid = () => {
+        if (
+          !needsFittedGrid() ||
+          fittedGridFallback ||
+          fittedGridHeld ||
+          fittedGridRevealed
+        )
+          return;
+        fittedGridHeld = true;
+        const generation = ++replayRevealGeneration;
+        containerElement.dataset.replayHeld = "true";
+        containerElement.style.opacity = "0";
+        setRestoringSession(true);
+        if (replayCompleted) replayPreview?.hold({ countdown: false });
+        let barrierPending = false;
+        const release = () => {
+          if (disposed || generation !== replayRevealGeneration) return;
+          checkReplayReveal = null;
+          if (replayRevealTimeout !== null) clearTimeout(replayRevealTimeout);
+          replayRevealTimeout = null;
+          fittedGridHeld = false;
+          fittedGridRevealed = true;
+          containerElement.dataset.replayHeld = "false";
+          if (fittedGridFallback) containerElement.style.opacity = "";
+          setRestoringSession(false);
+          const complete = completeReplayReveal;
+          completeReplayReveal = null;
+          complete?.();
+          updateGridVisibility();
+        };
+        checkReplayReveal = () => {
+          if (
+            disposed ||
+            generation !== replayRevealGeneration ||
+            barrierPending ||
+            !fittedGridReady() ||
+            outputPipeline === null ||
+            localFitGrid === null
+          )
+            return;
+          barrierPending = true;
+          outputPipeline.setGrid(localFitGrid.cols, localFitGrid.rows, () => {
+            barrierPending = false;
+            if (disposed || generation !== replayRevealGeneration) return;
+            if (fittedGridReady()) release();
+            else checkReplayReveal?.();
+          });
+        };
+        replayRevealTimeout = setTimeout(() => {
+          if (disposed || generation !== replayRevealGeneration) return;
+          fittedGridFallback = true;
+          release();
+        }, 15_000);
+      };
+      holdFittedGrid();
       const updateGridVisibility = () => {
         if (terminal === null) {
           return;
@@ -2009,17 +2091,26 @@ export function ThreadTerminalView({
         setShowFitControl(presentation.showFitControl);
         containerElement.dataset.ptyGridCols = String(latestPtyGrid.cols);
         containerElement.dataset.ptyGridRows = String(latestPtyGrid.rows);
+        if (terminal.element) {
+          terminal.element.style.maxWidth = needsFittedGrid() ? "100%" : "";
+          terminal.element.style.overflow = needsFittedGrid() ? "hidden" : "";
+        }
+        if (needsFittedGrid() && fittedGridRevealed && !fittedGridReady())
+          return;
+        if (needsFittedGrid() && !fittedGridReady()) holdFittedGrid();
         checkReplayReveal?.();
         if (
           (replayPreview !== null && !replayCompleted) ||
-          (retainNativeOutput && containerElement.dataset.replayHeld === "true")
+          (needsFittedGrid() && containerElement.dataset.replayHeld === "true")
         )
           return;
-        containerElement.style.opacity = "0";
+        if (!needsFittedGrid() || !fittedGridRevealed)
+          containerElement.style.opacity = "0";
         const scrollRetainedOutput =
-          retainedOutputGrid !== null
+          !needsFittedGrid() &&
+          (retainedOutputGrid !== null
             ? getMediaQuerySnapshot(COMPACT_VIEWPORT_QUERY)
-            : presentation.panHorizontally;
+            : presentation.panHorizontally);
         containerElement.style.overflowX = scrollRetainedOutput ? "auto" : "";
         containerElement.style.overflowY = scrollRetainedOutput ? "auto" : "";
         containerElement.style.paddingLeft = scrollRetainedOutput ? "0" : "";
@@ -2031,7 +2122,7 @@ export function ThreadTerminalView({
           applyTerminalSurfaceScale(
             terminal.element,
             scale,
-            !scrollRetainedOutput,
+            !scrollRetainedOutput && !needsFittedGrid(),
           );
         }
         const rendererWidth = containerElement.getBoundingClientRect().width;
@@ -2478,10 +2569,7 @@ export function ThreadTerminalView({
       }
       containerElement.dataset.renderGridCols = String(terminal.cols);
       containerElement.dataset.renderGridRows = String(terminal.rows);
-      containerElement.dataset.replayHeld =
-        retainNativeOutput && sessionStatusRef.current !== "exited"
-          ? "true"
-          : "false";
+      containerElement.dataset.replayHeld = fittedGridHeld ? "true" : "false";
       attachTerminalWheelLines(terminal);
       if (sessionRef.current.status !== "exited") {
         writeTerminalSessionStatusNotice({
@@ -2509,6 +2597,11 @@ export function ThreadTerminalView({
         ) {
           return;
         }
+        if (
+          localFitGrid?.cols !== fitted.cols ||
+          localFitGrid.rows !== fitted.rows
+        )
+          fittedGridFallback = false;
         localFitGrid = { cols: fitted.cols, rows: fitted.rows };
         containerElement.dataset.fitGridCols = String(fitted.cols);
         containerElement.dataset.fitGridRows = String(fitted.rows);
@@ -2525,8 +2618,9 @@ export function ThreadTerminalView({
         if (initialRendererSettled && initialLayoutSettled) {
           transport?.sendResize(fitted.cols, fitted.rows);
           if (
-            retainNativeOutput &&
-            containerElement.dataset.replayHeld === "true" &&
+            holdForFittedGrid &&
+            (containerElement.dataset.replayHeld === "true" ||
+              fittedGridRevealed) &&
             transport !== null &&
             (claimedFitGrid?.cols !== fitted.cols ||
               claimedFitGrid.rows !== fitted.rows)
@@ -2693,6 +2787,10 @@ export function ThreadTerminalView({
       ) => {
         if (message.type === "attached") {
           replayRevealGeneration += 1;
+          fittedGridHeld = false;
+          fittedGridRevealed = false;
+          fittedGridFallback = false;
+          completeReplayReveal = null;
           claimedFitGrid = null;
           checkReplayReveal = null;
           if (replayRevealTimeout !== null) clearTimeout(replayRevealTimeout);
@@ -2855,15 +2953,7 @@ export function ThreadTerminalView({
           },
           onReplayComplete: () => {
             replayCompleted = true;
-            const generation = ++replayRevealGeneration;
             const revealReplay = () => {
-              if (disposed || generation !== replayRevealGeneration) return;
-              checkReplayReveal = null;
-              if (replayRevealTimeout !== null) {
-                clearTimeout(replayRevealTimeout);
-                replayRevealTimeout = null;
-              }
-              if (disposed) return;
               pendingReplayRevealRef.current = session.id;
               performance.mark("terminal-replay-parsed", {
                 detail: { terminalId: session.id },
@@ -2899,52 +2989,11 @@ export function ThreadTerminalView({
                 },
               });
             };
-            if (retainNativeOutput && sessionStatusRef.current !== "exited") {
+            if (needsFittedGrid() && !fittedGridFallback) {
+              completeReplayReveal = revealReplay;
               replayPreview?.hold({ countdown: false });
-              let barrierPending = false;
-              const waitForFittedGrid = () => {
-                if (
-                  disposed ||
-                  generation !== replayRevealGeneration ||
-                  barrierPending ||
-                  !containerHasSize
-                )
-                  return;
-                const fit = localFitGrid;
-                if (
-                  fit !== null &&
-                  fit.cols > 0 &&
-                  fit.rows > 0 &&
-                  claimedFitGrid?.cols === fit.cols &&
-                  claimedFitGrid.rows === fit.rows &&
-                  latestPtyGrid.cols === fit.cols &&
-                  latestPtyGrid.rows === fit.rows &&
-                  activeTerminal.cols === fit.cols &&
-                  activeTerminal.rows === fit.rows &&
-                  outputPipeline !== null
-                ) {
-                  barrierPending = true;
-                  outputPipeline.setGrid(fit.cols, fit.rows, () => {
-                    barrierPending = false;
-                    if (disposed || generation !== replayRevealGeneration)
-                      return;
-                    if (
-                      localFitGrid?.cols === fit.cols &&
-                      localFitGrid.rows === fit.rows &&
-                      latestPtyGrid.cols === fit.cols &&
-                      latestPtyGrid.rows === fit.rows
-                    )
-                      revealReplay();
-                    else waitForFittedGrid();
-                  });
-                  return;
-                }
-              };
-              checkReplayReveal = waitForFittedGrid;
-              if (replayRevealTimeout !== null)
-                clearTimeout(replayRevealTimeout);
-              replayRevealTimeout = setTimeout(revealReplay, 15_000);
-              waitForFittedGrid();
+              holdFittedGrid();
+              checkReplayReveal?.();
             } else revealReplay();
           },
           onSessionChange: onSessionChangeRef.current,
