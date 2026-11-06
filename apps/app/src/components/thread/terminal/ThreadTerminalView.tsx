@@ -2616,16 +2616,15 @@ export function ThreadTerminalView({
         }
         updateGridVisibility();
         if (initialRendererSettled && initialLayoutSettled) {
-          transport?.sendResize(fitted.cols, fitted.rows);
-          if (
+          const claimFit =
             holdForFittedGrid &&
             (containerElement.dataset.replayHeld === "true" ||
               fittedGridRevealed) &&
             transport !== null &&
             (claimedFitGrid?.cols !== fitted.cols ||
-              claimedFitGrid.rows !== fitted.rows)
-          ) {
-            transport.claimSize();
+              claimedFitGrid.rows !== fitted.rows);
+          transport?.sendResize(fitted.cols, fitted.rows, claimFit);
+          if (claimFit) {
             claimedFitGrid = { ...fitted };
           }
         }
@@ -3218,7 +3217,7 @@ export function ThreadTerminalView({
         initialRendererSettled = true;
         initialLayoutSettled = true;
         activeTransport.markLayoutSettled();
-        activeTransport.claimSize();
+        activeTransport.claimSize(true);
         fitTerminal();
       };
       retryStalledReplay = () => {
@@ -3232,7 +3231,7 @@ export function ThreadTerminalView({
       fitTerminal();
       reportDocumentVisibility();
       sizeClaims = listenForTerminalSizeClaims({
-        claim: () => activeTransport.claimSize(),
+        claim: (reclaim) => activeTransport.claimSize(reclaim),
         element: containerElement,
         textarea: activeTerminal.textarea,
       });

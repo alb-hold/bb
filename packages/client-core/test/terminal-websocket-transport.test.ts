@@ -139,6 +139,86 @@ afterEach(() => {
 });
 
 describe("TerminalWebSocketTransport", () => {
+  it("sends one claimed grid through open, fit and restore hold release", () => {
+    vi.useFakeTimers();
+    const { transport, sockets } = createHarness();
+    transport.sendResize(45, 38);
+    transport.claimSize();
+    transport.start();
+    const socket = sockets[0]!;
+    socket.open();
+    transport.markLayoutSettled();
+    transport.sendResize(45, 38);
+    transport.claimSize();
+    transport.markLayoutSettled();
+    vi.advanceTimersByTime(5_000);
+    expect(socket.sent.map((payload) => JSON.parse(payload))).toEqual([
+      { type: "resize", cols: 45, rows: 38, claim: true },
+    ]);
+    transport.sendResize(46, 38);
+    transport.sendResize(46, 38);
+    expect(socket.sent.map((payload) => JSON.parse(payload)).slice(1)).toEqual([
+      { type: "resize", cols: 46, rows: 38 },
+    ]);
+    transport.sendResize(47, 38, true);
+    transport.sendResize(47, 38, true);
+    expect(socket.sent.map((payload) => JSON.parse(payload)).slice(2)).toEqual([
+      { type: "resize", cols: 47, rows: 38, claim: true },
+    ]);
+    transport.dispose();
+  });
+
+  it("uses a pending claim as the first fitted resize on an open socket", () => {
+    const { transport, sockets } = createHarness();
+    transport.start();
+    const socket = sockets[0]!;
+    socket.open();
+    transport.claimSize();
+    transport.markLayoutSettled();
+    transport.sendResize(115, 38);
+    transport.claimSize();
+    expect(socket.sent.map((payload) => JSON.parse(payload))).toEqual([
+      { type: "resize", cols: 115, rows: 38, claim: true },
+    ]);
+    transport.dispose();
+  });
+
+  it("resends a claimed grid after reconnect", () => {
+    vi.useFakeTimers();
+    const { transport, sockets } = createHarness();
+    transport.sendResize(45, 38);
+    transport.claimSize();
+    transport.start();
+    sockets[0]!.open();
+    transport.markLayoutSettled();
+    sockets[0]!.close();
+    vi.advanceTimersByTime(100);
+    const socket = sockets[1]!;
+    socket.open();
+    transport.markLayoutSettled();
+    expect(socket.sent.map((payload) => JSON.parse(payload))).toEqual([
+      { type: "resize", cols: 45, rows: 38, claim: true },
+    ]);
+    transport.dispose();
+  });
+
+  it("allows an interaction to reclaim the same grid from another device", () => {
+    const { transport, sockets } = createHarness();
+    transport.sendResize(45, 38);
+    transport.claimSize();
+    transport.start();
+    const socket = sockets[0]!;
+    socket.open();
+    transport.markLayoutSettled();
+    transport.claimSize(true);
+    transport.claimSize();
+    expect(socket.sent.map((payload) => JSON.parse(payload))).toEqual([
+      { type: "resize", cols: 45, rows: 38, claim: true },
+      { type: "resize", cols: 45, rows: 38, claim: true },
+    ]);
+    transport.dispose();
+  });
+
   it("reports the original event timestamp before decoding and ignores stale sockets", () => {
     const seen: number[] = [];
     const harness = createHarness({
@@ -869,10 +949,7 @@ describe("TerminalWebSocketTransport", () => {
 
     expect(
       socket.sent.filter((message) => message.includes('"resize"')),
-    ).toEqual([
-      JSON.stringify({ type: "resize", cols: 128, rows: 43 }),
-      JSON.stringify({ type: "resize", cols: 128, rows: 43 }),
-    ]);
+    ).toEqual([JSON.stringify({ type: "resize", cols: 128, rows: 43 })]);
     harness.transport.dispose();
   });
 
@@ -1587,7 +1664,6 @@ describe("TerminalWebSocketTransport", () => {
       vi.advanceTimersByTime(500);
 
       expect(socket.sent.slice(1)).toEqual([
-        JSON.stringify({ type: "resize", cols: 99, rows: 30 }),
         JSON.stringify({ type: "resize", cols: 99, rows: 30 }),
         JSON.stringify({ type: "resize", cols: 100, rows: 30 }),
       ]);
