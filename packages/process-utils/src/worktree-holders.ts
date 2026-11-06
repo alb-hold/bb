@@ -209,7 +209,7 @@ async function foreignUidCanReachDirectory(
   directory: string,
   foreignUid: number,
   foreignGid: number,
-  supplementaryGroups: number[],
+  supplementaryGroups: number[] | null,
   context: ScanContext,
 ): Promise<boolean | null> {
   let cursor = path.resolve(directory);
