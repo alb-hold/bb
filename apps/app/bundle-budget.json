@@ -443,5 +443,11 @@
         "shiki"
       ]
     }
-  }
+  },
+  "forbiddenBootModules": [
+      "../../packages/server-contract/src/api/threads.ts",
+      "../../packages/server-contract/src/thread-timeline.ts",
+      "../../packages/domain/src/provider-event.ts",
+      "../../packages/domain/src/pending-interactions.ts"
+  ]
 }

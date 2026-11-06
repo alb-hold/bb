@@ -947,34 +947,7 @@ export const threadOpenSignalSchema = z
   .strict();
 export type ThreadOpenSignal = z.infer<typeof threadOpenSignalSchema>;
 
-const threadOpenFileLenientSchema = z.object({
-  source: panelFileSourceSchema,
-  path: z.string().min(1),
-  lineNumber: z.number().int().positive().nullable(),
-});
-
-export const threadOpenSignalLenientSchema = z.object({
-  type: z.literal("thread-open"),
-  projectId: z.string(),
-  threadId: z.string(),
-  split: threadOpenSplitSchema,
-  file: threadOpenFileLenientSchema.nullable(),
-  terminalAction: z
-    .object({
-      action: z.enum(["focus", "openBrowser"]),
-      terminalId: z.string(),
-      url: z.string().optional(),
-    })
-    .optional(),
-  terminalLayoutAction: z
-    .object({
-      action: z.enum(["split", "move"]),
-      side: z.enum(["right", "left", "up", "down"]).optional(),
-      targetTerminalId: z.string().optional(),
-      terminalId: z.string(),
-    })
-    .optional(),
-});
+export { threadOpenSignalLenientSchema } from "./thread-signals.js";
 
 export const threadOpenRequestSchema = z
   .object({
@@ -1354,19 +1327,7 @@ const threadTimelineWindowFieldsShape = {
   timelinePage: timelinePageMetadataSchema,
 };
 
-export const THREAD_TIMELINE_WINDOW_FIELD_KEYS = [
-  "contextBoundarySeq",
-  "completedTurnDisplay",
-  "activePromptMode",
-  "activeThinking",
-  "activeWorkflows",
-  "activeBackgroundCommands",
-  "pendingTodos",
-  "goal",
-  "providerCommands",
-  "sessionOptions",
-  "modelFallback",
-] as const satisfies readonly (keyof typeof threadTimelineWindowFieldsShape)[];
+export { THREAD_TIMELINE_WINDOW_FIELD_KEYS } from "./thread-timeline-fields.js";
 
 const threadTimelineTagSchema = z.string().min(1);
 
@@ -1389,12 +1350,7 @@ export const timelineRowOrderSchema = z.array(
 );
 export type TimelineRowOrder = z.infer<typeof timelineRowOrderSchema>;
 
-export const TIMELINE_PAGE_FIELD_KEYS = [
-  "returnedSegmentCount",
-  "olderCursor",
-  "historySnapshot",
-  "olderRowsSourceSeqEnd",
-] as const satisfies readonly (keyof TimelinePageMetadata)[];
+export { TIMELINE_PAGE_FIELD_KEYS } from "./thread-timeline-fields.js";
 
 export const timelinePagePatchSchema = timelinePageMetadataSchema
   .extend({ olderRowUpdates: z.array(timelineRowSchema).nullable() })

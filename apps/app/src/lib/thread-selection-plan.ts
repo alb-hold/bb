@@ -1,9 +1,11 @@
 import type { Thread } from "@bb/domain";
+import type {
+  ThreadCascadeAction,
+  ThreadCascadeListResponse,
+} from "@bb/server-contract";
 import {
   THREAD_CASCADE_LIST_MAX_IDS,
-  type ThreadCascadeAction,
-  type ThreadCascadeListResponse,
-} from "@bb/server-contract";
+} from "@bb/server-contract/api/thread-client-constants";
 import { sdk } from "@/lib/sdk";
 
 export interface ThreadSelectionPlan {
