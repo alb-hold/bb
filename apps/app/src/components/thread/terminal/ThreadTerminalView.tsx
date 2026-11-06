@@ -3268,6 +3268,9 @@ export function ThreadTerminalView({
           initialLayoutSettled = true;
           fitTerminal();
           activeTransport.markLayoutSettled();
+          if (holdForFittedGrid && sessionStatusRef.current === "running") {
+            activeTransport.start();
+          }
           if (hasRestoredViewport && !hasManualScrollIntent) {
             restoreViewport(true);
           }
@@ -3359,6 +3362,8 @@ export function ThreadTerminalView({
             retainedReplayTimeout = null;
           }
         }
+      } else if (holdForFittedGrid) {
+        if (localFitGrid === null) activeTransport.start();
       } else {
         try {
           const snapshot = await screenPromise;
