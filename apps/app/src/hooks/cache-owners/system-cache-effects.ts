@@ -52,7 +52,7 @@ import {
 } from "./cache-effect-utils";
 
 interface SystemExecutionOptionsInvalidationArgs extends QueryClientArg {
-  hostId: string;
+  hostId: string | undefined;
 }
 
 interface ServerReconnectInvalidationArgs extends QueryClientArg {
@@ -180,6 +180,7 @@ export function invalidateSystemExecutionOptions({
     {
       queryKey: allSystemExecutionOptionsQueryKeyPrefix(),
       predicate: (query) => {
+        if (hostId === undefined) return true;
         const [, environmentId, routedHostId] = query.queryKey;
         if (typeof routedHostId === "string") return routedHostId === hostId;
         if (typeof environmentId === "string") {

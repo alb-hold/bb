@@ -29,6 +29,7 @@ export const promptAreaMocks = {
     | undefined,
   modelCatalogIsSettled: true,
   modelCatalogIsVerified: true,
+  permissionModeIsVerified: true,
   executionInputSources: {} as ExistingThreadExecutionInputSources,
   deleteQueuedMessageMutateAsync: vi.fn(),
   navigate: vi.fn(),
@@ -660,6 +661,7 @@ vi.mock("@/hooks/useThreadCreationOptions", async () => {
         moreModelOptions: [],
         permissionMode: options.initialPermissionMode ?? "auto",
         permissionModeOptions: [],
+        permissionModeIsVerified: promptAreaMocks.permissionModeIsVerified,
         providerOptions: [
           { value: "codex", label: "Codex" },
           { value: "claude-code", label: "Claude Code" },

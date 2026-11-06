@@ -413,6 +413,7 @@ beforeEach(() => {
   };
   mocks.modelCatalogIsSettled = true;
   mocks.modelCatalogIsVerified = true;
+  mocks.permissionModeIsVerified = true;
   mocks.executionInputSources = {};
   mocks.unknownReasoning = false;
   mocks.pluginComposerHost = null;
@@ -1060,6 +1061,60 @@ describe("ThreadDetailPromptArea", () => {
     rerender(buildPromptAreaElement({ executionOptionsPending: true }));
     expect(screen.getByTestId("selected-model").textContent).toBe("gpt-5");
     expect(screen.getByRole("button", { name: "Choose permission full" }).hasAttribute("disabled")).toBe(false);
+  });
+
+  it("enables loaded thread Permissions during a five-second cold model catalog request", () => {
+    vi.useFakeTimers();
+    try {
+      mocks.modelCatalogIsSettled = false;
+      mocks.modelCatalogIsVerified = false;
+      const { rerender } = renderPromptArea();
+      const assertPermissionsEnabled = () => {
+        expect(screen.getByTestId("permission-read-only").textContent).toBe(
+          "false",
+        );
+        expect(
+          screen
+            .getByRole("button", { name: "Choose permission full" })
+            .hasAttribute("disabled"),
+        ).toBe(false);
+        expect(screen.getByTestId("selected-permission").textContent).toBe(
+          "auto",
+        );
+      };
+      assertPermissionsEnabled();
+      act(() => vi.advanceTimersByTime(4999));
+      assertPermissionsEnabled();
+      mocks.modelCatalogIsSettled = true;
+      mocks.modelCatalogIsVerified = true;
+      rerender(buildPromptAreaElement());
+      assertPermissionsEnabled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps Permissions read-only until permission options and limits are verified", () => {
+    mocks.permissionModeIsVerified = false;
+    renderPromptArea();
+    expect(screen.getByTestId("permission-read-only").textContent).toBe("true");
+  });
+
+  it("keeps verified Permissions editable when a background model catalog becomes unverified", () => {
+    const { rerender } = renderPromptArea();
+    expect(screen.getByTestId("permission-read-only").textContent).toBe(
+      "false",
+    );
+    mocks.modelCatalogIsVerified = false;
+    rerender(buildPromptAreaElement({ executionOptionsPending: true }));
+    expect(screen.getByTestId("permission-read-only").textContent).toBe(
+      "false",
+    );
+    expect(
+      screen
+        .getByRole("button", { name: "Choose permission full" })
+        .hasAttribute("disabled"),
+    ).toBe(false);
   });
 
   it("shows stored execution when an offline, failed, or absent catalog settles unverified", () => {

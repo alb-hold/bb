@@ -713,6 +713,7 @@ export function ThreadDetailPromptArea({
     reasoningOptions,
     resolveReasoningForModel,
     permissionModeOptions,
+    permissionModeIsVerified,
     supportsPermissionModeSelection,
     supportsServiceTier,
     serviceTierSupportByProvider,
@@ -745,8 +746,7 @@ export function ThreadDetailPromptArea({
     return () => window.clearTimeout(timer);
   }, [modelCatalogIsSettled, thread.id]);
   const catalogPending =
-    !modelCatalogIsSettled &&
-    catalogWaitExpiredFor !== thread.id;
+    !modelCatalogIsSettled && catalogWaitExpiredFor !== thread.id;
   const isPermissionSnapshot = permissionPolicy === "snapshot";
   const permissionMode = isPermissionSnapshot
     ? (defaultExecutionOptions?.permissionMode ?? selectedPermissionMode)
@@ -1760,25 +1760,27 @@ export function ThreadDetailPromptArea({
 
   const bottomPermissionConfig = useMemo(
     () => ({
-      pending: !hasConcreteDefaultExecutionOptions || catalogPending,
+      pending:
+        !hasConcreteDefaultExecutionOptions ||
+        (!permissionModeIsVerified && catalogPending),
       value: hasConcreteDefaultExecutionOptions
-        ? modelCatalogIsVerified
+        ? permissionModeIsVerified
           ? permissionMode
           : defaultExecutionOptions?.permissionMode
         : undefined,
       options: hasConcreteDefaultExecutionOptions
-        ? modelCatalogIsVerified
+        ? permissionModeIsVerified
           ? permissionModeOptions
           : PERMISSION_MODE_OPTIONS
         : [],
       onChange: setPermissionMode,
       supported:
         hasConcreteDefaultExecutionOptions &&
-        (!modelCatalogIsVerified || supportsPermissionModeSelection),
+        (!permissionModeIsVerified || supportsPermissionModeSelection),
     }),
     [
       hasConcreteDefaultExecutionOptions,
-      modelCatalogIsVerified,
+      permissionModeIsVerified,
       catalogPending,
       defaultExecutionOptions,
       permissionMode,
@@ -2464,7 +2466,7 @@ export function ThreadDetailPromptArea({
       }
       execution={bottomExecutionConfig}
       permission={bottomPermissionConfig}
-      permissionReadOnly={isPermissionSnapshot || !modelCatalogIsVerified}
+      permissionReadOnly={isPermissionSnapshot || !permissionModeIsVerified}
       sessionOptionsControl={sessionOptionsControl}
       typeahead={typeaheadConfig}
       promptActions={promptActions}
