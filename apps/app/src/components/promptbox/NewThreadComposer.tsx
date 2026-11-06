@@ -954,6 +954,7 @@ export function NewThreadComposer({
       seed?.reasoningLevel === undefined ||
       seed?.permissionMode === undefined);
   const creationOptions = useThreadCreationOptions({
+    enabled: projectDefaultsState.status !== "pending",
     scope: selectionScope,
     preferenceProjectId: projectId,
     catalogProjectId: isProjectless ? undefined : projectId,

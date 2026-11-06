@@ -436,8 +436,10 @@ export function useThreadCreationOptions(
     selectedProviderCatalogScope === "workspace"
       ? catalogProjectId
       : undefined;
+  const isResolvingReadyProvider =
+    shouldResolveReadyProvider && providerStatesQuery.isPending;
   const executionOptionsQuery = useSystemExecutionOptions({
-    enabled: executionOptionsQueryEnabled,
+    enabled: executionOptionsQueryEnabled && !isResolvingReadyProvider,
     ...executionOptionsRouting,
     providerId: executionOptionsProviderId,
     projectId: executionOptionsProjectId,
@@ -447,7 +449,8 @@ export function useThreadCreationOptions(
   const providers = executionOptionsQuery.data?.providers ?? EMPTY_PROVIDERS;
   const isLoadingModels =
     executionOptionsQueryEnabled &&
-    (executionOptionsQuery.isLoading ||
+    (isResolvingReadyProvider ||
+      executionOptionsQuery.isLoading ||
       (executionOptionsQuery.isPlaceholderData &&
         (executionOptionsQuery.data?.models.length ?? 0) === 0));
   const modelLoadError =
@@ -595,10 +598,7 @@ export function useThreadCreationOptions(
   );
 
   const resolveReasoningForModel = useCallback(
-    (
-      model: string,
-      preferred: ReasoningLevel,
-    ): ModelReasoningOptions => {
+    (model: string, preferred: ReasoningLevel): ModelReasoningOptions => {
       const selection = resolveModelCatalogSelection({
         models: executionOptionsQuery.data?.models ?? [],
         selectedOnlyModels:
