@@ -2028,6 +2028,7 @@ export function ThreadTerminalView({
           fittedGridHeld = false;
           fittedGridRevealed = true;
           containerElement.dataset.replayHeld = "false";
+          if (fittedGridFallback) containerElement.style.opacity = "";
           setRestoringSession(false);
           const complete = completeReplayReveal;
           completeReplayReveal = null;

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import * as rendererModule from "./terminal-webgl-renderer";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
@@ -1024,19 +1024,29 @@ describe("ThreadTerminalView terminal visibility and panel", () => {
     {
       startsHidden: false,
       beforeAttach: true,
+      expireHold: false,
       name: "holds live native grid before attach",
     },
     {
       startsHidden: true,
       beforeAttach: true,
+      expireHold: false,
       name: "holds live native grid before attach at zero width",
     },
     {
       startsHidden: false,
       beforeAttach: false,
+      expireHold: false,
       name: "keeps revealed native grid visible while resizing",
     },
-  ])("$name", async ({ startsHidden, beforeAttach }) => {
+    {
+      startsHidden: false,
+      beforeAttach: true,
+      expireHold: true,
+      name: "releases the native grid hold when fitting never succeeds",
+    },
+  ])("$name", async ({ startsHidden, beforeAttach, expireHold }) => {
+    const timeouts = vi.spyOn(globalThis, "setTimeout");
     let paneWidth = startsHidden ? 0 : 1280;
     const notifySize: Array<() => void> = [];
     vi.stubGlobal("WebSocket", TestTerminalSocket);
@@ -1166,6 +1176,18 @@ describe("ThreadTerminalView terminal visibility and panel", () => {
       () => expect(renderer.dataset.renderGridCols).toBe("80"),
       "terminal did not mount at the default renderer grid",
     );
+    if (expireHold) {
+      expect(renderer.dataset.replayHeld).toBe("true");
+      expect(renderer.style.opacity).toBe("0");
+      const timeout = timeouts.mock.calls.find(
+        ([, delay]) => delay === 15_000,
+      )?.[0];
+      if (typeof timeout !== "function") throw new Error("hold timeout missing");
+      act(() => timeout());
+      expect(renderer.dataset.replayHeld).toBe("false");
+      expect(renderer.style.opacity).toBe("");
+      return;
+    }
     if (!startsHidden) {
       fitDimensionsAvailable = true;
       fireEvent(window, new Event("resize"));
