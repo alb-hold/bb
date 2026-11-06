@@ -1840,7 +1840,7 @@ export function ThreadTerminalView({
     let replayCheckpointSequence: number | null = null;
     let localFitGrid: TerminalGridSize | null = null;
     let claimedFitGrid: TerminalGridSize | null = null;
-    let replayRevealFrame: number | null = null;
+    let checkReplayReveal: (() => void) | null = null;
     let replayRevealTimeout: ReturnType<typeof setTimeout> | null = null;
     let replayRevealGeneration = 0;
     let screenLoadingPreview: ReturnType<
@@ -2011,6 +2011,7 @@ export function ThreadTerminalView({
         setShowFitControl(presentation.showFitControl);
         containerElement.dataset.ptyGridCols = String(latestPtyGrid.cols);
         containerElement.dataset.ptyGridRows = String(latestPtyGrid.rows);
+        checkReplayReveal?.();
         if (
           (replayPreview !== null && !replayCompleted) ||
           (retainNativeOutput && containerElement.dataset.replayHeld === "true")
@@ -2504,7 +2505,9 @@ export function ThreadTerminalView({
         if (
           fitted === undefined ||
           !Number.isFinite(fitted.cols) ||
-          !Number.isFinite(fitted.rows)
+          !Number.isFinite(fitted.rows) ||
+          fitted.cols <= 0 ||
+          fitted.rows <= 0
         ) {
           return;
         }
@@ -2534,6 +2537,7 @@ export function ThreadTerminalView({
             claimedFitGrid = { ...fitted };
           }
         }
+        checkReplayReveal?.();
       };
       const scheduleFit: TerminalFitScheduler = () => {
         if (resizeAnimationFrame !== null) {
@@ -2692,11 +2696,10 @@ export function ThreadTerminalView({
         if (message.type === "attached") {
           replayRevealGeneration += 1;
           claimedFitGrid = null;
-          if (replayRevealFrame !== null)
-            window.cancelAnimationFrame(replayRevealFrame);
+          checkReplayReveal = null;
           if (replayRevealTimeout !== null) clearTimeout(replayRevealTimeout);
-          replayRevealFrame = null;
           replayRevealTimeout = null;
+          scheduleFit();
           replayTimingNextSeq = message.nextSeq;
           replayTimingFirstFrame = false;
         }
@@ -2857,10 +2860,7 @@ export function ThreadTerminalView({
             const generation = ++replayRevealGeneration;
             const revealReplay = () => {
               if (disposed || generation !== replayRevealGeneration) return;
-              if (replayRevealFrame !== null) {
-                window.cancelAnimationFrame(replayRevealFrame);
-                replayRevealFrame = null;
-              }
+              checkReplayReveal = null;
               if (replayRevealTimeout !== null) {
                 clearTimeout(replayRevealTimeout);
                 replayRevealTimeout = null;
@@ -2903,13 +2903,20 @@ export function ThreadTerminalView({
             };
             if (retainNativeOutput && sessionStatusRef.current !== "exited") {
               replayPreview?.hold({ countdown: false });
+              let barrierPending = false;
               const waitForFittedGrid = () => {
-                replayRevealFrame = null;
-                if (disposed || generation !== replayRevealGeneration) return;
-                fitTerminal();
+                if (
+                  disposed ||
+                  generation !== replayRevealGeneration ||
+                  barrierPending ||
+                  !containerHasSize
+                )
+                  return;
                 const fit = localFitGrid;
                 if (
                   fit !== null &&
+                  fit.cols > 0 &&
+                  fit.rows > 0 &&
                   claimedFitGrid?.cols === fit.cols &&
                   claimedFitGrid.rows === fit.rows &&
                   latestPtyGrid.cols === fit.cols &&
@@ -2918,7 +2925,9 @@ export function ThreadTerminalView({
                   activeTerminal.rows === fit.rows &&
                   outputPipeline !== null
                 ) {
+                  barrierPending = true;
                   outputPipeline.setGrid(fit.cols, fit.rows, () => {
+                    barrierPending = false;
                     if (disposed || generation !== replayRevealGeneration)
                       return;
                     if (
@@ -2928,17 +2937,12 @@ export function ThreadTerminalView({
                       latestPtyGrid.rows === fit.rows
                     )
                       revealReplay();
-                    else
-                      replayRevealFrame =
-                        window.requestAnimationFrame(waitForFittedGrid);
+                    else waitForFittedGrid();
                   });
                   return;
                 }
-                replayRevealFrame =
-                  window.requestAnimationFrame(waitForFittedGrid);
               };
-              if (replayRevealFrame !== null)
-                window.cancelAnimationFrame(replayRevealFrame);
+              checkReplayReveal = waitForFittedGrid;
               if (replayRevealTimeout !== null)
                 clearTimeout(replayRevealTimeout);
               replayRevealTimeout = setTimeout(revealReplay, 15_000);
@@ -3482,8 +3486,7 @@ export function ThreadTerminalView({
       stopWatchingLayout?.();
       detachViewportListeners?.();
       sizeClaims?.dispose();
-      if (replayRevealFrame !== null)
-        window.cancelAnimationFrame(replayRevealFrame);
+      checkReplayReveal = null;
       if (replayRevealTimeout !== null) clearTimeout(replayRevealTimeout);
       sizeClaims = null;
       if (resizeAnimationFrame !== null) {
