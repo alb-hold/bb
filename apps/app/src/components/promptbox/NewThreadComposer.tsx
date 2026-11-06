@@ -2194,7 +2194,10 @@ export function NewThreadComposer({
             onChange: handleProjectChange,
             allowNoProject: options.allowNoProject,
             createProject: options.createProject,
-            isLoading: !sidebarNavigationSettled,
+            isLoading:
+              !sidebarNavigationQuery.isSuccess ||
+              !replayKnowsCandidate ||
+              (sidebarNavigationQuery.isPlaceholderData && isProjectless),
             disabled:
               locks.project ||
               isUploading ||
