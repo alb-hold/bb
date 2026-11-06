@@ -1,4 +1,5 @@
 import { StrictMode } from "react";
+import { traceStartupReactUpdates } from "./lib/diagnostic-react-hooks";
 import { createRoot } from "react-dom/client";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter } from "react-router-dom";
@@ -20,6 +21,7 @@ import { moveStylesheetPropertiesToRegistry } from "./lib/stylesheet-property-re
 import "./app.css";
 
 performance.mark("app-boot-started");
+traceStartupReactUpdates();
 appQueryClient.getQueryCache().subscribe((event) => {
   performance.mark(`p41-query:${event.type}:${event.query.queryHash}`);
 });
