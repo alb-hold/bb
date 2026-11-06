@@ -26,7 +26,7 @@ const response = () => ({
   arrayBuffer: async () => new ArrayBuffer(0),
 });
 
-it("waits for settled home, downloads serially, and yields the next asset to typing", async () => {
+it("downloads quiet home serially and yields the next asset to typing", async () => {
   const { scheduleSettledSplitDownloads } =
     await import("./settled-split-downloads");
   let completeFirst: (() => void) | undefined;
@@ -44,7 +44,6 @@ it("waits for settled home, downloads serially, and yields the next asset to typ
     ["thread-detail", "terminal-runtime"],
     () => true,
   );
-  await vi.advanceTimersByTimeAsync(15_000);
   expect(fetch).not.toHaveBeenCalled();
   await vi.advanceTimersByTimeAsync(1);
   expect(fetch).toHaveBeenCalledTimes(1);
@@ -98,7 +97,6 @@ it.each(["unmount", "navigation"])(
     const fetch = vi.fn(async (_url: string) => response());
     vi.stubGlobal("fetch", fetch);
     cancel = scheduleSettledSplitDownloads(["thread-detail"], () => active);
-    await vi.advanceTimersByTimeAsync(15_000);
     if (reason === "unmount") cancel();
     else active = false;
     await vi.advanceTimersByTimeAsync(10_000);
@@ -121,4 +119,104 @@ it("retries a failed background asset on demand", async () => {
     "/second.js",
     "/first.js",
   ]);
+});
+
+it("starts quiet home downloads immediately instead of waiting fifteen seconds", async () => {
+  const { scheduleSettledSplitDownloads } =
+    await import("./settled-split-downloads");
+  const fetch = vi.fn(async () => response());
+  vi.stubGlobal("fetch", fetch);
+  cancel = scheduleSettledSplitDownloads(["thread-detail"], () => true);
+  await vi.advanceTimersByTimeAsync(10);
+  expect(fetch).toHaveBeenCalledTimes(2);
+});
+
+it("serializes separate producers and pauses every evaluation for a full second after input", async () => {
+  const { createSettledWorkSchedule } =
+    await import("./settled-split-downloads");
+  const first = createSettledWorkSchedule(() => true);
+  const second = createSettledWorkSchedule(() => true);
+  cancel = () => {
+    first.cancel();
+    second.cancel();
+  };
+  const evaluations: number[] = [];
+  let finish = () => {};
+  const pending = first.run(async () => {
+    evaluations.push(Date.now());
+    await new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+  });
+  const next = second.run(async () => {
+    evaluations.push(Date.now());
+  });
+  await vi.advanceTimersByTimeAsync(10);
+  expect(evaluations).toHaveLength(1);
+  document.dispatchEvent(new Event("input", { bubbles: true }));
+  finish();
+  await pending;
+  await vi.advanceTimersByTimeAsync(999);
+  expect(evaluations).toHaveLength(1);
+  await vi.advanceTimersByTimeAsync(10);
+  await next;
+  expect(evaluations).toHaveLength(2);
+  expect(evaluations[1]! - evaluations[0]!).toBeGreaterThanOrEqual(1_010);
+});
+
+it("does not evaluate between IME composition events even after a long pause", async () => {
+  const { createSettledWorkSchedule } =
+    await import("./settled-split-downloads");
+  const schedule = createSettledWorkSchedule(() => true);
+  cancel = schedule.cancel;
+  const evaluate = vi.fn(async () => {});
+  document.dispatchEvent(
+    new CompositionEvent("compositionstart", { bubbles: true }),
+  );
+  const done = schedule.run(evaluate);
+  await vi.advanceTimersByTimeAsync(5_000);
+  expect(evaluate).not.toHaveBeenCalled();
+  document.dispatchEvent(
+    new CompositionEvent("compositionend", { bubbles: true }),
+  );
+  await vi.advanceTimersByTimeAsync(999);
+  expect(evaluate).not.toHaveBeenCalled();
+  await vi.advanceTimersByTimeAsync(10);
+  await done;
+  expect(evaluate).toHaveBeenCalledOnce();
+});
+
+it("evaluates dependency chunks in separate quiet tasks after downloading them", async () => {
+  const { createSettledWorkSchedule } =
+    await import("./settled-split-downloads");
+  const { prepareBackgroundSplit } = await import("./split-prefetch");
+  const evaluations: number[] = [];
+  vi.stubGlobal("__p41Evaluations", evaluations);
+  const dependency =
+    "data:text/javascript," +
+    encodeURIComponent(
+      'globalThis.__p41Evaluations.push(Date.now()); document.dispatchEvent(new Event("input", { bubbles: true }));',
+    );
+  const parent =
+    "data:text/javascript," +
+    encodeURIComponent(
+      `import ${JSON.stringify(dependency)}; globalThis.__p41Evaluations.push(Date.now());`,
+    );
+  document.getElementById("bb-prefetch-thread-detail")!.textContent =
+    JSON.stringify([dependency, parent]);
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => response()),
+  );
+  const schedule = createSettledWorkSchedule(() => true);
+  cancel = schedule.cancel;
+  const done = prepareBackgroundSplit("thread-detail", schedule.run);
+  await vi.waitFor(() => expect(evaluations).toHaveLength(1));
+  const inputAt = evaluations[0]!;
+  await vi.advanceTimersByTimeAsync(500);
+  expect(evaluations).toHaveLength(1);
+  await vi.advanceTimersByTimeAsync(600);
+  await vi.waitFor(() => expect(evaluations).toHaveLength(2));
+  await done;
+  expect(evaluations[1]! - inputAt).toBeGreaterThanOrEqual(1_000);
 });

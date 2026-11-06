@@ -9,7 +9,7 @@ export function markHomeComposerReady(): void {
 
 export function whenHomeBackgroundWorkMayStart(): Promise<number | null> {
   if (window.location.pathname !== "/") return Promise.resolve(null);
-  if (markedAt !== null) return Promise.resolve(markedAt + 15_000);
+  if (markedAt !== null) return Promise.resolve(markedAt);
   return new Promise((resolve) => {
     const finish = (settledAt: number | null) => {
       observer.disconnect();
@@ -18,7 +18,7 @@ export function whenHomeBackgroundWorkMayStart(): Promise<number | null> {
       window.removeEventListener("popstate", routeChanged);
       resolve(settledAt);
     };
-    const ready = () => finish((markedAt ?? Date.now()) + 15_000);
+    const ready = () => finish(markedAt ?? Date.now());
     const input = (event: Event) => {
       if (
         event.target instanceof Element &&

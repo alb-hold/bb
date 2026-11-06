@@ -3,6 +3,7 @@ import { createRetryingModuleLoader } from "./plugin-frontend-lazy";
 
 export const lazyRuntimeGroups = [
   {
+    id: "plugin-zod-runtime",
     slots: ["zod"],
     load: createRetryingModuleLoader(async () => {
       try {
@@ -17,6 +18,7 @@ export const lazyRuntimeGroups = [
     }),
   },
   {
+    id: "plugin-radix-runtime",
     slots: ["radixCheckbox", "radixSlot", "radixComposeRefs"],
     load: createRetryingModuleLoader(async () => {
       const { radixRuntimeSlots } = await import("./plugin-radix-runtime");
@@ -24,42 +26,49 @@ export const lazyRuntimeGroups = [
     }),
   },
   {
+    id: "plugin-alert-runtime",
     slots: ["radixAlertDialog"],
     load: createRetryingModuleLoader(async () => ({
       radixAlertDialog: await import("@radix-ui/react-alert-dialog"),
     })),
   },
   {
+    id: "plugin-hover-runtime",
     slots: ["radixHoverCard"],
     load: createRetryingModuleLoader(async () => ({
       radixHoverCard: await import("@radix-ui/react-hover-card"),
     })),
   },
   {
+    id: "plugin-menubar-runtime",
     slots: ["radixMenubar"],
     load: createRetryingModuleLoader(async () => ({
       radixMenubar: await import("@radix-ui/react-menubar"),
     })),
   },
   {
+    id: "plugin-navigation-runtime",
     slots: ["radixNavigationMenu"],
     load: createRetryingModuleLoader(async () => ({
       radixNavigationMenu: await import("@radix-ui/react-navigation-menu"),
     })),
   },
   {
+    id: "plugin-select-runtime",
     slots: ["radixSelect"],
     load: createRetryingModuleLoader(async () => ({
       radixSelect: await import("@radix-ui/react-select"),
     })),
   },
   {
+    id: "plugin-vaul-runtime",
     slots: ["vaul"],
     load: createRetryingModuleLoader(async () => ({
       vaul: await import("vaul"),
     })),
   },
   {
+    id: "plugin-pierre-runtime",
     slots: ["pierreDiffs", "pierreDiffsReact"],
     load: createRetryingModuleLoader(async () => {
       const { pierreRuntimeSlots } = await import("./plugin-pierre-runtime");
@@ -67,6 +76,7 @@ export const lazyRuntimeGroups = [
     }),
   },
 ] satisfies {
+  id: string;
   slots: (keyof BbPluginRuntime)[];
   load: () => Promise<Partial<BbPluginRuntime>>;
 }[];

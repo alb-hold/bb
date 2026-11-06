@@ -24,6 +24,17 @@ export const sharedViteConfig = {
     fontPreload(),
     initialThreadPreload(),
     splitPrefetch({
+      "plugin-zod-runtime":
+        "packages/plugin-build/src/generated/zod-runtime.generated.ts",
+      "plugin-radix-runtime": "src/lib/plugin-radix-runtime.ts",
+      "plugin-alert-runtime": "@radix-ui/react-alert-dialog/dist/index.mjs",
+      "plugin-hover-runtime": "@radix-ui/react-hover-card/dist/index.mjs",
+      "plugin-menubar-runtime": "@radix-ui/react-menubar/dist/index.mjs",
+      "plugin-navigation-runtime":
+        "@radix-ui/react-navigation-menu/dist/index.mjs",
+      "plugin-select-runtime": "@radix-ui/react-select/dist/index.mjs",
+      "plugin-vaul-runtime": "vaul/dist/index.mjs",
+      "plugin-pierre-runtime": "src/lib/plugin-pierre-runtime.tsx",
       "thread-detail": "src/views/thread-detail/ThreadDetailView.tsx",
       "root-compose-panel-tab-content":
         "src/views/RootComposePanelTabContent.tsx",

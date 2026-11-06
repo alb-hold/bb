@@ -36,6 +36,9 @@ it("emits hashed URLs for only the requested module and its static dependencies"
     expect(urls.some((url) => /\/heavy-[\w-]+\.js$/.test(url))).toBe(true);
     expect(urls.some((url) => /\/index-[\w-]+\.js$/.test(url))).toBe(true);
     expect(urls.some((url) => url.includes("other-"))).toBe(false);
+    expect(
+      urls.findIndex((url) => /\/index-[\w-]+\.js$/.test(url)),
+    ).toBeLessThan(urls.findIndex((url) => /\/heavy-[\w-]+\.js$/.test(url)));
     for (const url of urls) {
       expect(url.startsWith("/app/assets/")).toBe(true);
       expect(

@@ -1,46 +1,48 @@
 import { whenHomeBackgroundWorkMayStart } from "./home-composer-ready";
-import {
-  requestBrowserIdle,
-  whenRouteSurfaceMounted,
-} from "./plugin-frontend-boot-schedule";
-import { whenRouteContentPainted } from "./route-content-paint";
-import { createSettledWorkSchedule } from "./settled-split-downloads";
+import { whenRouteSurfaceMounted } from "./plugin-frontend-boot-schedule";
+import { createSettledWorkSchedule } from "./input-idle-work";
+import { prepareBackgroundSplit } from "./split-prefetch";
 
 export function createDeferredPluginFrontendSchedule() {
   let schedule: ReturnType<typeof createSettledWorkSchedule> | null = null;
-  let observer: MutationObserver | null = null;
+  const ensure = () => (schedule ??= createSettledWorkSchedule(() => true));
   const dispose = () => {
-    observer?.disconnect();
-    observer = null;
     schedule?.cancel();
     schedule = null;
   };
   const yieldBetweenDeferredLoads = async () => {
     await whenRouteSurfaceMounted();
-    if (schedule !== null && window.location.pathname === "/") {
-      if (await schedule.whenIdle()) return;
-    }
+    await ensure().whenIdle();
+  };
+  const runDeferredWork = async <T>(work: () => Promise<T>) => {
     await whenRouteSurfaceMounted();
-    await new Promise<void>((resolve) =>
-      requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
-    );
-    await new Promise<void>((resolve) => requestBrowserIdle(resolve));
+    return ensure().run(work);
   };
   const waitForDeferredLoad = async () => {
-    await whenRouteContentPainted();
+    ensure();
     await whenRouteSurfaceMounted();
-    const settledAt = await whenHomeBackgroundWorkMayStart();
-    if (settledAt !== null) {
-      schedule = createSettledWorkSchedule(
-        () => window.location.pathname === "/",
-        settledAt,
-      );
-      observer = new MutationObserver(() => {
-        if (window.location.pathname !== "/") dispose();
-      });
-      observer.observe(document, { childList: true, subtree: true });
-    }
+    await whenHomeBackgroundWorkMayStart();
     await yieldBetweenDeferredLoads();
   };
-  return { waitForDeferredLoad, yieldBetweenDeferredLoads, dispose };
+  const downloadDeferredModule = (url: string) =>
+    runDeferredWork(async () => {
+      try {
+        const response = await fetch(url, {
+          cache: "force-cache",
+          priority: "low",
+        });
+        if (response.ok) await response.arrayBuffer();
+      } catch {}
+    });
+  const prepareDeferredRuntime = async (id: string) => {
+    await prepareBackgroundSplit(id, (work) => runDeferredWork(work));
+  };
+  return {
+    waitForDeferredLoad,
+    yieldBetweenDeferredLoads,
+    downloadDeferredModule,
+    runDeferredWork,
+    prepareDeferredRuntime,
+    dispose,
+  };
 }

@@ -1,4 +1,3 @@
-import { scheduleHomeInteractionPreloads } from "./lib/home-interaction-preloads";
 import { appQueryClient } from "./lib/app-query-client";
 import { environmentProvidersQueryOptions } from "./hooks/queries/environment-provider-queries";
 import { machineProvidersQueryOptions } from "./hooks/queries/machine-provider-queries";
@@ -500,7 +499,6 @@ function RouteContentPaintSignal() {
   useEffect(() => {
     void whenCriticalLoadsSettled().then(markRouteContentPainted);
     startSplitPreloading();
-    return scheduleHomeInteractionPreloads();
   }, []);
   return null;
 }
