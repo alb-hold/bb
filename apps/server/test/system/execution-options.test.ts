@@ -27,7 +27,11 @@ import {
   seedProjectWithSource,
 } from "../helpers/seed.js";
 import { advanceUntilSettled } from "../helpers/fake-timers.js";
-import { requireRegistration } from "../helpers/provider-model-catalogs.js";
+import {
+  installCatalogStore,
+  requireRegistration,
+  settleTimers,
+} from "../helpers/provider-model-catalogs.js";
 import { withTestHarness, type TestAppHarness } from "../helpers/test-app.js";
 import {
   createTestProviderRegistry,
@@ -310,6 +314,62 @@ describe("appendCustomModels", () => {
 });
 
 describe("resolveSystemExecutionOptions", () => {
+  it("does not notify unchanged picker reads and notifies one catalog content change", async () => {
+    await withTestHarness(async (harness) => {
+      const store = installCatalogStore(harness, {
+        clock: { now: Date.now() },
+      });
+      const { host, session } = seedHostSession(harness.deps, {
+        id: "host-unchanged-picker",
+      });
+      registerHostRpcResponder(harness, {
+        hostId: host.id,
+        sessionId: session.id,
+        handle: (request) =>
+          request.command.type === "provider.health"
+            ? { ok: true, result: providerDiscoveryHealth(true) }
+            : {
+                ok: true,
+                result: {
+                  models: [availableModelFixture({ model: "cached-model" })],
+                  selectedOnlyModels: [],
+                },
+              },
+      });
+      const url = `/api/v1/system/execution-options?hostId=${host.id}&providerId=codex`;
+      expect((await harness.app.request(url)).status).toBe(200);
+      await settleTimers();
+      const notify = vi.spyOn(harness.hub, "notifyHost");
+      for (let index = 0; index < 2; index++) {
+        for (const provider of harness.deps.providerRegistry.list()) {
+          harness.deps.providerRegistry.rememberProviderHealthStatus(
+            { hostId: host.id, providerId: provider.info.id },
+            Promise.resolve("ready"),
+          );
+        }
+        await Promise.resolve();
+        expect((await harness.app.request(url)).status).toBe(200);
+        await settleTimers();
+      }
+      expect(notify).not.toHaveBeenCalled();
+      await store.remember(harness.deps, {
+        hostId: host.id,
+        provider: requireRegistration(harness, "codex").info,
+        cwd: null,
+        models: [availableModelFixture({ model: "changed-model" })],
+        selectedOnlyModels: [],
+      });
+      await settleTimers();
+      expect(notify).toHaveBeenCalledExactlyOnceWith(host.id, [
+        "provider-model-catalog-changed",
+      ]);
+      const response = await harness.app.request(url);
+      expect((await response.json()).models[0].model).toBe("changed-model");
+      await settleTimers();
+      expect(notify).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it("serves warm picker options without awaiting an in-flight health probe", async () => {
     await withTestHarness(async (harness) => {
       const { host, session } = seedHostSession(harness.deps, {

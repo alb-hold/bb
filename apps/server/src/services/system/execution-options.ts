@@ -163,12 +163,21 @@ const healthRefreshNotifications = new WeakSet<Promise<unknown>>();
 function notifyWhenHealthSettles(
   deps: LoggedWorkSessionDeps,
   hostId: string,
-  pending: Promise<unknown> | undefined,
+  providerId: string,
+  pending: ReturnType<ProviderRegistryService["lookupProviderHealthStatus"]>,
 ): void {
   if (pending === undefined || healthRefreshNotifications.has(pending)) return;
   healthRefreshNotifications.add(pending);
+  const previous = deps.providerRegistry.peekProviderHealthStatus({
+    hostId,
+    providerId,
+  });
   void pending.then(
-    () => deps.hub.notifyHost(hostId, ["provider-model-catalog-changed"]),
+    (status) => {
+      if (status !== previous) {
+        deps.hub.notifyHost(hostId, ["provider-model-catalog-changed"]);
+      }
+    },
     () => undefined,
   );
 }
@@ -189,7 +198,7 @@ async function omitProvidersThatCannotStartAThread(
         hostId,
         providerId: provider.id,
       });
-      notifyWhenHealthSettles(deps, hostId, pending);
+      notifyWhenHealthSettles(deps, hostId, provider.id, pending);
       if (status !== "unauthenticated") return true;
       const contributed = await resolvePluginProviderEnvHealth({
         providerId: provider.id,
@@ -266,7 +275,12 @@ async function listInstalledPluginProviderInfos(
               cacheKey,
               pending,
             );
-            notifyWhenHealthSettles(deps, hostId, pending);
+            notifyWhenHealthSettles(
+              deps,
+              hostId,
+              registration.info.id,
+              pending,
+            );
             const discovered = await pending;
             return discovered !== null && discovered !== "not_installed";
           });

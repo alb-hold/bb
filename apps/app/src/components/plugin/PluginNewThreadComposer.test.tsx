@@ -980,6 +980,51 @@ describe("PluginNewThreadComposer seeding", () => {
     expect(spies[0]).toHaveBeenCalledTimes(1);
   });
 
+  it("sends the resolved project default on Enter while the catalog is pending", async () => {
+    mocks.realPromptBox = true;
+    mocks.modelsLoading = true;
+    await registerComposerPlugin();
+    const submitted = vi.fn();
+    render(
+      <Provider>
+        <MemoryRouter>
+          <NewThreadComposer
+            projectId="proj_1"
+            onProjectChange={() => undefined}
+            draftStorage={{ kind: "new-thread" }}
+            selectionScope="new-thread"
+            onSubmit={submitted}
+          >
+            {(composer) =>
+              composer.renderPromptBox({ mentionMenuPlacement: "bottom" })
+            }
+          </NewThreadComposer>
+        </MemoryRouter>
+      </Provider>,
+    );
+    const element = await waitFor(() => {
+      const element = document.querySelector<TiptapEditorHTMLElement>(
+        "[contenteditable=true]",
+      );
+      expect(element?.editor).toBeTruthy();
+      return element!;
+    });
+    await act(async () => {
+      element.editor!.commands.insertContent("send immediately");
+    });
+    await act(async () => {
+      fireEvent.keyDown(element, { key: "Enter", keyCode: 13 });
+    });
+    expect(submitted).toHaveBeenCalledTimes(1);
+    expect(submitted.mock.calls[0][0]).toMatchObject({
+      providerId: "codex",
+      model: "gpt-5.6",
+      permissionMode: "auto",
+      executionInputSources: { providerId: "explicit", model: "explicit" },
+    });
+    expect(mocks.modelsLoading).toBe(true);
+  });
+
   it("delivers voice at the current caret and submits the latest draft inputs after fast typing", async () => {
     mocks.realPromptBox = true;
     await registerComposerPlugin();
@@ -3616,7 +3661,7 @@ describe("NewThreadComposer setSelection", () => {
       currentHost().setSelection!({ permissionMode: "full" }),
       2_000,
     );
-    expect(bounded.providerId).toBeUndefined();
+    expect(bounded.providerId).toBe("codex");
     expect(bounded.permissionMode).toBe("full");
   });
 
