@@ -77,11 +77,12 @@ try {
     try {
       await page.waitForFunction(
         () =>
-          performance.getEntriesByName("terminal-replay-parsed").length > 0 ||
-          (document.querySelector(
-            '[data-app-terminal] [data-replay-held="false"]',
-          ) &&
-            !document.querySelector("[data-terminal-restoring]")),
+          !document.querySelector("[data-terminal-restoring]") &&
+          !document.querySelector("[data-terminal-screen-loading-preview]") &&
+          (performance.getEntriesByName("terminal-replay-parsed").length > 0 ||
+            document.querySelector(
+              '[data-app-terminal] [data-replay-held="false"]',
+            )),
         undefined,
         { timeout: 30_000 },
       );
