@@ -350,7 +350,10 @@ Plugins. If the active component throws, bb shows a "stopped working"
 placeholder with a Reload button plus one toast; nothing else in the sidebar
 is affected.
 
-The component receives:
+Call `onNavigate` after opening a thread to close the mobile drawer. The deprecated
+`searchQuery` is always `""`. `experimental_isVisible` is true when shown and false
+in a closed compact drawer or collapsed desktop sidebar. Older hosts omit it;
+keep a visibility observer fallback for `undefined`. The component receives:
 
 ```ts
 interface PluginThreadListProps {
@@ -358,17 +361,10 @@ interface PluginThreadListProps {
   activeProjectId: string | null;
   isCompactViewport: boolean;
   experimental_isVisible?: boolean;
-  /** Closes the mobile drawer. Always call it after opening a thread. */
   onNavigate: () => void;
-  /** Deprecated compatibility value for the removed sidebar search field.
-      The host always supplies "". */
   searchQuery: string;
 }
 ```
-
-`experimental_isVisible` is true when the host shows the list and false in a
-closed compact drawer or collapsed desktop sidebar. Older hosts omit it, so
-`undefined` means visibility is unknown; retain a visibility observer fallback.
 
 **Reading and acting on threads.** One hook reads the list; writes go through
 the plugin SDK and navigation:
