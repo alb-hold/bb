@@ -39,7 +39,7 @@ function chunk(seq: number) {
   return { seq, dataBase64: "AA==" };
 }
 
-function createFixture() {
+function createFixture(origin = false) {
   const sent: Array<{
     message: TerminalDataPlaneMainMessage;
     handle: Socket | undefined;
@@ -84,7 +84,13 @@ function createFixture() {
     lifecycle,
     onTerminalExited,
   );
-  const request = { url: "/ws/terminals/term_1", headers: [], headBase64: "" };
+  const request = {
+    url: "/ws/terminals/term_1",
+    headers: origin
+      ? [["Origin", "http://localhost:3000"] as [string, string]]
+      : [],
+    headBase64: "",
+  };
   const attach = (terminalId = "term_1", handoffOwnerToken?: string) => {
     const raw = {} as Socket;
     const attachId = router.attachBrowser({
@@ -119,6 +125,27 @@ function createFixture() {
 }
 
 describe("TerminalDataPlaneRouter", () => {
+  it.each([false, true])(
+    "uses existing Origin on initial attach and resync (browser=%s)",
+    (browser) => {
+      const fixture = createFixture(browser);
+      const { attachId } = fixture.attach();
+      expect(fixture.lifecycle.attach).toHaveBeenLastCalledWith(
+        expect.objectContaining({ rawReplay: !browser }),
+      );
+      fixture.router.handleChildMessage({
+        v: V,
+        type: "browser.resync",
+        attachId,
+        terminalId: "term_1",
+        fromSeq: 0,
+      });
+      expect(fixture.lifecycle.attach).toHaveBeenLastCalledWith(
+        expect.objectContaining({ rawReplay: !browser }),
+      );
+    },
+  );
+
   it("keeps the app owner token on the server side of the daemon data-plane boundary", () => {
     const fixture = createFixture();
     const token = "0123456789abcdefghij_-";

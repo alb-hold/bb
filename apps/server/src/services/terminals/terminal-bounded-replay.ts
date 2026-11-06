@@ -17,148 +17,181 @@ interface ReplayInput extends Replay {
 }
 
 function replayIdentity(args: ReplayInput): string {
-  return [args.terminalId, args.daemonSessionId, args.cols, args.rows].join(
-    ":",
+  return JSON.stringify([
+    args.terminalId,
+    args.daemonSessionId,
+    args.cols,
+    args.rows,
+  ]);
+}
+
+function replayBytes(args: Replay): number {
+  return args.chunks.reduce(
+    (sum, chunk) => sum + Buffer.byteLength(chunk.dataBase64, "base64"),
+    0,
   );
 }
 
-function replayKey(args: ReplayInput): string {
-  return `${replayIdentity(args)}:${args.replayStartSeq}:${args.nextSeq}`;
+interface PendingBuild {
+  args: ReplayInput;
+  promise: Promise<Replay>;
+  resolve: (replay: Replay) => void;
 }
 
 export class TerminalBoundedReplay {
   private readonly snapshots = new Map<string, Replay>();
-  private readonly pending = new Map<string, Promise<Replay>>();
+  private readonly incompatible = new Map<string, true>();
+  private readonly pending = new Map<string, PendingBuild>();
   private bytes = 0;
-  private buildTail: Promise<void> = Promise.resolve();
+  private building = false;
   private generation = 0;
 
   forAttach(args: ReplayInput): Replay {
-    const key = replayKey(args);
-    const cached = this.snapshots.get(key);
-    if (cached !== undefined) return cached;
-    const generation = this.generation;
-    setImmediate(() => {
-      if (generation === this.generation) void this.compact(args);
-    });
-    const prefix = `${replayIdentity(args)}:`;
-    let earlier: Replay | undefined;
-    for (const [snapshotKey, snapshot] of this.snapshots) {
-      if (
-        snapshotKey.startsWith(prefix) &&
-        snapshot.nextSeq < args.nextSeq &&
-        snapshot.nextSeq >= args.replayStartSeq &&
-        snapshot.replayStartSeq > Number(snapshotKey.split(":").at(-2)) &&
-        (!earlier || snapshot.nextSeq > earlier.nextSeq)
-      )
-        earlier = snapshot;
-    }
-    if (earlier && args.nextSeq === args.replayStartSeq + args.chunks.length) {
-      const suffix = args.chunks.slice(earlier.nextSeq - args.replayStartSeq);
-      if (suffix.every((chunk, index) => chunk.seq === earlier.nextSeq + index))
-        return {
-          replayStartSeq: earlier.replayStartSeq,
+    const identity = replayIdentity(args);
+    const cached = this.cached(args, identity);
+    if (cached?.nextSeq === args.nextSeq && cached.chunks.length === 1)
+      return cached;
+    if (
+      this.incompatible.has(identity) ||
+      replayBytes(args) < TERMINAL_DATA_MAX_BYTES * 2
+    )
+      return args;
+    void this.compact(args);
+    return cached ?? args;
+  }
+
+  private cached(args: ReplayInput, identity: string): Replay | undefined {
+    const snapshot = this.snapshots.get(identity);
+    if (
+      !snapshot ||
+      snapshot.nextSeq > args.nextSeq ||
+      snapshot.nextSeq < args.replayStartSeq
+    )
+      return undefined;
+    const suffix = args.chunks.slice(snapshot.nextSeq - args.replayStartSeq);
+    if (
+      suffix.some((chunk, i) => chunk.seq !== snapshot.nextSeq + i) ||
+      snapshot.nextSeq + suffix.length !== args.nextSeq
+    )
+      return undefined;
+    this.snapshots.delete(identity);
+    this.snapshots.set(identity, snapshot);
+    return suffix.length === 0
+      ? snapshot
+      : {
+          replayStartSeq: snapshot.replayStartSeq,
           nextSeq: args.nextSeq,
-          chunks: [...earlier.chunks, ...suffix],
+          chunks: [...snapshot.chunks, ...suffix],
         };
-    }
-    return args;
   }
 
   compact(args: ReplayInput): Promise<Replay> {
     if (
       args.nextSeq !== args.replayStartSeq + args.chunks.length ||
-      args.chunks.some(
-        (chunk, index) => chunk.seq !== args.replayStartSeq + index,
-      )
+      args.chunks.some((chunk, i) => chunk.seq !== args.replayStartSeq + i)
     )
       return Promise.resolve(args);
-    const key = replayKey(args);
-    const cached = this.snapshots.get(key);
-    if (cached !== undefined) {
-      this.snapshots.delete(key);
-      this.snapshots.set(key, cached);
-      return Promise.resolve(cached);
+    const identity = replayIdentity(args);
+    const cached = this.cached(args, identity);
+    if (cached && cached.chunks.length === 1) return Promise.resolve(cached);
+    if (
+      this.incompatible.has(identity) ||
+      replayBytes(args) < TERMINAL_DATA_MAX_BYTES * 2
+    )
+      return Promise.resolve(args);
+    const queued = this.pending.get(identity);
+    if (queued) {
+      queued.args = args;
+      return queued.promise.then((result) =>
+        result.nextSeq === args.nextSeq ? result : args,
+      );
     }
-    const pending = this.pending.get(key);
-    if (pending !== undefined) return pending;
-    const generation = this.generation;
-    const work = this.buildTail
-      .then(() => this.build(args, key, generation))
-      .catch(() => args)
-      .finally(() => {
-        if (this.pending.get(key) === work) this.pending.delete(key);
-      });
-    this.buildTail = work.then(() => undefined);
-    this.pending.set(key, work);
-    return work;
+    let resolve: (replay: Replay) => void = () => {};
+    const promise = new Promise<Replay>((done) => {
+      resolve = done;
+    });
+    this.pending.set(identity, { args, promise, resolve });
+    if (!this.building) {
+      this.building = true;
+      setImmediate(() => void this.drain());
+    }
+    return promise.then((result) =>
+      result.nextSeq === args.nextSeq ? result : args,
+    );
+  }
+
+  private async drain(): Promise<void> {
+    try {
+      while (this.pending.size > 0) {
+        const next = this.pending.entries().next().value;
+        if (!next) break;
+        const [identity, work] = next;
+        this.pending.delete(identity);
+        try {
+          work.resolve(await this.build(work.args, identity, this.generation));
+        } catch {
+          work.resolve(work.args);
+        }
+      }
+    } finally {
+      this.building = false;
+    }
   }
 
   private async build(
     args: ReplayInput,
-    key: string,
+    identity: string,
     generation: number,
   ): Promise<Replay> {
-    if (generation !== this.generation) return args;
-    const rawBytes = args.chunks.reduce(
-      (sum, chunk) => sum + Buffer.byteLength(chunk.dataBase64, "base64"),
-      0,
-    );
-    const fallback = (): Replay => {
-      if (generation === this.generation) this.remember(key, args, rawBytes);
-      return args;
-    };
-    if (rawBytes < TERMINAL_DATA_MAX_BYTES * 2) return fallback();
+    const cached = this.cached(args, identity);
+    if (cached?.chunks.length === 1) return cached;
+    const input = cached ?? args;
+    const rawBytes = replayBytes(args);
     const state = new TerminalScreenState(args.cols, args.rows, true);
     try {
-      for (const [seq, chunk] of args.chunks.entries()) {
+      for (const [seq, chunk] of input.chunks.entries())
         state.pushBase64(seq, chunk.dataBase64);
+      const snapshot = await state.replaySnapshot(
+        Math.min(rawBytes, TERMINAL_DATA_MAX_BYTES + 1),
+      );
+      if (generation !== this.generation) return args;
+      if (snapshot === null) {
+        this.incompatible.set(identity, true);
+        if (this.incompatible.size > 256) {
+          const oldest = this.incompatible.keys().next().value;
+          if (oldest !== undefined) this.incompatible.delete(oldest);
+        }
+        return args;
       }
-      const snapshot = await state.replaySnapshot();
-      if (snapshot === null || generation !== this.generation)
-        return fallback();
-      const data = Buffer.from(snapshot.dataBase64, "base64");
-      const count = Math.ceil(data.length / TERMINAL_DATA_MAX_BYTES);
-      const replayStartSeq = args.nextSeq - count;
-      if (data.length >= rawBytes || replayStartSeq < args.replayStartSeq)
-        return fallback();
+      const bytes = Buffer.byteLength(snapshot.dataBase64, "base64");
+      if (bytes >= rawBytes || bytes > TERMINAL_DATA_MAX_BYTES) return args;
       const replay = {
-        replayStartSeq,
+        replayStartSeq: args.nextSeq - 1,
         nextSeq: args.nextSeq,
-        chunks: Array.from({ length: count }, (_, index) => ({
-          seq: replayStartSeq + index,
-          dataBase64: data
-            .subarray(
-              index * TERMINAL_DATA_MAX_BYTES,
-              (index + 1) * TERMINAL_DATA_MAX_BYTES,
-            )
-            .toString("base64"),
-        })),
+        chunks: [{ seq: args.nextSeq - 1, dataBase64: snapshot.dataBase64 }],
       };
-      this.remember(key, replay, data.length);
+      const previous = this.snapshots.get(identity);
+      if (previous) this.bytes -= replayBytes(previous);
+      this.snapshots.delete(identity);
+      this.snapshots.set(identity, replay);
+      this.bytes += bytes;
+      while (this.snapshots.size > 16 || this.bytes > 8 * 1024 * 1024) {
+        const oldest = this.snapshots.entries().next().value;
+        if (!oldest) break;
+        this.snapshots.delete(oldest[0]);
+        this.bytes -= replayBytes(oldest[1]);
+      }
       return replay;
     } finally {
       state.dispose();
     }
   }
 
-  private remember(key: string, replay: Replay, bytes: number): void {
-    this.snapshots.set(key, replay);
-    this.bytes += bytes;
-    while (this.snapshots.size > 16 || this.bytes > 8 * 1024 * 1024) {
-      const oldest = this.snapshots.entries().next().value;
-      if (oldest === undefined) break;
-      this.snapshots.delete(oldest[0]);
-      this.bytes -= oldest[1].chunks.reduce(
-        (sum, chunk) => sum + Buffer.byteLength(chunk.dataBase64, "base64"),
-        0,
-      );
-    }
-  }
-
   clear(): void {
     this.generation += 1;
     this.snapshots.clear();
+    this.incompatible.clear();
+    for (const work of this.pending.values()) work.resolve(work.args);
     this.pending.clear();
     this.bytes = 0;
   }

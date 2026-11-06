@@ -1111,6 +1111,7 @@ export function createApp(
       return {
         onOpen: (_event, socket) =>
           onTerminalSocketOpen(deps, {
+            rawReplay: context.req.header("origin") === undefined,
             outputAcks: query.data.outputAcks,
             handoffOwnerToken: query.data.handoffOwnerToken,
             resizeAcks: query.data.resizeAcks,

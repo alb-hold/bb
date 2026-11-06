@@ -27,6 +27,16 @@ describe("bounded replay scheduling", () => {
     const replay = new TerminalBoundedReplay();
     const args = input();
     expect(replay.forAttach(args)).toBe(args);
+    args.chunks.push({
+      seq: args.nextSeq++,
+      dataBase64: Buffer.from(
+        Array.from(
+          { length: 40 },
+          (_, i) =>
+            `\x1b[3${i % 8}mrow ${i} ${"wrapped".repeat(20)}\x1b[0m\r\n`,
+        ).join(""),
+      ).toString("base64"),
+    });
     const snapshot = await replay.compact(args);
     const suffix = Array.from({ length: 3 }, (_, i) => ({
       seq: args.nextSeq + i,
@@ -37,6 +47,7 @@ describe("bounded replay scheduling", () => {
       chunks: [...args.chunks, ...suffix],
       nextSeq: args.nextSeq + suffix.length,
     };
+    const push = vi.spyOn(TerminalScreenState.prototype, "pushBase64");
     const incremental = replay.forAttach(updated);
     expect(incremental.chunks).toEqual([...snapshot.chunks, ...suffix]);
     const shifted = replay.forAttach({
@@ -68,6 +79,22 @@ describe("bounded replay scheduling", () => {
       ),
       cursor: [terminal.buffer.active.cursorX, terminal.buffer.active.cursorY],
       modes: terminal.modes,
+      cells: Array.from({ length: terminal.buffer.active.length }, (_, row) => {
+        const line = terminal.buffer.active.getLine(row);
+        return {
+          wrapped: line?.isWrapped,
+          cells: Array.from({ length: terminal.cols }, (_, col) => {
+            const cell = line?.getCell(col);
+            return [
+              cell?.getChars() || " ",
+              cell?.getWidth(),
+              cell?.getFgColor(),
+              cell?.getBgColor(),
+              cell?.isBold(),
+            ];
+          }),
+        };
+      }),
     });
     try {
       await write(full, updated.chunks);
@@ -77,6 +104,13 @@ describe("bounded replay scheduling", () => {
       restored.resize(40, 24);
       expect(screen(restored)).toEqual(screen(full));
       const advanced = await replay.compact(updated);
+      expect(
+        push.mock.calls.reduce(
+          (sum, call) => sum + Buffer.byteLength(call[1], "base64"),
+          0,
+        ),
+      ).toBeLessThan(20_000);
+      push.mockRestore();
       expect(replay.forAttach(updated)).toBe(advanced);
     } finally {
       full.dispose();
@@ -88,7 +122,8 @@ describe("bounded replay scheduling", () => {
     const replay = new TerminalBoundedReplay();
     const args = input();
     expect(replay.forAttach(args)).toBe(args);
-    const compact = await replay.compact(args);
+    await vi.waitFor(() => expect(replay.forAttach(args)).not.toBe(args));
+    const compact = replay.forAttach(args);
     expect(compact.chunks.length).toBeLessThan(args.chunks.length);
     expect(replay.forAttach(args)).toBe(compact);
     replay.clear();
@@ -127,7 +162,118 @@ describe("bounded replay scheduling", () => {
     }
   });
 
-  it("caps builds at one across distinct terminal attaches", async () => {
+  it("coalesces rapid busy attaches to the latest queued build", async () => {
+    const replay = new TerminalBoundedReplay();
+    const snapshot = vi.spyOn(TerminalScreenState.prototype, "replaySnapshot");
+    const args = input();
+    try {
+      const requests = Array.from({ length: 20 }, (_, i) =>
+        replay.compact({
+          ...args,
+          nextSeq: args.nextSeq + i,
+          chunks: [
+            ...args.chunks,
+            ...Array.from({ length: i }, (_, j) => ({
+              seq: args.nextSeq + j,
+              dataBase64: Buffer.from("new\r\n").toString("base64"),
+            })),
+          ],
+        }),
+      );
+      await Promise.all(requests);
+      expect(snapshot).toHaveBeenCalledTimes(1);
+    } finally {
+      snapshot.mockRestore();
+      replay.clear();
+    }
+  });
+
+  it("coalesces busy forAttach warming across event-loop turns", async () => {
+    const replay = new TerminalBoundedReplay();
+    const args = input();
+    await replay.compact(args);
+    const snapshot = vi.spyOn(TerminalScreenState.prototype, "replaySnapshot");
+    let latest = args;
+    try {
+      for (let i = 0; i < 20; i++) {
+        latest = {
+          ...latest,
+          chunks: [
+            ...latest.chunks,
+            {
+              seq: latest.nextSeq,
+              dataBase64: Buffer.from("new\r\n").toString("base64"),
+            },
+          ],
+          nextSeq: latest.nextSeq + 1,
+        };
+        replay.forAttach(latest);
+      }
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      await replay.compact(latest);
+      expect(snapshot).toHaveBeenCalledTimes(1);
+      expect(replay.forAttach(latest).chunks).toHaveLength(1);
+    } finally {
+      snapshot.mockRestore();
+      replay.clear();
+    }
+  });
+
+  it("small and incompatible terminals preserve useful compacted entries", async () => {
+    const replay = new TerminalBoundedReplay();
+    const args = input();
+    const warmed = await replay.compact(args);
+    for (let i = 0; i < 20; i++) {
+      await replay.compact({
+        ...input(`small-${i}`),
+        chunks: [{ seq: 0, dataBase64: "YQ==" }],
+        replayStartSeq: 0,
+        nextSeq: 1,
+      });
+      await replay.compact(input(`incompatible-${i}`, true));
+    }
+    expect(replay.forAttach(args)).toBe(warmed);
+    replay.clear();
+  });
+
+  it("refreshes LRU on attach hits", async () => {
+    const replay = new TerminalBoundedReplay();
+    const args = input();
+    const warmed = await replay.compact(args);
+    for (let i = 0; i < 16; i++) {
+      expect(replay.forAttach(args)).toBe(warmed);
+      await replay.compact(input(`other-${i}`));
+    }
+    expect(replay.forAttach(args)).toBe(warmed);
+    replay.clear();
+  });
+
+  it("falls back when serialization needs multiple chunks", async () => {
+    const replay = new TerminalBoundedReplay();
+    const args = input();
+    const snapshot = vi
+      .spyOn(TerminalScreenState.prototype, "replaySnapshot")
+      .mockResolvedValue({
+        checkpointSeq: 128,
+        dataBase64: Buffer.alloc(100_000, 97).toString("base64"),
+      });
+    try {
+      expect(await replay.compact(args)).toBe(args);
+    } finally {
+      snapshot.mockRestore();
+      replay.clear();
+    }
+  });
+
+  it("rejects repeat-last-character CSI b", async () => {
+    const args = input();
+    args.chunks[0]!.dataBase64 = Buffer.from("A\x1b[3b").toString("base64");
+    const replay = new TerminalBoundedReplay();
+    expect(await replay.compact(args)).toBe(args);
+    replay.clear();
+  });
+
+  it("serializes builds across distinct terminal identities", async () => {
     const replay = new TerminalBoundedReplay();
     const original = TerminalScreenState.prototype.replaySnapshot;
     let active = 0;

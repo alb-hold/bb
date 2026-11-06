@@ -268,12 +268,25 @@ function visibleSolidRows(terminal: HeadlessTerminal): string[] {
 function* serializeScreenRows(
   terminal: HeadlessTerminal,
   history = false,
-): Generator<void, { data: Buffer; response: TerminalScreenResponse }> {
+  maxBytes = Infinity,
+): Generator<
+  void,
+  { buffers: Buffer[]; bytes: number; response: TerminalScreenResponse } | null
+> {
   const buffer = terminal.buffer.active;
   const rows: string[] = [];
   const parts = [
     history ? `${ESC}c${ESC}[?25l` : `${ESC}[?6l${ESC}[?7l${ESC}[?25l${ESC}[2J`,
   ];
+  const buffers: Buffer[] = [];
+  let bytes = 0;
+  const flush = () => {
+    const data = encodeUtf8(parts.join(""));
+    parts.length = 0;
+    buffers.push(data);
+    bytes += data.length;
+    return bytes < maxBytes;
+  };
   const firstRow = history ? 0 : buffer.baseY;
   const endRow = buffer.baseY + terminal.rows;
   if (history && buffer.getLine(0)?.isWrapped)
@@ -322,7 +335,10 @@ function* serializeScreenRows(
     }
     if (activeUrlId !== 0) parts.push(HYPERLINK_CLOSE);
     if (row >= buffer.baseY) rows.push(text.trimEnd());
-    if ((row - firstRow + 1) % 8 === 0) yield;
+    if ((row - firstRow + 1) % 8 === 0) {
+      if (!flush()) return null;
+      yield;
+    }
   }
   const cursorCell = buffer
     .getLine(buffer.baseY + buffer.cursorY)
@@ -340,8 +356,10 @@ function* serializeScreenRows(
   }
   parts.push(restoreModes(terminal));
   parts.push(`${ESC}[${buffer.cursorY + 1};${buffer.cursorX + 1}H`);
+  if (!flush()) return null;
   return {
-    data: encodeUtf8(parts.join("")),
+    buffers,
+    bytes,
     response: {
       rows,
       cursor: { col: buffer.cursorX, row: buffer.cursorY },
@@ -357,11 +375,16 @@ function serializeVisibleScreen(terminal: HeadlessTerminal) {
   const rows = serializeScreenRows(terminal);
   let result = rows.next();
   while (!result.done) result = rows.next();
-  return result.value;
+  if (result.value === null)
+    throw new Error("Visible screen serialization exceeded its limit");
+  return {
+    data: Buffer.concat(result.value.buffers, result.value.bytes),
+    response: result.value.response,
+  };
 }
 
-async function serializeHistory(terminal: HeadlessTerminal) {
-  const rows = serializeScreenRows(terminal, true);
+async function serializeHistory(terminal: HeadlessTerminal, maxBytes: number) {
+  const rows = serializeScreenRows(terminal, true, maxBytes);
   let result = rows.next();
   while (!result.done) {
     await new Promise<void>((resolve) => setImmediate(resolve));
@@ -500,9 +523,7 @@ export class TerminalScreenState {
           byte < 0x40 ||
           byte > 0x7e ||
           cursorStyle ||
-          ("ABCDEFGHJKLMPSTXZ`abcdefhlmnr".includes(
-            String.fromCharCode(byte),
-          ) &&
+          ("ABCDEFGHJKLMPSTXZ`acdefhlmnr".includes(String.fromCharCode(byte)) &&
             modeSupported &&
             /^[?0-9;:]*$/u.test(state.csiParameters));
         if (
@@ -699,7 +720,7 @@ export class TerminalScreenState {
     };
   }
 
-  async replaySnapshot(): Promise<{
+  async replaySnapshot(maxBytes = Infinity): Promise<{
     checkpointSeq: number;
     dataBase64: string;
   } | null> {
@@ -725,16 +746,25 @@ export class TerminalScreenState {
     if (typeof top !== "number" || typeof bottom !== "number") return null;
     const buffer = this.terminal.buffer.active;
     const row = buffer.cursorY - (this.terminal.modes.originMode ? top : 0);
+    const history = await serializeHistory(this.terminal, maxBytes);
+    if (history === null) return null;
+    const trailer = encodeUtf8(
+      `${ESC}[?6l${ESC}[${top + 1};${bottom + 1}r${restoreModes(this.terminal)}${ESC}[${row + 1};${buffer.cursorX + 1}H${[...this.replayMetadata.values()].join("")}${this.replayCursorStyle}`,
+    );
+    if (history.bytes + trailer.length >= maxBytes) return null;
+    const encoded: string[] = [];
+    let carry: Buffer = Buffer.alloc(0);
+    for (const buffer of [...history.buffers, trailer]) {
+      const data = carry.length === 0 ? buffer : Buffer.concat([carry, buffer]);
+      const end = data.length - (data.length % 3);
+      encoded.push(data.subarray(0, end).toString("base64"));
+      carry = data.subarray(end);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    if (carry.length > 0) encoded.push(carry.toString("base64"));
     return {
       checkpointSeq: this.nextSeq,
-      dataBase64: Buffer.concat([
-        (await serializeHistory(this.terminal)).data,
-        encodeUtf8(
-          `${ESC}[?6l${ESC}[${top + 1};${bottom + 1}r${restoreModes(this.terminal)}${ESC}[${row + 1};${buffer.cursorX + 1}H`,
-        ),
-        encodeUtf8([...this.replayMetadata.values()].join("")),
-        encodeUtf8(this.replayCursorStyle),
-      ]).toString("base64"),
+      dataBase64: encoded.join(""),
     };
   }
 

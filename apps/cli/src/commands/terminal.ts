@@ -1252,7 +1252,7 @@ function sendTerminalInput(
   transport: TerminalWebSocketTransport,
   data: Buffer,
 ) {
-  transport.claimSize();
+  transport.claimSize(true);
   for (const chunk of chunkTerminalInput(data)) {
     if (!transport.sendInput(chunk.toString("base64"))) return;
   }

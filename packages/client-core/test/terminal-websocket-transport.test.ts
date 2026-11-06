@@ -139,7 +139,7 @@ afterEach(() => {
 });
 
 describe("TerminalWebSocketTransport", () => {
-  it("sends one claimed grid through open, fit and restore hold release", () => {
+  it("sends one claimed grid through open, passive fits and restore hold release", () => {
     vi.useFakeTimers();
     const { transport, sockets } = createHarness();
     transport.sendResize(45, 38);
@@ -149,7 +149,6 @@ describe("TerminalWebSocketTransport", () => {
     socket.open();
     transport.markLayoutSettled();
     transport.sendResize(45, 38);
-    transport.claimSize();
     transport.markLayoutSettled();
     vi.advanceTimersByTime(5_000);
     expect(socket.sent.map((payload) => JSON.parse(payload))).toEqual([
@@ -161,7 +160,7 @@ describe("TerminalWebSocketTransport", () => {
       { type: "resize", cols: 46, rows: 38 },
     ]);
     transport.sendResize(47, 38, true);
-    transport.sendResize(47, 38, true);
+    transport.sendResize(47, 38);
     expect(socket.sent.map((payload) => JSON.parse(payload)).slice(2)).toEqual([
       { type: "resize", cols: 47, rows: 38, claim: true },
     ]);
@@ -176,7 +175,6 @@ describe("TerminalWebSocketTransport", () => {
     transport.claimSize();
     transport.markLayoutSettled();
     transport.sendResize(115, 38);
-    transport.claimSize();
     expect(socket.sent.map((payload) => JSON.parse(payload))).toEqual([
       { type: "resize", cols: 115, rows: 38, claim: true },
     ]);
@@ -202,7 +200,7 @@ describe("TerminalWebSocketTransport", () => {
     transport.dispose();
   });
 
-  it("allows an interaction to reclaim the same grid from another device", () => {
+  it("sends every explicit ownership claim even when the grid is unchanged", () => {
     const { transport, sockets } = createHarness();
     transport.sendResize(45, 38);
     transport.claimSize();
@@ -212,7 +210,10 @@ describe("TerminalWebSocketTransport", () => {
     transport.markLayoutSettled();
     transport.claimSize(true);
     transport.claimSize();
+    transport.sendResize(45, 38, true);
     expect(socket.sent.map((payload) => JSON.parse(payload))).toEqual([
+      { type: "resize", cols: 45, rows: 38, claim: true },
+      { type: "resize", cols: 45, rows: 38, claim: true },
       { type: "resize", cols: 45, rows: 38, claim: true },
       { type: "resize", cols: 45, rows: 38, claim: true },
     ]);
@@ -690,7 +691,67 @@ describe("TerminalWebSocketTransport", () => {
     harness.transport.dispose();
   });
 
-  it("reports a replay gap after an empty first attach", () => {
+  it("adopts compacted replay when visibility requests output again from zero", () => {
+    const gaps = vi.fn();
+    const harness = createHarness({ onSequenceGap: gaps });
+    harness.transport.start();
+    const first = harness.sockets[0]!;
+    first.open();
+    first.receive({
+      type: "attached",
+      session: terminalSession(),
+      replayStartSeq: 0,
+      nextSeq: 1,
+    });
+    first.receive({ type: "output", chunk: { seq: 0, dataBase64: "YQ==" } });
+    harness.transport.replayOutputFrom(0);
+    const second = harness.sockets[1]!;
+    second.open();
+    second.receive({
+      type: "attached",
+      session: terminalSession(),
+      replayStartSeq: 500,
+      nextSeq: 501,
+    });
+    second.receive({ type: "output", chunk: { seq: 500, dataBase64: "Yg==" } });
+    expect(gaps).not.toHaveBeenCalled();
+    expect(
+      harness.messages
+        .filter((message) => message.type === "output")
+        .map((message) => message.chunk.seq),
+    ).toEqual([0, 500]);
+    harness.transport.dispose();
+  });
+
+  it("reports a real attach gap when reconnecting from a positive sequence", () => {
+    vi.useFakeTimers();
+    const gaps = vi.fn();
+    const harness = createHarness({ onSequenceGap: gaps });
+    harness.transport.start();
+    const first = harness.sockets[0]!;
+    first.open();
+    first.receive({
+      type: "attached",
+      session: terminalSession(),
+      replayStartSeq: 0,
+      nextSeq: 1,
+    });
+    first.receive({ type: "output", chunk: { seq: 0, dataBase64: "YQ==" } });
+    first.close();
+    vi.advanceTimersByTime(100);
+    const second = harness.sockets[1]!;
+    second.open();
+    second.receive({
+      type: "attached",
+      session: terminalSession(),
+      replayStartSeq: 5,
+      nextSeq: 6,
+    });
+    expect(gaps).toHaveBeenCalledWith(1, 5);
+    harness.transport.dispose();
+  });
+
+  it("adopts a later compacted replay after an empty first attach", () => {
     const gaps = vi.fn();
     const harness = createHarness({ onSequenceGap: gaps });
     harness.transport.start();
@@ -708,7 +769,7 @@ describe("TerminalWebSocketTransport", () => {
       replayStartSeq: 5,
       nextSeq: 8,
     });
-    expect(gaps).toHaveBeenCalledWith(0, 5);
+    expect(gaps).not.toHaveBeenCalled();
     harness.transport.dispose();
   });
 

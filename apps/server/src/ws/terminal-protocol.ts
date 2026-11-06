@@ -16,6 +16,7 @@ interface TerminalSocket {
 }
 
 interface TerminalSocketOpenArgs {
+  rawReplay?: boolean;
   handoffOwnerToken?: string;
   outputAcks: boolean;
   resizeAcks: boolean;
@@ -87,6 +88,7 @@ export function onTerminalSocketOpen(
 ): void {
   try {
     deps.terminalSessions.attachBrowserTerminal({
+      rawReplay: args.rawReplay,
       handoffOwnerToken: args.handoffOwnerToken,
       outputAcks: args.outputAcks,
       resizeAcks: args.resizeAcks,

@@ -151,7 +151,7 @@ export class TerminalWebSocketTransport {
     seq: number | null;
   } | null = null;
   private nextOutputSeq = 0;
-  private hasAttached = false;
+  private requestedSinceSeq = 0;
   private replayEndNextSeq = 0;
   private pendingOutputAckNextSeq: number | null = null;
   private pendingInputBytes = 0;
@@ -368,7 +368,7 @@ export class TerminalWebSocketTransport {
 
   sendResize(cols: number, rows: number, claim = false): void {
     if (this.lastResize?.cols === cols && this.lastResize.rows === rows) {
-      if (claim) this.claimSize();
+      if (claim) this.claimSize(true);
       return;
     }
     if (claim) this.pendingSizeClaim = true;
@@ -410,7 +410,7 @@ export class TerminalWebSocketTransport {
 
   private pendingSizeClaim = false;
 
-  claimSize(reclaim = false): void {
+  claimSize(reclaim = true): void {
     this.pendingSizeClaim = true;
     const socket = this.socket;
     if (
@@ -620,6 +620,7 @@ export class TerminalWebSocketTransport {
     }
     this.options.onConnectionState?.(state);
     let socket: TerminalBrowserSocket;
+    this.requestedSinceSeq = this.nextOutputSeq;
     try {
       socket = this.createSocket(
         terminalSocketUrl(this.options.url, this.nextOutputSeq),
@@ -814,9 +815,8 @@ export class TerminalWebSocketTransport {
       return;
     }
     if (message.type === "attached") {
-      if (!this.hasAttached && this.nextOutputSeq === 0)
+      if (this.requestedSinceSeq === 0)
         this.nextOutputSeq = message.replayStartSeq;
-      this.hasAttached = true;
       this.replayEndNextSeq = message.nextSeq;
       this.reconnectAttempt = 0;
       this.options.onConnectionState?.("attached");
