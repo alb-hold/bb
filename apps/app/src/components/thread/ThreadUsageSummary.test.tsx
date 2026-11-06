@@ -79,13 +79,21 @@ describe("thread usage summary", () => {
         },
       });
       const { container } = render(
-        <TooltipProvider>
-          <ThreadTurnTokenSummary
-            openAnalysisOnClick={false}
-            threadId="parent"
-            turnId="phone"
-          />
-        </TooltipProvider>,
+        <>
+          <style>
+            {readFileSync(
+              "src/components/thread/timeline/message-action-bar.css",
+              "utf8",
+            )}
+          </style>
+          <TooltipProvider>
+            <ThreadTurnTokenSummary
+              openAnalysisOnClick={false}
+              threadId="parent"
+              turnId="phone"
+            />
+          </TooltipProvider>
+        </>,
       );
       const summary = container.querySelector("[data-thread-turn-tokens]")!;
       expect(
@@ -101,9 +109,12 @@ describe("thread usage summary", () => {
       ).toBe("208K tokens");
       const parts = summary.querySelector("[data-token-parts]")!;
       expect(parts.parentElement?.hasAttribute("data-token-clip")).toBe(true);
+      expect(getComputedStyle(parts.parentElement!).overflow).toBe("hidden");
+      expect(getComputedStyle(parts).columnGap).toBe("0.75rem");
       expect(parts.children).toHaveLength(expected.length);
       for (const [index, unit] of [...parts.children].entries()) {
         expect(unit.hasAttribute("data-token-unit")).toBe(true);
+        expect(getComputedStyle(unit).position).toBe("relative");
         expect(unit.children).toHaveLength(2);
         expect(
           unit.firstElementChild?.hasAttribute("data-token-separator"),
@@ -112,6 +123,10 @@ describe("thread usage summary", () => {
           "true",
         );
         expect(unit.firstElementChild?.textContent).toBe("·");
+        const separatorStyle = getComputedStyle(unit.firstElementChild!);
+        expect(separatorStyle.position).toBe("absolute");
+        expect(separatorStyle.insetInlineStart).toBe("-0.75rem");
+        expect(separatorStyle.width).toBe("0.75rem");
         expect(unit.lastElementChild?.getAttribute("data-token-part")).toBe(
           expected[index],
         );

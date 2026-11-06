@@ -312,8 +312,7 @@ describe("ThreadTimelineRows token footer", () => {
       /\[data-thread-turn-tokens\]\s*\[data-token-part="(?:reasoning|output|input|cached)"\]\s*\{\s*display:\s*none\s*;/,
     );
     expect(actionBarStyles).toContain("flex-wrap: wrap");
-    expect(actionBarStyles).toContain("margin-inline-start: -0.75rem");
-    expect(actionBarStyles).toContain("flex: 0 0 0.75rem");
+    expect(actionBarStyles).toContain("column-gap: 0.75rem");
     expect(actionBarStyles).toMatch(
       /\[data-touch-actions-visible="false"\]:not\(:focus-within\)\s+\[data-message-action-row\]/,
     );
