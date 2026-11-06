@@ -25,7 +25,13 @@ export function mountTerminalScreenLoadingPreview({
   preview.style.right = "auto";
   preview.style.bottom = "auto";
   preview.style.zIndex = "6";
-  container.parentElement?.append(preview);
+  const notice = document.createElement("div");
+  notice.dataset.terminalRestoring = "";
+  notice.setAttribute("role", "status");
+  notice.className =
+    "pointer-events-none absolute right-2 top-1 z-10 rounded-md bg-sidebar px-2 py-1 text-xs text-muted-foreground";
+  notice.textContent = "Restoring session…";
+  container.parentElement?.append(preview, notice);
   const refresh = (height: number) => {
     preview.style.top = `${container.offsetTop}px`;
     preview.style.left = `${container.offsetLeft}px`;
@@ -39,5 +45,11 @@ export function mountTerminalScreenLoadingPreview({
     preview.style.height = `${container.clientHeight}px`;
   };
   refresh(lineHeight);
-  return { dispose: () => preview.remove(), refresh };
+  return {
+    dispose: () => {
+      preview.remove();
+      notice.remove();
+    },
+    refresh,
+  };
 }

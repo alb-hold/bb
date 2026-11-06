@@ -30,7 +30,7 @@ import {
   nativeTerminalThreadSchema,
   threadResponseSchema,
 } from "@bb/server-contract";
-import { NATIVE_TERMINAL_ACTIVITY_FRESH_FOR_MS } from "@bb/domain";
+import { NATIVE_TERMINAL_ACTIVITY_FRESH_FOR_MS, NATIVE_TERMINAL_SETUP_DELAY_MS } from "@bb/domain";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as interactiveRequests from "../../src/internal/interactive-requests.js";
 import { DAEMON_RESTARTED_PENDING_INTERACTION_REASON } from "../../src/services/interactions/pending-interactions.js";
@@ -982,6 +982,47 @@ describe("native terminal activity", () => {
       getNativeTerminalThread(fixture.harness.db, thread.id)?.lastEvidenceAt,
     ).toBeNull();
   });
+
+  it.each(["lookup", "closed-database", "replaced"] as const)(
+    "contains delayed setup errors (%s) without crashing or notifying",
+    async (scenario) => {
+      const fixture = await createFixture();
+      const thread = seedChatThread(fixture, {
+        providerId: "claude-code",
+        providerThreadId: SESSION_ID,
+      });
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        await enterTerminal(fixture, thread.id);
+        const notify = vi.spyOn(fixture.harness.hub, "notifyThread");
+        const warn = vi.spyOn(fixture.harness.deps.logger, "warn");
+        const error = scenario === "closed-database"
+          ? new TypeError("The database connection is not open")
+          : new Error("unexpected terminal lookup failure");
+        vi.spyOn(fixture.harness.deps.terminalSessions, "getTerminal")
+          .mockImplementation(() => { throw error; });
+        if (scenario === "replaced") {
+          setNativeTerminalThreadTerminal(fixture.harness.db, {
+            threadId: thread.id,
+            terminalSessionId: null,
+          });
+        }
+        expect(() => vi.advanceTimersByTime(NATIVE_TERMINAL_SETUP_DELAY_MS + 1))
+          .not.toThrow();
+        expect(notify).not.toHaveBeenCalled();
+        if (scenario === "lookup") {
+          expect(warn).toHaveBeenCalledExactlyOnceWith(
+            { err: error, threadId: thread.id },
+            "Failed to check native terminal setup",
+          );
+        } else {
+          expect(warn).not.toHaveBeenCalled();
+        }
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
 
   it("propagates unexpected current terminal validation errors", async () => {
     const fixture = await createFixture();

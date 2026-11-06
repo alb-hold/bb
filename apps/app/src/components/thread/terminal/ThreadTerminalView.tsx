@@ -415,6 +415,12 @@ type TerminalCssVariableReader = (name: string) => string | undefined;
 
 export const TERMINAL_THEME_OPTIONS = { minimumContrastRatio: 7 };
 
+export const TERMINAL_CELL_OPTIONS = {
+  lineHeight: 1.12,
+  cursorBlink: false,
+  cursorStyle: "block" as const,
+};
+
 export function resolveTerminalFontFamily(
   get: TerminalCssVariableReader,
 ): string {
@@ -1803,9 +1809,8 @@ export function ThreadTerminalView({
     const terminalFontOptions = {
       fontFamily: readTerminalFontFamily(),
       fontSize: Math.max(12, terminalFontSizeRef.current),
-      lineHeight: 1,
+      ...TERMINAL_CELL_OPTIONS,
     };
-    let webglLineHeight = 1.12;
     let initialRendererSettled = retainNativeOutput;
     let initialLayoutSettled = false;
     let retainedOutputReplayed = sessionStatusRef.current !== "exited";
@@ -2041,7 +2046,6 @@ export function ThreadTerminalView({
         ...TERMINAL_THEME_OPTIONS,
         allowProposedApi: TERMINAL_ALLOW_PROPOSED_API,
         convertEol: true,
-        cursorBlink: true,
         ...terminalFontOptions,
         linkHandler: osc8LinkHandler,
         scrollback: 10_000,
@@ -2250,10 +2254,6 @@ export function ThreadTerminalView({
               visible: false,
               onRendererChange: (renderer) => {
                 if (disposed || terminal === null) return;
-                const lineHeight = renderer === "webgl" ? webglLineHeight : 1;
-                if (terminal.options.lineHeight !== lineHeight) {
-                  terminal.options.lineHeight = lineHeight;
-                }
                 scheduleFitRef.current?.();
                 if (renderer === "webgl" && !initialRendererSettled)
                   settleInitialRenderer();
@@ -2484,7 +2484,6 @@ export function ThreadTerminalView({
         if (disposed || terminal === null) return;
         clearTimeout(rendererDeadline);
         initialRendererSettled = true;
-        webglLineHeight = terminal.options.lineHeight ?? 1;
         fitTerminal();
       }
       if (!retainNativeOutput) {
@@ -2967,7 +2966,6 @@ export function ThreadTerminalView({
         clearTimeout(rendererDeadline);
         initialRendererSettled = true;
         initialLayoutSettled = true;
-        webglLineHeight = activeTerminal.options.lineHeight ?? 1;
         activeTransport.markLayoutSettled();
         activeTransport.claimSize();
         fitTerminal();

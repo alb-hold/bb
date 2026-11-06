@@ -9,6 +9,9 @@ import { waitFor } from "@testing-library/react";
 import {
   buildTerminalThemeFromCssColors,
   TERMINAL_THEME_OPTIONS,
+  TERMINAL_CELL_OPTIONS,
+  attachTerminalInputForwarding,
+  forwardTerminalData,
 } from "./ThreadTerminalView";
 
 const css = readFileSync(
@@ -73,6 +76,60 @@ function luminance(color: string, background?: string): number {
 afterEach(() => {
   vi.restoreAllMocks();
   document.body.replaceChildren();
+});
+
+it.each(["light", "dark"] as const)(
+  "forwards true %s theme OSC 10/11 replies to the CLI, suppressing historical queries",
+  async (mode) => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
+      measureText: (text: string) => ({ width: text.length * 9 }),
+    } as unknown as CanvasRenderingContext2D);
+    const terminal = new Terminal({
+      ...TERMINAL_THEME_OPTIONS,
+      ...TERMINAL_CELL_OPTIONS,
+      theme: buildTerminalThemeFromCssColors((name) =>
+        name.startsWith("--terminal-scrollbar") ? undefined : themeColor(mode, name),
+      ),
+    });
+    const container = document.createElement("div");
+    document.body.append(container);
+    terminal.open(container);
+    const onInput = vi.fn();
+    const replayWriteState = { suppressedWriteCount: 0 };
+    const subscription = attachTerminalInputForwarding({
+      terminal,
+      onData: (data, isUserInput) => forwardTerminalData({
+        data, isUserInput, onInput, replayWriteState, sessionStatus: "running",
+      }),
+    });
+    const query = "\x1b]10;?\x07\x1b]11;?\x1b\\";
+    try {
+      await new Promise<void>((resolve) => terminal.write(query, resolve));
+      const replies = onInput.mock.calls.map(([data]) => atob(data));
+      const rgb = (name: string) => (themeColor(mode, name).match(/\d+/g) ?? [])
+        .map((channel) => Number(channel).toString(16).padStart(2, "0").repeat(2)).join("/");
+      expect(replies).toEqual([
+        `\x1b]10;rgb:${rgb("--foreground")}\x1b\\`,
+        `\x1b]11;rgb:${rgb("--sidebar")}\x1b\\`,
+      ]);
+      expect(onInput.mock.calls.every(([, , user]) => user === false)).toBe(true);
+      onInput.mockClear();
+      replayWriteState.suppressedWriteCount = 1;
+      await new Promise<void>((resolve) => terminal.write(query, resolve));
+      expect(onInput).not.toHaveBeenCalled();
+    } finally {
+      subscription.dispose();
+      terminal.dispose();
+    }
+  },
+);
+
+it("uses stable readable cells and a steady block cursor across renderer handoffs", () => {
+  expect(TERMINAL_CELL_OPTIONS).toEqual({
+    lineHeight: 1.12,
+    cursorBlink: false,
+    cursorStyle: "block",
+  });
 });
 
 it.each(["light", "dark"] as const)(
