@@ -49,6 +49,7 @@ const GLOBAL_PROVIDER_ID = "global-provider";
 const PROJECT_PROVIDER_ID = "project-provider";
 
 vi.mock("@/lib/sdk", () => ({
+  BbHttpError: class BbHttpError extends Error {},
   sdk: {
     projects: {
       defaultExecutionOptions: vi.fn(),
