@@ -1301,9 +1301,7 @@ export function ThreadTerminalView({
   const [textSnapshotInitialLine, setTextSnapshotInitialLine] = useState<
     number | null
   >(null);
-  const [terminalFontSize, setTerminalFontSize] = useState(() =>
-    getMediaQuerySnapshot(COMPACT_VIEWPORT_QUERY) ? 13 : 12,
-  );
+  const [terminalFontSize, setTerminalFontSize] = useState(13);
   const terminalFontSizeRef = useRef(terminalFontSize);
   const defaultFontSizeRef = useRef(terminalFontSize);
   const longPressGestureRef = useRef<{
@@ -3580,7 +3578,7 @@ export function ThreadTerminalView({
     }
   };
   useEffect(() => {
-    const size = isCompactViewport ? 13 : 12;
+    const size = 13;
     const previousDefault = defaultFontSizeRef.current;
     defaultFontSizeRef.current = size;
     if (terminalFontSizeRef.current !== previousDefault) return;
@@ -3683,6 +3681,7 @@ export function ThreadTerminalView({
         >
           <button
             type="button"
+            data-compact-touch="code"
             className="shrink-0 rounded-md px-2 py-1 text-foreground hover:bg-state-hover"
             onClick={() => claimSizeRef.current?.()}
           >

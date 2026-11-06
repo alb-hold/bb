@@ -645,7 +645,7 @@ export function NativeTerminalPromptBar({
               ? "Starting microphone…"
               : recording
                 ? "Listening…"
-                : `Send to ${providerLabel}…`
+                : `Type to ${providerLabel}’s terminal…`
           }
           onChange={(event) => {
             applyValue(event.target.value, programmaticRef.current);
