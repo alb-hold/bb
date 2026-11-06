@@ -2012,56 +2012,108 @@ describe("useThreadCreationOptions", () => {
     });
   });
 
-  it("loads the cold home catalog once after ready-provider discovery", async () => {
-    const discovery = createDeferredPromise<SystemProviderStatesResponse>();
-    const catalog = createDeferredPromise<SystemExecutionOptionsResponse>();
-    vi.mocked(sdk.system.providerStates).mockReturnValue(discovery.promise);
-    vi.mocked(sdk.system.executionOptions).mockReturnValue(catalog.promise);
-    const { wrapper, queryClient } = createQueryClientTestHarness();
-    const { result, rerender } = renderHook(
-      () =>
-        useThreadCreationOptions({
-          preferReadyProviderWhenUnset: true,
-          resolveProviderRouting: () => ({ hostId: "home-host" }),
-        }),
-      { wrapper },
-    );
+  it.each([GLOBAL_PROVIDER_ID, PROJECT_PROVIDER_ID])(
+    "shows the server default before ready-provider discovery selects %s",
+    async (readyProviderId) => {
+      const discovery = createDeferredPromise<SystemProviderStatesResponse>();
+      const catalog = createDeferredPromise<SystemExecutionOptionsResponse>();
+      vi.mocked(sdk.system.providerStates).mockReturnValue(discovery.promise);
+      vi.mocked(sdk.system.executionOptions).mockReturnValue(catalog.promise);
+      const { wrapper, queryClient } = createQueryClientTestHarness();
+      const { result, rerender } = renderHook(
+        () =>
+          useThreadCreationOptions({
+            preferReadyProviderWhenUnset: true,
+            resolveProviderRouting: () => ({ hostId: "home-host" }),
+          }),
+        { wrapper },
+      );
 
-    await waitFor(() =>
-      expect(sdk.system.providerStates).toHaveBeenCalledTimes(1),
-    );
-    expect(sdk.system.executionOptions).not.toHaveBeenCalled();
-    expect(result.current.isLoadingModels).toBe(true);
-    await act(async () =>
-      discovery.resolve(readyProviderStates(GLOBAL_PROVIDER_ID)),
-    );
-    await waitFor(() =>
-      expect(sdk.system.executionOptions).toHaveBeenCalledTimes(1),
-    );
-    const request = vi.mocked(sdk.system.executionOptions).mock.calls[0]?.[0];
-    expect(request).toMatchObject({
-      hostId: "home-host",
-      providerId: GLOBAL_PROVIDER_ID,
-    });
-    act(() => {
-      for (let index = 0; index < 5; index++) {
-        void invalidateSystemExecutionOptions({
-          queryClient,
-          hostId: "home-host",
-        });
-      }
-    });
-    rerender();
-    expect(sdk.system.executionOptions).toHaveBeenCalledTimes(1);
-    expect(request?.signal?.aborted).toBe(false);
-    await act(async () => catalog.resolve(executionOptionsResponse()));
-    await waitFor(() =>
-      expect(result.current.activeModel?.displayName).toBe("Global Model"),
-    );
-    expect(result.current.modelCatalogIsVerified).toBe(true);
-    rerender();
-    expect(sdk.system.executionOptions).toHaveBeenCalledTimes(1);
-  });
+      await waitFor(() =>
+        expect(sdk.system.providerStates).toHaveBeenCalledTimes(1),
+      );
+      await waitFor(() =>
+        expect(sdk.system.executionOptions).toHaveBeenCalledTimes(1),
+      );
+      expect(result.current.isLoadingModels).toBe(true);
+      await act(async () => catalog.resolve(executionOptionsResponse()));
+      await waitFor(() =>
+        expect(result.current.activeModel?.displayName).toBe("Global Model"),
+      );
+      render(
+        <ExecutionControls
+          provider={{
+            selectedId: result.current.selectedProviderId,
+            options: result.current.providerOptions,
+          }}
+          model={{
+            selected: result.current.selectedModel,
+            options: result.current.modelOptions,
+            moreOptions: result.current.moreModelOptions,
+            isLoading: result.current.isLoadingModels,
+            loadFailed: result.current.modelLoadFailed,
+            onChange: result.current.setSelectedModel,
+          }}
+          reasoning={{
+            value: result.current.reasoningLevel,
+            options: result.current.reasoningOptions,
+            onChange: result.current.setReasoningLevel,
+          }}
+        />,
+        { wrapper },
+      );
+      expect(
+        screen.getByRole("button", { name: "Provider, model and reasoning" })
+          .textContent,
+      ).toContain("Global Model");
+      const readyCatalog =
+        createDeferredPromise<SystemExecutionOptionsResponse>();
+      vi.mocked(sdk.system.executionOptions).mockReturnValue(
+        readyCatalog.promise,
+      );
+      await act(async () =>
+        discovery.resolve(readyProviderStates(readyProviderId)),
+      );
+      await waitFor(() =>
+        expect(sdk.system.executionOptions).toHaveBeenCalledTimes(2),
+      );
+      const request = vi.mocked(sdk.system.executionOptions).mock.calls[1]?.[0];
+      expect(request).toMatchObject({
+        hostId: "home-host",
+        providerId: readyProviderId,
+      });
+      expect(result.current.selectedProviderId).toBe(readyProviderId);
+      act(() => {
+        for (let index = 0; index < 5; index++) {
+          void invalidateSystemExecutionOptions({
+            queryClient,
+            hostId: "home-host",
+          });
+        }
+      });
+      rerender();
+      expect(sdk.system.executionOptions).toHaveBeenCalledTimes(2);
+      expect(request?.signal?.aborted).toBe(false);
+      await act(async () =>
+        readyCatalog.resolve({
+          ...executionOptionsResponse(),
+          models: executionOptionsResponse().models.map((model) => ({
+            ...model,
+            model: `ready-${model.model}`,
+            displayName: `Ready ${model.displayName}`,
+          })),
+        }),
+      );
+      await waitFor(() =>
+        expect(result.current.activeModel?.displayName).toBe(
+          "Ready Global Model",
+        ),
+      );
+      expect(result.current.modelCatalogIsVerified).toBe(true);
+      rerender();
+      expect(sdk.system.executionOptions).toHaveBeenCalledTimes(2);
+    },
+  );
 
   it.each(["empty", "failed"])(
     "loads server defaults when ready-provider discovery is %s",
