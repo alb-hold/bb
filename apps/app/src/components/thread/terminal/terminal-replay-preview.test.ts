@@ -119,7 +119,7 @@ describe("terminal replay preview", () => {
       .spyOn(HTMLElement.prototype, "offsetWidth", "get")
       .mockImplementation(function (this: HTMLElement) {
         return this.classList.contains("xterm-char-measure-element")
-          ? characterWidth(this)
+          ? characterWidth(this) * (this.textContent?.length ?? 1)
           : 0;
       });
     const height = vi
@@ -139,6 +139,15 @@ describe("terminal replay preview", () => {
             56,
             preview ? parseFloat(this.style.width) : 357,
             parseFloat(this.style.height),
+          );
+        }
+        if (this.tagName === "SPAN" && this.closest(".xterm-rows")) {
+          return new DOMRect(
+            0,
+            0,
+            Array.from(this.textContent ?? "").length *
+              (8 + (parseFloat(getComputedStyle(this).letterSpacing) || 0)),
+            16,
           );
         }
         return new DOMRect();
@@ -194,6 +203,7 @@ describe("terminal replay preview", () => {
         preview.element!.querySelector<HTMLElement>(".xterm-screen")!;
       expect(screen.getBoundingClientRect().width).toBe(357);
       const rows = preview.element!.querySelector<HTMLElement>(".xterm-rows")!;
+      expect(parseFloat(rows.style.letterSpacing) + 8).toBeCloseTo(7, 6);
       const spacing = rows.style.letterSpacing;
       cover.setFitGrid(51, 42);
       expect(rows.style.letterSpacing).toBe(spacing);
@@ -217,7 +227,9 @@ describe("terminal replay preview", () => {
       const width = vi
         .spyOn(HTMLElement.prototype, "offsetWidth", "get")
         .mockImplementation(function (this: HTMLElement) {
-          return this.classList.contains("xterm-char-measure-element") ? 7 : 0;
+          return this.classList.contains("xterm-char-measure-element")
+            ? 7 * (this.textContent?.length ?? 1)
+            : 0;
         });
       const height = vi
         .spyOn(HTMLElement.prototype, "offsetHeight", "get")
