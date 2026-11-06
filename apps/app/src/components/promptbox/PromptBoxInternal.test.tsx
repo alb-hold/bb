@@ -4979,7 +4979,7 @@ describe("ComposerBox compact layout", () => {
     document.head.append(style);
     try {
       const media = Array.from(style.sheet?.cssRules ?? []).filter(
-        (rule): rule is CSSMediaRule => "media" in rule && "cssRules" in rule && rule.conditionText === "(width < 48rem)",
+        (rule): rule is CSSMediaRule => "media" in rule && "cssRules" in rule && "conditionText" in rule && rule.conditionText === "(width < 48rem)",
       );
       expect(media.length).toBeGreaterThan(0);
       const rules = media.flatMap((rule) => Array.from(rule.cssRules)).filter(
