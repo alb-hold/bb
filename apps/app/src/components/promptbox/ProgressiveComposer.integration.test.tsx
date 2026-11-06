@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { readFileSync } from "node:fs";
 import { useLayoutEffect, useRef, useState } from "react";
 import { Provider } from "jotai";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -44,6 +45,152 @@ beforeEach(() => {
   resetPluginSlotStoreForTest();
   resetPluginFrontendBootStateForTest();
 });
+
+it.each(["", "A phone draft that keeps its wrapping through hydration"])(
+  "shares the phone input column and action layout (draft=%s)",
+  async (draft) => {
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn((query: string) => ({
+        matches: query === "(pointer: coarse)",
+        media: query,
+        addEventListener() {},
+        removeEventListener() {},
+      })),
+    );
+    onTestFinished(() => vi.unstubAllGlobals());
+    const style = document.createElement("style");
+    const css = readFileSync("src/app.css", "utf8");
+    style.textContent = css.slice(
+      css.indexOf(
+        "@media (width < 48rem) {",
+        css.indexOf("root-compose-desktop-recents"),
+      ),
+    );
+    document.head.append(style);
+    onTestFinished(() => style.remove());
+    const rules = Array.from(style.sheet?.cssRules ?? []).flatMap((rule) =>
+      "conditionText" in rule &&
+      "cssRules" in rule &&
+      rule.conditionText === "(width < 48rem)"
+        ? Array.from((rule as CSSMediaRule).cssRules).filter(
+            (child): child is CSSStyleRule =>
+              "selectorText" in child && "style" in child,
+          )
+        : [],
+    );
+    expect(rules.length).toBeGreaterThan(0);
+    const declaration = (element: Element, property: string) =>
+      rules
+        .filter((rule) => element.matches(rule.selectorText))
+        .map((rule) => rule.style.getPropertyValue(property))
+        .filter(Boolean)
+        .at(-1);
+    function Host() {
+      const [value, setValue] = useState(draft);
+      return (
+        <ComposerBox
+          surface="new-thread"
+          value={value}
+          mentionRanges={[]}
+          onChange={setValue}
+          onSubmit={() => {}}
+          placeholder="Ask anything."
+          typeahead={testTypeaheadConfig()}
+          executionControls={
+            <ExecutionControls
+              pending={false}
+              provider={{ selectedId: "codex" }}
+              nativeTerminal={{ enabled: false, onChange() {} }}
+              reasoning={{
+                value: "medium",
+                options: [{ value: "medium", label: "Medium" }],
+                onChange() {},
+              }}
+              model={{
+                selected: "gpt-6.1-sol",
+                options: [{ value: "gpt-6.1-sol", label: "GPT-6.1-Sol" }],
+                moreOptions: [],
+                isLoading: false,
+                loadFailed: false,
+                onChange() {},
+              }}
+            />
+          }
+        />
+      );
+    }
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    onTestFinished(() => client.clear());
+    const view = render(
+      <QueryClientProvider client={client}>
+        <Provider>
+          <MemoryRouter>
+            <TooltipProvider>
+              <Host />
+            </TooltipProvider>
+          </MemoryRouter>
+        </Provider>
+      </QueryClientProvider>,
+    );
+    const input = await screen.findByRole<HTMLTextAreaElement>("textbox", {
+      name: "Ask anything.",
+    });
+    input.focus();
+    input.setSelectionRange(draft.length, draft.length);
+    const checkLayout = () => {
+      const scroll = view.container.querySelector(
+        "[data-promptbox-editor-scroll]",
+      )!;
+      const region = scroll.parentElement!;
+      expect(declaration(region, "padding-inline-end")).toBe("3rem");
+      expect(region.hasAttribute("data-promptbox-input-region")).toBe(true);
+      for (const token of [
+        "w-full",
+        "px-4",
+        "pb-1",
+        "pr-14",
+        "pt-3",
+        "max-md:pointer-coarse:text-base",
+      ])
+        expect(scroll.classList.contains(token)).toBe(true);
+      const row = view.container.querySelector("[data-promptbox-action-row]")!;
+      expect(declaration(row, "grid-template-columns")).toBe(
+        "2.75rem minmax(0, 1fr)",
+      );
+      expect(declaration(row, "padding")).toBe("0.75rem 0.25rem 0.25rem");
+      const trailing = row.querySelector("[data-promptbox-trailing-actions]")!;
+      expect(declaration(trailing, "position")).toBe("absolute");
+      expect(declaration(trailing, "right")).toBe("0.5rem");
+      expect(declaration(trailing, "bottom")).toBe("calc(100% - 0.5rem)");
+      const plus = row.querySelector("[data-promptbox-plus-control]")!;
+      const controls = row.querySelector("[data-execution-controls-layout]")!;
+      expect(declaration(plus, "grid-column")).toBe("1");
+      expect(declaration(controls, "grid-column")).toBe("2");
+      expect(
+        declaration(
+          controls.querySelector("[data-native-terminal-toggle]")!,
+          "width",
+        ),
+      ).toBe("10.5rem");
+      expect(declaration(plus, "grid-row")).toBe("1");
+      expect(declaration(controls, "grid-row")).toBe("1");
+    };
+    checkLayout();
+    await act(registerComposerPlugin);
+    await waitFor(() =>
+      expect(view.container.querySelector("textarea")).toBeNull(),
+    );
+    checkLayout();
+    const editor =
+      view.container.querySelector<TiptapEditorHTMLElement>(".ProseMirror")!;
+    expect(editor.textContent).toBe(draft);
+    expect(document.activeElement).toBe(editor);
+    expect(editor.editor!.state.selection.head).toBe(draft.length + 1);
+  },
+);
 afterEach(() => {
   cleanup();
   resetPluginSlotStoreForTest();

@@ -93,14 +93,19 @@ function props(
 function renderRail(
   items: readonly ExperimentalSidebarNavigationItem[],
   activeItemId: string | null = null,
+  isCompactViewport = false,
 ) {
-  return renderSlot(rail!, props("rail"), {
-    sidebarNavigation: {
-      items,
-      activeItemId,
-      isHomeActive: activeItemId === null,
+  return renderSlot(
+    rail!,
+    { ...props("rail"), isCompactViewport },
+    {
+      sidebarNavigation: {
+        items,
+        activeItemId,
+        isHomeActive: activeItemId === null,
+      },
     },
-  });
+  );
 }
 
 function renderTopList(
@@ -133,6 +138,25 @@ function withBadge(
 afterEach(cleanup);
 
 describe("Rail", () => {
+  it("keeps the phone host destinations and More fixed as plugin panels arrive", () => {
+    const prefix = ["Home", "Plugins", "More"];
+    renderRail([NEW_THREAD, SEARCH, PLUGINS], null, true);
+    expect(railLabels()).toEqual(prefix);
+    cleanup();
+    renderRail(
+      [NEW_THREAD, SEARCH, PLUGINS, { ...DOCS, isLoading: true }],
+      null,
+      true,
+    );
+    expect(railLabels()).toEqual([...prefix, "Docs"]);
+    cleanup();
+    renderRail([NEW_THREAD, SEARCH, PLUGINS, DOCS], null, true);
+    expect(railLabels()).toEqual([...prefix, "Docs"]);
+    expect(
+      screen.getByRole("button", { name: "Docs" }).getAttribute("aria-busy"),
+    ).toBeNull();
+  });
+
   it("draws Home and the visible destinations, leaving New thread to the header and hidden ones to More", () => {
     renderRail([NEW_THREAD, SEARCH, PLUGINS, DOCS]);
 
