@@ -104,11 +104,6 @@ function foreignReadableOutsideCwdProc(
   const foreignGid = 61_000;
   return {
     ...hostProc,
-    readlink: async (target) =>
-      target === `/proc/${pid}/cwd` ||
-      (target.startsWith(`/proc/${pid}/task/`) && target.endsWith("/cwd"))
-        ? "/tmp"
-        : hostProc.readlink(target),
     readFile: async (target) => {
       if (target === "/proc/self/status")
         return `Name:\tnode\nState:\tR (running)\nNSpid:\t${process.pid}\nUid:\t2000\t2000\t2000\t2000\nGid:\t2000\t2000\t2000\t2000\nGroups:\t2000\n`;
