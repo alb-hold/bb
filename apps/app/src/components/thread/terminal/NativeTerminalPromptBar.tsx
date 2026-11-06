@@ -623,9 +623,10 @@ export function NativeTerminalPromptBar({
           <div
             aria-label="Terminal execution"
             className="col-span-2 truncate px-2 text-xs leading-tight text-muted-foreground"
-            title={executionLabel ?? providerLabel}
           >
-            {executionLabel}
+            <span className="block truncate" title={executionLabel ?? providerLabel}>
+              {executionLabel}
+            </span>
           </div>
         ) : null}
         <label className="sr-only" htmlFor={inputId}>
@@ -697,8 +698,8 @@ export function NativeTerminalPromptBar({
             <Icon name="Plus" className="size-4" />
           </Button>
           {modelLabel ? (
-            <div aria-label="Terminal model" className="min-w-0 flex-1 truncate text-xs text-muted-foreground" title={modelLabel}>
-              {modelLabel}
+            <div aria-label="Terminal model" className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
+              <span title={modelLabel}>{modelLabel}</span>
             </div>
           ) : <div className="flex-1" />}
           {voiceAvailable ? (
