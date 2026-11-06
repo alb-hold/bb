@@ -623,6 +623,10 @@ export function NewThreadComposer({
     return candidateKnown ? requestedCandidate : PERSONAL_PROJECT_ID;
   }, [candidateKnown, projects, replayKnowsCandidate, requestedCandidate]);
   const isProjectless = isProjectlessProjectId(projectId);
+  const projectPickerIsLoading =
+    !sidebarNavigationQuery.isSuccess ||
+    !replayKnowsCandidate ||
+    (sidebarNavigationQuery.isPlaceholderData && isProjectless);
   const currentProject = useMemo(() => {
     if (isProjectless) {
       const personalProject = sidebarNavigationQuery.data?.personalProject;
@@ -2194,10 +2198,7 @@ export function NewThreadComposer({
             onChange: handleProjectChange,
             allowNoProject: options.allowNoProject,
             createProject: options.createProject,
-            isLoading:
-              !sidebarNavigationQuery.isSuccess ||
-              !replayKnowsCandidate ||
-              (sidebarNavigationQuery.isPlaceholderData && isProjectless),
+            isLoading: projectPickerIsLoading,
             disabled:
               locks.project ||
               isUploading ||
@@ -2317,7 +2318,7 @@ export function NewThreadComposer({
       selectedProviderId,
       serviceTier,
       serviceTierSupportByProvider,
-      sidebarNavigationSettled,
+      projectPickerIsLoading,
       supportsPermissionModeSelection,
       supportsServiceTier,
       submitDisabledReason,
