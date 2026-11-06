@@ -935,6 +935,16 @@ describe("ThreadTerminalView terminal visibility and panel", () => {
     }, "terminal did not mount");
     expect(testState.clearAttention).not.toHaveBeenCalled();
     await waitForReadinessCondition(() => {
+      expect(testState.sockets).toHaveLength(1);
+      expect(testState.sockets[0]?.readyState).toBe(TestTerminalSocket.OPEN);
+    }, "terminal socket did not open");
+    testState.sockets[0]!.receive({
+      type: "attached",
+      session,
+      replayStartSeq: 0,
+      nextSeq: 0,
+    });
+    await waitForReadinessCondition(() => {
       expect(
         Array.from(document.querySelectorAll("button")).some(
           (button) => button.textContent === "Fit to this screen",
