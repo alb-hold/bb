@@ -551,7 +551,7 @@ describe("ThreadRow", () => {
     expect(slot?.getAttribute("role")).toBe("img");
     expect(slot?.getAttribute("aria-label")).toBe(label);
     expect(context?.querySelectorAll('[role="img"]')).toHaveLength(1);
-    expect(slot?.querySelector("[data-icon-root]")?.classList.contains("size-3")).toBe(true);
+    expect(slot?.querySelector("[data-icon]")?.classList.contains("size-3")).toBe(true);
   });
 
   it.each([
@@ -676,6 +676,8 @@ describe("ThreadRow", () => {
   });
 
   it("renders Needs input, Working, Woke 3m elapsed, and Done labels", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now() + 20_001);
     const callRpc = vi.fn().mockResolvedValue({
       automations: [
         {
@@ -754,7 +756,7 @@ describe("ThreadRow", () => {
 
   it("updates only rows whose automation status or elapsed minute changed", async () => {
     vi.useFakeTimers();
-    vi.setSystemTime(Date.now() + 30_000);
+    vi.setSystemTime(Date.now() + 60_000);
     const startedAt = Date.now() - 60_000;
     const callRpc = vi.fn().mockResolvedValue({
       automations: [
