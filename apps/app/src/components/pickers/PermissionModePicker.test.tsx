@@ -33,9 +33,10 @@ it.each(["auto", "full"] as const)(
     ).toBe(true);
     const label = trigger.textContent;
     view.rerender(<PermissionModePicker {...props} />);
-    expect(trigger.textContent).toBe(label);
+    const enabledTrigger = screen.getByRole("button", { name: "Permissions" });
+    expect(enabledTrigger.textContent).toBe(label);
     expect(
-      trigger
+      enabledTrigger
         .querySelector('[data-icon="ChevronDown"]')
         ?.classList.contains("invisible"),
     ).toBe(false);
