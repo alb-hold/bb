@@ -46,6 +46,7 @@ import {
 } from "./plugin-css";
 import { frontendPriorityPluginIds } from "./plugin-surface-providers";
 import { prefetchPluginModule } from "./plugin-module-preload";
+import { lazyRuntimeGroups } from "./plugin-lazy-runtime-groups";
 import {
   collectPluginAppRegistrations,
   isPluginAppDefinition,
@@ -162,14 +163,9 @@ export async function loadPluginFrontend(
     };
   }
   try {
-    const runtimeGroups =
-      bundle.runtimeSlots.length === 0
-        ? []
-        : (
-            await import("./plugin-lazy-runtime-groups")
-          ).lazyRuntimeGroups.filter((group) =>
-            group.slots.some((slot) => bundle.runtimeSlots.includes(slot)),
-          );
+    const runtimeGroups = lazyRuntimeGroups.filter((group) =>
+      group.slots.some((slot) => bundle.runtimeSlots.includes(slot)),
+    );
     if (runtimeGroups.length > 0) {
       const slotsProvided = Promise.all(
         runtimeGroups.map(async (group) => {

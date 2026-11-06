@@ -216,6 +216,10 @@
     "sonner"
   ],
   "splitBoundaries": {
+    "../../packages/plugin-build/src/generated/zod-runtime.generated.ts": [
+      "boot"
+    ],
+    "src/lib/plugin-radix-runtime.ts": ["boot"],
     "../../plugins/composer/src/mentions/pasted-thread-links.ts": [
       "boot",
       "ThreadPage",
@@ -358,7 +362,7 @@
   },
   "routeClosures": {
     "PluginFrontend": {
-      "maxBytes": 505525,
+      "maxBytes": 505290,
       "maxBrotliBytes": 162937,
       "forbiddenPackages": [
         "@radix-ui/react-hover-card",
