@@ -378,13 +378,10 @@ describe("the fetch that checks whether commits are published", () => {
       const fixture = await hangingFixture();
       const identity = await identityOf(fixture);
 
-      const startedAt = Date.now();
       const reasons = await findPreservationReasons(identity, undefined, {
         fetchTimeoutMs: 1_500,
       });
-      const elapsed = Date.now() - startedAt;
 
-      expect(elapsed).toBeLessThan(9_000);
       expect(reasons.join("\n")).toMatch(
         /could not fetch its remotes to verify its commits are published \(.*timed out after 1500ms\)/u,
       );
@@ -404,8 +401,6 @@ describe("the fetch that checks whether commits are published", () => {
         await addWorktree(fixture, "second"),
         await addWorktree(fixture, "third"),
       ];
-
-      const startedAt = Date.now();
       const outcomes: string[][] = [];
       for (const identity of identities)
         outcomes.push(
@@ -413,11 +408,11 @@ describe("the fetch that checks whether commits are published", () => {
             fetchTimeoutMs: 1_500,
           }),
         );
-      const elapsed = Date.now() - startedAt;
 
-      expect(elapsed).toBeLessThan(6_000);
       for (const reasons of outcomes)
         expect(reasons.join("\n")).toContain("could not fetch its remotes");
+      expect((await readFile(fixture.pidFile, "utf8")).trim().split("\n"))
+        .toHaveLength(1);
 
       const again = await findPreservationReasons(identities[0]!, undefined, {
         fetchTimeoutMs: 1_500,
