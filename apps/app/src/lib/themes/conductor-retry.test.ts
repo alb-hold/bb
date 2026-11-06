@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { resolveAppThemeCss } from "./index";
 
 const themeImport = vi.hoisted(() => ({
   active: null as {
     themeId: string;
     css: string;
     attempts: number;
+    failed: () => void;
   } | null,
 }));
 
@@ -16,6 +18,7 @@ vi.mock("../retryable-chunk-import", async (importOriginal) => {
     createRetryableChunkImport: <T>(load: () => Promise<T>) =>
       retryable.createRetryableChunkImport(() =>
         load().catch((error: unknown) => {
+          themeImport.active?.failed();
           if (error instanceof Error && error.cause instanceof Error) {
             throw error.cause;
           }
@@ -59,6 +62,7 @@ const conductorThemes = [
 ] as const;
 
 afterEach(() => {
+  vi.useRealTimers();
   themeImport.active = null;
   vi.resetModules();
 });
@@ -67,13 +71,21 @@ describe("Conductor theme loading", () => {
   it.each(conductorThemes)(
     "applies $themeId after its chunk import rejects once",
     async ({ themeId, css }) => {
-      const attempt = { themeId, css, attempts: 0 };
+      let failed = () => {};
+      const rejected = new Promise<void>((resolve) => {
+        failed = resolve;
+      });
+      const attempt = { themeId, css, attempts: 0, failed };
       themeImport.active = attempt;
-      const { resolveAppThemeCss } = await import("./index");
-      const resolvedCss = await resolveAppThemeCss({
+      vi.useFakeTimers();
+      const pendingCss = resolveAppThemeCss({
         themeId,
         customCss: null,
       });
+      await rejected;
+      expect(attempt.attempts).toBe(1);
+      await vi.advanceTimersByTimeAsync(500);
+      const resolvedCss = await pendingCss;
 
       expect(attempt.attempts).toBe(2);
       expect(resolvedCss).toBe(css);

@@ -7,6 +7,7 @@ import { afterEach, expect, it, vi } from "vitest";
 afterEach(() => {
   cleanup();
   vi.doUnmock("./ThreadDetailPromptArea");
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
   vi.useRealTimers();
 });
@@ -16,9 +17,20 @@ it.each([true, false])(
   async (nativeIdle) => {
     vi.resetModules();
     vi.useFakeTimers();
+    let finishDownload = () => {};
+    const download = new Promise<void>((resolve) => {
+      finishDownload = resolve;
+    });
+    const prefetch = await import("@/lib/split-prefetch");
+    vi.spyOn(prefetch, "prepareSplitImport").mockReturnValue(download);
     const requested = vi.fn();
+    let markRequested = () => {};
+    const importRequested = new Promise<void>((resolve) => {
+      markRequested = resolve;
+    });
     vi.doMock("./ThreadDetailPromptArea", () => {
       requested();
+      markRequested();
       return { ThreadDetailPromptArea: () => <div>Composer controls</div> };
     });
     const { DeferredThreadDetailPromptArea } =
@@ -58,7 +70,11 @@ it.each([true, false])(
     await act(async () => {
       if (nativeIdle) idle.shift()!();
       else await vi.advanceTimersByTimeAsync(1_000);
-      await vi.dynamicImportSettled();
+    });
+    expect(requested).not.toHaveBeenCalled();
+    await act(async () => {
+      finishDownload();
+      await importRequested;
     });
     expect(requested).toHaveBeenCalledOnce();
     expect(screen.getByText("Composer controls")).toBeTruthy();

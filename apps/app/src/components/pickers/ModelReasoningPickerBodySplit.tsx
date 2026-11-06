@@ -26,7 +26,13 @@ export const ModelReasoningPickerBody =
         (module) => module.ModelReasoningPickerBody,
       ),
     loading: (props) => (
-      <PopoverContent align={props.align} mobileTitle="Model">
+      <PopoverContent
+        align={props.align}
+        mobileTitle="Model"
+        onCloseAutoFocus={(event) => {
+          if (props.open) event.preventDefault();
+        }}
+      >
         <PickerLoadingRows
           label="Loading model picker"
           rowDataAttribute="data-model-menu-loading-row"
