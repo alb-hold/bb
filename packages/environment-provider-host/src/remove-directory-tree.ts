@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { lstat, open, readdir, rename, stat, unlink } from "node:fs/promises";
+import { lstat, open, readdir, rename, rmdir, stat, unlink } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 
@@ -807,8 +807,9 @@ export async function removeDirectoryTree(
           (heldMarkerInfo !== null &&
             (finalDirectoryInfo.ctimeMs !== heldMarkerInfo.ctimeMs ||
               finalDirectoryInfo.mtimeMs !== heldMarkerInfo.mtimeMs))
-        )
+        ) {
           return await retain();
+        }
         await rmdir(quarantined);
         rootQuarantined = false;
         if (heldGitMarker !== null && gitMarkerHeld) {
