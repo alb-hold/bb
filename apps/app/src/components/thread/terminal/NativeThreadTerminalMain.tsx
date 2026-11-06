@@ -24,6 +24,7 @@ import { formatModelLabel } from "@/hooks/thread-creation-options/selection-stat
 import { PERMISSION_MODE_OPTIONS } from "@/lib/permission-mode-options";
 import { reasoningLevelLabel } from "@/lib/reasoning-labels";
 import { NativeActivityNotice } from "./NativeActivityNotice";
+import { NativeTerminalActivity } from "./NativeComposerStatus";
 import { NativeTerminalPromptBar } from "./NativeTerminalPromptBar";
 import { useNativeActivityNotice } from "@/hooks/useNativeActivityUnconfirmed";
 import {
@@ -177,6 +178,21 @@ export function NativeThreadTerminalMain({
           notice={activityNotice}
           pendingPromptCount={waitingPrompts.length}
           threadId={threadId}
+        />
+        <NativeTerminalActivity
+          indicator={
+            interactionsQuery.data?.some(
+              (interaction) => interaction.status === "pending",
+            )
+              ? "needs-input"
+              : session?.attention
+                ? "check-terminal"
+                : isRunningThreadRuntimeDisplayStatus(runtime.displayStatus)
+                  ? activityNotice.unconfirmed
+                    ? "activity-unreported"
+                    : "working"
+                  : "none"
+          }
         />
         <NativeTerminalPanel
           attentionShownAsBanner

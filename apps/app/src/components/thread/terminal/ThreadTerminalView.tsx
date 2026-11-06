@@ -455,7 +455,7 @@ export function buildTerminalThemeFromCssColors(
     magenta: get("--ansi-5"),
     cyan: get("--ansi-6"),
     white: get("--ansi-7"),
-    brightBlack: get("--ansi-8"),
+    brightBlack: get("--terminal-ansi-8") ?? get("--ansi-8"),
     brightRed: get("--ansi-9"),
     brightGreen: get("--ansi-10"),
     brightYellow: get("--ansi-11"),

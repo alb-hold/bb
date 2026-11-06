@@ -3,7 +3,11 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { TERMINAL_DEFAULT_COLORS, terminalRgbCss, TerminalColorQueries } from "@bb/domain";
+import {
+  TERMINAL_DEFAULT_COLORS,
+  terminalRgbCss,
+  TerminalColorQueries,
+} from "@bb/domain";
 import { Terminal } from "@xterm/xterm";
 import { afterEach, expect, it, vi } from "vitest";
 import { waitFor } from "@testing-library/react";
@@ -79,7 +83,11 @@ afterEach(() => {
   document.body.replaceChildren();
 });
 
-it.each((["light", "dark"] as const).flatMap((mode) => ["\x07", "\x1b\\"].map((terminator) => ({ mode, terminator }))))(
+it.each(
+  (["light", "dark"] as const).flatMap((mode) =>
+    ["\x07", "\x1b\\"].map((terminator) => ({ mode, terminator })),
+  ),
+)(
   "forwards $mode theme OSC 10/11 with $terminator, suppressing historical queries",
   async ({ mode, terminator }) => {
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
@@ -89,7 +97,9 @@ it.each((["light", "dark"] as const).flatMap((mode) => ["\x07", "\x1b\\"].map((t
       ...TERMINAL_THEME_OPTIONS,
       ...TERMINAL_CELL_OPTIONS,
       theme: buildTerminalThemeFromCssColors((name) =>
-        name.startsWith("--terminal-scrollbar") ? undefined : themeColor(mode, name),
+        name.startsWith("--terminal-scrollbar")
+          ? undefined
+          : themeColor(mode, name),
       ),
     });
     const container = document.createElement("div");
@@ -99,16 +109,25 @@ it.each((["light", "dark"] as const).flatMap((mode) => ["\x07", "\x1b\\"].map((t
     const replayWriteState = { suppressedWriteCount: 0 };
     const subscription = attachTerminalInputForwarding({
       terminal,
-      onData: (data, isUserInput) => forwardTerminalData({
-        data, isUserInput, onInput, replayWriteState, sessionStatus: "running",
-      }),
+      onData: (data, isUserInput) =>
+        forwardTerminalData({
+          data,
+          isUserInput,
+          onInput,
+          replayWriteState,
+          sessionStatus: "running",
+        }),
     });
     const query = `\x1b]10;?${terminator}\x1b]11;?${terminator}`;
     try {
       await new Promise<void>((resolve) => terminal.write(query, resolve));
       const replies = onInput.mock.calls.map(([data]) => atob(data));
-      const rgb = (name: string) => (themeColor(mode, name).match(/\d+/g) ?? [])
-        .map((channel) => Number(channel).toString(16).padStart(2, "0").repeat(2)).join("/");
+      const rgb = (name: string) =>
+        (themeColor(mode, name).match(/\d+/g) ?? [])
+          .map((channel) =>
+            Number(channel).toString(16).padStart(2, "0").repeat(2),
+          )
+          .join("/");
       expect(replies).toEqual([
         `\x1b]10;rgb:${rgb("--foreground")}\x1b\\`,
         `\x1b]11;rgb:${rgb("--sidebar")}\x1b\\`,
@@ -125,7 +144,9 @@ it.each((["light", "dark"] as const).flatMap((mode) => ["\x07", "\x1b\\"].map((t
         hostReplies.push(reply);
       });
       expect(hostReplies).toEqual(replies);
-      expect(onInput.mock.calls.every(([, , user]) => user === false)).toBe(true);
+      expect(onInput.mock.calls.every(([, , user]) => user === false)).toBe(
+        true,
+      );
       onInput.mockClear();
       replayWriteState.suppressedWriteCount = 1;
       await new Promise<void>((resolve) => terminal.write(query, resolve));
@@ -138,6 +159,9 @@ it.each((["light", "dark"] as const).flatMap((mode) => ["\x07", "\x1b\\"].map((t
 );
 
 it("uses stable readable cells and a steady block cursor across renderer handoffs", () => {
+  expect(TERMINAL_THEME_OPTIONS.minimumContrastRatio).toBeGreaterThanOrEqual(
+    4.5,
+  );
   expect(TERMINAL_CELL_OPTIONS).toEqual({
     lineHeight: 1.12,
     cursorBlink: false,
@@ -183,24 +207,23 @@ it.each(["light", "dark"] as const)(
       const style = getComputedStyle(span!);
       const fg = luminance(style.color);
       const bg = luminance(style.backgroundColor);
-      expect(bg).toBe(luminance(themeColor(mode, "--ansi-8")));
+      expect(bg).toBe(luminance(themeColor(mode, "--terminal-ansi-8")));
       const ratio = (Math.max(fg, bg) + 0.05) / (Math.min(fg, bg) + 0.05);
       console.log(
-        `${mode}: foreground=${style.color} background=${themeColor(mode, "--ansi-8")} contrast=${ratio}`,
+        `${mode}: foreground=${style.color} background=${themeColor(mode, "--terminal-ansi-8")} contrast=${ratio}`,
       );
       expect(ratio).toBeGreaterThanOrEqual(4.5);
+      if (mode === "dark") {
+        const canvas = luminance(themeColor(mode, "--sidebar"));
+        const bandContrast = (bg + 0.05) / (canvas + 0.05);
+        expect(bandContrast).toBeGreaterThanOrEqual(1.5);
+        expect(bandContrast).toBeLessThanOrEqual(2.5);
+      }
     } finally {
       terminal.dispose();
     }
   },
 );
-
-it("derives brighter dark ANSI grey from the ink and canvas tokens", () => {
-  const dark = css.slice(css.indexOf(".dark {"));
-  expect(dark).toContain(
-    "--ansi-8: color-mix(in oklch, var(--ink) 70%, var(--canvas))",
-  );
-});
 
 it.each([
   ["light", "\x1b[2m"],
@@ -251,15 +274,43 @@ it.each([
 );
 
 it.each(["light", "dark"] as const)(
-  "keeps bright black distinct and readable in %s mode",
-  (mode) => {
-    const fg = luminance(themeColor(mode, "--ansi-8"));
-    const bg = luminance(themeColor(mode, "--sidebar"));
-    const ratio = (Math.max(fg, bg) + 0.05) / (Math.min(fg, bg) + 0.05);
-    console.log(`${mode} bright black contrast=${ratio}`);
-    expect(ratio).toBeGreaterThanOrEqual(4.5);
-    expect(themeColor(mode, "--ansi-8")).not.toBe(
-      themeColor(mode, "--foreground"),
-    );
+  "keeps rendered bright-black text readable in %s mode",
+  async (mode) => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
+      measureText: (text: string) => ({ width: text.length * 9 }),
+    } as unknown as CanvasRenderingContext2D);
+    const terminal = new Terminal({
+      ...TERMINAL_THEME_OPTIONS,
+      cols: 40,
+      rows: 2,
+      theme: buildTerminalThemeFromCssColors((name) =>
+        name.startsWith("--terminal-scrollbar")
+          ? undefined
+          : themeColor(mode, name),
+      ),
+    });
+    const container = document.createElement("div");
+    document.body.append(container);
+    try {
+      terminal.open(container);
+      await new Promise<void>((resolve) =>
+        terminal.write("\x1b[38;5;8msecondary-text\x1b[0m", resolve),
+      );
+      await waitFor(() =>
+        expect(container.querySelector(".xterm-rows")?.textContent).toContain(
+          "secondary-text",
+        ),
+      );
+      const span = Array.from(
+        container.querySelectorAll(".xterm-rows span"),
+      ).find((node) => node.textContent?.includes("secondary-text"))!;
+      const fg = luminance(getComputedStyle(span).color);
+      const bg = luminance(themeColor(mode, "--sidebar"));
+      expect(
+        (Math.max(fg, bg) + 0.05) / (Math.min(fg, bg) + 0.05),
+      ).toBeGreaterThanOrEqual(4.5);
+    } finally {
+      terminal.dispose();
+    }
   },
 );

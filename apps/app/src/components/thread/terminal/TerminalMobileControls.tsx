@@ -1,4 +1,10 @@
-import { useCallback, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { Icon } from "@bb/shared-ui/icon";
 import { cn } from "@bb/shared-ui/lib/utils";
 import { getNativeShell } from "@/lib/native-shell/native-shell";
@@ -307,7 +313,7 @@ export function TerminalMobileControls({
           active={expanded}
           onPress={() => setExpanded(!expanded)}
         >
-          <Icon name="MoreHorizontal" className="size-4" />
+          Keys
         </Key>
       </div>
     </div>
