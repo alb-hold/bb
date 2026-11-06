@@ -10,7 +10,7 @@ import {
   isVideoAttachment,
   wrappedIndex,
 } from "./attachments";
-import { ComposerAttachmentPreview } from "@bb/shared-ui/composer-attachment-preview";
+import { ComposerAttachmentPreview } from "@/components/ui/composer-attachment-preview";
 
 interface AttachmentPreviewProps {
   attachments: readonly ComposerAttachment[];

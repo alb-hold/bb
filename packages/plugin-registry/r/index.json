@@ -86,6 +86,10 @@
       "type": "registry:ui"
     },
     {
+      "name": "composer-attachment-preview",
+      "type": "registry:ui"
+    },
+    {
       "name": "composer-primitives",
       "type": "registry:ui"
     },
