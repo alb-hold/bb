@@ -3,6 +3,7 @@ import {
   findStoredEventRow as findStoredEventRowRecord,
   getLatestThreadErrorEventRow,
   getLatestThreadOutputEventRow,
+  getNativeThreadReply,
   getTurnFinalAgentMessageEventRow,
   hydrateRetainedEventOutputRows,
   listLatestTurnFinalAgentMessageEventRows,
@@ -169,7 +170,13 @@ export function getLastThreadOutput(
   threadId: string,
 ): string | null {
   const row = getLatestThreadOutputEventRow(db, { threadId });
-
+  const nativeReply = getNativeThreadReply(db, threadId);
+  if (
+    nativeReply !== null &&
+    (row === null || nativeReply.recordedAt >= row.createdAt)
+  ) {
+    return nativeReply.text;
+  }
   if (!row) return null;
 
   const eventRow = parseStoredEventRow(row);
