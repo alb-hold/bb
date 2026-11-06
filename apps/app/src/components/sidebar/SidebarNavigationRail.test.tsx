@@ -856,12 +856,16 @@ describe("Rail", () => {
     const list = within(editor).getByRole("list", {
       name: "Sidebar navigation",
     });
+    expect(within(list).getAllByRole("checkbox")).toHaveLength(4);
+    for (const label of ["Search threads", "Plugins", "Skills", "Docs"]) {
+      expect(within(list).getByRole("checkbox", { name: new RegExp(label, "u") })).toBeTruthy();
+    }
     fireEvent.click(within(list).getByRole("checkbox", { name: /Skills/u }));
     expect(railLabels()).toEqual([
       "Home",
       "Plugins",
-      "Docs",
       "More",
+      "Docs",
       "Settings",
     ]);
   });

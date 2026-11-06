@@ -23,6 +23,7 @@ import type {
 } from "@get-bb/plugin-sdk";
 import { MemoryRouter } from "react-router-dom";
 import { TooltipProvider } from "@bb/shared-ui/tooltip";
+import { CompactViewportOverrideProvider } from "@bb/shared-ui/hooks/use-compact-viewport";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SidebarMenu, SidebarProvider } from "@/components/ui/sidebar.js";
 import {
@@ -132,10 +133,78 @@ afterEach(() => {
 
 function FooterPreferencesProbe() {
   const preferences = useSidebarFooterPreferences();
-  return <><output data-testid="visible-footer">{preferences.footer.map(item => item.key).join(",")}</output><output data-testid="more-footer">{preferences.more.map(item => item.key).join(",")}</output><button onClick={() => preferences.addToFooter("builtin:mobile")}>Choose mobile</button></>;
+  return (
+    <>
+      <output data-testid="visible-footer">
+        {preferences.footer.map((item) => item.key).join(",")}
+      </output>
+      <output data-testid="more-footer">
+        {preferences.more.map((item) => item.key).join(",")}
+      </output>
+      <button onClick={() => preferences.addToFooter("builtin:mobile")}>
+        Choose mobile
+      </button>
+    </>
+  );
 }
 
 describe("PluginSidebarFooterItems", () => {
+  it.each([
+    [true, null],
+    [true, 1],
+    [false, null],
+    [false, 1],
+  ] as const)(
+    "keeps the phone host prefix stable when a plugin arrives (compact=%s, capacity=%s)",
+    (compact, capacity) => {
+      const store = createStore();
+      store.set(sidebarFooterCapacityAtom, capacity);
+      const view = renderWithProviders(
+        <CompactViewportOverrideProvider isCompactViewport={compact}>
+          <SidebarMenu>
+            <PluginSidebarFooterItems
+              activeDisclosureKey={null}
+              onDisclosureCommand={vi.fn()}
+              onCustomize={vi.fn()}
+              builtInActions={[{ id: "report-bug", onActivate: vi.fn() }]}
+            />
+          </SidebarMenu>
+        </CompactViewportOverrideProvider>,
+        store,
+      );
+      const labels = () =>
+        Array.from(
+          view.container.querySelectorAll('[data-sidebar="menu-button"]'),
+        ).map((item) => item.getAttribute("aria-label"));
+      expect(labels()).toEqual(["Report a bug", "More footer actions"]);
+      act(() =>
+        setPluginSlotRegistrations(
+          "garden",
+          collectPluginAppRegistrations(
+            definePluginApp((app) => {
+              app.experimental_sidebarFooter.register({
+                kind: "action",
+                id: "notes",
+                label: "Garden notes",
+                icon: "BookOpen",
+                onActivate: vi.fn(),
+              });
+            }),
+          ),
+        ),
+      );
+      expect(labels()).toEqual(
+        compact
+          ? capacity === null
+            ? ["Report a bug", "More footer actions", "Garden notes"]
+            : ["Report a bug", "More footer actions"]
+          : capacity === null
+            ? ["Garden notes", "Report a bug", "More footer actions"]
+            : ["Garden notes", "More footer actions"],
+      );
+    },
+  );
+
   it.each(["Provider usage", "Report a bug", "More footer actions"])(
     "gives %s a matching accessible name and keyboard tooltip",
     async (label) => {
@@ -171,23 +240,39 @@ describe("PluginSidebarFooterItems", () => {
     },
   );
 
-  it.each(["order", "hidden"])("preserves an existing profile with saved %s", (kind) => {
-    const store = createStore();
-    if (kind === "order") store.set(sidebarFooterOrderAtom, ["builtin:report-bug", "builtin:mobile"]);
-    else store.set(sidebarFooterHiddenAtom, ["builtin:report-bug"]);
-    renderWithProviders(<FooterPreferencesProbe />, store);
-    expect(screen.getByTestId("visible-footer").textContent).toContain("builtin:mobile");
-    expect(screen.getByTestId(kind === "hidden" ? "more-footer" : "visible-footer").textContent).toContain("builtin:report-bug");
-  });
+  it.each(["order", "hidden"])(
+    "preserves an existing profile with saved %s",
+    (kind) => {
+      const store = createStore();
+      if (kind === "order")
+        store.set(sidebarFooterOrderAtom, [
+          "builtin:report-bug",
+          "builtin:mobile",
+        ]);
+      else store.set(sidebarFooterHiddenAtom, ["builtin:report-bug"]);
+      renderWithProviders(<FooterPreferencesProbe />, store);
+      expect(screen.getByTestId("visible-footer").textContent).toContain(
+        "builtin:mobile",
+      );
+      expect(
+        screen.getByTestId(kind === "hidden" ? "more-footer" : "visible-footer")
+          .textContent,
+      ).toContain("builtin:report-bug");
+    },
+  );
 
   it("chooses an item without hiding existing shortcuts", () => {
     const store = createStore();
     store.set(sidebarFooterOrderAtom, ["builtin:report-bug", "builtin:mobile"]);
     store.set(sidebarFooterHiddenAtom, ["builtin:mobile"]);
     renderWithProviders(<FooterPreferencesProbe />, store);
-    expect(screen.getByTestId("visible-footer").textContent).toBe("builtin:report-bug");
-    fireEvent.click(screen.getByRole("button", {name: "Choose mobile"}));
-    expect(screen.getByTestId("visible-footer").textContent).toBe("builtin:report-bug,builtin:mobile");
+    expect(screen.getByTestId("visible-footer").textContent).toBe(
+      "builtin:report-bug",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Choose mobile" }));
+    expect(screen.getByTestId("visible-footer").textContent).toBe(
+      "builtin:report-bug,builtin:mobile",
+    );
   });
 
   it("keeps plugin actions and bug reporting in the footer and mobile apps in More by default", async () => {
