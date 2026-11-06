@@ -433,6 +433,7 @@ export function buildRootComposeTerminalSessions({
 }
 
 export function RootComposeView() {
+  performance.mark("p41-root-compose-render");
   const { navigateInPane } = usePaneContext();
   const [rootComposeProjectId, setRootComposeProjectId] =
     useRootComposeProjectId();

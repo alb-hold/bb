@@ -20,6 +20,9 @@ import { moveStylesheetPropertiesToRegistry } from "./lib/stylesheet-property-re
 import "./app.css";
 
 performance.mark("app-boot-started");
+appQueryClient.getQueryCache().subscribe((event) => {
+  performance.mark(`p41-query:${event.type}:${event.query.queryHash}`);
+});
 
 installStaleChunkRecovery();
 installForeignDomMutationGuard();

@@ -648,8 +648,13 @@ export function ComposerRendererHostProvider({
   children,
   ...props
 }: ComposerBoxProps & { children: ReactNode }) {
+  performance.mark("p41-composer-host-render");
   const { api, boxHost, rootHost, contributions, typeahead } =
     useComposerRendererHostApi(props);
+  performance.mark("p41-composer-host-hooks-complete");
+  useLayoutEffect(() => {
+    performance.mark("p41-composer-host-commit");
+  }, []);
   return (
     <ComposerRendererContext.Provider value={api}>
       <ComposerRootHostContext.Provider value={rootHost}>

@@ -7,6 +7,7 @@ import {
   Component,
   lazy,
   Suspense,
+  useLayoutEffect,
   useState,
   type ComponentType,
   type ReactNode,
@@ -77,14 +78,26 @@ export function defineSplit<P extends object>({
       });
     return pending;
   };
-  const renderModule = () => trackCriticalLoad(loadModule());
+  const renderModule = () => {
+    performance.mark(`p41-split-read:${id}:${loaded !== null}`);
+    return trackCriticalLoad(loadModule());
+  };
   const warm = async () => {
     await loadModule().catch(() => undefined);
   };
   const onIntent = () => warm().catch(() => undefined);
   if (tier === "preload") queueSplitPreload(warm);
 
+  function DiagnosticLoading(props: P) {
+    performance.mark(`p41-split-fallback:${id}`);
+    return <Loading {...props} />;
+  }
+
   function SplitContent(props: P) {
+    performance.mark(`p41-split-render:${id}:${loaded !== null}`);
+    useLayoutEffect(() => {
+      performance.mark(`p41-split-commit:${id}`);
+    }, []);
     const [attempt, setAttempt] = useState(() => ({
       number: 0,
       View: loaded ?? lazy(renderModule),
@@ -101,7 +114,7 @@ export function defineSplit<P extends object>({
         key={attempt.number}
         fallback={<ErrorView {...props} retry={retry} />}
       >
-        <Suspense fallback={<Loading {...props} />}>
+        <Suspense fallback={<DiagnosticLoading {...props} />}>
           <View {...props} />
         </Suspense>
       </SplitErrorBoundary>
