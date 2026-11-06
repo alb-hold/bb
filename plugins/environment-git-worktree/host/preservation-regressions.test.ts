@@ -1382,58 +1382,28 @@ describe("real worktree teardown preservation", () => {
       const worktree = await makeWorktree();
       const originalMode =
         (await fs.stat(path.join(worktree.path, "README.md"))).mode & 0o7777;
-      let injected = false;
-      let racingSourcePath = "";
-      let collisionMoveStarted = false;
-      let reportedPath = "";
       const result = await removeDirectoryTree(worktree.path, {
         startedAt: Number.MAX_SAFE_INTEGER,
         afterEntryQuarantined: async (entry) => {
           if (!entry.endsWith("README.md")) return;
           await writeFile(entry, "racing bytes\n");
         },
-        beforeCollisionMove: async (source, candidate, isDirectory) => {
-          if (
-            !isDirectory &&
-            path.basename(source).startsWith(".bb-removing-") &&
-            path.basename(candidate).startsWith("README.md.")
-          )
-            collisionMoveStarted = true;
-        },
-        afterCollisionCandidateVerified: async (
-          source,
-          _candidate,
-          isDirectory,
-        ) => {
-          if (!collisionMoveStarted || isDirectory || injected) return;
-          injected = true;
-          racingSourcePath = path.join(worktree.path, path.basename(source));
-          await fs.unlink(source);
-          await writeFile(source, "racing quarantine replacement\n");
-        },
-        onRetainedPath: (retainedPath) => {
-          reportedPath = retainedPath;
-        },
       });
       expect(result.status).toBe("retained");
-      expect(reportedPath).not.toBe("");
-      await expect(access(reportedPath)).resolves.toBeUndefined();
-      if (injected)
-        await expect(readFile(racingSourcePath, "utf8")).resolves.toBe(
-          "racing quarantine replacement\n",
-        );
-      if (!injected) {
-        const quarantinedPath = reportedPath;
-        await expect(
-          readFile(path.join(worktree.path, "README.md"), "utf8"),
-        ).resolves.toBe("racing bytes\n");
-        await expect(readFile(quarantinedPath, "utf8")).resolves.toBe(
-          "published\n",
-        );
-        expect((await fs.stat(quarantinedPath)).mode & 0o7777).toBe(
-          originalMode,
-        );
-      }
+      const quarantinedPath = result.retainedPaths.find((retainedPath) =>
+        path.basename(retainedPath).startsWith(".bb-removing-"),
+      );
+      expect(quarantinedPath).toBeDefined();
+      await expect(access(quarantinedPath!)).resolves.toBeUndefined();
+      await expect(
+        readFile(path.join(worktree.path, "README.md"), "utf8"),
+      ).resolves.toBe("racing bytes\n");
+      await expect(readFile(quarantinedPath!, "utf8")).resolves.toBe(
+        "published\n",
+      );
+      expect((await fs.stat(quarantinedPath!)).mode & 0o7777).toBe(
+        originalMode,
+      );
       await expect(
         git(worktree.path, "rev-parse", "--git-dir"),
       ).resolves.toMatch(/worktrees/u);
@@ -1447,7 +1417,6 @@ describe("real worktree teardown preservation", () => {
     await fs.chmod(directory, 0o750);
     const originalMode = (await fs.stat(directory)).mode & 0o7777;
     let injected = false;
-    let preservedPath = "";
     const result = await removeDirectoryTree(worktree.path, {
       startedAt: Number.MAX_SAFE_INTEGER,
       afterEntryQuarantined: async (entry) => {
@@ -1455,17 +1424,20 @@ describe("real worktree teardown preservation", () => {
         injected = true;
         await mkdir(entry);
       },
-      onRetainedPath: (retained) => {
-        preservedPath = retained;
-      },
     });
 
     expect(result.status).toBe("retained");
     expect(injected).toBe(true);
-    expect(path.basename(preservedPath)).toMatch(/^\.bb-removing-[0-9a-f-]+$/u);
+    const preservedPath = result.retainedPaths.find((retained) =>
+      path.basename(retained).startsWith(".bb-removing-"),
+    );
+    expect(preservedPath).toBeDefined();
+    expect(path.basename(preservedPath!)).toMatch(
+      /^\.bb-removing-[0-9a-f-]+$/u,
+    );
     await expect(fs.readdir(directory)).resolves.toEqual([]);
-    await expect(fs.readdir(preservedPath)).resolves.toEqual([]);
-    expect((await fs.stat(preservedPath)).mode & 0o7777).toBe(originalMode);
+    await expect(fs.readdir(preservedPath!)).resolves.toEqual([]);
+    expect((await fs.stat(preservedPath!)).mode & 0o7777).toBe(originalMode);
     await expect(git(worktree.path, "rev-parse", "--git-dir")).resolves.toMatch(
       /worktrees/u,
     );
