@@ -4842,3 +4842,22 @@ helpers free of schema imports so app display does not eagerly load the parser.
 ## Provider environment catalog identity
 
 `ExperimentalPluginProviderEnvEntry.internal_DO_NOT_USE_catalogIdentity` is server-only plumbing. Account Pooler is its only caller: it supplies a stable identity for catalog-only credentials that rotate on every resolution. Core hashes this identity instead of the credential value and strips the field before host-daemon RPCs. Routing endpoints and every unmarked environment value remain fingerprint inputs. Stabilization requires catalog identity invalidation and RPC stripping coverage; it is not a Plugin Guide surface.
+
+## Internal composer paste parser and shared UI runtime slots
+
+`internal_DO_NOT_USE_loadComposerPasteParser` is used only by bb--composer's
+thread-link paste extension. The host loads the same parser that owns the
+composer's Markdown-aware link conversion after paste, retaining its existing
+cancellation, timeout, cached lookup and literal-link behavior. The single-file
+plugin build must not inline remark/unified into its first-render payload.
+This is first-party plumbing, not a third-party plugin API.
+An older host without the loader leaves pasted text literal.
+
+`internal_DO_NOT_USE_dropdown_menu`, `internal_DO_NOT_USE_dialog`,
+`internal_DO_NOT_USE_context_menu` and `internal_DO_NOT_USE_responsive_overlay`
+are host runtime slots for the shared-ui implementations already used by core.
+Their only direct callers are the build-generated shared-ui runtime shims.
+Composer and thread-list consume the same components through those shims;
+relative shared-ui imports, package imports and the builtin UI alias share the
+same path. Stabilization requires a public component contract and an audit of
+portal, context, focus and deferred drawer behavior across core and plugins.

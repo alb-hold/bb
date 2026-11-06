@@ -261,6 +261,8 @@ export function ThreadDetailHeader({
             variant="ghost"
             size="icon"
             className={HEADER_ICON_BUTTON_CLASS}
+            data-compact-touch="header"
+            data-terminal-search-trigger=""
             aria-label="Search terminal output"
             aria-keyshortcuts={findShortcut?.ariaKeyshortcuts}
             onClick={() => {

@@ -415,13 +415,11 @@ function MobileRecentThreadRow({
               )}
               title={metadataText}
             >
-              {workspaceIconName ? (
-                <Icon
-                  name={workspaceIconName}
-                  className="size-3.5 shrink-0"
-                  aria-hidden="true"
-                />
-              ) : null}
+              <Icon
+                name={workspaceIconName ?? "Folder"}
+                className="size-3.5 shrink-0"
+                aria-hidden="true"
+              />
               <span className="min-w-0 truncate">{metadataText}</span>
             </span>
           </span>

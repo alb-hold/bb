@@ -46,6 +46,7 @@ export type ComposerSource = Pick<
   | "textEffectKey"
   | "getCurrent"
   | "setDraft"
+  | "setTextAndMentions"
   | "isAvailable"
   | "focus"
   | "setSelection"
@@ -122,7 +123,7 @@ export function composerDraftFromPromptDraft(
 
 type ComposerDraftSource = Pick<
   ComposerSource,
-  "getCurrent" | "setDraft" | "focus" | "isAvailable"
+  "getCurrent" | "setDraft" | "setTextAndMentions" | "focus" | "isAvailable"
 >;
 
 export function createCoreComposerActions(source: ComposerDraftSource) {
@@ -144,6 +145,13 @@ function composerDraftTarget(source: ComposerDraftSource) {
     getDraft: () => composerDraftFromPromptDraft(source.getCurrent()),
     setDraft: (next: ComposerDraftReplacement) => {
       const current = source.getCurrent();
+      if (next.attachments === undefined && source.setTextAndMentions) {
+        source.setTextAndMentions(
+          next.text,
+          next.mentions.map(promptTextMentionFromComposerMention),
+        );
+        return;
+      }
       source.setDraft({
         ...current,
         text: next.text,

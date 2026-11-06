@@ -109,7 +109,7 @@ describe("ThreadTimelineRows token footer", () => {
     expect(
       container.querySelector('[data-token-part="cached"]')?.textContent,
     ).toContain("cached 466.2K");
-    expect(screen.getByText("Σ 466.6K")).toBeTruthy();
+    expect(screen.getByText("466.6K tokens")).toBeTruthy();
     expect(
       container.querySelector("[data-token-total-tight]")?.textContent,
     ).toBe("467K");
@@ -189,7 +189,7 @@ describe("ThreadTimelineRows token footer", () => {
         ?.closest("[data-timeline-row-id]")
         ?.getAttribute("data-timeline-row-id"),
     ).toBe(turnId);
-    expect(footer?.textContent).toBe("Σ 121.2K");
+    expect(footer?.textContent).toBe("121.2K tokens");
     expect(footer?.querySelector('[data-token-part="reasoning"]')).toBeNull();
     expect(footer?.className).toContain("font-sans");
     expect(footer?.className).toContain("text-xs");
@@ -767,7 +767,7 @@ describe("ThreadTimelineRows token footer", () => {
         ?.closest("[data-timeline-row-id]")
         ?.getAttribute("data-timeline-row-id"),
     ).toBe(`turn-${first.turnId}`);
-    expect(summaries[0]?.textContent).toBe("Σ 466.6K");
+    expect(summaries[0]?.textContent).toBe("466.6K tokens");
     expect(useThreadSpendSummary).toHaveBeenCalledWith(first.threadId);
 
     const idleRows = [...activeRows];
@@ -806,7 +806,7 @@ describe("ThreadTimelineRows token footer", () => {
         ?.closest("[data-timeline-row-id]")
         ?.getAttribute("data-timeline-row-id"),
     ).toBe(`turn-${second.turnId}`);
-    expect(idleSummaries[1]?.textContent).toBe("Σ 907.7K");
+    expect(idleSummaries[1]?.textContent).toBe("907.7K tokens");
   });
 
   it("keeps partial active-turn spend hidden while waiting for its host", () => {

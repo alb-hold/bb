@@ -5476,6 +5476,17 @@ export interface ExperimentalServers {
  * shims the specifier to that object on `globalThis.__bbPluginRuntime`.
  */
 export interface PluginSdkApp {
+  internal_DO_NOT_USE_loadComposerPasteParser(): Promise<{
+    findPastedThreadLinks(args: {
+      text: string;
+      parseLink: (url: string) => ExperimentalComposerThreadLinkTarget | null;
+    }): (ExperimentalComposerThreadLinkTarget & {
+      from: number;
+      to: number;
+      text: string;
+    })[];
+  } | null>;
+
   /** List URL schemes approved for this BB site in the viewing client's localStorage. Core Settings uses the same implementation. */
   experimental_getApplicationLinkApprovals(): Promise<string[]>;
   /** Revoke one scheme, or all with null, for this BB site on this client. Does not grant permission. */

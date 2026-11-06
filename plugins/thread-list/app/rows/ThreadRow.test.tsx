@@ -539,6 +539,22 @@ afterEach(() => {
 
 describe("ThreadRow", () => {
   it.each([
+    ["Workspace", createThread({ environment: null })],
+    ["Workspace", createThread({ environment: makeSidebarEnvironment({ isWorktree: false }) })],
+    ["Worktree", createThread({ environment: makeSidebarEnvironment({ isWorktree: true }) })],
+    ["Native terminal", createThread({ experimental_nativeActivity: { lastEvidenceAt: null, freshForMs: 90_000, confirmation: "unconfirmed", evidenceKind: "unknown" } })],
+  ] as const)("keeps one muted leading metadata glyph slot for %s", (label, thread) => {
+    const view = renderThreadRow({ thread });
+    const context = view.container.querySelector("[data-sidebar-thread-context]");
+    const slot = context?.firstElementChild;
+    expect(context?.classList.contains("text-muted-foreground")).toBe(true);
+    expect(slot?.getAttribute("role")).toBe("img");
+    expect(slot?.getAttribute("aria-label")).toBe(label);
+    expect(context?.querySelectorAll('[role="img"]')).toHaveLength(1);
+    expect(slot?.querySelector("[data-icon]")?.classList.contains("size-3")).toBe(true);
+  });
+
+  it.each([
     ["project:proj_context", "2m"],
     ["project:proj_other", "Orbital ·2m"],
     ["threads", "Orbital ·2m"],
@@ -660,6 +676,8 @@ describe("ThreadRow", () => {
   });
 
   it("renders Needs input, Working, Woke 3m elapsed, and Done labels", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now() + 20_001);
     const callRpc = vi.fn().mockResolvedValue({
       automations: [
         {
@@ -738,7 +756,7 @@ describe("ThreadRow", () => {
 
   it("updates only rows whose automation status or elapsed minute changed", async () => {
     vi.useFakeTimers();
-    vi.setSystemTime(Date.now() + 30_000);
+    vi.setSystemTime(Date.now() + 60_000);
     const startedAt = Date.now() - 60_000;
     const callRpc = vi.fn().mockResolvedValue({
       automations: [
@@ -3179,6 +3197,20 @@ describe.skipIf(
 )("ThreadRow row-state layout", () => {
   it("has a Chromium binary to measure layout with", () => {
     expect(chromiumPath).not.toBeNull();
+  });
+
+  it("keeps desktop sidebar row height when the smallest text advances one tier", async () => {
+    vi.spyOn(pluginSdk, "experimental_useExperiment").mockReturnValue(true);
+    const { container } = renderThreadRow({
+      thread: createThread(),
+      isCompactViewport: false,
+    });
+    const html = container.innerHTML;
+    const before = await measureRowLayout(`<style>:root{--text-2xs:0.625rem;--text-2xs--line-height:0.875rem}</style>${html}`, 1280);
+    const after = await measureRowLayout(`<style>:root{--text-2xs:0.6875rem;--text-2xs--line-height:0.875rem}</style>${html}`, 1280);
+    expect(after.row.height - before.row.height).toBeLessThanOrEqual(1);
+    expect(after.row.height).toBeGreaterThan(0);
+    await writeFile(join(tmpdir(), "p36-sidebar-af0afa41bfdb.json"), JSON.stringify({ before: before.row.height, after: after.row.height }));
   });
 
   const VIEWPORTS = [

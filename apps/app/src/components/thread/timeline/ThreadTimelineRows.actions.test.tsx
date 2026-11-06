@@ -329,14 +329,14 @@ describe("ThreadTimelineRows actions", () => {
       latestMessage?.querySelector('[aria-label="Message actions"]'),
     ).not.toBeNull();
     expect(
-      earlierMessage?.querySelector('[aria-label="Copy message"]'),
-    ).toBeNull();
+      earlierMessage?.querySelector('[data-touch-actions-visible="false"]'),
+    ).not.toBeNull();
     expect(
       latestMessage?.querySelector('[aria-label="Copy message"]'),
     ).not.toBeNull();
   });
 
-  it("uses inline mobile candidates only for the last user message", () => {
+  it("keeps both earlier and latest user actions hidden until tapped", () => {
     mockSelectionMenuMedia({ isCompactViewport: true, isPointerCoarse: true });
     const { container } = renderWithRouter(
       <ThreadTimelineRows
@@ -373,10 +373,10 @@ describe("ThreadTimelineRows actions", () => {
       latestMessage?.querySelector('[aria-label="Message actions"]'),
     ).not.toBeNull();
     expect(
-      earlierMessage?.querySelector('[aria-label="Copy message"]'),
-    ).toBeNull();
+      earlierMessage?.querySelector('[data-touch-actions-visible="false"]'),
+    ).not.toBeNull();
     expect(
-      latestMessage?.querySelector('[aria-label="Copy message"]'),
+      latestMessage?.querySelector('[data-touch-actions-visible="false"]'),
     ).not.toBeNull();
   });
 
@@ -1965,8 +1965,8 @@ describe("ThreadTimelineRows shared message column width", () => {
     await screen.findByRole("dialog", { name: "Message actions" });
     expect(document.body.querySelector('[data-side="top"]')).toBeNull();
     expect(
-      earlierMessage?.querySelector('[aria-label="Copy message"]'),
-    ).toBeNull();
+      earlierMessage?.querySelector('[data-touch-actions-visible="false"]'),
+    ).not.toBeNull();
     expect(
       earlierMessage?.querySelector('[aria-label="Fork into new thread"]'),
     ).toBeNull();
@@ -2050,8 +2050,8 @@ describe("ThreadTimelineRows shared message column width", () => {
     await screen.findByRole("dialog", { name: "Message actions" });
     expect(document.body.querySelector('[data-side="top"]')).toBeNull();
     expect(
-      earlierMessage.querySelector('[aria-label="Copy message"]'),
-    ).toBeNull();
+      earlierMessage.querySelector('[data-touch-actions-visible="false"]'),
+    ).not.toBeNull();
     expect(
       earlierMessage.querySelector('[aria-label="Fork into new thread"]'),
     ).toBeNull();

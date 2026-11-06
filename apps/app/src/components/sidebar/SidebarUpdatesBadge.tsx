@@ -9,7 +9,6 @@ import { SidebarMenuItem } from "@/components/ui/sidebar.js";
 import { useSystemProviders } from "@/hooks/queries/system-queries";
 import { useUpdateInventory } from "@/hooks/useUpdateInventory";
 import { useMachineAttention } from "@/hooks/useMachineAttention";
-import { ProviderIconMark } from "@/components/settings/ProviderIconMark";
 import { getProviderIconInfo } from "@/lib/provider-icon";
 import { getSettingsRoutePath } from "@/lib/route-paths";
 
@@ -108,7 +107,7 @@ export function SidebarUpdatesBadge({ onNavigate }: SidebarUpdatesBadgeProps) {
               data-testid="sidebar-machines-attention-badge"
               className={cn(CHIP_CLASS, "text-warning-text")}
             >
-              <Icon name="AlertTriangle" className="size-3" />
+              <Icon name="AlertTriangle" className="size-4" />
             </Link>
           </TooltipTrigger>
           <TooltipContent side="top">{machineAttention.label}</TooltipContent>
@@ -124,7 +123,7 @@ export function SidebarUpdatesBadge({ onNavigate }: SidebarUpdatesBadgeProps) {
               data-testid="sidebar-updates-badge-bb"
               className={CHIP_CLASS}
             >
-              <Icon name="Download" className="size-3 text-muted-foreground" />
+              <Icon name="Download" className="size-4 text-muted-foreground" />
               bb
             </Link>
           </TooltipTrigger>
@@ -144,7 +143,7 @@ export function SidebarUpdatesBadge({ onNavigate }: SidebarUpdatesBadgeProps) {
               <Icon
                 name={providerUpdateRunning ? "Loading" : "Download"}
                 className={cn(
-                  "size-3 shrink-0 text-muted-foreground",
+                  "size-4 shrink-0 text-muted-foreground",
                   providerUpdateRunning && "animate-spin",
                 )}
               />
@@ -167,17 +166,9 @@ export function SidebarUpdatesBadge({ onNavigate }: SidebarUpdatesBadgeProps) {
                       key={stale.provider}
                       data-provider-icon={providerId}
                       aria-hidden
-                      className="flex size-3 shrink-0 items-center justify-center"
+                      className="flex size-4 shrink-0 items-center justify-center"
                     >
-                      {provider === undefined ? (
-                        <iconInfo.icon className="size-3" />
-                      ) : (
-                        <ProviderIconMark
-                          provider={provider}
-                          icon={iconInfo.icon}
-                          className="size-3"
-                        />
-                      )}
+                      <iconInfo.icon className="size-4 text-muted-foreground" />
                     </span>
                   );
                 })}
@@ -197,7 +188,7 @@ export function SidebarUpdatesBadge({ onNavigate }: SidebarUpdatesBadgeProps) {
               data-testid="sidebar-updates-badge-plugins"
               className={CHIP_CLASS}
             >
-              <Icon name="Plug02" className="size-3 text-muted-foreground" />
+              <Icon name="Plug02" className="size-4 text-muted-foreground" />
               {pluginUpdateCount}
             </Link>
           </TooltipTrigger>

@@ -1,4 +1,4 @@
-import * as z from "zod/mini";
+import { z } from "zod";
 import type { ComposerMention } from "@get-bb/plugin-sdk/app";
 import type { JSONContent } from "@tiptap/react";
 import {
@@ -46,7 +46,7 @@ export interface PromptEditorMentionAttrs {
 
 const promptEditorMentionAttrsSchema = z.object({
   mention: mentionTargetSchema,
-  serializedText: z.string().check(z.minLength(1)),
+  serializedText: z.string().min(1),
 });
 
 const parsedMentionAttrs = new WeakMap<

@@ -26,6 +26,10 @@ export interface PluginComposerHost {
   getSelection?(): ComposerSelection;
   subscribeSelection?(listener: () => void): () => void;
   setDraft(next: PromptDraftState): void;
+  setTextAndMentions?(
+    text: string,
+    mentions: PromptDraftState["mentions"],
+  ): void;
   isAvailable?(): boolean;
   focus(): void;
   sendsOnEnter?: boolean;

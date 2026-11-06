@@ -18,12 +18,17 @@ import {
 const mocks = vi.hoisted(() => ({
   bootPluginFrontends: vi.fn(async () => {}),
   preloadPluginFrontend: vi.fn(),
+  prefetchPluginRuntimeSlots: vi.fn(),
   releaseSplitPreloads: vi.fn(),
   systemConfigData: undefined as unknown,
 }));
 
 vi.mock("@/lib/split-prefetch", () => ({
   holdSplitPreloads: () => mocks.releaseSplitPreloads,
+}));
+
+vi.mock("@/lib/plugin-lazy-runtime-groups", () => ({
+  prefetchPluginRuntimeSlots: mocks.prefetchPluginRuntimeSlots,
 }));
 
 vi.mock("@/lib/plugin-frontend-lazy", () => ({
@@ -67,11 +72,22 @@ afterEach(() => {
   mocks.bootPluginFrontends.mockImplementation(async () => {});
   mocks.releaseSplitPreloads.mockClear();
   mocks.preloadPluginFrontend.mockClear();
+  mocks.prefetchPluginRuntimeSlots.mockReset();
   resetPluginFrontendBootStateForTest();
 });
 
 describe("usePluginFrontendBoot", () => {
   it("downloads priority bundles and starts the runtime before route paint", async () => {
+    const runtimeRequests: { slots: string[]; precedingBundles: string[] }[] =
+      [];
+    mocks.prefetchPluginRuntimeSlots.mockImplementation((slots: string[]) => {
+      runtimeRequests.push({
+        slots,
+        precedingBundles: [
+          ...document.head.querySelectorAll('link[rel="modulepreload"]'),
+        ].map((link) => link.getAttribute("href")!),
+      });
+    });
     const plugins = ["bb--composer", "thread-list", "navigation", "other"].map(
       (id) =>
         makeInstalledPlugin({
@@ -87,7 +103,12 @@ describe("usePluginFrontendBoot", () => {
               sdkMajor: 0,
               sdkVersion: "0.0.0",
               compatible: true,
-              runtimeSlots: [],
+              runtimeSlots:
+                id === "bb--composer"
+                  ? ["zod"]
+                  : id === "thread-list"
+                    ? ["zod", "radixCheckbox"]
+                    : ["react"],
             },
           },
         }),
@@ -111,6 +132,20 @@ describe("usePluginFrontendBoot", () => {
       document.head.querySelectorAll("link[data-bb-plugin-css-prefetch]"),
     ).toHaveLength(3);
     expect(mocks.bootPluginFrontends).toHaveBeenCalledTimes(1);
+    expect(runtimeRequests).toEqual([
+      { slots: ["zod"], precedingBundles: [] },
+      {
+        slots: ["zod", "radixCheckbox"],
+        precedingBundles: ["/plugins/bb--composer.js"],
+      },
+      {
+        slots: ["react"],
+        precedingBundles: [
+          "/plugins/bb--composer.js",
+          "/plugins/thread-list.js",
+        ],
+      },
+    ]);
   });
 
   it("boots immediately on a plugin panel route: the plugin is the page", async () => {

@@ -407,3 +407,24 @@ describe("pasted thread link conversion", () => {
     expect(resolveThreads).not.toHaveBeenCalled();
   });
 });
+
+it("keeps paste literal when the host predates the paste parser loader", async () => {
+  const host = globalThis as typeof globalThis & {
+    __bbPluginRuntime: { pluginSdkApp: Record<string, unknown> };
+  };
+  const runtime = host.__bbPluginRuntime.pluginSdkApp;
+  const loader = runtime.internal_DO_NOT_USE_loadComposerPasteParser;
+  delete runtime.internal_DO_NOT_USE_loadComposerPasteParser;
+  try {
+    const resolveThreads = vi.fn(async () => [resolution(threadId)]);
+    const editor = createEditor({
+      getCachedThread: () => resolution(threadId),
+      resolveThreads,
+    });
+    await paste(editor, url);
+    expect(value(editor)).toEqual({ text: url, mentions: [] });
+    expect(resolveThreads).not.toHaveBeenCalled();
+  } finally {
+    runtime.internal_DO_NOT_USE_loadComposerPasteParser = loader;
+  }
+});
