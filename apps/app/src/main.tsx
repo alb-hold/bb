@@ -1,3 +1,4 @@
+import { scheduleHomeInteractionPreloads } from "./lib/home-interaction-preloads";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClientProvider } from "@tanstack/react-query";
@@ -20,6 +21,7 @@ import { moveStylesheetPropertiesToRegistry } from "./lib/stylesheet-property-re
 import "./app.css";
 
 performance.mark("app-boot-started");
+scheduleHomeInteractionPreloads();
 
 installStaleChunkRecovery();
 installForeignDomMutationGuard();

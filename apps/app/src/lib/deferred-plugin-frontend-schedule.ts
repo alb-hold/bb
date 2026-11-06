@@ -42,5 +42,19 @@ export function createDeferredPluginFrontendSchedule() {
     }
     await yieldBetweenDeferredLoads();
   };
-  return { waitForDeferredLoad, yieldBetweenDeferredLoads, dispose };
+  const downloadDeferredModule = async (url: string) => {
+    try {
+      const response = await fetch(url, {
+        cache: "force-cache",
+        priority: "low",
+      });
+      if (response.ok) await response.arrayBuffer();
+    } catch {}
+  };
+  return {
+    waitForDeferredLoad,
+    yieldBetweenDeferredLoads,
+    downloadDeferredModule,
+    dispose,
+  };
 }

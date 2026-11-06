@@ -429,6 +429,7 @@ export interface PluginFrontendReconcileDeps {
   waitForDeferredLoad?: () => Promise<void>;
   waitForComposerPaint?: () => Promise<void>;
   yieldBetweenDeferredLoads?: () => Promise<void>;
+  downloadDeferredModule?: (url: string) => Promise<void>;
   mountTimeoutMs?: number;
   cssReadyTimeoutMs?: number;
   diagnosticsChanged?: () => void;
@@ -810,7 +811,17 @@ async function reconcileCandidates(
             if (!isCandidateApplied(candidate, state))
               await deps.yieldBetweenDeferredLoads();
             if (!state.tornDown)
-              await reconcileCandidate(candidate, state, deps);
+              await reconcileCandidate(candidate, state, {
+                ...deps,
+                prefetchModule: () => {},
+                importModule: async (url) => {
+                  if (deps.downloadDeferredModule) {
+                    await deps.downloadDeferredModule(url);
+                    await deps.yieldBetweenDeferredLoads?.();
+                  }
+                  return deps.importModule(url);
+                },
+              });
           } finally {
             release();
           }
@@ -1136,6 +1147,7 @@ const browserReconcileDeps: PluginFrontendReconcileDeps = {
   },
   waitForDeferredLoad: deferredFrontendSchedule.waitForDeferredLoad,
   yieldBetweenDeferredLoads: deferredFrontendSchedule.yieldBetweenDeferredLoads,
+  downloadDeferredModule: deferredFrontendSchedule.downloadDeferredModule,
   resetCrashedSlots: resetCrashedPluginSlots,
   setRegistrations: setPluginSlotRegistrations,
   removeRegistrations: removePluginSlotRegistrations,
