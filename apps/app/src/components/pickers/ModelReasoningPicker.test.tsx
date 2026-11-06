@@ -303,17 +303,24 @@ afterEach(() => {
 
 describe("ModelReasoningPicker", () => {
   it.each([
-    ["codex", "GPT-6.1-Sol", "GPT-", "6.1-Sol"],
-    ["claude-code", "Claude Opus 5.5 (1M)", "Claude ", "Opus 5.5"],
+    ["codex", "GPT-6.1-Sol", "GPT-", "6.1-Sol", "GPT-6.1-Sol"],
+    [
+      "claude-code",
+      "Claude Opus 5.5 (1M)",
+      "Claude ",
+      "Opus 5.5",
+      "Opus 5.5 (1M)",
+    ],
     [
       "acp:custom",
       "Organization Custom ACP Production Model",
       "Organization ",
       "Custom ACP Production Model",
+      "Custom ACP Production Model",
     ],
   ])(
     "preserves the distinguishing compact name for %s",
-    (providerId, label, brandPrefix, identity) => {
+    (providerId, label, brandPrefix, identity, selectionLabel) => {
       renderPicker({
         compact: true,
         selectedProviderId: providerId,
@@ -330,9 +337,43 @@ describe("ModelReasoningPicker", () => {
       expect(name.textContent).toContain(identity);
       expect(name.className).not.toContain("truncate");
       expect(trigger.textContent).not.toContain("Medium");
-      expect(trigger.getAttribute("aria-description")).toContain(label);
-      expect(trigger.querySelector("[title]")?.getAttribute("title")).toContain(
-        label,
+      const description = `${providerId}: ${selectionLabel} · Medium reasoning`;
+      expect(trigger.getAttribute("aria-description")).toBe(description);
+      expect(trigger.getAttribute("aria-label")).toBe(
+        `Provider, model and reasoning: ${description}`,
+      );
+      expect(trigger.querySelector("[title]")?.getAttribute("title")).toBe(
+        description,
+      );
+    },
+  );
+
+  it.each([
+    ["Cursor Agent", "Agent"],
+    ["Independent Model", "Independent Model"],
+  ])(
+    "keeps the phone selection label identifiable for %s",
+    (label, expected) => {
+      renderPicker({
+        compact: true,
+        selectedProviderId: "cursor",
+        pickerProviderOptions: [
+          { value: "cursor", label: "Cursor", brandPrefix: "Cursor " },
+        ],
+        modelValue: "selected",
+        modelOptions: [{ value: "selected", label }],
+      });
+      const description = `Cursor: ${expected} · Medium reasoning`;
+      const trigger = screen.getByRole("button", {
+        name: `Provider, model and reasoning: ${description}`,
+      });
+      expect(trigger.querySelector("[data-model-name]")?.textContent).toBe(
+        expected,
+      );
+      expect(trigger.textContent).not.toContain("Medium");
+      expect(trigger.getAttribute("aria-description")).toBe(description);
+      expect(trigger.querySelector("[title]")?.getAttribute("title")).toBe(
+        description,
       );
     },
   );

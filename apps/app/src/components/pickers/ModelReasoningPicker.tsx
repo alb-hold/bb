@@ -350,11 +350,14 @@ export function ModelReasoningPicker(props: ModelReasoningPickerProps) {
       : undefined;
   const TriggerIcon = ProviderIcon;
   const showCompactIconOnly = compactIconOnly && isCompactViewport;
+  const selectionModelLabel = selectedProviderLabel.trim()
+    ? stripModelBrandPrefix(selectedModelLabel, selectedProvider?.brandPrefix)
+    : selectedModelLabel;
   const triggerTitleModelLabel = showLoadingTrigger
     ? "Model"
     : selectedModelLoadFailed
       ? selectedModelLoadErrorText
-      : selectedModelLabel || triggerModelLabel;
+      : selectionModelLabel || triggerModelLabel;
   const triggerTitle = [
     [selectedProviderLabel, triggerTitleModelLabel]
       .filter((label) => label.trim().length > 0)
@@ -366,7 +369,7 @@ export function ModelReasoningPicker(props: ModelReasoningPickerProps) {
   ].join("");
   const compactSelectionLabel = [
     selectedProviderLabel,
-    selectedModelLabel || "Model",
+    selectionModelLabel || "Model",
   ]
     .filter((label) => label.trim().length > 0)
     .join(": ");
