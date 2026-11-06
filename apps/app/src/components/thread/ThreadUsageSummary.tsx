@@ -357,7 +357,7 @@ export function ThreadUsageAndAgents({
                     failed
                     {childSummary.totalTokens === null
                       ? null
-                      : ` · Σ ${compactTokens(childSummary.totalTokens)}`}
+                      : ` · ${compactTokens(childSummary.totalTokens)} tokens`}
                   </span>
                 </span>
               </>
@@ -372,7 +372,7 @@ export function ThreadUsageAndAgents({
                   idle · {childSummary.failed ?? 0} failed
                   {childSummary.totalTokens === null
                     ? null
-                    : ` · Σ ${compactTokens(childSummary.totalTokens)}`}
+                    : ` · ${compactTokens(childSummary.totalTokens)} tokens`}
                 </span>
               </>
             )}
@@ -390,7 +390,7 @@ export function ThreadUsageAndAgents({
                   failed
                   {childSummary.totalTokens === null
                     ? null
-                    : ` · Σ ${compactTokens(childSummary.totalTokens)}`}
+                    : ` · ${compactTokens(childSummary.totalTokens)} tokens`}
                 </li>
               ) : null}
               {childRows}
@@ -704,7 +704,7 @@ function CompactThreadUsageDrawer({
               {childSummary.failed} failed
               {childSummary.totalTokens === null
                 ? null
-                : ` · Σ ${compactTokens(childSummary.totalTokens)}`}
+                : ` · ${compactTokens(childSummary.totalTokens)} tokens`}
             </p>
             {childRows.length > 0 ? (
               <ul className="min-h-0 overflow-y-auto rounded-md border border-border/70 p-3 text-sm">

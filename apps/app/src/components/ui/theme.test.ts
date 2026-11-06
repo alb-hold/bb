@@ -536,6 +536,9 @@ describe("composer and navigation contrast", () => {
       ...canvas,
       lightness: ink.lightness * share + canvas.lightness * (1 - share),
     };
+    it(`${mode} empty-state foreground reaches AA`, () => {
+      expect(contrastRatio(ink, canvas)).toBeGreaterThanOrEqual(4.5);
+    });
     it(`${mode} composer placeholder reaches 4.5:1 after opacity`, () => {
       expect(
         contrastRatio(blend(subtle, canvas, opacity), canvas),

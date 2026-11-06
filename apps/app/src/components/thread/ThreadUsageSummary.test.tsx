@@ -396,7 +396,7 @@ describe("thread usage summary", () => {
     ).not.toHaveLength(0);
     expect(screen.queryByText(/latest reported context fill/i)).toBeNull();
     expect(await screen.findByText(/Ran 2 agents/)).toBeTruthy();
-    expect(screen.getByText(/Σ 64.4M/)).toBeTruthy();
+    expect(screen.getByText(/64.4M tokens/)).toBeTruthy();
 
     fireEvent.click(screen.getByText("View ▸"));
     await waitFor(() =>

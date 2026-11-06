@@ -190,7 +190,9 @@ describe("mobile recents hierarchy interaction", () => {
       throw new Error("Expected provider tile inside the disclosure button");
     }
     expect(providerTile.className).not.toContain("border");
-    expect(providerTile.closest("li")?.querySelector("a")?.className).toContain("h-13");
+    expect(providerTile.closest("li")?.querySelector("a")?.className).toContain(
+      "h-13",
+    );
     fireEvent.click(providerTile);
 
     expect(screen.queryByText("Audit folder query paths")).toBeNull();
@@ -404,6 +406,11 @@ describe("mobile recent thread rows", () => {
     );
 
     expect(screen.getByText("bb \u00b7 3h ago")).not.toBeNull();
+    expect(
+      screen
+        .getByText("bb \u00b7 3h ago")
+        .previousElementSibling?.getAttribute("data-icon"),
+    ).toBe("Folder");
   });
 
   it("includes the worktree branch when the thread has one", () => {
@@ -432,9 +439,10 @@ describe("mobile recent thread rows", () => {
       </TestProviders>,
     );
 
+    const metadata = screen.getByText("bb \u00b7 bb/mobile-home \u00b7 3h ago");
     expect(
-      screen.getByText("bb \u00b7 bb/mobile-home \u00b7 3h ago"),
-    ).not.toBeNull();
+      metadata.previousElementSibling?.hasAttribute("data-icon-root"),
+    ).toBe(true);
   });
 
   it("does not repeat the project name as the workspace segment", () => {
