@@ -189,6 +189,27 @@ afterEach(() => {
 });
 
 describe("SidebarWindowedItems", () => {
+  it.each([40, 44, 57])("preserves measured %s px rows and calibrates unseen group placeholders", (height) => {
+    render(withScrollRef({ current: scrollElement }, (
+      <SidebarWindowedItems
+        itemKeys={["thread", "group"]}
+        estimateRows={(index) => index + 1}
+        renderItem={(index) => <span data-testid={`real-${index}`}>{index}</span>}
+      />
+    )));
+    const first = wrapperAt(0);
+    act(() => emitIntersections([{ target: first, isIntersecting: true }]));
+    expect(screen.queryByTestId("real-0")).not.toBeNull();
+    act(() => emitIntersections([{
+      target: first,
+      isIntersecting: false,
+      boundingClientRect: new DOMRect(0, 1000, 300, height),
+    }]));
+    expect(screen.queryByTestId("real-0")).toBeNull();
+    expect(first.getAttribute("style")).toBe(`height: ${height}px;`);
+    expect(wrapperAt(1).getAttribute("style")).toBe(`height: ${height * 2}px;`);
+  });
+
   it("batches a viewport resize storm without committing rows inside observer delivery", () => {
     vi.mocked(HTMLElement.prototype.getBoundingClientRect).mockReturnValue(
       VIEWPORT_RECT,

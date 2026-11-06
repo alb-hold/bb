@@ -2368,6 +2368,24 @@ describe("ThreadRow", () => {
     expect(clickLink).toHaveBeenCalledTimes(2);
   });
 
+  it.each([
+    { isCompact: false, metadata: false },
+    { isCompact: true, metadata: false },
+    { isCompact: false, metadata: true },
+    { isCompact: true, metadata: true },
+  ])("keeps phone touch rows at least 44 px (compact: $isCompact, metadata: $metadata)", ({ isCompact, metadata }) => {
+    getDefaultStore().set(sidebarShowRowMetadataAtom, metadata);
+    renderThreadRow({
+      experiments: ["threadRowMetadata"],
+      options: { ...DEFAULT_OPTIONS, isCompact },
+    });
+    const row = screen.getByRole("link", { name: "Open Thread" }).closest<HTMLElement>("[data-sidebar-rename-row]")!;
+    expect(row.classList.contains("max-md:pointer-coarse:min-h-11")).toBe(true);
+    expect(row.classList.contains("md:h-(--bb-sidebar-desktop-row-height)")).toBe(true);
+    expect(row.classList.contains("[--bb-sidebar-desktop-row-height:2.5rem]")).toBe(true);
+    expect(row.classList.contains("min-h-11")).toBe(false);
+  });
+
   it("draws other plugins' metadata only while Metadata is on", () => {
     const slot = renderThreadRow({ experiments: ["threadRowMetadata"] });
     expect(
@@ -2489,7 +2507,7 @@ describe("ThreadRow", () => {
         false,
       );
       expect(row.className).toContain("md:h-(--bb-sidebar-desktop-row-height)");
-      expect(row.className).not.toContain("max-md:pointer-coarse:min-h-11");
+      expect(row.classList.contains("max-md:pointer-coarse:min-h-11")).toBe(true);
     },
   );
 
