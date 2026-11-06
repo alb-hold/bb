@@ -558,11 +558,12 @@ describe("ThreadRow", () => {
     ["Workspace", createThread({ environment: makeSidebarEnvironment({ isWorktree: false }) })],
     ["Worktree", createThread({ environment: makeSidebarEnvironment({ isWorktree: true }) })],
     ["Native terminal", createThread({ experimental_nativeActivity: { lastEvidenceAt: null, freshForMs: 90_000, confirmation: "unconfirmed", evidenceKind: "unknown" } })],
-  ] as const)("keeps one muted leading metadata glyph slot for %s", (label, thread) => {
+  ] as const)("keeps one subdued leading metadata glyph slot for %s", (label, thread) => {
     const view = renderThreadRow({ thread });
     const context = view.container.querySelector("[data-sidebar-thread-context]");
     const slot = context?.firstElementChild;
-    expect(context?.classList.contains("text-muted-foreground")).toBe(true);
+    expect(context?.classList.contains("text-subtle-foreground")).toBe(true);
+    expect(context?.classList.contains("font-normal")).toBe(true);
     expect(slot?.getAttribute("role")).toBe("img");
     expect(slot?.getAttribute("aria-label")).toBe(label);
     expect(context?.querySelectorAll('[role="img"]')).toHaveLength(1);
