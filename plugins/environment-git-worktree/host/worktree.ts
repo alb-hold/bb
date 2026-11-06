@@ -16,6 +16,7 @@ import fs from "node:fs/promises";
 import {
   directoryTreeChangedSince,
   removeDirectoryTree,
+  RetainedRecoveryError,
 } from "bb-environment-provider-host/remove-directory-tree";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
@@ -119,6 +120,20 @@ interface RemoveWorktreeArgs {
           entry: string,
           quarantined: string,
         ) => Promise<void>;
+        beforeQuarantinePinLink?: (
+          source: string,
+          pin: string,
+        ) => Promise<void>;
+        beforePinnedRecoveryLink?: (
+          pin: string,
+          destination: string,
+        ) => Promise<void>;
+        beforeRecoveryCopy?: (
+          source: string,
+          destination: string,
+        ) => Promise<void>;
+        beforePinCleanup?: (pin: string, restoredPath: string) => Promise<void>;
+        createPinSuffix?: () => string;
       }
     | undefined;
 }
@@ -992,6 +1007,11 @@ async function removeRegisteredWorktree(
         beforeEntryRename: args.testHooks?.beforeEntryRename,
         afterEntryCheck: args.testHooks?.afterEntryCheck,
         afterEntryQuarantined: args.testHooks?.afterEntryQuarantined,
+        beforeQuarantinePinLink: args.testHooks?.beforeQuarantinePinLink,
+        beforePinnedRecoveryLink: args.testHooks?.beforePinnedRecoveryLink,
+        beforeRecoveryCopy: args.testHooks?.beforeRecoveryCopy,
+        beforePinCleanup: args.testHooks?.beforePinCleanup,
+        createPinSuffix: args.testHooks?.createPinSuffix,
       });
       if (removed.status === "retained") {
         throw worktreePreservedError(identity.path, [
@@ -1057,6 +1077,18 @@ async function removeRegisteredWorktree(
           `the worktree directory was removed but its severed Git metadata could not be removed (${error instanceof Error ? error.message : String(error)})`,
           ...keptNote,
         ]);
+      }
+      if (error instanceof RetainedRecoveryError) {
+        const retainedPaths = error.retainedPaths.map((retainedPath) =>
+          retainedPath === quarantinedPath ||
+          retainedPath.startsWith(`${quarantinedPath}${path.sep}`)
+            ? `${identity.path}${retainedPath.slice(quarantinedPath.length)}`
+            : retainedPath,
+        );
+        throw new RetainedRecoveryError(
+          error.message.replaceAll(quarantinedPath, identity.path),
+          retainedPaths,
+        );
       }
       throw error;
     }

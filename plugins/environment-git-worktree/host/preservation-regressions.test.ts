@@ -38,6 +38,22 @@ const hasRemoveDirectoryTree = existsSync(
 );
 const removeDirectoryTreeTest = it.skipIf(!hasRemoveDirectoryTree);
 
+function errorRetainedPaths(error: unknown): string[] {
+  if (
+    error === null ||
+    typeof error !== "object" ||
+    !("retainedPaths" in error)
+  )
+    return [];
+  const paths: unknown = error.retainedPaths;
+  return Array.isArray(paths)
+    ? paths.filter(
+        (retainedPath): retainedPath is string =>
+          typeof retainedPath === "string",
+      )
+    : [];
+}
+
 async function removeDirectoryTree(
   root: string,
   hooks: {
@@ -78,6 +94,14 @@ async function removeDirectoryTree(
       source: string,
       destination: string,
     ) => Promise<void>;
+    beforeQuarantinePinLink?: (source: string, pin: string) => Promise<void>;
+    beforePinnedRecoveryLink?: (
+      pin: string,
+      destination: string,
+    ) => Promise<void>;
+    beforeRecoveryCopy?: (source: string, destination: string) => Promise<void>;
+    beforePinCleanup?: (pin: string, restoredPath: string) => Promise<void>;
+    createPinSuffix?: () => string;
     afterGitMarkerLinked?: (
       source: string,
       destination: string,
@@ -298,6 +322,14 @@ async function remove(
       entry: string,
       quarantined: string,
     ) => Promise<void>;
+    beforeQuarantinePinLink?: (source: string, pin: string) => Promise<void>;
+    beforePinnedRecoveryLink?: (
+      pin: string,
+      destination: string,
+    ) => Promise<void>;
+    beforeRecoveryCopy?: (source: string, destination: string) => Promise<void>;
+    beforePinCleanup?: (pin: string, restoredPath: string) => Promise<void>;
+    createPinSuffix?: () => string;
   },
 ): Promise<void> {
   await Reflect.apply(removeWorktree, undefined, [
@@ -1117,11 +1149,9 @@ describe("real worktree teardown preservation", () => {
       await expect(readlink(path.join(root, quarantined!))).resolves.toBe(
         "README.md",
       );
-      if (typeof result !== "string") {
-        expect(result.retainedPaths).toContain(originalLink);
-        expect(result.retainedPaths).toContain(path.join(root, quarantined!));
-        expect(quarantined).toMatch(/^\.bb-removing-/u);
-      }
+      expect(result.retainedPaths).toContain(originalLink);
+      expect(result.retainedPaths).toContain(path.join(root, quarantined!));
+      expect(quarantined).toMatch(/^\.bb-removing-/u);
     },
   );
 
@@ -1133,21 +1163,22 @@ describe("real worktree teardown preservation", () => {
         (await fs.stat(path.join(worktree.path, "README.md"))).mode & 0o7777;
       let replaced = false;
       let racerSource = "";
+      let quarantineSource = "";
       const result = await removeDirectoryTree(worktree.path, {
         startedAt: Number.MAX_SAFE_INTEGER,
-        afterEntryQuarantined: async (entry) => {
+        afterEntryQuarantined: async (entry, quarantined) => {
           if (!entry.endsWith("README.md")) return;
+          quarantineSource = quarantined;
           await writeFile(
             path.join(worktree.path, "late-after-check.txt"),
             "late\n",
           );
         },
-        beforeQuarantineRestoreLink: async (source, destination) => {
+        beforeQuarantineRestoreLink: async (_source, destination) => {
           if (!destination.endsWith("README.md") || replaced) return;
           replaced = true;
-          racerSource = path.join(worktree.path, path.basename(source));
-          await fs.unlink(source);
-          await writeFile(source, "racing quarantine bytes\n");
+          racerSource = path.join(worktree.path, "README.md");
+          await writeFile(destination, "racing file bytes\n");
         },
       });
 
@@ -1155,13 +1186,14 @@ describe("real worktree teardown preservation", () => {
       expect(replaced).toBe(true);
       await expect(
         readFile(path.join(worktree.path, "README.md"), "utf8"),
-      ).resolves.toBe("racing quarantine bytes\n");
+      ).resolves.toBe("racing file bytes\n");
       await expect(readFile(racerSource, "utf8")).resolves.toBe(
-        "racing quarantine bytes\n",
+        "racing file bytes\n",
       );
       const recoveredPath = result.retainedPaths.find((retainedPath) =>
         path.basename(retainedPath).startsWith(".bb-recovered-"),
       );
+      expect(recoveredPath).toBeDefined();
       if (recoveredPath === undefined) {
         const visibleBytes = await Promise.all([
           readFile(path.join(worktree.path, "README.md")),
@@ -1182,15 +1214,14 @@ describe("real worktree teardown preservation", () => {
         expect.arrayContaining([
           recoveredPath,
           path.join(worktree.path, "README.md"),
-          racerSource,
+          path.join(worktree.path, path.basename(quarantineSource)),
         ]),
       );
-      expect(path.basename(racerSource)).toMatch(/^\.bb-removing-/u);
     },
   );
 
   removeDirectoryTreeTest(
-    "returns recovered and duplicate Git marker paths without a hook when its source is replaced",
+    "returns duplicate Git marker paths without a hook when its source is replaced",
     async () => {
       const worktree = await makeWorktree();
       const markerPath = path.join(worktree.path, ".git");
@@ -1203,15 +1234,11 @@ describe("real worktree teardown preservation", () => {
         afterRootMarkerDetached: async (root) => {
           await writeFile(path.join(root, "late-after-marker.txt"), "late\n");
         },
-        beforeGitMarkerRestoreLink: async (source) => {
+        beforeGitMarkerRestoreLink: async (_source, destination) => {
           if (replaced) return;
           replaced = true;
-          racerSource = path.join(
-            path.dirname(worktree.path),
-            path.basename(source),
-          );
-          await fs.unlink(source);
-          await writeFile(source, "racing git marker bytes\n");
+          racerSource = markerPath;
+          await writeFile(destination, "racing git marker bytes\n");
         },
       });
 
@@ -1225,22 +1252,13 @@ describe("real worktree teardown preservation", () => {
       const recoveredPath = result.retainedPaths.find((retainedPath) =>
         path.basename(retainedPath).startsWith(".bb-recovered-"),
       );
-      if (recoveredPath === undefined) {
-        const visibleBytes = await Promise.all([
-          readFile(markerPath),
-          readFile(racerSource),
-        ]);
-        expect(visibleBytes.some((bytes) => bytes.equals(originalMarker))).toBe(
-          true,
-        );
-        throw new Error("Recovered original path was not reported");
-      }
+      expect(recoveredPath).toBeDefined();
       await expect(readFile(recoveredPath!)).resolves.toEqual(originalMarker);
       expect((await fs.stat(recoveredPath!)).mode & 0o7777).toBe(originalMode);
+      expect((await fs.stat(markerPath)).mode & 0o7777).toBe(originalMode);
       expect(result.retainedPaths).toEqual(
-        expect.arrayContaining([recoveredPath, markerPath, racerSource]),
+        expect.arrayContaining([recoveredPath, markerPath, worktree.path]),
       );
-      expect(path.basename(racerSource)).toMatch(/^\.bb-gitfile-/u);
     },
   );
 
@@ -2112,6 +2130,264 @@ describe("real worktree teardown preservation", () => {
       expect(
         await readFile(path.join(worktree.path, "README.md"), "utf8"),
       ).toBe("published\n");
+    },
+  );
+
+  removeDirectoryTreeTest(
+    "removes a mismatched quarantine pin and recovers the held original from its file handle",
+    async () => {
+      const root = await mkdtemp(
+        path.join(os.tmpdir(), "bb-preserve-pin-race-"),
+      );
+      roots.push(root);
+      const originalPath = path.join(root, "payload.txt");
+      await writeFile(originalPath, "original bytes\n", { mode: 0o640 });
+      let swapped = false;
+      let copyAttempted = false;
+      let racerPath = "";
+      let error: unknown;
+      let result: RemoveDirectoryTreeResult | undefined;
+      try {
+        result = await removeDirectoryTree(root, {
+          startedAt: Number.MAX_SAFE_INTEGER,
+          beforeQuarantinePinLink: async (source) => {
+            if (swapped || path.basename(source) === "payload.txt") return;
+            swapped = true;
+            racerPath = source;
+            await fs.unlink(source);
+            await writeFile(source, "racer bytes\n");
+          },
+          afterEntryQuarantined: async (entry, quarantined) => {
+            if (swapped || !entry.endsWith("payload.txt")) return;
+            swapped = true;
+            racerPath = quarantined;
+            await fs.unlink(quarantined);
+            await writeFile(quarantined, "racer bytes\n");
+            await fs.chmod(root, 0o555);
+          },
+          beforeRecoveryCopy: async () => {
+            copyAttempted = true;
+          },
+        });
+      } catch (caught) {
+        error = caught;
+      } finally {
+        await fs.chmod(root, 0o755);
+      }
+
+      expect(swapped).toBe(true);
+      const reportedPaths = result?.retainedPaths ?? errorRetainedPaths(error);
+      const visiblePaths = await fs
+        .readdir(root)
+        .then((names) => names.map((name) => path.join(root, name)));
+      const contents: Buffer[] = [];
+      let originalIsReported = false;
+      for (const candidate of new Set([...reportedPaths, ...visiblePaths])) {
+        try {
+          const bytes = await readFile(candidate);
+          contents.push(bytes);
+          if (
+            reportedPaths.includes(candidate) &&
+            bytes.equals(Buffer.from("original bytes\n"))
+          )
+            originalIsReported = true;
+        } catch {}
+      }
+      expect(
+        contents.some((bytes) => bytes.equals(Buffer.from("original bytes\n"))),
+      ).toBe(true);
+      expect(originalIsReported).toBe(true);
+      expect(
+        visiblePaths.some((candidate) =>
+          path.basename(candidate).startsWith(".bb-pin-"),
+        ),
+      ).toBe(false);
+      expect(copyAttempted).toBe(true);
+      if (error !== undefined) {
+        expect(error).toMatchObject({ name: "RetainedRecoveryError" });
+        expect(
+          reportedPaths.some((retainedPath) =>
+            path.basename(retainedPath).startsWith(".bb-recovered-"),
+          ),
+        ).toBe(true);
+      }
+      await expect(
+        readFile(path.join(root, path.basename(racerPath)), "utf8"),
+      ).resolves.toBe("racer bytes\n");
+    },
+  );
+
+  removeDirectoryTreeTest(
+    "retains a stale recovery pin and its directory during a fresh teardown",
+    async () => {
+      const root = await mkdtemp(
+        path.join(os.tmpdir(), "bb-preserve-stale-pin-"),
+      );
+      roots.push(root);
+      const target = path.join(root, "target");
+      await mkdir(target);
+      const stalePin = path.join(target, ".bb-pin-deadbeef");
+      await writeFile(stalePin, "stale original bytes\n");
+      const result = await removeDirectoryTree(target, {
+        startedAt: Number.MAX_SAFE_INTEGER,
+      });
+
+      expect(result.status).toBe("retained");
+      expect(result.retainedPaths).toContain(stalePin);
+      await expect(readFile(stalePin, "utf8")).resolves.toBe(
+        "stale original bytes\n",
+      );
+      await expect(access(target)).resolves.toBeUndefined();
+    },
+  );
+
+  removeDirectoryTreeTest(
+    "retries pin name collisions and leaves no pin after a verified clean removal",
+    async () => {
+      const root = await mkdtemp(
+        path.join(os.tmpdir(), "bb-preserve-pin-clean-"),
+      );
+      roots.push(root);
+      await writeFile(path.join(root, "payload.txt"), "clean removal\n");
+      let attempt = 0;
+      const result = await removeDirectoryTree(root, {
+        startedAt: Number.MAX_SAFE_INTEGER,
+        createPinSuffix: () => (attempt++ === 0 ? "deadbeef" : "cafebabe"),
+        beforeQuarantinePinLink: async (_source, pin) => {
+          if (path.basename(pin) === ".bb-pin-deadbeef") {
+            await writeFile(pin, "name collision\n");
+            return;
+          }
+          await fs.unlink(path.join(root, ".bb-pin-deadbeef"));
+        },
+      });
+
+      expect(result.status).toBe("removed");
+      expect(attempt).toBeGreaterThan(1);
+      await expect(access(root)).rejects.toMatchObject({ code: "ENOENT" });
+    },
+  );
+
+  removeDirectoryTreeTest(
+    "removes the verified recovery pin after a successful restore",
+    async () => {
+      const root = await mkdtemp(
+        path.join(os.tmpdir(), "bb-preserve-pin-restored-"),
+      );
+      roots.push(root);
+      const originalPath = path.join(root, "payload.txt");
+      await writeFile(originalPath, "original bytes\n", { mode: 0o640 });
+      let restored = false;
+      const result = await removeDirectoryTree(root, {
+        startedAt: Number.MAX_SAFE_INTEGER,
+        afterEntryQuarantined: async (entry) => {
+          if (!entry.endsWith("payload.txt")) return;
+          await writeFile(path.join(root, "late-sibling.txt"), "late\n");
+        },
+        afterRestoreNameCheck: async (_source, destination, isDirectory) => {
+          if (isDirectory || !destination.endsWith("payload.txt") || restored)
+            return;
+          restored = true;
+          await writeFile(destination, "racing bytes\n");
+        },
+      });
+
+      expect(result.status).toBe("retained");
+      expect(restored).toBe(true);
+      await expect(readFile(originalPath, "utf8")).resolves.toBe(
+        "racing bytes\n",
+      );
+      const originalPathInResult = result.retainedPaths.find((candidate) =>
+        path.basename(candidate).startsWith(".bb-recovered-"),
+      );
+      expect(originalPathInResult).toBeDefined();
+      await expect(readFile(originalPathInResult!, "utf8")).resolves.toBe(
+        "original bytes\n",
+      );
+      await expect(
+        fs
+          .readdir(root)
+          .then((names) => names.some((name) => name.startsWith(".bb-pin-"))),
+      ).resolves.toBe(false);
+    },
+  );
+
+  removeDirectoryTreeTest(
+    "keeps the original pin and names it when verified recovery fails",
+    async () => {
+      const root = await mkdtemp(
+        path.join(os.tmpdir(), "bb-preserve-pin-failed-"),
+      );
+      roots.push(root);
+      const originalPath = path.join(root, "payload.txt");
+      await writeFile(originalPath, "original bytes\n");
+      let pinCleanupAttempted = false;
+      let error: unknown;
+      try {
+        await removeDirectoryTree(root, {
+          startedAt: Number.MAX_SAFE_INTEGER,
+          beforePinCleanup: async (pin) => {
+            if (path.basename(pin).startsWith(".bb-pin-")) {
+              pinCleanupAttempted = true;
+              throw new Error("injected pin cleanup failure");
+            }
+          },
+        });
+      } catch (caught) {
+        error = caught;
+      }
+
+      expect(pinCleanupAttempted).toBe(true);
+      expect(error).toMatchObject({ name: "RetainedRecoveryError" });
+      const pinPath = errorRetainedPaths(error).find((retainedPath) =>
+        path.basename(retainedPath).startsWith(".bb-pin-"),
+      );
+      expect(pinPath).toBeDefined();
+      await expect(access(originalPath)).resolves.toBeUndefined();
+      await expect(readFile(pinPath!)).resolves.toBeInstanceOf(Buffer);
+      expect(error instanceof Error ? error.message : "").toContain(pinPath);
+    },
+  );
+
+  removeDirectoryTreeTest(
+    "keeps a usable Git marker when marker recovery fails closed",
+    async () => {
+      const worktree = await makeWorktree();
+      let markerCleanupAttempted = false;
+      let markerDetached = false;
+      let result: RemoveDirectoryTreeResult | undefined;
+      let error: unknown;
+      try {
+        result = await removeDirectoryTree(worktree.path, {
+          startedAt: Number.MAX_SAFE_INTEGER,
+          afterRootMarkerDetached: async (root) => {
+            markerDetached = true;
+            await writeFile(path.join(root, "late-marker-data.txt"), "late\n");
+          },
+          beforePinCleanup: async (pin) => {
+            if (markerDetached && path.basename(pin).startsWith(".bb-pin-")) {
+              markerCleanupAttempted = true;
+              throw new Error("injected marker pin cleanup failure");
+            }
+          },
+        });
+      } catch (caught) {
+        error = caught;
+      }
+
+      expect(markerDetached).toBe(true);
+      expect(markerCleanupAttempted).toBe(true);
+      expect(result).toBeUndefined();
+      expect(error).toMatchObject({ name: "RetainedRecoveryError" });
+      const markerPin = errorRetainedPaths(error).find((retainedPath) =>
+        path.basename(retainedPath).startsWith(".bb-pin-"),
+      );
+      expect(markerPin).toBeDefined();
+      expect(error instanceof Error ? error.message : "").toContain(markerPin);
+      await expect(
+        git(worktree.path, "rev-parse", "--git-dir"),
+      ).resolves.toMatch(/worktrees/u);
+      await expect(readFile(markerPin!, "utf8")).resolves.toContain("gitdir:");
     },
   );
 

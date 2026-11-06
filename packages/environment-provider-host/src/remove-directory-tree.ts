@@ -13,7 +13,7 @@ import {
   unlink,
 } from "node:fs/promises";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 export interface RemoveDirectoryTreeHooks {
   startedAt?: number;
@@ -42,6 +42,14 @@ export interface RemoveDirectoryTreeHooks {
     destination: string,
   ) => Promise<void>;
   afterGitMarkerLinked?: (source: string, destination: string) => Promise<void>;
+  beforeQuarantinePinLink?: (source: string, pin: string) => Promise<void>;
+  beforePinnedRecoveryLink?: (
+    pin: string,
+    destination: string,
+  ) => Promise<void>;
+  beforeRecoveryCopy?: (source: string, destination: string) => Promise<void>;
+  beforePinCleanup?: (pin: string, restoredPath: string) => Promise<void>;
+  createPinSuffix?: () => string;
   readDirectoryNames?: (directory: string) => Promise<string[]>;
   onRetainedPath?: (retainedPath: string) => void;
   afterRootMarkerDetached?: (root: string) => Promise<void>;
@@ -54,6 +62,16 @@ export interface RemoveDirectoryTreeResult {
 }
 
 type RemoveEntryResult = RemoveDirectoryTreeResult["status"];
+
+export class RetainedRecoveryError extends Error {
+  readonly retainedPaths: string[];
+
+  constructor(message: string, retainedPaths: string[]) {
+    super(message);
+    this.name = "RetainedRecoveryError";
+    this.retainedPaths = retainedPaths;
+  }
+}
 
 function descriptorRoot(): string | null {
   if (process.platform === "linux") return "/proc/self/fd";
@@ -129,9 +147,12 @@ async function recoverFileFromHandle(
   parentDirectory: string,
   source: FileHandle,
   mode: bigint,
+  hooks: RemoveDirectoryTreeHooks,
+  sourcePath: string,
 ): Promise<string> {
   return createRecoveredEntry(parentDirectory, async (candidate) => {
-    const destination = await open(candidate, "wx", Number(mode));
+    await hooks.beforeRecoveryCopy?.(sourcePath, candidate);
+    const destination = await open(candidate, "wx+", Number(mode));
     try {
       const buffer = Buffer.alloc(64 * 1024);
       let position = 0;
@@ -158,8 +179,194 @@ async function recoverFileFromHandle(
         position += bytesRead;
       }
       await destination.chmod(Number(mode));
+      await verifyFileContents(destination, source);
     } finally {
       await destination.close();
+    }
+  });
+}
+
+async function hashFileHandle(
+  handle: FileHandle,
+  size: bigint,
+): Promise<string> {
+  if (size > BigInt(Number.MAX_SAFE_INTEGER))
+    throw new Error("File is too large to verify recovered contents");
+  const hash = createHash("sha256");
+  const buffer = Buffer.alloc(64 * 1024);
+  let position = 0;
+  const expectedSize = Number(size);
+  while (position < expectedSize) {
+    const { bytesRead } = await handle.read(
+      buffer,
+      0,
+      Math.min(buffer.length, expectedSize - position),
+      position,
+    );
+    if (bytesRead === 0) throw new Error("File changed while hashing contents");
+    hash.update(buffer.subarray(0, bytesRead));
+    position += bytesRead;
+  }
+  return hash.digest("hex");
+}
+
+async function verifyFileContents(
+  recovered: FileHandle,
+  original: FileHandle,
+): Promise<void> {
+  const [recoveredInfo, originalInfo] = await Promise.all([
+    recovered.stat({ bigint: true }),
+    original.stat({ bigint: true }),
+  ]);
+  if (
+    recoveredInfo.size !== originalInfo.size ||
+    (await hashFileHandle(recovered, recoveredInfo.size)) !==
+      (await hashFileHandle(original, originalInfo.size))
+  )
+    throw new Error("Recovered file contents do not match the held original");
+}
+
+async function verifyPathContents(
+  candidate: string,
+  original: FileHandle,
+): Promise<void> {
+  const info = await lstat(candidate, { bigint: true });
+  if (!info.isFile())
+    throw new Error(`Recovered path is not a file: ${candidate}`);
+  const recovered = await open(
+    candidate,
+    constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
+  );
+  try {
+    await verifyFileContents(recovered, original);
+  } finally {
+    await recovered.close();
+  }
+}
+
+async function removePathIfSame(
+  pathname: string,
+  expected: {
+    dev: bigint;
+    ino: bigint;
+  },
+): Promise<boolean> {
+  try {
+    const current = await lstat(pathname, { bigint: true });
+    if (current.dev !== expected.dev || current.ino !== expected.ino)
+      return false;
+    await unlink(pathname);
+    return true;
+  } catch (error) {
+    if (errorCode(error) === "ENOENT") return true;
+    throw error;
+  }
+}
+
+async function createPinFromPath(
+  parentDirectory: string,
+  sourcePath: string,
+  expected: { dev: bigint; ino: bigint },
+  heldHandle: FileHandle | null,
+  hooks: RemoveDirectoryTreeHooks,
+): Promise<{ pin: string | null; mismatchPath?: string }> {
+  for (let attempt = 0; attempt < 64; attempt += 1) {
+    const suffix =
+      hooks.createPinSuffix?.() ?? randomUUID().replaceAll("-", "").slice(0, 8);
+    if (!/^[0-9a-f]{8}$/u.test(suffix))
+      throw new Error(
+        "Recovery pin suffix must contain eight hexadecimal characters",
+      );
+    const pin = path.join(parentDirectory, `.bb-pin-${suffix}`);
+    try {
+      await hooks.beforeQuarantinePinLink?.(sourcePath, pin);
+      await link(sourcePath, pin);
+    } catch (error) {
+      if (errorCode(error) === "EEXIST") continue;
+      if (["EXDEV", "EPERM", "EMLINK"].includes(errorCode(error) ?? ""))
+        return { pin: null };
+      throw error;
+    }
+    const pinInfo = await lstat(pin, { bigint: true });
+    const heldInfo =
+      heldHandle === null ? expected : await heldHandle.stat({ bigint: true });
+    if (pinInfo.dev === heldInfo.dev && pinInfo.ino === heldInfo.ino)
+      return { pin };
+    if (!(await removePathIfSame(pin, pinInfo)))
+      return { pin: null, mismatchPath: pin };
+    return { pin: null };
+  }
+  throw new Error("Could not allocate a unique worktree recovery pin");
+}
+
+async function recoverFileFromPin(
+  parentDirectory: string,
+  pin: string,
+  source: FileHandle,
+  mode: bigint,
+  hooks: RemoveDirectoryTreeHooks,
+): Promise<string> {
+  return createRecoveredEntry(parentDirectory, async (candidate) => {
+    try {
+      await hooks.beforePinnedRecoveryLink?.(pin, candidate);
+      await link(pin, candidate);
+    } catch (error) {
+      if (!["EXDEV", "EPERM", "EMLINK"].includes(errorCode(error) ?? ""))
+        throw error;
+      await hooks.beforeRecoveryCopy?.(pin, candidate);
+      const destination = await open(candidate, "wx+", Number(mode));
+      try {
+        const buffer = Buffer.alloc(64 * 1024);
+        let position = 0;
+        while (true) {
+          const { bytesRead } = await source.read(
+            buffer,
+            0,
+            buffer.length,
+            position,
+          );
+          if (bytesRead === 0) break;
+          let written = 0;
+          while (written < bytesRead) {
+            const result = await destination.write(
+              buffer,
+              written,
+              bytesRead - written,
+              position + written,
+            );
+            if (result.bytesWritten === 0)
+              throw new Error("Could not write recovered file contents");
+            written += result.bytesWritten;
+          }
+          position += bytesRead;
+        }
+        await destination.chmod(Number(mode));
+        await verifyFileContents(destination, source);
+      } finally {
+        await destination.close();
+      }
+      return;
+    }
+    const [pinInfo, candidateInfo, heldInfo] = await Promise.all([
+      lstat(pin, { bigint: true }),
+      lstat(candidate, { bigint: true }),
+      source.stat({ bigint: true }),
+    ]);
+    if (
+      pinInfo.dev !== heldInfo.dev ||
+      pinInfo.ino !== heldInfo.ino ||
+      candidateInfo.dev !== heldInfo.dev ||
+      candidateInfo.ino !== heldInfo.ino
+    )
+      throw new Error(`Recovery pin identity changed at ${pin}`);
+    const recovered = await open(
+      candidate,
+      constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
+    );
+    try {
+      await verifyFileContents(recovered, source);
+    } finally {
+      await recovered.close();
     }
   });
 }
@@ -230,9 +437,11 @@ function matchesQuarantinedNames(
   expected: ReadonlySet<string>,
   originalName: string,
   quarantinedName: string,
+  additionalNames: readonly string[] = [],
 ): boolean {
   if (!expected.has(originalName)) return false;
   const afterRename = new Set(expected);
+  for (const name of additionalNames) afterRename.add(name);
   afterRename.delete(originalName);
   afterRename.add(quarantinedName);
   return (
@@ -248,9 +457,23 @@ export async function removeDirectoryTree(
   const startedAt = hooks.startedAt ?? Date.now();
   const readDirectoryNames = hooks.readDirectoryNames ?? readdir;
   const retainedPaths = new Set<string>();
+  const activePins = new Set<string>();
+  const displayPathMappings = new Map<string, string>();
+  const displayPath = (candidate: string): string => {
+    const mapping = [...displayPathMappings]
+      .filter(
+        ([source]) =>
+          candidate === source || candidate.startsWith(`${source}${path.sep}`),
+      )
+      .sort(([left], [right]) => right.length - left.length)[0];
+    return mapping === undefined
+      ? candidate
+      : path.join(mapping[1], path.relative(mapping[0], candidate));
+  };
   const reportRetainedPath = (retainedPath: string) => {
-    retainedPaths.add(retainedPath);
-    hooks.onRetainedPath?.(retainedPath);
+    const displayed = displayPath(retainedPath);
+    retainedPaths.add(displayed);
+    hooks.onRetainedPath?.(displayed);
   };
   const result = (status: RemoveEntryResult): RemoveDirectoryTreeResult => {
     if (status === "retained" && retainedPaths.size === 0)
@@ -274,6 +497,7 @@ export async function removeDirectoryTree(
     await parent.close();
     return result("retained");
   }
+  displayPathMappings.set(parentPath, path.dirname(path.resolve(root)));
   const inspectBeforeRemoval = async (
     directory: string,
     rootEntry = false,
@@ -305,8 +529,18 @@ export async function removeDirectoryTree(
       if (!sameDirectory(info, openedInfo)) return false;
       const openedPath = await descriptorPath(handle);
       if (openedPath === null) return false;
+      displayPathMappings.set(openedPath, path.resolve(directory));
       const listed = await readDirectoryNames(openedPath);
       if (listed.some((name) => name.startsWith(".bb-removing-"))) return false;
+      const stalePin = listed.find(
+        (name) =>
+          name.startsWith(".bb-pin-") &&
+          !activePins.has(path.join(directory, name)),
+      );
+      if (stalePin !== undefined) {
+        reportRetainedPath(path.join(directory, stalePin));
+        return false;
+      }
       await hooks.afterDirectoryListed?.(directory, listed);
       const currentInfo = await lstat(directory);
       if (!sameDirectory(openedInfo, currentInfo)) return false;
@@ -457,6 +691,7 @@ export async function removeDirectoryTree(
       let fileHandle: Awaited<ReturnType<typeof open>> | null = null;
       let modeChanged = false;
       let symbolicLinkTarget: string | null = null;
+      let recoveryPin: string | null = null;
       if (checkedPreciseInfo.isSymbolicLink()) {
         try {
           symbolicLinkTarget = await readlink(anchoredEntry);
@@ -468,30 +703,103 @@ export async function removeDirectoryTree(
         parentDirectory,
         `.bb-removing-${randomUUID()}`,
       );
+      const pinFailure = async (
+        reason: string,
+        extraPaths: string[] = [],
+      ): Promise<RetainedRecoveryError> => {
+        const expected =
+          fileHandle === null
+            ? checkedPreciseInfo
+            : await fileHandle.stat({ bigint: true });
+        const candidates: Array<string | null> = [
+          anchoredEntry,
+          quarantined,
+          recoveryPin,
+          ...extraPaths,
+        ];
+        const retained: string[] = [];
+        for (const candidate of candidates) {
+          if (candidate === null || retained.includes(candidate)) continue;
+          try {
+            const current = await lstat(candidate, { bigint: true });
+            if (current.dev === expected.dev && current.ino === expected.ino)
+              retained.push(displayPath(candidate));
+          } catch {}
+        }
+        if (retained.length === 0 && recoveryPin !== null)
+          retained.push(displayPath(recoveryPin));
+        if (retained.length === 0) retained.push(displayPath(quarantined));
+        for (const candidate of retained) reportRetainedPath(candidate);
+        return new RetainedRecoveryError(
+          `${reason}; original retained at ${retained.join(", ")}`,
+          retained,
+        );
+      };
+      const cleanupPin = async (restoredPath: string): Promise<void> => {
+        if (recoveryPin === null) return;
+        await hooks.beforePinCleanup?.(recoveryPin, restoredPath);
+        const expected =
+          fileHandle === null
+            ? checkedPreciseInfo
+            : await fileHandle.stat({ bigint: true });
+        const pinInfo = await lstat(recoveryPin, { bigint: true });
+        if (pinInfo.dev !== expected.dev || pinInfo.ino !== expected.ino)
+          throw await pinFailure(
+            "Recovery pin identity changed before cleanup",
+          );
+        await unlink(recoveryPin);
+        activePins.delete(recoveryPin);
+        recoveryPin = null;
+      };
+      const recoverFromPin = async (): Promise<boolean> => {
+        if (recoveryPin === null)
+          throw await pinFailure("No verified recovery pin is available");
+        try {
+          let recoveredPath: string;
+          if (fileHandle === null) {
+            recoveredPath = await recoverSymlink(
+              parentDirectory,
+              symbolicLinkTarget ?? "",
+            );
+            if ((await readlink(recoveredPath)) !== symbolicLinkTarget)
+              throw new Error("Recovered symbolic link target did not match");
+          } else {
+            recoveredPath = await recoverFileFromPin(
+              parentDirectory,
+              recoveryPin,
+              fileHandle,
+              originalMode,
+              hooks,
+            );
+          }
+          reportRetainedPath(recoveredPath);
+          await cleanupPin(recoveredPath);
+          reportRetainedPath(entry);
+          reportRetainedPath(quarantined);
+          return false;
+        } catch (error) {
+          if (error instanceof RetainedRecoveryError) throw error;
+          throw await pinFailure(
+            `Recovery failed for ${entry}: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      };
       const restoreQuarantine = async (): Promise<boolean> => {
         if (modeChanged && fileHandle !== null) {
           try {
             await fileHandle.chmod(Number(originalMode));
+            modeChanged = false;
           } catch {
-            reportRetainedPath(
-              path.join(path.dirname(entry), path.basename(quarantined)),
-            );
-            return false;
+            throw await pinFailure("Could not restore the original file mode");
           }
         }
         try {
           await lstat(anchoredEntry);
-          reportRetainedPath(
-            path.join(path.dirname(entry), path.basename(quarantined)),
-          );
-          return false;
+          return await recoverFromPin();
         } catch (error) {
-          if (errorCode(error) !== "ENOENT") {
-            reportRetainedPath(
-              path.join(path.dirname(entry), path.basename(quarantined)),
-            );
-            return false;
-          }
+          if (error instanceof RetainedRecoveryError) throw error;
+          if (errorCode(error) !== "ENOENT")
+            throw await pinFailure("Could not inspect the restore name");
         }
         try {
           await hooks.afterRestoreNameCheck?.(
@@ -499,8 +807,13 @@ export async function removeDirectoryTree(
             anchoredEntry,
             false,
           );
-          await hooks.beforeQuarantineRestoreLink?.(quarantined, anchoredEntry);
-          await link(quarantined, anchoredEntry);
+          await hooks.beforeQuarantineRestoreLink?.(
+            recoveryPin ?? quarantined,
+            anchoredEntry,
+          );
+          if (recoveryPin === null)
+            throw await pinFailure("No verified recovery pin is available");
+          await link(recoveryPin, anchoredEntry);
           const linkedInfo = await lstat(anchoredEntry, { bigint: true });
           const heldInfo =
             fileHandle === null
@@ -509,67 +822,19 @@ export async function removeDirectoryTree(
           if (
             linkedInfo.dev !== heldInfo.dev ||
             linkedInfo.ino !== heldInfo.ino
-          ) {
-            const recoveredPath =
-              fileHandle === null
-                ? await recoverSymlink(
-                    parentDirectory,
-                    symbolicLinkTarget ?? "",
-                  )
-                : await recoverFileFromHandle(
-                    parentDirectory,
-                    fileHandle,
-                    originalMode,
-                  );
-            reportRetainedPath(entry);
-            reportRetainedPath(
-              path.join(path.dirname(entry), path.basename(recoveredPath)),
-            );
-            reportRetainedPath(
-              path.join(path.dirname(entry), path.basename(quarantined)),
-            );
-            return false;
-          }
-          reportRetainedPath(
-            path.join(path.dirname(entry), path.basename(quarantined)),
-          );
+          )
+            return await recoverFromPin();
+          if (fileHandle !== null)
+            await verifyPathContents(anchoredEntry, fileHandle);
+          else if ((await readlink(anchoredEntry)) !== symbolicLinkTarget)
+            return await recoverFromPin();
+          reportRetainedPath(anchoredEntry);
+          reportRetainedPath(quarantined);
+          await cleanupPin(anchoredEntry);
           return true;
-        } catch {
-          let sourceMatches = false;
-          try {
-            const [sourceInfo, heldInfo] = await Promise.all([
-              lstat(quarantined, { bigint: true }),
-              fileHandle === null
-                ? Promise.resolve(checkedPreciseInfo)
-                : fileHandle.stat({ bigint: true }),
-            ]);
-            sourceMatches =
-              sourceInfo.dev === heldInfo.dev &&
-              sourceInfo.ino === heldInfo.ino;
-          } catch {}
-          if (!sourceMatches) {
-            try {
-              const recoveredPath =
-                fileHandle === null
-                  ? await recoverSymlink(
-                      parentDirectory,
-                      symbolicLinkTarget ?? "",
-                    )
-                  : await recoverFileFromHandle(
-                      parentDirectory,
-                      fileHandle,
-                      originalMode,
-                    );
-              reportRetainedPath(
-                path.join(path.dirname(entry), path.basename(recoveredPath)),
-              );
-            } catch {}
-          }
-          reportRetainedPath(entry);
-          reportRetainedPath(
-            path.join(path.dirname(entry), path.basename(quarantined)),
-          );
-          return false;
+        } catch (error) {
+          if (error instanceof RetainedRecoveryError) throw error;
+          return await recoverFromPin();
         }
       };
       try {
@@ -628,6 +893,55 @@ export async function removeDirectoryTree(
           return retainedEntry();
         }
         await rename(anchoredEntry, quarantined);
+        const pinResult = await createPinFromPath(
+          parentDirectory,
+          quarantined,
+          {
+            dev: checkedPreciseInfo.dev,
+            ino: checkedPreciseInfo.ino,
+          },
+          fileHandle,
+          hooks,
+        );
+        if (pinResult.pin === null) {
+          let recoveredPath: string;
+          try {
+            recoveredPath =
+              fileHandle === null
+                ? await recoverSymlink(
+                    parentDirectory,
+                    symbolicLinkTarget ?? "",
+                  )
+                : await recoverFileFromHandle(
+                    parentDirectory,
+                    fileHandle,
+                    originalMode,
+                    hooks,
+                    quarantined,
+                  );
+          } catch (error) {
+            const displayedQuarantine = displayPath(quarantined);
+            throw new RetainedRecoveryError(
+              `Could not pin the original entry or copy it from the held handle: ${error instanceof Error ? error.message : String(error)}; source remains at ${displayedQuarantine}`,
+              [displayedQuarantine],
+            );
+          }
+          if (
+            fileHandle === null &&
+            (await readlink(recoveredPath)) !== symbolicLinkTarget
+          )
+            throw new Error("Recovered symbolic link target did not match");
+          reportRetainedPath(recoveredPath);
+          reportRetainedPath(quarantined);
+          if (pinResult.mismatchPath !== undefined)
+            reportRetainedPath(pinResult.mismatchPath);
+          throw new RetainedRecoveryError(
+            `Could not pin the original entry; verified recovery remains at ${displayPath(recoveredPath)}`,
+            [displayPath(recoveredPath), displayPath(quarantined)],
+          );
+        }
+        recoveryPin = pinResult.pin;
+        activePins.add(recoveryPin);
         const verifyMovedEntry = async (): Promise<boolean> => {
           if (expectedSiblingNames !== undefined) {
             let siblingNames: string[];
@@ -642,6 +956,9 @@ export async function removeDirectoryTree(
                 expectedSiblingNames,
                 path.basename(anchoredEntry),
                 path.basename(quarantined),
+                [...activePins]
+                  .filter((pin) => path.dirname(pin) === parentDirectory)
+                  .map((pin) => path.basename(pin)),
               )
             )
               return false;
@@ -671,8 +988,10 @@ export async function removeDirectoryTree(
         }
         await hooks.afterParentVerified?.(entry, quarantined);
         await unlink(quarantined);
+        await cleanupPin(quarantined);
         return "removed";
-      } catch {
+      } catch (error) {
+        if (error instanceof RetainedRecoveryError) throw error;
         await restoreQuarantine();
         return retainedEntry();
       } finally {
@@ -687,6 +1006,7 @@ export async function removeDirectoryTree(
       if (!sameDirectory(info, openedInfo)) return retainedEntry();
       const directoryPath = await descriptorPath(directory);
       if (directoryPath === null) return retainedEntry();
+      displayPathMappings.set(directoryPath, path.resolve(entry));
       let currentInfo;
       try {
         currentInfo = await lstat(anchoredEntry);
@@ -875,6 +1195,7 @@ export async function removeDirectoryTree(
       let gitMarkerHeld = false;
       let rootQuarantined = false;
       let heldGitMarkerMode = 0n;
+      let gitMarkerPinName: string | null = null;
       let recoveredGitMarkerPath: string | null = null;
       let racedGitMarkerDestination: string | null = null;
       const restoreQuarantine = async (): Promise<boolean> => {
@@ -897,6 +1218,13 @@ export async function removeDirectoryTree(
         try {
           await hooks.afterRestoreNameCheck?.(quarantined, anchoredEntry, true);
           await rename(quarantined, anchoredEntry);
+          for (const activePin of [...activePins]) {
+            const relative = path.relative(quarantined, activePin);
+            if (relative === "" || relative.startsWith(`..${path.sep}`))
+              continue;
+            activePins.delete(activePin);
+            activePins.add(path.join(anchoredEntry, relative));
+          }
           rootQuarantined = false;
           return true;
         } catch {
@@ -910,9 +1238,13 @@ export async function removeDirectoryTree(
         if (!gitMarkerHeld || heldGitMarker === null) return true;
         if (heldGitMarkerHandle === null) return false;
         const destination = path.join(rootPath, ".git");
+        const pinPath =
+          gitMarkerPinName === null
+            ? heldGitMarker
+            : path.join(rootPath, gitMarkerPinName);
         try {
           await hooks.beforeGitMarkerRestoreLink?.(heldGitMarker, destination);
-          await link(heldGitMarker, destination);
+          await link(pinPath, destination);
           const [linkedInfo, heldInfo] = await Promise.all([
             lstat(destination, { bigint: true }),
             heldGitMarkerHandle.stat({ bigint: true }),
@@ -921,46 +1253,91 @@ export async function removeDirectoryTree(
             linkedInfo.dev !== heldInfo.dev ||
             linkedInfo.ino !== heldInfo.ino
           ) {
-            recoveredGitMarkerPath = await recoverFileFromHandle(
-              rootPath,
-              heldGitMarkerHandle,
-              heldGitMarkerMode,
-            );
-            racedGitMarkerDestination = destination;
-            reportRetainedPath(
-              path.join(path.dirname(entry), path.basename(heldGitMarker)),
-            );
-            return false;
+            throw new Error("Restored Git marker identity did not match");
           }
-          reportRetainedPath(
-            path.join(path.dirname(entry), path.basename(heldGitMarker)),
-          );
+          await verifyPathContents(destination, heldGitMarkerHandle);
+          reportRetainedPath(destination);
+          reportRetainedPath(heldGitMarker);
           await hooks.afterGitMarkerLinked?.(heldGitMarker, destination);
-          return true;
-        } catch {
-          let sourceMatches = false;
-          try {
-            const [sourceInfo, heldInfo] = await Promise.all([
-              lstat(heldGitMarker, { bigint: true }),
+          await verifyPathContents(destination, heldGitMarkerHandle);
+          if (gitMarkerPinName !== null) {
+            await hooks.beforePinCleanup?.(pinPath, destination);
+            const [pinInfo, heldInfoAfterHook] = await Promise.all([
+              lstat(pinPath, { bigint: true }),
               heldGitMarkerHandle.stat({ bigint: true }),
             ]);
-            sourceMatches =
-              sourceInfo.dev === heldInfo.dev &&
-              sourceInfo.ino === heldInfo.ino;
-          } catch {}
-          if (!sourceMatches) {
+            if (
+              pinInfo.dev !== heldInfoAfterHook.dev ||
+              pinInfo.ino !== heldInfoAfterHook.ino
+            )
+              throw new Error("Git marker pin identity changed before cleanup");
+            await unlink(pinPath);
+            activePins.delete(pinPath);
+            gitMarkerPinName = null;
+          }
+          return true;
+        } catch (error) {
+          if (errorCode(error) === "EEXIST" && gitMarkerPinName !== null) {
             try {
-              recoveredGitMarkerPath = await recoverFileFromHandle(
+              const recoveredPath = await recoverFileFromPin(
                 rootPath,
+                pinPath,
                 heldGitMarkerHandle,
                 heldGitMarkerMode,
+                hooks,
               );
+              recoveredGitMarkerPath = recoveredPath;
+              racedGitMarkerDestination = destination;
+              reportRetainedPath(recoveredPath);
+              reportRetainedPath(destination);
+              const heldPathInfo = await lstat(heldGitMarker, {
+                bigint: true,
+              });
+              const originalInfo = await heldGitMarkerHandle.stat({
+                bigint: true,
+              });
+              if (
+                heldPathInfo.dev === originalInfo.dev &&
+                heldPathInfo.ino === originalInfo.ino
+              )
+                reportRetainedPath(heldGitMarker);
+              await hooks.beforePinCleanup?.(pinPath, recoveredPath);
+              const [pinInfo, heldInfo] = await Promise.all([
+                lstat(pinPath, { bigint: true }),
+                heldGitMarkerHandle.stat({ bigint: true }),
+              ]);
+              if (pinInfo.dev !== heldInfo.dev || pinInfo.ino !== heldInfo.ino)
+                throw new Error(
+                  "Git marker pin identity changed before cleanup",
+                );
+              await unlink(pinPath);
+              activePins.delete(pinPath);
+              gitMarkerPinName = null;
+              return false;
+            } catch (recoveryError) {
+              if (recoveryError instanceof RetainedRecoveryError)
+                throw recoveryError;
+              error = recoveryError;
+            }
+          }
+          const heldInfo = await heldGitMarkerHandle.stat({ bigint: true });
+          const candidates = [pinPath, heldGitMarker, quarantined];
+          const retained: string[] = [];
+          for (const candidate of candidates) {
+            try {
+              const current = await lstat(candidate, { bigint: true });
+              if (current.dev === heldInfo.dev && current.ino === heldInfo.ino)
+                retained.push(candidate);
             } catch {}
           }
-          reportRetainedPath(
-            path.join(path.dirname(entry), path.basename(heldGitMarker)),
+          if (retained.length === 0) retained.push(displayPath(pinPath));
+          const displayedRetained = retained.map(displayPath);
+          for (const retainedPath of displayedRetained)
+            reportRetainedPath(retainedPath);
+          throw new RetainedRecoveryError(
+            `Git marker recovery failed (${error instanceof Error ? error.message : String(error)}); original retained at ${displayedRetained.join(", ")}`,
+            displayedRetained,
           );
-          return false;
         }
       };
       const retain = async (): Promise<RemoveEntryResult> => {
@@ -1030,6 +1407,9 @@ export async function removeDirectoryTree(
               expectedSiblingNames,
               path.basename(anchoredEntry),
               path.basename(quarantined),
+              [...activePins]
+                .filter((pin) => path.dirname(pin) === parentDirectory)
+                .map((pin) => path.basename(pin)),
             )
           )
             return await retain();
@@ -1072,6 +1452,32 @@ export async function removeDirectoryTree(
           )
             return await retain();
           heldGitMarkerMode = originalMarkerInfo.mode & 0o7777n;
+          const pinResult = await createPinFromPath(
+            directoryPath,
+            rootGitMarker,
+            {
+              dev: originalMarkerInfo.dev,
+              ino: originalMarkerInfo.ino,
+            },
+            heldGitMarkerHandle,
+            hooks,
+          );
+          if (pinResult.pin === null) {
+            const recoveredPath = await recoverFileFromHandle(
+              directoryPath,
+              heldGitMarkerHandle,
+              heldGitMarkerMode,
+              hooks,
+              rootGitMarker,
+            );
+            reportRetainedPath(recoveredPath);
+            throw new RetainedRecoveryError(
+              `Could not pin the Git marker; verified recovery remains at ${recoveredPath}`,
+              [recoveredPath],
+            );
+          }
+          gitMarkerPinName = path.basename(pinResult.pin);
+          activePins.add(pinResult.pin);
           await rename(rootGitMarker, heldGitMarker);
           gitMarkerHeld = true;
           const movedMarkerInfo = await lstat(heldGitMarker, {
@@ -1088,13 +1494,27 @@ export async function removeDirectoryTree(
         const finalEntries = await readDirectoryNames(directoryPath);
         const finalDirectoryInfo = await lstat(quarantined);
         if (
-          finalEntries.length > 0 ||
+          finalEntries.some((name) => name !== gitMarkerPinName) ||
           !sameDirectory(openedInfo, finalDirectoryInfo) ||
           (heldMarkerInfo !== null &&
             (finalDirectoryInfo.ctimeMs !== heldMarkerInfo.ctimeMs ||
               finalDirectoryInfo.mtimeMs !== heldMarkerInfo.mtimeMs))
         ) {
           return await retain();
+        }
+        if (gitMarkerPinName !== null && heldGitMarker !== null) {
+          const markerPin = path.join(quarantined, gitMarkerPinName);
+          const [pinInfo, heldInfo] = await Promise.all([
+            lstat(markerPin, { bigint: true }),
+            heldGitMarkerHandle!.stat({ bigint: true }),
+          ]);
+          if (pinInfo.dev !== heldInfo.dev || pinInfo.ino !== heldInfo.ino)
+            return await retain();
+          await verifyPathContents(markerPin, heldGitMarkerHandle!);
+          await hooks.beforePinCleanup?.(markerPin, heldGitMarker);
+          await unlink(markerPin);
+          activePins.delete(markerPin);
+          gitMarkerPinName = null;
         }
         await rmdir(quarantined);
         rootQuarantined = false;
@@ -1104,6 +1524,10 @@ export async function removeDirectoryTree(
         }
         return "removed";
       } catch (error) {
+        if (error instanceof RetainedRecoveryError) {
+          await retain();
+          throw error;
+        }
         await retain();
         const code = errorCode(error);
         return code === "ENOENT" ? "removed" : retainedEntry();
