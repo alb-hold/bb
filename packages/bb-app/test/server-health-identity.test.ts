@@ -428,7 +428,7 @@ describe("startFullStackServerProcess", () => {
           });
         await new Promise<void>((resolvePromise) => {
           setTimeout(resolvePromise, 50);
-        }, childProcessTestTimeoutMs(3));
+        });
         expect(
           readdirSync(context.logDir)
             .sort()
@@ -458,6 +458,7 @@ describe("startFullStackServerProcess", () => {
           await serverRun.terminate("SIGTERM").catch(() => undefined);
       }
     },
+    childProcessTestTimeoutMs(3),
   );
 
   it("bounds termination when the stdio log writer does not finish", async () => {
@@ -644,7 +645,7 @@ describe("startFullStackServerProcess", () => {
         });
       }
     }
-  });
+  }, childProcessTestTimeoutMs(3));
 
   it.each([90_000, 150_000])(
     "does not kill a server whose database migration delays /health for %i ms",
@@ -655,7 +656,7 @@ describe("startFullStackServerProcess", () => {
       const context = createStartContext({
         serverEntry: writeImmediateServerEntry(),
         serverPort,
-      }, childProcessTestTimeoutMs(3));
+      });
       const processes: ManagedFullStackProcesses = {
         daemonRun: null,
         serverRun: null,
