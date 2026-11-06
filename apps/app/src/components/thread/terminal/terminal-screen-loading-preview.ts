@@ -12,7 +12,7 @@ export function mountTerminalScreenLoadingPreview({
   fontFamily: string;
   fontSize: number;
   lineHeight: number;
-}): () => void {
+}): { dispose(): void; refresh(lineHeight: number): void } {
   const preview = document.createElement("pre");
   preview.dataset.terminalScreenLoadingPreview = "";
   preview.setAttribute("aria-hidden", "true");
@@ -22,11 +22,22 @@ export function mountTerminalScreenLoadingPreview({
   preview.style.fontSize = `${fontSize}px`;
   preview.style.lineHeight = "normal";
   preview.style.whiteSpace = "pre";
+  preview.style.right = "auto";
   preview.style.bottom = "auto";
-  preview.textContent = "W";
+  preview.style.zIndex = "6";
   container.parentElement?.append(preview);
-  const characterHeight = preview.getBoundingClientRect().height;
-  preview.style.lineHeight = `${Math.floor((characterHeight || fontSize * 1.2) * lineHeight)}px`;
-  preview.textContent = snapshot.rows.join("\n");
-  return () => preview.remove();
+  const refresh = (height: number) => {
+    preview.style.top = `${container.offsetTop}px`;
+    preview.style.left = `${container.offsetLeft}px`;
+    preview.style.width = `${container.clientWidth}px`;
+    preview.style.height = "auto";
+    preview.style.lineHeight = "normal";
+    preview.textContent = "W";
+    const characterHeight = preview.getBoundingClientRect().height;
+    preview.style.lineHeight = `${Math.floor((characterHeight || fontSize * 1.2) * height)}px`;
+    preview.textContent = snapshot.rows.join("\n");
+    preview.style.height = `${container.clientHeight}px`;
+  };
+  refresh(lineHeight);
+  return { dispose: () => preview.remove(), refresh };
 }

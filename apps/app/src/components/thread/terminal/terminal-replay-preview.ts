@@ -2,13 +2,7 @@ import { trackTerminalScrollability } from "./terminal-scrollbar";
 import type { Terminal as XTermTerminal } from "@xterm/xterm";
 import type { TerminalGrid } from "@bb/domain";
 import { createTerminalOutputPipeline } from "./terminal-output-pipeline";
-import {
-  applyTerminalSurfaceScale,
-  attachTerminalScalePointerCoordinates,
-  canRevealTerminalSurface,
-  readTerminalSurfaceScale,
-  terminalSurfacePresentation,
-} from "./terminal-grid-presentation";
+import { canRevealTerminalSurface } from "./terminal-grid-presentation";
 
 export const TERMINAL_REPLAY_PREVIEW_HOLD_TIMEOUT_MS = 5_000;
 
@@ -179,6 +173,9 @@ export function mountTerminalReplayPreview({
   initialFitGrid,
   isOwner,
   onHoldExpired,
+  liveTerminal,
+  paddingLeft = getComputedStyle(container).paddingLeft,
+  readyToPaint = () => true,
   terminal,
 }: {
   container: HTMLDivElement;
@@ -186,6 +183,9 @@ export function mountTerminalReplayPreview({
   initialFitGrid: { cols: number; rows: number } | null;
   isOwner: () => boolean;
   onHoldExpired?: () => void;
+  liveTerminal?: XTermTerminal;
+  paddingLeft?: string;
+  readyToPaint?: () => boolean;
   terminal: XTermTerminal;
 }): {
   readonly fallback: boolean;
@@ -194,6 +194,7 @@ export function mountTerminalReplayPreview({
   showFallback(): void;
   hold(options: { countdown: boolean }): void;
   noteProgress(): void;
+  refreshFonts(): void;
   resize(cols: number, rows: number): Promise<void>;
   setPtyGrid(cols: number, rows: number): void;
   setLatestPtyGrid(cols: number, rows: number): void;
@@ -217,10 +218,10 @@ export function mountTerminalReplayPreview({
   Object.assign(preview.style, {
     visibility: holdUntilReleased ? "hidden" : "",
     position: "absolute",
-    inset: "0 16px 0 0",
+    boxSizing: "border-box",
     overflow: "hidden",
     overflowX: "hidden",
-    paddingLeft: "0.5rem",
+    paddingLeft,
     pointerEvents: "none",
     zIndex: "5",
     containerType: "inline-size",
@@ -228,6 +229,11 @@ export function mountTerminalReplayPreview({
   container.style.opacity = "0";
   parent.append(preview);
   terminal.options.disableStdin = true;
+  if (liveTerminal) {
+    terminal.options.fontFamily = liveTerminal.options.fontFamily;
+    terminal.options.fontSize = liveTerminal.options.fontSize;
+    terminal.options.lineHeight = liveTerminal.options.lineHeight;
+  }
   terminal.open(preview);
   trackTerminalScrollability(terminal);
   if (terminal.element) terminal.element.style.pointerEvents = "none";
@@ -253,50 +259,102 @@ export function mountTerminalReplayPreview({
   let pendingBytes = 0;
   let handoffDeadline: number | null = null;
   const pendingBytesLimit = 256 * 1024;
-  const detachPointerCoordinates = terminal.element
-    ? attachTerminalScalePointerCoordinates(terminal.element, () =>
-        terminal.element ? readTerminalSurfaceScale(terminal.element) : 1,
-      )
-    : () => undefined;
-  const updateSurfaceScale = () => {
-    if (fitGrid === null) return;
-    const wasVisible = preview.style.visibility === "visible";
-    preview.style.visibility = "hidden";
-    const presentation = terminalSurfacePresentation({
-      grid: { cols: terminal.cols, rows: terminal.rows },
-      fitGrid,
-      fontSize: terminal.options.fontSize ?? 12,
-      isOwner: isOwner(),
-      running: true,
-    });
-    preview.style.overflowX = presentation.panHorizontally ? "auto" : "hidden";
-    preview.style.pointerEvents = presentation.panHorizontally
-      ? "auto"
-      : "none";
-    preview.style.touchAction = presentation.panHorizontally
-      ? "pan-x pan-y"
-      : "";
-    if (terminal.element) {
-      applyTerminalSurfaceScale(
-        terminal.element,
-        presentation.scale,
-        !presentation.panHorizontally,
-      );
-    }
-    const rendererWidth = container.getBoundingClientRect().width;
-    const paintedWidth =
-      terminal.element
-        ?.querySelector<HTMLElement>(".xterm-screen")
-        ?.getBoundingClientRect().width ?? 0;
+  let cellWidth = 0;
+  const originalSpacing = new WeakMap<
+    HTMLElement,
+    { source: string; applied: string; cellsPerCharacter: number }
+  >();
+  const matchCellWidth = () => {
+    if (held || !readyToPaint()) return;
+    const dimensions = terminal.dimensions;
+    const screen =
+      terminal.element?.querySelector<HTMLElement>(".xterm-screen");
+    const rows = terminal.element?.querySelector<HTMLElement>(".xterm-rows");
     if (
-      wasVisible &&
-      rendererWidth > 0 &&
-      (presentation.panHorizontally || paintedWidth <= rendererWidth + 1)
-    ) {
-      preview.style.visibility = "visible";
+      !screen ||
+      !rows ||
+      !dimensions ||
+      dimensions.css.cell.width <= 0 ||
+      cellWidth <= 0
+    )
+      return;
+    const residual = cellWidth - dimensions.css.cell.width;
+    const elements = [
+      rows,
+      ...rows.querySelectorAll<HTMLElement>("span[style*='letter-spacing']"),
+    ];
+    const spacing = elements.map((element) => {
+      const previous = originalSpacing.get(element);
+      const unchanged = element.style.letterSpacing === previous?.applied;
+      const source = unchanged ? previous.source : element.style.letterSpacing;
+      const cellsPerCharacter = unchanged
+        ? previous.cellsPerCharacter
+        : element === rows
+          ? 1
+          : element.getBoundingClientRect().width /
+            dimensions.css.cell.width /
+            Math.max(1, Array.from(element.textContent ?? "").length);
+      return { element, source, cellsPerCharacter };
+    });
+    for (const { element, source, cellsPerCharacter } of spacing) {
+      const applied = `${(parseFloat(source) || 0) + residual * cellsPerCharacter}px`;
+      element.style.letterSpacing = applied;
+      originalSpacing.set(element, {
+        source,
+        applied: element.style.letterSpacing,
+        cellsPerCharacter,
+      });
+    }
+    screen.style.width = `${cellWidth * terminal.cols}px`;
+    for (const row of rows.children) {
+      if (row instanceof HTMLElement)
+        row.style.width = `${cellWidth * terminal.cols}px`;
     }
   };
-  updateSurfaceScale();
+  const updateSurfaceLayout = () => {
+    preview.style.top = `${container.offsetTop}px`;
+    preview.style.left = `${container.offsetLeft}px`;
+    preview.style.width = `${container.clientWidth}px`;
+    preview.style.height = `${container.clientHeight}px`;
+    if (liveTerminal) {
+      terminal.options.fontFamily = liveTerminal.options.fontFamily;
+      terminal.options.fontSize = liveTerminal.options.fontSize;
+      terminal.options.lineHeight = liveTerminal.options.lineHeight;
+      if (readyToPaint()) {
+        const liveScreen =
+          liveTerminal.element?.querySelector<HTMLElement>(".xterm-screen");
+        cellWidth =
+          (liveScreen?.getBoundingClientRect().width ?? 0) / liveTerminal.cols;
+        const dimensions = terminal.dimensions;
+        if (cellWidth > 0 && dimensions) {
+          const dpr = window.devicePixelRatio || 1;
+          const unspacedWidth =
+            dimensions.css.cell.width -
+            Math.round(terminal.options.letterSpacing ?? 0) / dpr;
+          terminal.options.letterSpacing = (cellWidth - unspacedWidth) * dpr;
+          matchCellWidth();
+        }
+      }
+    }
+    if (terminal.element) {
+      terminal.element.style.transform = "none";
+      const screenHeight =
+        terminal.element
+          .querySelector<HTMLElement>(".xterm-screen")
+          ?.getBoundingClientRect().height ?? 0;
+      const cellHeight = screenHeight / terminal.rows;
+      const top =
+        cellHeight > 0
+          ? Math.min(
+              0,
+              Math.floor(container.clientHeight / cellHeight) - terminal.rows,
+            ) * cellHeight
+          : 0;
+      terminal.element.style.position = "relative";
+      terminal.element.style.top = `${top}px`;
+    }
+  };
+  updateSurfaceLayout();
   const outputPipeline = createTerminalOutputPipeline(
     {
       resize: (cols, rows) => terminal.resize(cols, rows),
@@ -308,12 +366,13 @@ export function mountTerminalReplayPreview({
   );
 
   let disposed = false;
-  const resizeObserver = new ResizeObserver(updateSurfaceScale);
+  const renderSubscription = terminal.onRender(matchCellWidth);
+  const resizeObserver = new ResizeObserver(updateVisibility);
   resizeObserver.observe(container);
-  window.addEventListener("resize", updateSurfaceScale);
-  const updateVisibility = () => {
-    updateSurfaceScale();
-    if (held) {
+  window.addEventListener("resize", updateVisibility);
+  function updateVisibility() {
+    updateSurfaceLayout();
+    if (held || !readyToPaint()) {
       preview.style.visibility = "hidden";
       return;
     }
@@ -335,7 +394,7 @@ export function mountTerminalReplayPreview({
         ? "visible"
         : "hidden";
     if (preview.style.visibility === "visible") shown = true;
-  };
+  }
   const refreshVisibility = () => updateVisibility();
   const flushPendingWrites = () => {
     if (disposed || !snapshotWriteFinished || !authoritativeGridAvailable) {
@@ -385,7 +444,7 @@ export function mountTerminalReplayPreview({
   document.addEventListener("focusout", refreshVisibility);
   window.addEventListener("focus", refreshVisibility);
   window.addEventListener("blur", refreshVisibility);
-  if (fitGrid !== null && fitGrid.rows > terminal.rows) {
+  if (readyToPaint() && fitGrid !== null && fitGrid.rows > terminal.rows) {
     terminal.resize(snapshotGrid.cols, fitGrid.rows);
   }
   updateVisibility();
@@ -447,6 +506,12 @@ export function mountTerminalReplayPreview({
       updateVisibility();
     },
     noteProgress,
+    refreshFonts() {
+      const family = terminal.options.fontFamily;
+      terminal.options.fontFamily = `${family} `;
+      terminal.options.fontFamily = family;
+      updateVisibility();
+    },
     resize(cols, rows) {
       if (disposed) return Promise.resolve();
       clearHandoffDeadline();
@@ -472,10 +537,13 @@ export function mountTerminalReplayPreview({
     setFitGrid(cols, rows) {
       if (disposed) return;
       fitGrid = { cols, rows };
-      if (terminal.cols === snapshotGrid.cols && rows > terminal.rows) {
+      if (
+        readyToPaint() &&
+        terminal.cols === snapshotGrid.cols &&
+        rows > terminal.rows
+      ) {
         terminal.resize(snapshotGrid.cols, rows);
       }
-      updateSurfaceScale();
       updateVisibility();
     },
     processExited() {
@@ -513,11 +581,11 @@ export function mountTerminalReplayPreview({
       pendingBytes = 0;
       document.removeEventListener("focusin", refreshVisibility);
       document.removeEventListener("focusout", refreshVisibility);
-      window.removeEventListener("resize", updateSurfaceScale);
+      window.removeEventListener("resize", updateVisibility);
       resizeObserver.disconnect();
+      renderSubscription.dispose();
       window.removeEventListener("focus", refreshVisibility);
       window.removeEventListener("blur", refreshVisibility);
-      detachPointerCoordinates();
       terminal.dispose();
       preview.remove();
       container.style.opacity = previousOpacity;

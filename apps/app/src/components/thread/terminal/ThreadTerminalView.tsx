@@ -1792,10 +1792,13 @@ export function ThreadTerminalView({
     const pendingExitNotices: string[] = [];
     let replayCheckpointSequence: number | null = null;
     let localFitGrid: TerminalGridSize | null = null;
-    let removeScreenLoadingPreview: (() => void) | null = null;
+    let screenLoadingPreview: ReturnType<
+      typeof mountTerminalScreenLoadingPreview
+    > | null = null;
+    let keepScreenLoadingPreview = false;
     const clearScreenLoadingPreview = () => {
-      removeScreenLoadingPreview?.();
-      removeScreenLoadingPreview = null;
+      screenLoadingPreview?.dispose();
+      screenLoadingPreview = null;
     };
     const terminalFontOptions = {
       fontFamily: readTerminalFontFamily(),
@@ -1814,20 +1817,9 @@ export function ThreadTerminalView({
     let terminalInputClaimed = false;
     let detachPointerCoordinates: (() => void) | null = null;
     let detachGridVisibilityListeners: (() => void) | null = null;
-    let replayPreview: {
-      dispose(): void;
-      readonly fallback: boolean;
-      release(): void;
-      showFallback(): void;
-      hold(options: { countdown: boolean }): void;
-      noteProgress(): void;
-      resize(cols: number, rows: number): Promise<void>;
-      setFitGrid(cols: number, rows: number): void;
-      setLatestPtyGrid(cols: number, rows: number): void;
-      setPtyGrid(cols: number, rows: number): void;
-      processExited(): void;
-      push(bytes: Uint8Array, callback: () => void): void;
-    } | null = null;
+    let replayPreview: ReturnType<
+      typeof mountTerminalReplayPreview
+    > | null = null;
     const flushPendingExitNotices = () => {
       if (terminal === null || pendingExitNotices.length === 0) return;
       for (const text of pendingExitNotices.splice(0)) {
@@ -1934,6 +1926,7 @@ export function ThreadTerminalView({
       containerElement: HTMLDivElement,
     ): Promise<void> {
       containerElement.style.opacity = "0";
+      const paddingLeft = getComputedStyle(containerElement).paddingLeft;
       const updateGridVisibility = () => {
         if (terminal === null) {
           return;
@@ -2012,15 +2005,16 @@ export function ThreadTerminalView({
       void screenPromise.then((snapshot) => {
         if (
           disposed ||
-          modulesReady ||
           snapshot == null ||
           !snapshot.complete ||
-          snapshot.truncated ||
-          snapshot.cols !== latestPtyGrid.cols ||
-          snapshot.gridRows !== latestPtyGrid.rows
+          snapshot.truncated
         )
           return;
-        removeScreenLoadingPreview = mountTerminalScreenLoadingPreview({
+        keepScreenLoadingPreview =
+          snapshot.cols !== latestPtyGrid.cols ||
+          snapshot.gridRows !== latestPtyGrid.rows;
+        if (modulesReady && !keepScreenLoadingPreview) return;
+        screenLoadingPreview = mountTerminalScreenLoadingPreview({
           container: containerElement,
           snapshot,
           ...terminalFontOptions,
@@ -2444,6 +2438,7 @@ export function ThreadTerminalView({
         });
       }
       const fitTerminal = () => {
+        screenLoadingPreview?.refresh(terminal?.options.lineHeight ?? 1);
         updateGridVisibility();
         if (!fitAddon || !terminal) {
           return;
@@ -2515,6 +2510,7 @@ export function ThreadTerminalView({
             return;
           }
           forceTerminalFontMeasurement(terminal);
+          replayPreview?.refreshFonts();
           scheduleFit();
         });
       }
@@ -2839,6 +2835,8 @@ export function ThreadTerminalView({
             },
             onReplayComplete: () => {
               replayCompleted = true;
+              keepScreenLoadingPreview = false;
+              clearScreenLoadingPreview();
               containerElement.dataset.replayHeld = "false";
               activeTransport.resetRetryBackoff();
               for (const text of pendingExitNotices.splice(0)) {
@@ -2912,6 +2910,11 @@ export function ThreadTerminalView({
                     document.hasFocus() &&
                     activeTerminal.element?.contains(document.activeElement) ===
                       true,
+                  liveTerminal: activeTerminal,
+                  paddingLeft,
+                  readyToPaint: () =>
+                    initialRendererSettled &&
+                    document.fonts?.status !== "loading",
                   terminal: previewTerminal,
                 });
                 replayPreview.setPtyGrid(replayGrid.cols, replayGrid.rows);
@@ -3092,6 +3095,10 @@ export function ThreadTerminalView({
                 document.hasFocus() &&
                 activeTerminal.element?.contains(document.activeElement) ===
                   true,
+              liveTerminal: activeTerminal,
+              paddingLeft,
+              readyToPaint: () =>
+                initialRendererSettled && document.fonts?.status !== "loading",
               terminal: previewTerminal,
             });
             replayCheckpointSequence = snapshot.checkpointSeq;
@@ -3254,7 +3261,9 @@ export function ThreadTerminalView({
 
     void mountTerminal(container)
       .then(() => {
-        window.requestAnimationFrame(clearScreenLoadingPreview);
+        window.requestAnimationFrame(() => {
+          if (!keepScreenLoadingPreview) clearScreenLoadingPreview();
+        });
       })
       .catch((error) => {
         clearScreenLoadingPreview();
