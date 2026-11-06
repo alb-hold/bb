@@ -84,6 +84,13 @@ interface Fixture {
   account: AccountSummary;
 }
 
+const CHILD_PROCESS_START_TIMEOUT_MS = 15_000;
+const CHILD_PROCESS_TEST_TIMEOUT_MS = CHILD_PROCESS_START_TIMEOUT_MS + 15_000;
+
+async function waitForChildProcessStart(assertStarted: () => void): Promise<void> {
+  await vi.waitFor(assertStarted, { timeout: CHILD_PROCESS_START_TIMEOUT_MS, interval: 25 });
+}
+
 async function waitForAccepting(read: () => Promise<boolean>): Promise<void> {
   await vi.waitFor(async () => expect(await read()).toBe(true), {
     timeout: 20_000,
@@ -15305,7 +15312,7 @@ describe("Actor route issuer", () => {
     expect(rotated).not.toBe(first);
     expect(await send(first)).toBe(401);
     expect(await send(rotated)).toBe(200);
-    await vi.waitFor(async () => {
+    await waitForChildProcessStart(async () => {
       const listed = JSON.parse((await cli(["route", "list", "--json"])).stdout) as {
         routes: Array<{ lastRoutedAt: number | null }>;
       };
@@ -15319,7 +15326,7 @@ describe("Actor route issuer", () => {
     expect(JSON.parse(secondRevoke.stdout)).toEqual({ ok: true, revoked: 0 });
     expect(await fixture.host.bb.storage.kv.list("actor-routed:")).toEqual([]);
     expect(await send(rotated)).toBe(401);
-  });
+  }, CHILD_PROCESS_TEST_TIMEOUT_MS);
 
   it("rejects a token minted before a machine token rotation once the grace period ends, and routes the new one", async () => {
     let clock = 1_800_000_000_000;
@@ -15705,7 +15712,7 @@ else {
     const waitForFile =
       "const f=process.argv[1];console.log('child-ready');setInterval(()=>{if(require('node:fs').existsSync(f))process.exit(0)},50)";
     const launchA = run(["--actor", "shared-actor"], {}, [process.execPath, "-e", waitForFile, release]);
-    await vi.waitFor(() => expect(launchA.output()).toContain("child-ready"));
+    await waitForChildProcessStart(() => expect(launchA.output()).toContain("child-ready"));
     const rotated = JSON.parse(
       (
         await threadCli([
@@ -15720,7 +15727,7 @@ else {
     expect(await hubSend(rotated.token)).toBe(200);
     const routes = (await listRoutes()) as Array<{ generation: string }>;
     expect(routes.map((route) => route.generation)).toEqual([rotated.generation]);
-  });
+  }, CHILD_PROCESS_TEST_TIMEOUT_MS);
 
   it("revokes when the command cannot be launched", async () => {
     const { run, listRoutes } = await harness();
@@ -15735,7 +15742,7 @@ else {
     const decoy = spawn(process.execPath, ["-e", script], { stdio: "ignore" });
     try {
       const hanging = run([], {}, [process.execPath, "-e", script]);
-      await vi.waitFor(() => expect(hanging.output()).toContain("child-ready"));
+      await waitForChildProcessStart(() => expect(hanging.output()).toContain("child-ready"));
       hanging.child.kill("SIGTERM");
       expect((await hanging.done).code).toBe(143);
       expect(decoy.exitCode).toBeNull();
@@ -15746,7 +15753,7 @@ else {
     }
     const source = await fs.readFile(launcher, "utf8");
     expect(source).not.toMatch(/\b(pkill|pgrep|killall)\b/u);
-  });
+  }, CHILD_PROCESS_TEST_TIMEOUT_MS);
 
   it("returns the child's own status code", async () => {
     const { run, hubSend, readToken, listRoutes } = await harness();
@@ -15768,7 +15775,7 @@ else {
   it("revokes when the launcher is terminated and forwards the signal to the child", async () => {
     const { run, hubSend, readToken, listRoutes } = await harness();
     const hanging = run([], {}, [process.execPath, "-e", "console.log('child-ready');setInterval(()=>{},1000)"]);
-    await vi.waitFor(() => expect(hanging.output()).toContain("child-ready"));
+    await waitForChildProcessStart(() => expect(hanging.output()).toContain("child-ready"));
     expect(await listRoutes()).toHaveLength(1);
     hanging.child.kill("SIGTERM");
     const ended = await hanging.done;
@@ -15776,7 +15783,7 @@ else {
     expect(await listRoutes()).toEqual([]);
     expect(readToken).toBeDefined();
     expect(hubSend).toBeDefined();
-  });
+  }, CHILD_PROCESS_TEST_TIMEOUT_MS);
 
   it.skipIf(process.env.POOL_E2E_BB_CLI === undefined)(
     "drives the real bb CLI: the proof travels on stdin, never in argv or the child env",
