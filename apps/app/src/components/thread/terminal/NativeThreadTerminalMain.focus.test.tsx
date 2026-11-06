@@ -174,8 +174,10 @@ describe("NativeThreadTerminalMain focus", () => {
 it.each(["active", "idle"] as const)(
   "describes an unlabelled signal truthfully while %s",
   (displayStatus) => {
+    const activityTarget = render(<header />).container;
     render(
       <NativeThreadTerminalMain
+        activityTarget={activityTarget}
         projectId="proj_1"
         threadId="thr_1"
         threadIsProvisioning={false}

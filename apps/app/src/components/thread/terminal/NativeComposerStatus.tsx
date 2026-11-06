@@ -2,6 +2,7 @@ import {
   getThreadListIndicatorLabel,
   type ThreadListIndicatorKind,
 } from "@bb/client-core";
+import { SIDEBAR_SUCCESS_STATUS_DOT_CLASS } from "@bb/shared-ui/sidebar-row-classes";
 import { ThreadStatusGlyph } from "../ThreadStatusGlyph";
 import { useEffect, useState } from "react";
 import { Icon } from "@bb/shared-ui/icon";
@@ -227,16 +228,18 @@ export function NativeTerminalActivity({
     <div
       role="status"
       aria-label="Terminal activity"
-      className="flex h-6 shrink-0 items-center gap-1.5 overflow-hidden px-4 text-xs text-muted-foreground md:hidden"
+      className="flex h-4 shrink-0 items-center gap-1.5 whitespace-nowrap text-xs text-muted-foreground"
     >
-      <ThreadStatusGlyph
-        indicator={indicator}
-        size="compact"
-        hideAccessibleLabel
-      />
-      <span className="truncate">
-        {getThreadListIndicatorLabel(indicator) ?? "Idle"}
-      </span>
+      {indicator === "none" ? (
+        <span aria-hidden className={SIDEBAR_SUCCESS_STATUS_DOT_CLASS} />
+      ) : (
+        <ThreadStatusGlyph
+          indicator={indicator}
+          size="compact"
+          hideAccessibleLabel
+        />
+      )}
+      <span>{getThreadListIndicatorLabel(indicator) ?? "Idle"}</span>
     </div>
   );
 }

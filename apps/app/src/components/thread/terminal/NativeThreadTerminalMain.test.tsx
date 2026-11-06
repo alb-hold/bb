@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { useState } from "react";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import type {
   ThreadExecutionProfileResponse,
@@ -176,6 +177,22 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+function TerminalWithHeader(
+  props: Parameters<typeof NativeThreadTerminalMain>[0],
+) {
+  const [activityTarget, setActivityTarget] = useState<HTMLDivElement | null>(
+    null,
+  );
+  return (
+    <>
+      <header>
+        <div ref={setActivityTarget} />
+      </header>
+      <NativeThreadTerminalMain {...props} activityTarget={activityTarget} />
+    </>
+  );
+}
+
 describe("NativeThreadTerminalMain", () => {
   it.each([
     ["active", "Working"],
@@ -183,7 +200,7 @@ describe("NativeThreadTerminalMain", () => {
     ["idle", "Check terminal"],
     ["idle", "Needs input"],
   ] as const)(
-    "shows %s activity in a stable compact header",
+    "places %s activity inside the existing header without a terminal row",
     (displayStatus, label) => {
       hooks.waiting = label === "Needs input";
       const terminal = {
@@ -199,7 +216,7 @@ describe("NativeThreadTerminalMain", () => {
         dataUpdatedAt: 1,
       });
       render(
-        <NativeThreadTerminalMain
+        <TerminalWithHeader
           projectId="proj_native"
           runtime={{ displayStatus }}
           threadId="thr_native"
@@ -209,8 +226,13 @@ describe("NativeThreadTerminalMain", () => {
       );
       const status = screen.getByRole("status", { name: "Terminal activity" });
       expect(status.textContent).toBe(label);
-      expect(status.classList.contains("h-6")).toBe(true);
-      expect(status.classList.contains("md:hidden")).toBe(true);
+      expect(status.closest("header")).not.toBeNull();
+      expect(status.querySelector("svg, [aria-hidden]")).not.toBeNull();
+      expect(
+        document.querySelector(
+          "[data-native-terminal-thread] [aria-label='Terminal activity']",
+        ),
+      ).toBeNull();
     },
   );
 
@@ -233,14 +255,11 @@ describe("NativeThreadTerminalMain", () => {
       threadIsProvisioning: false,
       view: { ...nativeView, terminal },
     };
-    const { container, rerender } = render(
-      <NativeThreadTerminalMain {...props} />,
-    );
+    const { container, rerender } = render(<TerminalWithHeader {...props} />);
     const layout = () =>
-      Array.from(container.firstElementChild!.children).map((element) => [
-        element.tagName,
-        element.className,
-      ]);
+      Array.from(
+        container.querySelector("[data-native-terminal-thread]")!.children,
+      ).map((element) => [element.tagName, element.className]);
     const layoutWithAttention = layout();
     expect(
       screen.getByRole("status", { name: "Terminal activity" }).textContent,
@@ -252,7 +271,7 @@ describe("NativeThreadTerminalMain", () => {
         .getAttribute("data-attention-banner"),
     ).toBe("true");
     terminal.attention = null;
-    rerender(<NativeThreadTerminalMain {...props} />);
+    rerender(<TerminalWithHeader {...props} />);
     expect(screen.queryByText("Check terminal")).toBeNull();
     expect(layout()).toEqual(layoutWithAttention);
   });

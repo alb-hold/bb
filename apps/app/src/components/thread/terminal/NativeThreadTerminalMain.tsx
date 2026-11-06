@@ -11,6 +11,7 @@ import { Button } from "@bb/shared-ui/button";
 import { useMediaQuery } from "@bb/shared-ui/hooks/use-media-query";
 import type { NativeTerminalThread } from "@bb/server-contract";
 import type { ThreadRuntimeState } from "@bb/domain";
+import { createPortal } from "react-dom";
 import { NativeTerminalPanel } from "./NativeTerminalPanel";
 import type { MarkdownPreviewLinkHandler } from "@/components/ui/markdown-link";
 import {
@@ -37,6 +38,7 @@ import {
 } from "./native-terminal-state";
 
 interface NativeThreadTerminalMainProps {
+  activityTarget?: HTMLElement | null;
   onOpenLink?: MarkdownPreviewLinkHandler;
   projectId: string;
   runtime: ThreadRuntimeState;
@@ -46,6 +48,7 @@ interface NativeThreadTerminalMainProps {
 }
 
 export function NativeThreadTerminalMain({
+  activityTarget = null,
   onOpenLink,
   projectId,
   runtime,
@@ -179,21 +182,28 @@ export function NativeThreadTerminalMain({
           pendingPromptCount={waitingPrompts.length}
           threadId={threadId}
         />
-        <NativeTerminalActivity
-          indicator={
-            interactionsQuery.data?.some(
-              (interaction) => interaction.status === "pending",
+        {activityTarget
+          ? createPortal(
+              <NativeTerminalActivity
+                indicator={
+                  interactionsQuery.data?.some(
+                    (interaction) => interaction.status === "pending",
+                  )
+                    ? "needs-input"
+                    : session?.attention
+                      ? "check-terminal"
+                      : isRunningThreadRuntimeDisplayStatus(
+                            runtime.displayStatus,
+                          )
+                        ? activityNotice.unconfirmed
+                          ? "activity-unreported"
+                          : "working"
+                        : "none"
+                }
+              />,
+              activityTarget,
             )
-              ? "needs-input"
-              : session?.attention
-                ? "check-terminal"
-                : isRunningThreadRuntimeDisplayStatus(runtime.displayStatus)
-                  ? activityNotice.unconfirmed
-                    ? "activity-unreported"
-                    : "working"
-                  : "none"
-          }
-        />
+          : null}
         <NativeTerminalPanel
           attentionShownAsBanner
           autoFocus={paneIsFocused && !isTouchDevice && !composerEngaged}

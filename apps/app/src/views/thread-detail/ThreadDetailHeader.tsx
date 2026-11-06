@@ -7,6 +7,7 @@ import {
   useState,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
+  type Ref,
 } from "react";
 import { Button } from "@bb/shared-ui/button";
 import { useAtomValue } from "jotai";
@@ -82,6 +83,7 @@ interface ThreadDetailHeaderProps {
   needsInput?: boolean;
   checkTerminal?: boolean;
   hasNativeTerminal?: boolean;
+  nativeActivityTargetRef?: Ref<HTMLDivElement>;
   workspaceOpenButton?: ReactNode;
 }
 
@@ -96,6 +98,7 @@ export function ThreadDetailHeader({
   needsInput = false,
   checkTerminal = false,
   hasNativeTerminal = false,
+  nativeActivityTargetRef,
   workspaceOpenButton,
   contextCardButton,
 }: ThreadDetailHeaderProps) {
@@ -202,29 +205,43 @@ export function ThreadDetailHeader({
           isSplitPaneHeader && isFocused && CONTEXT_SELECTION_SURFACE_CLASS,
         )}
       >
-        {needsInput || checkTerminal ? (
+        {(needsInput || checkTerminal) &&
+        !(isCompactViewport && hasNativeTerminal) ? (
           <ThreadStatusGlyph
             indicator={needsInput ? "needs-input" : "check-terminal"}
             size="compact"
           />
         ) : null}
-        <p
-          data-thread-detail-header-title=""
-          className={cn(
-            "relative min-w-0 max-w-full flex-1 truncate text-sm font-normal transition-colors",
-            isEditing && "overflow-visible",
-            isSplitPaneHeader &&
-              !isFocused &&
-              dimsInactiveSplits &&
-              CONTEXT_INACTIVE_TEXT_CLASS,
-            usesDesktopChrome && MACOS_WINDOW_NO_DRAG_CLASS,
-            beginPaneDrag && !isEditing && "cursor-grab touch-none select-none",
-          )}
-          onDoubleClick={handleTitleDoubleClick}
-          onPointerDown={beginPaneDrag ? handleTitlePointerDown : undefined}
+        <div
+          className={
+            isCompactViewport && hasNativeTerminal
+              ? "flex min-w-0 flex-1 flex-col"
+              : "contents"
+          }
         >
-          {isEditing ? editor : <ThreadTitle title={threadTitle} />}
-        </p>
+          <p
+            data-thread-detail-header-title=""
+            className={cn(
+              "relative min-w-0 max-w-full flex-1 truncate text-sm font-normal transition-colors",
+              isEditing && "overflow-visible",
+              isSplitPaneHeader &&
+                !isFocused &&
+                dimsInactiveSplits &&
+                CONTEXT_INACTIVE_TEXT_CLASS,
+              usesDesktopChrome && MACOS_WINDOW_NO_DRAG_CLASS,
+              beginPaneDrag &&
+                !isEditing &&
+                "cursor-grab touch-none select-none",
+            )}
+            onDoubleClick={handleTitleDoubleClick}
+            onPointerDown={beginPaneDrag ? handleTitlePointerDown : undefined}
+          >
+            {isEditing ? editor : <ThreadTitle title={threadTitle} />}
+          </p>
+          {isCompactViewport && hasNativeTerminal ? (
+            <div ref={nativeActivityTargetRef} className="h-4 shrink-0" />
+          ) : null}
+        </div>
         <ThreadUsageAndAgents
           compact={usesCompactAgentDrawer}
           compactSummary={!isCompactViewport}

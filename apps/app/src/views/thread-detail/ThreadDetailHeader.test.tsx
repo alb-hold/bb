@@ -7,7 +7,9 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
-import type { ReactElement, ReactNode, Ref } from "react";
+import { useState, type ReactElement, type ReactNode, type Ref } from "react";
+import { createPortal } from "react-dom";
+import { NativeTerminalActivity } from "@/components/thread/terminal/NativeComposerStatus";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ThreadDetailHeader } from "./ThreadDetailHeader";
@@ -1180,5 +1182,47 @@ it.each([
         `header [aria-label="${needsInput ? "Needs input" : "Check terminal"}"]`,
       ),
     ).not.toBeNull();
+  },
+);
+
+it.each([true, false])(
+  "keeps native activity in the header only on compact=%s",
+  (compact) => {
+    viewportState.isCompactViewport = compact;
+    function HeaderWithActivity() {
+      const [target, setTarget] = useState<HTMLDivElement | null>(null);
+      return (
+        <PaneContext.Provider value={PANE_CONTEXT}>
+          <ThreadDetailHeader
+            actionsMenu={null}
+            isSecondaryPanelOpen={false}
+            onToggleSecondaryPanel={vi.fn()}
+            thread={THREAD_TARGET}
+            threadTitle={"Long thread title ".repeat(20)}
+            hasNativeTerminal
+            nativeActivityTargetRef={setTarget}
+          />
+          {target
+            ? createPortal(<NativeTerminalActivity indicator="none" />, target)
+            : null}
+        </PaneContext.Provider>
+      );
+    }
+    const { container } = render(<HeaderWithActivity />);
+    const status = screen.queryByRole("status", { name: "Terminal activity" });
+    if (!compact) {
+      expect(status).toBeNull();
+      return;
+    }
+    expect(status).not.toBeNull();
+    expect(status!.closest("header")).not.toBeNull();
+    expect(status!.textContent).toBe("Idle");
+    expect(status!.classList.contains("shrink-0")).toBe(true);
+    expect(status!.classList.contains("whitespace-nowrap")).toBe(true);
+    expect(status!.querySelector(".truncate")).toBeNull();
+    const title = container.querySelector("[data-thread-detail-header-title]")!;
+    expect(title.classList.contains("truncate")).toBe(true);
+    expect(title.classList.contains("min-w-0")).toBe(true);
+    expect(title.parentElement!.contains(status)).toBe(true);
   },
 );

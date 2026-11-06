@@ -435,6 +435,8 @@ function ThreadDetailViewInternal(
     retryKey: threadId,
   });
   const { data: parentThread } = useThread(thread?.parentThreadId ?? "");
+  const [nativeActivityTarget, setNativeActivityTarget] =
+    useState<HTMLDivElement | null>(null);
   const [shouldAutoFocusNewTab, setShouldAutoFocusNewTab] = useState(false);
   const handleNewTabAutoFocusHandled = useCallback(
     () => setShouldAutoFocusNewTab(false),
@@ -1835,6 +1837,7 @@ function ThreadDetailViewInternal(
       threadTitle={threadTitle}
       needsInput={thread.nativeTerminal && thread.hasPendingInteraction}
       hasNativeTerminal={nativeTerminalThread != null}
+      nativeActivityTargetRef={setNativeActivityTarget}
       checkTerminal={nativeTerminalThread?.terminal?.attention != null}
       contextCardButton={<ThreadContextCardHeaderButton />}
       workspaceOpenButton={workspaceOpenButton}
@@ -2050,6 +2053,7 @@ function ThreadDetailViewInternal(
               nativeTerminalMain={
                 nativeTerminalThread === null ? null : (
                   <NativeThreadTerminalMain
+                    activityTarget={nativeActivityTarget}
                     onOpenLink={handleOpenTimelineLink}
                     projectId={thread.projectId}
                     runtime={thread.runtime}
