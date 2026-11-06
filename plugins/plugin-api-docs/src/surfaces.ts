@@ -89,6 +89,9 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
           "Add fixed tabs beside Browser and Terminal, and open terminals it started in any folder",
           "Show a live count or dot on its navigation entry",
         ],
+        reference: [
+          "Plugin destinations appear after More on phones and when first seen on desktop. Remembered desktop destinations keep their positions before More so late plugins do not move existing controls.",
+        ],
         apiSymbols: [
           "PluginNavPanelRegistration",
           "PluginNavPanelRegistration.experimental_sidebar",
@@ -214,8 +217,11 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
         bullets: [
           "Run an action, or open a small panel above the footer",
           "Show quick status, such as usage limits, without leaving the thread",
-          "Follow the user's order and visibility choices in Appearance",
+          "Follow visibility choices and saved order within host and plugin groups in Appearance",
           "Switch this device to another of its bb servers, in bb Desktop and the mobile app",
+        ],
+        reference: [
+          "The footer places host actions first, then More, then plugin items on every viewport. Saved order applies within each group, keeping host controls stable while plugins load.",
         ],
         apiSymbols: [
           "ExperimentalSidebarFooter",

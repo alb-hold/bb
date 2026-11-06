@@ -495,6 +495,7 @@ const FOOTER_ITEM_RENDERERS: Record<string, () => ReactNode> = {
     </span>
   ),
   "bug-report": () => <MiniIcon icon="Bug" className="size-4" />,
+  "footer-more": () => <MiniIcon icon="MoreHorizontal" className="size-4" />,
 };
 
 const RAIL_BUTTON_CLASS = "flex size-7 items-center justify-center rounded-md";
@@ -520,6 +521,10 @@ function SidebarRail() {
         <span className={RAIL_BUTTON_CLASS}>
           <MiniIcon icon="Zap" />
         </span>
+        <span className={RAIL_BUTTON_CLASS}>
+          <MiniIcon icon="MoreHorizontal" />
+          <span className="sr-only">More</span>
+        </span>
         <Mark
           id="nav-panel"
           label="Plugin nav panels, in the navigation rail"
@@ -529,9 +534,6 @@ function SidebarRail() {
           <PluginGlyph />
           <span className="sr-only">Your panel</span>
         </Mark>
-        <span className={RAIL_BUTTON_CLASS}>
-          <MiniIcon icon="MoreHorizontal" />
-        </span>
         <span className="flex-1" />
         <span className={RAIL_BUTTON_CLASS}>
           <MiniIcon icon="Settings" />
