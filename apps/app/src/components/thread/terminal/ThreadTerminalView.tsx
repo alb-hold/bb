@@ -2615,7 +2615,7 @@ export function ThreadTerminalView({
           return;
         }
         updateGridVisibility();
-        if (initialRendererSettled && initialLayoutSettled) {
+        if (initialLayoutSettled && (holdForFittedGrid || initialRendererSettled)) {
           const claimFit =
             holdForFittedGrid &&
             (containerElement.dataset.replayHeld === "true" ||
@@ -2790,7 +2790,7 @@ export function ThreadTerminalView({
           fittedGridRevealed = false;
           fittedGridFallback = false;
           completeReplayReveal = null;
-          claimedFitGrid = null;
+          if (hasReceivedInitialAttach) claimedFitGrid = null;
           checkReplayReveal = null;
           if (replayRevealTimeout !== null) clearTimeout(replayRevealTimeout);
           replayRevealTimeout = null;
@@ -3237,6 +3237,53 @@ export function ThreadTerminalView({
       });
       sizeClaims.claimIfFocused();
       document.addEventListener("visibilitychange", reportDocumentVisibility);
+      stopWatchingLayout = watchTerminalLayoutSettled({
+        graceFrames: holdForFittedGrid ? 1 : 8,
+        cancelFrame: (handle) => window.cancelAnimationFrame(handle),
+        measure: () => {
+          const rect = containerElement.getBoundingClientRect();
+          if (
+            rect.width <= 0 ||
+            rect.height <= 0 ||
+            hasRunningLayoutAnimation(containerElement) ||
+            document.fonts?.status === "loading"
+          ) {
+            return null;
+          }
+          const fitted = fitAddon?.proposeDimensions();
+          if (
+            fitted === undefined ||
+            !Number.isFinite(fitted.cols) ||
+            !Number.isFinite(fitted.rows)
+          ) {
+            return null;
+          }
+          return `${rect.width}x${rect.height}:${fitted?.cols}x${fitted?.rows}`;
+        },
+        onSettled: () => {
+          if (disposed) {
+            return;
+          }
+          captureLiveViewportBeforeGridResize();
+          initialLayoutSettled = true;
+          fitTerminal();
+          activeTransport.markLayoutSettled();
+          if (hasRestoredViewport && !hasManualScrollIntent) {
+            restoreViewport(true);
+          }
+          clearLiveViewportBeforeGridResize();
+        },
+        ready: document.fonts?.ready,
+        subscribe: (onSignal) =>
+          observeLayoutSignals({
+            affectsContainer: (target) =>
+              target instanceof Node && target.contains(containerElement),
+            document,
+            fontSet: document.fonts,
+            onSignal,
+          }),
+        requestFrame: (callback) => window.requestAnimationFrame(callback),
+      });
       if (
         sessionRef.current.status === "exited" ||
         pendingExitNotices.length > 0
@@ -3363,52 +3410,6 @@ export function ThreadTerminalView({
         if (disposed) return;
         activeTransport.start();
       }
-      stopWatchingLayout = watchTerminalLayoutSettled({
-        cancelFrame: (handle) => window.cancelAnimationFrame(handle),
-        measure: () => {
-          const rect = containerElement.getBoundingClientRect();
-          if (
-            rect.width <= 0 ||
-            rect.height <= 0 ||
-            hasRunningLayoutAnimation(containerElement) ||
-            document.fonts?.status === "loading"
-          ) {
-            return null;
-          }
-          const fitted = fitAddon?.proposeDimensions();
-          if (
-            fitted === undefined ||
-            !Number.isFinite(fitted.cols) ||
-            !Number.isFinite(fitted.rows)
-          ) {
-            return null;
-          }
-          return `${rect.width}x${rect.height}:${fitted?.cols}x${fitted?.rows}`;
-        },
-        onSettled: () => {
-          if (disposed) {
-            return;
-          }
-          captureLiveViewportBeforeGridResize();
-          initialLayoutSettled = true;
-          activeTransport.markLayoutSettled();
-          fitTerminal();
-          if (hasRestoredViewport && !hasManualScrollIntent) {
-            restoreViewport(true);
-          }
-          clearLiveViewportBeforeGridResize();
-        },
-        ready: document.fonts?.ready,
-        subscribe: (onSignal) =>
-          observeLayoutSignals({
-            affectsContainer: (target) =>
-              target instanceof Node && target.contains(containerElement),
-            document,
-            fontSet: document.fonts,
-            onSignal,
-          }),
-        requestFrame: (callback) => window.requestAnimationFrame(callback),
-      });
       const sendTerminalInput = (
         dataBase64: string,
         inputEventAt?: number,
