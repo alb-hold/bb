@@ -1075,7 +1075,7 @@ describe("real worktree teardown preservation", () => {
         ) => {
           if (!collisionMoveStarted || isDirectory || injected) return;
           injected = true;
-          racingSourcePath = source;
+          racingSourcePath = path.join(worktree.path, path.basename(source));
           await fs.unlink(source);
           await writeFile(source, "racing quarantine replacement\n");
         },
