@@ -53,21 +53,20 @@ export function composerDecorationSources(
   const sources: ExperimentalComposerDecorationSource[] = [
     ULTRACODE_DECORATION_SOURCE,
   ];
-  for (const contribution of pluginEffects) {
+  for (const { pluginId, customizationId, generation, effects } of pluginEffects) {
     sources.push({
-      id: `${contribution.pluginId}/${contribution.customizationId}`,
-      generation: contribution.generation,
-      pluginId: contribution.pluginId,
-      effects: contribution.effects,
+      id: `${pluginId}/${customizationId}`,
+      generation,
+      pluginId,
+      effects,
     });
   }
-  for (const effectSource of textEffects) {
-    const className = effectSource.effect.className;
+  for (const { pluginId, order, effect: { className } } of textEffects) {
     if (className.length === 0) continue;
     sources.push({
-      id: `plugin-imperative:${effectSource.pluginId}:${effectSource.order}`,
-      generation: effectSource.order,
-      pluginId: effectSource.pluginId,
+      id: `plugin-imperative:${pluginId}:${order}`,
+      generation: order,
+      pluginId,
       effects: [
         {
           id: "whole-draft",
