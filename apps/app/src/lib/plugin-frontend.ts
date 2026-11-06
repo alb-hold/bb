@@ -762,9 +762,13 @@ async function reconcileCandidates(
   const priorityReady = new Promise<void>((resolve) => {
     releasePriority = resolve;
   });
-  const deferredReady = deps.waitForDeferredLoad
-    ? priorityReady.then(deps.waitForDeferredLoad)
-    : Promise.resolve();
+  const hasDeferredCandidates = ordered.some(
+    (candidate) => !priorityPluginIds.includes(candidate.pluginId),
+  );
+  const deferredReady =
+    deps.waitForDeferredLoad && hasDeferredCandidates
+      ? priorityReady.then(deps.waitForDeferredLoad)
+      : Promise.resolve();
   const prefetched = new Set<string>();
   const prefetchAhead = () => {
     if (pendingPriority > 0) return;
