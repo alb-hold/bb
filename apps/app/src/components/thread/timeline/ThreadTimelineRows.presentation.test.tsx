@@ -76,7 +76,7 @@ describe("presentation-driven timeline rows", () => {
     expect(row?.closest(".gap-1")).not.toBeNull();
   });
 
-  it("gives execution metadata a smaller type scale than response prose", () => {
+  it("keeps execution metadata readable with a muted tone", () => {
     const view = renderRows(
       <ThreadTimelineRows
         threadId="thr_main"
@@ -86,8 +86,8 @@ describe("presentation-driven timeline rows", () => {
       />,
     );
     const title = view.container.querySelector('[title*="pnpm test"]');
-    expect(title?.classList.contains("text-2xs")).toBe(true);
-    expect(title?.classList.contains("text-xs")).toBe(false);
+    expect(title?.classList.contains("text-xs")).toBe(true);
+    expect(title?.closest("button")?.classList.contains("text-muted-foreground")).toBe(true);
     expect(title?.classList.contains("text-sm")).toBe(false);
   });
 

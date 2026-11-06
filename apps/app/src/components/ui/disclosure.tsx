@@ -35,7 +35,7 @@ export const COLLAPSIBLE_HEADER_COLLAPSED_TONE_CLASS = `text-muted-foreground ${
 const COLLAPSIBLE_HEADER_EXPANDED_TONE_CLASS = "text-foreground";
 export const COLLAPSIBLE_HEADER_STATIC_TONE_CLASS = "text-muted-foreground";
 export const COLLAPSIBLE_HEADER_BUTTON_BASE_CLASS =
-  "inline-flex max-w-full items-center gap-1 overflow-hidden py-0 text-left text-2xs";
+  "inline-flex max-w-full items-center gap-1 overflow-hidden py-0 text-left text-xs";
 const COLLAPSIBLE_HEADER_TEXT_CLASS = "min-w-0 truncate";
 
 function Chevron({ className }: ChevronProps) {

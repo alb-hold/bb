@@ -76,7 +76,7 @@ it("keeps summary rows compact and splits invisible extensions between neighbour
     "--compact-touch-summary-start: var(--compact-touch-summary-half-gap)",
   );
   expect(block).toContain(
-    "--compact-touch-summary-end: var(--compact-touch-summary-half-gap)",
+    "--compact-touch-summary-end: var(--compact-touch-summary-next-half-gap, var(--compact-touch-summary-half-gap))",
   );
 });
 

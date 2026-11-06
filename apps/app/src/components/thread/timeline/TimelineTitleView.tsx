@@ -88,7 +88,7 @@ function badgeToneClass(tone: "neutral" | "destructive"): string {
 
 const STATUS_DECORATION_TONE_CLASS = "text-muted-foreground";
 const STATUS_DECORATION_TEXT_CLASS = cn(
-  "font-mono text-2xs font-normal leading-none",
+  "font-mono text-xs font-normal leading-none",
   STATUS_DECORATION_TONE_CLASS,
 );
 
@@ -338,7 +338,7 @@ export function TimelineTitleView({
   return (
     <span
       className={cn(
-        "min-w-0 max-w-full text-2xs leading-5",
+        "min-w-0 max-w-full text-xs leading-5",
         wrap
           ? "whitespace-pre-wrap [overflow-wrap:anywhere]"
           : "inline-flex items-baseline gap-1 overflow-hidden whitespace-nowrap",
