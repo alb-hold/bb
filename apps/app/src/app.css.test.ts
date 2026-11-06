@@ -131,8 +131,20 @@ it("reserves an 8px action gap", () => {
 it("keeps the home execution controls on one row with voice beside the input", () => {
   expect(css).toContain("grid-template-columns: 2.75rem minmax(0, 1fr)");
   expect(css).not.toMatch(/data-promptbox-trailing-actions[^}]*grid-row: 2/s);
-  expect(css).toContain("bottom: 100%");
   expect(css).toContain("padding-inline-end: 3rem");
+});
+
+it("insets the phone microphone inside the input row without overlapping the action row", () => {
+  const phone = css.slice(css.indexOf("@media (width < 48rem)"));
+  const trailing = phone.match(
+    /\[data-promptbox-execution-layout="stacked"\]\s*> \[data-promptbox-trailing-actions\]\s*\{([^}]*)\}/,
+  )?.[1];
+  const row = phone.match(
+    /\[data-promptbox-execution-layout="stacked"\]\s*\{\s*padding:([^;]*);/,
+  )?.[1];
+  expect(trailing).toMatch(/right: 0\.5rem;/);
+  expect(trailing).toMatch(/bottom: calc\(100% - 0\.5rem\);/);
+  expect(row?.trim()).toBe("0.75rem 0.25rem 0.25rem");
 });
 it("centres code hit extensions and reserves space for message action extensions", () => {
   expect(css).toMatch(
