@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
+import { CompactViewportOverrideProvider } from "@bb/shared-ui/hooks/use-compact-viewport";
 import { PermissionModePicker } from "./PermissionModePicker";
 
 const options = [
@@ -59,4 +60,15 @@ it("opens the same options and applies a selected permission", async () => {
 it.each([false, true])("hides unsupported and single-option controls (%s)", (supported) => {
   render(<PermissionModePicker value="auto" options={options.slice(0, 1)} supported={supported} onChange={() => {}} />);
   expect(screen.queryByRole("button")).toBeNull();
+});
+
+it.each(["auto", "accept-edits", "full"] as const)("keeps the mobile %s trigger compact, named and warning-aware", (value) => {
+  render(<CompactViewportOverrideProvider isCompactViewport><PermissionModePicker value={value} options={options} supported onChange={() => {}} /></CompactViewportOverrideProvider>);
+  const mode = value === "auto" ? "Approve" : value === "full" ? "Full Access" : "Edits";
+  const trigger = screen.getByRole("button", { name: `Permissions: ${mode}` });
+  expect(trigger.textContent).toBe("");
+  expect(trigger.getAttribute("data-compact-touch")).toBe("picker");
+  expect(trigger.classList.contains("min-w-28")).toBe(false);
+  expect(trigger.querySelector('[data-icon="SecurityCheck"]')).not.toBeNull();
+  expect(trigger.classList.contains("text-warning-text")).toBe(value === "full");
 });

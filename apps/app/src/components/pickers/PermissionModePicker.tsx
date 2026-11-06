@@ -1,4 +1,5 @@
 import { useMemo, useRef } from "react";
+import { useIsCompactViewport } from "@bb/shared-ui/hooks/use-compact-viewport";
 import type { PermissionMode } from "@bb/domain";
 import { LIST_HOVER_TRANSITION } from "@bb/shared-ui/motion";
 import { cn } from "@bb/shared-ui/lib/utils";
@@ -66,6 +67,7 @@ export function PermissionModePicker({
   showChevronWhenDisabled,
   showWhenSingleOption = false,
 }: PermissionModePickerProps) {
+  const isCompactViewport = useIsCompactViewport();
   const compactOptions = useMemo(
     () => addPermissionModeCompactLabels(options),
     [options],
@@ -84,18 +86,19 @@ export function PermissionModePicker({
   }
   return (
     <OptionPicker
+      iconOnly={isCompactViewport}
       label="Permissions"
       value={displayValue}
       options={compactOptions}
       onChange={onChange}
       className={cn(
         LIST_HOVER_TRANSITION,
-        "min-w-28 justify-between",
-        pending && displayValue === undefined && "w-40 [&>span]:invisible animate-pulse bg-state-hover",
+        isCompactViewport ? "size-8 min-w-0 justify-center p-0" : "min-w-28 justify-between",
+        pending && displayValue === undefined && !isCompactViewport && "w-40 [&>span]:invisible animate-pulse bg-state-hover",
         showFullAccessWarning && "text-warning-text hover:text-warning-text data-[state=open]:text-warning-text",
         className,
       )}
-      leading={<><Icon name="SecurityCheck" className="size-3.5 shrink-0" /><span>Permissions:</span></>}
+      leading={<><Icon name="SecurityCheck" className="size-3.5 shrink-0" />{isCompactViewport ? null : <span>Permissions:</span>}</>}
       caretClassName="text-subtle-foreground/75"
       contentClassName="max-w-72"
       muted={muted}
