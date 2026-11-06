@@ -208,7 +208,6 @@ interface CreateServerClientOptions {
   getSessionId: () => string;
   beforeInteractiveRequestRegistrationAttempt?: () => Promise<void>;
   fetchFn?: FetchFn;
-  getProtocolVersion?: () => number | Promise<number>;
 }
 
 interface OpenSessionArgs {
@@ -417,9 +416,7 @@ export function createServerClient(
         platform: resolveHostPlatform(),
         dataDir: args.dataDir,
         localApiPort: args.localApiPort,
-        protocolVersion:
-          (await options.getProtocolVersion?.()) ??
-          HOST_DAEMON_PROTOCOL_VERSION,
+        protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
         activeThreads: await args.activeThreads,
         undeliveredEventThreadIds: args.undeliveredEventThreadIds,
         loadedEnvironments: await args.loadedEnvironments,

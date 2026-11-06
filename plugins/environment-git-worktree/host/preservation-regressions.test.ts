@@ -1388,6 +1388,7 @@ describe("real worktree teardown preservation", () => {
       expect(await fs.readdir(worktree.path)).toContain(
         path.basename(quarantinePath),
       );
+      expect(result.retainedPaths).toContain(quarantinePath);
       await expect(fs.readdir(quarantinePath)).resolves.toEqual([]);
       await expect(
         readFile(path.join(directory, "racer.txt"), "utf8"),
@@ -1396,6 +1397,58 @@ describe("real worktree teardown preservation", () => {
         readFile(path.join(worktree.path, "late-after-directory.txt"), "utf8"),
       ).resolves.toBe("late\n");
       expect((await fs.stat(quarantinePath)).mode & 0o7777).toBe(originalMode);
+      await expect(
+        git(worktree.path, "rev-parse", "--git-dir"),
+      ).resolves.toMatch(/worktrees/u);
+    },
+  );
+
+  removeDirectoryTreeTest(
+    "restores the original directory over an empty restore racer",
+    async () => {
+      const worktree = await makeWorktree();
+      const directory = path.join(worktree.path, "restore-race-empty-dir");
+      await mkdir(directory);
+      await fs.chmod(directory, 0o750);
+      const originalInfo = await fs.stat(directory);
+      const originalMode = originalInfo.mode & 0o7777;
+      let injected = false;
+      let racerIno = 0;
+      const result = await removeDirectoryTree(worktree.path, {
+        startedAt: Number.MAX_SAFE_INTEGER,
+        afterEntryQuarantined: async (entry) => {
+          if (!entry.endsWith("restore-race-empty-dir")) return;
+          await writeFile(
+            path.join(worktree.path, "late-after-empty-directory.txt"),
+            "late\n",
+          );
+        },
+        afterRestoreNameCheck: async (_source, destination, isDirectory) => {
+          if (
+            !isDirectory ||
+            !destination.endsWith("restore-race-empty-dir") ||
+            injected
+          )
+            return;
+          injected = true;
+          await mkdir(destination);
+          racerIno = (await fs.stat(destination)).ino;
+        },
+      });
+
+      expect(result.status).toBe("retained");
+      expect(injected).toBe(true);
+      const restoredInfo = await fs.stat(directory);
+      expect(restoredInfo.ino).toBe(originalInfo.ino);
+      expect(restoredInfo.ino).not.toBe(racerIno);
+      expect(restoredInfo.mode & 0o7777).toBe(originalMode);
+      await expect(fs.readdir(directory)).resolves.toEqual([]);
+      await expect(
+        readFile(
+          path.join(worktree.path, "late-after-empty-directory.txt"),
+          "utf8",
+        ),
+      ).resolves.toBe("late\n");
       await expect(
         git(worktree.path, "rev-parse", "--git-dir"),
       ).resolves.toMatch(/worktrees/u);
@@ -2313,39 +2366,115 @@ describe("real worktree teardown preservation", () => {
   );
 
   removeDirectoryTreeTest(
-    "keeps the original pin and names it when verified recovery fails",
+    "retains the original pin and worktree when pinned recovery link fails",
     async () => {
       const root = await mkdtemp(
-        path.join(os.tmpdir(), "bb-preserve-pin-failed-"),
+        path.join(os.tmpdir(), "bb-preserve-pin-link-failed-"),
       );
       roots.push(root);
-      const originalPath = path.join(root, "payload.txt");
+      const originalPath = path.join(root, "a-payload.txt");
+      const siblingPath = path.join(root, "z-sibling.txt");
       await writeFile(originalPath, "original bytes\n");
-      let pinCleanupAttempted = false;
+      await writeFile(siblingPath, "sibling bytes\n");
+      let injected = false;
       let error: unknown;
       try {
         await removeDirectoryTree(root, {
           startedAt: Number.MAX_SAFE_INTEGER,
-          beforePinCleanup: async (pin) => {
-            if (path.basename(pin).startsWith(".bb-pin-")) {
-              pinCleanupAttempted = true;
-              throw new Error("injected pin cleanup failure");
-            }
+          afterEntryQuarantined: async (entry) => {
+            if (!entry.endsWith("a-payload.txt")) return;
+            await writeFile(path.join(root, "late-sibling.txt"), "late\n");
+            await writeFile(entry, "racing bytes\n");
+          },
+          beforePinnedRecoveryLink: async () => {
+            injected = true;
+            throw Object.assign(new Error("injected recovery link failure"), {
+              code: "EIO",
+            });
           },
         });
       } catch (caught) {
         error = caught;
       }
 
-      expect(pinCleanupAttempted).toBe(true);
+      expect(injected).toBe(true);
       expect(error).toMatchObject({ name: "RetainedRecoveryError" });
       const pinPath = errorRetainedPaths(error).find((retainedPath) =>
         path.basename(retainedPath).startsWith(".bb-pin-"),
       );
       expect(pinPath).toBeDefined();
-      await expect(access(originalPath)).resolves.toBeUndefined();
-      await expect(readFile(pinPath!)).resolves.toBeInstanceOf(Buffer);
+      await expect(readFile(pinPath!, "utf8")).resolves.toBe(
+        "original bytes\n",
+      );
       expect(error instanceof Error ? error.message : "").toContain(pinPath);
+      await expect(access(root)).resolves.toBeUndefined();
+      await expect(readFile(siblingPath, "utf8")).resolves.toBe(
+        "sibling bytes\n",
+      );
+      await expect(readFile(originalPath, "utf8")).resolves.toBe(
+        "racing bytes\n",
+      );
+      await expect(readFile(path.join(root, "late-sibling.txt"), "utf8"))
+        .resolves.toBe("late\n");
+    },
+  );
+
+  removeDirectoryTreeTest(
+    "retains the original pin and worktree when recovery copy fails",
+    async () => {
+      const root = await mkdtemp(
+        path.join(os.tmpdir(), "bb-preserve-pin-copy-failed-"),
+      );
+      roots.push(root);
+      const originalPath = path.join(root, "a-payload.txt");
+      const siblingPath = path.join(root, "z-sibling.txt");
+      await writeFile(originalPath, "original bytes\n");
+      await writeFile(siblingPath, "sibling bytes\n");
+      let copyAttempted = false;
+      let error: unknown;
+      try {
+        await removeDirectoryTree(root, {
+          startedAt: Number.MAX_SAFE_INTEGER,
+          afterEntryQuarantined: async (entry) => {
+            if (!entry.endsWith("a-payload.txt")) return;
+            await writeFile(path.join(root, "late-sibling.txt"), "late\n");
+            await writeFile(entry, "racing bytes\n");
+          },
+          beforePinnedRecoveryLink: async () => {
+            throw Object.assign(new Error("force copy fallback"), {
+              code: "EPERM",
+            });
+          },
+          beforeRecoveryCopy: async () => {
+            copyAttempted = true;
+            throw Object.assign(new Error("injected recovery copy failure"), {
+              code: "ENOSPC",
+            });
+          },
+        });
+      } catch (caught) {
+        error = caught;
+      }
+
+      expect(copyAttempted).toBe(true);
+      expect(error).toMatchObject({ name: "RetainedRecoveryError" });
+      const pinPath = errorRetainedPaths(error).find((retainedPath) =>
+        path.basename(retainedPath).startsWith(".bb-pin-"),
+      );
+      expect(pinPath).toBeDefined();
+      await expect(readFile(pinPath!, "utf8")).resolves.toBe(
+        "original bytes\n",
+      );
+      expect(error instanceof Error ? error.message : "").toContain(pinPath);
+      await expect(access(root)).resolves.toBeUndefined();
+      await expect(readFile(siblingPath, "utf8")).resolves.toBe(
+        "sibling bytes\n",
+      );
+      await expect(readFile(originalPath, "utf8")).resolves.toBe(
+        "racing bytes\n",
+      );
+      await expect(readFile(path.join(root, "late-sibling.txt"), "utf8"))
+        .resolves.toBe("late\n");
     },
   );
 
