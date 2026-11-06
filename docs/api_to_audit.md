@@ -4889,3 +4889,14 @@ Composer and thread-list consume the same components through those shims;
 relative shared-ui imports, package imports and the builtin UI alias share the
 same path. Stabilization requires a public component contract and an audit of
 portal, context, focus and deferred drawer behavior across core and plugins.
+
+## `PluginThreadListProps.experimental_isVisible`
+
+The host supplies its existing compact drawer or desktop open state to thread lists.
+The bundled thread-list uses this to mount pinned rows on the first visible commit
+and omit them while collapsed, without a geometry read or observer round trip.
+Older hosts omit the value, meaning visibility is unknown; the bundled list retains
+observer-driven visibility in that case. Custom thread-list plugins can use the same
+public state to avoid speculative mounting or delayed first paint.
+Stabilize after verifying first-paint and open/close behavior on both layouts.
+Core caller: `components/sidebar/PluginThreadList.tsx`.

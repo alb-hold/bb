@@ -7,6 +7,7 @@ import {
   screen,
 } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
+import { CompactViewportOverrideProvider } from "@bb/shared-ui/hooks/use-compact-viewport";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PluginThreadListProps } from "@get-bb/plugin-sdk";
 import { resetAllCrashedPluginSlotsForTest } from "@/components/plugin/PluginSlotMount";
@@ -59,6 +60,33 @@ afterEach(() => {
 });
 
 describe("PluginThreadList", () => {
+  it.each([
+    { compact: false, open: true, visible: true },
+    { compact: false, open: false, visible: false },
+    { compact: true, open: true, visible: false },
+  ])(
+    "passes initial layout visibility for compact=$compact open=$open",
+    ({ compact, open, visible }) => {
+      const seen: PluginThreadListProps[] = [];
+      render(
+        <MemoryRouter>
+          <CompactViewportOverrideProvider isCompactViewport={compact}>
+            <SidebarProvider open={open}>
+              <PluginThreadList
+                replacement={pluginReplacement((props) => {
+                  seen.push(props);
+                  return null;
+                })}
+                onNavigate={() => {}}
+              />
+            </SidebarProvider>
+          </CompactViewportOverrideProvider>
+        </MemoryRouter>,
+      );
+      expect(seen[0]?.experimental_isVisible).toBe(visible);
+    },
+  );
+
   it("shows the loading placeholder until plugin frontends have booted, then the missing state", () => {
     const { container } = renderList({ kind: "owner" });
     expect(

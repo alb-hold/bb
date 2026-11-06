@@ -161,6 +161,7 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
         apiSymbols: [
           "PluginThreadListRegistration",
           "PluginThreadListProps",
+          "PluginThreadListProps.experimental_isVisible",
           "experimental_useSidebarThreads",
           "PluginSidebarThreadsState.experimental_archived",
           "PluginSidebarThreadsState.experimental_hosts",

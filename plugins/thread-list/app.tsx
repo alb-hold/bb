@@ -5,6 +5,7 @@ import {
 import { CompactViewportOverrideProvider } from "@/components/ui/hooks/use-compact-viewport";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { PreferencesSync } from "./app/preferences/PreferencesSync.js";
+import { SidebarListVisibleContext } from "./app/list/useSidebarListShown.js";
 import { ProjectList } from "./app/list/ProjectList.js";
 import { useSidebarThreadReveal } from "./app/list/useSidebarThreadReveal.js";
 import { moveThreadAction } from "./app/rows/moveThreadAction.js";
@@ -14,23 +15,26 @@ import { SidebarRowMetadataExperiment } from "./app/list/SidebarRowMetadataExper
 function ThreadList({
   activeThreadId,
   isCompactViewport,
+  experimental_isVisible,
   onNavigate,
 }: PluginThreadListProps) {
   useSidebarThreadReveal();
   return (
-    <CompactViewportOverrideProvider isCompactViewport={isCompactViewport}>
-      <TooltipProvider>
-        <PreferencesSync />
-        <SidebarRowMetadataExperiment>
-          <ThreadSelectionProvider activeThreadId={activeThreadId}>
-            <ProjectList
-              activeThreadId={activeThreadId}
-              onProjectSelect={onNavigate}
-            />
-          </ThreadSelectionProvider>
-        </SidebarRowMetadataExperiment>
-      </TooltipProvider>
-    </CompactViewportOverrideProvider>
+    <SidebarListVisibleContext.Provider value={experimental_isVisible}>
+      <CompactViewportOverrideProvider isCompactViewport={isCompactViewport}>
+        <TooltipProvider>
+          <PreferencesSync />
+          <SidebarRowMetadataExperiment>
+            <ThreadSelectionProvider activeThreadId={activeThreadId}>
+              <ProjectList
+                activeThreadId={activeThreadId}
+                onProjectSelect={onNavigate}
+              />
+            </ThreadSelectionProvider>
+          </SidebarRowMetadataExperiment>
+        </TooltipProvider>
+      </CompactViewportOverrideProvider>
+    </SidebarListVisibleContext.Provider>
   );
 }
 

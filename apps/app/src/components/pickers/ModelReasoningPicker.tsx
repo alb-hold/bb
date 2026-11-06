@@ -24,6 +24,12 @@ import {
   OPTION_MUTED_CLASS_NAME,
   OPTION_TRIGGER_CONTENT_CLASS_NAME,
 } from "@bb/shared-ui/option-display";
+import {
+  Tooltip,
+  TooltipTrigger,
+  TooltipContent,
+  TooltipProvider,
+} from "@bb/shared-ui/tooltip";
 import { Popover, PopoverTrigger } from "@bb/shared-ui/popover";
 import {
   useCallback,
@@ -385,7 +391,7 @@ export function ModelReasoningPicker(props: ModelReasoningPickerProps) {
       variant="ghost"
       size="sm"
       aria-label={triggerAccessibleLabel}
-      aria-description={modelSubstitutionNote}
+      aria-description={modelSubstitutionNote ?? triggerTitle}
       aria-keyshortcuts={toggleShortcut?.ariaKeyshortcuts}
       disabled={disabled}
       onPointerEnter={warmPicker}
@@ -464,7 +470,16 @@ export function ModelReasoningPicker(props: ModelReasoningPickerProps) {
 
   return (
     <Popover open={open && !disabled} onOpenChange={setOpen} modal={modal}>
-      <PopoverTrigger asChild>{trigger}</PopoverTrigger>
+      <TooltipProvider>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <PopoverTrigger asChild>{trigger}</PopoverTrigger>
+          </TooltipTrigger>
+          <TooltipContent>
+            {modelSubstitutionNote ?? triggerTitle}
+          </TooltipContent>
+        </Tooltip>
+      </TooltipProvider>
       <ModelReasoningPickerBody
         initialPreviewProviderId={startupProvider}
         initialReasoningLevel={startupReasoning}

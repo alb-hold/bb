@@ -3,47 +3,88 @@
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { SidebarContentElementContext } from "../ui/sidebar.js";
-import { useSidebarListShown } from "./useSidebarListShown.js";
+import {
+  SidebarListVisibleContext,
+  useSidebarListShown,
+} from "./useSidebarListShown.js";
 
 function Probe() {
-  return <span>{useSidebarListShown() ? "visible rows" : "hidden rows"}</span>;
+  return useSidebarListShown() ? <span>pinned rows</span> : null;
 }
 
 afterEach(() => {
   cleanup();
-  vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
-it("realizes rows from observer geometry without reading layout during commit", () => {
-  const callbacks: ResizeObserverCallback[] = [];
-  const disconnect = vi.fn();
-  vi.stubGlobal("ResizeObserver", class {
-    constructor(callback: ResizeObserverCallback) { callbacks.push(callback); }
-    observe() {}
-    disconnect = disconnect;
-  });
-  const height = vi.spyOn(Element.prototype, "clientHeight", "get");
+it("falls back to observer visibility when an older host omits visibility", () => {
+  let resize: ResizeObserverCallback | undefined;
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      constructor(callback: ResizeObserverCallback) {
+        resize = callback;
+      }
+      observe() {}
+      disconnect() {}
+    },
+  );
   const element = document.createElement("div");
-  const result = render(
+  render(
     <SidebarContentElementContext.Provider value={{ current: element }}>
       <Probe />
     </SidebarContentElementContext.Provider>,
   );
-  expect(height).not.toHaveBeenCalled();
-  expect(screen.getByText("hidden rows")).not.toBeNull();
-  const resize = (height: number) => act(() => {
-    for (const callback of callbacks) callback([
-      { target: element, contentRect: new DOMRectReadOnly(0, 0, 300, height), borderBoxSize: [], contentBoxSize: [], devicePixelContentBoxSize: [] },
-    ], {} as ResizeObserver);
-  });
-  resize(500);
-  expect(screen.getByText("visible rows")).not.toBeNull();
-  resize(0);
-  expect(screen.getByText("hidden rows")).not.toBeNull();
-  resize(300);
-  expect(screen.getByText("visible rows")).not.toBeNull();
-  expect(height).not.toHaveBeenCalled();
-  result.unmount();
-  expect(disconnect).toHaveBeenCalled();
+  expect(screen.queryByText("pinned rows")).toBeNull();
+  act(() =>
+    resize?.(
+      [
+        {
+          target: element,
+          contentRect: new DOMRectReadOnly(0, 0, 300, 500),
+          borderBoxSize: [],
+          contentBoxSize: [],
+          devicePixelContentBoxSize: [],
+        },
+      ],
+      {} as ResizeObserver,
+    ),
+  );
+  expect(screen.getByText("pinned rows")).toBeTruthy();
+  act(() =>
+    resize?.(
+      [
+        {
+          target: element,
+          contentRect: new DOMRectReadOnly(0, 0, 300, 0),
+          borderBoxSize: [],
+          contentBoxSize: [],
+          devicePixelContentBoxSize: [],
+        },
+      ],
+      {} as ResizeObserver,
+    ),
+  );
+  expect(screen.queryByText("pinned rows")).toBeNull();
+});
+
+it("tracks the host visibility immediately when the sidebar opens or collapses", () => {
+  const { rerender } = render(
+    <SidebarListVisibleContext.Provider value={false}>
+      <Probe />
+    </SidebarListVisibleContext.Provider>,
+  );
+  expect(screen.queryByText("pinned rows")).toBeNull();
+  rerender(
+    <SidebarListVisibleContext.Provider value>
+      <Probe />
+    </SidebarListVisibleContext.Provider>,
+  );
+  expect(screen.getByText("pinned rows")).toBeTruthy();
+  rerender(
+    <SidebarListVisibleContext.Provider value={false}>
+      <Probe />
+    </SidebarListVisibleContext.Provider>,
+  );
+  expect(screen.queryByText("pinned rows")).toBeNull();
 });

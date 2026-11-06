@@ -1,18 +1,21 @@
-import { useLayoutEffect, useState } from "react";
+import { createContext, useContext, useLayoutEffect, useState } from "react";
 import { flushSync } from "react-dom";
 import { useSidebarContentElementRef } from "../ui/sidebar.js";
 
+export const SidebarListVisibleContext = createContext<boolean | undefined>(
+  undefined,
+);
+
 export function useSidebarListShown(): boolean {
+  const visible = useContext(SidebarListVisibleContext);
   const scrollElementRef = useSidebarContentElementRef();
   const canObserve = typeof ResizeObserver !== "undefined";
-  const [shown, setShown] = useState<boolean | null>(null);
+  const [shown, setShown] = useState(false);
   useLayoutEffect(() => {
-    if (!canObserve) return;
+    if (visible !== undefined || !canObserve) return;
     const element = scrollElementRef?.current ?? null;
     if (element === null) {
-      const fallback = setTimeout(() =>
-        setShown((current) => current ?? true),
-      );
+      const fallback = setTimeout(() => setShown(true));
       return () => clearTimeout(fallback);
     }
     const observer = new ResizeObserver((entries) => {
@@ -21,6 +24,6 @@ export function useSidebarListShown(): boolean {
     });
     observer.observe(element);
     return () => observer.disconnect();
-  }, [canObserve, scrollElementRef]);
-  return canObserve ? shown === true : true;
+  }, [visible, canObserve, scrollElementRef]);
+  return visible ?? (canObserve ? shown : true);
 }
