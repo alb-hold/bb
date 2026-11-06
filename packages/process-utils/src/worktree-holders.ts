@@ -199,7 +199,7 @@ async function checkLink(
   return null;
 }
 
-export interface ProcessIdentity {
+interface LinuxProcessIdentity {
   uid: number;
   gids: number[];
 }
@@ -223,7 +223,7 @@ async function scanLinuxProcess(
   pid: number,
   directory: string,
   mountNamespace: string,
-  self: ProcessIdentity,
+  self: LinuxProcessIdentity,
   context: ScanContext,
 ): Promise<ProcessResult> {
   const base = `/proc/${pid}`;
@@ -696,10 +696,10 @@ async function scanOwnProcess(
 interface LinuxVisibility {
   problem: string | null;
   mountNamespace: string;
-  self: ProcessIdentity;
+  self: LinuxProcessIdentity;
 }
 
-const NO_IDENTITY: ProcessIdentity = { uid: -1, gids: [] };
+const NO_IDENTITY: LinuxProcessIdentity = { uid: -1, gids: [] };
 
 export async function linuxVisibilityProblem(
   proc: ProcReader = hostProc,
@@ -716,7 +716,7 @@ export async function linuxVisibilityProblem(
   const uids = parseStatusNumbers(status.value, "Uid");
   const gids = parseStatusNumbers(status.value, "Groups") ?? [];
   const gid = parseStatusNumbers(status.value, "Gid");
-  const self: ProcessIdentity = {
+  const self: LinuxProcessIdentity = {
     uid: uids?.[3] ?? -1,
     gids: [...gids, ...(gid ?? [])],
   };
