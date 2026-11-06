@@ -90,6 +90,7 @@ server.listen(Number(process.env.BB_SERVER_PORT), "127.0.0.1");
 `;
 
 const CHILD_PROCESS_START_TIMEOUT_MS = 15_000;
+const childProcessTestTimeoutMs = (waits: number): number => waits * CHILD_PROCESS_START_TIMEOUT_MS + 15_000;
 
 async function waitForChildProcessStart(assertStarted: () => void): Promise<void> {
   await vi.waitFor(assertStarted, { timeout: CHILD_PROCESS_START_TIMEOUT_MS, interval: 25 });
@@ -338,7 +339,7 @@ describe("startFullStackServerProcess", () => {
       await termination;
       await waitForChildProcessStart(() => expect(existsSync(completionPath)).toBe(true));
     }
-  });
+  }, childProcessTestTimeoutMs(2));
 
   it.skipIf(process.platform === "win32")(
     "does not wait for inherited stdio handles after the writer process exits",
@@ -427,7 +428,7 @@ describe("startFullStackServerProcess", () => {
           });
         await new Promise<void>((resolvePromise) => {
           setTimeout(resolvePromise, 50);
-        });
+        }, childProcessTestTimeoutMs(3));
         expect(
           readdirSync(context.logDir)
             .sort()
@@ -569,7 +570,7 @@ describe("startFullStackServerProcess", () => {
         });
       }
     }
-  });
+  }, childProcessTestTimeoutMs(2));
 
   it("does not treat a stdio writer kill error as writer exit", async () => {
     const serverPort = await reserveFreePort();
@@ -654,7 +655,7 @@ describe("startFullStackServerProcess", () => {
       const context = createStartContext({
         serverEntry: writeImmediateServerEntry(),
         serverPort,
-      });
+      }, childProcessTestTimeoutMs(3));
       const processes: ManagedFullStackProcesses = {
         daemonRun: null,
         serverRun: null,
