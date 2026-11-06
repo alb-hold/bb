@@ -184,10 +184,29 @@ export const updateTerminalRequestSchema = z
   .strict();
 export type UpdateTerminalRequest = z.infer<typeof updateTerminalRequestSchema>;
 
+const terminalOutputBase64ShapeSchema = z
+  .string()
+  .max(TERMINAL_DATA_MAX_BASE64_LENGTH)
+  .refine((value) => {
+    if (
+      value.length % 4 !== 0 ||
+      getTerminalBase64DecodedByteLength(value) > TERMINAL_DATA_MAX_BYTES
+    )
+      return false;
+    const padding = value.indexOf("=");
+    return (
+      padding < 0 ||
+      padding === value.length - 1 ||
+      (padding === value.length - 2 && value.endsWith("=="))
+    );
+  });
+
 export const terminalOutputChunkSchema = z
   .object({
     seq: z.number().int().nonnegative(),
-    dataBase64: z.union([z.literal(""), terminalDataBase64Schema]),
+    dataBase64: terminalOutputBase64ShapeSchema.refine((value) =>
+      /^[A-Za-z0-9+/=]*$/u.test(value),
+    ),
   })
   .strict();
 export type TerminalOutputChunk = z.infer<typeof terminalOutputChunkSchema>;
@@ -290,23 +309,7 @@ const terminalReplayBatchSchema = z
         z
           .object({
             seq: z.number().int().nonnegative(),
-            dataBase64: z
-              .string()
-              .max(TERMINAL_DATA_MAX_BASE64_LENGTH)
-              .refine((value) => {
-                if (
-                  value.length % 4 !== 0 ||
-                  getTerminalBase64DecodedByteLength(value) >
-                    TERMINAL_DATA_MAX_BYTES
-                )
-                  return false;
-                const padding = value.indexOf("=");
-                return (
-                  padding < 0 ||
-                  padding === value.length - 1 ||
-                  (padding === value.length - 2 && value.endsWith("=="))
-                );
-              }),
+            dataBase64: terminalOutputBase64ShapeSchema,
           })
           .strict(),
       )
