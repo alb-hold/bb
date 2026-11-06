@@ -1515,14 +1515,23 @@ describe("real worktree teardown preservation", () => {
       const worktree = await makeWorktree();
       const entry = path.join(worktree.path, "README.md");
       const preservedPath = `${entry}.bb-preserved-11111111`;
+      let actualPreservedPath = preservedPath;
       let injected = false;
       const result = await removeDirectoryTree(worktree.path, {
         startedAt: Number.MAX_SAFE_INTEGER,
         afterEntryQuarantined: async (removedEntry) => {
-          if (!removedEntry.endsWith("README.md") || injected) return;
+          if (!removedEntry.endsWith("README.md")) return;
+          await writeFile(
+            path.join(worktree.path, "late-d8-sibling.txt"),
+            "late sibling bytes\n",
+          );
+        },
+        afterRestoreNameCheck: async (_source, _destination, isDirectory) => {
+          if (isDirectory || injected) return;
+          actualPreservedPath = `${entry}.bb-preserved-11111111`;
           injected = true;
           await writeFile(entry, "restore-name racer bytes\n");
-          await writeFile(preservedPath, "candidate racing bytes\n");
+          await writeFile(actualPreservedPath, "candidate racing bytes\n");
         },
       });
 
@@ -1531,9 +1540,12 @@ describe("real worktree teardown preservation", () => {
       await expect(readFile(entry, "utf8")).resolves.toBe(
         "restore-name racer bytes\n",
       );
-      await expect(readFile(preservedPath, "utf8")).resolves.toBe(
+      await expect(readFile(actualPreservedPath, "utf8")).resolves.toBe(
         "candidate racing bytes\n",
       );
+      await expect(
+        readFile(path.join(worktree.path, "late-d8-sibling.txt"), "utf8"),
+      ).resolves.toBe("late sibling bytes\n");
       const quarantinedPath = result.retainedPaths.find((retainedPath) =>
         path.basename(retainedPath).startsWith(".bb-removing-"),
       );
@@ -2439,6 +2451,7 @@ describe("real worktree teardown preservation", () => {
       await writeFile(originalPath, "original bytes\n");
       await writeFile(siblingPath, "sibling bytes\n");
       let injected = false;
+      let linkErrno: string | undefined;
       let error: unknown;
       try {
         await removeDirectoryTree(root, {
@@ -2451,7 +2464,18 @@ describe("real worktree teardown preservation", () => {
           },
           recoveryLink: async (pin, destination) => {
             injected = true;
-            await fs.link(pin, destination);
+            try {
+              await fs.link(pin, destination);
+            } catch (caught) {
+              if (
+                typeof caught === "object" &&
+                caught !== null &&
+                "code" in caught &&
+                typeof caught.code === "string"
+              )
+                linkErrno = caught.code;
+              throw caught;
+            }
           },
         });
       } catch (caught) {
@@ -2461,6 +2485,7 @@ describe("real worktree teardown preservation", () => {
       }
 
       expect(injected).toBe(true);
+      expect(linkErrno).toBe("EACCES");
       expect(error).toMatchObject({ name: "RetainedRecoveryError" });
       const pinPath = errorRetainedPaths(error).find((retainedPath) =>
         path.basename(retainedPath).startsWith(".bb-pin-"),
@@ -2497,6 +2522,7 @@ describe("real worktree teardown preservation", () => {
       await writeFile(siblingPath, "sibling bytes\n");
       let copyAttempted = false;
       let writes = 0;
+      let writeErrno: string | undefined;
       let error: unknown;
       try {
         await removeDirectoryTree(root, {
@@ -2525,7 +2551,18 @@ describe("real worktree teardown preservation", () => {
             copyAttempted = true;
             writes += 1;
             if (writes === 2) await destination.close();
-            return destination.write(buffer, offset, length, position);
+            try {
+              return await destination.write(buffer, offset, length, position);
+            } catch (caught) {
+              if (
+                typeof caught === "object" &&
+                caught !== null &&
+                "code" in caught &&
+                typeof caught.code === "string"
+              )
+                writeErrno = caught.code;
+              throw caught;
+            }
           },
         });
       } catch (caught) {
@@ -2553,6 +2590,7 @@ describe("real worktree teardown preservation", () => {
         readFile(path.join(root, "late-sibling.txt"), "utf8"),
       ).resolves.toBe("late\n");
       expect(writes).toBe(2);
+      expect(writeErrno).toBe("EBADF");
       await expect(
         fs
           .readdir(root)
