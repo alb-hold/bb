@@ -24,6 +24,7 @@ export interface RemoveDirectoryTreeHooks {
   beforeEntryRename?: (entry: string) => Promise<void>;
   afterEntryCheck?: (entry: string) => Promise<void>;
   afterEntryQuarantined?: (entry: string, quarantined: string) => Promise<void>;
+  onRetainedPath?: (retainedPath: string) => void;
   afterRootMarkerDetached?: (root: string) => Promise<void>;
   allowQuarantinedRoot?: true;
 }
@@ -133,6 +134,31 @@ function errorCode(error: unknown): string | null {
     typeof error.code === "string"
     ? error.code
     : null;
+}
+
+async function moveToPreservedPath(
+  quarantined: string,
+  original: string,
+): Promise<string | null> {
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const preserved = path.join(
+      path.dirname(original),
+      `${path.basename(original)}.bb-preserved-${randomUUID().slice(0, 8)}`,
+    );
+    try {
+      await lstat(preserved);
+      continue;
+    } catch (error) {
+      if (errorCode(error) !== "ENOENT") return null;
+    }
+    try {
+      await rename(quarantined, preserved);
+      return preserved;
+    } catch (error) {
+      if (errorCode(error) !== "EEXIST") return null;
+    }
+  }
+  return null;
 }
 
 function matchesQuarantinedNames(
@@ -369,14 +395,25 @@ export async function removeDirectoryTree(
             }
           }
         }
+        const retainedPath = restored
+          ? null
+          : ((await moveToPreservedPath(quarantined, anchoredEntry)) ?? quarantined);
         if (modeChanged && fileHandle !== null) {
           try {
             await fileHandle.chmod(Number(originalMode));
           } catch {
+            if (retainedPath !== null)
+              hooks.onRetainedPath?.(
+                path.join(path.dirname(entry), path.basename(retainedPath)),
+              );
             return false;
           }
         }
-        return restored;
+        if (retainedPath !== null)
+          hooks.onRetainedPath?.(
+            path.join(path.dirname(entry), path.basename(retainedPath)),
+          );
+        return restored || retainedPath !== quarantined;
       };
       try {
         if (checkedPreciseInfo.isFile()) {
@@ -677,19 +714,33 @@ export async function removeDirectoryTree(
           : path.join(parentDirectory, `.bb-gitfile-${randomUUID()}`);
       let gitMarkerHeld = false;
       let rootQuarantined = false;
+      let preservedRoot: string | null = null;
       const restoreQuarantine = async (): Promise<boolean> => {
         try {
           await lstat(anchoredEntry);
-          return false;
-        } catch {
-          try {
-            await rename(quarantined, anchoredEntry);
-            rootQuarantined = false;
-            return true;
-          } catch {
-            return false;
+        } catch (error) {
+          if (errorCode(error) === "ENOENT") {
+            try {
+              await rename(quarantined, anchoredEntry);
+              rootQuarantined = false;
+              return true;
+            } catch {
+              preservedRoot = null;
+            }
           }
         }
+        preservedRoot = await moveToPreservedPath(quarantined, anchoredEntry);
+        if (preservedRoot !== null) {
+          rootQuarantined = false;
+          hooks.onRetainedPath?.(
+            path.join(path.dirname(entry), path.basename(preservedRoot)),
+          );
+          return true;
+        }
+        hooks.onRetainedPath?.(
+          path.join(path.dirname(entry), path.basename(quarantined)),
+        );
+        return false;
       };
       const restoreGitMarker = async (rootPath: string): Promise<boolean> => {
         if (!gitMarkerHeld || heldGitMarker === null) return true;
@@ -703,7 +754,9 @@ export async function removeDirectoryTree(
         }
       };
       const retain = async (): Promise<RemoveDirectoryTreeResult> => {
-        await restoreGitMarker(rootQuarantined ? quarantined : anchoredEntry);
+        await restoreGitMarker(
+          rootQuarantined ? quarantined : (preservedRoot ?? anchoredEntry),
+        );
         if (rootQuarantined) await restoreQuarantine();
         if (directoryModeChanged)
           await directory.chmod(Number(originalDirectoryMode));
@@ -733,6 +786,7 @@ export async function removeDirectoryTree(
           return await retain();
         await rename(anchoredEntry, quarantined);
         rootQuarantined = true;
+        await hooks.afterEntryQuarantined?.(entry, quarantined);
         if (expectedSiblingNames !== undefined) {
           let siblingNames: string[];
           try {

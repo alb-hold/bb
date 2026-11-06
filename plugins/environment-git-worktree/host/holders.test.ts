@@ -125,33 +125,31 @@ describe("scanWorktreeHolders", () => {
     },
   );
 
-  it("treats a non-root foreign process with an outside cwd as uncertain when it can traverse the worktree", async () => {
-    const proc = fakeProc({
-      self: { uid: 2000 },
-      worktreeUid: 2000,
-      worktreeMode: 0o755,
-      processes: {
-        102: { uid: 60000, cwd: "/home/other", fdTargets: ["/work/tree/file"] },
-      },
-    });
-    await expect(scanLinux("/work/tree", proc, 4242)).resolves.toMatchObject({
-      status: "uncertain",
-    });
-  });
-
-  it("clears a non-root foreign process with an outside cwd when it cannot traverse the worktree", async () => {
-    const proc = fakeProc({
-      self: { uid: 2000 },
-      worktreeUid: 2000,
-      worktreeMode: 0o700,
-      processes: {
-        103: { uid: 60000, cwd: "/home/other", fdTargets: ["/work/tree/file"] },
-      },
-    });
-    await expect(scanLinux("/work/tree", proc, 4242)).resolves.toEqual({
-      status: "clear",
-    });
-  });
+  it.each([
+    ["no DAC capabilities", "0000000000000000"],
+    ["CAP_DAC_OVERRIDE", "0000000000000002"],
+    ["CAP_DAC_READ_SEARCH", "0000000000000004"],
+  ])(
+    "treats a non-root foreign process with a readable outside cwd as uncertain when the worktree is not traversable (%s)",
+    async (_capability, capEff) => {
+      const proc = fakeProc({
+        self: { uid: 2000 },
+        worktreeUid: 2000,
+        worktreeMode: 0o700,
+        processes: {
+          102: {
+            uid: 60000,
+            cwd: "/home/other",
+            capEff,
+            fdTargets: ["/work/tree/file"],
+          },
+        },
+      });
+      await expect(scanLinux("/work/tree", proc, 4242)).resolves.toMatchObject({
+        status: "uncertain",
+      });
+    },
+  );
 
   it("is inconclusive, not clear, where the platform cannot be inspected", async () => {
     Object.defineProperty(process, "platform", { value: "win32" });
@@ -241,7 +239,9 @@ describe("real Linux POSIX ACL access checks", () => {
             ? [String(process.pid), String(pid)]
             : hostProc.readdir(target),
         readFile: async (target) =>
-          target === `/proc/${pid}/status`
+          target === "/proc/self/status"
+            ? `Name:\tnode\nState:\tR (running)\nNSpid:\t${process.pid}\nUid:\t0\t0\t0\t0\nGid:\t0\t0\t0\t0\nGroups:\t0\n`
+            : target === `/proc/${pid}/status`
             ? "Name:\tforeign\nState:\tS (sleeping)\nUid:\t65530\t65531\t65532\t65533\nGid:\t65530\t65531\t65532\t65533\nGroups:\t65533\nCapEff:\t0000000000000000\n"
             : hostProc.readFile(target),
         readlink: async (target) => {
@@ -558,7 +558,7 @@ describe("the Linux process-list visibility rule", () => {
     async (_name, mode, expected) => {
       const proc = fakeProc({
         worktreeMode: mode,
-        self: { groups: [1000] },
+        self: { uid: 0, groups: [1000] },
         processes: { 101: { uid: 1001, cwdDenied: true } },
       });
       expect(await scanLinux("/work/tree", proc, 4242)).toMatchObject({
@@ -572,6 +572,7 @@ describe("the Linux process-list visibility rule", () => {
     async (capEff) => {
       const proc = fakeProc({
         worktreeMode: 0o700,
+        self: { uid: 0 },
         processes: { 101: { uid: 1001, cwdDenied: true, capEff } },
       });
       expect(await scanLinux("/work/tree", proc, 4242)).toMatchObject({
@@ -613,6 +614,7 @@ describe("the Linux process-list visibility rule", () => {
     const proc = fakeProc({
       worktreeMode: 0o710,
       worktreeGid: 2000,
+      self: { uid: 0 },
       processes: {
         101: {
           uid: 1001,
@@ -633,6 +635,7 @@ describe("the Linux process-list visibility rule", () => {
       const proc = fakeProc({
         worktreeMode: 0o710,
         worktreeGid: 2000,
+        self: { uid: 0 },
         extendedAcl,
         processes: {
           101: {
@@ -652,6 +655,7 @@ describe("the Linux process-list visibility rule", () => {
   it("is uncertain when ACL inspection fails on a restrictive mode", async () => {
     const proc = fakeProc({
       worktreeMode: 0o700,
+      self: { uid: 0 },
       extendedAcl: null,
       processes: {
         101: {
@@ -671,6 +675,7 @@ describe("the Linux process-list visibility rule", () => {
     let allowedModeCalls = 0;
     const allowedModeProc = fakeProc({
       worktreeMode: 0o711,
+      self: { uid: 0 },
       processes: { 101: { uid: 1001, cwdDenied: true } },
     });
     allowedModeProc.hasExtendedAcl = async () => {
@@ -688,6 +693,7 @@ describe("the Linux process-list visibility rule", () => {
     const sharedPathProc = fakeProc({
       worktreeMode: 0o700,
       worktreeGid: 2000,
+      self: { uid: 0 },
       processes: {
         101: { uid: 1001, cwdDenied: true },
         102: { uid: 1002, cwdDenied: true },
@@ -705,6 +711,7 @@ describe("the Linux process-list visibility rule", () => {
 
   it("is clear when an unreadable foreign cwd cannot reach the worktree and skips root and system UIDs", async () => {
     const inaccessible = fakeProc({
+      self: { uid: 0 },
       worktreeMode: 0o700,
       processes: { 101: { uid: 1001, cwdDenied: true } },
     });

@@ -283,24 +283,15 @@ async function scanLinuxProcess(
     const foreignUid = uids[3];
     if (foreignUid === undefined || (foreignUid < 1000 && self.uid !== 0))
       return { otherUser: true };
+    if (self.uid !== 0) {
+      return {
+        uncertain: `process ${pid} foreign uid ${foreignUid} could not be inspected by a non-root daemon`,
+      };
+    }
     const cwd = await readOptional(() => proc.readlink(`${base}/cwd`));
     if ("value" in cwd) {
       if (isUnder(cwd.value, directory))
         return { pid, command: null, through: "working folder" };
-      if (self.uid !== 0) {
-        const reachable = await foreignUidCanReachDirectory(
-          proc,
-          directory,
-          foreignUid,
-          gids[3],
-          supplementaryGroups,
-          context,
-        );
-        if (reachable === false) return { otherUser: true };
-        return {
-          uncertain: `process ${pid} foreign uid ${foreignUid} may reach the worktree`,
-        };
-      }
     }
     if ("gone" in cwd) return null;
     if (!("failed" in cwd)) {

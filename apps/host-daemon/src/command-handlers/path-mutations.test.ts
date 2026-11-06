@@ -60,9 +60,13 @@ afterEach(async () => {
 });
 
 describe("confined host path mutations", () => {
-  it.skipIf(!hasHeldDirectoryRemoval || process.platform !== "linux")(
-    "refuses daemon removal for a foreign uid with a readable outside cwd and reachable worktree",
-    async () => {
+  it.skipIf(!hasHeldDirectoryRemoval || process.platform !== "linux").each([
+    ["no DAC capability", "0000000000000000"],
+    ["CAP_DAC_OVERRIDE", "0000000000000002"],
+    ["CAP_DAC_READ_SEARCH", "0000000000000004"],
+  ])(
+    "refuses daemon removal for a non-root daemon and foreign uid with an earlier fd despite %s",
+    async (_capability, capEff) => {
       const root = await fs.mkdtemp(
         path.join("/tmp", "bb-path-mutations-nonroot-"),
       );
@@ -70,7 +74,7 @@ describe("confined host path mutations", () => {
       await fs.chmod(root, 0o755);
       const target = path.join(root, "foreign-holder-nonroot");
       await fs.mkdir(target);
-      await fs.chmod(target, 0o755);
+      await fs.chmod(target, 0o700);
       await fs.writeFile(path.join(target, "data.txt"), "keep");
       const signal = vi.spyOn(process, "kill");
       const pid = 410104;
@@ -78,25 +82,26 @@ describe("confined host path mutations", () => {
       const selfUid: number = 2000;
       const selfGid = 2000;
       const foreignUid = selfUid === 60_000 ? 60_001 : 60_000;
-      const accessPaths: string[] = [];
       const proc: ProcReader = {
         ...hostProc,
         readFile: async (name) => {
           if (name === "/proc/self/status")
             return `Name:\tnode\nState:\tR (running)\nNSpid:\t${process.pid}\nUid:\t${selfUid}\t${selfUid}\t${selfUid}\t${selfUid}\nGid:\t${selfGid}\t${selfGid}\t${selfGid}\t${selfGid}\nGroups:\t${selfGid}\n`;
           if (name === `${base}/status`)
-            return `Name:\tforeign\nState:\tS (sleeping)\nUid:\t${foreignUid}\t${foreignUid}\t${foreignUid}\t${foreignUid}\nGid:\t60001\t60001\t60001\t60001\nGroups:\t60001\nCapEff:\t0000000000000000\n`;
+            return `Name:\tforeign\nState:\tS (sleeping)\nUid:\t${foreignUid}\t${foreignUid}\t${foreignUid}\t${foreignUid}\nGid:\t60001\t60001\t60001\t60001\nGroups:\t60001\nCapEff:\t${capEff}\n`;
           return hostProc.readFile(name);
         },
-        readdir: async (name) =>
-          name === "/proc"
-            ? [String(process.pid), String(pid)]
-            : hostProc.readdir(name),
-        readlink: async (name) =>
-          name === `${base}/cwd` ? "/tmp/outside" : hostProc.readlink(name),
-        statAccess: async (name) => {
-          accessPaths.push(name);
-          return hostProc.statAccess(name);
+        readdir: async (name) => {
+          if (name === "/proc") return [String(process.pid), String(pid)];
+          if (name === `${base}/task`) return [String(pid)];
+          if (name === `${base}/fd`) return ["3"];
+          return hostProc.readdir(name);
+        },
+        readlink: async (name) => {
+          if (name === `${base}/cwd` || name === `${base}/task/${pid}/cwd`)
+            return "/tmp/outside";
+          if (name === `${base}/fd/3`) return path.join(target, "data.txt");
+          return hostProc.readlink(name);
         },
       };
       useProcReaderForTests(proc);
@@ -109,10 +114,12 @@ describe("confined host path mutations", () => {
         problem: null,
         self: { uid: selfUid },
       });
-      expect((await fs.stat(target)).mode & 0o777).toBe(0o755);
+      expect((await fs.stat(target)).mode & 0o777).toBe(0o700);
       const scan = await scanLinux(target, proc);
-      expect(accessPaths).toContain(target);
       expect(scan).toMatchObject({ status: "uncertain" });
+      expect(scan.status === "uncertain" ? scan.reason : "").toContain(
+        "foreign-user processes could not be inspected",
+      );
       await expect(scanWorktreeHolders(target)).resolves.toMatchObject({
         status: "uncertain",
       });
