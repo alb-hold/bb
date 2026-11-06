@@ -447,12 +447,6 @@ export function useThreadCreationOptions(
   const hostsQuery = useHosts();
   const systemConfig = useSystemConfig();
   const providers = executionOptionsQuery.data?.providers ?? EMPTY_PROVIDERS;
-  const isLoadingModels =
-    executionOptionsQueryEnabled &&
-    (isResolvingReadyProvider ||
-      executionOptionsQuery.isPending ||
-      (executionOptionsQuery.isPlaceholderData &&
-        (executionOptionsQuery.data?.models.length ?? 0) === 0));
   const modelLoadError =
     executionOptionsQuery.data?.modelLoadError ?? NO_MODEL_LOAD_ERROR;
   const modelLoadFailed =
@@ -511,19 +505,31 @@ export function useThreadCreationOptions(
   const effectiveProviderMatchesInitialProvider =
     effectiveProviderId.length > 0 &&
     effectiveProviderId === renderedThreadSelections.selectedProviderId;
+  const rememberedProviderDefaultsEnabled =
+    usesStoredCreateSelections &&
+    Boolean(preferenceProjectId) &&
+    effectiveProviderId.length > 0 &&
+    !effectiveProviderMatchesInitialProvider &&
+    !storedSelectedModel;
   const rememberedProviderDefaultsQuery = useProjectDefaultExecutionOptions(
     {
       projectId: preferenceProjectId ?? undefined,
       providerId: effectiveProviderId,
     },
     {
-      enabled:
-        usesStoredCreateSelections &&
-        effectiveProviderId.length > 0 &&
-        !effectiveProviderMatchesInitialProvider &&
-        !storedSelectedModel,
+      enabled: rememberedProviderDefaultsEnabled,
     },
   );
+  const isLoadingModels =
+    executionOptionsQueryEnabled &&
+    (isResolvingReadyProvider ||
+      executionOptionsQuery.isPending ||
+      (executionOptionsQuery.isPlaceholderData &&
+        (executionOptionsQuery.data?.models.length ?? 0) === 0) ||
+      (!modelLoadFailed &&
+        rememberedProviderDefaultsEnabled &&
+        (rememberedProviderDefaultsQuery.isPending ||
+          rememberedProviderDefaultsQuery.isPlaceholderData)));
   const rememberedProviderDefaults =
     rememberedProviderDefaultsQuery.data?.providerId === effectiveProviderId
       ? rememberedProviderDefaultsQuery.data

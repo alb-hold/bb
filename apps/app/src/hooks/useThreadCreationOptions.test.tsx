@@ -16,7 +16,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ExecutionControls } from "@/components/promptbox/ExecutionControls";
 import { sdk } from "@/lib/sdk";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
-import type { ProviderModelCatalogScope } from "@bb/domain";
+import type {
+  ProjectExecutionDefaults,
+  ProviderModelCatalogScope,
+} from "@bb/domain";
 import type { QueryClient } from "@tanstack/react-query";
 import {
   hostsQueryKey,
@@ -339,6 +342,7 @@ beforeEach(() => {
     executionOptionsResponse(),
   );
   vi.mocked(sdk.system.providerStates).mockResolvedValue({ providers: [] });
+  vi.mocked(sdk.projects.defaultExecutionOptions).mockResolvedValue(null);
 });
 
 afterEach(() => {
@@ -348,6 +352,138 @@ afterEach(() => {
 });
 
 describe("useThreadCreationOptions", () => {
+  it.each([
+    { catalog: "choices", defaults: "model", label: "Global Model" },
+    { catalog: "choices", defaults: "none", label: "Select model" },
+    { catalog: "choices", defaults: "failed", label: "Select model" },
+    { catalog: "empty", defaults: "none", label: "No models available" },
+  ])(
+    "keeps the model placeholder until $defaults defaults settle for a $catalog catalog",
+    async ({ catalog, defaults, label }) => {
+      const pendingDefaults =
+        createDeferredPromise<ProjectExecutionDefaults | null>();
+      const response = executionOptionsResponse();
+      vi.mocked(sdk.system.executionOptions).mockResolvedValue({
+        ...response,
+        providers:
+          catalog === "empty"
+            ? response.providers.slice(0, 1)
+            : response.providers,
+        models: [],
+        selectedOnlyModels: catalog === "empty" ? [] : response.models,
+      });
+      vi.mocked(sdk.projects.defaultExecutionOptions).mockReturnValue(
+        pendingDefaults.promise,
+      );
+      const { wrapper } = createQueryClientTestHarness();
+      function Controls() {
+        const options = useThreadCreationOptions({
+          preferenceProjectId: PROJECT_ID,
+        });
+        return (
+          <ExecutionControls
+            provider={{
+              selectedId: options.selectedProviderId,
+              options: options.providerOptions,
+              hasMultiple: options.hasMultipleProviders,
+              onChange: options.setSelectedProviderId,
+            }}
+            model={{
+              selected: options.selectedModel,
+              options: options.modelOptions,
+              moreOptions: options.moreModelOptions,
+              isLoading: options.isLoadingModels,
+              loadFailed: options.modelLoadFailed,
+              onChange: options.setSelectedModel,
+            }}
+            reasoning={{
+              value: options.reasoningLevel,
+              options: options.reasoningOptions,
+              onChange: options.setReasoningLevel,
+            }}
+          />
+        );
+      }
+      render(<Controls />, { wrapper });
+      await waitFor(() =>
+        expect(sdk.projects.defaultExecutionOptions).toHaveBeenCalledWith(
+          expect.objectContaining({
+            projectId: PROJECT_ID,
+            providerId: GLOBAL_PROVIDER_ID,
+          }),
+        ),
+      );
+      const trigger = screen.getByRole("button", {
+        name: "Provider, model and reasoning",
+      });
+      expect(trigger.textContent).toBe("Model");
+      expect(screen.queryByText("Select model")).toBeNull();
+      expect(screen.queryByText("No models available")).toBeNull();
+      await act(async () => {
+        if (defaults === "failed") {
+          pendingDefaults.reject(new Error("defaults unavailable"));
+        } else {
+          pendingDefaults.resolve(
+            defaults === "model"
+              ? {
+                  providerId: GLOBAL_PROVIDER_ID,
+                  model: "global-model",
+                  reasoningLevel: "medium",
+                  permissionMode: "full",
+                  serviceTier: "default",
+                }
+              : null,
+          );
+        }
+      });
+      await waitFor(() => expect(trigger.textContent).toContain(label));
+    },
+  );
+
+  it("does not wait for disabled project defaults on projectless home", async () => {
+    const response = executionOptionsResponse();
+    vi.mocked(sdk.system.executionOptions).mockResolvedValue({
+      ...response,
+      models: [],
+      selectedOnlyModels: response.models,
+    });
+    const { wrapper } = createQueryClientTestHarness();
+    const { result } = renderHook(() => useThreadCreationOptions(), {
+      wrapper,
+    });
+    await waitFor(() =>
+      expect(result.current.modelCatalogIsVerified).toBe(true),
+    );
+    expect(result.current.isLoadingModels).toBe(false);
+    expect(sdk.projects.defaultExecutionOptions).not.toHaveBeenCalled();
+  });
+
+  it("shows a provider setup failure without waiting for project defaults", async () => {
+    const pendingDefaults =
+      createDeferredPromise<ProjectExecutionDefaults | null>();
+    vi.mocked(sdk.projects.defaultExecutionOptions).mockReturnValue(
+      pendingDefaults.promise,
+    );
+    vi.mocked(sdk.system.executionOptions).mockResolvedValue({
+      ...executionOptionsResponse(),
+      models: [],
+      selectedOnlyModels: [],
+      modelLoadError: {
+        providerId: GLOBAL_PROVIDER_ID,
+        code: "provider_unavailable",
+        detail: null,
+      },
+    });
+    const { wrapper } = createQueryClientTestHarness();
+    const { result } = renderHook(
+      () => useThreadCreationOptions({ preferenceProjectId: PROJECT_ID }),
+      { wrapper },
+    );
+    await waitFor(() => expect(result.current.modelLoadFailed).toBe(true));
+    expect(result.current.isLoadingModels).toBe(false);
+    expect(result.current.modelLoadError?.code).toBe("provider_unavailable");
+  });
+
   it("settles a disabled catalog instead of staying loading forever", async () => {
     const catalog = createDeferredPromise<SystemExecutionOptionsResponse>();
     vi.mocked(sdk.system.executionOptions).mockReturnValue(catalog.promise);
