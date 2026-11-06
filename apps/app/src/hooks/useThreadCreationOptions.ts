@@ -440,7 +440,7 @@ export function useThreadCreationOptions(
   const isResolvingReadyProvider =
     shouldResolveReadyProvider && providerStatesQuery.isPending;
   const executionOptionsQuery = useSystemExecutionOptions({
-    enabled: executionOptionsQueryEnabled && !isResolvingReadyProvider,
+    enabled: executionOptionsQueryEnabled,
     ...executionOptionsRouting,
     providerId: executionOptionsProviderId,
     projectId: executionOptionsProjectId,
