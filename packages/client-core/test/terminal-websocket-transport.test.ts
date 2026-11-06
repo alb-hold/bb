@@ -139,6 +139,26 @@ afterEach(() => {
 });
 
 describe("TerminalWebSocketTransport", () => {
+  it("reports the original event timestamp before decoding and ignores stale sockets", () => {
+    const seen: number[] = [];
+    const harness = createHarness({
+      onMessageEvent: (timestamp) => seen.push(timestamp),
+    });
+    harness.transport.start();
+    const socket = harness.sockets[0]!;
+    socket.open();
+    const event = new MessageEvent("message", {
+      data: JSON.stringify({ type: "pong" }),
+    });
+    socket.onmessage?.(event);
+    expect(seen).toEqual([event.timeStamp]);
+    expect(harness.messages).toEqual([{ type: "pong" }]);
+    const receive = socket.onmessage;
+    harness.transport.dispose();
+    receive?.(event);
+    expect(seen).toEqual([event.timeStamp]);
+  });
+
   it("validates the input classification at the browser boundary", () => {
     const input = { type: "input", dataBase64: "eA==" };
     expect(terminalClientMessageSchema.safeParse(input).success).toBe(true);

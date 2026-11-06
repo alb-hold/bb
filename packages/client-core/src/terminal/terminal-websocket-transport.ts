@@ -116,6 +116,7 @@ export interface TerminalWebSocketTransportOptions {
   ) => void;
   onOutputFrameReceived?: (terminalId: string, timestamp: number) => void;
   onInvalidMessage?: () => void;
+  onMessageEvent?: (timestamp: number) => void;
   onMessage: (message: TerminalServerMessage) => void;
   onRepaintNudgeSizeReleased?: (size: { cols: number; rows: number }) => void;
   onSequenceGap?: (expectedSeq: number, receivedSeq: number) => void;
@@ -604,7 +605,11 @@ export class TerminalWebSocketTransport {
     this.resizeReportedAfterLayoutSettle = false;
     this.repaintNudgeInFlight = null;
     socket.onopen = () => this.handleOpen(socket);
-    socket.onmessage = (event) => this.handleMessage(socket, event.data);
+    socket.onmessage = (event) => {
+      if (this.disposed || this.socket !== socket) return;
+      this.options.onMessageEvent?.(event.timeStamp);
+      this.handleMessage(socket, event.data);
+    };
     socket.onerror = () => undefined;
     socket.onclose = () => this.handleClose(socket);
   }

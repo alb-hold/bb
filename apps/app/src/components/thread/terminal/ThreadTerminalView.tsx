@@ -1326,6 +1326,22 @@ export function ThreadTerminalView({
     });
   const viewRef = useRef<HTMLDivElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const pendingReplayRevealRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (
+      pendingReplayRevealRef.current === session.id &&
+      !restoringSession &&
+      containerRef.current?.dataset.replayHeld === "false" &&
+      !viewRef.current?.querySelector(
+        "[data-terminal-screen-loading-preview], [data-terminal-restoring]",
+      )
+    ) {
+      performance.mark("terminal-replay-revealed", {
+        detail: { terminalId: session.id },
+      });
+      pendingReplayRevealRef.current = null;
+    }
+  }, [restoringSession, session.id]);
   const webglVisibilityRef = useRef<ReturnType<
     typeof observeTerminalWebglVisibility
   > | null>(null);
@@ -1811,6 +1827,9 @@ export function ThreadTerminalView({
     let markerGridActive = false;
     let replayCompleted = false;
     let replayStarted = false;
+    let replayTimingNextSeq: number | null = null;
+    let replayTimingFirstFrame = false;
+    let messageEventTimestamp = 0;
     const pendingExitNotices: string[] = [];
     let replayCheckpointSequence: number | null = null;
     let localFitGrid: TerminalGridSize | null = null;
@@ -2648,6 +2667,11 @@ export function ThreadTerminalView({
         onOutputFrameReceived: (terminalId, timestamp) => {
           outputFrameId = recordTerminalOutputReceived(terminalId, timestamp);
         },
+        onMessageEvent: (timestamp) => {
+          const now = performance.now();
+          messageEventTimestamp =
+            timestamp >= 0 && timestamp <= now ? timestamp : now;
+        },
         onRepaintNudgeSizeReleased: (size) => {
           const nextSize = nextSharedTerminalSize(sharedSize, size, false);
           if (nextSize !== null) {
@@ -2724,6 +2748,29 @@ export function ThreadTerminalView({
           });
         },
         onMessage: (message) => {
+          if (message.type === "attached") {
+            replayTimingNextSeq = message.nextSeq;
+            replayTimingFirstFrame = false;
+          }
+          if (
+            message.type === "output" &&
+            replayTimingNextSeq !== null &&
+            message.chunk.seq < replayTimingNextSeq
+          ) {
+            if (!replayTimingFirstFrame) {
+              replayTimingFirstFrame = true;
+              performance.mark("terminal-replay-first-frame-received", {
+                startTime: messageEventTimestamp,
+                detail: { terminalId: session.id },
+              });
+            }
+            if (message.chunk.seq + 1 === replayTimingNextSeq) {
+              performance.mark("terminal-replay-last-frame-received", {
+                startTime: messageEventTimestamp,
+                detail: { terminalId: session.id },
+              });
+            }
+          }
           if (
             message.type === "exited" ||
             ((message.type === "session-updated" ||
@@ -2825,6 +2872,14 @@ export function ThreadTerminalView({
             terminalId: session.id,
             onOutputFrameParsed: () => {
               if (
+                message.type === "output" &&
+                message.chunk.seq + 1 === replayTimingNextSeq
+              ) {
+                performance.mark("terminal-replay-primary-xterm-parsed", {
+                  detail: { terminalId: session.id },
+                });
+              }
+              if (
                 !disposed &&
                 hasReceivedInitialAttach &&
                 outputPipeline &&
@@ -2853,6 +2908,7 @@ export function ThreadTerminalView({
             },
             onReplayComplete: () => {
               replayCompleted = true;
+              pendingReplayRevealRef.current = session.id;
               performance.mark("terminal-replay-parsed", {
                 detail: { terminalId: session.id },
               });
@@ -2890,6 +2946,11 @@ export function ThreadTerminalView({
             onSessionChange: onSessionChangeRef.current,
             onOutputStart: recordOutputStart,
             onOutputParsed: (sequence) => {
+              if (sequence + 1 === replayTimingNextSeq) {
+                performance.mark("terminal-replay-last-xterm-callback", {
+                  detail: { terminalId: session.id },
+                });
+              }
               const outputAnchor = outputLineAnchors.find(
                 (candidate) => candidate.sequence === sequence,
               );
@@ -2967,6 +3028,14 @@ export function ThreadTerminalView({
             shouldProcessOutput: () =>
               terminalVisible === true && isPanelOpenRef.current,
           });
+          if (
+            message.type === "output" &&
+            message.chunk.seq + 1 === replayTimingNextSeq
+          ) {
+            performance.mark("terminal-replay-last-frame-dispatched", {
+              detail: { terminalId: session.id },
+            });
+          }
         },
         onSequenceGap: () => {
           resetTerminalOutput();
