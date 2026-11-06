@@ -1,3 +1,4 @@
+import { internal_DO_NOT_USE_loadComposerPasteParser } from "@get-bb/plugin-sdk/app";
 import type { ExperimentalComposerThreadLink } from "@get-bb/plugin-sdk/app";
 import { Extension, getChangedRanges, type Editor } from "@tiptap/core";
 import { closeHistory, isHistoryTransaction } from "@tiptap/pm/history";
@@ -160,6 +161,10 @@ export function createPromptThreadLinkPasteExtension(
   };
 
   const resolve = async (editor: Editor, paste: PendingPaste) => {
+    if (typeof internal_DO_NOT_USE_loadComposerPasteParser !== "function") {
+      cancel(paste);
+      return;
+    }
     const { signal } = paste.controller;
     const resolved = new Map<string, ExperimentalComposerThreadLink>();
     let findLinks: typeof findPastedThreadLinkCandidates | undefined;
@@ -212,8 +217,9 @@ export function createPromptThreadLinkPasteExtension(
       once: true,
     });
     try {
-      findLinks = (await import("../mentions/pasted-thread-links"))
-        .findPastedThreadLinks;
+      const parser = await internal_DO_NOT_USE_loadComposerPasteParser();
+      if (parser === null) return;
+      findLinks = parser.findPastedThreadLinks;
       if (signal.aborted) return;
       const missing: string[] = [];
       for (const id of new Set(

@@ -54,6 +54,10 @@ export const SHARED_UI_VOICE_INPUT_TEXTAREA_SPECIFIER =
  *    stay within the host's major (tailwind-merge ^3, clsx ^2, cva ^0.7).
  */
 export const RUNTIME_SLOT_BY_SPECIFIER = Object.freeze({
+  "@bb/shared-ui/dropdown-menu": "internal_DO_NOT_USE_dropdown_menu",
+  "@bb/shared-ui/dialog": "internal_DO_NOT_USE_dialog",
+  "@bb/shared-ui/context-menu": "internal_DO_NOT_USE_context_menu",
+  "@bb/shared-ui/responsive-overlay": "internal_DO_NOT_USE_responsive_overlay",
   zod: "zod",
   "zod/v4": "zod",
   "@radix-ui/react-checkbox": "radixCheckbox",

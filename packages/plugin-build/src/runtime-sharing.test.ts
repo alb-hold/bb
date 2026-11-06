@@ -204,3 +204,66 @@ it.each([
 ] as const)("checks plugin %s against host %s", (plugin, host, expected) => {
   expect(canShareRuntimeVersion(plugin, host)).toBe(expected);
 });
+
+it.each(["dropdown-menu", "dialog", "context-menu", "responsive-overlay"])(
+  "shares %s through package, builtin alias and shared-ui relative imports",
+  async (name) => {
+    const slot = `internal_DO_NOT_USE_${name.replaceAll("-", "_")}`;
+    for (const specifier of [
+      `@bb/shared-ui/${name}`,
+      `@/components/ui/${name}`,
+    ]) {
+      const result = await build({
+        stdin: {
+          resolveDir: appRoot,
+          contents: `export * from ${JSON.stringify(specifier)}`,
+        },
+        bundle: true,
+        format: "cjs",
+        platform: "browser",
+        write: false,
+        metafile: true,
+        plugins: [runtimeShimPlugin()],
+      });
+      expect(Object.keys(result.metafile!.inputs)).toEqual([
+        `bb-plugin-runtime-shim:@bb/shared-ui/${name}`,
+        "<stdin>",
+      ]);
+      expect(result.outputFiles[0]!.text).toContain(`runtime.${slot}`);
+      host.__bbPluginRuntime = {};
+      expect(() =>
+        new Function("exports", "module", result.outputFiles[0]!.text)(
+          {},
+          { exports: {} },
+        ),
+      ).toThrow(`Update the BB host before loading this plugin`);
+    }
+  },
+);
+
+it("keeps Markdown parsing outside the composer plugin's boot graph", async () => {
+  const result = await build({
+    entryPoints: [
+      join(
+        appRoot,
+        "../../plugins/composer/src/editor/prompt-thread-link-paste.ts",
+      ),
+    ],
+    bundle: true,
+    format: "esm",
+    platform: "browser",
+    write: false,
+    metafile: true,
+    plugins: [runtimeShimPlugin()],
+  });
+  const inputs = Object.keys(result.metafile!.inputs);
+  expect(inputs.some((path) => path.includes("pasted-thread-links"))).toBe(
+    false,
+  );
+  expect(
+    inputs.some((path) => /(?:remark-parse|unified|micromark)/.test(path)),
+  ).toBe(false);
+  expect(result.outputFiles[0]!.text).toContain(
+    "internal_DO_NOT_USE_loadComposerPasteParser",
+  );
+});

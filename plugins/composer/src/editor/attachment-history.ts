@@ -3,7 +3,7 @@ import type { Node } from "@tiptap/pm/model";
 import { closeHistory } from "@tiptap/pm/history";
 import type { Transaction } from "@tiptap/pm/state";
 import { Step, StepMap, StepResult } from "@tiptap/pm/transform";
-import * as z from "zod/mini";
+import { z } from "zod";
 
 const ATTACHMENT_HISTORY_STEP_ID = "bbAttachmentHistory";
 const attachmentHistoryStepSchema = z.object({

@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { getPromptDraftAccessor, usePromptDraftStorage } from "@/hooks/usePromptDraftStorage";
 import { readFileSync } from "node:fs";
 import { Provider, createStore, getDefaultStore } from "jotai";
 import { ExecutionControls } from "./ExecutionControls";
@@ -6929,4 +6930,57 @@ describe("ComposerBox pill word boundaries", () => {
       expect(latestValue(changes)).toBe("I am lost. /poteto-mode Also testing"),
     );
   });
+});
+
+describe("pending text submission", () => {
+  it.each(["button", "Enter"])(
+    "sends and persists the latest pending text through %s",
+    (trigger) => {
+      const scope = {
+        kind: "thread" as const,
+        projectId: `proj-pending-submit-${trigger}`,
+        threadId: "thr-pending-submit",
+      };
+      const accessor = getPromptDraftAccessor(scope);
+      let storageKey = "";
+      const submitted = vi.fn(() => ({
+        text: accessor.getCurrent().text,
+        stored: window.localStorage.getItem(storageKey),
+      }));
+      function Harness() {
+        const draft = usePromptDraftStorage(scope);
+        storageKey = draft.storageKey;
+        return (
+          <ComposerBox
+            {...createPromptBoxProps({
+              value: draft.text,
+              mentionRanges: draft.mentions,
+              onChange: draft.setTextAndMentions,
+              onSubmit: () => {
+                submitted();
+              },
+            })}
+          />
+        );
+      }
+      render(<Harness />);
+      act(() => {
+        accessor.setTextAndMentions("first pending", []);
+        accessor.setTextAndMentions("latest pending", []);
+      });
+      expect(window.localStorage.getItem(storageKey)).toBeNull();
+      if (trigger === "button")
+        fireEvent.click(screen.getByRole("button", { name: "Submit (Enter)" }));
+      else
+        fireEvent.keyDown(getPromptEditorElement(), {
+          key: "Enter",
+          code: "Enter",
+        });
+      expect(submitted).toHaveBeenCalledOnce();
+      expect(submitted.mock.results[0]?.value).toEqual({
+        text: "latest pending",
+        stored: JSON.stringify({ text: "latest pending", attachments: [] }),
+      });
+    },
+  );
 });

@@ -1,4 +1,4 @@
-import * as z from "zod/mini";
+import { z } from "zod";
 import type {
   ComposerMention,
   ExperimentalComposerCommandSuggestion,
@@ -14,7 +14,7 @@ export const mentionTargetSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("thread"),
     threadId: z.string(),
-    projectId: z.optional(z.string()),
+    projectId: z.string().optional(),
     label,
   }),
   z.object({ kind: z.literal("project"), projectId: z.string(), label }),
@@ -32,7 +32,7 @@ export const mentionTargetSchema = z.discriminatedUnion("kind", [
     name: z.string(),
     source: z.enum(["skill", "command"]),
     origin: z.enum(["builtin", "project", "user"]),
-    argumentHint: z.nullable(z.string()),
+    argumentHint: z.string().nullable(),
     label,
   }),
   z.object({ kind: z.literal("attachment"), path: z.string(), label }),
@@ -41,10 +41,10 @@ export const mentionTargetSchema = z.discriminatedUnion("kind", [
     pluginId: z.string(),
     provider: z.string(),
     id: z.string(),
-    icon: z.optional(z.nullable(z.string())),
+    icon: z.string().nullable().optional(),
     label,
   }),
-]) satisfies z.ZodMiniType<MentionTarget>;
+]) satisfies z.ZodType<MentionTarget>;
 
 export function mentionTarget(mention: ComposerMention): MentionTarget {
   const { from: _from, to: _to, ...target } = mention;

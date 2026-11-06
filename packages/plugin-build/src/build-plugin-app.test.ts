@@ -535,6 +535,19 @@ describe("plugin app runtime shim", () => {
     ]);
   });
 
+  it.each(["dropdown-menu", "dialog", "context-menu", "responsive-overlay"])(
+    "shares relative %s imports from shared-ui only",
+    (name) => {
+      const importer = "/repo/packages/shared-ui/src/components/ui/button.tsx";
+      expect(sharedUiRuntimeModuleFor(`./${name}`, importer)).toBe(
+        `@bb/shared-ui/${name}`,
+      );
+      expect(
+        sharedUiRuntimeModuleFor(`./${name}`, "/repo/plugin/button.tsx"),
+      ).toBeNull();
+    },
+  );
+
   it("records in app.meta.json the runtime slots the bundle imports", async () => {
     const dir = await mkdtemp(join(tmpdir(), "bb-plugin-runtime-slots-"));
     tempDirs.push(dir);
