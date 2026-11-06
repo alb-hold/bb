@@ -1,8 +1,18 @@
 // @vitest-environment jsdom
 
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 let cancel = () => {};
+beforeEach(() => {
+  window.history.replaceState(null, "", "/");
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(
+    new DOMRect(0, 0, 100, 20),
+  );
+  vi.stubGlobal("performance", {
+    mark: vi.fn(),
+    getEntriesByName: () => [],
+  });
+});
 afterEach(() => {
   cancel();
   document.body.replaceChildren();
@@ -80,8 +90,20 @@ it.each([true, false])(
     expect(fetch).not.toHaveBeenCalled();
     frames.shift()!(0);
     expect(fetch).not.toHaveBeenCalled();
+    expect(performance.mark).toHaveBeenCalledExactlyOnceWith(
+      "app-home-composer-ready",
+    );
+    expect(idle).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(249);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(idle).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(1);
     if (nativeIdle) idle.shift()!();
-    else await vi.advanceTimersByTimeAsync(1_000);
+    else {
+      await vi.advanceTimersByTimeAsync(999);
+      expect(fetch).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+    }
     await Promise.resolve();
     expect(
       fetch.mock.calls.map(([url]) => new URL(String(url)).pathname),
@@ -108,4 +130,72 @@ it("cancels pending warming when the route unmounts", async () => {
   cancel();
   expect(frame).toHaveBeenCalledOnce();
   expect(cancelFrame).toHaveBeenCalledWith(1);
+});
+
+it.each(["hidden", "empty"])(
+  "does not prefetch thread details for a %s composer that exists before readiness",
+  async (state) => {
+    vi.resetModules();
+    vi.useFakeTimers();
+    const { scheduleHomeInteractionPreloads } =
+      await import("./home-interaction-preloads");
+    document.body.innerHTML =
+      '<textarea></textarea><div data-sidebar-thread-id="thread"></div><script id="bb-prefetch-thread-detail" type="application/json">["/assets/thread-detail.js"]</script>';
+    const input = document.querySelector("textarea")!;
+    input.checkVisibility = () => true;
+    if (state === "hidden") input.style.visibility = "hidden";
+    const box = vi.spyOn(input, "getBoundingClientRect");
+    if (state === "empty") box.mockReturnValue(new DOMRect());
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) =>
+      window.setTimeout(() => callback(0), 16),
+    );
+    vi.stubGlobal("cancelAnimationFrame", window.clearTimeout);
+    vi.stubGlobal("requestIdleCallback", undefined);
+    const fetch = vi.fn(async () => ({
+      ok: true,
+      arrayBuffer: async () => new ArrayBuffer(0),
+    }));
+    vi.stubGlobal("fetch", fetch);
+    cancel = scheduleHomeInteractionPreloads();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(performance.mark).not.toHaveBeenCalled();
+    input.style.visibility = "visible";
+    box.mockReturnValue(new DOMRect(0, 0, 100, 20));
+    input.className = "mounted";
+    await vi.advanceTimersByTimeAsync(32);
+    expect(performance.mark).toHaveBeenCalledExactlyOnceWith(
+      "app-home-composer-ready",
+    );
+    expect(fetch).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1_250);
+    expect(fetch).toHaveBeenCalledExactlyOnceWith(
+      expect.stringContaining("/assets/thread-detail.js"),
+      { cache: "force-cache", priority: "low" },
+    );
+  },
+);
+
+it("cancels the post-ready delay before an idle fallback can start", async () => {
+  vi.resetModules();
+  vi.useFakeTimers();
+  const { scheduleHomeInteractionPreloads } =
+    await import("./home-interaction-preloads");
+  document.body.innerHTML =
+    '<textarea></textarea><div data-sidebar-thread-id="thread"></div><script id="bb-prefetch-thread-detail" type="application/json">["/assets/thread-detail.js"]</script>';
+  vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) =>
+    window.setTimeout(() => callback(0), 16),
+  );
+  vi.stubGlobal("cancelAnimationFrame", window.clearTimeout);
+  vi.stubGlobal("requestIdleCallback", undefined);
+  const fetch = vi.fn();
+  vi.stubGlobal("fetch", fetch);
+  cancel = scheduleHomeInteractionPreloads();
+  await vi.advanceTimersByTimeAsync(32);
+  expect(performance.mark).toHaveBeenCalledExactlyOnceWith(
+    "app-home-composer-ready",
+  );
+  cancel();
+  await vi.advanceTimersByTimeAsync(10_000);
+  expect(fetch).not.toHaveBeenCalled();
 });
