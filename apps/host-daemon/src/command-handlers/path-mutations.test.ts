@@ -408,31 +408,22 @@ describe("confined host path mutations", () => {
     const target = path.join(root, "retained-paths");
     await fs.mkdir(target);
     await fs.writeFile(path.join(target, "before.txt"), "before");
-    const originalRename = fs.rename.bind(fs);
-    vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
-      await originalRename(from, to);
-      if (String(from) === target)
-        await fs.writeFile(path.join(String(to), "late.txt"), "retained");
+    await expect(
+      removeDirectoryAfterHolderRecheck({
+        directory: target,
+        action: "remove",
+        recursive: true,
+        afterHolderScan: async (quarantine) => {
+          await fs.writeFile(path.join(quarantine, "late.txt"), "retained");
+        },
+      }),
+    ).rejects.toMatchObject({
+      code: "path_in_use",
+      message: expect.stringContaining(`Preserved entries: ${target}`),
     });
-
-    try {
-      await expect(
-        removeHostPath({
-          type: "host.remove_path",
-          path: target,
-          rootPath: root,
-          recursive: true,
-        }),
-      ).rejects.toMatchObject({
-        code: "path_in_use",
-        message: expect.stringContaining(`Preserved entries: ${target}`),
-      });
-      await expect(
-        fs.readFile(path.join(target, "late.txt"), "utf8"),
-      ).resolves.toBe("retained");
-    } finally {
-      vi.restoreAllMocks();
-    }
+    await expect(
+      fs.readFile(path.join(target, "late.txt"), "utf8"),
+    ).resolves.toBe("retained");
   });
 
   it.skipIf(!hasHeldDirectoryRemoval)(

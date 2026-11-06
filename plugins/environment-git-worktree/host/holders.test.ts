@@ -224,7 +224,7 @@ describe("real Linux POSIX ACL access checks", () => {
   );
 
   it.skipIf(process.platform !== "linux")(
-    "clears a genuinely foreign process outside a group-execute-only directory",
+    "marks an unreadable foreign process uncertain outside a group-execute-only directory",
     async () => {
       const root = await realpath(
         await mkdtemp(join("/tmp", "bb-holders-foreign-group-")),
@@ -253,7 +253,7 @@ describe("real Linux POSIX ACL access checks", () => {
         },
       };
       await expect(scanLinux(root, proc)).resolves.toMatchObject({
-        status: "clear",
+        status: "uncertain",
       });
     },
   );
@@ -551,7 +551,7 @@ describe("the Linux process-list visibility rule", () => {
   });
 
   it.each([
-    ["group execute outside the process groups", 0o710, "clear"],
+    ["group execute outside the process groups", 0o710, "uncertain"],
     ["other execute", 0o711, "uncertain"],
   ] as const)(
     "classifies a foreign UID with %s by its directory reachability",
@@ -610,7 +610,7 @@ describe("the Linux process-list visibility rule", () => {
     },
   );
 
-  it("is clear for a foreign UID outside the directory group when only group execute is set", async () => {
+  it("is uncertain for an unreadable foreign UID outside the directory group when only group execute is set", async () => {
     const proc = fakeProc({
       worktreeMode: 0o710,
       worktreeGid: 2000,
@@ -624,8 +624,8 @@ describe("the Linux process-list visibility rule", () => {
         },
       },
     });
-    expect(await scanLinux("/work/tree", proc, 4242)).toEqual({
-      status: "clear",
+    expect(await scanLinux("/work/tree", proc, 4242)).toMatchObject({
+      status: "uncertain",
     });
   });
 
@@ -703,8 +703,8 @@ describe("the Linux process-list visibility rule", () => {
       sharedPathCalls += 1;
       return false;
     };
-    expect(await scanLinux("/work/tree", sharedPathProc, 4242)).toEqual({
-      status: "clear",
+    expect(await scanLinux("/work/tree", sharedPathProc, 4242)).toMatchObject({
+      status: "uncertain",
     });
     expect(sharedPathCalls).toBe(1);
   });
