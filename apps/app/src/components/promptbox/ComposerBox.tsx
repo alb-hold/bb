@@ -549,9 +549,9 @@ function useComposerRendererHostApi({
   const availableMaxHeight = useContext(ComposerMaxHeightContext);
   const maxHeight = input.maxHeight ?? availableMaxHeight;
 
-  const decorationSources = composerDecorationSources(
-    resolvedEditor.effects,
-    textEffects ?? [],
+  const decorationSources = useMemo(
+    () => composerDecorationSources(resolvedEditor.effects, textEffects ?? []),
+    [resolvedEditor.effects, textEffects],
   );
   const [draftObserverRunner] = useState(createDraftObserverRunner);
   useEffect(() => {
