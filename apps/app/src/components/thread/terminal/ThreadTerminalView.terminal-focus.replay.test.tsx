@@ -1173,7 +1173,8 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
         ).toBe("early snapshot"),
       "snapshot remained hidden behind module loading",
     );
-    expect(testState.sockets).toHaveLength(0);
+    expect(testState.sockets).toHaveLength(1);
+    expect(testState.sockets[0]!.sent).toEqual([]);
     cleanup();
     expect(
       document.querySelector("[data-terminal-screen-loading-preview]"),
@@ -1225,7 +1226,8 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
             ?.textContent,
         ).toBe("snapshot text"),
       );
-      expect(testState.sockets).toHaveLength(0);
+      expect(testState.sockets).toHaveLength(1);
+      expect(testState.sockets[0]!.sent).toEqual([]);
       expect(pageText()).toContain("Restoring session…");
       expect(pageText()).not.toContain("Fit to this screen");
       const previewFontSize = document.querySelector<HTMLElement>(
@@ -1236,13 +1238,22 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
       )!;
       const removeSnapshot = vi.spyOn(snapshotElement, "remove");
       finishModules();
-      await waitFor(() => expect(testState.sockets).toHaveLength(1), {
-        timeout: 20_000,
-      });
+      await waitFor(
+        () => expect(document.querySelector(".xterm")).not.toBeNull(),
+        {
+          timeout: 20_000,
+        },
+      );
       expect(
         document.querySelector("[data-terminal-screen-loading-preview]")
           ?.textContent,
       ).toBe("snapshot text");
+      if (snapshotCols === 40)
+        await waitFor(() =>
+          expect(
+            document.querySelector("[data-terminal-replay-preview]"),
+          ).not.toBeNull(),
+        );
       const preview = document.querySelector<HTMLElement>(
         "[data-terminal-replay-preview]",
       );
@@ -1276,7 +1287,9 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
       expect(pageText()).toContain("Restoring session…");
       expect(pageText()).not.toContain("Fit to this screen");
       expect(
-        document.querySelector("[data-terminal-restoring]")?.getAttribute("role"),
+        document
+          .querySelector("[data-terminal-restoring]")
+          ?.getAttribute("role"),
       ).toBe("status");
       expect(snapshotElement.isConnected).toBe(true);
       expect(snapshotElement.style.whiteSpace).toBe("pre");
@@ -1354,7 +1367,9 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
       ).toBeNull(),
     );
     expect(document.body.textContent).toContain("renderer unavailable");
-    expect(testState.sockets).toHaveLength(0);
+    expect(testState.sockets[0]!.readyState).toBe(TestTerminalSocket.CLOSED);
+    expect(testState.sockets).toHaveLength(1);
+    expect(testState.sockets[0]!.sent).toEqual([]);
   });
 
   async function mountReplayWithUnusableSnapshot() {
@@ -1425,8 +1440,15 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
   }
 
   it("keeps the preview of a replay without a usable snapshot hidden until the replay completes", async () => {
+    const marks = vi.spyOn(performance, "mark");
     const { bufferText, preview, socket } =
       await mountReplayWithUnusableSnapshot();
+    expect(marks.mock.calls.map(([name]) => name)).toContain(
+      "terminal-replay-first-frame-received",
+    );
+    expect(marks.mock.calls.map(([name]) => name)).not.toContain(
+      "terminal-replay-last-xterm-callback",
+    );
     socket.receive({
       type: "output",
       chunk: { seq: 2, dataBase64: btoa("current frame\r\n") },
@@ -1438,6 +1460,28 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
     await waitForReadinessCondition(
       () => expect(preview()?.dataset.terminalReplayHeld).toBeUndefined(),
       "replay preview stayed held after the replay completed",
+    );
+    await waitForReadinessCondition(() => {
+      expect(marks.mock.calls.map(([name]) => name)).toContain(
+        "terminal-replay-revealed",
+      );
+    }, "replay reveal timing was not recorded");
+    const names = marks.mock.calls.map(([name]) => name);
+    for (const name of [
+      "terminal-replay-first-frame-received",
+      "terminal-replay-last-frame-received",
+      "terminal-replay-last-frame-dispatched",
+      "terminal-replay-primary-xterm-parsed",
+      "terminal-replay-last-xterm-callback",
+      "terminal-replay-revealed",
+    ]) {
+      expect(names.filter((candidate) => candidate === name)).toHaveLength(1);
+    }
+    expect(names.indexOf("terminal-replay-last-frame-dispatched")).toBeLessThan(
+      names.indexOf("terminal-replay-last-xterm-callback"),
+    );
+    expect(names.indexOf("terminal-replay-last-xterm-callback")).toBeLessThan(
+      names.indexOf("terminal-replay-revealed"),
     );
   });
 

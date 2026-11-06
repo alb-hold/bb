@@ -643,6 +643,10 @@ void _assertAllThreadChatMessageActionFieldsListed;
 describe("bb-plugin-authoring skill", () => {
   const skillEntry = readFileSync(SKILL_PATH, "utf8");
   const skill = readSkillTree();
+  const internalApiAudit = readFileSync(
+    join(REPO_ROOT, "docs/api_to_audit.md"),
+    "utf8",
+  );
 
   it("typechecks the machine provider guide example against the public SDK", () => {
     const source = readReference("backend-machines.md").match(
@@ -693,9 +697,13 @@ describe("bb-plugin-authoring skill", () => {
     }
   });
 
-  it("documents every @get-bb/plugin-sdk/app runtime export", () => {
+  it("documents every @get-bb/plugin-sdk/app runtime export at its API boundary", () => {
     for (const name of FRONTEND_RUNTIME_EXPORT_NAMES) {
-      expect(skill, `${name} is not documented in the skill`).toContain(name);
+      const internal = name.startsWith("internal_DO_NOT_USE_");
+      expect(
+        internal ? internalApiAudit : skill,
+        `${name} is not documented in ${internal ? "the internal API audit" : "the skill"}`,
+      ).toContain(name);
     }
   });
 

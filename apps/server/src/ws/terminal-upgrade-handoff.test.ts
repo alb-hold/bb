@@ -83,14 +83,25 @@ async function upgrade(
 }
 
 describe("installTerminalUpgradeHandoff", () => {
+  it("keeps resize echoes enabled for a replay-batch client", async () => {
+    const { attach, fallback, port } = await createFixture();
+    await upgrade(port, "/ws/terminals/term_1?outputAcks=1&resizeAcks=1", {
+      "Sec-WebSocket-Protocol": "bb.terminal.v1, bb.terminal.replay-batch.v1",
+    });
+    expect(attach.mock.calls[0]?.[0]).toMatchObject({
+      outputAcks: true,
+      resizeAcks: true,
+      resizeSeqEcho: true,
+    });
+    expect(fallback).not.toHaveBeenCalled();
+  });
   it("hands an authorized terminal upgrade to the data plane with the id from the path", async () => {
     const { attach, fallback, port } = await createFixture();
     await upgrade(
       port,
       "/ws/terminals/term_1?outputAcks=1&sinceSeq=5&handoffOwnerToken=0123456789abcdefghij_-",
       {
-        "Sec-WebSocket-Protocol":
-          "bb.terminal.v1, bb.terminal.resize-echo.v1",
+        "Sec-WebSocket-Protocol": "bb.terminal.v1, bb.terminal.resize-echo.v1",
       },
     );
     expect(attach).toHaveBeenCalledTimes(1);

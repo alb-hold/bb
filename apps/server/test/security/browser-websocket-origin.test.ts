@@ -5,6 +5,7 @@ import WebSocket from "ws";
 import {
   TERMINAL_LEGACY_WEBSOCKET_PROTOCOL,
   TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL,
+  TERMINAL_REPLAY_BATCH_WEBSOCKET_PROTOCOL,
 } from "@bb/server-contract";
 import {
   startTestServer,
@@ -124,6 +125,19 @@ afterEach(async () => {
 });
 
 describe("browser WebSocket origin boundary", () => {
+  it("selects replay batching ahead of the older resize echo protocol", async () => {
+    server = await startTestServer();
+    const socket = await openWebSocketWithProtocols(
+      websocketUrl(server.baseUrl, "/ws/terminals/missing-terminal"),
+      [
+        TERMINAL_LEGACY_WEBSOCKET_PROTOCOL,
+        TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL,
+        TERMINAL_REPLAY_BATCH_WEBSOCKET_PROTOCOL,
+      ],
+    );
+    expect(socket.protocol).toBe(TERMINAL_REPLAY_BATCH_WEBSOCKET_PROTOCOL);
+    await closeSocket(socket);
+  });
   it("selects the resize echo protocol when a client offers it", async () => {
     server = await startTestServer();
     const socket = await openWebSocketWithProtocols(

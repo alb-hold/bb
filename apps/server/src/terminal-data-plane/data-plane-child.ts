@@ -2,11 +2,13 @@ import { Socket } from "node:net";
 import { TERMINAL_DATA_MAX_BYTES } from "@bb/domain";
 import {
   terminalClientMessageSchema,
+  TERMINAL_REPLAY_BATCH_WEBSOCKET_PROTOCOL,
   terminalOutputChunkSchema,
   type TerminalOutputChunk,
   type TerminalServerMessage,
 } from "@bb/server-contract";
 import { z } from "zod";
+import { terminalReplayFrames } from "../services/terminals/terminal-replay-frames.js";
 import {
   TerminalOutputFlowControl,
   type TerminalOutputFlowDaemonMessage,
@@ -43,6 +45,7 @@ const OUTPUT_BATCH_DELAY_MS = 10;
 
 export interface TerminalDataPlaneSocket {
   readonly bufferedAmount: number;
+  readonly protocol?: string;
   close(code?: number, reason?: string): void;
   on(event: "close", listener: () => void): unknown;
   on(event: "error", listener: (error: Error) => void): unknown;
@@ -626,9 +629,11 @@ export class TerminalDataPlaneChild {
           nextSeq: message.nextSeq,
         }),
       );
-      for (const chunk of message.chunks) {
-        this.write(attach, JSON.stringify({ type: "output", chunk }));
-      }
+      for (const frame of terminalReplayFrames(
+        message.chunks,
+        attach.socket.protocol === TERMINAL_REPLAY_BATCH_WEBSOCKET_PROTOCOL,
+      ))
+        this.write(attach, frame);
       attach.nextSeq = message.nextSeq;
       const queued = attach.queuedControl;
       attach.queuedControl = [];
@@ -644,12 +649,18 @@ export class TerminalDataPlaneChild {
         );
         return;
       }
+      const accepted: TerminalOutputChunk[] = [];
       for (const chunk of message.chunks) {
         if (chunk.seq === attach.nextSeq) {
-          this.write(attach, JSON.stringify({ type: "output", chunk }));
+          accepted.push(chunk);
           attach.nextSeq = chunk.seq + 1;
         }
       }
+      for (const frame of terminalReplayFrames(
+        accepted,
+        attach.socket.protocol === TERMINAL_REPLAY_BATCH_WEBSOCKET_PROTOCOL,
+      ))
+        this.write(attach, frame);
       if (attach.nextSeq < message.nextSeq) {
         this.closeAttach(
           attach,

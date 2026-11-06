@@ -1,5 +1,6 @@
 import { emitPluginThreadEvents } from "../services/plugins/plugin-thread-events.js";
 import { Buffer } from "node:buffer";
+import { terminalReplayFrames } from "../services/terminals/terminal-replay-frames.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
   realtimeSubscriptionTargetKey as subscriptionKey,
@@ -26,6 +27,8 @@ import {
   pluginSignalSchema,
   serverMessageSchema,
   terminalServerMessageSchema,
+  TERMINAL_REPLAY_BATCH_WEBSOCKET_PROTOCOL,
+  type TerminalOutputChunk,
   threadOpenSignalSchema,
   threadPaneActionSignalSchema,
   deviceHandoffSignalSchema,
@@ -60,6 +63,7 @@ const LIST_RELEVANT_THREAD_EVENT_TYPES: ReadonlySet<ThreadEventType> =
 
 interface HubSocket {
   close(code?: number, reason?: string): void;
+  protocol?: string | null;
   raw?: { bufferedAmount: number };
   send(data: string, options?: { compress: boolean }): void;
 }
@@ -950,7 +954,8 @@ export class NotificationHub implements DbNotifier {
         state?.size !== null &&
         state !== undefined &&
         state.visible &&
-        (!state.heartbeats || now - state.lastSeenAt <= TERMINAL_CLIENT_STALE_MS)
+        (!state.heartbeats ||
+          now - state.lastSeenAt <= TERMINAL_CLIENT_STALE_MS)
       ) {
         return { ...state.size };
       }
@@ -1070,6 +1075,18 @@ export class NotificationHub implements DbNotifier {
       socket,
       JSON.stringify(terminalServerMessageSchema.parse(message)),
     );
+  }
+
+  sendTerminalReplay(
+    socket: HubSocket,
+    chunks: readonly TerminalOutputChunk[],
+  ): void {
+    for (const frame of terminalReplayFrames(
+      chunks,
+      socket.protocol === TERMINAL_REPLAY_BATCH_WEBSOCKET_PROTOCOL,
+    )) {
+      this.sendOrQueueTerminalPayload(socket, frame);
+    }
   }
 
   closeTerminalClients(

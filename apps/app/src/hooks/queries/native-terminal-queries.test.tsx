@@ -2,6 +2,7 @@
 
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import type { NativeTerminalThread } from "@bb/server-contract";
+import { prefetchTerminalSocket } from "@/components/thread/terminal/terminal-socket-prefetch";
 import { sdk } from "@/lib/sdk";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -18,6 +19,14 @@ vi.mock("@/components/secondary-panel/lazySecondaryPanelComponents", () => ({
 
 vi.mock("@/components/thread/terminal/terminal-modules", () => ({
   preloadTerminalModules: preloadModules,
+}));
+
+vi.mock("@/components/thread/terminal/terminal-socket-prefetch", () => ({
+  prefetchTerminalSocket: vi.fn(),
+  discardPrefetchedTerminalSocket: vi.fn(),
+}));
+vi.mock("@/lib/ws", () => ({
+  wsManager: { getDeviceHandoffClientToken: () => undefined },
 }));
 
 vi.mock("@/lib/sdk", () => ({
@@ -68,6 +77,10 @@ describe("useNativeTerminalThread terminal preload", () => {
     });
 
     await waitFor(() => expect(result.current.data).toEqual(NATIVE_VIEW));
+    expect(prefetchTerminalSocket).toHaveBeenCalledOnce();
+    expect(prefetchTerminalSocket).toHaveBeenCalledWith(
+      expect.stringContaining("term-prefetch"),
+    );
     expect(preloadPanel).toHaveBeenCalledOnce();
     expect(preloadModules).toHaveBeenCalledOnce();
     expect(sdk.terminals.experimental_screen).toHaveBeenCalledWith(

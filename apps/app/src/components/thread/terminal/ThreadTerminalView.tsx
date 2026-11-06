@@ -1,3 +1,8 @@
+import {
+  createPrefetchedTerminalSocket,
+  prefetchTerminalSocket,
+  discardPrefetchedTerminalSocket,
+} from "./terminal-socket-prefetch";
 import { mountTerminalScreenLoadingPreview } from "./terminal-screen-loading-preview";
 import { trackTerminalScrollability } from "./terminal-scrollbar";
 import { fetchTerminalScreen } from "./terminal-screen-prefetch";
@@ -36,6 +41,7 @@ import { useSystemConfig } from "@/hooks/queries/system-queries";
 import { usePreferredTheme } from "@/hooks/useTheme";
 import type { MarkdownPreviewLinkHandler } from "@/components/ui/markdown-link";
 import { openUrlInExternalBrowser } from "@/lib/url-open-routing";
+import { terminalReplayWrites } from "./terminal-replay-writes";
 import { decodeBase64Bytes } from "@/lib/base64-bytes";
 import { sdk } from "@/lib/sdk";
 import { wsManager } from "@/lib/ws";
@@ -580,6 +586,7 @@ interface WriteTerminalSessionStatusNoticeArgs {
 interface TerminalOutputWriteArgs {
   data: string | Uint8Array;
   frameId?: number;
+  replayData?: Uint8Array;
   isReplay: boolean;
   terminalId?: string;
   outputSequence?: number;
@@ -637,6 +644,7 @@ type TerminalSessionStatusNoticeRef = {
 interface HandleTerminalServerMessageArgs {
   acknowledgeOutput: (nextSeq: number) => void;
   message: TerminalServerMessage;
+  replayWrite?: { bytes: Uint8Array; sourceBytes: Uint8Array };
   terminalId?: string;
   onOutputFrameParsed?: () => void;
   onOutputParsed?: (sequence: number) => void;
@@ -1043,6 +1051,7 @@ export function captureTerminalContextMenuState({
 export function writeTerminalOutput({
   data,
   frameId,
+  replayData,
   isReplay,
   terminalId = "",
   outputSequence,
@@ -1076,7 +1085,7 @@ export function writeTerminalOutput({
         outputSequence >= replayCheckpointSequence &&
         replayPipeline
       ) {
-        replayPipeline.push(sourceBytes, onParsed);
+        replayPipeline.push(replayData ?? sourceBytes, onParsed);
       } else {
         onParsed();
       }
@@ -1105,7 +1114,7 @@ export function writeTerminalOutput({
       onParsed();
       return;
     }
-    replayPipeline.push(sourceBytes, () => {
+    replayPipeline.push(replayData ?? sourceBytes, () => {
       replayWriteState.suppressedWriteCount -= 1;
       recordTerminalOutputParsed(terminalId, frameId, performance.now());
       onOutputParsed?.();
@@ -1117,6 +1126,7 @@ export function writeTerminalOutput({
 export function handleTerminalServerMessage({
   acknowledgeOutput,
   message,
+  replayWrite,
   terminalId = "",
   onOutputFrameParsed,
   onOutputParsed,
@@ -1181,7 +1191,8 @@ export function handleTerminalServerMessage({
     case "output": {
       const nextSeq = message.chunk.seq + 1;
       writeTerminalOutput({
-        data: decodeBase64Bytes(message.chunk.dataBase64),
+        data: replayWrite?.bytes ?? decodeBase64Bytes(message.chunk.dataBase64),
+        replayData: replayWrite?.sourceBytes,
         frameId: outputFrameId,
         isReplay: replayNextSeq !== null && message.chunk.seq < replayNextSeq,
         terminalId,
@@ -1205,7 +1216,7 @@ export function handleTerminalServerMessage({
         replayPipeline,
         replayCheckpointSequence,
         outputSequence: message.chunk.seq,
-        outputBoundaries,
+        outputBoundaries: replayWrite ? undefined : outputBoundaries,
       });
       return;
     }
@@ -1321,6 +1332,22 @@ export function ThreadTerminalView({
     });
   const viewRef = useRef<HTMLDivElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const pendingReplayRevealRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (
+      pendingReplayRevealRef.current === session.id &&
+      !restoringSession &&
+      containerRef.current?.dataset.replayHeld === "false" &&
+      !viewRef.current?.querySelector(
+        "[data-terminal-screen-loading-preview], [data-terminal-restoring]",
+      )
+    ) {
+      performance.mark("terminal-replay-revealed", {
+        detail: { terminalId: session.id },
+      });
+      pendingReplayRevealRef.current = null;
+    }
+  }, [restoringSession, session.id]);
   const webglVisibilityRef = useRef<ReturnType<
     typeof observeTerminalWebglVisibility
   > | null>(null);
@@ -1690,6 +1717,13 @@ export function ThreadTerminalView({
     const activeElementAtMount = document.activeElement;
     container.style.containerType = "inline-size";
 
+    const earlySocketUrl = buildTerminalWebSocketUrl({
+      handoffOwnerToken:
+        wsManager.getDeviceHandoffClientToken() ?? handoffOwnerToken,
+      terminalId: session.id,
+    });
+    if (sessionStatusRef.current === "running")
+      prefetchTerminalSocket(earlySocketUrl);
     let disposed = false;
     let transport: TerminalWebSocketTransport | null = null;
     let terminal: XTermTerminal | null = null;
@@ -1799,6 +1833,9 @@ export function ThreadTerminalView({
     let markerGridActive = false;
     let replayCompleted = false;
     let replayStarted = false;
+    let replayTimingNextSeq: number | null = null;
+    let replayTimingFirstFrame = false;
+    let messageEventTimestamp = 0;
     const pendingExitNotices: string[] = [];
     let replayCheckpointSequence: number | null = null;
     let localFitGrid: TerminalGridSize | null = null;
@@ -1826,9 +1863,8 @@ export function ThreadTerminalView({
     let terminalInputClaimed = false;
     let detachPointerCoordinates: (() => void) | null = null;
     let detachGridVisibilityListeners: (() => void) | null = null;
-    let replayPreview: ReturnType<
-      typeof mountTerminalReplayPreview
-    > | null = null;
+    let replayPreview: ReturnType<typeof mountTerminalReplayPreview> | null =
+      null;
     const flushPendingExitNotices = () => {
       if (terminal === null || pendingExitNotices.length === 0) return;
       for (const text of pendingExitNotices.splice(0)) {
@@ -2628,13 +2664,315 @@ export function ThreadTerminalView({
         parsingOutputSequence = null;
         outputLineAnchorTracker.reset();
       };
+      const handleMessage = (
+        message: TerminalServerMessage,
+        replayWrite?: { bytes: Uint8Array; sourceBytes: Uint8Array },
+      ) => {
+        if (message.type === "attached") {
+          replayTimingNextSeq = message.nextSeq;
+          replayTimingFirstFrame = false;
+        }
+        if (
+          message.type === "output" &&
+          replayTimingNextSeq !== null &&
+          message.chunk.seq < replayTimingNextSeq
+        ) {
+          if (!replayTimingFirstFrame) {
+            replayTimingFirstFrame = true;
+            performance.mark("terminal-replay-first-frame-received", {
+              startTime: messageEventTimestamp,
+              detail: { terminalId: session.id },
+            });
+          }
+          if (message.chunk.seq + 1 === replayTimingNextSeq) {
+            performance.mark("terminal-replay-last-frame-received", {
+              startTime: messageEventTimestamp,
+              detail: { terminalId: session.id },
+            });
+          }
+        }
+        if (
+          message.type === "exited" ||
+          ((message.type === "session-updated" ||
+            message.type === "attached") &&
+            message.session.status === "exited")
+        ) {
+          processExitedSeen = true;
+        }
+        if (message.type === "error") {
+          if (
+            processExitedSeen ||
+            replayPreview === null ||
+            replayCompleted ||
+            message.code === "terminal_exited" ||
+            message.code === "terminal_not_found" ||
+            message.code === "terminal_not_running"
+          ) {
+            abandonReplayPreview();
+          } else {
+            retryStalledReplay();
+          }
+        }
+        if (message.type === "exited") handleReplayPreviewExit();
+        if (message.type === "output") {
+          latestOutputSequence = Math.max(
+            latestOutputSequence,
+            message.chunk.seq,
+          );
+        }
+        const currentOutputFrameId =
+          message.type === "output" ? outputFrameId : null;
+        if (message.type === "output") {
+          outputFrameId = null;
+          if (!replayCompleted) replayPreview?.noteProgress();
+        }
+        if (message.type === "attached" || message.type === "session-updated") {
+          if (message.type === "attached") {
+            hasReceivedInitialAttach = true;
+          }
+          const { cols, rows } = message.session;
+          const isOwnNudgeEcho =
+            message.type === "session-updated" &&
+            activeTransport.consumeRepaintNudgeEcho(
+              { cols, rows },
+              message.resizeSeq,
+            );
+          latestPtyGrid = { cols, rows };
+          updateGridVisibility();
+          const nextSize = nextSharedTerminalSize(
+            sharedSize,
+            { cols, rows },
+            isOwnNudgeEcho,
+          );
+          if (nextSize !== null) {
+            sharedSize = nextSize;
+            replayPreview?.resize(nextSize.cols, nextSize.rows);
+            scheduleFit();
+          } else {
+            replayPreview?.resize(cols, rows);
+          }
+          if (message.session.status === "exited") {
+            handleReplayPreviewExit();
+          }
+          if (
+            message.type === "attached" ||
+            !replayCompleted ||
+            replayWriteState.suppressedWriteCount > 0
+          ) {
+            captureLiveViewportBeforeGridResize();
+            activeTerminal.resize(cols, rows);
+            updateGridVisibility();
+            clearLiveViewportBeforeGridResize();
+          } else if (outputPipeline) {
+            applyTerminalGridAndKeepViewport({
+              pipeline: outputPipeline,
+              cols,
+              rows,
+              onGridApplied: updateGridVisibility,
+              restoreViewport: () => {
+                if (hasRestoredViewport && !hasManualScrollIntent) {
+                  restoreViewport(true);
+                }
+              },
+            });
+          }
+        }
+        handleTerminalServerMessage({
+          acknowledgeOutput: (nextSeq) => {
+            lastParsedOutputNextSeq = Math.max(
+              lastParsedOutputNextSeq,
+              nextSeq,
+            );
+            activeTransport.acknowledgeOutput(nextSeq);
+          },
+          message,
+          replayWrite,
+          terminalId: session.id,
+          onOutputFrameParsed: () => {
+            if (
+              message.type === "output" &&
+              message.chunk.seq + 1 === replayTimingNextSeq
+            ) {
+              performance.mark("terminal-replay-primary-xterm-parsed", {
+                detail: { terminalId: session.id },
+              });
+            }
+            if (
+              !disposed &&
+              hasReceivedInitialAttach &&
+              outputPipeline &&
+              (activeTerminal.cols !== latestPtyGrid.cols ||
+                activeTerminal.rows !== latestPtyGrid.rows)
+            ) {
+              applyTerminalGridAndKeepViewport({
+                pipeline: outputPipeline,
+                cols: latestPtyGrid.cols,
+                rows: latestPtyGrid.rows,
+                onGridApplied: updateGridVisibility,
+                restoreViewport: () => {
+                  if (hasRestoredViewport && !hasManualScrollIntent) {
+                    restoreViewport(true);
+                  }
+                },
+              });
+            }
+            if (
+              document.visibilityState !== "visible" ||
+              !containerHasSize ||
+              !isPanelOpenRef.current
+            ) {
+              cancelTerminalOutputNextRenders(session.id);
+            }
+          },
+          onReplayComplete: () => {
+            replayCompleted = true;
+            pendingReplayRevealRef.current = session.id;
+            performance.mark("terminal-replay-parsed", {
+              detail: { terminalId: session.id },
+            });
+            setRestoringSession(false);
+            keepScreenLoadingPreview = false;
+            clearScreenLoadingPreview();
+            containerElement.dataset.replayHeld = "false";
+            activeTransport.resetRetryBackoff();
+            for (const text of pendingExitNotices.splice(0)) {
+              routeQueuedExitNotice(text);
+            }
+            completeTerminalReplayPreview({
+              hasPendingExit: exitedBeforeReplayCompleted,
+              markExitApplied: () => {
+                replayPreviewExitApplied = true;
+              },
+              clearPendingExit: () => {
+                exitedBeforeReplayCompleted = false;
+              },
+              releasePreview: releaseReplayPreview,
+              processExited: () => replayPreview?.processExited(),
+            });
+            applyTerminalGridBeforeViewportRestore({
+              pipeline: outputPipeline,
+              cols: latestPtyGrid.cols,
+              rows: latestPtyGrid.rows,
+              onGridApplied: updateGridVisibility,
+              restoreViewport,
+              afterRestore: () => {
+                if (!disposed)
+                  activeTerminal.refresh(0, activeTerminal.rows - 1);
+              },
+            });
+          },
+          onSessionChange: onSessionChangeRef.current,
+          onOutputStart: recordOutputStart,
+          onOutputParsed: (sequence) => {
+            if (sequence + 1 === replayTimingNextSeq) {
+              performance.mark("terminal-replay-last-xterm-callback", {
+                detail: { terminalId: session.id },
+              });
+            }
+            const savedSequence = savedViewportAnchor?.outputSequence;
+            if (
+              savedSequence !== undefined &&
+              sequence >= savedSequence &&
+              savedOutputLineAnchor === null
+            ) {
+              updateSavedOutputLineAnchor(
+                outputLineAnchors.find(
+                  (candidate) => candidate.sequence === savedSequence,
+                ) ?? null,
+              );
+            }
+          },
+          replayNextSeq,
+          replayWriteState,
+          outputFrameId: currentOutputFrameId ?? undefined,
+          onReplayStart: () => {
+            replayStarted = true;
+            setRestoringSession(true);
+            containerElement.dataset.replayHeld = "true";
+            viewportReplaySaveGate.beginReplay();
+            replayCompleted = false;
+            replayPreviewExitApplied = false;
+            setReplayNotice(paintedScreenKept ? "reconnecting" : null);
+            if (replayPreview === null || replayPreview.fallback) {
+              replayPreview?.dispose();
+              replayCheckpointSequence = null;
+              const replayGrid = latestPtyGrid;
+              const previewTerminal = new Terminal({
+                ...TERMINAL_THEME_OPTIONS,
+                allowProposedApi: TERMINAL_ALLOW_PROPOSED_API,
+                cols: replayGrid.cols,
+                rows: replayGrid.rows,
+                ...terminalFontOptions,
+                theme: buildTerminalTheme(),
+              });
+              previewTerminal.loadAddon(new Unicode11Addon());
+              previewTerminal.unicode.activeVersion = TERMINAL_UNICODE_VERSION;
+              replayPreview = mountTerminalReplayPreview({
+                container: containerElement,
+                holdUntilReleased: true,
+                onHoldExpired: () => retryStalledReplay(),
+                initialFitGrid: localFitGrid,
+                isOwner: () =>
+                  terminalInputClaimed &&
+                  document.hasFocus() &&
+                  activeTerminal.element?.contains(document.activeElement) ===
+                    true,
+                liveTerminal: activeTerminal,
+                paddingLeft,
+                readyToPaint: () =>
+                  initialRendererSettled &&
+                  document.fonts?.status !== "loading",
+                terminal: previewTerminal,
+              });
+              replayPreview.setPtyGrid(replayGrid.cols, replayGrid.rows);
+              if (paintedScreenKept) keepPaintedScreen();
+            }
+          },
+          setReplayNextSeq: (nextSeq) => {
+            replayNextSeq = nextSeq;
+            if (nextSeq !== null) replayNextSequence = nextSeq;
+          },
+          setReplayStartSequence: (sequence) => {
+            replayStartSequence = sequence;
+            latestOutputSequence = Math.max(latestOutputSequence, sequence);
+            startTerminalOutputReplay({
+              outputLineAnchors,
+              sequence,
+              tracker: outputLineAnchorTracker,
+            });
+          },
+          terminal: activeTerminal,
+          pipeline: outputPipeline ?? undefined,
+          replayPipeline: replayPreview ?? undefined,
+          replayCheckpointSequence,
+          writeExitNotice: routeExitNotice,
+          outputBoundaries,
+          allowAttachedGrid: false,
+          shouldProcessOutput: () =>
+            terminalVisible === true && isPanelOpenRef.current,
+        });
+        if (
+          message.type === "output" &&
+          message.chunk.seq + 1 === replayTimingNextSeq
+        ) {
+          performance.mark("terminal-replay-last-frame-dispatched", {
+            detail: { terminalId: session.id },
+          });
+        }
+      };
       const activeTransport = new TerminalWebSocketTransport({
+        createSocket: createPrefetchedTerminalSocket,
         terminalId: session.id,
         now: () => performance.now(),
         onInputAccepted: recordTerminalInputAccepted,
         onInputSent: recordTerminalInputWebSocketSent,
         onOutputFrameReceived: (terminalId, timestamp) => {
           outputFrameId = recordTerminalOutputReceived(terminalId, timestamp);
+        },
+        onMessageEvent: (timestamp) => {
+          const now = performance.now();
+          messageEventTimestamp =
+            timestamp >= 0 && timestamp <= now ? timestamp : now;
         },
         onRepaintNudgeSizeReleased: (size) => {
           const nextSize = nextSharedTerminalSize(sharedSize, size, false);
@@ -2711,247 +3049,16 @@ export function ThreadTerminalView({
             text: "Terminal received an invalid server message",
           });
         },
-        onMessage: (message) => {
-          if (
-            message.type === "exited" ||
-            ((message.type === "session-updated" ||
-              message.type === "attached") &&
-              message.session.status === "exited")
-          ) {
-            processExitedSeen = true;
-          }
-          if (message.type === "error") {
-            if (
-              processExitedSeen ||
-              replayPreview === null ||
-              replayCompleted ||
-              message.code === "terminal_exited" ||
-              message.code === "terminal_not_found" ||
-              message.code === "terminal_not_running"
-            ) {
-              abandonReplayPreview();
-            } else {
-              retryStalledReplay();
-            }
-          }
-          if (message.type === "exited") handleReplayPreviewExit();
-          if (message.type === "output") {
-            latestOutputSequence = Math.max(
-              latestOutputSequence,
-              message.chunk.seq,
-            );
-          }
-          const currentOutputFrameId =
-            message.type === "output" ? outputFrameId : null;
-          if (message.type === "output") {
-            outputFrameId = null;
-            if (!replayCompleted) replayPreview?.noteProgress();
-          }
-          if (
-            message.type === "attached" ||
-            message.type === "session-updated"
-          ) {
-            if (message.type === "attached") {
-              hasReceivedInitialAttach = true;
-            }
-            const { cols, rows } = message.session;
-            const isOwnNudgeEcho =
-              message.type === "session-updated" &&
-              activeTransport.consumeRepaintNudgeEcho(
-                { cols, rows },
-                message.resizeSeq,
-              );
-            latestPtyGrid = { cols, rows };
-            updateGridVisibility();
-            const nextSize = nextSharedTerminalSize(
-              sharedSize,
-              { cols, rows },
-              isOwnNudgeEcho,
-            );
-            if (nextSize !== null) {
-              sharedSize = nextSize;
-              replayPreview?.resize(nextSize.cols, nextSize.rows);
-              scheduleFit();
-            } else {
-              replayPreview?.resize(cols, rows);
-            }
-            if (message.session.status === "exited") {
-              handleReplayPreviewExit();
-            }
-            if (
-              message.type === "attached" ||
-              !replayCompleted ||
-              replayWriteState.suppressedWriteCount > 0
-            ) {
-              captureLiveViewportBeforeGridResize();
-              activeTerminal.resize(cols, rows);
-              updateGridVisibility();
-              clearLiveViewportBeforeGridResize();
-            } else if (outputPipeline) {
-              applyTerminalGridAndKeepViewport({
-                pipeline: outputPipeline,
-                cols,
-                rows,
-                onGridApplied: updateGridVisibility,
-                restoreViewport: () => {
-                  if (hasRestoredViewport && !hasManualScrollIntent) {
-                    restoreViewport(true);
-                  }
-                },
-              });
-            }
-          }
-          handleTerminalServerMessage({
-            acknowledgeOutput: (nextSeq) => {
-              lastParsedOutputNextSeq = Math.max(
-                lastParsedOutputNextSeq,
-                nextSeq,
-              );
-              activeTransport.acknowledgeOutput(nextSeq);
-            },
-            message,
-            terminalId: session.id,
-            onOutputFrameParsed: () => {
-              if (
-                !disposed &&
-                hasReceivedInitialAttach &&
-                outputPipeline &&
-                (activeTerminal.cols !== latestPtyGrid.cols ||
-                  activeTerminal.rows !== latestPtyGrid.rows)
-              ) {
-                applyTerminalGridAndKeepViewport({
-                  pipeline: outputPipeline,
-                  cols: latestPtyGrid.cols,
-                  rows: latestPtyGrid.rows,
-                  onGridApplied: updateGridVisibility,
-                  restoreViewport: () => {
-                    if (hasRestoredViewport && !hasManualScrollIntent) {
-                      restoreViewport(true);
-                    }
-                  },
-                });
-              }
-              if (
-                document.visibilityState !== "visible" ||
-                !containerHasSize ||
-                !isPanelOpenRef.current
-              ) {
-                cancelTerminalOutputNextRenders(session.id);
-              }
-            },
-            onReplayComplete: () => {
-              replayCompleted = true;
-              setRestoringSession(false);
-              keepScreenLoadingPreview = false;
-              clearScreenLoadingPreview();
-              containerElement.dataset.replayHeld = "false";
-              activeTransport.resetRetryBackoff();
-              for (const text of pendingExitNotices.splice(0)) {
-                routeQueuedExitNotice(text);
-              }
-              completeTerminalReplayPreview({
-                hasPendingExit: exitedBeforeReplayCompleted,
-                markExitApplied: () => {
-                  replayPreviewExitApplied = true;
-                },
-                clearPendingExit: () => {
-                  exitedBeforeReplayCompleted = false;
-                },
-                releasePreview: releaseReplayPreview,
-                processExited: () => replayPreview?.processExited(),
-              });
-              applyTerminalGridBeforeViewportRestore({
-                pipeline: outputPipeline,
-                cols: latestPtyGrid.cols,
-                rows: latestPtyGrid.rows,
-                onGridApplied: updateGridVisibility,
-                restoreViewport,
-                afterRestore: () => {
-                  if (!disposed)
-                    activeTerminal.refresh(0, activeTerminal.rows - 1);
-                },
-              });
-            },
-            onSessionChange: onSessionChangeRef.current,
-            onOutputStart: recordOutputStart,
-            onOutputParsed: (sequence) => {
-              const outputAnchor = outputLineAnchors.find(
-                (candidate) => candidate.sequence === sequence,
-              );
-              if (sequence === savedViewportAnchor?.outputSequence) {
-                updateSavedOutputLineAnchor(outputAnchor ?? null);
-              }
-            },
-            replayNextSeq,
-            replayWriteState,
-            outputFrameId: currentOutputFrameId ?? undefined,
-            onReplayStart: () => {
-              replayStarted = true;
-              setRestoringSession(true);
-              containerElement.dataset.replayHeld = "true";
-              viewportReplaySaveGate.beginReplay();
-              replayCompleted = false;
-              replayPreviewExitApplied = false;
-              setReplayNotice(paintedScreenKept ? "reconnecting" : null);
-              if (replayPreview === null || replayPreview.fallback) {
-                replayPreview?.dispose();
-                replayCheckpointSequence = null;
-                const replayGrid = latestPtyGrid;
-                const previewTerminal = new Terminal({
-                  ...TERMINAL_THEME_OPTIONS,
-                  allowProposedApi: TERMINAL_ALLOW_PROPOSED_API,
-                  cols: replayGrid.cols,
-                  rows: replayGrid.rows,
-                  ...terminalFontOptions,
-                  theme: buildTerminalTheme(),
-                });
-                previewTerminal.loadAddon(new Unicode11Addon());
-                previewTerminal.unicode.activeVersion =
-                  TERMINAL_UNICODE_VERSION;
-                replayPreview = mountTerminalReplayPreview({
-                  container: containerElement,
-                  holdUntilReleased: true,
-                  onHoldExpired: () => retryStalledReplay(),
-                  initialFitGrid: localFitGrid,
-                  isOwner: () =>
-                    terminalInputClaimed &&
-                    document.hasFocus() &&
-                    activeTerminal.element?.contains(document.activeElement) ===
-                      true,
-                  liveTerminal: activeTerminal,
-                  paddingLeft,
-                  readyToPaint: () =>
-                    initialRendererSettled &&
-                    document.fonts?.status !== "loading",
-                  terminal: previewTerminal,
-                });
-                replayPreview.setPtyGrid(replayGrid.cols, replayGrid.rows);
-                if (paintedScreenKept) keepPaintedScreen();
-              }
-            },
-            setReplayNextSeq: (nextSeq) => {
-              replayNextSeq = nextSeq;
-              if (nextSeq !== null) replayNextSequence = nextSeq;
-            },
-            setReplayStartSequence: (sequence) => {
-              replayStartSequence = sequence;
-              latestOutputSequence = Math.max(latestOutputSequence, sequence);
-              startTerminalOutputReplay({
-                outputLineAnchors,
-                sequence,
-                tracker: outputLineAnchorTracker,
-              });
-            },
-            terminal: activeTerminal,
-            pipeline: outputPipeline ?? undefined,
-            replayPipeline: replayPreview ?? undefined,
-            replayCheckpointSequence,
-            writeExitNotice: routeExitNotice,
+        onMessage: handleMessage,
+        onReplayBatch: (chunks) => {
+          if (terminalVisible !== true || !isPanelOpenRef.current) return;
+          for (const write of terminalReplayWrites(
+            chunks,
             outputBoundaries,
-            allowAttachedGrid: false,
-            shouldProcessOutput: () =>
-              terminalVisible === true && isPanelOpenRef.current,
-          });
+            replayCheckpointSequence,
+          )) {
+            handleMessage({ type: "output", chunk: write.chunk }, write);
+          }
         },
         onSequenceGap: () => {
           resetTerminalOutput();
@@ -3267,6 +3374,7 @@ export function ThreadTerminalView({
     }
 
     void mountTerminal(container).catch((error) => {
+      discardPrefetchedTerminalSocket(earlySocketUrl);
       clearScreenLoadingPreview();
       if (!disposed) {
         setRestoringSession(false);
@@ -3335,6 +3443,7 @@ export function ThreadTerminalView({
         reportDocumentVisibility,
       );
       transport?.dispose();
+      discardPrefetchedTerminalSocket(earlySocketUrl);
       webglVisibilityRef.current?.dispose();
       webglVisibilityRef.current = null;
       webglRenderer?.dispose();
