@@ -56,7 +56,10 @@ import {
 import { encodeReuseValue } from "@/components/pickers/environment-picker-value";
 import { useRootComposeReuseEnvironment } from "@/lib/root-compose-selection";
 import { getPromptDraftAccessor } from "@/hooks/usePromptDraftStorage";
-import { makeThreadListEntry } from "@bb/test-helpers/domain-fixtures";
+import {
+  makeProviderInfo,
+  makeThreadListEntry,
+} from "@bb/test-helpers/domain-fixtures";
 import { createDeferredPromise } from "@bb/test-helpers";
 import type { PromptDraftAttachment, PromptDraftState } from "@bb/client-core";
 import { makeProjectWithThreadsResponse } from "@/test/fixtures/projects";
@@ -131,10 +134,11 @@ const mocks = vi.hoisted(() => ({
   serverAccessReady: true,
   machineProviders: [] as SystemMachineProvider[],
   modelsLoading: false,
+  hostPermissionCeiling: "full" as "auto" | "accept-edits" | "full",
   permissionCeiling: undefined as "accept-edits" | "auto" | "full" | undefined,
   modelSessionOptions: undefined as ThreadSessionOption[] | undefined,
   systemProviders: undefined as
-    | Array<{ id: string; capabilities: { supportsNativeTerminal: boolean } }>
+    | Array<{ id: string; capabilities: { supportsNativeTerminal?: boolean } }>
     | undefined,
 }));
 
@@ -333,8 +337,12 @@ vi.mock("@/hooks/queries/sidebar-navigation-query", () => ({
 vi.mock("@/hooks/queries/host-queries", () => ({
   useHosts: () => ({
     data: [
-      { id: "host_1", name: "Machine" },
-      { id: "host_2", name: "Other machine" },
+      {
+        id: "host_1",
+        name: "Machine",
+        maxPermissionMode: mocks.hostPermissionCeiling,
+      },
+      { id: "host_2", name: "Other machine", maxPermissionMode: "full" },
     ],
   }),
   selectHosts: <T,>(hosts: T[] | undefined) => hosts ?? [],
@@ -803,6 +811,7 @@ describe("PluginNewThreadComposer seeding", () => {
     mocks.serverAccessReady = true;
     mocks.machineProviders = [];
     mocks.modelsLoading = false;
+    mocks.hostPermissionCeiling = "full";
     mocks.permissionCeiling = undefined;
     mocks.environmentProviders = [
       CHECKOUT_PROVIDER,
@@ -2117,6 +2126,97 @@ describe("PluginNewThreadComposer seeding", () => {
     expect(panel.secondary.activeTabId).toBe(panel.secondary.tabs[0].id);
     view.unmount();
     expect(getFocusedAppPanelController()).toBeNull();
+  });
+
+  it("lets known-provider permissions change before the model catalog arrives and keeps the choice", async () => {
+    mocks.realPromptBox = true;
+    mocks.modelsLoading = true;
+    mocks.systemProviders = [
+      makeProviderInfo({
+        id: "codex",
+        capabilities: { permissionModes: ["auto", "full"] },
+      }),
+    ];
+    const view = render(newThreadElement("proj_1"));
+    const trigger = await screen.findByRole("button", { name: "Permissions" });
+    expect(trigger.textContent).toBe("Permissions:Approve");
+    expect(trigger.hasAttribute("disabled")).toBe(false);
+    fireEvent.pointerDown(trigger, {
+      button: 0,
+      ctrlKey: false,
+      pointerType: "mouse",
+    });
+    const fullAccess = await screen.findByRole("menuitem", {
+      name: /Full Access/,
+    });
+    expect(screen.queryByRole("menuitem", { name: /Edits/ })).toBeNull();
+    fireEvent.click(fullAccess);
+    await waitFor(() =>
+      expect(trigger.textContent).toBe("Permissions:Full Access"),
+    );
+
+    mocks.modelsLoading = false;
+    view.rerender(newThreadElement("proj_1"));
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "Provider, model and reasoning" })
+          .textContent,
+      ).toContain("5.6"),
+    );
+    expect(trigger.textContent).toBe("Permissions:Full Access");
+    expect(trigger.hasAttribute("disabled")).toBe(false);
+  });
+
+  it("keeps permissions pending until the selected provider capabilities are known", async () => {
+    mocks.realPromptBox = true;
+    mocks.modelsLoading = true;
+    const view = render(newThreadElement("proj_1"));
+    const trigger = await screen.findByRole("button", { name: "Permissions" });
+    expect(trigger.textContent).toBe("Permissions:Approve");
+    expect(trigger.hasAttribute("disabled")).toBe(true);
+    fireEvent.pointerDown(trigger, {
+      button: 0,
+      ctrlKey: false,
+      pointerType: "mouse",
+    });
+    expect(screen.queryByRole("menuitem", { name: /Full Access/ })).toBeNull();
+
+    mocks.systemProviders = [makeProviderInfo({ id: "codex" })];
+    view.rerender(newThreadElement("proj_1"));
+    await waitFor(() =>
+      expect(
+        screen
+          .getByRole("button", { name: "Permissions" })
+          .hasAttribute("disabled"),
+      ).toBe(false),
+    );
+  });
+
+  it("respects the machine ceiling before catalog loading and reconciles a later ceiling change", async () => {
+    mocks.realPromptBox = true;
+    mocks.modelsLoading = true;
+    mocks.hostPermissionCeiling = "accept-edits";
+    mocks.systemProviders = [makeProviderInfo({ id: "codex" })];
+    const view = render(newThreadElement("proj_1"));
+    const trigger = await screen.findByRole("button", { name: "Permissions" });
+    fireEvent.pointerDown(trigger, {
+      button: 0,
+      ctrlKey: false,
+      pointerType: "mouse",
+    });
+    const fullAccess = await screen.findByRole("menuitem", {
+      name: /Full Access/,
+    });
+    expect(fullAccess.getAttribute("aria-disabled")).toBe("true");
+    fireEvent.click(await screen.findByRole("menuitem", { name: /Edits/ }));
+    await waitFor(() => expect(trigger.textContent).toBe("Permissions:Edits"));
+
+    mocks.modelsLoading = false;
+    mocks.permissionCeiling = "auto";
+    view.rerender(newThreadElement("proj_1"));
+    await waitFor(() =>
+      expect(trigger.textContent).toBe("Permissions:Approve"),
+    );
   });
 
   it("avoids a false empty model label while project defaults are pending", async () => {
