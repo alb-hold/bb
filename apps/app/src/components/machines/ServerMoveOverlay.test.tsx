@@ -174,7 +174,7 @@ describe("ServerMoveOverlay", () => {
     await act(async () => {
       await new Promise((resolve) => window.setTimeout(resolve, 1200));
     });
-    expect(viewImports).not.toHaveBeenCalled();
+    expect(viewImports).toHaveBeenCalledOnce();
   });
 
   it("blocks the app with the step list and offers Cancel only while the move is cancellable", async () => {
