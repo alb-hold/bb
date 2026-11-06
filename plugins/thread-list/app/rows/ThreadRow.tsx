@@ -834,7 +834,7 @@ function ThreadRowComponent({
     SIDEBAR_ROW_BASE_CLASS,
     "gap-1",
     DESKTOP_THREAD_ROW_HEIGHT_VARIABLE_CLASS,
-    !hasRowState && !showRowMetadata &&
+    !hasRowState &&
       "md:h-(--bb-sidebar-desktop-row-height) md:min-h-(--bb-sidebar-desktop-row-height)",
     LIST_HOVER_TRANSITION,
     parentOptions?.stickyLevel === undefined && "relative",
@@ -843,10 +843,9 @@ function ThreadRowComponent({
       : options.isCompact
         ? COARSE_POINTER_COMPACT_ROW_HEIGHT_CLASS
         : COARSE_POINTER_ROW_HEIGHT_CLASS,
-    (showRowMetadata ||
-      (hasRowState && parentOptions?.stickyLevel !== undefined)) &&
+    hasRowState && parentOptions?.stickyLevel !== undefined &&
       "h-auto min-h-[var(--bb-sidebar-row-height)] max-md:pointer-coarse:h-auto max-md:pointer-coarse:min-h-[var(--bb-sidebar-row-height-coarse)]",
-    showRowMetadata && "max-md:pointer-coarse:min-h-11",
+    showRowMetadata && "has-[[data-reserve-line]]:h-auto has-[[data-reserve-line]]:md:h-auto has-[[data-reserve-line]]:min-h-[var(--bb-sidebar-row-height)] has-[[data-reserve-line]]:max-md:pointer-coarse:h-auto has-[[data-reserve-line]]:max-md:pointer-coarse:min-h-11",
     showActive
       ? SIDEBAR_ROW_SELECTED_STATE_CLASS
       : SIDEBAR_ROW_INTERACTIVE_STATE_CLASS,
@@ -925,7 +924,7 @@ function ThreadRowComponent({
           hasRowState && rowFirstLineHeightClass,
           hasVisibleStatus && "gap-1",
           showRowMetadata &&
-            "flex-wrap content-center gap-y-0 py-1.25 [&_.bb-thread-title]:leading-4",
+            "group/row-metadata has-[[data-reserve-line]]:flex-wrap has-[[data-reserve-line]]:content-center has-[[data-reserve-line]]:gap-y-0 has-[[data-reserve-line]]:py-1.25 has-[[data-reserve-line]]:[&_.bb-thread-title]:leading-4",
           !isActionsOpen &&
             "group-data-[sidebar-touch-armed=true]/thread-row:hidden",
           !isEditing &&
@@ -980,7 +979,7 @@ function ThreadRowComponent({
         <span
           className={
             showRowMetadata
-              ? "flex min-w-0 basis-full items-center gap-1.5 self-stretch"
+              ? "contents group-has-[[data-reserve-line]]/row-metadata:flex group-has-[[data-reserve-line]]/row-metadata:min-w-0 group-has-[[data-reserve-line]]/row-metadata:basis-full group-has-[[data-reserve-line]]/row-metadata:items-center group-has-[[data-reserve-line]]/row-metadata:gap-1.5 group-has-[[data-reserve-line]]/row-metadata:self-stretch"
               : "contents"
           }
         >
@@ -1069,7 +1068,7 @@ function ThreadRowComponent({
         {!showRowMetadata || isEditing || isCustomizingActions ? null : (
           <span
             className={cn(
-              "mt-px flex h-3.5 min-w-0 shrink-0 basis-full overflow-hidden",
+              "mt-px hidden has-[[data-reserve-line]]:flex h-3.5 min-w-0 shrink-0 basis-full overflow-hidden",
               provider !== undefined && "pl-6",
             )}
           >

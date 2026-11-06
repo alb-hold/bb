@@ -14,6 +14,10 @@ import {
 } from "@/lib/plugin-slots";
 import { toPluginSidebarThread } from "@/lib/plugin-sidebar-threads";
 import { makePluginRegistrationSet } from "@/test/fixtures/plugins";
+import {
+  markPluginFrontendsSettled,
+  resetPluginFrontendBootStateForTest,
+} from "@/lib/plugin-frontend-boot-state";
 import { ThreadRowMetadata } from "./ThreadRowMetadata";
 import { ThreadRowMetadataCollectorsView } from "./ThreadRowMetadataCollectorsView";
 
@@ -31,7 +35,9 @@ const archivedThread = toPluginSidebarThread(
 );
 
 function item(label: string) {
-  return function Item({ thread }: ExperimentalThreadRowMetadataProps<unknown>) {
+  return function Item({
+    thread,
+  }: ExperimentalThreadRowMetadataProps<unknown>) {
     return <span data-testid={label}>{thread.id}</span>;
   };
 }
@@ -50,17 +56,91 @@ function renderRow() {
 }
 
 beforeEach(() => {
+  localStorage.clear();
   vi.useFakeTimers();
 });
 
 afterEach(() => {
   cleanup();
+  localStorage.clear();
+  resetPluginFrontendBootStateForTest();
   removePluginSlotRegistrations("demo");
   resetAllCrashedPluginSlotsForTest();
   vi.useRealTimers();
 });
 
 describe("thread row metadata", () => {
+  it("drops remembered chrome when plugin boot finishes without metadata contributors", () => {
+    setPluginSlotRegistrations(
+      "demo",
+      makePluginRegistrationSet({
+        threadRowMetadata: [{ id: "badge", component: item("badge") }],
+      }),
+    );
+    const first = renderRow();
+    first.unmount();
+    removePluginSlotRegistrations("demo");
+    const next = renderRow();
+    expect(next.row.querySelector("[data-reserve-line]")).not.toBeNull();
+    act(() => markPluginFrontendsSettled());
+    expect(next.row.querySelector("[data-reserve-line]")).toBeNull();
+    next.unmount();
+    expect(renderRow().row.querySelector("[data-reserve-line]")).toBeNull();
+  });
+
+  it("remembers populated rows before registration and pending data, then forgets resolved empty rows", async () => {
+    setPluginSlotRegistrations(
+      "demo",
+      makePluginRegistrationSet({
+        threadRowMetadata: [{ id: "badge", component: item("badge") }],
+      }),
+    );
+    const first = renderRow();
+    expect(first.row.querySelector("[data-reserve-line]")).not.toBeNull();
+    first.unmount();
+    removePluginSlotRegistrations("demo");
+    const next = renderRow();
+    const line = next.row.querySelector("[data-thread-row-metadata]")!;
+    expect(line.hasAttribute("data-reserve-line")).toBe(true);
+    expect(line.hasAttribute("data-has-items")).toBe(false);
+    const empty = render(<ThreadRowMetadata thread={otherThread} />);
+    expect(empty.container.querySelector("[data-reserve-line]")).toBeNull();
+    let data: Map<string, string> | undefined;
+    function useData() {
+      return data;
+    }
+    function Badge({
+      thread,
+      data,
+    }: ExperimentalThreadRowMetadataProps<unknown>) {
+      const label = data instanceof Map ? data.get(thread.id) : undefined;
+      return label ? <span>{label}</span> : null;
+    }
+    act(() =>
+      setPluginSlotRegistrations(
+        "demo",
+        makePluginRegistrationSet({
+          threadRowMetadata: [{ id: "badge", useData, component: Badge }],
+        }),
+      ),
+    );
+    const collectors = render(<ThreadRowMetadataCollectorsView />);
+    await act(async () => {});
+    expect(line.hasAttribute("data-reserve-line")).toBe(true);
+    data = new Map([[thread.id, "#10843"]]);
+    collectors.rerender(<ThreadRowMetadataCollectorsView />);
+    await act(async () => {});
+    expect(line.textContent).toBe("#10843");
+    expect(line.hasAttribute("data-reserve-line")).toBe(true);
+    data = new Map();
+    collectors.rerender(<ThreadRowMetadataCollectorsView />);
+    await act(async () => {});
+    expect(line.hasAttribute("data-reserve-line")).toBe(false);
+    next.unmount();
+    act(() => removePluginSlotRegistrations("demo"));
+    expect(renderRow().row.querySelector("[data-reserve-line]")).toBeNull();
+  });
+
   it("mounts every row's items at once, whether or not the row is on screen", () => {
     setPluginSlotRegistrations(
       "demo",
@@ -105,7 +185,11 @@ describe("thread row metadata", () => {
     const line = render(<ThreadRowMetadata thread={archivedThread} />);
     expect(screen.queryByTestId("badge")).toBeNull();
     await act(async () => {});
-    expect(calls.at(-1)).toEqual([thread.id, otherThread.id, archivedThread.id]);
+    expect(calls.at(-1)).toEqual([
+      thread.id,
+      otherThread.id,
+      archivedThread.id,
+    ]);
     expect(screen.getByTestId("badge").textContent).toBe("pr:thr_archived");
 
     line.unmount();
@@ -143,7 +227,7 @@ describe("thread row metadata", () => {
 
   it("orders items, renders nothing without contributions, and drops only a crashing item", () => {
     const empty = renderRow();
-    expect(empty.row.querySelector("[data-thread-row-metadata]")).toBeNull();
+    expect(empty.row.querySelector("[data-reserve-line]")).toBeNull();
     empty.unmount();
     vi.spyOn(console, "warn").mockImplementation(() => {});
     vi.spyOn(console, "error").mockImplementation(() => {});
