@@ -85,6 +85,7 @@ export function PermissionModePicker({
   const compactLabel =
     displayOverride?.compactLabel ?? displayOverride?.label ?? modeLabel;
   const showFullAccessWarning = displayValue === "full" && !displayOverride;
+  const pickerDisabled = disabled || pending || options.length <= 1;
   if (
     !pending &&
     (value === undefined ||
@@ -104,7 +105,7 @@ export function PermissionModePicker({
         LIST_HOVER_TRANSITION,
         isCompactViewport
           ? "h-8 w-auto min-w-0 shrink-0 justify-center px-1.5"
-          : "w-44 shrink-0 justify-start",
+          : "w-max min-w-52 shrink-0 justify-start",
         pending &&
           displayValue === undefined &&
           !isCompactViewport &&
@@ -119,7 +120,13 @@ export function PermissionModePicker({
           <span>{isCompactViewport ? compactLabel : "Permissions:"}</span>
         </>
       }
-      caretClassName="ml-auto text-subtle-foreground/75"
+      caretClassName={cn(
+        "ml-auto text-subtle-foreground/75",
+        !isCompactViewport &&
+          pickerDisabled &&
+          showChevronWhenDisabled === false &&
+          "invisible",
+      )}
       contentClassName="max-w-72"
       muted={muted}
       defaultOpen={defaultOpen}
@@ -133,8 +140,10 @@ export function PermissionModePicker({
             }
           : undefined)
       }
-      disabled={disabled || pending || options.length <= 1}
-      showChevronWhenDisabled={showChevronWhenDisabled ?? true}
+      disabled={pickerDisabled}
+      showChevronWhenDisabled={
+        isCompactViewport ? (showChevronWhenDisabled ?? true) : true
+      }
     />
   );
 }

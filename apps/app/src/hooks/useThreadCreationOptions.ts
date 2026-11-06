@@ -41,6 +41,10 @@ import { PERMISSION_MODE_OPTIONS } from "@/lib/permission-mode-options";
 import { useRootComposeReuseEnvironment } from "@/lib/root-compose-selection";
 import { getProviderIconInfo } from "@/lib/provider-icon";
 import {
+  modelCatalogCacheKey,
+  readCachedModelCatalog,
+} from "@/lib/model-catalog-cache";
+import {
   DEFAULT_SERVICE_TIER,
   permissionModeRank,
   providerModelCatalogDependsOnWorkspace,
@@ -464,8 +468,7 @@ export function useThreadCreationOptions(
       !executionOptionsQuery.isPlaceholderData);
   const catalogPermissionsAreVerified =
     executionOptionsQuery.data !== undefined &&
-    !executionOptionsQuery.isPlaceholderData &&
-    !executionOptionsQuery.isError;
+    !executionOptionsQuery.isPlaceholderData;
   const providersQuery = useSystemProviders({
     ...(executionOptionsRouting.environmentId !== undefined
       ? { environmentId: executionOptionsRouting.environmentId }
@@ -479,13 +482,13 @@ export function useThreadCreationOptions(
   const effectiveProviderId = useMemo(() => {
     if (
       rawSelectedProviderId &&
-      ((scope === "new-thread" && !modelCatalogIsVerified) ||
+      (!modelCatalogIsVerified ||
         providers.some((provider) => provider.id === rawSelectedProviderId))
     ) {
       return rawSelectedProviderId;
     }
     return providers[0]?.id ?? "";
-  }, [modelCatalogIsVerified, providers, rawSelectedProviderId, scope]);
+  }, [modelCatalogIsVerified, providers, rawSelectedProviderId]);
 
   const { setValue: setStoredSelectedModel, value: storedSelectedModel } =
     usePromptBoxModelPreference(effectiveProviderId);
@@ -589,29 +592,46 @@ export function useThreadCreationOptions(
     [providers],
   );
 
-  const baseCatalogSelection = useMemo(
-    () =>
-      resolveModelCatalogSelection({
-        models: executionOptionsQuery.data?.models ?? [],
-        selectedOnlyModels:
-          executionOptionsQuery.data?.selectedOnlyModels ?? [],
-        selectedModel: rawSelectedModel,
-        preferredReasoningLevel,
-        sessionOptionSelections: requestedSessionOptionSelections,
-        provider: selectedProviderInfo,
-        catalogIsVerified: modelCatalogIsVerified,
-        formatModelLabel,
-      }),
-    [
-      executionOptionsQuery.data?.models,
-      executionOptionsQuery.data?.selectedOnlyModels,
-      modelCatalogIsVerified,
+  const baseCatalogSelection = useMemo(() => {
+    const routing = {
+      environmentId: executionOptionsRouting.environmentId ?? null,
+      hostId: executionOptionsRouting.hostId ?? null,
+      providerId: effectiveProviderId || null,
+    };
+    const cached =
+      executionOptionsQuery.data === undefined
+        ? (readCachedModelCatalog(
+            modelCatalogCacheKey({
+              ...routing,
+              projectId: executionOptionsProjectId,
+            }),
+          ) ?? readCachedModelCatalog(modelCatalogCacheKey(routing)))
+        : null;
+    return resolveModelCatalogSelection({
+      models: executionOptionsQuery.data?.models ?? cached?.models ?? [],
+      selectedOnlyModels:
+        executionOptionsQuery.data?.selectedOnlyModels ??
+        cached?.selectedOnlyModels ??
+        [],
+      selectedModel: rawSelectedModel,
       preferredReasoningLevel,
-      rawSelectedModel,
-      requestedSessionOptionSelections,
-      selectedProviderInfo,
-    ],
-  );
+      sessionOptionSelections: requestedSessionOptionSelections,
+      provider: selectedProviderInfo,
+      catalogIsVerified: modelCatalogIsVerified,
+      formatModelLabel,
+    });
+  }, [
+    executionOptionsRouting.environmentId,
+    executionOptionsRouting.hostId,
+    executionOptionsProjectId,
+    effectiveProviderId,
+    executionOptionsQuery.data,
+    modelCatalogIsVerified,
+    preferredReasoningLevel,
+    rawSelectedModel,
+    requestedSessionOptionSelections,
+    selectedProviderInfo,
+  ]);
 
   const resolveReasoningForModel = useCallback(
     (model: string, preferred: ReasoningLevel): ModelReasoningOptions => {

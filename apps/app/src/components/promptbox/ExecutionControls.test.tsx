@@ -62,6 +62,56 @@ afterEach(() => {
 });
 
 describe("ExecutionControls", () => {
+  it.each([
+    [360, false],
+    [390, false],
+    [360, true],
+    [390, true],
+  ] as const)(
+    "keeps model identities at %spx with terminal=%s",
+    (width, terminal) => {
+      const props = makeExecutionControlsProps();
+      const { wrapper } = createQueryClientTestHarness();
+      const names = [
+        "GPT-6.1-Sol",
+        "Claude Opus 5.5 (1M)",
+        "Organization Custom ACP Production Model",
+      ];
+      const content = (label: string) => (
+        <CompactViewportOverrideProvider isCompactViewport>
+          <div style={{ width }}>
+            <ExecutionControls
+              {...props}
+              model={{ ...props.model, options: [{ value: "gpt-5", label }] }}
+              nativeTerminal={{ enabled: terminal, onChange: vi.fn() }}
+            />
+          </div>
+        </CompactViewportOverrideProvider>
+      );
+      const view = render(content(names[0]!), { wrapper });
+      for (const label of names) {
+        view.rerender(content(label));
+        const trigger = screen.getByRole("button", {
+          name: new RegExp(label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+        });
+        const name = trigger.querySelector("[data-model-name]")!;
+        expect(name.textContent).toContain(
+          label === names[0] ? "6.1-Sol" : label.split(" (")[0],
+        );
+        expect(name.className).not.toContain("truncate");
+        expect(trigger.textContent).not.toContain("Medium");
+        expect(
+          trigger.querySelector("[title]")?.getAttribute("title"),
+        ).toContain(label);
+        expect(
+          screen
+            .getByRole("radio", { name: terminal ? "Terminal" : "Chat" })
+            .getAttribute("data-state"),
+        ).toBe("on");
+      }
+    },
+  );
+
   it("gives selected terminal a foreground label and visible border", () => {
     renderExecutionControls({
       ...makeExecutionControlsProps(),
@@ -102,7 +152,7 @@ describe("ExecutionControls", () => {
       );
       const { rerender } = render(content(true), { wrapper });
       const trigger = screen.getByRole("button", {
-        name: "Provider, model and reasoning",
+        name: /^Provider, model and reasoning/,
       });
       const widthContract = () => {
         expect(trigger.classList.contains("min-w-44")).toBe(true);
@@ -197,7 +247,7 @@ describe("ExecutionControls", () => {
     try {
       const { rerender } = render(content(390, true), { wrapper });
       const trigger = screen.getByRole("button", {
-        name: "Provider, model and reasoning",
+        name: /^Provider, model and reasoning/,
       });
       expect(trigger.textContent).toBe("Model");
       expect(
@@ -206,13 +256,13 @@ describe("ExecutionControls", () => {
       expect(trigger.querySelectorAll("[data-icon-root]")).toHaveLength(2);
       rerender(content(360, true));
       expect(
-        screen.getByRole("button", { name: "Provider, model and reasoning" }),
+        screen.getByRole("button", { name: /^Provider, model and reasoning/ }),
       ).toBe(trigger);
       rerender(content(390, false));
       expect(
-        screen.getByRole("button", { name: "Provider, model and reasoning" }),
+        screen.getByRole("button", { name: /^Provider, model and reasoning/ }),
       ).toBe(trigger);
-      expect(trigger.textContent).toContain("GPT-5");
+      expect(trigger.querySelector("[data-model-name]")?.textContent).toBe("5");
     } finally {
       style.remove();
     }
@@ -242,7 +292,7 @@ describe("ExecutionControls", () => {
     );
 
     const chip = screen.getByRole("button", {
-      name: "Provider, model and reasoning",
+      name: /^Provider, model and reasoning/,
     });
     expect(chip.textContent).toBe("Model");
     expect(chip.querySelectorAll("[data-icon-root]").length).toBe(2);
@@ -285,7 +335,7 @@ describe("ExecutionControls", () => {
     );
 
     const chip = screen.getByRole("button", {
-      name: "Provider, model and reasoning",
+      name: /^Provider, model and reasoning/,
     });
     expect(chip.textContent).toContain("6.1-Sol");
     expect(chip.querySelectorAll("[data-icon-root]").length).toBe(2);
@@ -308,7 +358,7 @@ describe("ExecutionControls", () => {
     });
 
     const chip = screen.getByRole("button", {
-      name: "Provider, model and reasoning",
+      name: /^Provider, model and reasoning/,
     });
     const control = screen.getByRole("radiogroup", {
       name: "Run this thread in",
@@ -413,7 +463,7 @@ describe("ExecutionControls", () => {
       pending: true,
     });
     const model = screen.getByRole("button", {
-      name: "Provider, model and reasoning",
+      name: /^Provider, model and reasoning/,
     });
     const terminal = screen.getByRole("radio", { name: "Terminal" });
     expect(model.textContent).toContain("GPT-5");
@@ -424,7 +474,7 @@ describe("ExecutionControls", () => {
     ).toBeNull();
     rerender(<ExecutionControls {...props} pending={false} />);
     expect(
-      screen.getByRole("button", { name: "Provider, model and reasoning" }),
+      screen.getByRole("button", { name: /^Provider, model and reasoning/ }),
     ).toBe(model);
     expect(screen.getByRole("radio", { name: "Terminal" })).toBe(terminal);
     expect(model.hasAttribute("disabled")).toBe(false);
@@ -445,7 +495,7 @@ describe("ExecutionControls", () => {
       },
     });
     const trigger = screen.getByRole("button", {
-      name: "Provider, model and reasoning",
+      name: /^Provider, model and reasoning/,
     });
     expect(trigger.hasAttribute("disabled")).toBe(false);
     expect(trigger.textContent).toContain("GPT-5");
@@ -499,7 +549,7 @@ describe("ExecutionControls", () => {
       model: { ...props.model, unavailableModel: "gpt-5.2-codex" },
     });
     const chip = screen.getByRole("button", {
-      name: "Provider, model and reasoning",
+      name: /^Provider, model and reasoning/,
     });
     expect(chip.querySelector("[title]")?.getAttribute("title")).toBe(note);
     expect(chip.getAttribute("aria-description")).toBe(note);
@@ -511,7 +561,7 @@ describe("ExecutionControls", () => {
 
     fireEvent.click(
       screen.getByRole("button", {
-        name: "Provider, model and reasoning",
+        name: /^Provider, model and reasoning/,
       }),
     );
 
@@ -524,7 +574,7 @@ describe("ExecutionControls", () => {
 
     fireEvent.click(
       screen.getByRole("button", {
-        name: "Provider, model and reasoning",
+        name: /^Provider, model and reasoning/,
       }),
     );
 
@@ -545,7 +595,7 @@ describe("ExecutionControls", () => {
     });
 
     const trigger = screen.getByRole("button", {
-      name: "Provider, model and reasoning",
+      name: /^Provider, model and reasoning/,
     });
 
     expect(trigger.textContent).toContain("o4-Mini");
@@ -564,7 +614,7 @@ it.each([false, true])(
       nativeTerminal: { enabled: true, onChange: vi.fn() },
     });
     const pill = container.querySelector("[data-model-reasoning-trigger]")!;
-    expect(pill.className).toContain("max-md:h-11");
+    expect(pill.className).toContain("max-md:min-h-11");
     expect(pill.className).toContain("max-md:rounded-md");
     expect(pill.className).toContain("max-md:bg-transparent");
     const terminal = screen.getByRole("radio", { name: "Terminal" });

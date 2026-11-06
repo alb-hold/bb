@@ -1313,8 +1313,7 @@ function dirtySystemExecutionOptionQueries(): QueryKey[] {
 function dirtyHostSystemExecutionOptionQueries({
   hostId,
   queryClient,
-}: HostRealtimeDirtyContext): QueryKey[] | void {
-  if (hostId === undefined) return [allSystemExecutionOptionsQueryKeyPrefix()];
+}: HostRealtimeDirtyContext): void {
   void invalidateSystemExecutionOptions({ hostId, queryClient });
 }
 

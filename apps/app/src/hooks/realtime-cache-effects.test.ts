@@ -749,6 +749,26 @@ describe("createRealtimeCacheEffects", () => {
       },
     );
 
+    it("retains the catalog host scope when replaying hidden events", () => {
+      const visibility = createFakeVisibility();
+      const { effects, queryClient } =
+        createRealtimeEffectsTestContext(visibility);
+      const invalidated = seedExecutionOptions(queryClient, "host-b");
+      visibility.setVisible(false);
+      for (let index = 0; index < 8; index++) {
+        effects.handleChanged({
+          type: "changed",
+          entity: "host",
+          id: "host-a",
+          changes: ["provider-model-catalog-changed"],
+        });
+      }
+      expect(invalidated()).toEqual([]);
+      visibility.setVisible(true);
+      expect(invalidated()).toEqual(["envHostA", "envUnknown", "hostA"]);
+      effects.dispose();
+    });
+
     it("refreshes hosts and providers but not catalogs when a host disconnects", () => {
       const { effects, queryClient } = createRealtimeEffectsTestContext();
       const invalidated = seedExecutionOptions(queryClient, "host-a");

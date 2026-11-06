@@ -157,8 +157,9 @@ export function resolveModelCatalogSelection({
 
   const activeModel =
     availableModels.find((model) => model.model === selectedModel) ??
-    availableModels.find((model) => model.isDefault) ??
-    availableModels[0];
+    (catalogIsVerified || !selectedModel
+      ? (availableModels.find((model) => model.isDefault) ?? availableModels[0])
+      : undefined);
 
   const seenReasoningLevels = new Set<ReasoningLevel>();
   const reasoningEfforts = (

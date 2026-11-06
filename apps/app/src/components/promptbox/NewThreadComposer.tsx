@@ -496,7 +496,7 @@ export function resolveNewThreadProjectDefaultsState({
     return { status: "resolved", defaults: cachedDefaults };
   }
   if (!projectFound) return { status: "pending" };
-  if (queryIsSuccess && !queryIsPlaceholderData) {
+  if ((queryIsSuccess || queryData !== undefined) && !queryIsPlaceholderData) {
     return { status: "resolved", defaults: queryData ?? null };
   }
   return queryIsError ? { status: "error" } : { status: "pending" };

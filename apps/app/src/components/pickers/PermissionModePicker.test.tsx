@@ -11,6 +11,38 @@ const options = [
 ] as const;
 afterEach(cleanup);
 
+it.each(["auto", "full"] as const)(
+  "keeps the desktop %s label intrinsic and reserves its enabled chevron",
+  (value) => {
+    const props = {
+      value,
+      options,
+      supported: true,
+      onChange: vi.fn(),
+      showChevronWhenDisabled: false,
+    };
+    const view = render(<PermissionModePicker {...props} disabled />);
+    const trigger = screen.getByRole("button", { name: "Permissions" });
+    expect(trigger.classList.contains("w-max")).toBe(true);
+    expect(trigger.classList.contains("min-w-52")).toBe(true);
+    expect(trigger.classList.contains("w-44")).toBe(false);
+    expect(
+      trigger
+        .querySelector('[data-icon="ChevronDown"]')
+        ?.classList.contains("invisible"),
+    ).toBe(true);
+    const label = trigger.textContent;
+    view.rerender(<PermissionModePicker {...props} />);
+    const enabledTrigger = screen.getByRole("button", { name: "Permissions" });
+    expect(enabledTrigger.textContent).toBe(label);
+    expect(
+      enabledTrigger
+        .querySelector('[data-icon="ChevronDown"]')
+        ?.classList.contains("invisible"),
+    ).toBe(false);
+  },
+);
+
 it("reserves the same desktop width while defaults and capabilities settle", () => {
   const onChange = vi.fn();
   const view = render(
@@ -27,14 +59,15 @@ it("reserves the same desktop width while defaults and capabilities settle", () 
     expect(
       screen
         .getByRole("button", { name: "Permissions" })
-        .classList.contains("w-44"),
+        .classList.contains("min-w-52"),
     ).toBe(true);
   assertWidth();
   expect(
     screen
       .getByRole("button", { name: "Permissions" })
-      .querySelector('[data-icon="ChevronDown"]'),
-  ).toBeNull();
+      .querySelector('[data-icon="ChevronDown"]')
+      ?.classList.contains("invisible"),
+  ).toBe(true);
   view.rerender(
     <PermissionModePicker
       value="auto"
@@ -141,7 +174,7 @@ it("reserves a skeleton when no cached mode exists", () => {
   );
   expect(
     screen.getByRole("button", { name: "Permissions" }).className,
-  ).toContain("w-44");
+  ).toContain("min-w-52");
   expect(
     screen.getByRole("button", { name: "Permissions" }).className,
   ).toContain("[&>span]:invisible");
