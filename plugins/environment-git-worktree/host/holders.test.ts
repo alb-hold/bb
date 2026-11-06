@@ -242,8 +242,8 @@ describe("real Linux POSIX ACL access checks", () => {
           target === "/proc/self/status"
             ? `Name:\tnode\nState:\tR (running)\nNSpid:\t${process.pid}\nUid:\t0\t0\t0\t0\nGid:\t0\t0\t0\t0\nGroups:\t0\n`
             : target === `/proc/${pid}/status`
-            ? "Name:\tforeign\nState:\tS (sleeping)\nUid:\t65530\t65531\t65532\t65533\nGid:\t65530\t65531\t65532\t65533\nGroups:\t65533\nCapEff:\t0000000000000000\n"
-            : hostProc.readFile(target),
+              ? "Name:\tforeign\nState:\tS (sleeping)\nUid:\t65530\t65531\t65532\t65533\nGid:\t65530\t65531\t65532\t65533\nGroups:\t65533\nCapEff:\t0000000000000000\n"
+              : hostProc.readFile(target),
         readlink: async (target) => {
           if (target === `/proc/${pid}/cwd`)
             throw Object.assign(new Error("Permission denied"), {
@@ -709,14 +709,23 @@ describe("the Linux process-list visibility rule", () => {
     expect(sharedPathCalls).toBe(1);
   });
 
-  it("is clear when an unreadable foreign cwd cannot reach the worktree and skips root and system UIDs", async () => {
+  it("is uncertain when a foreign cwd is unreadable even if it cannot traverse the worktree, and skips root and system UIDs", async () => {
     const inaccessible = fakeProc({
       self: { uid: 0 },
+      worktreeUid: 0,
       worktreeMode: 0o700,
-      processes: { 101: { uid: 1001, cwdDenied: true } },
+      processes: {
+        101: {
+          uid: 1001,
+          capEff: "0000000000000000",
+          cwdDenied: true,
+          fdTargets: ["/work/tree/held.txt"],
+        },
+      },
     });
-    expect(await scanLinux("/work/tree", inaccessible, 4242)).toEqual({
-      status: "clear",
+    expect(await scanLinux("/work/tree", inaccessible, 4242)).toMatchObject({
+      status: "uncertain",
+      reason: expect.stringContaining("cwd is unreadable for foreign uid 1001"),
     });
     const root = fakeProc({ processes: { 100: { uid: 0, cwdDenied: true } } });
     expect(await scanLinux("/work/tree", root, 4242)).toEqual({

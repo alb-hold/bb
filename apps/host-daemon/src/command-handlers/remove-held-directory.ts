@@ -47,20 +47,17 @@ export async function removeDirectoryAfterHolderRecheck(args: {
     await refuseWhileHeld({ directory: quarantine, action: args.action });
     await args.afterHolderScan?.(quarantine);
     if (args.recursive === true) {
-      const preservedPaths: string[] = [];
-      if (
-        (await removeDirectoryTree(quarantine, {
-          startedAt,
-          rootMetadataBaseline: {
-            ctimeMs: rootInfo.ctimeMs,
-            mtimeMs: rootInfo.mtimeMs,
-          },
-          onRetainedPath: (retainedPath) =>
-            preservedPaths.push(
-              path.join(args.directory, path.relative(quarantine, retainedPath)),
-            ),
-        })) !== "removed"
-      ) {
+      const removal = await removeDirectoryTree(quarantine, {
+        startedAt,
+        rootMetadataBaseline: {
+          ctimeMs: rootInfo.ctimeMs,
+          mtimeMs: rootInfo.mtimeMs,
+        },
+      });
+      if (removal.status !== "removed") {
+        const preservedPaths = removal.retainedPaths.map((retainedPath) =>
+          path.join(args.directory, path.relative(quarantine, retainedPath)),
+        );
         throw new CommandDispatchError(
           "path_in_use",
           `Refusing to ${args.action} ${args.directory}: new or changed data was found during removal; the directory may be partially removed.${preservedPaths.length > 0 ? ` Preserved entries: ${preservedPaths.join(", ")}.` : ""} Nothing was stopped.`,

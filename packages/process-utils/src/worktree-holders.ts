@@ -323,7 +323,11 @@ async function scanLinuxProcess(
         supplementaryGroups,
         context,
       );
-      if (reachable === false) return { otherUser: true };
+      if (reachable === false) {
+        return {
+          uncertain: `process ${pid} cwd is unreadable for foreign uid ${foreignUid}`,
+        };
+      }
       if (reachable === null)
         return {
           uncertain: `process ${pid} cwd reachability could not be determined`,

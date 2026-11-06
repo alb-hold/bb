@@ -77,7 +77,10 @@ async function removeDirectoryTree(
       source: string,
       destination: string,
     ) => Promise<void>;
-    afterGitMarkerLinked?: (source: string, destination: string) => Promise<void>;
+    afterGitMarkerLinked?: (
+      source: string,
+      destination: string,
+    ) => Promise<void>;
     readDirectoryNames?: (directory: string) => Promise<string[]>;
     onRetainedPath?: (retainedPath: string) => void;
     afterRootMarkerDetached?: (root: string) => Promise<void>;
@@ -752,7 +755,7 @@ describe("real worktree teardown preservation", () => {
       onRetainedPath: (retainedPath) => retainedPaths.push(retainedPath),
     });
 
-    expect(result).toBe("retained");
+    expect(result.status).toBe("retained");
     expect(injected).toBe(true);
     await expect(
       access(path.join(lateDirectory, "a-old.txt")),
@@ -811,7 +814,8 @@ describe("real worktree teardown preservation", () => {
         renamedEntries.push(`quarantined:${path.basename(entry)}`);
       },
     });
-    expect(result, renamedEntries.join("\n")).toBe("removed");
+    expect(result.status, renamedEntries.join("\n")).toBe("removed");
+    expect(result.retainedPaths).toEqual([]);
     await expect(access(worktree.path)).rejects.toMatchObject({
       code: "ENOENT",
     });
@@ -936,7 +940,7 @@ describe("real worktree teardown preservation", () => {
       });
 
       expect(injected).toBe(true);
-      expect(result).toBe("retained");
+      expect(result.status).toBe("retained");
       await expect(readFile(entry, "utf8")).resolves.toBe(edited);
       await expect(
         git(worktree.path, "rev-parse", "--git-dir"),
@@ -991,7 +995,7 @@ describe("real worktree teardown preservation", () => {
     const result = await removeDirectoryTree(root, {
       startedAt: Date.now() + 10_000,
     });
-    expect(result).toBe("retained");
+    expect(result.status).toBe("retained");
     await expect(readFile(quarantined, "utf8")).resolves.toBe("recoverable\n");
   });
 
@@ -1055,7 +1059,7 @@ describe("real worktree teardown preservation", () => {
       });
 
       expect(injected).toBe(true);
-      expect(result).toBe("retained");
+      expect(result.status).toBe("retained");
       expect(
         (await git(worktree.path, "rev-parse", "--git-dir")).trim(),
       ).not.toBe("");
@@ -1074,14 +1078,55 @@ describe("real worktree teardown preservation", () => {
   );
 
   removeDirectoryTreeTest(
-    "recovers the held file when its quarantine source is replaced before restore",
+    "retains a symlink racer and the original link when a racer takes its restore name",
     async () => {
       const worktree = await makeWorktree();
-      const originalMode = (await fs.stat(path.join(worktree.path, "README.md")))
-        .mode & 0o7777;
+      const originalLink = path.join(worktree.path, "original-link");
+      await fs.symlink("README.md", originalLink);
+      let injected = false;
+      const result = await removeDirectoryTree(worktree.path, {
+        startedAt: Number.MAX_SAFE_INTEGER,
+        afterEntryQuarantined: async (entry) => {
+          if (entry !== originalLink) return;
+          await writeFile(
+            path.join(worktree.path, "late-after-link-check"),
+            "late\n",
+          );
+        },
+        afterRestoreNameCheck: async (_source, destination, isDirectory) => {
+          if (isDirectory || destination !== originalLink || injected) return;
+          injected = true;
+          await fs.symlink("racer-target", destination);
+        },
+      });
+
+      expect(result.status ?? result).toBe("retained");
+      expect(injected).toBe(true);
+      await expect(readlink(originalLink)).resolves.toBe("racer-target");
+      const quarantined = (await fs.readdir(worktree.path)).find((name) =>
+        name.startsWith(".bb-removing-"),
+      );
+      expect(quarantined).toBeDefined();
+      await expect(
+        readlink(path.join(worktree.path, quarantined!)),
+      ).resolves.toBe("README.md");
+      if (typeof result !== "string") {
+        expect(result.retainedPaths).toContain(originalLink);
+        expect(result.retainedPaths).toContain(
+          path.join(worktree.path, quarantined!),
+        );
+      }
+    },
+  );
+
+  removeDirectoryTreeTest(
+    "returns recovered, duplicate, and quarantine paths for a replaced file source without a hook",
+    async () => {
+      const worktree = await makeWorktree();
+      const originalMode =
+        (await fs.stat(path.join(worktree.path, "README.md"))).mode & 0o7777;
       let replaced = false;
       let racerSource = "";
-      const retainedPaths: string[] = [];
       const result = await removeDirectoryTree(worktree.path, {
         startedAt: Number.MAX_SAFE_INTEGER,
         afterEntryQuarantined: async (entry) => {
@@ -1098,17 +1143,17 @@ describe("real worktree teardown preservation", () => {
           await fs.unlink(source);
           await writeFile(source, "racing quarantine bytes\n");
         },
-        onRetainedPath: (retainedPath) => retainedPaths.push(retainedPath),
       });
 
-      expect(result).toBe("retained");
+      expect(result.status).toBe("retained");
       expect(replaced).toBe(true);
-      await expect(readFile(path.join(worktree.path, "README.md"), "utf8"))
-        .resolves.toBe("racing quarantine bytes\n");
+      await expect(
+        readFile(path.join(worktree.path, "README.md"), "utf8"),
+      ).resolves.toBe("racing quarantine bytes\n");
       await expect(readFile(racerSource, "utf8")).resolves.toBe(
         "racing quarantine bytes\n",
       );
-      const recoveredPath = retainedPaths.find((retainedPath) =>
+      const recoveredPath = result.retainedPaths.find((retainedPath) =>
         path.basename(retainedPath).startsWith(".bb-recovered-"),
       );
       if (recoveredPath === undefined) {
@@ -1117,18 +1162,25 @@ describe("real worktree teardown preservation", () => {
           readFile(racerSource),
         ]);
         expect(
-          visibleBytes.some((bytes) => bytes.equals(Buffer.from("published\n"))),
+          visibleBytes.some((bytes) =>
+            bytes.equals(Buffer.from("published\n")),
+          ),
         ).toBe(true);
         throw new Error("Recovered original path was not reported");
       }
-      await expect(readFile(recoveredPath!, "utf8")).resolves.toBe("published\n");
+      await expect(readFile(recoveredPath!, "utf8")).resolves.toBe(
+        "published\n",
+      );
       expect((await fs.stat(recoveredPath!)).mode & 0o7777).toBe(originalMode);
-      expect(retainedPaths).toContain(path.join(worktree.path, "README.md"));
+      expect(result.retainedPaths).toContain(
+        path.join(worktree.path, "README.md"),
+      );
+      expect(result.retainedPaths).toContain(racerSource);
     },
   );
 
   removeDirectoryTreeTest(
-    "recovers the held git marker when its quarantine source is replaced before restore",
+    "returns recovered and duplicate Git marker paths without a hook when its source is replaced",
     async () => {
       const worktree = await makeWorktree();
       const markerPath = path.join(worktree.path, ".git");
@@ -1136,7 +1188,6 @@ describe("real worktree teardown preservation", () => {
       const originalMode = (await fs.stat(markerPath)).mode & 0o7777;
       let replaced = false;
       let racerSource = "";
-      const retainedPaths: string[] = [];
       const result = await removeDirectoryTree(worktree.path, {
         startedAt: Number.MAX_SAFE_INTEGER,
         afterRootMarkerDetached: async (root) => {
@@ -1152,17 +1203,16 @@ describe("real worktree teardown preservation", () => {
           await fs.unlink(source);
           await writeFile(source, "racing git marker bytes\n");
         },
-        onRetainedPath: (retainedPath) => retainedPaths.push(retainedPath),
       });
 
-      expect(result).toBe("retained");
+      expect(result.status).toBe("retained");
       await expect(readFile(markerPath, "utf8")).resolves.toBe(
         "racing git marker bytes\n",
       );
       await expect(readFile(racerSource, "utf8")).resolves.toBe(
         "racing git marker bytes\n",
       );
-      const recoveredPath = retainedPaths.find((retainedPath) =>
+      const recoveredPath = result.retainedPaths.find((retainedPath) =>
         path.basename(retainedPath).startsWith(".bb-recovered-"),
       );
       if (recoveredPath === undefined) {
@@ -1177,7 +1227,8 @@ describe("real worktree teardown preservation", () => {
       }
       await expect(readFile(recoveredPath!)).resolves.toEqual(originalMarker);
       expect((await fs.stat(recoveredPath!)).mode & 0o7777).toBe(originalMode);
-      expect(retainedPaths).toContain(markerPath);
+      expect(result.retainedPaths).toContain(markerPath);
+      expect(result.retainedPaths).toContain(racerSource);
     },
   );
 
@@ -1205,7 +1256,7 @@ describe("real worktree teardown preservation", () => {
         onRetainedPath: (retainedPath) => retainedPaths.push(retainedPath),
       });
 
-      expect(result).toBe("retained");
+      expect(result.status).toBe("retained");
       expect(injected).toBe(true);
       const quarantinePath = retainedPaths.find((retainedPath) =>
         path.basename(retainedPath).startsWith(".bb-removing-"),
@@ -1215,8 +1266,9 @@ describe("real worktree teardown preservation", () => {
         worktree.path,
         path.basename(quarantinePath!),
       );
-      await expect(readFile(path.join(worktree.path, "README.md"), "utf8"))
-        .resolves.toBe("racing file bytes\n");
+      await expect(
+        readFile(path.join(worktree.path, "README.md"), "utf8"),
+      ).resolves.toBe("racing file bytes\n");
       await expect(readFile(absoluteQuarantinePath, "utf8")).resolves.toBe(
         "published\n",
       );
@@ -1244,7 +1296,7 @@ describe("real worktree teardown preservation", () => {
         onRetainedPath: (retainedPath) => retainedPaths.push(retainedPath),
       });
 
-      expect(result).toBe("retained");
+      expect(result.status).toBe("retained");
       expect(heldPath).not.toBe("");
       const absoluteHeldPath = path.join(
         path.dirname(worktree.path),
@@ -1300,21 +1352,20 @@ describe("real worktree teardown preservation", () => {
         },
       });
 
-      expect(result).toBe("retained");
+      expect(result.status).toBe("retained");
       expect(injected).toBe(true);
       expect(quarantinePath).not.toBe("");
       expect(await fs.readdir(worktree.path)).toContain(
         path.basename(quarantinePath),
       );
       await expect(fs.readdir(quarantinePath)).resolves.toEqual([]);
-      await expect(readFile(path.join(directory, "racer.txt"), "utf8"))
-        .resolves.toBe("racer\n");
+      await expect(
+        readFile(path.join(directory, "racer.txt"), "utf8"),
+      ).resolves.toBe("racer\n");
       await expect(
         readFile(path.join(worktree.path, "late-after-directory.txt"), "utf8"),
       ).resolves.toBe("late\n");
-      expect(
-        (await fs.stat(quarantinePath)).mode & 0o7777,
-      ).toBe(originalMode);
+      expect((await fs.stat(quarantinePath)).mode & 0o7777).toBe(originalMode);
       await expect(
         git(worktree.path, "rev-parse", "--git-dir"),
       ).resolves.toMatch(/worktrees/u);
@@ -1360,7 +1411,7 @@ describe("real worktree teardown preservation", () => {
           reportedPath = retainedPath;
         },
       });
-      expect(result).toBe("retained");
+      expect(result.status).toBe("retained");
       expect(reportedPath).not.toBe("");
       await expect(access(reportedPath)).resolves.toBeUndefined();
       if (injected)
@@ -1405,7 +1456,7 @@ describe("real worktree teardown preservation", () => {
       },
     });
 
-    expect(result).toBe("retained");
+    expect(result.status).toBe("retained");
     expect(injected).toBe(true);
     expect(path.basename(preservedPath)).toMatch(/^\.bb-removing-[0-9a-f-]+$/u);
     await expect(fs.readdir(directory)).resolves.toEqual([]);
@@ -1498,7 +1549,7 @@ describe("real worktree teardown preservation", () => {
         beforeEntryRemoval: (entry) => maybeInject("removal", entry),
         beforeEntryRename: (entry) => maybeInject("rename", entry),
       });
-      expect(result).toBe("retained");
+      expect(result.status).toBe("retained");
       expect(injected).toBe(true);
       expect(injectionCount).toBe(1);
       expect(removedBeforeInjection.length).toBeGreaterThan(0);
@@ -1626,7 +1677,7 @@ describe("real worktree teardown preservation", () => {
           }
         },
       });
-      expect(result).toBe("retained");
+      expect(result.status).toBe("retained");
       expect(injected).toBe(true);
       expect(hookError).toBe("");
       expect(hookCalls).toHaveLength(1);
@@ -1691,7 +1742,7 @@ describe("real worktree teardown preservation", () => {
       },
     });
 
-    expect(result).toBe("retained");
+    expect(result.status).toBe("retained");
     expect(injected).toBe(true);
     await expect(
       readFile(path.join(lateDirectory, "late-file.txt"), "utf8"),
@@ -1734,7 +1785,7 @@ describe("real worktree teardown preservation", () => {
       },
     });
 
-    expect(result).toBe("retained");
+    expect(result.status).toBe("retained");
     expect(injected).toBe(true);
     await expect(
       access(path.join(lateDirectory, "a-old-dir")),
@@ -1830,7 +1881,7 @@ describe("real worktree teardown preservation", () => {
         },
       });
       expect(swapped).toBe(true);
-      expect(result).toBe("retained");
+      expect(result.status).toBe("retained");
       await expect(
         readFile(path.join(outside, "entry.txt"), "utf8"),
       ).resolves.toBe("outside\n");
@@ -1857,7 +1908,7 @@ describe("real worktree teardown preservation", () => {
           );
         },
       });
-      expect(result).toBe("retained");
+      expect(result.status).toBe("retained");
       await expect(
         readFile(path.join(target, "entry.txt"), "utf8"),
       ).resolves.toBe("keep\n");

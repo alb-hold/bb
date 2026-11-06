@@ -62,6 +62,6 @@ it("retains an in-place edit between ordinary and precise ctime snapshots", asyn
   });
 
   expect(injected).toBe(true);
-  expect(result).toBe("retained");
+  expect(result.status).toBe("retained");
   await expect(fs.readFile(entry, "utf8")).resolves.toBe("after!\n");
 });

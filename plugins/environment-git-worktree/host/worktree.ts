@@ -974,7 +974,6 @@ async function removeRegisteredWorktree(
       }
       const workspaceMetadataBaseline = await fs.lstat(quarantinedPath);
       const finalCheckStartedAt = Date.now();
-      const preservedWorkspaceEntries: string[] = [];
       await args.testHooks?.afterFinalCheck?.(quarantinedPath, severedGitDir);
       if (await directoryTreeChangedSince(severedGitDir, finalCheckStartedAt)) {
         throw worktreePreservedError(identity.path, [
@@ -993,21 +992,19 @@ async function removeRegisteredWorktree(
         beforeEntryRename: args.testHooks?.beforeEntryRename,
         afterEntryCheck: args.testHooks?.afterEntryCheck,
         afterEntryQuarantined: args.testHooks?.afterEntryQuarantined,
-        onRetainedPath: (retainedPath) =>
-          preservedWorkspaceEntries.push(
-            path.join(identity.path, path.relative(quarantinedPath, retainedPath)),
-          ),
       });
-      if (removed === "retained") {
+      if (removed.status === "retained") {
         throw worktreePreservedError(identity.path, [
           "new or changed data was found during directory removal; the directory may be partially removed",
-          ...preservedWorkspaceEntries.map((entry) => `preserved entry at ${entry}`),
+          ...removed.retainedPaths.map(
+            (retainedPath) =>
+              `preserved entry at ${path.join(identity.path, path.relative(quarantinedPath, retainedPath))}`,
+          ),
           ...keptNote,
         ]);
       }
       workspaceRemoved = true;
       const gitRootInfo = await fs.stat(severedGitDir);
-      const preservedMetadataEntries: string[] = [];
       const removedGitDir = await removeDirectoryTree(severedGitDir, {
         startedAt: finalCheckStartedAt,
         allowQuarantinedRoot: true,
@@ -1020,13 +1017,13 @@ async function removeRegisteredWorktree(
         beforeEntryRename: args.testHooks?.beforeEntryRename,
         afterEntryCheck: args.testHooks?.afterEntryCheck,
         afterEntryQuarantined: args.testHooks?.afterEntryQuarantined,
-        onRetainedPath: (retainedPath) =>
-          preservedMetadataEntries.push(retainedPath),
       });
-      if (removedGitDir === "retained") {
+      if (removedGitDir.status === "retained") {
         throw worktreePreservedError(severedGitDir, [
           "new or changed Git metadata was found during admin-directory removal",
-          ...preservedMetadataEntries.map((entry) => `preserved entry at ${entry}`),
+          ...removedGitDir.retainedPaths.map(
+            (entry) => `preserved entry at ${entry}`,
+          ),
           ...keptNote,
         ]);
       }
