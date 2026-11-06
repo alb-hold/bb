@@ -1524,7 +1524,7 @@ describe("real worktree teardown preservation", () => {
         startedAt: Number.MAX_SAFE_INTEGER,
         afterEntryQuarantined: async (removedEntry, quarantined) => {
           if (!removedEntry.endsWith("README.md")) return;
-          quarantinePath = quarantined;
+          quarantinePath = path.join(worktree.path, path.basename(quarantined));
           await writeFile(
             path.join(worktree.path, "late-d8-sibling.txt"),
             "late sibling bytes\n",
@@ -1533,8 +1533,8 @@ describe("real worktree teardown preservation", () => {
         afterRestoreNameCheck: async (_source, candidate, isDirectory) => {
           if (isDirectory) return;
           hookCalls += 1;
-          racingCandidate = candidate;
-          await writeFile(candidate, "candidate racing bytes\n");
+          racingCandidate = path.join(worktree.path, path.basename(candidate));
+          await writeFile(racingCandidate, "candidate racing bytes\n");
         },
       });
 
