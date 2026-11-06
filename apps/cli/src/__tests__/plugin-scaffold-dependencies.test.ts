@@ -165,7 +165,7 @@ describe("scaffold dependency classification", () => {
     expect(
       dependencies.filter(
         (name) =>
-          name in RUNTIME_SLOT_BY_SPECIFIER ||
+          SHIMMED_TYPE_PACKAGES.includes(name) ||
           PLUGIN_SERVER_EXTERNALS.includes(name),
       ),
     ).toEqual([]);

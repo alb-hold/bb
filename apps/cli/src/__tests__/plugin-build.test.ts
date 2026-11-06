@@ -17,9 +17,12 @@ import { PLUGIN_SDK_MAJOR, PLUGIN_SDK_VERSION } from "@bb/domain";
 import { scaffoldPlugin } from "@bb/templates/plugin-scaffold";
 import {
   buildPluginApp,
+  RUNTIME_SLOT_BY_SPECIFIER,
   resolvePluginBuildToolchain,
   type PluginBuildToolchain,
 } from "@bb/plugin-build";
+import { definePluginApp } from "../../../app/src/lib/plugin-app-definition.js";
+import { lazyRuntimeGroups } from "../../../app/src/lib/plugin-lazy-runtime-groups.js";
 function testToolchain() {
   return resolvePluginBuildToolchain(join(tmpdir(), "bb-toolchain-unused"));
 }
@@ -334,23 +337,33 @@ describe("buildPluginApp", () => {
     const css = await readFile(result.cssPath, "utf8");
     expect(css).toContain(".rounded-md");
 
-    (globalThis as { __bbPluginRuntime?: unknown }).__bbPluginRuntime = {
-      react: createRequire(
-        new URL("../../../app/package.json", import.meta.url),
-      )("react"),
-      reactDom: {},
-      jsxRuntime: { jsx: () => ({}), jsxs: () => ({}), Fragment: {} },
-      classVarianceAuthority: { cva: () => () => "" },
-      clsx: { clsx: () => "" },
-      tailwindMerge: { twMerge: (value: string) => value },
-      pluginSdkApp: {
-        definePluginApp: (setup: unknown) => ({
-          __bbPluginApp: true,
-          setup,
-        }),
-        useBbContext: () => ({ projectId: null, threadId: null }),
-      },
+    const meta = JSON.parse(await readFile(result.metaPath, "utf8")) as {
+      runtimeSlots: string[];
     };
+    const appRequire = createRequire(
+      new URL("../../../app/package.json", import.meta.url),
+    );
+    const hostModules: Record<string, unknown> = Object.assign(
+      { pluginSdkApp: { definePluginApp } },
+      ...(await Promise.all(
+        lazyRuntimeGroups
+          .filter((group) =>
+            group.slots.some((slot) => meta.runtimeSlots.includes(slot)),
+          )
+          .map((group) => group.load()),
+      )),
+    );
+    const runtime = Object.fromEntries(
+      meta.runtimeSlots.map((slot) => {
+        const specifier = Object.entries(RUNTIME_SLOT_BY_SPECIFIER).find(
+          ([, runtimeSlot]) => runtimeSlot === slot,
+        )?.[0];
+        if (!specifier) throw new Error(`Unknown runtime slot: ${slot}`);
+        return [slot, hostModules[slot] ?? appRequire(specifier)];
+      }),
+    );
+    expect(Object.keys(runtime)).toEqual(meta.runtimeSlots);
+    (globalThis as { __bbPluginRuntime?: unknown }).__bbPluginRuntime = runtime;
     try {
       const mod = (await import(
         /* @vite-ignore */ pathToFileURL(result.jsPath).href
