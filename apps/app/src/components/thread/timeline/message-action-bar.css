@@ -1,6 +1,5 @@
 .thread-turn-token-breakdown {
-  display: flex;
-  flex-wrap: wrap;
+  display: block;
   overflow: visible;
   white-space: normal;
 }
@@ -18,14 +17,26 @@
   }
 }
 
-.thread-turn-token-breakdown > [data-token-part] {
+.thread-turn-token-breakdown [data-token-clip] {
+  display: block;
+  overflow: hidden;
+}
+
+.thread-turn-token-breakdown [data-token-parts] {
+  display: flex;
+  flex-wrap: wrap;
+  margin-inline-start: -0.75rem;
+}
+
+.thread-turn-token-breakdown [data-token-unit] {
+  display: inline-flex;
   flex: 0 0 auto;
   white-space: nowrap;
 }
 
-.thread-turn-token-breakdown > [data-token-part] + [data-token-part]::before {
-  content: "·";
-  margin-inline-end: 0.25rem;
+.thread-turn-token-breakdown [data-token-separator] {
+  flex: 0 0 0.75rem;
+  text-align: center;
 }
 
 [data-token-total-tight] {

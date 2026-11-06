@@ -144,6 +144,27 @@ function formatPercent(value: number | null): string {
   return value === null ? "Unavailable" : `${Math.round(value * 100)}%`;
 }
 
+function TurnTokenPart({
+  children,
+  part,
+  className,
+}: {
+  children: ReactNode;
+  part: string;
+  className?: string;
+}) {
+  return (
+    <span data-token-unit="">
+      <span data-token-separator="" aria-hidden="true">
+        ·
+      </span>
+      <span data-token-part={part} className={className}>
+        {children}
+      </span>
+    </span>
+  );
+}
+
 export function ThreadTurnTokenSummary({
   openAnalysisOnClick = true,
   compact = false,
@@ -184,53 +205,55 @@ export function ThreadTurnTokenSummary({
       {compactTokens(turn.totalTokens)} tokens
     </span>
   ) : (
-    <>
-      {hasTokens(turn.totalTokens) ? (
-        <span data-token-part="total" className="font-medium">
-          <span data-token-total-full>
-            {formatCompact(turn.totalTokens)} tokens
-          </span>
-          <span
-            data-token-total-tight
-            aria-label={`Total ${exactTokens(turn.totalTokens)} tokens`}
-          >
-            {compactTokens(turn.totalTokens, 0)} tokens
-          </span>
-        </span>
-      ) : null}
-      {hasTokens(turn.inputTokens) ? (
-        <span data-token-part="input">
-          in {formatCompact(turn.inputTokens)}
-        </span>
-      ) : null}
-      {hasTokens(turn.outputTokens) ? (
-        <span data-token-part="output">
-          out {formatCompact(turn.outputTokens)}
-        </span>
-      ) : null}
-      {reasoningDisplayValue !== null && reasoningDisplayValue > 0 ? (
-        <span data-token-part="reasoning">
-          reason {formatCompact(reasoningDisplayValue)}
-        </span>
-      ) : null}
-      {hasTokens(turn.cachedInputTokens) ? (
-        <span data-token-part="cached">
-          <span data-token-cached-full>
-            cached {formatCompact(turn.cachedInputTokens)}
-          </span>
-          <span
-            data-token-total-tight
-            aria-label={`Cached ${exactTokens(turn.cachedInputTokens)} tokens`}
-          >
-            cached {compactTokens(turn.cachedInputTokens, 0)}
-          </span>
-        </span>
-      ) : null}
-    </>
+    <span data-token-clip="">
+      <span data-token-parts="">
+        {hasTokens(turn.totalTokens) ? (
+          <TurnTokenPart part="total" className="font-medium">
+            <span data-token-total-full>
+              {formatCompact(turn.totalTokens)} tokens
+            </span>
+            <span
+              data-token-total-tight
+              aria-label={`Total ${exactTokens(turn.totalTokens)} tokens`}
+            >
+              {compactTokens(turn.totalTokens, 0)} tokens
+            </span>
+          </TurnTokenPart>
+        ) : null}
+        {hasTokens(turn.inputTokens) ? (
+          <TurnTokenPart part="input">
+            in {formatCompact(turn.inputTokens)}
+          </TurnTokenPart>
+        ) : null}
+        {hasTokens(turn.outputTokens) ? (
+          <TurnTokenPart part="output">
+            out {formatCompact(turn.outputTokens)}
+          </TurnTokenPart>
+        ) : null}
+        {reasoningDisplayValue !== null && reasoningDisplayValue > 0 ? (
+          <TurnTokenPart part="reasoning">
+            reason {formatCompact(reasoningDisplayValue)}
+          </TurnTokenPart>
+        ) : null}
+        {hasTokens(turn.cachedInputTokens) ? (
+          <TurnTokenPart part="cached">
+            <span data-token-cached-full>
+              cached {formatCompact(turn.cachedInputTokens)}
+            </span>
+            <span
+              data-token-total-tight
+              aria-label={`Cached ${exactTokens(turn.cachedInputTokens)} tokens`}
+            >
+              cached {compactTokens(turn.cachedInputTokens, 0)}
+            </span>
+          </TurnTokenPart>
+        ) : null}
+      </span>
+    </span>
   );
   const summaryClassName = compact
     ? "inline-flex shrink-0 items-center whitespace-nowrap font-sans text-xs tabular-nums text-muted-foreground"
-    : "thread-turn-token-breakdown w-full min-w-0 flex-wrap items-center gap-x-1 whitespace-normal rounded-md border-0 bg-transparent p-0 text-left font-sans text-xs tabular-nums text-muted-foreground";
+    : "thread-turn-token-breakdown w-full min-w-0 whitespace-normal rounded-md border-0 bg-transparent p-0 text-left font-sans text-xs tabular-nums text-muted-foreground";
   return (
     <Tooltip>
       <TooltipTrigger asChild>

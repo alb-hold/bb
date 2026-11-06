@@ -99,6 +99,23 @@ describe("thread usage summary", () => {
       expect(
         summary.querySelector("[data-token-total-tight]")?.textContent,
       ).toBe("208K tokens");
+      const parts = summary.querySelector("[data-token-parts]")!;
+      expect(parts.parentElement?.hasAttribute("data-token-clip")).toBe(true);
+      expect(parts.children).toHaveLength(expected.length);
+      for (const [index, unit] of [...parts.children].entries()) {
+        expect(unit.hasAttribute("data-token-unit")).toBe(true);
+        expect(unit.children).toHaveLength(2);
+        expect(
+          unit.firstElementChild?.hasAttribute("data-token-separator"),
+        ).toBe(true);
+        expect(unit.firstElementChild?.getAttribute("aria-hidden")).toBe(
+          "true",
+        );
+        expect(unit.firstElementChild?.textContent).toBe("·");
+        expect(unit.lastElementChild?.getAttribute("data-token-part")).toBe(
+          expected[index],
+        );
+      }
     },
   );
 

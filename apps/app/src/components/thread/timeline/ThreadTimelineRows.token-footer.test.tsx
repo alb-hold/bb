@@ -114,7 +114,7 @@ describe("ThreadTimelineRows token footer", () => {
       container.querySelector("[data-token-total-tight]")?.textContent,
     ).toBe("467K tokens");
     const breakdown = container.querySelector("[data-thread-turn-tokens]");
-    expect(breakdown?.getAttribute("class")).toContain("flex-wrap");
+    expect(breakdown?.querySelector("[data-token-parts]")).toBeTruthy();
     expect(breakdown?.getAttribute("class")).toContain("whitespace-normal");
     expect(
       [...breakdown!.querySelectorAll("[data-token-part]")].map((part) =>
@@ -312,10 +312,8 @@ describe("ThreadTimelineRows token footer", () => {
       /\[data-thread-turn-tokens\]\s*\[data-token-part="(?:reasoning|output|input|cached)"\]\s*\{\s*display:\s*none\s*;/,
     );
     expect(actionBarStyles).toContain("flex-wrap: wrap");
-    expect(actionBarStyles).toContain(
-      "[data-token-part] + [data-token-part]::before",
-    );
-    expect(actionBarStyles).toContain('content: "·"');
+    expect(actionBarStyles).toContain("margin-inline-start: -0.75rem");
+    expect(actionBarStyles).toContain("flex: 0 0 0.75rem");
     expect(actionBarStyles).toMatch(
       /\[data-touch-actions-visible="false"\]:not\(:focus-within\)\s+\[data-message-action-row\]/,
     );
