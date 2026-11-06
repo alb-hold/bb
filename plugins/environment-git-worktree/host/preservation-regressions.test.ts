@@ -1080,22 +1080,22 @@ describe("real worktree teardown preservation", () => {
   removeDirectoryTreeTest(
     "retains a symlink racer and the original link when a racer takes its restore name",
     async () => {
-      const worktree = await makeWorktree();
-      const originalLink = path.join(worktree.path, "original-link");
+      const root = await mkdtemp(
+        path.join(os.tmpdir(), "bb-preserve-symlink-"),
+      );
+      roots.push(root);
+      const originalLink = path.join(root, "original-link");
       await fs.symlink("README.md", originalLink);
       let injected = false;
       let quarantinedLink = "";
       const quarantinedEntries: string[] = [];
-      const result = await removeDirectoryTree(worktree.path, {
+      const result = await removeDirectoryTree(root, {
         startedAt: Number.MAX_SAFE_INTEGER,
         afterEntryQuarantined: async (entry, quarantined) => {
           quarantinedEntries.push(entry);
           if (path.basename(entry) !== "original-link") return;
           quarantinedLink = quarantined;
-          await writeFile(
-            path.join(worktree.path, "late-after-link-check"),
-            "late\n",
-          );
+          await writeFile(path.join(root, "late-after-link-check"), "late\n");
         },
         beforeQuarantineRestoreLink: async (source, destination) => {
           if (
@@ -1113,18 +1113,16 @@ describe("real worktree teardown preservation", () => {
       expect(quarantinedEntries).toContain(originalLink);
       expect(injected).toBe(true);
       await expect(readlink(originalLink)).resolves.toBe("racer-target");
-      const quarantined = (await fs.readdir(worktree.path)).find((name) =>
+      const quarantined = (await fs.readdir(root)).find((name) =>
         name.startsWith(".bb-removing-"),
       );
       expect(quarantined).toBeDefined();
-      await expect(
-        readlink(path.join(worktree.path, quarantined!)),
-      ).resolves.toBe("README.md");
+      await expect(readlink(path.join(root, quarantined!))).resolves.toBe(
+        "README.md",
+      );
       if (typeof result !== "string") {
         expect(result.retainedPaths).toContain(originalLink);
-        expect(result.retainedPaths).toContain(
-          path.join(worktree.path, quarantined!),
-        );
+        expect(result.retainedPaths).toContain(path.join(root, quarantined!));
       }
     },
   );
