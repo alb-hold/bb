@@ -2554,13 +2554,14 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
       const opened = new Promise<void>((resolve) => {
         resolveOpened = resolve;
       });
-      vi.spyOn(Terminal.prototype, "open").mockImplementation(
-        function (this: Terminal, element) {
-          mounted.current = this;
-          open.call(this, element);
-          resolveOpened();
-        },
-      );
+      vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
+        this: Terminal,
+        element,
+      ) {
+        mounted.current = this;
+        open.call(this, element);
+        resolveOpened();
+      });
       vi.spyOn(FitAddon.prototype, "proposeDimensions").mockImplementation(
         () => ({
           cols: 40,
@@ -3040,15 +3041,17 @@ describe("terminal first paint", () => {
     vi.stubGlobal("innerWidth", 390);
     const paintOpacities: string[] = [];
     const write = Terminal.prototype.write;
-    vi.spyOn(Terminal.prototype, "write").mockImplementation(
-      function (this: Terminal, data, callback) {
-        paintOpacities.push(
-          document.querySelector<HTMLElement>("[data-terminal-renderer]")!.style
-            .opacity,
-        );
-        write.call(this, data, callback);
-      },
-    );
+    vi.spyOn(Terminal.prototype, "write").mockImplementation(function (
+      this: Terminal,
+      data,
+      callback,
+    ) {
+      paintOpacities.push(
+        document.querySelector<HTMLElement>("[data-terminal-renderer]")!.style
+          .opacity,
+      );
+      write.call(this, data, callback);
+    });
     let finishOutput!: (value: {
       chunks: { seq: number; dataBase64: string }[];
       nextSeq: number;
@@ -3179,12 +3182,13 @@ describe("terminal first paint recovery", () => {
     );
     const mounted: { current: Terminal | null } = { current: null };
     const open = Terminal.prototype.open;
-    vi.spyOn(Terminal.prototype, "open").mockImplementation(
-      function (this: Terminal, container) {
-        mounted.current ??= this;
-        open.call(this, container);
-      },
-    );
+    vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
+      this: Terminal,
+      container,
+    ) {
+      mounted.current ??= this;
+      open.call(this, container);
+    });
     let resolveOutput!: (output: {
       chunks: { seq: number; dataBase64: string }[];
       nextSeq: number;
@@ -3373,6 +3377,10 @@ describe("terminal first paint recovery", () => {
 
   it("fits a running session that exits without remount before revealing it", async () => {
     prepareFirstAttachFontMetricsHarness();
+    vi.mocked(FitAddon.prototype.proposeDimensions).mockReturnValue({
+      cols: 80,
+      rows: 24,
+    });
     testState.deferSocketOpen = true;
     vi.stubGlobal("innerWidth", 390);
     const open = vi.spyOn(Terminal.prototype, "open");
@@ -3384,6 +3392,14 @@ describe("terminal first paint recovery", () => {
     const surface = document.querySelector<HTMLElement>(
       "[data-terminal-renderer]",
     )!;
+    const socket = testState.sockets[0]!;
+    socket.open();
+    socket.receive({
+      type: "attached",
+      session,
+      replayStartSeq: 0,
+      nextSeq: 0,
+    });
     await waitForReadinessCondition(
       () => expect(surface.style.opacity).toBe(""),
       "running terminal was not visible",
