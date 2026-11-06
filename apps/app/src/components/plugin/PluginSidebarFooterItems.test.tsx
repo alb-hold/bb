@@ -193,9 +193,11 @@ describe("PluginSidebarFooterItems", () => {
           ),
         ),
       );
-      expect(labels()).toEqual(capacity === null
-        ? ["Report a bug", "More footer actions", "Garden notes"]
-        : ["Report a bug", "More footer actions"]);
+      expect(labels()).toEqual(
+        capacity === null
+          ? ["Report a bug", "More footer actions", "Garden notes"]
+          : ["Report a bug", "More footer actions"],
+      );
     },
   );
 
@@ -925,4 +927,59 @@ describe("PluginSidebarFooterItems", () => {
     );
     expect(run).toHaveBeenCalledTimes(1);
   });
+});
+
+it("reserves missing stored plugin positions before late footer registration", () => {
+  const store = createStore();
+  store.set(sidebarFooterOrderAtom, [
+    "plugin:early/action",
+    "plugin:late/action",
+  ]);
+  const view = renderWithProviders(
+    <SidebarMenu>
+      <PluginSidebarFooterItems
+        activeDisclosureKey={null}
+        onDisclosureCommand={vi.fn()}
+        onCustomize={vi.fn()}
+      />
+    </SidebarMenu>,
+    store,
+  );
+  const slots = () =>
+    view.container.querySelector("[data-footer-plugin-slots]")!;
+  expect(slots()).not.toBeNull();
+  expect(
+    slots().querySelectorAll("[data-footer-plugin-placeholder]"),
+  ).toHaveLength(2);
+  const register = (pluginId: string) =>
+    act(() =>
+      setPluginSlotRegistrations(
+        pluginId,
+        collectPluginAppRegistrations(
+          definePluginApp((app) => {
+            app.experimental_sidebarFooter.register({
+              kind: "action",
+              id: "action",
+              label: pluginId,
+              icon: "Zap",
+              onActivate: vi.fn(),
+            });
+          }),
+        ),
+      ),
+    );
+  register("late");
+  const late = screen.getByRole("button", { name: "late" });
+  expect(
+    late
+      .closest("[data-footer-item]")
+      ?.previousElementSibling?.hasAttribute("data-footer-plugin-placeholder"),
+  ).toBe(true);
+  register("early");
+  expect(screen.getByRole("button", { name: "late" })).toBe(late);
+  expect(
+    late
+      .closest("[data-footer-item]")
+      ?.previousElementSibling?.getAttribute("data-footer-item"),
+  ).toBe("plugin:early/action");
 });

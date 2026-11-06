@@ -562,12 +562,13 @@ describe("ThreadRow", () => {
     const view = renderThreadRow({ thread });
     const context = view.container.querySelector("[data-sidebar-thread-context]");
     const slot = context?.firstElementChild;
-    expect(context?.classList.contains("text-subtle-foreground")).toBe(true);
+    expect(context?.classList.contains("text-muted-foreground")).toBe(true);
     expect(context?.classList.contains("font-normal")).toBe(true);
+    expect(context?.classList.contains("text-xs")).toBe(true);
     expect(slot?.getAttribute("role")).toBe("img");
     expect(slot?.getAttribute("aria-label")).toBe(label);
     expect(context?.querySelectorAll('[role="img"]')).toHaveLength(1);
-    expect(slot?.querySelector("[data-icon]")?.classList.contains("size-3")).toBe(true);
+    expect(slot?.querySelector("[data-icon]")?.classList.contains("size-3.5")).toBe(true);
   });
 
   it.each([

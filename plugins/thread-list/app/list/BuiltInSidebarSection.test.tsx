@@ -95,7 +95,7 @@ describe("built-in sidebar section renderer", () => {
     expect(content.hasAttribute("data-more-below")).toBe(true);
     expect(content.className).not.toContain("mask-image");
     expect(content.className).toContain("[--bb-sidebar-desktop-row-height:2.5rem]");
-    expect(content.className).toContain("md:max-h-[calc(7*var(--bb-sidebar-desktop-row-height)_+_0.75rem)]");
+    expect(content.className).toContain("md:max-h-[calc(7*var(--bb-sidebar-desktop-row-height))]");
     content.scrollTop = 176;
     fireEvent.scroll(content);
     expect(content.hasAttribute("data-more-below")).toBe(false);
@@ -141,7 +141,7 @@ describe("built-in sidebar section renderer", () => {
       if (!collapsed) {
         expect(
           screen.getByText("Pinned content").parentElement?.className,
-        ).toContain("max-h-[calc(7*var(--bb-sidebar-row-height)_+_0.75rem)]");
+        ).toContain("max-h-[calc(7*var(--bb-sidebar-row-height))]");
         expect(
           screen.getByText("Pinned content").parentElement?.className,
         ).toContain("overflow-y-auto");

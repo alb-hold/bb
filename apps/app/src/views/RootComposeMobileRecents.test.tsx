@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { InfoRowTime } from "@bb/shared-ui/info-list-row";
 import type { ThreadListEntry } from "@bb/domain";
 import {
   act,
@@ -381,9 +382,16 @@ describe("mobile recents section", () => {
 });
 
 describe("mobile recent thread rows", () => {
-  it("shows project and relative activity on a metadata line", () => {
+  it.each([
+    [3 * 60 * 60 * 1000, "3h"],
+    [24 * 60 * 60 * 1000, "1d"],
+    [2 * 24 * 60 * 60 * 1000, "2d"],
+    [21 * 24 * 60 * 60 * 1000, "3w"],
+  ] as const)("matches sidebar relative dates at %s ms", (age, expected) => {
+    const now = Date.now();
     render(
       <TestProviders>
+        <InfoRowTime timestamp={now - age} now={now} />
         <RootComposeMobileRecents
           highlightedThreadId={null}
           projectNamesById={new Map([["proj_mobile", "bb"]])}
@@ -391,7 +399,7 @@ describe("mobile recent thread rows", () => {
           showCreatingRow={false}
           threads={[
             makeThread({
-              latestAttentionAt: Date.now() - 3 * 60 * 60 * 1000,
+              latestAttentionAt: now - age,
               activity: {
                 activeWorkflowCount: 0,
                 activeBackgroundAgentCount: 0,
@@ -405,10 +413,15 @@ describe("mobile recent thread rows", () => {
       </TestProviders>,
     );
 
-    expect(screen.getByText("bb \u00b7 3h ago")).not.toBeNull();
+    expect(screen.getByText(`bb \u00b7 ${expected}`)).not.toBeNull();
+    expect(screen.getByText(expected).tagName).toBe("TIME");
+    const metadata = screen.getByText(`bb \u00b7 ${expected}`).parentElement!;
+    expect(metadata.classList.contains("text-xs")).toBe(true);
+    expect(metadata.classList.contains("text-muted-foreground")).toBe(true);
+    expect(metadata.className).not.toContain("pointer-coarse:text-sm");
     expect(
       screen
-        .getByText("bb \u00b7 3h ago")
+        .getByText(`bb \u00b7 ${expected}`)
         .previousElementSibling?.getAttribute("data-icon"),
     ).toBe("Folder");
   });
@@ -439,7 +452,7 @@ describe("mobile recent thread rows", () => {
       </TestProviders>,
     );
 
-    const metadata = screen.getByText("bb \u00b7 bb/mobile-home \u00b7 3h ago");
+    const metadata = screen.getByText("bb \u00b7 bb/mobile-home \u00b7 3h");
     expect(
       metadata.previousElementSibling?.hasAttribute("data-icon-root"),
     ).toBe(true);
@@ -477,7 +490,7 @@ describe("mobile recent thread rows", () => {
       </QueryClientProvider>,
     );
 
-    expect(screen.getByText("Personal \u00b7 3h ago")).not.toBeNull();
+    expect(screen.getByText("Personal \u00b7 3h")).not.toBeNull();
   });
 
   it("drops the status slot entirely when a thread has no indicator", () => {

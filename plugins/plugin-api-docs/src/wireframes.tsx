@@ -621,7 +621,7 @@ const SIDEBAR_SECTION_RENDERERS: Record<string, () => ReactNode> = {
   footer: () => (
     <Mark
       id="sidebar-footer"
-      label="Plugin footer items can run actions or reveal content"
+      label="Reserved plugin footer slots can run actions or reveal content"
       className="mx-1.5 mb-1.5 flex w-44 flex-col gap-1.5 p-1.5"
     >
       <span className="block w-full overflow-hidden rounded-md border border-border bg-surface-raised-solid">

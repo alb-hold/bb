@@ -425,7 +425,38 @@ export function PluginSidebarFooterItems({
               </DropdownMenuContent>
             </DropdownMenu>
           </SidebarMenuItem>
-          {preferences.footerSuffix.filter(isAvailable).map(renderItem)}
+          <SidebarMenuItem
+            data-footer-plugin-slots=""
+            className="min-w-0 flex-1 overflow-hidden"
+          >
+            <SidebarMenu className="grid grid-flow-col auto-cols-max justify-start gap-1">
+              {(preferences.pluginKeys.length > 0
+                ? preferences.pluginKeys
+                : ["reserved"]
+              ).map((key) => {
+                const item = preferences.footerSuffix.find(
+                  (candidate) => candidate.key === key,
+                );
+                return item ? (
+                  renderItem(item)
+                ) : (
+                  <SidebarMenuItem
+                    key={key}
+                    aria-hidden="true"
+                    data-footer-plugin-placeholder=""
+                    className="shrink-0"
+                  >
+                    <span
+                      className={cn(
+                        SIDEBAR_FOOTER_ACTION_CLASS,
+                        "invisible block pointer-fine:size-(--bb-title-bar-control-size) max-md:pointer-coarse:min-h-11 max-md:pointer-coarse:min-w-11",
+                      )}
+                    />
+                  </SidebarMenuItem>
+                );
+              })}
+            </SidebarMenu>
+          </SidebarMenuItem>
         </SidebarMenu>
       </SidebarMenuItem>
     </>

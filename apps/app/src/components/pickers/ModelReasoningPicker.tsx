@@ -405,8 +405,7 @@ export function ModelReasoningPicker(props: ModelReasoningPickerProps) {
         muted && OPTION_MUTED_CLASS_NAME,
         muted && "font-normal",
         disabled && "cursor-default disabled:opacity-100",
-        showLoadingTrigger &&
-          "w-44 [&>span]:invisible animate-pulse bg-state-hover",
+        "w-44",
         className,
       )}
     >
