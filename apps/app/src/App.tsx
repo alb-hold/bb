@@ -5,6 +5,7 @@ import { machineProvidersQueryOptions } from "./hooks/queries/machine-provider-q
 import { PluginUpdateJobsHost } from "./components/plugin/PluginUpdateJobsHost";
 import { LazyThreadDetailView } from "./views/thread-detail/LazyThreadDetailView";
 import { LazyRootComposeView } from "./views/LazyRootComposeView";
+import { ProgressiveComposer } from "./components/promptbox/ProgressiveComposerSplit";
 import { useRouteState } from "./hooks/useRouteState";
 import {
   useThreadOpenIntent,
@@ -344,6 +345,7 @@ export function AppRoutes() {
     if (!isRootComposeView) return;
     void appQueryClient.prefetchQuery(environmentProvidersQueryOptions({}));
     void appQueryClient.prefetchQuery(machineProvidersQueryOptions());
+    void ProgressiveComposer.preload();
     void trackCriticalLoad(LazyRootComposeView.preload());
   }, [isRootComposeView]);
   return (

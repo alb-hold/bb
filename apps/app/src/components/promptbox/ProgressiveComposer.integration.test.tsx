@@ -13,7 +13,7 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, onTestFinished, vi } from "vitest";
 import type { PromptDraftAttachment } from "@bb/client-core";
 import type { TiptapEditorHTMLElement } from "@tiptap/core";
 import {
@@ -154,90 +154,120 @@ it("hands a live home draft to the actual plugin with its selection and working 
   client.clear();
 });
 
-it("keeps the first opened control and its typed search alive across the swap", async () => {
-  let mounts = 0;
-  function Controls() {
-    useLayoutEffect(() => {
-      mounts++;
-    }, []);
-    return (
-      <ExecutionControls
-        provider={{
-          selectedId: "codex",
-          options: [{ value: "codex", label: "Codex" }],
-        }}
-        model={{
-          selected: "gpt-5.5",
-          options: [
-            { value: "gpt-5.5", label: "GPT-5.5" },
-            { value: "o4-mini", label: "o4-mini" },
-            { value: "gpt-5.2", label: "GPT-5.2" },
-            { value: "gpt-4.1", label: "GPT-4.1" },
-            { value: "o3", label: "o3" },
-            { value: "sonnet", label: "Sonnet" },
-          ],
-          moreOptions: [],
-          isLoading: false,
-          loadFailed: false,
-          onChange: () => {},
-        }}
-        reasoning={{
-          value: "medium",
-          options: [{ value: "medium", label: "Medium" }],
-          onChange: () => {},
-        }}
-      />
+it.each([false, true])(
+  "mounts the real picker with the plain input and keeps its first search through the swap (loading=%s)",
+  async (loading) => {
+    let mounts = 0;
+    const commits: boolean[] = [];
+    const options = { resolve: () => {} };
+    const observer = new MutationObserver(() => {
+      if (
+        document.querySelector("[data-progressive-composer-plain] textarea")
+      ) {
+        commits.push(
+          document.querySelector("[data-model-reasoning-trigger]") !== null,
+        );
+      }
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    onTestFinished(() => observer.disconnect());
+    function Controls() {
+      const [ready, setReady] = useState(!loading);
+      options.resolve = () => setReady(true);
+      useLayoutEffect(() => {
+        mounts++;
+      }, []);
+      return (
+        <ExecutionControls
+          pending={!ready}
+          provider={{
+            selectedId: ready ? "codex" : "",
+            options: ready ? [{ value: "codex", label: "Codex" }] : [],
+          }}
+          model={{
+            selected: ready ? "gpt-5.5" : "",
+            options: ready
+              ? [
+                  { value: "gpt-5.5", label: "GPT-5.5" },
+                  { value: "o4-mini", label: "o4-mini" },
+                  { value: "gpt-5.2", label: "GPT-5.2" },
+                  { value: "gpt-4.1", label: "GPT-4.1" },
+                  { value: "o3", label: "o3" },
+                  { value: "sonnet", label: "Sonnet" },
+                ]
+              : [],
+            moreOptions: [],
+            isLoading: !ready,
+            loadFailed: false,
+            onChange: () => {},
+          }}
+          reasoning={{
+            value: "medium",
+            options: [{ value: "medium", label: "Medium" }],
+            onChange: () => {},
+          }}
+        />
+      );
+    }
+    function Host() {
+      const [value, setValue] = useState("draft");
+      return (
+        <ComposerBox
+          surface="new-thread"
+          value={value}
+          mentionRanges={[]}
+          onChange={setValue}
+          onSubmit={() => {}}
+          placeholder="Ask anything."
+          mentionMenuPlacement="bottom"
+          typeahead={testTypeaheadConfig()}
+          executionControls={<Controls />}
+        />
+      );
+    }
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const view = render(
+      <QueryClientProvider client={client}>
+        <Provider>
+          <MemoryRouter>
+            <TooltipProvider>
+              <Host />
+            </TooltipProvider>
+          </MemoryRouter>
+        </Provider>
+      </QueryClientProvider>,
     );
-  }
-  function Host() {
-    const [value, setValue] = useState("draft");
-    return (
-      <ComposerBox
-        surface="new-thread"
-        value={value}
-        mentionRanges={[]}
-        onChange={setValue}
-        onSubmit={() => {}}
-        placeholder="Ask anything."
-        mentionMenuPlacement="bottom"
-        typeahead={testTypeaheadConfig()}
-        executionControls={<Controls />}
-      />
+    const input = await screen.findByRole("textbox", { name: "Ask anything." });
+    observer.disconnect();
+    expect(commits.length).toBeGreaterThan(0);
+    expect(commits.every(Boolean)).toBe(true);
+    expect(input.closest("[data-progressive-composer-plain]")).not.toBeNull();
+    const trigger = screen.getByRole("button", {
+      name: "Provider, model and reasoning",
+    });
+    expect(view.container.querySelector("[contenteditable=true]")).toBeNull();
+    fireEvent.click(trigger);
+    if (loading) {
+      await screen.findByText("Loading models");
+      act(options.resolve);
+    }
+    const search =
+      await screen.findByPlaceholderText<HTMLInputElement>("Search models");
+    search.focus();
+    fireEvent.change(search, { target: { value: "o4-mini" } });
+    await act(registerComposerPlugin);
+    await waitFor(() =>
+      expect(view.container.querySelector("textarea")).toBeNull(),
     );
-  }
-  const client = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
-  });
-  const view = render(
-    <QueryClientProvider client={client}>
-      <Provider>
-        <MemoryRouter>
-          <TooltipProvider>
-            <Host />
-          </TooltipProvider>
-        </MemoryRouter>
-      </Provider>
-    </QueryClientProvider>,
-  );
-  const trigger = await screen.findByRole("button", {
-    name: "Provider, model and reasoning",
-  });
-  expect(view.container.querySelector("[contenteditable=true]")).toBeNull();
-  fireEvent.click(trigger);
-  const search =
-    await screen.findByPlaceholderText<HTMLInputElement>("Search models");
-  search.focus();
-  fireEvent.change(search, { target: { value: "o4-mini" } });
-  await act(registerComposerPlugin);
-  await waitFor(() =>
-    expect(view.container.querySelector("textarea")).toBeNull(),
-  );
-  expect(screen.getByPlaceholderText("Search models")).toBe(search);
-  expect(search.value).toBe("o4-mini");
-  expect(document.activeElement).toBe(search);
-  expect(mounts).toBe(1);
-  client.clear();
-});
+    expect(screen.getByPlaceholderText("Search models")).toBe(search);
+    expect(search.value).toBe("o4-mini");
+    expect(document.activeElement).toBe(search);
+    expect(mounts).toBe(1);
+    client.clear();
+  },
+);
 
 it("inserts voice at the plain caret and carries a pasted attachment into the rich host", async () => {
   const handle = { current: null as PromptBoxHandle | null };

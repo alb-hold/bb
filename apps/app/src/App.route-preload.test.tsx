@@ -31,6 +31,7 @@ const downloads = await vi.hoisted(async () => {
     workspace: createDeferredPromise<void>(),
     workspaceStarted: vi.fn(),
     compose: vi.fn(),
+    progressive: vi.fn(),
     thread: vi.fn(),
     prefetch: vi.fn(),
   };
@@ -49,6 +50,10 @@ vi.mock("./views/SplitWorkspaceRoute", async () => {
   downloads.workspaceStarted();
   await downloads.workspace.promise;
   return { default: () => <p>Workspace ready</p> };
+});
+vi.mock("./components/promptbox/ProgressiveComposer", () => {
+  downloads.progressive();
+  return { ProgressiveComposer: () => null };
 });
 vi.mock("./views/RootComposeView", () => {
   downloads.compose();
@@ -85,6 +90,7 @@ it("keeps the workspace chunk off routes that do not use it", async () => {
     </MemoryRouter>,
   );
   await screen.findByText("Settings ready");
+  expect(downloads.progressive).not.toHaveBeenCalled();
   expect(downloads.workspaceStarted).not.toHaveBeenCalled();
 });
 
@@ -119,6 +125,7 @@ it("starts destination code before the workspace settles and keeps thread code o
     </MemoryRouter>,
   );
   await waitFor(() => expect(downloads.compose).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(downloads.progressive).toHaveBeenCalledTimes(1));
   startSplitPreloading();
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 1200));

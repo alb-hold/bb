@@ -1,4 +1,4 @@
-import { defineSplit } from "@/lib/define-split";
+import { ProgressiveComposer } from "./ProgressiveComposerSplit";
 import { flushPendingPromptDraftPersists } from "@/hooks/usePromptDraftStorage";
 import {
   createContext,
@@ -108,17 +108,6 @@ import { toUserAttachmentImageSrc } from "@/lib/user-attachment-images";
 import { useOptionalPaneContext } from "@/views/thread-detail/PaneContext";
 import { ComposerPlaceholder } from "./ComposerPlaceholder";
 
-const ProgressiveComposer = defineSplit({
-  id: "progressive-composer",
-  tier: "intent",
-  load: () =>
-    import("./ProgressiveComposer").then(
-      (module) => module.ProgressiveComposer,
-    ),
-  loading: () => (
-    <ComposerPlaceholder state={{ kind: "loading", shape: "new-thread" }} />
-  ),
-});
 import { PluginComposerPopup } from "@/components/plugin/PluginComposerPopup";
 import {
   ComposerContributionsContext,
