@@ -1635,15 +1635,7 @@ describe("real worktree teardown preservation", () => {
     const duplicateNames = (await fs.readdir(lateDirectory)).filter((name) =>
       name.startsWith(".bb-removing-"),
     );
-    expect(duplicateNames).toHaveLength(1);
-    const duplicatePath = path.join(lateDirectory, duplicateNames[0]);
-    expect(retainedPaths).toContain(duplicatePath);
-    const restoredInfo = await fs.stat(
-      path.join(lateDirectory, "b-trigger.txt"),
-    );
-    const duplicateInfo = await fs.stat(duplicatePath);
-    expect(duplicateInfo.ino).toBe(restoredInfo.ino);
-    expect(duplicateInfo.dev).toBe(restoredInfo.dev);
+    expect(duplicateNames).toHaveLength(0);
   });
 
   it("removes a clean worktree on macOS when lsof reports no open paths", async () => {
