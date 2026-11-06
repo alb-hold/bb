@@ -2384,7 +2384,7 @@ describe("ThreadRow", () => {
     "reserves stable row metrics across late metadata registration (compact: %s)",
     (isCompact) => {
       let registered = false;
-      vi.spyOn(pluginSdk, "experimental_ThreadRowMetadata").mockImplementation(
+      vi.spyOn(pluginSdk, "experimental_ThreadRowMetadata", "get").mockReturnValue(
         () =>
           registered ? (
             <span data-thread-row-metadata="" data-has-items="">
