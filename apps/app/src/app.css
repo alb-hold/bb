@@ -957,8 +957,66 @@
   }
 }
 
-@media (width <= 360px) {
-  [data-native-terminal-toggle] > button > span {
+@media (width <= 480px) {
+  [data-native-composer-inline] {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+  }
+
+  [data-native-composer-inline] > [aria-label="Terminal execution"] {
+    grid-column: 1 / -1;
+  }
+
+  [data-native-composer-inline] > textarea {
+    min-height: 2.75rem;
+  }
+
+  [data-native-composer-inline] [data-native-composer-actions] > [aria-label="Terminal model"],
+  [data-native-composer-inline] [data-native-composer-actions] > .flex-1 {
     display: none;
+  }
+
+  [data-native-terminal-prompt] [data-native-composer-actions] > button {
+    min-width: 2.75rem;
+    min-height: 2.75rem;
+  }
+
+  [data-promptbox-execution-layout="stacked"] [data-execution-controls-layout="stacked"] {
+    grid-column: 1 / -1;
+    grid-row: 1;
+  }
+
+  [data-promptbox-execution-layout="stacked"] [data-promptbox-plus-control],
+  [data-promptbox-execution-layout="stacked"] > [data-promptbox-trailing-actions] {
+    grid-row: 2;
+  }
+
+  [data-execution-controls-layout="stacked"] [data-model-reasoning-trigger] {
+    gap: 0.25rem;
+    padding-inline: 0.25rem;
+  }
+
+  [data-execution-controls-layout="stacked"] [data-model-reasoning-trigger] > span {
+    min-width: 0;
+    gap: 0.25rem;
+  }
+
+  [data-execution-controls-layout="stacked"] [data-model-name] {
+    min-width: 7ch;
+  }
+
+  [data-execution-controls-layout="stacked"] [data-model-tag],
+  [data-execution-controls-layout="stacked"] [data-promptbox-hide-compact] {
+    display: none;
+  }
+
+  [data-execution-controls-layout="stacked"] [data-native-terminal-toggle] {
+    gap: 0;
+  }
+
+  [data-execution-controls-layout="stacked"] [data-native-terminal-toggle] > button {
+    gap: 0.25rem;
+    padding-inline: 0.25rem;
   }
 }

@@ -15,6 +15,7 @@ import {
 } from "./ExecutionControls";
 import { ModelReasoningMenu } from "@/components/pickers/ModelReasoningMenuSplit";
 import { Icon } from "@bb/shared-ui/icon";
+import { readFileSync } from "node:fs";
 import { CompactViewportOverrideProvider } from "@bb/shared-ui/hooks/use-compact-viewport";
 
 function makeExecutionControlsProps(
@@ -61,6 +62,36 @@ afterEach(() => {
 });
 
 describe("ExecutionControls", () => {
+  it.each([320, 360, 390])("keeps Terminal and Chat labels visible at %i px", (width) => {
+    const css = readFileSync(new URL("../../app.css", import.meta.url), "utf8");
+    const style = document.createElement("style");
+    const media = /@media \(width <= (\d+)px\) \{/g;
+    for (const match of css.matchAll(media)) {
+      if (width > Number(match[1])) continue;
+      const start = match.index! + match[0].length;
+      let end = start;
+      let depth = 1;
+      while (depth > 0 && end < css.length) {
+        if (css[end] === "{") depth++;
+        if (css[end] === "}") depth--;
+        end++;
+      }
+      style.textContent += css.slice(start, end - 1);
+    }
+    document.head.append(style);
+    try {
+      renderExecutionControls({ ...makeExecutionControlsProps(), nativeTerminal: { enabled: true, onChange: vi.fn() } });
+      for (const label of ["Terminal", "Chat"]) {
+        const button = screen.getByRole("radio", { name: label });
+        const text = within(button).getByText(label);
+        expect(getComputedStyle(text).display).not.toBe("none");
+        expect(getComputedStyle(text).visibility).not.toBe("hidden");
+      }
+    } finally {
+      style.remove();
+    }
+  });
+
   it("keeps the unresolved model glyph and chevron in a 360px compact composer", () => {
     const props = makeExecutionControlsProps();
     const { wrapper } = createQueryClientTestHarness();

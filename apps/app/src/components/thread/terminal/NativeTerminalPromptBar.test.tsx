@@ -19,6 +19,7 @@ import { serializePromptDraftStorage } from "@bb/client-core";
 import { writingAssistanceQueryKey } from "@/hooks/queries/query-keys";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
 import { getPromptDraftAccessor } from "@/hooks/usePromptDraftStorage";
+import { readFileSync } from "node:fs";
 import { NativeTerminalPromptBar } from "./NativeTerminalPromptBar";
 
 const send = vi.hoisted(() => vi.fn());
@@ -102,13 +103,13 @@ vi.mock("@/lib/attachment-local-previews", () => ({
   registerLocalAttachmentPreview: vi.fn(),
 }));
 
-function renderBar(executionLabel = "Native CLI · GPT-5 · Full access", modelLabel: string | undefined = "GPT-5") {
+function renderBar(executionLabel = "Native CLI · GPT-5 · Full access", modelLabel: string | undefined = "GPT-5", providerLabel = "Native CLI") {
   const { wrapper: Wrapper, queryClient } = createQueryClientTestHarness();
   render(
     <Wrapper>
       <NativeTerminalPromptBar
         projectId="proj-n"
-        providerLabel="Native CLI"
+        providerLabel={providerLabel}
         executionLabel={executionLabel}
         modelLabel={modelLabel}
         threadId="thr-n"
@@ -118,9 +119,9 @@ function renderBar(executionLabel = "Native CLI · GPT-5 · Full access", modelL
   return {
     queryClient,
     input: screen.getByLabelText(
-      "Send to Native CLI terminal",
+      `Send to ${providerLabel} terminal`,
     ) as HTMLTextAreaElement,
-    sendButton: screen.getByRole("button", { name: "Send to Native CLI" }),
+    sendButton: screen.getByRole("button", { name: `Send to ${providerLabel}` }),
   };
 }
 
@@ -178,22 +179,55 @@ describe("NativeTerminalPromptBar", () => {
 
   it("labels the terminal destination and keeps execution details read-only", () => {
     const { input } = renderBar();
-    expect(input.placeholder).toBe("To terminal above");
+    expect(input.placeholder).toBe("Send to Native CLI…");
     expect(
       screen.getByText("Native CLI · GPT-5 · Full access").className,
     ).toContain("truncate");
   });
-  it("uses one phone row only while the terminal draft is empty and unfocused", () => {
+  it("keeps empty and single-line drafts inline, then expands when text wraps", () => {
+    let height = 24;
+    const scrollHeight = vi.spyOn(HTMLTextAreaElement.prototype, "scrollHeight", "get").mockImplementation(() => height);
     const { input } = renderBar();
     const shell = input.closest("[data-native-composer]")!;
-    expect(shell.classList.contains("max-md:grid")).toBe(false);
+    const phoneStyle = document.createElement("style");
+    const css = readFileSync(new URL("../../../app.css", import.meta.url), "utf8");
+    phoneStyle.textContent = css.slice(css.lastIndexOf("@media (width <= 480px) {")).replace("@media (width <= 480px) {", "").replace(/}\s*$/, "");
+    document.head.append(phoneStyle);
+    expect(getComputedStyle(shell).display).toBe("grid");
+    expect(shell.hasAttribute("data-native-composer-inline")).toBe(true);
     fireEvent.focus(input);
-    expect(shell.classList.contains("max-md:grid")).toBe(false);
-    fireEvent.change(input, { target: { value: "explain this output" } });
-    fireEvent.blur(input);
-    expect(shell.classList.contains("max-md:grid")).toBe(false);
+    expect(shell.hasAttribute("data-native-composer-inline")).toBe(true);
+    fireEvent.change(input, { target: { value: "short" } });
+    expect(shell.hasAttribute("data-native-composer-inline")).toBe(true);
+    height = 48;
+    fireEvent.change(input, { target: { value: "a draft that wraps at the compact input width" } });
+    expect(shell.hasAttribute("data-native-composer-inline")).toBe(false);
+    expect(getComputedStyle(shell).display).not.toBe("grid");
+    height = 24;
     fireEvent.change(input, { target: { value: "" } });
-    expect(shell.classList.contains("max-md:grid")).toBe(false);
+    expect(shell.hasAttribute("data-native-composer-inline")).toBe(true);
+    fireEvent.change(input, { target: { value: "first\nsecond" } });
+    expect(shell.hasAttribute("data-native-composer-inline")).toBe(false);
+    phoneStyle.remove();
+    scrollHeight.mockRestore();
+  });
+
+  it("expands for attachments and returns inline after removal", async () => {
+    upload.mockResolvedValue({ type: "localImage", path: "/tmp/a.png", name: "a.png" });
+    const { input } = renderBar();
+    const shell = input.closest("[data-native-composer]")!;
+    const fileInput = screen.getByLabelText("Attach images for Native CLI");
+    fireEvent.change(fileInput, { target: { files: [new File(["image"], "a.png", { type: "image/png" })] } });
+    expect(shell.hasAttribute("data-native-composer-inline")).toBe(false);
+    const remove = await screen.findByRole("button", { name: "Remove a.png" });
+    expect(shell.hasAttribute("data-native-composer-inline")).toBe(false);
+    fireEvent.click(remove);
+    expect(shell.hasAttribute("data-native-composer-inline")).toBe(true);
+  });
+
+  it.each(["Codex", "Claude Code"])("uses provider metadata in the %s placeholder", (providerLabel) => {
+    const { input } = renderBar("", "", providerLabel);
+    expect(input.placeholder).toBe(`Send to ${providerLabel}…`);
   });
   it.each(["Native CLI", " Native CLI ", ""])(
     "omits redundant execution text %j",
