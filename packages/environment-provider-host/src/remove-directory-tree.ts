@@ -355,17 +355,23 @@ export async function removeDirectoryTree(
           try {
             await fileHandle.chmod(Number(originalMode));
           } catch {
-            hooks.onRetainedPath?.(quarantined);
+            hooks.onRetainedPath?.(
+              path.join(path.dirname(entry), path.basename(quarantined)),
+            );
             return false;
           }
         }
         try {
           await lstat(anchoredEntry);
-          hooks.onRetainedPath?.(quarantined);
+          hooks.onRetainedPath?.(
+            path.join(path.dirname(entry), path.basename(quarantined)),
+          );
           return false;
         } catch (error) {
           if (errorCode(error) !== "ENOENT") {
-            hooks.onRetainedPath?.(quarantined);
+            hooks.onRetainedPath?.(
+              path.join(path.dirname(entry), path.basename(quarantined)),
+            );
             return false;
           }
         }
@@ -373,7 +379,9 @@ export async function removeDirectoryTree(
           await rename(quarantined, anchoredEntry);
           return true;
         } catch {
-          hooks.onRetainedPath?.(quarantined);
+          hooks.onRetainedPath?.(
+            path.join(path.dirname(entry), path.basename(quarantined)),
+          );
           return false;
         }
       };
@@ -677,32 +685,33 @@ export async function removeDirectoryTree(
           : path.join(parentDirectory, `.bb-gitfile-${randomUUID()}`);
       let gitMarkerHeld = false;
       let rootQuarantined = false;
-      let preservedRoot: string | null = null;
       const restoreQuarantine = async (): Promise<boolean> => {
-        if (
-          (await moveToOwnedPath(quarantined, anchoredEntry, true, hooks)) ===
-          "moved"
-        ) {
-          rootQuarantined = false;
-          return true;
-        }
-        preservedRoot = await moveToPreservedPath(
-          quarantined,
-          anchoredEntry,
-          true,
-          hooks,
-        );
-        if (preservedRoot !== null) {
-          rootQuarantined = false;
+        if (directoryModeChanged)
+          await directory.chmod(Number(originalDirectoryMode));
+        try {
+          await lstat(anchoredEntry);
           hooks.onRetainedPath?.(
-            path.join(path.dirname(entry), path.basename(preservedRoot)),
+            path.join(path.dirname(entry), path.basename(quarantined)),
           );
-          return true;
+          return false;
+        } catch (error) {
+          if (errorCode(error) !== "ENOENT") {
+            hooks.onRetainedPath?.(
+              path.join(path.dirname(entry), path.basename(quarantined)),
+            );
+            return false;
+          }
         }
-        hooks.onRetainedPath?.(
-          path.join(path.dirname(entry), path.basename(quarantined)),
-        );
-        return false;
+        try {
+          await rename(quarantined, anchoredEntry);
+          rootQuarantined = false;
+          return true;
+        } catch {
+          hooks.onRetainedPath?.(
+            path.join(path.dirname(entry), path.basename(quarantined)),
+          );
+          return false;
+        }
       };
       const restoreGitMarker = async (rootPath: string): Promise<boolean> => {
         if (!gitMarkerHeld || heldGitMarker === null) return true;
@@ -716,9 +725,7 @@ export async function removeDirectoryTree(
         }
       };
       const retain = async (): Promise<RemoveDirectoryTreeResult> => {
-        await restoreGitMarker(
-          rootQuarantined ? quarantined : (preservedRoot ?? anchoredEntry),
-        );
+        await restoreGitMarker(rootQuarantined ? quarantined : anchoredEntry);
         if (rootQuarantined) await restoreQuarantine();
         if (directoryModeChanged)
           await directory.chmod(Number(originalDirectoryMode));
