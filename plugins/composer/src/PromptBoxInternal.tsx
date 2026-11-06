@@ -1994,6 +1994,7 @@ export function PromptBoxInternal({
       extensions: editorExtensions,
       content: initialEditorContent.content,
       immediatelyRender: false,
+      enableCoreExtensions: { delete: false },
       editorProps,
       onCreate({ editor: createdEditor }) {
         editorRef.current = createdEditor;
@@ -3459,6 +3460,7 @@ export function PromptBoxInternal({
             ) : null}
             <ComposerEditorSlot
               editor={editor}
+              empty={editor?.isEmpty ?? true}
               scrollContainerRef={editorScrollContainerRef}
               inputLocked={composerInputLocked}
               isCompactLayout={showCompactLayout}

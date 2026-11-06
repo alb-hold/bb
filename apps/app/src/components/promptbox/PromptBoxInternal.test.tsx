@@ -33,6 +33,7 @@ import { TextSelection } from "@tiptap/pm/state";
 import { CompactViewportOverrideProvider } from "@bb/shared-ui/hooks/use-compact-viewport";
 import { EditorView } from "@tiptap/pm/view";
 import {
+  Profiler,
   createRef,
   useEffect,
   useLayoutEffect,
@@ -729,8 +730,9 @@ beforeEach(async () => {
 });
 
 describe("suppressPromptEditorAnchorActivation", () => {
-  it("commits once per typed draft while keeping editor props stable", async () => {
+  it("renders once per typed draft with at most one nested subscription commit", async () => {
     const changed = vi.fn();
+    const committed = vi.fn();
     const module = await composerPluginModule<{ PromptBoxInternal: (props: ExperimentalComposerInput) => ReactNode }>("PromptBoxInternal.tsx");
     const renderedInner = vi.spyOn(module, "PromptBoxInternal");
     onTestFinished(() => renderedInner.mockRestore());
@@ -748,22 +750,114 @@ describe("suppressPromptEditorAnchorActivation", () => {
         />
       );
     }
-    render(<TypingComposer />);
+    render(<Profiler id="composer-inclusive" onRender={committed}><TypingComposer /></Profiler>);
     const element = getPromptEditorElement() as TiptapEditorHTMLElement;
     const editor = element.editor;
     if (!editor) throw new Error("Editor was not mounted");
     const editorProps = editor.options.editorProps;
-    for (const text of ["a", "b", "c"]) {
+    let nestedUpdates = 0;
+    for (const text of "abcdefghijklmnopqrst") {
       renderedInner.mockClear();
+      committed.mockClear();
       await act(async () => {
         editor.commands.insertContent(text);
       });
       expect(editor.options.editorProps).toBe(editorProps);
       expect(renderedInner).toHaveBeenCalledTimes(1);
+      const phases = committed.mock.calls.map(([, phase]) => phase);
+      expect(phases.filter((phase) => phase === "update")).toHaveLength(1);
+      nestedUpdates += phases.filter((phase) => phase === "nested-update").length;
     }
+    expect(nestedUpdates).toBeLessThanOrEqual(1);
     expect(editor.getText()).toContain("abc");
     expect(changed).toHaveBeenLastCalledWith(editor.getText());
   });
+
+  it("runs rich-text rules once per keystroke without refreshing unchanged sources", async () => {
+    const match = vi.fn((text: string) =>
+      text.length ? [{ from: 0, to: text.length }] : [],
+    );
+    setPluginSlotRegistrations(
+      "typing-paint",
+      pluginRegistrationSet([{
+        id: "paint",
+        scopes: ["new-thread"],
+        richText: { effects: [{ id: "all", className: "typing-paint", match }] },
+      }]),
+    );
+    function TypingComposer() {
+      const [value, setValue] = useState("");
+      return <ComposerBox {...createPromptBoxProps({ value, onChange: setValue })} />;
+    }
+    const view = render(<TypingComposer />);
+    const editor = (getPromptEditorElement() as TiptapEditorHTMLElement).editor;
+    if (!editor) throw new Error("Editor was not mounted");
+    for (const text of ["a", "b", "c"]) {
+      match.mockClear();
+      await act(async () => {
+        editor.commands.insertContent(text);
+      });
+      expect(view.container.querySelector(".typing-paint")?.textContent).toBe(
+        editor.getText(),
+      );
+      expect(match).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it.each([
+    {
+      label: "mention",
+      resource: {
+        kind: "plugin",
+        pluginId: "sample",
+        itemId: "people:alice",
+        icon: null,
+        label: "Alice",
+      },
+    },
+    {
+      label: "attachment chip",
+      resource: { kind: "attachment", path: "uploads/Alice", label: "Alice" },
+    },
+  ] as const)(
+    "deletes a $label through keyboard editing without delete-event notifications",
+    async ({ resource }) => {
+      const { changes } = renderPromptBox("a @Alice z", {
+        initialMentionRanges: [{ start: 2, end: 8, resource }],
+      });
+      const editor = (getPromptEditorElement() as TiptapEditorHTMLElement)
+        .editor!;
+      expect(
+        editor.extensionManager.extensions.some(
+          ({ name }) => name === "delete",
+        ),
+      ).toBe(false);
+      for (const operation of ["backspace", "forward", "selection"] as const) {
+        if (operation !== "backspace")
+          await act(async () => {
+            pressUndo();
+          });
+        expect(editor.state.doc.firstChild?.child(1).type.name).toBe("mention");
+        await act(async () => {
+          editor.commands.setTextSelection(
+            operation === "selection"
+              ? { from: 2, to: 5 }
+              : operation === "backspace"
+                ? 4
+                : 3,
+          );
+          fireEvent.keyDown(getPromptEditorElement(), {
+            key: operation === "forward" ? "Delete" : "Backspace",
+            keyCode: operation === "forward" ? 46 : 8,
+          });
+        });
+        expect(latestChange(changes)?.mentions, operation).toEqual([]);
+        expect(latestValue(changes)).toBe(
+          operation === "selection" ? "az" : "a  z",
+        );
+      }
+    },
+  );
 
   it("restores the editor selection when pane navigation returns focus", async () => {
     render(

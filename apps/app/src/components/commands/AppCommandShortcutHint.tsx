@@ -1,4 +1,5 @@
 import { ShortcutPill } from "@bb/shared-ui/shortcut-pill";
+import { memo } from "react";
 import type { AppShortcutPresentation } from "@/lib/app-keybindings";
 import { useIsAppCommandModifierHeld } from "./AppCommandProvider";
 
@@ -7,7 +8,7 @@ interface AppCommandShortcutHintProps {
   className?: string;
 }
 
-export function AppCommandShortcutHint({
+export const AppCommandShortcutHint = memo(function AppCommandShortcutHint({
   shortcut,
   className,
 }: AppCommandShortcutHintProps) {
@@ -15,4 +16,4 @@ export function AppCommandShortcutHint({
   if (!isPrimaryModifierHeld || !shortcut) return null;
 
   return <ShortcutPill shortcut={shortcut} className={className} />;
-}
+});

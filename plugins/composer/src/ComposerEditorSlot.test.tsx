@@ -9,7 +9,7 @@ afterEach(cleanup);
 it("preserves the text token's contrast on the empty composer", () => {
   const { container } = render(
     <ComposerEditorSlot
-      editor={null}
+      editor={null} empty
       scrollContainerRef={{ current: null }}
       inputLocked={false}
       isCompactLayout={false}
@@ -25,7 +25,7 @@ it("preserves the text token's contrast on the empty composer", () => {
 });
 
 it.each([null, 180])("only compacts the empty home editor without a resized height (%s)", (userHeightPx) => {
-  const { container } = render(<ComposerEditorSlot editor={null} scrollContainerRef={{ current: null }} inputLocked={false} isCompactLayout={false} minHeight={68} layout="root-compose" resolveMentionLink={undefined} userHeightPx={userHeightPx} />);
+  const { container } = render(<ComposerEditorSlot editor={null} empty scrollContainerRef={{ current: null }} inputLocked={false} isCompactLayout={false} minHeight={68} layout="root-compose" resolveMentionLink={undefined} userHeightPx={userHeightPx} />);
   expect(container.querySelector("[data-promptbox-editor-scroll]")?.hasAttribute("data-compact-empty-editor")).toBe(userHeightPx === null);
 });
 
@@ -35,6 +35,6 @@ it("reduces the empty editor floor on desktop and phone", () => {
 });
 
 it("compacts an empty thread editor without overriding a resized editor", () => {
-  const { container } = render(<ComposerEditorSlot editor={null} scrollContainerRef={{ current: null }} inputLocked={false} isCompactLayout={false} minHeight={68} layout="thread" resolveMentionLink={undefined} userHeightPx={null} />);
+  const { container } = render(<ComposerEditorSlot editor={null} empty scrollContainerRef={{ current: null }} inputLocked={false} isCompactLayout={false} minHeight={68} layout="thread" resolveMentionLink={undefined} userHeightPx={null} />);
   expect(container.querySelector("[data-compact-empty-editor]")).not.toBeNull();
 });

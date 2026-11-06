@@ -548,10 +548,25 @@ function useComposerRendererHostApi({
   const isFocusedPane = useOptionalPaneContext()?.isFocused ?? true;
   const availableMaxHeight = useContext(ComposerMaxHeightContext);
   const maxHeight = input.maxHeight ?? availableMaxHeight;
+  const resolveMentionLink = useMemo(
+    () =>
+      mentionLinkResolver({
+        resolveLink: typeahead.mention.resolveLink,
+        attachments: draftAttachments,
+        attachmentProjectId: attachments?.projectId,
+        openAttachment,
+      }),
+    [
+      typeahead.mention.resolveLink,
+      draftAttachments,
+      attachments?.projectId,
+      openAttachment,
+    ],
+  );
 
-  const decorationSources = composerDecorationSources(
-    resolvedEditor.effects,
-    textEffects ?? [],
+  const decorationSources = useMemo(
+    () => composerDecorationSources(resolvedEditor.effects, textEffects ?? []),
+    [resolvedEditor.effects, textEffects],
   );
   const [draftObserverRunner] = useState(createDraftObserverRunner);
   useEffect(() => {
@@ -599,12 +614,7 @@ function useComposerRendererHostApi({
       commandTriggers: typeahead.command.source.skillsTriggers.filter(
         (trigger) => !mentionTriggers.some((mention) => mention === trigger),
       ),
-      resolveMentionLink: mentionLinkResolver({
-        resolveLink: typeahead.mention.resolveLink,
-        attachments: draftAttachments,
-        attachmentProjectId: attachments?.projectId,
-        openAttachment,
-      }),
+      resolveMentionLink,
       attachments: composerAttachments(attachments),
       history: composerHistory(
         history,

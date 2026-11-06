@@ -1,7 +1,18 @@
 // @vitest-environment jsdom
 
-import { useEffect, useState, type ReactNode } from "react";
+import {
+  useEffect,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from "react";
+import type { TiptapEditorHTMLElement } from "@tiptap/core";
+import {
+  registerComposerPlugin,
+  composerPluginModule,
+} from "@/test/fixtures/composer-plugin";
 import { Provider } from "jotai";
+import { TooltipProvider } from "@bb/shared-ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   defaultAppSettings,
@@ -47,7 +58,7 @@ import { useRootComposeReuseEnvironment } from "@/lib/root-compose-selection";
 import { getPromptDraftAccessor } from "@/hooks/usePromptDraftStorage";
 import { makeThreadListEntry } from "@bb/test-helpers/domain-fixtures";
 import { createDeferredPromise } from "@bb/test-helpers";
-import type { PromptDraftAttachment } from "@bb/client-core";
+import type { PromptDraftAttachment, PromptDraftState } from "@bb/client-core";
 import { makeProjectWithThreadsResponse } from "@/test/fixtures/projects";
 import { RootComposeView } from "@/views/RootComposeView";
 import { DefaultPaneContextProvider } from "@/views/thread-detail/PaneContext";
@@ -88,12 +99,16 @@ function render(element: ReactNode) {
   });
   return renderWithoutQueryClient(element, {
     wrapper: ({ children }) => (
-      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+      <QueryClientProvider client={queryClient}>
+        <TooltipProvider>{children}</TooltipProvider>
+      </QueryClientProvider>
     ),
   });
 }
 
 const mocks = vi.hoisted(() => ({
+  realPromptBox: false,
+  promptBoxShellRenders: 0,
   rootCompositionRenders: 0,
   unknownReasoning: false,
   promptBoxProps: [] as Array<Record<string, any>>,
@@ -157,17 +172,52 @@ vi.mock("@/hooks/queries/thread-terminal-queries", async (importOriginal) => {
   };
 });
 
-vi.mock("@/components/promptbox/NewThreadPromptBox", () => ({
-  NewThreadPromptBox: (props: Record<string, any>) => {
-    mocks.promptBoxProps.push(props);
+vi.mock("@/components/promptbox/NewThreadPromptBox", async (importOriginal) => {
+  const actual =
+    await importOriginal<
+      typeof import("@/components/promptbox/NewThreadPromptBox")
+    >();
+  function LivePromptBox(props: Record<string, any>) {
+    const draft = useSyncExternalStore<PromptDraftState>(
+      props.draftSource.subscribe,
+      props.draftSource.getCurrent,
+      props.draftSource.getCurrent,
+    );
+    mocks.promptBoxProps.push({
+      ...props,
+      value: draft.text,
+      mentionRanges: draft.mentions,
+      attachments: { ...props.attachments, items: draft.attachments },
+      history: { ...props.history, currentDraft: draft },
+    });
     return (
       <div data-testid="new-thread-prompt-box">
         {props.modeConfig?.banner ?? null}
         {props.modeConfig?.environmentProviderInputsSlot ?? null}
       </div>
     );
-  },
-}));
+  }
+  return {
+    ...actual,
+    NewThreadPromptBox: (props: Record<string, any>) => {
+      mocks.promptBoxShellRenders++;
+      if (mocks.realPromptBox)
+        return (
+          <actual.NewThreadPromptBox
+            {...(props as import("@/components/promptbox/NewThreadPromptBox").NewThreadPromptBoxProps)}
+          />
+        );
+      if (props.draftSource) return <LivePromptBox {...props} />;
+      mocks.promptBoxProps.push(props);
+      return (
+        <div data-testid="new-thread-prompt-box">
+          {props.modeConfig?.banner ?? null}
+          {props.modeConfig?.environmentProviderInputsSlot ?? null}
+        </div>
+      );
+    },
+  };
+});
 
 vi.mock("@/hooks/queries/environment-provider-queries", () => ({
   useSystemEnvironmentProviders: () => ({
@@ -183,10 +233,12 @@ vi.mock("@/hooks/queries/plugin-settings-queries", () => ({
   usePluginList: () => ({ data: { plugins: mocks.plugins } }),
 }));
 
-vi.mock("@/lib/sdk", () => ({
+vi.mock("@/lib/sdk", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/sdk")>()),
   sdk: {
     projects: { attachments: { copy: mocks.copyAttachments } },
     system: {
+      config: vi.fn(async () => ({ generalSettings: defaultAppSettings })),
       experimental_recordTelemetryEvent: vi
         .fn()
         .mockRejectedValue(new Error("Telemetry unavailable")),
@@ -284,7 +336,13 @@ vi.mock("@/hooks/queries/host-queries", () => ({
   ) => hosts?.find((host) => host.id === primaryHostId) ?? hosts?.[0] ?? null,
 }));
 
-vi.mock("@/hooks/queries/system-queries", () => ({
+vi.mock("@/hooks/queries/system-queries", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/hooks/queries/system-queries")>()),
+  useProviderPreviewExecutionOptions: () => ({
+    data: undefined,
+    isLoading: false,
+    isError: false,
+  }),
   useSystemProviders: () => ({ data: mocks.systemProviders }),
   useSystemProviderStates: () => ({ data: undefined, isPending: false }),
   useKnownProviderModelCatalogScope: () => undefined,
@@ -711,6 +769,8 @@ async function submit(): Promise<void> {
 
 describe("PluginNewThreadComposer seeding", () => {
   beforeEach(() => {
+    mocks.realPromptBox = false;
+    mocks.promptBoxShellRenders = 0;
     resetFixedPanelTabsStateForTest();
     mocks.closeTerminal.mockClear();
     mocks.modelSessionOptions = undefined;
@@ -798,6 +858,7 @@ describe("PluginNewThreadComposer seeding", () => {
     });
     const surfaceRendersAfterFirstKey = surfaceStates.length;
     const promptBoxRendersAfterFirstKey = mocks.promptBoxProps.length;
+    const shellRendersAfterFirstKey = mocks.promptBoxShellRenders;
 
     const text = "hello world";
     for (let length = 2; length <= text.length; length += 1) {
@@ -807,6 +868,7 @@ describe("PluginNewThreadComposer seeding", () => {
     }
 
     expect(surfaceStates.length).toBe(surfaceRendersAfterFirstKey);
+    expect(mocks.promptBoxShellRenders).toBe(shellRendersAfterFirstKey);
     expect(mocks.promptBoxProps.length - promptBoxRendersAfterFirstKey).toBe(
       text.length - 1,
     );
@@ -814,6 +876,202 @@ describe("PluginNewThreadComposer seeding", () => {
     expect(new Set(surfaceStates.map((state) => state.promptDraft)).size).toBe(
       1,
     );
+  });
+
+  it("keeps the connected shell, voice and editor chrome idle after the first typed key", async () => {
+    mocks.realPromptBox = true;
+    await registerComposerPlugin();
+    const slot = await composerPluginModule<{
+      ComposerEditorSlot: { type: (...args: never[]) => ReactNode };
+    }>("ComposerEditorSlot.tsx");
+    const tiptap = await import("@tiptap/react");
+    const content = tiptap.EditorContent as unknown as {
+      type: { render: (...args: never[]) => ReactNode };
+    };
+    const execution = await import("@/components/promptbox/ExecutionControls");
+    const hint = await import("@/components/commands/AppCommandShortcutHint");
+    const voice = await import("@/components/promptbox/usePromptVoice");
+    const hosts = await import("@/hooks/queries/host-queries");
+    const system = await import("@/hooks/queries/system-queries");
+    const audio = await import("@/lib/audio-input-device-preference");
+    const spies = [
+      vi.spyOn(slot.ComposerEditorSlot, "type"),
+      vi.spyOn(content.type, "render"),
+      vi.spyOn(
+        execution.ExecutionControls as unknown as {
+          type: (...args: never[]) => ReactNode;
+        },
+        "type",
+      ),
+      vi.spyOn(
+        hint.AppCommandShortcutHint as unknown as {
+          type: (...args: never[]) => ReactNode;
+        },
+        "type",
+      ),
+      vi.spyOn(voice, "usePromptVoice"),
+      vi.spyOn(hosts, "useHosts"),
+      vi.spyOn(system, "useSystemConfig"),
+      vi.spyOn(audio, "useAudioInputDevicePreferenceValue"),
+    ];
+    const surfaces: NewThreadComposerState[] = [];
+    render(
+      <Provider>
+        <MemoryRouter>
+          <NewThreadComposer
+            projectId="proj_1"
+            onProjectChange={() => undefined}
+            draftStorage={{ kind: "new-thread" }}
+            selectionScope="new-thread"
+            onSubmit={() => undefined}
+          >
+            {(composer) => {
+              surfaces.push(composer);
+              return composer.renderPromptBox({
+                mentionMenuPlacement: "bottom",
+              });
+            }}
+          </NewThreadComposer>
+        </MemoryRouter>
+      </Provider>,
+    );
+    const element = await waitFor(() => {
+      const element = document.querySelector<TiptapEditorHTMLElement>(
+        "[contenteditable=true]",
+      );
+      expect(element?.editor).toBeTruthy();
+      return element!;
+    });
+    const editor = element.editor!;
+    await act(async () => {
+      editor.commands.insertContent("a");
+    });
+    expect(
+      document
+        .querySelector("[data-promptbox-submit-action]")
+        ?.hasAttribute("disabled"),
+    ).toBe(false);
+    const shellRenders = mocks.promptBoxShellRenders;
+    const surfaceRenders = surfaces.length;
+    for (const text of "bcdefghijklmnopqrst") {
+      for (const spy of spies) spy.mockClear();
+      await act(async () => {
+        editor.commands.insertContent(text);
+      });
+      expect(spies.map((spy) => spy.mock.calls.length)).toEqual(
+        spies.map(() => 0),
+      );
+      expect(mocks.promptBoxShellRenders).toBe(shellRenders);
+      expect(surfaces).toHaveLength(surfaceRenders);
+    }
+    expect(editor.getText()).toBe("abcdefghijklmnopqrst");
+    expect(document.querySelector("[data-compact-empty-editor]")).toBeNull();
+    await act(async () => {
+      editor.commands.clearContent();
+    });
+    expect(
+      document.querySelector("[data-compact-empty-editor]"),
+    ).not.toBeNull();
+    expect(
+      document
+        .querySelector("[data-promptbox-submit-action]")
+        ?.hasAttribute("disabled"),
+    ).toBe(true);
+    expect(spies[0]).toHaveBeenCalledTimes(1);
+  });
+
+  it("delivers voice at the current caret and submits the latest draft inputs after fast typing", async () => {
+    mocks.realPromptBox = true;
+    await registerComposerPlugin();
+    const voiceInput = await import("@/hooks/useVoiceInput");
+    const voice = vi.spyOn(voiceInput, "useVoiceInput");
+    const submitted = vi.fn();
+    render(
+      <Provider>
+        <MemoryRouter>
+          <NewThreadComposer
+            projectId="proj_1"
+            onProjectChange={() => undefined}
+            draftStorage={{ kind: "new-thread" }}
+            selectionScope="new-thread"
+            onSubmit={submitted}
+          >
+            {(composer) =>
+              composer.renderPromptBox({ mentionMenuPlacement: "bottom" })
+            }
+          </NewThreadComposer>
+        </MemoryRouter>
+      </Provider>,
+    );
+    const element = await waitFor(() => {
+      const element = document.querySelector<TiptapEditorHTMLElement>(
+        "[contenteditable=true]",
+      );
+      expect(element?.editor).toBeTruthy();
+      return element!;
+    });
+    const editor = element.editor!;
+    await act(async () => {
+      editor.commands.insertContent("first");
+    });
+    const deliver = voice.mock.calls.at(-1)![0].onTranscript;
+    await act(async () => {
+      editor.commands.insertContent(" latest");
+      editor.commands.setTextSelection(6);
+      deliver("voice", "insert");
+    });
+    expect(editor.getText()).toBe("first voice latest");
+    expect(
+      getPromptDraftAccessor({ kind: "new-thread" }).getCurrent().text,
+    ).toBe("first voice latest");
+    await act(async () => {
+      editor.commands.setTextSelection(editor.state.doc.content.size - 1);
+      editor.commands.insertContent(" @Alice");
+      const draft = getPromptDraftAccessor({ kind: "new-thread" });
+      const current = draft.getCurrent();
+      draft.setDraft({
+        ...current,
+        mentions: [
+          {
+            start: current.text.length - 6,
+            end: current.text.length,
+            resource: {
+              kind: "plugin",
+              pluginId: "sample",
+              itemId: "people:alice",
+              icon: null,
+              label: "Alice",
+            },
+          },
+        ],
+        attachments: [
+          { type: "localFile", path: "uploads/latest.txt", name: "latest.txt" },
+        ],
+      });
+      fireEvent.keyDown(element, { key: "Enter", keyCode: 13 });
+    });
+    expect(submitted).toHaveBeenCalledTimes(1);
+    expect(submitted.mock.calls[0][0].input).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "text",
+          text: "first voice latest @Alice",
+        }),
+        expect.objectContaining({
+          type: "localFile",
+          path: "uploads/latest.txt",
+        }),
+      ]),
+    );
+    expect(
+      submitted.mock.calls[0][0].input.find(
+        (input: { type: string }) => input.type === "text",
+      ).mentions,
+    ).toEqual([
+      expect.objectContaining({
+        resource: expect.objectContaining({ itemId: "people:alice" }),
+      }),
+    ]);
   });
 
   it("forwards a requested mention menu placement to the prompt box", () => {
