@@ -54,6 +54,11 @@ async function removeDirectoryTree(
       candidate: string,
       isDirectory: boolean,
     ) => Promise<void>;
+    afterCollisionCandidateVerified?: (
+      source: string,
+      candidate: string,
+      isDirectory: boolean,
+    ) => Promise<void>;
     afterEntryQuarantined?: (
       entry: string,
       quarantined: string,
@@ -1046,48 +1051,45 @@ describe("real worktree teardown preservation", () => {
       const originalMode =
         (await fs.stat(path.join(worktree.path, "README.md"))).mode & 0o7777;
       let injected = false;
-      let racingBytesLost = false;
+      let racingSourcePath = "";
       let collisionMoveStarted = false;
       let reportedPath = "";
-      const unlink = fs.unlink.bind(fs);
-      const unlinkSpy = vi.spyOn(fs, "unlink");
-      unlinkSpy.mockImplementation(async (entry) => {
-        if (collisionMoveStarted && !injected) {
+      const result = await removeDirectoryTree(worktree.path, {
+        startedAt: Number.MAX_SAFE_INTEGER,
+        afterEntryQuarantined: async (entry) => {
+          if (!entry.endsWith("README.md")) return;
+          await writeFile(entry, "racing bytes\n");
+        },
+        beforeCollisionMove: async (source, candidate, isDirectory) => {
+          if (
+            !isDirectory &&
+            path.basename(source).startsWith(".bb-removing-") &&
+            path.basename(candidate).startsWith("README.md.")
+          )
+            collisionMoveStarted = true;
+        },
+        afterCollisionCandidateVerified: async (
+          source,
+          _candidate,
+          isDirectory,
+        ) => {
+          if (!collisionMoveStarted || isDirectory || injected) return;
           injected = true;
-          await unlink(entry);
-          await writeFile(entry, "racing quarantine replacement\n");
-          await unlink(entry);
-          racingBytesLost = true;
-          return;
-        }
-        await unlink(entry);
+          racingSourcePath = source;
+          await fs.unlink(source);
+          await writeFile(source, "racing quarantine replacement\n");
+        },
+        onRetainedPath: (retainedPath) => {
+          reportedPath = retainedPath;
+        },
       });
-      try {
-        const result = await removeDirectoryTree(worktree.path, {
-          startedAt: Number.MAX_SAFE_INTEGER,
-          afterEntryQuarantined: async (entry) => {
-            if (!entry.endsWith("README.md")) return;
-            await writeFile(entry, "racing bytes\n");
-          },
-          beforeCollisionMove: async (source, candidate, isDirectory) => {
-            if (
-              !isDirectory &&
-              path.basename(source).startsWith(".bb-removing-") &&
-              path.basename(candidate).startsWith("README.md.")
-            )
-              collisionMoveStarted = true;
-          },
-          onRetainedPath: (retainedPath) => {
-            reportedPath = retainedPath;
-          },
-        });
-        expect(result).toBe("retained");
-      } finally {
-        unlinkSpy.mockRestore();
-      }
+      expect(result).toBe("retained");
       expect(reportedPath).not.toBe("");
       await expect(access(reportedPath)).resolves.toBeUndefined();
-      expect(racingBytesLost).toBe(false);
+      if (injected)
+        await expect(readFile(racingSourcePath, "utf8")).resolves.toBe(
+          "racing quarantine replacement\n",
+        );
       if (!injected) {
         const quarantinedPath = reportedPath;
         await expect(
