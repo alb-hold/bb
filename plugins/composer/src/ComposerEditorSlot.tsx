@@ -44,7 +44,7 @@ export function ComposerEditorSlot({
     <div
       ref={scrollContainerRef}
       data-promptbox-editor-scroll=""
-      data-compact-empty-editor={layout === "root-compose" && userHeightPx === null && (editor?.isEmpty ?? true) ? "" : undefined}
+      data-compact-empty-editor={userHeightPx === null && (editor?.isEmpty ?? true) ? "" : undefined}
       aria-busy={inputLocked || undefined}
       className={cn(
         "w-full overflow-y-auto bg-transparent px-4 pb-1 pr-14 pt-3 outline-none",

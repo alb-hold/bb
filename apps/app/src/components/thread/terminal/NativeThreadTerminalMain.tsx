@@ -61,6 +61,7 @@ export function NativeThreadTerminalMain({
     staleTime: 30_000,
   }).data;
   const report = profile?.executed;
+  const modelLabel = view.model ? formatModelLabel(view.model) : undefined;
   const formatExecution = (metadata: typeof report) =>
     [
       metadata?.model ? formatModelLabel(metadata.model) : null,
@@ -190,6 +191,7 @@ export function NativeThreadTerminalMain({
         />
         <NativeTerminalPromptBar
           projectId={projectId}
+          modelLabel={modelLabel}
           executionLabel={executionLabel || undefined}
           providerLabel={providerLabel}
           threadId={threadId}

@@ -87,3 +87,13 @@ it("keeps the last summary hit area inside the animated clip without adding layo
     /\[data-compact-touch-height\]:has\(\[data-compact-touch-summary\]\) > div\s*\{\s*padding-block-end: 20px;\s*\}/,
   );
 });
+
+it("limits compact pseudo-element hit areas to coarse pointers", () => {
+  expect(css).toContain("@media (width < 48rem) and (pointer: coarse)");
+});
+
+it("collapses terminal segment labels first and reserves an 8px action gap", () => {
+  expect(css).toContain("@media (width <= 360px)");
+  expect(css).toMatch(/\[data-native-terminal-toggle\] > button > span\s*{\s*display: none/);
+  expect(css).toContain("column-gap: 0.5rem");
+});

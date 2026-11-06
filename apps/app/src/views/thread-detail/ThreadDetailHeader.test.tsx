@@ -489,8 +489,8 @@ describe("ThreadDetailHeader", () => {
   });
 
   it.each([
-    { expectedIcon: "PanelRight", isCompactViewport: true },
-    { expectedIcon: "PanelRight", isCompactViewport: false },
+    { expectedIcon: "ChevronLeft", isCompactViewport: true },
+    { expectedIcon: "ChevronLeft", isCompactViewport: false },
   ])(
     "shows the $expectedIcon glyph on the right-panel trigger",
     ({ expectedIcon, isCompactViewport }) => {

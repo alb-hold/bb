@@ -34,6 +34,7 @@ function view(terminal: TerminalSession | null): NativeTerminalThread {
     providerId: "native-provider",
     displayName: "Native CLI",
     nativeSessionId: "sess-1",
+    model: null,
     canReturnToChat: true,
     terminal,
   };

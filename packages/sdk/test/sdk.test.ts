@@ -111,6 +111,38 @@ function createFetchQueue(
 }
 
 describe("@bb/sdk", () => {
+  it.each(["gpt-6.1-sol", null, undefined])(
+    "reads the native stored model (%s), defaulting only legacy missing fields to null",
+    async (model) => {
+      const view = {
+        threadId: "thr_native",
+        providerId: "codex",
+        displayName: "Codex",
+        nativeSessionId: "native-session",
+        canReturnToChat: false,
+        terminal: null,
+        ...(model === undefined ? {} : { model }),
+      };
+      const queue = createFetchQueue([{ body: view }]);
+      const sdk = createBbSdk({
+        transport: createHttpTransport({
+          baseUrl: "http://bb.test",
+          fetch: queue.fetch,
+          runtime: "node",
+        }),
+      });
+      await expect(sdk.nativeTerminals.get({ threadId: "thr_native" })).resolves.toEqual({ ...view, model: model ?? null });
+    },
+  );
+
+  it("preserves an absent native thread", async () => {
+    const queue = createFetchQueue([{ body: null }]);
+    const sdk = createBbSdk({
+      transport: createHttpTransport({ baseUrl: "http://bb.test", fetch: queue.fetch, runtime: "node" }),
+    });
+    await expect(sdk.nativeTerminals.get({ threadId: "thr_native" })).resolves.toBeNull();
+  });
+
   it("lists thread terminal surfaces with kind and stable IDs", async () => {
     const queue = createFetchQueue([
       { body: { archivedAt: null } },

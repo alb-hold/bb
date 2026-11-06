@@ -213,8 +213,6 @@
   }
 }
 
-@media (width < 48rem) {
-  [data-compact-empty-editor] {
-    min-height: 44px !important;
-  }
+[data-compact-empty-editor] {
+  min-height: 44px !important;
 }

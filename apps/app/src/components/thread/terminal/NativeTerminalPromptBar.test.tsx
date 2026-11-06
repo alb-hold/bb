@@ -102,7 +102,7 @@ vi.mock("@/lib/attachment-local-previews", () => ({
   registerLocalAttachmentPreview: vi.fn(),
 }));
 
-function renderBar(executionLabel = "Native CLI · GPT-5 · Full access") {
+function renderBar(executionLabel = "Native CLI · GPT-5 · Full access", modelLabel: string | undefined = "GPT-5") {
   const { wrapper: Wrapper, queryClient } = createQueryClientTestHarness();
   render(
     <Wrapper>
@@ -110,6 +110,7 @@ function renderBar(executionLabel = "Native CLI · GPT-5 · Full access") {
         projectId="proj-n"
         providerLabel="Native CLI"
         executionLabel={executionLabel}
+        modelLabel={modelLabel}
         threadId="thr-n"
       />
     </Wrapper>,
@@ -185,14 +186,14 @@ describe("NativeTerminalPromptBar", () => {
   it("uses one phone row only while the terminal draft is empty and unfocused", () => {
     const { input } = renderBar();
     const shell = input.closest("[data-native-composer]")!;
-    expect(shell.classList.contains("max-md:grid")).toBe(true);
+    expect(shell.classList.contains("max-md:grid")).toBe(false);
     fireEvent.focus(input);
     expect(shell.classList.contains("max-md:grid")).toBe(false);
     fireEvent.change(input, { target: { value: "explain this output" } });
     fireEvent.blur(input);
     expect(shell.classList.contains("max-md:grid")).toBe(false);
     fireEvent.change(input, { target: { value: "" } });
-    expect(shell.classList.contains("max-md:grid")).toBe(true);
+    expect(shell.classList.contains("max-md:grid")).toBe(false);
   });
   it.each(["Native CLI", " Native CLI ", ""])(
     "omits redundant execution text %j",
@@ -1259,3 +1260,17 @@ describe(
     });
   },
 );
+
+it("shows read-only model context beside attachment controls", () => {
+  renderBar();
+  const chips = screen.getByLabelText("Terminal model");
+  expect(chips.textContent).toBe("GPT-5");
+  expect(chips.querySelector("button")).toBeNull();
+  expect(screen.queryByText(/Permissions:/)).toBeNull();
+});
+
+it("omits the model chip container when the native record has no model", () => {
+  renderBar("Native CLI", "");
+  expect(screen.queryByLabelText("Terminal model")).toBeNull();
+  expect(screen.queryByLabelText("Terminal model and permissions")).toBeNull();
+});

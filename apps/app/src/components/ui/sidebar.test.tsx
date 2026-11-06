@@ -516,7 +516,7 @@ describe("SidebarTrigger", () => {
       </SidebarProvider>,
     );
 
-    expect(markup).toContain('data-icon="PanelLeft"');
+    expect(markup).toContain('data-icon="ChevronRight"');
     expect(markup).not.toContain('data-icon="AlignLeft"');
     expect(markup).toContain('aria-expanded="true"');
     expect(markup).not.toContain('aria-pressed="');

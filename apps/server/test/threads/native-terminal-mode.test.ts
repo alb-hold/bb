@@ -488,6 +488,7 @@ describe("switching a chat thread to its native terminal", () => {
       threadId: thread.id,
       providerId: "claude-code",
       nativeSessionId: SESSION_ID,
+      model: null,
       canReturnToChat: true,
     });
     expect(view.terminal?.id).toBe(open.terminalId);

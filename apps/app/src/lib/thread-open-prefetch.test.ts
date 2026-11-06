@@ -35,6 +35,7 @@ it("starts native discovery while thread bootstrap is pending and warms a native
     providerId: "codex",
     displayName: "Codex",
     nativeSessionId: null,
+    model: null,
     canReturnToChat: true,
     terminal: null,
   });

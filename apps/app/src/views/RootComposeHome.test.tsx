@@ -104,7 +104,7 @@ describe("RootComposeHome", () => {
     );
     const column = screen.getByTestId("root-compose-compact-home");
     expect(screen.getByText("Start a new thread").className).toContain(
-      "text-base font-medium text-foreground",
+      "text-lg font-medium text-foreground",
     );
     expect(column.className).toContain("my-auto");
     expect(column.className).toContain("shrink-0");

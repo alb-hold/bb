@@ -376,6 +376,7 @@ function toNativeTerminalThread(
       deps.providerRegistry.get(record.providerId)?.info.displayName ??
       record.providerId,
     nativeSessionId: record.nativeSessionId,
+    model: record.model,
     canReturnToChat: canReturnToChat(deps, record),
     terminal,
   };

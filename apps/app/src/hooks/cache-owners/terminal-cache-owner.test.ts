@@ -71,6 +71,7 @@ describe("native terminal view cache", () => {
       providerId: "claude-code",
       displayName: "Claude Code",
       nativeSessionId: "session-a",
+      model: null,
       canReturnToChat: true,
       terminal: makeTerminalSession({ id: "term_a", threadId: "thr_a" }),
     };
@@ -91,6 +92,7 @@ describe("native terminal view cache", () => {
       providerId: "claude-code",
       displayName: "Claude Code",
       nativeSessionId: "session-a",
+      model: null,
       canReturnToChat: true,
       terminal: null,
     };

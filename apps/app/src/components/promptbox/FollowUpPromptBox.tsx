@@ -643,7 +643,6 @@ function FollowUpPromptBoxWithComposer({
   const permissionControl = useMemo(
     () => (
       <PermissionModePicker
-        compactWarningOnly={isPromptBoxCompact}
         pending={permission.pending}
         value={permission.value}
         options={permission.options}

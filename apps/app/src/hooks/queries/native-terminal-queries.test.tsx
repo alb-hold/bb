@@ -33,6 +33,7 @@ const NATIVE_VIEW = {
   providerId: "codex",
   displayName: "Codex",
   nativeSessionId: null,
+  model: null,
   canReturnToChat: false,
   terminal: { id: "term-prefetch", status: "running" } as NonNullable<
     NativeTerminalThread["terminal"]

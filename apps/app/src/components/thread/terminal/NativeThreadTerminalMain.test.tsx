@@ -98,9 +98,11 @@ vi.mock("@/views/thread-detail/PaneContext", () => ({
 vi.mock("./NativeTerminalPromptBar", () => ({
   NativeTerminalPromptBar: ({
     executionLabel,
+    modelLabel,
   }: {
     executionLabel?: string;
-  }) => <div data-testid="execution-defaults">{executionLabel}</div>,
+    modelLabel?: string;
+  }) => <><div data-testid="execution-defaults">{executionLabel}</div>{modelLabel ? <span aria-label="Terminal model">{modelLabel}</span> : null}</>,
 }));
 
 vi.mock("./NativeActivityNotice", () => ({ NativeActivityNotice: () => null }));
@@ -110,6 +112,7 @@ const nativeView: NativeTerminalThread = {
   providerId: "claude-code",
   displayName: "Claude Code",
   nativeSessionId: "session-native",
+  model: null,
   canReturnToChat: true,
   terminal: null,
 };
@@ -588,3 +591,53 @@ it("keeps retained output while an omitted cached session is being refetched", (
   expect(screen.queryByText(/history expired/i)).toBeNull();
   expect(screen.getByTestId("terminal-panel")).toBeTruthy();
 });
+
+it.each(["gpt-6.1-sol", null])(
+  "uses only the native record model (%s) when the execution profile is empty",
+  (model) => {
+    hooks.profile.mockReturnValue({
+      data: {
+        executed: null,
+        nextTurn: null,
+        lastRequested: null,
+        overrides: { model: null, reasoningLevel: null },
+      },
+    });
+    const terminal: NonNullable<NativeTerminalThread["terminal"]> = {
+      id: "term-live",
+      threadId: "thr_native",
+      environmentId: "env_native",
+      hostId: "host_native",
+      title: "Codex",
+      initialCwd: "/workspace",
+      cols: 80,
+      rows: 24,
+      status: "running",
+      exitCode: null,
+      closeReason: null,
+      createdAt: 1000,
+      updatedAt: 1000,
+      lastUserInputAt: null,
+    };
+    hooks.listTerminals.mockReturnValue({
+      data: { sessions: [terminal] },
+      dataUpdatedAt: 1,
+    });
+    render(
+      <NativeThreadTerminalMain
+        projectId="proj_native"
+        runtime={{ displayStatus: "idle" }}
+        threadId="thr_native"
+        threadIsProvisioning={false}
+        view={{ ...nativeView, providerId: "codex", displayName: "Codex", model, terminal }}
+      />,
+    );
+    expect(screen.getByTestId("terminal-panel")).toBeTruthy();
+    if (model) {
+      expect(screen.getByLabelText("Terminal model").textContent).toBe("GPT-6.1-Sol");
+    } else {
+      expect(screen.queryByLabelText("Terminal model")).toBeNull();
+    }
+    expect(screen.queryByLabelText("Terminal model and permissions")).toBeNull();
+  },
+);

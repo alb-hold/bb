@@ -29,7 +29,12 @@ it.each([null, 180])("only compacts the empty home editor without a resized heig
   expect(container.querySelector("[data-promptbox-editor-scroll]")?.hasAttribute("data-compact-empty-editor")).toBe(userHeightPx === null);
 });
 
-it("retains desktop height while reducing the empty phone editor floor", () => {
+it("reduces the empty editor floor on desktop and phone", () => {
   const css = readFileSync("src/composer.css", "utf8");
-  expect(css).toMatch(/@media \(width < 48rem\)\s*{\s*\[data-compact-empty-editor\]\s*{\s*min-height: 44px !important/);
+  expect(css).toMatch(/\[data-compact-empty-editor\]\s*{\s*min-height: 44px !important/);
+});
+
+it("compacts an empty thread editor without overriding a resized editor", () => {
+  const { container } = render(<ComposerEditorSlot editor={null} scrollContainerRef={{ current: null }} inputLocked={false} isCompactLayout={false} minHeight={68} layout="thread" resolveMentionLink={undefined} userHeightPx={null} />);
+  expect(container.querySelector("[data-compact-empty-editor]")).not.toBeNull();
 });

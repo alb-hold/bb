@@ -50,6 +50,7 @@ interface NativeTerminalPromptBarProps {
   providerLabel: string;
   threadId: string;
   executionLabel?: string;
+  modelLabel?: string;
 }
 
 const PUSH_TO_TALK_HOLD_MS = 350;
@@ -101,6 +102,7 @@ export function NativeTerminalPromptBar({
   projectId,
   providerLabel,
   executionLabel,
+  modelLabel,
   threadId,
 }: NativeTerminalPromptBarProps) {
   const inputId = useId();
@@ -555,10 +557,7 @@ export function NativeTerminalPromptBar({
           COMPOSER_SHELL_CLASS,
           "flex flex-col px-1.5 py-0.5 transition-[border-color,box-shadow] duration-200 focus-within:border-ring/60 motion-reduce:transition-none",
           recording && "border-destructive/40",
-          !text &&
-            !focused &&
-            dictation.phase === "idle" &&
-            "max-md:grid max-md:grid-cols-[minmax(0,1fr)_auto] max-md:items-center",
+
         )}
         data-native-composer=""
         onDragOver={onDragOver}
@@ -659,7 +658,11 @@ export function NativeTerminalPromptBar({
           >
             <Icon name="Plus" className="size-4" />
           </Button>
-          <div className="flex-1" />
+          {modelLabel ? (
+            <div aria-label="Terminal model" className="min-w-0 flex-1 truncate text-xs text-muted-foreground" title={modelLabel}>
+              {modelLabel}
+            </div>
+          ) : <div className="flex-1" />}
           {voiceAvailable ? (
             <Button
               type="button"

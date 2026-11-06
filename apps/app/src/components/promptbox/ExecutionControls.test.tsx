@@ -84,8 +84,8 @@ describe("ExecutionControls", () => {
       { wrapper },
     );
 
-    const chip = screen.getByRole("button", { name: "Model" });
-    expect(chip.textContent).toBe("");
+    const chip = screen.getByRole("button", { name: "Provider, model and reasoning" });
+    expect(chip.textContent).toBe("Model");
     expect(chip.querySelectorAll("[data-icon-root]").length).toBe(2);
     expect(chip.hasAttribute("disabled")).toBe(false);
     expect(
@@ -97,7 +97,7 @@ describe("ExecutionControls", () => {
     expect(screen.getByRole("radio", { name: "Terminal" })).toBeTruthy();
   });
 
-  it("uses a glyph without partial model text beside compact execution choices", () => {
+  it("keeps model text beside compact execution choices", () => {
     const props = makeExecutionControlsProps();
     const { wrapper } = createQueryClientTestHarness();
     render(
@@ -126,9 +126,9 @@ describe("ExecutionControls", () => {
     );
 
     const chip = screen.getByRole("button", {
-      name: "Provider, model and reasoning: Codex: GPT-6.1-Sol · Medium reasoning",
+      name: "Provider, model and reasoning",
     });
-    expect(chip.textContent).toBe("");
+    expect(chip.textContent).toContain("6.1-Sol");
     expect(chip.querySelectorAll("[data-icon-root]").length).toBe(2);
     expect(screen.getByRole("radio", { name: "Chat" })).toBeTruthy();
     expect(screen.getByRole("radio", { name: "Terminal" })).toBeTruthy();

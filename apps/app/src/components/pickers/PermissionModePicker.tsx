@@ -1,4 +1,5 @@
 import { useMemo, useRef } from "react";
+import { useIsCompactViewport } from "@bb/shared-ui/hooks/use-compact-viewport";
 import type { PermissionMode } from "@bb/domain";
 import { LIST_HOVER_TRANSITION } from "@bb/shared-ui/motion";
 import { cn } from "@bb/shared-ui/lib/utils";
@@ -7,7 +8,7 @@ import { OptionPicker, type PickerOption } from "./OptionPicker";
 
 type PermissionModeOption = PickerOption<PermissionMode>;
 
-function getPermissionModeCompactLabel(value: PermissionMode): string {
+export function getPermissionModeCompactLabel(value: PermissionMode): string {
   switch (value) {
     case "full":
       return "Full Access";
@@ -29,7 +30,6 @@ function addPermissionModeCompactLabels(
 }
 
 export interface PermissionModePickerProps {
-  compactWarningOnly?: boolean;
   pending?: boolean;
   value?: PermissionMode;
   options: readonly PickerOption<PermissionMode>[];
@@ -52,7 +52,6 @@ export interface PermissionModePickerProps {
 }
 
 export function PermissionModePicker({
-  compactWarningOnly = false,
   pending = false,
   value,
   options,
@@ -68,15 +67,15 @@ export function PermissionModePicker({
   showChevronWhenDisabled,
   showWhenSingleOption = false,
 }: PermissionModePickerProps) {
+  const isCompactViewport = useIsCompactViewport();
   const compactOptions = useMemo(
     () => addPermissionModeCompactLabels(options),
     [options],
   );
-  const lastValue = useRef<PermissionMode | undefined>(pending ? undefined : value);
+  const lastValue = useRef<PermissionMode | undefined>(value);
   if (!pending && value !== undefined) lastValue.current = value;
   const displayValue = pending ? lastValue.current : value ?? lastValue.current;
   const showFullAccessWarning = displayValue === "full" && !displayOverride;
-  if (compactWarningOnly && (!showFullAccessWarning || pending)) return null;
   if (
     !pending &&
     (value === undefined ||
@@ -87,18 +86,19 @@ export function PermissionModePicker({
   }
   return (
     <OptionPicker
-      iconOnly={compactWarningOnly}
-      label="Permission mode"
+      iconOnly={isCompactViewport}
+      label="Permissions"
       value={displayValue}
       options={compactOptions}
       onChange={onChange}
       className={cn(
         LIST_HOVER_TRANSITION,
-        compactWarningOnly ? "size-8 min-w-0 justify-center p-0" : "min-w-28 justify-between",
+        isCompactViewport ? "size-8 min-w-0 justify-center p-0" : "min-w-28 justify-between",
+        pending && displayValue === undefined && !isCompactViewport && "w-40 [&>span]:invisible animate-pulse bg-state-hover",
         showFullAccessWarning && "text-warning-text hover:text-warning-text data-[state=open]:text-warning-text",
         className,
       )}
-      leading={showFullAccessWarning ? <Icon name="AlertTriangle" className="size-3.5 shrink-0 text-attention" /> : undefined}
+      leading={<><Icon name="SecurityCheck" className="size-3.5 shrink-0" />{isCompactViewport ? null : <span>Permissions:</span>}</>}
       caretClassName="text-subtle-foreground/75"
       contentClassName="max-w-72"
       muted={muted}

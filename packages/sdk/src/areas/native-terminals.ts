@@ -78,12 +78,14 @@ export function createNativeTerminalsArea(
   const route = () => transport.api.v1.threads[":id"]["native-terminal"];
   return {
     async get(input) {
-      return transport.readJson(
+      const view = await transport.readJson(
         route().$get(
           { param: { id: input.threadId } },
           ...signalRequestArgs(input.signal),
         ),
       );
+      if (view) view.model ??= null;
+      return view;
     },
     async launch(input) {
       return transport.readJson(

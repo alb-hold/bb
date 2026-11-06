@@ -822,7 +822,7 @@
     display: grid;
     grid-template-columns: 2.75rem minmax(0, 1fr) auto;
     align-items: center;
-    column-gap: 0.25rem;
+    column-gap: 0.5rem;
     row-gap: 0;
   }
 
@@ -875,7 +875,7 @@
   visibility: hidden;
 }
 
-@media (width < 48rem) {
+@media (width < 48rem) and (pointer: coarse) {
   button:not([data-native-terminal-prompt] button):is(
     [data-compact-touch="header"],
     [data-sidebar="trigger"],
@@ -954,5 +954,11 @@
   ) > [data-compact-touch-panel] > div >
     [data-compact-touch-summary][aria-expanded="false"] {
     --compact-touch-summary-end: -4px;
+  }
+}
+
+@media (width <= 360px) {
+  [data-native-terminal-toggle] > button > span {
+    display: none;
   }
 }
