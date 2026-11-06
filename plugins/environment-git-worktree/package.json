@@ -26,7 +26,6 @@
     "prepare:bundled": "bb-plugin-build prepare-bundled"
   },
   "dependencies": {
-    "@bb/process-utils": "workspace:*",
     "@bb/shared-ui": "workspace:*",
     "bb-environment-provider-host": "workspace:*",
     "zod": "^4.3.6"

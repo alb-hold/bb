@@ -20,7 +20,10 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { RemoveDirectoryTreeResult } from "bb-environment-provider-host/remove-directory-tree";
+import type {
+  RemoveDirectoryTreeHooks,
+  RemoveDirectoryTreeResult,
+} from "bb-environment-provider-host/remove-directory-tree";
 import {
   hostProc,
   scanWorktreeHolders,
@@ -61,59 +64,14 @@ function errorRetainedPaths(error: unknown): string[] {
 
 async function removeDirectoryTree(
   root: string,
-  hooks: {
-    startedAt?: number;
-    afterStart?: (startedAt: number) => Promise<void>;
-    afterDirectoryListed?: (
-      directory: string,
-      entries: readonly string[],
-    ) => Promise<void>;
-    beforeEntryRemoval?: (entry: string) => Promise<void>;
-    beforeEntryRename?: (entry: string) => Promise<void>;
-    afterEntryCheck?: (entry: string) => Promise<void>;
-    afterEntryQuarantined?: (
-      entry: string,
-      quarantined: string,
-    ) => Promise<void>;
-    afterParentVerified?: (entry: string, quarantined: string) => Promise<void>;
-    afterRestoreNameCheck?: (
-      source: string,
-      destination: string,
-      isDirectory: boolean,
-    ) => Promise<void>;
-    beforeQuarantineRestoreLink?: (
-      source: string,
-      destination: string,
-    ) => Promise<void>;
-    beforeGitMarkerRestoreLink?: (
-      source: string,
-      destination: string,
-    ) => Promise<void>;
-    beforeQuarantinePinLink?: (source: string, pin: string) => Promise<void>;
-    recoveryLink?: (pin: string, destination: string) => Promise<void>;
-    recoveryWrite?: (
-      destination: Awaited<ReturnType<typeof fs.open>>,
-      buffer: Buffer,
-      offset: number,
-      length: number,
-      position: number,
-    ) => Promise<{ bytesWritten: number }>;
-    beforePinCleanup?: (pin: string, restoredPath: string) => Promise<void>;
-    createPinSuffix?: () => string;
-    afterGitMarkerLinked?: (
-      source: string,
-      destination: string,
-    ) => Promise<void>;
-    readDirectoryNames?: (directory: string) => Promise<string[]>;
-    onRetainedPath?: (retainedPath: string) => void;
-    afterRootMarkerDetached?: (root: string) => Promise<void>;
-  },
+  hooks: RemoveDirectoryTreeHooks,
 ): Promise<RemoveDirectoryTreeResult> {
   const moduleUrl = new URL("./remove-directory-tree.js", import.meta.url).href;
   const result: unknown = await (
     await import(moduleUrl)
   ).removeDirectoryTree(root, hooks);
-  if (typeof result === "string") return { status: result, retainedPaths: [] };
+  if (result === "removed" || result === "retained")
+    return { status: result, retainedPaths: [] };
   return result as RemoveDirectoryTreeResult;
 }
 
@@ -879,7 +837,7 @@ describe("real worktree teardown preservation", () => {
       handle?: Awaited<ReturnType<typeof fs.open>>;
       originalTimes?: { atimeMs: number; mtimeMs: number; mode: number };
     } = {};
-    let outcome: PromiseSettledResult<RemoveDirectoryTreeResult>;
+    let outcome: PromiseSettledResult<void>;
     try {
       outcome = await Promise.allSettled([
         remove(worktree, {

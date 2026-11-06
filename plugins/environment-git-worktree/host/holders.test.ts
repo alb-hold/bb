@@ -13,7 +13,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { linuxPathHasExtendedAcl } from "@bb/process-utils/linux-path-access";
+import { linuxPathHasExtendedAcl } from "./linux-path-access.js";
 import {
   describeHolderScan,
   hostProc,
