@@ -1004,7 +1004,7 @@ describe("native terminal activity", () => {
         if (scenario === "replaced") {
           setNativeTerminalThreadTerminal(fixture.harness.db, {
             threadId: thread.id,
-            terminalSessionId: null,
+            terminalSessionId: "replacement-terminal",
           });
         }
         expect(() => vi.advanceTimersByTime(NATIVE_TERMINAL_SETUP_DELAY_MS + 1))
