@@ -56,7 +56,34 @@ export function scheduleHomeInteractionPreloads(): () => void {
           if (stopped || !ready()) return;
           cancelIdle = requestBrowserIdle(() => {
             if (stopped || !ready()) return;
-            for (const id of HOME_INTERACTION_SPLITS) void downloadSplit(id);
+            const downloads = new Map<string, Promise<void>>(
+              HOME_INTERACTION_SPLITS.map((id) => [id, downloadSplit(id)]),
+            );
+            void Promise.all(
+              [
+                "thread-terminal",
+                "terminal-runtime",
+                "terminal-fit",
+                "terminal-unicode",
+                "terminal-webgl",
+                "terminal-search",
+                "terminal-web-links",
+              ].map((id) => downloads.get(id)),
+            )
+              .then(async () => {
+                if (stopped || !ready()) return;
+                const [{ LazyThreadTerminalPanel }, { importTerminalModules }] =
+                  await Promise.all([
+                    import("@/components/secondary-panel/lazySecondaryPanelComponents"),
+                    import("@/components/thread/terminal/terminal-modules"),
+                  ]);
+                if (stopped || !ready()) return;
+                await Promise.all([
+                  LazyThreadTerminalPanel.preload(),
+                  importTerminalModules(),
+                ]);
+              })
+              .catch(() => undefined);
           });
         }, 250);
       });

@@ -70,6 +70,8 @@ it("keeps hidden panels, SDK UI, menu bodies and extended glyphs outside their s
       "src/components/promptbox/usePromptVoiceRuntime.tsx",
     ],
     boot: [
+      "src/components/thread/terminal/ThreadTerminalPanel.tsx",
+      "src/components/thread/terminal/terminal-modules.ts",
       "src/hooks/useVoiceInput.ts",
       "src/components/pickers/ModelReasoningPickerBody.tsx",
     ],
