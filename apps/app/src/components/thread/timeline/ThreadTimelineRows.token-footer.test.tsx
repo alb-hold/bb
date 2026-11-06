@@ -192,7 +192,7 @@ describe("ThreadTimelineRows token footer", () => {
     expect(footer?.textContent).toBe("121.2K tokens");
     expect(footer?.querySelector('[data-token-part="reasoning"]')).toBeNull();
     expect(footer?.className).toContain("font-sans");
-    expect(footer?.className).toContain("text-xs");
+    expect(footer?.className).toContain("text-2xs");
     expect(footer?.className).toContain("text-muted-foreground");
     fireEvent.click(
       container.querySelector(

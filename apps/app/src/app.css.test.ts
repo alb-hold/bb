@@ -65,12 +65,19 @@ describe("compact touch targets", () => {
   });
 });
 
-it("gives stacked summaries disjoint 44px targets instead of borrowing adjacent hit areas", () => {
+it("keeps summary rows compact and splits invisible extensions between neighbours", () => {
   const block = css.slice(css.lastIndexOf("@media (width < 48rem)"));
-  expect(block).toMatch(/button\[data-compact-touch-summary\]\s*\{\s*min-block-size: 44px;/);
-  expect(block).toMatch(/button\[data-compact-touch-summary\]::after\s*\{\s*inset-block: 0;/);
-  expect(block).not.toContain("--compact-touch-summary-end");
-  expect(block).not.toContain("margin-block-end: -20px");
+  expect(block).not.toMatch(
+    /button\[data-compact-touch-summary\]\s*\{\s*min-block-size:/,
+  );
+  expect(block).toContain("var(--compact-touch-summary-start, -12px)");
+  expect(block).toContain("var(--compact-touch-summary-end, -12px)");
+  expect(block).toContain(
+    "--compact-touch-summary-start: var(--compact-touch-summary-half-gap)",
+  );
+  expect(block).toContain(
+    "--compact-touch-summary-end: var(--compact-touch-summary-half-gap)",
+  );
 });
 
 it("limits compact pseudo-element hit areas to coarse pointers", () => {

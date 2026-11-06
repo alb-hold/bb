@@ -86,7 +86,8 @@ describe("presentation-driven timeline rows", () => {
       />,
     );
     const title = view.container.querySelector('[title*="pnpm test"]');
-    expect(title?.classList.contains("text-xs")).toBe(true);
+    expect(title?.classList.contains("text-2xs")).toBe(true);
+    expect(title?.classList.contains("text-xs")).toBe(false);
     expect(title?.classList.contains("text-sm")).toBe(false);
   });
 
