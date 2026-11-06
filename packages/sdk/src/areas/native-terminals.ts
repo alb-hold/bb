@@ -84,7 +84,8 @@ export function createNativeTerminalsArea(
           ...signalRequestArgs(input.signal),
         ),
       );
-      return view === null ? null : { ...view, model: view.model ?? null };
+      if (view) view.model ??= null;
+      return view;
     },
     async launch(input) {
       return transport.readJson(
