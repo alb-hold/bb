@@ -81,7 +81,7 @@ it("keeps disclosure extensions at their full height between neighbours", () => 
   expect(block).not.toContain("--compact-touch-summary-half-gap");
 });
 
-it("expands timeline hit areas without increasing their layout heights", () => {
+it("reserves real timeline hit areas without extensions into neighbouring rows", () => {
   const block = css.slice(
     css.lastIndexOf("@media (width < 48rem)"),
     css.indexOf("@media (width <= 480px)"),
@@ -89,22 +89,22 @@ it("expands timeline hit areas without increasing their layout heights", () => {
   const timeline = block.slice(block.indexOf('[data-compact-touch="action"]'));
   expect(block).not.toContain("aria-label");
   expect(timeline).not.toContain("min-block-size");
-  expect(timeline).toContain('content: ""');
-  expect(timeline).toContain("position: absolute");
-  expect(timeline).toContain("inset-block: calc((100% - 44px) / 2)");
-  expect(timeline).toContain("inset-block: -12px");
+  expect(timeline).not.toContain('content: ""');
+  expect(timeline).toContain("min-height: 44px");
+  expect(timeline).not.toContain("inset-block: calc((100% - 44px) / 2)");
+  expect(timeline).not.toContain("inset-block: -12px");
 });
 
-it("keeps the last summary hit area inside the animated clip without adding layout height", () => {
+it("keeps the last summary hit area inside the animated clip without negative margins", () => {
   const block = css.slice(
     css.lastIndexOf("@media (width < 48rem)"),
     css.indexOf("@media (width <= 480px)"),
   );
   expect(block).toMatch(
-    /\[data-compact-touch-height\]:has\(\[data-compact-touch-summary\]\)\s*\{\s*margin-block: -12px;\s*\}/,
+    /\[data-compact-touch-height\]:has\(\[data-compact-touch-summary\]\)\s*\{\s*margin-block: 0px;\s*\}/,
   );
   expect(block).toMatch(
-    /\[data-compact-touch-height\]:has\(\[data-compact-touch-summary\]\) > div\s*\{\s*padding-block: 12px;\s*\}/,
+    /\[data-compact-touch-height\]:has\(\[data-compact-touch-summary\]\) > div\s*\{\s*padding-block: 0px;\s*\}/,
   );
 });
 
@@ -134,12 +134,10 @@ it("insets the phone microphone inside the input row without overlapping the act
   expect(trailing).toMatch(/bottom: calc\(100% - 0\.5rem\);/);
   expect(row?.trim()).toBe("0.75rem 0.25rem 0.25rem");
 });
-it("centres code hit extensions and reserves space for message action extensions", () => {
+it("keeps code and message hit areas inside their own rows", () => {
+  expect(css).toMatch(/min-height: 44px;/);
   expect(css).toMatch(
-    /button\[data-compact-touch="code"\]::after\s*\{\s*inset-block: calc\(\(100% - 44px\) \/ 2\);/,
-  );
-  expect(css).toMatch(
-    /\[data-message-action-slot\]\s*\{\s*padding-block: 0.75rem;/,
+    /\[data-message-action-slot\]\s*\{\s*padding-block: 0px;/,
   );
   expect(css).toMatch(/\[data-code-actions\]\s*\{\s*min-height: 2.75rem;/);
 });

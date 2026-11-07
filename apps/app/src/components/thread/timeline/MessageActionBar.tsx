@@ -188,7 +188,7 @@ const HOVER_REVEAL_CLASS = cn(
   HOVER_REVEAL_NO_HOVER_VISIBLE_CLASS,
 );
 const MOBILE_INLINE_ACTION_CLASS =
-  "max-md:pointer-coarse:size-9 max-md:pointer-coarse:[&_[data-icon-root]]:size-4";
+  "max-md:pointer-coarse:size-11 max-md:pointer-coarse:[&_[data-icon-root]]:size-4";
 const MOBILE_OVERFLOW_ACTION_CLASS = "max-md:pointer-coarse:hidden";
 const ACTION_TOOLTIP_SIDE = "bottom";
 const MENU_CONTENT_WIDTH_CLASS = "max-w-[min(16rem,calc(100vw-1rem))]";
@@ -460,7 +460,7 @@ export function MessageActionBar({
         ref={slotRef}
         className={cn(
           slotClass,
-          "@container/message-actions min-h-5 max-md:pointer-coarse:min-h-9",
+          "@container/message-actions min-h-5",
         )}
         data-message-action-slot=""
       >

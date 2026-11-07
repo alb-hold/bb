@@ -69,11 +69,12 @@
 
 @media (width < 48rem) and (pointer: coarse) {
   [data-message-action-slot][data-message-action-slot] {
-    padding-block: 4px;
+    padding-block: 0px;
+    min-height: 0px;
   }
 
   [data-compact-touch-panel] > div:first-child {
-    padding-block: 4px;
+    padding-block: 0px;
   }
 
   button:is(
@@ -82,11 +83,7 @@
     [data-compact-touch="code"],
     [data-compact-touch-summary]
   ) {
-    min-height: 36px;
-  }
-
-  [data-compact-touch-panel] button[data-compact-touch-summary]::after {
-    inset-block: calc((100% - 44px) / 2);
+    min-height: 44px;
   }
 
   [data-touch-actions-visible="false"]:not(:focus-within)
