@@ -1,3 +1,4 @@
+import { getThreadDetailActivityIndicator } from "@/lib/thread-activity-label";
 import { useTerminalMountGate } from "@/hooks/useTerminalMountGate";
 import { AppPanelTabsPublisher } from "@/lib/app-panel-tabs";
 import {
@@ -1850,7 +1851,7 @@ function ThreadDetailViewInternal(
       }
       thread={threadActionTarget}
       threadTitle={threadTitle}
-      activityIndicator={thread.listIndicator}
+      activityIndicator={getThreadDetailActivityIndicator(thread)}
       needsInput={thread.nativeTerminal && thread.hasPendingInteraction}
       hasNativeTerminal={nativeTerminalThread != null}
       nativeActivityTargetRef={setNativeActivityTarget}

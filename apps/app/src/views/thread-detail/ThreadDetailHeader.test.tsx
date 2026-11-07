@@ -287,7 +287,11 @@ describe("ThreadDetailHeader", () => {
         if (this.tagName === "HEADER") return new DOMRect(0, 0, width, 52);
         if (this.hasAttribute("data-terminal-search-trigger"))
           return new DOMRect(0, 0, 44, 44);
-        if (this.querySelector(":scope > [data-thread-detail-header-title]")) {
+        if (
+          this.firstElementChild?.hasAttribute(
+            "data-thread-detail-header-title",
+          )
+        ) {
           const folded = !document.querySelector(
             "[data-terminal-search-trigger]",
           );
@@ -295,14 +299,23 @@ describe("ThreadDetailHeader", () => {
         }
         return new DOMRect();
       });
-      let actions: ThreadDetailHeaderActionsMenuArgs["terminalSearchActions"] =
-        [];
       render(
         <PaneContext.Provider value={PANE_CONTEXT}>
           <ThreadDetailHeader
             actionsMenu={(args) => {
-              actions = args.terminalSearchActions;
-              return <button>Thread actions</button>;
+              return (
+                <div>
+                  <button>Thread actions</button>
+                  {args.terminalSearchActions.map((item) => (
+                    <button
+                      key={item.key}
+                      aria-label="Search terminal output in menu"
+                    >
+                      {item.action.label}
+                    </button>
+                  ))}
+                </div>
+              );
             }}
             hasNativeTerminal
             isSecondaryPanelOpen={false}
@@ -312,9 +325,11 @@ describe("ThreadDetailHeader", () => {
           />
         </PaneContext.Provider>,
       );
-      expect(actions.map((item) => item.action.label)).toEqual(
-        fits ? [] : ["Search terminal output"],
-      );
+      expect(
+        screen.queryByRole("button", {
+          name: "Search terminal output in menu",
+        }) !== null,
+      ).toBe(!fits);
       expect(
         screen.queryByRole("button", { name: "Search terminal output" }) !==
           null,
