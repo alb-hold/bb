@@ -45,6 +45,7 @@ export function renderPageShellFooter(
     <div className="relative shrink-0 bg-background">
       <OverflowFade placement="above" tone="background" />
       <div
+        data-panel-layout-anchor=""
         className={cn(
           "mx-auto w-full px-4",
           bottomPaddingClassName,
@@ -90,6 +91,7 @@ export function StaticPageShell({
           )}
         >
           <div
+            data-panel-layout-anchor=""
             className={cn(
               "mx-auto flex w-full flex-col px-4 pt-2",
               staticFooter ? "pb-4" : STATIC_CONTENT_BOTTOM_PADDING_CLASS,

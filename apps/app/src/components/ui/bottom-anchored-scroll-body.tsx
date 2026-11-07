@@ -380,6 +380,7 @@ export function BottomAnchoredScrollBody({
               />
               <div
                 ref={pageContentRef}
+                data-panel-layout-anchor=""
                 data-scroll-attached={isAtBottom ? "" : undefined}
                 className={cn(
                   "mx-auto flex w-full min-w-0 flex-1 flex-col px-4 pb-4 pt-2",
