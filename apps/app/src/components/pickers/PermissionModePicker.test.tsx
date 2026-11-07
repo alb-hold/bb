@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { readFileSync } from "node:fs";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { CompactViewportOverrideProvider } from "@bb/shared-ui/hooks/use-compact-viewport";
@@ -288,3 +289,40 @@ it("keeps the phone permission name and menu while marking its collapsible label
   fireEvent.click(await screen.findByRole("menuitem", { name: /Approve/ }));
   expect(onChange).toHaveBeenCalledWith("auto");
 });
+
+it.each([
+  ["full", "Full Access"],
+  ["auto", "Approve"],
+  ["accept-edits", "Edits"],
+] as const)(
+  "names the collapsed phone shield for mode %s while its visible label is hidden",
+  (value, label) => {
+    const css = readFileSync("src/app.css", "utf8");
+    const labelRule = css.match(
+      /\[data-promptbox\]\[data-promptbox-collapsed\] \[data-permission-label\] \{[^}]+\}/,
+    )?.[0];
+    expect(labelRule).toBeDefined();
+    render(
+      <CompactViewportOverrideProvider isCompactViewport>
+        <style>{labelRule}</style>
+        <form data-promptbox="" data-promptbox-collapsed="">
+          <PermissionModePicker
+            value={value}
+            options={options}
+            supported
+            onChange={vi.fn()}
+          />
+        </form>
+      </CompactViewportOverrideProvider>,
+    );
+    const trigger = screen.getByRole("button", {
+      name: `Permissions: ${label}`,
+    });
+    expect(
+      getComputedStyle(trigger.querySelector("[data-permission-label]")!)
+        .display,
+    ).toBe("none");
+    expect(trigger.querySelector('[data-icon="SecurityCheck"]')).not.toBeNull();
+    expect(trigger.getAttribute("aria-label")).toBe(`Permissions: ${label}`);
+  },
+);
