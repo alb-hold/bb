@@ -183,3 +183,22 @@ describe("terminal WebGL lifecycle", () => {
     expect(addons[1]!.dispose).toHaveBeenCalledOnce();
   });
 });
+
+it("distinguishes an unattempted hidden renderer from a completed DOM fallback", () => {
+  const { renderer, terminal, createAddon, onRendererChange } = setupRenderer({
+    visible: false,
+    failLoads: true,
+  });
+  expect(renderer.initialAttemptComplete).toBe(false);
+  expect(createAddon).not.toHaveBeenCalled();
+  let completedOnFailure = false;
+  onRendererChange.mockImplementation(() => {
+    completedOnFailure = renderer.initialAttemptComplete;
+  });
+  renderer.setVisible(true);
+  expect(terminal.loadAddon).toHaveBeenCalledOnce();
+  expect(renderer.renderer).toBe("dom");
+  expect(renderer.initialAttemptComplete).toBe(true);
+  expect(completedOnFailure).toBe(true);
+  renderer.dispose();
+});

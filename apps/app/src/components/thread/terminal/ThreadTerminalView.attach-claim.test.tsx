@@ -216,7 +216,7 @@ describe("native terminal attach claim timing", () => {
       ),
     ),
     ...[44, 125].flatMap((cols) =>
-      ["webgl", "late", "unobserved"].flatMap((rendererMode) =>
+      ["webgl", "failed", "late", "unobserved"].flatMap((rendererMode) =>
         (rendererMode === "webgl" ? [false, true] : [false]).map(
           (layoutShift) => ({
             cols,
@@ -266,7 +266,11 @@ describe("native terminal attach claim timing", () => {
           get renderer() {
             return webglActive ? "webgl" : "dom";
           },
+          get initialAttemptComplete() {
+            return webglActive || rendererMode === "failed";
+          },
           setVisible: (visible) => {
+            if (rendererMode === "failed") return;
             if (visible && !webglActive) {
               webglActive = true;
               options?.onRendererChange?.("webgl");
@@ -535,7 +539,7 @@ describe("native terminal attach claim timing", () => {
         rendererMode === "late" || rendererMode === "unobserved" ? 200 : 150,
       );
       if (cacheMode === "miss") expect(claimAt).toBe(resizeAt);
-      if (rendererMode === "dom")
+      if (rendererMode === "dom" || rendererMode === "failed")
         expect(claimAt! - renderedAt).toBeLessThanOrEqual(100);
       if (rendererMode !== "dom")
         expect(claimAt! - renderedAt).toBeLessThanOrEqual(

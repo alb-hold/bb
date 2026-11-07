@@ -2425,7 +2425,11 @@ export function ThreadTerminalView({
               onRendererChange: (renderer) => {
                 if (disposed || terminal === null) return;
                 scheduleFitRef.current?.();
-                if (renderer === "webgl" && !initialRendererSettled)
+                if (
+                  !initialRendererSettled &&
+                  (renderer === "webgl" ||
+                    webglRenderer?.initialAttemptComplete)
+                )
                   settleInitialRenderer();
               },
             },
@@ -2692,13 +2696,13 @@ export function ThreadTerminalView({
         )
           return;
         clearTimeout(rendererDeadline);
+        initialRendererSettled = true;
         if (holdForFittedGrid && webglRenderer?.renderer === "dom") {
           webglVisibilityRef.current?.dispose();
           webglVisibilityRef.current = null;
           webglRenderer.dispose();
           webglRenderer = null;
         }
-        initialRendererSettled = true;
         markTerminalPerformance("terminal-initial-renderer-settled");
         fitTerminal();
         resolveRendererSettled();
@@ -2712,7 +2716,7 @@ export function ThreadTerminalView({
           if (
             initialRendererSettled ||
             webglRenderer === null ||
-            webglRenderer.renderer === "webgl"
+            webglRenderer.initialAttemptComplete
           ) {
             settleInitialRenderer();
           }
