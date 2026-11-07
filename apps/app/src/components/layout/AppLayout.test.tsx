@@ -19,6 +19,7 @@ import {
 } from "@/lib/plugin-slots";
 import { resetAllCrashedPluginSlotsForTest } from "@/components/plugin/PluginSlotMount";
 import { makePluginRegistrationSet } from "@/test/fixtures/plugins";
+import { makeThreadResponse } from "@/test/fixtures/thread-responses";
 import {
   useEffect,
   type MouseEvent as ReactMouseEvent,
@@ -51,6 +52,12 @@ const sidebarThreadsMock = vi.hoisted(() => {
   const threads: import("@bb/domain").ThreadListEntry[] = [];
   return { threads };
 });
+
+const useThreadMock = vi.hoisted(() =>
+  vi.fn((): { data: ReturnType<typeof makeThreadResponse> | undefined } => ({
+    data: undefined,
+  })),
+);
 
 const SIDEBAR_WIDTH_STORAGE_KEY = "bb.sidebar.width";
 const SIDEBAR_OPEN_STORAGE_KEY = "bb.sidebar.open";
@@ -193,7 +200,7 @@ vi.mock("@/hooks/queries/sidebar-navigation-query", () => ({
 vi.mock("@/hooks/queries/thread-queries", () => ({
   useArchivedThreads: () => ({ data: undefined }),
   didThreadDetailBootstrapRefreshAfterMount: () => true,
-  useThread: () => ({ data: undefined }),
+  useThread: useThreadMock,
   useThreadDetailBootstrap: useThreadDetailBootstrapMock,
   useThreadPendingInteractions: () => ({ data: undefined }),
 }));
@@ -246,6 +253,7 @@ function renderLayout(initialPath = "/", children: ReactNode = null) {
 
 beforeEach(() => {
   sidebarThreadsMock.threads = [];
+  useThreadMock.mockReturnValue({ data: undefined });
   window.localStorage.clear();
   window.sessionStorage.clear();
   useThreadDetailBootstrapMock.mockReset();
@@ -269,7 +277,10 @@ afterEach(() => {
 it("shows the compact home context and reuses new-thread navigation", async () => {
   render(
     <CompactViewportOverrideProvider isCompactViewport>
-      {layoutTree("/", <Link to="/projects/proj_one/threads/thr_one">Open seeded thread</Link>)}
+      {layoutTree(
+        "/",
+        <Link to="/projects/proj_one/threads/thr_one">Open seeded thread</Link>,
+      )}
     </CompactViewportOverrideProvider>,
   );
   expect(await screen.findByText("Home")).toBeDefined();
@@ -280,11 +291,38 @@ it("shows the compact home context and reuses new-thread navigation", async () =
   await waitFor(() =>
     expect(screen.getByTestId("location").textContent).toBe("/"),
   );
-  fireEvent.click(screen.getByRole("link", {name: "Open seeded thread"}));
-  await waitFor(() => expect(screen.queryByRole("button", {name: /^New thread$/})).toBeNull());
+  fireEvent.click(screen.getByRole("link", { name: "Open seeded thread" }));
+  await waitFor(() =>
+    expect(screen.queryByRole("button", { name: /^New thread$/ })).toBeNull(),
+  );
 });
 
 describe("canonical thread routes", () => {
+  it("keeps an explicit mismatching project while a different project is cached", () => {
+    useThreadMock.mockReturnValue({
+      data: makeThreadResponse({ id: "thr_one", projectId: "proj_actual" }),
+    });
+
+    const route = "/projects/proj_wrong/threads/thr_one?panel=files#diff";
+    renderLayout(route);
+
+    expect(screen.getByTestId("location").textContent).toBe(route);
+  });
+
+  it("canonicalizes from a ready thread record while bootstrap is pending", async () => {
+    useThreadMock.mockReturnValue({
+      data: makeThreadResponse({ id: "thr_one", projectId: "proj_actual" }),
+    });
+
+    renderLayout("/threads/thr_one?message=12#event-12");
+
+    await waitFor(() =>
+      expect(screen.getByTestId("location").textContent).toBe(
+        "/projects/proj_actual/threads/thr_one?message=12#event-12",
+      ),
+    );
+  });
+
   it.each([
     [
       "/threads/thr_one?message=12#event-12",
@@ -292,9 +330,9 @@ describe("canonical thread routes", () => {
     ],
     [
       "/projects/proj_wrong/threads/thr_one?panel=files#diff",
-      "/projects/proj_actual/threads/thr_one?panel=files#diff",
+      "/projects/proj_wrong/threads/thr_one?panel=files#diff",
     ],
-  ])("redirects %s to the thread's project route", async (route, expected) => {
+  ])("canonicalizes only projectless routes: %s", async (route, expected) => {
     useThreadDetailBootstrapMock.mockReturnValue({
       data: { projectId: "proj_actual" },
       isError: false,

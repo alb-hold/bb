@@ -1880,6 +1880,11 @@ export function ThreadTerminalView({
       ...TERMINAL_CELL_OPTIONS,
     };
     let initialRendererSettled = retainNativeOutput;
+    let resolveRendererSettled = () => {};
+    const rendererSettled = new Promise<void>((resolve) => {
+      resolveRendererSettled = resolve;
+    });
+    if (initialRendererSettled) resolveRendererSettled();
     let initialLayoutSettled = false;
     let retainedOutputReplayed = sessionStatusRef.current !== "exited";
     let retainedOutputGrid: TerminalGridSize | null = null;
@@ -2693,6 +2698,7 @@ export function ThreadTerminalView({
         initialRendererSettled = true;
         markTerminalPerformance("terminal-initial-renderer-settled");
         fitTerminal();
+        resolveRendererSettled();
       }
       if (!initialRendererSettled) {
         rendererDeadline = setTimeout(
@@ -3277,6 +3283,7 @@ export function ThreadTerminalView({
         clearTimeout(rendererDeadline);
         initialRendererSettled = true;
         initialLayoutSettled = true;
+        resolveRendererSettled();
         activeTransport.markLayoutSettled();
         activeTransport.claimSize(true);
         fitTerminal();
@@ -3311,11 +3318,11 @@ export function ThreadTerminalView({
             rect.width <= 0 ||
             rect.height <= 0 ||
             hasRunningLayoutAnimation(containerElement) ||
-            (holdForFittedGrid && !initialRendererSettled) ||
             document.fonts?.status === "loading"
           ) {
             return null;
           }
+          if (holdForFittedGrid) return `${rect.width}x${rect.height}`;
           const fitted = fitAddon?.proposeDimensions();
           if (
             fitted === undefined ||
@@ -3341,6 +3348,7 @@ export function ThreadTerminalView({
           clearLiveViewportBeforeGridResize();
         },
         ready: document.fonts?.ready,
+        settleReady: holdForFittedGrid ? rendererSettled : undefined,
         subscribe: (onSignal) =>
           observeLayoutSignals({
             affectsContainer: (target) =>

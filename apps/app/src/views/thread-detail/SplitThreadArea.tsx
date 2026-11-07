@@ -99,7 +99,6 @@ import {
 import { getAdjacentPaneId, getDirectionalPaneId } from "./splitPaneCommands";
 import {
   applyThreadPaneActionToLayout,
-  createSinglePaneLayout,
   focusedPaneRoute,
   paneContentRoute,
   reconcileLayoutForContent,
@@ -303,14 +302,26 @@ function SplitThreadAreaContent({ routeContent }: SplitThreadAreaProps) {
     );
   }, [currentContent, setLayout]);
 
-  const layout: SplitLayout | null =
-    storedLayout ??
-    (currentContent?.kind === "thread" && routeThread
-      ? createSinglePaneLayout(routeThread)
-      : currentContent
-        ? reconcileLayoutForContent(null, currentContent)
-        : null);
-  useTerminalMountGate("terminal-split-layout", "workspace", layout !== null && currentContent !== null);
+  const layout = useMemo(() => {
+    if (currentContent === null) return storedLayout;
+    if (storedLayout === null)
+      return reconcileLayoutForContent(null, currentContent);
+    const focusedContent = findPane(
+      storedLayout.root,
+      storedLayout.focusedPaneId,
+    )?.content;
+    return currentContent.kind === "thread" &&
+      focusedContent?.kind === "thread" &&
+      currentContent.threadId === focusedContent.threadId &&
+      currentContent.projectId !== focusedContent.projectId
+      ? reconcileLayoutForContent(storedLayout, currentContent)
+      : storedLayout;
+  }, [storedLayout, currentContent]);
+  useTerminalMountGate(
+    "terminal-split-layout",
+    "workspace",
+    layout !== null && currentContent !== null,
+  );
   const panes = layout === null ? [] : listPanes(layout.root);
   const isSplitActive = splitWorkspaceActive && panes.length > 1;
   const maximizedPane =

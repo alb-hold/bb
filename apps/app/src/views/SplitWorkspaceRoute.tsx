@@ -11,6 +11,7 @@ import {
 } from "@/lib/route-paths";
 import type { PaneContent } from "@/lib/split-layout";
 import { useRouteState } from "@/hooks/useRouteState";
+import { useThread } from "@/hooks/queries/thread-queries";
 import { LegacyProjectComposeRedirect } from "./LegacyProjectComposeRedirect";
 import { SplitThreadArea } from "./thread-detail/SplitThreadArea";
 import { paneContentForPathname } from "./thread-detail/splitThreadNavigation";
@@ -22,7 +23,17 @@ const ROOT_COMPOSE_CONTENT = { kind: "new-thread" } as const;
 
 export default function SplitWorkspaceRoute() {
   const location = useLocation();
-  const { projectId, threadId, isThreadView } = useRouteState();
+  const {
+    projectId: routeProjectId,
+    threadId,
+    isThreadView,
+    isProjectlessView,
+  } = useRouteState();
+  const { data: thread } = useThread(threadId ?? "", { enabled: false });
+  const projectId =
+    isProjectlessView && thread?.id === threadId
+      ? (thread?.projectId ?? routeProjectId)
+      : routeProjectId;
   const legacyProjectMatch = matchPath(
     LEGACY_PROJECT_COMPOSE_ROUTE_PATH,
     location.pathname,

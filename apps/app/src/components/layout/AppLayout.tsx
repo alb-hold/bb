@@ -524,8 +524,14 @@ function AppLayoutContent({ children }: AppLayoutProps) {
   );
   const location = useLocation();
   useRedirectRetiredPluginPaths();
-  const { projectId, threadId, isThreadView, isArchivedView, isRootView } =
-    useRouteState();
+  const {
+    projectId,
+    threadId,
+    isThreadView,
+    isArchivedView,
+    isRootView,
+    isProjectlessView,
+  } = useRouteState();
   const focusedPageTitle = useAtomValue(focusedPageTitleAtom);
   const activeTerminalSessionId = useActiveDeviceHandoffTerminal();
   const deviceHandoffQueue = useDeviceHandoffQueue(
@@ -657,9 +663,20 @@ function AppLayoutContent({ children }: AppLayoutProps) {
   });
   const hasThreadDetailBootstrapSettled =
     threadDetailBootstrapQuery.isSuccess || threadDetailBootstrapQuery.isError;
-  const resolvedThreadProjectId = threadDetailBootstrapQuery.data?.projectId;
+  const { data: thread } = useThread(threadId ?? "", {
+    enabled:
+      Boolean(threadId) && (!isThreadView || hasThreadDetailBootstrapSettled),
+    refetchOnMount:
+      isThreadView &&
+      didThreadDetailBootstrapRefreshAfterMount(threadDetailBootstrapQuery)
+        ? false
+        : "always",
+  });
+  const resolvedThreadProjectId =
+    thread?.projectId ?? threadDetailBootstrapQuery.data?.projectId;
   const canonicalThreadRoutePath =
     isThreadView &&
+    isProjectlessView &&
     projectId !== undefined &&
     threadId !== undefined &&
     resolvedThreadProjectId !== undefined &&
@@ -692,15 +709,6 @@ function AppLayoutContent({ children }: AppLayoutProps) {
     : null;
   const projectName = projectId ? project?.name : undefined;
   const projectLabel = projectName ?? (projectId ? projectId : undefined);
-  const { data: thread } = useThread(threadId ?? "", {
-    enabled:
-      Boolean(threadId) && (!isThreadView || hasThreadDetailBootstrapSettled),
-    refetchOnMount:
-      isThreadView &&
-      didThreadDetailBootstrapRefreshAfterMount(threadDetailBootstrapQuery)
-        ? false
-        : "always",
-  });
   const threadDisplayTitle = thread
     ? resolveThreadTitleDisplayText(
         getThreadDisplayTitle(thread),

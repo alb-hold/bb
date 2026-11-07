@@ -274,6 +274,65 @@ describe("watchTerminalLayoutSettled", () => {
 
     expect(onSettled).not.toHaveBeenCalled();
   });
+
+  it.each(["stable", "changed", "hidden"])(
+    "samples layout during renderer loading and rechecks a %s container before claiming",
+    async (layout) => {
+      vi.useFakeTimers();
+      const start = Date.now();
+      let size: string | null = "800x600";
+      let rendererReady = () => {};
+      const claims: { at: number; size: string | null }[] = [];
+      watchTerminalLayoutSettled({
+        ...frameScheduler(),
+        graceFrames: 0,
+        stableFramesRequired: 1,
+        measure: () => size,
+        settleReady: new Promise<void>((resolve) => {
+          rendererReady = resolve;
+        }),
+        onSettled: () => claims.push({ at: Date.now() - start, size }),
+      });
+      await vi.advanceTimersByTimeAsync(72);
+      expect(claims).toEqual([]);
+      if (layout === "changed") size = "900x600";
+      if (layout === "hidden") size = null;
+      rendererReady();
+      await vi.advanceTimersByTimeAsync(0);
+      if (layout === "stable") {
+        expect(claims).toEqual([{ at: 72, size: "800x600" }]);
+      } else {
+        expect(claims).toEqual([]);
+        if (layout === "hidden") {
+          await vi.advanceTimersByTimeAsync(16);
+          size = "900x600";
+        }
+        await vi.advanceTimersByTimeAsync(32);
+        expect(claims).toEqual([
+          { at: layout === "hidden" ? 120 : 88, size: "900x600" },
+        ]);
+      }
+    },
+  );
+
+  it("cancels layout sampling while renderer selection is pending", async () => {
+    vi.useFakeTimers();
+    let rendererReady = () => {};
+    const onSettled = vi.fn();
+    const stop = watchTerminalLayoutSettled({
+      ...frameScheduler(),
+      measure: () => "800x600",
+      settleReady: new Promise<void>((resolve) => {
+        rendererReady = resolve;
+      }),
+      onSettled,
+    });
+    await vi.advanceTimersByTimeAsync(64);
+    stop();
+    rendererReady();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(onSettled).not.toHaveBeenCalled();
+  });
 });
 
 describe("hasRunningLayoutAnimation", () => {

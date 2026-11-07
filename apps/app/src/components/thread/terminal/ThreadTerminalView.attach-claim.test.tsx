@@ -211,20 +211,28 @@ describe("native terminal attach claim timing", () => {
           pendingScreen,
           cacheMode,
           rendererMode: "dom",
+          layoutShift: false,
         })),
       ),
     ),
     ...[44, 125].flatMap((cols) =>
-      ["webgl", "late"].map((rendererMode) => ({
-        cols,
-        pendingScreen: "pending",
-        cacheMode: "miss",
-        rendererMode,
-      })),
+      ["webgl", "late"].flatMap((rendererMode) =>
+        (rendererMode === "webgl" ? [false, true] : [false]).map(
+          (layoutShift) => ({
+            cols,
+            pendingScreen: "pending",
+            cacheMode: "miss",
+            rendererMode,
+            layoutShift,
+          }),
+        ),
+      ),
     ),
   ])(
-    "claims the fitted $cols-column grid (screen: $pendingScreen, cache: $cacheMode, renderer: $rendererMode)",
-    async ({ cols, pendingScreen, cacheMode, rendererMode }) => {
+    "claims the fitted $cols-column grid (screen: $pendingScreen, cache: $cacheMode, renderer: $rendererMode, layout shift: $layoutShift)",
+    async ({ cols, pendingScreen, cacheMode, rendererMode, layoutShift }) => {
+      let layoutMoved = false;
+      const finalCols = cols + (layoutShift ? 3 : 0);
       const stages = new Map<string, number>();
       vi.spyOn(terminalMarks, "markTerminalPerformance").mockImplementation(
         (name) => {
@@ -299,21 +307,26 @@ describe("native terminal attach claim timing", () => {
       );
       vi.spyOn(FitAddon.prototype, "proposeDimensions").mockImplementation(
         () => ({
-          cols: rendererMode === "webgl" && !webglActive ? cols - 2 : cols,
+          cols:
+            (layoutMoved ? finalCols : cols) -
+            (rendererMode === "webgl" && !webglActive ? 2 : 0),
           rows: 36,
         }),
       );
-      vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
-        width: 354,
+      vi.spyOn(
+        HTMLElement.prototype,
+        "getBoundingClientRect",
+      ).mockImplementation(() => ({
+        width: layoutMoved ? 400 : 354,
         height: 504,
         top: 0,
         left: 0,
-        right: 354,
+        right: layoutMoved ? 400 : 354,
         bottom: 504,
         x: 0,
         y: 0,
         toJSON: () => ({}),
-      });
+      }));
       const frames = new Map<number, FrameRequestCallback>();
       let frameId = 0;
       vi.spyOn(window, "requestAnimationFrame").mockImplementation(
@@ -441,6 +454,10 @@ describe("native terminal attach claim timing", () => {
       if (cacheMode === "miss") expect(claimAt).toBeUndefined();
       Object.assign(fonts, { status: "loaded" });
       fontsReady?.();
+      if (layoutShift)
+        setTimeout(() => {
+          layoutMoved = true;
+        }, 56);
       let revealedAt: number | undefined;
       for (let frame = 0; frame < 50; frame += 1) {
         await act(async () => {
@@ -504,10 +521,22 @@ describe("native terminal attach claim timing", () => {
       if (cacheMode === "miss") expect(claimAt).toBe(resizeAt);
       if (rendererMode === "dom")
         expect(claimAt! - renderedAt).toBeLessThanOrEqual(100);
-      const measured = { type: "resize", cols, rows: 36, claim: true };
+      if (rendererMode !== "dom")
+        expect(claimAt! - renderedAt).toBeLessThanOrEqual(
+          (rendererMode === "late" ? 150 : 80) + (layoutShift ? 16 : 0),
+        );
+      const measured = {
+        type: "resize",
+        cols: finalCols,
+        rows: 36,
+        claim: true,
+      };
       expect(claims).toEqual([measured]);
       if (rendererMode === "late") expect(webglActive).toBe(false);
-      expect(readCachedTerminalGrid(session.id)).toEqual({ cols, rows: 36 });
+      expect(readCachedTerminalGrid(session.id)).toEqual({
+        cols: finalCols,
+        rows: 36,
+      });
     },
   );
 });

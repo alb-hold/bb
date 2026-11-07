@@ -16,6 +16,7 @@ import {
   useMemo,
   useRef,
   useState,
+  Profiler,
   type ReactNode,
 } from "react";
 import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
@@ -268,7 +269,11 @@ vi.mock("@/hooks/queries/thread-queries", () => ({
       return { data: undefined, isSuccess: false, isError: false, error: null };
     }
     return {
-      data: { id, archivedAt: entry.archivedAt, deletedAt: entry.deletedAt },
+      data: {
+        id,
+        archivedAt: entry.archivedAt,
+        deletedAt: entry.deletedAt,
+      },
       isSuccess: true,
       isError: false,
       error: null,
@@ -620,6 +625,13 @@ function threadContent(threadId: string) {
   };
 }
 
+function singleThreadLayout(threadId = "thr-a"): SplitLayout {
+  return {
+    root: { type: "pane", paneId: "pane-1", content: threadContent(threadId) },
+    focusedPaneId: "pane-1",
+  };
+}
+
 function stackingLayer(element: HTMLElement): number {
   for (const token of element.classList) {
     const match = /^z-(?:\[(\d+)\]|(\d+))$/.exec(token);
@@ -927,6 +939,7 @@ function renderSplitArea(options: {
   leavableWorkspace?: boolean;
   pluginPanelLifecycle?: boolean;
   maximizedPaneId?: string;
+  onCommit?: () => void;
 }) {
   const store = createStore();
   if (options.layout !== undefined) {
@@ -936,29 +949,31 @@ function renderSplitArea(options: {
     store.set(maximizedPaneIdAtom, options.maximizedPaneId);
   }
   render(
-    <TooltipProvider delayDuration={0}>
-      <JotaiProvider store={store}>
-        <QueryClientProvider client={queryClient}>
-          <MemoryRouter initialEntries={[options.path]}>
-            <RouteNavigationProvider>
-              {options.pluginPanelLifecycle ? (
-                <PluginPanelLifecycleHarness />
-              ) : options.leavableWorkspace ? (
-                <LeavableWorkspace />
-              ) : options.routeAwareContent ? (
-                <RouteAwareSplitArea />
-              ) : (
-                <SplitThreadArea routeContent={options.routeContent} />
-              )}
-              <LocationProbe />
-              {options.externalTo !== undefined ? (
-                <ExternalNav to={options.externalTo} />
-              ) : null}
-            </RouteNavigationProvider>
-          </MemoryRouter>
-        </QueryClientProvider>
-      </JotaiProvider>
-    </TooltipProvider>,
+    <Profiler id="split-workspace" onRender={() => options.onCommit?.()}>
+      <TooltipProvider delayDuration={0}>
+        <JotaiProvider store={store}>
+          <QueryClientProvider client={queryClient}>
+            <MemoryRouter initialEntries={[options.path]}>
+              <RouteNavigationProvider>
+                {options.pluginPanelLifecycle ? (
+                  <PluginPanelLifecycleHarness />
+                ) : options.leavableWorkspace ? (
+                  <LeavableWorkspace />
+                ) : options.routeAwareContent ? (
+                  <RouteAwareSplitArea />
+                ) : (
+                  <SplitThreadArea routeContent={options.routeContent} />
+                )}
+                <LocationProbe />
+                {options.externalTo !== undefined ? (
+                  <ExternalNav to={options.externalTo} />
+                ) : null}
+              </RouteNavigationProvider>
+            </MemoryRouter>
+          </QueryClientProvider>
+        </JotaiProvider>
+      </TooltipProvider>
+    </Profiler>,
   );
   return store;
 }
@@ -994,6 +1009,47 @@ afterEach(() => {
 });
 
 describe("SplitThreadArea", () => {
+  it.each(
+    [false, true].flatMap((compact) =>
+      [false, true].map((persisted) => ({ compact, persisted })),
+    ),
+  )(
+    "opens a projectless cached thread in its own project immediately (compact: $compact, persisted: $persisted)",
+    ({ compact, persisted }) => {
+      viewportState.compact = compact;
+      getPromptDraftAccessor({
+        kind: "thread",
+        projectId: "proj_actual",
+        threadId: "thr-a",
+      }).setTextAndMentions("Actual project draft", []);
+
+      const committedDrafts: string[] = [];
+      renderSplitArea({
+        path: "/threads/thr-a",
+        routeContent: {
+          kind: "thread",
+          projectId: "proj_actual",
+          threadId: "thr-a",
+        },
+        layout: persisted ? singleThreadLayout() : undefined,
+        onCommit: () => {
+          const draft =
+            screen.queryByTestId<HTMLTextAreaElement>("draft-thr-a");
+          if (draft) committedDrafts.push(draft.value);
+        },
+      });
+
+      expect(screen.getByTestId<HTMLTextAreaElement>("draft-thr-a").value).toBe(
+        "Actual project draft",
+      );
+      expect(paneMounts.get("thr-a")).toBe(1);
+      expect(committedDrafts.length).toBeGreaterThan(0);
+      expect(
+        committedDrafts.every((draft) => draft === "Actual project draft"),
+      ).toBe(true);
+    },
+  );
+
   it.each([
     { fromCompact: false, toCompact: true, label: "desktop to phone" },
     { fromCompact: true, toCompact: false, label: "phone to landscape" },
@@ -3351,17 +3407,6 @@ describe("SplitThreadArea", () => {
 });
 
 describe("SplitThreadArea compact breakpoint crossings", () => {
-  function singleThreadLayout(threadId = "thr-a"): SplitLayout {
-    return {
-      root: {
-        type: "pane",
-        paneId: "pane-1",
-        content: threadContent(threadId),
-      },
-      focusedPaneId: "pane-1",
-    };
-  }
-
   function latestPaneContext(threadId: string): PaneContextValue {
     const pane = paneContextRenders.get(threadId)?.at(-1);
     if (pane === undefined || pane === null) {

@@ -1,7 +1,16 @@
 // @vitest-environment jsdom
 
 import { Suspense, useEffect } from "react";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render as renderReact,
+  screen,
+} from "@testing-library/react";
+import type { ReactNode } from "react";
+import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
+import { makeThreadResponse } from "@/test/fixtures/thread-responses";
+import { threadQueryKey } from "@/hooks/queries/query-keys";
 import { MemoryRouter, Route, Routes, useNavigate } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PaneContent } from "@/lib/split-layout";
@@ -12,6 +21,10 @@ import {
 import SplitWorkspaceRoute from "./SplitWorkspaceRoute";
 
 const workspaceLifecycle = vi.hoisted(() => ({ mounts: 0, unmounts: 0 }));
+const { queryClient, wrapper } = createQueryClientTestHarness();
+function render(ui: ReactNode) {
+  return renderReact(ui, { wrapper });
+}
 const { queueSplitDownload } = vi.hoisted(() => ({
   queueSplitDownload: vi.fn(),
 }));
@@ -21,7 +34,10 @@ vi.mock("@/lib/split-prefetch", async (importOriginal) => ({
   queueSplitDownload,
 }));
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  queryClient.clear();
+});
 
 vi.mock("./thread-detail/SplitThreadArea", () => ({
   SplitThreadArea: ({ routeContent }: { routeContent: PaneContent }) => {
@@ -69,6 +85,30 @@ function NavigationControls() {
 }
 
 describe("SplitWorkspaceRoute", () => {
+  it.each([
+    ["/threads/thr_cached", "/projects/proj_actual/threads/thr_cached"],
+    [
+      "/projects/proj_wrong/threads/thr_cached",
+      "/projects/proj_wrong/threads/thr_cached",
+    ],
+  ])(
+    "resolves only projectless route metadata before the pane mounts: %s",
+    (path, expected) => {
+      queryClient.setQueryData(
+        threadQueryKey("thr_cached"),
+        makeThreadResponse({ id: "thr_cached", projectId: "proj_actual" }),
+      );
+      render(
+        <MemoryRouter initialEntries={[path]}>
+          <SplitWorkspaceRoute />
+        </MemoryRouter>,
+      );
+      expect(
+        screen.getByTestId("route-content").getAttribute("data-route"),
+      ).toBe(expected);
+    },
+  );
+
   it("does not fetch markdown renderer dependencies when home loads", () => {
     expect(queueSplitDownload).not.toHaveBeenCalledWith("markdown-html");
   });

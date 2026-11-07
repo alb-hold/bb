@@ -8,6 +8,7 @@ interface WatchTerminalLayoutSettledArgs {
   measure: () => string | null;
   onSettled: () => void;
   ready?: Promise<unknown>;
+  settleReady?: Promise<unknown>;
   requestFrame: (callback: () => void) => number;
   subscribe?: (onSignal: () => void) => () => void;
 }
@@ -19,6 +20,7 @@ export function watchTerminalLayoutSettled({
   measure,
   onSettled,
   ready,
+  settleReady,
   requestFrame,
   subscribe,
 }: WatchTerminalLayoutSettledArgs): () => void {
@@ -27,6 +29,8 @@ export function watchTerminalLayoutSettled({
   let stableFrames = 0;
   let stopped = false;
   let signalled = false;
+  let started = false;
+  let canSettle = settleReady === undefined;
   const unsubscribe = subscribe?.(() => {
     signalled = true;
   });
@@ -48,7 +52,7 @@ export function watchTerminalLayoutSettled({
       stableFrames = 0;
     }
     previous = current;
-    if (stableFrames >= framesRequired) {
+    if (canSettle && stableFrames >= framesRequired) {
       stopped = true;
       unsubscribe?.();
       onSettled();
@@ -56,11 +60,20 @@ export function watchTerminalLayoutSettled({
     }
     handle = requestFrame(tick);
   };
+  const allowSettle = () => {
+    canSettle = true;
+    if (stopped || !started) return;
+    if (handle !== null) cancelFrame(handle);
+    tick();
+  };
+  void settleReady?.then(allowSettle, allowSettle);
   if (ready === undefined) {
+    started = true;
     handle = requestFrame(tick);
   } else {
     const start = () => {
       if (!stopped && handle === null) {
+        started = true;
         handle = requestFrame(tick);
       }
     };
