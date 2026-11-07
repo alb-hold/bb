@@ -272,12 +272,29 @@ describe("ThreadDetailHeader", () => {
       container.querySelector("[data-terminal-renderer]"),
     );
   });
-  it.each([360, 361])(
-    "preserves search in the menu only at narrow phone width %s",
-    (width) => {
-      vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
-        width,
-      } as DOMRect);
+  it.each([
+    [360, 120, true],
+    [360, 119, false],
+    [390, 120, true],
+    [390, 119, false],
+  ] as const)(
+    "shows search at width %s with %s px title space when fits=%s",
+    (width, titleWidth, fits) => {
+      vi.spyOn(
+        HTMLElement.prototype,
+        "getBoundingClientRect",
+      ).mockImplementation(function (this: HTMLElement) {
+        if (this.tagName === "HEADER") return new DOMRect(0, 0, width, 52);
+        if (this.hasAttribute("data-terminal-search-trigger"))
+          return new DOMRect(0, 0, 44, 44);
+        if (this.querySelector(":scope > [data-thread-detail-header-title]")) {
+          const folded = !document.querySelector(
+            "[data-terminal-search-trigger]",
+          );
+          return new DOMRect(0, 0, titleWidth + (folded ? 48 : 0), 36);
+        }
+        return new DOMRect();
+      });
       let actions: ThreadDetailHeaderActionsMenuArgs["terminalSearchActions"] =
         [];
       render(
@@ -296,12 +313,12 @@ describe("ThreadDetailHeader", () => {
         </PaneContext.Provider>,
       );
       expect(actions.map((item) => item.action.label)).toEqual(
-        width === 360 ? ["Search terminal output"] : [],
+        fits ? [] : ["Search terminal output"],
       );
       expect(
         screen.queryByRole("button", { name: "Search terminal output" }) !==
           null,
-      ).toBe(width > 360);
+      ).toBe(fits);
     },
   );
   it("puts native terminal search in the thread header", () => {

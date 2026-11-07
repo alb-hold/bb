@@ -519,7 +519,7 @@ describe("mobile recent thread rows", () => {
     expect(branch.parentElement?.dataset.branchMinimum).toBe("main");
     expect(
       project.parentElement?.parentElement?.classList.contains(
-        "grid-cols-[minmax(0,max-content)_auto_minmax(min-content,1fr)]",
+        "grid-cols-[minmax(0,max-content)_auto_minmax(min-content,max-content)]",
       ),
     ).toBe(true);
   });

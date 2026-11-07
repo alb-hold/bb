@@ -2626,19 +2626,18 @@ function TimelineRowsList({
     unreadDividerAutoScroll,
     unreadDividerPlacement: loadedUnreadDividerPlacement,
   });
-  const itemGaps = useMemo(
-    () =>
-      items.map((current, index) => {
-        const next = items[index + 1];
-        return current.kind === "row" &&
-          next?.kind === "row" &&
-          DISCLOSURE_ROW_KINDS.has(current.row.kind) &&
-          DISCLOSURE_ROW_KINDS.has(next.row.kind)
-          ? 4
-          : 8;
-      }),
-    [items],
-  );
+  const itemGaps = useMemo(() => {
+    const gaps = items.map((current, index) => {
+      const next = items[index + 1];
+      return current.kind === "row" &&
+        next?.kind === "row" &&
+        DISCLOSURE_ROW_KINDS.has(current.row.kind) &&
+        DISCLOSURE_ROW_KINDS.has(next.row.kind)
+        ? 4
+        : 8;
+    });
+    return gaps.includes(4) ? gaps : 8;
+  }, [items]);
   const estimateItemHeight = useCallback(
     (index: number) => {
       const item = items[index];

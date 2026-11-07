@@ -987,6 +987,7 @@ describe("ThreadTerminalView terminal viewport and focus", () => {
   );
 
   it("uses gesture-start scale for uneven multi-frame pinch gestures", async () => {
+    vi.stubGlobal("innerWidth", 390);
     vi.stubGlobal("WebSocket", TestTerminalSocket);
     vi.stubGlobal(
       "ResizeObserver",

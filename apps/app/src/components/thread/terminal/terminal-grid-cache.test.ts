@@ -15,7 +15,7 @@ afterEach(() => {
 function container(width = 936, height = 662) {
   const element = document.createElement("div");
   element.dataset.terminalGridCacheId = "term";
-  element.dataset.terminalFontSize = "13";
+  element.dataset.terminalFontSize = "14";
   vi.spyOn(element, "getBoundingClientRect").mockReturnValue(
     new DOMRect(0, 0, width, height),
   );
@@ -24,7 +24,7 @@ function container(width = 936, height = 662) {
 
 it("persists the fitted grid across a browser module reload, using the last rect before mount", async () => {
   const cache = await import("./terminal-grid-cache");
-  cache.rememberTerminalGrid("term", container(), 13, { cols: 116, rows: 38 });
+  cache.rememberTerminalGrid("term", container(), 14, { cols: 116, rows: 38 });
   vi.resetModules();
   const reloaded = await import("./terminal-grid-cache");
   expect(reloaded.readCachedTerminalGrid("term")).toEqual({
@@ -44,15 +44,15 @@ it.each([
   "height",
 ])("misses when the current %s differs", async (changed) => {
   const cache = await import("./terminal-grid-cache");
-  cache.rememberTerminalGrid("term", container(), 13, { cols: 116, rows: 38 });
-  let fontSize = 13;
+  cache.rememberTerminalGrid("term", container(), 14, { cols: 116, rows: 38 });
+  let fontSize = 14;
   if (changed === "viewportWidth")
     vi.spyOn(window, "innerWidth", "get").mockReturnValue(390);
   if (changed === "viewportHeight")
     vi.spyOn(window, "innerHeight", "get").mockReturnValue(844);
   if (changed === "dpr")
     vi.spyOn(window, "devicePixelRatio", "get").mockReturnValue(2);
-  if (changed === "fontSize") fontSize = 14;
+  if (changed === "fontSize") fontSize = 15;
   if (changed === "fontFamily")
     document.documentElement.style.setProperty("--font-terminal", "monospace");
   if (changed === "width" || changed === "height") {
@@ -68,7 +68,7 @@ it.each([
 
 it("matches container dimensions rounded to whole pixels", async () => {
   const cache = await import("./terminal-grid-cache");
-  cache.rememberTerminalGrid("term", container(935.9, 662.1), 13, {
+  cache.rememberTerminalGrid("term", container(935.9, 662.1), 14, {
     cols: 116,
     rows: 38,
   });
@@ -82,7 +82,7 @@ it("matches the font actually used for the fit, including a pending font-family 
   cache.rememberTerminalGrid(
     "term",
     container(),
-    13,
+    14,
     { cols: 116, rows: 38 },
     "old-font",
   );
@@ -93,8 +93,8 @@ it("matches the font actually used for the fit, including a pending font-family 
 
 it("keeps multiple pane sizes and uses the most recently fitted rect before mount", async () => {
   const cache = await import("./terminal-grid-cache");
-  cache.rememberTerminalGrid("term", container(), 13, { cols: 116, rows: 38 });
-  cache.rememberTerminalGrid("term", container(800), 13, {
+  cache.rememberTerminalGrid("term", container(), 14, { cols: 116, rows: 38 });
+  cache.rememberTerminalGrid("term", container(800), 14, {
     cols: 99,
     rows: 38,
   });
@@ -102,7 +102,7 @@ it("keeps multiple pane sizes and uses the most recently fitted rect before moun
   const mounted = container();
   document.body.append(mounted);
   expect(cache.readCachedTerminalGrid("term")).toEqual({ cols: 116, rows: 38 });
-  cache.rememberTerminalGrid("term", mounted, 13, { cols: 116, rows: 38 });
+  cache.rememberTerminalGrid("term", mounted, 14, { cols: 116, rows: 38 });
   mounted.remove();
   expect(cache.readCachedTerminalGrid("term")).toEqual({ cols: 116, rows: 38 });
 });
@@ -114,7 +114,7 @@ it.each(["getItem", "setItem"] as const)(
       throw new Error("storage unavailable");
     });
     const cache = await import("./terminal-grid-cache");
-    cache.rememberTerminalGrid("term", container(), 13, {
+    cache.rememberTerminalGrid("term", container(), 14, {
       cols: 116,
       rows: 38,
     });
@@ -128,7 +128,7 @@ it.each(["getItem", "setItem"] as const)(
 it("bounds persisted contexts and rejects malformed or unmeasurable grids", async () => {
   const cache = await import("./terminal-grid-cache");
   for (let index = 0; index < 40; index++) {
-    cache.rememberTerminalGrid(`term-${index}`, container(), 13, {
+    cache.rememberTerminalGrid(`term-${index}`, container(), 14, {
       cols: 116,
       rows: 38,
     });
@@ -140,12 +140,12 @@ it("bounds persisted contexts and rejects malformed or unmeasurable grids", asyn
   });
   const key = localStorage.key(0)!;
   expect(JSON.parse(localStorage.getItem(key)!)).toHaveLength(32);
-  cache.rememberTerminalGrid("invalid", container(0), 13, {
+  cache.rememberTerminalGrid("invalid", container(0), 14, {
     cols: 116,
     rows: 38,
   });
   expect(cache.readCachedTerminalGrid("invalid")).toBeNull();
-  cache.rememberTerminalGrid("oversized", container(), 13, {
+  cache.rememberTerminalGrid("oversized", container(), 14, {
     cols: 501,
     rows: 201,
   });
@@ -161,7 +161,7 @@ it.each(["lineHeight", "fontWeight"])(
   "rejects a grid fitted with stale %s",
   async (metric) => {
     const cache = await import("./terminal-grid-cache");
-    cache.rememberTerminalGrid("term", container(), 13, {
+    cache.rememberTerminalGrid("term", container(), 14, {
       cols: 116,
       rows: 38,
     });
@@ -175,7 +175,7 @@ it.each(["lineHeight", "fontWeight"])(
 
 it("rejects a legacy cache entry with no leading or weight", async () => {
   const cache = await import("./terminal-grid-cache");
-  cache.rememberTerminalGrid("term", container(), 13, { cols: 116, rows: 38 });
+  cache.rememberTerminalGrid("term", container(), 14, { cols: 116, rows: 38 });
   const key = localStorage.key(0)!;
   const entries = JSON.parse(localStorage.getItem(key)!);
   delete entries[0].lineHeight;
@@ -185,7 +185,7 @@ it("rejects a legacy cache entry with no leading or weight", async () => {
   const reloaded = await import("./terminal-grid-cache");
   expect(() => reloaded.readCachedTerminalGrid("term")).not.toThrow();
   expect(reloaded.readCachedTerminalGrid("term")).toBeNull();
-  reloaded.rememberTerminalGrid("term", container(), 13, {
+  reloaded.rememberTerminalGrid("term", container(), 14, {
     cols: 116,
     rows: 36,
   });
@@ -197,7 +197,7 @@ it("rejects a legacy cache entry with no leading or weight", async () => {
 
 it("reuses measured metrics across repeated grid reads", async () => {
   const cache = await import("./terminal-grid-cache");
-  cache.rememberTerminalGrid("term", container(), 13, { cols: 116, rows: 38 });
+  cache.rememberTerminalGrid("term", container(), 14, { cols: 116, rows: 38 });
   const create = vi.spyOn(document, "createElement");
   for (let index = 0; index < 10; index++)
     expect(cache.readCachedTerminalGrid("term")).toEqual({
