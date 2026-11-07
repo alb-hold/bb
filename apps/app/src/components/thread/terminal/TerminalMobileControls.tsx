@@ -86,10 +86,14 @@ export function TerminalMobileControls({
 }: TerminalMobileControlsProps) {
   const [expanded, setExpanded] = useState(false);
   const [secondaryKeysInline, setSecondaryKeysInline] = useState(false);
+  const [compactKeys, setCompactKeys] = useState(false);
+  const controlsRef = useRef<HTMLDivElement>(null);
   const scrollerRef = useRef<HTMLDivElement>(null);
   const updateOverflow = useCallback(() => {
     const scroller = scrollerRef.current;
     if (!scroller) return;
+    const width = controlsRef.current?.clientWidth ?? 0;
+    setCompactKeys(width > 0 && width < 375);
     setSecondaryKeysInline(
       scroller.clientWidth >= (searchAvailable ? 9 : 8) * 48 - 4,
     );
@@ -109,6 +113,7 @@ export function TerminalMobileControls({
     if (!scroller) return;
     const observer = new ResizeObserver(updateOverflow);
     observer.observe(scroller);
+    if (controlsRef.current) observer.observe(controlsRef.current);
     return () => observer.disconnect();
   }, [updateOverflow]);
   const keyProps = { disabled };
@@ -149,6 +154,7 @@ export function TerminalMobileControls({
       role="group"
       aria-label="Terminal keyboard controls"
       data-terminal-mobile-controls=""
+      ref={controlsRef}
       className={cn(
         "shrink-0 border-t border-border/50 bg-sidebar px-2 py-1",
         className,
@@ -303,17 +309,27 @@ export function TerminalMobileControls({
             {secondaryKeysInline ? secondaryKeys : null}
           </div>
         </div>
-        <Key {...keyProps} label="Enter" onPress={() => onInput("\r")}>
-          Enter
+        <Key
+          {...keyProps}
+          label="Enter"
+          className={compactKeys ? "w-11" : undefined}
+          onPress={() => onInput("\r")}
+        >
+          {compactKeys ? (
+            <Icon name="CornerDownLeft" className="size-4" />
+          ) : (
+            "Enter"
+          )}
         </Key>
         <Key
           {...keyProps}
           label="More terminal keys"
           toggle
           active={expanded}
+          className={compactKeys ? "w-11" : undefined}
           onPress={() => setExpanded(!expanded)}
         >
-          Keys
+          {compactKeys ? <Icon name="Keyboard" className="size-4" /> : "Keys"}
           <Icon
             name={expanded ? "ChevronUp" : "ChevronDown"}
             className="size-3"
