@@ -1,3 +1,5 @@
+import { measureTerminalPerformance } from "@/lib/terminal-performance";
+
 const STABLE_FRAMES_REQUIRED = 2;
 const GRACE_FRAMES_AFTER_STABLE = 8;
 
@@ -74,7 +76,7 @@ export function watchTerminalLayoutSettled({
     const start = () => {
       if (!stopped && handle === null) {
         started = true;
-        handle = requestFrame(tick);
+        measureTerminalPerformance("terminal-layout-ready-sample", tick);
       }
     };
     void ready.then(start, start);

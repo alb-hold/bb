@@ -243,7 +243,7 @@ describe("watchTerminalLayoutSettled", () => {
       },
       onSettled,
     });
-    await vi.advanceTimersByTimeAsync(FRAME_MS);
+    await vi.advanceTimersByTimeAsync(FRAME_MS / 2);
     animating = true;
     signal();
     await vi.advanceTimersByTimeAsync(FRAME_MS * 4);
@@ -275,9 +275,13 @@ describe("watchTerminalLayoutSettled", () => {
     expect(onSettled).not.toHaveBeenCalled();
   });
 
-  it.each(["stable", "changed", "hidden"])(
-    "samples layout during renderer loading and rechecks a %s container before claiming",
-    async (layout) => {
+  it.each(
+    [8, 72].flatMap((rendererAt) =>
+      ["stable", "changed", "hidden"].map((layout) => ({ rendererAt, layout })),
+    ),
+  )(
+    "samples layout during renderer loading and rechecks a $layout container at $rendererAt ms before claiming",
+    async ({ layout, rendererAt }) => {
       vi.useFakeTimers();
       const start = Date.now();
       let size: string | null = "800x600";
@@ -288,19 +292,20 @@ describe("watchTerminalLayoutSettled", () => {
         graceFrames: 0,
         stableFramesRequired: 1,
         measure: () => size,
+        ready: Promise.resolve(),
         settleReady: new Promise<void>((resolve) => {
           rendererReady = resolve;
         }),
         onSettled: () => claims.push({ at: Date.now() - start, size }),
       });
-      await vi.advanceTimersByTimeAsync(72);
+      await vi.advanceTimersByTimeAsync(rendererAt);
       expect(claims).toEqual([]);
       if (layout === "changed") size = "900x600";
       if (layout === "hidden") size = null;
       rendererReady();
       await vi.advanceTimersByTimeAsync(0);
       if (layout === "stable") {
-        expect(claims).toEqual([{ at: 72, size: "800x600" }]);
+        expect(claims).toEqual([{ at: rendererAt, size: "800x600" }]);
       } else {
         expect(claims).toEqual([]);
         if (layout === "hidden") {
@@ -309,7 +314,7 @@ describe("watchTerminalLayoutSettled", () => {
         }
         await vi.advanceTimersByTimeAsync(32);
         expect(claims).toEqual([
-          { at: layout === "hidden" ? 120 : 88, size: "900x600" },
+          { at: rendererAt + (layout === "hidden" ? 48 : 16), size: "900x600" },
         ]);
       }
     },
