@@ -28,9 +28,14 @@ import {
 } from "./host/created-by.js";
 import { copyWorktreeIncludeFiles } from "./host/worktree-include.js";
 import { removeWorktree } from "./host/worktree.js";
+import { worktreeHolderScopeNotice } from "./host/worktree-preservation.js";
 
 const execFileAsync = promisify(execFile);
 const temporaryRoots: string[] = [];
+const expectedRemoved = () => {
+  const notice = worktreeHolderScopeNotice();
+  return { status: "removed", ...(notice === null ? {} : { message: notice }) };
+};
 
 it("exposes no uncalled retention or inspection host RPCs", () => {
   const rpcNames = Object.keys(worktreeHostContract);
@@ -634,7 +639,7 @@ describe("worktree host entry", () => {
           pathKey,
           path: null,
         }),
-      ).toEqual({ status: "removed" });
+      ).toEqual(expectedRemoved());
       expect(existsSync(join(dataDir, "worktrees", pathKey))).toBe(false);
       await harness.experimental_dispose();
     },
@@ -1035,7 +1040,7 @@ describe("worktree host entry", () => {
       message: expect.stringContaining("in use by"),
     });
     expect(stillRunning).toBe(true);
-    expect(removed).toEqual({ status: "removed" });
+    expect(removed).toEqual(expectedRemoved());
     expect(progressText(harness)).not.toContain("tearing-down");
     expect(existsSync(join(root, "teardown.marker"))).toBe(false);
     expect(existsSync(created.path)).toBe(false);
@@ -1516,7 +1521,7 @@ describe.skipIf(process.platform === "win32")(
           ).trim(),
         ).toBe("0");
         await stopLingering(worktree);
-        expect(await removeFrom(worktree)).toEqual({ status: "removed" });
+        expect(await removeFrom(worktree)).toEqual(expectedRemoved());
         await expectWorktreeRemoved(worktree);
       } finally {
         await worktree.harness.experimental_dispose();
@@ -1568,7 +1573,7 @@ describe.skipIf(process.platform === "win32")(
           await git(worktree.path, "branch", "-r", "--contains", sha),
         ).toBe("");
         await stopLingering(worktree);
-        expect(await removeFrom(worktree)).toEqual({ status: "removed" });
+        expect(await removeFrom(worktree)).toEqual(expectedRemoved());
         await expectWorktreeRemoved(worktree);
       } finally {
         await worktree.harness.experimental_dispose();
@@ -1602,7 +1607,7 @@ describe.skipIf(process.platform === "win32")(
         await writeFile(join(worktree.sourcePath, "README.md"), "other\n");
         await git(worktree.sourcePath, "stash", "push");
         await stopLingering(worktree);
-        expect(await removeFrom(worktree)).toEqual({ status: "removed" });
+        expect(await removeFrom(worktree)).toEqual(expectedRemoved());
         await expectWorktreeRemoved(worktree);
       } finally {
         await worktree.harness.experimental_dispose();
@@ -1623,7 +1628,7 @@ describe.skipIf(process.platform === "win32")(
         });
         await writeFile(join(worktree.path, "node_modules", "pkg", "i.js"), "");
         await stopLingering(worktree);
-        expect(await removeFrom(worktree)).toEqual({ status: "removed" });
+        expect(await removeFrom(worktree)).toEqual(expectedRemoved());
         await expectWorktreeRemoved(worktree);
       } finally {
         await worktree.harness.experimental_dispose();
@@ -1646,7 +1651,7 @@ describe.skipIf(process.platform === "win32")(
           ).trim(),
         ).toBe("");
         await stopLingering(worktree);
-        expect(await removeFrom(worktree)).toEqual({ status: "removed" });
+        expect(await removeFrom(worktree)).toEqual(expectedRemoved());
         await expectWorktreeRemoved(worktree);
       } finally {
         await worktree.harness.experimental_dispose();
@@ -1658,7 +1663,7 @@ describe.skipIf(process.platform === "win32")(
       try {
         await git(worktree.path, "checkout", "--detach", "origin/main");
         await stopLingering(worktree);
-        expect(await removeFrom(worktree)).toEqual({ status: "removed" });
+        expect(await removeFrom(worktree)).toEqual(expectedRemoved());
         await expectWorktreeRemoved(worktree);
       } finally {
         await worktree.harness.experimental_dispose();

@@ -173,7 +173,10 @@ Making your repo work with bb:
   daemon UID has its cwd or an open file path under the workspace, or while any
   such same-user process cannot be inspected. Other users' processes are out of
   scope; inspect them separately before recovering, as with the Linux `Uid:`
-  check in `/proc`.
+  check in `/proc`. On Linux, a non-root daemon does not inspect root or
+  system-UID (<1000) processes during teardown. A same-user process with
+  unreadable paths is trusted by name only when its name is a known session
+  agent, and processes deliberately evading the scan are out of scope.
   The guard compares paths, including deleted paths, rather than shared inode
   identity. It does not kill processes. Processes owned by other users require
   separate inspection before recovery. Stop or move your own workspace users

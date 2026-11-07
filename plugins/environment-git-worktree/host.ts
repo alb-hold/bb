@@ -25,7 +25,10 @@ import {
   resolveAdoptableWorktree,
 } from "./host/worktree.js";
 import { classifyCreateFailure } from "./host/create-failure.js";
-import { isWorktreePreservedError } from "./host/worktree-preservation.js";
+import {
+  isWorktreePreservedError,
+  worktreeHolderScopeNotice,
+} from "./host/worktree-preservation.js";
 
 export { setTestWorktreeHolderScan } from "./host/worktree-preservation.js";
 
@@ -269,7 +272,13 @@ export function createWorktreeHostEntry() {
             }
           }
           if (outcome.kept.length === 0 && outcome.unknown.length === 0) {
-            return { status: "removed" } as const;
+            const notice = worktreeHolderScopeNotice();
+            return {
+              status: "removed",
+              ...(targets.length > 0 && notice !== null
+                ? { message: notice }
+                : {}),
+            } as const;
           }
           if (outcome.kept.length > 0 && outcome.unknown.length === 0) {
             return {
