@@ -1,11 +1,10 @@
 import { markTerminalPerformance } from "@/lib/terminal-performance";
 import type { TerminalBrowserSocket } from "@bb/client-core";
 import { readCachedTerminalGrid } from "./terminal-grid-cache";
-import {
+import type {
   TERMINAL_REPLAY_BATCH_WEBSOCKET_PROTOCOL,
   TERMINAL_LEGACY_WEBSOCKET_PROTOCOL,
   TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL,
-  terminalServerMessageSchema,
 } from "@bb/server-contract";
 
 const pending = new Map<string, BufferedTerminalSocket>();
@@ -35,6 +34,9 @@ class BufferedTerminalSocket implements TerminalBrowserSocket {
     protocols: string[],
     private readonly forget: () => void,
   ) {
+    const terminalId = decodeURIComponent(
+      new URL(url).pathname.split("/").at(-1) ?? "",
+    );
     this.socket = new WebSocket(url, protocols);
     markTerminalPerformance("terminal-socket-created");
     this.timer = setTimeout(() => this.close(), 10_000);
@@ -85,12 +87,20 @@ class BufferedTerminalSocket implements TerminalBrowserSocket {
           typeof event.data === "string"
         ) {
           try {
-            const message = terminalServerMessageSchema.safeParse(
-              JSON.parse(event.data),
-            );
-            if (message.success && message.data.type === "attached") {
+            const message: unknown = JSON.parse(event.data);
+            if (
+              typeof message === "object" &&
+              message !== null &&
+              "type" in message &&
+              message.type === "attached" &&
+              "session" in message &&
+              typeof message.session === "object" &&
+              message.session !== null &&
+              "id" in message.session &&
+              message.session.id === terminalId
+            ) {
               this.awaitingAttach = false;
-              const grid = readCachedTerminalGrid(message.data.session.id);
+              const grid = readCachedTerminalGrid(message.session.id);
               if (grid && this.socket.readyState === WebSocket.OPEN) {
                 this.socket.send(
                   JSON.stringify({ type: "resize", ...grid, claim: true }),
@@ -169,9 +179,9 @@ export function prefetchTerminalSocket(url: string): void {
     const socket = new BufferedTerminalSocket(
       key,
       [
-        TERMINAL_LEGACY_WEBSOCKET_PROTOCOL,
-        TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL,
-        TERMINAL_REPLAY_BATCH_WEBSOCKET_PROTOCOL,
+        "bb.terminal.v1" satisfies typeof TERMINAL_LEGACY_WEBSOCKET_PROTOCOL,
+        "bb.terminal.resize-echo.v1" satisfies typeof TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL,
+        "bb.terminal.replay-batch.v1" satisfies typeof TERMINAL_REPLAY_BATCH_WEBSOCKET_PROTOCOL,
       ],
       () => {
         if (pending.get(key) === socket) pending.delete(key);

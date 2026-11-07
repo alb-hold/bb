@@ -25,6 +25,7 @@ export function initialThreadPreload(): Plugin {
         const route = new Set<string>();
         const terminal = new Set<string>();
         const panel = new Set<string>();
+        const entries: Record<string, string> = {};
         const visit = (file: string, files: Set<string>) => {
           if (files.has(file)) return;
           files.add(file);
@@ -37,9 +38,18 @@ export function initialThreadPreload(): Plugin {
           const modules = Object.keys(chunk.modules);
           if (
             modules.some((id) =>
+              id.endsWith("/src/views/SplitWorkspaceRoute.tsx"),
+            )
+          ) {
+            entries.workspace = `${base}${chunk.fileName}`;
+            visit(chunk.fileName, route);
+          }
+          if (
+            modules.some((id) =>
               id.endsWith("/src/views/thread-detail/ThreadDetailView.tsx"),
             )
           ) {
+            entries.thread = `${base}${chunk.fileName}`;
             visit(chunk.fileName, route);
           }
           if (
@@ -56,10 +66,12 @@ export function initialThreadPreload(): Plugin {
               ),
             )
           ) {
+            entries.panel = `${base}${chunk.fileName}`;
             visit(chunk.fileName, panel);
           }
         }
         const assets = JSON.stringify({
+          entries,
           route: [...route].map((file) => `${base}${file}`),
           terminal: [...terminal].map((file) => `${base}${file}`),
           panel: [...panel].map((file) => `${base}${file}`),
@@ -69,7 +81,7 @@ export function initialThreadPreload(): Plugin {
             tag: "script",
             attrs: { id: "bb-initial-thread-preload" },
             injectTo: "head-prepend",
-            children: `(()=>{const match=/^(?:\\/projects\\/[^/]+)?\\/threads\\/([^/]+)\\/?$/.exec(location.pathname);if(!match)return;const assets=${assets};const seen=new Set();const preload=(files,priority="auto")=>{for(const href of files){if(seen.has(href))continue;seen.add(href);const link=document.createElement("link");link.rel="modulepreload";link.crossOrigin="";link.fetchPriority=priority;link.href=href;document.head.append(link)}};let threadId;try{threadId=decodeURIComponent(match[1])}catch{return}const path="/api/v1/threads/"+encodeURIComponent(threadId)+"/native-terminal";globalThis.performance?.mark?.("terminal-initial-metadata-requested");const response=fetch(path,{priority:"high"});globalThis.__bbInitialNativeTerminalRequest={path,response};const lookup=response.then(r=>{globalThis.performance?.mark?.("terminal-initial-metadata-received");return r.ok?r.clone().json():null});preload(assets.route);const timeout=setTimeout(()=>preload(assets.terminal,"low"),50);lookup.then(view=>{clearTimeout(timeout);if(view&&typeof view==="object"&&view.threadId===threadId&&typeof view.providerId==="string"){preload(assets.terminal);preload(assets.panel)}}).catch(()=>{})})()`,
+            children: `(()=>{const match=/^(?:\\/projects\\/[^/]+)?\\/threads\\/([^/]+)\\/?$/.exec(location.pathname);if(!match)return;const assets=${assets};const seen=new Set();const preload=(files,priority="auto")=>{for(const href of files){if(seen.has(href))continue;seen.add(href);const link=document.createElement("link");link.rel="modulepreload";link.crossOrigin="";link.fetchPriority=priority;link.href=href;document.head.append(link)}};const warm=(name,href,files)=>{if(!href)return;const start=performance.now();performance.mark("terminal-head-"+name+"-import-start");import(href).then(()=>{const responses=files.flatMap(file=>performance.getEntriesByName(new URL(file,location.href).href,"resource")).map(entry=>entry.responseEnd);performance.mark("terminal-head-"+name+"-import-end",{detail:{elapsed:performance.now()-start,lastResponseEnd:Math.max(0,...responses),resources:responses.length}})},()=>performance.mark("terminal-head-"+name+"-import-failed"))};const whenParsed=fn=>{if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",fn,{once:true});else fn()};let threadId;try{threadId=decodeURIComponent(match[1])}catch{return}const path="/api/v1/threads/"+encodeURIComponent(threadId)+"/native-terminal";globalThis.performance?.mark?.("terminal-initial-metadata-requested");const response=fetch(path,{priority:"high"});globalThis.__bbInitialNativeTerminalRequest={path,response};const lookup=response.then(r=>{globalThis.performance?.mark?.("terminal-initial-metadata-received");return r.ok?r.clone().json():null});preload(assets.route);whenParsed(()=>{warm("workspace",assets.entries.workspace,assets.route);warm("thread",assets.entries.thread,assets.route)});const timeout=setTimeout(()=>preload(assets.terminal,"low"),50);lookup.then(view=>{clearTimeout(timeout);if(view&&typeof view==="object"&&view.threadId===threadId&&typeof view.providerId==="string"){preload(assets.terminal);preload(assets.panel);whenParsed(()=>warm("panel",assets.entries.panel,assets.panel))}}).catch(()=>{})})()`,
           },
           {
             tag: "script",

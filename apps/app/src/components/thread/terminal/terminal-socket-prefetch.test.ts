@@ -10,7 +10,7 @@ import {
   prefetchTerminalSocket,
 } from "./terminal-socket-prefetch";
 
-const url = "ws://localhost/api/terminals/term/socket";
+const url = "ws://localhost/ws/terminals/term";
 const fullUrl = `${url}?sinceSeq=0&outputAcks=1&resizeAcks=1`;
 
 class Socket {

@@ -3,7 +3,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { makeTerminalSession } from "@/test/fixtures/terminal-sessions";
 import { prefetchTerminalSocket } from "@/components/thread/terminal/terminal-socket-prefetch";
 const warm = vi.hoisted(() => ({
-  panel: vi.fn(),
+  panel: vi.fn(() => Promise.resolve(null)),
   xterm: vi.fn(),
   route: vi.fn(),
 }));

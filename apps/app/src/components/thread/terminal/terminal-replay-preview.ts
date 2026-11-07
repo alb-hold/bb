@@ -3,6 +3,7 @@ import type { Terminal as XTermTerminal } from "@xterm/xterm";
 import type { TerminalGrid } from "@bb/domain";
 import { createTerminalOutputPipeline } from "./terminal-output-pipeline";
 import { canRevealTerminalSurface } from "./terminal-grid-presentation";
+import { flushTerminalReplay } from "./terminal-replay-flush";
 
 export const TERMINAL_REPLAY_PREVIEW_HOLD_TIMEOUT_MS = 5_000;
 
@@ -364,7 +365,10 @@ export function mountTerminalReplayPreview({
     },
     undefined,
     undefined,
-    { resizeMarkerGrids: false },
+    {
+      resizeMarkerGrids: false,
+      flushReplay: () => flushTerminalReplay(terminal, "preview"),
+    },
   );
 
   let disposed = false;
@@ -560,14 +564,19 @@ export function mountTerminalReplayPreview({
       if (disposed) {
         callback();
       } else if (!snapshotWriteFinished) {
-        outputPipeline.push(bytes, () => {
-          snapshotWriteFinished = true;
-          startHandoffDeadline();
-          onParsed();
-          flushPendingWrites();
-        });
+        outputPipeline.push(
+          bytes,
+          () => {
+            snapshotWriteFinished = true;
+            startHandoffDeadline();
+            onParsed();
+            flushPendingWrites();
+          },
+          true,
+          true,
+        );
       } else if (authoritativeGridAvailable) {
-        outputPipeline.push(bytes, onParsed);
+        outputPipeline.push(bytes, onParsed, true, true);
       } else {
         pendingWrites.push({ bytes, callback: onParsed });
         pendingBytes += bytes.byteLength;

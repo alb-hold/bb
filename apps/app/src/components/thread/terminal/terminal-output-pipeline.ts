@@ -7,7 +7,7 @@ type TerminalWriter = {
 };
 
 type Operation =
-  | { type: "write"; bytes: Uint8Array }
+  | { type: "write"; bytes: Uint8Array; flush: boolean }
   | {
       type: "grid";
       grid: TerminalGrid;
@@ -24,12 +24,14 @@ export function createTerminalOutputPipeline(
     resizeMarkerGrids?: boolean;
     beforeResize?: () => void;
     afterResize?: () => void;
+    flushReplay?: () => void;
   } = {},
 ): {
   push(
     bytes: Uint8Array,
     callback: () => void,
     applyMarkerGrids?: boolean,
+    flush?: boolean,
   ): void;
   setGrid(cols: number, rows: number, callback?: () => void): void;
 } {
@@ -71,6 +73,7 @@ export function createTerminalOutputPipeline(
         if (operation.type === "write") {
           lastWrite = new Promise<void>((resolve) => {
             terminal.write(operation.bytes, resolve);
+            if (operation.flush) options.flushReplay?.();
           });
           continue;
         }
@@ -98,7 +101,7 @@ export function createTerminalOutputPipeline(
   };
 
   return {
-    push(bytes, callback, applyMarkerGrids = true) {
+    push(bytes, callback, applyMarkerGrids = true, flush = false) {
       const result = scanner.pushOperations(bytes);
       const applyScannedMarkerGrids =
         applyMarkerGrids && pendingMarkerGridsApply;
@@ -115,6 +118,7 @@ export function createTerminalOutputPipeline(
             enqueue({
               type: "write",
               bytes: operation.bytes.subarray(offset, offset + 16 * 1024),
+              flush,
             });
           }
         } else if (operation.type === "grid") {

@@ -4,6 +4,7 @@ const GRACE_FRAMES_AFTER_STABLE = 8;
 interface WatchTerminalLayoutSettledArgs {
   cancelFrame: (handle: number) => void;
   graceFrames?: number;
+  stableFramesRequired?: number;
   measure: () => string | null;
   onSettled: () => void;
   ready?: Promise<unknown>;
@@ -14,6 +15,7 @@ interface WatchTerminalLayoutSettledArgs {
 export function watchTerminalLayoutSettled({
   cancelFrame,
   graceFrames = GRACE_FRAMES_AFTER_STABLE,
+  stableFramesRequired = STABLE_FRAMES_REQUIRED,
   measure,
   onSettled,
   ready,
@@ -29,8 +31,7 @@ export function watchTerminalLayoutSettled({
     signalled = true;
   });
   const framesRequired =
-    STABLE_FRAMES_REQUIRED +
-    (subscribe === undefined ? 0 : graceFrames);
+    stableFramesRequired + (subscribe === undefined ? 0 : graceFrames);
 
   const tick = () => {
     handle = null;

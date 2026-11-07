@@ -53,6 +53,7 @@ import { usePreferredTheme } from "@/hooks/useTheme";
 import type { MarkdownPreviewLinkHandler } from "@/components/ui/markdown-link";
 import { openUrlInExternalBrowser } from "@/lib/url-open-routing";
 import { terminalReplayWrites } from "./terminal-replay-writes";
+import { flushTerminalReplay } from "./terminal-replay-flush";
 import { decodeBase64Bytes } from "@/lib/base64-bytes";
 import { sdk } from "@/lib/sdk";
 import { wsManager } from "@/lib/ws";
@@ -1084,7 +1085,7 @@ export function writeTerminalOutput({
     bytes = outputBoundaries.insert(sourceBytes, outputSequence);
   }
   const write = (callback: () => void, applyMarkerGrids: boolean) => {
-    if (pipeline) pipeline.push(bytes, callback, applyMarkerGrids);
+    if (pipeline) pipeline.push(bytes, callback, applyMarkerGrids, isReplay);
     else terminal.write(bytes, callback);
   };
   if (!isReplay) {
@@ -1727,6 +1728,8 @@ export function ThreadTerminalView({
     }
     const holdForFittedGrid =
       container.closest("[data-native-terminal-thread]") !== null;
+    let nativeWebglReady = !holdForFittedGrid;
+    let webglRevealFrame: number | null = null;
     setRestoringSession(sessionStatusRef.current === "running");
 
     const activeElementAtMount = document.activeElement;
@@ -2039,6 +2042,16 @@ export function ThreadTerminalView({
           replayRevealTimeout = null;
           fittedGridHeld = false;
           fittedGridRevealed = true;
+          if (!nativeWebglReady && webglRevealFrame === null) {
+            webglRevealFrame = window.requestAnimationFrame(() => {
+              webglRevealFrame = window.requestAnimationFrame(() => {
+                webglRevealFrame = null;
+                if (disposed) return;
+                nativeWebglReady = true;
+                webglVisibilityRef.current?.sync();
+              });
+            });
+          }
           markTerminalPerformance("terminal-fitted-grid-revealed");
           containerElement.dataset.replayHeld = "false";
           if (fittedGridFallback) containerElement.style.opacity = "";
@@ -2317,6 +2330,9 @@ export function ThreadTerminalView({
             terminal?.refresh(0, terminal.rows - 1);
             clearLiveViewportBeforeGridResize();
           },
+          flushReplay: () => {
+            if (terminal) flushTerminalReplay(terminal, "primary");
+          },
         },
       );
       let reportedCwd: string | null = null;
@@ -2415,7 +2431,7 @@ export function ThreadTerminalView({
           webglVisibilityRef.current = observeTerminalWebglVisibility({
             root: containerElement,
             renderer: webglRenderer,
-            isPanelOpen: () => isPanelOpenRef.current,
+            isPanelOpen: () => isPanelOpenRef.current && nativeWebglReady,
           });
         })
         .catch(() => undefined);
@@ -3274,7 +3290,8 @@ export function ThreadTerminalView({
         activeTransport.start();
       }
       stopWatchingLayout = watchTerminalLayoutSettled({
-        graceFrames: holdForFittedGrid ? 1 : 8,
+        graceFrames: holdForFittedGrid ? 0 : 8,
+        stableFramesRequired: holdForFittedGrid ? 1 : 2,
         cancelFrame: (handle) => window.cancelAnimationFrame(handle),
         measure: () => {
           const rect = containerElement.getBoundingClientRect();
@@ -3622,6 +3639,8 @@ export function ThreadTerminalView({
       discardPrefetchedTerminalSocket(earlySocketUrl);
       webglVisibilityRef.current?.dispose();
       webglVisibilityRef.current = null;
+      if (webglRevealFrame !== null)
+        window.cancelAnimationFrame(webglRevealFrame);
       webglRenderer?.dispose();
       clearTimeout(rendererDeadline);
       terminal?.dispose();

@@ -107,7 +107,10 @@ it("keeps route-only chunks out of startup HTML preloads", async () => {
     expect(preloaded.filter((file) => idleFiles.includes(file))).toEqual([]);
     expect(html).toContain('id="bb-initial-thread-preload"');
     expect(html).toMatch(
-      /"route":\["\/app\/assets\/ThreadDetailView-[\w-]+\.js"/,
+      /"route":\[[^\]]*"\/app\/assets\/ThreadDetailView-[\w-]+\.js"/,
+    );
+    expect(html).toMatch(
+      /"route":\[[^\]]*"\/app\/assets\/SplitWorkspaceRoute-[\w-]+\.js"/,
     );
     expect(new Set(preloaded).size).toBe(preloaded.length);
     for (const href of preloaded) {

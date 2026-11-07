@@ -236,10 +236,31 @@ describe("native terminal attach claim timing", () => {
       ] as const) {
         vi.spyOn(HTMLElement.prototype, dimension, "get").mockReturnValue(354);
       }
+      let webglVisible = () => false;
+      vi.spyOn(rendererModule, "loadTerminalWebglRenderer").mockReturnValue({
+        renderer: "dom",
+        setVisible: vi.fn(),
+        dispose: vi.fn(),
+      });
+      vi.spyOn(
+        rendererModule,
+        "observeTerminalWebglVisibility",
+      ).mockImplementation(({ isPanelOpen }) => {
+        webglVisible = isPanelOpen;
+        return { sync: vi.fn(), dispose: vi.fn() };
+      });
       vi.spyOn(
         rendererModule,
         "loadOptionalTerminalWebglAddon",
-      ).mockReturnValue(new Promise(() => undefined));
+      ).mockResolvedValue({
+        WebglAddon: class {
+          activate() {}
+          dispose() {}
+          onContextLoss() {
+            return { dispose() {} };
+          }
+        },
+      });
       vi.spyOn(FitAddon.prototype, "proposeDimensions").mockReturnValue({
         cols,
         rows: 36,
@@ -369,6 +390,7 @@ describe("native terminal attach claim timing", () => {
       });
       expect(startTransport).toHaveBeenCalledOnce();
       expect(adoptedAt! - renderedAt).toBeLessThanOrEqual(16);
+      expect(webglVisible()).toBe(false);
       expect(
         document.querySelector('[data-replay-held="true"]'),
       ).not.toBeNull();
@@ -391,6 +413,7 @@ describe("native terminal attach claim timing", () => {
       expect(adoptedAt).toBeDefined();
       expect(claimAt).toBeDefined();
       if (cacheMode === "match") {
+        expect(webglVisible()).toBe(true);
         expect(
           document.querySelector('[data-replay-held="false"]'),
         ).not.toBeNull();
@@ -398,7 +421,7 @@ describe("native terminal attach claim timing", () => {
           type: "ack",
           nextSeq: 1,
         });
-        expect(revealedAt! - renderedAt).toBeLessThanOrEqual(100);
+        expect(revealedAt! - renderedAt).toBeLessThanOrEqual(64);
       }
       const claims = socket.sent
         .map((raw) => JSON.parse(raw))
