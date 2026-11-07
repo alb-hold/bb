@@ -1,3 +1,4 @@
+import { usePanelToggle } from "@/components/secondary-panel/usePanelToggle";
 import { AppPanelTabsPublisher } from "@/lib/app-panel-tabs";
 import { appendQuoteAndAttachmentsToDraft } from "@bb/client-core";
 import type { ComposerAttachment } from "@get-bb/plugin-sdk";
@@ -1212,13 +1213,23 @@ function RootComposeSurface({
     }
     return true;
   });
-  const handleToggleSecondaryPanel = useCallback(() => {
-    if (isSecondaryPanelOpen) {
-      panel.close();
+  const revealSecondaryPanel = useCallback(() => {
+    if (isCompactViewport) {
+      openCompactDrawer();
       return;
     }
-    handleOpenNewTab();
-  }, [handleOpenNewTab, isSecondaryPanelOpen, panel]);
+    updateFixedPanelTabsState((state) => ({
+      ...state,
+      secondary: { ...state.secondary, isOpen: true },
+    }));
+  }, [isCompactViewport, openCompactDrawer, updateFixedPanelTabsState]);
+  const handleToggleSecondaryPanel = usePanelToggle({
+    isOpen: isSecondaryPanelOpen,
+    hasActiveTab: activeFixedSecondaryTab !== null,
+    close: panel.close,
+    openNewTab: handleOpenNewTab,
+    reveal: revealSecondaryPanel,
+  });
   const acceptsRootTerminal = useCallback(
     (session: TerminalSession) =>
       rootPanelTerminalTarget !== null &&

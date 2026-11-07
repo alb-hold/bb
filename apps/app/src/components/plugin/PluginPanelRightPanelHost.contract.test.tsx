@@ -34,10 +34,22 @@ import {
   snapshotFromState,
   type ContractPanelRef,
   type ContractStateSink,
+  type PanelContractSurface,
 } from "@/test/panel-controller-contract";
 import { PluginContext } from "./plugin-context";
 import { getPluginPagePanelStateId } from "./plugin-page-panel-state";
 import { PluginPanelRightPanelHost } from "./PluginPanelRightPanelHost";
+
+import {
+  describePanelToggleContract,
+  type PanelToggleMountOptions,
+} from "@/test/panel-toggle-contract";
+import {
+  getFixedPanelTabsStateStorageKey,
+  serializeFixedPanelTabsState,
+} from "@/lib/fixed-panel-tabs-state";
+
+const viewport = vi.hoisted(() => ({ compact: false }));
 
 const appCommandHandlers = vi.hoisted(
   () => new Map<string, () => boolean | void>(),
@@ -50,7 +62,7 @@ vi.mock("@/components/commands/AppCommandProvider", () => ({
   useAppCommandShortcut: () => null,
 }));
 vi.mock("@bb/shared-ui/hooks/use-compact-viewport", () => ({
-  useIsCompactViewport: () => false,
+  useIsCompactViewport: () => viewport.compact,
 }));
 vi.mock("@/hooks/queries/plugin-settings-queries", () => ({
   usePluginList: () => ({ data: { plugins: [] } }),
@@ -128,6 +140,7 @@ function pagePanelTabId(fixedTabId: string) {
 
 beforeEach(() => {
   markPluginFrontendsSettled();
+  viewport.compact = false;
   appCommandHandlers.clear();
   localStorage.clear();
   resetFixedPanelTabsStateForTest();
@@ -172,72 +185,101 @@ afterEach(() => {
   resetFocusedAppPanelControllersForTest();
 });
 
-describePanelControllerContract(
-  "plugin nav-panel page",
-  { fixedTabs: true },
-  async () => {
-    const probe: ContractPanelRef = { current: null };
-    const sink: ContractStateSink = { current: null };
-    render(
-      <QueryClientProvider
-        client={
-          new QueryClient({ defaultOptions: { queries: { retry: false } } })
-        }
-      >
-        <JotaiProvider store={createStore()}>
-          <TooltipProvider>
-            <MemoryRouter
-              initialEntries={[`/plugins/${CONTRACT_PLUGIN_ID}/board`]}
-            >
-              <RouteNavigationProvider>
-                <ContractStateProbe
-                  panelStateId={panelStateId}
-                  syncThreadId={null}
-                  sink={sink}
-                />
-                <PluginPanelRightPanelHost
-                  panelPath={PANEL_ID}
-                  pluginId={CONTRACT_PLUGIN_ID}
-                  subPath=""
-                >
-                  <PluginContext.Provider value={CONTRACT_PLUGIN_ID}>
-                    <ContractPanelProbe probe={probe} />
-                  </PluginContext.Provider>
-                </PluginPanelRightPanelHost>
-              </RouteNavigationProvider>
-            </MemoryRouter>
-          </TooltipProvider>
-        </JotaiProvider>
-      </QueryClientProvider>,
+async function mountSurface(
+  options?: PanelToggleMountOptions,
+): Promise<PanelContractSurface> {
+  if (options) {
+    setPluginSlotRegistrations(
+      CONTRACT_PLUGIN_ID,
+      collectPluginAppRegistrations(
+        definePluginApp((app) => {
+          app.slots.navPanel({
+            id: PANEL_ID,
+            title: "Board",
+            icon: "Columns",
+            path: PANEL_ID,
+            component: () => null,
+          });
+        }),
+      ),
     );
+    viewport.compact = options.compact;
+    window.localStorage.setItem(
+      getFixedPanelTabsStateStorageKey({ threadId: panelStateId }),
+      serializeFixedPanelTabsState({ state: options.state }),
+    );
+  }
+  const probe: ContractPanelRef = { current: null };
+  const sink: ContractStateSink = { current: null };
+  render(
+    <QueryClientProvider
+      client={
+        new QueryClient({ defaultOptions: { queries: { retry: false } } })
+      }
+    >
+      <JotaiProvider store={createStore()}>
+        <TooltipProvider>
+          <MemoryRouter
+            initialEntries={[`/plugins/${CONTRACT_PLUGIN_ID}/board`]}
+          >
+            <RouteNavigationProvider>
+              <ContractStateProbe
+                panelStateId={panelStateId}
+                syncThreadId={null}
+                sink={sink}
+              />
+              <PluginPanelRightPanelHost
+                panelPath={PANEL_ID}
+                pluginId={CONTRACT_PLUGIN_ID}
+                subPath=""
+              >
+                <PluginContext.Provider value={CONTRACT_PLUGIN_ID}>
+                  <ContractPanelProbe probe={probe} />
+                </PluginContext.Provider>
+              </PluginPanelRightPanelHost>
+            </RouteNavigationProvider>
+          </MemoryRouter>
+        </TooltipProvider>
+      </JotaiProvider>
+    </QueryClientProvider>,
+  );
+  if (options) await waitFor(() => expect(probe.current).not.toBeNull());
+  else
     await waitFor(() =>
       expect(snapshotFromState(sink).tabIds).toContain(
         pagePanelTabId("details"),
       ),
     );
-    return {
-      panel: () => readContractPanel(probe),
-      snapshot: () => snapshotFromState(sink),
-      tabs: () => readContractTabs(probe),
-      renderedTabVisible: () =>
-        screen.queryByTestId("contract-tab-visible")?.textContent ?? null,
-      renderedTarget: () =>
-        screen.queryByTestId("contract-target")?.textContent ?? null,
-      command: (id) => appCommandHandlers.get(id)?.() !== false,
-      action: { tab: actionTab, panelTabId: contractActionPanelTabId("chat") },
-      fixed: {
-        targeted: { tab: targetedTab, panelTabId: pagePanelTabId("details") },
-        untargeted: {
-          tab: untargetedTab,
-          panelTabId: pagePanelTabId("navigation"),
-        },
+  return {
+    panel: () => readContractPanel(probe),
+    snapshot: () => snapshotFromState(sink),
+    tabs: () => readContractTabs(probe),
+    renderedTabVisible: () =>
+      screen.queryByTestId("contract-tab-visible")?.textContent ?? null,
+    renderedTarget: () =>
+      screen.queryByTestId("contract-target")?.textContent ?? null,
+    command: (id) => appCommandHandlers.get(id)?.() !== false,
+    action: { tab: actionTab, panelTabId: contractActionPanelTabId("chat") },
+    fixed: {
+      targeted: { tab: targetedTab, panelTabId: pagePanelTabId("details") },
+      untargeted: {
+        tab: untargetedTab,
+        panelTabId: pagePanelTabId("navigation"),
       },
-      foreignTab: {
-        id: "chat",
-        context: { kind: "thread" },
-        availability: "action",
-      },
-      toggleRestoresActiveTab: true,
-    };
-  },
+    },
+    foreignTab: {
+      id: "chat",
+      context: { kind: "thread" },
+      availability: "action",
+    },
+    toggleRestoresActiveTab: true,
+  };
+}
+
+describePanelControllerContract(
+  "plugin nav-panel page",
+  { fixedTabs: true },
+  mountSurface,
 );
+
+describePanelToggleContract("plugin nav-panel page", mountSurface);
