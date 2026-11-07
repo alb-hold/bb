@@ -1304,6 +1304,7 @@ it.each([true, false])(
     );
     const status = screen.getByRole("status", { name: "Thread activity" });
     expect(status.textContent).toBe("Idle");
+    expect(status.firstElementChild?.getAttribute("aria-hidden")).toBe("true");
     expect(status.classList.contains("h-4")).toBe(true);
     expect(
       container.querySelector("[data-thread-detail-header-title]")!

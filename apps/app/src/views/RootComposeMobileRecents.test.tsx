@@ -485,9 +485,6 @@ describe("mobile recent thread rows", () => {
     expect(age.classList.contains("truncate")).toBe(false);
     expect(branchNode.classList.contains("min-w-0")).toBe(true);
     expect(branchNode.classList.contains("truncate")).toBe(true);
-    expect(branchNode.parentElement?.dataset.branchMinimum).toBe(
-      `${branch.slice(0, 6)}…`,
-    );
     expect(metadata.classList.contains("leading-4")).toBe(true);
     expect(metadata.firstElementChild?.classList.contains("size-4")).toBe(true);
     expect(metadata.firstElementChild?.getAttribute("aria-hidden")).toBe(
@@ -495,7 +492,7 @@ describe("mobile recent thread rows", () => {
     );
   });
 
-  it("lets a long project use available space beside a short branch", () => {
+  it("caps the project and reserves the age beside a short branch", () => {
     render(
       <TestProviders>
         <RootComposeMobileRecents
@@ -514,14 +511,9 @@ describe("mobile recent thread rows", () => {
     );
     const project = screen.getByText("queen-scheduler");
     const branch = screen.getByText("main");
-    expect(project.className).not.toMatch(/max-w-/);
-    expect(project.parentElement?.classList.contains("min-w-0")).toBe(true);
-    expect(branch.parentElement?.dataset.branchMinimum).toBe("main");
-    expect(
-      project.parentElement?.parentElement?.classList.contains(
-        "grid-cols-[minmax(0,max-content)_auto_minmax(min-content,max-content)]",
-      ),
-    ).toBe(true);
+    expect(project.classList.contains("max-w-[min(14ch,60%)]")).toBe(true);
+    expect(project.classList.contains("shrink-0")).toBe(true);
+    expect(branch.classList.contains("truncate")).toBe(true);
   });
 
   it("does not repeat the project name as the workspace segment", () => {

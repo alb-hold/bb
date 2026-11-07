@@ -14,7 +14,7 @@ export function TerminalCommandGutter({
   viewportLine,
 }: TerminalCommandGutterProps) {
   return (
-    <div className="pointer-events-none absolute inset-y-2 left-2 z-10 w-1">
+    <div className="pointer-events-none absolute inset-y-2 md:top-4 left-2 z-10 w-1">
       {commandMarks.map((mark, index) => {
         const row = mark.line - viewportLine;
         if (row < 0 || row >= rows || mark.exitCode === null) return null;

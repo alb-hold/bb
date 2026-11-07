@@ -330,7 +330,7 @@ export function TerminalMobileControls({
           onPress={() => setExpanded(!expanded)}
         >
           {compactKeys ? (
-            <Icon name="Keyboard" className="size-4" />
+            <Icon name="MoreHorizontal" className="size-4" />
           ) : (
             "Keys"
           )}

@@ -599,23 +599,27 @@ describe("ThreadRow", () => {
     expect(context?.classList.contains("font-normal")).toBe(true);
     expect(context?.classList.contains("text-xs")).toBe(true);
     expect(slot?.classList.contains("size-4")).toBe(true);
-    if (label === "Native terminal" || label === "Worktree") {
+    if (label === "Worktree") {
       expect(slot?.getAttribute("role")).toBe("img");
       expect(slot?.getAttribute("aria-label")).toBe(label);
-      expect(slot?.querySelector("[data-icon]")?.getAttribute("data-icon")).toBe(label === "Native terminal" ? "Terminal" : "FolderGit");
+      expect(slot?.querySelector("[data-icon]")?.getAttribute("data-icon")).toBe("FolderGit");
       expect(slot?.querySelector("[data-icon]")?.classList.contains("size-4")).toBe(true);
     } else {
       expect(slot?.getAttribute("aria-hidden")).toBe("true");
       expect(slot?.querySelector("[data-icon]")).toBeNull();
+      if (label === "Native terminal") {
+        expect(screen.getByRole("img", { name: label }).closest(".bb-thread-title")).not.toBeNull();
+      }
     }
+    expect(context?.classList.contains("md:text-sm")).toBe(true);
   });
 
   it.each([
     ["project:proj_context", "2m"],
-    ["project:proj_other", "Orbital ·2m"],
-    ["threads", "Orbital ·2m"],
-    ["pinned", "Orbital ·2m"],
-    ["section:custom", "Orbital ·2m"],
+    ["project:proj_other", "Orbital · 2m"],
+    ["threads", "Orbital · 2m"],
+    ["pinned", "Orbital · 2m"],
+    ["section:custom", "Orbital · 2m"],
   ])("shows project context only outside its own project group (%s)", (group, expected) => {
     const updatedAt = Date.now() - 120_000;
     const view = renderThreadRow({
@@ -633,7 +637,7 @@ describe("ThreadRow", () => {
       projects: [{ id: "proj_context", name: "Orbital", isPersonal: false, href: "/", settingsHref: "/" }],
     });
     const context = view.container.querySelector("[data-sidebar-thread-context]");
-    expect(context?.textContent).toBe("Orbital ·2m");
+    expect(context?.textContent).toBe("Orbital · 2m");
     expect(context?.querySelector("time")?.dateTime).toBe(new Date(updatedAt).toISOString());
     expect(view.container.querySelector("[data-thread-row-metadata]")).toBeNull();
     expect(screen.queryByRole("img", { name: "Native terminal", hidden: true })).toBeNull();
@@ -3691,9 +3695,10 @@ it("reserves an equal metadata slot for chat, worktree and terminal rows", () =>
   expect(slot().getAttribute("aria-hidden")).toBe("true");
   expect(slot().querySelector("[data-icon]")).toBeNull();
   view.rerenderThreadRow(createThread({ experimental_nativeTerminal: true }));
-  expect(screen.getByRole("img", { name: "Native terminal" })).toBe(slot());
+  expect(slot().getAttribute("aria-hidden")).toBe("true");
+  expect(screen.getByRole("img", { name: "Native terminal" }).closest(".bb-thread-title")).not.toBeNull();
   expect(
-    slot().querySelector("[data-icon]")?.classList.contains("size-4"),
+    screen.getByRole("img", { name: "Native terminal" }).querySelector("[data-icon]")?.classList.contains("size-4"),
   ).toBe(true);
   view.rerenderThreadRow(
     createThread({

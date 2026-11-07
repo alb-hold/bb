@@ -218,7 +218,7 @@ describe("creating a sidebar section", () => {
           }),
         ),
       ];
-      renderCustomSections(
+      const view = renderCustomSections(
         true,
         mode,
         false,
@@ -244,7 +244,7 @@ describe("creating a sidebar section", () => {
           : mode === "machine"
             ? "Machine 0"
             : "Threads",
-        { exact: true },
+        { exact: true, selector: '[data-sidebar="group-label"] [title]' },
       );
       const follows = (earlier: Element, later: Element) =>
         Boolean(
@@ -257,6 +257,24 @@ describe("creating a sidebar section", () => {
       expect(follows(rais3, firstModeGroup)).toBe(true);
       if (mode === "project") {
         expect(screen.queryByText("Project 3", { exact: true })).toBeNull();
+        const ownLink = view.container.querySelector(
+          '[data-sidebar-thread-id="thr_many_0"]',
+        );
+        const pinnedLink = view.container.querySelector(
+          '[data-sidebar-thread-id="thr_many_pinned"]',
+        );
+        expect(ownLink).not.toBeNull();
+        expect(pinnedLink).not.toBeNull();
+        const ownGroup = ownLink?.parentElement?.querySelector(
+          "[data-sidebar-thread-context]",
+        );
+        const pinnedRow = pinnedLink?.parentElement?.querySelector(
+          "[data-sidebar-thread-context]",
+        );
+        expect(ownGroup).not.toBeNull();
+        expect(pinnedRow).not.toBeNull();
+        expect(ownGroup?.textContent).not.toContain("Project 0");
+        expect(pinnedRow?.textContent).toContain("Project 0");
       }
     },
   );
@@ -288,7 +306,7 @@ describe("creating a sidebar section", () => {
       });
       const firstModeGroup = screen.getByText(
         mode === "project" ? "Project 0" : "Threads",
-        { exact: true },
+        { exact: true, selector: '[data-sidebar="group-label"] [title]' },
       );
       expect(
         Boolean(
@@ -339,7 +357,7 @@ describe("creating a sidebar section", () => {
       if (mode !== "chronological") {
         const firstModeGroup = screen.getByText(
           mode === "project" ? "Project 0" : "Threads",
-          { exact: true },
+          { exact: true, selector: '[data-sidebar="group-label"] [title]' },
         );
         expect(
           Boolean(

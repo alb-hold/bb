@@ -1,3 +1,4 @@
+import { ThreadRowMetadata } from "@bb/shared-ui/thread-row-metadata";
 import {
   threadListIndicatorStateForThread,
   type ThreadListIndicatorState,
@@ -116,6 +117,9 @@ export function RecentThreadRowContent({
     <>
       <span className="min-w-0 flex-1 space-y-0.5">
         <span className="flex min-w-0 items-center gap-1.5">
+          {thread.nativeTerminal === true ? (
+            <ThreadModeGlyph nativeTerminal isWorktree={false} />
+          ) : null}
           <ThreadTitle
             title={getThreadDisplayTitle(thread)}
             className={cn("font-normal", COARSE_POINTER_TEXT_BASE_CLASS)}
@@ -128,48 +132,17 @@ export function RecentThreadRowContent({
           title={metadataText}
         >
           <ThreadModeGlyph
-            nativeTerminal={thread.nativeTerminal === true}
-            isWorktree={thread.environmentIsWorktree === true}
+            nativeTerminal={false}
+            isWorktree={
+              thread.environmentIsWorktree === true &&
+              thread.nativeTerminal !== true
+            }
           />
-          <span className="flex min-w-0 flex-1 items-center whitespace-nowrap">
-            <span
-              className={cn(
-                "grid min-w-0",
-                metadata.project !== null && metadata.branch !== null
-                  ? "grid-cols-[minmax(0,max-content)_auto_minmax(min-content,max-content)]"
-                  : "grid-cols-[minmax(0,1fr)]",
-              )}
-            >
-              {metadata.project !== null ? (
-                <span className="min-w-0">
-                  <span className="block shrink-0 overflow-hidden text-ellipsis">
-                    {metadata.project}
-                  </span>
-                </span>
-              ) : null}
-              {metadata.project !== null && metadata.branch !== null ? (
-                <span className="shrink-0 whitespace-pre">{" \u00b7 "}</span>
-              ) : null}
-              {metadata.branch !== null ? (
-                <span
-                  className="grid min-w-min before:invisible before:col-start-1 before:row-start-1 before:content-[attr(data-branch-minimum)]"
-                  data-branch-minimum={
-                    metadata.branch.length <= 7
-                      ? metadata.branch
-                      : `${metadata.branch.slice(0, 6)}…`
-                  }
-                >
-                  <span className="col-start-1 row-start-1 min-w-0 truncate">
-                    {metadata.branch}
-                  </span>
-                </span>
-              ) : null}
-            </span>
-            {metadata.project !== null || metadata.branch !== null ? (
-              <span className="shrink-0 whitespace-pre">{" \u00b7 "}</span>
-            ) : null}
-            <span className="shrink-0">{metadata.age}</span>
-          </span>
+          <ThreadRowMetadata
+            project={metadata.project}
+            branch={metadata.branch}
+            age={metadata.age}
+          />
         </span>
       </span>
       <span

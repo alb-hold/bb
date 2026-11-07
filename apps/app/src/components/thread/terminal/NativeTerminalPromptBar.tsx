@@ -540,7 +540,7 @@ export function NativeTerminalPromptBar({
   return (
     <form
       className={cn(
-        "mx-auto flex w-full shrink-0 flex-col gap-1.5 bg-sidebar px-4 pt-1 pb-[max(0.5rem,env(safe-area-inset-bottom))]",
+        "mx-auto md:has-[[data-native-composer-inline]]:mx-0 md:has-[[data-native-composer-inline]]:max-w-none md:has-[[data-native-composer-inline]]:pl-2 flex w-full shrink-0 flex-col gap-1.5 bg-sidebar px-4 pt-1 pb-[max(0.5rem,env(safe-area-inset-bottom))]",
         CONTENT_MEASURE_MAX_WIDTH_CLASS,
       )}
       data-native-terminal-prompt=""
@@ -582,7 +582,7 @@ export function NativeTerminalPromptBar({
       <div
         className={cn(
           COMPOSER_SHELL_CLASS,
-          "group flex flex-col max-md:pointer-coarse:data-[native-composer-inline]:grid max-md:pointer-coarse:data-[native-composer-inline]:grid-cols-[minmax(0,1fr)_auto] max-md:pointer-coarse:data-[native-composer-inline]:items-center px-1.5 py-0.5 transition-[border-color,box-shadow] duration-200 focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/40 motion-reduce:transition-none",
+          "group flex flex-col md:data-[native-composer-inline]:max-w-md md:data-[native-composer-inline]:border-transparent md:data-[native-composer-inline]:bg-transparent md:data-[native-composer-inline]:shadow-none md:data-[native-composer-inline]:px-0 md:data-[native-composer-inline]:grid md:data-[native-composer-inline]:grid-cols-[minmax(0,1fr)_auto] md:data-[native-composer-inline]:items-center max-md:pointer-coarse:data-[native-composer-inline]:grid max-md:pointer-coarse:data-[native-composer-inline]:grid-cols-[minmax(0,1fr)_auto] max-md:pointer-coarse:data-[native-composer-inline]:items-center px-1.5 py-0.5 transition-[border-color,box-shadow] duration-200 focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/40 motion-reduce:transition-none",
           recording && "border-destructive/40",
         )}
         data-native-composer=""
@@ -622,7 +622,7 @@ export function NativeTerminalPromptBar({
           <div
             aria-label="Terminal execution"
             data-native-composer-execution=""
-            className="col-span-2 truncate px-2 text-xs leading-tight text-muted-foreground max-md:pointer-coarse:group-data-[native-composer-inline]:hidden"
+            className="col-span-2 truncate px-2 text-xs leading-tight text-muted-foreground max-md:pointer-coarse:group-data-[native-composer-inline]:hidden md:group-data-[native-composer-inline]:hidden"
           >
             <span
               className="block truncate"
@@ -649,7 +649,7 @@ export function NativeTerminalPromptBar({
               : recording
                 ? "Listening…"
                 : isNarrowViewport
-                  ? "Send to prompt…"
+                  ? `Send to ${providerLabel.length <= 11 ? providerLabel : "CLI"}`
                   : isCompactViewport
                     ? "Send to prompt above…"
                     : `Send to ${providerLabel} prompt above…`
@@ -711,7 +711,7 @@ export function NativeTerminalPromptBar({
             <div
               aria-label="Terminal model"
               data-native-composer-model=""
-              className="min-w-0 flex-1 truncate text-xs text-muted-foreground max-md:pointer-coarse:group-data-[native-composer-inline]:hidden"
+              className="min-w-0 flex-1 truncate text-xs text-muted-foreground max-md:pointer-coarse:group-data-[native-composer-inline]:hidden md:group-data-[native-composer-inline]:hidden"
             >
               <span title={modelLabel}>{modelLabel}</span>
             </div>
