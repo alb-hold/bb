@@ -1778,6 +1778,70 @@ describe("ModelReasoningPicker service tiers", () => {
   });
 });
 
+it.each(["codex", "acp:custom"])(
+  "keeps the remembered trigger text at 390 px when the %s catalog arrives",
+  (providerId) => {
+    const { result } = renderHook(() =>
+      usePromptBoxModelPreference(providerId),
+    );
+    act(() => result.current.setValue("gpt-6.1-sol"));
+    const originalWidth = window.innerWidth;
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: 390,
+    });
+    const { wrapper } = createQueryClientTestHarness();
+    const picker = (loaded: boolean) => (
+      <CompactViewportOverrideProvider
+        isCompactViewport={window.innerWidth < 768}
+      >
+        <ModelReasoningPicker
+          providerOptions={
+            loaded
+              ? [{ value: providerId, label: "Provider", brandPrefix: "GPT-" }]
+              : []
+          }
+          selectedProviderId={providerId}
+          hasMultipleProviders={false}
+          modelValue={loaded ? "gpt-6.1-sol" : ""}
+          modelOptions={
+            loaded ? [{ value: "gpt-6.1-sol", label: "GPT-6.1-Sol" }] : []
+          }
+          modelIsLoading={!loaded}
+          onModelChange={vi.fn()}
+          reasoningValue="medium"
+          reasoningOptions={reasoningOptions}
+          onReasoningChange={vi.fn()}
+          serviceTierValue={undefined}
+          serviceTierOptions={[]}
+          onServiceTierChange={vi.fn()}
+        />
+      </CompactViewportOverrideProvider>
+    );
+    try {
+      const { rerender } = render(picker(false), { wrapper });
+      const trigger = screen.getByRole("button", {
+        name: /^Provider, model and reasoning/,
+      });
+      const firstPaint = trigger.textContent;
+      expect(trigger.querySelector("[data-model-name]")?.textContent).toBe(
+        "6.1-Sol",
+      );
+      rerender(picker(true));
+      expect(trigger.textContent).toBe(firstPaint);
+      expect(trigger.querySelector("[data-model-name]")?.textContent).toBe(
+        "6.1-Sol",
+      );
+    } finally {
+      act(() => result.current.setValue(""));
+      Object.defineProperty(window, "innerWidth", {
+        configurable: true,
+        value: originalWidth,
+      });
+    }
+  },
+);
+
 it("uses the persisted model when the home selection is still loading", () => {
   const { result } = renderHook(() => usePromptBoxModelPreference("codex"));
   act(() => result.current.setValue("gpt-5.5"));

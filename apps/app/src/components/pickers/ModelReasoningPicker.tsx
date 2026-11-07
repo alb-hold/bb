@@ -155,11 +155,7 @@ export function ModelReasoningPicker(props: ModelReasoningPickerProps) {
   const triggerModelLabel = showLoadingTrigger
     ? "Model"
     : hasSelectedModel
-      ? stripModelBrandPrefix(
-          selectedModelLabel,
-          selectedProvider?.brandPrefix ??
-            (selectedProviderId === "codex" ? "GPT-" : undefined),
-        )
+      ? stripModelBrandPrefix(selectedModelLabel, selectedProvider?.brandPrefix)
       : selectedModelLoadFailed
         ? hasAlternateSelectionPath
           ? "Select model"
