@@ -59,15 +59,16 @@ it("retains the first preload timings when later panel consumers preload again",
 
 it("retries a rejected runtime import on the next open", async () => {
   vi.stubGlobal("performance", nodePerformance);
+  const failure = new Error("runtime download unavailable");
   vi.doMock("@xterm/xterm", () => {
-    throw new Error("runtime download unavailable");
+    throw failure;
   });
   const { importTerminalModules, preloadTerminalModules } =
     await import("./terminal-modules");
   preloadTerminalModules();
-  await expect(importTerminalModules()).rejects.toThrow(
-    "runtime download unavailable",
-  );
+  await expect(importTerminalModules()).rejects.toMatchObject({
+    cause: failure,
+  });
   await Promise.resolve();
   expect(performance.getEntriesByName(`${gate}-end`)[0]).toMatchObject({
     detail: { outcome: "rejected" },
