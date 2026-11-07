@@ -232,6 +232,7 @@ export function mountTerminalReplayPreview({
   if (liveTerminal) {
     terminal.options.fontFamily = liveTerminal.options.fontFamily;
     terminal.options.fontSize = liveTerminal.options.fontSize;
+    terminal.options.fontWeight = liveTerminal.options.fontWeight;
     terminal.options.lineHeight = liveTerminal.options.lineHeight;
   }
   terminal.open(preview);
@@ -319,6 +320,7 @@ export function mountTerminalReplayPreview({
     if (liveTerminal) {
       terminal.options.fontFamily = liveTerminal.options.fontFamily;
       terminal.options.fontSize = liveTerminal.options.fontSize;
+      terminal.options.fontWeight = liveTerminal.options.fontWeight;
       terminal.options.lineHeight = liveTerminal.options.lineHeight;
       if (readyToPaint()) {
         const liveScreen =

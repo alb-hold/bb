@@ -8,7 +8,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   document.body.replaceChildren();
-  document.documentElement.style.removeProperty("--font-terminal");
+  document.documentElement.style.removeProperty("--font-mono");
   vi.restoreAllMocks();
 });
 
@@ -54,7 +54,7 @@ it.each([
     vi.spyOn(window, "devicePixelRatio", "get").mockReturnValue(2);
   if (changed === "fontSize") fontSize = 14;
   if (changed === "fontFamily")
-    document.documentElement.style.setProperty("--font-terminal", "monospace");
+    document.documentElement.style.setProperty("--font-mono", "monospace");
   if (changed === "width" || changed === "height") {
     document.body.append(
       container(
@@ -78,7 +78,7 @@ it("matches container dimensions rounded to whole pixels", async () => {
 
 it("matches the font actually used for the fit, including a pending font-family change", async () => {
   const cache = await import("./terminal-grid-cache");
-  document.documentElement.style.setProperty("--font-terminal", "new-font");
+  document.documentElement.style.setProperty("--font-mono", "new-font");
   cache.rememberTerminalGrid(
     "term",
     container(),
@@ -87,7 +87,7 @@ it("matches the font actually used for the fit, including a pending font-family 
     "old-font",
   );
   expect(cache.readCachedTerminalGrid("term")).toBeNull();
-  document.documentElement.style.setProperty("--font-terminal", "old-font");
+  document.documentElement.style.setProperty("--font-mono", "old-font");
   expect(cache.readCachedTerminalGrid("term")).toEqual({ cols: 116, rows: 38 });
 });
 
@@ -151,6 +151,36 @@ it("bounds persisted contexts and rejects malformed or unmeasurable grids", asyn
   });
   expect(cache.readCachedTerminalGrid("oversized")).toBeNull();
   localStorage.setItem(key, '[{"terminalId":"term","cols":-1}]');
+  vi.resetModules();
+  expect(
+    (await import("./terminal-grid-cache")).readCachedTerminalGrid("term"),
+  ).toBeNull();
+});
+
+it.each(["lineHeight", "fontWeight"])(
+  "rejects a grid fitted with stale %s",
+  async (metric) => {
+    const cache = await import("./terminal-grid-cache");
+    cache.rememberTerminalGrid("term", container(), 13, {
+      cols: 116,
+      rows: 38,
+    });
+    const key = localStorage.key(0)!;
+    const entries = JSON.parse(localStorage.getItem(key)!);
+    entries[0][metric] = metric === "lineHeight" ? 1.12 : 700;
+    localStorage.setItem(key, JSON.stringify(entries));
+    expect(cache.readCachedTerminalGrid("term")).toBeNull();
+  },
+);
+
+it("rejects a legacy cache entry with no leading or weight", async () => {
+  const cache = await import("./terminal-grid-cache");
+  cache.rememberTerminalGrid("term", container(), 13, { cols: 116, rows: 38 });
+  const key = localStorage.key(0)!;
+  const entries = JSON.parse(localStorage.getItem(key)!);
+  delete entries[0].lineHeight;
+  delete entries[0].fontWeight;
+  localStorage.setItem(key, JSON.stringify(entries));
   vi.resetModules();
   expect(
     (await import("./terminal-grid-cache")).readCachedTerminalGrid("term"),

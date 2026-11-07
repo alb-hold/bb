@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { transform, Features } from "lightningcss";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -28,20 +29,32 @@ function themeColor(mode: "light" | "dark", name: string): string {
   const at = css.indexOf(`color-scheme: ${mode};`);
   const block = css.slice(css.lastIndexOf("{", at), css.indexOf("}", at));
   let value = block.match(new RegExp(`${name}:\\s*([^;]+);`))?.[1].trim();
+  if (!value)
+    value = css
+      .slice(css.lastIndexOf(":root {"))
+      .match(new RegExp(`${name}:\\s*([^;]+);`))?.[1]
+      .trim();
   if (!value && name === "--muted")
     value = "color-mix(in oklch, var(--ink) 11%, var(--canvas))";
   if (!value) throw new Error(`Missing ${name}`);
-  const mix = value.match(
-    /^color-mix\(in oklch, var\((--[^)]+)\) ([\d.]+)%, var\((--[^)]+)\)\)$/,
-  );
-  if (mix) {
-    const lightness = (token: string) =>
-      Number(block.match(new RegExp(`${token}: oklch\\(([\\d.]+)`))?.[1]);
-    const weight = Number(mix[2]) / 100;
-    value = `oklch(${lightness(mix[1]) * weight + lightness(mix[3]) * (1 - weight)} 0 0)`;
+  const resolve = (input: string): string =>
+    input.replace(/var\((--[^)]+)\)/g, (_, token: string) =>
+      themeColor(mode, token),
+    );
+  value = resolve(value);
+  if (value.startsWith("color-mix")) {
+    const output = transform({
+      filename: "terminal.css",
+      code: Buffer.from(`a { color: ${value}; }`),
+      include: Features.Colors,
+    }).code.toString();
+    value = output.match(/color: (#[0-9a-f]+);/)?.[1] ?? value;
   }
-  const alias = value.match(/^var\((--[^)]+)\)$/);
-  if (alias) return themeColor(mode, alias[1]);
+  if (/^#[0-9a-f]{6}$/.test(value))
+    return `rgb(${[1, 3, 5].map((at) => parseInt(value!.slice(at, at + 2), 16)).join(", ")})`;
+  if (/^#[0-9a-f]{3}$/.test(value))
+    return `rgb(${[1, 2, 3].map((at) => parseInt(value![at].repeat(2), 16)).join(", ")})`;
+
   const neutral = value.match(/^oklch\(([\d.]+) 0 0\)$/);
   if (neutral) {
     const linear = Number(neutral[1]) ** 3;
@@ -163,7 +176,7 @@ it("uses stable readable cells and a steady block cursor across renderer handoff
     4.5,
   );
   expect(TERMINAL_CELL_OPTIONS).toEqual({
-    lineHeight: 1.12,
+    lineHeight: 1.22,
     cursorBlink: false,
     cursorStyle: "block",
   });
@@ -217,7 +230,7 @@ it.each(["light", "dark"] as const)(
         const canvas = luminance(themeColor(mode, "--sidebar"));
         const bandContrast = (bg + 0.05) / (canvas + 0.05);
         expect(bandContrast).toBeGreaterThanOrEqual(1.5);
-        expect(bandContrast).toBeLessThanOrEqual(2.5);
+        expect(bandContrast).toBeLessThanOrEqual(1.6);
       }
     } finally {
       terminal.dispose();
@@ -309,6 +322,55 @@ it.each(["light", "dark"] as const)(
       expect(
         (Math.max(fg, bg) + 0.05) / (Math.min(fg, bg) + 0.05),
       ).toBeGreaterThanOrEqual(4.5);
+    } finally {
+      terminal.dispose();
+    }
+  },
+);
+
+it("derives the full terminal palette from theme ink and canvas", () => {
+  const names = new Set<string>();
+  const theme = buildTerminalThemeFromCssColors((name) => {
+    names.add(name);
+    return name;
+  });
+  expect(theme.background).toBe("--sidebar");
+  expect(theme.foreground).toBe("--foreground");
+  for (let index = 0; index < 16; index++) {
+    expect(names.has(`--terminal-ansi-${index}`)).toBe(true);
+    const declaration = css.match(
+      new RegExp(`--terminal-ansi-${index}:\\s*([^;]+);`),
+    )?.[1];
+    expect(declaration).toMatch(/var\(--(?:ink|canvas)\)/);
+  }
+});
+
+it.each(["light", "dark"] as const)(
+  "answers OSC 4 with the rendered %s turn-band palette entry",
+  async (mode) => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
+      measureText: (text: string) => ({ width: text.length * 9 }),
+    } as unknown as CanvasRenderingContext2D);
+    const terminal = new Terminal({
+      theme: buildTerminalThemeFromCssColors((name) =>
+        name.startsWith("--terminal-scrollbar")
+          ? undefined
+          : themeColor(mode, name),
+      ),
+    });
+    const container = document.createElement("div");
+    document.body.append(container);
+    terminal.open(container);
+    const replies: string[] = [];
+    terminal.onData((reply) => replies.push(reply));
+    try {
+      await new Promise<void>((resolve) =>
+        terminal.write("\x1b]4;8;?\x07", resolve),
+      );
+      const rgb = (themeColor(mode, "--terminal-ansi-8").match(/\d+/g) ?? [])
+        .map((c) => Number(c).toString(16).padStart(2, "0").repeat(2))
+        .join("/");
+      expect(replies).toEqual([`\x1b]4;8;rgb:${rgb}\x1b\\`]);
     } finally {
       terminal.dispose();
     }

@@ -1,7 +1,14 @@
 import { markTerminalPerformance } from "@/lib/terminal-performance";
 import { rememberTerminalGrid } from "./terminal-grid-cache";
-import { readTerminalFontFamily } from "./terminal-font";
-export { resolveTerminalFontFamily, TERMINAL_FONT_FAMILY } from "./terminal-font";
+import {
+  readTerminalFontFamily,
+  readTerminalFontMetrics,
+  TERMINAL_LINE_HEIGHT,
+} from "./terminal-font";
+export {
+  resolveTerminalFontFamily,
+  TERMINAL_FONT_FAMILY,
+} from "./terminal-font";
 import {
   createPrefetchedTerminalSocket,
   prefetchTerminalSocket,
@@ -423,7 +430,7 @@ type TerminalCssVariableReader = (name: string) => string | undefined;
 export const TERMINAL_THEME_OPTIONS = { minimumContrastRatio: 7 };
 
 export const TERMINAL_CELL_OPTIONS = {
-  lineHeight: 1.12,
+  lineHeight: TERMINAL_LINE_HEIGHT,
   cursorBlink: false,
   cursorStyle: "block" as const,
 };
@@ -441,22 +448,22 @@ export function buildTerminalThemeFromCssColors(
     scrollbarSliderActiveBackground: get("--terminal-scrollbar-hover"),
     selectionBackground: get("--muted"),
     selectionInactiveBackground: get("--muted"),
-    black: get("--ansi-0"),
-    red: get("--ansi-1"),
-    green: get("--ansi-2"),
-    yellow: get("--ansi-3"),
-    blue: get("--ansi-4"),
-    magenta: get("--ansi-5"),
-    cyan: get("--ansi-6"),
-    white: get("--ansi-7"),
-    brightBlack: get("--terminal-ansi-8") ?? get("--ansi-8"),
-    brightRed: get("--ansi-9"),
-    brightGreen: get("--ansi-10"),
-    brightYellow: get("--ansi-11"),
-    brightBlue: get("--ansi-12"),
-    brightMagenta: get("--ansi-13"),
-    brightCyan: get("--ansi-14"),
-    brightWhite: get("--ansi-15"),
+    black: get("--terminal-ansi-0"),
+    red: get("--terminal-ansi-1"),
+    green: get("--terminal-ansi-2"),
+    yellow: get("--terminal-ansi-3"),
+    blue: get("--terminal-ansi-4"),
+    magenta: get("--terminal-ansi-5"),
+    cyan: get("--terminal-ansi-6"),
+    white: get("--terminal-ansi-7"),
+    brightBlack: get("--terminal-ansi-8"),
+    brightRed: get("--terminal-ansi-9"),
+    brightGreen: get("--terminal-ansi-10"),
+    brightYellow: get("--terminal-ansi-11"),
+    brightBlue: get("--terminal-ansi-12"),
+    brightMagenta: get("--terminal-ansi-13"),
+    brightCyan: get("--terminal-ansi-14"),
+    brightWhite: get("--terminal-ansi-15"),
   };
 }
 
@@ -1286,7 +1293,9 @@ export function ThreadTerminalView({
   const [textSnapshotInitialLine, setTextSnapshotInitialLine] = useState<
     number | null
   >(null);
-  const [terminalFontSize, setTerminalFontSize] = useState(13);
+  const [terminalFontSize, setTerminalFontSize] = useState(
+    () => readTerminalFontMetrics().fontSize,
+  );
   const terminalFontSizeRef = useRef(terminalFontSize);
   const defaultFontSizeRef = useRef(terminalFontSize);
   const longPressGestureRef = useRef<{
@@ -1841,8 +1850,8 @@ export function ThreadTerminalView({
       screenLoadingPreview = null;
     };
     const terminalFontOptions = {
-      fontFamily: readTerminalFontFamily(),
-      fontSize: Math.max(12, terminalFontSizeRef.current),
+      ...readTerminalFontMetrics(),
+      fontSize: terminalFontSizeRef.current,
       ...TERMINAL_CELL_OPTIONS,
     };
     let initialRendererSettled = retainNativeOutput;
@@ -2600,7 +2609,10 @@ export function ThreadTerminalView({
           return;
         }
         updateGridVisibility();
-        if (initialLayoutSettled && (holdForFittedGrid || initialRendererSettled)) {
+        if (
+          initialLayoutSettled &&
+          (holdForFittedGrid || initialRendererSettled)
+        ) {
           if (holdForFittedGrid && sessionStatusRef.current === "running") {
             rememberTerminalGrid(
               session.id,
@@ -2608,6 +2620,8 @@ export function ThreadTerminalView({
               terminal.options.fontSize ?? 13,
               fitted,
               terminal.options.fontFamily ?? readTerminalFontFamily(),
+              terminal.options.lineHeight ?? TERMINAL_LINE_HEIGHT,
+              Number(terminal.options.fontWeight),
             );
           }
           const claimFit =
@@ -3716,7 +3730,10 @@ export function ThreadTerminalView({
     }
   };
   useEffect(() => {
-    const size = 13;
+    const metrics = readTerminalFontMetrics();
+    const size = metrics.fontSize;
+    if (terminalRef.current)
+      terminalRef.current.options.fontWeight = metrics.fontWeight;
     const previousDefault = defaultFontSizeRef.current;
     defaultFontSizeRef.current = size;
     if (terminalFontSizeRef.current !== previousDefault) return;
@@ -3726,7 +3743,7 @@ export function ThreadTerminalView({
       terminalRef.current.options.fontSize = size;
       scheduleFitRef.current?.();
     }
-  }, [isCompactViewport]);
+  }, [isCompactViewport, preferredTheme, appThemeEpoch]);
 
   const ensurePinchGesture = () => {
     pinchGestureRef.current ??= createTerminalPinchGesture({

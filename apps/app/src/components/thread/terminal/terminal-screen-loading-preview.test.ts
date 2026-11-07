@@ -11,6 +11,7 @@ it("shows literal snapshot rows outside xterm and removes them without changing 
     container,
     fontFamily: "monospace",
     fontSize: 18,
+    fontWeight: 450,
     lineHeight: 1.5,
     snapshot: {
       rows: ["<script>literal</script>", "next line"],
@@ -26,6 +27,7 @@ it("shows literal snapshot rows outside xterm and removes them without changing 
   );
   expect(parent.querySelector("script")).toBeNull();
   expect(parent.querySelector("pre")?.style.fontSize).toBe("18px");
+  expect(parent.querySelector("pre")?.style.fontWeight).toBe("450");
   expect(parent.querySelector("pre")?.style.lineHeight).toBe("32px");
   expect(container.textContent).toBe("replayed history");
   expect(parent.querySelector("pre")?.style.whiteSpace).toBe("pre");

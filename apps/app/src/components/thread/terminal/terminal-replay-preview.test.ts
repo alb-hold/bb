@@ -208,10 +208,12 @@ describe("terminal replay preview", () => {
       expect(element.style.visibility).toBe("hidden");
       live.options.fontSize = 13;
       live.options.lineHeight = 1.12;
+      live.options.fontWeight = 450;
       ready = true;
       cover.setFitGrid(51, 42);
       expect(preview.options.fontSize).toBe(13);
       expect(preview.options.lineHeight).toBe(1.12);
+      expect(preview.options.fontWeight).toBe(450);
       expect(preview.options.letterSpacing).toBeCloseTo(-0.82, 1);
       expect(element.style.visibility).toBe("visible");
       expect(preview.element?.style.transform).toBe("none");

@@ -5,12 +5,14 @@ export function mountTerminalScreenLoadingPreview({
   snapshot,
   fontFamily,
   fontSize,
+  fontWeight,
   lineHeight,
 }: {
   container: HTMLDivElement;
   snapshot: TerminalScreenResult;
   fontFamily: string;
   fontSize: number;
+  fontWeight: number;
   lineHeight: number;
 }): { dispose(): void; refresh(lineHeight: number): void } {
   const preview = document.createElement("pre");
@@ -20,6 +22,7 @@ export function mountTerminalScreenLoadingPreview({
     "pointer-events-none absolute inset-0 m-0 overflow-hidden bg-sidebar pl-2 text-foreground";
   preview.style.fontFamily = fontFamily;
   preview.style.fontSize = `${fontSize}px`;
+  preview.style.fontWeight = String(fontWeight);
   preview.style.lineHeight = "normal";
   preview.style.whiteSpace = "pre";
   preview.style.right = "auto";
