@@ -10,6 +10,14 @@ import { parseWorktreeListPorcelain } from "./worktree-list.js";
 
 export const KEEP_WORKTREE_MARKER = ".keep-worktree";
 export const WORKTREE_PRESERVED_CODE = "worktree_preserved";
+export const NON_ROOT_LINUX_HOLDER_SCOPE_NOTICE =
+  "Root and system-UID (<1000) processes are not inspected by this non-root daemon.";
+
+export function worktreeHolderScopeNotice(): string | null {
+  return process.platform === "linux" && process.getuid?.() !== 0
+    ? NON_ROOT_LINUX_HOLDER_SCOPE_NOTICE
+    : null;
+}
 
 let testWorktreeHolderScan: WorktreeHolderScan | undefined;
 
@@ -45,9 +53,10 @@ export function worktreePreservedError(
   worktreePath: string,
   reasons: readonly string[],
 ): WorkspaceError {
+  const scopeNotice = worktreeHolderScopeNotice();
   return new WorkspaceError(
     WORKTREE_PRESERVED_CODE,
-    `Kept ${worktreePath}: ${reasons.join("; ")}. Commit and push the work, or remove the worktree yourself; bb retries the removal automatically.`,
+    `Kept ${worktreePath}: ${reasons.join("; ")}. Commit and push the work, or remove the worktree yourself; bb retries the removal automatically.${scopeNotice === null ? "" : ` ${scopeNotice}`}`,
   );
 }
 

@@ -550,6 +550,27 @@ describe("core environment orchestration", () => {
       );
     }));
 
+  it("preserves a successful removal notice in the environment lifecycle", async () =>
+    withTestHarness(async (harness) => {
+      const notice =
+        "Root and system-UID (<1000) processes are not inspected by this non-root daemon.";
+      const fixture = setup(harness, {
+        policy: { retireGraceMs: 0 },
+        remove: async () => ({ status: "removed", message: notice }),
+      });
+      fixture.ask();
+      await fixture.settled();
+      const environmentId = fixture.attach();
+      await sweepProviderEnvironment(harness.deps, environmentId);
+
+      const row = getEnvironment(harness.db, environmentId);
+      expect(row?.teardownStatus).toBe("removed");
+      expect(row?.teardownMessage).toBe(notice);
+      expect(
+        toEnvironmentResponse(harness.db, row!).lifecycle.teardown,
+      ).toMatchObject({ status: "removed", message: notice });
+    }));
+
   it("forwards teardown hook output only from the hook host while the hook runs", async () =>
     withTestHarness(async (harness) => {
       const fixture = setup(harness, { policy: { retireGraceMs: 0 } });

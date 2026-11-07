@@ -180,7 +180,10 @@ const createResultSchema = z.discriminatedUnion("status", [
   }),
 ]);
 const removeResultSchema = z.discriminatedUnion("status", [
-  z.object({ status: z.literal("removed") }),
+  z.object({
+    status: z.literal("removed"),
+    message: z.string().min(1).optional(),
+  }),
   z.object({ status: z.literal("retained"), message: z.string().min(1) }),
   z.object({ status: z.literal("failed"), message: z.string().min(1) }),
 ]);
@@ -780,7 +783,7 @@ async function runRemove(
       deps.db.transaction(() => {
         writeEnvironment(deps, environmentId, {
           teardownStatus: "removed",
-          teardownMessage: null,
+          teardownMessage: result.message ?? null,
           claimPath: null,
           resource: null,
           retireAt: null,

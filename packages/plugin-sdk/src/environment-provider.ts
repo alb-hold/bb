@@ -106,7 +106,7 @@ export interface PluginEnvironmentProviderRemoveContext {
 }
 
 export type PluginEnvironmentProviderRemoveResult =
-  | { status: "removed" }
+  | { status: "removed"; message?: string }
   | { status: "retained"; message: string }
   | { status: "failed"; message: string };
 

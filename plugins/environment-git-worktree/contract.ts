@@ -95,7 +95,12 @@ export const worktreeHostContract = defineRpcContract({
       })
       .strict(),
     output: z.discriminatedUnion("status", [
-      z.object({ status: z.literal("removed") }).strict(),
+      z
+        .object({
+          status: z.literal("removed"),
+          message: z.string().min(1).optional(),
+        })
+        .strict(),
       z
         .object({ status: z.literal("retained"), message: z.string().min(1) })
         .strict(),

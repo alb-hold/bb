@@ -15,6 +15,7 @@ import {
   useProcReaderForTests,
   type ProcReader,
 } from "./host/holders.js";
+import { worktreePreservedError } from "./host/worktree-preservation.js";
 
 const execFileAsync = promisify(execFile);
 const temporaryRoots: string[] = [];
@@ -99,6 +100,52 @@ it("reports a worktree retained when a holder appears during quarantined removal
   expect(existsSync(fixture.path)).toBe(true);
   expect(existsSync(`${fixture.path}.completed`)).toBe(true);
   expect(existsSync(join(fixture.path, "README.md"))).toBe(true);
+});
+
+it("reports the Linux non-root holder scan limit after removing a worktree", async () => {
+  const fixture = await createFixture();
+  const originalPlatform = process.platform;
+  vi.spyOn(process, "getuid").mockReturnValue(1000);
+  Object.defineProperty(process, "platform", { value: "linux" });
+  useProcReaderForTests({
+    ...hostProc,
+    readFile: async (target) =>
+      target === "/proc/self/status"
+        ? `Name:\tnode\nState:\tR (running)\nNSpid:\t${process.pid}\nUid:\t1000\t1000\t1000\t1000\nGid:\t1000\t1000\t1000\t1000\nGroups:\t1000\n`
+        : hostProc.readFile(target),
+    readdir: async (target) =>
+      target === "/proc" ? [String(process.pid)] : hostProc.readdir(target),
+  });
+  try {
+    const removed = await fixture.harness.experimental_call("remove", {
+      operationId: "remove-non-root-holder-limit",
+      pathKey: "thr_unreadable",
+      path: fixture.path,
+    });
+
+    expect(removed).toMatchObject({
+      status: "removed",
+      message: expect.stringContaining(
+        "Root and system-UID (<1000) processes are not inspected",
+      ),
+    });
+    expect(existsSync(fixture.path)).toBe(false);
+  } finally {
+    Object.defineProperty(process, "platform", { value: originalPlatform });
+  }
+});
+
+it("includes the Linux non-root holder scan limit in a retained message", () => {
+  const originalPlatform = process.platform;
+  vi.spyOn(process, "getuid").mockReturnValue(1000);
+  Object.defineProperty(process, "platform", { value: "linux" });
+  try {
+    expect(
+      worktreePreservedError("/work/tree", ["is in use"]).message,
+    ).toContain("Root and system-UID (<1000) processes are not inspected");
+  } finally {
+    Object.defineProperty(process, "platform", { value: originalPlatform });
+  }
 });
 
 async function createFixture() {
