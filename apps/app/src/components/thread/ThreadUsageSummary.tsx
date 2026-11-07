@@ -208,7 +208,7 @@ export function ThreadTurnTokenSummary({
     <span data-token-clip="">
       <span data-token-parts="">
         {hasTokens(turn.totalTokens) ? (
-          <TurnTokenPart part="total" className="font-medium">
+          <TurnTokenPart part="total">
             <span data-token-total-full>
               {formatCompact(turn.totalTokens)} tokens
             </span>
@@ -232,7 +232,7 @@ export function ThreadTurnTokenSummary({
         ) : null}
         {reasoningDisplayValue !== null && reasoningDisplayValue > 0 ? (
           <TurnTokenPart part="reasoning">
-            reason {formatCompact(reasoningDisplayValue)}
+            reasoning {formatCompact(reasoningDisplayValue)}
           </TurnTokenPart>
         ) : null}
         {hasTokens(turn.cachedInputTokens) ? (
@@ -253,7 +253,7 @@ export function ThreadTurnTokenSummary({
   );
   const summaryClassName = compact
     ? "inline-flex shrink-0 items-center whitespace-nowrap font-sans text-xs tabular-nums text-muted-foreground"
-    : "thread-turn-token-breakdown w-full min-w-0 whitespace-normal rounded-md border-0 bg-transparent p-0 text-left font-sans text-xs tabular-nums text-muted-foreground";
+    : "thread-turn-token-breakdown w-full min-w-0 whitespace-normal rounded-md border-0 bg-transparent p-0 text-left font-sans text-2xs tabular-nums text-subtle-foreground";
   return (
     <Tooltip>
       <TooltipTrigger asChild>

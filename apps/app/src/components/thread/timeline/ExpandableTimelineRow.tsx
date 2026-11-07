@@ -235,7 +235,15 @@ function ExpandableTimelineRowComponent({
           {titleContent ?? (
             <TimelineTitleView title={title} onTitleAction={onTitleAction} />
           )}
-          {summaryAdornment}
+          {summaryAdornment ? (
+            <>
+              {" "}
+              <span data-token-separator="" aria-hidden="true">
+                ·
+              </span>{" "}
+              {summaryAdornment}
+            </>
+          ) : null}
         </span>
       }
       summaryContentClassName={TIMELINE_ROW_HEADER_CONTENT_CLASS_NAME}

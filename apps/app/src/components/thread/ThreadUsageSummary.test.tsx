@@ -107,6 +107,13 @@ describe("thread usage summary", () => {
       expect(
         summary.querySelector("[data-token-total-tight]")?.textContent,
       ).toBe("208K tokens");
+      expect(summary.classList.contains("text-2xs")).toBe(true);
+      expect(summary.classList.contains("text-subtle-foreground")).toBe(true);
+      if (reasoningOutputTokens) {
+        expect(
+          summary.querySelector('[data-token-part="reasoning"]')?.textContent,
+        ).toBe("reasoning 2.1K");
+      }
       const parts = summary.querySelector("[data-token-parts]")!;
       expect(parts.parentElement?.hasAttribute("data-token-clip")).toBe(true);
       expect(getComputedStyle(parts.parentElement!).overflow).toBe("hidden");
@@ -574,7 +581,7 @@ describe("thread usage summary", () => {
       </TooltipProvider>,
     );
 
-    expect(screen.getByText("reason 10")).toBeTruthy();
+    expect(screen.getByText("reasoning 10")).toBeTruthy();
     expect(
       screen.getByText("cached 20", { selector: "[data-token-cached-full]" }),
     ).toBeTruthy();

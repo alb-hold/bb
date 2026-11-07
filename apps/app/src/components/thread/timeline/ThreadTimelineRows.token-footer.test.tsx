@@ -206,7 +206,7 @@ describe("ThreadTimelineRows token footer", () => {
     );
     expect(
       container.querySelector('[data-token-part="reasoning"]')?.textContent,
-    ).toBe("reason 567");
+    ).toBe("reasoning 567");
   });
 
   it("omits the token footer when every per-turn usage field is unavailable", () => {
@@ -368,7 +368,7 @@ describe("ThreadTimelineRows token footer", () => {
     ).toHaveLength(1);
     expect(
       container.querySelector('[data-token-part="reasoning"]')?.textContent,
-    ).toBe("reason 37");
+    ).toBe("reasoning 37");
   });
 
   it("keeps the footer on the last assistant message and hides the active turn", () => {

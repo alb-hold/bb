@@ -467,3 +467,21 @@ describe("MessageActionBar", () => {
     expect(row?.hasAttribute("data-menu-open")).toBe(false);
   });
 });
+
+it("packs phone actions using their full 44px minimum width", () => {
+  mockMobileCoarsePointer();
+  const observer = installControlledResizeObserver();
+  render(
+    <MessageActionBar
+      timestamp={TIMESTAMP}
+      messageText="Answer"
+      alignment="start"
+      mobileActionDisplay="inline"
+      onEdit={vi.fn()}
+    />,
+  );
+  observer.reportWidth(140);
+  expect(screen.getByRole("button", { name: "Copy message" })).toBeDefined();
+  expect(screen.queryByRole("button", { name: "Edit message" })).toBeNull();
+  expect(screen.getByRole("button", { name: "Message actions" })).toBeDefined();
+});

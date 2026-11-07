@@ -103,6 +103,7 @@ export function PermissionModePicker({
       onChange={onChange}
       className={cn(
         LIST_HOVER_TRANSITION,
+        "permission-mode-picker",
         isCompactViewport
           ? "h-8 w-auto min-w-0 shrink-0 justify-center px-1.5"
           : "w-max min-w-52 shrink-0 justify-start",
@@ -117,7 +118,9 @@ export function PermissionModePicker({
       leading={
         <>
           <Icon name="SecurityCheck" className="size-3.5 shrink-0" />
-          <span>{isCompactViewport ? compactLabel : "Permissions:"}</span>
+          <span data-permission-label="">
+            {isCompactViewport ? compactLabel : "Permissions:"}
+          </span>
         </>
       }
       caretClassName={cn(
