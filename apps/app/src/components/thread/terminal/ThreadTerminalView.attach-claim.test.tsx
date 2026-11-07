@@ -216,7 +216,7 @@ describe("native terminal attach claim timing", () => {
       ),
     ),
     ...[44, 125].flatMap((cols) =>
-      ["webgl", "late"].flatMap((rendererMode) =>
+      ["webgl", "late", "unobserved"].flatMap((rendererMode) =>
         (rendererMode === "webgl" ? [false, true] : [false]).map(
           (layoutShift) => ({
             cols,
@@ -275,11 +275,19 @@ describe("native terminal attach claim timing", () => {
           dispose: vi.fn(),
         }),
       );
+      const observeVisibility = rendererModule.observeTerminalWebglVisibility;
       vi.spyOn(
         rendererModule,
         "observeTerminalWebglVisibility",
-      ).mockImplementation(({ isPanelOpen, renderer }) => {
-        const sync = () => renderer.setVisible(isPanelOpen());
+      ).mockImplementation((args) => {
+        if (rendererMode === "unobserved") {
+          args.root.style.visibility = "hidden";
+          const observer = observeVisibility(args);
+          args.root.style.visibility = "visible";
+          observer.sync();
+          return observer;
+        }
+        const sync = () => args.renderer.setVisible(args.isPanelOpen());
         sync();
         return { sync, dispose: vi.fn() };
       });
@@ -483,7 +491,11 @@ describe("native terminal attach claim timing", () => {
           nextSeq: 1,
         });
         expect(revealedAt! - renderedAt).toBeLessThanOrEqual(
-          rendererMode === "late" ? 200 : rendererMode === "webgl" ? 150 : 64,
+          rendererMode === "late" || rendererMode === "unobserved"
+            ? 200
+            : rendererMode === "webgl"
+              ? 150
+              : 64,
         );
         expect(stages.get("terminal-replay-revealed")).toBeDefined();
         expect(
@@ -516,14 +528,16 @@ describe("native terminal attach claim timing", () => {
       expect(sendResize.mock.calls.some((args) => args[2] === true)).toBe(true);
       expect(resizeAt).toBeDefined();
       expect(resizeAt! - renderedAt).toBeLessThanOrEqual(
-        rendererMode === "late" ? 200 : 150,
+        rendererMode === "late" || rendererMode === "unobserved" ? 200 : 150,
       );
       if (cacheMode === "miss") expect(claimAt).toBe(resizeAt);
       if (rendererMode === "dom")
         expect(claimAt! - renderedAt).toBeLessThanOrEqual(100);
       if (rendererMode !== "dom")
         expect(claimAt! - renderedAt).toBeLessThanOrEqual(
-          (rendererMode === "late" ? 150 : 80) + (layoutShift ? 16 : 0),
+          (rendererMode === "late" || rendererMode === "unobserved"
+            ? 150
+            : 80) + (layoutShift ? 16 : 0),
         );
       const measured = {
         type: "resize",
@@ -532,7 +546,8 @@ describe("native terminal attach claim timing", () => {
         claim: true,
       };
       expect(claims).toEqual([measured]);
-      if (rendererMode === "late") expect(webglActive).toBe(false);
+      if (rendererMode === "late" || rendererMode === "unobserved")
+        expect(webglActive).toBe(false);
       expect(readCachedTerminalGrid(session.id)).toEqual({
         cols: finalCols,
         rows: 36,

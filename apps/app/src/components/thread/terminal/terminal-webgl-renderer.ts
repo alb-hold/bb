@@ -244,27 +244,30 @@ export function observeTerminalWebglVisibility({
   let disposed = false;
   const supportsIntersectionObserver =
     typeof IntersectionObserver !== "undefined";
-  let hasObserved = !supportsIntersectionObserver;
-  let intersects = !supportsIntersectionObserver;
-  const sync = () => {
-    if (disposed) {
-      return;
-    }
+  const isGeometricallyVisible = () => {
     const box = root.getBoundingClientRect();
     const style = window?.getComputedStyle(root);
+    return (
+      document.visibilityState === "visible" &&
+      box.width > 0 &&
+      box.height > 0 &&
+      box.bottom > 0 &&
+      box.right > 0 &&
+      box.top < (window?.innerHeight ?? 0) &&
+      box.left < (window?.innerWidth ?? 0) &&
+      intersectsClippingAncestors(root, box, window) &&
+      style?.visibility !== "hidden" &&
+      style?.visibility !== "collapse"
+    );
+  };
+  let hasObserved = !supportsIntersectionObserver;
+  let intersects =
+    !supportsIntersectionObserver ||
+    (isPanelOpen() && isGeometricallyVisible());
+  const sync = () => {
+    if (disposed) return;
     renderer.setVisible(
-      isPanelOpen() &&
-        intersects &&
-        document.visibilityState === "visible" &&
-        box.width > 0 &&
-        box.height > 0 &&
-        box.bottom > 0 &&
-        box.right > 0 &&
-        box.top < (window?.innerHeight ?? 0) &&
-        box.left < (window?.innerWidth ?? 0) &&
-        intersectsClippingAncestors(root, box, window) &&
-        style?.visibility !== "hidden" &&
-        style?.visibility !== "collapse",
+      isPanelOpen() && intersects && isGeometricallyVisible(),
     );
   };
   const syncGeometry = () => {

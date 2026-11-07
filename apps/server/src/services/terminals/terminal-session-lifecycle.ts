@@ -9,6 +9,7 @@ import {
 } from "../hosts/host-environment.js";
 import { randomUUID } from "node:crypto";
 import { Buffer } from "node:buffer";
+import { performance } from "node:perf_hooks";
 import { setImmediate as yieldToEventLoop } from "node:timers/promises";
 import { z } from "zod";
 import {
@@ -223,6 +224,7 @@ interface PendingTerminalCloseKey extends PendingRpcKey {
 }
 
 interface PendingTerminalAttachKey extends PendingTerminalRpcKey {
+  requestedAt: number;
   handoffOwnerToken?: string;
   socket: TerminalClientSocket;
   sinceSeq: number;
@@ -3299,6 +3301,10 @@ export class TerminalSessionLifecycle {
 
     const requestId = randomUUID();
     const pendingAttach: PendingTerminalAttachKey = {
+      requestedAt: this.markReplayStage("daemon-requested", {
+        terminalId: current.id,
+        requestId,
+      }),
       handoffOwnerToken: args.handoffOwnerToken,
       daemonSessionId: current.daemonSessionId,
       requestId,
@@ -3597,6 +3603,7 @@ export class TerminalSessionLifecycle {
   private async handleTerminalReplay(
     args: HandleDaemonTerminalMessageArgs & { message: TerminalReplayMessage },
   ): Promise<void> {
+    const receivedAt = this.markReplayStage("daemon-received", args.message);
     const sourceMessage = args.message;
     const replayOffset = this.outputSequenceRebase.baseFor(
       sourceMessage.terminalId,
@@ -3631,15 +3638,22 @@ export class TerminalSessionLifecycle {
         args,
         replaySession,
         replayOffset,
+        receivedAt,
       ).finally(() => this.finishTerminalReplay(current.id));
     }
-    return this.handleTerminalReplayWork(args, replaySession, replayOffset);
+    return this.handleTerminalReplayWork(
+      args,
+      replaySession,
+      replayOffset,
+      receivedAt,
+    );
   }
 
   private async handleTerminalReplayWork(
     args: HandleDaemonTerminalMessageArgs & { message: TerminalReplayMessage },
     replaySession: TerminalSessionRow | null,
     replayOffset: number,
+    receivedAt: number,
   ): Promise<void> {
     const earlyKey = terminalResponseRpcKey(args.sessionId, args.message);
     const pendingAttach = this.pendingAttaches.keyFor(earlyKey);
@@ -3660,6 +3674,7 @@ export class TerminalSessionLifecycle {
         replayOffset,
         pendingAttach,
         live,
+        receivedAt,
       );
     } finally {
       if (listeners && replaySession) {
@@ -3676,6 +3691,7 @@ export class TerminalSessionLifecycle {
     replayOffset: number,
     pendingAttach: PendingTerminalAttachKey | null,
     live: ReplayLiveOutput,
+    receivedAt: number,
   ): Promise<void> {
     const sourceMessage = args.message;
     const attributionAlreadyRecorded = this.forgetAttributedAttachFailure(
@@ -3719,6 +3735,10 @@ export class TerminalSessionLifecycle {
         replayOwnershipChanged = true;
       return true;
     };
+    const scanStartedAt = this.markReplayStage(
+      "holder-scan-start",
+      sourceMessage,
+    );
     let sourceChunks = sourceMessage.chunks;
     if (replaySession !== null) {
       sourceChunks = await this.stripPendingHolderMarkerFromReplay(
@@ -3726,6 +3746,7 @@ export class TerminalSessionLifecycle {
         sourceChunks,
       );
     }
+    const scanEndedAt = this.markReplayStage("holder-scan-end", sourceMessage);
     if (this.terminalOutputWritesStopped) return;
     if (!stillOwned()) replayOwnershipChanged = true;
     const replayHeader = this.outputSequenceRebase.replayToServer(
@@ -3888,6 +3909,10 @@ export class TerminalSessionLifecycle {
       );
       return;
     }
+    const persistenceStartedAt = this.markReplayStage(
+      "persistence-start",
+      sourceMessage,
+    );
     const retainedAppendPerformed = current !== null && retainedTail.length > 0;
     if (retainedAppendPerformed && current) {
       runEventLoopWorkSync("ws:daemon terminal.replay append-retained", () => {
@@ -3913,6 +3938,10 @@ export class TerminalSessionLifecycle {
       else this.pendingRetainedOutput.delete(current.id);
     }
 
+    const persistenceEndedAt = this.markReplayStage(
+      "persistence-end",
+      sourceMessage,
+    );
     if (current && (current.status === "exited" || replayOwnershipChanged)) {
       if (latest?.status === "exited") {
         markRetainedTerminalOutputExited(
@@ -3983,6 +4012,10 @@ export class TerminalSessionLifecycle {
         : this.pendingCatchUps.keyFor(rpcKey)
           ? "catch-up"
           : "unmatched";
+    const dispatchStartedAt = this.markReplayStage(
+      "dispatch-start",
+      sourceMessage,
+    );
     const callers = [
       this.pendingAttaches.settle(rpcKey, attachMessage)
         ? "terminal-attach"
@@ -3990,12 +4023,23 @@ export class TerminalSessionLifecycle {
       this.pendingOutputReads.settle(rpcKey, message) ? "output-read" : null,
       this.pendingCatchUps.settle(rpcKey, message) ? "catch-up" : null,
     ].filter((caller): caller is string => caller !== null);
+    const dispatchEndedAt = this.markReplayStage("dispatch-end", sourceMessage);
     if (
       attributionAlreadyRecorded ||
       this.forgetAttributedAttachFailure(rpcKey)
     )
       return;
     this.logReplayAttribution({
+      timings: {
+        daemonMs:
+          pendingAttach === null
+            ? null
+            : receivedAt - pendingAttach.requestedAt,
+        holderScanMs: scanEndedAt - scanStartedAt,
+        persistenceMs: persistenceEndedAt - persistenceStartedAt,
+        dispatchMs: dispatchEndedAt - dispatchStartedAt,
+        serverMs: dispatchEndedAt - receivedAt,
+      },
       path,
       callers: callers.length > 0 ? callers : ["unmatched"],
       daemonSessionId: args.sessionId,
@@ -4979,7 +5023,34 @@ export class TerminalSessionLifecycle {
     );
   }
 
+  private markReplayStage(
+    stage:
+      | "daemon-requested"
+      | "daemon-received"
+      | "holder-scan-start"
+      | "holder-scan-end"
+      | "persistence-start"
+      | "persistence-end"
+      | "dispatch-start"
+      | "dispatch-end",
+    detail: { terminalId: string; requestId?: string },
+  ): number {
+    const name = `terminal-replay-${stage}`;
+    const mark = performance.mark(name, {
+      detail: { terminalId: detail.terminalId, requestId: detail.requestId },
+    });
+    performance.clearMarks(name);
+    return mark.startTime;
+  }
+
   private logReplayAttribution(fields: {
+    timings?: {
+      daemonMs: number | null;
+      holderScanMs: number;
+      persistenceMs: number;
+      dispatchMs: number;
+      serverMs: number;
+    };
     path: string;
     callers: string[];
     daemonSessionId: string | null;
