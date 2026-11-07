@@ -58,8 +58,8 @@ function Key({
         onPress();
       }}
       className={cn(
-        "flex h-11 min-w-11 flex-none touch-manipulation items-center justify-center rounded-md px-1 font-mono text-xs font-medium text-muted-foreground transition-colors hover:bg-state-hover hover:text-foreground active:bg-state-active active:text-foreground focus-visible:outline-2 focus-visible:outline-ring disabled:opacity-40",
-        active && "bg-state-active text-foreground",
+        "flex h-11 min-w-11 flex-none touch-manipulation items-center justify-center gap-1 rounded-full bg-[image:var(--pill-surface)] px-1 font-mono text-xs font-medium text-muted-foreground transition-colors hover:bg-state-hover hover:text-foreground active:bg-none active:bg-state-active active:text-foreground focus-visible:outline-2 focus-visible:outline-ring disabled:opacity-40",
+        active && "bg-none bg-state-active text-foreground",
         className,
       )}
     >
@@ -314,6 +314,10 @@ export function TerminalMobileControls({
           onPress={() => setExpanded(!expanded)}
         >
           Keys
+          <Icon
+            name={expanded ? "ChevronUp" : "ChevronDown"}
+            className="size-3"
+          />
         </Key>
       </div>
     </div>

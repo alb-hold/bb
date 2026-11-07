@@ -1334,6 +1334,17 @@ it("rests inline, expands on focus or text, and collapses after clearing", () =>
   const { input } = renderBar();
   const shell = input.closest("[data-native-composer]")!;
   expect(shell.hasAttribute("data-native-composer-inline")).toBe(true);
+  expect(shell.className.split(/\s+/)).toEqual(
+    expect.arrayContaining([
+      "border",
+      "border-border",
+      "bg-background",
+      "focus-within:ring-2",
+      "focus-within:border-ring",
+    ]),
+  );
+  const send = screen.getByRole("button", { name: "Send to Native CLI" });
+  expect(send.classList.contains("disabled:bg-foreground/5")).toBe(true);
   fireEvent.focus(input);
   expect(shell.hasAttribute("data-native-composer-inline")).toBe(false);
   fireEvent.change(input, { target: { value: "hello" } });

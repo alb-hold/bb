@@ -25,7 +25,13 @@ it.each(["auto", "full"] as const)(
     const view = render(<PermissionModePicker {...props} disabled />);
     const trigger = screen.getByRole("button", { name: "Permissions" });
     expect(trigger.classList.contains("w-max")).toBe(true);
-    expect(trigger.classList.contains("min-w-52")).toBe(true);
+    expect(trigger.classList.contains("min-w-0")).toBe(true);
+    expect(trigger.classList.contains("gap-1")).toBe(true);
+    expect(
+      trigger
+        .querySelector('[data-icon="ChevronDown"]')
+        ?.classList.contains("ml-auto"),
+    ).toBe(false);
     expect(trigger.classList.contains("w-44")).toBe(false);
     expect(
       trigger
@@ -44,7 +50,7 @@ it.each(["auto", "full"] as const)(
   },
 );
 
-it("reserves the same desktop width while defaults and capabilities settle", () => {
+it("keeps desktop sizing intrinsic while defaults and capabilities settle", () => {
   const onChange = vi.fn();
   const view = render(
     <PermissionModePicker
@@ -60,7 +66,7 @@ it("reserves the same desktop width while defaults and capabilities settle", () 
     expect(
       screen
         .getByRole("button", { name: "Permissions" })
-        .classList.contains("min-w-52"),
+        .classList.contains("min-w-0"),
     ).toBe(true);
   assertWidth();
   expect(
@@ -175,7 +181,7 @@ it("reserves a skeleton when no cached mode exists", () => {
   );
   expect(
     screen.getByRole("button", { name: "Permissions" }).className,
-  ).toContain("min-w-52");
+  ).toContain("min-w-0");
   expect(
     screen.getByRole("button", { name: "Permissions" }).className,
   ).toContain("[&>span]:invisible");

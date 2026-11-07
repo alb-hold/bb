@@ -40,6 +40,12 @@ describe("TerminalMobileControls", () => {
     expect(
       screen.getByRole("button", { name: "More terminal keys" }).textContent,
     ).toBe("Keys");
+    const more = screen.getByRole("button", { name: "More terminal keys" });
+    expect(more.querySelector('[data-icon="ChevronDown"]')).not.toBeNull();
+    fireEvent.click(more);
+    expect(more.getAttribute("aria-pressed")).toBe("true");
+    expect(more.querySelector('[data-icon="ChevronUp"]')).not.toBeNull();
+    fireEvent.click(more);
     const buttons = Array.from(controls.querySelectorAll("button"));
     expect(controls.querySelector(".bg-gradient-to-l")).toBeNull();
 
@@ -61,6 +67,15 @@ describe("TerminalMobileControls", () => {
     }
     expect(buttons[0]?.closest("[data-terminal-key-scroller]")).not.toBeNull();
     for (const button of buttons) {
+      expect(button.className.split(/\s+/u)).toEqual(
+        expect.arrayContaining([
+          "h-11",
+          "rounded-full",
+          "bg-[image:var(--pill-surface)]",
+          "active:bg-none",
+          "active:bg-state-active",
+        ]),
+      );
       expect(button.className.split(/\s+/u)).toContain("min-w-11");
       expect(button.className.split(/\s+/u)).toContain("flex-none");
     }
