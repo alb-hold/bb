@@ -1178,7 +1178,7 @@ describe("ThreadTerminalView terminal visibility and panel", () => {
       () => expect(testState.sockets).toHaveLength(1),
       "socket missing",
     );
-    let socket = testState.sockets[0]!;
+    const socket = testState.sockets[0]!;
 
     const renderer = mounted.container.querySelector<HTMLElement>(
       "[data-terminal-renderer]",
@@ -1247,21 +1247,7 @@ describe("ThreadTerminalView terminal visibility and panel", () => {
     fitDimensionsAvailable = true;
     for (const notify of notifySize) notify();
     fireEvent(window, new Event("resize"));
-    if (startsHidden) {
-      await waitForReadinessCondition(
-        () => expect(testState.sockets).toHaveLength(2),
-        "visible terminal did not reconnect for replay",
-      );
-      socket = testState.sockets[1]!;
-      socket.open();
-      await socket.opened;
-      socket.receive({
-        type: "attached",
-        session,
-        replayStartSeq: 0,
-        nextSeq: 0,
-      });
-    }
+    if (startsHidden) expect(testState.sockets).toHaveLength(1);
     let claimed: { cols: number; rows: number } | undefined;
     await waitForReadinessCondition(() => {
       claimed = socket.sent
@@ -1641,9 +1627,32 @@ describe("hidden terminal output continuity", () => {
       measureText: (text: string) => ({ width: text.length * 8 }),
     } as unknown as CanvasRenderingContext2D);
     for (const dimension of ["clientWidth", "offsetWidth"] as const)
-      vi.spyOn(HTMLElement.prototype, dimension, "get").mockReturnValue(800);
+      vi.spyOn(HTMLElement.prototype, dimension, "get").mockImplementation(
+        function (this: HTMLElement) {
+          return this.classList.contains("xterm-char-measure-element")
+            ? 8
+            : 800;
+        },
+      );
     for (const dimension of ["clientHeight", "offsetHeight"] as const)
-      vi.spyOn(HTMLElement.prototype, dimension, "get").mockReturnValue(480);
+      vi.spyOn(HTMLElement.prototype, dimension, "get").mockImplementation(
+        function (this: HTMLElement) {
+          return this.classList.contains("xterm-char-measure-element")
+            ? 18
+            : 480;
+        },
+      );
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
+      width: 800,
+      height: 480,
+      top: 0,
+      left: 0,
+      right: 800,
+      bottom: 480,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    });
     vi.spyOn(FitAddon.prototype, "proposeDimensions").mockReturnValue({
       cols: 80,
       rows: 24,
@@ -1654,7 +1663,7 @@ describe("hidden terminal output continuity", () => {
       this: Terminal,
       ...args
     ) {
-      live = this;
+      live ??= this;
       return open.apply(this, args);
     });
     const session = makeTerminalSession({
@@ -1665,11 +1674,13 @@ describe("hidden terminal output continuity", () => {
     const ui = (visible: boolean) => (
       <MemoryRouter>
         <AppCommandProvider>
-          <ThreadTerminalView
-            session={session}
-            autoFocus={false}
-            isPanelOpen={visible}
-          />
+          <div data-native-terminal-thread>
+            <ThreadTerminalView
+              session={session}
+              autoFocus={false}
+              isPanelOpen={visible}
+            />
+          </div>
         </AppCommandProvider>
       </MemoryRouter>
     );
@@ -1682,7 +1693,7 @@ describe("hidden terminal output continuity", () => {
       type: "attached",
       session,
       replayStartSeq: 0,
-      nextSeq: initiallyHidden ? 1 : 0,
+      nextSeq: 1,
     });
     socket.receive({
       type: "output",
@@ -1698,7 +1709,13 @@ describe("hidden terminal output continuity", () => {
         : "";
     };
     if (!initiallyHidden)
-      await waitFor(() => expect(text()).toContain("initial"));
+      await waitForReadinessCondition(() => {
+        expect(text()).toContain("initial");
+        expect(
+          view.container.querySelector<HTMLElement>("[data-terminal-renderer]")
+            ?.dataset.replayHeld,
+        ).toBe("false");
+      }, "visible terminal did not finish its initial replay");
     const visible = async (value: boolean) => {
       view.rerender(ui(value));
       await waitFor(() =>
@@ -1718,13 +1735,13 @@ describe("hidden terminal output continuity", () => {
     });
     expect(h.text()).not.toContain("initial");
     await h.visible(true);
-    await waitFor(() => {
+    await waitForReadinessCondition(() => {
       expect(h.text()).toContain("later-live");
       expect(
         h.view.container.querySelector<HTMLElement>("[data-terminal-renderer]")
           ?.dataset.replayHeld,
       ).toBe("false");
-    });
+    }, "initially hidden replay did not reveal its live output");
     expect(h.text().match(/initial/g)).toHaveLength(1);
     expect(h.text().match(/later-live/g)).toHaveLength(1);
     expect(testState.sockets).toHaveLength(1);

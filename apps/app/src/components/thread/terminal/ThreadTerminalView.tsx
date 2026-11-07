@@ -1979,6 +1979,8 @@ export function ThreadTerminalView({
         containerHasSize &&
         isPanelOpenRef.current;
       if (transport === null) return;
+      if (!holdForFittedGrid && !isPanelOpenRef.current)
+        hiddenOutput.invalidate();
       const wasVisible = terminalVisible;
       if (wasVisible === nextVisible) return;
       terminalVisible = nextVisible;
@@ -2906,8 +2908,6 @@ export function ThreadTerminalView({
           lastQueuedOutputNextSeq = message.chunk.seq + 1;
         }
         if (message.type === "attached") {
-          if (lastQueuedOutputNextSeq === 0)
-            lastQueuedOutputNextSeq = message.replayStartSeq;
           replayRevealGeneration += 1;
           fittedGridHeld = false;
           fittedGridRevealed = false;
@@ -3287,6 +3287,7 @@ export function ThreadTerminalView({
             setReplayNotice(paintedScreenKept ? "reconnecting" : null);
           }
           if (state === "reconnecting") {
+            if (terminalVisible === false) hiddenOutput.invalidate();
             if (reconnecting) {
               return;
             }

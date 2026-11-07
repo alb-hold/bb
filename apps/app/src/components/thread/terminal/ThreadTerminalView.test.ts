@@ -1959,6 +1959,8 @@ describe("terminal output encoding", () => {
       const writeCallbacks: Array<() => void> = [];
       const pipeline = createTerminalOutputPipeline(
         {
+          cols: 80,
+          rows: 24,
           resize,
           write: (bytes, callback) => {
             written.push(new TextDecoder().decode(bytes));
@@ -1992,6 +1994,8 @@ describe("terminal output encoding", () => {
     const writeCallbacks: Array<() => void> = [];
     const resize = vi.fn();
     const pipeline = createTerminalOutputPipeline({
+      cols: 80,
+      rows: 24,
       resize,
       write: (_data, callback) => writeCallbacks.push(callback),
     });
@@ -2024,6 +2028,8 @@ describe("terminal output encoding", () => {
     const writeCallbacks: Array<() => void> = [];
     const resize = vi.fn();
     const pipeline = createTerminalOutputPipeline({
+      cols: 80,
+      rows: 24,
       resize,
       write: (_data, callback) => writeCallbacks.push(callback),
     });

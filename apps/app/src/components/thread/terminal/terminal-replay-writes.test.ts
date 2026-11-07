@@ -9,6 +9,8 @@ describe("terminal replay writes", () => {
     const sizes: number[] = [];
     let parsed = false;
     const pipeline = createTerminalOutputPipeline({
+      cols: 80,
+      rows: 24,
       resize() {},
       write(bytes, callback) {
         sizes.push(bytes.length);
