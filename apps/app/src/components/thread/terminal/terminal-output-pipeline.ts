@@ -2,6 +2,8 @@ import { createTerminalGridByteMarkerScanner } from "@bb/domain";
 import type { TerminalGrid } from "@bb/domain";
 
 type TerminalWriter = {
+  readonly cols: number;
+  readonly rows: number;
   resize(cols: number, rows: number): void;
   write(data: Uint8Array, callback: () => void): void;
 };
@@ -80,10 +82,15 @@ export function createTerminalOutputPipeline(
         if (operation.type === "grid") {
           await lastWrite;
           if (operation.resize) {
-            options.beforeResize?.();
-            terminal.resize(operation.grid.cols, operation.grid.rows);
+            const changed =
+              terminal.cols !== operation.grid.cols ||
+              terminal.rows !== operation.grid.rows;
+            if (changed) {
+              options.beforeResize?.();
+              terminal.resize(operation.grid.cols, operation.grid.rows);
+            }
             onResize?.(operation.grid.cols, operation.grid.rows);
-            options.afterResize?.();
+            if (changed) options.afterResize?.();
           }
           operation.callback?.();
           continue;

@@ -1149,6 +1149,8 @@ describe("terminal replay preview", () => {
 
     const markerPipeline = createTerminalOutputPipeline(
       {
+        cols: 120,
+        rows: 36,
         resize: () => undefined,
         write: (_bytes, callback) => callback(),
       },
@@ -1653,9 +1655,12 @@ describe("terminal replay preview", () => {
     harness.cover.push(Buffer.from("\r\nchunk A"), () => {
       firstCallbackCount += 1;
     });
-    const terminalResize = harness.terminal.resize.bind(harness.terminal);
-    vi.spyOn(harness.terminal, "resize").mockImplementation((cols, rows) => {
-      terminalResize(cols, rows);
+    const terminalWrite = harness.terminal.write.bind(harness.terminal);
+    let appended = false;
+    vi.spyOn(harness.terminal, "write").mockImplementation((data, callback) => {
+      terminalWrite(data, callback);
+      if (appended) return;
+      appended = true;
       harness.cover.push(Buffer.from("\r\nchunk B"), () => {
         secondCallbackCount += 1;
       });

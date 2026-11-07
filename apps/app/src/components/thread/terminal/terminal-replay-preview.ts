@@ -369,6 +369,12 @@ export function mountTerminalReplayPreview({
   if (!held) updateSurfaceLayout();
   const outputPipeline = createTerminalOutputPipeline(
     {
+      get cols() {
+        return terminal.cols;
+      },
+      get rows() {
+        return terminal.rows;
+      },
       resize: (cols, rows) => terminal.resize(cols, rows),
       write: (bytes, callback) => terminal.write(bytes, callback),
     },

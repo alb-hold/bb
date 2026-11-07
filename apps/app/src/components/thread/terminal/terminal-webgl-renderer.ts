@@ -22,6 +22,18 @@ interface TerminalWebglRendererOptions {
 
 type TerminalAddonLoader = Pick<Terminal, "loadAddon"> &
   Partial<Pick<Terminal, "element">>;
+
+export function disposeTerminalWithRenderer(
+  terminal: Pick<Terminal, "dispose"> | null,
+  renderer: IDisposable | null,
+): void {
+  try {
+    terminal?.dispose();
+  } finally {
+    renderer?.dispose();
+  }
+}
+
 const WEBGL_RECOVERY_LIMIT = 3;
 const WEBGL_RECOVERY_DELAY_MS = 100;
 const WEBGL_STABLE_PERIOD_MS = 10_000;
@@ -239,11 +251,13 @@ export function observeTerminalWebglVisibility({
   root,
   renderer,
   isPanelOpen,
+  onVisible,
 }: {
   root: HTMLElement;
   renderer: TerminalWebglRenderer;
   isPanelOpen: () => boolean;
-}): IDisposable & { sync: () => void } {
+  onVisible?: () => void;
+}): IDisposable & { sync: () => boolean } {
   const document = root.ownerDocument;
   const window = document.defaultView;
   let disposed = false;
@@ -269,11 +283,15 @@ export function observeTerminalWebglVisibility({
   let intersects =
     !supportsIntersectionObserver ||
     (isPanelOpen() && isGeometricallyVisible());
+  let wasVisible = false;
   const sync = () => {
-    if (disposed) return;
-    renderer.setVisible(
-      isPanelOpen() && intersects && isGeometricallyVisible(),
-    );
+    if (disposed) return false;
+    const visible = isPanelOpen() && intersects && isGeometricallyVisible();
+    const becameVisible = visible && !wasVisible;
+    wasVisible = visible;
+    renderer.setVisible(visible);
+    if (becameVisible) onVisible?.();
+    return visible;
   };
   const syncGeometry = () => {
     if (hasObserved) {
@@ -283,7 +301,7 @@ export function observeTerminalWebglVisibility({
         window,
       );
     }
-    sync();
+    return sync();
   };
   const resizeObserver = new ResizeObserver(syncGeometry);
   const intersectionObserver = !supportsIntersectionObserver
@@ -319,7 +337,7 @@ export function observeTerminalWebglVisibility({
   document.addEventListener("visibilitychange", sync);
   sync();
   return {
-    sync,
+    sync: syncGeometry,
     dispose: () => {
       disposed = true;
       resizeObserver.disconnect();

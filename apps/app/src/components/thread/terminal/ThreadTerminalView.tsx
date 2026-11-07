@@ -3,6 +3,8 @@ import {
   measureTerminalPerformance,
 } from "@/lib/terminal-performance";
 import { rememberTerminalGrid } from "./terminal-grid-cache";
+import { createTerminalFitWork } from "./terminal-fit-work";
+import { createTerminalHiddenOutput } from "./terminal-hidden-output";
 import {
   readTerminalFontFamily,
   readTerminalFontMetrics,
@@ -194,6 +196,7 @@ import { sendTerminalTapClick } from "./terminal-tap-click";
 import { attachTerminalWheelLines } from "./terminal-wheel";
 import { attachTerminalInteractions } from "./terminal-interactions";
 import {
+  disposeTerminalWithRenderer,
   loadOptionalTerminalWebglAddon,
   loadTerminalWebglRenderer,
   observeTerminalWebglVisibility,
@@ -1754,6 +1757,7 @@ export function ThreadTerminalView({
       null;
     let rendererDeadline: ReturnType<typeof setTimeout> | undefined;
     let fitAddon: FitAddon | null = null;
+    const fitWork = createTerminalFitWork();
     let replayNextSeq: number | null = null;
     let replayNextSequence = 0;
     const replayWriteState: TerminalReplayWriteState = {
@@ -1959,6 +1963,9 @@ export function ThreadTerminalView({
     let terminalVisible: boolean | null = null;
     let hasReceivedInitialAttach = false;
     let lastParsedOutputNextSeq = 0;
+    let lastQueuedOutputNextSeq = 0;
+    const hiddenOutput = createTerminalHiddenOutput();
+    let flushHiddenOutput = () => {};
     const reportDocumentVisibility = () => {
       if (
         document.visibilityState !== "visible" ||
@@ -1972,14 +1979,18 @@ export function ThreadTerminalView({
         containerHasSize &&
         isPanelOpenRef.current;
       if (transport === null) return;
+      if (!holdForFittedGrid && !isPanelOpenRef.current)
+        hiddenOutput.invalidate();
       const wasVisible = terminalVisible;
       if (wasVisible === nextVisible) return;
       terminalVisible = nextVisible;
+      if (nextVisible) webglVisibilityRef.current?.sync();
       transport?.setVisible(nextVisible);
-      if (nextVisible) sizeClaims?.claimIfFocused();
-      if (wasVisible === false && nextVisible && hasReceivedInitialAttach) {
-        transport?.replayOutputFrom(lastParsedOutputNextSeq);
+      if (nextVisible) {
+        sizeClaims?.claimIfFocused();
+        scheduleFitRef.current?.();
       }
+      if (wasVisible === false && nextVisible) flushHiddenOutput();
     };
     terminalVisibilityReporterRef.current = reportDocumentVisibility;
     reportDocumentVisibilityRef.current = reportDocumentVisibility;
@@ -2415,7 +2426,7 @@ export function ThreadTerminalView({
             webglAddonModule === null ||
             terminal === null ||
             retainNativeOutput ||
-            (holdForFittedGrid && initialRendererSettled)
+            initialRendererSettled
           ) {
             return;
           }
@@ -2427,6 +2438,7 @@ export function ThreadTerminalView({
               visible: false,
               onRendererChange: (renderer) => {
                 if (disposed || terminal === null) return;
+                fitWork.invalidate();
                 scheduleFitRef.current?.();
                 if (
                   !initialRendererSettled &&
@@ -2441,6 +2453,7 @@ export function ThreadTerminalView({
             root: containerElement,
             renderer: webglRenderer,
             isPanelOpen: () => isPanelOpenRef.current,
+            onVisible: () => scheduleFitRef.current?.(),
           });
         })
         .catch(() => undefined);
@@ -2638,81 +2651,105 @@ export function ThreadTerminalView({
         }
       };
       const fitTerminal = () => {
-        if (screenLoadingPreview)
-          measureTerminalPerformance("terminal-fit-snapshot-refresh", () =>
-            screenLoadingPreview?.refresh(terminal?.options.lineHeight ?? 1),
-          );
-        updateGridVisibility();
         if (!fitAddon || !terminal) {
           return;
         }
-        if (!hasVisibleTerminalSize({ containerElement })) {
-          return;
-        }
-        const fitted = measureTerminalPerformance(
-          "terminal-fit-propose-dimensions",
-          () => fitAddon?.proposeDimensions(),
-        );
         if (
-          fitted === undefined ||
-          !Number.isFinite(fitted.cols) ||
-          !Number.isFinite(fitted.rows) ||
-          fitted.cols <= 0 ||
-          fitted.rows <= 0
+          !initialRendererSettled ||
+          !isPanelOpenRef.current ||
+          document.visibilityState !== "visible" ||
+          !hasVisibleTerminalSize({ containerElement })
         ) {
           return;
         }
-        if (
-          localFitGrid?.cols !== fitted.cols ||
-          localFitGrid.rows !== fitted.rows
-        )
-          fittedGridFallback = false;
-        localFitGrid = { cols: fitted.cols, rows: fitted.rows };
-        containerElement.dataset.fitGridCols = String(fitted.cols);
-        containerElement.dataset.fitGridRows = String(fitted.rows);
-        if (replayPreview)
-          measureTerminalPerformance("terminal-fit-preview-layout", () =>
-            replayPreview?.setFitGrid(fitted.cols, fitted.rows),
-          );
-        if (retainNativeOutput && sessionStatusRef.current === "exited") {
-          if (retainedOutputReplayed) {
-            retainedOutputGrid = latestPtyGrid;
-            terminal.resize(retainedOutputGrid.cols, retainedOutputGrid.rows);
-          }
-          updateGridVisibility();
-          return;
-        }
-        updateGridVisibility();
-        if (initialLayoutSettled && initialRendererSettled) {
-          if (holdForFittedGrid && sessionStatusRef.current === "running") {
-            rememberTerminalGrid(
-              session.id,
-              containerElement,
-              terminal.options.fontSize ?? 13,
-              fitted,
-              terminal.options.fontFamily ?? readTerminalFontFamily(),
-              terminal.options.lineHeight ?? TERMINAL_LINE_HEIGHT,
-              Number(terminal.options.fontWeight),
+        if (webglVisibilityRef.current?.sync() === false) return;
+        const activeTerminal = terminal;
+        const activeFitAddon = fitAddon;
+        fitWork.run({
+          container: containerElement,
+          terminal: activeTerminal,
+          ptyGrid: latestPtyGrid,
+          layoutSettled: initialLayoutSettled,
+          rendererSettled: initialRendererSettled,
+          retainedOutputReplayed,
+          work: () => {
+            if (screenLoadingPreview)
+              measureTerminalPerformance("terminal-fit-snapshot-refresh", () =>
+                screenLoadingPreview?.refresh(
+                  activeTerminal.options.lineHeight ?? 1,
+                ),
+              );
+            updateGridVisibility();
+            const fitted = measureTerminalPerformance(
+              "terminal-fit-propose-dimensions",
+              () => activeFitAddon.proposeDimensions(),
             );
-          }
-          const claimFit =
-            holdForFittedGrid &&
-            (containerElement.dataset.replayHeld === "true" ||
-              fittedGridRevealed) &&
-            transport !== null &&
-            (claimedFitGrid?.cols !== fitted.cols ||
-              claimedFitGrid.rows !== fitted.rows);
-          if (transport)
-            reconcilePrefetchedTerminalGrid(earlySocketUrl, fitted);
-          transport?.sendResize(fitted.cols, fitted.rows, claimFit);
-          if (claimFit) {
-            if (claimedFitGrid === null)
-              markTerminalPerformance("terminal-first-fitted-grid-claimed");
-            markTerminalPerformance("terminal-fitted-grid-claimed");
-            claimedFitGrid = { ...fitted };
-            prepareClaimedGrid();
-          }
-        }
+            if (
+              fitted === undefined ||
+              !Number.isFinite(fitted.cols) ||
+              !Number.isFinite(fitted.rows) ||
+              fitted.cols <= 0 ||
+              fitted.rows <= 0
+            ) {
+              return false;
+            }
+            if (
+              localFitGrid?.cols !== fitted.cols ||
+              localFitGrid.rows !== fitted.rows
+            )
+              fittedGridFallback = false;
+            localFitGrid = { cols: fitted.cols, rows: fitted.rows };
+            containerElement.dataset.fitGridCols = String(fitted.cols);
+            containerElement.dataset.fitGridRows = String(fitted.rows);
+            if (replayPreview)
+              measureTerminalPerformance("terminal-fit-preview-layout", () =>
+                replayPreview?.setFitGrid(fitted.cols, fitted.rows),
+              );
+            if (retainNativeOutput && sessionStatusRef.current === "exited") {
+              if (retainedOutputReplayed) {
+                retainedOutputGrid = latestPtyGrid;
+                activeTerminal.resize(
+                  retainedOutputGrid.cols,
+                  retainedOutputGrid.rows,
+                );
+              }
+              updateGridVisibility();
+              return true;
+            }
+            updateGridVisibility();
+            if (initialLayoutSettled && initialRendererSettled) {
+              if (holdForFittedGrid && sessionStatusRef.current === "running") {
+                rememberTerminalGrid(
+                  session.id,
+                  containerElement,
+                  activeTerminal.options.fontSize ?? 13,
+                  fitted,
+                  activeTerminal.options.fontFamily ?? readTerminalFontFamily(),
+                  activeTerminal.options.lineHeight ?? TERMINAL_LINE_HEIGHT,
+                  Number(activeTerminal.options.fontWeight),
+                );
+              }
+              const claimFit =
+                holdForFittedGrid &&
+                (containerElement.dataset.replayHeld === "true" ||
+                  fittedGridRevealed) &&
+                transport !== null &&
+                (claimedFitGrid?.cols !== fitted.cols ||
+                  claimedFitGrid.rows !== fitted.rows);
+              if (transport)
+                reconcilePrefetchedTerminalGrid(earlySocketUrl, fitted);
+              transport?.sendResize(fitted.cols, fitted.rows, claimFit);
+              if (claimFit) {
+                if (claimedFitGrid === null)
+                  markTerminalPerformance("terminal-first-fitted-grid-claimed");
+                markTerminalPerformance("terminal-fitted-grid-claimed");
+                claimedFitGrid = { ...fitted };
+                prepareClaimedGrid();
+              }
+            }
+            return true;
+          },
+        });
         checkReplayReveal?.();
       };
       const scheduleFit: TerminalFitScheduler = () => {
@@ -2725,15 +2762,10 @@ export function ThreadTerminalView({
         });
       };
       function settleInitialRenderer() {
-        if (
-          disposed ||
-          terminal === null ||
-          (holdForFittedGrid && initialRendererSettled)
-        )
-          return;
+        if (disposed || terminal === null || initialRendererSettled) return;
         clearTimeout(rendererDeadline);
         initialRendererSettled = true;
-        if (holdForFittedGrid && webglRenderer?.renderer === "dom") {
+        if (webglRenderer?.renderer === "dom") {
           webglVisibilityRef.current?.dispose();
           webglVisibilityRef.current = null;
           webglRenderer.dispose();
@@ -2753,6 +2785,9 @@ export function ThreadTerminalView({
           TERMINAL_RENDERER_SETTLE_MS,
         );
         void initialRendererReady.then(() => {
+          if (disposed) return;
+          fitWork.invalidate();
+          scheduleFit();
           if (
             initialRendererSettled ||
             webglRenderer === null ||
@@ -2773,6 +2808,7 @@ export function ThreadTerminalView({
           if (terminal === null) {
             return;
           }
+          fitWork.invalidate();
           forceTerminalFontMeasurement(terminal);
           replayPreview?.refreshFonts();
           scheduleFit();
@@ -2876,6 +2912,8 @@ export function ThreadTerminalView({
         }
       };
       const resetTerminalOutput = () => {
+        lastQueuedOutputNextSeq = 0;
+        hiddenOutput.clear();
         outputLineAnchorTracker.reset();
         outputLineAnchors.length = 0;
         savedOutputLineAnchor = null;
@@ -2891,6 +2929,14 @@ export function ThreadTerminalView({
         message: TerminalServerMessage,
         replayWrite?: { bytes: Uint8Array; sourceBytes: Uint8Array },
       ) => {
+        if (message.type === "output") {
+          if (terminalVisible !== true || !isPanelOpenRef.current) {
+            hiddenOutput.push(message.chunk, lastQueuedOutputNextSeq);
+            return;
+          }
+          if (message.chunk.seq < lastQueuedOutputNextSeq) return;
+          lastQueuedOutputNextSeq = message.chunk.seq + 1;
+        }
         if (message.type === "attached") {
           replayRevealGeneration += 1;
           fittedGridHeld = false;
@@ -2992,10 +3038,14 @@ export function ThreadTerminalView({
             !replayCompleted ||
             replayWriteState.suppressedWriteCount > 0
           ) {
-            captureLiveViewportBeforeGridResize();
-            activeTerminal.resize(cols, rows);
+            const changed =
+              activeTerminal.cols !== cols || activeTerminal.rows !== rows;
+            if (changed) {
+              captureLiveViewportBeforeGridResize();
+              activeTerminal.resize(cols, rows);
+            }
             updateGridVisibility();
-            clearLiveViewportBeforeGridResize();
+            if (changed) clearLiveViewportBeforeGridResize();
           } else if (outputPipeline) {
             applyTerminalGridAndKeepViewport({
               pipeline: outputPipeline,
@@ -3257,6 +3307,7 @@ export function ThreadTerminalView({
           if (disposed) {
             return;
           }
+          fitWork.invalidate();
           if (state === "closed") abandonReplayPreview();
           if (
             state === "reconnecting" &&
@@ -3267,6 +3318,7 @@ export function ThreadTerminalView({
             setReplayNotice(paintedScreenKept ? "reconnecting" : null);
           }
           if (state === "reconnecting") {
+            if (terminalVisible === false) hiddenOutput.invalidate();
             if (reconnecting) {
               return;
             }
@@ -3275,6 +3327,7 @@ export function ThreadTerminalView({
             setConnectionNotice(null);
             connectionNoticeTimeout = setTimeout(() => {
               connectionNoticeTimeout = null;
+              fitWork.invalidate();
               reconnectingNoticeVisible = true;
               setConnectionNotice("reconnecting");
             }, TERMINAL_RECONNECTING_NOTICE_DELAY_MS);
@@ -3307,7 +3360,11 @@ export function ThreadTerminalView({
         },
         onMessage: handleMessage,
         onReplayBatch: (chunks) => {
-          if (terminalVisible !== true || !isPanelOpenRef.current) return;
+          if (terminalVisible !== true || !isPanelOpenRef.current) {
+            for (const chunk of chunks)
+              hiddenOutput.push(chunk, lastQueuedOutputNextSeq);
+            return;
+          }
           markTerminalPerformance("terminal-replay-batch-dispatch-start");
           measureTerminalPerformance("terminal-replay-batch-dispatch", () => {
             for (const write of terminalReplayWrites(
@@ -3320,6 +3377,10 @@ export function ThreadTerminalView({
           });
         },
         onSequenceGap: () => {
+          if (terminalVisible !== true || !isPanelOpenRef.current) {
+            hiddenOutput.invalidate();
+            return;
+          }
           resetTerminalOutput();
           writeTerminalStatus({
             terminal: activeTerminal,
@@ -3335,6 +3396,31 @@ export function ThreadTerminalView({
         }),
       });
       transport = activeTransport;
+      flushHiddenOutput = () => {
+        const chunks = hiddenOutput.take();
+        if (chunks === null) {
+          activeTransport.replayOutputFrom(lastQueuedOutputNextSeq);
+          return;
+        }
+        const replayEnd = replayNextSeq;
+        const firstLive =
+          replayEnd === null
+            ? -1
+            : chunks.findIndex((chunk) => chunk.seq >= replayEnd);
+        const groups =
+          firstLive > 0
+            ? [chunks.slice(0, firstLive), chunks.slice(firstLive)]
+            : [chunks];
+        for (const group of groups) {
+          for (const write of terminalReplayWrites(
+            group,
+            outputBoundaries,
+            replayCheckpointSequence,
+          )) {
+            handleMessage({ type: "output", chunk: write.chunk }, write);
+          }
+        }
+      };
       claimSizeRef.current = () => {
         terminalInputClaimed = true;
         activeTerminal.focus();
@@ -3381,6 +3467,12 @@ export function ThreadTerminalView({
             return null;
           }
           if (holdForFittedGrid) return `${rect.width}x${rect.height}`;
+          if (
+            !initialRendererSettled ||
+            !isPanelOpenRef.current ||
+            document.visibilityState !== "visible"
+          )
+            return null;
           const fitted = fitAddon?.proposeDimensions();
           if (
             fitted === undefined ||
@@ -3658,6 +3750,8 @@ export function ThreadTerminalView({
 
     return () => {
       disposed = true;
+      hiddenOutput.clear();
+      flushHiddenOutput = () => {};
       clearScreenLoadingPreview();
       outputLineAnchorTracker.dispose();
       viewportLineAnchor?.dispose();
@@ -3721,9 +3815,8 @@ export function ThreadTerminalView({
       discardPrefetchedTerminalSocket(earlySocketUrl);
       webglVisibilityRef.current?.dispose();
       webglVisibilityRef.current = null;
-      webglRenderer?.dispose();
       clearTimeout(rendererDeadline);
-      terminal?.dispose();
+      disposeTerminalWithRenderer(terminal, webglRenderer);
       terminalRef.current = null;
       scheduleFitRef.current = null;
       if (terminalVisibilityReporterRef.current === reportDocumentVisibility) {

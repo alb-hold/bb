@@ -473,16 +473,14 @@ describe("ThreadTerminalView terminal visibility and panel", () => {
       let holdWrites = true;
       const pendingWrites: Array<() => void> = [];
       const write = Terminal.prototype.write;
-      vi.spyOn(Terminal.prototype, "write").mockImplementation(function (
-        this: Terminal,
-        data,
-        callback,
-      ) {
-        write.call(this, data, () => {
-          if (holdWrites && callback) pendingWrites.push(callback);
-          else callback?.();
-        });
-      });
+      vi.spyOn(Terminal.prototype, "write").mockImplementation(
+        function (this: Terminal, data, callback) {
+          write.call(this, data, () => {
+            if (holdWrites && callback) pendingWrites.push(callback);
+            else callback?.();
+          });
+        },
+      );
       try {
         socket.receive({
           type: "output",
@@ -1180,7 +1178,7 @@ describe("ThreadTerminalView terminal visibility and panel", () => {
       () => expect(testState.sockets).toHaveLength(1),
       "socket missing",
     );
-    let socket = testState.sockets[0]!;
+    const socket = testState.sockets[0]!;
 
     const renderer = mounted.container.querySelector<HTMLElement>(
       "[data-terminal-renderer]",
@@ -1249,21 +1247,7 @@ describe("ThreadTerminalView terminal visibility and panel", () => {
     fitDimensionsAvailable = true;
     for (const notify of notifySize) notify();
     fireEvent(window, new Event("resize"));
-    if (startsHidden) {
-      await waitForReadinessCondition(
-        () => expect(testState.sockets).toHaveLength(2),
-        "visible terminal did not reconnect for replay",
-      );
-      socket = testState.sockets[1]!;
-      socket.open();
-      await socket.opened;
-      socket.receive({
-        type: "attached",
-        session,
-        replayStartSeq: 0,
-        nextSeq: 0,
-      });
-    }
+    if (startsHidden) expect(testState.sockets).toHaveLength(1);
     let claimed: { cols: number; rows: number } | undefined;
     await waitForReadinessCondition(() => {
       claimed = socket.sent
@@ -1669,3 +1653,327 @@ it.each([
     }
   },
 );
+
+describe("hidden terminal output continuity", () => {
+  const webglModule = {
+    WebglAddon: class {
+      activate() {}
+      dispose() {}
+      onContextLoss() {
+        return { dispose() {} };
+      }
+    },
+  };
+
+  async function mountContinuityViewer(
+    initiallyHidden = false,
+    {
+      rendererGrid = false,
+      native = true,
+      waitForReplay = true,
+      terminalId = "term_hidden_continuity",
+    } = {},
+  ) {
+    vi.stubGlobal("WebSocket", TestTerminalSocket);
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
+      measureText: (text: string) => ({ width: text.length * 8 }),
+    } as unknown as CanvasRenderingContext2D);
+    for (const dimension of ["clientWidth", "offsetWidth"] as const)
+      vi.spyOn(HTMLElement.prototype, dimension, "get").mockImplementation(
+        function (this: HTMLElement) {
+          return this.classList.contains("xterm-char-measure-element")
+            ? 8
+            : 800;
+        },
+      );
+    for (const dimension of ["clientHeight", "offsetHeight"] as const)
+      vi.spyOn(HTMLElement.prototype, dimension, "get").mockImplementation(
+        function (this: HTMLElement) {
+          return this.classList.contains("xterm-char-measure-element")
+            ? 18
+            : 480;
+        },
+      );
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
+      width: 800,
+      height: 480,
+      top: 0,
+      left: 0,
+      right: 800,
+      bottom: 480,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    });
+    const propose = vi
+      .spyOn(FitAddon.prototype, "proposeDimensions")
+      .mockImplementation(() => ({
+        cols: rendererGrid
+          ? document.querySelector<HTMLElement>("[data-terminal-renderer]")
+              ?.dataset.terminalRenderer === "webgl"
+            ? 98
+            : 92
+          : 80,
+        rows: 24,
+      }));
+    let live: Terminal | null = null;
+    const open = Terminal.prototype.open;
+    vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
+      this: Terminal,
+      ...args
+    ) {
+      live ??= this;
+      return open.apply(this, args);
+    });
+    const session = makeTerminalSession({
+      id: terminalId,
+      cols: rendererGrid ? 98 : 80,
+      rows: 24,
+    });
+    const ui = (visible: boolean) => (
+      <MemoryRouter>
+        <AppCommandProvider>
+          <div data-native-terminal-thread={native ? "native" : undefined}>
+            <ThreadTerminalView
+              session={session}
+              autoFocus={false}
+              isPanelOpen={visible}
+            />
+          </div>
+        </AppCommandProvider>
+      </MemoryRouter>
+    );
+    const view = render(ui(!initiallyHidden));
+    await waitFor(() => expect(testState.sockets).toHaveLength(1));
+    const socket = testState.sockets[0]!;
+    await socket.opened;
+    await waitFor(() => expect(live).not.toBeNull());
+    socket.receive({
+      type: "attached",
+      session,
+      replayStartSeq: 0,
+      nextSeq: 1,
+    });
+    socket.receive({
+      type: "output",
+      chunk: { seq: 0, dataBase64: btoa("initial\r\n") },
+    });
+    const text = () => {
+      const buffer = live?.buffer.active;
+      return buffer
+        ? Array.from(
+            { length: buffer.length },
+            (_, i) => buffer.getLine(i)?.translateToString(true) ?? "",
+          ).join("\n")
+        : "";
+    };
+    const ready = () =>
+      waitForReadinessCondition(() => {
+        expect(text()).toContain("initial");
+        expect(
+          view.container.querySelector<HTMLElement>("[data-terminal-renderer]")
+            ?.dataset.replayHeld,
+        ).toBe("false");
+      }, "visible terminal did not finish its initial replay");
+    if (!initiallyHidden && waitForReplay) await ready();
+    const visible = async (value: boolean) => {
+      view.rerender(ui(value));
+      await waitFor(() =>
+        expect(
+          testState.socketMessages.map((message) => JSON.parse(message)),
+        ).toContainEqual({ type: "visibility", visible: value }),
+      );
+    };
+    return { socket, session, text, visible, view, propose, ready };
+  }
+
+  const nextFrames = () =>
+    new Promise<void>((resolve) =>
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+    );
+  const resizeMessages = (socket: TestTerminalSocket) =>
+    socket.sent
+      .map((message) => JSON.parse(message))
+      .filter((message) => message.type === "resize");
+
+  it("does not fit a hidden renderer or resize the PTY across an unchanged hide/show", async () => {
+    vi.spyOn(
+      rendererModule,
+      "loadOptionalTerminalWebglAddon",
+    ).mockResolvedValue(webglModule);
+    const h = await mountContinuityViewer(false, {
+      rendererGrid: true,
+      terminalId: "term_renderer_switch",
+    });
+    expect(
+      h.view.container.querySelector<HTMLElement>("[data-terminal-renderer]")
+        ?.dataset.terminalRenderer,
+    ).toBe("webgl");
+    const sizes = resizeMessages(h.socket).length;
+    const proposals = h.propose.mock.calls.length;
+    await h.visible(false);
+    await nextFrames();
+    expect(h.propose).toHaveBeenCalledTimes(proposals);
+    expect(resizeMessages(h.socket)).toHaveLength(sizes);
+    await h.visible(true);
+    await nextFrames();
+    expect(
+      h.view.container.querySelector<HTMLElement>("[data-terminal-renderer]")
+        ?.dataset.terminalRenderer,
+    ).toBe("webgl");
+    expect(h.propose).toHaveBeenCalledTimes(proposals + 1);
+    expect(
+      resizeMessages(h.socket).every(
+        (size) => size.cols === 98 && size.rows === 24,
+      ),
+    ).toBe(true);
+    expect(testState.sockets).toHaveLength(1);
+  });
+
+  it.each(["ready", "deadline"] as const)(
+    "fits only after the initial renderer decision: %s",
+    async (decision) => {
+      const realSetTimeout = globalThis.setTimeout;
+      const timeouts = vi
+        .spyOn(globalThis, "setTimeout")
+        .mockImplementation((handler, delay, ...args) =>
+          realSetTimeout(handler, delay === 150 ? 60_000 : delay, ...args),
+        );
+      let finishRenderer!: (value: typeof webglModule) => void;
+      vi.spyOn(
+        rendererModule,
+        "loadOptionalTerminalWebglAddon",
+      ).mockReturnValue(
+        new Promise((resolve) => {
+          finishRenderer = resolve;
+        }),
+      );
+      const h = await mountContinuityViewer(false, {
+        rendererGrid: true,
+        native: false,
+        waitForReplay: false,
+        terminalId: `term_renderer_decision_${decision}`,
+      });
+      expect(h.propose).not.toHaveBeenCalled();
+      expect(resizeMessages(h.socket)).toHaveLength(0);
+      if (decision === "ready") {
+        await act(async () => finishRenderer(webglModule));
+      } else {
+        const deadline = timeouts.mock.calls.find(
+          ([, delay]) => delay === 150,
+        )?.[0];
+        if (typeof deadline !== "function")
+          throw new Error("renderer deadline is missing");
+        act(() => deadline());
+      }
+      await waitForReadinessCondition(
+        () => expect(resizeMessages(h.socket)).toHaveLength(1),
+        "initial renderer decision did not send one fit",
+      );
+      expect(resizeMessages(h.socket)[0].cols).toBe(
+        decision === "ready" ? 98 : 92,
+      );
+      if (decision === "deadline") {
+        await act(async () => finishRenderer(webglModule));
+        await nextFrames();
+        expect(resizeMessages(h.socket)).toHaveLength(1);
+        expect(
+          h.view.container.querySelector<HTMLElement>(
+            "[data-terminal-renderer]",
+          )?.dataset.terminalRenderer,
+        ).toBe("dom");
+      }
+      expect(testState.sockets).toHaveLength(1);
+    },
+  );
+
+  it("completes an initially hidden replay before draining later live output", async () => {
+    const h = await mountContinuityViewer(true);
+    h.socket.receive({
+      type: "output",
+      chunk: { seq: 1, dataBase64: btoa("later-live\r\n") },
+    });
+    expect(h.text()).not.toContain("initial");
+    await h.visible(true);
+    await waitForReadinessCondition(() => {
+      expect(h.text()).toContain("later-live");
+      expect(
+        h.view.container.querySelector<HTMLElement>("[data-terminal-renderer]")
+          ?.dataset.replayHeld,
+      ).toBe("false");
+    }, "initially hidden replay did not reveal its live output");
+    expect(h.text().match(/initial/g)).toHaveLength(1);
+    expect(h.text().match(/later-live/g)).toHaveLength(1);
+    expect(testState.sockets).toHaveLength(1);
+  });
+
+  it("keeps the socket and parses hidden output exactly once when shown", async () => {
+    const h = await mountContinuityViewer();
+    await h.visible(false);
+    for (const [seq, text] of [
+      [1, "hidden-one"],
+      [1, "hidden-one"],
+      [2, "hidden-two"],
+    ] as const)
+      h.socket.receive({
+        type: "output",
+        chunk: { seq, dataBase64: btoa(text + "\r\n") },
+      });
+    expect(h.text()).not.toContain("hidden-one");
+    await h.visible(true);
+    await waitFor(() => expect(h.text()).toContain("hidden-two"));
+    expect(h.text().match(/hidden-one/g)).toHaveLength(1);
+    expect(h.text().match(/hidden-two/g)).toHaveLength(1);
+    await waitFor(() =>
+      expect(
+        h.socket.sent.map((message) => JSON.parse(message)),
+      ).toContainEqual({ type: "ack", nextSeq: 3 }),
+    );
+    await h.visible(false);
+    await h.visible(true);
+    expect(testState.sockets).toHaveLength(1);
+    expect(h.socket.readyState).toBe(TestTerminalSocket.OPEN);
+  });
+
+  it.each(["overflow", "gap"])(
+    "replays once after hidden output %s",
+    async (reason) => {
+      const h = await mountContinuityViewer();
+      await h.visible(false);
+      if (reason === "overflow") {
+        const dataBase64 = btoa("x".repeat(64 * 1024));
+        for (let seq = 1; seq <= 26; seq++)
+          h.socket.receive({ type: "output", chunk: { seq, dataBase64 } });
+      } else {
+        h.socket.receive({
+          type: "output",
+          chunk: { seq: 2, dataBase64: btoa("gap") },
+        });
+      }
+      expect(testState.sockets).toHaveLength(1);
+      await h.visible(true);
+      await waitFor(() => expect(testState.sockets).toHaveLength(2));
+      expect(
+        new URL(testState.socketUrls[1]!).searchParams.get("sinceSeq"),
+      ).toBe("1");
+      const replaySocket = testState.sockets[1]!;
+      await replaySocket.opened;
+      replaySocket.receive({
+        type: "attached",
+        session: h.session,
+        replayStartSeq: 1,
+        nextSeq: 2,
+      });
+      replaySocket.receive({
+        type: "output",
+        chunk: { seq: 1, dataBase64: btoa("recovered\r\n") },
+      });
+      await waitFor(() => expect(h.text()).toContain("recovered"));
+      await h.visible(false);
+      await h.visible(true);
+      expect(testState.sockets).toHaveLength(2);
+      expect(h.text().match(/initial/g)).toHaveLength(1);
+      expect(h.text().match(/recovered/g)).toHaveLength(1);
+    },
+  );
+});

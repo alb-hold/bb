@@ -1959,6 +1959,8 @@ describe("terminal output encoding", () => {
       const writeCallbacks: Array<() => void> = [];
       const pipeline = createTerminalOutputPipeline(
         {
+          cols: 80,
+          rows: 24,
           resize,
           write: (bytes, callback) => {
             written.push(new TextDecoder().decode(bytes));
@@ -1992,6 +1994,8 @@ describe("terminal output encoding", () => {
     const writeCallbacks: Array<() => void> = [];
     const resize = vi.fn();
     const pipeline = createTerminalOutputPipeline({
+      cols: 80,
+      rows: 24,
       resize,
       write: (_data, callback) => writeCallbacks.push(callback),
     });
@@ -2024,6 +2028,8 @@ describe("terminal output encoding", () => {
     const writeCallbacks: Array<() => void> = [];
     const resize = vi.fn();
     const pipeline = createTerminalOutputPipeline({
+      cols: 80,
+      rows: 24,
       resize,
       write: (_data, callback) => writeCallbacks.push(callback),
     });
@@ -2176,6 +2182,8 @@ describe("terminal output encoding", () => {
   it("registers the next sequence anchor in the preceding chunk parse callback", async () => {
     const writeCallbacks: Array<() => void> = [];
     const terminal = {
+      cols: 80,
+      rows: 24,
       resize: vi.fn(),
       write: vi.fn((_bytes: Uint8Array, callback: () => void) => {
         writeCallbacks.push(callback);
@@ -3178,12 +3186,23 @@ describe("terminal output write barriers", () => {
   function heldWriter() {
     const callbacks: Array<() => void> = [];
     const events: string[] = [];
+    const grid = { cols: 80, rows: 24 };
     const pipeline = createTerminalOutputPipeline({
+      get cols() {
+        return grid.cols;
+      },
+      get rows() {
+        return grid.rows;
+      },
       write: (bytes, callback) => {
         events.push(`write:${new TextDecoder().decode(bytes)}`);
         callbacks.push(callback);
       },
-      resize: (cols, rows) => events.push(`resize:${cols}x${rows}`),
+      resize: (cols, rows) => {
+        grid.cols = cols;
+        grid.rows = rows;
+        events.push(`resize:${cols}x${rows}`);
+      },
     });
     return { callbacks, events, pipeline };
   }
@@ -3264,6 +3283,8 @@ describe("terminal output write barriers", () => {
     const callbacks: Array<() => void> = [];
     const acknowledged: number[] = [];
     const pipeline = createTerminalOutputPipeline({
+      cols: 80,
+      rows: 24,
       write: (_bytes, callback) => callbacks.push(callback),
       resize: () => undefined,
     });
