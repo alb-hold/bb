@@ -19,7 +19,6 @@ import { serializePromptDraftStorage } from "@bb/client-core";
 import { writingAssistanceQueryKey } from "@/hooks/queries/query-keys";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
 import { getPromptDraftAccessor } from "@/hooks/usePromptDraftStorage";
-import { readFileSync } from "node:fs";
 import { NativeTerminalPromptBar } from "./NativeTerminalPromptBar";
 
 const send = vi.hoisted(() => vi.fn());
@@ -190,39 +189,50 @@ describe("NativeTerminalPromptBar", () => {
       screen.getByText("Native CLI · GPT-5 · Full access").className,
     ).toContain("truncate");
   });
-  it.each([360, 390])(
-    "uses one phone row while empty and expands with content at %i px",
+  it.each([360, 390, 600])(
+    "collapses only an empty unfocused touch composer at %i px",
     (width) => {
       const scrollHeight = vi
         .spyOn(HTMLTextAreaElement.prototype, "scrollHeight", "get")
         .mockReturnValue(width === 360 ? 48 : 24);
-      const { input } = renderBar("", "", "Codex");
+      const { input } = renderBar();
       const shell = input.closest("[data-native-composer]")!;
-      const phoneStyle = document.createElement("style");
-      const css = readFileSync(
-        "src/components/thread/terminal/native-terminal-prompt.css",
-        "utf8",
-      );
-      phoneStyle.textContent = css
-        .replace("@media (width <= 480px) {", "")
-        .replace(/}\s*$/, "");
-      document.head.append(phoneStyle);
+      const execution = screen.getByLabelText("Terminal execution");
+      const model = screen.getByLabelText("Terminal model");
       try {
-        expect(getComputedStyle(shell).display).toBe("grid");
-        expect(getComputedStyle(shell).gridTemplateColumns).toBe(
-          "minmax(0, 1fr) auto",
+        act(() => input.focus());
+        expect(shell.hasAttribute("data-native-composer-inline")).toBe(false);
+        expect(screen.getByLabelText("Terminal execution")).toBe(execution);
+        expect(screen.getByLabelText("Terminal model")).toBe(model);
+        act(() => screen.getByRole("button", { name: "Attach image" }).focus());
+        expect(shell.hasAttribute("data-native-composer-inline")).toBe(false);
+        act(() => (document.activeElement as HTMLElement).blur());
+        expect(shell.hasAttribute("data-native-composer-inline")).toBe(true);
+        expect(shell.className).toContain(
+          "max-md:pointer-coarse:data-[native-composer-inline]:grid",
         );
-        expect(getComputedStyle(input).minHeight).toBe("2.75rem");
-        for (const button of shell.querySelectorAll("button")) {
-          expect(getComputedStyle(button).minWidth).toBe("2.75rem");
-          expect(getComputedStyle(button).minHeight).toBe("2.75rem");
+        expect(shell.className).toContain(
+          "max-md:pointer-coarse:data-[native-composer-inline]:grid-cols-[minmax(0,1fr)_auto]",
+        );
+        expect(shell.hasAttribute("data-native-composer-inline")).toBe(true);
+        expect(execution.hasAttribute("data-native-composer-execution")).toBe(
+          true,
+        );
+        expect(model.hasAttribute("data-native-composer-model")).toBe(true);
+        for (const detail of [execution, model]) {
+          expect(detail.className).toContain(
+            "max-md:pointer-coarse:group-data-[native-composer-inline]:hidden",
+          );
         }
         fireEvent.change(input, { target: { value: "first\nsecond" } });
-        expect(getComputedStyle(shell).display).not.toBe("grid");
+        expect(shell.hasAttribute("data-native-composer-inline")).toBe(false);
         fireEvent.change(input, { target: { value: "" } });
-        expect(getComputedStyle(shell).display).toBe("grid");
+        expect(shell.hasAttribute("data-native-composer-inline")).toBe(true);
+        for (const button of shell.querySelectorAll("button")) {
+          expect(button.className).toContain("max-md:pointer-coarse:min-w-11");
+          expect(button.className).toContain("max-md:pointer-coarse:min-h-11");
+        }
       } finally {
-        phoneStyle.remove();
         scrollHeight.mockRestore();
       }
     },
