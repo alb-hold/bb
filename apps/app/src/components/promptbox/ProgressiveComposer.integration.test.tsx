@@ -66,7 +66,9 @@ it.each(["", "A phone draft that keeps its wrapping through hydration"])(
     style.textContent = css.slice(
       css.indexOf(
         "@media (width < 48rem) {",
-        css.indexOf("root-compose-desktop-recents"),
+        css.indexOf(
+          ':where([data-testid="root-compose-compact-scroll-viewport"]',
+        ),
       ),
     );
     document.head.append(style);

@@ -828,11 +828,6 @@
   );
 }
 
-:where(.peer[data-state="expanded"][data-collapsible] ~ *)
-  :where([data-testid="root-compose-desktop-recents"]) {
-  display: none;
-}
-
 @media (width < 48rem) {
   [data-promptbox]:not([data-promptbox-voice-active])
     [data-promptbox-execution-layout="stacked"] {
@@ -1076,8 +1071,31 @@
   stroke: currentColor;
 }
 
-:where(.bb-sidebar-chrome-icon) [data-icon-root][data-icon]:is([data-icon="Home"], [data-icon="Puzzle"], [data-icon="Plug02"], [data-icon="Zap"], [data-icon="MoreHorizontal"], [data-icon="Settings"], [data-icon="Bug"], [data-icon="ChartColumn"], [data-icon="Download"]),
-:where(.bb-sidebar-chrome-icon) [data-icon-root][data-icon]:is([data-icon="Home"], [data-icon="Puzzle"], [data-icon="Plug02"], [data-icon="Zap"], [data-icon="MoreHorizontal"], [data-icon="Settings"], [data-icon="Bug"], [data-icon="ChartColumn"], [data-icon="Download"]) * {
+:where(.bb-sidebar-chrome-icon)
+  [data-icon-root][data-icon]:is(
+    [data-icon="Home"],
+    [data-icon="Puzzle"],
+    [data-icon="Plug02"],
+    [data-icon="Zap"],
+    [data-icon="MoreHorizontal"],
+    [data-icon="Settings"],
+    [data-icon="Bug"],
+    [data-icon="ChartColumn"],
+    [data-icon="Download"]
+  ),
+:where(.bb-sidebar-chrome-icon)
+  [data-icon-root][data-icon]:is(
+    [data-icon="Home"],
+    [data-icon="Puzzle"],
+    [data-icon="Plug02"],
+    [data-icon="Zap"],
+    [data-icon="MoreHorizontal"],
+    [data-icon="Settings"],
+    [data-icon="Bug"],
+    [data-icon="ChartColumn"],
+    [data-icon="Download"]
+  )
+  * {
   fill: none;
   stroke: currentColor;
 }
@@ -1127,12 +1145,14 @@
 
 @container promptbox-shell (min-width: 27.5rem) {
   [data-promptbox-execution-layout="stacked"],
-  [data-promptbox-execution-layout="stacked"] > [data-promptbox-leading-actions],
+  [data-promptbox-execution-layout="stacked"]
+    > [data-promptbox-leading-actions],
   [data-execution-controls-layout="stacked"] {
     flex-wrap: nowrap;
   }
 
-  [data-promptbox-execution-layout="stacked"] > [data-promptbox-leading-actions] {
+  [data-promptbox-execution-layout="stacked"]
+    > [data-promptbox-leading-actions] {
     min-width: 0;
     flex-shrink: 1;
   }

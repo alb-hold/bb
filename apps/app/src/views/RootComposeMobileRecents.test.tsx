@@ -31,6 +31,12 @@ import { CompactViewportOverrideProvider } from "@bb/shared-ui/hooks/use-compact
 import type { SystemEnvironmentProvider } from "@bb/server-contract";
 import { systemEnvironmentProvidersQueryKey } from "@/hooks/queries/environment-provider-queries";
 import { RootComposeMobileRecents } from "./RootComposeMobileRecents";
+import { readFileSync } from "node:fs";
+import {
+  SidebarProvider,
+  Sidebar,
+  SidebarInset,
+} from "@/components/ui/sidebar";
 import { RootComposeHome } from "./RootComposeHome";
 import { makeThreadListEntry } from "@bb/test-helpers/domain-fixtures";
 import { CORE_THREAD_ACTIONS } from "@/lib/thread-actions/core-thread-actions";
@@ -156,6 +162,7 @@ afterEach(() => {
   window.localStorage.clear();
   vi.useRealTimers();
   vi.clearAllMocks();
+  vi.unstubAllGlobals();
 });
 
 describe("mobile recents hierarchy interaction", () => {
@@ -591,7 +598,14 @@ describe("mobile recent thread rows", () => {
 });
 
 describe("RootComposeMobileRecents", () => {
-  it("limits desktop Recent to three rows and omits an empty group", () => {
+  it("shows three desktop Recent rows with the real sidebar expanded", () => {
+    vi.stubGlobal("innerWidth", 1280);
+    vi.stubGlobal("innerHeight", 800);
+    const css = readFileSync("src/app.css", "utf8");
+    const start = css.indexOf(
+      ':where([data-testid="root-compose-compact-scroll-viewport"]',
+    );
+    const rules = css.slice(start, css.indexOf("@media", start));
     const props = {
       highlightedThreadId: null,
       projectNamesById: new Map<string, string>(),
@@ -601,21 +615,36 @@ describe("RootComposeMobileRecents", () => {
     };
     const { rerender } = render(
       <TestProviders>
-        <RootComposeHome
-          isCompact={false}
-          composer={<div data-testid="desktop-composer" />}
-          homepageSections={null}
-          compactScrollContent={
-            <RootComposeMobileRecents
-              {...props}
-              threads={Array.from({ length: 6 }, (_, i) =>
-                makeThread({ id: `recent-${i}`, title: `Recent ${i}` }),
-              )}
-            />
-          }
-        />
+        <style>{rules}</style>
+        <CompactViewportOverrideProvider isCompactViewport={false}>
+          <SidebarProvider open>
+            <Sidebar />
+            <SidebarInset>
+              <RootComposeHome
+                isCompact={false}
+                composer={<div data-testid="desktop-composer" />}
+                homepageSections={null}
+                compactScrollContent={
+                  <RootComposeMobileRecents
+                    {...props}
+                    threads={Array.from({ length: 6 }, (_, i) =>
+                      makeThread({ id: `recent-${i}`, title: `Recent ${i}` }),
+                    )}
+                  />
+                }
+              />
+            </SidebarInset>
+          </SidebarProvider>
+        </CompactViewportOverrideProvider>
       </TestProviders>,
     );
+    expect(
+      document.querySelector('.peer[data-state="expanded"][data-collapsible]'),
+    ).not.toBeNull();
+    expect(
+      getComputedStyle(screen.getByTestId("root-compose-desktop-recents"))
+        .display,
+    ).not.toBe("none");
     expect(screen.getAllByRole("link")).toHaveLength(3);
     expect(
       screen
