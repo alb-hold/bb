@@ -1,10 +1,4 @@
-import {
-  useDeferredValue,
-  useLayoutEffect,
-  useRef,
-  useState,
-  type ReactNode,
-} from "react";
+import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { cn } from "@bb/shared-ui/lib/utils";
 import { PAGE_SHELL_CONTENT_STYLE } from "@/components/ui/page-shell-content-style.js";
 import { CONTENT_MEASURE_MAX_WIDTH_CLASS } from "@/lib/content-measure";
@@ -102,8 +96,6 @@ export function RootComposeHome({
     composerMaxHeight,
   } = useCompactHomeMetrics(isCompact);
 
-  const showDesktopRecents = useDeferredValue(true, false);
-
   return (
     <div
       className={
@@ -177,8 +169,11 @@ export function RootComposeHome({
             </div>
           </div>
         </div>
-        {!isCompact && showDesktopRecents ? (
-          <div className="mt-6 empty:hidden" data-testid="root-compose-desktop-recents">
+        {!isCompact ? (
+          <div
+            className="mt-6 empty:hidden"
+            data-testid="root-compose-desktop-recents"
+          >
             {compactScrollContent}
           </div>
         ) : null}

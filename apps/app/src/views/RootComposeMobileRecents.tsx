@@ -1,4 +1,24 @@
 import {
+  getMobileRecentThreads,
+  getMobileRecentAncestorIds,
+  getFirstPaintMobileRecentRowCount,
+  type MobileRecentThreadRow,
+} from "./root-compose-recent-threads";
+export {
+  getMobileRecentThreads,
+  getMobileRecentAncestorIds,
+} from "./root-compose-recent-threads";
+import {
+  RecentThreadProviderMark,
+  RecentThreadCollapseMark,
+  RECENT_THREAD_COLLAPSE_CLASS,
+  recentThreadRowIndicatorState,
+  RecentThreadRowContent,
+  RecentThreadsSection,
+  RECENT_THREAD_ROW_CLASS,
+  RECENT_THREAD_BODY_CLASS,
+} from "./RootComposeRecentRows";
+import {
   useCallback,
   useDeferredValue,
   useEffect,
@@ -8,65 +28,27 @@ import {
 import { useAtom } from "jotai";
 import type { ProviderInfo, ThreadListEntry } from "@bb/domain";
 import { RouteAnchor } from "@/components/ui/app-route-anchor";
-import { ThreadStatusGlyph } from "@/components/thread/ThreadStatusGlyph";
 import { ThreadActionsContextMenu } from "@/components/thread/ThreadActionsMenu";
 import { threadListEntryActionTarget } from "@/lib/thread-actions/thread-action-target";
 import { getSidebarThreadRowPaddingLeft } from "@bb/shared-ui/sidebar-row-classes";
 import { SIDEBAR_WORKING_STATUS_COLOR_CLASS } from "@bb/shared-ui/sidebar-row-classes";
-import { CHROME_SECTION_LABEL_CLASS } from "@bb/shared-ui/chrome-style-tokens";
-import {
-  COARSE_POINTER_ICON_SIZE_CLASS,
-  COARSE_POINTER_TEXT_BASE_CLASS,
-} from "@bb/shared-ui/coarse-pointer-sizing";
+import { COARSE_POINTER_ICON_SIZE_CLASS } from "@bb/shared-ui/coarse-pointer-sizing";
 import { Icon } from "@bb/shared-ui/icon";
-import { OverflowFade } from "@bb/shared-ui/overflow-fade";
 import { getThreadRoutePath, isProjectlessProjectId } from "@/lib/route-paths";
 import {
   getThreadListIndicatorLabel,
   resolveThreadListIndicator,
-  threadListIndicatorStateForThread,
-  buildChronologicalThreadList,
-  type CollapsedChildActivity,
-  type ProjectThreadItem,
-  type ThreadListIndicatorState,
 } from "@bb/client-core";
 import { getThreadDisplayTitle } from "@/lib/thread-title";
-import {
-  ThreadTitle,
-  useThreadTitleDisplayText,
-} from "@/components/thread/ThreadTitleMentions";
-import { formatCompactRelativeTime } from "@bb/shared-ui/info-list-row";
-import {
-  findEnvironmentDisplayProvider,
-  getEnvironmentDisplayIconName,
-} from "@/lib/environment-workspace-display";
+import { useThreadTitleDisplayText } from "@/components/thread/ThreadTitleMentions";
+import { findEnvironmentDisplayProvider } from "@/lib/environment-workspace-display";
 import { useSystemEnvironmentProviders } from "@/hooks/queries/environment-provider-queries";
-import {
-  resolveEnvironmentDisplayName,
-  type EnvironmentDisplayProviderLookup,
-} from "@bb/core-ui";
-import { getProviderIconInfo } from "@/lib/provider-icon";
-import { ProviderIconMark } from "@/components/settings/ProviderIconMark";
 import { cn } from "@bb/shared-ui/lib/utils";
 import { usePromptDraftInputThreadIds } from "@/hooks/usePromptDraftStorage";
 import { useSecondTick } from "@/hooks/useSecondTick";
 import { mobileRecentsCollapsedThreadIdsAtom } from "./mobile-recents-collapse";
 
-const MOBILE_RECENT_ROW_HEIGHT_PX = 52;
-
 const MOBILE_RECENT_ROW_HEIGHT_CLASS = "h-13";
-
-type ThreadListEntryComparator = (
-  left: ThreadListEntry,
-  right: ThreadListEntry,
-) => number;
-
-interface GetMobileRecentThreadsArgs {
-  collapsedThreadIds: ReadonlySet<string>;
-  draftThreadIds: ReadonlySet<string>;
-  threads: readonly ThreadListEntry[];
-  now?: number;
-}
 
 interface MobileRecentThreadRowProps {
   highlighted: boolean;
@@ -75,48 +57,6 @@ interface MobileRecentThreadRowProps {
   provider: ProviderInfo | null;
   row: MobileRecentThreadRow;
   now: number;
-}
-
-function repeatsProjectName(
-  workspaceName: string,
-  projectName: string | null,
-): boolean {
-  return (
-    projectName !== null &&
-    (workspaceName === projectName ||
-      workspaceName.startsWith(`${projectName} `))
-  );
-}
-
-function getMobileRecentThreadMetadata({
-  environmentProviderLookup,
-  projectName,
-  thread,
-}: {
-  environmentProviderLookup: EnvironmentDisplayProviderLookup;
-  projectName: string | null;
-  thread: ThreadListEntry;
-}): { project: string | null; branch: string | null; age: string } {
-  const workspaceName = resolveEnvironmentDisplayName(
-    {
-      name: thread.environmentName,
-      branchName: thread.environmentBranchName,
-      path: thread.environmentPath,
-      environmentProviderId: thread.environmentProviderId,
-    },
-    environmentProviderLookup,
-  );
-  return {
-    project: projectName || null,
-    branch:
-      workspaceName !== null && repeatsProjectName(workspaceName, projectName)
-        ? null
-        : workspaceName || null,
-    age: formatCompactRelativeTime({
-      timestamp: thread.latestAttentionAt,
-      now: Date.now(),
-    }),
-  };
 }
 
 interface RootComposeMobileRecentsProps {
@@ -128,116 +68,6 @@ interface RootComposeMobileRecentsProps {
   threads: readonly ThreadListEntry[];
 }
 
-const compareMobileRecentThreads: ThreadListEntryComparator = (left, right) => {
-  const latestAttentionAtDelta =
-    right.latestAttentionAt - left.latestAttentionAt;
-  if (latestAttentionAtDelta !== 0) {
-    return latestAttentionAtDelta;
-  }
-
-  const createdAtDelta = right.createdAt - left.createdAt;
-  if (createdAtDelta !== 0) {
-    return createdAtDelta;
-  }
-
-  return left.id.localeCompare(right.id);
-};
-
-export interface MobileRecentThreadRow {
-  thread: ThreadListEntry;
-  depth: number;
-  childActivity: CollapsedChildActivity;
-  hasUnsubmittedDraft: boolean;
-  hasChildren: boolean;
-  isCollapsed: boolean;
-}
-
-function flattenMobileRecentNodes({
-  collapsedThreadIds,
-  draftThreadIds,
-  items,
-  rows,
-}: {
-  collapsedThreadIds: ReadonlySet<string>;
-  draftThreadIds: ReadonlySet<string>;
-  items: readonly ProjectThreadItem[];
-  rows: MobileRecentThreadRow[];
-}): void {
-  for (const { node } of items) {
-    const hasChildren = node.children.length > 0;
-    const isCollapsed = hasChildren && collapsedThreadIds.has(node.thread.id);
-    rows.push({
-      thread: node.thread,
-      depth: node.depth,
-      childActivity: node.stats.childActivity,
-      hasUnsubmittedDraft: draftThreadIds.has(node.thread.id),
-      hasChildren,
-      isCollapsed,
-    });
-    if (hasChildren && !isCollapsed) {
-      flattenMobileRecentNodes({
-        collapsedThreadIds,
-        draftThreadIds,
-        items: node.children,
-        rows,
-      });
-    }
-  }
-}
-
-export function getMobileRecentAncestorIds({
-  threadId,
-  threads,
-}: {
-  threadId: string;
-  threads: readonly ThreadListEntry[];
-}): string[] {
-  const byId = new Map(threads.map((thread) => [thread.id, thread]));
-  const selected = byId.get(threadId);
-  if (selected === undefined || selected.visibility === "hidden") {
-    return [];
-  }
-
-  const ancestorIds: string[] = [];
-  let current: ThreadListEntry | undefined = selected;
-  let remainingHops = byId.size;
-  while (current !== undefined && remainingHops > 0) {
-    const parentThreadId: string | null = current.parentThreadId;
-    if (parentThreadId === null) break;
-    const parent = byId.get(parentThreadId);
-    if (parent === undefined) break;
-    ancestorIds.push(parent.id);
-    current = parent;
-    remainingHops -= 1;
-  }
-  return ancestorIds;
-}
-
-function getFirstPaintMobileRecentRowCount(): number {
-  return Math.ceil(window.innerHeight / MOBILE_RECENT_ROW_HEIGHT_PX) + 1;
-}
-
-export function getMobileRecentThreads({
-  collapsedThreadIds,
-  draftThreadIds,
-  threads,
-  now,
-}: GetMobileRecentThreadsArgs): MobileRecentThreadRow[] {
-  const rows: MobileRecentThreadRow[] = [];
-  flattenMobileRecentNodes({
-    collapsedThreadIds,
-    draftThreadIds,
-    items: buildChronologicalThreadList(
-      threads,
-      compareMobileRecentThreads,
-      draftThreadIds,
-      now,
-    ),
-    rows,
-  });
-  return rows;
-}
-
 function MobileRecentThreadRow({
   highlighted,
   onToggleCollapsed,
@@ -246,51 +76,12 @@ function MobileRecentThreadRow({
   row,
   now,
 }: MobileRecentThreadRowProps) {
-  const {
-    thread,
-    depth,
-    childActivity,
-    hasUnsubmittedDraft,
-    hasChildren,
-    isCollapsed,
-  } = row;
+  const { thread, depth, hasChildren, isCollapsed } = row;
   const touchStartedBeforeLink = useRef(false);
   const { providers: environmentProviders } = useSystemEnvironmentProviders();
   const threadTitle = useThreadTitleDisplayText(getThreadDisplayTitle(thread));
-  const indicatorState: ThreadListIndicatorState =
-    threadListIndicatorStateForThread(thread, hasUnsubmittedDraft, now);
-  const hasHiddenChildren = hasChildren && isCollapsed;
-  const trailingIndicatorState: ThreadListIndicatorState = hasHiddenChildren
-    ? {
-        hasPendingInteraction:
-          indicatorState.hasPendingInteraction || childActivity.pending,
-        isActivityUnreported: indicatorState.isActivityUnreported,
-        queuedFailedCount: indicatorState.queuedFailedCount,
-        hasUnsubmittedDraft:
-          indicatorState.hasUnsubmittedDraft ||
-          childActivity.hasUnsubmittedDraft,
-        hasUnreadError:
-          indicatorState.hasUnreadError || childActivity.unreadError,
-        hasUnreadSuccess:
-          indicatorState.hasUnreadSuccess ||
-          (childActivity.unread && !childActivity.unreadError),
-        isBackgroundAgentActive:
-          indicatorState.isBackgroundAgentActive ||
-          childActivity.backgroundAgent,
-        isBackgroundCommandActive:
-          indicatorState.isBackgroundCommandActive ||
-          childActivity.backgroundCommand,
-        isGoalActive: indicatorState.isGoalActive || childActivity.goal,
-        queuedWork: indicatorState.queuedWork,
-        isPlanModeActive:
-          indicatorState.isPlanModeActive || childActivity.planMode,
-        isRuntimeActive:
-          indicatorState.isRuntimeActive || childActivity.runtimeWorking,
-        isWorkflowActive:
-          indicatorState.isWorkflowActive || childActivity.workflow,
-        isAutomationWoken: indicatorState.isAutomationWoken,
-      }
-    : indicatorState;
+  const { indicatorState, trailingIndicatorState } =
+    recentThreadRowIndicatorState(row, now);
   const indicatorKind = resolveThreadListIndicator(trailingIndicatorState);
   const indicatorLabel = getThreadListIndicatorLabel(
     indicatorKind,
@@ -300,40 +91,12 @@ function MobileRecentThreadRow({
     environmentProviders,
     thread.environmentProviderId,
   );
-  const metadata = getMobileRecentThreadMetadata({
-    environmentProviderLookup,
-    projectName,
-    thread,
-  });
-  const metadataText = [metadata.project, metadata.branch, metadata.age]
-    .filter((part): part is string => part !== null && part.length > 0)
-    .join(" \u00b7 ");
-  const workspaceIconName = getEnvironmentDisplayIconName(
-    environmentProviderLookup,
-  );
-  const providerIcon = getProviderIconInfo(
-    "agent",
-    thread.providerId,
-    provider,
-  );
-  const ProviderMark = providerIcon?.icon;
   const providerTile = (
-    <span
-      className={cn(
-        "flex size-4 shrink-0 items-center justify-center text-muted-foreground",
-        depth > 0 && "opacity-60",
-      )}
-    >
-      {ProviderMark === undefined ? null : provider === null ? (
-        <ProviderMark className="size-4" />
-      ) : (
-        <ProviderIconMark
-          provider={provider}
-          icon={ProviderMark}
-          className="size-4"
-        />
-      )}
-    </span>
+    <RecentThreadProviderMark
+      thread={thread}
+      provider={provider}
+      depth={depth}
+    />
   );
   return (
     <ThreadActionsContextMenu thread={threadListEntryActionTarget(thread)}>
@@ -349,8 +112,7 @@ function MobileRecentThreadRow({
         }}
         style={{ paddingLeft: getSidebarThreadRowPaddingLeft(depth) }}
         className={cn(
-          "flex select-none items-center gap-2.5 rounded-md pr-2",
-          MOBILE_RECENT_ROW_HEIGHT_CLASS,
+          RECENT_THREAD_ROW_CLASS,
           highlighted && "bg-surface-selected",
         )}
       >
@@ -363,23 +125,16 @@ function MobileRecentThreadRow({
                 ? `Show threads under ${threadTitle}`
                 : `Hide threads under ${threadTitle}`
             }
-            className="group relative -ml-6 flex h-11 w-13 shrink-0 cursor-pointer items-center rounded-md pl-6 outline-none"
+            className={RECENT_THREAD_COLLAPSE_CLASS}
             onClick={(event) => {
               event.preventDefault();
               event.stopPropagation();
               onToggleCollapsed(thread.id);
             }}
           >
-            <Icon
-              name="ChevronRight"
-              className={cn(
-                "absolute left-2 size-3 text-subtle-foreground transition-transform duration-150 group-hover:text-muted-foreground group-focus-visible:text-muted-foreground",
-                !isCollapsed && "rotate-90",
-                depth > 0 && "opacity-60",
-              )}
-              aria-hidden="true"
-            />
-            {providerTile}
+            <RecentThreadCollapseMark isCollapsed={isCollapsed} depth={depth}>
+              {providerTile}
+            </RecentThreadCollapseMark>
           </button>
         ) : (
           providerTile
@@ -397,82 +152,15 @@ function MobileRecentThreadRow({
               event.preventDefault();
             }
           }}
-          className={cn(
-            "flex min-w-0 flex-1 items-center gap-2.5 rounded-md text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
-            MOBILE_RECENT_ROW_HEIGHT_CLASS,
-          )}
+          className={RECENT_THREAD_BODY_CLASS}
         >
-          <span className="min-w-0 flex-1 space-y-0.5">
-            <span className="flex min-w-0 items-center gap-1.5">
-              <ThreadTitle
-                title={getThreadDisplayTitle(thread)}
-                className={cn("font-medium", COARSE_POINTER_TEXT_BASE_CLASS)}
-              />
-            </span>
-            <span
-              className={cn(
-                "flex min-w-0 items-center gap-1.5 text-muted-foreground text-xs leading-4",
-              )}
-              title={metadataText}
-            >
-              <Icon
-                name={workspaceIconName ?? "Folder"}
-                className="size-3.5 shrink-0"
-                aria-hidden="true"
-              />
-              <span className="flex min-w-0 flex-1 items-center whitespace-nowrap">
-                <span
-                  className={cn(
-                    "grid min-w-0",
-                    metadata.project !== null && metadata.branch !== null
-                      ? "grid-cols-[minmax(0,max-content)_auto_minmax(min-content,1fr)]"
-                      : "grid-cols-[minmax(0,1fr)]",
-                  )}
-                >
-                  {metadata.project !== null ? (
-                    <span className="min-w-0">
-                      <span className="block shrink-0 overflow-hidden text-ellipsis">
-                        {metadata.project}
-                      </span>
-                    </span>
-                  ) : null}
-                  {metadata.project !== null && metadata.branch !== null ? (
-                    <span className="shrink-0 whitespace-pre">
-                      {" \u00b7 "}
-                    </span>
-                  ) : null}
-                  {metadata.branch !== null ? (
-                    <span
-                      className="grid min-w-min before:invisible before:col-start-1 before:row-start-1 before:content-[attr(data-branch-minimum)]"
-                      data-branch-minimum={
-                        metadata.branch.length <= 7
-                          ? metadata.branch
-                          : `${metadata.branch.slice(0, 6)}…`
-                      }
-                    >
-                      <span className="col-start-1 row-start-1 min-w-0 truncate">
-                        {metadata.branch}
-                      </span>
-                    </span>
-                  ) : null}
-                </span>
-                {metadata.project !== null || metadata.branch !== null ? (
-                  <span className="shrink-0 whitespace-pre">{" \u00b7 "}</span>
-                ) : null}
-                <span className="shrink-0">{metadata.age}</span>
-              </span>
-            </span>
-          </span>
-          {indicatorKind !== "none" ? (
-            <span className="flex size-6 shrink-0 items-center justify-center">
-              <ThreadStatusGlyph
-                indicator={indicatorKind}
-                experimental_queuedFailedCount={
-                  indicatorState.queuedFailedCount
-                }
-              />
-            </span>
-          ) : null}
+          <RecentThreadRowContent
+            thread={thread}
+            projectName={projectName}
+            environmentProviderLookup={environmentProviderLookup}
+            indicatorKind={indicatorKind}
+            queuedFailedCount={indicatorState.queuedFailedCount}
+          />
         </RouteAnchor>
       </li>
     </ThreadActionsContextMenu>
@@ -540,19 +228,7 @@ export function RootComposeMobileRecents({
   }
 
   return (
-    <section
-      data-root-compose-mobile-recents=""
-      aria-labelledby="root-compose-mobile-recents"
-    >
-      <div className="sticky top-0 z-10 mb-1 bg-background px-2 py-2">
-        <h2
-          id="root-compose-mobile-recents"
-          className={cn(CHROME_SECTION_LABEL_CLASS, "text-subtle-foreground")}
-        >
-          Recent
-        </h2>
-        <OverflowFade placement="below" tone="background" />
-      </div>
+    <RecentThreadsSection>
       {showCreatingRow ? (
         <div
           role="status"
@@ -594,6 +270,6 @@ export function RootComposeMobileRecents({
           ))}
         </ul>
       ) : null}
-    </section>
+    </RecentThreadsSection>
   );
 }

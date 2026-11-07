@@ -15,8 +15,8 @@ import { cn } from "@bb/shared-ui/lib/utils";
 import { CONTENT_MEASURE_MAX_WIDTH_CLASS } from "@/lib/content-measure";
 import { useEffect, type ReactNode } from "react";
 import { readCachedSidebarBootstrap } from "@/lib/sidebar-bootstrap-cache";
-import { getThreadDisplayTitle } from "@/lib/thread-title";
-import { CHROME_SECTION_LABEL_CLASS } from "@bb/shared-ui/chrome-style-tokens";
+import { RootComposeHome } from "@/views/RootComposeHome";
+import { CachedRootComposeRecents } from "@/views/CachedRootComposeRecents";
 
 interface RouteLoadingSkeletonProps {
   children?: ReactNode;
@@ -41,23 +41,6 @@ export function RouteLoadingSkeleton({
 }: RouteLoadingSkeletonProps) {
   const isRootCompose = variant === "root-compose";
   const cachedNavigation = isRootCompose ? readCachedSidebarBootstrap() : null;
-  const cachedThreads = cachedNavigation
-    ? [...cachedNavigation.projects, cachedNavigation.personalProject]
-        .flatMap((project) => project.threads)
-        .filter(
-          (thread) =>
-            thread.archivedAt === null &&
-            thread.deletedAt === null &&
-            thread.visibility === "visible",
-        )
-        .sort(
-          (left, right) =>
-            right.latestAttentionAt - left.latestAttentionAt ||
-            right.createdAt - left.createdAt ||
-            left.id.localeCompare(right.id),
-        )
-        .slice(0, 6)
-    : [];
   const isCompactViewport = useIsCompactViewport();
   const isSidebarFramed = useIsSidebarFramed();
   const isSidebarShowing = useOptionalIsSidebarShowing();
@@ -103,25 +86,27 @@ export function RouteLoadingSkeleton({
         </div>
       ) : null}
       {isRootCompose ? (
-        <div
-          className={cn(
-            "mx-auto flex min-h-0 w-full flex-1 flex-col px-4 pb-4",
-            CONTENT_MEASURE_MAX_WIDTH_CLASS,
-            isCompactViewport ? "justify-end pt-2" : "pt-14",
-          )}
-        >
-          {isCompactViewport && cachedThreads.length > 0 ? (
-            <CachedRecentRows threads={cachedThreads} />
-          ) : null}
-          <ComposerLoadingControls shape="new-thread" />
-          <div className="mt-1 flex h-8 shrink-0 items-center justify-between px-3.5 max-md:mt-0 max-md:px-1 max-md:pointer-coarse:h-11">
-            <Skeleton className="h-3 w-24" />
-            <Skeleton className="h-3 w-24 max-md:w-12" />
-          </div>
-          {!isCompactViewport && cachedThreads.length > 0 ? (
-            <CachedRecentRows threads={cachedThreads.slice(0, 3)} />
-          ) : null}
-        </div>
+        <RootComposeHome
+          isCompact={isCompactViewport}
+          compactScrollContent={
+            cachedNavigation ? (
+              <CachedRootComposeRecents
+                navigation={cachedNavigation}
+                maxRows={isCompactViewport ? undefined : 3}
+              />
+            ) : null
+          }
+          homepageSections={null}
+          composer={
+            <>
+              <ComposerLoadingControls shape="new-thread" />
+              <div className="mt-1 flex h-8 shrink-0 items-center justify-between px-3.5 max-md:mt-0 max-md:px-1 max-md:pointer-coarse:h-11">
+                <Skeleton className="h-3 w-24" />
+                <Skeleton className="h-3 w-24 max-md:w-12" />
+              </div>
+            </>
+          }
+        />
       ) : (
         <>
           <div
@@ -149,30 +134,5 @@ export function RouteLoadingSkeleton({
         </>
       )}
     </div>
-  );
-}
-
-function CachedRecentRows({
-  threads,
-}: {
-  threads: readonly Parameters<typeof getThreadDisplayTitle>[0][];
-}) {
-  return (
-    <section
-      className="mb-auto min-h-0 overflow-hidden py-4"
-      aria-label="Recent"
-    >
-      <h2 className={CHROME_SECTION_LABEL_CLASS}>Recent</h2>
-      <ul>
-        {threads.map((thread) => (
-          <li
-            key={thread.id}
-            className="flex h-13 items-center truncate text-sm text-foreground"
-          >
-            {getThreadDisplayTitle(thread)}
-          </li>
-        ))}
-      </ul>
-    </section>
   );
 }
