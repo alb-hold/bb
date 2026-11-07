@@ -1536,6 +1536,45 @@ describe("PluginNewThreadComposer seeding", () => {
     });
   });
 
+  it.each([true, false])(
+    "keeps an early Terminal choice until capabilities arrive (%s)",
+    async (supported) => {
+      mocks.modelsLoading = true;
+      mocks.systemProviders = undefined;
+      const view = render(newThreadElement("proj_1"));
+      expect(latestPromptBoxProps().execution.nativeTerminal.disabled).toBe(
+        false,
+      );
+      await act(async () => {
+        latestPromptBoxProps().execution.nativeTerminal.onChange(false);
+        latestPromptBoxProps().execution.nativeTerminal.onChange(true);
+      });
+      expect(latestPromptBoxProps().execution.nativeTerminal.enabled).toBe(
+        true,
+      );
+      mocks.modelsLoading = false;
+      mocks.systemProviders = [
+        { id: "codex", capabilities: { supportsNativeTerminal: supported } },
+      ];
+      view.rerender(newThreadElement("proj_1"));
+      await waitFor(() =>
+        expect(latestPromptBoxProps().execution.nativeTerminal.enabled).toBe(
+          supported,
+        ),
+      );
+      expect(latestPromptBoxProps().execution.nativeTerminal.disabled).toBe(
+        !supported,
+      );
+      if (!supported)
+        expect(
+          latestPromptBoxProps().execution.nativeTerminal.unavailableReason,
+        ).toBe("This provider does not support Terminal mode");
+      await act(async () => {
+        latestPromptBoxProps().execution.nativeTerminal.onChange(false);
+      });
+    },
+  );
+
   it("defaults to Terminal and preserves an explicit Chat choice", async () => {
     mocks.systemProviders = [
       { id: "codex", capabilities: { supportsNativeTerminal: true } },

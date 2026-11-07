@@ -1687,9 +1687,12 @@ export function NewThreadComposer({
     [projectPromptHistory],
   );
   const agentProviders = useSystemProviders().data;
-  const nativeTerminalAvailable =
-    agentProviders?.find((provider) => provider.id === selectedProviderId)
-      ?.capabilities.supportsNativeTerminal === true;
+  const nativeTerminalSupport =
+    agentProviders === undefined || !selectedProviderId
+      ? undefined
+      : agentProviders.find((provider) => provider.id === selectedProviderId)
+          ?.capabilities.supportsNativeTerminal === true;
+  const nativeTerminalAvailable = nativeTerminalSupport === true;
   const nativeTerminal = nativeTerminalAvailable && nativeTerminalRequested;
   const seededExecutionInputSources = useMemo(
     (): CreateExecutionInputSources => ({
@@ -2216,14 +2219,12 @@ export function NewThreadComposer({
             pending: projectDefaultsUnavailable || isLoadingModels,
             nativeTerminal: {
               enabled:
-                projectDefaultsUnavailable || isLoadingModels
+                nativeTerminalSupport === undefined
                   ? nativeTerminalRequested
                   : nativeTerminal,
-              disabled: !nativeTerminalAvailable,
+              disabled: nativeTerminalSupport === false,
               unavailableReason:
-                !nativeTerminalAvailable &&
-                agentProviders !== undefined &&
-                !isLoadingModels
+                nativeTerminalSupport === false
                   ? "This provider does not support Terminal mode"
                   : undefined,
               onChange: setNativeTerminalRequested,
@@ -2345,6 +2346,7 @@ export function NewThreadComposer({
       agentProviders,
       nativeTerminalRequested,
       nativeTerminalAvailable,
+      nativeTerminalSupport,
       setNativeTerminalRequested,
       pickerSessionOptionSections,
       placedSessionOptions.footer,

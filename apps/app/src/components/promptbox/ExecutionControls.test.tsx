@@ -476,6 +476,10 @@ describe("ExecutionControls", () => {
     expect(model.textContent).toContain("GPT-5");
     expect(model.hasAttribute("disabled")).toBe(false);
     expect(terminal.getAttribute("data-state")).toBe("on");
+    expect(terminal.hasAttribute("disabled")).toBe(false);
+    fireEvent.click(screen.getByRole("radio", { name: "Chat" }));
+    expect(props.nativeTerminal.onChange).toHaveBeenCalledWith(false);
+
     expect(
       container.querySelector('[role="status"], [data-slot="skeleton"]'),
     ).toBeNull();
