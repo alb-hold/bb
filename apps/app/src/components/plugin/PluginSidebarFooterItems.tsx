@@ -11,14 +11,13 @@ import { Link, useNavigate } from "react-router-dom";
 import type { ExperimentalSidebarFooterCommandKind } from "@get-bb/plugin-sdk/internal/plugin-app-collector";
 import { cn } from "@bb/shared-ui/lib/utils";
 import { useIsCompactViewport } from "@bb/shared-ui/hooks/use-compact-viewport";
-import { Icon, isBuiltinIconName } from "@bb/shared-ui/icon";
-import { EXTENDED_ICON_NAMES } from "@bb/shared-ui/icon-registry";
+import { Icon } from "@bb/shared-ui/icon";
 import {
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
 } from "@/components/ui/sidebar.js";
-import { pluginIconName } from "@/components/plugin/PluginIcon";
+import { PluginItemIcon, pluginIconName } from "@/components/plugin/PluginIcon";
 import { PluginSlotMount } from "@/components/plugin/PluginSlotMount";
 import {
   usePluginSlots,
@@ -493,15 +492,16 @@ function FooterCommandObserver({
 }
 
 export function FooterItemIcon({ item }: { item: FooterItem }) {
-  return (
+  return item.kind === "plugin" &&
+    item.slot.source === "sidebarFooterAction" ? (
+    <PluginItemIcon
+      pluginId={item.slot.pluginId}
+      icon={item.icon}
+      className="size-4 shrink-0 text-current [&_svg]:fill-none [&_svg]:stroke-current"
+    />
+  ) : (
     <Icon
-      name={
-        item.kind === "plugin" &&
-        !isBuiltinIconName(item.icon) &&
-        !EXTENDED_ICON_NAMES.some((name) => name === item.icon)
-          ? "Puzzle"
-          : pluginIconName(item.icon)
-      }
+      name={pluginIconName(item.icon)}
       className="size-4 shrink-0"
       aria-hidden="true"
     />

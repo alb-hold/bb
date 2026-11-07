@@ -750,7 +750,7 @@
   --foreground: color-mix(
     in oklch,
     var(--ink) 42%,
-    oklch(from var(--canvas) 1 c h)
+    var(--destructive-foreground)
   );
   /* Card and popover stay flush with the canvas here too — elevation comes from
    * border + shadow. The lift ramp below uses larger steps than light so the

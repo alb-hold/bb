@@ -635,7 +635,7 @@ describe("home and assistant hierarchy", () => {
     const canvas = parseOklch(variableValue(block, "canvas"));
     const foreground = variableValue(block, "foreground");
     expect(foreground.replace(/\s/g, "")).toBe(
-      "color-mix(inoklch,var(--ink)42%,oklch(fromvar(--canvas)1ch))",
+      "color-mix(inoklch,var(--ink)42%,var(--destructive-foreground))",
     );
     expect(
       contrastRatio({ ...ink, lightness: ink.lightness * 0.42 + 0.58 }, canvas),

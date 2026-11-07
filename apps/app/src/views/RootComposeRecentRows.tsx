@@ -136,7 +136,7 @@ export function RecentThreadRowContent({
           )}
           title={metadataText}
         >
-          <ThreadModeGlyph nativeTerminal={thread.nativeTerminal === true} />
+          <ThreadModeGlyph nativeTerminal={thread.nativeTerminal === true} isWorktree={thread.environmentIsWorktree === true} />
           <span className="flex min-w-0 flex-1 items-center whitespace-nowrap">
             <span
               className={cn(

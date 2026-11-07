@@ -578,10 +578,10 @@ describe("ThreadRow", () => {
     expect(context?.classList.contains("font-normal")).toBe(true);
     expect(context?.classList.contains("text-xs")).toBe(true);
     expect(slot?.classList.contains("size-4")).toBe(true);
-    if (label === "Native terminal") {
+    if (label === "Native terminal" || label === "Worktree") {
       expect(slot?.getAttribute("role")).toBe("img");
       expect(slot?.getAttribute("aria-label")).toBe(label);
-      expect(slot?.querySelector("[data-icon]")?.getAttribute("data-icon")).toBe("Terminal");
+      expect(slot?.querySelector("[data-icon]")?.getAttribute("data-icon")).toBe(label === "Native terminal" ? "Terminal" : "FolderGit");
       expect(slot?.querySelector("[data-icon]")?.classList.contains("size-4")).toBe(true);
     } else {
       expect(slot?.getAttribute("aria-hidden")).toBe("true");
@@ -3653,7 +3653,6 @@ it("reserves an equal metadata slot for chat, worktree and terminal rows", () =>
       },
     }),
   );
-  expect(slot().getAttribute("aria-hidden")).toBe("true");
-  expect(slot().querySelector("[data-icon]")).toBeNull();
+  expect(screen.getByRole("img", { name: "Worktree" })).toBe(slot());
   expect(slot().classList.contains("size-4")).toBe(true);
 });

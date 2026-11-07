@@ -1003,7 +1003,22 @@ it("reserves two plugin controls on an uncached first paint", () => {
   ).toHaveLength(2);
 });
 
-it("contains branded footer marks in the shared outline icon set", () => {
+it("preserves branded footer identity as a monochrome currentColor mask", () => {
+  setPluginLogoUrls(
+    new Map([
+      [
+        "brand",
+        {
+          displayName: "Brand",
+          icon: "Zap",
+          compactIconUrl: "/brand-mark.svg",
+          logoUrl: null,
+          logoDarkUrl: null,
+          icons: new Map(),
+        },
+      ],
+    ]),
+  );
   setPluginSlotRegistrations(
     "brand",
     registrationSet({
@@ -1019,8 +1034,11 @@ it("contains branded footer marks in the shared outline icon set", () => {
   );
   renderWithProviders(<FooterHarness />);
   const button = screen.getByRole("button", { name: "Branded action" });
-  expect(
-    button.querySelector('[data-icon="Puzzle"]')?.classList.contains("size-4"),
-  ).toBe(true);
+  const mark = button.querySelector<HTMLElement>(
+    '[data-plugin-icon-asset="/brand-mark.svg"]',
+  );
+  expect(mark?.classList.contains("size-4")).toBe(true);
+  expect(mark?.style.backgroundColor).toBe("currentcolor");
+  expect(mark?.style.maskImage).toContain("/brand-mark.svg");
   expect(button.querySelector("img")).toBeNull();
 });

@@ -856,11 +856,16 @@ it.each(
     const cachedClasses = [cachedRow, ...cachedRow.querySelectorAll("*")].map(
       (node) => node.getAttribute("class"),
     );
-    const expectedGlyph = shape === "native" ? "Terminal" : null;
-    const expectedLabel = "Native terminal";
-    expect(cachedRow.querySelector('[data-icon="Terminal"]') !== null).toBe(
-      expectedGlyph !== null,
-    );
+    const expectedGlyph =
+      shape === "native"
+        ? "Terminal"
+        : shape === "worktree"
+          ? "FolderGit"
+          : null;
+    const expectedLabel = shape === "native" ? "Native terminal" : "Worktree";
+    expect(
+      cachedRow.querySelector(`[data-icon="${expectedGlyph}"]`) !== null,
+    ).toBe(expectedGlyph !== null);
     expect(
       cachedRow.querySelector(`[role="img"][aria-label="${expectedLabel}"]`) !==
         null,
@@ -892,9 +897,9 @@ it.each(
         node.getAttribute("class"),
       ),
     ).toEqual(cachedClasses);
-    expect(liveRow.querySelector('[data-icon="Terminal"]') !== null).toBe(
-      expectedGlyph !== null,
-    );
+    expect(
+      liveRow.querySelector(`[data-icon="${expectedGlyph}"]`) !== null,
+    ).toBe(expectedGlyph !== null);
     expect(
       liveRow.querySelector(`[role="img"][aria-label="${expectedLabel}"]`) !==
         null,
