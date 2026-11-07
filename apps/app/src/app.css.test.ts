@@ -154,6 +154,7 @@ it("reveals actions for coarse pointers while retaining keyboard focus access", 
   expect(actionsCss).toContain(
     '[data-touch-actions-visible="false"]:not(:focus-within)',
   );
-  expect(actionsCss).toContain("display: none");
+  expect(actionsCss).toContain("clip-path: inset(50%)");
+  expect(actionsCss.slice(actionsCss.indexOf("@media (pointer: coarse)"))).not.toContain("display: none");
   expect(actionsCss).toContain('[data-touch-actions-visible="true"] [data-message-action-row] button');
 });

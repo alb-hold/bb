@@ -88,7 +88,12 @@
 
   [data-touch-actions-visible="false"]:not(:focus-within)
     [data-message-action-row] {
-    display: none;
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
   }
 
   [data-touch-actions-visible="true"] [data-message-action-row] button {

@@ -797,6 +797,7 @@ it("gives assistant prose primary foreground while older actions reveal on long 
     message.querySelector("p")?.classList.contains("text-foreground"),
   ).toBe(true);
   expect(message.dataset.touchActionsVisible).toBe("false");
+  expect(screen.getByRole("button", { name: "Copy message" })).toBeTruthy();
   fireEvent.contextMenu(message);
   expect(message.dataset.touchActionsVisible).toBe("true");
   expect(
