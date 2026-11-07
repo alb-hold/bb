@@ -106,7 +106,9 @@ function layoutFingerprint(): string {
     ).map((element) => {
       const rect = element.getBoundingClientRect();
       return [
-        element.dataset.splitPaneId ?? element.dataset.sidebar ?? (element.hasAttribute("data-panel") ? "panel" : "shell"),
+        element.dataset.splitPaneId ??
+          element.dataset.sidebar ??
+          (element.hasAttribute("data-panel") ? "panel" : "shell"),
         ...[rect.x, rect.y, rect.width, rect.height].map(Math.round),
       ];
     }),

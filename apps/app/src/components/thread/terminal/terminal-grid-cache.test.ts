@@ -207,18 +207,27 @@ it("reuses measured metrics across repeated grid reads", async () => {
   expect(create).not.toHaveBeenCalled();
 });
 
-it.each(["shell", "panel", "split"])("misses before mount when the surrounding %s layout changes at the same viewport", async (kind) => {
-  const shell = document.createElement("div");
-  if (kind === "shell") shell.dataset.testid = "app-layout-content-shell";
-  if (kind === "panel") shell.setAttribute("data-panel", "");
-  if (kind === "split") shell.dataset.splitPaneId = "pane-1";
-  document.body.append(shell);
-  const rect = vi
-    .spyOn(shell, "getBoundingClientRect")
-    .mockReturnValue(new DOMRect(256, 0, 936, 800));
-  const cache = await import("./terminal-grid-cache");
-  cache.rememberTerminalGrid("term", container(), 13, { cols: 116, rows: 38 });
-  expect(cache.readCachedTerminalGrid("term")).toEqual({ cols: 116, rows: 38 });
-  rect.mockReturnValue(new DOMRect(400, 0, 792, 800));
-  expect(cache.readCachedTerminalGrid("term")).toBeNull();
-});
+it.each(["shell", "panel", "split"])(
+  "misses before mount when the surrounding %s layout changes at the same viewport",
+  async (kind) => {
+    const shell = document.createElement("div");
+    if (kind === "shell") shell.dataset.testid = "app-layout-content-shell";
+    if (kind === "panel") shell.setAttribute("data-panel", "");
+    if (kind === "split") shell.dataset.splitPaneId = "pane-1";
+    document.body.append(shell);
+    const rect = vi
+      .spyOn(shell, "getBoundingClientRect")
+      .mockReturnValue(new DOMRect(256, 0, 936, 800));
+    const cache = await import("./terminal-grid-cache");
+    cache.rememberTerminalGrid("term", container(), 13, {
+      cols: 116,
+      rows: 38,
+    });
+    expect(cache.readCachedTerminalGrid("term")).toEqual({
+      cols: 116,
+      rows: 38,
+    });
+    rect.mockReturnValue(new DOMRect(400, 0, 792, 800));
+    expect(cache.readCachedTerminalGrid("term")).toBeNull();
+  },
+);
