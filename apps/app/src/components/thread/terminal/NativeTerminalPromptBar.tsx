@@ -647,8 +647,8 @@ export function NativeTerminalPromptBar({
               : recording
                 ? "Listening…"
                 : isCompactViewport
-                  ? `${providerLabel} terminal…`
-                  : `Send to ${providerLabel} terminal…`
+                  ? "Send to prompt above…"
+                  : `Send to ${providerLabel} prompt above…`
           }
           onChange={(event) => {
             applyValue(event.target.value, programmaticRef.current);

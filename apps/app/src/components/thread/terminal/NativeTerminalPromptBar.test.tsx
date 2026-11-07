@@ -114,13 +114,13 @@ function renderBar(
   render(
     <Wrapper>
       <CompactViewportOverrideProvider isCompactViewport={compact}>
-      <NativeTerminalPromptBar
-        projectId="proj-n"
-        providerLabel={providerLabel}
-        executionLabel={executionLabel}
-        modelLabel={modelLabel}
-        threadId="thr-n"
-      />
+        <NativeTerminalPromptBar
+          projectId="proj-n"
+          providerLabel={providerLabel}
+          executionLabel={executionLabel}
+          modelLabel={modelLabel}
+          threadId="thr-n"
+        />
       </CompactViewportOverrideProvider>
     </Wrapper>,
   );
@@ -189,7 +189,7 @@ describe("NativeTerminalPromptBar", () => {
 
   it("labels the terminal destination and keeps execution details read-only", () => {
     const { input } = renderBar();
-    expect(input.placeholder).toBe("Send to Native CLI terminal…");
+    expect(input.placeholder).toBe("Send to Native CLI prompt above…");
     expect(
       screen.getByText("Native CLI · GPT-5 · Full access").className,
     ).toContain("truncate");
@@ -213,6 +213,7 @@ describe("NativeTerminalPromptBar", () => {
         expect(shell.hasAttribute("data-native-composer-inline")).toBe(false);
         act(() => (document.activeElement as HTMLElement).blur());
         expect(shell.hasAttribute("data-native-composer-inline")).toBe(true);
+        expect(input.placeholder).toContain("prompt above…");
         expect(shell.className).toContain(
           "max-md:pointer-coarse:data-[native-composer-inline]:grid",
         );
@@ -247,7 +248,7 @@ describe("NativeTerminalPromptBar", () => {
     "uses provider metadata in the %s placeholder",
     (providerLabel) => {
       const { input } = renderBar("", "", providerLabel);
-      expect(input.placeholder).toBe(`Send to ${providerLabel} terminal…`);
+      expect(input.placeholder).toBe(`Send to ${providerLabel} prompt above…`);
     },
   );
   it.each(["Native CLI", " Native CLI ", ""])(
@@ -1354,8 +1355,11 @@ it("rests inline, expands on focus or text, and collapses after clearing", () =>
   expect(shell.hasAttribute("data-native-composer-inline")).toBe(true);
 });
 
-it.each(["Codex", "Claude Code", "Native CLI"])("shortens the compact %s placeholder but preserves the accessible name", (provider) => {
-  const { input } = renderBar(undefined, undefined, provider, true);
-  expect(input.placeholder).toBe(`${provider} terminal…`);
-  expect(screen.getByLabelText(`Send to ${provider} terminal`)).toBe(input);
-});
+it.each(["Codex", "Claude Code", "Native CLI"])(
+  "shortens the compact %s placeholder but preserves the accessible name",
+  (provider) => {
+    const { input } = renderBar(undefined, undefined, provider, true);
+    expect(input.placeholder).toBe("Send to prompt above…");
+    expect(screen.getByLabelText(`Send to ${provider} terminal`)).toBe(input);
+  },
+);
