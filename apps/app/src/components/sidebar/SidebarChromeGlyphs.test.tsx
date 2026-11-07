@@ -15,6 +15,39 @@ import {
 
 afterEach(cleanup);
 
+it.each([SIDEBAR_FOOTER_ACTION_CLASS, SIDEBAR_RAIL_BUTTON_CLASS])(
+  "keeps inactive chrome legible and puzzle paths outlined: %s",
+  (className) => {
+    const css = readFileSync(join(import.meta.dirname, "../../app.css"), "utf8");
+    const { container } = render(
+      <>
+        <style>{css.slice(css.indexOf(":where(.bb-sidebar-chrome-icon)"))}</style>
+        <button className={className}>
+          <svg data-icon-root="" data-icon="Puzzle">
+            <path fill="currentColor" />
+          </svg>
+        </button>
+      </>,
+    );
+    const path = container.querySelector("path")!;
+    expect(getComputedStyle(path).fill).toBe("none");
+    expect(getComputedStyle(path).stroke).toBe("currentcolor");
+    expect(className.split(" ")).toContain("text-sidebar-foreground");
+  },
+);
+
+it("sizes desktop chrome glyphs at 18 px without enlarging phone glyphs", () => {
+  const css = readFileSync(join(import.meta.dirname, "../../app.css"), "utf8");
+  const start = css.indexOf(":root {");
+  const end = css.indexOf("\n  [data-sidebar-header-slot]", start);
+  const { container } = render(<style>{css.slice(start, end)}</style>);
+  const rules = Array.from(container.querySelector("style")!.sheet!.cssRules);
+  const root = rules[0] as CSSStyleRule;
+  expect(root.style.getPropertyValue("--bb-sidebar-control-icon-size")).toBe("18px");
+  const phone = (rules[1] as CSSMediaRule).cssRules[0] as CSSStyleRule;
+  expect(phone.style.getPropertyValue("--bb-sidebar-control-icon-size")).toBe("20px");
+});
+
 it("reserves final phone footer targets before plugin actions arrive", () => {
   const css = readFileSync(join(import.meta.dirname, "../../app.css"), "utf8");
   function Footer({ plugin }: { plugin: boolean }) {

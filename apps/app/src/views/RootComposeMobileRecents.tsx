@@ -96,7 +96,7 @@ function getMobileRecentThreadMetadata({
   environmentProviderLookup: EnvironmentDisplayProviderLookup;
   projectName: string | null;
   thread: ThreadListEntry;
-}): string {
+}): { project: string | null; branch: string | null; age: string } {
   const workspaceName = resolveEnvironmentDisplayName(
     {
       name: thread.environmentName,
@@ -106,18 +106,17 @@ function getMobileRecentThreadMetadata({
     },
     environmentProviderLookup,
   );
-  return [
-    projectName,
-    workspaceName !== null && repeatsProjectName(workspaceName, projectName)
-      ? null
-      : workspaceName,
-    formatCompactRelativeTime({
+  return {
+    project: projectName || null,
+    branch:
+      workspaceName !== null && repeatsProjectName(workspaceName, projectName)
+        ? null
+        : workspaceName || null,
+    age: formatCompactRelativeTime({
       timestamp: thread.latestAttentionAt,
       now: Date.now(),
     }),
-  ]
-    .filter((part): part is string => part !== null && part.length > 0)
-    .join(" \u00b7 ");
+  };
 }
 
 interface RootComposeMobileRecentsProps {
@@ -301,11 +300,14 @@ function MobileRecentThreadRow({
     environmentProviders,
     thread.environmentProviderId,
   );
-  const metadataText = getMobileRecentThreadMetadata({
+  const metadata = getMobileRecentThreadMetadata({
     environmentProviderLookup,
     projectName,
     thread,
   });
+  const metadataText = [metadata.project, metadata.branch, metadata.age]
+    .filter((part): part is string => part !== null && part.length > 0)
+    .join(" \u00b7 ");
   const workspaceIconName = getEnvironmentDisplayIconName(
     environmentProviderLookup,
   );
@@ -409,7 +411,7 @@ function MobileRecentThreadRow({
             </span>
             <span
               className={cn(
-                "flex min-w-0 items-center gap-1.5 leading-4 text-muted-foreground text-xs",
+                "flex min-w-0 items-center gap-1.5 text-muted-foreground text-xs leading-4",
               )}
               title={metadataText}
             >
@@ -418,7 +420,23 @@ function MobileRecentThreadRow({
                 className="size-3.5 shrink-0"
                 aria-hidden="true"
               />
-              <span className="min-w-0 truncate">{metadataText}</span>
+              <span className="flex min-w-0 flex-1 items-center whitespace-nowrap">
+                {metadata.project !== null ? (
+                  <span className="max-w-[40%] shrink-0 overflow-hidden text-ellipsis">
+                    {metadata.project}
+                  </span>
+                ) : null}
+                {metadata.project !== null ? (
+                  <span className="shrink-0 whitespace-pre">{" \u00b7 "}</span>
+                ) : null}
+                {metadata.branch !== null ? (
+                  <>
+                    <span className="min-w-0 truncate">{metadata.branch}</span>
+                    <span className="shrink-0 whitespace-pre">{" \u00b7 "}</span>
+                  </>
+                ) : null}
+                <span className="shrink-0">{metadata.age}</span>
+              </span>
             </span>
           </span>
           {indicatorKind !== "none" ? (

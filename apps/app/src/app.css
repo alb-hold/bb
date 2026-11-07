@@ -40,7 +40,7 @@
     --secondary-panel-width-mobile: min(76vw, 320px);
     --bb-sidebar-rail-padding: var(--bb-frame-rail-padding);
     --bb-sidebar-control-size: var(--bb-frame-rail-control-size);
-    --bb-sidebar-control-icon-size: 16px;
+    --bb-sidebar-control-icon-size: 18px;
   }
 
   @media (width < 48rem) and (pointer: coarse) {
@@ -1109,4 +1109,14 @@
 
 :where(.bb-sidebar-chrome-icon) [data-icon-root] [stroke]:not([stroke="none"]) {
   stroke: currentColor;
+}
+
+:where(.bb-sidebar-chrome-icon) [data-icon-root][data-icon]:is([data-icon="Home"], [data-icon="Puzzle"], [data-icon="Plug02"], [data-icon="Zap"], [data-icon="MoreHorizontal"], [data-icon="Settings"], [data-icon="Bug"], [data-icon="ChartColumn"], [data-icon="Download"]),
+:where(.bb-sidebar-chrome-icon) [data-icon-root][data-icon]:is([data-icon="Home"], [data-icon="Puzzle"], [data-icon="Plug02"], [data-icon="Zap"], [data-icon="MoreHorizontal"], [data-icon="Settings"], [data-icon="Bug"], [data-icon="ChartColumn"], [data-icon="Download"]) * {
+  fill: none;
+  stroke: currentColor;
+}
+
+[data-sidebar-sticky-stack] {
+  --bb-sidebar-sticky-child-row-gap: 0px;
 }

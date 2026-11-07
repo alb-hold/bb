@@ -521,7 +521,7 @@ function ProjectThreadTreeGroup({
   return (
     <div
       data-sidebar-sticky-section=""
-      className="relative space-y-0.5"
+      className="relative space-y-0"
       onClickCapture={onClickCapture}
     >
       {children}
@@ -1001,7 +1001,7 @@ const EnvironmentThreadGroupRow = memo(function EnvironmentThreadGroupRow({
       <SidebarStickyGroup
         ref={sortableRef}
         style={sortableStyle}
-        className="space-y-0.5"
+        className="space-y-0"
       >
         <EnvironmentThreadGroupHeader
           dragBindings={dragBindings}
@@ -1022,7 +1022,7 @@ const EnvironmentThreadGroupRow = memo(function EnvironmentThreadGroupRow({
           onToggleCollapsed={onToggleEnvironmentCollapsed}
         />
         {!isCollapsed ? (
-          <div className="relative space-y-px">
+          <div className="relative space-y-0">
             <ThreadTreeGroupLine parentRowDepth={rowDepth} />
             <SidebarWindowedItems
               itemKeys={itemKeys}
@@ -1320,7 +1320,7 @@ const SectionTreeItemRow = memo(function SectionTreeItemRow({
     });
 
   const childrenArea = showChildren ? (
-    <div className="relative space-y-px">
+    <div className="relative space-y-0">
       {depthOffset > 0 ? (
         <ThreadTreeGroupLine parentRowDepth={headerDepth} />
       ) : null}
@@ -1420,7 +1420,7 @@ const SectionTreeItemRow = memo(function SectionTreeItemRow({
       ref={sortableRef}
       style={sortableStyle}
       data-sidebar-section-id={section.id}
-      className="relative space-y-0.5 rounded-md transition-colors"
+      className="relative space-y-0 rounded-md transition-colors"
     >
       {threadDropState ? (
         <SectionDropTargetOverlay state={threadDropState} />
@@ -1583,7 +1583,7 @@ export const ThreadTreeNodeRow = memo(function ThreadTreeNodeRow({
     <SidebarStickyGroup
       style={sortableStyle}
       className={cn(
-        "relative space-y-0.5",
+        "relative space-y-0",
         afterSubtree && REORDER_PLACEMENT_CLASS.after,
       )}
     >
@@ -1594,7 +1594,7 @@ export const ThreadTreeNodeRow = memo(function ThreadTreeNodeRow({
         <StickyOffsetProvider
           value={addGrowingRow(inheritedStickyOffset, growingRowHeight)}
         >
-          <div className="relative space-y-px">
+          <div className="relative space-y-0">
             <ThreadTreeGroupLine parentRowDepth={parentRowDepth} />
             {showChildren ? (
               <SidebarWindowedItems
