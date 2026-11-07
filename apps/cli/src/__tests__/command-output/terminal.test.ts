@@ -55,6 +55,36 @@ describe("bb terminal command output", () => {
   const register: CommandRegistrar = (program) =>
     registerTerminalCommands(program, () => "http://server");
 
+  it("sets OSC colours through the controlling viewer route", async () => {
+    const setColors = vi.fn(async () => makeTerminalSession());
+    stubServerApi({
+      "v1.terminals.:terminalId.default-colors.$post": setColors,
+    });
+    await runCommand(
+      [
+        "terminal",
+        "colors",
+        "term-1",
+        "--foreground",
+        "12,34,56",
+        "--background",
+        "234,245,255",
+        "--viewer-token",
+        "abcdefghijklmnopqrstuv",
+        "--json",
+      ],
+      register,
+    );
+    expect(setColors).toHaveBeenCalledWith({
+      param: { terminalId: "term-1" },
+      json: {
+        foreground: [12, 34, 56],
+        background: [234, 245, 255],
+        viewerToken: "abcdefghijklmnopqrstuv",
+      },
+    });
+  });
+
   it("does not document scope selectors on send", async () => {
     const sendHelp = await getHelpOutput(["terminal", "send"], register);
 

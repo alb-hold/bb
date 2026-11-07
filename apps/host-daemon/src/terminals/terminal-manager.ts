@@ -703,6 +703,13 @@ export class TerminalManager {
       case "terminal.input":
         this.writeTerminalInput(message.terminalId, message.dataBase64);
         return;
+      case "terminal.default-colors": {
+        const session = this.sessions.get(message.terminalId);
+        if (session?.colorQueries) session.colorQueries.updateColors(message);
+        else if (session)
+          session.colorQueries = new TerminalColorQueries(message);
+        return;
+      }
       case "terminal.resize":
         this.resizeTerminal({
           cols: message.cols,

@@ -194,3 +194,11 @@ elsewhere, or a tap on touch screens. Printed file paths, including `path:line`
 and `path:line:column`, open in bb's file viewer on the terminal's machine.
 Relative paths use the shell's OSC 7 working directory when reported, otherwise
 the session's initial directory. Quoted paths may contain spaces.
+
+`bb terminal colors <terminalId> --foreground <r,g,b> --background <r,g,b>
+--viewer-token <token> [--json]` updates OSC 10/11 replies using sRGB integers
+from 0 to 255. Only the app viewer currently holding terminal size control may
+update colours; its live viewer token is required. Read-only observers are rejected.
+The SDK method is `terminals.experimental_setDefaultColors({ terminalId,
+foreground, background, viewerToken })`. Accepted colours survive daemon reconnect;
+native sessions use the dark fallback until the first accepted viewer update.

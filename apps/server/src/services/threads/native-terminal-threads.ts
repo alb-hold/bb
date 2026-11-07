@@ -12,6 +12,7 @@ import {
   getEnvironment,
   getNativeTerminalThread,
   getStoredProviderSession,
+  getTerminalSession,
   listTerminalSessions,
   getThread,
   listNativeTerminalThreadsWithDisconnectedTerminal,
@@ -499,7 +500,13 @@ async function openNativeTerminalOnce(
     clearNativeTerminalThreadEvidence(deps.db, thread.id);
     const terminal = await deps.terminalSessions
       .createTerminal({
-        defaultColors: TERMINAL_DEFAULT_COLORS.dark,
+        defaultColors:
+          (args.reattachOnly && record.terminalSessionId !== null
+            ? getTerminalSession(deps.db, {
+                kind: "terminal",
+                terminalId: record.terminalSessionId,
+              })?.defaultColors
+            : null) ?? TERMINAL_DEFAULT_COLORS.dark,
         ...(args.repaintOnAttach
           ? {
               onTerminalStarted: (terminalId: string) =>
@@ -560,9 +567,7 @@ async function openNativeTerminalOnce(
             now: Date.now(),
           })
         )
-          deps.hub.notifyThread(thread.id, [
-            "terminals-changed",
-          ]);
+          deps.hub.notifyThread(thread.id, ["terminals-changed"]);
       } catch (error) {
         if (!isClosedDatabaseConnectionError(error)) {
           deps.logger.warn(

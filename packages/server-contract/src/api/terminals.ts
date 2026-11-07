@@ -5,6 +5,7 @@ import {
   getTerminalBase64DecodedByteLength,
   GENERATED_ID_ALPHABET,
   GENERATED_ID_SUFFIX_LENGTH,
+  terminalDefaultColorsSchema,
   terminalColsSchema,
   terminalDataBase64Schema,
   terminalRowsSchema,
@@ -436,3 +437,15 @@ export const terminalServerMessageSchema = z.discriminatedUnion("type", [
     .strict(),
 ]);
 export type TerminalServerMessage = z.infer<typeof terminalServerMessageSchema>;
+
+export const terminalDefaultColorsRequestSchema = terminalDefaultColorsSchema
+  .extend({
+    viewerToken: z
+      .string()
+      .length(22)
+      .regex(/^[A-Za-z0-9_-]+$/u),
+  })
+  .strict();
+export type TerminalDefaultColorsRequest = z.infer<
+  typeof terminalDefaultColorsRequestSchema
+>;

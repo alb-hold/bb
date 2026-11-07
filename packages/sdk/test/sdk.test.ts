@@ -135,6 +135,32 @@ describe("@bb/sdk", () => {
     },
   );
 
+  it("sets terminal default colours through the typed per-session route", async () => {
+    const queue = createFetchQueue([{ body: makeTerminalSession() }]);
+    const sdk = createBbSdk({
+      transport: createHttpTransport({
+        baseUrl: "http://bb.test",
+        fetch: queue.fetch,
+        runtime: "node",
+      }),
+    });
+    await sdk.terminals.experimental_setDefaultColors({
+      terminalId: "term_test",
+      foreground: [12, 34, 56],
+      background: [234, 245, 255],
+      viewerToken: "abcdefghijklmnopqrstuv",
+    });
+    expect(queue.requests[0].url).toBe(
+      "http://bb.test/api/v1/terminals/term_test/default-colors",
+    );
+    expect(queue.requests[0].method).toBe("POST");
+    expect(JSON.parse(queue.requests[0].bodyText ?? "null")).toEqual({
+      foreground: [12, 34, 56],
+      background: [234, 245, 255],
+      viewerToken: "abcdefghijklmnopqrstuv",
+    });
+  });
+
   it("preserves an absent native thread", async () => {
     const queue = createFetchQueue([{ body: null }]);
     const sdk = createBbSdk({

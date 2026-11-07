@@ -1,3 +1,14 @@
+import { z } from "zod";
+
+export const terminalRgbSchema = z.tuple([
+  z.number().int().min(0).max(255),
+  z.number().int().min(0).max(255),
+  z.number().int().min(0).max(255),
+]);
+export const terminalDefaultColorsSchema = z
+  .object({ foreground: terminalRgbSchema, background: terminalRgbSchema })
+  .strict();
+
 export type TerminalRgb = [number, number, number];
 
 export interface TerminalDefaultColors {

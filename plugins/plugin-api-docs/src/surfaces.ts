@@ -1590,6 +1590,8 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
           "PluginBbSdk.threads.experimental_listDescendants",
           "PluginBbSdk.terminals.experimental_attention",
           "PluginBbSdk.terminals.experimental_screen",
+          "PluginBbSdk.terminals.experimental_setDefaultColors",
+          "TerminalsArea.experimental_setDefaultColors",
           "PluginBbSdk.threads.experimental_listCascade",
           "PluginBbSdk.threads.experimental_regenerateTitle",
         ],

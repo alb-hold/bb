@@ -4900,3 +4900,11 @@ observer-driven visibility in that case. Custom thread-list plugins can use the 
 public state to avoid speculative mounting or delayed first paint.
 Stabilize after verifying first-paint and open/close behavior on both layouts.
 Core caller: `components/sidebar/PluginThreadList.tsx`.
+
+## `sdk.terminals.experimental_setDefaultColors`
+
+Sets validated foreground/background sRGB tuples for OSC 10/11 replies through
+the authorised terminal route. Requires the live controlling viewer token; rejects
+observers. Core terminal theme updates use this same SDK path. Stabilise after
+control handoff, custom themes, and daemon reconnect behaviour have shipped.
+The bb-app BBSdk delegates its terminals area directly to the SDK.
