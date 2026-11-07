@@ -319,14 +319,6 @@ describe("ThreadScreen", () => {
     expect(mocks.pageShellProps.at(-1)!.scrollAnchorMode).toBe("restore");
   });
 
-  it("anchors the conversation at the left edge before a side panel opens", () => {
-    renderScreen({ kind: "page" });
-    expect(mocks.pageShellProps.at(-1)!.contentClassName).toContain("ml-0");
-    expect(mocks.pageShellProps.at(-1)!.contentClassName).not.toContain(
-      "mx-auto",
-    );
-  });
-
   it("sizes a page-measure panel to the content measure and a panel-measure one to its container", () => {
     const view = renderScreen({
       kind: "panel",
@@ -338,7 +330,6 @@ describe("ThreadScreen", () => {
       screen.getByRole("button", { name: "Add selection to chat" })
         .parentElement!;
 
-    expect(column().className).toContain("ml-0");
     expect(column().className).toContain(CONTENT_MEASURE_MAX_WIDTH_CLASS);
     expect(column().className).not.toContain("max-w-none");
 
