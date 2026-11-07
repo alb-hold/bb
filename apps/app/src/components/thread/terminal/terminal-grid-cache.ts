@@ -4,10 +4,11 @@ import {
   TERMINAL_LINE_HEIGHT,
 } from "./terminal-font";
 
-const STORAGE_KEY = "bb.terminal.fit-grids.v1";
+const STORAGE_KEY = "bb.terminal.fit-grids.v2";
 const MAX_ENTRIES = 32;
 interface Entry {
   terminalId: string;
+  layout: string;
   viewportWidth: number;
   viewportHeight: number;
   widthClass: "compact" | "wide";
@@ -40,6 +41,9 @@ function isEntry(value: unknown): value is Entry {
   return (
     typeof value === "object" &&
     value !== null &&
+    "layout" in value &&
+    typeof value.layout === "string" &&
+    value.layout.length <= 8192 &&
     "terminalId" in value &&
     typeof value.terminalId === "string" &&
     value.terminalId.length > 0 &&
@@ -93,11 +97,28 @@ function readEntries(): Entry[] {
   return memory;
 }
 
+function layoutFingerprint(): string {
+  return JSON.stringify(
+    Array.from(
+      document.querySelectorAll<HTMLElement>(
+        '[data-testid="app-layout-content-shell"], [data-sidebar="panel"], [data-split-pane-id], [data-panel]',
+      ),
+    ).map((element) => {
+      const rect = element.getBoundingClientRect();
+      return [
+        element.dataset.splitPaneId ?? element.dataset.sidebar ?? (element.hasAttribute("data-panel") ? "panel" : "shell"),
+        ...[rect.x, rect.y, rect.width, rect.height].map(Math.round),
+      ];
+    }),
+  );
+}
+
 function context(terminalId: string, fontSize: number) {
   if (typeof window === "undefined" || typeof document === "undefined")
     return null;
   return {
     terminalId,
+    layout: layoutFingerprint(),
     viewportWidth: Math.round(window.innerWidth),
     viewportHeight: Math.round(window.innerHeight),
     widthClass:
@@ -116,6 +137,7 @@ function matchesContext(
 ) {
   return (
     entry.terminalId === current.terminalId &&
+    entry.layout === current.layout &&
     entry.viewportWidth === current.viewportWidth &&
     entry.viewportHeight === current.viewportHeight &&
     entry.widthClass === current.widthClass &&

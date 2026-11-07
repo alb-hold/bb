@@ -1,3 +1,4 @@
+import { readCachedTerminalGrid } from "./terminal-grid-cache";
 import { markTerminalPerformance } from "@/lib/terminal-performance";
 import type { TerminalBrowserSocket } from "@bb/client-core";
 import type {
@@ -8,6 +9,7 @@ import type {
 
 const pending = new Map<string, BufferedTerminalSocket>();
 const active = new Map<string, BufferedTerminalSocket>();
+let cachedClaimMisses = 0;
 const MAX_BYTES = 24 * 1024 * 1024;
 
 type Delivery = () => void;
@@ -20,6 +22,8 @@ class BufferedTerminalSocket implements TerminalBrowserSocket {
   private queue: Delivery[] = [];
   private bytes = 0;
   private adopted = false;
+  private adoptionRequested = false;
+  private cachedClaim: { cols: number; rows: number } | null = null;
   private firstLiveOutput = false;
   private firstReplayBatch = false;
   private timer: ReturnType<typeof setTimeout>;
@@ -35,6 +39,20 @@ class BufferedTerminalSocket implements TerminalBrowserSocket {
     this.timer = setTimeout(() => this.close(), 10_000);
     this.socket.onopen = (event) => {
       markTerminalPerformance("terminal-socket-open");
+      const terminalId = new URL(url).pathname.match(
+        /\/terminals\/([^/]+)(?:\/|$)/,
+      )?.[1];
+      const grid =
+        !this.adoptionRequested && terminalId
+          ? readCachedTerminalGrid(decodeURIComponent(terminalId))
+          : null;
+      if (grid) {
+        this.cachedClaim = grid;
+        this.socket.send(
+          JSON.stringify({ type: "resize", ...grid, claim: true }),
+        );
+        markTerminalPerformance("terminal-cached-grid-claimed");
+      }
       this.deliver(() => this.onopen?.(event));
     };
     this.socket.onmessage = (event) => {
@@ -79,10 +97,15 @@ class BufferedTerminalSocket implements TerminalBrowserSocket {
     };
     this.socket.onerror = (event) => this.deliver(() => this.onerror?.(event));
     this.socket.onclose = (event) => {
+      this.cachedClaim = null;
       this.forget();
       clearTimeout(this.timer);
       this.deliver(() => this.onclose?.(event));
     };
+  }
+
+  get initialSizeClaim() {
+    return this.cachedClaim ?? undefined;
   }
 
   get readyState() {
@@ -101,6 +124,7 @@ class BufferedTerminalSocket implements TerminalBrowserSocket {
   }
 
   adopt() {
+    this.adoptionRequested = true;
     markTerminalPerformance("terminal-socket-adopted");
     clearTimeout(this.timer);
     this.forget();
@@ -117,10 +141,34 @@ class BufferedTerminalSocket implements TerminalBrowserSocket {
   }
 
   send(data: string) {
+    if (this.cachedClaim) {
+      const frame: unknown = JSON.parse(data);
+      if (
+        typeof frame === "object" &&
+        frame !== null &&
+        "type" in frame &&
+        frame.type === "resize"
+      ) {
+        const cached = this.cachedClaim;
+        this.cachedClaim = null;
+        if (
+          "cols" in frame &&
+          "rows" in frame &&
+          frame.cols === cached.cols &&
+          frame.rows === cached.rows
+        ) {
+          markTerminalPerformance("terminal-cached-grid-hit");
+        } else
+          markTerminalPerformance("terminal-cached-grid-miss", {
+            detail: { count: ++cachedClaimMisses },
+          });
+      }
+    }
     this.socket.send(data);
   }
 
   close(code?: number, reason?: string) {
+    this.cachedClaim = null;
     clearTimeout(this.timer);
     this.forget();
     this.queue = [];
