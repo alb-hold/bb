@@ -1415,6 +1415,7 @@ export function ThreadTerminalView({
     sessionId: session.id,
   });
   const scheduleFitRef = useRef<TerminalFitScheduler | null>(null);
+  const fitStatusNoticeRef = useRef<string | null>(null);
   const terminalVisibilityReporterRef = useRef<(() => void) | null>(null);
   const systemConfig = useSystemConfig();
   const copyOnSelectRef = useRef(false);
@@ -1752,6 +1753,7 @@ export function ThreadTerminalView({
       null;
     let rendererDeadline: ReturnType<typeof setTimeout> | undefined;
     let fitAddon: FitAddon | null = null;
+    const fitWork = createTerminalFitWork();
     let replayNextSeq: number | null = null;
     let replayNextSequence = 0;
     const replayWriteState: TerminalReplayWriteState = {
@@ -2425,6 +2427,7 @@ export function ThreadTerminalView({
               visible: false,
               onRendererChange: (renderer) => {
                 if (disposed || terminal === null) return;
+                fitWork.invalidate();
                 scheduleFitRef.current?.();
                 if (renderer === "webgl" && !initialRendererSettled)
                   settleInitialRenderer();
@@ -2608,7 +2611,6 @@ export function ThreadTerminalView({
           terminal,
         });
       }
-      const fitWork = createTerminalFitWork();
       const fitTerminal = () => {
         if (!fitAddon || !terminal) {
           return;
@@ -2625,6 +2627,7 @@ export function ThreadTerminalView({
           layoutSettled: initialLayoutSettled,
           rendererSettled: initialRendererSettled,
           retainedOutputReplayed,
+          statusNotice: fitStatusNoticeRef.current,
           work: () => {
             screenLoadingPreview?.refresh(
               activeTerminal.options.lineHeight ?? 1,
@@ -2727,6 +2730,9 @@ export function ThreadTerminalView({
           TERMINAL_RENDERER_SETTLE_MS,
         );
         void initialRendererReady.then(() => {
+          if (disposed) return;
+          fitWork.invalidate();
+          scheduleFit();
           if (
             initialRendererSettled ||
             webglRenderer === null ||
@@ -3224,6 +3230,7 @@ export function ThreadTerminalView({
           if (disposed) {
             return;
           }
+          fitWork.invalidate();
           if (state === "closed") abandonReplayPreview();
           if (
             state === "reconnecting" &&
@@ -3861,6 +3868,7 @@ export function ThreadTerminalView({
               : restoringSession
                 ? "Restoring session…"
                 : null;
+  fitStatusNoticeRef.current = connectionNoticeText;
   useEffect(() => {
     webglVisibilityRef.current?.sync();
     terminalVisibilityReporterRef.current?.();

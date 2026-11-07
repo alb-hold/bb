@@ -3,6 +3,8 @@ import type { Terminal } from "@xterm/xterm";
 interface FitState {
   width: number;
   height: number;
+  viewportWidth: number;
+  viewportHeight: number;
   cellWidth: number;
   cellHeight: number;
   cols: number;
@@ -21,6 +23,7 @@ interface FitState {
   layoutSettled: boolean;
   rendererSettled: boolean;
   retainedOutputReplayed: boolean;
+  statusNotice: string | null;
 }
 
 type FitTerminal = Pick<Terminal, "cols" | "rows" | "dimensions" | "options">;
@@ -38,6 +41,7 @@ export function createTerminalFitWork() {
       layoutSettled,
       rendererSettled,
       retainedOutputReplayed,
+      statusNotice,
       work,
     }: {
       container: HTMLElement;
@@ -46,6 +50,7 @@ export function createTerminalFitWork() {
       layoutSettled: boolean;
       rendererSettled: boolean;
       retainedOutputReplayed: boolean;
+      statusNotice: string | null;
       work: () => boolean;
     }): void {
       const cell = terminal.dimensions?.css.cell;
@@ -56,6 +61,8 @@ export function createTerminalFitWork() {
       const state: FitState = {
         width: container.clientWidth,
         height: container.clientHeight,
+        viewportWidth: window.innerWidth,
+        viewportHeight: window.innerHeight,
         cellWidth: cell.width,
         cellHeight: cell.height,
         cols: terminal.cols,
@@ -74,11 +81,14 @@ export function createTerminalFitWork() {
         layoutSettled,
         rendererSettled,
         retainedOutputReplayed,
+        statusNotice,
       };
       if (
         previous !== null &&
         state.width === previous.width &&
         state.height === previous.height &&
+        state.viewportWidth === previous.viewportWidth &&
+        state.viewportHeight === previous.viewportHeight &&
         state.cellWidth === previous.cellWidth &&
         state.cellHeight === previous.cellHeight &&
         state.cols === previous.cols &&
@@ -96,7 +106,8 @@ export function createTerminalFitWork() {
         state.dpr === previous.dpr &&
         state.layoutSettled === previous.layoutSettled &&
         state.rendererSettled === previous.rendererSettled &&
-        state.retainedOutputReplayed === previous.retainedOutputReplayed
+        state.retainedOutputReplayed === previous.retainedOutputReplayed &&
+        state.statusNotice === previous.statusNotice
       )
         return;
       if (work()) previous = state;
