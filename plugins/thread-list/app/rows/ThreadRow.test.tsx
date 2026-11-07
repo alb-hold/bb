@@ -3600,3 +3600,25 @@ describe.skipIf(
     ).toBeNull();
   });
 });
+
+it("uses regular desktop weight for inactive rows and medium for attention", () => {
+  const view = renderThreadRow({ thread: createThread({ indicator: "none", lastReadAt: 1, latestAttentionAt: 1 }) });
+  const title = () => view.container.querySelector(".bb-thread-title")!;
+  expect(title().getAttribute("data-emphasized")).toBe("false");
+  expect(title().className).toContain("md:data-[emphasized=false]:font-normal");
+  expect(title().className).toContain("max-md:font-normal");
+  view.rerenderThreadRow(createThread({ indicator: "check-terminal" }));
+  expect(title().getAttribute("data-emphasized")).toBe("true");
+  const metadata = view.container.querySelector("[data-sidebar-thread-context]")!;
+  expect(metadata.className).toContain("md:text-subtle-foreground");
+});
+
+it("hides plain workspace glyphs on desktop and retains meaningful worktree glyphs", () => {
+  const view = renderThreadRow({ thread: createThread({ environment: null }) });
+  expect(screen.getByRole("img", { name: "Workspace" }).classList.contains("md:hidden")).toBe(true);
+  view.rerenderThreadRow(createThread({ environment: {
+    id: "env-worktree", name: null, branchName: "feature", path: null,
+    isWorktree: true, providerId: null, workspaceDisplayKind: null,
+  } }));
+  expect(screen.getByRole("img", { name: "Worktree" }).classList.contains("md:hidden")).toBe(false);
+});

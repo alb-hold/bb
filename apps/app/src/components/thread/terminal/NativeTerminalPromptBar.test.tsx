@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 
+import { CompactViewportOverrideProvider } from "@bb/shared-ui/hooks/use-compact-viewport";
+
 import {
   act,
   cleanup,
@@ -106,10 +108,12 @@ function renderBar(
   executionLabel = "Native CLI · GPT-5 · Full access",
   modelLabel: string | undefined = "GPT-5",
   providerLabel = "Native CLI",
+  compact = false,
 ) {
   const { wrapper: Wrapper, queryClient } = createQueryClientTestHarness();
   render(
     <Wrapper>
+      <CompactViewportOverrideProvider isCompactViewport={compact}>
       <NativeTerminalPromptBar
         projectId="proj-n"
         providerLabel={providerLabel}
@@ -117,6 +121,7 @@ function renderBar(
         modelLabel={modelLabel}
         threadId="thr-n"
       />
+      </CompactViewportOverrideProvider>
     </Wrapper>,
   );
   return {
@@ -1323,4 +1328,23 @@ it("omits the model chip container when the native record has no model", () => {
   renderBar("Native CLI", "");
   expect(screen.queryByLabelText("Terminal model")).toBeNull();
   expect(screen.queryByLabelText("Terminal model and permissions")).toBeNull();
+});
+
+it("rests inline, expands on focus or text, and collapses after clearing", () => {
+  const { input } = renderBar();
+  const shell = input.closest("[data-native-composer]")!;
+  expect(shell.hasAttribute("data-native-composer-inline")).toBe(true);
+  fireEvent.focus(input);
+  expect(shell.hasAttribute("data-native-composer-inline")).toBe(false);
+  fireEvent.change(input, { target: { value: "hello" } });
+  fireEvent.blur(input);
+  expect(shell.hasAttribute("data-native-composer-inline")).toBe(false);
+  fireEvent.change(input, { target: { value: "" } });
+  expect(shell.hasAttribute("data-native-composer-inline")).toBe(true);
+});
+
+it.each(["Codex", "Claude Code", "Native CLI"])("shortens the compact %s placeholder but preserves the accessible name", (provider) => {
+  const { input } = renderBar(undefined, undefined, provider, true);
+  expect(input.placeholder).toBe(`${provider} terminal…`);
+  expect(screen.getByLabelText(`Send to ${provider} terminal`)).toBe(input);
 });

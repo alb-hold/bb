@@ -1,3 +1,4 @@
+import { SecondaryPanelActions, SecondaryPanelActionsProvider } from "./SecondaryPanelActions";
 import { ThreadInfoContentContext } from "@/components/secondary-panel/thread-info-registration";
 import {
   type CSSProperties,
@@ -750,6 +751,7 @@ function ThreadSecondaryPanelContent({
       activeSurfaceModel?.kind === "terminal" && hasActiveSurfaceTab;
 
     return (
+      <SecondaryPanelActionsProvider>
       <ImageTabLightboxProvider
         activeTabId={activeSurfaceTabId}
         tabs={surfaceTabs}
@@ -806,6 +808,7 @@ function ThreadSecondaryPanelContent({
                 showNewTabButton: showNewTabControl,
               })}
             </div>
+            <SecondaryPanelActions />
             {showOuterControls ||
             onRemoveSplit ||
             usesPaneArrangementControl ? (
@@ -884,6 +887,7 @@ function ThreadSecondaryPanelContent({
           </TabVisibleContext.Provider>
         </div>
       </ImageTabLightboxProvider>
+      </SecondaryPanelActionsProvider>
     );
   };
 

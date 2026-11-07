@@ -1,3 +1,4 @@
+import { useIsCompactViewport } from "@bb/shared-ui/hooks/use-compact-viewport";
 import { CONTENT_MEASURE_MAX_WIDTH_CLASS } from "@/lib/content-measure";
 import {
   useCallback,
@@ -527,6 +528,7 @@ export function NativeTerminalPromptBar({
     return () => observer.disconnect();
   }, [measureInput]);
 
+  const isCompactViewport = useIsCompactViewport();
   const recording =
     dictation.phase === "recording" || dictation.phase === "starting";
   const micLabel = recording
@@ -644,7 +646,9 @@ export function NativeTerminalPromptBar({
               ? "Starting microphone…"
               : recording
                 ? "Listening…"
-                : `Send to ${providerLabel} terminal…`
+                : isCompactViewport
+                  ? `${providerLabel} terminal…`
+                  : `Send to ${providerLabel} terminal…`
           }
           onChange={(event) => {
             applyValue(event.target.value, programmaticRef.current);
