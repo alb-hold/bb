@@ -157,8 +157,7 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
           "Replace the sidebar's thread list with one your plugin renders. With this, a plugin can:",
         bullets: [
           "Group, sort, and draw every row your own way",
-          "Read live threads, sections, projects, and run status",
-          "Read experimental_nativeTerminal to identify native terminal threads even while idle; the CLI exposes the same mode as nativeTerminal",
+          "Read live threads, sections, projects, run status, and native terminal mode",
           "Use optimistic SDK writes and bb's actions to move, pin, rename, restore, archive, and split threads",
           "Keep bb's New thread button, search, and footer around it",
         ],
