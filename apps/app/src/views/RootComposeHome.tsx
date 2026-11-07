@@ -104,7 +104,7 @@ export function RootComposeHome({
       className={
         isCompact
           ? "@container/page flex min-h-0 flex-1 flex-col"
-          : "@container/page flex min-h-0 flex-1 flex-col overflow-y-auto"
+          : "@container/page grid min-h-0 flex-1 grid-rows-[minmax(0,0.38fr)_auto_minmax(0,0.62fr)] overflow-y-auto"
       }
       style={isCompact ? PAGE_SHELL_CONTENT_STYLE : undefined}
     >
@@ -115,7 +115,7 @@ export function RootComposeHome({
           isCompact
             ? "relative min-h-0 flex-1"
             : cn(
-                "mx-auto my-auto flex w-full shrink-0 flex-col px-4 py-8",
+                "row-start-2 mx-auto flex w-full shrink-0 flex-col px-4 py-8",
                 ROOT_COMPOSE_MAX_WIDTH_CLASS,
                 wideContentClassName,
               )

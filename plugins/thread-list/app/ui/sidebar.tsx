@@ -14,8 +14,7 @@ export function useSidebarContentElement(
   const [element, setElement] = React.useState<HTMLElement | null>(null);
   React.useLayoutEffect(() => {
     const next =
-      anchorRef.current?.closest<HTMLElement>(SIDEBAR_CONTENT_SELECTOR) ??
-      null;
+      anchorRef.current?.closest<HTMLElement>(SIDEBAR_CONTENT_SELECTOR) ?? null;
     setElement((current) => (current === next ? current : next));
   }, [anchorRef]);
   return element;
@@ -36,6 +35,29 @@ export function SidebarContentElementProvider({
   const anchorRef = React.useRef<HTMLDivElement>(null);
   const element = useSidebarContentElement(anchorRef);
   const contentRef = React.useMemo(() => ({ current: element }), [element]);
+  React.useLayoutEffect(() => {
+    if (!element) return;
+    const update = () =>
+      element.toggleAttribute(
+        "data-more-below",
+        element.scrollTop + element.clientHeight < element.scrollHeight - 1,
+      );
+    update();
+    element.addEventListener("scroll", update, { passive: true });
+    const resize =
+      typeof ResizeObserver === "undefined" ? null : new ResizeObserver(update);
+    resize?.observe(element);
+    const anchor = anchorRef.current;
+    if (anchor) for (const child of anchor.children) resize?.observe(child);
+    const mutation = new MutationObserver(update);
+    mutation.observe(element, { childList: true, subtree: true });
+    return () => {
+      element.removeEventListener("scroll", update);
+      resize?.disconnect();
+      mutation.disconnect();
+      element.removeAttribute("data-more-below");
+    };
+  }, [element]);
   return (
     <SidebarContentElementContext.Provider value={contentRef}>
       <div ref={anchorRef} className="contents">

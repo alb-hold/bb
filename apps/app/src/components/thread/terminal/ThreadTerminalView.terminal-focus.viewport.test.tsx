@@ -342,9 +342,10 @@ describe("ThreadTerminalView terminal viewport and focus", () => {
     },
   );
   it.each([360, 390, 767, 768, 1440])(
-    "starts terminals at 13px at %s px",
+    "starts terminals with responsive typography at %s px",
     async (width) => {
       prepareMobileTerminal();
+      vi.stubGlobal("innerWidth", width);
       vi.stubGlobal("matchMedia", (query: string) => ({
         matches:
           query === "(pointer: coarse)" ||
@@ -367,7 +368,7 @@ describe("ThreadTerminalView terminal viewport and focus", () => {
           document
             .querySelector("[data-terminal-font-size]")
             ?.getAttribute("data-terminal-font-size"),
-        ).toBe("13"),
+        ).toBe(width < 768 ? "15" : "14"),
       );
     },
   );
@@ -379,12 +380,13 @@ describe("ThreadTerminalView terminal viewport and focus", () => {
     });
     let terminal: Terminal | null = null;
     const open = Terminal.prototype.open;
-    vi.spyOn(Terminal.prototype, "open").mockImplementation(
-      function (this: Terminal, element) {
-        terminal = this;
-        open.call(this, element);
-      },
-    );
+    vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
+      this: Terminal,
+      element,
+    ) {
+      terminal = this;
+      open.call(this, element);
+    });
     renderMobileTerminal();
     await waitFor(() => expect(terminal?.options.lineHeight).toBe(1.22));
     await waitFor(() => {
@@ -1082,7 +1084,7 @@ describe("ThreadTerminalView terminal viewport and focus", () => {
     const pane = document.querySelector(".group\\/terminal-pane");
     const fontSizeNode = document.querySelector("[data-terminal-renderer]");
     expect(pane).not.toBeNull();
-    expect(fontSizeNode?.getAttribute("data-terminal-font-size")).toBe("13");
+    expect(fontSizeNode?.getAttribute("data-terminal-font-size")).toBe("15");
 
     const dispatchTouches = (
       type: "touchstart" | "touchmove" | "touchend",
@@ -1134,13 +1136,13 @@ describe("ThreadTerminalView terminal viewport and focus", () => {
     }
     dispatchTouches("touchend", 150, true);
     await waitFor(() =>
-      expect(fontSizeNode?.getAttribute("data-terminal-font-size")).toBe("20"),
+      expect(fontSizeNode?.getAttribute("data-terminal-font-size")).toBe("23"),
     );
     await waitFor(() => expect(resizeMessages()).toHaveLength(2));
     expect(resizeMessages().at(-1)).toEqual({
       type: "resize",
-      cols: 31,
-      rows: 28,
+      cols: 27,
+      rows: 25,
     });
 
     dispatchTouches("touchstart", 150);
@@ -1149,7 +1151,7 @@ describe("ThreadTerminalView terminal viewport and focus", () => {
     }
     dispatchTouches("touchend", 100, true);
     await waitFor(() =>
-      expect(fontSizeNode?.getAttribute("data-terminal-font-size")).toBe("13"),
+      expect(fontSizeNode?.getAttribute("data-terminal-font-size")).toBe("15"),
     );
     await waitFor(() => expect(resizeMessages()).toHaveLength(3));
     expect(resizeMessages().at(-1)).toEqual(originalGrid);

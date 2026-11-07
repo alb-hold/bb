@@ -1254,3 +1254,28 @@ it.each([true, false])(
     expect(title.parentElement!.contains(status)).toBe(true);
   },
 );
+
+it.each([true, false])(
+  "aligns chat activity below the title on compact=%s",
+  (compact) => {
+    viewportState.isCompactViewport = compact;
+    const { container } = render(
+      <PaneContext.Provider value={PANE_CONTEXT}>
+        <ThreadDetailHeader
+          actionsMenu={null}
+          isSecondaryPanelOpen={false}
+          onToggleSecondaryPanel={vi.fn()}
+          thread={THREAD_TARGET}
+          threadTitle="Chat thread"
+        />
+      </PaneContext.Provider>,
+    );
+    const status = screen.getByRole("status", { name: "Thread activity" });
+    expect(status.textContent).toBe("Idle");
+    expect(status.classList.contains("h-4")).toBe(true);
+    expect(
+      container.querySelector("[data-thread-detail-header-title]")!
+        .parentElement,
+    ).toBe(status.parentElement);
+  },
+);

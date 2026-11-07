@@ -1017,7 +1017,9 @@ function ConversationRow({
       }
       turnTokenSummary={turnTokenSummary}
       mobileActionDisplay={
-        row.role === "assistant" && row.id === latestActionableMessageId ? "inline" : "overflow"
+        row.role === "assistant" && row.id === latestActionableMessageId
+          ? "inline"
+          : "overflow"
       }
       streaming={
         row.role === "assistant" && row.id === streamingAssistantMessageId
@@ -2415,7 +2417,9 @@ function TimelineRowItemWrapper({
   row,
   spacing,
   windowedState,
+  style,
 }: {
+  style?: CSSProperties;
   children: ReactNode;
   row: ThreadTimelineViewRow;
   spacing: TimelineRowsListSpacing;
@@ -2438,11 +2442,12 @@ function TimelineRowItemWrapper({
           ? TOP_LEVEL_TIMELINE_ROW_INTRINSIC_SIZE_CLASS_NAME
           : undefined
       }
-      style={
-        isTopLevel && !windowedState.windowingEnabled
+      style={{
+        ...(isTopLevel && !windowedState.windowingEnabled
           ? timelineRowContainmentStyle(row)
-          : undefined
-      }
+          : undefined),
+        ...style,
+      }}
     >
       {children}
     </div>
@@ -2678,7 +2683,24 @@ function TimelineRowsList({
               }
               return 28;
             }}
-            gap={spacing === "bundle" ? 0 : isCompactTouch ? 0 : 8}
+            gap={
+              spacing === "bundle" || isCompactTouch
+                ? 0
+                : (index) => {
+                    const current = items[index];
+                    const next = items[index + 1];
+                    return current?.kind === "row" &&
+                      next?.kind === "row" &&
+                      ["work", "step-summary", "bundle-summary"].includes(
+                        current.row.kind,
+                      ) &&
+                      ["work", "step-summary", "bundle-summary"].includes(
+                        next.row.kind,
+                      )
+                      ? 4
+                      : 8;
+                  }
+            }
             initialWindowAnchor={
               isTopLevelList && detailScrollRoot === null ? scrollRestore : null
             }

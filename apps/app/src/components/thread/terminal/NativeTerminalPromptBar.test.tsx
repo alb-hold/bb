@@ -173,7 +173,7 @@ describe("NativeTerminalPromptBar", () => {
     expect(form.className).toContain("mx-auto");
     expect(input.classList.contains("text-base")).toBe(true);
     expect(input.classList.contains("md:text-sm")).toBe(true);
-    expect(input.classList.contains("placeholder:text-sm")).toBe(true);
+    expect(input.classList.contains("placeholder:text-sm")).toBe(false);
     expect(input.classList.contains("min-h-7")).toBe(true);
     expect(form.classList.contains("pt-1")).toBe(true);
     const shell = form.querySelector("[data-native-composer]")!;
@@ -1363,3 +1363,23 @@ it.each(["Codex", "Claude Code", "Native CLI"])(
     expect(screen.getByLabelText(`Send to ${provider} terminal`)).toBe(input);
   },
 );
+
+it.each([
+  [360, "Send to prompt…"],
+  [374, "Send to prompt…"],
+  [375, "Send to prompt above…"],
+  [390, "Send to prompt above…"],
+])("fits the compact placeholder at %i px", (width, placeholder) => {
+  vi.stubGlobal("matchMedia", (query: string) => ({
+    matches: query === "(width < 375px)" && Number(width) < 375,
+    media: query,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+  }));
+  const { input } = renderBar("", "", "Native CLI", true);
+  expect(input.placeholder).toBe(placeholder);
+  expect(input.className).not.toContain("placeholder:text-sm");
+  expect(input.classList.contains("text-base")).toBe(true);
+  cleanup();
+  vi.unstubAllGlobals();
+});

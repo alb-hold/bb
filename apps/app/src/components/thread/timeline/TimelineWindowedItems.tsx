@@ -1,4 +1,7 @@
 import {
+  cloneElement,
+  isValidElement,
+  type CSSProperties,
   createContext,
   useCallback,
   useLayoutEffect,
@@ -60,7 +63,7 @@ export interface TimelineWindowAnchor {
 export interface TimelineWindowedItemsProps {
   alwaysMountedKeys?: ReadonlySet<string>;
   estimateItemHeight: (index: number) => number;
-  gap: number;
+  gap: number | ((index: number) => number);
   initialWindowAnchor?: TimelineWindowAnchor | null;
   itemKeys: readonly string[];
   measurements: Map<string, number>;
@@ -95,7 +98,7 @@ function buildModel(
   itemKeys: readonly string[],
   heights: ReadonlyMap<string, number>,
   estimateItemHeight: (index: number) => number,
-  gap: number,
+  gap: number | ((index: number) => number),
 ): LayoutModel {
   const itemHeights = new Array<number>(itemKeys.length);
   const offsets = new Array<number>(itemKeys.length);
@@ -107,12 +110,15 @@ function buildModel(
       Math.max(1, estimateItemHeight(index));
     itemHeights[index] = height;
     offsets[index] = top;
-    top += height + gap;
+    top += height + (typeof gap === "number" ? gap : gap(index));
   }
   return {
     heights: itemHeights,
     offsets,
-    total: itemKeys.length === 0 ? 0 : top - gap,
+    total:
+      itemKeys.length === 0
+        ? 0
+        : top - (typeof gap === "number" ? gap : gap(itemKeys.length - 1)),
   };
 }
 
@@ -569,6 +575,8 @@ export function TimelineWindowedItems({
     [indexByKey],
   );
 
+  const gapBefore = (index: number) =>
+    typeof gap === "number" || index === 0 ? 0 : gap(index - 1);
   const children: ReactNode[] = [];
   let previous = -1;
   for (const index of mountedIndexes) {
@@ -578,11 +586,22 @@ export function TimelineWindowedItems({
           key={`spacer:${itemKeys[previous + 1] ?? previous + 1}`}
           aria-hidden
           data-timeline-window-spacer=""
-          style={{ height: spacerHeight(renderModel, previous + 1, index - 1) }}
+          style={{
+            height:
+              spacerHeight(renderModel, previous + 1, index - 1) +
+              gapBefore(previous + 1),
+          }}
         />,
       );
     }
-    children.push(renderItem(index, { itemRef, windowingEnabled }));
+    const item = renderItem(index, { itemRef, windowingEnabled });
+    children.push(
+      typeof gap !== "number" && isValidElement<{ style?: CSSProperties }>(item)
+        ? cloneElement(item, {
+            style: { ...item.props.style, marginTop: gapBefore(index) },
+          })
+        : item,
+    );
     previous = index;
   }
   if (mountedIndexes.length > 0 && previous < itemKeys.length - 1) {
@@ -592,7 +611,9 @@ export function TimelineWindowedItems({
         aria-hidden
         data-timeline-window-spacer=""
         style={{
-          height: spacerHeight(renderModel, previous + 1, itemKeys.length - 1),
+          height:
+            spacerHeight(renderModel, previous + 1, itemKeys.length - 1) +
+            gapBefore(previous + 1),
         }}
       />,
     );
@@ -602,7 +623,7 @@ export function TimelineWindowedItems({
     <div
       ref={containerRef}
       className="flex w-full min-w-0 flex-col"
-      style={{ gap }}
+      style={{ gap: typeof gap === "number" ? gap : 0 }}
       data-timeline-items=""
       data-timeline-virtual-spacer={windowingEnabled ? "" : undefined}
       onClickCapture={retainInteractedItem}

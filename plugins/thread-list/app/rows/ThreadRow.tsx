@@ -997,7 +997,7 @@ function ThreadRowComponent({
                   data-sidebar-thread-provider={provider.id}
                   role="img"
                   aria-label={provider.displayName}
-                  className="pointer-events-auto relative z-[31] flex size-4 shrink-0 items-center justify-center mr-1 max-md:mr-1.5 text-muted-foreground"
+                  className="pointer-events-auto relative z-[31] flex size-4 shrink-0 items-center justify-center mr-1 max-md:mr-1.5 text-muted-foreground [&_*]:text-inherit!"
                   onClick={(event) => {
                     event.preventDefault();
                     event.stopPropagation();
@@ -1028,7 +1028,7 @@ function ThreadRowComponent({
                 <ThreadTitle threadId={thread.id} />
               </span>
               <span data-sidebar-thread-context="" className="hidden min-w-0 items-center gap-1 truncate text-xs font-normal leading-4 text-muted-foreground md:text-subtle-foreground [&_time]:text-xs [&_time]:text-inherit md:flex">
-                <ThreadModeGlyph nativeTerminal={thread.experimental_nativeTerminal} isWorktree={thread.environment?.isWorktree === true} />
+                <span className={thread.experimental_nativeTerminal ? "contents text-foreground [&_svg]:stroke-[2]" : "contents"}><ThreadModeGlyph nativeTerminal={thread.experimental_nativeTerminal} isWorktree={thread.environment?.isWorktree === true} /></span>
                 {showProjectName && projectName ? <span className="truncate">{projectName} ·</span> : null}
                 <InfoRowTime timestamp={thread.updatedAt} />
               </span>

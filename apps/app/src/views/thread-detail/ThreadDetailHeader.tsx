@@ -186,8 +186,25 @@ export function ThreadDetailHeader({
   const handleTitleDoubleClick = () => {
     if (!isEditing) startEditingFromDoubleClick();
   };
+  const [searchFits, setSearchFits] = useState<boolean | null>(null);
   const searchInMenu =
-    actionsMenu !== null && measuredPaneWidth > 0 && measuredPaneWidth <= 360;
+    actionsMenu !== null &&
+    (searchFits ?? (measuredPaneWidth > 0 && measuredPaneWidth <= 360));
+  useLayoutEffect(() => {
+    if (!hasNativeTerminal) return;
+    const header = headerRef.current;
+    const title = header.querySelector(
+      "[data-thread-detail-header-title]",
+    )?.parentElement;
+    const titleWidth = title?.getBoundingClientRect().width ?? 0;
+    if (titleWidth <= 0) return;
+    const searchWidth =
+      header
+        .querySelector("[data-terminal-search-trigger]")
+        ?.getBoundingClientRect().width ?? 0;
+    const available = titleWidth + (searchWidth > 0 ? searchWidth + 4 : 0);
+    setSearchFits(available >= 120 + 44 + 4);
+  }, [hasNativeTerminal, measuredPaneWidth, searchInMenu]);
   const searchTerminal = () => {
     const pane =
       headerRef.current.closest("[data-split-pane-id]") ??
@@ -224,11 +241,7 @@ export function ThreadDetailHeader({
             size="compact"
           />
         ) : null}
-        <div
-          className={
-            hasNativeTerminal ? "flex min-w-0 flex-1 flex-col" : "contents"
-          }
-        >
+        <div className="flex min-w-0 flex-1 flex-col">
           <p
             data-thread-detail-header-title=""
             className={cn(
@@ -250,7 +263,22 @@ export function ThreadDetailHeader({
           </p>
           {hasNativeTerminal ? (
             <div ref={nativeActivityTargetRef} className="h-4 shrink-0" />
-          ) : null}
+          ) : (
+            <div
+              role="status"
+              aria-label="Thread activity"
+              className="flex h-4 shrink-0 items-center whitespace-nowrap text-xs text-muted-foreground"
+            >
+              {needsInput
+                ? "Needs input"
+                : checkTerminal
+                  ? "Check terminal"
+                  : thread.status === "pending"
+                    ? "Idle"
+                    : thread.status.charAt(0).toUpperCase() +
+                      thread.status.slice(1)}
+            </div>
+          )}
         </div>
         <ThreadUsageAndAgents
           compact={usesCompactAgentDrawer}

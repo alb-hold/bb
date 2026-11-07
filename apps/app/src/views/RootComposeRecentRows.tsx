@@ -16,7 +16,6 @@ import { getThreadDisplayTitle } from "@/lib/thread-title";
 import { ThreadTitle } from "@/components/thread/ThreadTitleMentions";
 import { ThreadModeGlyph } from "@bb/shared-ui/thread-mode-glyph";
 import { getProviderIconInfo } from "@/lib/provider-icon";
-import { ProviderIconMark } from "@/components/settings/ProviderIconMark";
 import { ThreadStatusGlyph } from "@/components/thread/ThreadStatusGlyph";
 import type { ThreadListIndicatorKind } from "@bb/client-core";
 
@@ -88,15 +87,7 @@ export function RecentThreadProviderMark({
         depth > 0 && "opacity-60",
       )}
     >
-      {ProviderMark === undefined ? null : provider === null ? (
-        <ProviderMark className="size-4" />
-      ) : (
-        <ProviderIconMark
-          provider={provider}
-          icon={ProviderMark}
-          className="size-4"
-        />
-      )}
+      {ProviderMark === undefined ? null : <ProviderMark className="size-4" />}
     </span>
   );
 }
@@ -136,13 +127,16 @@ export function RecentThreadRowContent({
           )}
           title={metadataText}
         >
-          <ThreadModeGlyph nativeTerminal={thread.nativeTerminal === true} isWorktree={thread.environmentIsWorktree === true} />
+          <ThreadModeGlyph
+            nativeTerminal={thread.nativeTerminal === true}
+            isWorktree={thread.environmentIsWorktree === true}
+          />
           <span className="flex min-w-0 flex-1 items-center whitespace-nowrap">
             <span
               className={cn(
                 "grid min-w-0",
                 metadata.project !== null && metadata.branch !== null
-                  ? "grid-cols-[minmax(0,max-content)_auto_minmax(min-content,1fr)]"
+                  ? "grid-cols-[minmax(0,max-content)_auto_minmax(min-content,max-content)]"
                   : "grid-cols-[minmax(0,1fr)]",
               )}
             >
@@ -178,14 +172,17 @@ export function RecentThreadRowContent({
           </span>
         </span>
       </span>
-      {indicatorKind !== "none" ? (
-        <span className="flex size-6 shrink-0 items-center justify-center">
+      <span
+        className="flex size-6 shrink-0 items-center justify-center"
+        data-recent-status-slot=""
+      >
+        {indicatorKind !== "none" ? (
           <ThreadStatusGlyph
             indicator={indicatorKind}
             experimental_queuedFailedCount={queuedFailedCount}
           />
-        </span>
-      ) : null}
+        ) : null}
+      </span>
     </>
   );
 }

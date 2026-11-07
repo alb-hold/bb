@@ -431,3 +431,34 @@ describe("TimelineWindowedItems", () => {
     );
   });
 });
+
+it("uses four pixels between disclosures and eight at message boundaries", () => {
+  const { container } = render(
+    <TimelineWindowedItems
+      estimateItemHeight={() => 44}
+      gap={(index) => (index === 1 ? 4 : 8)}
+      itemKeys={["message", "command", "tool", "reply"]}
+      measurements={new Map()}
+      positionKeeper={null}
+      pinnedToEnd={false}
+      renderItem={(index, state) => (
+        <div
+          key={index}
+          ref={state.itemRef}
+          data-timeline-window-key={String(index)}
+        >
+          {index}
+        </div>
+      )}
+    />,
+  );
+  const rows = Array.from(
+    container.querySelectorAll<HTMLElement>("[data-timeline-window-key]"),
+  );
+  expect(rows.map((row) => row.style.marginTop)).toEqual([
+    "0px",
+    "8px",
+    "4px",
+    "8px",
+  ]);
+});
