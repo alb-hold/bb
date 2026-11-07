@@ -11,13 +11,14 @@ import { Link, useNavigate } from "react-router-dom";
 import type { ExperimentalSidebarFooterCommandKind } from "@get-bb/plugin-sdk/internal/plugin-app-collector";
 import { cn } from "@bb/shared-ui/lib/utils";
 import { useIsCompactViewport } from "@bb/shared-ui/hooks/use-compact-viewport";
-import { Icon } from "@bb/shared-ui/icon";
+import { Icon, isBuiltinIconName } from "@bb/shared-ui/icon";
+import { EXTENDED_ICON_NAMES } from "@bb/shared-ui/icon-registry";
 import {
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
 } from "@/components/ui/sidebar.js";
-import { PluginItemIcon, pluginIconName } from "@/components/plugin/PluginIcon";
+import { pluginIconName } from "@/components/plugin/PluginIcon";
 import { PluginSlotMount } from "@/components/plugin/PluginSlotMount";
 import {
   usePluginSlots,
@@ -427,7 +428,7 @@ export function PluginSidebarFooterItems({
           </SidebarMenuItem>
           <SidebarMenuItem
             data-footer-plugin-slots=""
-            className="min-w-0 flex-1 overflow-hidden"
+            className="ml-1 min-w-0 flex-1 overflow-hidden border-l border-border-seam pl-1"
           >
             <SidebarMenu className="grid grid-flow-col auto-cols-max justify-start gap-1">
               {[
@@ -492,12 +493,15 @@ function FooterCommandObserver({
 }
 
 export function FooterItemIcon({ item }: { item: FooterItem }) {
-  return item.kind === "plugin" &&
-    item.slot.source === "sidebarFooterAction" ? (
-    <PluginItemIcon pluginId={item.slot.pluginId} icon={item.icon} />
-  ) : (
+  return (
     <Icon
-      name={pluginIconName(item.icon)}
+      name={
+        item.kind === "plugin" &&
+        !isBuiltinIconName(item.icon) &&
+        !EXTENDED_ICON_NAMES.some((name) => name === item.icon)
+          ? "Puzzle"
+          : pluginIconName(item.icon)
+      }
       className="size-4 shrink-0"
       aria-hidden="true"
     />

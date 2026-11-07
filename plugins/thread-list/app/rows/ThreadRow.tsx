@@ -1028,7 +1028,7 @@ function ThreadRowComponent({
                 <ThreadTitle threadId={thread.id} />
               </span>
               <span data-sidebar-thread-context="" className="hidden min-w-0 items-center gap-1 truncate text-xs font-normal leading-4 text-muted-foreground md:text-subtle-foreground [&_time]:text-xs [&_time]:text-inherit md:flex">
-                <ThreadModeGlyph nativeTerminal={thread.experimental_nativeTerminal} isWorktree={thread.environment?.isWorktree === true} hideWorkspaceOnDesktop />
+                <ThreadModeGlyph nativeTerminal={thread.experimental_nativeTerminal} isWorktree={thread.environment?.isWorktree === true} />
                 {showProjectName && projectName ? <span className="truncate">{projectName} ·</span> : null}
                 <InfoRowTime timestamp={thread.updatedAt} />
               </span>

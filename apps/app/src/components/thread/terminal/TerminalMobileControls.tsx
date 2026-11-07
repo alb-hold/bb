@@ -329,7 +329,14 @@ export function TerminalMobileControls({
           className={compactKeys ? "w-11" : undefined}
           onPress={() => setExpanded(!expanded)}
         >
-          {compactKeys ? <Icon name="Keyboard" className="size-4" /> : "Keys"}
+          {compactKeys ? (
+            <Icon
+              name="Keyboard"
+              className="size-4 scale-y-75 [&_path:nth-child(2)]:hidden"
+            />
+          ) : (
+            "Keys"
+          )}
           <Icon
             name={expanded ? "ChevronUp" : "ChevronDown"}
             className="size-3"

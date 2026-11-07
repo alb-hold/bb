@@ -773,7 +773,10 @@ function MarkdownCodeBlock({
   }
 
   return (
-    <div className="my-2 overflow-visible rounded-md border border-border bg-surface-recessed">
+    <div
+      data-code-card=""
+      className="my-2 overflow-visible rounded-md border border-border bg-surface-recessed"
+    >
       <div
         data-clipboard-ignore
         data-code-actions=""

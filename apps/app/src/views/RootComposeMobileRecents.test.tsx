@@ -31,6 +31,7 @@ import { CompactViewportOverrideProvider } from "@bb/shared-ui/hooks/use-compact
 import type { SystemEnvironmentProvider } from "@bb/server-contract";
 import { systemEnvironmentProvidersQueryKey } from "@/hooks/queries/environment-provider-queries";
 import { RootComposeMobileRecents } from "./RootComposeMobileRecents";
+import { RootComposeHome } from "./RootComposeHome";
 import { makeThreadListEntry } from "@bb/test-helpers/domain-fixtures";
 import { CORE_THREAD_ACTIONS } from "@/lib/thread-actions/core-thread-actions";
 import { ThreadActionCollectors } from "@/lib/thread-actions/thread-action-registry";
@@ -385,10 +386,7 @@ describe("mobile recents section", () => {
     expect(label.className).toContain("top-0");
     expect(label.className).toContain("bg-background");
     expect(label.classList.contains("py-1")).toBe(true);
-    expect(label.querySelector('[data-overflow-fade="below"]')).not.toBeNull();
-    expect(
-      label.querySelector('[data-overflow-fade="below"]')?.className,
-    ).toContain("h-6");
+    expect(label.querySelector('[data-overflow-fade="below"]')).toBeNull();
   });
 });
 
@@ -432,11 +430,10 @@ describe("mobile recent thread rows", () => {
     );
     const metadata = screen.getByTitle(`bb \u00b7 ${expected}`);
     expect(metadata.classList.contains("text-xs")).toBe(true);
-    expect(metadata.classList.contains("text-muted-foreground")).toBe(true);
+    expect(metadata.classList.contains("text-subtle-foreground")).toBe(true);
     expect(metadata.className).not.toContain("pointer-coarse:text-sm");
-    expect(metadata.querySelector("[data-icon]")?.getAttribute("data-icon")).toBe(
-      "Folder",
-    );
+    expect(metadata.querySelector("[data-icon]")).toBeNull();
+    expect(metadata.firstElementChild?.classList.contains("size-4")).toBe(true);
   });
 
   it.each([
@@ -484,8 +481,9 @@ describe("mobile recent thread rows", () => {
       `${branch.slice(0, 6)}…`,
     );
     expect(metadata.classList.contains("leading-4")).toBe(true);
-    expect(metadata.querySelector("[data-icon-root]")?.hasAttribute("data-icon-root")).toBe(
-      true,
+    expect(metadata.firstElementChild?.classList.contains("size-4")).toBe(true);
+    expect(metadata.firstElementChild?.getAttribute("aria-hidden")).toBe(
+      "true",
     );
   });
 
@@ -603,15 +601,32 @@ describe("RootComposeMobileRecents", () => {
     };
     const { rerender } = render(
       <TestProviders>
-        <RootComposeMobileRecents
-          {...props}
-          threads={Array.from({ length: 6 }, (_, i) =>
-            makeThread({ id: `recent-${i}`, title: `Recent ${i}` }),
-          )}
+        <RootComposeHome
+          isCompact={false}
+          composer={<div data-testid="desktop-composer" />}
+          homepageSections={null}
+          compactScrollContent={
+            <RootComposeMobileRecents
+              {...props}
+              threads={Array.from({ length: 6 }, (_, i) =>
+                makeThread({ id: `recent-${i}`, title: `Recent ${i}` }),
+              )}
+            />
+          }
         />
       </TestProviders>,
     );
     expect(screen.getAllByRole("link")).toHaveLength(3);
+    expect(
+      screen
+        .getByTestId("root-compose-desktop-recents")
+        .contains(screen.getByRole("list")),
+    ).toBe(true);
+    expect(
+      document.querySelector(
+        "[data-root-compose-mobile-recents] [data-overflow-fade]",
+      ),
+    ).toBeNull();
     expect(
       screen.getByText("Recent").closest("section")?.className,
     ).not.toContain("md:hidden");
@@ -781,9 +796,13 @@ describe("RootComposeMobileRecents", () => {
   });
 });
 
-it.each(["plain", "expanded", "collapsed", "native", "worktree"])(
-  "keeps cached and live Recent row geometry and metadata identical (%s)",
-  (shape) => {
+it.each(
+  ["plain", "expanded", "collapsed", "native", "worktree"].flatMap((shape) =>
+    [true, false].map((isCompact) => ({ shape, isCompact })),
+  ),
+)(
+  "keeps cached and live Recent row geometry identical ($shape, compact=$isCompact)",
+  ({ shape, isCompact }) => {
     vi.spyOn(Date, "now").mockReturnValue(1800000000000);
     const thread = makeThread({
       title: "Cached work",
@@ -819,10 +838,12 @@ it.each(["plain", "expanded", "collapsed", "native", "worktree"])(
       JSON.stringify(readCachedSidebarBootstrap()),
     );
     resetSidebarBootstrapCacheForTest();
-    expect(readCachedSidebarBootstrap()?.projects[0]?.threads[0]?.nativeTerminal).toBe(shape === "native");
+    expect(
+      readCachedSidebarBootstrap()?.projects[0]?.threads[0]?.nativeTerminal,
+    ).toBe(shape === "native");
     const cached = render(
       <TestProviders store={store}>
-        <CompactViewportOverrideProvider isCompactViewport>
+        <CompactViewportOverrideProvider isCompactViewport={isCompact}>
           <RouteLoadingSkeleton isBoundedPane={false} variant="root-compose" />
         </CompactViewportOverrideProvider>
       </TestProviders>,
@@ -835,10 +856,15 @@ it.each(["plain", "expanded", "collapsed", "native", "worktree"])(
     const cachedClasses = [cachedRow, ...cachedRow.querySelectorAll("*")].map(
       (node) => node.getAttribute("class"),
     );
-    const expectedGlyph = shape === "native" ? "Terminal" : shape === "worktree" ? "FolderGit" : "Folder";
-    const expectedLabel = shape === "native" ? "Native terminal" : shape === "worktree" ? "Worktree" : "Workspace";
-    expect(cachedRow.querySelector(`[data-icon="${expectedGlyph}"]`)).not.toBeNull();
-    expect(cachedRow.querySelector(`[role="img"][aria-label="${expectedLabel}"]`)).not.toBeNull();
+    const expectedGlyph = shape === "native" ? "Terminal" : null;
+    const expectedLabel = "Native terminal";
+    expect(cachedRow.querySelector('[data-icon="Terminal"]') !== null).toBe(
+      expectedGlyph !== null,
+    );
+    expect(
+      cachedRow.querySelector(`[role="img"][aria-label="${expectedLabel}"]`) !==
+        null,
+    ).toBe(expectedGlyph !== null);
     const cachedText = cachedRow.textContent;
     const cachedPadding = cachedRow.getAttribute("style");
     const cachedRows = cachedSection!.querySelectorAll("li").length;
@@ -866,8 +892,13 @@ it.each(["plain", "expanded", "collapsed", "native", "worktree"])(
         node.getAttribute("class"),
       ),
     ).toEqual(cachedClasses);
-    expect(liveRow.querySelector(`[data-icon="${expectedGlyph}"]`)).not.toBeNull();
-    expect(liveRow.querySelector(`[role="img"][aria-label="${expectedLabel}"]`)).not.toBeNull();
+    expect(liveRow.querySelector('[data-icon="Terminal"]') !== null).toBe(
+      expectedGlyph !== null,
+    );
+    expect(
+      liveRow.querySelector(`[role="img"][aria-label="${expectedLabel}"]`) !==
+        null,
+    ).toBe(expectedGlyph !== null);
     expect(liveRow.textContent).toBe(cachedText);
     expect(liveRow.getAttribute("style")).toBe(cachedPadding);
     expect(liveSection.querySelectorAll("li").length).toBe(cachedRows);

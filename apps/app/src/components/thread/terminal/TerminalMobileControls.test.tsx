@@ -52,6 +52,11 @@ describe("TerminalMobileControls", () => {
         expect(
           enter.querySelector('[data-icon="CornerDownLeft"]') !== null,
         ).toBe(compact);
+        if (compact) {
+          expect(
+            more.querySelector('[data-icon="Keyboard"]')?.getAttribute("class"),
+          ).toContain("scale-y-75");
+        }
         expect(more.querySelector('[data-icon="Keyboard"]') !== null).toBe(
           compact,
         );

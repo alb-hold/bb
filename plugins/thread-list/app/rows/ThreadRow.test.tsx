@@ -577,11 +577,16 @@ describe("ThreadRow", () => {
     expect(context?.classList.contains("text-muted-foreground")).toBe(true);
     expect(context?.classList.contains("font-normal")).toBe(true);
     expect(context?.classList.contains("text-xs")).toBe(true);
-    expect(slot?.getAttribute("role")).toBe("img");
-    expect(slot?.getAttribute("aria-label")).toBe(label);
-    expect(slot?.querySelector("[data-icon]")?.getAttribute("data-icon")).toBe(label === "Native terminal" ? "Terminal" : label === "Worktree" ? "FolderGit" : "Folder");
-    expect(context?.querySelectorAll('[role="img"]')).toHaveLength(1);
-    expect(slot?.querySelector("[data-icon]")?.classList.contains("size-3.5")).toBe(true);
+    expect(slot?.classList.contains("size-4")).toBe(true);
+    if (label === "Native terminal") {
+      expect(slot?.getAttribute("role")).toBe("img");
+      expect(slot?.getAttribute("aria-label")).toBe(label);
+      expect(slot?.querySelector("[data-icon]")?.getAttribute("data-icon")).toBe("Terminal");
+      expect(slot?.querySelector("[data-icon]")?.classList.contains("size-4")).toBe(true);
+    } else {
+      expect(slot?.getAttribute("aria-hidden")).toBe("true");
+      expect(slot?.querySelector("[data-icon]")).toBeNull();
+    }
   });
 
   it.each([
@@ -3622,12 +3627,33 @@ it("uses regular desktop weight for inactive rows and medium for attention", () 
   expect(metadata.className).toContain("md:text-subtle-foreground");
 });
 
-it("hides plain workspace glyphs on desktop and retains meaningful worktree glyphs", () => {
+it("reserves an equal metadata slot for chat, worktree and terminal rows", () => {
   const view = renderThreadRow({ thread: createThread({ environment: null }) });
-  expect(screen.getByRole("img", { name: "Workspace" }).classList.contains("md:hidden")).toBe(true);
-  view.rerenderThreadRow(createThread({ environment: {
-    id: "env-worktree", name: null, branchName: "feature", path: null,
-    isWorktree: true, providerId: null, workspaceDisplayKind: null,
-  } }));
-  expect(screen.getByRole("img", { name: "Worktree" }).classList.contains("md:hidden")).toBe(false);
+  const slot = () =>
+    view.container.querySelector("[data-sidebar-thread-context]")!
+      .firstElementChild!;
+  expect(slot().classList.contains("size-4")).toBe(true);
+  expect(slot().getAttribute("aria-hidden")).toBe("true");
+  expect(slot().querySelector("[data-icon]")).toBeNull();
+  view.rerenderThreadRow(createThread({ experimental_nativeTerminal: true }));
+  expect(screen.getByRole("img", { name: "Native terminal" })).toBe(slot());
+  expect(
+    slot().querySelector("[data-icon]")?.classList.contains("size-4"),
+  ).toBe(true);
+  view.rerenderThreadRow(
+    createThread({
+      environment: {
+        id: "env-worktree",
+        name: null,
+        branchName: "feature",
+        path: null,
+        isWorktree: true,
+        providerId: null,
+        workspaceDisplayKind: null,
+      },
+    }),
+  );
+  expect(slot().getAttribute("aria-hidden")).toBe("true");
+  expect(slot().querySelector("[data-icon]")).toBeNull();
+  expect(slot().classList.contains("size-4")).toBe(true);
 });

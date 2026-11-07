@@ -948,6 +948,8 @@ it("reserves missing stored plugin positions before late footer registration", (
   const slots = () =>
     view.container.querySelector("[data-footer-plugin-slots]")!;
   expect(slots()).not.toBeNull();
+  expect(slots().className).toContain("border-l");
+  expect(slots().className).toContain("pl-1");
   expect(
     slots().querySelectorAll("[data-footer-plugin-placeholder]"),
   ).toHaveLength(2);
@@ -999,4 +1001,26 @@ it("reserves two plugin controls on an uncached first paint", () => {
   expect(
     slots.querySelectorAll("[data-footer-plugin-placeholder]"),
   ).toHaveLength(2);
+});
+
+it("contains branded footer marks in the shared outline icon set", () => {
+  setPluginSlotRegistrations(
+    "brand",
+    registrationSet({
+      sidebarFooterActions: [
+        {
+          id: "open",
+          title: "Branded action",
+          icon: "brand:filled-mark",
+          run: () => {},
+        },
+      ],
+    }),
+  );
+  renderWithProviders(<FooterHarness />);
+  const button = screen.getByRole("button", { name: "Branded action" });
+  expect(
+    button.querySelector('[data-icon="Puzzle"]')?.classList.contains("size-4"),
+  ).toBe(true);
+  expect(button.querySelector("img")).toBeNull();
 });
