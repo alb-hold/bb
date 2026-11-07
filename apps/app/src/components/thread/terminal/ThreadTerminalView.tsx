@@ -2151,9 +2151,11 @@ export function ThreadTerminalView({
           ...terminalFontOptions,
         });
       });
+      markTerminalPerformance("terminal-xterm-import-start");
       const requiredModulesPromise = importTerminalModules();
       const [{ Terminal }, { FitAddon: LoadedFitAddon }, { Unicode11Addon }] =
         await requiredModulesPromise;
+      markTerminalPerformance("terminal-xterm-import-end");
       modulesReady = true;
       if (disposed) {
         return;
@@ -2316,7 +2318,9 @@ export function ThreadTerminalView({
       terminal.loadAddon(fitAddon);
       terminal.loadAddon(new Unicode11Addon());
       terminal.unicode.activeVersion = TERMINAL_UNICODE_VERSION;
+      markTerminalPerformance("terminal-xterm-open-start");
       terminal.open(containerElement);
+      markTerminalPerformance("terminal-xterm-open-end");
       trackTerminalScrollability(terminal);
       const viewport =
         terminal.element?.querySelector<HTMLElement>(".xterm-viewport");

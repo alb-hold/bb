@@ -44,6 +44,7 @@ export function frontendPriorityPluginIds(pathname: string): string[] {
   const routePluginId = getPluginPanelRoutePluginId(pathname);
   return [
     ...new Set([
+      "thread-list",
       ...(routePluginId === null ? [] : [routePluginId]),
       ...expectedSurfaceProviderIds(),
     ]),

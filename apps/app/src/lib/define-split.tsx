@@ -11,6 +11,7 @@ import {
   type ComponentType,
   type ReactNode,
 } from "react";
+import { traceTerminalGate } from "./terminal-performance";
 import { loadChunkWithRetries } from "./retryable-chunk-import";
 
 export type SplitTier = "preload" | "intent";
@@ -65,8 +66,14 @@ export function defineSplit<P extends object>({
   let pending: Promise<{ default: ComponentType<P> }> | null = null;
   let loaded: ComponentType<P> | null = null;
   const loadModule = () => {
-    pending ??= prepareSplitImport(id)
-      .then(() => loadChunkWithRetries(load))
+    pending ??= traceTerminalGate(`terminal-split-${id}-prepare`, () =>
+      prepareSplitImport(id),
+    )
+      .then(() =>
+        traceTerminalGate(`terminal-split-${id}-import`, () =>
+          loadChunkWithRetries(load),
+        ),
+      )
       .then((component) => {
         loaded = component;
         return { default: component };

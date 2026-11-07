@@ -1,3 +1,4 @@
+import { useTerminalMountGate } from "@/hooks/useTerminalMountGate";
 import { focusPaneComposer } from "@/lib/pane-composer-focus";
 import { cn } from "@bb/shared-ui/lib/utils";
 import {
@@ -309,6 +310,7 @@ function SplitThreadAreaContent({ routeContent }: SplitThreadAreaProps) {
       : currentContent
         ? reconcileLayoutForContent(null, currentContent)
         : null);
+  useTerminalMountGate("terminal-split-layout", "workspace", layout !== null && currentContent !== null);
   const panes = layout === null ? [] : listPanes(layout.root);
   const isSplitActive = splitWorkspaceActive && panes.length > 1;
   const maximizedPane =

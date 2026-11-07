@@ -1,3 +1,8 @@
+import { useTerminalSuspenseGate } from "./hooks/useTerminalMountGate";
+import {
+  traceTerminalGate,
+  markTerminalPerformance,
+} from "./lib/terminal-performance";
 import { appQueryClient } from "./lib/app-query-client";
 import { environmentProvidersQueryOptions } from "./hooks/queries/environment-provider-queries";
 import { machineProvidersQueryOptions } from "./hooks/queries/machine-provider-queries";
@@ -133,7 +138,12 @@ const MachineSettingsView = lazy(() =>
   })),
 );
 const SplitWorkspaceRoute = lazy(() =>
-  trackCriticalLoad(import("./views/SplitWorkspaceRoute")),
+  trackCriticalLoad(
+    traceTerminalGate(
+      "terminal-workspace-route-import",
+      () => import("./views/SplitWorkspaceRoute"),
+    ),
+  ),
 );
 
 function NavigatePreservingLocation({ pathname }: { pathname: string }) {
@@ -330,11 +340,34 @@ export function HashNavigationScroll() {
   return null;
 }
 
+function WorkspaceRouteFallback({
+  rootCompose,
+  thread,
+}: {
+  rootCompose: boolean;
+  thread: boolean;
+}) {
+  useTerminalSuspenseGate("terminal-workspace-route-fallback");
+  return (
+    <RouteLoadingSkeleton
+      isBoundedPane={false}
+      variant={rootCompose ? "root-compose" : "default"}
+    >
+      {thread ? <ThreadTimelineLoadingSkeleton /> : null}
+    </RouteLoadingSkeleton>
+  );
+}
+
 export function AppRoutes() {
   const { isThreadView, threadId } = useRouteState();
   useThreadOpenIntent();
   useEffect(() => {
-    if (threadId) prefetchThreadOpenOnIntent(threadId);
+    if (threadId) {
+      markTerminalPerformance("terminal-route-navigation", {
+        detail: { threadId },
+      });
+      prefetchThreadOpenOnIntent(threadId);
+    }
   }, [threadId]);
   const isRootComposeView = useLocation().pathname === APP_ROOT_ROUTE_PATH;
   useEffect(() => {
@@ -476,12 +509,10 @@ export function AppRoutes() {
             element={
               <Suspense
                 fallback={
-                  <RouteLoadingSkeleton
-                    isBoundedPane={false}
-                    variant={isRootComposeView ? "root-compose" : "default"}
-                  >
-                    {isThreadView ? <ThreadTimelineLoadingSkeleton /> : null}
-                  </RouteLoadingSkeleton>
+                  <WorkspaceRouteFallback
+                    rootCompose={isRootComposeView}
+                    thread={isThreadView}
+                  />
                 }
               >
                 <SplitWorkspaceRoute />

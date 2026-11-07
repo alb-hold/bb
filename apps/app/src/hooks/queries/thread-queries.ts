@@ -1,3 +1,4 @@
+import { traceTerminalGate } from "@/lib/terminal-performance";
 import { useThreadDefaultExecutionOptions } from "./thread-default-execution-options-query";
 import { useThreadQueuedMessages } from "./thread-panel-queries";
 import {
@@ -742,11 +743,16 @@ export function threadDetailBootstrapQueryOptions(
         });
       }
 
-      const thread = await sdk.threads.get({
-        include: "environment,host",
-        threadId,
-        signal,
-      });
+      const thread = await traceTerminalGate(
+        "terminal-thread-bootstrap",
+        () =>
+          sdk.threads.get({
+            include: "environment,host",
+            threadId,
+            signal,
+          }),
+        { threadId },
+      );
       ingestThreadDetailBootstrap({
         queryClient,
         thread,

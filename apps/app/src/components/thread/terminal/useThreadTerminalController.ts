@@ -23,9 +23,7 @@ import {
   omitSupersededDisconnectedSessions,
   shouldShowRetainedTerminalSession,
 } from "@/lib/terminal-session-visibility";
-import {
-  useMountedTerminalRegistration,
-} from "./mounted-terminals";
+import { useMountedTerminalRegistration } from "./mounted-terminals";
 import {
   resolveTerminalScopeKey,
   type ThreadTerminalTarget,
@@ -55,6 +53,7 @@ export type { ThreadTerminalTarget };
 
 export interface ThreadTerminalControllerArgs {
   canCreateTerminal?: boolean;
+  initialSession?: TerminalSession;
   fixedPanelTarget?: TerminalCreateTarget;
   fixedTerminalId?: string;
   isPanelOpen: boolean;
@@ -205,6 +204,7 @@ export function pickActiveTerminalId(
 
 export function useThreadTerminalController({
   canCreateTerminal = true,
+  initialSession,
   fixedPanelTarget,
   fixedTerminalId,
   isPanelOpen,
@@ -281,7 +281,13 @@ export function useThreadTerminalController({
   const closingTerminalVariables = closeTerminalMutation.variables;
   const sessions = useMemo(() => {
     const currentSessions =
-      terminalsQuery.data?.sessions ?? EMPTY_TERMINAL_SESSIONS;
+      terminalsQuery.data?.sessions ??
+      (initialSession &&
+      initialSession.id === terminalId &&
+      target.kind === "thread" &&
+      initialSession.threadId === target.threadId
+        ? [initialSession]
+        : EMPTY_TERMINAL_SESSIONS);
     const scopedSessions =
       target.kind === "host_path"
         ? currentSessions.filter((session) =>
@@ -295,7 +301,13 @@ export function useThreadTerminalController({
       return scopedSessions;
     }
     return [...scopedSessions, retainedExitedSession];
-  }, [retainedExitedSession, target, terminalsQuery.data?.sessions]);
+  }, [
+    initialSession,
+    terminalId,
+    retainedExitedSession,
+    target,
+    terminalsQuery.data?.sessions,
+  ]);
   const paneRetainedTerminalIds = useMemo(
     () =>
       new Set<string>(
