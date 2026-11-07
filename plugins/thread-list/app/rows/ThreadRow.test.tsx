@@ -3102,6 +3102,7 @@ const CHROMIUM_QUIET_FLAGS = [
 
 interface RowLayout {
   innerWidth: number;
+  context: { textLeft: number; glyphWidth: number } | null;
   row: {
     width: number;
     height: number;
@@ -3136,6 +3137,7 @@ const bar = document.querySelector("[role=progressbar]");
 const chip = document.querySelector("[data-sidebar-thread-status-chip]");
 const glyph = document.querySelector("[data-thread-status-glyph]");
 const statusSlot = document.querySelector("[data-sidebar-thread-trailing-indicator]");
+const context = document.querySelector("[data-sidebar-thread-context]");
 const visible = (element) => {
   for (let node = element; node; node = node.parentElement) {
     const style = getComputedStyle(node);
@@ -3145,6 +3147,10 @@ const visible = (element) => {
 };
 const layout = {
   innerWidth: window.innerWidth,
+  context: context && context.children.length > 1 ? {
+    textLeft: box(context.children[1]).left,
+    glyphWidth: box(context.children[0]).width,
+  } : null,
   row: box(document.querySelector("[data-sidebar-rename-row]")),
   link: box(document.querySelector("[data-sidebar-thread-id]")),
   statusGlyph: glyph && statusSlot ? { ...box(statusSlot), kind: glyph.getAttribute("data-thread-status-glyph"), visible: visible(glyph) } : null,
@@ -3367,6 +3373,34 @@ describe.skipIf(
 )("ThreadRow row-state layout", () => {
   it("has a Chromium binary to measure layout with", () => {
     expect(chromiumPath).not.toBeNull();
+  });
+
+  it("aligns metadata text after chat, terminal and worktree glyph slots", async () => {
+    const view = renderThreadRow({
+      thread: createThread({ environment: null }),
+      isCompactViewport: false,
+    });
+    const chat = await measureRowLayout(view.container.innerHTML, 1280);
+    view.rerenderThreadRow(
+      createThread({ environment: null, experimental_nativeTerminal: true }),
+    );
+    const terminal = await measureRowLayout(view.container.innerHTML, 1280);
+    view.rerenderThreadRow(
+      createThread({
+        environment: makeSidebarEnvironment({ isWorktree: true }),
+      }),
+    );
+    const worktree = await measureRowLayout(view.container.innerHTML, 1280);
+    expect(chat.context).not.toBeNull();
+    expect(chat.context?.glyphWidth).toBe(16);
+    for (const layout of [terminal, worktree]) {
+      expect(layout.context?.glyphWidth).toBe(16);
+      expect(layout.context?.textLeft).toBe(chat.context?.textLeft);
+    }
+    await writeFile(
+      join(tmpdir(), "p108-sidebar-metadata-offsets.json"),
+      JSON.stringify({ chat: chat.context, terminal: terminal.context, worktree: worktree.context }),
+    );
   });
 
   it("keeps desktop sidebar row height when the smallest text advances one tier", async () => {
