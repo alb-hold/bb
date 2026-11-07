@@ -2743,6 +2743,7 @@ export function ThreadTerminalView({
           tailBytes: 64 * 1024,
         });
         for (const chunk of output.chunks) {
+          if (disposed) return;
           await new Promise<void>((resolve) => {
             const bytes = decodeBase64Bytes(chunk.dataBase64);
             if (outputPipeline) outputPipeline.push(bytes, resolve);
@@ -3356,6 +3357,7 @@ export function ThreadTerminalView({
                 }
               },
             });
+            if (disposed) return;
             if (retainNativeOutput) {
               retainedOutputReplayed = true;
               fitTerminal();
@@ -3427,6 +3429,7 @@ export function ThreadTerminalView({
         if (disposed) return;
         activeTransport.start();
       }
+      if (disposed) return;
       const sendTerminalInput = (
         dataBase64: string,
         inputEventAt?: number,
