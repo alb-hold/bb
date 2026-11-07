@@ -70,6 +70,9 @@ describe("TerminalMobileControls", () => {
       expect(button.className.split(/\s+/u)).toEqual(
         expect.arrayContaining([
           "h-11",
+          "w-max",
+          "shrink-0",
+          "whitespace-nowrap",
           "rounded-full",
           "bg-[image:var(--pill-surface)]",
           "active:bg-none",
