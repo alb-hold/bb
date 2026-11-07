@@ -27,6 +27,8 @@ import {
 import { classifyCreateFailure } from "./host/create-failure.js";
 import { isWorktreePreservedError } from "./host/worktree-preservation.js";
 
+export { setTestWorktreeHolderScan } from "./host/worktree-preservation.js";
+
 function completionPathForWorktree(worktreePath: string): string {
   return `${worktreePath}.completed`;
 }

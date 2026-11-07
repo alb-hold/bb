@@ -1,11 +1,23 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { runGit, WorkspaceError } from "bb-environment-provider-host/git";
-import { describeHolderScan, scanWorktreeHolders } from "./holders.js";
+import {
+  describeHolderScan,
+  scanWorktreeHolders,
+  type WorktreeHolderScan,
+} from "./holders.js";
 import { parseWorktreeListPorcelain } from "./worktree-list.js";
 
 export const KEEP_WORKTREE_MARKER = ".keep-worktree";
 export const WORKTREE_PRESERVED_CODE = "worktree_preserved";
+
+let testWorktreeHolderScan: WorktreeHolderScan | undefined;
+
+export function setTestWorktreeHolderScan(
+  scan: WorktreeHolderScan | undefined,
+): void {
+  testWorktreeHolderScan = scan;
+}
 
 const IN_PROGRESS_OPERATION_PATHS = [
   "MERGE_HEAD",
@@ -623,7 +635,7 @@ export async function findPreservationReasons(
     }
   }
   const holderReason = describeHolderScan(
-    await scanWorktreeHolders(identity.path),
+    testWorktreeHolderScan ?? (await scanWorktreeHolders(identity.path)),
   );
   if (holderReason !== null) reasons.push(holderReason);
   return reasons;

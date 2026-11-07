@@ -959,32 +959,6 @@ async function scanWithLsof(directory: string): Promise<WorktreeHolderScan> {
 export async function scanWorktreeHolders(
   directory: string,
 ): Promise<WorktreeHolderScan> {
-  if (process.env.NODE_ENV === "test") {
-    const override = process.env["BB_TEST_WORKTREE_HOLDER_SCAN"];
-    if (override !== undefined) {
-      try {
-        const value: unknown = JSON.parse(override);
-        if (
-          typeof value === "object" &&
-          value !== null &&
-          "status" in value &&
-          value.status === "clear"
-        ) {
-          return { status: "clear" };
-        }
-        if (
-          typeof value === "object" &&
-          value !== null &&
-          "status" in value &&
-          value.status === "uncertain" &&
-          "reason" in value &&
-          typeof value.reason === "string"
-        ) {
-          return { status: "uncertain", reason: value.reason };
-        }
-      } catch {}
-    }
-  }
   if (process.platform === "linux") return scanLinux(directory, activeProc);
   if (process.platform === "win32") {
     return {

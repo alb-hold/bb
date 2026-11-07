@@ -60,6 +60,51 @@ afterEach(async () => {
 });
 
 describe("confined host path mutations", () => {
+  it.skipIf(process.platform !== "linux")(
+    "does not let the test environment override a live holder during thread storage deletion",
+    async () => {
+      const root = await makeRoot();
+      const target = path.join(root, "live-holder");
+      await fs.mkdir(target);
+      await fs.writeFile(path.join(target, "data.txt"), "keep");
+      const child = spawn("sleep", ["30"], {
+        cwd: target,
+        stdio: "ignore",
+      });
+      await once(child, "spawn");
+      if (child.pid !== undefined) trackedPids.add(child.pid);
+      const originalNodeEnv = process.env.NODE_ENV;
+      const originalHolderScan = process.env.BB_TEST_WORKTREE_HOLDER_SCAN;
+      process.env.NODE_ENV = "test";
+      process.env.BB_TEST_WORKTREE_HOLDER_SCAN = JSON.stringify({
+        status: "clear",
+      });
+      try {
+        await expect(
+          removeDirectoryAfterHolderRecheck({
+            directory: target,
+            action: "delete thread storage",
+            recursive: true,
+          }),
+        ).rejects.toMatchObject({ code: "path_in_use" });
+        await expect(
+          fs.readFile(path.join(target, "data.txt"), "utf8"),
+        ).resolves.toBe("keep");
+        expect(child.exitCode).toBeNull();
+        expect(child.signalCode).toBeNull();
+      } finally {
+        if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
+        else process.env.NODE_ENV = originalNodeEnv;
+        if (originalHolderScan === undefined)
+          delete process.env.BB_TEST_WORKTREE_HOLDER_SCAN;
+        else process.env.BB_TEST_WORKTREE_HOLDER_SCAN = originalHolderScan;
+        if (child.exitCode === null && child.signalCode === null) child.kill();
+        if (child.exitCode === null && child.signalCode === null)
+          await once(child, "close");
+      }
+    },
+  );
+
   it.skipIf(!hasHeldDirectoryRemoval || process.platform !== "linux").each([
     ["no DAC capability", "0000000000000000"],
     ["CAP_DAC_OVERRIDE", "0000000000000002"],

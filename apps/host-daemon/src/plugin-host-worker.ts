@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { isAbsolute } from "node:path";
 import { pathToFileURL } from "node:url";
+import type { WorktreeHolderScan } from "@bb/process-utils";
 
 const HOST_WORKER_PROTOCOL_VERSION = 2;
 function createOperationEnvironmentScope(target: NodeJS.ProcessEnv) {
@@ -33,6 +34,29 @@ function createOperationEnvironmentScope(target: NodeJS.ProcessEnv) {
 const acquireEnvironment = createOperationEnvironmentScope(process.env);
 const RESULT_MAX_BYTES = 8 * 1024 * 1024;
 const DEFAULT_DISPOSE_TIMEOUT_MS = 5_000;
+
+function takeTestWorktreeHolderScan(): WorktreeHolderScan | undefined {
+  const serialized = process.env.BB_TEST_WORKTREE_HOLDER_SCAN;
+  delete process.env.BB_TEST_WORKTREE_HOLDER_SCAN;
+  if (process.env.NODE_ENV !== "test" || serialized === undefined)
+    return undefined;
+  try {
+    const value: unknown = JSON.parse(serialized);
+    if (typeof value !== "object" || value === null || !("status" in value))
+      return undefined;
+    if (value.status === "clear") return { status: "clear" };
+    if (
+      value.status === "uncertain" &&
+      "reason" in value &&
+      typeof value.reason === "string"
+    ) {
+      return { status: "uncertain", reason: value.reason };
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 interface StandardSchema {
   readonly "~standard": {
@@ -606,8 +630,16 @@ process.once("disconnect", () => void dispose());
 if (!process.connected) void dispose();
 
 try {
+  const testWorktreeHolderScan = takeTestWorktreeHolderScan();
   const imported = await import(pathToFileURL(artifactPath).href);
   if (disposing) process.exit(0);
+  const setTestWorktreeHolderScan = Reflect.get(
+    imported,
+    "setTestWorktreeHolderScan",
+  );
+  if (typeof setTestWorktreeHolderScan === "function") {
+    setTestWorktreeHolderScan(testWorktreeHolderScan);
+  }
   entry = parseEntry(imported.default);
   process.on("message", (raw: unknown) => {
     const message = parseParentMessage(raw);
