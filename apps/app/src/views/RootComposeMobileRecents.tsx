@@ -421,19 +421,43 @@ function MobileRecentThreadRow({
                 aria-hidden="true"
               />
               <span className="flex min-w-0 flex-1 items-center whitespace-nowrap">
-                {metadata.project !== null ? (
-                  <span className="max-w-[40%] shrink-0 overflow-hidden text-ellipsis">
-                    {metadata.project}
-                  </span>
-                ) : null}
-                {metadata.project !== null ? (
+                <span
+                  className={cn(
+                    "grid min-w-0",
+                    metadata.project !== null && metadata.branch !== null
+                      ? "grid-cols-[minmax(0,max-content)_auto_minmax(min-content,1fr)]"
+                      : "grid-cols-[minmax(0,1fr)]",
+                  )}
+                >
+                  {metadata.project !== null ? (
+                    <span className="min-w-0">
+                      <span className="block shrink-0 overflow-hidden text-ellipsis">
+                        {metadata.project}
+                      </span>
+                    </span>
+                  ) : null}
+                  {metadata.project !== null && metadata.branch !== null ? (
+                    <span className="shrink-0 whitespace-pre">
+                      {" \u00b7 "}
+                    </span>
+                  ) : null}
+                  {metadata.branch !== null ? (
+                    <span
+                      className="grid min-w-min before:invisible before:col-start-1 before:row-start-1 before:content-[attr(data-branch-minimum)]"
+                      data-branch-minimum={
+                        metadata.branch.length <= 7
+                          ? metadata.branch
+                          : `${metadata.branch.slice(0, 6)}…`
+                      }
+                    >
+                      <span className="col-start-1 row-start-1 min-w-0 truncate">
+                        {metadata.branch}
+                      </span>
+                    </span>
+                  ) : null}
+                </span>
+                {metadata.project !== null || metadata.branch !== null ? (
                   <span className="shrink-0 whitespace-pre">{" \u00b7 "}</span>
-                ) : null}
-                {metadata.branch !== null ? (
-                  <>
-                    <span className="min-w-0 truncate">{metadata.branch}</span>
-                    <span className="shrink-0 whitespace-pre">{" \u00b7 "}</span>
-                  </>
                 ) : null}
                 <span className="shrink-0">{metadata.age}</span>
               </span>
