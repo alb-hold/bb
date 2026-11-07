@@ -25,6 +25,7 @@ const hooks = vi.hoisted(() => ({
     },
   })),
   waiting: false,
+  approval: false,
   listTerminals: vi.fn(),
   preloadTerminalPanel: vi.fn(),
   refetchNative: vi.fn(),
@@ -91,18 +92,32 @@ vi.mock("@/hooks/queries/thread-queries", () => ({
             providerId: "codex",
             providerThreadId: "session",
             providerRequestId: "request",
-            payload: {
-              kind: "user_question",
-              questions: [
-                {
-                  id: "q",
-                  prompt: "Continue?",
-                  multiSelect: false,
-                  allowFreeText: true,
-                  required: true,
+            payload: hooks.approval
+              ? {
+                  kind: "approval",
+                  subject: {
+                    kind: "command",
+                    itemId: "command",
+                    command: "pwd",
+                    cwd: null,
+                    actions: [],
+                    sessionGrant: null,
+                  },
+                  reason: null,
+                  availableDecisions: ["allow_once", "deny"],
+                }
+              : {
+                  kind: "user_question",
+                  questions: [
+                    {
+                      id: "q",
+                      prompt: "Continue?",
+                      multiSelect: false,
+                      allowFreeText: true,
+                      required: true,
+                    },
+                  ],
                 },
-              ],
-            },
           },
         ]
       : [],
@@ -159,6 +174,7 @@ const nativeView: NativeTerminalThread = {
 afterEach(() => {
   cleanup();
   hooks.waiting = false;
+  hooks.approval = false;
   vi.clearAllMocks();
   vi.restoreAllMocks();
   hooks.profile.mockReturnValue({
@@ -199,15 +215,17 @@ describe("NativeThreadTerminalMain", () => {
     [false, true].flatMap(
       (compact) =>
         [
-          ["active", "Working", compact],
-          ["idle", "Idle", compact],
-          ["idle", "Check terminal", compact],
-          ["idle", "Needs input", compact],
+          ["active", "Working", false, false, false, compact],
+          ["idle", "Idle", false, false, false, compact],
+          ["active", "Check terminal", true, false, false, compact],
+          ["active", "Needs input", true, true, false, compact],
+          ["active", "Needs input", true, true, true, compact],
+          ["idle", "Needs input", false, true, false, compact],
         ] as const,
     ),
   )(
-    "places %s activity (%s) inside the header on compact=%s",
-    (displayStatus, label, compact) => {
+    "places %s activity (%s), attention=%s, pending=%s, approval=%s inside the header on compact=%s",
+    (displayStatus, label, attention, pending, approval, compact) => {
       vi.spyOn(window, "matchMedia").mockImplementation((query) => ({
         matches: compact,
         media: query,
@@ -218,14 +236,14 @@ describe("NativeThreadTerminalMain", () => {
         removeEventListener: vi.fn(),
         dispatchEvent: () => false,
       }));
-      hooks.waiting = label === "Needs input";
+      hooks.waiting = pending;
+      hooks.approval = approval;
       const terminal = {
         id: "term-live",
         status: "running",
         createdAt: Date.now(),
         lastUserInputAt: null,
-        attention:
-          label === "Check terminal" ? { at: 10, kind: "bell", seq: 1 } : null,
+        attention: attention ? { at: 10, kind: "bell", seq: 1 } : null,
       } as NonNullable<NativeTerminalThread["terminal"]>;
       hooks.listTerminals.mockReturnValue({
         data: { sessions: [terminal] },
