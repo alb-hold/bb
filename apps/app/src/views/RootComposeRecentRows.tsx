@@ -15,7 +15,7 @@ import { OverflowFade } from "@bb/shared-ui/overflow-fade";
 import { formatCompactRelativeTime } from "@bb/shared-ui/info-list-row";
 import { getThreadDisplayTitle } from "@/lib/thread-title";
 import { ThreadTitle } from "@/components/thread/ThreadTitleMentions";
-import { getEnvironmentDisplayIconName } from "@/lib/environment-workspace-display";
+import { ThreadModeGlyph } from "@bb/shared-ui/thread-mode-glyph";
 import { getProviderIconInfo } from "@/lib/provider-icon";
 import { ProviderIconMark } from "@/components/settings/ProviderIconMark";
 import { ThreadStatusGlyph } from "@/components/thread/ThreadStatusGlyph";
@@ -122,9 +122,6 @@ export function RecentThreadRowContent({
   const metadataText = [metadata.project, metadata.branch, metadata.age]
     .filter((part): part is string => part !== null && part.length > 0)
     .join(" · ");
-  const workspaceIconName = getEnvironmentDisplayIconName(
-    environmentProviderLookup,
-  );
   return (
     <>
       <span className="min-w-0 flex-1 space-y-0.5">
@@ -140,11 +137,7 @@ export function RecentThreadRowContent({
           )}
           title={metadataText}
         >
-          <Icon
-            name={workspaceIconName ?? "Folder"}
-            className="size-3.5 shrink-0"
-            aria-hidden="true"
-          />
+          <ThreadModeGlyph nativeTerminal={thread.nativeTerminal === true} isWorktree={thread.environmentIsWorktree === true} />
           <span className="flex min-w-0 flex-1 items-center whitespace-nowrap">
             <span
               className={cn(

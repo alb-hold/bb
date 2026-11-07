@@ -158,6 +158,7 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
         bullets: [
           "Group, sort, and draw every row your own way",
           "Read live threads, sections, projects, and run status",
+          "Read experimental_nativeTerminal to identify native terminal threads even while idle; the CLI exposes the same mode as nativeTerminal",
           "Use optimistic SDK writes and bb's actions to move, pin, rename, restore, archive, and split threads",
           "Keep bb's New thread button, search, and footer around it",
         ],
@@ -171,6 +172,7 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
           "PluginSidebarThreadsState",
           "PluginSidebarThread",
           "PluginSidebarThread.experimental_rowState",
+          "PluginSidebarThread.experimental_nativeTerminal",
           "PluginSidebarThread.experimental_nativeActivity",
           "PluginSidebarThread.experimental_queuedFailedCount",
           "PluginSidebarSection",

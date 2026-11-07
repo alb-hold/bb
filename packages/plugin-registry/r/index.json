@@ -386,6 +386,10 @@
       "type": "registry:ui"
     },
     {
+      "name": "thread-mode-glyph",
+      "type": "registry:ui"
+    },
+    {
       "name": "toggle",
       "type": "registry:ui"
     },

@@ -543,6 +543,11 @@
       "source": "./src/components/ui/list-loading-placeholder.tsx",
       "types": "./src/components/ui/list-loading-placeholder.tsx",
       "default": "./src/components/ui/list-loading-placeholder.tsx"
+    },
+    "./thread-mode-glyph": {
+      "source": "./src/components/ui/thread-mode-glyph.tsx",
+      "types": "./src/components/ui/thread-mode-glyph.tsx",
+      "default": "./src/components/ui/thread-mode-glyph.tsx"
     }
   },
   "scripts": {

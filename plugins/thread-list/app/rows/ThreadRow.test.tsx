@@ -543,6 +543,13 @@ describe("ThreadRow", () => {
     expect(view.container.querySelector(".bb-thread-title")?.classList.contains("md:font-medium")).toBe(true);
     expect(view.container.querySelector("[data-sidebar-thread-context]")?.classList.contains("text-muted-foreground")).toBe(true);
   });
+  it("shows Terminal for an idle native thread without live activity", () => {
+    renderThreadRow({ thread: createThread({ experimental_nativeTerminal: true }) });
+    const glyph = screen.getByRole("img", { name: "Native terminal" });
+    expect(glyph.querySelector('[data-icon="Terminal"]')).not.toBeNull();
+    expect(glyph.classList.contains("md:hidden")).toBe(false);
+  });
+
   it("renders terminal attention delivered by the host and clears it with the state", () => {
     const view = renderThreadRow({
       thread: createThread({ indicator: "check-terminal" }),
@@ -562,7 +569,7 @@ describe("ThreadRow", () => {
     ["Workspace", createThread({ environment: null })],
     ["Workspace", createThread({ environment: makeSidebarEnvironment({ isWorktree: false }) })],
     ["Worktree", createThread({ environment: makeSidebarEnvironment({ isWorktree: true }) })],
-    ["Native terminal", createThread({ experimental_nativeActivity: { lastEvidenceAt: null, freshForMs: 90_000, confirmation: "unconfirmed", evidenceKind: "unknown" } })],
+    ["Native terminal", createThread({ experimental_nativeTerminal: true, experimental_nativeActivity: { lastEvidenceAt: null, freshForMs: 90_000, confirmation: "unconfirmed", evidenceKind: "unknown" } })],
   ] as const)("keeps one subdued leading metadata glyph slot for %s", (label, thread) => {
     const view = renderThreadRow({ thread });
     const context = view.container.querySelector("[data-sidebar-thread-context]");
@@ -572,6 +579,7 @@ describe("ThreadRow", () => {
     expect(context?.classList.contains("text-xs")).toBe(true);
     expect(slot?.getAttribute("role")).toBe("img");
     expect(slot?.getAttribute("aria-label")).toBe(label);
+    expect(slot?.querySelector("[data-icon]")?.getAttribute("data-icon")).toBe(label === "Native terminal" ? "Terminal" : label === "Worktree" ? "FolderGit" : "Folder");
     expect(context?.querySelectorAll('[role="img"]')).toHaveLength(1);
     expect(slot?.querySelector("[data-icon]")?.classList.contains("size-3.5")).toBe(true);
   });
@@ -986,6 +994,7 @@ describe("ThreadRow", () => {
         runtimeStatus: "active",
         queuedWork: "failed",
         experimental_queuedFailedCount: 4,
+        experimental_nativeTerminal: true,
         experimental_nativeActivity: {
           lastEvidenceAt: null,
           freshForMs: 90_000,

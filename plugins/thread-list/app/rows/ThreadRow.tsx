@@ -1,3 +1,4 @@
+import { ThreadModeGlyph } from "@/components/ui/thread-mode-glyph";
 import {
   memo,
   createContext,
@@ -1027,7 +1028,7 @@ function ThreadRowComponent({
                 <ThreadTitle threadId={thread.id} />
               </span>
               <span data-sidebar-thread-context="" className="hidden min-w-0 items-center gap-1 truncate text-xs font-normal leading-4 text-muted-foreground md:text-subtle-foreground [&_time]:text-xs [&_time]:text-inherit md:flex">
-                <span className={thread.experimental_nativeActivity === undefined && !thread.environment?.isWorktree ? "md:hidden" : undefined} role="img" aria-label={thread.experimental_nativeActivity !== undefined ? "Native terminal" : thread.environment?.isWorktree ? "Worktree" : "Workspace"}><Icon name={thread.experimental_nativeActivity !== undefined ? "Terminal" : thread.environment?.isWorktree ? "FolderGit" : "Folder"} className="size-3.5 shrink-0" aria-hidden /></span>
+                <ThreadModeGlyph nativeTerminal={thread.experimental_nativeTerminal} isWorktree={thread.environment?.isWorktree === true} hideWorkspaceOnDesktop />
                 {showProjectName && projectName ? <span className="truncate">{projectName} ·</span> : null}
                 <InfoRowTime timestamp={thread.updatedAt} />
               </span>
