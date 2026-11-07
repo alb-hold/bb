@@ -388,6 +388,7 @@ for (;;) {
         serverPid = Number(await waitForFile(serverPidFile, 45_000));
         activeChildren.add(serverPid);
         if (mode === "during-startup") {
+          await waitForFile(join(dir, "server-ready"), 45_000);
           const deadline = Date.now() + 10_000;
           let databaseFdFound = false;
           while (Date.now() < deadline && !databaseFdFound) {

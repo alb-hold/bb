@@ -2,12 +2,18 @@ import { describe, expect, it } from "vitest";
 import {
   createProject,
   createThread,
+  getThread,
+  upsertNativeThreadReply,
   listStoredEventRows,
   noopNotifier,
+  migrate,
   upsertHost,
 } from "@bb/db";
 import { createMigratedConnection } from "@bb/db/testing";
-import { parseStoredEvent } from "../../src/services/threads/thread-data.js";
+import {
+  getLastThreadOutput,
+  parseStoredEvent,
+} from "../../src/services/threads/thread-data.js";
 
 function setup() {
   const db = createMigratedConnection();
@@ -26,6 +32,113 @@ function setup() {
 }
 
 describe("thread data stored event parsing", () => {
+  it("prefers the newer native reply over an older assistant event", () => {
+    const { db, thread } = setup();
+    try {
+      db.$client
+        .prepare(
+          `
+        INSERT INTO events (
+          id, thread_id, scope_kind, turn_id, sequence, type, item_id,
+          item_kind, parent_tool_call_id, provider_thread_id, data, created_at
+        ) VALUES (?, ?, 'turn', 'old-turn', 1, 'item/completed', ?, 'agentMessage', NULL, ?, ?, ?)
+      `,
+        )
+        .run(
+          "evt_old_native_output",
+          thread.id,
+          "msg_old",
+          "provider-old",
+          JSON.stringify({
+            item: {
+              id: "msg_old",
+              type: "agentMessage",
+              text: "old event output",
+            },
+          }),
+          1,
+        );
+      upsertNativeThreadReply(db, {
+        threadId: thread.id,
+        text: "latest native reply",
+        turnId: "native-turn",
+        recordedAt: 2,
+      });
+      expect(getLastThreadOutput(db, thread.id)).toBe("latest native reply");
+    } finally {
+      db.$client.close();
+    }
+  });
+
+  it("keeps a newer event output ahead of an older native reply", () => {
+    const { db, thread } = setup();
+    try {
+      upsertNativeThreadReply(db, {
+        threadId: thread.id,
+        text: "older native reply",
+        turnId: "native-turn",
+        recordedAt: 1,
+      });
+      db.$client
+        .prepare(
+          `
+        INSERT INTO events (
+          id, thread_id, scope_kind, turn_id, sequence, type, item_id,
+          item_kind, parent_tool_call_id, provider_thread_id, data, created_at
+        ) VALUES (?, ?, 'turn', 'new-turn', 1, 'item/completed', ?, 'agentMessage', NULL, ?, ?, ?)
+      `,
+        )
+        .run(
+          "evt_new_provider_output",
+          thread.id,
+          "msg_new",
+          "provider-new",
+          JSON.stringify({
+            item: {
+              id: "msg_new",
+              type: "agentMessage",
+              text: "new event output",
+            },
+          }),
+          2,
+        );
+      expect(getLastThreadOutput(db, thread.id)).toBe("new event output");
+    } finally {
+      db.$client.close();
+    }
+  });
+
+  it("returns a persisted native reply when no output event exists", () => {
+    const { db, thread } = setup();
+    try {
+      upsertNativeThreadReply(db, {
+        threadId: thread.id,
+        text: "latest native reply",
+        turnId: null,
+        recordedAt: Date.now(),
+      });
+      expect(getLastThreadOutput(db, thread.id)).toBe("latest native reply");
+    } finally {
+      db.$client.close();
+    }
+  });
+
+  it("keeps migrated thread reads working when the fork reply table exists", () => {
+    const { db, thread } = setup();
+    try {
+      upsertNativeThreadReply(db, {
+        threadId: thread.id,
+        text: "native reply",
+        turnId: null,
+        recordedAt: Date.now(),
+      });
+      migrate(db);
+      expect(getThread(db, thread.id)?.id).toBe(thread.id);
+    } finally {
+      db.$client.close();
+    }
+  });
+
   it("rejects malformed stored scope kinds", () => {
     const { db, thread } = setup();
 

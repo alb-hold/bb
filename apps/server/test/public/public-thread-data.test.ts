@@ -19,6 +19,7 @@ import {
   reorderQueuedThreadMessage,
   setQueuedThreadMessageGroupBoundary,
   setThreadExecutionOverride,
+  upsertNativeThreadReply,
   threads as threadRows,
 } from "@bb/db";
 import {
@@ -2645,6 +2646,26 @@ describe("public thread data routes", () => {
         permissionMode: "full",
         serviceTier: "fast",
         source: "client/turn/requested",
+      });
+    });
+  });
+
+  it("returns the persisted native reply from the thread output route", async () => {
+    await withTestHarness(async (harness) => {
+      const { thread } = seedThreadFixture(harness);
+      upsertNativeThreadReply(harness.deps.db, {
+        threadId: thread.id,
+        text: "native terminal reply",
+        turnId: "native-turn",
+        recordedAt: Date.now(),
+      });
+
+      const response = await harness.app.request(
+        `/api/v1/threads/${thread.id}/output`,
+      );
+      expect(response.status).toBe(200);
+      await expect(readJson(response)).resolves.toEqual({
+        output: "native terminal reply",
       });
     });
   });

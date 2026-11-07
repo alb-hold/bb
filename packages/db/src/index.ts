@@ -114,6 +114,11 @@ export {
   type NativeTerminalToolCredentialRecord,
 } from "./fork-native-terminal-threads.js";
 export {
+  getNativeThreadReply,
+  upsertNativeThreadReply,
+  type NativeThreadReply,
+} from "./fork-native-thread-replies.js";
+export {
   isSqliteForeignKeyConstraint,
   isSqliteUniqueConstraintOnColumns,
 } from "./sqlite-errors.js";

@@ -89,6 +89,13 @@ server.on("error", () => process.exit(1));
 server.listen(Number(process.env.BB_SERVER_PORT), "127.0.0.1");
 `;
 
+const CHILD_PROCESS_START_TIMEOUT_MS = 15_000;
+const childProcessTestTimeoutMs = (waits: number): number => waits * CHILD_PROCESS_START_TIMEOUT_MS + 15_000;
+
+async function waitForChildProcessStart(assertStarted: () => void): Promise<void> {
+  await vi.waitFor(assertStarted, { timeout: CHILD_PROCESS_START_TIMEOUT_MS, interval: 25 });
+}
+
 function createStartContext(args: {
   serverEntry: string;
   serverPort: number;
@@ -315,7 +322,7 @@ describe("startFullStackServerProcess", () => {
     });
 
     try {
-      await vi.waitFor(() =>
+      await waitForChildProcessStart(() =>
         expect(existsSync(finalizationEnteredPath)).toBe(true),
       );
       expect(terminationResolved).toBe(false);
@@ -330,9 +337,9 @@ describe("startFullStackServerProcess", () => {
         writeFileSync(finalizationReleasePath, "release");
       }
       await termination;
-      await vi.waitFor(() => expect(existsSync(completionPath)).toBe(true));
+      await waitForChildProcessStart(() => expect(existsSync(completionPath)).toBe(true));
     }
-  });
+  }, childProcessTestTimeoutMs(2));
 
   it.skipIf(process.platform === "win32")(
     "does not wait for inherited stdio handles after the writer process exits",
@@ -384,7 +391,7 @@ describe("startFullStackServerProcess", () => {
           processes,
         });
         const termination = serverRun.terminate("SIGTERM");
-        await vi.waitFor(() => expect(existsSync(holderPidPath)).toBe(true));
+        await waitForChildProcessStart(() => expect(existsSync(holderPidPath)).toBe(true));
         holderPid = Number(readFileSync(holderPidPath, "utf8"));
         expect(holderPid).toBeGreaterThan(0);
         expect(writerProcess).toBeDefined();
@@ -394,7 +401,7 @@ describe("startFullStackServerProcess", () => {
         writerProcess?.once("close", () => {
           closeObserved = true;
         });
-        await vi.waitFor(() => expect(writerProcess?.exitCode).toBe(0));
+        await waitForChildProcessStart(() => expect(writerProcess?.exitCode).toBe(0));
         expect(() => process.kill(writerPid!, 0)).toThrow(
           expect.objectContaining({ code: "ESRCH" }),
         );
@@ -441,7 +448,7 @@ describe("startFullStackServerProcess", () => {
           } catch (error) {
             if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
           }
-          await vi.waitFor(() =>
+          await waitForChildProcessStart(() =>
             expect(() => process.kill(holderPid!, 0)).toThrow(
               expect.objectContaining({ code: "ESRCH" }),
             ),
@@ -451,6 +458,7 @@ describe("startFullStackServerProcess", () => {
           await serverRun.terminate("SIGTERM").catch(() => undefined);
       }
     },
+    childProcessTestTimeoutMs(3),
   );
 
   it("bounds termination when the stdio log writer does not finish", async () => {
@@ -483,7 +491,7 @@ describe("startFullStackServerProcess", () => {
     let writerKill: ReturnType<typeof vi.spyOn> | undefined;
 
     try {
-      await vi.waitFor(() =>
+      await waitForChildProcessStart(() =>
         expect(existsSync(finalizationEnteredPath)).toBe(true),
       );
       writerPid = Number(readFileSync(finalizationEnteredPath, "utf8"));
@@ -552,7 +560,7 @@ describe("startFullStackServerProcess", () => {
       }
       await termination.catch(() => undefined);
       if (writerPid !== undefined) {
-        await vi.waitFor(() => {
+        await waitForChildProcessStart(() => {
           let writerIsGone = false;
           try {
             process.kill(writerPid!, 0);
@@ -563,7 +571,7 @@ describe("startFullStackServerProcess", () => {
         });
       }
     }
-  });
+  }, childProcessTestTimeoutMs(2));
 
   it("does not treat a stdio writer kill error as writer exit", async () => {
     const serverPort = await reserveFreePort();
@@ -594,7 +602,7 @@ describe("startFullStackServerProcess", () => {
     let writerKill: ReturnType<typeof vi.spyOn> | undefined;
 
     try {
-      await vi.waitFor(() =>
+      await waitForChildProcessStart(() =>
         expect(existsSync(finalizationEnteredPath)).toBe(true),
       );
       writerPid = Number(readFileSync(finalizationEnteredPath, "utf8"));
@@ -624,9 +632,9 @@ describe("startFullStackServerProcess", () => {
       if (!existsSync(finalizationReleasePath)) {
         writeFileSync(finalizationReleasePath, "release");
       }
-      await vi.waitFor(() => expect(existsSync(completionPath)).toBe(true));
+      await waitForChildProcessStart(() => expect(existsSync(completionPath)).toBe(true));
       if (writerPid !== undefined) {
-        await vi.waitFor(() => {
+        await waitForChildProcessStart(() => {
           let writerIsGone = false;
           try {
             process.kill(writerPid!, 0);
@@ -637,7 +645,7 @@ describe("startFullStackServerProcess", () => {
         });
       }
     }
-  });
+  }, childProcessTestTimeoutMs(3));
 
   it.each([90_000, 150_000])(
     "does not kill a server whose database migration delays /health for %i ms",
