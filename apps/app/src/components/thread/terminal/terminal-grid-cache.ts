@@ -1,3 +1,4 @@
+import { markTerminalPerformance } from "@/lib/terminal-performance";
 import { terminalLayoutFingerprint } from "./terminal-layout-fingerprint";
 import {
   readTerminalFontFamily,
@@ -192,6 +193,7 @@ export function rememberTerminalGrid(
     previous.rows === entry.rows
   )
     return;
+  markTerminalPerformance("terminal-grid-cache-write", { detail: entry });
   memory = [entry, ...entries.filter((candidate) => !matches(candidate))].slice(
     0,
     MAX_ENTRIES,
@@ -212,6 +214,7 @@ export function readCachedTerminalGrid(
   if (!stored.some((entry) => entry.terminalId === terminalId)) return null;
   const current = context(terminalId, fontSize);
   if (current === null) return null;
+  markTerminalPerformance("terminal-grid-cache-read", { detail: current });
   const entries = stored.filter((candidate) =>
     matchesContext(candidate, current),
   );

@@ -342,3 +342,54 @@ it.each([false, true])(
     expect(cache.readCachedTerminalGrid("term")).toBeNull();
   },
 );
+
+it.each([false, true])(
+  "ignores tab selection and order while a panel stays open=%s",
+  async (isOpen) => {
+    const {
+      createEmptyFixedPanelTabsState,
+      createThreadInfoFixedPanelTab,
+      createNewTabFixedPanelTab,
+      serializeFixedPanelTabsState,
+    } = await import("@bb/client-core");
+    const tabs = [createThreadInfoFixedPanelTab(), createNewTabFixedPanelTab()];
+    const state = createEmptyFixedPanelTabsState({
+      lastUsedAt: Date.now(),
+      secondary: { tabs, activeTabId: tabs[0]!.id, isOpen },
+    });
+    const key = "bb.thread.fixedPanelTabsState-thread";
+    localStorage.setItem(key, serializeFixedPanelTabsState({ state }));
+    const cache = await import("./terminal-grid-cache");
+    cache.rememberTerminalGrid("term", container(), 13, {
+      cols: 116,
+      rows: 38,
+    });
+    localStorage.setItem(
+      key,
+      serializeFixedPanelTabsState({
+        state: {
+          ...state,
+          secondary: {
+            tabs: [...tabs].reverse(),
+            activeTabId: tabs[1]!.id,
+            isOpen,
+          },
+        },
+      }),
+    );
+    expect(cache.readCachedTerminalGrid("term")).toEqual({
+      cols: 116,
+      rows: 38,
+    });
+  },
+);
+
+it("treats a newly persisted closed panel like the default closed panel", async () => {
+  const cache = await import("./terminal-grid-cache");
+  cache.rememberTerminalGrid("term", container(), 13, { cols: 116, rows: 38 });
+  localStorage.setItem(
+    "bb.thread.fixedPanelTabsState-thread",
+    JSON.stringify({ secondary: { isOpen: false } }),
+  );
+  expect(cache.readCachedTerminalGrid("term")).toEqual({ cols: 116, rows: 38 });
+});

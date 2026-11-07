@@ -2,6 +2,9 @@
 
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { rememberTerminalGrid } from "./terminal-grid-cache";
+import * as terminalFont from "./terminal-font";
+import { terminalLayoutFingerprint } from "./terminal-layout-fingerprint";
+import browserCaptures from "./terminal-grid-cache.browser-fixture";
 import { makeTerminalSession } from "@/test/fixtures/terminal-sessions";
 import { TerminalWebSocketTransport } from "@bb/client-core";
 import {
@@ -354,3 +357,64 @@ it("claims a persisted grid at socket open before the app layout mounts", async 
   expect(native.sent).toHaveLength(1);
   transport.dispose();
 });
+
+it.each(browserCaptures)(
+  "reuses the fitted key at socket open after captured WebKit hydration at $viewportWidth px",
+  async (capture) => {
+    vi.spyOn(window, "innerWidth", "get").mockReturnValue(
+      capture.viewportWidth,
+    );
+    vi.spyOn(window, "innerHeight", "get").mockReturnValue(
+      capture.viewportHeight,
+    );
+    vi.spyOn(window, "devicePixelRatio", "get").mockReturnValue(capture.dpr);
+    vi.spyOn(terminalFont, "readTerminalFontMetrics").mockReturnValue({
+      fontSize: capture.fontSize,
+      fontWeight: 400,
+      fontFamily: terminalFont.readTerminalFontFamily(),
+    });
+    localStorage.setItem("bb.splitLayout", capture.splitLayout);
+    const panelKey = "bb.thread.fixedPanelTabsState-thread-1";
+    localStorage.setItem(
+      panelKey,
+      JSON.stringify({ secondary: capture.fittedPanelGeometry }),
+    );
+    const shell = document.createElement("div");
+    shell.dataset.testid = "app-layout-content-shell";
+    const container = document.createElement("div");
+    vi.spyOn(container, "getBoundingClientRect").mockReturnValue(
+      new DOMRect(0, 0, capture.containerWidth, capture.containerHeight),
+    );
+    shell.append(container);
+    document.body.append(shell);
+    rememberTerminalGrid("term", container, capture.fontSize, capture.grid);
+    const fittedKey = JSON.parse(
+      localStorage.getItem("bb.terminal.fit-grids.v3")!,
+    )[0].layout;
+    expect(fittedKey).toEqual(
+      JSON.stringify([320, true, capture.splitLayout, null, []]),
+    );
+    document.body.replaceChildren();
+    localStorage.setItem(panelKey, JSON.stringify(capture.persistedPanelState));
+    expect(terminalLayoutFingerprint()).toEqual(fittedKey);
+    prefetchTerminalSocket(url);
+    const native = Socket.instances[0]!;
+    native.open();
+    expect(native.sent.map((frame) => JSON.parse(frame))).toEqual([
+      { type: "resize", ...capture.grid, claim: true },
+    ]);
+    const transport = new TerminalWebSocketTransport({
+      url,
+      createSocket: createPrefetchedTerminalSocket,
+      onMessage: () => {},
+      shouldReconnect: () => true,
+    });
+    transport.sendResize(capture.grid.cols, capture.grid.rows, true);
+    transport.markLayoutSettled();
+    transport.start();
+    vi.runAllTicks();
+    await Promise.resolve();
+    expect(native.sent).toHaveLength(1);
+    transport.dispose();
+  },
+);

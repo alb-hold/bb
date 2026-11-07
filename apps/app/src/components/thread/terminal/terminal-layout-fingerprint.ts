@@ -3,8 +3,6 @@ import { z } from "zod";
 const panelGeometrySchema = z.object({
   secondary: z.object({
     isOpen: z.boolean(),
-    activeTabId: z.string().nullable(),
-    tabs: z.array(z.object({ id: z.string(), kind: z.string() })),
   }),
 });
 
@@ -55,12 +53,14 @@ export function terminalLayoutFingerprint(): string {
       tabValue("bb.sidebar.open") !== "false",
       tabValue("bb.splitLayout") || null,
       tabValue("bb.splitLayout.maximizedPaneId") || null,
-      keys.map((key) => {
-        const value = read(local, key);
-        if (!key.startsWith("bb.thread.fixedPanelTabsState-"))
-          return [key, value];
-        return [key, panelGeometry(value)];
-      }),
+      keys
+        .map((key) => {
+          const value = read(local, key);
+          if (!key.startsWith("bb.thread.fixedPanelTabsState-"))
+            return [key, value];
+          return panelGeometry(value)?.isOpen ? [key, true] : null;
+        })
+        .filter((entry) => entry !== null),
     ]);
   } catch {
     return "[]";
