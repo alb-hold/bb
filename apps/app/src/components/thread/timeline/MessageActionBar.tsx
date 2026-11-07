@@ -460,7 +460,7 @@ export function MessageActionBar({
         ref={slotRef}
         className={cn(
           slotClass,
-          "@container/message-actions min-h-5 max-md:pointer-coarse:min-h-9",
+          "@container/message-actions min-h-5",
         )}
         data-message-action-slot=""
       >

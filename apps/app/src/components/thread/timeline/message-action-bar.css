@@ -70,6 +70,7 @@
 @media (width < 48rem) and (pointer: coarse) {
   [data-message-action-slot][data-message-action-slot] {
     padding-block: 0px;
+    min-height: 0px;
   }
 
   [data-compact-touch-panel] > div:first-child {

@@ -12,6 +12,8 @@ import {
 } from "react";
 import type { ComponentProps, CSSProperties, ReactNode } from "react";
 import { useComposedRefs } from "@radix-ui/react-compose-refs";
+import { useIsCompactViewport } from "@bb/shared-ui/hooks/use-compact-viewport";
+import { usePointerCoarse } from "@bb/shared-ui/hooks/use-pointer-coarse";
 import { TimelineImageGallery } from "./TimelineImageGallery";
 import type { PromptInput, ThreadRuntimeDisplayStatus } from "@bb/domain";
 import {
@@ -2535,6 +2537,9 @@ function TimelineRowsList({
   unreadDividerAutoScroll = false,
   unreadDividerPlacement,
 }: TimelineRowsListProps) {
+  const isCompactViewport = useIsCompactViewport();
+  const isPointerCoarse = usePointerCoarse();
+  const isCompactTouch = isCompactViewport && isPointerCoarse;
   const { threadId } = useTimelineRendererStaticContext();
   const bottomAnchor = useBottomAnchoredScroll();
   const scrollRestore = useContext(TimelineScrollRestoreContext);
@@ -2673,7 +2678,7 @@ function TimelineRowsList({
               }
               return 28;
             }}
-            gap={spacing === "bundle" ? 0 : 8}
+            gap={spacing === "bundle" ? 0 : isCompactTouch ? 4 : 8}
             initialWindowAnchor={
               isTopLevelList && detailScrollRoot === null ? scrollRestore : null
             }
