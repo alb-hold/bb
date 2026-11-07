@@ -371,7 +371,9 @@ function PromptSubmitButton({
         className,
         COMPOSER_SUBMIT_CLASS,
         label !== undefined && !isCompact && "size-auto h-8 gap-1.5 px-2.5",
-        "max-md:pointer-coarse:size-11",
+        label !== undefined && !isCompact
+          ? "max-md:pointer-coarse:h-11 max-md:pointer-coarse:min-w-11 max-md:pointer-coarse:w-auto max-md:pointer-coarse:aspect-auto"
+          : "max-md:pointer-coarse:size-11",
       )}
     >
       {isBusy ? (

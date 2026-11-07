@@ -3563,6 +3563,36 @@ describe("ComposerBox compact layout", () => {
     },
   );
 
+  it("keeps a labelled phone submit tall with room for its text", () => {
+    const restoreMatchMedia = mockPointerCoarse(true);
+    try {
+      render(
+        <CompactViewportOverrideProvider isCompactViewport>
+          <ComposerBox
+            {...createPromptBoxProps({
+              value: "Select handoff",
+              submission: { label: "New thread", icon: "MessageSquarePlus" },
+            })}
+          />
+        </CompactViewportOverrideProvider>,
+      );
+      const button = screen.getByRole("button", { name: "Submit (Enter)" });
+      expect(
+        button.querySelector("[data-promptbox-submit-label]")?.textContent,
+      ).toBe("New thread");
+      expect(button.classList).not.toContain("max-md:pointer-coarse:size-11");
+      expect(button.classList).toContain("size-auto");
+      expect(button.classList).toContain("px-2.5");
+      expect(button.classList).toContain("max-md:pointer-coarse:h-11");
+      expect(button.classList).toContain("max-md:pointer-coarse:w-auto");
+      expect(button.classList).toContain("max-md:pointer-coarse:aspect-auto");
+      expect(button.classList).toContain("max-md:pointer-coarse:min-w-11");
+      expect(button.classList).not.toContain("max-md:pointer-coarse:h-10");
+    } finally {
+      restoreMatchMedia();
+    }
+  });
+
   it("keeps a labelled desktop submit action as a pill", () => {
     render(
       <ComposerBox

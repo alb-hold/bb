@@ -11,6 +11,7 @@ import {
 import { afterEach, expect, it, vi } from "vitest";
 import type { ExperimentalComposerInput } from "@get-bb/plugin-sdk";
 import { TooltipProvider } from "@bb/shared-ui/tooltip";
+import { CompactViewportOverrideProvider } from "@bb/shared-ui/hooks/use-compact-viewport";
 import { ProgressiveComposer } from "./ProgressiveComposer";
 import type {
   ComposerBoxProps,
@@ -99,11 +100,13 @@ function setup(initial = "", submission?: PromptBoxSubmissionConfig) {
     };
     return (
       <TooltipProvider>
-        <ProgressiveComposer props={props}>
-          {(handoff, _rich, layout) =>
-            layout(downloaded ? <PreparedEditor handoff={handoff} /> : null)
-          }
-        </ProgressiveComposer>
+        <CompactViewportOverrideProvider isCompactViewport>
+          <ProgressiveComposer props={props}>
+            {(handoff, _rich, layout) =>
+              layout(downloaded ? <PreparedEditor handoff={handoff} /> : null)
+            }
+          </ProgressiveComposer>
+        </CompactViewportOverrideProvider>
       </TooltipProvider>
     );
   }
@@ -145,6 +148,28 @@ it("keeps a 44px phone submit slot before and after typing during startup", () =
   const emptySize = sizeClasses();
   fireEvent.change(view.input, { target: { value: "Send this" } });
   expect(sizeClasses()).toEqual(emptySize);
+});
+
+it("keeps a labelled phone submit tall with room for its text during startup", () => {
+  vi.stubGlobal("matchMedia", (query: string) => ({
+    matches: true,
+    media: query,
+    addEventListener: () => {},
+    removeEventListener: () => {},
+  }));
+  setup("Select handoff", { label: "New thread", icon: "MessageSquarePlus" });
+  const button = screen.getByRole("button", { name: "Submit (Enter)" });
+  expect(
+    button.querySelector("[data-promptbox-submit-label]")?.textContent,
+  ).toBe("New thread");
+  expect(button.classList).not.toContain("max-md:pointer-coarse:size-11");
+  expect(button.classList).toContain("size-auto");
+  expect(button.classList).toContain("px-2.5");
+  expect(button.classList).toContain("max-md:pointer-coarse:h-11");
+  expect(button.classList).toContain("max-md:pointer-coarse:w-auto");
+  expect(button.classList).toContain("max-md:pointer-coarse:aspect-auto");
+  expect(button.classList).toContain("max-md:pointer-coarse:min-w-11");
+  expect(button.classList).not.toContain("max-md:pointer-coarse:h-10");
 });
 
 it("carries the last keystroke, backward selection and focus at the actual swap", () => {
