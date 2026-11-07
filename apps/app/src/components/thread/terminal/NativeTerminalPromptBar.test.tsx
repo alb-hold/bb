@@ -1363,3 +1363,29 @@ it.each(["Codex", "Claude Code", "Native CLI"])(
     expect(screen.getByLabelText(`Send to ${provider} terminal`)).toBe(input);
   },
 );
+
+it.each([360, 374, 375, 1024])("uses a whole placeholder at %s px", (width) => {
+  const media = vi.spyOn(window, "matchMedia").mockImplementation((query) => ({
+    matches: query === "(max-width: 374px)" && width < 375,
+    media: query,
+    onchange: null,
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    dispatchEvent: () => false,
+  }));
+  try {
+    const { input } = renderBar(undefined, undefined, "Codex", width < 768);
+    expect(input.placeholder).toBe(
+      width < 375
+        ? "Send to prompt…"
+        : width < 768
+          ? "Send to prompt above…"
+          : "Send to Codex prompt above…",
+    );
+  } finally {
+    cleanup();
+    media.mockRestore();
+  }
+});

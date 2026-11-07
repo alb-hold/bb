@@ -60,7 +60,7 @@ it.each(
     ["miss", "match", "mismatch"].map((kind) => ({ cols, kind })),
   ),
 )(
-  "waits for the final renderer before claiming a cached $cols-column grid ($kind)",
+  "claims a cached $cols-column grid at socket open and reconciles the final renderer ($kind)",
   async ({ cols, kind }) => {
     if (kind !== "miss") {
       const container = document.createElement("div");
@@ -86,7 +86,9 @@ it.each(
       native.sent
         .map((raw) => JSON.parse(raw))
         .filter((frame) => frame.type === "resize");
-    expect(frames()).toEqual([]);
+    expect(frames()).toEqual(
+      kind === "miss" ? [] : [{ type: "resize", cols, rows: 38, claim: true }],
+    );
     expect(Date.now() - attachedAt).toBeLessThanOrEqual(5);
     await vi.advanceTimersByTimeAsync(700);
     const transport = new TerminalWebSocketTransport({
@@ -103,7 +105,7 @@ it.each(
     await Promise.resolve();
     transport.sendResize(fittedCols, 38);
     transport.markLayoutSettled();
-    expect(frames()).toHaveLength(1);
+    expect(frames()).toHaveLength(kind === "mismatch" ? 2 : 1);
     expect(frames().at(-1)).toEqual({
       type: "resize",
       cols: fittedCols,
@@ -111,7 +113,7 @@ it.each(
       claim: true,
     });
     transport.claimSize();
-    expect(frames()).toHaveLength(2);
+    expect(frames()).toHaveLength(kind === "mismatch" ? 3 : 2);
     expect(frames().at(-1)).toEqual({
       type: "resize",
       cols: fittedCols,
@@ -205,4 +207,79 @@ it("bounds unconsumed frame memory", () => {
   prefetchTerminalSocket(url);
   Socket.instances[0]!.message("x".repeat(13 * 1024 * 1024));
   expect(Socket.instances[0]!.readyState).toBe(3);
+});
+
+it("claims while attach is pending and delivers replay at the claimed grid before live output", async () => {
+  const container = document.createElement("div");
+  vi.spyOn(container, "getBoundingClientRect").mockReturnValue(
+    new DOMRect(0, 0, 936, 662),
+  );
+  rememberTerminalGrid("term", container, 13, { cols: 116, rows: 38 });
+  prefetchTerminalSocket(url);
+  const native = Socket.instances[0]!;
+  native.open();
+  expect(native.sent.map((raw) => JSON.parse(raw))).toEqual([
+    { type: "resize", cols: 116, rows: 38, claim: true },
+  ]);
+  const session = makeTerminalSession({
+    id: "term",
+    status: "running",
+    cols: 116,
+    rows: 38,
+  });
+  const attached = { type: "attached", session, replayStartSeq: 0, nextSeq: 1 };
+  const replay = {
+    type: "output",
+    chunk: { seq: 0, dataBase64: btoa("history") },
+  };
+  native.message(JSON.stringify(attached));
+  native.message(JSON.stringify(replay));
+  const seen: unknown[] = [];
+  const transport = new TerminalWebSocketTransport({
+    url,
+    createSocket: createPrefetchedTerminalSocket,
+    onMessage: (message) => seen.push(message),
+    shouldReconnect: () => true,
+  });
+  transport.sendResize(116, 38, true);
+  transport.markLayoutSettled();
+  transport.start();
+  vi.runAllTicks();
+  await Promise.resolve();
+  expect(seen).toEqual(expect.arrayContaining([attached, replay]));
+  expect(
+    seen
+      .map((message) => JSON.stringify(message))
+      .indexOf(JSON.stringify(attached)),
+  ).toBeLessThan(
+    seen
+      .map((message) => JSON.stringify(message))
+      .indexOf(JSON.stringify(replay)),
+  );
+  expect(
+    native.sent
+      .map((raw) => JSON.parse(raw))
+      .filter((frame) => frame.type === "resize"),
+  ).toHaveLength(1);
+  transport.dispose();
+});
+
+it("forgets a disconnected cached claim before a new socket is adopted", () => {
+  const container = document.createElement("div");
+  vi.spyOn(container, "getBoundingClientRect").mockReturnValue(
+    new DOMRect(0, 0, 936, 662),
+  );
+  rememberTerminalGrid("term", container, 13, { cols: 116, rows: 38 });
+  prefetchTerminalSocket(url);
+  const native = Socket.instances[0]!;
+  native.open();
+  native.readyState = 3;
+  native.onclose?.(new CloseEvent("close"));
+  prefetchTerminalSocket(url);
+  const replacement = Socket.instances[1]!;
+  replacement.open();
+  expect(replacement.sent.map((raw) => JSON.parse(raw))).toEqual([
+    { type: "resize", cols: 116, rows: 38, claim: true },
+  ]);
+  expect(native.sent).toHaveLength(1);
 });
