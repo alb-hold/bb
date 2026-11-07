@@ -6,7 +6,6 @@ import {
   fireEvent,
   render,
   screen,
-  waitFor,
 } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { TooltipProvider } from "@bb/shared-ui/tooltip";
@@ -381,7 +380,7 @@ describe("SidebarUpdatesBadge", () => {
     expect(screen.queryByTestId("sidebar-updates-badge-providers")).toBeNull();
   });
 
-  it("renders one mark per provider in a stable order when the same CLI is stale on several machines", async () => {
+  it("shows the outline download icon and distinct provider count across machines", () => {
     renderBadge({
       appUpdateAvailable: true,
       machines: [
@@ -403,23 +402,9 @@ describe("SidebarUpdatesBadge", () => {
     expect(providerChip.getAttribute("aria-label")).toBe(
       "Claude Code and Codex updates available",
     );
-    await waitFor(() =>
-      expect(
-        providerChip.querySelectorAll(
-          "[data-provider-icon] [data-provider-logo]",
-        ).length,
-      ).toBe(2),
-    );
-    expect(
-      [...providerChip.querySelectorAll("[data-provider-icon]")].map((node) =>
-        node.getAttribute("data-provider-icon"),
-      ),
-    ).toEqual(["claude-code", "codex"]);
-    expect(
-      [...providerChip.querySelectorAll("[data-provider-icon]")].every((node) =>
-        node.classList.contains("flex"),
-      ),
-    ).toBe(true);
+    expect(providerChip.querySelector('[data-icon="Download"]')).not.toBeNull();
+    expect(providerChip.querySelector("[data-provider-icon]")).toBeNull();
+    expect(providerChip.textContent).toBe("2");
     expect(screen.getByTestId("sidebar-updates-badge-bb")).toBeTruthy();
   });
 });
