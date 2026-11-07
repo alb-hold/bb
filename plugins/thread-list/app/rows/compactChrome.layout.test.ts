@@ -59,7 +59,7 @@ it.each(
     ),
   ),
 )(
-  "preserves the smallest host tier and compact summary geometry for $count rows at $width px with a $gap px gap",
+  "preserves host typography, in-flow phone targets and desktop summary geometry for $count rows at $width px with a $gap px gap",
   async ({ width, gap, count }) => {
     expect(chromiumPath).not.toBeNull();
     const dir = await mkdtemp(join(tmpdir(), "bb-compact-chrome-"));
@@ -151,19 +151,25 @@ document.querySelector('#result').textContent = JSON.stringify({panelPadding,sma
       expect(result.smallestType.trim()).toBe("0.6875rem");
       for (const summary of result.summaries) {
         expect(summary.hits.filter(Boolean).length).toBeGreaterThanOrEqual(
-          width < 480 ? 3 : 2,
+          width < 480 ? 4 : 2,
         );
         expect(summary.fontSize).toBe(width < 480 ? "14px" : "12px");
-        expect(summary.height).toBeGreaterThanOrEqual(20);
-        expect(summary.height).toBeLessThanOrEqual(24);
+        if (width < 480) {
+          expect(summary.height).toBe(44);
+        } else {
+          expect(summary.height).toBeGreaterThanOrEqual(20);
+          expect(summary.height).toBeLessThanOrEqual(24);
+        }
       }
-      if (width < 480) expect(result.boundaryHits.every(Boolean)).toBe(true);
+      if (width < 480)
+        expect(result.boundaryHits.every((hit) => !hit)).toBe(true);
+      const effectiveGap = width < 480 && gap === 8 ? 4 : gap;
       expect(result.summaries[1].y - result.summaries[0].y).toBe(
-        20 + gap + 2 * result.panelPadding,
+        (width < 480 ? 44 : 20) + effectiveGap + 2 * result.panelPadding,
       );
       if (count > 2)
         expect(result.summaries[2].y - result.summaries[1].y).toBe(
-          23 + gap + 2 * result.panelPadding,
+          (width < 480 ? 44 : 23) + effectiveGap + 2 * result.panelPadding,
         );
       expect(result.search.height).toBe(width < 480 ? 44 : 36);
       expect(result.search.width).toBe(width < 480 ? 44 : 36);
