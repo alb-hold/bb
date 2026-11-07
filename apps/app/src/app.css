@@ -927,11 +927,11 @@
   [data-promptbox][data-promptbox-collapsed] .permission-mode-picker {
     min-width: 44px;
     min-height: 44px;
-    padding-inline: 0;
+    padding-inline: 0.375rem;
   }
 
   [data-promptbox][data-promptbox-collapsed] [data-permission-label] {
-    display: none;
+    display: inline;
   }
 
   [data-sidebar="footer"] [data-sidebar="menu-item"] {
@@ -1167,4 +1167,8 @@
   [data-execution-controls-layout="stacked"] [data-promptbox-hide-compact] {
     display: none;
   }
+}
+
+[data-sidebar="content"][data-more-below] {
+  mask-image: linear-gradient(to bottom, black calc(100% - 16px), transparent);
 }

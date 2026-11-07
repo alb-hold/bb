@@ -173,7 +173,7 @@ describe("NativeTerminalPromptBar", () => {
     expect(form.className).toContain("mx-auto");
     expect(input.classList.contains("text-base")).toBe(true);
     expect(input.classList.contains("md:text-sm")).toBe(true);
-    expect(input.classList.contains("placeholder:text-sm")).toBe(true);
+    expect(input.classList.contains("placeholder:text-sm")).toBe(false);
     expect(input.classList.contains("min-h-7")).toBe(true);
     expect(form.classList.contains("pt-1")).toBe(true);
     const shell = form.querySelector("[data-native-composer]")!;

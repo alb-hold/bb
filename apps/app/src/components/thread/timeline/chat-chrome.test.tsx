@@ -17,7 +17,9 @@ import { MarkdownPreview } from "../../ui/markdown-preview";
 
 function compactStyles(
   path: string,
-  media = path.endsWith("message-action-bar.css") ? "@media (pointer: coarse)" : "@media (width < 48rem) and (pointer: coarse)",
+  media = path.endsWith("message-action-bar.css")
+    ? "@media (pointer: coarse)"
+    : "@media (width < 48rem) and (pointer: coarse)",
 ) {
   const css = readFileSync(path, "utf8");
   let result = "";
@@ -287,7 +289,7 @@ it("uses a 4px phone block gap and keeps animated disclosure hit areas in flow",
   ).toBe("0px");
 });
 
-it("only hides the permission label inside a collapsed phone composer", () => {
+it("keeps the permission policy visible inside a collapsed phone composer", () => {
   const { container } = render(
     <>
       <style>{compactStyles("src/app.css")}</style>
@@ -305,7 +307,7 @@ it("only hides the permission label inside a collapsed phone composer", () => {
     </>,
   );
   const labels = container.querySelectorAll("[data-permission-label]");
-  expect(getComputedStyle(labels[0]!).display).toBe("none");
+  expect(getComputedStyle(labels[0]!).display).toBe("inline");
   expect(getComputedStyle(labels[1]!).display).not.toBe("none");
   const trigger = container.querySelector("button")!;
   expect(getComputedStyle(trigger).minHeight).toBe("44px");
@@ -336,7 +338,10 @@ it("keeps only the token total in the phone footer, including its separators", (
   const { container } = render(
     <>
       <style>{css}</style>
-      <button className="thread-turn-token-breakdown" aria-label="Open thread token analysis">
+      <button
+        className="thread-turn-token-breakdown"
+        aria-label="Open thread token analysis"
+      >
         <span data-token-parts="">
           <span data-token-unit="total">108K tokens</span>
           <span data-token-unit="input"> · in 100K</span>
@@ -352,6 +357,10 @@ it("keeps only the token total in the phone footer, including its separators", (
   for (const unit of Array.from(units).slice(1)) {
     expect(getComputedStyle(unit).display).toBe("none");
   }
-  expect(getComputedStyle(container.querySelector("[data-token-parts]")!).flexWrap).toBe("nowrap");
-  expect(screen.getByRole("button", { name: "Open thread token analysis" })).toBeTruthy();
+  expect(
+    getComputedStyle(container.querySelector("[data-token-parts]")!).flexWrap,
+  ).toBe("nowrap");
+  expect(
+    screen.getByRole("button", { name: "Open thread token analysis" }),
+  ).toBeTruthy();
 });
