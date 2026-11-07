@@ -401,6 +401,7 @@ it("moves the only panel search trigger between retained terminal tabs", () => {
   const openB = vi.fn();
   const content = (active: string | null) => (
     <SecondaryPanelActionsProvider activeTerminalId={active}>
+      <input aria-label="Main composer" />
       <div role="toolbar"><SecondaryPanelActions /></div>
       <TerminalSearch terminalId="terminal-a" addon={createSearchAddon()} terminal={{} as Terminal} open={false} onOpenChange={openA} />
       <TerminalSearch terminalId="terminal-b" addon={createSearchAddon()} terminal={{} as Terminal} open={false} onOpenChange={openB} />
@@ -408,6 +409,10 @@ it("moves the only panel search trigger between retained terminal tabs", () => {
   );
   const view = render(content("terminal-a"));
   const trigger = () => screen.getByRole("button", { name: "Search terminal output" });
+  expect(screen.getAllByRole("button", { name: "Search terminal output" })).toHaveLength(1);
+  const composer = screen.getByRole("textbox", { name: "Main composer" });
+  composer.focus();
+  expect(document.activeElement).toBe(composer);
   expect(screen.getAllByRole("button", { name: "Search terminal output" })).toHaveLength(1);
   fireEvent.click(trigger());
   expect(openA).toHaveBeenCalledWith(true);
