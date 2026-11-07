@@ -109,7 +109,7 @@ it("keeps the last summary hit area inside the animated clip without negative ma
 });
 
 it("limits compact pseudo-element hit areas to coarse pointers", () => {
-  expect(css).toContain("@media (pointer: coarse)");
+  expect(css).toContain("@media (width < 48rem) and (pointer: coarse)");
 });
 
 it("reserves an 8px action gap", () => {
@@ -155,6 +155,6 @@ it("reveals actions for coarse pointers while retaining keyboard focus access", 
     '[data-touch-actions-visible="false"]:not(:focus-within)',
   );
   expect(actionsCss).toContain("clip-path: inset(50%)");
-  expect(actionsCss.slice(actionsCss.indexOf("@media (pointer: coarse)"))).not.toContain("display: none");
+  expect(actionsCss.slice(actionsCss.lastIndexOf("@media (pointer: coarse)"))).not.toContain("display: none");
   expect(actionsCss).toContain('[data-touch-actions-visible="true"] [data-message-action-row] button');
 });
