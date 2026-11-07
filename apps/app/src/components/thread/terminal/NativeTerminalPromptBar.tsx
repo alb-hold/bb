@@ -1,3 +1,4 @@
+import "./native-terminal-prompt.css";
 import { CONTENT_MEASURE_MAX_WIDTH_CLASS } from "@/lib/content-measure";
 import {
   useCallback,
@@ -581,6 +582,15 @@ export function NativeTerminalPromptBar({
           recording && "border-destructive/40",
         )}
         data-native-composer=""
+        data-native-composer-inline={
+          text.length === 0 &&
+          dictation.phase === "idle" &&
+          assist.suggestions.length === 0 &&
+          assist.recent === null &&
+          !assist.pending
+            ? ""
+            : undefined
+        }
         onDragOver={onDragOver}
         onDrop={onDrop}
       >
@@ -626,7 +636,7 @@ export function NativeTerminalPromptBar({
               ? "Starting microphone…"
               : recording
                 ? "Listening…"
-                : `Message ${providerLabel}…`
+                : `Send to ${providerLabel} terminal…`
           }
           onChange={(event) => {
             applyValue(event.target.value, programmaticRef.current);

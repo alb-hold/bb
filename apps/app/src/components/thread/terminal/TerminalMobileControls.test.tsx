@@ -66,6 +66,14 @@ describe("TerminalMobileControls", () => {
     }
   });
 
+  it("labels Enter visibly and sends a carriage return", () => {
+    const { onInput } = renderControls();
+    const enter = screen.getByRole("button", { name: "Enter" });
+    expect(enter.textContent).toBe("Enter");
+    fireEvent.click(enter);
+    expect(onInput).toHaveBeenCalledExactlyOnceWith("\r");
+  });
+
   it("interrupts without expanding or scrolling the key bar", () => {
     const { onInput } = renderControls();
     const interrupt = screen.getByRole("button", {

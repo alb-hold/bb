@@ -185,13 +185,13 @@ describe("NativeTerminalPromptBar", () => {
 
   it("labels the terminal destination and keeps execution details read-only", () => {
     const { input } = renderBar();
-    expect(input.placeholder).toBe("Message Native CLI…");
+    expect(input.placeholder).toBe("Send to Native CLI terminal…");
     expect(
       screen.getByText("Native CLI · GPT-5 · Full access").className,
     ).toContain("truncate");
   });
   it.each([360, 390])(
-    "keeps a two-row phone structure at %i px regardless of placeholder wrapping",
+    "uses one phone row while empty and expands with content at %i px",
     (width) => {
       const scrollHeight = vi
         .spyOn(HTMLTextAreaElement.prototype, "scrollHeight", "get")
@@ -199,21 +199,28 @@ describe("NativeTerminalPromptBar", () => {
       const { input } = renderBar("", "", "Codex");
       const shell = input.closest("[data-native-composer]")!;
       const phoneStyle = document.createElement("style");
-      const css = readFileSync("src/app.css", "utf8");
+      const css = readFileSync(
+        "src/components/thread/terminal/native-terminal-prompt.css",
+        "utf8",
+      );
       phoneStyle.textContent = css
-        .slice(css.lastIndexOf("@media (width <= 480px) {"))
         .replace("@media (width <= 480px) {", "")
         .replace(/}\s*$/, "");
       document.head.append(phoneStyle);
       try {
-        expect(getComputedStyle(shell).display).not.toBe("grid");
-        expect(shell.classList.contains("flex-col")).toBe(true);
-        expect(shell.hasAttribute("data-native-composer-inline")).toBe(false);
-        expect(input.placeholder).toBe("Message Codex…");
-        fireEvent.change(input, { target: { value: "short" } });
-        expect(shell.hasAttribute("data-native-composer-inline")).toBe(false);
+        expect(getComputedStyle(shell).display).toBe("grid");
+        expect(getComputedStyle(shell).gridTemplateColumns).toBe(
+          "minmax(0, 1fr) auto",
+        );
+        expect(getComputedStyle(input).minHeight).toBe("2.75rem");
+        for (const button of shell.querySelectorAll("button")) {
+          expect(getComputedStyle(button).minWidth).toBe("2.75rem");
+          expect(getComputedStyle(button).minHeight).toBe("2.75rem");
+        }
         fireEvent.change(input, { target: { value: "first\nsecond" } });
-        expect(shell.hasAttribute("data-native-composer-inline")).toBe(false);
+        expect(getComputedStyle(shell).display).not.toBe("grid");
+        fireEvent.change(input, { target: { value: "" } });
+        expect(getComputedStyle(shell).display).toBe("grid");
       } finally {
         phoneStyle.remove();
         scrollHeight.mockRestore();
@@ -225,7 +232,7 @@ describe("NativeTerminalPromptBar", () => {
     "uses provider metadata in the %s placeholder",
     (providerLabel) => {
       const { input } = renderBar("", "", providerLabel);
-      expect(input.placeholder).toBe(`Message ${providerLabel}…`);
+      expect(input.placeholder).toBe(`Send to ${providerLabel} terminal…`);
     },
   );
   it.each(["Native CLI", " Native CLI ", ""])(

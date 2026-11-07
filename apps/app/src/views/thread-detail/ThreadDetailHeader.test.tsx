@@ -1186,7 +1186,7 @@ it.each([
 );
 
 it.each([true, false])(
-  "keeps native activity in the header only on compact=%s",
+  "keeps native activity under the title on compact=%s",
   (compact) => {
     viewportState.isCompactViewport = compact;
     function HeaderWithActivity() {
@@ -1210,10 +1210,6 @@ it.each([true, false])(
     }
     const { container } = render(<HeaderWithActivity />);
     const status = screen.queryByRole("status", { name: "Terminal activity" });
-    if (!compact) {
-      expect(status).toBeNull();
-      return;
-    }
     expect(status).not.toBeNull();
     expect(status!.closest("header")).not.toBeNull();
     expect(status!.textContent).toBe("Idle");

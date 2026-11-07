@@ -304,7 +304,7 @@ export function TerminalMobileControls({
           </div>
         </div>
         <Key {...keyProps} label="Enter" onPress={() => onInput("\r")}>
-          <Icon name="CornerDownLeft" className="size-4" />
+          Enter
         </Key>
         <Key
           {...keyProps}
