@@ -1,19 +1,24 @@
 import { createContext, useContext, useState, type ReactNode } from "react";
 
-const ActionsTargetContext = createContext<HTMLElement | null>(null);
+const ActionsTargetContext = createContext<{
+  target: HTMLElement | null;
+  activeTerminalId: string | null;
+} | null>(null);
 const ActionsRefContext = createContext<
   ((target: HTMLDivElement | null) => void) | null
 >(null);
 
 export function SecondaryPanelActionsProvider({
   children,
+  activeTerminalId,
 }: {
   children: ReactNode;
+  activeTerminalId: string | null;
 }) {
   const [target, setTarget] = useState<HTMLDivElement | null>(null);
   return (
     <ActionsRefContext.Provider value={setTarget}>
-      <ActionsTargetContext.Provider value={target}>
+      <ActionsTargetContext.Provider value={{ target, activeTerminalId }}>
         {children}
       </ActionsTargetContext.Provider>
     </ActionsRefContext.Provider>

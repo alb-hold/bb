@@ -49,6 +49,7 @@ export function TerminalSearch({
   terminal,
   touch = false,
   hideTrigger = false,
+  terminalId,
   open,
   onOpenChange,
 }: {
@@ -56,10 +57,15 @@ export function TerminalSearch({
   terminal: Terminal | null;
   touch?: boolean;
   hideTrigger?: boolean;
+  terminalId?: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
-  const actionsTarget = useSecondaryPanelActionsTarget();
+  const panelActions = useSecondaryPanelActionsTarget();
+  const actionsTarget = panelActions?.target;
+  const showTrigger =
+    panelActions === null ||
+    (actionsTarget !== null && panelActions.activeTerminalId === terminalId);
   const [state, setState] = useState(initialState);
   const setOpen = useCallback(
     (nextOpen: boolean) => onOpenChange(nextOpen),
@@ -152,7 +158,7 @@ export function TerminalSearch({
 
   return (
     <div className="pointer-events-none absolute inset-x-2 top-2 z-20 flex justify-end">
-      {!open && !hideTrigger ? (
+      {!open && !hideTrigger && showTrigger ? (
         actionsTarget ? (
           createPortal(trigger, actionsTarget)
         ) : (

@@ -384,9 +384,9 @@ describe("TerminalSearch shortcuts and closed controls", () => {
 it("ports the closed search control into the enclosing panel toolbar", () => {
   const onOpenChange = vi.fn();
   const { container } = render(
-    <SecondaryPanelActionsProvider>
+    <SecondaryPanelActionsProvider activeTerminalId="terminal-a">
       <div role="toolbar"><SecondaryPanelActions /></div>
-      <TerminalSearch addon={createSearchAddon()} terminal={{} as Terminal} open={false} onOpenChange={onOpenChange} />
+      <TerminalSearch terminalId="terminal-a" addon={createSearchAddon()} terminal={{} as Terminal} open={false} onOpenChange={onOpenChange} />
     </SecondaryPanelActionsProvider>,
   );
   const button = screen.getByRole("button", { name: "Search terminal output" });
@@ -394,4 +394,30 @@ it("ports the closed search control into the enclosing panel toolbar", () => {
   expect(container.querySelector("[data-secondary-panel-actions]")?.contains(button)).toBe(true);
   fireEvent.click(button);
   expect(onOpenChange).toHaveBeenCalledWith(true);
+});
+
+it("moves the only panel search trigger between retained terminal tabs", () => {
+  const openA = vi.fn();
+  const openB = vi.fn();
+  const content = (active: string | null) => (
+    <SecondaryPanelActionsProvider activeTerminalId={active}>
+      <div role="toolbar"><SecondaryPanelActions /></div>
+      <TerminalSearch terminalId="terminal-a" addon={createSearchAddon()} terminal={{} as Terminal} open={false} onOpenChange={openA} />
+      <TerminalSearch terminalId="terminal-b" addon={createSearchAddon()} terminal={{} as Terminal} open={false} onOpenChange={openB} />
+    </SecondaryPanelActionsProvider>
+  );
+  const view = render(content("terminal-a"));
+  const trigger = () => screen.getByRole("button", { name: "Search terminal output" });
+  expect(screen.getAllByRole("button", { name: "Search terminal output" })).toHaveLength(1);
+  fireEvent.click(trigger());
+  expect(openA).toHaveBeenCalledWith(true);
+  expect(openB).not.toHaveBeenCalled();
+  openA.mockClear();
+  view.rerender(content("terminal-b"));
+  expect(screen.getAllByRole("button", { name: "Search terminal output" })).toHaveLength(1);
+  fireEvent.click(trigger());
+  expect(openB).toHaveBeenCalledWith(true);
+  expect(openA).not.toHaveBeenCalled();
+  view.rerender(content(null));
+  expect(screen.queryByRole("button", { name: "Search terminal output" })).toBeNull();
 });

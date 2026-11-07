@@ -751,7 +751,7 @@ function ThreadSecondaryPanelContent({
       activeSurfaceModel?.kind === "terminal" && hasActiveSurfaceTab;
 
     return (
-      <SecondaryPanelActionsProvider>
+      <SecondaryPanelActionsProvider activeTerminalId={isFocused && isLayoutOpen && activeSurfaceModel?.kind === "terminal" ? activeSurfaceModel.terminalId : null}>
       <ImageTabLightboxProvider
         activeTabId={activeSurfaceTabId}
         tabs={surfaceTabs}
