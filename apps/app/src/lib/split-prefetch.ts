@@ -57,14 +57,12 @@ export async function prepareBackgroundSplit(
   id: string,
   run: (work: () => Promise<void>) => Promise<void>,
 ): Promise<void> {
-  await downloadSplitInBackground(id, async () => true, run);
   for (const path of splitAssets(id)) {
     const url = new URL(path, document.baseURI).href;
     if (importing.has(id)) return;
-    if (requested.has(url))
-      await run(async () => {
-        await import(/* @vite-ignore */ url);
-      });
+    await run(async () => {
+      if (!importing.has(id)) await import(/* @vite-ignore */ url);
+    });
   }
 }
 

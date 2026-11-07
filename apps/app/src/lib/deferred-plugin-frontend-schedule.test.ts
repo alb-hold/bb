@@ -173,26 +173,25 @@ it.each([false, true])(
   },
 );
 
-it("waits for input quiet again when a deferred download completes during typing", async () => {
+it("waits for input quiet before publishing a completed deferred import", async () => {
+  const h = await start();
+  const module = await h.imports.mock.results[0]!.value;
   let finish = () => {};
-  const download = vi.fn(
+  h.imports.mockImplementationOnce(
     () =>
-      new Promise<void>((resolve) => {
-        finish = resolve;
+      new Promise((resolve) => {
+        finish = () => resolve(module);
       }),
   );
-  const h = await start({ downloadDeferredModule: download });
   h.markHomeComposerReady();
   await vi.advanceTimersByTimeAsync(100);
-  expect(download).toHaveBeenCalledExactlyOnceWith("/plugins/git.js");
-  expect(h.imports).toHaveBeenCalledTimes(1);
+  expect(h.imports).toHaveBeenCalledTimes(2);
   document
     .querySelector("textarea")!
     .dispatchEvent(new Event("input", { bubbles: true }));
-  download.mockResolvedValue(undefined);
   finish();
   await vi.advanceTimersByTimeAsync(999);
-  expect(h.imports).toHaveBeenCalledTimes(1);
+  expect(h.imports).toHaveBeenCalledTimes(2);
   await vi.advanceTimersByTimeAsync(100);
   await h.done;
   expect(h.imports.mock.calls.flat()).toEqual([
@@ -200,12 +199,11 @@ it("waits for input quiet again when a deferred download completes during typing
     "/plugins/git.js",
     "/plugins/usage.js",
   ]);
+  expect(fetch).not.toHaveBeenCalled();
 });
 
 it("gates cache-busting retries after input during a failed import", async () => {
-  const download = vi.fn(async (_url: string) => {});
   const h = await start({
-    downloadDeferredModule: download,
     importRetryDelaysMs: [1],
   });
   const module = await h.imports.mock.results[0]!.value;
@@ -224,46 +222,14 @@ it("gates cache-busting retries after input during a failed import", async () =>
   await vi.advanceTimersByTimeAsync(210);
   await h.done;
   expect(h.imports).toHaveBeenCalledTimes(4);
-  expect(download.mock.calls.flat()).toEqual([
+  expect(h.imports.mock.calls.flat()).toEqual([
+    "/plugins/thread-list.js",
     "/plugins/git.js",
     "/plugins/git.js?bb_retry=1",
     "/plugins/usage.js",
   ]);
+  expect(fetch).not.toHaveBeenCalled();
 });
-
-it.each(["network", "status", "body"])(
-  "keeps the real import available after a %s cache-download failure",
-  async (failure) => {
-    const response = {
-      ok: failure !== "status",
-      arrayBuffer: vi.fn(async () => {
-        if (failure === "body") throw new Error("Truncated download");
-        return new ArrayBuffer(0);
-      }),
-    };
-    const fetch = vi.fn(async () => {
-      if (failure === "network") throw new TypeError("Network unavailable");
-      return response;
-    });
-    vi.stubGlobal("fetch", fetch);
-    const h = await start();
-    h.markHomeComposerReady();
-    await vi.advanceTimersByTimeAsync(100);
-    await h.done;
-    expect(h.imports.mock.calls.flat()).toEqual([
-      "/plugins/thread-list.js",
-      "/plugins/git.js",
-      "/plugins/usage.js",
-    ]);
-    expect(fetch).toHaveBeenCalledWith("/plugins/git.js", {
-      cache: "force-cache",
-      priority: "low",
-    });
-    expect(response.arrayBuffer).toHaveBeenCalledTimes(
-      failure === "body" ? 2 : 0,
-    );
-  },
-);
 
 it("keeps deferred runtime-slot bundles out of eager modulepreload compilation", async () => {
   const h = await start({}, ["radixCheckbox"]);
@@ -274,8 +240,5 @@ it("keeps deferred runtime-slot bundles out of eager modulepreload compilation",
     timeout: 10_000,
   });
   await h.done;
-  expect(fetch).toHaveBeenCalledWith("/plugins/git.js", {
-    cache: "force-cache",
-    priority: "low",
-  });
+  expect(fetch).not.toHaveBeenCalled();
 });

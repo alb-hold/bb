@@ -24,23 +24,12 @@ export function createDeferredPluginFrontendSchedule() {
     await whenHomeBackgroundWorkMayStart();
     await yieldBetweenDeferredLoads();
   };
-  const downloadDeferredModule = (url: string) =>
-    runDeferredWork(async () => {
-      try {
-        const response = await fetch(url, {
-          cache: "force-cache",
-          priority: "low",
-        });
-        if (response.ok) await response.arrayBuffer();
-      } catch {}
-    });
   const prepareDeferredRuntime = async (id: string) => {
     await prepareBackgroundSplit(id, (work) => runDeferredWork(work));
   };
   return {
     waitForDeferredLoad,
     yieldBetweenDeferredLoads,
-    downloadDeferredModule,
     runDeferredWork,
     prepareDeferredRuntime,
     dispose,

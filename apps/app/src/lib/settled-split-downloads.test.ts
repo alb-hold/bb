@@ -186,7 +186,7 @@ it("does not evaluate between IME composition events even after a long pause", a
   expect(evaluate).toHaveBeenCalledOnce();
 });
 
-it("evaluates dependency chunks in separate quiet tasks after downloading them", async () => {
+it("imports dependency chunks in separate quiet tasks without fetching them twice", async () => {
   const { createSettledWorkSchedule } =
     await import("./settled-split-downloads");
   const { prepareBackgroundSplit } = await import("./split-prefetch");
@@ -219,4 +219,5 @@ it("evaluates dependency chunks in separate quiet tasks after downloading them",
   await vi.waitFor(() => expect(evaluations).toHaveLength(2));
   await done;
   expect(evaluations[1]! - inputAt).toBeGreaterThanOrEqual(1_000);
+  expect(fetch).not.toHaveBeenCalled();
 });
