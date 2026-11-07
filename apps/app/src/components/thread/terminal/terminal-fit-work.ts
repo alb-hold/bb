@@ -23,7 +23,7 @@ interface FitState {
   layoutSettled: boolean;
   rendererSettled: boolean;
   retainedOutputReplayed: boolean;
-  statusNotice: string | null;
+  top: number;
 }
 
 type FitTerminal = Pick<Terminal, "cols" | "rows" | "dimensions" | "options">;
@@ -41,7 +41,6 @@ export function createTerminalFitWork() {
       layoutSettled,
       rendererSettled,
       retainedOutputReplayed,
-      statusNotice,
       work,
     }: {
       container: HTMLElement;
@@ -50,7 +49,6 @@ export function createTerminalFitWork() {
       layoutSettled: boolean;
       rendererSettled: boolean;
       retainedOutputReplayed: boolean;
-      statusNotice: string | null;
       work: () => boolean;
     }): void {
       const cell = terminal.dimensions?.css.cell;
@@ -81,7 +79,7 @@ export function createTerminalFitWork() {
         layoutSettled,
         rendererSettled,
         retainedOutputReplayed,
-        statusNotice,
+        top: container.offsetTop,
       };
       if (
         previous !== null &&
@@ -107,7 +105,7 @@ export function createTerminalFitWork() {
         state.layoutSettled === previous.layoutSettled &&
         state.rendererSettled === previous.rendererSettled &&
         state.retainedOutputReplayed === previous.retainedOutputReplayed &&
-        state.statusNotice === previous.statusNotice
+        state.top === previous.top
       )
         return;
       if (work()) previous = state;

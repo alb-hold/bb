@@ -1,6 +1,12 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  waitFor,
+} from "@testing-library/react";
 import * as rendererModule from "./terminal-webgl-renderer";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
@@ -467,16 +473,14 @@ describe("ThreadTerminalView terminal visibility and panel", () => {
       let holdWrites = true;
       const pendingWrites: Array<() => void> = [];
       const write = Terminal.prototype.write;
-      vi.spyOn(Terminal.prototype, "write").mockImplementation(function (
-        this: Terminal,
-        data,
-        callback,
-      ) {
-        write.call(this, data, () => {
-          if (holdWrites && callback) pendingWrites.push(callback);
-          else callback?.();
-        });
-      });
+      vi.spyOn(Terminal.prototype, "write").mockImplementation(
+        function (this: Terminal, data, callback) {
+          write.call(this, data, () => {
+            if (holdWrites && callback) pendingWrites.push(callback);
+            else callback?.();
+          });
+        },
+      );
       try {
         socket.receive({
           type: "output",
@@ -1183,7 +1187,8 @@ describe("ThreadTerminalView terminal visibility and panel", () => {
       const timeout = timeouts.mock.calls.find(
         ([, delay]) => delay === 15_000,
       )?.[0];
-      if (typeof timeout !== "function") throw new Error("hold timeout missing");
+      if (typeof timeout !== "function")
+        throw new Error("hold timeout missing");
       act(() => timeout());
       expect(renderer.dataset.replayHeld).toBe("false");
       expect(renderer.style.opacity).toBe("");
@@ -1621,3 +1626,149 @@ it.each([
     }
   },
 );
+
+describe("hidden terminal output continuity", () => {
+  async function mountContinuityViewer() {
+    vi.stubGlobal("WebSocket", TestTerminalSocket);
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
+      measureText: (text: string) => ({ width: text.length * 8 }),
+    } as unknown as CanvasRenderingContext2D);
+    for (const dimension of ["clientWidth", "offsetWidth"] as const)
+      vi.spyOn(HTMLElement.prototype, dimension, "get").mockReturnValue(800);
+    for (const dimension of ["clientHeight", "offsetHeight"] as const)
+      vi.spyOn(HTMLElement.prototype, dimension, "get").mockReturnValue(480);
+    vi.spyOn(FitAddon.prototype, "proposeDimensions").mockReturnValue({
+      cols: 80,
+      rows: 24,
+    });
+    let live: Terminal | null = null;
+    const open = Terminal.prototype.open;
+    vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
+      this: Terminal,
+      ...args
+    ) {
+      live = this;
+      return open.apply(this, args);
+    });
+    const session = makeTerminalSession({
+      id: "term_hidden_continuity",
+      cols: 80,
+      rows: 24,
+    });
+    const ui = (visible: boolean) => (
+      <MemoryRouter>
+        <AppCommandProvider>
+          <ThreadTerminalView
+            session={session}
+            autoFocus={false}
+            isPanelOpen={visible}
+          />
+        </AppCommandProvider>
+      </MemoryRouter>
+    );
+    const view = render(ui(true));
+    await waitFor(() => expect(testState.sockets).toHaveLength(1));
+    const socket = testState.sockets[0]!;
+    await socket.opened;
+    await waitFor(() => expect(live).not.toBeNull());
+    socket.receive({
+      type: "attached",
+      session,
+      replayStartSeq: 0,
+      nextSeq: 0,
+    });
+    socket.receive({
+      type: "output",
+      chunk: { seq: 0, dataBase64: btoa("initial\r\n") },
+    });
+    const text = () => {
+      const buffer = live?.buffer.active;
+      return buffer
+        ? Array.from(
+            { length: buffer.length },
+            (_, i) => buffer.getLine(i)?.translateToString(true) ?? "",
+          ).join("\n")
+        : "";
+    };
+    await waitFor(() => expect(text()).toContain("initial"));
+    const visible = async (value: boolean) => {
+      view.rerender(ui(value));
+      await waitFor(() =>
+        expect(
+          testState.socketMessages.map((message) => JSON.parse(message)),
+        ).toContainEqual({ type: "visibility", visible: value }),
+      );
+    };
+    return { socket, session, text, visible };
+  }
+
+  it("keeps the socket and parses hidden output exactly once when shown", async () => {
+    const h = await mountContinuityViewer();
+    await h.visible(false);
+    for (const [seq, text] of [
+      [1, "hidden-one"],
+      [1, "hidden-one"],
+      [2, "hidden-two"],
+    ] as const)
+      h.socket.receive({
+        type: "output",
+        chunk: { seq, dataBase64: btoa(text + "\r\n") },
+      });
+    expect(h.text()).not.toContain("hidden-one");
+    await h.visible(true);
+    await waitFor(() => expect(h.text()).toContain("hidden-two"));
+    expect(h.text().match(/hidden-one/g)).toHaveLength(1);
+    expect(h.text().match(/hidden-two/g)).toHaveLength(1);
+    await waitFor(() =>
+      expect(
+        h.socket.sent.map((message) => JSON.parse(message)),
+      ).toContainEqual({ type: "ack", nextSeq: 3 }),
+    );
+    await h.visible(false);
+    await h.visible(true);
+    expect(testState.sockets).toHaveLength(1);
+    expect(h.socket.readyState).toBe(TestTerminalSocket.OPEN);
+  });
+
+  it.each(["overflow", "gap"])(
+    "replays once after hidden output %s",
+    async (reason) => {
+      const h = await mountContinuityViewer();
+      await h.visible(false);
+      if (reason === "overflow") {
+        const dataBase64 = btoa("x".repeat(64 * 1024));
+        for (let seq = 1; seq <= 26; seq++)
+          h.socket.receive({ type: "output", chunk: { seq, dataBase64 } });
+      } else {
+        h.socket.receive({
+          type: "output",
+          chunk: { seq: 2, dataBase64: btoa("gap") },
+        });
+      }
+      expect(testState.sockets).toHaveLength(1);
+      await h.visible(true);
+      await waitFor(() => expect(testState.sockets).toHaveLength(2));
+      expect(
+        new URL(testState.socketUrls[1]!).searchParams.get("sinceSeq"),
+      ).toBe("1");
+      const replaySocket = testState.sockets[1]!;
+      await replaySocket.opened;
+      replaySocket.receive({
+        type: "attached",
+        session: h.session,
+        replayStartSeq: 1,
+        nextSeq: 2,
+      });
+      replaySocket.receive({
+        type: "output",
+        chunk: { seq: 1, dataBase64: btoa("recovered\r\n") },
+      });
+      await waitFor(() => expect(h.text()).toContain("recovered"));
+      await h.visible(false);
+      await h.visible(true);
+      expect(testState.sockets).toHaveLength(2);
+      expect(h.text().match(/initial/g)).toHaveLength(1);
+      expect(h.text().match(/recovered/g)).toHaveLength(1);
+    },
+  );
+});

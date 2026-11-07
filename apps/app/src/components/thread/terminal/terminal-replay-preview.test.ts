@@ -1149,6 +1149,8 @@ describe("terminal replay preview", () => {
 
     const markerPipeline = createTerminalOutputPipeline(
       {
+        cols: 120,
+        rows: 36,
         resize: () => undefined,
         write: (_bytes, callback) => callback(),
       },

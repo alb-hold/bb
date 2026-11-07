@@ -1,6 +1,7 @@
 import { markTerminalPerformance } from "@/lib/terminal-performance";
 import { rememberTerminalGrid } from "./terminal-grid-cache";
 import { createTerminalFitWork } from "./terminal-fit-work";
+import { createTerminalHiddenOutput } from "./terminal-hidden-output";
 import {
   readTerminalFontFamily,
   readTerminalFontMetrics,
@@ -1415,7 +1416,6 @@ export function ThreadTerminalView({
     sessionId: session.id,
   });
   const scheduleFitRef = useRef<TerminalFitScheduler | null>(null);
-  const fitStatusNoticeRef = useRef<string | null>(null);
   const terminalVisibilityReporterRef = useRef<(() => void) | null>(null);
   const systemConfig = useSystemConfig();
   const copyOnSelectRef = useRef(false);
@@ -1959,6 +1959,9 @@ export function ThreadTerminalView({
     let terminalVisible: boolean | null = null;
     let hasReceivedInitialAttach = false;
     let lastParsedOutputNextSeq = 0;
+    let lastQueuedOutputNextSeq = 0;
+    const hiddenOutput = createTerminalHiddenOutput();
+    let flushHiddenOutput = () => {};
     const reportDocumentVisibility = () => {
       if (
         document.visibilityState !== "visible" ||
@@ -1977,9 +1980,7 @@ export function ThreadTerminalView({
       terminalVisible = nextVisible;
       transport?.setVisible(nextVisible);
       if (nextVisible) sizeClaims?.claimIfFocused();
-      if (wasVisible === false && nextVisible && hasReceivedInitialAttach) {
-        transport?.replayOutputFrom(lastParsedOutputNextSeq);
-      }
+      if (wasVisible === false && nextVisible) flushHiddenOutput();
     };
     terminalVisibilityReporterRef.current = reportDocumentVisibility;
     reportDocumentVisibilityRef.current = reportDocumentVisibility;
@@ -2627,7 +2628,6 @@ export function ThreadTerminalView({
           layoutSettled: initialLayoutSettled,
           rendererSettled: initialRendererSettled,
           retainedOutputReplayed,
-          statusNotice: fitStatusNoticeRef.current,
           work: () => {
             screenLoadingPreview?.refresh(
               activeTerminal.options.lineHeight ?? 1,
@@ -2857,6 +2857,8 @@ export function ThreadTerminalView({
         }
       };
       const resetTerminalOutput = () => {
+        lastQueuedOutputNextSeq = 0;
+        hiddenOutput.clear();
         outputLineAnchorTracker.reset();
         outputLineAnchors.length = 0;
         savedOutputLineAnchor = null;
@@ -2872,7 +2874,17 @@ export function ThreadTerminalView({
         message: TerminalServerMessage,
         replayWrite?: { bytes: Uint8Array; sourceBytes: Uint8Array },
       ) => {
+        if (message.type === "output") {
+          if (terminalVisible !== true || !isPanelOpenRef.current) {
+            hiddenOutput.push(message.chunk, lastQueuedOutputNextSeq);
+            return;
+          }
+          if (message.chunk.seq < lastQueuedOutputNextSeq) return;
+          lastQueuedOutputNextSeq = message.chunk.seq + 1;
+        }
         if (message.type === "attached") {
+          if (lastQueuedOutputNextSeq === 0)
+            lastQueuedOutputNextSeq = message.replayStartSeq;
           replayRevealGeneration += 1;
           fittedGridHeld = false;
           fittedGridRevealed = false;
@@ -2973,10 +2985,14 @@ export function ThreadTerminalView({
             !replayCompleted ||
             replayWriteState.suppressedWriteCount > 0
           ) {
-            captureLiveViewportBeforeGridResize();
-            activeTerminal.resize(cols, rows);
+            const changed =
+              activeTerminal.cols !== cols || activeTerminal.rows !== rows;
+            if (changed) {
+              captureLiveViewportBeforeGridResize();
+              activeTerminal.resize(cols, rows);
+            }
             updateGridVisibility();
-            clearLiveViewportBeforeGridResize();
+            if (changed) clearLiveViewportBeforeGridResize();
           } else if (outputPipeline) {
             applyTerminalGridAndKeepViewport({
               pipeline: outputPipeline,
@@ -3249,6 +3265,7 @@ export function ThreadTerminalView({
             setConnectionNotice(null);
             connectionNoticeTimeout = setTimeout(() => {
               connectionNoticeTimeout = null;
+              fitWork.invalidate();
               reconnectingNoticeVisible = true;
               setConnectionNotice("reconnecting");
             }, TERMINAL_RECONNECTING_NOTICE_DELAY_MS);
@@ -3281,7 +3298,11 @@ export function ThreadTerminalView({
         },
         onMessage: handleMessage,
         onReplayBatch: (chunks) => {
-          if (terminalVisible !== true || !isPanelOpenRef.current) return;
+          if (terminalVisible !== true || !isPanelOpenRef.current) {
+            for (const chunk of chunks)
+              hiddenOutput.push(chunk, lastQueuedOutputNextSeq);
+            return;
+          }
           for (const write of terminalReplayWrites(
             chunks,
             outputBoundaries,
@@ -3291,6 +3312,10 @@ export function ThreadTerminalView({
           }
         },
         onSequenceGap: () => {
+          if (terminalVisible !== true || !isPanelOpenRef.current) {
+            hiddenOutput.invalidate();
+            return;
+          }
           resetTerminalOutput();
           writeTerminalStatus({
             terminal: activeTerminal,
@@ -3306,6 +3331,20 @@ export function ThreadTerminalView({
         }),
       });
       transport = activeTransport;
+      flushHiddenOutput = () => {
+        const chunks = hiddenOutput.take();
+        if (chunks === null) {
+          activeTransport.replayOutputFrom(lastQueuedOutputNextSeq);
+          return;
+        }
+        for (const write of terminalReplayWrites(
+          chunks,
+          outputBoundaries,
+          replayCheckpointSequence,
+        )) {
+          handleMessage({ type: "output", chunk: write.chunk }, write);
+        }
+      };
       claimSizeRef.current = () => {
         terminalInputClaimed = true;
         activeTerminal.focus();
@@ -3626,6 +3665,8 @@ export function ThreadTerminalView({
 
     return () => {
       disposed = true;
+      hiddenOutput.clear();
+      flushHiddenOutput = () => {};
       clearScreenLoadingPreview();
       outputLineAnchorTracker.dispose();
       viewportLineAnchor?.dispose();
@@ -3868,7 +3909,6 @@ export function ThreadTerminalView({
               : restoringSession
                 ? "Restoring session…"
                 : null;
-  fitStatusNoticeRef.current = connectionNoticeText;
   useEffect(() => {
     webglVisibilityRef.current?.sync();
     terminalVisibilityReporterRef.current?.();

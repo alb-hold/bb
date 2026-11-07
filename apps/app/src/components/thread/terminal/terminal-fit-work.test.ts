@@ -7,11 +7,12 @@ import { createTerminalFitWork } from "./terminal-fit-work";
 afterEach(() => vi.unstubAllGlobals());
 
 function setup() {
-  const size = { width: 900, height: 500 };
+  const size = { width: 900, height: 500, top: 0 };
   const container = document.createElement("div");
   Object.defineProperties(container, {
     clientWidth: { get: () => size.width },
     clientHeight: { get: () => size.height },
+    offsetTop: { get: () => size.top },
   });
   const cell = { width: 9, height: 18 };
   const terminal = {
@@ -43,7 +44,6 @@ function setup() {
     layoutSettled: true,
     rendererSettled: true,
     retainedOutputReplayed: false,
-    statusNotice: "",
     work,
   };
   const fit = createTerminalFitWork();
@@ -60,7 +60,7 @@ it("does no more fit, cache or presentation work on repeated unchanged focus", (
 it.each([
   "container",
   "viewport",
-  "status notice",
+  "status layout inset",
   "cell",
   "PTY grid",
   "render grid",
@@ -79,8 +79,8 @@ it.each([
     case "viewport":
       vi.stubGlobal("innerWidth", window.innerWidth - 100);
       break;
-    case "status notice":
-      h.input.statusNotice = "Reconnecting…";
+    case "status layout inset":
+      h.size.top = 20;
       break;
     case "cell":
       h.cell.width = 10;
