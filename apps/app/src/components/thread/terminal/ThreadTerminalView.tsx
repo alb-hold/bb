@@ -2687,6 +2687,24 @@ export function ThreadTerminalView({
               markTerminalPerformance("terminal-first-fitted-grid-claimed");
             markTerminalPerformance("terminal-fitted-grid-claimed");
             claimedFitGrid = { ...fitted };
+            if (
+              !fittedGridRevealed &&
+              replayCompleted &&
+              outputPipeline !== null &&
+              (terminal.cols !== fitted.cols || terminal.rows !== fitted.rows)
+            ) {
+              applyTerminalGridAndKeepViewport({
+                pipeline: outputPipeline,
+                cols: fitted.cols,
+                rows: fitted.rows,
+                onGridApplied: updateGridVisibility,
+                restoreViewport: () => {
+                  if (hasRestoredViewport && !hasManualScrollIntent) {
+                    restoreViewport(true);
+                  }
+                },
+              });
+            }
           }
         }
         checkReplayReveal?.();

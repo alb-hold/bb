@@ -1,6 +1,12 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  waitFor,
+} from "@testing-library/react";
 import * as rendererModule from "./terminal-webgl-renderer";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
@@ -1189,7 +1195,8 @@ describe("ThreadTerminalView terminal visibility and panel", () => {
       const timeout = timeouts.mock.calls.find(
         ([, delay]) => delay === 15_000,
       )?.[0];
-      if (typeof timeout !== "function") throw new Error("hold timeout missing");
+      if (typeof timeout !== "function")
+        throw new Error("hold timeout missing");
       act(() => timeout());
       expect(renderer.dataset.replayHeld).toBe("false");
       expect(renderer.style.opacity).toBe("");
@@ -1265,7 +1272,36 @@ describe("ThreadTerminalView terminal visibility and panel", () => {
       expect(claimed).toBeDefined();
       expect(claimed?.cols).toBe(125);
     }, "fitted resize was not claimed");
+    await waitForReadinessCondition(() => {
+      expect(renderer.dataset.renderGridCols).toBe("125");
+      expect(renderer.dataset.renderGridRows).toBe("41");
+    }, "hidden terminal was not prepared while awaiting the PTY echo");
     expect(renderer.dataset.replayHeld).toBe("true");
+    expect(renderer.style.opacity).toBe("0");
+    const visibleGrids: string[] = [];
+    const heldObserver = new MutationObserver(() => {
+      if (renderer.style.opacity !== "0") {
+        visibleGrids.push(
+          `${renderer.dataset.renderGridCols}x${renderer.dataset.renderGridRows}`,
+        );
+      }
+    });
+    heldObserver.observe(renderer, { attributes: true });
+    try {
+      socket.receive({
+        type: "session-updated",
+        session: { ...session, cols: 119, rows: 40 },
+      });
+      await waitForReadinessCondition(() => {
+        expect(renderer.dataset.renderGridCols).toBe("119");
+        expect(renderer.dataset.renderGridRows).toBe("40");
+      }, "terminal did not lay out at the different PTY echo");
+      expect(renderer.dataset.replayHeld).toBe("true");
+      expect(renderer.style.opacity).toBe("0");
+      expect(visibleGrids).toEqual([]);
+    } finally {
+      heldObserver.disconnect();
+    }
     socket.receive({
       type: "session-updated",
       session: { ...session, ...claimed },
@@ -1279,6 +1315,11 @@ describe("ThreadTerminalView terminal visibility and panel", () => {
       );
       expect(renderer.dataset.replayHeld).toBe("false");
     }, "fitted replay was not revealed");
+    expect(
+      socket.sent
+        .map((raw) => JSON.parse(raw))
+        .filter((message) => message.type === "resize"),
+    ).toEqual([{ type: "resize", ...claimed, claim: true }]);
     if (beforeAttach) return;
     expect(renderer.dataset.renderGridCols).toBe("125");
     expect(renderer.dataset.renderGridRows).toBe("41");
