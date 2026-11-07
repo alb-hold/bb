@@ -946,6 +946,17 @@ export class NotificationHub implements DbNotifier {
     state.lastSeenAt = now;
   }
 
+  terminalViewerHasControl(terminalId: string, token: string): boolean {
+    this.terminalSharedSize(terminalId, Date.now());
+    const owner = this.terminalResizeOwnerById.get(terminalId);
+    const hash = this.deviceHandoffHashForToken(token);
+    return (
+      owner !== undefined &&
+      hash !== null &&
+      this.deviceHandoffOwnerByTerminalSocket.get(owner) === hash
+    );
+  }
+
   terminalSharedSize(terminalId: string, now: number): TerminalSize | null {
     const owner = this.terminalResizeOwnerById.get(terminalId);
     if (owner !== undefined) {

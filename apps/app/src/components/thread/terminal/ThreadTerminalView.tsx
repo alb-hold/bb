@@ -467,6 +467,27 @@ export function buildTerminalThemeFromCssColors(
   };
 }
 
+export function terminalThemeDefaultColors(
+  theme: ITheme,
+): import("@bb/domain").TerminalDefaultColors | null {
+  if (!theme.foreground || !theme.background) return null;
+  const context = document
+    .createElement("canvas")
+    .getContext("2d", { willReadFrequently: true });
+  if (!context) return null;
+  const rgb = (color: string): import("@bb/domain").TerminalRgb => {
+    context.clearRect(0, 0, 1, 1);
+    context.fillStyle = color;
+    context.fillRect(0, 0, 1, 1);
+    const data = context.getImageData(0, 0, 1, 1).data;
+    return [data[0], data[1], data[2]];
+  };
+  return {
+    foreground: rgb(theme.foreground),
+    background: rgb(theme.background),
+  };
+}
+
 function buildTerminalTheme(): ITheme {
   if (typeof document === "undefined") {
     return {};
@@ -3690,6 +3711,81 @@ export function ThreadTerminalView({
     );
     terminal.options.theme = buildTerminalTheme();
   }, [preferredTheme, appThemeEpoch]);
+
+  const sentThemeColorsRef = useRef("");
+  const themeControllerRef = useRef("");
+  const themeSendPendingRef = useRef(false);
+  const syncThemeColorsRef = useRef<(() => void) | null>(null);
+  useEffect(() => {
+    const terminal = terminalRef.current;
+    if (!terminal || !terminalReady || !handoffOwnerToken) return;
+    const viewerKey = JSON.stringify([session.id, handoffOwnerToken]);
+    let disposed = false;
+    let attempts = 0;
+    let timer: ReturnType<typeof setTimeout>;
+    const sync = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        if (
+          disposed ||
+          themeSendPendingRef.current ||
+          (themeControllerRef.current !== viewerKey &&
+            (!document.hasFocus() ||
+              !terminal.element?.contains(document.activeElement)))
+        )
+          return;
+        const colors = terminalThemeDefaultColors(terminal.options.theme ?? {});
+        if (!colors) return;
+        const key = JSON.stringify([session.id, handoffOwnerToken, colors]);
+        if (key === sentThemeColorsRef.current) return;
+        themeSendPendingRef.current = true;
+        attempts++;
+        void sdk.terminals
+          .experimental_setDefaultColors({
+            terminalId: session.id,
+            viewerToken: handoffOwnerToken,
+            ...colors,
+          })
+          .then(() => {
+            sentThemeColorsRef.current = key;
+            themeControllerRef.current = viewerKey;
+          })
+          .catch(() => {
+            themeControllerRef.current = "";
+            if (!disposed && attempts < 2) sync();
+          })
+          .finally(() => {
+            themeSendPendingRef.current = false;
+            if (disposed) syncThemeColorsRef.current?.();
+          });
+      }, 100);
+    };
+    const release = () => {
+      sentThemeColorsRef.current = "";
+      attempts = 0;
+    };
+    syncThemeColorsRef.current = sync;
+    sync();
+    terminal.element?.addEventListener("focusin", sync);
+    terminal.element?.addEventListener("focusout", release);
+    window.addEventListener("focus", sync);
+    window.addEventListener("blur", release);
+    return () => {
+      disposed = true;
+      syncThemeColorsRef.current = null;
+      clearTimeout(timer);
+      terminal.element?.removeEventListener("focusin", sync);
+      terminal.element?.removeEventListener("focusout", release);
+      window.removeEventListener("focus", sync);
+      window.removeEventListener("blur", release);
+    };
+  }, [
+    preferredTheme,
+    appThemeEpoch,
+    terminalReady,
+    handoffOwnerToken,
+    session.id,
+  ]);
 
   const connectionNoticeText =
     session.status === "disconnected"

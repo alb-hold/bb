@@ -13,6 +13,7 @@ import { Terminal } from "@xterm/xterm";
 import { afterEach, expect, it, vi } from "vitest";
 import { waitFor } from "@testing-library/react";
 import {
+  terminalThemeDefaultColors,
   buildTerminalThemeFromCssColors,
   TERMINAL_THEME_OPTIONS,
   TERMINAL_CELL_OPTIONS,
@@ -397,3 +398,48 @@ it("keeps light ANSI black darker than white with readable opposite colours", ()
     expect((white + 0.05) / (black + 0.05)).toBeGreaterThanOrEqual(4.5);
   }
 });
+
+it.each([
+  {
+    label: "light",
+    foreground: "rgb(51, 51, 51)",
+    background: "rgb(250, 250, 250)",
+    expected: { foreground: [51, 51, 51], background: [250, 250, 250] },
+  },
+  {
+    label: "custom",
+    foreground: "color(srgb 0.2 0.4 0.8)",
+    background: "oklab(0.8 0.02 0.08)",
+    expected: { foreground: [51, 102, 204], background: [221, 183, 129] },
+  },
+])(
+  "uses the resolved $label theme for OSC colours",
+  ({ foreground, background, expected }) => {
+    const context = {
+      clearRect: vi.fn(),
+      fillRect: vi.fn(),
+      fillStyle: "",
+      getImageData: () => ({
+        data: new Uint8ClampedArray([
+          ...(context.fillStyle === foreground
+            ? expected.foreground
+            : expected.background),
+          255,
+        ]),
+      }),
+    };
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(
+      context as unknown as CanvasRenderingContext2D,
+    );
+    const theme = buildTerminalThemeFromCssColors((name) =>
+      name === "--foreground"
+        ? foreground
+        : name === "--sidebar"
+          ? background
+          : undefined,
+    );
+    expect(terminalThemeDefaultColors(theme)).toEqual(expected);
+    expect(context.fillRect).toHaveBeenCalledTimes(2);
+    expect(terminalThemeDefaultColors({})).toBeNull();
+  },
+);

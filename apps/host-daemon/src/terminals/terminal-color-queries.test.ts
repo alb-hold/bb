@@ -30,6 +30,31 @@ describe("live default color queries", () => {
     }
   }
 
+  it.each(["\x07", "\x1b\\"])(
+    "updates a split query without duplicate replies (%s)",
+    (end) => {
+      const scanner = new TerminalColorQueries(colors);
+      const replies: string[] = [];
+      expect(
+        scanner.push("before\x1b]10;?", (reply) => replies.push(reply)),
+      ).toBe("before");
+      scanner.updateColors({
+        foreground: [255, 0, 128],
+        background: [250, 251, 252],
+      });
+      expect(
+        scanner.push(`${end}\x1b]11;?${end}after`, (reply) =>
+          replies.push(reply),
+        ),
+      ).toBe("after");
+      expect(replies).toEqual([
+        "\x1b]10;rgb:ffff/0000/8080\x1b\\",
+        "\x1b]11;rgb:fafa/fbfb/fcfc\x1b\\",
+      ]);
+      expect(scanner.flush()).toBe("");
+    },
+  );
+
   it("consumes consecutive queries without changing surrounding output", () => {
     const scanner = new TerminalColorQueries(colors);
     const replies: string[] = [];

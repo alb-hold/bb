@@ -24,6 +24,7 @@ import {
 } from "@bb/client-core";
 import { makeTerminalSession } from "@/test/fixtures/terminal-sessions";
 import { wsManager } from "@/lib/ws";
+import { applyAppThemeCss } from "@/lib/app-theme-css";
 import { COMPACT_VIEWPORT_QUERY } from "@bb/shared-ui/hooks/use-compact-viewport";
 import * as terminalModules from "./terminal-modules";
 import * as terminalReplayPreview from "./terminal-replay-preview";
@@ -34,6 +35,7 @@ import { ThreadTerminalView, writeTerminalOutput } from "./ThreadTerminalView";
 const testState = vi.hoisted(() => ({
   calls: [] as string[],
   clearAttention: vi.fn(),
+  setDefaultColors: vi.fn().mockResolvedValue({}),
   deferSocketOpen: false,
   mediaQueryListeners: new Set<() => void>(),
   touchEnabled: false,
@@ -121,6 +123,7 @@ class TestTerminalSocket {
 vi.mock("@/lib/sdk", () => ({
   sdk: {
     terminals: {
+      experimental_setDefaultColors: testState.setDefaultColors,
       experimental_screen: testState.screen,
       output: testState.output,
       experimental_attention: {
@@ -191,6 +194,9 @@ vi.mock("@/hooks/usePluginCommandBindings", () => ({
 afterEach(() => {
   vi.useRealTimers();
   cleanup();
+  applyAppThemeCss("");
+  document.documentElement.style.removeProperty("--foreground");
+  document.documentElement.style.removeProperty("--sidebar");
   for (const sheet of Array.from(document.styleSheets)) {
     const owner = sheet.ownerNode;
     if (owner instanceof HTMLStyleElement && !owner.isConnected) {
@@ -434,6 +440,109 @@ function writeReplay(terminal: Terminal, data: string): Promise<void> {
 }
 
 describe("ThreadTerminalView terminal replay and reconnect", () => {
+  it("sends the resolved theme only from the focused viewer and leaves replay replies suppressed", async () => {
+    prepareMobileTerminal();
+    Reflect.set(
+      wsManager,
+      "deviceHandoffClientToken",
+      "abcdefghijklmnopqrstuv",
+    );
+    const context = {
+      measureText: (text: string) => ({ width: text.length * 9 }),
+      clearRect: vi.fn(),
+      fillRect: vi.fn(),
+      fillStyle: "",
+      getImageData: () => ({
+        data: new Uint8ClampedArray([
+          ...(context.fillStyle.match(/\d+/gu)?.slice(0, 3).map(Number) ?? [
+            12, 34, 56,
+          ]),
+          255,
+        ]),
+      }),
+    };
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(
+      context as unknown as CanvasRenderingContext2D,
+    );
+    vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    document.documentElement.style.setProperty(
+      "--foreground",
+      "rgb(12, 34, 56)",
+    );
+    document.documentElement.style.setProperty("--sidebar", "rgb(12, 34, 56)");
+    testState.setDefaultColors.mockClear();
+    const session = renderMobileTerminal();
+    await waitForReadinessCondition(
+      () => expect(testState.sockets).toHaveLength(1),
+      "terminal did not connect",
+    );
+    const socket = testState.sockets[0];
+    await waitForReadiness(socket.opened, "terminal did not open");
+    socket.receive({
+      type: "attached",
+      session,
+      replayStartSeq: 0,
+      nextSeq: 1,
+    });
+    socket.receive({
+      type: "output",
+      chunk: {
+        seq: 0,
+        dataBase64: btoa("history\x1b]10;?\x07\x1b]11;?\x1b\\"),
+      },
+    });
+    expect(testState.setDefaultColors).not.toHaveBeenCalled();
+    const textarea = await waitFor(() => {
+      const element = document.querySelector<HTMLTextAreaElement>(
+        ".xterm-helper-textarea",
+      );
+      expect(element).not.toBeNull();
+      return element!;
+    });
+    act(() => textarea.focus());
+    await waitFor(() =>
+      expect(testState.setDefaultColors).toHaveBeenCalledWith({
+        terminalId: session.id,
+        viewerToken: "abcdefghijklmnopqrstuv",
+        foreground: [12, 34, 56],
+        background: [12, 34, 56],
+      }),
+    );
+    act(() =>
+      textarea.dispatchEvent(new FocusEvent("focusin", { bubbles: true })),
+    );
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    });
+    expect(testState.setDefaultColors).toHaveBeenCalledTimes(1);
+    act(() => textarea.blur());
+    document.documentElement.style.removeProperty("--foreground");
+    document.documentElement.style.removeProperty("--sidebar");
+    const lightCss =
+      ":root { --foreground: rgb(51, 51, 51); --sidebar: rgb(250, 250, 250); }";
+    act(() => applyAppThemeCss(lightCss));
+    await waitFor(() =>
+      expect(testState.setDefaultColors).toHaveBeenLastCalledWith({
+        terminalId: session.id,
+        viewerToken: "abcdefghijklmnopqrstuv",
+        foreground: [51, 51, 51],
+        background: [250, 250, 250],
+      }),
+    );
+    expect(testState.setDefaultColors).toHaveBeenCalledTimes(2);
+    act(() => applyAppThemeCss(lightCss + "\n"));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    });
+    expect(testState.setDefaultColors).toHaveBeenCalledTimes(2);
+
+    expect(
+      socket.sent.filter((raw) => JSON.parse(raw).type === "input"),
+    ).toEqual([]);
+    document.documentElement.style.removeProperty("--foreground");
+    document.documentElement.style.removeProperty("--sidebar");
+  });
+
   it("restores history and one exit notice from exited props without WebSocket messages", async () => {
     prepareMobileTerminal();
     testState.output.mockResolvedValue({

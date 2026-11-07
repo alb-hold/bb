@@ -163,6 +163,7 @@ Use `--selected-model <model-id>` to discover its reasoning choices and include 
 - `bb terminal show`
 - `bb terminal attach`
 - `bb terminal send`
+- `bb terminal colors`
 - `bb terminal resize`
 - `bb terminal output`
 - `bb terminal screen`

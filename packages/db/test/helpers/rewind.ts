@@ -123,3 +123,11 @@ export function dropQueuedMessageDeliveryModeColumn(db: DbConnection): void {
     );
   }
 }
+
+export function dropTerminalDefaultColorsColumn(db: DbConnection): void {
+  const columns = db.$client
+    .prepare<[], { name: string }>("PRAGMA table_info(terminal_sessions)")
+    .all();
+  if (columns.some((column) => column.name === "default_colors"))
+    db.$client.exec("ALTER TABLE terminal_sessions DROP COLUMN default_colors");
+}

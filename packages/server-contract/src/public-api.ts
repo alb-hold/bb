@@ -239,6 +239,7 @@ import {
   type TerminalOutputResponse,
   type TerminalScreenQuery,
   type TerminalScreenResponse,
+  type TerminalDefaultColorsRequest,
   type TerminalResizeRequest,
   type ThreadArchiveAllResponse,
   type ThreadChildSummaryResponse,
@@ -395,6 +396,7 @@ import {
   terminalNotifyRequestSchema,
   terminalOutputQuerySchema,
   terminalScreenQuerySchema,
+  terminalDefaultColorsRequestSchema,
   terminalResizeRequestSchema,
   threadTimelineQuerySchema,
   systemCliSkillsStatusQuerySchema,
@@ -1207,6 +1209,14 @@ export const publicApiRoutes = {
       path: "/terminals/:terminalId/attention/clear",
       method: "post",
       request: noRequest<PathTerminal>(),
+      response: jsonResponse<TerminalSession>(),
+    }),
+    defaultColors: defineRoute({
+      path: "/terminals/:terminalId/default-colors",
+      method: "post",
+      request: jsonRequest<PathTerminal, TerminalDefaultColorsRequest>(
+        terminalDefaultColorsRequestSchema,
+      ),
       response: jsonResponse<TerminalSession>(),
     }),
     resize: defineRoute({

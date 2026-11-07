@@ -75,6 +75,7 @@ import type {
   TerminalOutputResponse,
   TerminalScreenQuery,
   TerminalScreenResponse,
+  TerminalDefaultColorsRequest,
   TerminalResizeRequest,
   TerminalSession,
   TerminalServerMessage,
@@ -1533,6 +1534,11 @@ export class TerminalSessionLifecycle {
       threadId: args.threadId,
       title: args.title,
     });
+    if (args.defaultColors)
+      updateTerminalById(this.options.db, startingSession.id, {
+        kind: "default-colors",
+        defaultColors: args.defaultColors,
+      });
     const requestId = randomUUID();
     const openMessage: HostDaemonServerWsMessage = {
       type: "terminal.open",
@@ -2045,6 +2051,51 @@ export class TerminalSessionLifecycle {
       emitPluginTerminalInput(this.toTerminalSession(session));
     }
     return this.toTerminalSession(session);
+  }
+
+  setTerminalDefaultColors(args: {
+    terminalId: string;
+    payload: TerminalDefaultColorsRequest;
+  }): TerminalSession {
+    const current = getTerminalById(this.options.db, args.terminalId);
+    if (!current)
+      throw new ApiError(
+        404,
+        "terminal_not_found",
+        "Terminal session not found",
+      );
+    if (
+      !this.options.hub.terminalViewerHasControl(
+        current.id,
+        args.payload.viewerToken,
+      )
+    )
+      throw new ApiError(
+        403,
+        "terminal_control_required",
+        "Only the controlling viewer may set terminal colours",
+      );
+    if (!isRunningBrowserTerminalSession(current))
+      throw new ApiError(
+        409,
+        "terminal_not_running",
+        "Terminal session is not running",
+      );
+    const colors = {
+      foreground: args.payload.foreground,
+      background: args.payload.background,
+    };
+    const sent = this.options.hub.sendDaemonSessionMessage(
+      current.daemonSessionId,
+      { type: "terminal.default-colors", terminalId: current.id, ...colors },
+    );
+    if (!sent)
+      throw new ApiError(502, "host_disconnected", "Host is not connected");
+    updateTerminalById(this.options.db, current.id, {
+      kind: "default-colors",
+      defaultColors: colors,
+    });
+    return this.toTerminalSession(current);
   }
 
   resizeTerminal(args: ResizeTerminalArgs): TerminalSession {
@@ -2925,11 +2976,13 @@ export class TerminalSessionLifecycle {
         }
         const openMessage: HostDaemonServerWsMessage = {
           type: "terminal.open",
-          ...(reconnected.threadId !== null &&
-          getNativeTerminalThread(this.options.db, reconnected.threadId)
-            ?.terminalSessionId === reconnected.id
-            ? { defaultColors: TERMINAL_DEFAULT_COLORS.dark }
-            : {}),
+          ...(reconnected.defaultColors
+            ? { defaultColors: reconnected.defaultColors }
+            : reconnected.threadId !== null &&
+                getNativeTerminalThread(this.options.db, reconnected.threadId)
+                  ?.terminalSessionId === reconnected.id
+              ? { defaultColors: TERMINAL_DEFAULT_COLORS.dark }
+              : {}),
           contributedEnv,
           requestId,
           terminalId: reconnected.id,

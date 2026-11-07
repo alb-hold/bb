@@ -35,6 +35,7 @@ import type {
   ServiceTier,
   TerminalSessionCloseReason,
   TerminalSessionStatus,
+  TerminalDefaultColors,
   ThreadDynamicContextFileStatus,
   ThreadSearchSourceKind,
   ThreadEventItemType,
@@ -1202,6 +1203,9 @@ export const terminalSessions = sqliteTable(
     createdAt: integer("created_at").notNull(),
     updatedAt: integer("updated_at").notNull(),
     lastUserInputAt: integer("last_user_input_at"),
+    defaultColors: text("default_colors", {
+      mode: "json",
+    }).$type<TerminalDefaultColors>(),
   },
   (table) => [
     index("terminal_sessions_thread_status_updated_idx").on(

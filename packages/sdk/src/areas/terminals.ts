@@ -8,6 +8,7 @@ import type {
   TerminalOutputQuery,
   TerminalOutputResponse,
   TerminalNotifyRequest,
+  TerminalDefaultColorsRequest,
   TerminalResizeRequest,
   TerminalSession,
   TerminalScreenQuery,
@@ -115,6 +116,9 @@ export interface TerminalInputArgs extends TerminalTargetArgs {
   dataBase64: TerminalInputRequest["dataBase64"];
 }
 
+export interface TerminalDefaultColorsArgs
+  extends TerminalTargetArgs, TerminalDefaultColorsRequest {}
+
 export interface TerminalResizeArgs extends TerminalTargetArgs {
   cols: TerminalResizeRequest["cols"];
   rows: TerminalResizeRequest["rows"];
@@ -219,6 +223,9 @@ export interface TerminalsArea {
   ): AsyncGenerator<Uint8Array>;
   rename(args: TerminalRenameArgs): Promise<TerminalRenameResult>;
   restart(args: TerminalRestartArgs): Promise<TerminalRestartResult>;
+  experimental_setDefaultColors(
+    args: TerminalDefaultColorsArgs,
+  ): Promise<TerminalSession>;
   resize(args: TerminalResizeArgs): Promise<TerminalResizeResult>;
 }
 
@@ -559,6 +566,18 @@ export function createTerminalsArea(args: CreateSdkAreaArgs): TerminalsArea {
         transport.api.v1.terminals[":terminalId"].restart.$post({
           param: { terminalId: input.terminalId },
           json: {},
+        }),
+      );
+    },
+    async experimental_setDefaultColors(input) {
+      return transport.readJson(
+        transport.api.v1.terminals[":terminalId"]["default-colors"].$post({
+          param: { terminalId: input.terminalId },
+          json: {
+            foreground: input.foreground,
+            background: input.background,
+            viewerToken: input.viewerToken,
+          },
         }),
       );
     },

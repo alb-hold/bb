@@ -1858,6 +1858,52 @@ describe("TerminalManager", () => {
     );
   });
 
+  it("updates native OSC replies while preserving pending queries, input and replay", async () => {
+    const harness = createHarness();
+    const pty = await openTerminal(harness, [], {
+      foreground: [190, 128, 1],
+      background: [24, 32, 48],
+    });
+    pty.emitData("\x1b]11;?\x07before\x1b]10;?");
+    await harness.manager.handleMessage({
+      type: "terminal.default-colors",
+      terminalId: "term-1",
+      foreground: [10, 20, 30],
+      background: [250, 251, 252],
+    });
+    pty.emitData("\x07\x1b]11;?\x1b\\after");
+    await harness.manager.handleMessage({
+      type: "terminal.input",
+      terminalId: "term-1",
+      dataBase64: Buffer.from("input").toString("base64"),
+    });
+    await harness.manager.handleMessage({
+      type: "terminal.attach",
+      requestId: "updated-colors-replay",
+      terminalId: "term-1",
+      sinceSeq: 0,
+      tailBytes: 4096,
+    });
+    expect(pty.writeCalls).toEqual([
+      "\x1b]11;rgb:1818/2020/3030\x1b\\",
+      "\x1b]10;rgb:0a0a/1414/1e1e\x1b\\",
+      "\x1b]11;rgb:fafa/fbfb/fcfc\x1b\\",
+      Buffer.from("input"),
+    ]);
+    expect(collectTerminalOutput(harness.messages)).toBe("beforeafter");
+    const replay = harness.messages.find(
+      (message) =>
+        message.type === "terminal.replay" &&
+        message.requestId === "updated-colors-replay",
+    );
+    if (replay?.type !== "terminal.replay") throw new Error("Missing replay");
+    expect(
+      replay.chunks
+        .map((chunk) => Buffer.from(chunk.dataBase64, "base64").toString())
+        .join(""),
+    ).toBe("beforeafter");
+  });
+
   it("answers live color queries once across multiple attaches and excludes them from replay", async () => {
     const harness = createHarness();
     const pty = await openTerminal(harness, [], {

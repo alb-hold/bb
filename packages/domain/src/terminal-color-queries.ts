@@ -14,7 +14,11 @@ export class TerminalColorQueries {
   private pending = "";
   private passthroughOsc = false;
 
-  constructor(private readonly colors: TerminalDefaultColors) {}
+  constructor(private colors: TerminalDefaultColors) {}
+
+  updateColors(colors: TerminalDefaultColors): void {
+    this.colors = colors;
+  }
 
   push(chunk: string, reply: (data: string) => void): string {
     if (

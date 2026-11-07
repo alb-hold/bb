@@ -401,7 +401,14 @@ describe("reopenNativeTerminalsAfterDaemonReconnect", () => {
       const { threadId } = await createDisconnectedNativeThread(h, 4, host.id);
       h.db
         .update(terminalSessions)
-        .set({ status: "exited", closeReason: "daemon-disconnect" })
+        .set({
+          status: "exited",
+          closeReason: "daemon-disconnect",
+          defaultColors: {
+            foreground: [12, 34, 56],
+            background: [234, 245, 255],
+          },
+        })
         .where(eq(terminalSessions.threadId, threadId))
         .run();
       const sourceRegistry = await createTestProviderRegistry();
@@ -437,6 +444,10 @@ describe("reopenNativeTerminalsAfterDaemonReconnect", () => {
 
       expect(resolveProviderEnv).not.toHaveBeenCalled();
       expect(createTerminal).toHaveBeenCalledOnce();
+      expect(createTerminal.mock.calls[0]?.[0].defaultColors).toEqual({
+        foreground: [12, 34, 56],
+        background: [234, 245, 255],
+      });
       const contributed =
         createTerminal.mock.calls[0]?.[0].extraContributedEnv ?? [];
       expect(contributed.map((entry) => entry.name)).toEqual([

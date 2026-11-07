@@ -90,3 +90,11 @@ for user-requested progress clearing. SDK callers can pass `force: true` to
 `threads.experimental_updateRowState` when they intend that override. The SDK
 equivalents are `threads.experimental_rowState` and
 `threads.experimental_updateRowState`; see the [thread row-state API](api/thread-row-state.md).
+
+`bb terminal colors <terminalId> --foreground <r,g,b> --background <r,g,b>
+--viewer-token <token> [--json]` updates OSC 10/11 replies using sRGB integers
+from 0 to 255. Only the app viewer currently holding terminal size control may
+update colours; its live viewer token is required. Read-only observers are rejected.
+The SDK method is `terminals.experimental_setDefaultColors({ terminalId,
+foreground, background, viewerToken })`. Accepted colours survive daemon reconnect;
+native sessions use the dark fallback until the first accepted viewer update.

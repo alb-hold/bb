@@ -15,6 +15,7 @@ import {
   rewindThreadPruningWork,
   dropMarketplaceSourceGitSubdirectoryColumn,
   dropThreadParentNotificationsColumn,
+  dropTerminalDefaultColorsColumn,
   dropQueuedMessageDeliveryModeColumn,
   dropQueuedMessageEditHeldUntilColumn,
 } from "./helpers/rewind.js";
@@ -119,6 +120,7 @@ it.each([false, true])(
       dropQueuedMessageEditHeldUntilColumn(db);
       dropMarketplaceSourceGitSubdirectoryColumn(db);
       dropThreadParentNotificationsColumn(db);
+      dropTerminalDefaultColorsColumn(db);
       dropQueuedMessageDeliveryModeColumn(db);
       migrate(db);
       migrate(db);
@@ -132,7 +134,9 @@ it.each([false, true])(
       expect(queueAfter.filter((row) => beforeIds.has(String(row.id)))).toEqual(
         queueBefore,
       );
-      const restored = queueAfter.filter((row) => !beforeIds.has(String(row.id)));
+      const restored = queueAfter.filter(
+        (row) => !beforeIds.has(String(row.id)),
+      );
       const preserved = alreadyMigrated
         ? db.$client
             .prepare(

@@ -453,6 +453,56 @@ export function registerTerminalCommands(
     );
 
   terminal
+    .command("colors <terminalId>")
+    .description("Set OSC 10/11 colours for the controlling terminal viewer")
+    .requiredOption("--foreground <r,g,b>", "Foreground sRGB channels (0–255)")
+    .requiredOption("--background <r,g,b>", "Background sRGB channels (0–255)")
+    .requiredOption("--viewer-token <token>", "Controlling app viewer token")
+    .option("--json", "Print machine-readable JSON output")
+    .action(
+      action(
+        async (
+          terminalId: string,
+          opts: {
+            foreground: string;
+            background: string;
+            viewerToken: string;
+            json?: boolean;
+          },
+        ) => {
+          const rgb = (value: string): [number, number, number] => {
+            const channels = value.split(",").map(Number);
+            if (
+              channels.length !== 3 ||
+              value.split(",").some((channel) => !/^\d+$/u.test(channel)) ||
+              channels.some(
+                (channel) =>
+                  !Number.isInteger(channel) || channel < 0 || channel > 255,
+              )
+            )
+              throw new CliUsageError({
+                code: "invalid_terminal_color",
+                hint: "Use r,g,b channels",
+                message:
+                  "Colours must contain three comma-separated integers from 0 to 255",
+              });
+            return [channels[0], channels[1], channels[2]];
+          };
+          const session = await createCliBbSdk(
+            getUrl(),
+          ).terminals.experimental_setDefaultColors({
+            terminalId,
+            foreground: rgb(opts.foreground),
+            background: rgb(opts.background),
+            viewerToken: opts.viewerToken,
+          });
+          if (!outputJson(opts, session))
+            console.log(`Updated terminal colours for ${session.id}`);
+        },
+      ),
+    );
+
+  terminal
     .command("move <terminalId>")
     .description(
       "Move a terminal tab to the pane containing another terminal in the app clients viewing this thread",
