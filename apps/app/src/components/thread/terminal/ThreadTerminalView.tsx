@@ -3370,12 +3370,23 @@ export function ThreadTerminalView({
           activeTransport.replayOutputFrom(lastQueuedOutputNextSeq);
           return;
         }
-        for (const write of terminalReplayWrites(
-          chunks,
-          outputBoundaries,
-          replayCheckpointSequence,
-        )) {
-          handleMessage({ type: "output", chunk: write.chunk }, write);
+        const replayEnd = replayNextSeq;
+        const firstLive =
+          replayEnd === null
+            ? -1
+            : chunks.findIndex((chunk) => chunk.seq >= replayEnd);
+        const groups =
+          firstLive > 0
+            ? [chunks.slice(0, firstLive), chunks.slice(firstLive)]
+            : [chunks];
+        for (const group of groups) {
+          for (const write of terminalReplayWrites(
+            group,
+            outputBoundaries,
+            replayCheckpointSequence,
+          )) {
+            handleMessage({ type: "output", chunk: write.chunk }, write);
+          }
         }
       };
       claimSizeRef.current = () => {

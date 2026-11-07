@@ -1635,7 +1635,7 @@ it.each([
 );
 
 describe("hidden terminal output continuity", () => {
-  async function mountContinuityViewer() {
+  async function mountContinuityViewer(initiallyHidden = false) {
     vi.stubGlobal("WebSocket", TestTerminalSocket);
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
       measureText: (text: string) => ({ width: text.length * 8 }),
@@ -1673,7 +1673,7 @@ describe("hidden terminal output continuity", () => {
         </AppCommandProvider>
       </MemoryRouter>
     );
-    const view = render(ui(true));
+    const view = render(ui(!initiallyHidden));
     await waitFor(() => expect(testState.sockets).toHaveLength(1));
     const socket = testState.sockets[0]!;
     await socket.opened;
@@ -1682,7 +1682,7 @@ describe("hidden terminal output continuity", () => {
       type: "attached",
       session,
       replayStartSeq: 0,
-      nextSeq: 0,
+      nextSeq: initiallyHidden ? 1 : 0,
     });
     socket.receive({
       type: "output",
@@ -1697,7 +1697,8 @@ describe("hidden terminal output continuity", () => {
           ).join("\n")
         : "";
     };
-    await waitFor(() => expect(text()).toContain("initial"));
+    if (!initiallyHidden)
+      await waitFor(() => expect(text()).toContain("initial"));
     const visible = async (value: boolean) => {
       view.rerender(ui(value));
       await waitFor(() =>
@@ -1706,8 +1707,28 @@ describe("hidden terminal output continuity", () => {
         ).toContainEqual({ type: "visibility", visible: value }),
       );
     };
-    return { socket, session, text, visible };
+    return { socket, session, text, visible, view };
   }
+
+  it("completes an initially hidden replay before draining later live output", async () => {
+    const h = await mountContinuityViewer(true);
+    h.socket.receive({
+      type: "output",
+      chunk: { seq: 1, dataBase64: btoa("later-live\r\n") },
+    });
+    expect(h.text()).not.toContain("initial");
+    await h.visible(true);
+    await waitFor(() => {
+      expect(h.text()).toContain("later-live");
+      expect(
+        h.view.container.querySelector<HTMLElement>("[data-terminal-renderer]")
+          ?.dataset.replayHeld,
+      ).toBe("false");
+    });
+    expect(h.text().match(/initial/g)).toHaveLength(1);
+    expect(h.text().match(/later-live/g)).toHaveLength(1);
+    expect(testState.sockets).toHaveLength(1);
+  });
 
   it("keeps the socket and parses hidden output exactly once when shown", async () => {
     const h = await mountContinuityViewer();
