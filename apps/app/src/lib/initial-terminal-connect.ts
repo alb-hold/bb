@@ -4,6 +4,7 @@ import { buildTerminalWebSocketUrl } from "@/components/thread/terminal/terminal
 import { ensureDeviceHandoffId } from "./device-handoff-identity";
 import "./initial-native-terminal-request";
 import { loadNativeTerminalPanel } from "@/components/thread/terminal/native-terminal-panel-loader";
+import { preloadTerminalModules } from "@/components/thread/terminal/terminal-modules";
 
 markTerminalPerformance("terminal-initial-connector-ready");
 const initial = globalThis.__bbInitialNativeTerminalRequest;
@@ -33,6 +34,7 @@ if (initial) {
         view.terminal.id.length > 256
       )
         return;
+      preloadTerminalModules();
       prefetchTerminalSocket(
         buildTerminalWebSocketUrl({
           terminalId: view.terminal.id,
@@ -46,9 +48,6 @@ if (initial) {
           once: true,
         });
       else warmPanel();
-      void import("@/components/thread/terminal/terminal-modules")
-        .then(({ preloadTerminalModules }) => preloadTerminalModules())
-        .catch(() => undefined);
       void import("@/views/thread-detail/LazyThreadDetailView")
         .then(({ LazyThreadDetailView }) => LazyThreadDetailView.preload())
         .catch(() => undefined);

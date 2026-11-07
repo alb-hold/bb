@@ -216,7 +216,7 @@ describe("native terminal attach claim timing", () => {
       ),
     ),
     ...[44, 125].flatMap((cols) =>
-      ["webgl", "late", "unobserved"].flatMap((rendererMode) =>
+      ["webgl", "failed", "late", "unobserved"].flatMap((rendererMode) =>
         (rendererMode === "webgl" ? [false, true] : [false]).map(
           (layoutShift) => ({
             cols,
@@ -261,12 +261,23 @@ describe("native terminal attach claim timing", () => {
         vi.spyOn(HTMLElement.prototype, dimension, "get").mockReturnValue(354);
       }
       let webglActive = false;
+      let rendererFailedAt: number | undefined;
       vi.spyOn(rendererModule, "loadTerminalWebglRenderer").mockImplementation(
         (_terminal, _create, options) => ({
           get renderer() {
             return webglActive ? "webgl" : "dom";
           },
+          get initialAttemptComplete() {
+            return webglActive || rendererFailedAt !== undefined;
+          },
           setVisible: (visible) => {
+            if (rendererMode === "failed") {
+              if (visible && rendererFailedAt === undefined) {
+                rendererFailedAt = Date.now();
+                options?.onRendererChange?.("dom");
+              }
+              return;
+            }
             if (visible && !webglActive) {
               webglActive = true;
               options?.onRendererChange?.("webgl");
@@ -494,13 +505,18 @@ describe("native terminal attach claim timing", () => {
           type: "ack",
           nextSeq: 1,
         });
-        expect(revealedAt! - renderedAt).toBeLessThanOrEqual(
-          rendererMode === "late" || rendererMode === "unobserved"
-            ? 200
-            : rendererMode === "webgl"
-              ? 150
-              : 64,
-        );
+        if (rendererMode === "failed") {
+          expect(rendererFailedAt! - renderedAt).toBe(80);
+          expect(revealedAt! - rendererFailedAt!).toBeLessThanOrEqual(64);
+          expect(revealedAt! - renderedAt).toBeLessThanOrEqual(80 + 64);
+        } else
+          expect(revealedAt! - renderedAt).toBeLessThanOrEqual(
+            rendererMode === "late" || rendererMode === "unobserved"
+              ? 200
+              : rendererMode === "webgl"
+                ? 150
+                : 64,
+          );
         expect(stages.get("terminal-replay-revealed")).toBeDefined();
         expect(
           stages.get("terminal-replay-revealed")! -
@@ -537,6 +553,10 @@ describe("native terminal attach claim timing", () => {
       if (cacheMode === "miss") expect(claimAt).toBe(resizeAt);
       if (rendererMode === "dom")
         expect(claimAt! - renderedAt).toBeLessThanOrEqual(100);
+      if (rendererMode === "failed") {
+        expect(claimAt! - rendererFailedAt!).toBeLessThanOrEqual(64);
+        expect(claimAt! - renderedAt).toBeLessThanOrEqual(80 + 64);
+      }
       if (rendererMode !== "dom")
         expect(claimAt! - renderedAt).toBeLessThanOrEqual(
           (rendererMode === "late" || rendererMode === "unobserved"

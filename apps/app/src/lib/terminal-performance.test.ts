@@ -2,12 +2,31 @@ import { afterEach, expect, it } from "vitest";
 import { PerformanceObserver } from "node:perf_hooks";
 import {
   markTerminalPerformance,
+  measureTerminalPerformance,
   traceTerminalGate,
 } from "./terminal-performance";
 
 const name = "terminal-replay-parsed";
 
 afterEach(() => performance.clearMarks(name));
+
+it("bounds synchronous timings while preserving results and thrown failures", () => {
+  const measure = "terminal-test-synchronous";
+  const failure = new Error("fit failed");
+  try {
+    for (let index = 0; index < 3; index++) {
+      expect(measureTerminalPerformance(measure, () => index)).toBe(index);
+    }
+    expect(() =>
+      measureTerminalPerformance(measure, () => {
+        throw failure;
+      }),
+    ).toThrow(failure);
+    expect(performance.getEntriesByName(measure)).toHaveLength(1);
+  } finally {
+    performance.clearMeasures(measure);
+  }
+});
 
 it("bounds retained marks while delivering every replay timing to observers", async () => {
   const received = new Promise<number>((resolve) => {
