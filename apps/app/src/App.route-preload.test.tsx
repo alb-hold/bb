@@ -1,4 +1,8 @@
 // @vitest-environment jsdom
+import {
+  systemProvidersQueryOptions,
+  useSystemProviders,
+} from "./hooks/queries/system-queries";
 import { sdk } from "./lib/sdk";
 import { appQueryClient } from "./lib/app-query-client";
 import {
@@ -95,6 +99,7 @@ it("keeps the workspace chunk off routes that do not use it", async () => {
 });
 
 it("starts destination code before the workspace settles and keeps thread code off new-thread startup", async () => {
+  const providers = vi.spyOn(sdk.providers, "list").mockResolvedValue([]);
   const environments = vi
     .spyOn(sdk.environments, "listProviders")
     .mockResolvedValue([]);
@@ -133,12 +138,17 @@ it("starts destination code before the workspace settles and keeps thread code o
   expect(downloads.thread).not.toHaveBeenCalled();
   await waitFor(() => expect(environments).toHaveBeenCalledTimes(1));
   expect(machines).toHaveBeenCalledTimes(1);
+  expect(providers).toHaveBeenCalledTimes(1);
+  expect(screen.queryByText("Workspace ready")).toBeNull();
+  expect(screen.queryByText("Compose ready")).toBeNull();
+  await appQueryClient.ensureQueryData(systemProvidersQueryOptions());
   await appQueryClient.ensureQueryData(environmentProvidersQueryOptions({}));
   await appQueryClient.ensureQueryData(machineProvidersQueryOptions());
   renderHook(
     () => {
       useSystemEnvironmentProviders();
       useSystemMachineProviders();
+      useSystemProviders();
     },
     {
       wrapper: ({ children }) => (
@@ -150,6 +160,7 @@ it("starts destination code before the workspace settles and keeps thread code o
   );
   expect(environments).toHaveBeenCalledTimes(1);
   expect(environments).toHaveBeenCalledWith({});
+  expect(providers).toHaveBeenCalledTimes(1);
   expect(machines).toHaveBeenCalledTimes(1);
 
   fireEvent.click(screen.getByRole("button", { name: "Open personal thread" }));

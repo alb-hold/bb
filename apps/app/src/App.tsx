@@ -5,6 +5,7 @@ import {
 } from "./lib/terminal-performance";
 import { appQueryClient } from "./lib/app-query-client";
 import { environmentProvidersQueryOptions } from "./hooks/queries/environment-provider-queries";
+import { systemProvidersQueryOptions } from "./hooks/queries/system-queries";
 import { machineProvidersQueryOptions } from "./hooks/queries/machine-provider-queries";
 import { PluginUpdateJobsHost } from "./components/plugin/PluginUpdateJobsHost";
 import { LazyThreadDetailView } from "./views/thread-detail/LazyThreadDetailView";
@@ -375,6 +376,7 @@ export function AppRoutes() {
   }, [isThreadView]);
   useEffect(() => {
     if (!isRootComposeView) return;
+    void appQueryClient.prefetchQuery(systemProvidersQueryOptions());
     void appQueryClient.prefetchQuery(environmentProvidersQueryOptions({}));
     void appQueryClient.prefetchQuery(machineProvidersQueryOptions());
     void ProgressiveComposer.preload();
