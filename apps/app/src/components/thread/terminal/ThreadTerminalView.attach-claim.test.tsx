@@ -422,7 +422,8 @@ describe("native terminal attach claim timing", () => {
       expect(
         document.querySelector("[data-terminal-grid-cache-id]"),
       ).toBeNull();
-      expect(claimAt).toBeUndefined();
+      if (cacheMode === "miss") expect(claimAt).toBeUndefined();
+      else expect(claimAt).toBe(attachedAt);
       expect(startTransport).not.toHaveBeenCalled();
       if (cacheMode !== "miss") await vi.advanceTimersByTimeAsync(700);
       const renderedAt = Date.now();
@@ -545,7 +546,11 @@ describe("native terminal attach claim timing", () => {
         rows: 36,
         claim: true,
       };
-      expect(claims).toEqual([measured]);
+      expect(claims).toEqual(
+        cacheMode === "mismatch"
+          ? [{ type: "resize", cols: cachedCols, rows: 36, claim: true }, measured]
+          : [measured],
+      );
       if (rendererMode === "late" || rendererMode === "unobserved")
         expect(webglActive).toBe(false);
       expect(readCachedTerminalGrid(session.id)).toEqual({
