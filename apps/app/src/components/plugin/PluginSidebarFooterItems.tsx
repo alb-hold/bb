@@ -497,7 +497,7 @@ export function FooterItemIcon({ item }: { item: FooterItem }) {
     <PluginItemIcon
       pluginId={item.slot.pluginId}
       icon={item.icon}
-      className="size-4 shrink-0 text-current [&_svg]:fill-none [&_svg]:stroke-current"
+      className="size-4 shrink-0 text-current fill-none stroke-current"
     />
   ) : (
     <Icon
