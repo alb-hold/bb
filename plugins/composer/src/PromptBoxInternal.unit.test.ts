@@ -147,6 +147,31 @@ describe("arePromptEditorValuesEqual", () => {
   });
 });
 
+function eagerPhoneStyle(selector: string): Record<string, string> {
+  const css = readFileSync("../../apps/app/src/app.css", "utf8").replace(
+    /\s+/g,
+    " ",
+  );
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const rules = Array.from(
+    css.matchAll(
+      new RegExp(`(?:^|(?<=[{}]))\\s*${escaped}\\s*\\{([^{}]+)\\}`, "g"),
+    ),
+  );
+  expect(rules.length).toBeGreaterThan(0);
+  const style: Record<string, string> = {};
+  for (const rule of rules) {
+    for (const declaration of rule[1]!.split(";")) {
+      const colon = declaration.indexOf(":");
+      if (colon < 0) continue;
+      style[declaration.slice(0, colon).trim()] = declaration
+        .slice(colon + 1)
+        .trim();
+    }
+  }
+  return style;
+}
+
 it("owns the single phone action row through stable composer slots", () => {
   const source = readFileSync("src/PromptBoxInternal.tsx", "utf8");
   const css = readFileSync("../../apps/app/src/app.css", "utf8");
@@ -162,21 +187,29 @@ it("owns the single phone action row through stable composer slots", () => {
   ]) {
     expect(source).toContain(`data-promptbox-${slot}=""`);
   }
-  for (const [slot, column] of [
-    ["plus-control", "1"],
-    ["trailing-actions", "3"],
-  ]) {
-    const rule = css.match(
-      new RegExp(`\\[data-promptbox-${slot}\\]\\s*\\{([^}]+)`),
-    )?.[1];
-    expect(rule).toContain(`grid-column: ${column}`);
-    expect(rule).toContain("grid-row: 1");
-  }
+  const layout = '[data-promptbox-execution-layout="stacked"]';
+  const row = eagerPhoneStyle(
+    `[data-promptbox]:not([data-promptbox-voice-active]) ${layout}`,
+  );
+  expect(row.display).toBe("grid");
+  expect(row["grid-template-columns"]).toBe("2.75rem minmax(0, 1fr)");
+  const plus = eagerPhoneStyle(`${layout} [data-promptbox-plus-control]`);
+  expect(plus["grid-column"]).toBe("1");
+  expect(plus["grid-row"]).toBe("1");
+  const trailing = eagerPhoneStyle(
+    `${layout} > [data-promptbox-trailing-actions]`,
+  );
+  expect(trailing.position).toBe("absolute");
+  expect(trailing.right).toBe("0.5rem");
+  expect(trailing.bottom).toBe("calc(100% - 0.5rem)");
+  const input = eagerPhoneStyle(
+    `[data-promptbox]:has(${layout}) [data-promptbox-input-region]`,
+  );
+  expect(input["padding-inline-end"]).toBe("3rem");
   expect(css).not.toContain('aria-label="Prompt actions"');
 });
 
 it("pins pending execution controls to one phone row in the eager stylesheet", () => {
-  const css = readFileSync("../../apps/app/src/app.css", "utf8");
   const pluginCss = readFileSync("src/composer.css", "utf8");
   for (const slot of [
     "data-execution-controls-layout",
@@ -186,14 +219,36 @@ it("pins pending execution controls to one phone row in the eager stylesheet", (
     expect(pluginCss).not.toContain(slot);
   }
   for (const [selector, declarations] of [
-    ['[data-execution-controls-layout="stacked"]', ["display: flex", "grid-column: 2", "grid-row: 1", "min-width: 0", "flex-wrap: nowrap", "gap: 0"]],
-    ['[data-model-reasoning-trigger]', ["min-width: 0", "flex: 1 1 0%", "overflow: hidden"]],
-    ['[data-native-terminal-toggle]', ["height: auto"]],
-    ['[data-native-terminal-toggle] > button', ["height: 2.75rem", "min-width: 2.75rem"]],
+    [
+      '[data-promptbox-execution-layout="stacked"] [data-execution-controls-layout="stacked"]',
+      [
+        "display: flex",
+        "grid-column: 2",
+        "grid-row: 1",
+        "min-width: 0",
+        "flex-wrap: nowrap",
+        "gap: 0",
+      ],
+    ],
+    [
+      '[data-execution-controls-layout="stacked"] [data-model-reasoning-trigger]',
+      ["min-width: 0", "flex: 1 1 0%", "overflow: hidden"],
+    ],
+    [
+      '[data-execution-controls-layout="stacked"] [data-native-terminal-toggle]',
+      ["height: auto"],
+    ],
+    [
+      '[data-execution-controls-layout="stacked"] [data-native-terminal-toggle] > button',
+      ["height: 2.75rem", "min-width: 2.75rem"],
+    ],
   ] as const) {
-    expect(css).toContain(selector + " {");
-    const rule = css.slice(css.indexOf(selector + " {"));
-    const body = rule.slice(0, rule.indexOf("}"));
-    for (const declaration of declarations) expect(body).toContain(declaration);
+    const style = eagerPhoneStyle(selector);
+    for (const declaration of declarations) {
+      const colon = declaration.indexOf(":");
+      expect(style[declaration.slice(0, colon)]).toBe(
+        declaration.slice(colon + 1).trim(),
+      );
+    }
   }
 });
