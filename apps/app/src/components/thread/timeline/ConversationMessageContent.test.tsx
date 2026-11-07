@@ -248,6 +248,11 @@ describe("ConversationMessageContent user sizing", () => {
         .querySelector("[data-markdown-preview]")
         ?.classList.contains("@container"),
     ).toBe(false);
+    expect(
+      container
+        .querySelector("[data-markdown-preview]")
+        ?.classList.contains("md:text-base"),
+    ).toBe(true);
   });
 });
 
