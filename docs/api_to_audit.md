@@ -4908,3 +4908,12 @@ the authorised terminal route. Requires the live controlling viewer token; rejec
 observers. Core terminal theme updates use this same SDK path. Stabilise after
 control handoff, custom themes, and daemon reconnect behaviour have shipped.
 The bb-app BBSdk delegates its terminals area directly to the SDK.
+
+## PluginSidebarThread.experimental_nativeTerminal
+
+Required boolean projected from the server thread summary's `nativeTerminal`,
+independent of live activity. The core Recent rows and thread-list sidebar use
+the same mode for their shared Terminal / FolderGit / Folder glyph. Sidebar
+bootstrap caching retains the source field; `bb thread get --json` exposes it
+as `nativeTerminal`. Stabilize after auditing all sidebar renderers and idle,
+active, and cached native terminal rows across desktop and phone.

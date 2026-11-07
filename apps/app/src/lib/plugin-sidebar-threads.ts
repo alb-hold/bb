@@ -56,6 +56,7 @@ export function toPluginSidebarThread(
     status: entry.status,
     experimental_rowState: entry.rowState,
     runtimeStatus: entry.runtime.displayStatus,
+    experimental_nativeTerminal: entry.nativeTerminal === true,
     ...(entry.runtime.nativeActivity === undefined
       ? {}
       : {

@@ -1364,6 +1364,7 @@ export interface PluginSidebarThread {
    * unknown value as `status`.
    */
   runtimeStatus: ThreadRuntimeDisplayStatus;
+  experimental_nativeTerminal: boolean;
   experimental_nativeActivity?: NativeActivityDiagnostic;
   /**
    * Whether a message is queued behind the running turn ("waiting") or a

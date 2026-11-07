@@ -1,0 +1,18 @@
+{
+  "$schema": "https://ui.shadcn.com/schema/registry-item.json",
+  "name": "thread-mode-glyph",
+  "type": "registry:ui",
+  "title": "thread-mode-glyph",
+  "description": "BB ui \"thread-mode-glyph\" — vendored from the BB app's own source (version-matched to this BB release).",
+  "registryDependencies": [
+    "@bb/icon"
+  ],
+  "files": [
+    {
+      "path": "registry/components/ui/thread-mode-glyph.tsx",
+      "content": "import { Icon } from \"./icon\";\n\nexport function ThreadModeGlyph({\n  nativeTerminal,\n  isWorktree,\n  hideWorkspaceOnDesktop = false,\n}: {\n  nativeTerminal: boolean;\n  isWorktree: boolean;\n  hideWorkspaceOnDesktop?: boolean;\n}) {\n  const name = nativeTerminal ? \"Terminal\" : isWorktree ? \"FolderGit\" : \"Folder\";\n  const label = nativeTerminal ? \"Native terminal\" : isWorktree ? \"Worktree\" : \"Workspace\";\n  return (\n    <span className={hideWorkspaceOnDesktop && !nativeTerminal && !isWorktree ? \"md:hidden\" : undefined} role=\"img\" aria-label={label}>\n      <Icon name={name} className=\"size-3.5 shrink-0\" aria-hidden />\n    </span>\n  );\n}\n",
+      "type": "registry:ui",
+      "target": "components/ui/thread-mode-glyph.tsx"
+    }
+  ]
+}

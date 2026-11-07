@@ -18,6 +18,8 @@ import { MemoryRouter } from "react-router-dom";
 import { RouteLoadingSkeleton } from "@/components/ui/route-loading-skeleton";
 import {
   writeCachedSidebarBootstrap,
+  readCachedSidebarBootstrap,
+  SIDEBAR_BOOTSTRAP_CACHE_KEY,
   resetSidebarBootstrapCacheForTest,
 } from "@/lib/sidebar-bootstrap-cache";
 import {
@@ -432,7 +434,7 @@ describe("mobile recent thread rows", () => {
     expect(metadata.classList.contains("text-xs")).toBe(true);
     expect(metadata.classList.contains("text-muted-foreground")).toBe(true);
     expect(metadata.className).not.toContain("pointer-coarse:text-sm");
-    expect(metadata.firstElementChild?.getAttribute("data-icon")).toBe(
+    expect(metadata.querySelector("[data-icon]")?.getAttribute("data-icon")).toBe(
       "Folder",
     );
   });
@@ -482,7 +484,7 @@ describe("mobile recent thread rows", () => {
       `${branch.slice(0, 6)}…`,
     );
     expect(metadata.classList.contains("leading-4")).toBe(true);
-    expect(metadata.firstElementChild?.hasAttribute("data-icon-root")).toBe(
+    expect(metadata.querySelector("[data-icon-root]")?.hasAttribute("data-icon-root")).toBe(
       true,
     );
   });
@@ -779,12 +781,16 @@ describe("RootComposeMobileRecents", () => {
   });
 });
 
-it.each(["plain", "expanded", "collapsed"])(
+it.each(["plain", "expanded", "collapsed", "native", "worktree"])(
   "keeps cached and live Recent row geometry and metadata identical (%s)",
   (shape) => {
     vi.spyOn(Date, "now").mockReturnValue(1800000000000);
     const thread = makeThread({
       title: "Cached work",
+      nativeTerminal: shape === "native",
+      environmentIsWorktree: shape === "worktree",
+      status: "idle",
+      runtime: { displayStatus: "idle" },
       environmentBranchName: "feature/paint",
       latestAttentionAt: Date.now() - 60000,
     });
@@ -808,6 +814,12 @@ it.each(["plain", "expanded", "collapsed"])(
         ],
       }),
     );
+    window.localStorage.setItem(
+      SIDEBAR_BOOTSTRAP_CACHE_KEY,
+      JSON.stringify(readCachedSidebarBootstrap()),
+    );
+    resetSidebarBootstrapCacheForTest();
+    expect(readCachedSidebarBootstrap()?.projects[0]?.threads[0]?.nativeTerminal).toBe(shape === "native");
     const cached = render(
       <TestProviders store={store}>
         <CompactViewportOverrideProvider isCompactViewport>
@@ -823,6 +835,10 @@ it.each(["plain", "expanded", "collapsed"])(
     const cachedClasses = [cachedRow, ...cachedRow.querySelectorAll("*")].map(
       (node) => node.getAttribute("class"),
     );
+    const expectedGlyph = shape === "native" ? "Terminal" : shape === "worktree" ? "FolderGit" : "Folder";
+    const expectedLabel = shape === "native" ? "Native terminal" : shape === "worktree" ? "Worktree" : "Workspace";
+    expect(cachedRow.querySelector(`[data-icon="${expectedGlyph}"]`)).not.toBeNull();
+    expect(cachedRow.querySelector(`[role="img"][aria-label="${expectedLabel}"]`)).not.toBeNull();
     const cachedText = cachedRow.textContent;
     const cachedPadding = cachedRow.getAttribute("style");
     const cachedRows = cachedSection!.querySelectorAll("li").length;
@@ -850,6 +866,8 @@ it.each(["plain", "expanded", "collapsed"])(
         node.getAttribute("class"),
       ),
     ).toEqual(cachedClasses);
+    expect(liveRow.querySelector(`[data-icon="${expectedGlyph}"]`)).not.toBeNull();
+    expect(liveRow.querySelector(`[role="img"][aria-label="${expectedLabel}"]`)).not.toBeNull();
     expect(liveRow.textContent).toBe(cachedText);
     expect(liveRow.getAttribute("style")).toBe(cachedPadding);
     expect(liveSection.querySelectorAll("li").length).toBe(cachedRows);
