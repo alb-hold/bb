@@ -540,7 +540,7 @@ describe("composer and navigation contrast", () => {
       ...canvas,
       lightness: ink.lightness * share + canvas.lightness * (1 - share),
     };
-    it(`${mode} inactive rail and footer ink sits between muted and active with 3:1 contrast`, () => {
+    it(`${mode} inactive rail and footer ink is visibly dimmer than active with 4.5:1 contrast`, () => {
       const share = rampSteps(block).get("sidebar-icon-foreground");
       expect(share).toBeDefined();
       const inactive = {
@@ -551,9 +551,8 @@ describe("composer and navigation contrast", () => {
       };
       const distance = (color: OklchColor) =>
         Math.abs(color.lightness - canvas.lightness);
-      expect(distance(inactive)).toBeGreaterThan(distance(muted));
-      expect(distance(inactive)).toBeLessThan(distance(ink));
-      expect(contrastRatio(inactive, sidebar)).toBeGreaterThanOrEqual(3);
+      expect(distance(ink) - distance(inactive)).toBeGreaterThanOrEqual(0.05);
+      expect(contrastRatio(inactive, sidebar)).toBeGreaterThanOrEqual(4.5);
       for (const classes of [
         SIDEBAR_RAIL_BUTTON_CLASS,
         SIDEBAR_FOOTER_ACTION_CLASS,

@@ -856,7 +856,7 @@
   );
   --sidebar: color-mix(in oklch, var(--ink) 4.3%, var(--canvas));
   --sidebar-foreground: var(--ink);
-  --sidebar-icon-foreground: color-mix(in oklch, var(--ink) 98%, var(--canvas));
+  --sidebar-icon-foreground: color-mix(in oklch, var(--ink) 90%, var(--canvas));
   --sidebar-accent: color-mix(in oklch, var(--ink) 12%, var(--canvas));
   --sidebar-accent-foreground: var(--ink);
   --sidebar-border: color-mix(in oklch, var(--ink) 18.1%, var(--canvas));
