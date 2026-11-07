@@ -553,6 +553,10 @@ describe("native terminal attach claim timing", () => {
       if (cacheMode === "miss") expect(claimAt).toBe(resizeAt);
       if (rendererMode === "dom")
         expect(claimAt! - renderedAt).toBeLessThanOrEqual(100);
+      if (rendererMode === "failed") {
+        expect(claimAt! - rendererFailedAt!).toBeLessThanOrEqual(64);
+        expect(claimAt! - renderedAt).toBeLessThanOrEqual(80 + 64);
+      }
       if (rendererMode !== "dom")
         expect(claimAt! - renderedAt).toBeLessThanOrEqual(
           (rendererMode === "late" || rendererMode === "unobserved"
