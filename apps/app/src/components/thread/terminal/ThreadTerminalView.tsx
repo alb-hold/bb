@@ -1984,8 +1984,12 @@ export function ThreadTerminalView({
       const wasVisible = terminalVisible;
       if (wasVisible === nextVisible) return;
       terminalVisible = nextVisible;
+      if (nextVisible) webglVisibilityRef.current?.sync();
       transport?.setVisible(nextVisible);
-      if (nextVisible) sizeClaims?.claimIfFocused();
+      if (nextVisible) {
+        sizeClaims?.claimIfFocused();
+        scheduleFitRef.current?.();
+      }
       if (wasVisible === false && nextVisible) flushHiddenOutput();
     };
     terminalVisibilityReporterRef.current = reportDocumentVisibility;
@@ -2422,7 +2426,7 @@ export function ThreadTerminalView({
             webglAddonModule === null ||
             terminal === null ||
             retainNativeOutput ||
-            (holdForFittedGrid && initialRendererSettled)
+            initialRendererSettled
           ) {
             return;
           }
@@ -2449,6 +2453,7 @@ export function ThreadTerminalView({
             root: containerElement,
             renderer: webglRenderer,
             isPanelOpen: () => isPanelOpenRef.current,
+            onVisible: () => scheduleFitRef.current?.(),
           });
         })
         .catch(() => undefined);
@@ -2649,9 +2654,15 @@ export function ThreadTerminalView({
         if (!fitAddon || !terminal) {
           return;
         }
-        if (!hasVisibleTerminalSize({ containerElement })) {
+        if (
+          !initialRendererSettled ||
+          !isPanelOpenRef.current ||
+          document.visibilityState !== "visible" ||
+          !hasVisibleTerminalSize({ containerElement })
+        ) {
           return;
         }
+        if (webglVisibilityRef.current?.sync() === false) return;
         const activeTerminal = terminal;
         const activeFitAddon = fitAddon;
         fitWork.run({
@@ -2751,15 +2762,10 @@ export function ThreadTerminalView({
         });
       };
       function settleInitialRenderer() {
-        if (
-          disposed ||
-          terminal === null ||
-          (holdForFittedGrid && initialRendererSettled)
-        )
-          return;
+        if (disposed || terminal === null || initialRendererSettled) return;
         clearTimeout(rendererDeadline);
         initialRendererSettled = true;
-        if (holdForFittedGrid && webglRenderer?.renderer === "dom") {
+        if (webglRenderer?.renderer === "dom") {
           webglVisibilityRef.current?.dispose();
           webglVisibilityRef.current = null;
           webglRenderer.dispose();
@@ -3461,6 +3467,12 @@ export function ThreadTerminalView({
             return null;
           }
           if (holdForFittedGrid) return `${rect.width}x${rect.height}`;
+          if (
+            !initialRendererSettled ||
+            !isPanelOpenRef.current ||
+            document.visibilityState !== "visible"
+          )
+            return null;
           const fitted = fitAddon?.proposeDimensions();
           if (
             fitted === undefined ||

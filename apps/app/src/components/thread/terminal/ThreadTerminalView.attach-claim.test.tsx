@@ -299,7 +299,11 @@ describe("native terminal attach claim timing", () => {
           observer.sync();
           return observer;
         }
-        const sync = () => args.renderer.setVisible(args.isPanelOpen());
+        const sync = () => {
+          const visible = args.isPanelOpen();
+          args.renderer.setVisible(visible);
+          return visible;
+        };
         sync();
         return { sync, dispose: vi.fn() };
       });
@@ -363,15 +367,12 @@ describe("native terminal attach claim timing", () => {
         TerminalWebSocketTransport.prototype.sendResize;
       const sendResize = vi
         .spyOn(TerminalWebSocketTransport.prototype, "sendResize")
-        .mockImplementation(function (
-          this: TerminalWebSocketTransport,
-          cols,
-          rows,
-          claim,
-        ) {
-          if (claim) resizeAt ??= Date.now();
-          originalSendResize.call(this, cols, rows, claim);
-        });
+        .mockImplementation(
+          function (this: TerminalWebSocketTransport, cols, rows, claim) {
+            if (claim) resizeAt ??= Date.now();
+            originalSendResize.call(this, cols, rows, claim);
+          },
+        );
       const session = makeTerminalSession({
         id: "term_existing_client_grid",
         threadId: null,

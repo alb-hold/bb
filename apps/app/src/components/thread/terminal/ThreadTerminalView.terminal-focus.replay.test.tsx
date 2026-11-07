@@ -481,10 +481,7 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
       "--foreground",
       "rgb(228, 228, 228)",
     );
-    document.documentElement.style.setProperty(
-      "--ink",
-      "rgb(12, 34, 56)",
-    );
+    document.documentElement.style.setProperty("--ink", "rgb(12, 34, 56)");
     document.documentElement.style.setProperty("--sidebar", "rgb(12, 34, 56)");
     testState.setDefaultColors.mockClear();
     const session = renderMobileTerminal();
@@ -2745,7 +2742,7 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
     },
   );
 
-  it("preserves terminal state when WebGL attaches after replay", async () => {
+  it("preserves the DOM decision and terminal state when WebGL arrives after replay", async () => {
     prepareFirstAttachFontMetricsHarness();
     testState.touchEnabled = false;
     stubVisibleIntersectionObserver();
@@ -2763,12 +2760,11 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
     vi.spyOn(terminalModules, "importTerminalWebglAddon").mockReturnValue(
       webglModule,
     );
-    let loseContext = () => {};
+    const activate = vi.fn();
     class WebglAddon {
-      activate(_terminal: Terminal): void {}
+      activate = activate;
       dispose(): void {}
-      onContextLoss(listener: () => void) {
-        loseContext = listener;
+      onContextLoss(_listener: () => void) {
         return { dispose: () => {} };
       }
     }
@@ -2833,8 +2829,8 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
         expect(
           document.querySelector<HTMLElement>("[data-terminal-renderer]")
             ?.dataset.terminalRenderer,
-        ).toBe("webgl"),
-      "WebGL renderer did not attach after replay",
+        ).toBe("dom"),
+      "late WebGL import changed the settled DOM renderer",
     );
     expect(terminal.options.lineHeight).toBe(1.22);
     expect({
@@ -2846,8 +2842,7 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
       viewportY: terminal.buffer.active.viewportY,
       retainedLine: terminal.buffer.active.getLine(5)?.translateToString(true),
     }).toEqual(before);
-    act(() => loseContext());
-    expect(terminal.options.lineHeight).toBe(1.22);
+    expect(activate).not.toHaveBeenCalled();
   }, 30_000);
 
   it("keeps the DOM renderer and replay working when WebGL import fails", async () => {

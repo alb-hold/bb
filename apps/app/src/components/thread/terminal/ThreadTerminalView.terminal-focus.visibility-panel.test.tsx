@@ -1655,7 +1655,25 @@ it.each([
 );
 
 describe("hidden terminal output continuity", () => {
-  async function mountContinuityViewer(initiallyHidden = false) {
+  const webglModule = {
+    WebglAddon: class {
+      activate() {}
+      dispose() {}
+      onContextLoss() {
+        return { dispose() {} };
+      }
+    },
+  };
+
+  async function mountContinuityViewer(
+    initiallyHidden = false,
+    {
+      rendererGrid = false,
+      native = true,
+      waitForReplay = true,
+      terminalId = "term_hidden_continuity",
+    } = {},
+  ) {
     vi.stubGlobal("WebSocket", TestTerminalSocket);
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
       measureText: (text: string) => ({ width: text.length * 8 }),
@@ -1687,10 +1705,17 @@ describe("hidden terminal output continuity", () => {
       y: 0,
       toJSON: () => ({}),
     });
-    vi.spyOn(FitAddon.prototype, "proposeDimensions").mockReturnValue({
-      cols: 80,
-      rows: 24,
-    });
+    const propose = vi
+      .spyOn(FitAddon.prototype, "proposeDimensions")
+      .mockImplementation(() => ({
+        cols: rendererGrid
+          ? document.querySelector<HTMLElement>("[data-terminal-renderer]")
+              ?.dataset.terminalRenderer === "webgl"
+            ? 98
+            : 92
+          : 80,
+        rows: 24,
+      }));
     let live: Terminal | null = null;
     const open = Terminal.prototype.open;
     vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
@@ -1701,14 +1726,14 @@ describe("hidden terminal output continuity", () => {
       return open.apply(this, args);
     });
     const session = makeTerminalSession({
-      id: "term_hidden_continuity",
-      cols: 80,
+      id: terminalId,
+      cols: rendererGrid ? 98 : 80,
       rows: 24,
     });
     const ui = (visible: boolean) => (
       <MemoryRouter>
         <AppCommandProvider>
-          <div data-native-terminal-thread>
+          <div data-native-terminal-thread={native ? "native" : undefined}>
             <ThreadTerminalView
               session={session}
               autoFocus={false}
@@ -1742,14 +1767,15 @@ describe("hidden terminal output continuity", () => {
           ).join("\n")
         : "";
     };
-    if (!initiallyHidden)
-      await waitForReadinessCondition(() => {
+    const ready = () =>
+      waitForReadinessCondition(() => {
         expect(text()).toContain("initial");
         expect(
           view.container.querySelector<HTMLElement>("[data-terminal-renderer]")
             ?.dataset.replayHeld,
         ).toBe("false");
       }, "visible terminal did not finish its initial replay");
+    if (!initiallyHidden && waitForReplay) await ready();
     const visible = async (value: boolean) => {
       view.rerender(ui(value));
       await waitFor(() =>
@@ -1758,8 +1784,108 @@ describe("hidden terminal output continuity", () => {
         ).toContainEqual({ type: "visibility", visible: value }),
       );
     };
-    return { socket, session, text, visible, view };
+    return { socket, session, text, visible, view, propose, ready };
   }
+
+  const nextFrames = () =>
+    new Promise<void>((resolve) =>
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+    );
+  const resizeMessages = (socket: TestTerminalSocket) =>
+    socket.sent
+      .map((message) => JSON.parse(message))
+      .filter((message) => message.type === "resize");
+
+  it("does not fit a hidden renderer or resize the PTY across an unchanged hide/show", async () => {
+    vi.spyOn(
+      rendererModule,
+      "loadOptionalTerminalWebglAddon",
+    ).mockResolvedValue(webglModule);
+    const h = await mountContinuityViewer(false, {
+      rendererGrid: true,
+      terminalId: "term_renderer_switch",
+    });
+    expect(
+      h.view.container.querySelector<HTMLElement>("[data-terminal-renderer]")
+        ?.dataset.terminalRenderer,
+    ).toBe("webgl");
+    const sizes = resizeMessages(h.socket).length;
+    const proposals = h.propose.mock.calls.length;
+    await h.visible(false);
+    await nextFrames();
+    expect(h.propose).toHaveBeenCalledTimes(proposals);
+    expect(resizeMessages(h.socket)).toHaveLength(sizes);
+    await h.visible(true);
+    await nextFrames();
+    expect(
+      h.view.container.querySelector<HTMLElement>("[data-terminal-renderer]")
+        ?.dataset.terminalRenderer,
+    ).toBe("webgl");
+    expect(h.propose).toHaveBeenCalledTimes(proposals + 1);
+    expect(
+      resizeMessages(h.socket).every(
+        (size) => size.cols === 98 && size.rows === 24,
+      ),
+    ).toBe(true);
+    expect(testState.sockets).toHaveLength(1);
+  });
+
+  it.each(["ready", "deadline"] as const)(
+    "fits only after the initial renderer decision: %s",
+    async (decision) => {
+      const realSetTimeout = globalThis.setTimeout;
+      const timeouts = vi
+        .spyOn(globalThis, "setTimeout")
+        .mockImplementation((handler, delay, ...args) =>
+          realSetTimeout(handler, delay === 150 ? 60_000 : delay, ...args),
+        );
+      let finishRenderer!: (value: typeof webglModule) => void;
+      vi.spyOn(
+        rendererModule,
+        "loadOptionalTerminalWebglAddon",
+      ).mockReturnValue(
+        new Promise((resolve) => {
+          finishRenderer = resolve;
+        }),
+      );
+      const h = await mountContinuityViewer(false, {
+        rendererGrid: true,
+        native: false,
+        waitForReplay: false,
+        terminalId: `term_renderer_decision_${decision}`,
+      });
+      expect(h.propose).not.toHaveBeenCalled();
+      expect(resizeMessages(h.socket)).toHaveLength(0);
+      if (decision === "ready") {
+        await act(async () => finishRenderer(webglModule));
+      } else {
+        const deadline = timeouts.mock.calls.find(
+          ([, delay]) => delay === 150,
+        )?.[0];
+        if (typeof deadline !== "function")
+          throw new Error("renderer deadline is missing");
+        act(() => deadline());
+      }
+      await waitForReadinessCondition(
+        () => expect(resizeMessages(h.socket)).toHaveLength(1),
+        "initial renderer decision did not send one fit",
+      );
+      expect(resizeMessages(h.socket)[0].cols).toBe(
+        decision === "ready" ? 98 : 92,
+      );
+      if (decision === "deadline") {
+        await act(async () => finishRenderer(webglModule));
+        await nextFrames();
+        expect(resizeMessages(h.socket)).toHaveLength(1);
+        expect(
+          h.view.container.querySelector<HTMLElement>(
+            "[data-terminal-renderer]",
+          )?.dataset.terminalRenderer,
+        ).toBe("dom");
+      }
+      expect(testState.sockets).toHaveLength(1);
+    },
+  );
 
   it("completes an initially hidden replay before draining later live output", async () => {
     const h = await mountContinuityViewer(true);
