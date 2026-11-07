@@ -430,10 +430,13 @@ export function PluginSidebarFooterItems({
             className="min-w-0 flex-1 overflow-hidden"
           >
             <SidebarMenu className="grid grid-flow-col auto-cols-max justify-start gap-1">
-              {(preferences.pluginKeys.length > 0
-                ? preferences.pluginKeys
-                : ["reserved"]
-              ).map((key) => {
+              {[
+                ...preferences.pluginKeys,
+                ...Array.from(
+                  { length: Math.max(0, 2 - preferences.pluginKeys.length) },
+                  (_, index) => `reserved-${index}`,
+                ),
+              ].map((key) => {
                 const item = preferences.footerSuffix.find(
                   (candidate) => candidate.key === key,
                 );

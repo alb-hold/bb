@@ -13,10 +13,7 @@ import { cn } from "@/lib/utils";
 import { Icon } from "@/components/ui/icon";
 import { LIST_HOVER_TRANSITION } from "@/components/ui/motion";
 import { CHROME_SECTION_LABEL_CLASS } from "@/components/ui/chrome-style-tokens";
-import {
-  SidebarStickyGroup,
-  SidebarStickyTier,
-} from "../ui/sidebar.js";
+import { SidebarStickyGroup, SidebarStickyTier } from "../ui/sidebar.js";
 import {
   SIDEBAR_HOVER_ACTIONS_CLASS,
   SIDEBAR_HOVER_ACTIONS_FADE_CLASS,
@@ -28,7 +25,6 @@ import type { ConsumeDragClickSuppression } from "@/components/ui/use-drag-click
 import {
   SIDEBAR_STANDARD_ROW_PADDING_CLASS,
   SIDEBAR_CONTROL_STATE_CLASS,
-  SIDEBAR_GROUP_TEXT_CLASS,
 } from "@/components/ui/sidebar-row-classes";
 import {
   SectionDropTargetOverlay,
@@ -119,9 +115,13 @@ export function TopLevelSidebarSection({
     if (!content || !contentClassName) return;
     const measure = () => updateContentScrollCue(content);
     const frame =
-      typeof ResizeObserver === "undefined" ? requestAnimationFrame(measure) : null;
+      typeof ResizeObserver === "undefined"
+        ? requestAnimationFrame(measure)
+        : null;
     const observer =
-      typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+      typeof ResizeObserver === "undefined"
+        ? null
+        : new ResizeObserver(measure);
     observer?.observe(content);
     for (const child of content.children) observer?.observe(child);
     return () => {
@@ -223,7 +223,7 @@ export function TopLevelSidebarSection({
         className={cn(
           SIDEBAR_HOVER_ACTIONS_ROW_CLASS,
           CHROME_SECTION_LABEL_CLASS,
-          SIDEBAR_GROUP_TEXT_CLASS,
+          "font-medium text-subtle-foreground",
           SIDEBAR_STANDARD_ROW_PADDING_CLASS,
           "rounded-md pr-0 transition-colors",
           !stickyHeader && "relative top-auto",
@@ -312,8 +312,7 @@ export function TopLevelSidebarSection({
                   "inline-flex shrink-0 items-center",
                   SIDEBAR_HOVER_ACTIONS_GAP_CLASS,
                   !actionsAlwaysVisible && SIDEBAR_HOVER_ACTIONS_CLASS,
-                  collapseControl?.isCollapsed &&
-                    "[@media(hover:none)]:hidden",
+                  collapseControl?.isCollapsed && "[@media(hover:none)]:hidden",
                 )}
               >
                 {actions}

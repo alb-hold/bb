@@ -272,6 +272,38 @@ describe("ThreadDetailHeader", () => {
       container.querySelector("[data-terminal-renderer]"),
     );
   });
+  it.each([360, 361])(
+    "preserves search in the menu only at narrow phone width %s",
+    (width) => {
+      vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
+        width,
+      } as DOMRect);
+      let actions: ThreadDetailHeaderActionsMenuArgs["terminalSearchActions"] =
+        [];
+      render(
+        <PaneContext.Provider value={PANE_CONTEXT}>
+          <ThreadDetailHeader
+            actionsMenu={(args) => {
+              actions = args.terminalSearchActions;
+              return <button>Thread actions</button>;
+            }}
+            hasNativeTerminal
+            isSecondaryPanelOpen={false}
+            onToggleSecondaryPanel={vi.fn()}
+            thread={THREAD_TARGET}
+            threadTitle="Map the sync pipeline"
+          />
+        </PaneContext.Provider>,
+      );
+      expect(actions.map((item) => item.action.label)).toEqual(
+        width === 360 ? ["Search terminal output"] : [],
+      );
+      expect(
+        screen.queryByRole("button", { name: "Search terminal output" }) !==
+          null,
+      ).toBe(width > 360);
+    },
+  );
   it("puts native terminal search in the thread header", () => {
     const { container, rerender } = render(
       <PaneContext.Provider value={PANE_CONTEXT}>
@@ -493,8 +525,8 @@ describe("ThreadDetailHeader", () => {
   });
 
   it.each([
-    { expectedIcon: "ChevronLeft", isCompactViewport: true },
-    { expectedIcon: "ChevronLeft", isCompactViewport: false },
+    { expectedIcon: "PanelRight", isCompactViewport: true },
+    { expectedIcon: "PanelRight", isCompactViewport: false },
   ])(
     "shows the $expectedIcon glyph on the right-panel trigger",
     ({ expectedIcon, isCompactViewport }) => {

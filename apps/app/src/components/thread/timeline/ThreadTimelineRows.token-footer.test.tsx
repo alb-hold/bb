@@ -198,7 +198,7 @@ describe("ThreadTimelineRows token footer", () => {
     expect(footer?.querySelector('[data-token-part="reasoning"]')).toBeNull();
     expect(footer?.className).toContain("font-sans");
     expect(footer?.className).toContain("text-xs");
-    expect(footer?.className).toContain("text-muted-foreground");
+    expect(footer?.className).toContain("text-subtle-foreground");
     fireEvent.click(
       container.querySelector(
         `[data-timeline-row-id="${turnId}"] button[aria-expanded]`,

@@ -42,9 +42,9 @@ describe("P95 responsive layout contracts", () => {
       'className="relative min-w-0 shrink"',
     );
   });
-  it("gives usage metadata the sanctioned xs muted style", () => {
+  it("gives usage metadata the sanctioned xs subtle style", () => {
     expect(source("../thread/ThreadUsageSummary.tsx")).toContain(
-      "text-left font-sans text-xs tabular-nums text-muted-foreground",
+      "text-left font-sans text-xs tabular-nums text-subtle-foreground",
     );
   });
   it("separates sidebar footer actions with a token border", () => {

@@ -178,6 +178,14 @@ describe("thread-list plugin", () => {
       "pullRequests",
     ]);
     expect(sectionHeaders()).toEqual(["Pinned", "Later", "Review", "Threads"]);
+    for (const label of ["Pinned", "Threads"]) {
+      const header = screen
+        .getByTitle(label)
+        .closest('[data-sidebar-sticky-tier="label"]')!;
+      expect(header.classList.contains("font-medium")).toBe(true);
+      expect(header.classList.contains("text-subtle-foreground")).toBe(true);
+      expect(header.classList.contains("text-muted-foreground")).toBe(false);
+    }
     expect(threadIds()).toEqual([
       "thr_pinned",
       "thr_later",

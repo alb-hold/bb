@@ -775,7 +775,7 @@ describe("PluginPanelRightPanelHost", () => {
       const showButton = await screen.findByRole("button", {
         name: "Show right panel",
       });
-      expect(showButton.querySelector('[data-icon="ChevronLeft"]')).toBeTruthy();
+      expect(showButton.querySelector('[data-icon="PanelRight"]')).toBeTruthy();
     },
   );
 

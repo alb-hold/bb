@@ -230,8 +230,8 @@ it.each(["light", "dark"] as const)(
       if (mode === "dark") {
         const canvas = luminance(themeColor(mode, "--sidebar"));
         const bandContrast = (bg + 0.05) / (canvas + 0.05);
-        expect(bandContrast).toBeGreaterThanOrEqual(1.5);
-        expect(bandContrast).toBeLessThanOrEqual(1.6);
+        expect(bandContrast).toBeGreaterThanOrEqual(1);
+        expect(bandContrast).toBeLessThanOrEqual(1.15);
       }
     } finally {
       terminal.dispose();
@@ -343,6 +343,10 @@ it("derives the full terminal palette from theme ink and canvas", () => {
     return name;
   });
   expect(theme.background).toBe("--sidebar");
+  expect(css.match(/--terminal-ansi-8:[^;]+;/g)).toEqual([
+    "--terminal-ansi-8: color-mix(in oklch, var(--ink) 6%, var(--canvas));",
+    "--terminal-ansi-8: color-mix(in oklch, var(--ink) 6%, var(--canvas));",
+  ]);
   expect(theme.foreground).toBe("--foreground");
   for (let index = 0; index < 16; index++) {
     expect(names.has(`--terminal-ansi-${index}`)).toBe(true);

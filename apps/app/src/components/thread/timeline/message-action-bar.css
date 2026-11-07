@@ -67,7 +67,7 @@
   }
 }
 
-@media (width < 48rem) and (pointer: coarse) {
+@media (pointer: coarse) {
   [data-message-action-slot][data-message-action-slot] {
     padding-block: 0px;
     min-height: 0px;
@@ -88,12 +88,7 @@
 
   [data-touch-actions-visible="false"]:not(:focus-within)
     [data-message-action-row] {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    padding: 0;
-    overflow: hidden;
-    clip-path: inset(50%);
+    display: none;
   }
 
   [data-touch-actions-visible="true"] [data-message-action-row] button {

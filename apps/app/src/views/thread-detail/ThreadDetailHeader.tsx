@@ -13,6 +13,7 @@ import { Button } from "@bb/shared-ui/button";
 import { useAtomValue } from "jotai";
 import type {
   PluginThreadActionEntry,
+  PluginThreadActionsInlineItem,
   PluginThreadActionTarget,
 } from "@get-bb/plugin-sdk";
 import { COARSE_POINTER_TOOLBAR_ACTION_BUTTON_CLASS } from "@bb/shared-ui/coarse-pointer-sizing";
@@ -66,6 +67,7 @@ const NARROW_SPLIT_HEADER_MAX_WIDTH = 560;
 
 export interface ThreadDetailHeaderActionsMenuArgs {
   includeResponsiveActions: boolean;
+  terminalSearchActions: PluginThreadActionsInlineItem[];
   headerActions: readonly PluginThreadActionEntry[];
   requestRename: (threadId: string) => void;
   onCloseAutoFocus: (event: Event) => void;
@@ -184,6 +186,17 @@ export function ThreadDetailHeader({
   const handleTitleDoubleClick = () => {
     if (!isEditing) startEditingFromDoubleClick();
   };
+  const searchInMenu =
+    actionsMenu !== null && measuredPaneWidth > 0 && measuredPaneWidth <= 360;
+  const searchTerminal = () => {
+    const pane =
+      headerRef.current.closest("[data-split-pane-id]") ??
+      headerRef.current.parentElement;
+    commandRunner.dispatch(
+      "terminal.find",
+      pane?.querySelector("[data-terminal-renderer]") ?? null,
+    );
+  };
   const rightPanelIconName = RIGHT_PANEL_TOGGLE_ICON_NAME;
   const mountRightPanelToggle = secondaryPanelHost === null;
   const showRightPanelToggle =
@@ -254,6 +267,20 @@ export function ThreadDetailHeader({
         >
           {actionsMenu({
             includeResponsiveActions: usesResponsiveActionOverflow,
+            terminalSearchActions:
+              hasNativeTerminal && searchInMenu
+                ? [
+                    {
+                      key: "terminal-search",
+                      group: "terminal",
+                      action: {
+                        icon: "Search",
+                        label: "Search terminal output",
+                        run: searchTerminal,
+                      },
+                    },
+                  ]
+                : [],
             headerActions,
             requestRename: startEditingFromMenu,
             onCloseAutoFocus,
@@ -269,7 +296,7 @@ export function ThreadDetailHeader({
         className="flex items-center gap-1"
         data-thread-header-workflow-actions=""
       >
-        {hasNativeTerminal ? (
+        {hasNativeTerminal && !searchInMenu ? (
           <Button
             type="button"
             variant="ghost"
@@ -279,14 +306,7 @@ export function ThreadDetailHeader({
             data-terminal-search-trigger=""
             aria-label="Search terminal output"
             aria-keyshortcuts={findShortcut?.ariaKeyshortcuts}
-            onClick={() => {
-              const pane =
-                headerRef.current.closest("[data-split-pane-id]") ??
-                headerRef.current.parentElement;
-              const terminal =
-                pane?.querySelector("[data-terminal-renderer]") ?? null;
-              commandRunner.dispatch("terminal.find", terminal);
-            }}
+            onClick={searchTerminal}
           >
             <Icon name="Search" className="size-4" />
           </Button>
