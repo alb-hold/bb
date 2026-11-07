@@ -11,6 +11,7 @@ export {
 } from "./terminal-font";
 import {
   createPrefetchedTerminalSocket,
+  reconcilePrefetchedTerminalGrid,
   prefetchTerminalSocket,
   discardPrefetchedTerminalSocket,
 } from "./terminal-socket-prefetch";
@@ -2662,6 +2663,7 @@ export function ThreadTerminalView({
             transport !== null &&
             (claimedFitGrid?.cols !== fitted.cols ||
               claimedFitGrid.rows !== fitted.rows);
+          if (transport) reconcilePrefetchedTerminalGrid(earlySocketUrl, fitted);
           transport?.sendResize(fitted.cols, fitted.rows, claimFit);
           if (claimFit) {
             if (claimedFitGrid === null)

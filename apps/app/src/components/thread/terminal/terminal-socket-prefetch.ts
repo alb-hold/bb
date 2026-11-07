@@ -140,30 +140,20 @@ class BufferedTerminalSocket implements TerminalBrowserSocket {
     return this;
   }
 
-  send(data: string) {
-    if (this.cachedClaim) {
-      const frame: unknown = JSON.parse(data);
-      if (
-        typeof frame === "object" &&
-        frame !== null &&
-        "type" in frame &&
-        frame.type === "resize"
-      ) {
-        const cached = this.cachedClaim;
-        this.cachedClaim = null;
-        if (
-          "cols" in frame &&
-          "rows" in frame &&
-          frame.cols === cached.cols &&
-          frame.rows === cached.rows
-        ) {
-          markTerminalPerformance("terminal-cached-grid-hit");
-        } else
-          markTerminalPerformance("terminal-cached-grid-miss", {
-            detail: { count: ++cachedClaimMisses },
-          });
-      }
+  reconcileGrid(grid: { cols: number; rows: number }) {
+    const cached = this.cachedClaim;
+    if (!cached) return;
+    this.cachedClaim = null;
+    if (grid.cols === cached.cols && grid.rows === cached.rows) {
+      markTerminalPerformance("terminal-cached-grid-hit");
+    } else {
+      markTerminalPerformance("terminal-cached-grid-miss", {
+        detail: { count: ++cachedClaimMisses },
+      });
     }
+  }
+
+  send(data: string) {
     this.socket.send(data);
   }
 
@@ -223,4 +213,11 @@ export function createPrefetchedTerminalSocket(
 
 export function discardPrefetchedTerminalSocket(url: string): void {
   pending.get(attachUrl(url))?.close();
+}
+
+export function reconcilePrefetchedTerminalGrid(
+  url: string,
+  grid: { cols: number; rows: number },
+): void {
+  active.get(attachUrl(url))?.reconcileGrid(grid);
 }

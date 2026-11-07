@@ -546,6 +546,10 @@ describe("native terminal attach claim timing", () => {
         rows: 36,
         claim: true,
       };
+      if (cacheMode !== "miss") {
+        expect(stages.has("terminal-cached-grid-hit")).toBe(cacheMode === "match");
+        expect(stages.has("terminal-cached-grid-miss")).toBe(cacheMode === "mismatch");
+      }
       expect(claims).toEqual(
         cacheMode === "mismatch"
           ? [{ type: "resize", cols: cachedCols, rows: 36, claim: true }, measured]
