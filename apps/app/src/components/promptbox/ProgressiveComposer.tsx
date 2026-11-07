@@ -603,6 +603,7 @@ export function ProgressiveComposer({
                                 "ml-1",
                                 COARSE_POINTER_PROMPT_ACTION_BUTTON_CLASS,
                                 "rounded-full transition-colors",
+                                "bg-foreground/5 text-muted-foreground hover:bg-foreground/10",
                                 ACTION_LAYOUT,
                                 "max-md:pointer-coarse:size-11",
                               )}

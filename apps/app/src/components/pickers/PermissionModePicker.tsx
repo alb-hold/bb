@@ -106,7 +106,7 @@ export function PermissionModePicker({
         "permission-mode-picker",
         isCompactViewport
           ? "h-8 w-auto min-w-0 shrink-0 justify-center px-1.5"
-          : "w-max min-w-52 shrink-0 justify-start",
+          : "w-max min-w-0 shrink-0 justify-start",
         pending &&
           displayValue === undefined &&
           !isCompactViewport &&
@@ -124,7 +124,7 @@ export function PermissionModePicker({
         </>
       }
       caretClassName={cn(
-        "ml-auto text-subtle-foreground/75",
+        "text-subtle-foreground/75",
         !isCompactViewport &&
           pickerDisabled &&
           showChevronWhenDisabled === false &&

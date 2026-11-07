@@ -3856,6 +3856,8 @@ describe("ComposerBox compact layout", () => {
       );
       expect(submitGroup?.contains(voiceButton)).toBe(true);
       expect(voiceButton.classList.contains("rounded-full")).toBe(true);
+      expect(voiceButton.classList.contains("bg-foreground/5")).toBe(true);
+      expect(voiceButton.classList.contains("bg-foreground")).toBe(false);
       expect(
         screen.queryByRole("button", { name: "Submit (Enter)" }),
       ).toBeNull();

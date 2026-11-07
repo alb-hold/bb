@@ -217,8 +217,8 @@ describe("ComposerResizeHandle", () => {
 
   it("keeps resizing accessible without decorative desktop brackets or a desktop grip", () => {
     const { heightHandle, leftWidthHandle, rightWidthHandle } = renderHandle();
-    expect(heightHandle.className).toContain("md:before:hidden");
-    expect(heightHandle.className).toContain("before:opacity-20");
+    expect(heightHandle.className).not.toContain("before:");
+    expect(heightHandle.className).toContain("focus-visible:ring-2");
     for (const handle of [leftWidthHandle, rightWidthHandle]) {
       expect(handle.className).not.toContain("before:border");
       expect(handle.className).toContain("focus-visible:ring-2");

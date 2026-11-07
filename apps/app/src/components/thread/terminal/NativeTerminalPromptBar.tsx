@@ -580,7 +580,7 @@ export function NativeTerminalPromptBar({
       <div
         className={cn(
           COMPOSER_SHELL_CLASS,
-          "group flex flex-col max-md:pointer-coarse:data-[native-composer-inline]:grid max-md:pointer-coarse:data-[native-composer-inline]:grid-cols-[minmax(0,1fr)_auto] max-md:pointer-coarse:data-[native-composer-inline]:items-center px-1.5 py-0.5 transition-[border-color,box-shadow] duration-200 focus-within:border-ring/60 motion-reduce:transition-none",
+          "group flex flex-col max-md:pointer-coarse:data-[native-composer-inline]:grid max-md:pointer-coarse:data-[native-composer-inline]:grid-cols-[minmax(0,1fr)_auto] max-md:pointer-coarse:data-[native-composer-inline]:items-center px-1.5 py-0.5 transition-[border-color,box-shadow] duration-200 focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/40 motion-reduce:transition-none",
           recording && "border-destructive/40",
         )}
         data-native-composer=""

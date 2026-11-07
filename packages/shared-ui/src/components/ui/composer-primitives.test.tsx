@@ -29,13 +29,18 @@ it("keeps the send glyph and geometry when sending is unavailable", () => {
   expect(button.querySelector(".animate-spin")).toBeNull();
   expect(button.classList.contains("size-9")).toBe(true);
   expect(button.classList.contains("pointer-coarse:size-11")).toBe(true);
-  expect(button.classList.contains("disabled:opacity-50")).toBe(true);
+  expect(button.classList.contains("disabled:opacity-100")).toBe(true);
   expect(
     container.querySelector("form")?.classList.contains("rounded-xl"),
   ).toBe(true);
   expect(
     container.querySelector("form")?.classList.contains("border-border"),
   ).toBe(true);
+  expect(button.classList.contains("disabled:bg-foreground/5")).toBe(true);
+  expect(button.classList.contains("disabled:text-muted-foreground")).toBe(
+    true,
+  );
+  expect(button.classList.contains("bg-foreground")).toBe(true);
   fireEvent.click(button);
   expect(onClick).not.toHaveBeenCalled();
   rerender(<ComposerSubmitButton aria-label="Send" onClick={onClick} />);

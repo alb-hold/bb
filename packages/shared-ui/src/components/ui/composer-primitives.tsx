@@ -7,7 +7,7 @@ export const COMPOSER_SHELL_CLASS =
   "rounded-xl border border-border bg-background shadow-lift";
 
 export const COMPOSER_SUBMIT_CLASS =
-  "size-9 shrink-0 rounded-full p-0 pointer-coarse:size-11 disabled:opacity-50";
+  "size-9 shrink-0 rounded-full p-0 pointer-coarse:size-11 disabled:bg-foreground/5 disabled:text-muted-foreground disabled:opacity-100";
 
 export const COMPOSER_SEND_ICON = "ArrowUp";
 

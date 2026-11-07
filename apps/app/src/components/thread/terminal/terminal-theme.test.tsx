@@ -180,6 +180,7 @@ it("uses stable readable cells and a steady block cursor across renderer handoff
     lineHeight: 1.22,
     cursorBlink: false,
     cursorStyle: "block",
+    cursorInactiveStyle: "none",
   });
 });
 

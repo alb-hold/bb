@@ -31,6 +31,45 @@ function renderControls() {
 }
 
 describe("TerminalMobileControls", () => {
+  it.each([360, 390])(
+    "preserves key names and reserves room for five scroller keys at %s px",
+    (width) => {
+      const clientWidth = vi
+        .spyOn(HTMLElement.prototype, "clientWidth", "get")
+        .mockImplementation(function (this: HTMLElement) {
+          return this.hasAttribute("data-terminal-mobile-controls") ? width : 0;
+        });
+      try {
+        renderControls();
+        const enter = screen.getByRole("button", { name: "Enter" });
+        const more = screen.getByRole("button", { name: "More terminal keys" });
+        const compact = width === 360;
+        for (const key of [enter, more]) {
+          expect(key.classList.contains("w-11")).toBe(compact);
+          expect(key.classList.contains("min-w-11")).toBe(true);
+          expect(key.classList.contains("shrink-0")).toBe(true);
+        }
+        expect(
+          enter.querySelector('[data-icon="CornerDownLeft"]') !== null,
+        ).toBe(compact);
+        expect(more.querySelector('[data-icon="Keyboard"]') !== null).toBe(
+          compact,
+        );
+        expect(more.querySelector('[data-icon="ChevronDown"]')).not.toBeNull();
+        const scroller = document.querySelector(
+          "[data-terminal-key-scroller]",
+        )!;
+        expect(scroller.querySelectorAll("button")).toHaveLength(5);
+        expect(scroller.classList.contains("flex-nowrap")).toBe(true);
+        fireEvent.click(more);
+        expect(more.getAttribute("aria-pressed")).toBe("true");
+        expect(more.querySelector('[data-icon="ChevronUp"]')).not.toBeNull();
+      } finally {
+        clientWidth.mockRestore();
+      }
+    },
+  );
+
   it("keeps touch targets wide enough to press on a narrow phone", () => {
     renderControls();
 
@@ -40,6 +79,12 @@ describe("TerminalMobileControls", () => {
     expect(
       screen.getByRole("button", { name: "More terminal keys" }).textContent,
     ).toBe("Keys");
+    const more = screen.getByRole("button", { name: "More terminal keys" });
+    expect(more.querySelector('[data-icon="ChevronDown"]')).not.toBeNull();
+    fireEvent.click(more);
+    expect(more.getAttribute("aria-pressed")).toBe("true");
+    expect(more.querySelector('[data-icon="ChevronUp"]')).not.toBeNull();
+    fireEvent.click(more);
     const buttons = Array.from(controls.querySelectorAll("button"));
     expect(controls.querySelector(".bg-gradient-to-l")).toBeNull();
 
@@ -61,6 +106,18 @@ describe("TerminalMobileControls", () => {
     }
     expect(buttons[0]?.closest("[data-terminal-key-scroller]")).not.toBeNull();
     for (const button of buttons) {
+      expect(button.className.split(/\s+/u)).toEqual(
+        expect.arrayContaining([
+          "h-11",
+          "w-max",
+          "shrink-0",
+          "whitespace-nowrap",
+          "rounded-full",
+          "bg-[image:var(--pill-surface)]",
+          "active:bg-none",
+          "active:bg-state-active",
+        ]),
+      );
       expect(button.className.split(/\s+/u)).toContain("min-w-11");
       expect(button.className.split(/\s+/u)).toContain("flex-none");
     }

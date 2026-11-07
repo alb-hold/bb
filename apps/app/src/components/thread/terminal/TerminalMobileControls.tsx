@@ -58,8 +58,8 @@ function Key({
         onPress();
       }}
       className={cn(
-        "flex h-11 min-w-11 flex-none touch-manipulation items-center justify-center rounded-md px-1 font-mono text-xs font-medium text-muted-foreground transition-colors hover:bg-state-hover hover:text-foreground active:bg-state-active active:text-foreground focus-visible:outline-2 focus-visible:outline-ring disabled:opacity-40",
-        active && "bg-state-active text-foreground",
+        "flex h-11 w-max min-w-11 flex-none shrink-0 whitespace-nowrap touch-manipulation items-center justify-center gap-1 rounded-full bg-[image:var(--pill-surface)] px-1 font-mono text-xs font-medium text-muted-foreground transition-colors hover:bg-state-hover hover:text-foreground active:bg-none active:bg-state-active active:text-foreground focus-visible:outline-2 focus-visible:outline-ring disabled:opacity-40",
+        active && "bg-none bg-state-active text-foreground",
         className,
       )}
     >
@@ -86,10 +86,14 @@ export function TerminalMobileControls({
 }: TerminalMobileControlsProps) {
   const [expanded, setExpanded] = useState(false);
   const [secondaryKeysInline, setSecondaryKeysInline] = useState(false);
+  const [compactKeys, setCompactKeys] = useState(false);
+  const controlsRef = useRef<HTMLDivElement>(null);
   const scrollerRef = useRef<HTMLDivElement>(null);
   const updateOverflow = useCallback(() => {
     const scroller = scrollerRef.current;
     if (!scroller) return;
+    const width = controlsRef.current?.clientWidth ?? 0;
+    setCompactKeys(width > 0 && width < 375);
     setSecondaryKeysInline(
       scroller.clientWidth >= (searchAvailable ? 9 : 8) * 48 - 4,
     );
@@ -109,6 +113,7 @@ export function TerminalMobileControls({
     if (!scroller) return;
     const observer = new ResizeObserver(updateOverflow);
     observer.observe(scroller);
+    if (controlsRef.current) observer.observe(controlsRef.current);
     return () => observer.disconnect();
   }, [updateOverflow]);
   const keyProps = { disabled };
@@ -149,6 +154,7 @@ export function TerminalMobileControls({
       role="group"
       aria-label="Terminal keyboard controls"
       data-terminal-mobile-controls=""
+      ref={controlsRef}
       className={cn(
         "shrink-0 border-t border-border/50 bg-sidebar px-2 py-1",
         className,
@@ -303,17 +309,31 @@ export function TerminalMobileControls({
             {secondaryKeysInline ? secondaryKeys : null}
           </div>
         </div>
-        <Key {...keyProps} label="Enter" onPress={() => onInput("\r")}>
-          Enter
+        <Key
+          {...keyProps}
+          label="Enter"
+          className={compactKeys ? "w-11" : undefined}
+          onPress={() => onInput("\r")}
+        >
+          {compactKeys ? (
+            <Icon name="CornerDownLeft" className="size-4" />
+          ) : (
+            "Enter"
+          )}
         </Key>
         <Key
           {...keyProps}
           label="More terminal keys"
           toggle
           active={expanded}
+          className={compactKeys ? "w-11" : undefined}
           onPress={() => setExpanded(!expanded)}
         >
-          Keys
+          {compactKeys ? <Icon name="Keyboard" className="size-4" /> : "Keys"}
+          <Icon
+            name={expanded ? "ChevronUp" : "ChevronDown"}
+            className="size-3"
+          />
         </Key>
       </div>
     </div>
