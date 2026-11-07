@@ -2927,7 +2927,7 @@ describe("terminal font family", () => {
   it("uses the theme terminal font family when it is set", () => {
     expect(
       resolveTerminalFontFamily((name) =>
-        name === "--font-mono" ? '"Berkeley Mono", monospace' : undefined,
+        name === "--font-terminal" ? '"Berkeley Mono", monospace' : undefined,
       ),
     ).toBe('"Berkeley Mono", monospace');
   });

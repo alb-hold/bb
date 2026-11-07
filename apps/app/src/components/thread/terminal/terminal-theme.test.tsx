@@ -319,9 +319,16 @@ it.each(["light", "dark"] as const)(
       ).find((node) => node.textContent?.includes("secondary-text"))!;
       const fg = luminance(getComputedStyle(span).color);
       const bg = luminance(themeColor(mode, "--sidebar"));
-      expect(
-        (Math.max(fg, bg) + 0.05) / (Math.min(fg, bg) + 0.05),
-      ).toBeGreaterThanOrEqual(4.5);
+      const textContrast =
+        (Math.max(fg, bg) + 0.05) / (Math.min(fg, bg) + 0.05);
+      const band = luminance(themeColor(mode, "--terminal-ansi-8"));
+      const bandContrast =
+        (Math.max(band, bg) + 0.05) / (Math.min(band, bg) + 0.05);
+      console.log(
+        `${mode} bright-black: text=${getComputedStyle(span).color}, raw=${themeColor(mode, "--terminal-ansi-8")}, background=${themeColor(mode, "--sidebar")}, text contrast=${textContrast}, band contrast=${bandContrast}`,
+      );
+      expect(TERMINAL_THEME_OPTIONS.minimumContrastRatio).toBe(7);
+      expect(textContrast).toBeGreaterThanOrEqual(7);
     } finally {
       terminal.dispose();
     }
@@ -376,3 +383,17 @@ it.each(["light", "dark"] as const)(
     }
   },
 );
+
+it("keeps light ANSI black darker than white with readable opposite colours", () => {
+  const theme = buildTerminalThemeFromCssColors((name) =>
+    name.startsWith("--terminal-scrollbar")
+      ? undefined
+      : themeColor("light", name),
+  );
+  const black = luminance(theme.black!);
+  for (const whiteColor of [theme.white!, theme.brightWhite!]) {
+    const white = luminance(whiteColor);
+    expect(black).toBeLessThan(white);
+    expect((white + 0.05) / (black + 0.05)).toBeGreaterThanOrEqual(4.5);
+  }
+});

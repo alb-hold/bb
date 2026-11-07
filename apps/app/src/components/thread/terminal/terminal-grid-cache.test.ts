@@ -8,7 +8,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   document.body.replaceChildren();
-  document.documentElement.style.removeProperty("--font-mono");
+  document.documentElement.style.removeProperty("--font-terminal");
   vi.restoreAllMocks();
 });
 
@@ -54,7 +54,7 @@ it.each([
     vi.spyOn(window, "devicePixelRatio", "get").mockReturnValue(2);
   if (changed === "fontSize") fontSize = 14;
   if (changed === "fontFamily")
-    document.documentElement.style.setProperty("--font-mono", "monospace");
+    document.documentElement.style.setProperty("--font-terminal", "monospace");
   if (changed === "width" || changed === "height") {
     document.body.append(
       container(
@@ -78,7 +78,7 @@ it("matches container dimensions rounded to whole pixels", async () => {
 
 it("matches the font actually used for the fit, including a pending font-family change", async () => {
   const cache = await import("./terminal-grid-cache");
-  document.documentElement.style.setProperty("--font-mono", "new-font");
+  document.documentElement.style.setProperty("--font-terminal", "new-font");
   cache.rememberTerminalGrid(
     "term",
     container(),
@@ -87,7 +87,7 @@ it("matches the font actually used for the fit, including a pending font-family 
     "old-font",
   );
   expect(cache.readCachedTerminalGrid("term")).toBeNull();
-  document.documentElement.style.setProperty("--font-mono", "old-font");
+  document.documentElement.style.setProperty("--font-terminal", "old-font");
   expect(cache.readCachedTerminalGrid("term")).toEqual({ cols: 116, rows: 38 });
 });
 
@@ -182,7 +182,27 @@ it("rejects a legacy cache entry with no leading or weight", async () => {
   delete entries[0].fontWeight;
   localStorage.setItem(key, JSON.stringify(entries));
   vi.resetModules();
-  expect(
-    (await import("./terminal-grid-cache")).readCachedTerminalGrid("term"),
-  ).toBeNull();
+  const reloaded = await import("./terminal-grid-cache");
+  expect(() => reloaded.readCachedTerminalGrid("term")).not.toThrow();
+  expect(reloaded.readCachedTerminalGrid("term")).toBeNull();
+  reloaded.rememberTerminalGrid("term", container(), 13, {
+    cols: 116,
+    rows: 36,
+  });
+  expect(reloaded.readCachedTerminalGrid("term")).toEqual({
+    cols: 116,
+    rows: 36,
+  });
+});
+
+it("reuses measured metrics across repeated grid reads", async () => {
+  const cache = await import("./terminal-grid-cache");
+  cache.rememberTerminalGrid("term", container(), 13, { cols: 116, rows: 38 });
+  const create = vi.spyOn(document, "createElement");
+  for (let index = 0; index < 10; index++)
+    expect(cache.readCachedTerminalGrid("term")).toEqual({
+      cols: 116,
+      rows: 38,
+    });
+  expect(create).not.toHaveBeenCalled();
 });
