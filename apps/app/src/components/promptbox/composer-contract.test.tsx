@@ -359,6 +359,10 @@ it.each([
   [true, "codex", "Codex", "Start Codex CLI…"],
   [true, "claude-code", "Claude Code", "Start Claude Code CLI…"],
   [true, "custom-cli", "Custom", "Start Custom CLI…"],
+  [true, "codex", null, "Start CLI…"],
+  [true, "claude-code", null, "Start CLI…"],
+  [true, "custom-cli", null, "Start CLI…"],
+  [true, "custom-cli", "", "Start CLI…"],
 ])(
   "home composer mode %s names %s without hover",
   async (enabled, selectedId, label, placeholder) => {
@@ -373,7 +377,10 @@ it.each([
         return cloneElement(element, {
           execution: {
             ...execution,
-            provider: { selectedId, options: [{ value: selectedId, label }] },
+            provider: {
+              selectedId,
+              options: label === null ? [] : [{ value: selectedId, label }],
+            },
             nativeTerminal: { enabled, onChange: () => {} },
           },
         });
