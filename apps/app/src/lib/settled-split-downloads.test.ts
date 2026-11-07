@@ -2,6 +2,9 @@
 
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
+vi.mock("./plugin-module-preload", () => ({
+  preloadPluginModule: vi.fn(async () => true),
+}));
 let cancel = () => {};
 beforeEach(() => {
   vi.resetModules();
@@ -186,7 +189,7 @@ it("does not evaluate between IME composition events even after a long pause", a
   expect(evaluate).toHaveBeenCalledOnce();
 });
 
-it("evaluates dependency chunks in separate quiet tasks after downloading them", async () => {
+it("imports dependency chunks in separate quiet tasks without fetching them twice", async () => {
   const { createSettledWorkSchedule } =
     await import("./settled-split-downloads");
   const { prepareBackgroundSplit } = await import("./split-prefetch");
@@ -219,4 +222,21 @@ it("evaluates dependency chunks in separate quiet tasks after downloading them",
   await vi.waitFor(() => expect(evaluations).toHaveLength(2));
   await done;
   expect(evaluations[1]! - inputAt).toBeGreaterThanOrEqual(1_000);
+  expect(fetch).not.toHaveBeenCalled();
+});
+
+it("keeps previously fetched assets outside this loader out of background evaluation", async () => {
+  const evaluate = vi.fn();
+  vi.stubGlobal("__p115Evaluate", evaluate);
+  vi.stubGlobal("performance", { getEntriesByName: () => [{}] });
+  document.getElementById("bb-prefetch-thread-detail")!.textContent =
+    JSON.stringify([
+      "data:text/javascript," +
+        encodeURIComponent("globalThis.__p115Evaluate();"),
+    ]);
+  const { prepareBackgroundSplit } = await import("./split-prefetch");
+  await prepareBackgroundSplit("thread-detail", async (work) => {
+    await work();
+  });
+  expect(evaluate).not.toHaveBeenCalled();
 });

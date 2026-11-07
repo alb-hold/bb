@@ -49,6 +49,7 @@ import {
 const flushMicrotasks = () => act(async () => {});
 
 beforeEach(() => {
+  vi.spyOn(DOMTokenList.prototype, "supports").mockReturnValue(true);
   appQueryClient.setQueryData(
     pluginListQueryOptions({ enabled: true }).queryKey,
     [],
@@ -60,6 +61,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   cleanup();
   document.body.replaceChildren();
   appQueryClient.clear();

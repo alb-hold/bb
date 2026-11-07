@@ -1,3 +1,4 @@
+import { preloadPluginModule } from "./plugin-module-preload";
 import { createSettledWorkSchedule } from "./input-idle-work";
 
 const requested = new Set<string>();
@@ -57,14 +58,23 @@ export async function prepareBackgroundSplit(
   id: string,
   run: (work: () => Promise<void>) => Promise<void>,
 ): Promise<void> {
-  await downloadSplitInBackground(id, async () => true, run);
   for (const path of splitAssets(id)) {
     const url = new URL(path, document.baseURI).href;
     if (importing.has(id)) return;
-    if (requested.has(url))
-      await run(async () => {
+    if (!requested.has(url) && performance.getEntriesByName(url).length > 0)
+      continue;
+    await run(async () => {
+      if (!importing.has(id) && (await preloadPluginModule(url, "low")))
+        requested.add(url);
+    });
+  }
+  for (const path of splitAssets(id)) {
+    const url = new URL(path, document.baseURI).href;
+    if (importing.has(id)) return;
+    await run(async () => {
+      if (!importing.has(id) && requested.has(url))
         await import(/* @vite-ignore */ url);
-      });
+    });
   }
 }
 
