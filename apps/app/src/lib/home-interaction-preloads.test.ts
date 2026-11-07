@@ -68,7 +68,7 @@ it.each([true, false])(
       arrayBuffer: async () => new ArrayBuffer(0),
     }));
     vi.stubGlobal("fetch", fetch);
-    for (const id of HOME_INTERACTION_SPLITS) {
+    for (const id of [...HOME_INTERACTION_SPLITS, ...HOME_SETTLED_SPLITS]) {
       const script = document.createElement("script");
       script.id = `bb-prefetch-${id}`;
       script.type = "application/json";
@@ -105,7 +105,7 @@ it.each([true, false])(
       expect(fetch).not.toHaveBeenCalled();
       await vi.advanceTimersByTimeAsync(1);
     }
-    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(12_000);
     expect(
       fetch.mock.calls.map(([url]) => new URL(String(url)).pathname),
     ).toEqual(

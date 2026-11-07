@@ -2,8 +2,6 @@ import * as internal_DO_NOT_USE_dropdown_menu from "@bb/shared-ui/dropdown-menu"
 import * as internal_DO_NOT_USE_dialog from "@bb/shared-ui/dialog";
 import * as internal_DO_NOT_USE_context_menu from "@bb/shared-ui/context-menu";
 import * as internal_DO_NOT_USE_responsive_overlay from "@bb/shared-ui/responsive-overlay";
-import * as questionFormHost from "@bb/shared-ui/question-form-host";
-import * as voiceInputTextarea from "@bb/shared-ui/voice-input-textarea";
 import * as react from "react";
 import * as reactDom from "react-dom";
 import * as reactDomClient from "react-dom/client";
@@ -237,8 +235,8 @@ export interface BbPluginRuntime {
   tailwindMerge: unknown;
   classVarianceAuthority: unknown;
   sharedUiIcon: unknown;
-  questionFormHost: typeof questionFormHost;
-  voiceInputTextarea: typeof voiceInputTextarea;
+  questionFormHost?: typeof import("@bb/shared-ui/question-form-host");
+  voiceInputTextarea?: typeof import("@bb/shared-ui/voice-input-textarea");
 }
 
 type RuntimeHost = typeof globalThis & { __bbPluginRuntime?: BbPluginRuntime };
@@ -269,8 +267,6 @@ export function installPluginRuntime(): BbPluginRuntime {
     tailwindMerge,
     classVarianceAuthority,
     sharedUiIcon,
-    questionFormHost,
-    voiceInputTextarea,
   };
   return host.__bbPluginRuntime;
 }

@@ -196,7 +196,6 @@ describe("installPluginRuntime", () => {
       "jsxDevRuntime",
       "jsxRuntime",
       "pluginSdkApp",
-      "questionFormHost",
       "radixContextMenu",
       "radixDialog",
       "radixDropdownMenu",
@@ -208,7 +207,6 @@ describe("installPluginRuntime", () => {
       "sharedUiIcon",
       "sonner",
       "tailwindMerge",
-      "voiceInputTextarea",
     ]);
     expect((runtime.clsx as { default: unknown }).default).toBe(clsx);
     expect((runtime.sharedUiIcon as { Icon: unknown }).Icon).toBe(Icon);
@@ -228,6 +226,31 @@ describe("installPluginRuntime", () => {
     installPluginRuntime();
     expect((globalThis as RuntimeHost).__bbPluginRuntime).toBe(runtime);
   });
+
+  it.each(["questionFormHost", "voiceInputTextarea"] as const)(
+    "loads %s only before evaluating a plugin that declares it",
+    async (slot) => {
+      const runtime = installPluginRuntime();
+      expect(runtime[slot]).toBeUndefined();
+      const plain = await loadPluginFrontend(candidate("plain"), {
+        importModule: async () => ({}),
+        prefetchModule: vi.fn(),
+        warn: vi.fn(),
+      });
+      expect(plain.status).toBe("loaded");
+      expect(runtime[slot]).toBeUndefined();
+      const importModule = vi.fn(async () => {
+        expect(runtime[slot]).toBeDefined();
+        return {};
+      });
+      const loaded = await loadPluginFrontend(
+        candidate("specialised", { runtimeSlots: [slot] }),
+        { importModule, prefetchModule: vi.fn(), warn: vi.fn() },
+      );
+      expect(loaded.status).toBe("loaded");
+      expect(importModule).toHaveBeenCalledOnce();
+    },
+  );
 
   it("awaits lazy Radix runtimes before evaluating a requesting plugin", async () => {
     const runtime = installPluginRuntime();

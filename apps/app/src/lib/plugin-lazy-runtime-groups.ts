@@ -3,6 +3,20 @@ import { createRetryingModuleLoader } from "./plugin-frontend-lazy";
 
 export const lazyRuntimeGroups = [
   {
+    id: "plugin-question-form-runtime",
+    slots: ["questionFormHost"],
+    load: createRetryingModuleLoader(async () => ({
+      questionFormHost: await import("@bb/shared-ui/question-form-host"),
+    })),
+  },
+  {
+    id: "plugin-voice-input-runtime",
+    slots: ["voiceInputTextarea"],
+    load: createRetryingModuleLoader(async () => ({
+      voiceInputTextarea: await import("@bb/shared-ui/voice-input-textarea"),
+    })),
+  },
+  {
     id: "plugin-zod-runtime",
     slots: ["zod"],
     load: createRetryingModuleLoader(async () => {
