@@ -354,6 +354,7 @@ export function orderPluginFrontendCandidates(
   priorityPluginIds: readonly string[],
 ): PluginFrontendCandidate[] {
   const rank = (pluginId: string) => {
+    if (pluginId === "thread-list") return -1;
     const index = priorityPluginIds.indexOf(pluginId);
     return index === -1 ? priorityPluginIds.length : index;
   };
