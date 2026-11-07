@@ -4979,6 +4979,7 @@ describe("ComposerBox compact layout", () => {
     ["thread", false],
     ["thread", true],
   ] as const)("keeps %s action slots stable (pending: %s)", (surface, pending) => {
+    const onModeChange = vi.fn();
     render(
       <ComposerBox
         {...createPromptBoxProps({
@@ -5004,7 +5005,7 @@ describe("ComposerBox compact layout", () => {
                 options: [{ value: "medium", label: "Medium" }],
                 onChange: vi.fn(),
               }}
-              nativeTerminal={{ enabled: true, onChange: vi.fn() }}
+              nativeTerminal={{ enabled: true, onChange: onModeChange }}
             />
           ),
         })}
@@ -5024,7 +5025,9 @@ describe("ComposerBox compact layout", () => {
     });
     const send = screen.getByRole("button", { name: pending ? "Stop run" : "Submit (Enter)" });
     expect(model.hasAttribute("disabled")).toBe(false);
-    expect(screen.getByRole("radio", { name: "Terminal" }).hasAttribute("disabled")).toBe(pending);
+    expect(screen.getByRole("radio", { name: "Terminal" }).hasAttribute("disabled")).toBe(false);
+    fireEvent.click(screen.getByRole("radio", { name: "Chat" }));
+    expect(onModeChange).toHaveBeenCalledWith(false);
     const mic = screen.getByRole("button", { name: "Start voice input" });
     expect(row?.querySelector("[data-promptbox-trailing-actions]")?.contains(mic)).toBe(true);
     expect(

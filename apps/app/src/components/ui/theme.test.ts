@@ -510,7 +510,7 @@ describe("composer and navigation contrast", () => {
   const slot = source(
     "../../../../../plugins/composer/src/ComposerEditorSlot.tsx",
   );
-  const recents = source("../../views/RootComposeMobileRecents.tsx");
+  const recents = source("../../views/RootComposeRecentRows.tsx");
   const chrome = source(
     "../../../../../packages/shared-ui/src/components/ui/chrome-style-tokens.ts",
   );
