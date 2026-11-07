@@ -1,5 +1,12 @@
 import { setTimeout as sleep } from "node:timers/promises";
-import { getThread, listEvents, markThreadDeleted } from "@bb/db";
+import {
+  getEnvironment,
+  getThread,
+  listEvents,
+  markThreadDeleted,
+  threads,
+} from "@bb/db";
+import { eq } from "drizzle-orm";
 import type { EnvironmentRow } from "@bb/db";
 import type { Thread } from "@bb/domain";
 import { describe, expect, it, vi } from "vitest";
@@ -11,6 +18,8 @@ import {
   stopThreadForCurrentState,
 } from "../../src/services/threads/thread-lifecycle.js";
 import { HostOnlineRpcTimeoutError } from "../../src/ws/hub.js";
+import { setPluginEnvironmentProviderBridge } from "../../src/services/plugins/plugin-environment-provider-registry.js";
+import { validatePluginEnvironmentProviderDeclaration } from "@get-bb/plugin-sdk/internal/host-policy";
 import {
   listQueuedThreadCommands,
   reportQueuedCommandError,
@@ -41,7 +50,7 @@ interface WaitForStopRpcIdleArgs {
 }
 
 function seedActiveThreadStopFixture(
-  args: SeedActiveThreadStopFixtureArgs,
+  args: SeedActiveThreadStopFixtureArgs & { providerBacked?: boolean },
 ): ActiveThreadStopFixture {
   const { host } = seedHostSession(args.harness.deps, {
     id: `host-thread-stop-retry-${args.value}`,
@@ -55,6 +64,13 @@ function seedActiveThreadStopFixture(
     projectId: project.id,
     path: `/tmp/thread-stop-retry-${args.value}`,
     status: "ready",
+    ...(args.providerBacked
+      ? {
+          environmentProviderId: "retained-worktree",
+          environmentProviderPluginId: "test-retained-worktree",
+          providerOwnsPath: true,
+        }
+      : {}),
   });
   const thread = seedThread(args.harness.deps, {
     projectId: project.id,
@@ -78,6 +94,70 @@ async function waitForStopRpcIdle(args: WaitForStopRpcIdleArgs): Promise<void> {
 }
 
 describe("thread stop dispatch", () => {
+  it("schedules provider retirement after storage deletion is retained", async () => {
+    await withTestHarness(async (harness) => {
+      const provider = validatePluginEnvironmentProviderDeclaration({
+        id: "retained-worktree",
+        displayName: "Retained Worktree",
+        description: "A provider used by the retained storage test.",
+        icon: "Folder",
+        policy: { retireGraceMs: 0 },
+        create: async () => ({
+          status: "failed" as const,
+          message: "not used by this test",
+        }),
+        remove: async () => ({ status: "removed" as const }),
+      });
+      const record = { pluginId: "test-retained-worktree", provider };
+      setPluginEnvironmentProviderBridge({
+        listEnvironmentProviders: () => [record],
+        getEnvironmentProvider: (id) =>
+          id === provider.id ? record : undefined,
+        invokeProvider: async (_record, _label, run) => ({
+          ok: true,
+          value: await run(),
+        }),
+        decisionTimeoutMs: 10_000,
+      });
+      try {
+        const { environment, thread } = seedActiveThreadStopFixture({
+          harness,
+          value: 8,
+          providerBacked: true,
+        });
+        harness.db
+          .update(threads)
+          .set({ status: "idle" })
+          .where(eq(threads.id, thread.id))
+          .run();
+        markThreadDeleted(harness.db, harness.hub, { threadId: thread.id });
+
+        requestThreadStorageDeletion(harness.deps, thread, environment);
+        const deleteCommand = await waitForQueuedCommand(
+          harness,
+          ({ command }) =>
+            command.type === "thread.storage.delete" &&
+            command.threadId === thread.id,
+        );
+        await reportQueuedCommandError(harness, deleteCommand, {
+          errorCode: "path_in_use",
+          errorMessage:
+            "The storage path is retained because a foreign-user process could not be inspected",
+        });
+
+        await expect
+          .poll(() => getEnvironment(harness.db, environment.id)?.retireAt)
+          .toEqual(expect.any(Number));
+        expect(getThread(harness.db, thread.id)).toMatchObject({
+          deletedAt: expect.any(Number),
+          storageDeletedAt: null,
+        });
+      } finally {
+        setPluginEnvironmentProviderBridge(undefined);
+      }
+    });
+  });
+
   it("keeps a deleted thread tombstone until storage deletion succeeds", async () => {
     await withTestHarness(async (harness) => {
       const { environment, thread } = seedActiveThreadStopFixture({

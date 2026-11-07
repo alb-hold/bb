@@ -1126,6 +1126,12 @@ export function requestThreadStorageDeletion(
         { err: error, threadId: thread.id },
         "Thread storage deletion command failed",
       );
+      if (
+        error instanceof ApiError &&
+        error.body.code === "path_in_use" &&
+        thread.environmentId !== null
+      )
+        refreshProviderRetirement(deps, thread.environmentId);
     })
     .finally(() => {
       inFlightThreadRpcGuard.release(thread.id, "thread.storage.delete");

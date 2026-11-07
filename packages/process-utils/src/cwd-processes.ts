@@ -66,7 +66,7 @@ async function listLsofProcessCwds(): Promise<ProcessWithCwd[]> {
   return results;
 }
 
-async function resolveSweepDirectory(
+export async function resolveSweepDirectory(
   directory: string,
 ): Promise<string | null> {
   const resolved = resolve(directory);
