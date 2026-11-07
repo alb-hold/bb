@@ -60,3 +60,33 @@ it("honors cancellation while waiting for the preload response", async () => {
     ),
   ).rejects.toThrow();
 });
+
+it("reuses the early thread record without consuming the bootstrap or native metadata response", async () => {
+  const nativePath = "/api/v1/threads/native/native-terminal";
+  const path = "/api/v1/threads/native";
+  globalThis.__bbInitialNativeTerminalRequest = {
+    path: nativePath,
+    response: Promise.resolve(new Response("metadata")),
+    thread: { path, response: Promise.resolve(new Response("record")) },
+  };
+  expect(
+    takeInitialNativeTerminalResponse(
+      new URL(path + "?include=bootstrap", location.origin),
+    ),
+  ).toBeNull();
+  expect(
+    await (
+      await takeInitialNativeTerminalResponse(new URL(path, location.origin))
+    )?.text(),
+  ).toBe("record");
+  expect(
+    takeInitialNativeTerminalResponse(new URL(path, location.origin)),
+  ).toBeNull();
+  expect(
+    await (
+      await takeInitialNativeTerminalResponse(
+        new URL(nativePath, location.origin),
+      )
+    )?.text(),
+  ).toBe("metadata");
+});

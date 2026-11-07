@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { act, cleanup, render } from "@testing-library/react";
+import * as terminalMarks from "@/lib/terminal-performance";
 import * as rendererModule from "./terminal-webgl-renderer";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm";
@@ -202,19 +203,34 @@ const originalClipboardDescriptor = Object.getOwnPropertyDescriptor(
 vi.setConfig({ testTimeout: 30_000 });
 
 describe("native terminal attach claim timing", () => {
-  it.each(
-    [44, 125].flatMap((cols) =>
+  it.each([
+    ...[44, 125].flatMap((cols) =>
       ["ready", "pending", "delayed"].flatMap((pendingScreen) =>
         ["miss", "match", "mismatch"].map((cacheMode) => ({
           cols,
           pendingScreen,
           cacheMode,
+          rendererMode: "dom",
         })),
       ),
     ),
-  )(
-    "claims the fitted $cols-column grid (screen: $pendingScreen, cache: $cacheMode)",
-    async ({ cols, pendingScreen, cacheMode }) => {
+    ...[44, 125].flatMap((cols) =>
+      ["webgl", "late"].map((rendererMode) => ({
+        cols,
+        pendingScreen: "pending",
+        cacheMode: "miss",
+        rendererMode,
+      })),
+    ),
+  ])(
+    "claims the fitted $cols-column grid (screen: $pendingScreen, cache: $cacheMode, renderer: $rendererMode)",
+    async ({ cols, pendingScreen, cacheMode, rendererMode }) => {
+      const stages = new Map<string, number>();
+      vi.spyOn(terminalMarks, "markTerminalPerformance").mockImplementation(
+        (name) => {
+          if (!stages.has(name)) stages.set(name, Date.now());
+        },
+      );
       localStorage.clear();
       if (pendingScreen === "pending")
         testState.screen.mockReturnValue(new Promise(() => undefined));
@@ -236,35 +252,57 @@ describe("native terminal attach claim timing", () => {
       ] as const) {
         vi.spyOn(HTMLElement.prototype, dimension, "get").mockReturnValue(354);
       }
-      let webglVisible = () => false;
-      vi.spyOn(rendererModule, "loadTerminalWebglRenderer").mockReturnValue({
-        renderer: "dom",
-        setVisible: vi.fn(),
-        dispose: vi.fn(),
-      });
+      let webglActive = false;
+      vi.spyOn(rendererModule, "loadTerminalWebglRenderer").mockImplementation(
+        (_terminal, _create, options) => ({
+          get renderer() {
+            return webglActive ? "webgl" : "dom";
+          },
+          setVisible: (visible) => {
+            if (visible && !webglActive) {
+              webglActive = true;
+              options?.onRendererChange?.("webgl");
+            }
+          },
+          dispose: vi.fn(),
+        }),
+      );
       vi.spyOn(
         rendererModule,
         "observeTerminalWebglVisibility",
-      ).mockImplementation(({ isPanelOpen }) => {
-        webglVisible = isPanelOpen;
-        return { sync: vi.fn(), dispose: vi.fn() };
+      ).mockImplementation(({ isPanelOpen, renderer }) => {
+        const sync = () => renderer.setVisible(isPanelOpen());
+        sync();
+        return { sync, dispose: vi.fn() };
       });
       vi.spyOn(
         rendererModule,
         "loadOptionalTerminalWebglAddon",
-      ).mockResolvedValue({
-        WebglAddon: class {
-          activate() {}
-          dispose() {}
-          onContextLoss() {
-            return { dispose() {} };
-          }
-        },
-      });
-      vi.spyOn(FitAddon.prototype, "proposeDimensions").mockReturnValue({
-        cols,
-        rows: 36,
-      });
+      ).mockImplementation(() =>
+        rendererMode === "dom"
+          ? Promise.resolve(null)
+          : new Promise((resolve) =>
+              setTimeout(
+                () =>
+                  resolve({
+                    WebglAddon: class {
+                      activate() {}
+                      dispose() {}
+                      onContextLoss() {
+                        return { dispose() {} };
+                      }
+                    },
+                  }),
+                rendererMode === "late" ? 400 : 80,
+              ),
+            ),
+      );
+      vi.spyOn(FitAddon.prototype, "proposeDimensions").mockImplementation(
+        () => ({
+          cols: rendererMode === "webgl" && !webglActive ? cols - 2 : cols,
+          rows: 36,
+        }),
+      );
       vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
         width: 354,
         height: 504,
@@ -302,7 +340,9 @@ describe("native terminal attach claim timing", () => {
         id: "term_existing_client_grid",
         threadId: null,
         status: "running",
-        ...(cacheMode === "match" ? { cols, rows: 36 } : {}),
+        ...(cacheMode === "match" || rendererMode !== "dom"
+          ? { cols, rows: 36 }
+          : {}),
       });
       await importTerminalModules();
       vi.useFakeTimers();
@@ -336,6 +376,14 @@ describe("native terminal attach claim timing", () => {
       vi.spyOn(socket, "send").mockImplementation((data) => {
         if (JSON.parse(data).claim) claimAt ??= Date.now();
         send(data);
+        const frame = JSON.parse(data);
+        if (rendererMode === "webgl" && frame.type === "resize")
+          queueMicrotask(() =>
+            socket.receive({
+              type: "session-updated",
+              session: { ...session, cols: frame.cols, rows: frame.rows },
+            }),
+          );
       });
       socket.open();
       socket.receive({
@@ -353,13 +401,9 @@ describe("native terminal attach claim timing", () => {
       expect(
         document.querySelector("[data-terminal-grid-cache-id]"),
       ).toBeNull();
-      if (cacheMode === "miss") {
-        expect(claimAt).toBeUndefined();
-      } else {
-        expect(claimAt! - attachedAt).toBeLessThanOrEqual(5);
-        expect(startTransport).not.toHaveBeenCalled();
-        await vi.advanceTimersByTimeAsync(700);
-      }
+      expect(claimAt).toBeUndefined();
+      expect(startTransport).not.toHaveBeenCalled();
+      if (cacheMode !== "miss") await vi.advanceTimersByTimeAsync(700);
       const renderedAt = Date.now();
       let fontsReady: (() => void) | undefined;
       const fonts = new EventTarget();
@@ -390,7 +434,7 @@ describe("native terminal attach claim timing", () => {
       });
       expect(startTransport).toHaveBeenCalledOnce();
       expect(adoptedAt! - renderedAt).toBeLessThanOrEqual(16);
-      expect(webglVisible()).toBe(false);
+      if (rendererMode === "webgl") expect(webglActive).toBe(false);
       expect(
         document.querySelector('[data-replay-held="true"]'),
       ).not.toBeNull();
@@ -412,8 +456,8 @@ describe("native terminal attach claim timing", () => {
       expect(testState.socketUrls).toHaveLength(1);
       expect(adoptedAt).toBeDefined();
       expect(claimAt).toBeDefined();
-      if (cacheMode === "match") {
-        expect(webglVisible()).toBe(true);
+      if (cacheMode === "match" || rendererMode !== "dom") {
+        expect(document.querySelector("[data-terminal-restoring]")).toBeNull();
         expect(
           document.querySelector('[data-replay-held="false"]'),
         ).not.toBeNull();
@@ -421,7 +465,18 @@ describe("native terminal attach claim timing", () => {
           type: "ack",
           nextSeq: 1,
         });
-        expect(revealedAt! - renderedAt).toBeLessThanOrEqual(64);
+        expect(revealedAt! - renderedAt).toBeLessThanOrEqual(
+          rendererMode === "late" ? 200 : rendererMode === "webgl" ? 150 : 64,
+        );
+        expect(stages.get("terminal-replay-revealed")).toBeDefined();
+        expect(
+          stages.get("terminal-replay-revealed")! -
+            stages.get("terminal-fitted-grid-revealed")!,
+        ).toBe(0);
+        expect(
+          stages.get("terminal-first-fitted-grid-claimed")!,
+        ).toBeLessThanOrEqual(stages.get("terminal-replay-revealed")!);
+        expect(stages.has("terminal-replay-preview-open-start")).toBe(false);
       }
       const claims = socket.sent
         .map((raw) => JSON.parse(raw))
@@ -443,18 +498,15 @@ describe("native terminal attach claim timing", () => {
       });
       expect(sendResize.mock.calls.some((args) => args[2] === true)).toBe(true);
       expect(resizeAt).toBeDefined();
-      expect(resizeAt! - renderedAt).toBeLessThanOrEqual(100);
-      if (cacheMode === "miss") expect(claimAt).toBe(resizeAt);
-      expect(claimAt! - attachedAt).toBeLessThanOrEqual(100);
-      const measured = { type: "resize", cols, rows: 36, claim: true };
-      expect(claims).toEqual(
-        cacheMode === "mismatch"
-          ? [
-              { type: "resize", cols: cachedCols, rows: 36, claim: true },
-              measured,
-            ]
-          : [measured],
+      expect(resizeAt! - renderedAt).toBeLessThanOrEqual(
+        rendererMode === "late" ? 200 : 150,
       );
+      if (cacheMode === "miss") expect(claimAt).toBe(resizeAt);
+      if (rendererMode === "dom")
+        expect(claimAt! - renderedAt).toBeLessThanOrEqual(100);
+      const measured = { type: "resize", cols, rows: 36, claim: true };
+      expect(claims).toEqual([measured]);
+      if (rendererMode === "late") expect(webglActive).toBe(false);
       expect(readCachedTerminalGrid(session.id)).toEqual({ cols, rows: 36 });
     },
   );

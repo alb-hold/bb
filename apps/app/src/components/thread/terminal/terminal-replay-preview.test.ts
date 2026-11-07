@@ -698,6 +698,7 @@ describe("terminal replay preview", () => {
     parent.append(container);
     document.body.append(parent);
     const terminal = new Terminal({ cols: 120, rows: 36 });
+    const open = vi.spyOn(terminal, "open");
     const cover = mountTerminalReplayPreview({
       container,
       holdUntilReleased: true,
@@ -718,8 +719,13 @@ describe("terminal replay preview", () => {
     );
     cover.setFitGrid(120, 36);
     expect(getComputedStyle(element).visibility).toBe("hidden");
+    expect(open).not.toHaveBeenCalled();
+    expect(terminal.buffer.active.getLine(0)?.translateToString(true)).toBe(
+      "oldest historical frame",
+    );
 
     cover.release();
+    expect(open).toHaveBeenCalledOnce();
     expect(element.dataset.terminalReplayHeld).toBeUndefined();
     expect(getComputedStyle(element).visibility).toBe("visible");
 

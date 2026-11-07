@@ -1,6 +1,5 @@
 import { markTerminalPerformance } from "@/lib/terminal-performance";
 import type { TerminalBrowserSocket } from "@bb/client-core";
-import { readCachedTerminalGrid } from "./terminal-grid-cache";
 import type {
   TERMINAL_REPLAY_BATCH_WEBSOCKET_PROTOCOL,
   TERMINAL_LEGACY_WEBSOCKET_PROTOCOL,
@@ -21,11 +20,8 @@ class BufferedTerminalSocket implements TerminalBrowserSocket {
   private queue: Delivery[] = [];
   private bytes = 0;
   private adopted = false;
-  private adopting = false;
   private firstLiveOutput = false;
   private firstReplayBatch = false;
-  private awaitingAttach = true;
-  initialSizeClaim: { cols: number; rows: number } | undefined;
   private timer: ReturnType<typeof setTimeout>;
   private readonly socket: WebSocket;
 
@@ -34,9 +30,6 @@ class BufferedTerminalSocket implements TerminalBrowserSocket {
     protocols: string[],
     private readonly forget: () => void,
   ) {
-    const terminalId = decodeURIComponent(
-      new URL(url).pathname.split("/").at(-1) ?? "",
-    );
     this.socket = new WebSocket(url, protocols);
     markTerminalPerformance("terminal-socket-created");
     this.timer = setTimeout(() => this.close(), 10_000);
@@ -81,35 +74,6 @@ class BufferedTerminalSocket implements TerminalBrowserSocket {
           this.close();
           return;
         }
-        if (
-          !this.adopting &&
-          this.awaitingAttach &&
-          typeof event.data === "string"
-        ) {
-          try {
-            const message: unknown = JSON.parse(event.data);
-            if (
-              typeof message === "object" &&
-              message !== null &&
-              "type" in message &&
-              message.type === "attached" &&
-              "session" in message &&
-              typeof message.session === "object" &&
-              message.session !== null &&
-              "id" in message.session &&
-              message.session.id === terminalId
-            ) {
-              this.awaitingAttach = false;
-              const grid = readCachedTerminalGrid(message.session.id);
-              if (grid && this.socket.readyState === WebSocket.OPEN) {
-                this.socket.send(
-                  JSON.stringify({ type: "resize", ...grid, claim: true }),
-                );
-                this.initialSizeClaim = grid;
-              }
-            }
-          } catch {}
-        }
       }
       this.deliver(() => this.onmessage?.(event));
     };
@@ -138,15 +102,16 @@ class BufferedTerminalSocket implements TerminalBrowserSocket {
 
   adopt() {
     markTerminalPerformance("terminal-socket-adopted");
-    this.adopting = true;
     clearTimeout(this.timer);
     this.forget();
     queueMicrotask(() => {
+      markTerminalPerformance("terminal-buffer-drain-start");
       for (let index = 0; index < this.queue.length; index++)
         this.queue[index]?.();
       this.queue = [];
       this.bytes = 0;
       this.adopted = true;
+      markTerminalPerformance("terminal-buffer-drain-end");
     });
     return this;
   }

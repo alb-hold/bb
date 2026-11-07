@@ -129,6 +129,9 @@ it.each(["/threads/thr_abc", "/projects/proj_a/threads/thr_abc/"])(
       "/thread.js",
     ]);
     await state.respond();
+    expect(state.fetch).toHaveBeenCalledWith("/api/v1/threads/thr_abc", {
+      priority: "high",
+    });
     expect(state.links.map((link) => link.href)).toEqual([
       "/workspace.js",
       "/shared.js",

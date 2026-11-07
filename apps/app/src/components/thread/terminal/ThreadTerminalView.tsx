@@ -20,11 +20,13 @@ import { fetchTerminalScreen } from "./terminal-screen-prefetch";
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
   type TouchEvent as ReactTouchEvent,
 } from "react";
+import { flushSync } from "react-dom";
 import "@xterm/xterm/css/xterm.css";
 import type { IMarker, ITheme, Terminal as XTermTerminal } from "@xterm/xterm";
 import type { FitAddon } from "@xterm/addon-fit";
@@ -1347,7 +1349,7 @@ export function ThreadTerminalView({
   const viewRef = useRef<HTMLDivElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const pendingReplayRevealRef = useRef<string | null>(null);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (
       pendingReplayRevealRef.current === session.id &&
       !restoringSession &&
@@ -1728,8 +1730,6 @@ export function ThreadTerminalView({
     }
     const holdForFittedGrid =
       container.closest("[data-native-terminal-thread]") !== null;
-    let nativeWebglReady = !holdForFittedGrid;
-    let webglRevealFrame: number | null = null;
     setRestoringSession(sessionStatusRef.current === "running");
 
     const activeElementAtMount = document.activeElement;
@@ -1878,7 +1878,7 @@ export function ThreadTerminalView({
       fontSize: terminalFontSizeRef.current,
       ...TERMINAL_CELL_OPTIONS,
     };
-    let initialRendererSettled = retainNativeOutput || holdForFittedGrid;
+    let initialRendererSettled = retainNativeOutput;
     let initialLayoutSettled = false;
     let retainedOutputReplayed = sessionStatusRef.current !== "exited";
     let retainedOutputGrid: TerminalGridSize | null = null;
@@ -2042,24 +2042,18 @@ export function ThreadTerminalView({
           replayRevealTimeout = null;
           fittedGridHeld = false;
           fittedGridRevealed = true;
-          if (!nativeWebglReady && webglRevealFrame === null) {
-            webglRevealFrame = window.requestAnimationFrame(() => {
-              webglRevealFrame = window.requestAnimationFrame(() => {
-                webglRevealFrame = null;
-                if (disposed) return;
-                nativeWebglReady = true;
-                webglVisibilityRef.current?.sync();
-              });
-            });
-          }
           markTerminalPerformance("terminal-fitted-grid-revealed");
           containerElement.dataset.replayHeld = "false";
           if (fittedGridFallback) containerElement.style.opacity = "";
-          setRestoringSession(false);
           const complete = completeReplayReveal;
           completeReplayReveal = null;
-          complete?.();
-          updateGridVisibility();
+          const finish = () => {
+            setRestoringSession(false);
+            complete?.();
+            updateGridVisibility();
+          };
+          if (needsFittedGrid()) flushSync(finish);
+          else finish();
         };
         checkReplayReveal = () => {
           if (
@@ -2410,7 +2404,8 @@ export function ThreadTerminalView({
             disposed ||
             webglAddonModule === null ||
             terminal === null ||
-            retainNativeOutput
+            retainNativeOutput ||
+            (holdForFittedGrid && initialRendererSettled)
           ) {
             return;
           }
@@ -2431,7 +2426,7 @@ export function ThreadTerminalView({
           webglVisibilityRef.current = observeTerminalWebglVisibility({
             root: containerElement,
             renderer: webglRenderer,
-            isPanelOpen: () => isPanelOpenRef.current && nativeWebglReady,
+            isPanelOpen: () => isPanelOpenRef.current,
           });
         })
         .catch(() => undefined);
@@ -2642,10 +2637,7 @@ export function ThreadTerminalView({
           return;
         }
         updateGridVisibility();
-        if (
-          initialLayoutSettled &&
-          (holdForFittedGrid || initialRendererSettled)
-        ) {
+        if (initialLayoutSettled && initialRendererSettled) {
           if (holdForFittedGrid && sessionStatusRef.current === "running") {
             rememberTerminalGrid(
               session.id,
@@ -2666,6 +2658,8 @@ export function ThreadTerminalView({
               claimedFitGrid.rows !== fitted.rows);
           transport?.sendResize(fitted.cols, fitted.rows, claimFit);
           if (claimFit) {
+            if (claimedFitGrid === null)
+              markTerminalPerformance("terminal-first-fitted-grid-claimed");
             markTerminalPerformance("terminal-fitted-grid-claimed");
             claimedFitGrid = { ...fitted };
           }
@@ -2682,8 +2676,19 @@ export function ThreadTerminalView({
         });
       };
       function settleInitialRenderer() {
-        if (disposed || terminal === null) return;
+        if (
+          disposed ||
+          terminal === null ||
+          (holdForFittedGrid && initialRendererSettled)
+        )
+          return;
         clearTimeout(rendererDeadline);
+        if (holdForFittedGrid && webglRenderer?.renderer === "dom") {
+          webglVisibilityRef.current?.dispose();
+          webglVisibilityRef.current = null;
+          webglRenderer.dispose();
+          webglRenderer = null;
+        }
         initialRendererSettled = true;
         markTerminalPerformance("terminal-initial-renderer-settled");
         fitTerminal();
@@ -3010,6 +3015,10 @@ export function ThreadTerminalView({
               keepScreenLoadingPreview = false;
               clearScreenLoadingPreview();
               containerElement.dataset.replayHeld = "false";
+              if (needsFittedGrid() && fittedGridReady()) {
+                replayPreview?.dispose();
+                replayPreview = null;
+              }
               activeTransport.resetRetryBackoff();
               for (const text of pendingExitNotices.splice(0)) {
                 routeQueuedExitNotice(text);
@@ -3080,13 +3089,14 @@ export function ThreadTerminalView({
               replayPreview?.dispose();
               replayCheckpointSequence = null;
               const replayGrid = latestPtyGrid;
+              markTerminalPerformance("terminal-replay-preview-create-start");
               const previewTerminal = new Terminal({
                 ...TERMINAL_THEME_OPTIONS,
                 allowProposedApi: TERMINAL_ALLOW_PROPOSED_API,
                 cols: replayGrid.cols,
                 rows: replayGrid.rows,
                 ...terminalFontOptions,
-                theme: buildTerminalTheme(),
+                theme: activeTerminal.options.theme,
               });
               previewTerminal.loadAddon(new Unicode11Addon());
               previewTerminal.unicode.activeVersion = TERMINAL_UNICODE_VERSION;
@@ -3108,6 +3118,7 @@ export function ThreadTerminalView({
                 terminal: previewTerminal,
               });
               replayPreview.setPtyGrid(replayGrid.cols, replayGrid.rows);
+              markTerminalPerformance("terminal-replay-preview-create-end");
               if (paintedScreenKept) keepPaintedScreen();
             }
           },
@@ -3299,6 +3310,7 @@ export function ThreadTerminalView({
             rect.width <= 0 ||
             rect.height <= 0 ||
             hasRunningLayoutAnimation(containerElement) ||
+            (holdForFittedGrid && !initialRendererSettled) ||
             document.fonts?.status === "loading"
           ) {
             return null;
@@ -3639,8 +3651,6 @@ export function ThreadTerminalView({
       discardPrefetchedTerminalSocket(earlySocketUrl);
       webglVisibilityRef.current?.dispose();
       webglVisibilityRef.current = null;
-      if (webglRevealFrame !== null)
-        window.cancelAnimationFrame(webglRevealFrame);
       webglRenderer?.dispose();
       clearTimeout(rendererDeadline);
       terminal?.dispose();
