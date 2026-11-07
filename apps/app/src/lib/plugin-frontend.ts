@@ -142,7 +142,6 @@ interface PluginFrontendLoaderDeps {
   prefetchModule: (url: string) => void;
   warn: (message: string) => void;
   prepareDeferredRuntime?: (id: string) => Promise<void>;
-  downloadDeferredModule?: (url: string) => Promise<void>;
   runDeferredWork?: <T>(work: () => Promise<T>) => Promise<T | undefined>;
 }
 

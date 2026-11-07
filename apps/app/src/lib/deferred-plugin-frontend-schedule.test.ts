@@ -10,7 +10,10 @@ import {
 } from "./plugin-frontend";
 
 const preloads = vi.hoisted(() => vi.fn(async (_url: string) => true));
-vi.mock("./plugin-module-preload", () => ({ preloadPluginModule: preloads }));
+vi.mock("./plugin-module-preload", () => ({
+  preloadPluginModule: preloads,
+  prefetchPluginModule: vi.fn(),
+}));
 let dispose = () => {};
 beforeEach(() => {
   vi.resetModules();
