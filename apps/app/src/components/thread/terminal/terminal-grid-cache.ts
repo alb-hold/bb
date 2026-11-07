@@ -1,14 +1,16 @@
+import { terminalLayoutFingerprint } from "./terminal-layout-fingerprint";
 import {
   readTerminalFontFamily,
   readTerminalFontMetrics,
   TERMINAL_LINE_HEIGHT,
 } from "./terminal-font";
 
-const STORAGE_KEY = "bb.terminal.fit-grids.v2";
+const STORAGE_KEY = "bb.terminal.fit-grids.v3";
 const MAX_ENTRIES = 32;
 interface Entry {
   terminalId: string;
   layout: string;
+  measuredLayout: string;
   viewportWidth: number;
   viewportHeight: number;
   widthClass: "compact" | "wide";
@@ -44,6 +46,9 @@ function isEntry(value: unknown): value is Entry {
     "layout" in value &&
     typeof value.layout === "string" &&
     value.layout.length <= 8192 &&
+    "measuredLayout" in value &&
+    typeof value.measuredLayout === "string" &&
+    value.measuredLayout.length <= 8192 &&
     "terminalId" in value &&
     typeof value.terminalId === "string" &&
     value.terminalId.length > 0 &&
@@ -120,7 +125,7 @@ function context(terminalId: string, fontSize: number) {
     return null;
   return {
     terminalId,
-    layout: layoutFingerprint(),
+    layout: terminalLayoutFingerprint(),
     viewportWidth: Math.round(window.innerWidth),
     viewportHeight: Math.round(window.innerHeight),
     widthClass:
@@ -165,6 +170,7 @@ export function rememberTerminalGrid(
   const rect = container.getBoundingClientRect();
   const entry = {
     ...current,
+    measuredLayout: layoutFingerprint(),
     fontFamily,
     lineHeight,
     fontWeight,
@@ -181,7 +187,8 @@ export function rememberTerminalGrid(
   const previous = entries.find(matches);
   if (
     previous === entries[0] &&
-    previous?.cols === entry.cols &&
+    previous?.measuredLayout === entry.measuredLayout &&
+    previous.cols === entry.cols &&
     previous.rows === entry.rows
   )
     return;
@@ -226,9 +233,12 @@ export function readCachedTerminalGrid(
   if (container && Number(container.dataset.terminalFontSize) !== fontSize)
     return null;
   const rect = container?.getBoundingClientRect();
+  const measuredLayout = container ? layoutFingerprint() : null;
   const entry = entries.find(
     (candidate) =>
       matchesContext(candidate, current) &&
+      (measuredLayout === null ||
+        candidate.measuredLayout === measuredLayout) &&
       (!rect ||
         (Math.round(rect.width) === candidate.width &&
           Math.round(rect.height) === candidate.height)),

@@ -44,11 +44,13 @@ class Socket {
 
 beforeEach(() => {
   localStorage.clear();
+  sessionStorage.clear();
   vi.useFakeTimers();
   Socket.instances = [];
   vi.stubGlobal("WebSocket", Socket);
 });
 afterEach(() => {
+  document.body.replaceChildren();
   discardPrefetchedTerminalSocket(url);
   vi.unstubAllGlobals();
   vi.useRealTimers();
@@ -314,5 +316,41 @@ it("claims at socket-open even when the view adopted the connecting socket first
       .map((raw) => JSON.parse(raw))
       .filter((frame) => frame.type === "resize"),
   ).toHaveLength(1);
+  transport.dispose();
+});
+
+it("claims a persisted grid at socket open before the app layout mounts", async () => {
+  const shell = document.createElement("div");
+  shell.dataset.testid = "app-layout-content-shell";
+  vi.spyOn(shell, "getBoundingClientRect").mockReturnValue(
+    new DOMRect(320, 0, 960, 800),
+  );
+  const container = document.createElement("div");
+  vi.spyOn(container, "getBoundingClientRect").mockReturnValue(
+    new DOMRect(0, 0, 944, 698),
+  );
+  shell.append(container);
+  document.body.append(shell);
+  rememberTerminalGrid("term", container, 13, { cols: 116, rows: 36 });
+  document.body.replaceChildren();
+  prefetchTerminalSocket(url);
+  const native = Socket.instances[0]!;
+  native.open();
+  expect(document.body.children).toHaveLength(0);
+  expect(native.sent.map((frame) => JSON.parse(frame))).toEqual([
+    { type: "resize", cols: 116, rows: 36, claim: true },
+  ]);
+  const transport = new TerminalWebSocketTransport({
+    url,
+    createSocket: createPrefetchedTerminalSocket,
+    onMessage: () => {},
+    shouldReconnect: () => true,
+  });
+  transport.sendResize(116, 36, true);
+  transport.markLayoutSettled();
+  transport.start();
+  vi.runAllTicks();
+  await Promise.resolve();
+  expect(native.sent).toHaveLength(1);
   transport.dispose();
 });
