@@ -381,7 +381,7 @@ describe("ThreadTerminalView terminal viewport and focus", () => {
       },
     );
     renderMobileTerminal();
-    await waitFor(() => expect(terminal?.options.lineHeight).toBe(1.12));
+    await waitFor(() => expect(terminal?.options.lineHeight).toBe(1.22));
   });
   it("keeps a bottom-following client at the bottom after output and a shared resize", async () => {
     prepareMobileTerminal();
