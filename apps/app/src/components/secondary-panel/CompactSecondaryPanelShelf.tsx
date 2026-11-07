@@ -20,7 +20,7 @@ import {
 import { isCompactSidebarDrawerShowing } from "@/components/ui/sidebar-mobile-drawer-visibility";
 
 const SHELF_TRANSITION_CLASS =
-  "[transition:translate_220ms_cubic-bezier(0.32,0.72,0,1),width_220ms_cubic-bezier(0.32,0.72,0,1)] motion-reduce:transition-none!";
+  "[transition:translate_220ms_cubic-bezier(0.32,0.72,0,1)] motion-reduce:transition-none!";
 const SHELF_SETTLE_MS = 220;
 const SHELF_DRAG_SETTLE_TRANSITION =
   "translate 220ms cubic-bezier(0.32, 0.72, 0, 1)";
@@ -59,6 +59,11 @@ export function CompactSecondaryPanelShelf({
   const canSwipeOpen = onOpen !== undefined && !open;
 
   const clearDragStyles = useCallback(() => {
+    const panel = panelRef.current;
+    if (panel !== null) {
+      panel.style.translate = "";
+      panel.style.transition = "";
+    }
     const inset = draggedInsetRef.current;
     if (inset !== null) {
       inset.style.translate = "";
@@ -81,6 +86,8 @@ export function CompactSecondaryPanelShelf({
       if (panel === null) {
         return;
       }
+      panel.style.translate = `${width * (1 - progress)}px`;
+      panel.style.transition = settling ? SHELF_DRAG_SETTLE_TRANSITION : "none";
       const inset = panel.ownerDocument.querySelector('[data-sidebar="inset"]');
       if (inset instanceof HTMLElement) {
         draggedInsetRef.current = inset;
@@ -117,7 +124,7 @@ export function CompactSecondaryPanelShelf({
     const panel = panelRef.current;
     if (panel !== null) {
       panel.style.visibility = "";
-      panel.style.width = "";
+      panel.style.translate = "";
       panel.style.transition = "";
     }
   }, []);
@@ -145,8 +152,8 @@ export function CompactSecondaryPanelShelf({
       inset.style.translate = `${-width * (1 - progress)}px`;
       inset.style.transition = settling ? SHELF_DRAG_SETTLE_TRANSITION : "none";
       panel.style.visibility = "visible";
-      panel.style.width = "100%";
-      panel.style.transition = "none";
+      panel.style.translate = `${width * progress}px`;
+      panel.style.transition = settling ? SHELF_DRAG_SETTLE_TRANSITION : "none";
     },
     [],
   );
@@ -267,10 +274,9 @@ export function CompactSecondaryPanelShelf({
             : APP_OVERLAY_LAYER.secondaryPanel,
       }}
       className={cn(
-        "fixed inset-y-0 right-0 flex h-(--bb-shell-height) flex-col overflow-hidden border-l border-border-seam bg-sidebar pt-[env(safe-area-inset-top)] pr-[env(safe-area-inset-right)] pb-[var(--bb-safe-area-bottom,env(safe-area-inset-bottom))] pl-[env(safe-area-inset-left)] outline-none",
-        "w-(--secondary-panel-width-mobile) data-[state=full]:w-full data-[state=full]:border-l-0",
+        "fixed inset-y-0 right-0 flex h-(--bb-shell-height) w-full flex-col overflow-hidden bg-sidebar pt-[env(safe-area-inset-top)] pr-[env(safe-area-inset-right)] pb-[var(--bb-safe-area-bottom,env(safe-area-inset-bottom))] pl-[env(safe-area-inset-left)] outline-none",
         SHELF_TRANSITION_CLASS,
-        "data-[state=closed]:invisible data-[state=closed]:[transition:visibility_0s_linear_220ms]",
+        "data-[state=closed]:invisible data-[state=closed]:translate-x-full data-[state=closed]:[transition:translate_220ms_cubic-bezier(0.32,0.72,0,1),visibility_0s_linear_220ms]",
       )}
       onPointerDown={beginPointerDrag}
       onTouchStart={beginTouchDrag}

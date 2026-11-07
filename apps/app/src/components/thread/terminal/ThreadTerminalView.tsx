@@ -2128,7 +2128,6 @@ export function ThreadTerminalView({
             : presentation.panHorizontally);
         containerElement.style.overflowX = scrollRetainedOutput ? "auto" : "";
         containerElement.style.overflowY = scrollRetainedOutput ? "auto" : "";
-        containerElement.style.paddingLeft = scrollRetainedOutput ? "0" : "";
         containerElement.style.touchAction = scrollRetainedOutput
           ? "pan-x pan-y"
           : "";
