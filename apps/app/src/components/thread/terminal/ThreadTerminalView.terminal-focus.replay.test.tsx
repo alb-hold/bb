@@ -3174,6 +3174,74 @@ describe("terminal first paint", () => {
 });
 
 describe("terminal first paint recovery", () => {
+  it.each([
+    ["resolve", true],
+    ["reject", true],
+    ["resolve", false],
+    ["reject", false],
+    ["write", true],
+    ["write", false],
+  ] as const)(
+    "releases terminal listeners after late history %s with retained output %s",
+    async (settlement, retainNativeOutput) => {
+      prepareFirstAttachFontMetricsHarness();
+      const add = vi.spyOn(window, "addEventListener");
+      const remove = vi.spyOn(window, "removeEventListener");
+      let parsed: (() => void) | undefined;
+      if (settlement === "write") {
+        const write = Terminal.prototype.write;
+        vi.spyOn(Terminal.prototype, "write").mockImplementation(
+          function (this: Terminal, data, callback) {
+            write.call(this, data, () => {
+              if (data === "" && callback) parsed = callback;
+              else callback?.();
+            });
+          },
+        );
+      }
+      for (let navigation = 0; navigation < 4; navigation++) {
+        let resolveOutput!: (value: { chunks: []; nextSeq: number }) => void;
+        let rejectOutput!: (reason: Error) => void;
+        testState.output.mockImplementation(
+          () =>
+            new Promise((resolve, reject) => {
+              resolveOutput = resolve;
+              rejectOutput = reject;
+            }),
+        );
+        renderMobileTerminal(
+          { status: "exited", exitCode: 0 },
+          retainNativeOutput,
+        );
+        await waitForReadinessCondition(() => {
+          expect(testState.output).toHaveBeenCalledTimes(navigation + 1);
+        }, "history was not requested");
+        if (settlement === "write") {
+          await act(async () => resolveOutput({ chunks: [], nextSeq: 0 }));
+          await waitForReadinessCondition(() => {
+            expect(parsed).toBeTypeOf("function");
+          }, "history parsing did not reach its completion callback");
+        }
+        cleanup();
+        await act(async () => {
+          if (settlement === "resolve")
+            resolveOutput({ chunks: [], nextSeq: 0 });
+          else if (settlement === "reject")
+            rejectOutput(new Error("history unavailable"));
+          else parsed?.();
+        });
+        parsed = undefined;
+        const active = new Set<EventListenerOrEventListenerObject>();
+        for (const [event, listener] of add.mock.calls) {
+          if (event === "pointerup") active.add(listener);
+        }
+        for (const [event, listener] of remove.mock.calls) {
+          if (event === "pointerup") active.delete(listener);
+        }
+        expect(active.size).toBe(0);
+      }
+    },
+  );
   it("reconciles retained history arriving after the timeout", async () => {
     prepareFirstAttachFontMetricsHarness();
     vi.stubGlobal("innerWidth", 390);
