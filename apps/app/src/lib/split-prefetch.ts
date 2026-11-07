@@ -61,6 +61,8 @@ export async function prepareBackgroundSplit(
   for (const path of splitAssets(id)) {
     const url = new URL(path, document.baseURI).href;
     if (importing.has(id)) return;
+    if (!requested.has(url) && performance.getEntriesByName(url).length > 0)
+      continue;
     await run(async () => {
       if (!importing.has(id) && (await preloadPluginModule(url, "low")))
         requested.add(url);
