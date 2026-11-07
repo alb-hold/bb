@@ -772,7 +772,7 @@ describe("ThreadSecondaryPanel hide control glyph", () => {
     });
 
     const hideControl = view.getByRole("button", { name: "Hide right panel" });
-    expect(hideControl.querySelector('[data-icon="ChevronLeft"]')).toBeTruthy();
+    expect(hideControl.querySelector('[data-icon="PanelRight"]')).toBeTruthy();
     expect(
       screen
         .getByTestId("thread-secondary-panel-top-chrome")

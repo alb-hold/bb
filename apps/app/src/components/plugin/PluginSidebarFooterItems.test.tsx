@@ -983,3 +983,20 @@ it("reserves missing stored plugin positions before late footer registration", (
       ?.previousElementSibling?.getAttribute("data-footer-item"),
   ).toBe("plugin:early/action");
 });
+
+it("reserves two plugin controls on an uncached first paint", () => {
+  const view = renderWithProviders(
+    <SidebarMenu>
+      <PluginSidebarFooterItems
+        activeDisclosureKey={null}
+        onDisclosureCommand={vi.fn()}
+        onCustomize={vi.fn()}
+      />
+    </SidebarMenu>,
+    createStore(),
+  );
+  const slots = view.container.querySelector("[data-footer-plugin-slots]")!;
+  expect(
+    slots.querySelectorAll("[data-footer-plugin-placeholder]"),
+  ).toHaveLength(2);
+});

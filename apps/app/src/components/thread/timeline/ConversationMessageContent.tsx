@@ -387,11 +387,24 @@ function useTouchMessageActions(alwaysVisible: boolean) {
         selecting: (window.getSelection()?.toString().length ?? 0) > 0,
       };
     },
+    onContextMenu: (event: MouseEvent<HTMLDivElement>) => {
+      if (
+        !window.matchMedia("(pointer: coarse)").matches ||
+        !(event.target instanceof Element) ||
+        event.target.closest(
+          'a, button, input, textarea, select, [contenteditable="true"]',
+        ) ||
+        (window.getSelection()?.toString().length ?? 0) > 0
+      )
+        return;
+      event.preventDefault();
+      setRevealed(true);
+    },
     onClick: (event: MouseEvent<HTMLDivElement>) => {
       const target = event.target;
       const start = pointerStart.current;
       if (
-        !window.matchMedia("(width < 48rem) and (pointer: coarse)").matches ||
+        !window.matchMedia("(pointer: coarse)").matches ||
         !(target instanceof Element) ||
         target.closest(
           'a, button, input, textarea, select, [role="button"], [contenteditable="true"]',
@@ -698,7 +711,7 @@ function AssistantConversationMessage({
   return (
     <div
       className={cn(
-        "group/message focus-visible:outline-2 focus-visible:outline-ring w-full text-sm font-normal leading-relaxed",
+        "group/message focus-visible:outline-2 focus-visible:outline-ring w-full text-sm font-normal leading-relaxed text-foreground",
         PROSE_COLUMN_INSET_CLASS,
       )}
       data-message-column=""

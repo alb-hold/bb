@@ -382,7 +382,7 @@ describe("mobile recents section", () => {
     expect(label.className).toContain("sticky");
     expect(label.className).toContain("top-0");
     expect(label.className).toContain("bg-background");
-    expect(label.classList.contains("py-2")).toBe(true);
+    expect(label.classList.contains("py-1")).toBe(true);
     expect(label.querySelector('[data-overflow-fade="below"]')).not.toBeNull();
     expect(
       label.querySelector('[data-overflow-fade="below"]')?.className,

@@ -1783,6 +1783,7 @@ function ThreadDetailViewInternal(
     <ThreadDetailHeader
       actionsMenu={({
         includeResponsiveActions,
+        terminalSearchActions,
         headerActions,
         requestRename,
         onCloseAutoFocus,
@@ -1814,8 +1815,9 @@ function ThreadDetailViewInternal(
               />
             </Button>
           )}
-          inline={
-            includeResponsiveActions
+          inline={[
+            ...terminalSearchActions,
+            ...(includeResponsiveActions
               ? [
                   ...responsiveWorkspaceActions,
                   ...headerActions.map(
@@ -1826,8 +1828,8 @@ function ThreadDetailViewInternal(
                     }),
                   ),
                 ]
-              : []
-          }
+              : []),
+          ]}
           requestRename={requestRename}
           onCloseAutoFocus={onCloseAutoFocus}
         />
@@ -2011,19 +2013,21 @@ function ThreadDetailViewInternal(
     }
   };
   const panelTabs: readonly SecondaryPanelRenderableTab[] =
-    syncedOrderedSecondaryFileTabs.map((tab): SecondaryPanelRenderableTab => ({
-      ...presentPanelTab(tab),
-      tab,
-      renderContent: () => renderSecondaryTabContent(tab),
-      onSelect:
-        tab.kind === "terminal"
-          ? () => terminals.select(tab.terminalId)
-          : () => handleActivateFileTab(tab.id),
-      onClose:
-        tab.kind === "terminal"
-          ? () => terminals.close(tab.terminalId)
-          : () => closeTab(tab.id),
-    }));
+    syncedOrderedSecondaryFileTabs.map(
+      (tab): SecondaryPanelRenderableTab => ({
+        ...presentPanelTab(tab),
+        tab,
+        renderContent: () => renderSecondaryTabContent(tab),
+        onSelect:
+          tab.kind === "terminal"
+            ? () => terminals.select(tab.terminalId)
+            : () => handleActivateFileTab(tab.id),
+        onClose:
+          tab.kind === "terminal"
+            ? () => terminals.close(tab.terminalId)
+            : () => closeTab(tab.id),
+      }),
+    );
   const threadDetailContent = (
     <MarkdownLocalFileContextMenuContext.Provider
       value={getLocalFileContextMenuItems}

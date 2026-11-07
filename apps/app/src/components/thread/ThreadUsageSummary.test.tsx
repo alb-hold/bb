@@ -108,7 +108,10 @@ describe("thread usage summary", () => {
         summary.querySelector("[data-token-total-tight]")?.textContent,
       ).toBe("208K tokens");
       expect(summary.classList.contains("text-xs")).toBe(true);
-      expect(summary.classList.contains("text-muted-foreground")).toBe(true);
+      for (const part of summary.querySelectorAll('[data-token-part]:not([data-token-part="total"])')) {
+        expect(part.parentElement?.hasAttribute("data-token-unit")).toBe(true);
+      }
+      expect(summary.classList.contains("text-subtle-foreground")).toBe(true);
       if (reasoningOutputTokens) {
         expect(
           summary.querySelector('[data-token-part="reasoning"]')?.textContent,

@@ -789,3 +789,20 @@ it("dismisses older actions on outside tap and keeps them keyboard reachable", (
   fireEvent.keyDown(message, { key: "Escape" });
   expect(message.dataset.touchActionsVisible).toBe("false");
 });
+
+it("gives assistant prose primary foreground while older actions reveal on long press", () => {
+  const { message } = renderTouchActions("overflow");
+  expect(message.classList.contains("text-foreground")).toBe(true);
+  expect(
+    message.querySelector("p")?.classList.contains("text-foreground"),
+  ).toBe(true);
+  expect(message.dataset.touchActionsVisible).toBe("false");
+  expect(screen.getByRole("button", { name: "Copy message" })).toBeTruthy();
+  fireEvent.contextMenu(message);
+  expect(message.dataset.touchActionsVisible).toBe("true");
+  expect(
+    screen
+      .getByRole("button", { name: "Copy message" })
+      .getAttribute("data-compact-touch"),
+  ).toBe("action");
+});

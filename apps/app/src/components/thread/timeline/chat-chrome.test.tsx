@@ -17,7 +17,7 @@ import { MarkdownPreview } from "../../ui/markdown-preview";
 
 function compactStyles(
   path: string,
-  media = "@media (width < 48rem) and (pointer: coarse)",
+  media = path.endsWith("message-action-bar.css") ? "@media (pointer: coarse)" : "@media (width < 48rem) and (pointer: coarse)",
 ) {
   const css = readFileSync(path, "utf8");
   let result = "";

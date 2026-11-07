@@ -104,7 +104,7 @@ describe("RootComposeHome", () => {
     );
     const column = screen.getByTestId("root-compose-compact-home");
     expect(screen.getByText("Start a new thread").className).toContain(
-      "text-lg font-medium text-foreground",
+      "text-xl font-medium text-foreground",
     );
     expect(column.className).toContain("my-auto");
     expect(column.className).toContain("shrink-0");
@@ -213,11 +213,26 @@ describe("RootComposeHome", () => {
 });
 
 it("never fades the first Recent title before scrolling", () => {
-  render(<RootComposeHome isCompact composer={<div />} compactScrollContent={<section data-root-compose-mobile-recents=""><div data-overflow-fade="below" /></section>} homepageSections={null} />);
-  const fade = document.querySelector('[data-root-compose-mobile-recents] [data-overflow-fade="below"]');
+  render(
+    <RootComposeHome
+      isCompact
+      composer={<div />}
+      compactScrollContent={
+        <section data-root-compose-mobile-recents="">
+          <div data-overflow-fade="below" />
+        </section>
+      }
+      homepageSections={null}
+    />,
+  );
+  const fade = document.querySelector(
+    '[data-root-compose-mobile-recents] [data-overflow-fade="below"]',
+  );
   const viewport = screen.getByTestId("root-compose-compact-scroll-viewport");
   const css = readFileSync("src/app.css", "utf8");
-  const rule = css.match(/([^{}]*\[data-root-compose-mobile-recents\][^{}]*)\{\s*visibility: hidden;\s*\}/);
+  const rule = css.match(
+    /([^{}]*\[data-root-compose-mobile-recents\][^{}]*)\{\s*visibility: hidden;\s*\}/,
+  );
   expect(rule).not.toBeNull();
   const selector = rule![1].trim();
   expect(fade?.matches(selector)).toBe(true);

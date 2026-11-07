@@ -142,7 +142,7 @@ it("keeps code and message hit areas inside their own rows", () => {
   expect(css).toMatch(/\[data-code-actions\]\s*\{\s*min-height: 2.75rem;/);
 });
 
-it("limits tap-reveal to phones with coarse pointers while retaining accessible actions", () => {
+it("reveals actions for coarse pointers while retaining keyboard focus access", () => {
   const actionsCss = readFileSync(
     join(
       dirname(fileURLToPath(import.meta.url)),
@@ -150,12 +150,11 @@ it("limits tap-reveal to phones with coarse pointers while retaining accessible 
     ),
     "utf8",
   );
-  expect(actionsCss).toContain("@media (width < 48rem) and (pointer: coarse)");
+  expect(actionsCss).toContain("@media (pointer: coarse)");
   expect(actionsCss).toContain(
     '[data-touch-actions-visible="false"]:not(:focus-within)',
   );
   expect(actionsCss).toContain("clip-path: inset(50%)");
-  expect(
-    actionsCss.slice(actionsCss.indexOf("@media (width < 48rem)")),
-  ).not.toContain("display: none");
+  expect(actionsCss.slice(actionsCss.lastIndexOf("@media (pointer: coarse)"))).not.toContain("display: none");
+  expect(actionsCss).toContain('[data-touch-actions-visible="true"] [data-message-action-row] button');
 });
