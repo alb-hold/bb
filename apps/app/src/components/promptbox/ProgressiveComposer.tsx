@@ -604,6 +604,7 @@ export function ProgressiveComposer({
                                 COARSE_POINTER_PROMPT_ACTION_BUTTON_CLASS,
                                 "rounded-full transition-colors",
                                 ACTION_LAYOUT,
+                                "max-md:pointer-coarse:size-11",
                               )}
                               onMouseDown={(event) => event.preventDefault()}
                               onClick={() => void props.voice?.start()}
@@ -629,6 +630,7 @@ export function ProgressiveComposer({
                                 COMPOSER_SUBMIT_CLASS,
                                 props.submission?.label !== undefined &&
                                   "size-auto h-8 gap-1.5 px-2.5",
+                                "max-md:pointer-coarse:size-11",
                               )}
                             >
                               {props.submission?.isSubmitting || attaching ? (

@@ -126,6 +126,27 @@ function setup(initial = "", submission?: PromptBoxSubmissionConfig) {
   };
 }
 
+it("keeps a 44px phone submit slot before and after typing during startup", () => {
+  vi.stubGlobal("matchMedia", (query: string) => ({
+    matches: true,
+    media: query,
+    addEventListener: () => {},
+    removeEventListener: () => {},
+  }));
+  const view = setup();
+  const sizeClasses = () => {
+    const button = screen.getByRole("button", { name: "Submit (Enter)" });
+    expect(button.classList).toContain("max-md:pointer-coarse:size-11");
+    expect(button.classList).not.toContain("max-md:pointer-coarse:h-10");
+    return Array.from(button.classList).filter((token) =>
+      /^max-md:pointer-coarse:(?:size|h|w)-/.test(token),
+    );
+  };
+  const emptySize = sizeClasses();
+  fireEvent.change(view.input, { target: { value: "Send this" } });
+  expect(sizeClasses()).toEqual(emptySize);
+});
+
 it("carries the last keystroke, backward selection and focus at the actual swap", () => {
   const view = setup("hello world");
   view.input.focus();
