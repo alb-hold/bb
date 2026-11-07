@@ -238,7 +238,7 @@ function makeAgentMarkdown(rng: Rng): string {
     );
   }
   if (rng.chance(0.3)) {
-    parts.push("```ts\n" + makeOutput(rng, rng.int(3, 8)) + "\n```");
+    parts.push("```\n" + makeOutput(rng, rng.int(3, 8)) + "\n```");
   }
   if (rng.chance(0.5)) {
     parts.push(sentences(rng, AGENT_SENTENCES, rng.int(1, 4)));
@@ -477,7 +477,10 @@ function buildThreadEvents(args: ThreadEventBuildArgs): void {
         itemBudget -= deltaCount + 1;
       } else if (roll < 0.65) {
         const itemId = `toolu_${rng.hex(24)}`;
-        const command = `$ ${rng.pick(OUTPUT_LINES)}`;
+        const command = rng.pick([
+          "pnpm exec turbo run test --filter=@acme/core",
+          "git status --short",
+        ]);
         emit({
           type: "item/started",
           turnId,

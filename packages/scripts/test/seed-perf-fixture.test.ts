@@ -57,6 +57,27 @@ describe("seedPerfFixture", () => {
       )
       .all() as SeededEventRow[];
     expect(eventRows.length).toBeGreaterThan(0);
+    const commandInputs = db.$client.prepare(
+      `SELECT json_extract(data, '$.item.command') AS command FROM events
+       WHERE json_extract(data, '$.item.type') = 'commandExecution'`,
+    ).all();
+    expect(commandInputs.length).toBeGreaterThan(0);
+    for (const input of commandInputs) {
+      expect(input).toEqual({
+        command: expect.stringMatching(/^(pnpm exec turbo run test --filter=@acme\/core|git status --short)$/),
+      });
+    }
+    const fencedMessages = db.$client.prepare(
+      `SELECT json_extract(data, '$.item.text') AS text FROM events
+       WHERE json_extract(data, '$.item.type') = 'agentMessage'
+       AND instr(json_extract(data, '$.item.text'), char(96, 96, 96)) > 0`,
+    ).all();
+    expect(fencedMessages.length).toBeGreaterThan(0);
+    for (const message of fencedMessages) {
+      expect(message).toEqual({ text: expect.stringContaining("```\n") });
+      expect(message).not.toEqual({ text: expect.stringContaining("```ts") });
+    }
+
     const parseFailuresByType = new Map<string, string>();
     for (const row of eventRows) {
       const parsedData: unknown = JSON.parse(row.data);
