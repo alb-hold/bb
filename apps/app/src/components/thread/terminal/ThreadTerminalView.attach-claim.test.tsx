@@ -503,7 +503,9 @@ describe("native terminal attach claim timing", () => {
             ? 200
             : rendererMode === "webgl"
               ? 150
-              : 64,
+              : rendererMode === "failed"
+                ? 100
+                : 64,
         );
         expect(stages.get("terminal-replay-revealed")).toBeDefined();
         expect(

@@ -1,3 +1,5 @@
+import { traceTerminalGate } from "@/lib/terminal-performance";
+
 export function importTerminalModules() {
   return Promise.all([
     import("@xterm/xterm"),
@@ -23,7 +25,10 @@ export function importTerminalWebglAddon() {
 }
 
 export function preloadTerminalModules(): void {
-  void importTerminalModules().catch(() => undefined);
+  void traceTerminalGate(
+    "terminal-runtime-preload",
+    importTerminalModules,
+  ).catch(() => undefined);
   void importTerminalSearchAddon().catch(() => undefined);
   void importTerminalWebLinksAddon().catch(() => undefined);
   void importTerminalWebglAddon().catch(() => undefined);

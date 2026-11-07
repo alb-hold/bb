@@ -6,6 +6,16 @@ export function markTerminalPerformance(
   performance.mark?.(name, options);
 }
 
+export function measureTerminalPerformance<T>(name: string, run: () => T): T {
+  const start = performance.now();
+  try {
+    return run();
+  } finally {
+    performance.clearMeasures?.(name);
+    performance.measure?.(name, { start, end: performance.now() });
+  }
+}
+
 export async function traceTerminalGate<T>(
   name: string,
   load: () => Promise<T>,

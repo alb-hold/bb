@@ -1197,6 +1197,7 @@ describe("ThreadTerminalView terminal visibility and panel", () => {
     }
     if (!startsHidden) {
       fitDimensionsAvailable = true;
+      for (const notify of notifySize) notify();
       fireEvent(window, new Event("resize"));
       await waitForReadinessCondition(
         () => expect(renderer.dataset.fitGridCols).toBe("125"),
