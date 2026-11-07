@@ -5,6 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 beforeEach(() => {
   vi.resetModules();
   localStorage.clear();
+  sessionStorage.clear();
 });
 afterEach(() => {
   document.body.replaceChildren();
@@ -205,4 +206,190 @@ it("reuses measured metrics across repeated grid reads", async () => {
       rows: 38,
     });
   expect(create).not.toHaveBeenCalled();
+});
+
+it.each(["shell", "panel", "split"])(
+  "misses with a mounted terminal when the surrounding %s layout changes at the same viewport",
+  async (kind) => {
+    const shell = document.createElement("div");
+    if (kind === "shell") shell.dataset.testid = "app-layout-content-shell";
+    if (kind === "panel") shell.setAttribute("data-panel", "");
+    if (kind === "split") shell.dataset.splitPaneId = "pane-1";
+    document.body.append(shell);
+    const rect = vi
+      .spyOn(shell, "getBoundingClientRect")
+      .mockReturnValue(new DOMRect(256, 0, 936, 800));
+    const cache = await import("./terminal-grid-cache");
+    const mounted = container();
+    document.body.append(mounted);
+    cache.rememberTerminalGrid("term", mounted, 13, {
+      cols: 116,
+      rows: 38,
+    });
+    expect(cache.readCachedTerminalGrid("term")).toEqual({
+      cols: 116,
+      rows: 38,
+    });
+    rect.mockReturnValue(new DOMRect(400, 0, 792, 800));
+    expect(cache.readCachedTerminalGrid("term")).toBeNull();
+  },
+);
+
+it("loads a persisted fit before any layout DOM exists on the next page", async () => {
+  const shell = document.createElement("div");
+  shell.dataset.testid = "app-layout-content-shell";
+  vi.spyOn(shell, "getBoundingClientRect").mockReturnValue(
+    new DOMRect(320, 0, 960, 800),
+  );
+  document.body.append(shell);
+  const cache = await import("./terminal-grid-cache");
+  cache.rememberTerminalGrid("term", container(), 13, { cols: 116, rows: 38 });
+  document.body.replaceChildren();
+  vi.resetModules();
+  const reloaded = await import("./terminal-grid-cache");
+  expect(reloaded.readCachedTerminalGrid("term")).toEqual({
+    cols: 116,
+    rows: 38,
+  });
+});
+
+it.each([
+  ["bb.sidebar.width", "400", "tab"],
+  ["bb.sidebar.open", "false", "tab"],
+  ["bb.splitLayout", "changed split ratios", "tab"],
+  ["bb.splitLayout.maximizedPaneId", "pane-2", "tab"],
+  ["bb.thread.secondaryPanel.widthPercent", "60", "local"],
+  ["bb.thread.secondaryPanel.widthPercent-thread", "60", "local"],
+  ["bb.thread.conversation.collapsed-thread", "true", "local"],
+  [
+    "bb.thread.secondaryPanelSplitLayout.thread",
+    "changed panel splits",
+    "local",
+  ],
+])(
+  "misses before mount after persisted %s changes",
+  async (key, value, scope) => {
+    const cache = await import("./terminal-grid-cache");
+    cache.rememberTerminalGrid("term", container(), 13, {
+      cols: 116,
+      rows: 38,
+    });
+    (scope === "tab" ? sessionStorage : localStorage).setItem(key, value);
+    expect(cache.readCachedTerminalGrid("term")).toBeNull();
+  },
+);
+
+it("uses the tab sidebar state and normalizes persisted initial defaults", async () => {
+  const cache = await import("./terminal-grid-cache");
+  cache.rememberTerminalGrid("term", container(), 13, { cols: 116, rows: 38 });
+  sessionStorage.setItem("bb.sidebar.width", "320");
+  sessionStorage.setItem("bb.sidebar.open", "true");
+  localStorage.setItem("bb.sidebar.width", "400");
+  localStorage.setItem("bb.sidebar.open", "false");
+  expect(cache.readCachedTerminalGrid("term")).toEqual({ cols: 116, rows: 38 });
+});
+
+it("ignores panel recency updates but rejects a different panel open state", async () => {
+  const { createEmptyFixedPanelTabsState, serializeFixedPanelTabsState } =
+    await import("@bb/client-core");
+  const key = "bb.thread.fixedPanelTabsState-thread";
+  const state = createEmptyFixedPanelTabsState({ lastUsedAt: Date.now() });
+  localStorage.setItem(key, serializeFixedPanelTabsState({ state }));
+  const cache = await import("./terminal-grid-cache");
+  cache.rememberTerminalGrid("term", container(), 13, { cols: 116, rows: 38 });
+  localStorage.setItem(
+    key,
+    serializeFixedPanelTabsState({
+      state: { ...state, lastUsedAt: Date.now() + 1000 },
+    }),
+  );
+  expect(cache.readCachedTerminalGrid("term")).toEqual({ cols: 116, rows: 38 });
+  localStorage.setItem(
+    key,
+    serializeFixedPanelTabsState({
+      state: { ...state, secondary: { ...state.secondary, isOpen: true } },
+    }),
+  );
+  expect(cache.readCachedTerminalGrid("term")).toBeNull();
+});
+
+it.each([false, true])(
+  "misses before mount when a populated panel changes from open=%s",
+  async (isOpen) => {
+    const {
+      createEmptyFixedPanelTabsState,
+      createThreadInfoFixedPanelTab,
+      serializeFixedPanelTabsState,
+    } = await import("@bb/client-core");
+    const tab = createThreadInfoFixedPanelTab();
+    const state = createEmptyFixedPanelTabsState({
+      lastUsedAt: Date.now(),
+      secondary: { tabs: [tab], activeTabId: tab.id, isOpen },
+    });
+    const key = "bb.thread.fixedPanelTabsState-thread";
+    localStorage.setItem(key, serializeFixedPanelTabsState({ state }));
+    const cache = await import("./terminal-grid-cache");
+    cache.rememberTerminalGrid("term", container(), 13, {
+      cols: 116,
+      rows: 38,
+    });
+    localStorage.setItem(
+      key,
+      serializeFixedPanelTabsState({
+        state: { ...state, secondary: { ...state.secondary, isOpen: !isOpen } },
+      }),
+    );
+    expect(cache.readCachedTerminalGrid("term")).toBeNull();
+  },
+);
+
+it.each([false, true])(
+  "ignores tab selection and order while a panel stays open=%s",
+  async (isOpen) => {
+    const {
+      createEmptyFixedPanelTabsState,
+      createThreadInfoFixedPanelTab,
+      createNewTabFixedPanelTab,
+      serializeFixedPanelTabsState,
+    } = await import("@bb/client-core");
+    const tabs = [createThreadInfoFixedPanelTab(), createNewTabFixedPanelTab()];
+    const state = createEmptyFixedPanelTabsState({
+      lastUsedAt: Date.now(),
+      secondary: { tabs, activeTabId: tabs[0]!.id, isOpen },
+    });
+    const key = "bb.thread.fixedPanelTabsState-thread";
+    localStorage.setItem(key, serializeFixedPanelTabsState({ state }));
+    const cache = await import("./terminal-grid-cache");
+    cache.rememberTerminalGrid("term", container(), 13, {
+      cols: 116,
+      rows: 38,
+    });
+    localStorage.setItem(
+      key,
+      serializeFixedPanelTabsState({
+        state: {
+          ...state,
+          secondary: {
+            tabs: [...tabs].reverse(),
+            activeTabId: tabs[1]!.id,
+            isOpen,
+          },
+        },
+      }),
+    );
+    expect(cache.readCachedTerminalGrid("term")).toEqual({
+      cols: 116,
+      rows: 38,
+    });
+  },
+);
+
+it("treats a newly persisted closed panel like the default closed panel", async () => {
+  const cache = await import("./terminal-grid-cache");
+  cache.rememberTerminalGrid("term", container(), 13, { cols: 116, rows: 38 });
+  localStorage.setItem(
+    "bb.thread.fixedPanelTabsState-thread",
+    JSON.stringify({ secondary: { isOpen: false } }),
+  );
+  expect(cache.readCachedTerminalGrid("term")).toEqual({ cols: 116, rows: 38 });
 });

@@ -1,3 +1,4 @@
+import { useMediaQuery } from "@bb/shared-ui/hooks/use-media-query";
 import { useIsCompactViewport } from "@bb/shared-ui/hooks/use-compact-viewport";
 import { CONTENT_MEASURE_MAX_WIDTH_CLASS } from "@/lib/content-measure";
 import {
@@ -529,6 +530,7 @@ export function NativeTerminalPromptBar({
   }, [measureInput]);
 
   const isCompactViewport = useIsCompactViewport();
+  const isNarrowViewport = useMediaQuery("(max-width: 374px)");
   const recording =
     dictation.phase === "recording" || dictation.phase === "starting";
   const micLabel = recording
@@ -646,9 +648,11 @@ export function NativeTerminalPromptBar({
               ? "Starting microphone…"
               : recording
                 ? "Listening…"
-                : isCompactViewport
-                  ? "Send to prompt above…"
-                  : `Send to ${providerLabel} prompt above…`
+                : isNarrowViewport
+                  ? "Send to prompt…"
+                  : isCompactViewport
+                    ? "Send to prompt above…"
+                    : `Send to ${providerLabel} prompt above…`
           }
           onChange={(event) => {
             applyValue(event.target.value, programmaticRef.current);

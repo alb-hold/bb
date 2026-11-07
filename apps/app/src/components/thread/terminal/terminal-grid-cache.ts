@@ -1,13 +1,17 @@
+import { markTerminalPerformance } from "@/lib/terminal-performance";
+import { terminalLayoutFingerprint } from "./terminal-layout-fingerprint";
 import {
   readTerminalFontFamily,
   readTerminalFontMetrics,
   TERMINAL_LINE_HEIGHT,
 } from "./terminal-font";
 
-const STORAGE_KEY = "bb.terminal.fit-grids.v1";
+const STORAGE_KEY = "bb.terminal.fit-grids.v3";
 const MAX_ENTRIES = 32;
 interface Entry {
   terminalId: string;
+  layout: string;
+  measuredLayout: string;
   viewportWidth: number;
   viewportHeight: number;
   widthClass: "compact" | "wide";
@@ -40,6 +44,12 @@ function isEntry(value: unknown): value is Entry {
   return (
     typeof value === "object" &&
     value !== null &&
+    "layout" in value &&
+    typeof value.layout === "string" &&
+    value.layout.length <= 8192 &&
+    "measuredLayout" in value &&
+    typeof value.measuredLayout === "string" &&
+    value.measuredLayout.length <= 8192 &&
     "terminalId" in value &&
     typeof value.terminalId === "string" &&
     value.terminalId.length > 0 &&
@@ -93,11 +103,30 @@ function readEntries(): Entry[] {
   return memory;
 }
 
+function layoutFingerprint(): string {
+  return JSON.stringify(
+    Array.from(
+      document.querySelectorAll<HTMLElement>(
+        '[data-testid="app-layout-content-shell"], [data-sidebar="panel"], [data-split-pane-id], [data-panel]',
+      ),
+    ).map((element) => {
+      const rect = element.getBoundingClientRect();
+      return [
+        element.dataset.splitPaneId ??
+          element.dataset.sidebar ??
+          (element.hasAttribute("data-panel") ? "panel" : "shell"),
+        ...[rect.x, rect.y, rect.width, rect.height].map(Math.round),
+      ];
+    }),
+  );
+}
+
 function context(terminalId: string, fontSize: number) {
   if (typeof window === "undefined" || typeof document === "undefined")
     return null;
   return {
     terminalId,
+    layout: terminalLayoutFingerprint(),
     viewportWidth: Math.round(window.innerWidth),
     viewportHeight: Math.round(window.innerHeight),
     widthClass:
@@ -116,6 +145,7 @@ function matchesContext(
 ) {
   return (
     entry.terminalId === current.terminalId &&
+    entry.layout === current.layout &&
     entry.viewportWidth === current.viewportWidth &&
     entry.viewportHeight === current.viewportHeight &&
     entry.widthClass === current.widthClass &&
@@ -141,6 +171,7 @@ export function rememberTerminalGrid(
   const rect = container.getBoundingClientRect();
   const entry = {
     ...current,
+    measuredLayout: layoutFingerprint(),
     fontFamily,
     lineHeight,
     fontWeight,
@@ -157,10 +188,12 @@ export function rememberTerminalGrid(
   const previous = entries.find(matches);
   if (
     previous === entries[0] &&
-    previous?.cols === entry.cols &&
+    previous?.measuredLayout === entry.measuredLayout &&
+    previous.cols === entry.cols &&
     previous.rows === entry.rows
   )
     return;
+  markTerminalPerformance("terminal-grid-cache-write", { detail: entry });
   memory = [entry, ...entries.filter((candidate) => !matches(candidate))].slice(
     0,
     MAX_ENTRIES,
@@ -181,6 +214,7 @@ export function readCachedTerminalGrid(
   if (!stored.some((entry) => entry.terminalId === terminalId)) return null;
   const current = context(terminalId, fontSize);
   if (current === null) return null;
+  markTerminalPerformance("terminal-grid-cache-read", { detail: current });
   const entries = stored.filter((candidate) =>
     matchesContext(candidate, current),
   );
@@ -202,9 +236,12 @@ export function readCachedTerminalGrid(
   if (container && Number(container.dataset.terminalFontSize) !== fontSize)
     return null;
   const rect = container?.getBoundingClientRect();
+  const measuredLayout = container ? layoutFingerprint() : null;
   const entry = entries.find(
     (candidate) =>
       matchesContext(candidate, current) &&
+      (measuredLayout === null ||
+        candidate.measuredLayout === measuredLayout) &&
       (!rect ||
         (Math.round(rect.width) === candidate.width &&
           Math.round(rect.height) === candidate.height)),

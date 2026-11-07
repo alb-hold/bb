@@ -156,6 +156,23 @@ describe("TerminalWebSocketTransport", () => {
     transport.dispose();
   });
 
+  it("seeds a socket-open cached claim after the connecting socket was adopted", () => {
+    vi.useFakeTimers();
+    const socket = new FakeTerminalBrowserSocket();
+    const { transport } = createHarness({ createSocket: () => socket });
+    transport.sendResize(45, 38, true);
+    transport.markLayoutSettled();
+    transport.start();
+    socket.initialSizeClaim = { cols: 45, rows: 38 };
+    socket.open();
+    expect(socket.sent.map((payload) => JSON.parse(payload))).toEqual([]);
+    transport.claimSize();
+    expect(socket.sent.map((payload) => JSON.parse(payload))).toEqual([
+      { type: "resize", cols: 45, rows: 38, claim: true },
+    ]);
+    transport.dispose();
+  });
+
   it.each([false, true])(
     "preserves explicit cached-grid reclaim queued before open: %s",
     (explicit) => {
