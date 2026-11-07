@@ -1,5 +1,6 @@
 import { markTerminalPerformance } from "@/lib/terminal-performance";
 import { rememberTerminalGrid } from "./terminal-grid-cache";
+import { createTerminalFitWork } from "./terminal-fit-work";
 import {
   readTerminalFontFamily,
   readTerminalFontMetrics,
@@ -190,6 +191,7 @@ import { sendTerminalTapClick } from "./terminal-tap-click";
 import { attachTerminalWheelLines } from "./terminal-wheel";
 import { attachTerminalInteractions } from "./terminal-interactions";
 import {
+  disposeTerminalWithRenderer,
   loadOptionalTerminalWebglAddon,
   loadTerminalWebglRenderer,
   observeTerminalWebglVisibility,
@@ -2606,70 +2608,89 @@ export function ThreadTerminalView({
           terminal,
         });
       }
+      const fitWork = createTerminalFitWork();
       const fitTerminal = () => {
-        screenLoadingPreview?.refresh(terminal?.options.lineHeight ?? 1);
-        updateGridVisibility();
         if (!fitAddon || !terminal) {
           return;
         }
         if (!hasVisibleTerminalSize({ containerElement })) {
           return;
         }
-        const fitted = fitAddon.proposeDimensions();
-        if (
-          fitted === undefined ||
-          !Number.isFinite(fitted.cols) ||
-          !Number.isFinite(fitted.rows) ||
-          fitted.cols <= 0 ||
-          fitted.rows <= 0
-        ) {
-          return;
-        }
-        if (
-          localFitGrid?.cols !== fitted.cols ||
-          localFitGrid.rows !== fitted.rows
-        )
-          fittedGridFallback = false;
-        localFitGrid = { cols: fitted.cols, rows: fitted.rows };
-        containerElement.dataset.fitGridCols = String(fitted.cols);
-        containerElement.dataset.fitGridRows = String(fitted.rows);
-        replayPreview?.setFitGrid(fitted.cols, fitted.rows);
-        if (retainNativeOutput && sessionStatusRef.current === "exited") {
-          if (retainedOutputReplayed) {
-            retainedOutputGrid = latestPtyGrid;
-            terminal.resize(retainedOutputGrid.cols, retainedOutputGrid.rows);
-          }
-          updateGridVisibility();
-          return;
-        }
-        updateGridVisibility();
-        if (initialLayoutSettled && initialRendererSettled) {
-          if (holdForFittedGrid && sessionStatusRef.current === "running") {
-            rememberTerminalGrid(
-              session.id,
-              containerElement,
-              terminal.options.fontSize ?? 13,
-              fitted,
-              terminal.options.fontFamily ?? readTerminalFontFamily(),
-              terminal.options.lineHeight ?? TERMINAL_LINE_HEIGHT,
-              Number(terminal.options.fontWeight),
+        const activeTerminal = terminal;
+        const activeFitAddon = fitAddon;
+        fitWork.run({
+          container: containerElement,
+          terminal: activeTerminal,
+          ptyGrid: latestPtyGrid,
+          layoutSettled: initialLayoutSettled,
+          rendererSettled: initialRendererSettled,
+          retainedOutputReplayed,
+          work: () => {
+            screenLoadingPreview?.refresh(
+              activeTerminal.options.lineHeight ?? 1,
             );
-          }
-          const claimFit =
-            holdForFittedGrid &&
-            (containerElement.dataset.replayHeld === "true" ||
-              fittedGridRevealed) &&
-            transport !== null &&
-            (claimedFitGrid?.cols !== fitted.cols ||
-              claimedFitGrid.rows !== fitted.rows);
-          transport?.sendResize(fitted.cols, fitted.rows, claimFit);
-          if (claimFit) {
-            if (claimedFitGrid === null)
-              markTerminalPerformance("terminal-first-fitted-grid-claimed");
-            markTerminalPerformance("terminal-fitted-grid-claimed");
-            claimedFitGrid = { ...fitted };
-          }
-        }
+            updateGridVisibility();
+            const fitted = activeFitAddon.proposeDimensions();
+            if (
+              fitted === undefined ||
+              !Number.isFinite(fitted.cols) ||
+              !Number.isFinite(fitted.rows) ||
+              fitted.cols <= 0 ||
+              fitted.rows <= 0
+            ) {
+              return false;
+            }
+            if (
+              localFitGrid?.cols !== fitted.cols ||
+              localFitGrid.rows !== fitted.rows
+            )
+              fittedGridFallback = false;
+            localFitGrid = { cols: fitted.cols, rows: fitted.rows };
+            containerElement.dataset.fitGridCols = String(fitted.cols);
+            containerElement.dataset.fitGridRows = String(fitted.rows);
+            replayPreview?.setFitGrid(fitted.cols, fitted.rows);
+            if (retainNativeOutput && sessionStatusRef.current === "exited") {
+              if (retainedOutputReplayed) {
+                retainedOutputGrid = latestPtyGrid;
+                activeTerminal.resize(
+                  retainedOutputGrid.cols,
+                  retainedOutputGrid.rows,
+                );
+              }
+              updateGridVisibility();
+              return true;
+            }
+            updateGridVisibility();
+            if (initialLayoutSettled && initialRendererSettled) {
+              if (holdForFittedGrid && sessionStatusRef.current === "running") {
+                rememberTerminalGrid(
+                  session.id,
+                  containerElement,
+                  activeTerminal.options.fontSize ?? 13,
+                  fitted,
+                  activeTerminal.options.fontFamily ?? readTerminalFontFamily(),
+                  activeTerminal.options.lineHeight ?? TERMINAL_LINE_HEIGHT,
+                  Number(activeTerminal.options.fontWeight),
+                );
+              }
+              const claimFit =
+                holdForFittedGrid &&
+                (containerElement.dataset.replayHeld === "true" ||
+                  fittedGridRevealed) &&
+                transport !== null &&
+                (claimedFitGrid?.cols !== fitted.cols ||
+                  claimedFitGrid.rows !== fitted.rows);
+              transport?.sendResize(fitted.cols, fitted.rows, claimFit);
+              if (claimFit) {
+                if (claimedFitGrid === null)
+                  markTerminalPerformance("terminal-first-fitted-grid-claimed");
+                markTerminalPerformance("terminal-fitted-grid-claimed");
+                claimedFitGrid = { ...fitted };
+              }
+            }
+            return true;
+          },
+        });
         checkReplayReveal?.();
       };
       const scheduleFit: TerminalFitScheduler = () => {
@@ -2726,6 +2747,7 @@ export function ThreadTerminalView({
           if (terminal === null) {
             return;
           }
+          fitWork.invalidate();
           forceTerminalFontMeasurement(terminal);
           replayPreview?.refreshFonts();
           scheduleFit();
@@ -3660,9 +3682,8 @@ export function ThreadTerminalView({
       discardPrefetchedTerminalSocket(earlySocketUrl);
       webglVisibilityRef.current?.dispose();
       webglVisibilityRef.current = null;
-      webglRenderer?.dispose();
       clearTimeout(rendererDeadline);
-      terminal?.dispose();
+      disposeTerminalWithRenderer(terminal, webglRenderer);
       terminalRef.current = null;
       scheduleFitRef.current = null;
       if (terminalVisibilityReporterRef.current === reportDocumentVisibility) {

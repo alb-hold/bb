@@ -21,6 +21,18 @@ interface TerminalWebglRendererOptions {
 
 type TerminalAddonLoader = Pick<Terminal, "loadAddon"> &
   Partial<Pick<Terminal, "element">>;
+
+export function disposeTerminalWithRenderer(
+  terminal: Pick<Terminal, "dispose"> | null,
+  renderer: IDisposable | null,
+): void {
+  try {
+    terminal?.dispose();
+  } finally {
+    renderer?.dispose();
+  }
+}
+
 const WEBGL_RECOVERY_LIMIT = 3;
 const WEBGL_RECOVERY_DELAY_MS = 100;
 const WEBGL_STABLE_PERIOD_MS = 10_000;

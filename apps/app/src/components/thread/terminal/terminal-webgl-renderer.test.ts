@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { loadTerminalWebglRenderer } from "./terminal-webgl-renderer";
+import {
+  disposeTerminalWithRenderer,
+  loadTerminalWebglRenderer,
+} from "./terminal-webgl-renderer";
 
 function setupRenderer({ visible = true, failLoads = false } = {}) {
   vi.useFakeTimers();
@@ -46,6 +49,41 @@ afterEach(() => {
 });
 
 describe("terminal WebGL lifecycle", () => {
+  it("tears down the terminal before an addon can install a fallback renderer", () => {
+    let terminalDisposed = false;
+    const installFallback = vi.fn();
+    const renderer = {
+      dispose: vi.fn(() => {
+        if (!terminalDisposed) installFallback();
+      }),
+    };
+    disposeTerminalWithRenderer(
+      {
+        dispose: () => {
+          terminalDisposed = true;
+        },
+      },
+      renderer,
+    );
+    expect(renderer.dispose).toHaveBeenCalledOnce();
+    expect(installFallback).not.toHaveBeenCalled();
+  });
+
+  it("releases renderer resources even if terminal teardown fails", () => {
+    const renderer = { dispose: vi.fn() };
+    expect(() =>
+      disposeTerminalWithRenderer(
+        {
+          dispose: () => {
+            throw new Error("teardown failed");
+          },
+        },
+        renderer,
+      ),
+    ).toThrow("teardown failed");
+    expect(renderer.dispose).toHaveBeenCalledOnce();
+  });
+
   it("recreates a lost context and reports the active renderer", () => {
     const { addons, renderer, root, terminal, onRendererChange } =
       setupRenderer();
