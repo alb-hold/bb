@@ -2,6 +2,9 @@
 
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
+vi.mock("./plugin-module-preload", () => ({
+  preloadPluginModule: vi.fn(async () => true),
+}));
 let cancel = () => {};
 beforeEach(() => {
   vi.resetModules();

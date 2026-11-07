@@ -9,9 +9,13 @@ import {
   type PluginFrontendReconcileDeps,
 } from "./plugin-frontend";
 
+const preloads = vi.hoisted(() => vi.fn(async (_url: string) => true));
+vi.mock("./plugin-module-preload", () => ({ preloadPluginModule: preloads }));
 let dispose = () => {};
 beforeEach(() => {
   vi.resetModules();
+  preloads.mockReset();
+  preloads.mockResolvedValue(true);
   vi.useFakeTimers();
   vi.stubGlobal("performance", { mark: vi.fn() });
   vi.stubGlobal(
@@ -173,25 +177,25 @@ it.each([false, true])(
   },
 );
 
-it("waits for input quiet before publishing a completed deferred import", async () => {
+it("waits for a quiet second before evaluating a module downloaded during input", async () => {
   const h = await start();
-  const module = await h.imports.mock.results[0]!.value;
   let finish = () => {};
-  h.imports.mockImplementationOnce(
+  preloads.mockImplementationOnce(
     () =>
       new Promise((resolve) => {
-        finish = () => resolve(module);
+        finish = () => resolve(true);
       }),
   );
   h.markHomeComposerReady();
   await vi.advanceTimersByTimeAsync(100);
-  expect(h.imports).toHaveBeenCalledTimes(2);
+  expect(preloads).toHaveBeenCalledExactlyOnceWith("/plugins/git.js", "low");
+  expect(h.imports).toHaveBeenCalledTimes(1);
   document
     .querySelector("textarea")!
     .dispatchEvent(new Event("input", { bubbles: true }));
   finish();
   await vi.advanceTimersByTimeAsync(999);
-  expect(h.imports).toHaveBeenCalledTimes(2);
+  expect(h.imports).toHaveBeenCalledTimes(1);
   await vi.advanceTimersByTimeAsync(100);
   await h.done;
   expect(h.imports.mock.calls.flat()).toEqual([

@@ -1,3 +1,4 @@
+import { preloadPluginModule } from "./plugin-module-preload";
 import { createSettledWorkSchedule } from "./input-idle-work";
 
 const requested = new Set<string>();
@@ -61,7 +62,16 @@ export async function prepareBackgroundSplit(
     const url = new URL(path, document.baseURI).href;
     if (importing.has(id)) return;
     await run(async () => {
-      if (!importing.has(id)) await import(/* @vite-ignore */ url);
+      if (!importing.has(id) && (await preloadPluginModule(url, "low")))
+        requested.add(url);
+    });
+  }
+  for (const path of splitAssets(id)) {
+    const url = new URL(path, document.baseURI).href;
+    if (importing.has(id)) return;
+    await run(async () => {
+      if (!importing.has(id) && requested.has(url))
+        await import(/* @vite-ignore */ url);
     });
   }
 }

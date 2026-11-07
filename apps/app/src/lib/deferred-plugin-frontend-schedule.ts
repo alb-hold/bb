@@ -1,3 +1,4 @@
+import { preloadPluginModule } from "./plugin-module-preload";
 import { whenHomeBackgroundWorkMayStart } from "./home-composer-ready";
 import { whenRouteSurfaceMounted } from "./plugin-frontend-boot-schedule";
 import { createSettledWorkSchedule } from "./input-idle-work";
@@ -24,12 +25,16 @@ export function createDeferredPluginFrontendSchedule() {
     await whenHomeBackgroundWorkMayStart();
     await yieldBetweenDeferredLoads();
   };
+  const downloadDeferredModule = async (url: string): Promise<void> => {
+    await runDeferredWork(() => preloadPluginModule(url, "low"));
+  };
   const prepareDeferredRuntime = async (id: string) => {
     await prepareBackgroundSplit(id, (work) => runDeferredWork(work));
   };
   return {
     waitForDeferredLoad,
     yieldBetweenDeferredLoads,
+    downloadDeferredModule,
     runDeferredWork,
     prepareDeferredRuntime,
     dispose,

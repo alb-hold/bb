@@ -142,6 +142,7 @@ interface PluginFrontendLoaderDeps {
   prefetchModule: (url: string) => void;
   warn: (message: string) => void;
   prepareDeferredRuntime?: (id: string) => Promise<void>;
+  downloadDeferredModule?: (url: string) => Promise<void>;
   runDeferredWork?: <T>(work: () => Promise<T>) => Promise<T | undefined>;
 }
 
@@ -435,6 +436,7 @@ export interface PluginFrontendReconcileDeps {
   waitForDeferredLoad?: () => Promise<void>;
   waitForComposerPaint?: () => Promise<void>;
   yieldBetweenDeferredLoads?: () => Promise<void>;
+  downloadDeferredModule?: (url: string) => Promise<void>;
   runDeferredWork?: <T>(work: () => Promise<T>) => Promise<T | undefined>;
   prepareDeferredRuntime?: (id: string) => Promise<void>;
   beforePublish?: () => Promise<void>;
@@ -824,6 +826,10 @@ async function reconcileCandidates(
                 prefetchModule: () => {},
                 beforePublish: deps.yieldBetweenDeferredLoads,
                 importModule: async (url) => {
+                  if (deps.downloadDeferredModule) {
+                    await deps.downloadDeferredModule(url);
+                    await deps.yieldBetweenDeferredLoads?.();
+                  }
                   return deps.runDeferredWork
                     ? deps.runDeferredWork(() => deps.importModule(url))
                     : deps.importModule(url);
@@ -1161,6 +1167,7 @@ const browserReconcileDeps: PluginFrontendReconcileDeps = {
   },
   waitForDeferredLoad: deferredFrontendSchedule.waitForDeferredLoad,
   yieldBetweenDeferredLoads: deferredFrontendSchedule.yieldBetweenDeferredLoads,
+  downloadDeferredModule: deferredFrontendSchedule.downloadDeferredModule,
   runDeferredWork: deferredFrontendSchedule.runDeferredWork,
   prepareDeferredRuntime: deferredFrontendSchedule.prepareDeferredRuntime,
   resetCrashedSlots: resetCrashedPluginSlots,
