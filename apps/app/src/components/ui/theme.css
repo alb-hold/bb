@@ -700,7 +700,7 @@
   --terminal-ansi-0: var(--ink);
   --terminal-ansi-7: color-mix(in oklch, var(--ink) 15%, var(--canvas));
   --terminal-ansi-15: var(--canvas);
-  --terminal-ansi-8: color-mix(in oklch, var(--ink) 6%, var(--canvas));
+  --terminal-ansi-8: color-mix(in oklch, var(--ink) 8%, var(--canvas));
   --ansi-9: #d32f2f;
   --ansi-10: #197c52;
   --ansi-11: #a35f00;
@@ -915,7 +915,7 @@
   --terminal-ansi-0: var(--canvas);
   --terminal-ansi-7: var(--ink);
   --terminal-ansi-15: var(--ink);
-  --terminal-ansi-8: color-mix(in oklch, var(--ink) 6%, var(--canvas));
+  --terminal-ansi-8: color-mix(in oklch, var(--ink) 13%, var(--canvas));
   --ansi-9: #ff6f6f;
   --ansi-10: #23d18b;
   --ansi-11: #f5f543;

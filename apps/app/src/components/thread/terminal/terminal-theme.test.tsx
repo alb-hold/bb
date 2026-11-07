@@ -221,6 +221,9 @@ it.each(["light", "dark"] as const)(
       const style = getComputedStyle(span!);
       const fg = luminance(style.color);
       const bg = luminance(style.backgroundColor);
+      expect(themeColor(mode, "--terminal-ansi-8")).toBe(
+        mode === "dark" ? "rgb(40, 40, 40)" : "rgb(237, 237, 237)",
+      );
       expect(bg).toBe(luminance(themeColor(mode, "--terminal-ansi-8")));
       const ratio = (Math.max(fg, bg) + 0.05) / (Math.min(fg, bg) + 0.05);
       console.log(
@@ -230,8 +233,8 @@ it.each(["light", "dark"] as const)(
       if (mode === "dark") {
         const canvas = luminance(themeColor(mode, "--sidebar"));
         const bandContrast = (bg + 0.05) / (canvas + 0.05);
-        expect(bandContrast).toBeGreaterThanOrEqual(1);
-        expect(bandContrast).toBeLessThanOrEqual(1.15);
+        expect(bandContrast).toBeGreaterThanOrEqual(1.15);
+        expect(bandContrast).toBeLessThanOrEqual(1.25);
       }
     } finally {
       terminal.dispose();
@@ -344,8 +347,8 @@ it("derives the full terminal palette from theme ink and canvas", () => {
   });
   expect(theme.background).toBe("--sidebar");
   expect(css.match(/--terminal-ansi-8:[^;]+;/g)).toEqual([
-    "--terminal-ansi-8: color-mix(in oklch, var(--ink) 6%, var(--canvas));",
-    "--terminal-ansi-8: color-mix(in oklch, var(--ink) 6%, var(--canvas));",
+    "--terminal-ansi-8: color-mix(in oklch, var(--ink) 8%, var(--canvas));",
+    "--terminal-ansi-8: color-mix(in oklch, var(--ink) 13%, var(--canvas));",
   ]);
   expect(theme.foreground).toBe("--foreground");
   for (let index = 0; index < 16; index++) {
