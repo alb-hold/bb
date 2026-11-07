@@ -1,6 +1,10 @@
 import { z } from "zod";
 import { terminalColsSchema, terminalRowsSchema } from "@bb/domain";
-import { readTerminalFontFamily } from "./terminal-font";
+import {
+  readTerminalFontFamily,
+  readTerminalFontMetrics,
+  TERMINAL_LINE_HEIGHT,
+} from "./terminal-font";
 
 const STORAGE_KEY = "bb.terminal.fit-grids.v1";
 const MAX_ENTRIES = 32;
@@ -15,6 +19,8 @@ const entrySchema = z.object({
   height: size,
   fontSize: positive.max(256),
   fontFamily: z.string().max(2048),
+  lineHeight: positive.max(4),
+  fontWeight: positive.max(1000),
   dpr: positive.max(16),
   cols: terminalColsSchema,
   rows: terminalRowsSchema,
@@ -49,6 +55,8 @@ function context(terminalId: string, fontSize: number) {
       window.innerWidth < 768 ? ("compact" as const) : ("wide" as const),
     fontSize,
     fontFamily: readTerminalFontFamily(),
+    lineHeight: TERMINAL_LINE_HEIGHT,
+    fontWeight: readTerminalFontMetrics().fontWeight,
     dpr: window.devicePixelRatio,
   };
 }
@@ -64,6 +72,8 @@ function matchesContext(
     entry.widthClass === current.widthClass &&
     entry.fontSize === current.fontSize &&
     entry.fontFamily === current.fontFamily &&
+    entry.lineHeight === current.lineHeight &&
+    entry.fontWeight === current.fontWeight &&
     entry.dpr === current.dpr
   );
 }
@@ -74,6 +84,8 @@ export function rememberTerminalGrid(
   fontSize: number,
   grid: { cols: number; rows: number },
   fontFamily = readTerminalFontFamily(),
+  lineHeight = TERMINAL_LINE_HEIGHT,
+  fontWeight = readTerminalFontMetrics().fontWeight,
 ): void {
   const current = context(terminalId, fontSize);
   if (current === null) return;
@@ -81,6 +93,8 @@ export function rememberTerminalGrid(
   const parsed = entrySchema.safeParse({
     ...current,
     fontFamily,
+    lineHeight,
+    fontWeight,
     width: Math.round(rect.width),
     height: Math.round(rect.height),
     ...grid,
@@ -112,7 +126,7 @@ export function rememberTerminalGrid(
 
 export function readCachedTerminalGrid(
   terminalId: string,
-  fontSize = 13,
+  fontSize = readTerminalFontMetrics().fontSize,
 ): { cols: number; rows: number } | null {
   if (typeof window === "undefined") return null;
   const stored = readEntries();

@@ -2568,7 +2568,7 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
       vi.spyOn(FitAddon.prototype, "proposeDimensions").mockImplementation(
         () => ({
           cols: 40,
-          rows: mounted.current?.options.lineHeight === 1.12 ? 10 : 12,
+          rows: mounted.current?.options.lineHeight === 1.22 ? 10 : 12,
         }),
       );
       const resizes = () =>
@@ -2606,10 +2606,10 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
           }),
       );
       expect(resizes()).toHaveLength(1);
-      expect(mounted.current?.options.lineHeight).toBe(1.12);
+      expect(mounted.current?.options.lineHeight).toBe(1.22);
       if (outcome === "ready") {
         act(() => loseContext());
-        expect(mounted.current?.options.lineHeight).toBe(1.12);
+        expect(mounted.current?.options.lineHeight).toBe(1.22);
       }
     },
   );
@@ -2657,7 +2657,7 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
     );
     const terminal = mountedTerminal.current;
     if (!terminal) throw new Error("terminal did not mount");
-    expect(terminal.options.lineHeight).toBe(1.12);
+    expect(terminal.options.lineHeight).toBe(1.22);
     await waitForReadinessCondition(
       () =>
         expect(
@@ -2705,7 +2705,7 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
         ).toBe("webgl"),
       "WebGL renderer did not attach after replay",
     );
-    expect(terminal.options.lineHeight).toBe(1.12);
+    expect(terminal.options.lineHeight).toBe(1.22);
     expect({
       cols: terminal.cols,
       rows: terminal.rows,
@@ -2716,7 +2716,7 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
       retainedLine: terminal.buffer.active.getLine(5)?.translateToString(true),
     }).toEqual(before);
     act(() => loseContext());
-    expect(terminal.options.lineHeight).toBe(1.12);
+    expect(terminal.options.lineHeight).toBe(1.22);
   }, 30_000);
 
   it("keeps the DOM renderer and replay working when WebGL import fails", async () => {

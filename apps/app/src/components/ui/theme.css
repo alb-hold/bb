@@ -695,7 +695,10 @@
   --ansi-6: #0b6f88;
   --ansi-7: #3d3d3d;
   --ansi-8: color-mix(in oklch, var(--ink) 70%, var(--canvas));
-  --terminal-ansi-8: var(--ansi-8);
+  --terminal-ansi-0: var(--ink);
+  --terminal-ansi-7: color-mix(in oklch, var(--ink) 15%, var(--canvas));
+  --terminal-ansi-15: var(--canvas);
+  --terminal-ansi-8: color-mix(in oklch, var(--ink) 11%, var(--canvas));
   --ansi-9: #d32f2f;
   --ansi-10: #197c52;
   --ansi-11: #a35f00;
@@ -906,7 +909,10 @@
   --ansi-6: #11a8cd;
   --ansi-7: #e5e5e5;
   --ansi-8: color-mix(in oklch, var(--ink) 70%, var(--canvas));
-  --terminal-ansi-8: color-mix(in oklch, var(--ink) 44%, var(--canvas));
+  --terminal-ansi-0: var(--canvas);
+  --terminal-ansi-7: var(--ink);
+  --terminal-ansi-15: var(--ink);
+  --terminal-ansi-8: color-mix(in oklch, var(--ink) 25%, var(--canvas));
   --ansi-9: #ff6f6f;
   --ansi-10: #23d18b;
   --ansi-11: #f5f543;
@@ -1129,4 +1135,19 @@ body.sidebar-resizing [data-sidebar="panel"] {
  */
 [data-panel-group]:has([data-resize-handle-active]) [data-panel] {
   transition-property: opacity;
+}
+
+:root {
+  --terminal-ansi-1: color-mix(in oklch, var(--ansi-1) 75%, var(--ink));
+  --terminal-ansi-2: color-mix(in oklch, var(--ansi-2) 75%, var(--ink));
+  --terminal-ansi-3: color-mix(in oklch, var(--ansi-3) 75%, var(--ink));
+  --terminal-ansi-4: color-mix(in oklch, var(--ansi-4) 75%, var(--ink));
+  --terminal-ansi-5: color-mix(in oklch, var(--ansi-5) 75%, var(--ink));
+  --terminal-ansi-6: color-mix(in oklch, var(--ansi-6) 75%, var(--ink));
+  --terminal-ansi-9: color-mix(in oklch, var(--ansi-9) 75%, var(--ink));
+  --terminal-ansi-10: color-mix(in oklch, var(--ansi-10) 75%, var(--ink));
+  --terminal-ansi-11: color-mix(in oklch, var(--ansi-11) 75%, var(--ink));
+  --terminal-ansi-12: color-mix(in oklch, var(--ansi-12) 75%, var(--ink));
+  --terminal-ansi-13: color-mix(in oklch, var(--ansi-13) 75%, var(--ink));
+  --terminal-ansi-14: color-mix(in oklch, var(--ansi-14) 75%, var(--ink));
 }

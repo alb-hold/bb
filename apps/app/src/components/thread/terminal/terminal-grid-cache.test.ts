@@ -156,3 +156,53 @@ it("bounds persisted contexts and rejects malformed or unmeasurable grids", asyn
     (await import("./terminal-grid-cache")).readCachedTerminalGrid("term"),
   ).toBeNull();
 });
+
+it.each(["lineHeight", "fontWeight"])(
+  "rejects a grid fitted with stale %s",
+  async (metric) => {
+    const cache = await import("./terminal-grid-cache");
+    cache.rememberTerminalGrid("term", container(), 13, {
+      cols: 116,
+      rows: 38,
+    });
+    const key = localStorage.key(0)!;
+    const entries = JSON.parse(localStorage.getItem(key)!);
+    entries[0][metric] = metric === "lineHeight" ? 1.12 : 700;
+    localStorage.setItem(key, JSON.stringify(entries));
+    expect(cache.readCachedTerminalGrid("term")).toBeNull();
+  },
+);
+
+it("rejects a legacy cache entry with no leading or weight", async () => {
+  const cache = await import("./terminal-grid-cache");
+  cache.rememberTerminalGrid("term", container(), 13, { cols: 116, rows: 38 });
+  const key = localStorage.key(0)!;
+  const entries = JSON.parse(localStorage.getItem(key)!);
+  delete entries[0].lineHeight;
+  delete entries[0].fontWeight;
+  localStorage.setItem(key, JSON.stringify(entries));
+  vi.resetModules();
+  const reloaded = await import("./terminal-grid-cache");
+  expect(() => reloaded.readCachedTerminalGrid("term")).not.toThrow();
+  expect(reloaded.readCachedTerminalGrid("term")).toBeNull();
+  reloaded.rememberTerminalGrid("term", container(), 13, {
+    cols: 116,
+    rows: 36,
+  });
+  expect(reloaded.readCachedTerminalGrid("term")).toEqual({
+    cols: 116,
+    rows: 36,
+  });
+});
+
+it("reuses measured metrics across repeated grid reads", async () => {
+  const cache = await import("./terminal-grid-cache");
+  cache.rememberTerminalGrid("term", container(), 13, { cols: 116, rows: 38 });
+  const create = vi.spyOn(document, "createElement");
+  for (let index = 0; index < 10; index++)
+    expect(cache.readCachedTerminalGrid("term")).toEqual({
+      cols: 116,
+      rows: 38,
+    });
+  expect(create).not.toHaveBeenCalled();
+});
