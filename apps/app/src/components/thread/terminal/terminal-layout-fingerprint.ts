@@ -1,7 +1,23 @@
-import {
-  EMPTY_FIXED_PANEL_TABS_STATE,
-  parseFixedPanelTabsState,
-} from "@bb/client-core";
+import { z } from "zod";
+
+const panelGeometrySchema = z.object({
+  secondary: z.object({
+    isOpen: z.boolean(),
+    activeTabId: z.string().nullable(),
+    tabs: z.array(z.object({ id: z.string(), kind: z.string() })),
+  }),
+});
+
+function panelGeometry(value: string | null) {
+  if (value === null) return null;
+  try {
+    const parsed: unknown = JSON.parse(value);
+    const result = panelGeometrySchema.safeParse(parsed);
+    return result.success ? result.data.secondary : null;
+  } catch {
+    return null;
+  }
+}
 
 function read(storage: Storage, key: string): string | null {
   try {
@@ -43,17 +59,7 @@ export function terminalLayoutFingerprint(): string {
         const value = read(local, key);
         if (!key.startsWith("bb.thread.fixedPanelTabsState-"))
           return [key, value];
-        const { secondary } = parseFixedPanelTabsState({
-          initialValue: EMPTY_FIXED_PANEL_TABS_STATE,
-          now: Date.now(),
-          storedValue: value,
-        });
-        return [
-          key,
-          secondary.isOpen,
-          secondary.activeTabId,
-          secondary.tabs.map((tab) => [tab.id, tab.kind]),
-        ];
+        return [key, panelGeometry(value)];
       }),
     ]);
   } catch {

@@ -312,3 +312,33 @@ it("ignores panel recency updates but rejects a different panel open state", asy
   );
   expect(cache.readCachedTerminalGrid("term")).toBeNull();
 });
+
+it.each([false, true])(
+  "misses before mount when a populated panel changes from open=%s",
+  async (isOpen) => {
+    const {
+      createEmptyFixedPanelTabsState,
+      createThreadInfoFixedPanelTab,
+      serializeFixedPanelTabsState,
+    } = await import("@bb/client-core");
+    const tab = createThreadInfoFixedPanelTab();
+    const state = createEmptyFixedPanelTabsState({
+      lastUsedAt: Date.now(),
+      secondary: { tabs: [tab], activeTabId: tab.id, isOpen },
+    });
+    const key = "bb.thread.fixedPanelTabsState-thread";
+    localStorage.setItem(key, serializeFixedPanelTabsState({ state }));
+    const cache = await import("./terminal-grid-cache");
+    cache.rememberTerminalGrid("term", container(), 13, {
+      cols: 116,
+      rows: 38,
+    });
+    localStorage.setItem(
+      key,
+      serializeFixedPanelTabsState({
+        state: { ...state, secondary: { ...state.secondary, isOpen: !isOpen } },
+      }),
+    );
+    expect(cache.readCachedTerminalGrid("term")).toBeNull();
+  },
+);
