@@ -1,7 +1,10 @@
 // @vitest-environment jsdom
 import { readFileSync } from "node:fs";
-import { cleanup, render } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, expect, it } from "vitest";
+import { MessageActionBar } from "./MessageActionBar";
+import { ExpandablePanel } from "../../ui/disclosure";
+import { MarkdownPreview } from "../../ui/markdown-preview";
 
 function compactStyles(
   path: string,
@@ -25,6 +28,85 @@ function compactStyles(
   return result;
 }
 afterEach(cleanup);
+
+it.each([true, false])(
+  "sizes real chat controls with phone coarse styles enabled: %s",
+  (coarse) => {
+    render(
+      <>
+        {coarse ? (
+          <style>
+            {compactStyles("src/app.css") +
+              compactStyles(
+                "src/components/thread/timeline/message-action-bar.css",
+              )}
+          </style>
+        ) : null}
+        <MessageActionBar
+          timestamp={0}
+          messageText="Answer"
+          alignment="start"
+          mobileActionDisplay="inline"
+          pluginActions={[
+            {
+              key: "reply",
+              label: "Reply in side chat",
+              pluginId: null,
+              icon: "Reply",
+              onSelect: () => {},
+            },
+          ]}
+        />
+        <MarkdownPreview content={"```sh\npwd\n```"} />
+        {[
+          "Ran 1 command",
+          "Ran 1 tool",
+          "Worked for 18m 1s · 108.7K tokens",
+        ].map((summary) => (
+          <ExpandablePanel
+            key={summary}
+            isExpanded={false}
+            summaryContent={summary}
+            headerToneClass="text-muted-foreground"
+            onToggle={() => {}}
+          >
+            Output
+          </ExpandablePanel>
+        ))}
+      </>,
+    );
+    for (const name of [
+      "Copy message",
+      "Message actions",
+      "Reply in side chat",
+      "Copy code",
+      "Wrap lines",
+      "Ran 1 command",
+      "Ran 1 tool",
+      "Worked for 18m 1s · 108.7K tokens",
+    ]) {
+      const button = screen.getByRole("button", { name });
+      const style = getComputedStyle(button);
+      if (coarse) {
+        expect(style.minHeight, name).toBe("44px");
+        expect(style.minInlineSize, name).toBe("44px");
+      } else {
+        expect(style.minHeight, name).not.toBe("44px");
+        expect(style.minInlineSize, name).not.toBe("44px");
+      }
+    }
+    expect(
+      screen
+        .getByRole("button", { name: "Message actions" })
+        .classList.contains("size-5"),
+    ).toBe(true);
+    expect(
+      screen
+        .getByRole("button", { name: "Wrap lines" })
+        .classList.contains("size-5"),
+    ).toBe(true);
+  },
+);
 
 it("balances compact transcript spacing with visible controls and 44px effective targets", () => {
   const { container } = render(
@@ -54,18 +136,51 @@ it("balances compact transcript spacing with visible controls and 44px effective
     "[data-compact-touch-summary]",
   ]) {
     const style = getComputedStyle(container.querySelector(selector)!);
-    expect(style.minHeight).toBe("36px");
+    expect(style.minHeight).toBe("44px");
     expect(style.minInlineSize).toBe("44px");
   }
   expect(
     getComputedStyle(container.querySelector("[data-message-action-slot]")!)
       .paddingBlock,
-  ).toBe("4px");
+  ).toBe("0px");
   expect(
     getComputedStyle(
       container.querySelector("[data-compact-touch-panel] > div")!,
     ).paddingBlock,
+  ).toBe("0px");
+});
+
+it("uses a 4px phone block gap and keeps animated disclosure hit areas in flow", () => {
+  const { container } = render(
+    <>
+      <style>
+        {compactStyles("src/app.css") +
+          compactStyles(
+            "src/components/thread/timeline/message-action-bar.css",
+          )}
+      </style>
+      <div data-timeline-row-list="top-level">
+        <div data-timeline-items="" />
+      </div>
+      <div data-compact-touch-height="">
+        <div>
+          <button data-compact-touch-summary="">Ran 1 tool</button>
+        </div>
+      </div>
+    </>,
+  );
+  expect(
+    getComputedStyle(container.querySelector("[data-timeline-items]")!).rowGap,
   ).toBe("4px");
+  expect(
+    getComputedStyle(container.querySelector("[data-compact-touch-height]")!)
+      .marginBlock,
+  ).toBe("0px");
+  expect(
+    getComputedStyle(
+      container.querySelector("[data-compact-touch-height] > div")!,
+    ).paddingBlock,
+  ).toBe("0px");
 });
 
 it("only hides the permission label inside a collapsed phone composer", () => {
