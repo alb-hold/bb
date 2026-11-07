@@ -912,10 +912,10 @@
     animation: none;
   }
   [data-execution-controls-layout="stacked"] [data-native-terminal-toggle] {
-    width: 10.5rem;
+    width: max-content;
     flex: 0 0 auto;
     padding: 0;
-    margin-inline: 0.25rem;
+    margin-inline: 0;
   }
   [data-new-thread-footer] {
     margin-top: 0.25rem;
@@ -929,6 +929,16 @@
 }
 
 @media (width < 48rem) and (pointer: coarse) {
+  [data-promptbox][data-promptbox-collapsed] .permission-mode-picker {
+    min-width: 44px;
+    min-height: 44px;
+    padding-inline: 0;
+  }
+
+  [data-promptbox][data-promptbox-collapsed] [data-permission-label] {
+    display: none;
+  }
+
   [data-sidebar="footer"] [data-sidebar="menu-item"] {
     min-block-size: 44px;
   }

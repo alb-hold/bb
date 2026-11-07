@@ -108,11 +108,17 @@ describe("ExecutionControls", () => {
             .getByRole("radio", { name: terminal ? "Terminal" : "Chat" })
             .getAttribute("data-state"),
         ).toBe("on");
+        const selected = screen.getByRole("radio", {
+          name: terminal ? "Terminal" : "Chat",
+        });
+        expect(selected.className).not.toContain(
+          "data-[state=on]:border-foreground/60",
+        );
       }
     },
   );
 
-  it("gives selected terminal a foreground label and visible border", () => {
+  it("gives selected terminal a foreground label and single selected fill", () => {
     renderExecutionControls({
       ...makeExecutionControlsProps(),
       nativeTerminal: { enabled: true, onChange: vi.fn() },
@@ -120,9 +126,10 @@ describe("ExecutionControls", () => {
     const terminal = screen.getByRole("radio", { name: "Terminal" });
     expect(terminal.getAttribute("data-state")).toBe("on");
     expect(terminal.className).toContain("data-[state=on]:text-foreground");
-    expect(terminal.className).toContain(
+    expect(terminal.className).not.toContain(
       "data-[state=on]:border-foreground/60",
     );
+    expect(terminal.className).toContain("data-[state=on]:bg-accent");
     expect(terminal.hasAttribute("disabled")).toBe(false);
   });
 

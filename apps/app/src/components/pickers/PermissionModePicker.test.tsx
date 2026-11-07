@@ -260,3 +260,31 @@ it.each(["auto", "accept-edits", "full"] as const)(
     );
   },
 );
+
+it("keeps the phone permission name and menu while marking its collapsible label", async () => {
+  const onChange = vi.fn();
+  render(
+    <CompactViewportOverrideProvider isCompactViewport>
+      <PermissionModePicker
+        value="full"
+        options={options}
+        supported
+        onChange={onChange}
+      />
+    </CompactViewportOverrideProvider>,
+  );
+  const trigger = screen.getByRole("button", {
+    name: "Permissions: Full Access",
+  });
+  expect(trigger.classList.contains("permission-mode-picker")).toBe(true);
+  expect(trigger.querySelector("[data-permission-label]")?.textContent).toBe(
+    "Full Access",
+  );
+  expect(trigger.querySelector('[data-icon="SecurityCheck"]')).not.toBeNull();
+  expect(trigger.querySelector("[title]")?.getAttribute("title")).toContain(
+    "Full Access",
+  );
+  fireEvent.click(trigger);
+  fireEvent.click(await screen.findByRole("menuitem", { name: /Approve/ }));
+  expect(onChange).toHaveBeenCalledWith("auto");
+});

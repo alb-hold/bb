@@ -49,3 +49,33 @@ it("shows turn spend on the collapsed Worked for row in secondary status ink", (
   expect(chevron?.classList.contains("opacity-0")).toBe(false);
   expect(chevron?.classList.contains("text-muted-foreground")).toBe(true);
 });
+
+it("separates the worked duration and token count visually and for assistive readers", () => {
+  render(
+    <QueryClientProvider client={new QueryClient()}>
+      <MemoryRouter>
+        <ThreadTimelineRows
+          timelineRows={[
+            turnRow({
+              id: "separator-turn",
+              status: "completed",
+              durationMs: 1000,
+              children: [commandRow({ command: "pwd" })],
+            }),
+          ]}
+          threadRuntimeDisplayStatus="idle"
+          threadIsActive={false}
+        />
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+  const button = screen.getByText("Worked for").closest("button")!;
+  expect(button.querySelector("[data-token-separator]")?.textContent).toBe("·");
+  expect(
+    button.querySelector("[data-token-separator]")?.getAttribute("aria-hidden"),
+  ).toBe("true");
+  expect(button.textContent).toMatch(/1s · Token breakdown fixture/);
+  expect(
+    screen.getByRole("button", { name: /1s Token breakdown fixture/ }),
+  ).toBe(button);
+});

@@ -177,7 +177,7 @@ it.each(["", "A phone draft that keeps its wrapping through hydration"])(
           controls.querySelector("[data-native-terminal-toggle]")!,
           "width",
         ),
-      ).toBe("10.5rem");
+      ).toBe("max-content");
       expect(declaration(plus, "grid-row")).toBe("1");
       expect(declaration(controls, "grid-row")).toBe("1");
     };

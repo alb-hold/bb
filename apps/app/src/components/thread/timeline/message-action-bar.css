@@ -68,6 +68,27 @@
 }
 
 @media (width < 48rem) and (pointer: coarse) {
+  [data-message-action-slot][data-message-action-slot] {
+    padding-block: 4px;
+  }
+
+  [data-compact-touch-panel] > div:first-child {
+    padding-block: 4px;
+  }
+
+  button:is(
+    [data-compact-touch="action"],
+    [data-compact-touch="action-menu"],
+    [data-compact-touch="code"],
+    [data-compact-touch-summary]
+  ) {
+    min-height: 36px;
+  }
+
+  [data-compact-touch-panel] button[data-compact-touch-summary]::after {
+    inset-block: calc((100% - 44px) / 2);
+  }
+
   [data-touch-actions-visible="false"]:not(:focus-within)
     [data-message-action-row] {
     position: absolute;

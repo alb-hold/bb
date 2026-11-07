@@ -204,7 +204,7 @@ export const ExecutionControls = memo(function ExecutionControls({
                 nativeTerminal.unavailableReason ?? choice.title
               }
               className={cn(
-                "h-6 min-w-0 gap-1 whitespace-nowrap rounded-sm border border-transparent px-1.5 text-xs font-normal text-muted-foreground shadow-none hover:bg-state-hover hover:text-foreground data-[state=on]:bg-accent data-[state=on]:text-foreground data-[state=on]:border-foreground/60 data-[state=on]:font-medium data-[state=on]:hover:bg-accent",
+                "h-6 min-w-0 gap-1 whitespace-nowrap rounded-sm border border-transparent px-1.5 text-xs font-normal text-muted-foreground shadow-none hover:bg-state-hover hover:text-foreground data-[state=on]:bg-accent data-[state=on]:text-foreground data-[state=on]:font-medium data-[state=on]:hover:bg-accent",
                 "relative max-md:h-11 max-md:min-w-11 max-md:text-sm max-md:data-[state=on]:bg-transparent max-md:data-[state=on]:text-foreground max-md:data-[state=on]:hover:bg-transparent max-md:before:absolute max-md:before:inset-x-0 max-md:before:inset-y-1.5 max-md:before:rounded-md max-md:data-[state=on]:before:bg-state-hover max-md:data-[state=on]:font-semibold max-md:px-2",
                 LIST_HOVER_TRANSITION,
               )}
