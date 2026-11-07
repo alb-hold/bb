@@ -1,5 +1,3 @@
-import { z } from "zod";
-import { terminalColsSchema, terminalRowsSchema } from "@bb/domain";
 import {
   readTerminalFontFamily,
   readTerminalFontMetrics,
@@ -8,25 +6,71 @@ import {
 
 const STORAGE_KEY = "bb.terminal.fit-grids.v1";
 const MAX_ENTRIES = 32;
-const positive = z.number().finite().positive();
-const size = positive.int().max(100_000);
-const entrySchema = z.object({
-  terminalId: z.string().min(1).max(256),
-  viewportWidth: size,
-  viewportHeight: size,
-  widthClass: z.enum(["compact", "wide"]),
-  width: size,
-  height: size,
-  fontSize: positive.max(256),
-  fontFamily: z.string().max(2048),
-  lineHeight: positive.max(4),
-  fontWeight: positive.max(1000),
-  dpr: positive.max(16),
-  cols: terminalColsSchema,
-  rows: terminalRowsSchema,
-});
-const entriesSchema = z.array(entrySchema).max(MAX_ENTRIES);
-type Entry = z.infer<typeof entrySchema>;
+interface Entry {
+  terminalId: string;
+  viewportWidth: number;
+  viewportHeight: number;
+  widthClass: "compact" | "wide";
+  width: number;
+  height: number;
+  fontSize: number;
+  fontFamily: string;
+  lineHeight: number;
+  fontWeight: number;
+  dpr: number;
+  cols: number;
+  rows: number;
+}
+
+function positive(
+  value: unknown,
+  max: number,
+  integer = false,
+): value is number {
+  return (
+    typeof value === "number" &&
+    Number.isFinite(value) &&
+    value > 0 &&
+    value <= max &&
+    (!integer || Number.isInteger(value))
+  );
+}
+
+function isEntry(value: unknown): value is Entry {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "terminalId" in value &&
+    typeof value.terminalId === "string" &&
+    value.terminalId.length > 0 &&
+    value.terminalId.length <= 256 &&
+    "viewportWidth" in value &&
+    positive(value.viewportWidth, 100_000, true) &&
+    "viewportHeight" in value &&
+    positive(value.viewportHeight, 100_000, true) &&
+    "widthClass" in value &&
+    (value.widthClass === "compact" || value.widthClass === "wide") &&
+    "width" in value &&
+    positive(value.width, 100_000, true) &&
+    "height" in value &&
+    positive(value.height, 100_000, true) &&
+    "fontSize" in value &&
+    positive(value.fontSize, 256) &&
+    "fontFamily" in value &&
+    typeof value.fontFamily === "string" &&
+    value.fontFamily.length <= 2048 &&
+    "lineHeight" in value &&
+    positive(value.lineHeight, 4) &&
+    "fontWeight" in value &&
+    positive(value.fontWeight, 1000) &&
+    "dpr" in value &&
+    positive(value.dpr, 16) &&
+    "cols" in value &&
+    positive(value.cols, 500, true) &&
+    "rows" in value &&
+    positive(value.rows, 200, true)
+  );
+}
 let memory: Entry[] = [];
 let storageUnavailable = false;
 
@@ -36,8 +80,13 @@ function readEntries(): Entry[] {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     if (raw === null) return (memory = []);
     if (raw.length > 128_000) return memory;
-    const parsed = entriesSchema.safeParse(JSON.parse(raw));
-    if (parsed.success) memory = parsed.data;
+    const parsed: unknown = JSON.parse(raw);
+    if (
+      Array.isArray(parsed) &&
+      parsed.length <= MAX_ENTRIES &&
+      parsed.every(isEntry)
+    )
+      memory = parsed;
   } catch {
     storageUnavailable = true;
   }
@@ -90,7 +139,7 @@ export function rememberTerminalGrid(
   const current = context(terminalId, fontSize);
   if (current === null) return;
   const rect = container.getBoundingClientRect();
-  const parsed = entrySchema.safeParse({
+  const entry = {
     ...current,
     fontFamily,
     lineHeight,
@@ -98,9 +147,8 @@ export function rememberTerminalGrid(
     width: Math.round(rect.width),
     height: Math.round(rect.height),
     ...grid,
-  });
-  if (!parsed.success) return;
-  const entry = parsed.data;
+  };
+  if (!isEntry(entry)) return;
   const entries = readEntries();
   const matches = (candidate: Entry) =>
     matchesContext(candidate, entry) &&

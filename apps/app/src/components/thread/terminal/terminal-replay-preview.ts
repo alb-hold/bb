@@ -1,8 +1,10 @@
+import { markTerminalPerformance } from "@/lib/terminal-performance";
 import { trackTerminalScrollability } from "./terminal-scrollbar";
 import type { Terminal as XTermTerminal } from "@xterm/xterm";
 import type { TerminalGrid } from "@bb/domain";
 import { createTerminalOutputPipeline } from "./terminal-output-pipeline";
 import { canRevealTerminalSurface } from "./terminal-grid-presentation";
+import { flushTerminalReplay } from "./terminal-replay-flush";
 
 export const TERMINAL_REPLAY_PREVIEW_HOLD_TIMEOUT_MS = 5_000;
 
@@ -210,7 +212,6 @@ export function mountTerminalReplayPreview({
   const snapshotGrid = { cols: terminal.cols, rows: terminal.rows };
   container.style.containerType = "inline-size";
   const preview = document.createElement("div");
-  const focusedElement = document.activeElement;
   preview.dataset.terminalReplayPreview = "";
   preview.dataset.gridCols = String(terminal.cols);
   preview.dataset.gridRows = String(terminal.rows);
@@ -235,18 +236,27 @@ export function mountTerminalReplayPreview({
     terminal.options.fontWeight = liveTerminal.options.fontWeight;
     terminal.options.lineHeight = liveTerminal.options.lineHeight;
   }
-  terminal.open(preview);
-  trackTerminalScrollability(terminal);
-  if (terminal.element) terminal.element.style.pointerEvents = "none";
-  if (terminal.textarea) terminal.textarea.tabIndex = -1;
-  if (
-    focusedElement instanceof HTMLElement &&
-    focusedElement !== document.body &&
-    focusedElement.isConnected &&
-    document.activeElement !== focusedElement
-  ) {
-    focusedElement.focus({ preventScroll: true });
-  }
+  let opened = false;
+  const open = () => {
+    if (opened) return;
+    opened = true;
+    const focusedElement = document.activeElement;
+    markTerminalPerformance("terminal-replay-preview-open-start");
+    terminal.open(preview);
+    markTerminalPerformance("terminal-replay-preview-open-end");
+    trackTerminalScrollability(terminal);
+    if (terminal.element) terminal.element.style.pointerEvents = "none";
+    if (terminal.textarea) terminal.textarea.tabIndex = -1;
+    if (
+      focusedElement instanceof HTMLElement &&
+      focusedElement !== document.body &&
+      focusedElement.isConnected &&
+      document.activeElement !== focusedElement
+    ) {
+      focusedElement.focus({ preventScroll: true });
+    }
+  };
+  if (!holdUntilReleased) open();
   let fitGrid = initialFitGrid;
   let latestPtyGrid = { cols: terminal.cols, rows: terminal.rows };
   let shown = false;
@@ -356,7 +366,7 @@ export function mountTerminalReplayPreview({
       terminal.element.style.top = `${top}px`;
     }
   };
-  updateSurfaceLayout();
+  if (!held) updateSurfaceLayout();
   const outputPipeline = createTerminalOutputPipeline(
     {
       resize: (cols, rows) => terminal.resize(cols, rows),
@@ -364,7 +374,10 @@ export function mountTerminalReplayPreview({
     },
     undefined,
     undefined,
-    { resizeMarkerGrids: false },
+    {
+      resizeMarkerGrids: false,
+      flushReplay: () => flushTerminalReplay(terminal, "preview"),
+    },
   );
 
   let disposed = false;
@@ -373,11 +386,12 @@ export function mountTerminalReplayPreview({
   resizeObserver.observe(container);
   window.addEventListener("resize", updateVisibility);
   function updateVisibility() {
-    updateSurfaceLayout();
     if (held || !readyToPaint()) {
       preview.style.visibility = "hidden";
       return;
     }
+    open();
+    updateSurfaceLayout();
     const localGridReady =
       fitGrid !== null &&
       terminal.cols === snapshotGrid.cols &&
@@ -560,14 +574,19 @@ export function mountTerminalReplayPreview({
       if (disposed) {
         callback();
       } else if (!snapshotWriteFinished) {
-        outputPipeline.push(bytes, () => {
-          snapshotWriteFinished = true;
-          startHandoffDeadline();
-          onParsed();
-          flushPendingWrites();
-        });
+        outputPipeline.push(
+          bytes,
+          () => {
+            snapshotWriteFinished = true;
+            startHandoffDeadline();
+            onParsed();
+            flushPendingWrites();
+          },
+          true,
+          true,
+        );
       } else if (authoritativeGridAvailable) {
-        outputPipeline.push(bytes, onParsed);
+        outputPipeline.push(bytes, onParsed, true, true);
       } else {
         pendingWrites.push({ bytes, callback: onParsed });
         pendingBytes += bytes.byteLength;

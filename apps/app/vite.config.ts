@@ -70,7 +70,7 @@ export const sharedViteConfig = {
           groups: [
             {
               name: "terminal-connect",
-              test: /src[\\/]lib[\\/]initial-terminal-connect\.ts$/,
+              test: /src[\\/](?:lib[\\/](?:initial-terminal-connect|retryable-chunk-import)|components[\\/]thread[\\/]terminal[\\/]native-terminal-panel-loader)\.ts$/,
               priority: 4,
             },
             {

@@ -5,7 +5,10 @@ import { buildTerminalWebSocketUrl } from "@/components/thread/terminal/terminal
 import { wsManager } from "./ws";
 import { prefetchTerminalScreen } from "@/components/thread/terminal/terminal-screen-prefetch";
 import { appQueryClient } from "./app-query-client";
-import { threadDetailBootstrapQueryOptions } from "@/hooks/queries/thread-queries";
+import {
+  threadDetailBootstrapQueryOptions,
+  threadQueryOptions,
+} from "@/hooks/queries/thread-queries";
 import { nativeTerminalThreadQueryKey } from "@/hooks/queries/query-keys";
 import { sdk } from "./sdk";
 import { LazyThreadTerminalPanel } from "@/components/secondary-panel/lazySecondaryPanelComponents";
@@ -23,6 +26,9 @@ function prefetchCurrentNativeTerminalSocket(threadId: string): void {
     nativeTerminalThreadQueryKey(threadId),
   );
   if (view?.terminal?.status !== "running") return;
+  void appQueryClient.prefetchQuery(
+    threadQueryOptions(appQueryClient, threadId),
+  );
   prefetchTerminalSocket(
     buildTerminalWebSocketUrl({
       terminalId: view.terminal.id,

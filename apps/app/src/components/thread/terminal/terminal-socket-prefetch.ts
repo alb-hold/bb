@@ -1,11 +1,9 @@
 import { markTerminalPerformance } from "@/lib/terminal-performance";
 import type { TerminalBrowserSocket } from "@bb/client-core";
-import { readCachedTerminalGrid } from "./terminal-grid-cache";
-import {
+import type {
   TERMINAL_REPLAY_BATCH_WEBSOCKET_PROTOCOL,
   TERMINAL_LEGACY_WEBSOCKET_PROTOCOL,
   TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL,
-  terminalServerMessageSchema,
 } from "@bb/server-contract";
 
 const pending = new Map<string, BufferedTerminalSocket>();
@@ -22,11 +20,8 @@ class BufferedTerminalSocket implements TerminalBrowserSocket {
   private queue: Delivery[] = [];
   private bytes = 0;
   private adopted = false;
-  private adopting = false;
   private firstLiveOutput = false;
   private firstReplayBatch = false;
-  private awaitingAttach = true;
-  initialSizeClaim: { cols: number; rows: number } | undefined;
   private timer: ReturnType<typeof setTimeout>;
   private readonly socket: WebSocket;
 
@@ -79,27 +74,6 @@ class BufferedTerminalSocket implements TerminalBrowserSocket {
           this.close();
           return;
         }
-        if (
-          !this.adopting &&
-          this.awaitingAttach &&
-          typeof event.data === "string"
-        ) {
-          try {
-            const message = terminalServerMessageSchema.safeParse(
-              JSON.parse(event.data),
-            );
-            if (message.success && message.data.type === "attached") {
-              this.awaitingAttach = false;
-              const grid = readCachedTerminalGrid(message.data.session.id);
-              if (grid && this.socket.readyState === WebSocket.OPEN) {
-                this.socket.send(
-                  JSON.stringify({ type: "resize", ...grid, claim: true }),
-                );
-                this.initialSizeClaim = grid;
-              }
-            }
-          } catch {}
-        }
       }
       this.deliver(() => this.onmessage?.(event));
     };
@@ -128,15 +102,16 @@ class BufferedTerminalSocket implements TerminalBrowserSocket {
 
   adopt() {
     markTerminalPerformance("terminal-socket-adopted");
-    this.adopting = true;
     clearTimeout(this.timer);
     this.forget();
     queueMicrotask(() => {
+      markTerminalPerformance("terminal-buffer-drain-start");
       for (let index = 0; index < this.queue.length; index++)
         this.queue[index]?.();
       this.queue = [];
       this.bytes = 0;
       this.adopted = true;
+      markTerminalPerformance("terminal-buffer-drain-end");
     });
     return this;
   }
@@ -169,9 +144,9 @@ export function prefetchTerminalSocket(url: string): void {
     const socket = new BufferedTerminalSocket(
       key,
       [
-        TERMINAL_LEGACY_WEBSOCKET_PROTOCOL,
-        TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL,
-        TERMINAL_REPLAY_BATCH_WEBSOCKET_PROTOCOL,
+        "bb.terminal.v1" satisfies typeof TERMINAL_LEGACY_WEBSOCKET_PROTOCOL,
+        "bb.terminal.resize-echo.v1" satisfies typeof TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL,
+        "bb.terminal.replay-batch.v1" satisfies typeof TERMINAL_REPLAY_BATCH_WEBSOCKET_PROTOCOL,
       ],
       () => {
         if (pending.get(key) === socket) pending.delete(key);

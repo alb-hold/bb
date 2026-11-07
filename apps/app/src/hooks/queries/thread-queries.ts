@@ -678,10 +678,15 @@ export function threadQueryOptions(
   return queryOptions<ThreadResponse>({
     queryKey: threadQueryKey(id),
     queryFn: ({ signal }) =>
-      sdk.threads.get({
-        threadId: requireThreadId(id, "useThread"),
-        signal,
-      }),
+      traceTerminalGate(
+        "terminal-thread-record",
+        () =>
+          sdk.threads.get({
+            threadId: requireThreadId(id, "useThread"),
+            signal,
+          }),
+        { threadId: id },
+      ),
     enabled: (options?.enabled ?? true) && Boolean(id),
     staleTime: THREAD_DETAIL_STALE_TIME_MS,
     refetchOnMount: options?.refetchOnMount ?? true,

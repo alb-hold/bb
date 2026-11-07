@@ -1,6 +1,15 @@
 declare global {
   var __bbInitialNativeTerminalRequest:
-    | { path: string; response: Promise<Response>; claimed?: boolean }
+    | {
+        path: string;
+        response: Promise<Response>;
+        claimed?: boolean;
+        thread?: {
+          path: string;
+          response: Promise<Response>;
+          claimed?: boolean;
+        };
+      }
     | undefined;
 }
 
@@ -8,7 +17,11 @@ export function takeInitialNativeTerminalResponse(
   url: URL,
   signal?: AbortSignal | null,
 ): Promise<Response | null> | null {
-  const initial = globalThis.__bbInitialNativeTerminalRequest;
+  const preload = globalThis.__bbInitialNativeTerminalRequest;
+  const initial =
+    preload?.thread?.path === url.pathname && url.search === ""
+      ? preload.thread
+      : preload;
   if (
     !initial ||
     initial.claimed ||

@@ -226,6 +226,35 @@ describe("watchTerminalLayoutSettled", () => {
     expect(onSettled).toHaveBeenCalledTimes(1);
   });
 
+  it("settles a native fit after two equal measurements and restarts after an animation signal", async () => {
+    vi.useFakeTimers();
+    let signal = () => {};
+    let animating = false;
+    const onSettled = vi.fn();
+    watchTerminalLayoutSettled({
+      ...frameScheduler(),
+      graceFrames: 0,
+      stableFramesRequired: 1,
+      measure: () => (animating ? null : "800x600:125x36"),
+      ready: Promise.resolve(),
+      subscribe: (onSignal) => {
+        signal = onSignal;
+        return () => {};
+      },
+      onSettled,
+    });
+    await vi.advanceTimersByTimeAsync(FRAME_MS);
+    animating = true;
+    signal();
+    await vi.advanceTimersByTimeAsync(FRAME_MS * 4);
+    expect(onSettled).not.toHaveBeenCalled();
+    animating = false;
+    await vi.advanceTimersByTimeAsync(FRAME_MS);
+    expect(onSettled).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(FRAME_MS);
+    expect(onSettled).toHaveBeenCalledOnce();
+  });
+
   it("does not report when cancelled before the fonts are ready", async () => {
     vi.useFakeTimers();
     const onSettled = vi.fn();

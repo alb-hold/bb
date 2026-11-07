@@ -4,10 +4,17 @@ import { afterEach, expect, it, vi } from "vitest";
 import { appQueryClient } from "./app-query-client";
 import { prefetchThreadOpen } from "./thread-open-prefetch";
 import { sdk } from "./sdk";
-import { nativeTerminalThreadQueryKey } from "@/hooks/queries/query-keys";
+import {
+  nativeTerminalThreadQueryKey,
+  threadQueryKey,
+} from "@/hooks/queries/query-keys";
 import { prefetchTerminalSocket } from "@/components/thread/terminal/terminal-socket-prefetch";
 import { preloadTerminalModules } from "@/components/thread/terminal/terminal-modules";
 import { LazyThreadTerminalPanel } from "@/components/secondary-panel/lazySecondaryPanelComponents";
+
+const { readThread } = vi.hoisted(() => ({
+  readThread: vi.fn(() => Promise.resolve({ id: "native" })),
+}));
 
 vi.mock("./sdk", () => ({ sdk: { nativeTerminals: { get: vi.fn() } } }));
 vi.mock("./ws", () => ({
@@ -20,6 +27,11 @@ vi.mock("@/components/thread/terminal/terminal-screen-prefetch", () => ({
   prefetchTerminalScreen: vi.fn(),
 }));
 vi.mock("@/hooks/queries/thread-queries", () => ({
+  threadQueryOptions: (_client: unknown, id: string) => ({
+    queryKey: threadQueryKey(id),
+    queryFn: readThread,
+    staleTime: 30_000,
+  }),
   threadDetailBootstrapQueryOptions: (
     _client: unknown,
     id: string,
@@ -134,6 +146,23 @@ it("starts native discovery while thread bootstrap is pending and warms a native
     appQueryClient.getQueryState(["bootstrap", "native"])?.fetchStatus,
   ).toBe("fetching");
   expect(LazyThreadTerminalPanel.preload).toHaveBeenCalledOnce();
+});
+
+it("fills the native thread record before the detail view mounts while bootstrap is pending", async () => {
+  window.history.replaceState({}, "", "/threads/native");
+  appQueryClient.setQueryData(nativeTerminalThreadQueryKey("native"), {
+    terminal: { id: "term-cached", status: "running" },
+  });
+  prefetchThreadOpen("native");
+  await vi.waitFor(() =>
+    expect(appQueryClient.getQueryData(threadQueryKey("native"))).toEqual({
+      id: "native",
+    }),
+  );
+  expect(readThread).toHaveBeenCalledOnce();
+  expect(
+    appQueryClient.getQueryState(["bootstrap", "native"])?.fetchStatus,
+  ).toBe("fetching");
 });
 
 it("does not download xterm for a chat thread or repeat fresh discovery", async () => {

@@ -10,7 +10,7 @@ import {
   prefetchTerminalSocket,
 } from "./terminal-socket-prefetch";
 
-const url = "ws://localhost/api/terminals/term/socket";
+const url = "ws://localhost/ws/terminals/term";
 const fullUrl = `${url}?sinceSeq=0&outputAcks=1&resizeAcks=1`;
 
 class Socket {
@@ -60,7 +60,7 @@ it.each(
     ["miss", "match", "mismatch"].map((kind) => ({ cols, kind })),
   ),
 )(
-  "claims a cached $cols-column grid before adoption ($kind)",
+  "waits for the final renderer before claiming a cached $cols-column grid ($kind)",
   async ({ cols, kind }) => {
     if (kind !== "miss") {
       const container = document.createElement("div");
@@ -86,9 +86,7 @@ it.each(
       native.sent
         .map((raw) => JSON.parse(raw))
         .filter((frame) => frame.type === "resize");
-    expect(frames()).toEqual(
-      kind === "miss" ? [] : [{ type: "resize", cols, rows: 38, claim: true }],
-    );
+    expect(frames()).toEqual([]);
     expect(Date.now() - attachedAt).toBeLessThanOrEqual(5);
     await vi.advanceTimersByTimeAsync(700);
     const transport = new TerminalWebSocketTransport({
@@ -105,7 +103,7 @@ it.each(
     await Promise.resolve();
     transport.sendResize(fittedCols, 38);
     transport.markLayoutSettled();
-    expect(frames()).toHaveLength(kind === "mismatch" ? 2 : 1);
+    expect(frames()).toHaveLength(1);
     expect(frames().at(-1)).toEqual({
       type: "resize",
       cols: fittedCols,
@@ -113,7 +111,7 @@ it.each(
       claim: true,
     });
     transport.claimSize();
-    expect(frames()).toHaveLength(kind === "mismatch" ? 3 : 2);
+    expect(frames()).toHaveLength(2);
     expect(frames().at(-1)).toEqual({
       type: "resize",
       cols: fittedCols,

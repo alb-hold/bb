@@ -2,6 +2,20 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { makeTerminalSession } from "@/test/fixtures/terminal-sessions";
 import { prefetchTerminalSocket } from "@/components/thread/terminal/terminal-socket-prefetch";
+const warm = vi.hoisted(() => ({
+  panel: vi.fn(() => Promise.resolve(null)),
+  xterm: vi.fn(),
+  route: vi.fn(),
+}));
+vi.mock("@/components/thread/terminal/native-terminal-panel-loader", () => ({
+  loadNativeTerminalPanel: warm.panel,
+}));
+vi.mock("@/components/thread/terminal/terminal-modules", () => ({
+  preloadTerminalModules: warm.xterm,
+}));
+vi.mock("@/views/thread-detail/LazyThreadDetailView", () => ({
+  LazyThreadDetailView: { preload: warm.route },
+}));
 
 vi.mock("@/components/thread/terminal/terminal-socket-prefetch", () => ({
   prefetchTerminalSocket: vi.fn(),
@@ -43,10 +57,18 @@ it.each(["native", "other"])(
     await import("./initial-terminal-connect");
     await globalThis.__bbInitialNativeTerminalRequest.response;
     await new Promise((resolve) => setTimeout(resolve, 10));
-    if (route === "native")
+    if (route === "native") {
       expect(prefetchTerminalSocket).toHaveBeenCalledWith(
         expect.stringMatching(/early-terminal.*handoffOwnerToken=local-device/),
       );
-    else expect(prefetchTerminalSocket).not.toHaveBeenCalled();
+      expect(warm.panel).toHaveBeenCalledOnce();
+      expect(warm.xterm).toHaveBeenCalledOnce();
+      expect(warm.route).toHaveBeenCalledOnce();
+    } else {
+      expect(prefetchTerminalSocket).not.toHaveBeenCalled();
+      expect(warm.panel).not.toHaveBeenCalled();
+      expect(warm.xterm).not.toHaveBeenCalled();
+      expect(warm.route).not.toHaveBeenCalled();
+    }
   },
 );
