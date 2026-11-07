@@ -3,6 +3,7 @@ import {
   PLUGIN_FRONTEND_BOOT_TIMEOUT_MS,
   requestBrowserIdle,
   scheduleDeferredPluginFrontendBoot,
+  whenHomeComposerReady,
 } from "../lib/plugin-frontend-boot-schedule";
 import { markPluginFrontendSettleFloorReached } from "../lib/plugin-frontend-boot-state";
 import {
@@ -23,6 +24,14 @@ import { prefetchPluginRuntimeSlots } from "../lib/plugin-lazy-runtime-groups";
 export const PLUGIN_FRONTEND_SETTLE_FLOOR_MS = 15_000;
 const PRIORITY_PRELOAD_HOLD_MAX_MS = 10_000;
 
+async function waitForHomeComposerPaint(): Promise<void> {
+  if (window.location.pathname !== "/") return;
+  await whenHomeComposerReady();
+  await new Promise<void>((resolve) =>
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+  );
+}
+
 export function usePluginFrontendBoot(): void {
   const systemConfig = useSystemConfig();
   const resolved = systemConfig.data !== undefined;
@@ -32,7 +41,8 @@ export function usePluginFrontendBoot(): void {
     let cancelled = false;
     void appQueryClient
       .fetchQuery(pluginListQueryOptions({ enabled: true }))
-      .then((plugins) => {
+      .then(async (plugins) => {
+        await waitForHomeComposerPaint();
         if (cancelled) return;
         for (const pluginId of priorityPluginIds) {
           if (pathname === "/" && pluginId === "bb--composer") continue;
@@ -57,7 +67,9 @@ export function usePluginFrontendBoot(): void {
       priorityPluginIds.length > 0 ||
       getPluginPanelRoutePluginId(pathname) !== null
     ) {
-      preloadPluginFrontend();
+      void waitForHomeComposerPaint().then(() => {
+        if (!cancelled) preloadPluginFrontend();
+      });
     }
     return () => {
       cancelled = true;
@@ -67,6 +79,7 @@ export function usePluginFrontendBoot(): void {
     if (!resolved) return;
     const pathname = window.location.pathname;
     const priorityPluginIds = frontendPriorityPluginIds(pathname);
+    let cancelled = false;
     const releaseHold =
       priorityPluginIds.length > 0 ? holdSplitPreloads() : () => {};
     const holdTimeout = window.setTimeout(
@@ -78,9 +91,14 @@ export function usePluginFrontendBoot(): void {
       releaseHold();
     };
     const cleanup = () => {
+      cancelled = true;
       releasePreloads();
     };
-    const boot = () => void bootPluginFrontends().then(releasePreloads);
+    const boot = () => {
+      void waitForHomeComposerPaint().then(() => {
+        if (!cancelled) void bootPluginFrontends().then(releasePreloads);
+      });
+    };
     if (
       priorityPluginIds.length > 0 ||
       getPluginPanelRoutePluginId(pathname) !== null

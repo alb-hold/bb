@@ -61,6 +61,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  document.body.replaceChildren();
   appQueryClient.clear();
   document.head
     .querySelectorAll(
@@ -78,7 +79,7 @@ afterEach(() => {
 
 describe("usePluginFrontendBoot", () => {
   it.each(["/", "/threads/thr_one"])(
-    "downloads shell bundles before paint on %s without eagerly fetching the home rich editor",
+    "downloads shell bundles after the home composer paints, or immediately on %s",
     async (pathname) => {
       window.history.replaceState(null, "", pathname);
       const deferredComposer = pathname === "/";
@@ -128,6 +129,20 @@ describe("usePluginFrontendBoot", () => {
       );
       renderHook(() => usePluginFrontendBoot());
       await flushMicrotasks();
+      if (deferredComposer) {
+        expect(mocks.preloadPluginFrontend).not.toHaveBeenCalled();
+        expect(mocks.bootPluginFrontends).not.toHaveBeenCalled();
+        expect(runtimeRequests).toEqual([]);
+        expect(
+          document.head.querySelectorAll('link[rel="modulepreload"]'),
+        ).toHaveLength(0);
+        document.body.innerHTML =
+          '<textarea></textarea><div data-sidebar-thread-id="recent"></div>';
+        await flushMicrotasks();
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(40);
+        });
+      }
       expect(
         [...document.head.querySelectorAll('link[rel="modulepreload"]')].map(
           (link) => link.getAttribute("href"),
@@ -164,6 +179,28 @@ describe("usePluginFrontendBoot", () => {
     },
   );
 
+  it("releases home plugin loading if the composer cannot mount", async () => {
+    renderHook(() => usePluginFrontendBoot());
+    await flushMicrotasks();
+    expect(mocks.preloadPluginFrontend).not.toHaveBeenCalled();
+    expect(mocks.bootPluginFrontends).not.toHaveBeenCalled();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_550);
+    });
+    expect(mocks.preloadPluginFrontend).toHaveBeenCalledTimes(1);
+    expect(mocks.bootPluginFrontends).toHaveBeenCalledTimes(1);
+  });
+
+  it("cancels home plugin loading when unmounted before composer paint", async () => {
+    const { unmount } = renderHook(() => usePluginFrontendBoot());
+    unmount();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_000);
+    });
+    expect(mocks.preloadPluginFrontend).not.toHaveBeenCalled();
+    expect(mocks.bootPluginFrontends).not.toHaveBeenCalled();
+  });
+
   it("boots immediately on a plugin panel route: the plugin is the page", async () => {
     window.history.replaceState(null, "", "/plugins/tasks/board");
     renderHook(() => usePluginFrontendBoot());
@@ -172,6 +209,7 @@ describe("usePluginFrontendBoot", () => {
   });
 
   it("downloads runtime and plugin list before config, but gates activation", async () => {
+    window.history.replaceState(null, "", "/threads/thr_one");
     mocks.systemConfigData = undefined;
     const fetchList = vi.spyOn(appQueryClient, "fetchQuery");
     const { rerender } = renderHook(() => usePluginFrontendBoot());
