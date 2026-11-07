@@ -23,6 +23,8 @@ class BufferedTerminalSocket implements TerminalBrowserSocket {
   private bytes = 0;
   private adopted = false;
   private adopting = false;
+  private firstLiveOutput = false;
+  private firstReplayBatch = false;
   private awaitingAttach = true;
   initialSizeClaim: { cols: number; rows: number } | undefined;
   private timer: ReturnType<typeof setTimeout>;
@@ -36,8 +38,40 @@ class BufferedTerminalSocket implements TerminalBrowserSocket {
     this.socket = new WebSocket(url, protocols);
     markTerminalPerformance("terminal-socket-created");
     this.timer = setTimeout(() => this.close(), 10_000);
-    this.socket.onopen = (event) => this.deliver(() => this.onopen?.(event));
+    this.socket.onopen = (event) => {
+      markTerminalPerformance("terminal-socket-open");
+      this.deliver(() => this.onopen?.(event));
+    };
     this.socket.onmessage = (event) => {
+      if (typeof event.data === "string") {
+        try {
+          const message: unknown = JSON.parse(event.data);
+          if (
+            typeof message !== "object" ||
+            message === null ||
+            !("type" in message)
+          )
+            throw new Error("Invalid terminal frame");
+          if (
+            typeof message.type === "string" &&
+            [
+              "attached",
+              "features",
+              "session-updated",
+              "resize-applied",
+            ].includes(message.type)
+          )
+            markTerminalPerformance(`terminal-wire-${message.type}`);
+          if (message.type === "output-batch" && !this.firstReplayBatch) {
+            this.firstReplayBatch = true;
+            markTerminalPerformance("terminal-wire-first-output-batch");
+          }
+          if (message.type === "output" && !this.firstLiveOutput) {
+            this.firstLiveOutput = true;
+            markTerminalPerformance("terminal-wire-first-output");
+          }
+        } catch {}
+      }
       if (!this.adopted) {
         this.bytes +=
           typeof event.data === "string" ? event.data.length * 2 : MAX_BYTES;
@@ -93,6 +127,7 @@ class BufferedTerminalSocket implements TerminalBrowserSocket {
   }
 
   adopt() {
+    markTerminalPerformance("terminal-socket-adopted");
     this.adopting = true;
     clearTimeout(this.timer);
     this.forget();

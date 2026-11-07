@@ -69,6 +69,11 @@ export const sharedViteConfig = {
         advancedChunks: {
           groups: [
             {
+              name: "terminal-connect",
+              test: /src[\\/]lib[\\/]initial-terminal-connect\.ts$/,
+              priority: 4,
+            },
+            {
               name: "boot-icons",
               test: /@hugeicons[\/]core-free-icons/,
               tags: ["$initial"],

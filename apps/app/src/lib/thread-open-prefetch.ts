@@ -11,7 +11,28 @@ import { sdk } from "./sdk";
 import { LazyThreadTerminalPanel } from "@/components/secondary-panel/lazySecondaryPanelComponents";
 import { preloadTerminalModules } from "@/components/thread/terminal/terminal-modules";
 
+function prefetchCurrentNativeTerminalSocket(threadId: string): void {
+  if (
+    typeof window === "undefined" ||
+    window.location.pathname.match(
+      /^\/(?:projects\/[^/]+\/)?threads\/([^/]+)\/?$/,
+    )?.[1] !== threadId
+  )
+    return;
+  const view = appQueryClient.getQueryData<NativeTerminalThread | null>(
+    nativeTerminalThreadQueryKey(threadId),
+  );
+  if (view?.terminal?.status !== "running") return;
+  prefetchTerminalSocket(
+    buildTerminalWebSocketUrl({
+      terminalId: view.terminal.id,
+      handoffOwnerToken: wsManager.getDeviceHandoffClientToken(),
+    }),
+  );
+}
+
 export function prefetchThreadOpen(threadId: string): void {
+  prefetchCurrentNativeTerminalSocket(threadId);
   void appQueryClient.prefetchQuery(
     threadDetailBootstrapQueryOptions(appQueryClient, threadId, {
       timelinePrefetch: true,
@@ -35,22 +56,6 @@ export function prefetchThreadOpen(threadId: string): void {
       },
     })
     .then(() => {
-      if (
-        typeof window === "undefined" ||
-        window.location.pathname.match(
-          /^\/(?:projects\/[^/]+\/)?threads\/([^/]+)\/?$/,
-        )?.[1] !== threadId
-      )
-        return;
-      const view = appQueryClient.getQueryData<NativeTerminalThread | null>(
-        nativeTerminalThreadQueryKey(threadId),
-      );
-      if (view?.terminal?.status !== "running") return;
-      prefetchTerminalSocket(
-        buildTerminalWebSocketUrl({
-          terminalId: view.terminal.id,
-          handoffOwnerToken: wsManager.getDeviceHandoffClientToken(),
-        }),
-      );
+      prefetchCurrentNativeTerminalSocket(threadId);
     });
 }
