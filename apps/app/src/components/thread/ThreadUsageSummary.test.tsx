@@ -107,8 +107,8 @@ describe("thread usage summary", () => {
       expect(
         summary.querySelector("[data-token-total-tight]")?.textContent,
       ).toBe("208K tokens");
-      expect(summary.classList.contains("text-2xs")).toBe(true);
-      expect(summary.classList.contains("text-subtle-foreground")).toBe(true);
+      expect(summary.classList.contains("text-xs")).toBe(true);
+      expect(summary.classList.contains("text-muted-foreground")).toBe(true);
       if (reasoningOutputTokens) {
         expect(
           summary.querySelector('[data-token-part="reasoning"]')?.textContent,

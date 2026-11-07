@@ -1130,3 +1130,70 @@
 [data-sidebar-sticky-stack] {
   --bb-sidebar-sticky-child-row-gap: 0px;
 }
+
+[data-native-composer] textarea::placeholder {
+  white-space: nowrap;
+}
+
+[data-model-reasoning-trigger] [data-model-name] {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+@media (width >= 48rem) {
+  [data-native-terminal-prompt] {
+    max-width: none;
+    padding-inline: 0.5rem;
+  }
+
+  [data-native-composer-inline] {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    border-color: transparent;
+    border-radius: var(--radius-md);
+    background: transparent;
+    box-shadow: none;
+    padding: 0;
+  }
+
+  [data-native-composer-inline] [data-native-composer-execution],
+  [data-native-composer-inline] [data-native-composer-model] {
+    display: none;
+  }
+
+  [data-native-composer-inline] textarea {
+    padding-inline: 0;
+  }
+
+  [data-native-composer-inline] [data-native-composer-actions] > button {
+    width: 1.75rem;
+    height: 1.75rem;
+  }
+}
+
+@container promptbox-shell (min-width: 27.5rem) {
+  [data-promptbox-execution-layout="stacked"],
+  [data-promptbox-execution-layout="stacked"] > [data-promptbox-leading-actions],
+  [data-execution-controls-layout="stacked"] {
+    flex-wrap: nowrap;
+  }
+
+  [data-promptbox-execution-layout="stacked"] > [data-promptbox-leading-actions] {
+    min-width: 0;
+    flex-shrink: 1;
+  }
+
+  [data-execution-controls-layout="stacked"] [data-model-reasoning-trigger] {
+    min-width: 0;
+    flex-shrink: 1;
+  }
+}
+
+@container promptbox-shell (max-width: 40rem) {
+  [data-execution-controls-layout="stacked"] [data-promptbox-hide-compact] {
+    display: none;
+  }
+}

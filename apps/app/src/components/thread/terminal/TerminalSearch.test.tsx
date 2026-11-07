@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Terminal } from "@xterm/xterm";
 import type { TerminalSearchAddonInstance } from "./terminal-search-addon";
 import { TerminalMobileControls } from "./TerminalMobileControls";
+import { SecondaryPanelActions, SecondaryPanelActionsProvider } from "@/components/secondary-panel/SecondaryPanelActions";
 import { TerminalSearch } from "./TerminalSearch";
 import { loadOptionalTerminalSearchAddon } from "./terminal-search-addon";
 
@@ -378,4 +379,50 @@ describe("TerminalSearch shortcuts and closed controls", () => {
       screen.getByRole("search", { name: "Search terminal output" }),
     ).toBeTruthy();
   });
+});
+
+it("ports the closed search control into the enclosing panel toolbar", () => {
+  const onOpenChange = vi.fn();
+  const { container } = render(
+    <SecondaryPanelActionsProvider activeTerminalId="terminal-a">
+      <div role="toolbar"><SecondaryPanelActions /></div>
+      <TerminalSearch terminalId="terminal-a" addon={createSearchAddon()} terminal={{} as Terminal} open={false} onOpenChange={onOpenChange} />
+    </SecondaryPanelActionsProvider>,
+  );
+  const button = screen.getByRole("button", { name: "Search terminal output" });
+  expect(screen.getByRole("toolbar").contains(button)).toBe(true);
+  expect(container.querySelector("[data-secondary-panel-actions]")?.contains(button)).toBe(true);
+  fireEvent.click(button);
+  expect(onOpenChange).toHaveBeenCalledWith(true);
+});
+
+it("moves the only panel search trigger between retained terminal tabs", () => {
+  const openA = vi.fn();
+  const openB = vi.fn();
+  const content = (active: string | null) => (
+    <SecondaryPanelActionsProvider activeTerminalId={active}>
+      <input aria-label="Main composer" />
+      <div role="toolbar"><SecondaryPanelActions /></div>
+      <TerminalSearch terminalId="terminal-a" addon={createSearchAddon()} terminal={{} as Terminal} open={false} onOpenChange={openA} />
+      <TerminalSearch terminalId="terminal-b" addon={createSearchAddon()} terminal={{} as Terminal} open={false} onOpenChange={openB} />
+    </SecondaryPanelActionsProvider>
+  );
+  const view = render(content("terminal-a"));
+  const trigger = () => screen.getByRole("button", { name: "Search terminal output" });
+  expect(screen.getAllByRole("button", { name: "Search terminal output" })).toHaveLength(1);
+  const composer = screen.getByRole("textbox", { name: "Main composer" });
+  composer.focus();
+  expect(document.activeElement).toBe(composer);
+  expect(screen.getAllByRole("button", { name: "Search terminal output" })).toHaveLength(1);
+  fireEvent.click(trigger());
+  expect(openA).toHaveBeenCalledWith(true);
+  expect(openB).not.toHaveBeenCalled();
+  openA.mockClear();
+  view.rerender(content("terminal-b"));
+  expect(screen.getAllByRole("button", { name: "Search terminal output" })).toHaveLength(1);
+  fireEvent.click(trigger());
+  expect(openB).toHaveBeenCalledWith(true);
+  expect(openA).not.toHaveBeenCalled();
+  view.rerender(content(null));
+  expect(screen.queryByRole("button", { name: "Search terminal output" })).toBeNull();
 });

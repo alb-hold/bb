@@ -3909,6 +3909,7 @@ export function ThreadTerminalView({
               viewportLine={promptTrackerState.viewportLine}
             />
             <TerminalSearch
+              terminalId={session.id}
               addon={terminalSearchAddon}
               terminal={terminalRef.current}
               touch={isTouchDevice}

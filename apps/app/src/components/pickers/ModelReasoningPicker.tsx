@@ -462,6 +462,7 @@ export function ModelReasoningPicker(props: ModelReasoningPickerProps) {
       </span>
       <Icon
         name="ChevronDown"
+        data-model-chevron=""
         className={cn(
           "size-3.5 shrink-0",
           muted ? "text-subtle-foreground/75" : "text-muted-foreground",

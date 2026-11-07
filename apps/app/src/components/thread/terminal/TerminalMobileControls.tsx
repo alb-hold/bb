@@ -270,7 +270,7 @@ export function TerminalMobileControls({
         </div>
       ) : null}
       <div className="flex min-w-0 gap-1">
-        <div className="relative min-w-0 flex-1">
+        <div className="relative min-w-0 shrink">
           <div
             ref={scrollerRef}
             onScroll={updateOverflow}
