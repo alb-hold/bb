@@ -234,9 +234,14 @@ function prepareMobileTerminal(): void {
       unobserve(): void {}
     },
   );
-  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
-    measureText: (text: string) => ({ width: text.length * 9 }),
-  } as unknown as CanvasRenderingContext2D);
+  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(
+    (kind) =>
+      kind === "2d"
+        ? ({
+            measureText: (text: string) => ({ width: text.length * 9 }),
+          } as unknown as CanvasRenderingContext2D)
+        : null,
+  );
   vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(
     function offsetWidth(this: HTMLElement) {
       return this.classList.contains("xterm-char-measure-element") ? 9 : 354;
@@ -1010,9 +1015,14 @@ describe("ThreadTerminalView terminal viewport and focus", () => {
       onchange: null,
       dispatchEvent: vi.fn(),
     }));
-    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
-      measureText: (text: string) => ({ width: text.length * 7 }),
-    } as unknown as CanvasRenderingContext2D);
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(
+      (kind) =>
+        kind === "2d"
+          ? ({
+              measureText: (text: string) => ({ width: text.length * 7 }),
+            } as unknown as CanvasRenderingContext2D)
+          : null,
+    );
     vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(
       function offsetWidth(this: HTMLElement) {
         return this.classList.contains("xterm-char-measure-element") ? 7 : 354;
@@ -1325,9 +1335,14 @@ describe("ThreadTerminalView terminal viewport and focus", () => {
   });
 
   it("suppresses terminal-scoped shortcuts from the real xterm input", async () => {
-    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
-      measureText: (text: string) => ({ width: text.length * 9 }),
-    } as unknown as CanvasRenderingContext2D);
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(
+      (kind) =>
+        kind === "2d"
+          ? ({
+              measureText: (text: string) => ({ width: text.length * 9 }),
+            } as unknown as CanvasRenderingContext2D)
+          : null,
+    );
     vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(
       function offsetWidth(this: HTMLElement) {
         return this.classList.contains("xterm-char-measure-element")
