@@ -32,8 +32,20 @@ import {
   describePanelControllerContract,
   snapshotFromState,
   type ContractStateSink,
+  type PanelContractSurface,
 } from "@/test/panel-controller-contract";
 import { RootComposeView } from "./RootComposeView";
+
+import {
+  describePanelToggleContract,
+  type PanelToggleMountOptions,
+} from "@/test/panel-toggle-contract";
+import {
+  getFixedPanelTabsStateStorageKey,
+  serializeFixedPanelTabsState,
+} from "@/lib/fixed-panel-tabs-state";
+
+const viewport = vi.hoisted(() => ({ compact: false }));
 
 const appCommandHandlers = vi.hoisted(
   () => new Map<string, () => boolean | void>(),
@@ -49,7 +61,7 @@ vi.mock("@/components/commands/AppCommandProvider", async (importOriginal) => ({
   useAppCommandShortcut: () => null,
 }));
 vi.mock("@bb/shared-ui/hooks/use-compact-viewport", () => ({
-  useIsCompactViewport: () => false,
+  useIsCompactViewport: () => viewport.compact,
 }));
 vi.mock("@/components/secondary-panel/SecondaryPanelLayout", () => ({
   SecondaryPanelLayout: ({ main }: { main: ReactNode }) => main,
@@ -196,6 +208,7 @@ const actionTab = {
 } as const;
 
 beforeEach(() => {
+  viewport.compact = false;
   appCommandHandlers.clear();
   window.localStorage.clear();
   resetFixedPanelTabsStateForTest();
@@ -220,65 +233,80 @@ afterEach(() => {
   resetFocusedAppPanelControllersForTest();
 });
 
+async function mountSurface(
+  options?: PanelToggleMountOptions,
+): Promise<PanelContractSurface> {
+  if (options) {
+    viewport.compact = options.compact;
+    window.localStorage.setItem(
+      getFixedPanelTabsStateStorageKey({
+        threadId: ROOT_COMPOSE_FIXED_PANEL_STATE_ID,
+      }),
+      serializeFixedPanelTabsState({ state: options.state }),
+    );
+  }
+  const sink: ContractStateSink = { current: null };
+  const router = createMemoryRouter(
+    [
+      {
+        path: "/",
+        element: (
+          <DefaultPaneContextProvider
+            paneId="main"
+            onRequestClose={null}
+            navigateInPane={() => {}}
+          >
+            <ContractStateProbe
+              panelStateId={ROOT_COMPOSE_FIXED_PANEL_STATE_ID}
+              syncThreadId={null}
+              sink={sink}
+            />
+            <RootComposeView />
+          </DefaultPaneContextProvider>
+        ),
+      },
+    ],
+    { initialEntries: ["/"] },
+  );
+  render(
+    <QueryClientProvider
+      client={
+        new QueryClient({ defaultOptions: { queries: { retry: false } } })
+      }
+    >
+      <Provider>
+        <RouterProvider router={router} />
+      </Provider>
+    </QueryClientProvider>,
+  );
+  await screen.findByTestId("new-thread-prompt-box");
+  await waitFor(() => expect(getFocusedAppPanelController()).not.toBeNull());
+  const panel = createPluginPanelController(
+    CONTRACT_PLUGIN_ID,
+    getFocusedAppPanelController,
+  );
+  return {
+    panel: () => panel,
+    snapshot: () => snapshotFromState(sink),
+    tabs: () => getFocusedAppPanelController()?.getTabs() ?? NO_TABS,
+    renderedTarget: () => null,
+    renderedTabVisible: () => null,
+    command: (id) => appCommandHandlers.get(id)?.() !== false,
+    action: { tab: actionTab, panelTabId: contractActionPanelTabId("chat") },
+    fixed: null,
+    foreignTab: {
+      id: "chat",
+      context: { kind: "nav-panel", panelId: "board" },
+      availability: "action",
+    },
+    toggleRestoresActiveTab: true,
+  };
+}
+
 describePanelControllerContract(
   "New thread screen",
   { fixedTabs: false },
-  async () => {
-    const sink: ContractStateSink = { current: null };
-    const router = createMemoryRouter(
-      [
-        {
-          path: "/",
-          element: (
-            <DefaultPaneContextProvider
-              paneId="main"
-              onRequestClose={null}
-              navigateInPane={() => {}}
-            >
-              <ContractStateProbe
-                panelStateId={ROOT_COMPOSE_FIXED_PANEL_STATE_ID}
-                syncThreadId={null}
-                sink={sink}
-              />
-              <RootComposeView />
-            </DefaultPaneContextProvider>
-          ),
-        },
-      ],
-      { initialEntries: ["/"] },
-    );
-    render(
-      <QueryClientProvider
-        client={
-          new QueryClient({ defaultOptions: { queries: { retry: false } } })
-        }
-      >
-        <Provider>
-          <RouterProvider router={router} />
-        </Provider>
-      </QueryClientProvider>,
-    );
-    await screen.findByTestId("new-thread-prompt-box");
-    await waitFor(() => expect(getFocusedAppPanelController()).not.toBeNull());
-    const panel = createPluginPanelController(
-      CONTRACT_PLUGIN_ID,
-      getFocusedAppPanelController,
-    );
-    return {
-      panel: () => panel,
-      snapshot: () => snapshotFromState(sink),
-      tabs: () => getFocusedAppPanelController()?.getTabs() ?? NO_TABS,
-      renderedTarget: () => null,
-      renderedTabVisible: () => null,
-      command: (id) => appCommandHandlers.get(id)?.() !== false,
-      action: { tab: actionTab, panelTabId: contractActionPanelTabId("chat") },
-      fixed: null,
-      foreignTab: {
-        id: "chat",
-        context: { kind: "nav-panel", panelId: "board" },
-        availability: "action",
-      },
-      toggleRestoresActiveTab: false,
-    };
-  },
+  mountSurface,
 );
+
+describePanelToggleContract("New thread screen", mountSurface);
