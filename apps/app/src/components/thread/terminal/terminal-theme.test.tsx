@@ -143,12 +143,12 @@ it.each(
           )
           .join("/");
       expect(replies).toEqual([
-        `\x1b]10;rgb:${rgb("--foreground")}\x1b\\`,
+        `\x1b]10;rgb:${rgb("--ink")}\x1b\\`,
         `\x1b]11;rgb:${rgb("--sidebar")}\x1b\\`,
       ]);
       const palette = TERMINAL_DEFAULT_COLORS[mode];
       expect(terminalRgbCss(palette.foreground)).toBe(
-        themeColor(mode, "--foreground"),
+        themeColor(mode, "--ink"),
       );
       expect(terminalRgbCss(palette.background)).toBe(
         themeColor(mode, "--sidebar"),
@@ -351,7 +351,7 @@ it("derives the full terminal palette from theme ink and canvas", () => {
     "--terminal-ansi-8: color-mix(in oklch, var(--ink) 8%, var(--canvas));",
     "--terminal-ansi-8: color-mix(in oklch, var(--ink) 13%, var(--canvas));",
   ]);
-  expect(theme.foreground).toBe("--foreground");
+  expect(theme.foreground).toBe("--ink");
   for (let index = 0; index < 16; index++) {
     expect(names.has(`--terminal-ansi-${index}`)).toBe(true);
     const declaration = css.match(
@@ -440,7 +440,7 @@ it.each([
       context as unknown as CanvasRenderingContext2D,
     );
     const theme = buildTerminalThemeFromCssColors((name) =>
-      name === "--foreground"
+      name === "--ink"
         ? foreground
         : name === "--sidebar"
           ? background

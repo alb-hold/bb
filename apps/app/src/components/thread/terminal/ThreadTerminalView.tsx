@@ -441,8 +441,8 @@ export function buildTerminalThemeFromCssColors(
 ): ITheme {
   return {
     background: get("--sidebar"),
-    foreground: get("--foreground"),
-    cursor: get("--foreground"),
+    foreground: get("--ink"),
+    cursor: get("--ink"),
     cursorAccent: get("--sidebar"),
     scrollbarSliderBackground: get("--terminal-scrollbar"),
     scrollbarSliderHoverBackground: get("--terminal-scrollbar-hover"),
