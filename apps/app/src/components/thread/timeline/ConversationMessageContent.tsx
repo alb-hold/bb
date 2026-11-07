@@ -289,6 +289,7 @@ function CollapsibleMessageText({
           <span>{body.text}</span>
         ) : (
           <MarkdownPreview
+            className="md:text-base"
             containerQuery={false}
             tableLayout="contained"
             content={
@@ -536,7 +537,7 @@ function UserConversationMessage({
           </div>
         ) : null}
         <div className="flex w-fit max-w-full flex-col items-end">
-          <div className="max-w-full rounded-xl border border-border-seam bg-surface-recessed px-4 py-2.5 text-sm leading-relaxed text-foreground">
+          <div className="max-w-full rounded-xl border border-border-seam bg-surface-recessed px-4 py-2.5 text-sm md:text-base leading-relaxed text-foreground">
             {messageText ? (
               <CollapsibleMessageText
                 mentions={mentions}
