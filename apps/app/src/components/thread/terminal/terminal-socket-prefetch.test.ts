@@ -286,17 +286,33 @@ it("forgets a disconnected cached claim before a new socket is adopted", () => {
 
 it("claims at socket-open even when the view adopted the connecting socket first", async () => {
   const container = document.createElement("div");
-  vi.spyOn(container, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 936, 662));
+  vi.spyOn(container, "getBoundingClientRect").mockReturnValue(
+    new DOMRect(0, 0, 936, 662),
+  );
   rememberTerminalGrid("term", container, 13, { cols: 116, rows: 38 });
   prefetchTerminalSocket(url);
   const native = Socket.instances[0]!;
-  const transport = new TerminalWebSocketTransport({ url, createSocket: createPrefetchedTerminalSocket, onMessage: () => {}, shouldReconnect: () => true });
-  transport.sendResize(116, 38, true);
-  transport.markLayoutSettled();
+  const transport = new TerminalWebSocketTransport({
+    url,
+    createSocket: createPrefetchedTerminalSocket,
+    onMessage: () => {},
+    shouldReconnect: () => true,
+  });
   transport.start();
   vi.runAllTicks();
   await Promise.resolve();
   native.open();
-  expect(native.sent.map((raw) => JSON.parse(raw)).filter((frame) => frame.type === "resize")).toEqual([{ type: "resize", cols: 116, rows: 38, claim: true }]);
+  expect(
+    native.sent
+      .map((raw) => JSON.parse(raw))
+      .filter((frame) => frame.type === "resize"),
+  ).toEqual([{ type: "resize", cols: 116, rows: 38, claim: true }]);
+  transport.sendResize(116, 38, true);
+  transport.markLayoutSettled();
+  expect(
+    native.sent
+      .map((raw) => JSON.parse(raw))
+      .filter((frame) => frame.type === "resize"),
+  ).toHaveLength(1);
   transport.dispose();
 });

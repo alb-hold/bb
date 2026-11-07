@@ -43,10 +43,9 @@ class BufferedTerminalSocket implements TerminalBrowserSocket {
       const terminalId = new URL(url).pathname.match(
         /\/terminals\/([^/]+)(?:\/|$)/,
       )?.[1];
-      const grid =
-        terminalId
-          ? readCachedTerminalGrid(decodeURIComponent(terminalId))
-          : null;
+      const grid = terminalId
+        ? readCachedTerminalGrid(decodeURIComponent(terminalId))
+        : null;
       if (grid) {
         this.initialSizeClaim = grid;
         this.cachedClaim = grid;

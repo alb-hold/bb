@@ -660,7 +660,11 @@ export class TerminalWebSocketTransport {
       return;
     }
     if (this.lastSentResize === null && socket.initialSizeClaim)
-      this.lastSentResize = { ...socket.initialSizeClaim, claim: true, seq: null };
+      this.lastSentResize = {
+        ...socket.initialSizeClaim,
+        claim: true,
+        seq: null,
+      };
     this.lastPongAt = this.now();
     this.resizeEchoSeqConfirmed =
       socket.protocol === TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL ||
