@@ -102,7 +102,9 @@ it("reserves final phone footer targets before plugin actions arrive", () => {
   style.textContent = css.slice(
     css.indexOf(
       "@media (width < 48rem) and (pointer: coarse) {",
-      css.indexOf("root-compose-desktop-recents"),
+      css.indexOf(
+        ':where([data-testid="root-compose-compact-scroll-viewport"]',
+      ),
     ),
   );
   document.head.append(style);

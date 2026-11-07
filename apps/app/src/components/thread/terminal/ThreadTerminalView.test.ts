@@ -2951,6 +2951,8 @@ describe("buildTerminalThemeFromCssColors", () => {
     const theme = buildTerminalThemeFromCssColors(get);
 
     expect(theme.background).toBe("--sidebar");
+    expect(theme.foreground).toBe("--ink");
+    expect(theme.cursor).toBe("--ink");
     expect(theme.cursorAccent).toBe("--sidebar");
     expect(theme.scrollbarSliderBackground).toBe("--terminal-scrollbar");
     expect(theme.scrollbarSliderHoverBackground).toBe(

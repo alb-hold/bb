@@ -711,7 +711,7 @@ function AssistantConversationMessage({
   return (
     <div
       className={cn(
-        "group/message focus-visible:outline-2 focus-visible:outline-ring w-full text-sm font-normal leading-relaxed text-foreground",
+        "group/message focus-visible:outline-2 focus-visible:outline-ring w-full text-sm md:text-base font-normal leading-relaxed text-foreground md:[&_[data-markdown-preview]]:text-base md:[&_[data-code-card]:last-child]:mb-0",
         PROSE_COLUMN_INSET_CLASS,
       )}
       data-message-column=""

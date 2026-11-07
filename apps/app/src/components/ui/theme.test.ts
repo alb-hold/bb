@@ -615,3 +615,32 @@ describe("sidebar and timeline metadata contrast", () => {
     }
   }
 });
+
+describe("home and assistant hierarchy", () => {
+  for (const mode of MODES) {
+    it(`${mode} keeps Recent metadata one quieter AA step below muted`, () => {
+      const block = modeBlock(mode);
+      const canvas = parseOklch(variableValue(block, "canvas"));
+      const subtle = parseOklch(variableValue(block, "subtle-foreground"));
+      const muted = parseOklch(variableValue(block, "muted-foreground"));
+      expect(contrastRatio(subtle, canvas)).toBeGreaterThanOrEqual(4.5);
+      expect(contrastRatio(subtle, canvas)).toBeLessThan(
+        contrastRatio(muted, canvas),
+      );
+    });
+  }
+  it("lifts only dark primary foreground to at least 14:1", () => {
+    const block = modeBlock("dark");
+    const ink = parseOklch(variableValue(block, "ink"));
+    const canvas = parseOklch(variableValue(block, "canvas"));
+    const foreground = variableValue(block, "foreground");
+    expect(foreground.replace(/\s/g, "")).toBe(
+      "color-mix(inoklch,var(--ink)42%,var(--destructive-foreground))",
+    );
+    expect(
+      contrastRatio({ ...ink, lightness: ink.lightness * 0.42 + 0.58 }, canvas),
+    ).toBeGreaterThanOrEqual(14);
+    expect(variableValue(block, "muted-foreground")).toBe("oklch(0.78 0 0)");
+    expect(variableValue(block, "subtle-foreground")).toBe("oklch(0.68 0 0)");
+  });
+});

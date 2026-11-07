@@ -427,7 +427,7 @@ export function PluginSidebarFooterItems({
           </SidebarMenuItem>
           <SidebarMenuItem
             data-footer-plugin-slots=""
-            className="min-w-0 flex-1 overflow-hidden"
+            className="ml-1 min-w-0 flex-1 overflow-hidden border-l border-border-seam pl-1"
           >
             <SidebarMenu className="grid grid-flow-col auto-cols-max justify-start gap-1">
               {[
@@ -494,7 +494,11 @@ function FooterCommandObserver({
 export function FooterItemIcon({ item }: { item: FooterItem }) {
   return item.kind === "plugin" &&
     item.slot.source === "sidebarFooterAction" ? (
-    <PluginItemIcon pluginId={item.slot.pluginId} icon={item.icon} />
+    <PluginItemIcon
+      pluginId={item.slot.pluginId}
+      icon={item.icon}
+      className="size-4 shrink-0 text-current fill-none stroke-current"
+    />
   ) : (
     <Icon
       name={pluginIconName(item.icon)}

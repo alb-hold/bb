@@ -707,7 +707,10 @@ describe("user message overflow", () => {
   );
 });
 
-function renderTouchActions(mobileActionDisplay: "inline" | "overflow") {
+function renderTouchActions(
+  mobileActionDisplay: "inline" | "overflow",
+  text = "Older answer with [a link](https://example.com).",
+) {
   vi.spyOn(window, "matchMedia").mockImplementation((query) => ({
     matches: true,
     media: query,
@@ -730,7 +733,7 @@ function renderTouchActions(mobileActionDisplay: "inline" | "overflow") {
         mobileActionDisplay={mobileActionDisplay}
         streaming={false}
         timestamp={0}
-        text="Older answer with [a link](https://example.com)."
+        text={text}
       />
     </MemoryRouter>,
   );
@@ -793,6 +796,14 @@ it("dismisses older actions on outside tap and keeps them keyboard reachable", (
 it("gives assistant prose primary foreground while older actions reveal on long press", () => {
   const { message } = renderTouchActions("overflow");
   expect(message.classList.contains("text-foreground")).toBe(true);
+  expect(message.classList.contains("text-sm")).toBe(true);
+  expect(message.classList.contains("md:text-base")).toBe(true);
+  expect(message.className).toContain(
+    "md:[&_[data-markdown-preview]]:text-base",
+  );
+  expect(message.className).toContain(
+    "md:[&_[data-code-card]:last-child]:mb-0",
+  );
   expect(
     message.querySelector("p")?.classList.contains("text-foreground"),
   ).toBe(true);
@@ -805,4 +816,19 @@ it("gives assistant prose primary foreground while older actions reveal on long 
       .getByRole("button", { name: "Copy message" })
       .getAttribute("data-compact-touch"),
   ).toBe("action");
+});
+
+it("keeps the last code card close to following disclosure rows on desktop", () => {
+  const { message } = renderTouchActions(
+    "overflow",
+    "```ts\nconst result = 1;\n```",
+  );
+  const card = message.querySelector("[data-code-card]");
+  expect(card).not.toBeNull();
+  expect(card?.classList.contains("my-2")).toBe(true);
+  expect(card?.matches(":last-child")).toBe(true);
+  expect(message.className).toContain(
+    "md:[&_[data-code-card]:last-child]:mb-0",
+  );
+  expect(message.querySelector("pre code")?.className).toContain("text-xs");
 });

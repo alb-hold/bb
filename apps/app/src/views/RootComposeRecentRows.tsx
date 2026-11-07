@@ -11,7 +11,6 @@ import { cn } from "@bb/shared-ui/lib/utils";
 import { CHROME_SECTION_LABEL_CLASS } from "@bb/shared-ui/chrome-style-tokens";
 import { COARSE_POINTER_TEXT_BASE_CLASS } from "@bb/shared-ui/coarse-pointer-sizing";
 import { Icon } from "@bb/shared-ui/icon";
-import { OverflowFade } from "@bb/shared-ui/overflow-fade";
 import { formatCompactRelativeTime } from "@bb/shared-ui/info-list-row";
 import { getThreadDisplayTitle } from "@/lib/thread-title";
 import { ThreadTitle } from "@/components/thread/ThreadTitleMentions";
@@ -133,7 +132,7 @@ export function RecentThreadRowContent({
         </span>
         <span
           className={cn(
-            "flex min-w-0 items-center gap-1.5 text-muted-foreground text-xs leading-4",
+            "flex min-w-0 items-center gap-1.5 text-subtle-foreground text-xs leading-4",
           )}
           title={metadataText}
         >
@@ -203,7 +202,6 @@ export function RecentThreadsSection({ children }: { children: ReactNode }) {
         >
           Recent
         </h2>
-        <OverflowFade placement="below" tone="background" />
       </div>
       {children}
     </section>

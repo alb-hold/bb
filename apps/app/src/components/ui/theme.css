@@ -747,7 +747,11 @@
    * follows by an imperceptible amount. */
   --ink: oklch(0.81 0 0);
   --background: var(--canvas);
-  --foreground: var(--ink);
+  --foreground: color-mix(
+    in oklch,
+    var(--ink) 42%,
+    var(--destructive-foreground)
+  );
   /* Card and popover stay flush with the canvas here too — elevation comes from
    * border + shadow. The lift ramp below uses larger steps than light so the
    * neutral surfaces still read against the darker canvas. */

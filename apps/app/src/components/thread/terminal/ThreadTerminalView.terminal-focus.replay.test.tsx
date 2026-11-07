@@ -196,6 +196,7 @@ afterEach(() => {
   cleanup();
   applyAppThemeCss("");
   document.documentElement.style.removeProperty("--foreground");
+  document.documentElement.style.removeProperty("--ink");
   document.documentElement.style.removeProperty("--sidebar");
   for (const sheet of Array.from(document.styleSheets)) {
     const owner = sheet.ownerNode;
@@ -467,6 +468,10 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
     vi.spyOn(document, "hasFocus").mockReturnValue(true);
     document.documentElement.style.setProperty(
       "--foreground",
+      "rgb(228, 228, 228)",
+    );
+    document.documentElement.style.setProperty(
+      "--ink",
       "rgb(12, 34, 56)",
     );
     document.documentElement.style.setProperty("--sidebar", "rgb(12, 34, 56)");
@@ -517,9 +522,10 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
     expect(testState.setDefaultColors).toHaveBeenCalledTimes(1);
     act(() => textarea.blur());
     document.documentElement.style.removeProperty("--foreground");
+    document.documentElement.style.removeProperty("--ink");
     document.documentElement.style.removeProperty("--sidebar");
     const lightCss =
-      ":root { --foreground: rgb(51, 51, 51); --sidebar: rgb(250, 250, 250); }";
+      ":root { --foreground: rgb(80, 80, 80); --ink: rgb(51, 51, 51); --sidebar: rgb(250, 250, 250); }";
     act(() => applyAppThemeCss(lightCss));
     await waitFor(() =>
       expect(testState.setDefaultColors).toHaveBeenLastCalledWith({
@@ -540,6 +546,7 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
       socket.sent.filter((raw) => JSON.parse(raw).type === "input"),
     ).toEqual([]);
     document.documentElement.style.removeProperty("--foreground");
+    document.documentElement.style.removeProperty("--ink");
     document.documentElement.style.removeProperty("--sidebar");
   });
 

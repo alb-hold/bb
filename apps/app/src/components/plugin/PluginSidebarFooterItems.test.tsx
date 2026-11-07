@@ -948,6 +948,8 @@ it("reserves missing stored plugin positions before late footer registration", (
   const slots = () =>
     view.container.querySelector("[data-footer-plugin-slots]")!;
   expect(slots()).not.toBeNull();
+  expect(slots().className).toContain("border-l");
+  expect(slots().className).toContain("pl-1");
   expect(
     slots().querySelectorAll("[data-footer-plugin-placeholder]"),
   ).toHaveLength(2);
@@ -999,4 +1001,44 @@ it("reserves two plugin controls on an uncached first paint", () => {
   expect(
     slots.querySelectorAll("[data-footer-plugin-placeholder]"),
   ).toHaveLength(2);
+});
+
+it("preserves branded footer identity as a monochrome currentColor mask", () => {
+  setPluginLogoUrls(
+    new Map([
+      [
+        "brand",
+        {
+          displayName: "Brand",
+          icon: "Zap",
+          compactIconUrl: "/brand-mark.svg",
+          logoUrl: null,
+          logoDarkUrl: null,
+          icons: new Map(),
+        },
+      ],
+    ]),
+  );
+  setPluginSlotRegistrations(
+    "brand",
+    registrationSet({
+      sidebarFooterActions: [
+        {
+          id: "open",
+          title: "Branded action",
+          icon: "brand:filled-mark",
+          run: () => {},
+        },
+      ],
+    }),
+  );
+  renderWithProviders(<FooterHarness />);
+  const button = screen.getByRole("button", { name: "Branded action" });
+  const mark = button.querySelector<HTMLElement>(
+    '[data-plugin-icon-asset="/brand-mark.svg"]',
+  );
+  expect(mark?.classList.contains("size-4")).toBe(true);
+  expect(mark?.style.backgroundColor).toBe("currentcolor");
+  expect(mark?.style.maskImage).toContain("/brand-mark.svg");
+  expect(button.querySelector("img")).toBeNull();
 });
