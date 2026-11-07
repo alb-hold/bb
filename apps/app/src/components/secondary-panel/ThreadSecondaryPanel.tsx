@@ -1101,10 +1101,7 @@ function ThreadSecondaryPanelContent({
         onResize={handlePanelResize}
         order={2}
         style={SECONDARY_RESIZABLE_PANEL_STYLE}
-        className={cn(
-          "min-w-0",
-          `relative transition-[flex-grow,flex-basis] ${PANEL_COLLAPSE_TRANSITION_CLASS}`,
-        )}
+        className="relative min-w-0"
       >
         {asideMarkup}
       </Panel>
@@ -1224,7 +1221,7 @@ function SecondaryPanelResizeHandle({
       hitAreaMargins={{ coarse: 0, fine: 0 }}
       tabIndex={-1}
       className={cn(
-        "group relative shrink-0 overflow-visible transition-[width,opacity,background-color]",
+        "group relative shrink-0 overflow-visible transition-[opacity,background-color]",
         PANEL_RESIZE_HANDLE_LAYER_CLASS,
         PANEL_COLLAPSE_TRANSITION_CLASS,
         isConversationCollapsed ? "cursor-default" : "cursor-col-resize",

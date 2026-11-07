@@ -369,10 +369,7 @@ export function SecondaryPanelLayout({
             minSize={minimumSize.min * 100}
             order={1}
             style={{ overflow: "clip" }}
-            className={cn(
-              "min-w-0 transition-[flex-grow,flex-basis]",
-              PANEL_COLLAPSE_TRANSITION_CLASS,
-            )}
+            className="min-w-0"
           >
             {mainContent}
           </Panel>

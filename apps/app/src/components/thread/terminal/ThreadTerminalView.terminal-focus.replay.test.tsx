@@ -2935,6 +2935,77 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
 });
 
 describe("terminal first paint", () => {
+  it("keeps the renderer inset through replay, fitting and session switches", async () => {
+    prepareFirstAttachFontMetricsHarness();
+    vi.stubGlobal("innerWidth", 390);
+    const style = document.createElement("style");
+    style.textContent = ".pl-2 { padding-left: 8px; }";
+    document.head.append(style);
+    const insets: string[] = [];
+    const terminals: Terminal[] = [];
+    const open = Terminal.prototype.open;
+    vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
+      this: Terminal,
+      element: HTMLElement,
+    ) {
+      open.call(this, element);
+      if (!element.matches("[data-terminal-renderer]")) return;
+      terminals.push(this);
+      insets.push(getComputedStyle(element).paddingLeft);
+      this.onRender(() => {
+        insets.push(getComputedStyle(element).paddingLeft);
+      });
+    });
+    try {
+      let session = renderMobileTerminal({ cols: 120, rows: 36 });
+      for (let index = 0; index < 2; index += 1) {
+        await waitForReadinessCondition(() => {
+          expect(testState.sockets).toHaveLength(index + 1);
+        }, "terminal socket did not mount");
+        const socket = testState.sockets[index]!;
+        await waitForReadiness(socket.opened, "terminal socket did not open");
+        socket.receive({
+          type: "attached",
+          session,
+          replayStartSeq: 0,
+          nextSeq: 1,
+        });
+        socket.receive({
+          type: "output",
+          chunk: { seq: 0, dataBase64: btoa("SWITCH-INSET\r\n") },
+        });
+        await waitForReadinessCondition(() => {
+          expect(
+            socket.sent.map((message) => JSON.parse(message)),
+          ).toContainEqual({
+            type: "ack",
+            nextSeq: 1,
+          });
+        }, "terminal replay did not finish");
+        const host = document.querySelector<HTMLElement>(
+          "[data-terminal-renderer]",
+        )!;
+        expect(getComputedStyle(host).paddingLeft).toBe("8px");
+        socket.receive({
+          type: "session-updated",
+          session: { ...session, cols: 51, rows: 47 },
+        });
+        await act(async () => {
+          await writeReplay(terminals[index]!, "");
+        });
+        expect(getComputedStyle(host).paddingLeft).toBe("8px");
+        if (index === 0) {
+          session = { ...session, id: "term_switch_inset" };
+          rerenderMobileTerminal(session);
+        }
+      }
+      expect(insets.length).toBeGreaterThan(2);
+      expect(new Set(insets)).toEqual(new Set(["8px"]));
+    } finally {
+      style.remove();
+    }
+  });
+
   it("fits a live native session at phone width without retained-history scrolling", async () => {
     prepareFirstAttachFontMetricsHarness();
     testState.touchEnabled = true;
@@ -3246,7 +3317,7 @@ describe("terminal first paint", () => {
     expect(surface.style.opacity).toBe("");
     expect(surface.dataset.fitGridCols).toBe("49");
     expect(surface.dataset.renderGridCols).toBe("51");
-    expect(surface.style.paddingLeft).toBe("0px");
+    expect(surface.style.paddingLeft).toBe("");
     expect(
       surface.querySelector<HTMLElement>(".xterm")?.dataset.surfaceScale,
     ).toBe("1");
