@@ -1023,7 +1023,7 @@ function ThreadRowComponent({
               title={labelTitle}
               onDoubleClick={startTitleEditing}
             >
-              <span className="bb-thread-title block min-w-0 flex-1 truncate max-md:font-normal">
+              <span className="bb-thread-title block min-w-0 flex-1 truncate max-md:font-normal md:font-medium">
                 <ThreadTitle threadId={thread.id} />
               </span>
               <span data-sidebar-thread-context="" className="hidden min-w-0 items-center gap-1 truncate text-xs font-normal leading-4 text-muted-foreground [&_time]:text-xs [&_time]:text-muted-foreground md:flex">

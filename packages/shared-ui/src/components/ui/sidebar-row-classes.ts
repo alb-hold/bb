@@ -93,7 +93,7 @@ export const PROJECT_LIST_ACTION_BUTTON_CLASS = cn(
 );
 
 export const SIDEBAR_RAIL_BUTTON_CLASS = cn(
-  "bb-sidebar-chrome-icon relative size-(--bb-sidebar-control-size) shrink-0 rounded-md p-0 text-muted-foreground ring-sidebar-ring",
+  "bb-sidebar-chrome-icon relative size-(--bb-sidebar-control-size) shrink-0 rounded-md p-0 text-sidebar-foreground ring-sidebar-ring",
   "hover:bg-state-hover hover:text-sidebar-foreground focus-visible:ring-2",
   "aria-[current=page]:bg-state-active aria-[current=page]:text-sidebar-foreground",
   "data-[state=open]:bg-state-active data-[state=open]:text-sidebar-foreground",
@@ -103,5 +103,5 @@ export const SIDEBAR_RAIL_BUTTON_CLASS = cn(
 export const SIDEBAR_FOOTER_ACTION_CLASS = cn(
   COARSE_POINTER_ROW_HEIGHT_CLASS,
   COARSE_POINTER_CHILD_ICON_BUTTON_CLASS,
-  "bb-sidebar-chrome-icon items-center justify-center text-muted-foreground hover:text-sidebar-foreground [&_[data-icon-root]]:size-(--bb-sidebar-control-icon-size)",
+  "bb-sidebar-chrome-icon items-center justify-center text-sidebar-foreground hover:text-sidebar-foreground [&_[data-icon-root]]:size-(--bb-sidebar-control-icon-size)",
 );

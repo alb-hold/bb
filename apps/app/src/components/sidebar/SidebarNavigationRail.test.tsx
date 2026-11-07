@@ -1078,6 +1078,6 @@ describe("Rail", () => {
 
 it("preserves the sidebar selected surface and normalizes footer glyphs", () => {
   expect(SIDEBAR_RAIL_BUTTON_CLASS).toContain("aria-[current=page]:bg-state-active");
-  expect(SIDEBAR_RAIL_BUTTON_CLASS).toContain("text-muted-foreground");
+  expect(SIDEBAR_RAIL_BUTTON_CLASS).toContain("text-sidebar-foreground");
   expect(SIDEBAR_FOOTER_ACTION_CLASS).toContain("[&_[data-icon-root]]:size-(--bb-sidebar-control-icon-size)");
 });

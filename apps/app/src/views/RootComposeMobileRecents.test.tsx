@@ -413,20 +413,18 @@ describe("mobile recent thread rows", () => {
       </TestProviders>,
     );
 
-    expect(screen.getByText(`bb \u00b7 ${expected}`)).not.toBeNull();
-    expect(screen.getByText(expected).tagName).toBe("TIME");
-    const metadata = screen.getByText(`bb \u00b7 ${expected}`).parentElement!;
+    expect(screen.getByTitle(`bb \u00b7 ${expected}`).textContent).toBe(`bb \u00b7 ${expected}`);
+    expect(screen.getByText(expected, { selector: "time" }).tagName).toBe("TIME");
+    const metadata = screen.getByTitle(`bb \u00b7 ${expected}`);
     expect(metadata.classList.contains("text-xs")).toBe(true);
     expect(metadata.classList.contains("text-muted-foreground")).toBe(true);
     expect(metadata.className).not.toContain("pointer-coarse:text-sm");
     expect(
-      screen
-        .getByText(`bb \u00b7 ${expected}`)
-        .previousElementSibling?.getAttribute("data-icon"),
+      metadata.firstElementChild?.getAttribute("data-icon"),
     ).toBe("Folder");
   });
 
-  it("includes the worktree branch when the thread has one", () => {
+  it.each(["bb/mobile-home", "bb/add-e2e-coverage-for-the-mobile-home-recent-list-with-a-very-long-branch"])("keeps project and age outside the shrinking branch: %s", (branch) => {
     render(
       <TestProviders>
         <RootComposeMobileRecents
@@ -436,7 +434,7 @@ describe("mobile recent thread rows", () => {
           showCreatingRow={false}
           threads={[
             makeThread({
-              environmentBranchName: "bb/mobile-home",
+              environmentBranchName: branch,
               environmentProviderId: null,
               latestAttentionAt: Date.now() - 3 * 60 * 60 * 1000,
               activity: {
@@ -452,9 +450,21 @@ describe("mobile recent thread rows", () => {
       </TestProviders>,
     );
 
-    const metadata = screen.getByText("bb \u00b7 bb/mobile-home \u00b7 3h");
+    const metadata = screen.getByTitle(`bb \u00b7 ${branch} \u00b7 3h`);
+    expect(metadata.textContent).toBe(`bb \u00b7 ${branch} \u00b7 3h`);
+    const project = screen.getByText("bb");
+    const age = screen.getByText("3h");
+    const branchNode = screen.getByText(branch);
+    for (const node of [project, age]) {
+      expect(node.classList.contains("shrink-0")).toBe(true);
+      expect(node.classList.contains("min-w-0")).toBe(false);
+    }
+    expect(age.classList.contains("truncate")).toBe(false);
+    expect(branchNode.classList.contains("min-w-0")).toBe(true);
+    expect(branchNode.classList.contains("truncate")).toBe(true);
+    expect(metadata.classList.contains("leading-4")).toBe(true);
     expect(
-      metadata.previousElementSibling?.hasAttribute("data-icon-root"),
+      metadata.firstElementChild?.hasAttribute("data-icon-root"),
     ).toBe(true);
   });
 
@@ -490,7 +500,7 @@ describe("mobile recent thread rows", () => {
       </QueryClientProvider>,
     );
 
-    expect(screen.getByText("Personal \u00b7 3h")).not.toBeNull();
+    expect(screen.getByTitle("Personal \u00b7 3h").textContent).toBe("Personal \u00b7 3h");
   });
 
   it("drops the status slot entirely when a thread has no indicator", () => {

@@ -307,7 +307,7 @@ describe("PluginSidebarFooterItems", () => {
     expect(screen.getByRole("button", { name: "Report a bug" })).toBeDefined();
     expect(screen.queryByRole("button", { name: "Mobile apps" })).toBeNull();
     const more = screen.getByRole("button", { name: "More footer actions" });
-    expect(more.className).toContain("text-muted-foreground");
+    expect(more.className).toContain("text-sidebar-foreground");
     expect(more.className).not.toContain("opacity-80");
     fireEvent.pointerDown(
       screen.getByRole("button", { name: "More footer actions" }),

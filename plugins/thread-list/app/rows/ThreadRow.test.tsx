@@ -538,6 +538,11 @@ afterEach(() => {
 });
 
 describe("ThreadRow", () => {
+  it("emphasizes desktop titles while keeping context secondary", () => {
+    const view = renderThreadRow();
+    expect(view.container.querySelector(".bb-thread-title")?.classList.contains("md:font-medium")).toBe(true);
+    expect(view.container.querySelector("[data-sidebar-thread-context]")?.classList.contains("text-muted-foreground")).toBe(true);
+  });
   it("renders terminal attention delivered by the host and clears it with the state", () => {
     const view = renderThreadRow({
       thread: createThread({ indicator: "check-terminal" }),
