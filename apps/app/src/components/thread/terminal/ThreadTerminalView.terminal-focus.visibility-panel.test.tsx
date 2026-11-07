@@ -578,7 +578,12 @@ describe("ThreadTerminalView terminal visibility and panel", () => {
         fitted = fit;
         if (lateRenderer === "webgl") {
           vi.spyOn(rendererModule, "loadTerminalWebglRenderer").mockReturnValue(
-            { renderer: "webgl", setVisible() {}, dispose() {} },
+            {
+              renderer: "webgl",
+              initialAttemptComplete: true,
+              setVisible() {},
+              dispose() {},
+            },
           );
           finishRenderer?.({
             WebglAddon: class {
@@ -640,6 +645,7 @@ describe("ThreadTerminalView terminal visibility and panel", () => {
     });
     vi.spyOn(rendererModule, "loadTerminalWebglRenderer").mockReturnValue({
       renderer: "webgl",
+      initialAttemptComplete: true,
       setVisible() {},
       dispose() {},
     });
@@ -1196,6 +1202,7 @@ describe("ThreadTerminalView terminal visibility and panel", () => {
     }
     if (!startsHidden) {
       fitDimensionsAvailable = true;
+      for (const notify of notifySize) notify();
       fireEvent(window, new Event("resize"));
       await waitForReadinessCondition(
         () => expect(renderer.dataset.fitGridCols).toBe("125"),

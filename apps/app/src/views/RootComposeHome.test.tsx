@@ -106,7 +106,10 @@ describe("RootComposeHome", () => {
     expect(screen.getByText("Start a new thread").className).toContain(
       "text-xl font-medium text-foreground",
     );
-    expect(column.className).toContain("my-auto");
+    expect(column.className).toContain("row-start-2");
+    expect(column.parentElement?.className).toContain(
+      "grid-rows-[minmax(0,0.38fr)_auto_minmax(0,0.62fr)]",
+    );
     expect(column.className).toContain("shrink-0");
     expect(column.parentElement?.className).toContain("overflow-y-auto");
   });

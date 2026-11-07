@@ -519,7 +519,7 @@ describe("mobile recent thread rows", () => {
     expect(branch.parentElement?.dataset.branchMinimum).toBe("main");
     expect(
       project.parentElement?.parentElement?.classList.contains(
-        "grid-cols-[minmax(0,max-content)_auto_minmax(min-content,1fr)]",
+        "grid-cols-[minmax(0,max-content)_auto_minmax(min-content,max-content)]",
       ),
     ).toBe(true);
   });
@@ -561,7 +561,7 @@ describe("mobile recent thread rows", () => {
     );
   });
 
-  it("drops the status slot entirely when a thread has no indicator", () => {
+  it("reserves an empty status slot when a thread has no indicator", () => {
     render(
       <TestProviders>
         <RootComposeMobileRecents
@@ -593,8 +593,8 @@ describe("mobile recent thread rows", () => {
     expect(screen.queryByLabelText("Plan mode active")).toBeNull();
     expect(screen.queryByLabelText("Thread working")).toBeNull();
     expect(
-      screen.getByRole("link").querySelectorAll("span.size-6"),
-    ).toHaveLength(0);
+      screen.getByRole("link").querySelectorAll("[data-recent-status-slot]"),
+    ).toHaveLength(1);
   });
 });
 

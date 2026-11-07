@@ -1,3 +1,4 @@
+import { readCachedTerminalGrid } from "./terminal-grid-cache";
 import { markTerminalPerformance } from "@/lib/terminal-performance";
 import type { TerminalBrowserSocket } from "@bb/client-core";
 import type {
@@ -8,6 +9,7 @@ import type {
 
 const pending = new Map<string, BufferedTerminalSocket>();
 const active = new Map<string, BufferedTerminalSocket>();
+let cachedClaimMisses = 0;
 const MAX_BYTES = 24 * 1024 * 1024;
 
 type Delivery = () => void;
@@ -20,6 +22,9 @@ class BufferedTerminalSocket implements TerminalBrowserSocket {
   private queue: Delivery[] = [];
   private bytes = 0;
   private adopted = false;
+  initialSizeClaim: TerminalBrowserSocket["initialSizeClaim"];
+  private fittedGrid: { cols: number; rows: number } | null = null;
+  private cachedClaim: { cols: number; rows: number } | null = null;
   private firstLiveOutput = false;
   private firstReplayBatch = false;
   private timer: ReturnType<typeof setTimeout>;
@@ -35,6 +40,21 @@ class BufferedTerminalSocket implements TerminalBrowserSocket {
     this.timer = setTimeout(() => this.close(), 10_000);
     this.socket.onopen = (event) => {
       markTerminalPerformance("terminal-socket-open");
+      const terminalId = new URL(url).pathname.match(
+        /\/terminals\/([^/]+)(?:\/|$)/,
+      )?.[1];
+      const grid = terminalId
+        ? readCachedTerminalGrid(decodeURIComponent(terminalId))
+        : null;
+      if (grid) {
+        this.initialSizeClaim = grid;
+        this.cachedClaim = grid;
+        this.socket.send(
+          JSON.stringify({ type: "resize", ...grid, claim: true }),
+        );
+        markTerminalPerformance("terminal-cached-grid-claimed");
+        if (this.fittedGrid) this.reconcileGrid(this.fittedGrid);
+      }
       this.deliver(() => this.onopen?.(event));
     };
     this.socket.onmessage = (event) => {
@@ -79,6 +99,9 @@ class BufferedTerminalSocket implements TerminalBrowserSocket {
     };
     this.socket.onerror = (event) => this.deliver(() => this.onerror?.(event));
     this.socket.onclose = (event) => {
+      this.initialSizeClaim = undefined;
+      this.fittedGrid = null;
+      this.cachedClaim = null;
       this.forget();
       clearTimeout(this.timer);
       this.deliver(() => this.onclose?.(event));
@@ -116,11 +139,28 @@ class BufferedTerminalSocket implements TerminalBrowserSocket {
     return this;
   }
 
+  reconcileGrid(grid: { cols: number; rows: number }) {
+    this.fittedGrid = grid;
+    const cached = this.cachedClaim;
+    if (!cached) return;
+    this.cachedClaim = null;
+    if (grid.cols === cached.cols && grid.rows === cached.rows) {
+      markTerminalPerformance("terminal-cached-grid-hit");
+    } else {
+      markTerminalPerformance("terminal-cached-grid-miss", {
+        detail: { count: ++cachedClaimMisses },
+      });
+    }
+  }
+
   send(data: string) {
     this.socket.send(data);
   }
 
   close(code?: number, reason?: string) {
+    this.initialSizeClaim = undefined;
+    this.fittedGrid = null;
+    this.cachedClaim = null;
     clearTimeout(this.timer);
     this.forget();
     this.queue = [];
@@ -175,4 +215,11 @@ export function createPrefetchedTerminalSocket(
 
 export function discardPrefetchedTerminalSocket(url: string): void {
   pending.get(attachUrl(url))?.close();
+}
+
+export function reconcilePrefetchedTerminalGrid(
+  url: string,
+  grid: { cols: number; rows: number },
+): void {
+  active.get(attachUrl(url))?.reconcileGrid(grid);
 }

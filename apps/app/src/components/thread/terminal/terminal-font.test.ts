@@ -23,7 +23,7 @@ it.each([360, 390, 1280])(
     );
     const style = document.createElement("style");
     style.textContent =
-      ".text-sm { font-size: 15px; } .font-normal { font-weight: 450; }";
+      ".text-terminal { font-size: 15px; } .font-normal { font-weight: 450; }";
     document.body.append(style);
     expect(readTerminalFontMetrics()).toEqual({
       fontFamily: "Test Mono, monospace",
@@ -50,20 +50,34 @@ it("remeasures cached metrics only after viewport class or theme epoch changes",
   const width = vi.spyOn(window, "innerWidth", "get").mockReturnValue(1280);
   const style = document.createElement("style");
   style.textContent =
-    ".text-sm { font-size: 15px; } .font-normal { font-weight: 450; }";
+    ".text-terminal { font-size: 15px; } .font-normal { font-weight: 450; }";
   document.body.append(style);
   const append = vi.spyOn(document.body, "append");
   expect(readTerminalFontMetrics().fontSize).toBe(15);
   expect(readTerminalFontMetrics().fontWeight).toBe(450);
   expect(append).toHaveBeenCalledTimes(1);
   style.textContent =
-    ".text-sm { font-size: 16px; } .font-normal { font-weight: 450; }";
+    ".text-terminal { font-size: 16px; } .font-normal { font-weight: 450; }";
   width.mockReturnValue(390);
   expect(readTerminalFontMetrics().fontSize).toBe(16);
   expect(append).toHaveBeenCalledTimes(2);
   style.textContent =
-    ".text-sm { font-size: 16px; } .font-normal { font-weight: 500; }";
+    ".text-terminal { font-size: 16px; } .font-normal { font-weight: 500; }";
   applyAppThemeCss(".p85-theme-epoch {}");
   expect(readTerminalFontMetrics().fontWeight).toBe(500);
   expect(append).toHaveBeenCalledTimes(3);
+});
+
+it.each([
+  [360, 15],
+  [390, 15],
+  [1280, 14],
+])("uses terminal typography at %i px", (width, size) => {
+  vi.spyOn(window, "innerWidth", "get").mockReturnValue(width);
+  document.documentElement.className = `terminal-size-${width}`;
+  const style = document.createElement("style");
+  style.textContent = `.text-terminal { font-size: ${width < 768 ? 15 : 14}px; }`;
+  document.body.append(style);
+  expect(readTerminalFontMetrics().fontSize).toBe(size);
+  document.documentElement.className = "";
 });

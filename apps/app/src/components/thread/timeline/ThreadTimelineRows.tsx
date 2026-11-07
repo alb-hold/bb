@@ -1017,7 +1017,9 @@ function ConversationRow({
       }
       turnTokenSummary={turnTokenSummary}
       mobileActionDisplay={
-        row.role === "assistant" && row.id === latestActionableMessageId ? "inline" : "overflow"
+        row.role === "assistant" && row.id === latestActionableMessageId
+          ? "inline"
+          : "overflow"
       }
       streaming={
         row.role === "assistant" && row.id === streamingAssistantMessageId
@@ -2415,7 +2417,9 @@ function TimelineRowItemWrapper({
   row,
   spacing,
   windowedState,
+  style,
 }: {
+  style?: CSSProperties;
   children: ReactNode;
   row: ThreadTimelineViewRow;
   spacing: TimelineRowsListSpacing;
@@ -2438,11 +2442,12 @@ function TimelineRowItemWrapper({
           ? TOP_LEVEL_TIMELINE_ROW_INTRINSIC_SIZE_CLASS_NAME
           : undefined
       }
-      style={
-        isTopLevel && !windowedState.windowingEnabled
+      style={{
+        ...(isTopLevel && !windowedState.windowingEnabled
           ? timelineRowContainmentStyle(row)
-          : undefined
-      }
+          : undefined),
+        ...style,
+      }}
     >
       {children}
     </div>
@@ -2518,6 +2523,12 @@ function estimateTimelineWindowedRowHeight(
   }
   return 20 + lineCount * 23;
 }
+
+const DISCLOSURE_ROW_KINDS = new Set([
+  "work",
+  "step-summary",
+  "bundle-summary",
+]);
 
 function TimelineRowsList({
   compactActivityIntents,
@@ -2615,6 +2626,27 @@ function TimelineRowsList({
     unreadDividerAutoScroll,
     unreadDividerPlacement: loadedUnreadDividerPlacement,
   });
+  const itemGaps = useMemo(() => {
+    const gaps = items.map((current, index) => {
+      const next = items[index + 1];
+      return current.kind === "row" &&
+        next?.kind === "row" &&
+        DISCLOSURE_ROW_KINDS.has(current.row.kind) &&
+        DISCLOSURE_ROW_KINDS.has(next.row.kind)
+        ? 4
+        : 8;
+    });
+    return gaps.includes(4) ? gaps : 8;
+  }, [items]);
+  const estimateItemHeight = useCallback(
+    (index: number) => {
+      const item = items[index];
+      return item?.kind === "row"
+        ? estimateTimelineWindowedRowHeight(item.row, spacing)
+        : 28;
+    },
+    [items, spacing],
+  );
   const itemKeys = useMemo(
     () =>
       items.map((item) => {
@@ -2671,14 +2703,8 @@ function TimelineRowsList({
         >
           <TimelineWindowedItems
             alwaysMountedKeys={alwaysMountedKeys}
-            estimateItemHeight={(index) => {
-              const item = items[index];
-              if (item?.kind === "row") {
-                return estimateTimelineWindowedRowHeight(item.row, spacing);
-              }
-              return 28;
-            }}
-            gap={spacing === "bundle" ? 0 : isCompactTouch ? 0 : 8}
+            estimateItemHeight={estimateItemHeight}
+            gap={spacing === "bundle" || isCompactTouch ? 0 : itemGaps}
             initialWindowAnchor={
               isTopLevelList && detailScrollRoot === null ? scrollRestore : null
             }

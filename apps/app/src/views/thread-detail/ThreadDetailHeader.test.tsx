@@ -272,20 +272,50 @@ describe("ThreadDetailHeader", () => {
       container.querySelector("[data-terminal-renderer]"),
     );
   });
-  it.each([360, 361])(
-    "preserves search in the menu only at narrow phone width %s",
-    (width) => {
-      vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
-        width,
-      } as DOMRect);
-      let actions: ThreadDetailHeaderActionsMenuArgs["terminalSearchActions"] =
-        [];
+  it.each([
+    [360, 120, true],
+    [360, 119, false],
+    [390, 120, true],
+    [390, 119, false],
+  ] as const)(
+    "shows search at width %s with %s px title space when fits=%s",
+    (width, titleWidth, fits) => {
+      vi.spyOn(
+        HTMLElement.prototype,
+        "getBoundingClientRect",
+      ).mockImplementation(function (this: HTMLElement) {
+        if (this.tagName === "HEADER") return new DOMRect(0, 0, width, 52);
+        if (this.hasAttribute("data-terminal-search-trigger"))
+          return new DOMRect(0, 0, 44, 44);
+        if (
+          this.firstElementChild?.hasAttribute(
+            "data-thread-detail-header-title",
+          )
+        ) {
+          const folded = !document.querySelector(
+            "[data-terminal-search-trigger]",
+          );
+          return new DOMRect(0, 0, titleWidth + (folded ? 48 : 0), 36);
+        }
+        return new DOMRect();
+      });
       render(
         <PaneContext.Provider value={PANE_CONTEXT}>
           <ThreadDetailHeader
             actionsMenu={(args) => {
-              actions = args.terminalSearchActions;
-              return <button>Thread actions</button>;
+              return (
+                <div>
+                  <button>Thread actions</button>
+                  {args.terminalSearchActions.map((item) => (
+                    <button
+                      key={item.key}
+                      aria-label="Search terminal output in menu"
+                    >
+                      {item.action.label}
+                    </button>
+                  ))}
+                </div>
+              );
             }}
             hasNativeTerminal
             isSecondaryPanelOpen={false}
@@ -295,13 +325,15 @@ describe("ThreadDetailHeader", () => {
           />
         </PaneContext.Provider>,
       );
-      expect(actions.map((item) => item.action.label)).toEqual(
-        width === 360 ? ["Search terminal output"] : [],
-      );
+      expect(
+        screen.queryByRole("button", {
+          name: "Search terminal output in menu",
+        }) !== null,
+      ).toBe(!fits);
       expect(
         screen.queryByRole("button", { name: "Search terminal output" }) !==
           null,
-      ).toBe(width > 360);
+      ).toBe(fits);
     },
   );
   it("puts native terminal search in the thread header", () => {
@@ -1252,5 +1284,58 @@ it.each([true, false])(
     expect(title.classList.contains("truncate")).toBe(true);
     expect(title.classList.contains("min-w-0")).toBe(true);
     expect(title.parentElement!.contains(status)).toBe(true);
+  },
+);
+
+it.each([true, false])(
+  "aligns chat activity below the title on compact=%s",
+  (compact) => {
+    viewportState.isCompactViewport = compact;
+    const { container } = render(
+      <PaneContext.Provider value={PANE_CONTEXT}>
+        <ThreadDetailHeader
+          actionsMenu={null}
+          isSecondaryPanelOpen={false}
+          onToggleSecondaryPanel={vi.fn()}
+          thread={THREAD_TARGET}
+          threadTitle="Chat thread"
+        />
+      </PaneContext.Provider>,
+    );
+    const status = screen.getByRole("status", { name: "Thread activity" });
+    expect(status.textContent).toBe("Idle");
+    expect(status.classList.contains("h-4")).toBe(true);
+    expect(
+      container.querySelector("[data-thread-detail-header-title]")!
+        .parentElement,
+    ).toBe(status.parentElement);
+  },
+);
+
+it.each([
+  ["none", "Idle"],
+  ["working", "Working"],
+  ["needs-input", "Needs input"],
+  ["check-terminal", "Check terminal"],
+  ["queued-waiting", "Thread has a message waiting to send"],
+  ["done-unread", "Done"],
+] as const)(
+  "shares the native terminal's %s activity vocabulary",
+  (activityIndicator, label) => {
+    render(
+      <PaneContext.Provider value={PANE_CONTEXT}>
+        <ThreadDetailHeader
+          actionsMenu={null}
+          isSecondaryPanelOpen={false}
+          onToggleSecondaryPanel={vi.fn()}
+          thread={THREAD_TARGET}
+          threadTitle="Chat thread"
+          activityIndicator={activityIndicator}
+        />
+      </PaneContext.Provider>,
+    );
+    expect(
+      screen.getByRole("status", { name: "Thread activity" }).textContent,
+    ).toBe(label);
   },
 );

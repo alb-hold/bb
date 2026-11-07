@@ -34,6 +34,10 @@ it.each(["native", "other"])(
   "connects only the current route (%s) from the HTML response without React or the general socket",
   async (route) => {
     vi.resetModules();
+    let preloadedAtSocket = false;
+    vi.mocked(prefetchTerminalSocket).mockImplementation(() => {
+      preloadedAtSocket = warm.xterm.mock.calls.length === 1;
+    });
     history.replaceState({}, "", `/threads/${route}`);
     globalThis.__bbInitialNativeTerminalRequest = {
       path: "/api/v1/threads/native/native-terminal",
@@ -63,6 +67,7 @@ it.each(["native", "other"])(
       );
       expect(warm.panel).toHaveBeenCalledOnce();
       expect(warm.xterm).toHaveBeenCalledOnce();
+      expect(preloadedAtSocket).toBe(true);
       expect(warm.route).toHaveBeenCalledOnce();
     } else {
       expect(prefetchTerminalSocket).not.toHaveBeenCalled();

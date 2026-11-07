@@ -160,6 +160,7 @@ afterEach(() => {
   cleanup();
   hooks.waiting = false;
   vi.clearAllMocks();
+  vi.restoreAllMocks();
   hooks.profile.mockReturnValue({
     data: {
       executed: null,
@@ -194,14 +195,29 @@ function TerminalWithHeader(
 }
 
 describe("NativeThreadTerminalMain", () => {
-  it.each([
-    ["active", "Working"],
-    ["idle", "Idle"],
-    ["idle", "Check terminal"],
-    ["idle", "Needs input"],
-  ] as const)(
-    "places %s activity inside the existing header without a terminal row",
-    (displayStatus, label) => {
+  it.each(
+    [false, true].flatMap(
+      (compact) =>
+        [
+          ["active", "Working", compact],
+          ["idle", "Idle", compact],
+          ["idle", "Check terminal", compact],
+          ["idle", "Needs input", compact],
+        ] as const,
+    ),
+  )(
+    "places %s activity (%s) inside the header on compact=%s",
+    (displayStatus, label, compact) => {
+      vi.spyOn(window, "matchMedia").mockImplementation((query) => ({
+        matches: compact,
+        media: query,
+        onchange: null,
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        dispatchEvent: () => false,
+      }));
       hooks.waiting = label === "Needs input";
       const terminal = {
         id: "term-live",

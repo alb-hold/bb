@@ -1,4 +1,7 @@
-import { markTerminalPerformance } from "@/lib/terminal-performance";
+import {
+  markTerminalPerformance,
+  measureTerminalPerformance,
+} from "@/lib/terminal-performance";
 import { rememberTerminalGrid } from "./terminal-grid-cache";
 import { createTerminalFitWork } from "./terminal-fit-work";
 import { createTerminalHiddenOutput } from "./terminal-hidden-output";
@@ -13,6 +16,7 @@ export {
 } from "./terminal-font";
 import {
   createPrefetchedTerminalSocket,
+  reconcilePrefetchedTerminalGrid,
   prefetchTerminalSocket,
   discardPrefetchedTerminalSocket,
 } from "./terminal-socket-prefetch";
@@ -2430,7 +2434,11 @@ export function ThreadTerminalView({
                 if (disposed || terminal === null) return;
                 fitWork.invalidate();
                 scheduleFitRef.current?.();
-                if (renderer === "webgl" && !initialRendererSettled)
+                if (
+                  !initialRendererSettled &&
+                  (renderer === "webgl" ||
+                    webglRenderer?.initialAttemptComplete)
+                )
                   settleInitialRenderer();
               },
             },
@@ -2629,11 +2637,17 @@ export function ThreadTerminalView({
           rendererSettled: initialRendererSettled,
           retainedOutputReplayed,
           work: () => {
-            screenLoadingPreview?.refresh(
-              activeTerminal.options.lineHeight ?? 1,
-            );
+            if (screenLoadingPreview)
+              measureTerminalPerformance("terminal-fit-snapshot-refresh", () =>
+                screenLoadingPreview?.refresh(
+                  activeTerminal.options.lineHeight ?? 1,
+                ),
+              );
             updateGridVisibility();
-            const fitted = activeFitAddon.proposeDimensions();
+            const fitted = measureTerminalPerformance(
+              "terminal-fit-propose-dimensions",
+              () => activeFitAddon.proposeDimensions(),
+            );
             if (
               fitted === undefined ||
               !Number.isFinite(fitted.cols) ||
@@ -2651,7 +2665,10 @@ export function ThreadTerminalView({
             localFitGrid = { cols: fitted.cols, rows: fitted.rows };
             containerElement.dataset.fitGridCols = String(fitted.cols);
             containerElement.dataset.fitGridRows = String(fitted.rows);
-            replayPreview?.setFitGrid(fitted.cols, fitted.rows);
+            if (replayPreview)
+              measureTerminalPerformance("terminal-fit-preview-layout", () =>
+                replayPreview?.setFitGrid(fitted.cols, fitted.rows),
+              );
             if (retainNativeOutput && sessionStatusRef.current === "exited") {
               if (retainedOutputReplayed) {
                 retainedOutputGrid = latestPtyGrid;
@@ -2683,6 +2700,8 @@ export function ThreadTerminalView({
                 transport !== null &&
                 (claimedFitGrid?.cols !== fitted.cols ||
                   claimedFitGrid.rows !== fitted.rows);
+              if (transport)
+                reconcilePrefetchedTerminalGrid(earlySocketUrl, fitted);
               transport?.sendResize(fitted.cols, fitted.rows, claimFit);
               if (claimFit) {
                 if (claimedFitGrid === null)
@@ -2713,15 +2732,19 @@ export function ThreadTerminalView({
         )
           return;
         clearTimeout(rendererDeadline);
+        initialRendererSettled = true;
         if (holdForFittedGrid && webglRenderer?.renderer === "dom") {
           webglVisibilityRef.current?.dispose();
           webglVisibilityRef.current = null;
           webglRenderer.dispose();
           webglRenderer = null;
         }
-        initialRendererSettled = true;
         markTerminalPerformance("terminal-initial-renderer-settled");
-        fitTerminal();
+        measureTerminalPerformance(
+          "terminal-initial-renderer-fit",
+          fitTerminal,
+        );
+        markTerminalPerformance("terminal-initial-renderer-fit-end");
         resolveRendererSettled();
       }
       if (!initialRendererSettled) {
@@ -2736,7 +2759,7 @@ export function ThreadTerminalView({
           if (
             initialRendererSettled ||
             webglRenderer === null ||
-            webglRenderer.renderer === "webgl"
+            webglRenderer.initialAttemptComplete
           ) {
             settleInitialRenderer();
           }
@@ -3104,7 +3127,14 @@ export function ThreadTerminalView({
               checkReplayReveal?.();
             } else revealReplay();
           },
-          onSessionChange: onSessionChangeRef.current,
+          onSessionChange: (updatedSession) => {
+            if (message.type === "attached")
+              measureTerminalPerformance(
+                "terminal-attached-session-change",
+                () => onSessionChangeRef.current?.(updatedSession),
+              );
+            else onSessionChangeRef.current?.(updatedSession);
+          },
           onOutputStart: recordOutputStart,
           onOutputParsed: (sequence) => {
             if (sequence + 1 === replayTimingNextSeq) {
@@ -3303,13 +3333,16 @@ export function ThreadTerminalView({
               hiddenOutput.push(chunk, lastQueuedOutputNextSeq);
             return;
           }
-          for (const write of terminalReplayWrites(
-            chunks,
-            outputBoundaries,
-            replayCheckpointSequence,
-          )) {
-            handleMessage({ type: "output", chunk: write.chunk }, write);
-          }
+          markTerminalPerformance("terminal-replay-batch-dispatch-start");
+          measureTerminalPerformance("terminal-replay-batch-dispatch", () => {
+            for (const write of terminalReplayWrites(
+              chunks,
+              outputBoundaries,
+              replayCheckpointSequence,
+            )) {
+              handleMessage({ type: "output", chunk: write.chunk }, write);
+            }
+          });
         },
         onSequenceGap: () => {
           if (terminalVisible !== true || !isPanelOpenRef.current) {
@@ -3408,7 +3441,10 @@ export function ThreadTerminalView({
           captureLiveViewportBeforeGridResize();
           initialLayoutSettled = true;
           markTerminalPerformance("terminal-initial-layout-settled");
-          fitTerminal();
+          measureTerminalPerformance(
+            "terminal-initial-layout-fit",
+            fitTerminal,
+          );
           activeTransport.markLayoutSettled();
           if (hasRestoredViewport && !hasManualScrollIntent) {
             restoreViewport(true);

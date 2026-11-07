@@ -1433,11 +1433,15 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
         type: "output",
         chunk: { seq: 1, dataBase64: btoa("snapshot text\r\n") },
       });
-      await waitFor(() =>
+      await waitFor(() => {
         expect(
           document.querySelector("[data-terminal-replay-preview]"),
-        ).toBeNull(),
-      );
+        ).toBeNull();
+        expect(
+          document.querySelector("[data-terminal-screen-loading-preview]"),
+        ).toBeNull();
+        expect(pageText()).not.toContain("Restoring session…");
+      });
       const terminal = terminals[0]!;
       expect(previewFontSize).toBe(`${terminal.options.fontSize}px`);
       const text = Array.from(

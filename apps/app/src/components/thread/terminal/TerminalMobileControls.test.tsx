@@ -54,7 +54,7 @@ describe("TerminalMobileControls", () => {
         ).toBe(compact);
 
         expect(
-          more.querySelector('[data-icon="MoreHorizontal"]') !== null,
+          more.querySelector('[data-icon="Keyboard"]') !== null,
         ).toBe(compact);
         expect(more.querySelector('[data-icon="ChevronDown"]')).not.toBeNull();
         const scroller = document.querySelector(

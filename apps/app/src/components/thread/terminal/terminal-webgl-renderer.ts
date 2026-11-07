@@ -10,6 +10,7 @@ interface TerminalWebglAddonModule {
 
 interface TerminalWebglRenderer extends IDisposable {
   readonly renderer: "webgl" | "dom";
+  readonly initialAttemptComplete: boolean;
   setVisible: (visible: boolean) => void;
 }
 
@@ -165,6 +166,7 @@ export function loadTerminalWebglRenderer(
       renderer = "webgl";
       reportRenderer();
     } catch {
+      if (!hasLoaded) disabled = true;
       release();
       if (hasLoaded) {
         recovering = true;
@@ -179,6 +181,9 @@ export function loadTerminalWebglRenderer(
   return {
     get renderer() {
       return renderer;
+    },
+    get initialAttemptComplete() {
+      return hasLoaded || disabled;
     },
     setVisible: (nextVisible) => {
       if (disposed || visible === nextVisible) {

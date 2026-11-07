@@ -253,7 +253,11 @@ it.each(["auto", "accept-edits", "full"] as const)(
       </CompactViewportOverrideProvider>,
     );
     const mode =
-      value === "auto" ? "Ask first" : value === "full" ? "Full Access" : "Edits";
+      value === "auto"
+        ? "Ask first"
+        : value === "full"
+          ? "Full Access"
+          : "Edits";
     const trigger = screen.getByRole("button", {
       name: `Permissions: ${mode}`,
     });
@@ -301,7 +305,7 @@ it.each([
   ["auto", "Ask first"],
   ["accept-edits", "Edits"],
 ] as const)(
-  "names the collapsed phone shield for mode %s while its visible label is hidden",
+  "names the collapsed phone shield for mode %s with its visible policy label",
   (value, label) => {
     const css = readFileSync("src/app.css", "utf8");
     const labelRule = css.match(
@@ -327,7 +331,7 @@ it.each([
     expect(
       getComputedStyle(trigger.querySelector("[data-permission-label]")!)
         .display,
-    ).toBe("none");
+    ).toBe("inline");
     expect(trigger.querySelector('[data-icon="SecurityCheck"]')).not.toBeNull();
     expect(trigger.getAttribute("aria-label")).toBe(`Permissions: ${label}`);
   },

@@ -13,6 +13,7 @@ import { wsManager } from "@/lib/ws";
 import { AppCommandProvider } from "@/components/commands/AppCommandProvider";
 import { ThreadTerminalView } from "./ThreadTerminalView";
 import { importTerminalModules } from "./terminal-modules";
+import { readTerminalFontMetrics } from "./terminal-font";
 import {
   readCachedTerminalGrid,
   rememberTerminalGrid,
@@ -216,7 +217,7 @@ describe("native terminal attach claim timing", () => {
       ),
     ),
     ...[44, 125].flatMap((cols) =>
-      ["webgl", "late", "unobserved"].flatMap((rendererMode) =>
+      ["webgl", "failed", "late", "unobserved"].flatMap((rendererMode) =>
         (rendererMode === "webgl" ? [false, true] : [false]).map(
           (layoutShift) => ({
             cols,
@@ -261,12 +262,23 @@ describe("native terminal attach claim timing", () => {
         vi.spyOn(HTMLElement.prototype, dimension, "get").mockReturnValue(354);
       }
       let webglActive = false;
+      let rendererFailedAt: number | undefined;
       vi.spyOn(rendererModule, "loadTerminalWebglRenderer").mockImplementation(
         (_terminal, _create, options) => ({
           get renderer() {
             return webglActive ? "webgl" : "dom";
           },
+          get initialAttemptComplete() {
+            return webglActive || rendererFailedAt !== undefined;
+          },
           setVisible: (visible) => {
+            if (rendererMode === "failed") {
+              if (visible && rendererFailedAt === undefined) {
+                rendererFailedAt = Date.now();
+                options?.onRendererChange?.("dom");
+              }
+              return;
+            }
             if (visible && !webglActive) {
               webglActive = true;
               options?.onRendererChange?.("webgl");
@@ -351,12 +363,15 @@ describe("native terminal attach claim timing", () => {
         TerminalWebSocketTransport.prototype.sendResize;
       const sendResize = vi
         .spyOn(TerminalWebSocketTransport.prototype, "sendResize")
-        .mockImplementation(
-          function (this: TerminalWebSocketTransport, cols, rows, claim) {
-            if (claim) resizeAt ??= Date.now();
-            originalSendResize.call(this, cols, rows, claim);
-          },
-        );
+        .mockImplementation(function (
+          this: TerminalWebSocketTransport,
+          cols,
+          rows,
+          claim,
+        ) {
+          if (claim) resizeAt ??= Date.now();
+          originalSendResize.call(this, cols, rows, claim);
+        });
       const session = makeTerminalSession({
         id: "term_existing_client_grid",
         threadId: null,
@@ -378,10 +393,15 @@ describe("native terminal attach claim timing", () => {
         });
       const cachedCols = cacheMode === "mismatch" ? cols + 1 : cols;
       if (cacheMode !== "miss") {
-        rememberTerminalGrid(session.id, document.createElement("div"), 13, {
-          cols: cachedCols,
-          rows: 36,
-        });
+        rememberTerminalGrid(
+          session.id,
+          document.createElement("div"),
+          readTerminalFontMetrics().fontSize,
+          {
+            cols: cachedCols,
+            rows: 36,
+          },
+        );
       }
       prefetchTerminalSocket(
         buildTerminalWebSocketUrl({
@@ -422,7 +442,8 @@ describe("native terminal attach claim timing", () => {
       expect(
         document.querySelector("[data-terminal-grid-cache-id]"),
       ).toBeNull();
-      expect(claimAt).toBeUndefined();
+      if (cacheMode === "miss") expect(claimAt).toBeUndefined();
+      else expect(claimAt).toBe(attachedAt);
       expect(startTransport).not.toHaveBeenCalled();
       if (cacheMode !== "miss") await vi.advanceTimersByTimeAsync(700);
       const renderedAt = Date.now();
@@ -490,13 +511,18 @@ describe("native terminal attach claim timing", () => {
           type: "ack",
           nextSeq: 1,
         });
-        expect(revealedAt! - renderedAt).toBeLessThanOrEqual(
-          rendererMode === "late" || rendererMode === "unobserved"
-            ? 200
-            : rendererMode === "webgl"
-              ? 150
-              : 64,
-        );
+        if (rendererMode === "failed") {
+          expect(rendererFailedAt! - renderedAt).toBe(80);
+          expect(revealedAt! - rendererFailedAt!).toBeLessThanOrEqual(64);
+          expect(revealedAt! - renderedAt).toBeLessThanOrEqual(80 + 64);
+        } else
+          expect(revealedAt! - renderedAt).toBeLessThanOrEqual(
+            rendererMode === "late" || rendererMode === "unobserved"
+              ? 200
+              : rendererMode === "webgl"
+                ? 150
+                : 64,
+          );
         expect(stages.get("terminal-replay-revealed")).toBeDefined();
         expect(
           stages.get("terminal-replay-revealed")! -
@@ -533,6 +559,10 @@ describe("native terminal attach claim timing", () => {
       if (cacheMode === "miss") expect(claimAt).toBe(resizeAt);
       if (rendererMode === "dom")
         expect(claimAt! - renderedAt).toBeLessThanOrEqual(100);
+      if (rendererMode === "failed") {
+        expect(claimAt! - rendererFailedAt!).toBeLessThanOrEqual(64);
+        expect(claimAt! - renderedAt).toBeLessThanOrEqual(80 + 64);
+      }
       if (rendererMode !== "dom")
         expect(claimAt! - renderedAt).toBeLessThanOrEqual(
           (rendererMode === "late" || rendererMode === "unobserved"
@@ -545,7 +575,22 @@ describe("native terminal attach claim timing", () => {
         rows: 36,
         claim: true,
       };
-      expect(claims).toEqual([measured]);
+      if (cacheMode !== "miss") {
+        expect(stages.has("terminal-cached-grid-hit")).toBe(
+          cacheMode === "match",
+        );
+        expect(stages.has("terminal-cached-grid-miss")).toBe(
+          cacheMode === "mismatch",
+        );
+      }
+      expect(claims).toEqual(
+        cacheMode === "mismatch"
+          ? [
+              { type: "resize", cols: cachedCols, rows: 36, claim: true },
+              measured,
+            ]
+          : [measured],
+      );
       if (rendererMode === "late" || rendererMode === "unobserved")
         expect(webglActive).toBe(false);
       expect(readCachedTerminalGrid(session.id)).toEqual({

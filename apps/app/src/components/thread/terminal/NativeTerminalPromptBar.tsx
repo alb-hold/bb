@@ -1,3 +1,4 @@
+import { useMediaQuery } from "@bb/shared-ui/hooks/use-media-query";
 import { useIsCompactViewport } from "@bb/shared-ui/hooks/use-compact-viewport";
 import { CONTENT_MEASURE_MAX_WIDTH_CLASS } from "@/lib/content-measure";
 import {
@@ -529,6 +530,7 @@ export function NativeTerminalPromptBar({
   }, [measureInput]);
 
   const isCompactViewport = useIsCompactViewport();
+  const isNarrowViewport = useMediaQuery("(max-width: 374px)");
   const recording =
     dictation.phase === "recording" || dictation.phase === "starting";
   const micLabel = recording
@@ -646,9 +648,11 @@ export function NativeTerminalPromptBar({
               ? "Starting microphone…"
               : recording
                 ? "Listening…"
-                : isCompactViewport
-                  ? "Send to prompt above…"
-                  : `Send to ${providerLabel} prompt above…`
+                : isNarrowViewport
+                  ? "Send to prompt…"
+                  : isCompactViewport
+                    ? "Send to prompt above…"
+                    : `Send to ${providerLabel} prompt above…`
           }
           onChange={(event) => {
             applyValue(event.target.value, programmaticRef.current);
@@ -662,7 +666,7 @@ export function NativeTerminalPromptBar({
           onKeyDown={onKeyDown}
           onPaste={onPaste}
           className={cn(
-            "max-md:pointer-coarse:group-data-[native-composer-inline]:col-start-1 max-md:pointer-coarse:group-data-[native-composer-inline]:row-start-1 max-md:pointer-coarse:group-data-[native-composer-inline]:h-11 max-md:pointer-coarse:group-data-[native-composer-inline]:overflow-hidden max-h-48 min-h-7 max-md:min-h-11 min-w-0 w-full resize-none bg-transparent px-2 py-1 text-base md:text-sm text-foreground field-sizing-content placeholder:text-sm placeholder:text-muted-foreground focus-visible:outline-none",
+            "max-md:pointer-coarse:group-data-[native-composer-inline]:col-start-1 max-md:pointer-coarse:group-data-[native-composer-inline]:row-start-1 max-md:pointer-coarse:group-data-[native-composer-inline]:h-11 max-md:pointer-coarse:group-data-[native-composer-inline]:overflow-hidden max-h-48 min-h-7 max-md:min-h-11 min-w-0 w-full resize-none bg-transparent px-2 py-1 text-base md:text-sm text-foreground field-sizing-content placeholder:text-muted-foreground focus-visible:outline-none",
           )}
         />
         <AssistStrip
