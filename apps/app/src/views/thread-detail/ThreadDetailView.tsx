@@ -1850,6 +1850,7 @@ function ThreadDetailViewInternal(
       }
       thread={threadActionTarget}
       threadTitle={threadTitle}
+      activityIndicator={thread.listIndicator}
       needsInput={thread.nativeTerminal && thread.hasPendingInteraction}
       hasNativeTerminal={nativeTerminalThread != null}
       nativeActivityTargetRef={setNativeActivityTarget}

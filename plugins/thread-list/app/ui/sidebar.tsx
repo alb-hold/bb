@@ -49,12 +49,9 @@ export function SidebarContentElementProvider({
     resize?.observe(element);
     const anchor = anchorRef.current;
     if (anchor) for (const child of anchor.children) resize?.observe(child);
-    const mutation = new MutationObserver(update);
-    mutation.observe(element, { childList: true, subtree: true });
     return () => {
       element.removeEventListener("scroll", update);
       resize?.disconnect();
-      mutation.disconnect();
       element.removeAttribute("data-more-below");
     };
   }, [element]);

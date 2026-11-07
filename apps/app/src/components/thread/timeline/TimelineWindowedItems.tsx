@@ -63,7 +63,7 @@ export interface TimelineWindowAnchor {
 export interface TimelineWindowedItemsProps {
   alwaysMountedKeys?: ReadonlySet<string>;
   estimateItemHeight: (index: number) => number;
-  gap: number | ((index: number) => number);
+  gap: number | readonly number[];
   initialWindowAnchor?: TimelineWindowAnchor | null;
   itemKeys: readonly string[];
   measurements: Map<string, number>;
@@ -98,7 +98,7 @@ function buildModel(
   itemKeys: readonly string[],
   heights: ReadonlyMap<string, number>,
   estimateItemHeight: (index: number) => number,
-  gap: number | ((index: number) => number),
+  gap: number | readonly number[],
 ): LayoutModel {
   const itemHeights = new Array<number>(itemKeys.length);
   const offsets = new Array<number>(itemKeys.length);
@@ -110,7 +110,7 @@ function buildModel(
       Math.max(1, estimateItemHeight(index));
     itemHeights[index] = height;
     offsets[index] = top;
-    top += height + (typeof gap === "number" ? gap : gap(index));
+    top += height + (typeof gap === "number" ? gap : (gap[index] ?? 0));
   }
   return {
     heights: itemHeights,
@@ -118,7 +118,8 @@ function buildModel(
     total:
       itemKeys.length === 0
         ? 0
-        : top - (typeof gap === "number" ? gap : gap(itemKeys.length - 1)),
+        : top -
+          (typeof gap === "number" ? gap : (gap[itemKeys.length - 1] ?? 0)),
   };
 }
 
@@ -332,6 +333,8 @@ export function TimelineWindowedItems({
     mountedIndexes: readonly number[];
     renderedHeights: ReadonlyMap<string, number>;
     revision: number;
+    gap: number | readonly number[];
+    estimateItemHeight: (index: number) => number;
     model: LayoutModel;
   } | null>(null);
   const measurementRevisionRef = useRef(0);
@@ -343,7 +346,9 @@ export function TimelineWindowedItems({
       cached.itemKeys === live.itemKeys &&
       cached.mountedIndexes === live.mountedIndexes &&
       cached.renderedHeights === live.renderedHeights &&
-      cached.revision === measurementRevisionRef.current
+      cached.revision === measurementRevisionRef.current &&
+      cached.gap === live.gap &&
+      cached.estimateItemHeight === live.estimateItemHeight
     ) {
       return cached.model;
     }
@@ -364,6 +369,8 @@ export function TimelineWindowedItems({
       mountedIndexes: live.mountedIndexes,
       renderedHeights: live.renderedHeights,
       revision: measurementRevisionRef.current,
+      gap: live.gap,
+      estimateItemHeight: live.estimateItemHeight,
       model,
     };
     return model;
@@ -576,7 +583,7 @@ export function TimelineWindowedItems({
   );
 
   const gapBefore = (index: number) =>
-    typeof gap === "number" || index === 0 ? 0 : gap(index - 1);
+    typeof gap === "number" || index === 0 ? 0 : (gap[index - 1] ?? 0);
   const children: ReactNode[] = [];
   let previous = -1;
   for (const index of mountedIndexes) {

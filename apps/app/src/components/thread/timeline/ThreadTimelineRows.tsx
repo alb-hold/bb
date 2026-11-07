@@ -2524,6 +2524,12 @@ function estimateTimelineWindowedRowHeight(
   return 20 + lineCount * 23;
 }
 
+const DISCLOSURE_ROW_KINDS = new Set([
+  "work",
+  "step-summary",
+  "bundle-summary",
+]);
+
 function TimelineRowsList({
   compactActivityIntents,
   hasOlderTimelineRows,
@@ -2620,6 +2626,28 @@ function TimelineRowsList({
     unreadDividerAutoScroll,
     unreadDividerPlacement: loadedUnreadDividerPlacement,
   });
+  const itemGaps = useMemo(
+    () =>
+      items.map((current, index) => {
+        const next = items[index + 1];
+        return current.kind === "row" &&
+          next?.kind === "row" &&
+          DISCLOSURE_ROW_KINDS.has(current.row.kind) &&
+          DISCLOSURE_ROW_KINDS.has(next.row.kind)
+          ? 4
+          : 8;
+      }),
+    [items],
+  );
+  const estimateItemHeight = useCallback(
+    (index: number) => {
+      const item = items[index];
+      return item?.kind === "row"
+        ? estimateTimelineWindowedRowHeight(item.row, spacing)
+        : 28;
+    },
+    [items, spacing],
+  );
   const itemKeys = useMemo(
     () =>
       items.map((item) => {
@@ -2676,31 +2704,8 @@ function TimelineRowsList({
         >
           <TimelineWindowedItems
             alwaysMountedKeys={alwaysMountedKeys}
-            estimateItemHeight={(index) => {
-              const item = items[index];
-              if (item?.kind === "row") {
-                return estimateTimelineWindowedRowHeight(item.row, spacing);
-              }
-              return 28;
-            }}
-            gap={
-              spacing === "bundle" || isCompactTouch
-                ? 0
-                : (index) => {
-                    const current = items[index];
-                    const next = items[index + 1];
-                    return current?.kind === "row" &&
-                      next?.kind === "row" &&
-                      ["work", "step-summary", "bundle-summary"].includes(
-                        current.row.kind,
-                      ) &&
-                      ["work", "step-summary", "bundle-summary"].includes(
-                        next.row.kind,
-                      )
-                      ? 4
-                      : 8;
-                  }
-            }
+            estimateItemHeight={estimateItemHeight}
+            gap={spacing === "bundle" || isCompactTouch ? 0 : itemGaps}
             initialWindowAnchor={
               isTopLevelList && detailScrollRoot === null ? scrollRestore : null
             }

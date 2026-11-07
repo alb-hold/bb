@@ -1027,8 +1027,8 @@ function ThreadRowComponent({
               <span data-emphasized={showActive || thread.isUnread || trailingIndicatorKind === "needs-input" || trailingIndicatorKind === "check-terminal" || trailingIndicatorKind === "waiting-for-input"} className="bb-thread-title block min-w-0 flex-1 truncate max-md:font-normal md:font-medium md:data-[emphasized=false]:font-normal">
                 <ThreadTitle threadId={thread.id} />
               </span>
-              <span data-sidebar-thread-context="" className="hidden min-w-0 items-center gap-1 truncate text-xs font-normal leading-4 text-muted-foreground md:text-subtle-foreground [&_time]:text-xs [&_time]:text-inherit md:flex">
-                <span className={thread.experimental_nativeTerminal ? "contents text-foreground [&_svg]:stroke-[2]" : "contents"}><ThreadModeGlyph nativeTerminal={thread.experimental_nativeTerminal} isWorktree={thread.environment?.isWorktree === true} /></span>
+              <span data-sidebar-thread-context="" className={cn("hidden min-w-0 items-center gap-1 truncate text-xs font-normal leading-4 text-muted-foreground md:text-subtle-foreground [&_time]:text-xs [&_time]:text-inherit md:flex", thread.experimental_nativeTerminal && "[&>[role=img]]:text-foreground [&>[role=img]_svg]:stroke-[2]")}>
+                <ThreadModeGlyph nativeTerminal={thread.experimental_nativeTerminal} isWorktree={thread.environment?.isWorktree === true} />
                 {showProjectName && projectName ? <span className="truncate">{projectName} ·</span> : null}
                 <InfoRowTime timestamp={thread.updatedAt} />
               </span>

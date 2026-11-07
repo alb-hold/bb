@@ -1,3 +1,5 @@
+import type { ThreadListIndicatorKind } from "@bb/client-core";
+import { getThreadActivityLabel } from "@/lib/thread-activity-label";
 import { preloadThreadSecondaryPanel } from "@/components/secondary-panel/lazySecondaryPanelComponents";
 import {
   useCallback,
@@ -82,6 +84,7 @@ interface ThreadDetailHeaderProps {
   pluginActions?: ReactNode;
   thread: PluginThreadActionTarget;
   threadTitle: string;
+  activityIndicator?: ThreadListIndicatorKind;
   needsInput?: boolean;
   checkTerminal?: boolean;
   hasNativeTerminal?: boolean;
@@ -97,6 +100,7 @@ export function ThreadDetailHeader({
   pluginActions,
   thread,
   threadTitle,
+  activityIndicator = "none",
   needsInput = false,
   checkTerminal = false,
   hasNativeTerminal = false,
@@ -269,14 +273,13 @@ export function ThreadDetailHeader({
               aria-label="Thread activity"
               className="flex h-4 shrink-0 items-center whitespace-nowrap text-xs text-muted-foreground"
             >
-              {needsInput
-                ? "Needs input"
-                : checkTerminal
-                  ? "Check terminal"
-                  : thread.status === "pending"
-                    ? "Idle"
-                    : thread.status.charAt(0).toUpperCase() +
-                      thread.status.slice(1)}
+              {getThreadActivityLabel(
+                needsInput
+                  ? "needs-input"
+                  : checkTerminal
+                    ? "check-terminal"
+                    : activityIndicator,
+              )}
             </div>
           )}
         </div>

@@ -1279,3 +1279,31 @@ it.each([true, false])(
     ).toBe(status.parentElement);
   },
 );
+
+it.each([
+  ["none", "Idle"],
+  ["working", "Working"],
+  ["needs-input", "Needs input"],
+  ["check-terminal", "Check terminal"],
+  ["queued-waiting", "Thread has a message waiting to send"],
+  ["done-unread", "Done"],
+] as const)(
+  "shares the native terminal's %s activity vocabulary",
+  (activityIndicator, label) => {
+    render(
+      <PaneContext.Provider value={PANE_CONTEXT}>
+        <ThreadDetailHeader
+          actionsMenu={null}
+          isSecondaryPanelOpen={false}
+          onToggleSecondaryPanel={vi.fn()}
+          thread={THREAD_TARGET}
+          threadTitle="Chat thread"
+          activityIndicator={activityIndicator}
+        />
+      </PaneContext.Provider>,
+    );
+    expect(
+      screen.getByRole("status", { name: "Thread activity" }).textContent,
+    ).toBe(label);
+  },
+);

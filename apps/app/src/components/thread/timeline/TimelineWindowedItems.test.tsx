@@ -436,7 +436,7 @@ it("uses four pixels between disclosures and eight at message boundaries", () =>
   const { container } = render(
     <TimelineWindowedItems
       estimateItemHeight={() => 44}
-      gap={(index) => (index === 1 ? 4 : 8)}
+      gap={[8, 4, 8, 8]}
       itemKeys={["message", "command", "tool", "reply"]}
       measurements={new Map()}
       positionKeeper={null}
@@ -461,4 +461,35 @@ it("uses four pixels between disclosures and eight at message boundaries", () =>
     "4px",
     "8px",
   ]);
+});
+
+it("reuses layout estimates when a parent renders again with unchanged inputs", () => {
+  const itemKeys = ["message", "command", "tool"];
+  const gap = [8, 4, 8];
+  const measurements = new Map<string, number>();
+  const estimateItemHeight = vi.fn(() => 44);
+  const view = (label: string) => (
+    <TimelineWindowedItems
+      estimateItemHeight={estimateItemHeight}
+      gap={gap}
+      itemKeys={itemKeys}
+      measurements={measurements}
+      positionKeeper={null}
+      pinnedToEnd={false}
+      renderItem={(index, state) => (
+        <div
+          key={index}
+          ref={state.itemRef}
+          data-timeline-window-key={itemKeys[index]}
+        >
+          {label}
+        </div>
+      )}
+    />
+  );
+  const { rerender } = render(view("First render"));
+  const calls = estimateItemHeight.mock.calls.length;
+  expect(calls).toBeGreaterThan(0);
+  rerender(view("Parent rendered again"));
+  expect(estimateItemHeight).toHaveBeenCalledTimes(calls);
 });
