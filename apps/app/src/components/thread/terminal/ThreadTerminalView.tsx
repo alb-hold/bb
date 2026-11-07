@@ -2040,6 +2040,7 @@ export function ThreadTerminalView({
           replayRevealTimeout = null;
           fittedGridHeld = false;
           fittedGridRevealed = true;
+          markTerminalPerformance("terminal-fitted-grid-revealed");
           containerElement.dataset.replayHeld = "false";
           if (fittedGridFallback) containerElement.style.opacity = "";
           setRestoringSession(false);
@@ -2657,6 +2658,7 @@ export function ThreadTerminalView({
               claimedFitGrid.rows !== fitted.rows);
           transport?.sendResize(fitted.cols, fitted.rows, claimFit);
           if (claimFit) {
+            markTerminalPerformance("terminal-fitted-grid-claimed");
             claimedFitGrid = { ...fitted };
           }
         }

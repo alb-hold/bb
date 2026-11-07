@@ -29,7 +29,7 @@ function bootstrap(pathname: string, view: unknown, ok = true) {
   const document = { createElement: () => ({}), head: { append: (link: { href: string; rel: string; fetchPriority: string }) => { order.push(link.href); links.push(link); } } };
   runInNewContext(tags[0]!.children, { document, location: { pathname }, fetch, setTimeout, clearTimeout: timer });
   return { links, fetch, tags, order, setTimeout, timer, fallback: () => fallback(), respond: async () => {
-    resolve({ ok, json: async () => view });
+    resolve({ ok, json: async () => view, clone: () => ({ json: async () => view }) });
     await new Promise((r) => globalThis.setTimeout(r, 0));
   } };
 }
@@ -37,6 +37,11 @@ function bootstrap(pathname: string, view: unknown, ok = true) {
 it.each(["/threads/thr_abc", "/projects/proj_a/threads/thr_abc/"])("fetches the route before shell execution on %s and native assets after identity lookup", async (path) => {
   const state = bootstrap(path, { threadId: "thr_abc", providerId: "codex" });
   expect(state.tags[0]!.injectTo).toBe("head-prepend");
+  expect(state.tags[1]).toMatchObject({
+    injectTo: "head-prepend",
+    attrs: { id: "bb-initial-terminal-connect" },
+    children: 'if(globalThis.__bbInitialNativeTerminalRequest)import("/assets/initial-terminal-connect.js")',
+  });
   expect(state.links.map((link) => link.href)).toEqual(["/thread.js", "/shared.js"]);
   expect(state.fetch).toHaveBeenCalledWith("/api/v1/threads/thr_abc/native-terminal", { priority: "high" });
   expect(state.order).toEqual(["lookup", "/thread.js", "/shared.js"]);

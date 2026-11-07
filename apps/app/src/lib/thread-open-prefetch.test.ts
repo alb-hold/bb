@@ -104,6 +104,20 @@ it("does not attach when navigation leaves before native metadata resolves", asy
   expect(prefetchTerminalSocket).not.toHaveBeenCalled();
 });
 
+it("opens a cached terminal synchronously while bootstrap remains pending and no general socket token exists", () => {
+  window.history.replaceState({}, "", "/threads/native");
+  appQueryClient.setQueryData(nativeTerminalThreadQueryKey("native"), {
+    terminal: { id: "term-cached", status: "running" },
+  });
+  prefetchThreadOpen("native");
+  expect(prefetchTerminalSocket).toHaveBeenCalledWith(
+    expect.stringContaining("term-cached"),
+  );
+  expect(
+    appQueryClient.getQueryState(["bootstrap", "native"])?.fetchStatus,
+  ).toBe("fetching");
+});
+
 it("starts native discovery while thread bootstrap is pending and warms a native terminal", async () => {
   vi.mocked(sdk.nativeTerminals.get).mockResolvedValue({
     threadId: "native",
