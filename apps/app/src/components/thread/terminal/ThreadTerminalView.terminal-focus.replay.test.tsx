@@ -2760,13 +2760,10 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
     vi.spyOn(terminalModules, "importTerminalWebglAddon").mockReturnValue(
       webglModule,
     );
+    const actualWebgl = await vi.importActual<WebglModule>("@xterm/addon-webgl");
     const activate = vi.fn();
-    class WebglAddon {
+    class WebglAddon extends actualWebgl.WebglAddon {
       activate = activate;
-      dispose(): void {}
-      onContextLoss(_listener: () => void) {
-        return { dispose: () => {} };
-      }
     }
     const mountedTerminal: { current: Terminal | null } = { current: null };
     const loadAddon = Terminal.prototype.loadAddon;
@@ -2823,7 +2820,7 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
       retainedLine: terminal.buffer.active.getLine(5)?.translateToString(true),
     };
     expect(before.viewportY).toBeLessThan(before.baseY);
-    await act(async () => resolveWebgl({ WebglAddon } as WebglModule));
+    await act(async () => resolveWebgl({ ...actualWebgl, WebglAddon }));
     await waitForReadinessCondition(
       () =>
         expect(
