@@ -1,3 +1,4 @@
+import { useTerminalSuspenseGate } from "@/hooks/useTerminalMountGate";
 import type { ComponentProps } from "react";
 import { defineSplit } from "@/lib/define-split";
 import { RouteLoadingSkeleton } from "@/components/ui/route-loading-skeleton";
@@ -6,6 +7,7 @@ import { usePaneContext } from "./PaneContext";
 import type { ThreadDetailView } from "./ThreadDetailView";
 
 function ThreadDetailViewLoading() {
+  useTerminalSuspenseGate("terminal-thread-view-fallback");
   const { isBoundedPane } = usePaneContext();
   return (
     <RouteLoadingSkeleton isBoundedPane={isBoundedPane}>

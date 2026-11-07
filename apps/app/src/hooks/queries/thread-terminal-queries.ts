@@ -1,3 +1,4 @@
+import { traceTerminalGate } from "@/lib/terminal-performance";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   CloseTerminalRequest,
@@ -52,14 +53,16 @@ export function useTerminals(
       scope ?? { kind: "host_path", hostId: "__disabled__" },
     ),
     queryFn: ({ signal }) =>
-      sdk.terminals.list({
-        scope: requireEnabledQueryArg({
-          value: scope,
-          hookName: "useTerminals",
-          argName: "terminal scope",
+      traceTerminalGate("terminal-session-list", () =>
+        sdk.terminals.list({
+          scope: requireEnabledQueryArg({
+            value: scope,
+            hookName: "useTerminals",
+            argName: "terminal scope",
+          }),
+          signal,
         }),
-        signal,
-      }),
+      ),
     enabled:
       (options?.enabled ?? true) && scope !== null && scope !== undefined,
     ...REALTIME_OWNED_NO_FOCUS_QUERY_POLICY,

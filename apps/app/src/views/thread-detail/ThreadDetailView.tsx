@@ -1,3 +1,4 @@
+import { useTerminalMountGate } from "@/hooks/useTerminalMountGate";
 import { AppPanelTabsPublisher } from "@/lib/app-panel-tabs";
 import {
   getThreadFixedTabOwnerId,
@@ -307,6 +308,7 @@ function ThreadDetailViewInternal(
   props: ThreadRoutePathArgs & { timelineEnabled: boolean },
 ) {
   const { projectId, threadId, timelineEnabled } = props;
+  useTerminalMountGate("terminal-thread-view-mount", threadId, true);
   const {
     isFocused,
     paneId,
@@ -473,6 +475,12 @@ function ThreadDetailViewInternal(
   });
   const refetchTerminalList = terminalsListQuery.refetch;
   const nativeTerminalThreadQuery = useNativeTerminalThread(threadId);
+  useTerminalMountGate("terminal-thread-data", threadId, thread !== undefined);
+  useTerminalMountGate(
+    "terminal-native-data",
+    threadId,
+    !nativeTerminalThreadQuery.isPending,
+  );
   const nativeTerminalThread = nativeTerminalThreadQuery.data ?? null;
   const nativeTerminalId = nativeTerminalThread?.terminal?.id ?? null;
   const visibleTerminalSessions = useMemo(

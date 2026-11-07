@@ -1,3 +1,4 @@
+import { useTerminalMountGate } from "@/hooks/useTerminalMountGate";
 import { Button } from "@bb/shared-ui/button";
 import type { MarkdownPreviewLinkHandler } from "@/components/ui/markdown-link";
 import {
@@ -30,6 +31,11 @@ export function ThreadTerminalContent({
   onRetryStart,
   onSelectionAddToChat,
 }: ThreadTerminalContentProps) {
+  useTerminalMountGate(
+    "terminal-session-ready",
+    "active",
+    controller.shouldMountTerminalView && controller.activeSession !== null,
+  );
   if (!controller.shouldMountTerminalView) {
     return null;
   }

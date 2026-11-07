@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { frontendPriorityPluginIds } from "./plugin-surface-providers";
 import { definePluginApp } from "./plugin-app-definition";
 import {
   getPluginSlotSnapshot,
@@ -381,4 +382,31 @@ describe("reconcilePluginFrontends load scheduling", () => {
     expect(state.records.get("fine")?.status).toBe("loaded");
     expect(state.records.get("also")?.status).toBe("loaded");
   });
+});
+
+it("loads the sidebar first on a cold thread route without waiting for its module before starting the composer", async () => {
+  const imports = makeDeferredImports();
+  const done = reconcilePluginFrontends(
+    createPluginFrontendReconcileState(),
+    makeDeps(
+      [
+        candidate("bb--composer", 424000),
+        candidate("thread-list", 263000),
+        candidate("navigation", 500),
+        candidate("optional", 10),
+      ],
+      {
+        priorityPluginIds: () =>
+          frontendPriorityPluginIds("/projects/project-a/threads/thread-a"),
+        importModule: imports.importModule,
+      },
+    ),
+  );
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+  expect(imports.started[0]).toContain("/thread-list/");
+  expect(imports.started.some((url) => url.includes("/bb--composer/"))).toBe(
+    true,
+  );
+  while (imports.pending()) await imports.resolveNext();
+  await done;
 });

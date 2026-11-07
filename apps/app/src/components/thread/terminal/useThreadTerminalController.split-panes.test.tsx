@@ -20,6 +20,10 @@ import { makeTerminalSession } from "@/test/fixtures/terminal-sessions";
 import { clearTerminalCurrentCwd } from "./terminal-shell-state";
 import { ThreadTerminalContent } from "./ThreadTerminalContent";
 
+vi.mock("./ThreadTerminalView", () => ({
+  ThreadTerminalView: () => <div data-testid="mounted-native-terminal" />,
+}));
+
 vi.mock("@/lib/sdk", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/sdk")>();
   return {
@@ -73,7 +77,12 @@ afterEach(() => {
   vi.useRealTimers();
   cleanup();
   vi.clearAllMocks();
-  for (const terminalId of ["terminal-a", "terminal-b", "terminal-orphan", "terminal-new"]) {
+  for (const terminalId of [
+    "terminal-a",
+    "terminal-b",
+    "terminal-orphan",
+    "terminal-new",
+  ]) {
     clearTerminalCurrentCwd(terminalId);
   }
 });
@@ -205,7 +214,10 @@ describe("two split panes each holding a terminal", () => {
 
   it("keeps the previous terminal's progress when a different active terminal exits", async () => {
     vi.mocked(sdk.terminals.list).mockResolvedValue({
-      sessions: [session("terminal-a", "running"), session("terminal-b", "running")],
+      sessions: [
+        session("terminal-a", "running"),
+        session("terminal-b", "running"),
+      ],
     });
     const { wrapper } = createQueryClientTestHarness();
     const { result, rerender } = renderHook(
@@ -247,7 +259,10 @@ describe("two split panes each holding a terminal", () => {
 
   it("clears progress when the terminal that reported it exits after switching tabs", async () => {
     vi.mocked(sdk.terminals.list).mockResolvedValue({
-      sessions: [session("terminal-a", "running"), session("terminal-b", "running")],
+      sessions: [
+        session("terminal-a", "running"),
+        session("terminal-b", "running"),
+      ],
     });
     const { wrapper } = createQueryClientTestHarness();
     const { result, rerender } = renderHook(
@@ -282,7 +297,10 @@ describe("two split panes each holding a terminal", () => {
 
   it("does not let one pane's terminal exit clear progress owned by another pane", async () => {
     vi.mocked(sdk.terminals.list).mockResolvedValue({
-      sessions: [session("terminal-a", "running"), session("terminal-b", "running")],
+      sessions: [
+        session("terminal-a", "running"),
+        session("terminal-b", "running"),
+      ],
     });
     const { wrapper } = createQueryClientTestHarness();
     const paneA = renderHook(
@@ -451,7 +469,10 @@ describe("two split panes each holding a terminal", () => {
 
   it("scopes a clear from a pane that never set progress to its terminal", async () => {
     vi.mocked(sdk.terminals.list).mockResolvedValue({
-      sessions: [session("terminal-a", "running"), session("terminal-b", "running")],
+      sessions: [
+        session("terminal-a", "running"),
+        session("terminal-b", "running"),
+      ],
     });
     const { wrapper } = createQueryClientTestHarness();
     const paneA = renderHook(
@@ -646,7 +667,9 @@ describe("two split panes each holding a terminal", () => {
     );
     act(() => result.current.handleCreateTerminal());
     await waitFor(() => expect(sdk.terminals.create).toHaveBeenCalled());
-    vi.mocked(sdk.terminals.list).mockResolvedValue({ sessions: [source, created] });
+    vi.mocked(sdk.terminals.list).mockResolvedValue({
+      sessions: [source, created],
+    });
     await act(async () => {
       await queryClient.invalidateQueries();
     });
@@ -861,4 +884,58 @@ describe("terminal progress output sequences", () => {
     );
     expect(sdk.threads.experimental_updateRowState).toHaveBeenCalledTimes(2);
   });
+});
+
+it("mounts the known native session while the terminal list is stalled, then honors its result", async () => {
+  let finish!: (value: { sessions: TerminalSession[] }) => void;
+  vi.mocked(sdk.terminals.list).mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  const initialSession = session("terminal-a", "running");
+  const { wrapper } = createQueryClientTestHarness();
+  const { result } = renderHook(
+    () =>
+      useThreadTerminalController({
+        ...paneArgs("terminal-a"),
+        terminalId: "terminal-a",
+        initialSession,
+      }),
+    { wrapper },
+  );
+  await waitFor(() => expect(sdk.terminals.list).toHaveBeenCalled());
+  expect(result.current.activeSession).toEqual(initialSession);
+  expect(result.current.shouldMountTerminalView).toBe(true);
+  render(
+    <ThreadTerminalContent
+      controller={result.current}
+      onCloseStart={() => {}}
+      onRetryStart={() => {}}
+    />,
+  );
+  expect(screen.getByTestId("mounted-native-terminal")).toBeTruthy();
+  await act(async () =>
+    finish({ sessions: [session("terminal-a", "exited")] }),
+  );
+  await waitFor(() =>
+    expect(result.current.activeSession?.status).toBe("exited"),
+  );
+});
+
+it("does not revive a native session omitted by an authoritative terminal list", async () => {
+  vi.mocked(sdk.terminals.list).mockResolvedValue({ sessions: [] });
+  const { wrapper } = createQueryClientTestHarness();
+  const { result } = renderHook(
+    () =>
+      useThreadTerminalController({
+        ...paneArgs("terminal-a"),
+        terminalId: "terminal-a",
+        initialSession: session("terminal-a", "running"),
+      }),
+    { wrapper },
+  );
+  await waitFor(() => expect(result.current.terminalsLoading).toBe(false));
+  expect(result.current.activeSession).toBeNull();
 });

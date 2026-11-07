@@ -1,5 +1,7 @@
 import { useEffect, useState, type ComponentProps } from "react";
 import type { ThreadTerminalPanel } from "./ThreadTerminalPanel";
+import { traceTerminalGate } from "@/lib/terminal-performance";
+import { useTerminalMountGate } from "@/hooks/useTerminalMountGate";
 import { loadChunkWithRetries } from "@/lib/retryable-chunk-import";
 import { SplitLoadFailure } from "@/lib/define-split";
 
@@ -9,9 +11,16 @@ export function NativeTerminalPanel(props: ComponentProps<Panel>) {
   const [View, setView] = useState<Panel | null>(null);
   const [failed, setFailed] = useState(false);
   const [attempt, setAttempt] = useState(0);
+  useTerminalMountGate(
+    "terminal-native-panel-mount",
+    props.terminalId,
+    View !== null,
+  );
   useEffect(() => {
     let disposed = false;
-    void loadChunkWithRetries(() => import("./ThreadTerminalPanel"))
+    void traceTerminalGate("terminal-native-panel-import", () =>
+      loadChunkWithRetries(() => import("./ThreadTerminalPanel")),
+    )
       .then((module) => {
         if (!disposed) setView(() => module.ThreadTerminalPanel);
       })
