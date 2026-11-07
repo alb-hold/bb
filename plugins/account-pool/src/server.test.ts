@@ -15736,6 +15736,26 @@ else {
     expect(await listRoutes()).toEqual([]);
   });
 
+  it("waits for a launch failure even when the liveness probe reports the child absent", async () => {
+    const { run, listRoutes, work } = await harness();
+    const bashEnv = path.join(work, "disable-child-liveness.sh");
+    const sourced = path.join(work, "bash-env-sourced.txt");
+    await fs.writeFile(
+      bashEnv,
+      `printf sourced > ${sourced}\nkill() { if [ "$1" = "-0" ]; then return 1; fi; command kill "$@"; }\n`,
+    );
+
+    const result = await run(
+      [],
+      { BASH_ENV: bashEnv },
+      ["definitely-not-a-command-for-pool-launch"],
+    ).done;
+
+    expect(await fs.readFile(sourced, "utf8")).toBe("sourced");
+    expect(result.code).toBe(127);
+    expect(await listRoutes()).toEqual([]);
+  });
+
   it("signals only its own child and never matches processes by name", async () => {
     const { run, listRoutes } = await harness();
     const script = "console.log('child-ready');setInterval(()=>{},1000)";
