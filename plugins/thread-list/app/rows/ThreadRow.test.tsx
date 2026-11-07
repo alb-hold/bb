@@ -556,10 +556,27 @@ describe("ThreadRow", () => {
       const view = renderThreadRow({
         isCompactViewport,
         thread: createThread({
+          status: "active",
+          runtimeStatus: "active",
+          experimental_nativeTerminal: true,
+          experimental_nativeActivity: {
+            lastEvidenceAt: Date.now(),
+            freshForMs: 90_000,
+            confirmation: "confirmed",
+            evidenceKind: "holder-report",
+          },
+        }),
+      });
+      expect(screen.getByRole("img", { name: /^Working/ })).toBeTruthy();
+      expect(renderedIndicators()).toEqual(["working"]);
+      view.rerenderThreadRow(
+        createThread({
+          status: "active",
+          runtimeStatus: "active",
           indicator: "check-terminal",
           experimental_nativeTerminal: true,
         }),
-      });
+      );
       expect(screen.getByRole("img", { name: "Check terminal" })).toBeTruthy();
       expect(
         view.container.querySelector(
