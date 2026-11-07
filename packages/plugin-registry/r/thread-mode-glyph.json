@@ -10,7 +10,7 @@
   "files": [
     {
       "path": "registry/components/ui/thread-mode-glyph.tsx",
-      "content": "import { Icon } from \"./icon\";\n\nexport function ThreadModeGlyph({\n  nativeTerminal,\n  isWorktree,\n  hideWorkspaceOnDesktop = false,\n}: {\n  nativeTerminal: boolean;\n  isWorktree: boolean;\n  hideWorkspaceOnDesktop?: boolean;\n}) {\n  const name = nativeTerminal ? \"Terminal\" : isWorktree ? \"FolderGit\" : \"Folder\";\n  const label = nativeTerminal ? \"Native terminal\" : isWorktree ? \"Worktree\" : \"Workspace\";\n  return (\n    <span className={hideWorkspaceOnDesktop && !nativeTerminal && !isWorktree ? \"md:hidden\" : undefined} role=\"img\" aria-label={label}>\n      <Icon name={name} className=\"size-3.5 shrink-0\" aria-hidden />\n    </span>\n  );\n}\n",
+      "content": "import { Icon } from \"./icon\";\n\nexport function ThreadModeGlyph({\n  nativeTerminal,\n  isWorktree,\n}: {\n  nativeTerminal: boolean;\n  isWorktree: boolean;\n}) {\n  const name = nativeTerminal ? \"Terminal\" : isWorktree ? \"FolderGit\" : null;\n  const label = nativeTerminal ? \"Native terminal\" : \"Worktree\";\n  return (\n    <span\n      className=\"inline-flex size-4 shrink-0 items-center justify-center\"\n      role={name === null ? undefined : \"img\"}\n      aria-label={name === null ? undefined : label}\n      aria-hidden={name === null ? true : undefined}\n    >\n      {name === null ? null : (\n        <Icon name={name} className=\"size-4 shrink-0\" aria-hidden />\n      )}\n    </span>\n  );\n}\n",
       "type": "registry:ui",
       "target": "components/ui/thread-mode-glyph.tsx"
     }
