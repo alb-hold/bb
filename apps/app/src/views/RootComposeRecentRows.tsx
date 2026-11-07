@@ -21,9 +21,9 @@ import { ThreadStatusGlyph } from "@/components/thread/ThreadStatusGlyph";
 import type { ThreadListIndicatorKind } from "@bb/client-core";
 
 export const RECENT_THREAD_ROW_CLASS =
-  "flex select-none items-center gap-2.5 rounded-md pr-2 h-13";
+  "flex select-none items-center gap-2.5 rounded-md pr-2 h-13 md:h-10";
 export const RECENT_THREAD_BODY_CLASS =
-  "flex min-w-0 flex-1 items-center gap-2.5 rounded-md text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring h-13";
+  "flex min-w-0 flex-1 items-center gap-2.5 rounded-md text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring h-13 md:h-10";
 function repeatsProjectName(
   workspaceName: string,
   projectName: string | null,
@@ -127,7 +127,7 @@ export function RecentThreadRowContent({
         <span className="flex min-w-0 items-center gap-1.5">
           <ThreadTitle
             title={getThreadDisplayTitle(thread)}
-            className={cn("font-medium", COARSE_POINTER_TEXT_BASE_CLASS)}
+            className={cn("font-normal", COARSE_POINTER_TEXT_BASE_CLASS)}
           />
         </span>
         <span
@@ -195,7 +195,7 @@ export function RecentThreadsSection({ children }: { children: ReactNode }) {
       data-root-compose-mobile-recents=""
       aria-labelledby="root-compose-mobile-recents"
     >
-      <div className="sticky top-0 z-10 bg-background px-2 py-1">
+      <div className="sticky top-0 z-10 bg-background px-2 pt-1 pb-2">
         <h2
           id="root-compose-mobile-recents"
           className={cn(CHROME_SECTION_LABEL_CLASS, "text-subtle-foreground")}

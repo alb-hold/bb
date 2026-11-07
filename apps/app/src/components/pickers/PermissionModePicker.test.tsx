@@ -86,7 +86,7 @@ it("keeps desktop sizing intrinsic while defaults and capabilities settle", () =
   );
   assertWidth();
   expect(screen.getByRole("button", { name: "Permissions" }).textContent).toBe(
-    "Permissions:Approve",
+    "Permissions:Ask first",
   );
   expect(
     screen
@@ -124,7 +124,7 @@ it.each(["auto", "accept-edits", "full"] as const)(
     );
     const trigger = screen.getByRole("button", { name: "Permissions" });
     expect(trigger.textContent).toBe(
-      `Permissions:${value === "auto" ? "Approve" : value === "full" ? "Full Access" : "Edits"}`,
+      `Permissions:${value === "auto" ? "Ask first" : value === "full" ? "Full Access" : "Edits"}`,
     );
     expect(trigger.querySelector('[data-icon="SecurityCheck"]')).not.toBeNull();
     expect(trigger.querySelector('[data-icon="AlertTriangle"]')).toBeNull();
@@ -171,7 +171,7 @@ it("uses the initial cached mode before options resolve", () => {
     />,
   );
   expect(screen.getByRole("button", { name: "Permissions" }).textContent).toBe(
-    "Permissions:Approve",
+    "Permissions:Ask first",
   );
 });
 
@@ -253,7 +253,7 @@ it.each(["auto", "accept-edits", "full"] as const)(
       </CompactViewportOverrideProvider>,
     );
     const mode =
-      value === "auto" ? "Approve" : value === "full" ? "Full Access" : "Edits";
+      value === "auto" ? "Ask first" : value === "full" ? "Full Access" : "Edits";
     const trigger = screen.getByRole("button", {
       name: `Permissions: ${mode}`,
     });
@@ -292,13 +292,13 @@ it("keeps the phone permission name and menu while marking its collapsible label
     "Full Access",
   );
   fireEvent.click(trigger);
-  fireEvent.click(await screen.findByRole("menuitem", { name: /Approve/ }));
+  fireEvent.click(await screen.findByRole("menuitem", { name: /Ask first/ }));
   expect(onChange).toHaveBeenCalledWith("auto");
 });
 
 it.each([
   ["full", "Full Access"],
-  ["auto", "Approve"],
+  ["auto", "Ask first"],
   ["accept-edits", "Edits"],
 ] as const)(
   "names the collapsed phone shield for mode %s while its visible label is hidden",

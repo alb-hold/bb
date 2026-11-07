@@ -125,7 +125,7 @@ describe("PluginPermissionModePicker", () => {
     expect(trigger.querySelector('[data-icon="AlertTriangle"]')).toBeNull();
     expect(onChange).not.toHaveBeenCalled();
     response.resolve(executionOptions("auto"));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Permissions" }).textContent).toBe("Permissions:Approve"));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Permissions" }).textContent).toBe("Permissions:Ask first"));
     expect(screen.getByRole("button", { name: "Permissions" }).querySelector('[data-icon="AlertTriangle"]')).toBeNull();
     expect(onChange).toHaveBeenCalledWith("auto");
   });

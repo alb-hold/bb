@@ -100,3 +100,13 @@
     opacity: 1;
   }
 }
+
+@media (width < 48rem) and (pointer: coarse) {
+  .thread-turn-token-breakdown [data-token-unit]:not([data-token-unit="total"]) {
+    display: none;
+  }
+
+  .thread-turn-token-breakdown [data-token-parts] {
+    flex-wrap: nowrap;
+  }
+}

@@ -1003,7 +1003,7 @@ it("reserves two plugin controls on an uncached first paint", () => {
   ).toHaveLength(2);
 });
 
-it("preserves branded footer identity as a monochrome currentColor mask", () => {
+it("uses the outline branding icon instead of a filled footer mask", () => {
   setPluginLogoUrls(
     new Map([
       [
@@ -1034,11 +1034,7 @@ it("preserves branded footer identity as a monochrome currentColor mask", () => 
   );
   renderWithProviders(<FooterHarness />);
   const button = screen.getByRole("button", { name: "Branded action" });
-  const mark = button.querySelector<HTMLElement>(
-    '[data-plugin-icon-asset="/brand-mark.svg"]',
-  );
-  expect(mark?.classList.contains("size-4")).toBe(true);
-  expect(mark?.style.backgroundColor).toBe("currentcolor");
-  expect(mark?.style.maskImage).toContain("/brand-mark.svg");
+  expect(button.querySelector('[data-plugin-icon-asset]')).toBeNull();
+  expect(button.querySelector('[data-icon="Zap"]')).not.toBeNull();
   expect(button.querySelector("img")).toBeNull();
 });

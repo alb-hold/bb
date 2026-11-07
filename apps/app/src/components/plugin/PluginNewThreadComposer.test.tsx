@@ -2178,7 +2178,7 @@ describe("PluginNewThreadComposer seeding", () => {
     ];
     const view = render(newThreadElement("proj_1"));
     const trigger = await screen.findByRole("button", { name: "Permissions" });
-    expect(trigger.textContent).toBe("Permissions:Approve");
+    expect(trigger.textContent).toBe("Permissions:Ask first");
     expect(trigger.hasAttribute("disabled")).toBe(false);
     fireEvent.pointerDown(trigger, {
       button: 0,
@@ -2211,7 +2211,7 @@ describe("PluginNewThreadComposer seeding", () => {
     mocks.modelsLoading = true;
     const view = render(newThreadElement("proj_1"));
     const trigger = await screen.findByRole("button", { name: "Permissions" });
-    expect(trigger.textContent).toBe("Permissions:Approve");
+    expect(trigger.textContent).toBe("Permissions:Ask first");
     expect(trigger.hasAttribute("disabled")).toBe(true);
     fireEvent.pointerDown(trigger, {
       button: 0,
@@ -2254,7 +2254,7 @@ describe("PluginNewThreadComposer seeding", () => {
     mocks.permissionCeiling = "auto";
     view.rerender(newThreadElement("proj_1"));
     await waitFor(() =>
-      expect(trigger.textContent).toBe("Permissions:Approve"),
+      expect(trigger.textContent).toBe("Permissions:Ask first"),
     );
   });
 

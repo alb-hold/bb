@@ -15,7 +15,7 @@ export function getPermissionModeCompactLabel(value: PermissionMode): string {
     case "accept-edits":
       return "Edits";
     case "auto":
-      return "Approve";
+      return "Ask first";
   }
 }
 

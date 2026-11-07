@@ -2678,7 +2678,7 @@ function TimelineRowsList({
               }
               return 28;
             }}
-            gap={spacing === "bundle" ? 0 : isCompactTouch ? 4 : 8}
+            gap={spacing === "bundle" ? 0 : isCompactTouch ? 0 : 8}
             initialWindowAnchor={
               isTopLevelList && detailScrollRoot === null ? scrollRestore : null
             }

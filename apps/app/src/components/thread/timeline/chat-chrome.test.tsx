@@ -42,7 +42,7 @@ afterEach(() => {
 });
 
 it.each([
-  [true, true, "4px"],
+  [true, true, "0px"],
   [true, false, "8px"],
   [false, true, "8px"],
 ])(
@@ -326,4 +326,32 @@ it("lets the phone mode selector fit its labels without fixed width or edge marg
   );
   expect(style.width).toBe("max-content");
   expect(style.marginInline).toBe("0px");
+});
+
+it("keeps only the token total in the phone footer, including its separators", () => {
+  const css = compactStyles(
+    "src/components/thread/timeline/message-action-bar.css",
+    "@media (width < 48rem) and (pointer: coarse)",
+  );
+  const { container } = render(
+    <>
+      <style>{css}</style>
+      <button className="thread-turn-token-breakdown" aria-label="Open thread token analysis">
+        <span data-token-parts="">
+          <span data-token-unit="total">108K tokens</span>
+          <span data-token-unit="input"> · in 100K</span>
+          <span data-token-unit="output"> · out 8K</span>
+          <span data-token-unit="reasoning"> · reasoning 1K</span>
+          <span data-token-unit="cached"> · cached 90K</span>
+        </span>
+      </button>
+    </>,
+  );
+  const units = container.querySelectorAll<HTMLElement>("[data-token-unit]");
+  expect(getComputedStyle(units[0]!).display).not.toBe("none");
+  for (const unit of Array.from(units).slice(1)) {
+    expect(getComputedStyle(unit).display).toBe("none");
+  }
+  expect(getComputedStyle(container.querySelector("[data-token-parts]")!).flexWrap).toBe("nowrap");
+  expect(screen.getByRole("button", { name: "Open thread token analysis" })).toBeTruthy();
 });

@@ -154,7 +154,7 @@ function TurnTokenPart({
   className?: string;
 }) {
   return (
-    <span data-token-unit="">
+    <span data-token-unit={part}>
       <span data-token-separator="" aria-hidden="true">
         ·
       </span>
