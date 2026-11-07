@@ -72,7 +72,12 @@ it.each(
       vi.spyOn(container, "getBoundingClientRect").mockReturnValue(
         new DOMRect(0, 0, 936, 662),
       );
-      rememberTerminalGrid("term", container, 13, { cols, rows: 38 });
+      rememberTerminalGrid(
+        "term",
+        container,
+        terminalFont.readTerminalFontMetrics().fontSize,
+        { cols, rows: 38 },
+      );
     }
     prefetchTerminalSocket(url);
     const native = Socket.instances[0]!;
@@ -219,7 +224,12 @@ it("claims while attach is pending and delivers replay at the claimed grid befor
   vi.spyOn(container, "getBoundingClientRect").mockReturnValue(
     new DOMRect(0, 0, 936, 662),
   );
-  rememberTerminalGrid("term", container, 13, { cols: 116, rows: 38 });
+  rememberTerminalGrid(
+    "term",
+    container,
+    terminalFont.readTerminalFontMetrics().fontSize,
+    { cols: 116, rows: 38 },
+  );
   prefetchTerminalSocket(url);
   const native = Socket.instances[0]!;
   native.open();
@@ -274,7 +284,12 @@ it("forgets a disconnected cached claim before a new socket is adopted", () => {
   vi.spyOn(container, "getBoundingClientRect").mockReturnValue(
     new DOMRect(0, 0, 936, 662),
   );
-  rememberTerminalGrid("term", container, 13, { cols: 116, rows: 38 });
+  rememberTerminalGrid(
+    "term",
+    container,
+    terminalFont.readTerminalFontMetrics().fontSize,
+    { cols: 116, rows: 38 },
+  );
   prefetchTerminalSocket(url);
   const native = Socket.instances[0]!;
   native.open();
@@ -294,7 +309,12 @@ it("claims at socket-open even when the view adopted the connecting socket first
   vi.spyOn(container, "getBoundingClientRect").mockReturnValue(
     new DOMRect(0, 0, 936, 662),
   );
-  rememberTerminalGrid("term", container, 13, { cols: 116, rows: 38 });
+  rememberTerminalGrid(
+    "term",
+    container,
+    terminalFont.readTerminalFontMetrics().fontSize,
+    { cols: 116, rows: 38 },
+  );
   prefetchTerminalSocket(url);
   const native = Socket.instances[0]!;
   const transport = new TerminalWebSocketTransport({
@@ -334,7 +354,12 @@ it("claims a persisted grid at socket open before the app layout mounts", async 
   );
   shell.append(container);
   document.body.append(shell);
-  rememberTerminalGrid("term", container, 13, { cols: 116, rows: 36 });
+  rememberTerminalGrid(
+    "term",
+    container,
+    terminalFont.readTerminalFontMetrics().fontSize,
+    { cols: 116, rows: 36 },
+  );
   document.body.replaceChildren();
   prefetchTerminalSocket(url);
   const native = Socket.instances[0]!;

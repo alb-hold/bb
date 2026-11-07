@@ -13,6 +13,7 @@ import { wsManager } from "@/lib/ws";
 import { AppCommandProvider } from "@/components/commands/AppCommandProvider";
 import { ThreadTerminalView } from "./ThreadTerminalView";
 import { importTerminalModules } from "./terminal-modules";
+import { readTerminalFontMetrics } from "./terminal-font";
 import {
   readCachedTerminalGrid,
   rememberTerminalGrid,
@@ -392,10 +393,15 @@ describe("native terminal attach claim timing", () => {
         });
       const cachedCols = cacheMode === "mismatch" ? cols + 1 : cols;
       if (cacheMode !== "miss") {
-        rememberTerminalGrid(session.id, document.createElement("div"), 13, {
-          cols: cachedCols,
-          rows: 36,
-        });
+        rememberTerminalGrid(
+          session.id,
+          document.createElement("div"),
+          readTerminalFontMetrics().fontSize,
+          {
+            cols: cachedCols,
+            rows: 36,
+          },
+        );
       }
       prefetchTerminalSocket(
         buildTerminalWebSocketUrl({

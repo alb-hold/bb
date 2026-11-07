@@ -26,7 +26,7 @@ let cachedMetrics: {
 
 export function readTerminalFontMetrics() {
   if (typeof document === "undefined")
-    return { fontFamily: TERMINAL_FONT_FAMILY, fontSize: 13, fontWeight: 400 };
+    return { fontFamily: TERMINAL_FONT_FAMILY, fontSize: 14, fontWeight: 400 };
   const key = `${window.innerWidth < 768}:${getAppThemeEpoch()}:${document.documentElement.className}`;
   if (cachedMetrics?.key === key)
     return {
@@ -35,12 +35,13 @@ export function readTerminalFontMetrics() {
       fontWeight: cachedMetrics.fontWeight,
     };
   const probe = document.createElement("span");
-  probe.className = "font-mono text-sm font-normal";
+  probe.className = "font-mono text-terminal font-normal";
   probe.style.position = "absolute";
   probe.style.visibility = "hidden";
   document.body.append(probe);
   const style = getComputedStyle(probe);
-  const fontSize = parseFloat(style.fontSize) || 13;
+  const fontSize =
+    parseFloat(style.fontSize) || (window.innerWidth < 768 ? 15 : 14);
   const fontWeight = Number(style.fontWeight) || 400;
   probe.remove();
   cachedMetrics = { key, fontSize, fontWeight };

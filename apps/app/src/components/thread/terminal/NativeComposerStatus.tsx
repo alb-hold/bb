@@ -1,7 +1,5 @@
-import {
-  getThreadListIndicatorLabel,
-  type ThreadListIndicatorKind,
-} from "@bb/client-core";
+import type { ThreadListIndicatorKind } from "@bb/client-core";
+import { getThreadActivityLabel } from "@/lib/thread-activity-label";
 import { SIDEBAR_SUCCESS_STATUS_DOT_CLASS } from "@bb/shared-ui/sidebar-row-classes";
 import { ThreadStatusGlyph } from "../ThreadStatusGlyph";
 import { useEffect, useState } from "react";
@@ -239,7 +237,7 @@ export function NativeTerminalActivity({
           hideAccessibleLabel
         />
       )}
-      <span>{getThreadListIndicatorLabel(indicator) ?? "Idle"}</span>
+      <span>{getThreadActivityLabel(indicator)}</span>
     </div>
   );
 }
