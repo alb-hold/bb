@@ -3522,6 +3522,77 @@ describe("ComposerBox compact layout", () => {
     expect(document.querySelector("[data-promptbox-attachments]")).toBeNull();
   });
 
+  it.each([false, true])(
+    "keeps a 44px phone submit slot across draft and run states (compact: %s)",
+    (compact) => {
+      const restoreMatchMedia = mockPointerCoarse(true);
+      try {
+        const props = createPromptBoxProps({
+          voice: createVoiceConfig(),
+          compact: compact
+            ? { when: "always", placeholder: "Ask a follow-up" }
+            : undefined,
+        });
+        const composer = (value: string, submission = props.submission) => (
+          <CompactViewportOverrideProvider isCompactViewport>
+            <ComposerBox {...props} value={value} submission={submission} />
+          </CompactViewportOverrideProvider>
+        );
+        const view = render(composer(""));
+        const phoneSizeClasses = () => {
+          const button = view.container.querySelector(
+            "[data-promptbox-submit-action]",
+          )!;
+          expect(button.classList).toContain("max-md:pointer-coarse:size-11");
+          expect(button.classList).not.toContain("max-md:pointer-coarse:h-10");
+          return Array.from(button.classList).filter((token) =>
+            /^max-md:pointer-coarse:(?:size|h|w)-/.test(token),
+          );
+        };
+        const emptySize = phoneSizeClasses();
+        view.rerender(composer("Send this"));
+        expect(phoneSizeClasses()).toEqual(emptySize);
+        view.rerender(composer("Send this", { isSubmitting: true }));
+        expect(phoneSizeClasses()).toEqual(emptySize);
+        view.rerender(composer("", { isRunning: true, onStop: vi.fn() }));
+        expect(screen.getByRole("button", { name: "Stop run" })).toBeTruthy();
+        expect(phoneSizeClasses()).toEqual(emptySize);
+      } finally {
+        restoreMatchMedia();
+      }
+    },
+  );
+
+  it("keeps a labelled phone submit tall with room for its text", () => {
+    const restoreMatchMedia = mockPointerCoarse(true);
+    try {
+      render(
+        <CompactViewportOverrideProvider isCompactViewport>
+          <ComposerBox
+            {...createPromptBoxProps({
+              value: "Select handoff",
+              submission: { label: "New thread", icon: "MessageSquarePlus" },
+            })}
+          />
+        </CompactViewportOverrideProvider>,
+      );
+      const button = screen.getByRole("button", { name: "Submit (Enter)" });
+      expect(
+        button.querySelector("[data-promptbox-submit-label]")?.textContent,
+      ).toBe("New thread");
+      expect(button.classList).not.toContain("max-md:pointer-coarse:size-11");
+      expect(button.classList).toContain("size-auto");
+      expect(button.classList).toContain("px-2.5");
+      expect(button.classList).toContain("max-md:pointer-coarse:h-11");
+      expect(button.classList).toContain("max-md:pointer-coarse:w-auto");
+      expect(button.classList).toContain("max-md:pointer-coarse:aspect-auto");
+      expect(button.classList).toContain("max-md:pointer-coarse:min-w-11");
+      expect(button.classList).not.toContain("max-md:pointer-coarse:h-10");
+    } finally {
+      restoreMatchMedia();
+    }
+  });
+
   it("keeps a labelled desktop submit action as a pill", () => {
     render(
       <ComposerBox

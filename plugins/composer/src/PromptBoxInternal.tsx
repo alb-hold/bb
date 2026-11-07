@@ -371,6 +371,9 @@ function PromptSubmitButton({
         className,
         COMPOSER_SUBMIT_CLASS,
         label !== undefined && !isCompact && "size-auto h-8 gap-1.5 px-2.5",
+        label !== undefined && !isCompact
+          ? "max-md:pointer-coarse:h-11 max-md:pointer-coarse:min-w-11 max-md:pointer-coarse:w-auto max-md:pointer-coarse:aspect-auto"
+          : "max-md:pointer-coarse:size-11",
       )}
     >
       {isBusy ? (
@@ -3717,6 +3720,7 @@ export function PromptBoxInternal({
                             ? COMPACT_PROMPT_ACTION_BUTTON_CLASS
                             : COARSE_POINTER_PROMPT_ICON_ACTION_BUTTON_CLASS,
                           PROMPT_ACTION_LAYOUT_CLASS,
+                          "max-md:pointer-coarse:size-11",
                         )}
                       >
                         <Icon
@@ -3743,6 +3747,7 @@ export function PromptBoxInternal({
                               ],
                           "rounded-full transition-colors",
                           PROMPT_ACTION_LAYOUT_CLASS,
+                          "max-md:pointer-coarse:size-11",
                         )}
                       >
                         <Icon name="Mic" className="size-4" />
