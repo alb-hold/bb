@@ -413,18 +413,25 @@ describe("mobile recent thread rows", () => {
       </TestProviders>,
     );
 
-    expect(screen.getByTitle(`bb \u00b7 ${expected}`).textContent).toBe(`bb \u00b7 ${expected}`);
-    expect(screen.getByText(expected, { selector: "time" }).tagName).toBe("TIME");
+    expect(screen.getByTitle(`bb \u00b7 ${expected}`).textContent).toBe(
+      `bb \u00b7 ${expected}`,
+    );
+    expect(screen.getByText(expected, { selector: "time" }).tagName).toBe(
+      "TIME",
+    );
     const metadata = screen.getByTitle(`bb \u00b7 ${expected}`);
     expect(metadata.classList.contains("text-xs")).toBe(true);
     expect(metadata.classList.contains("text-muted-foreground")).toBe(true);
     expect(metadata.className).not.toContain("pointer-coarse:text-sm");
-    expect(
-      metadata.firstElementChild?.getAttribute("data-icon"),
-    ).toBe("Folder");
+    expect(metadata.firstElementChild?.getAttribute("data-icon")).toBe(
+      "Folder",
+    );
   });
 
-  it.each(["bb/mobile-home", "bb/add-e2e-coverage-for-the-mobile-home-recent-list-with-a-very-long-branch"])("keeps project and age outside the shrinking branch: %s", (branch) => {
+  it.each([
+    "bb/mobile-home",
+    "bb/add-e2e-coverage-for-the-mobile-home-recent-list-with-a-very-long-branch",
+  ])("keeps project and age outside the shrinking branch: %s", (branch) => {
     render(
       <TestProviders>
         <RootComposeMobileRecents
@@ -462,9 +469,41 @@ describe("mobile recent thread rows", () => {
     expect(age.classList.contains("truncate")).toBe(false);
     expect(branchNode.classList.contains("min-w-0")).toBe(true);
     expect(branchNode.classList.contains("truncate")).toBe(true);
+    expect(branchNode.parentElement?.dataset.branchMinimum).toBe(
+      `${branch.slice(0, 6)}…`,
+    );
     expect(metadata.classList.contains("leading-4")).toBe(true);
+    expect(metadata.firstElementChild?.hasAttribute("data-icon-root")).toBe(
+      true,
+    );
+  });
+
+  it("lets a long project use available space beside a short branch", () => {
+    render(
+      <TestProviders>
+        <RootComposeMobileRecents
+          highlightedThreadId={null}
+          projectNamesById={new Map([["proj_mobile", "queen-scheduler"]])}
+          providersById={new Map()}
+          showCreatingRow={false}
+          threads={[
+            makeThread({
+              environmentBranchName: "main",
+              environmentProviderId: null,
+            }),
+          ]}
+        />
+      </TestProviders>,
+    );
+    const project = screen.getByText("queen-scheduler");
+    const branch = screen.getByText("main");
+    expect(project.className).not.toMatch(/max-w-/);
+    expect(project.parentElement?.classList.contains("min-w-0")).toBe(true);
+    expect(branch.parentElement?.dataset.branchMinimum).toBe("main");
     expect(
-      metadata.firstElementChild?.hasAttribute("data-icon-root"),
+      project.parentElement?.parentElement?.classList.contains(
+        "grid-cols-[minmax(0,max-content)_auto_minmax(min-content,1fr)]",
+      ),
     ).toBe(true);
   });
 
@@ -500,7 +539,9 @@ describe("mobile recent thread rows", () => {
       </QueryClientProvider>,
     );
 
-    expect(screen.getByTitle("Personal \u00b7 3h").textContent).toBe("Personal \u00b7 3h");
+    expect(screen.getByTitle("Personal \u00b7 3h").textContent).toBe(
+      "Personal \u00b7 3h",
+    );
   });
 
   it("drops the status slot entirely when a thread has no indicator", () => {

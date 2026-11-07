@@ -2,6 +2,10 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
+import {
+  SIDEBAR_RAIL_BUTTON_CLASS,
+  SIDEBAR_FOOTER_ACTION_CLASS,
+} from "@bb/shared-ui/sidebar-row-classes";
 
 const css = readFileSync(
   join(dirname(fileURLToPath(import.meta.url)), "theme.css"),
@@ -536,6 +540,32 @@ describe("composer and navigation contrast", () => {
       ...canvas,
       lightness: ink.lightness * share + canvas.lightness * (1 - share),
     };
+    it(`${mode} inactive rail and footer ink sits between muted and active with 3:1 contrast`, () => {
+      const share = rampSteps(block).get("sidebar-icon-foreground");
+      expect(share).toBeDefined();
+      const inactive = {
+        ...ink,
+        lightness:
+          (ink.lightness * share!) / 100 +
+          canvas.lightness * (1 - share! / 100),
+      };
+      const distance = (color: OklchColor) =>
+        Math.abs(color.lightness - canvas.lightness);
+      expect(distance(inactive)).toBeGreaterThan(distance(muted));
+      expect(distance(inactive)).toBeLessThan(distance(ink));
+      expect(contrastRatio(inactive, sidebar)).toBeGreaterThanOrEqual(3);
+      for (const classes of [
+        SIDEBAR_RAIL_BUTTON_CLASS,
+        SIDEBAR_FOOTER_ACTION_CLASS,
+      ]) {
+        const tokens = classes.split(" ");
+        expect(tokens).toContain("text-sidebar-icon-foreground");
+        expect(tokens).not.toContain("text-sidebar-foreground");
+        expect(tokens).toContain("hover:text-sidebar-foreground");
+        expect(tokens).toContain("aria-[current=page]:text-sidebar-foreground");
+        expect(tokens).toContain("data-[state=open]:text-sidebar-foreground");
+      }
+    });
     it(`${mode} empty-state foreground reaches AA`, () => {
       expect(contrastRatio(ink, canvas)).toBeGreaterThanOrEqual(4.5);
     });
