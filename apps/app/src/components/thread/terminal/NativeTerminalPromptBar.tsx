@@ -109,6 +109,7 @@ export function NativeTerminalPromptBar({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [text, setText] = useState("");
+  const [composerFocused, setComposerFocused] = useState(false);
   const textRef = useRef("");
   const programmaticRef = useRef(false);
   const composingRef = useRef(false);
@@ -577,10 +578,26 @@ export function NativeTerminalPromptBar({
       <div
         className={cn(
           COMPOSER_SHELL_CLASS,
-          "flex flex-col px-1.5 py-0.5 transition-[border-color,box-shadow] duration-200 focus-within:border-ring/60 motion-reduce:transition-none",
+          "group flex flex-col max-md:pointer-coarse:data-[native-composer-inline]:grid max-md:pointer-coarse:data-[native-composer-inline]:grid-cols-[minmax(0,1fr)_auto] max-md:pointer-coarse:data-[native-composer-inline]:items-center px-1.5 py-0.5 transition-[border-color,box-shadow] duration-200 focus-within:border-ring/60 motion-reduce:transition-none",
           recording && "border-destructive/40",
         )}
         data-native-composer=""
+        data-native-composer-inline={
+          text.length === 0 &&
+          !composerFocused &&
+          dictation.phase === "idle" &&
+          assist.suggestions.length === 0 &&
+          assist.recent === null &&
+          !assist.pending
+            ? ""
+            : undefined
+        }
+        onFocus={() => setComposerFocused(true)}
+        onBlur={(event) => {
+          if (!event.currentTarget.contains(event.relatedTarget)) {
+            setComposerFocused(false);
+          }
+        }}
         onDragOver={onDragOver}
         onDrop={onDrop}
       >
@@ -600,7 +617,8 @@ export function NativeTerminalPromptBar({
         executionLabel.trim() !== providerLabel.trim() ? (
           <div
             aria-label="Terminal execution"
-            className="col-span-2 truncate px-2 text-xs leading-tight text-muted-foreground"
+            data-native-composer-execution=""
+            className="col-span-2 truncate px-2 text-xs leading-tight text-muted-foreground max-md:pointer-coarse:group-data-[native-composer-inline]:hidden"
           >
             <span
               className="block truncate"
@@ -626,7 +644,7 @@ export function NativeTerminalPromptBar({
               ? "Starting microphone…"
               : recording
                 ? "Listening…"
-                : `Message ${providerLabel}…`
+                : `Send to ${providerLabel} terminal…`
           }
           onChange={(event) => {
             applyValue(event.target.value, programmaticRef.current);
@@ -640,7 +658,7 @@ export function NativeTerminalPromptBar({
           onKeyDown={onKeyDown}
           onPaste={onPaste}
           className={cn(
-            "max-h-48 min-h-7 max-md:min-h-11 min-w-0 w-full resize-none bg-transparent px-2 py-1 text-base md:text-sm text-foreground field-sizing-content placeholder:text-sm placeholder:text-muted-foreground focus-visible:outline-none",
+            "max-md:pointer-coarse:group-data-[native-composer-inline]:col-start-1 max-md:pointer-coarse:group-data-[native-composer-inline]:row-start-1 max-md:pointer-coarse:group-data-[native-composer-inline]:h-11 max-md:pointer-coarse:group-data-[native-composer-inline]:overflow-hidden max-h-48 min-h-7 max-md:min-h-11 min-w-0 w-full resize-none bg-transparent px-2 py-1 text-base md:text-sm text-foreground field-sizing-content placeholder:text-sm placeholder:text-muted-foreground focus-visible:outline-none",
           )}
         />
         <AssistStrip
@@ -656,7 +674,7 @@ export function NativeTerminalPromptBar({
         />
         <div
           data-native-composer-actions=""
-          className="flex shrink-0 items-center gap-1"
+          className="flex shrink-0 items-center gap-1 max-md:pointer-coarse:group-data-[native-composer-inline]:col-start-2 max-md:pointer-coarse:group-data-[native-composer-inline]:row-start-1"
         >
           <input
             ref={fileInputRef}
@@ -675,7 +693,7 @@ export function NativeTerminalPromptBar({
             type="button"
             size="icon"
             variant="ghost"
-            className="size-9 shrink-0 rounded-full pointer-coarse:size-11"
+            className="size-9 shrink-0 rounded-full pointer-coarse:size-11 max-md:pointer-coarse:min-w-11 max-md:pointer-coarse:min-h-11"
             aria-label="Attach image"
             onClick={() => fileInputRef.current?.click()}
           >
@@ -684,7 +702,8 @@ export function NativeTerminalPromptBar({
           {modelLabel ? (
             <div
               aria-label="Terminal model"
-              className="min-w-0 flex-1 truncate text-xs text-muted-foreground"
+              data-native-composer-model=""
+              className="min-w-0 flex-1 truncate text-xs text-muted-foreground max-md:pointer-coarse:group-data-[native-composer-inline]:hidden"
             >
               <span title={modelLabel}>{modelLabel}</span>
             </div>
@@ -697,7 +716,7 @@ export function NativeTerminalPromptBar({
               size="icon"
               variant="ghost"
               className={cn(
-                "relative size-9 shrink-0 rounded-full transition-colors duration-200 pointer-coarse:size-11 motion-reduce:transition-none",
+                "relative size-9 shrink-0 rounded-full max-md:pointer-coarse:min-w-11 max-md:pointer-coarse:min-h-11 transition-colors duration-200 pointer-coarse:size-11 motion-reduce:transition-none",
                 recording &&
                   "bg-destructive/15 text-destructive hover:bg-destructive/20 hover:text-destructive",
               )}
@@ -737,7 +756,10 @@ export function NativeTerminalPromptBar({
             type="submit"
             variant="default"
             size="icon"
-            className={COMPOSER_SUBMIT_CLASS}
+            className={cn(
+              COMPOSER_SUBMIT_CLASS,
+              "max-md:pointer-coarse:min-w-11 max-md:pointer-coarse:min-h-11",
+            )}
             disabled={!canSend}
             aria-label={`Send to ${providerLabel}`}
             onMouseDown={(event) => event.preventDefault()}

@@ -205,8 +205,7 @@ export function ThreadDetailHeader({
           isSplitPaneHeader && isFocused && CONTEXT_SELECTION_SURFACE_CLASS,
         )}
       >
-        {(needsInput || checkTerminal) &&
-        !(isCompactViewport && hasNativeTerminal) ? (
+        {(needsInput || checkTerminal) && !hasNativeTerminal ? (
           <ThreadStatusGlyph
             indicator={needsInput ? "needs-input" : "check-terminal"}
             size="compact"
@@ -214,9 +213,7 @@ export function ThreadDetailHeader({
         ) : null}
         <div
           className={
-            isCompactViewport && hasNativeTerminal
-              ? "flex min-w-0 flex-1 flex-col"
-              : "contents"
+            hasNativeTerminal ? "flex min-w-0 flex-1 flex-col" : "contents"
           }
         >
           <p
@@ -238,7 +235,7 @@ export function ThreadDetailHeader({
           >
             {isEditing ? editor : <ThreadTitle title={threadTitle} />}
           </p>
-          {isCompactViewport && hasNativeTerminal ? (
+          {hasNativeTerminal ? (
             <div ref={nativeActivityTargetRef} className="h-4 shrink-0" />
           ) : null}
         </div>

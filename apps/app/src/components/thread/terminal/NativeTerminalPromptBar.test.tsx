@@ -19,7 +19,6 @@ import { serializePromptDraftStorage } from "@bb/client-core";
 import { writingAssistanceQueryKey } from "@/hooks/queries/query-keys";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
 import { getPromptDraftAccessor } from "@/hooks/usePromptDraftStorage";
-import { readFileSync } from "node:fs";
 import { NativeTerminalPromptBar } from "./NativeTerminalPromptBar";
 
 const send = vi.hoisted(() => vi.fn());
@@ -185,37 +184,55 @@ describe("NativeTerminalPromptBar", () => {
 
   it("labels the terminal destination and keeps execution details read-only", () => {
     const { input } = renderBar();
-    expect(input.placeholder).toBe("Message Native CLI…");
+    expect(input.placeholder).toBe("Send to Native CLI terminal…");
     expect(
       screen.getByText("Native CLI · GPT-5 · Full access").className,
     ).toContain("truncate");
   });
-  it.each([360, 390])(
-    "keeps a two-row phone structure at %i px regardless of placeholder wrapping",
+  it.each([360, 390, 600])(
+    "collapses only an empty unfocused touch composer at %i px",
     (width) => {
       const scrollHeight = vi
         .spyOn(HTMLTextAreaElement.prototype, "scrollHeight", "get")
         .mockReturnValue(width === 360 ? 48 : 24);
-      const { input } = renderBar("", "", "Codex");
+      const { input } = renderBar();
       const shell = input.closest("[data-native-composer]")!;
-      const phoneStyle = document.createElement("style");
-      const css = readFileSync("src/app.css", "utf8");
-      phoneStyle.textContent = css
-        .slice(css.lastIndexOf("@media (width <= 480px) {"))
-        .replace("@media (width <= 480px) {", "")
-        .replace(/}\s*$/, "");
-      document.head.append(phoneStyle);
+      const execution = screen.getByLabelText("Terminal execution");
+      const model = screen.getByLabelText("Terminal model");
       try {
-        expect(getComputedStyle(shell).display).not.toBe("grid");
-        expect(shell.classList.contains("flex-col")).toBe(true);
+        act(() => input.focus());
         expect(shell.hasAttribute("data-native-composer-inline")).toBe(false);
-        expect(input.placeholder).toBe("Message Codex…");
-        fireEvent.change(input, { target: { value: "short" } });
+        expect(screen.getByLabelText("Terminal execution")).toBe(execution);
+        expect(screen.getByLabelText("Terminal model")).toBe(model);
+        act(() => screen.getByRole("button", { name: "Attach image" }).focus());
         expect(shell.hasAttribute("data-native-composer-inline")).toBe(false);
+        act(() => (document.activeElement as HTMLElement).blur());
+        expect(shell.hasAttribute("data-native-composer-inline")).toBe(true);
+        expect(shell.className).toContain(
+          "max-md:pointer-coarse:data-[native-composer-inline]:grid",
+        );
+        expect(shell.className).toContain(
+          "max-md:pointer-coarse:data-[native-composer-inline]:grid-cols-[minmax(0,1fr)_auto]",
+        );
+        expect(shell.hasAttribute("data-native-composer-inline")).toBe(true);
+        expect(execution.hasAttribute("data-native-composer-execution")).toBe(
+          true,
+        );
+        expect(model.hasAttribute("data-native-composer-model")).toBe(true);
+        for (const detail of [execution, model]) {
+          expect(detail.className).toContain(
+            "max-md:pointer-coarse:group-data-[native-composer-inline]:hidden",
+          );
+        }
         fireEvent.change(input, { target: { value: "first\nsecond" } });
         expect(shell.hasAttribute("data-native-composer-inline")).toBe(false);
+        fireEvent.change(input, { target: { value: "" } });
+        expect(shell.hasAttribute("data-native-composer-inline")).toBe(true);
+        for (const button of shell.querySelectorAll("button")) {
+          expect(button.className).toContain("max-md:pointer-coarse:min-w-11");
+          expect(button.className).toContain("max-md:pointer-coarse:min-h-11");
+        }
       } finally {
-        phoneStyle.remove();
         scrollHeight.mockRestore();
       }
     },
@@ -225,7 +242,7 @@ describe("NativeTerminalPromptBar", () => {
     "uses provider metadata in the %s placeholder",
     (providerLabel) => {
       const { input } = renderBar("", "", providerLabel);
-      expect(input.placeholder).toBe(`Message ${providerLabel}…`);
+      expect(input.placeholder).toBe(`Send to ${providerLabel} terminal…`);
     },
   );
   it.each(["Native CLI", " Native CLI ", ""])(
