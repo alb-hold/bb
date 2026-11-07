@@ -351,12 +351,15 @@ describe("native terminal attach claim timing", () => {
         TerminalWebSocketTransport.prototype.sendResize;
       const sendResize = vi
         .spyOn(TerminalWebSocketTransport.prototype, "sendResize")
-        .mockImplementation(
-          function (this: TerminalWebSocketTransport, cols, rows, claim) {
-            if (claim) resizeAt ??= Date.now();
-            originalSendResize.call(this, cols, rows, claim);
-          },
-        );
+        .mockImplementation(function (
+          this: TerminalWebSocketTransport,
+          cols,
+          rows,
+          claim,
+        ) {
+          if (claim) resizeAt ??= Date.now();
+          originalSendResize.call(this, cols, rows, claim);
+        });
       const session = makeTerminalSession({
         id: "term_existing_client_grid",
         threadId: null,
@@ -422,7 +425,8 @@ describe("native terminal attach claim timing", () => {
       expect(
         document.querySelector("[data-terminal-grid-cache-id]"),
       ).toBeNull();
-      expect(claimAt).toBeUndefined();
+      if (cacheMode === "miss") expect(claimAt).toBeUndefined();
+      else expect(claimAt).toBe(attachedAt);
       expect(startTransport).not.toHaveBeenCalled();
       if (cacheMode !== "miss") await vi.advanceTimersByTimeAsync(700);
       const renderedAt = Date.now();
@@ -545,7 +549,22 @@ describe("native terminal attach claim timing", () => {
         rows: 36,
         claim: true,
       };
-      expect(claims).toEqual([measured]);
+      if (cacheMode !== "miss") {
+        expect(stages.has("terminal-cached-grid-hit")).toBe(
+          cacheMode === "match",
+        );
+        expect(stages.has("terminal-cached-grid-miss")).toBe(
+          cacheMode === "mismatch",
+        );
+      }
+      expect(claims).toEqual(
+        cacheMode === "mismatch"
+          ? [
+              { type: "resize", cols: cachedCols, rows: 36, claim: true },
+              measured,
+            ]
+          : [measured],
+      );
       if (rendererMode === "late" || rendererMode === "unobserved")
         expect(webglActive).toBe(false);
       expect(readCachedTerminalGrid(session.id)).toEqual({

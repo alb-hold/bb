@@ -550,20 +550,41 @@ describe("ThreadRow", () => {
     expect(glyph.classList.contains("md:hidden")).toBe(false);
   });
 
-  it("renders terminal attention delivered by the host and clears it with the state", () => {
-    const view = renderThreadRow({
-      thread: createThread({ indicator: "check-terminal" }),
-    });
-    expect(screen.getByRole("img", { name: "Check terminal" })).toBeTruthy();
-    expect(
-      view.container.querySelector(
-        '[data-thread-status-glyph="check-terminal"]',
-      ),
-    ).not.toBeNull();
-    view.unmount();
-    renderThreadRow({ thread: createThread({ indicator: "none" }) });
-    expect(screen.queryByRole("img", { name: "Check terminal" })).toBeNull();
-  });
+  it.each([false, true])(
+    "renders terminal attention and input on compact=%s and clears them with state",
+    (isCompactViewport) => {
+      const view = renderThreadRow({
+        isCompactViewport,
+        thread: createThread({
+          indicator: "check-terminal",
+          experimental_nativeTerminal: true,
+        }),
+      });
+      expect(screen.getByRole("img", { name: "Check terminal" })).toBeTruthy();
+      expect(
+        view.container.querySelector(
+          '[data-thread-status-glyph="check-terminal"]',
+        ),
+      ).not.toBeNull();
+      view.unmount();
+      const inputView = renderThreadRow({
+        isCompactViewport,
+        thread: createThread({
+          indicator: "check-terminal",
+          hasPendingInteraction: true,
+          experimental_nativeTerminal: true,
+        }),
+      });
+      expect(screen.getByRole("img", { name: "Needs input" })).toBeTruthy();
+      expect(screen.queryByRole("img", { name: "Check terminal" })).toBeNull();
+      inputView.unmount();
+      renderThreadRow({
+        isCompactViewport,
+        thread: createThread({ indicator: "none" }),
+      });
+      expect(screen.queryByRole("img", { name: "Check terminal" })).toBeNull();
+    },
+  );
 
   it.each([
     ["Workspace", createThread({ environment: null })],

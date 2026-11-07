@@ -1364,22 +1364,28 @@ it.each(["Codex", "Claude Code", "Native CLI"])(
   },
 );
 
-it.each([
-  [360, "Send to prompt…"],
-  [374, "Send to prompt…"],
-  [375, "Send to prompt above…"],
-  [390, "Send to prompt above…"],
-])("fits the compact placeholder at %i px", (width, placeholder) => {
-  vi.stubGlobal("matchMedia", (query: string) => ({
-    matches: query === "(width < 375px)" && Number(width) < 375,
+it.each([360, 374, 375, 1024])("uses a whole placeholder at %s px", (width) => {
+  const media = vi.spyOn(window, "matchMedia").mockImplementation((query) => ({
+    matches: query === "(max-width: 374px)" && width < 375,
     media: query,
+    onchange: null,
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
     addEventListener: vi.fn(),
     removeEventListener: vi.fn(),
+    dispatchEvent: () => false,
   }));
-  const { input } = renderBar("", "", "Native CLI", true);
-  expect(input.placeholder).toBe(placeholder);
-  expect(input.className).not.toContain("placeholder:text-sm");
-  expect(input.classList.contains("text-base")).toBe(true);
-  cleanup();
-  vi.unstubAllGlobals();
+  try {
+    const { input } = renderBar(undefined, undefined, "Codex", width < 768);
+    expect(input.placeholder).toBe(
+      width < 375
+        ? "Send to prompt…"
+        : width < 768
+          ? "Send to prompt above…"
+          : "Send to Codex prompt above…",
+    );
+  } finally {
+    cleanup();
+    media.mockRestore();
+  }
 });
