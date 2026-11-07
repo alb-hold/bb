@@ -15,6 +15,15 @@ import type { ReactNode } from "react";
 import { Provider, createStore } from "jotai";
 import { mobileRecentsCollapsedThreadIdsAtom } from "./mobile-recents-collapse";
 import { MemoryRouter } from "react-router-dom";
+import { RouteLoadingSkeleton } from "@/components/ui/route-loading-skeleton";
+import {
+  writeCachedSidebarBootstrap,
+  resetSidebarBootstrapCacheForTest,
+} from "@/lib/sidebar-bootstrap-cache";
+import {
+  makeSidebarBootstrapResponse,
+  makeProjectWithThreadsResponse,
+} from "@/test/fixtures/projects";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CompactViewportOverrideProvider } from "@bb/shared-ui/hooks/use-compact-viewport";
 import type { SystemEnvironmentProvider } from "@bb/server-contract";
@@ -769,3 +778,82 @@ describe("RootComposeMobileRecents", () => {
     expect(screen.queryByLabelText("Plan mode active")).toBeNull();
   });
 });
+
+it.each(["plain", "expanded", "collapsed"])(
+  "keeps cached and live Recent row geometry and metadata identical (%s)",
+  (shape) => {
+    vi.spyOn(Date, "now").mockReturnValue(1800000000000);
+    const thread = makeThread({
+      title: "Cached work",
+      environmentBranchName: "feature/paint",
+      latestAttentionAt: Date.now() - 60000,
+    });
+    const child = makeThread({
+      id: "cached-child",
+      parentThreadId: thread.id,
+      title: "Child work",
+    });
+    const threads = shape === "plain" ? [thread] : [thread, child];
+    const store = storeWithCollapsedThreads(
+      shape === "collapsed" ? [thread.id] : [],
+    );
+    writeCachedSidebarBootstrap(
+      makeSidebarBootstrapResponse({
+        projects: [
+          makeProjectWithThreadsResponse({
+            id: thread.projectId,
+            name: "Paint project",
+            threads,
+          }),
+        ],
+      }),
+    );
+    const cached = render(
+      <TestProviders store={store}>
+        <CompactViewportOverrideProvider isCompactViewport>
+          <RouteLoadingSkeleton isBoundedPane={false} variant="root-compose" />
+        </CompactViewportOverrideProvider>
+      </TestProviders>,
+    );
+    const cachedSection = cached.container.querySelector(
+      "[data-root-compose-mobile-recents]",
+    );
+    expect(cachedSection).not.toBeNull();
+    const cachedRow = cachedSection!.querySelector("li")!;
+    const cachedClasses = [cachedRow, ...cachedRow.querySelectorAll("*")].map(
+      (node) => node.getAttribute("class"),
+    );
+    const cachedText = cachedRow.textContent;
+    const cachedPadding = cachedRow.getAttribute("style");
+    const cachedRows = cachedSection!.querySelectorAll("li").length;
+    expect(cachedRow.querySelector("a, button")).toBeNull();
+    expect(cachedRow.closest('[aria-hidden="true"]')).not.toBeNull();
+    const cachedHeader = cachedSection!.firstElementChild!.outerHTML;
+    cached.unmount();
+    const live = render(
+      <TestProviders store={store}>
+        <RootComposeMobileRecents
+          highlightedThreadId={null}
+          showCreatingRow={false}
+          threads={threads}
+          projectNamesById={new Map([[thread.projectId, "Paint project"]])}
+          providersById={new Map()}
+        />
+      </TestProviders>,
+    );
+    const liveSection = live.container.querySelector(
+      "[data-root-compose-mobile-recents]",
+    )!;
+    const liveRow = liveSection.querySelector("li")!;
+    expect(
+      [liveRow, ...liveRow.querySelectorAll("*")].map((node) =>
+        node.getAttribute("class"),
+      ),
+    ).toEqual(cachedClasses);
+    expect(liveRow.textContent).toBe(cachedText);
+    expect(liveRow.getAttribute("style")).toBe(cachedPadding);
+    expect(liveSection.querySelectorAll("li").length).toBe(cachedRows);
+    expect(liveSection.firstElementChild!.outerHTML).toBe(cachedHeader);
+    resetSidebarBootstrapCacheForTest();
+  },
+);

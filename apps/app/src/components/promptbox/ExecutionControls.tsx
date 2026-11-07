@@ -192,7 +192,7 @@ export const ExecutionControls = memo(function ExecutionControls({
               nativeTerminal.onChange(value === "terminal");
             }
           }}
-          disabled={disabled || pending || nativeTerminal.disabled}
+          disabled={disabled || nativeTerminal.disabled}
           className="h-7 w-max shrink-0 gap-0.5 rounded-md p-0.5 max-md:h-11 max-md:p-0"
         >
           {NATIVE_TERMINAL_CHOICES.map((choice) => (

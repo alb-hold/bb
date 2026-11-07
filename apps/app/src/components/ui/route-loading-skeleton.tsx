@@ -14,6 +14,9 @@ import { ComposerLoadingControls } from "@/components/promptbox/ComposerLoadingC
 import { cn } from "@bb/shared-ui/lib/utils";
 import { CONTENT_MEASURE_MAX_WIDTH_CLASS } from "@/lib/content-measure";
 import { useEffect, type ReactNode } from "react";
+import { readCachedSidebarBootstrap } from "@/lib/sidebar-bootstrap-cache";
+import { RootComposeHome } from "@/views/RootComposeHome";
+import { CachedRootComposeRecents } from "@/views/CachedRootComposeRecents";
 
 interface RouteLoadingSkeletonProps {
   children?: ReactNode;
@@ -37,6 +40,7 @@ export function RouteLoadingSkeleton({
   variant = "default",
 }: RouteLoadingSkeletonProps) {
   const isRootCompose = variant === "root-compose";
+  const cachedNavigation = isRootCompose ? readCachedSidebarBootstrap() : null;
   const isCompactViewport = useIsCompactViewport();
   const isSidebarFramed = useIsSidebarFramed();
   const isSidebarShowing = useOptionalIsSidebarShowing();
@@ -82,19 +86,27 @@ export function RouteLoadingSkeleton({
         </div>
       ) : null}
       {isRootCompose ? (
-        <div
-          className={cn(
-            "mx-auto flex min-h-0 w-full flex-1 flex-col px-4 pb-4",
-            CONTENT_MEASURE_MAX_WIDTH_CLASS,
-            isCompactViewport ? "justify-end pt-2" : "pt-14",
-          )}
-        >
-          <ComposerLoadingControls shape="new-thread" />
-          <div className="mt-1 flex h-8 shrink-0 items-center justify-between px-3.5 max-md:mt-0 max-md:px-1 max-md:pointer-coarse:h-11">
-            <Skeleton className="h-3 w-24" />
-            <Skeleton className="h-3 w-24 max-md:w-12" />
-          </div>
-        </div>
+        <RootComposeHome
+          isCompact={isCompactViewport}
+          compactScrollContent={
+            cachedNavigation ? (
+              <CachedRootComposeRecents
+                navigation={cachedNavigation}
+                maxRows={isCompactViewport ? undefined : 3}
+              />
+            ) : null
+          }
+          homepageSections={null}
+          composer={
+            <>
+              <ComposerLoadingControls shape="new-thread" />
+              <div className="mt-1 flex h-8 shrink-0 items-center justify-between px-3.5 max-md:mt-0 max-md:px-1 max-md:pointer-coarse:h-11">
+                <Skeleton className="h-3 w-24" />
+                <Skeleton className="h-3 w-24 max-md:w-12" />
+              </div>
+            </>
+          }
+        />
       ) : (
         <>
           <div
