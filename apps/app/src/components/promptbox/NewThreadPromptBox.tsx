@@ -288,8 +288,20 @@ const DefaultNewThreadComposer = memo(function DefaultNewThreadComposer({
   onFocusCommand,
 }: DefaultNewThreadComposerProps) {
   const isProjectlessPrompt = project?.value === null;
+  const providerLabel =
+    execution.provider.options?.find(
+      (option) => option.value === execution.provider.selectedId,
+    )?.label ??
+    (execution.provider.selectedId === "codex"
+      ? "Codex"
+      : execution.provider.selectedId === "claude-code"
+        ? "Claude Code"
+        : (execution.provider.selectedId ?? "provider"));
   const placeholder =
-    placeholderOverride ?? getNewThreadPromptPlaceholder(isProjectlessPrompt);
+    placeholderOverride ??
+    (execution.nativeTerminal?.enabled
+      ? `Start ${providerLabel} CLI…`
+      : getNewThreadPromptPlaceholder(isProjectlessPrompt));
   const { permissionDisplayOverride, permissionPickerDisabledByPlanMode } =
     usePromptModePermissionDisplay({
       execution,
