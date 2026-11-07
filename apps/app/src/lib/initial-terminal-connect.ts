@@ -30,6 +30,15 @@ if (initial) {
           handoffOwnerToken: ensureDeviceHandoffId(),
         }),
       );
+      void import("@/components/thread/terminal/native-terminal-panel-loader")
+        .then(({ loadNativeTerminalPanel }) => loadNativeTerminalPanel())
+        .catch(() => undefined);
+      void import("@/components/thread/terminal/terminal-modules")
+        .then(({ preloadTerminalModules }) => preloadTerminalModules())
+        .catch(() => undefined);
+      void import("@/views/thread-detail/LazyThreadDetailView")
+        .then(({ LazyThreadDetailView }) => LazyThreadDetailView.preload())
+        .catch(() => undefined);
     })
     .catch(() => undefined);
 }

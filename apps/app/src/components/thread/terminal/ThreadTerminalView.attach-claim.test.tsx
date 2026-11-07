@@ -36,9 +36,10 @@ const testState = vi.hoisted(() => ({
   screen: vi.fn(),
   output: vi.fn(),
 }));
+const originalFonts = Object.getOwnPropertyDescriptor(document, "fonts");
 
 class TestTerminalSocket {
-  readonly protocol = "bb.terminal.resize-echo.v1";
+  readonly protocol = "bb.terminal.replay-batch.v1";
   static readonly CLOSED = 3;
   static readonly CONNECTING = 0;
   static readonly OPEN = 1;
@@ -163,6 +164,8 @@ vi.mock("@/hooks/usePluginCommandBindings", () => ({
 }));
 
 afterEach(() => {
+  if (originalFonts) Object.defineProperty(document, "fonts", originalFonts);
+  else Reflect.deleteProperty(document, "fonts");
   localStorage.clear();
   vi.useRealTimers();
   cleanup();
@@ -278,6 +281,7 @@ describe("native terminal attach claim timing", () => {
         id: "term_existing_client_grid",
         threadId: null,
         status: "running",
+        ...(cacheMode === "match" ? { cols, rows: 36 } : {}),
       });
       await importTerminalModules();
       vi.useFakeTimers();
@@ -317,7 +321,13 @@ describe("native terminal attach claim timing", () => {
         type: "attached",
         session,
         replayStartSeq: 0,
-        nextSeq: 0,
+        nextSeq: 1,
+      });
+      socket.receive({
+        type: "output-batch",
+        chunks: [
+          { seq: 0, dataBase64: btoa("Retained output\r\n".repeat(400)) },
+        ],
       });
       expect(
         document.querySelector("[data-terminal-grid-cache-id]"),
@@ -330,6 +340,17 @@ describe("native terminal attach claim timing", () => {
         await vi.advanceTimersByTimeAsync(700);
       }
       const renderedAt = Date.now();
+      let fontsReady: (() => void) | undefined;
+      const fonts = new EventTarget();
+      Object.defineProperty(document, "fonts", {
+        configurable: true,
+        value: Object.assign(fonts, {
+          status: "loading",
+          ready: new Promise<void>((resolve) => {
+            fontsReady = resolve;
+          }),
+        }),
+      });
       render(
         <MemoryRouter>
           <AppCommandProvider>
@@ -343,6 +364,18 @@ describe("native terminal attach claim timing", () => {
           </AppCommandProvider>
         </MemoryRouter>,
       );
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(16);
+      });
+      expect(startTransport).toHaveBeenCalledOnce();
+      expect(adoptedAt! - renderedAt).toBeLessThanOrEqual(16);
+      expect(
+        document.querySelector('[data-replay-held="true"]'),
+      ).not.toBeNull();
+      if (cacheMode === "miss") expect(claimAt).toBeUndefined();
+      Object.assign(fonts, { status: "loaded" });
+      fontsReady?.();
+      let revealedAt: number | undefined;
       for (let frame = 0; frame < 50; frame += 1) {
         await act(async () => {
           await vi.advanceTimersByTimeAsync(16);
@@ -350,18 +383,34 @@ describe("native terminal attach claim timing", () => {
           frames.clear();
           for (const callback of pending) callback(performance.now());
         });
+        if (document.querySelector('[data-replay-held="false"]'))
+          revealedAt ??= Date.now();
       }
       expect(startTransport).toHaveBeenCalledOnce();
       expect(testState.socketUrls).toHaveLength(1);
       expect(adoptedAt).toBeDefined();
       expect(claimAt).toBeDefined();
-      expect(claimAt! - adoptedAt!).toBeLessThanOrEqual(16);
+      if (cacheMode === "match") {
+        expect(
+          document.querySelector('[data-replay-held="false"]'),
+        ).not.toBeNull();
+        expect(socket.sent.map((raw) => JSON.parse(raw))).toContainEqual({
+          type: "ack",
+          nextSeq: 1,
+        });
+        expect(revealedAt! - renderedAt).toBeLessThanOrEqual(100);
+      }
       const claims = socket.sent
         .map((raw) => JSON.parse(raw))
         .filter((message) => message.type === "resize");
       console.info("P74 prefetched attach-to-claim", {
         cols,
         cacheMode,
+        pendingScreen,
+        adoptionFromMount: adoptedAt! - renderedAt,
+        claimFromMount: resizeAt! - renderedAt,
+        revealFromMount:
+          revealedAt === undefined ? null : revealedAt - renderedAt,
         adoptionToClaimMilliseconds:
           claimAt === undefined || adoptedAt === undefined
             ? null

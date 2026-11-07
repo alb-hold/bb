@@ -329,6 +329,7 @@ function ThreadDetailViewInternal(
     threadId,
     enabled: timelineEnabled,
   });
+  const nativeTerminalThreadQuery = useNativeTerminalThread(threadId);
   const {
     hasThreadDetailBootstrapSettled,
     thread,
@@ -341,7 +342,12 @@ function ThreadDetailViewInternal(
     systemConfigQuery.data?.experiments.unreadDividerAtAnswer === true
       ? "turn-answer"
       : "first-unread-row",
-    { hasUnseenTimelineEvents: timeline.hasUnseenTimelineEvents, isFocused },
+    {
+      hasUnseenTimelineEvents: timeline.hasUnseenTimelineEvents,
+      isFocused,
+      nativeTerminalReady:
+        nativeTerminalThreadQuery.data?.terminal?.status === "running",
+    },
   );
   const environmentQuery = useEnvironment(thread?.environmentId, {
     enabled: hasThreadDetailBootstrapSettled,
@@ -474,7 +480,6 @@ function ThreadDetailViewInternal(
     enabled: isSecondaryPanelOpen || terminalLayoutRequest !== null,
   });
   const refetchTerminalList = terminalsListQuery.refetch;
-  const nativeTerminalThreadQuery = useNativeTerminalThread(threadId);
   useTerminalMountGate("terminal-thread-data", threadId, thread !== undefined);
   useTerminalMountGate(
     "terminal-native-data",

@@ -12,6 +12,7 @@ import { useThreadUnreadDividerState } from "./useThreadUnreadDividerState";
 interface ThreadDetailThreadTimelineState {
   hasUnseenTimelineEvents: boolean;
   isFocused: boolean;
+  nativeTerminalReady?: boolean;
 }
 
 const DEFAULT_TIMELINE_STATE: ThreadDetailThreadTimelineState = {
@@ -23,13 +24,17 @@ export function useThreadDetailThread(
   threadId: string,
   trackRead: boolean,
   unreadDividerAnchor: ThreadTimelineUnreadDividerAnchor,
-  { hasUnseenTimelineEvents, isFocused }: ThreadDetailThreadTimelineState = DEFAULT_TIMELINE_STATE,
+  {
+    hasUnseenTimelineEvents,
+    isFocused,
+    nativeTerminalReady = false,
+  }: ThreadDetailThreadTimelineState = DEFAULT_TIMELINE_STATE,
 ) {
   const threadDetailBootstrapQuery = useThreadDetailBootstrap(threadId);
   const hasThreadDetailBootstrapSettled =
     threadDetailBootstrapQuery.isSuccess || threadDetailBootstrapQuery.isError;
   const threadQuery = useThread(threadId, {
-    enabled: hasThreadDetailBootstrapSettled,
+    enabled: hasThreadDetailBootstrapSettled || nativeTerminalReady,
     refetchOnMount: didThreadDetailBootstrapRefreshAfterMount(
       threadDetailBootstrapQuery,
     )

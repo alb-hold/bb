@@ -51,6 +51,13 @@ it("keeps route-only chunks out of startup HTML preloads", async () => {
       configFile: false,
       logLevel: "silent",
       plugins: [
+        {
+          name: "fixture-initial-terminal-connector",
+          load(id) {
+            if (id.endsWith("/src/lib/initial-terminal-connect.ts"))
+              return "window.initialTerminalConnector = true;";
+          },
+        },
         ...sharedViteConfig.plugins.filter(
           (plugin) =>
             !Array.isArray(plugin) &&

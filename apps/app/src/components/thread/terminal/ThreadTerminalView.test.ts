@@ -2556,6 +2556,42 @@ describe("terminal output encoding", () => {
     terminal.dispose();
   });
 
+  it.each(["primary", "preview"])(
+    "parses both replay screens concurrently and waits for %s",
+    (last) => {
+      const terminal = new Terminal({ cols: 40, rows: 5 });
+      let primaryParsed: (() => void) | undefined;
+      let previewParsed: (() => void) | undefined;
+      vi.spyOn(terminal, "write").mockImplementation((_data, callback) => {
+        primaryParsed = callback;
+      });
+      const previewPush = vi.fn((_bytes: Uint8Array, callback: () => void) => {
+        previewParsed = callback;
+      });
+      const onParsed = vi.fn();
+      const state = { suppressedWriteCount: 0 };
+      writeTerminalOutput({
+        data: "retained screen",
+        isReplay: true,
+        onParsed,
+        replayWriteState: state,
+        terminal,
+        replayPipeline: { push: previewPush },
+      });
+      expect(previewPush).toHaveBeenCalledOnce();
+      expect(state.suppressedWriteCount).toBe(1);
+      const firstParsed = last === "primary" ? previewParsed : primaryParsed;
+      const lastParsed = last === "primary" ? primaryParsed : previewParsed;
+      firstParsed?.();
+      expect(onParsed).not.toHaveBeenCalled();
+      expect(state.suppressedWriteCount).toBe(1);
+      lastParsed?.();
+      expect(onParsed).toHaveBeenCalledOnce();
+      expect(state.suppressedWriteCount).toBe(0);
+      terminal.dispose();
+    },
+  );
+
   it("feeds a checkpoint preview only from the checkpoint sequence onward", async () => {
     const terminal = new Terminal({ cols: 40, rows: 5 });
     const previewPush = vi.fn((bytes: Uint8Array, callback: () => void) =>
