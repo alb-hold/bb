@@ -1,11 +1,22 @@
 import { traceTerminalGate } from "@/lib/terminal-performance";
 
-export function importTerminalModules() {
+function loadTerminalModules() {
   return Promise.all([
     import("@xterm/xterm"),
     import("@xterm/addon-fit"),
     importTerminalUnicodeAddon(),
   ]);
+}
+
+let requiredModules: ReturnType<typeof loadTerminalModules> | null = null;
+let preloaded = false;
+
+export function importTerminalModules() {
+  requiredModules ??= loadTerminalModules().catch((error) => {
+    requiredModules = null;
+    throw error;
+  });
+  return requiredModules;
 }
 
 export function importTerminalSearchAddon() {
@@ -25,10 +36,14 @@ export function importTerminalWebglAddon() {
 }
 
 export function preloadTerminalModules(): void {
+  if (preloaded) return;
+  preloaded = true;
   void traceTerminalGate(
     "terminal-runtime-preload",
     importTerminalModules,
-  ).catch(() => undefined);
+  ).catch(() => {
+    preloaded = false;
+  });
   void importTerminalSearchAddon().catch(() => undefined);
   void importTerminalWebLinksAddon().catch(() => undefined);
   void importTerminalWebglAddon().catch(() => undefined);

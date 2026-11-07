@@ -2622,6 +2622,29 @@ export function ThreadTerminalView({
           terminal,
         });
       }
+      const prepareClaimedGrid = () => {
+        const grid = claimedFitGrid;
+        if (
+          !fittedGridRevealed &&
+          replayCompleted &&
+          grid !== null &&
+          terminal !== null &&
+          outputPipeline !== null &&
+          (terminal.cols !== grid.cols || terminal.rows !== grid.rows)
+        ) {
+          applyTerminalGridAndKeepViewport({
+            pipeline: outputPipeline,
+            cols: grid.cols,
+            rows: grid.rows,
+            onGridApplied: updateGridVisibility,
+            restoreViewport: () => {
+              if (hasRestoredViewport && !hasManualScrollIntent) {
+                restoreViewport(true);
+              }
+            },
+          });
+        }
+      };
       const fitTerminal = () => {
         if (!fitAddon || !terminal) {
           return;
@@ -2710,6 +2733,7 @@ export function ThreadTerminalView({
                   markTerminalPerformance("terminal-first-fitted-grid-claimed");
                 markTerminalPerformance("terminal-fitted-grid-claimed");
                 claimedFitGrid = { ...fitted };
+                prepareClaimedGrid();
               }
             }
             return true;
@@ -3079,6 +3103,7 @@ export function ThreadTerminalView({
           },
           onReplayComplete: () => {
             replayCompleted = true;
+            prepareClaimedGrid();
             markTerminalPerformance("terminal-replay-screens-parsed");
             const revealReplay = () => {
               pendingReplayRevealRef.current = session.id;
