@@ -465,6 +465,7 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
     "background",
     "background-resize",
     "background-burst",
+    "background-stream",
     "gap",
     "overflow",
     "socket-error",
@@ -572,6 +573,16 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
         ).not.toBeNull();
         expect(contexts).toBe(1);
       }, "initial route replay did not settle");
+      const controlledBackground =
+        scenario === "background-burst" || scenario === "background-stream";
+      let activeTime = 0;
+      const activeClock = controlledBackground
+        ? vi
+            .spyOn(performance, "now")
+            .mockImplementation(() => (activeTime += 2))
+        : null;
+      if (controlledBackground)
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
       const beforePark = socket.sent.length;
       if (scenario === "reuse") {
         fireEvent.contextMenu(document.querySelector(".xterm-screen")!);
@@ -627,32 +638,55 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
             "parked viewer did not apply another client's PTY grid",
           );
         }
-        if (scenario === "background-burst") {
-          for (let group = 0; group < 8; group++) {
+        if (controlledBackground) {
+          const sustained = scenario === "background-stream";
+          const groups = sustained ? 32 : 8;
+          const chunkSize = sustained ? 16384 : 32768;
+          const catchupTicks = 17;
+          for (let group = 0; group < groups; group++) {
             act(() => {
               for (let item = 0; item < 8; item++) {
                 const seq = 2 + group * 8 + item;
+                const line = `\r\npark-burst-${seq}\r\n`;
                 socket.receive({
                   type: "output",
                   chunk: {
                     seq,
                     dataBase64: btoa(
-                      "z".repeat(32740) + `\r\npark-burst-${seq}\r\n`,
+                      "z".repeat(chunkSize - line.length) + line,
                     ),
                   },
                 });
               }
             });
-            await pause(125);
+            await act(async () => {
+              await vi.advanceTimersByTimeAsync(
+                125 - (group === 2 ? catchupTicks : 0),
+              );
+              if (group === 1)
+                for (let tick = 0; tick < catchupTicks; tick++)
+                  await vi.advanceTimersByTimeAsync(1);
+            });
+            if (group === 1)
+              expect(
+                terminal.buffer.active
+                  .getLine(terminal.buffer.active.baseY + terminal.rows - 2)
+                  ?.translateToString(true),
+              ).toBe("park-burst-17");
+            expect(testState.sockets).toHaveLength(1);
+            expect(socket.readyState).toBe(TestTerminalSocket.OPEN);
+            expect(terminal.element?.isConnected).toBe(true);
           }
-          await waitForReadinessCondition(() => {
-            const lines = Array.from(
-              { length: terminal.buffer.active.length },
-              (_, index) =>
-                terminal.buffer.active.getLine(index)?.translateToString(true),
-            ).join("\n");
-            expect(lines).toContain("park-burst-65");
-          }, "parked burst did not drain within a few ticks");
+          await act(async () => {
+            await vi.advanceTimersByTimeAsync(250);
+            for (let tick = 0; tick < catchupTicks; tick++)
+              await vi.advanceTimersByTimeAsync(1);
+          });
+          expect(
+            terminal.buffer.active
+              .getLine(terminal.buffer.active.baseY + terminal.rows - 2)
+              ?.translateToString(true),
+          ).toBe(`park-burst-${1 + groups * 8}`);
           expect(testState.sockets).toHaveLength(1);
           expect(
             socket.sent
@@ -660,6 +694,8 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
               .map((raw) => JSON.parse(raw))
               .filter((message) => message.type === "resize"),
           ).toEqual([]);
+          activeClock?.mockRestore();
+          vi.useRealTimers();
           rerender(tree(true));
           await waitForReadinessCondition(
             () => expect(contexts).toBe(1),

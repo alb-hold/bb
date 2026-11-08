@@ -3476,7 +3476,7 @@ export function ThreadTerminalView({
           );
         } finally {
           parkedOutputDraining = false;
-          scheduleParkedOutput(moreOutput ? 16 : 250);
+          scheduleParkedOutput(moreOutput ? 0 : 250);
         }
       };
       const scheduleParkedOutput = (delay = 250) => {
