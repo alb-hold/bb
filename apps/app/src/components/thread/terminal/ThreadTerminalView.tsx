@@ -2970,6 +2970,7 @@ export function ThreadTerminalView({
             (terminalVisible !== true || !isPanelOpenRef.current)
           ) {
             hiddenOutput.push(message.chunk, lastQueuedOutputNextSeq);
+            scheduleParkedOutput();
             return;
           }
           if (message.chunk.seq < lastQueuedOutputNextSeq) return;
@@ -3147,6 +3148,7 @@ export function ThreadTerminalView({
           },
           onReplayComplete: () => {
             replayCompleted = true;
+            scheduleParkedOutput();
             prepareClaimedGrid();
             markTerminalPerformance("terminal-replay-screens-parsed");
             const revealReplay = () => {
@@ -3405,6 +3407,7 @@ export function ThreadTerminalView({
           if (terminalVisible !== true || !isPanelOpenRef.current) {
             for (const chunk of chunks)
               hiddenOutput.push(chunk, lastQueuedOutputNextSeq);
+            scheduleParkedOutput();
             return;
           }
           markTerminalPerformance("terminal-replay-batch-dispatch-start");
@@ -3440,20 +3443,13 @@ export function ThreadTerminalView({
       transport = activeTransport;
       const drainParkedOutput = async () => {
         parkedOutputTimer = null;
-        if (disposed || !parkedRef.current || !replayCompleted) {
-          scheduleParkedOutput();
-          return;
-        }
+        if (disposed || !parkedRef.current || !replayCompleted) return;
         parkedOutputDraining = true;
         const started = performance.now();
-        let moreOutput = true;
         try {
           do {
             const chunks = hiddenOutput.takeBatch(8 * 1024);
-            if (chunks.length === 0) {
-              moreOutput = false;
-              break;
-            }
+            if (chunks.length === 0) break;
             for (const write of terminalReplayWrites(
               chunks,
               outputBoundaries,
@@ -3476,13 +3472,15 @@ export function ThreadTerminalView({
           );
         } finally {
           parkedOutputDraining = false;
-          scheduleParkedOutput(moreOutput ? 0 : 250);
+          scheduleParkedOutput(0);
         }
       };
       const scheduleParkedOutput = (delay = 250) => {
         if (
           parkedOutputTimer !== null ||
           parkedOutputDraining ||
+          !replayCompleted ||
+          !hiddenOutput.hasPending ||
           disposed ||
           !parkedRef.current
         )
