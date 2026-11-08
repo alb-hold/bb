@@ -876,6 +876,18 @@ function ThreadRowComponent({
   );
 
   const rowLinkRef = useRef<HTMLAnchorElement>(null);
+  const trailingRef = useRef<HTMLSpanElement>(null);
+  useLayoutEffect(() => {
+    const trailing = trailingRef.current;
+    const row = rowLinkRef.current?.closest<HTMLElement>("[data-sidebar-rename-row]");
+    if (!trailing || !row) return;
+    const measure = () => row.style.setProperty("--bb-thread-trailing-width", `${trailing.getBoundingClientRect().width + 8}px`);
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(trailing);
+    return () => observer.disconnect();
+  }, []);
   useEffect(() => {
     if (isCustomizingActions) {
       focusFirstRowActionSlot(
@@ -913,11 +925,184 @@ function ThreadRowComponent({
     rename.onCloseAutoFocus(event);
   };
 
-  const trailingContent = (
+  const rowContent = (
+    <>
+      {parentOptions?.stickyLevel !== undefined && parentGuideLeft !== null ? (
+        <span
+          aria-hidden="true"
+          className="pointer-events-none absolute -bottom-0.5 top-0 z-[1] w-px bg-border-hairline opacity-70"
+          style={{ left: parentGuideLeft }}
+        />
+      ) : null}
       <span
+        className={cn(
+          "relative flex min-w-0 flex-1 items-center gap-1.5 self-stretch",
+          hasRowState && rowFirstLineHeightClass,
+          hasVisibleStatus && "gap-1",
+          showRowMetadata &&
+            "group/row-metadata has-[[data-reserve-line]]:flex-wrap has-[[data-reserve-line]]:content-center has-[[data-reserve-line]]:gap-y-0 has-[[data-reserve-line]]:py-1.25 has-[[data-reserve-line]]:[&_.bb-thread-title]:leading-4",
+          !isActionsOpen &&
+            "group-data-[sidebar-touch-armed=true]/thread-row:hidden",
+          !isEditing &&
+            !isCustomizingActions &&
+            (reserveActionSpace
+              ? "pr-(--bb-sidebar-hover-actions-inset) [@media(hover:none)]:pr-0"
+              : SIDEBAR_HOVER_ACTIONS_INSET_CLASS),
+        )}
+        style={getHoverActionsInsetStyle(quickActions.length + 1)}
+      >
+        <a
+          ref={rowLinkRef}
+          href={thread.href}
+          draggable={false}
+          data-sidebar-thread-shortcut-target=""
+          data-sidebar-thread-id={thread.id}
+          data-sidebar-project-id={thread.projectId}
+          data-sidebar-rename-anchor=""
+          onClick={(event) => {
+            if (isEditing) {
+              event.preventDefault();
+              event.stopPropagation();
+              return;
+            }
+            if (
+              selectionStore.handleClick(thread.id, event, event.currentTarget)
+            ) {
+              event.preventDefault();
+              event.stopPropagation();
+              return;
+            }
+            if (splitAvailable && (event.metaKey || event.ctrlKey)) {
+              event.preventDefault();
+              openInSplit();
+              return;
+            }
+            if (
+              consumeSidebarTitleDoubleClick(thread.id) &&
+              startEditingFromDoubleClick()
+            ) {
+              event.preventDefault();
+              event.stopPropagation();
+              return;
+            }
+            onProjectSelect?.();
+          }}
+          onDoubleClick={isEditing ? undefined : startTitleEditing}
+          aria-label={linkLabel}
+          aria-keyshortcuts={shortcut?.ariaKeyshortcuts}
+          className="absolute inset-0 rounded-md outline-none"
+        />
+        <span
+          className={
+            showRowMetadata
+              ? "contents group-has-[[data-reserve-line]]/row-metadata:flex group-has-[[data-reserve-line]]/row-metadata:min-w-0 group-has-[[data-reserve-line]]/row-metadata:basis-full group-has-[[data-reserve-line]]/row-metadata:items-center group-has-[[data-reserve-line]]/row-metadata:gap-1.5 group-has-[[data-reserve-line]]/row-metadata:self-stretch"
+              : "contents"
+          }
+        >
+        <span
+          className={cn(
+            "pointer-events-none relative flex min-w-0 flex-1 items-center self-stretch",
+          )}
+        >
+          {provider ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span
+                  data-sidebar-thread-provider={provider.id}
+                  role="img"
+                  aria-label={provider.displayName}
+                  className="pointer-events-auto relative z-[31] flex size-4 shrink-0 items-center justify-center mr-1 max-md:mr-1.5 text-muted-foreground [&_*]:text-inherit!"
+                  onClick={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    rowLinkRef.current?.click();
+                  }}
+                >
+                  <ProviderIcon
+                    providerKind="agent"
+                    provider={provider}
+                    className="size-4"
+                  />
+                </span>
+              </TooltipTrigger>
+              <TooltipContent side="top">{provider.displayName}</TooltipContent>
+            </Tooltip>
+          ) : null}
+          {isEditing ? (
+            <span className="pointer-events-auto relative z-10 min-w-0 flex-1 overflow-visible">
+              {editor}
+            </span>
+          ) : (
+            <span
+              className="min-w-0 flex-1 md:pb-1"
+              title={labelTitle}
+              onDoubleClick={startTitleEditing}
+            >
+              <span data-emphasized={showActive || thread.isUnread || trailingIndicatorKind === "needs-input" || trailingIndicatorKind === "check-terminal" || trailingIndicatorKind === "waiting-for-input"} className="bb-thread-title md:leading-5 md:items-center! flex min-w-0 flex-1 items-center gap-1 truncate font-normal md:data-[emphasized=true]:font-medium">
+                <span className="inline-flex size-4 shrink-0 text-foreground md:translate-y-px max-md:-translate-y-0.5" data-thread-title-mode=""><ThreadModeGlyph nativeTerminal={thread.experimental_nativeTerminal === true} isWorktree={!thread.experimental_nativeTerminal && thread.environment?.isWorktree === true} /></span>
+                <span className="min-w-0 truncate md:flex md:items-center md:leading-5 md:[&_span]:leading-5"><ThreadTitle threadId={thread.id} /></span>
+              </span>
+              <span data-sidebar-thread-context="" className={cn("md:pr-[var(--bb-thread-trailing-width)] hidden min-w-0 items-center gap-1 pl-5 truncate text-xs font-normal leading-4 text-muted-foreground md:text-xs md:leading-4 md:[&_span]:leading-4 md:[&_time]:leading-4 md:text-sidebar-metadata-foreground [&_time]:text-xs md:[&_time]:text-xs [&_time]:text-inherit md:flex", thread.experimental_nativeTerminal && "[&>[role=img]]:text-foreground [&>[role=img]_svg]:stroke-[2]")}>
+                <ThreadContextMetadata project={showProjectName ? projectName ?? null : null} age={<InfoRowTime timestamp={thread.updatedAt} />} />
+              </span>
+            </span>
+          )}
+        </span>
+        {crossProjectLabel !== null ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span
+                data-sidebar-thread-cross-project=""
+                role="img"
+                aria-label={crossProjectLabel}
+                className="relative z-[31] flex size-5 shrink-0 items-center justify-center text-muted-foreground"
+                onClick={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  rowLinkRef.current?.click();
+                }}
+              >
+                <Icon name="FolderExport" className="size-3.5" aria-hidden />
+              </span>
+            </TooltipTrigger>
+            <TooltipContent side="top">{crossProjectLabel}</TooltipContent>
+          </Tooltip>
+        ) : null}
+        {parentOptions && hasChildren ? (
+          <SidebarChildToggleChevron
+            disabled={isEditing}
+            className={cn(isEditing && "hidden", hasVisibleStatus && "size-4")}
+            isCollapsed={isParentCollapsed}
+            expandLabel={`Expand ${labelTitle} threads`}
+            collapseLabel={`Collapse ${labelTitle} threads`}
+            onToggle={() => parentOptions.onToggleCollapsed(thread.id)}
+            revealOnHover={!isParentCollapsed}
+          />
+        ) : null}
+        </span>
+        {!showRowMetadata || isEditing || isCustomizingActions ? null : (
+          <span
+            className={cn(
+              "mt-px hidden has-[[data-reserve-line]]:flex h-3.5 min-w-0 shrink-0 basis-full overflow-hidden",
+              provider !== undefined && "pl-6",
+            )}
+          >
+            <ThreadRowMetadata thread={thread} />
+          </span>
+        )}
+      </span>
+      {rowDragBindings && !rowDragBindings.disabled && !isActionsOpen ? (
+        <SidebarThreadDragChip
+          title={labelTitle}
+          visualOnly
+          className="hidden group-data-[sidebar-touch-armed=true]/thread-row:flex"
+        />
+      ) : null}
+      <span
+        ref={trailingRef}
         data-sidebar-thread-trailing=""
         className={cn(
-          "flex min-w-0 shrink-0 items-center gap-0.5",
+          "flex min-w-0 shrink-0 items-center gap-0.5 md:absolute md:right-2 md:bottom-1",
           !isActionsOpen &&
             "group-data-[sidebar-touch-armed=true]/thread-row:hidden",
           (isEditing || isCustomizingActions) && "hidden",
@@ -1057,183 +1242,6 @@ function ThreadRowComponent({
           </div>
         )}
       </span>
-  );
-
-  const rowContent = (
-    <>
-      {parentOptions?.stickyLevel !== undefined && parentGuideLeft !== null ? (
-        <span
-          aria-hidden="true"
-          className="pointer-events-none absolute -bottom-0.5 top-0 z-[1] w-px bg-border-hairline opacity-70"
-          style={{ left: parentGuideLeft }}
-        />
-      ) : null}
-      <span
-        className={cn(
-          "relative flex min-w-0 flex-1 items-center gap-1.5 self-stretch",
-          hasRowState && rowFirstLineHeightClass,
-          hasVisibleStatus && "gap-1",
-          showRowMetadata &&
-            "group/row-metadata has-[[data-reserve-line]]:flex-wrap has-[[data-reserve-line]]:content-center has-[[data-reserve-line]]:gap-y-0 has-[[data-reserve-line]]:py-1.25 has-[[data-reserve-line]]:[&_.bb-thread-title]:leading-4",
-          !isActionsOpen &&
-            "group-data-[sidebar-touch-armed=true]/thread-row:hidden",
-          !isEditing &&
-            !isCustomizingActions &&
-            (reserveActionSpace
-              ? "pr-(--bb-sidebar-hover-actions-inset) [@media(hover:none)]:pr-0"
-              : SIDEBAR_HOVER_ACTIONS_INSET_CLASS),
-        )}
-        style={getHoverActionsInsetStyle(quickActions.length + 1)}
-      >
-        <a
-          ref={rowLinkRef}
-          href={thread.href}
-          draggable={false}
-          data-sidebar-thread-shortcut-target=""
-          data-sidebar-thread-id={thread.id}
-          data-sidebar-project-id={thread.projectId}
-          data-sidebar-rename-anchor=""
-          onClick={(event) => {
-            if (isEditing) {
-              event.preventDefault();
-              event.stopPropagation();
-              return;
-            }
-            if (
-              selectionStore.handleClick(thread.id, event, event.currentTarget)
-            ) {
-              event.preventDefault();
-              event.stopPropagation();
-              return;
-            }
-            if (splitAvailable && (event.metaKey || event.ctrlKey)) {
-              event.preventDefault();
-              openInSplit();
-              return;
-            }
-            if (
-              consumeSidebarTitleDoubleClick(thread.id) &&
-              startEditingFromDoubleClick()
-            ) {
-              event.preventDefault();
-              event.stopPropagation();
-              return;
-            }
-            onProjectSelect?.();
-          }}
-          onDoubleClick={isEditing ? undefined : startTitleEditing}
-          aria-label={linkLabel}
-          aria-keyshortcuts={shortcut?.ariaKeyshortcuts}
-          className="absolute inset-0 rounded-md outline-none"
-        />
-        <span
-          className={
-            showRowMetadata
-              ? "contents group-has-[[data-reserve-line]]/row-metadata:flex group-has-[[data-reserve-line]]/row-metadata:min-w-0 group-has-[[data-reserve-line]]/row-metadata:basis-full group-has-[[data-reserve-line]]/row-metadata:items-center group-has-[[data-reserve-line]]/row-metadata:gap-1.5 group-has-[[data-reserve-line]]/row-metadata:self-stretch"
-              : "contents"
-          }
-        >
-        <span
-          className={cn(
-            "pointer-events-none relative flex min-w-0 flex-1 items-center self-stretch",
-          )}
-        >
-          {provider ? (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <span
-                  data-sidebar-thread-provider={provider.id}
-                  role="img"
-                  aria-label={provider.displayName}
-                  className="pointer-events-auto relative z-[31] flex size-4 shrink-0 items-center justify-center mr-1 max-md:mr-1.5 text-muted-foreground [&_*]:text-inherit!"
-                  onClick={(event) => {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    rowLinkRef.current?.click();
-                  }}
-                >
-                  <ProviderIcon
-                    providerKind="agent"
-                    provider={provider}
-                    className="size-4"
-                  />
-                </span>
-              </TooltipTrigger>
-              <TooltipContent side="top">{provider.displayName}</TooltipContent>
-            </Tooltip>
-          ) : null}
-          {isEditing ? (
-            <span className="pointer-events-auto relative z-10 min-w-0 flex-1 overflow-visible">
-              {editor}
-            </span>
-          ) : (
-            <span
-              className="min-w-0 flex-1 md:pb-1"
-              title={labelTitle}
-              onDoubleClick={startTitleEditing}
-            >
-              <span data-emphasized={showActive || thread.isUnread || trailingIndicatorKind === "needs-input" || trailingIndicatorKind === "check-terminal" || trailingIndicatorKind === "waiting-for-input"} className="bb-thread-title md:leading-5 md:items-center! flex min-w-0 flex-1 items-center gap-1 truncate font-normal md:data-[emphasized=true]:font-medium">
-                <span className="inline-flex size-4 shrink-0 text-foreground md:translate-y-px max-md:-translate-y-0.5" data-thread-title-mode=""><ThreadModeGlyph nativeTerminal={thread.experimental_nativeTerminal === true} isWorktree={!thread.experimental_nativeTerminal && thread.environment?.isWorktree === true} /></span>
-                <span className="min-w-0 truncate md:flex md:items-center md:leading-5 md:[&_span]:leading-5"><ThreadTitle threadId={thread.id} /></span>
-              </span>
-              <span data-sidebar-thread-context="" className={cn("hidden min-w-0 items-center gap-1 pl-5 truncate text-xs font-normal leading-4 text-muted-foreground md:text-xs md:leading-4 md:[&_span]:leading-4 md:[&_time]:leading-4 md:text-sidebar-metadata-foreground [&_time]:text-xs md:[&_time]:text-xs [&_time]:text-inherit md:flex", thread.experimental_nativeTerminal && "[&>[role=img]]:text-foreground [&>[role=img]_svg]:stroke-[2]")}>
-                <ThreadContextMetadata project={showProjectName ? projectName ?? null : null} age={<InfoRowTime timestamp={thread.updatedAt} />} />
-                {!isCompactViewport ? trailingContent : null}
-              </span>
-            </span>
-          )}
-        </span>
-        {crossProjectLabel !== null ? (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <span
-                data-sidebar-thread-cross-project=""
-                role="img"
-                aria-label={crossProjectLabel}
-                className="relative z-[31] flex size-5 shrink-0 items-center justify-center text-muted-foreground"
-                onClick={(event) => {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  rowLinkRef.current?.click();
-                }}
-              >
-                <Icon name="FolderExport" className="size-3.5" aria-hidden />
-              </span>
-            </TooltipTrigger>
-            <TooltipContent side="top">{crossProjectLabel}</TooltipContent>
-          </Tooltip>
-        ) : null}
-        {parentOptions && hasChildren ? (
-          <SidebarChildToggleChevron
-            disabled={isEditing}
-            className={cn(isEditing && "hidden", hasVisibleStatus && "size-4")}
-            isCollapsed={isParentCollapsed}
-            expandLabel={`Expand ${labelTitle} threads`}
-            collapseLabel={`Collapse ${labelTitle} threads`}
-            onToggle={() => parentOptions.onToggleCollapsed(thread.id)}
-            revealOnHover={!isParentCollapsed}
-          />
-        ) : null}
-        </span>
-        {!showRowMetadata || isEditing || isCustomizingActions ? null : (
-          <span
-            className={cn(
-              "mt-px hidden has-[[data-reserve-line]]:flex h-3.5 min-w-0 shrink-0 basis-full overflow-hidden",
-              provider !== undefined && "pl-6",
-            )}
-          >
-            <ThreadRowMetadata thread={thread} />
-          </span>
-        )}
-      </span>
-      {rowDragBindings && !rowDragBindings.disabled && !isActionsOpen ? (
-        <SidebarThreadDragChip
-          title={labelTitle}
-          visualOnly
-          className="hidden group-data-[sidebar-touch-armed=true]/thread-row:flex"
-        />
-      ) : null}
-      {isCompactViewport ? trailingContent : null}
       {rowState !== null && hasRowState ? (
         <div
           ref={rowStateRef}
