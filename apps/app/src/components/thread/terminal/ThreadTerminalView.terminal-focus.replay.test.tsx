@@ -662,7 +662,7 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
       expect(focusOpenThreadTerminal("thr_other", sessions[0]!.id)).toBe(false);
       expect(focusOpenThreadTerminal("thr_test", "term_closed")).toBe(false);
       fireEvent.click(
-        view.getByRole("button", { name: "Overview", exact: true }),
+        view.getByRole("button", { name: /^Overview$/ }),
       );
       await waitForReadinessCondition(
         () => expect(view.queryByText("Overview content")).not.toBeNull(),
