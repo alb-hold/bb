@@ -52,6 +52,102 @@ function bufferState(terminal: Terminal) {
   };
 }
 
+it.each(["snapshot", "promptScreen"] as const)(
+  "answers a screen request at its queued checkpoint while output keeps arriving (%s)",
+  async (method) => {
+    const state = new TerminalScreenState(40, 5);
+    const write = Terminal.prototype.write;
+    let nextSeq = 1;
+    const writes = vi
+      .spyOn(Terminal.prototype, "write")
+      .mockImplementation(function (this: Terminal, data, callback) {
+        write.call(this, data, () => {
+          if (nextSeq < 80) {
+            state.push(nextSeq, Buffer.from(`line ${nextSeq}\r\n`));
+            nextSeq += 1;
+          }
+          callback?.();
+        });
+      });
+    try {
+      state.push(0, Buffer.from("line 0\r\n"));
+      const snapshot = await state[method]();
+      if (snapshot !== null && "checkpointSeq" in snapshot)
+        expect(snapshot.checkpointSeq).toBe(1);
+      expect(snapshot?.rows.join("\n")).toContain("line 0");
+      expect(nextSeq).toBeLessThan(80);
+    } finally {
+      state.dispose();
+      writes.mockRestore();
+    }
+  },
+);
+
+it.each(["dispose", "sequence gap", "overflow"])(
+  "settles queued screen requests when %s discards their output",
+  async (reason) => {
+    const state = new TerminalScreenState(40, 5);
+    state.push(0, Buffer.from("initial"));
+    const snapshot = state.snapshot();
+    if (reason === "dispose") state.dispose();
+    else if (reason === "sequence gap") state.push(2, Buffer.from("gap"));
+    else state.push(1, Buffer.alloc(8 * 1024 * 1024 + 1, 120));
+    try {
+      await expect(snapshot).resolves.toBeNull();
+    } finally {
+      state.dispose();
+    }
+  },
+);
+
+it("answers behind ten thousand small chunks within two seconds and preserves read and resize boundaries", async () => {
+  const state = new TerminalScreenState(40, 5);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    for (let seq = 0; seq < 10_000; seq += 1) {
+      state.pushBase64(seq, Buffer.from(`line ${seq}\r\n`).toString("base64"));
+    }
+    const beforeResize = state.snapshot();
+    state.resize(20, 4);
+    state.push(10_000, Buffer.from("\u001b[31"));
+    const partial = state.snapshot();
+    state.pushBase64(
+      10_001,
+      Buffer.from("mred\u001b[0m\r\n").toString("base64"),
+    );
+    const afterResize = state.snapshot();
+    const [before, cut, after] = await Promise.race([
+      Promise.all([beforeResize, partial, afterResize]),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error("screen backlog exceeded two seconds")),
+          2_000,
+        );
+      }),
+    ]);
+    expect(before).toMatchObject({
+      cols: 40,
+      gridRows: 5,
+      checkpointSeq: 10_000,
+    });
+    expect(before?.rows.join("\n")).toContain("line 9999");
+    expect(before?.rows.join("\n")).not.toContain("red");
+    expect(cut).toMatchObject({ cols: 20, gridRows: 4, checkpointSeq: 10_001 });
+    expect(Buffer.from(cut?.dataBase64 ?? "", "base64").toString()).toMatch(
+      /\u001b\[31$/u,
+    );
+    expect(after).toMatchObject({
+      cols: 20,
+      gridRows: 4,
+      checkpointSeq: 10_002,
+    });
+    expect(after?.rows.join("\n")).toContain("red");
+  } finally {
+    clearTimeout(timer);
+    state.dispose();
+  }
+});
+
 it("bounds browser replay while retaining the full scrollback and wrapped cells", async () => {
   const state = new TerminalScreenState(40, 5, true);
   const full = create(40, 5, 10_000);
