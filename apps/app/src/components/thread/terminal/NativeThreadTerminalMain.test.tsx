@@ -26,6 +26,7 @@ const hooks = vi.hoisted(() => ({
   })),
   waiting: false,
   approval: false,
+  unconfirmed: false,
   listTerminals: vi.fn(),
   preloadTerminalPanel: vi.fn(),
   refetchNative: vi.fn(),
@@ -130,7 +131,7 @@ vi.mock("@/hooks/useNativeActivityUnconfirmed", () => ({
     evidenceKind: "unknown",
     lastToolCallAt: null,
     now: 0,
-    unconfirmed: false,
+    unconfirmed: hooks.unconfirmed,
   }),
 }));
 
@@ -159,7 +160,9 @@ vi.mock("./NativeTerminalPromptBar", () => ({
   ),
 }));
 
-vi.mock("./NativeActivityNotice", () => ({ NativeActivityNotice: () => null }));
+vi.mock("@/hooks/queries/host-queries", () => ({
+  useHosts: () => ({ data: [] }),
+}));
 
 const nativeView: NativeTerminalThread = {
   threadId: "thr_native",
@@ -175,6 +178,7 @@ afterEach(() => {
   cleanup();
   hooks.waiting = false;
   hooks.approval = false;
+  hooks.unconfirmed = false;
   vi.clearAllMocks();
   vi.restoreAllMocks();
   hooks.profile.mockReturnValue({
@@ -381,6 +385,41 @@ describe("NativeThreadTerminalMain", () => {
     act(() => vi.advanceTimersByTime(12000));
     expect(screen.queryByText(/hasn't started a session yet/)).toBeNull();
   });
+
+  it.each(["waiting", "activity notice"])(
+    "does not stack setup guidance over %s",
+    (signal) => {
+      hooks.waiting = signal === "waiting";
+      hooks.unconfirmed = signal === "activity notice";
+      const terminal = {
+        id: "term-live",
+        status: "running",
+        createdAt: Date.now() - 13_000,
+        lastUserInputAt: null,
+      } as NonNullable<NativeTerminalThread["terminal"]>;
+      hooks.listTerminals.mockReturnValue({
+        data: { sessions: [terminal] },
+        dataUpdatedAt: 1,
+      });
+      render(
+        <NativeThreadTerminalMain
+          projectId="proj_native"
+          runtime={{ displayStatus: "active" }}
+          threadId="thr_native"
+          threadIsProvisioning={false}
+          view={{ ...nativeView, nativeSessionId: null, terminal }}
+        />,
+      );
+      expect(screen.queryByText(/hasn't started a session yet/)).toBeNull();
+      if (signal === "waiting") {
+        expect(
+          screen.getByText(/waiting for your answer in the terminal/),
+        ).toBeTruthy();
+      } else {
+        expect(screen.getByText(/Activity not reported/)).toBeTruthy();
+      }
+    },
+  );
 
   it.each([
     ["gpt-6-sol", "gpt-6-sol", "session-native", "Last reported:"],

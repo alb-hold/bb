@@ -164,7 +164,9 @@ export function NativeThreadTerminalMain({
         data-no-sidebar-swipe=""
         onFocus={onFocusWithin}
       >
-        {setupWaiting ? (
+        {setupWaiting &&
+        waitingPrompts.length === 0 &&
+        !activityNotice.unconfirmed ? (
           <div
             role="status"
             className="flex shrink-0 items-center gap-1.5 px-3 py-1 text-xs text-muted-foreground"

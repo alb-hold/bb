@@ -1,4 +1,3 @@
-import { useMediaQuery } from "@bb/shared-ui/hooks/use-media-query";
 import { useIsCompactViewport } from "@bb/shared-ui/hooks/use-compact-viewport";
 import { CONTENT_MEASURE_MAX_WIDTH_CLASS } from "@/lib/content-measure";
 import {
@@ -530,7 +529,11 @@ export function NativeTerminalPromptBar({
   }, [measureInput]);
 
   const isCompactViewport = useIsCompactViewport();
-  const isNarrowViewport = useMediaQuery("(max-width: 374px)");
+  const compactProvider = providerLabel.trim();
+  const compactDestination =
+    compactProvider.length > 0 && compactProvider.length <= 5
+      ? compactProvider
+      : "CLI";
   const recording =
     dictation.phase === "recording" || dictation.phase === "starting";
   const micLabel = recording
@@ -540,7 +543,7 @@ export function NativeTerminalPromptBar({
   return (
     <form
       className={cn(
-        "mx-auto md:has-[[data-native-composer-inline]]:mx-0 md:has-[[data-native-composer-inline]]:max-w-none md:has-[[data-native-composer-inline]]:pl-2 flex w-full shrink-0 flex-col gap-1.5 bg-sidebar px-4 pt-1 pb-[max(0.5rem,env(safe-area-inset-bottom))]",
+        "mx-auto flex w-full shrink-0 flex-col gap-1.5 bg-sidebar px-4 pt-1 pb-[max(0.5rem,env(safe-area-inset-bottom))]",
         CONTENT_MEASURE_MAX_WIDTH_CLASS,
       )}
       data-native-terminal-prompt=""
@@ -582,7 +585,7 @@ export function NativeTerminalPromptBar({
       <div
         className={cn(
           COMPOSER_SHELL_CLASS,
-          "group flex flex-col md:data-[native-composer-inline]:max-w-md md:data-[native-composer-inline]:border-0 md:data-[native-composer-inline]:border-transparent md:data-[native-composer-inline]:bg-transparent md:data-[native-composer-inline]:shadow-none md:data-[native-composer-inline]:px-0 md:data-[native-composer-inline]:grid md:data-[native-composer-inline]:grid-cols-[minmax(0,1fr)_auto] md:data-[native-composer-inline]:items-center max-md:pointer-coarse:data-[native-composer-inline]:grid max-md:pointer-coarse:data-[native-composer-inline]:grid-cols-[minmax(0,1fr)_auto] max-md:pointer-coarse:data-[native-composer-inline]:items-center px-1.5 py-0.5 transition-[border-color,box-shadow] duration-200 focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/40 motion-reduce:transition-none",
+          "group flex flex-col max-md:pointer-coarse:data-[native-composer-inline]:grid max-md:pointer-coarse:data-[native-composer-inline]:grid-cols-[minmax(0,1fr)_auto] max-md:pointer-coarse:data-[native-composer-inline]:items-center px-1.5 py-0.5 transition-[border-color,box-shadow] duration-200 focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/40 motion-reduce:transition-none",
           recording && "border-destructive/40",
         )}
         data-native-composer=""
@@ -648,11 +651,9 @@ export function NativeTerminalPromptBar({
               ? "Starting microphone…"
               : recording
                 ? "Listening…"
-                : isNarrowViewport
-                  ? `Send to ${providerLabel.length <= 11 ? providerLabel : "CLI"}`
-                  : isCompactViewport
-                    ? "Send to prompt above…"
-                    : `Send to ${providerLabel} prompt above…`
+                : isCompactViewport
+                  ? `To ${compactDestination} prompt…`
+                  : `Send to ${providerLabel} prompt above…`
           }
           onChange={(event) => {
             applyValue(event.target.value, programmaticRef.current);

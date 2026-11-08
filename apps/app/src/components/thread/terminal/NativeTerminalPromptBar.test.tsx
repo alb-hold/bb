@@ -179,6 +179,23 @@ describe("NativeTerminalPromptBar", () => {
     const shell = form.querySelector("[data-native-composer]")!;
     expect(shell.classList.contains("rounded-xl")).toBe(true);
     expect(shell.classList.contains("border-border")).toBe(true);
+    expect(shell.className).not.toContain(
+      "md:data-[native-composer-inline]:border-0",
+    );
+    expect(shell.className).not.toContain(
+      "md:data-[native-composer-inline]:max-w-md",
+    );
+    expect(shell.className).not.toContain(
+      "md:data-[native-composer-inline]:grid",
+    );
+    expect(form.className).not.toContain(
+      "md:has-[[data-native-composer-inline]]:mx-0",
+    );
+    expect(
+      form
+        .querySelector("[data-native-composer-actions]")
+        ?.classList.contains("flex"),
+    ).toBe(true);
     expect(sendButton.classList.contains("pointer-coarse:size-11")).toBe(true);
     expect(
       screen.getByRole("button", { name: "Attach image" }).querySelector("svg"),
@@ -1378,44 +1395,26 @@ it.each(["Codex", "Claude Code", "Native CLI"])(
   "shortens the compact %s placeholder but preserves the accessible name",
   (provider) => {
     const { input } = renderBar(undefined, undefined, provider, true);
-    expect(input.placeholder).toBe("Send to prompt above…");
+    expect(input.placeholder).toBe(
+      `To ${provider.length <= 5 ? provider : "CLI"} prompt…`,
+    );
     expect(screen.getByLabelText(`Send to ${provider} terminal`)).toBe(input);
   },
 );
 
-it.each([360, 374, 375, 1024])("uses a whole placeholder at %s px", (width) => {
-  const media = vi.spyOn(window, "matchMedia").mockImplementation((query) => ({
-    matches: query === "(max-width: 374px)" && width < 375,
-    media: query,
-    onchange: null,
-    addListener: vi.fn(),
-    removeListener: vi.fn(),
-    addEventListener: vi.fn(),
-    removeEventListener: vi.fn(),
-    dispatchEvent: () => false,
-  }));
-  try {
-    const { input } = renderBar(undefined, undefined, "Codex", width < 768);
-    expect(input.placeholder).toBe(
-      width < 375
-        ? "Send to Codex"
-        : width < 768
-          ? "Send to prompt above…"
-          : "Send to Codex prompt above…",
-    );
-  } finally {
-    cleanup();
-    media.mockRestore();
-  }
-});
-
-it.each(["Codex", "Claude Code", "A provider with a long label"])(
-  "keeps the narrow destination whole for %s",
-  (provider) => {
+it.each(
+  [360, 375, 390, 1024].flatMap((width) =>
+    ["Codex", "Claude Code", "A provider with a long label"].map(
+      (provider) => ({ width, provider }),
+    ),
+  ),
+)(
+  "keeps a consistent destination at $width px for $provider",
+  ({ width, provider }) => {
     const media = vi
       .spyOn(window, "matchMedia")
       .mockImplementation((query) => ({
-        matches: query === "(max-width: 374px)",
+        matches: query === "(max-width: 374px)" && width < 375,
         media: query,
         onchange: null,
         addListener: vi.fn(),
@@ -1425,12 +1424,16 @@ it.each(["Codex", "Claude Code", "A provider with a long label"])(
         dispatchEvent: () => false,
       }));
     try {
-      const { input } = renderBar(undefined, undefined, provider, true);
+      const { input } = renderBar(undefined, undefined, provider, width < 768);
       expect(input.placeholder).toBe(
-        `Send to ${provider.length <= 11 ? provider : "CLI"}`,
+        width < 768
+          ? `To ${provider.length <= 5 ? provider : "CLI"} prompt…`
+          : `Send to ${provider} prompt above…`,
       );
-      expect(input.placeholder).not.toContain("…");
       expect(screen.getByLabelText(`Send to ${provider} terminal`)).toBe(input);
+      expect(input.className).toContain(
+        "max-md:pointer-coarse:group-data-[native-composer-inline]:h-11",
+      );
     } finally {
       cleanup();
       media.mockRestore();
