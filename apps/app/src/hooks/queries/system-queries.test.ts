@@ -874,4 +874,13 @@ it("exposes terminal capability at first paint from the matching execution snaps
   expect(observer.getCurrentResult().isFetching).toBe(true);
   const other = observe(queryClient, systemProvidersQueryOptions({ environmentId: "env-other" }, queryClient));
   expect(other.getCurrentResult().data).toBeUndefined();
+  const otherHost = observe(queryClient, systemProvidersQueryOptions({ environmentId: "env-cached", hostId: "host-other" }, queryClient));
+  expect(otherHost.getCurrentResult().data).toBeUndefined();
+  queryClient.setQueryData(systemExecutionOptionsQueryKey({ environmentId: null, hostId: "host-cached", providerId: "native-cached" }), {
+    ...EXECUTION_OPTIONS_RESPONSE, providers: [provider],
+  });
+  const matchingHost = observe(queryClient, systemProvidersQueryOptions({ hostId: "host-cached" }, queryClient));
+  expect(matchingHost.getCurrentResult().data?.[0]?.capabilities.supportsNativeTerminal).toBe(true);
+  const differentHost = observe(queryClient, systemProvidersQueryOptions({ hostId: "host-other" }, queryClient));
+  expect(differentHost.getCurrentResult().data).toBeUndefined();
 });
