@@ -521,6 +521,56 @@ function textChunk(text: string, seq: number): TerminalOutputChunk {
 }
 
 describe("TerminalManager", () => {
+  it("answers bounded reads after twelve terminals stream for six minutes", async () => {
+    vi.useFakeTimers();
+    const harness = createHarness();
+    const terminals: FakeTerminalPty[] = [];
+    for (let index = 0; index < 12; index += 1) {
+      terminals.push(await openTerminalWithId(harness, `term-stream-${index}`));
+    }
+    expect(new Set(terminals).size).toBe(12);
+    for (let line = 1; line <= 6 * 60 * 40; line += 1) {
+      for (const terminal of terminals) terminal.emitData(`line ${line}\r\n`);
+      vi.advanceTimersByTime(25);
+      if (line % (60 * 40) !== 0) continue;
+      for (let index = 0; index < terminals.length; index += 1) {
+        const requestId = `read-${line}-${index}`;
+        await harness.manager.handleMessage({
+          type: "terminal.attach",
+          requestId,
+          terminalId: `term-stream-${index}`,
+          sinceSeq: 0,
+          tailBytes: 4096,
+        });
+        const replay = harness.messages.find(
+          (message) =>
+            message.type === "terminal.replay" &&
+            message.requestId === requestId,
+        );
+        if (replay?.type !== "terminal.replay")
+          throw new Error("Missing output replay");
+        const text = replay.chunks
+          .map((chunk) => Buffer.from(chunk.dataBase64, "base64").toString())
+          .join("");
+        expect(text).toContain(`line ${line}\r\n`);
+        expect(replay.nextSeq).toBeGreaterThan(line - 1);
+        const live = harness.messages
+          .filter(
+            (message) =>
+              message.type === "terminal.output" &&
+              message.terminalId === `term-stream-${index}`,
+          )
+          .pop();
+        if (live?.type !== "terminal.output") {
+          throw new Error("missing live output");
+        }
+        expect(
+          Buffer.from(live.chunk.dataBase64, "base64").toString(),
+        ).toContain(`line ${line}\r\n`);
+      }
+    }
+  });
+
   it("starts shell terminals through the terminal-id holder client when bb is available", async () => {
     const harness = createHarnessWithOptions({
       onSendMessage: () => undefined,

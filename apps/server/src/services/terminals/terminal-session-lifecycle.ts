@@ -4751,7 +4751,10 @@ export class TerminalSessionLifecycle {
           bytesRead += data.length;
         },
       );
-      if (rowsRead >= 8 || bytesRead >= 256 * 1024) {
+      if (
+        rowsRead >= 256 ||
+        bytesRead >= TERMINAL_REPLAY_PREPARE_BYTES_PER_TICK
+      ) {
         rowsRead = 0;
         bytesRead = 0;
         await yieldToEventLoop();
@@ -4806,7 +4809,10 @@ export class TerminalSessionLifecycle {
           outputBytes += outputChunk.length;
         },
       );
-      if ((index + 1) % 8 === 0 || outputBytes >= 256 * 1024) {
+      if (
+        (index + 1) % 256 === 0 ||
+        outputBytes >= TERMINAL_REPLAY_PREPARE_BYTES_PER_TICK
+      ) {
         outputBytes = 0;
         await yieldToEventLoop();
       }
