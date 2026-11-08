@@ -127,6 +127,16 @@ function requireElement(container: ParentNode, selector: string): Element {
 }
 
 describe("MarkdownPreview", () => {
+  it("starts code independently of the action toolbar height", () => {
+    const { container } = render(<MarkdownPreview content={"```ts\nconst answer = 42;\n```"} />);
+    const actions = container.querySelector("[data-code-actions]")!;
+    const code = container.querySelector("[data-code-card] pre")!;
+    expect(actions.classList.contains("absolute")).toBe(true);
+    expect(code.textContent).toContain("const answer = 42;");
+    expect(code.classList.contains("pr-28")).toBe(true);
+    expect(actions.querySelectorAll("[data-compact-touch=code]")).toHaveLength(2);
+  });
+
   it("contains table breakouts to the markdown content width", () => {
     const { container } = render(
       <MarkdownPreview content={"| A |\n| - |\n| B |"} />,
