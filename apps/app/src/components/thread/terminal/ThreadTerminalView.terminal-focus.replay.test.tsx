@@ -104,9 +104,9 @@ class TestTerminalSocket {
     queueMicrotask(() => this.onclose?.({ code, reason } as CloseEvent));
   }
 
-  disconnect(): void {
+  disconnect(code = 1006, reason = "test disconnect"): void {
     this.readyState = TestTerminalSocket.CLOSED;
-    this.onclose?.({ code: 1006, reason: "test disconnect" } as CloseEvent);
+    this.onclose?.(new CloseEvent("close", { code, reason }));
   }
 
   send(data: string): void {
@@ -452,6 +452,80 @@ function writeReplay(terminal: Terminal, data: string): Promise<void> {
 }
 
 describe("ThreadTerminalView terminal replay and reconnect", () => {
+  it.each(["terminal_attach_timeout", "terminal_not_found"])(
+    "handles %s and server close while the screen request is pending",
+    async (code) => {
+      prepareMobileTerminal();
+      stubVisibleIntersectionObserver();
+      let resolveScreen!: (snapshot: TerminalScreenResponse | null) => void;
+      testState.screen.mockReturnValueOnce(
+        new Promise<TerminalScreenResponse | null>((resolve) => {
+          resolveScreen = resolve;
+        }),
+      );
+      const terminals: Terminal[] = [];
+      const open = Terminal.prototype.open;
+      vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
+        this: Terminal,
+        element: HTMLElement,
+      ) {
+        if (element.hasAttribute("data-terminal-grid-cache-id"))
+          terminals.push(this);
+        open.call(this, element);
+      });
+      const session = renderMobileTerminal();
+      try {
+        await waitForReadinessCondition(() => {
+          expect(terminals).toHaveLength(1);
+          expect(testState.sockets).toHaveLength(1);
+        }, "pending-screen viewer did not mount");
+        const failed = testState.sockets[0]!;
+        await waitForReadiness(failed.opened, "initial socket did not open");
+        failed.receive({ type: "error", code, message: "Attach failed" });
+        failed.disconnect(1013, "attach-failed");
+        if (code === "terminal_not_found") {
+          await pause(1_000);
+          expect(testState.sockets).toHaveLength(1);
+          expect(failed.readyState).toBe(TestTerminalSocket.CLOSED);
+          return;
+        }
+        await waitForReadinessCondition(() => {
+          expect(testState.sockets).toHaveLength(2);
+        }, "attach timeout did not reconnect with a pending screen");
+        const retry = testState.sockets[1]!;
+        await waitForReadiness(retry.opened, "retry socket did not open");
+        retry.receive({
+          type: "attached",
+          session,
+          replayStartSeq: 49_999,
+          nextSeq: 50_000,
+        });
+        for (const seq of [49_999, 50_000]) {
+          retry.receive({
+            type: "output",
+            chunk: { seq, dataBase64: btoa(`line ${seq + 1}\r\n`) },
+          });
+        }
+        await waitForReadinessCondition(() => {
+          expect(retry.sent.map((frame) => JSON.parse(frame))).toContainEqual({
+            type: "ack",
+            nextSeq: 50_001,
+          });
+        }, "retry did not catch up and acknowledge current output");
+        const terminal = terminals[0]!;
+        expect(
+          Array.from({ length: terminal.buffer.active.length }, (_, index) =>
+            terminal.buffer.active.getLine(index)?.translateToString(true),
+          ).join("\n"),
+        ).toContain("line 50001");
+        expect(retry.readyState).toBe(TestTerminalSocket.OPEN);
+        expect(testState.sockets).toHaveLength(2);
+      } finally {
+        resolveScreen(null);
+      }
+    },
+  );
+
   it("adopts replay and acknowledges fifty-thousand-line history while the screen request is pending", async () => {
     prepareMobileTerminal();
     stubVisibleIntersectionObserver();
@@ -2944,7 +3018,8 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
     vi.spyOn(terminalModules, "importTerminalWebglAddon").mockReturnValue(
       webglModule,
     );
-    const actualWebgl = await vi.importActual<WebglModule>("@xterm/addon-webgl");
+    const actualWebgl =
+      await vi.importActual<WebglModule>("@xterm/addon-webgl");
     const activate = vi.fn();
     class WebglAddon extends actualWebgl.WebglAddon {
       activate = activate;

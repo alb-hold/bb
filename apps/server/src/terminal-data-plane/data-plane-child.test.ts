@@ -817,6 +817,85 @@ describe("terminal data plane child", () => {
     ]);
   });
 
+  it.each(["reply", "broadcast"])(
+    "delivers an attach timeout before attached via %s so the viewer can reconnect",
+    async (delivery) => {
+      const harness = createHarness();
+      const socket = await attachBrowser(harness, {
+        attachId: "timed-out",
+        terminalId: "term_a",
+      });
+      const other = await attachBrowser(harness, {
+        attachId: "still-live",
+        terminalId: "term_a",
+      });
+      replay(harness, {
+        attachId: "still-live",
+        terminalId: "term_a",
+        nextSeq: 50_000,
+      });
+      const error = {
+        type: "error" as const,
+        code: "terminal_attach_timeout",
+        message: "Timed out attaching terminal",
+      };
+      if (delivery === "reply") {
+        main(harness, {
+          v,
+          type: "browser.reply",
+          attachId: "timed-out",
+          message: error,
+        });
+      } else {
+        main(harness, {
+          v,
+          type: "browser.send",
+          terminalId: "term_a",
+          message: error,
+        });
+      }
+      expect(socket.frames()).toEqual([error]);
+      main(harness, {
+        v,
+        type: "browser.close",
+        target: { kind: "attach", attachId: "timed-out" },
+        code: 1013,
+        reason: "attach-failed",
+      });
+      expect(socket.closes).toEqual([{ code: 1013, reason: "attach-failed" }]);
+      expect(other.closes).toEqual([]);
+      main(harness, {
+        v,
+        type: "terminal.output",
+        terminalId: "term_a",
+        chunk: chunk(50_000, "line 50001\r\n"),
+      });
+      expect(other.outputSeqs()).toEqual([50_000]);
+      if (delivery === "reply") {
+        expect(other.frames().map((frame) => frame.type)).toEqual([
+          "attached",
+          "output",
+        ]);
+      }
+      const retry = await attachBrowser(harness, {
+        attachId: "retry",
+        terminalId: "term_a",
+      });
+      replay(harness, {
+        attachId: "retry",
+        terminalId: "term_a",
+        chunks: [chunk(49_999, "line 50000\r\n")],
+        replayStartSeq: 49_999,
+        nextSeq: 50_000,
+      });
+      expect(retry.frames().map((frame) => frame.type)).toEqual([
+        "attached",
+        "output",
+      ]);
+      expect(retry.outputSeqs()).toEqual([49_999]);
+    },
+  );
+
   it("sends a reply only to the attach it names, held until the attached frame is written", async () => {
     const harness = createHarness();
     const named = await attachBrowser(harness, {

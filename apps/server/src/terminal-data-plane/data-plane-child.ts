@@ -579,7 +579,7 @@ export class TerminalDataPlaneChild {
     for (const attach of [
       ...(this.attachesByTerminalId.get(terminalId) ?? []),
     ]) {
-      if (attach.attachedFrameSent) {
+      if (attach.attachedFrameSent || message.type === "error") {
         this.write(attach, frame);
       } else {
         attach.queuedControl.push(frame);
@@ -593,7 +593,7 @@ export class TerminalDataPlaneChild {
       return;
     }
     const frame = JSON.stringify(message);
-    if (attach.attachedFrameSent) {
+    if (attach.attachedFrameSent || message.type === "error") {
       this.write(attach, frame);
     } else {
       attach.queuedControl.push(frame);
