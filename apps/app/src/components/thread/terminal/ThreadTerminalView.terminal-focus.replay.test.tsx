@@ -451,6 +451,103 @@ function writeReplay(terminal: Terminal, data: string): Promise<void> {
 }
 
 describe("ThreadTerminalView terminal replay and reconnect", () => {
+  it.each(["before attachment", "after parsed output"])(
+    "replays missed output once after a viewer unmounts %s",
+    async (phase) => {
+      prepareMobileTerminal();
+      stubVisibleIntersectionObserver();
+      testState.deferSocketOpen = true;
+      const mountedTerminals: Terminal[] = [];
+      const openTerminal = Terminal.prototype.open;
+      vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
+        this: Terminal,
+        element: HTMLElement,
+      ) {
+        if (element.hasAttribute("data-terminal-grid-cache-id")) {
+          mountedTerminals.push(this);
+        }
+        openTerminal.call(this, element);
+      });
+      const session = renderMobileTerminal();
+      await waitForReadinessCondition(() => {
+        expect(document.querySelector(".xterm-screen")).not.toBeNull();
+        expect(testState.sockets).toHaveLength(1);
+      }, "terminal screen was not created before attachment");
+      const initialSocket = testState.sockets[0];
+      if (!initialSocket) throw new Error("initial socket is missing");
+      if (phase === "after parsed output") {
+        initialSocket.open();
+        initialSocket.receive({
+          type: "attached",
+          session,
+          replayStartSeq: 0,
+          nextSeq: 1,
+        });
+        initialSocket.receive({
+          type: "output",
+          chunk: { seq: 0, dataBase64: btoa("line 1\r\n") },
+        });
+        await waitForReadinessCondition(() => {
+          expect(
+            initialSocket.sent.map((message) => JSON.parse(message)),
+          ).toContainEqual({ type: "ack", nextSeq: 1 });
+        }, "initial output was not parsed");
+      } else {
+        expect(initialSocket.readyState).toBe(TestTerminalSocket.CONNECTING);
+        expect(initialSocket.sent).toEqual([]);
+      }
+      cleanup();
+      expect(initialSocket.readyState).toBe(TestTerminalSocket.CLOSED);
+      renderMobileTerminal();
+      await waitForReadinessCondition(() => {
+        expect(testState.sockets).toHaveLength(2);
+        expect(mountedTerminals).toHaveLength(2);
+      }, "returning to the terminal did not create a new viewer");
+      const replaySocket = testState.sockets[1];
+      const terminal = mountedTerminals[1];
+      if (!replaySocket || !terminal)
+        throw new Error("returning viewer is missing");
+      expect(
+        new URL(testState.socketUrls[1] ?? "ws://localhost").searchParams.get(
+          "sinceSeq",
+        ),
+      ).toBe("0");
+      replaySocket.open();
+      replaySocket.receive({
+        type: "attached",
+        session,
+        replayStartSeq: 37,
+        nextSeq: 39,
+      });
+      for (const seq of [37, 38, 38, 39]) {
+        replaySocket.receive({
+          type: "output",
+          chunk: { seq, dataBase64: btoa(`line ${seq + 1}\r\n`) },
+        });
+      }
+      await waitForReadinessCondition(() => {
+        expect(
+          replaySocket.sent.map((message) => JSON.parse(message)),
+        ).toContainEqual({ type: "ack", nextSeq: 40 });
+      }, "returning viewer did not parse replay and later live output");
+      await waitFor(
+        () => {
+          const text = Array.from(
+            { length: terminal.buffer.active.length },
+            (_, index) =>
+              terminal.buffer.active.getLine(index)?.translateToString(true),
+          ).join("\n");
+          for (const line of [38, 39, 40]) {
+            expect(text).toContain(`line ${line}`);
+            expect(text.match(new RegExp(`line ${line}`, "g"))).toHaveLength(1);
+          }
+        },
+        { timeout: 5000 },
+      );
+      expect(testState.sockets).toHaveLength(2);
+    },
+  );
+
   it("sends the resolved theme only from the focused viewer and leaves replay replies suppressed", async () => {
     prepareMobileTerminal();
     Reflect.set(

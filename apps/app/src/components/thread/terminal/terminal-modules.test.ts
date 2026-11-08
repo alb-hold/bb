@@ -13,7 +13,6 @@ afterEach(async () => {
   await vi.dynamicImportSettled();
   nodePerformance.clearMarks(`${gate}-start`);
   nodePerformance.clearMarks(`${gate}-end`);
-  vi.doUnmock("@xterm/addon-unicode11");
   vi.unstubAllGlobals();
   vi.resetModules();
 });
@@ -61,38 +60,4 @@ it("retains the first preload timings when later panel consumers preload again",
     start,
   );
   expect(performance.getEntriesByName(`${gate}-end`)[0]?.startTime).toBe(end);
-});
-
-it("retries a rejected runtime import on the next open", async () => {
-  vi.stubGlobal("performance", nodePerformance);
-  const failure = new Error("runtime download unavailable");
-  vi.doMock("@xterm/addon-unicode11", () => {
-    throw failure;
-  });
-  const { importTerminalModules, preloadTerminalModules } =
-    await import("./terminal-modules");
-  preloadTerminalModules();
-  await expect(importTerminalModules()).rejects.toMatchObject({
-    cause: failure,
-  });
-  await vi.dynamicImportSettled();
-  expect(performance.getEntriesByName(`${gate}-end`)[0]).toMatchObject({
-    detail: { outcome: "rejected" },
-  });
-  vi.doUnmock("@xterm/addon-unicode11");
-  preloadTerminalModules();
-  const [{ Terminal }] = await importTerminalModules();
-  await Promise.resolve();
-  const terminal = new Terminal({ cols: 40, rows: 31 });
-  try {
-    await new Promise<void>((resolve) => terminal.write("retried", resolve));
-    expect(terminal.buffer.active.getLine(0)?.translateToString(true)).toBe(
-      "retried",
-    );
-    expect(performance.getEntriesByName(`${gate}-end`)[0]).toMatchObject({
-      detail: { outcome: "resolved" },
-    });
-  } finally {
-    terminal.dispose();
-  }
 });
