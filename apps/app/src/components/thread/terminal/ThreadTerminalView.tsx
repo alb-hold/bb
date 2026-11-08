@@ -4281,6 +4281,15 @@ export function ThreadTerminalView({
           </button>
         </div>
       ) : null}
+            <TerminalSearch
+              terminalId={session.id}
+              addon={terminalSearchAddon}
+              terminal={terminalRef.current}
+              touch={isTouchDevice}
+              hideTrigger={attentionShownAsBanner}
+              open={terminalSearchOpen}
+              onOpenChange={setTerminalSearchOpen}
+            />
       <ContextMenu
         open={!parked && contextMenuOpen}
         onOpenChange={(open) => {
@@ -4340,15 +4349,7 @@ export function ThreadTerminalView({
               rows={session.rows}
               viewportLine={promptTrackerState.viewportLine}
             />
-            <TerminalSearch
-              terminalId={session.id}
-              addon={terminalSearchAddon}
-              terminal={terminalRef.current}
-              touch={isTouchDevice}
-              hideTrigger={attentionShownAsBanner}
-              open={terminalSearchOpen}
-              onOpenChange={setTerminalSearchOpen}
-            />
+
           </TerminalAttentionPane>
         </ContextMenuTrigger>
         <ContextMenuContent

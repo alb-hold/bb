@@ -91,12 +91,13 @@ function watchTerminalKeys(textarea: HTMLTextAreaElement) {
 }
 
 describe("TerminalSearch shortcuts and closed controls", () => {
-  it("never overlays a closed search trigger without a tab-strip target", () => {
+  it("omits the standalone strip trigger when the header owns search", () => {
     render(
       <TerminalSearch
         addon={null}
         terminal={null}
         open={false}
+        hideTrigger
         onOpenChange={vi.fn()}
       />,
     );
