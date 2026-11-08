@@ -835,7 +835,7 @@ function ThreadRowComponent({
     SIDEBAR_HOVER_ACTIONS_ROW_CLASS,
     "group/thread-row cursor-pointer",
     SIDEBAR_ROW_BASE_CLASS,
-    "gap-1",
+    "gap-1 md:grid md:grid-cols-[minmax(0,1fr)_auto] md:grid-rows-[1.25rem_1rem] md:content-center md:gap-y-0 md:py-0.5",
     DESKTOP_THREAD_ROW_HEIGHT_VARIABLE_CLASS,
     !hasRowState &&
       "md:h-(--bb-sidebar-desktop-row-height) md:min-h-(--bb-sidebar-desktop-row-height)",
@@ -876,18 +876,6 @@ function ThreadRowComponent({
   );
 
   const rowLinkRef = useRef<HTMLAnchorElement>(null);
-  const trailingRef = useRef<HTMLSpanElement>(null);
-  useLayoutEffect(() => {
-    const trailing = trailingRef.current;
-    const row = rowLinkRef.current?.closest<HTMLElement>("[data-sidebar-rename-row]");
-    if (!trailing || !row) return;
-    const measure = () => row.style.setProperty("--bb-thread-trailing-width", `${trailing.getBoundingClientRect().width + 8}px`);
-    measure();
-    if (typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(measure);
-    observer.observe(trailing);
-    return () => observer.disconnect();
-  }, []);
   useEffect(() => {
     if (isCustomizingActions) {
       focusFirstRowActionSlot(
@@ -936,7 +924,7 @@ function ThreadRowComponent({
       ) : null}
       <span
         className={cn(
-          "relative flex min-w-0 flex-1 items-center gap-1.5 self-stretch",
+          "relative flex min-w-0 flex-1 items-center gap-1.5 self-stretch md:contents",
           hasRowState && rowFirstLineHeightClass,
           hasVisibleStatus && "gap-1",
           showRowMetadata &&
@@ -995,13 +983,13 @@ function ThreadRowComponent({
         <span
           className={
             showRowMetadata
-              ? "contents group-has-[[data-reserve-line]]/row-metadata:flex group-has-[[data-reserve-line]]/row-metadata:min-w-0 group-has-[[data-reserve-line]]/row-metadata:basis-full group-has-[[data-reserve-line]]/row-metadata:items-center group-has-[[data-reserve-line]]/row-metadata:gap-1.5 group-has-[[data-reserve-line]]/row-metadata:self-stretch"
+              ? "contents md:contents! group-has-[[data-reserve-line]]/row-metadata:flex group-has-[[data-reserve-line]]/row-metadata:min-w-0 group-has-[[data-reserve-line]]/row-metadata:basis-full group-has-[[data-reserve-line]]/row-metadata:items-center group-has-[[data-reserve-line]]/row-metadata:gap-1.5 group-has-[[data-reserve-line]]/row-metadata:self-stretch"
               : "contents"
           }
         >
         <span
           className={cn(
-            "pointer-events-none relative flex min-w-0 flex-1 items-center self-stretch",
+            "pointer-events-none relative flex min-w-0 flex-1 items-center self-stretch md:contents",
           )}
         >
           {provider ? (
@@ -1011,7 +999,7 @@ function ThreadRowComponent({
                   data-sidebar-thread-provider={provider.id}
                   role="img"
                   aria-label={provider.displayName}
-                  className="pointer-events-auto relative z-[31] flex size-4 shrink-0 items-center justify-center mr-1 max-md:mr-1.5 text-muted-foreground [&_*]:text-inherit!"
+                  className="pointer-events-auto relative z-[31] flex size-4 shrink-0 items-center justify-center mr-1 max-md:mr-1.5 md:col-start-1 md:row-start-1 md:self-center md:justify-self-start text-muted-foreground [&_*]:text-inherit!"
                   onClick={(event) => {
                     event.preventDefault();
                     event.stopPropagation();
@@ -1029,25 +1017,26 @@ function ThreadRowComponent({
             </Tooltip>
           ) : null}
           {isEditing ? (
-            <span className="pointer-events-auto relative z-10 min-w-0 flex-1 overflow-visible">
+            <span className="pointer-events-auto relative z-10 min-w-0 flex-1 overflow-visible md:col-span-2 md:row-span-2">
               {editor}
             </span>
           ) : (
             <span
-              className="min-w-0 flex-1 md:pb-1"
+              className="min-w-0 flex-1 md:contents"
               title={labelTitle}
               onDoubleClick={startTitleEditing}
             >
-              <span data-emphasized={showActive || thread.isUnread || trailingIndicatorKind === "needs-input" || trailingIndicatorKind === "check-terminal" || trailingIndicatorKind === "waiting-for-input"} className="bb-thread-title md:leading-5 md:items-center! flex min-w-0 flex-1 items-center gap-1 truncate font-normal md:data-[emphasized=true]:font-medium">
+              <span data-emphasized={showActive || thread.isUnread || trailingIndicatorKind === "needs-input" || trailingIndicatorKind === "check-terminal" || trailingIndicatorKind === "waiting-for-input"} className={cn("bb-thread-title md:col-span-2 md:row-start-1 md:leading-5 md:items-center! flex min-w-0 flex-1 items-center gap-1 truncate font-normal md:data-[emphasized=true]:font-medium", provider && "md:pl-5", crossProjectLabel !== null && parentOptions && hasChildren ? "md:pr-11" : crossProjectLabel !== null || (parentOptions && hasChildren) ? "md:pr-6" : undefined)}>
                 <span className="inline-flex size-4 shrink-0 text-foreground md:translate-y-px max-md:-translate-y-0.5" data-thread-title-mode=""><ThreadModeGlyph nativeTerminal={thread.experimental_nativeTerminal === true} isWorktree={!thread.experimental_nativeTerminal && thread.environment?.isWorktree === true} /></span>
                 <span className="min-w-0 truncate md:flex md:items-center md:leading-5 md:[&_span]:leading-5"><ThreadTitle threadId={thread.id} /></span>
               </span>
-              <span data-sidebar-thread-context="" className={cn("md:pr-[var(--bb-thread-trailing-width)] hidden min-w-0 items-center gap-1 pl-5 truncate text-xs font-normal leading-4 text-muted-foreground md:text-xs md:leading-4 md:[&_span]:leading-4 md:[&_time]:leading-4 md:text-sidebar-metadata-foreground [&_time]:text-xs md:[&_time]:text-xs [&_time]:text-inherit md:flex", thread.experimental_nativeTerminal && "[&>[role=img]]:text-foreground [&>[role=img]_svg]:stroke-[2]")}>
+              <span data-sidebar-thread-context="" className={cn("md:col-start-1 md:row-start-2 hidden min-w-0 items-center gap-1 pl-5 truncate text-xs font-normal leading-4 text-muted-foreground md:text-xs md:leading-4 md:[&_span]:leading-4 md:[&_time]:leading-4 md:text-sidebar-metadata-foreground [&_time]:text-xs md:[&_time]:text-xs [&_time]:text-inherit md:flex", provider && "md:ml-5", thread.experimental_nativeTerminal && "[&>[role=img]]:text-foreground [&>[role=img]_svg]:stroke-[2]")}>
                 <ThreadContextMetadata project={showProjectName ? projectName ?? null : null} age={<InfoRowTime timestamp={thread.updatedAt} />} />
               </span>
             </span>
           )}
         </span>
+        <span className="contents md:col-start-2 md:row-start-1 md:flex md:items-center md:justify-end">
         {crossProjectLabel !== null ? (
           <Tooltip>
             <TooltipTrigger asChild>
@@ -1080,10 +1069,11 @@ function ThreadRowComponent({
           />
         ) : null}
         </span>
+        </span>
         {!showRowMetadata || isEditing || isCustomizingActions ? null : (
           <span
             className={cn(
-              "mt-px hidden has-[[data-reserve-line]]:flex h-3.5 min-w-0 shrink-0 basis-full overflow-hidden",
+              "md:col-span-2 mt-px hidden has-[[data-reserve-line]]:flex h-3.5 min-w-0 shrink-0 basis-full overflow-hidden",
               provider !== undefined && "pl-6",
             )}
           >
@@ -1099,10 +1089,9 @@ function ThreadRowComponent({
         />
       ) : null}
       <span
-        ref={trailingRef}
         data-sidebar-thread-trailing=""
         className={cn(
-          "flex min-w-0 shrink-0 items-center gap-0.5 md:absolute md:right-2 md:bottom-1",
+          "flex min-w-0 shrink-0 items-center gap-0.5 md:col-start-2 md:row-start-2 md:relative md:self-center md:pr-2",
           !isActionsOpen &&
             "group-data-[sidebar-touch-armed=true]/thread-row:hidden",
           (isEditing || isCustomizingActions) && "hidden",
@@ -1113,7 +1102,7 @@ function ThreadRowComponent({
           data-sidebar-hover-actions-open={isActionsOpen ? "true" : undefined}
           className={cn(
             SIDEBAR_HOVER_ACTIONS_FADE_CLASS,
-            "flex min-w-0 shrink-0 items-center gap-0.5 [@media(hover:none)]:opacity-100!",
+            "flex min-w-0 shrink-0 items-center gap-0.5 md:opacity-100! [@media(hover:none)]:opacity-100!",
           )}
         >
           <SidebarThreadPullRequestChip thread={thread} />
@@ -1213,6 +1202,7 @@ function ThreadRowComponent({
               SIDEBAR_HOVER_ACTIONS_CLASS,
               "flex shrink-0 items-center justify-end gap-1",
               rowActionsOverlayClass,
+            "md:static! md:inset-auto! md:w-0 md:overflow-hidden md:group-hover/thread-row:w-auto md:group-has-[:focus-visible]/thread-row:w-auto md:data-[sidebar-hover-actions-open=true]:w-auto",
               isEditing && "invisible pointer-events-none",
             )}
           >
@@ -1246,7 +1236,7 @@ function ThreadRowComponent({
         <div
           ref={rowStateRef}
           data-sidebar-thread-row-state=""
-          className="pointer-events-none relative z-[1] flex w-full min-w-0 basis-full flex-col gap-1 pl-6 pr-2 pb-1"
+          className="pointer-events-none relative z-[1] flex w-full min-w-0 basis-full md:col-span-2 flex-col gap-1 pl-6 pr-2 pb-1"
         >
           {Object.entries(rowState.statuses)
             .sort(
