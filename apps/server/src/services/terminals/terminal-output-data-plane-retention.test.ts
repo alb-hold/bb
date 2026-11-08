@@ -585,6 +585,151 @@ async function retainReplayAcrossLifecycleTransition(args: {
 }
 
 describe("terminal output retained from the data plane", () => {
+  it("yields a single large marker chunk while preserving replay and live output", async () => {
+    const fixture = await setup();
+    const marker = `\u001b]7717;bb-holder;${fixture.terminal.id}\u0007`;
+    const text = "r".repeat(65_537);
+    const live = { seq: 1, dataBase64: Buffer.from("live").toString("base64") };
+    let yields = 0;
+    replayYieldControl.intercept = async () => {
+      yields += 1;
+      if (yields !== 1) return;
+      fixture.terminalSessions.handleDaemonTerminalMessage({
+        hostId: fixture.host.id,
+        sessionId: fixture.session.id,
+        message: {
+          type: "terminal.output",
+          terminalId: fixture.terminal.id,
+          chunk: live,
+        },
+      });
+    };
+    const replay = fixture.terminalSessions.handleDaemonTerminalMessage({
+      hostId: fixture.host.id,
+      sessionId: fixture.session.id,
+      message: {
+        type: "terminal.replay",
+        requestId: "large-marker-chunk",
+        terminalId: fixture.terminal.id,
+        replayStartSeq: 0,
+        nextSeq: 1,
+        chunks: [
+          {
+            seq: 0,
+            dataBase64: Buffer.from(`${marker}${text}`).toString("base64"),
+          },
+        ],
+      },
+    });
+    try {
+      await replay;
+      expect(yields).toBeGreaterThanOrEqual(2);
+      const retained = retainedAfterFlush(
+        fixture.terminalSessions,
+        fixture.db,
+        {
+          hostId: fixture.host.id,
+          terminalSessionId: fixture.terminal.id,
+          now: Date.now(),
+        },
+      );
+      expect(retained).toEqual([live]);
+    } finally {
+      replayYieldControl.intercept = null;
+      fixture.child.shutdown();
+    }
+  });
+
+  it("serves output reads and browser replay before timeout with small chunks on a busy loop", async () => {
+    const fixture = await setup();
+    const socket = new FakeSocket();
+    const chunks = Array.from({ length: 4_800 }, (_, seq) => ({
+      seq,
+      dataBase64: Buffer.from(`line ${seq}\r\n`).toString("base64"),
+    }));
+    const queueErrors: unknown[] = [];
+    const replays: Promise<void>[] = [];
+    const queue = createDaemonSocketMessageQueue<() => Promise<void>>({
+      handle: (work) => work(),
+      onError: (error) => queueErrors.push(error),
+    });
+    queue.release();
+    fixture.hub.registerDaemon(fixture.session.id, fixture.host.id, {
+      close() {},
+      send(data: string) {
+        const message = JSON.parse(data);
+        if (message.type !== "terminal.attach") return;
+        queue.enqueue(() => {
+          const replay = Promise.resolve(
+            fixture.terminalSessions.handleDaemonTerminalMessage({
+              hostId: fixture.host.id,
+              sessionId: fixture.session.id,
+              message: {
+                type: "terminal.replay",
+                requestId: message.requestId,
+                terminalId: fixture.terminal.id,
+                replayStartSeq: 0,
+                nextSeq: chunks.length,
+                chunks,
+              },
+            }),
+          );
+          replays.push(replay);
+          return replay;
+        });
+      },
+    });
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    replayYieldControl.intercept = async () => {
+      await vi.advanceTimersByTimeAsync(60);
+    };
+    try {
+      const started = Date.now();
+      fixture.terminalSessions.attachBrowserTerminal({
+        outputAcks: false,
+        resizeAcks: false,
+        socket,
+        sinceSeq: 0,
+        terminalId: fixture.terminal.id,
+      });
+      const response = await fixture.harness.app.request(
+        `/api/v1/terminals/${fixture.terminal.id}/output?tailBytes=4096`,
+      );
+      expect(response.status).toBe(200);
+      const output = await response.json();
+      expect(textFrom(output.chunks)).toContain("line 4799\r\n");
+      expect(Date.now() - started).toBeLessThan(5_000);
+      expect(socket.sent.map((data) => JSON.parse(data))).toContainEqual(
+        expect.objectContaining({ type: "attached", nextSeq: chunks.length }),
+      );
+      const live = {
+        seq: chunks.length,
+        dataBase64: Buffer.from("line 4800\r\n").toString("base64"),
+      };
+      fixture.terminalSessions.handleDaemonTerminalMessage({
+        hostId: fixture.host.id,
+        sessionId: fixture.session.id,
+        message: {
+          type: "terminal.output",
+          terminalId: fixture.terminal.id,
+          chunk: live,
+        },
+      });
+      expect(socket.sent.map((data) => JSON.parse(data))).toContainEqual({
+        type: "output",
+        chunk: live,
+      });
+      expect(queueErrors).toEqual([]);
+    } finally {
+      replayYieldControl.intercept = null;
+      await Promise.all(replays);
+      queue.close();
+      fixture.child.shutdown();
+      fixture.hub.unregisterDaemon(fixture.session.id);
+      vi.useRealTimers();
+    }
+  });
+
   it("yields retained timer output after one chunk slice and keeps order", async () => {
     const fixture = await setup();
     const lifecycle = fixture.terminalSessions as unknown as {
@@ -2758,7 +2903,7 @@ describe("terminal output retained from the data plane", () => {
           yieldHeld = true;
         });
       };
-      const replayChunks = Array.from({ length: 2_048 }, (_, seq) => ({
+      const replayChunks = Array.from({ length: 32_768 }, (_, seq) => ({
         seq,
         dataBase64: Buffer.from("r").toString("base64"),
       }));
@@ -2879,7 +3024,7 @@ describe("terminal output retained from the data plane", () => {
           },
         ],
       });
-      const chunks = Array.from({ length: 2_048 }, (_, index) => ({
+      const chunks = Array.from({ length: 32_768 }, (_, index) => ({
         seq: index + 1,
         dataBase64: Buffer.from(`replay-${index}`).toString("base64"),
       }));
