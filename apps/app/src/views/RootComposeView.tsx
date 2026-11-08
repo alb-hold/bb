@@ -750,7 +750,6 @@ function RootComposeSurface({
   });
   const activeFixedSecondaryTabId = activeFixedSecondaryTab?.id ?? null;
   const isCompactViewport = useIsCompactViewport();
-  const hasRoomForFiveRecents = useMediaQuery("(min-height: 800px)");
   const secondaryPanelDrawerVisibility =
     useThreadSecondaryPanelDrawerVisibility({
       isCompactViewport,
@@ -1561,13 +1560,7 @@ function RootComposeSurface({
                 isCompactHomeLayout={isCompactViewport}
                 compactScrollContent={
                   <RootComposeMobileRecents
-                    maxRows={
-                      isCompactViewport
-                        ? undefined
-                        : hasRoomForFiveRecents
-                          ? 5
-                          : 3
-                    }
+                    maxRows={isCompactViewport ? undefined : 3}
                     highlightedThreadId={lastCreatedThreadId}
                     projectNamesById={mobileRecentProjectNamesById}
                     providersById={mobileRecentProvidersById}
