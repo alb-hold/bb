@@ -797,7 +797,7 @@ function MarkdownCodeBlock({
                   onClick={() => {
                     setSoftWrap((value) => !value);
                   }}
-                  className="relative inline-flex h-5! w-11! cursor-pointer items-center justify-center before:absolute before:inset-x-0 before:-inset-y-3 text-foreground transition-colors hover:text-foreground aria-pressed:text-foreground"
+                  className="inline-flex size-11! cursor-pointer items-center justify-center text-foreground transition-colors hover:text-foreground aria-pressed:text-foreground"
                 >
                   <Icon name="TextWrap" className="size-3.5" />
                 </button>
@@ -809,7 +809,7 @@ function MarkdownCodeBlock({
             data-compact-touch="code"
             text={codeText}
             label="Copy code"
-            className="relative h-5! w-11! before:absolute before:inset-x-0 before:-inset-y-3 text-foreground"
+            className="size-11! text-foreground"
             iconClassName="size-3.5"
           />
         </div>

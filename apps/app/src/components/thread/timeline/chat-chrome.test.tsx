@@ -209,7 +209,7 @@ it.each([true, false])(
     expect(
       screen
         .getByRole("button", { name: "Wrap lines" })
-        .classList.contains("size-5"),
+        .classList.contains("size-11!"),
     ).toBe(true);
   },
 );
