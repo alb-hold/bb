@@ -659,36 +659,34 @@ export class TerminalScreenState {
                   next.kind === "base64"
                     ? Buffer.from(next.data, "base64")
                     : next.data;
-                if (this.captureReplay) {
-                  const batch = [data];
-                  let bytes = data.byteLength;
-                  while (this.pendingWork.length > 0) {
-                    const queued = this.pendingWork[0];
-                    if (
-                      !queued ||
-                      queued.kind === "resize" ||
-                      queued.kind === "read"
-                    )
-                      break;
-                    const size =
-                      queued.kind === "base64"
-                        ? Buffer.byteLength(queued.data, "base64")
-                        : queued.data.byteLength;
-                    if (bytes + size > this.replayBatchBytes) break;
-                    this.pendingWork.shift();
-                    this.pendingWorkBytes -=
-                      queued.kind === "base64"
-                        ? Buffer.byteLength(queued.data, "utf8")
-                        : size;
-                    batch.push(
-                      queued.kind === "base64"
-                        ? Buffer.from(queued.data, "base64")
-                        : queued.data,
-                    );
-                    bytes += size;
-                  }
-                  if (batch.length > 1) data = Buffer.concat(batch);
+                const batch = [data];
+                let bytes = data.byteLength;
+                while (this.pendingWork.length > 0) {
+                  const queued = this.pendingWork[0];
+                  if (
+                    !queued ||
+                    queued.kind === "resize" ||
+                    queued.kind === "read"
+                  )
+                    break;
+                  const size =
+                    queued.kind === "base64"
+                      ? Buffer.byteLength(queued.data, "base64")
+                      : queued.data.byteLength;
+                  if (bytes + size > this.replayBatchBytes) break;
+                  this.pendingWork.shift();
+                  this.pendingWorkBytes -=
+                    queued.kind === "base64"
+                      ? Buffer.byteLength(queued.data, "utf8")
+                      : size;
+                  batch.push(
+                    queued.kind === "base64"
+                      ? Buffer.from(queued.data, "base64")
+                      : queued.data,
+                  );
+                  bytes += size;
                 }
+                if (batch.length > 1) data = Buffer.concat(batch);
                 const started = performance.now();
                 this.trackPartialSequence(data);
                 if (this.captureReplay && !this.replayCompatible) {
@@ -696,19 +694,17 @@ export class TerminalScreenState {
                   return;
                 }
                 this.terminal.write(data, () => {
-                  if (this.captureReplay) {
-                    const elapsed = performance.now() - started;
-                    if (elapsed > 8)
-                      this.replayBatchBytes = Math.max(
-                        8 * 1024,
-                        Math.floor(this.replayBatchBytes / 2),
-                      );
-                    else if (elapsed < 4)
-                      this.replayBatchBytes = Math.min(
-                        64 * 1024,
-                        this.replayBatchBytes + 8 * 1024,
-                      );
-                  }
+                  const elapsed = performance.now() - started;
+                  if (elapsed > 8)
+                    this.replayBatchBytes = Math.max(
+                      8 * 1024,
+                      Math.floor(this.replayBatchBytes / 2),
+                    );
+                  else if (elapsed < 4)
+                    this.replayBatchBytes = Math.min(
+                      64 * 1024,
+                      this.replayBatchBytes + 8 * 1024,
+                    );
                   setImmediate(drain);
                 });
               } catch (error) {
