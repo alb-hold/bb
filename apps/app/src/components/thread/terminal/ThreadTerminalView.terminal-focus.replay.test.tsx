@@ -661,9 +661,7 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
       }
       expect(focusOpenThreadTerminal("thr_other", sessions[0]!.id)).toBe(false);
       expect(focusOpenThreadTerminal("thr_test", "term_closed")).toBe(false);
-      fireEvent.click(
-        view.getByRole("button", { name: /^Overview$/ }),
-      );
+      fireEvent.click(view.getByRole("button", { name: /^Overview$/ }));
       await waitForReadinessCondition(
         () => expect(view.queryByText("Overview content")).not.toBeNull(),
         "Overview did not appear",
@@ -3919,22 +3917,68 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
 });
 
 describe("terminal first paint", () => {
-  it("keeps symmetric renderer insets through replay, fitting and session switches", async () => {
+  it("opens its first screen with symmetric insets and keeps them through replay and session switches", async () => {
     prepareFirstAttachFontMetricsHarness();
     vi.stubGlobal("innerWidth", 390);
     const style = document.createElement("style");
-    style.textContent = ".px-2 { padding-left: 8px; padding-right: 8px; }";
+    style.textContent = `
+      .px-2 { padding-left: 8px; padding-right: 8px; }
+      ${readFileSync(
+        join(dirname(fileURLToPath(import.meta.url)), "../../../app.css"),
+        "utf8",
+      )
+        .match(/:where\(\[data-app-terminal\][^}]+\}/g)
+        ?.join("\n")}
+    `;
     document.head.append(style);
     const insets: string[] = [];
+    const initialInsets: string[] = [];
+    const paintFrames = new Map<
+      Terminal,
+      Array<{ width: string; height: string; insets: string }>
+    >();
+    const paintFrameHandles = new Set<number>();
     const terminals: Terminal[] = [];
     const open = Terminal.prototype.open;
     vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
       this: Terminal,
       element: HTMLElement,
     ) {
-      open.call(this, element);
-      if (!element.matches("[data-terminal-renderer]")) return;
+      if (!element.matches("[data-terminal-renderer]")) {
+        open.call(this, element);
+        return;
+      }
       terminals.push(this);
+      open.call(this, element);
+      const initialStyle = getComputedStyle(this.element!);
+      initialInsets.push(
+        `${initialStyle.paddingLeft}/${initialStyle.paddingRight}`,
+      );
+      const frames: Array<{
+        width: string;
+        height: string;
+        insets: string;
+      }> = [];
+      paintFrames.set(this, frames);
+      const capturePaint = () => {
+        const handle = requestAnimationFrame(() => {
+          paintFrameHandles.delete(handle);
+          if (!element.isConnected) return;
+          if (element.style.opacity !== "0") {
+            const screen =
+              this.element!.querySelector<HTMLElement>(".xterm-screen")!;
+            const computed = getComputedStyle(this.element!);
+            frames.push({
+              width: screen.style.width,
+              height: screen.style.height,
+              insets: `${computed.paddingLeft}/${computed.paddingRight}`,
+            });
+          }
+          if (frames.length < 2) capturePaint();
+        });
+        paintFrameHandles.add(handle);
+      };
+      capturePaint();
       this.onRender(() => {
         const computed = getComputedStyle(this.element!);
         insets.push(`${computed.paddingLeft}/${computed.paddingRight}`);
@@ -3969,6 +4013,20 @@ describe("terminal first paint", () => {
         const renderer = terminals[index]!.element!;
         expect(getComputedStyle(renderer).paddingLeft).toBe("8px");
         expect(getComputedStyle(renderer).paddingRight).toBe("8px");
+        await waitForReadinessCondition(
+          () => expect(paintFrames.get(terminals[index]!)!).toHaveLength(2),
+          "terminal did not paint two visible frames",
+        );
+        const frames = paintFrames.get(terminals[index]!)!;
+        const screen = renderer.querySelector<HTMLElement>(".xterm-screen")!;
+        expect(parseFloat(frames[0]!.width)).toBeGreaterThan(0);
+        expect(parseFloat(frames[0]!.height)).toBeGreaterThan(0);
+        expect(frames[0]).toEqual({
+          width: screen.style.width,
+          height: screen.style.height,
+          insets: "8px/8px",
+        });
+        expect(frames[1]).toEqual(frames[0]);
         socket.receive({
           type: "session-updated",
           session: { ...session, cols: 51, rows: 47 },
@@ -3985,7 +4043,10 @@ describe("terminal first paint", () => {
       }
       expect(insets.length).toBeGreaterThan(2);
       expect(new Set(insets)).toEqual(new Set(["8px/8px"]));
+      expect(initialInsets.length).toBeGreaterThan(0);
+      expect(new Set(initialInsets)).toEqual(new Set(["8px/8px"]));
     } finally {
+      for (const handle of paintFrameHandles) cancelAnimationFrame(handle);
       style.remove();
     }
   });

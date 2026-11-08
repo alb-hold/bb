@@ -2399,7 +2399,7 @@ export function ThreadTerminalView({
       terminal.unicode.activeVersion = TERMINAL_UNICODE_VERSION;
       markTerminalPerformance("terminal-xterm-open-start");
       terminal.open(containerElement);
-      terminal.element?.classList.add("px-2", "bg-sidebar");
+      terminal.element?.classList.add("bg-sidebar");
       paddingLeft = getComputedStyle(
         terminal.element ?? containerElement,
       ).paddingLeft;

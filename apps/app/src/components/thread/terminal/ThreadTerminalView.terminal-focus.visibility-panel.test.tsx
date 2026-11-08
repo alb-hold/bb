@@ -718,7 +718,7 @@ describe("ThreadTerminalView terminal visibility and panel", () => {
     async (renderer) => {
       vi.stubGlobal("WebSocket", TestTerminalSocket);
       const style = document.createElement("style");
-      style.textContent = `.px-2 { padding-left: 8px; padding-right: 8px; }
+      style.textContent = `.px-2, [data-app-terminal] [data-terminal-grid-cache-id] > .xterm { padding-left: 8px; padding-right: 8px; }
         .pl-2 { padding-left: 8px; }
         .bg-sidebar { background-color: var(--sidebar); }
         .xterm:not(.allow-transparency) .xterm-viewport { background-color: black; }
