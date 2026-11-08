@@ -1,4 +1,5 @@
 import { RetainedTerminalViewsProvider } from "@/components/thread/terminal/RetainedTerminalViews";
+import { focusOpenThreadTerminal } from "@/lib/open-thread-terminal-focus";
 import { useCorePageTitle } from "./core-page-title";
 import { type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import {
@@ -574,6 +575,17 @@ function AppLayoutContent({ children }: AppLayoutProps) {
   useEffect(
     () =>
       wsManager.onThreadOpen((signal) => {
+        if (
+          signal.terminalAction?.action === "focus" &&
+          signal.split === "replace" &&
+          signal.file === null &&
+          signal.terminalLayoutAction === undefined &&
+          focusOpenThreadTerminal(
+            signal.threadId,
+            signal.terminalAction.terminalId,
+          )
+        )
+          return;
         const route = getThreadRoutePath({
           projectId: signal.projectId,
           threadId: signal.threadId,

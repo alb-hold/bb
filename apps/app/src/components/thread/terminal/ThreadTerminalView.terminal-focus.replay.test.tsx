@@ -8,7 +8,10 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { FitAddon } from "@xterm/addon-fit";
-import type { TerminalScreenResponse } from "@bb/server-contract";
+import type {
+  TerminalScreenResponse,
+  UpdateThreadTabsRequest,
+} from "@bb/server-contract";
 import { Terminal } from "@xterm/xterm";
 import { createTerminalGridMarker } from "@bb/domain";
 import { MemoryRouter } from "react-router-dom";
@@ -33,6 +36,10 @@ import * as terminalReplayPreview from "./terminal-replay-preview";
 import * as terminalViewport from "./terminal-viewport";
 import { AppCommandProvider } from "@/components/commands/AppCommandProvider";
 import { ThreadTerminalView, writeTerminalOutput } from "./ThreadTerminalView";
+import { usePanelTerminals } from "@/components/secondary-panel/usePanelTerminals";
+import { useFixedPanelTabsState } from "@/lib/fixed-panel-tabs";
+import { focusOpenThreadTerminal } from "@/lib/open-thread-terminal-focus";
+import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
 
 import {
   RetainedTerminalViewsProvider,
@@ -53,6 +60,8 @@ const testState = vi.hoisted(() => ({
   socketUrls: [] as string[],
   screen: vi.fn(),
   output: vi.fn(),
+  tabsGet: vi.fn(),
+  tabsUpdate: vi.fn(),
 }));
 
 class TestTerminalSocket {
@@ -129,6 +138,9 @@ class TestTerminalSocket {
 
 vi.mock("@/lib/sdk", () => ({
   sdk: {
+    threads: {
+      tabs: { get: testState.tabsGet, update: testState.tabsUpdate },
+    },
     terminals: {
       experimental_setDefaultColors: testState.setDefaultColors,
       experimental_screen: testState.screen,
@@ -235,6 +247,8 @@ afterEach(() => {
   testState.clearAttention.mockReset();
   testState.screen.mockReset();
   testState.output.mockReset();
+  testState.tabsGet.mockReset();
+  testState.tabsUpdate.mockReset();
   testState.toastError.mockReset();
   testState.touchEnabled = false;
   testState.mediaQueryListeners.clear();
@@ -458,6 +472,152 @@ function writeReplay(terminal: Terminal, data: string): Promise<void> {
 }
 
 describe("ThreadTerminalView terminal replay and reconnect", () => {
+  it("focuses another retained terminal through the open thread controller without a socket, resize or claim", async () => {
+    prepareMobileTerminal();
+    stubVisibleIntersectionObserver();
+    vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    vi.spyOn(FitAddon.prototype, "proposeDimensions").mockReturnValue({
+      cols: 40,
+      rows: 12,
+    });
+    testState.tabsGet.mockResolvedValue({ revision: 0, tabs: [] });
+    testState.tabsUpdate.mockImplementation(
+      ({ expectedRevision, tabs }: UpdateThreadTabsRequest) =>
+        Promise.resolve({ revision: expectedRevision + 1, tabs }),
+    );
+    const sessions = ["term_focus_first", "term_focus_second"].map((id) =>
+      makeTerminalSession({ id, cols: 40, rows: 12 }),
+    );
+    const terminals = new Map<string, Terminal>();
+    const open = Terminal.prototype.open;
+    vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
+      this: Terminal,
+      element: HTMLElement,
+    ) {
+      const id = element.getAttribute("data-terminal-grid-cache-id");
+      if (id !== null) terminals.set(id, this);
+      open.call(this, element);
+    });
+    function OpenThread() {
+      const controller = usePanelTerminals({
+        panelStateId: "thr_test",
+        syncThreadId: "thr_test",
+        createTarget: { kind: "thread", threadId: "thr_test" },
+        isFocused: true,
+        acceptsSession: (session) => session.threadId === "thr_test",
+        tabsCarryTarget: false,
+        reveal: () => undefined,
+      });
+      const state = useFixedPanelTabsState("thr_test", "thr_test");
+      const tab = state.secondary.tabs.find(
+        (candidate) => candidate.id === state.secondary.activeTabId,
+      );
+      const session =
+        sessions.find(
+          (candidate) =>
+            tab?.kind === "terminal" && candidate.id === tab.terminalId,
+        ) ?? sessions[0]!;
+      return (
+        <>
+          <button onClick={() => controller.select(sessions[0]!.id)}>
+            First
+          </button>
+          <button onClick={() => controller.select(sessions[1]!.id)}>
+            Second
+          </button>
+          <RetainedTerminalViewSlot
+            key={session.id}
+            View={ThreadTerminalView}
+            autoFocus={controller.autoFocusTerminalId === session.id}
+            onAutoFocusHandled={controller.handleAutoFocusHandled}
+            isPanelOpen
+            session={session}
+          />
+        </>
+      );
+    }
+    const { wrapper } = createQueryClientTestHarness();
+    const view = render(
+      <MemoryRouter>
+        <AppCommandProvider>
+          <RetainedTerminalViewsProvider>
+            <OpenThread />
+          </RetainedTerminalViewsProvider>
+        </AppCommandProvider>
+      </MemoryRouter>,
+      { wrapper },
+    );
+    fireEvent.click(view.getByRole("button", { name: "First" }));
+    for (const [index, session] of sessions.entries()) {
+      if (index === 1)
+        fireEvent.click(view.getByRole("button", { name: "Second" }));
+      await waitForReadinessCondition(() => {
+        expect(testState.sockets).toHaveLength(index + 1);
+        expect(terminals.has(session.id)).toBe(true);
+      }, "terminal did not mount");
+      const socket = testState.sockets[index]!;
+      await socket.opened;
+      socket.receive({
+        type: "attached",
+        session,
+        replayStartSeq: 0,
+        nextSeq: 1,
+      });
+      socket.receive({
+        type: "output",
+        chunk: { seq: 0, dataBase64: btoa(`${session.id}\r\n`) },
+      });
+      await waitForReadinessCondition(() => {
+        expect(socket.sent.map((raw) => JSON.parse(raw))).toContainEqual({
+          type: "ack",
+          nextSeq: 1,
+        });
+        expect(
+          terminals
+            .get(session.id)!
+            .element!.closest<HTMLElement>("[data-terminal-grid-cache-id]")!
+            .dataset.replayHeld,
+        ).toBe("false");
+      }, "terminal replay did not settle");
+    }
+    expect(focusOpenThreadTerminal("thr_other", sessions[0]!.id)).toBe(false);
+    expect(focusOpenThreadTerminal("thr_test", "term_closed")).toBe(false);
+    const before = testState.socketMessages.length;
+    act(() =>
+      expect(focusOpenThreadTerminal("thr_test", sessions[0]!.id)).toBe(true),
+    );
+    await waitForReadinessCondition(() => {
+      const terminal = terminals.get(sessions[0]!.id)!;
+      expect(
+        terminal.element!.closest("[data-retained-terminal-host]"),
+      ).toBeNull();
+      expect(
+        terminal.element!.closest<HTMLElement>("[data-terminal-grid-cache-id]")!
+          .dataset.replayHeld,
+      ).toBe("false");
+      expect(terminal.buffer.active.getLine(0)?.translateToString(true)).toBe(
+        sessions[0]!.id,
+      );
+    }, "retained terminal was not adopted");
+    await act(async () => {
+      await new Promise<void>((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+      );
+    });
+    expect(testState.sockets).toHaveLength(2);
+    expect(
+      testState.sockets.every((socket) => socket.closeCalls.length === 0),
+    ).toBe(true);
+    expect(
+      testState.socketMessages
+        .slice(before)
+        .map((raw) => JSON.parse(raw))
+        .filter((message) => message.type === "resize"),
+    ).toEqual([]);
+    view.unmount();
+    expect(focusOpenThreadTerminal("thr_test", sessions[0]!.id)).toBe(false);
+  });
+
   it.each([
     "reuse",
     "cross-workspace",

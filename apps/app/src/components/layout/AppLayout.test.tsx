@@ -21,7 +21,10 @@ import { resetAllCrashedPluginSlotsForTest } from "@/components/plugin/PluginSlo
 import { makePluginRegistrationSet } from "@/test/fixtures/plugins";
 import { makeThreadResponse } from "@/test/fixtures/thread-responses";
 import {
+  startTransition,
+  Suspense,
   useEffect,
+  useState,
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
 } from "react";
@@ -33,6 +36,14 @@ import { CompactViewportOverrideProvider } from "@bb/shared-ui/hooks/use-compact
 import { setCompactSecondaryPanelPresentation } from "@/components/ui/secondary-panel-shelf-visibility";
 
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
+import { usePanelTerminals } from "@/components/secondary-panel/usePanelTerminals";
+import {
+  resetFixedPanelTabsStateForTest,
+  useFixedPanelTabsState,
+} from "@/lib/fixed-panel-tabs";
+import { wsManager } from "@/lib/ws";
+import { sdk } from "@/lib/sdk";
+import type { ThreadOpenSignal } from "@bb/server-contract";
 
 function render(ui: ReactNode) {
   return renderReact(ui, { wrapper: createQueryClientTestHarness().wrapper });
@@ -265,6 +276,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  resetFixedPanelTabsStateForTest();
   resetPluginSlotStoreForTest();
   resetAllCrashedPluginSlotsForTest();
   setCompactSecondaryPanelPresentation("closed");
@@ -272,6 +284,88 @@ afterEach(() => {
   vi.unstubAllGlobals();
   window.localStorage.clear();
   window.sessionStorage.clear();
+});
+
+describe("terminal focus in the open thread", () => {
+  it("selects through the mounted controller before a pending transition without terminalAction navigation", async () => {
+    let receive: ((signal: ThreadOpenSignal) => void) | undefined;
+    vi.spyOn(wsManager, "onThreadOpen").mockImplementation((handler) => {
+      receive = handler;
+      return () => {
+        receive = undefined;
+      };
+    });
+    vi.spyOn(sdk.threads.tabs, "get").mockResolvedValue({
+      revision: 0,
+      tabs: [],
+    });
+    const pending = new Promise<void>(() => undefined);
+    function PendingContent({ blocked }: { blocked: boolean }) {
+      if (blocked) throw pending;
+      return <div>Current content</div>;
+    }
+    function OpenThread() {
+      const [blocked, setBlocked] = useState(false);
+      const location = useLocation();
+      const terminals = usePanelTerminals({
+        panelStateId: "thr_one",
+        syncThreadId: "thr_one",
+        createTarget: { kind: "thread", threadId: "thr_one" },
+        isFocused: true,
+        acceptsSession: (session) => session.threadId === "thr_one",
+        tabsCarryTarget: false,
+        reveal: () => undefined,
+      });
+      const state = useFixedPanelTabsState("thr_one", "thr_one");
+      const active = state.secondary.tabs.find(
+        (tab) => tab.id === state.secondary.activeTabId,
+      );
+      return (
+        <>
+          <button onClick={() => terminals.select("term_first")}>First</button>
+          <button onClick={() => terminals.select("term_second")}>
+            Second
+          </button>
+          <button onClick={() => startTransition(() => setBlocked(true))}>
+            Suspend update
+          </button>
+          <div data-testid="selected-terminal">
+            {active?.kind === "terminal" ? active.terminalId : "none"}
+          </div>
+          <div data-testid="terminal-navigation-state">
+            {JSON.stringify(location.state)}
+          </div>
+          <Suspense fallback={<div>Suspended update</div>}>
+            <PendingContent blocked={blocked} />
+          </Suspense>
+        </>
+      );
+    }
+    renderLayout("/projects/proj_one/threads/thr_one", <OpenThread />);
+    fireEvent.click(screen.getByRole("button", { name: "First" }));
+    fireEvent.click(screen.getByRole("button", { name: "Second" }));
+    fireEvent.click(screen.getByRole("button", { name: "First" }));
+    fireEvent.click(screen.getByRole("button", { name: "Suspend update" }));
+    const before = screen.getByTestId("terminal-navigation-state").textContent;
+    await act(async () => {
+      receive?.({
+        type: "thread-open",
+        projectId: "proj_one",
+        threadId: "thr_one",
+        split: "replace",
+        file: null,
+        terminalAction: { action: "focus", terminalId: "term_second" },
+      });
+    });
+    expect(screen.getByTestId("selected-terminal").textContent).toBe(
+      "term_second",
+    );
+    expect(screen.getByTestId("terminal-navigation-state").textContent).toBe(
+      before,
+    );
+    expect(screen.queryByText("Suspended update")).toBeNull();
+    expect(screen.getByText("Current content")).toBeDefined();
+  });
 });
 
 it("shows the compact home context and reuses new-thread navigation", async () => {
