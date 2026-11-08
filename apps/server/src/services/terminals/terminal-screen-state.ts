@@ -16,6 +16,10 @@ const TERMINAL_SCREEN_STATE_PARTIAL_SEQUENCE_LIMIT = 64 * 1024;
 const HYPERLINK_URI_LIMIT = 2048;
 const HYPERLINK_ID_LIMIT = 256;
 const require = createRequire(import.meta.url);
+type TerminalScreenSnapshot = TerminalScreenResponse & {
+  checkpointSeq: number;
+  dataBase64: string;
+};
 const Terminal = require("@xterm/headless")
   .Terminal as typeof import("@xterm/headless").Terminal;
 const { Unicode11Addon } =
@@ -399,6 +403,7 @@ export class TerminalScreenState {
     | { kind: "base64"; data: string }
     | { kind: "bytes"; data: Uint8Array }
     | { kind: "resize"; cols: number; rows: number }
+    | { kind: "read"; read: () => void }
   > = [];
   private pendingWorkBytes = 0;
   private cols: number;
@@ -572,6 +577,13 @@ export class TerminalScreenState {
 
   private invalidate(): void {
     this.valid = false;
+    this.clearPendingWork();
+  }
+
+  private clearPendingWork(): void {
+    for (const work of this.pendingWork) {
+      if (work.kind === "read") work.read();
+    }
     this.pendingWork.length = 0;
     this.pendingWorkBytes = 0;
   }
@@ -593,10 +605,11 @@ export class TerminalScreenState {
     work:
       | { kind: "base64"; data: string }
       | { kind: "bytes"; data: Uint8Array }
-      | { kind: "resize"; cols: number; rows: number },
+      | { kind: "resize"; cols: number; rows: number }
+      | { kind: "read"; read: () => void },
   ): void {
     const bytes =
-      work.kind === "resize"
+      work.kind === "resize" || work.kind === "read"
         ? 0
         : work.kind === "bytes"
           ? work.data.byteLength
@@ -619,19 +632,24 @@ export class TerminalScreenState {
             const drain = () => {
               const next = this.pendingWork.shift();
               if (this.disposed || !this.valid || next === undefined) {
-                this.pendingWork.length = 0;
-                this.pendingWorkBytes = 0;
+                if (next?.kind === "read") next.read();
+                this.clearPendingWork();
                 this.draining = false;
                 resolve();
                 return;
               }
-              if (next.kind !== "resize") {
+              if (next.kind !== "resize" && next.kind !== "read") {
                 this.pendingWorkBytes -=
                   next.kind === "bytes"
                     ? next.data.byteLength
                     : Buffer.byteLength(next.data, "utf8");
               }
               try {
+                if (next.kind === "read") {
+                  next.read();
+                  setImmediate(drain);
+                  return;
+                }
                 if (next.kind === "resize") {
                   this.terminal.resize(next.cols, next.rows);
                   setImmediate(drain);
@@ -646,7 +664,12 @@ export class TerminalScreenState {
                   let bytes = data.byteLength;
                   while (this.pendingWork.length > 0) {
                     const queued = this.pendingWork[0];
-                    if (!queued || queued.kind === "resize") break;
+                    if (
+                      !queued ||
+                      queued.kind === "resize" ||
+                      queued.kind === "read"
+                    )
+                      break;
                     const size =
                       queued.kind === "base64"
                         ? Buffer.byteLength(queued.data, "base64")
@@ -702,17 +725,36 @@ export class TerminalScreenState {
       });
   }
 
-  async snapshot(): Promise<
-    | (TerminalScreenResponse & { checkpointSeq: number; dataBase64: string })
-    | null
-  > {
-    await this.pending;
+  snapshot(): Promise<TerminalScreenSnapshot | null> {
+    const checkpointSeq = this.nextSeq;
+    return this.readQueued(() => this.serializeSnapshot(checkpointSeq));
+  }
+
+  private readQueued<T>(read: () => T | null): Promise<T | null> {
+    if (this.disposed || !this.valid) return Promise.resolve(null);
+    return new Promise((resolve, reject) => {
+      this.enqueue({
+        kind: "read",
+        read: () => {
+          try {
+            resolve(this.disposed || !this.valid ? null : read());
+          } catch (error) {
+            reject(error);
+          }
+        },
+      });
+    });
+  }
+
+  private serializeSnapshot(
+    checkpointSeq: number,
+  ): TerminalScreenSnapshot | null {
     if (this.disposed || !this.valid) return null;
     if (this.partialSequenceOverflow) return null;
     const snapshot = serializeVisibleScreen(this.terminal);
     return {
       ...snapshot.response,
-      checkpointSeq: this.nextSeq,
+      checkpointSeq,
       dataBase64: (this.partialSequence.length === 0
         ? snapshot.data
         : Buffer.concat([snapshot.data, this.partialSequence])
@@ -768,27 +810,22 @@ export class TerminalScreenState {
     };
   }
 
-  async promptScreen(): Promise<{
-    cursor: { col: number; row: number };
-    rows: string[];
-    solidRows: string[];
-  } | null> {
-    await this.pending;
-    if (this.disposed || !this.valid) return null;
-    if (this.partialSequenceOverflow) return null;
-    const { response } = serializeVisibleScreen(this.terminal);
-    return {
-      cursor: response.cursor,
-      rows: response.rows,
-      solidRows: visibleSolidRows(this.terminal),
-    };
+  promptScreen() {
+    return this.readQueued(() => {
+      if (this.partialSequenceOverflow) return null;
+      const { response } = serializeVisibleScreen(this.terminal);
+      return {
+        cursor: response.cursor,
+        rows: response.rows,
+        solidRows: visibleSolidRows(this.terminal),
+      };
+    });
   }
 
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
-    this.pendingWork.length = 0;
-    this.pendingWorkBytes = 0;
+    this.clearPendingWork();
     this.terminal.dispose();
   }
 }

@@ -3740,10 +3740,12 @@ export class TerminalSessionLifecycle {
       sourceMessage,
     );
     let sourceChunks = sourceMessage.chunks;
+    const holderScanTiming = { yieldMs: 0 };
     if (replaySession !== null) {
       sourceChunks = await this.stripPendingHolderMarkerFromReplay(
         replaySession,
         sourceChunks,
+        holderScanTiming,
       );
     }
     const scanEndedAt = this.markReplayStage("holder-scan-end", sourceMessage);
@@ -4036,6 +4038,11 @@ export class TerminalSessionLifecycle {
             ? null
             : receivedAt - pendingAttach.requestedAt,
         holderScanMs: scanEndedAt - scanStartedAt,
+        holderScanActiveMs: Math.max(
+          0,
+          scanEndedAt - scanStartedAt - holderScanTiming.yieldMs,
+        ),
+        holderScanYieldMs: holderScanTiming.yieldMs,
         persistenceMs: persistenceEndedAt - persistenceStartedAt,
         dispatchMs: dispatchEndedAt - dispatchStartedAt,
         serverMs: dispatchEndedAt - receivedAt,
@@ -4689,7 +4696,13 @@ export class TerminalSessionLifecycle {
   private async stripPendingHolderMarkerFromReplay(
     current: TerminalSessionRow,
     chunks: TerminalReplayMessage["chunks"],
+    timing: { yieldMs: number },
   ): Promise<TerminalReplayMessage["chunks"]> {
+    const yieldScan = async () => {
+      const startedAt = performance.now();
+      await yieldToEventLoop();
+      timing.yieldMs += performance.now() - startedAt;
+    };
     const markerPending = this.pendingHolderMarkers.has(current.id);
     const marker = Buffer.from(
       `${TERMINAL_HOLDER_MARKER_PREFIX}${current.id}\u0007`,
@@ -4757,7 +4770,7 @@ export class TerminalSessionLifecycle {
       ) {
         rowsRead = 0;
         bytesRead = 0;
-        await yieldToEventLoop();
+        await yieldScan();
       }
     }
     if (this.terminalOutputWritesStopped) return chunks;
@@ -4814,7 +4827,7 @@ export class TerminalSessionLifecycle {
         outputBytes >= TERMINAL_REPLAY_PREPARE_BYTES_PER_TICK
       ) {
         outputBytes = 0;
-        await yieldToEventLoop();
+        await yieldScan();
       }
     }
     return outputChunks;
@@ -5053,6 +5066,8 @@ export class TerminalSessionLifecycle {
     timings?: {
       daemonMs: number | null;
       holderScanMs: number;
+      holderScanActiveMs: number;
+      holderScanYieldMs: number;
       persistenceMs: number;
       dispatchMs: number;
       serverMs: number;

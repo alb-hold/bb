@@ -2183,6 +2183,7 @@ export function ThreadTerminalView({
       void screenPromise.then((snapshot) => {
         if (
           disposed ||
+          replayStarted ||
           replayCompleted ||
           snapshot == null ||
           !snapshot.complete ||
@@ -3589,54 +3590,60 @@ export function ThreadTerminalView({
           }
         }
       } else if (!holdForFittedGrid) {
-        try {
-          const snapshot = await screenPromise;
-          if (
-            !disposed &&
-            snapshot !== null &&
-            snapshot.complete &&
-            !snapshot.truncated &&
-            snapshot.dataBase64 !== undefined &&
-            snapshot.checkpointSeq !== undefined &&
-            snapshot.cols === latestPtyGrid.cols &&
-            snapshot.gridRows === latestPtyGrid.rows
-          ) {
-            const previewTerminal = new Terminal({
-              ...TERMINAL_THEME_OPTIONS,
-              allowProposedApi: TERMINAL_ALLOW_PROPOSED_API,
-              cols: snapshot.cols,
-              rows: snapshot.gridRows,
-              ...terminalFontOptions,
-              theme: buildTerminalTheme(),
-            });
-            previewTerminal.loadAddon(new Unicode11Addon());
-            previewTerminal.unicode.activeVersion = TERMINAL_UNICODE_VERSION;
-            replayPreview = mountTerminalReplayPreview({
-              container: containerElement,
-              initialFitGrid: localFitGrid,
-              isOwner: () =>
-                terminalInputClaimed &&
-                document.hasFocus() &&
-                activeTerminal.element?.contains(document.activeElement) ===
-                  true,
-              liveTerminal: activeTerminal,
-              paddingLeft,
-              readyToPaint: () =>
-                initialRendererSettled && document.fonts?.status !== "loading",
-              terminal: previewTerminal,
-            });
-            replayCheckpointSequence = snapshot.checkpointSeq;
-            const snapshotFrame = decodeBase64Bytes(snapshot.dataBase64);
-            await new Promise<void>((resolve) =>
-              replayPreview?.push(snapshotFrame, resolve),
-            );
+        void (async () => {
+          try {
+            const snapshot = await screenPromise;
+            if (
+              !disposed &&
+              !replayStarted &&
+              !replayCompleted &&
+              snapshot !== null &&
+              snapshot.complete &&
+              !snapshot.truncated &&
+              snapshot.dataBase64 !== undefined &&
+              snapshot.checkpointSeq !== undefined &&
+              snapshot.cols === latestPtyGrid.cols &&
+              snapshot.gridRows === latestPtyGrid.rows
+            ) {
+              const previewTerminal = new Terminal({
+                ...TERMINAL_THEME_OPTIONS,
+                allowProposedApi: TERMINAL_ALLOW_PROPOSED_API,
+                cols: snapshot.cols,
+                rows: snapshot.gridRows,
+                ...terminalFontOptions,
+                theme: buildTerminalTheme(),
+              });
+              previewTerminal.loadAddon(new Unicode11Addon());
+              previewTerminal.unicode.activeVersion = TERMINAL_UNICODE_VERSION;
+              replayPreview = mountTerminalReplayPreview({
+                container: containerElement,
+                initialFitGrid: localFitGrid,
+                isOwner: () =>
+                  terminalInputClaimed &&
+                  document.hasFocus() &&
+                  activeTerminal.element?.contains(document.activeElement) ===
+                    true,
+                liveTerminal: activeTerminal,
+                paddingLeft,
+                readyToPaint: () =>
+                  initialRendererSettled &&
+                  document.fonts?.status !== "loading",
+                terminal: previewTerminal,
+              });
+              replayCheckpointSequence = snapshot.checkpointSeq;
+              const snapshotFrame = decodeBase64Bytes(snapshot.dataBase64);
+              await new Promise<void>((resolve) =>
+                replayPreview?.push(snapshotFrame, resolve),
+              );
+            }
+          } catch {
+            if (!replayStarted) {
+              replayCheckpointSequence = null;
+              replayPreview?.dispose();
+              replayPreview = null;
+            }
           }
-        } catch {
-          replayCheckpointSequence = null;
-          replayPreview?.dispose();
-          replayPreview = null;
-        }
-        if (disposed) return;
+        })();
         activeTransport.start();
       }
       if (disposed) return;

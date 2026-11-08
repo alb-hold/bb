@@ -52,6 +52,54 @@ function bufferState(terminal: Terminal) {
   };
 }
 
+it.each(["snapshot", "promptScreen"] as const)(
+  "answers a screen request at its queued checkpoint while output keeps arriving (%s)",
+  async (method) => {
+    const state = new TerminalScreenState(40, 5);
+    const write = Terminal.prototype.write;
+    let nextSeq = 1;
+    const writes = vi
+      .spyOn(Terminal.prototype, "write")
+      .mockImplementation(function (this: Terminal, data, callback) {
+        write.call(this, data, () => {
+          if (nextSeq < 80) {
+            state.push(nextSeq, Buffer.from(`line ${nextSeq}\r\n`));
+            nextSeq += 1;
+          }
+          callback?.();
+        });
+      });
+    try {
+      state.push(0, Buffer.from("line 0\r\n"));
+      const snapshot = await state[method]();
+      if (snapshot !== null && "checkpointSeq" in snapshot)
+        expect(snapshot.checkpointSeq).toBe(1);
+      expect(snapshot?.rows.join("\n")).toContain("line 0");
+      expect(nextSeq).toBeLessThan(80);
+    } finally {
+      state.dispose();
+      writes.mockRestore();
+    }
+  },
+);
+
+it.each(["dispose", "sequence gap", "overflow"])(
+  "settles queued screen requests when %s discards their output",
+  async (reason) => {
+    const state = new TerminalScreenState(40, 5);
+    state.push(0, Buffer.from("initial"));
+    const snapshot = state.snapshot();
+    if (reason === "dispose") state.dispose();
+    else if (reason === "sequence gap") state.push(2, Buffer.from("gap"));
+    else state.push(1, Buffer.alloc(8 * 1024 * 1024 + 1, 120));
+    try {
+      await expect(snapshot).resolves.toBeNull();
+    } finally {
+      state.dispose();
+    }
+  },
+);
+
 it("bounds browser replay while retaining the full scrollback and wrapped cells", async () => {
   const state = new TerminalScreenState(40, 5, true);
   const full = create(40, 5, 10_000);

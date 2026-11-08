@@ -8,6 +8,7 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { FitAddon } from "@xterm/addon-fit";
+import type { TerminalScreenResponse } from "@bb/server-contract";
 import { Terminal } from "@xterm/xterm";
 import { MemoryRouter } from "react-router-dom";
 import { readFileSync } from "node:fs";
@@ -451,6 +452,90 @@ function writeReplay(terminal: Terminal, data: string): Promise<void> {
 }
 
 describe("ThreadTerminalView terminal replay and reconnect", () => {
+  it("adopts replay and acknowledges fifty-thousand-line history while the screen request is pending", async () => {
+    prepareMobileTerminal();
+    stubVisibleIntersectionObserver();
+    let resolveScreen!: (snapshot: TerminalScreenResponse | null) => void;
+    testState.screen.mockReturnValueOnce(
+      new Promise<TerminalScreenResponse | null>((resolve) => {
+        resolveScreen = resolve;
+      }),
+    );
+    const terminals: Terminal[] = [];
+    const open = Terminal.prototype.open;
+    vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
+      this: Terminal,
+      element: HTMLElement,
+    ) {
+      if (element.hasAttribute("data-terminal-grid-cache-id"))
+        terminals.push(this);
+      open.call(this, element);
+    });
+    const session = renderMobileTerminal();
+    try {
+      await waitForReadinessCondition(() => {
+        expect(terminals).toHaveLength(1);
+        expect(testState.sockets).toHaveLength(1);
+      }, "viewer did not mount");
+      const socket = testState.sockets[0]!;
+      await waitForReadiness(socket.opened, "prefetched socket did not open");
+      socket.receive({
+        type: "attached",
+        session,
+        replayStartSeq: 40_000,
+        nextSeq: 50_000,
+      });
+      for (let start = 40_000; start < 50_000; start += 500) {
+        socket.receive({
+          type: "output-batch",
+          chunks: Array.from({ length: 500 }, (_, index) => ({
+            seq: start + index,
+            dataBase64: btoa(`line ${start + index + 1}\r\n`),
+          })),
+        });
+      }
+      socket.receive({
+        type: "output",
+        chunk: { seq: 50_000, dataBase64: btoa("line 50001\r\n") },
+      });
+      await waitForReadinessCondition(() => {
+        expect(socket.sent.map((frame) => JSON.parse(frame))).toContainEqual({
+          type: "ack",
+          nextSeq: 50_001,
+        });
+      }, "screen request blocked replay adoption and ACK");
+      const terminal = terminals[0]!;
+      expect(
+        Array.from({ length: terminal.buffer.active.length }, (_, index) =>
+          terminal.buffer.active.getLine(index)?.translateToString(true),
+        ).join("\n"),
+      ).toContain("line 50001");
+      expect(testState.sockets).toHaveLength(1);
+      expect(socket.readyState).toBe(TestTerminalSocket.OPEN);
+      await act(async () => {
+        resolveScreen({
+          complete: true,
+          truncated: false,
+          cols: terminal.cols,
+          gridRows: terminal.rows,
+          rows: ["stale checkpoint"],
+          cursor: { col: 0, row: 0 },
+          checkpointSeq: 40_001,
+          dataBase64: btoa("stale checkpoint\r\n"),
+        });
+      });
+      expect(document.body.textContent).not.toContain("stale checkpoint");
+      expect(
+        Array.from({ length: terminal.buffer.active.length }, (_, index) =>
+          terminal.buffer.active.getLine(index)?.translateToString(true),
+        ).join("\n"),
+      ).toContain("line 50001");
+      expect(testState.sockets).toHaveLength(1);
+    } finally {
+      resolveScreen(null);
+    }
+  });
+
   it.each(["before attachment", "after parsed output"])(
     "replays missed output once after a viewer unmounts %s",
     async (phase) => {
@@ -581,6 +666,8 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
     document.documentElement.style.setProperty("--ink", "rgb(12, 34, 56)");
     document.documentElement.style.setProperty("--sidebar", "rgb(12, 34, 56)");
     testState.setDefaultColors.mockClear();
+    const otherViewer = render(<button>Other viewer</button>);
+    otherViewer.getByRole("button").focus();
     const session = renderMobileTerminal();
     await waitForReadinessCondition(
       () => expect(testState.sockets).toHaveLength(1),
