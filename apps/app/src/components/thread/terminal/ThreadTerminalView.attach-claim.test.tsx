@@ -475,6 +475,11 @@ describe("native terminal attach claim timing", () => {
       await act(async () => {
         await vi.advanceTimersByTimeAsync(16);
       });
+      if (cacheMode === "match") {
+        expect(stages.has("terminal-cached-layout-reused")).toBe(true);
+      } else {
+        expect(stages.has("terminal-cached-layout-reused")).toBe(false);
+      }
       expect(startTransport).toHaveBeenCalledOnce();
       expect(adoptedAt! - renderedAt).toBeLessThanOrEqual(16);
       if (rendererMode === "webgl") expect(webglActive).toBe(false);
@@ -498,6 +503,11 @@ describe("native terminal attach claim timing", () => {
         });
         if (document.querySelector('[data-replay-held="false"]'))
           revealedAt ??= Date.now();
+      }
+      if (cacheMode === "match") {
+        expect(stages.has("terminal-cached-layout-reused")).toBe(true);
+      } else {
+        expect(stages.has("terminal-cached-layout-reused")).toBe(false);
       }
       expect(startTransport).toHaveBeenCalledOnce();
       expect(testState.socketUrls).toHaveLength(1);

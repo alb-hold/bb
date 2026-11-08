@@ -2,7 +2,7 @@ import {
   markTerminalPerformance,
   measureTerminalPerformance,
 } from "@/lib/terminal-performance";
-import { rememberTerminalGrid } from "./terminal-grid-cache";
+import { readCachedTerminalGrid, rememberTerminalGrid } from "./terminal-grid-cache";
 import { createTerminalFitWork } from "./terminal-fit-work";
 import { createTerminalHiddenOutput } from "./terminal-hidden-output";
 import {
@@ -2745,6 +2745,23 @@ export function ThreadTerminalView({
             )
               fittedGridFallback = false;
             localFitGrid = { cols: fitted.cols, rows: fitted.rows };
+            if (
+              holdForFittedGrid &&
+              !initialLayoutSettled &&
+              document.fonts?.status !== "loading" &&
+              !hasRunningLayoutAnimation(containerElement)
+            ) {
+              const cached = readCachedTerminalGrid(session.id, activeTerminal.options.fontSize);
+              if (
+                cached?.cols === fitted.cols && cached.rows === fitted.rows &&
+                latestPtyGrid.cols === fitted.cols && latestPtyGrid.rows === fitted.rows
+              ) {
+                initialLayoutSettled = true;
+                markTerminalPerformance("terminal-initial-layout-settled");
+                markTerminalPerformance("terminal-cached-layout-reused");
+                transport?.markLayoutSettled();
+              }
+            }
             if (initialLayoutSettled) initialFitComplete = true;
             containerElement.dataset.fitGridCols = String(fitted.cols);
             containerElement.dataset.fitGridRows = String(fitted.rows);
@@ -3583,7 +3600,8 @@ export function ThreadTerminalView({
       if (holdForFittedGrid && sessionStatusRef.current === "running") {
         activeTransport.start();
       }
-      stopWatchingLayout = watchTerminalLayoutSettled({
+      if (initialLayoutSettled) activeTransport.markLayoutSettled();
+      else stopWatchingLayout = watchTerminalLayoutSettled({
         graceFrames: holdForFittedGrid ? 0 : 8,
         stableFramesRequired: holdForFittedGrid ? 1 : 2,
         cancelFrame: (handle) => window.cancelAnimationFrame(handle),
