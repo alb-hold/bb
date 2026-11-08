@@ -5,7 +5,6 @@ import {
 } from "@/lib/application-url";
 import {
   Children,
-  Fragment,
   cloneElement,
   createContext,
   isValidElement,
@@ -755,13 +754,11 @@ function MarkdownCodeBlock({
   const [softWrap, setSoftWrap] = useState(false);
   const highlightedHtml = useMemo(
     () =>
-      language !== "mermaid"
-        ? highlightMarkdownCode({ code: codeText, language })
-        : null,
+      highlightMarkdownCode({ code: codeText, language }),
     [language, codeText],
   );
   const highlightedMarkup = useMemo(
-    () => (highlightedHtml === null ? null : { __html: highlightedHtml }),
+    () => ({ __html: highlightedHtml }),
     [highlightedHtml],
   );
   if (language === "mermaid" && imagePolicy === "render") {
@@ -781,7 +778,7 @@ function MarkdownCodeBlock({
       <div
         data-clipboard-ignore
         data-code-actions=""
-        className="absolute right-0 top-0 flex h-11 w-44 items-center justify-between gap-1 pl-1 pr-1.5"
+        className="absolute right-0 top-0 flex h-11 w-44 items-center justify-between gap-1 rounded-tr-md bg-surface-recessed pl-1 pr-1.5"
       >
         <span className="min-w-0 truncate font-mono text-xs uppercase text-muted-foreground" title={language ?? undefined}>
           {language ?? ""}
@@ -818,27 +815,21 @@ function MarkdownCodeBlock({
       <pre
         data-code-card-content=""
         data-code-wrap={softWrap ? "true" : "false"}
-        className="bb-code-highlight px-3 pb-3 pt-2"
-      >
-        {highlightedMarkup === null ? (
-          <code className="font-mono text-xs" {...codeProps}>
-            {codeText.split("\n").map((line, index) => (
-              <Fragment key={index}>
-                {index === 0 ? null : "\n"}
-                <span className="sh__line">{line}</span>
-              </Fragment>
-            ))}
-          </code>
-        ) : (
-          <code
-            className={cn(
-              "font-mono text-xs",
-              language ? `language-${language}` : "",
-            )}
-            dangerouslySetInnerHTML={highlightedMarkup}
-            {...codeProps}
-          />
+        className={cn(
+          "bb-code-highlight px-3 pb-3 pt-2",
+          softWrap
+            ? "whitespace-pre-wrap [overflow-wrap:anywhere]"
+            : "overflow-x-auto",
         )}
+      >
+        <code
+          className={cn(
+            "font-mono text-xs",
+            language ? `language-${language}` : "",
+          )}
+          dangerouslySetInnerHTML={highlightedMarkup}
+          {...codeProps}
+        />
       </pre>
     </div>
   );
