@@ -1990,6 +1990,8 @@ export function ThreadTerminalView({
       retentionInvalidatedRef.current?.(),
     );
     let flushHiddenOutput = () => {};
+    let parkedOutputTimer: ReturnType<typeof setTimeout> | null = null;
+    let parkedOutputDraining = false;
     const reportDocumentVisibility = () => {
       if (
         document.visibilityState !== "visible" ||
@@ -2365,6 +2367,7 @@ export function ThreadTerminalView({
           updateGridVisibility();
         },
         {
+          flushWrites: () => parkedRef.current,
           beforeResize: () => captureLiveViewportBeforeGridResize(),
           afterResize: () => {
             terminal?.refresh(0, terminal.rows - 1);
@@ -2957,11 +2960,15 @@ export function ThreadTerminalView({
       const handleMessage = (
         message: TerminalServerMessage,
         replayWrite?: { bytes: Uint8Array; sourceBytes: Uint8Array },
+        parseParkedOutput = false,
       ) => {
         if (message.type === "exited" || message.type === "error")
           retentionInvalidatedRef.current?.();
         if (message.type === "output") {
-          if (terminalVisible !== true || !isPanelOpenRef.current) {
+          if (
+            !parseParkedOutput &&
+            (terminalVisible !== true || !isPanelOpenRef.current)
+          ) {
             hiddenOutput.push(message.chunk, lastQueuedOutputNextSeq);
             return;
           }
@@ -3286,7 +3293,8 @@ export function ThreadTerminalView({
           outputBoundaries,
           allowAttachedGrid: false,
           shouldProcessOutput: () =>
-            terminalVisible === true && isPanelOpenRef.current,
+            parseParkedOutput ||
+            (terminalVisible === true && isPanelOpenRef.current),
         });
         if (
           message.type === "output" &&
@@ -3430,16 +3438,77 @@ export function ThreadTerminalView({
         }),
       });
       transport = activeTransport;
+      const drainParkedOutput = async () => {
+        parkedOutputTimer = null;
+        if (disposed || !parkedRef.current || !replayCompleted) {
+          scheduleParkedOutput();
+          return;
+        }
+        parkedOutputDraining = true;
+        const started = performance.now();
+        let moreOutput = true;
+        try {
+          do {
+            const chunks = hiddenOutput.takeBatch(8 * 1024);
+            if (chunks.length === 0) {
+              moreOutput = false;
+              break;
+            }
+            for (const write of terminalReplayWrites(
+              chunks,
+              outputBoundaries,
+              replayCheckpointSequence,
+            )) {
+              handleMessage(
+                { type: "output", chunk: write.chunk },
+                write,
+                true,
+              );
+            }
+            if (outputPipeline)
+              await new Promise<void>((resolve) =>
+                outputPipeline!.whenParsed(resolve),
+              );
+          } while (
+            !disposed &&
+            parkedRef.current &&
+            performance.now() - started < 4
+          );
+        } finally {
+          parkedOutputDraining = false;
+          scheduleParkedOutput(moreOutput ? 16 : 250);
+        }
+      };
+      const scheduleParkedOutput = (delay = 250) => {
+        if (
+          parkedOutputTimer !== null ||
+          parkedOutputDraining ||
+          disposed ||
+          !parkedRef.current
+        )
+          return;
+        parkedOutputTimer = setTimeout(() => {
+          void drainParkedOutput();
+        }, delay);
+      };
       parkTransportRef.current = (nextParked) => {
         markTerminalPerformance(
           nextParked ? "terminal-view-parked" : "terminal-view-adopted",
           { detail: { terminalId: session.id } },
         );
         activeTransport.setParked(nextParked);
+        if (nextParked) scheduleParkedOutput();
+        else if (parkedOutputTimer !== null) {
+          clearTimeout(parkedOutputTimer);
+          parkedOutputTimer = null;
+        }
         webglVisibilityRef.current?.sync();
         reportDocumentVisibility();
       };
-      if (parkedRef.current) activeTransport.setParked(true);
+      if (parkedRef.current) {
+        activeTransport.setParked(true);
+        scheduleParkedOutput();
+      }
       flushHiddenOutput = () => {
         const chunks = hiddenOutput.take();
         if (chunks === null) {
@@ -3804,6 +3873,7 @@ export function ThreadTerminalView({
 
     return () => {
       disposed = true;
+      if (parkedOutputTimer !== null) clearTimeout(parkedOutputTimer);
       hiddenOutput.clear();
       flushHiddenOutput = () => {};
       clearScreenLoadingPreview();

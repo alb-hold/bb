@@ -10,6 +10,7 @@ import {
 import { FitAddon } from "@xterm/addon-fit";
 import type { TerminalScreenResponse } from "@bb/server-contract";
 import { Terminal } from "@xterm/xterm";
+import { createTerminalGridMarker } from "@bb/domain";
 import { MemoryRouter } from "react-router-dom";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -461,6 +462,9 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
     "reuse",
     "cross-workspace",
     "no-environment",
+    "background",
+    "background-resize",
+    "background-burst",
     "gap",
     "overflow",
     "socket-error",
@@ -471,7 +475,8 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
       const retained =
         scenario === "reuse" ||
         scenario === "cross-workspace" ||
-        scenario === "no-environment";
+        scenario === "no-environment" ||
+        scenario.startsWith("background");
       prepareMobileTerminal();
       stubVisibleIntersectionObserver();
       vi.spyOn(FitAddon.prototype, "proposeDimensions").mockReturnValue({
@@ -505,6 +510,15 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
         id: "term_route_retained",
         cols: 40,
         rows: 12,
+      });
+      let primary: Terminal | null = null;
+      const originalOpen = Terminal.prototype.open;
+      vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
+        this: Terminal,
+        element: HTMLElement,
+      ) {
+        if (element.hasAttribute("data-terminal-grid-cache-id")) primary = this;
+        originalOpen.call(this, element);
       });
       const tree = (shown: boolean) => {
         const route =
@@ -599,7 +613,120 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
           .map((raw) => JSON.parse(raw))
           .filter((message) => message.type === "resize"),
       ).toEqual([]);
-      rerender(tree(true));
+      if (scenario.startsWith("background")) {
+        const terminal = primary!;
+        if (scenario === "background-resize") {
+          act(() =>
+            socket.receive({
+              type: "session-updated",
+              session: { ...session, cols: 60 },
+            }),
+          );
+          await waitForReadinessCondition(
+            () => expect(terminal.cols).toBe(60),
+            "parked viewer did not apply another client's PTY grid",
+          );
+        }
+        if (scenario === "background-burst") {
+          for (let group = 0; group < 8; group++) {
+            act(() => {
+              for (let item = 0; item < 8; item++) {
+                const seq = 2 + group * 8 + item;
+                socket.receive({
+                  type: "output",
+                  chunk: {
+                    seq,
+                    dataBase64: btoa(
+                      "z".repeat(32740) + `\r\npark-burst-${seq}\r\n`,
+                    ),
+                  },
+                });
+              }
+            });
+            await pause(125);
+          }
+          await waitForReadinessCondition(() => {
+            const lines = Array.from(
+              { length: terminal.buffer.active.length },
+              (_, index) =>
+                terminal.buffer.active.getLine(index)?.translateToString(true),
+            ).join("\n");
+            expect(lines).toContain("park-burst-65");
+          }, "parked burst did not drain within a few ticks");
+          expect(testState.sockets).toHaveLength(1);
+          expect(
+            socket.sent
+              .slice(beforePark)
+              .map((raw) => JSON.parse(raw))
+              .filter((message) => message.type === "resize"),
+          ).toEqual([]);
+          rerender(tree(true));
+          await waitForReadinessCondition(
+            () => expect(contexts).toBe(1),
+            "burst viewer did not restore renderer",
+          );
+          expect(testState.sockets).toHaveLength(1);
+          return;
+        }
+        act(() => {
+          for (let seq = 2; seq <= 121; seq++)
+            socket.receive({
+              type: "output",
+              chunk: {
+                seq,
+                dataBase64: btoa(
+                  (seq === 2
+                    ? createTerminalGridMarker({ cols: 41, rows: 12 })
+                    : "") + `parked-line-${seq}\r\n`,
+                ),
+              },
+            });
+        });
+        await waitForReadinessCondition(() => {
+          const lines = Array.from(
+            { length: terminal.buffer.active.length },
+            (_, index) =>
+              terminal.buffer.active.getLine(index)?.translateToString(true),
+          ).join("\n");
+          expect(lines).toContain("parked-line-121");
+        }, "parked output was not parsed before adoption");
+        expect(terminal.cols).toBe(scenario === "background-resize" ? 60 : 40);
+        expect(contexts).toBe(0);
+        expect(
+          socket.sent
+            .slice(beforePark)
+            .map((raw) => JSON.parse(raw))
+            .filter((message) => message.type === "resize"),
+        ).toEqual([]);
+        const write = vi.spyOn(terminal, "write");
+        act(() =>
+          socket.receive({
+            type: "output",
+            chunk: { seq: 122, dataBase64: btoa("small-tail\r\n") },
+          }),
+        );
+        rerender(tree(true));
+        await waitForReadinessCondition(
+          () => expect(pageText()).toContain("small-tail"),
+          "adoption did not parse its small tail",
+        );
+        const written = write.mock.calls
+          .map(([bytes]) =>
+            typeof bytes === "string" ? bytes : new TextDecoder().decode(bytes),
+          )
+          .join("");
+        expect(written).toContain("small-tail");
+        expect(written).not.toContain("parked-line-");
+        expect(write).toHaveBeenCalledTimes(1);
+      } else {
+        rerender(tree(true));
+      }
+      const retainedText = () =>
+        scenario.startsWith("background")
+          ? Array.from({ length: primary!.buffer.active.length }, (_, index) =>
+              primary!.buffer.active.getLine(index)?.translateToString(true),
+            ).join("\n")
+          : pageText();
       if (!retained) {
         await waitForReadinessCondition(
           () => expect(testState.sockets).toHaveLength(2),
@@ -625,7 +752,7 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
         });
       }
       await waitForReadinessCondition(() => {
-        expect(pageText()).toContain("while-away");
+        expect(retainedText()).toContain("while-away");
         expect(contexts).toBe(1);
       }, "retained route did not catch up");
       if (retained) {
@@ -639,8 +766,8 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
         ).toEqual([]);
       }
       expect(maxContexts).toBe(1);
-      expect(pageText().match(/before-route/g)).toHaveLength(1);
-      expect(pageText().match(/while-away/g)).toHaveLength(1);
+      expect(retainedText().match(/before-route/g)).toHaveLength(1);
+      expect(retainedText().match(/while-away/g)).toHaveLength(1);
     },
   );
 
