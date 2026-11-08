@@ -1030,7 +1030,7 @@ function ThreadRowComponent({
                 <span className="inline-flex size-4 shrink-0 text-foreground md:translate-y-px max-md:-translate-y-0.5" data-thread-title-mode=""><ThreadModeGlyph nativeTerminal={thread.experimental_nativeTerminal === true} isWorktree={!thread.experimental_nativeTerminal && thread.environment?.isWorktree === true} /></span>
                 <span className="min-w-0 truncate md:flex md:items-center md:leading-5 md:[&_span]:leading-5"><ThreadTitle threadId={thread.id} /></span>
               </span>
-              <span data-sidebar-thread-context="" className={cn("hidden min-w-0 items-center gap-1 pl-5 truncate text-xs font-normal leading-4 text-muted-foreground md:text-xs md:leading-4 md:[&_span]:leading-4 md:[&_time]:leading-4 md:text-sidebar-metadata-foreground [&_time]:text-xs md:[&_time]:text-xs [&_time]:text-inherit md:flex", thread.experimental_nativeTerminal && "[&>[role=img]]:text-foreground [&>[role=img]_svg]:stroke-[2]")}>
+              <span data-sidebar-thread-context="" className={cn("md:pr-16 hidden min-w-0 items-center gap-1 pl-5 truncate text-xs font-normal leading-4 text-muted-foreground md:text-xs md:leading-4 md:[&_span]:leading-4 md:[&_time]:leading-4 md:text-sidebar-metadata-foreground [&_time]:text-xs md:[&_time]:text-xs [&_time]:text-inherit md:flex", thread.experimental_nativeTerminal && "[&>[role=img]]:text-foreground [&>[role=img]_svg]:stroke-[2]")}>
                 <ThreadContextMetadata project={showProjectName ? projectName ?? null : null} age={<InfoRowTime timestamp={thread.updatedAt} />} />
               </span>
             </span>
@@ -1089,7 +1089,7 @@ function ThreadRowComponent({
       <span
         data-sidebar-thread-trailing=""
         className={cn(
-          "flex min-w-0 shrink-0 items-center gap-0.5",
+          "flex min-w-0 shrink-0 items-center gap-0.5 md:absolute md:right-2 md:bottom-1",
           !isActionsOpen &&
             "group-data-[sidebar-touch-armed=true]/thread-row:hidden",
           (isEditing || isCustomizingActions) && "hidden",
