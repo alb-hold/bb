@@ -973,7 +973,7 @@ describe("FollowUpPromptBox", () => {
     );
     expect(screen.getByText("Ask a follow-up")).toBeTruthy();
     expect(mocks.permissionModePicker).toHaveBeenCalledWith(expect.not.objectContaining({ compactWarningOnly: true }));
-    expect(screen.queryByText("Local environment")).not.toBeNull();
+    expect(screen.queryByText("Local environment")).toBeNull();
     expect(document.querySelector("[data-follow-up-composer-footer]")).not.toBeNull();
     expect(
       screen.queryByRole("button", { name: "Collapse prompt box" }),
@@ -1019,7 +1019,7 @@ describe("FollowUpPromptBox", () => {
     expect(screen.getByTestId("prompt-box").getAttribute("data-compact")).toBe(
       "true",
     );
-    expect(screen.queryByText("Local environment")).not.toBeNull();
+    expect(screen.queryByText("Local environment")).toBeNull();
     expect(document.querySelector("[data-follow-up-composer-footer]")).not.toBeNull();
 
     act(() =>
@@ -1068,7 +1068,7 @@ describe("FollowUpPromptBox", () => {
     expect(screen.getByTestId("prompt-box").getAttribute("data-compact")).toBe(
       "true",
     );
-    expect(screen.queryByText("Local environment")).not.toBeNull();
+    expect(screen.queryByText("Local environment")).toBeNull();
     expect(document.querySelector("[data-follow-up-composer-footer]")).not.toBeNull();
 
     fireEvent.keyDown(window, { key: "c", metaKey: true, shiftKey: true });
@@ -1158,7 +1158,7 @@ describe("FollowUpPromptBox", () => {
     expect(screen.getByTestId("prompt-box").getAttribute("data-compact")).toBe(
       "false",
     );
-    expect(screen.queryByText("Local environment")).not.toBeNull();
+    expect(screen.queryByText("Local environment")).toBeNull();
     expect(document.querySelector("[data-follow-up-composer-footer]")).not.toBeNull();
 
     fireEvent.blur(input, { relatedTarget: submit });
