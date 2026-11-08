@@ -473,14 +473,16 @@ describe("ThreadTerminalView terminal visibility and panel", () => {
       let holdWrites = true;
       const pendingWrites: Array<() => void> = [];
       const write = Terminal.prototype.write;
-      vi.spyOn(Terminal.prototype, "write").mockImplementation(
-        function (this: Terminal, data, callback) {
-          write.call(this, data, () => {
-            if (holdWrites && callback) pendingWrites.push(callback);
-            else callback?.();
-          });
-        },
-      );
+      vi.spyOn(Terminal.prototype, "write").mockImplementation(function (
+        this: Terminal,
+        data,
+        callback,
+      ) {
+        write.call(this, data, () => {
+          if (holdWrites && callback) pendingWrites.push(callback);
+          else callback?.();
+        });
+      });
       try {
         socket.receive({
           type: "output",
@@ -711,6 +713,138 @@ describe("ThreadTerminalView terminal visibility and panel", () => {
     await new Promise((resolve) => setTimeout(resolve, 250));
     expect(sizes()).toEqual([expect.objectContaining({ cols: 44, rows: 39 })]);
   });
+
+  it.each(["dom", "webgl"] as const)(
+    "fits symmetric horizontal padding before its single %s size claim",
+    async (renderer) => {
+      vi.stubGlobal("WebSocket", TestTerminalSocket);
+      const style = document.createElement("style");
+      style.textContent = `.px-2 { padding-left: 8px; padding-right: 8px; }
+        .pl-2 { padding-left: 8px; }
+        [data-terminal-grid-cache-id] { width: 354px; height: 504px; }`;
+      document.body.append(style);
+      vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
+        measureText: (text: string) => ({ width: text.length * 8 }),
+      } as unknown as CanvasRenderingContext2D);
+      vi.spyOn(
+        rendererModule,
+        "loadOptionalTerminalWebglAddon",
+      ).mockResolvedValue(null);
+      vi.spyOn(rendererModule, "loadTerminalWebglRenderer").mockReturnValue({
+        renderer,
+        initialAttemptComplete: true,
+        setVisible() {},
+        dispose() {},
+      });
+      for (const dimension of ["clientWidth", "offsetWidth"] as const)
+        vi.spyOn(HTMLElement.prototype, dimension, "get").mockImplementation(
+          function (this: HTMLElement) {
+            return this.classList.contains("xterm-char-measure-element")
+              ? 8 * 32
+              : 354;
+          },
+        );
+      for (const dimension of ["clientHeight", "offsetHeight"] as const)
+        vi.spyOn(HTMLElement.prototype, dimension, "get").mockImplementation(
+          function (this: HTMLElement) {
+            return this.classList.contains("xterm-char-measure-element")
+              ? 18
+              : 504;
+          },
+        );
+      vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(
+        new DOMRect(0, 0, 354, 504),
+      );
+      const terminals: Terminal[] = [];
+      const open = Terminal.prototype.open;
+      vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
+        this: Terminal,
+        element,
+      ) {
+        terminals.push(this);
+        open.call(this, element);
+      });
+      const view = render(
+        <MemoryRouter>
+          <AppCommandProvider>
+            <ThreadTerminalView
+              autoFocus={false}
+              isPanelOpen
+              session={makeTerminalSession({
+                id: `term_padding_${renderer}`,
+                threadId: null,
+                status: "running",
+              })}
+            />
+          </AppCommandProvider>
+        </MemoryRouter>,
+      );
+      const sizes = () =>
+        testState.socketMessages
+          .map(
+            (value) =>
+              JSON.parse(value) as { type: string; cols: number; rows: number },
+          )
+          .filter((value) => value.type === "resize");
+      await waitForReadinessCondition(
+        () => expect(sizes()).toHaveLength(1),
+        "padding grid was not claimed",
+      );
+      const terminal = terminals[0]!;
+      const host = view.container.querySelector<HTMLElement>(
+        "[data-terminal-grid-cache-id]",
+      )!;
+      const terminalStyle = getComputedStyle(terminal.element!);
+      const hostStyle = getComputedStyle(host);
+      expect(
+        parseFloat(hostStyle.paddingLeft || "0") +
+          parseFloat(terminalStyle.paddingLeft || "0"),
+      ).toBe(8);
+      expect(
+        parseFloat(hostStyle.paddingRight || "0") +
+          parseFloat(terminalStyle.paddingRight || "0"),
+      ).toBe(8);
+      expect(terminalStyle.paddingLeft).toBe("8px");
+      expect(terminalStyle.paddingRight).toBe("8px");
+      const cell = terminal.dimensions!.css.cell;
+      const scrollbar = terminal.options.scrollbar?.width ?? 14;
+      const expected = {
+        cols: Math.floor((354 - 16 - scrollbar) / cell.width),
+        rows: Math.floor(504 / cell.height),
+      };
+      expect(sizes()).toEqual([expect.objectContaining(expected)]);
+      const socket = testState.sockets[0]!;
+      socket.receive({
+        type: "attached",
+        session: makeTerminalSession({
+          id: `term_padding_${renderer}`,
+          threadId: null,
+          status: "running",
+          ...expected,
+        }),
+        replayStartSeq: 0,
+        nextSeq: 1,
+      });
+      socket.receive({
+        type: "output",
+        chunk: {
+          seq: 0,
+          dataBase64: btoa(createTerminalGridMarker(expected) + "padded\r\n"),
+        },
+      });
+      socket.receive({ type: "replay-complete", nextSeq: 1 });
+      await waitForReadinessCondition(
+        () =>
+          expect({ cols: terminal.cols, rows: terminal.rows }).toEqual(
+            expected,
+          ),
+        "render grid did not match accepted PTY grid",
+      );
+      expect(sizes()).toHaveLength(1);
+      view.unmount();
+      style.remove();
+    },
+  );
 
   it("keeps the app identity when the server echoes it after terminal attach", async () => {
     vi.stubGlobal("WebSocket", TestTerminalSocket);

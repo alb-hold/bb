@@ -414,7 +414,7 @@ it.each(browserCaptures)(
     document.body.append(shell);
     rememberTerminalGrid("term", container, capture.fontSize, capture.grid);
     const fittedKey = JSON.parse(
-      localStorage.getItem("bb.terminal.fit-grids.v3")!,
+      localStorage.getItem("bb.terminal.fit-grids.v4")!,
     )[0].layout;
     expect(fittedKey).toEqual(
       JSON.stringify([320, true, capture.splitLayout, null, []]),

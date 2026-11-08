@@ -2046,7 +2046,7 @@ export function ThreadTerminalView({
       containerElement: HTMLDivElement,
     ): Promise<void> {
       containerElement.style.opacity = "0";
-      const paddingLeft = getComputedStyle(containerElement).paddingLeft;
+      let paddingLeft = "0px";
       const needsFittedGrid = () =>
         holdForFittedGrid && sessionStatusRef.current !== "exited";
       const fittedGridReady = () => {
@@ -2399,6 +2399,10 @@ export function ThreadTerminalView({
       terminal.unicode.activeVersion = TERMINAL_UNICODE_VERSION;
       markTerminalPerformance("terminal-xterm-open-start");
       terminal.open(containerElement);
+      terminal.element?.classList.add("px-2");
+      paddingLeft = getComputedStyle(
+        terminal.element ?? containerElement,
+      ).paddingLeft;
       markTerminalPerformance("terminal-xterm-open-end");
       if (initialRendererSettled)
         markTerminalPerformance("terminal-initial-renderer-settled");
@@ -4316,7 +4320,7 @@ export function ThreadTerminalView({
               data-terminal-context-loss-count="0"
               data-terminal-font-size={terminalFontSize}
               data-terminal-grid-cache-id={session.id}
-              className="box-border h-full min-h-0 w-full overflow-hidden pl-2"
+              className="box-border h-full min-h-0 w-full overflow-hidden"
             />
             <TerminalCommandGutter
               commandMarks={promptTrackerState.commandMarks}
