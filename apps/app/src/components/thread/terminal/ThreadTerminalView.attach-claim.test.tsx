@@ -207,7 +207,7 @@ describe("native terminal attach claim timing", () => {
   it.each([
     ...[44, 125].flatMap((cols) =>
       ["ready", "pending", "delayed"].flatMap((pendingScreen) =>
-        ["miss", "match", "mismatch"].map((cacheMode) => ({
+        ["miss", "match", "mismatch", "pty-mismatch"].map((cacheMode) => ({
           cols,
           pendingScreen,
           cacheMode,
@@ -505,6 +505,8 @@ describe("native terminal attach claim timing", () => {
       } else {
         expect(stages.has("terminal-cached-layout-reused")).toBe(false);
       }
+      if (cacheMode === "pty-mismatch")
+        expect(document.querySelector('[data-replay-held="false"]')).toBeNull();
       expect(startTransport).toHaveBeenCalledOnce();
       expect(testState.socketUrls).toHaveLength(1);
       expect(adoptedAt).toBeDefined();
@@ -584,7 +586,7 @@ describe("native terminal attach claim timing", () => {
       };
       if (cacheMode !== "miss") {
         expect(stages.has("terminal-cached-grid-hit")).toBe(
-          cacheMode === "match",
+          cacheMode === "match" || cacheMode === "pty-mismatch",
         );
         expect(stages.has("terminal-cached-grid-miss")).toBe(
           cacheMode === "mismatch",
