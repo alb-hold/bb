@@ -244,6 +244,9 @@ export function mountTerminalReplayPreview({
     const focusedElement = document.activeElement;
     markTerminalPerformance("terminal-replay-preview-open-start");
     terminal.open(preview);
+    const viewport =
+      terminal.element?.querySelector<HTMLElement>(".xterm-viewport");
+    if (viewport) viewport.style.backgroundColor = "inherit";
     markTerminalPerformance("terminal-replay-preview-open-end");
     trackTerminalScrollability(terminal);
     if (terminal.element) terminal.element.style.pointerEvents = "none";

@@ -2409,7 +2409,7 @@ export function ThreadTerminalView({
       trackTerminalScrollability(terminal);
       const viewport =
         terminal.element?.querySelector<HTMLElement>(".xterm-viewport");
-      if (retainNativeOutput && viewport) {
+      if (viewport) {
         viewport.style.backgroundColor = "inherit";
       }
       void loadOptionalTerminalSearchAddon(importTerminalSearchAddon)

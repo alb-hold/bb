@@ -721,6 +721,7 @@ describe("ThreadTerminalView terminal visibility and panel", () => {
       style.textContent = `.px-2 { padding-left: 8px; padding-right: 8px; }
         .pl-2 { padding-left: 8px; }
         .bg-sidebar { background-color: var(--sidebar); }
+        .xterm:not(.allow-transparency) .xterm-viewport { background-color: black; }
         [data-terminal-grid-cache-id] { width: 354px; height: 504px; }
         :root { --sidebar: rgb(30, 40, 50); --ink: rgb(220, 230, 240); }`;
       document.body.append(style);
@@ -805,6 +806,10 @@ describe("ThreadTerminalView terminal visibility and panel", () => {
       expect(getComputedStyle(terminal.element!).backgroundColor).toBe(
         "rgb(30, 40, 50)",
       );
+      expect(
+        getComputedStyle(terminal.element!.querySelector(".xterm-viewport")!)
+          .backgroundColor,
+      ).toBe("rgb(30, 40, 50)");
       const terminalStyle = getComputedStyle(terminal.element!);
       const hostStyle = getComputedStyle(host);
       expect(
