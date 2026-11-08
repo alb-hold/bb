@@ -131,9 +131,10 @@ describe("MarkdownPreview", () => {
     const { container } = render(<MarkdownPreview content={"```ts\nconst answer = 42;\n```"} />);
     const actions = container.querySelector("[data-code-actions]")!;
     const code = container.querySelector("[data-code-card] pre")!;
-    expect(actions.classList.contains("absolute")).toBe(true);
+    expect(actions.classList.contains("h-7")).toBe(true);
     expect(code.textContent).toContain("const answer = 42;");
-    expect(code.classList.contains("pr-28")).toBe(true);
+    expect(code.classList.contains("pr-28")).toBe(false);
+    expect(actions.textContent).toContain("ts");
     expect(actions.querySelectorAll("[data-compact-touch=code]")).toHaveLength(2);
   });
 

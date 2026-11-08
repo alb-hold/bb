@@ -780,9 +780,9 @@ function MarkdownCodeBlock({
       <div
         data-clipboard-ignore
         data-code-actions=""
-        className="absolute right-1.5 top-1.5 flex items-center gap-2"
+        className="flex h-7 items-center justify-between pl-3 pr-1.5 pt-1.5"
       >
-        <span className="sr-only font-mono text-xs uppercase text-muted-foreground">
+        <span className="font-mono text-xs uppercase text-muted-foreground">
           {language ?? ""}
         </span>
         <div className="flex items-center gap-0.5">
@@ -797,7 +797,7 @@ function MarkdownCodeBlock({
                   onClick={() => {
                     setSoftWrap((value) => !value);
                   }}
-                  className="inline-flex size-5 cursor-pointer items-center justify-center text-foreground transition-colors hover:text-foreground aria-pressed:text-foreground"
+                  className="relative inline-flex size-5! cursor-pointer items-center justify-center before:absolute before:-inset-3 text-foreground transition-colors hover:text-foreground aria-pressed:text-foreground"
                 >
                   <Icon name="TextWrap" className="size-3.5" />
                 </button>
@@ -809,14 +809,14 @@ function MarkdownCodeBlock({
             data-compact-touch="code"
             text={codeText}
             label="Copy code"
-            className="text-foreground"
+            className="relative size-5! before:absolute before:-inset-3 text-foreground"
             iconClassName="size-3.5"
           />
         </div>
       </div>
       <pre
         className={cn(
-          "bb-code-highlight px-3 py-3 pr-28",
+          "bb-code-highlight px-3 pb-3 pt-1",
           softWrap
             ? "whitespace-pre-wrap [overflow-wrap:anywhere]"
             : "overflow-x-auto",
