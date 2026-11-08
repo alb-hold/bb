@@ -1,3 +1,4 @@
+import { releaseParkedTerminalRendering } from "./terminal-parked-rendering";
 import {
   markTerminalPerformance,
   measureTerminalPerformance,
@@ -3528,8 +3529,13 @@ export function ThreadTerminalView({
           { detail: { terminalId: session.id } },
         );
         activeTransport.setParked(nextParked);
-        if (nextParked) scheduleParkedOutput();
-        else if (parkedOutputTimer !== null) {
+        if (nextParked) {
+          releaseParkedTerminalRendering(activeTerminal);
+          scheduleParkedOutput();
+        } else {
+          activeTerminal.refresh(0, activeTerminal.rows - 1);
+        }
+        if (!nextParked && parkedOutputTimer !== null) {
           clearTimeout(parkedOutputTimer);
           parkedOutputTimer = null;
         }
