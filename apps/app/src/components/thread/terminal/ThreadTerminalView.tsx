@@ -1916,6 +1916,7 @@ export function ThreadTerminalView({
     });
     if (initialRendererSettled) resolveRendererSettled();
     let initialLayoutSettled = false;
+    let initialFitComplete = false;
     let retainedOutputReplayed = sessionStatusRef.current !== "exited";
     let retainedOutputGrid: TerminalGridSize | null = null;
     let latestPtyGrid: TerminalGridSize = {
@@ -2046,9 +2047,8 @@ export function ThreadTerminalView({
       containerElement: HTMLDivElement,
     ): Promise<void> {
       containerElement.style.opacity = "0";
-      let paintedGridTimeout: ReturnType<typeof setTimeout> | null = null;
-      let paintedGridFallback: { cols: number; rows: number } | null = null;
       let paddingLeft = "0px";
+      let horizontalPadding = 0;
       const needsFittedGrid = () =>
         holdForFittedGrid && sessionStatusRef.current !== "exited";
       const fittedGridReady = () => {
@@ -2133,6 +2133,10 @@ export function ThreadTerminalView({
         const displayGrid = retainedOutputGrid ?? latestPtyGrid;
         const canReveal =
           localFitGrid !== null &&
+          (sessionStatusRef.current === "exited" ||
+            initialFitComplete ||
+            (terminal.cols === localFitGrid.cols &&
+              terminal.rows === localFitGrid.rows)) &&
           (!retainNativeOutput ||
             sessionStatusRef.current !== "exited" ||
             retainedOutputGrid !== null) &&
@@ -2186,7 +2190,8 @@ export function ThreadTerminalView({
             !scrollRetainedOutput && !needsFittedGrid(),
           );
         }
-        const rendererWidth = containerElement.getBoundingClientRect().width;
+        const rendererWidth =
+          containerElement.getBoundingClientRect().width - horizontalPadding;
         const paintedWidth =
           terminal.element
             ?.querySelector<HTMLElement>(".xterm-screen")
@@ -2194,51 +2199,12 @@ export function ThreadTerminalView({
         const widthFits =
           rendererWidth > 0 &&
           (scrollRetainedOutput || paintedWidth <= rendererWidth + 1);
-        const dimensions = terminal.dimensions?.css;
-        const paintedGridReady =
-          dimensions !== undefined &&
-          dimensions.cell.width > 0 &&
-          dimensions.cell.height > 0 &&
-          Math.abs(
-            dimensions.canvas.width -
-              Math.round(dimensions.cell.width * terminal.cols),
-          ) <= 1 &&
-          Math.abs(
-            dimensions.canvas.height -
-              Math.round(dimensions.cell.height * terminal.rows),
-          ) <= 1;
-        const paintedGridTimedOut =
-          paintedGridFallback?.cols === terminal.cols &&
-          paintedGridFallback.rows === terminal.rows;
-        if (
-          canReveal &&
-          widthFits &&
-          !paintedGridReady &&
-          !paintedGridTimedOut
-        ) {
-          containerElement.style.opacity = "0";
-          if (paintedGridTimeout === null) {
-            const grid = { cols: terminal.cols, rows: terminal.rows };
-            paintedGridTimeout = setTimeout(() => {
-              paintedGridTimeout = null;
-              if (disposed) return;
-              paintedGridFallback = grid;
-              updateGridVisibility();
-            }, 1000);
-          }
-          return;
-        }
-        if (paintedGridReady) {
-          if (paintedGridTimeout !== null) clearTimeout(paintedGridTimeout);
-          paintedGridTimeout = null;
-          paintedGridFallback = null;
-        }
         if (canReveal && widthFits) {
-          containerElement.style.opacity = "";
           if (replayCompleted && replayPreview !== null) {
             replayPreview.dispose();
             replayPreview = null;
           }
+          containerElement.style.opacity = "";
           return;
         }
       };
@@ -2441,9 +2407,13 @@ export function ThreadTerminalView({
       markTerminalPerformance("terminal-xterm-open-start");
       terminal.open(containerElement);
       terminal.element?.classList.add("bg-sidebar");
-      paddingLeft = getComputedStyle(
+      const rendererStyle = getComputedStyle(
         terminal.element ?? containerElement,
-      ).paddingLeft;
+      );
+      paddingLeft = rendererStyle.paddingLeft;
+      horizontalPadding =
+        (parseFloat(paddingLeft) || 0) +
+        (parseFloat(rendererStyle.paddingRight) || 0);
       markTerminalPerformance("terminal-xterm-open-end");
       if (initialRendererSettled)
         markTerminalPerformance("terminal-initial-renderer-settled");
@@ -2673,16 +2643,12 @@ export function ThreadTerminalView({
           manualScrollTimeout = null;
         }
       };
-      const dimensionsSubscription =
-        terminal.onDimensionsChange(updateGridVisibility);
       document.addEventListener("focusin", updateGridVisibility);
       document.addEventListener("focusout", updateGridVisibility);
       window.addEventListener("focus", updateGridVisibility);
       window.addEventListener("blur", updateGridVisibility);
       window.addEventListener("resize", updateGridVisibility);
       detachGridVisibilityListeners = () => {
-        dimensionsSubscription.dispose();
-        if (paintedGridTimeout !== null) clearTimeout(paintedGridTimeout);
         document.removeEventListener("focusin", updateGridVisibility);
         document.removeEventListener("focusout", updateGridVisibility);
         window.removeEventListener("focus", updateGridVisibility);
@@ -2779,6 +2745,7 @@ export function ThreadTerminalView({
             )
               fittedGridFallback = false;
             localFitGrid = { cols: fitted.cols, rows: fitted.rows };
+            if (initialLayoutSettled) initialFitComplete = true;
             containerElement.dataset.fitGridCols = String(fitted.cols);
             containerElement.dataset.fitGridRows = String(fitted.rows);
             if (replayPreview)

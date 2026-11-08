@@ -3917,123 +3917,135 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
 });
 
 describe("terminal first paint", () => {
-  it.each([true, false])(
-    "keeps the first screen hidden until a paused renderer applies its fitted grid or the deadline expires (resumes=%s)",
-    async (resumes) => {
+  it.each([8, 32])(
+    "holds a default 80x24 grid inside a wider host until the initial fit settles (spare width=%s)",
+    async (spareWidth) => {
       prepareFirstAttachFontMetricsHarness();
+      stubVisibleIntersectionObserver();
       vi.spyOn(terminalModules, "importTerminalWebglAddon").mockRejectedValue(
         new Error("DOM renderer"),
       );
-      let resumeScreen: (() => void) | undefined;
-      let pauseScreen: (() => void) | undefined;
-      vi.stubGlobal(
-        "IntersectionObserver",
-        class {
-          constructor(
-            private readonly callback: IntersectionObserverCallback,
-          ) {}
-          disconnect() {}
-          unobserve() {}
-          observe(target: Element) {
-            const notify = (isIntersecting: boolean) =>
-              this.callback(
-                [
-                  {
-                    target,
-                    isIntersecting,
-                    intersectionRatio: isIntersecting ? 1 : 0,
-                    intersectionRect: new DOMRect(0, 0, 354, 504),
-                  } as IntersectionObserverEntry,
-                ],
-                this as unknown as IntersectionObserver,
-              );
-            if (target.classList.contains("xterm-screen")) {
-              resumeScreen = () => notify(true);
-              pauseScreen = () => notify(false);
-              notify(true);
-            } else notify(true);
-          }
-        },
-      );
+      vi.spyOn(FitAddon.prototype, "proposeDimensions").mockReturnValue({
+        cols: 56,
+        rows: 38,
+      });
+      const hostWidth = 80 * 7 + spareWidth;
+      vi.spyOn(
+        HTMLElement.prototype,
+        "getBoundingClientRect",
+      ).mockImplementation(function getBoundingClientRect(this: HTMLElement) {
+        return new DOMRect(
+          0,
+          0,
+          this.classList.contains("xterm-screen")
+            ? parseFloat(this.style.width) || 0
+            : hostWidth,
+          722,
+        );
+      });
+      const fontDescriptor = Object.getOwnPropertyDescriptor(document, "fonts");
+      let finishFonts!: () => void;
+      const fonts = Object.assign(new EventTarget(), {
+        status: "loading",
+        ready: new Promise<void>((resolve) => {
+          finishFonts = resolve;
+        }),
+      });
+      Object.defineProperty(document, "fonts", {
+        configurable: true,
+        value: fonts,
+      });
       let terminal: Terminal | undefined;
       const open = Terminal.prototype.open;
       vi.spyOn(Terminal.prototype, "open").mockImplementation(
         function (this: Terminal, element) {
           if (element.matches("[data-terminal-renderer]")) terminal = this;
           open.call(this, element);
+          if (element.matches("[data-terminal-renderer]")) {
+            this.element!.style.paddingLeft = "8px";
+            this.element!.style.paddingRight = "8px";
+          }
         },
       );
-      const session = renderMobileTerminal({ cols: 40, rows: 24 });
-      await waitForReadinessCondition(
-        () => expect(testState.sockets).toHaveLength(1),
-        "terminal did not mount",
-      );
-      const socket = testState.sockets[0]!;
-      await socket.opened;
-      await act(async () => {
-        await new Promise<void>((resolve) =>
-          requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+      try {
+        const session = renderMobileTerminal({ cols: 80, rows: 24 });
+        await waitForReadinessCondition(
+          () => expect(testState.sockets).toHaveLength(1),
+          "terminal did not mount",
         );
-      });
-      act(() => {
-        terminal!.resize(40, 24);
-        pauseScreen!();
-      });
-      socket.receive({
-        type: "attached",
-        session: { ...session, cols: 51, rows: 47 },
-        replayStartSeq: 0,
-        nextSeq: 1,
-      });
-      socket.receive({
-        type: "output",
-        chunk: { seq: 0, dataBase64: btoa("FIRST-FRAME\r\n") },
-      });
-      await waitForReadinessCondition(() => {
-        expect(socket.sent.map((raw) => JSON.parse(raw))).toContainEqual({
-          type: "ack",
+        const socket = testState.sockets[0]!;
+        await socket.opened;
+        socket.receive({
+          type: "attached",
+          session,
+          replayStartSeq: 0,
           nextSeq: 1,
         });
-        expect(terminal?.cols).toBe(51);
-        expect(terminal?.rows).toBe(47);
-      }, "fitted replay did not parse");
-      const host = document.querySelector<HTMLElement>(
-        "[data-terminal-renderer]",
-      )!;
-      await waitForReadinessCondition(
-        () => expect(host.dataset.replayHeld).toBe("false"),
-        "logical grid did not become ready",
-      );
-      await act(async () => {
-        await new Promise<void>((resolve) =>
-          requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+        socket.receive({
+          type: "output",
+          chunk: { seq: 0, dataBase64: btoa("DEFAULT-GRID\r\n") },
+        });
+        await waitForReadinessCondition(() => {
+          expect(socket.sent.map((raw) => JSON.parse(raw))).toContainEqual({
+            type: "ack",
+            nextSeq: 1,
+          });
+        }, "default grid replay did not parse");
+        const host = document.querySelector<HTMLElement>(
+          "[data-terminal-renderer]",
+        )!;
+        await waitForReadinessCondition(
+          () => expect(host.dataset.replayHeld).toBe("false"),
+          "replay did not complete",
         );
-      });
-      expect(host.style.opacity).toBe("0");
-      expect(resumeScreen).toBeDefined();
-      if (resumes) act(() => resumeScreen!());
-      await waitForReadinessCondition(
-        () => expect(host.style.opacity).toBe(""),
-        "resized screen did not reveal",
-      );
-      const dimensions = terminal!.dimensions!.css;
-      const screen =
-        terminal!.element!.querySelector<HTMLElement>(".xterm-screen")!;
-      if (resumes)
-        expect(parseFloat(screen.style.width)).toBeCloseTo(
-          dimensions.cell.width * 51,
-          0,
-        );
-      if (resumes)
-        expect(parseFloat(screen.style.height)).toBeCloseTo(
-          dimensions.cell.height * 47,
-          0,
-        );
+        expect(terminal?.cols).toBe(80);
+        expect(terminal?.rows).toBe(24);
+        expect(
+          terminal!
+            .element!.querySelector(".xterm-screen")!
+            .getBoundingClientRect().width,
+        ).toBeLessThan(host.getBoundingClientRect().width);
+        expect(host.style.opacity).toBe("0");
+        await act(async () => {
+          fonts.status = "loaded";
+          finishFonts();
+          fonts.dispatchEvent(new Event("loadingdone"));
+        });
+        await waitForReadinessCondition(() => {
+          expect(socket.sent.map((raw) => JSON.parse(raw))).toContainEqual(
+            expect.objectContaining({ type: "resize", cols: 56, rows: 38 }),
+          );
+        }, "settled fit was not sent");
+        socket.receive({
+          type: "session-updated",
+          session: { ...session, cols: 56, rows: 38 },
+        });
+        await waitForReadinessCondition(() => {
+          expect(terminal?.cols).toBe(56);
+          expect(terminal?.rows).toBe(38);
+          expect(host.style.opacity).toBe("");
+        }, "fitted grid did not reveal");
+      } finally {
+        if (fontDescriptor)
+          Object.defineProperty(document, "fonts", fontDescriptor);
+        else Reflect.deleteProperty(document, "fonts");
+      }
     },
   );
 
   it("opens its first screen with symmetric insets and keeps them through replay and session switches", async () => {
     prepareFirstAttachFontMetricsHarness();
+    const measure = vi
+      .mocked(HTMLElement.prototype.getBoundingClientRect)
+      .getMockImplementation()!;
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+      function getBoundingClientRect(this: HTMLElement) {
+        const rect = measure.call(this);
+        return this.matches("[data-terminal-renderer]")
+          ? new DOMRect(rect.x, rect.y, rect.width + 16, rect.height)
+          : rect;
+      },
+    );
     vi.stubGlobal("innerWidth", 390);
     const style = document.createElement("style");
     style.textContent = `
