@@ -1,4 +1,3 @@
-import { useMediaQuery } from "@bb/shared-ui/hooks/use-media-query";
 import { usePanelToggle } from "@/components/secondary-panel/usePanelToggle";
 import { AppPanelTabsPublisher } from "@/lib/app-panel-tabs";
 import { appendQuoteAndAttachmentsToDraft } from "@bb/client-core";
