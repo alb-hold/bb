@@ -179,6 +179,23 @@ describe("NativeTerminalPromptBar", () => {
     const shell = form.querySelector("[data-native-composer]")!;
     expect(shell.classList.contains("rounded-xl")).toBe(true);
     expect(shell.classList.contains("border-border")).toBe(true);
+    expect(shell.className).not.toContain(
+      "md:data-[native-composer-inline]:border-0",
+    );
+    expect(shell.className).not.toContain(
+      "md:data-[native-composer-inline]:max-w-md",
+    );
+    expect(shell.className).not.toContain(
+      "md:data-[native-composer-inline]:grid",
+    );
+    expect(form.className).not.toContain(
+      "md:has-[[data-native-composer-inline]]:mx-0",
+    );
+    expect(
+      form
+        .querySelector("[data-native-composer-actions]")
+        ?.classList.contains("flex"),
+    ).toBe(true);
     expect(sendButton.classList.contains("pointer-coarse:size-11")).toBe(true);
     expect(
       screen.getByRole("button", { name: "Attach image" }).querySelector("svg"),
