@@ -508,3 +508,20 @@ it("treats a newly persisted closed panel like the default closed panel", async 
   );
   expect(cache.readCachedTerminalGrid("term")).toEqual({ cols: 116, rows: 38 });
 });
+
+it("rejects persisted grids measured before symmetric terminal padding", async () => {
+  const cache = await import("./terminal-grid-cache");
+  cache.rememberTerminalGrid(
+    "term",
+    container(),
+    readTerminalFontMetrics().fontSize,
+    { cols: 116, rows: 38 },
+  );
+  const key = localStorage.key(0)!;
+  const previous = localStorage.getItem(key)!;
+  localStorage.clear();
+  localStorage.setItem("bb.terminal.fit-grids.v3", previous);
+  vi.resetModules();
+  const reloaded = await import("./terminal-grid-cache");
+  expect(reloaded.readCachedTerminalGrid("term")).toBeNull();
+});

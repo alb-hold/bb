@@ -304,25 +304,27 @@ export function observeTerminalWebglVisibility({
     }
     for (const current of parents) resizeObserver.observe(current);
   };
-  const sync = () => {
-    if (disposed) return false;
-    const visible = isPanelOpen() && intersects && isGeometricallyVisible();
+  const applyVisibility = (visible: boolean) => {
     const becameVisible = visible && !wasVisible;
     wasVisible = visible;
     renderer.setVisible(visible);
     if (becameVisible) onVisible?.();
     return visible;
   };
+  const sync = () => {
+    if (disposed) return false;
+    return applyVisibility(
+      isPanelOpen() && intersects && isGeometricallyVisible(),
+    );
+  };
   const syncGeometry = () => {
+    if (disposed) return false;
     syncParents();
-    if (hasObserved) {
-      intersects = intersectsClippingAncestors(
-        root,
-        root.getBoundingClientRect(),
-        window,
-      );
-    }
-    return sync();
+    if (!isPanelOpen() || document.visibilityState !== "visible")
+      return applyVisibility(false);
+    const visible = isGeometricallyVisible();
+    if (hasObserved) intersects = visible;
+    return applyVisibility(intersects && visible);
   };
   const resizeObserver = new ResizeObserver(syncGeometry);
   const intersectionObserver = !supportsIntersectionObserver

@@ -27,7 +27,7 @@ import {
   normalizeGitDiffPath,
   type ParsedGitDiffFile,
   type GitDiffFileChangeKind,
-} from "./git-diff-parsing";
+} from "./git-diff-metadata";
 
 export type DiffFileContentsResult =
   | { kind: "text"; file: FileContents }

@@ -371,3 +371,8 @@ export const internal_DO_NOT_USE_loadComposerPasteParser: PluginSdkApp["internal
   () =>
     installedApp()?.internal_DO_NOT_USE_loadComposerPasteParser?.() ??
     Promise.resolve(null);
+
+export const internal_DO_NOT_USE_loadGitDiffParser: PluginSdkApp["internal_DO_NOT_USE_loadGitDiffParser"] =
+  () =>
+    installedApp()?.internal_DO_NOT_USE_loadGitDiffParser?.() ??
+    Promise.resolve(null);

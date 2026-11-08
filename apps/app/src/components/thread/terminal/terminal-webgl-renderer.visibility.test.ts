@@ -148,6 +148,34 @@ function setupVisibility(
 }
 
 describe("terminal visibility signals", () => {
+  it("does not measure parked terminals when their ancestors resize", () => {
+    const state = setupVisibility();
+    state.openPanel(false);
+    const measure = vi.mocked(state.root.getBoundingClientRect);
+    measure.mockClear();
+    state.resize(new DOMRect(10, 10, 300, 200));
+    state.move(new DOMRect(10, 10, 300, 200));
+    expect(measure).not.toHaveBeenCalled();
+    expect(state.root.dataset.terminalRenderer).toBe("dom");
+    state.observer.dispose();
+    state.renderer.dispose();
+  });
+
+  it("measures the adopted layout once before restoring its renderer", () => {
+    const state = setupVisibility();
+    state.openPanel(false);
+    const measure = vi.mocked(state.root.getBoundingClientRect);
+    measure.mockClear();
+    state.openPanel(true);
+    expect(measure).toHaveBeenCalledOnce();
+    expect(state.root.dataset.terminalRenderer).toBe("webgl");
+    const measureOrder = measure.mock.invocationCallOrder[0]!;
+    const restoreOrder = state.createAddon.mock.invocationCallOrder.at(-1)!;
+    expect(measureOrder).toBeLessThan(restoreOrder);
+    state.observer.dispose();
+    state.renderer.dispose();
+  });
+
   it("drops obsolete route ancestors when its terminal moves to a parked host", () => {
     const route = document.createElement("div");
     const host = document.createElement("div");

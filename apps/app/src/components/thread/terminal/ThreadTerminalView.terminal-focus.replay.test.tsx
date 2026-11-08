@@ -466,6 +466,7 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
     "background-resize",
     "background-burst",
     "background-stream",
+    "background-idle",
     "gap",
     "overflow",
     "socket-error",
@@ -512,13 +513,53 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
         cols: 40,
         rows: 12,
       });
+      const sessions =
+        scenario === "background-idle"
+          ? [
+              session,
+              ...[1, 2].map((index) => ({
+                ...session,
+                id: `term_idle_${index}`,
+              })),
+            ]
+          : [session];
+      const activeSession = sessions[sessions.length - 1]!;
+      if (scenario === "background-idle") {
+        vi.stubGlobal(
+          "WebSocket",
+          class extends TestTerminalSocket {
+            constructor(private readonly url: string) {
+              super(url);
+            }
+            override open() {
+              super.open();
+              this.receive({
+                type: "attached",
+                session: sessions.find((candidate) =>
+                  new URL(this.url).pathname.includes(candidate.id),
+                ),
+                replayStartSeq: 0,
+                nextSeq: 1,
+              });
+              this.receive({
+                type: "output",
+                chunk: { seq: 0, dataBase64: btoa("before-route\r\n") },
+              });
+            }
+          },
+        );
+      }
       let primary: Terminal | null = null;
       const originalOpen = Terminal.prototype.open;
       vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
         this: Terminal,
         element: HTMLElement,
       ) {
-        if (element.hasAttribute("data-terminal-grid-cache-id")) primary = this;
+        if (
+          element.getAttribute("data-terminal-grid-cache-id") ===
+          activeSession.id
+        )
+          primary = this;
         originalOpen.call(this, element);
       });
       const tree = (shown: boolean) => {
@@ -537,12 +578,15 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
             <AppCommandProvider>
               <RetainedTerminalViewsProvider {...route}>
                 {shown ? (
-                  <RetainedTerminalViewSlot
-                    View={ThreadTerminalView}
-                    autoFocus
-                    isPanelOpen
-                    session={session}
-                  />
+                  sessions.map((viewSession) => (
+                    <RetainedTerminalViewSlot
+                      key={viewSession.id}
+                      View={ThreadTerminalView}
+                      autoFocus={scenario !== "background-idle"}
+                      isPanelOpen
+                      session={viewSession}
+                    />
+                  ))
                 ) : (
                   <div>Chat route</div>
                 )}
@@ -553,28 +597,41 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
       };
       const { rerender } = render(tree(true));
       await waitForReadinessCondition(() => {
-        expect(testState.sockets).toHaveLength(1);
+        expect(testState.sockets).toHaveLength(sessions.length);
       }, "initial route socket missing");
-      const socket = testState.sockets[0]!;
-      socket.receive({
-        type: "attached",
-        session,
-        replayStartSeq: 0,
-        nextSeq: 1,
+      const sessionSockets = sessions.map((viewSession) => {
+        const index = testState.socketUrls.findIndex((url) =>
+          new URL(url).pathname.includes(viewSession.id),
+        );
+        expect(index).toBeGreaterThanOrEqual(0);
+        return testState.sockets[index]!;
       });
-      socket.receive({
-        type: "output",
-        chunk: { seq: 0, dataBase64: btoa("before-route\r\n") },
-      });
+      const socket = sessionSockets[sessionSockets.length - 1]!;
+      for (const [index, initialSocket] of sessionSockets.entries()) {
+        await initialSocket.opened;
+        if (scenario === "background-idle") continue;
+        initialSocket.receive({
+          type: "attached",
+          session: sessions[index],
+          replayStartSeq: 0,
+          nextSeq: 1,
+        });
+        initialSocket.receive({
+          type: "output",
+          chunk: { seq: 0, dataBase64: btoa("before-route\r\n") },
+        });
+      }
       await waitForReadinessCondition(() => {
         expect(pageText()).toContain("before-route");
         expect(
-          document.querySelector("[data-replay-held='false']"),
-        ).not.toBeNull();
-        expect(contexts).toBe(1);
+          document.querySelectorAll("[data-replay-held='false']"),
+        ).toHaveLength(sessions.length);
+        expect(contexts).toBe(sessions.length);
       }, "initial route replay did not settle");
       const controlledBackground =
-        scenario === "background-burst" || scenario === "background-stream";
+        scenario === "background-burst" ||
+        scenario === "background-stream" ||
+        scenario === "background-idle";
       let activeTime = 0;
       const activeClock = controlledBackground
         ? vi
@@ -637,6 +694,55 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
             () => expect(terminal.cols).toBe(60),
             "parked viewer did not apply another client's PTY grid",
           );
+        }
+        if (scenario === "background-idle") {
+          await act(async () => {
+            await vi.advanceTimersByTimeAsync(30_000);
+          });
+          const idleSocketCount = testState.sockets.length;
+          const idleTimeouts = vi.fn();
+          const timeout = globalThis.setTimeout;
+          globalThis.setTimeout = new Proxy(timeout, {
+            apply(target, receiver, args) {
+              idleTimeouts();
+              return Reflect.apply(target, receiver, args);
+            },
+          });
+          try {
+            await act(async () => {
+              await vi.advanceTimersByTimeAsync(30_000);
+            });
+            expect(idleTimeouts).not.toHaveBeenCalled();
+            act(() =>
+              socket.receive({
+                type: "output",
+                chunk: { seq: 2, dataBase64: btoa("after-idle\r\n") },
+              }),
+            );
+            await act(async () => {
+              await vi.advanceTimersByTimeAsync(1000);
+            });
+            expect(
+              Array.from(
+                { length: terminal.buffer.active.length },
+                (_, index) =>
+                  terminal.buffer.active
+                    .getLine(index)
+                    ?.translateToString(true),
+              ).join("\n"),
+            ).toContain("after-idle");
+            idleTimeouts.mockClear();
+            await act(async () => {
+              await vi.advanceTimersByTimeAsync(1000);
+            });
+            expect(idleTimeouts).not.toHaveBeenCalled();
+            expect(testState.sockets).toHaveLength(idleSocketCount);
+          } finally {
+            globalThis.setTimeout = timeout;
+            activeClock?.mockRestore();
+            vi.useRealTimers();
+          }
+          return;
         }
         if (controlledBackground) {
           const sustained = scenario === "background-stream";
@@ -3563,11 +3669,11 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
 });
 
 describe("terminal first paint", () => {
-  it("keeps the renderer inset through replay, fitting and session switches", async () => {
+  it("keeps symmetric renderer insets through replay, fitting and session switches", async () => {
     prepareFirstAttachFontMetricsHarness();
     vi.stubGlobal("innerWidth", 390);
     const style = document.createElement("style");
-    style.textContent = ".pl-2 { padding-left: 8px; }";
+    style.textContent = ".px-2 { padding-left: 8px; padding-right: 8px; }";
     document.head.append(style);
     const insets: string[] = [];
     const terminals: Terminal[] = [];
@@ -3579,9 +3685,9 @@ describe("terminal first paint", () => {
       open.call(this, element);
       if (!element.matches("[data-terminal-renderer]")) return;
       terminals.push(this);
-      insets.push(getComputedStyle(element).paddingLeft);
       this.onRender(() => {
-        insets.push(getComputedStyle(element).paddingLeft);
+        const computed = getComputedStyle(this.element!);
+        insets.push(`${computed.paddingLeft}/${computed.paddingRight}`);
       });
     });
     try {
@@ -3610,10 +3716,9 @@ describe("terminal first paint", () => {
             nextSeq: 1,
           });
         }, "terminal replay did not finish");
-        const host = document.querySelector<HTMLElement>(
-          "[data-terminal-renderer]",
-        )!;
-        expect(getComputedStyle(host).paddingLeft).toBe("8px");
+        const renderer = terminals[index]!.element!;
+        expect(getComputedStyle(renderer).paddingLeft).toBe("8px");
+        expect(getComputedStyle(renderer).paddingRight).toBe("8px");
         socket.receive({
           type: "session-updated",
           session: { ...session, cols: 51, rows: 47 },
@@ -3621,14 +3726,15 @@ describe("terminal first paint", () => {
         await act(async () => {
           await writeReplay(terminals[index]!, "");
         });
-        expect(getComputedStyle(host).paddingLeft).toBe("8px");
+        expect(getComputedStyle(renderer).paddingLeft).toBe("8px");
+        expect(getComputedStyle(renderer).paddingRight).toBe("8px");
         if (index === 0) {
           session = { ...session, id: "term_switch_inset" };
           rerenderMobileTerminal(session);
         }
       }
       expect(insets.length).toBeGreaterThan(2);
-      expect(new Set(insets)).toEqual(new Set(["8px"]));
+      expect(new Set(insets)).toEqual(new Set(["8px/8px"]));
     } finally {
       style.remove();
     }

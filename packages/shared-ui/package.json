@@ -469,6 +469,16 @@
       "types": "./src/components/ui/workspace-changes-list.tsx",
       "default": "./src/components/ui/workspace-changes-list.tsx"
     },
+    "./git-diff/metadata": {
+      "source": "./src/components/git-diff/git-diff-metadata.ts",
+      "types": "./src/components/git-diff/git-diff-metadata.ts",
+      "default": "./src/components/git-diff/git-diff-metadata.ts"
+    },
+    "./git-diff/lazy-parser": {
+      "source": "./src/components/git-diff/git-diff-lazy-parser.ts",
+      "types": "./src/components/git-diff/git-diff-lazy-parser.ts",
+      "default": "./src/components/git-diff/git-diff-lazy-parser.ts"
+    },
     "./git-diff/parsing": {
       "source": "./src/components/git-diff/git-diff-parsing.ts",
       "types": "./src/components/git-diff/git-diff-parsing.ts",

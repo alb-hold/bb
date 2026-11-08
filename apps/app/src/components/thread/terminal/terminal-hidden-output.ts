@@ -21,6 +21,9 @@ export function createTerminalHiddenOutput(onInvalidated?: () => void) {
   return {
     clear,
     invalidate,
+    get hasPending() {
+      return chunks.length > 0;
+    },
     push(chunk: TerminalOutputChunk, expectedNextSeq: number) {
       if (needsReplay) return;
       const expected = nextSeq ?? expectedNextSeq;

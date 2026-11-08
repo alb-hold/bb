@@ -1,11 +1,19 @@
 // @vitest-environment jsdom
-import { renderHook, fireEvent, cleanup } from "@testing-library/react";
+import { render, renderHook, fireEvent, cleanup } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
+import { createElement } from "react";
+import { ThreadModeGlyph } from "@bb/shared-ui/thread-mode-glyph";
+import { preloadTerminalModules } from "@/components/thread/terminal/terminal-modules";
+import { downloadSplit } from "@/lib/split-prefetch";
 import { useThreadOpenIntent } from "./useThreadOpenIntent";
 import { prefetchThreadOpen } from "@/lib/thread-open-prefetch";
 import { warmSplitWhenQuiet } from "@/lib/settled-split-downloads";
 import { LazyThreadDetailView } from "@/views/thread-detail/LazyThreadDetailView";
 
+vi.mock("@/components/thread/terminal/terminal-modules", () => ({
+  preloadTerminalModules: vi.fn(),
+}));
+vi.mock("@/lib/split-prefetch", () => ({ downloadSplit: vi.fn() }));
 vi.mock("@/lib/settled-split-downloads", () => ({
   warmSplitWhenQuiet: vi.fn(),
 }));
@@ -61,10 +69,6 @@ it.each(["focus", "input", "submit"])(
   "warms the chat view on home composer %s without terminal code",
   async (event) => {
     window.history.replaceState(null, "", "/");
-    const terminal = vi.fn();
-    vi.doMock("@/components/thread/terminal/terminal-modules", () => ({
-      preloadTerminalModules: terminal,
-    }));
     renderHook(useThreadOpenIntent);
     document.body.innerHTML =
       '<form data-app-composer=""><textarea></textarea></form>';
@@ -88,36 +92,70 @@ it.each(["focus", "input", "submit"])(
       expect(LazyThreadDetailView.preload).toHaveBeenCalledOnce();
     }
     await Promise.resolve();
-    expect(terminal).not.toHaveBeenCalled();
+    expect(preloadTerminalModules).not.toHaveBeenCalled();
   },
 );
 
-it("warms terminal modules for explicit native-terminal composer intent", async () => {
-  const terminal = vi.fn();
-  vi.doMock("@/components/thread/terminal/terminal-modules", () => ({
-    preloadTerminalModules: terminal,
-  }));
+it("warms terminal modules immediately for explicit native-terminal composer intent", async () => {
   renderHook(useThreadOpenIntent);
   document.body.innerHTML =
     '<div data-app-composer="" data-native-terminal="true"><textarea></textarea></div>';
   fireEvent.input(document.querySelector("textarea")!);
-  expect(terminal).not.toHaveBeenCalled();
-  expect(warmSplitWhenQuiet).toHaveBeenCalledWith(
-    "thread-terminal",
-    expect.any(Function),
-  );
-  for (const [, load] of vi.mocked(warmSplitWhenQuiet).mock.calls) await load();
-  expect(terminal).not.toHaveBeenCalled();
-  expect(warmSplitWhenQuiet).toHaveBeenCalledWith(
-    "terminal-runtime",
-    expect.any(Function),
-  );
-  expect(warmSplitWhenQuiet).toHaveBeenCalledWith(
-    "terminal-fit",
-    expect.any(Function),
-  );
+  expect(downloadSplit).toHaveBeenCalledWith("thread-terminal");
+  await vi.waitFor(() => expect(preloadTerminalModules).toHaveBeenCalledOnce());
   expect(LazyThreadDetailView.preload).toHaveBeenCalledOnce();
+  expect(warmSplitWhenQuiet).not.toHaveBeenCalled();
 });
+
+it.each(["sidebar", "recent"])(
+  "prepares a native terminal on %s row intent",
+  async (surface) => {
+    renderHook(useThreadOpenIntent);
+    const row =
+      surface === "sidebar"
+        ? document.createElement("button")
+        : document.createElement("a");
+    if (row instanceof HTMLAnchorElement) row.href = "/threads/native";
+    else row.dataset.sidebarThreadId = "native";
+    document.body.append(row);
+    render(
+      createElement(ThreadModeGlyph, {
+        nativeTerminal: true,
+        isWorktree: false,
+      }),
+      { container: row },
+    );
+    fireEvent.pointerOver(row.firstElementChild!);
+    expect(downloadSplit).toHaveBeenCalledWith("thread-terminal");
+    await vi.waitFor(() =>
+      expect(preloadTerminalModules).toHaveBeenCalledOnce(),
+    );
+    expect(prefetchThreadOpen).toHaveBeenCalledWith("native");
+  },
+);
+
+it.each(["pointerDown", "touchStart", "focusIn"])(
+  "prepares a native terminal on %s",
+  async (event) => {
+    renderHook(useThreadOpenIntent);
+    const row = document.createElement("button");
+    row.dataset.sidebarThreadId = "native";
+    document.body.append(row);
+    render(
+      createElement(ThreadModeGlyph, {
+        nativeTerminal: true,
+        isWorktree: false,
+      }),
+      { container: row },
+    );
+    if (event === "pointerDown") fireEvent.pointerDown(row);
+    else if (event === "touchStart") fireEvent.touchStart(row);
+    else fireEvent.focusIn(row);
+    await vi.waitFor(() =>
+      expect(preloadTerminalModules).toHaveBeenCalledOnce(),
+    );
+  },
+);
 
 it("warms notification and deep-link destinations without sidebar rows", async () => {
   renderHook(useThreadOpenIntent);
