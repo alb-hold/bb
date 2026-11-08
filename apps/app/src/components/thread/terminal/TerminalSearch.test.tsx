@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Terminal } from "@xterm/xterm";
 import type { TerminalSearchAddonInstance } from "./terminal-search-addon";
@@ -377,6 +378,38 @@ describe("TerminalSearch shortcuts and closed controls", () => {
       screen.getByRole("search", { name: "Search terminal output" }),
     ).toBeTruthy();
   });
+});
+
+it.each([
+  ["secondary panel", false, false, true],
+  ["standalone strip", false, false, false],
+  ["native header", true, false, false],
+  ["phone keys", false, true, false],
+] as const)("opens keyboard search on the %s surface", (_surface, hideTrigger, touch, panel) => {
+  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
+  const textarea = document.createElement("textarea");
+  document.body.appendChild(textarea);
+  const terminal = { textarea, focus: () => textarea.focus() } as unknown as Terminal;
+  const addon = createSearchAddon();
+  const onOpenChange = vi.fn();
+  const wrap = (children: ReactNode) => panel ? (
+    <SecondaryPanelActionsProvider activeTerminalId="terminal-a">
+      <div role="toolbar"><SecondaryPanelActions /></div>
+      {children}
+    </SecondaryPanelActionsProvider>
+  ) : children;
+  const view = render(wrap(<TerminalSearch terminalId="terminal-a" addon={addon} terminal={terminal} hideTrigger={hideTrigger} touch={touch} open={false} onOpenChange={onOpenChange} />));
+  for (const [platform, modifiers] of [
+    ["Linux x86_64", { ctrlKey: true, shiftKey: true }],
+    ["MacIntel", { metaKey: true }],
+  ] as const) {
+    Object.defineProperty(navigator, "platform", { configurable: true, value: platform });
+    textarea.focus();
+    expect(sendKey("f", modifiers, textarea).defaultPrevented).toBe(true);
+    expect(onOpenChange).toHaveBeenLastCalledWith(true);
+  }
+  view.rerender(wrap(<TerminalSearch terminalId="terminal-a" addon={addon} terminal={terminal} hideTrigger={hideTrigger} touch={touch} open onOpenChange={onOpenChange} />));
+  expect(screen.getByRole("searchbox", { name: "Find in terminal" })).toBeTruthy();
 });
 
 it("ports the closed search control into the enclosing panel toolbar", () => {
