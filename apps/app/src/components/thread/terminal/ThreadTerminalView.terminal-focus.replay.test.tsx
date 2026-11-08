@@ -3917,6 +3917,121 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
 });
 
 describe("terminal first paint", () => {
+  it.each([true, false])(
+    "keeps the first screen hidden until a paused renderer applies its fitted grid or the deadline expires (resumes=%s)",
+    async (resumes) => {
+      prepareFirstAttachFontMetricsHarness();
+      vi.spyOn(terminalModules, "importTerminalWebglAddon").mockRejectedValue(
+        new Error("DOM renderer"),
+      );
+      let resumeScreen: (() => void) | undefined;
+      let pauseScreen: (() => void) | undefined;
+      vi.stubGlobal(
+        "IntersectionObserver",
+        class {
+          constructor(
+            private readonly callback: IntersectionObserverCallback,
+          ) {}
+          disconnect() {}
+          unobserve() {}
+          observe(target: Element) {
+            const notify = (isIntersecting: boolean) =>
+              this.callback(
+                [
+                  {
+                    target,
+                    isIntersecting,
+                    intersectionRatio: isIntersecting ? 1 : 0,
+                    intersectionRect: new DOMRect(0, 0, 354, 504),
+                  } as IntersectionObserverEntry,
+                ],
+                this as unknown as IntersectionObserver,
+              );
+            if (target.classList.contains("xterm-screen")) {
+              resumeScreen = () => notify(true);
+              pauseScreen = () => notify(false);
+              notify(true);
+            } else notify(true);
+          }
+        },
+      );
+      let terminal: Terminal | undefined;
+      const open = Terminal.prototype.open;
+      vi.spyOn(Terminal.prototype, "open").mockImplementation(
+        function (this: Terminal, element) {
+          if (element.matches("[data-terminal-renderer]")) terminal = this;
+          open.call(this, element);
+        },
+      );
+      const session = renderMobileTerminal({ cols: 40, rows: 24 });
+      await waitForReadinessCondition(
+        () => expect(testState.sockets).toHaveLength(1),
+        "terminal did not mount",
+      );
+      const socket = testState.sockets[0]!;
+      await socket.opened;
+      await act(async () => {
+        await new Promise<void>((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+        );
+      });
+      act(() => {
+        terminal!.resize(40, 24);
+        pauseScreen!();
+      });
+      socket.receive({
+        type: "attached",
+        session: { ...session, cols: 51, rows: 47 },
+        replayStartSeq: 0,
+        nextSeq: 1,
+      });
+      socket.receive({
+        type: "output",
+        chunk: { seq: 0, dataBase64: btoa("FIRST-FRAME\r\n") },
+      });
+      await waitForReadinessCondition(() => {
+        expect(socket.sent.map((raw) => JSON.parse(raw))).toContainEqual({
+          type: "ack",
+          nextSeq: 1,
+        });
+        expect(terminal?.cols).toBe(51);
+        expect(terminal?.rows).toBe(47);
+      }, "fitted replay did not parse");
+      const host = document.querySelector<HTMLElement>(
+        "[data-terminal-renderer]",
+      )!;
+      await waitForReadinessCondition(
+        () => expect(host.dataset.replayHeld).toBe("false"),
+        "logical grid did not become ready",
+      );
+      await act(async () => {
+        await new Promise<void>((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+        );
+      });
+      expect(host.style.opacity).toBe("0");
+      expect(resumeScreen).toBeDefined();
+      if (resumes) act(() => resumeScreen!());
+      await waitForReadinessCondition(
+        () => expect(host.style.opacity).toBe(""),
+        "resized screen did not reveal",
+      );
+      const dimensions = terminal!.dimensions!.css;
+      const screen =
+        terminal!.element!.querySelector<HTMLElement>(".xterm-screen")!;
+      if (resumes)
+        expect(parseFloat(screen.style.width)).toBeCloseTo(
+          dimensions.cell.width * 51,
+          0,
+        );
+      if (resumes)
+        expect(parseFloat(screen.style.height)).toBeCloseTo(
+          dimensions.cell.height * 47,
+          0,
+        );
+    },
+  );
+
   it("opens its first screen with symmetric insets and keeps them through replay and session switches", async () => {
     prepareFirstAttachFontMetricsHarness();
     vi.stubGlobal("innerWidth", 390);

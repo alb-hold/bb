@@ -2046,6 +2046,8 @@ export function ThreadTerminalView({
       containerElement: HTMLDivElement,
     ): Promise<void> {
       containerElement.style.opacity = "0";
+      let paintedGridTimeout: ReturnType<typeof setTimeout> | null = null;
+      let paintedGridFallback: { cols: number; rows: number } | null = null;
       let paddingLeft = "0px";
       const needsFittedGrid = () =>
         holdForFittedGrid && sessionStatusRef.current !== "exited";
@@ -2192,6 +2194,45 @@ export function ThreadTerminalView({
         const widthFits =
           rendererWidth > 0 &&
           (scrollRetainedOutput || paintedWidth <= rendererWidth + 1);
+        const dimensions = terminal.dimensions?.css;
+        const paintedGridReady =
+          dimensions !== undefined &&
+          dimensions.cell.width > 0 &&
+          dimensions.cell.height > 0 &&
+          Math.abs(
+            dimensions.canvas.width -
+              Math.round(dimensions.cell.width * terminal.cols),
+          ) <= 1 &&
+          Math.abs(
+            dimensions.canvas.height -
+              Math.round(dimensions.cell.height * terminal.rows),
+          ) <= 1;
+        const paintedGridTimedOut =
+          paintedGridFallback?.cols === terminal.cols &&
+          paintedGridFallback.rows === terminal.rows;
+        if (
+          canReveal &&
+          widthFits &&
+          !paintedGridReady &&
+          !paintedGridTimedOut
+        ) {
+          containerElement.style.opacity = "0";
+          if (paintedGridTimeout === null) {
+            const grid = { cols: terminal.cols, rows: terminal.rows };
+            paintedGridTimeout = setTimeout(() => {
+              paintedGridTimeout = null;
+              if (disposed) return;
+              paintedGridFallback = grid;
+              updateGridVisibility();
+            }, 1000);
+          }
+          return;
+        }
+        if (paintedGridReady) {
+          if (paintedGridTimeout !== null) clearTimeout(paintedGridTimeout);
+          paintedGridTimeout = null;
+          paintedGridFallback = null;
+        }
         if (canReveal && widthFits) {
           containerElement.style.opacity = "";
           if (replayCompleted && replayPreview !== null) {
@@ -2632,12 +2673,16 @@ export function ThreadTerminalView({
           manualScrollTimeout = null;
         }
       };
+      const dimensionsSubscription =
+        terminal.onDimensionsChange(updateGridVisibility);
       document.addEventListener("focusin", updateGridVisibility);
       document.addEventListener("focusout", updateGridVisibility);
       window.addEventListener("focus", updateGridVisibility);
       window.addEventListener("blur", updateGridVisibility);
       window.addEventListener("resize", updateGridVisibility);
       detachGridVisibilityListeners = () => {
+        dimensionsSubscription.dispose();
+        if (paintedGridTimeout !== null) clearTimeout(paintedGridTimeout);
         document.removeEventListener("focusin", updateGridVisibility);
         document.removeEventListener("focusout", updateGridVisibility);
         window.removeEventListener("focus", updateGridVisibility);
