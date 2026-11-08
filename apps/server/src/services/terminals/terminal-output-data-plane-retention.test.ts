@@ -149,6 +149,14 @@ function textFrom(chunks: Array<{ dataBase64: string }>): string {
   ).toString("utf8");
 }
 
+function simulateBusyReplayWork() {
+  let activeReplayClock = 0;
+  return vi.spyOn(performance, "now").mockImplementation(() => {
+    activeReplayClock += 0.04;
+    return activeReplayClock;
+  });
+}
+
 async function setup(
   args: {
     holdOutputBatches?: boolean;
@@ -465,6 +473,7 @@ async function retainReplayAcrossLifecycleTransition(args: {
   expectedStatus: "disconnected" | "exited";
 }) {
   const fixture = await setup(args.setup);
+  const replayClock = simulateBusyReplayWork();
   const chunks = Array.from({ length: 1_024 }, (_, seq) => ({
     seq: seq + 10,
     dataBase64: Buffer.from(
@@ -579,6 +588,7 @@ async function retainReplayAcrossLifecycleTransition(args: {
       expect(row?.expiresAt).toBeGreaterThan(Date.now());
     }
   } finally {
+    replayClock.mockRestore();
     queue.close();
     fixture.child.shutdown();
   }
@@ -640,10 +650,10 @@ describe("terminal output retained from the data plane", () => {
     }
   });
 
-  it("serves output reads and browser replay before timeout with small chunks on a busy loop", async () => {
+  it("serves ten thousand small chunks within one second on a busy loop", async () => {
     const fixture = await setup();
     const socket = new FakeSocket();
-    const chunks = Array.from({ length: 4_800 }, (_, seq) => ({
+    const chunks = Array.from({ length: 10_000 }, (_, seq) => ({
       seq,
       dataBase64: Buffer.from(`line ${seq}\r\n`).toString("base64"),
     }));
@@ -697,14 +707,14 @@ describe("terminal output retained from the data plane", () => {
       );
       expect(response.status).toBe(200);
       const output = await response.json();
-      expect(textFrom(output.chunks)).toContain("line 4799\r\n");
-      expect(Date.now() - started).toBeLessThan(5_000);
+      expect(textFrom(output.chunks)).toContain("line 9999\r\n");
+      expect(Date.now() - started).toBeLessThan(1_000);
       expect(socket.sent.map((data) => JSON.parse(data))).toContainEqual(
         expect.objectContaining({ type: "attached", nextSeq: chunks.length }),
       );
       const live = {
         seq: chunks.length,
-        dataBase64: Buffer.from("line 4800\r\n").toString("base64"),
+        dataBase64: Buffer.from("line 10000\r\n").toString("base64"),
       };
       fixture.terminalSessions.handleDaemonTerminalMessage({
         hostId: fixture.host.id,
@@ -768,11 +778,13 @@ describe("terminal output retained from the data plane", () => {
     await new Promise<void>((resolve) => setImmediate(resolve));
     expect(order[0]).toBe("queued task");
     while (scheduled.length > 0) scheduled.shift()!();
-    expect(getRetainedTerminalOutput(fixture.db, {
-      hostId: fixture.host.id,
-      terminalSessionId: fixture.terminal.id,
-      now: Date.now(),
-    })).toEqual(chunks);
+    expect(
+      getRetainedTerminalOutput(fixture.db, {
+        hostId: fixture.host.id,
+        terminalSessionId: fixture.terminal.id,
+        now: Date.now(),
+      }),
+    ).toEqual(chunks);
     fixture.child.shutdown();
   });
 
@@ -843,14 +855,18 @@ describe("terminal output retained from the data plane", () => {
       seq,
       dataBase64: Buffer.from(`first-${seq}`).toString("base64"),
     }));
-    const replayChunks = [{
-      seq: 0,
-      dataBase64: Buffer.from("replay").toString("base64"),
-    }];
-    const nextChunks = [{
-      seq: 0,
-      dataBase64: Buffer.from("next").toString("base64"),
-    }];
+    const replayChunks = [
+      {
+        seq: 0,
+        dataBase64: Buffer.from("replay").toString("base64"),
+      },
+    ];
+    const nextChunks = [
+      {
+        seq: 0,
+        dataBase64: Buffer.from("next").toString("base64"),
+      },
+    ];
     fixture.terminalSessions.recordDirectTerminalOutputBatch({
       daemonSessionId: fixture.session.id,
       terminalId: fixture.terminal.id,
@@ -1165,15 +1181,19 @@ describe("terminal output retained from the data plane", () => {
       [fixture.terminal, fixture.host.id, baselineOne],
       [secondTerminal, secondHostSession.host.id, baselineTwo],
     ] as const) {
-      expect(getRetainedTerminalOutput(fixture.db, {
-        hostId,
-        terminalSessionId: terminal.id,
-        now: Date.now(),
-      })).toEqual(getRetainedTerminalOutput(fixture.db, {
-        hostId,
-        terminalSessionId: baseline.id,
-        now: Date.now(),
-      }));
+      expect(
+        getRetainedTerminalOutput(fixture.db, {
+          hostId,
+          terminalSessionId: terminal.id,
+          now: Date.now(),
+        }),
+      ).toEqual(
+        getRetainedTerminalOutput(fixture.db, {
+          hostId,
+          terminalSessionId: baseline.id,
+          now: Date.now(),
+        }),
+      );
     }
     fixture.child.shutdown();
   });
@@ -1190,11 +1210,13 @@ describe("terminal output retained from the data plane", () => {
       chunks,
     });
     fixture.terminalSessions.flushAllRetainedOutput();
-    expect(getRetainedTerminalOutput(fixture.db, {
-      hostId: fixture.host.id,
-      terminalSessionId: fixture.terminal.id,
-      now: Date.now(),
-    })).toEqual(chunks);
+    expect(
+      getRetainedTerminalOutput(fixture.db, {
+        hostId: fixture.host.id,
+        terminalSessionId: fixture.terminal.id,
+        now: Date.now(),
+      }),
+    ).toEqual(chunks);
     fixture.child.shutdown();
   });
 
@@ -1223,8 +1245,11 @@ describe("terminal output retained from the data plane", () => {
     expect(timings).toMatchObject({ chunkCount: 1, inputBytes: 17 });
 
     let slowMeasure = 0;
-    (fixture.terminalSessions as unknown as { options: Record<string, unknown> })
-      .options.retainedOutputMeasureClock = () => (slowMeasure += 20);
+    (
+      fixture.terminalSessions as unknown as {
+        options: Record<string, unknown>;
+      }
+    ).options.retainedOutputMeasureClock = () => (slowMeasure += 20);
     const info = vi.spyOn(fixture.harness.deps.logger, "info");
     fixture.terminalSessions.recordDirectTerminalOutputBatch({
       daemonSessionId: fixture.session.id,
@@ -1498,6 +1523,7 @@ describe("terminal output retained from the data plane", () => {
 
   it("retains every replay chunk once when the terminal exits at a replay yield", async () => {
     const fixture = await setup();
+    const replayClock = simulateBusyReplayWork();
     const attachSocket = new FakeSocket();
     const chunks = Array.from({ length: 1_024 }, (_, seq) => ({
       seq: seq + 10,
@@ -1624,6 +1650,7 @@ describe("terminal output retained from the data plane", () => {
         .get(fixture.terminal.id) as { expiresAt: number | null } | undefined;
       expect(row?.expiresAt).toBeGreaterThan(Date.now());
     } finally {
+      replayClock.mockRestore();
       fixture.child.shutdown();
     }
   }, 15_000);
@@ -1638,7 +1665,10 @@ describe("terminal output retained from the data plane", () => {
       socket.on("data", (data) => {
         timeline.push(`socket-data:${Date.now()}`);
         frame += data.toString();
-        const request = JSON.parse(frame) as { requestId: string; terminalId: string };
+        const request = JSON.parse(frame) as {
+          requestId: string;
+          terminalId: string;
+        };
         timeline.push(`frame-parsed:${Date.now()}`);
         fixture.terminalSessions.handleDaemonTerminalMessage({
           hostId: fixture.host.id,
@@ -1649,20 +1679,32 @@ describe("terminal output retained from the data plane", () => {
             terminalId: request.terminalId,
             replayStartSeq: 0,
             nextSeq: 1,
-            chunks: [{ seq: 0, dataBase64: Buffer.from("after stall").toString("base64") }],
+            chunks: [
+              {
+                seq: 0,
+                dataBase64: Buffer.from("after stall").toString("base64"),
+              },
+            ],
           },
         });
       });
     });
-    await new Promise<void>((resolve) => daemonServer.listen(0, "127.0.0.1", resolve));
+    await new Promise<void>((resolve) =>
+      daemonServer.listen(0, "127.0.0.1", resolve),
+    );
     const address = daemonServer.address();
-    if (address === null || typeof address === "string") throw new Error("daemon test socket did not bind");
+    if (address === null || typeof address === "string")
+      throw new Error("daemon test socket did not bind");
     const daemonSocket = createConnection(address.port, "127.0.0.1");
     await new Promise<void>((resolve) => daemonSocket.once("connect", resolve));
     fixture.hub.registerDaemon(fixture.session.id, fixture.host.id, {
       close() {},
       send(data: string) {
-        const request = JSON.parse(data) as { requestId: string; terminalId: string; type: string };
+        const request = JSON.parse(data) as {
+          requestId: string;
+          terminalId: string;
+          type: string;
+        };
         if (request.type !== "terminal.attach") return;
         daemonSocket.write(JSON.stringify(request), () => {
           timeline.push(`write-flushed:${Date.now()}`);
@@ -1684,22 +1726,40 @@ describe("terminal output retained from the data plane", () => {
             await new Promise<void>((resolve) => setImmediate(resolve));
           }
         })(),
-        delay(5_000).then(() => { throw new Error("stalled lifecycle attach did not settle"); }),
+        delay(5_000).then(() => {
+          throw new Error("stalled lifecycle attach did not settle");
+        }),
       ]);
       const sent = attachSocket.sent.map((data) => JSON.parse(data));
       timeline.push(`client-settled:${Date.now()}`);
       process.stdout.write(`${JSON.stringify({ timeline })}\n`);
-      expect(sent).toContainEqual(expect.objectContaining({ type: "attached" }));
-      expect(sent).not.toContainEqual(expect.objectContaining({ type: "error", code: "terminal_attach_timeout" }));
+      expect(sent).toContainEqual(
+        expect.objectContaining({ type: "attached" }),
+      );
+      expect(sent).not.toContainEqual(
+        expect.objectContaining({
+          type: "error",
+          code: "terminal_attach_timeout",
+        }),
+      );
       const attributions = replayInfo.mock.calls
         .filter(([, message]) => message === "Terminal replay attributed")
         .map(([fields]) => fields);
-      expect(attributions).not.toContainEqual(expect.objectContaining({ path: "data-plane/failed" }));
-      expect(attributions).not.toContainEqual(expect.objectContaining({ path: "websocket/failed" }));
-      expect(sent).toContainEqual(expect.objectContaining({
-        type: "output",
-        chunk: { seq: 0, dataBase64: Buffer.from("after stall").toString("base64") },
-      }));
+      expect(attributions).not.toContainEqual(
+        expect.objectContaining({ path: "data-plane/failed" }),
+      );
+      expect(attributions).not.toContainEqual(
+        expect.objectContaining({ path: "websocket/failed" }),
+      );
+      expect(sent).toContainEqual(
+        expect.objectContaining({
+          type: "output",
+          chunk: {
+            seq: 0,
+            dataBase64: Buffer.from("after stall").toString("base64"),
+          },
+        }),
+      );
     } finally {
       fixture.child.shutdown();
       fixture.hub.unregisterDaemon(fixture.session.id);
@@ -1710,7 +1770,10 @@ describe("terminal output retained from the data plane", () => {
 
   it("fails an unanswered lifecycle attach within the three-times timeout bound", async () => {
     const fixture = await setup({ attachTimeoutMs: 40 });
+    const replayInfo = vi.spyOn(fixture.harness.deps.logger, "info");
     const attachSocket = new FakeSocket();
+    const send = vi.spyOn(attachSocket, "send");
+    const close = vi.spyOn(attachSocket, "close");
     fixture.hub.registerDaemon(fixture.session.id, fixture.host.id, {
       close() {},
       send() {},
@@ -1733,10 +1796,28 @@ describe("terminal output retained from the data plane", () => {
       });
       const elapsedMs = Date.now() - startedAt;
       expect(attachSocket.sent.map((data) => JSON.parse(data))).toContainEqual(
-        expect.objectContaining({ type: "error", code: "terminal_attach_timeout" }),
+        expect.objectContaining({
+          type: "error",
+          code: "terminal_attach_timeout",
+        }),
       );
       expect(elapsedMs).toBeLessThan(120);
+      expect(close).toHaveBeenCalledWith(1013, "attach-failed");
+      expect(send.mock.invocationCallOrder.at(-1)).toBeLessThan(
+        close.mock.invocationCallOrder[0]!,
+      );
+      expect(replayInfo.mock.calls).toContainEqual([
+        expect.objectContaining({
+          path: "websocket/failed",
+          failureCode: "terminal_attach_timeout",
+          failureMessage: "Timed out attaching terminal session",
+        }),
+        "Terminal replay attributed",
+      ]);
     } finally {
+      replayInfo.mockRestore();
+      send.mockRestore();
+      close.mockRestore();
       fixture.child.shutdown();
       fixture.hub.unregisterDaemon(fixture.session.id);
     }
@@ -1835,7 +1916,9 @@ describe("terminal output retained from the data plane", () => {
       );
       expect(failedAttributions).toHaveLength(1);
       expect(failedAttributions[0]?.[0]).toMatchObject({
-        path: "websocket/failed", replayBytes: 0, retainedWriteBytes: 0,
+        path: "websocket/failed",
+        replayBytes: 0,
+        retainedWriteBytes: 0,
       });
       const discard = replayInfo.mock.calls.find(
         ([, message]) =>
@@ -2217,9 +2300,7 @@ describe("terminal output retained from the data plane", () => {
         chunks: [
           {
             seq: 7,
-            dataBase64: Buffer.from("nonzero fallback\r\n").toString(
-              "base64",
-            ),
+            dataBase64: Buffer.from("nonzero fallback\r\n").toString("base64"),
           },
         ],
       });
@@ -2302,9 +2383,10 @@ describe("terminal output retained from the data plane", () => {
 
       expect(screenStates.has(fixture.terminal.id)).toBe(false);
       expect(
-        Reflect.get(fixture.terminalSessions, "terminalScreenStateRebuilds").has(
-          fixture.terminal.id,
-        ),
+        Reflect.get(
+          fixture.terminalSessions,
+          "terminalScreenStateRebuilds",
+        ).has(fixture.terminal.id),
       ).toBe(false);
     } finally {
       replayYieldControl.intercept = null;
@@ -2354,7 +2436,7 @@ describe("terminal output retained from the data plane", () => {
       });
       await reachedReplayYield.promise;
       const raw = Buffer.alloc(
-        Math.floor(TERMINAL_SCREEN_STATE_PENDING_BYTES_LIMIT * 3 / 4) + 1,
+        Math.floor((TERMINAL_SCREEN_STATE_PENDING_BYTES_LIMIT * 3) / 4) + 1,
         120,
       );
       const tail = Buffer.from("\r\noverflow fallback\r\n");
@@ -2421,7 +2503,9 @@ describe("terminal output retained from the data plane", () => {
       );
       expect(response.status).toBe(200);
       await expect(response.json()).resolves.toMatchObject({
-        rows: expect.arrayContaining([expect.stringContaining("later reconnect")]),
+        rows: expect.arrayContaining([
+          expect.stringContaining("later reconnect"),
+        ]),
         complete: true,
       });
     } finally {
@@ -2623,6 +2707,7 @@ describe("terminal output retained from the data plane", () => {
 
   it("retains pending, replay, and concurrent running output in sequence order", async () => {
     const fixture = await setup();
+    const replayClock = simulateBusyReplayWork();
     const pending = [
       { seq: 0, dataBase64: Buffer.from("pending-0").toString("base64") },
       { seq: 1, dataBase64: Buffer.from("pending-1").toString("base64") },
@@ -2688,9 +2773,55 @@ describe("terminal output retained from the data plane", () => {
         })?.status,
       ).toBe("running");
     } finally {
+      replayClock.mockRestore();
       fixture.child.shutdown();
     }
   }, 15_000);
+
+  it("retains a late live sequence below replay nextSeq once on the ordinary flush", async () => {
+    const fixture = await setup();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const chunks = Array.from({ length: 1_024 }, (_, index) => ({
+      seq: index + 10,
+      dataBase64: Buffer.from(`replay-${index}`).toString("base64"),
+    }));
+    const late = {
+      seq: 5,
+      dataBase64: Buffer.from("late-live-output").toString("base64"),
+    };
+    try {
+      await fixture.terminalSessions.handleDaemonTerminalMessage({
+        hostId: fixture.host.id,
+        sessionId: fixture.session.id,
+        message: {
+          type: "terminal.replay",
+          requestId: "completed-before-live-output",
+          terminalId: fixture.terminal.id,
+          replayStartSeq: 10,
+          nextSeq: 1_034,
+          chunks,
+        },
+      });
+      fixture.terminalSessions.recordDirectTerminalOutputBatch({
+        daemonSessionId: fixture.session.id,
+        terminalId: fixture.terminal.id,
+        chunks: [late, late],
+      });
+      await vi.advanceTimersByTimeAsync(1_000);
+      const retained = getRetainedTerminalOutput(fixture.db, {
+        hostId: fixture.host.id,
+        terminalSessionId: fixture.terminal.id,
+        now: Date.now(),
+      });
+      expect(retained?.filter((chunk) => chunk.seq === 5)).toEqual([late]);
+      expect(
+        [...(retained ?? [])].sort((left, right) => left.seq - right.seq),
+      ).toEqual([late, ...chunks]);
+    } finally {
+      vi.useRealTimers();
+      fixture.child.shutdown();
+    }
+  });
 
   it("preserves pending output when a synthetic host change occurs at the replay yield", async () => {
     const fixture = await setup();
@@ -2882,6 +3013,7 @@ describe("terminal output retained from the data plane", () => {
     let waitingForYield = nextYield.promise;
     let releaseYield: () => void = () => {};
     let yieldHeld = false;
+    const replayClock = simulateBusyReplayWork();
     try {
       const injectedSeqs: number[] = [];
       let queuedMessageProcessed = false;
@@ -3002,6 +3134,7 @@ describe("terminal output retained from the data plane", () => {
       expect(retainedSeqs).toEqual(expectedSeqs);
       expect(new Set(retainedSeqs).size).toBe(retainedSeqs.length);
     } finally {
+      replayClock.mockRestore();
       replayYieldControl.intercept = null;
       if (yieldHeld) releaseYield();
       queue.close();
@@ -3013,6 +3146,7 @@ describe("terminal output retained from the data plane", () => {
   it("persists data-plane output recorded during replay on the post-replay flush", async () => {
     const fixture = await setup();
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const replayClock = simulateBusyReplayWork();
     try {
       fixture.terminalSessions.recordDirectTerminalOutputBatch({
         daemonSessionId: fixture.session.id,
@@ -3077,6 +3211,7 @@ describe("terminal output retained from the data plane", () => {
         expect.arrayContaining(injectedSeqs),
       );
     } finally {
+      replayClock.mockRestore();
       vi.useRealTimers();
       fixture.child.shutdown();
     }

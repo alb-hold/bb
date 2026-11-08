@@ -18,7 +18,10 @@ export type ChildTerminalBroadcastMessage = Extract<
 >;
 
 export type ChildTerminalReplyMessage =
-  | Extract<TerminalServerMessage, { type: "features" | "resize-applied" }>
+  | Extract<
+      TerminalServerMessage,
+      { type: "features" | "resize-applied" | "error" }
+    >
   | Extract<TerminalServerMessage, { type: "session-updated" }>;
 
 export interface ChildTerminalSocketSink {
@@ -74,6 +77,10 @@ export class ChildTerminalSocket {
       case "resize-applied":
         this.sink.reply(this.attachId, message);
         return;
+      case "error":
+        this.flushReplay();
+        this.sink.reply(this.attachId, message);
+        return;
       case "attached":
         this.collecting = {
           chunks: [],
@@ -100,7 +107,6 @@ export class ChildTerminalSocket {
         this.sink.relayOutput(this.terminalId, message.chunk);
         return;
       case "exited":
-      case "error":
         if (this.collecting !== null) {
           this.collecting.trailing.push(message);
           return;

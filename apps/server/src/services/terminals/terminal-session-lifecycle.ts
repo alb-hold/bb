@@ -138,6 +138,7 @@ const DEFAULT_TERMINAL_START: NonNullable<CreateTerminalRequest["start"]> = {
 const HOST_HOME_INITIAL_CWD = "~";
 const TERMINAL_SCROLLBACK_MAX_BYTES = 4 * 1024 * 1024;
 const TERMINAL_REPLAY_PREPARE_BYTES_PER_TICK = 64 * 1024;
+const TERMINAL_REPLAY_ACTIVE_MS_PER_TICK = 10;
 const TERMINAL_EXIT_RETENTION_MINUTES = Math.round(
   TERMINAL_OUTPUT_RETENTION_MS / 60_000,
 );
@@ -3810,11 +3811,10 @@ export class TerminalSessionLifecycle {
       }
     };
     let preparedBytes = 0;
-    let preparedChunks = 0;
+    let preparationStartedAt = performance.now();
     const prepareChunk = (chunk: TerminalOutputChunk): void => {
       retainTail(chunk);
       preparedBytes += Buffer.byteLength(chunk.dataBase64, "base64");
-      preparedChunks += 1;
     };
     const capturePendingChunks = (): void => {
       if (!current) return;
@@ -3839,13 +3839,14 @@ export class TerminalSessionLifecycle {
           persistedPendingChunks.get(batch.batch)?.add(chunk);
           if (
             preparedBytes >= TERMINAL_REPLAY_PREPARE_BYTES_PER_TICK ||
-            preparedChunks >= 256
+            performance.now() - preparationStartedAt >=
+              TERMINAL_REPLAY_ACTIVE_MS_PER_TICK
           ) {
             await yieldToEventLoop();
+            preparationStartedAt = performance.now();
             if (!checkReplayAfterYield()) return;
             capturePendingChunks();
             preparedBytes = 0;
-            preparedChunks = 0;
           }
         }
       }
@@ -3859,17 +3860,17 @@ export class TerminalSessionLifecycle {
         prepareChunk(toTerminalOutputChunk(rebased));
       } else {
         preparedBytes += chunkBytes;
-        preparedChunks += 1;
       }
       if (
         preparedBytes >= TERMINAL_REPLAY_PREPARE_BYTES_PER_TICK ||
-        preparedChunks >= 256
+        performance.now() - preparationStartedAt >=
+          TERMINAL_REPLAY_ACTIVE_MS_PER_TICK
       ) {
         await yieldToEventLoop();
+        preparationStartedAt = performance.now();
         if (!checkReplayAfterYield()) return;
         capturePendingChunks();
         preparedBytes = 0;
-        preparedChunks = 0;
       }
     }
 
@@ -4698,10 +4699,12 @@ export class TerminalSessionLifecycle {
     chunks: TerminalReplayMessage["chunks"],
     timing: { yieldMs: number },
   ): Promise<TerminalReplayMessage["chunks"]> {
+    let activeStartedAt = performance.now();
     const yieldScan = async () => {
       const startedAt = performance.now();
       await yieldToEventLoop();
       timing.yieldMs += performance.now() - startedAt;
+      activeStartedAt = performance.now();
     };
     const markerPending = this.pendingHolderMarkers.has(current.id);
     const marker = Buffer.from(
@@ -4736,7 +4739,6 @@ export class TerminalSessionLifecycle {
         outputLengths[targetIndex] = targetOffset;
       }
     };
-    let rowsRead = 0;
     let bytesRead = 0;
     for (const chunk of chunks) {
       runEventLoopWorkSync(
@@ -4760,15 +4762,14 @@ export class TerminalSessionLifecycle {
             emit(scan.subarray(offset, markerOffset));
             offset = markerOffset + marker.length;
           }
-          rowsRead += 1;
           bytesRead += data.length;
         },
       );
       if (
-        rowsRead >= 256 ||
-        bytesRead >= TERMINAL_REPLAY_PREPARE_BYTES_PER_TICK
+        bytesRead >= TERMINAL_REPLAY_PREPARE_BYTES_PER_TICK ||
+        performance.now() - activeStartedAt >=
+          TERMINAL_REPLAY_ACTIVE_MS_PER_TICK
       ) {
-        rowsRead = 0;
         bytesRead = 0;
         await yieldScan();
       }
@@ -4807,6 +4808,7 @@ export class TerminalSessionLifecycle {
     );
     const outputChunks: TerminalReplayMessage["chunks"] = [];
     let outputBytes = 0;
+    activeStartedAt = performance.now();
     for (const [index, chunk] of chunks.entries()) {
       runEventLoopWorkSync(
         "ws:daemon terminal.replay holder-marker-output",
@@ -4823,8 +4825,9 @@ export class TerminalSessionLifecycle {
         },
       );
       if (
-        (index + 1) % 256 === 0 ||
-        outputBytes >= TERMINAL_REPLAY_PREPARE_BYTES_PER_TICK
+        outputBytes >= TERMINAL_REPLAY_PREPARE_BYTES_PER_TICK ||
+        performance.now() - activeStartedAt >=
+          TERMINAL_REPLAY_ACTIVE_MS_PER_TICK
       ) {
         outputBytes = 0;
         await yieldScan();
@@ -5063,6 +5066,8 @@ export class TerminalSessionLifecycle {
   }
 
   private logReplayAttribution(fields: {
+    failureCode?: string;
+    failureMessage?: string;
     timings?: {
       daemonMs: number | null;
       holderScanMs: number;
@@ -5098,8 +5103,19 @@ export class TerminalSessionLifecycle {
     socket: TerminalClientSocket,
     outcome: string,
     requestId: string | null = null,
+    error?: Error,
   ): void {
     this.logReplayAttribution({
+      ...(error === undefined
+        ? {}
+        : {
+            failureCode:
+              error instanceof ApiError
+                ? error.body.code
+                : "terminal_attach_failed",
+            failureMessage:
+              error instanceof ApiError ? error.body.message : error.message,
+          }),
       path: `${this.directOutputSockets.has(socket) ? "data-plane" : "websocket"}/${outcome}`,
       callers: ["terminal-attach"],
       daemonSessionId: session.daemonSessionId,
@@ -5132,6 +5148,7 @@ export class TerminalSessionLifecycle {
   private attributeFailedAttach(
     pending: PendingTerminalAttachKey,
     outcome: string,
+    error?: Error,
   ): void {
     if (this.attributedAttachFailures.has(pending.rpcKey)) return;
     const session = getTerminalById(this.options.db, pending.terminalId);
@@ -5152,6 +5169,7 @@ export class TerminalSessionLifecycle {
       pending.socket,
       outcome,
       pending.requestId,
+      error,
     );
   }
 
@@ -5162,6 +5180,7 @@ export class TerminalSessionLifecycle {
     this.attributeFailedAttach(
       pending,
       error === TERMINAL_ATTACH_CANCELLED ? "cancelled" : "failed",
+      error,
     );
     if (error === TERMINAL_ATTACH_CANCELLED) {
       return;
@@ -5180,6 +5199,7 @@ export class TerminalSessionLifecycle {
         error instanceof ApiError ? error.body.code : "terminal_attach_failed",
       message: error instanceof ApiError ? error.body.message : error.message,
     });
+    pending.socket.close(1013, "attach-failed");
   }
 
   private sendTerminalSocketError(args: SendTerminalSocketErrorArgs): void {
