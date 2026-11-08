@@ -441,7 +441,7 @@ describe("mobile recent thread rows", () => {
     expect(metadata.classList.contains("text-subtle-foreground")).toBe(true);
     expect(metadata.className).not.toContain("pointer-coarse:text-sm");
     expect(metadata.querySelector("[data-icon]")).toBeNull();
-    expect(metadata.firstElementChild?.classList.contains("size-4")).toBe(true);
+    expect(metadata.classList.contains("pl-5.5")).toBe(true);
   });
 
   it.each([
@@ -486,10 +486,8 @@ describe("mobile recent thread rows", () => {
     expect(branchNode.classList.contains("min-w-0")).toBe(true);
     expect(branchNode.classList.contains("truncate")).toBe(true);
     expect(metadata.classList.contains("leading-4")).toBe(true);
-    expect(metadata.firstElementChild?.classList.contains("size-4")).toBe(true);
-    expect(metadata.firstElementChild?.getAttribute("aria-hidden")).toBe(
-      "true",
-    );
+    expect(metadata.classList.contains("pl-5.5")).toBe(true);
+    expect(metadata.querySelector('[role="img"]')).toBeNull();
   });
 
   it("caps the project and reserves the age beside a short branch", () => {

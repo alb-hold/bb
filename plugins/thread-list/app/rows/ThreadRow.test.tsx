@@ -608,25 +608,17 @@ describe("ThreadRow", () => {
     ["Workspace", createThread({ environment: makeSidebarEnvironment({ isWorktree: false }) })],
     ["Worktree", createThread({ environment: makeSidebarEnvironment({ isWorktree: true }) })],
     ["Native terminal", createThread({ experimental_nativeTerminal: true, experimental_nativeActivity: { lastEvidenceAt: null, freshForMs: 90_000, confirmation: "unconfirmed", evidenceKind: "unknown" } })],
-  ] as const)("keeps one subdued leading metadata glyph slot for %s", (label, thread) => {
+  ] as const)("reserves one title glyph slot and no metadata glyph slot for %s", (label, thread) => {
     const view = renderThreadRow({ thread });
     const context = view.container.querySelector("[data-sidebar-thread-context]");
-    const slot = context?.firstElementChild;
-    expect(context?.classList.contains("text-muted-foreground")).toBe(true);
-    expect(context?.classList.contains("font-normal")).toBe(true);
-    expect(context?.classList.contains("text-xs")).toBe(true);
+    const slot = view.container.querySelector("[data-thread-title-mode]");
     expect(slot?.classList.contains("size-4")).toBe(true);
-    if (label === "Worktree") {
-      expect(slot?.getAttribute("role")).toBe("img");
-      expect(slot?.getAttribute("aria-label")).toBe(label);
-      expect(slot?.querySelector("[data-icon]")?.getAttribute("data-icon")).toBe("FolderGit");
-      expect(slot?.querySelector("[data-icon]")?.classList.contains("size-4")).toBe(true);
+    expect(context?.querySelector('[role="img"]')).toBeNull();
+    expect(context?.classList.contains("pl-5")).toBe(true);
+    if (label !== "Workspace") {
+      expect(screen.getByRole("img", { name: label }).closest("[data-thread-title-mode]")).toBe(slot);
     } else {
-      expect(slot?.getAttribute("aria-hidden")).toBe("true");
       expect(slot?.querySelector("[data-icon]")).toBeNull();
-      if (label === "Native terminal") {
-        expect(screen.getByRole("img", { name: label }).closest(".bb-thread-title")).not.toBeNull();
-      }
     }
     expect(context?.classList.contains("md:text-sm")).toBe(true);
   });
@@ -3226,9 +3218,9 @@ const visible = (element) => {
 };
 const layout = {
   innerWidth: window.innerWidth,
-  context: context && context.children.length > 1 ? {
-    textLeft: box(context.children[1]).left,
-    glyphWidth: box(context.children[0]).width,
+  context: context && context.firstElementChild ? {
+    textLeft: box(context.firstElementChild).left,
+    glyphWidth: box(document.querySelector("[data-thread-title-mode]")).width,
   } : null,
   row: box(document.querySelector("[data-sidebar-rename-row]")),
   link: box(document.querySelector("[data-sidebar-thread-id]")),
@@ -3740,16 +3732,16 @@ it("uses regular desktop weight for inactive rows and medium for attention", () 
   expect(metadata.className).toContain("md:text-subtle-foreground");
 });
 
-it("reserves an equal metadata slot for chat, worktree and terminal rows", () => {
+it("reserves an equal title slot for chat, worktree and terminal rows", () => {
   const view = renderThreadRow({ thread: createThread({ environment: null }) });
   const slot = () =>
-    view.container.querySelector("[data-sidebar-thread-context]")!
+    view.container.querySelector("[data-thread-title-mode]")!
       .firstElementChild!;
   expect(slot().classList.contains("size-4")).toBe(true);
   expect(slot().getAttribute("aria-hidden")).toBe("true");
   expect(slot().querySelector("[data-icon]")).toBeNull();
   view.rerenderThreadRow(createThread({ experimental_nativeTerminal: true }));
-  expect(slot().getAttribute("aria-hidden")).toBe("true");
+  expect(slot().getAttribute("aria-label")).toBe("Native terminal");
   expect(screen.getByRole("img", { name: "Native terminal" }).closest(".bb-thread-title")).not.toBeNull();
   expect(
     screen.getByRole("img", { name: "Native terminal" }).querySelector("[data-icon]")?.classList.contains("size-4"),
