@@ -4414,7 +4414,10 @@ export function ThreadTerminalView({
           className={attentionShownAsBanner ? "py-0" : undefined}
           controlActive={controlActive}
           disabled={!terminalReady || session.status !== "running"}
-          readOnlyDisabled={!terminalReady}
+          readOnlyDisabled={
+            !terminalReady ||
+            (session.status !== "running" && session.status !== "exited")
+          }
           onControlChange={(active) => {
             changeControlActive(active);
             if (active) terminalRef.current?.focus();
