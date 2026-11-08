@@ -36,6 +36,7 @@
   --color-muted: var(--muted);
   --color-muted-foreground: var(--muted-foreground);
   --color-subtle-foreground: var(--subtle-foreground);
+  --color-sidebar-metadata-foreground: var(--sidebar-metadata-foreground);
   /* Cadence (thread design refresh): a recede tier between muted and subtle for
    * settled/closed-turn machinery, and a text-only destructive that clears AA in
    * dark mode (the --destructive fill is below the 4.5:1 text floor there). */
@@ -519,6 +520,7 @@
    * while keeping muted darker than subtle so the hierarchy survives. */
   --muted-foreground: oklch(0.44 0 0);
   --subtle-foreground: oklch(0.5 0 0);
+  --sidebar-metadata-foreground: color-mix(in oklch, var(--ink) 67%, var(--canvas));
   /* Recede tier between muted (7.77:1) and subtle (6.00:1); ~6.83:1 on white. */
   --readback-foreground: oklch(0.47 0 0);
   /* The version an update would move you to. Its own role rather than plain
@@ -772,6 +774,7 @@
   --muted: color-mix(in oklch, var(--ink) 16%, var(--canvas));
   --muted-foreground: oklch(0.78 0 0);
   --subtle-foreground: oklch(0.68 0 0);
+  --sidebar-metadata-foreground: color-mix(in oklch, var(--ink) 72%, var(--canvas));
   /* Recede tier between muted (9.14:1) and subtle (6.35:1); ~7.24:1 on canvas. */
   --readback-foreground: oklch(0.715 0 0);
   /* See the light block: the version an update would move you to. */
@@ -798,7 +801,7 @@
   --diff-removed: oklch(0.72 0.19 22);
   --pr-merged: oklch(0.68 0.18 295);
   --brand-discord: var(--foreground);
-  --border: color-mix(in oklch, var(--ink) 19.4%, var(--canvas));
+  --border: color-mix(in oklch, var(--ink) 24%, var(--canvas));
   --border-hairline: color-mix(in oklch, var(--ink) 21%, var(--canvas));
   /* One app-shell seam for top nav, sidebar, split, and panel boundaries. */
   --border-seam: color-mix(in oklch, var(--ink) 11%, var(--canvas));

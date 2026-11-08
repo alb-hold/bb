@@ -209,7 +209,7 @@ export function TopLevelSidebarSection({
       data-sidebar-rename-row=""
       data-sidebar-sticky-header={stickyHeader ? undefined : "false"}
       className={cn(
-        "group/sidebar-section relative min-w-0 rounded-md transition-colors",
+        "group/sidebar-section relative min-w-0 md:pt-2 rounded-md transition-colors",
         isDropTargetActive && "bg-sidebar-accent/60",
       )}
       onClickCapture={handleClickCapture}

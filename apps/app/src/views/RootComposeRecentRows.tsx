@@ -117,9 +117,7 @@ export function RecentThreadRowContent({
     <>
       <span className="min-w-0 flex-1 space-y-0.5">
         <span className="flex min-w-0 items-center gap-1.5">
-          {thread.nativeTerminal === true ? (
-            <ThreadModeGlyph nativeTerminal isWorktree={false} />
-          ) : null}
+          <span className="inline-flex size-4 shrink-0 text-foreground" data-thread-title-mode=""><ThreadModeGlyph nativeTerminal={thread.nativeTerminal === true} isWorktree={thread.environmentIsWorktree === true && thread.nativeTerminal !== true} /></span>
           <ThreadTitle
             title={getThreadDisplayTitle(thread)}
             className={cn("font-normal", COARSE_POINTER_TEXT_BASE_CLASS)}
@@ -127,17 +125,10 @@ export function RecentThreadRowContent({
         </span>
         <span
           className={cn(
-            "flex min-w-0 items-center gap-1.5 text-subtle-foreground text-xs leading-4",
+            "flex min-w-0 items-center gap-1.5 pl-5.5 text-subtle-foreground text-xs leading-4",
           )}
           title={metadataText}
         >
-          <ThreadModeGlyph
-            nativeTerminal={false}
-            isWorktree={
-              thread.environmentIsWorktree === true &&
-              thread.nativeTerminal !== true
-            }
-          />
           <ThreadRowMetadata
             project={metadata.project}
             branch={metadata.branch}
