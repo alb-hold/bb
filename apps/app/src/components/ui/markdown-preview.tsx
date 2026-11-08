@@ -775,14 +775,14 @@ function MarkdownCodeBlock({
   return (
     <div
       data-code-card=""
-      className="my-2 overflow-visible rounded-md border border-border bg-surface-recessed"
+      className="relative my-2 overflow-visible rounded-md border border-border bg-surface-recessed"
     >
       <div
         data-clipboard-ignore
         data-code-actions=""
-        className="flex items-center justify-between pl-3 pr-1.5 pt-1.5"
+        className="absolute right-1.5 top-1.5 flex items-center gap-2"
       >
-        <span className="font-mono text-xs uppercase text-muted-foreground">
+        <span className="sr-only font-mono text-xs uppercase text-muted-foreground">
           {language ?? ""}
         </span>
         <div className="flex items-center gap-0.5">
@@ -816,7 +816,7 @@ function MarkdownCodeBlock({
       </div>
       <pre
         className={cn(
-          "bb-code-highlight px-3 pb-3 pt-1",
+          "bb-code-highlight px-3 py-3 pr-28",
           softWrap
             ? "whitespace-pre-wrap [overflow-wrap:anywhere]"
             : "overflow-x-auto",
