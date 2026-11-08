@@ -526,7 +526,7 @@ function UserConversationMessage({
     <div className="@container w-full" data-message-column="">
       <div
         {...touchActions}
-        className="group/message focus-visible:outline-2 focus-visible:outline-ring ml-auto flex w-fit max-w-[70%] flex-col items-end"
+        className="group/message focus-visible:outline-2 focus-visible:outline-ring ml-auto flex w-fit max-w-[88%] md:max-w-[70%] flex-col items-end"
       >
         {requestLabel ? (
           <div className="mb-1 flex items-center justify-end gap-2">
