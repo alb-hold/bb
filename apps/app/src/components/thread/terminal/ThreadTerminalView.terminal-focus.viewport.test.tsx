@@ -514,7 +514,7 @@ describe("ThreadTerminalView terminal viewport and focus", () => {
     renderMobileTerminal();
     await waitFor(() => expect(terminal?.options.lineHeight).toBe(1.22));
     await waitFor(() => {
-      expect(terminal?.options.cursorInactiveStyle).toBe("none");
+      expect(terminal?.options.cursorInactiveStyle).toBe("outline");
       expect(terminal?.options.cursorStyle).toBe("block");
     });
   });
