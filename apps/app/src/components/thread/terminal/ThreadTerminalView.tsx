@@ -3529,6 +3529,7 @@ export function ThreadTerminalView({
           { detail: { terminalId: session.id } },
         );
         activeTransport.setParked(nextParked);
+        webglVisibilityRef.current?.sync();
         if (nextParked) {
           releaseParkedTerminalRendering(activeTerminal);
           scheduleParkedOutput();
@@ -3539,7 +3540,6 @@ export function ThreadTerminalView({
           clearTimeout(parkedOutputTimer);
           parkedOutputTimer = null;
         }
-        webglVisibilityRef.current?.sync();
         reportDocumentVisibility();
       };
       if (parkedRef.current) {

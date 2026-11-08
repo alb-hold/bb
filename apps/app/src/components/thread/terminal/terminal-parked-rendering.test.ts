@@ -21,13 +21,21 @@ it("releases parked DOM rows and restores the same terminal buffer and grid", as
     const rendered = () => host.querySelector(".xterm-rows")?.textContent ?? "";
     terminal.refresh(0, terminal.rows - 1);
     await vi.waitFor(() => expect(rendered()).toContain("retained output"));
+    const resized = vi.fn();
+    terminal.onResize(resized);
+    const originalFont = terminal.options.fontFamily;
     for (let cycle = 0; cycle < 3; cycle++) {
+      host.style.display = "none";
       releaseParkedTerminalRendering(terminal);
       expect(rendered()).toBe("");
       expect(terminal.buffer.active.getLine(0)?.translateToString(true)).toBe("retained output");
       expect([terminal.cols, terminal.rows]).toEqual([44, 12]);
+      expect(terminal.options.fontFamily).toBe(originalFont);
+      expect(resized).not.toHaveBeenCalled();
+      host.style.display = "";
       terminal.refresh(0, terminal.rows - 1);
       await vi.waitFor(() => expect(rendered()).toContain("retained output"));
+      expect(resized).not.toHaveBeenCalled();
     }
   } finally {
     terminal.dispose();
