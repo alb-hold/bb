@@ -306,6 +306,130 @@ function scrollTerminalAsUser(terminal: Terminal, line: number): void {
 }
 
 describe("ThreadTerminalView terminal viewport and focus", () => {
+  it.each(["starting", "disconnected", "exited"] as const)(
+    "keeps the ready mobile controls appropriate for a %s session",
+    async (status) => {
+      prepareMobileTerminal();
+      const session = makeTerminalSession({
+        id: "term_mobile_status",
+        status: "running",
+      });
+      const view = (current: typeof session) => (
+        <MemoryRouter>
+          <AppCommandProvider>
+            <ThreadTerminalView
+              autoFocus={false}
+              isPanelOpen
+              session={current}
+            />
+          </AppCommandProvider>
+        </MemoryRouter>
+      );
+      const { rerender } = render(view(session));
+      await waitForReadinessCondition(
+        () =>
+          expect(
+            screen.getByRole<HTMLButtonElement>("button", {
+              name: "More terminal keys",
+            }).disabled,
+          ).toBe(false),
+        "mobile status viewer was not ready",
+      );
+      rerender(view({ ...session, status }));
+      const controls = screen.getByRole("group", {
+        name: "Terminal keyboard controls",
+      });
+      expect(screen.queryByRole("button", { name: "Shift Tab" })).toBeNull();
+      expect(
+        screen.getByRole<HTMLButtonElement>("button", {
+          name: "Escape",
+        }).disabled,
+      ).toBe(true);
+      if (status === "exited") {
+        expect(controls.children).toHaveLength(4);
+        for (const name of [
+          "Previous prompt",
+          "Next prompt",
+          "Select terminal text",
+        ]) {
+          expect(
+            screen.getByRole<HTMLButtonElement>("button", { name }).disabled,
+          ).toBe(false);
+        }
+      } else {
+        expect(controls.children).toHaveLength(1);
+        for (const name of [
+          "Previous prompt",
+          "Next prompt",
+          "Select terminal text",
+        ]) {
+          expect(screen.queryByRole("button", { name })).toBeNull();
+        }
+      }
+    },
+  );
+
+  it("keeps the same collapsed row when switching to a reconnecting terminal", async () => {
+    prepareMobileTerminal();
+    const running = makeTerminalSession({
+      id: "term_mobile_running",
+      status: "running",
+    });
+    const reconnecting = makeTerminalSession({
+      id: "term_mobile_reconnecting",
+      status: "running",
+    });
+    const view = (
+      active: string,
+      status: typeof reconnecting.status = "running",
+    ) => (
+      <MemoryRouter>
+        <AppCommandProvider>
+          {[running, { ...reconnecting, status }].map((session) => (
+            <div key={session.id} hidden={active !== session.id}>
+              <ThreadTerminalView
+                autoFocus={false}
+                isPanelOpen={active === session.id}
+                session={session}
+              />
+            </div>
+          ))}
+        </AppCommandProvider>
+      </MemoryRouter>
+    );
+    const { rerender } = render(view(reconnecting.id));
+    const waitUntilReady = () =>
+      waitForReadinessCondition(
+        () =>
+          expect(
+            screen.getByRole<HTMLButtonElement>("button", {
+              name: "More terminal keys",
+            }).disabled,
+          ).toBe(false),
+        "switched mobile viewer was not ready",
+      );
+    await waitUntilReady();
+    rerender(view(running.id));
+    await waitUntilReady();
+    const runningControls = screen.getByRole("group", {
+      name: "Terminal keyboard controls",
+    });
+    expect(runningControls.children).toHaveLength(1);
+    const collapsedClass = runningControls.className;
+    for (const active of [reconnecting.id, running.id, reconnecting.id]) {
+      rerender(view(active, "disconnected"));
+      const controls = screen.getByRole("group", {
+        name: "Terminal keyboard controls",
+      });
+      expect(controls.className).toBe(collapsedClass);
+      expect(controls.children).toHaveLength(1);
+      expect(screen.queryByRole("button", { name: "Shift Tab" })).toBeNull();
+      expect(
+        screen.queryByRole("button", { name: "Select terminal text" }),
+      ).toBeNull();
+    }
+  });
+
   it.each([true, false])(
     "leaves one header search action in a native pane with touch=%s",
     async (touch) => {
