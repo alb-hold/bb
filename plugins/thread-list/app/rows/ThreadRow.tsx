@@ -491,6 +491,7 @@ function renderThreadActionsTrigger(props: PluginThreadActionsTriggerProps) {
         "rounded-md p-0",
         "data-[state=open]:bg-state-active data-[state=open]:text-foreground",
         SIDEBAR_CONTROL_BUTTON_CLASS,
+        "max-md:pointer-coarse:min-h-11 max-md:pointer-coarse:min-w-11",
       )}
       aria-label="Thread actions"
       data-thread-actions-trigger=""
@@ -1205,11 +1206,13 @@ function ThreadRowComponent({
           >
             <SidebarRowControls
               primaryAction={
-                <ThreadRowQuickActions
-                  entries={quickActions}
-                  className={SIDEBAR_CONTROL_BUTTON_CLASS}
-                  onMenuOpenChange={setIsDropdownActionsOpen}
-                />
+                isCompactViewport ? null : (
+                  <ThreadRowQuickActions
+                    entries={quickActions}
+                    className={SIDEBAR_CONTROL_BUTTON_CLASS}
+                    onMenuOpenChange={setIsDropdownActionsOpen}
+                  />
+                )
               }
             >
               <ThreadActionsMenu

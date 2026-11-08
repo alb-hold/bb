@@ -1270,6 +1270,37 @@ describe("ThreadRow", () => {
     expect(container.querySelector('[aria-label="Working"]')).toBeNull();
   });
 
+  it.each([
+    { label: "Working", state: { status: "active", runtimeStatus: "active" } },
+    { label: "Needs input", state: { hasPendingInteraction: true } },
+    {
+      label: "Check terminal",
+      state: { indicator: "check-terminal", experimental_nativeTerminal: true },
+    },
+  ] as const)(
+    "keeps $label visible with one compact action and reachable Archive",
+    async ({ label, state }) => {
+      const ran: RanThreadAction[] = [];
+      const { container } = renderThreadRow({
+        isCompactViewport: true,
+        thread: createThread(state),
+        threadActions: hostThreadActions({ ran }),
+      });
+      expect(screen.queryByRole("button", { name: "Archive" })).toBeNull();
+      const controls = container.querySelector("[data-sidebar-row-controls]")!;
+      expect(controls.querySelectorAll("button")).toHaveLength(1);
+      expectPersistentRowMetadata(screen.getByRole("img", { name: label }));
+      fireEvent.click(screen.getByRole("button", { name: "Thread actions" }));
+      fireEvent.click(await screen.findByRole("menuitem", { name: "Archive" }));
+      await waitFor(() =>
+        expect(ran).toEqual([
+          { key: "bb--core/archive", threadId: "thr_test" },
+        ]),
+      );
+      expectPersistentRowMetadata(screen.getByRole("img", { name: label }));
+    },
+  );
+
   it.each(
     [false, true].flatMap((isCompactViewport) =>
       (["Working", "Done"] as const).flatMap((statusLabel) =>
@@ -1299,14 +1330,16 @@ describe("ThreadRow", () => {
       const row = container.querySelector<HTMLElement>(
         "[data-sidebar-rename-row]",
       )!;
-      const archive = screen.getByRole("button", { name: "Archive" });
+      const archive = screen.queryByRole("button", { name: "Archive" });
+      expect(archive === null).toBe(isCompactViewport);
       const menu = screen.getByRole("button", { name: "Thread actions" });
       if (state === "hover") {
         fireEvent.pointerEnter(row, { pointerType: "mouse" });
         fireEvent.mouseOver(row);
       } else if (state === "focus") {
-        act(() => archive.focus());
-        expect(document.activeElement).toBe(archive);
+        const target = archive ?? menu;
+        act(() => target.focus());
+        expect(document.activeElement).toBe(target);
       } else if (state === "menu-open") {
         fireEvent.click(menu);
         await screen.findByRole("menuitem", { name: "Rename" });
@@ -1345,7 +1378,7 @@ describe("ThreadRow", () => {
         "truncate",
       );
       expect(
-        archive.closest(".bb-sidebar-hover-actions")?.classList,
+        menu.closest(".bb-sidebar-hover-actions")?.classList,
       ).not.toContain("absolute");
       if (isCompactViewport) {
         expect(
@@ -1891,8 +1924,12 @@ describe("ThreadRow", () => {
       fireEvent.click(screen.getByRole("button", { name: "Thread actions" }));
       fireEvent.click(await screen.findByRole("menuitem", { name: "Rename" }));
       await expectRenamePresentation(menu);
-      fireEvent.click(screen.getByRole("button", { name: "Rename" }));
-      await expectRenamePresentation(direct);
+      if (compact) {
+        expect(screen.queryByRole("button", { name: "Rename" })).toBeNull();
+      } else {
+        fireEvent.click(screen.getByRole("button", { name: "Rename" }));
+        await expectRenamePresentation(direct);
+      }
       fireEvent.doubleClick(screen.getByText("Thread"));
       await expectRenamePresentation(doubleClick);
     },
