@@ -1916,6 +1916,7 @@ export function ThreadTerminalView({
     });
     if (initialRendererSettled) resolveRendererSettled();
     let initialLayoutSettled = false;
+    let initialFitComplete = false;
     let retainedOutputReplayed = sessionStatusRef.current !== "exited";
     let retainedOutputGrid: TerminalGridSize | null = null;
     let latestPtyGrid: TerminalGridSize = {
@@ -2047,6 +2048,7 @@ export function ThreadTerminalView({
     ): Promise<void> {
       containerElement.style.opacity = "0";
       let paddingLeft = "0px";
+      let horizontalPadding = 0;
       const needsFittedGrid = () =>
         holdForFittedGrid && sessionStatusRef.current !== "exited";
       const fittedGridReady = () => {
@@ -2131,6 +2133,10 @@ export function ThreadTerminalView({
         const displayGrid = retainedOutputGrid ?? latestPtyGrid;
         const canReveal =
           localFitGrid !== null &&
+          (sessionStatusRef.current === "exited" ||
+            initialFitComplete ||
+            (terminal.cols === localFitGrid.cols &&
+              terminal.rows === localFitGrid.rows)) &&
           (!retainNativeOutput ||
             sessionStatusRef.current !== "exited" ||
             retainedOutputGrid !== null) &&
@@ -2184,7 +2190,8 @@ export function ThreadTerminalView({
             !scrollRetainedOutput && !needsFittedGrid(),
           );
         }
-        const rendererWidth = containerElement.getBoundingClientRect().width;
+        const rendererWidth =
+          containerElement.getBoundingClientRect().width - horizontalPadding;
         const paintedWidth =
           terminal.element
             ?.querySelector<HTMLElement>(".xterm-screen")
@@ -2193,11 +2200,11 @@ export function ThreadTerminalView({
           rendererWidth > 0 &&
           (scrollRetainedOutput || paintedWidth <= rendererWidth + 1);
         if (canReveal && widthFits) {
-          containerElement.style.opacity = "";
           if (replayCompleted && replayPreview !== null) {
             replayPreview.dispose();
             replayPreview = null;
           }
+          containerElement.style.opacity = "";
           return;
         }
       };
@@ -2400,9 +2407,13 @@ export function ThreadTerminalView({
       markTerminalPerformance("terminal-xterm-open-start");
       terminal.open(containerElement);
       terminal.element?.classList.add("bg-sidebar");
-      paddingLeft = getComputedStyle(
+      const rendererStyle = getComputedStyle(
         terminal.element ?? containerElement,
-      ).paddingLeft;
+      );
+      paddingLeft = rendererStyle.paddingLeft;
+      horizontalPadding =
+        (parseFloat(paddingLeft) || 0) +
+        (parseFloat(rendererStyle.paddingRight) || 0);
       markTerminalPerformance("terminal-xterm-open-end");
       if (initialRendererSettled)
         markTerminalPerformance("terminal-initial-renderer-settled");
@@ -2734,6 +2745,7 @@ export function ThreadTerminalView({
             )
               fittedGridFallback = false;
             localFitGrid = { cols: fitted.cols, rows: fitted.rows };
+            if (initialLayoutSettled) initialFitComplete = true;
             containerElement.dataset.fitGridCols = String(fitted.cols);
             containerElement.dataset.fitGridRows = String(fitted.rows);
             if (replayPreview)

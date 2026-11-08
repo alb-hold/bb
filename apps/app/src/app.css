@@ -816,8 +816,13 @@
   padding-right: 8px;
 }
 
+:where([data-app-terminal] .xterm) .xterm-scrollable-element {
+  container-type: inline-size;
+}
+
 :where([data-app-terminal] .xterm) .xterm-screen {
-  margin-inline: auto;
+  margin-inline: 0;
+  translate: max(0px, calc((100cqw - 100%) / 2)) 0;
 }
 
 :where(.xterm) .xterm-viewport {
