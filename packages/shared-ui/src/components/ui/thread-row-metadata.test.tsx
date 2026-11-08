@@ -59,7 +59,7 @@ it("preserves the capped project and age, dropping a branch below six visible ch
   width = 183;
   act(() => notify());
   expect(branch()?.textContent).toBe("bb/harden-input");
-  expect(view.container.textContent).toBe("waggle-cli · bb/harden-input · 3d");
+  expect(view.container.textContent).toBe("waggle-cli · bb/harden-input· 3d");
   width = 182;
   act(() => notify());
   expect(branch()).toBeNull();
