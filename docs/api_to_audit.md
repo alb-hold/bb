@@ -4917,3 +4917,14 @@ the same mode for their shared Terminal / FolderGit / Folder glyph. Sidebar
 bootstrap caching retains the source field; `bb thread get --json` exposes it
 as `nativeTerminal`. Stabilize after auditing all sidebar renderers and idle,
 active, and cached native terminal rows across desktop and phone.
+
+## Internal git diff parser loader
+
+`internal_DO_NOT_USE_loadGitDiffParser` is first-party plumbing for bb--git's
+file cards, through shared-ui's lazy parser bridge. It loads the same parsing
+module used by core PluginDiff and BbDiff on the first expanded, loaded patch.
+The opaque module namespace is checked for its parser function at the bridge;
+this keeps Pierre implementation types out of the SDK contract. The existing
+full `pierreDiffs` runtime slot and its synchronous exports remain unchanged for
+legacy and third-party plugins. Stabilization requires a public patch-metadata
+contract and parser failure/retry coverage. It is not a Plugin Guide surface.

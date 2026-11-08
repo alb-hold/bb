@@ -5491,6 +5491,7 @@ export interface ExperimentalServers {
  * shims the specifier to that object on `globalThis.__bbPluginRuntime`.
  */
 export interface PluginSdkApp {
+  internal_DO_NOT_USE_loadGitDiffParser(): Promise<unknown>;
   internal_DO_NOT_USE_loadComposerPasteParser(): Promise<{
     findPastedThreadLinks(args: {
       text: string;

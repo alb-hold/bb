@@ -33,6 +33,12 @@ const TEXT_PATCH = [
   "",
 ].join("\n");
 
+vi.mock("@get-bb/plugin-sdk/app", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@get-bb/plugin-sdk/app")>()),
+  internal_DO_NOT_USE_loadGitDiffParser: () =>
+    import("@bb/shared-ui/git-diff/parsing"),
+}));
+
 function buildEntry(overrides: Partial<DiffFileEntry> = {}): DiffFileEntry {
   return makeDiffFileEntry({
     additions: 1,
@@ -189,7 +195,11 @@ describe("DiffFileCard", () => {
       isViewedDisabled: false,
       onViewedChange: () => {},
       entry: buildEntry(),
-      presentation: { view: "unified", overflow: "scroll", showLineNumbers: true },
+      presentation: {
+        view: "unified",
+        overflow: "scroll",
+        showLineNumbers: true,
+      },
       isCollapsed: false,
       onToggleCollapsed: () => {},
       patchState: { status: "loaded", patch: "" },

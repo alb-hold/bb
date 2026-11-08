@@ -156,6 +156,8 @@ function PanelTabIcon({ tabKey }: ExperimentalPanelTabIconProps) {
 }
 
 export const pluginSdkAppImplementation = {
+  internal_DO_NOT_USE_loadGitDiffParser: () =>
+    import("@bb/shared-ui/git-diff/parsing"),
   internal_DO_NOT_USE_loadComposerPasteParser: () =>
     import("../../../../plugins/composer/src/mentions/pasted-thread-links"),
   experimental_getApplicationLinkApprovals: applicationLinkApprovals.list,

@@ -1,10 +1,5 @@
 // @vitest-environment jsdom
-import {
-  cleanup,
-  fireEvent,
-  screen,
-  waitFor,
-} from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { POINTER_COARSE_QUERY } from "@bb/shared-ui/hooks/use-pointer-coarse";
@@ -16,14 +11,21 @@ import type { DiffFileEntry } from "../../contract.js";
 import { DiffFileCard, type DiffFileCardProps } from "./DiffFileCard.js";
 import { makeDiffFileEntry } from "./diff-file-fixtures.js";
 
+vi.mock("@get-bb/plugin-sdk/app", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@get-bb/plugin-sdk/app")>()),
+  internal_DO_NOT_USE_loadGitDiffParser: () =>
+    import("@bb/shared-ui/git-diff/parsing"),
+}));
+
 function findDiffView() {
   return screen.findByTestId("bb-diff");
 }
 
 function hasFullFileContents(): boolean {
   return (
-    screen.getByTestId("bb-diff").getAttribute("data-has-full-file-contents") ===
-    "true"
+    screen
+      .getByTestId("bb-diff")
+      .getAttribute("data-has-full-file-contents") === "true"
   );
 }
 
@@ -78,16 +80,19 @@ function textResult(contents: string, name: string): DiffFileContentsResult {
 }
 
 function stubPointer(kind: "coarse" | "fine") {
-  vi.stubGlobal("matchMedia", (query: string): MediaQueryList => ({
-    matches: kind === "coarse" && query === POINTER_COARSE_QUERY,
-    media: query,
-    onchange: null,
-    addListener: () => {},
-    removeListener: () => {},
-    addEventListener: () => {},
-    removeEventListener: () => {},
-    dispatchEvent: () => false,
-  }));
+  vi.stubGlobal(
+    "matchMedia",
+    (query: string): MediaQueryList => ({
+      matches: kind === "coarse" && query === POINTER_COARSE_QUERY,
+      media: query,
+      onchange: null,
+      addListener: () => {},
+      removeListener: () => {},
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => false,
+    }),
+  );
 }
 
 function cardProps(

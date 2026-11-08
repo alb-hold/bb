@@ -9,7 +9,7 @@ import { formatByteSize } from "../../lib/format-byte-size";
 import { cn } from "../../lib/utils";
 import { GitDiffCopyButton } from "./renderers";
 import type { DiffImageSizeStat } from "./GitDiffCardBody";
-import type { GitDiffFileChangeKind } from "./git-diff-parsing";
+import type { GitDiffFileChangeKind } from "./git-diff-metadata";
 
 export interface GitDiffCardHeaderModel {
   label: string;

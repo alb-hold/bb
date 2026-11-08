@@ -1,3 +1,4 @@
+import { loadGitDiffParser } from "@bb/shared-ui/git-diff/lazy-parser";
 import { DiffLoadingSkeleton } from "@bb/shared-ui/diff-loading-skeleton";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { useIntersectionObserver } from "usehooks-ts";
@@ -24,9 +25,8 @@ import {
 import {
   isPreviewableImagePath,
   isSvgGitDiffFile,
-  parseGitDiffFiles,
   type ParsedGitDiffFile,
-} from "@bb/shared-ui/git-diff/parsing";
+} from "@bb/shared-ui/git-diff/metadata";
 import { Button } from "@bb/shared-ui/button";
 import { Checkbox } from "@bb/shared-ui/checkbox";
 import { FilePathLink } from "@bb/shared-ui/file-path-link";
@@ -271,12 +271,42 @@ export const DiffFileCard = memo(function DiffFileCard({
   onRequestFileContents,
 }: DiffFileCardProps) {
   const headerModel = useMemo(() => buildDiffEntryHeaderModel(entry), [entry]);
+  const [parser, setParser] = useState<Awaited<
+    ReturnType<typeof loadGitDiffParser>
+  > | null>(null);
+  const [parserFailed, setParserFailed] = useState(false);
+  useEffect(() => {
+    if (isCollapsed || patchState.status !== "loaded" || !patchState.patch)
+      return;
+    let current = true;
+    setParserFailed(false);
+    void loadGitDiffParser().then(
+      (loaded) => {
+        if (current) setParser(loaded);
+      },
+      () => {
+        if (current) setParserFailed(true);
+      },
+    );
+    return () => {
+      current = false;
+    };
+  }, [isCollapsed, patchState.patch, patchState.status]);
+  const parsing =
+    patchState.status === "loaded" &&
+    Boolean(patchState.patch) &&
+    parser === null;
+  const bodyPatchState: DiffPatchState = parsing
+    ? parserFailed
+      ? { status: "error", error: "Failed to load this file's diff." }
+      : { status: "loading" }
+    : patchState;
   const parsedFile = useMemo<ParsedGitDiffFile | null>(() => {
     if (patchState.status !== "loaded" || patchState.patch === undefined) {
       return null;
     }
-    return parseGitDiffFiles(patchState.patch)[0] ?? null;
-  }, [patchState.patch, patchState.status]);
+    return parser?.parseGitDiffFiles(patchState.patch)[0] ?? null;
+  }, [parser, patchState.patch, patchState.status]);
   const [svgDisplayMode, setSvgDisplayMode] =
     useState<GitDiffCardSvgDisplayMode>("preview");
   useEffect(() => {
@@ -387,7 +417,7 @@ export const DiffFileCard = memo(function DiffFileCard({
             presentation={presentation}
             ignoreWhitespace={ignoreWhitespace}
             parsedFile={parsedFile}
-            patchState={patchState}
+            patchState={bodyPatchState}
             svgDisplayMode={svgDisplayMode}
             onLoadPatch={onLoadPatch}
             onRetry={onRetry}
