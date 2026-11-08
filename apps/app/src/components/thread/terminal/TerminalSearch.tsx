@@ -65,7 +65,7 @@ export function TerminalSearch({
   const actionsTarget = panelActions?.target;
   const showTrigger =
     panelActions === null ||
-    (actionsTarget !== null && panelActions.activeTerminalId === terminalId);
+    (actionsTarget != null && panelActions.activeTerminalId === terminalId);
   const [state, setState] = useState(initialState);
   const setOpen = useCallback(
     (nextOpen: boolean) => onOpenChange(nextOpen),
@@ -146,7 +146,7 @@ export function TerminalSearch({
       onPointerDown={(event) => event.preventDefault()}
       onClick={() => setOpen(true)}
       className={cn(
-        "pointer-events-none inline-flex size-11 items-center justify-center rounded-md border border-border bg-popover text-muted-foreground opacity-0 shadow-sm transition-opacity hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring group-hover/terminal-pane:pointer-events-auto group-hover/terminal-pane:opacity-100 group-focus-within/terminal-pane:pointer-events-auto group-focus-within/terminal-pane:opacity-100",
+        "pointer-events-auto inline-flex size-7 items-center justify-center rounded-md bg-transparent text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring",
         touch && "hidden",
         actionsTarget &&
           "pointer-events-auto size-7 border-0 bg-transparent opacity-100 shadow-none",
@@ -157,7 +157,7 @@ export function TerminalSearch({
   );
 
   return (
-    <div className="pointer-events-none absolute inset-x-2 top-2 z-20 flex justify-end">
+    <div className={cn("z-20 flex justify-end", open ? "pointer-events-none absolute inset-x-2 top-2" : "shrink-0 empty:hidden")}>
       {!open && !hideTrigger && showTrigger ? (
         actionsTarget ? (
           createPortal(trigger, actionsTarget)

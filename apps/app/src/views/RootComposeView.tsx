@@ -1,4 +1,3 @@
-import { useMediaQuery } from "@bb/shared-ui/hooks/use-media-query";
 import { usePanelToggle } from "@/components/secondary-panel/usePanelToggle";
 import { AppPanelTabsPublisher } from "@/lib/app-panel-tabs";
 import { appendQuoteAndAttachmentsToDraft } from "@bb/client-core";
@@ -750,7 +749,6 @@ function RootComposeSurface({
   });
   const activeFixedSecondaryTabId = activeFixedSecondaryTab?.id ?? null;
   const isCompactViewport = useIsCompactViewport();
-  const hasRoomForFiveRecents = useMediaQuery("(min-height: 800px)");
   const secondaryPanelDrawerVisibility =
     useThreadSecondaryPanelDrawerVisibility({
       isCompactViewport,
@@ -1561,13 +1559,7 @@ function RootComposeSurface({
                 isCompactHomeLayout={isCompactViewport}
                 compactScrollContent={
                   <RootComposeMobileRecents
-                    maxRows={
-                      isCompactViewport
-                        ? undefined
-                        : hasRoomForFiveRecents
-                          ? 5
-                          : 3
-                    }
+                    maxRows={isCompactViewport ? undefined : 3}
                     highlightedThreadId={lastCreatedThreadId}
                     projectNamesById={mobileRecentProjectNamesById}
                     providersById={mobileRecentProvidersById}

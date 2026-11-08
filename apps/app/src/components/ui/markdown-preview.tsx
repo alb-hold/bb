@@ -754,13 +754,11 @@ function MarkdownCodeBlock({
   const [softWrap, setSoftWrap] = useState(false);
   const highlightedHtml = useMemo(
     () =>
-      language !== "mermaid"
-        ? highlightMarkdownCode({ code: codeText, language })
-        : null,
+      highlightMarkdownCode({ code: codeText, language }),
     [language, codeText],
   );
   const highlightedMarkup = useMemo(
-    () => (highlightedHtml === null ? null : { __html: highlightedHtml }),
+    () => ({ __html: highlightedHtml }),
     [highlightedHtml],
   );
   if (language === "mermaid" && imagePolicy === "render") {
@@ -775,14 +773,14 @@ function MarkdownCodeBlock({
   return (
     <div
       data-code-card=""
-      className="my-2 overflow-visible rounded-md border border-border bg-surface-recessed"
+      className="relative my-2 overflow-visible rounded-md border border-border bg-surface-recessed"
     >
       <div
         data-clipboard-ignore
         data-code-actions=""
-        className="flex items-center justify-between pl-3 pr-1.5 pt-1.5"
+        className="absolute right-0 top-0 flex h-11 w-44 items-center justify-between gap-1 rounded-tr-md bg-surface-recessed-solid pl-1 pr-1.5"
       >
-        <span className="font-mono text-xs uppercase text-muted-foreground">
+        <span className="min-w-0 truncate font-mono text-xs uppercase text-muted-foreground" title={language ?? undefined}>
           {language ?? ""}
         </span>
         <div className="flex items-center gap-0.5">
@@ -797,7 +795,7 @@ function MarkdownCodeBlock({
                   onClick={() => {
                     setSoftWrap((value) => !value);
                   }}
-                  className="inline-flex size-5 cursor-pointer items-center justify-center text-foreground transition-colors hover:text-foreground aria-pressed:text-foreground"
+                  className="inline-flex size-11! cursor-pointer items-center justify-center text-foreground transition-colors hover:text-foreground aria-pressed:text-foreground"
                 >
                   <Icon name="TextWrap" className="size-3.5" />
                 </button>
@@ -809,33 +807,29 @@ function MarkdownCodeBlock({
             data-compact-touch="code"
             text={codeText}
             label="Copy code"
-            className="text-foreground"
+            className="size-11! text-foreground"
             iconClassName="size-3.5"
           />
         </div>
       </div>
       <pre
+        data-code-card-content=""
+        data-code-wrap={softWrap ? "true" : "false"}
         className={cn(
-          "bb-code-highlight px-3 pb-3 pt-1",
+          "bb-code-highlight px-3 pb-3 pt-2",
           softWrap
             ? "whitespace-pre-wrap [overflow-wrap:anywhere]"
             : "overflow-x-auto",
         )}
       >
-        {highlightedMarkup === null ? (
-          <code className="font-mono text-xs" {...codeProps}>
-            {codeText}
-          </code>
-        ) : (
-          <code
-            className={cn(
-              "font-mono text-xs",
-              language ? `language-${language}` : "",
-            )}
-            dangerouslySetInnerHTML={highlightedMarkup}
-            {...codeProps}
-          />
-        )}
+        <code
+          className={cn(
+            "font-mono text-xs",
+            language ? `language-${language}` : "",
+          )}
+          dangerouslySetInnerHTML={highlightedMarkup}
+          {...codeProps}
+        />
       </pre>
     </div>
   );

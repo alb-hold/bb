@@ -1250,7 +1250,7 @@ it.each([
 );
 
 it.each([true, false])(
-  "keeps native activity under the title on compact=%s",
+  "keeps native activity accessible with the title on compact=%s",
   (compact) => {
     viewportState.isCompactViewport = compact;
     function HeaderWithActivity() {
@@ -1277,6 +1277,7 @@ it.each([true, false])(
     expect(status).not.toBeNull();
     expect(status!.closest("header")).not.toBeNull();
     expect(status!.textContent).toBe("Idle");
+    expect(status!.parentElement?.classList.contains("max-md:[&_[role=status]>span:last-child]:sr-only")).toBe(true);
     expect(status!.classList.contains("shrink-0")).toBe(true);
     expect(status!.classList.contains("whitespace-nowrap")).toBe(true);
     expect(status!.querySelector(".truncate")).toBeNull();

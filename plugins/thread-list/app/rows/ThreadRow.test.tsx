@@ -620,7 +620,7 @@ describe("ThreadRow", () => {
     } else {
       expect(slot?.querySelector("[data-icon]")).toBeNull();
     }
-    expect(context?.classList.contains("md:text-sm")).toBe(true);
+    expect(context?.classList.contains("md:text-xs")).toBe(true);
   });
 
   it.each([

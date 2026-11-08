@@ -474,7 +474,7 @@ describe("mobile recent thread rows", () => {
     );
 
     const metadata = screen.getByTitle(`bb \u00b7 ${branch} \u00b7 3h`);
-    expect(metadata.textContent).toBe(`bb \u00b7 ${branch} \u00b7 3h`);
+    expect(metadata.textContent).toBe(`bb \u00b7 ${branch}\u00b7 3h`);
     const project = screen.getByText("bb");
     const age = screen.getByText("3h");
     const branchNode = screen.getByText(branch);

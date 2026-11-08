@@ -789,7 +789,6 @@ function FollowUpPromptBoxWithComposer({
         promptActions={promptActions}
         compactBeforeSend={
           <>
-            {isPromptBoxCompact ? permissionControl : null}
             {compactBeforeSend ? <CompactBeforeSendChip {...compactBeforeSend} /> : null}
           </>
         }
@@ -824,13 +823,13 @@ function FollowUpPromptBoxWithComposer({
         }
         executionControls={executionControls}
       />
-      {!isPromptBoxCompact ? (
+      {
         <div
           data-follow-up-composer-footer=""
           className="mt-1 flex min-h-6 max-h-6 select-none max-md:mt-0 max-md:pointer-coarse:min-h-11 max-md:pointer-coarse:max-h-11 items-center justify-between gap-2 overflow-hidden pl-[15px] pr-3.5 opacity-100 transition-[max-height,min-height,margin-top,opacity] duration-[180ms] ease-[cubic-bezier(0.16,1,0.3,1)] motion-reduce:transition-none"
         >
           <div className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">
-            {isCompactViewport ? compactEnvironmentSummary : environmentSummary}
+            {isPromptBoxCompact ? null : isCompactViewport ? compactEnvironmentSummary : environmentSummary}
           </div>
           <div className="flex shrink-0 items-center gap-2 max-md:gap-0">
             {sessionOptionsControl}
@@ -840,7 +839,7 @@ function FollowUpPromptBoxWithComposer({
             ) : null}
           </div>
         </div>
-      ) : null}
+      }
     </div>
   );
 

@@ -55,7 +55,7 @@ describe("TerminalMobileControls", () => {
 
         expect(
           more.querySelector("[data-icon]")?.getAttribute("data-icon"),
-        ).toBe("MoreHorizontal");
+        ).toBe(compact ? "Keyboard" : "MoreHorizontal");
         expect(more.querySelector('[data-icon="ChevronDown"]')).not.toBeNull();
         const scroller = document.querySelector(
           "[data-terminal-key-scroller]",
@@ -66,7 +66,7 @@ describe("TerminalMobileControls", () => {
         expect(more.getAttribute("aria-pressed")).toBe("true");
         expect(
           more.querySelector("[data-icon]")?.getAttribute("data-icon"),
-        ).toBe("MoreHorizontal");
+        ).toBe(compact ? "Keyboard" : "MoreHorizontal");
         expect(more.querySelector('[data-icon="ChevronUp"]')).not.toBeNull();
       } finally {
         clientWidth.mockRestore();

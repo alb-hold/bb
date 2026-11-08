@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Terminal } from "@xterm/xterm";
 import type { TerminalSearchAddonInstance } from "./terminal-search-addon";
@@ -91,7 +92,7 @@ function watchTerminalKeys(textarea: HTMLTextAreaElement) {
 }
 
 describe("TerminalSearch shortcuts and closed controls", () => {
-  it("omits the floating trigger when the header owns search", () => {
+  it("omits the standalone strip trigger when the header owns search", () => {
     render(
       <TerminalSearch
         addon={null}
@@ -359,12 +360,10 @@ describe("TerminalSearch shortcuts and closed controls", () => {
       name: "Search terminal output",
     });
     expect((button as HTMLButtonElement).disabled).toBe(false);
-    expect(button.className).toContain("opacity-0");
-    expect(button.className).toContain("pointer-events-none");
-    expect(button.className).toContain("group-hover/terminal-pane:opacity-100");
-    expect(button.className).toContain(
-      "group-focus-within/terminal-pane:opacity-100",
-    );
+    expect(button.className).toContain("pointer-events-auto");
+    expect(button.className).toContain("bg-transparent");
+    expect(button.className).not.toContain("opacity-0");
+    expect(button.parentElement?.classList.contains("absolute")).toBe(false);
     const terminalKeys = watchTerminalKeys(textarea);
     expect(sendKey("f", { ctrlKey: true }, textarea).defaultPrevented).toBe(
       false,
@@ -379,6 +378,38 @@ describe("TerminalSearch shortcuts and closed controls", () => {
       screen.getByRole("search", { name: "Search terminal output" }),
     ).toBeTruthy();
   });
+});
+
+it.each([
+  ["secondary panel", false, false, true],
+  ["standalone strip", false, false, false],
+  ["native header", true, false, false],
+  ["phone keys", false, true, false],
+] as const)("opens keyboard search on the %s surface", (_surface, hideTrigger, touch, panel) => {
+  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
+  const textarea = document.createElement("textarea");
+  document.body.appendChild(textarea);
+  const terminal = { textarea, focus: () => textarea.focus() } as unknown as Terminal;
+  const addon = createSearchAddon();
+  const onOpenChange = vi.fn();
+  const wrap = (children: ReactNode) => panel ? (
+    <SecondaryPanelActionsProvider activeTerminalId="terminal-a">
+      <div role="toolbar"><SecondaryPanelActions /></div>
+      {children}
+    </SecondaryPanelActionsProvider>
+  ) : children;
+  const view = render(wrap(<TerminalSearch terminalId="terminal-a" addon={addon} terminal={terminal} hideTrigger={hideTrigger} touch={touch} open={false} onOpenChange={onOpenChange} />));
+  for (const [platform, modifiers] of [
+    ["Linux x86_64", { ctrlKey: true, shiftKey: true }],
+    ["MacIntel", { metaKey: true }],
+  ] as const) {
+    Object.defineProperty(navigator, "platform", { configurable: true, value: platform });
+    textarea.focus();
+    expect(sendKey("f", modifiers, textarea).defaultPrevented).toBe(true);
+    expect(onOpenChange).toHaveBeenLastCalledWith(true);
+  }
+  view.rerender(wrap(<TerminalSearch terminalId="terminal-a" addon={addon} terminal={terminal} hideTrigger={hideTrigger} touch={touch} open onOpenChange={onOpenChange} />));
+  expect(screen.getByRole("searchbox", { name: "Find in terminal" })).toBeTruthy();
 });
 
 it("ports the closed search control into the enclosing panel toolbar", () => {

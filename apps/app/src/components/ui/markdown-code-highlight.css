@@ -60,3 +60,10 @@
     transparent
   );
 }
+
+.bb-code-highlight[data-code-card-content] .sh__line:first-child {
+  min-width: 0;
+  width: calc(100% - 11rem);
+  min-height: 2.25rem;
+  vertical-align: top;
+}
