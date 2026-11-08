@@ -41,13 +41,7 @@ if (initial) {
           handoffOwnerToken: ensureDeviceHandoffId(),
         }),
       );
-      const warmPanel = () =>
-        void loadNativeTerminalPanel().catch(() => undefined);
-      if (document.readyState === "loading")
-        document.addEventListener("DOMContentLoaded", warmPanel, {
-          once: true,
-        });
-      else warmPanel();
+      void loadNativeTerminalPanel().catch(() => undefined);
       void import("@/views/thread-detail/LazyThreadDetailView")
         .then(({ LazyThreadDetailView }) => LazyThreadDetailView.preload())
         .catch(() => undefined);

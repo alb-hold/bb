@@ -12,6 +12,7 @@ import {
 import { nativeTerminalThreadQueryKey } from "@/hooks/queries/query-keys";
 import { sdk } from "./sdk";
 import { LazyThreadTerminalPanel } from "@/components/secondary-panel/lazySecondaryPanelComponents";
+import { loadNativeTerminalPanel } from "@/components/thread/terminal/native-terminal-panel-loader";
 import { preloadTerminalModules } from "@/components/thread/terminal/terminal-modules";
 
 function prefetchCurrentNativeTerminalSocket(threadId: string): void {
@@ -25,7 +26,10 @@ function prefetchCurrentNativeTerminalSocket(threadId: string): void {
   const view = appQueryClient.getQueryData<NativeTerminalThread | null>(
     nativeTerminalThreadQueryKey(threadId),
   );
-  if (view?.terminal?.status !== "running") return;
+  if (view === undefined || view === null) return;
+  void loadNativeTerminalPanel().catch(() => undefined);
+  preloadTerminalModules();
+  if (view.terminal?.status !== "running") return;
   void appQueryClient.prefetchQuery(
     threadQueryOptions(appQueryClient, threadId),
   );
@@ -55,6 +59,7 @@ export function prefetchThreadOpen(threadId: string): void {
         if (view !== null) {
           if (view.terminal?.status === "running")
             prefetchTerminalScreen(view.terminal.id, threadId);
+          void loadNativeTerminalPanel().catch(() => undefined);
           void LazyThreadTerminalPanel.preload();
           preloadTerminalModules();
         }

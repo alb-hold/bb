@@ -12,8 +12,13 @@ import { prefetchTerminalSocket } from "@/components/thread/terminal/terminal-so
 import { preloadTerminalModules } from "@/components/thread/terminal/terminal-modules";
 import { LazyThreadTerminalPanel } from "@/components/secondary-panel/lazySecondaryPanelComponents";
 
-const { readThread } = vi.hoisted(() => ({
+const { readThread, warmNativePanel } = vi.hoisted(() => ({
+  warmNativePanel: vi.fn(() => Promise.resolve(null)),
   readThread: vi.fn(() => Promise.resolve({ id: "native" })),
+}));
+
+vi.mock("@/components/thread/terminal/native-terminal-panel-loader", () => ({
+  loadNativeTerminalPanel: warmNativePanel,
 }));
 
 vi.mock("./sdk", () => ({ sdk: { nativeTerminals: { get: vi.fn() } } }));
@@ -176,4 +181,15 @@ it("does not download xterm for a chat thread or repeat fresh discovery", async 
   await Promise.resolve();
   expect(sdk.nativeTerminals.get).toHaveBeenCalledOnce();
   expect(preloadTerminalModules).not.toHaveBeenCalled();
+});
+
+it("warms the native panel on a fresh cached route without waiting for metadata or bootstrap", () => {
+  window.history.replaceState({}, "", "/threads/native");
+  appQueryClient.setQueryData(nativeTerminalThreadQueryKey("native"), {
+    terminal: { id: "term-cached", status: "running" },
+  });
+  prefetchThreadOpen("native");
+  expect(warmNativePanel).toHaveBeenCalledOnce();
+  expect(preloadTerminalModules).toHaveBeenCalledOnce();
+  expect(sdk.nativeTerminals.get).not.toHaveBeenCalled();
 });

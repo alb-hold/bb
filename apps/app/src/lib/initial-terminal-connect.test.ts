@@ -34,6 +34,7 @@ it.each(["native", "other"])(
   "connects only the current route (%s) from the HTML response without React or the general socket",
   async (route) => {
     vi.resetModules();
+    const readyState = vi.spyOn(document, "readyState", "get").mockReturnValue("loading");
     let preloadedAtSocket = false;
     vi.mocked(prefetchTerminalSocket).mockImplementation(() => {
       preloadedAtSocket = warm.xterm.mock.calls.length === 1;
@@ -75,5 +76,6 @@ it.each(["native", "other"])(
       expect(warm.xterm).not.toHaveBeenCalled();
       expect(warm.route).not.toHaveBeenCalled();
     }
+    readyState.mockRestore();
   },
 );
