@@ -3762,3 +3762,19 @@ it("reserves an equal title slot for chat, worktree and terminal rows", () => {
   expect(screen.getByRole("img", { name: "Worktree" })).toBe(slot());
   expect(slot().classList.contains("size-4")).toBe(true);
 });
+
+it("leaves desktop descenders room without fixed title or metadata heights", () => {
+  const view = renderThreadRow({ thread: createThread({ title: "g p y j q" }) });
+  const title = view.container.querySelector(".bb-thread-title")!;
+  const text = title.lastElementChild!;
+  const metadata = view.container.querySelector("[data-sidebar-thread-context]")!;
+  expect(title.classList.contains("md:leading-5")).toBe(true);
+  expect(text.classList.contains("md:leading-5")).toBe(true);
+  expect(title.classList.contains("md:items-center!")).toBe(true);
+  expect(title.querySelector("[data-thread-title-mode]")?.classList.contains("md:translate-y-px")).toBe(true);
+  expect(title.querySelector("[data-thread-title-mode]")?.classList.contains("max-md:-translate-y-0.5")).toBe(true);
+  for (const element of [title, text, metadata]) {
+    expect(element.className).not.toMatch(/(?:^| )md:h-/);
+  }
+  expect(metadata.classList.contains("md:leading-4")).toBe(true);
+});
