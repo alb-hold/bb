@@ -33,6 +33,11 @@ import * as terminalViewport from "./terminal-viewport";
 import { AppCommandProvider } from "@/components/commands/AppCommandProvider";
 import { ThreadTerminalView, writeTerminalOutput } from "./ThreadTerminalView";
 
+import {
+  RetainedTerminalViewsProvider,
+  RetainedTerminalViewSlot,
+} from "./RetainedTerminalViews";
+
 const testState = vi.hoisted(() => ({
   calls: [] as string[],
   clearAttention: vi.fn(),
@@ -452,6 +457,193 @@ function writeReplay(terminal: Terminal, data: string): Promise<void> {
 }
 
 describe("ThreadTerminalView terminal replay and reconnect", () => {
+  it.each([
+    "reuse",
+    "cross-workspace",
+    "no-environment",
+    "gap",
+    "overflow",
+    "socket-error",
+    "exit",
+  ] as const)(
+    "returns a route-owned terminal after %s with a valid parser or fresh full replay",
+    async (scenario) => {
+      const retained =
+        scenario === "reuse" ||
+        scenario === "cross-workspace" ||
+        scenario === "no-environment";
+      prepareMobileTerminal();
+      stubVisibleIntersectionObserver();
+      vi.spyOn(FitAddon.prototype, "proposeDimensions").mockReturnValue({
+        cols: 40,
+        rows: 12,
+      });
+      type WebglModule = Awaited<
+        ReturnType<typeof terminalModules.importTerminalWebglAddon>
+      >;
+      const actualWebgl =
+        await vi.importActual<WebglModule>("@xterm/addon-webgl");
+      let contexts = 0;
+      let maxContexts = 0;
+      class WebglAddon extends actualWebgl.WebglAddon {
+        private active = false;
+        activate() {
+          this.active = true;
+          contexts++;
+          maxContexts = Math.max(maxContexts, contexts);
+        }
+        dispose() {
+          if (this.active) contexts--;
+          this.active = false;
+        }
+      }
+      vi.spyOn(terminalModules, "importTerminalWebglAddon").mockResolvedValue({
+        ...actualWebgl,
+        WebglAddon,
+      });
+      const session = makeTerminalSession({
+        id: "term_route_retained",
+        cols: 40,
+        rows: 12,
+      });
+      const tree = (shown: boolean) => {
+        const route =
+          !shown && scenario === "cross-workspace"
+            ? { projectId: "prj_other", environmentId: "env_other" }
+            : {
+                projectId: "prj_test",
+                environmentId:
+                  !shown && scenario === "no-environment"
+                    ? null
+                    : session.environmentId,
+              };
+        return (
+          <MemoryRouter>
+            <AppCommandProvider>
+              <RetainedTerminalViewsProvider {...route}>
+                {shown ? (
+                  <RetainedTerminalViewSlot
+                    View={ThreadTerminalView}
+                    autoFocus
+                    isPanelOpen
+                    session={session}
+                  />
+                ) : (
+                  <div>Chat route</div>
+                )}
+              </RetainedTerminalViewsProvider>
+            </AppCommandProvider>
+          </MemoryRouter>
+        );
+      };
+      const { rerender } = render(tree(true));
+      await waitForReadinessCondition(() => {
+        expect(testState.sockets).toHaveLength(1);
+      }, "initial route socket missing");
+      const socket = testState.sockets[0]!;
+      socket.receive({
+        type: "attached",
+        session,
+        replayStartSeq: 0,
+        nextSeq: 1,
+      });
+      socket.receive({
+        type: "output",
+        chunk: { seq: 0, dataBase64: btoa("before-route\r\n") },
+      });
+      await waitForReadinessCondition(() => {
+        expect(pageText()).toContain("before-route");
+        expect(
+          document.querySelector("[data-replay-held='false']"),
+        ).not.toBeNull();
+        expect(contexts).toBe(1);
+      }, "initial route replay did not settle");
+      const beforePark = socket.sent.length;
+      if (scenario === "reuse") {
+        fireEvent.contextMenu(document.querySelector(".xterm-screen")!);
+        await waitForReadinessCondition(
+          () => expect(document.querySelector("[role=menu]")).not.toBeNull(),
+          "terminal menu did not open",
+        );
+      }
+      rerender(tree(false));
+      expect(contexts).toBe(0);
+      expect(document.querySelector("[role=menu]")).toBeNull();
+      act(() =>
+        socket.receive({
+          type: "output",
+          chunk: { seq: 1, dataBase64: btoa("while-away\r\n") },
+        }),
+      );
+      act(() => {
+        if (scenario === "gap")
+          socket.receive({
+            type: "output",
+            chunk: { seq: 3, dataBase64: btoa("gap") },
+          });
+        if (scenario === "overflow") {
+          const dataBase64 = btoa("x".repeat(64 * 1024));
+          for (let seq = 2; seq < 34; seq++)
+            socket.receive({ type: "output", chunk: { seq, dataBase64 } });
+        }
+        if (scenario === "socket-error") socket.onerror?.(new Event("error"));
+        if (scenario === "exit")
+          socket.receive({
+            type: "exited",
+            session: { ...session, status: "exited" },
+          });
+      });
+      expect(
+        socket.sent
+          .slice(beforePark)
+          .map((raw) => JSON.parse(raw))
+          .filter((message) => message.type === "resize"),
+      ).toEqual([]);
+      rerender(tree(true));
+      if (!retained) {
+        await waitForReadinessCondition(
+          () => expect(testState.sockets).toHaveLength(2),
+          "invalid viewer did not reopen",
+        );
+        expect(
+          new URL(testState.socketUrls[1]!).searchParams.get("sinceSeq"),
+        ).toBe("0");
+        const fresh = testState.sockets[1]!;
+        fresh.receive({
+          type: "attached",
+          session,
+          replayStartSeq: 0,
+          nextSeq: 2,
+        });
+        fresh.receive({
+          type: "output",
+          chunk: { seq: 0, dataBase64: btoa("before-route\r\n") },
+        });
+        fresh.receive({
+          type: "output",
+          chunk: { seq: 1, dataBase64: btoa("while-away\r\n") },
+        });
+      }
+      await waitForReadinessCondition(() => {
+        expect(pageText()).toContain("while-away");
+        expect(contexts).toBe(1);
+      }, "retained route did not catch up");
+      if (retained) {
+        expect(testState.sockets).toHaveLength(1);
+        expect(testState.socketUrls).toHaveLength(1);
+        expect(
+          socket.sent
+            .slice(beforePark)
+            .map((raw) => JSON.parse(raw))
+            .filter((message) => message.type === "resize"),
+        ).toEqual([]);
+      }
+      expect(maxContexts).toBe(1);
+      expect(pageText().match(/before-route/g)).toHaveLength(1);
+      expect(pageText().match(/while-away/g)).toHaveLength(1);
+    },
+  );
+
   it.each(["terminal_attach_timeout", "terminal_not_found"])(
     "handles %s and server close while the screen request is pending",
     async (code) => {

@@ -441,6 +441,63 @@ describe("TerminalWebSocketTransport", () => {
     harness.transport.dispose();
   });
 
+  it("parks without resize or ownership traffic and returns without reasserting an unchanged grid", () => {
+    const harness = createHarness();
+    harness.transport.markLayoutSettled();
+    harness.transport.start();
+    const socket = harness.sockets[0]!;
+    socket.open();
+    harness.transport.sendResize(80, 24, true);
+    socket.sent.length = 0;
+    harness.transport.setParked(true);
+    harness.transport.claimSize(true);
+    harness.transport.sendResize(0, 0, true);
+    harness.transport.requestRepaint();
+    harness.transport.markLayoutSettled();
+    harness.transport.setVisible(true);
+    expect(socket.sent.map((frame) => JSON.parse(frame))).toEqual([
+      { type: "visibility", visible: false },
+    ]);
+    expect(socket.closeCalls).toEqual([]);
+    harness.transport.setParked(false);
+    harness.transport.setVisible(true);
+    harness.transport.sendResize(80, 24);
+    expect(socket.sent.map((frame) => JSON.parse(frame))).toEqual([
+      { type: "visibility", visible: false },
+      { type: "visibility", visible: true },
+    ]);
+    harness.transport.sendResize(90, 24, true);
+    expect(
+      socket.sent
+        .map((frame) => JSON.parse(frame))
+        .filter((message) => message.type === "resize"),
+    ).toEqual([{ type: "resize", cols: 90, rows: 24, claim: true }]);
+    harness.transport.dispose();
+  });
+
+  it("cancels delayed repaint and settle traffic on park and reports a socket error", () => {
+    vi.useFakeTimers();
+    const onSocketError = vi.fn();
+    const harness = createHarness({ onSocketError });
+    harness.transport.sendResize(80, 24, true);
+    harness.transport.start();
+    const socket = harness.sockets[0]!;
+    socket.open();
+    harness.transport.requestRepaint();
+    harness.transport.setParked(true);
+    const parked = socket.sent.length;
+    vi.advanceTimersByTime(1500);
+    expect(
+      socket.sent
+        .slice(parked)
+        .map((frame) => JSON.parse(frame))
+        .filter((message) => message.type === "resize"),
+    ).toEqual([]);
+    socket.onerror?.(new Event("error"));
+    expect(onSocketError).toHaveBeenCalledOnce();
+    harness.transport.dispose();
+  });
+
   it("reasserts the unchanged fit when a hidden terminal becomes visible", () => {
     const harness = createHarness();
     harness.transport.setVisible(true);
