@@ -40,6 +40,14 @@ import { usePanelTerminals } from "@/components/secondary-panel/usePanelTerminal
 import { useFixedPanelTabsState } from "@/lib/fixed-panel-tabs";
 import { focusOpenThreadTerminal } from "@/lib/open-thread-terminal-focus";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
+import { PanelGroup } from "react-resizable-panels";
+import { TooltipProvider } from "@bb/shared-ui/tooltip";
+import { ThreadSecondaryPanel } from "@/components/secondary-panel/ThreadSecondaryPanel";
+import {
+  createTerminalFixedPanelTab,
+  createThreadInfoFixedPanelTab,
+} from "@/lib/fixed-panel-tabs-state";
+import { useUpdateFixedPanelTabsState } from "@/lib/fixed-panel-tabs";
 
 import {
   RetainedTerminalViewsProvider,
@@ -136,7 +144,8 @@ class TestTerminalSocket {
   }
 }
 
-vi.mock("@/lib/sdk", () => ({
+vi.mock("@/lib/sdk", async (importOriginal) => ({
+  BbHttpError: (await importOriginal<typeof import("@/lib/sdk")>()).BbHttpError,
   sdk: {
     threads: {
       tabs: { get: testState.tabsGet, update: testState.tabsUpdate },
@@ -472,151 +481,232 @@ function writeReplay(terminal: Terminal, data: string): Promise<void> {
 }
 
 describe("ThreadTerminalView terminal replay and reconnect", () => {
-  it("focuses another retained terminal through the open thread controller without a socket, resize or claim", async () => {
-    prepareMobileTerminal();
-    stubVisibleIntersectionObserver();
-    vi.spyOn(document, "hasFocus").mockReturnValue(true);
-    vi.spyOn(FitAddon.prototype, "proposeDimensions").mockReturnValue({
-      cols: 40,
-      rows: 12,
-    });
-    testState.tabsGet.mockResolvedValue({ revision: 0, tabs: [] });
-    testState.tabsUpdate.mockImplementation(
-      ({ expectedRevision, tabs }: UpdateThreadTabsRequest) =>
-        Promise.resolve({ revision: expectedRevision + 1, tabs }),
-    );
-    const sessions = ["term_focus_first", "term_focus_second"].map((id) =>
-      makeTerminalSession({ id, cols: 40, rows: 12 }),
-    );
-    const terminals = new Map<string, Terminal>();
-    const open = Terminal.prototype.open;
-    vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
-      this: Terminal,
-      element: HTMLElement,
-    ) {
-      const id = element.getAttribute("data-terminal-grid-cache-id");
-      if (id !== null) terminals.set(id, this);
-      open.call(this, element);
-    });
-    function OpenThread() {
-      const controller = usePanelTerminals({
-        panelStateId: "thr_test",
-        syncThreadId: "thr_test",
-        createTarget: { kind: "thread", threadId: "thr_test" },
-        isFocused: true,
-        acceptsSession: (session) => session.threadId === "thr_test",
-        tabsCarryTarget: false,
-        reveal: () => undefined,
+  it.each([
+    [false, false],
+    [false, true],
+    [true, false],
+    [true, true],
+  ])(
+    "focuses an existing terminal from Overview without tab writes, sockets or size claims (drawer=%s, rejected PUT=%s)",
+    async (renderAsDrawer, rejectTabsWrite) => {
+      prepareMobileTerminal();
+      stubVisibleIntersectionObserver();
+      vi.spyOn(document, "hasFocus").mockReturnValue(true);
+      vi.spyOn(FitAddon.prototype, "proposeDimensions").mockReturnValue({
+        cols: 40,
+        rows: 12,
       });
-      const state = useFixedPanelTabsState("thr_test", "thr_test");
-      const tab = state.secondary.tabs.find(
-        (candidate) => candidate.id === state.secondary.activeTabId,
+      const sessions = ["term_focus_first", "term_focus_second"].map((id) =>
+        makeTerminalSession({ id, cols: 40, rows: 12 }),
       );
-      const session =
-        sessions.find(
-          (candidate) =>
-            tab?.kind === "terminal" && candidate.id === tab.terminalId,
-        ) ?? sessions[0]!;
-      return (
-        <>
-          <button onClick={() => controller.select(sessions[0]!.id)}>
-            First
-          </button>
-          <button onClick={() => controller.select(sessions[1]!.id)}>
-            Second
-          </button>
-          <RetainedTerminalViewSlot
-            key={session.id}
-            View={ThreadTerminalView}
-            autoFocus={controller.autoFocusTerminalId === session.id}
-            onAutoFocusHandled={controller.handleAutoFocusHandled}
-            isPanelOpen
-            session={session}
-          />
-        </>
+      const infoTab = createThreadInfoFixedPanelTab();
+      testState.tabsGet.mockResolvedValue({
+        revision: 1,
+        tabs: [
+          infoTab,
+          ...sessions.map((session) =>
+            createTerminalFixedPanelTab({ terminalId: session.id }),
+          ),
+        ],
+      });
+      testState.tabsUpdate.mockImplementation(
+        ({ expectedRevision, tabs }: UpdateThreadTabsRequest) =>
+          rejectTabsWrite
+            ? Promise.reject(new TypeError("Failed to fetch"))
+            : Promise.resolve({ revision: expectedRevision + 1, tabs }),
       );
-    }
-    const { wrapper } = createQueryClientTestHarness();
-    const view = render(
-      <MemoryRouter>
-        <AppCommandProvider>
-          <RetainedTerminalViewsProvider>
-            <OpenThread />
-          </RetainedTerminalViewsProvider>
-        </AppCommandProvider>
-      </MemoryRouter>,
-      { wrapper },
-    );
-    fireEvent.click(view.getByRole("button", { name: "First" }));
-    for (const [index, session] of sessions.entries()) {
-      if (index === 1)
-        fireEvent.click(view.getByRole("button", { name: "Second" }));
-      await waitForReadinessCondition(() => {
-        expect(testState.sockets).toHaveLength(index + 1);
-        expect(terminals.has(session.id)).toBe(true);
-      }, "terminal did not mount");
-      const socket = testState.sockets[index]!;
-      await socket.opened;
-      socket.receive({
-        type: "attached",
-        session,
-        replayStartSeq: 0,
-        nextSeq: 1,
+      const terminals = new Map<string, Terminal>();
+      const open = Terminal.prototype.open;
+      vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
+        this: Terminal,
+        element: HTMLElement,
+      ) {
+        const id = element.getAttribute("data-terminal-grid-cache-id");
+        if (id !== null) terminals.set(id, this);
+        open.call(this, element);
       });
-      socket.receive({
-        type: "output",
-        chunk: { seq: 0, dataBase64: btoa(`${session.id}\r\n`) },
-      });
-      await waitForReadinessCondition(() => {
-        expect(socket.sent.map((raw) => JSON.parse(raw))).toContainEqual({
-          type: "ack",
+      function OpenThread() {
+        const controller = usePanelTerminals({
+          panelStateId: "thr_test",
+          syncThreadId: "thr_test",
+          createTarget: { kind: "thread", threadId: "thr_test" },
+          isFocused: true,
+          acceptsSession: (session) => session.threadId === "thr_test",
+          tabsCarryTarget: false,
+          reveal: () => undefined,
+        });
+        const state = useFixedPanelTabsState("thr_test", "thr_test");
+        const updateState = useUpdateFixedPanelTabsState(
+          "thr_test",
+          "thr_test",
+        );
+        const tab = state.secondary.tabs.find(
+          (candidate) => candidate.id === state.secondary.activeTabId,
+        );
+        return (
+          <>
+            <button onClick={() => controller.select(sessions[0]!.id)}>
+              First
+            </button>
+            <button onClick={() => controller.select(sessions[1]!.id)}>
+              Second
+            </button>
+            <button
+              onClick={() =>
+                updateState((current) => ({
+                  ...current,
+                  secondary: { ...current.secondary, activeTabId: infoTab.id },
+                }))
+              }
+            >
+              Overview
+            </button>
+            <TooltipProvider>
+              <PanelGroup direction="horizontal">
+                <ThreadSecondaryPanel
+                  activeTab={tab ?? infoTab}
+                  fixedTabs={[
+                    {
+                      tab: infoTab,
+                      label: "Overview",
+                      title: "Overview",
+                      ariaLabel: "Show Overview",
+                      leadingVisual: null,
+                      onSelect: () => undefined,
+                      renderContent: () => <div>Overview content</div>,
+                    },
+                  ]}
+                  tabs={sessions.map((session) => ({
+                    tab: createTerminalFixedPanelTab({
+                      terminalId: session.id,
+                    }),
+                    label: session.id,
+                    leadingVisual: null,
+                    statusLabel: null,
+                    onClose: () => undefined,
+                    onSelect: () => controller.select(session.id),
+                    renderContent: () => (
+                      <RetainedTerminalViewSlot
+                        key={session.id}
+                        View={ThreadTerminalView}
+                        autoFocus={
+                          controller.autoFocusTerminalId === session.id
+                        }
+                        onAutoFocusHandled={controller.handleAutoFocusHandled}
+                        isPanelOpen
+                        session={session}
+                      />
+                    ),
+                  }))}
+                  isConversationCollapsed={false}
+                  isOpen
+                  metadataContent={null}
+                  onClose={() => undefined}
+                  onCollapse={() => undefined}
+                  onTabReorder={() => undefined}
+                  onOpenNewTab={() => undefined}
+                  onPanelFocus={() => undefined}
+                  onToggleConversationCollapse={() => undefined}
+                  renderAsDrawer={renderAsDrawer}
+                  splitPanelStateId="thr_test"
+                />
+              </PanelGroup>
+            </TooltipProvider>
+          </>
+        );
+      }
+      const { wrapper } = createQueryClientTestHarness();
+      const view = render(
+        <MemoryRouter>
+          <AppCommandProvider>
+            <RetainedTerminalViewsProvider>
+              <OpenThread />
+            </RetainedTerminalViewsProvider>
+          </AppCommandProvider>
+        </MemoryRouter>,
+        { wrapper },
+      );
+      fireEvent.click(view.getByRole("button", { name: "First" }));
+      for (const [index, session] of sessions.entries()) {
+        if (index === 1)
+          fireEvent.click(view.getByRole("button", { name: "Second" }));
+        await waitForReadinessCondition(() => {
+          expect(testState.sockets).toHaveLength(index + 1);
+          expect(terminals.has(session.id)).toBe(true);
+        }, "terminal did not mount");
+        const socket = testState.sockets[index]!;
+        await socket.opened;
+        socket.receive({
+          type: "attached",
+          session,
+          replayStartSeq: 0,
           nextSeq: 1,
         });
+        socket.receive({
+          type: "output",
+          chunk: { seq: 0, dataBase64: btoa(`${session.id}\r\n`) },
+        });
+        await waitForReadinessCondition(() => {
+          expect(socket.sent.map((raw) => JSON.parse(raw))).toContainEqual({
+            type: "ack",
+            nextSeq: 1,
+          });
+          expect(
+            terminals
+              .get(session.id)!
+              .element!.closest<HTMLElement>("[data-terminal-grid-cache-id]")!
+              .dataset.replayHeld,
+          ).toBe("false");
+        }, "terminal replay did not settle");
+      }
+      expect(focusOpenThreadTerminal("thr_other", sessions[0]!.id)).toBe(false);
+      expect(focusOpenThreadTerminal("thr_test", "term_closed")).toBe(false);
+      fireEvent.click(
+        view.getByRole("button", { name: "Overview", exact: true }),
+      );
+      await waitForReadinessCondition(
+        () => expect(view.queryByText("Overview content")).not.toBeNull(),
+        "Overview did not appear",
+      );
+      const before = testState.socketMessages.length;
+      act(() =>
+        expect(focusOpenThreadTerminal("thr_test", sessions[0]!.id)).toBe(true),
+      );
+      await waitForReadinessCondition(() => {
+        expect(view.queryByText("Overview content")).toBeNull();
+        const terminal = terminals.get(sessions[0]!.id)!;
         expect(
-          terminals
-            .get(session.id)!
-            .element!.closest<HTMLElement>("[data-terminal-grid-cache-id]")!
-            .dataset.replayHeld,
+          terminal.element!.closest("[data-retained-terminal-host]"),
+        ).toBeNull();
+        expect(
+          terminal.element!.closest<HTMLElement>(
+            "[data-terminal-grid-cache-id]",
+          )!.dataset.replayHeld,
         ).toBe("false");
-      }, "terminal replay did not settle");
-    }
-    expect(focusOpenThreadTerminal("thr_other", sessions[0]!.id)).toBe(false);
-    expect(focusOpenThreadTerminal("thr_test", "term_closed")).toBe(false);
-    const before = testState.socketMessages.length;
-    act(() =>
-      expect(focusOpenThreadTerminal("thr_test", sessions[0]!.id)).toBe(true),
-    );
-    await waitForReadinessCondition(() => {
-      const terminal = terminals.get(sessions[0]!.id)!;
+        expect(terminal.buffer.active.getLine(0)?.translateToString(true)).toBe(
+          sessions[0]!.id,
+        );
+      }, "retained terminal was not adopted");
+      await act(async () => {
+        await new Promise<void>((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+        );
+      });
+      expect(testState.sockets).toHaveLength(2);
+      expect(testState.tabsUpdate).not.toHaveBeenCalled();
       expect(
-        terminal.element!.closest("[data-retained-terminal-host]"),
-      ).toBeNull();
+        testState.sockets.every((socket) => socket.closeCalls.length === 0),
+      ).toBe(true);
       expect(
-        terminal.element!.closest<HTMLElement>("[data-terminal-grid-cache-id]")!
-          .dataset.replayHeld,
-      ).toBe("false");
-      expect(terminal.buffer.active.getLine(0)?.translateToString(true)).toBe(
-        sessions[0]!.id,
-      );
-    }, "retained terminal was not adopted");
-    await act(async () => {
-      await new Promise<void>((resolve) =>
-        requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
-      );
-    });
-    expect(testState.sockets).toHaveLength(2);
-    expect(
-      testState.sockets.every((socket) => socket.closeCalls.length === 0),
-    ).toBe(true);
-    expect(
-      testState.socketMessages
-        .slice(before)
-        .map((raw) => JSON.parse(raw))
-        .filter((message) => message.type === "resize"),
-    ).toEqual([]);
-    view.unmount();
-    expect(focusOpenThreadTerminal("thr_test", sessions[0]!.id)).toBe(false);
-  });
+        testState.socketMessages
+          .slice(before)
+          .map((raw) => JSON.parse(raw))
+          .filter((message) => message.type === "resize"),
+      ).toEqual([]);
+      view.unmount();
+      expect(focusOpenThreadTerminal("thr_test", sessions[0]!.id)).toBe(false);
+    },
+  );
 
   it.each([
     "reuse",

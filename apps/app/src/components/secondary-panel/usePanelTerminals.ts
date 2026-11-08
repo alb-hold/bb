@@ -110,7 +110,7 @@ export function usePanelTerminals({
         )
       )
         return false;
-      select(terminalId, { kind: "thread", threadId: syncThreadId });
+      select(terminalId);
       return true;
     });
   }, [getPanelState, isFocused, select, syncThreadId]);
