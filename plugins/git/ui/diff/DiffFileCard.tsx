@@ -279,10 +279,12 @@ export const DiffFileCard = memo(function DiffFileCard({
     if (isCollapsed || patchState.status !== "loaded" || !patchState.patch)
       return;
     let current = true;
-    setParserFailed(false);
     void loadGitDiffParser().then(
       (loaded) => {
-        if (current) setParser(loaded);
+        if (current) {
+          setParserFailed(false);
+          setParser(loaded);
+        }
       },
       () => {
         if (current) setParserFailed(true);

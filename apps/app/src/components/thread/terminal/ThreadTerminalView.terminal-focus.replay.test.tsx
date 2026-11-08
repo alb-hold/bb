@@ -3669,11 +3669,11 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
 });
 
 describe("terminal first paint", () => {
-  it("keeps the renderer inset through replay, fitting and session switches", async () => {
+  it("keeps symmetric renderer insets through replay, fitting and session switches", async () => {
     prepareFirstAttachFontMetricsHarness();
     vi.stubGlobal("innerWidth", 390);
     const style = document.createElement("style");
-    style.textContent = ".pl-2 { padding-left: 8px; }";
+    style.textContent = ".px-2 { padding-left: 8px; padding-right: 8px; }";
     document.head.append(style);
     const insets: string[] = [];
     const terminals: Terminal[] = [];
@@ -3685,9 +3685,9 @@ describe("terminal first paint", () => {
       open.call(this, element);
       if (!element.matches("[data-terminal-renderer]")) return;
       terminals.push(this);
-      insets.push(getComputedStyle(element).paddingLeft);
       this.onRender(() => {
-        insets.push(getComputedStyle(element).paddingLeft);
+        const computed = getComputedStyle(this.element!);
+        insets.push(`${computed.paddingLeft}/${computed.paddingRight}`);
       });
     });
     try {
@@ -3716,10 +3716,9 @@ describe("terminal first paint", () => {
             nextSeq: 1,
           });
         }, "terminal replay did not finish");
-        const host = document.querySelector<HTMLElement>(
-          "[data-terminal-renderer]",
-        )!;
-        expect(getComputedStyle(host).paddingLeft).toBe("8px");
+        const renderer = terminals[index]!.element!;
+        expect(getComputedStyle(renderer).paddingLeft).toBe("8px");
+        expect(getComputedStyle(renderer).paddingRight).toBe("8px");
         socket.receive({
           type: "session-updated",
           session: { ...session, cols: 51, rows: 47 },
@@ -3727,14 +3726,15 @@ describe("terminal first paint", () => {
         await act(async () => {
           await writeReplay(terminals[index]!, "");
         });
-        expect(getComputedStyle(host).paddingLeft).toBe("8px");
+        expect(getComputedStyle(renderer).paddingLeft).toBe("8px");
+        expect(getComputedStyle(renderer).paddingRight).toBe("8px");
         if (index === 0) {
           session = { ...session, id: "term_switch_inset" };
           rerenderMobileTerminal(session);
         }
       }
       expect(insets.length).toBeGreaterThan(2);
-      expect(new Set(insets)).toEqual(new Set(["8px"]));
+      expect(new Set(insets)).toEqual(new Set(["8px/8px"]));
     } finally {
       style.remove();
     }
