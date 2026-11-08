@@ -27,6 +27,7 @@ export function createTerminalOutputPipeline(
     beforeResize?: () => void;
     afterResize?: () => void;
     flushReplay?: () => void;
+    flushWrites?: () => boolean;
   } = {},
 ): {
   push(
@@ -36,6 +37,7 @@ export function createTerminalOutputPipeline(
     flush?: boolean,
   ): void;
   setGrid(cols: number, rows: number, callback?: () => void): void;
+  whenParsed(callback: () => void): void;
 } {
   const scanner = createTerminalGridByteMarkerScanner();
   const operations: Array<Operation | undefined> = [];
@@ -75,7 +77,8 @@ export function createTerminalOutputPipeline(
         if (operation.type === "write") {
           lastWrite = new Promise<void>((resolve) => {
             terminal.write(operation.bytes, resolve);
-            if (operation.flush) options.flushReplay?.();
+            if (operation.flush || options.flushWrites?.())
+              options.flushReplay?.();
           });
           continue;
         }
@@ -108,6 +111,9 @@ export function createTerminalOutputPipeline(
   };
 
   return {
+    whenParsed(callback) {
+      enqueue({ type: "ack", callback });
+    },
     push(bytes, callback, applyMarkerGrids = true, flush = false) {
       const result = scanner.pushOperations(bytes);
       const applyScannedMarkerGrids =

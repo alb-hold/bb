@@ -25,7 +25,22 @@ it.each(["gap", "overflow"])(
       7,
     );
     output.push({ seq: 10, dataBase64: "ZA==" }, 7);
+    expect(output.takeBatch(8192)).toEqual([]);
     expect(output.take()).toBeNull();
     expect(output.take()).toEqual([]);
   },
 );
+
+it("drains a bounded prefix while preserving sequence validation and the adoption tail", () => {
+  const output = createTerminalHiddenOutput();
+  for (let seq = 0; seq < 100; seq++)
+    output.push({ seq, dataBase64: "YQ==" }, 0);
+  const batch = output.takeBatch(720);
+  expect(batch.map((chunk) => chunk.seq)).toEqual(
+    Array.from({ length: 10 }, (_, index) => index),
+  );
+  output.push({ seq: 100, dataBase64: "YQ==" }, 10);
+  expect(output.take()?.map((chunk) => chunk.seq)).toEqual(
+    Array.from({ length: 91 }, (_, index) => index + 10),
+  );
+});

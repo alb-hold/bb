@@ -34,6 +34,20 @@ export function createTerminalHiddenOutput(onInvalidated?: () => void) {
       bytes += size;
       nextSeq = chunk.seq + 1;
     },
+    takeBatch(maxBytes: number): TerminalOutputChunk[] {
+      if (needsReplay) return [];
+      let count = 0;
+      let batchBytes = 0;
+      while (count < chunks.length) {
+        const size = chunks[count]!.dataBase64.length * 2 + 64;
+        if (count > 0 && batchBytes + size > maxBytes) break;
+        batchBytes += size;
+        count++;
+        if (batchBytes >= maxBytes) break;
+      }
+      bytes -= batchBytes;
+      return chunks.splice(0, count);
+    },
     take(): TerminalOutputChunk[] | null {
       const result = needsReplay ? null : chunks;
       clear();
