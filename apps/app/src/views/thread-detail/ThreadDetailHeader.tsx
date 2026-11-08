@@ -268,7 +268,7 @@ export function ThreadDetailHeader({
             {isEditing ? editor : <ThreadTitle title={threadTitle} />}
           </p>
           {hasNativeTerminal ? (
-            <div ref={nativeActivityTargetRef} className="h-4 shrink-0 max-md:order-first max-md:[&_[role=status]>span:last-child]:hidden" />
+            <div ref={nativeActivityTargetRef} className="h-4 shrink-0 max-md:order-first max-md:[&_[role=status]>span:last-child]:sr-only" />
           ) : (
             <ThreadActivityLabel
               indicator={
