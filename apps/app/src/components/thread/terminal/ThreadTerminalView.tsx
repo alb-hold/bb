@@ -2399,7 +2399,7 @@ export function ThreadTerminalView({
       terminal.unicode.activeVersion = TERMINAL_UNICODE_VERSION;
       markTerminalPerformance("terminal-xterm-open-start");
       terminal.open(containerElement);
-      terminal.element?.classList.add("px-2");
+      terminal.element?.classList.add("px-2", "bg-sidebar");
       paddingLeft = getComputedStyle(
         terminal.element ?? containerElement,
       ).paddingLeft;
@@ -4282,7 +4282,7 @@ export function ThreadTerminalView({
           <TerminalAttentionPane
             attention={session.attention}
             bannerOnly={attentionShownAsBanner}
-            className={`group/terminal-pane relative min-h-0 w-full flex-1 overflow-hidden bg-sidebar px-2 pt-2 md:pt-4 ${isTouchDevice ? (showFitControl || (retainNativeOutput && session.status === "exited") ? "touch-pan-x touch-pan-y" : "touch-pan-y") : ""}`}
+            className={`group/terminal-pane relative min-h-0 w-full flex-1 overflow-hidden bg-sidebar pt-2 md:pt-4 ${isTouchDevice ? (showFitControl || (retainNativeOutput && session.status === "exited") ? "touch-pan-x touch-pan-y" : "touch-pan-y") : ""}`}
             onContextMenuCapture={captureTerminalContextMenu}
             onTouchStart={(event) => {
               stopRetainedHistoryTouchPropagation(event);

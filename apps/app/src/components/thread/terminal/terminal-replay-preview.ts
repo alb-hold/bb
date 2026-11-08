@@ -223,6 +223,7 @@ export function mountTerminalReplayPreview({
     overflow: "hidden",
     overflowX: "hidden",
     paddingLeft,
+    paddingRight: paddingLeft,
     pointerEvents: "none",
     zIndex: "5",
     containerType: "inline-size",

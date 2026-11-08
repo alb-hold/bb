@@ -97,6 +97,7 @@ class TestTerminalSocket {
 vi.mock("@/lib/sdk", () => ({
   sdk: {
     terminals: {
+      experimental_setDefaultColors: vi.fn().mockResolvedValue(undefined),
       experimental_screen: testState.screen,
       output: testState.output,
       experimental_attention: {
@@ -473,16 +474,14 @@ describe("ThreadTerminalView terminal visibility and panel", () => {
       let holdWrites = true;
       const pendingWrites: Array<() => void> = [];
       const write = Terminal.prototype.write;
-      vi.spyOn(Terminal.prototype, "write").mockImplementation(function (
-        this: Terminal,
-        data,
-        callback,
-      ) {
-        write.call(this, data, () => {
-          if (holdWrites && callback) pendingWrites.push(callback);
-          else callback?.();
-        });
-      });
+      vi.spyOn(Terminal.prototype, "write").mockImplementation(
+        function (this: Terminal, data, callback) {
+          write.call(this, data, () => {
+            if (holdWrites && callback) pendingWrites.push(callback);
+            else callback?.();
+          });
+        },
+      );
       try {
         socket.receive({
           type: "output",
@@ -715,16 +714,23 @@ describe("ThreadTerminalView terminal visibility and panel", () => {
   });
 
   it.each(["dom", "webgl"] as const)(
-    "fits symmetric horizontal padding before its single %s size claim",
+    "paints one symmetric gutter without losing a second gutter of columns before its single %s size claim",
     async (renderer) => {
       vi.stubGlobal("WebSocket", TestTerminalSocket);
       const style = document.createElement("style");
       style.textContent = `.px-2 { padding-left: 8px; padding-right: 8px; }
         .pl-2 { padding-left: 8px; }
-        [data-terminal-grid-cache-id] { width: 354px; height: 504px; }`;
+        .bg-sidebar { background-color: var(--sidebar); }
+        [data-terminal-grid-cache-id] { width: 354px; height: 504px; }
+        :root { --sidebar: rgb(30, 40, 50); --ink: rgb(220, 230, 240); }`;
       document.body.append(style);
       vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
         measureText: (text: string) => ({ width: text.length * 8 }),
+        clearRect() {},
+        fillRect() {},
+        getImageData: () => ({
+          data: new Uint8ClampedArray([30, 40, 50, 255]),
+        }),
       } as unknown as CanvasRenderingContext2D);
       vi.spyOn(
         rendererModule,
@@ -757,13 +763,12 @@ describe("ThreadTerminalView terminal visibility and panel", () => {
       );
       const terminals: Terminal[] = [];
       const open = Terminal.prototype.open;
-      vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
-        this: Terminal,
-        element,
-      ) {
-        terminals.push(this);
-        open.call(this, element);
-      });
+      vi.spyOn(Terminal.prototype, "open").mockImplementation(
+        function (this: Terminal, element) {
+          terminals.push(this);
+          open.call(this, element);
+        },
+      );
       const view = render(
         <MemoryRouter>
           <AppCommandProvider>
@@ -794,6 +799,12 @@ describe("ThreadTerminalView terminal visibility and panel", () => {
       const host = view.container.querySelector<HTMLElement>(
         "[data-terminal-grid-cache-id]",
       )!;
+      const paneStyle = getComputedStyle(host.parentElement!);
+      expect(parseFloat(paneStyle.paddingLeft || "0")).toBe(0);
+      expect(parseFloat(paneStyle.paddingRight || "0")).toBe(0);
+      expect(getComputedStyle(terminal.element!).backgroundColor).toBe(
+        "rgb(30, 40, 50)",
+      );
       const terminalStyle = getComputedStyle(terminal.element!);
       const hostStyle = getComputedStyle(host);
       expect(

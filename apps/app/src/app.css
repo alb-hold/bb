@@ -811,6 +811,10 @@
   border-radius: 9999px;
 }
 
+:where([data-app-terminal] .xterm) .xterm-screen {
+  margin-inline: auto;
+}
+
 :where(.xterm) .xterm-viewport {
   scrollbar-color: var(--terminal-scrollbar) transparent;
   scrollbar-width: thin;
