@@ -1,13 +1,19 @@
 // @vitest-environment jsdom
 import { performance as nodePerformance } from "node:perf_hooks";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 const gate = "terminal-runtime-preload";
 
-afterEach(() => {
+beforeEach(async () => {
+  await vi.dynamicImportSettled();
+  vi.resetModules();
+});
+
+afterEach(async () => {
+  await vi.dynamicImportSettled();
   nodePerformance.clearMarks(`${gate}-start`);
   nodePerformance.clearMarks(`${gate}-end`);
-  vi.doUnmock("@xterm/xterm");
+  vi.doUnmock("@xterm/addon-unicode11");
   vi.unstubAllGlobals();
   vi.resetModules();
 });
@@ -60,7 +66,7 @@ it("retains the first preload timings when later panel consumers preload again",
 it("retries a rejected runtime import on the next open", async () => {
   vi.stubGlobal("performance", nodePerformance);
   const failure = new Error("runtime download unavailable");
-  vi.doMock("@xterm/xterm", () => {
+  vi.doMock("@xterm/addon-unicode11", () => {
     throw failure;
   });
   const { importTerminalModules, preloadTerminalModules } =
@@ -69,11 +75,11 @@ it("retries a rejected runtime import on the next open", async () => {
   await expect(importTerminalModules()).rejects.toMatchObject({
     cause: failure,
   });
-  await Promise.resolve();
+  await vi.dynamicImportSettled();
   expect(performance.getEntriesByName(`${gate}-end`)[0]).toMatchObject({
     detail: { outcome: "rejected" },
   });
-  vi.doUnmock("@xterm/xterm");
+  vi.doUnmock("@xterm/addon-unicode11");
   preloadTerminalModules();
   const [{ Terminal }] = await importTerminalModules();
   await Promise.resolve();
