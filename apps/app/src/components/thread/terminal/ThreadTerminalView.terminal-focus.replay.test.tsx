@@ -3918,7 +3918,7 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
 
 describe("terminal first paint", () => {
   it.each([8, 32])(
-    "holds a default 80x24 grid inside a wider host until the initial fit settles (spare width=%s)",
+    "excludes the unfitted default grid from visible layout until the initial fit settles (spare width=%s)",
     async (spareWidth) => {
       prepareFirstAttachFontMetricsHarness();
       stubVisibleIntersectionObserver();
@@ -4006,6 +4006,14 @@ describe("terminal first paint", () => {
             .getBoundingClientRect().width,
         ).toBeLessThan(host.getBoundingClientRect().width);
         expect(host.style.opacity).toBe("0");
+        expect(getComputedStyle(terminal!.element!).visibility).toBe("hidden");
+        expect(getComputedStyle(terminal!.textarea!).visibility).toBe(
+          "visible",
+        );
+        expect(
+          getComputedStyle(terminal!.element!.querySelector(".xterm-screen")!)
+            .visibility,
+        ).toBe("hidden");
         await act(async () => {
           fonts.status = "loaded";
           finishFonts();
@@ -4024,6 +4032,13 @@ describe("terminal first paint", () => {
           expect(terminal?.cols).toBe(56);
           expect(terminal?.rows).toBe(38);
           expect(host.style.opacity).toBe("");
+          expect(getComputedStyle(terminal!.element!).visibility).toBe(
+            "visible",
+          );
+          expect(
+            getComputedStyle(terminal!.element!.querySelector(".xterm-screen")!)
+              .visibility,
+          ).toBe("visible");
         }, "fitted grid did not reveal");
       } finally {
         if (fontDescriptor)

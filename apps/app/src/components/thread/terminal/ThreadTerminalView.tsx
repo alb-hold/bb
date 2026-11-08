@@ -2093,7 +2093,10 @@ export function ThreadTerminalView({
           fittedGridRevealed = true;
           markTerminalPerformance("terminal-fitted-grid-revealed");
           containerElement.dataset.replayHeld = "false";
-          if (fittedGridFallback) containerElement.style.opacity = "";
+          if (fittedGridFallback) {
+            containerElement.style.opacity = "";
+            if (terminal?.element) terminal.element.style.visibility = "";
+          }
           const complete = completeReplayReveal;
           completeReplayReveal = null;
           const finish = () => {
@@ -2204,6 +2207,7 @@ export function ThreadTerminalView({
             replayPreview.dispose();
             replayPreview = null;
           }
+          if (terminal.element) terminal.element.style.visibility = "";
           containerElement.style.opacity = "";
           return;
         }
@@ -2407,6 +2411,8 @@ export function ThreadTerminalView({
       markTerminalPerformance("terminal-xterm-open-start");
       terminal.open(containerElement);
       terminal.element?.classList.add("bg-sidebar");
+      if (terminal.element) terminal.element.style.visibility = "hidden";
+      if (terminal.textarea) terminal.textarea.style.visibility = "visible";
       const rendererStyle = getComputedStyle(
         terminal.element ?? containerElement,
       );
