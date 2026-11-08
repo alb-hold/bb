@@ -801,7 +801,7 @@
   --diff-removed: oklch(0.72 0.19 22);
   --pr-merged: oklch(0.68 0.18 295);
   --brand-discord: var(--foreground);
-  --border: color-mix(in oklch, var(--ink) 19.4%, var(--canvas));
+  --border: color-mix(in oklch, var(--ink) 24%, var(--canvas));
   --border-hairline: color-mix(in oklch, var(--ink) 21%, var(--canvas));
   /* One app-shell seam for top nav, sidebar, split, and panel boundaries. */
   --border-seam: color-mix(in oklch, var(--ink) 11%, var(--canvas));

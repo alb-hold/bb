@@ -662,3 +662,14 @@ for (const scheme of MODES) {
     expect(metadata).toBeLessThan(contrastRatio(parseOklch(variableValue(block, "subtle-foreground")), sidebar));
   });
 }
+
+it("gives dark structural borders a visible step without changing light or text", () => {
+  const block = modeBlock("dark");
+  const ink = parseOklch(variableValue(block, "ink"));
+  const canvas = parseOklch(variableValue(block, "canvas"));
+  const share = rampSteps(block).get("border")! / 100;
+  const border = { ...canvas, lightness: canvas.lightness + (ink.lightness - canvas.lightness) * share };
+  expect(contrastRatio(border, canvas)).toBeGreaterThanOrEqual(1.55);
+  expect(rampSteps(modeBlock("light")).get("border")).toBe(14);
+  expect(variableValue(block, "subtle-foreground")).toBe("oklch(0.68 0 0)");
+});
