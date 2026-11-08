@@ -1,3 +1,4 @@
+import { RetainedTerminalViewsProvider } from "@/components/thread/terminal/RetainedTerminalViews";
 import { useCorePageTitle } from "./core-page-title";
 import { type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import {
@@ -951,7 +952,12 @@ function AppLayoutContent({ children }: AppLayoutProps) {
                       />
                     ) : null}
                     <main className="flex min-h-0 flex-1 flex-col p-4 md:p-5">
-                      {children}
+                      <RetainedTerminalViewsProvider
+                        projectId={resolvedThreadProjectId ?? projectId}
+                        environmentId={thread?.environmentId}
+                      >
+                        {children}
+                      </RetainedTerminalViewsProvider>
                     </main>
                   </div>
                 </SidebarInset>

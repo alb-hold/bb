@@ -561,7 +561,9 @@ export function observeTerminalFontLoading(
   };
 }
 
-interface ThreadTerminalViewProps {
+export interface ThreadTerminalViewProps {
+  parked?: boolean;
+  onRetentionInvalidated?: () => void;
   retainNativeOutput?: boolean;
   attentionShownAsBanner?: boolean;
   autoFocus: boolean;
@@ -1267,7 +1269,9 @@ export function ThreadTerminalView({
   retainNativeOutput = false,
   attentionShownAsBanner = false,
   autoFocus,
-  isPanelOpen,
+  isPanelOpen: panelOpen,
+  parked = false,
+  onRetentionInvalidated,
   onAutoFocusHandled,
   onOpenLink,
   onSelectionAddToChat,
@@ -1278,6 +1282,18 @@ export function ThreadTerminalView({
   onUserInput,
   session,
 }: ThreadTerminalViewProps) {
+  const isPanelOpen = panelOpen && !parked;
+  const parkedRef = useRef(parked);
+  parkedRef.current = parked;
+  const retentionInvalidatedRef = useRef(onRetentionInvalidated);
+  retentionInvalidatedRef.current = onRetentionInvalidated;
+  const parkTransportRef = useRef<((parked: boolean) => void) | null>(null);
+  const returningRef = useRef(false);
+  const restoringFocusRef = useRef(false);
+  useLayoutEffect(() => {
+    if (parked) returningRef.current = true;
+    parkTransportRef.current?.(parked);
+  }, [parked]);
   const [handoffOwnerToken, setHandoffOwnerToken] = useState(() =>
     wsManager.getDeviceHandoffClientToken(),
   );
@@ -1354,6 +1370,7 @@ export function ThreadTerminalView({
       link: null,
       selectionText: "",
     });
+  const [contextMenuOpen, setContextMenuOpen] = useState(false);
   const viewRef = useRef<HTMLDivElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const pendingReplayRevealRef = useRef<string | null>(null);
@@ -1728,8 +1745,13 @@ export function ThreadTerminalView({
     setTextSnapshot(null);
     updateHoveredTerminalLink(null);
     setPendingTerminalLink(null);
+    setContextMenuOpen(false);
+    if (parked) {
+      longPressGestureRef.current?.cancel();
+      setTerminalSearchOpen(false);
+    }
     setContextMenuState({ link: null, selectionText: "" });
-  }, [session.id, updateHoveredTerminalLink]);
+  }, [parked, session.id, updateHoveredTerminalLink]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -1740,7 +1762,7 @@ export function ThreadTerminalView({
       container.closest("[data-native-terminal-thread]") !== null;
     setRestoringSession(sessionStatusRef.current === "running");
 
-    const activeElementAtMount = document.activeElement;
+    let activeElementAtMount = document.activeElement;
     container.style.containerType = "inline-size";
 
     const earlySocketUrl = buildTerminalWebSocketUrl({
@@ -1964,7 +1986,9 @@ export function ThreadTerminalView({
     let hasReceivedInitialAttach = false;
     let lastParsedOutputNextSeq = 0;
     let lastQueuedOutputNextSeq = 0;
-    const hiddenOutput = createTerminalHiddenOutput();
+    const hiddenOutput = createTerminalHiddenOutput(() =>
+      retentionInvalidatedRef.current?.(),
+    );
     let flushHiddenOutput = () => {};
     const reportDocumentVisibility = () => {
       if (
@@ -1979,7 +2003,7 @@ export function ThreadTerminalView({
         containerHasSize &&
         isPanelOpenRef.current;
       if (transport === null) return;
-      if (!holdForFittedGrid && !isPanelOpenRef.current)
+      if (!holdForFittedGrid && !isPanelOpenRef.current && !parkedRef.current)
         hiddenOutput.invalidate();
       const wasVisible = terminalVisible;
       if (wasVisible === nextVisible) return;
@@ -1987,7 +2011,7 @@ export function ThreadTerminalView({
       if (nextVisible) webglVisibilityRef.current?.sync();
       transport?.setVisible(nextVisible);
       if (nextVisible) {
-        sizeClaims?.claimIfFocused();
+        if (!returningRef.current) sizeClaims?.claimIfFocused();
         scheduleFitRef.current?.();
       }
       if (wasVisible === false && nextVisible) flushHiddenOutput();
@@ -2286,7 +2310,7 @@ export function ThreadTerminalView({
                   id: `${now}-${Math.random()}`,
                   createdAt: now,
                   expiresAt: now + 120_000,
-                  originLabel: session.title,
+                  originLabel: sessionRef.current.title,
                   request: {
                     kind: "copy-text",
                     text,
@@ -2439,6 +2463,9 @@ export function ThreadTerminalView({
               visible: false,
               onRendererChange: (renderer) => {
                 if (disposed || terminal === null) return;
+                markTerminalPerformance("terminal-renderer-changed", {
+                  detail: { terminalId: session.id, renderer },
+                });
                 fitWork.invalidate();
                 scheduleFitRef.current?.();
                 if (
@@ -2845,6 +2872,7 @@ export function ThreadTerminalView({
         terminal.focus();
         onAutoFocusHandledRef.current?.();
       }
+      activeElementAtMount = null;
 
       const activeTerminal = terminal!;
       const getReplayState = () => ({
@@ -2930,6 +2958,8 @@ export function ThreadTerminalView({
         message: TerminalServerMessage,
         replayWrite?: { bytes: Uint8Array; sourceBytes: Uint8Array },
       ) => {
+        if (message.type === "exited" || message.type === "error")
+          retentionInvalidatedRef.current?.();
         if (message.type === "output") {
           if (terminalVisible !== true || !isPanelOpenRef.current) {
             hiddenOutput.push(message.chunk, lastQueuedOutputNextSeq);
@@ -3304,11 +3334,14 @@ export function ThreadTerminalView({
             scheduleFit();
           }
         },
+        onSocketError: () => retentionInvalidatedRef.current?.(),
         onConnectionState: (state) => {
           if (disposed) {
             return;
           }
           fitWork.invalidate();
+          if (state === "reconnecting" || state === "closed")
+            retentionInvalidatedRef.current?.();
           if (state === "closed") abandonReplayPreview();
           if (
             state === "reconnecting" &&
@@ -3397,6 +3430,16 @@ export function ThreadTerminalView({
         }),
       });
       transport = activeTransport;
+      parkTransportRef.current = (nextParked) => {
+        markTerminalPerformance(
+          nextParked ? "terminal-view-parked" : "terminal-view-adopted",
+          { detail: { terminalId: session.id } },
+        );
+        activeTransport.setParked(nextParked);
+        webglVisibilityRef.current?.sync();
+        reportDocumentVisibility();
+      };
+      if (parkedRef.current) activeTransport.setParked(true);
       flushHiddenOutput = () => {
         const chunks = hiddenOutput.take();
         if (chunks === null) {
@@ -3444,7 +3487,11 @@ export function ThreadTerminalView({
       fitTerminal();
       reportDocumentVisibility();
       sizeClaims = listenForTerminalSizeClaims({
-        claim: (reclaim) => activeTransport.claimSize(reclaim),
+        claim: (reclaim) => {
+          if (parkedRef.current || restoringFocusRef.current) return;
+          returningRef.current = false;
+          activeTransport.claimSize(reclaim);
+        },
         element: containerElement,
         textarea: activeTerminal.textarea,
       });
@@ -3818,6 +3865,7 @@ export function ThreadTerminalView({
         "visibilitychange",
         reportDocumentVisibility,
       );
+      parkTransportRef.current = null;
       transport?.dispose();
       discardPrefetchedTerminalSocket(earlySocketUrl);
       webglVisibilityRef.current?.dispose();
@@ -3845,7 +3893,6 @@ export function ThreadTerminalView({
     session.id,
     session.threadId,
     handoffOwnerToken,
-    session.title,
     updateHoveredTerminalLink,
   ]);
 
@@ -3879,7 +3926,12 @@ export function ThreadTerminalView({
     }
     const terminal = terminalRef.current;
     if (terminal !== null && !terminalSearchOpenRef.current) {
-      terminal.focus();
+      restoringFocusRef.current = returningRef.current;
+      try {
+        terminal.focus();
+      } finally {
+        restoringFocusRef.current = false;
+      }
       onAutoFocusHandledRef.current?.();
     }
     scheduleFitRef.current?.();
@@ -3928,6 +3980,7 @@ export function ThreadTerminalView({
       timer = setTimeout(() => {
         if (
           disposed ||
+          parkedRef.current ||
           themeSendPendingRef.current ||
           (themeControllerRef.current !== viewerKey &&
             (!document.hasFocus() ||
@@ -4145,7 +4198,9 @@ export function ThreadTerminalView({
         </div>
       ) : null}
       <ContextMenu
+        open={!parked && contextMenuOpen}
         onOpenChange={(open) => {
+          setContextMenuOpen(open);
           if (!open) {
             setContextMenuState({ link: null, selectionText: "" });
           }
@@ -4216,7 +4271,7 @@ export function ThreadTerminalView({
           className="min-w-36"
           onCloseAutoFocus={(event) => {
             event.preventDefault();
-            terminalRef.current?.focus();
+            if (!parkedRef.current) terminalRef.current?.focus();
           }}
         >
           {contextMenuLink !== null ? (
@@ -4266,7 +4321,7 @@ export function ThreadTerminalView({
           </ContextMenuItem>
         </ContextMenuContent>
         <TimelineSelectionMenu
-          selection={activeSelection}
+          selection={parked ? null : activeSelection}
           onAddToChat={
             onSelectionAddToChat === undefined
               ? undefined
@@ -4275,7 +4330,7 @@ export function ThreadTerminalView({
           onDismiss={dismissTerminalSelectionMenu}
         />
         <TerminalLinkOpenDialog
-          target={pendingTerminalLink}
+          target={parked ? null : pendingTerminalLink}
           onConfirm={confirmTerminalLinkOpen}
           onOpenChange={(open) => {
             if (!open) {
@@ -4338,7 +4393,7 @@ export function ThreadTerminalView({
       ) : null}
       {isTouchDevice ? (
         <TerminalTextSelectSheet
-          open={textSnapshot !== null}
+          open={!parked && textSnapshot !== null}
           text={textSnapshot ?? ""}
           initialLine={textSnapshotInitialLine}
           onOpenChange={(open) => {

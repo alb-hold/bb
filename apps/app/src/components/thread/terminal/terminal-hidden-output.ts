@@ -2,7 +2,7 @@ import type { TerminalOutputChunk } from "@bb/server-contract";
 
 const MAX_BUFFERED_BYTES = 4 * 1024 * 1024;
 
-export function createTerminalHiddenOutput() {
+export function createTerminalHiddenOutput(onInvalidated?: () => void) {
   let chunks: TerminalOutputChunk[] = [];
   let bytes = 0;
   let nextSeq: number | null = null;
@@ -16,6 +16,7 @@ export function createTerminalHiddenOutput() {
   const invalidate = () => {
     clear();
     needsReplay = true;
+    onInvalidated?.();
   };
   return {
     clear,

@@ -5,6 +5,10 @@ import {
   SHORT_LIVED_STATUS_DELAY_MS,
   useSustainedFlag,
 } from "@/hooks/useSustainedFlag";
+import {
+  RetainedTerminalViewSlot,
+  useRetainedTerminalPanelState,
+} from "./RetainedTerminalViews";
 import { ThreadTerminalView } from "./ThreadTerminalView";
 import type { ThreadTerminalController } from "./useThreadTerminalController";
 
@@ -31,6 +35,10 @@ export function ThreadTerminalContent({
   onRetryStart,
   onSelectionAddToChat,
 }: ThreadTerminalContentProps) {
+  useRetainedTerminalPanelState(
+    controller.activeSession?.id,
+    controller.isPanelOpen && controller.shouldMountTerminalView,
+  );
   useTerminalMountGate(
     "terminal-session-ready",
     "active",
@@ -105,7 +113,8 @@ export function ThreadTerminalContent({
   }
 
   return (
-    <ThreadTerminalView
+    <RetainedTerminalViewSlot
+      View={ThreadTerminalView}
       retainNativeOutput={retainNativeOutput}
       attentionShownAsBanner={attentionShownAsBanner}
       autoFocus={autoFocus}

@@ -284,6 +284,26 @@ export function observeTerminalWebglVisibility({
     !supportsIntersectionObserver ||
     (isPanelOpen() && isGeometricallyVisible());
   let wasVisible = false;
+  let parents: HTMLElement[] = [];
+  const syncParents = () => {
+    let parent = root.parentElement;
+    let index = 0;
+    while (parent !== null && parents[index] === parent) {
+      parent = parent.parentElement;
+      index++;
+    }
+    if (parent === null && index === parents.length) return;
+    for (const previous of parents) resizeObserver.unobserve(previous);
+    parents = [];
+    for (
+      parent = root.parentElement;
+      parent !== null;
+      parent = parent.parentElement
+    ) {
+      parents.push(parent);
+    }
+    for (const current of parents) resizeObserver.observe(current);
+  };
   const sync = () => {
     if (disposed) return false;
     const visible = isPanelOpen() && intersects && isGeometricallyVisible();
@@ -294,6 +314,7 @@ export function observeTerminalWebglVisibility({
     return visible;
   };
   const syncGeometry = () => {
+    syncParents();
     if (hasObserved) {
       intersects = intersectsClippingAncestors(
         root,
@@ -322,13 +343,7 @@ export function observeTerminalWebglVisibility({
       );
   resizeObserver.observe(root);
   intersectionObserver?.observe(root);
-  for (
-    let parent = root.parentElement;
-    parent !== null;
-    parent = parent.parentElement
-  ) {
-    resizeObserver.observe(parent);
-  }
+  syncParents();
   window?.addEventListener("scroll", syncGeometry, {
     capture: true,
     passive: true,
@@ -341,6 +356,7 @@ export function observeTerminalWebglVisibility({
     dispose: () => {
       disposed = true;
       resizeObserver.disconnect();
+      parents = [];
       intersectionObserver?.disconnect();
       window?.removeEventListener("scroll", syncGeometry, true);
       window?.removeEventListener("resize", syncGeometry);

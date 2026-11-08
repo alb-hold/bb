@@ -25,6 +25,7 @@ function setupVisibility(
   let resize = () => {};
   let intersect = (_visible: boolean, _bounds?: DOMRect) => {};
   const disconnectResize = vi.fn();
+  const observed = new Set<Element>();
   const disconnectIntersection = vi.fn();
   vi.spyOn(root, "getBoundingClientRect").mockImplementation(() => box);
   vi.spyOn(document, "visibilityState", "get").mockImplementation(() =>
@@ -36,7 +37,12 @@ function setupVisibility(
       constructor(callback: () => void) {
         resize = callback;
       }
-      observe() {}
+      observe(element: Element) {
+        observed.add(element);
+      }
+      unobserve(element: Element) {
+        observed.delete(element);
+      }
       disconnect = disconnectResize;
     },
   );
@@ -118,6 +124,7 @@ function setupVisibility(
     observer,
     createAddon,
     disconnectResize,
+    observed,
     disconnectIntersection,
     intersect: (visible: boolean, bounds?: DOMRect) =>
       intersect(visible, bounds),
@@ -141,6 +148,21 @@ function setupVisibility(
 }
 
 describe("terminal visibility signals", () => {
+  it("drops obsolete route ancestors when its terminal moves to a parked host", () => {
+    const route = document.createElement("div");
+    const host = document.createElement("div");
+    document.body.append(route, host);
+    const state = setupVisibility(true, true, (root) => route.append(root));
+    expect(state.observed.has(route)).toBe(true);
+    host.append(state.root);
+    state.openPanel(false);
+    expect(state.observed.has(route)).toBe(false);
+    expect(state.observed.has(host)).toBe(true);
+    expect(state.root.dataset.terminalRenderer).toBe("dom");
+    route.remove();
+    state.observer.dispose();
+    state.renderer.dispose();
+  });
   it("releases and reacquires sub-threshold visible slivers on scroll", () => {
     const state = setupVisibility();
     const parent = document.createElement("div");
