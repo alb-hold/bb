@@ -318,6 +318,12 @@ describe("terminal replay preview", () => {
           "[data-terminal-replay-preview]",
         )!;
         expect(element.style.visibility).toBe("hidden");
+        expect(element.style.paddingLeft).toBe("8px");
+        expect(element.style.paddingRight).toBe("8px");
+        expect(
+          preview.element!.querySelector<HTMLElement>(".xterm-viewport")!.style
+            .backgroundColor,
+        ).toBe("inherit");
         ready = true;
         cover.setFitGrid(125, 44);
         expect(element.style.visibility).toBe("visible");
