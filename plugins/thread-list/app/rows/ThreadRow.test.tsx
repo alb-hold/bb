@@ -3771,6 +3771,7 @@ it("leaves desktop descenders room without fixed title or metadata heights", () 
   expect(title.classList.contains("md:leading-5")).toBe(true);
   expect(text.classList.contains("md:leading-5")).toBe(true);
   expect(title.classList.contains("md:items-center!")).toBe(true);
+  expect(title.querySelector("[data-thread-title-mode]")?.classList.contains("md:translate-y-px")).toBe(true);
   for (const element of [title, text, metadata]) {
     expect(element.className).not.toMatch(/(?:^| )md:h-/);
   }
