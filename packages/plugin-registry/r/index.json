@@ -390,6 +390,10 @@
       "type": "registry:ui"
     },
     {
+      "name": "thread-row-metadata",
+      "type": "registry:ui"
+    },
+    {
       "name": "toggle",
       "type": "registry:ui"
     },

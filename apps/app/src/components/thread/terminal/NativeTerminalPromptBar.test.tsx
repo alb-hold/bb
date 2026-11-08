@@ -1325,6 +1325,25 @@ it("shows read-only model context beside attachment controls", () => {
   expect(screen.queryByText(/Permissions:/)).toBeNull();
 });
 
+it("hides desktop attachment chrome only while resting inline", () => {
+  const { input } = renderBar();
+  const shell = input.closest("[data-native-composer]")!;
+  for (const label of ["Terminal model", "Terminal execution"]) {
+    const classes = screen.getByLabelText(label).className.split(/\s+/);
+    expect(classes).toContain("md:group-data-[native-composer-inline]:hidden");
+    expect(classes).toContain(
+      "max-md:pointer-coarse:group-data-[native-composer-inline]:hidden",
+    );
+    expect(classes).not.toContain("group-data-[native-composer-inline]:hidden");
+  }
+  expect(shell.hasAttribute("data-native-composer-inline")).toBe(true);
+  fireEvent.focus(input);
+  expect(shell.hasAttribute("data-native-composer-inline")).toBe(false);
+  fireEvent.change(input, { target: { value: "hello" } });
+  fireEvent.blur(input);
+  expect(shell.hasAttribute("data-native-composer-inline")).toBe(false);
+});
+
 it("omits the model chip container when the native record has no model", () => {
   renderBar("Native CLI", "");
   expect(screen.queryByLabelText("Terminal model")).toBeNull();
@@ -1379,7 +1398,7 @@ it.each([360, 374, 375, 1024])("uses a whole placeholder at %s px", (width) => {
     const { input } = renderBar(undefined, undefined, "Codex", width < 768);
     expect(input.placeholder).toBe(
       width < 375
-        ? "Send to prompt…"
+        ? "Send to Codex"
         : width < 768
           ? "Send to prompt above…"
           : "Send to Codex prompt above…",
@@ -1389,3 +1408,32 @@ it.each([360, 374, 375, 1024])("uses a whole placeholder at %s px", (width) => {
     media.mockRestore();
   }
 });
+
+it.each(["Codex", "Claude Code", "A provider with a long label"])(
+  "keeps the narrow destination whole for %s",
+  (provider) => {
+    const media = vi
+      .spyOn(window, "matchMedia")
+      .mockImplementation((query) => ({
+        matches: query === "(max-width: 374px)",
+        media: query,
+        onchange: null,
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        dispatchEvent: () => false,
+      }));
+    try {
+      const { input } = renderBar(undefined, undefined, provider, true);
+      expect(input.placeholder).toBe(
+        `Send to ${provider.length <= 11 ? provider : "CLI"}`,
+      );
+      expect(input.placeholder).not.toContain("…");
+      expect(screen.getByLabelText(`Send to ${provider} terminal`)).toBe(input);
+    } finally {
+      cleanup();
+      media.mockRestore();
+    }
+  },
+);

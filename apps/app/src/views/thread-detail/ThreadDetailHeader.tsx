@@ -1,5 +1,5 @@
 import type { ThreadListIndicatorKind } from "@bb/client-core";
-import { getThreadActivityLabel } from "@/lib/thread-activity-label";
+import { ThreadActivityLabel } from "@/components/thread/ThreadActivityLabel";
 import { preloadThreadSecondaryPanel } from "@/components/secondary-panel/lazySecondaryPanelComponents";
 import {
   useCallback,
@@ -270,19 +270,15 @@ export function ThreadDetailHeader({
           {hasNativeTerminal ? (
             <div ref={nativeActivityTargetRef} className="h-4 shrink-0" />
           ) : (
-            <div
-              role="status"
-              aria-label="Thread activity"
-              className="flex h-4 shrink-0 items-center whitespace-nowrap text-xs text-muted-foreground"
-            >
-              {getThreadActivityLabel(
+            <ThreadActivityLabel
+              indicator={
                 needsInput
                   ? "needs-input"
                   : checkTerminal
                     ? "check-terminal"
-                    : activityIndicator,
-              )}
-            </div>
+                    : activityIndicator
+              }
+            />
           )}
         </div>
         <ThreadUsageAndAgents

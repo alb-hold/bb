@@ -548,6 +548,11 @@
       "source": "./src/components/ui/thread-mode-glyph.tsx",
       "types": "./src/components/ui/thread-mode-glyph.tsx",
       "default": "./src/components/ui/thread-mode-glyph.tsx"
+    },
+    "./thread-row-metadata": {
+      "source": "./src/components/ui/thread-row-metadata.tsx",
+      "types": "./src/components/ui/thread-row-metadata.tsx",
+      "default": "./src/components/ui/thread-row-metadata.tsx"
     }
   },
   "scripts": {

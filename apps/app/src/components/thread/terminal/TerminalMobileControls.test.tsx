@@ -54,8 +54,8 @@ describe("TerminalMobileControls", () => {
         ).toBe(compact);
 
         expect(
-          more.querySelector('[data-icon="Keyboard"]') !== null,
-        ).toBe(compact);
+          more.querySelector("[data-icon]")?.getAttribute("data-icon"),
+        ).toBe("MoreHorizontal");
         expect(more.querySelector('[data-icon="ChevronDown"]')).not.toBeNull();
         const scroller = document.querySelector(
           "[data-terminal-key-scroller]",
@@ -64,6 +64,9 @@ describe("TerminalMobileControls", () => {
         expect(scroller.classList.contains("flex-nowrap")).toBe(true);
         fireEvent.click(more);
         expect(more.getAttribute("aria-pressed")).toBe("true");
+        expect(
+          more.querySelector("[data-icon]")?.getAttribute("data-icon"),
+        ).toBe("MoreHorizontal");
         expect(more.querySelector('[data-icon="ChevronUp"]')).not.toBeNull();
       } finally {
         clientWidth.mockRestore();
