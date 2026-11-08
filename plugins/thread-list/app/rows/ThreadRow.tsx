@@ -1036,7 +1036,6 @@ function ThreadRowComponent({
             </span>
           )}
         </span>
-        <span className="contents md:col-start-2 md:row-start-1 md:flex md:items-center md:justify-end">
         {crossProjectLabel !== null ? (
           <Tooltip>
             <TooltipTrigger asChild>
@@ -1044,7 +1043,7 @@ function ThreadRowComponent({
                 data-sidebar-thread-cross-project=""
                 role="img"
                 aria-label={crossProjectLabel}
-                className="relative z-[31] flex size-5 shrink-0 items-center justify-center text-muted-foreground"
+                className={cn("relative z-[31] flex size-5 shrink-0 items-center justify-center text-muted-foreground md:col-start-2 md:row-start-1 md:justify-self-end", parentOptions && hasChildren && "md:mr-5")}
                 onClick={(event) => {
                   event.preventDefault();
                   event.stopPropagation();
@@ -1060,7 +1059,7 @@ function ThreadRowComponent({
         {parentOptions && hasChildren ? (
           <SidebarChildToggleChevron
             disabled={isEditing}
-            className={cn(isEditing && "hidden", hasVisibleStatus && "size-4")}
+            className={cn("md:col-start-2 md:row-start-1 md:justify-self-end", isEditing && "hidden", hasVisibleStatus && "size-4")}
             isCollapsed={isParentCollapsed}
             expandLabel={`Expand ${labelTitle} threads`}
             collapseLabel={`Collapse ${labelTitle} threads`}
@@ -1068,7 +1067,6 @@ function ThreadRowComponent({
             revealOnHover={!isParentCollapsed}
           />
         ) : null}
-        </span>
         </span>
         {!showRowMetadata || isEditing || isCustomizingActions ? null : (
           <span
