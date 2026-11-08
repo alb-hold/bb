@@ -443,7 +443,7 @@ export const TERMINAL_CELL_OPTIONS = {
   lineHeight: TERMINAL_LINE_HEIGHT,
   cursorBlink: false,
   cursorStyle: "block" as const,
-  cursorInactiveStyle: "none" as const,
+  cursorInactiveStyle: "outline" as const,
 };
 
 export function buildTerminalThemeFromCssColors(
