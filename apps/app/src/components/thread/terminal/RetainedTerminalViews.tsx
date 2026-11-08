@@ -146,19 +146,23 @@ export function createRetainedTerminalViews() {
     },
     detach(entry: Entry) {
       if (!entries.includes(entry)) return;
+      if (host === null) {
+        update(entry, { attachment: null, retained: entry.snapshot.retained });
+        remove(entry);
+        return;
+      }
       const rect = entry.container.getBoundingClientRect();
       entry.container.style.width = `${rect.width}px`;
       entry.container.style.height = `${rect.height}px`;
       update(entry, { attachment: null, retained: entry.snapshot.retained });
-      host?.append(entry.container);
       if (
         entry.invalid ||
-        entry.snapshot.retained.session.status !== "running" ||
-        host === null
+        entry.snapshot.retained.session.status !== "running"
       ) {
         remove(entry);
         return;
       }
+      host.append(entry.container);
       entries = [...entries.filter((candidate) => candidate !== entry), entry];
       prune();
       publish();
@@ -234,11 +238,9 @@ function RetainedView({
 export function RetainedTerminalViewsProvider({
   children,
   projectId,
-  environmentId,
 }: {
   children: ReactNode;
   projectId?: string;
-  environmentId?: string | null;
 }) {
   const [registry] = useState(createRetainedTerminalViews);
   const context = useMemo(
@@ -249,14 +251,6 @@ export function RetainedTerminalViewsProvider({
     registry.subscribe,
     registry.getSnapshot,
   );
-  useLayoutEffect(() => {
-    registry.invalidate(
-      (entry) =>
-        (projectId !== undefined && entry.projectId !== projectId) ||
-        (environmentId !== undefined &&
-          entry.snapshot.retained.session.environmentId !== environmentId),
-    );
-  }, [environmentId, projectId, registry]);
   useEffect(() => {
     const visibility = () =>
       registry.setDocumentHidden(document.visibilityState !== "visible");

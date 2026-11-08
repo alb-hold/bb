@@ -954,7 +954,6 @@ function AppLayoutContent({ children }: AppLayoutProps) {
                     <main className="flex min-h-0 flex-1 flex-col p-4 md:p-5">
                       <RetainedTerminalViewsProvider
                         projectId={resolvedThreadProjectId ?? projectId}
-                        environmentId={thread?.environmentId}
                       >
                         {children}
                       </RetainedTerminalViewsProvider>

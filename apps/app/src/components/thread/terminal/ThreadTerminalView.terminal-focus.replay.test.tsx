@@ -457,9 +457,21 @@ function writeReplay(terminal: Terminal, data: string): Promise<void> {
 }
 
 describe("ThreadTerminalView terminal replay and reconnect", () => {
-  it.each(["reuse", "gap", "overflow", "socket-error", "exit"] as const)(
+  it.each([
+    "reuse",
+    "cross-workspace",
+    "no-environment",
+    "gap",
+    "overflow",
+    "socket-error",
+    "exit",
+  ] as const)(
     "returns a route-owned terminal after %s with a valid parser or fresh full replay",
     async (scenario) => {
+      const retained =
+        scenario === "reuse" ||
+        scenario === "cross-workspace" ||
+        scenario === "no-environment";
       prepareMobileTerminal();
       stubVisibleIntersectionObserver();
       vi.spyOn(FitAddon.prototype, "proposeDimensions").mockReturnValue({
@@ -494,27 +506,36 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
         cols: 40,
         rows: 12,
       });
-      const tree = (shown: boolean) => (
-        <MemoryRouter>
-          <AppCommandProvider>
-            <RetainedTerminalViewsProvider
-              projectId="prj_test"
-              environmentId={session.environmentId}
-            >
-              {shown ? (
-                <RetainedTerminalViewSlot
-                  View={ThreadTerminalView}
-                  autoFocus
-                  isPanelOpen
-                  session={session}
-                />
-              ) : (
-                <div>Chat route</div>
-              )}
-            </RetainedTerminalViewsProvider>
-          </AppCommandProvider>
-        </MemoryRouter>
-      );
+      const tree = (shown: boolean) => {
+        const route =
+          !shown && scenario === "cross-workspace"
+            ? { projectId: "prj_other", environmentId: "env_other" }
+            : {
+                projectId: "prj_test",
+                environmentId:
+                  !shown && scenario === "no-environment"
+                    ? null
+                    : session.environmentId,
+              };
+        return (
+          <MemoryRouter>
+            <AppCommandProvider>
+              <RetainedTerminalViewsProvider {...route}>
+                {shown ? (
+                  <RetainedTerminalViewSlot
+                    View={ThreadTerminalView}
+                    autoFocus
+                    isPanelOpen
+                    session={session}
+                  />
+                ) : (
+                  <div>Chat route</div>
+                )}
+              </RetainedTerminalViewsProvider>
+            </AppCommandProvider>
+          </MemoryRouter>
+        );
+      };
       const { rerender } = render(tree(true));
       await waitForReadinessCondition(() => {
         expect(testState.sockets).toHaveLength(1);
@@ -579,7 +600,7 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
           .filter((message) => message.type === "resize"),
       ).toEqual([]);
       rerender(tree(true));
-      if (scenario !== "reuse") {
+      if (!retained) {
         await waitForReadinessCondition(
           () => expect(testState.sockets).toHaveLength(2),
           "invalid viewer did not reopen",
@@ -607,7 +628,7 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
         expect(pageText()).toContain("while-away");
         expect(contexts).toBe(1);
       }, "retained route did not catch up");
-      if (scenario === "reuse") {
+      if (retained) {
         expect(testState.sockets).toHaveLength(1);
         expect(testState.socketUrls).toHaveLength(1);
         expect(

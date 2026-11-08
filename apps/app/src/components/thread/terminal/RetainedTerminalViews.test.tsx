@@ -2,7 +2,6 @@
 
 import { act, cleanup, render } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ComponentProps } from "react";
 import { useEffect } from "react";
 import { makeTerminalSession } from "@/test/fixtures/terminal-sessions";
 import { useAppNavigationHost } from "@/lib/app-navigation-host";
@@ -236,78 +235,68 @@ describe("retained terminal viewers", () => {
       expect(mounts).toBe(kind === "terminals-changed" ? 1 : 2);
     },
   );
-  it.each([
-    "project",
-    "workspace",
-    "reconnect",
-    "identity",
-    "disconnect",
-  ] as const)("evicts parked viewers after a %s change", (kind) => {
-    let connected: Parameters<typeof wsManager.onConnected>[0] = () => {};
-    let stateChanged = () => {};
-    vi.spyOn(wsManager, "onConnectionStateChange").mockImplementation(
-      (callback) => {
-        stateChanged = callback;
+  it.each(["startup", "reconnect", "identity", "disconnect"] as const)(
+    "distinguishes %s from an unchanged startup connection",
+    (kind) => {
+      const connectionState = vi
+        .spyOn(wsManager, "getConnectionState")
+        .mockReturnValue(kind === "startup" ? "connecting" : "connected");
+      let connected: Parameters<typeof wsManager.onConnected>[0] = () => {};
+      let stateChanged = () => {};
+      vi.spyOn(wsManager, "onConnectionStateChange").mockImplementation(
+        (callback) => {
+          stateChanged = callback;
+          return () => {};
+        },
+      );
+      let identity: Parameters<
+        typeof wsManager.onDeviceHandoffClientToken
+      >[0] = () => {};
+      vi.spyOn(wsManager, "onConnected").mockImplementation((callback) => {
+        connected = callback;
         return () => {};
-      },
-    );
-    let identity: Parameters<
-      typeof wsManager.onDeviceHandoffClientToken
-    >[0] = () => {};
-    vi.spyOn(wsManager, "onConnected").mockImplementation((callback) => {
-      connected = callback;
-      return () => {};
-    });
-    vi.spyOn(wsManager, "getDeviceHandoffClientToken").mockReturnValue(
-      "old-identity",
-    );
-    vi.spyOn(wsManager, "onDeviceHandoffClientToken").mockImplementation(
-      (callback) => {
-        identity = callback;
-        return () => {};
-      },
-    );
-    let mounts = 0,
-      disposals = 0;
-    function Viewer() {
-      useEffect(() => {
-        mounts++;
-        return () => {
-          disposals++;
-        };
-      }, []);
-      return <div>viewer</div>;
-    }
-    const tree = (
-      shown: boolean,
-      scope: Partial<ComponentProps<typeof RetainedTerminalViewsProvider>> = {},
-    ) => (
-      <RetainedTerminalViewsProvider
-        projectId="old-project"
-        environmentId="env_test"
-        {...scope}
-      >
-        {shown ? (
-          <RetainedTerminalViewSlot View={Viewer} {...props("retained")} />
-        ) : null}
-      </RetainedTerminalViewsProvider>
-    );
-    const { rerender } = render(tree(true));
-    rerender(tree(false));
-    if (kind === "project") rerender(tree(false, { projectId: "new-project" }));
-    if (kind === "workspace")
-      rerender(tree(false, { environmentId: "new-environment" }));
-    if (kind === "reconnect")
-      act(() => connected({ reconnected: true, disconnectedAt: 0 }));
-    if (kind === "identity") act(() => identity("new-identity"));
-    if (kind === "disconnect") {
-      vi.spyOn(wsManager, "getConnectionState").mockReturnValue("connecting");
-      act(stateChanged);
-    }
-    expect(disposals).toBe(1);
-    rerender(tree(true));
-    expect(mounts).toBe(2);
-  });
+      });
+      vi.spyOn(wsManager, "getDeviceHandoffClientToken").mockReturnValue(
+        "old-identity",
+      );
+      vi.spyOn(wsManager, "onDeviceHandoffClientToken").mockImplementation(
+        (callback) => {
+          identity = callback;
+          return () => {};
+        },
+      );
+      let mounts = 0,
+        disposals = 0;
+      function Viewer() {
+        useEffect(() => {
+          mounts++;
+          return () => {
+            disposals++;
+          };
+        }, []);
+        return <div>viewer</div>;
+      }
+      const tree = (shown: boolean) => (
+        <RetainedTerminalViewsProvider projectId="old-project">
+          {shown ? (
+            <RetainedTerminalViewSlot View={Viewer} {...props("retained")} />
+          ) : null}
+        </RetainedTerminalViewsProvider>
+      );
+      const { rerender } = render(tree(true));
+      rerender(tree(false));
+      if (kind === "reconnect")
+        act(() => connected({ reconnected: true, disconnectedAt: 0 }));
+      if (kind === "identity") act(() => identity("new-identity"));
+      if (kind === "disconnect") {
+        connectionState.mockReturnValue("reconnecting");
+        act(stateChanged);
+      }
+      expect(disposals).toBe(kind === "startup" ? 0 : 1);
+      rerender(tree(true));
+      expect(mounts).toBe(kind === "startup" ? 1 : 2);
+    },
+  );
   it("parks inside an inert host without hiding the active slot or app root", () => {
     const tree = (shown: boolean) => (
       <RetainedTerminalViewsProvider>
