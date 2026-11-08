@@ -24,6 +24,7 @@ it("releases parked DOM rows and restores the same terminal buffer and grid", as
     const resized = vi.fn();
     terminal.onResize(resized);
     const originalFont = terminal.options.fontFamily;
+    const fontChanges = vi.spyOn(terminal.options, "fontFamily", "set");
     for (let cycle = 0; cycle < 3; cycle++) {
       host.style.display = "none";
       releaseParkedTerminalRendering(terminal);
@@ -31,6 +32,7 @@ it("releases parked DOM rows and restores the same terminal buffer and grid", as
       expect(terminal.buffer.active.getLine(0)?.translateToString(true)).toBe("retained output");
       expect([terminal.cols, terminal.rows]).toEqual([44, 12]);
       expect(terminal.options.fontFamily).toBe(originalFont);
+      expect(fontChanges).not.toHaveBeenCalled();
       expect(resized).not.toHaveBeenCalled();
       host.style.display = "";
       terminal.refresh(0, terminal.rows - 1);
