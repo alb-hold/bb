@@ -359,12 +359,10 @@ describe("TerminalSearch shortcuts and closed controls", () => {
       name: "Search terminal output",
     });
     expect((button as HTMLButtonElement).disabled).toBe(false);
-    expect(button.className).toContain("opacity-0");
-    expect(button.className).toContain("pointer-events-none");
-    expect(button.className).toContain("group-hover/terminal-pane:opacity-100");
-    expect(button.className).toContain(
-      "group-focus-within/terminal-pane:opacity-100",
-    );
+    expect(button.className).toContain("pointer-events-auto");
+    expect(button.className).toContain("bg-transparent");
+    expect(button.className).not.toContain("opacity-0");
+    expect(button.parentElement?.classList.contains("absolute")).toBe(false);
     const terminalKeys = watchTerminalKeys(textarea);
     expect(sendKey("f", { ctrlKey: true }, textarea).defaultPrevented).toBe(
       false,
