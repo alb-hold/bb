@@ -1022,11 +1022,11 @@ function ThreadRowComponent({
             </span>
           ) : (
             <span
-              className="min-w-0 flex-1"
+              className="min-w-0 flex-1 md:pb-1"
               title={labelTitle}
               onDoubleClick={startTitleEditing}
             >
-              <span data-emphasized={showActive || thread.isUnread || trailingIndicatorKind === "needs-input" || trailingIndicatorKind === "check-terminal" || trailingIndicatorKind === "waiting-for-input"} className="bb-thread-title flex min-w-0 flex-1 items-center gap-1 truncate max-md:font-normal md:font-medium md:data-[emphasized=false]:font-normal">
+              <span data-emphasized={showActive || thread.isUnread || trailingIndicatorKind === "needs-input" || trailingIndicatorKind === "check-terminal" || trailingIndicatorKind === "waiting-for-input"} className="bb-thread-title md:leading-4 flex min-w-0 flex-1 items-center gap-1 truncate max-md:font-normal md:font-medium md:data-[emphasized=false]:font-normal">
                 {thread.experimental_nativeTerminal ? <ThreadModeGlyph nativeTerminal isWorktree={false} /> : null}
                 <span className="min-w-0 truncate"><ThreadTitle threadId={thread.id} /></span>
               </span>
