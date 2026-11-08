@@ -778,7 +778,7 @@ function MarkdownCodeBlock({
       <div
         data-clipboard-ignore
         data-code-actions=""
-        className="absolute right-0 top-0 flex h-11 w-44 items-center justify-between gap-1 rounded-tr-md bg-surface-recessed pl-1 pr-1.5"
+        className="absolute right-0 top-0 flex h-11 w-44 items-center justify-between gap-1 rounded-tr-md bg-surface-recessed-solid pl-1 pr-1.5"
       >
         <span className="min-w-0 truncate font-mono text-xs uppercase text-muted-foreground" title={language ?? undefined}>
           {language ?? ""}

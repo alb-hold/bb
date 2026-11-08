@@ -133,6 +133,7 @@ describe("MarkdownPreview", () => {
     const code = container.querySelector("[data-code-card] pre")!;
     expect(actions.classList.contains("absolute")).toBe(true);
     expect(actions.classList.contains("h-11")).toBe(true);
+    expect(actions.classList.contains("bg-surface-recessed-solid")).toBe(true);
     expect(code.hasAttribute("data-code-card-content")).toBe(true);
     expect(code.textContent).toContain("const answer = 42;");
     expect(code.classList.contains("pr-28")).toBe(false);
