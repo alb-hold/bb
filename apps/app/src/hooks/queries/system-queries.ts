@@ -222,7 +222,10 @@ export function useKnownProviderModelCatalogScope(
   return undefined;
 }
 
-export function systemProvidersQueryOptions(args: UseSystemProvidersArgs = {}) {
+export function systemProvidersQueryOptions(
+  args: UseSystemProvidersArgs = {},
+  queryClient?: QueryClient,
+) {
   const capability = args.capability ?? null;
   const environmentId = args.environmentId ?? null;
   const hostId = args.hostId ?? null;
@@ -253,8 +256,14 @@ export function systemProvidersQueryOptions(args: UseSystemProvidersArgs = {}) {
     enabled: args.enabled ?? true,
     staleTime: 60_000,
     placeholderData: () => {
-      const remembered = readCachedProviderList(providersCacheKey);
-      if (remembered === null) return undefined;
+      const remembered = readCachedProviderList(providersCacheKey) ??
+        queryClient?.getQueriesData<SystemExecutionOptionsResponse>({
+          queryKey: allSystemExecutionOptionsQueryKeyPrefix(),
+        }).find(([key, data]) =>
+          isSameExecutionOptionsRoute(key, environmentId, hostId) &&
+          data !== undefined && data.providers.length > 0,
+        )?.[1]?.providers;
+      if (remembered == null) return undefined;
       const eligible =
         capability === null
           ? remembered
@@ -266,7 +275,8 @@ export function systemProvidersQueryOptions(args: UseSystemProvidersArgs = {}) {
 
 export function useSystemProviders(args: UseSystemProvidersArgs = {}) {
   useSystemRealtimeSubscription({ enabled: args.enabled ?? true });
-  return useQuery(systemProvidersQueryOptions(args));
+  const queryClient = useQueryClient();
+  return useQuery(systemProvidersQueryOptions(args, queryClient));
 }
 
 export function resolveSystemProviderInfo({

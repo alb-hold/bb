@@ -861,3 +861,17 @@ describe("useSystemProviderStates", () => {
     });
   });
 });
+
+it("exposes terminal capability at first paint from the matching execution snapshot while refreshing the roster", () => {
+  const { queryClient } = createQueryClientTestHarness();
+  const provider = makeProviderInfo({ id: "native-cached", capabilities: { supportsNativeTerminal: true } });
+  queryClient.setQueryData(systemExecutionOptionsQueryKey({ environmentId: "env-cached", hostId: null, providerId: "native-cached" }), {
+    ...EXECUTION_OPTIONS_RESPONSE, providers: [provider],
+  });
+  vi.mocked(sdk.providers.list).mockImplementation(() => new Promise(() => {}));
+  const observer = observe(queryClient, systemProvidersQueryOptions({ environmentId: "env-cached" }, queryClient));
+  expect(observer.getCurrentResult().data?.[0]?.capabilities.supportsNativeTerminal).toBe(true);
+  expect(observer.getCurrentResult().isFetching).toBe(true);
+  const other = observe(queryClient, systemProvidersQueryOptions({ environmentId: "env-other" }, queryClient));
+  expect(other.getCurrentResult().data).toBeUndefined();
+});
