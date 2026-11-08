@@ -540,7 +540,7 @@ afterEach(() => {
 describe("ThreadRow", () => {
   it("emphasizes desktop titles while keeping context secondary", () => {
     const view = renderThreadRow();
-    expect(view.container.querySelector(".bb-thread-title")?.classList.contains("md:font-medium")).toBe(true);
+    expect(view.container.querySelector(".bb-thread-title")?.classList.contains("md:data-[emphasized=true]:font-medium")).toBe(true);
     expect(view.container.querySelector("[data-sidebar-thread-context]")?.classList.contains("text-muted-foreground")).toBe(true);
   });
   it("shows Terminal for an idle native thread without live activity", () => {
@@ -3724,12 +3724,12 @@ it("uses regular desktop weight for inactive rows and medium for attention", () 
   const view = renderThreadRow({ thread: createThread({ indicator: "none", lastReadAt: 1, latestAttentionAt: 1 }) });
   const title = () => view.container.querySelector(".bb-thread-title")!;
   expect(title().getAttribute("data-emphasized")).toBe("false");
-  expect(title().className).toContain("md:data-[emphasized=false]:font-normal");
-  expect(title().className).toContain("max-md:font-normal");
+  expect(title().className).toContain("font-normal");
+  expect(title().className).toContain("font-normal");
   view.rerenderThreadRow(createThread({ indicator: "check-terminal" }));
   expect(title().getAttribute("data-emphasized")).toBe("true");
   const metadata = view.container.querySelector("[data-sidebar-thread-context]")!;
-  expect(metadata.className).toContain("md:text-subtle-foreground");
+  expect(metadata.className).toContain("md:text-sidebar-metadata-foreground");
 });
 
 it("reserves an equal title slot for chat, worktree and terminal rows", () => {

@@ -644,3 +644,21 @@ describe("home and assistant hierarchy", () => {
     expect(variableValue(block, "subtle-foreground")).toBe("oklch(0.68 0 0)");
   });
 });
+
+for (const scheme of MODES) {
+  it(`keeps ${scheme} sidebar metadata legible below the subtle text tier`, () => {
+    const block = modeBlock(scheme);
+    const ink = parseOklch(variableValue(block, "ink"));
+    const canvas = parseOklch(variableValue(block, "canvas"));
+    const steps = rampSteps(block);
+    const mixed = (token: string) => {
+      const share = steps.get(token);
+      if (share === undefined) throw new Error(`Missing ramp token ${token}`);
+      return { ...canvas, lightness: canvas.lightness + (ink.lightness - canvas.lightness) * share / 100 };
+    };
+    const sidebar = mixed("sidebar");
+    const metadata = contrastRatio(mixed("sidebar-metadata-foreground"), sidebar);
+    expect(metadata).toBeGreaterThanOrEqual(4.5);
+    expect(metadata).toBeLessThan(contrastRatio(parseOklch(variableValue(block, "subtle-foreground")), sidebar));
+  });
+}
