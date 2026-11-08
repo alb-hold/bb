@@ -1500,6 +1500,13 @@ export function NewThreadComposer({
   const [nativeTerminalRequested, setNativeTerminalRequested] = useAtom(
     nativeTerminalPreferenceAtom,
   );
+  const handleNativeTerminalChange = useCallback(
+    (enabled: boolean) => {
+      setNativeTerminalRequested(enabled);
+      if (enabled) prefetchThreadViewOnIntent(true);
+    },
+    [setNativeTerminalRequested],
+  );
   const isCopyingAttachmentsRef = useRef(false);
   const isSubmittingRef = useRef(false);
   const uploadPromptAttachment = useUploadPromptAttachment();
@@ -2227,7 +2234,7 @@ export function NewThreadComposer({
                 nativeTerminalSupport === false
                   ? "This provider does not support Terminal mode"
                   : undefined,
-              onChange: setNativeTerminalRequested,
+              onChange: handleNativeTerminalChange,
             },
             providerRouting: executionOptionsRouting,
             provider: {
@@ -2345,7 +2352,7 @@ export function NewThreadComposer({
       nativeTerminal,
       nativeTerminalRequested,
       nativeTerminalSupport,
-      setNativeTerminalRequested,
+      handleNativeTerminalChange,
       pickerSessionOptionSections,
       placedSessionOptions.footer,
       setSessionOption,

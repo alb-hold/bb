@@ -2,7 +2,6 @@ import { useEffect } from "react";
 import { LazyThreadDetailView } from "@/views/thread-detail/LazyThreadDetailView";
 import { downloadSplit } from "@/lib/split-prefetch";
 import { warmSplitWhenQuiet } from "@/lib/settled-split-downloads";
-import { HOME_SETTLED_SPLITS } from "@/lib/home-interaction-preloads";
 
 export function prefetchThreadViewOnIntent(nativeTerminal = false): void {
   void LazyThreadDetailView.preload();
@@ -14,8 +13,11 @@ export function prefetchThreadViewOnIntent(nativeTerminal = false): void {
   }
 }
 
-export function prefetchThreadOpenOnIntent(threadId: string): void {
-  prefetchThreadViewOnIntent();
+export function prefetchThreadOpenOnIntent(
+  threadId: string,
+  nativeTerminal = false,
+): void {
+  prefetchThreadViewOnIntent(nativeTerminal);
   void import("@/lib/thread-open-prefetch")
     .then(({ prefetchThreadOpen }) => prefetchThreadOpen(threadId))
     .catch(() => undefined);
@@ -48,7 +50,15 @@ export function useThreadOpenIntent(): void {
               /^\/(?:projects\/[^/]+\/)?threads\/([^/]+)\/?$/,
             )?.[1]
           : null);
-      if (threadId) prefetchThreadOpenOnIntent(threadId);
+      if (threadId)
+        prefetchThreadOpenOnIntent(
+          threadId,
+          Boolean(
+            (row ?? link)?.querySelector(
+              '[role="img"][aria-label="Native terminal"]',
+            ),
+          ),
+        );
       if (
         window.location.pathname === "/" &&
         event.target.closest("[data-app-composer]") &&
@@ -63,14 +73,12 @@ export function useThreadOpenIntent(): void {
           event.target
             .closest("[data-app-composer]")
             ?.getAttribute("data-native-terminal") === "true";
-        if (event.type === "submit") prefetchThreadViewOnIntent(nativeTerminal);
+        if (event.type === "submit" || nativeTerminal)
+          prefetchThreadViewOnIntent(nativeTerminal);
         else {
           warmSplitWhenQuiet("thread-detail", () =>
             LazyThreadDetailView.preload(),
           );
-          if (nativeTerminal)
-            for (const id of HOME_SETTLED_SPLITS.slice(1))
-              warmSplitWhenQuiet(id, async () => {});
         }
       }
     };

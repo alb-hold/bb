@@ -1519,10 +1519,12 @@ describe("PluginNewThreadComposer seeding", () => {
     await act(async () => {
       latestPromptBoxProps().execution.agentOptions.onChange("daybreak", true);
     });
+    vi.mocked(prefetchThreadViewOnIntent).mockClear();
     await act(async () => {
       latestPromptBoxProps().execution.nativeTerminal.onChange(true);
     });
 
+    expect(prefetchThreadViewOnIntent).toHaveBeenCalledWith(true);
     expect(latestPromptBoxProps().execution.nativeTerminal.enabled).toBe(true);
     expect(latestPromptBoxProps().execution.agentOptions).toBeUndefined();
     expect(latestPromptBoxProps().modeConfig.sessionOptionsControl).toBeNull();
