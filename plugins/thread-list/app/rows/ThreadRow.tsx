@@ -883,6 +883,7 @@ function ThreadRowComponent({
     if (!trailing || !row) return;
     const measure = () => row.style.setProperty("--bb-thread-trailing-width", `${trailing.getBoundingClientRect().width + 8}px`);
     measure();
+    if (typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(measure);
     observer.observe(trailing);
     return () => observer.disconnect();
