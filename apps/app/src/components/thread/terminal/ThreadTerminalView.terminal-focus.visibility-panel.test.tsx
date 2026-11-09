@@ -13,7 +13,7 @@ import { Terminal } from "@xterm/xterm";
 import { createTerminalGridMarker } from "@bb/domain";
 import { TerminalWebSocketTransport } from "@bb/client-core";
 import { MemoryRouter } from "react-router-dom";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import {
   waitForReadiness,
   waitForReadinessCondition,
@@ -725,6 +725,7 @@ describe("ThreadTerminalView terminal visibility and panel", () => {
         [data-terminal-grid-cache-id] { width: 354px; height: 504px; }
         :root { --sidebar: rgb(30, 40, 50); --ink: rgb(220, 230, 240); }`;
       document.body.append(style);
+      onTestFinished(() => style.remove());
       vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
         measureText: (text: string) => ({ width: text.length * 8 }),
         clearRect() {},
@@ -770,6 +771,15 @@ describe("ThreadTerminalView terminal visibility and panel", () => {
           open.call(this, element);
         },
       );
+      const send = TestTerminalSocket.prototype.send;
+      const claimReady = new Promise<void>((resolve) => {
+        vi.spyOn(TestTerminalSocket.prototype, "send").mockImplementation(
+          function (this: TestTerminalSocket, data: string) {
+            send.call(this, data);
+            if (JSON.parse(data).type === "resize") resolve();
+          },
+        );
+      });
       const view = render(
         <MemoryRouter>
           <AppCommandProvider>
@@ -792,10 +802,8 @@ describe("ThreadTerminalView terminal visibility and panel", () => {
               JSON.parse(value) as { type: string; cols: number; rows: number },
           )
           .filter((value) => value.type === "resize");
-      await waitForReadinessCondition(
-        () => expect(sizes()).toHaveLength(1),
-        "padding grid was not claimed",
-      );
+      await claimReady;
+      expect(sizes()).toHaveLength(1);
       const terminal = terminals[0]!;
       const host = view.container.querySelector<HTMLElement>(
         "[data-terminal-grid-cache-id]",
@@ -850,15 +858,11 @@ describe("ThreadTerminalView terminal visibility and panel", () => {
       });
       socket.receive({ type: "replay-complete", nextSeq: 1 });
       await waitForReadinessCondition(
-        () =>
-          expect({ cols: terminal.cols, rows: terminal.rows }).toEqual(
-            expected,
-          ),
+        () => expect({ cols: terminal.cols, rows: terminal.rows }).toEqual(expected),
         "render grid did not match accepted PTY grid",
       );
       expect(sizes()).toHaveLength(1);
       view.unmount();
-      style.remove();
     },
   );
 
