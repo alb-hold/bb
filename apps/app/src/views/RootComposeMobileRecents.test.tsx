@@ -30,6 +30,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { CompactViewportOverrideProvider } from "@bb/shared-ui/hooks/use-compact-viewport";
 import type { SystemEnvironmentProvider } from "@bb/server-contract";
 import { systemEnvironmentProvidersQueryKey } from "@/hooks/queries/environment-provider-queries";
+import {
+  RecentThreadProviderMark,
+  RecentThreadRowContent,
+} from "./RootComposeRecentRows";
 import { RootComposeMobileRecents } from "./RootComposeMobileRecents";
 import { readFileSync } from "node:fs";
 import {
@@ -441,7 +445,7 @@ describe("mobile recent thread rows", () => {
     expect(metadata.classList.contains("text-subtle-foreground")).toBe(true);
     expect(metadata.className).not.toContain("pointer-coarse:text-sm");
     expect(metadata.querySelector("[data-icon]")).toBeNull();
-    expect(metadata.classList.contains("pl-5.5")).toBe(true);
+    expect(metadata.classList.contains("pl-5.5")).toBe(false);
   });
 
   it.each([
@@ -474,7 +478,7 @@ describe("mobile recent thread rows", () => {
     );
 
     const metadata = screen.getByTitle(`bb \u00b7 ${branch} \u00b7 3h`);
-    expect(metadata.textContent).toBe(`bb \u00b7 ${branch}\u00b7 3h`);
+    expect(metadata.textContent).toBe(`bb \u00b7 ${branch} \u00b7 3h`);
     const project = screen.getByText("bb");
     const age = screen.getByText("3h");
     const branchNode = screen.getByText(branch);
@@ -486,7 +490,7 @@ describe("mobile recent thread rows", () => {
     expect(branchNode.classList.contains("min-w-0")).toBe(true);
     expect(branchNode.classList.contains("truncate")).toBe(true);
     expect(metadata.classList.contains("leading-4")).toBe(true);
-    expect(metadata.classList.contains("pl-5.5")).toBe(true);
+    expect(metadata.classList.contains("pl-5.5")).toBe(false);
     expect(metadata.querySelector('[role="img"]')).toBeNull();
   });
 
@@ -929,5 +933,33 @@ it.each(
     expect(liveSection.querySelectorAll("li").length).toBe(cachedRows);
     expect(liveSection.firstElementChild!.outerHTML).toBe(cachedHeader);
     resetSidebarBootstrapCacheForTest();
+  },
+);
+
+it.each([false, true])(
+  "uses one leading glyph column for native=%s",
+  (nativeTerminal) => {
+    const thread = makeThreadListEntry({
+      nativeTerminal,
+      environmentIsWorktree: false,
+    });
+    const { container } = render(
+      <TestProviders>
+        <div className="flex items-center gap-2.5">
+          <RecentThreadProviderMark thread={thread} provider={null} depth={0} />
+          <RecentThreadRowContent
+            thread={thread}
+            projectName="bb"
+            environmentProviderLookup={{ status: "loaded", provider: null }}
+            indicatorKind="none"
+            queuedFailedCount={0}
+          />
+        </div>
+      </TestProviders>,
+    );
+    expect(container.querySelector("[data-thread-title-mode]")).toBeNull();
+    expect(
+      container.querySelectorAll('[aria-label="Native terminal"]'),
+    ).toHaveLength(nativeTerminal ? 1 : 0);
   },
 );

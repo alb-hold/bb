@@ -129,6 +129,13 @@ function setup(initial = "", submission?: PromptBoxSubmissionConfig) {
   };
 }
 
+it("names the prompt actions before the full composer loads", () => {
+  setup();
+  expect(screen.getByRole("button", { name: "Prompt actions" }).title).toBe(
+    "Prompt actions",
+  );
+});
+
 it("keeps a 44px phone submit slot before and after typing during startup", () => {
   vi.stubGlobal("matchMedia", (query: string) => ({
     matches: true,

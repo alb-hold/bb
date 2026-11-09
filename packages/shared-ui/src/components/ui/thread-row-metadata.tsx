@@ -68,7 +68,7 @@ export function ThreadRowMetadata({
         </span>
       ) : null}
       {project || visibleBranch ? (
-        <span className="shrink-0 whitespace-pre">{visibleBranch ? "· " : " · "}</span>
+        <span className="shrink-0 whitespace-pre">{" · "}</span>
       ) : null}
       <span ref={ageRef} className="shrink-0">
         {age}

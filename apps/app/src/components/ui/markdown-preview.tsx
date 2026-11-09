@@ -753,8 +753,7 @@ function MarkdownCodeBlock({
 }) {
   const [softWrap, setSoftWrap] = useState(false);
   const highlightedHtml = useMemo(
-    () =>
-      highlightMarkdownCode({ code: codeText, language }),
+    () => highlightMarkdownCode({ code: codeText, language }),
     [language, codeText],
   );
   const highlightedMarkup = useMemo(
@@ -778,9 +777,12 @@ function MarkdownCodeBlock({
       <div
         data-clipboard-ignore
         data-code-actions=""
-        className="absolute right-0 top-0 flex h-11 w-44 items-center justify-between gap-1 rounded-tr-md bg-surface-recessed-solid pl-1 pr-1.5"
+        className="absolute right-0 top-0 max-md:pointer-coarse:static max-md:pointer-coarse:w-full max-md:pointer-coarse:rounded-t-md flex h-11 w-44 items-center justify-between gap-1 rounded-tr-md bg-surface-recessed-solid pl-1 pr-1.5"
       >
-        <span className="min-w-0 truncate font-mono text-xs uppercase text-muted-foreground" title={language ?? undefined}>
+        <span
+          className="min-w-0 truncate font-mono text-xs uppercase text-muted-foreground"
+          title={language ?? undefined}
+        >
           {language ?? ""}
         </span>
         <div className="flex items-center gap-0.5">

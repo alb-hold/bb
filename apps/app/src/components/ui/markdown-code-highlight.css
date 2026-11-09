@@ -67,3 +67,11 @@
   min-height: 2.25rem;
   vertical-align: top;
 }
+
+@media (max-width: 767px) and (pointer: coarse) {
+  .bb-code-highlight[data-code-card-content] .sh__line:first-child {
+    min-width: 100%;
+    width: auto;
+    min-height: 0;
+  }
+}

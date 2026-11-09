@@ -105,6 +105,7 @@ describe("PromptBoxActionsMenu", () => {
     for (const token of CHROME_SUBTLE_ICON_BUTTON_FOREGROUND_CLASS.split(" ")) {
       expect(trigger.classList).toContain(token);
     }
+    expect(trigger.title).toBe("Prompt actions");
     expect(trigger.querySelector('[data-icon="Plus"]')).not.toBeNull();
     expect(trigger.querySelector('[data-icon="Spinner"]')).toBeNull();
     fireEvent.pointerDown(trigger, { button: 0 });

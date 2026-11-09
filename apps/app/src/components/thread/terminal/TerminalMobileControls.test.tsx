@@ -49,9 +49,10 @@ describe("TerminalMobileControls", () => {
           expect(key.classList.contains("min-w-11")).toBe(true);
           expect(key.classList.contains("shrink-0")).toBe(true);
         }
-        expect(
-          enter.querySelector('[data-icon="CornerDownLeft"]') !== null,
-        ).toBe(compact);
+        expect(enter.textContent).toBe("Enter");
+        expect(enter.title).toBe("Enter");
+        expect(more.title).toBe("More terminal keys");
+        expect(more.textContent).toBe("Keys");
 
         expect(
           more.querySelector("[data-icon]")?.getAttribute("data-icon"),

@@ -132,6 +132,7 @@ export function PromptBoxActionsMenu({
           size="icon"
           variant="ghost"
           aria-label="Prompt actions"
+          title="Prompt actions"
           className={cn(
             COARSE_POINTER_PROMPT_ICON_ACTION_BUTTON_CLASS,
             CHROME_SUBTLE_ICON_BUTTON_FOREGROUND_CLASS,

@@ -213,12 +213,9 @@ export function ThreadContextWindowIndicator({
         >
           <span
             aria-hidden="true"
-            className={cn(
-              "text-xs tabular-nums",
-              toneClass,
-            )}
+            className={cn("text-xs tabular-nums", toneClass)}
           >
-            {usedPercent}%
+            {usedPercent}% context
           </span>
           <svg
             viewBox="0 0 16 16"

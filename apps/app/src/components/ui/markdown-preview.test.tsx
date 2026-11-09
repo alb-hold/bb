@@ -128,17 +128,28 @@ function requireElement(container: ParentNode, selector: string): Element {
 
 describe("MarkdownPreview", () => {
   it("insets only the first code line beside the action hit areas", () => {
-    const { container } = render(<MarkdownPreview content={"```ts\nconst answer = 42;\n```"} />);
+    const { container } = render(
+      <MarkdownPreview content={"```ts\nconst answer = 42;\n```"} />,
+    );
     const actions = container.querySelector("[data-code-actions]")!;
     const code = container.querySelector("[data-code-card] pre")!;
     expect(actions.classList.contains("absolute")).toBe(true);
+    expect(actions.classList.contains("max-md:pointer-coarse:static")).toBe(
+      true,
+    );
+    expect(actions.classList.contains("max-md:pointer-coarse:w-full")).toBe(
+      true,
+    );
+    expect(code.classList.contains("overflow-x-auto")).toBe(true);
     expect(actions.classList.contains("h-11")).toBe(true);
     expect(actions.classList.contains("bg-surface-recessed-solid")).toBe(true);
     expect(code.hasAttribute("data-code-card-content")).toBe(true);
     expect(code.textContent).toContain("const answer = 42;");
     expect(code.classList.contains("pr-28")).toBe(false);
     expect(actions.textContent).toContain("ts");
-    expect(actions.querySelectorAll("[data-compact-touch=code]")).toHaveLength(2);
+    expect(actions.querySelectorAll("[data-compact-touch=code]")).toHaveLength(
+      2,
+    );
   });
 
   it("contains table breakouts to the markdown content width", () => {
@@ -327,21 +338,17 @@ describe("MarkdownPreview", () => {
     );
 
     const { container } = render(
-      <div
-        data-left="0"
-        data-width="390"
-        style={{ overflowX: "hidden" }}
-      >
+      <div data-left="0" data-width="390" style={{ overflowX: "hidden" }}>
         <MarkdownPreview content={"| A |\n| - |\n| B |"} />
       </div>,
     );
-    const breakout = container.querySelector("table")?.parentElement
-      ?.parentElement;
+    const breakout =
+      container.querySelector("table")?.parentElement?.parentElement;
     notifyResize();
 
-    expect(
-      breakout?.style.getPropertyValue("--md-table-breakout-max"),
-    ).toBe("319px");
+    expect(breakout?.style.getPropertyValue("--md-table-breakout-max")).toBe(
+      "319px",
+    );
   });
 
   it("skips height-only resize events for tables", () => {
@@ -407,7 +414,9 @@ describe("MarkdownPreview", () => {
         "1 passed",
       );
       expect(
-        container.querySelector("pre")?.previousElementSibling?.querySelector("span")?.textContent || null,
+        container
+          .querySelector("pre")
+          ?.previousElementSibling?.querySelector("span")?.textContent || null,
       ).toBe(label);
       expect(screen.getByRole("button", { name: "Copy code" })).toBeDefined();
     },

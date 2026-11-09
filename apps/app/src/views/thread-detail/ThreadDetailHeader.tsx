@@ -247,7 +247,13 @@ export function ThreadDetailHeader({
             size="compact"
           />
         ) : null}
-        <div className={cn("flex min-w-0 flex-1 flex-col", hasNativeTerminal && "max-md:flex-row max-md:items-center max-md:gap-2")}>
+        <div
+          className={cn(
+            "flex min-w-0 flex-1 flex-col",
+            hasNativeTerminal &&
+              "max-md:flex-row max-md:items-center max-md:gap-2",
+          )}
+        >
           <p
             data-thread-detail-header-title=""
             className={cn(
@@ -268,7 +274,10 @@ export function ThreadDetailHeader({
             {isEditing ? editor : <ThreadTitle title={threadTitle} />}
           </p>
           {hasNativeTerminal ? (
-            <div ref={nativeActivityTargetRef} className="h-4 shrink-0 max-md:order-first max-md:[&_[role=status]>span:last-child]:sr-only" />
+            <div
+              ref={nativeActivityTargetRef}
+              className="h-4 shrink-0 max-[375px]:[&_[role=status]>span:last-child]:sr-only"
+            />
           ) : (
             <ThreadActivityLabel
               indicator={
