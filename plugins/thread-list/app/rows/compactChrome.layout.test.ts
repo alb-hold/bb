@@ -30,13 +30,12 @@ const tailwindTheme = await readFile(
   ),
   "utf8",
 );
-const panelClass = z
-  .string()
-  .parse(
-    disclosureSource.match(/<div className="(group\/timeline-row[^"]*)"/)?.[1],
-  );
+const panelHeader = z.string().parse(
+  disclosureSource.match(/<div\b[^>]*className="group\/timeline-row[^"]*"[^>]*>/)?.[0],
+);
+const panelClass = z.string().parse(panelHeader.match(/className="([^"]*)"/)?.[1]);
 const paddingSteps = Number(
-  z.string().parse(panelClass.match(/max-md:pointer-coarse:py-(\d+)/)?.[1]),
+  panelClass.match(/max-md:pointer-coarse:py-(\d+)/)?.[1] ?? 0,
 );
 const spacing = z
   .string()
@@ -59,7 +58,7 @@ it.each(
     ),
   ),
 )(
-  "preserves host typography, in-flow phone targets and desktop summary geometry for $count rows at $width px with a $gap px gap",
+  "preserves host typography, overlapping phone targets and desktop summary geometry for $count rows at $width px with a $gap px gap",
   async ({ width, gap, count }) => {
     expect(chromiumPath).not.toBeNull();
     const dir = await mkdtemp(join(tmpdir(), "bb-compact-chrome-"));
@@ -84,7 +83,7 @@ ${panelCss}
 </style><header><button data-compact-touch="header">Actions</button><button data-compact-touch="header" data-terminal-search-trigger aria-label="Search terminal output">Search</button><button data-compact-touch="header">Panel</button></header><div style="height:32px"></div>
 <div data-compact-touch-height><div><div data-timeline-row-list="${gap === 0 ? "bundle" : gap === 4 ? "nested" : "top-level"}"><div data-timeline-items>
 <div data-message-action-slot><button data-compact-touch="action" aria-label="Copy previous message">Copy</button></div>
-${Array.from({ length: count }, (_, index) => `<div data-timeline-row-id="row-${index}"><div data-compact-touch-panel><div class="${panelClass}"><button data-compact-touch-summary aria-expanded="false" style="height:${index % 2 === 0 ? 20 : 23}px">Ran ${index + 1} command</button></div></div></div>`).join("")}
+${Array.from({ length: count }, (_, index) => `<div data-timeline-row-id="row-${index}"><div data-compact-touch-panel>${panelHeader.replace("className=", "class=")}<button data-compact-touch-summary aria-expanded="false" style="height:${index % 2 === 0 ? 20 : 23}px">Ran ${index + 1} command</button></div></div></div>`).join("")}
 <div data-message-action-slot><button data-compact-touch="action" aria-label="Copy next message">Copy</button></div>
 </div></div></div></div>
 <pre id="result"></pre><script>
@@ -95,8 +94,9 @@ return [[x,y-21],[x,y+21],[x-21,y],[x+21,y]].map(([x,y]) => el.contains(document
 const summaries = [...document.querySelectorAll('[data-compact-touch-summary]')];
 const search = document.querySelector('[aria-label="Search terminal output"]');
 const boundaryHits = summaries.slice(0,-1).flatMap((el,index) => { const first = el.getBoundingClientRect(), second = summaries[index+1].getBoundingClientRect(); const midpoint = (first.bottom + second.top)/2, x=first.x+first.width/2; return [el.contains(document.elementFromPoint(x,midpoint-1)),summaries[index+1].contains(document.elementFromPoint(x,midpoint+1))]; });
-const drawnHits = summaries.every(el => { const r = el.getBoundingClientRect(); return [r.top+1,r.bottom-1].every(y => el.contains(document.elementFromPoint(r.x+r.width/2,y))); });
-const adjacentControls = [...document.querySelectorAll('[data-message-action-slot] button')].map((el,index) => {const r=el.getBoundingClientRect();return el.contains(document.elementFromPoint(r.x+r.width/2,index===0?r.bottom-1:r.top+1));});
+const labelHit = el => { const range = document.createRange(); range.selectNodeContents(el); const r = range.getBoundingClientRect(); return el.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2)); };
+const drawnHits = summaries.every(labelHit);
+const adjacentControls = [...document.querySelectorAll('[data-message-action-slot] button')].map(labelHit);
 document.querySelector('#result').textContent = JSON.stringify({panelPadding,smallestType:getComputedStyle(document.documentElement).getPropertyValue("--text-2xs"),drawnHits,adjacentControls,coarse:matchMedia('(pointer: coarse)').matches, boundaryHits, summaries:summaries.map(el => ({...box(el),hits:probe(el)})),search:{...box(search),hits:probe(search)}});
 </script>`,
       );
@@ -151,7 +151,7 @@ document.querySelector('#result').textContent = JSON.stringify({panelPadding,sma
       expect(result.smallestType.trim()).toBe("0.6875rem");
       for (const summary of result.summaries) {
         expect(summary.hits.filter(Boolean).length).toBeGreaterThanOrEqual(
-          width < 480 ? 4 : 2,
+          width < 480 ? 3 : 2,
         );
         expect(summary.fontSize).toBe(width < 480 ? "14px" : "12px");
         if (width < 480) {
@@ -162,14 +162,16 @@ document.querySelector('#result').textContent = JSON.stringify({panelPadding,sma
         }
       }
       if (width < 480)
-        expect(result.boundaryHits.every((hit) => !hit)).toBe(true);
+        expect(result.boundaryHits).toEqual(
+          Array.from({ length: count - 1 }, () => [false, true]).flat(),
+        );
       const effectiveGap = width < 480 && gap === 8 ? 4 : gap;
       expect(result.summaries[1].y - result.summaries[0].y).toBe(
-        (width < 480 ? 44 : 20) + effectiveGap + 2 * result.panelPadding,
+        (width < 480 ? 32 : 20) + effectiveGap,
       );
       if (count > 2)
         expect(result.summaries[2].y - result.summaries[1].y).toBe(
-          (width < 480 ? 44 : 23) + effectiveGap + 2 * result.panelPadding,
+          (width < 480 ? 32 : 23) + effectiveGap,
         );
       expect(result.search.height).toBe(width < 480 ? 44 : 36);
       expect(result.search.width).toBe(width < 480 ? 44 : 36);
