@@ -69,12 +69,17 @@ export function createTerminalOutputLineAnchorTracker(args: {
   dispose: () => void;
 } {
   const { registerMarker, getCurrentLine } = args;
-  type MutableAnchor = {
-    sequence: number;
-    lineOffset: number;
-    line: number;
-    expired: boolean;
-  };
+  class MutableAnchor {
+    expired = false;
+
+    constructor(public sequence: number, public lineOffset: number) {}
+
+    get line(): number {
+      return this.expired
+        ? -1
+        : (reference?.marker.line ?? -1) + this.lineOffset;
+    }
+  }
   let reference:
     | { marker: NonNullable<ReturnType<typeof registerMarker>> }
     | undefined;
@@ -149,19 +154,7 @@ export function createTerminalOutputLineAnchorTracker(args: {
       }
       if (!reference) return undefined;
       const line = getCurrentLine();
-      const anchor: MutableAnchor = {
-        sequence,
-        lineOffset: line - reference.marker.line,
-        line: 0,
-        expired: false,
-      };
-      Object.defineProperty(anchor, "line", {
-        enumerable: true,
-        get: () =>
-          anchor.expired
-            ? -1
-            : (reference?.marker.line ?? -1) + anchor.lineOffset,
-      });
+      const anchor = new MutableAnchor(sequence, line - reference.marker.line);
       anchors.add(anchor);
       return anchor;
     },
