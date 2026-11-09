@@ -7,7 +7,7 @@ import {
 } from "@/hooks/queries/thread-queries";
 import { useNativeTerminalThread } from "@/hooks/queries/native-terminal-queries";
 import { useTerminalSuspenseGate } from "@/hooks/useTerminalMountGate";
-import { useEffect, type ComponentProps } from "react";
+import { useEffect, useState, type ComponentProps } from "react";
 import { defineSplit } from "@/lib/define-split";
 import { RouteLoadingSkeleton } from "@/components/ui/route-loading-skeleton";
 import { ThreadTimelineLoadingSkeleton } from "@/components/thread/timeline/ThreadTimelineLoadingSkeleton";
@@ -53,22 +53,31 @@ function ThreadDetailEntry(props: ComponentProps<typeof ThreadDetailView>) {
   const threadId =
     props.surface === "pane" ? props.threadId : (route.threadId ?? "");
   const native = useNativeTerminalThread(threadId);
-  useEffect(() => {
-    if (native.data != null) void preloadNativeThreadFrame();
-  }, [native.data]);
   useThreadDetailBootstrap(threadId, {
     enabled: threadId.length > 0,
     timelinePrefetch: false,
   });
   const threadQuery = useThread(threadId, { enabled: false });
   const thread = threadQuery.data;
+  const nativeIdentified =
+    native.data?.threadId === threadId ||
+    (thread?.id === threadId && thread.nativeTerminal === true);
+  const [detailThreadId, setDetailThreadId] = useState<string | null>(null);
+  if (!nativeIdentified && detailThreadId !== threadId)
+    setDetailThreadId(threadId);
+  const useEarlyFrame = nativeIdentified && detailThreadId !== threadId;
+  useEffect(() => {
+    if (useEarlyFrame && thread?.nativeTerminal === true)
+      void preloadNativeThreadFrame();
+  }, [useEarlyFrame, thread?.nativeTerminal]);
   const projectId =
     props.surface === "pane"
       ? props.projectId
       : route.isProjectlessView && thread?.id === threadId
         ? thread.projectId
         : route.projectId;
-  if (thread?.nativeTerminal === false) return <DetailModule {...props} />;
+  if (!useEarlyFrame || thread?.nativeTerminal === false)
+    return <DetailModule {...props} />;
   if (
     native.isPending ||
     (native.data != null &&

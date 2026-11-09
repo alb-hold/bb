@@ -140,8 +140,7 @@ function NativeThreadFrameBody({
   const canMount =
     interactions.isSuccess &&
     tabs.isSuccess &&
-    (thread.environmentId === null || !environmentQuery.isPending) &&
-    state.threadFixedTabs.isReady;
+    (thread.environmentId === null || !environmentQuery.isPending);
   const [ready, setReady] = useState(false);
   useEffect(() => {
     if (canMount) setReady(true);
