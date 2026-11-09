@@ -4,6 +4,7 @@ import {
   type CSSProperties,
   createContext,
   useCallback,
+  useContext,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -14,6 +15,7 @@ import {
 import { flushSync } from "react-dom";
 import { isIOSWebKit } from "@/lib/ios-webkit";
 import type { ScrollPositionKeeper } from "@/components/ui/scroll-position-keeper";
+import { AutoHeightSnapContext } from "@/components/ui/height-transition";
 
 export const DEFAULT_WINDOWING_MIN_ITEM_COUNT = 20;
 const MAX_MEASUREMENTS = 2_000;
@@ -233,6 +235,7 @@ export function TimelineWindowedItems({
   renderItem,
   pinnedToEnd,
 }: TimelineWindowedItemsProps) {
+  const snapHeight = useContext(AutoHeightSnapContext);
   const [windowingSupported] = useState(
     () => typeof navigator === "undefined" || !isIOSWebKit(navigator),
   );
@@ -245,6 +248,11 @@ export function TimelineWindowedItems({
     scrollRootUsable !== false &&
     itemKeys.length >= DEFAULT_WINDOWING_MIN_ITEM_COUNT;
   const containerRef = useRef<HTMLDivElement>(null);
+  const nodesRef = useRef(new Map<string, HTMLDivElement>());
+  const [overscanWidths, setOverscanWidths] = useState<
+    ReadonlyMap<string, number>
+  >(new Map());
+  const overscanWidthsRef = useRef(overscanWidths);
   const [windowState, setWindowState] = useState<WindowState>(() => {
     const heights = new Map(measurements);
     if (itemKeys.length < DEFAULT_WINDOWING_MIN_ITEM_COUNT) {
@@ -387,10 +395,15 @@ export function TimelineWindowedItems({
   );
 
   const observerRef = useRef<ResizeObserver | null>(null);
+  const observedWidthRef = useRef<number | null>(null);
   const getObserver = useCallback((): ResizeObserver | null => {
     if (observerRef.current !== null) return observerRef.current;
     if (typeof ResizeObserver === "undefined") return null;
     observerRef.current = new ResizeObserver((entries) => {
+      const width = containerRef.current?.clientWidth ?? null;
+      const widthChanged =
+        observedWidthRef.current !== null && width !== observedWidthRef.current;
+      observedWidthRef.current = width;
       let changed = false;
       for (const entry of entries) {
         const key = entry.target.getAttribute(WINDOW_KEY_ATTRIBUTE);
@@ -400,10 +413,15 @@ export function TimelineWindowedItems({
           entry.target.getBoundingClientRect().height;
         if (record(key, height)) changed = true;
       }
-      if (changed) positionKeeper?.reconcile();
+      if (changed && widthChanged) {
+        snapHeight?.();
+        positionKeeper?.remeasure();
+      } else if (changed) {
+        positionKeeper?.reconcile();
+      }
     });
     return observerRef.current;
-  }, [positionKeeper, record]);
+  }, [positionKeeper, record, snapHeight]);
 
   useLayoutEffect(
     () => () => {
@@ -417,11 +435,15 @@ export function TimelineWindowedItems({
     (node: HTMLDivElement | null) => {
       if (node === null) return undefined;
       const key = node.getAttribute(WINDOW_KEY_ATTRIBUTE);
-      if (key !== null) record(key, node.getBoundingClientRect().height);
+      if (key !== null) {
+        nodesRef.current.set(key, node);
+        record(key, node.getBoundingClientRect().height);
+      }
       const observer = getObserver();
       observer?.observe(node);
       return () => {
         observer?.unobserve(node);
+        if (key !== null) nodesRef.current.delete(key);
       };
     },
     [getObserver, record],
@@ -481,6 +503,31 @@ export function TimelineWindowedItems({
         container.getBoundingClientRect().top;
       const visible = visibleRange(model, localTop, viewportHeight);
       if (visible.end < visible.start) return;
+      const nextWidths = new Map<string, number>();
+      for (const index of live.mountedIndexes) {
+        const key = live.itemKeys[index];
+        if (key === undefined || index >= visible.start) continue;
+        const width =
+          overscanWidthsRef.current.get(key) ??
+          nodesRef.current.get(key)?.getBoundingClientRect().width;
+        if (width !== undefined && width > 0) nextWidths.set(key, width);
+      }
+      const previousWidths = overscanWidthsRef.current;
+      const widthsChanged =
+        nextWidths.size !== previousWidths.size ||
+        [...nextWidths].some(
+          ([key, width]) => previousWidths.get(key) !== width,
+        );
+      const applyWidths = () => {
+        if (!widthsChanged) return;
+        overscanWidthsRef.current = nextWidths;
+        setOverscanWidths(nextWidths);
+      };
+      const commitWidths = () => {
+        if (!widthsChanged) return;
+        if (urgent) flushSync(applyWidths);
+        else applyWidths();
+      };
       const mounted = new Set(live.mountedIndexes);
       let uncovered = false;
       for (let index = visible.start; index <= visible.end; index += 1) {
@@ -504,18 +551,23 @@ export function TimelineWindowedItems({
           last < live.itemKeys.length - 1) ||
         (!mountToTop && visible.start - first > 3 * OVERSCAN_ITEMS) ||
         last - visible.end > 3 * OVERSCAN_ITEMS;
-      if (!uncovered && !nearEdge) return;
+      if (!uncovered && !nearEdge) return commitWidths();
       const keys = windowKeysAround(live.itemKeys, visible, mountToTop);
       const heldKey = heldKeyOf(positionKeeper);
       if (heldKey !== null && live.indexByKey.has(heldKey)) keys.add(heldKey);
-      if (sameKeys(keys, live.windowKeys) || !takeFrameUpdate()) return;
+      if (sameKeys(keys, live.windowKeys) || !takeFrameUpdate()) {
+        return commitWidths();
+      }
       const heights = knownHeights(
         live.itemKeys,
         measurements,
         live.renderedHeights,
       );
-      const apply = () => setWindowState({ keys, heights });
-      if (urgent && uncovered) {
+      const apply = () => {
+        applyWidths();
+        setWindowState({ keys, heights });
+      };
+      if (urgent && (uncovered || widthsChanged)) {
         flushSync(apply);
       } else {
         apply();
@@ -602,10 +654,22 @@ export function TimelineWindowedItems({
       );
     }
     const item = renderItem(index, { itemRef, windowingEnabled });
+    const overscanWidth = windowingEnabled
+      ? overscanWidths.get(itemKeys[index] ?? "")
+      : undefined;
     children.push(
-      typeof gap !== "number" && isValidElement<{ style?: CSSProperties }>(item)
+      (typeof gap !== "number" || overscanWidth !== undefined) &&
+        isValidElement<{ style?: CSSProperties }>(item)
         ? cloneElement(item, {
-            style: { ...item.props.style, marginTop: gapBefore(index) },
+            style: {
+              ...item.props.style,
+              ...(typeof gap !== "number"
+                ? { marginTop: gapBefore(index) }
+                : {}),
+              ...(overscanWidth !== undefined
+                ? { width: overscanWidth, flexShrink: 0 }
+                : {}),
+            },
           })
         : item,
     );
