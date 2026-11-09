@@ -193,9 +193,8 @@ export function ThreadDetailHeader({
   const [searchFits, setSearchFits] = useState<boolean | null>(null);
   const searchInMenu =
     actionsMenu !== null &&
-    (searchFits === null
-      ? measuredPaneWidth > 0 && measuredPaneWidth <= 360
-      : !searchFits);
+    ((measuredPaneWidth > 0 && measuredPaneWidth < 400) ||
+      searchFits === false);
   useLayoutEffect(() => {
     if (!hasNativeTerminal) return;
     const header = headerRef.current;

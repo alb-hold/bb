@@ -273,9 +273,9 @@ describe("ThreadDetailHeader", () => {
     );
   });
   it.each([
-    [360, 120, true],
+    [360, 120, false],
     [360, 119, false],
-    [390, 120, true],
+    [390, 120, false],
     [390, 119, false],
   ] as const)(
     "shows search at width %s with %s px title space when fits=%s",
