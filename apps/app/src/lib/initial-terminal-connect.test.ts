@@ -6,6 +6,7 @@ const warm = vi.hoisted(() => ({
   panel: vi.fn(() => Promise.resolve(null)),
   xterm: vi.fn(),
   route: vi.fn(),
+  frame: vi.fn(),
 }));
 vi.mock("@/components/thread/terminal/native-terminal-panel-loader", () => ({
   loadNativeTerminalPanel: warm.panel,
@@ -15,6 +16,7 @@ vi.mock("@/components/thread/terminal/terminal-modules", () => ({
 }));
 vi.mock("@/views/thread-detail/LazyThreadDetailView", () => ({
   LazyThreadDetailView: { preload: warm.route },
+  preloadNativeThreadFrame: warm.frame,
 }));
 
 vi.mock("@/components/thread/terminal/terminal-socket-prefetch", () => ({
@@ -34,7 +36,9 @@ it.each(["native", "other"])(
   "connects only the current route (%s) from the HTML response without React or the general socket",
   async (route) => {
     vi.resetModules();
-    const readyState = vi.spyOn(document, "readyState", "get").mockReturnValue("loading");
+    const readyState = vi
+      .spyOn(document, "readyState", "get")
+      .mockReturnValue("loading");
     let preloadedAtSocket = false;
     vi.mocked(prefetchTerminalSocket).mockImplementation(() => {
       preloadedAtSocket = warm.xterm.mock.calls.length === 1;
@@ -70,11 +74,13 @@ it.each(["native", "other"])(
       expect(warm.xterm).toHaveBeenCalledOnce();
       expect(preloadedAtSocket).toBe(true);
       expect(warm.route).toHaveBeenCalledOnce();
+      expect(warm.frame).toHaveBeenCalledOnce();
     } else {
       expect(prefetchTerminalSocket).not.toHaveBeenCalled();
       expect(warm.panel).not.toHaveBeenCalled();
       expect(warm.xterm).not.toHaveBeenCalled();
       expect(warm.route).not.toHaveBeenCalled();
+      expect(warm.frame).not.toHaveBeenCalled();
     }
     readyState.mockRestore();
   },

@@ -1,4 +1,13 @@
-import { getThreadDetailActivityIndicator } from "@/lib/thread-activity-label";
+import {
+  NativeThreadLinkPublisher,
+  useNativeThreadFrame,
+} from "./NativeThreadFrameContext";
+import {
+  ThreadFrameStateProvider,
+  useOptionalThreadFrameState,
+  useThreadFrameState,
+} from "./ThreadFrameState";
+import { ThreadFrameHeader } from "./ThreadFrameHeader";
 import { useTerminalMountGate } from "@/hooks/useTerminalMountGate";
 import { AppPanelTabsPublisher } from "@/lib/app-panel-tabs";
 import {
@@ -15,7 +24,6 @@ import { useAppCommandHandler } from "@/components/commands/AppCommandProvider";
 import { GIT_DIFF_TAB_REFERENCE } from "@/lib/git-diff-tab";
 import { useGitWorkspaceStatus } from "@/hooks/queries/git-plugin-queries";
 import {
-  useThreadFixedTabs,
   createThreadFixedTabDescriptor,
   getThreadFixedTabTargetKey,
   type ThreadFixedTabEntry,
@@ -38,7 +46,7 @@ import {
 } from "@/hooks/queries/system-queries";
 import { useImmediateRouteNavigate } from "@/components/ui/app-route-anchor";
 import { useLocation } from "react-router-dom";
-import { useAtom } from "jotai";
+
 import { useDesktopBrowserReveal } from "@/lib/use-desktop-browser-reveal";
 import {
   type ThreadTimelineForkMessageHandler,
@@ -79,18 +87,11 @@ import { isTransientReadError } from "@/hooks/queries/query-helpers";
 import { PageShell } from "@/components/ui/page-shell.js";
 import { RouteLoadingSkeleton } from "@/components/ui/route-loading-skeleton";
 import { ThreadTimelineLoadingSkeleton } from "@/components/thread/timeline/ThreadTimelineLoadingSkeleton";
-import { HEADER_ICON_BUTTON_CLASS } from "@/components/layout/AppPageHeader";
-import type {
-  JsonValue,
-  PluginThreadActionsInlineItem,
-} from "@get-bb/plugin-sdk";
-import { ThreadActionsMenu } from "@/components/thread/ThreadActionsMenu";
+
+import type { JsonValue } from "@get-bb/plugin-sdk";
+
 import { toThreadActionTarget } from "@/lib/thread-actions/thread-action-target";
-import { Button } from "@bb/shared-ui/button";
-import { COARSE_POINTER_ICON_SIZE_CLASS } from "@bb/shared-ui/coarse-pointer-sizing";
-import { cn } from "@bb/shared-ui/lib/utils";
-import { PluginThreadHeaderActions } from "@/components/plugin/PluginThreadHeaderActions";
-import { ThreadWorkspaceOpenButton } from "@/components/thread/ThreadWorkspaceOpenButton";
+
 import {
   formatEnvironmentDisplay,
   type EnvironmentDisplayHostContext,
@@ -122,34 +123,27 @@ import { useSystemEnvironmentProviders } from "@/hooks/queries/environment-provi
 import { useSystemMachineProviders } from "@/hooks/queries/machine-provider-queries";
 import { formatWorkspaceCheckoutDisplay } from "@bb/shared-ui/lib/workspace-checkout-display";
 import { resolveAbsoluteFilePath } from "@bb/shared-ui/lib/absolute-file-path";
-import { getThreadDisplayTitle } from "@/lib/thread-title";
 import { hasThreadProvisioningFailure } from "@/lib/thread-provisioning-failure";
 import {
   getProjectComposeRoutePath,
   type ThreadRoutePathArgs,
 } from "@/lib/route-paths";
 import { THREAD_INFO_FIXED_TAB_REFERENCE } from "@/components/secondary-panel/thread-info-fixed-tab-navigation";
-import { ThreadDetailHeader } from "./ThreadDetailHeader";
+
 import {
   CORE_THREAD_CONTEXT_CARD_ROWS,
   CORE_THREAD_CONTEXT_CARD_SECTIONS,
 } from "./ThreadContextCardCore";
-import {
-  ThreadContextCardHeaderButton,
-  ThreadContextCardProvider,
-} from "@/components/plugin/PluginThreadContextCard";
+import { ThreadContextCardProvider } from "@/components/plugin/PluginThreadContextCard";
 import { ThreadScreen, useThreadComposerAddToChat } from "./ThreadScreen";
 import { ThreadDetailSecondaryContent } from "./ThreadDetailSecondaryContent";
-import {
-  useThreadSecondaryPanelDrawerVisibility,
-  useThreadSecondaryPanelVisibility,
-} from "./useThreadSecondaryPanelVisibility";
+import { useThreadSecondaryPanelVisibility } from "./useThreadSecondaryPanelVisibility";
 import { useTerminalAttentionHandoff } from "./useTerminalAttentionHandoff";
 import {
   shouldLoadThreadStorageFileList,
   useThreadStorageViewer,
 } from "@/components/secondary-panel/useThreadStorageViewer";
-import { getThreadConversationCollapsedAtom } from "@/components/secondary-panel/threadSecondaryPanelAtoms";
+
 import { BrowserTabLifecycleObserver } from "@/components/secondary-panel/BrowserTabLifecycleObserver";
 import {
   LazyBrowserTabDeck,
@@ -174,7 +168,7 @@ import {
 import { SelectionAddToChatContext } from "@/components/thread/SelectionAddToChatContext";
 import { usePluginSlots } from "@/lib/plugin-slots";
 import { getFileExtension } from "@/lib/plugin-slot-resolvers";
-import { Icon } from "@bb/shared-ui/icon";
+
 import { getBbDesktopInfo, isDesktopBrowserAvailable } from "@/lib/bb-desktop";
 import {
   openUrlInExternalBrowser,
@@ -224,22 +218,14 @@ import {
 } from "@/components/ui/markdown-link-routing";
 import {
   useFixedPanelTabsStorageMaintenance,
-  useReconciledFixedPanelTabsState,
-  useTouchFixedPanelTabsState,
-  useUpdateFixedPanelTabsState,
   useSetFixedRightTerminalActiveTerminal,
 } from "@/lib/fixed-panel-tabs";
 import type { SecondaryFileFixedPanelTab } from "@/lib/fixed-panel-tabs-state";
-import { resolveGitDiffTabStatus } from "@/components/secondary-panel/gitDiffTabEligibility";
+
 import { isRootThread } from "./threadParentSelectorOptions";
-import { useIsCompactViewport } from "@bb/shared-ui/hooks/use-compact-viewport";
+
 import { usePointerCoarse } from "@bb/shared-ui/hooks/use-pointer-coarse";
-import {
-  activeTerminalIdForDeviceHandoff,
-  getActiveFixedSecondaryTab,
-  useSetThreadSecondaryPanelSelection,
-  useToggleThreadSecondaryPanelSelection,
-} from "./threadSecondaryPanelSelection";
+import { activeTerminalIdForDeviceHandoff } from "./threadSecondaryPanelSelection";
 import { useRouteState } from "@/hooks/useRouteState";
 import { usePaneContext } from "./PaneContext";
 import { PaneThreadActionCommandHandler } from "./PaneThreadActionCommandHandler";
@@ -248,7 +234,6 @@ const EMPTY_PARENT_THREADS: readonly ThreadListEntry[] = [];
 const EMPTY_PROJECT_THREAD_SUBSET_FILTERS =
   {} satisfies ProjectThreadSubsetFilters;
 const EMPTY_TERMINAL_SESSIONS: readonly TerminalSession[] = [];
-const THREAD_HEADER_ACTIONS_GROUP = "0_header";
 const THREAD_DETAIL_SCREEN_PRESENTATION = { kind: "page" } as const;
 
 type OpenFilePreviewHandler = (relativePath: string) => void;
@@ -308,8 +293,28 @@ export function ThreadDetailView(props: ThreadDetailViewProps) {
 function ThreadDetailViewInternal(
   props: ThreadRoutePathArgs & { timelineEnabled: boolean },
 ) {
+  const state = useOptionalThreadFrameState();
+  return state ? (
+    <ThreadDetailController {...props} />
+  ) : (
+    <ThreadFrameStateProvider threadId={props.threadId}>
+      <ThreadDetailController {...props} />
+    </ThreadFrameStateProvider>
+  );
+}
+
+function ThreadDetailController(
+  props: ThreadRoutePathArgs & { timelineEnabled: boolean },
+) {
   const { projectId, threadId, timelineEnabled } = props;
-  useTerminalMountGate("terminal-thread-view-mount", threadId, true);
+  const nativeFrame = useNativeThreadFrame();
+  useTerminalMountGate(
+    nativeFrame
+      ? "terminal-thread-controller-mount"
+      : "terminal-thread-view-mount",
+    threadId,
+    true,
+  );
   const {
     isFocused,
     paneId,
@@ -361,79 +366,36 @@ function ThreadDetailViewInternal(
       : environment.hostLifecycle;
   const executionUnavailable =
     hostLifecycle !== null || environment?.status === "destroyed";
-  const gitDiffTabStatus = resolveGitDiffTabStatus({
-    environmentId: thread?.environmentId ?? null,
-    environmentIsGitRepo: environment?.isGitRepo,
-    environmentLoadFailed: environmentQuery.isError,
-    environmentOwnsPath: environment?.managed,
-    hasResolvedThread: thread !== undefined,
-    threadArchived: thread?.archivedAt != null || executionUnavailable,
-  });
-  const canUseGitUi = !executionUnavailable && gitDiffTabStatus === "eligible";
-  const threadEnvironmentId =
-    canUseGitUi && environment !== undefined && thread?.environmentId
-      ? thread.environmentId
-      : null;
-  const threadTabEnvironmentId = thread?.environmentId ?? null;
+  const {
+    threadEnvironmentId,
+    threadTabEnvironmentId,
+    threadFixedTabs,
+    fixedPanelTabsState,
+    isPersistedSecondaryPanelOpen,
+    activeFixedSecondaryTab,
+    activeFixedSecondaryTabId,
+    isCompactViewport,
+    renderSecondaryPanelAsDrawer,
+    secondaryPanelDrawerVisibility,
+    isSecondaryPanelOpen,
+    touchFixedPanelTabsState,
+    updateFixedPanelTabsState,
+    setThreadSecondaryPanel,
+    closeThreadSecondaryPanel,
+    toggleDefaultPersistedSecondaryPanel,
+    isConversationCollapsed,
+    toggleConversationCollapse,
+  } = useThreadFrameState();
+  const retainedTerminalIds = useMountedTerminalIds(threadId);
   const threadTabEnvironment = useMemo(
     () =>
       threadTabEnvironmentId === null ? null : { id: threadTabEnvironmentId },
     [threadTabEnvironmentId],
   );
-  const threadFixedTabs = useThreadFixedTabs({
-    threadId: thread?.id ?? null,
-    environmentId: threadTabEnvironmentId,
-  });
-  const threadFixedViewTabs = useMemo(
-    () => threadFixedTabs.entries.map((entry) => entry.tab),
-    [threadFixedTabs.entries],
-  );
-  const fixedPanelTabsState = useReconciledFixedPanelTabsState({
-    fixedTabs: threadFixedViewTabs,
-    isAuthoritative:
-      threadFixedTabs.isReady &&
-      (gitDiffTabStatus === "eligible" || gitDiffTabStatus === "ineligible"),
-    panelStateId: threadId,
-    syncThreadId: threadId,
-  });
-  const isPersistedSecondaryPanelOpen = fixedPanelTabsState.secondary.isOpen;
-  const activeFixedSecondaryTab = getActiveFixedSecondaryTab({
-    fixedPanelTabsState,
-  });
-  const retainedTerminalIds = useMountedTerminalIds(threadId);
-  const activeFixedSecondaryTabId = activeFixedSecondaryTab?.id ?? null;
-  const isCompactViewport = useIsCompactViewport();
   const isPointerCoarse = usePointerCoarse();
   const threadContextCardEnabled =
     systemConfigQuery.data?.experiments.threadContextCard === true &&
     !(isCompactViewport && isPointerCoarse);
-  const renderSecondaryPanelAsDrawer = isCompactViewport;
-  const secondaryPanelDrawerVisibility =
-    useThreadSecondaryPanelDrawerVisibility({
-      isCompactViewport: renderSecondaryPanelAsDrawer,
-      threadId,
-    });
-  const isWorkspacePanelOpen = renderSecondaryPanelAsDrawer
-    ? secondaryPanelDrawerVisibility.isDrawerVisible
-    : isPersistedSecondaryPanelOpen;
-  const isSecondaryPanelOpen = isWorkspacePanelOpen;
-  const touchFixedPanelTabsState = useTouchFixedPanelTabsState(
-    threadId,
-    threadId,
-  );
-  const updateFixedPanelTabsState = useUpdateFixedPanelTabsState(
-    threadId,
-    threadId,
-  );
-  const setThreadSecondaryPanel = useSetThreadSecondaryPanelSelection(
-    threadId,
-    threadId,
-  );
-  const closeThreadSecondaryPanel = useCallback(() => {
-    setThreadSecondaryPanel(null);
-  }, [setThreadSecondaryPanel]);
-  const toggleDefaultPersistedSecondaryPanel =
-    useToggleThreadSecondaryPanelSelection(threadId, threadId);
   const threadQueryState = useConnectionAwareQueryState({
     enabled: hasThreadDetailBootstrapSettled,
     hasResolvedData: thread !== undefined,
@@ -928,13 +890,6 @@ function ThreadDetailViewInternal(
     selectedPath: activeStorageFilePath,
     threadId,
   });
-  const [storedConversationCollapsed, setStoredConversationCollapsed] = useAtom(
-    getThreadConversationCollapsedAtom(threadId),
-  );
-  const isConversationCollapsed = storedConversationCollapsed;
-  const toggleConversationCollapse = useCallback(() => {
-    setStoredConversationCollapsed((collapsed) => !collapsed);
-  }, [setStoredConversationCollapsed]);
   const secondaryPanelFixedTabs = useMemo<
     readonly SecondaryPanelFixedTab[]
   >(() => {
@@ -1726,138 +1681,28 @@ function ThreadDetailViewInternal(
   const threadCheckoutDisplay = workspaceStatus
     ? formatWorkspaceCheckoutDisplay({ checkout: workspaceStatus.checkout })
     : undefined;
-  const threadTitle = getThreadDisplayTitle(thread);
-  const responsiveWorkspaceActions: PluginThreadActionsInlineItem[] =
-    workspaceOpenPath && preferredDirectoryTarget
-      ? [
-          preferredDirectoryTarget,
-          ...directoryOpenTargets.filter(
-            (target) => target.id !== preferredDirectoryTarget.id,
-          ),
-        ].map((target) => ({
-          key: `workspace/${target.id}`,
-          group: THREAD_HEADER_ACTIONS_GROUP,
-          action: {
-            icon: "FolderOpen",
-            label: `Open workspace in ${target.label}`,
-            run: async () => {
-              if (target.id === preferredDirectoryTarget.id) {
-                await openPathInPreferredDirectoryTarget({
-                  lineNumber: null,
-                  path: workspaceOpenPath,
-                });
-                return;
-              }
-              await openPathInDirectoryTarget({
-                lineNumber: null,
-                path: workspaceOpenPath,
-                rememberTarget: true,
-                targetId: target.id,
-              });
-            },
-          },
-        }))
-      : [];
   const threadActionTarget = toThreadActionTarget(
     thread,
     isThreadOnReusableEnvironment && thread.environmentId !== null
       ? { id: thread.environmentId, path: environment.path }
       : null,
   );
-  const workspaceOpenButton =
-    workspaceOpenPath && preferredDirectoryTarget ? (
-      <ThreadWorkspaceOpenButton
-        preferredTarget={preferredDirectoryTarget}
-        targets={directoryOpenTargets}
-        onOpenPreferredTarget={async () => {
-          await openPathInPreferredDirectoryTarget({
-            lineNumber: null,
-            path: workspaceOpenPath,
-          });
-        }}
-        onOpenTarget={async (targetId) => {
-          await openPathInDirectoryTarget({
-            lineNumber: null,
-            path: workspaceOpenPath,
-            rememberTarget: true,
-            targetId,
-          });
-        }}
-      />
-    ) : undefined;
   const timelineHeader = (
-    <ThreadDetailHeader
-      actionsMenu={({
-        includeResponsiveActions,
-        terminalSearchActions,
-        headerActions,
-        requestRename,
-        onCloseAutoFocus,
-      }) => (
-        <ThreadActionsMenu
-          thread={threadActionTarget}
-          trigger={(triggerProps) => (
-            <Button
-              {...triggerProps}
-              type="button"
-              variant="ghost"
-              size="icon"
-              className={cn(
-                triggerProps.className,
-                "rounded-md p-0",
-                "data-[state=open]:bg-state-active data-[state=open]:text-foreground",
-                HEADER_ICON_BUTTON_CLASS,
-              )}
-              aria-label="Thread actions"
-              data-compact-touch="header"
-              onClick={(event) => {
-                triggerProps.onClick?.(event);
-                event.stopPropagation();
-              }}
-            >
-              <Icon
-                name="MoreHorizontal"
-                className={COARSE_POINTER_ICON_SIZE_CLASS}
-              />
-            </Button>
-          )}
-          inline={[
-            ...terminalSearchActions,
-            ...(includeResponsiveActions
-              ? [
-                  ...responsiveWorkspaceActions,
-                  ...headerActions.map(
-                    ({ key, action }): PluginThreadActionsInlineItem => ({
-                      key,
-                      group: THREAD_HEADER_ACTIONS_GROUP,
-                      action: { ...action, run: () => action.run() },
-                    }),
-                  ),
-                ]
-              : []),
-          ]}
-          requestRename={requestRename}
-          onCloseAutoFocus={onCloseAutoFocus}
-        />
-      )}
+    <ThreadFrameHeader
+      thread={thread}
+      threadActionTarget={threadActionTarget}
+      workspaceOpenPath={workspaceOpenPath}
+      openTargets={{
+        preferredDirectoryTarget,
+        directoryOpenTargets,
+        openPathInDirectoryTarget,
+        openPathInPreferredDirectoryTarget,
+      }}
       isSecondaryPanelOpen={isSecondaryPanelOpen}
-      onClosePane={onRequestClose ?? undefined}
-      onToggleSecondaryPanel={toggleSecondaryPanel}
-      pluginActions={
-        <PluginThreadHeaderActions
-          threadId={thread.id}
-          projectId={thread.projectId}
-        />
-      }
-      thread={threadActionTarget}
-      threadTitle={threadTitle}
-      activityIndicator={getThreadDetailActivityIndicator(thread)}
-      needsInput={thread.nativeTerminal && thread.hasPendingInteraction}
-      hasNativeTerminal={nativeTerminalThread != null}
-      nativeActivityTargetRef={setNativeActivityTarget}
-      checkTerminal={nativeTerminalThread?.terminal?.attention != null}
-      contextCardButton={<ThreadContextCardHeaderButton />}
-      workspaceOpenButton={workspaceOpenButton}
+      toggleSecondaryPanel={toggleSecondaryPanel}
+      onRequestClose={onRequestClose ?? undefined}
+      nativeTerminalThread={nativeTerminalThread}
+      setNativeActivityTarget={setNativeActivityTarget}
     />
   );
   const threadScreen = (
@@ -2059,7 +1904,8 @@ function ThreadDetailViewInternal(
               isOpen={isSecondaryPanelOpen}
               tabs={panelTabs}
             />
-            {threadFixedTabs.observers}
+            {nativeFrame ? null : threadFixedTabs.observers}
+            <NativeThreadLinkPublisher onOpenLink={handleOpenTimelineLink} />
             <ThreadDetailSecondaryContent
               header={timelineHeader}
               main={threadScreen}
@@ -2068,7 +1914,7 @@ function ThreadDetailViewInternal(
                 nativeTerminalThreadQuery.isPending
               }
               nativeTerminalMain={
-                nativeTerminalThread === null ? null : (
+                nativeFrame || nativeTerminalThread === null ? null : (
                   <NativeThreadTerminalMain
                     activityTarget={nativeActivityTarget}
                     onOpenLink={handleOpenTimelineLink}
@@ -2169,7 +2015,7 @@ function ThreadDetailViewInternal(
             <SelectionAddToChatContext.Provider
               value={handleSelectionAddToChat}
             >
-              <ThreadContextCardProvider
+              <ThreadDetailContextCardProvider
                 enabled={threadContextCardEnabled}
                 coreRows={CORE_THREAD_CONTEXT_CARD_ROWS}
                 coreSections={CORE_THREAD_CONTEXT_CARD_SECTIONS}
@@ -2182,11 +2028,22 @@ function ThreadDetailViewInternal(
                 }
               >
                 {threadDetailContent}
-              </ThreadContextCardProvider>
+              </ThreadDetailContextCardProvider>
             </SelectionAddToChatContext.Provider>
           </AttachmentOpenerContext.Provider>
         </MarkdownLocalFileOpenTargetsContext.Provider>
       </ThreadProviderContext.Provider>
     </>
+  );
+}
+
+function ThreadDetailContextCardProvider(
+  props: import("react").ComponentProps<typeof ThreadContextCardProvider>,
+) {
+  const nativeFrame = useNativeThreadFrame();
+  return nativeFrame ? (
+    props.children
+  ) : (
+    <ThreadContextCardProvider {...props} />
   );
 }

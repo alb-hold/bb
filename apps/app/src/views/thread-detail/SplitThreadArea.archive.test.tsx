@@ -75,8 +75,8 @@ vi.mock("@/components/commands/AppCommandProvider", () => ({
   useIsAppCommandModifierHeld: () => false,
 }));
 
-vi.mock("./ThreadDetailView", () => ({
-  ThreadDetailView: ({ threadId }: { threadId: string }) => {
+vi.mock("./LazyThreadDetailView", () => ({
+  LazyThreadDetailView: ({ threadId }: { threadId: string }) => {
     const pane = useContext(PaneContext);
     const { data: thread } = useThread(threadId);
     return (

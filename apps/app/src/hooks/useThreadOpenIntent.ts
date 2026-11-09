@@ -1,11 +1,15 @@
 import { useEffect } from "react";
-import { LazyThreadDetailView } from "@/views/thread-detail/LazyThreadDetailView";
+import {
+  LazyThreadDetailView,
+  preloadNativeThreadFrame,
+} from "@/views/thread-detail/LazyThreadDetailView";
 import { downloadSplit } from "@/lib/split-prefetch";
 import { warmSplitWhenQuiet } from "@/lib/settled-split-downloads";
 
 export function prefetchThreadViewOnIntent(nativeTerminal = false): void {
   void LazyThreadDetailView.preload();
   if (nativeTerminal) {
+    void preloadNativeThreadFrame();
     void downloadSplit("thread-terminal");
     void import("@/components/thread/terminal/terminal-modules")
       .then(({ preloadTerminalModules }) => preloadTerminalModules())

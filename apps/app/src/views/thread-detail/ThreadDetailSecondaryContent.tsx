@@ -5,7 +5,8 @@ import {
   PluginComposerHostScopeProvider,
   usePluginComposerHost,
 } from "@/components/plugin/plugin-composer-host";
-import { SecondaryPanelLayout } from "@/components/secondary-panel/SecondaryPanelLayout";
+import { ThreadFrameLayout } from "./ThreadFrameLayout";
+import { useNativeThreadFrame } from "./NativeThreadFrameContext";
 import { getThreadSecondaryPanelWidthPercentAtom } from "@/components/secondary-panel/threadSecondaryPanelAtoms";
 import { LazyThreadSecondaryPanel } from "@/components/secondary-panel/lazySecondaryPanelComponents";
 import {
@@ -55,6 +56,8 @@ interface ThreadDetailSecondaryContentProps {
 export function ThreadDetailSecondaryContent(
   props: ThreadDetailSecondaryContentProps,
 ) {
+  const frame = useNativeThreadFrame();
+  if (frame) return <ThreadDetailSecondaryContentBody {...props} />;
   return (
     <PluginComposerHostScopeProvider>
       <ThreadDetailSecondaryContentBody {...props} />
@@ -111,13 +114,10 @@ function ThreadDetailSecondaryContentBody({
   );
 
   return (
-    <div
-      className={cn(
-        "flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-clip",
-        !isBoundedPane && "-mx-4 -mb-4 -mt-4 md:-mx-5 md:-mb-5 md:-mt-5",
-      )}
-    >
-      <SecondaryPanelLayout
+    <>
+      <ThreadFrameLayout
+        deferred
+        isBoundedPane={isBoundedPane}
         open={isSecondaryPanelOpen}
         onToggle={onToggleSecondaryPanel}
         onSwipeOpen={onToggleSecondaryPanel}
@@ -178,7 +178,7 @@ function ThreadDetailSecondaryContentBody({
           />
         )}
       />
-    </div>
+    </>
   );
 }
 

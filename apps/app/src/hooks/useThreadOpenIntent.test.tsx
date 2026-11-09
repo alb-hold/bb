@@ -8,7 +8,10 @@ import { downloadSplit } from "@/lib/split-prefetch";
 import { useThreadOpenIntent } from "./useThreadOpenIntent";
 import { prefetchThreadOpen } from "@/lib/thread-open-prefetch";
 import { warmSplitWhenQuiet } from "@/lib/settled-split-downloads";
-import { LazyThreadDetailView } from "@/views/thread-detail/LazyThreadDetailView";
+import {
+  LazyThreadDetailView,
+  preloadNativeThreadFrame,
+} from "@/views/thread-detail/LazyThreadDetailView";
 
 vi.mock("@/components/thread/terminal/terminal-modules", () => ({
   preloadTerminalModules: vi.fn(),
@@ -20,6 +23,7 @@ vi.mock("@/lib/settled-split-downloads", () => ({
 vi.mock("@/lib/thread-open-prefetch", () => ({ prefetchThreadOpen: vi.fn() }));
 vi.mock("@/views/thread-detail/LazyThreadDetailView", () => ({
   LazyThreadDetailView: { preload: vi.fn() },
+  preloadNativeThreadFrame: vi.fn(),
 }));
 afterEach(() => {
   cleanup();
@@ -93,6 +97,7 @@ it.each(["focus", "input", "submit"])(
     }
     await Promise.resolve();
     expect(preloadTerminalModules).not.toHaveBeenCalled();
+    expect(preloadNativeThreadFrame).not.toHaveBeenCalled();
   },
 );
 
@@ -102,6 +107,7 @@ it("warms terminal modules immediately for explicit native-terminal composer int
     '<div data-app-composer="" data-native-terminal="true"><textarea></textarea></div>';
   fireEvent.input(document.querySelector("textarea")!);
   expect(downloadSplit).toHaveBeenCalledWith("thread-terminal");
+  expect(preloadNativeThreadFrame).toHaveBeenCalled();
   await vi.waitFor(() => expect(preloadTerminalModules).toHaveBeenCalledOnce());
   expect(LazyThreadDetailView.preload).toHaveBeenCalledOnce();
   expect(warmSplitWhenQuiet).not.toHaveBeenCalled();
@@ -127,6 +133,7 @@ it.each(["sidebar", "recent"])(
     );
     fireEvent.pointerOver(row.firstElementChild!);
     expect(downloadSplit).toHaveBeenCalledWith("thread-terminal");
+    expect(preloadNativeThreadFrame).toHaveBeenCalled();
     await vi.waitFor(() =>
       expect(preloadTerminalModules).toHaveBeenCalledOnce(),
     );

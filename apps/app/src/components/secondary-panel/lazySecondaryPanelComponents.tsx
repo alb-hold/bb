@@ -15,6 +15,7 @@ import {
   CONVERSATION_COLLAPSED_PANEL_SIZE_PERCENT,
   useSecondaryPanelMinimum,
 } from "./secondaryPanelSizing";
+import { SecondaryPanelHostLayoutContext } from "./SecondaryPanelHostLayoutContext";
 import { SecondaryPanelWidthPercentAtomContext } from "./threadSecondaryPanelAtoms";
 
 type ThreadSecondaryPanelModule = typeof import("./ThreadSecondaryPanel");
@@ -26,17 +27,18 @@ interface ThreadSecondaryPanelInlinePlaceholderProps {
   children?: ReactNode;
 }
 
-function ThreadSecondaryPanelInlinePlaceholder({
+export function ThreadSecondaryPanelInlinePlaceholder({
   isOpen,
   isConversationCollapsed,
   resizablePanelId,
   children,
 }: ThreadSecondaryPanelInlinePlaceholderProps) {
   const minimumSize = useSecondaryPanelMinimum();
+  const hostLayout = useContext(SecondaryPanelHostLayoutContext);
   const persistedWidthPercent = useAtomValue(
     useContext(SecondaryPanelWidthPercentAtomContext),
   );
-  return (
+  const panel = (
     <Panel
       id={resizablePanelId}
       collapsible
@@ -64,6 +66,20 @@ function ThreadSecondaryPanelInlinePlaceholder({
         </div>
       ) : null}
     </Panel>
+  );
+  return (
+    <>
+      {hostLayout === null ? null : (
+        <div
+          aria-hidden
+          style={{
+            width: isOpen && !isConversationCollapsed ? 1 : 0,
+            flexShrink: 0,
+          }}
+        />
+      )}
+      {panel}
+    </>
   );
 }
 

@@ -215,6 +215,10 @@ describePanelControllerContract(
     const probe = fixtures.probe;
     probe.current = null;
     const sink: ContractStateSink = { current: null };
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    client.setQueryData(threadQueryKey(THREAD.id), THREAD);
     const router = createMemoryRouter(
       [
         {
@@ -243,11 +247,7 @@ describePanelControllerContract(
       { initialEntries: ["/"] },
     );
     render(
-      <QueryClientProvider
-        client={
-          new QueryClient({ defaultOptions: { queries: { retry: false } } })
-        }
-      >
+      <QueryClientProvider client={client}>
         <Provider>
           <RouterProvider router={router} />
         </Provider>

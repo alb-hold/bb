@@ -43,7 +43,10 @@ if (initial) {
       );
       void loadNativeTerminalPanel().catch(() => undefined);
       void import("@/views/thread-detail/LazyThreadDetailView")
-        .then(({ LazyThreadDetailView }) => LazyThreadDetailView.preload())
+        .then(({ LazyThreadDetailView, preloadNativeThreadFrame }) => {
+          void preloadNativeThreadFrame();
+          return LazyThreadDetailView.preload();
+        })
         .catch(() => undefined);
     })
     .catch(() => undefined);
