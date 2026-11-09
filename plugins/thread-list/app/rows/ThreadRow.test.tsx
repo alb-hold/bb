@@ -3541,8 +3541,9 @@ describe.skipIf(
       expect(layout.mode.right + 4).toBeCloseTo(layout.title.left, 0);
       expect(layout.mode.width).toBe(16);
       expect(layout.metadata.text).toContain("drone-agent");
-      expect(layout.metadata.text).toContain(" · main · ");
-      expect(layout.branch?.width).toBeGreaterThan(8);
+      expect(layout.metadata.text).toContain(" · ");
+      expect(layout.metadata.text).not.toContain("main");
+      expect(layout.branch).toBeNull();
     }
   });
 

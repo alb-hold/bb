@@ -1,3 +1,4 @@
+import { ThreadRowMetadata as ThreadContextMetadata } from "@/components/ui/thread-row-metadata";
 import { ThreadModeGlyph } from "@/components/ui/thread-mode-glyph";
 import {
   memo,
@@ -1065,41 +1066,10 @@ function ThreadRowComponent({
                       "[&>[role=img]]:text-foreground [&>[role=img]_svg]:stroke-[2]",
                   )}
                 >
-                  <span
-                    data-thread-context-metadata=""
-                    className="relative flex min-w-0 flex-1 items-center whitespace-nowrap"
-                  >
-                    {showProjectName && projectName ? (
-                      <span
-                        data-thread-row-project=""
-                        className="max-w-[min(14ch,60%)] shrink-0 truncate"
-                      >
-                        {projectName}
-                      </span>
-                    ) : null}
-                    {thread.environment?.branchName ? (
-                      <>
-                        {showProjectName && projectName ? (
-                          <span className="shrink-0 whitespace-pre">
-                            {" · "}
-                          </span>
-                        ) : null}
-                        <span
-                          data-thread-row-branch=""
-                          className="min-w-0 truncate"
-                        >
-                          {thread.environment.branchName}
-                        </span>
-                      </>
-                    ) : null}
-                    {(showProjectName && projectName) ||
-                    thread.environment?.branchName ? (
-                      <span className="shrink-0 whitespace-pre">{" · "}</span>
-                    ) : null}
-                    <span className="shrink-0">
-                      <InfoRowTime timestamp={thread.updatedAt} />
-                    </span>
-                  </span>
+                  <ThreadContextMetadata
+                    project={showProjectName ? projectName ?? null : null}
+                    age={<InfoRowTime timestamp={thread.updatedAt} />}
+                  />
                 </span>
               </span>
             )}
