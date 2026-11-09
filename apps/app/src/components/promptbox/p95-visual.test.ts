@@ -30,8 +30,8 @@ describe("P95 responsive layout contracts", () => {
     expect(css).toContain("@container promptbox-shell (max-width: 40rem)");
   });
   it("hosts terminal search in the panel action area", () => {
-    expect(source("../secondary-panel/ThreadSecondaryPanel.tsx")).toContain(
-      "<SecondaryPanelActions />",
+    expect(source("../secondary-panel/ThreadSecondaryPanel.tsx")).toMatch(
+      /<SecondaryPanelActions>\s*\{renderAsDrawer \? <TerminalSizeClaimSlot \/> : null\}\s*<\/SecondaryPanelActions>/,
     );
     expect(source("../thread/terminal/TerminalSearch.tsx")).toContain(
       "createPortal(trigger, actionsTarget)",
