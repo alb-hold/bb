@@ -485,6 +485,10 @@ describe("daemon websocket session authorization", () => {
       title: "Terminal 1",
     });
     const socket = await connectDaemon(session.id, host.id);
+    let releaseReplay!: () => void;
+    const replayGate = new Promise<void>((resolve) => {
+      releaseReplay = resolve;
+    });
     let acceptSecondFrame!: () => void;
     const secondFrameAccepted = new Promise<void>((resolve) => {
       acceptSecondFrame = resolve;
@@ -514,12 +518,13 @@ describe("daemon websocket session authorization", () => {
       server.deps.terminalSessions,
       "handleDaemonTerminalMessage",
     ).mockImplementation((args) => {
-      const result = handleTerminalMessage(args);
-      if (args.message.type !== "terminal.replay") return result;
+      if (args.message.type !== "terminal.replay") {
+        return handleTerminalMessage(args);
+      }
       replayStarted();
-      return result instanceof Promise
-        ? result.finally(replayFinished)
-        : result;
+      return replayGate
+        .then(() => handleTerminalMessage(args))
+        .finally(replayFinished);
     });
     const notifyEnvironmentOriginal = server.hub.notifyEnvironment.bind(
       server.hub,
@@ -533,65 +538,77 @@ describe("daemon websocket session authorization", () => {
       environmentNotified();
       return notifyEnvironmentOriginal(...args);
     });
-    const chunks = Array.from({ length: 1_024 }, (_, seq) => ({
+    const chunks = Array.from({ length: 2 }, (_, seq) => ({
       seq,
       dataBase64: Buffer.from(`replay-${seq}`).toString("base64"),
     }));
     const closed = new Promise<void>((resolve) =>
       socket.once("close", () => resolve()),
     );
-    socket.send(
-      JSON.stringify({
-        type: "terminal.replay",
-        requestId: "queued-replay-before-close",
-        terminalId: terminal.id,
-        replayStartSeq: 0,
-        nextSeq: chunks.length,
-        chunks,
-      }),
-    );
-    await started;
-    socket.send(
-      JSON.stringify({
-        type: "environment-change",
-        environmentId: environment.id,
-        change: "work-status-changed",
-      }),
-    );
-    await secondFrameAccepted;
-    socket.close();
-    await closed;
-    expect(notifyEnvironment).not.toHaveBeenCalled();
-    await Promise.race([
-      notified,
-      new Promise<never>((_, reject) =>
-        setTimeout(
-          () => reject(new Error("accepted frame did not drain")),
-          5_000,
+    try {
+      socket.send(
+        JSON.stringify({
+          type: "terminal.replay",
+          requestId: "queued-replay-before-close",
+          terminalId: terminal.id,
+          replayStartSeq: 0,
+          nextSeq: chunks.length,
+          chunks,
+        }),
+      );
+      await started;
+      socket.send(
+        JSON.stringify({
+          type: "environment-change",
+          environmentId: environment.id,
+          change: "work-status-changed",
+        }),
+      );
+      await secondFrameAccepted;
+      socket.close();
+      await closed;
+      expect(notifyEnvironment).not.toHaveBeenCalled();
+      expect(
+        getRetainedTerminalOutput(server.db, {
+          hostId: host.id,
+          terminalSessionId: terminal.id,
+          now: Date.now(),
+        })?.length ?? 0,
+      ).toBe(0);
+      releaseReplay();
+      await Promise.race([
+        notified,
+        new Promise<never>((_, reject) =>
+          setTimeout(
+            () => reject(new Error("accepted frame did not drain")),
+            5_000,
+          ),
         ),
-      ),
-    ]);
-    await finished;
+      ]);
+      await finished;
 
-    expect(notifyEnvironment).toHaveBeenCalledTimes(1);
-    expect(notifyEnvironment).toHaveBeenCalledWith(environment.id, [
-      "work-status-changed",
-    ]);
-    expect(
-      getRetainedTerminalOutput(server.db, {
-        hostId: host.id,
-        terminalSessionId: terminal.id,
-        now: Date.now(),
-      })?.map(({ seq }) => seq),
-    ).toEqual(chunks.map(({ seq }) => seq));
-    expect(
-      new Set(
+      expect(notifyEnvironment).toHaveBeenCalledTimes(1);
+      expect(notifyEnvironment).toHaveBeenCalledWith(environment.id, [
+        "work-status-changed",
+      ]);
+      expect(
         getRetainedTerminalOutput(server.db, {
           hostId: host.id,
           terminalSessionId: terminal.id,
           now: Date.now(),
         })?.map(({ seq }) => seq),
-      ).size,
-    ).toBe(chunks.length);
+      ).toEqual(chunks.map(({ seq }) => seq));
+      expect(
+        new Set(
+          getRetainedTerminalOutput(server.db, {
+            hostId: host.id,
+            terminalSessionId: terminal.id,
+            now: Date.now(),
+          })?.map(({ seq }) => seq),
+        ).size,
+      ).toBe(chunks.length);
+    } finally {
+      releaseReplay();
+    }
   });
 });
