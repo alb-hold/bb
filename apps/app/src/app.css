@@ -1190,3 +1190,22 @@
   padding-left: 16px;
   padding-right: 16px;
 }
+
+:where([data-code-card]) {
+  container-type: inline-size;
+  container-name: code-card;
+}
+
+@container code-card (min-width: 40rem) {
+  :where([data-code-card]) > :where([data-code-actions]) {
+    position: absolute;
+    top: 0;
+    right: 0;
+    width: 11rem;
+  }
+
+  :where([data-code-card]) > :where([data-code-card-content]) {
+    margin-right: 11rem;
+  }
+}
+

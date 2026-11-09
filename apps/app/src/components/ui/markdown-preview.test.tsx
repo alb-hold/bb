@@ -149,9 +149,9 @@ describe("MarkdownPreview", () => {
         getComputedStyle(lines[1]!).minHeight,
       );
       const viewport = container.querySelector("[data-code-card-content]")!;
-      expect(viewport.classList.contains("mr-44")).toBe(true);
+      expect(viewport.classList.contains("mr-44")).toBe(false);
       expect(viewport.classList.contains("max-md:pointer-coarse:mr-0")).toBe(
-        true,
+        false,
       );
       expect(viewport.classList.contains("overflow-x-auto")).toBe(true);
     } finally {
@@ -165,11 +165,11 @@ describe("MarkdownPreview", () => {
     );
     const actions = container.querySelector("[data-code-actions]")!;
     const code = container.querySelector("[data-code-card] pre")!;
-    expect(actions.classList.contains("absolute")).toBe(true);
+    expect(actions.classList.contains("absolute")).toBe(false);
     expect(actions.classList.contains("max-md:pointer-coarse:static")).toBe(
-      true,
+      false,
     );
-    expect(actions.classList.contains("max-md:pointer-coarse:w-full")).toBe(
+    expect(actions.classList.contains("w-full")).toBe(
       true,
     );
     expect(code.classList.contains("overflow-x-auto")).toBe(true);

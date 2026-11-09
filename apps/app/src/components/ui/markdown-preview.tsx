@@ -777,7 +777,7 @@ function MarkdownCodeBlock({
       <div
         data-clipboard-ignore
         data-code-actions=""
-        className="absolute right-0 top-0 max-md:pointer-coarse:static max-md:pointer-coarse:w-full max-md:pointer-coarse:rounded-t-md flex h-11 w-44 items-center justify-between gap-1 rounded-tr-md bg-surface-recessed-solid pl-1 pr-1.5"
+        className="flex h-11 w-full items-center justify-between gap-1 rounded-tr-md bg-surface-recessed-solid pl-1 pr-1.5"
       >
         <span
           className="min-w-0 truncate font-mono text-xs uppercase text-muted-foreground"
@@ -818,7 +818,7 @@ function MarkdownCodeBlock({
         data-code-card-content=""
         data-code-wrap={softWrap ? "true" : "false"}
         className={cn(
-          "bb-code-highlight mr-44 px-3 pb-3 pt-2 max-md:pointer-coarse:mr-0",
+          "bb-code-highlight px-3 pb-3 pt-2",
           softWrap
             ? "whitespace-pre-wrap [overflow-wrap:anywhere]"
             : "overflow-x-auto",
