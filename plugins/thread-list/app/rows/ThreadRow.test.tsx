@@ -3173,6 +3173,26 @@ const CHROMIUM_QUIET_FLAGS = [
 
 interface RowLayout {
   innerWidth: number;
+  title: {
+    left: number;
+    right: number;
+    top: number;
+    bottom: number;
+    width: number;
+    height: number;
+  };
+  metadata: {
+    left: number;
+    right: number;
+    top: number;
+    bottom: number;
+    width: number;
+    height: number;
+    visible: boolean;
+    text: string;
+  };
+  branch: { width: number } | null;
+  mode: { left: number; right: number; width: number };
   context: { textLeft: number; glyphWidth: number } | null;
   row: {
     width: number;
@@ -3199,6 +3219,7 @@ const box = (element) => {
   return {
     width: rect.width,
     height: rect.height,
+    top: rect.top,
     bottom: rect.bottom,
     left: rect.left,
     right: rect.right,
@@ -3218,6 +3239,10 @@ const visible = (element) => {
 };
 const layout = {
   innerWidth: window.innerWidth,
+  title: box(document.querySelector(".bb-thread-title > span:last-child")),
+  metadata: { ...box(context), visible: visible(context), text: context.textContent },
+  branch: document.querySelector("[data-thread-row-branch]") ? box(document.querySelector("[data-thread-row-branch]")) : null,
+  mode: box(document.querySelector("[data-thread-title-mode]")),
   context: context && context.firstElementChild ? {
     textLeft: box(context.firstElementChild).left,
     glyphWidth: box(document.querySelector("[data-thread-title-mode]")).width,
@@ -3240,21 +3265,27 @@ document.getElementById("layout").textContent = JSON.stringify(layout);
 async function measureRowLayout(
   rowHtml: string,
   viewportWidth: number,
+  sidebarWidth = viewportWidth,
 ): Promise<RowLayout> {
   const dir = await mkdtemp(join(tmpdir(), "bb-row-layout-"));
   try {
     const page = join(dir, "row.html");
+    const themeCss = await readFile(
+      join(process.cwd(), "../../apps/app/src/components/ui/theme.css"),
+      "utf8",
+    );
     await writeFile(
       page,
-      `<!doctype html><html><head><meta name="viewport" content="width=device-width"><style>
+      `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><style>
 :root{--bb-sidebar-row-height:1.75rem;--bb-sidebar-row-height-coarse:2.5rem;--sidebar-accent:#e4e4e7;--timeline-accent:#2563eb}
 *,::before,::after{box-sizing:border-box}
 body{margin:0}
 ${pluginCss ?? ""}
+${themeCss}
 </style></head><body>
-<div data-bb-plugin-root style="width:${viewportWidth}px">${rowHtml}</div>
+<div data-bb-plugin-root style="width:${sidebarWidth}px">${rowHtml}</div>
 <pre id="layout"></pre>
-<script>${MEASURE_SCRIPT}</script>
+<script>addEventListener("load", () => setTimeout(() => {${MEASURE_SCRIPT}}, 50));</script>
 </body></html>`,
     );
     const { stdout } = await execFileAsync(chromiumPath ?? "", [
@@ -3316,7 +3347,7 @@ async function measureStickyParentLayout(
     );
     await writeFile(
       page,
-      `<!doctype html><html><head><meta name="viewport" content="width=device-width"><style>
+      `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><style>
 @layer theme, base, components, utilities;
 :root{--bb-sidebar-row-height:1.75rem;--bb-sidebar-row-height-coarse:2.5rem;--sidebar:#fafafa;--sidebar-accent:#e4e4e7;--timeline-accent:#2563eb}
 *,::before,::after{box-sizing:border-box}
@@ -3400,7 +3431,7 @@ async function measureNestedPinLayout(
     ).join("");
     await writeFile(
       page,
-      `<!doctype html><html><head><meta name="viewport" content="width=device-width"><style>
+      `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><style>
 @layer theme, base, components, utilities;
 :root{--bb-sidebar-row-height:1.75rem;--bb-sidebar-row-height-coarse:2.5rem;--sidebar:#fafafa;--sidebar-accent:#e4e4e7;--timeline-accent:#2563eb}
 *,::before,::after{box-sizing:border-box}
@@ -3444,6 +3475,75 @@ describe.skipIf(
 )("ThreadRow row-state layout", () => {
   it("has a Chromium binary to measure layout with", () => {
     expect(chromiumPath).not.toBeNull();
+  });
+
+  it("keeps desktop chat, terminal and cross-project titles aligned above visible metadata in a narrow sidebar", async () => {
+    const projects = [
+      makePluginProject({ id: "proj_test", name: "drone-agent" }),
+    ];
+    const providers: PluginProvidersState["providers"] = [
+      {
+        id: "provider-test",
+        pluginId: "provider-test",
+        displayName: "Test Provider",
+        logoUrl: null,
+        available: true,
+        maintenance: { health: false, usage: false, installation: false },
+        capabilities: {
+          supportsThreadArchive: true,
+          supportsThreadRename: true,
+          supportsServiceTier: false,
+          supportsNativeUserQuestion: false,
+          supportsFork: true,
+          supportsSessionRewind: false,
+          modelCatalogScope: "workspace",
+          permissionModes: ["accept-edits", "auto", "full"],
+        },
+        composerActions: [],
+        completedTurnDisplay: "collapse",
+      },
+    ];
+    const layouts: RowLayout[] = [];
+    for (const [id, nativeTerminal, crossProjectId] of [
+      ["chat", false, null],
+      ["terminal", true, null],
+      ["cross-project", false, "proj_test"],
+    ] as const) {
+      const view = renderThreadRow({
+        thread: createThread({
+          id,
+          title: "Slice B setup cue check",
+          pinnedAt: id === "chat" ? 1 : null,
+          experimental_nativeTerminal: nativeTerminal,
+          providerId: nativeTerminal ? "unresolved-provider" : "provider-test",
+          environment: makeSidebarEnvironment({ branchName: "main" }),
+          updatedAt: Date.now() - 4 * 86_400_000,
+        }),
+        projects,
+        providers,
+        crossProjectId,
+        isCompactViewport: false,
+      });
+      layouts.push(await measureRowLayout(view.container.innerHTML, 1280, 256));
+      view.unmount();
+    }
+    for (const layout of layouts) {
+      expect(layout.title.width).toBeGreaterThan(100);
+      expect(layout.metadata.visible).toBe(true);
+      expect(layout.metadata.width).toBeGreaterThan(100);
+      expect(layout.metadata.height).toBeGreaterThan(0);
+      expect(layout.metadata.top).toBeGreaterThanOrEqual(
+        layout.title.bottom - 1,
+      );
+      expect(layout.metadata.bottom).toBeLessThanOrEqual(layout.row.bottom + 1);
+      expect(layout.context?.textLeft).toBeCloseTo(layout.title.left, 0);
+      expect(layout.title.left).toBeCloseTo(layouts[0]!.title.left, 0);
+      expect(layout.mode.right + 4).toBeCloseTo(layout.title.left, 0);
+      expect(layout.mode.width).toBe(16);
+      expect(layout.metadata.text).toContain("drone-agent");
+      expect(layout.metadata.text).toContain(" · main · ");
+      expect(layout.branch?.width).toBeGreaterThan(8);
+    }
   });
 
   it("aligns metadata text after chat, terminal and worktree glyph slots", async () => {
