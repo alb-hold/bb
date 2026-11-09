@@ -23,7 +23,10 @@ const navigation: ReturnType<typeof useAppNavigationHost> = {
   openUrl: () => false,
   openSignInWindow: () => null,
 };
-const View = () => <div>Terminal</div>;
+const View = ({ onSurfaceVisible }: ThreadTerminalViewProps) => {
+  useEffect(() => onSurfaceVisible?.(), [onSurfaceVisible]);
+  return <div>Terminal</div>;
+};
 const props = (id: string): ThreadTerminalViewProps => ({
   session: makeTerminalSession({ id }),
   autoFocus: false,
@@ -34,16 +37,18 @@ function harness() {
   const host = document.createElement("div");
   document.body.append(host);
   registry.setHost(host);
-  const attach = (id: string, key = id) => {
+  const attach = (id: string, key = id, revealed = true) => {
     const slot = document.createElement("div");
     document.body.append(slot);
-    return registry.attach(
+    const entry = registry.attach(
       key,
       slot,
       View,
       { props: props(id), navigation },
       "prj_test",
     );
+    entry.revealed = revealed;
+    return entry;
   };
   return { registry, host, attach };
 }
@@ -55,11 +60,51 @@ afterEach(() => {
 });
 
 describe("retained terminal viewers", () => {
+  it("keeps disposal off a fresh viewer's mount and first reveal frames", async () => {
+    vi.useFakeTimers();
+    const { registry, attach } = harness();
+    const older = attach("older");
+    registry.detach(older);
+    const outgoing = attach("outgoing");
+    registry.detach(outgoing);
+    const incoming = attach("incoming", "incoming", false);
+    await Promise.resolve();
+    expect(registry.getSnapshot()).toEqual([older, outgoing, incoming]);
+    registry.revealed(incoming);
+    await Promise.resolve();
+    expect(registry.getSnapshot()).toHaveLength(3);
+    vi.advanceTimersToNextFrame();
+    await Promise.resolve();
+    expect(registry.getSnapshot()).toHaveLength(3);
+    vi.advanceTimersToNextFrame();
+    await Promise.resolve();
+    expect(registry.getSnapshot()).toEqual([outgoing, incoming]);
+    expect(older.container.isConnected).toBe(false);
+    registry.dispose();
+  });
+  it("disposes abandoned unfinished viewers without accumulating parked output", async () => {
+    const { registry, attach } = harness();
+    const warm = attach("warm");
+    registry.detach(warm);
+    for (let index = 0; index < 20; index++) {
+      const unfinished = attach(
+        `unfinished-${index}`,
+        `unfinished-${index}`,
+        false,
+      );
+      registry.detach(unfinished);
+      await Promise.resolve();
+      expect(unfinished.container.isConnected).toBe(false);
+      expect(registry.getSnapshot()).toEqual([warm]);
+    }
+    registry.dispose();
+  });
   it("invalidates a user-closed panel while a route unmount parks it", () => {
     let mounts = 0;
     let disposals = 0;
-    function Viewer() {
+    function Viewer({ onSurfaceVisible }: ThreadTerminalViewProps) {
       useEffect(() => {
+        onSurfaceVisible?.();
         mounts++;
         return () => {
           disposals++;
@@ -223,8 +268,9 @@ describe("retained terminal viewers", () => {
       });
       let mounts = 0,
         disposals = 0;
-      function Viewer() {
+      function Viewer({ onSurfaceVisible }: ThreadTerminalViewProps) {
         useEffect(() => {
+          onSurfaceVisible?.();
           mounts++;
           return () => {
             disposals++;
@@ -287,8 +333,9 @@ describe("retained terminal viewers", () => {
       );
       let mounts = 0,
         disposals = 0;
-      function Viewer() {
+      function Viewer({ onSurfaceVisible }: ThreadTerminalViewProps) {
         useEffect(() => {
+          onSurfaceVisible?.();
           mounts++;
           return () => {
             disposals++;

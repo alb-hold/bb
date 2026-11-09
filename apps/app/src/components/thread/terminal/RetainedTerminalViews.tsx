@@ -42,6 +42,7 @@ interface Entry {
   View: View;
   container: HTMLDivElement;
   invalid: boolean;
+  revealed: boolean;
   snapshot: Snapshot;
   listeners: Set<() => void>;
   subscribe: (listener: () => void) => () => void;
@@ -54,6 +55,9 @@ export function createRetainedTerminalViews() {
   let host: HTMLDivElement | null = null;
   let hiddenTimer: ReturnType<typeof setTimeout> | null = null;
   let prunePending = false;
+  let revealFrame: number | null = null;
+  let revealTimer: ReturnType<typeof setTimeout> | null = null;
+  let openingEntry: Entry | null = null;
   const listeners = new Set<() => void>();
   const publish = () => listeners.forEach((listener) => listener());
   const update = (entry: Entry, snapshot: Snapshot) => {
@@ -73,6 +77,7 @@ export function createRetainedTerminalViews() {
     }
   };
   const prune = () => {
+    if (revealFrame !== null || openingEntry !== null) return;
     const detached = entries.filter(
       (entry) => entry.snapshot.attachment === null,
     );
@@ -129,6 +134,7 @@ export function createRetainedTerminalViews() {
           View,
           container,
           invalid: false,
+          revealed: false,
           snapshot: { attachment, retained: retain(attachment.props) },
           listeners: entryListeners,
           subscribe: (listener) => {
@@ -146,8 +152,27 @@ export function createRetainedTerminalViews() {
       entry.container.style.height = "";
       slot.append(entry.container);
       update(entry, { attachment, retained: retain(attachment.props) });
+      openingEntry = entry.revealed ? null : entry;
       publish();
       return entry;
+    },
+    revealed(entry: Entry) {
+      if (entry.revealed || !entries.includes(entry)) return;
+      entry.revealed = true;
+      if (openingEntry === entry) openingEntry = null;
+      if (revealFrame !== null) cancelAnimationFrame(revealFrame);
+      if (revealTimer !== null) clearTimeout(revealTimer);
+      const finish = () => {
+        if (revealFrame !== null) cancelAnimationFrame(revealFrame);
+        revealFrame = null;
+        if (revealTimer !== null) clearTimeout(revealTimer);
+        revealTimer = null;
+        schedulePrune();
+      };
+      revealFrame = requestAnimationFrame(() => {
+        revealFrame = requestAnimationFrame(finish);
+      });
+      revealTimer = setTimeout(finish, 2_000);
     },
     update(entry: Entry, attachment: Attachment) {
       update(entry, { attachment, retained: retain(attachment.props) });
@@ -155,6 +180,7 @@ export function createRetainedTerminalViews() {
     },
     detach(entry: Entry) {
       if (!entries.includes(entry)) return;
+      if (openingEntry === entry) openingEntry = null;
       if (host === null) {
         update(entry, { attachment: null, retained: entry.snapshot.retained });
         remove(entry);
@@ -165,6 +191,7 @@ export function createRetainedTerminalViews() {
       entry.container.style.height = `${rect.height}px`;
       update(entry, { attachment: null, retained: entry.snapshot.retained });
       if (
+        !entry.revealed ||
         entry.invalid ||
         entry.snapshot.retained.session.status !== "running"
       ) {
@@ -195,6 +222,11 @@ export function createRetainedTerminalViews() {
         : null;
     },
     dispose() {
+      openingEntry = null;
+      if (revealFrame !== null) cancelAnimationFrame(revealFrame);
+      revealFrame = null;
+      if (revealTimer !== null) clearTimeout(revealTimer);
+      revealTimer = null;
       if (hiddenTimer !== null) clearTimeout(hiddenTimer);
       hiddenTimer = null;
       entries = [];
@@ -224,6 +256,7 @@ function RetainedView({
     entry.snapshot.attachment?.props.onSessionChange?.(session);
     registry.sessionChanged(entry, session);
   });
+  const [onSurfaceVisible] = useState(() => () => registry.revealed(entry));
   const props = snapshot.attachment?.props ?? {
     ...snapshot.retained,
     autoFocus: false,
@@ -238,6 +271,7 @@ function RetainedView({
         parked={snapshot.attachment === null}
         onSessionChange={onSessionChange}
         onRetentionInvalidated={onRetentionInvalidated}
+        onSurfaceVisible={onSurfaceVisible}
       />
     </AppNavigationHostProvider>,
     entry.container,

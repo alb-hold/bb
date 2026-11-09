@@ -565,6 +565,7 @@ export function observeTerminalFontLoading(
 export interface ThreadTerminalViewProps {
   parked?: boolean;
   onRetentionInvalidated?: () => void;
+  onSurfaceVisible?: () => void;
   retainNativeOutput?: boolean;
   attentionShownAsBanner?: boolean;
   autoFocus: boolean;
@@ -1273,6 +1274,7 @@ export function ThreadTerminalView({
   isPanelOpen: panelOpen,
   parked = false,
   onRetentionInvalidated,
+  onSurfaceVisible,
   onAutoFocusHandled,
   onOpenLink,
   onSelectionAddToChat,
@@ -1288,6 +1290,8 @@ export function ThreadTerminalView({
   parkedRef.current = parked;
   const retentionInvalidatedRef = useRef(onRetentionInvalidated);
   retentionInvalidatedRef.current = onRetentionInvalidated;
+  const surfaceVisibleRef = useRef(onSurfaceVisible);
+  surfaceVisibleRef.current = onSurfaceVisible;
   const parkTransportRef = useRef<((parked: boolean) => void) | null>(null);
   const returningRef = useRef(false);
   const restoringFocusRef = useRef(false);
@@ -2206,6 +2210,7 @@ export function ThreadTerminalView({
             replayPreview = null;
           }
           containerElement.style.opacity = "";
+          if (!parkedRef.current) surfaceVisibleRef.current?.();
           return;
         }
       };

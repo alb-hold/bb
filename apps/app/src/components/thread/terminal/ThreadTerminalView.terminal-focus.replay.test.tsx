@@ -575,6 +575,10 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
       const warmSocket = testState.sockets[1]!;
       view.rerender(tree(2));
       await ready(3);
+      await waitForReadinessCondition(
+        () => expect(coldSocket.readyState).toBe(TestTerminalSocket.CLOSED),
+        "older viewer was not disposed after the incoming reveal",
+      );
       expect(document.querySelectorAll(".xterm")).toHaveLength(2);
       expect(coldSocket.readyState).toBe(TestTerminalSocket.CLOSED);
       expect(coldElement.isConnected).toBe(false);
