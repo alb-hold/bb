@@ -131,9 +131,9 @@ function setup(initial = "", submission?: PromptBoxSubmissionConfig) {
 
 it("names the prompt actions before the full composer loads", () => {
   setup();
-  expect(screen.getByRole("button", { name: "Prompt actions" }).title).toBe(
-    "Prompt actions",
-  );
+  fireEvent.keyDown(document.body, { key: "Tab" });
+  fireEvent.focus(screen.getByRole("button", { name: "Prompt actions" }));
+  expect(screen.getByRole("tooltip").textContent).toBe("Prompt actions");
 });
 
 it("keeps a 44px phone submit slot before and after typing during startup", () => {
