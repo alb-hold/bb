@@ -2,6 +2,12 @@
 
 import { act, cleanup, render } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  SecondaryPanelActionsProvider,
+  SecondaryPanelActions,
+  useSecondaryPanelActionsTarget,
+} from "@/components/secondary-panel/SecondaryPanelActions";
+import { createPortal } from "react-dom";
 import { useEffect } from "react";
 import { makeTerminalSession } from "@/test/fixtures/terminal-sessions";
 import { useAppNavigationHost } from "@/lib/app-navigation-host";
@@ -384,4 +390,28 @@ describe("retained terminal viewers", () => {
     expect(host.textContent).toBe("Terminal");
     expect(document.querySelector("button")?.closest("[inert]")).toBeNull();
   });
+});
+
+it("keeps retained terminal actions in the real panel toolbar", () => {
+  function Search() {
+    const actions = useSecondaryPanelActionsTarget();
+    return actions?.target ? (
+      createPortal(<button>Search output</button>, actions.target)
+    ) : (
+      <span>No toolbar</span>
+    );
+  }
+  const view = render(
+    <RetainedTerminalViewsProvider>
+      <SecondaryPanelActionsProvider activeTerminalId="search">
+        <SecondaryPanelActions />
+        <RetainedTerminalViewSlot View={Search} {...props("search")} />
+      </SecondaryPanelActionsProvider>
+    </RetainedTerminalViewsProvider>,
+  );
+  expect(
+    view.container.querySelector("[data-secondary-panel-actions] button")
+      ?.textContent,
+  ).toBe("Search output");
+  expect(view.container.textContent).not.toContain("No toolbar");
 });

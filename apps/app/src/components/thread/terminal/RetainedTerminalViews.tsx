@@ -20,6 +20,11 @@ import { wsManager } from "@/lib/ws";
 import { useOptionalPaneContext } from "@/views/thread-detail/PaneContext";
 import type { ThreadTerminalViewProps } from "./ThreadTerminalView";
 
+import {
+  SecondaryPanelActionsTargetProvider,
+  useSecondaryPanelActionsTarget,
+} from "@/components/secondary-panel/SecondaryPanelActions";
+
 type Navigation = ReturnType<typeof useAppNavigationHost>;
 type View = ComponentType<ThreadTerminalViewProps>;
 type RetainedProps = Pick<
@@ -27,6 +32,7 @@ type RetainedProps = Pick<
   "session" | "retainNativeOutput" | "attentionShownAsBanner"
 >;
 interface Attachment {
+  panelActions?: ReturnType<typeof useSecondaryPanelActionsTarget>;
   props: ThreadTerminalViewProps;
   navigation: Navigation;
 }
@@ -266,13 +272,17 @@ function RetainedView({
     <AppNavigationHostProvider
       capabilities={snapshot.attachment?.navigation ?? {}}
     >
-      <entry.View
-        {...props}
-        parked={snapshot.attachment === null}
-        onSessionChange={onSessionChange}
-        onRetentionInvalidated={onRetentionInvalidated}
-        onSurfaceVisible={onSurfaceVisible}
-      />
+      <SecondaryPanelActionsTargetProvider
+        value={snapshot.attachment?.panelActions ?? null}
+      >
+        <entry.View
+          {...props}
+          parked={snapshot.attachment === null}
+          onSessionChange={onSessionChange}
+          onRetentionInvalidated={onRetentionInvalidated}
+          onSurfaceVisible={onSurfaceVisible}
+        />
+      </SecondaryPanelActionsTargetProvider>
     </AppNavigationHostProvider>,
     entry.container,
   );
@@ -407,11 +417,12 @@ export function RetainedTerminalViewSlot({
 }: ThreadTerminalViewProps & { View: View }) {
   const context = useContext(RetainedTerminalViewsContext);
   const navigation = useAppNavigationHost();
+  const panelActions = useSecondaryPanelActionsTarget();
   const paneId = useOptionalPaneContext()?.paneId ?? "page";
   const slot = useRef<HTMLDivElement>(null);
   const entry = useRef<Entry | null>(null);
-  const current = useRef({ props, navigation });
-  current.current = { props, navigation };
+  const current = useRef({ props, navigation, panelActions });
+  current.current = { props, navigation, panelActions };
   const registry = context?.registry;
   const projectId = context?.projectId;
   useLayoutEffect(() => {

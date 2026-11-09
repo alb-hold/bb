@@ -10,6 +10,9 @@ const ActionsTargetContext = createContext<{
   target: HTMLElement | null;
   activeTerminalId: string | null;
 } | null>(null);
+export const SecondaryPanelActionsTargetProvider =
+  ActionsTargetContext.Provider;
+
 const ActionsRefContext = createContext<
   ((target: HTMLDivElement | null) => void) | null
 >(null);
