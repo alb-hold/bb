@@ -333,6 +333,7 @@ export function AutoHeightContainer({
         if (sync.useIntrinsicHeight) {
           finishHeightTransition();
           enterIntrinsicHeightMode(wrapper, resizeState, snapState);
+          positionKeeper?.remeasure();
           scheduleIntrinsicHeightRestore({
             inner,
             resizeState,
