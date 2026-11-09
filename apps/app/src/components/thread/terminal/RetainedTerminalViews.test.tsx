@@ -109,7 +109,7 @@ describe("retained terminal viewers", () => {
         return () => {
           disposals++;
         };
-      }, []);
+      }, [onSurfaceVisible]);
       return <div>viewer</div>;
     }
     function Panel({ open }: { open: boolean }) {
@@ -275,7 +275,7 @@ describe("retained terminal viewers", () => {
           return () => {
             disposals++;
           };
-        }, []);
+        }, [onSurfaceVisible]);
         return <div>viewer</div>;
       }
       const tree = (shown: boolean) => (
@@ -340,7 +340,7 @@ describe("retained terminal viewers", () => {
           return () => {
             disposals++;
           };
-        }, []);
+        }, [onSurfaceVisible]);
         return <div>viewer</div>;
       }
       const tree = (shown: boolean) => (
