@@ -5,7 +5,7 @@ import {
 } from "./ComposerLoadingControls";
 
 export type ComposerPlaceholderState =
-  | { kind: "loading"; shape: ComposerLoadingShape }
+  | { kind: "loading"; shape: ComposerLoadingShape; placeholder?: string }
   | { kind: "missing" }
   | { kind: "failed"; onRetry: () => void }
   | { kind: "crashed"; pluginTitle: string; onReload: () => void };
@@ -19,6 +19,7 @@ export function ComposerPlaceholder({
     return (
       <ComposerLoadingControls
         shape={state.shape}
+        placeholder={state.placeholder}
         aria-label="Loading composer"
         data-composer-placeholder="loading"
       />

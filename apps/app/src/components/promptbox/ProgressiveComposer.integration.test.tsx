@@ -676,3 +676,20 @@ it.each(["plain", "rich"] as const)(
     client.clear();
   },
 );
+
+it("keeps the terminal-specific placeholder while the composer plugin loads", () => {
+  render(
+    <ComposerBox
+      surface="thread"
+      value=""
+      mentionRanges={[]}
+      onChange={() => {}}
+      onSubmit={() => {}}
+      typeahead={testTypeaheadConfig()}
+      compact={{ when: "always", placeholder: "Send to Codex prompt above…" }}
+      mentionMenuPlacement="top"
+    />,
+  );
+  expect(screen.getByText("Send to Codex prompt above…")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Loading composer" }).hasAttribute("disabled")).toBe(true);
+});

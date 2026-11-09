@@ -702,6 +702,10 @@ export function ComposerBox(props: ComposerBoxProps) {
           !bootSettled
             ? {
                 kind: "loading",
+                placeholder:
+                  props.compact?.when === "always"
+                    ? props.compact.placeholder
+                    : props.placeholder,
                 shape:
                   props.surface === "new-thread"
                     ? "new-thread"
