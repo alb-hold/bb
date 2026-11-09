@@ -3,6 +3,8 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import {
   turnRow,
   commandRow,
@@ -79,19 +81,30 @@ it("tightens disclosure margins within a turn without changing user or turn boun
       </MemoryRouter>
     </QueryClientProvider>,
   );
-  const margin = (id: string) => {
-    const row = container.querySelector<HTMLElement>(
-      `[data-timeline-window-key="${id}"]`,
-    );
-    expect(row).not.toBeNull();
-    return row!.style.marginTop;
-  };
-  expect(margin("spacing-code")).toBe("8px");
-  expect(margin("spacing-command")).toBe("4px");
-  expect(margin("spacing-tool")).toBe("2px");
-  expect(margin("spacing-worked")).toBe("4px");
-  expect(margin("spacing-next-user")).toBe("8px");
-  expect(margin("spacing-next-answer")).toBe("8px");
+  const stylesheet = document.createElement("style");
+  stylesheet.textContent = readFileSync(
+    resolve("src/components/thread/timeline/timeline-row-spacing.css"),
+    "utf8",
+  );
+  document.head.append(stylesheet);
+  try {
+    const margin = (id: string) => {
+      const row = container.querySelector<HTMLElement>(
+        `[data-timeline-window-key="${id}"]`,
+      );
+      expect(row).not.toBeNull();
+      expect(row!.style.marginTop).toBe("");
+      return getComputedStyle(row!).marginTop;
+    };
+    expect(margin("spacing-code")).toBe("0.5rem");
+    expect(margin("spacing-command")).toBe("0.25rem");
+    expect(margin("spacing-tool")).toBe("0.125rem");
+    expect(margin("spacing-worked")).toBe("0.25rem");
+    expect(margin("spacing-next-user")).toBe("0.5rem");
+    expect(margin("spacing-next-answer")).toBe("0.5rem");
+  } finally {
+    stylesheet.remove();
+  }
 });
 
 it("shows turn spend on the collapsed Worked for row in secondary status ink", () => {

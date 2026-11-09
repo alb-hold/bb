@@ -11,6 +11,7 @@ import {
   useSyncExternalStore,
 } from "react";
 import type { ComponentProps, CSSProperties, ReactNode } from "react";
+import "./timeline-row-spacing.css";
 import { useComposedRefs } from "@radix-ui/react-compose-refs";
 import { useIsCompactViewport } from "@bb/shared-ui/hooks/use-compact-viewport";
 import { usePointerCoarse } from "@bb/shared-ui/hooks/use-pointer-coarse";
@@ -2428,6 +2429,7 @@ function TimelineRowItemWrapper({
   const wrapperRef = useRef<HTMLDivElement>(null);
   const composedRef = useComposedRefs(wrapperRef, windowedState.itemRef);
   const isTopLevel = spacing === "top-level";
+  const { marginTop, ...rowStyle } = style ?? {};
   useArmTopLevelTimelineRowContainment(
     wrapperRef,
     isTopLevel && !windowedState.windowingEnabled,
@@ -2437,6 +2439,7 @@ function TimelineRowItemWrapper({
       ref={composedRef}
       data-timeline-row-id={row.id}
       data-timeline-window-key={row.id}
+      data-timeline-gap-before={marginTop}
       className={
         isTopLevel && !windowedState.windowingEnabled
           ? TOP_LEVEL_TIMELINE_ROW_INTRINSIC_SIZE_CLASS_NAME
@@ -2446,7 +2449,7 @@ function TimelineRowItemWrapper({
         ...(isTopLevel && !windowedState.windowingEnabled
           ? timelineRowContainmentStyle(row)
           : undefined),
-        ...style,
+        ...rowStyle,
       }}
     >
       {children}
