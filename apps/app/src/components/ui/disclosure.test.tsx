@@ -307,7 +307,7 @@ it.each(["Ran 1 command", "Ran 1 tool"])(
     expect(header.hasAttribute("data-compact-touch-summary")).toBe(true);
     expect(header.classList.contains("overflow-visible")).toBe(true);
     expect(
-      header.parentElement?.classList.contains("max-md:pointer-coarse:py-3"),
+      header.parentElement?.hasAttribute("data-timeline-disclosure-header"),
     ).toBe(true);
     for (
       let node: HTMLElement | null = header;

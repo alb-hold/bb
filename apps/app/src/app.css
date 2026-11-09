@@ -1209,3 +1209,8 @@
   }
 }
 
+@media (max-width: 767px) and (pointer: coarse) {
+  :where([data-timeline-disclosure-header]) > button[data-compact-touch-summary] {
+    margin-block: -6px;
+  }
+}

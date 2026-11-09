@@ -334,7 +334,7 @@ export function ExpandablePanel({
       {...intentHandlers}
     >
       {}
-      <div className="group/timeline-row max-md:pointer-coarse:py-3">
+      <div data-timeline-disclosure-header="" className="group/timeline-row">
         <CollapsibleHeader
           isExpanded={isExpanded}
           forceChevronVisible={forceHeaderChevronVisible}
