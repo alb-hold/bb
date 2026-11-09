@@ -617,6 +617,7 @@ function ThreadRowComponent({
     thread,
     hasComposerDraft,
   );
+  const hasModeGlyph = thread.experimental_nativeTerminal || thread.environment?.isWorktree === true;
   const labelTitle = thread.displayTitle;
   const crossProjectName = useSidebarProjectName(crossProjectId);
   const projectName = useSidebarProjectName(thread.projectId);
@@ -992,13 +993,14 @@ function ThreadRowComponent({
               "pointer-events-none relative flex min-w-0 flex-1 items-center self-stretch",
             )}
           >
-            {provider ? (
+            {provider || hasModeGlyph ? (
               <Tooltip>
                 <TooltipTrigger asChild>
                   <span
-                    data-sidebar-thread-provider={provider.id}
-                    role="img"
-                    aria-label={provider.displayName}
+                    data-sidebar-thread-provider={provider?.id}
+                    data-sidebar-thread-leading=""
+                    role={provider ? "img" : undefined}
+                    aria-label={provider?.displayName}
                     className="pointer-events-auto relative z-[31] flex size-4 shrink-0 items-center justify-center mr-1 max-md:mr-1.5 md:self-start md:mt-0.5 text-muted-foreground [&_*]:text-inherit!"
                     onClick={(event) => {
                       event.preventDefault();
@@ -1006,19 +1008,13 @@ function ThreadRowComponent({
                       rowLinkRef.current?.click();
                     }}
                   >
-                    <ProviderIcon
-                      providerKind="agent"
-                      provider={provider}
-                      className="size-4"
-                    />
+                    {hasModeGlyph ? <ThreadModeGlyph nativeTerminal={thread.experimental_nativeTerminal} isWorktree={thread.environment?.isWorktree === true} /> : provider ? <ProviderIcon providerKind="agent" provider={provider} className="size-4" /> : null}
                   </span>
                 </TooltipTrigger>
                 <TooltipContent side="top">
-                  {provider.displayName}
+                  {provider?.displayName ?? (thread.experimental_nativeTerminal ? "Native terminal" : "Worktree")}
                 </TooltipContent>
               </Tooltip>
-            ) : showProviderIcons ? (
-              <span aria-hidden className="hidden size-4 shrink-0 mr-1 md:flex" />
             ) : null}
             {isEditing ? (
               <span className="pointer-events-auto relative z-10 min-w-0 flex-1 overflow-visible">
@@ -1040,20 +1036,6 @@ function ThreadRowComponent({
                   }
                   className="bb-thread-title md:leading-5 md:items-center! flex min-w-0 flex-1 items-center gap-1 truncate font-normal md:data-[emphasized=true]:font-medium"
                 >
-                  <span
-                    className="inline-flex size-4 shrink-0 text-foreground md:translate-y-px max-md:-translate-y-0.5"
-                    data-thread-title-mode=""
-                  >
-                    <ThreadModeGlyph
-                      nativeTerminal={
-                        thread.experimental_nativeTerminal === true
-                      }
-                      isWorktree={
-                        !thread.experimental_nativeTerminal &&
-                        thread.environment?.isWorktree === true
-                      }
-                    />
-                  </span>
                   <span className="min-w-0 truncate md:flex md:items-center md:leading-5 md:[&_span]:leading-5">
                     <ThreadTitle threadId={thread.id} />
                   </span>
@@ -1061,7 +1043,7 @@ function ThreadRowComponent({
                 <span
                   data-sidebar-thread-context=""
                   className={cn(
-                    "hidden min-w-0 items-center gap-1 pl-5 truncate text-xs font-normal leading-4 text-muted-foreground md:text-xs md:leading-4 md:[&_span]:leading-4 md:[&_time]:leading-4 md:text-sidebar-metadata-foreground [&_time]:text-xs md:[&_time]:text-xs [&_time]:text-inherit md:flex",
+                    "hidden min-w-0 items-center gap-1 truncate text-xs font-normal leading-4 text-muted-foreground md:text-xs md:leading-4 md:[&_span]:leading-4 md:[&_time]:leading-4 md:text-sidebar-metadata-foreground [&_time]:text-xs md:[&_time]:text-xs [&_time]:text-inherit md:flex",
                     thread.experimental_nativeTerminal &&
                       "[&>[role=img]]:text-foreground [&>[role=img]_svg]:stroke-[2]",
                   )}

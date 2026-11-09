@@ -538,6 +538,13 @@ afterEach(() => {
 });
 
 describe("ThreadRow", () => {
+  it("uses one leading mode column without a blank title slot", () => {
+    const view = renderThreadRow({ thread: createThread({ experimental_nativeTerminal: true }) });
+    expect(view.container.querySelectorAll('[data-icon="Terminal"]')).toHaveLength(1);
+    expect(view.container.querySelector('.bb-thread-title [role="img"]')).toBeNull();
+    expect(view.container.querySelector('[data-thread-title-mode]')).toBeNull();
+  });
+
   it("emphasizes desktop titles while keeping context secondary", () => {
     const view = renderThreadRow();
     expect(view.container.querySelector(".bb-thread-title")?.classList.contains("md:data-[emphasized=true]:font-medium")).toBe(true);
@@ -611,14 +618,14 @@ describe("ThreadRow", () => {
   ] as const)("reserves one title glyph slot and no metadata glyph slot for %s", (label, thread) => {
     const view = renderThreadRow({ thread });
     const context = view.container.querySelector("[data-sidebar-thread-context]");
-    const slot = view.container.querySelector("[data-thread-title-mode]");
-    expect(slot?.classList.contains("size-4")).toBe(true);
+    const slot = view.container.querySelector("[data-sidebar-thread-leading]");
+    expect(slot?.classList.contains("size-4") ?? false).toBe(label !== "Workspace");
     expect(context?.querySelector('[role="img"]')).toBeNull();
-    expect(context?.classList.contains("pl-5")).toBe(true);
+    expect(context?.classList.contains("pl-5")).toBe(false);
     if (label !== "Workspace") {
-      expect(screen.getByRole("img", { name: label }).closest("[data-thread-title-mode]")).toBe(slot);
+      expect(screen.getByRole("img", { name: label }).closest("[data-sidebar-thread-leading]")).toBe(slot);
     } else {
-      expect(slot?.querySelector("[data-icon]")).toBeNull();
+      expect(slot).toBeNull();
     }
     expect(context?.classList.contains("md:text-xs")).toBe(true);
   });
@@ -3242,10 +3249,10 @@ const layout = {
   title: box(document.querySelector(".bb-thread-title > span:last-child")),
   metadata: { ...box(context), visible: visible(context), text: context.textContent },
   branch: document.querySelector("[data-thread-row-branch]") ? box(document.querySelector("[data-thread-row-branch]")) : null,
-  mode: box(document.querySelector("[data-thread-title-mode]")),
+  mode: (document.querySelector("[data-sidebar-thread-leading]") ? box(document.querySelector("[data-sidebar-thread-leading]")) : {width:0}),
   context: context && context.firstElementChild ? {
     textLeft: box(context.firstElementChild).left,
-    glyphWidth: box(document.querySelector("[data-thread-title-mode]")).width,
+    glyphWidth: (document.querySelector("[data-sidebar-thread-leading]") ? box(document.querySelector("[data-sidebar-thread-leading]")) : {width:0}).width,
   } : null,
   row: box(document.querySelector("[data-sidebar-rename-row]")),
   link: box(document.querySelector("[data-sidebar-thread-id]")),
@@ -3564,10 +3571,10 @@ describe.skipIf(
     );
     const worktree = await measureRowLayout(view.container.innerHTML, 1280);
     expect(chat.context).not.toBeNull();
-    expect(chat.context?.glyphWidth).toBe(16);
+    expect(chat.context?.glyphWidth).toBe(0);
     for (const layout of [terminal, worktree]) {
       expect(layout.context?.glyphWidth).toBe(16);
-      expect(layout.context?.textLeft).toBe(chat.context?.textLeft);
+      expect(layout.context?.textLeft).toBeCloseTo(layout.title.left, 0);
     }
     await writeFile(
       join(tmpdir(), "p108-sidebar-metadata-offsets.json"),
@@ -3833,35 +3840,11 @@ it("uses regular desktop weight for inactive rows and medium for attention", () 
   expect(metadata.className).toContain("md:text-sidebar-metadata-foreground");
 });
 
-it("reserves an equal title slot for chat, worktree and terminal rows", () => {
+it("puts a mode glyph in the leading column without a blank chat slot", () => {
   const view = renderThreadRow({ thread: createThread({ environment: null }) });
-  const slot = () =>
-    view.container.querySelector("[data-thread-title-mode]")!
-      .firstElementChild!;
-  expect(slot().classList.contains("size-4")).toBe(true);
-  expect(slot().getAttribute("aria-hidden")).toBe("true");
-  expect(slot().querySelector("[data-icon]")).toBeNull();
+  expect(view.container.querySelector("[data-sidebar-thread-leading]")).toBeNull();
   view.rerenderThreadRow(createThread({ experimental_nativeTerminal: true }));
-  expect(slot().getAttribute("aria-label")).toBe("Native terminal");
-  expect(screen.getByRole("img", { name: "Native terminal" }).closest(".bb-thread-title")).not.toBeNull();
-  expect(
-    screen.getByRole("img", { name: "Native terminal" }).querySelector("[data-icon]")?.classList.contains("size-4"),
-  ).toBe(true);
-  view.rerenderThreadRow(
-    createThread({
-      environment: {
-        id: "env-worktree",
-        name: null,
-        branchName: "feature",
-        path: null,
-        isWorktree: true,
-        providerId: null,
-        workspaceDisplayKind: null,
-      },
-    }),
-  );
-  expect(screen.getByRole("img", { name: "Worktree" })).toBe(slot());
-  expect(slot().classList.contains("size-4")).toBe(true);
+  expect(screen.getByRole("img", { name: "Native terminal" }).closest("[data-sidebar-thread-leading]")).not.toBeNull();
 });
 
 it("leaves desktop descenders room without fixed title or metadata heights", () => {
@@ -3872,8 +3855,6 @@ it("leaves desktop descenders room without fixed title or metadata heights", () 
   expect(title.classList.contains("md:leading-5")).toBe(true);
   expect(text.classList.contains("md:leading-5")).toBe(true);
   expect(title.classList.contains("md:items-center!")).toBe(true);
-  expect(title.querySelector("[data-thread-title-mode]")?.classList.contains("md:translate-y-px")).toBe(true);
-  expect(title.querySelector("[data-thread-title-mode]")?.classList.contains("max-md:-translate-y-0.5")).toBe(true);
   for (const element of [title, text, metadata]) {
     expect(element.className).not.toMatch(/(?:^| )md:h-/);
   }
