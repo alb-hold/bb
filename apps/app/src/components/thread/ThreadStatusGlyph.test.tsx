@@ -347,3 +347,8 @@ it("shows a bell and an honest label ahead of plugin status", async () => {
   );
   expect(screen.queryByLabelText("Needs input")).toBeNull();
 });
+
+it("explains the completed unread check on hover", () => {
+  render(<ThreadStatusGlyph indicator="done-unread" />);
+  expect(screen.getByLabelText("Done").parentElement?.getAttribute("title")).toBe("Done");
+});

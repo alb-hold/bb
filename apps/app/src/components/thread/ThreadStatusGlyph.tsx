@@ -196,12 +196,14 @@ export function ThreadStatusGlyph({
       );
     case "done-unread":
       return (
+        <span title={statusLabel} className="inline-flex">
         <Icon
           name="Check"
           className={cn(SIDEBAR_SUCCESS_STATUS_COLOR_CLASS, iconSizeClass)}
           aria-label={statusLabel}
           aria-hidden={hideAccessibleLabel}
         />
+        </span>
       );
     case "archived":
       return (
