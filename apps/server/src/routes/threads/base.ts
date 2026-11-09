@@ -1,6 +1,5 @@
 import { nativeThreadExitRuntime } from "../../services/threads/thread-runtime-display.js";
 import { countUnarchivedThreadDescendants } from "../../services/threads/thread-archive.js";
-import { eq } from "drizzle-orm";
 import { listThreadCascades } from "../../services/threads/thread-cascade.js";
 import { cancelAbandonedProviderCreations } from "../../services/threads/thread-environment-providers.js";
 import {
@@ -14,7 +13,6 @@ import {
   getHost,
   getThread,
   getThreadExecutionOverride,
-  getThreadSpawner,
   isNativeTerminalThread,
   setThreadExecutionOverride,
   getThreadSectionById,
@@ -28,7 +26,6 @@ import {
   markThreadDeleted,
   listThreadDeletionTree,
   listPluginThreadMetadata,
-  queuedThreadMessages,
   listThreadAncestors,
   listThreadDescendants,
   searchThreadsWithPendingInteractionState,
@@ -108,10 +105,6 @@ import {
   applyThreadSessionOptionPatch,
   resolveThreadSessionOptionPatch,
 } from "../../services/threads/thread-session-options.js";
-import {
-  assertRequestedModelAllowed,
-  childThreadModel,
-} from "../../services/threads/child-thread-model.js";
 import { emitPluginThreadDeleted } from "../../services/plugins/plugin-thread-events.js";
 import { NotificationBuffer } from "../../services/lib/notification-buffer.js";
 import { getActiveTurnId } from "../../services/threads/thread-events.js";
@@ -764,26 +757,7 @@ export function registerThreadBaseRoutes(
       !nativeTerminal &&
       (hasParentChange || typeof payload.model === "string")
     ) {
-      const requestedModel =
-        payload.model === null
-          ? null
-          : typeof payload.model === "string"
-            ? payload.model
-            : getThreadExecutionOverride(deps.db, thread.id)?.modelOverride;
-      const parentThreadId = hasParentChange
-        ? payload.parentThreadId
-        : thread.parentThreadId;
-      const childScope = parentThreadId
-        ? "parent"
-        : getThreadSpawner(deps.db, thread.id) === null
-          ? null
-          : "spawner";
-      await assertRequestedModelAllowed(deps, {
-        childScope,
-        model: requestedModel,
-        providerId: thread.providerId,
-        sources: undefined,
-      });
+      await deps.providerRegistry.whenRegistrationsSettled();
     }
 
     const metadataUpdate: UpdateThreadInput = {};
@@ -808,7 +782,6 @@ export function registerThreadBaseRoutes(
     let updated: Thread | null;
     if (hasParentChange && !nativeTerminal) {
       await deps.providerRegistry.whenRegistrationsSettled();
-      const spawnerThreadId = getThreadSpawner(deps.db, thread.id);
       const models =
         "model" in payload || "reasoningLevel" in payload
           ? await loadThreadProviderModels(
@@ -853,66 +826,6 @@ export function registerThreadBaseRoutes(
                 fallbackModel: resolveFallbackModel(deps, current),
               })
             : existing;
-          const declaredChildModel = deps.providerRegistry.get(
-            current.providerId,
-          )?.childThreadModel;
-          const beforePolicy = childThreadModel({
-            parentThreadId: current.parentThreadId ?? spawnerThreadId,
-            declaredChildModel,
-          });
-          const afterPolicy = childThreadModel({
-            parentThreadId: payload.parentThreadId ?? spawnerThreadId,
-            declaredChildModel,
-          });
-          if (
-            afterPolicy !== null &&
-            next.modelOverride !== null &&
-            next.modelOverride !== afterPolicy
-          ) {
-            throw new ApiError(
-              400,
-              "child_model_conflict",
-              `Child threads for ${current.providerId} must use ${afterPolicy}; clear or choose the compatible model before changing the parent.`,
-              {
-                details: {
-                  providerId: current.providerId,
-                  requestedModel: next.modelOverride,
-                  childThreadModel: afterPolicy,
-                  reason: "parent",
-                },
-              },
-            );
-          }
-          if (afterPolicy !== null && afterPolicy !== beforePolicy) {
-            const conflictingQueuedRows = tx
-              .select({
-                id: queuedThreadMessages.id,
-                model: queuedThreadMessages.model,
-              })
-              .from(queuedThreadMessages)
-              .where(eq(queuedThreadMessages.threadId, current.id))
-              .all()
-              .filter((row) => row.model !== afterPolicy);
-            const conflictingQueuedMessageIds = conflictingQueuedRows.map(
-              (row) => row.id,
-            );
-            if (conflictingQueuedMessageIds.length > 0) {
-              throw new ApiError(
-                400,
-                "child_model_conflict",
-                "Changing the parent would change the model for accepted queued work.",
-                {
-                  details: {
-                    providerId: current.providerId,
-                    requestedModel: conflictingQueuedRows[0]!.model,
-                    childThreadModel: afterPolicy,
-                    reason: "parent",
-                    queuedMessageIds: conflictingQueuedMessageIds,
-                  },
-                },
-              );
-            }
-          }
           if (models) {
             setThreadExecutionOverride(tx, {
               threadId: current.id,

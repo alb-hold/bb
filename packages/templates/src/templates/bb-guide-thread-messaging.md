@@ -18,7 +18,7 @@ Messaging:
                                            shell runs `backticks` and $(...) before bb sees them
     --mode <mode>                          Message mode: steer (default), queue, or auto
     --model <model>                        Model override for this turn; a child thread
-                                           accepts only the provider's child model
+                                           uses the provider's child model by default
     --reasoning-level <level>              Reasoning level override
     --plan                                 Send the message as the provider's /plan action
     --send-at <when>                       Dispatch at an ISO 8601 timestamp or a duration from now (30s, 10m, 2h, 7d)
@@ -74,9 +74,8 @@ Ownership:
   Model and reasoning updates stay within the thread's current provider. BB
   validates them against that provider's current model catalog, applies them on
   the next turn, and keeps using them on later turns until changed.
-  An explicit model update on a child thread must match the provider's child
-  model; omit --model to keep its automatically selected model. Existing stored
-  overrides and queued messages remain readable and use that model when run.
+  Explicit child-thread models take precedence over the provider's child
+  default. Sticky updates and accepted queued messages keep their chosen model.
 
   bb thread regenerate-title [id]          Replace the title with a generated one
     --self                                 Target current thread

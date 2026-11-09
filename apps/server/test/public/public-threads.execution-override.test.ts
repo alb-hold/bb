@@ -191,7 +191,7 @@ describe("PATCH /threads/:id execution override", () => {
     });
   });
 
-  it("refuses a sticky model override that conflicts with child policy before writing", async () => {
+  it("allows an explicit sticky child model", async () => {
     await withTestHarness(async (harness) => {
       const { host, session, thread } = seedProviderThread(harness);
       const parent = seedThread(harness.deps, {
@@ -212,12 +212,9 @@ describe("PATCH /threads/:id execution override", () => {
         model: "claude-opus-5-5",
       });
 
-      expect(response.status).toBe(400);
-      expect(await readJson(response)).toMatchObject({
-        code: "child_model_conflict",
-      });
+      expect(response.status).toBe(200);
       expect(getThreadExecutionOverride(harness.db, thread.id)).toEqual({
-        modelOverride: null,
+        modelOverride: "claude-opus-5-5",
         reasoningLevelOverride: null,
       });
     });
@@ -274,13 +271,10 @@ describe("PATCH /threads/:id execution override", () => {
       releaseCatalog();
       const response = await modelPatch;
 
-      expect(response.status).toBe(400);
-      expect(await readJson(response)).toMatchObject({
-        code: "child_model_conflict",
-      });
+      expect(response.status).toBe(200);
       expect(getThread(harness.db, thread.id)?.parentThreadId).toBe(parent.id);
       expect(getThreadExecutionOverride(harness.db, thread.id)).toEqual({
-        modelOverride: null,
+        modelOverride: "claude-opus-5-5",
         reasoningLevelOverride: null,
       });
     });
@@ -345,14 +339,11 @@ describe("PATCH /threads/:id execution override", () => {
       releaseRouteCommit();
       const response = await parentPatch;
 
-      expect(response.status).toBe(400);
-      expect(await readJson(response)).toMatchObject({
-        code: "child_model_conflict",
-      });
-      expect(getThread(harness.db, thread.id)?.parentThreadId).toBeNull();
+      expect(response.status).toBe(200);
+      expect(getThread(harness.db, thread.id)?.parentThreadId).toBe(parent.id);
       expect(getThreadExecutionOverride(harness.db, thread.id)).toEqual({
         modelOverride: "claude-opus-5-5",
-        reasoningLevelOverride: null,
+        reasoningLevelOverride: "high",
       });
     });
   });
@@ -399,7 +390,7 @@ describe("PATCH /threads/:id execution override", () => {
     });
   });
 
-  it("refuses reparenting when the existing sticky model conflicts", async () => {
+  it("preserves an explicit sticky model when reparenting", async () => {
     await withTestHarness(async (harness) => {
       const { thread } = seedProviderThread(harness);
       const parent = seedThread(harness.deps, {
@@ -417,11 +408,8 @@ describe("PATCH /threads/:id execution override", () => {
         parentThreadId: parent.id,
       });
 
-      expect(response.status).toBe(400);
-      expect(await readJson(response)).toMatchObject({
-        code: "child_model_conflict",
-      });
-      expect(getThread(harness.db, thread.id)?.parentThreadId).toBeNull();
+      expect(response.status).toBe(200);
+      expect(getThread(harness.db, thread.id)?.parentThreadId).toBe(parent.id);
       expect(getThreadExecutionOverride(harness.db, thread.id)).toEqual({
         modelOverride: "claude-opus-5-5",
         reasoningLevelOverride: "high",
@@ -429,7 +417,7 @@ describe("PATCH /threads/:id execution override", () => {
     });
   });
 
-  it("refuses a new child policy that would substitute an accepted scheduled model", async () => {
+  it("preserves an accepted scheduled model when reparenting", async () => {
     await withTestHarness(async (harness) => {
       const { thread } = seedProviderThread(harness);
       const parent = seedThread(harness.deps, {
@@ -451,16 +439,8 @@ describe("PATCH /threads/:id execution override", () => {
         parentThreadId: parent.id,
       });
 
-      expect(response.status).toBe(400);
-      expect(await readJson(response)).toMatchObject({
-        code: "child_model_conflict",
-        details: {
-          reason: "parent",
-          requestedModel: "claude-opus-5-5",
-          queuedMessageIds: [queued.id],
-        },
-      });
-      expect(getThread(harness.db, thread.id)?.parentThreadId).toBeNull();
+      expect(response.status).toBe(200);
+      expect(getThread(harness.db, thread.id)?.parentThreadId).toBe(parent.id);
       expect(listQueuedThreadMessages(harness.db, thread.id)).toMatchObject([
         { id: queued.id, model: "claude-opus-5-5" },
       ]);
@@ -508,9 +488,10 @@ describe("PATCH /threads/:id execution override", () => {
     });
   });
 
-  it("rejects a conflicting queued-message model before inserting a queue row", async () => {
+  it("accepts an explicit queued child model", async () => {
     await withTestHarness(async (harness) => {
-      const { thread } = seedProviderThread(harness);
+      const { host, session, thread } = seedProviderThread(harness);
+      registerSendHostResponder(harness, host.id, session.id);
       const parent = seedThread(harness.deps, {
         projectId: thread.projectId,
         environmentId: thread.environmentId,
@@ -528,7 +509,6 @@ describe("PATCH /threads/:id execution override", () => {
         modelOverride: "claude-sonnet-5-5",
         reasoningLevelOverride: null,
       });
-      const eventCount = listEvents(harness.db, { threadId: child.id }).length;
 
       const response = await harness.app.request(
         `/api/v1/threads/${child.id}/queued-messages`,
@@ -542,25 +522,17 @@ describe("PATCH /threads/:id execution override", () => {
         },
       );
 
-      expect(response.status).toBe(400);
-      expect(await readJson(response)).toMatchObject({
-        code: "child_model_conflict",
-      });
-      expect(getThreadExecutionOverride(harness.db, child.id)).toEqual({
-        modelOverride: "claude-sonnet-5-5",
-        reasoningLevelOverride: null,
-      });
-      expect(listEvents(harness.db, { threadId: child.id })).toHaveLength(
-        eventCount,
-      );
-      expect(listQueuedThreadMessages(harness.db, child.id)).toEqual([]);
+      expect(response.status).toBe(201);
+      expect(listQueuedThreadMessages(harness.db, child.id)).toMatchObject([
+        { model: "claude-opus-5-5" },
+      ]);
       expect(
         listQueuedThreadCommands(harness, "turn.submit", child.id),
       ).toEqual([]);
     });
   });
 
-  it("rejects a conflicting edit before stopping the child thread", async () => {
+  it("validates edit prerequisites after accepting an explicit child model", async () => {
     await withTestHarness(async (harness) => {
       const { thread } = seedProviderThread(harness);
       const parent = seedThread(harness.deps, {
@@ -589,11 +561,11 @@ describe("PATCH /threads/:id execution override", () => {
         },
       );
 
-      expect(response.status).toBe(400);
+      expect(response.status).toBe(409);
       expect(await readJson(response)).toMatchObject({
-        code: "child_model_conflict",
+        code: "invalid_request",
+        message: "The thread has no editable user message",
       });
-      expect(getThread(harness.db, child.id)?.status).toBe("idle");
       expect(
         listQueuedThreadCommands(harness, "thread.stop", child.id),
       ).toEqual([]);
@@ -733,7 +705,7 @@ describe("PATCH /threads/:id execution override", () => {
       expect(profileResponse.status).toBe(200);
       expect(await readJson(profileResponse)).toMatchObject({
         overrides: { model: "claude-opus-5-5" },
-        nextTurn: { model: "claude-sonnet-5-5" },
+        nextTurn: { model: "claude-opus-5-5" },
       });
     });
   });
@@ -829,7 +801,7 @@ describe("POST /threads/:id/send execution override recovery", () => {
       expect(
         turnRequestEventDataSchema.parse(JSON.parse(tellRequest!.data))
           .execution.model,
-      ).toBe("claude-sonnet-5-5");
+      ).toBe("claude-opus-5-5");
       await vi.waitFor(() => {
         expect(
           childResponder.requests.some(
@@ -846,7 +818,7 @@ describe("POST /threads/:id/send execution override recovery", () => {
       );
       expect(tellCommand?.command).toMatchObject({
         type: "thread.start",
-        options: { model: "claude-sonnet-5-5" },
+        options: { model: "claude-opus-5-5" },
         input: expect.arrayContaining([
           expect.objectContaining({
             text: "ordinary tell",
@@ -1029,7 +1001,7 @@ describe("POST /threads/:id/send execution override recovery", () => {
         turnRequestEventDataSchema.parse(
           JSON.parse(partialSourcesRequest!.data),
         ).execution.model,
-      ).toBe("claude-sonnet-5-5");
+      ).toBe("claude-opus-5-5");
     });
   });
 });

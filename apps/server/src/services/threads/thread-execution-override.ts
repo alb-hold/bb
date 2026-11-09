@@ -3,8 +3,6 @@ import {
   getProjectExecutionDefaults,
   getThread,
   getThreadExecutionOverride,
-  getThreadSpawner,
-  isNativeTerminalThread,
   setThreadExecutionOverride,
   type ThreadExecutionOverride,
 } from "@bb/db";
@@ -21,10 +19,6 @@ import type { ProviderRegistryService } from "../providers/provider-registry.js"
 import { resolveSystemExecutionOptionsForValidation } from "../system/execution-options.js";
 import { getLastExecutionOptions } from "./thread-events.js";
 import { getSupportedReasoningLevelsForProvider } from "./thread-reasoning-policy.js";
-import {
-  assertRequestedModelAllowedForCurrentScope,
-  childThreadModel,
-} from "./child-thread-model.js";
 
 interface ThreadExecutionOverridePatch {
   model?: string | null;
@@ -59,7 +53,6 @@ export interface PreparedThreadModelOverrideRecovery {
   reasoningLevelSource: CallerExecutionInputSource | undefined;
   models: readonly AvailableModel[];
   fallbackModel: string | null;
-  spawnerThreadId: string | null;
 }
 
 export async function prepareThreadModelOverrideRecovery(
@@ -90,7 +83,6 @@ export async function prepareThreadModelOverrideRecovery(
     ...args,
     models,
     fallbackModel: resolveFallbackModel(deps, args.thread),
-    spawnerThreadId: getThreadSpawner(deps.db, args.thread.id),
   };
 }
 
@@ -103,15 +95,10 @@ export function applyPreparedThreadModelOverrideRecovery(
   if (prepared === null) return;
   const existing = getThreadExecutionOverride(db, thread.id);
   if (existing === null) return;
-  const requiredChildModel = childThreadModel({
-    parentThreadId: thread.parentThreadId ?? prepared.spawnerThreadId,
-    declaredChildModel: registry.get(thread.providerId)?.childThreadModel,
-  });
   const patch: ThreadExecutionOverridePatch = {};
   if (
     prepared.model !== undefined &&
     prepared.modelSource === "explicit" &&
-    (requiredChildModel === null || prepared.model === requiredChildModel) &&
     existing.modelOverride != null &&
     existing.modelOverride !== prepared.model
   ) {
@@ -229,21 +216,6 @@ export async function applyThreadExecutionOverride(
       if (!currentThread) {
         throw new ApiError(404, "thread_not_found", "Thread not found");
       }
-      if (
-        typeof patch.model === "string" &&
-        !isNativeTerminalThread(tx, thread.id)
-      ) {
-        assertRequestedModelAllowedForCurrentScope(
-          { db: tx, providerRegistry: deps.providerRegistry },
-          {
-            threadId: thread.id,
-            model: patch.model,
-            providerId: currentThread.providerId,
-            sources: undefined,
-            spawnerThreadId: getThreadSpawner(deps.db, thread.id),
-          },
-        );
-      }
       const existing = getThreadExecutionOverride(tx, thread.id) ?? {
         modelOverride: null,
         reasoningLevelOverride: null,
@@ -271,17 +243,10 @@ export async function recoverThreadModelOverride(
 ): Promise<void> {
   await deps.providerRegistry.whenRegistrationsSettled();
   const existing = getThreadExecutionOverride(deps.db, args.thread.id);
-  const requiredChildModel = childThreadModel({
-    parentThreadId:
-      args.thread.parentThreadId ?? getThreadSpawner(deps.db, args.thread.id),
-    declaredChildModel: deps.providerRegistry.get(args.thread.providerId)
-      ?.childThreadModel,
-  });
   const patch: ThreadExecutionOverridePatch = {};
   if (
     args.model !== undefined &&
     args.modelSource === "explicit" &&
-    (requiredChildModel === null || args.model === requiredChildModel) &&
     existing?.modelOverride != null &&
     existing.modelOverride !== args.model
   ) {

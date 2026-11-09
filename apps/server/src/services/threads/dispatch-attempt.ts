@@ -109,10 +109,6 @@ import {
 import type { TurnRequestRetryMarker } from "./thread-events.js";
 import { restoreInterruptedThreadStartupRequest } from "./thread-provisioning.js";
 import { markTurnTraceSpan } from "../system/turn-trace.js";
-import {
-  assertRequestedModelAllowed,
-  assertRequestedModelAllowedForCurrentScope,
-} from "./child-thread-model.js";
 
 export const pendingThreadStartContextSchema = z.object({
   environmentIntent: threadProvisionEnvironmentIntentSchema,
@@ -324,18 +320,6 @@ async function runDispatchAttempt(
   assertThreadHostAcceptsWork(deps.db, thread);
   const initialCurrentThread = getThread(deps.db, thread.id);
   if (initialCurrentThread?.parentThreadId !== thread.parentThreadId) {
-    if (
-      args.source.kind === "inline" &&
-      args.trigger === "user" &&
-      args.retryOf === undefined
-    ) {
-      assertRequestedModelAllowedForCurrentScope(deps, {
-        threadId: thread.id,
-        model: payload.model,
-        providerId: thread.providerId,
-        sources: payload.executionInputSources,
-      });
-    }
     return reattemptDispatchForThreadChange(
       deps,
       args,
@@ -348,17 +332,7 @@ async function runDispatchAttempt(
     args.trigger === "user" &&
     args.retryOf === undefined
   ) {
-    const currentChildScope = thread.parentThreadId
-      ? "parent"
-      : getThreadSpawner(deps.db, thread.id) === null
-        ? null
-        : "spawner";
-    await assertRequestedModelAllowed(deps, {
-      childScope: currentChildScope,
-      model: payload.model,
-      providerId: thread.providerId,
-      sources: payload.executionInputSources,
-    });
+    await deps.providerRegistry.whenRegistrationsSettled();
   }
   if (
     payload.mode === "queue-if-active" &&
@@ -663,10 +637,6 @@ async function runDispatchAttempt(
         author,
         originPluginId: args.originPluginId,
         claimed,
-        assertExplicitModel:
-          args.source.kind === "inline" &&
-          args.trigger === "user" &&
-          args.retryOf === undefined,
         execution,
         payload:
           senderThreadId === null
@@ -799,19 +769,6 @@ async function runDispatchAttempt(
           current.parentThreadId !== thread.parentThreadId &&
           !isStandaloneBuiltinClearCommand(resolvedPayload.input)
         ) {
-          if (
-            args.source.kind === "inline" &&
-            args.trigger === "user" &&
-            args.retryOf === undefined
-          ) {
-            assertRequestedModelAllowedForCurrentScope(deps, {
-              threadId: thread.id,
-              model: payload.model,
-              providerId: thread.providerId,
-              sources: payload.executionInputSources,
-              spawnerThreadId: getThreadSpawner(deps.db, thread.id),
-            });
-          }
           if (claimed !== null && !hasMessageDispatchHooks()) {
             throw createQueuedMessageClaimLostError();
           }
@@ -905,7 +862,6 @@ interface AdmitPendingThreadArgs {
   author: DispatchAuthor;
   originPluginId: string | null;
   claimed: ClaimedQueuedThreadMessageRow[] | null;
-  assertExplicitModel: boolean;
   execution: ResolvedThreadExecutionOptions;
   payload: SendMessageRequest & { inputGroups?: PromptInput[][] };
   respectManualStopPause: boolean;
@@ -951,15 +907,6 @@ async function admitPendingThread(
         const currentThread = getThread(tx, args.thread.id);
         if (!currentThread) throw new PendingThreadAdmissionLost();
         if (currentThread.parentThreadId !== args.thread.parentThreadId) {
-          if (args.assertExplicitModel) {
-            assertRequestedModelAllowedForCurrentScope(deps, {
-              threadId: args.thread.id,
-              model: args.payload.model,
-              providerId: args.thread.providerId,
-              sources: args.payload.executionInputSources,
-              spawnerThreadId: getThreadSpawner(deps.db, args.thread.id),
-            });
-          }
           throw new PendingThreadAdmissionLost(true);
         }
         if (args.claimed !== null && args.claimed.length > 0) {
