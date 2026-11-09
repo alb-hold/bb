@@ -38,14 +38,16 @@ export function SecondaryPanelActionsProvider({
   );
 }
 
-export function SecondaryPanelActions() {
+export function SecondaryPanelActions({ children }: { children?: ReactNode }) {
   const ref = useContext(ActionsRefContext);
   return (
     <div
       ref={ref}
       className="flex shrink-0 items-center gap-1 empty:hidden"
       data-secondary-panel-actions=""
-    />
+    >
+      {children}
+    </div>
   );
 }
 

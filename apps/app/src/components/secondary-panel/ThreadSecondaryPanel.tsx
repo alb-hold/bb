@@ -1,4 +1,5 @@
 import { SecondaryPanelActions, SecondaryPanelActionsProvider } from "./SecondaryPanelActions";
+import { TerminalSizeClaimSlot } from "@/components/thread/terminal/TerminalSizeClaimControl";
 import { ThreadInfoContentContext } from "@/components/secondary-panel/thread-info-registration";
 import {
   type CSSProperties,
@@ -808,7 +809,9 @@ function ThreadSecondaryPanelContent({
                 showNewTabButton: showNewTabControl,
               })}
             </div>
-            <SecondaryPanelActions />
+            <SecondaryPanelActions>
+              {renderAsDrawer ? <TerminalSizeClaimSlot /> : null}
+            </SecondaryPanelActions>
             {showOuterControls ||
             onRemoveSplit ||
             usesPaneArrangementControl ? (
