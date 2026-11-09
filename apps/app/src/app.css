@@ -1185,3 +1185,8 @@
 [data-sidebar="content"][data-more-below] {
   mask-image: linear-gradient(to bottom, black calc(100% - 16px), transparent);
 }
+
+:where([data-terminal-drawer] [data-app-terminal] [data-terminal-grid-cache-id]) > .xterm {
+  padding-left: 16px;
+  padding-right: 16px;
+}

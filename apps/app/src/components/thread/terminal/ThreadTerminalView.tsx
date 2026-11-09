@@ -1,3 +1,4 @@
+import { TerminalSizeClaimControl } from "./TerminalSizeClaimControl";
 import { releaseParkedTerminalRendering } from "./terminal-parked-rendering";
 import {
   markTerminalPerformance,
@@ -4296,19 +4297,7 @@ export function ThreadTerminalView({
         </div>
       ) : null}
       {terminalReady && !restoringSession && showFitControl ? (
-        <div
-          style={{ position: "absolute" }}
-          className={`right-2 z-10 flex items-center justify-end gap-2 rounded-md bg-sidebar px-2 py-1 text-xs shadow-sm ${connectionNoticeText === null ? "top-1" : "top-10"}`}
-        >
-          <button
-            type="button"
-            data-compact-touch="code"
-            className="shrink-0 rounded-md px-2 py-1 text-foreground hover:bg-state-hover"
-            onClick={() => claimSizeRef.current?.()}
-          >
-            Fit to this screen
-          </button>
-        </div>
+        <TerminalSizeClaimControl terminalId={session.id} touch={isTouchDevice} notice={connectionNoticeText !== null} onClaim={() => claimSizeRef.current?.()} />
       ) : null}
             <TerminalSearch
               terminalId={session.id}

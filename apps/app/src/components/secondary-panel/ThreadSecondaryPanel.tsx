@@ -767,7 +767,7 @@ function ThreadSecondaryPanelContent({
             className={cn(
               CHROME_ROW_CLASS,
               "min-w-0 justify-between gap-2",
-              renderAsDrawer ? "px-2" : "px-(--bb-panel-chrome-padding)",
+              renderAsDrawer ? "px-4" : "px-(--bb-panel-chrome-padding)",
               usesDesktopChrome && usesWindowChrome && MACOS_WINDOW_DRAG_CLASS,
               usesDesktopChrome &&
                 usesWindowChrome && [
@@ -1038,6 +1038,7 @@ function ThreadSecondaryPanelContent({
       inert={!isOpen}
       onFocusCapture={handlePanelFocusCapture}
       data-surface-tone="sidebar"
+      data-terminal-drawer={renderAsDrawer ? "" : undefined}
       style={
         !renderAsDrawer && !isSecondaryPanelResizing
           ? {
