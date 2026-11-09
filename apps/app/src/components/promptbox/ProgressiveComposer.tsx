@@ -1,3 +1,9 @@
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@bb/shared-ui/tooltip";
 import { createPortal } from "react-dom";
 import {
   useCallback,
@@ -531,25 +537,33 @@ export function ProgressiveComposer({
                           data-promptbox-plus-control=""
                           className="contents"
                         >
-                          <Button
-                            type="button"
-                            size="icon"
-                            variant="ghost"
-                            aria-label="Prompt actions"
-                            title="Prompt actions"
-                            className={cn(
-                              COARSE_POINTER_PROMPT_ICON_ACTION_BUTTON_CLASS,
-                              CHROME_SUBTLE_ICON_BUTTON_FOREGROUND_CLASS,
-                              "-ml-1.5",
-                            )}
-                            onMouseDown={(event) => event.preventDefault()}
-                            onClick={() => {
-                              pendingPlus.current = true;
-                              schedule();
-                            }}
-                          >
-                            <Icon name="Plus" className="size-4" />
-                          </Button>
+                          <TooltipProvider>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <Button
+                                  type="button"
+                                  size="icon"
+                                  variant="ghost"
+                                  aria-label="Prompt actions"
+                                  className={cn(
+                                    COARSE_POINTER_PROMPT_ICON_ACTION_BUTTON_CLASS,
+                                    CHROME_SUBTLE_ICON_BUTTON_FOREGROUND_CLASS,
+                                    "-ml-1.5",
+                                  )}
+                                  onMouseDown={(event) =>
+                                    event.preventDefault()
+                                  }
+                                  onClick={() => {
+                                    pendingPlus.current = true;
+                                    schedule();
+                                  }}
+                                >
+                                  <Icon name="Plus" className="size-4" />
+                                </Button>
+                              </TooltipTrigger>
+                              <TooltipContent>Prompt actions</TooltipContent>
+                            </Tooltip>
+                          </TooltipProvider>
                         </div>
                         <div
                           data-promptbox-execution-controls=""

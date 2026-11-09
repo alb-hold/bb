@@ -29,7 +29,12 @@ it("keeps the context trigger clear of compact footer siblings without changing 
   expect(triggerClasses).toContain("max-md:h-11");
   expect(triggerClasses).not.toContain("max-md:-ml-1");
   expect(trigger.textContent).toBe("10% context");
-  expect(trigger.querySelector("span")?.className).not.toContain("hidden");
+  expect(trigger.querySelector("span")?.className).toContain(
+    "whitespace-nowrap",
+  );
+  const suffix = screen.getByText("context", { selector: "span" });
+  expect(suffix.classList.contains("hidden")).toBe(true);
+  expect(suffix.classList.contains("md:inline")).toBe(true);
 });
 
 it("shows details when a snapshot arrives and removes them when only aggregate usage remains", () => {

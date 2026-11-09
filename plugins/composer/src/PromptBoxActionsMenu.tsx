@@ -1,3 +1,9 @@
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { useCallback, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -125,23 +131,29 @@ export function PromptBoxActionsMenu({
         }
       }}
     >
-      <DropdownMenuTrigger asChild>
-        <Button
-          ref={triggerRef}
-          type="button"
-          size="icon"
-          variant="ghost"
-          aria-label="Prompt actions"
-          title="Prompt actions"
-          className={cn(
-            COARSE_POINTER_PROMPT_ICON_ACTION_BUTTON_CLASS,
-            CHROME_SUBTLE_ICON_BUTTON_FOREGROUND_CLASS,
-            "-ml-1.5",
-          )}
-        >
-          <Icon name="Plus" className="size-4" />
-        </Button>
-      </DropdownMenuTrigger>
+      <TooltipProvider>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <DropdownMenuTrigger asChild>
+              <Button
+                ref={triggerRef}
+                type="button"
+                size="icon"
+                variant="ghost"
+                aria-label="Prompt actions"
+                className={cn(
+                  COARSE_POINTER_PROMPT_ICON_ACTION_BUTTON_CLASS,
+                  CHROME_SUBTLE_ICON_BUTTON_FOREGROUND_CLASS,
+                  "-ml-1.5",
+                )}
+              >
+                <Icon name="Plus" className="size-4" />
+              </Button>
+            </DropdownMenuTrigger>
+          </TooltipTrigger>
+          <TooltipContent>Prompt actions</TooltipContent>
+        </Tooltip>
+      </TooltipProvider>
       <DropdownMenuContent
         aria-label="Prompt actions"
         align="start"

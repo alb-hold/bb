@@ -48,7 +48,6 @@ function Key({
     <button
       type="button"
       aria-label={label}
-      title={label}
       aria-pressed={toggle ? active : undefined}
       disabled={disabled}
       onPointerDown={(event) => event.preventDefault()}
@@ -313,7 +312,7 @@ export function TerminalMobileControls({
         <Key
           {...keyProps}
           label="Enter"
-          className={compactKeys ? "w-11" : undefined}
+          className={compactKeys ? "w-11 px-0" : undefined}
           onPress={() => onInput("\r")}
         >
           Enter
@@ -323,14 +322,12 @@ export function TerminalMobileControls({
           label="More terminal keys"
           toggle
           active={expanded}
-          className={compactKeys ? "w-11 flex-col gap-0" : undefined}
+          className={compactKeys ? "w-11 flex-col gap-0 px-0" : undefined}
           onPress={() => setExpanded(!expanded)}
         >
           <Icon
-            name={compactKeys ? "Keyboard" : "MoreHorizontal"}
-            className={
-              compactKeys ? "h-3 w-5 [&_path:nth-child(2)]:hidden" : "size-4"
-            }
+            name="MoreHorizontal"
+            className={compactKeys ? "size-3" : "size-4"}
           />
           Keys
           <Icon

@@ -50,13 +50,13 @@ describe("TerminalMobileControls", () => {
           expect(key.classList.contains("shrink-0")).toBe(true);
         }
         expect(enter.textContent).toBe("Enter");
-        expect(enter.title).toBe("Enter");
-        expect(more.title).toBe("More terminal keys");
+        for (const key of [enter, more])
+          expect(key.classList.contains("px-0")).toBe(compact);
         expect(more.textContent).toBe("Keys");
 
         expect(
           more.querySelector("[data-icon]")?.getAttribute("data-icon"),
-        ).toBe(compact ? "Keyboard" : "MoreHorizontal");
+        ).toBe("MoreHorizontal");
         expect(more.querySelector('[data-icon="ChevronDown"]')).not.toBeNull();
         const scroller = document.querySelector(
           "[data-terminal-key-scroller]",
@@ -67,7 +67,7 @@ describe("TerminalMobileControls", () => {
         expect(more.getAttribute("aria-pressed")).toBe("true");
         expect(
           more.querySelector("[data-icon]")?.getAttribute("data-icon"),
-        ).toBe(compact ? "Keyboard" : "MoreHorizontal");
+        ).toBe("MoreHorizontal");
         expect(more.querySelector('[data-icon="ChevronUp"]')).not.toBeNull();
       } finally {
         clientWidth.mockRestore();
