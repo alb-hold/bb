@@ -29,3 +29,10 @@ it("reserves the home composer with labeled disabled controls", () => {
   );
   expect(shell?.classList.contains("rounded-xl")).toBe(true);
 });
+
+it("shows the loaded follow-up placeholder while composer controls are disabled", () => {
+  render(<ComposerPlaceholder state={{ kind: "loading", shape: "thread-compact" }} />);
+  expect(screen.getByText("Ask a follow-up")).toBeTruthy();
+  expect(screen.queryByText("Composer")).toBeNull();
+  expect(screen.getByRole("button").hasAttribute("disabled")).toBe(true);
+});
