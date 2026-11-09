@@ -1,3 +1,4 @@
+import { requireBridgeLaunchForProviderId } from "../system/provider-bridge-launch.js";
 import { requestThreadStorageDeletion } from "./thread-lifecycle.js";
 import { seedThreadSessionOptionSelections } from "./thread-session-options.js";
 import { assertEnvironmentPathAvailable } from "../environments/path-admission.js";
@@ -9,6 +10,7 @@ import {
   getEnvironment,
   getThread,
   getThreadSpawner,
+  setThreadExecutionOverride,
 } from "@bb/db";
 import { randomUUID } from "node:crypto";
 import {
@@ -52,10 +54,8 @@ import { configureThreadPlugins } from "./dispatch-hooks.js";
 import {
   createThreadRecord,
   getThreadSafe,
-  resolveRecordableSpawner,
   requirePublicProjectForThreadCreate,
 } from "./thread-create-helpers.js";
-import { assertRequestedModelAllowed } from "./child-thread-model.js";
 import {
   resolveStableThreadRequestEnvironment,
   type ResolvedStableThreadRequestEnvironment,
@@ -465,17 +465,23 @@ async function createPendingThreadAndAttemptFirstDispatch(
   });
   let execution: Awaited<ReturnType<typeof buildExecutionOptions>>;
   try {
-    if (args.nativeTerminal === null) {
-      await assertRequestedModelAllowed(deps, {
-        childScope: thread.parentThreadId
-          ? "parent"
-          : getThreadSpawner(deps.db, thread.id) === null
-            ? null
-            : "spawner",
-        model: args.request.model,
-        providerId: thread.providerId,
-        sources: args.request.executionInputSources,
+    if (
+      args.nativeTerminal === null &&
+      deps.providerRegistry.get(thread.providerId)?.childThreadModel != null &&
+      (thread.parentThreadId !== null ||
+        getThreadSpawner(deps.db, thread.id) !== null) &&
+      args.request.model != null &&
+      (args.request.executionInputSources === undefined ||
+        args.request.executionInputSources.model === "explicit")
+    ) {
+      setThreadExecutionOverride(deps.db, {
+        threadId: thread.id,
+        modelOverride: args.request.model,
+        reasoningLevelOverride: null,
       });
+    }
+    if (args.nativeTerminal === null) {
+      await deps.providerRegistry.whenRegistrationsSettled();
     }
     await configureThreadPlugins(
       thread,
@@ -763,6 +769,20 @@ export async function createThreadFromRequest(
     projectId: requestInput.projectId,
     providerId: requestInput.providerId,
   });
+  const provider = deps.providerRegistry.get(providerId);
+  if (provider === null) {
+    throw new ApiError(
+      400,
+      "invalid_provider",
+      `Unknown provider "${providerId}". Valid providers: ${deps.providerRegistry
+        .list()
+        .map((entry) => entry.info.id)
+        .join(", ")}.`,
+    );
+  }
+  if (requestInput.nativeTerminal !== true) {
+    requireBridgeLaunchForProviderId(deps, providerId);
+  }
   const {
     originKind: _requestedOriginKind,
     parentThreadId: _requestedParentThreadId,
@@ -893,20 +913,7 @@ export async function createThreadFromRequest(
       : null;
 
   if (nativeTerminalProvider === null) {
-    const recordableSpawner = resolveRecordableSpawner(deps, {
-      projectId: request.projectId,
-      spawnedByThreadId: request.spawnedByThreadId,
-    });
-    await assertRequestedModelAllowed(deps, {
-      childScope: request.parentThreadId
-        ? "parent"
-        : recordableSpawner === null
-          ? null
-          : "spawner",
-      model: request.model,
-      providerId: request.providerId,
-      sources: request.executionInputSources,
-    });
+    await deps.providerRegistry.whenRegistrationsSettled();
   }
 
   const { environmentId, environmentIntent } =
