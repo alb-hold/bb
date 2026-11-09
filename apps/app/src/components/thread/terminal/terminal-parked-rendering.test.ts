@@ -48,10 +48,14 @@ it("releases parked DOM rows and restores the same buffer and grid without resiz
     expect(claims()).toHaveLength(1);
     const originalFont = terminal.options.fontFamily;
     const fontChanges = vi.spyOn(terminal.options, "fontFamily", "set");
+    const scrollbars = Array.from(host.querySelectorAll<HTMLElement>(".xterm-scrollbar"));
+    expect(scrollbars.length).toBeGreaterThan(0);
+    const scrollbarDisplays = scrollbars.map((scrollbar) => scrollbar.style.display);
     for (let cycle = 0; cycle < 3; cycle++) {
       host.style.display = "none";
       transport.setParked(true);
-      releaseParkedTerminalRendering(terminal);
+      const restoreRendering = releaseParkedTerminalRendering(terminal);
+      expect(scrollbars.every((scrollbar) => scrollbar.style.display === "none")).toBe(true);
       expect(rendered()).toBe("");
       expect(terminal.buffer.active.getLine(0)?.translateToString(true)).toBe("retained output");
       expect([terminal.cols, terminal.rows]).toEqual([44, 12]);
@@ -60,6 +64,8 @@ it("releases parked DOM rows and restores the same buffer and grid without resiz
       expect(resized).not.toHaveBeenCalled();
       expect(claims()).toHaveLength(1);
       host.style.display = "";
+      restoreRendering();
+      expect(scrollbars.map((scrollbar) => scrollbar.style.display)).toEqual(scrollbarDisplays);
       transport.setParked(false);
       transport.setVisible(true);
       terminal.refresh(0, terminal.rows - 1);

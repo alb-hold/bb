@@ -1999,6 +1999,7 @@ export function ThreadTerminalView({
     let flushHiddenOutput = () => {};
     let parkedOutputTimer: ReturnType<typeof setTimeout> | null = null;
     let parkedOutputDraining = false;
+    let restoreParkedRendering: (() => void) | null = null;
     const reportDocumentVisibility = () => {
       if (
         document.visibilityState !== "visible" ||
@@ -3535,9 +3536,13 @@ export function ThreadTerminalView({
           { detail: { terminalId: session.id } },
         );
         activeTransport.setParked(nextParked);
+        if (!nextParked) {
+          restoreParkedRendering?.();
+          restoreParkedRendering = null;
+        }
         webglVisibilityRef.current?.sync();
         if (nextParked) {
-          releaseParkedTerminalRendering(activeTerminal);
+          restoreParkedRendering ??= releaseParkedTerminalRendering(activeTerminal);
           scheduleParkedOutput();
         } else {
           activeTerminal.refresh(0, activeTerminal.rows - 1);
@@ -3918,6 +3923,7 @@ export function ThreadTerminalView({
     return () => {
       disposed = true;
       if (parkedOutputTimer !== null) clearTimeout(parkedOutputTimer);
+      restoreParkedRendering = null;
       hiddenOutput.clear();
       flushHiddenOutput = () => {};
       clearScreenLoadingPreview();
