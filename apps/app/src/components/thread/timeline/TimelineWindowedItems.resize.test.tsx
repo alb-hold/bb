@@ -54,7 +54,11 @@ it.each([
     const height = (element: Element): number => {
       if (!(element instanceof HTMLElement)) return 0;
       if (element.dataset.timelineRowId !== undefined) {
-        const effectiveWidth = Number.parseFloat(element.style.width) || width;
+        const child = element.firstElementChild;
+        const effectiveWidth =
+          child instanceof HTMLElement
+            ? Number.parseFloat(child.style.width) || width
+            : width;
         return (
           69 +
           (element.dataset.timelineRowId === "row-67" &&
@@ -97,7 +101,8 @@ it.each([
         let top = -scrollTop;
         let current: Element | null = this;
         while (current !== null && current !== area) {
-          const siblings = current.parentElement?.children;
+          const siblings: HTMLCollection | undefined =
+            current.parentElement?.children;
           const gap =
             Number.parseFloat(current.parentElement?.style.gap ?? "") || 0;
           for (const sibling of siblings ?? []) {
@@ -166,7 +171,12 @@ it.each([
             {
               target: above,
               borderBoxSize: [{ inlineSize: width, blockSize: height(above) }],
-            } as ResizeObserverEntry,
+              contentBoxSize: [{ inlineSize: width, blockSize: height(above) }],
+              devicePixelContentBoxSize: [
+                { inlineSize: width, blockSize: height(above) },
+              ],
+              contentRect: new DOMRect(0, 0, width, height(above)),
+            },
           ],
           observer,
         );
@@ -197,10 +207,21 @@ it.each([
       expect(keeper.isAttached()).toBe(attached);
       if (widthDriven) {
         expect(above.getBoundingClientRect().height).toBe(69);
+        expect(above.getBoundingClientRect().width).toBe(480);
         expect(anchor.getBoundingClientRect().width).toBe(480);
+        const retainedContent = above.firstElementChild;
+
+        for (const nextWidth of [960, 640, 480]) {
+          width = nextWidth;
+          emit();
+          expect(above.getBoundingClientRect().width).toBe(nextWidth);
+          expect(above.getBoundingClientRect().height).toBe(69);
+          expect(anchor.getBoundingClientRect().top).toBe(before.top);
+        }
 
         act(() => keeper.scrollTo(area.scrollTop - 500, "instant"));
 
+        expect(above.firstElementChild).toBe(retainedContent);
         expect(above.getBoundingClientRect().top).toBeGreaterThan(0);
         expect(above.getBoundingClientRect().width).toBe(480);
         expect(above.getBoundingClientRect().height).toBe(93);

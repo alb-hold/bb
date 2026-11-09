@@ -658,18 +658,31 @@ export function TimelineWindowedItems({
       ? overscanWidths.get(itemKeys[index] ?? "")
       : undefined;
     children.push(
-      (typeof gap !== "number" || overscanWidth !== undefined) &&
-        isValidElement<{ style?: CSSProperties }>(item)
+      (typeof gap !== "number" || windowingEnabled) &&
+        isValidElement<{ style?: CSSProperties; children?: ReactNode }>(item)
         ? cloneElement(item, {
             style: {
               ...item.props.style,
               ...(typeof gap !== "number"
                 ? { marginTop: gapBefore(index) }
                 : {}),
-              ...(overscanWidth !== undefined
-                ? { width: overscanWidth, flexShrink: 0 }
-                : {}),
+              ...(overscanWidth !== undefined ? { overflowX: "clip" } : {}),
             },
+            ...(windowingEnabled
+              ? {
+                  children: (
+                    <div
+                      style={
+                        overscanWidth === undefined
+                          ? undefined
+                          : { width: overscanWidth }
+                      }
+                    >
+                      {item.props.children}
+                    </div>
+                  ),
+                }
+              : {}),
           })
         : item,
     );
