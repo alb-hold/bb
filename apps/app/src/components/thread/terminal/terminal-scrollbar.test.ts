@@ -26,6 +26,16 @@ it("hides an empty terminal thumb, shows scrollback, and hides it after clearing
   active.baseY = 3;
   render();
   expect(element.dataset.scrollable).toBe("true");
+  const observer = new MutationObserver(() => {});
+  observer.observe(element, { attributes: true, attributeFilter: ["data-scrollable"] });
+  try {
+    render();
+    scroll();
+    render();
+    expect(observer.takeRecords()).toHaveLength(0);
+  } finally {
+    observer.disconnect();
+  }
   active.baseY = 0;
   scroll();
   expect(element.dataset.scrollable).toBe("false");
