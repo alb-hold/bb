@@ -610,7 +610,10 @@ export function ThreadTableOfContents({
     const onScroll = () => {
       setScrolling(true);
       if (scrollTimeout !== null) window.clearTimeout(scrollTimeout);
-      scrollTimeout = window.setTimeout(() => setScrolling(false), TOC_ACTIVE_UPDATE_IDLE_MS);
+      scrollTimeout = window.setTimeout(
+        () => setScrolling(false),
+        TOC_ACTIVE_UPDATE_IDLE_MS,
+      );
       scheduleActiveItemsUpdate();
     };
     scheduleActiveItemsUpdate();
@@ -744,10 +747,8 @@ export function ThreadTableOfContents({
                 key={item.id}
                 className={cn(
                   "h-[3px] shrink-0 rounded-full transition-colors duration-150 group-hover/toc:bg-foreground group-focus-within/toc:bg-foreground",
-                  scrolling ? "bg-foreground" : "bg-border/30",
-                  item.id === activeUserId
-                    ? "w-5"
-                    : "w-3",
+                  scrolling ? "bg-foreground" : "bg-muted-foreground/50",
+                  item.id === activeUserId ? "w-5" : "w-3",
                 )}
               />
             ))}

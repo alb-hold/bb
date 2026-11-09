@@ -48,6 +48,7 @@ function Key({
     <button
       type="button"
       aria-label={label}
+      title={label}
       aria-pressed={toggle ? active : undefined}
       disabled={disabled}
       onPointerDown={(event) => event.preventDefault()}
@@ -315,25 +316,26 @@ export function TerminalMobileControls({
           className={compactKeys ? "w-11" : undefined}
           onPress={() => onInput("\r")}
         >
-          {compactKeys ? (
-            <Icon name="CornerDownLeft" className="size-4" />
-          ) : (
-            "Enter"
-          )}
+          Enter
         </Key>
         <Key
           {...keyProps}
           label="More terminal keys"
           toggle
           active={expanded}
-          className={compactKeys ? "w-11" : undefined}
+          className={compactKeys ? "w-11 flex-col gap-0" : undefined}
           onPress={() => setExpanded(!expanded)}
         >
-          <Icon name={compactKeys ? "Keyboard" : "MoreHorizontal"} className="size-4" />
-          {compactKeys ? null : "Keys"}
+          <Icon
+            name={compactKeys ? "Keyboard" : "MoreHorizontal"}
+            className={
+              compactKeys ? "h-3 w-5 [&_path:nth-child(2)]:hidden" : "size-4"
+            }
+          />
+          Keys
           <Icon
             name={expanded ? "ChevronUp" : "ChevronDown"}
-            className="size-3"
+            className={compactKeys ? "hidden" : "size-3"}
           />
         </Key>
       </div>

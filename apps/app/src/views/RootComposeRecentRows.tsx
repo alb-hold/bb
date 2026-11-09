@@ -88,7 +88,17 @@ export function RecentThreadProviderMark({
         depth > 0 && "opacity-60",
       )}
     >
-      {ProviderMark === undefined ? null : <ProviderMark className="size-4" />}
+      {thread.nativeTerminal || thread.environmentIsWorktree ? (
+        <ThreadModeGlyph
+          nativeTerminal={thread.nativeTerminal === true}
+          isWorktree={
+            thread.environmentIsWorktree === true &&
+            thread.nativeTerminal !== true
+          }
+        />
+      ) : ProviderMark === undefined ? null : (
+        <ProviderMark className="size-4" />
+      )}
     </span>
   );
 }
@@ -117,7 +127,6 @@ export function RecentThreadRowContent({
     <>
       <span className="min-w-0 flex-1 space-y-0.5">
         <span className="flex min-w-0 items-center gap-1.5">
-          <span className="inline-flex size-4 shrink-0 text-foreground" data-thread-title-mode=""><ThreadModeGlyph nativeTerminal={thread.nativeTerminal === true} isWorktree={thread.environmentIsWorktree === true && thread.nativeTerminal !== true} /></span>
           <ThreadTitle
             title={getThreadDisplayTitle(thread)}
             className={cn("font-normal", COARSE_POINTER_TEXT_BASE_CLASS)}
@@ -125,7 +134,7 @@ export function RecentThreadRowContent({
         </span>
         <span
           className={cn(
-            "flex min-w-0 items-center gap-1.5 pl-5.5 text-subtle-foreground text-xs leading-4",
+            "flex min-w-0 items-center gap-1.5 text-subtle-foreground text-xs leading-4",
           )}
           title={metadataText}
         >

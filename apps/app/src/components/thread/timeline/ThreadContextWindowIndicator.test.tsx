@@ -28,7 +28,7 @@ it("keeps the context trigger clear of compact footer siblings without changing 
   expect(triggerClasses).toContain("max-md:-mr-3");
   expect(triggerClasses).toContain("max-md:h-11");
   expect(triggerClasses).not.toContain("max-md:-ml-1");
-  expect(trigger.textContent).toBe("10%");
+  expect(trigger.textContent).toBe("10% context");
   expect(trigger.querySelector("span")?.className).not.toContain("hidden");
 });
 
