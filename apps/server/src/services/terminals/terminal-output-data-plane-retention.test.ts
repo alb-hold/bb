@@ -650,13 +650,36 @@ describe("terminal output retained from the data plane", () => {
     }
   });
 
-  it("serves ten thousand small chunks within one second on a busy loop", async () => {
+  it("serves ten thousand small chunks with bounded replay work and event-loop progress", async () => {
     const fixture = await setup();
     const socket = new FakeSocket();
-    const chunks = Array.from({ length: 10_000 }, (_, seq) => ({
-      seq,
-      dataBase64: Buffer.from(`line ${seq}\r\n`).toString("base64"),
-    }));
+    const chunkCount = 10_000;
+    let active = true;
+    let workClock = 0;
+    let reads = 0;
+    let sliceReads = 0;
+    let replayRequests = 0;
+    const slices: number[] = [];
+    const chunks = Array.from({ length: chunkCount }, (_, seq) => {
+      const dataBase64 = Buffer.from(`line ${seq}\r\n`).toString("base64");
+      return {
+        seq,
+        get dataBase64() {
+          if (active) {
+            reads += 1;
+            sliceReads += 1;
+            workClock += 0.01;
+            if (reads > chunkCount * 4 * Math.max(1, replayRequests))
+              throw new Error("Replay exceeded its linear input-read budget");
+          }
+          return dataBase64;
+        },
+      };
+    });
+    const replayClock = vi
+      .spyOn(performance, "now")
+      .mockImplementation(() => workClock);
+    const serialize = vi.spyOn(JSON, "stringify");
     const queueErrors: unknown[] = [];
     const replays: Promise<void>[] = [];
     const queue = createDaemonSocketMessageQueue<() => Promise<void>>({
@@ -669,6 +692,7 @@ describe("terminal output retained from the data plane", () => {
       send(data: string) {
         const message = JSON.parse(data);
         if (message.type !== "terminal.attach") return;
+        replayRequests += 1;
         queue.enqueue(() => {
           const replay = Promise.resolve(
             fixture.terminalSessions.handleDaemonTerminalMessage({
@@ -689,12 +713,14 @@ describe("terminal output retained from the data plane", () => {
         });
       },
     });
-    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    let eventLoopTurns = 0;
     replayYieldControl.intercept = async () => {
-      await vi.advanceTimersByTimeAsync(60);
+      slices.push(sliceReads);
+      sliceReads = 0;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      eventLoopTurns += 1;
     };
     try {
-      const started = Date.now();
       fixture.terminalSessions.attachBrowserTerminal({
         outputAcks: false,
         resizeAcks: false,
@@ -707,8 +733,31 @@ describe("terminal output retained from the data plane", () => {
       );
       expect(response.status).toBe(200);
       const output = await response.json();
+      active = false;
+      slices.push(sliceReads);
+      const serializationCalls = serialize.mock.calls.length;
+      const outputSerializationCalls = serialize.mock.calls.filter(
+        ([message]) => message?.type === "output",
+      ).length;
+      serialize.mockRestore();
+      expect(replayRequests).toBeGreaterThanOrEqual(1);
+      expect(replayRequests).toBeLessThanOrEqual(2);
+      expect(reads).toBeLessThanOrEqual(chunkCount * 4 * replayRequests);
+      expect(Math.max(...slices)).toBeLessThanOrEqual(2_100);
+      expect(eventLoopTurns).toBeGreaterThanOrEqual(10);
+      expect(eventLoopTurns).toBeLessThanOrEqual(64 * replayRequests);
+      expect(serializationCalls).toBeLessThanOrEqual(chunkCount * 2 + 32);
+      expect(outputSerializationCalls).toBe(chunkCount);
+      process.stdout.write(
+        `${JSON.stringify({ replayRequests, reads, maxSliceReads: Math.max(...slices), eventLoopTurns, serializationCalls, outputSerializationCalls })}\n`,
+      );
       expect(textFrom(output.chunks)).toContain("line 9999\r\n");
-      expect(Date.now() - started).toBeLessThan(1_000);
+      expect(
+        socket.sent
+          .map((data) => JSON.parse(data))
+          .filter((message) => message.type === "output")
+          .map((message) => message.chunk),
+      ).toEqual(chunks);
       expect(socket.sent.map((data) => JSON.parse(data))).toContainEqual(
         expect.objectContaining({ type: "attached", nextSeq: chunks.length }),
       );
@@ -731,12 +780,14 @@ describe("terminal output retained from the data plane", () => {
       });
       expect(queueErrors).toEqual([]);
     } finally {
+      active = false;
+      replayClock.mockRestore();
+      serialize.mockRestore();
       replayYieldControl.intercept = null;
       await Promise.all(replays);
       queue.close();
       fixture.child.shutdown();
       fixture.hub.unregisterDaemon(fixture.session.id);
-      vi.useRealTimers();
     }
   });
 
