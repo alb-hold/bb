@@ -312,7 +312,7 @@ export function TerminalMobileControls({
         <Key
           {...keyProps}
           label="Enter"
-          className={compactKeys ? "w-11 px-0" : undefined}
+          className={compactKeys ? "w-11 px-1.5 text-2xs" : undefined}
           onPress={() => onInput("\r")}
         >
           Enter
@@ -322,12 +322,12 @@ export function TerminalMobileControls({
           label="More terminal keys"
           toggle
           active={expanded}
-          className={compactKeys ? "w-11 flex-col gap-0 px-0" : undefined}
+          className={compactKeys ? "w-11 px-1.5 text-2xs" : undefined}
           onPress={() => setExpanded(!expanded)}
         >
           <Icon
             name="MoreHorizontal"
-            className={compactKeys ? "size-3" : "size-4"}
+            className={compactKeys ? "hidden" : "size-4"}
           />
           Keys
           <Icon

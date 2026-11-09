@@ -51,7 +51,7 @@ describe("TerminalMobileControls", () => {
         }
         expect(enter.textContent).toBe("Enter");
         for (const key of [enter, more])
-          expect(key.classList.contains("px-0")).toBe(compact);
+          expect(key.classList.contains("px-1.5")).toBe(compact);
         expect(more.textContent).toBe("Keys");
 
         expect(
