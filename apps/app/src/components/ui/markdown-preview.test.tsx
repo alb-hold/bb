@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
 
 import { defaultExperiments } from "@bb/domain";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { appQueryClient } from "@/lib/app-query-client";
 import { systemConfigQueryKey } from "@/hooks/queries/query-keys";
 import { ApplicationUrlDialog } from "@/components/ApplicationUrlDialog";
@@ -127,7 +129,37 @@ function requireElement(container: ParentNode, selector: string): Element {
 }
 
 describe("MarkdownPreview", () => {
-  it("insets only the first code line beside the action hit areas", () => {
+  it("keeps the first two code lines at the same minimum height and reserves a separate controls lane", () => {
+    const stylesheet = document.createElement("style");
+    stylesheet.textContent = readFileSync(
+      resolve("src/components/ui/markdown-code-highlight.css"),
+      "utf8",
+    );
+    document.head.append(stylesheet);
+    try {
+      expect(stylesheet.sheet?.cssRules.length).toBeGreaterThan(0);
+      const { container } = render(
+        <MarkdownPreview
+          content={"```sh\nPASS src/http/routes.test.ts\nsecond line\n```"}
+        />,
+      );
+      const lines = container.querySelectorAll(".sh__line");
+      expect(lines).toHaveLength(2);
+      expect(getComputedStyle(lines[0]!).minHeight).toBe(
+        getComputedStyle(lines[1]!).minHeight,
+      );
+      const viewport = container.querySelector("[data-code-card-content]")!;
+      expect(viewport.classList.contains("mr-44")).toBe(true);
+      expect(viewport.classList.contains("max-md:pointer-coarse:mr-0")).toBe(
+        true,
+      );
+      expect(viewport.classList.contains("overflow-x-auto")).toBe(true);
+    } finally {
+      stylesheet.remove();
+    }
+  });
+
+  it("keeps desktop controls beside the scroll viewport and phone controls in flow", () => {
     const { container } = render(
       <MarkdownPreview content={"```ts\nconst answer = 42;\n```"} />,
     );

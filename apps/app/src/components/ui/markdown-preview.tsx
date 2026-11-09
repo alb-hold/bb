@@ -772,7 +772,7 @@ function MarkdownCodeBlock({
   return (
     <div
       data-code-card=""
-      className="relative my-2 overflow-visible rounded-md border border-border bg-surface-recessed"
+      className="relative my-2 min-h-11 overflow-visible rounded-md border border-border bg-surface-recessed"
     >
       <div
         data-clipboard-ignore
@@ -818,7 +818,7 @@ function MarkdownCodeBlock({
         data-code-card-content=""
         data-code-wrap={softWrap ? "true" : "false"}
         className={cn(
-          "bb-code-highlight px-3 pb-3 pt-2",
+          "bb-code-highlight mr-44 px-3 pb-3 pt-2 max-md:pointer-coarse:mr-0",
           softWrap
             ? "whitespace-pre-wrap [overflow-wrap:anywhere]"
             : "overflow-x-auto",

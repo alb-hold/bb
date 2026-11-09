@@ -2629,14 +2629,29 @@ function TimelineRowsList({
   const itemGaps = useMemo(() => {
     const gaps = items.map((current, index) => {
       const next = items[index + 1];
-      return current.kind === "row" &&
-        next?.kind === "row" &&
+      if (current.kind !== "row" || next?.kind !== "row") return 8;
+      const previousGap =
         DISCLOSURE_ROW_KINDS.has(current.row.kind) &&
         DISCLOSURE_ROW_KINDS.has(next.row.kind)
-        ? 4
-        : 8;
+          ? 4
+          : 8;
+      if (
+        current.row.turnId !== next.row.turnId ||
+        (current.row.kind === "conversation" && current.row.role === "user") ||
+        (next.row.kind === "conversation" && next.row.role === "user")
+      )
+        return previousGap;
+      const currentIsDisclosure =
+        DISCLOSURE_ROW_KINDS.has(current.row.kind) ||
+        (current.row.kind === "turn" && current.row.status !== "pending");
+      const nextIsDisclosure =
+        DISCLOSURE_ROW_KINDS.has(next.row.kind) ||
+        (next.row.kind === "turn" && next.row.status !== "pending");
+      return currentIsDisclosure || nextIsDisclosure
+        ? previousGap / 2
+        : previousGap;
     });
-    return gaps.includes(4) ? gaps : 8;
+    return gaps.some((gap) => gap !== 8) ? gaps : 8;
   }, [items]);
   const estimateItemHeight = useCallback(
     (index: number) => {
