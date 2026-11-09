@@ -566,6 +566,7 @@ The mobile app is now a WebView shell around the bb web app. One implementation 
 
 ### Agent providers
 
+- Claude Code offers Fable 5.2.
 - Claude Code offers Fable 5.1.
 - The model picker shows the models that Pi gives you access to.
 - bb releases a restorable provider session after 30 idle minutes. This is no longer an experiment.
