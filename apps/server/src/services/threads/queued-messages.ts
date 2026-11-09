@@ -79,6 +79,10 @@ import {
   resolveMessageSenderThreadId,
 } from "./thread-send.js";
 import {
+  assertRequestedModelAllowed,
+  assertRequestedModelAllowedForCurrentScope,
+} from "./child-thread-model.js";
+import {
   goneThreadEnvironmentDetails,
   threadEnvironmentUnavailableDetails,
   throwThreadEnvironmentUnavailable,
@@ -216,7 +220,17 @@ export async function createQueuedMessageForThread(
   args: CreateQueuedMessageForThreadArgs,
 ): Promise<ThreadQueuedMessage> {
   const { payload, thread } = args;
-  await deps.providerRegistry.whenRegistrationsSettled();
+  await assertRequestedModelAllowed(deps, {
+    threadId: thread.id,
+    childScope: thread.parentThreadId
+      ? "parent"
+      : getThreadSpawner(deps.db, thread.id) === null
+        ? null
+        : "spawner",
+    model: payload.model,
+    providerId: thread.providerId,
+    sources: payload.executionInputSources,
+  });
   ensureThreadQueueIsWritable(thread);
   assertNotNativeTerminalThread(deps.db, thread.id);
   const input = await resolvePromptAttachmentReferences({
@@ -272,6 +286,16 @@ export async function createQueuedMessageForThread(
           throw new ApiError(404, "thread_not_found", "Thread not found");
         }
         if (currentThread.parentThreadId !== thread.parentThreadId) {
+          assertRequestedModelAllowedForCurrentScope(
+            { db: tx, providerRegistry: deps.providerRegistry },
+            {
+              threadId: thread.id,
+              model: payload.model,
+              providerId: thread.providerId,
+              sources: payload.executionInputSources,
+              spawnerThreadId: getThreadSpawner(deps.db, thread.id),
+            },
+          );
           throw new ApiError(
             409,
             "thread_scope_changed",
@@ -361,6 +385,15 @@ export async function resolveQueuedMessageExecutionChange(
     return null;
   }
   const current = toThreadQueuedMessage(row);
+  if (request.model !== undefined) {
+    await deps.providerRegistry.whenRegistrationsSettled();
+    assertRequestedModelAllowedForCurrentScope(deps, {
+      threadId: args.thread.id,
+      model: request.model,
+      providerId: args.thread.providerId,
+      sources: undefined,
+    });
+  }
   const resolved = await buildExecutionOptions(
     deps,
     {

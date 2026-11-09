@@ -1182,7 +1182,7 @@ describe("the requested queue drain", () => {
       await recovery;
       expect(
         getThreadExecutionOverride(harness.db, thread.id)?.modelOverride,
-      ).toBe("claude-opus-5-5");
+      ).toBe("claude-sonnet-5-5");
 
       const queued = seedQueuedMessage(harness.deps, {
         content: textInput("legacy queued request after registration"),
@@ -1199,10 +1199,10 @@ describe("the requested queue drain", () => {
       const dispatched = turnRequestEventDataSchema.parse(
         JSON.parse(turnRequests(harness, thread.id).at(-1)!.data),
       );
-      expect(dispatched.execution.model).toBe("claude-opus-5-5");
+      expect(dispatched.execution.model).toBe("claude-sonnet-5-5");
       expect(
         getThreadExecutionOverride(harness.db, thread.id)?.modelOverride,
-      ).toBe("claude-opus-5-5");
+      ).toBe("claude-sonnet-5-5");
     });
   });
 
@@ -1285,7 +1285,7 @@ describe("the requested queue drain", () => {
       expect(
         turnRequestEventDataSchema.parse(JSON.parse(requested!.data)).execution
           .model,
-      ).toBe("claude-opus-5-5");
+      ).toBe("claude-sonnet-5-5");
     });
   });
 

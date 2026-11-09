@@ -1979,7 +1979,7 @@ describe("concurrent idle dispatch regression", () => {
     });
   });
 
-  it("preserves a claimed legacy model when reparenting", async () => {
+  it("keeps a claimed legacy row on the old scope when a new child policy is refused", async () => {
     await withTestHarness(async (harness) => {
       const { session, thread } = seedProviderThreadFixture({
         harness,
@@ -2026,14 +2026,16 @@ describe("concurrent idle dispatch regression", () => {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ parentThreadId: parent.id }),
       });
-      expect(patch.status).toBe(200);
-      release();
-      await expect(dispatch).rejects.toMatchObject({ status: 409 });
-      await sendQueuedMessageNow(harness.deps, {
-        mode: "auto",
-        queuedMessageId: queued.id,
-        threadId: thread.id,
+      expect(patch.status).toBe(400);
+      expect(await patch.json()).toMatchObject({
+        code: "child_model_conflict",
+        details: {
+          queuedMessageIds: [queued.id],
+          requestedModel: "claude-opus-5-5",
+        },
       });
+      release();
+      await dispatch;
 
       expect(getQueuedThreadMessage(harness.db, queued.id)).toBeNull();
       expect(
@@ -2193,7 +2195,7 @@ describe("concurrent idle dispatch regression", () => {
       expect(getQueuedThreadMessage(harness.db, queued.id)).toBeNull();
       expect(
         threadEvents.getLastExecutionOptions(harness.deps, child.id),
-      ).toMatchObject({ model: "claude-opus-5-5" });
+      ).toMatchObject({ model: "claude-sonnet-5-5" });
       expect(
         listQueuedThreadCommands(harness, "turn.submit", child.id),
       ).toHaveLength(1);

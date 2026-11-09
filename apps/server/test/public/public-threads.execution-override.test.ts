@@ -83,6 +83,7 @@ function registerSendHostResponder(
               models: [
                 availableModelFixture({ model: "claude-opus-5-5" }),
                 availableModelFixture({ model: "claude-sonnet-5-5" }),
+                availableModelFixture({ model: "claude-opus-4-8" }),
               ],
               selectedOnlyModels: [],
             },
@@ -130,6 +131,96 @@ function patchThread(harness: TestAppHarness, threadId: string, body: unknown) {
 }
 
 describe("PATCH /threads/:id execution override", () => {
+  it.each(["send", "queue", "queued edit", "edit", "sticky"] as const)(
+    "rejects a child %s changing its persisted spawn model to another non-default model",
+    async (action) => {
+      await withTestHarness(async (harness) => {
+        const { host, session, thread: parent } = seedProviderThread(harness);
+        registerSendHostResponder(harness, host.id, session.id);
+        const child = seedThread(harness.deps, {
+          projectId: parent.projectId,
+          environmentId: parent.environmentId,
+          providerId: "claude-code",
+          parentThreadId: parent.id,
+          status: "idle",
+        });
+        setThreadExecutionOverride(harness.db, {
+          threadId: child.id,
+          modelOverride: "claude-opus-5-5",
+          reasoningLevelOverride: null,
+        });
+        const queued =
+          action === "queued edit"
+            ? seedQueuedMessage(harness.deps, {
+                threadId: child.id,
+                content: [
+                  { type: "text", text: "Accepted queued model", mentions: [] },
+                ],
+                model: "claude-opus-5-5",
+                waitingOn: { kind: "time" },
+                sendAt: Date.now() + 60_000,
+              })
+            : null;
+        const previousQueue = listQueuedThreadMessages(harness.db, child.id);
+        const eventCount = listEvents(harness.db, {
+          threadId: child.id,
+        }).length;
+        const model = "claude-opus-4-8";
+        const path =
+          queued !== null
+            ? `/queued-messages/${queued.id}`
+            : action === "sticky"
+              ? ""
+              : action === "queue"
+                ? "/queued-messages"
+                : action === "edit"
+                  ? "/edit-message"
+                  : "/send";
+        const response = await harness.app.request(
+          `/api/v1/threads/${child.id}${path}`,
+          {
+            method: action === "sticky" || queued !== null ? "PATCH" : "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(
+              queued !== null
+                ? { model, expectedUpdatedAt: queued.updatedAt }
+                : action === "sticky"
+                  ? { model }
+                  : {
+                      model,
+                      input: [{ type: "text", text: "Change model" }],
+                      ...(action === "edit"
+                        ? { operationId: "forbidden-model-edit" }
+                        : {}),
+                      ...(action === "send" ? { mode: "auto" } : {}),
+                    },
+            ),
+          },
+        );
+        expect(response.status).toBe(400);
+        expect(await readJson(response)).toMatchObject({
+          code: "child_model_conflict",
+        });
+        expect(getThreadExecutionOverride(harness.db, child.id)).toEqual({
+          modelOverride: "claude-opus-5-5",
+          reasoningLevelOverride: null,
+        });
+        expect(listQueuedThreadMessages(harness.db, child.id)).toEqual(
+          previousQueue,
+        );
+        expect(listEvents(harness.db, { threadId: child.id })).toHaveLength(
+          eventCount,
+        );
+        expect(
+          listQueuedThreadCommands(harness, "thread.stop", child.id),
+        ).toEqual([]);
+        expect(
+          listQueuedThreadCommands(harness, "turn.submit", child.id),
+        ).toEqual([]);
+      });
+    },
+  );
+
   for (const provider of [
     { id: "codex", model: "gpt-5.6-sol" },
     { id: "claude-code", model: "claude-opus-4-8" },
@@ -191,7 +282,7 @@ describe("PATCH /threads/:id execution override", () => {
     });
   });
 
-  it("allows an explicit sticky child model", async () => {
+  it("allows the persisted spawn model in a sticky child update", async () => {
     await withTestHarness(async (harness) => {
       const { host, session, thread } = seedProviderThread(harness);
       const parent = seedThread(harness.deps, {
@@ -207,6 +298,11 @@ describe("PATCH /threads/:id execution override", () => {
         "claude-opus-5-5",
       );
 
+      setThreadExecutionOverride(harness.db, {
+        threadId: thread.id,
+        modelOverride: "claude-opus-5-5",
+        reasoningLevelOverride: null,
+      });
       const response = await patchThread(harness, thread.id, {
         parentThreadId: parent.id,
         model: "claude-opus-5-5",
@@ -271,10 +367,13 @@ describe("PATCH /threads/:id execution override", () => {
       releaseCatalog();
       const response = await modelPatch;
 
-      expect(response.status).toBe(200);
+      expect(response.status).toBe(400);
+      expect(await readJson(response)).toMatchObject({
+        code: "child_model_conflict",
+      });
       expect(getThread(harness.db, thread.id)?.parentThreadId).toBe(parent.id);
       expect(getThreadExecutionOverride(harness.db, thread.id)).toEqual({
-        modelOverride: "claude-opus-5-5",
+        modelOverride: null,
         reasoningLevelOverride: null,
       });
     });
@@ -417,7 +516,7 @@ describe("PATCH /threads/:id execution override", () => {
     });
   });
 
-  it("preserves an accepted scheduled model when reparenting", async () => {
+  it("refuses a new child policy that would substitute an accepted scheduled model", async () => {
     await withTestHarness(async (harness) => {
       const { thread } = seedProviderThread(harness);
       const parent = seedThread(harness.deps, {
@@ -439,8 +538,16 @@ describe("PATCH /threads/:id execution override", () => {
         parentThreadId: parent.id,
       });
 
-      expect(response.status).toBe(200);
-      expect(getThread(harness.db, thread.id)?.parentThreadId).toBe(parent.id);
+      expect(response.status).toBe(400);
+      expect(await readJson(response)).toMatchObject({
+        code: "child_model_conflict",
+        details: {
+          reason: "parent",
+          requestedModel: "claude-opus-5-5",
+          queuedMessageIds: [queued.id],
+        },
+      });
+      expect(getThread(harness.db, thread.id)?.parentThreadId).toBeNull();
       expect(listQueuedThreadMessages(harness.db, thread.id)).toMatchObject([
         { id: queued.id, model: "claude-opus-5-5" },
       ]);
@@ -488,7 +595,7 @@ describe("PATCH /threads/:id execution override", () => {
     });
   });
 
-  it("accepts an explicit queued child model", async () => {
+  it("accepts the persisted spawn model in a queued child message", async () => {
     await withTestHarness(async (harness) => {
       const { host, session, thread } = seedProviderThread(harness);
       registerSendHostResponder(harness, host.id, session.id);
@@ -506,7 +613,7 @@ describe("PATCH /threads/:id execution override", () => {
       });
       setThreadExecutionOverride(harness.db, {
         threadId: child.id,
-        modelOverride: "claude-sonnet-5-5",
+        modelOverride: "claude-opus-5-5",
         reasoningLevelOverride: null,
       });
 
@@ -532,7 +639,7 @@ describe("PATCH /threads/:id execution override", () => {
     });
   });
 
-  it("validates edit prerequisites after accepting an explicit child model", async () => {
+  it("validates edit prerequisites after accepting the persisted spawn model", async () => {
     await withTestHarness(async (harness) => {
       const { thread } = seedProviderThread(harness);
       const parent = seedThread(harness.deps, {
@@ -548,6 +655,11 @@ describe("PATCH /threads/:id execution override", () => {
         status: "idle",
       });
 
+      setThreadExecutionOverride(harness.db, {
+        threadId: child.id,
+        modelOverride: "claude-opus-5-5",
+        reasoningLevelOverride: null,
+      });
       const response = await harness.app.request(
         `/api/v1/threads/${child.id}/edit-message`,
         {

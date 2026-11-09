@@ -367,7 +367,10 @@ export async function resolveExistingThreadExecutionPlan(
         ?.childThreadModel,
     }) ?? undefined;
   const model = resolveRequiredField<string>([
-    ...(args.input.model?.source === "explicit"
+    ...(args.input.model?.source === "explicit" &&
+    (declaredChildModel === undefined ||
+      args.input.model.value === declaredChildModel ||
+      args.input.model.value === thread.modelOverride)
       ? [args.input.model.value]
       : []),
     ...(declaredChildModel === undefined

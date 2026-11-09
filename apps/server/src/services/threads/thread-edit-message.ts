@@ -8,6 +8,7 @@ import {
   getActivePendingInteractionForThread,
   getHighWaterMarks,
   getThread,
+  getThreadSpawner,
   hasClaimedQueuedThreadMessages,
   hasRootStoredTurnStarted,
   classifyStoredProviderThreadClaim,
@@ -62,6 +63,7 @@ import {
   resolveThreadMessageEditRefusal,
   type ThreadMessageEditPolicyDeps,
 } from "./thread-message-edit-policy.js";
+import { assertRequestedModelAllowed } from "./child-thread-model.js";
 
 type ThreadRewindPrepareCommand = Extract<
   HostDaemonCommand,
@@ -493,7 +495,17 @@ export async function editThreadMessage(
       requestSequence: committed.requestSequence,
     };
   }
-  await deps.providerRegistry.whenRegistrationsSettled();
+  await assertRequestedModelAllowed(deps, {
+    threadId: args.thread.id,
+    childScope: args.thread.parentThreadId
+      ? "parent"
+      : getThreadSpawner(deps.db, args.thread.id) === null
+        ? null
+        : "spawner",
+    model: args.payload.model,
+    providerId: args.thread.providerId,
+    sources: args.payload.executionInputSources,
+  });
   if (
     deps.pendingInteractions.hasTurnBoundPendingThreadInteraction(
       args.thread.id,

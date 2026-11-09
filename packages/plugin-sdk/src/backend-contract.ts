@@ -1627,10 +1627,11 @@ export interface PluginProviderDeclaration {
     scope?: PluginProviderModelCatalogScope;
     /**
      * The default model for a thread with a parent or an active thread spawner.
-     * Explicit models and stored overrides take precedence. Omitted or
-     * client-preference models use this default when no override exists.
-     * Accepted queued work retains its chosen model. Omitted, children run
-     * like any other thread. 1–200 characters.
+     * An explicit spawn model is persisted and takes precedence. Later explicit
+     * model requests must match this default or the persisted override. Omitted
+     * or client-preference models use this default when no override exists.
+     * Existing queued work resolves within the same child model policy.
+     * Omitted, children run like any other thread. 1–200 characters.
      */
     childThreadModel?: string;
   };

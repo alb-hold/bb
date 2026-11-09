@@ -55,10 +55,11 @@ whose `--model` cannot run with them is refused with the name of one that can.
 
 Providers may declare a default child-thread model. Omit `--model` when
 spawning to use it automatically; an explicit `--model` takes precedence and
-is used on later turns until changed. Spawning with `bb thread spawn` from
+is persisted for later turns. Spawning with `bb thread spawn` from
 inside an active thread also uses this default, even without `--parent-self`.
-Explicit models on child-thread messages, sticky updates, and accepted queued
-work take precedence over the provider's child default.
+Later explicit models on child-thread messages, message edits, queued messages,
+and sticky updates must match either the provider's child default or the
+thread's persisted model override. Omit the model to retain the selected model.
 
 Service tiers are provider-defined ids. `bb provider list --json` reports each
 provider's `serviceTiers` ({id, label, description?}); `default` always means

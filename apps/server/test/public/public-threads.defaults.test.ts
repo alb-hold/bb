@@ -11,6 +11,7 @@ import {
   createProjectSource,
   getProjectExecutionDefaults,
   getThread,
+  getThreadExecutionOverride,
   listEvents,
   listQueuedThreadMessages,
   listThreadsWithPendingInteractionState,
@@ -690,7 +691,7 @@ describe("public thread default routes", () => {
     },
   );
 
-  it("accepts an explicit child model when handling the standalone clear command", async () => {
+  it("accepts the persisted child model when handling the standalone clear command", async () => {
     await withTestHarness(async (harness) => {
       const { host, session } = seedHostSession(harness.deps);
       registerHostRpcResponder(harness, {
@@ -717,6 +718,11 @@ describe("public thread default routes", () => {
         providerId: "claude-code",
         parentThreadId: parent.id,
         status: "idle",
+      });
+      setThreadExecutionOverride(harness.db, {
+        threadId: child.id,
+        modelOverride: "claude-opus-5-5",
+        reasoningLevelOverride: null,
       });
       const input = [
         {
@@ -1030,7 +1036,7 @@ describe("public thread default routes", () => {
         if (parent || spawned) {
           setThreadExecutionOverride(harness.db, {
             threadId: thread.id,
-            modelOverride: "claude-sonnet-5-5",
+            modelOverride: "claude-opus-5-5",
             reasoningLevelOverride: null,
           });
         }
@@ -1177,7 +1183,7 @@ describe("public thread default routes", () => {
     });
   });
 
-  it("keeps an explicit inline model when parent scope changes during recovery", async () => {
+  it("refuses an explicit inline model when parent scope changes during recovery", async () => {
     await withTestHarness(async (harness) => {
       const { host, session } = seedHostSession(harness.deps);
       const { project } = seedProjectWithSource(harness.deps, {
@@ -1209,14 +1215,10 @@ describe("public thread default routes", () => {
         modelOverride: "claude-sonnet-5-5",
         reasoningLevelOverride: null,
       });
-      const responder = registerHostRpcResponder(harness, {
+      registerHostRpcResponder(harness, {
         hostId: host.id,
         sessionId: session.id,
-        handle: async ({ command }) => {
-          if (command.type === "host.read_workspace_agent_context")
-            return { ok: true, result: EMPTY_WORKSPACE_AGENT_CONTEXT };
-          if (command.type !== "provider.list_models")
-            return { ok: true, result: { trace: { spans: [] } } };
+        handle: async () => {
           enteredCatalog();
           await catalogGate;
           return {
@@ -1279,21 +1281,30 @@ describe("public thread default routes", () => {
         },
       );
       expect(parentPatch.status).toBe(200);
+      const eventsBeforeRelease = listEvents(harness.db, {
+        threadId: thread.id,
+      });
       releaseCatalog();
       const response = await send;
 
-      expect(response.status).toBe(200);
-      const submit = responder.requests.find(
-        ({ command }) =>
-          command.type === "turn.submit" && command.threadId === thread.id,
-      );
-      expect(submit?.command).toMatchObject({
-        options: { model: "claude-opus-5-5" },
+      expect(response.status).toBe(400);
+      expect(await readJson(response)).toMatchObject({
+        code: "child_model_conflict",
       });
+      expect(listEvents(harness.db, { threadId: thread.id })).toEqual(
+        eventsBeforeRelease,
+      );
+      expect(getThreadExecutionOverride(harness.db, thread.id)).toEqual({
+        modelOverride: "claude-sonnet-5-5",
+        reasoningLevelOverride: null,
+      });
+      expect(
+        listQueuedThreadCommands(harness, "turn.submit", thread.id),
+      ).toEqual([]);
     });
   });
 
-  it("keeps an explicit inline model when parent scope changes after resolution", async () => {
+  it("refuses an explicit inline model when parent scope changes after resolution", async () => {
     await withTestHarness(async (harness) => {
       const { host } = seedHostSession(harness.deps);
       const { project } = seedProjectWithSource(harness.deps, {
@@ -1389,18 +1400,23 @@ describe("public thread default routes", () => {
         },
       );
       expect(parentPatch.status).toBe(200);
+      const eventsBeforeRelease = listEvents(harness.db, {
+        threadId: thread.id,
+      });
       releasePreparation();
       const response = await send;
 
-      expect(response.status).toBe(200);
-      const submit = await waitForQueuedCommand(
-        harness,
-        ({ command }) =>
-          command.type === "turn.submit" && command.threadId === thread.id,
-      );
-      expect(submit.command).toMatchObject({
-        options: { model: "claude-opus-5-5" },
+      expect(response.status).toBe(400);
+      expect(await readJson(response)).toMatchObject({
+        code: "child_model_conflict",
       });
+      expect(listEvents(harness.db, { threadId: thread.id })).toEqual(
+        eventsBeforeRelease,
+      );
+      expect(listQueuedThreadMessages(harness.db, thread.id)).toEqual([]);
+      expect(
+        listQueuedThreadCommands(harness, "turn.submit", thread.id),
+      ).toEqual([]);
     });
   });
 
