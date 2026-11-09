@@ -627,7 +627,7 @@ describe("ThreadRow", () => {
     } else {
       expect(slot).toBeNull();
     }
-    expect(context?.classList.contains("md:text-xs")).toBe(true);
+    expect(context?.classList.contains("md:text-sm")).toBe(true);
   });
 
   it.each([

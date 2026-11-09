@@ -747,7 +747,7 @@ export function ThreadTableOfContents({
                 key={item.id}
                 className={cn(
                   "h-[3px] shrink-0 rounded-full transition-colors duration-150 group-hover/toc:bg-foreground group-focus-within/toc:bg-foreground",
-                  scrolling ? "bg-foreground" : "bg-muted-foreground/50",
+                  scrolling ? "bg-foreground" : "bg-muted-foreground/70",
                   item.id === activeUserId ? "w-5" : "w-3",
                 )}
               />
