@@ -595,26 +595,58 @@ describe("bb thread spawn command output", () => {
     ).toEqual(thread);
   });
 
-  it("bb thread spawn prefixes model-catalog failures with context", async () => {
-    vi.stubEnv("BB_PROJECT_ID", "proj-1");
-    const post = vi.fn(async () => {
-      throw new Error(
-        "HTTP 503: Unable to load codex models to resolve the default",
+  it.each([
+    {
+      failure: "model-catalog failure",
+      providerId: "codex",
+      status: 503,
+      code: "model_catalog_unavailable",
+      message: "Unable to load codex models to resolve the default",
+    },
+    {
+      failure: "unknown provider",
+      providerId: "claude",
+      status: 400,
+      code: "invalid_provider",
+      message: 'Unknown provider "claude". Valid providers: claude-code.',
+    },
+  ])(
+    "bb thread spawn prints the $failure response with context",
+    async ({ providerId, status, code, message }) => {
+      vi.stubEnv("BB_PROJECT_ID", "proj-1");
+      const post = vi.fn(
+        async () =>
+          new Response(JSON.stringify({ code, message }), {
+            status,
+            headers: { "content-type": "application/json" },
+          }),
       );
-    });
-    stubServerApi({ "v1.threads.$post": post });
+      stubServerApi({ "v1.threads.$post": post });
 
-    await expect(
-      runCommand(
-        ["thread", "spawn", "--project", "proj-1", "--prompt", "hello"],
-        register,
-      ),
-    ).rejects.toThrow("process.exit:1");
+      await expect(
+        runCommand(
+          [
+            "thread",
+            "spawn",
+            "--project",
+            "proj-1",
+            "--prompt",
+            "hello",
+            "--provider",
+            providerId,
+          ],
+          register,
+        ),
+      ).rejects.toThrow("process.exit:1");
 
-    expect(collectLogLines(vi.mocked(console.error))).toContain(
-      "Error: Failed to create thread: HTTP 503: Unable to load codex models to resolve the default",
-    );
-  });
+      expect(post).toHaveBeenCalledWith({
+        json: expect.objectContaining({ providerId }),
+      });
+      expect(collectLogLines(vi.mocked(console.error))).toContain(
+        `Error: Failed to create thread: HTTP ${status}: ${message}`,
+      );
+    },
+  );
 
   it("bb thread spawn with --parent-thread forwards parent thread id", async () => {
     vi.stubEnv("BB_PROJECT_ID", "proj-1");

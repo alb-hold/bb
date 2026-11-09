@@ -1,4 +1,5 @@
 import { applyLoggedThreadLifecycleEvent } from "../../src/services/threads/lifecycle-outcome.js";
+import { createProviderRegistryService } from "../../src/services/providers/provider-registry.js";
 import { seedModelCatalog } from "../helpers/provider-model-catalogs.js";
 import {
   provisionHostMock,
@@ -52,6 +53,100 @@ describe("public thread default routes", () => {
     provisionHostMock.mockReset();
     resumeHostMock.mockReset();
   });
+
+  it.each(["provider registration", "bridge artifact"] as const)(
+    "waits for pending %s before accepting a valid Claude spawn",
+    async (pending) => {
+      await withTestHarness(async (harness) => {
+        const { host } = seedHostSession(harness.deps);
+        const { project } = seedProjectWithSource(harness.deps, {
+          hostId: host.id,
+        });
+        const environment = seedEnvironment(harness.deps, {
+          hostId: host.id,
+          projectId: project.id,
+        });
+        const registration = harness.deps.providerRegistry.get("claude-code");
+        if (registration === null)
+          throw new Error("Claude registration missing");
+        const artifact = harness.deps.pluginHostArtifacts.get(
+          registration.pluginId,
+        );
+        if (artifact === undefined) throw new Error("Claude artifact missing");
+        const registry = createProviderRegistryService({
+          deferRegistrationsSettled: true,
+        });
+        harness.deps.providerRegistry = registry;
+        if (pending === "bridge artifact") {
+          registry.register(registration);
+          harness.deps.pluginHostArtifacts.delete(registration.pluginId);
+        }
+        const whenSettled = registry.whenRegistrationsSettled.bind(registry);
+        const readinessReached = new Promise<void>((resolve) => {
+          vi.spyOn(registry, "whenRegistrationsSettled").mockImplementation(
+            async () => {
+              resolve();
+              await whenSettled();
+            },
+          );
+        });
+        const create = Promise.resolve(
+          harness.app.request("/api/v1/threads", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              origin: "cli",
+              projectId: project.id,
+              providerId: "claude-code",
+              model: "claude-opus-5-5",
+              input: [{ type: "text", text: "Start after registration" }],
+              environment: { type: "reuse", environmentId: environment.id },
+            }),
+          }),
+        );
+        try {
+          expect(
+            await Promise.race([
+              readinessReached.then(() => "waiting"),
+              create.then(() => "responded"),
+            ]),
+          ).toBe("waiting");
+          expect(
+            harness.db
+              .select()
+              .from(threads)
+              .where(eq(threads.projectId, project.id))
+              .all(),
+          ).toEqual([]);
+          expect(listQueuedThreadCommands(harness, "thread.start")).toEqual([]);
+          if (pending === "provider registration") {
+            registry.register(registration);
+          } else {
+            harness.deps.pluginHostArtifacts.set(
+              registration.pluginId,
+              artifact,
+            );
+          }
+        } finally {
+          registry.markRegistrationsSettled();
+        }
+        const response = await create;
+        expect(response.status).toBe(201);
+        const created = threadSchema.parse(await readJson(response));
+        expect(getThread(harness.db, created.id)?.providerId).toBe(
+          "claude-code",
+        );
+        const start = await waitForQueuedCommand(
+          harness,
+          ({ command }) =>
+            command.type === "thread.start" && command.threadId === created.id,
+        );
+        expect(start.command).toMatchObject({
+          options: { model: "claude-opus-5-5" },
+        });
+      });
+    },
+  );
 
   it.each([
     { providerId: "claude", status: 400, code: "invalid_provider" },
