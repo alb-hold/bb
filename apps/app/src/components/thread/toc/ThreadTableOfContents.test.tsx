@@ -675,7 +675,7 @@ describe("ThreadTableOfContents", () => {
           "[data-thread-toc] [aria-hidden] > span",
         ),
       );
-    expect(railTicks()[0]?.classList.contains("bg-muted-foreground/50")).toBe(
+    expect(railTicks()[0]?.classList.contains("bg-muted-foreground/70")).toBe(
       true,
     );
     expect(railTicks()[0]?.className).toContain(
@@ -699,7 +699,7 @@ describe("ThreadTableOfContents", () => {
     act(() => {
       vi.advanceTimersByTime(1);
     });
-    expect(railTicks()[0]?.classList.contains("bg-muted-foreground/50")).toBe(
+    expect(railTicks()[0]?.classList.contains("bg-muted-foreground/70")).toBe(
       true,
     );
     expect(railTicks()[0]?.classList.contains("w-5")).toBe(false);
