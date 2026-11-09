@@ -88,27 +88,47 @@ describe("retained terminal viewers", () => {
     rerender(tree(true));
     expect(mounts).toBe(2);
   });
-  it("keeps twelve detached viewers in LRU order without evicting attached viewers", () => {
+  it("keeps only the most recently parked viewer without evicting attached viewers", async () => {
     const { registry, attach } = harness();
     const attached = attach("active");
     const oldest = attach("oldest");
     registry.detach(oldest);
-    for (let i = 0; i < 11; i++) registry.detach(attach(`idle-${i}`));
-    const evictedId = registry
-      .getSnapshot()
-      .find((entry) => entry.key === "idle-0")!.id;
+    await Promise.resolve();
     const adopted = attach("oldest");
     expect(adopted).toBe(oldest);
     registry.detach(adopted);
-    registry.detach(attach("newest"));
+    const newest = attach("newest");
+    registry.detach(newest);
+    await Promise.resolve();
     const entries = registry.getSnapshot();
     expect(entries).toContain(attached);
     expect(
       entries.filter((entry) => entry.snapshot.attachment === null),
-    ).toHaveLength(12);
-    expect(entries).toContain(oldest);
-    expect(entries.some((entry) => entry.key === "idle-0")).toBe(false);
-    expect(attach("idle-0").id).not.toBe(evictedId);
+    ).toEqual([newest]);
+    expect(oldest.container.isConnected).toBe(false);
+    expect(attach("oldest").id).not.toBe(oldest.id);
+    registry.dispose();
+  });
+  it("adopts the previous viewer before pruning the outgoing viewer in the same switch", async () => {
+    const { registry, attach } = harness();
+    let active = attach("a");
+    const first = active;
+    registry.detach(active);
+    active = attach("b");
+    const second = active;
+    await Promise.resolve();
+    for (let cycle = 0; cycle < 4; cycle++) {
+      registry.detach(active);
+      active = attach(cycle % 2 === 0 ? "a" : "b");
+      await Promise.resolve();
+      expect(active).toBe(cycle % 2 === 0 ? first : second);
+      expect(registry.getSnapshot()).toHaveLength(2);
+      expect(
+        registry
+          .getSnapshot()
+          .filter((entry) => entry.snapshot.attachment === null),
+      ).toHaveLength(1);
+    }
     registry.dispose();
   });
   it("clears route props and navigation on detach and adopts only current callbacks", () => {

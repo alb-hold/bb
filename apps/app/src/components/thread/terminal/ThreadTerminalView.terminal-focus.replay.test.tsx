@@ -481,6 +481,169 @@ function writeReplay(terminal: Terminal, data: string): Promise<void> {
 }
 
 describe("ThreadTerminalView terminal replay and reconnect", () => {
+  it.each([false, true])(
+    "disposes older parked viewers and their streams while retaining the last switch and replaying the same session on return (native=%s)",
+    async (native) => {
+      prepareMobileTerminal();
+      stubVisibleIntersectionObserver();
+      vi.spyOn(FitAddon.prototype, "proposeDimensions").mockReturnValue({
+        cols: 40,
+        rows: 12,
+      });
+      const sessions = ["cold", "warm", "active"].map((name) =>
+        makeTerminalSession({
+          id: `term_memory_${native}_${name}`,
+          cols: 40,
+          rows: 12,
+        }),
+      );
+      const history =
+        Array.from({ length: 64 }, (_, index) => `history-${index}`).join(
+          "\r\n",
+        ) + "\r\n";
+      vi.stubGlobal(
+        "WebSocket",
+        class extends TestTerminalSocket {
+          constructor(private readonly url: string) {
+            super(url);
+          }
+          override open() {
+            super.open();
+            this.receive({
+              type: "attached",
+              session: sessions.find((session) =>
+                new URL(this.url).pathname.includes(session.id),
+              ),
+              replayStartSeq: 0,
+              nextSeq: 1,
+            });
+            this.receive({
+              type: "output",
+              chunk: { seq: 0, dataBase64: btoa(history) },
+            });
+          }
+        },
+      );
+      const opened: Terminal[] = [];
+      const originalOpen = Terminal.prototype.open;
+      vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
+        this: Terminal,
+        element: HTMLElement,
+      ) {
+        if (element.hasAttribute("data-terminal-grid-cache-id"))
+          opened.push(this);
+        originalOpen.call(this, element);
+      });
+      const disposed = vi.spyOn(Terminal.prototype, "dispose");
+      const tree = (index: number) => (
+        <MemoryRouter>
+          <AppCommandProvider>
+            <button autoFocus>Composer</button>
+            <RetainedTerminalViewsProvider>
+              <div data-native-terminal-thread={native ? "" : undefined}>
+                <RetainedTerminalViewSlot
+                  View={ThreadTerminalView}
+                  autoFocus={false}
+                  isPanelOpen
+                  session={sessions[index]!}
+                />
+              </div>
+            </RetainedTerminalViewsProvider>
+          </AppCommandProvider>
+        </MemoryRouter>
+      );
+      const view = render(tree(0));
+      const ready = async (socketCount: number) => {
+        await waitForReadinessCondition(() => {
+          expect(testState.sockets).toHaveLength(socketCount);
+          expect(
+            document.querySelectorAll(
+              "[data-replay-held='false']:not([inert] *)",
+            ),
+          ).toHaveLength(1);
+        }, "memory viewer did not reveal");
+      };
+      await ready(1);
+      const cold = opened[0]!;
+      const coldSocket = testState.sockets[0]!;
+      const coldElement = cold.element!;
+      const coldWrite = vi.spyOn(cold, "write");
+      view.rerender(tree(1));
+      await ready(2);
+      const warm = opened[1]!;
+      const warmElement = warm.element!;
+      const warmSocket = testState.sockets[1]!;
+      view.rerender(tree(2));
+      await ready(3);
+      expect(document.querySelectorAll(".xterm")).toHaveLength(2);
+      expect(coldSocket.readyState).toBe(TestTerminalSocket.CLOSED);
+      expect(coldElement.isConnected).toBe(false);
+      expect(disposed.mock.contexts).toContain(cold);
+      expect(disposed.mock.contexts).not.toContain(warm);
+      coldWrite.mockClear();
+      act(() => {
+        coldSocket.receive({
+          type: "output",
+          chunk: { seq: 1, dataBase64: btoa("discarded\r\n") },
+        });
+        warmSocket.receive({
+          type: "output",
+          chunk: { seq: 1, dataBase64: btoa("warm-tail\r\n") },
+        });
+      });
+      await waitForReadinessCondition(() => {
+        expect(
+          warm.buffer.active
+            .getLine(warm.buffer.active.baseY + warm.rows - 2)
+            ?.translateToString(true),
+        ).toBe("warm-tail");
+      }, "warm viewer stopped consuming its stream");
+      expect(coldWrite).not.toHaveBeenCalled();
+      view.rerender(tree(1));
+      await ready(3);
+      expect(warm.element).toBe(warmElement);
+      expect(warmSocket.readyState).toBe(TestTerminalSocket.OPEN);
+      expect(opened).toHaveLength(3);
+      view.rerender(tree(0));
+      await ready(4);
+      expect(opened[3]).not.toBe(cold);
+      expect(new URL(testState.socketUrls[3]!).pathname).toContain(
+        sessions[0]!.id,
+      );
+      expect(
+        new URL(testState.socketUrls[3]!).searchParams.get("sinceSeq"),
+      ).toBe("0");
+      expect(opened[3]!.buffer.active.getLine(0)?.translateToString(true)).toBe(
+        "history-0",
+      );
+      expect(
+        opened[3]!.buffer.active.getLine(63)?.translateToString(true),
+      ).toBe("history-63");
+      for (const socket of testState.sockets) {
+        const resizes = socket.sent
+          .map((raw) => JSON.parse(raw))
+          .filter((message) => message.type === "resize");
+        expect(resizes.filter((resize) => resize.claim)).toHaveLength(
+          native ? 1 : 0,
+        );
+        if (native) expect(resizes).toHaveLength(1);
+        for (const resize of resizes)
+          expect(resize).toEqual({
+            type: "resize",
+            cols: 40,
+            rows: 12,
+            ...(native ? { claim: true } : {}),
+          });
+      }
+      view.unmount();
+      expect(
+        testState.sockets.every(
+          (socket) => socket.readyState === TestTerminalSocket.CLOSED,
+        ),
+      ).toBe(true);
+    },
+  );
+
   it.each([
     [false, false],
     [false, true],

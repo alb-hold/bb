@@ -53,6 +53,7 @@ export function createRetainedTerminalViews() {
   let nextId = 0;
   let host: HTMLDivElement | null = null;
   let hiddenTimer: ReturnType<typeof setTimeout> | null = null;
+  let prunePending = false;
   const listeners = new Set<() => void>();
   const publish = () => listeners.forEach((listener) => listener());
   const update = (entry: Entry, snapshot: Snapshot) => {
@@ -75,8 +76,16 @@ export function createRetainedTerminalViews() {
     const detached = entries.filter(
       (entry) => entry.snapshot.attachment === null,
     );
-    for (const entry of detached.slice(0, Math.max(0, detached.length - 12)))
+    for (const entry of detached.slice(0, Math.max(0, detached.length - 1)))
       remove(entry);
+  };
+  const schedulePrune = () => {
+    if (prunePending) return;
+    prunePending = true;
+    queueMicrotask(() => {
+      prunePending = false;
+      prune();
+    });
   };
   const retain = (props: ThreadTerminalViewProps): RetainedProps => ({
     session: props.session,
@@ -164,7 +173,7 @@ export function createRetainedTerminalViews() {
       }
       host.append(entry.container);
       entries = [...entries.filter((candidate) => candidate !== entry), entry];
-      prune();
+      schedulePrune();
       publish();
     },
     invalidate,
