@@ -1642,14 +1642,14 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
       clearRect: vi.fn(),
       fillRect: vi.fn(),
       fillStyle: "",
-      getImageData: () => ({
+      getImageData: vi.fn(() => ({
         data: new Uint8ClampedArray([
           ...(context.fillStyle.match(/\d+/gu)?.slice(0, 3).map(Number) ?? [
             12, 34, 56,
           ]),
           255,
         ]),
-      }),
+      })),
     };
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(
       (kind) =>
@@ -1702,6 +1702,8 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
         background: [12, 34, 56],
       }),
     );
+    const initialColorReads = context.getImageData.mock.calls.length;
+    const createElement = vi.spyOn(document, "createElement");
     act(() =>
       textarea.dispatchEvent(new FocusEvent("focusin", { bubbles: true })),
     );
@@ -1709,6 +1711,10 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
       await new Promise((resolve) => setTimeout(resolve, 150));
     });
     expect(testState.setDefaultColors).toHaveBeenCalledTimes(1);
+    expect(context.getImageData).toHaveBeenCalledTimes(initialColorReads);
+    expect(
+      createElement.mock.calls.filter(([tag]) => tag === "canvas"),
+    ).toHaveLength(0);
     act(() => textarea.blur());
     document.documentElement.style.removeProperty("--foreground");
     document.documentElement.style.removeProperty("--ink");
@@ -1725,11 +1731,19 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
       }),
     );
     expect(testState.setDefaultColors).toHaveBeenCalledTimes(2);
+    expect(context.getImageData).toHaveBeenCalledTimes(initialColorReads + 2);
+    const changedThemeCanvases = createElement.mock.calls.filter(
+      ([tag]) => tag === "canvas",
+    ).length;
     act(() => applyAppThemeCss(lightCss + "\n"));
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 150));
     });
     expect(testState.setDefaultColors).toHaveBeenCalledTimes(2);
+    expect(context.getImageData).toHaveBeenCalledTimes(initialColorReads + 2);
+    expect(
+      createElement.mock.calls.filter(([tag]) => tag === "canvas"),
+    ).toHaveLength(changedThemeCanvases);
 
     expect(
       socket.sent.filter((raw) => JSON.parse(raw).type === "input"),

@@ -4079,6 +4079,10 @@ export function ThreadTerminalView({
   }, [preferredTheme, appThemeEpoch]);
 
   const sentThemeColorsRef = useRef("");
+  const themeColorsRef = useRef<{
+    key: string;
+    colors: NonNullable<ReturnType<typeof terminalThemeDefaultColors>>;
+  } | null>(null);
   const themeControllerRef = useRef("");
   const themeSendPendingRef = useRef(false);
   const syncThemeColorsRef = useRef<(() => void) | null>(null);
@@ -4101,8 +4105,14 @@ export function ThreadTerminalView({
               !terminal.element?.contains(document.activeElement)))
         )
           return;
-        const colors = terminalThemeDefaultColors(terminal.options.theme ?? {});
+        const theme = terminal.options.theme ?? {};
+        const inputKey = JSON.stringify([theme.foreground, theme.background]);
+        const colors =
+          themeColorsRef.current?.key === inputKey
+            ? themeColorsRef.current.colors
+            : terminalThemeDefaultColors(theme);
         if (!colors) return;
+        themeColorsRef.current = { key: inputKey, colors };
         const key = JSON.stringify([session.id, handoffOwnerToken, colors]);
         if (key === sentThemeColorsRef.current) return;
         themeSendPendingRef.current = true;
