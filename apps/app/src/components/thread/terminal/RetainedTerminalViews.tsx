@@ -154,7 +154,6 @@ export function createRetainedTerminalViews() {
         entry = created;
         entries = [...entries, entry];
       }
-      if (projectId !== undefined) entry.projectId = projectId;
       entry.container.style.width = "";
       entry.container.style.height = "";
       slot.append(entry.container);
@@ -427,8 +426,6 @@ export function RetainedTerminalViewSlot({
   current.current = { props, navigation, panelActions };
   const registry = context?.registry;
   const projectId = context?.projectId;
-  const projectIdRef = useRef(projectId);
-  projectIdRef.current = projectId;
   useLayoutEffect(() => {
     if (registry === undefined || slot.current === null) return;
     const native =
@@ -444,7 +441,7 @@ export function RetainedTerminalViewSlot({
       slot.current,
       View,
       current.current,
-      projectIdRef.current,
+      undefined,
       paneId,
     );
     entry.current = acquired;

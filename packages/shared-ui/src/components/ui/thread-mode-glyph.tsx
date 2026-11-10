@@ -46,10 +46,8 @@ export function ThreadLeadingMark({
   providerName: string | null;
 }) {
   const mode = threadModeLabel({ nativeTerminal, isWorktree });
-  const iconName = nativeTerminal ? "Terminal" : "FolderGit";
   return (
     <span
-      data-thread-leading-mark=""
       role={mode === null ? undefined : "img"}
       aria-label={
         mode === null
@@ -65,9 +63,12 @@ export function ThreadLeadingMark({
         <span
           aria-hidden
           data-thread-mode-badge={nativeTerminal ? "native-terminal" : "worktree"}
-          className="absolute -bottom-0.5 -right-0.5 flex size-2 items-center justify-center rounded-full bg-background ring-1 ring-background"
+          className="absolute -bottom-0.5 -right-0.5 grid size-2 place-items-center rounded-full bg-background ring-1 ring-background"
         >
-          <Icon name={iconName} className="size-1.5 shrink-0" aria-hidden />
+          <Icon
+            name={nativeTerminal ? "Terminal" : "FolderGit"}
+            className="size-1.5"
+          />
         </span>
       )}
     </span>
