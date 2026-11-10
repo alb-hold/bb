@@ -1342,14 +1342,19 @@ it("rests as a quiet single line at every width and expands to the bordered fiel
     "data-[native-composer-inline]:border-border/40",
     "data-[native-composer-inline]:bg-muted/40",
     "data-[native-composer-inline]:shadow-none",
-    "data-[native-composer-inline]:py-0",
     "data-[native-composer-inline]:grid",
   ])
     expect(shellClasses).toContain(quiet);
+  expect(shellClasses).toContain("pointer-coarse:data-[native-composer-inline]:py-0");
+  expect(shellClasses).not.toContain("data-[native-composer-inline]:py-0");
   expect(shellClasses).toContain("border-border");
   expect(shellClasses).toContain("focus-within:border-ring");
   const textareaClasses = input.className.split(/\s+/);
-  expect(textareaClasses).toContain("group-data-[native-composer-inline]:h-11");
+  expect(textareaClasses).toContain(
+    "pointer-coarse:group-data-[native-composer-inline]:h-11",
+  );
+  expect(textareaClasses).not.toContain("group-data-[native-composer-inline]:h-11");
+  expect(textareaClasses).toContain("min-h-7");
   expect(textareaClasses).toContain(
     "group-data-[native-composer-inline]:col-start-1",
   );
@@ -1368,6 +1373,26 @@ it("rests as a quiet single line at every width and expands to the bordered fiel
   fireEvent.blur(input);
   expect(shell.hasAttribute("data-native-composer-inline")).toBe(false);
   expect(input.placeholder).not.toBe("");
+});
+
+it("keeps the 44px resting height and zero padding to coarse pointers so a fine-pointer desktop composer stays at its old height", () => {
+  const { input } = renderBar();
+  const shell = input.closest("[data-native-composer]")!;
+  const shellClasses = shell.className.split(/\s+/);
+  const textareaClasses = input.className.split(/\s+/);
+  const unprefixed = (classes: string[]) =>
+    classes.filter((name) => /^(group-)?data-\[native-composer-inline\]:(h-11|py-0|overflow-hidden)$/.test(name));
+  expect(unprefixed(shellClasses)).toEqual([]);
+  expect(unprefixed(textareaClasses)).toEqual([]);
+  expect(shellClasses).toContain("px-1.5");
+  expect(shellClasses).toContain("py-0.5");
+  expect(textareaClasses).toContain("min-h-7");
+  expect(textareaClasses).toContain(
+    "pointer-coarse:group-data-[native-composer-inline]:h-11",
+  );
+  expect(shellClasses).toContain(
+    "pointer-coarse:data-[native-composer-inline]:py-0",
+  );
 });
 
 it("hides desktop attachment chrome only while resting inline", () => {
@@ -1460,7 +1485,7 @@ it.each(
       );
       expect(screen.getByLabelText(`Send to ${provider} terminal`)).toBe(input);
       expect(input.className).toContain(
-        "group-data-[native-composer-inline]:h-11",
+        "pointer-coarse:group-data-[native-composer-inline]:h-11",
       );
     } finally {
       cleanup();
