@@ -166,7 +166,10 @@ export function ThreadStatusGlyph({
       return (
         <Icon
           name={kind === "check-terminal" ? "BellDot" : "CircleQuestion"}
-          className={cn("text-attention", iconSizeClass)}
+          className={cn(
+            kind === "needs-input" ? "text-destructive-text" : "text-attention",
+            iconSizeClass,
+          )}
           aria-label={statusLabel}
           aria-hidden={hideAccessibleLabel}
         />

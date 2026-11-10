@@ -2337,11 +2337,13 @@ describe("ThreadRow", () => {
     expect(
       screen
         .getByRole("img", { name: "Needs input" })
-        .classList.contains("text-attention"),
+        .classList.contains("text-destructive-text"),
     ).toBe(true);
     expect(
-      screen.getByRole("img", { name: "Needs input" }).className,
-    ).not.toContain("destructive");
+      screen
+        .getByRole("img", { name: "Needs input" })
+        .classList.contains("text-warning"),
+    ).toBe(false);
   });
 
   it("clocks a thread with queued work, and drops the clock once it runs", () => {
