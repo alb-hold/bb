@@ -35,6 +35,7 @@ import {
   RecentThreadRowContent,
 } from "./RootComposeRecentRows";
 import { RootComposeMobileRecents } from "./RootComposeMobileRecents";
+import { SidebarThreadEntriesProvider } from "@/lib/sidebar-thread-entries";
 import { readFileSync } from "node:fs";
 import {
   SidebarProvider,
@@ -90,19 +91,32 @@ const personalProvider: SystemEnvironmentProvider = {
 function TestProviders({
   children,
   store = createStore(),
+  withSidebarEntries = false,
 }: {
   children: ReactNode;
   store?: ReturnType<typeof createStore>;
+  withSidebarEntries?: boolean;
 }) {
+  const body = (
+    <>
+      <ThreadActionCollectors
+        coreRegistrations={CORE_THREAD_ACTIONS}
+        requestRename={() => {}}
+      />
+      {children}
+    </>
+  );
   return (
     <Provider store={store}>
       <QueryClientProvider client={new QueryClient()}>
         <MemoryRouter>
-          <ThreadActionCollectors
-            coreRegistrations={CORE_THREAD_ACTIONS}
-            requestRename={() => {}}
-          />
-          {children}
+          {withSidebarEntries ? (
+            <SidebarThreadEntriesProvider navigation={undefined}>
+              {body}
+            </SidebarThreadEntriesProvider>
+          ) : (
+            body
+          )}
         </MemoryRouter>
       </QueryClientProvider>
     </Provider>
@@ -961,5 +975,37 @@ it.each([false, true])(
     expect(
       container.querySelectorAll('[aria-label="Native terminal"]'),
     ).toHaveLength(nativeTerminal ? 1 : 0);
+  },
+);
+
+it.each([
+  ["native", { nativeTerminal: true }, "Native terminal", "native-terminal", "Terminal"],
+  ["worktree", { environmentIsWorktree: true }, "Worktree", "worktree", "FolderGit"],
+] as const)(
+  "keeps the provider mark in a Recent row's leading column and badges the %s mode",
+  (_shape, overrides, label, badge, icon) => {
+    const thread = makeThread({ title: "Badge work", ...overrides });
+    const plain = makeThread({ id: "badge-plain", title: "Plain work" });
+    const view = render(
+      <TestProviders store={storeWithCollapsedThreads([])} withSidebarEntries>
+        <RootComposeMobileRecents
+          highlightedThreadId={null}
+          projectNamesById={new Map()}
+          providersById={new Map()}
+          showCreatingRow={false}
+          threads={[thread, plain]}
+        />
+      </TestProviders>,
+    );
+    const marked = screen.getByText("Badge work").closest("li")!;
+    const unmarked = screen.getByText("Plain work").closest("li")!;
+    const mark = marked.querySelector('[role="img"]')!;
+    expect(mark.getAttribute("aria-label")).toBe(label);
+    expect(
+      marked.querySelectorAll(`[data-thread-mode-badge="${badge}"]`),
+    ).toHaveLength(1);
+    expect(marked.querySelectorAll(`[data-icon="${icon}"]`)).toHaveLength(1);
+    expect(unmarked.querySelector("[data-thread-mode-badge]")).toBeNull();
+    expect(view.container.querySelectorAll("li")).toHaveLength(2);
   },
 );

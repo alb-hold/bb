@@ -43,6 +43,19 @@ const TOC_MIN_VISIBLE_WIDTH_PX = 56 * 16;
 const TOC_BOTTOM_ACTIVE_THRESHOLD_PX = 4;
 const TOC_MIN_USER_MESSAGES = 3;
 const TOC_MAX_RAIL_TICKS = 20;
+const TOC_MIN_RAIL_VIEWPORTS = 2;
+
+export function isTocRailWarranted({
+  clientHeight,
+  scrollHeight,
+}: {
+  clientHeight: number;
+  scrollHeight: number;
+}): boolean {
+  return (
+    clientHeight <= 0 || scrollHeight > clientHeight * TOC_MIN_RAIL_VIEWPORTS
+  );
+}
 const TOC_ACTIVE_UPDATE_IDLE_MS = 120;
 const TOC_JUMP_MAX_PAGE_LOADS = 1000;
 const TOC_JUMP_RENDER_FRAMES = 6;
@@ -543,6 +556,7 @@ export function ThreadTableOfContents({
   const [activeUserId, setActiveUserId] = useState<string | null>(null);
   const [activeAgentId, setActiveAgentId] = useState<string | null>(null);
   const [pendingJumpId, setPendingJumpId] = useState<string | null>(null);
+  const [railWarranted, setRailWarranted] = useState(true);
   const {
     aboveOverflow,
     belowOverflow,
@@ -591,7 +605,16 @@ export function ThreadTableOfContents({
       }
       activeIdsRef.current = nextActiveIds;
     };
+    const measureRail = () =>
+      setRailWarranted(
+        isTocRailWarranted({
+          clientHeight: scrollElement.clientHeight,
+          scrollHeight: scrollElement.scrollHeight,
+        }),
+      );
+    measureRail();
     const updateActiveItems = () => {
+      measureRail();
       publishActiveItems(
         findActiveItemIds({ agentItems, scrollElement, userItems }),
       );
@@ -730,8 +753,8 @@ export function ThreadTableOfContents({
       }}
     >
       <div
-        className={cn("relative", !tocVisible && "hidden")}
-        inert={!tocVisible}
+        className={cn("relative", !(tocVisible && railWarranted) && "hidden")}
+        inert={!(tocVisible && railWarranted)}
       >
         <button
           type="button"

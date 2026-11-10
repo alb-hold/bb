@@ -777,6 +777,7 @@ function MarkdownCodeBlock({
       <div
         data-clipboard-ignore
         data-code-actions=""
+        data-code-unlabeled={language ? undefined : ""}
         className="flex h-11 w-full items-center justify-between gap-1 rounded-tr-md bg-surface-recessed-solid pl-1 pr-1.5"
       >
         <span

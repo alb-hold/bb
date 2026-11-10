@@ -1,5 +1,9 @@
 import { ThreadRowMetadata as ThreadContextMetadata } from "@/components/ui/thread-row-metadata";
-import { ThreadModeGlyph } from "@/components/ui/thread-mode-glyph";
+import {
+  ThreadLeadingMark,
+  ThreadModeGlyph,
+  threadModeLabel,
+} from "@/components/ui/thread-mode-glyph";
 import {
   memo,
   createContext,
@@ -999,8 +1003,8 @@ function ThreadRowComponent({
                   <span
                     data-sidebar-thread-provider={provider?.id}
                     data-sidebar-thread-leading=""
-                    role={provider ? "img" : undefined}
-                    aria-label={provider?.displayName}
+                    role={provider && !hasModeGlyph ? "img" : undefined}
+                    aria-label={provider && !hasModeGlyph ? provider.displayName : undefined}
                     className="pointer-events-auto relative z-[31] flex size-4 shrink-0 items-center justify-center mr-1 max-md:mr-1.5 md:self-start md:mt-0.5 text-muted-foreground [&_*]:text-inherit!"
                     onClick={(event) => {
                       event.preventDefault();
@@ -1008,11 +1012,11 @@ function ThreadRowComponent({
                       rowLinkRef.current?.click();
                     }}
                   >
-                    {hasModeGlyph ? <ThreadModeGlyph nativeTerminal={thread.experimental_nativeTerminal} isWorktree={thread.environment?.isWorktree === true} /> : provider ? <ProviderIcon providerKind="agent" provider={provider} className="size-4" /> : null}
+                    {provider ? (hasModeGlyph ? <ThreadLeadingMark nativeTerminal={thread.experimental_nativeTerminal === true} isWorktree={thread.environment?.isWorktree === true && thread.experimental_nativeTerminal !== true} providerName={provider.displayName}><ProviderIcon providerKind="agent" provider={provider} className="size-4" /></ThreadLeadingMark> : <ProviderIcon providerKind="agent" provider={provider} className="size-4" />) : <ThreadModeGlyph nativeTerminal={thread.experimental_nativeTerminal === true} isWorktree={thread.environment?.isWorktree === true} />}
                   </span>
                 </TooltipTrigger>
                 <TooltipContent side="top">
-                  {provider?.displayName ?? (thread.experimental_nativeTerminal ? "Native terminal" : "Worktree")}
+                  {provider ? (hasModeGlyph ? `${provider.displayName}, ${(threadModeLabel({ nativeTerminal: thread.experimental_nativeTerminal === true, isWorktree: thread.environment?.isWorktree === true }) ?? "").toLowerCase()}` : provider.displayName) : (thread.experimental_nativeTerminal ? "Native terminal" : "Worktree")}
                 </TooltipContent>
               </Tooltip>
             ) : null}

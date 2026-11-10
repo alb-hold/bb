@@ -142,6 +142,15 @@ it("keeps code and message hit areas inside their own rows", () => {
   expect(css).toMatch(/\[data-code-actions\]\s*\{\s*min-height: 2.75rem;/);
 });
 
+it("shrinks an unlabeled phone code card's controls to an icon-width cluster at the right", () => {
+  const rule = css.match(
+    /@container code-card \(width < 40rem\)\s*\{\s*@media \(pointer: coarse\)\s*\{\s*:where\(\[data-code-card\]\) > :where\(\[data-code-actions\]\[data-code-unlabeled\]\)\s*\{([^}]*)\}/,
+  )?.[1];
+  expect(rule).toMatch(/width: fit-content;/);
+  expect(rule).toMatch(/margin-left: auto;/);
+  expect(css).toMatch(/\[data-code-actions\]\s*\{\s*min-height: 2.75rem;/);
+});
+
 it("reveals actions for coarse pointers while retaining keyboard focus access", () => {
   const actionsCss = readFileSync(
     join(

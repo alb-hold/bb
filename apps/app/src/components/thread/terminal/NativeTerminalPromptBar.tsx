@@ -585,7 +585,7 @@ export function NativeTerminalPromptBar({
       <div
         className={cn(
           COMPOSER_SHELL_CLASS,
-          "group flex flex-col max-md:pointer-coarse:data-[native-composer-inline]:grid max-md:pointer-coarse:data-[native-composer-inline]:grid-cols-[minmax(0,1fr)_auto] max-md:pointer-coarse:data-[native-composer-inline]:items-center px-1.5 py-0.5 transition-[border-color,box-shadow] duration-200 focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/40 motion-reduce:transition-none",
+          "group flex flex-col data-[native-composer-inline]:grid data-[native-composer-inline]:grid-cols-[minmax(0,1fr)_auto] data-[native-composer-inline]:items-center data-[native-composer-inline]:border-border/40 data-[native-composer-inline]:bg-muted/40 pointer-coarse:data-[native-composer-inline]:py-0 data-[native-composer-inline]:shadow-none px-1.5 py-0.5 transition-[border-color,background-color,box-shadow] duration-200 focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/40 motion-reduce:transition-none",
           recording && "border-destructive/40",
         )}
         data-native-composer=""
@@ -667,7 +667,7 @@ export function NativeTerminalPromptBar({
           onKeyDown={onKeyDown}
           onPaste={onPaste}
           className={cn(
-            "max-md:pointer-coarse:group-data-[native-composer-inline]:col-start-1 max-md:pointer-coarse:group-data-[native-composer-inline]:row-start-1 max-md:pointer-coarse:group-data-[native-composer-inline]:h-11 max-md:pointer-coarse:group-data-[native-composer-inline]:overflow-hidden max-h-48 min-h-7 max-md:min-h-11 min-w-0 w-full resize-none bg-transparent px-2 py-1 text-base md:text-sm text-foreground field-sizing-content placeholder:text-muted-foreground focus-visible:outline-none",
+            "group-data-[native-composer-inline]:col-start-1 group-data-[native-composer-inline]:row-start-1 pointer-coarse:group-data-[native-composer-inline]:h-11 pointer-coarse:group-data-[native-composer-inline]:overflow-hidden max-h-48 min-h-7 max-md:min-h-11 min-w-0 w-full resize-none bg-transparent px-2 py-1 text-base md:text-sm text-foreground field-sizing-content placeholder:text-muted-foreground focus-visible:outline-none",
           )}
         />
         <AssistStrip
@@ -683,7 +683,7 @@ export function NativeTerminalPromptBar({
         />
         <div
           data-native-composer-actions=""
-          className="flex shrink-0 items-center gap-1 max-md:pointer-coarse:group-data-[native-composer-inline]:col-start-2 max-md:pointer-coarse:group-data-[native-composer-inline]:row-start-1"
+          className="flex shrink-0 items-center gap-1 group-data-[native-composer-inline]:col-start-2 group-data-[native-composer-inline]:row-start-1"
         >
           <input
             ref={fileInputRef}

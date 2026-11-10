@@ -244,6 +244,56 @@ describe("MobilePanelTabPager", () => {
     expect(screen.queryByRole("button", { name: "package.json" })).toBeNull();
   });
 
+  it("gives a lone tab the free header width instead of reserving unusable paging buttons", () => {
+    let width = 280;
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(
+      () => width,
+    );
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+      function (this: HTMLElement) {
+        return DOMRect.fromRect({
+          width: this.hasAttribute("data-panel-tab-measure") ? 200 : 36,
+          height: 36,
+        });
+      },
+    );
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        disconnect() {}
+      },
+    );
+    const [tab] = createTabs(["r33d-probe"]);
+    const { rerender } = render(
+      <MobilePanelTabPager
+        activeTabId="r33d-probe"
+        fixedTabs={createFixedTabs()}
+        tabs={[tab!]}
+        newTabControl={<button>Add tab</button>}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: "Previous tab" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Next tab" })).toBeNull();
+    const viewport = screen.getByTestId("mobile-panel-tab-viewport");
+    expect(Number.parseFloat(viewport.style.width)).toBeGreaterThan(144);
+    const measured = viewport.querySelector<HTMLElement>(
+      "[data-panel-tab-measure]",
+    )!;
+    expect(Number.parseFloat(measured.style.maxWidth)).toBeGreaterThan(144);
+    width = 280;
+    rerender(
+      <MobilePanelTabPager
+        activeTabId="r33d-probe"
+        fixedTabs={createFixedTabs()}
+        tabs={createTabs(["r33d-probe", "second"])}
+        newTabControl={<button>Add tab</button>}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Previous tab" })).toBeDefined();
+    expect(screen.getByRole("button", { name: "Next tab" })).toBeDefined();
+  });
+
   it("leaves fixed views and add available when there are no content tabs", () => {
     render(
       <MobilePanelTabPager

@@ -15,3 +15,9 @@
   > :where([data-timeline-gap-before="8"]) {
   margin-top: 0.5rem;
 }
+
+:where([data-timeline-row-list])
+  > :where([data-timeline-items])
+  > :where([data-timeline-gap-before="16"]) {
+  margin-top: 1rem;
+}

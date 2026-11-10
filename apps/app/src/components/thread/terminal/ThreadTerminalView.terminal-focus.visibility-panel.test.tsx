@@ -940,6 +940,87 @@ describe("ThreadTerminalView terminal visibility and panel", () => {
     ).toBe(initialToken);
   });
 
+  it("keeps the same xterm and rebinds only the socket when the app identity changes after mount", async () => {
+    vi.stubGlobal("WebSocket", TestTerminalSocket);
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        constructor(private readonly callback: ResizeObserverCallback) {}
+        disconnect(): void {}
+        observe(target: Element): void {
+          this.callback(
+            [
+              {
+                target,
+                contentRect: { width: 390, height: 700 },
+              } as ResizeObserverEntry,
+            ],
+            this as unknown as ResizeObserver,
+          );
+        }
+        unobserve(): void {}
+      },
+    );
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
+      measureText: (text: string) => ({ width: text.length * 8 }),
+    } as unknown as CanvasRenderingContext2D);
+    vi.spyOn(FitAddon.prototype, "proposeDimensions").mockReturnValue({
+      cols: 40,
+      rows: 20,
+    });
+    const dispose = vi.spyOn(Terminal.prototype, "dispose");
+
+    const view = render(
+      <MemoryRouter>
+        <AppCommandProvider>
+          <ThreadTerminalView
+            autoFocus={false}
+            isPanelOpen
+            session={makeTerminalSession({
+              id: "term-token-change-after-mount",
+              threadId: null,
+              status: "running",
+            })}
+          />
+        </AppCommandProvider>
+      </MemoryRouter>,
+    );
+    await waitForReadinessCondition(
+      () => expect(testState.socketUrls).toHaveLength(1),
+      "initial terminal socket URL was not created within 5000 ms",
+    );
+    await waitForReadinessCondition(
+      () => expect(document.querySelector(".xterm")).not.toBeNull(),
+      "xterm was not mounted",
+    );
+    const xterm = document.querySelector(".xterm");
+    expect(xterm).not.toBeNull();
+    const initialToken = new URL(
+      testState.socketUrls[0] ?? "ws://localhost",
+    ).searchParams.get("handoffOwnerToken");
+
+    wsManager.handleIncomingMessage(
+      JSON.stringify({
+        type: "device-handoff-client-token",
+        token: "lateAppIdentity0123456",
+      }),
+    );
+
+    await waitForReadinessCondition(
+      () => expect(testState.socketUrls).toHaveLength(2),
+      "terminal socket was not rebound to the new app identity",
+    );
+    expect(
+      new URL(testState.socketUrls[1] ?? "ws://localhost").searchParams.get(
+        "handoffOwnerToken",
+      ),
+    ).toBe("lateAppIdentity0123456");
+    expect(initialToken).not.toBe("lateAppIdentity0123456");
+    expect(document.querySelector(".xterm")).toBe(xterm);
+    expect(dispose).not.toHaveBeenCalled();
+    view.unmount();
+  });
+
   it.each([
     {
       path: "desktop terminal tab",

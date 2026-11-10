@@ -133,7 +133,7 @@ export function RootComposeHome({
             <div
               ref={scrollContentRef}
               data-testid="root-compose-compact-scroll-content"
-              className="flex min-h-full flex-col"
+              className="flex min-h-full flex-col pb-[calc(1rem+env(safe-area-inset-bottom))]"
             >
               <div className={COMPACT_HOME_COLUMN_CLASS}>
                 {compactScrollContent}

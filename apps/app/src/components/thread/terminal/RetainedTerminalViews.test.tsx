@@ -415,3 +415,54 @@ it("keeps retained terminal actions in the real panel toolbar", () => {
   ).toBe("Search output");
   expect(view.container.textContent).not.toContain("No toolbar");
 });
+
+describe("a project id that resolves after the first mount", () => {
+  function Counting({ log }: { log: string[] }) {
+    useEffect(() => {
+      log.push("mount");
+      return () => {
+        log.push("dispose");
+      };
+    }, [log]);
+    return <div>unrevealed viewer</div>;
+  }
+  it("keeps the unrevealed viewer mounted instead of re-attaching it", () => {
+    const log: string[] = [];
+    const Viewer = () => <Counting log={log} />;
+    const tree = (projectId: string | undefined) => (
+      <RetainedTerminalViewsProvider projectId={projectId}>
+        <RetainedTerminalViewSlot View={Viewer} {...props("retained")} />
+      </RetainedTerminalViewsProvider>
+    );
+    const { rerender } = render(tree(undefined));
+    rerender(tree("proj_late"));
+    rerender(tree("proj_late"));
+    expect(log).toEqual(["mount"]);
+  });
+  it("applies the late project id to project-deleted invalidation", () => {
+    let changed: Parameters<typeof wsManager.onChanged>[0] = () => {};
+    vi.spyOn(wsManager, "onChanged").mockImplementation((callback) => {
+      changed = callback;
+      return () => {};
+    });
+    const log: string[] = [];
+    const Viewer = () => <Counting log={log} />;
+    const tree = (projectId: string | undefined) => (
+      <RetainedTerminalViewsProvider projectId={projectId}>
+        <RetainedTerminalViewSlot View={Viewer} {...props("retained")} />
+      </RetainedTerminalViewsProvider>
+    );
+    const { rerender } = render(tree(undefined));
+    rerender(tree("proj_late"));
+    act(() =>
+      changed({
+        type: "changed",
+        entity: "project",
+        id: "proj_late",
+        changes: ["project-deleted"],
+      }),
+    );
+    rerender(tree("proj_late"));
+    expect(log).toEqual(["mount"]);
+  });
+});

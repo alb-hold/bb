@@ -2527,6 +2527,7 @@ function estimateTimelineWindowedRowHeight(
   return 20 + lineCount * 23;
 }
 
+const TURN_END_TO_USER_GAP = 16;
 const DISCLOSURE_ROW_KINDS = new Set([
   "work",
   "step-summary",
@@ -2638,15 +2639,19 @@ function TimelineRowsList({
         DISCLOSURE_ROW_KINDS.has(next.row.kind)
           ? 4
           : 8;
-      if (
-        current.row.turnId !== next.row.turnId ||
-        (current.row.kind === "conversation" && current.row.role === "user") ||
-        (next.row.kind === "conversation" && next.row.role === "user")
-      )
-        return previousGap;
       const currentIsDisclosure =
         DISCLOSURE_ROW_KINDS.has(current.row.kind) ||
         (current.row.kind === "turn" && current.row.status !== "pending");
+      const nextIsUserMessage =
+        next.row.kind === "conversation" && next.row.role === "user";
+      if (currentIsDisclosure && nextIsUserMessage)
+        return TURN_END_TO_USER_GAP;
+      if (
+        current.row.turnId !== next.row.turnId ||
+        (current.row.kind === "conversation" && current.row.role === "user") ||
+        nextIsUserMessage
+      )
+        return previousGap;
       const nextIsDisclosure =
         DISCLOSURE_ROW_KINDS.has(next.row.kind) ||
         (next.row.kind === "turn" && next.row.status !== "pending");

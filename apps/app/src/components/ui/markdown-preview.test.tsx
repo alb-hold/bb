@@ -184,6 +184,26 @@ describe("MarkdownPreview", () => {
     );
   });
 
+  it("marks a code card without a language so a phone can shrink its controls to an icon-width cluster", () => {
+    const labeled = render(
+      <MarkdownPreview content={"```ts\nconst a = 1;\n```"} />,
+    );
+    expect(
+      labeled.container
+        .querySelector("[data-code-actions]")!
+        .hasAttribute("data-code-unlabeled"),
+    ).toBe(false);
+    labeled.unmount();
+    const bare = render(<MarkdownPreview content={"```\nplain\nthree\nlines\n```"} />);
+    const actions = bare.container.querySelector("[data-code-actions]")!;
+    expect(actions.hasAttribute("data-code-unlabeled")).toBe(true);
+    expect(actions.querySelectorAll("[data-compact-touch=code]")).toHaveLength(2);
+    expect(actions.classList.contains("h-11")).toBe(true);
+    const code = bare.container.querySelector("[data-code-card] pre")!;
+    expect(code.classList.contains("overflow-x-auto")).toBe(true);
+    expect(code.previousElementSibling).toBe(actions);
+  });
+
   it("contains table breakouts to the markdown content width", () => {
     const { container } = render(
       <MarkdownPreview content={"| A |\n| - |\n| B |"} />,

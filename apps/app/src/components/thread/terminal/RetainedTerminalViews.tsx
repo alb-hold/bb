@@ -180,7 +180,8 @@ export function createRetainedTerminalViews() {
       });
       revealTimer = setTimeout(finish, 2_000);
     },
-    update(entry: Entry, attachment: Attachment) {
+    update(entry: Entry, attachment: Attachment, projectId?: string) {
+      if (projectId !== undefined) entry.projectId = projectId;
       update(entry, { attachment, retained: retain(attachment.props) });
       if (attachment.props.session.status !== "running") entry.invalid = true;
     },
@@ -440,7 +441,7 @@ export function RetainedTerminalViewSlot({
       slot.current,
       View,
       current.current,
-      projectId,
+      undefined,
       paneId,
     );
     entry.current = acquired;
@@ -448,17 +449,10 @@ export function RetainedTerminalViewSlot({
       entry.current = null;
       registry.detach(acquired);
     };
-  }, [
-    View,
-    paneId,
-    projectId,
-    props.session.id,
-    props.session.threadId,
-    registry,
-  ]);
+  }, [View, paneId, props.session.id, props.session.threadId, registry]);
   useLayoutEffect(() => {
     if (entry.current !== null)
-      registry?.update(entry.current, current.current);
+      registry?.update(entry.current, current.current, projectId);
   });
   return registry === undefined ? (
     <View {...props} />
