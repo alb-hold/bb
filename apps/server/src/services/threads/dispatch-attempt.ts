@@ -354,6 +354,7 @@ async function runDispatchAttempt(
         ? null
         : "spawner";
     await assertRequestedModelAllowed(deps, {
+      threadId: thread.id,
       childScope: currentChildScope,
       model: payload.model,
       providerId: thread.providerId,

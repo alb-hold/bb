@@ -248,6 +248,12 @@ function spawnGit(args: string[], options: RunGitOptions): Promise<GitRun> {
     ): void => {
       if (settled) return;
       settled = true;
+      if (stopping && USES_PROCESS_GROUPS && child.pid !== undefined) {
+        try {
+          process.kill(-child.pid, 0);
+          signalGit("SIGKILL");
+        } catch {}
+      }
       clearTimeout(timer);
       clearTimeout(forceKill);
       options.signal?.removeEventListener("abort", onAbort);

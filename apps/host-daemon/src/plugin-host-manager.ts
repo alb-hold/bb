@@ -4,6 +4,7 @@ import {
   ensurePluginProcessDataDir,
   sanitizeInheritedChildProcessEnv,
 } from "@bb/process-utils";
+import type { WorktreeHolderScan } from "@bb/process-utils";
 import { operationEnvironment } from "./operation-environment.js";
 import type { ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -94,6 +95,7 @@ interface ActiveCallAdmission {
 }
 
 interface PluginHostManagerOptions {
+  testWorktreeHolderScan?: WorktreeHolderScan;
   dataDir: string;
   logger: Pick<HostDaemonLogger, "debug" | "info" | "warn">;
   fetchArtifact: FetchPluginHostArtifact;
@@ -457,10 +459,20 @@ export class PluginHostManager {
         defaultWorkerEntryPath(),
         [artifactPath, command.pluginId, command.generation, dataDir, tempDir],
         {
-          env: sanitizeInheritedChildProcessEnv({
-            env: process.env,
-            ...(shellPath !== undefined ? { shellPath } : {}),
-          }),
+          env: {
+            ...sanitizeInheritedChildProcessEnv({
+              env: process.env,
+              ...(shellPath !== undefined ? { shellPath } : {}),
+            }),
+            ...(this.options.testWorktreeHolderScan === undefined
+              ? {}
+              : {
+                  NODE_ENV: "test",
+                  BB_TEST_WORKTREE_HOLDER_SCAN: JSON.stringify(
+                    this.options.testWorktreeHolderScan,
+                  ),
+                }),
+          },
           stdio: ["ignore", "ignore", "pipe", "ipc"],
         },
       );

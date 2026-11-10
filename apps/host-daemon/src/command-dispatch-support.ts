@@ -26,6 +26,7 @@ import type {
   ProviderInstallationStatus,
 } from "@bb/provider-bridge-protocol";
 import { ensurePluginProcessDataDir } from "@bb/process-utils";
+import type { WorktreeHolderScan } from "@bb/process-utils";
 import type { InteractiveResolveCommandInput } from "./interactive-request-registry.js";
 import { RuntimeManager, type RuntimeEntry } from "./runtime-manager.js";
 import type { FetchProjectAttachment } from "./project-attachments.js";
@@ -49,6 +50,7 @@ export interface TerminalDataSocketPort {
 }
 
 export interface CommandDispatchOptions {
+  testWorktreeHolderScan?: WorktreeHolderScan;
   emitEnvironmentHookProgress?: (
     message: EnvironmentHookProgressMessage,
   ) => void;

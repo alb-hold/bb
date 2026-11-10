@@ -7240,6 +7240,7 @@ describe("bridge", () => {
       PATH: binDir,
     });
     expect(models.map((model) => model.model)).toEqual([
+      "claude-fable-5-2",
       "claude-fable-5-1",
       "claude-opus-5-5[1m]",
       "claude-opus-5[1m]",

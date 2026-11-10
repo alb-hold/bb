@@ -1,0 +1,292 @@
+import { execFile, spawn } from "node:child_process";
+import { existsSync } from "node:fs";
+import fs from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { once } from "node:events";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { promisify } from "node:util";
+import { experimental_createHostEntryHarness } from "@get-bb/plugin-sdk/testing/host";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { createWorktreeHostEntry } from "./host.js";
+import { descendantsOnly } from "./host/descendants-only.js";
+import {
+  hostProc,
+  useProcReaderForTests,
+  type ProcReader,
+} from "./host/holders.js";
+import { worktreePreservedError } from "./host/worktree-preservation.js";
+
+const execFileAsync = promisify(execFile);
+const temporaryRoots: string[] = [];
+const lingering: ReturnType<typeof spawn>[] = [];
+const NON_DUMPABLE = [
+  "import ctypes, os, sys, time",
+  "libc = ctypes.CDLL(None)",
+  "libc.prctl(4, 0, 0, 0, 0)",
+  "libc.prctl(15, b'unlisted-agent', 0, 0, 0)",
+  "sys.stdout.write(str(os.getpid()) + chr(10))",
+  "sys.stdout.flush()",
+  "time.sleep(300)",
+].join("\n");
+const realUnreadableApplies =
+  process.platform === "linux" && process.getuid?.() !== 0;
+
+function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function git(cwd: string, ...args: string[]): Promise<string> {
+  const result = await execFileAsync("git", args, {
+    cwd,
+    env: {
+      ...process.env,
+      GIT_AUTHOR_NAME: "bb",
+      GIT_AUTHOR_EMAIL: "bb@example.com",
+      GIT_COMMITTER_NAME: "bb",
+      GIT_COMMITTER_EMAIL: "bb@example.com",
+    },
+  });
+  return result.stdout;
+}
+
+afterEach(async () => {
+  vi.restoreAllMocks();
+  useProcReaderForTests(descendantsOnly(hostProc, process.pid));
+  for (const child of lingering.splice(0)) child.kill("SIGKILL");
+  await Promise.all(
+    temporaryRoots
+      .splice(0)
+      .map((root) => rm(root, { recursive: true, force: true })),
+  );
+});
+
+it("reports a worktree retained when a holder appears during quarantined removal", async () => {
+  const fixture = await createFixture();
+  useProcReaderForTests(descendantsOnly(hostProc, process.pid));
+  const originalRename = fs.rename.bind(fs);
+  let holder: ReturnType<typeof spawn> | undefined;
+  vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
+    await originalRename(from, to);
+    if (String(from) !== fixture.path || holder !== undefined) return;
+    holder = spawn(
+      process.execPath,
+      ["-e", "process.send('ready'); setInterval(() => {}, 1000)"],
+      {
+        cwd: String(to),
+        stdio: ["ignore", "ignore", "ignore", "ipc"],
+      },
+    );
+    lingering.push(holder);
+    await once(holder, "message");
+  });
+
+  const removed = await fixture.harness.experimental_call("remove", {
+    operationId: "remove-after-quarantine-holder",
+    pathKey: "thr_unreadable",
+    path: fixture.path,
+  });
+
+  expect(removed).toMatchObject({
+    status: "retained",
+    message: expect.stringContaining("in use by"),
+  });
+  expect(isPidAlive(holder?.pid ?? 0)).toBe(true);
+  expect(existsSync(fixture.path)).toBe(true);
+  expect(existsSync(`${fixture.path}.completed`)).toBe(true);
+  expect(existsSync(join(fixture.path, "README.md"))).toBe(true);
+});
+
+it("reports the Linux non-root holder scan limit after removing a worktree", async () => {
+  const fixture = await createFixture();
+  const originalPlatform = process.platform;
+  vi.spyOn(process, "getuid").mockReturnValue(1000);
+  Object.defineProperty(process, "platform", { value: "linux" });
+  useProcReaderForTests({
+    ...hostProc,
+    readFile: async (target) =>
+      target === "/proc/self/status"
+        ? `Name:\tnode\nState:\tR (running)\nNSpid:\t${process.pid}\nUid:\t1000\t1000\t1000\t1000\nGid:\t1000\t1000\t1000\t1000\nGroups:\t1000\n`
+        : hostProc.readFile(target),
+    readdir: async (target) =>
+      target === "/proc" ? [String(process.pid)] : hostProc.readdir(target),
+  });
+  try {
+    const removed = await fixture.harness.experimental_call("remove", {
+      operationId: "remove-non-root-holder-limit",
+      pathKey: "thr_unreadable",
+      path: fixture.path,
+    });
+
+    expect(removed).toMatchObject({
+      status: "removed",
+      message: expect.stringContaining(
+        "Root and system-UID (<1000) processes are not inspected",
+      ),
+    });
+    expect(existsSync(fixture.path)).toBe(false);
+  } finally {
+    Object.defineProperty(process, "platform", { value: originalPlatform });
+  }
+});
+
+it("includes the Linux non-root holder scan limit in a retained message", () => {
+  const originalPlatform = process.platform;
+  vi.spyOn(process, "getuid").mockReturnValue(1000);
+  Object.defineProperty(process, "platform", { value: "linux" });
+  try {
+    expect(
+      worktreePreservedError("/work/tree", ["is in use"]).message,
+    ).toContain("Root and system-UID (<1000) processes are not inspected");
+  } finally {
+    Object.defineProperty(process, "platform", { value: originalPlatform });
+  }
+});
+
+async function createFixture() {
+  const root = await mkdtemp(join(tmpdir(), "bb-worktree-unreadable-"));
+  temporaryRoots.push(root);
+  const sourcePath = join(root, "repo");
+  const dataDir = join(root, "plugin-data");
+  await mkdir(sourcePath, { recursive: true });
+  await mkdir(dataDir, { recursive: true });
+  await git(sourcePath, "init", "--initial-branch=main");
+  await writeFile(join(sourcePath, "README.md"), "hello\n");
+  await git(sourcePath, "add", ".");
+  await git(sourcePath, "commit", "-m", "initial");
+  const remotePath = join(root, "origin.git");
+  await git(root, "init", "--bare", "--initial-branch=main", remotePath);
+  await git(sourcePath, "remote", "add", "origin", remotePath);
+  await git(sourcePath, "push", "origin", "main");
+  const harness = experimental_createHostEntryHarness(
+    createWorktreeHostEntry(),
+    { experimental_paths: { dataDir, tempDir: join(dataDir, "tmp") } },
+  );
+  const path = join(dataDir, "worktrees", "thr_unreadable", "clean");
+  await mkdir(join(dataDir, "worktrees", "thr_unreadable"), {
+    recursive: true,
+  });
+  await git(sourcePath, "worktree", "add", "--detach", path, "origin/main");
+  await writeFile(`${path}.completed`, "clean\n");
+  return { sourcePath, dataDir, harness, path };
+}
+
+function startOrdinaryProcess(cwd: string): ReturnType<typeof spawn> {
+  const child = spawn(
+    process.execPath,
+    ["-e", "setTimeout(() => {}, 300_000)"],
+    {
+      cwd,
+      detached: true,
+      stdio: "ignore",
+    },
+  );
+  child.unref();
+  lingering.push(child);
+  return child;
+}
+
+function unreadableAfterStart(reader: ProcReader, pid: number): ProcReader {
+  const denied = (path: string) =>
+    new RegExp(`^/proc/${pid}/(ns|root|exe|cwd|fd|task|maps)(/|$)`, "u").test(
+      path,
+    );
+  const refuse = (): never => {
+    throw Object.assign(new Error("EACCES: permission denied"), {
+      code: "EACCES",
+    });
+  };
+  return {
+    ...reader,
+    readlink: (path) => (denied(path) ? refuse() : reader.readlink(path)),
+    readdir: (path) => (denied(path) ? refuse() : reader.readdir(path)),
+    lstatId: (path) => (denied(path) ? refuse() : reader.lstatId(path)),
+    statId: (path) => (denied(path) ? refuse() : reader.statId(path)),
+    readFile: (path) => (denied(path) ? refuse() : reader.readFile(path)),
+  };
+}
+
+async function expectKept(
+  fixture: Awaited<ReturnType<typeof createFixture>>,
+  holderPid: number,
+) {
+  const input = {
+    operationId: "remove",
+    pathKey: "thr_unreadable",
+    path: fixture.path,
+  };
+  const removed = await fixture.harness.experimental_call("remove", input);
+  expect(removed).toMatchObject({
+    status: "retained",
+    message: expect.stringContaining(`process ${holderPid}`),
+  });
+  expect(existsSync(join(fixture.path, "README.md"))).toBe(true);
+  expect(existsSync(`${fixture.path}.completed`)).toBe(true);
+  expect(
+    await git(fixture.sourcePath, "worktree", "list", "--porcelain"),
+  ).toContain(await realpath(fixture.path));
+  const retried = await fixture.harness.experimental_call("remove", input);
+  expect(retried).toMatchObject({
+    status: "retained",
+    message: expect.stringContaining(
+      `process ${holderPid}`,
+    ),
+  });
+  expect(isPidAlive(holderPid)).toBe(true);
+}
+
+describe("a program whose /proc entries cannot be read", () => {
+  it("keeps a clean, published worktree and deletes nothing, with a readable reason, when a same-user program is unreadable (any user)", async () => {
+    const fixture = await createFixture();
+    const holder = startOrdinaryProcess(fixture.dataDir);
+    const pid = holder.pid ?? 0;
+    useProcReaderForTests(
+      unreadableAfterStart(descendantsOnly(hostProc, process.pid), pid),
+    );
+
+    await expectKept(fixture, pid);
+    await fixture.harness.experimental_dispose();
+  });
+
+  it.skipIf(!realUnreadableApplies)(
+      "retains it when a live non-dumpable same-user process has cwd inside the worktree",
+    async () => {
+      const fixture = await createFixture();
+      const holder = spawn("python3", ["-c", NON_DUMPABLE], {
+        cwd: fixture.path,
+        stdio: ["ignore", "pipe", "ignore"],
+      });
+      lingering.push(holder);
+      const pid = await new Promise<number>((resolve) =>
+        holder.stdout?.once("data", (chunk: Buffer) =>
+          resolve(Number(String(chunk).trim())),
+        ),
+      );
+
+      await expectKept(fixture, pid);
+      await fixture.harness.experimental_dispose();
+    },
+  );
+
+  it("removes the same worktree when nothing is unreadable, so only the unreadable program is what keeps it", async () => {
+    const fixture = await createFixture();
+    startOrdinaryProcess(fixture.dataDir);
+
+    const removed = await fixture.harness.experimental_call("remove", {
+      operationId: "remove",
+      pathKey: "thr_unreadable",
+      path: fixture.path,
+    });
+
+    expect(removed, JSON.stringify(removed)).toMatchObject({
+      status: "removed",
+    });
+    expect(existsSync(fixture.path)).toBe(false);
+    await fixture.harness.experimental_dispose();
+  });
+});

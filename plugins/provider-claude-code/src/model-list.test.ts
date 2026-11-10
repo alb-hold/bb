@@ -12,6 +12,13 @@ const EFFORT_LEVELS: ModelInfo["supportedEffortLevels"] = [
 
 const DISCOVERED_MODELS: ModelInfo[] = [
   {
+    value: "claude-fable-5-2[1m]",
+    resolvedModel: "claude-fable-5-2",
+    displayName: "Fable 5.2",
+    description: "Fable 5.2",
+    supportedEffortLevels: EFFORT_LEVELS,
+  },
+  {
     value: "default",
     resolvedModel: "claude-opus-5-5[1m]",
     displayName: "Default (recommended)",
@@ -64,6 +71,7 @@ describe("buildClaudeCodeModels", () => {
         isDefault: model.isDefault,
       })),
     ).toEqual([
+      { model: "claude-fable-5-2", displayName: "Fable 5.2", isDefault: false },
       { model: "claude-fable-5-1", displayName: "Fable 5.1", isDefault: false },
       {
         model: "claude-opus-5-5[1m]",
@@ -96,6 +104,7 @@ describe("buildClaudeCodeModels", () => {
         displayName: model.displayName,
       })),
     ).toEqual([
+      { model: "claude-fable-5-2[1m]", displayName: "Fable 5.2 alias" },
       { model: "opus[1m]", displayName: "Opus (1M context) alias" },
       { model: "claude-fable-5-1[1m]", displayName: "Fable alias" },
       { model: "sonnet", displayName: "Sonnet alias" },
@@ -107,6 +116,7 @@ describe("buildClaudeCodeModels", () => {
     const result = buildClaudeCodeModels([]);
 
     expect(result.models.map((model) => model.model)).toEqual([
+      "claude-fable-5-2",
       "claude-fable-5-1",
       "claude-opus-5-5[1m]",
       "claude-opus-5[1m]",

@@ -37,6 +37,13 @@ export const DEFAULT_CLAUDE_CODE_MODEL = "claude-opus-5-5[1m]";
 export const CLAUDE_CODE_ACTIVE_CATALOG_DATA: readonly ClaudeCodeCatalogEntryData[] =
   [
     {
+      model: "claude-fable-5-2",
+      displayName: "Fable 5.2",
+      description:
+        "Fable 5.2 for demanding reasoning; requires Claude Code v2.1.321+",
+      defaultReasoningEffort: "high",
+    },
+    {
       model: "claude-fable-5-1",
       displayName: "Fable 5.1",
       description:

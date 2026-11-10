@@ -180,7 +180,11 @@ const createResultSchema = z.discriminatedUnion("status", [
   }),
 ]);
 const removeResultSchema = z.discriminatedUnion("status", [
-  z.object({ status: z.literal("removed") }),
+  z.object({
+    status: z.literal("removed"),
+    message: z.string().min(1).optional(),
+  }),
+  z.object({ status: z.literal("retained"), message: z.string().min(1) }),
   z.object({ status: z.literal("failed"), message: z.string().min(1) }),
 ]);
 const environmentOperations = new WeakMap<
@@ -704,6 +708,7 @@ async function runRemove(
   attempt: number,
   resumeOnly: boolean,
   signal: AbortSignal,
+  statusToRestoreOnRetention: EnvironmentRow["status"] | null,
 ): Promise<void> {
   const row = getEnvironment(deps.db, environmentId);
   if (
@@ -763,6 +768,14 @@ async function runRemove(
       if (invocation.value === null)
         throw new Error("The environment provider became unavailable.");
       const result = removeResultSchema.parse(invocation.value);
+      if (result.status === "retained") {
+        writeEnvironmentTeardownFailure(deps, environmentId, result.message);
+        if (statusToRestoreOnRetention !== null)
+          writeEnvironment(deps, environmentId, {
+            status: statusToRestoreOnRetention,
+          });
+        return;
+      }
       if (result.status === "failed") {
         writeEnvironmentTeardownFailure(deps, environmentId, result.message);
         return;
@@ -770,7 +783,7 @@ async function runRemove(
       deps.db.transaction(() => {
         writeEnvironment(deps, environmentId, {
           teardownStatus: "removed",
-          teardownMessage: null,
+          teardownMessage: result.message ?? null,
           claimPath: null,
           resource: null,
           retireAt: null,
@@ -870,6 +883,14 @@ async function sweepProviderEnvironmentInSlot(
     row.teardownStatus === "removed"
   )
     return;
+  const ownerThread =
+    row.ownerThreadId === null ? null : getThread(deps.db, row.ownerThreadId);
+  const statusToRestoreOnRetention =
+    ownerThread !== null &&
+    ownerThread.deletedAt === null &&
+    ["starting", "active", "stopping"].includes(ownerThread.status)
+      ? row.status
+      : null;
   const environmentProviderId = row.environmentProviderId;
   const machineRemoving = getHost(deps.db, row.hostId)?.phase === "removing";
   const shared =
@@ -985,6 +1006,7 @@ async function sweepProviderEnvironmentInSlot(
       attempt,
       row.teardownAttempt > 0,
       signal,
+      statusToRestoreOnRetention,
     );
   } catch (error) {
     writeEnvironmentTeardownFailure(deps, environmentId, errorMessage(error));

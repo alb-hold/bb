@@ -1,6 +1,6 @@
 import { nativeThreadExitRuntime } from "../../services/threads/thread-runtime-display.js";
 import { countUnarchivedThreadDescendants } from "../../services/threads/thread-archive.js";
-import { eq } from "drizzle-orm";
+import { and, eq, ne } from "drizzle-orm";
 import { listThreadCascades } from "../../services/threads/thread-cascade.js";
 import { cancelAbandonedProviderCreations } from "../../services/threads/thread-environment-providers.js";
 import {
@@ -779,6 +779,7 @@ export function registerThreadBaseRoutes(
           ? null
           : "spawner";
       await assertRequestedModelAllowed(deps, {
+        threadId: thread.id,
         childScope,
         model: requestedModel,
         providerId: thread.providerId,
@@ -867,7 +868,8 @@ export function registerThreadBaseRoutes(
           if (
             afterPolicy !== null &&
             next.modelOverride !== null &&
-            next.modelOverride !== afterPolicy
+            next.modelOverride !== afterPolicy &&
+            next.modelOverride !== existing.modelOverride
           ) {
             throw new ApiError(
               400,
@@ -890,9 +892,16 @@ export function registerThreadBaseRoutes(
                 model: queuedThreadMessages.model,
               })
               .from(queuedThreadMessages)
-              .where(eq(queuedThreadMessages.threadId, current.id))
-              .all()
-              .filter((row) => row.model !== afterPolicy);
+              .where(
+                and(
+                  eq(queuedThreadMessages.threadId, current.id),
+                  ne(queuedThreadMessages.model, afterPolicy),
+                  existing.modelOverride === null
+                    ? undefined
+                    : ne(queuedThreadMessages.model, existing.modelOverride),
+                ),
+              )
+              .all();
             const conflictingQueuedMessageIds = conflictingQueuedRows.map(
               (row) => row.id,
             );

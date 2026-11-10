@@ -221,6 +221,7 @@ export async function createQueuedMessageForThread(
 ): Promise<ThreadQueuedMessage> {
   const { payload, thread } = args;
   await assertRequestedModelAllowed(deps, {
+    threadId: thread.id,
     childScope: thread.parentThreadId
       ? "parent"
       : getThreadSpawner(deps.db, thread.id) === null
@@ -384,6 +385,15 @@ export async function resolveQueuedMessageExecutionChange(
     return null;
   }
   const current = toThreadQueuedMessage(row);
+  if (request.model !== undefined) {
+    await deps.providerRegistry.whenRegistrationsSettled();
+    assertRequestedModelAllowedForCurrentScope(deps, {
+      threadId: args.thread.id,
+      model: request.model,
+      providerId: args.thread.providerId,
+      sources: undefined,
+    });
+  }
   const resolved = await buildExecutionOptions(
     deps,
     {

@@ -12,13 +12,13 @@ describe("thread execution profile", () => {
       kind: "parent-linked child",
       parent: true,
       spawned: false,
-      expected: "claude-sonnet-5-5",
+      expected: "claude-opus-5-5",
     },
     {
       kind: "agent-spawned root",
       parent: false,
       spawned: true,
-      expected: "claude-sonnet-5-5",
+      expected: "claude-opus-5-5",
     },
     {
       kind: "user-started root",

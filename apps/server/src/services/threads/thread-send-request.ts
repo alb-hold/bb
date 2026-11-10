@@ -83,6 +83,7 @@ export async function acceptThreadSendRequest(
     return { ok: true, delivery: "sent" };
   }
   await assertRequestedModelAllowed(deps, {
+    threadId: args.thread.id,
     childScope: args.thread.parentThreadId
       ? "parent"
       : getThreadSpawner(deps.db, args.thread.id) === null
