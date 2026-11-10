@@ -1510,6 +1510,54 @@ describe("ThreadRow", () => {
     ).toBeNull();
   });
 
+  it.each([
+    ["native terminal", { experimental_nativeTerminal: true }, "Test Provider, native terminal", "native-terminal"],
+    ["worktree", { environment: makeSidebarEnvironment({ isWorktree: true }) }, "Test Provider, worktree", "worktree"],
+  ] as const)(
+    "keeps the provider mark in the leading column and badges the %s mode",
+    (_label, overrides, name, badge) => {
+      const provider: PluginProvidersState["providers"][number] = {
+        id: "provider-test",
+        pluginId: "provider-test",
+        displayName: "Test Provider",
+        logoUrl: "/provider-test.svg",
+        available: true,
+        maintenance: { health: false, usage: false, installation: false },
+        capabilities: {
+          supportsThreadArchive: true,
+          supportsThreadRename: true,
+          supportsServiceTier: false,
+          supportsNativeUserQuestion: false,
+          supportsFork: true,
+          supportsSessionRewind: false,
+          modelCatalogScope: "workspace",
+          permissionModes: ["accept-edits", "auto", "full"],
+        },
+        composerActions: [],
+        completedTurnDisplay: "collapse",
+      };
+      const slot = renderThreadRow({
+        thread: createThread({ providerId: "provider-test", ...overrides }),
+        providers: [provider],
+      });
+      const mark = screen.getByRole("img", { name });
+      const leading = slot.container.querySelector("[data-sidebar-thread-leading]")!;
+      expect(leading.contains(mark)).toBe(true);
+      expect(
+        leading.querySelectorAll('[data-provider-logo="/provider-test.svg"]'),
+      ).toHaveLength(1);
+      expect(
+        leading.querySelectorAll(`[data-thread-mode-badge="${badge}"]`),
+      ).toHaveLength(1);
+      expect(leading.querySelectorAll('[data-icon="Terminal"], [data-icon="FolderGit"]')).toHaveLength(1);
+      slot.rerenderThreadRow(createThread({ providerId: "provider-test" }));
+      expect(
+        slot.container.querySelector("[data-thread-mode-badge]"),
+      ).toBeNull();
+      expect(screen.getByRole("img", { name: "Test Provider" })).toBeTruthy();
+    },
+  );
+
   it("links the row to the thread href and leaves a plain click to the host", () => {
     const slot = renderThreadRow({
       thread: createThread({ href: "/projects/proj_test/threads/thr_test" }),

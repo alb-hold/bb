@@ -15,7 +15,7 @@ import { Icon } from "@bb/shared-ui/icon";
 import { formatCompactRelativeTime } from "@bb/shared-ui/info-list-row";
 import { getThreadDisplayTitle } from "@/lib/thread-title";
 import { ThreadTitle } from "@/components/thread/ThreadTitleMentions";
-import { ThreadModeGlyph } from "@bb/shared-ui/thread-mode-glyph";
+import { ThreadLeadingMark } from "@bb/shared-ui/thread-mode-glyph";
 import { getProviderIconInfo } from "@/lib/provider-icon";
 import { ThreadStatusGlyph } from "@/components/thread/ThreadStatusGlyph";
 import type { ThreadListIndicatorKind } from "@bb/client-core";
@@ -88,17 +88,18 @@ export function RecentThreadProviderMark({
         depth > 0 && "opacity-60",
       )}
     >
-      {thread.nativeTerminal || thread.environmentIsWorktree ? (
-        <ThreadModeGlyph
-          nativeTerminal={thread.nativeTerminal === true}
-          isWorktree={
-            thread.environmentIsWorktree === true &&
-            thread.nativeTerminal !== true
-          }
-        />
-      ) : ProviderMark === undefined ? null : (
-        <ProviderMark className="size-4" />
-      )}
+      <ThreadLeadingMark
+        nativeTerminal={thread.nativeTerminal === true}
+        isWorktree={
+          thread.environmentIsWorktree === true &&
+          thread.nativeTerminal !== true
+        }
+        providerName={provider?.displayName ?? null}
+      >
+        {ProviderMark === undefined ? null : (
+          <ProviderMark className="size-4" />
+        )}
+      </ThreadLeadingMark>
     </span>
   );
 }
