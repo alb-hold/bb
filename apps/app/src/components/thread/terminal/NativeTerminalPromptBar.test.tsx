@@ -180,13 +180,7 @@ describe("NativeTerminalPromptBar", () => {
     expect(shell.classList.contains("rounded-xl")).toBe(true);
     expect(shell.classList.contains("border-border")).toBe(true);
     expect(shell.className).not.toContain(
-      "md:data-[native-composer-inline]:border-0",
-    );
-    expect(shell.className).not.toContain(
       "md:data-[native-composer-inline]:max-w-md",
-    );
-    expect(shell.className).not.toContain(
-      "md:data-[native-composer-inline]:grid",
     );
     expect(form.className).not.toContain(
       "md:has-[[data-native-composer-inline]]:mx-0",
@@ -231,11 +225,9 @@ describe("NativeTerminalPromptBar", () => {
         act(() => (document.activeElement as HTMLElement).blur());
         expect(shell.hasAttribute("data-native-composer-inline")).toBe(true);
         expect(input.placeholder).toContain("prompt above…");
+        expect(shell.className).toContain("data-[native-composer-inline]:grid");
         expect(shell.className).toContain(
-          "max-md:pointer-coarse:data-[native-composer-inline]:grid",
-        );
-        expect(shell.className).toContain(
-          "max-md:pointer-coarse:data-[native-composer-inline]:grid-cols-[minmax(0,1fr)_auto]",
+          "data-[native-composer-inline]:grid-cols-[minmax(0,1fr)_auto]",
         );
         expect(shell.hasAttribute("data-native-composer-inline")).toBe(true);
         expect(execution.hasAttribute("data-native-composer-execution")).toBe(
@@ -1342,6 +1334,42 @@ it("shows read-only model context beside attachment controls", () => {
   expect(screen.queryByText(/Permissions:/)).toBeNull();
 });
 
+it("rests as a quiet single line at every width and expands to the bordered field on focus or text", () => {
+  const { input } = renderBar();
+  const shell = input.closest("[data-native-composer]")!;
+  const shellClasses = shell.className.split(/\s+/);
+  for (const quiet of [
+    "data-[native-composer-inline]:border-border/40",
+    "data-[native-composer-inline]:bg-muted/40",
+    "data-[native-composer-inline]:shadow-none",
+    "data-[native-composer-inline]:py-0",
+    "data-[native-composer-inline]:grid",
+  ])
+    expect(shellClasses).toContain(quiet);
+  expect(shellClasses).toContain("border-border");
+  expect(shellClasses).toContain("focus-within:border-ring");
+  const textareaClasses = input.className.split(/\s+/);
+  expect(textareaClasses).toContain("group-data-[native-composer-inline]:h-11");
+  expect(textareaClasses).toContain(
+    "group-data-[native-composer-inline]:col-start-1",
+  );
+  const actionClasses = shell
+    .querySelector("[data-native-composer-actions]")!
+    .className.split(/\s+/);
+  expect(actionClasses).toContain(
+    "group-data-[native-composer-inline]:col-start-2",
+  );
+  expect(shell.hasAttribute("data-native-composer-inline")).toBe(true);
+  fireEvent.focus(input);
+  expect(shell.hasAttribute("data-native-composer-inline")).toBe(false);
+  fireEvent.blur(input);
+  expect(shell.hasAttribute("data-native-composer-inline")).toBe(true);
+  fireEvent.change(input, { target: { value: "typed" } });
+  fireEvent.blur(input);
+  expect(shell.hasAttribute("data-native-composer-inline")).toBe(false);
+  expect(input.placeholder).not.toBe("");
+});
+
 it("hides desktop attachment chrome only while resting inline", () => {
   const { input } = renderBar();
   const shell = input.closest("[data-native-composer]")!;
@@ -1432,7 +1460,7 @@ it.each(
       );
       expect(screen.getByLabelText(`Send to ${provider} terminal`)).toBe(input);
       expect(input.className).toContain(
-        "max-md:pointer-coarse:group-data-[native-composer-inline]:h-11",
+        "group-data-[native-composer-inline]:h-11",
       );
     } finally {
       cleanup();
