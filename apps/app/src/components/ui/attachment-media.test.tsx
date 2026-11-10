@@ -87,7 +87,7 @@ afterEach(() => {
 
 it.each(["video/quicktime", ""])(
   "reuses an uploaded video locally for its thumbnail and lightbox (MIME %s)",
-  (type) => {
+  async (type) => {
     const createObjectURL = vi.fn(() => "blob:local-video");
     const revokeObjectURL = vi.fn();
     class PreviewURL extends URL {
@@ -104,7 +104,9 @@ it.each(["video/quicktime", ""])(
     );
     fireEvent.click(trigger);
     expect(
-      view.getByRole("dialog").querySelector("video")?.getAttribute("src"),
+      (await view.findByRole("dialog"))
+        .querySelector("video")
+        ?.getAttribute("src"),
     ).toBe("blob:local-video");
     expect(createObjectURL).toHaveBeenCalledWith(file);
     view.unmount();

@@ -7,6 +7,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
@@ -189,22 +190,23 @@ it("finds scrollback without copying matches, navigates them, and returns focus 
     name: "Find in terminal",
   });
   await waitFor(() => expect(document.activeElement).toBe(input));
+  const search = within(screen.getByRole("search"));
   fireEvent.change(input, { target: { value: "needle" } });
   await waitFor(() =>
-    expect(screen.getByRole("status").textContent).toBe("1 / 2"),
+    expect(search.getByRole("status").textContent).toBe("1 / 2"),
   );
   fireEvent.keyDown(input, { key: "Enter" });
   await waitFor(() =>
-    expect(screen.getByRole("status").textContent).toBe("2 / 2"),
+    expect(search.getByRole("status").textContent).toBe("2 / 2"),
   );
   fireEvent.keyDown(input, { key: "Enter", shiftKey: true });
   await waitFor(() =>
-    expect(screen.getByRole("status").textContent).toBe("1 / 2"),
+    expect(search.getByRole("status").textContent).toBe("1 / 2"),
   );
   fireEvent.click(screen.getByRole("button", { name: "Match case" }));
   fireEvent.change(input, { target: { value: "NEEDLE" } });
   await waitFor(() =>
-    expect(screen.getByRole("status").textContent).toBe("0 / 0"),
+    expect(search.getByRole("status").textContent).toBe("0 / 0"),
   );
   expect(copyToClipboardWithToast).not.toHaveBeenCalled();
   expect(state.input).not.toHaveBeenCalled();

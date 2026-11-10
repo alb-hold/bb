@@ -269,11 +269,7 @@ export function ComposerResizeHandle({
         onKeyDown={(event) => handleKeyDown(event, "height")}
         className={cn(
           "absolute inset-x-12 top-0 z-20 flex h-3 cursor-row-resize touch-none items-start justify-center outline-none",
-          "before:mt-0.5 before:h-1 before:w-12 before:rounded-full before:bg-muted-foreground before:opacity-40 before:transition-opacity before:duration-150 motion-reduce:before:transition-none",
-          "group-hover/promptbox:before:opacity-70 group-focus-within/promptbox:before:opacity-70 hover:before:bg-ring hover:before:opacity-100 focus-visible:before:bg-ring focus-visible:before:opacity-100",
-          dragging &&
-            dragAxis === "height" &&
-            "before:bg-ring before:opacity-100",
+          "focus-visible:ring-2 focus-visible:ring-ring",
         )}
       >
         <span id={heightInstructionsId} className="sr-only">
@@ -315,15 +311,7 @@ export function ComposerResizeHandle({
             className={cn(
               "absolute -top-2 z-30 size-6 cursor-col-resize touch-none outline-none",
               isLeft ? "-left-2" : "-right-2",
-              "before:absolute before:top-2 before:size-3.5 before:border-muted-foreground before:opacity-40 before:transition-opacity before:duration-150 motion-reduce:before:transition-none",
-              isLeft
-                ? "before:left-2 before:rounded-tl-md before:border-l-2 before:border-t-2"
-                : "before:right-2 before:rounded-tr-md before:border-r-2 before:border-t-2",
-              "group-hover/promptbox:before:opacity-70 group-focus-within/promptbox:before:opacity-70 hover:before:border-ring hover:before:opacity-100 focus-visible:before:border-ring focus-visible:before:opacity-100",
-              dragging &&
-                dragAxis === "width" &&
-                dragWidthHandleSide === side &&
-                "before:border-ring before:opacity-100",
+              "focus-visible:ring-2 focus-visible:ring-ring",
             )}
           />
         );

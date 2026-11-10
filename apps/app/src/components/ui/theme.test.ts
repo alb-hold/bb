@@ -2,6 +2,10 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
+import {
+  SIDEBAR_RAIL_BUTTON_CLASS,
+  SIDEBAR_FOOTER_ACTION_CLASS,
+} from "@bb/shared-ui/sidebar-row-classes";
 
 const css = readFileSync(
   join(dirname(fileURLToPath(import.meta.url)), "theme.css"),
@@ -291,6 +295,16 @@ describe("theme.css neutral ramp", () => {
 });
 
 describe("theme.css Cadence text tokens", () => {
+  it("keeps the smallest host tier authoritative over plugin theme layers without enlarging phones", () => {
+    const host = css.match(/\n:root \{([^}]+)\}/)?.[1];
+    expect(host).toMatch(/--text-2xs:\s*0\.6875rem;/);
+    const touch = css.match(
+      /@media \(max-width: 767px\) and \(pointer: coarse\) \{\s*:root \{([^}]+)\}/,
+    )?.[1];
+    expect(touch).toMatch(/--text-2xs:\s*0\.6875rem;/);
+    expect(touch).toMatch(/--text-xs:\s*0\.875rem;/);
+  });
+
   it("registers Cadence color and type utilities with Tailwind", () => {
     expect(css).toMatch(
       /--color-readback-foreground:\s*var\(--readback-foreground\);/,
@@ -299,7 +313,7 @@ describe("theme.css Cadence text tokens", () => {
     expect(css).toMatch(
       /--color-destructive-text:\s*var\(--destructive-text\);/,
     );
-    expect(css).toMatch(/--text-2xs:\s*0\.625rem;/);
+    expect(css).toMatch(/--text-2xs:\s*0\.6875rem;/);
     expect(css).toMatch(/--text-2xs--line-height:\s*0\.875rem;/);
   });
 
@@ -488,4 +502,174 @@ describe("theme.css shimmer paint scope", () => {
     expect(rule).toMatch(/(?<!-)mask-image:\s*none;/);
     expect(rule).toMatch(/-webkit-mask-image:\s*none;/);
   });
+});
+
+describe("composer and navigation contrast", () => {
+  const source = (path: string) =>
+    readFileSync(join(dirname(fileURLToPath(import.meta.url)), path), "utf8");
+  const slot = source(
+    "../../../../../plugins/composer/src/ComposerEditorSlot.tsx",
+  );
+  const recents = source("../../views/RootComposeRecentRows.tsx");
+  const chrome = source(
+    "../../../../../packages/shared-ui/src/components/ui/chrome-style-tokens.ts",
+  );
+  const opacity =
+    Number(slot.match(/::before\]:opacity-(\d+)/)?.[1] ?? 100) / 100;
+  const recentOpacity = recents.includes('"text-subtle-foreground"')
+    ? 1
+    : Number(chrome.match(/text-subtle-foreground\/(\d+)/)?.[1] ?? 100) / 100;
+  const blend = (fg: OklchColor, bg: OklchColor, alpha: number): OklchColor => {
+    const encode = (v: number) =>
+      v <= 0.0031308 ? 12.92 * v : 1.055 * v ** (1 / 2.4) - 0.055;
+    const decode = (v: number) =>
+      v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+    const channel =
+      encode(fg.lightness ** 3) * alpha +
+      encode(bg.lightness ** 3) * (1 - alpha);
+    return { ...fg, lightness: Math.cbrt(decode(channel)) };
+  };
+  for (const mode of MODES) {
+    const block = modeBlock(mode);
+    const canvas = parseOklch(variableValue(block, "canvas"));
+    const ink = parseOklch(variableValue(block, "ink"));
+    const subtle = parseOklch(variableValue(block, "subtle-foreground"));
+    const muted = parseOklch(variableValue(block, "muted-foreground"));
+    const share = rampSteps(block).get("sidebar")! / 100;
+    const sidebar = {
+      ...canvas,
+      lightness: ink.lightness * share + canvas.lightness * (1 - share),
+    };
+    it(`${mode} inactive rail and footer ink is visibly dimmer than active with 4.5:1 contrast`, () => {
+      const share = rampSteps(block).get("sidebar-icon-foreground");
+      expect(share).toBeDefined();
+      const inactive = {
+        ...ink,
+        lightness:
+          (ink.lightness * share!) / 100 +
+          canvas.lightness * (1 - share! / 100),
+      };
+      const distance = (color: OklchColor) =>
+        Math.abs(color.lightness - canvas.lightness);
+      expect(distance(ink) - distance(inactive)).toBeGreaterThanOrEqual(0.05);
+      expect(contrastRatio(inactive, sidebar)).toBeGreaterThanOrEqual(4.5);
+      for (const classes of [
+        SIDEBAR_RAIL_BUTTON_CLASS,
+        SIDEBAR_FOOTER_ACTION_CLASS,
+      ]) {
+        const tokens = classes.split(" ");
+        expect(tokens).toContain("text-sidebar-icon-foreground");
+        expect(tokens).not.toContain("text-sidebar-foreground");
+        expect(tokens).toContain("hover:text-sidebar-foreground");
+        expect(tokens).toContain("aria-[current=page]:text-sidebar-foreground");
+        expect(tokens).toContain("data-[state=open]:text-sidebar-foreground");
+      }
+    });
+    it(`${mode} empty-state foreground reaches AA`, () => {
+      expect(contrastRatio(ink, canvas)).toBeGreaterThanOrEqual(4.5);
+    });
+    it(`${mode} composer placeholder reaches 4.5:1 after opacity`, () => {
+      expect(
+        contrastRatio(blend(subtle, canvas, opacity), canvas),
+      ).toBeGreaterThanOrEqual(4.5);
+    });
+    it(`${mode} Recent heading reaches 4.5:1 after color alpha`, () => {
+      expect(
+        contrastRatio(blend(subtle, canvas, recentOpacity), canvas),
+      ).toBeGreaterThanOrEqual(4.5);
+    });
+    it(`${mode} rail icons and sidebar labels retain their contrast floors`, () => {
+      expect(contrastRatio(muted, sidebar)).toBeGreaterThanOrEqual(4.5);
+      expect(contrastRatio(subtle, sidebar)).toBeGreaterThanOrEqual(3);
+    });
+  }
+});
+
+it("keeps terminal bright-black output distinct from the canvas in both themes", () => {
+  for (const mode of ["dark", "light"] as const) {
+    expect(modeBlock(mode)).toContain(
+      "--ansi-8: color-mix(in oklch, var(--ink) 70%, var(--canvas))",
+    );
+  }
+});
+
+describe("sidebar and timeline metadata contrast", () => {
+  for (const mode of MODES) {
+    const block = modeBlock(mode);
+    const canvas = parseOklch(variableValue(block, "canvas"));
+    const ink = parseOklch(variableValue(block, "ink"));
+    for (const background of ["canvas", "sidebar", "sidebar-accent"]) {
+      const share =
+        background === "canvas" ? 0 : rampSteps(block).get(background)! / 100;
+      const surface = {
+        ...canvas,
+        lightness: ink.lightness * share + canvas.lightness * (1 - share),
+      };
+      for (const token of ["subtle-foreground", "muted-foreground"]) {
+        it(`${mode} ${token} metadata reaches 4.5:1 on ${background}`, () => {
+          expect(
+            contrastRatio(parseOklch(variableValue(block, token)), surface),
+          ).toBeGreaterThanOrEqual(4.5);
+        });
+      }
+    }
+  }
+});
+
+describe("home and assistant hierarchy", () => {
+  for (const mode of MODES) {
+    it(`${mode} keeps Recent metadata one quieter AA step below muted`, () => {
+      const block = modeBlock(mode);
+      const canvas = parseOklch(variableValue(block, "canvas"));
+      const subtle = parseOklch(variableValue(block, "subtle-foreground"));
+      const muted = parseOklch(variableValue(block, "muted-foreground"));
+      expect(contrastRatio(subtle, canvas)).toBeGreaterThanOrEqual(4.5);
+      expect(contrastRatio(subtle, canvas)).toBeLessThan(
+        contrastRatio(muted, canvas),
+      );
+    });
+  }
+  it("lifts only dark primary foreground to at least 14:1", () => {
+    const block = modeBlock("dark");
+    const ink = parseOklch(variableValue(block, "ink"));
+    const canvas = parseOklch(variableValue(block, "canvas"));
+    const foreground = variableValue(block, "foreground");
+    expect(foreground.replace(/\s/g, "")).toBe(
+      "color-mix(inoklch,var(--ink)42%,oklch(100))",
+    );
+    expect(
+      contrastRatio({ ...ink, lightness: ink.lightness * 0.42 + 0.58 }, canvas),
+    ).toBeGreaterThanOrEqual(14);
+    expect(variableValue(block, "muted-foreground")).toBe("oklch(0.78 0 0)");
+    expect(variableValue(block, "subtle-foreground")).toBe("oklch(0.68 0 0)");
+  });
+});
+
+for (const scheme of MODES) {
+  it(`keeps ${scheme} sidebar metadata legible below the subtle text tier`, () => {
+    const block = modeBlock(scheme);
+    const ink = parseOklch(variableValue(block, "ink"));
+    const canvas = parseOklch(variableValue(block, "canvas"));
+    const steps = rampSteps(block);
+    const mixed = (token: string) => {
+      const share = steps.get(token);
+      if (share === undefined) throw new Error(`Missing ramp token ${token}`);
+      return { ...canvas, lightness: canvas.lightness + (ink.lightness - canvas.lightness) * share / 100 };
+    };
+    const sidebar = mixed("sidebar");
+    const metadata = contrastRatio(mixed("sidebar-metadata-foreground"), sidebar);
+    expect(metadata).toBeGreaterThanOrEqual(4.5);
+    expect(metadata).toBeLessThan(contrastRatio(parseOklch(variableValue(block, "subtle-foreground")), sidebar));
+  });
+}
+
+it("gives dark structural borders a visible step without changing light or text", () => {
+  const block = modeBlock("dark");
+  const ink = parseOklch(variableValue(block, "ink"));
+  const canvas = parseOklch(variableValue(block, "canvas"));
+  const share = rampSteps(block).get("border")! / 100;
+  const border = { ...canvas, lightness: canvas.lightness + (ink.lightness - canvas.lightness) * share };
+  expect(contrastRatio(border, canvas)).toBeGreaterThanOrEqual(1.55);
+  expect(rampSteps(modeBlock("light")).get("border")).toBe(14);
+  expect(variableValue(block, "subtle-foreground")).toBe("oklch(0.68 0 0)");
 });

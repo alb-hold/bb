@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
+import { frontendPriorityPluginIds } from "./plugin-surface-providers";
 import { definePluginApp } from "./plugin-app-definition";
+import {
+  getPluginSlotSnapshot,
+  resetPluginSlotStoreForTest,
+  setPluginSlotRegistrations,
+} from "./plugin-slots";
 import {
   createPluginFrontendReconcileState,
   orderPluginFrontendCandidates,
@@ -25,7 +31,15 @@ function candidate(pluginId: string, jsBytes: number): PluginFrontendCandidate {
 }
 
 function pluginModule(): Record<string, unknown> {
-  return { default: definePluginApp(() => {}) };
+  return {
+    default: definePluginApp((app) => {
+      app.slots.homepageSection({
+        id: "section",
+        title: "Section",
+        component: () => null,
+      });
+    }),
+  };
 }
 
 function makeDeferredImports() {
@@ -101,6 +115,129 @@ describe("orderPluginFrontendCandidates", () => {
 });
 
 describe("reconcilePluginFrontends load scheduling", () => {
+  it("does not start an unused deferred wait when only home plugins are installed", async () => {
+    const waitForDeferredLoad = vi.fn(() => new Promise<void>(() => {}));
+    const importModule = vi.fn(async () => pluginModule());
+    await reconcilePluginFrontends(
+      createPluginFrontendReconcileState(),
+      makeDeps([candidate("thread-list", 263_000)], {
+        priorityPluginIds: () => ["thread-list"],
+        waitForDeferredLoad,
+        importModule,
+      }),
+    );
+    expect(importModule).toHaveBeenCalledOnce();
+    expect(waitForDeferredLoad).not.toHaveBeenCalled();
+  });
+
+  it("paints the home input before importing its rich renderer while loading the sidebar in parallel", async () => {
+    const imports: string[] = [];
+    let paint = () => {};
+    const painted = new Promise<void>((resolve) => {
+      paint = resolve;
+    });
+    const prefetchModule = vi.fn();
+    const done = reconcilePluginFrontends(
+      createPluginFrontendReconcileState(),
+      makeDeps(
+        [candidate("bb--composer", 424_000), candidate("thread-list", 263_000)],
+        {
+          priorityPluginIds: () => ["bb--composer", "thread-list"],
+          waitForComposerPaint: () => painted,
+          prefetchModule,
+          importModule: async (url) => {
+            imports.push(url);
+            return pluginModule();
+          },
+        },
+      ),
+    );
+    for (let index = 0; index < 20; index++) await Promise.resolve();
+    expect(imports).toEqual([expect.stringContaining("thread-list")]);
+    expect(prefetchModule.mock.calls.flat()).not.toContainEqual(
+      expect.stringContaining("bb--composer"),
+    );
+    paint();
+    await done;
+    expect(imports).toHaveLength(2);
+    expect(imports[1]).toContain("bb--composer");
+  });
+
+  it("yields before each deferred bundle and never overlaps their evaluations", async () => {
+    const imports = makeDeferredImports();
+    const idle: (() => void)[] = [];
+    const done = reconcilePluginFrontends(
+      createPluginFrontendReconcileState(),
+      makeDeps([candidate("a", 1), candidate("b", 2), candidate("c", 3)], {
+        importModule: imports.importModule,
+        yieldBetweenDeferredLoads: () =>
+          new Promise<void>((resolve) => idle.push(resolve)),
+      }),
+    );
+    for (let i = 0; i < 20; i += 1) await Promise.resolve();
+    expect(imports.started).toHaveLength(0);
+    expect(idle).toHaveLength(1);
+    for (let count = 1; count <= 3; count += 1) {
+      idle.shift()!();
+      for (let i = 0; i < 20; i += 1) await Promise.resolve();
+      expect(imports.started).toHaveLength(count);
+      expect(imports.pending()).toBe(1);
+      expect(idle).toHaveLength(0);
+      await imports.resolveNext();
+      for (let i = 0; i < 20; i += 1) await Promise.resolve();
+      expect(idle).toHaveLength(1);
+      idle.shift()!();
+      for (let i = 0; i < 20; i += 1) await Promise.resolve();
+      expect(idle).toHaveLength(count < 3 ? 1 : 0);
+    }
+    await done;
+  });
+
+  it("defers invisible bundles until paint and idle, then publishes their slots", async () => {
+    let resume = () => {};
+    const idle = new Promise<void>((resolve) => {
+      resume = resolve;
+    });
+    const imports = makeDeferredImports();
+    resetPluginSlotStoreForTest();
+    const registrations = vi.fn(setPluginSlotRegistrations);
+    const waitForDeferredLoad = vi.fn(() => idle);
+    const done = reconcilePluginFrontends(
+      createPluginFrontendReconcileState(),
+      makeDeps([candidate("panel", 100), candidate("composer", 900)], {
+        importModule: imports.importModule,
+        priorityPluginIds: () => ["composer"],
+        waitForDeferredLoad,
+        setRegistrations: registrations,
+      }),
+    );
+    for (let i = 0; i < 10; i += 1) await Promise.resolve();
+    expect(imports.started).toEqual([
+      "/api/v1/plugins/composer/assets/app.js?h=h",
+    ]);
+    expect(waitForDeferredLoad).not.toHaveBeenCalled();
+    await imports.resolveNext();
+    expect(waitForDeferredLoad).toHaveBeenCalledOnce();
+    expect(registrations.mock.calls.map(([id]) => id)).toEqual(["composer"]);
+    expect(imports.started).toHaveLength(1);
+    expect(
+      getPluginSlotSnapshot().homepageSections.map((slot) => slot.pluginId),
+    ).toEqual(["composer"]);
+    resume();
+    for (let i = 0; i < 10; i += 1) await Promise.resolve();
+    await imports.resolveNext();
+    await done;
+    expect(registrations.mock.calls.map(([id]) => id)).toEqual([
+      "composer",
+      "panel",
+    ]);
+    expect(
+      getPluginSlotSnapshot()
+        .homepageSections.map((slot) => slot.pluginId)
+        .sort(),
+    ).toEqual(["composer", "panel"]);
+    resetPluginSlotStoreForTest();
+  });
   it("imports at most PLUGIN_FRONTEND_LOAD_CONCURRENCY bundles at once, in priority order", async () => {
     const imports = makeDeferredImports();
     const state = createPluginFrontendReconcileState();
@@ -245,4 +382,31 @@ describe("reconcilePluginFrontends load scheduling", () => {
     expect(state.records.get("fine")?.status).toBe("loaded");
     expect(state.records.get("also")?.status).toBe("loaded");
   });
+});
+
+it("loads the sidebar first on a cold thread route without waiting for its module before starting the composer", async () => {
+  const imports = makeDeferredImports();
+  const done = reconcilePluginFrontends(
+    createPluginFrontendReconcileState(),
+    makeDeps(
+      [
+        candidate("bb--composer", 424000),
+        candidate("thread-list", 263000),
+        candidate("navigation", 500),
+        candidate("optional", 10),
+      ],
+      {
+        priorityPluginIds: () =>
+          frontendPriorityPluginIds("/projects/project-a/threads/thread-a"),
+        importModule: imports.importModule,
+      },
+    ),
+  );
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+  expect(imports.started[0]).toContain("/thread-list/");
+  expect(imports.started.some((url) => url.includes("/bb--composer/"))).toBe(
+    true,
+  );
+  while (imports.pending()) await imports.resolveNext();
+  await done;
 });

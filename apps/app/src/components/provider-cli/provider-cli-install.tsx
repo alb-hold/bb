@@ -5,13 +5,27 @@ import type {
   ProviderCliStatus,
   ProviderCliStatusResponse,
 } from "@bb/host-daemon-contract";
-import { ProviderCliInstallLogDialog } from "@/components/dialogs/ProviderCliInstallLogDialog";
+import type { ProviderCliInstallLogDialogProps } from "@/components/dialogs/ProviderCliInstallLogDialog";
+import { defineSplit } from "@/lib/define-split";
 import {
   closeProviderCliInstallLog,
   getProviderCliInstallSnapshot,
   startProviderCliInstall,
   subscribeProviderCliInstalls,
 } from "@/components/provider-cli/provider-cli-install-store";
+
+const ProviderCliInstallLogDialogSplit =
+  defineSplit<ProviderCliInstallLogDialogProps>({
+    id: "provider-cli-install-log-dialog",
+    tier: "intent",
+    load: () =>
+      import("@/components/dialogs/ProviderCliInstallLogDialog").then(
+        (module) => module.ProviderCliInstallLogDialog,
+      ),
+    loading: () => null,
+    mountWhen: ({ state }) => state !== null,
+    keepMounted: true,
+  });
 
 export interface ProviderCliStatusEntry {
   provider: ProviderCliKey;
@@ -142,7 +156,7 @@ export function ProviderCliInstallLogDialogHost() {
   );
 
   return (
-    <ProviderCliInstallLogDialog
+    <ProviderCliInstallLogDialogSplit
       state={snapshot.logDialogState}
       onClose={closeProviderCliInstallLog}
     />

@@ -23,7 +23,13 @@ export const promptAreaMocks = {
   cancelThreadPlanMutate: vi.fn(),
   clearThreadGoalMutate: vi.fn(),
   createThreadMutateAsync: vi.fn(),
-  defaultExecutionOptions: null as ResolvedThreadExecutionOptions | null,
+  defaultExecutionOptions: null as
+    | ResolvedThreadExecutionOptions
+    | null
+    | undefined,
+  modelCatalogIsSettled: true,
+  modelCatalogIsVerified: true,
+  permissionModeIsVerified: true,
   executionInputSources: {} as ExistingThreadExecutionInputSources,
   deleteQueuedMessageMutateAsync: vi.fn(),
   navigate: vi.fn(),
@@ -135,8 +141,10 @@ vi.mock("@/components/promptbox/FollowUpPromptBox", async () => {
       } | null;
       environmentSummary?: ReactNode;
       execution: {
+        pending?: boolean;
         providerRouting: { environmentId?: string; hostId?: string };
         model: {
+          unavailableModel?: string;
           active?: { model: string } | null;
           onChange: (model: string) => void;
         };
@@ -168,7 +176,7 @@ vi.mock("@/components/promptbox/FollowUpPromptBox", async () => {
       };
       executionReadOnly?: boolean;
       pendingInteraction?: ReactNode;
-      permission: { value?: string; onChange?: (value: "full") => void };
+      permission: { pending?: boolean; value?: string; onChange?: (value: "full") => void };
       permissionReadOnly?: boolean;
       pluginComposerHost?: PluginComposerHost | null;
       sessionOptionsControl?: ReactNode;
@@ -223,7 +231,11 @@ vi.mock("@/components/promptbox/FollowUpPromptBox", async () => {
         <div data-testid="command-suggestions">
           {`${typeahead.command.source.providerId}:${typeahead.command.source.commandScope}`}
         </div>
-        <div data-testid="selected-model">{execution.model.active?.model}</div>
+        <div data-testid="selected-model" data-unavailable-model={execution.model.unavailableModel}>
+          {execution.pending
+            ? "Loading execution options"
+            : execution.model.active?.model}
+        </div>
         {execution.model.onChange ? (
           <button
             type="button"
@@ -233,7 +245,7 @@ vi.mock("@/components/promptbox/FollowUpPromptBox", async () => {
           </button>
         ) : null}
         {permission.onChange ? (
-          <button type="button" onClick={() => permission.onChange?.("full")}>
+          <button type="button" disabled={permission.pending} onClick={() => permission.onChange?.("full")}>
             Choose permission full
           </button>
         ) : null}
@@ -641,13 +653,15 @@ vi.mock("@/hooks/useThreadCreationOptions", async () => {
         providers: [],
         hasMultipleProviders: true,
         isLoadingModels: false,
-        modelCatalogIsSettled: true,
+        modelCatalogIsSettled: promptAreaMocks.modelCatalogIsSettled,
+        modelCatalogIsVerified: promptAreaMocks.modelCatalogIsVerified,
         modelLoadError: null,
         modelLoadFailed: false,
         modelOptions: [],
         moreModelOptions: [],
         permissionMode: options.initialPermissionMode ?? "auto",
         permissionModeOptions: [],
+        permissionModeIsVerified: promptAreaMocks.permissionModeIsVerified,
         providerOptions: [
           { value: "codex", label: "Codex" },
           { value: "claude-code", label: "Claude Code" },

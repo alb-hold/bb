@@ -1,3 +1,5 @@
+import { ProgressiveComposer } from "./ProgressiveComposerSplit";
+import { flushPendingPromptDraftPersists } from "@/hooks/usePromptDraftStorage";
 import {
   createContext,
   useCallback,
@@ -16,7 +18,6 @@ import { QueryClientContext } from "@tanstack/react-query";
 import type {
   ComposerView,
   ComposerAttachment,
-  ExperimentalComposerAction,
   ExperimentalComposerContributions,
   ExperimentalComposerEditor,
   ExperimentalComposerEditorVoice,
@@ -106,6 +107,7 @@ import {
 import { toUserAttachmentImageSrc } from "@/lib/user-attachment-images";
 import { useOptionalPaneContext } from "@/views/thread-detail/PaneContext";
 import { ComposerPlaceholder } from "./ComposerPlaceholder";
+
 import { PluginComposerPopup } from "@/components/plugin/PluginComposerPopup";
 import {
   ComposerContributionsContext,
@@ -133,10 +135,7 @@ import {
   useContentMeasure,
 } from "@/lib/content-measure";
 import { composerEditorHeightAtom } from "./composerHeightAtoms";
-import {
-  modifierSubmitShortcutAria,
-  modifierSubmitShortcutLabel,
-} from "./modifier-submit-shortcut";
+import { composerSubmission } from "./composer-submission";
 
 interface TypeaheadMentionConfig {
   triggers?: readonly PluginMentionTrigger[];
@@ -185,6 +184,7 @@ export interface PromptVoiceConfig extends Omit<
   "unsupportedMessage"
 > {
   unsupportedReason?: VoiceUnsupportedReason | null;
+  runtime?: ReactNode;
 }
 
 export interface PromptBoxSubmissionConfig extends Omit<
@@ -227,58 +227,6 @@ export type ComposerBoxProps = Omit<
 const EMPTY_ATTACHMENTS: PromptDraftAttachment[] = [];
 
 const COMPOSER_SLOT_KIND = "composer";
-
-const ignoreReportedSubmitError = () => {};
-
-const ENTER_SHORTCUT = { label: "Enter", ariaKeyshortcuts: "Enter" };
-
-function composerSubmission(
-  submission: PromptBoxSubmissionConfig | undefined,
-  onSubmit: ComposerBoxProps["onSubmit"],
-): ExperimentalComposerSubmission {
-  const {
-    onModifierSubmit,
-    queuesDraft = false,
-    swapSubmitActions = false,
-    showModifierSubmitAction = false,
-    ...state
-  } = submission ?? {};
-  const runReported =
-    (handler: () => void | Promise<void>): ExperimentalComposerAction["run"] =>
-    () => {
-      void Promise.resolve(handler()).catch(ignoreReportedSubmitError);
-    };
-  const draft = {
-    kind: queuesDraft || swapSubmitActions ? "queue" : "send",
-    requiresInput: true,
-    run: runReported(() => onSubmit()),
-  } as const;
-  const steer =
-    onModifierSubmit === undefined
-      ? null
-      : ({
-          kind: "steer",
-          requiresInput: false,
-          run: runReported(() => onModifierSubmit()),
-        } as const);
-  const [enter, modifier] =
-    swapSubmitActions && steer !== null ? [steer, draft] : [draft, steer];
-  return {
-    ...state,
-    enter: { ...enter, shortcut: ENTER_SHORTCUT },
-    modifier:
-      modifier === null
-        ? null
-        : {
-            ...modifier,
-            shortcut: {
-              label: modifierSubmitShortcutLabel(),
-              ariaKeyshortcuts: modifierSubmitShortcutAria(),
-            },
-          },
-    showModifierInMenu: showModifierSubmitAction,
-  };
-}
 
 const ComposerRendererContext =
   createContext<ExperimentalComposerRendererApi | null>(null);
@@ -489,6 +437,7 @@ function useComposerRendererHostApi({
       if (host?.sendsOnEnter !== true) {
         throw new Error("This composer cannot submit programmatically.");
       }
+      flushPendingPromptDraftPersists();
       const current = host.getCurrent();
       if (
         current.text.trim().length === 0 &&
@@ -526,6 +475,7 @@ function useComposerRendererHostApi({
     }),
     getCurrent: () => draft,
     subscribeDraft,
+    setTextAndMentions: onChange,
     setDraft: (next) => {
       onChange(next.text, next.mentions);
       if (next.attachments !== draft.attachments) {
@@ -544,10 +494,25 @@ function useComposerRendererHostApi({
   const isFocusedPane = useOptionalPaneContext()?.isFocused ?? true;
   const availableMaxHeight = useContext(ComposerMaxHeightContext);
   const maxHeight = input.maxHeight ?? availableMaxHeight;
+  const resolveMentionLink = useMemo(
+    () =>
+      mentionLinkResolver({
+        resolveLink: typeahead.mention.resolveLink,
+        attachments: draftAttachments,
+        attachmentProjectId: attachments?.projectId,
+        openAttachment,
+      }),
+    [
+      typeahead.mention.resolveLink,
+      draftAttachments,
+      attachments?.projectId,
+      openAttachment,
+    ],
+  );
 
-  const decorationSources = composerDecorationSources(
-    resolvedEditor.effects,
-    textEffects ?? [],
+  const decorationSources = useMemo(
+    () => composerDecorationSources(resolvedEditor.effects, textEffects ?? []),
+    [resolvedEditor.effects, textEffects],
   );
   const [draftObserverRunner] = useState(createDraftObserverRunner);
   useEffect(() => {
@@ -595,12 +560,7 @@ function useComposerRendererHostApi({
       commandTriggers: typeahead.command.source.skillsTriggers.filter(
         (trigger) => !mentionTriggers.some((mention) => mention === trigger),
       ),
-      resolveMentionLink: mentionLinkResolver({
-        resolveLink: typeahead.mention.resolveLink,
-        attachments: draftAttachments,
-        attachmentProjectId: attachments?.projectId,
-        openAttachment,
-      }),
+      resolveMentionLink,
       attachments: composerAttachments(attachments),
       history: composerHistory(
         history,
@@ -712,15 +672,22 @@ export function ComposerBox(props: ComposerBoxProps) {
   const bootSettled = usePluginFrontendsSettled();
   const loadFailed = usePluginFrontendLoadFailed();
   const [attempt, setAttempt] = useState(0);
+  const [rendererFailed, setRendererFailed] = useState(false);
   const registration =
     replacement.kind === "plugin" ? replacement.registration : null;
   const pluginId = registration?.pluginId ?? null;
+  const [startsProgressive] = useState(
+    () =>
+      props.surface === "new-thread" && registration === null && !bootSettled,
+  );
   const handleReload = useCallback(() => {
     if (pluginId !== null) resetCrashedPluginSlots(pluginId);
     setAttempt((current) => current + 1);
+    setRendererFailed(false);
   }, [pluginId]);
   const handleCrash = useCallback(
     (crashedPluginId: string) => {
+      setRendererFailed(true);
       appToast.error("Composer plugin crashed", {
         description: `${registration?.title ?? "Composer"} (${crashedPluginId}) stopped working.`,
       });
@@ -728,13 +695,17 @@ export function ComposerBox(props: ComposerBoxProps) {
     [registration?.title],
   );
 
-  if (registration === null) {
+  if (registration === null && !(startsProgressive && !bootSettled)) {
     return (
       <ComposerPlaceholder
         state={
           !bootSettled
             ? {
                 kind: "loading",
+                placeholder:
+                  props.compact?.when === "always"
+                    ? props.compact.placeholder
+                    : props.placeholder,
                 shape:
                   props.surface === "new-thread"
                     ? "new-thread"
@@ -749,9 +720,9 @@ export function ComposerBox(props: ComposerBoxProps) {
       />
     );
   }
-  const Composer = registration.component;
-  return (
-    <ComposerRendererHostProvider {...props}>
+  const Composer = registration?.component;
+  const content =
+    Composer && registration ? (
       <div data-composer-box="" className="w-full">
         <PluginSlotMount
           key={`${registration.pluginId}/${registration.id}/${registration.generation}/${attempt}`}
@@ -772,6 +743,32 @@ export function ComposerBox(props: ComposerBoxProps) {
           <Composer />
         </PluginSlotMount>
       </div>
+    ) : null;
+  if (
+    startsProgressive &&
+    !rendererFailed &&
+    (registration === null || registration.pluginId === "bb--composer")
+  ) {
+    return (
+      <ProgressiveComposer props={props}>
+        {(handoff, rich, layout, controls) => (
+          <ComposerRendererHostProvider
+            {...props}
+            experimental_startupHandoff={rich ? undefined : handoff}
+            executionControls={rich ? controls : undefined}
+            promptBoxRef={rich ? props.promptBoxRef : undefined}
+          >
+            {props.voice?.runtime}
+            {layout(content)}
+          </ComposerRendererHostProvider>
+        )}
+      </ProgressiveComposer>
+    );
+  }
+  return (
+    <ComposerRendererHostProvider {...props}>
+      {props.voice?.runtime}
+      {content}
     </ComposerRendererHostProvider>
   );
 }

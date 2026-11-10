@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useLayoutEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   closeSecondaryPanelTabInState,
@@ -18,11 +18,13 @@ import { applyTerminalSessionUpsert } from "@/hooks/cache-owners/terminal-cache-
 import {
   replaceFixedRightTerminalTabInState,
   restoreFixedRightTerminalTabInState,
+  useGetFixedPanelTabsState,
   useRemoveFixedRightTerminalTab,
   useSetFixedRightTerminalActiveTerminal,
   useUpdateFixedPanelTabsState,
 } from "@/lib/fixed-panel-tabs";
 import { isVisibleTerminalSession } from "@/lib/terminal-session-visibility";
+import { registerOpenThreadTerminalFocus } from "@/lib/open-thread-terminal-focus";
 
 interface UsePanelTerminalsArgs {
   panelStateId: string | null | undefined;
@@ -74,6 +76,7 @@ export function usePanelTerminals({
     null,
   );
   const queryClient = useQueryClient();
+  const getPanelState = useGetFixedPanelTabsState(panelStateId);
   const pendingTerminals = usePendingTerminals();
   const updatePanelState = useUpdateFixedPanelTabsState(
     panelStateId,
@@ -97,6 +100,20 @@ export function usePanelTerminals({
     },
     [reveal, setActiveTerminal],
   );
+
+  useLayoutEffect(() => {
+    if (!isFocused || !syncThreadId) return;
+    return registerOpenThreadTerminalFocus(syncThreadId, (terminalId) => {
+      if (
+        !getPanelState().secondary.tabs.some(
+          (tab) => tab.kind === "terminal" && tab.terminalId === terminalId,
+        )
+      )
+        return false;
+      select(terminalId);
+      return true;
+    });
+  }, [getPanelState, isFocused, select, syncThreadId]);
 
   const open = useCallback(
     (session: TerminalSession) => {

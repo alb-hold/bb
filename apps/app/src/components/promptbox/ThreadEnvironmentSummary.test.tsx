@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 
+import { CHROME_SUBTLE_ICON_BUTTON_FOREGROUND_CLASS } from "@bb/shared-ui/chrome-style-tokens";
+
 import { cleanup, render, screen } from "@testing-library/react";
 import { TooltipProvider } from "@bb/shared-ui/tooltip";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -171,10 +173,9 @@ describe("ThreadEnvironmentSummary", () => {
     const createThreadButton = screen.getByRole("button", {
       name: "New thread in this environment",
     });
-    expect(createThreadButton.classList).toContain("text-subtle-foreground/75");
-    expect(createThreadButton.classList).toContain(
-      "hover:text-muted-foreground",
-    );
+    for (const token of CHROME_SUBTLE_ICON_BUTTON_FOREGROUND_CLASS.split(" ")) {
+      expect(createThreadButton.classList).toContain(token);
+    }
     expect(
       container.querySelector('[data-icon="MessageSquarePlus"]'),
     ).not.toBeNull();

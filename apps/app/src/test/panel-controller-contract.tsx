@@ -43,7 +43,7 @@ export interface PanelContractSurface {
   snapshot: () => PanelContractSnapshot;
   renderedTarget: () => string | null;
   renderedTabVisible: () => string | null;
-  command: (id: "panel.toggle") => boolean;
+  command: (id: "panel.toggle" | "panel.newTab") => boolean;
   action: {
     tab: ExperimentalTabReference;
     panelTabId: (params: JsonValue | undefined) => string;

@@ -10,13 +10,17 @@ import {
 import { existsSync } from "node:fs";
 import { dirname, extname, join, resolve } from "node:path";
 import { derivePluginId } from "@bb/domain";
-import type { Metafile, Plugin } from "esbuild";
+import type { BuildOptions, Metafile, Plugin } from "esbuild";
+import { pluginZodAdmission } from "./zod-admission.js";
 import {
   PLUGIN_THEME_CSS,
   TW_ANIMATE_CSS,
 } from "./generated/plugin-theme.generated.js";
 import { renameIntoPlace } from "./rename-into-place.js";
-import { RUNTIME_EXPORT_MANIFEST } from "./generated/runtime-export-manifest.generated.js";
+import {
+  RUNTIME_EXPORT_MANIFEST,
+  RUNTIME_PACKAGE_VERSIONS,
+} from "./generated/runtime-export-manifest.generated.js";
 import type { PluginBuildToolchain } from "./toolchain.js";
 import { createPluginArtifactMeta } from "./plugin-artifact-meta.js";
 import {
@@ -50,6 +54,14 @@ export {
 
 const SHARED_UI_SOURCE_IMPORTER = /[\\/]shared-ui[\\/]src[\\/]/;
 const SHARED_UI_RUNTIME_MODULES: ReadonlyMap<string, string> = new Map([
+  ["/shared-ui/src/components/ui/dropdown-menu", "@bb/shared-ui/dropdown-menu"],
+  ["/shared-ui/src/components/ui/dialog", "@bb/shared-ui/dialog"],
+  ["/shared-ui/src/components/ui/context-menu", "@bb/shared-ui/context-menu"],
+  [
+    "/shared-ui/src/components/ui/responsive-overlay",
+    "@bb/shared-ui/responsive-overlay",
+  ],
+
   ["/shared-ui/src/components/ui/icon", SHARED_UI_ICON_SPECIFIER],
   [
     "/shared-ui/src/components/ui/question-form-host",
@@ -139,9 +151,12 @@ async function shimModuleSource(
   const names = await shimExportsOf(specifier, pluginSdkAppModuleUrl);
   return [
     `const runtime = globalThis.__bbPluginRuntime;`,
-    `if (runtime == null || runtime.${slot} == null) {`,
+    `if (runtime == null) {`,
+    `  throw new Error("Plugins must be loaded by the BB app.");`,
+    `}`,
+    `if (runtime.${slot} == null) {`,
     `  throw new Error(${JSON.stringify(
-      `Cannot load "${specifier}": this bundle must be loaded by the BB app, which provides the shared plugin runtime (globalThis.__bbPluginRuntime).`,
+      `Cannot load "${specifier}": missing shared plugin runtime slot "${slot}". Update the BB host before loading this plugin.`,
     )});`,
     `}`,
     `const mod = runtime.${slot};`,
@@ -190,7 +205,56 @@ const SHIM_FILTER = new RegExp(
     .join("|")})$`,
 );
 
-export function runtimeShimPlugin(pluginSdkAppModuleUrl?: string): Plugin {
+const VERSIONED_RUNTIME_SPECIFIERS = new Set([
+  "zod",
+  "zod/v4",
+  "@radix-ui/react-checkbox",
+  "@radix-ui/react-slot",
+  "@radix-ui/react-compose-refs",
+]);
+
+export function canShareRuntimeVersion(
+  pluginVersion: string | null,
+  hostVersion: string | undefined,
+): boolean {
+  if (pluginVersion === null || hostVersion === undefined) return false;
+  const plugin = /^(\d+)\.(\d+)\.(\d+)$/.exec(pluginVersion);
+  const host = /^(\d+)\.(\d+)\.(\d+)$/.exec(hostVersion);
+  if (plugin === null || host === null) return pluginVersion === hostVersion;
+  if (plugin[1] !== host[1]) return false;
+  for (const part of [2, 3]) {
+    const difference = Number(host[part]) - Number(plugin[part]);
+    if (difference !== 0) return difference > 0;
+  }
+  return true;
+}
+
+async function installedPackageVersion(
+  file: string,
+  specifier: string,
+): Promise<string | null> {
+  const parts = specifier.split("/");
+  const name = specifier.startsWith("@")
+    ? parts.slice(0, 2).join("/")
+    : parts[0];
+  let directory = dirname(file);
+  while (dirname(directory) !== directory) {
+    try {
+      const pkg: unknown = JSON.parse(
+        await readFile(join(directory, "package.json"), "utf8"),
+      );
+      if (isRecord(pkg) && pkg.name === name && typeof pkg.version === "string")
+        return pkg.version;
+    } catch {}
+    directory = dirname(directory);
+  }
+  return null;
+}
+
+export function runtimeShimPlugin(
+  pluginSdkAppModuleUrl?: string,
+  shareZod = false,
+): Plugin {
   return {
     name: "bb-plugin-runtime-shims",
     setup(build) {
@@ -242,6 +306,37 @@ export function runtimeShimPlugin(pluginSdkAppModuleUrl?: string): Plugin {
         },
       );
       build.onResolve({ filter: SHIM_FILTER }, async (args) => {
+        if (args.pluginData?.bbRuntimeVersionResolution) return undefined;
+        if ((args.path === "zod" || args.path === "zod/v4") && !shareZod)
+          return undefined;
+        if (VERSIONED_RUNTIME_SPECIFIERS.has(args.path)) {
+          const resolved = await build.resolve(args.path, {
+            resolveDir: args.resolveDir,
+            kind: args.kind,
+            pluginData: { bbRuntimeVersionResolution: true },
+          });
+          const version =
+            resolved.errors.length === 0
+              ? await installedPackageVersion(resolved.path, args.path)
+              : null;
+          const hostVersion = RUNTIME_PACKAGE_VERSIONS[args.path];
+          if (
+            !canShareRuntimeVersion(version, hostVersion) &&
+            (resolved.errors.length === 0 ||
+              args.path === "zod" ||
+              args.path === "zod/v4")
+          ) {
+            return {
+              path: resolved.path,
+              errors: resolved.errors,
+              warnings: [
+                {
+                  text: `Bundling ${args.path}@${version ?? "unresolved"}: host runtime provides ${hostVersion}; incompatible, newer or unknown plugin version.`,
+                },
+              ],
+            };
+          }
+        }
         const retired =
           (args.path === PLUGIN_SDK_APP_SPECIFIER ||
             args.path === LEGACY_PLUGIN_SDK_APP_SPECIFIER) &&
@@ -260,13 +355,20 @@ export function runtimeShimPlugin(pluginSdkAppModuleUrl?: string): Plugin {
       build.onResolve(
         {
           filter:
-            /(^|\/)(icon|question-form-host|voice-input-textarea)(\.[jt]sx?)?$/,
+            /(^|\/)(icon|question-form-host|voice-input-textarea|dropdown-menu|dialog|context-menu|responsive-overlay)(\.[jt]sx?)?$/,
         },
         (args) => {
-          if (args.namespace !== "file" || !args.path.startsWith(".")) {
+          if (args.namespace !== "file" && args.namespace !== "") {
             return undefined;
           }
-          const specifier = sharedUiRuntimeModuleFor(args.path, args.importer);
+          const alias = args.path.replace("@/components/ui/", "@bb/shared-ui/");
+          const specifier =
+            args.path.startsWith("@/components/ui/") &&
+            RUNTIME_SLOT_BY_SPECIFIER[alias]
+              ? alias
+              : args.path.startsWith(".")
+                ? sharedUiRuntimeModuleFor(args.path, args.importer)
+                : null;
           return specifier === null
             ? undefined
             : { path: specifier, namespace: SHIM_NAMESPACE };
@@ -551,7 +653,7 @@ export async function buildPluginApp(
     const esbuild = (await import(
       toolchain.esbuild
     )) as typeof import("esbuild");
-    const bundle = await esbuild.build({
+    const buildOptions = {
       entryPoints: [appEntry],
       outfile: stagedJsPath,
       absWorkingDir: rootDir,
@@ -570,7 +672,31 @@ export async function buildPluginApp(
       },
       logLevel: "error",
       plugins: [zodLocaleStubPlugin(), runtimeShimPlugin()],
-    });
+    } satisfies BuildOptions;
+    const preflight = await esbuild.build({ ...buildOptions, write: false });
+    const admission = await pluginZodAdmission(
+      preflight.metafile!,
+      rootDir,
+      esbuild.transform,
+      async (path) =>
+        canShareRuntimeVersion(
+          await installedPackageVersion(path, "zod"),
+          RUNTIME_PACKAGE_VERSIONS.zod,
+        ),
+    );
+    const bundle = admission.shared
+      ? await esbuild.build({
+          ...buildOptions,
+          plugins: [zodLocaleStubPlugin(), runtimeShimPlugin(undefined, true)],
+        })
+      : preflight;
+    if (!admission.shared) {
+      await Promise.all(
+        preflight.outputFiles!.map((file) =>
+          writeFile(file.path, file.contents),
+        ),
+      );
+    }
 
     migrationWarnings = bundle.warnings
       .filter((warning) => warning.pluginName === "bb-plugin-runtime-shims")
@@ -578,6 +704,10 @@ export async function buildPluginApp(
         warning.location === null
           ? warning.text
           : `${warning.location.file}:${warning.location.line}: ${warning.text}`,
+      );
+    if (admission.reason !== null)
+      migrationWarnings.push(
+        `Bundling Zod for ${packageName}: ${admission.reason}`,
       );
 
     let authoredCss = "";

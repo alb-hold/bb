@@ -1,5 +1,9 @@
 // @vitest-environment jsdom
 
+import { SidebarRowMetadataExperiment } from "../list/SidebarRowMetadataExperiment.js";
+import { ThreadListVisibilityGroupScope } from "../list/ThreadListVisibility.js";
+import * as pluginSdk from "@get-bb/plugin-sdk/app";
+
 import {
   act,
   cleanup,
@@ -41,7 +45,10 @@ import {
   type TestThreadActionsResolver,
   type TestThreadBulkActionsResolver,
 } from "@get-bb/plugin-sdk/testing/app";
-import { NO_COLLAPSED_CHILD_ACTIVITY } from "../model/thread-activity.js";
+import {
+  NO_COLLAPSED_CHILD_ACTIVITY,
+  getCollapsedChildActivity,
+} from "../model/thread-activity.js";
 import {
   threadListPullRequestRpcContract,
   type ThreadListPullRequest,
@@ -55,6 +62,7 @@ import {
 import {
   sidebarShowProviderIconsAtom,
   sidebarShowRowMetadataAtom,
+  THREAD_ROW_METADATA_EXPERIMENT,
 } from "../preferences/atoms.js";
 import { SidebarProjectsContext } from "../model/use-sidebar-data.js";
 import type { ThreadRowOptions } from "./ThreadRow.js";
@@ -144,6 +152,7 @@ interface HarnessProps {
   providers?: PluginProvidersState["providers"];
   isCompactViewport?: boolean;
   crossProjectId?: string | null;
+  visibilityGroup?: string;
   isActive?: boolean;
   options?: ThreadRowOptions;
   onRowEvent?: () => void;
@@ -159,65 +168,71 @@ function ThreadRowHarness({
   providers = [],
   isCompactViewport,
   crossProjectId = null,
+  visibilityGroup,
   isActive = false,
   options = DEFAULT_OPTIONS,
   onRowEvent,
   onCustomizeRowActions,
   onFinishCustomizingRowActions,
 }: HarnessProps) {
-  const row = (
-    <ThreadRow
-      thread={thread}
-      crossProjectId={crossProjectId}
-      isActive={isActive}
-      options={options}
-    />
+  const threadRow = (
+      <ThreadRow
+        thread={thread}
+        crossProjectId={crossProjectId}
+        isActive={isActive}
+        options={options}
+      />
   );
+  const row = visibilityGroup ? (
+    <ThreadListVisibilityGroupScope id={visibilityGroup}>{threadRow}</ThreadListVisibilityGroupScope>
+  ) : threadRow;
   const content = (
-    <SidebarProjectsContext.Provider value={projects}>
-      <SidebarProvidersContext.Provider value={providers}>
-        <TooltipProvider>
-          <SidebarDraftPresenceSync />
-          <ThreadRowNavigationProvider>
-            <ThreadSelectionProvider activeThreadId={null}>
-              <SidebarRenameProvider>
-                <CustomizeRowActionsContext.Provider
-                  value={onCustomizeRowActions ?? null}
-                >
-                  <ThreadRowActionsCustomizingContext.Provider
-                    value={
-                      onFinishCustomizingRowActions
-                        ? {
-                            threadId: thread.id,
-                            onDone: onFinishCustomizingRowActions,
-                          }
-                        : null
-                    }
+    <SidebarRowMetadataExperiment>
+      <SidebarProjectsContext.Provider value={projects}>
+        <SidebarProvidersContext.Provider value={providers}>
+          <TooltipProvider>
+            <SidebarDraftPresenceSync />
+            <ThreadRowNavigationProvider>
+              <ThreadSelectionProvider activeThreadId={null}>
+                <SidebarRenameProvider>
+                  <CustomizeRowActionsContext.Provider
+                    value={onCustomizeRowActions ?? null}
                   >
-                    <div
-                      onPointerDown={onRowEvent}
-                      onKeyDown={onRowEvent}
-                      onClick={onRowEvent}
+                    <ThreadRowActionsCustomizingContext.Provider
+                      value={
+                        onFinishCustomizingRowActions
+                          ? {
+                              threadId: thread.id,
+                              onDone: onFinishCustomizingRowActions,
+                            }
+                          : null
+                      }
                     >
-                      {row}
-                      {siblings.map((sibling) => (
-                        <ThreadRow
-                          key={sibling.id}
-                          thread={sibling}
-                          crossProjectId={crossProjectId}
-                          isActive={false}
-                          options={options}
-                        />
-                      ))}
-                    </div>
-                  </ThreadRowActionsCustomizingContext.Provider>
-                </CustomizeRowActionsContext.Provider>
-              </SidebarRenameProvider>
-            </ThreadSelectionProvider>
-          </ThreadRowNavigationProvider>
-        </TooltipProvider>
-      </SidebarProvidersContext.Provider>
-    </SidebarProjectsContext.Provider>
+                      <div
+                        onPointerDown={onRowEvent}
+                        onKeyDown={onRowEvent}
+                        onClick={onRowEvent}
+                      >
+                        {row}
+                        {siblings.map((sibling) => (
+                          <ThreadRow
+                            key={sibling.id}
+                            thread={sibling}
+                            crossProjectId={crossProjectId}
+                            isActive={false}
+                            options={options}
+                          />
+                        ))}
+                      </div>
+                    </ThreadRowActionsCustomizingContext.Provider>
+                  </CustomizeRowActionsContext.Provider>
+                </SidebarRenameProvider>
+              </ThreadSelectionProvider>
+            </ThreadRowNavigationProvider>
+          </TooltipProvider>
+        </SidebarProvidersContext.Provider>
+      </SidebarProjectsContext.Provider>
+    </SidebarRowMetadataExperiment>
   );
   return isCompactViewport === undefined ? (
     content
@@ -522,7 +537,159 @@ afterEach(() => {
   resetPreferencesSyncForTest();
 });
 
+const sdkExportsAreSpyable =
+  Object.getOwnPropertyDescriptor(pluginSdk, "experimental_useExperiment")
+    ?.configurable === true;
+
 describe("ThreadRow", () => {
+  it("uses one leading mode column without a blank title slot", () => {
+    const view = renderThreadRow({ thread: createThread({ experimental_nativeTerminal: true }) });
+    expect(view.container.querySelectorAll('[data-icon="Terminal"]')).toHaveLength(1);
+    expect(view.container.querySelector('.bb-thread-title [role="img"]')).toBeNull();
+    expect(view.container.querySelector('[data-thread-title-mode]')).toBeNull();
+  });
+
+  it("emphasizes desktop titles while keeping context secondary", () => {
+    const view = renderThreadRow();
+    expect(view.container.querySelector(".bb-thread-title")?.classList.contains("md:data-[emphasized=true]:font-medium")).toBe(true);
+    expect(view.container.querySelector("[data-sidebar-thread-context]")?.classList.contains("text-muted-foreground")).toBe(true);
+  });
+  it("shows Terminal for an idle native thread without live activity", () => {
+    renderThreadRow({ thread: createThread({ experimental_nativeTerminal: true }) });
+    const glyph = screen.getByRole("img", { name: "Native terminal" });
+    expect(glyph.querySelector('[data-icon="Terminal"]')).not.toBeNull();
+    expect(glyph.classList.contains("md:hidden")).toBe(false);
+  });
+
+  it.each([false, true])(
+    "renders terminal attention and input on compact=%s and clears them with state",
+    (isCompactViewport) => {
+      const view = renderThreadRow({
+        isCompactViewport,
+        thread: createThread({
+          status: "active",
+          runtimeStatus: "active",
+          experimental_nativeTerminal: true,
+          experimental_nativeActivity: {
+            lastEvidenceAt: Date.now(),
+            freshForMs: 90_000,
+            confirmation: "confirmed",
+            evidenceKind: "holder-report",
+          },
+        }),
+      });
+      expect(screen.getByRole("img", { name: /^Working/ })).toBeTruthy();
+      expect(renderedIndicators()).toEqual(["working"]);
+      view.rerenderThreadRow(
+        createThread({
+          status: "active",
+          runtimeStatus: "active",
+          indicator: "check-terminal",
+          experimental_nativeTerminal: true,
+        }),
+      );
+      expect(screen.getByRole("img", { name: "Check terminal" })).toBeTruthy();
+      expect(
+        view.container.querySelector(
+          '[data-thread-status-glyph="check-terminal"]',
+        ),
+      ).not.toBeNull();
+      view.unmount();
+      const inputView = renderThreadRow({
+        isCompactViewport,
+        thread: createThread({
+          indicator: "check-terminal",
+          hasPendingInteraction: true,
+          experimental_nativeTerminal: true,
+        }),
+      });
+      expect(screen.getByRole("img", { name: "Needs input" })).toBeTruthy();
+      expect(screen.queryByRole("img", { name: "Check terminal" })).toBeNull();
+      inputView.unmount();
+      renderThreadRow({
+        isCompactViewport,
+        thread: createThread({ indicator: "none" }),
+      });
+      expect(screen.queryByRole("img", { name: "Check terminal" })).toBeNull();
+    },
+  );
+
+  it.each([
+    ["Workspace", createThread({ environment: null })],
+    ["Workspace", createThread({ environment: makeSidebarEnvironment({ isWorktree: false }) })],
+    ["Worktree", createThread({ environment: makeSidebarEnvironment({ isWorktree: true }) })],
+    ["Native terminal", createThread({ experimental_nativeTerminal: true, experimental_nativeActivity: { lastEvidenceAt: null, freshForMs: 90_000, confirmation: "unconfirmed", evidenceKind: "unknown" } })],
+  ] as const)("reserves one title glyph slot and no metadata glyph slot for %s", (label, thread) => {
+    const view = renderThreadRow({ thread });
+    const context = view.container.querySelector("[data-sidebar-thread-context]");
+    const slot = view.container.querySelector("[data-sidebar-thread-leading]");
+    expect(slot?.classList.contains("size-4") ?? false).toBe(label !== "Workspace");
+    expect(context?.querySelector('[role="img"]')).toBeNull();
+    expect(context?.classList.contains("pl-5")).toBe(false);
+    if (label !== "Workspace") {
+      expect(screen.getByRole("img", { name: label }).closest("[data-sidebar-thread-leading]")).toBe(slot);
+    } else {
+      expect(slot).toBeNull();
+    }
+    expect(context?.classList.contains("md:text-sm")).toBe(true);
+  });
+
+  it.each([
+    ["project:proj_context", "2m"],
+    ["project:proj_other", "Orbital · 2m"],
+    ["threads", "Orbital · 2m"],
+    ["pinned", "Orbital · 2m"],
+    ["section:custom", "Orbital · 2m"],
+  ])("shows project context only outside its own project group (%s)", (group, expected) => {
+    const updatedAt = Date.now() - 120_000;
+    const view = renderThreadRow({
+      visibilityGroup: group,
+      thread: createThread({ projectId: "proj_context", updatedAt, archivedAt: 1 }),
+      projects: [{ id: "proj_context", name: "Orbital", isPersonal: false, href: "/", settingsHref: "/" }],
+    });
+    expect(view.container.querySelector("[data-sidebar-thread-context]")?.textContent).toBe(expected);
+  });
+
+  it("shows project and age context without requiring plugin metadata", () => {
+    const updatedAt = Date.now() - 120_000;
+    const view = renderThreadRow({
+      thread: createThread({ projectId: "proj_context", updatedAt, archivedAt: 1 }),
+      projects: [{ id: "proj_context", name: "Orbital", isPersonal: false, href: "/", settingsHref: "/" }],
+    });
+    const context = view.container.querySelector("[data-sidebar-thread-context]");
+    expect(context?.textContent).toBe("Orbital · 2m");
+    expect(context?.querySelector("time")?.dateTime).toBe(new Date(updatedAt).toISOString());
+    expect(view.container.querySelector("[data-thread-row-metadata]")).toBeNull();
+    expect(screen.queryByRole("img", { name: "Native terminal", hidden: true })).toBeNull();
+  });
+
+  it("keeps age context when the project is unavailable", () => {
+    const view = renderThreadRow({ thread: createThread({ updatedAt: Date.now(), archivedAt: 1 }) });
+    expect(view.container.querySelector("[data-sidebar-thread-context]")?.textContent).toBe("now");
+  });
+
+  it.skipIf(!sdkExportsAreSpyable)("shares the metadata experiment subscription with sibling rows", () => {
+    const subscribe = vi.spyOn(pluginSdk, "experimental_useExperiment");
+    renderThreadRow({
+      thread: createThread({ archivedAt: 1 }),
+      siblings: Array.from({ length: 20 }, (_, index) =>
+        createThread({ id: `sibling-${index}`, archivedAt: 1 }),
+      ),
+    });
+    expect(
+      subscribe.mock.calls.filter(
+        ([key]) => key === THREAD_ROW_METADATA_EXPERIMENT,
+      ),
+    ).toHaveLength(1);
+  });
+  it("preserves nesting indentation while keeping compact title spacing", () => {
+    const view = renderThreadRow({ thread: createThread({ archivedAt: 1 }) });
+    const row = view.container.querySelector<HTMLElement>(
+      "[data-sidebar-rename-row]",
+    );
+    expect(row?.style.paddingLeft).toBe("22px");
+    expect(row?.classList.contains("gap-1")).toBe(true);
+  });
   it("renders bounded status chips and progress on the row", () => {
     const statuses = Object.fromEntries(
       Array.from({ length: 8 }, (_, index) => [
@@ -589,6 +756,8 @@ describe("ThreadRow", () => {
   });
 
   it("renders Needs input, Working, Woke 3m elapsed, and Done labels", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now() + 20_001);
     const callRpc = vi.fn().mockResolvedValue({
       automations: [
         {
@@ -667,7 +836,7 @@ describe("ThreadRow", () => {
 
   it("updates only rows whose automation status or elapsed minute changed", async () => {
     vi.useFakeTimers();
-    vi.setSystemTime(Date.now() + 30_000);
+    vi.setSystemTime(Date.now() + 60_000);
     const startedAt = Date.now() - 60_000;
     const callRpc = vi.fn().mockResolvedValue({
       automations: [
@@ -875,6 +1044,7 @@ describe("ThreadRow", () => {
         runtimeStatus: "active",
         queuedWork: "failed",
         experimental_queuedFailedCount: 4,
+        experimental_nativeTerminal: true,
         experimental_nativeActivity: {
           lastEvidenceAt: null,
           freshForMs: 90_000,
@@ -887,6 +1057,7 @@ describe("ThreadRow", () => {
     const queued = container.querySelector(
       '[data-thread-status-glyph="queued-failed"]',
     );
+    expect(screen.getByRole("img", { name: "Native terminal", hidden: true })).toBeTruthy();
     expect(queued?.getAttribute("data-queued-failed-count")).toBe("4");
     expect(
       container.querySelector("[data-sidebar-native-activity-warning]"),
@@ -1102,6 +1273,37 @@ describe("ThreadRow", () => {
     expect(container.querySelector('[aria-label="Working"]')).toBeNull();
   });
 
+  it.each([
+    { label: "Working", state: { status: "active", runtimeStatus: "active" } },
+    { label: "Needs input", state: { hasPendingInteraction: true } },
+    {
+      label: "Check terminal",
+      state: { indicator: "check-terminal", experimental_nativeTerminal: true },
+    },
+  ] as const)(
+    "keeps $label visible with one compact action and reachable Archive",
+    async ({ label, state }) => {
+      const ran: RanThreadAction[] = [];
+      const { container } = renderThreadRow({
+        isCompactViewport: true,
+        thread: createThread(state),
+        threadActions: hostThreadActions({ ran }),
+      });
+      expect(screen.queryByRole("button", { name: "Archive" })).toBeNull();
+      const controls = container.querySelector("[data-sidebar-row-controls]")!;
+      expect(controls.querySelectorAll("button")).toHaveLength(1);
+      expectPersistentRowMetadata(screen.getByRole("img", { name: label }));
+      fireEvent.click(screen.getByRole("button", { name: "Thread actions" }));
+      fireEvent.click(await screen.findByRole("menuitem", { name: "Archive" }));
+      await waitFor(() =>
+        expect(ran).toEqual([
+          { key: "bb--core/archive", threadId: "thr_test" },
+        ]),
+      );
+      expectPersistentRowMetadata(screen.getByRole("img", { name: label }));
+    },
+  );
+
   it.each(
     [false, true].flatMap((isCompactViewport) =>
       (["Working", "Done"] as const).flatMap((statusLabel) =>
@@ -1131,14 +1333,16 @@ describe("ThreadRow", () => {
       const row = container.querySelector<HTMLElement>(
         "[data-sidebar-rename-row]",
       )!;
-      const archive = screen.getByRole("button", { name: "Archive" });
+      const archive = screen.queryByRole("button", { name: "Archive" });
+      expect(archive === null).toBe(isCompactViewport);
       const menu = screen.getByRole("button", { name: "Thread actions" });
       if (state === "hover") {
         fireEvent.pointerEnter(row, { pointerType: "mouse" });
         fireEvent.mouseOver(row);
       } else if (state === "focus") {
-        act(() => archive.focus());
-        expect(document.activeElement).toBe(archive);
+        const target = archive ?? menu;
+        act(() => target.focus());
+        expect(document.activeElement).toBe(target);
       } else if (state === "menu-open") {
         fireEvent.click(menu);
         await screen.findByRole("menuitem", { name: "Rename" });
@@ -1177,7 +1381,7 @@ describe("ThreadRow", () => {
         "truncate",
       );
       expect(
-        archive.closest(".bb-sidebar-hover-actions")?.classList,
+        menu.closest(".bb-sidebar-hover-actions")?.classList,
       ).not.toContain("absolute");
       if (isCompactViewport) {
         expect(
@@ -1723,8 +1927,12 @@ describe("ThreadRow", () => {
       fireEvent.click(screen.getByRole("button", { name: "Thread actions" }));
       fireEvent.click(await screen.findByRole("menuitem", { name: "Rename" }));
       await expectRenamePresentation(menu);
-      fireEvent.click(screen.getByRole("button", { name: "Rename" }));
-      await expectRenamePresentation(direct);
+      if (compact) {
+        expect(screen.queryByRole("button", { name: "Rename" })).toBeNull();
+      } else {
+        fireEvent.click(screen.getByRole("button", { name: "Rename" }));
+        await expectRenamePresentation(direct);
+      }
       fireEvent.doubleClick(screen.getByText("Thread"));
       await expectRenamePresentation(doubleClick);
     },
@@ -2099,12 +2307,41 @@ describe("ThreadRow", () => {
     ).toBeNull();
   });
 
+  it("shows a plain terminal signal with its own label", () => {
+    renderThreadRow({
+      thread: createThread({
+        indicator: "check-terminal",
+        hasPendingInteraction: false,
+      }),
+    });
+    expect(renderedIndicators()).toEqual(["check-terminal"]);
+    expect(screen.getByRole("img", { name: "Check terminal" })).toBeTruthy();
+    expect(screen.getByText("Check terminal")).toBeTruthy();
+    expect(screen.queryByText("Needs input")).toBeNull();
+  });
+
+  it.each([false, true])("shows a collapsed child's signal, with real questions first: %s", (withQuestion) => {
+    const children = [createThread({ id: "signal", indicator: "check-terminal", hasPendingInteraction: false })];
+    if (withQuestion) children.push(createThread({ id: "question", hasPendingInteraction: true }));
+    renderThreadRow({ thread: createThread({ lastReadAt: 1, latestAttentionAt: 1 }), options: { kind: "parent", depth: 1, isCompact: false, isCollapsed: true, childCount: children.length, childActivity: getCollapsedChildActivity(children), onToggleCollapsed: vi.fn() } });
+    expect(renderedIndicators()).toEqual([withQuestion ? "needs-input" : "check-terminal"]);
+    expect(screen.getByRole("img", { name: withQuestion ? "Needs input" : "Check terminal" })).toBeTruthy();
+  });
+
   it("shows the needs-input indicator when the thread needs user input", () => {
     renderThreadRow({
       thread: createThread({ hasPendingInteraction: true }),
     });
 
     expect(renderedIndicators()).toEqual(["needs-input"]);
+    expect(
+      screen
+        .getByRole("img", { name: "Needs input" })
+        .classList.contains("text-attention"),
+    ).toBe(true);
+    expect(
+      screen.getByRole("img", { name: "Needs input" }).className,
+    ).not.toContain("destructive");
   });
 
   it("clocks a thread with queued work, and drops the clock once it runs", () => {
@@ -2233,6 +2470,24 @@ describe("ThreadRow", () => {
     expect(clickLink).toHaveBeenCalledTimes(2);
   });
 
+  it.each([
+    { isCompact: false, metadata: false },
+    { isCompact: true, metadata: false },
+    { isCompact: false, metadata: true },
+    { isCompact: true, metadata: true },
+  ])("keeps phone touch rows at least 44 px (compact: $isCompact, metadata: $metadata)", ({ isCompact, metadata }) => {
+    getDefaultStore().set(sidebarShowRowMetadataAtom, metadata);
+    renderThreadRow({
+      experiments: ["threadRowMetadata"],
+      options: { ...DEFAULT_OPTIONS, isCompact },
+    });
+    const row = screen.getByRole("link", { name: "Open Thread" }).closest<HTMLElement>("[data-sidebar-rename-row]")!;
+    expect(row.classList.contains("max-md:pointer-coarse:min-h-11")).toBe(true);
+    expect(row.classList.contains("md:h-(--bb-sidebar-desktop-row-height)")).toBe(true);
+    expect(row.classList.contains("[--bb-sidebar-desktop-row-height:2.5rem]")).toBe(true);
+    expect(row.classList.contains("min-h-11")).toBe(false);
+  });
+
   it("draws other plugins' metadata only while Metadata is on", () => {
     const slot = renderThreadRow({ experiments: ["threadRowMetadata"] });
     expect(
@@ -2244,6 +2499,119 @@ describe("ThreadRow", () => {
       slot.container.querySelector("[data-thread-row-metadata]"),
     ).not.toBeNull();
   });
+
+  it.skipIf(!sdkExportsAreSpyable).each([false, true])(
+    "keeps empty metadata rows dense (compact: %s)",
+    (isCompact) => {
+      vi.spyOn(
+        pluginSdk,
+        "experimental_ThreadRowMetadata",
+        "get",
+      ).mockReturnValue(() => <span data-thread-row-metadata="" />);
+      getDefaultStore().set(sidebarShowRowMetadataAtom, true);
+      const slot = renderThreadRow({
+        experiments: ["threadRowMetadata"],
+        options: { ...DEFAULT_OPTIONS, isCompact },
+      });
+      const link = screen.getByRole("link", { name: "Open Thread" });
+      const content = link.parentElement!;
+      const reservation = content.lastElementChild!;
+      expect(content.classList.contains("py-1.25")).toBe(false);
+      expect(content.classList.contains("[&_.bb-thread-title]:leading-4")).toBe(
+        false,
+      );
+      expect(reservation.classList.contains("flex")).toBe(false);
+      expect(reservation.classList.contains("hidden")).toBe(true);
+      expect(
+        reservation.classList.contains("has-[[data-reserve-line]]:flex"),
+      ).toBe(true);
+      slot.unmount();
+    },
+  );
+
+  it.skipIf(!sdkExportsAreSpyable).each([false, true])(
+    "reserves stable row metrics across late metadata registration (compact: %s)",
+    (isCompact) => {
+      let registered = false;
+      vi.spyOn(
+        pluginSdk,
+        "experimental_ThreadRowMetadata",
+        "get",
+      ).mockReturnValue(() => (
+        <span data-thread-row-metadata="" data-reserve-line="">
+          {registered ? (
+            <span className="text-xs leading-3.5">#10843</span>
+          ) : null}
+        </span>
+      ));
+      getDefaultStore().set(sidebarShowRowMetadataAtom, true);
+      const thread = createThread();
+      const slot = renderThreadRow({
+        thread,
+        experiments: ["threadRowMetadata"],
+        options: { ...DEFAULT_OPTIONS, isCompact },
+      });
+      const link = screen.getByRole("link", { name: "Open Thread" });
+      const row = link.closest<HTMLElement>("[data-sidebar-rename-row]")!;
+      const content = link.parentElement!;
+      const title = row.querySelector(".bb-thread-title")!;
+      const reservation = content.lastElementChild!;
+      const before = [
+        row.className,
+        content.className,
+        title.className,
+        reservation.className,
+      ];
+      expect(
+        content.classList.contains("has-[[data-reserve-line]]:py-1.25"),
+      ).toBe(true);
+      expect(
+        content.classList.contains(
+          "has-[[data-reserve-line]]:[&_.bb-thread-title]:leading-4",
+        ),
+      ).toBe(true);
+      expect(content.className).not.toContain("data-has-items");
+      expect(reservation.classList.contains("basis-full")).toBe(true);
+      expect(reservation.classList.contains("h-3.5")).toBe(true);
+      expect(reservation.classList.contains("shrink-0")).toBe(true);
+      expect(reservation.classList.contains("overflow-hidden")).toBe(true);
+      expect(reservation.textContent).toBe("");
+      expect(row.className).toContain("max-md:pointer-coarse:min-h-11");
+
+      registered = true;
+      slot.rerenderThreadRow({ ...thread });
+      expect(reservation.querySelector("[data-reserve-line]")).not.toBeNull();
+      expect(content.lastElementChild).toBe(reservation);
+      expect([
+        row.className,
+        content.className,
+        title.className,
+        reservation.className,
+      ]).toEqual(before);
+      const clickLink = vi.spyOn(link, "click");
+      fireEvent.click(row);
+      expect(clickLink).toHaveBeenCalledOnce();
+
+      registered = false;
+      slot.rerenderThreadRow({ ...thread });
+      expect(reservation.textContent).toBe("");
+      expect([
+        row.className,
+        content.className,
+        title.className,
+        reservation.className,
+      ]).toEqual(before);
+
+      act(() => getDefaultStore().set(sidebarShowRowMetadataAtom, false));
+      expect(reservation.isConnected).toBe(false);
+      expect(content.classList.contains("py-1.25")).toBe(false);
+      expect(content.classList.contains("[&_.bb-thread-title]:leading-4")).toBe(
+        false,
+      );
+      expect(row.className).toContain("md:h-(--bb-sidebar-desktop-row-height)");
+      expect(row.classList.contains("max-md:pointer-coarse:min-h-11")).toBe(true);
+    },
+  );
 
   it("ignores the Metadata preference while its experiment is off", () => {
     getDefaultStore().set(sidebarShowRowMetadataAtom, true);
@@ -2369,6 +2737,9 @@ describe("ThreadRow", () => {
     ).toBe("1");
     expect(tier?.style.paddingLeft).toBe("36px");
     expect(tier?.querySelector('[aria-hidden="true"].w-px')).not.toBeNull();
+    expect(
+      tier?.querySelector<HTMLElement>('[aria-hidden="true"].w-px')?.style.left,
+    ).toBe("30px");
   });
 
   it("keeps its active indicator and actions alongside a Command shortcut", () => {
@@ -2813,6 +3184,27 @@ const CHROMIUM_QUIET_FLAGS = [
 
 interface RowLayout {
   innerWidth: number;
+  title: {
+    left: number;
+    right: number;
+    top: number;
+    bottom: number;
+    width: number;
+    height: number;
+  };
+  metadata: {
+    left: number;
+    right: number;
+    top: number;
+    bottom: number;
+    width: number;
+    height: number;
+    visible: boolean;
+    text: string;
+  };
+  branch: { width: number } | null;
+  mode: { left: number; right: number; width: number };
+  context: { textLeft: number; glyphWidth: number } | null;
   row: {
     width: number;
     height: number;
@@ -2821,6 +3213,7 @@ interface RowLayout {
     right: number;
   };
   link: { width: number };
+  statusGlyph: { kind: string | null; width: number; height: number; visible: boolean } | null;
   chip: { width: number; left: number; right: number } | null;
   bar: {
     width: number;
@@ -2837,6 +3230,7 @@ const box = (element) => {
   return {
     width: rect.width,
     height: rect.height,
+    top: rect.top,
     bottom: rect.bottom,
     left: rect.left,
     right: rect.right,
@@ -2844,10 +3238,29 @@ const box = (element) => {
 };
 const bar = document.querySelector("[role=progressbar]");
 const chip = document.querySelector("[data-sidebar-thread-status-chip]");
+const glyph = document.querySelector("[data-thread-status-glyph]");
+const statusSlot = document.querySelector("[data-sidebar-thread-trailing-indicator]");
+const context = document.querySelector("[data-sidebar-thread-context]");
+const visible = (element) => {
+  for (let node = element; node; node = node.parentElement) {
+    const style = getComputedStyle(node);
+    if (style.display === "none" || style.visibility === "hidden" || Number(style.opacity) === 0) return false;
+  }
+  return true;
+};
 const layout = {
   innerWidth: window.innerWidth,
+  title: box(document.querySelector(".bb-thread-title > span:last-child")),
+  metadata: { ...box(context), visible: visible(context), text: context.textContent },
+  branch: document.querySelector("[data-thread-row-branch]") ? box(document.querySelector("[data-thread-row-branch]")) : null,
+  mode: (document.querySelector("[data-sidebar-thread-leading]") ? box(document.querySelector("[data-sidebar-thread-leading]")) : {width:0}),
+  context: context && context.firstElementChild ? {
+    textLeft: box(context.firstElementChild).left,
+    glyphWidth: (document.querySelector("[data-sidebar-thread-leading]") ? box(document.querySelector("[data-sidebar-thread-leading]")) : {width:0}).width,
+  } : null,
   row: box(document.querySelector("[data-sidebar-rename-row]")),
   link: box(document.querySelector("[data-sidebar-thread-id]")),
+  statusGlyph: glyph && statusSlot ? { ...box(statusSlot), kind: glyph.getAttribute("data-thread-status-glyph"), visible: visible(glyph) } : null,
   chip: chip ? box(chip) : null,
   bar: bar
     ? {
@@ -2863,25 +3276,32 @@ document.getElementById("layout").textContent = JSON.stringify(layout);
 async function measureRowLayout(
   rowHtml: string,
   viewportWidth: number,
+  sidebarWidth = viewportWidth,
 ): Promise<RowLayout> {
   const dir = await mkdtemp(join(tmpdir(), "bb-row-layout-"));
   try {
     const page = join(dir, "row.html");
+    const themeCss = await readFile(
+      join(process.cwd(), "../../apps/app/src/components/ui/theme.css"),
+      "utf8",
+    );
     await writeFile(
       page,
-      `<!doctype html><html><head><meta name="viewport" content="width=device-width"><style>
+      `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><style>
 :root{--bb-sidebar-row-height:1.75rem;--bb-sidebar-row-height-coarse:2.5rem;--sidebar-accent:#e4e4e7;--timeline-accent:#2563eb}
 *,::before,::after{box-sizing:border-box}
 body{margin:0}
 ${pluginCss ?? ""}
+${themeCss}
 </style></head><body>
-<div data-bb-plugin-root style="width:${viewportWidth}px">${rowHtml}</div>
+<div data-bb-plugin-root style="width:${sidebarWidth}px">${rowHtml}</div>
 <pre id="layout"></pre>
-<script>${MEASURE_SCRIPT}</script>
+<script>addEventListener("load", () => setTimeout(() => {${MEASURE_SCRIPT}}, 50));</script>
 </body></html>`,
     );
     const { stdout } = await execFileAsync(chromiumPath ?? "", [
       "--headless",
+      `--user-data-dir=${join(dir, "profile")}`,
       "--no-sandbox",
       "--disable-gpu",
       ...CHROMIUM_QUIET_FLAGS,
@@ -2938,7 +3358,7 @@ async function measureStickyParentLayout(
     );
     await writeFile(
       page,
-      `<!doctype html><html><head><meta name="viewport" content="width=device-width"><style>
+      `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><style>
 @layer theme, base, components, utilities;
 :root{--bb-sidebar-row-height:1.75rem;--bb-sidebar-row-height-coarse:2.5rem;--sidebar:#fafafa;--sidebar-accent:#e4e4e7;--timeline-accent:#2563eb}
 *,::before,::after{box-sizing:border-box}
@@ -2956,6 +3376,7 @@ ${themeCss}
     );
     const { stdout } = await execFileAsync(chromiumPath ?? "", [
       "--headless",
+      `--user-data-dir=${join(dir, "profile")}`,
       "--no-sandbox",
       "--disable-gpu",
       ...CHROMIUM_QUIET_FLAGS,
@@ -3021,7 +3442,7 @@ async function measureNestedPinLayout(
     ).join("");
     await writeFile(
       page,
-      `<!doctype html><html><head><meta name="viewport" content="width=device-width"><style>
+      `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><style>
 @layer theme, base, components, utilities;
 :root{--bb-sidebar-row-height:1.75rem;--bb-sidebar-row-height-coarse:2.5rem;--sidebar:#fafafa;--sidebar-accent:#e4e4e7;--timeline-accent:#2563eb}
 *,::before,::after{box-sizing:border-box}
@@ -3042,6 +3463,7 @@ ${themeCss}
     );
     const { stdout } = await execFileAsync(chromiumPath ?? "", [
       "--headless",
+      `--user-data-dir=${join(dir, "profile")}`,
       "--no-sandbox",
       "--disable-gpu",
       ...CHROMIUM_QUIET_FLAGS,
@@ -3066,10 +3488,141 @@ describe.skipIf(
     expect(chromiumPath).not.toBeNull();
   });
 
+  it("keeps desktop chat, terminal and cross-project titles aligned above visible metadata in a narrow sidebar", async () => {
+    const projects = [
+      makePluginProject({ id: "proj_test", name: "drone-agent" }),
+    ];
+    const providers: PluginProvidersState["providers"] = [
+      {
+        id: "provider-test",
+        pluginId: "provider-test",
+        displayName: "Test Provider",
+        logoUrl: null,
+        available: true,
+        maintenance: { health: false, usage: false, installation: false },
+        capabilities: {
+          supportsThreadArchive: true,
+          supportsThreadRename: true,
+          supportsServiceTier: false,
+          supportsNativeUserQuestion: false,
+          supportsFork: true,
+          supportsSessionRewind: false,
+          modelCatalogScope: "workspace",
+          permissionModes: ["accept-edits", "auto", "full"],
+        },
+        composerActions: [],
+        completedTurnDisplay: "collapse",
+      },
+    ];
+    const layouts: RowLayout[] = [];
+    for (const [id, nativeTerminal, crossProjectId] of [
+      ["chat", false, null],
+      ["terminal", true, null],
+      ["cross-project", false, "proj_test"],
+    ] as const) {
+      const view = renderThreadRow({
+        thread: createThread({
+          id,
+          title: "Slice B setup cue check",
+          pinnedAt: id === "chat" ? 1 : null,
+          experimental_nativeTerminal: nativeTerminal,
+          providerId: nativeTerminal ? "unresolved-provider" : "provider-test",
+          environment: makeSidebarEnvironment({ branchName: "main" }),
+          updatedAt: Date.now() - 4 * 86_400_000,
+        }),
+        projects,
+        providers,
+        crossProjectId,
+        isCompactViewport: false,
+      });
+      layouts.push(await measureRowLayout(view.container.innerHTML, 1280, 256));
+      view.unmount();
+    }
+    for (const layout of layouts) {
+      expect(layout.title.width).toBeGreaterThan(100);
+      expect(layout.metadata.visible).toBe(true);
+      expect(layout.metadata.width).toBeGreaterThan(100);
+      expect(layout.metadata.height).toBeGreaterThan(0);
+      expect(layout.metadata.top).toBeGreaterThanOrEqual(
+        layout.title.bottom - 1,
+      );
+      expect(layout.metadata.bottom).toBeLessThanOrEqual(layout.row.bottom + 1);
+      expect(layout.context?.textLeft).toBeCloseTo(layout.title.left, 0);
+      expect(layout.title.left).toBeCloseTo(layouts[0]!.title.left, 0);
+      expect(layout.mode.right + 4).toBeCloseTo(layout.title.left, 0);
+      expect(layout.mode.width).toBe(16);
+      expect(layout.metadata.text).toContain("drone-agent");
+      expect(layout.metadata.text).toContain(" · ");
+      expect(layout.metadata.text).not.toContain("main");
+      expect(layout.branch).toBeNull();
+    }
+  });
+
+  it("aligns metadata text after chat, terminal and worktree glyph slots", async () => {
+    const view = renderThreadRow({
+      thread: createThread({ environment: null }),
+      isCompactViewport: false,
+    });
+    const chat = await measureRowLayout(view.container.innerHTML, 1280);
+    view.rerenderThreadRow(
+      createThread({ environment: null, experimental_nativeTerminal: true }),
+    );
+    const terminal = await measureRowLayout(view.container.innerHTML, 1280);
+    view.rerenderThreadRow(
+      createThread({
+        environment: makeSidebarEnvironment({ isWorktree: true }),
+      }),
+    );
+    const worktree = await measureRowLayout(view.container.innerHTML, 1280);
+    expect(chat.context).not.toBeNull();
+    expect(chat.context?.glyphWidth).toBe(0);
+    for (const layout of [terminal, worktree]) {
+      expect(layout.context?.glyphWidth).toBe(16);
+      expect(layout.context?.textLeft).toBeCloseTo(layout.title.left, 0);
+    }
+    await writeFile(
+      join(tmpdir(), "p108-sidebar-metadata-offsets.json"),
+      JSON.stringify({ chat: chat.context, terminal: terminal.context, worktree: worktree.context }),
+    );
+  });
+
+  it("keeps desktop sidebar row height when the smallest text advances one tier", async () => {
+    vi.spyOn(pluginSdk, "experimental_useExperiment").mockReturnValue(true);
+    const { container } = renderThreadRow({
+      thread: createThread(),
+      isCompactViewport: false,
+    });
+    const html = container.innerHTML;
+    const before = await measureRowLayout(`<style>:root{--text-2xs:0.625rem;--text-2xs--line-height:0.875rem}</style>${html}`, 1280);
+    const after = await measureRowLayout(`<style>:root{--text-2xs:0.6875rem;--text-2xs--line-height:0.875rem}</style>${html}`, 1280);
+    expect(after.row.height - before.row.height).toBeLessThanOrEqual(1);
+    expect(after.row.height).toBeGreaterThan(0);
+    await writeFile(join(tmpdir(), "p36-sidebar-af0afa41bfdb.json"), JSON.stringify({ before: before.row.height, after: after.row.height }));
+  });
+
   const VIEWPORTS = [
     { name: "desktop", width: 280, isCompact: false },
     { name: "compact 390px", width: 390, isCompact: true },
   ];
+
+  it.each([
+    { kind: "working", thread: { status: "active", runtimeStatus: "active" } },
+    { kind: "needs-input", thread: { hasPendingInteraction: true } },
+  ] as const)("keeps the $kind status slot visible at desktop width", async ({ kind, thread }) => {
+    const { container } = renderThreadRow({
+      thread: createThread(thread),
+      isCompactViewport: false,
+    });
+    const row = container.querySelector("[data-sidebar-rename-row]");
+    expect(row?.className).toContain("[--bb-sidebar-desktop-row-height:2.5rem]");
+    expect(row?.className).toContain("md:h-(--bb-sidebar-desktop-row-height)");
+    const layout = await measureRowLayout(container.innerHTML, 1280);
+    expect(layout.innerWidth).toBeGreaterThanOrEqual(768);
+    expect(layout.statusGlyph?.kind).toBe(kind);
+    expect(layout.statusGlyph?.visible).toBe(true);
+    expect(layout.statusGlyph?.width).toBeGreaterThan(0);
+    expect(layout.statusGlyph?.height).toBeGreaterThan(0);
+  });
 
   async function layoutFor(
     progress: { value: number; label?: string } | null,
@@ -3277,4 +3830,37 @@ describe.skipIf(
       none.container.querySelector("[data-sidebar-thread-row-state]"),
     ).toBeNull();
   });
+});
+
+it("uses regular desktop weight for inactive rows and medium for attention", () => {
+  const view = renderThreadRow({ thread: createThread({ indicator: "none", lastReadAt: 1, latestAttentionAt: 1 }) });
+  const title = () => view.container.querySelector(".bb-thread-title")!;
+  expect(title().getAttribute("data-emphasized")).toBe("false");
+  expect(title().className).toContain("font-normal");
+  expect(title().className).toContain("font-normal");
+  view.rerenderThreadRow(createThread({ indicator: "check-terminal" }));
+  expect(title().getAttribute("data-emphasized")).toBe("true");
+  const metadata = view.container.querySelector("[data-sidebar-thread-context]")!;
+  expect(metadata.className).toContain("md:text-sidebar-metadata-foreground");
+});
+
+it("puts a mode glyph in the leading column without a blank chat slot", () => {
+  const view = renderThreadRow({ thread: createThread({ environment: null }) });
+  expect(view.container.querySelector("[data-sidebar-thread-leading]")).toBeNull();
+  view.rerenderThreadRow(createThread({ experimental_nativeTerminal: true }));
+  expect(screen.getByRole("img", { name: "Native terminal" }).closest("[data-sidebar-thread-leading]")).not.toBeNull();
+});
+
+it("leaves desktop descenders room without fixed title or metadata heights", () => {
+  const view = renderThreadRow({ thread: createThread({ title: "g p y j q" }) });
+  const title = view.container.querySelector(".bb-thread-title")!;
+  const text = title.lastElementChild!;
+  const metadata = view.container.querySelector("[data-sidebar-thread-context]")!;
+  expect(title.classList.contains("md:leading-5")).toBe(true);
+  expect(text.classList.contains("md:leading-5")).toBe(true);
+  expect(title.classList.contains("md:items-center!")).toBe(true);
+  for (const element of [title, text, metadata]) {
+    expect(element.className).not.toMatch(/(?:^| )md:h-/);
+  }
+  expect(metadata.classList.contains("md:leading-4")).toBe(true);
 });

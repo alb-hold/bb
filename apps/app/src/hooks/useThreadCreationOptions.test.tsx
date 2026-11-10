@@ -1,14 +1,26 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  render,
+  renderHook,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import type {
   SystemExecutionOptionsResponse,
   SystemProviderStatesResponse,
 } from "@bb/server-contract";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ExecutionControls } from "@/components/promptbox/ExecutionControls";
+import { PermissionModePicker } from "@/components/pickers/PermissionModePicker";
 import { sdk } from "@/lib/sdk";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
-import type { ProviderModelCatalogScope } from "@bb/domain";
+import type {
+  ProjectExecutionDefaults,
+  ProviderModelCatalogScope,
+} from "@bb/domain";
 import type { QueryClient } from "@tanstack/react-query";
 import {
   hostsQueryKey,
@@ -17,16 +29,20 @@ import {
   systemProvidersQueryKey,
 } from "./queries/query-keys";
 import { getProjectScopedStorageKey } from "@/lib/project-scoped-storage";
+import { buildAutoFollowUpRequest } from "@bb/client-core";
 import { useThreadCreationOptions } from "./useThreadCreationOptions";
+import { createRealtimeCacheEffects } from "./realtime-cache-effects";
+import { invalidateSystemExecutionOptions } from "./cache-owners/system-cache-effects";
 import {
   providerListCacheKey,
   writeCachedProviderList,
 } from "@/lib/provider-list-cache";
 import { createDeferredPromise } from "@bb/test-helpers";
-import { makeProviderInfo } from "@bb/test-helpers/domain-fixtures";
+import { makeHost, makeProviderInfo } from "@bb/test-helpers/domain-fixtures";
 import {
   modelCatalogCacheKey,
   readCachedModelCatalog,
+  writeCachedModelCatalog,
 } from "@/lib/model-catalog-cache";
 
 const PROJECT_ID = "proj_prompt_defaults";
@@ -34,6 +50,7 @@ const GLOBAL_PROVIDER_ID = "global-provider";
 const PROJECT_PROVIDER_ID = "project-provider";
 
 vi.mock("@/lib/sdk", () => ({
+  BbHttpError: class BbHttpError extends Error {},
   sdk: {
     projects: {
       defaultExecutionOptions: vi.fn(),
@@ -329,6 +346,7 @@ beforeEach(() => {
     executionOptionsResponse(),
   );
   vi.mocked(sdk.system.providerStates).mockResolvedValue({ providers: [] });
+  vi.mocked(sdk.projects.defaultExecutionOptions).mockResolvedValue(null);
 });
 
 afterEach(() => {
@@ -338,6 +356,414 @@ afterEach(() => {
 });
 
 describe("useThreadCreationOptions", () => {
+  it.each([
+    "remembered",
+    "project",
+    "thread",
+    "cached",
+    "stale-cache",
+    "first-run",
+  ] as const)(
+    "paints the %s selection before the catalog resolves and changes only for a missing model",
+    async (source) => {
+      const pending = createDeferredPromise<SystemExecutionOptionsResponse>();
+      vi.mocked(sdk.system.executionOptions).mockReturnValue(pending.promise);
+      const providerId = GLOBAL_PROVIDER_ID;
+      const modelId = "gpt-6.1-sol";
+      if (source === "remembered") {
+        window.localStorage.setItem("bb.promptbox.provider", providerId);
+        window.localStorage.setItem(
+          `bb.promptbox.model-${providerId}-1`,
+          modelId,
+        );
+        window.localStorage.setItem(
+          `bb.promptbox.reasoning-${providerId}-1`,
+          "medium",
+        );
+      }
+      const catalog = executionOptionsResponse();
+      const template = catalog.models[0]!;
+      catalog.models = [
+        {
+          ...template,
+          id: modelId,
+          model: modelId,
+          displayName: "GPT-6.1-Sol",
+        },
+      ];
+      const expectedName =
+        source === "cached" ? "Remembered display name" : "GPT-6.1-Sol";
+      if (source === "cached" || source === "stale-cache") {
+        catalog.models[0]!.displayName = expectedName;
+        writeCachedModelCatalog(
+          modelCatalogCacheKey({
+            environmentId: null,
+            hostId: null,
+            providerId,
+          }),
+          {
+            models: source === "stale-cache" ? [template] : catalog.models,
+            selectedOnlyModels: [],
+          },
+        );
+      }
+      function ComposerControls() {
+        const options = useThreadCreationOptions({
+          scope: source === "thread" ? "component-local" : "new-thread",
+          initialProviderId:
+            source === "remembered" || source === "first-run"
+              ? undefined
+              : providerId,
+          initialModel:
+            source === "remembered" || source === "first-run"
+              ? undefined
+              : modelId,
+          initialReasoningLevel: "medium",
+        });
+        return (
+          <>
+            <PermissionModePicker
+              pending={!options.permissionModeIsVerified}
+              value={options.permissionMode}
+              options={options.permissionModeOptions}
+              onChange={options.setPermissionMode}
+              supported={options.supportsPermissionModeSelection}
+            />
+            <ExecutionControls
+              pending={options.isLoadingModels}
+              provider={{
+                selectedId: options.selectedProviderId,
+                options: options.providerOptions,
+              }}
+              model={{
+                active: options.activeModel,
+                loadFailed: options.modelLoadFailed,
+                selected: options.selectedModel,
+                options: options.modelOptions,
+                moreOptions: options.moreModelOptions,
+                isLoading: options.isLoadingModels,
+                onChange: options.setSelectedModel,
+              }}
+              reasoning={{
+                value: options.reasoningLevel,
+                options: options.reasoningOptions,
+                onChange: options.setReasoningLevel,
+              }}
+            />
+          </>
+        );
+      }
+      const { wrapper, queryClient } = createQueryClientTestHarness();
+      const view = render(<ComposerControls />, { wrapper });
+      const trigger = view.container.querySelector(
+        "[data-model-reasoning-trigger]",
+      )!;
+      expect(trigger.textContent).toContain(
+        source === "first-run" ? "Model" : expectedName,
+      );
+      if (source !== "first-run") {
+        expect(trigger.textContent).toContain("Medium");
+        expect(trigger.getAttribute("aria-description")).toContain(
+          expectedName,
+        );
+      }
+      const labels = [trigger.textContent];
+      const observer = new MutationObserver(() => {
+        if (labels.at(-1) !== trigger.textContent)
+          labels.push(trigger.textContent);
+      });
+      observer.observe(trigger, {
+        subtree: true,
+        childList: true,
+        characterData: true,
+      });
+      await act(async () => {
+        pending.resolve(catalog);
+      });
+      await waitFor(() => expect(trigger.textContent).toContain(expectedName));
+      expect(labels).toHaveLength(source === "first-run" ? 2 : 1);
+      const permissionTrigger = screen.getByRole("button", {
+        name: "Permissions",
+      });
+      const permissionLabel = permissionTrigger.textContent;
+      const refresh = createDeferredPromise<SystemExecutionOptionsResponse>();
+      vi.mocked(sdk.system.executionOptions).mockReturnValue(refresh.promise);
+      let refreshDone: Promise<void>;
+      await act(async () => {
+        refreshDone = invalidateSystemExecutionOptions({
+          queryClient,
+          hostId: "host-primary",
+        });
+      });
+      expect(permissionTrigger.hasAttribute("disabled")).toBe(false);
+      expect(permissionTrigger.textContent).toBe(permissionLabel);
+      expect(trigger.hasAttribute("disabled")).toBe(false);
+      expect(trigger.textContent).toContain(expectedName);
+      await act(async () => {
+        refresh.resolve(catalog);
+        await refreshDone;
+      });
+      if (source === "project") {
+        vi.mocked(sdk.system.executionOptions).mockRejectedValue(
+          new Error("background refresh unavailable"),
+        );
+        await act(async () => {
+          await invalidateSystemExecutionOptions({
+            queryClient,
+            hostId: "host-primary",
+          });
+        });
+        expect(permissionTrigger.hasAttribute("disabled")).toBe(false);
+        expect(permissionTrigger.textContent).toBe(permissionLabel);
+        expect(trigger.textContent).toContain(expectedName);
+      }
+      vi.mocked(sdk.system.executionOptions).mockResolvedValue({
+        ...catalog,
+        models: [template],
+      });
+      await act(async () => {
+        await invalidateSystemExecutionOptions({
+          queryClient,
+          hostId: "host-primary",
+        });
+      });
+      await waitFor(() =>
+        expect(trigger.textContent).toContain("Global Model"),
+      );
+      expect(labels).toHaveLength(source === "first-run" ? 3 : 2);
+      observer.disconnect();
+    },
+  );
+
+  it.each([
+    { catalog: "choices", defaults: "model", label: "Global Model" },
+    { catalog: "choices", defaults: "none", label: "Select model" },
+    { catalog: "choices", defaults: "failed", label: "Select model" },
+    { catalog: "empty", defaults: "none", label: "No models available" },
+  ])(
+    "keeps the model placeholder until $defaults defaults settle for a $catalog catalog",
+    async ({ catalog, defaults, label }) => {
+      const pendingDefaults =
+        createDeferredPromise<ProjectExecutionDefaults | null>();
+      const response = executionOptionsResponse();
+      vi.mocked(sdk.system.executionOptions).mockResolvedValue({
+        ...response,
+        providers:
+          catalog === "empty"
+            ? response.providers.slice(0, 1)
+            : response.providers,
+        models: [],
+        selectedOnlyModels: catalog === "empty" ? [] : response.models,
+      });
+      vi.mocked(sdk.projects.defaultExecutionOptions).mockReturnValue(
+        pendingDefaults.promise,
+      );
+      const { wrapper } = createQueryClientTestHarness();
+      function Controls() {
+        const options = useThreadCreationOptions({
+          preferenceProjectId: PROJECT_ID,
+        });
+        return (
+          <ExecutionControls
+            provider={{
+              selectedId: options.selectedProviderId,
+              options: options.providerOptions,
+              hasMultiple: options.hasMultipleProviders,
+              onChange: options.setSelectedProviderId,
+            }}
+            model={{
+              selected: options.selectedModel,
+              options: options.modelOptions,
+              moreOptions: options.moreModelOptions,
+              isLoading: options.isLoadingModels,
+              loadFailed: options.modelLoadFailed,
+              onChange: options.setSelectedModel,
+            }}
+            reasoning={{
+              value: options.reasoningLevel,
+              options: options.reasoningOptions,
+              onChange: options.setReasoningLevel,
+            }}
+          />
+        );
+      }
+      render(<Controls />, { wrapper });
+      await waitFor(() =>
+        expect(sdk.projects.defaultExecutionOptions).toHaveBeenCalledWith(
+          expect.objectContaining({
+            projectId: PROJECT_ID,
+            providerId: GLOBAL_PROVIDER_ID,
+          }),
+        ),
+      );
+      const trigger = screen.getByRole("button", {
+        name: "Provider, model and reasoning",
+      });
+      expect(trigger.textContent).toBe("Model");
+      expect(screen.queryByText("Select model")).toBeNull();
+      expect(screen.queryByText("No models available")).toBeNull();
+      await act(async () => {
+        if (defaults === "failed") {
+          pendingDefaults.reject(new Error("defaults unavailable"));
+        } else {
+          pendingDefaults.resolve(
+            defaults === "model"
+              ? {
+                  providerId: GLOBAL_PROVIDER_ID,
+                  model: "global-model",
+                  reasoningLevel: "medium",
+                  permissionMode: "full",
+                  serviceTier: "default",
+                }
+              : null,
+          );
+        }
+      });
+      await waitFor(() => expect(trigger.textContent).toContain(label));
+    },
+  );
+
+  it("does not wait for disabled project defaults on projectless home", async () => {
+    const response = executionOptionsResponse();
+    vi.mocked(sdk.system.executionOptions).mockResolvedValue({
+      ...response,
+      models: [],
+      selectedOnlyModels: response.models,
+    });
+    const { wrapper } = createQueryClientTestHarness();
+    const { result } = renderHook(() => useThreadCreationOptions(), {
+      wrapper,
+    });
+    await waitFor(() =>
+      expect(result.current.modelCatalogIsVerified).toBe(true),
+    );
+    expect(result.current.isLoadingModels).toBe(false);
+    expect(sdk.projects.defaultExecutionOptions).not.toHaveBeenCalled();
+  });
+
+  it("shows a provider setup failure without waiting for project defaults", async () => {
+    const pendingDefaults =
+      createDeferredPromise<ProjectExecutionDefaults | null>();
+    vi.mocked(sdk.projects.defaultExecutionOptions).mockReturnValue(
+      pendingDefaults.promise,
+    );
+    vi.mocked(sdk.system.executionOptions).mockResolvedValue({
+      ...executionOptionsResponse(),
+      models: [],
+      selectedOnlyModels: [],
+      modelLoadError: {
+        providerId: GLOBAL_PROVIDER_ID,
+        code: "provider_unavailable",
+        detail: null,
+      },
+    });
+    const { wrapper } = createQueryClientTestHarness();
+    const { result } = renderHook(
+      () => useThreadCreationOptions({ preferenceProjectId: PROJECT_ID }),
+      { wrapper },
+    );
+    await waitFor(() => expect(result.current.modelLoadFailed).toBe(true));
+    expect(result.current.isLoadingModels).toBe(false);
+    expect(result.current.modelLoadError?.code).toBe("provider_unavailable");
+  });
+
+  it("settles a disabled catalog instead of staying loading forever", async () => {
+    const catalog = createDeferredPromise<SystemExecutionOptionsResponse>();
+    vi.mocked(sdk.system.executionOptions).mockReturnValue(catalog.promise);
+    const { wrapper } = createQueryClientTestHarness();
+    function Controls({ enabled }: { enabled: boolean }) {
+      const options = useThreadCreationOptions({
+        enabled,
+        initialProviderId: GLOBAL_PROVIDER_ID,
+      });
+      return (
+        <ExecutionControls
+          provider={{
+            selectedId: options.selectedProviderId,
+            options: options.providerOptions,
+          }}
+          model={{
+            selected: options.selectedModel,
+            options: options.modelOptions,
+            moreOptions: options.moreModelOptions,
+            isLoading: options.isLoadingModels,
+            loadFailed: options.modelLoadFailed,
+            onChange: options.setSelectedModel,
+          }}
+          reasoning={{
+            value: options.reasoningLevel,
+            options: options.reasoningOptions,
+            onChange: options.setReasoningLevel,
+          }}
+        />
+      );
+    }
+    const view = render(<Controls enabled={false} />, { wrapper });
+    expect(screen.getByText("No models available")).toBeTruthy();
+    expect(sdk.system.executionOptions).not.toHaveBeenCalled();
+
+    view.rerender(<Controls enabled />);
+    await waitFor(() => expect(sdk.system.executionOptions).toHaveBeenCalled());
+    expect(screen.queryByText("No models available")).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Provider, model and reasoning" })
+        .textContent,
+    ).toBe("Model");
+
+    view.rerender(<Controls enabled={false} />);
+    expect(screen.getByText("No models available")).toBeTruthy();
+    view.rerender(<Controls enabled />);
+
+    await act(async () =>
+      catalog.resolve({
+        ...executionOptionsResponse(),
+        providers: executionOptionsResponse().providers.slice(0, 1),
+        models: [],
+        selectedOnlyModels: [],
+      }),
+    );
+    expect(await screen.findByText("No models available")).toBeTruthy();
+  });
+
+  it("sends the catalog substitute when a verified catalog omits the stored model", async () => {
+    const catalog = createDeferredPromise<SystemExecutionOptionsResponse>();
+    vi.mocked(sdk.system.executionOptions).mockReturnValue(catalog.promise);
+    const { wrapper } = createQueryClientTestHarness();
+    const { result } = renderHook(
+      () =>
+        useThreadCreationOptions({
+          scope: "component-local",
+          initialProviderId: GLOBAL_PROVIDER_ID,
+          initialModel: "gpt-5.2-codex",
+          initialReasoningLevel: "medium",
+          initialPermissionMode: "full",
+        }),
+      { wrapper },
+    );
+    expect(result.current.selectedModel).toBe("gpt-5.2-codex");
+    await act(async () => catalog.resolve(executionOptionsResponse()));
+    await waitFor(() =>
+      expect(result.current.modelCatalogIsVerified).toBe(true),
+    );
+    expect(result.current.selectedModel).toBe("global-model");
+    expect(result.current.activeModel?.model).toBe("global-model");
+    const request = buildAutoFollowUpRequest({
+      compactFirst: false,
+      input: [{ type: "text", text: "Continue", mentions: [] }],
+      threadId: "thr_stored",
+      execution: {
+        model: result.current.selectedModel,
+        supportsServiceTier: result.current.supportsServiceTier,
+        serviceTier: result.current.serviceTier,
+        reasoningLevel: result.current.reasoningLevel,
+        permissionMode: result.current.permissionMode,
+        executionInputSources: result.current.executionInputSources,
+      },
+    });
+    expect(request?.model).toBe("global-model");
+    expect(request?.executionInputSources?.model).toBe("explicit");
+  });
+
   it("keeps an unprobed selection without reasoning choices until its actual ladder arrives", async () => {
     const discovery = createDeferredPromise<SystemExecutionOptionsResponse>();
     const catalog = executionOptionsResponse();
@@ -996,7 +1422,9 @@ describe("useThreadCreationOptions", () => {
         }),
       { wrapper },
     );
-    await waitFor(() => expect(result.current.selectedModel).toBe("global-default"));
+    await waitFor(() =>
+      expect(result.current.selectedModel).toBe("global-default"),
+    );
     act(() => result.current.setSelectedProviderId(PROJECT_PROVIDER_ID));
     await waitFor(() => {
       expect(result.current.selectedProviderId).toBe(PROJECT_PROVIDER_ID);
@@ -1004,10 +1432,12 @@ describe("useThreadCreationOptions", () => {
       expect(result.current.reasoningLevel).toBe("high");
     });
     expect(sdk.projects.defaultExecutionOptions).toHaveBeenCalledWith(
-      expect.objectContaining({ projectId: PROJECT_ID, providerId: PROJECT_PROVIDER_ID }),
+      expect.objectContaining({
+        projectId: PROJECT_ID,
+        providerId: PROJECT_PROVIDER_ID,
+      }),
     );
   });
-
 
   it("offers each model's own tiers and keeps the chosen tier for the models that have it", async () => {
     const base = executionOptionsResponse();
@@ -1081,7 +1511,7 @@ describe("useThreadCreationOptions", () => {
       { wrapper },
     );
     await waitFor(() =>
-      expect(result.current.selectedProviderId).toBe(GLOBAL_PROVIDER_ID),
+      expect(result.current.modelCatalogIsVerified).toBe(true),
     );
     expect(result.current.supportsServiceTier).toBe(false);
     expect(result.current.serviceTier).toBe("default");
@@ -1763,6 +2193,374 @@ describe("useThreadCreationOptions", () => {
         }),
       );
     });
+  });
+
+  it.each([GLOBAL_PROVIDER_ID, PROJECT_PROVIDER_ID])(
+    "shows the server default before ready-provider discovery selects %s",
+    async (readyProviderId) => {
+      const discovery = createDeferredPromise<SystemProviderStatesResponse>();
+      const catalog = createDeferredPromise<SystemExecutionOptionsResponse>();
+      vi.mocked(sdk.system.providerStates).mockReturnValue(discovery.promise);
+      vi.mocked(sdk.system.executionOptions).mockReturnValue(catalog.promise);
+      const { wrapper, queryClient } = createQueryClientTestHarness();
+      const { result, rerender } = renderHook(
+        () =>
+          useThreadCreationOptions({
+            preferReadyProviderWhenUnset: true,
+            resolveProviderRouting: () => ({ hostId: "home-host" }),
+          }),
+        { wrapper },
+      );
+
+      await waitFor(() =>
+        expect(sdk.system.providerStates).toHaveBeenCalledTimes(1),
+      );
+      await waitFor(() =>
+        expect(sdk.system.executionOptions).toHaveBeenCalledTimes(1),
+      );
+      expect(result.current.isLoadingModels).toBe(true);
+      await act(async () => catalog.resolve(executionOptionsResponse()));
+      await waitFor(() =>
+        expect(result.current.activeModel?.displayName).toBe("Global Model"),
+      );
+      render(
+        <ExecutionControls
+          provider={{
+            selectedId: result.current.selectedProviderId,
+            options: result.current.providerOptions,
+          }}
+          model={{
+            selected: result.current.selectedModel,
+            options: result.current.modelOptions,
+            moreOptions: result.current.moreModelOptions,
+            isLoading: result.current.isLoadingModels,
+            loadFailed: result.current.modelLoadFailed,
+            onChange: result.current.setSelectedModel,
+          }}
+          reasoning={{
+            value: result.current.reasoningLevel,
+            options: result.current.reasoningOptions,
+            onChange: result.current.setReasoningLevel,
+          }}
+        />,
+        { wrapper },
+      );
+      expect(
+        screen.getByRole("button", { name: "Provider, model and reasoning" })
+          .textContent,
+      ).toContain("Global Model");
+      const readyCatalog =
+        createDeferredPromise<SystemExecutionOptionsResponse>();
+      vi.mocked(sdk.system.executionOptions).mockReturnValue(
+        readyCatalog.promise,
+      );
+      await act(async () =>
+        discovery.resolve(readyProviderStates(readyProviderId)),
+      );
+      await waitFor(() =>
+        expect(sdk.system.executionOptions).toHaveBeenCalledTimes(2),
+      );
+      const request = vi.mocked(sdk.system.executionOptions).mock.calls[1]?.[0];
+      expect(request).toMatchObject({
+        hostId: "home-host",
+        providerId: readyProviderId,
+      });
+      expect(result.current.selectedProviderId).toBe(readyProviderId);
+      act(() => {
+        for (let index = 0; index < 5; index++) {
+          void invalidateSystemExecutionOptions({
+            queryClient,
+            hostId: "home-host",
+          });
+        }
+      });
+      rerender();
+      expect(sdk.system.executionOptions).toHaveBeenCalledTimes(2);
+      expect(request?.signal?.aborted).toBe(false);
+      await act(async () =>
+        readyCatalog.resolve({
+          ...executionOptionsResponse(),
+          models: executionOptionsResponse().models.map((model) => ({
+            ...model,
+            model: `ready-${model.model}`,
+            displayName: `Ready ${model.displayName}`,
+          })),
+        }),
+      );
+      await waitFor(() =>
+        expect(result.current.activeModel?.displayName).toBe(
+          "Ready Global Model",
+        ),
+      );
+      expect(result.current.modelCatalogIsVerified).toBe(true);
+      rerender();
+      expect(sdk.system.executionOptions).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it.each(["empty", "failed"])(
+    "loads server defaults when ready-provider discovery is %s",
+    async (status) => {
+      if (status === "failed") {
+        vi.mocked(sdk.system.providerStates).mockRejectedValue(
+          new Error("offline"),
+        );
+      }
+      const { wrapper } = createQueryClientTestHarness();
+      const { result } = renderHook(
+        () => useThreadCreationOptions({ preferReadyProviderWhenUnset: true }),
+        { wrapper },
+      );
+      await waitFor(() =>
+        expect(result.current.modelCatalogIsVerified).toBe(true),
+      );
+      expect(result.current.activeModel?.displayName).toBe("Global Model");
+      expect(sdk.system.executionOptions).toHaveBeenCalledTimes(1);
+      expect(sdk.system.executionOptions).toHaveBeenCalledWith(
+        expect.objectContaining({ providerId: undefined }),
+      );
+    },
+  );
+
+  it("enables cached provider permissions and enforces the host limit before a five-second catalog resolves", async () => {
+    vi.useFakeTimers();
+    const catalog = executionOptionsResponse();
+    writeCachedProviderList(
+      providerListCacheKey({ hostId: "home-host", environmentId: null }),
+      catalog.providers,
+    );
+    vi.mocked(sdk.system.executionOptions).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          setTimeout(() => resolve(catalog), 5000);
+        }),
+    );
+    const { wrapper, queryClient } = createQueryClientTestHarness();
+    queryClient.setQueryData(hostsQueryKey(), [
+      makeHost({ id: "home-host", maxPermissionMode: "auto" }),
+    ]);
+    const { result } = renderHook(
+      () =>
+        useThreadCreationOptions({
+          scope: "component-local",
+          initialProviderId: GLOBAL_PROVIDER_ID,
+          initialPermissionMode: "auto",
+          resolveProviderRouting: () => ({ hostId: "home-host" }),
+        }),
+      { wrapper },
+    );
+    try {
+      expect(result.current.modelCatalogIsVerified).toBe(false);
+      expect(result.current.permissionModeIsVerified).toBe(true);
+      expect(result.current.permissionMode).toBe("auto");
+      expect(
+        result.current.permissionModeOptions.find(
+          ({ value }) => value === "full",
+        )?.disabled,
+      ).toBe(true);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(4999);
+      });
+      expect(result.current.modelCatalogIsVerified).toBe(false);
+      expect(result.current.permissionModeIsVerified).toBe(true);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2);
+      });
+      expect(result.current.modelCatalogIsVerified).toBe(true);
+      expect(result.current.permissionModeIsVerified).toBe(true);
+    } finally {
+      cleanup();
+      queryClient.clear();
+      vi.useRealTimers();
+    }
+  });
+
+  it("retains verified permission options when a background model request fails and recovers", async () => {
+    const { wrapper, queryClient } = createQueryClientTestHarness();
+    const { result } = renderHook(
+      () =>
+        useThreadCreationOptions({
+          scope: "component-local",
+          initialProviderId: GLOBAL_PROVIDER_ID,
+          resolveProviderRouting: () => ({ hostId: "home-host" }),
+        }),
+      { wrapper },
+    );
+    await waitFor(() =>
+      expect(result.current.modelCatalogIsVerified).toBe(true),
+    );
+    const permissionOptions = result.current.permissionModeOptions;
+    vi.mocked(sdk.system.executionOptions).mockRejectedValue(
+      new Error("catalog refresh unavailable"),
+    );
+    await act(async () => {
+      await invalidateSystemExecutionOptions({
+        queryClient,
+        hostId: "home-host",
+      });
+    });
+    await waitFor(() =>
+      expect(result.current.modelCatalogIsVerified).toBe(false),
+    );
+    expect(result.current.permissionModeIsVerified).toBe(true);
+    expect(result.current.permissionModeOptions).toEqual(permissionOptions);
+    vi.mocked(sdk.system.executionOptions).mockResolvedValue(
+      executionOptionsResponse(),
+    );
+    await act(async () => {
+      await invalidateSystemExecutionOptions({
+        queryClient,
+        hostId: "home-host",
+      });
+    });
+    await waitFor(() =>
+      expect(result.current.modelCatalogIsVerified).toBe(true),
+    );
+    expect(result.current.permissionModeIsVerified).toBe(true);
+  });
+
+  it.each(["home-host", undefined])(
+    "settles an 800ms catalog and keeps composer controls enabled through 300ms events from %s",
+    async (hostId) => {
+      vi.useFakeTimers();
+      const requests: AbortSignal[] = [];
+      vi.mocked(sdk.system.executionOptions).mockImplementation((args) => {
+        const signal = args?.signal;
+        if (signal === undefined)
+          throw new Error("catalog request has no signal");
+        requests.push(signal);
+        return new Promise((resolve) => {
+          setTimeout(() => resolve(executionOptionsResponse()), 800);
+        });
+      });
+      const { wrapper, queryClient } = createQueryClientTestHarness();
+      const effects = createRealtimeCacheEffects({ queryClient });
+      const states: boolean[] = [];
+      function ComposerControls() {
+        const options = useThreadCreationOptions({
+          scope: "component-local",
+          resolveProviderRouting: () => ({ hostId: "home-host" }),
+          initialProviderId: GLOBAL_PROVIDER_ID,
+          initialModel: "global-model",
+        });
+        states.push(options.permissionModeIsVerified);
+        return (
+          <>
+            <PermissionModePicker
+              pending={!options.permissionModeIsVerified}
+              value={options.permissionMode}
+              options={options.permissionModeOptions}
+              onChange={options.setPermissionMode}
+              supported={options.supportsPermissionModeSelection}
+            />
+            <ExecutionControls
+              pending={options.isLoadingModels}
+              reasoning={{
+                value: options.reasoningLevel,
+                options: options.reasoningOptions,
+                onChange: options.setReasoningLevel,
+              }}
+              provider={{
+                selectedId: options.selectedProviderId,
+                options: options.providerOptions,
+              }}
+              model={{
+                active: options.activeModel,
+                loadFailed: options.modelLoadFailed,
+                selected: options.selectedModel,
+                options: options.modelOptions,
+                moreOptions: options.moreModelOptions,
+                isLoading: options.isLoadingModels,
+                onChange: options.setSelectedModel,
+              }}
+            />
+          </>
+        );
+      }
+      try {
+        render(<ComposerControls />, { wrapper });
+        expect(
+          screen
+            .getByRole("button", { name: "Permissions" })
+            .hasAttribute("disabled"),
+        ).toBe(true);
+        for (let elapsed = 300; elapsed <= 2400; elapsed += 300) {
+          await act(async () => {
+            if (elapsed === 900) {
+              await vi.advanceTimersByTimeAsync(200);
+              expect(requests).toHaveLength(1);
+              await vi.advanceTimersByTimeAsync(100);
+            } else {
+              await vi.advanceTimersByTimeAsync(300);
+            }
+            effects.handleChanged({
+              type: "changed",
+              entity: "host",
+              ...(hostId === undefined ? {} : { id: hostId }),
+              changes: ["provider-model-catalog-changed"],
+            });
+            await vi.advanceTimersByTimeAsync(0);
+          });
+          if (elapsed >= 900) {
+            expect(
+              screen
+                .getByRole("button", { name: "Permissions" })
+                .hasAttribute("disabled"),
+            ).toBe(false);
+            const model = document.querySelector(
+              "[data-model-reasoning-trigger]",
+            )!;
+            expect(model.hasAttribute("disabled")).toBe(false);
+            expect(model.textContent).toContain("Global Model");
+          }
+        }
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(2000);
+        });
+        expect(requests).toHaveLength(3);
+        expect(requests.every((signal) => !signal.aborted)).toBe(true);
+        expect(states.slice(states.indexOf(true))).not.toContain(false);
+      } finally {
+        effects.dispose();
+        cleanup();
+        queryClient.clear();
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it("keeps an active catalog refresh through repeated host notifications", async () => {
+    const { wrapper, queryClient } = createQueryClientTestHarness();
+    const { result } = renderHook(
+      () => useThreadCreationOptions({ initialProviderId: GLOBAL_PROVIDER_ID }),
+      { wrapper },
+    );
+    await waitFor(() =>
+      expect(result.current.modelCatalogIsVerified).toBe(true),
+    );
+    const refresh = createDeferredPromise<SystemExecutionOptionsResponse>();
+    vi.mocked(sdk.system.executionOptions).mockReturnValue(refresh.promise);
+    act(() => {
+      void invalidateSystemExecutionOptions({
+        queryClient,
+        hostId: "home-host",
+      });
+    });
+    await waitFor(() =>
+      expect(sdk.system.executionOptions).toHaveBeenCalledTimes(2),
+    );
+    const request = vi.mocked(sdk.system.executionOptions).mock.calls[1]?.[0];
+    act(() => {
+      for (let index = 0; index < 5; index++) {
+        void invalidateSystemExecutionOptions({
+          queryClient,
+          hostId: "home-host",
+        });
+      }
+    });
+    expect(request?.signal?.aborted).toBe(false);
+    expect(sdk.system.executionOptions).toHaveBeenCalledTimes(2);
+    await act(async () => refresh.resolve(executionOptionsResponse()));
   });
 
   it("latches the initial ready provider instead of resolving it again after a machine switch", async () => {

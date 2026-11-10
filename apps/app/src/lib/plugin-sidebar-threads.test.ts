@@ -28,6 +28,11 @@ function makeThread(overrides: Partial<ThreadListEntry> = {}): ThreadListEntry {
 }
 
 describe("toPluginSidebarThread", () => {
+  it.each([true, false])("preserves native terminal mode without live activity (%s)", (nativeTerminal) => {
+    const mapped = toPluginSidebarThread(makeThread({ nativeTerminal }));
+    expect(mapped.experimental_nativeTerminal).toBe(nativeTerminal);
+    expect(mapped.experimental_nativeActivity).toBeUndefined();
+  });
   it("resolves the display title through the same rules bb's row uses", () => {
     expect(toPluginSidebarThread(makeThread()).displayTitle).toBe("A thread");
     expect(

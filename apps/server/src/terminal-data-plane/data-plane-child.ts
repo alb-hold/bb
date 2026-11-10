@@ -2,11 +2,13 @@ import { Socket } from "node:net";
 import { TERMINAL_DATA_MAX_BYTES } from "@bb/domain";
 import {
   terminalClientMessageSchema,
+  TERMINAL_REPLAY_BATCH_WEBSOCKET_PROTOCOL,
   terminalOutputChunkSchema,
   type TerminalOutputChunk,
   type TerminalServerMessage,
 } from "@bb/server-contract";
 import { z } from "zod";
+import { terminalReplayFrames } from "../services/terminals/terminal-replay-frames.js";
 import {
   TerminalOutputFlowControl,
   type TerminalOutputFlowDaemonMessage,
@@ -43,6 +45,7 @@ const OUTPUT_BATCH_DELAY_MS = 10;
 
 export interface TerminalDataPlaneSocket {
   readonly bufferedAmount: number;
+  readonly protocol?: string;
   close(code?: number, reason?: string): void;
   on(event: "close", listener: () => void): unknown;
   on(event: "error", listener: (error: Error) => void): unknown;
@@ -400,7 +403,11 @@ export class TerminalDataPlaneChild {
         this.write(attach, JSON.stringify({ type: "pong" }));
         return;
       case "input":
-        this.forwardInput(attach, message.dataBase64);
+        this.forwardInput(
+          attach,
+          message.dataBase64,
+          message.isUserInput !== false,
+        );
         return;
       case "resize":
         this.send({
@@ -572,7 +579,7 @@ export class TerminalDataPlaneChild {
     for (const attach of [
       ...(this.attachesByTerminalId.get(terminalId) ?? []),
     ]) {
-      if (attach.attachedFrameSent) {
+      if (attach.attachedFrameSent || message.type === "error") {
         this.write(attach, frame);
       } else {
         attach.queuedControl.push(frame);
@@ -580,16 +587,13 @@ export class TerminalDataPlaneChild {
     }
   }
 
-  private sendReply(
-    attachId: string,
-    message: TerminalServerMessage,
-  ): void {
+  private sendReply(attachId: string, message: TerminalServerMessage): void {
     const attach = this.attaches.get(attachId);
     if (attach === undefined || attach.closed) {
       return;
     }
     const frame = JSON.stringify(message);
-    if (attach.attachedFrameSent) {
+    if (attach.attachedFrameSent || message.type === "error") {
       this.write(attach, frame);
     } else {
       attach.queuedControl.push(frame);
@@ -625,9 +629,11 @@ export class TerminalDataPlaneChild {
           nextSeq: message.nextSeq,
         }),
       );
-      for (const chunk of message.chunks) {
-        this.write(attach, JSON.stringify({ type: "output", chunk }));
-      }
+      for (const frame of terminalReplayFrames(
+        message.chunks,
+        attach.socket.protocol === TERMINAL_REPLAY_BATCH_WEBSOCKET_PROTOCOL,
+      ))
+        this.write(attach, frame);
       attach.nextSeq = message.nextSeq;
       const queued = attach.queuedControl;
       attach.queuedControl = [];
@@ -643,12 +649,18 @@ export class TerminalDataPlaneChild {
         );
         return;
       }
+      const accepted: TerminalOutputChunk[] = [];
       for (const chunk of message.chunks) {
         if (chunk.seq === attach.nextSeq) {
-          this.write(attach, JSON.stringify({ type: "output", chunk }));
+          accepted.push(chunk);
           attach.nextSeq = chunk.seq + 1;
         }
       }
+      for (const frame of terminalReplayFrames(
+        accepted,
+        attach.socket.protocol === TERMINAL_REPLAY_BATCH_WEBSOCKET_PROTOCOL,
+      ))
+        this.write(attach, frame);
       if (attach.nextSeq < message.nextSeq) {
         this.closeAttach(
           attach,
@@ -823,13 +835,18 @@ export class TerminalDataPlaneChild {
     }
   }
 
-  private forwardInput(attach: BrowserAttach, dataBase64: string): void {
+  private forwardInput(
+    attach: BrowserAttach,
+    dataBase64: string,
+    isUserInput: boolean,
+  ): void {
     const terminalId = attach.terminalId;
     const now = this.now();
     const lastActivityAt = this.lastInputActivityAt.get(terminalId);
     if (
-      lastActivityAt === undefined ||
-      now - lastActivityAt >= TERMINAL_DATA_PLANE_INPUT_ACTIVITY_INTERVAL_MS
+      isUserInput &&
+      (lastActivityAt === undefined ||
+        now - lastActivityAt >= TERMINAL_DATA_PLANE_INPUT_ACTIVITY_INTERVAL_MS)
     ) {
       this.lastInputActivityAt.set(terminalId, now);
       this.send({ v: V, type: "terminal.input-activity", terminalId, at: now });

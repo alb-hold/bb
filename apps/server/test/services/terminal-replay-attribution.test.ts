@@ -1,3 +1,5 @@
+import { performance } from "node:perf_hooks";
+import { setImmediate } from "node:timers";
 import { IncomingMessage } from "node:http";
 import { Socket } from "node:net";
 import { handOffTerminalUpgrade } from "../../src/ws/terminal-upgrade-handoff.js";
@@ -58,7 +60,9 @@ async function setup(terminalAttachTimeoutMs?: number) {
     info.mock.calls.filter(
       ([, message]) => message === "Terminal replay attributed",
     );
-  const reply = async () => {
+  const reply = async (
+    chunks = [{ seq: 0, dataBase64: Buffer.from("replay").toString("base64") }],
+  ) => {
     const request = [...requests]
       .reverse()
       .find((message) => message.type === "terminal.attach");
@@ -72,10 +76,8 @@ async function setup(terminalAttachTimeoutMs?: number) {
         terminalId: terminal.id,
         requestId: request.requestId,
         replayStartSeq: 0,
-        nextSeq: 1,
-        chunks: [
-          { seq: 0, dataBase64: Buffer.from("replay").toString("base64") },
-        ],
+        nextSeq: chunks.length,
+        chunks,
       },
     });
   };
@@ -83,6 +85,113 @@ async function setup(terminalAttachTimeoutMs?: number) {
 }
 
 describe("terminal replay attribution paths", () => {
+  it("records each attach stage for fragmented small replays without retaining marks", async () => {
+    const f = await setup();
+    const marks: Array<{ stage: string; at: number }> = [];
+    const mark = performance.mark.bind(performance);
+    vi.spyOn(performance, "mark").mockImplementation((name, options) => {
+      const result = mark(name, options);
+      if (name.startsWith("terminal-replay-"))
+        marks.push({ stage: name, at: result.startTime });
+      return result;
+    });
+    const chunks = Array.from({ length: 40 }, (_, seq) => ({
+      seq,
+      dataBase64: Buffer.from("x".repeat(170)).toString("base64"),
+    }));
+    for (let run = 0; run < 6; run += 1) {
+      marks.length = 0;
+      const socket = { close: vi.fn(), send: vi.fn() };
+      onTerminalSocketOpen(f.harness.deps, {
+        terminalId: f.terminal.id,
+        socket,
+        sinceSeq: 0,
+        outputAcks: false,
+        resizeAcks: false,
+      });
+      await f.reply(chunks);
+      expect(marks.map(({ stage }) => stage)).toEqual([
+        "terminal-replay-daemon-requested",
+        "terminal-replay-daemon-received",
+        "terminal-replay-holder-scan-start",
+        "terminal-replay-holder-scan-end",
+        "terminal-replay-persistence-start",
+        "terminal-replay-persistence-end",
+        "terminal-replay-dispatch-start",
+        "terminal-replay-dispatch-end",
+      ]);
+      expect(
+        marks.every(
+          ({ at }, index) => index === 0 || at >= marks[index - 1]!.at,
+        ),
+      ).toBe(true);
+      expect(f.lines().at(-1)?.[0]).toMatchObject({
+        replayBytes: 6800,
+        replayChunks: 40,
+        timings: {
+          daemonMs: expect.any(Number),
+          holderScanMs: expect.any(Number),
+          persistenceMs: expect.any(Number),
+          dispatchMs: expect.any(Number),
+          serverMs: expect.any(Number),
+        },
+      });
+      expect(
+        performance
+          .getEntriesByType("mark")
+          .filter(({ name }) => name.startsWith("terminal-replay-")),
+      ).toHaveLength(0);
+      console.info(
+        "P101 server replay stages",
+        JSON.stringify({ run, marks, attribution: f.lines().at(-1)?.[0] }),
+      );
+      f.harness.deps.terminalSessions.detachBrowserTerminal({
+        terminalId: f.terminal.id,
+        socket,
+      });
+    }
+  });
+
+  it("yields while scanning a large replay before dispatching it", async () => {
+    const f = await setup();
+    const socket = { close: vi.fn(), send: vi.fn() };
+    let yielded = false;
+    let scanned = false;
+    const mark = performance.mark.bind(performance);
+    vi.spyOn(performance, "mark").mockImplementation((name, options) => {
+      if (name === "terminal-replay-holder-scan-start")
+        setImmediate(() => {
+          yielded = true;
+        });
+      if (name === "terminal-replay-holder-scan-end") {
+        scanned = true;
+        expect(yielded).toBe(true);
+        expect(socket.send).not.toHaveBeenCalled();
+      }
+      return mark(name, options);
+    });
+    onTerminalSocketOpen(f.harness.deps, {
+      terminalId: f.terminal.id,
+      socket,
+      sinceSeq: 0,
+      outputAcks: false,
+      resizeAcks: false,
+    });
+    await f.reply(
+      Array.from({ length: 64 }, (_, seq) => ({
+        seq,
+        dataBase64: Buffer.from("x".repeat(8192)).toString("base64"),
+      })),
+    );
+    expect(scanned).toBe(true);
+    expect(f.lines().at(-1)?.[0]).toMatchObject({ replayBytes: 524288 });
+    expect(
+      socket.send.mock.calls.some(
+        ([data]) => JSON.parse(data).type === "attached",
+      ),
+    ).toBe(true);
+  });
+
   it.each(["websocket", "data-plane"] as const)(
     "attributes exactly one %s replay",
     async (path) => {

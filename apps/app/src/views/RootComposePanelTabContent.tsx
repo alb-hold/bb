@@ -1,51 +1,53 @@
-import { PluginDetailTabContent } from "@/components/plugin/plugin-detail-navigation";
-import type { ReactNode } from "react";
-import type { SidebarProject } from "@/hooks/queries/project-queries";
-import { findLocalPathProjectSourceForHost } from "@bb/domain";
-import type {
-  ExperimentalLiveFileTarget,
-  PluginFileOpenerSource,
-} from "@get-bb/plugin-sdk";
-import type {
-  PluginPanelFixedPanelTab,
-  SecondaryFileFixedPanelTab,
-} from "@/lib/fixed-panel-tabs-state";
-import type { SecondaryPanelPaneRenderContext } from "@/components/secondary-panel/ThreadSecondaryPanel";
+import { useAppCommandHandler } from "@/components/commands/AppCommandProvider";
 import {
-  LazyFilePreview,
-  LazyHostFilePreviewTabContent,
-  LazyHostScopedFilePreviewTabContent,
-  LazyNewTabPage,
-  LazyProjectFilePreviewTabContent,
-  LazyThreadStorageFilePreviewTabContent,
-  LazyAttachmentFilePreviewTabContent,
-  LazyThreadTerminalPanel,
-  LazyWorkspaceFilePreviewTabContent,
-} from "@/components/secondary-panel/lazySecondaryPanelComponents";
-import type { FileSearchSelection } from "@/components/secondary-panel/useThreadFileTabs";
-import {
-  PluginPanelTabContent,
-  type PluginPanelActionEntry,
+PluginPanelTabContent,
+type PluginPanelActionEntry,
 } from "@/components/plugin/PluginPanelActions";
 import {
-  createFileOpenerOriginalTab,
-  parseFileOpenerParams,
-  type FileOpenerOriginalTab,
+createFileOpenerOriginalTab,
+parseFileOpenerParams,
+type FileOpenerOriginalTab,
 } from "@/components/plugin/file-opener-tabs";
+import { PluginDetailTabContent } from "@/components/plugin/plugin-detail-navigation";
+import type { SecondaryPanelPaneRenderContext } from "@/components/secondary-panel/ThreadSecondaryPanel";
+import {
+LazyAttachmentFilePreviewTabContent,
+LazyFilePreview,
+LazyHostFilePreviewTabContent,
+LazyHostScopedFilePreviewTabContent,
+LazyNewTabPage,
+LazyProjectFilePreviewTabContent,
+LazyThreadStorageFilePreviewTabContent,
+LazyThreadTerminalPanel,
+LazyWorkspaceFilePreviewTabContent,
+} from "@/components/secondary-panel/lazySecondaryPanelComponents";
+import type { FileSearchSelection } from "@/components/secondary-panel/useThreadFileTabs";
+import type { MarkdownPreviewLinkHandler } from "@/components/ui/markdown-link";
 import { useEnvironment } from "@/hooks/queries/environment-queries";
+import type { SidebarProject } from "@/hooks/queries/project-queries";
 import { useThreadStorageLocation } from "@/hooks/queries/thread-panel-queries";
 import { useLiveFileOpenTargets } from "@/hooks/useLiveFileOpenTargets";
 import { useAppNavigationHost } from "@/lib/app-navigation-host";
+import type {
+PluginPanelFixedPanelTab,
+SecondaryFileFixedPanelTab,
+} from "@/lib/fixed-panel-tabs-state";
 import { getFilePreviewLineRangeStart } from "@bb/client-core";
+import { findLocalPathProjectSourceForHost } from "@bb/domain";
 import { resolveAbsoluteFilePath } from "@bb/shared-ui/lib/absolute-file-path";
-import { useAppCommandHandler } from "@/components/commands/AppCommandProvider";
-import type { MarkdownPreviewLinkHandler } from "@/components/ui/markdown-link";
-
-export const ROOT_COMPOSE_FIXED_PANEL_STATE_ID = "root-compose";
-
-export type RootComposeTerminalTarget =
-  | { kind: "environment"; environmentId: string }
-  | { kind: "host_path"; cwd: string | null; hostId: string };
+import type {
+ExperimentalLiveFileTarget,
+PluginFileOpenerSource,
+} from "@get-bb/plugin-sdk";
+import type { ReactNode } from "react";
+import {
+ROOT_COMPOSE_FIXED_PANEL_STATE_ID,
+type RootComposeTerminalTarget,
+} from "./root-compose-panel-types";
+export {
+ROOT_COMPOSE_FIXED_PANEL_STATE_ID,
+type RootComposeTerminalTarget
+} from "./root-compose-panel-types";
 
 interface RootComposePanelTabContentProps {
   activeTabId: string | null;

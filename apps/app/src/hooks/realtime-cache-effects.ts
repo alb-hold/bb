@@ -101,7 +101,7 @@ interface RealtimeCacheEffectsOptions {
 
 interface DeferredNonThreadChanges {
   environmentKindsById: Map<string, Set<EnvironmentChangeKind>>;
-  hostKinds: Set<HostChangeKind>;
+  hostKindsById: Map<string | undefined, Set<HostChangeKind>>;
   projectKindsById: Map<string | undefined, Set<ProjectChangeKind>>;
   systemKinds: Set<SystemChangeKind>;
 }
@@ -373,7 +373,7 @@ function invalidateRealtimeEnvironmentChange({
 function createDeferredNonThreadChanges(): DeferredNonThreadChanges {
   return {
     environmentKindsById: new Map(),
-    hostKinds: new Set(),
+    hostKindsById: new Map(),
     projectKindsById: new Map(),
     systemKinds: new Set(),
   };
@@ -403,7 +403,7 @@ function hasDeferredNonThreadChanges(
 ): boolean {
   return (
     deferred.environmentKindsById.size > 0 ||
-    deferred.hostKinds.size > 0 ||
+    deferred.hostKindsById.size > 0 ||
     deferred.projectKindsById.size > 0 ||
     deferred.systemKinds.size > 0
   );
@@ -571,21 +571,27 @@ export function createRealtimeCacheEffects({
       void invalidateTags(queryClient, scope, tags === null ? null : [...tags]);
     deferredTags.clear();
     if (hasDeferredNonThreadChanges(deferredNonThreadChanges)) {
-      const { environmentKindsById, hostKinds, projectKindsById, systemKinds } =
-        deferredNonThreadChanges;
+      const {
+        environmentKindsById,
+        hostKindsById,
+        projectKindsById,
+        systemKinds,
+      } = deferredNonThreadChanges;
       for (const [environmentId, changeKinds] of environmentKindsById) {
         environmentInvalidator.markChanged(
           environmentId,
           Array.from(changeKinds),
         );
       }
-      applyHostChanges(undefined, hostKinds);
+      for (const [hostId, changeKinds] of hostKindsById) {
+        applyHostChanges(hostId, changeKinds);
+      }
       for (const [projectId, changeKinds] of projectKindsById) {
         applyProjectChanges(projectId, changeKinds);
       }
       applySystemChanges(systemKinds);
       environmentKindsById.clear();
-      hostKinds.clear();
+      hostKindsById.clear();
       projectKindsById.clear();
       systemKinds.clear();
     }
@@ -692,7 +698,11 @@ export function createRealtimeCacheEffects({
           break;
         case "host":
           if (!documentVisible) {
-            addAll(deferredNonThreadChanges.hostKinds, message.changes);
+            mergeInto(
+              deferredNonThreadChanges.hostKindsById,
+              message.id,
+              message.changes,
+            );
             break;
           }
           applyHostChanges(message.id, message.changes);

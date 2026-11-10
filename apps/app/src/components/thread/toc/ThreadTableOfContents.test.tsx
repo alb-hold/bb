@@ -675,6 +675,12 @@ describe("ThreadTableOfContents", () => {
           "[data-thread-toc] [aria-hidden] > span",
         ),
       );
+    expect(railTicks()[0]?.classList.contains("bg-muted-foreground/70")).toBe(
+      true,
+    );
+    expect(railTicks()[0]?.className).toContain(
+      "group-focus-within/toc:bg-foreground",
+    );
     expect(railTicks()[0]?.classList.contains("w-5")).toBe(true);
 
     act(() => {
@@ -683,12 +689,19 @@ describe("ThreadTableOfContents", () => {
       fireEvent.scroll(scrollElement);
       vi.advanceTimersByTime(119);
     });
+    expect(railTicks()[0]?.classList.contains("bg-foreground")).toBe(true);
+    expect(railTicks()[0]?.className).toContain(
+      "group-focus-within/toc:bg-foreground",
+    );
     expect(railTicks()[0]?.classList.contains("w-5")).toBe(true);
     expect(railTicks()[1]?.classList.contains("w-5")).toBe(false);
 
     act(() => {
       vi.advanceTimersByTime(1);
     });
+    expect(railTicks()[0]?.classList.contains("bg-muted-foreground/70")).toBe(
+      true,
+    );
     expect(railTicks()[0]?.classList.contains("w-5")).toBe(false);
     expect(railTicks()[1]?.classList.contains("w-5")).toBe(true);
   });

@@ -20,8 +20,7 @@ export const SIDEBAR_STATUS_GLYPH_BOX_CLASS = "h-4 w-4";
 
 export const SIDEBAR_WORKING_STATUS_COLOR_CLASS = "text-timeline-accent";
 
-export const SIDEBAR_SUCCESS_STATUS_COLOR_CLASS =
-  "bb-sidebar-success-status";
+export const SIDEBAR_SUCCESS_STATUS_COLOR_CLASS = "bb-sidebar-success-status";
 
 export const SIDEBAR_SUCCESS_STATUS_DOT_CLASS =
   "size-[5px] rounded-full bg-muted-foreground/60 max-md:pointer-coarse:size-1.5";
@@ -37,7 +36,7 @@ export const SIDEBAR_ROW_TEXT_CLASS = "text-sidebar-foreground";
 export const SIDEBAR_GROUP_TEXT_CLASS = "text-muted-foreground";
 
 export const SIDEBAR_CONTROL_TONE_CLASS =
-  "text-subtle-foreground hover:text-muted-foreground data-[state=open]:text-muted-foreground";
+  "text-foreground hover:text-foreground data-[state=open]:text-foreground";
 
 export const SIDEBAR_CONTROL_STATE_CLASS = `${SIDEBAR_CONTROL_TONE_CLASS} hover:bg-state-hover active:bg-state-active data-[state=open]:bg-state-active data-[state=open]:hover:bg-state-active`;
 
@@ -93,7 +92,7 @@ export const PROJECT_LIST_ACTION_BUTTON_CLASS = cn(
 );
 
 export const SIDEBAR_RAIL_BUTTON_CLASS = cn(
-  "relative size-(--bb-sidebar-control-size) shrink-0 rounded-md p-0 text-muted-foreground ring-sidebar-ring",
+  "bb-sidebar-chrome-icon relative size-(--bb-sidebar-control-size) shrink-0 rounded-md p-0 text-sidebar-icon-foreground ring-sidebar-ring",
   "hover:bg-state-hover hover:text-sidebar-foreground focus-visible:ring-2",
   "aria-[current=page]:bg-state-active aria-[current=page]:text-sidebar-foreground",
   "data-[state=open]:bg-state-active data-[state=open]:text-sidebar-foreground",
@@ -103,5 +102,5 @@ export const SIDEBAR_RAIL_BUTTON_CLASS = cn(
 export const SIDEBAR_FOOTER_ACTION_CLASS = cn(
   COARSE_POINTER_ROW_HEIGHT_CLASS,
   COARSE_POINTER_CHILD_ICON_BUTTON_CLASS,
-  "text-muted-foreground hover:text-sidebar-foreground [&>[data-icon-root]]:opacity-80",
+  "bb-sidebar-chrome-icon items-center justify-center text-sidebar-icon-foreground hover:text-sidebar-foreground aria-[current=page]:text-sidebar-foreground data-[state=open]:text-sidebar-foreground [&_[data-icon-root]]:size-(--bb-sidebar-control-icon-size)",
 );

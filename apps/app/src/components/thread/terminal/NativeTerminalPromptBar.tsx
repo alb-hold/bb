@@ -1,3 +1,5 @@
+import { useIsCompactViewport } from "@bb/shared-ui/hooks/use-compact-viewport";
+import { CONTENT_MEASURE_MAX_WIDTH_CLASS } from "@/lib/content-measure";
 import {
   useCallback,
   useEffect,
@@ -14,6 +16,11 @@ import {
 import type { PromptInput } from "@bb/domain";
 import type { UploadedPromptAttachment } from "@bb/server-contract";
 import { Button } from "@bb/shared-ui/button";
+import {
+  COMPOSER_SHELL_CLASS,
+  COMPOSER_SUBMIT_CLASS,
+  COMPOSER_SEND_ICON,
+} from "@bb/shared-ui/composer-primitives";
 import { Icon } from "@bb/shared-ui/icon";
 import { cn } from "@bb/shared-ui/lib/utils";
 import {
@@ -43,6 +50,8 @@ interface NativeTerminalPromptBarProps {
   projectId: string;
   providerLabel: string;
   threadId: string;
+  executionLabel?: string;
+  modelLabel?: string;
 }
 
 const PUSH_TO_TALK_HOLD_MS = 350;
@@ -93,12 +102,15 @@ function pastedFiles(clipboard: Pick<DataTransfer, "files" | "items">): File[] {
 export function NativeTerminalPromptBar({
   projectId,
   providerLabel,
+  executionLabel,
+  modelLabel,
   threadId,
 }: NativeTerminalPromptBarProps) {
   const inputId = useId();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [text, setText] = useState("");
+  const [composerFocused, setComposerFocused] = useState(false);
   const textRef = useRef("");
   const programmaticRef = useRef(false);
   const composingRef = useRef(false);
@@ -486,13 +498,42 @@ export function NativeTerminalPromptBar({
     element.setSelectionRange(selection[0], selection[1]);
   }, [text]);
 
-  useLayoutEffect(() => {
+  const measureInput = useCallback(() => {
     const element = textareaRef.current;
-    if (element === null || supportsFieldSizing) return;
-    element.style.height = "auto";
-    element.style.height = `${Math.min(element.scrollHeight, MAX_TEXTAREA_HEIGHT_PX)}px`;
+    if (!element) return;
+    if (text.length === 0) {
+      element.style.height = "";
+      return;
+    }
+    if (!supportsFieldSizing) {
+      element.style.height = "auto";
+      element.style.height = `${Math.min(element.scrollHeight, MAX_TEXTAREA_HEIGHT_PX)}px`;
+    }
   }, [text]);
 
+  useLayoutEffect(measureInput, [measureInput]);
+
+  useLayoutEffect(() => {
+    const shell = textareaRef.current?.closest<HTMLElement>(
+      "[data-native-composer]",
+    );
+    if (!shell) return;
+    let previousWidth = shell.clientWidth;
+    const observer = new ResizeObserver(() => {
+      if (shell.clientWidth === previousWidth) return;
+      previousWidth = shell.clientWidth;
+      measureInput();
+    });
+    observer.observe(shell);
+    return () => observer.disconnect();
+  }, [measureInput]);
+
+  const isCompactViewport = useIsCompactViewport();
+  const compactProvider = providerLabel.trim();
+  const compactDestination =
+    compactProvider.length > 0 && compactProvider.length <= 5
+      ? compactProvider
+      : "CLI";
   const recording =
     dictation.phase === "recording" || dictation.phase === "starting";
   const micLabel = recording
@@ -501,7 +542,10 @@ export function NativeTerminalPromptBar({
 
   return (
     <form
-      className="flex shrink-0 flex-col gap-1.5 border-t border-border/50 bg-sidebar px-2 pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]"
+      className={cn(
+        "mx-auto flex w-full shrink-0 flex-col gap-1.5 bg-sidebar px-4 pt-1 pb-[max(0.5rem,env(safe-area-inset-bottom))]",
+        CONTENT_MEASURE_MAX_WIDTH_CLASS,
+      )}
       data-native-terminal-prompt=""
       onSubmit={submit}
     >
@@ -540,10 +584,27 @@ export function NativeTerminalPromptBar({
       ) : null}
       <div
         className={cn(
-          "flex flex-col rounded-2xl border bg-background px-1.5 pt-1 pb-1 transition-[border-color,box-shadow] duration-200 focus-within:border-ring/60 motion-reduce:transition-none",
-          recording ? "border-destructive/40" : "border-input",
+          COMPOSER_SHELL_CLASS,
+          "group flex flex-col max-md:pointer-coarse:data-[native-composer-inline]:grid max-md:pointer-coarse:data-[native-composer-inline]:grid-cols-[minmax(0,1fr)_auto] max-md:pointer-coarse:data-[native-composer-inline]:items-center px-1.5 py-0.5 transition-[border-color,box-shadow] duration-200 focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/40 motion-reduce:transition-none",
+          recording && "border-destructive/40",
         )}
         data-native-composer=""
+        data-native-composer-inline={
+          text.length === 0 &&
+          !composerFocused &&
+          dictation.phase === "idle" &&
+          assist.suggestions.length === 0 &&
+          assist.recent === null &&
+          !assist.pending
+            ? ""
+            : undefined
+        }
+        onFocus={() => setComposerFocused(true)}
+        onBlur={(event) => {
+          if (!event.currentTarget.contains(event.relatedTarget)) {
+            setComposerFocused(false);
+          }
+        }}
         onDragOver={onDragOver}
         onDrop={onDrop}
       >
@@ -559,8 +620,23 @@ export function NativeTerminalPromptBar({
             onDiscard={dictation.discardFailed}
           />
         )}
+        {executionLabel?.trim() &&
+        executionLabel.trim() !== providerLabel.trim() ? (
+          <div
+            aria-label="Terminal execution"
+            data-native-composer-execution=""
+            className="col-span-2 truncate px-2 text-xs leading-tight text-muted-foreground max-md:pointer-coarse:group-data-[native-composer-inline]:hidden md:group-data-[native-composer-inline]:hidden"
+          >
+            <span
+              className="block truncate"
+              title={executionLabel ?? providerLabel}
+            >
+              {executionLabel}
+            </span>
+          </div>
+        ) : null}
         <label className="sr-only" htmlFor={inputId}>
-          Message {providerLabel}
+          Send to {providerLabel} terminal
         </label>
         <textarea
           ref={textareaRef}
@@ -575,7 +651,9 @@ export function NativeTerminalPromptBar({
               ? "Starting microphone…"
               : recording
                 ? "Listening…"
-                : `Message ${providerLabel}`
+                : isCompactViewport
+                  ? `To ${compactDestination} prompt…`
+                  : `Send to ${providerLabel} prompt above…`
           }
           onChange={(event) => {
             applyValue(event.target.value, programmaticRef.current);
@@ -588,7 +666,9 @@ export function NativeTerminalPromptBar({
           }}
           onKeyDown={onKeyDown}
           onPaste={onPaste}
-          className="max-h-48 min-h-10 w-full resize-none bg-transparent px-2 py-2 text-base text-foreground field-sizing-content placeholder:text-muted-foreground focus-visible:outline-none"
+          className={cn(
+            "max-md:pointer-coarse:group-data-[native-composer-inline]:col-start-1 max-md:pointer-coarse:group-data-[native-composer-inline]:row-start-1 max-md:pointer-coarse:group-data-[native-composer-inline]:h-11 max-md:pointer-coarse:group-data-[native-composer-inline]:overflow-hidden max-h-48 min-h-7 max-md:min-h-11 min-w-0 w-full resize-none bg-transparent px-2 py-1 text-base md:text-sm text-foreground field-sizing-content placeholder:text-muted-foreground focus-visible:outline-none",
+          )}
         />
         <AssistStrip
           suggestions={assist.suggestions}
@@ -601,7 +681,10 @@ export function NativeTerminalPromptBar({
           onDismiss={assist.dismissSuggestion}
           onUndo={assist.undoRecent}
         />
-        <div className="flex items-center gap-1">
+        <div
+          data-native-composer-actions=""
+          className="flex shrink-0 items-center gap-1 max-md:pointer-coarse:group-data-[native-composer-inline]:col-start-2 max-md:pointer-coarse:group-data-[native-composer-inline]:row-start-1"
+        >
           <input
             ref={fileInputRef}
             type="file"
@@ -619,20 +702,30 @@ export function NativeTerminalPromptBar({
             type="button"
             size="icon"
             variant="ghost"
-            className="size-9 shrink-0 rounded-full pointer-coarse:size-11"
+            className="size-9 shrink-0 rounded-full pointer-coarse:size-11 max-md:pointer-coarse:min-w-11 max-md:pointer-coarse:min-h-11"
             aria-label="Attach image"
             onClick={() => fileInputRef.current?.click()}
           >
-            <Icon name="Paperclip" className="size-4" />
+            <Icon name="Plus" className="size-4" />
           </Button>
-          <div className="flex-1" />
+          {modelLabel ? (
+            <div
+              aria-label="Terminal model"
+              data-native-composer-model=""
+              className="min-w-0 flex-1 truncate text-xs text-muted-foreground max-md:pointer-coarse:group-data-[native-composer-inline]:hidden md:group-data-[native-composer-inline]:hidden"
+            >
+              <span title={modelLabel}>{modelLabel}</span>
+            </div>
+          ) : (
+            <div className="flex-1" />
+          )}
           {voiceAvailable ? (
             <Button
               type="button"
               size="icon"
               variant="ghost"
               className={cn(
-                "relative size-9 shrink-0 rounded-full transition-colors duration-200 pointer-coarse:size-11 motion-reduce:transition-none",
+                "relative size-9 shrink-0 rounded-full max-md:pointer-coarse:min-w-11 max-md:pointer-coarse:min-h-11 transition-colors duration-200 pointer-coarse:size-11 motion-reduce:transition-none",
                 recording &&
                   "bg-destructive/15 text-destructive hover:bg-destructive/20 hover:text-destructive",
               )}
@@ -670,13 +763,17 @@ export function NativeTerminalPromptBar({
           ) : null}
           <Button
             type="submit"
+            variant="default"
             size="icon"
-            className="size-9 shrink-0 rounded-full pointer-coarse:size-11"
+            className={cn(
+              COMPOSER_SUBMIT_CLASS,
+              "max-md:pointer-coarse:min-w-11 max-md:pointer-coarse:min-h-11",
+            )}
             disabled={!canSend}
             aria-label={`Send to ${providerLabel}`}
             onMouseDown={(event) => event.preventDefault()}
           >
-            <Icon name="ArrowUp" className="size-4" />
+            <Icon name={COMPOSER_SEND_ICON} className="size-4" />
           </Button>
         </div>
       </div>

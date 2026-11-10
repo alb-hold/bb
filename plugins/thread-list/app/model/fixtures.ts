@@ -68,6 +68,7 @@ export function makeSidebarThread(
     providerId: "provider-test",
     status: "idle",
     runtimeStatus: "idle",
+    experimental_nativeTerminal: false,
     queuedWork: "none",
     experimental_queuedFailedCount: 0,
     hasPendingInteraction: false,

@@ -15,7 +15,7 @@
   "scripts": {
     "clean": "rimraf tsconfig.tsbuildinfo",
     "test": "vitest run --config vitest.config.ts",
-    "generate": "node ./scripts/generate-plugin-theme.mjs && node ./scripts/generate-runtime-export-manifest.mjs",
+    "generate": "node ./scripts/generate-zod-runtime.mjs && node ./scripts/generate-plugin-theme.mjs && node ./scripts/generate-runtime-export-manifest.mjs",
     "typecheck": "tsrs --noEmit",
     "build": "node ../../scripts/build-node-entry.mjs src/cli.ts dist/cli.js --clean-dist"
   },

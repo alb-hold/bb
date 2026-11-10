@@ -1,10 +1,21 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
+import { existsSync, readFileSync } from "node:fs";
 import type { ComposerMention } from "@get-bb/plugin-sdk/app";
 import {
   arePromptEditorValuesEqual,
   suppressPromptEditorAnchorActivation,
 } from "./PromptBoxInternal";
+
+it("gives the primary voice action the same round shape as submit", () => {
+  const source = readFileSync("src/PromptBoxInternal.tsx", "utf8");
+  const primaryVoice = source.slice(
+    source.indexOf(") : showVoiceAsPrimaryAction ? ("),
+  );
+  expect(
+    primaryVoice.slice(0, primaryVoice.indexOf("</VoiceInputButton>")),
+  ).toContain('"rounded-full transition-colors"');
+});
 
 function dispatchThroughEditorTarget({
   eventName,
@@ -134,4 +145,113 @@ describe("arePromptEditorValuesEqual", () => {
       ),
     ).toBe(true);
   });
+});
+
+const APP_CSS_PATH = "../../apps/app/src/app.css";
+const hasAppStylesheet = existsSync(APP_CSS_PATH);
+
+function eagerPhoneStyle(selector: string): Record<string, string> {
+  const css = readFileSync(APP_CSS_PATH, "utf8").replace(
+    /\s+/g,
+    " ",
+  );
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const rules = Array.from(
+    css.matchAll(
+      new RegExp(`(?:^|(?<=[{}]))\\s*${escaped}\\s*\\{([^{}]+)\\}`, "g"),
+    ),
+  );
+  expect(rules.length).toBeGreaterThan(0);
+  const style: Record<string, string> = {};
+  for (const rule of rules) {
+    for (const declaration of rule[1]!.split(";")) {
+      const colon = declaration.indexOf(":");
+      if (colon < 0) continue;
+      style[declaration.slice(0, colon).trim()] = declaration
+        .slice(colon + 1)
+        .trim();
+    }
+  }
+  return style;
+}
+
+it.skipIf(!hasAppStylesheet)("owns the single phone action row through stable composer slots", () => {
+  const source = readFileSync("src/PromptBoxInternal.tsx", "utf8");
+  const css = readFileSync(APP_CSS_PATH, "utf8");
+  const pluginCss = readFileSync("src/composer.css", "utf8");
+  expect(pluginCss).not.toContain('data-promptbox-execution-layout="stacked"');
+  expect(source).toContain("data-promptbox-execution-layout=");
+  expect(source).toContain('surface === "new-thread" && executionControls');
+  for (const slot of [
+    "leading-actions",
+    "plus-control",
+    "execution-controls",
+    "trailing-actions",
+  ]) {
+    expect(source).toContain(`data-promptbox-${slot}=""`);
+  }
+  const layout = '[data-promptbox-execution-layout="stacked"]';
+  const row = eagerPhoneStyle(
+    `[data-promptbox]:not([data-promptbox-voice-active]) ${layout}`,
+  );
+  expect(row.display).toBe("grid");
+  expect(row["grid-template-columns"]).toBe("2.75rem minmax(0, 1fr)");
+  const plus = eagerPhoneStyle(`${layout} [data-promptbox-plus-control]`);
+  expect(plus["grid-column"]).toBe("1");
+  expect(plus["grid-row"]).toBe("1");
+  const trailing = eagerPhoneStyle(
+    `${layout} > [data-promptbox-trailing-actions]`,
+  );
+  expect(trailing.position).toBe("absolute");
+  expect(trailing.right).toBe("0.5rem");
+  expect(trailing.bottom).toBe("calc(100% - 0.5rem)");
+  const input = eagerPhoneStyle(
+    `[data-promptbox]:has(${layout}) [data-promptbox-input-region]`,
+  );
+  expect(input["padding-inline-end"]).toBe("3rem");
+  expect(css).not.toContain('aria-label="Prompt actions"');
+});
+
+it.skipIf(!hasAppStylesheet)("pins pending execution controls to one phone row in the eager stylesheet", () => {
+  const pluginCss = readFileSync("src/composer.css", "utf8");
+  for (const slot of [
+    "data-execution-controls-layout",
+    "data-model-reasoning-trigger",
+    "data-native-terminal-toggle",
+  ]) {
+    expect(pluginCss).not.toContain(slot);
+  }
+  for (const [selector, declarations] of [
+    [
+      '[data-promptbox-execution-layout="stacked"] [data-execution-controls-layout="stacked"]',
+      [
+        "display: flex",
+        "grid-column: 2",
+        "grid-row: 1",
+        "min-width: 0",
+        "flex-wrap: nowrap",
+        "gap: 0",
+      ],
+    ],
+    [
+      '[data-execution-controls-layout="stacked"] [data-model-reasoning-trigger]',
+      ["min-width: 0", "flex: 1 1 0%", "overflow: hidden"],
+    ],
+    [
+      '[data-execution-controls-layout="stacked"] [data-native-terminal-toggle]',
+      ["height: auto"],
+    ],
+    [
+      '[data-execution-controls-layout="stacked"] [data-native-terminal-toggle] > button',
+      ["height: 2.75rem", "min-width: 2.75rem"],
+    ],
+  ] as const) {
+    const style = eagerPhoneStyle(selector);
+    for (const declaration of declarations) {
+      const colon = declaration.indexOf(":");
+      expect(style[declaration.slice(0, colon)]).toBe(
+        declaration.slice(colon + 1).trim(),
+      );
+    }
+  }
 });

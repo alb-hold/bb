@@ -87,94 +87,99 @@ export function createTerminalGridByteMarkerScanner(): {
   push(bytes: Uint8Array): TerminalGridByteMarkerScan;
   pushOperations(bytes: Uint8Array): TerminalGridByteOperationScan;
 } {
-  const scanner = createOrderedTerminalGridMarkerScanner();
+  const prefix = new TextEncoder().encode(TERMINAL_GRID_OSC_PREFIX);
+  let pending = new Uint8Array(0);
+  const scan = (input: Uint8Array): TerminalGridByteOperationScan => {
+    let bytes = input;
+    if (pending.length > 0) {
+      bytes = new Uint8Array(pending.length + input.length);
+      bytes.set(pending);
+      bytes.set(input, pending.length);
+      pending = new Uint8Array(0);
+    }
+    const operations: TerminalGridByteOperation[] = [];
+    let outputStart = 0;
+    let searchAt = 0;
+    while (searchAt < bytes.length) {
+      const start = bytes.indexOf(27, searchAt);
+      if (start < 0) break;
+      let matched = 0;
+      while (
+        matched < prefix.length &&
+        start + matched < bytes.length &&
+        bytes[start + matched] === prefix[matched]
+      )
+        matched++;
+      let hold = matched < prefix.length && start + matched === bytes.length;
+      if (matched === prefix.length) {
+        let end = start + matched;
+        while (
+          end < bytes.length &&
+          end - start - matched <= 8 &&
+          bytes[end] !== 7
+        )
+          end++;
+        const payload = fromByteString(bytes.subarray(start + matched, end));
+        const grid =
+          bytes[end] === 7
+            ? parseTerminalGridMarker(`bb-grid;${payload}`)
+            : null;
+        if (grid !== null) {
+          if (start > outputStart)
+            operations.push({
+              type: "bytes",
+              bytes: bytes.subarray(outputStart, start),
+            });
+          operations.push({ type: "grid", grid });
+          outputStart = end + 1;
+          searchAt = outputStart;
+          continue;
+        }
+        hold =
+          end === bytes.length && isPossibleTerminalGridPayloadPrefix(payload);
+      }
+      if (hold) {
+        if (start > outputStart)
+          operations.push({
+            type: "bytes",
+            bytes: bytes.subarray(outputStart, start),
+          });
+        pending = bytes.slice(start);
+        return { operations, hasPending: true };
+      }
+      searchAt = start + 1;
+    }
+    if (outputStart < bytes.length)
+      operations.push({ type: "bytes", bytes: bytes.subarray(outputStart) });
+    return { operations, hasPending: false };
+  };
   return {
-    flush(): Uint8Array {
-      return toByteString(scanner.flush());
+    flush() {
+      const bytes = pending;
+      pending = new Uint8Array(0);
+      return bytes;
     },
-    push(bytes: Uint8Array): TerminalGridByteMarkerScan {
-      const result = scanner.push(fromByteString(bytes));
+    push(bytes) {
+      const result = scan(bytes);
+      const parts = result.operations.flatMap((operation) =>
+        operation.type === "bytes" ? [operation.bytes] : [],
+      );
+      const output = new Uint8Array(
+        parts.reduce((size, part) => size + part.length, 0),
+      );
+      let offset = 0;
+      for (const part of parts) {
+        output.set(part, offset);
+        offset += part.length;
+      }
       return {
-        bytes: toByteString(
-          result.operations
-            .filter((operation) => operation.type === "bytes")
-            .map((operation) => operation.bytes)
-            .join(""),
-        ),
+        bytes: output,
         markers: result.operations.flatMap((operation) =>
           operation.type === "grid" ? [operation.grid] : [],
         ),
       };
     },
-    pushOperations(bytes: Uint8Array): TerminalGridByteOperationScan {
-      const result = scanner.push(fromByteString(bytes));
-      return {
-        operations: result.operations.map((operation) =>
-          operation.type === "bytes"
-            ? { type: "bytes", bytes: toByteString(operation.bytes) }
-            : operation,
-        ),
-        hasPending: result.hasPending,
-      };
-    },
-  };
-}
-
-function createOrderedTerminalGridMarkerScanner(): {
-  flush(): string;
-  push(text: string): {
-    operations: Array<
-      { type: "bytes"; bytes: string } | { type: "grid"; grid: TerminalGrid }
-    >;
-    hasPending: boolean;
-  };
-} {
-  let pending = "";
-  return {
-    flush(): string {
-      const text = pending;
-      pending = "";
-      return text;
-    },
-    push(text: string) {
-      const operations: Array<
-        { type: "bytes"; bytes: string } | { type: "grid"; grid: TerminalGrid }
-      > = [];
-      let output = "";
-      const flushOutput = () => {
-        if (output.length > 0)
-          operations.push({ type: "bytes", bytes: output });
-        output = "";
-      };
-      for (const character of text) {
-        pending += character;
-        while (pending.length > 0) {
-          if (TERMINAL_GRID_OSC_PREFIX.startsWith(pending)) break;
-          if (pending.startsWith(TERMINAL_GRID_OSC_PREFIX)) {
-            const payload = pending.slice(TERMINAL_GRID_OSC_PREFIX.length);
-            const complete = /^([1-9]\d{0,2});([1-9]\d{0,2})\u0007$/u.exec(
-              payload,
-            );
-            if (complete) {
-              const grid = parseTerminalGridMarker(
-                `bb-grid;${complete[1]};${complete[2]}`,
-              );
-              if (grid !== null) {
-                flushOutput();
-                operations.push({ type: "grid", grid });
-                pending = "";
-                break;
-              }
-            }
-            if (isPossibleTerminalGridPayloadPrefix(payload)) break;
-          }
-          output += pending[0] ?? "";
-          pending = pending.slice(1);
-        }
-      }
-      flushOutput();
-      return { operations, hasPending: pending.length > 0 };
-    },
+    pushOperations: scan,
   };
 }
 
@@ -208,12 +213,4 @@ function fromByteString(bytes: Uint8Array): string {
     result += String.fromCharCode(...bytes.subarray(offset, offset + 8192));
   }
   return result;
-}
-
-function toByteString(value: string): Uint8Array {
-  const bytes = new Uint8Array(value.length);
-  for (let index = 0; index < value.length; index += 1) {
-    bytes[index] = value.charCodeAt(index);
-  }
-  return bytes;
 }

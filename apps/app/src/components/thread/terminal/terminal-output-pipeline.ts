@@ -2,12 +2,14 @@ import { createTerminalGridByteMarkerScanner } from "@bb/domain";
 import type { TerminalGrid } from "@bb/domain";
 
 type TerminalWriter = {
+  readonly cols: number;
+  readonly rows: number;
   resize(cols: number, rows: number): void;
   write(data: Uint8Array, callback: () => void): void;
 };
 
 type Operation =
-  | { type: "write"; bytes: Uint8Array }
+  | { type: "write"; bytes: Uint8Array; flush: boolean }
   | {
       type: "grid";
       grid: TerminalGrid;
@@ -24,20 +26,25 @@ export function createTerminalOutputPipeline(
     resizeMarkerGrids?: boolean;
     beforeResize?: () => void;
     afterResize?: () => void;
+    flushReplay?: () => void;
+    flushWrites?: () => boolean;
   } = {},
 ): {
   push(
     bytes: Uint8Array,
     callback: () => void,
     applyMarkerGrids?: boolean,
+    flush?: boolean,
   ): void;
   setGrid(cols: number, rows: number, callback?: () => void): void;
+  whenParsed(callback: () => void): void;
 } {
   const scanner = createTerminalGridByteMarkerScanner();
-  const operations: Operation[] = [];
+  const operations: Array<Operation | undefined> = [];
+  let operationHead = 0;
   const callbacksHeldForMarker: Array<() => void> = [];
   let draining = false;
-  let pendingWrites: Promise<void>[] = [];
+  let lastWrite = Promise.resolve();
   let pendingMarkerGridsApply = true;
 
   const enqueue = (operation: Operation) => {
@@ -63,43 +70,51 @@ export function createTerminalOutputPipeline(
     if (draining) return;
     draining = true;
     try {
-      while (operations.length > 0) {
-        const operation = operations.shift();
+      while (operationHead < operations.length) {
+        const operation = operations[operationHead];
+        operations[operationHead++] = undefined;
         if (operation === undefined) continue;
         if (operation.type === "write") {
-          const write = new Promise<void>((resolve) => {
+          lastWrite = new Promise<void>((resolve) => {
             terminal.write(operation.bytes, resolve);
-          });
-          pendingWrites.push(write);
-          void write.then(() => {
-            pendingWrites = pendingWrites.filter(
-              (pending) => pending !== write,
-            );
+            if (operation.flush || options.flushWrites?.())
+              options.flushReplay?.();
           });
           continue;
         }
         if (operation.type === "grid") {
-          await Promise.all(pendingWrites);
+          await lastWrite;
           if (operation.resize) {
-            options.beforeResize?.();
-            terminal.resize(operation.grid.cols, operation.grid.rows);
+            const changed =
+              terminal.cols !== operation.grid.cols ||
+              terminal.rows !== operation.grid.rows;
+            if (changed) {
+              options.beforeResize?.();
+              terminal.resize(operation.grid.cols, operation.grid.rows);
+            }
             onResize?.(operation.grid.cols, operation.grid.rows);
-            options.afterResize?.();
+            if (changed) options.afterResize?.();
           }
           operation.callback?.();
           continue;
         }
-        const writeBarrier = [...pendingWrites];
-        void Promise.all(writeBarrier).then(operation.callback);
+        void lastWrite.then(operation.callback);
       }
     } finally {
+      if (operationHead === operations.length) {
+        operations.length = 0;
+        operationHead = 0;
+      }
       draining = false;
-      if (operations.length > 0) void drain();
+      if (operationHead < operations.length) void drain();
     }
   };
 
   return {
-    push(bytes, callback, applyMarkerGrids = true) {
+    whenParsed(callback) {
+      enqueue({ type: "ack", callback });
+    },
+    push(bytes, callback, applyMarkerGrids = true, flush = false) {
       const result = scanner.pushOperations(bytes);
       const applyScannedMarkerGrids =
         applyMarkerGrids && pendingMarkerGridsApply;
@@ -108,15 +123,22 @@ export function createTerminalOutputPipeline(
         : true;
       for (const operation of result.operations) {
         if (operation.type === "bytes" && operation.bytes.length > 0) {
-          enqueue({ type: "write", bytes: operation.bytes });
+          for (
+            let offset = 0;
+            offset < operation.bytes.length;
+            offset += 16 * 1024
+          ) {
+            enqueue({
+              type: "write",
+              bytes: operation.bytes.subarray(offset, offset + 16 * 1024),
+              flush,
+            });
+          }
         } else if (operation.type === "grid") {
           onGrid?.(operation.grid, applyScannedMarkerGrids);
-          enqueue({
-            type: "grid",
-            grid: operation.grid,
-            resize:
-              applyScannedMarkerGrids && (options.resizeMarkerGrids ?? true),
-          });
+          if (applyScannedMarkerGrids && (options.resizeMarkerGrids ?? true)) {
+            enqueue({ type: "grid", grid: operation.grid, resize: true });
+          }
         }
       }
       if (result.hasPending) {

@@ -9,6 +9,7 @@ import {
 } from "@testing-library/react";
 import { Provider, createStore } from "jotai";
 import {
+  useSidebarFooterPreferences,
   sidebarFooterCapacityAtom,
   sidebarFooterOrderAtom,
   sidebarFooterHiddenAtom,
@@ -22,10 +23,12 @@ import type {
 } from "@get-bb/plugin-sdk";
 import { MemoryRouter } from "react-router-dom";
 import { TooltipProvider } from "@bb/shared-ui/tooltip";
+import { CompactViewportOverrideProvider } from "@bb/shared-ui/hooks/use-compact-viewport";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SidebarMenu, SidebarProvider } from "@/components/ui/sidebar.js";
 import {
   resetPluginSlotStoreForTest,
+  getPluginSlotSnapshot,
   removePluginSlotRegistrations,
   setPluginSlotRegistrations,
   type PluginRegistrationSet,
@@ -60,7 +63,19 @@ function registrationSet(
   };
 }
 
-function renderWithProviders(ui: ReactNode, store = createStore()) {
+function pinnedFooterStore() {
+  const store = createStore();
+  store.set(sidebarFooterOrderAtom, [
+    "builtin:mobile",
+    ...getPluginSlotSnapshot().sidebarFooterItems.map(
+      (item) => `plugin:${item.pluginId}/${item.id}`,
+    ),
+    "builtin:report-bug",
+  ]);
+  return store;
+}
+
+function renderWithProviders(ui: ReactNode, store = pinnedFooterStore()) {
   return render(
     <Provider store={store}>
       <MemoryRouter>
@@ -116,7 +131,195 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+function FooterPreferencesProbe() {
+  const preferences = useSidebarFooterPreferences();
+  return (
+    <>
+      <output data-testid="visible-footer">
+        {preferences.footer.map((item) => item.key).join(",")}
+      </output>
+      <output data-testid="more-footer">
+        {preferences.more.map((item) => item.key).join(",")}
+      </output>
+      <button onClick={() => preferences.addToFooter("builtin:mobile")}>
+        Choose mobile
+      </button>
+    </>
+  );
+}
+
 describe("PluginSidebarFooterItems", () => {
+  it.each([
+    [true, null],
+    [true, 1],
+    [false, null],
+    [false, 1],
+  ] as const)(
+    "keeps the host prefix stable when a plugin arrives (compact=%s, capacity=%s)",
+    (compact, capacity) => {
+      const store = createStore();
+      store.set(sidebarFooterCapacityAtom, capacity);
+      const view = renderWithProviders(
+        <CompactViewportOverrideProvider isCompactViewport={compact}>
+          <SidebarMenu>
+            <PluginSidebarFooterItems
+              activeDisclosureKey={null}
+              onDisclosureCommand={vi.fn()}
+              onCustomize={vi.fn()}
+              builtInActions={[{ id: "report-bug", onActivate: vi.fn() }]}
+            />
+          </SidebarMenu>
+        </CompactViewportOverrideProvider>,
+        store,
+      );
+      const labels = () =>
+        Array.from(
+          view.container.querySelectorAll('[data-sidebar="menu-button"]'),
+        ).map((item) => item.getAttribute("aria-label"));
+      expect(labels()).toEqual(["Report a bug", "More footer actions"]);
+      act(() =>
+        setPluginSlotRegistrations(
+          "garden",
+          collectPluginAppRegistrations(
+            definePluginApp((app) => {
+              app.experimental_sidebarFooter.register({
+                kind: "action",
+                id: "notes",
+                label: "Garden notes",
+                icon: "BookOpen",
+                onActivate: vi.fn(),
+              });
+            }),
+          ),
+        ),
+      );
+      expect(labels()).toEqual(
+        capacity === null
+          ? ["Report a bug", "More footer actions", "Garden notes"]
+          : ["Report a bug", "More footer actions"],
+      );
+    },
+  );
+
+  it.each(["Provider usage", "Report a bug", "More footer actions"])(
+    "gives %s a matching accessible name and keyboard tooltip",
+    async (label) => {
+      setPluginSlotRegistrations(
+        "usage",
+        collectPluginAppRegistrations(
+          definePluginApp((app) => {
+            app.experimental_sidebarFooter.register({
+              kind: "action",
+              id: "usage",
+              label: "Provider usage",
+              icon: "ChartColumn",
+              onActivate: vi.fn(),
+            });
+          }),
+        ),
+      );
+      renderWithProviders(
+        <SidebarMenu>
+          <PluginSidebarFooterItems
+            activeDisclosureKey={null}
+            onDisclosureCommand={vi.fn()}
+            onCustomize={vi.fn()}
+            builtInActions={[{ id: "report-bug", onActivate: vi.fn() }]}
+          />
+        </SidebarMenu>,
+        createStore(),
+      );
+      const trigger = screen.getByRole("button", { name: label });
+      fireEvent.keyDown(document.body, { key: "Tab" });
+      act(() => trigger.focus());
+      expect((await screen.findByRole("tooltip")).textContent).toBe(label);
+    },
+  );
+
+  it.each(["order", "hidden"])(
+    "preserves an existing profile with saved %s",
+    (kind) => {
+      const store = createStore();
+      if (kind === "order")
+        store.set(sidebarFooterOrderAtom, [
+          "builtin:report-bug",
+          "builtin:mobile",
+        ]);
+      else store.set(sidebarFooterHiddenAtom, ["builtin:report-bug"]);
+      renderWithProviders(<FooterPreferencesProbe />, store);
+      expect(screen.getByTestId("visible-footer").textContent).toContain(
+        "builtin:mobile",
+      );
+      expect(
+        screen.getByTestId(kind === "hidden" ? "more-footer" : "visible-footer")
+          .textContent,
+      ).toContain("builtin:report-bug");
+    },
+  );
+
+  it("chooses an item without hiding existing shortcuts", () => {
+    const store = createStore();
+    store.set(sidebarFooterOrderAtom, ["builtin:report-bug", "builtin:mobile"]);
+    store.set(sidebarFooterHiddenAtom, ["builtin:mobile"]);
+    renderWithProviders(<FooterPreferencesProbe />, store);
+    expect(screen.getByTestId("visible-footer").textContent).toBe(
+      "builtin:report-bug",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Choose mobile" }));
+    expect(screen.getByTestId("visible-footer").textContent).toBe(
+      "builtin:report-bug,builtin:mobile",
+    );
+  });
+
+  it("keeps plugin actions and bug reporting in the footer and mobile apps in More by default", async () => {
+    const run = vi.fn();
+    setPluginSlotRegistrations(
+      "example",
+      collectPluginAppRegistrations(
+        definePluginApp((app) => {
+          app.experimental_sidebarFooter.register({
+            kind: "action",
+            id: "action",
+            label: "Run action",
+            icon: "Zap",
+            onActivate: run,
+          });
+        }),
+      ),
+    );
+    renderWithProviders(
+      <SidebarMenu>
+        <PluginSidebarFooterItems
+          activeDisclosureKey={null}
+          onDisclosureCommand={vi.fn()}
+          onCustomize={vi.fn()}
+          builtInActions={[
+            { id: "mobile", onActivate: run },
+            { id: "report-bug", onActivate: run },
+          ]}
+        />
+      </SidebarMenu>,
+      createStore(),
+    );
+    expect(document.querySelectorAll("[data-footer-item]")).toHaveLength(2);
+    fireEvent.click(screen.getByRole("button", { name: "Run action" }));
+    expect(run).toHaveBeenCalledOnce();
+    expect(screen.getByRole("button", { name: "Report a bug" })).toBeDefined();
+    expect(screen.queryByRole("button", { name: "Mobile apps" })).toBeNull();
+    const more = screen.getByRole("button", { name: "More footer actions" });
+    expect(more.className).toContain("text-sidebar-foreground");
+    expect(more.className).not.toContain("opacity-80");
+    fireEvent.pointerDown(
+      screen.getByRole("button", { name: "More footer actions" }),
+      { button: 0, ctrlKey: false, pointerType: "mouse" },
+    );
+    expect(
+      await screen.findByRole("menuitem", { name: "Mobile apps" }),
+    ).toBeDefined();
+    expect(screen.queryByRole("menuitem", { name: "Report a bug" })).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: "Run action" })).toBeNull();
+  });
+
   it("fills the footer to its measured capacity and keeps overflow in More when an icon is removed", () => {
     setPluginSlotRegistrations(
       "example",
@@ -134,7 +337,7 @@ describe("PluginSidebarFooterItems", () => {
         }),
       ),
     );
-    const store = createStore();
+    const store = pinnedFooterStore();
     store.set(sidebarFooterHiddenAtom, ["plugin:unloaded/action"]);
     store.set(sidebarFooterCapacityAtom, 5);
     renderWithProviders(<SidebarFooterCustomize onDone={() => {}} />, store);
@@ -145,16 +348,16 @@ describe("PluginSidebarFooterItems", () => {
       );
     expect(footerIcons()).toEqual([
       "builtin:mobile",
+      "builtin:report-bug",
       "plugin:example/one",
       "plugin:example/two",
       "plugin:example/three",
-      "plugin:example/four",
     ]);
     expect(document.activeElement).toBe(
       screen.getByRole("button", { name: "Remove Mobile apps from footer" }),
     );
     expect(
-      screen.getByRole("button", { name: "Add Report a bug to footer" }),
+      screen.getByRole("button", { name: "Add Action four to footer" }),
     ).toHaveProperty("disabled", true);
 
     fireEvent.click(
@@ -162,14 +365,14 @@ describe("PluginSidebarFooterItems", () => {
     );
     expect(store.get(sidebarFooterHiddenAtom)).toEqual([
       "plugin:unloaded/action",
-      "builtin:report-bug",
+      "plugin:example/four",
       "plugin:example/two",
     ]);
     expect(footerIcons()).toEqual([
       "builtin:mobile",
+      "builtin:report-bug",
       "plugin:example/one",
       "plugin:example/three",
-      "plugin:example/four",
     ]);
 
     fireEvent.click(
@@ -177,27 +380,27 @@ describe("PluginSidebarFooterItems", () => {
     );
     expect(footerIcons()).toEqual([
       "builtin:mobile",
+      "builtin:report-bug",
       "plugin:example/one",
       "plugin:example/three",
-      "plugin:example/four",
       "plugin:example/two",
     ]);
     expect(
-      screen.getByRole("button", { name: "Add Report a bug to footer" }),
+      screen.getByRole("button", { name: "Add Action four to footer" }),
     ).toHaveProperty("disabled", true);
 
     act(() => store.set(sidebarFooterCapacityAtom, 6));
     expect(footerIcons()).toHaveLength(5);
     fireEvent.click(
-      screen.getByRole("button", { name: "Add Report a bug to footer" }),
+      screen.getByRole("button", { name: "Add Action four to footer" }),
     );
     expect(footerIcons()).toEqual([
       "builtin:mobile",
+      "builtin:report-bug",
       "plugin:example/one",
       "plugin:example/three",
-      "plugin:example/four",
       "plugin:example/two",
-      "builtin:report-bug",
+      "plugin:example/four",
     ]);
     expect(store.get(sidebarFooterHiddenAtom)).toEqual([
       "plugin:unloaded/action",
@@ -219,7 +422,7 @@ describe("PluginSidebarFooterItems", () => {
         }),
       ),
     );
-    const store = createStore();
+    const store = pinnedFooterStore();
     store.set(sidebarFooterHiddenAtom, ["plugin:unloaded/action"]);
     renderWithProviders(<FooterHarness />, store);
     const openMore = () =>
@@ -530,7 +733,7 @@ describe("PluginSidebarFooterItems", () => {
       "usage-plugin",
       collectPluginAppRegistrations(definition),
     );
-    const store = createStore();
+    const store = pinnedFooterStore();
     const onCustomize = vi.fn();
     renderWithProviders(
       <>
@@ -655,7 +858,7 @@ describe("PluginSidebarFooterItems", () => {
     ]);
   });
 
-  it("orders built-in and plugin shortcuts together and keeps all-hidden actions reachable", async () => {
+  it("keeps stored order within host and plugin groups and all-hidden actions reachable", async () => {
     const run = vi.fn();
     setPluginSlotRegistrations(
       "example",
@@ -698,8 +901,8 @@ describe("PluginSidebarFooterItems", () => {
       ),
     ).toEqual([
       "builtin:report-bug",
-      "plugin:example/action",
       "builtin:mobile",
+      "plugin:example/action",
     ]);
     expect(
       screen.getByRole("link", { name: "Mobile apps" }).getAttribute("href"),
@@ -724,4 +927,118 @@ describe("PluginSidebarFooterItems", () => {
     );
     expect(run).toHaveBeenCalledTimes(1);
   });
+});
+
+it("reserves missing stored plugin positions before late footer registration", () => {
+  const store = createStore();
+  store.set(sidebarFooterOrderAtom, [
+    "plugin:early/action",
+    "plugin:late/action",
+  ]);
+  const view = renderWithProviders(
+    <SidebarMenu>
+      <PluginSidebarFooterItems
+        activeDisclosureKey={null}
+        onDisclosureCommand={vi.fn()}
+        onCustomize={vi.fn()}
+      />
+    </SidebarMenu>,
+    store,
+  );
+  const slots = () =>
+    view.container.querySelector("[data-footer-plugin-slots]")!;
+  expect(slots()).not.toBeNull();
+  expect(slots().className).toContain("border-l");
+  expect(slots().className).toContain("pl-1");
+  expect(
+    slots().querySelectorAll("[data-footer-plugin-placeholder]"),
+  ).toHaveLength(2);
+  const register = (pluginId: string) =>
+    act(() =>
+      setPluginSlotRegistrations(
+        pluginId,
+        collectPluginAppRegistrations(
+          definePluginApp((app) => {
+            app.experimental_sidebarFooter.register({
+              kind: "action",
+              id: "action",
+              label: pluginId,
+              icon: "Zap",
+              onActivate: vi.fn(),
+            });
+          }),
+        ),
+      ),
+    );
+  register("late");
+  const late = screen.getByRole("button", { name: "late" });
+  expect(
+    late
+      .closest("[data-footer-item]")
+      ?.previousElementSibling?.hasAttribute("data-footer-plugin-placeholder"),
+  ).toBe(true);
+  register("early");
+  expect(screen.getByRole("button", { name: "late" })).toBe(late);
+  expect(
+    late
+      .closest("[data-footer-item]")
+      ?.previousElementSibling?.getAttribute("data-footer-item"),
+  ).toBe("plugin:early/action");
+});
+
+it("reserves two plugin controls on an uncached first paint", () => {
+  const view = renderWithProviders(
+    <SidebarMenu>
+      <PluginSidebarFooterItems
+        activeDisclosureKey={null}
+        onDisclosureCommand={vi.fn()}
+        onCustomize={vi.fn()}
+      />
+    </SidebarMenu>,
+    createStore(),
+  );
+  const slots = view.container.querySelector("[data-footer-plugin-slots]")!;
+  expect(
+    slots.querySelectorAll("[data-footer-plugin-placeholder]"),
+  ).toHaveLength(2);
+});
+
+it("preserves branded footer identity as a monochrome currentColor mask", () => {
+  setPluginLogoUrls(
+    new Map([
+      [
+        "brand",
+        {
+          displayName: "Brand",
+          icon: "Zap",
+          compactIconUrl: "/brand-mark.svg",
+          logoUrl: null,
+          logoDarkUrl: null,
+          icons: new Map(),
+        },
+      ],
+    ]),
+  );
+  setPluginSlotRegistrations(
+    "brand",
+    registrationSet({
+      sidebarFooterActions: [
+        {
+          id: "open",
+          title: "Branded action",
+          icon: "brand:filled-mark",
+          run: () => {},
+        },
+      ],
+    }),
+  );
+  renderWithProviders(<FooterHarness />);
+  const button = screen.getByRole("button", { name: "Branded action" });
+  const mark = button.querySelector<HTMLElement>(
+    '[data-plugin-icon-asset="/brand-mark.svg"]',
+  );
+  expect(mark?.classList.contains("size-4")).toBe(true);
+  expect(mark?.style.backgroundColor).toBe("currentcolor");
+  expect(mark?.style.maskImage).toContain("/brand-mark.svg");
+  expect(button.querySelector("img")).toBeNull();
 });

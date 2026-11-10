@@ -1,3 +1,5 @@
+import type { ThreadListIndicatorKind } from "@bb/client-core";
+import { ThreadActivityLabel } from "../ThreadActivityLabel";
 import { useEffect, useState } from "react";
 import { Icon } from "@bb/shared-ui/icon";
 import { cn } from "@bb/shared-ui/lib/utils";
@@ -210,5 +212,15 @@ export function AssistStrip({
         </span>
       ))}
     </div>
+  );
+}
+
+export function NativeTerminalActivity({
+  indicator,
+}: {
+  indicator: ThreadListIndicatorKind;
+}) {
+  return (
+    <ThreadActivityLabel indicator={indicator} label="Terminal activity" />
   );
 }

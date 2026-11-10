@@ -1,3 +1,5 @@
+import type { ThreadListIndicatorKind } from "@bb/client-core";
+import { ThreadActivityLabel } from "@/components/thread/ThreadActivityLabel";
 import { preloadThreadSecondaryPanel } from "@/components/secondary-panel/lazySecondaryPanelComponents";
 import {
   useCallback,
@@ -7,11 +9,13 @@ import {
   useState,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
+  type Ref,
 } from "react";
 import { Button } from "@bb/shared-ui/button";
 import { useAtomValue } from "jotai";
 import type {
   PluginThreadActionEntry,
+  PluginThreadActionsInlineItem,
   PluginThreadActionTarget,
 } from "@get-bb/plugin-sdk";
 import { COARSE_POINTER_TOOLBAR_ACTION_BUTTON_CLASS } from "@bb/shared-ui/coarse-pointer-sizing";
@@ -31,12 +35,14 @@ import {
 import { useIsSidebarFramed } from "@/components/ui/sidebar.js";
 import { cn } from "@bb/shared-ui/lib/utils";
 import {
+  useAppCommandRunner,
   useAppCommandHandler,
   useAppCommandShortcut,
 } from "@/components/commands/AppCommandProvider";
 import { useSidebarRename } from "@/components/sidebar/SidebarInlineRename";
 import { useThreadActions } from "@/components/thread/ThreadActionsProvider";
 import { ThreadTitle } from "@/components/thread/ThreadTitleMentions";
+import { ThreadStatusGlyph } from "@/components/thread/ThreadStatusGlyph";
 import { ThreadUsageAndAgents } from "@/components/thread/ThreadUsageSummary";
 import { useThreadHeaderActionEntries } from "@/lib/thread-actions/thread-action-registry";
 import { SecondaryPanelHostLayoutContext } from "@/components/secondary-panel/SecondaryPanelHostLayoutContext";
@@ -63,6 +69,7 @@ const NARROW_SPLIT_HEADER_MAX_WIDTH = 560;
 
 export interface ThreadDetailHeaderActionsMenuArgs {
   includeResponsiveActions: boolean;
+  terminalSearchActions: PluginThreadActionsInlineItem[];
   headerActions: readonly PluginThreadActionEntry[];
   requestRename: (threadId: string) => void;
   onCloseAutoFocus: (event: Event) => void;
@@ -77,6 +84,11 @@ interface ThreadDetailHeaderProps {
   pluginActions?: ReactNode;
   thread: PluginThreadActionTarget;
   threadTitle: string;
+  activityIndicator?: ThreadListIndicatorKind;
+  needsInput?: boolean;
+  checkTerminal?: boolean;
+  hasNativeTerminal?: boolean;
+  nativeActivityTargetRef?: Ref<HTMLDivElement>;
   workspaceOpenButton?: ReactNode;
 }
 
@@ -88,9 +100,16 @@ export function ThreadDetailHeader({
   pluginActions,
   thread,
   threadTitle,
+  activityIndicator = "none",
+  needsInput = false,
+  checkTerminal = false,
+  hasNativeTerminal = false,
+  nativeActivityTargetRef,
   workspaceOpenButton,
   contextCardButton,
 }: ThreadDetailHeaderProps) {
+  const commandRunner = useAppCommandRunner();
+  const findShortcut = useAppCommandShortcut("terminal.find");
   const isCompactViewport = useIsCompactViewport();
   const threadId = thread.id;
   const headerActions = useThreadHeaderActionEntries(thread);
@@ -171,6 +190,35 @@ export function ThreadDetailHeader({
   const handleTitleDoubleClick = () => {
     if (!isEditing) startEditingFromDoubleClick();
   };
+  const [searchFits, setSearchFits] = useState<boolean | null>(null);
+  const searchInMenu =
+    actionsMenu !== null &&
+    ((measuredPaneWidth > 0 && measuredPaneWidth < 400) ||
+      searchFits === false);
+  useLayoutEffect(() => {
+    if (!hasNativeTerminal) return;
+    const header = headerRef.current;
+    const title = header.querySelector(
+      "[data-thread-detail-header-title]",
+    )?.parentElement;
+    const titleWidth = title?.getBoundingClientRect().width ?? 0;
+    if (titleWidth <= 0) return;
+    const searchWidth =
+      header
+        .querySelector("[data-terminal-search-trigger]")
+        ?.getBoundingClientRect().width ?? 0;
+    const available = titleWidth + (searchWidth > 0 ? searchWidth + 4 : 0);
+    setSearchFits(available >= 120 + 44 + 4);
+  }, [hasNativeTerminal, measuredPaneWidth, searchInMenu]);
+  const searchTerminal = () => {
+    const pane =
+      headerRef.current.closest("[data-split-pane-id]") ??
+      headerRef.current.parentElement;
+    commandRunner.dispatch(
+      "terminal.find",
+      pane?.querySelector("[data-terminal-renderer]") ?? null,
+    );
+  };
   const rightPanelIconName = RIGHT_PANEL_TOGGLE_ICON_NAME;
   const mountRightPanelToggle = secondaryPanelHost === null;
   const showRightPanelToggle =
@@ -192,23 +240,55 @@ export function ThreadDetailHeader({
           isSplitPaneHeader && isFocused && CONTEXT_SELECTION_SURFACE_CLASS,
         )}
       >
-        <p
-          data-thread-detail-header-title=""
+        {(needsInput || checkTerminal) && !hasNativeTerminal ? (
+          <ThreadStatusGlyph
+            indicator={needsInput ? "needs-input" : "check-terminal"}
+            size="compact"
+          />
+        ) : null}
+        <div
           className={cn(
-            "relative min-w-0 max-w-full flex-1 truncate text-sm font-normal transition-colors",
-            isEditing && "overflow-visible",
-            isSplitPaneHeader &&
-              !isFocused &&
-              dimsInactiveSplits &&
-              CONTEXT_INACTIVE_TEXT_CLASS,
-            usesDesktopChrome && MACOS_WINDOW_NO_DRAG_CLASS,
-            beginPaneDrag && !isEditing && "cursor-grab touch-none select-none",
+            "flex min-w-0 flex-1 flex-col",
+            hasNativeTerminal &&
+              "max-md:flex-row max-md:items-center max-md:gap-2",
           )}
-          onDoubleClick={handleTitleDoubleClick}
-          onPointerDown={beginPaneDrag ? handleTitlePointerDown : undefined}
         >
-          {isEditing ? editor : <ThreadTitle title={threadTitle} />}
-        </p>
+          <p
+            data-thread-detail-header-title=""
+            className={cn(
+              "relative min-w-0 max-w-full flex-1 truncate text-sm font-normal transition-colors",
+              isEditing && "overflow-visible",
+              isSplitPaneHeader &&
+                !isFocused &&
+                dimsInactiveSplits &&
+                CONTEXT_INACTIVE_TEXT_CLASS,
+              usesDesktopChrome && MACOS_WINDOW_NO_DRAG_CLASS,
+              beginPaneDrag &&
+                !isEditing &&
+                "cursor-grab touch-none select-none",
+            )}
+            onDoubleClick={handleTitleDoubleClick}
+            onPointerDown={beginPaneDrag ? handleTitlePointerDown : undefined}
+          >
+            {isEditing ? editor : <ThreadTitle title={threadTitle} />}
+          </p>
+          {hasNativeTerminal ? (
+            <div
+              ref={nativeActivityTargetRef}
+              className="h-4 shrink-0 max-[375px]:[&_[role=status]>span:last-child]:sr-only"
+            />
+          ) : (
+            <ThreadActivityLabel
+              indicator={
+                needsInput
+                  ? "needs-input"
+                  : checkTerminal
+                    ? "check-terminal"
+                    : activityIndicator
+              }
+            />
+          )}
+        </div>
         <ThreadUsageAndAgents
           compact={usesCompactAgentDrawer}
           compactSummary={!isCompactViewport}
@@ -224,6 +304,20 @@ export function ThreadDetailHeader({
         >
           {actionsMenu({
             includeResponsiveActions: usesResponsiveActionOverflow,
+            terminalSearchActions:
+              hasNativeTerminal && searchInMenu
+                ? [
+                    {
+                      key: "terminal-search",
+                      group: "terminal",
+                      action: {
+                        icon: "Search",
+                        label: "Search terminal output",
+                        run: searchTerminal,
+                      },
+                    },
+                  ]
+                : [],
             headerActions,
             requestRename: startEditingFromMenu,
             onCloseAutoFocus,
@@ -239,6 +333,21 @@ export function ThreadDetailHeader({
         className="flex items-center gap-1"
         data-thread-header-workflow-actions=""
       >
+        {hasNativeTerminal && !searchInMenu ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className={HEADER_ICON_BUTTON_CLASS}
+            data-compact-touch="header"
+            data-terminal-search-trigger=""
+            aria-label="Search terminal output"
+            aria-keyshortcuts={findShortcut?.ariaKeyshortcuts}
+            onClick={searchTerminal}
+          >
+            <Icon name="Search" className="size-4" />
+          </Button>
+        ) : null}
         {pluginActions}
         {!usesResponsiveActionOverflow && workspaceOpenButton ? (
           <span className="inline-flex" data-thread-header-responsive-action="">
@@ -314,6 +423,7 @@ export function ThreadDetailHeader({
               !showRightPanelToggle && "hidden",
             )}
             inert={!showRightPanelToggle}
+            data-compact-touch="header"
             aria-label={
               panelShortcut
                 ? `${rightPanelLabel} (${panelShortcut.label})`

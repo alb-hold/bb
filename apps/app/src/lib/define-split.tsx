@@ -5,12 +5,13 @@ import {
 } from "./split-prefetch";
 import {
   Component,
-  lazy,
   Suspense,
+  useEffect,
   useState,
   type ComponentType,
   type ReactNode,
 } from "react";
+import { traceTerminalGate } from "./terminal-performance";
 import { loadChunkWithRetries } from "./retryable-chunk-import";
 
 export type SplitTier = "preload" | "intent";
@@ -65,8 +66,14 @@ export function defineSplit<P extends object>({
   let pending: Promise<{ default: ComponentType<P> }> | null = null;
   let loaded: ComponentType<P> | null = null;
   const loadModule = () => {
-    pending ??= prepareSplitImport(id)
-      .then(() => loadChunkWithRetries(load))
+    pending ??= traceTerminalGate(`terminal-split-${id}-prepare`, () =>
+      prepareSplitImport(id),
+    )
+      .then(() =>
+        traceTerminalGate(`terminal-split-${id}-import`, () =>
+          loadChunkWithRetries(load),
+        ),
+      )
       .then((component) => {
         loaded = component;
         return { default: component };
@@ -77,33 +84,68 @@ export function defineSplit<P extends object>({
       });
     return pending;
   };
-  const renderModule = () => trackCriticalLoad(loadModule());
   const warm = async () => {
     await loadModule().catch(() => undefined);
   };
   const onIntent = () => warm().catch(() => undefined);
   if (tier === "preload") queueSplitPreload(warm);
 
+  type Attempt = { number: number } & (
+    | { status: "loading" }
+    | { status: "failed" }
+    | { status: "ready"; View: ComponentType<P> }
+  );
+  const createAttempt = (number: number): Attempt =>
+    loaded === null
+      ? { number, status: "loading" }
+      : { number, status: "ready", View: loaded };
+
   function SplitContent(props: P) {
-    const [attempt, setAttempt] = useState(() => ({
-      number: 0,
-      View: loaded ?? lazy(renderModule),
-    }));
+    const [attempt, setAttempt] = useState(() => createAttempt(0));
+    useEffect(() => {
+      if (attempt.status !== "loading") return;
+      let alive = true;
+      void trackCriticalLoad(loadModule()).then(
+        ({ default: View }) => {
+          if (alive) {
+            setAttempt((current) =>
+              current === attempt
+                ? { number: attempt.number, status: "ready", View }
+                : current,
+            );
+          }
+        },
+        () => {
+          if (alive) {
+            setAttempt((current) =>
+              current === attempt
+                ? { number: attempt.number, status: "failed" }
+                : current,
+            );
+          }
+        },
+      );
+      return () => {
+        alive = false;
+      };
+    }, [attempt]);
     const retry = () => {
-      setAttempt((previous) => ({
-        number: previous.number + 1,
-        View: loaded ?? lazy(renderModule),
-      }));
+      setAttempt((previous) => createAttempt(previous.number + 1));
     };
-    const View = attempt.View;
     return (
       <SplitErrorBoundary
         key={attempt.number}
         fallback={<ErrorView {...props} retry={retry} />}
       >
-        <Suspense fallback={<Loading {...props} />}>
-          <View {...props} />
-        </Suspense>
+        {attempt.status === "ready" ? (
+          <Suspense fallback={<Loading {...props} />}>
+            <attempt.View {...props} />
+          </Suspense>
+        ) : attempt.status === "failed" ? (
+          <ErrorView key="failed" {...props} retry={retry} />
+        ) : (
+          <Loading key="loading" {...props} />
+        )}
       </SplitErrorBoundary>
     );
   }

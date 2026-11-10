@@ -16,6 +16,7 @@ type ThreadActivityStateShape = Pick<PluginSidebarThread, "activity">;
 
 export interface ThreadListIndicatorState {
   hasPendingInteraction: boolean;
+  hasTerminalAttention?: boolean;
   hasUnsubmittedDraft: boolean;
   hasUnreadError: boolean;
   hasUnreadSuccess: boolean;
@@ -40,6 +41,7 @@ const THREAD_LIST_INDICATOR_LABELS: Record<
   "unread-error": "Unread thread failed",
   "waiting-for-input": "Thread needs user input",
   "needs-input": "Needs input",
+  "check-terminal": "Check terminal",
   working: "Working",
   woke: "Woke",
   "done-unread": "Done",
@@ -205,6 +207,7 @@ export function resolveThreadListIndicator(
   state: ThreadListIndicatorState,
 ): ThreadListIndicatorKind {
   if (state.hasPendingInteraction) return "needs-input";
+  if (state.hasTerminalAttention) return "check-terminal";
   const hasActiveWork = hasThreadListWorkingActivity(state);
   if (hasActiveWork) return "working";
   if (state.isAutomationWoken) return "woke";
@@ -233,7 +236,8 @@ export function resolveThreadStatus(
     indicatorKind !== "runtime" &&
     indicatorKind !== "unread-error" &&
     indicatorKind !== "waiting-for-input" &&
-    indicatorKind !== "needs-input";
+    indicatorKind !== "needs-input" &&
+    indicatorKind !== "check-terminal";
   return {
     accessibleLabel: rowStatusIsVisible
       ? rowStatus.label
@@ -249,13 +253,17 @@ export function threadListIndicatorStateForThread(
     ThreadActivityStateShape &
     Pick<
       PluginSidebarThread,
-      "experimental_queuedFailedCount" | "hasPendingInteraction" | "queuedWork"
+      | "experimental_queuedFailedCount"
+      | "hasPendingInteraction"
+      | "queuedWork"
+      | "indicator"
     >,
   hasUnsubmittedDraft: boolean,
 ): ThreadListIndicatorState {
   const unreadDone = isUnreadDoneThread(thread);
   return {
     hasPendingInteraction: thread.hasPendingInteraction,
+    hasTerminalAttention: thread.indicator === "check-terminal",
     hasUnsubmittedDraft,
     hasUnreadError: unreadDone && thread.status === "error",
     hasUnreadSuccess: unreadDone && thread.status !== "error",
@@ -275,6 +283,7 @@ export function threadListIndicatorStateForThread(
 export interface CollapsedChildActivity {
   threadIds: readonly string[];
   pending: boolean;
+  terminalAttention: boolean;
   working: boolean;
   runtimeWorking: boolean;
   workflow: boolean;
@@ -289,6 +298,7 @@ export interface CollapsedChildActivity {
 export const NO_COLLAPSED_CHILD_ACTIVITY: CollapsedChildActivity = {
   threadIds: [],
   pending: false,
+  terminalAttention: false,
   working: false,
   runtimeWorking: false,
   workflow: false,
@@ -302,13 +312,14 @@ export const NO_COLLAPSED_CHILD_ACTIVITY: CollapsedChildActivity = {
 
 type ThreadActivityShape = ThreadStatusShape &
   ThreadRuntimeShape &
-  Pick<PluginSidebarThread, "id" | "activity" | "hasPendingInteraction">;
+  Pick<PluginSidebarThread, "id" | "activity" | "hasPendingInteraction" | "indicator">;
 
 export function getCollapsedChildActivity(
   threads: readonly ThreadActivityShape[],
 ): CollapsedChildActivity {
   const threadIds: string[] = [];
   let pending = false;
+  let terminalAttention = false;
   let working = false;
   let runtimeWorking = false;
   let workflow = false;
@@ -330,6 +341,7 @@ export function getCollapsedChildActivity(
     if (thread.hasPendingInteraction) {
       pending = true;
     }
+    if (thread.indicator === "check-terminal") terminalAttention = true;
     if (isBusyThread(thread)) working = true;
     if (isRuntimeBusyThread(thread)) runtimeWorking = true;
     if (hasActiveWorkflowActivity(thread)) workflow = true;
@@ -341,6 +353,7 @@ export function getCollapsedChildActivity(
   return {
     threadIds,
     pending,
+    terminalAttention,
     working,
     runtimeWorking,
     workflow,

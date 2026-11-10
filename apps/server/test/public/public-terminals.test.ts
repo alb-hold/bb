@@ -778,7 +778,7 @@ describe("public terminal routes", () => {
     }
   });
 
-  it("records daemon attention on the existing thread unread timestamp and clears terminal state when visible", async () => {
+  it("records daemon attention on the existing thread unread timestamp and keeps it while visible until input", async () => {
     const fixture = await createTerminalRouteFixture();
     harnesses.push(fixture.harness);
     const stored = createTerminalSession(fixture.harness.db, {
@@ -841,7 +841,25 @@ describe("public terminal routes", () => {
         ),
       ),
     );
-    expect(afterClear.sessions[0]?.attention).toBeNull();
+    expect(afterClear.sessions[0]?.attention).toEqual(
+      listed.sessions[0]?.attention,
+    );
+    onTerminalSocketMessage(fixture.harness.deps, {
+      raw: JSON.stringify({
+        type: "input",
+        dataBase64: Buffer.from("y", "utf8").toString("base64"),
+      }),
+      socket: browserSocket,
+      terminalId: stored.id,
+    });
+    const afterInput = terminalListResponseSchema.parse(
+      await readJson(
+        await fixture.harness.app.request(
+          `/api/v1/terminals?threadId=${encodeURIComponent(fixture.thread.id)}`,
+        ),
+      ),
+    );
+    expect(afterInput.sessions[0]?.attention).toBeNull();
   });
 
   it("gets and renames a terminal by ID without a redundant scope", async () => {
@@ -1013,6 +1031,106 @@ describe("public terminal routes", () => {
     ]);
   });
 
+  it("passes the native launch palette through to terminal.open", async () => {
+    const fixture = await createTerminalRouteFixture();
+    harnesses.push(fixture.harness);
+    const defaultColors = {
+      foreground: [220, 230, 240],
+      background: [25, 30, 35],
+    } satisfies import("@bb/domain").TerminalDefaultColors;
+    const opened = fixture.harness.deps.terminalSessions.createTerminal({
+      defaultColors,
+      payload: {
+        cols: 100,
+        rows: 30,
+        target: { kind: "thread", threadId: fixture.thread.id },
+      },
+    });
+    const message = await waitForDaemonMessage(fixture.socket);
+    if (message.type !== "terminal.open")
+      throw new Error("Expected terminal.open");
+    expect(message.defaultColors).toEqual(defaultColors);
+    acknowledgeTerminalOpen(fixture, message, "/tmp");
+    await opened;
+  });
+
+  it.each([
+    { kind: "generic", persisted: false },
+    { kind: "native", persisted: false },
+    { kind: "generic", persisted: true },
+    { kind: "native", persisted: true },
+  ])(
+    "reopens a $kind holder with persisted=$persisted colours after daemon restart",
+    async ({ kind, persisted }) => {
+      const fixture = await createTerminalRouteFixture();
+      harnesses.push(fixture.harness);
+      const terminal =
+        kind === "native"
+          ? createDisconnectedNativeTerminal(fixture, "disconnected")
+          : createTerminalSession(fixture.harness.db, {
+              cols: 80,
+              rows: 24,
+              daemonSessionId: null,
+              environmentId: fixture.environment.id,
+              hostId: fixture.host.id,
+              initialCwd: "/tmp",
+              status: "disconnected",
+              threadId: fixture.thread.id,
+              title: "Generic",
+            });
+      updateTerminalSession(fixture.harness.db, {
+        scope: { kind: "terminal", terminalId: terminal.id },
+        update: { kind: "holder-backed" },
+      });
+      if (persisted)
+        updateTerminalSession(fixture.harness.db, {
+          scope: { kind: "terminal", terminalId: terminal.id },
+          update: {
+            kind: "default-colors",
+            defaultColors: {
+              foreground: [12, 34, 56],
+              background: [234, 245, 255],
+            },
+          },
+        });
+      const messages: TerminalOpenMessage[] = [];
+      vi.spyOn(
+        fixture.harness.hub,
+        "sendDaemonSessionMessage",
+      ).mockImplementation((sessionId, message) => {
+        if (message.type === "terminal.open") {
+          messages.push(message);
+          fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+            hostId: fixture.host.id,
+            sessionId,
+            message: {
+              type: "terminal.opened",
+              requestId: message.requestId,
+              terminalId: message.terminalId,
+              cols: message.cols,
+              rows: message.rows,
+              shell: "/bin/sh",
+              title: "Reopened",
+              initialCwd: "/tmp",
+            },
+          });
+        }
+        return true;
+      });
+      await fixture.harness.deps.terminalSessions.reconcileDisconnectedHostTerminals(
+        { daemonSessionId: fixture.session.id, hostId: fixture.host.id },
+      );
+      expect(messages).toHaveLength(1);
+      expect(messages[0].defaultColors).toEqual(
+        persisted
+          ? { foreground: [12, 34, 56], background: [234, 245, 255] }
+          : kind === "native"
+            ? { foreground: [193, 193, 193], background: [27, 27, 27] }
+            : undefined,
+      );
+    },
+  );
+
   it("allows the same public API caller to open a host path and a workspace cwd", async () => {
     const fixture = await createTerminalRouteFixture();
     harnesses.push(fixture.harness);
@@ -1020,6 +1138,7 @@ describe("public terminal routes", () => {
     const hostPath = await startPendingStandaloneTerminalOpen(fixture, {
       cwd: "/tmp",
     });
+    expect(hostPath.openMessage.defaultColors).toBeUndefined();
     expect(hostPath.openMessage.target).toEqual({
       kind: "host_path",
       cwd: "/tmp",
@@ -1819,6 +1938,76 @@ describe("public terminal routes", () => {
       expect(inputs).toHaveLength(3);
     },
   );
+
+  it("allows only the controlling viewer to update colours and persists accepted RGB tuples", async () => {
+    const fixture = await createTerminalRouteFixture();
+    harnesses.push(fixture.harness);
+    const stored = createTerminalSession(fixture.harness.db, {
+      cols: 80,
+      rows: 24,
+      daemonSessionId: fixture.session.id,
+      environmentId: fixture.environment.id,
+      hostId: fixture.host.id,
+      initialCwd: "/tmp",
+      status: "running",
+      threadId: fixture.thread.id,
+      title: "Terminal",
+    });
+    const hub = fixture.harness.deps.hub;
+    const owner = createFakeBrowserSocket();
+    const observer = createFakeBrowserSocket();
+    const ownerToken = hub.issueDeviceHandoffClientToken(
+      createFakeBrowserSocket(),
+    );
+    const observerToken = hub.issueDeviceHandoffClientToken(
+      createFakeBrowserSocket(),
+    );
+    hub.registerTerminalClient(stored.id, owner);
+    hub.registerTerminalClient(stored.id, observer);
+    hub.linkDeviceHandoffTerminalAttachment(ownerToken, stored.id, owner);
+    hub.linkDeviceHandoffTerminalAttachment(observerToken, stored.id, observer);
+    hub.recordTerminalClientSize(
+      stored.id,
+      owner,
+      { cols: 80, rows: 24 },
+      Date.now(),
+      true,
+    );
+    const colors = { foreground: [10, 20, 30], background: [250, 251, 252] };
+    const update = (viewerToken: string, foreground = colors.foreground) =>
+      fixture.harness.app.request(
+        `/api/v1/terminals/${stored.id}/default-colors`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ ...colors, foreground, viewerToken }),
+        },
+      );
+    expect((await update(observerToken)).status).toBe(403);
+    expect((await update(ownerToken, [256, 0, 0])).status).toBe(400);
+    expect((await update(ownerToken, [0.5, 0, 0])).status).toBe(400);
+    expect((await update(ownerToken)).status).toBe(200);
+    expect(await waitForDaemonMessage(fixture.socket)).toMatchObject({
+      type: "terminal.default-colors",
+      terminalId: stored.id,
+      ...colors,
+    });
+    expect(
+      getTerminalSession(fixture.harness.db, {
+        kind: "terminal",
+        terminalId: stored.id,
+      })?.defaultColors,
+    ).toEqual(colors);
+    hub.recordTerminalClientSize(
+      stored.id,
+      observer,
+      { cols: 80, rows: 24 },
+      Date.now(),
+      true,
+    );
+    expect((await update(ownerToken)).status).toBe(403);
+    expect((await update(observerToken)).status).toBe(200);
+  });
 
   it("resizes a running terminal over the daemon session", async () => {
     const fixture = await createTerminalRouteFixture();

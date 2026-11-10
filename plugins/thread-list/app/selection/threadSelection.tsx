@@ -10,7 +10,10 @@ import {
   type ReactNode,
 } from "react";
 import { experimental_useExperiment } from "@get-bb/plugin-sdk/app";
-import { useSidebarData } from "../model/use-sidebar-data.js";
+import {
+  useSidebarData,
+  type SidebarProject,
+} from "../model/use-sidebar-data.js";
 import { SIDEBAR_CONTENT_SELECTOR } from "../ui/sidebar.js";
 import { SIDEBAR_WINDOWED_NAV_ATTRIBUTE } from "../list/sidebarThreadShortcuts.js";
 
@@ -191,6 +194,13 @@ export function collectVisibleThreadIds(origin: Element): string[] {
 }
 
 const ThreadSelectionContext = createContext(new ThreadSelectionStore());
+const ThreadSelectionProjectsContext = createContext<
+  readonly SidebarProject[]
+>([]);
+
+export function useThreadSelectionProjects() {
+  return useContext(ThreadSelectionProjectsContext);
+}
 
 export function ThreadSelectionProvider({
   activeThreadId,
@@ -256,7 +266,9 @@ export function ThreadSelectionProvider({
   }, [hasSelection, store]);
   return (
     <ThreadSelectionContext.Provider value={store}>
-      {children}
+      <ThreadSelectionProjectsContext.Provider value={projects}>
+        {children}
+      </ThreadSelectionProjectsContext.Provider>
     </ThreadSelectionContext.Provider>
   );
 }

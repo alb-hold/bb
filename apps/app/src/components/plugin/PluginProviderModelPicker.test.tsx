@@ -1,3 +1,4 @@
+import { ModelReasoningPickerBody } from "@/components/pickers/ModelReasoningPickerBodySplit";
 // @vitest-environment jsdom
 
 import { useState } from "react";
@@ -126,7 +127,12 @@ function cacheCatalog(
   );
 }
 
-beforeAll(() => ModelReasoningMenu.preload());
+beforeAll(() =>
+  Promise.all([
+    ModelReasoningMenu.preload(),
+    ModelReasoningPickerBody.preload(),
+  ]),
+);
 
 afterEach(() => {
   cleanup();

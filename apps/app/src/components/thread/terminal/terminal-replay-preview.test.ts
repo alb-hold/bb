@@ -111,6 +111,261 @@ function createExitHandler(
 }
 
 describe("terminal replay preview", () => {
+  it("follows a phone font change and matches fractional DOM cells to the live renderer before showing", async () => {
+    installPreviewCanvasContext();
+    const stylePrototype: CSSStyleDeclaration = Object.getPrototypeOf(
+      document.createElement("div").style,
+    );
+    const setSpacing = Object.getOwnPropertyDescriptor(
+      stylePrototype,
+      "letterSpacing",
+    )!.set!;
+    const spacingSetter = vi
+      .spyOn(stylePrototype, "letterSpacing", "set")
+      .mockImplementation(function (this: CSSStyleDeclaration, value: string) {
+        const numeric = parseFloat(value);
+        setSpacing.call(
+          this,
+          Number.isFinite(numeric) ? `${Number(numeric.toFixed(6))}px` : value,
+        );
+      });
+    const characterWidth = (element: HTMLElement) =>
+      parseFloat(getComputedStyle(element).fontSize) === 13 ? 7.82 : 7;
+    const width = vi
+      .spyOn(HTMLElement.prototype, "offsetWidth", "get")
+      .mockImplementation(function (this: HTMLElement) {
+        return this.classList.contains("xterm-char-measure-element")
+          ? characterWidth(this) * (this.textContent?.length ?? 1)
+          : 0;
+      });
+    const height = vi
+      .spyOn(HTMLElement.prototype, "offsetHeight", "get")
+      .mockImplementation(function (this: HTMLElement) {
+        return this.classList.contains("xterm-char-measure-element") ? 15 : 0;
+      });
+    const bounds = vi
+      .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+      .mockImplementation(function (this: HTMLElement) {
+        if (this.classList.contains("xterm-char-measure-element"))
+          return new DOMRect(0, 0, characterWidth(this), 15);
+        if (this.classList.contains("xterm-screen")) {
+          const preview = this.closest("[data-terminal-replay-preview]");
+          return new DOMRect(
+            16,
+            56,
+            preview ? parseFloat(this.style.width) : 357,
+            parseFloat(this.style.height),
+          );
+        }
+        if (this.tagName === "SPAN" && this.closest(".xterm-rows")) {
+          return new DOMRect(
+            0,
+            0,
+            Array.from(this.textContent ?? "").length *
+              (8 + (parseFloat(getComputedStyle(this).letterSpacing) || 0)),
+            16,
+          );
+        }
+        return new DOMRect();
+      });
+    const parent = document.createElement("div");
+    const container = document.createElement("div");
+    Object.defineProperties(container, {
+      clientWidth: { value: 374 },
+      clientHeight: { value: 682 },
+    });
+    parent.append(container);
+    document.body.append(parent);
+    const live = new Terminal({
+      cols: 51,
+      rows: 42,
+      fontSize: 12,
+      lineHeight: 1,
+    });
+    live.open(container);
+    const preview = new Terminal({
+      cols: 51,
+      rows: 42,
+      fontSize: 12,
+      lineHeight: 1,
+    });
+    let ready = false;
+    const cover = mountTerminalReplayPreview({
+      container,
+      initialFitGrid: { cols: 51, rows: 42 },
+      isOwner: () => false,
+      liveTerminal: live,
+      readyToPaint: () => ready,
+      terminal: preview,
+    });
+    try {
+      await new Promise<void>((resolve) =>
+        cover.push(Buffer.from("phone snapshot"), resolve),
+      );
+      const element = parent.querySelector<HTMLElement>(
+        "[data-terminal-replay-preview]",
+      )!;
+      expect(element.style.visibility).toBe("hidden");
+      live.options.fontSize = 13;
+      live.options.lineHeight = 1.12;
+      live.options.fontWeight = 450;
+      ready = true;
+      cover.setFitGrid(51, 42);
+      expect(preview.options.fontSize).toBe(13);
+      expect(preview.options.lineHeight).toBe(1.12);
+      expect(preview.options.fontWeight).toBe(450);
+      expect(preview.options.letterSpacing).toBeCloseTo(-0.82, 1);
+      expect(element.style.visibility).toBe("visible");
+      expect(preview.element?.style.transform).toBe("none");
+      const screen =
+        preview.element!.querySelector<HTMLElement>(".xterm-screen")!;
+      expect(screen.getBoundingClientRect().width).toBe(357);
+      const rows = preview.element!.querySelector<HTMLElement>(".xterm-rows")!;
+      expect(parseFloat(rows.style.letterSpacing) + 8).toBeCloseTo(7, 6);
+      const spacing = rows.style.letterSpacing;
+      cover.setFitGrid(51, 42);
+      expect(rows.style.letterSpacing).toBe(spacing);
+      expect(screen.getBoundingClientRect().width).toBe(357);
+      expect(preview.cols).toBe(51);
+      expect(preview.rows).toBe(42);
+    } finally {
+      cover.dispose();
+      live.dispose();
+      parent.remove();
+      bounds.mockRestore();
+      width.mockRestore();
+      height.mockRestore();
+      spacingSetter.mockRestore();
+    }
+  });
+
+  it.each([44, 60])(
+    "matches live cell metrics and origin while clipping a %s-row snapshot",
+    async (rows) => {
+      installPreviewCanvasContext();
+      const width = vi
+        .spyOn(HTMLElement.prototype, "offsetWidth", "get")
+        .mockImplementation(function (this: HTMLElement) {
+          return this.classList.contains("xterm-char-measure-element")
+            ? 7 * (this.textContent?.length ?? 1)
+            : 0;
+        });
+      const height = vi
+        .spyOn(HTMLElement.prototype, "offsetHeight", "get")
+        .mockImplementation(function (this: HTMLElement) {
+          return this.classList.contains("xterm-char-measure-element") ? 14 : 0;
+        });
+      const bounds = vi
+        .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+        .mockImplementation(function (this: HTMLElement) {
+          if (this.classList.contains("xterm-char-measure-element"))
+            return new DOMRect(0, 0, 7, 14);
+          if (!this.classList.contains("xterm-screen")) return new DOMRect();
+          const surface = this.closest<HTMLElement>(".xterm")!;
+          const host = surface.parentElement!;
+          const preview = host.hasAttribute("data-terminal-replay-preview");
+          return new DOMRect(
+            320 +
+              (preview ? parseFloat(host.style.left) : host.offsetLeft) +
+              parseFloat(host.style.paddingLeft),
+            48 +
+              (preview ? parseFloat(host.style.top) : host.offsetTop) +
+              (parseFloat(surface.style.top) || 0),
+            parseFloat(this.style.width),
+            parseFloat(this.style.height),
+          );
+        });
+      const parent = document.createElement("div");
+      const container = document.createElement("div");
+      container.style.paddingLeft = "8px";
+      Object.defineProperties(container, {
+        offsetLeft: { value: 8 },
+        offsetTop: { value: 8 },
+        clientWidth: { value: 944 },
+        clientHeight: { value: 662 },
+      });
+      parent.append(container);
+      document.body.append(parent);
+      const live = new Terminal({
+        cols: 132,
+        rows: 44,
+        fontSize: 12,
+        lineHeight: 1.12,
+      });
+      live.open(container);
+      const preview = new Terminal({
+        cols: 132,
+        rows,
+        fontSize: 12,
+        lineHeight: 1,
+      });
+      let ready = false;
+      const cover = mountTerminalReplayPreview({
+        container,
+        initialFitGrid: { cols: 125, rows: 47 },
+        isOwner: () => false,
+        liveTerminal: live,
+        readyToPaint: () => ready,
+        terminal: preview,
+      });
+      try {
+        cover.setFitGrid(125, 47);
+        expect(preview.rows).toBe(rows);
+        await new Promise<void>((resolve) =>
+          cover.push(Buffer.from("snapshot"), resolve),
+        );
+        const element = parent.querySelector<HTMLElement>(
+          "[data-terminal-replay-preview]",
+        )!;
+        expect(element.style.visibility).toBe("hidden");
+        expect(element.style.paddingLeft).toBe("8px");
+        expect(element.style.paddingRight).toBe("8px");
+        expect(
+          preview.element!.querySelector<HTMLElement>(".xterm-viewport")!.style
+            .backgroundColor,
+        ).toBe("inherit");
+        ready = true;
+        cover.setFitGrid(125, 44);
+        expect(element.style.visibility).toBe("visible");
+        expect(preview.element?.style.transform).toBe("none");
+        expect({ cols: preview.cols, rows: preview.rows }).toEqual({
+          cols: 132,
+          rows,
+        });
+        const row =
+          preview.element!.querySelector<HTMLElement>(".xterm-rows > div")!;
+        const liveRow =
+          live.element!.querySelector<HTMLElement>(".xterm-rows > div")!;
+        expect(row.style.height).toBe("15px");
+        expect(row.style.height).toBe(liveRow.style.height);
+        const screen =
+          preview.element!.querySelector<HTMLElement>(".xterm-screen")!;
+        const liveScreen =
+          live.element!.querySelector<HTMLElement>(".xterm-screen")!;
+        const rect = screen.getBoundingClientRect();
+        expect(rect.x).toBe(liveScreen.getBoundingClientRect().x);
+        expect(rect.y).toBe(
+          liveScreen.getBoundingClientRect().y - (rows - 44) * 15,
+        );
+        expect(rect.y + rect.height).toBe(
+          liveScreen.getBoundingClientRect().bottom,
+        );
+        expect(element.style.overflow).toBe("hidden");
+        cover.dispose();
+        expect(liveRow.style.height).toBe("15px");
+        expect(liveScreen.getBoundingClientRect().x).toBe(336);
+        expect(liveScreen.getBoundingClientRect().y).toBe(56);
+      } finally {
+        cover.dispose();
+        live.dispose();
+        parent.remove();
+        bounds.mockRestore();
+        width.mockRestore();
+        height.mockRestore();
+      }
+    },
+  );
+
   it("defers a snapshot-preview exit and keeps the preview visible after replay", () => {
     const replayState = {
       hasReplaySurface: true,
@@ -247,8 +502,7 @@ describe("terminal replay preview", () => {
     const terminalWrites: string[] = [];
     const route = createExitHandler({
       getReplayState: () => replayState,
-      pushReplay: (bytes) =>
-        replayWrites.push(new TextDecoder().decode(bytes)),
+      pushReplay: (bytes) => replayWrites.push(new TextDecoder().decode(bytes)),
       queueNotice: (text) => pendingNotices.push(text),
       restoreTerminalHistory: async () => undefined,
       writeTerminal: (status) => terminalWrites.push(status),
@@ -268,8 +522,7 @@ describe("terminal replay preview", () => {
     replayState.replayStarted = false;
     const completedRoute = createExitHandler({
       getReplayState: () => replayState,
-      pushReplay: (bytes) =>
-        replayWrites.push(new TextDecoder().decode(bytes)),
+      pushReplay: (bytes) => replayWrites.push(new TextDecoder().decode(bytes)),
       queueNotice: (text) => pendingNotices.push(text),
       restoreTerminalHistory: async () => undefined,
       writeTerminal: (status) => terminalWrites.push(status),
@@ -300,10 +553,12 @@ describe("terminal replay preview", () => {
     replayState.replayCompleted = true;
     replayState.needsHistoryRestore = true;
     expect(route("Terminal exited with code 7")).toBe(true);
-    await vi.waitFor(() => expect(writes).toEqual([
-      "replayed terminal history",
-      "Terminal exited with code 7",
-    ]));
+    await vi.waitFor(() =>
+      expect(writes).toEqual([
+        "replayed terminal history",
+        "Terminal exited with code 7",
+      ]),
+    );
   });
 
   it("holds an exit received before replay starts until replay history is complete", async () => {
@@ -326,7 +581,8 @@ describe("terminal replay preview", () => {
         restoreTerminalHistory: async () => {
           deliveryOrder.push("history");
         },
-        pushReplay: (bytes) => replayWrites.push(new TextDecoder().decode(bytes)),
+        pushReplay: (bytes) =>
+          replayWrites.push(new TextDecoder().decode(bytes)),
         queueNotice: (notice) => pendingNotices.push(notice),
         text,
         writeTerminal: (notice) => {
@@ -378,9 +634,7 @@ describe("terminal replay preview", () => {
       writeTerminal: (text) => terminalWrites.push(text),
     });
     route("Terminal exited with code 7");
-    expect(replayWrites[1]).toContain(
-      "Terminal exited with code 7",
-    );
+    expect(replayWrites[1]).toContain("Terminal exited with code 7");
     expect(terminalWrites).toEqual([]);
     expect(pendingNotices).toEqual(["Terminal exited with code 7"]);
   });
@@ -450,6 +704,7 @@ describe("terminal replay preview", () => {
     parent.append(container);
     document.body.append(parent);
     const terminal = new Terminal({ cols: 120, rows: 36 });
+    const open = vi.spyOn(terminal, "open");
     const cover = mountTerminalReplayPreview({
       container,
       holdUntilReleased: true,
@@ -470,8 +725,13 @@ describe("terminal replay preview", () => {
     );
     cover.setFitGrid(120, 36);
     expect(getComputedStyle(element).visibility).toBe("hidden");
+    expect(open).not.toHaveBeenCalled();
+    expect(terminal.buffer.active.getLine(0)?.translateToString(true)).toBe(
+      "oldest historical frame",
+    );
 
     cover.release();
+    expect(open).toHaveBeenCalledOnce();
     expect(element.dataset.terminalReplayHeld).toBeUndefined();
     expect(getComputedStyle(element).visibility).toBe("visible");
 
@@ -534,6 +794,25 @@ describe("terminal replay preview", () => {
       cleanup();
     } finally {
       vi.useRealTimers();
+    }
+  });
+
+  it("expires only after replay arrivals and parser progress both stop", async () => {
+    vi.useFakeTimers();
+    const expired = vi.fn();
+    const { cover, cleanup } = mountHeldPreview(expired);
+    cover.setPtyGrid(120, 36);
+    try {
+      for (let chunk = 0; chunk < 3; chunk += 1) {
+        await vi.advanceTimersByTimeAsync(4_000);
+        cover.push(Buffer.from(`frame ${chunk}\r\n`), () => undefined);
+        await vi.advanceTimersByTimeAsync(10);
+        expect(expired).not.toHaveBeenCalled();
+      }
+      await vi.advanceTimersByTimeAsync(5_001);
+      expect(expired).toHaveBeenCalledOnce();
+    } finally {
+      cleanup();
     }
   });
 
@@ -711,7 +990,7 @@ describe("terminal replay preview", () => {
     parent.remove();
   });
 
-  it("waits for the phone fit before revealing and scaling an attached-grid preview", () => {
+  it("waits for the phone fit before revealing a clipped attached-grid preview", () => {
     const context = new Proxy(
       {
         measureText: (text: string) => ({ width: text.length * 8 }),
@@ -736,7 +1015,7 @@ describe("terminal replay preview", () => {
     parent.append(container);
     document.body.append(parent);
 
-    const preview = new Terminal({ cols: 135, rows: 56 });
+    const preview = new Terminal({ cols: 135, rows: 56, fontSize: 12 });
     const cover = mountTerminalReplayPreview({
       container,
       initialFitGrid: null,
@@ -751,22 +1030,23 @@ describe("terminal replay preview", () => {
 
     cover.setFitGrid(51, 47);
 
-    const scale = 51 / 135;
     expect({ cols: preview.cols, rows: preview.rows }).toEqual({
       cols: 135,
       rows: 56,
     });
     expect(getComputedStyle(previewElement).visibility).toBe("visible");
-    expect(preview.element?.style.transform).toBe(
-      "scale(min(var(--terminal-grid-scale, 1), calc(100cqw / var(--terminal-natural-width, 1px))))",
-    );
-    expect(135 * scale).toBe(51);
+    expect(preview.element?.style.transform).toBe("none");
+    expect((previewElement as HTMLElement).style.overflowX).toBe("hidden");
+    expect((previewElement as HTMLElement).style.pointerEvents).toBe("none");
+    expect(preview.options.disableStdin).toBe(true);
+    expect(preview.element?.style.pointerEvents).toBe("none");
+    expect(preview.textarea?.tabIndex).toBe(-1);
 
     cover.dispose();
     parent.remove();
   });
 
-  it("keeps a visible 135-column preview inside the renderer across a desktop-to-phone resize", () => {
+  it("clips a visible 135-column preview across a desktop-to-phone resize", () => {
     const context = new Proxy(
       {
         measureText: (text: string) => ({ width: text.length * 8 }),
@@ -791,7 +1071,7 @@ describe("terminal replay preview", () => {
     parent.append(container);
     document.body.append(parent);
     let availableWidth = 964;
-    const preview = new Terminal({ cols: 135, rows: 56 });
+    const preview = new Terminal({ cols: 135, rows: 56, fontSize: 12 });
     const cover = mountTerminalReplayPreview({
       container,
       initialFitGrid: { cols: 135, rows: 56 },
@@ -810,34 +1090,27 @@ describe("terminal replay preview", () => {
     Object.defineProperty(screen!, "getBoundingClientRect", {
       configurable: true,
       value: () => {
-        const scale = Number(preview.element?.dataset.surfaceScale ?? "1");
-        const widthScale = Math.min(1, availableWidth / 975);
-        return new DOMRect(
-          0,
-          0,
-          975 * Math.min(scale, widthScale),
-          784 * Math.min(scale, widthScale),
-        );
+        return new DOMRect(0, 0, 975, 784);
       },
     });
     const paintedWidth = () => screen!.getBoundingClientRect().width;
 
     window.dispatchEvent(new Event("resize"));
     expect(previewElement.style.visibility).toBe("visible");
-    expect(paintedWidth()).toBeLessThanOrEqual(availableWidth + 1);
+    expect(paintedWidth()).toBeGreaterThan(availableWidth);
 
     availableWidth = 357;
+    cover.setFitGrid(51, 47);
     window.dispatchEvent(new Event("resize"));
 
     expect(previewElement.style.visibility).toBe("visible");
-    expect(paintedWidth()).toBeLessThanOrEqual(availableWidth + 1);
+    expect(paintedWidth()).toBeGreaterThan(availableWidth);
+    expect(previewElement.style.overflowX).toBe("hidden");
     expect(container.style.containerType).toBe("inline-size");
-    expect(preview.element?.style.transform).toBe(
-      "scale(min(var(--terminal-grid-scale, 1), calc(100cqw / var(--terminal-natural-width, 1px))))",
-    );
+    expect(preview.element?.style.transform).toBe("none");
     expect(
       preview.element?.style.getPropertyValue("--terminal-grid-scale"),
-    ).toBe("1");
+    ).toBe("");
 
     cover.dispose();
     parent.remove();
@@ -882,6 +1155,8 @@ describe("terminal replay preview", () => {
 
     const markerPipeline = createTerminalOutputPipeline(
       {
+        cols: 120,
+        rows: 36,
         resize: () => undefined,
         write: (_bytes, callback) => callback(),
       },
@@ -1015,9 +1290,7 @@ describe("terminal replay preview", () => {
       cols: 135,
       rows: 56,
     });
-    expect(preview.element?.style.transform).toBe(
-      "scale(min(var(--terminal-grid-scale, 1), calc(100cqw / var(--terminal-natural-width, 1px))))",
-    );
+    expect(preview.element?.style.transform).toBe("none");
     expect(
       Array.from({ length: preview.buffer.active.length }, (_, index) =>
         preview.buffer.active.getLine(index)?.translateToString(),
@@ -1140,13 +1413,20 @@ describe("terminal replay preview", () => {
     harness.cover.setFitGrid(120, 47);
 
     expect(getComputedStyle(harness.previewElement).visibility).toBe("visible");
-    expect({ cols: harness.terminal.cols, rows: harness.terminal.rows }).toEqual({
+    expect({
+      cols: harness.terminal.cols,
+      rows: harness.terminal.rows,
+    }).toEqual({
       cols: 100,
       rows: 47,
     });
     expect(
-      Array.from({ length: harness.terminal.buffer.active.length }, (_, index) =>
-        harness.terminal.buffer.active.getLine(index)?.translateToString(true),
+      Array.from(
+        { length: harness.terminal.buffer.active.length },
+        (_, index) =>
+          harness.terminal.buffer.active
+            .getLine(index)
+            ?.translateToString(true),
       ).join("\n"),
     ).toContain("screenshot snapshot");
     expect({
@@ -1159,24 +1439,34 @@ describe("terminal replay preview", () => {
     const snapshotLines = Array.from(
       { length: harness.terminal.rows },
       (_, index) =>
-        harness.terminal.buffer.active.getLine(index)?.translateToString(true) ??
-        "",
+        harness.terminal.buffer.active
+          .getLine(index)
+          ?.translateToString(true) ?? "",
     );
     harness.cover.setFitGrid(120, 50);
-    expect({ cols: harness.terminal.cols, rows: harness.terminal.rows }).toEqual({
+    expect({
+      cols: harness.terminal.cols,
+      rows: harness.terminal.rows,
+    }).toEqual({
       cols: 100,
       rows: 50,
     });
     expect(
-      Array.from({ length: snapshotLines.length }, (_, index) =>
-        harness.terminal.buffer.active.getLine(index)?.translateToString(true) ?? "",
+      Array.from(
+        { length: snapshotLines.length },
+        (_, index) =>
+          harness.terminal.buffer.active
+            .getLine(index)
+            ?.translateToString(true) ?? "",
       ),
     ).toEqual(snapshotLines);
     expect(
-      Array.from({ length: 3 }, (_, index) =>
-        harness.terminal.buffer.active
-          .getLine(snapshotLines.length + index)
-          ?.translateToString(true) ?? "",
+      Array.from(
+        { length: 3 },
+        (_, index) =>
+          harness.terminal.buffer.active
+            .getLine(snapshotLines.length + index)
+            ?.translateToString(true) ?? "",
       ),
     ).toEqual(["", "", ""]);
 
@@ -1220,8 +1510,12 @@ describe("terminal replay preview", () => {
     expect(harness.terminal.rows).toBe(47);
     expect(getComputedStyle(harness.previewElement).visibility).toBe("visible");
     expect(
-      Array.from({ length: harness.terminal.buffer.active.length }, (_, index) =>
-        harness.terminal.buffer.active.getLine(index)?.translateToString(true),
+      Array.from(
+        { length: harness.terminal.buffer.active.length },
+        (_, index) =>
+          harness.terminal.buffer.active
+            .getLine(index)
+            ?.translateToString(true),
       ).join("\n"),
     ).toContain("screenshot snapshot");
     expect({
@@ -1266,17 +1560,27 @@ describe("terminal replay preview", () => {
     expect(liveWriteCompleted).toBe(false);
     expect(terminalWrite).not.toHaveBeenCalled();
     expect(
-      Array.from({ length: harness.terminal.buffer.active.length }, (_, index) =>
-        harness.terminal.buffer.active.getLine(index)?.translateToString(true),
+      Array.from(
+        { length: harness.terminal.buffer.active.length },
+        (_, index) =>
+          harness.terminal.buffer.active
+            .getLine(index)
+            ?.translateToString(true),
       ).join("\n"),
     ).not.toContain("live after marker");
 
     harness.cover.setPtyGrid(120, 40);
-    await vi.waitFor(() => expect(liveWriteCompleted).toBe(true));
+    await vi.waitFor(() => expect(liveWriteCompleted).toBe(true), {
+      timeout: 5000,
+    });
     expect(terminalWrite).toHaveBeenCalledOnce();
     expect(
-      Array.from({ length: harness.terminal.buffer.active.length }, (_, index) =>
-        harness.terminal.buffer.active.getLine(index)?.translateToString(true),
+      Array.from(
+        { length: harness.terminal.buffer.active.length },
+        (_, index) =>
+          harness.terminal.buffer.active
+            .getLine(index)
+            ?.translateToString(true),
       ).join("\n"),
     ).toContain("live after marker");
 
@@ -1311,10 +1615,13 @@ describe("terminal replay preview", () => {
     expect(terminalWrite).not.toHaveBeenCalled();
     expect(getComputedStyle(harness.previewElement).visibility).toBe("visible");
 
-    await vi.waitFor(() => {
-      expect(firstCompleted).toBe(true);
-      expect(secondCompleted).toBe(true);
-    }, { timeout: 1500 });
+    await vi.waitFor(
+      () => {
+        expect(firstCompleted).toBe(true);
+        expect(secondCompleted).toBe(true);
+      },
+      { timeout: 5000 },
+    );
 
     const rendered = Array.from(
       { length: harness.terminal.buffer.active.length },
@@ -1325,7 +1632,10 @@ describe("terminal replay preview", () => {
     expect(rendered.indexOf("second queued chunk")).toBeGreaterThan(
       rendered.indexOf("first queued chunk"),
     );
-    expect({ cols: harness.terminal.cols, rows: harness.terminal.rows }).toEqual({
+    expect({
+      cols: harness.terminal.cols,
+      rows: harness.terminal.rows,
+    }).toEqual({
       cols: 120,
       rows: 47,
     });
@@ -1335,14 +1645,10 @@ describe("terminal replay preview", () => {
     harness.parent.remove();
   });
 
-  it("keeps chunks in order while the deadline handoff is pending", async () => {
-    const captured: { frame: FrameRequestCallback | null } = { frame: null };
+  it("finishes replay in order when the non-owner receives no resize or animation frame", async () => {
     const frameRequest = vi
       .spyOn(window, "requestAnimationFrame")
-      .mockImplementation((callback) => {
-        captured.frame = callback;
-        return 1;
-      });
+      .mockImplementation(() => 1);
     const harness = await createPreviewHarness({
       cols: 120,
       rows: 36,
@@ -1350,25 +1656,28 @@ describe("terminal replay preview", () => {
       fitRows: 47,
     });
     frameRequest.mockRestore();
-    if (captured.frame === null) throw new Error("Expected preview frame");
-    vi.useFakeTimers();
     let firstCallbackCount = 0;
     let secondCallbackCount = 0;
     harness.cover.push(Buffer.from("\r\nchunk A"), () => {
       firstCallbackCount += 1;
     });
-    captured.frame(0);
-    const terminalResize = harness.terminal.resize.bind(harness.terminal);
-    vi.spyOn(harness.terminal, "resize").mockImplementation((cols, rows) => {
-      terminalResize(cols, rows);
+    const terminalWrite = harness.terminal.write.bind(harness.terminal);
+    let appended = false;
+    vi.spyOn(harness.terminal, "write").mockImplementation((data, callback) => {
+      terminalWrite(data, callback);
+      if (appended) return;
+      appended = true;
       harness.cover.push(Buffer.from("\r\nchunk B"), () => {
         secondCallbackCount += 1;
       });
     });
-    vi.advanceTimersByTime(500);
-    await vi.advanceTimersByTimeAsync(0);
-    expect(firstCallbackCount).toBe(1);
-    expect(secondCallbackCount).toBe(1);
+    await vi.waitFor(
+      () => {
+        expect(firstCallbackCount).toBe(1);
+        expect(secondCallbackCount).toBe(1);
+      },
+      { timeout: 5000 },
+    );
     const rendered = Array.from(
       { length: harness.terminal.buffer.active.length },
       (_, index) =>
@@ -1405,11 +1714,15 @@ describe("terminal replay preview", () => {
     expect(terminalWrite).not.toHaveBeenCalled();
 
     await harness.cover.resize(120, 36);
-    await vi.waitFor(() => expect(completed).toBe(true));
+    await vi.waitFor(() => expect(completed).toBe(true), { timeout: 5000 });
     expect(terminalWrite).toHaveBeenCalledOnce();
     expect(
-      Array.from({ length: harness.terminal.buffer.active.length }, (_, index) =>
-        harness.terminal.buffer.active.getLine(index)?.translateToString(true),
+      Array.from(
+        { length: harness.terminal.buffer.active.length },
+        (_, index) =>
+          harness.terminal.buffer.active
+            .getLine(index)
+            ?.translateToString(true),
       ).join("\n"),
     ).toContain("equal-grid attach output");
 
@@ -1433,11 +1746,15 @@ describe("terminal replay preview", () => {
 
     harness.cover.processExited();
 
-    await vi.waitFor(() => expect(completed).toBe(true));
+    await vi.waitFor(() => expect(completed).toBe(true), { timeout: 5000 });
     expect(terminalWrite).toHaveBeenCalled();
     expect(
-      Array.from({ length: harness.terminal.buffer.active.length }, (_, index) =>
-        harness.terminal.buffer.active.getLine(index)?.translateToString(true),
+      Array.from(
+        { length: harness.terminal.buffer.active.length },
+        (_, index) =>
+          harness.terminal.buffer.active
+            .getLine(index)
+            ?.translateToString(true),
       ).join("\n"),
     ).toContain("final process output");
 
@@ -1582,7 +1899,8 @@ describe("terminal replay preview", () => {
     const suppressedWriteCount = replayWriteState.suppressedWriteCount;
     const previewBuffer = Array.from(
       { length: preview.buffer.active.length },
-      (_, index) => preview.buffer.active.getLine(index)?.translateToString(true),
+      (_, index) =>
+        preview.buffer.active.getLine(index)?.translateToString(true),
     ).join("\n");
 
     cover.dispose();

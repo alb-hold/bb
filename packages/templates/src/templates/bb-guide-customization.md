@@ -361,8 +361,10 @@ restore Automatic. With no composer plugin enabled, no composer is shown.
 
 A vertical rail of destinations sits on the left edge of the sidebar on every
 screen size. Home is at the top and returns to the last thread; the visible
-destinations (Plugins, Skills, and plugin panels) follow; More holds hidden
-destinations and Customize navigation; Settings is at the bottom. New thread sits in
+host destinations (Plugins and Skills) follow; More holds hidden destinations
+and Customize navigation. Plugin panels appear after More on phones. On desktop,
+remembered panels keep their positions before More, while newly seen panels
+appear after it. Settings is at the bottom. New thread sits in
 the sidebar header and cannot be hidden from the rail. The list beside the rail swaps between
 the thread list, Plugins, Skills, and Settings, and collapsing the sidebar
 hides that list and leaves the rail. Rail order and visibility are
@@ -402,7 +404,8 @@ reloads and temporarily unavailable plugins; new items are visible by default.
 bb settings ui set sidebar.hiddenFooterItems '["plugin:bb--provider-usage/usage"]'
 bb settings ui reset sidebar.hiddenFooterItems
 
-In the app, the sidebar footer's More menu holds hidden actions and actions
+The footer shows host actions, More, then plugin actions, with saved order
+within each group. Its More menu holds hidden actions and actions
 that don't fit; Settings → Appearance → Sidebar footer, or right-clicking an
 action, edits the footer.
 

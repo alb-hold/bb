@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -27,6 +28,22 @@ import { sdk } from "@/lib/sdk";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
 import { ServerMoveOverlay } from "./ServerMoveOverlay";
 import { fetchServerMoveDestinationHealth } from "./server-move-destination";
+import { startSplitPreloading } from "@/lib/split-prefetch";
+
+const viewImports = vi.hoisted(() => vi.fn());
+const viewDownload = vi.hoisted(() => {
+  let finish = () => {};
+  const completed = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  return { completed, finish };
+});
+vi.mock("./ServerMoveOverlayView", async (original) => {
+  viewImports();
+  const view = await original();
+  viewDownload.finish();
+  return view;
+});
 
 vi.mock("./server-move-destination", () => ({
   fetchServerMoveDestinationHealth: vi.fn(async () => null),
@@ -162,6 +179,11 @@ describe("ServerMoveOverlay", () => {
     });
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(vi.mocked(appToast.success)).not.toHaveBeenCalled();
+    startSplitPreloading();
+    await act(async () => {
+      await viewDownload.completed;
+    });
+    expect(viewImports).toHaveBeenCalledOnce();
   });
 
   it("blocks the app with the step list and offers Cancel only while the move is cancellable", async () => {

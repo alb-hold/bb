@@ -86,6 +86,14 @@
       "type": "registry:ui"
     },
     {
+      "name": "composer-attachment-preview",
+      "type": "registry:ui"
+    },
+    {
+      "name": "composer-primitives",
+      "type": "registry:ui"
+    },
+    {
       "name": "confirm-delete-dialog",
       "type": "registry:ui"
     },
@@ -135,6 +143,10 @@
     },
     {
       "name": "icon",
+      "type": "registry:ui"
+    },
+    {
+      "name": "info-list-row",
       "type": "registry:ui"
     },
     {
@@ -371,6 +383,14 @@
     },
     {
       "name": "thread-list-empty-state",
+      "type": "registry:ui"
+    },
+    {
+      "name": "thread-mode-glyph",
+      "type": "registry:ui"
+    },
+    {
+      "name": "thread-row-metadata",
       "type": "registry:ui"
     },
     {

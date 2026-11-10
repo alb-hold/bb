@@ -30,7 +30,7 @@ import {
   expectedFallbackErrorLogFields,
   runtimeErrorLogFields,
 } from "../lib/error-log-fields.js";
-import { resolvePluginProviderEnv } from "../plugins/plugin-agent-contributions.js";
+import { resolvePluginProviderCatalogEnv } from "../plugins/plugin-agent-contributions.js";
 import {
   requireBridgeLaunchForProviderId,
   resolveBridgeLaunchForProviderId,
@@ -121,6 +121,7 @@ interface CatalogFailure {
 
 interface CatalogRefresh {
   fingerprint: string;
+  superseded: boolean;
   sessionId: string | null;
   startedAt: number;
   markedStale: boolean;
@@ -192,7 +193,7 @@ async function resolveCatalogLaunch(args: {
   bridgeLaunch: HostDaemonBridgeLaunch;
 }): Promise<CatalogLaunch> {
   const { bridgeLaunch } = args;
-  const contributedEnv = await resolvePluginProviderEnv({
+  const contributedEnv = await resolvePluginProviderCatalogEnv({
     providerId: args.providerId,
     context: { threadId: null, projectId: null, hostId: args.hostId },
   });
@@ -204,11 +205,23 @@ async function resolveCatalogLaunch(args: {
         bridgeLaunch.source,
         bridgeLaunch.providerOptions,
         bridgeLaunch.envPassthrough,
-        contributedEnv.map((entry) => [entry.name, entry.value]),
+        contributedEnv.map((entry) => [
+          entry.name,
+          entry.internal_DO_NOT_USE_catalogIdentity ?? entry.value,
+        ]),
       ]),
     )
     .digest("hex");
-  return { bridgeLaunch, contributedEnv, fingerprint };
+  return {
+    bridgeLaunch,
+    contributedEnv: contributedEnv.map(({ name, value, source, reason }) => ({
+      name,
+      value,
+      source,
+      reason,
+    })),
+    fingerprint,
+  };
 }
 
 function parseStoredModels(json: string): AvailableModel[] | null {
@@ -235,7 +248,9 @@ function keepDiscoveredReasoning(
   );
   return models.map((model) => {
     const source =
-      model.reasoningDiscovery === "unknown" ? known.get(model.model) : undefined;
+      model.reasoningDiscovery === "unknown"
+        ? known.get(model.model)
+        : undefined;
     return source === undefined
       ? model
       : {
@@ -500,6 +515,7 @@ export function createProviderModelCatalogStore(options: {
       );
     };
     if (entry.refresh !== refresh) {
+      refresh.superseded = true;
       log("info", { outcome: "superseded", changed: false });
       return;
     }
@@ -570,6 +586,7 @@ export function createProviderModelCatalogStore(options: {
     const { hostId, providerId, scopeKey } = entry.key;
     const refresh: CatalogRefresh = {
       fingerprint: launch.fingerprint,
+      superseded: false,
       sessionId: deps.hub.getDaemonSessionIdForHost(hostId),
       startedAt: options.now(),
       markedStale: false,
@@ -631,6 +648,7 @@ export function createProviderModelCatalogStore(options: {
     const refresh: CatalogRefresh & { expiresAt: number } = {
       expiresAt: Infinity,
       fingerprint,
+      superseded: false,
       sessionId: deps.hub.getDaemonSessionIdForHost(entry.key.hostId),
       startedAt: options.now(),
       markedStale: false,
@@ -770,12 +788,16 @@ export function createProviderModelCatalogStore(options: {
     },
 
     async read(deps, args) {
-      const launch = await resolveCatalogLaunch({
-        hostId: args.hostId,
-        providerId: args.provider.id,
-        bridgeLaunch: requireBridgeLaunchForProviderId(deps, args.provider.id),
-      });
-      const { fingerprint } = launch;
+      const resolveLaunch = () =>
+        resolveCatalogLaunch({
+          hostId: args.hostId,
+          providerId: args.provider.id,
+          bridgeLaunch: requireBridgeLaunchForProviderId(
+            deps,
+            args.provider.id,
+          ),
+        });
+      let launch = await resolveLaunch();
       const entry = loadEntry(deps, {
         hostId: args.hostId,
         providerId: args.provider.id,
@@ -787,7 +809,8 @@ export function createProviderModelCatalogStore(options: {
             ? args.cwd
             : "",
       });
-      for (let refreshed = false; ; refreshed = true) {
+      for (let refreshed = false; ;) {
+        const { fingerprint } = launch;
         const decision = evaluate(
           entry,
           fingerprint,
@@ -820,7 +843,18 @@ export function createProviderModelCatalogStore(options: {
           }
           return decision.result;
         }
-        await joinOrStartRefresh(deps, entry, launch);
+        const pending = joinOrStartRefresh(deps, entry, launch);
+        const refresh = entry.refresh;
+        await pending;
+        if (
+          refresh?.superseded &&
+          entries.get(entryMapKey(entry.key)) === entry
+        ) {
+          launch = await resolveLaunch();
+          refreshed = false;
+        } else {
+          refreshed = true;
+        }
       }
     },
 

@@ -17,6 +17,8 @@ import {
 } from "@/lib/plugin-slots";
 import { makePluginRegistrationSet } from "@/test/fixtures/plugins";
 import { LazyPluginDiff, LazyPluginSourceCode } from "./lazy-plugin-renderers";
+import { BbDiffSplit } from "@/components/code/BbDiffSplit";
+import { BbSourceCodeSplit } from "@/components/code/BbSourceCodeSplit";
 
 const downloads = await vi.hoisted(async () => {
   const { createDeferredPromise } = await import("@bb/test-helpers");
@@ -116,7 +118,13 @@ it("starts selected built-ins while SDK adapters are still downloading, without 
   await act(async () => {
     downloads.renderers.resolve();
     downloads.adapters.resolve();
+    await Promise.all([
+      LazyPluginDiff.preload(),
+      LazyPluginSourceCode.preload(),
+      BbDiffSplit.preload(),
+      BbSourceCodeSplit.preload(),
+    ]);
   });
-  expect(await screen.findByText("Diff ready", {}, { timeout: 10000 })).toBeDefined();
-  expect(await screen.findByText("Source ready", {}, { timeout: 10000 })).toBeDefined();
+  expect(screen.getByText("Diff ready")).toBeDefined();
+  expect(screen.getByText("Source ready")).toBeDefined();
 });

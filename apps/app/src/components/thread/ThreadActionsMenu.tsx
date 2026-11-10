@@ -1,3 +1,20 @@
+import { CompactLongPressMenu } from "@bb/shared-ui/compact-long-press-menu";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuTrigger,
+} from "@bb/shared-ui/context-menu";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuTrigger,
+} from "@bb/shared-ui/dropdown-menu";
+import { useIsCompactViewport } from "@bb/shared-ui/hooks/use-compact-viewport";
+import type {
+  PluginThreadActionsContextMenuProps,
+  PluginThreadActionsMenuProps,
+  PluginThreadActionsTriggerProps,
+} from "@get-bb/plugin-sdk";
 import {
   forwardRef,
   useCallback,
@@ -8,65 +25,13 @@ import {
   type ComponentPropsWithoutRef,
   type ReactNode,
 } from "react";
-import type {
-  PluginThreadActionsContextMenuProps,
-  PluginThreadActionsInlineItem,
-  PluginThreadActionsMenuProps,
-  PluginThreadActionsTriggerProps,
-  PluginThreadActionTarget,
-} from "@get-bb/plugin-sdk";
+import { type ThreadActionMenuSurface } from "./ThreadActionMenuItems";
 import {
-  ContextMenu,
-  ContextMenuContent,
-  ContextMenuLabel,
-  ContextMenuTrigger,
-} from "@bb/shared-ui/context-menu";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuLabel,
-  DropdownMenuTrigger,
-} from "@bb/shared-ui/dropdown-menu";
-import { ActionMenuSeparator } from "@bb/shared-ui/action-menu-items";
-import { useIsCompactViewport } from "@bb/shared-ui/hooks/use-compact-viewport";
-import { CompactLongPressMenu } from "@bb/shared-ui/compact-long-press-menu";
-import {
-  ThreadActionMenuRows,
-  useThreadActionMenuGroups,
-  useThreadBulkActionMenuGroups,
-  type ThreadActionMenuSurface,
-} from "./ThreadActionMenuItems";
+  ThreadActionsMenuItems,
+  ThreadBulkMenuItems,
+} from "./ThreadMenuItemsSplit";
 
 const MENU_LABEL = "Thread actions";
-
-function ThreadActionsMenuItems({
-  thread,
-  inline,
-  requestRename,
-  surface,
-  isDrawer,
-  drawerStep,
-  onDrawerStepChange,
-}: {
-  thread: PluginThreadActionTarget;
-  inline?: readonly PluginThreadActionsInlineItem[];
-  requestRename?: (threadId: string) => void;
-  surface: ThreadActionMenuSurface;
-  isDrawer: boolean;
-  drawerStep: string | null;
-  onDrawerStepChange: (key: string | null) => void;
-}) {
-  const groups = useThreadActionMenuGroups({ thread, inline, requestRename });
-  return (
-    <ThreadActionMenuRows
-      groups={groups}
-      surface={surface}
-      isDrawer={isDrawer}
-      drawerStep={drawerStep}
-      onDrawerStepChange={onDrawerStepChange}
-    />
-  );
-}
 
 function describeTriggerContractViolation(
   element: HTMLElement | null,
@@ -139,7 +104,10 @@ export function ThreadActionsMenu({
   return (
     <DropdownMenu modal={false} onOpenChange={handleOpenChange}>
       <DropdownMenuTrigger asChild>
-        <ThreadActionsTriggerSlot render={trigger} />
+        <ThreadActionsTriggerSlot
+          render={trigger}
+          {...ThreadActionsMenuItems.intentProps}
+        />
       </DropdownMenuTrigger>
       <DropdownMenuContent
         side={side}
@@ -228,40 +196,6 @@ function describeThreadCount(count: number): string {
   return count === 1 ? "1 thread" : `${count} threads`;
 }
 
-function ThreadBulkMenuItems({
-  threads,
-  inline,
-  surface,
-  isDrawer,
-  drawerStep,
-  onDrawerStepChange,
-}: {
-  threads: readonly PluginThreadActionTarget[];
-  inline?: readonly PluginThreadActionsInlineItem[];
-} & MenuItemsRenderProps) {
-  const groups = useThreadBulkActionMenuGroups({ threads, inline });
-  const Label = surface === "context" ? ContextMenuLabel : DropdownMenuLabel;
-  return (
-    <>
-      {drawerStep === null ? (
-        <>
-          <Label className="text-muted-foreground">
-            {describeThreadCount(threads.length)} selected
-          </Label>
-          {groups.length > 0 ? <ActionMenuSeparator surface={surface} /> : null}
-        </>
-      ) : null}
-      <ThreadActionMenuRows
-        groups={groups}
-        surface={surface}
-        isDrawer={isDrawer}
-        drawerStep={drawerStep}
-        onDrawerStepChange={onDrawerStepChange}
-      />
-    </>
-  );
-}
-
 function ResponsiveContextMenu(props: ContextMenuShellProps) {
   const isCompactViewport = useIsCompactViewport();
   return isCompactViewport ? (
@@ -323,7 +257,11 @@ function DesktopContextMenuShell({
   }, [dragging, handleOpenChange, open]);
   return (
     <ContextMenu modal={false} open={open} onOpenChange={handleOpenChange}>
-      <ContextMenuTrigger asChild disabled={disabled || dragging}>
+      <ContextMenuTrigger
+        asChild
+        disabled={disabled || dragging}
+        {...ThreadActionsMenuItems.intentProps}
+      >
         {children}
       </ContextMenuTrigger>
       <ContextMenuContent

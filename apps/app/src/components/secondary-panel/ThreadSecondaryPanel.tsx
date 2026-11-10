@@ -1,3 +1,5 @@
+import { SecondaryPanelActions, SecondaryPanelActionsProvider } from "./SecondaryPanelActions";
+import { TerminalSizeClaimSlot } from "@/components/thread/terminal/TerminalSizeClaimControl";
 import { ThreadInfoContentContext } from "@/components/secondary-panel/thread-info-registration";
 import {
   type CSSProperties,
@@ -481,6 +483,7 @@ function ThreadSecondaryPanelContent({
         isPanelInFrame && MACOS_TITLE_BAR_TRAILING_TOGGLE_CLASS,
       )}
       onClick={onClose}
+      data-compact-touch="header"
       aria-label={
         togglePanelShortcut
           ? `${HIDE_PANEL_LABEL} (${togglePanelShortcut.label})`
@@ -749,6 +752,7 @@ function ThreadSecondaryPanelContent({
       activeSurfaceModel?.kind === "terminal" && hasActiveSurfaceTab;
 
     return (
+      <SecondaryPanelActionsProvider activeTerminalId={isFocused && isLayoutOpen && activeSurfaceModel?.kind === "terminal" ? activeSurfaceModel.terminalId : null}>
       <ImageTabLightboxProvider
         activeTabId={activeSurfaceTabId}
         tabs={surfaceTabs}
@@ -764,7 +768,7 @@ function ThreadSecondaryPanelContent({
             className={cn(
               CHROME_ROW_CLASS,
               "min-w-0 justify-between gap-2",
-              renderAsDrawer ? "px-2" : "px-(--bb-panel-chrome-padding)",
+              renderAsDrawer ? "px-4" : "px-(--bb-panel-chrome-padding)",
               usesDesktopChrome && usesWindowChrome && MACOS_WINDOW_DRAG_CLASS,
               usesDesktopChrome &&
                 usesWindowChrome && [
@@ -805,6 +809,9 @@ function ThreadSecondaryPanelContent({
                 showNewTabButton: showNewTabControl,
               })}
             </div>
+            <SecondaryPanelActions>
+              {renderAsDrawer ? <TerminalSizeClaimSlot /> : null}
+            </SecondaryPanelActions>
             {showOuterControls ||
             onRemoveSplit ||
             usesPaneArrangementControl ? (
@@ -883,6 +890,7 @@ function ThreadSecondaryPanelContent({
           </TabVisibleContext.Provider>
         </div>
       </ImageTabLightboxProvider>
+      </SecondaryPanelActionsProvider>
     );
   };
 
@@ -1033,6 +1041,7 @@ function ThreadSecondaryPanelContent({
       inert={!isOpen}
       onFocusCapture={handlePanelFocusCapture}
       data-surface-tone="sidebar"
+      data-terminal-drawer={renderAsDrawer ? "" : undefined}
       style={
         !renderAsDrawer && !isSecondaryPanelResizing
           ? {
@@ -1096,10 +1105,7 @@ function ThreadSecondaryPanelContent({
         onResize={handlePanelResize}
         order={2}
         style={SECONDARY_RESIZABLE_PANEL_STYLE}
-        className={cn(
-          "min-w-0",
-          `relative transition-[flex-grow,flex-basis] ${PANEL_COLLAPSE_TRANSITION_CLASS}`,
-        )}
+        className="relative min-w-0"
       >
         {asideMarkup}
       </Panel>
@@ -1219,7 +1225,7 @@ function SecondaryPanelResizeHandle({
       hitAreaMargins={{ coarse: 0, fine: 0 }}
       tabIndex={-1}
       className={cn(
-        "group relative shrink-0 overflow-visible transition-[width,opacity,background-color]",
+        "group relative shrink-0 overflow-visible transition-[opacity,background-color]",
         PANEL_RESIZE_HANDLE_LAYER_CLASS,
         PANEL_COLLAPSE_TRANSITION_CLASS,
         isConversationCollapsed ? "cursor-default" : "cursor-col-resize",

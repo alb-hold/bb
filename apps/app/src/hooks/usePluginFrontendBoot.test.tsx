@@ -18,12 +18,17 @@ import {
 const mocks = vi.hoisted(() => ({
   bootPluginFrontends: vi.fn(async () => {}),
   preloadPluginFrontend: vi.fn(),
+  prefetchPluginRuntimeSlots: vi.fn(),
   releaseSplitPreloads: vi.fn(),
   systemConfigData: undefined as unknown,
 }));
 
 vi.mock("@/lib/split-prefetch", () => ({
   holdSplitPreloads: () => mocks.releaseSplitPreloads,
+}));
+
+vi.mock("@/lib/plugin-lazy-runtime-groups", () => ({
+  prefetchPluginRuntimeSlots: mocks.prefetchPluginRuntimeSlots,
 }));
 
 vi.mock("@/lib/plugin-frontend-lazy", () => ({
@@ -44,6 +49,7 @@ import {
 const flushMicrotasks = () => act(async () => {});
 
 beforeEach(() => {
+  vi.spyOn(DOMTokenList.prototype, "supports").mockReturnValue(true);
   appQueryClient.setQueryData(
     pluginListQueryOptions({ enabled: true }).queryKey,
     [],
@@ -55,7 +61,9 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   cleanup();
+  document.body.replaceChildren();
   appQueryClient.clear();
   document.head
     .querySelectorAll(
@@ -67,50 +75,132 @@ afterEach(() => {
   mocks.bootPluginFrontends.mockImplementation(async () => {});
   mocks.releaseSplitPreloads.mockClear();
   mocks.preloadPluginFrontend.mockClear();
+  mocks.prefetchPluginRuntimeSlots.mockReset();
   resetPluginFrontendBootStateForTest();
 });
 
 describe("usePluginFrontendBoot", () => {
-  it("downloads priority bundles and starts the runtime before route paint", async () => {
-    const plugins = ["bb--composer", "thread-list", "navigation", "other"].map(
-      (id) =>
+  it.each(["/", "/threads/thr_one"])(
+    "downloads shell bundles after the home composer paints, or immediately on %s",
+    async (pathname) => {
+      window.history.replaceState(null, "", pathname);
+      const deferredComposer = pathname === "/";
+      const bundleSuffix = deferredComposer ? "home" : "thread";
+      const runtimeRequests: { slots: string[]; precedingBundles: string[] }[] =
+        [];
+      mocks.prefetchPluginRuntimeSlots.mockImplementation((slots: string[]) => {
+        runtimeRequests.push({
+          slots,
+          precedingBundles: [
+            ...document.head.querySelectorAll('link[rel="modulepreload"]'),
+          ].map((link) => link.getAttribute("href")!),
+        });
+      });
+      const plugins = [
+        "bb--composer",
+        "thread-list",
+        "navigation",
+        "other",
+      ].map((id) =>
         makeInstalledPlugin({
           id,
           enabled: true,
           status: "running",
           app: {
             bundle: {
-              jsUrl: `/plugins/${id}.js`,
-              cssUrl: `/plugins/${id}.css`,
+              jsUrl: `/plugins/${id}-${bundleSuffix}.js`,
+              cssUrl: `/plugins/${id}-${bundleSuffix}.css`,
               jsBytes: 100,
               hash: id,
               sdkMajor: 0,
               sdkVersion: "0.0.0",
               compatible: true,
-              runtimeSlots: [],
+              runtimeSlots:
+                id === "bb--composer"
+                  ? ["zod"]
+                  : id === "thread-list"
+                    ? ["zod", "radixCheckbox"]
+                    : ["react"],
             },
           },
         }),
-    );
-    appQueryClient.setQueryData(
-      pluginListQueryOptions({ enabled: true }).queryKey,
-      plugins,
-    );
+      );
+      appQueryClient.setQueryData(
+        pluginListQueryOptions({ enabled: true }).queryKey,
+        plugins,
+      );
+      renderHook(() => usePluginFrontendBoot());
+      await flushMicrotasks();
+      if (deferredComposer) {
+        expect(mocks.preloadPluginFrontend).not.toHaveBeenCalled();
+        expect(mocks.bootPluginFrontends).not.toHaveBeenCalled();
+        expect(runtimeRequests).toEqual([]);
+        expect(
+          document.head.querySelectorAll('link[rel="modulepreload"]'),
+        ).toHaveLength(0);
+        document.body.innerHTML =
+          '<textarea></textarea><div data-sidebar-thread-id="recent"></div>';
+        await flushMicrotasks();
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(40);
+        });
+      }
+      expect(
+        [...document.head.querySelectorAll('link[rel="modulepreload"]')].map(
+          (link) => link.getAttribute("href"),
+        ),
+      ).toEqual([
+        ...(deferredComposer
+          ? []
+          : [`/plugins/bb--composer-${bundleSuffix}.js`]),
+        `/plugins/thread-list-${bundleSuffix}.js`,
+        `/plugins/navigation-${bundleSuffix}.js`,
+      ]);
+      expect(
+        document.head.querySelectorAll("link[data-bb-plugin-css-prefetch]"),
+      ).toHaveLength(deferredComposer ? 2 : 3);
+      expect(mocks.bootPluginFrontends).toHaveBeenCalledTimes(1);
+      expect(runtimeRequests).toEqual([
+        ...(deferredComposer ? [] : [{ slots: ["zod"], precedingBundles: [] }]),
+        {
+          slots: ["zod", "radixCheckbox"],
+          precedingBundles: deferredComposer
+            ? []
+            : [`/plugins/bb--composer-${bundleSuffix}.js`],
+        },
+        {
+          slots: ["react"],
+          precedingBundles: [
+            ...(deferredComposer
+              ? []
+              : [`/plugins/bb--composer-${bundleSuffix}.js`]),
+            `/plugins/thread-list-${bundleSuffix}.js`,
+          ],
+        },
+      ]);
+    },
+  );
+
+  it("releases home plugin loading if the composer cannot mount", async () => {
     renderHook(() => usePluginFrontendBoot());
     await flushMicrotasks();
-    expect(
-      [...document.head.querySelectorAll('link[rel="modulepreload"]')].map(
-        (link) => link.getAttribute("href"),
-      ),
-    ).toEqual([
-      "/plugins/bb--composer.js",
-      "/plugins/thread-list.js",
-      "/plugins/navigation.js",
-    ]);
-    expect(
-      document.head.querySelectorAll("link[data-bb-plugin-css-prefetch]"),
-    ).toHaveLength(3);
+    expect(mocks.preloadPluginFrontend).not.toHaveBeenCalled();
+    expect(mocks.bootPluginFrontends).not.toHaveBeenCalled();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_550);
+    });
+    expect(mocks.preloadPluginFrontend).toHaveBeenCalledTimes(1);
     expect(mocks.bootPluginFrontends).toHaveBeenCalledTimes(1);
+  });
+
+  it("cancels home plugin loading when unmounted before composer paint", async () => {
+    const { unmount } = renderHook(() => usePluginFrontendBoot());
+    unmount();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_000);
+    });
+    expect(mocks.preloadPluginFrontend).not.toHaveBeenCalled();
+    expect(mocks.bootPluginFrontends).not.toHaveBeenCalled();
   });
 
   it("boots immediately on a plugin panel route: the plugin is the page", async () => {
@@ -121,6 +211,7 @@ describe("usePluginFrontendBoot", () => {
   });
 
   it("downloads runtime and plugin list before config, but gates activation", async () => {
+    window.history.replaceState(null, "", "/threads/thr_one");
     mocks.systemConfigData = undefined;
     const fetchList = vi.spyOn(appQueryClient, "fetchQuery");
     const { rerender } = renderHook(() => usePluginFrontendBoot());

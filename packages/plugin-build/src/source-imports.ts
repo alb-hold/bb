@@ -3,7 +3,7 @@ interface SourceToken {
   value: string;
 }
 
-function sourceTokens(source: string): SourceToken[] {
+export function sourceTokens(source: string): SourceToken[] {
   const tokens: SourceToken[] = [];
   let index = 0;
   while (index < source.length) {
@@ -44,6 +44,7 @@ function sourceTokens(source: string): SourceToken[] {
       continue;
     }
     if (character === "`") {
+      tokens.push({ kind: "punctuation", value: character });
       index += 1;
       while (index < source.length) {
         const next = source[index] ?? "";

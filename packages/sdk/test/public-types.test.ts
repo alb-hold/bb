@@ -480,6 +480,7 @@ type ExpectedTerminalsKey =
   | "experimental_attention"
   | "experimental_follow"
   | "experimental_screen"
+  | "experimental_setDefaultColors"
   | "experimental_focus"
   | "experimental_layout"
   | "experimental_openBrowser"

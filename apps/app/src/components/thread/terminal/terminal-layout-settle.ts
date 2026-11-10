@@ -1,20 +1,28 @@
+import { measureTerminalPerformance } from "@/lib/terminal-performance";
+
 const STABLE_FRAMES_REQUIRED = 2;
 const GRACE_FRAMES_AFTER_STABLE = 8;
 
 interface WatchTerminalLayoutSettledArgs {
   cancelFrame: (handle: number) => void;
+  graceFrames?: number;
+  stableFramesRequired?: number;
   measure: () => string | null;
   onSettled: () => void;
   ready?: Promise<unknown>;
+  settleReady?: Promise<unknown>;
   requestFrame: (callback: () => void) => number;
   subscribe?: (onSignal: () => void) => () => void;
 }
 
 export function watchTerminalLayoutSettled({
   cancelFrame,
+  graceFrames = GRACE_FRAMES_AFTER_STABLE,
+  stableFramesRequired = STABLE_FRAMES_REQUIRED,
   measure,
   onSettled,
   ready,
+  settleReady,
   requestFrame,
   subscribe,
 }: WatchTerminalLayoutSettledArgs): () => void {
@@ -23,12 +31,13 @@ export function watchTerminalLayoutSettled({
   let stableFrames = 0;
   let stopped = false;
   let signalled = false;
+  let started = false;
+  let canSettle = settleReady === undefined;
   const unsubscribe = subscribe?.(() => {
     signalled = true;
   });
   const framesRequired =
-    STABLE_FRAMES_REQUIRED +
-    (subscribe === undefined ? 0 : GRACE_FRAMES_AFTER_STABLE);
+    stableFramesRequired + (subscribe === undefined ? 0 : graceFrames);
 
   const tick = () => {
     handle = null;
@@ -45,7 +54,7 @@ export function watchTerminalLayoutSettled({
       stableFrames = 0;
     }
     previous = current;
-    if (stableFrames >= framesRequired) {
+    if (canSettle && stableFrames >= framesRequired) {
       stopped = true;
       unsubscribe?.();
       onSettled();
@@ -53,12 +62,21 @@ export function watchTerminalLayoutSettled({
     }
     handle = requestFrame(tick);
   };
+  const allowSettle = () => {
+    canSettle = true;
+    if (stopped || !started) return;
+    if (handle !== null) cancelFrame(handle);
+    tick();
+  };
+  void settleReady?.then(allowSettle, allowSettle);
   if (ready === undefined) {
+    started = true;
     handle = requestFrame(tick);
   } else {
     const start = () => {
       if (!stopped && handle === null) {
-        handle = requestFrame(tick);
+        started = true;
+        measureTerminalPerformance("terminal-layout-ready-sample", tick);
       }
     };
     void ready.then(start, start);

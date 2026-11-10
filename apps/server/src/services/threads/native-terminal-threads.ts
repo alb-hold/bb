@@ -1,3 +1,8 @@
+import { TERMINAL_DEFAULT_COLORS } from "@bb/domain";
+import {
+  NATIVE_TERMINAL_SETUP_DELAY_MS,
+  nativeTerminalMayNeedSetup,
+} from "@bb/domain";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import {
   consumeNativeTerminalThreadLaunchInput,
@@ -7,6 +12,7 @@ import {
   getEnvironment,
   getNativeTerminalThread,
   getStoredProviderSession,
+  getTerminalSession,
   listTerminalSessions,
   getThread,
   listNativeTerminalThreadsWithDisconnectedTerminal,
@@ -372,6 +378,7 @@ function toNativeTerminalThread(
       deps.providerRegistry.get(record.providerId)?.info.displayName ??
       record.providerId,
     nativeSessionId: record.nativeSessionId,
+    model: record.model,
     canReturnToChat: canReturnToChat(deps, record),
     terminal,
   };
@@ -493,6 +500,13 @@ async function openNativeTerminalOnce(
     clearNativeTerminalThreadEvidence(deps.db, thread.id);
     const terminal = await deps.terminalSessions
       .createTerminal({
+        defaultColors:
+          (args.reattachOnly && record.terminalSessionId !== null
+            ? getTerminalSession(deps.db, {
+                kind: "terminal",
+                terminalId: record.terminalSessionId,
+              })?.defaultColors
+            : null) ?? TERMINAL_DEFAULT_COLORS.dark,
         ...(args.repaintOnAttach
           ? {
               onTerminalStarted: (terminalId: string) =>
@@ -536,6 +550,34 @@ async function openNativeTerminalOnce(
       threadId: thread.id,
       terminalSessionId: terminal.id,
     });
+    const checkSetup = () => {
+      try {
+        const current = getNativeTerminalThread(deps.db, thread.id);
+        if (current?.terminalSessionId !== terminal.id) return;
+        const currentTerminal = readRecordTerminal(deps, current);
+        if (
+          current.nativeSessionId !== null ||
+          currentTerminal?.status !== "running"
+        )
+          return;
+        if (
+          nativeTerminalMayNeedSetup({
+            nativeSessionId: current.nativeSessionId,
+            terminal: currentTerminal,
+            now: Date.now(),
+          })
+        )
+          deps.hub.notifyThread(thread.id, ["terminals-changed"]);
+      } catch (error) {
+        if (!isClosedDatabaseConnectionError(error)) {
+          deps.logger.warn(
+            { err: error, threadId: thread.id },
+            "Failed to check native terminal setup",
+          );
+        }
+      }
+    };
+    setTimeout(checkSetup, NATIVE_TERMINAL_SETUP_DELAY_MS).unref();
     if (!args.reattachOnly) interruptNativeTerminalQuestions(deps, thread.id);
     forgetRejectedNativeQuestions(deps, thread.id);
     returnResumedNativeThreadToIdle(deps, thread.id);

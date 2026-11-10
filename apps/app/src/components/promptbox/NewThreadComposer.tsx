@@ -1,3 +1,4 @@
+import { flushPendingPromptDraftPersists } from "@/hooks/usePromptDraftStorage";
 import { createCoreComposerActions } from "@/lib/plugin-composer-handle";
 import { useAtom } from "jotai";
 import { atomWithStorage } from "jotai/utils";
@@ -24,6 +25,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type ReactNode,
 } from "react";
 import { useNavigate } from "react-router-dom";
@@ -61,6 +63,7 @@ import {
 import { providerInputsControlRequired } from "@/components/pickers/environment-provider-inputs";
 import { useMachineProviderInputs } from "@/components/pickers/machine-provider-inputs";
 import { formatModelLoadErrorText } from "@/components/pickers/model-load-error-message";
+import { prefetchThreadViewOnIntent } from "@/hooks/useThreadOpenIntent";
 import {
   buildSessionOptionMenuSections,
   declaredSessionOptionViews,
@@ -113,8 +116,6 @@ import {
 import type { CommandSuggestionSource } from "@/hooks/useCommandSuggestions";
 import {
   usePromptDraftController,
-  usePromptDraftInputEmpty,
-  usePromptDraftSnapshot,
   type PromptDraftController,
   type PromptDraftScope,
 } from "@/hooks/usePromptDraftStorage";
@@ -269,7 +270,7 @@ export interface NewThreadComposerState {
 
 const nativeTerminalPreferenceAtom = atomWithStorage<boolean>(
   "bb.composer.nativeTerminal",
-  false,
+  true,
   createJsonLocalStorage<boolean>(
     (value): value is boolean => typeof value === "boolean",
   ),
@@ -324,6 +325,7 @@ type LiveDraftNewThreadPromptBoxProps = Omit<
   history: Omit<NewThreadPromptBoxProps["history"], "currentDraft">;
   promptDraft: PromptDraftController;
   blockerReason: NewThreadBlockerReason | null;
+  allowEmpty: boolean;
 };
 
 function LiveDraftNewThreadPromptBox({
@@ -331,10 +333,21 @@ function LiveDraftNewThreadPromptBox({
   history,
   promptDraft,
   blockerReason,
+  allowEmpty,
   ...promptBoxProps
 }: LiveDraftNewThreadPromptBoxProps) {
-  const draft = usePromptDraftSnapshot(promptDraft);
+  const getEmptyState = useCallback(() => {
+    const draft = promptDraft.getCurrent();
+    return `${isPromptDraftEmpty(draft)}/${draft.text.trim().length === 0 && draft.attachments.length === 0}`;
+  }, [promptDraft]);
+  useSyncExternalStore(promptDraft.subscribe, getEmptyState, getEmptyState);
+  const draft = promptDraft.getCurrent();
   const hasDraft = !isPromptDraftEmpty(draft);
+  const disabledReason =
+    promptBoxProps.disabledReason ??
+    (promptDraftToInput(draft).length === 0 && !allowEmpty
+      ? "Enter a prompt or attach a file."
+      : undefined);
   const reportedBlockers = useRef(new Set<NewThreadBlockerReason>());
   useEffect(() => {
     if (!hasDraft || blockerReason === null) return;
@@ -348,6 +361,9 @@ function LiveDraftNewThreadPromptBox({
   return (
     <NewThreadPromptBox
       {...promptBoxProps}
+      draftSource={promptDraft}
+      disabled={disabledReason !== undefined}
+      disabledReason={disabledReason}
       value={draft.text}
       mentionRanges={draft.mentions}
       history={{ ...history, currentDraft: draft }}
@@ -480,7 +496,7 @@ export function resolveNewThreadProjectDefaultsState({
     return { status: "resolved", defaults: cachedDefaults };
   }
   if (!projectFound) return { status: "pending" };
-  if (queryIsSuccess && !queryIsPlaceholderData) {
+  if ((queryIsSuccess || queryData !== undefined) && !queryIsPlaceholderData) {
     return { status: "resolved", defaults: queryData ?? null };
   }
   return queryIsError ? { status: "error" } : { status: "pending" };
@@ -608,6 +624,10 @@ export function NewThreadComposer({
     return candidateKnown ? requestedCandidate : PERSONAL_PROJECT_ID;
   }, [candidateKnown, projects, replayKnowsCandidate, requestedCandidate]);
   const isProjectless = isProjectlessProjectId(projectId);
+  const projectPickerIsLoading =
+    !sidebarNavigationQuery.isSuccess ||
+    !replayKnowsCandidate ||
+    (sidebarNavigationQuery.isPlaceholderData && isProjectless);
   const currentProject = useMemo(() => {
     if (isProjectless) {
       const personalProject = sidebarNavigationQuery.data?.personalProject;
@@ -939,6 +959,7 @@ export function NewThreadComposer({
       seed?.reasoningLevel === undefined ||
       seed?.permissionMode === undefined);
   const creationOptions = useThreadCreationOptions({
+    enabled: projectDefaultsState.status !== "pending",
     scope: selectionScope,
     preferenceProjectId: projectId,
     catalogProjectId: isProjectless ? undefined : projectId,
@@ -969,6 +990,7 @@ export function NewThreadComposer({
     moreModelOptions,
     permissionMode,
     permissionModeOptions,
+    permissionModeIsVerified,
     providerOptions,
     reasoningLevel,
     reasoningOptions,
@@ -993,7 +1015,16 @@ export function NewThreadComposer({
     sessionOptionSelections,
     setSessionOption,
   } = creationOptions;
+  const modelPickerIsLoading =
+    projectDefaultsState.status === "pending" || isLoadingModels;
   const selectedThreadModel = activeModel?.model ?? selectedModel;
+  const canSubmitPendingCatalog =
+    isLoadingModels &&
+    projectDefaultsState.status === "resolved" &&
+    projectDefaults !== null &&
+    projectDefaults !== undefined &&
+    projectDefaults.providerId === selectedProviderId &&
+    projectDefaults.model === selectedThreadModel;
   const placedSessionOptions = useMemo(
     () =>
       splitSessionOptionsByPlacement(
@@ -1469,6 +1500,13 @@ export function NewThreadComposer({
   const [nativeTerminalRequested, setNativeTerminalRequested] = useAtom(
     nativeTerminalPreferenceAtom,
   );
+  const handleNativeTerminalChange = useCallback(
+    (enabled: boolean) => {
+      setNativeTerminalRequested(enabled);
+      if (enabled) prefetchThreadViewOnIntent(true);
+    },
+    [setNativeTerminalRequested],
+  );
   const isCopyingAttachmentsRef = useRef(false);
   const isSubmittingRef = useRef(false);
   const uploadPromptAttachment = useUploadPromptAttachment();
@@ -1655,11 +1693,13 @@ export function NewThreadComposer({
     () => promptHistoryEntriesToDrafts(projectPromptHistory),
     [projectPromptHistory],
   );
-  const promptInputEmpty = usePromptDraftInputEmpty(promptDraft);
   const agentProviders = useSystemProviders().data;
-  const nativeTerminalAvailable =
-    agentProviders?.find((provider) => provider.id === selectedProviderId)
-      ?.capabilities.supportsNativeTerminal === true;
+  const nativeTerminalSupport =
+    agentProviders === undefined || !selectedProviderId
+      ? undefined
+      : agentProviders.find((provider) => provider.id === selectedProviderId)
+          ?.capabilities.supportsNativeTerminal === true;
+  const nativeTerminalAvailable = nativeTerminalSupport === true;
   const nativeTerminal = nativeTerminalAvailable && nativeTerminalRequested;
   const seededExecutionInputSources = useMemo(
     (): CreateExecutionInputSources => ({
@@ -1698,7 +1738,7 @@ export function NewThreadComposer({
     environmentSetupRequiredReason:
       environmentSetupRequiredReason ?? machineServerAccessReason,
     isCopyingAttachments,
-    isLoadingModels,
+    isLoadingModels: isLoadingModels && !canSubmitPendingCatalog,
     isSubmitting,
     isUploading,
     modelLoadError,
@@ -1712,16 +1752,13 @@ export function NewThreadComposer({
   });
   const submissionReadinessReason = submissionBlocker?.message ?? null;
   const submissionBlockerReason = submissionBlocker?.reason ?? null;
-  const submitDisabledReason =
-    submissionReadinessReason ??
-    (promptInputEmpty && !nativeTerminal
-      ? "Enter a prompt or attach a file."
-      : null);
+  const submitDisabledReason = submissionReadinessReason;
   const submitDraft = useCallback(
     async (
       blockedReason: string | null,
       { sendAt, pluginSubmission }: ComposerSubmitExtras,
     ) => {
+      flushPendingPromptDraftPersists();
       const submittedDraft = promptDraft.getCurrent();
       const input = promptDraftToInput(submittedDraft);
       if (
@@ -1745,6 +1782,9 @@ export function NewThreadComposer({
       const sources: CreateExecutionInputSources = {
         ...executionInputSources,
         ...seededExecutionInputSources,
+        ...(canSubmitPendingCatalog
+          ? { providerId: "explicit", model: "explicit" }
+          : {}),
       };
       const creationData = getComposerCreateData(promptDraft.storageKey);
       const request: NewThreadComposerSubmission = {
@@ -1808,6 +1848,7 @@ export function NewThreadComposer({
       onSubmit,
       permissionMode,
       projectDefaultsUnavailable,
+      canSubmitPendingCatalog,
       projectId,
       promptDraft,
       reasoningLevel,
@@ -1823,9 +1864,11 @@ export function NewThreadComposer({
   );
 
   const handleSubmit = useCallback(
-    (blockedReason: string | null, extras: ComposerSubmitExtras = {}) =>
-      submitDraft(blockedReason, extras),
-    [submitDraft],
+    (blockedReason: string | null, extras: ComposerSubmitExtras = {}) => {
+      prefetchThreadViewOnIntent(nativeTerminal);
+      return submitDraft(blockedReason, extras);
+    },
+    [submitDraft, nativeTerminal],
   );
 
   const handleProviderChange = useDraftPreservingOptionChange(
@@ -2010,6 +2053,7 @@ export function NewThreadComposer({
       getSelection,
       subscribeSelection,
       setDraft: promptDraft.setDraft,
+      setTextAndMentions: promptDraft.setTextAndMentions,
       focus: focusPromptBox,
       sendsOnEnter: true,
       setSelection,
@@ -2020,6 +2064,7 @@ export function NewThreadComposer({
       projectId,
       promptDraft.getCurrent,
       promptDraft.setDraft,
+      promptDraft.setTextAndMentions,
       promptDraft.storageKey,
       promptDraft.subscribe,
       setSelection,
@@ -2040,6 +2085,7 @@ export function NewThreadComposer({
       const disabledReason = options.blocker?.message ?? submitDisabledReason;
       return (
         <LiveDraftNewThreadPromptBox
+          allowEmpty={nativeTerminal}
           blockerReason={
             options.blocker ? options.blocker.reason : submissionBlockerReason
           }
@@ -2105,6 +2151,7 @@ export function NewThreadComposer({
               disabled: locks.environment,
             },
             permission: {
+              pending: projectDefaultsUnavailable || !permissionModeIsVerified,
               value: permissionMode,
               options: permissionModeOptions,
               onChange: handlePermissionChange,
@@ -2167,7 +2214,7 @@ export function NewThreadComposer({
             onChange: handleProjectChange,
             allowNoProject: options.allowNoProject,
             createProject: options.createProject,
-            isLoading: !sidebarNavigationSettled,
+            isLoading: projectPickerIsLoading,
             disabled:
               locks.project ||
               isUploading ||
@@ -2176,14 +2223,19 @@ export function NewThreadComposer({
             showChevronWhenDisabled: !locks.project,
           }}
           execution={{
-            ...(nativeTerminalAvailable
-              ? {
-                  nativeTerminal: {
-                    enabled: nativeTerminal,
-                    onChange: setNativeTerminalRequested,
-                  },
-                }
-              : {}),
+            pending: projectDefaultsUnavailable || isLoadingModels,
+            nativeTerminal: {
+              enabled:
+                nativeTerminalSupport === undefined
+                  ? nativeTerminalRequested
+                  : nativeTerminal,
+              disabled: nativeTerminalSupport === false,
+              unavailableReason:
+                nativeTerminalSupport === false
+                  ? "This provider does not support Terminal mode"
+                  : undefined,
+              onChange: handleNativeTerminalChange,
+            },
             providerRouting: executionOptionsRouting,
             provider: {
               options: providerOptions,
@@ -2196,7 +2248,7 @@ export function NewThreadComposer({
               selected: selectedModel,
               options: modelOptions,
               moreOptions: moreModelOptions,
-              isLoading: isLoadingModels,
+              isLoading: modelPickerIsLoading,
               loadFailed: modelLoadFailed,
               loadError: modelLoadError,
               onChange: handleModelChange,
@@ -2227,6 +2279,7 @@ export function NewThreadComposer({
     },
     [
       activeModel,
+      projectDefaultsUnavailable,
       attachmentError,
       commandSource,
       defaultMentionLinkResolver,
@@ -2256,9 +2309,11 @@ export function NewThreadComposer({
       modelLoadError,
       modelLoadFailed,
       modelOptions,
+      modelPickerIsLoading,
       moreModelOptions,
       permissionMode,
       permissionModeOptions,
+      permissionModeIsVerified,
       projectId,
       projectOptions,
       projectSources,
@@ -2279,7 +2334,7 @@ export function NewThreadComposer({
       selectedProviderId,
       serviceTier,
       serviceTierSupportByProvider,
-      sidebarNavigationSettled,
+      projectPickerIsLoading,
       supportsPermissionModeSelection,
       supportsServiceTier,
       submitDisabledReason,
@@ -2295,8 +2350,9 @@ export function NewThreadComposer({
       textEffects,
       serviceTierOptions,
       nativeTerminal,
-      nativeTerminalAvailable,
-      setNativeTerminalRequested,
+      nativeTerminalRequested,
+      nativeTerminalSupport,
+      handleNativeTerminalChange,
       pickerSessionOptionSections,
       placedSessionOptions.footer,
       setSessionOption,

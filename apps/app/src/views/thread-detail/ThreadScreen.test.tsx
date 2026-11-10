@@ -3,7 +3,8 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { PendingInteraction } from "@bb/domain";
+import type { PendingInteraction, ThreadListEntry } from "@bb/domain";
+import { makeThreadListEntry } from "@bb/test-helpers/domain-fixtures";
 import type { TimelineWorkflowWorkRow } from "@bb/server-contract";
 import type { UseThreadTimelineControllerResult } from "@/components/thread/timeline";
 import { getPromptDraftAccessor } from "@/hooks/usePromptDraftStorage";
@@ -14,6 +15,7 @@ import { ThreadScreen, type ThreadScreenPresentation } from "./ThreadScreen";
 import type { ThreadResponse } from "@bb/server-contract";
 
 const mocks = vi.hoisted(() => ({
+  children: [] as ThreadListEntry[],
   pendingInteractions: [] as PendingInteraction[] | undefined,
   pendingInteractionsIsError: false,
   pendingInteractionsIsFetching: false,
@@ -28,7 +30,7 @@ vi.mock("@/hooks/queries/thread-queries", () => ({
     interactions: readonly unknown[] | undefined,
     isFetching: boolean,
   ) => (interactions === undefined || interactions.length === 0) && isFetching,
-  useChildThreads: () => ({ data: [] }),
+  useChildThreads: () => ({ data: mocks.children }),
   useThread: () => ({ data: undefined }),
   useThreadPendingInteractions: () => ({
     data: mocks.pendingInteractions,
@@ -75,10 +77,7 @@ vi.mock("@/components/thread/timeline", async (importOriginal) => {
 });
 
 vi.mock("@/components/ui/page-shell.js", () => ({
-  PageShell: (props: {
-    children?: ReactNode;
-    footer?: ReactNode;
-  }) => {
+  PageShell: (props: { children?: ReactNode; footer?: ReactNode }) => {
     mocks.pageShellProps.push(props as Record<string, unknown>);
     return (
       <div>
@@ -89,8 +88,8 @@ vi.mock("@/components/ui/page-shell.js", () => ({
   },
 }));
 
-vi.mock("./ThreadDetailPromptArea", () => ({
-  ThreadDetailPromptArea: (props: Record<string, unknown>) => {
+vi.mock("./DeferredThreadDetailPromptArea", () => ({
+  DeferredThreadDetailPromptArea: (props: Record<string, unknown>) => {
     mocks.promptAreaProps.push(props);
     return <div data-testid="prompt-area" />;
   },
@@ -211,6 +210,7 @@ function makePluginInteraction(): PendingInteraction {
 }
 
 beforeEach(() => {
+  mocks.children = [];
   mocks.pendingInteractions = [];
   mocks.pendingInteractionsIsError = false;
   mocks.pendingInteractionsIsFetching = false;
@@ -218,6 +218,30 @@ beforeEach(() => {
   mocks.pageShellProps = [];
   mocks.promptAreaProps = [];
   mocks.surfaceProps = [];
+});
+
+it("includes an idle signaled child in the parent banner", () => {
+  mocks.children = [
+    makeThreadListEntry({
+      id: "child-signal",
+      parentThreadId: THREAD.id,
+      originKind: null,
+      listIndicator: "check-terminal",
+      hasPendingInteraction: false,
+      status: "idle",
+      runtime: { displayStatus: "idle" },
+    }),
+  ];
+  renderScreen({ kind: "page" });
+  expect(mocks.promptAreaProps.at(-1)!.childThreadsSection).toMatchObject({
+    items: [
+      {
+        id: "child-signal",
+        hasPendingInteraction: false,
+        hasTerminalAttention: true,
+      },
+    ],
+  });
 });
 
 afterEach(() => {
@@ -417,4 +441,13 @@ describe("ThreadScreen panel ongoing indicator", () => {
 
     expect(indicator()).toEqual({ label: undefined, show: false });
   });
+});
+
+it("keeps the first phone disclosure hit area below the header", () => {
+  renderScreen({ kind: "page" });
+  const shell = mocks.pageShellProps.at(-1)!;
+  expect(shell.scrollAreaClassName).toContain(
+    "max-md:pointer-coarse:scroll-pt-7",
+  );
+  expect(shell.contentClassName).toContain("max-md:pointer-coarse:pt-7");
 });

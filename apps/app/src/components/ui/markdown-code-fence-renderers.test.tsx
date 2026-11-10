@@ -474,6 +474,19 @@ describe("MarkdownPreview inside a code fence host", () => {
     );
     const wrapper = screen.getByTestId("delegating-fence");
     expect(wrapper.textContent).toContain("{ delegated }");
+    const actions = wrapper.querySelector("[data-code-actions]")!;
+    expect(actions.parentElement!.className).toContain("overflow-visible");
+    expect(actions.parentElement!.className).not.toContain("overflow-hidden");
+    expect(
+      wrapper
+        .querySelector('button[aria-label="Wrap lines"]')
+        ?.getAttribute("data-compact-touch"),
+    ).toBe("code");
+    expect(
+      wrapper
+        .querySelector('button[aria-label="Copy code"]')
+        ?.getAttribute("data-compact-touch"),
+    ).toBe("code");
     expect(
       wrapper.querySelector('button[aria-label="Wrap lines"]'),
     ).not.toBeNull();

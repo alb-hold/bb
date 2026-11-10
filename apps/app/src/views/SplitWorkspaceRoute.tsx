@@ -1,4 +1,3 @@
-import { queueSplitDownload } from "@/lib/split-prefetch";
 import { pluginDetailKeyFromRoute } from "@/components/plugin/plugin-detail-key";
 import { useMemo } from "react";
 import { disableGlobalCursorStyles } from "react-resizable-panels";
@@ -6,13 +5,13 @@ import { matchPath, Navigate, useLocation } from "react-router-dom";
 import { useAtomValue } from "jotai";
 import { splitLayoutAtom } from "@/lib/split-layout/atoms";
 import { holdsPluginDetailPane } from "@/lib/split-layout/openPaneContentInSplit";
-import "@bb/shared-ui/icon-extended";
 import {
   APP_ROOT_ROUTE_PATH,
   LEGACY_PROJECT_COMPOSE_ROUTE_PATH,
 } from "@/lib/route-paths";
 import type { PaneContent } from "@/lib/split-layout";
 import { useRouteState } from "@/hooks/useRouteState";
+import { useThread } from "@/hooks/queries/thread-queries";
 import { LegacyProjectComposeRedirect } from "./LegacyProjectComposeRedirect";
 import { SplitThreadArea } from "./thread-detail/SplitThreadArea";
 import { paneContentForPathname } from "./thread-detail/splitThreadNavigation";
@@ -22,11 +21,19 @@ disableGlobalCursorStyles();
 
 const ROOT_COMPOSE_CONTENT = { kind: "new-thread" } as const;
 
-queueSplitDownload("markdown-html");
-
 export default function SplitWorkspaceRoute() {
   const location = useLocation();
-  const { projectId, threadId, isThreadView } = useRouteState();
+  const {
+    projectId: routeProjectId,
+    threadId,
+    isThreadView,
+    isProjectlessView,
+  } = useRouteState();
+  const { data: thread } = useThread(threadId ?? "", { enabled: false });
+  const projectId =
+    isProjectlessView && thread?.id === threadId
+      ? (thread?.projectId ?? routeProjectId)
+      : routeProjectId;
   const legacyProjectMatch = matchPath(
     LEGACY_PROJECT_COMPOSE_ROUTE_PATH,
     location.pathname,

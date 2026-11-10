@@ -502,6 +502,8 @@ export interface PluginThreadListProps {
   activeProjectId: string | null;
   /** True on phone-width viewports and coarse pointers. */
   isCompactViewport: boolean;
+  /** Whether the host currently shows the list; false in a closed drawer or collapsed sidebar. Older hosts omit this, so visibility is unknown. */
+  experimental_isVisible?: boolean;
   /**
    * Call after the user opens a thread. It closes the mobile sidebar drawer.
    */
@@ -1271,9 +1273,13 @@ export interface ExperimentalSidebarFooter {
  * one. "queued-failed" and "queued-waiting" are reported, with the same
  * precedence bb's list uses (a failed send outranks the unread dot; a waiting
  * message ranks just below it).
+ * "check-terminal" means a pending plain native-terminal signal, not a
+ * confirmed question. Its accessible label is "Check terminal". A real
+ * pending approval or question keeps "needs-input" or "waiting-for-input".
  */
 export type PluginSidebarThreadIndicator =
   | "needs-input"
+  | "check-terminal"
   | "working"
   | "woke"
   | "done-unread"
@@ -1358,6 +1364,7 @@ export interface PluginSidebarThread {
    * unknown value as `status`.
    */
   runtimeStatus: ThreadRuntimeDisplayStatus;
+  experimental_nativeTerminal: boolean;
   experimental_nativeActivity?: NativeActivityDiagnostic;
   /**
    * Whether a message is queued behind the running turn ("waiting") or a
@@ -2702,6 +2709,7 @@ export interface ExperimentalComposerAction {
 
 /** Submit-button state and actions the host computes for a composer. */
 export interface ExperimentalComposerSubmission {
+  experimental_onBlockedSubmit?(): void;
   isSubmitting?: boolean;
   disabled?: boolean;
   disabledReason?: string;
@@ -2937,6 +2945,17 @@ export interface ExperimentalComposerInput {
   onEscape?(): void;
   placeholder?: string;
   autoFocus?: boolean;
+  experimental_startupHandoff?: {
+    attach(
+      accept: (snapshot: {
+        draft: ComposerDraft;
+        anchor: number;
+        head: number;
+        focused: boolean;
+        scrollTop: number;
+      }) => void,
+    ): () => void;
+  };
   /** bb's model, reasoning effort and mode controls for this composer. */
   executionControls?: ReactNode;
   /** The "Handoff to new thread" banner, while a handoff is active. */
@@ -5472,6 +5491,18 @@ export interface ExperimentalServers {
  * shims the specifier to that object on `globalThis.__bbPluginRuntime`.
  */
 export interface PluginSdkApp {
+  internal_DO_NOT_USE_loadGitDiffParser(): Promise<unknown>;
+  internal_DO_NOT_USE_loadComposerPasteParser(): Promise<{
+    findPastedThreadLinks(args: {
+      text: string;
+      parseLink: (url: string) => ExperimentalComposerThreadLinkTarget | null;
+    }): (ExperimentalComposerThreadLinkTarget & {
+      from: number;
+      to: number;
+      text: string;
+    })[];
+  } | null>;
+
   /** List URL schemes approved for this BB site in the viewing client's localStorage. Core Settings uses the same implementation. */
   experimental_getApplicationLinkApprovals(): Promise<string[]>;
   /** Revoke one scheme, or all with null, for this BB site on this client. Does not grant permission. */

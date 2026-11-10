@@ -1,9 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { loadTerminalWebglRenderer } from "./terminal-webgl-renderer";
+import {
+  disposeTerminalWithRenderer,
+  loadTerminalWebglRenderer,
+} from "./terminal-webgl-renderer";
 
 function setupRenderer({ visible = true, failLoads = false } = {}) {
   vi.useFakeTimers();
   const root: Pick<HTMLElement, "dataset"> = { dataset: {} };
+  const onRendererChange = vi.fn();
   const addons: Array<{
     activate: ReturnType<typeof vi.fn>;
     dispose: ReturnType<typeof vi.fn>;
@@ -34,8 +38,9 @@ function setupRenderer({ visible = true, failLoads = false } = {}) {
   const renderer = loadTerminalWebglRenderer(terminal, createAddon, {
     root,
     visible,
+    onRendererChange,
   });
-  return { root, addons, createAddon, terminal, renderer };
+  return { root, addons, createAddon, terminal, renderer, onRendererChange };
 }
 
 afterEach(() => {
@@ -44,8 +49,44 @@ afterEach(() => {
 });
 
 describe("terminal WebGL lifecycle", () => {
+  it("tears down the terminal before an addon can install a fallback renderer", () => {
+    let terminalDisposed = false;
+    const installFallback = vi.fn();
+    const renderer = {
+      dispose: vi.fn(() => {
+        if (!terminalDisposed) installFallback();
+      }),
+    };
+    disposeTerminalWithRenderer(
+      {
+        dispose: () => {
+          terminalDisposed = true;
+        },
+      },
+      renderer,
+    );
+    expect(renderer.dispose).toHaveBeenCalledOnce();
+    expect(installFallback).not.toHaveBeenCalled();
+  });
+
+  it("releases renderer resources even if terminal teardown fails", () => {
+    const renderer = { dispose: vi.fn() };
+    expect(() =>
+      disposeTerminalWithRenderer(
+        {
+          dispose: () => {
+            throw new Error("teardown failed");
+          },
+        },
+        renderer,
+      ),
+    ).toThrow("teardown failed");
+    expect(renderer.dispose).toHaveBeenCalledOnce();
+  });
+
   it("recreates a lost context and reports the active renderer", () => {
-    const { addons, renderer, root, terminal } = setupRenderer();
+    const { addons, renderer, root, terminal, onRendererChange } =
+      setupRenderer();
     expect(root.dataset.terminalRenderer).toBe("webgl");
 
     addons[0]!.lose();
@@ -58,6 +99,12 @@ describe("terminal WebGL lifecycle", () => {
     expect(terminal.loadAddon).toHaveBeenCalledTimes(2);
     expect(root.dataset.terminalRenderer).toBe("webgl");
     expect(renderer.renderer).toBe("webgl");
+    expect(onRendererChange.mock.calls).toEqual([
+      ["dom"],
+      ["webgl"],
+      ["dom"],
+      ["webgl"],
+    ]);
     renderer.dispose();
   });
 
@@ -173,4 +220,23 @@ describe("terminal WebGL lifecycle", () => {
     expect(root.dataset.terminalRenderer).toBe("dom");
     expect(addons[1]!.dispose).toHaveBeenCalledOnce();
   });
+});
+
+it("distinguishes an unattempted hidden renderer from a completed DOM fallback", () => {
+  const { renderer, terminal, createAddon, onRendererChange } = setupRenderer({
+    visible: false,
+    failLoads: true,
+  });
+  expect(renderer.initialAttemptComplete).toBe(false);
+  expect(createAddon).not.toHaveBeenCalled();
+  let completedOnFailure = false;
+  onRendererChange.mockImplementation(() => {
+    completedOnFailure = renderer.initialAttemptComplete;
+  });
+  renderer.setVisible(true);
+  expect(terminal.loadAddon).toHaveBeenCalledOnce();
+  expect(renderer.renderer).toBe("dom");
+  expect(renderer.initialAttemptComplete).toBe(true);
+  expect(completedOnFailure).toBe(true);
+  renderer.dispose();
 });

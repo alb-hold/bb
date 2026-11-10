@@ -4,17 +4,11 @@ import { Icon } from "@bb/shared-ui/icon";
 import { TooltipProvider } from "@bb/shared-ui/tooltip";
 import { cn } from "@bb/shared-ui/lib/utils";
 import type { VoiceInputTextareaProps } from "@bb/shared-ui/voice-input-textarea";
-import { useVoiceInput } from "@/hooks/useVoiceInput";
-import { transcribeVoiceInput } from "@/lib/api";
+import { usePromptVoice } from "./usePromptVoice";
+import type { PromptBoxHandle } from "./ComposerBox";
 import { WaveformVisualizer } from "./WaveformVisualizer";
 import { VoiceInputButton } from "./VoiceInputButton";
 import { FailedVoiceRecordings } from "./FailedVoiceRecordings";
-
-function appendTranscript(value: string, transcript: string): string {
-  return value && !/\s$/.test(value)
-    ? `${value} ${transcript}`
-    : `${value}${transcript}`;
-}
 
 export function VoiceInputTextarea({
   value,
@@ -37,22 +31,29 @@ export function VoiceInputTextarea({
     };
   }, []);
 
-  const voice = useVoiceInput({
-    recordingKey: null,
-    onTranscribe: async ({ file, signal }) => {
-      if (!mountedRef.current)
-        throw new DOMException("Cancelled", "AbortError");
-      const result = await transcribeVoiceInput(file, undefined, signal);
-      if (!mountedRef.current)
-        throw new DOMException("Cancelled", "AbortError");
-      return result.text;
+  const promptBoxRef = useRef<PromptBoxHandle | null>(null);
+  const deferredVoice = usePromptVoice(
+    promptBoxRef,
+    {
+      getCurrent: () => ({
+        text: latestRef.current.value,
+        mentions: [],
+        attachments: [],
+      }),
+      setDraft: (next) => {
+        if (mountedRef.current) latestRef.current.onValueChange(next.text);
+      },
     },
-    onTranscript: (transcript) => {
-      if (!mountedRef.current) return;
-      const latest = latestRef.current;
-      latest.onValueChange(appendTranscript(latest.value, transcript));
-    },
-  });
+    null,
+  );
+  const voice = {
+    ...deferredVoice,
+    isListening:
+      deferredVoice.state === "recording" ||
+      deferredVoice.state === "transcribing",
+    isRecording: deferredVoice.state === "recording",
+    isProcessing: deferredVoice.state === "transcribing",
+  };
 
   useEffect(() => {
     latestRef.current.onVoiceInputActiveChange?.(voice.isListening);
@@ -60,6 +61,7 @@ export function VoiceInputTextarea({
 
   return (
     <div className="relative">
+      {voice.runtime}
       {voice.failedRecordings.length > 0 ? (
         <FailedVoiceRecordings
           recordings={voice.failedRecordings}
@@ -119,7 +121,7 @@ export function VoiceInputTextarea({
                 }
                 className="size-8 rounded-md p-0 max-md:pointer-coarse:size-10"
                 disabled={disabled || voice.isProcessing}
-                onClick={() => voice.stop("insert")}
+                onClick={() => voice.stop()}
               >
                 <Icon
                   name={voice.isProcessing ? "Spinner" : "Square"}

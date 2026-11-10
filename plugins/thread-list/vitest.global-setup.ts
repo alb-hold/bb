@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { existsSync, globSync } from "node:fs";
-import { readFile } from "node:fs/promises";
-import { homedir } from "node:os";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join, parse } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -35,21 +35,27 @@ function findChromium(): string | null {
 }
 
 async function warmUpChromium(chromiumPath: string): Promise<void> {
-  await execFileAsync(
-    chromiumPath,
-    [
-      "--headless",
-      "--no-sandbox",
-      "--disable-gpu",
-      "--disable-dev-shm-usage",
-      "--disable-extensions",
-      "--disable-background-networking",
-      "--no-first-run",
-      "--dump-dom",
-      "about:blank",
-    ],
-    { timeout: 120_000 },
-  );
+  const dir = await mkdtemp(join(tmpdir(), "bb-chromium-warmup-"));
+  try {
+    await execFileAsync(
+      chromiumPath,
+      [
+        "--headless",
+        `--user-data-dir=${join(dir, "profile")}`,
+        "--no-sandbox",
+        "--disable-gpu",
+        "--disable-dev-shm-usage",
+        "--disable-extensions",
+        "--disable-background-networking",
+        "--no-first-run",
+        "--dump-dom",
+        "about:blank",
+      ],
+      { timeout: 120_000 },
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 }
 
 function insideMonorepo(from: string): boolean {

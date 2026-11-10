@@ -212,3 +212,7 @@
     content: var(--promptbox-container-compact-placeholder);
   }
 }
+
+[data-compact-empty-editor] {
+  min-height: 44px !important;
+}

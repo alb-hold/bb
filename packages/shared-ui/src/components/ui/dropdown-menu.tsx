@@ -16,6 +16,7 @@ import {
 import {
   blurActiveKeyboardInputBeforeOverlayOpen,
   getOverlayTriggerClassName,
+  useOverlayTriggerModality,
   isLastInputKeyboard,
   preventOverlayTriggerSelection,
 } from "./overlay-trigger.js";
@@ -63,10 +64,8 @@ function sharedResponsiveMenuContext(): React.Context<ResponsiveOverlayContextVa
   return context;
 }
 
-const ResponsiveMenuContext = sharedResponsiveMenuContext();
-
 function useResponsiveMenu() {
-  return React.useContext(ResponsiveMenuContext);
+  return React.useContext(sharedResponsiveMenuContext());
 }
 
 function DropdownMenu({
@@ -76,6 +75,7 @@ function DropdownMenu({
   defaultOpen,
   ...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.Root>) {
+  const ResponsiveMenuContext = sharedResponsiveMenuContext();
   const ctx = useResponsiveRoot(
     controlledOpen,
     controlledOnChange,
@@ -107,6 +107,7 @@ const DropdownMenuTrigger = React.forwardRef<
   HTMLButtonElement,
   React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.Trigger>
 >(({ asChild, children, className, ...props }, ref) => {
+  useOverlayTriggerModality();
   const { isCompactViewport, open, onOpenChange } = useResponsiveMenu();
   const anchorRef = useCloseWhenAnchorDetaches(
     ref,

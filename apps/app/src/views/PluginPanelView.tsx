@@ -1,4 +1,4 @@
-import { PageShell } from "@/components/ui/page-shell.js";
+import { StaticPageShell as PageShell } from "@/components/ui/page-shell-static.js";
 import { EmptyStatePanel } from "@bb/shared-ui/empty-state";
 import { PluginSlotMount } from "@/components/plugin/PluginSlotMount";
 import { usePluginFrontendsSettled } from "@/lib/plugin-frontend-boot-state";

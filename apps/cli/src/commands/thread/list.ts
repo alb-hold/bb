@@ -232,6 +232,7 @@ function activityAwareListIndicator(
   wokeThreadIds: ReadonlySet<string>,
 ): ThreadListEntry["listIndicator"] {
   if (thread.listIndicator === "needs-input") return thread.listIndicator;
+  if (thread.listIndicator === "check-terminal") return thread.listIndicator;
   if (thread.listIndicator === "working") {
     return thread.runtime !== undefined &&
       isNativeActivityUnconfirmed(thread.runtime) &&
@@ -289,6 +290,7 @@ export function formatThreadListIndicator(
   wokeThreadIds: ReadonlySet<string>,
 ): string {
   if (thread.listIndicator === "needs-input") return "Needs input";
+  if (thread.listIndicator === "check-terminal") return "Check terminal";
   if (thread.listIndicator === "working") {
     const hasIndependentActivity = thread.activity
       ? hasIndependentWorkingActivity({ activity: thread.activity })

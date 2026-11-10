@@ -1,3 +1,5 @@
+import { RetainedTerminalViewsProvider } from "@/components/thread/terminal/RetainedTerminalViews";
+import { focusOpenThreadTerminal } from "@/lib/open-thread-terminal-focus";
 import { useCorePageTitle } from "./core-page-title";
 import { type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import {
@@ -37,7 +39,8 @@ import {
 } from "@/components/thread/ThreadTitleMentions";
 import { CommandPalette } from "@/components/commands/CommandPalette";
 import { NotificationCenter } from "@/components/notifications/NotificationCenter";
-import { DeviceHandoffSheet } from "@/components/device-handoff/DeviceHandoffSheet";
+import { defineSplit } from "@/lib/define-split";
+
 import { useDeviceHandoffQueue } from "@/components/device-handoff/useDeviceHandoffQueue";
 import { useActiveDeviceHandoffTerminal } from "@/components/device-handoff/device-handoff-view";
 import {
@@ -146,6 +149,34 @@ import { useSetRootComposeProjectId } from "@/lib/root-compose-selection";
 import { BackToAppCommandHandler } from "./BackToAppCommandHandler";
 import { HistoryCommandHandlers } from "./HistoryCommandHandlers";
 import { TerminalAttentionCommandHandler } from "./TerminalAttentionCommandHandler";
+
+const DeviceHandoffSheet = defineSplit<
+  Parameters<
+    typeof import("@/components/device-handoff/DeviceHandoffSheet").DeviceHandoffSheet
+  >[0]
+>({
+  id: "device-handoff-sheet",
+  load: () =>
+    import("@/components/device-handoff/DeviceHandoffSheet").then(
+      (module) => module.DeviceHandoffSheet,
+    ),
+  loading: () => null,
+  tier: "intent",
+  mountWhen: ({ signal }) => signal !== null,
+  keepMounted: true,
+});
+
+const compactHomeHeaderImport =
+  typeof window !== "undefined" &&
+  typeof window.matchMedia === "function" &&
+  window.matchMedia("(max-width: 767px)").matches
+    ? import("./CompactHomeHeader")
+    : null;
+const CompactHomeHeader = lazy(() =>
+  (compactHomeHeaderImport ?? import("./CompactHomeHeader")).then((module) => ({
+    default: module.CompactHomeHeader,
+  })),
+);
 
 const ProjectPathDialog = lazy(() =>
   import("@/components/dialogs/ProjectPathDialog").then((module) => ({
@@ -495,8 +526,14 @@ function AppLayoutContent({ children }: AppLayoutProps) {
   );
   const location = useLocation();
   useRedirectRetiredPluginPaths();
-  const { projectId, threadId, isThreadView, isArchivedView, isRootView } =
-    useRouteState();
+  const {
+    projectId,
+    threadId,
+    isThreadView,
+    isArchivedView,
+    isRootView,
+    isProjectlessView,
+  } = useRouteState();
   const focusedPageTitle = useAtomValue(focusedPageTitleAtom);
   const activeTerminalSessionId = useActiveDeviceHandoffTerminal();
   const deviceHandoffQueue = useDeviceHandoffQueue(
@@ -538,6 +575,17 @@ function AppLayoutContent({ children }: AppLayoutProps) {
   useEffect(
     () =>
       wsManager.onThreadOpen((signal) => {
+        if (
+          signal.terminalAction?.action === "focus" &&
+          signal.split === "replace" &&
+          signal.file === null &&
+          signal.terminalLayoutAction === undefined &&
+          focusOpenThreadTerminal(
+            signal.threadId,
+            signal.terminalAction.terminalId,
+          )
+        )
+          return;
         const route = getThreadRoutePath({
           projectId: signal.projectId,
           threadId: signal.threadId,
@@ -628,9 +676,20 @@ function AppLayoutContent({ children }: AppLayoutProps) {
   });
   const hasThreadDetailBootstrapSettled =
     threadDetailBootstrapQuery.isSuccess || threadDetailBootstrapQuery.isError;
-  const resolvedThreadProjectId = threadDetailBootstrapQuery.data?.projectId;
+  const { data: thread } = useThread(threadId ?? "", {
+    enabled:
+      Boolean(threadId) && (!isThreadView || hasThreadDetailBootstrapSettled),
+    refetchOnMount:
+      isThreadView &&
+      didThreadDetailBootstrapRefreshAfterMount(threadDetailBootstrapQuery)
+        ? false
+        : "always",
+  });
+  const resolvedThreadProjectId =
+    thread?.projectId ?? threadDetailBootstrapQuery.data?.projectId;
   const canonicalThreadRoutePath =
     isThreadView &&
+    isProjectlessView &&
     projectId !== undefined &&
     threadId !== undefined &&
     resolvedThreadProjectId !== undefined &&
@@ -663,15 +722,6 @@ function AppLayoutContent({ children }: AppLayoutProps) {
     : null;
   const projectName = projectId ? project?.name : undefined;
   const projectLabel = projectName ?? (projectId ? projectId : undefined);
-  const { data: thread } = useThread(threadId ?? "", {
-    enabled:
-      Boolean(threadId) && (!isThreadView || hasThreadDetailBootstrapSettled),
-    refetchOnMount:
-      isThreadView &&
-      didThreadDetailBootstrapRefreshAfterMount(threadDetailBootstrapQuery)
-        ? false
-        : "always",
-  });
   const threadDisplayTitle = thread
     ? resolveThreadTitleDisplayText(
         getThreadDisplayTitle(thread),
@@ -891,6 +941,11 @@ function AppLayoutContent({ children }: AppLayoutProps) {
                     data-app-content-shell=""
                     className="relative flex h-full min-h-0 min-w-0 w-full flex-col pt-[env(safe-area-inset-top)] pr-[env(safe-area-inset-right)] pb-(--bb-content-bottom-inset) pl-[env(safe-area-inset-left)] [--bb-content-bottom-inset:var(--bb-safe-area-bottom,env(safe-area-inset-bottom))]"
                   >
+                    {isRootView && isCompactViewport ? (
+                      <Suspense fallback={null}>
+                        <CompactHomeHeader title={project?.name ?? "Home"} />
+                      </Suspense>
+                    ) : null}
                     {showHeader ? (
                       <AppHeader
                         resourceSection={
@@ -909,7 +964,11 @@ function AppLayoutContent({ children }: AppLayoutProps) {
                       />
                     ) : null}
                     <main className="flex min-h-0 flex-1 flex-col p-4 md:p-5">
-                      {children}
+                      <RetainedTerminalViewsProvider
+                        projectId={resolvedThreadProjectId ?? projectId}
+                      >
+                        {children}
+                      </RetainedTerminalViewsProvider>
                     </main>
                   </div>
                 </SidebarInset>

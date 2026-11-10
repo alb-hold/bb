@@ -18,7 +18,10 @@ export type ChildTerminalBroadcastMessage = Extract<
 >;
 
 export type ChildTerminalReplyMessage =
-  | Extract<TerminalServerMessage, { type: "features" | "resize-applied" }>
+  | Extract<
+      TerminalServerMessage,
+      { type: "features" | "resize-applied" | "error" }
+    >
   | Extract<TerminalServerMessage, { type: "session-updated" }>;
 
 export interface ChildTerminalSocketSink {
@@ -74,6 +77,10 @@ export class ChildTerminalSocket {
       case "resize-applied":
         this.sink.reply(this.attachId, message);
         return;
+      case "error":
+        this.flushReplay();
+        this.sink.reply(this.attachId, message);
+        return;
       case "attached":
         this.collecting = {
           chunks: [],
@@ -86,6 +93,12 @@ export class ChildTerminalSocket {
         };
         queueMicrotask(() => this.flushReplay());
         return;
+      case "output-batch":
+        for (const chunk of message.chunks) {
+          if (this.collecting !== null) this.collecting.chunks.push(chunk);
+          else this.sink.relayOutput(this.terminalId, chunk);
+        }
+        return;
       case "output":
         if (this.collecting !== null) {
           this.collecting.chunks.push(message.chunk);
@@ -94,15 +107,13 @@ export class ChildTerminalSocket {
         this.sink.relayOutput(this.terminalId, message.chunk);
         return;
       case "exited":
-      case "error":
         if (this.collecting !== null) {
           this.collecting.trailing.push(message);
           return;
         }
         this.sink.broadcast(this.terminalId, message, data.length);
         return;
-      case "session-updated":
-      {
+      case "session-updated": {
         const resizeSeq = message.resizeSeq;
         if (typeof resizeSeq === "number") {
           this.sink.reply(this.attachId, {

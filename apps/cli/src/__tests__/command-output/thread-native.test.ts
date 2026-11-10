@@ -13,6 +13,7 @@ const VIEW: NativeTerminalThread = {
   threadId: "thr_chat",
   providerId: "claude-code",
   displayName: "Claude Code",
+  model: "claude-opus-5-5",
   nativeSessionId: "2e624c50-68af-4689-9410-06caa371eb8a",
   canReturnToChat: true,
   terminal: {
@@ -59,6 +60,14 @@ describe("bb thread native --convert / --chat", () => {
     expect(collectLogLines(vi.mocked(console.log)).join("\n")).toContain(
       "term_native",
     );
+  });
+
+  it("includes the stored model in native JSON output", async () => {
+    stubServerApi({
+      "v1.threads.:id.native-terminal.mode.$post": vi.fn(async () => VIEW),
+    });
+    await runCommand(["thread", "native", "thr_chat", "--convert", "--json"], register);
+    expect(JSON.parse(collectLogLines(vi.mocked(console.log)).join("\n"))).toEqual(VIEW);
   });
 
   it("moves a converted thread back to chat", async () => {

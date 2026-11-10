@@ -1,6 +1,10 @@
 import {
-  createContext,
-  useContext,
+  ThreadContextCardPaneContext,
+  useThreadContextCardPaneState,
+  type ThreadContextCardPaneState,
+} from "./thread-context-card-context";
+export { useThreadContextKind } from "./thread-context-card-context";
+import {
   useLayoutEffect,
   useMemo,
   useRef,
@@ -9,10 +13,7 @@ import {
   type ReactNode,
 } from "react";
 import { useAtom } from "jotai";
-import type {
-  ExperimentalThreadContextCardProps,
-  ExperimentalThreadContextKind,
-} from "@get-bb/plugin-sdk";
+import type { ExperimentalThreadContextCardProps } from "@get-bb/plugin-sdk";
 import { Button } from "@bb/shared-ui/button";
 import { CHROME_SUBTLE_ICON_BUTTON_FOREGROUND_CLASS } from "@bb/shared-ui/chrome-style-tokens";
 import { Icon } from "@bb/shared-ui/icon";
@@ -76,23 +77,6 @@ export function resolveThreadContextCardLayout(
 }
 
 const pinnedAtom = createSyncedPreferenceAtom("threadContextCard.pinned");
-
-interface ThreadContextCardPaneState {
-  props: ExperimentalThreadContextCardProps;
-  rows: readonly ThreadContextCardRowEntry[];
-  sections: readonly ThreadContextCardSectionEntry[];
-  layout: ThreadContextCardLayout;
-  setLayout(layout: ThreadContextCardLayout): void;
-  popoverOpen: boolean;
-  setPopoverOpen(open: boolean): void;
-  cardHasContent: boolean;
-  setCardHasContent(hasContent: boolean): void;
-  cardRevealed: boolean;
-  setCardRevealedForThreadId(threadId: string | null): void;
-}
-
-const ThreadContextCardPaneContext =
-  createContext<ThreadContextCardPaneState | null>(null);
 
 function sortByPlacement<Item>(
   items: readonly Item[],
@@ -208,17 +192,6 @@ export function WithoutThreadContextCard({
   );
 }
 
-function usePaneState(): ThreadContextCardPaneState | null {
-  const state = useContext(ThreadContextCardPaneContext);
-  return state !== null && state.rows.length + state.sections.length > 0
-    ? state
-    : null;
-}
-
-export function useThreadContextKind(): ExperimentalThreadContextKind {
-  return usePaneState() === null ? "banner" : "card";
-}
-
 function isCardShown(
   state: ThreadContextCardPaneState,
   pinned: boolean,
@@ -227,7 +200,7 @@ function isCardShown(
 }
 
 export function useThreadContextCardContentInset(): number {
-  const state = usePaneState();
+  const state = useThreadContextCardPaneState();
   const [pinned] = useAtom(pinnedAtom);
   return state !== null &&
     state.layout === "shift" &&
@@ -354,7 +327,7 @@ const CARD_CLASS =
   "overflow-y-auto overflow-x-hidden rounded-md border border-border bg-popover p-2 text-popover-foreground";
 
 export function ThreadContextCard() {
-  const state = usePaneState();
+  const state = useThreadContextCardPaneState();
   const [pinned] = useAtom(pinnedAtom);
   const probeRef = useRef<HTMLSpanElement>(null);
   const setLayout = state?.setLayout;
@@ -404,7 +377,7 @@ const HEADER_BUTTON_CLASS = cn(
 );
 
 export function ThreadContextCardHeaderButton() {
-  const state = usePaneState();
+  const state = useThreadContextCardPaneState();
   const [pinned, setPinned] = useAtom(pinnedAtom);
   if (state === null) return null;
   if (state.layout !== "overlay") {

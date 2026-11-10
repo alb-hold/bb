@@ -166,10 +166,34 @@
     "1589.6), so boot plus ThreadPage fell from 3203.9 to 3160.2 KB. Both",
     "boot caps rose to the measured size plus under 1 KB: to 1,610,000 raw /",
     "394,500 Brotli bytes. Code that moved between the entry chunk and the",
-    "thread route in the sync was not individually attributed."
+    "thread route in the sync was not individually attributed.",
+    "",
+    "On 2026-11-05 PR 426 round 7 measured the boot payload at 1,609,919 raw",
+    "bytes, 276 over the cap this PR had lowered to 1,609,643. The growth is",
+    "the check-terminal indicator: its list-indicator branch, the favicon",
+    "dot check and the child-banner filter. The raw cap returns to the",
+    "1,610,000 set by the 0.48.0 sync; the Brotli cap stays lowered.",
+    "",
+    "On 2026-11-05 PR 426 round 8 added the phone home scroll-edge cue (one",
+    "scroll listener toggling a data attribute; the mask rule lives in app.css).",
+    "Raw boot stayed at 1,609,919 bytes, but Brotli measured about 394,430,",
+    "66 over the lowered cap. The Brotli cap returns to the 394,500 set by the",
+    "0.48.0 sync; neither cap is above the base.",
+    "",
+    "On 2026-11-10 PR 426 ran the full CI for the first time, on its merge",
+    "with ours 4781b00a. Boot measured 1,635,347 raw and 405,071 Brotli bytes,",
+    "over the 1,579,000 / 390,000 caps this PR had lowered on 2026-11-06 and",
+    "also over the 1,610,000 / 394,500 base set by the 0.48.0 sync (ours",
+    "measures about 1,608,000 raw / 394,000 Brotli). The growth landed",
+    "after 2026-11-06, alongside the terminal-first startup work (native",
+    "terminal replay started with the initial thread load); it was not",
+    "attributed commit by commit. The owner asked that day to ship the",
+    "overhaul as it stands and keep polishing afterwards, so the caps move",
+    "to 1,636,000 / 405,500: above the base, as a ceiling for the",
+    "follow-up that brings boot back under 1,610,000 / 394,500."
   ],
-  "maxBootBytes": 1610000,
-  "maxBootBrotliBytes": 394500,
+  "maxBootBytes": 1636000,
+  "maxBootBrotliBytes": 405500,
   "forbiddenBootPackages": [
     "@dnd-kit/accessibility",
     "@dnd-kit/core",
@@ -204,16 +228,60 @@
     "sonner"
   ],
   "splitBoundaries": {
-    "src/components/settings/SettingsSidebar.tsx": ["boot"],
-    "src/components/dialogs/RemotePathBrowser.tsx": ["boot"],
-    "src/lib/plugin-sdk-hooks.ts": ["boot"],
-    "src/lib/plugin-sidebar-hooks.ts": ["boot"],
+    "../../packages/plugin-build/src/generated/zod-runtime.generated.ts": [
+      "boot"
+    ],
+    "src/lib/plugin-radix-runtime.ts": [
+      "boot"
+    ],
+    "../../plugins/composer/src/mentions/pasted-thread-links.ts": [
+      "boot",
+      "ThreadPage",
+      "NewThreadPage",
+      "PluginFrontend"
+    ],
+    "src/components/dialogs/ThreadDeleteDialog.tsx": [
+      "boot"
+    ],
+    "src/components/notifications/NotificationCenterView.tsx": [
+      "boot"
+    ],
+    "src/components/device-handoff/DeviceHandoffSheet.tsx": [
+      "boot"
+    ],
+    "src/components/dialogs/ProviderCliInstallLogDialog.tsx": [
+      "boot"
+    ],
+    "src/views/AuthCallbackView.tsx": [
+      "boot"
+    ],
+    "src/components/tools/ResourceSidebar.tsx": [
+      "boot"
+    ],
+    "src/components/settings/SettingsSidebar.tsx": [
+      "boot"
+    ],
+    "src/components/dialogs/RemotePathBrowser.tsx": [
+      "boot",
+      "ThreadPage",
+      "NewThreadPage"
+    ],
+    "src/lib/plugin-sdk-hooks.ts": [
+      "boot"
+    ],
+    "src/lib/plugin-sidebar-hooks.ts": [
+      "boot"
+    ],
     "src/components/promptbox/MicrophonePreferences.tsx": [
       "boot",
       "ThreadPage",
       "NewThreadPage"
     ],
-    "src/components/code/BbDiff.tsx": ["boot", "ThreadPage", "NewThreadPage"],
+    "src/components/code/BbDiff.tsx": [
+      "boot",
+      "ThreadPage",
+      "NewThreadPage"
+    ],
     "src/components/code/BbSourceCode.tsx": [
       "boot",
       "ThreadPage",
@@ -269,14 +337,13 @@
       "ThreadPage",
       "NewThreadPage"
     ],
-    "src/lib/themes/conductor.ts": ["boot"],
-    "src/lib/themes/conductor-black.ts": ["boot"],
-    "src/components/dialogs/ProjectPathDialog.tsx": [
-      "boot",
-      "ThreadPage",
-      "NewThreadPage"
+    "src/lib/themes/conductor.ts": [
+      "boot"
     ],
-    "src/components/dialogs/RemotePathBrowser.tsx": [
+    "src/lib/themes/conductor-black.ts": [
+      "boot"
+    ],
+    "src/components/dialogs/ProjectPathDialog.tsx": [
       "boot",
       "ThreadPage",
       "NewThreadPage"
@@ -323,7 +390,101 @@
       "NewThreadPage",
       "PluginFrontend"
     ],
-    "src/views/RootComposeView.tsx": ["boot", "ThreadPage"]
+    "src/views/RootComposeView.tsx": [
+      "boot",
+      "ThreadPage"
+    ],
+    "src/views/RootComposePanelTabContent.tsx": [
+      "boot",
+      "NewThreadPage",
+      "PluginFrontend"
+    ],
+    "src/components/thread/ThreadMenuItems.tsx": [
+      "boot",
+      "NewThreadPage",
+      "PluginFrontend",
+      "ThreadPage"
+    ],
+    "src/components/pickers/OptionPickerItems.tsx": [
+      "boot",
+      "NewThreadPage",
+      "PluginFrontend",
+      "ThreadPage"
+    ],
+    "src/components/plugin/PluginNewThreadComposer.tsx": [
+      "boot",
+      "PluginFrontend"
+    ],
+    "src/components/plugin/PluginProviderModelPicker.tsx": [
+      "boot",
+      "PluginFrontend"
+    ],
+    "src/components/plugin/PluginPermissionModePicker.tsx": [
+      "boot",
+      "PluginFrontend"
+    ],
+    "src/components/plugin/PluginBranchPicker.tsx": [
+      "boot",
+      "PluginFrontend"
+    ],
+    "src/components/ui/image-lightbox.tsx": [
+      "boot",
+      "PluginFrontend"
+    ],
+    "../../packages/shared-ui/src/components/ui/icon-extended.tsx": [
+      "boot",
+      "NewThreadPage",
+      "PluginFrontend",
+      "ThreadPage"
+    ],
+    "src/hooks/useVoiceInput.ts": [
+      "boot",
+      "NewThreadPage",
+      "PluginFrontend"
+    ],
+    "src/components/pickers/ModelReasoningPickerBody.tsx": [
+      "boot",
+      "NewThreadPage",
+      "PluginFrontend"
+    ],
+    "src/views/thread-detail/ThreadDetailPromptArea.tsx": [
+      "ThreadPage"
+    ],
+    "src/components/pickers/ModelReasoningPicker.tsx": [
+      "ThreadPage"
+    ],
+    "src/components/pickers/PermissionModePicker.tsx": [
+      "ThreadPage"
+    ],
+    "src/components/promptbox/usePromptVoice.tsx": [
+      "ThreadPage"
+    ],
+    "src/hooks/useThreadCreationOptions.ts": [
+      "ThreadPage"
+    ],
+    "src/hooks/usePromptHistoryEnabled.ts": [
+      "ThreadPage"
+    ],
+    "src/components/plugin/PluginThreadContextCard.tsx": [
+      "boot",
+      "NewThreadPage",
+      "PluginFrontend"
+    ],
+    "src/components/ui/page-shell.tsx": [
+      "boot",
+      "NewThreadPage",
+      "PluginFrontend"
+    ],
+    "src/components/ui/bottom-anchored-scroll-body.tsx": [
+      "boot",
+      "NewThreadPage",
+      "PluginFrontend"
+    ],
+    "src/components/ui/scroll-position-keeper.ts": [
+      "boot",
+      "NewThreadPage",
+      "PluginFrontend"
+    ]
   },
   "onDemandPackages": {
     "ansi-to-html": "src/components/thread/timeline/TerminalOutputBlock.tsx",
@@ -334,9 +495,14 @@
   },
   "routeClosures": {
     "PluginFrontend": {
-      "maxBytes": 676970,
-      "maxBrotliBytes": 211533,
+      "maxBytes": 255000,
+      "maxBrotliBytes": 92000,
       "forbiddenPackages": [
+        "@radix-ui/react-hover-card",
+        "@radix-ui/react-menubar",
+        "@radix-ui/react-navigation-menu",
+        "@radix-ui/react-select",
+        "vaul",
         "@pierre/diffs",
         "@pierre/theming",
         "@shikijs/core",
@@ -349,8 +515,8 @@
       ]
     },
     "ThreadPage": {
-      "maxBytes": 2428911,
-      "maxBrotliBytes": 699019,
+      "maxBytes": 1302000,
+      "maxBrotliBytes": 400000,
       "forbiddenPackages": [
         "@dnd-kit/accessibility",
         "@dnd-kit/core",
@@ -385,8 +551,8 @@
       ]
     },
     "NewThreadPage": {
-      "maxBytes": 1466040,
-      "maxBrotliBytes": 431498,
+      "maxBytes": 608000,
+      "maxBrotliBytes": 211000,
       "forbiddenPackages": [
         "@dnd-kit/accessibility",
         "@dnd-kit/core",
@@ -420,5 +586,16 @@
         "shiki"
       ]
     }
+  },
+  "forbiddenBootModules": [
+    "../../packages/server-contract/src/api/threads.ts",
+    "../../packages/server-contract/src/thread-timeline.ts",
+    "../../packages/domain/src/provider-event.ts",
+    "../../packages/domain/src/pending-interactions.ts"
+  ],
+  "forbiddenChunkPackages": {
+    "assets/boot-vendor": [
+      "@hugeicons/core-free-icons"
+    ]
   }
 }

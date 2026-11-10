@@ -191,29 +191,55 @@ export function SidebarWindowedItems({
     const promoteAll =
       !scrollElement || typeof IntersectionObserver === "undefined";
 
-    const promoted = new Set<string>();
-    if (promoteAll) {
-      for (const key of itemKeys) {
-        promoted.add(key);
-      }
-    } else if (scrollElement.clientHeight > 0) {
-      const viewport = scrollElement.getBoundingClientRect();
-      const viewportTop = viewport.top - WINDOW_VIEWPORT_MARGIN_PX;
-      const viewportBottom = viewport.bottom + WINDOW_VIEWPORT_MARGIN_PX;
-      for (const [key, element] of wrapperByKeyRef.current) {
-        if (realizedKeys.has(key) || !keySet.has(key)) {
-          continue;
-        }
-        const rect = element.getBoundingClientRect();
-        if (rect.bottom >= viewportTop && rect.top <= viewportBottom) {
+    const promoteVisible = () => {
+      const promoted = new Set<string>();
+      if (promoteAll) {
+        for (const key of itemKeys) {
           promoted.add(key);
         }
+      } else if (scrollElement) {
+        const viewport = scrollElement.getBoundingClientRect();
+        const viewportTop = viewport.top - WINDOW_VIEWPORT_MARGIN_PX;
+        const viewportBottom = viewport.bottom + WINDOW_VIEWPORT_MARGIN_PX;
+        for (const [key, element] of wrapperByKeyRef.current) {
+          if (realizedKeys.has(key) || !keySet.has(key)) {
+            continue;
+          }
+          const rect = element.getBoundingClientRect();
+          if (rect.bottom >= viewportTop && rect.top <= viewportBottom) {
+            promoted.add(key);
+          }
+        }
       }
-    }
 
-    setRealizedKeys((previous) =>
-      mergeRealizedKeys(previous, { add: promoted, retain: keySet }),
-    );
+      setRealizedKeys((previous) =>
+        mergeRealizedKeys(previous, { add: promoted, retain: keySet }),
+      );
+    };
+
+    let resizeObserver: ResizeObserver | null = null;
+    let frame: number | null = null;
+    if (promoteAll) {
+      promoteVisible();
+    } else if (scrollElement && typeof ResizeObserver !== "undefined") {
+      resizeObserver = new ResizeObserver((entries) => {
+        if (
+          entries.some(
+            (entry) =>
+              entry.target === scrollElement && entry.contentRect.height > 0,
+          )
+        ) {
+          promoteVisible();
+        }
+      });
+      resizeObserver.observe(scrollElement);
+    } else {
+      frame = requestAnimationFrame(() => {
+        if (!scrollElement || scrollElement.clientHeight > 0) {
+          promoteVisible();
+        }
+      });
+    }
 
     const observer = observerRef.current;
     if (observer) {
@@ -221,6 +247,10 @@ export function SidebarWindowedItems({
         observer.observe(element);
       }
     }
+    return () => {
+      resizeObserver?.disconnect();
+      if (frame !== null) cancelAnimationFrame(frame);
+    };
     // oxlint-disable-next-line react/exhaustive-deps
   }, [windowingEnabled, keySignature]);
 
@@ -234,10 +264,9 @@ export function SidebarWindowedItems({
     }
 
     let observer: IntersectionObserver | null = null;
-    let resizeObserver: ResizeObserver | null = null;
 
     const connect = () => {
-      if (observer || scrollElement.clientHeight === 0) {
+      if (observer) {
         return;
       }
       observer = new IntersectionObserver(
@@ -281,18 +310,11 @@ export function SidebarWindowedItems({
       for (const element of wrapperByKeyRef.current.values()) {
         observer.observe(element);
       }
-      resizeObserver?.disconnect();
-      resizeObserver = null;
     };
 
     connect();
-    if (!observer && typeof ResizeObserver !== "undefined") {
-      resizeObserver = new ResizeObserver(() => connect());
-      resizeObserver.observe(scrollElement);
-    }
 
     return () => {
-      resizeObserver?.disconnect();
       observerRef.current = null;
       observer?.disconnect();
     };

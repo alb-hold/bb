@@ -1064,8 +1064,10 @@ footer.
 
 The bundled Navigation plugin draws the navigation. Its default layout,
 `navigation/rail`, is a vertical rail on the left edge of the sidebar that holds Home (the last thread),
-the visible destinations (Plugins, Skills, plugin panels), More (hidden
-destinations and Customize navigation), and Settings at the bottom. New thread sits
+the host destinations (Plugins and Skills), More (hidden destinations and
+Customize navigation), and plugin panels after More on phones. On desktop,
+remembered plugin panels keep their positions before More; panels not yet seen
+appear after it. Settings stays at the bottom. New thread sits
 in the sidebar header and cannot be hidden from the rail. The list beside the rail swaps
 between the thread list, Plugins, Skills, and Settings; collapsing the sidebar
 leaves only the rail. On narrow windows and phones the rail sits inside the
@@ -1230,8 +1232,9 @@ bb thread-list prefs reset rowActions
 
 ### Sidebar footer
 
-The footer shows as many icons as fit the sidebar's width, followed by an
-always-available More menu. More lists hidden actions and actions that don't
+The footer shows host action icons, an always-available More menu, then plugin
+icons, fitting as many actions as the sidebar's width allows. Saved ordering
+applies within the host and plugin groups. More lists hidden actions and actions that don't
 fit, plus Customize footer and Hide footer. Hide footer moves every action into
 More, leaving only the More button; the same menu item then reads Show footer,
 which shows them again. Customize footer replaces the

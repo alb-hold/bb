@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
 
 import { defaultExperiments } from "@bb/domain";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { appQueryClient } from "@/lib/app-query-client";
 import { systemConfigQueryKey } from "@/hooks/queries/query-keys";
 import { ApplicationUrlDialog } from "@/components/ApplicationUrlDialog";
@@ -127,6 +129,61 @@ function requireElement(container: ParentNode, selector: string): Element {
 }
 
 describe("MarkdownPreview", () => {
+  it("keeps the first two code lines at the same minimum height and reserves a separate controls lane", () => {
+    const stylesheet = document.createElement("style");
+    stylesheet.textContent = readFileSync(
+      resolve("src/components/ui/markdown-code-highlight.css"),
+      "utf8",
+    );
+    document.head.append(stylesheet);
+    try {
+      expect(stylesheet.sheet?.cssRules.length).toBeGreaterThan(0);
+      const { container } = render(
+        <MarkdownPreview
+          content={"```sh\nPASS src/http/routes.test.ts\nsecond line\n```"}
+        />,
+      );
+      const lines = container.querySelectorAll(".sh__line");
+      expect(lines).toHaveLength(2);
+      expect(getComputedStyle(lines[0]!).minHeight).toBe(
+        getComputedStyle(lines[1]!).minHeight,
+      );
+      const viewport = container.querySelector("[data-code-card-content]")!;
+      expect(viewport.classList.contains("mr-44")).toBe(false);
+      expect(viewport.classList.contains("max-md:pointer-coarse:mr-0")).toBe(
+        false,
+      );
+      expect(viewport.classList.contains("overflow-x-auto")).toBe(true);
+    } finally {
+      stylesheet.remove();
+    }
+  });
+
+  it("keeps desktop controls beside the scroll viewport and phone controls in flow", () => {
+    const { container } = render(
+      <MarkdownPreview content={"```ts\nconst answer = 42;\n```"} />,
+    );
+    const actions = container.querySelector("[data-code-actions]")!;
+    const code = container.querySelector("[data-code-card] pre")!;
+    expect(actions.classList.contains("absolute")).toBe(false);
+    expect(actions.classList.contains("max-md:pointer-coarse:static")).toBe(
+      false,
+    );
+    expect(actions.classList.contains("w-full")).toBe(
+      true,
+    );
+    expect(code.classList.contains("overflow-x-auto")).toBe(true);
+    expect(actions.classList.contains("h-11")).toBe(true);
+    expect(actions.classList.contains("bg-surface-recessed-solid")).toBe(true);
+    expect(code.hasAttribute("data-code-card-content")).toBe(true);
+    expect(code.textContent).toContain("const answer = 42;");
+    expect(code.classList.contains("pr-28")).toBe(false);
+    expect(actions.textContent).toContain("ts");
+    expect(actions.querySelectorAll("[data-compact-touch=code]")).toHaveLength(
+      2,
+    );
+  });
+
   it("contains table breakouts to the markdown content width", () => {
     const { container } = render(
       <MarkdownPreview content={"| A |\n| - |\n| B |"} />,
@@ -313,21 +370,17 @@ describe("MarkdownPreview", () => {
     );
 
     const { container } = render(
-      <div
-        data-left="0"
-        data-width="390"
-        style={{ overflowX: "hidden" }}
-      >
+      <div data-left="0" data-width="390" style={{ overflowX: "hidden" }}>
         <MarkdownPreview content={"| A |\n| - |\n| B |"} />
       </div>,
     );
-    const breakout = container.querySelector("table")?.parentElement
-      ?.parentElement;
+    const breakout =
+      container.querySelector("table")?.parentElement?.parentElement;
     notifyResize();
 
-    expect(
-      breakout?.style.getPropertyValue("--md-table-breakout-max"),
-    ).toBe("319px");
+    expect(breakout?.style.getPropertyValue("--md-table-breakout-max")).toBe(
+      "319px",
+    );
   });
 
   it("skips height-only resize events for tables", () => {
@@ -372,6 +425,34 @@ describe("MarkdownPreview", () => {
 
     expect(container.querySelector("ol")?.getAttribute("start")).toBe("2");
   });
+
+  it.each([
+    ["", null],
+    ["ts", "ts"],
+    ["text", "text"],
+  ])(
+    "labels runner output only with the declared fence language %s",
+    (fence, label) => {
+      const { container } = render(
+        <MarkdownPreview
+          content={
+            "```" +
+            fence +
+            "\n ✓ tests/example.test.ts (3 tests)\n Test Files  1 passed\n```"
+          }
+        />,
+      );
+      expect(container.querySelector("pre code")?.textContent).toContain(
+        "1 passed",
+      );
+      expect(
+        container
+          .querySelector("pre")
+          ?.previousElementSibling?.querySelector("span")?.textContent || null,
+      ).toBe(label);
+      expect(screen.getByRole("button", { name: "Copy code" })).toBeDefined();
+    },
+  );
 
   it("HTML-escapes fenced code so it cannot inject markup", () => {
     const { container } = render(

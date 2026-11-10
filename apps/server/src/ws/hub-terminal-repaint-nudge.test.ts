@@ -82,6 +82,22 @@ function createRoom(): TwoClientRoom {
     send(data: string) {
       const message: unknown = JSON.parse(data);
       if (
+        typeof message === "object" &&
+        message !== null &&
+        "type" in message &&
+        message.type === "visibility" &&
+        "visible" in message &&
+        typeof message.visible === "boolean"
+      ) {
+        hub.recordTerminalClientVisibility(
+          TERMINAL_ID,
+          ownerSocket,
+          message.visible,
+          Date.now(),
+        );
+        return;
+      }
+      if (
         typeof message !== "object" ||
         message === null ||
         !("type" in message) ||
@@ -135,7 +151,10 @@ function createRoom(): TwoClientRoom {
         changed &&
         (reported.cols !== shared.cols || reported.rows !== shared.rows))
     ) {
-      emit({ type: "session-updated", session: session(shared.cols, shared.rows) });
+      emit({
+        type: "session-updated",
+        session: session(shared.cols, shared.rows),
+      });
     }
     if (source === ownerSocket && changed && seq !== undefined) {
       emit({
@@ -160,7 +179,10 @@ function createRoom(): TwoClientRoom {
       if (message.type !== "session-updated") {
         return;
       }
-      const reported = { cols: message.session.cols, rows: message.session.rows };
+      const reported = {
+        cols: message.session.cols,
+        rows: message.session.rows,
+      };
       if (!transport.consumeRepaintNudgeEcho(reported, message.resizeSeq)) {
         shared = reported.cols;
         track();
@@ -233,6 +255,25 @@ describe("repaint nudge with a second client on the same terminal", () => {
     vi.useRealTimers();
   });
 
+  it("releases a parked viewer's ownership and preserves a CLI owner's grid through an unchanged return", () => {
+    const room = createRoom();
+    room.connect();
+    room.transport.setParked(true);
+    room.peerResizes(90, 30, true);
+    room.transport.claimSize(true);
+    room.transport.sendResize(0, 0, true);
+    room.transport.requestRepaint();
+    room.advance(1500);
+    expect(room.ptySize()).toEqual({ cols: 90, rows: 30 });
+    room.transport.setParked(false);
+    room.transport.setVisible(true);
+    room.transport.sendResize(FITTED.cols, FITTED.rows);
+    room.advance(1500);
+    expect(room.ptySize()).toEqual({ cols: 90, rows: 30 });
+    expect(room.viewCols()).toBe(90);
+    room.transport.dispose();
+  });
+
   it("keeps the focused owner's size when a background peer is smaller", () => {
     const room = createRoom();
     room.start();
@@ -262,7 +303,10 @@ describe("repaint nudge with a second client on the same terminal", () => {
     expect(room.restoresSentByOwner()).toBe(1);
     room.advance(1000);
 
-    expect(room.ptySize()).toEqual({ cols: FITTED.cols - 1, rows: FITTED.rows });
+    expect(room.ptySize()).toEqual({
+      cols: FITTED.cols - 1,
+      rows: FITTED.rows,
+    });
     expect(room.viewCols()).toBe(FITTED.cols - 1);
     room.transport.dispose();
   });

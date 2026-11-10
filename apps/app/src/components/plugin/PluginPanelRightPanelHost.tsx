@@ -1,3 +1,4 @@
+import { usePanelToggle } from "@/components/secondary-panel/usePanelToggle";
 import { AppPanelTabsPublisher } from "@/lib/app-panel-tabs";
 import {
   useCallback,
@@ -521,14 +522,13 @@ export function PluginPanelRightPanelHost({
     openTab({ kind: "new-tab" });
     revealPanel();
   }, [openTab, revealPanel]);
-  const togglePanel = useCallback(() => {
-    if (isOpen) {
-      panelController.close();
-      return;
-    }
-    if (activeTab === null) openTab({ kind: "new-tab" });
-    revealPanel();
-  }, [activeTab, isOpen, openTab, panelController, revealPanel]);
+  const togglePanel = usePanelToggle({
+    isOpen,
+    hasActiveTab: activeTab !== null,
+    close: panelController.close,
+    openNewTab,
+    reveal: revealPanel,
+  });
 
   useAppCommandHandler("panel.toggle", () => {
     if (!isFocused || panel === null) return false;
@@ -936,6 +936,7 @@ export function PluginPanelRightPanelHost({
                     isSidebarFramed && MACOS_TITLE_BAR_TRAILING_TOGGLE_CLASS,
                   )}
                   aria-label={toggleLabel}
+                  data-compact-touch="header"
                   aria-pressed={isOpen}
                   onPointerEnter={preloadThreadSecondaryPanel}
                   onFocus={preloadThreadSecondaryPanel}

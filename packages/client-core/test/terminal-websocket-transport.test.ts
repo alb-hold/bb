@@ -1,3 +1,4 @@
+import { terminalClientMessageSchema } from "@bb/server-contract";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   TerminalServerMessage,
@@ -10,6 +11,7 @@ import {
 } from "../src/terminal/terminal-websocket-transport.js";
 
 class FakeTerminalBrowserSocket implements TerminalBrowserSocket {
+  initialSizeClaim?: { cols: number; rows: number };
   bufferedAmount: number | undefined = 0;
   closeCalls: Array<{ code?: number; reason?: string }> = [];
   onclose: ((event: CloseEvent) => void) | null = null;
@@ -138,6 +140,193 @@ afterEach(() => {
 });
 
 describe("TerminalWebSocketTransport", () => {
+  it("deduplicates a corrective fit made between adoption and buffered open delivery", () => {
+    vi.useFakeTimers();
+    const socket = new FakeTerminalBrowserSocket();
+    socket.initialSizeClaim = { cols: 45, rows: 38 };
+    socket.readyState = 1;
+    const { transport } = createHarness({ createSocket: () => socket });
+    transport.start();
+    transport.sendResize(46, 38, true);
+    transport.markLayoutSettled();
+    socket.open();
+    expect(socket.sent.map((payload) => JSON.parse(payload))).toEqual([
+      { type: "resize", cols: 46, rows: 38, claim: true },
+    ]);
+    transport.dispose();
+  });
+
+  it("seeds a socket-open cached claim after the connecting socket was adopted", () => {
+    vi.useFakeTimers();
+    const socket = new FakeTerminalBrowserSocket();
+    const { transport } = createHarness({ createSocket: () => socket });
+    transport.sendResize(45, 38, true);
+    transport.markLayoutSettled();
+    transport.start();
+    socket.initialSizeClaim = { cols: 45, rows: 38 };
+    socket.open();
+    expect(socket.sent.map((payload) => JSON.parse(payload))).toEqual([]);
+    transport.claimSize();
+    expect(socket.sent.map((payload) => JSON.parse(payload))).toEqual([
+      { type: "resize", cols: 45, rows: 38, claim: true },
+    ]);
+    transport.dispose();
+  });
+
+  it.each([false, true])(
+    "preserves explicit cached-grid reclaim queued before open: %s",
+    (explicit) => {
+      vi.useFakeTimers();
+      const socket = new FakeTerminalBrowserSocket();
+      socket.initialSizeClaim = { cols: 45, rows: 38 };
+      const { transport } = createHarness({ createSocket: () => socket });
+      transport.sendResize(45, 38, true);
+      if (explicit) transport.claimSize();
+      transport.markLayoutSettled();
+      transport.start();
+      socket.open();
+      expect(socket.sent.map((payload) => JSON.parse(payload))).toEqual(
+        explicit ? [{ type: "resize", cols: 45, rows: 38, claim: true }] : [],
+      );
+      transport.claimSize();
+      expect(socket.sent).toHaveLength(explicit ? 2 : 1);
+      transport.dispose();
+    },
+  );
+
+  it("sends one claimed grid through open, passive fits and restore hold release", () => {
+    vi.useFakeTimers();
+    const { transport, sockets } = createHarness();
+    transport.sendResize(45, 38);
+    transport.claimSize();
+    transport.start();
+    const socket = sockets[0]!;
+    socket.open();
+    transport.markLayoutSettled();
+    transport.sendResize(45, 38);
+    transport.markLayoutSettled();
+    vi.advanceTimersByTime(5_000);
+    expect(socket.sent.map((payload) => JSON.parse(payload))).toEqual([
+      { type: "resize", cols: 45, rows: 38, claim: true },
+    ]);
+    transport.sendResize(46, 38);
+    transport.sendResize(46, 38);
+    expect(socket.sent.map((payload) => JSON.parse(payload)).slice(1)).toEqual([
+      { type: "resize", cols: 46, rows: 38 },
+    ]);
+    transport.sendResize(47, 38, true);
+    transport.sendResize(47, 38);
+    expect(socket.sent.map((payload) => JSON.parse(payload)).slice(2)).toEqual([
+      { type: "resize", cols: 47, rows: 38, claim: true },
+    ]);
+    transport.dispose();
+  });
+
+  it("uses a pending claim as the first fitted resize on an open socket", () => {
+    const { transport, sockets } = createHarness();
+    transport.start();
+    const socket = sockets[0]!;
+    socket.open();
+    transport.claimSize();
+    transport.markLayoutSettled();
+    transport.sendResize(115, 38);
+    expect(socket.sent.map((payload) => JSON.parse(payload))).toEqual([
+      { type: "resize", cols: 115, rows: 38, claim: true },
+    ]);
+    transport.dispose();
+  });
+
+  it("resends a claimed grid after reconnect", () => {
+    vi.useFakeTimers();
+    const { transport, sockets } = createHarness();
+    transport.sendResize(45, 38);
+    transport.claimSize();
+    transport.start();
+    sockets[0]!.open();
+    transport.markLayoutSettled();
+    sockets[0]!.close();
+    vi.advanceTimersByTime(100);
+    const socket = sockets[1]!;
+    socket.open();
+    transport.markLayoutSettled();
+    expect(socket.sent.map((payload) => JSON.parse(payload))).toEqual([
+      { type: "resize", cols: 45, rows: 38, claim: true },
+    ]);
+    transport.dispose();
+  });
+
+  it("sends every explicit ownership claim even when the grid is unchanged", () => {
+    const { transport, sockets } = createHarness();
+    transport.sendResize(45, 38);
+    transport.claimSize();
+    transport.start();
+    const socket = sockets[0]!;
+    socket.open();
+    transport.markLayoutSettled();
+    transport.claimSize(true);
+    transport.claimSize();
+    transport.sendResize(45, 38, true);
+    expect(socket.sent.map((payload) => JSON.parse(payload))).toEqual([
+      { type: "resize", cols: 45, rows: 38, claim: true },
+      { type: "resize", cols: 45, rows: 38, claim: true },
+      { type: "resize", cols: 45, rows: 38, claim: true },
+      { type: "resize", cols: 45, rows: 38, claim: true },
+    ]);
+    transport.dispose();
+  });
+
+  it("reports the original event timestamp before decoding and ignores stale sockets", () => {
+    const seen: number[] = [];
+    const harness = createHarness({
+      onMessageEvent: (timestamp) => seen.push(timestamp),
+    });
+    harness.transport.start();
+    const socket = harness.sockets[0]!;
+    socket.open();
+    const event = new MessageEvent("message", {
+      data: JSON.stringify({ type: "pong" }),
+    });
+    socket.onmessage?.(event);
+    expect(seen).toEqual([event.timeStamp]);
+    expect(harness.messages).toEqual([{ type: "pong" }]);
+    const receive = socket.onmessage;
+    harness.transport.dispose();
+    receive?.(event);
+    expect(seen).toEqual([event.timeStamp]);
+  });
+
+  it("validates the input classification at the browser boundary", () => {
+    const input = { type: "input", dataBase64: "eA==" };
+    expect(terminalClientMessageSchema.safeParse(input).success).toBe(true);
+    expect(
+      terminalClientMessageSchema.safeParse({ ...input, isUserInput: false })
+        .success,
+    ).toBe(true);
+    expect(
+      terminalClientMessageSchema.safeParse({ ...input, isUserInput: "false" })
+        .success,
+    ).toBe(false);
+  });
+
+  it("retains non-user classification through queued and immediate sends", () => {
+    const harness = createHarness();
+    harness.transport.start();
+    harness.transport.sendInput("eA==", undefined, false);
+    harness.sockets[0]?.open();
+    harness.transport.sendInput("eQ==", undefined, false);
+    harness.transport.sendInput("eg==");
+    expect(
+      harness.sockets[0]?.sent
+        .map((frame) => JSON.parse(frame))
+        .filter((frame) => frame.type === "input"),
+    ).toEqual([
+      { type: "input", dataBase64: "eA==", isUserInput: false },
+      { type: "input", dataBase64: "eQ==", isUserInput: false },
+      { type: "input", dataBase64: "eg==" },
+    ]);
+    harness.transport.dispose();
+  });
+
   it("timestamps queued acceptance at insertion and send after serialization", () => {
     let timestamp = 100;
     const inputAccepted = vi.fn();
@@ -249,6 +438,63 @@ describe("TerminalWebSocketTransport", () => {
         .map((payload) => JSON.parse(payload))
         .filter((message) => message.type === "visibility"),
     ).toEqual([{ type: "visibility", visible: true }]);
+    harness.transport.dispose();
+  });
+
+  it("parks without resize or ownership traffic and returns without reasserting an unchanged grid", () => {
+    const harness = createHarness();
+    harness.transport.markLayoutSettled();
+    harness.transport.start();
+    const socket = harness.sockets[0]!;
+    socket.open();
+    harness.transport.sendResize(80, 24, true);
+    socket.sent.length = 0;
+    harness.transport.setParked(true);
+    harness.transport.claimSize(true);
+    harness.transport.sendResize(0, 0, true);
+    harness.transport.requestRepaint();
+    harness.transport.markLayoutSettled();
+    harness.transport.setVisible(true);
+    expect(socket.sent.map((frame) => JSON.parse(frame))).toEqual([
+      { type: "visibility", visible: false },
+    ]);
+    expect(socket.closeCalls).toEqual([]);
+    harness.transport.setParked(false);
+    harness.transport.setVisible(true);
+    harness.transport.sendResize(80, 24);
+    expect(socket.sent.map((frame) => JSON.parse(frame))).toEqual([
+      { type: "visibility", visible: false },
+      { type: "visibility", visible: true },
+    ]);
+    harness.transport.sendResize(90, 24, true);
+    expect(
+      socket.sent
+        .map((frame) => JSON.parse(frame))
+        .filter((message) => message.type === "resize"),
+    ).toEqual([{ type: "resize", cols: 90, rows: 24, claim: true }]);
+    harness.transport.dispose();
+  });
+
+  it("cancels delayed repaint and settle traffic on park and reports a socket error", () => {
+    vi.useFakeTimers();
+    const onSocketError = vi.fn();
+    const harness = createHarness({ onSocketError });
+    harness.transport.sendResize(80, 24, true);
+    harness.transport.start();
+    const socket = harness.sockets[0]!;
+    socket.open();
+    harness.transport.requestRepaint();
+    harness.transport.setParked(true);
+    const parked = socket.sent.length;
+    vi.advanceTimersByTime(1500);
+    expect(
+      socket.sent
+        .slice(parked)
+        .map((frame) => JSON.parse(frame))
+        .filter((message) => message.type === "resize"),
+    ).toEqual([]);
+    socket.onerror?.(new Event("error"));
+    expect(onSocketError).toHaveBeenCalledOnce();
     harness.transport.dispose();
   });
 
@@ -450,6 +696,56 @@ describe("TerminalWebSocketTransport", () => {
     harness.transport.dispose();
   });
 
+  it("expands negotiated batches in order and only acknowledges bytes the consumer parsed", async () => {
+    const harness = createHarness();
+    harness.transport.start();
+    const socket = harness.sockets[0]!;
+    socket.protocol = "bb.terminal.replay-batch.v1";
+    socket.open();
+    const chunks = [0, 1, 2].map((seq) => ({ seq, dataBase64: "YQ==" }));
+    socket.receive({ type: "output-batch", chunks });
+    socket.receive({ type: "output", chunk: { seq: 3, dataBase64: "Yg==" } });
+    expect(
+      harness.messages
+        .filter((message) => message.type === "output")
+        .map((message) => message.chunk.seq),
+    ).toEqual([0, 1, 2, 3]);
+    await Promise.resolve();
+    expect(socket.sent).toEqual([]);
+    harness.transport.acknowledgeOutput(2);
+    await Promise.resolve();
+    expect(socket.sent.map((data) => JSON.parse(data))).toEqual([
+      { type: "ack", nextSeq: 2 },
+    ]);
+    socket.receive({
+      type: "output-batch",
+      chunks: [chunks[2]!, { seq: 4, dataBase64: "Yw==" }],
+    });
+    expect(
+      harness.messages
+        .filter((message) => message.type === "output")
+        .map((message) => message.chunk.seq),
+    ).toEqual([0, 1, 2, 3, 4]);
+    harness.transport.dispose();
+  });
+
+  it("rejects batches when an old server selected a legacy protocol", () => {
+    const invalid = vi.fn();
+    const harness = createHarness({ onInvalidMessage: invalid });
+    harness.transport.start();
+    const socket = harness.sockets[0]!;
+    socket.open();
+    socket.receive({
+      type: "output-batch",
+      chunks: [{ seq: 0, dataBase64: "YQ==" }],
+    });
+    expect(invalid).toHaveBeenCalledOnce();
+    expect(harness.messages).toEqual([]);
+    socket.receive({ type: "output", chunk: { seq: 0, dataBase64: "YQ==" } });
+    expect(harness.messages).toHaveLength(1);
+    harness.transport.dispose();
+  });
+
   it("reports a hidden document again after reconnecting", () => {
     vi.useFakeTimers();
     const harness = createHarness();
@@ -477,7 +773,7 @@ describe("TerminalWebSocketTransport", () => {
     harness.transport.dispose();
   });
 
-  it("reports an explicit replay truncation before accepting available output", () => {
+  it("adopts a compacted first replay without resetting output", () => {
     const gaps = vi.fn<(expectedSeq: number, receivedSeq: number) => void>();
     const harness = createHarness({ onSequenceGap: gaps });
 
@@ -498,13 +794,94 @@ describe("TerminalWebSocketTransport", () => {
       },
     });
 
-    expect(gaps).toHaveBeenCalledOnce();
-    expect(gaps).toHaveBeenCalledWith(0, 5);
+    expect(gaps).not.toHaveBeenCalled();
     expect(
       harness.messages
         .filter((message) => message.type === "output")
         .map((message) => message.chunk.seq),
     ).toEqual([5]);
+    harness.transport.dispose();
+  });
+
+  it("adopts compacted replay when visibility requests output again from zero", () => {
+    const gaps = vi.fn();
+    const harness = createHarness({ onSequenceGap: gaps });
+    harness.transport.start();
+    const first = harness.sockets[0]!;
+    first.open();
+    first.receive({
+      type: "attached",
+      session: terminalSession(),
+      replayStartSeq: 0,
+      nextSeq: 1,
+    });
+    first.receive({ type: "output", chunk: { seq: 0, dataBase64: "YQ==" } });
+    harness.transport.replayOutputFrom(0);
+    const second = harness.sockets[1]!;
+    second.open();
+    second.receive({
+      type: "attached",
+      session: terminalSession(),
+      replayStartSeq: 500,
+      nextSeq: 501,
+    });
+    second.receive({ type: "output", chunk: { seq: 500, dataBase64: "Yg==" } });
+    expect(gaps).not.toHaveBeenCalled();
+    expect(
+      harness.messages
+        .filter((message) => message.type === "output")
+        .map((message) => message.chunk.seq),
+    ).toEqual([0, 500]);
+    harness.transport.dispose();
+  });
+
+  it("reports a real attach gap when reconnecting from a positive sequence", () => {
+    vi.useFakeTimers();
+    const gaps = vi.fn();
+    const harness = createHarness({ onSequenceGap: gaps });
+    harness.transport.start();
+    const first = harness.sockets[0]!;
+    first.open();
+    first.receive({
+      type: "attached",
+      session: terminalSession(),
+      replayStartSeq: 0,
+      nextSeq: 1,
+    });
+    first.receive({ type: "output", chunk: { seq: 0, dataBase64: "YQ==" } });
+    first.close();
+    vi.advanceTimersByTime(100);
+    const second = harness.sockets[1]!;
+    second.open();
+    second.receive({
+      type: "attached",
+      session: terminalSession(),
+      replayStartSeq: 5,
+      nextSeq: 6,
+    });
+    expect(gaps).toHaveBeenCalledWith(1, 5);
+    harness.transport.dispose();
+  });
+
+  it("adopts a later compacted replay after an empty first attach", () => {
+    const gaps = vi.fn();
+    const harness = createHarness({ onSequenceGap: gaps });
+    harness.transport.start();
+    const socket = harness.sockets[0]!;
+    socket.open();
+    socket.receive({
+      type: "attached",
+      session: terminalSession(),
+      replayStartSeq: 0,
+      nextSeq: 0,
+    });
+    socket.receive({
+      type: "attached",
+      session: terminalSession(),
+      replayStartSeq: 5,
+      nextSeq: 8,
+    });
+    expect(gaps).not.toHaveBeenCalled();
     harness.transport.dispose();
   });
 
@@ -766,10 +1143,7 @@ describe("TerminalWebSocketTransport", () => {
 
     expect(
       socket.sent.filter((message) => message.includes('"resize"')),
-    ).toEqual([
-      JSON.stringify({ type: "resize", cols: 128, rows: 43 }),
-      JSON.stringify({ type: "resize", cols: 128, rows: 43 }),
-    ]);
+    ).toEqual([JSON.stringify({ type: "resize", cols: 128, rows: 43 })]);
     harness.transport.dispose();
   });
 
@@ -997,6 +1371,7 @@ describe("TerminalWebSocketTransport", () => {
       expect(harness.protocols[0]).toEqual([
         "bb.terminal.v1",
         "bb.terminal.resize-echo.v1",
+        "bb.terminal.replay-batch.v1",
       ]);
       harness.transport.dispose();
     });
@@ -1484,10 +1859,74 @@ describe("TerminalWebSocketTransport", () => {
 
       expect(socket.sent.slice(1)).toEqual([
         JSON.stringify({ type: "resize", cols: 99, rows: 30 }),
-        JSON.stringify({ type: "resize", cols: 99, rows: 30 }),
         JSON.stringify({ type: "resize", cols: 100, rows: 30 }),
       ]);
       harness.transport.dispose();
     });
+  });
+});
+
+describe("negotiated replay delivery", () => {
+  it("delivers replay once per batch and preserves live callbacks and parsed-only acks", async () => {
+    const batches: number[][] = [];
+    const harness = createHarness({
+      onReplayBatch: (chunks) => batches.push(chunks.map((chunk) => chunk.seq)),
+    });
+    harness.transport.start();
+    const socket = harness.sockets[0]!;
+    socket.protocol = "bb.terminal.replay-batch.v1";
+    socket.open();
+    socket.receive({
+      type: "attached",
+      session: terminalSession(),
+      replayStartSeq: 0,
+      nextSeq: 3,
+    });
+    socket.receive({
+      type: "output-batch",
+      chunks: [0, 1, 2].map((seq) => ({ seq, dataBase64: "YQ==" })),
+    });
+    socket.receive({ type: "output", chunk: { seq: 3, dataBase64: "Yg==" } });
+    expect(batches).toEqual([[0, 1, 2]]);
+    expect(harness.messages.map((message) => message.type)).toEqual([
+      "attached",
+      "output",
+    ]);
+    expect(socket.sent).toEqual([]);
+    harness.transport.acknowledgeOutput(3);
+    await Promise.resolve();
+    expect(socket.sent.map((frame) => JSON.parse(frame))).toEqual([
+      { type: "ack", nextSeq: 3 },
+    ]);
+    harness.transport.dispose();
+  });
+
+  it("deduplicates and flushes replay before gaps and live output in a mixed frame", () => {
+    const events: unknown[] = [];
+    const harness = createHarness({
+      onReplayBatch: (chunks) => events.push(chunks.map((chunk) => chunk.seq)),
+      onSequenceGap: (expected, actual) =>
+        events.push(["gap", expected, actual]),
+      onMessage: (message) =>
+        events.push(
+          message.type === "output" ? message.chunk.seq : message.type,
+        ),
+    });
+    harness.transport.start();
+    const socket = harness.sockets[0]!;
+    socket.protocol = "bb.terminal.replay-batch.v1";
+    socket.open();
+    socket.receive({
+      type: "attached",
+      session: terminalSession(),
+      replayStartSeq: 0,
+      nextSeq: 4,
+    });
+    socket.receive({
+      type: "output-batch",
+      chunks: [0, 0, 2, 3, 4].map((seq) => ({ seq, dataBase64: "YQ==" })),
+    });
+    expect(events).toEqual(["attached", [0], ["gap", 1, 2], [2, 3], 4]);
+    harness.transport.dispose();
   });
 });

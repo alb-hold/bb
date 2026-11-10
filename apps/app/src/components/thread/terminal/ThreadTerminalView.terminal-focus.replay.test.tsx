@@ -8,7 +8,12 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { FitAddon } from "@xterm/addon-fit";
+import type {
+  TerminalScreenResponse,
+  UpdateThreadTabsRequest,
+} from "@bb/server-contract";
 import { Terminal } from "@xterm/xterm";
+import { createTerminalGridMarker } from "@bb/domain";
 import { MemoryRouter } from "react-router-dom";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -24,16 +29,35 @@ import {
 } from "@bb/client-core";
 import { makeTerminalSession } from "@/test/fixtures/terminal-sessions";
 import { wsManager } from "@/lib/ws";
+import { applyAppThemeCss } from "@/lib/app-theme-css";
 import { COMPACT_VIEWPORT_QUERY } from "@bb/shared-ui/hooks/use-compact-viewport";
 import * as terminalModules from "./terminal-modules";
 import * as terminalReplayPreview from "./terminal-replay-preview";
 import * as terminalViewport from "./terminal-viewport";
 import { AppCommandProvider } from "@/components/commands/AppCommandProvider";
 import { ThreadTerminalView, writeTerminalOutput } from "./ThreadTerminalView";
+import { usePanelTerminals } from "@/components/secondary-panel/usePanelTerminals";
+import { useFixedPanelTabsState } from "@/lib/fixed-panel-tabs";
+import { focusOpenThreadTerminal } from "@/lib/open-thread-terminal-focus";
+import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
+import { PanelGroup } from "react-resizable-panels";
+import { TooltipProvider } from "@bb/shared-ui/tooltip";
+import { ThreadSecondaryPanel } from "@/components/secondary-panel/ThreadSecondaryPanel";
+import {
+  createTerminalFixedPanelTab,
+  createThreadInfoFixedPanelTab,
+} from "@/lib/fixed-panel-tabs-state";
+import { useUpdateFixedPanelTabsState } from "@/lib/fixed-panel-tabs";
+
+import {
+  RetainedTerminalViewsProvider,
+  RetainedTerminalViewSlot,
+} from "./RetainedTerminalViews";
 
 const testState = vi.hoisted(() => ({
   calls: [] as string[],
   clearAttention: vi.fn(),
+  setDefaultColors: vi.fn().mockResolvedValue({}),
   deferSocketOpen: false,
   mediaQueryListeners: new Set<() => void>(),
   touchEnabled: false,
@@ -44,6 +68,8 @@ const testState = vi.hoisted(() => ({
   socketUrls: [] as string[],
   screen: vi.fn(),
   output: vi.fn(),
+  tabsGet: vi.fn(),
+  tabsUpdate: vi.fn(),
 }));
 
 class TestTerminalSocket {
@@ -101,9 +127,9 @@ class TestTerminalSocket {
     queueMicrotask(() => this.onclose?.({ code, reason } as CloseEvent));
   }
 
-  disconnect(): void {
+  disconnect(code = 1006, reason = "test disconnect"): void {
     this.readyState = TestTerminalSocket.CLOSED;
-    this.onclose?.({ code: 1006, reason: "test disconnect" } as CloseEvent);
+    this.onclose?.(new CloseEvent("close", { code, reason }));
   }
 
   send(data: string): void {
@@ -118,9 +144,14 @@ class TestTerminalSocket {
   }
 }
 
-vi.mock("@/lib/sdk", () => ({
+vi.mock("@/lib/sdk", async (importOriginal) => ({
+  BbHttpError: (await importOriginal<typeof import("@/lib/sdk")>()).BbHttpError,
   sdk: {
+    threads: {
+      tabs: { get: testState.tabsGet, update: testState.tabsUpdate },
+    },
     terminals: {
+      experimental_setDefaultColors: testState.setDefaultColors,
       experimental_screen: testState.screen,
       output: testState.output,
       experimental_attention: {
@@ -191,6 +222,10 @@ vi.mock("@/hooks/usePluginCommandBindings", () => ({
 afterEach(() => {
   vi.useRealTimers();
   cleanup();
+  applyAppThemeCss("");
+  document.documentElement.style.removeProperty("--foreground");
+  document.documentElement.style.removeProperty("--ink");
+  document.documentElement.style.removeProperty("--sidebar");
   for (const sheet of Array.from(document.styleSheets)) {
     const owner = sheet.ownerNode;
     if (owner instanceof HTMLStyleElement && !owner.isConnected) {
@@ -221,6 +256,8 @@ afterEach(() => {
   testState.clearAttention.mockReset();
   testState.screen.mockReset();
   testState.output.mockReset();
+  testState.tabsGet.mockReset();
+  testState.tabsUpdate.mockReset();
   testState.toastError.mockReset();
   testState.touchEnabled = false;
   testState.mediaQueryListeners.clear();
@@ -258,9 +295,14 @@ function prepareMobileTerminal(): void {
       unobserve(): void {}
     },
   );
-  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
-    measureText: (text: string) => ({ width: text.length * 9 }),
-  } as unknown as CanvasRenderingContext2D);
+  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(
+    (kind) =>
+      kind === "2d"
+        ? ({
+            measureText: (text: string) => ({ width: text.length * 9 }),
+          } as unknown as CanvasRenderingContext2D)
+        : null,
+  );
   vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(
     function offsetWidth(this: HTMLElement) {
       return this.classList.contains("xterm-char-measure-element") ? 9 : 354;
@@ -320,9 +362,14 @@ function prepareFirstAttachFontMetricsHarness(): void {
       unobserve(): void {}
     },
   );
-  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
-    measureText: (text: string) => ({ width: text.length * 7 }),
-  } as unknown as CanvasRenderingContext2D);
+  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(
+    (kind) =>
+      kind === "2d"
+        ? ({
+            measureText: (text: string) => ({ width: text.length * 7 }),
+          } as unknown as CanvasRenderingContext2D)
+        : null,
+  );
   vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(
     function offsetWidth(this: HTMLElement) {
       return this.classList.contains("xterm-char-measure-element") ? 7 : 354;
@@ -355,7 +402,7 @@ function prepareFirstAttachFontMetricsHarness(): void {
   );
 }
 
-function stubVisibleIntersectionObserver(): void {
+function stubVisibleIntersectionObserver(deferred = false): void {
   vi.stubGlobal(
     "IntersectionObserver",
     class {
@@ -367,16 +414,19 @@ function stubVisibleIntersectionObserver(): void {
       disconnect(): void {}
 
       observe(target: Element): void {
-        this.callback(
-          [
-            {
-              target,
-              isIntersecting: true,
-              intersectionRect: new DOMRect(0, 0, 354, 504),
-            } as IntersectionObserverEntry,
-          ],
-          this as unknown as IntersectionObserver,
-        );
+        const notify = () =>
+          this.callback(
+            [
+              {
+                target,
+                isIntersecting: true,
+                intersectionRect: new DOMRect(0, 0, 354, 504),
+              } as IntersectionObserverEntry,
+            ],
+            this as unknown as IntersectionObserver,
+          );
+        if (deferred) requestAnimationFrame(notify);
+        else notify();
       }
 
       unobserve(): void {}
@@ -431,6 +481,1288 @@ function writeReplay(terminal: Terminal, data: string): Promise<void> {
 }
 
 describe("ThreadTerminalView terminal replay and reconnect", () => {
+  it.each([false, true])(
+    "disposes older parked viewers and their streams while retaining the last switch and replaying the same session on return (native=%s)",
+    async (native) => {
+      prepareMobileTerminal();
+      stubVisibleIntersectionObserver();
+      vi.spyOn(FitAddon.prototype, "proposeDimensions").mockReturnValue({
+        cols: 40,
+        rows: 12,
+      });
+      const sessions = ["cold", "warm", "active"].map((name) =>
+        makeTerminalSession({
+          id: `term_memory_${native}_${name}`,
+          cols: 40,
+          rows: 12,
+        }),
+      );
+      const history =
+        Array.from({ length: 64 }, (_, index) => `history-${index}`).join(
+          "\r\n",
+        ) + "\r\n";
+      vi.stubGlobal(
+        "WebSocket",
+        class extends TestTerminalSocket {
+          constructor(private readonly url: string) {
+            super(url);
+          }
+          override open() {
+            super.open();
+            this.receive({
+              type: "attached",
+              session: sessions.find((session) =>
+                new URL(this.url).pathname.includes(session.id),
+              ),
+              replayStartSeq: 0,
+              nextSeq: 1,
+            });
+            this.receive({
+              type: "output",
+              chunk: { seq: 0, dataBase64: btoa(history) },
+            });
+          }
+        },
+      );
+      const opened: Terminal[] = [];
+      const originalOpen = Terminal.prototype.open;
+      vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
+        this: Terminal,
+        element: HTMLElement,
+      ) {
+        if (element.hasAttribute("data-terminal-grid-cache-id"))
+          opened.push(this);
+        originalOpen.call(this, element);
+      });
+      const disposed = vi.spyOn(Terminal.prototype, "dispose");
+      const tree = (index: number) => (
+        <MemoryRouter>
+          <AppCommandProvider>
+            <button autoFocus>Composer</button>
+            <RetainedTerminalViewsProvider>
+              <div data-native-terminal-thread={native ? "" : undefined}>
+                <RetainedTerminalViewSlot
+                  View={ThreadTerminalView}
+                  autoFocus={false}
+                  isPanelOpen
+                  session={sessions[index]!}
+                />
+              </div>
+            </RetainedTerminalViewsProvider>
+          </AppCommandProvider>
+        </MemoryRouter>
+      );
+      const view = render(tree(0));
+      const ready = async (socketCount: number) => {
+        await waitForReadinessCondition(() => {
+          expect(testState.sockets).toHaveLength(socketCount);
+          expect(
+            document.querySelectorAll(
+              "[data-replay-held='false']:not([inert] *)",
+            ),
+          ).toHaveLength(1);
+        }, "memory viewer did not reveal");
+      };
+      await ready(1);
+      const cold = opened[0]!;
+      const coldSocket = testState.sockets[0]!;
+      const coldElement = cold.element!;
+      const coldWrite = vi.spyOn(cold, "write");
+      view.rerender(tree(1));
+      await ready(2);
+      const warm = opened[1]!;
+      const warmElement = warm.element!;
+      const warmSocket = testState.sockets[1]!;
+      view.rerender(tree(2));
+      await ready(3);
+      await waitForReadinessCondition(
+        () => expect(coldSocket.readyState).toBe(TestTerminalSocket.CLOSED),
+        "older viewer was not disposed after the incoming reveal",
+      );
+      expect(document.querySelectorAll(".xterm")).toHaveLength(2);
+      expect(coldSocket.readyState).toBe(TestTerminalSocket.CLOSED);
+      expect(coldElement.isConnected).toBe(false);
+      expect(disposed.mock.contexts).toContain(cold);
+      expect(disposed.mock.contexts).not.toContain(warm);
+      coldWrite.mockClear();
+      act(() => {
+        coldSocket.receive({
+          type: "output",
+          chunk: { seq: 1, dataBase64: btoa("discarded\r\n") },
+        });
+        warmSocket.receive({
+          type: "output",
+          chunk: { seq: 1, dataBase64: btoa("warm-tail\r\n") },
+        });
+      });
+      await waitForReadinessCondition(() => {
+        expect(
+          warm.buffer.active
+            .getLine(warm.buffer.active.baseY + warm.rows - 2)
+            ?.translateToString(true),
+        ).toBe("warm-tail");
+      }, "warm viewer stopped consuming its stream");
+      expect(coldWrite).not.toHaveBeenCalled();
+      view.rerender(tree(1));
+      await ready(3);
+      expect(warm.element).toBe(warmElement);
+      expect(warmSocket.readyState).toBe(TestTerminalSocket.OPEN);
+      expect(opened).toHaveLength(3);
+      view.rerender(tree(0));
+      await ready(4);
+      expect(opened[3]).not.toBe(cold);
+      expect(new URL(testState.socketUrls[3]!).pathname).toContain(
+        sessions[0]!.id,
+      );
+      expect(
+        new URL(testState.socketUrls[3]!).searchParams.get("sinceSeq"),
+      ).toBe("0");
+      expect(opened[3]!.buffer.active.getLine(0)?.translateToString(true)).toBe(
+        "history-0",
+      );
+      expect(
+        opened[3]!.buffer.active.getLine(63)?.translateToString(true),
+      ).toBe("history-63");
+      for (const socket of testState.sockets) {
+        const resizes = socket.sent
+          .map((raw) => JSON.parse(raw))
+          .filter((message) => message.type === "resize");
+        expect(resizes.filter((resize) => resize.claim)).toHaveLength(
+          native ? 1 : 0,
+        );
+        if (native) expect(resizes).toHaveLength(1);
+        for (const resize of resizes)
+          expect(resize).toEqual({
+            type: "resize",
+            cols: 40,
+            rows: 12,
+            ...(native ? { claim: true } : {}),
+          });
+      }
+      view.unmount();
+      expect(
+        testState.sockets.every(
+          (socket) => socket.readyState === TestTerminalSocket.CLOSED,
+        ),
+      ).toBe(true);
+    },
+  );
+
+  it.each([
+    [false, false, false],
+    [false, true, false],
+    [true, false, false],
+    [true, true, false],
+    [false, false, true],
+    [false, true, true],
+    [true, false, true],
+    [true, true, true],
+  ])(
+    "focuses an existing terminal from Overview without tab writes, preserving warm viewers and replaying evicted viewers (drawer=%s, rejected PUT=%s, evicted=%s)",
+    async (renderAsDrawer, rejectTabsWrite, evicted) => {
+      prepareMobileTerminal();
+      stubVisibleIntersectionObserver();
+      vi.spyOn(document, "hasFocus").mockReturnValue(true);
+      vi.spyOn(FitAddon.prototype, "proposeDimensions").mockReturnValue({
+        cols: 40,
+        rows: 12,
+      });
+      const fixtureId = `${renderAsDrawer}_${rejectTabsWrite}_${evicted}`;
+      const threadId = `thr_focus_${fixtureId}`;
+      const sessions = ["first", "second"].map((name) =>
+        makeTerminalSession({
+          id: `term_focus_${fixtureId}_${name}`,
+          threadId,
+          cols: 40,
+          rows: 12,
+        }),
+      );
+      const infoTab = createThreadInfoFixedPanelTab();
+      testState.tabsGet.mockResolvedValue({
+        revision: 1,
+        tabs: [
+          infoTab,
+          ...sessions.map((session) =>
+            createTerminalFixedPanelTab({ terminalId: session.id }),
+          ),
+        ],
+      });
+      testState.tabsUpdate.mockImplementation(
+        ({ expectedRevision, tabs }: UpdateThreadTabsRequest) =>
+          rejectTabsWrite
+            ? Promise.reject(new TypeError("Failed to fetch"))
+            : Promise.resolve({ revision: expectedRevision + 1, tabs }),
+      );
+      const terminals = new Map<string, Terminal>();
+      const open = Terminal.prototype.open;
+      vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
+        this: Terminal,
+        element: HTMLElement,
+      ) {
+        const id = element.getAttribute("data-terminal-grid-cache-id");
+        if (id !== null) terminals.set(id, this);
+        open.call(this, element);
+      });
+      function OpenThread() {
+        const controller = usePanelTerminals({
+          panelStateId: threadId,
+          syncThreadId: threadId,
+          createTarget: { kind: "thread", threadId },
+          isFocused: true,
+          acceptsSession: (session) => session.threadId === threadId,
+          tabsCarryTarget: false,
+          reveal: () => undefined,
+        });
+        const state = useFixedPanelTabsState(threadId, threadId);
+        const updateState = useUpdateFixedPanelTabsState(threadId, threadId);
+        const tab = state.secondary.tabs.find(
+          (candidate) => candidate.id === state.secondary.activeTabId,
+        );
+        return (
+          <>
+            <button onClick={() => controller.select(sessions[0]!.id)}>
+              First
+            </button>
+            <button onClick={() => controller.select(sessions[1]!.id)}>
+              Second
+            </button>
+            <button
+              onClick={() =>
+                updateState((current) => ({
+                  ...current,
+                  secondary: { ...current.secondary, activeTabId: infoTab.id },
+                }))
+              }
+            >
+              Overview
+            </button>
+            <TooltipProvider>
+              <PanelGroup direction="horizontal">
+                <ThreadSecondaryPanel
+                  activeTab={tab ?? infoTab}
+                  fixedTabs={[
+                    {
+                      tab: infoTab,
+                      label: "Overview",
+                      title: "Overview",
+                      ariaLabel: "Show Overview",
+                      leadingVisual: null,
+                      onSelect: () => undefined,
+                      renderContent: () => <div>Overview content</div>,
+                    },
+                  ]}
+                  tabs={sessions.map((session) => ({
+                    tab: createTerminalFixedPanelTab({
+                      terminalId: session.id,
+                    }),
+                    label: session.id,
+                    leadingVisual: null,
+                    statusLabel: null,
+                    onClose: () => undefined,
+                    onSelect: () => controller.select(session.id),
+                    renderContent: () => (
+                      <RetainedTerminalViewSlot
+                        key={session.id}
+                        View={ThreadTerminalView}
+                        autoFocus={
+                          controller.autoFocusTerminalId === session.id
+                        }
+                        onAutoFocusHandled={controller.handleAutoFocusHandled}
+                        isPanelOpen
+                        session={session}
+                      />
+                    ),
+                  }))}
+                  isConversationCollapsed={false}
+                  isOpen
+                  metadataContent={null}
+                  onClose={() => undefined}
+                  onCollapse={() => undefined}
+                  onTabReorder={() => undefined}
+                  onOpenNewTab={() => undefined}
+                  onPanelFocus={() => undefined}
+                  onToggleConversationCollapse={() => undefined}
+                  renderAsDrawer={renderAsDrawer}
+                  splitPanelStateId={threadId}
+                />
+              </PanelGroup>
+            </TooltipProvider>
+          </>
+        );
+      }
+      const { wrapper } = createQueryClientTestHarness();
+      const view = render(
+        <MemoryRouter>
+          <AppCommandProvider>
+            <RetainedTerminalViewsProvider>
+              <OpenThread />
+            </RetainedTerminalViewsProvider>
+          </AppCommandProvider>
+        </MemoryRouter>,
+        { wrapper },
+      );
+      fireEvent.click(view.getByRole("button", { name: "First" }));
+      for (const [index, session] of sessions.entries()) {
+        if (index === 1)
+          fireEvent.click(view.getByRole("button", { name: "Second" }));
+        await waitForReadinessCondition(() => {
+          expect(testState.sockets).toHaveLength(index + 1);
+          expect(terminals.has(session.id)).toBe(true);
+        }, "terminal did not mount");
+        const socket = testState.sockets[index]!;
+        await socket.opened;
+        socket.receive({
+          type: "attached",
+          session,
+          replayStartSeq: 0,
+          nextSeq: 1,
+        });
+        socket.receive({
+          type: "output",
+          chunk: { seq: 0, dataBase64: btoa(`${session.id}\r\n`) },
+        });
+        await waitForReadinessCondition(() => {
+          expect(socket.sent.map((raw) => JSON.parse(raw))).toContainEqual({
+            type: "ack",
+            nextSeq: 1,
+          });
+          expect(
+            terminals
+              .get(session.id)!
+              .element!.closest<HTMLElement>("[data-terminal-grid-cache-id]")!
+              .dataset.replayHeld,
+          ).toBe("false");
+        }, "terminal replay did not settle");
+      }
+      expect(focusOpenThreadTerminal("thr_other", sessions[0]!.id)).toBe(false);
+      expect(focusOpenThreadTerminal(threadId, "term_closed")).toBe(false);
+      fireEvent.click(view.getByRole("button", { name: /^Overview$/ }));
+      await waitForReadinessCondition(
+        () => expect(view.queryByText("Overview content")).not.toBeNull(),
+        "Overview did not appear",
+      );
+      await waitForReadinessCondition(() => {
+        expect(testState.sockets[0]!.readyState).toBe(
+          TestTerminalSocket.CLOSED,
+        );
+        expect(testState.sockets[1]!.readyState).toBe(TestTerminalSocket.OPEN);
+      }, "Overview did not retain only the most recent viewer");
+      const target = sessions[evicted ? 0 : 1]!;
+      const previousTerminal = terminals.get(target.id)!;
+      const before = testState.socketMessages.length;
+      act(() =>
+        expect(focusOpenThreadTerminal(threadId, target.id)).toBe(true),
+      );
+      if (evicted) {
+        await waitForReadinessCondition(() => {
+          expect(testState.sockets).toHaveLength(3);
+          expect(terminals.get(target.id)).not.toBe(previousTerminal);
+        }, "evicted viewer did not reopen");
+        const socket = testState.sockets[2]!;
+        await socket.opened;
+        expect(new URL(testState.socketUrls[2]!).pathname).toContain(target.id);
+        expect(
+          new URL(testState.socketUrls[2]!).searchParams.get("sinceSeq"),
+        ).toBe("0");
+        socket.receive({
+          type: "attached",
+          session: target,
+          replayStartSeq: 0,
+          nextSeq: 1,
+        });
+        socket.receive({
+          type: "output",
+          chunk: { seq: 0, dataBase64: btoa(`${target.id}\r\n`) },
+        });
+      }
+      await waitForReadinessCondition(() => {
+        expect(view.queryByText("Overview content")).toBeNull();
+        const terminal = terminals.get(target.id)!;
+        expect(
+          terminal.element!.closest("[data-retained-terminal-host]"),
+        ).toBeNull();
+        expect(
+          terminal.element!.closest<HTMLElement>(
+            "[data-terminal-grid-cache-id]",
+          )!.dataset.replayHeld,
+        ).toBe("false");
+        expect(terminal.buffer.active.getLine(0)?.translateToString(true)).toBe(
+          target.id,
+        );
+        expect(document.activeElement).toBe(terminal.textarea);
+      }, "requested terminal did not reveal and focus");
+      await act(async () => {
+        await new Promise<void>((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+        );
+      });
+      expect(testState.sockets).toHaveLength(evicted ? 3 : 2);
+      expect(terminals.get(target.id) === previousTerminal).toBe(!evicted);
+      expect(testState.tabsUpdate).not.toHaveBeenCalled();
+      expect(testState.sockets[0]!.closeCalls).toHaveLength(1);
+      expect(testState.sockets[1]!.closeCalls).toHaveLength(0);
+      const resizes = testState.socketMessages
+        .slice(before)
+        .map((raw) => JSON.parse(raw))
+        .filter((message) => message.type === "resize");
+      if (evicted) {
+        expect(testState.sockets[2]!.closeCalls).toHaveLength(0);
+        expect(
+          resizes.filter((message) => message.claim).length,
+        ).toBeLessThanOrEqual(1);
+        for (const resize of resizes)
+          expect(resize).toMatchObject({ cols: 40, rows: 12 });
+      } else {
+        expect(resizes).toEqual([]);
+      }
+      view.unmount();
+      expect(focusOpenThreadTerminal(threadId, sessions[0]!.id)).toBe(false);
+    },
+  );
+
+  it.each([
+    "reuse",
+    "cross-workspace",
+    "no-environment",
+    "background",
+    "background-resize",
+    "background-burst",
+    "background-stream",
+    "background-idle",
+    "gap",
+    "overflow",
+    "socket-error",
+    "exit",
+  ] as const)(
+    "returns a route-owned terminal after %s with a valid parser or fresh full replay",
+    async (scenario) => {
+      const retained =
+        scenario === "reuse" ||
+        scenario === "cross-workspace" ||
+        scenario === "no-environment" ||
+        scenario.startsWith("background");
+      prepareMobileTerminal();
+      stubVisibleIntersectionObserver();
+      vi.spyOn(FitAddon.prototype, "proposeDimensions").mockReturnValue({
+        cols: 40,
+        rows: 12,
+      });
+      type WebglModule = Awaited<
+        ReturnType<typeof terminalModules.importTerminalWebglAddon>
+      >;
+      const actualWebgl =
+        await vi.importActual<WebglModule>("@xterm/addon-webgl");
+      let contexts = 0;
+      let maxContexts = 0;
+      class WebglAddon extends actualWebgl.WebglAddon {
+        private active = false;
+        activate() {
+          this.active = true;
+          contexts++;
+          maxContexts = Math.max(maxContexts, contexts);
+        }
+        dispose() {
+          if (this.active) contexts--;
+          this.active = false;
+        }
+      }
+      vi.spyOn(terminalModules, "importTerminalWebglAddon").mockResolvedValue({
+        ...actualWebgl,
+        WebglAddon,
+      });
+      const session = makeTerminalSession({
+        id: "term_route_retained",
+        cols: 40,
+        rows: 12,
+      });
+      const sessions =
+        scenario === "background-idle"
+          ? [
+              session,
+              ...[1, 2].map((index) => ({
+                ...session,
+                id: `term_idle_${index}`,
+              })),
+            ]
+          : [session];
+      const activeSession = sessions[sessions.length - 1]!;
+      if (scenario === "background-idle") {
+        vi.stubGlobal(
+          "WebSocket",
+          class extends TestTerminalSocket {
+            constructor(private readonly url: string) {
+              super(url);
+            }
+            override open() {
+              super.open();
+              this.receive({
+                type: "attached",
+                session: sessions.find((candidate) =>
+                  new URL(this.url).pathname.includes(candidate.id),
+                ),
+                replayStartSeq: 0,
+                nextSeq: 1,
+              });
+              this.receive({
+                type: "output",
+                chunk: { seq: 0, dataBase64: btoa("before-route\r\n") },
+              });
+            }
+          },
+        );
+      }
+      let primary: Terminal | null = null;
+      const originalOpen = Terminal.prototype.open;
+      vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
+        this: Terminal,
+        element: HTMLElement,
+      ) {
+        if (
+          element.getAttribute("data-terminal-grid-cache-id") ===
+          activeSession.id
+        )
+          primary = this;
+        originalOpen.call(this, element);
+      });
+      const tree = (shown: boolean) => {
+        const route =
+          !shown && scenario === "cross-workspace"
+            ? { projectId: "prj_other", environmentId: "env_other" }
+            : {
+                projectId: "prj_test",
+                environmentId:
+                  !shown && scenario === "no-environment"
+                    ? null
+                    : session.environmentId,
+              };
+        return (
+          <MemoryRouter>
+            <AppCommandProvider>
+              <RetainedTerminalViewsProvider {...route}>
+                {shown ? (
+                  sessions.map((viewSession) => (
+                    <RetainedTerminalViewSlot
+                      key={viewSession.id}
+                      View={ThreadTerminalView}
+                      autoFocus={scenario !== "background-idle"}
+                      isPanelOpen
+                      session={viewSession}
+                    />
+                  ))
+                ) : (
+                  <div>Chat route</div>
+                )}
+              </RetainedTerminalViewsProvider>
+            </AppCommandProvider>
+          </MemoryRouter>
+        );
+      };
+      const { rerender } = render(tree(true));
+      await waitForReadinessCondition(() => {
+        expect(testState.sockets).toHaveLength(sessions.length);
+      }, "initial route socket missing");
+      const sessionSockets = sessions.map((viewSession) => {
+        const index = testState.socketUrls.findIndex((url) =>
+          new URL(url).pathname.includes(viewSession.id),
+        );
+        expect(index).toBeGreaterThanOrEqual(0);
+        return testState.sockets[index]!;
+      });
+      const socket = sessionSockets[sessionSockets.length - 1]!;
+      for (const [index, initialSocket] of sessionSockets.entries()) {
+        await initialSocket.opened;
+        if (scenario === "background-idle") continue;
+        initialSocket.receive({
+          type: "attached",
+          session: sessions[index],
+          replayStartSeq: 0,
+          nextSeq: 1,
+        });
+        initialSocket.receive({
+          type: "output",
+          chunk: { seq: 0, dataBase64: btoa("before-route\r\n") },
+        });
+      }
+      await waitForReadinessCondition(() => {
+        expect(pageText()).toContain("before-route");
+        expect(
+          document.querySelectorAll("[data-replay-held='false']"),
+        ).toHaveLength(sessions.length);
+        expect(contexts).toBe(sessions.length);
+      }, "initial route replay did not settle");
+      const controlledBackground =
+        scenario === "background-burst" ||
+        scenario === "background-stream" ||
+        scenario === "background-idle";
+      let activeTime = 0;
+      const activeClock = controlledBackground
+        ? vi
+            .spyOn(performance, "now")
+            .mockImplementation(() => (activeTime += 2))
+        : null;
+      if (controlledBackground)
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      const beforePark = socket.sent.length;
+      if (scenario === "reuse") {
+        fireEvent.contextMenu(document.querySelector(".xterm-screen")!);
+        await waitForReadinessCondition(
+          () => expect(document.querySelector("[role=menu]")).not.toBeNull(),
+          "terminal menu did not open",
+        );
+      }
+      rerender(tree(false));
+      expect(contexts).toBe(0);
+      expect(document.querySelector("[role=menu]")).toBeNull();
+      act(() =>
+        socket.receive({
+          type: "output",
+          chunk: { seq: 1, dataBase64: btoa("while-away\r\n") },
+        }),
+      );
+      act(() => {
+        if (scenario === "gap")
+          socket.receive({
+            type: "output",
+            chunk: { seq: 3, dataBase64: btoa("gap") },
+          });
+        if (scenario === "overflow") {
+          const dataBase64 = btoa("x".repeat(64 * 1024));
+          for (let seq = 2; seq < 34; seq++)
+            socket.receive({ type: "output", chunk: { seq, dataBase64 } });
+        }
+        if (scenario === "socket-error") socket.onerror?.(new Event("error"));
+        if (scenario === "exit")
+          socket.receive({
+            type: "exited",
+            session: { ...session, status: "exited" },
+          });
+      });
+      expect(
+        socket.sent
+          .slice(beforePark)
+          .map((raw) => JSON.parse(raw))
+          .filter((message) => message.type === "resize"),
+      ).toEqual([]);
+      if (scenario.startsWith("background")) {
+        const terminal = primary!;
+        if (scenario === "background-resize") {
+          act(() =>
+            socket.receive({
+              type: "session-updated",
+              session: { ...session, cols: 60 },
+            }),
+          );
+          await waitForReadinessCondition(
+            () => expect(terminal.cols).toBe(60),
+            "parked viewer did not apply another client's PTY grid",
+          );
+        }
+        if (scenario === "background-idle") {
+          await act(async () => {
+            await vi.advanceTimersByTimeAsync(30_000);
+          });
+          const idleSocketCount = testState.sockets.length;
+          const idleTimeouts = vi.fn();
+          const timeout = globalThis.setTimeout;
+          globalThis.setTimeout = new Proxy(timeout, {
+            apply(target, receiver, args) {
+              idleTimeouts();
+              return Reflect.apply(target, receiver, args);
+            },
+          });
+          try {
+            await act(async () => {
+              await vi.advanceTimersByTimeAsync(30_000);
+            });
+            expect(idleTimeouts).not.toHaveBeenCalled();
+            act(() =>
+              socket.receive({
+                type: "output",
+                chunk: { seq: 2, dataBase64: btoa("after-idle\r\n") },
+              }),
+            );
+            await act(async () => {
+              await vi.advanceTimersByTimeAsync(1000);
+            });
+            expect(
+              Array.from(
+                { length: terminal.buffer.active.length },
+                (_, index) =>
+                  terminal.buffer.active
+                    .getLine(index)
+                    ?.translateToString(true),
+              ).join("\n"),
+            ).toContain("after-idle");
+            idleTimeouts.mockClear();
+            await act(async () => {
+              await vi.advanceTimersByTimeAsync(1000);
+            });
+            expect(idleTimeouts).not.toHaveBeenCalled();
+            expect(testState.sockets).toHaveLength(idleSocketCount);
+          } finally {
+            globalThis.setTimeout = timeout;
+            activeClock?.mockRestore();
+            vi.useRealTimers();
+          }
+          return;
+        }
+        if (controlledBackground) {
+          const sustained = scenario === "background-stream";
+          const groups = sustained ? 32 : 8;
+          const chunkSize = sustained ? 16384 : 32768;
+          const catchupTicks = 17;
+          for (let group = 0; group < groups; group++) {
+            act(() => {
+              for (let item = 0; item < 8; item++) {
+                const seq = 2 + group * 8 + item;
+                const line = `\r\npark-burst-${seq}\r\n`;
+                socket.receive({
+                  type: "output",
+                  chunk: {
+                    seq,
+                    dataBase64: btoa(
+                      "z".repeat(chunkSize - line.length) + line,
+                    ),
+                  },
+                });
+              }
+            });
+            await act(async () => {
+              await vi.advanceTimersByTimeAsync(
+                125 - (group === 2 ? catchupTicks : 0),
+              );
+              if (group === 1)
+                for (let tick = 0; tick < catchupTicks; tick++)
+                  await vi.advanceTimersByTimeAsync(1);
+            });
+            if (group === 1)
+              expect(
+                terminal.buffer.active
+                  .getLine(terminal.buffer.active.baseY + terminal.rows - 2)
+                  ?.translateToString(true),
+              ).toBe("park-burst-17");
+            expect(testState.sockets).toHaveLength(1);
+            expect(socket.readyState).toBe(TestTerminalSocket.OPEN);
+            expect(terminal.element?.isConnected).toBe(true);
+          }
+          await act(async () => {
+            await vi.advanceTimersByTimeAsync(250);
+            for (let tick = 0; tick < catchupTicks; tick++)
+              await vi.advanceTimersByTimeAsync(1);
+          });
+          expect(
+            terminal.buffer.active
+              .getLine(terminal.buffer.active.baseY + terminal.rows - 2)
+              ?.translateToString(true),
+          ).toBe(`park-burst-${1 + groups * 8}`);
+          expect(testState.sockets).toHaveLength(1);
+          expect(
+            socket.sent
+              .slice(beforePark)
+              .map((raw) => JSON.parse(raw))
+              .filter((message) => message.type === "resize"),
+          ).toEqual([]);
+          activeClock?.mockRestore();
+          vi.useRealTimers();
+          rerender(tree(true));
+          await waitForReadinessCondition(
+            () => expect(contexts).toBe(1),
+            "burst viewer did not restore renderer",
+          );
+          expect(testState.sockets).toHaveLength(1);
+          return;
+        }
+        act(() => {
+          for (let seq = 2; seq <= 121; seq++)
+            socket.receive({
+              type: "output",
+              chunk: {
+                seq,
+                dataBase64: btoa(
+                  (seq === 2
+                    ? createTerminalGridMarker({ cols: 41, rows: 12 })
+                    : "") + `parked-line-${seq}\r\n`,
+                ),
+              },
+            });
+        });
+        await waitForReadinessCondition(() => {
+          const lines = Array.from(
+            { length: terminal.buffer.active.length },
+            (_, index) =>
+              terminal.buffer.active.getLine(index)?.translateToString(true),
+          ).join("\n");
+          expect(lines).toContain("parked-line-121");
+        }, "parked output was not parsed before adoption");
+        expect(terminal.cols).toBe(scenario === "background-resize" ? 60 : 40);
+        expect(contexts).toBe(0);
+        expect(
+          document.querySelector('[data-terminal-paint-pending="true"]'),
+        ).not.toBeNull();
+        expect(
+          socket.sent
+            .slice(beforePark)
+            .map((raw) => JSON.parse(raw))
+            .filter((message) => message.type === "resize"),
+        ).toEqual([]);
+        const write = vi.spyOn(terminal, "write");
+        act(() =>
+          socket.receive({
+            type: "output",
+            chunk: { seq: 122, dataBase64: btoa("small-tail\r\n") },
+          }),
+        );
+        rerender(tree(true));
+        await waitForReadinessCondition(
+          () => expect(pageText()).toContain("small-tail"),
+          "adoption did not parse its small tail",
+        );
+        const written = write.mock.calls
+          .map(([bytes]) =>
+            typeof bytes === "string" ? bytes : new TextDecoder().decode(bytes),
+          )
+          .join("");
+        expect(written).toContain("small-tail");
+        await waitForReadinessCondition(
+          () =>
+            expect(
+              document.querySelector('[data-terminal-paint-pending="true"]'),
+            ).toBeNull(),
+          "adopted viewer stayed hidden after its first render",
+        );
+        expect(written).not.toContain("parked-line-");
+        expect(write).toHaveBeenCalledTimes(1);
+      } else {
+        rerender(tree(true));
+      }
+      const retainedText = () =>
+        scenario.startsWith("background")
+          ? Array.from({ length: primary!.buffer.active.length }, (_, index) =>
+              primary!.buffer.active.getLine(index)?.translateToString(true),
+            ).join("\n")
+          : pageText();
+      if (!retained) {
+        await waitForReadinessCondition(
+          () => expect(testState.sockets).toHaveLength(2),
+          "invalid viewer did not reopen",
+        );
+        expect(
+          new URL(testState.socketUrls[1]!).searchParams.get("sinceSeq"),
+        ).toBe("0");
+        const fresh = testState.sockets[1]!;
+        fresh.receive({
+          type: "attached",
+          session,
+          replayStartSeq: 0,
+          nextSeq: 2,
+        });
+        fresh.receive({
+          type: "output",
+          chunk: { seq: 0, dataBase64: btoa("before-route\r\n") },
+        });
+        fresh.receive({
+          type: "output",
+          chunk: { seq: 1, dataBase64: btoa("while-away\r\n") },
+        });
+      }
+      await waitForReadinessCondition(() => {
+        expect(retainedText()).toContain("while-away");
+        expect(contexts).toBe(1);
+      }, "retained route did not catch up");
+      if (retained) {
+        expect(testState.sockets).toHaveLength(1);
+        expect(testState.socketUrls).toHaveLength(1);
+        expect(
+          socket.sent
+            .slice(beforePark)
+            .map((raw) => JSON.parse(raw))
+            .filter((message) => message.type === "resize"),
+        ).toEqual([]);
+      }
+      expect(maxContexts).toBe(1);
+      expect(retainedText().match(/before-route/g)).toHaveLength(1);
+      expect(retainedText().match(/while-away/g)).toHaveLength(1);
+    },
+  );
+
+  it.each(["terminal_attach_timeout", "terminal_not_found"])(
+    "handles %s and server close while the screen request is pending",
+    async (code) => {
+      prepareMobileTerminal();
+      stubVisibleIntersectionObserver();
+      let resolveScreen!: (snapshot: TerminalScreenResponse | null) => void;
+      testState.screen.mockReturnValueOnce(
+        new Promise<TerminalScreenResponse | null>((resolve) => {
+          resolveScreen = resolve;
+        }),
+      );
+      const terminals: Terminal[] = [];
+      const open = Terminal.prototype.open;
+      vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
+        this: Terminal,
+        element: HTMLElement,
+      ) {
+        if (element.hasAttribute("data-terminal-grid-cache-id"))
+          terminals.push(this);
+        open.call(this, element);
+      });
+      const session = renderMobileTerminal();
+      try {
+        await waitForReadinessCondition(() => {
+          expect(terminals).toHaveLength(1);
+          expect(testState.sockets).toHaveLength(1);
+        }, "pending-screen viewer did not mount");
+        const failed = testState.sockets[0]!;
+        await waitForReadiness(failed.opened, "initial socket did not open");
+        failed.receive({ type: "error", code, message: "Attach failed" });
+        failed.disconnect(1013, "attach-failed");
+        if (code === "terminal_not_found") {
+          await pause(1_000);
+          expect(testState.sockets).toHaveLength(1);
+          expect(failed.readyState).toBe(TestTerminalSocket.CLOSED);
+          return;
+        }
+        await waitForReadinessCondition(() => {
+          expect(testState.sockets).toHaveLength(2);
+        }, "attach timeout did not reconnect with a pending screen");
+        const retry = testState.sockets[1]!;
+        await waitForReadiness(retry.opened, "retry socket did not open");
+        retry.receive({
+          type: "attached",
+          session,
+          replayStartSeq: 49_999,
+          nextSeq: 50_000,
+        });
+        for (const seq of [49_999, 50_000]) {
+          retry.receive({
+            type: "output",
+            chunk: { seq, dataBase64: btoa(`line ${seq + 1}\r\n`) },
+          });
+        }
+        await waitForReadinessCondition(() => {
+          expect(retry.sent.map((frame) => JSON.parse(frame))).toContainEqual({
+            type: "ack",
+            nextSeq: 50_001,
+          });
+        }, "retry did not catch up and acknowledge current output");
+        const terminal = terminals[0]!;
+        expect(
+          Array.from({ length: terminal.buffer.active.length }, (_, index) =>
+            terminal.buffer.active.getLine(index)?.translateToString(true),
+          ).join("\n"),
+        ).toContain("line 50001");
+        expect(retry.readyState).toBe(TestTerminalSocket.OPEN);
+        expect(testState.sockets).toHaveLength(2);
+      } finally {
+        resolveScreen(null);
+      }
+    },
+  );
+
+  it("adopts replay and acknowledges fifty-thousand-line history while the screen request is pending", async () => {
+    prepareMobileTerminal();
+    stubVisibleIntersectionObserver();
+    let resolveScreen!: (snapshot: TerminalScreenResponse | null) => void;
+    testState.screen.mockReturnValueOnce(
+      new Promise<TerminalScreenResponse | null>((resolve) => {
+        resolveScreen = resolve;
+      }),
+    );
+    const terminals: Terminal[] = [];
+    const open = Terminal.prototype.open;
+    vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
+      this: Terminal,
+      element: HTMLElement,
+    ) {
+      if (element.hasAttribute("data-terminal-grid-cache-id"))
+        terminals.push(this);
+      open.call(this, element);
+    });
+    const session = renderMobileTerminal();
+    try {
+      await waitForReadinessCondition(() => {
+        expect(terminals).toHaveLength(1);
+        expect(testState.sockets).toHaveLength(1);
+      }, "viewer did not mount");
+      const socket = testState.sockets[0]!;
+      await waitForReadiness(socket.opened, "prefetched socket did not open");
+      socket.receive({
+        type: "attached",
+        session,
+        replayStartSeq: 40_000,
+        nextSeq: 50_000,
+      });
+      for (let start = 40_000; start < 50_000; start += 500) {
+        socket.receive({
+          type: "output-batch",
+          chunks: Array.from({ length: 500 }, (_, index) => ({
+            seq: start + index,
+            dataBase64: btoa(`line ${start + index + 1}\r\n`),
+          })),
+        });
+      }
+      socket.receive({
+        type: "output",
+        chunk: { seq: 50_000, dataBase64: btoa("line 50001\r\n") },
+      });
+      await waitForReadinessCondition(() => {
+        expect(socket.sent.map((frame) => JSON.parse(frame))).toContainEqual({
+          type: "ack",
+          nextSeq: 50_001,
+        });
+      }, "screen request blocked replay adoption and ACK");
+      const terminal = terminals[0]!;
+      expect(
+        Array.from({ length: terminal.buffer.active.length }, (_, index) =>
+          terminal.buffer.active.getLine(index)?.translateToString(true),
+        ).join("\n"),
+      ).toContain("line 50001");
+      expect(testState.sockets).toHaveLength(1);
+      expect(socket.readyState).toBe(TestTerminalSocket.OPEN);
+      await act(async () => {
+        resolveScreen({
+          complete: true,
+          truncated: false,
+          cols: terminal.cols,
+          gridRows: terminal.rows,
+          rows: ["stale checkpoint"],
+          cursor: { col: 0, row: 0 },
+          checkpointSeq: 40_001,
+          dataBase64: btoa("stale checkpoint\r\n"),
+        });
+      });
+      expect(document.body.textContent).not.toContain("stale checkpoint");
+      expect(
+        Array.from({ length: terminal.buffer.active.length }, (_, index) =>
+          terminal.buffer.active.getLine(index)?.translateToString(true),
+        ).join("\n"),
+      ).toContain("line 50001");
+      expect(testState.sockets).toHaveLength(1);
+    } finally {
+      resolveScreen(null);
+    }
+  });
+
+  it.each(["before attachment", "after parsed output"])(
+    "replays missed output once after a viewer unmounts %s",
+    async (phase) => {
+      prepareMobileTerminal();
+      stubVisibleIntersectionObserver();
+      testState.deferSocketOpen = true;
+      const mountedTerminals: Terminal[] = [];
+      const openTerminal = Terminal.prototype.open;
+      vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
+        this: Terminal,
+        element: HTMLElement,
+      ) {
+        if (element.hasAttribute("data-terminal-grid-cache-id")) {
+          mountedTerminals.push(this);
+        }
+        openTerminal.call(this, element);
+      });
+      const session = renderMobileTerminal();
+      await waitForReadinessCondition(() => {
+        expect(document.querySelector(".xterm-screen")).not.toBeNull();
+        expect(testState.sockets).toHaveLength(1);
+      }, "terminal screen was not created before attachment");
+      const initialSocket = testState.sockets[0];
+      if (!initialSocket) throw new Error("initial socket is missing");
+      if (phase === "after parsed output") {
+        initialSocket.open();
+        initialSocket.receive({
+          type: "attached",
+          session,
+          replayStartSeq: 0,
+          nextSeq: 1,
+        });
+        initialSocket.receive({
+          type: "output",
+          chunk: { seq: 0, dataBase64: btoa("line 1\r\n") },
+        });
+        await waitForReadinessCondition(() => {
+          expect(
+            initialSocket.sent.map((message) => JSON.parse(message)),
+          ).toContainEqual({ type: "ack", nextSeq: 1 });
+        }, "initial output was not parsed");
+      } else {
+        expect(initialSocket.readyState).toBe(TestTerminalSocket.CONNECTING);
+        expect(initialSocket.sent).toEqual([]);
+      }
+      cleanup();
+      expect(initialSocket.readyState).toBe(TestTerminalSocket.CLOSED);
+      renderMobileTerminal();
+      await waitForReadinessCondition(() => {
+        expect(testState.sockets).toHaveLength(2);
+        expect(mountedTerminals).toHaveLength(2);
+      }, "returning to the terminal did not create a new viewer");
+      const replaySocket = testState.sockets[1];
+      const terminal = mountedTerminals[1];
+      if (!replaySocket || !terminal)
+        throw new Error("returning viewer is missing");
+      expect(
+        new URL(testState.socketUrls[1] ?? "ws://localhost").searchParams.get(
+          "sinceSeq",
+        ),
+      ).toBe("0");
+      replaySocket.open();
+      replaySocket.receive({
+        type: "attached",
+        session,
+        replayStartSeq: 37,
+        nextSeq: 39,
+      });
+      for (const seq of [37, 38, 38, 39]) {
+        replaySocket.receive({
+          type: "output",
+          chunk: { seq, dataBase64: btoa(`line ${seq + 1}\r\n`) },
+        });
+      }
+      await waitForReadinessCondition(() => {
+        expect(
+          replaySocket.sent.map((message) => JSON.parse(message)),
+        ).toContainEqual({ type: "ack", nextSeq: 40 });
+      }, "returning viewer did not parse replay and later live output");
+      await waitFor(
+        () => {
+          const text = Array.from(
+            { length: terminal.buffer.active.length },
+            (_, index) =>
+              terminal.buffer.active.getLine(index)?.translateToString(true),
+          ).join("\n");
+          for (const line of [38, 39, 40]) {
+            expect(text).toContain(`line ${line}`);
+            expect(text.match(new RegExp(`line ${line}`, "g"))).toHaveLength(1);
+          }
+        },
+        { timeout: 5000 },
+      );
+      expect(testState.sockets).toHaveLength(2);
+    },
+  );
+
+  it("sends the resolved theme only from the focused viewer and leaves replay replies suppressed", async () => {
+    prepareMobileTerminal();
+    Reflect.set(
+      wsManager,
+      "deviceHandoffClientToken",
+      "abcdefghijklmnopqrstuv",
+    );
+    const context = {
+      measureText: (text: string) => ({ width: text.length * 9 }),
+      clearRect: vi.fn(),
+      fillRect: vi.fn(),
+      fillStyle: "",
+      getImageData: vi.fn(() => ({
+        data: new Uint8ClampedArray([
+          ...(context.fillStyle.match(/\d+/gu)?.slice(0, 3).map(Number) ?? [
+            12, 34, 56,
+          ]),
+          255,
+        ]),
+      })),
+    };
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(
+      (kind) =>
+        kind === "2d" ? (context as unknown as CanvasRenderingContext2D) : null,
+    );
+    vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    document.documentElement.style.setProperty(
+      "--foreground",
+      "rgb(228, 228, 228)",
+    );
+    document.documentElement.style.setProperty("--ink", "rgb(12, 34, 56)");
+    document.documentElement.style.setProperty("--sidebar", "rgb(12, 34, 56)");
+    testState.setDefaultColors.mockClear();
+    const otherViewer = render(<button>Other viewer</button>);
+    otherViewer.getByRole("button").focus();
+    const session = renderMobileTerminal();
+    await waitForReadinessCondition(
+      () => expect(testState.sockets).toHaveLength(1),
+      "terminal did not connect",
+    );
+    const socket = testState.sockets[0];
+    await waitForReadiness(socket.opened, "terminal did not open");
+    socket.receive({
+      type: "attached",
+      session,
+      replayStartSeq: 0,
+      nextSeq: 1,
+    });
+    socket.receive({
+      type: "output",
+      chunk: {
+        seq: 0,
+        dataBase64: btoa("history\x1b]10;?\x07\x1b]11;?\x1b\\"),
+      },
+    });
+    expect(testState.setDefaultColors).not.toHaveBeenCalled();
+    const textarea = await waitFor(() => {
+      const element = document.querySelector<HTMLTextAreaElement>(
+        ".xterm-helper-textarea",
+      );
+      expect(element).not.toBeNull();
+      return element!;
+    });
+    act(() => textarea.focus());
+    await waitFor(() =>
+      expect(testState.setDefaultColors).toHaveBeenCalledWith({
+        terminalId: session.id,
+        viewerToken: "abcdefghijklmnopqrstuv",
+        foreground: [12, 34, 56],
+        background: [12, 34, 56],
+      }),
+    );
+    const initialColorReads = context.getImageData.mock.calls.length;
+    const createElement = vi.spyOn(document, "createElement");
+    act(() =>
+      textarea.dispatchEvent(new FocusEvent("focusin", { bubbles: true })),
+    );
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    });
+    expect(testState.setDefaultColors).toHaveBeenCalledTimes(1);
+    expect(context.getImageData).toHaveBeenCalledTimes(initialColorReads);
+    expect(
+      createElement.mock.calls.filter(([tag]) => tag === "canvas"),
+    ).toHaveLength(0);
+    act(() => textarea.blur());
+    document.documentElement.style.removeProperty("--foreground");
+    document.documentElement.style.removeProperty("--ink");
+    document.documentElement.style.removeProperty("--sidebar");
+    const lightCss =
+      ":root { --foreground: rgb(80, 80, 80); --ink: rgb(51, 51, 51); --sidebar: rgb(250, 250, 250); }";
+    act(() => applyAppThemeCss(lightCss));
+    await waitFor(() =>
+      expect(testState.setDefaultColors).toHaveBeenLastCalledWith({
+        terminalId: session.id,
+        viewerToken: "abcdefghijklmnopqrstuv",
+        foreground: [51, 51, 51],
+        background: [250, 250, 250],
+      }),
+    );
+    expect(testState.setDefaultColors).toHaveBeenCalledTimes(2);
+    expect(context.getImageData).toHaveBeenCalledTimes(initialColorReads + 2);
+    const changedThemeCanvases = createElement.mock.calls.filter(
+      ([tag]) => tag === "canvas",
+    ).length;
+    act(() => applyAppThemeCss(lightCss + "\n"));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    });
+    expect(testState.setDefaultColors).toHaveBeenCalledTimes(2);
+    expect(context.getImageData).toHaveBeenCalledTimes(initialColorReads + 2);
+    expect(
+      createElement.mock.calls.filter(([tag]) => tag === "canvas"),
+    ).toHaveLength(changedThemeCanvases);
+
+    expect(
+      socket.sent.filter((raw) => JSON.parse(raw).type === "input"),
+    ).toEqual([]);
+    document.documentElement.style.removeProperty("--foreground");
+    document.documentElement.style.removeProperty("--ink");
+    document.documentElement.style.removeProperty("--sidebar");
+  });
+
   it("restores history and one exit notice from exited props without WebSocket messages", async () => {
     prepareMobileTerminal();
     testState.output.mockResolvedValue({
@@ -659,7 +1991,73 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
     }, "hidden output was not replayed when the terminal became visible");
   });
 
-  it("does not repaint-nudge the initial terminal replay", async () => {
+  it.each([
+    { width: 390, cols: 45, rows: 37 },
+    { width: 360, cols: 41, rows: 33 },
+  ])(
+    "claims one final phone grid at $width px while the fit action disappears",
+    async ({ cols, rows }) => {
+      prepareMobileTerminal();
+      const guard = render(<button>Other input</button>);
+      guard.getByRole("button").focus();
+      vi.spyOn(FitAddon.prototype, "proposeDimensions").mockImplementation(
+        () => {
+          const fit = Array.from(document.querySelectorAll("button")).find(
+            (button) => button.textContent === "Fit to this screen",
+          );
+          const inFlow =
+            fit?.parentElement &&
+            getComputedStyle(fit.parentElement).position !== "absolute";
+          return { cols, rows: rows - (inFlow ? 2 : 0) };
+        },
+      );
+      const settled = vi.spyOn(
+        TerminalWebSocketTransport.prototype,
+        "markLayoutSettled",
+      );
+      const session = renderMobileTerminal({ cols: 132, rows: 41 });
+      await waitForReadinessCondition(
+        () => expect(settled).toHaveBeenCalled(),
+        "phone layout did not settle",
+      );
+      await waitForReadinessCondition(
+        () => expect(testState.sockets).toHaveLength(1),
+        "phone did not connect",
+      );
+      const socket = testState.sockets[0]!;
+      await socket.opened;
+      const resizes = () =>
+        socket.sent
+          .map((frame) => JSON.parse(frame))
+          .filter((frame) => frame.type === "resize");
+      await waitForReadinessCondition(
+        () => expect(resizes().length).toBeGreaterThan(0),
+        "phone did not send its fit",
+      );
+      expect(
+        resizes().every((frame) => frame.cols === cols && frame.rows === rows),
+      ).toBe(true);
+      socket.receive({
+        type: "attached",
+        session: { ...session, cols, rows },
+        replayStartSeq: 0,
+        nextSeq: 0,
+      });
+      await waitForReadinessCondition(
+        () => expect(pageText()).not.toContain("Fit to this screen"),
+        "fit action did not disappear after ownership fit",
+      );
+      expect(
+        resizes().every((frame) => frame.cols === cols && frame.rows === rows),
+      ).toBe(true);
+      fireEvent.focus(document.querySelector(".xterm-helper-textarea")!);
+      const claims = resizes().filter((frame) => frame.claim === true);
+      expect(claims).toHaveLength(1);
+      expect(claims[0]).toMatchObject({ cols, rows });
+    },
+  );
+
+  it("keeps the settled grid through initial replay and reconnect without a repaint nudge", async () => {
     prepareFirstAttachFontMetricsHarness();
     const markLayoutSettled =
       TerminalWebSocketTransport.prototype.markLayoutSettled;
@@ -714,10 +2112,10 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
               type?: string;
             },
         )
-        .filter(
-          (message) => message.type === "resize" && message.claim !== true,
-        );
-    expect(resizeMessages()).toEqual([{ type: "resize", cols: 51, rows: 47 }]);
+        .filter((message) => message.type === "resize");
+    expect(resizeMessages()).toEqual([
+      { type: "resize", cols: 51, rows: 47, claim: true },
+    ]);
 
     const session = makeTerminalSession({
       id: "term_first_attach_font_metrics",
@@ -732,11 +2130,15 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
       replayStartSeq: 0,
       nextSeq: 0,
     });
-    expect(resizeMessages()).toEqual([{ type: "resize", cols: 51, rows: 47 }]);
+    expect(resizeMessages()).toEqual([
+      { type: "resize", cols: 51, rows: 47, claim: true },
+    ]);
     await act(async () => {
       await vi.advanceTimersByTimeAsync(REPAINT_RESTORE_DELAY_MS + 1);
     });
-    expect(resizeMessages()).toEqual([{ type: "resize", cols: 51, rows: 47 }]);
+    expect(resizeMessages()).toEqual([
+      { type: "resize", cols: 51, rows: 47, claim: true },
+    ]);
     vi.useRealTimers();
 
     testState.deferSocketOpen = true;
@@ -772,36 +2174,13 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0);
     });
-    expect(socketResizes()).toContainEqual({
-      type: "resize",
-      cols: 50,
-      rows: 47,
-      seq: 1,
-    });
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(REPAINT_RESTORE_DELAY_MS);
+      await vi.advanceTimersByTimeAsync(REPAINT_RESTORE_DELAY_MS + 1);
     });
-    expect(socketResizes().at(-1)).toEqual({
-      type: "resize",
-      cols: 50,
-      rows: 47,
-      seq: 1,
-    });
-    reconnectedSocket.receive({ type: "resize-applied", seq: 1 });
-    expect(socketResizes().at(-1)).toEqual({
-      type: "resize",
-      cols: 51,
-      rows: 47,
-      seq: 2,
-    });
+    expect(socketResizes().length).toBeGreaterThan(0);
     expect(
-      socketResizes()
-        .slice(-2)
-        .map(({ type, cols, rows }) => ({ type, cols, rows })),
-    ).toEqual([
-      { type: "resize", cols: 50, rows: 47 },
-      { type: "resize", cols: 51, rows: 47 },
-    ]);
+      socketResizes().every(({ cols, rows }) => cols === 51 && rows === 47),
+    ).toBe(true);
   });
 
   it("retries a replay attempt that outlasts the backstop and holds again for the next attempt", async () => {
@@ -1099,6 +2478,237 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
     );
   }
 
+  it("paints the screen before terminal modules or socket replay arrive", async () => {
+    prepareMobileTerminal();
+    testState.screen.mockResolvedValue({
+      rows: ["early snapshot"],
+      cursor: { col: 0, row: 0 },
+      cols: 40,
+      gridRows: 12,
+      complete: true,
+      truncated: false,
+      checkpointSeq: 2,
+      dataBase64: btoa("early snapshot"),
+    });
+    vi.spyOn(terminalModules, "importTerminalModules").mockImplementationOnce(
+      () => new Promise(() => {}),
+    );
+    renderMobileTerminal();
+    await waitForReadinessCondition(
+      () => expect(testState.screen).toHaveBeenCalledOnce(),
+      "screen fetch did not overlap module loading",
+    );
+    await waitForReadinessCondition(
+      () =>
+        expect(
+          document.querySelector("[data-terminal-screen-loading-preview]")
+            ?.textContent,
+        ).toBe("early snapshot"),
+      "snapshot remained hidden behind module loading",
+    );
+    expect(testState.sockets).toHaveLength(1);
+    expect(testState.sockets[0]!.sent).toEqual([]);
+    cleanup();
+    expect(
+      document.querySelector("[data-terminal-screen-loading-preview]"),
+    ).toBeNull();
+  });
+
+  it.each([40, 30])(
+    "replaces a %i-column loading snapshot with replay history exactly once",
+    async (snapshotCols) => {
+      prepareMobileTerminal();
+      stubVisibleIntersectionObserver();
+      vi.spyOn(FitAddon.prototype, "proposeDimensions").mockReturnValue({
+        cols: 40,
+        rows: 12,
+      });
+      const modules = terminalModules.importTerminalModules();
+      let finishModules!: () => void;
+      vi.spyOn(terminalModules, "importTerminalModules").mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finishModules = () => {
+              void modules.then(resolve);
+            };
+          }),
+      );
+      testState.screen.mockResolvedValue({
+        rows: ["snapshot text"],
+        cursor: { col: 0, row: 0 },
+        cols: snapshotCols,
+        gridRows: 12,
+        complete: true,
+        truncated: false,
+        checkpointSeq: 1,
+        dataBase64: btoa("snapshot text"),
+      });
+      const terminals: Terminal[] = [];
+      const open = Terminal.prototype.open;
+      vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
+        this: Terminal,
+        element: HTMLElement,
+      ) {
+        terminals.push(this);
+        open.call(this, element);
+      });
+      const session = renderMobileTerminal();
+      await waitFor(() =>
+        expect(
+          document.querySelector("[data-terminal-screen-loading-preview]")
+            ?.textContent,
+        ).toBe("snapshot text"),
+      );
+      expect(testState.sockets).toHaveLength(1);
+      expect(testState.sockets[0]!.sent).toEqual([]);
+      expect(pageText()).toContain("Restoring session…");
+      expect(pageText()).not.toContain("Fit to this screen");
+      const previewFontSize = document.querySelector<HTMLElement>(
+        "[data-terminal-screen-loading-preview]",
+      )!.style.fontSize;
+      const snapshotElement = document.querySelector<HTMLElement>(
+        "[data-terminal-screen-loading-preview]",
+      )!;
+      const removeSnapshot = vi.spyOn(snapshotElement, "remove");
+      finishModules();
+      await waitFor(
+        () => expect(document.querySelector(".xterm")).not.toBeNull(),
+        {
+          timeout: 20_000,
+        },
+      );
+      expect(
+        document.querySelector("[data-terminal-screen-loading-preview]")
+          ?.textContent,
+      ).toBe("snapshot text");
+      if (snapshotCols === 40)
+        await waitFor(() =>
+          expect(
+            document.querySelector("[data-terminal-replay-preview]"),
+          ).not.toBeNull(),
+        );
+      const preview = document.querySelector<HTMLElement>(
+        "[data-terminal-replay-preview]",
+      );
+      const socket = testState.sockets[0]!;
+      await waitForReadiness(socket.opened, "socket did not open");
+      await waitForReadinessCondition(
+        () =>
+          expect(
+            socket.sent.some((frame) => JSON.parse(frame).type === "resize"),
+          ).toBe(true),
+        "terminal fit did not settle",
+      );
+      if (snapshotCols === 40)
+        await waitFor(() => expect(preview?.style.visibility).toBe("visible"));
+      socket.receive({
+        type: "attached",
+        session,
+        replayStartSeq: 0,
+        nextSeq: 2,
+      });
+      await waitFor(() => expect(pageText()).toContain("Restoring session…"));
+      expect(pageText()).not.toContain("Fit to this screen");
+      expect(
+        document.querySelector("[data-terminal-screen-loading-preview]")
+          ?.textContent,
+      ).toBe("snapshot text");
+      expect(pageText()).not.toContain("Reconnecting");
+      vi.useFakeTimers();
+      await act(() => vi.advanceTimersByTimeAsync(3700));
+      vi.useRealTimers();
+      expect(pageText()).toContain("Restoring session…");
+      expect(pageText()).not.toContain("Fit to this screen");
+      expect(
+        document
+          .querySelector("[data-terminal-restoring]")
+          ?.getAttribute("role"),
+      ).toBe("status");
+      expect(snapshotElement.isConnected).toBe(true);
+      expect(snapshotElement.style.whiteSpace).toBe("pre");
+      expect(removeSnapshot).not.toHaveBeenCalled();
+      socket.receive({
+        type: "output",
+        chunk: { seq: 0, dataBase64: btoa("older scrollback\r\n") },
+      });
+      socket.receive({
+        type: "output",
+        chunk: { seq: 1, dataBase64: btoa("snapshot text\r\n") },
+      });
+      await waitFor(() => {
+        expect(
+          document.querySelector("[data-terminal-replay-preview]"),
+        ).toBeNull();
+        expect(
+          document.querySelector("[data-terminal-screen-loading-preview]"),
+        ).toBeNull();
+        expect(pageText()).not.toContain("Restoring session…");
+      });
+      const terminal = terminals[0]!;
+      expect(previewFontSize).toBe(`${terminal.options.fontSize}px`);
+      const text = Array.from(
+        { length: terminal.buffer.active.length },
+        (_, i) => terminal.buffer.active.getLine(i)?.translateToString(true),
+      ).join("\n");
+      expect(text).toContain("older scrollback");
+      expect(text.match(/snapshot text/g)).toHaveLength(1);
+      expect(text.indexOf("older scrollback")).toBeLessThan(
+        text.indexOf("snapshot text"),
+      );
+      expect(
+        document.querySelector("[data-terminal-screen-loading-preview]"),
+      ).toBeNull();
+      expect(removeSnapshot).toHaveBeenCalledOnce();
+      expect(pageText()).not.toContain("Restoring session…");
+      expect(testState.sockets).toHaveLength(1);
+      expect(socket.closeCalls).toHaveLength(0);
+      const resizes = socket.sent
+        .map((frame) => JSON.parse(frame))
+        .filter((frame) => frame.type === "resize");
+      expect(resizes.filter((frame) => frame.claim === true)).toHaveLength(1);
+      expect(
+        resizes.every((frame) => frame.cols === 40 && frame.rows === 12),
+      ).toBe(true);
+    },
+  );
+
+  it("removes the loading snapshot when terminal modules fail", async () => {
+    prepareMobileTerminal();
+    testState.screen.mockResolvedValue({
+      rows: ["stale snapshot"],
+      cursor: { col: 0, row: 0 },
+      cols: 40,
+      gridRows: 12,
+      complete: true,
+      truncated: false,
+      checkpointSeq: 2,
+      dataBase64: btoa("stale snapshot"),
+    });
+    let fail!: (error: Error) => void;
+    vi.spyOn(terminalModules, "importTerminalModules").mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          fail = reject;
+        }),
+    );
+    renderMobileTerminal();
+    await waitFor(() =>
+      expect(
+        document.querySelector("[data-terminal-screen-loading-preview]"),
+      ).not.toBeNull(),
+    );
+    fail(new Error("renderer unavailable"));
+    await waitFor(() =>
+      expect(
+        document.querySelector("[data-terminal-screen-loading-preview]"),
+      ).toBeNull(),
+    );
+    expect(document.body.textContent).toContain("renderer unavailable");
+    expect(testState.sockets[0]!.readyState).toBe(TestTerminalSocket.CLOSED);
+    expect(testState.sockets).toHaveLength(1);
+    expect(testState.sockets[0]!.sent).toEqual([]);
+  });
+
   async function mountReplayWithUnusableSnapshot() {
     prepareMobileTerminal();
     testState.screen.mockResolvedValue({
@@ -1167,8 +2777,15 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
   }
 
   it("keeps the preview of a replay without a usable snapshot hidden until the replay completes", async () => {
+    const marks = vi.spyOn(performance, "mark");
     const { bufferText, preview, socket } =
       await mountReplayWithUnusableSnapshot();
+    expect(marks.mock.calls.map(([name]) => name)).toContain(
+      "terminal-replay-first-frame-received",
+    );
+    expect(marks.mock.calls.map(([name]) => name)).not.toContain(
+      "terminal-replay-last-xterm-callback",
+    );
     socket.receive({
       type: "output",
       chunk: { seq: 2, dataBase64: btoa("current frame\r\n") },
@@ -1181,6 +2798,57 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
       () => expect(preview()?.dataset.terminalReplayHeld).toBeUndefined(),
       "replay preview stayed held after the replay completed",
     );
+    await waitForReadinessCondition(() => {
+      expect(marks.mock.calls.map(([name]) => name)).toContain(
+        "terminal-replay-revealed",
+      );
+    }, "replay reveal timing was not recorded");
+    const names = marks.mock.calls.map(([name]) => name);
+    for (const name of [
+      "terminal-replay-first-frame-received",
+      "terminal-replay-last-frame-received",
+      "terminal-replay-last-frame-dispatched",
+      "terminal-replay-primary-xterm-parsed",
+      "terminal-replay-last-xterm-callback",
+      "terminal-replay-revealed",
+    ]) {
+      expect(names.filter((candidate) => candidate === name)).toHaveLength(1);
+    }
+    expect(names.indexOf("terminal-replay-last-frame-dispatched")).toBeLessThan(
+      names.indexOf("terminal-replay-last-xterm-callback"),
+    );
+    expect(names.indexOf("terminal-replay-last-xterm-callback")).toBeLessThan(
+      names.indexOf("terminal-replay-revealed"),
+    );
+  });
+
+  it("finishes a non-owner attach using its grid without a later resize or deadline", async () => {
+    const setTimeout = window.setTimeout.bind(window);
+    vi.spyOn(window, "setTimeout").mockImplementation(((
+      handler: TimerHandler,
+      delay?: number,
+      ...args: unknown[]
+    ) =>
+      setTimeout(
+        handler,
+        typeof handler === "function" && handler.name === "handoffAtLatestGrid"
+          ? 10_000
+          : delay,
+        ...args,
+      )) as typeof window.setTimeout);
+    const { preview, socket } = await mountReplayWithUnusableSnapshot();
+    socket.receive({
+      type: "output",
+      chunk: { seq: 2, dataBase64: btoa("current frame\r\n") },
+    });
+    await waitForReadinessCondition(() => {
+      expect(socket.sent.map((raw) => JSON.parse(raw))).toContainEqual({
+        type: "ack",
+        nextSeq: 3,
+      });
+    }, "non-owner replay waited for a resize instead of using its attach grid");
+    expect(preview()?.dataset.terminalReplayHeld).toBeUndefined();
+    expect(pageText()).not.toContain("Reconnecting");
   });
 
   it("keeps the preview hidden while the socket is down and holds it again for the replay a reconnect starts", async () => {
@@ -1308,16 +2976,32 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
   });
 
   it("keeps the painted screen visible and partial output hidden after a stalled replay hold expires", async () => {
-    shortenReplayHoldTimeout(600);
+    let expireHold: (() => void) | undefined;
+    const setTimeout = window.setTimeout.bind(window);
+    vi.spyOn(window, "setTimeout").mockImplementation(((
+      handler: TimerHandler,
+      delay?: number,
+      ...args: unknown[]
+    ) => {
+      if (typeof handler === "function" && handler.name === "expireHold") {
+        expireHold = () => handler(...args);
+        return setTimeout(() => undefined, 0);
+      }
+      return setTimeout(handler, delay, ...args);
+    }) as typeof window.setTimeout);
     const { bufferText, preview } = await mountReplayWithUnusableSnapshot();
-    await waitForReadinessCondition(
-      () => expect(preview()?.dataset.terminalReplayHoldExpired).toBeDefined(),
-      "hold backstop did not fire for the stalled replay",
-    );
+    expect(expireHold).toBeDefined();
+    await act(async () => expireHold?.());
     expect(preview()?.dataset.terminalReplayHeld).toBeDefined();
     expect(preview()?.style.visibility).toBe("hidden");
     expect(pageText()).toContain("Reconnecting");
     expect(pageText()).not.toContain("Still loading terminal");
+    const status = Array.from(
+      document.querySelectorAll('[role="status"]'),
+    ).find((element) => element.textContent?.includes("Reconnecting"));
+    expect(status?.parentElement?.className.split(/\s+/u)).toContain("flex");
+    expect(status && getComputedStyle(status).position).toBe("absolute");
+    expect(status?.closest("[data-terminal-replay-preview]")).toBeNull();
 
     await waitForReadinessCondition(
       () => expect(testState.sockets).toHaveLength(2),
@@ -1752,45 +3436,100 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
     expect(testState.sockets).toHaveLength(socketsBefore + 1);
   });
 
+  it("claims the terminal on the first key without remeasuring its grid on later keys", async () => {
+    prepareMobileTerminal();
+    stubVisibleIntersectionObserver();
+    testState.screen.mockResolvedValue(null);
+    const session = renderMobileTerminal();
+    await waitForReadinessCondition(
+      () => expect(testState.sockets).toHaveLength(1),
+      "terminal socket did not mount",
+    );
+    const socket = testState.sockets[0];
+    if (!socket) throw new Error("terminal socket is missing");
+    await waitForReadiness(socket.opened, "terminal socket did not open");
+    socket.receive({
+      type: "attached",
+      session,
+      replayStartSeq: 0,
+      nextSeq: 0,
+    });
+    const textarea = document.querySelector<HTMLTextAreaElement>(
+      ".xterm-helper-textarea",
+    );
+    if (!textarea) throw new Error("terminal input did not mount");
+    textarea.focus();
+    const bounds = vi.mocked(HTMLElement.prototype.getBoundingClientRect);
+    const key = () =>
+      fireEvent.keyDown(textarea, {
+        key: "ArrowLeft",
+        code: "ArrowLeft",
+        keyCode: 37,
+        which: 37,
+      });
+    bounds.mockClear();
+    key();
+    expect(bounds.mock.calls.length).toBeGreaterThan(0);
+    bounds.mockClear();
+    for (let i = 0; i < 40; i += 1) key();
+    expect(bounds).not.toHaveBeenCalled();
+    expect(
+      socket.sent
+        .map((message) => JSON.parse(message))
+        .filter((message) => message.type === "input"),
+    ).toHaveLength(41);
+  });
+
   it("backs off instead of spinning when the retried replay also stalls", async () => {
     shortenReplayHoldTimeout(600);
+    let notifyRetry = () => {};
+    const nextRetry = () =>
+      new Promise<void>((resolve) => {
+        notifyRetry = resolve;
+      });
+    let retried = nextRetry();
+    const retry = TerminalWebSocketTransport.prototype.retry;
+    const retryAttempt = vi
+      .spyOn(TerminalWebSocketTransport.prototype, "retry")
+      .mockImplementation(function (this: TerminalWebSocketTransport) {
+        vi.useFakeTimers();
+        retry.call(this);
+        notifyRetry();
+      });
     const { preview, session } = await mountReplayAfterCheckpointedOpen();
+    testState.deferSocketOpen = true;
     let known = testState.sockets.length;
-    const stallTimes: number[] = [];
-    const openTimes: number[] = [];
-    for (const round of [1, 2]) {
-      await waitForReadinessCondition(
-        () =>
-          expect(preview()?.dataset.terminalReplayHoldExpired).toBeDefined(),
-        `hold backstop did not fire in round ${round}`,
-      );
-      stallTimes.push(performance.now());
+    const advance = (ms: number) =>
+      act(async () => {
+        await vi.advanceTimersByTimeAsync(ms);
+      });
+    for (const delay of [100, 250, 500]) {
+      await waitForReadiness(retried, "replay hold did not expire");
+      await advance(0);
+      expect(retryAttempt).toHaveBeenCalledTimes(known - 1);
       expect(pageText()).toContain("Reconnecting");
       expect(pageText()).not.toContain("Terminal output unavailable");
-      await waitForReadinessCondition(
-        () => expect(testState.sockets).toHaveLength(known + 1),
-        `stalled replay did not reconnect in round ${round}`,
-      );
-      openTimes.push(performance.now());
+      await advance(delay - 1);
+      expect(testState.sockets).toHaveLength(known);
+      await advance(1);
+      expect(testState.sockets).toHaveLength(known + 1);
       const next = testState.sockets[known];
       if (!next) throw new Error("retry socket is missing");
       known += 1;
-      await waitForReadiness(next.opened, "retry socket did not open");
-      next.receive({
-        type: "attached",
-        session,
-        replayStartSeq: 4,
-        nextSeq: 6,
+      vi.clearAllTimers();
+      vi.useRealTimers();
+      retried = nextRetry();
+      await act(async () => {
+        next.open();
+        next.receive({
+          type: "attached",
+          session,
+          replayStartSeq: 4,
+          nextSeq: 6,
+        });
       });
-      await waitForReadinessCondition(
-        () =>
-          expect(preview()?.dataset.terminalReplayHoldExpired).toBeUndefined(),
-        `retry socket ${round} did not start a new held replay`,
-      );
+      expect(preview()?.dataset.terminalReplayHoldExpired).toBeUndefined();
     }
-    const firstDelay = (openTimes[0] ?? 0) - (stallTimes[0] ?? 0);
-    const secondDelay = (openTimes[1] ?? 0) - (stallTimes[1] ?? 0);
-    expect(secondDelay).toBeGreaterThan(firstDelay + 100);
     expect(pageText()).toContain("Reconnecting");
     expect(pageText()).not.toContain("Terminal output unavailable");
     expectPaintedScreenKept(preview);
@@ -2120,8 +3859,96 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
     referenceHost.remove();
   }, 30_000);
 
-  it("preserves terminal state when WebGL attaches after replay", async () => {
-    prepareMobileTerminal();
+  it.each(["ready", "visibility", "timeout", "failure"] as const)(
+    "sends one native cold-open resize when WebGL load ends with %s",
+    async (outcome) => {
+      prepareFirstAttachFontMetricsHarness();
+      testState.touchEnabled = false;
+      stubVisibleIntersectionObserver(outcome === "visibility");
+      type WebglModule = Awaited<
+        ReturnType<typeof terminalModules.importTerminalWebglAddon>
+      >;
+      let resolveWebgl!: (module: WebglModule) => void;
+      let rejectWebgl!: (error: Error) => void;
+      vi.spyOn(terminalModules, "importTerminalWebglAddon").mockReturnValue(
+        new Promise<WebglModule>((resolve, reject) => {
+          resolveWebgl = resolve;
+          rejectWebgl = reject;
+        }),
+      );
+      let loseContext = () => {};
+      class WebglAddon {
+        activate(_terminal: Terminal): void {}
+        dispose(): void {}
+        onContextLoss(listener: () => void) {
+          loseContext = listener;
+          return { dispose: () => {} };
+        }
+      }
+      const mounted: { current: Terminal | null } = { current: null };
+      const open = Terminal.prototype.open;
+      let resolveOpened!: () => void;
+      const opened = new Promise<void>((resolve) => {
+        resolveOpened = resolve;
+      });
+      vi.spyOn(Terminal.prototype, "open").mockImplementation(
+        function (this: Terminal, element) {
+          mounted.current = this;
+          open.call(this, element);
+          resolveOpened();
+        },
+      );
+      vi.spyOn(FitAddon.prototype, "proposeDimensions").mockImplementation(
+        () => ({
+          cols: 40,
+          rows: mounted.current?.options.lineHeight === 1.22 ? 10 : 12,
+        }),
+      );
+      const resizes = () =>
+        testState.socketMessages
+          .map((message) => JSON.parse(message))
+          .filter((message) => message.type === "resize");
+      const settled = vi.spyOn(
+        TerminalWebSocketTransport.prototype,
+        "markLayoutSettled",
+      );
+      renderMobileTerminal();
+      await waitForReadiness(opened, "terminal did not mount");
+      if (outcome === "timeout") {
+        await waitForReadinessCondition(
+          () => expect(settled).toHaveBeenCalled(),
+          "terminal layout did not settle before late WebGL load",
+        );
+        await waitForReadinessCondition(
+          () => expect(resizes()).toHaveLength(1),
+          "terminal did not fit before late WebGL load",
+        );
+      }
+      await act(async () => {
+        if (outcome === "failure") rejectWebgl(new Error("GPU unavailable"));
+        else resolveWebgl({ WebglAddon } as WebglModule);
+      });
+      await waitForReadinessCondition(
+        () => expect(resizes()).toHaveLength(1),
+        "native cold open sent more than one resize",
+      );
+      await act(
+        () =>
+          new Promise<void>((resolve) => {
+            requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+          }),
+      );
+      expect(resizes()).toHaveLength(1);
+      expect(mounted.current?.options.lineHeight).toBe(1.22);
+      if (outcome === "ready") {
+        act(() => loseContext());
+        expect(mounted.current?.options.lineHeight).toBe(1.22);
+      }
+    },
+  );
+
+  it("preserves the DOM decision and terminal state when WebGL arrives after replay", async () => {
+    prepareFirstAttachFontMetricsHarness();
     testState.touchEnabled = false;
     stubVisibleIntersectionObserver();
     vi.spyOn(FitAddon.prototype, "proposeDimensions").mockReturnValue({
@@ -2138,12 +3965,11 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
     vi.spyOn(terminalModules, "importTerminalWebglAddon").mockReturnValue(
       webglModule,
     );
-    class WebglAddon {
-      activate(_terminal: Terminal): void {}
-      dispose(): void {}
-      onContextLoss(_listener: () => void) {
-        return { dispose: () => {} };
-      }
+    const actualWebgl =
+      await vi.importActual<WebglModule>("@xterm/addon-webgl");
+    const activate = vi.fn();
+    class WebglAddon extends actualWebgl.WebglAddon {
+      activate = activate;
     }
     const mountedTerminal: { current: Terminal | null } = { current: null };
     const loadAddon = Terminal.prototype.loadAddon;
@@ -2161,6 +3987,17 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
     );
     const terminal = mountedTerminal.current;
     if (!terminal) throw new Error("terminal did not mount");
+    expect(terminal.options.lineHeight).toBe(1.22);
+    await waitForReadinessCondition(
+      () =>
+        expect(
+          testState.socketMessages.some((raw) => {
+            const message = JSON.parse(raw);
+            return message.type === "resize";
+          }),
+        ).toBe(true),
+      "terminal did not fit before WebGL resolution",
+    );
     const history = Array.from(
       { length: 160 },
       (_, index) => `history ${String(index + 1).padStart(3, "0")}`,
@@ -2189,15 +4026,16 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
       retainedLine: terminal.buffer.active.getLine(5)?.translateToString(true),
     };
     expect(before.viewportY).toBeLessThan(before.baseY);
-    await act(async () => resolveWebgl({ WebglAddon } as WebglModule));
+    await act(async () => resolveWebgl({ ...actualWebgl, WebglAddon }));
     await waitForReadinessCondition(
       () =>
         expect(
           document.querySelector<HTMLElement>("[data-terminal-renderer]")
             ?.dataset.terminalRenderer,
-        ).toBe("webgl"),
-      "WebGL renderer did not attach after replay",
+        ).toBe("dom"),
+      "late WebGL import changed the settled DOM renderer",
     );
+    expect(terminal.options.lineHeight).toBe(1.22);
     expect({
       cols: terminal.cols,
       rows: terminal.rows,
@@ -2207,6 +4045,7 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
       viewportY: terminal.buffer.active.viewportY,
       retainedLine: terminal.buffer.active.getLine(5)?.translateToString(true),
     }).toEqual(before);
+    expect(activate).not.toHaveBeenCalled();
   }, 30_000);
 
   it("keeps the DOM renderer and replay working when WebGL import fails", async () => {
@@ -2316,6 +4155,267 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
 });
 
 describe("terminal first paint", () => {
+  it.each([8, 32])(
+    "holds a default 80x24 grid inside a wider host until the initial fit settles (spare width=%s)",
+    async (spareWidth) => {
+      prepareFirstAttachFontMetricsHarness();
+      stubVisibleIntersectionObserver();
+      vi.spyOn(terminalModules, "importTerminalWebglAddon").mockRejectedValue(
+        new Error("DOM renderer"),
+      );
+      vi.spyOn(FitAddon.prototype, "proposeDimensions").mockReturnValue({
+        cols: 56,
+        rows: 38,
+      });
+      const hostWidth = 80 * 7 + spareWidth;
+      vi.spyOn(
+        HTMLElement.prototype,
+        "getBoundingClientRect",
+      ).mockImplementation(function getBoundingClientRect(this: HTMLElement) {
+        return new DOMRect(
+          0,
+          0,
+          this.classList.contains("xterm-screen")
+            ? parseFloat(this.style.width) || 0
+            : hostWidth,
+          722,
+        );
+      });
+      const fontDescriptor = Object.getOwnPropertyDescriptor(document, "fonts");
+      let finishFonts!: () => void;
+      const fonts = Object.assign(new EventTarget(), {
+        status: "loading",
+        ready: new Promise<void>((resolve) => {
+          finishFonts = resolve;
+        }),
+      });
+      Object.defineProperty(document, "fonts", {
+        configurable: true,
+        value: fonts,
+      });
+      let terminal: Terminal | undefined;
+      const open = Terminal.prototype.open;
+      vi.spyOn(Terminal.prototype, "open").mockImplementation(
+        function (this: Terminal, element) {
+          if (element.matches("[data-terminal-renderer]")) terminal = this;
+          open.call(this, element);
+          if (element.matches("[data-terminal-renderer]")) {
+            this.element!.style.paddingLeft = "8px";
+            this.element!.style.paddingRight = "8px";
+          }
+        },
+      );
+      try {
+        const session = renderMobileTerminal({ cols: 80, rows: 24 });
+        await waitForReadinessCondition(
+          () => expect(testState.sockets).toHaveLength(1),
+          "terminal did not mount",
+        );
+        const socket = testState.sockets[0]!;
+        await socket.opened;
+        socket.receive({
+          type: "attached",
+          session,
+          replayStartSeq: 0,
+          nextSeq: 1,
+        });
+        socket.receive({
+          type: "output",
+          chunk: { seq: 0, dataBase64: btoa("DEFAULT-GRID\r\n") },
+        });
+        await waitForReadinessCondition(() => {
+          expect(socket.sent.map((raw) => JSON.parse(raw))).toContainEqual({
+            type: "ack",
+            nextSeq: 1,
+          });
+        }, "default grid replay did not parse");
+        const host = document.querySelector<HTMLElement>(
+          "[data-terminal-renderer]",
+        )!;
+        await waitForReadinessCondition(
+          () => expect(host.dataset.replayHeld).toBe("false"),
+          "replay did not complete",
+        );
+        expect(terminal?.cols).toBe(80);
+        expect(terminal?.rows).toBe(24);
+        expect(
+          terminal!
+            .element!.querySelector(".xterm-screen")!
+            .getBoundingClientRect().width,
+        ).toBeLessThan(host.getBoundingClientRect().width);
+        expect(host.style.opacity).toBe("0");
+        await act(async () => {
+          fonts.status = "loaded";
+          finishFonts();
+          fonts.dispatchEvent(new Event("loadingdone"));
+        });
+        await waitForReadinessCondition(() => {
+          expect(socket.sent.map((raw) => JSON.parse(raw))).toContainEqual(
+            expect.objectContaining({ type: "resize", cols: 56, rows: 38 }),
+          );
+        }, "settled fit was not sent");
+        socket.receive({
+          type: "session-updated",
+          session: { ...session, cols: 56, rows: 38 },
+        });
+        await waitForReadinessCondition(() => {
+          expect(terminal?.cols).toBe(56);
+          expect(terminal?.rows).toBe(38);
+          expect(host.style.opacity).toBe("");
+        }, "fitted grid did not reveal");
+      } finally {
+        if (fontDescriptor)
+          Object.defineProperty(document, "fonts", fontDescriptor);
+        else Reflect.deleteProperty(document, "fonts");
+      }
+    },
+  );
+
+  it("opens its first screen with symmetric insets and keeps them through replay and session switches", async () => {
+    prepareFirstAttachFontMetricsHarness();
+    const measure = vi
+      .mocked(HTMLElement.prototype.getBoundingClientRect)
+      .getMockImplementation()!;
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+      function getBoundingClientRect(this: HTMLElement) {
+        const rect = measure.call(this);
+        return this.matches("[data-terminal-renderer]")
+          ? new DOMRect(rect.x, rect.y, rect.width + 16, rect.height)
+          : rect;
+      },
+    );
+    vi.stubGlobal("innerWidth", 390);
+    const style = document.createElement("style");
+    style.textContent = `
+      .px-2 { padding-left: 8px; padding-right: 8px; }
+      ${readFileSync(
+        join(dirname(fileURLToPath(import.meta.url)), "../../../app.css"),
+        "utf8",
+      )
+        .match(/:where\(\[data-app-terminal\][^}]+\}/g)
+        ?.join("\n")}
+    `;
+    document.head.append(style);
+    const insets: string[] = [];
+    const initialInsets: string[] = [];
+    const paintFrames = new Map<
+      Terminal,
+      Array<{ width: string; height: string; insets: string }>
+    >();
+    const paintFrameHandles = new Set<number>();
+    const terminals: Terminal[] = [];
+    const open = Terminal.prototype.open;
+    vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
+      this: Terminal,
+      element: HTMLElement,
+    ) {
+      if (!element.matches("[data-terminal-renderer]")) {
+        open.call(this, element);
+        return;
+      }
+      terminals.push(this);
+      open.call(this, element);
+      const initialStyle = getComputedStyle(this.element!);
+      initialInsets.push(
+        `${initialStyle.paddingLeft}/${initialStyle.paddingRight}`,
+      );
+      const frames: Array<{
+        width: string;
+        height: string;
+        insets: string;
+      }> = [];
+      paintFrames.set(this, frames);
+      const capturePaint = () => {
+        const handle = requestAnimationFrame(() => {
+          paintFrameHandles.delete(handle);
+          if (!element.isConnected) return;
+          if (element.style.opacity !== "0") {
+            const screen =
+              this.element!.querySelector<HTMLElement>(".xterm-screen")!;
+            const computed = getComputedStyle(this.element!);
+            frames.push({
+              width: screen.style.width,
+              height: screen.style.height,
+              insets: `${computed.paddingLeft}/${computed.paddingRight}`,
+            });
+          }
+          if (frames.length < 2) capturePaint();
+        });
+        paintFrameHandles.add(handle);
+      };
+      capturePaint();
+      this.onRender(() => {
+        const computed = getComputedStyle(this.element!);
+        insets.push(`${computed.paddingLeft}/${computed.paddingRight}`);
+      });
+    });
+    try {
+      let session = renderMobileTerminal({ cols: 120, rows: 36 });
+      for (let index = 0; index < 2; index += 1) {
+        await waitForReadinessCondition(() => {
+          expect(testState.sockets).toHaveLength(index + 1);
+        }, "terminal socket did not mount");
+        const socket = testState.sockets[index]!;
+        await waitForReadiness(socket.opened, "terminal socket did not open");
+        socket.receive({
+          type: "attached",
+          session,
+          replayStartSeq: 0,
+          nextSeq: 1,
+        });
+        socket.receive({
+          type: "output",
+          chunk: { seq: 0, dataBase64: btoa("SWITCH-INSET\r\n") },
+        });
+        await waitForReadinessCondition(() => {
+          expect(
+            socket.sent.map((message) => JSON.parse(message)),
+          ).toContainEqual({
+            type: "ack",
+            nextSeq: 1,
+          });
+        }, "terminal replay did not finish");
+        const renderer = terminals[index]!.element!;
+        expect(getComputedStyle(renderer).paddingLeft).toBe("8px");
+        expect(getComputedStyle(renderer).paddingRight).toBe("8px");
+        await waitForReadinessCondition(
+          () => expect(paintFrames.get(terminals[index]!)!).toHaveLength(2),
+          "terminal did not paint two visible frames",
+        );
+        const frames = paintFrames.get(terminals[index]!)!;
+        const screen = renderer.querySelector<HTMLElement>(".xterm-screen")!;
+        expect(parseFloat(frames[0]!.width)).toBeGreaterThan(0);
+        expect(parseFloat(frames[0]!.height)).toBeGreaterThan(0);
+        expect(frames[0]).toEqual({
+          width: screen.style.width,
+          height: screen.style.height,
+          insets: "8px/8px",
+        });
+        expect(frames[1]).toEqual(frames[0]);
+        socket.receive({
+          type: "session-updated",
+          session: { ...session, cols: 51, rows: 47 },
+        });
+        await act(async () => {
+          await writeReplay(terminals[index]!, "");
+        });
+        expect(getComputedStyle(renderer).paddingLeft).toBe("8px");
+        expect(getComputedStyle(renderer).paddingRight).toBe("8px");
+        if (index === 0) {
+          session = { ...session, id: "term_switch_inset" };
+          rerenderMobileTerminal(session);
+        }
+      }
+      expect(insets.length).toBeGreaterThan(2);
+      expect(new Set(insets)).toEqual(new Set(["8px/8px"]));
+      expect(initialInsets.length).toBeGreaterThan(0);
+      expect(new Set(initialInsets)).toEqual(new Set(["8px/8px"]));
+    } finally {
+      for (const handle of paintFrameHandles) cancelAnimationFrame(handle);
+      style.remove();
+    }
+  });
+
   it("fits a live native session at phone width without retained-history scrolling", async () => {
     prepareFirstAttachFontMetricsHarness();
     testState.touchEnabled = true;
@@ -2329,7 +4429,9 @@ describe("terminal first paint", () => {
     await waitForReadinessCondition(() => {
       expect(
         testState.socketMessages.map((message) => JSON.parse(message)),
-      ).toContainEqual({ type: "resize", cols: 51, rows: 47 });
+      ).toContainEqual(
+        expect.objectContaining({ type: "resize", cols: 51, rows: 47 }),
+      );
     }, "live terminal did not send the phone fit");
     socket.receive({
       type: "attached",
@@ -2532,17 +4634,15 @@ describe("terminal first paint", () => {
     vi.stubGlobal("innerWidth", 390);
     const paintOpacities: string[] = [];
     const write = Terminal.prototype.write;
-    vi.spyOn(Terminal.prototype, "write").mockImplementation(function (
-      this: Terminal,
-      data,
-      callback,
-    ) {
-      paintOpacities.push(
-        document.querySelector<HTMLElement>("[data-terminal-renderer]")!.style
-          .opacity,
-      );
-      write.call(this, data, callback);
-    });
+    vi.spyOn(Terminal.prototype, "write").mockImplementation(
+      function (this: Terminal, data, callback) {
+        paintOpacities.push(
+          document.querySelector<HTMLElement>("[data-terminal-renderer]")!.style
+            .opacity,
+        );
+        write.call(this, data, callback);
+      },
+    );
     let finishOutput!: (value: {
       chunks: { seq: number; dataBase64: string }[];
       nextSeq: number;
@@ -2627,7 +4727,7 @@ describe("terminal first paint", () => {
     expect(surface.style.opacity).toBe("");
     expect(surface.dataset.fitGridCols).toBe("49");
     expect(surface.dataset.renderGridCols).toBe("51");
-    expect(surface.style.paddingLeft).toBe("0px");
+    expect(surface.style.paddingLeft).toBe("");
     expect(
       surface.querySelector<HTMLElement>(".xterm")?.dataset.surfaceScale,
     ).toBe("1");
@@ -2664,6 +4764,74 @@ describe("terminal first paint", () => {
 });
 
 describe("terminal first paint recovery", () => {
+  it.each([
+    ["resolve", true],
+    ["reject", true],
+    ["resolve", false],
+    ["reject", false],
+    ["write", true],
+    ["write", false],
+  ] as const)(
+    "releases terminal listeners after late history %s with retained output %s",
+    async (settlement, retainNativeOutput) => {
+      prepareFirstAttachFontMetricsHarness();
+      const add = vi.spyOn(window, "addEventListener");
+      const remove = vi.spyOn(window, "removeEventListener");
+      let parsed: (() => void) | undefined;
+      if (settlement === "write") {
+        const write = Terminal.prototype.write;
+        vi.spyOn(Terminal.prototype, "write").mockImplementation(
+          function (this: Terminal, data, callback) {
+            write.call(this, data, () => {
+              if (data === "" && callback) parsed = callback;
+              else callback?.();
+            });
+          },
+        );
+      }
+      for (let navigation = 0; navigation < 4; navigation++) {
+        let resolveOutput!: (value: { chunks: []; nextSeq: number }) => void;
+        let rejectOutput!: (reason: Error) => void;
+        testState.output.mockImplementation(
+          () =>
+            new Promise((resolve, reject) => {
+              resolveOutput = resolve;
+              rejectOutput = reject;
+            }),
+        );
+        renderMobileTerminal(
+          { status: "exited", exitCode: 0 },
+          retainNativeOutput,
+        );
+        await waitForReadinessCondition(() => {
+          expect(testState.output).toHaveBeenCalledTimes(navigation + 1);
+        }, "history was not requested");
+        if (settlement === "write") {
+          await act(async () => resolveOutput({ chunks: [], nextSeq: 0 }));
+          await waitForReadinessCondition(() => {
+            expect(parsed).toBeTypeOf("function");
+          }, "history parsing did not reach its completion callback");
+        }
+        cleanup();
+        await act(async () => {
+          if (settlement === "resolve")
+            resolveOutput({ chunks: [], nextSeq: 0 });
+          else if (settlement === "reject")
+            rejectOutput(new Error("history unavailable"));
+          else parsed?.();
+        });
+        parsed = undefined;
+        const active = new Set<EventListenerOrEventListenerObject>();
+        for (const [event, listener] of add.mock.calls) {
+          if (event === "pointerup") active.add(listener);
+        }
+        for (const [event, listener] of remove.mock.calls) {
+          if (event === "pointerup") active.delete(listener);
+        }
+        expect(active.size).toBe(0);
+      }
+    },
+  );
   it("reconciles retained history arriving after the timeout", async () => {
     prepareFirstAttachFontMetricsHarness();
     vi.stubGlobal("innerWidth", 390);
@@ -2673,13 +4841,12 @@ describe("terminal first paint recovery", () => {
     );
     const mounted: { current: Terminal | null } = { current: null };
     const open = Terminal.prototype.open;
-    vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
-      this: Terminal,
-      container,
-    ) {
-      mounted.current ??= this;
-      open.call(this, container);
-    });
+    vi.spyOn(Terminal.prototype, "open").mockImplementation(
+      function (this: Terminal, container) {
+        mounted.current ??= this;
+        open.call(this, container);
+      },
+    );
     let resolveOutput!: (output: {
       chunks: { seq: number; dataBase64: string }[];
       nextSeq: number;
@@ -2868,6 +5035,10 @@ describe("terminal first paint recovery", () => {
 
   it("fits a running session that exits without remount before revealing it", async () => {
     prepareFirstAttachFontMetricsHarness();
+    vi.mocked(FitAddon.prototype.proposeDimensions).mockReturnValue({
+      cols: 80,
+      rows: 24,
+    });
     testState.deferSocketOpen = true;
     vi.stubGlobal("innerWidth", 390);
     const open = vi.spyOn(Terminal.prototype, "open");
@@ -2879,6 +5050,14 @@ describe("terminal first paint recovery", () => {
     const surface = document.querySelector<HTMLElement>(
       "[data-terminal-renderer]",
     )!;
+    const socket = testState.sockets[0]!;
+    socket.open();
+    socket.receive({
+      type: "attached",
+      session,
+      replayStartSeq: 0,
+      nextSeq: 0,
+    });
     await waitForReadinessCondition(
       () => expect(surface.style.opacity).toBe(""),
       "running terminal was not visible",

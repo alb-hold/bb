@@ -1,7 +1,13 @@
 // @vitest-environment jsdom
 
 import { LazyMarkdownHtml } from "@/components/ui/lazy-markdown-html";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+} from "@testing-library/react";
 import type { ThreadListEntry } from "@bb/domain";
 import { beforeAll, afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
@@ -242,6 +248,11 @@ describe("ConversationMessageContent user sizing", () => {
         .querySelector("[data-markdown-preview]")
         ?.classList.contains("@container"),
     ).toBe(false);
+    expect(
+      container
+        .querySelector("[data-markdown-preview]")
+        ?.classList.contains("md:text-base"),
+    ).toBe(true);
   });
 });
 
@@ -699,4 +710,130 @@ describe("user message overflow", () => {
       );
     },
   );
+});
+
+function renderTouchActions(
+  mobileActionDisplay: "inline" | "overflow",
+  text = "Older answer with [a link](https://example.com).",
+) {
+  vi.spyOn(window, "matchMedia").mockImplementation((query) => ({
+    matches: true,
+    media: query,
+    onchange: null,
+    addListener() {},
+    removeListener() {},
+    addEventListener() {},
+    removeEventListener() {},
+    dispatchEvent: () => false,
+  }));
+  const view = render(
+    <MemoryRouter>
+      <ConversationMessageContent
+        role="assistant"
+        attachments={null}
+        id="msg_actions"
+        threadId="thr_actions"
+        turnId="turn_actions"
+        showActions
+        mobileActionDisplay={mobileActionDisplay}
+        streaming={false}
+        timestamp={0}
+        text={text}
+      />
+    </MemoryRouter>,
+  );
+  const message = view.container.querySelector<HTMLElement>(
+    "[data-touch-actions-visible]",
+  )!;
+  return { ...view, message };
+}
+
+it("reveals older message actions on a deliberate tap and hides them on a second tap", () => {
+  const { message } = renderTouchActions("overflow");
+  expect(message.dataset.touchActionsVisible).toBe("false");
+  fireEvent.click(message);
+  expect(message.dataset.touchActionsVisible).toBe("true");
+  expect(screen.getByRole("button", { name: "Copy message" })).toBeTruthy();
+  fireEvent.click(message);
+  expect(message.dataset.touchActionsVisible).toBe("false");
+});
+
+it("keeps latest assistant actions visible when its message is tapped", () => {
+  const { message } = renderTouchActions("inline");
+  expect(message.dataset.touchActionsVisible).toBe("true");
+  fireEvent.click(message);
+  expect(message.dataset.touchActionsVisible).toBe("true");
+});
+
+it("does not reveal older actions during selection or link and control taps", () => {
+  const { message } = renderTouchActions("overflow");
+  const selection = window.getSelection()!;
+  const range = document.createRange();
+  range.selectNodeContents(message);
+  selection.addRange(range);
+  fireEvent.click(message);
+  expect(message.dataset.touchActionsVisible).toBe("false");
+  selection.removeAllRanges();
+  fireEvent.click(screen.getByRole("link", { name: "a link" }));
+  expect(message.dataset.touchActionsVisible).toBe("false");
+  fireEvent.click(screen.getByRole("button", { name: "Copy message" }));
+  expect(message.dataset.touchActionsVisible).toBe("false");
+});
+
+it("dismisses older actions on outside tap and keeps them keyboard reachable", () => {
+  const { message } = renderTouchActions("overflow");
+  fireEvent.click(message);
+  expect(message.dataset.touchActionsVisible).toBe("true");
+  const outside = document.createElement("button");
+  outside.addEventListener("pointerdown", (event) => event.stopPropagation());
+  document.body.append(outside);
+  fireEvent.pointerDown(outside);
+  outside.remove();
+  expect(message.dataset.touchActionsVisible).toBe("false");
+  expect(message.tabIndex).toBe(0);
+  act(() => message.focus());
+  fireEvent.keyDown(message, { key: "Enter" });
+  expect(message.dataset.touchActionsVisible).toBe("true");
+  fireEvent.keyDown(message, { key: "Escape" });
+  expect(message.dataset.touchActionsVisible).toBe("false");
+});
+
+it("gives assistant prose primary foreground while older actions reveal on long press", () => {
+  const { message } = renderTouchActions("overflow");
+  expect(message.classList.contains("text-foreground")).toBe(true);
+  expect(message.classList.contains("text-sm")).toBe(true);
+  expect(message.classList.contains("md:text-base")).toBe(true);
+  expect(message.className).toContain(
+    "md:[&_[data-markdown-preview]]:text-base",
+  );
+  expect(message.className).toContain(
+    "md:[&_[data-code-card]:last-child]:mb-0",
+  );
+  expect(
+    message.querySelector("p")?.classList.contains("text-foreground"),
+  ).toBe(true);
+  expect(message.dataset.touchActionsVisible).toBe("false");
+  expect(screen.getByRole("button", { name: "Copy message" })).toBeTruthy();
+  fireEvent.contextMenu(message);
+  expect(message.dataset.touchActionsVisible).toBe("true");
+  expect(
+    screen
+      .getByRole("button", { name: "Copy message" })
+      .getAttribute("data-compact-touch"),
+  ).toBe("action");
+});
+
+it("keeps the last code card close to following disclosure rows on desktop", () => {
+  const { message } = renderTouchActions(
+    "overflow",
+    "```ts\nconst result = 1;\n```",
+  );
+  const card = message.querySelector("[data-code-card]");
+  expect(card).not.toBeNull();
+  expect(card?.classList.contains("my-2")).toBe(true);
+  expect(card?.matches(":last-child")).toBe(true);
+  expect(message.className).toContain(
+    "md:[&_[data-code-card]:last-child]:mb-0",
+  );
+  expect(message.querySelector("pre code")?.className).toContain("text-xs");
 });

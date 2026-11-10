@@ -1,0 +1,17 @@
+:where([data-timeline-row-list])
+  > :where([data-timeline-items])
+  > :where([data-timeline-gap-before="2"]) {
+  margin-top: 0.125rem;
+}
+
+:where([data-timeline-row-list])
+  > :where([data-timeline-items])
+  > :where([data-timeline-gap-before="4"]) {
+  margin-top: 0.25rem;
+}
+
+:where([data-timeline-row-list])
+  > :where([data-timeline-items])
+  > :where([data-timeline-gap-before="8"]) {
+  margin-top: 0.5rem;
+}

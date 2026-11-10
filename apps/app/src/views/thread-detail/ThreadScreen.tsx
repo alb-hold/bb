@@ -46,10 +46,8 @@ import { BottomAnchoredScrollBody } from "@/components/ui/bottom-anchored-scroll
 import { PageShell } from "@/components/ui/page-shell.js";
 import { appToast } from "@/components/ui/app-toast";
 import { SelectionAddToChatContext } from "@/components/thread/SelectionAddToChatContext";
-import {
-  isThreadDisplayStatusBannerActive,
-  type ThreadPromptChildThreadsSection,
-} from "@/components/promptbox/banner/ThreadPromptContextBanner";
+import type { ThreadPromptChildThreadsSection } from "@/components/promptbox/banner/ThreadPromptContextBanner";
+import { isThreadDisplayStatusBannerActive } from "@/components/promptbox/banner/thread-banner-active-status";
 import type { EnvironmentSummaryChrome } from "@/lib/environment-workspace-display";
 import type { MachineRemovalStatus } from "@/lib/machine-removal-display";
 import type { WorkspaceCheckoutDisplay } from "@bb/shared-ui/lib/workspace-checkout-display";
@@ -82,11 +80,11 @@ import {
 } from "@/hooks/mutations/thread-runtime-mutations";
 import type { PendingInteractionsQueryBannerProps } from "@/components/thread/pending-interactions/PendingInteractionsQueryBanner";
 import { useSideChatConsumerMessageActions } from "./useSideChatConsumerMessageActions";
-import {
-  ThreadDetailPromptArea,
-  type ThreadComposerPermissionPolicy,
-  type ThreadDetailSentMessageEdit,
+import type {
+  ThreadComposerPermissionPolicy,
+  ThreadDetailSentMessageEdit,
 } from "./ThreadDetailPromptArea";
+import { DeferredThreadDetailPromptArea } from "./DeferredThreadDetailPromptArea";
 
 const THREAD_DETAIL_COMPOSER_ID = "thread-detail-follow-up-composer";
 const EMPTY_CHILD_THREAD_ITEMS: readonly ChildThreadPendingAttentionSource[] =
@@ -226,7 +224,8 @@ function useChildThreadsSection(
           entry.originKind === null &&
           ((isThreadDisplayStatusBannerActive(entry.runtime.displayStatus) &&
             !isNativeActivityUnconfirmed(entry.runtime, activityNow)) ||
-            entry.hasPendingInteraction),
+            entry.hasPendingInteraction ||
+            entry.listIndicator === "check-terminal"),
       )
       .sort((left, right) =>
         left.hasPendingInteraction === right.hasPendingInteraction
@@ -243,6 +242,7 @@ function useChildThreadsSection(
           threadId: entry.id,
         }),
         hasPendingInteraction: entry.hasPendingInteraction,
+        hasTerminalAttention: entry.listIndicator === "check-terminal",
       }));
     if (activeItems.length === 0) return null;
     return { items: activeItems };
@@ -626,7 +626,7 @@ export function ThreadScreen({
           : null;
   const chrome = composer?.environmentChrome;
   const promptArea = composer ? (
-    <ThreadDetailPromptArea
+    <DeferredThreadDetailPromptArea
       composerId={
         presentation.kind === "page"
           ? THREAD_DETAIL_COMPOSER_ID
@@ -665,6 +665,9 @@ export function ThreadScreen({
       activePromptMode={timeline.activePromptMode}
       goal={timeline.goal}
       providerCommands={timeline.providerCommands}
+      executionOptionsPending={
+        timeline.timelineLoading || Boolean(timeline.timelineError)
+      }
       sessionOptions={timeline.sessionOptions}
       modelFallback={timeline.modelFallback}
       activeWorkflows={timeline.activeWorkflows}
@@ -692,8 +695,8 @@ export function ThreadScreen({
             }
             scrollContentInsetEndPx={contextCardInset}
             shellClassName="!mx-0 !mt-0 md:!mx-0 md:!mt-0"
-            scrollAreaClassName="scroll-pt-4"
-            contentClassName="gap-2 pt-4"
+            scrollAreaClassName="scroll-pt-4 max-md:pointer-coarse:scroll-pt-7"
+            contentClassName="gap-2 pt-4 max-md:pointer-coarse:pt-7"
             footerClassName="chat-prompt-box"
             footer={promptArea}
             scrollOverlay={
@@ -792,9 +795,14 @@ function ThreadScreenPanelShell({
     >
       <BottomAnchoredScrollBody
         key={threadId}
-        scrollAreaClassName={cn(surfaceClassName, "scroll-pt-4")}
+        scrollAreaClassName={cn(
+          surfaceClassName,
+          "scroll-pt-4 max-md:pointer-coarse:scroll-pt-7",
+        )}
         contentClassName={
-          measure === "page" ? "!pb-3 !pt-4" : "!px-2 !pb-3 !pt-4"
+          measure === "page"
+            ? "!pb-3 !pt-4 max-md:pointer-coarse:!pt-7"
+            : "!px-2 !pb-3 !pt-4 max-md:pointer-coarse:!pt-7"
         }
         maxWidthClassName={maxWidthClassName}
         footer={footer}

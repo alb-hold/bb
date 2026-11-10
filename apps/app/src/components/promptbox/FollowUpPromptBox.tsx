@@ -598,7 +598,7 @@ function FollowUpPromptBoxWithComposer({
     return true;
   }, [collapseWidePromptBox]);
   const extensionController = useComposerExtensionController({
-    host: pluginComposerHost ?? null,
+    host: execution.pending ? null : (pluginComposerHost ?? null),
     view: composerView,
     collapseIfFocused,
     focusDefault,
@@ -643,6 +643,7 @@ function FollowUpPromptBoxWithComposer({
   const permissionControl = useMemo(
     () => (
       <PermissionModePicker
+        pending={permission.pending}
         value={permission.value}
         options={permission.options}
         onChange={permission.onChange}
@@ -654,6 +655,7 @@ function FollowUpPromptBoxWithComposer({
       />
     ),
     [
+      permission.pending,
       permission.onChange,
       permission.options,
       permission.supported,
@@ -711,9 +713,7 @@ function FollowUpPromptBoxWithComposer({
       className="relative z-20"
       data-follow-up-composer=""
       data-follow-up-composer-expanded={isEditorExpanded ? "" : undefined}
-      data-follow-up-composer-footer-visible={
-        isEditorExpanded ? "" : undefined
-      }
+      data-follow-up-composer-footer-visible={isEditorExpanded ? "" : undefined}
       hidden={hasPendingInteraction}
       onBlurCapture={scheduleCollapseAfterFocusLoss}
       onFocusCapture={handleComposerFocus}
@@ -788,12 +788,12 @@ function FollowUpPromptBoxWithComposer({
         attachments={attachments}
         promptActions={promptActions}
         compactBeforeSend={
-          compactBeforeSend ? (
-            <CompactBeforeSendChip {...compactBeforeSend} />
-          ) : null
+          <>
+            {compactBeforeSend ? <CompactBeforeSendChip {...compactBeforeSend} /> : null}
+          </>
         }
         suppressPluginComposerCustomizations={
-          suppressPluginComposerCustomizations
+          suppressPluginComposerCustomizations || execution.pending
         }
         compact={compactConfig}
         surface="thread"
@@ -823,13 +823,13 @@ function FollowUpPromptBoxWithComposer({
         }
         executionControls={executionControls}
       />
-      {!isPromptBoxCompact ? (
+      {
         <div
           data-follow-up-composer-footer=""
           className="mt-1 flex min-h-6 max-h-6 select-none max-md:mt-0 max-md:pointer-coarse:min-h-11 max-md:pointer-coarse:max-h-11 items-center justify-between gap-2 overflow-hidden pl-[15px] pr-3.5 opacity-100 transition-[max-height,min-height,margin-top,opacity] duration-[180ms] ease-[cubic-bezier(0.16,1,0.3,1)] motion-reduce:transition-none"
         >
           <div className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">
-            {isCompactViewport ? compactEnvironmentSummary : environmentSummary}
+            {isPromptBoxCompact ? null : isCompactViewport ? compactEnvironmentSummary : environmentSummary}
           </div>
           <div className="flex shrink-0 items-center gap-2 max-md:gap-0">
             {sessionOptionsControl}
@@ -839,7 +839,7 @@ function FollowUpPromptBoxWithComposer({
             ) : null}
           </div>
         </div>
-      ) : null}
+      }
     </div>
   );
 
@@ -851,7 +851,9 @@ function FollowUpPromptBoxWithComposer({
           active={composer.threadRuntimeDisplayStatus === "active"}
           composerElement={composerElement}
           hasPluginComposerScope={
-            composerScope !== null && !suppressPluginComposerCustomizations
+            composerScope !== null &&
+            !suppressPluginComposerCustomizations &&
+            !execution.pending
           }
           isPrimaryComposer={isPrimaryComposer}
           pendingInteraction={pendingInteraction}

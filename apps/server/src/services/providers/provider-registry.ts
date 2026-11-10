@@ -75,6 +75,9 @@ export interface ProviderRegistryService {
     key: ProviderHealthCacheKey,
     probe: () => Promise<boolean>,
   ): Promise<void>;
+  peekProviderHealthStatus(
+    key: ProviderHealthCacheKey,
+  ): ProviderDiscoveredHealthStatus | undefined;
   lookupProviderHealthStatus(
     key: ProviderHealthCacheKey,
   ): Promise<ProviderDiscoveredHealthStatus> | undefined;
@@ -135,6 +138,7 @@ export function createProviderRegistryService(
         registrationRevision: number;
         expiresAt: number;
         value: Promise<ProviderDiscoveredHealthStatus>;
+        settledValue?: ProviderDiscoveredHealthStatus;
       }
     >
   >();
@@ -311,6 +315,13 @@ export function createProviderRegistryService(
       );
     },
 
+    peekProviderHealthStatus(key) {
+      const entry = installedByHostId.get(key.hostId)?.get(key.providerId);
+      return entry?.registrationRevision === registrationRevision
+        ? entry.settledValue
+        : undefined;
+    },
+
     lookupProviderHealthStatus(key) {
       const hostEntries = installedByHostId.get(key.hostId);
       if (hostEntries === undefined) return undefined;
@@ -320,8 +331,6 @@ export function createProviderRegistryService(
         entry.registrationRevision !== registrationRevision ||
         entry.expiresAt <= Date.now()
       ) {
-        hostEntries.delete(key.providerId);
-        if (hostEntries.size === 0) installedByHostId.delete(key.hostId);
         return undefined;
       }
       return entry.value;
@@ -333,11 +342,24 @@ export function createProviderRegistryService(
         hostEntries = new Map();
         installedByHostId.set(key.hostId, hostEntries);
       }
-      hostEntries.set(key.providerId, {
+      const previous = hostEntries.get(key.providerId);
+      const entry = {
         registrationRevision,
         expiresAt: Date.now() + PROVIDER_INSTALLED_CACHE_TTL_MS,
         value,
-      });
+        settledValue:
+          previous?.registrationRevision === registrationRevision
+            ? previous.settledValue
+            : undefined,
+      };
+      hostEntries.set(key.providerId, entry);
+      void value.then(
+        (status) => {
+          if (hostEntries.get(key.providerId) === entry)
+            entry.settledValue = status;
+        },
+        () => undefined,
+      );
     },
 
     forgetInstalledKey(key) {

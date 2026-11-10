@@ -47,7 +47,7 @@ function emToneClass(tone: TimelineTitleTone): string {
     case "default":
       return "font-medium text-foreground opacity-70";
     case "summary":
-      return "text-subtle-foreground";
+      return "text-muted-foreground";
     default:
       return assertNever(tone);
   }
@@ -61,7 +61,7 @@ function accentToneClass(
     case "muted":
       return "text-muted-foreground";
     case "subtle":
-      return "text-subtle-foreground";
+      return "text-muted-foreground";
     case "file":
       return em ? "font-medium text-timeline-accent" : "text-timeline-accent";
     default:
@@ -74,7 +74,7 @@ function plainToneClass(tone: TimelineTitleTone): string {
     case "default":
       return "text-muted-foreground";
     case "summary":
-      return "text-subtle-foreground";
+      return "text-muted-foreground";
     default:
       return assertNever(tone);
   }
@@ -86,7 +86,7 @@ function badgeToneClass(tone: "neutral" | "destructive"): string {
     : "text-muted-foreground";
 }
 
-const STATUS_DECORATION_TONE_CLASS = "text-subtle-foreground";
+const STATUS_DECORATION_TONE_CLASS = "text-muted-foreground";
 const STATUS_DECORATION_TEXT_CLASS = cn(
   "font-mono text-xs font-normal leading-none",
   STATUS_DECORATION_TONE_CLASS,
@@ -338,7 +338,7 @@ export function TimelineTitleView({
   return (
     <span
       className={cn(
-        "min-w-0 max-w-full text-sm leading-5",
+        "min-w-0 max-w-full text-xs leading-5",
         wrap
           ? "whitespace-pre-wrap [overflow-wrap:anywhere]"
           : "inline-flex items-baseline gap-1 overflow-hidden whitespace-nowrap",

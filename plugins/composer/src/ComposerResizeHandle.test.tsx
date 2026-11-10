@@ -215,6 +215,16 @@ describe("ComposerResizeHandle", () => {
     expect(sizing().contentWidth).toBeNull();
   });
 
+  it("keeps resizing accessible without decorative desktop brackets or a desktop grip", () => {
+    const { heightHandle, leftWidthHandle, rightWidthHandle } = renderHandle();
+    expect(heightHandle.className).not.toContain("before:");
+    expect(heightHandle.className).toContain("focus-visible:ring-2");
+    for (const handle of [leftWidthHandle, rightWidthHandle]) {
+      expect(handle.className).not.toContain("before:border");
+      expect(handle.className).toContain("focus-visible:ring-2");
+    }
+  });
+
   it("grows only the chat from either top corner resize handle", () => {
     const { leftWidthHandle, rightWidthHandle, sizing } = renderHandle();
     fireEvent.pointerDown(rightWidthHandle, {

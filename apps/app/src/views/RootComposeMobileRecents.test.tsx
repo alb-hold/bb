@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { InfoRowTime } from "@bb/shared-ui/info-list-row";
 import type { ThreadListEntry } from "@bb/domain";
 import {
   act,
@@ -14,11 +15,33 @@ import type { ReactNode } from "react";
 import { Provider, createStore } from "jotai";
 import { mobileRecentsCollapsedThreadIdsAtom } from "./mobile-recents-collapse";
 import { MemoryRouter } from "react-router-dom";
+import { RouteLoadingSkeleton } from "@/components/ui/route-loading-skeleton";
+import {
+  writeCachedSidebarBootstrap,
+  readCachedSidebarBootstrap,
+  SIDEBAR_BOOTSTRAP_CACHE_KEY,
+  resetSidebarBootstrapCacheForTest,
+} from "@/lib/sidebar-bootstrap-cache";
+import {
+  makeSidebarBootstrapResponse,
+  makeProjectWithThreadsResponse,
+} from "@/test/fixtures/projects";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CompactViewportOverrideProvider } from "@bb/shared-ui/hooks/use-compact-viewport";
 import type { SystemEnvironmentProvider } from "@bb/server-contract";
 import { systemEnvironmentProvidersQueryKey } from "@/hooks/queries/environment-provider-queries";
+import {
+  RecentThreadProviderMark,
+  RecentThreadRowContent,
+} from "./RootComposeRecentRows";
 import { RootComposeMobileRecents } from "./RootComposeMobileRecents";
+import { readFileSync } from "node:fs";
+import {
+  SidebarProvider,
+  Sidebar,
+  SidebarInset,
+} from "@/components/ui/sidebar";
+import { RootComposeHome } from "./RootComposeHome";
 import { makeThreadListEntry } from "@bb/test-helpers/domain-fixtures";
 import { CORE_THREAD_ACTIONS } from "@/lib/thread-actions/core-thread-actions";
 import { ThreadActionCollectors } from "@/lib/thread-actions/thread-action-registry";
@@ -143,6 +166,7 @@ afterEach(() => {
   window.localStorage.clear();
   vi.useRealTimers();
   vi.clearAllMocks();
+  vi.unstubAllGlobals();
 });
 
 describe("mobile recents hierarchy interaction", () => {
@@ -185,10 +209,14 @@ describe("mobile recents hierarchy interaction", () => {
     });
     expect(collapse.getAttribute("aria-expanded")).toBe("true");
 
-    const providerTile = collapse.querySelector("span.size-7");
+    const providerTile = collapse.querySelector("span.size-4");
     if (!(providerTile instanceof HTMLElement)) {
       throw new Error("Expected provider tile inside the disclosure button");
     }
+    expect(providerTile.className).not.toContain("border");
+    expect(providerTile.closest("li")?.querySelector("a")?.className).toContain(
+      "h-13",
+    );
     fireEvent.click(providerTile);
 
     expect(screen.queryByText("Audit folder query paths")).toBeNull();
@@ -358,6 +386,9 @@ describe("mobile recents section", () => {
       </TestProviders>,
     );
 
+    expect(
+      screen.getByText("Recent").classList.contains("text-subtle-foreground"),
+    ).toBe(true);
     const label = screen.getByText("Recent").parentElement;
     if (!(label instanceof HTMLElement)) {
       throw new Error("Expected a Recent label wrapper");
@@ -365,14 +396,23 @@ describe("mobile recents section", () => {
     expect(label.className).toContain("sticky");
     expect(label.className).toContain("top-0");
     expect(label.className).toContain("bg-background");
-    expect(label.querySelector('[data-overflow-fade="below"]')).not.toBeNull();
+    expect(label.classList.contains("pt-1")).toBe(true);
+    expect(label.classList.contains("pb-2")).toBe(true);
+    expect(label.querySelector('[data-overflow-fade="below"]')).toBeNull();
   });
 });
 
 describe("mobile recent thread rows", () => {
-  it("shows project and relative activity on a metadata line", () => {
+  it.each([
+    [3 * 60 * 60 * 1000, "3h"],
+    [24 * 60 * 60 * 1000, "1d"],
+    [2 * 24 * 60 * 60 * 1000, "2d"],
+    [21 * 24 * 60 * 60 * 1000, "3w"],
+  ] as const)("matches sidebar relative dates at %s ms", (age, expected) => {
+    const now = Date.now();
     render(
       <TestProviders>
+        <InfoRowTime timestamp={now - age} now={now} />
         <RootComposeMobileRecents
           highlightedThreadId={null}
           projectNamesById={new Map([["proj_mobile", "bb"]])}
@@ -380,7 +420,7 @@ describe("mobile recent thread rows", () => {
           showCreatingRow={false}
           threads={[
             makeThread({
-              latestAttentionAt: Date.now() - 3 * 60 * 60 * 1000,
+              latestAttentionAt: now - age,
               activity: {
                 activeWorkflowCount: 0,
                 activeBackgroundAgentCount: 0,
@@ -394,10 +434,24 @@ describe("mobile recent thread rows", () => {
       </TestProviders>,
     );
 
-    expect(screen.getByText("bb \u00b7 3h ago")).not.toBeNull();
+    expect(screen.getByTitle(`bb \u00b7 ${expected}`).textContent).toBe(
+      `bb \u00b7 ${expected}`,
+    );
+    expect(screen.getByText(expected, { selector: "time" }).tagName).toBe(
+      "TIME",
+    );
+    const metadata = screen.getByTitle(`bb \u00b7 ${expected}`);
+    expect(metadata.classList.contains("text-xs")).toBe(true);
+    expect(metadata.classList.contains("text-subtle-foreground")).toBe(true);
+    expect(metadata.className).not.toContain("pointer-coarse:text-sm");
+    expect(metadata.querySelector("[data-icon]")).toBeNull();
+    expect(metadata.classList.contains("pl-5.5")).toBe(false);
   });
 
-  it("includes the worktree branch when the thread has one", () => {
+  it.each([
+    "bb/mobile-home",
+    "bb/add-e2e-coverage-for-the-mobile-home-recent-list-with-a-very-long-branch",
+  ])("keeps project and age outside the shrinking branch: %s", (branch) => {
     render(
       <TestProviders>
         <RootComposeMobileRecents
@@ -407,7 +461,7 @@ describe("mobile recent thread rows", () => {
           showCreatingRow={false}
           threads={[
             makeThread({
-              environmentBranchName: "bb/mobile-home",
+              environmentBranchName: branch,
               environmentProviderId: null,
               latestAttentionAt: Date.now() - 3 * 60 * 60 * 1000,
               activity: {
@@ -423,9 +477,45 @@ describe("mobile recent thread rows", () => {
       </TestProviders>,
     );
 
-    expect(
-      screen.getByText("bb \u00b7 bb/mobile-home \u00b7 3h ago"),
-    ).not.toBeNull();
+    const metadata = screen.getByTitle(`bb \u00b7 ${branch} \u00b7 3h`);
+    expect(metadata.textContent).toBe(`bb \u00b7 ${branch} \u00b7 3h`);
+    const project = screen.getByText("bb");
+    const age = screen.getByText("3h");
+    const branchNode = screen.getByText(branch);
+    for (const node of [project, age]) {
+      expect(node.classList.contains("shrink-0")).toBe(true);
+      expect(node.classList.contains("min-w-0")).toBe(false);
+    }
+    expect(age.classList.contains("truncate")).toBe(false);
+    expect(branchNode.classList.contains("min-w-0")).toBe(true);
+    expect(branchNode.classList.contains("truncate")).toBe(true);
+    expect(metadata.classList.contains("leading-4")).toBe(true);
+    expect(metadata.classList.contains("pl-5.5")).toBe(false);
+    expect(metadata.querySelector('[role="img"]')).toBeNull();
+  });
+
+  it("caps the project and reserves the age beside a short branch", () => {
+    render(
+      <TestProviders>
+        <RootComposeMobileRecents
+          highlightedThreadId={null}
+          projectNamesById={new Map([["proj_mobile", "queen-scheduler"]])}
+          providersById={new Map()}
+          showCreatingRow={false}
+          threads={[
+            makeThread({
+              environmentBranchName: "main",
+              environmentProviderId: null,
+            }),
+          ]}
+        />
+      </TestProviders>,
+    );
+    const project = screen.getByText("queen-scheduler");
+    const branch = screen.getByText("main");
+    expect(project.classList.contains("max-w-[min(14ch,60%)]")).toBe(true);
+    expect(project.classList.contains("shrink-0")).toBe(true);
+    expect(branch.classList.contains("truncate")).toBe(true);
   });
 
   it("does not repeat the project name as the workspace segment", () => {
@@ -460,10 +550,12 @@ describe("mobile recent thread rows", () => {
       </QueryClientProvider>,
     );
 
-    expect(screen.getByText("Personal \u00b7 3h ago")).not.toBeNull();
+    expect(screen.getByTitle("Personal \u00b7 3h").textContent).toBe(
+      "Personal \u00b7 3h",
+    );
   });
 
-  it("drops the status slot entirely when a thread has no indicator", () => {
+  it("reserves an empty status slot when a thread has no indicator", () => {
     render(
       <TestProviders>
         <RootComposeMobileRecents
@@ -495,12 +587,81 @@ describe("mobile recent thread rows", () => {
     expect(screen.queryByLabelText("Plan mode active")).toBeNull();
     expect(screen.queryByLabelText("Thread working")).toBeNull();
     expect(
-      screen.getByRole("link").querySelectorAll("span.size-6"),
-    ).toHaveLength(0);
+      screen.getByRole("link").querySelectorAll("[data-recent-status-slot]"),
+    ).toHaveLength(1);
   });
 });
 
 describe("RootComposeMobileRecents", () => {
+  it("shows three desktop Recent rows with the real sidebar expanded", () => {
+    vi.stubGlobal("innerWidth", 1280);
+    vi.stubGlobal("innerHeight", 800);
+    const css = readFileSync("src/app.css", "utf8");
+    const start = css.indexOf(
+      ':where([data-testid="root-compose-compact-scroll-viewport"]',
+    );
+    const rules = css.slice(start, css.indexOf("@media", start));
+    const props = {
+      highlightedThreadId: null,
+      projectNamesById: new Map<string, string>(),
+      providersById: new Map(),
+      showCreatingRow: false,
+      maxRows: 3,
+    };
+    const { rerender } = render(
+      <TestProviders>
+        <style>{rules}</style>
+        <CompactViewportOverrideProvider isCompactViewport={false}>
+          <SidebarProvider open>
+            <Sidebar />
+            <SidebarInset>
+              <RootComposeHome
+                isCompact={false}
+                composer={<div data-testid="desktop-composer" />}
+                homepageSections={null}
+                compactScrollContent={
+                  <RootComposeMobileRecents
+                    {...props}
+                    threads={Array.from({ length: 6 }, (_, i) =>
+                      makeThread({ id: `recent-${i}`, title: `Recent ${i}` }),
+                    )}
+                  />
+                }
+              />
+            </SidebarInset>
+          </SidebarProvider>
+        </CompactViewportOverrideProvider>
+      </TestProviders>,
+    );
+    expect(
+      document.querySelector('.peer[data-state="expanded"][data-collapsible]'),
+    ).not.toBeNull();
+    expect(
+      getComputedStyle(screen.getByTestId("root-compose-desktop-recents"))
+        .display,
+    ).not.toBe("none");
+    expect(screen.getAllByRole("link")).toHaveLength(3);
+    expect(
+      screen
+        .getByTestId("root-compose-desktop-recents")
+        .contains(screen.getByRole("list")),
+    ).toBe(true);
+    expect(
+      document.querySelector(
+        "[data-root-compose-mobile-recents] [data-overflow-fade]",
+      ),
+    ).toBeNull();
+    expect(
+      screen.getByText("Recent").closest("section")?.className,
+    ).not.toContain("md:hidden");
+    rerender(
+      <TestProviders>
+        <RootComposeMobileRecents {...props} threads={[]} />
+      </TestProviders>,
+    );
+    expect(screen.queryByText("Recent")).toBeNull();
+  });
+
   it("opens thread actions on a long press without following the thread link", async () => {
     vi.useFakeTimers();
     const thread = makeThread();
@@ -658,3 +819,147 @@ describe("RootComposeMobileRecents", () => {
     expect(screen.queryByLabelText("Plan mode active")).toBeNull();
   });
 });
+
+it.each(
+  ["plain", "expanded", "collapsed", "native", "worktree"].flatMap((shape) =>
+    [true, false].map((isCompact) => ({ shape, isCompact })),
+  ),
+)(
+  "keeps cached and live Recent row geometry identical ($shape, compact=$isCompact)",
+  ({ shape, isCompact }) => {
+    vi.spyOn(Date, "now").mockReturnValue(1800000000000);
+    const thread = makeThread({
+      title: "Cached work",
+      nativeTerminal: shape === "native",
+      environmentIsWorktree: shape === "worktree",
+      status: "idle",
+      runtime: { displayStatus: "idle" },
+      environmentBranchName: "feature/paint",
+      latestAttentionAt: Date.now() - 60000,
+    });
+    const child = makeThread({
+      id: "cached-child",
+      parentThreadId: thread.id,
+      title: "Child work",
+    });
+    const threads = shape === "plain" ? [thread] : [thread, child];
+    const store = storeWithCollapsedThreads(
+      shape === "collapsed" ? [thread.id] : [],
+    );
+    writeCachedSidebarBootstrap(
+      makeSidebarBootstrapResponse({
+        projects: [
+          makeProjectWithThreadsResponse({
+            id: thread.projectId,
+            name: "Paint project",
+            threads,
+          }),
+        ],
+      }),
+    );
+    window.localStorage.setItem(
+      SIDEBAR_BOOTSTRAP_CACHE_KEY,
+      JSON.stringify(readCachedSidebarBootstrap()),
+    );
+    resetSidebarBootstrapCacheForTest();
+    expect(
+      readCachedSidebarBootstrap()?.projects[0]?.threads[0]?.nativeTerminal,
+    ).toBe(shape === "native");
+    const cached = render(
+      <TestProviders store={store}>
+        <CompactViewportOverrideProvider isCompactViewport={isCompact}>
+          <RouteLoadingSkeleton isBoundedPane={false} variant="root-compose" />
+        </CompactViewportOverrideProvider>
+      </TestProviders>,
+    );
+    const cachedSection = cached.container.querySelector(
+      "[data-root-compose-mobile-recents]",
+    );
+    expect(cachedSection).not.toBeNull();
+    const cachedRow = cachedSection!.querySelector("li")!;
+    const cachedClasses = [cachedRow, ...cachedRow.querySelectorAll("*")].map(
+      (node) => node.getAttribute("class"),
+    );
+    const expectedGlyph =
+      shape === "native"
+        ? "Terminal"
+        : shape === "worktree"
+          ? "FolderGit"
+          : null;
+    const expectedLabel = shape === "native" ? "Native terminal" : "Worktree";
+    expect(
+      cachedRow.querySelector(`[data-icon="${expectedGlyph}"]`) !== null,
+    ).toBe(expectedGlyph !== null);
+    expect(
+      cachedRow.querySelector(`[role="img"][aria-label="${expectedLabel}"]`) !==
+        null,
+    ).toBe(expectedGlyph !== null);
+    const cachedText = cachedRow.textContent;
+    const cachedPadding = cachedRow.getAttribute("style");
+    const cachedRows = cachedSection!.querySelectorAll("li").length;
+    expect(cachedRow.querySelector("a, button")).toBeNull();
+    expect(cachedRow.closest('[aria-hidden="true"]')).not.toBeNull();
+    const cachedHeader = cachedSection!.firstElementChild!.outerHTML;
+    cached.unmount();
+    const live = render(
+      <TestProviders store={store}>
+        <RootComposeMobileRecents
+          highlightedThreadId={null}
+          showCreatingRow={false}
+          threads={threads}
+          projectNamesById={new Map([[thread.projectId, "Paint project"]])}
+          providersById={new Map()}
+        />
+      </TestProviders>,
+    );
+    const liveSection = live.container.querySelector(
+      "[data-root-compose-mobile-recents]",
+    )!;
+    const liveRow = liveSection.querySelector("li")!;
+    expect(
+      [liveRow, ...liveRow.querySelectorAll("*")].map((node) =>
+        node.getAttribute("class"),
+      ),
+    ).toEqual(cachedClasses);
+    expect(
+      liveRow.querySelector(`[data-icon="${expectedGlyph}"]`) !== null,
+    ).toBe(expectedGlyph !== null);
+    expect(
+      liveRow.querySelector(`[role="img"][aria-label="${expectedLabel}"]`) !==
+        null,
+    ).toBe(expectedGlyph !== null);
+    expect(liveRow.textContent).toBe(cachedText);
+    expect(liveRow.getAttribute("style")).toBe(cachedPadding);
+    expect(liveSection.querySelectorAll("li").length).toBe(cachedRows);
+    expect(liveSection.firstElementChild!.outerHTML).toBe(cachedHeader);
+    resetSidebarBootstrapCacheForTest();
+  },
+);
+
+it.each([false, true])(
+  "uses one leading glyph column for native=%s",
+  (nativeTerminal) => {
+    const thread = makeThreadListEntry({
+      nativeTerminal,
+      environmentIsWorktree: false,
+    });
+    const { container } = render(
+      <TestProviders>
+        <div className="flex items-center gap-2.5">
+          <RecentThreadProviderMark thread={thread} provider={null} depth={0} />
+          <RecentThreadRowContent
+            thread={thread}
+            projectName="bb"
+            environmentProviderLookup={{ status: "loaded", provider: null }}
+            indicatorKind="none"
+            queuedFailedCount={0}
+          />
+        </div>
+      </TestProviders>,
+    );
+    expect(container.querySelector("[data-thread-title-mode]")).toBeNull();
+    expect(
+      container.querySelectorAll('[aria-label="Native terminal"]'),
+    ).toHaveLength(nativeTerminal ? 1 : 0);
+  },
+);

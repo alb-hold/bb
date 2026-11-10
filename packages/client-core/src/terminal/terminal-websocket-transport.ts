@@ -2,7 +2,9 @@ import { getTerminalBase64DecodedByteLength } from "@bb/domain";
 import {
   TERMINAL_LEGACY_WEBSOCKET_PROTOCOL,
   TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL,
+  TERMINAL_REPLAY_BATCH_WEBSOCKET_PROTOCOL,
   terminalServerMessageSchema,
+  type TerminalOutputChunk,
   type TerminalServerMessage,
 } from "@bb/server-contract";
 
@@ -28,6 +30,7 @@ export type TerminalSocketConnectionState =
   | "closed";
 
 export interface TerminalBrowserSocket {
+  readonly initialSizeClaim?: { cols: number; rows: number };
   bufferedAmount?: number;
   close(code?: number, reason?: string): void;
   onclose: ((event: CloseEvent) => void) | null;
@@ -73,6 +76,7 @@ function terminalSocketProtocols(): string[] {
   return [
     TERMINAL_LEGACY_WEBSOCKET_PROTOCOL,
     TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL,
+    TERMINAL_REPLAY_BATCH_WEBSOCKET_PROTOCOL,
   ];
 }
 
@@ -101,6 +105,7 @@ export interface TerminalWebSocketTransportOptions {
   heartbeatTimeoutMs?: number;
   inputQueueMaxBytes?: number;
   now?: () => number;
+  onSocketError?: () => void;
   onConnectionState?: (state: TerminalSocketConnectionState) => void;
   onInputOverflow?: (maxBytes: number) => void;
   onInputAccepted?: (
@@ -116,6 +121,8 @@ export interface TerminalWebSocketTransportOptions {
   ) => void;
   onOutputFrameReceived?: (terminalId: string, timestamp: number) => void;
   onInvalidMessage?: () => void;
+  onMessageEvent?: (timestamp: number) => void;
+  onReplayBatch?: (chunks: readonly TerminalOutputChunk[]) => void;
   onMessage: (message: TerminalServerMessage) => void;
   onRepaintNudgeSizeReleased?: (size: { cols: number; rows: number }) => void;
   onSequenceGap?: (expectedSeq: number, receivedSeq: number) => void;
@@ -139,7 +146,15 @@ export class TerminalWebSocketTransport {
   private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
   private lastPongAt = 0;
   private lastResize: { cols: number; rows: number } | null = null;
+  private lastSentResize: {
+    cols: number;
+    rows: number;
+    claim: boolean;
+    seq: number | null;
+  } | null = null;
   private nextOutputSeq = 0;
+  private requestedSinceSeq = 0;
+  private replayEndNextSeq = 0;
   private pendingOutputAckNextSeq: number | null = null;
   private pendingInputBytes = 0;
   private readonly pendingInputs: PendingTerminalInput[] = [];
@@ -161,6 +176,8 @@ export class TerminalWebSocketTransport {
   private socket: TerminalBrowserSocket | null = null;
   private terminalEnded = false;
   private visible = true;
+  private parked = false;
+  private suppressVisibilityResize = false;
   private visibilityReported = false;
 
   constructor(private readonly options: TerminalWebSocketTransportOptions) {
@@ -232,7 +249,11 @@ export class TerminalWebSocketTransport {
     this.retryStreak = 0;
   }
 
-  sendInput(dataBase64: string, inputEventAt?: number): boolean {
+  sendInput(
+    dataBase64: string,
+    inputEventAt?: number,
+    isUserInput = true,
+  ): boolean {
     const tracksInputTiming =
       this.options.onInputAccepted !== undefined ||
       this.options.onInputSent !== undefined;
@@ -240,6 +261,7 @@ export class TerminalWebSocketTransport {
     const payload = JSON.stringify({
       type: "input",
       dataBase64,
+      isUserInput: isUserInput ? undefined : false,
     });
     const serializedAt = tracksInputTiming ? this.now() : 0;
     const pending = {
@@ -313,19 +335,41 @@ export class TerminalWebSocketTransport {
     });
   }
 
+  setParked(parked: boolean): void {
+    if (this.parked === parked) return;
+    this.parked = parked;
+    this.pendingSizeClaim = false;
+    this.pendingSizeReclaim = false;
+    if (parked) {
+      this.cancelRepaintRestore();
+      this.clearRepaintTimeout();
+      this.clearSettleTimeout();
+      this.repaintNudgeInFlight = null;
+      this.setVisible(false);
+    } else this.suppressVisibilityResize = true;
+  }
+
   setVisible(visible: boolean): void {
+    if (this.parked && visible) return;
     this.visibilityReported = true;
     if (this.visible === visible) {
       return;
     }
     this.visible = visible;
+    this.lastSentResize = null;
     const socket = this.socket;
     if (socket !== null && socket.readyState === SOCKET_OPEN) {
       this.trySend(socket, JSON.stringify({ type: "visibility", visible }));
-      if (visible && this.lastResize !== null && this.settleTimeout === null) {
+      if (
+        visible &&
+        !this.suppressVisibilityResize &&
+        this.lastResize !== null &&
+        this.settleTimeout === null
+      ) {
         this.sendResizeMessage(socket, this.lastResize);
       }
     }
+    if (visible) this.suppressVisibilityResize = false;
   }
 
   replayOutputFrom(nextSeq: number): void {
@@ -347,12 +391,15 @@ export class TerminalWebSocketTransport {
     this.connect("reconnecting");
   }
 
-  sendResize(cols: number, rows: number): void {
+  sendResize(cols: number, rows: number, claim = false): void {
+    if (this.parked) return;
     if (this.lastResize?.cols === cols && this.lastResize.rows === rows) {
+      if (claim) this.claimSize(true);
       return;
     }
+    if (claim) this.pendingSizeClaim = true;
     this.lastResize = { cols, rows };
-    if (this.pendingSizeClaim) this.claimSize();
+    if (this.pendingSizeClaim) this.claimSize(false);
     this.cancelRepaintRestore();
     const socket = this.socket;
     if (
@@ -388,9 +435,12 @@ export class TerminalWebSocketTransport {
   }
 
   private pendingSizeClaim = false;
+  private pendingSizeReclaim = false;
 
-  claimSize(): void {
+  claimSize(reclaim = true): void {
+    if (this.parked) return;
     this.pendingSizeClaim = true;
+    this.pendingSizeReclaim ||= reclaim;
     const socket = this.socket;
     if (
       this.lastResize === null ||
@@ -399,11 +449,14 @@ export class TerminalWebSocketTransport {
     ) {
       return;
     }
-    this.pendingSizeClaim = false;
-    this.trySend(
+    this.pendingSizeClaim = !this.sendResizeMessage(
       socket,
-      JSON.stringify({ type: "resize", ...this.lastResize, claim: true }),
+      this.lastResize,
+      undefined,
+      true,
+      this.pendingSizeReclaim,
     );
+    if (!this.pendingSizeClaim) this.pendingSizeReclaim = false;
   }
 
   private setRepaintFinalSeq(seq: number | null): void {
@@ -422,21 +475,38 @@ export class TerminalWebSocketTransport {
     socket: TerminalBrowserSocket,
     size: { cols: number; rows: number },
     onSeq: (seq: number | null) => void = () => undefined,
+    claim = false,
+    force = false,
   ): boolean {
-    if (!this.resizeAcksConfirmed) {
-      onSeq(null);
-      return this.trySend(socket, JSON.stringify({ type: "resize", ...size }));
+    if (this.parked) return false;
+    const previous = this.lastSentResize;
+    if (
+      !force &&
+      previous?.cols === size.cols &&
+      previous.rows === size.rows &&
+      (!claim || previous.claim)
+    ) {
+      onSeq(previous.seq);
+      return true;
     }
-    const seq = this.nextResizeSeq + 1;
-    this.nextResizeSeq = seq;
+    const seq =
+      !claim && this.resizeAcksConfirmed ? ++this.nextResizeSeq : null;
     onSeq(seq);
-    return this.trySend(
+    const sent = this.trySend(
       socket,
-      JSON.stringify({ type: "resize", ...size, seq }),
+      JSON.stringify({
+        type: "resize",
+        ...size,
+        ...(claim ? { claim: true } : {}),
+        ...(seq === null ? {} : { seq }),
+      }),
     );
+    if (sent) this.lastSentResize = { ...size, claim, seq };
+    return sent;
   }
 
   requestRepaint(): void {
+    if (this.parked) return;
     if (!this.resizeEchoSeqConfirmed) {
       return;
     }
@@ -582,6 +652,7 @@ export class TerminalWebSocketTransport {
     }
     this.options.onConnectionState?.(state);
     let socket: TerminalBrowserSocket;
+    this.requestedSinceSeq = this.nextOutputSeq;
     try {
       socket = this.createSocket(
         terminalSocketUrl(this.options.url, this.nextOutputSeq),
@@ -591,6 +662,10 @@ export class TerminalWebSocketTransport {
       this.scheduleReconnect();
       return;
     }
+    if (this.lastSentResize?.claim) this.pendingSizeClaim = true;
+    this.lastSentResize = socket.initialSizeClaim
+      ? { ...socket.initialSizeClaim, claim: true, seq: null }
+      : null;
     this.socket = socket;
     this.ackedResizeSeq = 0;
     this.nextResizeSeq = 0;
@@ -599,8 +674,12 @@ export class TerminalWebSocketTransport {
     this.resizeReportedAfterLayoutSettle = false;
     this.repaintNudgeInFlight = null;
     socket.onopen = () => this.handleOpen(socket);
-    socket.onmessage = (event) => this.handleMessage(socket, event.data);
-    socket.onerror = () => undefined;
+    socket.onmessage = (event) => {
+      if (this.disposed || this.socket !== socket) return;
+      this.options.onMessageEvent?.(event.timeStamp);
+      this.handleMessage(socket, event.data);
+    };
+    socket.onerror = () => this.options.onSocketError?.();
     socket.onclose = () => this.handleClose(socket);
   }
 
@@ -608,9 +687,16 @@ export class TerminalWebSocketTransport {
     if (this.disposed || this.socket !== socket) {
       return;
     }
+    if (this.lastSentResize === null && socket.initialSizeClaim)
+      this.lastSentResize = {
+        ...socket.initialSizeClaim,
+        claim: true,
+        seq: null,
+      };
     this.lastPongAt = this.now();
     this.resizeEchoSeqConfirmed =
-      socket.protocol === TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL;
+      socket.protocol === TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL ||
+      socket.protocol === TERMINAL_REPLAY_BATCH_WEBSOCKET_PROTOCOL;
     this.startHeartbeat(socket);
     if (this.visibilityReported) {
       this.trySend(
@@ -618,8 +704,8 @@ export class TerminalWebSocketTransport {
         JSON.stringify({ type: "visibility", visible: this.visible }),
       );
     }
+    if (this.pendingSizeClaim) this.claimSize(false);
     this.beginResizeSettle(socket);
-    if (this.pendingSizeClaim) this.claimSize();
     this.flushInputs();
   }
 
@@ -711,6 +797,52 @@ export class TerminalWebSocketTransport {
       return;
     }
     const message = parsed.data;
+    if (message.type === "output-batch") {
+      if (socket.protocol !== TERMINAL_REPLAY_BATCH_WEBSOCKET_PROTOCOL) {
+        this.options.onInvalidMessage?.();
+        return;
+      }
+      let accepted: TerminalOutputChunk[] = [];
+      const flush = () => {
+        if (accepted.length === 0) return;
+        this.options.onOutputFrameReceived?.(
+          this.options.terminalId ?? "",
+          receivedAt,
+        );
+        this.options.onReplayBatch?.(accepted);
+        accepted = [];
+      };
+      for (const chunk of message.chunks) {
+        if (this.disposed || this.socket !== socket) return;
+        if (!this.options.onReplayBatch || chunk.seq >= this.replayEndNextSeq) {
+          flush();
+          this.handleServerMessage(
+            socket,
+            { type: "output", chunk },
+            receivedAt,
+          );
+          continue;
+        }
+        if (chunk.seq < this.nextOutputSeq) continue;
+        if (chunk.seq > this.nextOutputSeq) {
+          flush();
+          this.options.onSequenceGap?.(this.nextOutputSeq, chunk.seq);
+        }
+        this.nextOutputSeq = chunk.seq + 1;
+        accepted.push(chunk);
+      }
+      flush();
+      return;
+    }
+    this.handleServerMessage(socket, message, receivedAt);
+  }
+
+  private handleServerMessage(
+    socket: TerminalBrowserSocket,
+    message: Exclude<TerminalServerMessage, { type: "output-batch" }>,
+    receivedAt: number,
+  ): void {
+    if (this.disposed || this.socket !== socket) return;
     if (message.type === "pong") {
       this.lastPongAt = this.now();
     }
@@ -723,6 +855,9 @@ export class TerminalWebSocketTransport {
       return;
     }
     if (message.type === "attached") {
+      if (this.requestedSinceSeq === 0)
+        this.nextOutputSeq = message.replayStartSeq;
+      this.replayEndNextSeq = message.nextSeq;
       this.reconnectAttempt = 0;
       this.options.onConnectionState?.("attached");
     }
@@ -839,7 +974,7 @@ export class TerminalWebSocketTransport {
     ) {
       const pending = this.pendingInputs[0];
       if (!pending) break;
-      this.claimSize();
+      this.claimSize(true);
       if (
         !this.trySend(
           socket,
@@ -929,8 +1064,12 @@ export class TerminalWebSocketTransport {
       }
       const size = this.lastResize;
       if (size !== null && socket.readyState === SOCKET_OPEN) {
-        this.sendResizeMessage(socket, size, (restoreSeq) =>
-          this.setRepaintFinalSeq(restoreSeq),
+        this.sendResizeMessage(
+          socket,
+          size,
+          (restoreSeq) => this.setRepaintFinalSeq(restoreSeq),
+          false,
+          true,
         );
       }
       this.scheduleRepaintRestoreRetry(socket, inFlight);

@@ -11,7 +11,6 @@ import { cn } from "@bb/shared-ui/lib/utils";
 import { preloadTerminalModules } from "@/components/thread/terminal/terminal-modules";
 import { FilePreviewLoading } from "./FilePreviewChrome";
 import { SecondaryPanelContentSkeleton } from "./SecondaryPanelContentSkeleton";
-import { PANEL_COLLAPSE_TRANSITION_CLASS } from "./panelTransitionTokens";
 import {
   CONVERSATION_COLLAPSED_PANEL_SIZE_PERCENT,
   useSecondaryPanelMinimum,
@@ -54,8 +53,7 @@ function ThreadSecondaryPanelInlinePlaceholder({
       order={2}
       style={{ overflow: "clip" }}
       className={cn(
-        "min-w-0",
-        `relative transition-[flex-grow,flex-basis] ${PANEL_COLLAPSE_TRANSITION_CLASS}`,
+        "relative min-w-0",
         isOpen && !isConversationCollapsed && "border-l border-border-seam",
       )}
       data-testid="thread-secondary-panel-placeholder"
@@ -136,7 +134,7 @@ const ThreadSecondaryPanelSplit = defineSplit<LazyThreadSecondaryPanelProps>({
     ),
   mountWhen: (props) => props.isOpen,
   keepMounted: true,
-  tier: "preload",
+  tier: "intent",
 });
 
 export const LazyThreadSecondaryPanel = Object.assign(
@@ -220,7 +218,7 @@ export const LazyWorkspaceFilePreviewTabContent = defineSplit({
   loading: ({ activePath, copyPath }) => (
     <FilePreviewLoading path={activePath} copyPath={copyPath ?? null} />
   ),
-  tier: "preload",
+  tier: "intent",
 });
 
 export const LazyHostFilePreviewTabContent = defineSplit({
@@ -232,7 +230,7 @@ export const LazyHostFilePreviewTabContent = defineSplit({
   loading: ({ activePath, copyPath }) => (
     <FilePreviewLoading path={activePath} copyPath={copyPath ?? null} />
   ),
-  tier: "preload",
+  tier: "intent",
 });
 
 export const LazyHostScopedFilePreviewTabContent = defineSplit({
@@ -244,7 +242,7 @@ export const LazyHostScopedFilePreviewTabContent = defineSplit({
   loading: ({ activePath }) => (
     <FilePreviewLoading path={activePath} copyPath={activePath} />
   ),
-  tier: "preload",
+  tier: "intent",
 });
 
 export const LazyProjectFilePreviewTabContent = defineSplit({
@@ -256,7 +254,7 @@ export const LazyProjectFilePreviewTabContent = defineSplit({
   loading: ({ activePath, copyPath }) => (
     <FilePreviewLoading path={activePath} copyPath={copyPath ?? null} />
   ),
-  tier: "preload",
+  tier: "intent",
 });
 
 export const LazyThreadStorageFilePreviewTabContent = defineSplit({
@@ -268,7 +266,7 @@ export const LazyThreadStorageFilePreviewTabContent = defineSplit({
   loading: ({ activePath, copyPath }) => (
     <FilePreviewLoading path={activePath} copyPath={copyPath ?? null} />
   ),
-  tier: "preload",
+  tier: "intent",
 });
 
 export const LazyAttachmentFilePreviewTabContent = defineSplit({

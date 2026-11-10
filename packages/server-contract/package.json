@@ -8,6 +8,36 @@
       "source": "./src/index.ts",
       "types": "./src/index.ts",
       "default": "./src/index.ts"
+    },
+    "./api/thread-client-constants": {
+      "source": "./src/api/thread-client-constants.ts",
+      "types": "./src/api/thread-client-constants.ts",
+      "default": "./src/api/thread-client-constants.ts"
+    },
+    "./api/device-handoff": {
+      "source": "./src/api/device-handoff.ts",
+      "types": "./src/api/device-handoff.ts",
+      "default": "./src/api/device-handoff.ts"
+    },
+    "./api/shared": {
+      "source": "./src/api/shared.ts",
+      "types": "./src/api/shared.ts",
+      "default": "./src/api/shared.ts"
+    },
+    "./api/thread-signals": {
+      "source": "./src/api/thread-signals.ts",
+      "types": "./src/api/thread-signals.ts",
+      "default": "./src/api/thread-signals.ts"
+    },
+    "./device-handoff-identity": {
+      "source": "./src/device-handoff-identity.ts",
+      "types": "./src/device-handoff-identity.ts",
+      "default": "./src/device-handoff-identity.ts"
+    },
+    "./api/thread-tabs": {
+      "source": "./src/api/thread-tabs.ts",
+      "types": "./src/api/thread-tabs.ts",
+      "default": "./src/api/thread-tabs.ts"
     }
   },
   "types": "./src/index.ts",

@@ -1539,3 +1539,17 @@ describe("ScrollPositionKeeper", () => {
     expect(timeline.topOf("row-3")).toBe(before);
   });
 });
+
+it.each([false, true])("keeps width-reflow policy for bottom-follow=%s", (attached) => {
+  const timeline = createTimeline(rowsOf(10), { attached });
+  let width = 960;
+  Object.defineProperty(timeline.scrollElement, "clientWidth", { configurable: true, get: () => width });
+  timeline.keeper.reconcile();
+  if (!attached) timeline.userScrollTo(450);
+  const before = attached ? timeline.element("row-9").getBoundingClientRect().bottom : timeline.topOf("row-2");
+  width = 480;
+  timeline.resize("row-2", 320);
+  timeline.keeper.remeasure();
+  expect(attached ? timeline.element("row-9").getBoundingClientRect().bottom : timeline.topOf("row-2")).toBe(before);
+  expect(timeline.keeper.isAttached()).toBe(attached);
+});

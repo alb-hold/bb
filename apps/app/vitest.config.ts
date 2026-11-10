@@ -1,3 +1,4 @@
+import { xtermFaintContrast } from "./vite-xterm-faint.js";
 import path from "path";
 import {
   defineWorkspaceTestConfig,
@@ -24,6 +25,7 @@ class AppTestSequencer extends SharedWorkerSequencer {
 
 export default defineWorkspaceTestConfig({
   plugins: [
+    xtermFaintContrast(),
     forkablePluginPaths(path.resolve(__dirname, "./src")),
     sharedUiEnvSeam(),
     react(),
@@ -35,6 +37,7 @@ export default defineWorkspaceTestConfig({
     },
   },
   test: {
+    server: { deps: { inline: [/@xterm\/(xterm|addon-webgl)/] } },
     silent: "passed-only",
     sequence: { sequencer: AppTestSequencer },
     environment: "node",

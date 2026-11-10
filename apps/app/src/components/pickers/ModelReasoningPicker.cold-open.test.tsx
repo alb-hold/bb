@@ -11,6 +11,8 @@ import {
 import { afterEach, expect, it, vi } from "vitest";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
 import { ModelReasoningPicker } from "./ModelReasoningPicker";
+import { ModelReasoningMenu } from "./ModelReasoningMenuSplit";
+import { startSplitPreloading } from "@/lib/split-prefetch";
 
 const menu = vi.hoisted(() => ({ imports: 0, release: () => {} }));
 vi.mock("./ModelReasoningMenu", async (importOriginal) => {
@@ -57,14 +59,21 @@ it("keeps search typing and keyboard selection across the first menu download", 
     />,
     { wrapper },
   );
-  await act(async () => {});
+  startSplitPreloading();
+  await act(async () => {
+    await new Promise((resolve) => window.setTimeout(resolve, 1200));
+  });
   expect(menu.imports).toBe(0);
+  fireEvent.pointerEnter(
+    screen.getByRole("button", { name: "Provider, model and reasoning" }),
+  );
+  await waitFor(() => expect(menu.imports).toBe(1));
   expect(screen.queryByPlaceholderText("Search models")).toBeNull();
   fireEvent.click(
     screen.getByRole("button", { name: "Provider, model and reasoning" }),
   );
   await waitFor(() => expect(menu.imports).toBe(1));
-  const search = screen.getByPlaceholderText("Search models");
+  const search = await screen.findByPlaceholderText("Search models");
   await waitFor(() => expect(document.activeElement).toBe(search));
   expect(
     screen.getByRole("status", { name: "Loading model picker" }),
@@ -72,7 +81,10 @@ it("keeps search typing and keyboard selection across the first menu download", 
   fireEvent.change(search, { target: { value: "o4m" } });
   fireEvent.keyDown(search, { key: "ArrowDown" });
   expect(menu.imports).toBe(1);
-  await act(async () => menu.release());
+  await act(async () => {
+    menu.release();
+    await ModelReasoningMenu.preload();
+  });
   expect(await screen.findByText("o4-mini")).toBeTruthy();
   expect(screen.queryByText("Sonnet")).toBeNull();
   expect(search).toHaveProperty("value", "o4m");

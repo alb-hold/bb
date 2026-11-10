@@ -35,6 +35,166 @@ vi.mock("@/lib/sdk", () => ({
 describe("thread usage summary", () => {
   afterEach(cleanup);
 
+  it("keeps the collapsed total readable and puts the breakdown in its tooltip", async () => {
+    const { container } = render(
+      <TooltipProvider delayDuration={0}>
+        <ThreadTurnTokenSummary
+          compact
+          openAnalysisOnClick={false}
+          threadId="parent"
+          turnId="da385f7e5d-t1"
+        />
+      </TooltipProvider>,
+    );
+    const summary = container.querySelector("[data-thread-turn-tokens]")!;
+    expect(summary.textContent).toBe("2.8M tokens");
+    expect(summary.querySelectorAll("[data-token-part]")).toHaveLength(1);
+    expect(summary.className).toContain("font-sans");
+    fireEvent.pointerMove(summary);
+    expect(await screen.findAllByText("Fresh input")).not.toHaveLength(0);
+    expect(await screen.findAllByText("2,843,776")).not.toHaveLength(0);
+  });
+
+  it.each([
+    [186_800, 2_100, ["total", "input", "output", "reasoning", "cached"]],
+    [0, 2_100, ["total", "input", "output", "reasoning"]],
+    [186_800, 0, ["total", "input", "output", "cached"]],
+    [0, null, ["total", "input", "output"]],
+  ])(
+    "keeps total first with cached=%s and reasoning=%s",
+    (cachedInputTokens, reasoningOutputTokens, expected) => {
+      useThreadSpendSummary.mockReturnValue({
+        data: {
+          total: { reasoningOutputTokens },
+          turns: [
+            {
+              turnId: "phone",
+              inputTokens: 201_300,
+              outputTokens: 6_200,
+              cachedInputTokens,
+              reasoningOutputTokens,
+              totalTokens: 207_500,
+            },
+          ],
+        },
+      });
+      const { container } = render(
+        <>
+          <style>
+            {readFileSync(
+              "src/components/thread/timeline/message-action-bar.css",
+              "utf8",
+            )}
+          </style>
+          <TooltipProvider>
+            <ThreadTurnTokenSummary
+              openAnalysisOnClick={false}
+              threadId="parent"
+              turnId="phone"
+            />
+          </TooltipProvider>
+        </>,
+      );
+      const summary = container.querySelector("[data-thread-turn-tokens]")!;
+      expect(
+        [...summary.querySelectorAll("[data-token-part]")].map((part) =>
+          part.getAttribute("data-token-part"),
+        ),
+      ).toEqual(expected);
+      expect(
+        summary.querySelector("[data-token-total-full]")?.textContent,
+      ).toBe("207.5K tokens");
+      expect(
+        summary.querySelector("[data-token-total-tight]")?.textContent,
+      ).toBe("208K tokens");
+      expect(summary.classList.contains("text-xs")).toBe(true);
+      for (const part of summary.querySelectorAll('[data-token-part]:not([data-token-part="total"])')) {
+        expect(part.parentElement?.hasAttribute("data-token-unit")).toBe(true);
+      }
+      expect(summary.classList.contains("text-subtle-foreground")).toBe(true);
+      if (reasoningOutputTokens) {
+        expect(
+          summary.querySelector('[data-token-part="reasoning"]')?.textContent,
+        ).toBe("reasoning 2.1K");
+      }
+      const parts = summary.querySelector("[data-token-parts]")!;
+      expect(parts.parentElement?.hasAttribute("data-token-clip")).toBe(true);
+      expect(getComputedStyle(parts.parentElement!).overflow).toBe("hidden");
+      expect(getComputedStyle(parts).columnGap).toBe("0.75rem");
+      expect(parts.children).toHaveLength(expected.length);
+      for (const [index, unit] of [...parts.children].entries()) {
+        expect(unit.hasAttribute("data-token-unit")).toBe(true);
+        expect(getComputedStyle(unit).position).toBe("relative");
+        expect(unit.children).toHaveLength(2);
+        expect(
+          unit.firstElementChild?.hasAttribute("data-token-separator"),
+        ).toBe(true);
+        expect(unit.firstElementChild?.getAttribute("aria-hidden")).toBe(
+          "true",
+        );
+        expect(unit.firstElementChild?.textContent).toBe("·");
+        const separatorStyle = getComputedStyle(unit.firstElementChild!);
+        expect(separatorStyle.position).toBe("absolute");
+        expect(separatorStyle.insetInlineStart).toBe("-0.75rem");
+        expect(separatorStyle.width).toBe("0.75rem");
+        expect(unit.lastElementChild?.getAttribute("data-token-part")).toBe(
+          expected[index],
+        );
+      }
+    },
+  );
+
+  it.each([true, false])(
+    "uses UI type with tabular numerals for compact=%s",
+    (compact) => {
+      const { container } = render(
+        <TooltipProvider>
+          <ThreadTurnTokenSummary
+            compact={compact}
+            openAnalysisOnClick={false}
+            threadId="parent"
+            turnId="da385f7e5d-t1"
+          />
+        </TooltipProvider>,
+      );
+      const summary = container.querySelector("[data-thread-turn-tokens]")!;
+      expect(summary.classList.contains("font-sans")).toBe(true);
+      expect(summary.classList.contains("tabular-nums")).toBe(true);
+      expect(summary.classList.contains("font-mono")).toBe(false);
+    },
+  );
+
+  it("does not invent a collapsed total when only partial usage is reported", () => {
+    useThreadSpendSummary.mockReturnValue({
+      data: {
+        total: {},
+        turns: [
+          {
+            turnId: "partial",
+            inputTokens: null,
+            cachedInputTokens: null,
+            outputTokens: 23,
+            reasoningOutputTokens: null,
+            totalTokens: null,
+          },
+        ],
+      },
+    });
+    const { container } = render(
+      <TooltipProvider>
+        <ThreadTurnTokenSummary
+          compact
+          openAnalysisOnClick={false}
+          threadId="parent"
+          turnId="partial"
+        />
+      </TooltipProvider>,
+    );
+    expect(
+      container.querySelector("[data-thread-turn-tokens]")?.textContent,
+    ).toBe("unavailable tokens");
+  });
+
   it("keeps token-summary taps above the composer resize handle on short viewports", () => {
     const messageActionBarStyles = readFileSync(
       "src/components/thread/timeline/message-action-bar.css",
@@ -308,10 +468,10 @@ describe("thread usage summary", () => {
 
     expect(container.querySelector("[data-thread-turn-tokens]")).toBeTruthy();
     expect(screen.getByText(/cached 2\.8M/)).toBeTruthy();
-    expect(screen.getByText("Σ 2.8M")).toBeTruthy();
+    expect(screen.getByText("2.8M tokens")).toBeTruthy();
     expect(
       container.querySelector("[data-token-total-tight]")?.textContent,
-    ).toBe("3M");
+    ).toBe("3M tokens");
     expect(screen.queryByText(/Thread tokens/)).toBeNull();
     fireEvent.pointerMove(
       container.querySelector("[data-thread-turn-tokens]")!,
@@ -325,7 +485,7 @@ describe("thread usage summary", () => {
     ).not.toHaveLength(0);
     expect(screen.queryByText(/latest reported context fill/i)).toBeNull();
     expect(await screen.findByText(/Ran 2 agents/)).toBeTruthy();
-    expect(screen.getByText(/Σ 64.4M/)).toBeTruthy();
+    expect(screen.getByText(/64.4M tokens/)).toBeTruthy();
 
     fireEvent.click(screen.getByText("View ▸"));
     await waitFor(() =>
@@ -424,9 +584,13 @@ describe("thread usage summary", () => {
       </TooltipProvider>,
     );
 
-    expect(screen.getByText("reason 10")).toBeTruthy();
-    expect(screen.getByText("cached 20")).toBeTruthy();
-    expect(screen.getByText("Σ 220")).toBeTruthy();
+    expect(screen.getByText("reasoning 10")).toBeTruthy();
+    expect(
+      screen.getByText("cached 20", { selector: "[data-token-cached-full]" }),
+    ).toBeTruthy();
+    expect(
+      screen.getByText("220 tokens", { selector: "[data-token-total-full]" }),
+    ).toBeTruthy();
   });
 
   it("keeps a compact desktop summary while preserving the full details popup", async () => {
@@ -554,7 +718,7 @@ describe("thread usage summary", () => {
       tokenSummary?.querySelector('[data-token-part="reasoning"]'),
     ).toBeNull();
     expect(tokenSummary?.textContent).toContain("cached 20");
-    expect(tokenSummary?.textContent).toContain("Σ 220");
+    expect(tokenSummary?.textContent).toContain("220 tokens");
     fireEvent.pointerMove(tokenSummary!);
     expect((await screen.findAllByText("Not reported")).length).toBeGreaterThan(
       0,
@@ -608,7 +772,7 @@ describe("thread usage summary", () => {
     expect(container.querySelector("[data-token-total-full]")).toBeNull();
     expect(
       container.querySelector("[data-token-total-tight]")?.textContent,
-    ).toBe("687M");
+    ).toBe("cached 687M");
     expect(
       container.querySelector("[data-thread-turn-tokens]")?.textContent,
     ).toContain("cached 686.7M");
@@ -635,7 +799,7 @@ describe("thread usage summary", () => {
     );
 
     expect(await screen.findByText(/Ran 1 agent/)).toBeTruthy();
-    expect(screen.queryByText(/Σ unavailable/)).toBeNull();
+    expect(screen.queryByText(/unavailable tokens/)).toBeNull();
   });
 
   it("keeps the compact agent chip short and opens the full breakdown in a drawer", async () => {

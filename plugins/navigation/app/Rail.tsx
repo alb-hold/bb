@@ -1,9 +1,10 @@
-import { forwardRef, useRef, type ComponentProps, type ReactNode } from "react";
+import { forwardRef, useRef, useState, type ComponentProps, type ReactNode } from "react";
 import {
   experimental_SidebarNavigationIcon as SidebarNavigationIcon,
   experimental_useSidebarNavigation,
   experimental_useSidebarNavigationSplit,
   type ExperimentalSidebarNavigationItem,
+  type ExperimentalSidebarNavigationProps,
 } from "@get-bb/plugin-sdk/app";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
@@ -126,8 +127,14 @@ function RailItem({ item }: { item: ExperimentalSidebarNavigationItem }) {
   );
 }
 
-export function Rail() {
+export function Rail({
+  isCompactViewport,
+}: ExperimentalSidebarNavigationProps) {
   const { items, isHomeActive, actions } = experimental_useSidebarNavigation();
+  const [initialItemIds] = useState(() => new Set(items.map((item) => item.id)));
+  const isPrefixItem = (item: ExperimentalSidebarNavigationItem) =>
+    item.pluginId === null ||
+    (!isCompactViewport && initialItemIds.has(item.id));
 
   const destinations = items.filter(
     (item) => item.action.kind !== "new-thread",
@@ -157,9 +164,11 @@ export function Rail() {
           >
             <Icon name="Home" aria-hidden="true" />
           </RailButton>
-          {visible.map((item) => (
-            <RailItem key={item.id} item={item} />
-          ))}
+          {visible
+            .filter(isPrefixItem)
+            .map((item) => (
+              <RailItem key={item.id} item={item} />
+            ))}
           <SidebarNavigationMoreMenu
             trigger={
               <RailButton
@@ -184,6 +193,9 @@ export function Rail() {
             sideOffset={RAIL_MENU_SIDE_OFFSET}
             testId="nav-rail-more-menu"
           />
+          {visible
+            .filter((item) => !isPrefixItem(item))
+            .map((item) => <RailItem key={item.id} item={item} />)}
         </div>
       </div>
     </TooltipProvider>

@@ -366,3 +366,13 @@ export const experimental_getApplicationLinkApprovals = runtimeFunction(
 export const experimental_revokeApplicationLinkApproval = runtimeFunction(
   "experimental_revokeApplicationLinkApproval",
 );
+
+export const internal_DO_NOT_USE_loadComposerPasteParser: PluginSdkApp["internal_DO_NOT_USE_loadComposerPasteParser"] =
+  () =>
+    installedApp()?.internal_DO_NOT_USE_loadComposerPasteParser?.() ??
+    Promise.resolve(null);
+
+export const internal_DO_NOT_USE_loadGitDiffParser: PluginSdkApp["internal_DO_NOT_USE_loadGitDiffParser"] =
+  () =>
+    installedApp()?.internal_DO_NOT_USE_loadGitDiffParser?.() ??
+    Promise.resolve(null);

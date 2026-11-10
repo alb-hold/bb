@@ -1,11 +1,16 @@
 import type { MarkdownPreviewLinkHandler } from "@/components/ui/markdown-link";
-import type { TerminalCreateTarget } from "@bb/server-contract";
+import type {
+  TerminalSession,
+  TerminalCreateTarget,
+} from "@bb/server-contract";
 import { ThreadTerminalContent } from "./ThreadTerminalContent";
 import { useThreadTerminalController } from "./useThreadTerminalController";
 
 interface ThreadTerminalPanelProps {
   autoFocus?: boolean;
+  initialSession?: TerminalSession;
   retainNativeOutput?: boolean;
+  attentionShownAsBanner?: boolean;
   isPanelOpen: boolean;
   isPanelPersistedOpen: boolean;
   onAutoFocusHandled?: () => void;
@@ -19,7 +24,9 @@ interface ThreadTerminalPanelProps {
 
 export function ThreadTerminalPanel({
   autoFocus = false,
+  initialSession,
   retainNativeOutput = false,
+  attentionShownAsBanner = false,
   isPanelOpen,
   isPanelPersistedOpen,
   onAutoFocusHandled,
@@ -31,6 +38,7 @@ export function ThreadTerminalPanel({
   target,
 }: ThreadTerminalPanelProps) {
   const terminalController = useThreadTerminalController({
+    initialSession,
     isPanelOpen,
     isPanelPersistedOpen,
     terminalId,
@@ -46,6 +54,7 @@ export function ThreadTerminalPanel({
       <div className="min-h-0 flex-1 overflow-hidden bg-sidebar">
         <ThreadTerminalContent
           retainNativeOutput={retainNativeOutput}
+          attentionShownAsBanner={attentionShownAsBanner}
           autoFocus={autoFocus}
           controller={terminalController}
           onAutoFocusHandled={onAutoFocusHandled}

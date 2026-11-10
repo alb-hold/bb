@@ -17,7 +17,7 @@ import type {
 } from "@get-bb/plugin-sdk";
 import { CopyIconButton } from "../ui/copy-button";
 import { useSdkClipboardCopy } from "../ui/sdk-clipboard-copy";
-import type { ParsedGitDiffFile } from "./git-diff-parsing";
+import type { ParsedGitDiffFile } from "./git-diff-metadata";
 import { buildFileDiffPatchText } from "./git-diff-patch-text";
 
 export interface DiffPresentation {

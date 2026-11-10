@@ -122,12 +122,14 @@ describe("CompactSecondaryPanelShelf", () => {
       fireTouch(body, "touchstart", createTouch(300, 160));
       fireTouch(window, "touchmove", createTouch(260, 162));
       expect(Number.parseFloat(inset.style.translate)).toBeCloseTo(-40);
+      expect(Number.parseFloat(shelf.style.translate)).toBeCloseTo(360);
       expect(shelf.style.visibility).toBe("visible");
       fireTouch(window, "touchend", createTouch(260, 162));
       vi.advanceTimersByTime(250);
       expect(onOpen).not.toHaveBeenCalled();
       expect(inset.style.translate).toBe("");
       expect(shelf.style.visibility).toBe("");
+      expect(shelf.style.translate).toBe("");
 
       fireTouch(body, "touchstart", createTouch(100, 160));
       fireTouch(window, "touchmove", createTouch(300, 162));
@@ -307,7 +309,7 @@ describe("CompactSecondaryPanelShelf", () => {
     expect(shelf.style.zIndex).toBe(String(APP_OVERLAY_LAYER.secondaryPanel));
     expect(shelf.className).toContain("data-[state=closed]:invisible");
     expect(shelf.className).toContain(
-      "data-[state=closed]:[transition:visibility_0s_linear_220ms]",
+      "data-[state=closed]:[transition:translate_220ms_cubic-bezier(0.32,0.72,0,1),visibility_0s_linear_220ms]",
     );
     expect(shelf.className).toContain("motion-reduce:transition-none!");
   });

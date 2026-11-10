@@ -111,6 +111,7 @@ export const PLUGIN_PROVIDER_ENV_MAX_ENTRIES = 32;
 
 const pluginProviderEnvEntrySchema = z
   .object({
+    internal_DO_NOT_USE_catalogIdentity: z.string().min(1).optional(),
     name: z.string().regex(PLUGIN_PROVIDER_ENV_NAME_PATTERN),
     value: z.union([
       z.string(),

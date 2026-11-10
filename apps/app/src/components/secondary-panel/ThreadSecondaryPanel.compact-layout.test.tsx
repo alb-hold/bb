@@ -38,6 +38,70 @@ afterEach(() => {
 });
 
 describe("compact terminal layout requests", () => {
+  it("reserves the drawer resize action before the terminal viewer is ready", () => {
+    const matchMedia = vi
+      .spyOn(window, "matchMedia")
+      .mockImplementation((query) => ({
+        matches: query === "(pointer: coarse)",
+        media: query,
+        onchange: null,
+        addListener: noop,
+        removeListener: noop,
+        addEventListener: noop,
+        removeEventListener: noop,
+        dispatchEvent: () => true,
+      }));
+    try {
+      const terminalTab = createTerminalFixedPanelTab({
+        terminalId: "pending-viewer",
+      });
+      const { wrapper: Wrapper } = createQueryClientTestHarness();
+      render(
+        <Wrapper>
+          <TooltipProvider>
+            <PanelGroup direction="horizontal">
+              <ThreadSecondaryPanel
+                activeTab={terminalTab}
+                fixedTabs={[]}
+                tabs={[
+                  {
+                    label: "Pending terminal",
+                    leadingVisual: null,
+                    onClose: noop,
+                    onSelect: noop,
+                    renderContent: () => <div>Loading terminals…</div>,
+                    statusLabel: null,
+                    tab: terminalTab,
+                  },
+                ]}
+                isConversationCollapsed={false}
+                isOpen
+                metadataContent={null}
+                onClose={noop}
+                onCollapse={noop}
+                onTabReorder={noop}
+                onOpenNewTab={noop}
+                onPanelFocus={noop}
+                onToggleConversationCollapse={noop}
+                renderAsDrawer
+              />
+            </PanelGroup>
+          </TooltipProvider>
+        </Wrapper>,
+      );
+      const chrome = screen.getByTestId("thread-secondary-panel-top-chrome");
+      const slot = chrome.querySelector("[data-terminal-size-claim-slot]");
+      expect(slot).not.toBeNull();
+      expect(slot?.textContent).toBe("Resize to this screen");
+      expect(
+        screen.queryByRole("button", { name: "Resize to this screen" }),
+      ).toBeNull();
+    } finally {
+      cleanup();
+      matchMedia.mockRestore();
+    }
+  });
+
   it("selects the requested terminal on a non-drawer host without split state", async () => {
     const terminalId = "term-no-split-state";
     const terminalTab = createTerminalFixedPanelTab({ terminalId });

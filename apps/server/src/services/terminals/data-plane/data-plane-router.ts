@@ -33,6 +33,7 @@ export interface DataPlaneTransport {
 
 export interface DataPlaneLifecyclePort {
   attach(args: {
+    rawReplay: boolean;
     handoffOwnerToken?: string;
     outputAcks: boolean;
     resizeAcks: boolean;
@@ -60,6 +61,7 @@ export interface DataPlaneLifecyclePort {
 }
 
 interface PendingAttach {
+  rawReplay: boolean;
   outputAcks: boolean;
   resizeAcks: boolean;
   resizeSeqEcho: boolean;
@@ -110,6 +112,9 @@ export class TerminalDataPlaneRouter implements ChildTerminalSocketSink {
     }
     const attachId = randomUUID();
     this.pending.set(attachId, {
+      rawReplay: !args.request.headers.some(
+        ([name]) => name.toLowerCase() === "origin",
+      ),
       outputAcks: args.outputAcks,
       resizeAcks: args.resizeAcks,
       resizeSeqEcho: args.resizeSeqEcho,
@@ -298,7 +303,10 @@ export class TerminalDataPlaneRouter implements ChildTerminalSocketSink {
     trailing: ChildTerminalBroadcastMessage[],
   ): void {
     const chunks = frame.chunks.flatMap((chunk) =>
-      this.lifecycle.stripHolderMarkersFromDataPlaneOutput(socket.terminalId, chunk),
+      this.lifecycle.stripHolderMarkersFromDataPlaneOutput(
+        socket.terminalId,
+        chunk,
+      ),
     );
     const bytes = chunks.reduce(
       (total, chunk) => total + chunk.dataBase64.length,
@@ -357,10 +365,8 @@ export class TerminalDataPlaneRouter implements ChildTerminalSocketSink {
   }
 
   relayOutput(terminalId: string, chunk: TerminalOutputChunk): void {
-    const sanitizedChunks = this.lifecycle.stripHolderMarkersFromDataPlaneOutput(
-      terminalId,
-      chunk,
-    );
+    const sanitizedChunks =
+      this.lifecycle.stripHolderMarkersFromDataPlaneOutput(terminalId, chunk);
     for (const sanitized of sanitizedChunks) {
       const relayed = this.relayedSeqByTerminalId.get(terminalId) ?? -1;
       if (sanitized.seq <= relayed) {
@@ -381,6 +387,8 @@ export class TerminalDataPlaneRouter implements ChildTerminalSocketSink {
     });
   }
 
+  private readonly rawReplaySockets = new WeakSet<ChildTerminalSocket>();
+
   private handleAttached(attachId: string): void {
     const pending = this.pending.get(attachId);
     if (pending === undefined) {
@@ -395,12 +403,14 @@ export class TerminalDataPlaneRouter implements ChildTerminalSocketSink {
       pending.resizeAcks,
       pending.resizeSeqEcho,
     );
+    if (pending.rawReplay) this.rawReplaySockets.add(socket);
     this.socketsByAttachId.set(attachId, socket);
     const ids = this.attachIdsByTerminalId.get(pending.terminalId) ?? new Set();
     ids.add(attachId);
     this.attachIdsByTerminalId.set(pending.terminalId, ids);
     this.lifecycle.attach({
       handoffOwnerToken: this.handoffOwnerTokensByAttachId.get(attachId),
+      rawReplay: pending.rawReplay,
       outputAcks: pending.outputAcks,
       resizeAcks: pending.resizeAcks,
       resizeSeqEcho: pending.resizeSeqEcho,
@@ -441,9 +451,11 @@ export class TerminalDataPlaneRouter implements ChildTerminalSocketSink {
       socket.resizeAcks,
       socket.resizeSeqEcho,
     );
+    if (this.rawReplaySockets.has(socket)) this.rawReplaySockets.add(fresh);
     this.socketsByAttachId.set(attachId, fresh);
     this.lifecycle.attach({
       handoffOwnerToken: this.handoffOwnerTokensByAttachId.get(attachId),
+      rawReplay: this.rawReplaySockets.has(fresh),
       outputAcks: fresh.outputAcks,
       resizeAcks: fresh.resizeAcks,
       resizeSeqEcho: fresh.resizeSeqEcho,

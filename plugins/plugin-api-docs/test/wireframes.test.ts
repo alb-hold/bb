@@ -325,6 +325,10 @@ describe("guide fixture boundaries", () => {
     expect(railEnd).toBeGreaterThan(railStart);
     expect(rail).toContain('data-guide-region="nav-panel"');
     expect(rail).toContain('class="sr-only">Your panel');
+    expect(rail.indexOf('class="sr-only">More')).toBeGreaterThan(-1);
+    expect(rail.indexOf('class="sr-only">More')).toBeLessThan(
+      rail.indexOf('data-guide-region="nav-panel"'),
+    );
     expect(
       markup.lastIndexOf('data-guide-region="sidebar-navigation"', railStart),
     ).toBeGreaterThan(-1);

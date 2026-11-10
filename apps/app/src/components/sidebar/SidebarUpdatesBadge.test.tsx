@@ -1,11 +1,11 @@
 // @vitest-environment jsdom
 
 import {
+  act,
   cleanup,
   fireEvent,
   render,
   screen,
-  waitFor,
 } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { TooltipProvider } from "@bb/shared-ui/tooltip";
@@ -180,11 +180,21 @@ describe("SidebarUpdatesBadge", () => {
     expect(result.container.innerHTML).toBe("");
   });
 
-  it("shows only the bb chip for a bb-only update", () => {
+  it("shows only the bb chip for a bb-only update", async () => {
     renderBadge({ appUpdateAvailable: true });
 
-    expect(screen.getByTestId("sidebar-updates-badge-bb")).toBeTruthy();
+    const badge = screen.getByTestId("sidebar-updates-badge-bb");
+    expect(badge.classList.contains("text-muted-foreground")).toBe(true);
+    const glyph = badge.querySelector("[data-icon-root]");
+    expect(glyph?.classList.contains("text-muted-foreground")).toBe(true);
+    expect(glyph?.classList.contains("size-4")).toBe(true);
+    expect(glyph?.getAttribute("style")).toBeNull();
+    expect(badge.classList.contains("rounded-full")).toBe(false);
     expect(screen.queryByTestId("sidebar-updates-badge-providers")).toBeNull();
+    expect(screen.getByRole("link", { name: "bb update available" })).toBe(badge);
+    fireEvent.keyDown(document.body, { key: "Tab" });
+    act(() => badge.focus());
+    expect((await screen.findByRole("tooltip")).textContent).toBe("bb update available");
   });
 
   it("counts plugin updates but not blocked plugin candidates", () => {
@@ -370,7 +380,7 @@ describe("SidebarUpdatesBadge", () => {
     expect(screen.queryByTestId("sidebar-updates-badge-providers")).toBeNull();
   });
 
-  it("renders one mark per provider in a stable order when the same CLI is stale on several machines", async () => {
+  it("shows the outline download icon and distinct provider count across machines", () => {
     renderBadge({
       appUpdateAvailable: true,
       machines: [
@@ -392,23 +402,9 @@ describe("SidebarUpdatesBadge", () => {
     expect(providerChip.getAttribute("aria-label")).toBe(
       "Claude Code and Codex updates available",
     );
-    await waitFor(() =>
-      expect(
-        providerChip.querySelectorAll(
-          "[data-provider-icon] [data-provider-logo]",
-        ).length,
-      ).toBe(2),
-    );
-    expect(
-      [...providerChip.querySelectorAll("[data-provider-icon]")].map((node) =>
-        node.getAttribute("data-provider-icon"),
-      ),
-    ).toEqual(["claude-code", "codex"]);
-    expect(
-      [...providerChip.querySelectorAll("[data-provider-icon]")].every((node) =>
-        node.classList.contains("flex"),
-      ),
-    ).toBe(true);
+    expect(providerChip.querySelector('[data-icon="Download"]')).not.toBeNull();
+    expect(providerChip.querySelector("[data-provider-icon]")).toBeNull();
+    expect(providerChip.textContent).toBe("2");
     expect(screen.getByTestId("sidebar-updates-badge-bb")).toBeTruthy();
   });
 });

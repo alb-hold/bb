@@ -11,7 +11,10 @@ import {
   useSyncExternalStore,
 } from "react";
 import type { ComponentProps, CSSProperties, ReactNode } from "react";
+import "./timeline-row-spacing.css";
 import { useComposedRefs } from "@radix-ui/react-compose-refs";
+import { useIsCompactViewport } from "@bb/shared-ui/hooks/use-compact-viewport";
+import { usePointerCoarse } from "@bb/shared-ui/hooks/use-pointer-coarse";
 import { TimelineImageGallery } from "./TimelineImageGallery";
 import type { PromptInput, ThreadRuntimeDisplayStatus } from "@bb/domain";
 import {
@@ -676,8 +679,9 @@ function timelineRowsListGapClassName(
 ): string {
   switch (spacing) {
     case "top-level":
-    case "nested":
       return "gap-2";
+    case "nested":
+      return "gap-1";
     case "bundle":
       return "gap-0";
   }
@@ -1014,7 +1018,9 @@ function ConversationRow({
       }
       turnTokenSummary={turnTokenSummary}
       mobileActionDisplay={
-        row.id === latestActionableMessageId ? "inline" : "overflow"
+        row.role === "assistant" && row.id === latestActionableMessageId
+          ? "inline"
+          : "overflow"
       }
       streaming={
         row.role === "assistant" && row.id === streamingAssistantMessageId
@@ -1747,7 +1753,7 @@ function DelegationRowBody({ row }: { row: TimelineViewDelegationWorkRow }) {
   );
 }
 
-export const PAST_ROW_DIM_CLASS_NAME = "opacity-40";
+export const PAST_ROW_DIM_CLASS_NAME = "text-muted-foreground";
 
 export function pastRowDimClassName({
   activeLatestBundleId,
@@ -2089,10 +2095,11 @@ function TimelineExpandableRowView({
       }
       forceExpanded={searchExpandedRowIds.has(row.id)}
       terminalAutoExpanded={terminalAutoExpandedRowIds.has(row.id)}
-      collapsedPreview={
+      summaryAdornment={
         row.kind === "turn" && row.status !== "pending" ? (
           <TooltipProvider>
             <ThreadTurnTokenSummary
+              compact
               openAnalysisOnClick={false}
               threadId={row.threadId}
               turnId={row.turnId}
@@ -2270,7 +2277,7 @@ export function buildTimelineRowsListItems({
     unreadDividerPlacement,
   });
 
-  for (let index = 0; index < rows.length;) {
+  for (let index = 0; index < rows.length; ) {
     if (index === dividerIndex) {
       items.push({ kind: "unread-divider", id: "thread-unread-divider" });
     }
@@ -2411,7 +2418,9 @@ function TimelineRowItemWrapper({
   row,
   spacing,
   windowedState,
+  style,
 }: {
+  style?: CSSProperties;
   children: ReactNode;
   row: ThreadTimelineViewRow;
   spacing: TimelineRowsListSpacing;
@@ -2420,6 +2429,7 @@ function TimelineRowItemWrapper({
   const wrapperRef = useRef<HTMLDivElement>(null);
   const composedRef = useComposedRefs(wrapperRef, windowedState.itemRef);
   const isTopLevel = spacing === "top-level";
+  const { marginTop, ...rowStyle } = style ?? {};
   useArmTopLevelTimelineRowContainment(
     wrapperRef,
     isTopLevel && !windowedState.windowingEnabled,
@@ -2429,16 +2439,18 @@ function TimelineRowItemWrapper({
       ref={composedRef}
       data-timeline-row-id={row.id}
       data-timeline-window-key={row.id}
+      data-timeline-gap-before={marginTop}
       className={
         isTopLevel && !windowedState.windowingEnabled
           ? TOP_LEVEL_TIMELINE_ROW_INTRINSIC_SIZE_CLASS_NAME
           : undefined
       }
-      style={
-        isTopLevel && !windowedState.windowingEnabled
+      style={{
+        ...(isTopLevel && !windowedState.windowingEnabled
           ? timelineRowContainmentStyle(row)
-          : undefined
-      }
+          : undefined),
+        ...rowStyle,
+      }}
     >
       {children}
     </div>
@@ -2515,6 +2527,12 @@ function estimateTimelineWindowedRowHeight(
   return 20 + lineCount * 23;
 }
 
+const DISCLOSURE_ROW_KINDS = new Set([
+  "work",
+  "step-summary",
+  "bundle-summary",
+]);
+
 function TimelineRowsList({
   compactActivityIntents,
   hasOlderTimelineRows,
@@ -2533,6 +2551,9 @@ function TimelineRowsList({
   unreadDividerAutoScroll = false,
   unreadDividerPlacement,
 }: TimelineRowsListProps) {
+  const isCompactViewport = useIsCompactViewport();
+  const isPointerCoarse = usePointerCoarse();
+  const isCompactTouch = isCompactViewport && isPointerCoarse;
   const { threadId } = useTimelineRendererStaticContext();
   const bottomAnchor = useBottomAnchoredScroll();
   const scrollRestore = useContext(TimelineScrollRestoreContext);
@@ -2608,6 +2629,42 @@ function TimelineRowsList({
     unreadDividerAutoScroll,
     unreadDividerPlacement: loadedUnreadDividerPlacement,
   });
+  const itemGaps = useMemo(() => {
+    const gaps = items.map((current, index) => {
+      const next = items[index + 1];
+      if (current.kind !== "row" || next?.kind !== "row") return 8;
+      const previousGap =
+        DISCLOSURE_ROW_KINDS.has(current.row.kind) &&
+        DISCLOSURE_ROW_KINDS.has(next.row.kind)
+          ? 4
+          : 8;
+      if (
+        current.row.turnId !== next.row.turnId ||
+        (current.row.kind === "conversation" && current.row.role === "user") ||
+        (next.row.kind === "conversation" && next.row.role === "user")
+      )
+        return previousGap;
+      const currentIsDisclosure =
+        DISCLOSURE_ROW_KINDS.has(current.row.kind) ||
+        (current.row.kind === "turn" && current.row.status !== "pending");
+      const nextIsDisclosure =
+        DISCLOSURE_ROW_KINDS.has(next.row.kind) ||
+        (next.row.kind === "turn" && next.row.status !== "pending");
+      return currentIsDisclosure || nextIsDisclosure
+        ? previousGap / 2
+        : previousGap;
+    });
+    return gaps.some((gap) => gap !== 8) ? gaps : 8;
+  }, [items]);
+  const estimateItemHeight = useCallback(
+    (index: number) => {
+      const item = items[index];
+      return item?.kind === "row"
+        ? estimateTimelineWindowedRowHeight(item.row, spacing)
+        : 28;
+    },
+    [items, spacing],
+  );
   const itemKeys = useMemo(
     () =>
       items.map((item) => {
@@ -2664,14 +2721,8 @@ function TimelineRowsList({
         >
           <TimelineWindowedItems
             alwaysMountedKeys={alwaysMountedKeys}
-            estimateItemHeight={(index) => {
-              const item = items[index];
-              if (item?.kind === "row") {
-                return estimateTimelineWindowedRowHeight(item.row, spacing);
-              }
-              return 28;
-            }}
-            gap={spacing === "bundle" ? 0 : 8}
+            estimateItemHeight={estimateItemHeight}
+            gap={spacing === "bundle" || isCompactTouch ? 0 : itemGaps}
             initialWindowAnchor={
               isTopLevelList && detailScrollRoot === null ? scrollRestore : null
             }
@@ -2748,6 +2799,14 @@ function TimelineRowsList({
               );
             }}
           />
+          {turnTokenSummary && turnTokenSummaryMessageId === null ? (
+            <TooltipProvider>
+              <ThreadTurnTokenSummary
+                threadId={turnTokenSummary.threadId}
+                turnId={turnTokenSummary.turnId}
+              />
+            </TooltipProvider>
+          ) : null}
         </div>
       </MessageColumnWidthContext.Provider>
     </TimelineSearchExpansionContext.Provider>

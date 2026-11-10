@@ -5,6 +5,7 @@ import {
   cleanup,
   fireEvent,
   render,
+  renderHook,
   screen,
 } from "@testing-library/react";
 import type {
@@ -22,6 +23,7 @@ import type {
 } from "@bb/server-contract";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { systemExecutionOptionsQueryKey } from "@/hooks/queries/query-keys";
+import { usePromptBoxModelPreference } from "@/hooks/thread-creation-options/persisted-selection-fields";
 import { sdk } from "@/lib/sdk";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
 import { CompactViewportOverrideProvider } from "@bb/shared-ui/hooks/use-compact-viewport";
@@ -35,6 +37,7 @@ import {
   ModelReasoningPicker,
   type ModelReasoningPickerHandoff,
 } from "./ModelReasoningPicker";
+import { ModelReasoningPickerBody } from "./ModelReasoningPickerBodySplit";
 import { ModelReasoningMenu } from "./ModelReasoningMenuSplit";
 import type { PickerOption } from "./OptionPicker";
 import type { ProviderPickerOption } from "./model-brand-prefix";
@@ -181,6 +184,7 @@ function renderPicker({
   modelIsLoading = false,
   modelLoadError = null,
   compact = false,
+  compactIconOnly = false,
   splitPane = false,
   muted = false,
   handoff,
@@ -207,6 +211,7 @@ function renderPicker({
   modelIsLoading?: boolean;
   modelLoadError?: SystemExecutionOptionsModelLoadError | null;
   compact?: boolean;
+  compactIconOnly?: boolean;
   splitPane?: boolean;
   muted?: boolean;
   handoff?: ModelReasoningPickerHandoff;
@@ -235,6 +240,7 @@ function renderPicker({
   const picker = (
     <div data-app-composer>
       <ModelReasoningPicker
+        compactIconOnly={compactIconOnly}
         providerOptions={pickerProviderOptions}
         providerRouting={providerRouting}
         selectedProviderId={selectedProviderId}
@@ -296,7 +302,116 @@ afterEach(() => {
 });
 
 describe("ModelReasoningPicker", () => {
-  beforeAll(() => ModelReasoningMenu.preload());
+  it.each([
+    ["codex", "GPT-6.1-Sol", "GPT-", "6.1-Sol", "GPT-6.1-Sol"],
+    [
+      "claude-code",
+      "Claude Opus 5.5 (1M)",
+      "Claude ",
+      "Opus 5.5",
+      "Opus 5.5 (1M)",
+    ],
+    [
+      "acp:custom",
+      "Organization Custom ACP Production Model",
+      "Organization ",
+      "Custom ACP Production Model",
+      "Custom ACP Production Model",
+    ],
+  ])(
+    "preserves the distinguishing compact name for %s",
+    (providerId, label, brandPrefix, identity, selectionLabel) => {
+      renderPicker({
+        compact: true,
+        selectedProviderId: providerId,
+        pickerProviderOptions: [
+          { value: providerId, label: providerId, brandPrefix },
+        ],
+        modelValue: "selected",
+        modelOptions: [{ value: "selected", label }],
+      });
+      const trigger = screen.getByRole("button", {
+        name: /^Provider, model and reasoning/,
+      });
+      const name = trigger.querySelector("[data-model-name]")!;
+      expect(name.textContent).toContain(identity);
+      expect(name.className).not.toContain("truncate");
+      expect(trigger.textContent).not.toContain("Medium");
+      const description = `${providerId}: ${selectionLabel} · Medium reasoning`;
+      expect(trigger.getAttribute("aria-description")).toBe(description);
+      expect(trigger.getAttribute("aria-label")).toBe(
+        `Provider, model and reasoning: ${description}`,
+      );
+      expect(trigger.querySelector("[title]")?.getAttribute("title")).toBe(
+        description,
+      );
+    },
+  );
+
+  it.each([
+    ["Cursor Agent", "Agent"],
+    ["Independent Model", "Independent Model"],
+  ])(
+    "keeps the phone selection label identifiable for %s",
+    (label, expected) => {
+      renderPicker({
+        compact: true,
+        selectedProviderId: "cursor",
+        pickerProviderOptions: [
+          { value: "cursor", label: "Cursor", brandPrefix: "Cursor " },
+        ],
+        modelValue: "selected",
+        modelOptions: [{ value: "selected", label }],
+      });
+      const description = `Cursor: ${expected} · Medium reasoning`;
+      const trigger = screen.getByRole("button", {
+        name: `Provider, model and reasoning: ${description}`,
+      });
+      expect(trigger.querySelector("[data-model-name]")?.textContent).toBe(
+        expected,
+      );
+      expect(trigger.textContent).not.toContain("Medium");
+      expect(trigger.getAttribute("aria-description")).toBe(description);
+      expect(trigger.querySelector("[title]")?.getAttribute("title")).toBe(
+        description,
+      );
+    },
+  );
+
+  beforeAll(() =>
+    Promise.all([
+      ModelReasoningMenu.preload(),
+      ModelReasoningPickerBody.preload(),
+    ]),
+  );
+
+  it("keeps closed provider shortcuts in the active handoff before the menu mounts", () => {
+    const onStart = vi.fn();
+    const onSelect = vi.fn();
+    const { onSelectedProviderChange } = renderPicker({
+      handoff: {
+        active: true,
+        sourceProviderId: "codex",
+        onStart,
+        onExit: vi.fn(),
+        onSelect,
+      },
+    });
+    const trigger = screen.getByRole("button", {
+      name: /^Provider, model and reasoning/,
+    });
+    act(() => {
+      expect(
+        commandHandlers.get("modelPicker.cycleProvider")?.({ target: trigger }),
+      ).toBe(true);
+    });
+    expect(onStart).toHaveBeenCalledTimes(1);
+    expect(onSelectedProviderChange).not.toHaveBeenCalled();
+    act(() => {
+      commandHandlers.get("modelPicker.cycleModel")?.({ target: trigger });
+    });
+    expect(onSelect).not.toHaveBeenCalled();
+  });
 
   it.each([
     ["ArrowRight", "medium", "high"],
@@ -306,7 +421,7 @@ describe("ModelReasoningPicker", () => {
     (key, value, next) => {
       const { onReasoningChange } = renderPicker({ reasoningValue: value });
       const trigger = screen.getByRole("button", {
-        name: "Provider, model and reasoning",
+        name: /^Provider, model and reasoning/,
       });
       trigger.focus();
       fireEvent.keyDown(trigger, { key });
@@ -322,11 +437,25 @@ describe("ModelReasoningPicker", () => {
     const { onReasoningChange } = renderPicker({ reasoningValue: value });
     fireEvent.keyDown(
       screen.getByRole("button", {
-        name: "Provider, model and reasoning",
+        name: /^Provider, model and reasoning/,
       }),
       { key },
     );
     expect(onReasoningChange).not.toHaveBeenCalled();
+  });
+
+  it("keeps the GPT family in the visible trigger and tooltip", () => {
+    renderPicker({
+      modelOptions: [{ value: "gpt-6.1-sol", label: "GPT-6.1-Sol" }],
+      modelValue: "gpt-6.1-sol",
+    });
+    const trigger = screen.getByRole("button", {
+      name: /^Provider, model and reasoning/,
+    });
+    expect(trigger.textContent).toContain("GPT-6.1-Sol");
+    expect(trigger.querySelector("[title]")?.getAttribute("title")).toContain(
+      "GPT-6.1-Sol",
+    );
   });
 
   it("adjusts reasoning in an empty search but preserves text navigation", () => {
@@ -335,7 +464,7 @@ describe("ModelReasoningPicker", () => {
     });
     fireEvent.click(
       screen.getByRole("button", {
-        name: "Provider, model and reasoning",
+        name: /^Provider, model and reasoning/,
       }),
     );
     const search = screen.getByPlaceholderText("Search models");
@@ -351,10 +480,10 @@ describe("ModelReasoningPicker", () => {
     const { onReasoningChange, onModelChange } = renderPicker();
     fireEvent.click(
       screen.getByRole("button", {
-        name: "Provider, model and reasoning",
+        name: /^Provider, model and reasoning/,
       }),
     );
-    const model = screen.getByRole("button", { name: "5.5" });
+    const model = screen.getByRole("button", { name: "GPT-5.5" });
     model.focus();
     fireEvent.keyDown(model, { key: "ArrowRight" });
     expect(onReasoningChange).toHaveBeenCalledExactlyOnceWith("high");
@@ -368,7 +497,7 @@ describe("ModelReasoningPicker", () => {
     });
     fireEvent.click(
       screen.getByRole("button", {
-        name: "Provider, model and reasoning",
+        name: /^Provider, model and reasoning/,
       }),
     );
     const moreModels = screen.getByRole("button", { name: "More models" });
@@ -382,7 +511,7 @@ describe("ModelReasoningPicker", () => {
   it("leaves modified arrows and models without reasoning alone", () => {
     const { onReasoningChange } = renderPicker();
     const trigger = screen.getByRole("button", {
-      name: "Provider, model and reasoning",
+      name: /^Provider, model and reasoning/,
     });
     for (const modifier of ["altKey", "ctrlKey", "metaKey", "shiftKey"]) {
       fireEvent.keyDown(trigger, { key: "ArrowRight", [modifier]: true });
@@ -392,7 +521,7 @@ describe("ModelReasoningPicker", () => {
     renderPicker({ pickerReasoningOptions: [], onReasoningChange });
     fireEvent.keyDown(
       screen.getByRole("button", {
-        name: "Provider, model and reasoning",
+        name: /^Provider, model and reasoning/,
       }),
       { key: "ArrowRight" },
     );
@@ -412,7 +541,7 @@ describe("ModelReasoningPicker", () => {
     });
 
     fireEvent.click(
-      screen.getByRole("button", { name: "Provider, model and reasoning" }),
+      screen.getByRole("button", { name: /^Provider, model and reasoning/ }),
     );
 
     expect(screen.getByTitle("Codex")).not.toBeNull();
@@ -443,7 +572,7 @@ describe("ModelReasoningPicker", () => {
     });
 
     fireEvent.click(
-      screen.getByRole("button", { name: "Provider, model and reasoning" }),
+      screen.getByRole("button", { name: /^Provider, model and reasoning/ }),
     );
 
     expect(screen.getByText("Could not load models for Codex.")).not.toBeNull();
@@ -469,7 +598,7 @@ describe("ModelReasoningPicker", () => {
     });
 
     fireEvent.click(
-      screen.getByRole("button", { name: "Provider, model and reasoning" }),
+      screen.getByRole("button", { name: /^Provider, model and reasoning/ }),
     );
 
     expect(screen.getByText("Not signed in")).not.toBeNull();
@@ -489,7 +618,7 @@ describe("ModelReasoningPicker", () => {
     });
 
     fireEvent.click(
-      screen.getByRole("button", { name: "Provider, model and reasoning" }),
+      screen.getByRole("button", { name: /^Provider, model and reasoning/ }),
     );
 
     expect(screen.getByText("Could not load models for Codex.")).not.toBeNull();
@@ -513,7 +642,7 @@ describe("ModelReasoningPicker", () => {
         pickerReasoningOptions: cache === "cached" ? reasoningOptions : [],
       });
       const trigger = screen.getByRole("button", {
-        name: "Provider, model and reasoning",
+        name: /^Provider, model and reasoning/,
       });
 
       expect(trigger.textContent).toContain("5.5");
@@ -528,7 +657,7 @@ describe("ModelReasoningPicker", () => {
     },
   );
 
-  it("holds the trigger and model-list layout with skeletons while loading", () => {
+  it("shows Model in the reserved control while the model list loads", () => {
     renderPicker({
       modelOptions: [],
       modelValue: "",
@@ -536,13 +665,17 @@ describe("ModelReasoningPicker", () => {
       modelIsLoading: true,
     });
     const trigger = screen.getByRole("button", {
-      name: "Provider, model and reasoning",
+      name: /^Provider, model and reasoning/,
     });
 
     expect(
       trigger.querySelectorAll("[data-model-loading-placeholder]"),
-    ).toHaveLength(2);
-    expect(trigger.textContent).not.toContain("Loading models...");
+    ).toHaveLength(0);
+    expect(trigger.textContent).toContain("Model");
+    expect(trigger.className).toContain("w-44");
+    expect(trigger.className).not.toContain("invisible");
+    expect(trigger.textContent).not.toContain("No models available");
+    expect(trigger.querySelector(".animate-spin")).toBeNull();
 
     fireEvent.click(trigger);
 
@@ -582,7 +715,7 @@ describe("ModelReasoningPicker", () => {
       reasoningValue: "low",
     });
     const target = screen.getByRole("button", {
-      name: "Provider, model and reasoning",
+      name: /^Provider, model and reasoning/,
     });
 
     expect(
@@ -594,7 +727,7 @@ describe("ModelReasoningPicker", () => {
   it("swallows the provider cycle chord when provider switching is locked", () => {
     renderPicker({ onSelectedProviderChange: null });
     const lockedTarget = screen.getByRole("button", {
-      name: "Provider, model and reasoning",
+      name: /^Provider, model and reasoning/,
     });
     expect(
       commandHandlers.get("modelPicker.cycleProvider")?.({
@@ -631,7 +764,7 @@ describe("ModelReasoningPicker", () => {
   it("cycles the provider while the picker popover is open", () => {
     const { onSelectedProviderChange } = renderPicker();
     const trigger = screen.getByRole("button", {
-      name: "Provider, model and reasoning",
+      name: /^Provider, model and reasoning/,
     });
     fireEvent.click(trigger);
 
@@ -661,7 +794,7 @@ describe("ModelReasoningPicker", () => {
       alternateProviderModels,
     });
     fireEvent.click(
-      screen.getByRole("button", { name: "Provider, model and reasoning" }),
+      screen.getByRole("button", { name: /^Provider, model and reasoning/ }),
     );
     const search = screen.getByPlaceholderText("Search models");
     search.focus();
@@ -690,7 +823,7 @@ describe("ModelReasoningPicker", () => {
       ],
     });
     const trigger = screen.getByRole("button", {
-      name: "Provider, model and reasoning",
+      name: /^Provider, model and reasoning/,
     });
     fireEvent.click(trigger);
 
@@ -708,9 +841,9 @@ describe("ModelReasoningPicker", () => {
     });
 
     fireEvent.click(
-      screen.getByRole("button", { name: "Provider, model and reasoning" }),
+      screen.getByRole("button", { name: /^Provider, model and reasoning/ }),
     );
-    fireEvent.click(screen.getByText("5.2"));
+    fireEvent.click(screen.getByText("GPT-5.2"));
 
     expect(onModelChange).toHaveBeenCalledWith("gpt-5.2");
     expect(screen.getByRole("dialog")).not.toBeNull();
@@ -725,7 +858,7 @@ describe("ModelReasoningPicker", () => {
     renderPicker();
 
     fireEvent.click(
-      screen.getByRole("button", { name: "Provider, model and reasoning" }),
+      screen.getByRole("button", { name: /^Provider, model and reasoning/ }),
     );
 
     expect(
@@ -737,7 +870,7 @@ describe("ModelReasoningPicker", () => {
     renderPicker({ modelOptions: manyCodexModels });
 
     fireEvent.click(
-      screen.getByRole("button", { name: "Provider, model and reasoning" }),
+      screen.getByRole("button", { name: /^Provider, model and reasoning/ }),
     );
 
     const menu = screen.getByRole("dialog");
@@ -763,7 +896,7 @@ describe("ModelReasoningPicker", () => {
     renderPicker({ compact: true, modelOptions: manyCodexModels });
 
     fireEvent.click(
-      screen.getByRole("button", { name: "Provider, model and reasoning" }),
+      screen.getByRole("button", { name: /^Provider, model and reasoning/ }),
     );
 
     expect(screen.getByRole("dialog").className).not.toContain("100dvh");
@@ -777,16 +910,16 @@ describe("ModelReasoningPicker", () => {
 
     fireEvent.click(
       screen.getByRole("button", {
-        name: "Provider, model and reasoning",
+        name: /^Provider, model and reasoning/,
       }),
     );
-    expect(screen.getAllByText("5.5")).toHaveLength(2);
+    expect(screen.getAllByText("GPT-5.5")).toHaveLength(2);
 
     fireEvent.click(screen.getByTitle("Claude Code"));
 
     expect(onSelectedProviderChange).toHaveBeenCalledWith("claude-code");
     expect(await screen.findByText("Opus 4.7")).not.toBeNull();
-    expect(screen.getAllByText("5.5")).toHaveLength(1);
+    expect(screen.getAllByText("GPT-5.5")).toHaveLength(1);
     expect(onModelChange).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByText("Opus 4.7"));
@@ -812,13 +945,13 @@ describe("ModelReasoningPicker", () => {
       },
     });
     fireEvent.click(
-      screen.getByRole("button", { name: "Provider, model and reasoning" }),
+      screen.getByRole("button", { name: /^Provider, model and reasoning/ }),
     );
     fireEvent.click(
       screen.getByRole("button", { name: "Handoff to new thread" }),
     );
     expect(onStart).toHaveBeenCalledOnce();
-    fireEvent.click(screen.getByRole("button", { name: "5.5" }));
+    fireEvent.click(screen.getByRole("button", { name: "GPT-5.5" }));
     expect(onSelect).toHaveBeenCalledWith(
       expect.objectContaining({ providerId: "codex" }),
     );
@@ -848,7 +981,7 @@ describe("ModelReasoningPicker", () => {
       },
     });
     fireEvent.click(
-      screen.getByRole("button", { name: "Provider, model and reasoning" }),
+      screen.getByRole("button", { name: /^Provider, model and reasoning/ }),
     );
     fireEvent.click(
       screen.getByRole("button", { name: "Handoff to new thread" }),
@@ -898,7 +1031,7 @@ describe("ModelReasoningPicker", () => {
           ],
         });
       fireEvent.click(
-        screen.getByRole("button", { name: "Provider, model and reasoning" }),
+        screen.getByRole("button", { name: /^Provider, model and reasoning/ }),
       );
       fireEvent.click(
         screen.getByRole("button", { name: "Handoff to new thread" }),
@@ -947,7 +1080,7 @@ describe("ModelReasoningPicker", () => {
         ],
       });
       fireEvent.click(
-        screen.getByRole("button", { name: "Provider, model and reasoning" }),
+        screen.getByRole("button", { name: /^Provider, model and reasoning/ }),
       );
       fireEvent.click(
         screen.getByRole("button", { name: "Handoff to new thread" }),
@@ -983,7 +1116,7 @@ describe("ModelReasoningPicker", () => {
       },
     });
     const trigger = screen.getByRole("button", {
-      name: "Provider, model and reasoning",
+      name: /^Provider, model and reasoning/,
     });
     fireEvent.click(trigger);
     fireEvent.click(screen.getByTitle("Codex (current thread)"));
@@ -1013,7 +1146,7 @@ describe("ModelReasoningPicker", () => {
         .mock.calls.map(([args]) => `${args?.hostId}/${args?.providerId}`);
 
     fireEvent.click(
-      screen.getByRole("button", { name: "Provider, model and reasoning" }),
+      screen.getByRole("button", { name: /^Provider, model and reasoning/ }),
     );
     fireEvent.pointerEnter(screen.getByTitle("Codex"));
     await act(async () => {
@@ -1031,7 +1164,7 @@ describe("ModelReasoningPicker", () => {
 
     fireEvent.click(
       screen.getByRole("button", {
-        name: "Provider, model and reasoning",
+        name: /^Provider, model and reasoning/,
       }),
     );
     fireEvent.click(screen.getByTitle("Claude Code"));
@@ -1058,7 +1191,7 @@ describe("ModelReasoningPicker", () => {
     });
 
     const trigger = screen.getByRole("button", {
-      name: "Provider, model and reasoning",
+      name: /^Provider, model and reasoning/,
     });
     expect(trigger.textContent).toContain(modelLabel);
     expect(trigger.textContent).not.toContain("openai-codex");
@@ -1074,11 +1207,23 @@ describe("ModelReasoningPicker", () => {
     expect(onModelChange).toHaveBeenCalledWith(apiModel);
   });
 
+  it("formats catalog and fallback model labels through the same formatter", () => {
+    renderPicker({
+      modelValue: "gpt-5.2-codex",
+      pickerProviderOptions: [{ value: "codex", label: "Codex" }],
+      modelOptions: [{ value: "gpt-5.2-codex", label: "gpt-5.2-codex" }],
+    });
+    expect(
+      screen.getByRole("button", { name: /^Provider, model and reasoning/ })
+        .textContent,
+    ).toContain("5.2-Codex");
+  });
+
   it("uses picker search policy and selects the match by keyboard", () => {
     const { onModelChange } = renderPicker({ modelOptions: manyCodexModels });
 
     fireEvent.click(
-      screen.getByRole("button", { name: "Provider, model and reasoning" }),
+      screen.getByRole("button", { name: /^Provider, model and reasoning/ }),
     );
 
     const search = screen.getByPlaceholderText("Search models");
@@ -1109,7 +1254,7 @@ describe("ModelReasoningPicker", () => {
     });
 
     fireEvent.click(
-      screen.getByRole("button", { name: "Provider, model and reasoning" }),
+      screen.getByRole("button", { name: /^Provider, model and reasoning/ }),
     );
     fireEvent.change(screen.getByPlaceholderText("Search models"), {
       target: { value: "gpt4" },
@@ -1129,7 +1274,7 @@ describe("ModelReasoningPicker", () => {
     renderPicker({ modelOptions: manyCodexModels });
 
     fireEvent.click(
-      screen.getByRole("button", { name: "Provider, model and reasoning" }),
+      screen.getByRole("button", { name: /^Provider, model and reasoning/ }),
     );
 
     const search = screen.getByPlaceholderText("Search models");
@@ -1149,7 +1294,7 @@ describe("ModelReasoningPicker", () => {
     });
     renderPicker({ compact: true, modelOptions: manyCodexModels });
     const trigger = screen.getByRole("button", {
-      name: "Provider, model and reasoning",
+      name: /^Provider, model and reasoning/,
     });
 
     fireEvent.click(trigger);
@@ -1183,13 +1328,13 @@ describe("ModelReasoningPicker", () => {
     });
 
     fireEvent.click(
-      screen.getByRole("button", { name: "Provider, model and reasoning" }),
+      screen.getByRole("button", { name: /^Provider, model and reasoning/ }),
     );
 
     const search = screen.getByPlaceholderText("Search models");
     fireEvent.change(search, { target: { value: "legacy" } });
 
-    expect(screen.getByText("4.1 Legacy")).not.toBeNull();
+    expect(screen.getByText("GPT-4.1 Legacy")).not.toBeNull();
 
     fireEvent.keyDown(search, { key: "ArrowDown" });
     fireEvent.keyDown(search, { key: "Enter" });
@@ -1206,7 +1351,7 @@ describe("ModelReasoningPicker", () => {
     renderPicker({ compact: true, modelOptions: manyCodexModels });
 
     fireEvent.click(
-      screen.getByRole("button", { name: "Provider, model and reasoning" }),
+      screen.getByRole("button", { name: /^Provider, model and reasoning/ }),
     );
     act(() => frames.splice(0).forEach((callback) => callback(0)));
     act(() => frames.splice(0).forEach((callback) => callback(16)));
@@ -1241,7 +1386,7 @@ describe("ModelReasoningPicker", () => {
     renderPicker();
 
     fireEvent.click(
-      screen.getByRole("button", { name: "Provider, model and reasoning" }),
+      screen.getByRole("button", { name: /^Provider, model and reasoning/ }),
     );
 
     expect(screen.queryByPlaceholderText("Search models")).toBeNull();
@@ -1334,7 +1479,12 @@ describe("buildModelNavRows", () => {
 });
 
 describe("ModelReasoningPicker service tiers", () => {
-  beforeAll(() => ModelReasoningMenu.preload());
+  beforeAll(() =>
+    Promise.all([
+      ModelReasoningMenu.preload(),
+      ModelReasoningPickerBody.preload(),
+    ]),
+  );
   afterEach(() => setPluginAssetIcons(new Map()));
 
   const fast = { id: "fast", label: "Fast", description: "1.5x speed" };
@@ -1342,7 +1492,7 @@ describe("ModelReasoningPicker service tiers", () => {
 
   function openPicker(): void {
     fireEvent.click(
-      screen.getByRole("button", { name: "Provider, model and reasoning" }),
+      screen.getByRole("button", { name: /^Provider, model and reasoning/ }),
     );
   }
 
@@ -1429,7 +1579,7 @@ describe("ModelReasoningPicker service tiers", () => {
   it.each([
     ["fast", "Zap"],
     ["ultrafast", "provider-codex/ultrafast"],
-  ])("shows the %s tier's icon on the trigger", (tier, icon) => {
+  ])("shows the selected %s tier icon on the trigger", (tier, icon) => {
     setPluginAssetIcons(
       new Map([["provider-codex/ultrafast", "/icons/ultrafast.svg"]]),
     );
@@ -1442,11 +1592,12 @@ describe("ModelReasoningPicker service tiers", () => {
     });
 
     const trigger = screen.getByRole("button", {
-      name: "Provider, model and reasoning",
+      name: /^Provider, model and reasoning/,
     });
     const icons = [...trigger.querySelectorAll("[data-icon]")].map((node) =>
       node.getAttribute("data-icon"),
     );
+    expect(icons).toContain("ChevronDown");
     expect(icons).toContain(icon);
     expect(icons).not.toContain(
       icon === "Zap" ? "provider-codex/ultrafast" : "Zap",
@@ -1576,7 +1727,7 @@ describe("ModelReasoningPicker service tiers", () => {
       ],
     });
     const trigger = screen.getByRole("button", {
-      name: "Provider, model and reasoning",
+      name: /^Provider, model and reasoning/,
     });
     commandHandlers.get("modelPicker.cycleModel")?.({ target: trigger });
     expect(onModelChange).toHaveBeenLastCalledWith("o3");
@@ -1625,4 +1776,192 @@ describe("ModelReasoningPicker service tiers", () => {
     ).toBeTruthy();
     expect(screen.queryByRole("radiogroup", { name: "Speed" })).toBeNull();
   });
+});
+
+it.each(["codex", "acp:custom"])(
+  "keeps the remembered trigger text at 390 px when the %s catalog arrives",
+  (providerId) => {
+    const { result } = renderHook(() =>
+      usePromptBoxModelPreference(providerId),
+    );
+    act(() => result.current.setValue("gpt-6.1-sol"));
+    const originalWidth = window.innerWidth;
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: 390,
+    });
+    const { wrapper } = createQueryClientTestHarness();
+    const picker = (loaded: boolean) => (
+      <CompactViewportOverrideProvider
+        isCompactViewport={window.innerWidth < 768}
+      >
+        <ModelReasoningPicker
+          providerOptions={
+            loaded
+              ? [{ value: providerId, label: "Provider", brandPrefix: "GPT-" }]
+              : []
+          }
+          selectedProviderId={providerId}
+          hasMultipleProviders={false}
+          modelValue={loaded ? "gpt-6.1-sol" : ""}
+          modelOptions={
+            loaded ? [{ value: "gpt-6.1-sol", label: "GPT-6.1-Sol" }] : []
+          }
+          modelIsLoading={!loaded}
+          onModelChange={vi.fn()}
+          reasoningValue="medium"
+          reasoningOptions={reasoningOptions}
+          onReasoningChange={vi.fn()}
+          serviceTierValue={undefined}
+          serviceTierOptions={[]}
+          onServiceTierChange={vi.fn()}
+        />
+      </CompactViewportOverrideProvider>
+    );
+    try {
+      const { rerender } = render(picker(false), { wrapper });
+      const trigger = screen.getByRole("button", {
+        name: /^Provider, model and reasoning/,
+      });
+      const firstPaint = trigger.textContent;
+      expect(trigger.querySelector("[data-model-name]")?.textContent).toBe(
+        "6.1-Sol",
+      );
+      rerender(picker(true));
+      expect(trigger.textContent).toBe(firstPaint);
+      expect(trigger.querySelector("[data-model-name]")?.textContent).toBe(
+        "6.1-Sol",
+      );
+    } finally {
+      act(() => result.current.setValue(""));
+      Object.defineProperty(window, "innerWidth", {
+        configurable: true,
+        value: originalWidth,
+      });
+    }
+  },
+);
+
+it("uses the persisted model when the home selection is still loading", () => {
+  const { result } = renderHook(() => usePromptBoxModelPreference("codex"));
+  act(() => result.current.setValue("gpt-5.5"));
+  try {
+    renderPicker({ modelValue: "", modelOptions: [], modelIsLoading: true });
+    expect(
+      screen.getByRole("button", { name: /^Provider, model and reasoning/ })
+        .textContent,
+    ).toContain("5.5");
+  } finally {
+    act(() => result.current.setValue(""));
+  }
+});
+
+it.each([
+  [false, false],
+  [true, false],
+  [false, true],
+  [true, true],
+])(
+  "keeps model identity and chevron with compact=%s pending=%s",
+  (compact, modelIsLoading) => {
+    renderPicker({ compact, modelIsLoading, modelValue: "gpt-5.5" });
+    const trigger = screen.getByRole("button", {
+      name: /^Provider, model and reasoning/,
+    });
+    expect(trigger.textContent).toContain("5.5");
+    expect(trigger.querySelector('[data-icon="ChevronDown"]')).not.toBeNull();
+    expect(trigger.querySelector('[data-icon="Bot"]')).not.toBeNull();
+    expect(trigger.querySelector('[data-icon="Zap"]')).toBeNull();
+  },
+);
+
+it.each([false, true])(
+  "keeps provider, model and effort in compact accessible names while pending=%s",
+  (modelIsLoading) => {
+    renderPicker({
+      compact: true,
+      compactIconOnly: true,
+      modelIsLoading,
+      modelValue: "gpt-5.5",
+    });
+    const trigger = screen.getByRole("button", {
+      name: "Provider, model and reasoning: Codex: GPT-5.5 · Medium reasoning",
+    });
+    expect(trigger.querySelector('[data-icon="ChevronDown"]')).not.toBeNull();
+  },
+);
+
+it.each([false, true])(
+  "keeps the selected tier cue with compact=%s",
+  (compact) => {
+    renderPicker({
+      compact,
+      compactIconOnly: compact,
+      serviceTierOptions: [{ id: "fast", label: "Fast" }],
+      serviceTierValue: "fast",
+    });
+    const trigger = screen.getByRole("button", {
+      name: /^Provider, model and reasoning/,
+    });
+    expect(trigger.querySelector('[data-icon="Zap"]')).not.toBeNull();
+    expect(
+      trigger
+        .querySelector('[data-icon="Zap"]')
+        ?.classList.contains("size-3.5"),
+    ).toBe(true);
+    expect(
+      trigger
+        .querySelector('[data-icon="Zap"]')
+        ?.classList.contains("fill-current"),
+    ).toBe(true);
+    expect(
+      trigger
+        .querySelector('[data-icon="Zap"]')
+        ?.classList.contains("text-subtle-foreground"),
+    ).toBe(true);
+    expect(trigger.querySelector('[data-icon="ChevronDown"]')).not.toBeNull();
+  },
+);
+
+it("keeps provider and effort in the compact name before a model resolves", () => {
+  renderPicker({
+    compact: true,
+    compactIconOnly: true,
+    modelIsLoading: true,
+    modelValue: "",
+    modelOptions: [],
+  });
+  expect(
+    screen.getByRole("button", {
+      name: "Provider, model and reasoning: Codex: Model · Medium reasoning",
+    }),
+  ).not.toBeNull();
+});
+
+it("uses Model for an unresolved compact picker without a provider", () => {
+  renderPicker({
+    compact: true,
+    compactIconOnly: true,
+    selectedProviderId: "",
+    pickerProviderOptions: [],
+    modelValue: "",
+    modelOptions: [],
+    modelIsLoading: true,
+  });
+  expect(screen.getByRole("button", { name: "Model" })).not.toBeNull();
+});
+
+it("omits an empty provider segment from the resolved compact name", () => {
+  renderPicker({
+    compact: true,
+    compactIconOnly: true,
+    selectedProviderId: "",
+    pickerProviderOptions: [],
+    modelValue: "gpt-5.5",
+  });
+  expect(
+    screen.getByRole("button", {
+      name: "Provider, model and reasoning: GPT-5.5 · Medium reasoning",
+    }),
+  ).not.toBeNull();
 });

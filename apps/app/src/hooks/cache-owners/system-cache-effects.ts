@@ -52,7 +52,7 @@ import {
 } from "./cache-effect-utils";
 
 interface SystemExecutionOptionsInvalidationArgs extends QueryClientArg {
-  hostId: string;
+  hostId: string | undefined;
 }
 
 interface ServerReconnectInvalidationArgs extends QueryClientArg {
@@ -176,20 +176,24 @@ export function invalidateSystemExecutionOptions({
   const primaryHostId =
     queryClient.getQueryData<SystemConfigResponse>(systemConfigQueryKey())
       ?.primaryHostId ?? null;
-  return queryClient.invalidateQueries({
-    queryKey: allSystemExecutionOptionsQueryKeyPrefix(),
-    predicate: (query) => {
-      const [, environmentId, routedHostId] = query.queryKey;
-      if (typeof routedHostId === "string") return routedHostId === hostId;
-      if (typeof environmentId === "string") {
-        const environment = queryClient.getQueryData<Environment>(
-          environmentQueryKey(environmentId),
-        );
-        return environment === undefined || environment.hostId === hostId;
-      }
-      return primaryHostId === null || primaryHostId === hostId;
+  return queryClient.invalidateQueries(
+    {
+      queryKey: allSystemExecutionOptionsQueryKeyPrefix(),
+      predicate: (query) => {
+        if (hostId === undefined) return true;
+        const [, environmentId, routedHostId] = query.queryKey;
+        if (typeof routedHostId === "string") return routedHostId === hostId;
+        if (typeof environmentId === "string") {
+          const environment = queryClient.getQueryData<Environment>(
+            environmentQueryKey(environmentId),
+          );
+          return environment === undefined || environment.hostId === hostId;
+        }
+        return primaryHostId === null || primaryHostId === hostId;
+      },
     },
-  });
+    { cancelRefetch: false },
+  );
 }
 
 export function invalidateGeneralSettingsDependencies({

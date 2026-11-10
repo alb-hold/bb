@@ -39,7 +39,7 @@ function chunk(seq: number) {
   return { seq, dataBase64: "AA==" };
 }
 
-function createFixture() {
+function createFixture(origin = false) {
   const sent: Array<{
     message: TerminalDataPlaneMainMessage;
     handle: Socket | undefined;
@@ -84,7 +84,13 @@ function createFixture() {
     lifecycle,
     onTerminalExited,
   );
-  const request = { url: "/ws/terminals/term_1", headers: [], headBase64: "" };
+  const request = {
+    url: "/ws/terminals/term_1",
+    headers: origin
+      ? [["Origin", "http://localhost:3000"] as [string, string]]
+      : [],
+    headBase64: "",
+  };
   const attach = (terminalId = "term_1", handoffOwnerToken?: string) => {
     const raw = {} as Socket;
     const attachId = router.attachBrowser({
@@ -119,6 +125,27 @@ function createFixture() {
 }
 
 describe("TerminalDataPlaneRouter", () => {
+  it.each([false, true])(
+    "uses existing Origin on initial attach and resync (browser=%s)",
+    (browser) => {
+      const fixture = createFixture(browser);
+      const { attachId } = fixture.attach();
+      expect(fixture.lifecycle.attach).toHaveBeenLastCalledWith(
+        expect.objectContaining({ rawReplay: !browser }),
+      );
+      fixture.router.handleChildMessage({
+        v: V,
+        type: "browser.resync",
+        attachId,
+        terminalId: "term_1",
+        fromSeq: 0,
+      });
+      expect(fixture.lifecycle.attach).toHaveBeenLastCalledWith(
+        expect.objectContaining({ rawReplay: !browser }),
+      );
+    },
+  );
+
   it("keeps the app owner token on the server side of the daemon data-plane boundary", () => {
     const fixture = createFixture();
     const token = "0123456789abcdefghij_-";
@@ -211,6 +238,28 @@ describe("TerminalDataPlaneRouter", () => {
         entry.message.message.type === "session-updated",
     );
     expect(updates).toHaveLength(2);
+  });
+
+  it("sends an attach failure only to that browser while another viewer stays attached", async () => {
+    const fixture = createFixture();
+    const failed = fixture.attach();
+    fixture.attach();
+    await Promise.resolve();
+    fixture.sent.length = 0;
+    const error = {
+      type: "error",
+      code: "terminal_attach_timeout",
+      message: "Timed out attaching terminal session",
+    };
+    fixture.attached[0]?.send(JSON.stringify(error));
+    expect(fixture.sent.map((entry) => entry.message)).toEqual([
+      {
+        v: V,
+        type: "browser.reply",
+        attachId: failed.attachId,
+        message: error,
+      },
+    ]);
   });
 
   it("sends resize acknowledgements to the one browser they name, after the session update that caused them", async () => {

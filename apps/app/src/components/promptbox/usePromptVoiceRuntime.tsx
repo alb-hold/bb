@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, type RefObject } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  memo,
+  useLayoutEffect,
+  type RefObject,
+} from "react";
 import { useVoiceInput } from "@/hooks/useVoiceInput";
 import { transcribeVoiceInput } from "@/lib/api";
 import type { VoiceDelivery } from "@/lib/voice-recording-store";
@@ -21,7 +29,7 @@ async function requestVoiceTranscription({
   return transcription.text;
 }
 
-export function usePromptVoice(
+export function usePromptVoiceRuntime(
   promptBoxRef: RefObject<PromptBoxHandle | null>,
   draft: PromptVoiceDraftTarget | undefined,
   recordingKey: string | null,
@@ -99,3 +107,37 @@ export function usePromptVoice(
     ],
   );
 }
+
+export const PromptVoiceRuntime = memo(function PromptVoiceRuntime({
+  target,
+  promptBoxRef,
+  recordingKey,
+  publish,
+}: {
+  target: { current: PromptVoiceDraftTarget | undefined };
+  promptBoxRef: RefObject<PromptBoxHandle | null>;
+  recordingKey: string | null;
+  publish: (voice: PromptVoiceConfig | null) => void;
+}) {
+  const draft = useMemo<PromptVoiceDraftTarget | undefined>(
+    () =>
+      target.current
+        ? {
+            getCurrent: () => {
+              if (!target.current)
+                throw new Error("Composer is no longer available");
+              return target.current.getCurrent();
+            },
+            setDraft: (value) => target.current?.setDraft(value),
+            submit: () => target.current?.submit?.(),
+          }
+        : undefined,
+    [target],
+  );
+  const voice = usePromptVoiceRuntime(promptBoxRef, draft, recordingKey);
+  useLayoutEffect(() => {
+    publish(voice);
+    return () => publish(null);
+  }, [publish, voice]);
+  return null;
+});

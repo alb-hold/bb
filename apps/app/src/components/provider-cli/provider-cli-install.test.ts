@@ -235,10 +235,13 @@ describe("provider CLI install store", () => {
     expect(invalidateQueries).toHaveBeenCalledWith({
       queryKey: hostProviderCliStatusQueryKey("host_1"),
     });
-    expect(invalidateQueries).toHaveBeenCalledWith({
-      queryKey: allSystemExecutionOptionsQueryKeyPrefix(),
-      predicate: expect.any(Function),
-    });
+    expect(invalidateQueries).toHaveBeenCalledWith(
+      {
+        queryKey: allSystemExecutionOptionsQueryKeyPrefix(),
+        predicate: expect.any(Function),
+      },
+      { cancelRefetch: false },
+    );
     expect(appToastMock.success).not.toHaveBeenCalled();
   });
 

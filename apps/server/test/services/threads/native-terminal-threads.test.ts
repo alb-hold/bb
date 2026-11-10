@@ -91,6 +91,87 @@ async function createDisconnectedNativeThread(
 }
 
 describe("reopenNativeTerminalsAfterDaemonReconnect", () => {
+  it("refreshes only the quiet pane hint while the CLI is unbound and untouched", async () => {
+    await withTestHarness({ seedFirstPartyProviders: false }, async (h) => {
+      const host = upsertHost(h.db, noopNotifier, {
+        id: "host-setup-cue",
+        name: "Setup cue",
+      });
+      const { threadId, terminalId: previousTerminalId } =
+        await createDisconnectedNativeThread(h, 55, host.id);
+      h.db.$client
+        .prepare(
+          "UPDATE terminal_sessions SET status = 'exited', close_reason = 'user' WHERE id = ?",
+        )
+        .run(previousTerminalId);
+      h.db.$client
+        .prepare(
+          "UPDATE fork_native_terminal_threads SET native_session_id = NULL WHERE thread_id = ?",
+        )
+        .run(threadId);
+      const registry = await createTestProviderRegistry();
+      const registration = registry.get("codex");
+      if (registration === null)
+        throw new Error("Codex provider is not seeded");
+      h.deps.providerRegistry = createProviderRegistryService();
+      h.deps.providerRegistry.register(registration);
+      vi.spyOn(h.pluginService, "resolveProviderEnv").mockResolvedValue({
+        entries: [],
+      });
+      const terminal = createTerminalSession(h.db, {
+        threadId,
+        environmentId: null,
+        hostId: host.id,
+        daemonSessionId: null,
+        title: "Codex",
+        initialCwd: "/tmp",
+        cols: 120,
+        rows: 36,
+        status: "running",
+      });
+      vi.spyOn(h.deps.terminalSessions, "createTerminal").mockResolvedValue(
+        terminal,
+      );
+      const timer = vi.spyOn(globalThis, "setTimeout");
+      const notify = vi.spyOn(h.deps.hub, "notifyThread");
+      try {
+        await openNativeTerminal(h.deps, { threadId, request: {} });
+        const callback = timer.mock.calls.find(
+          ([, delay]) => delay === 12000,
+        )?.[0];
+        expect(callback).toBeTypeOf("function");
+        if (typeof callback !== "function")
+          throw new Error("Missing setup timer");
+        vi.spyOn(Date, "now").mockReturnValue(terminal.createdAt + 13000);
+        notify.mockClear();
+        callback();
+        expect(notify).toHaveBeenCalledWith(threadId, ["terminals-changed"]);
+        h.db.$client
+          .prepare(
+            "UPDATE terminal_sessions SET last_user_input_at = ? WHERE id = ?",
+          )
+          .run(Date.now(), terminal.id);
+        notify.mockClear();
+        callback();
+        expect(notify).not.toHaveBeenCalled();
+        h.db.$client
+          .prepare(
+            "UPDATE terminal_sessions SET last_user_input_at = NULL WHERE id = ?",
+          )
+          .run(terminal.id);
+        h.db.$client
+          .prepare(
+            "UPDATE fork_native_terminal_threads SET native_session_id = ? WHERE thread_id = ?",
+          )
+          .run("bound-session", threadId);
+        callback();
+        expect(notify).not.toHaveBeenCalled();
+      } finally {
+        vi.restoreAllMocks();
+      }
+    });
+  });
+
   it("sends a large public tell as ordered valid frames without closing its session", async () => {
     await withTestHarness(async (h) => {
       const seeded = seedHostSession(h.deps, { id: "host-native-large-tell" });
@@ -298,6 +379,10 @@ describe("reopenNativeTerminalsAfterDaemonReconnect", () => {
         takeNativeTerminalLaunchSpec(h.deps, { imagesAsArgv: true, threadId })
           .providerId,
       ).toBe("codex");
+      expect(createTerminal.mock.calls[0]?.[0].defaultColors).toEqual({
+        foreground: [193, 193, 193],
+        background: [27, 27, 27],
+      });
       const start = createTerminal.mock.calls[0]?.[0].payload.start;
       if (start?.mode !== "command") {
         throw new Error("Expected a command terminal launch");
@@ -316,7 +401,14 @@ describe("reopenNativeTerminalsAfterDaemonReconnect", () => {
       const { threadId } = await createDisconnectedNativeThread(h, 4, host.id);
       h.db
         .update(terminalSessions)
-        .set({ status: "exited", closeReason: "daemon-disconnect" })
+        .set({
+          status: "exited",
+          closeReason: "daemon-disconnect",
+          defaultColors: {
+            foreground: [12, 34, 56],
+            background: [234, 245, 255],
+          },
+        })
         .where(eq(terminalSessions.threadId, threadId))
         .run();
       const sourceRegistry = await createTestProviderRegistry();
@@ -352,6 +444,10 @@ describe("reopenNativeTerminalsAfterDaemonReconnect", () => {
 
       expect(resolveProviderEnv).not.toHaveBeenCalled();
       expect(createTerminal).toHaveBeenCalledOnce();
+      expect(createTerminal.mock.calls[0]?.[0].defaultColors).toEqual({
+        foreground: [12, 34, 56],
+        background: [234, 245, 255],
+      });
       const contributed =
         createTerminal.mock.calls[0]?.[0].extraContributedEnv ?? [];
       expect(contributed.map((entry) => entry.name)).toEqual([

@@ -34,6 +34,7 @@ import type { PluginSettingsCandidate } from "@/components/settings/plugin-setti
 import { appQueryClient } from "@/lib/app-query-client";
 import { LazyCommandPaletteBody } from "./LazyCommandPaletteBody";
 import { ThreadSearchPalettePlaceholder } from "./ThreadSearchPalettePlaceholder";
+import { prefetchThreadViewOnIntent } from "@/hooks/useThreadOpenIntent";
 
 const ThreadSearchPaletteMode = defineSplit({
   id: "thread-search-palette-mode",
@@ -42,7 +43,7 @@ const ThreadSearchPaletteMode = defineSplit({
       (module) => module.ThreadSearchPaletteMode,
     ),
   loading: (props) => <ThreadSearchPalettePlaceholder {...props} />,
-  tier: "preload",
+  tier: "intent",
 });
 
 const THREAD_SEARCH_ACTION_ID = paletteActionIdForCommand("thread.search");
@@ -165,6 +166,7 @@ export function CommandPalette({ threadId, projectId }: CommandPaletteProps) {
 
   const prepareOpen = useCallback(
     (target: EventTarget | null) => {
+      prefetchThreadViewOnIntent();
       if (!open) openTargetRef.current = target;
       setActions(buildActions(openTargetRef.current));
       setQuery("");

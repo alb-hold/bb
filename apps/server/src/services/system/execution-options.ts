@@ -158,6 +158,30 @@ function canOmitProviderDiscoveryForError(error: unknown): error is ApiError {
   );
 }
 
+const healthRefreshNotifications = new WeakSet<Promise<unknown>>();
+
+function notifyWhenHealthSettles(
+  deps: LoggedWorkSessionDeps,
+  hostId: string,
+  providerId: string,
+  pending: ReturnType<ProviderRegistryService["lookupProviderHealthStatus"]>,
+): void {
+  if (pending === undefined || healthRefreshNotifications.has(pending)) return;
+  healthRefreshNotifications.add(pending);
+  const previous = deps.providerRegistry.peekProviderHealthStatus({
+    hostId,
+    providerId,
+  });
+  void pending.then(
+    (status) => {
+      if (status !== previous) {
+        deps.hub.notifyHost(hostId, ["provider-model-catalog-changed"]);
+      }
+    },
+    () => undefined,
+  );
+}
+
 async function omitProvidersThatCannotStartAThread(
   deps: LoggedWorkSessionDeps,
   hostId: string | null,
@@ -166,10 +190,15 @@ async function omitProvidersThatCannotStartAThread(
   if (hostId === null) return providers;
   const usable = await Promise.all(
     providers.map(async (provider) => {
-      const status = await deps.providerRegistry.lookupProviderHealthStatus({
+      const status = deps.providerRegistry.peekProviderHealthStatus({
         hostId,
         providerId: provider.id,
       });
+      const pending = deps.providerRegistry.lookupProviderHealthStatus({
+        hostId,
+        providerId: provider.id,
+      });
+      notifyWhenHealthSettles(deps, hostId, provider.id, pending);
       if (status !== "unauthenticated") return true;
       const contributed = await resolvePluginProviderEnvHealth({
         providerId: provider.id,
@@ -226,28 +255,33 @@ async function listInstalledPluginProviderInfos(
         deps.providerRegistry.lookupProviderHealthStatus(cacheKey);
       try {
         const status =
-          cachedStatus ??
-          (cachedInstalled === undefined
-            ? probe(budget)
-            : cachedInstalled.then((installed) =>
+          cachedInstalled !== undefined
+            ? cachedInstalled.then((installed) =>
                 installed ? "ready" : "not_installed",
-              ));
+              )
+            : (cachedStatus ?? probe(budget));
         const installed = status.then(
-          (discovered) =>
-            discovered !== null && discovered !== "not_installed",
+          (discovered) => discovered !== null && discovered !== "not_installed",
         );
-        if (cachedStatus === undefined) {
+        if (cachedStatus === undefined && cachedInstalled === undefined) {
           deps.providerRegistry.rememberProviderHealthStatus(cacheKey, status);
         }
         if (cachedInstalled === undefined) {
           deps.providerRegistry.rememberInstalled(cacheKey, installed);
         } else {
           void deps.providerRegistry.revalidateInstalled(cacheKey, async () => {
-            const discovered = await probe(createProviderListingBudget());
+            const pending = probe(createProviderListingBudget());
             deps.providerRegistry.rememberProviderHealthStatus(
               cacheKey,
-              Promise.resolve(discovered),
+              pending,
             );
+            notifyWhenHealthSettles(
+              deps,
+              hostId,
+              registration.info.id,
+              pending,
+            );
+            const discovered = await pending;
             return discovered !== null && discovered !== "not_installed";
           });
         }

@@ -1,9 +1,14 @@
 import {
+  useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
   type CSSProperties,
+  type FocusEvent,
+  type KeyboardEvent,
+  type MouseEvent,
+  type PointerEvent,
   type ReactNode,
 } from "react";
 import type {
@@ -284,6 +289,7 @@ function CollapsibleMessageText({
           <span>{body.text}</span>
         ) : (
           <MarkdownPreview
+            className="md:text-base"
             containerQuery={false}
             tableLayout="contained"
             content={
@@ -334,13 +340,93 @@ function buildAddToChatAttachments(
   ];
 }
 
+function useTouchMessageActions(alwaysVisible: boolean) {
+  const [revealed, setRevealed] = useState(false);
+  const messageRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!revealed) return;
+    const dismiss = (event: globalThis.PointerEvent) => {
+      if (
+        event.target instanceof Node &&
+        !messageRef.current?.contains(event.target)
+      ) {
+        setRevealed(false);
+      }
+    };
+    document.addEventListener("pointerdown", dismiss, true);
+    return () => document.removeEventListener("pointerdown", dismiss, true);
+  }, [revealed]);
+  const pointerStart = useRef<{
+    x: number;
+    y: number;
+    selecting: boolean;
+  } | null>(null);
+  return {
+    ref: messageRef,
+    tabIndex: 0,
+    role: "group",
+    "aria-label": "Message",
+    "aria-description":
+      "Press Enter to show message actions; Escape to dismiss",
+    "data-touch-actions-visible": alwaysVisible || revealed ? "true" : "false",
+    onBlur: (event: FocusEvent<HTMLDivElement>) => {
+      if (!event.currentTarget.contains(event.relatedTarget))
+        setRevealed(false);
+    },
+    onKeyDown: (event: KeyboardEvent<HTMLDivElement>) => {
+      if (event.target !== event.currentTarget) return;
+      if (event.key === "Escape") setRevealed(false);
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        setRevealed(true);
+      }
+    },
+    onPointerDown: (event: PointerEvent<HTMLDivElement>) => {
+      pointerStart.current = {
+        x: event.clientX,
+        y: event.clientY,
+        selecting: (window.getSelection()?.toString().length ?? 0) > 0,
+      };
+    },
+    onContextMenu: (event: MouseEvent<HTMLDivElement>) => {
+      if (
+        !window.matchMedia("(pointer: coarse)").matches ||
+        !(event.target instanceof Element) ||
+        event.target.closest(
+          'a, button, input, textarea, select, [contenteditable="true"]',
+        ) ||
+        (window.getSelection()?.toString().length ?? 0) > 0
+      )
+        return;
+      event.preventDefault();
+      setRevealed(true);
+    },
+    onClick: (event: MouseEvent<HTMLDivElement>) => {
+      const target = event.target;
+      const start = pointerStart.current;
+      if (
+        !window.matchMedia("(pointer: coarse)").matches ||
+        !(target instanceof Element) ||
+        target.closest(
+          'a, button, input, textarea, select, [role="button"], [contenteditable="true"]',
+        ) ||
+        (window.getSelection()?.toString().length ?? 0) > 0 ||
+        start?.selecting ||
+        (start &&
+          Math.hypot(event.clientX - start.x, event.clientY - start.y) > 8)
+      )
+        return;
+      setRevealed((value) => !value);
+    },
+  };
+}
+
 function UserConversationMessage({
   actionMetadata,
   addToChatAttachments,
   attachmentItems,
   initiator,
   mentions,
-  mobileActionDisplay,
   onAddToChat,
   onCopyLink,
   onEdit,
@@ -359,6 +445,7 @@ function UserConversationMessage({
   threadId,
   turnRequest,
 }: UserConversationMessageProps) {
+  const touchActions = useTouchMessageActions(false);
   const linkRouting = useMessageLinkRouting(threadId);
   const automationDue =
     initiator === "user" ? parseAutomationDueMessage(text) : null;
@@ -437,7 +524,10 @@ function UserConversationMessage({
 
   return (
     <div className="@container w-full" data-message-column="">
-      <div className="group/message ml-auto flex w-fit max-w-[70%] flex-col items-end">
+      <div
+        {...touchActions}
+        className="group/message focus-visible:outline-2 focus-visible:outline-ring ml-auto flex w-fit max-w-[88%] md:max-w-[70%] flex-col items-end"
+      >
         {requestLabel ? (
           <div className="mb-1 flex items-center justify-end gap-2">
             <TurnRequestLabel
@@ -447,7 +537,7 @@ function UserConversationMessage({
           </div>
         ) : null}
         <div className="flex w-fit max-w-full flex-col items-end">
-          <div className="max-w-full rounded-xl border border-border-seam bg-surface-recessed px-4 py-2.5 text-sm leading-relaxed text-foreground">
+          <div className="max-w-full rounded-xl border border-border-seam bg-surface-recessed px-4 py-2.5 text-sm md:text-base leading-relaxed text-foreground">
             {messageText ? (
               <CollapsibleMessageText
                 mentions={mentions}
@@ -471,7 +561,7 @@ function UserConversationMessage({
             timestamp={timestamp}
             messageText={messageText}
             alignment="end"
-            mobileActionDisplay={mobileActionDisplay}
+            mobileActionDisplay="inline"
             addToChatAttachments={addToChatAttachments}
             copyImageUrl={
               attachmentItems.imageItems.find(
@@ -520,6 +610,7 @@ function AssistantConversationMessage({
       });
     }
   }, [id, streaming, text, threadId]);
+  const touchActions = useTouchMessageActions(mobileActionDisplay === "inline");
   const { split: streamingSplit, liveMarkdown } = useMemo(
     () => resolveStreamingMarkdown(text, streaming),
     [streaming, text],
@@ -621,10 +712,11 @@ function AssistantConversationMessage({
   return (
     <div
       className={cn(
-        "group/message w-full text-sm font-normal leading-relaxed",
+        "group/message focus-visible:outline-2 focus-visible:outline-ring w-full text-sm md:text-base font-normal leading-relaxed text-foreground md:[&_[data-markdown-preview]]:text-base md:[&_[data-code-card]:last-child]:mb-0 max-md:pointer-coarse:[&_[data-code-card]:last-child]:mb-0",
         PROSE_COLUMN_INSET_CLASS,
       )}
       data-message-column=""
+      {...touchActions}
     >
       <SelectableMessageProse onSelect={onSelectProse}>
         {codeFenceRendererRegistry === null ? (
@@ -650,7 +742,7 @@ function AssistantConversationMessage({
           timestamp={timestamp}
           messageText={text}
           alignment="start"
-          mobileActionDisplay={mobileActionDisplay}
+          mobileActionDisplay="inline"
           addToChatAttachments={addToChatAttachments}
           copyImageUrl={
             attachmentItems.imageItems.find(

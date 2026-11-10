@@ -88,7 +88,6 @@ it("snap-syncs the timeline height when older rows are prepended", () => {
           threadId="thr_main"
           timelineRows={rows}
           threadRuntimeDisplayStatus="idle"
-
           threadIsActive={false}
         />
       </QueryClientProvider>
@@ -120,7 +119,6 @@ it("snaps active timeline growth on fine-pointer browsers", () => {
           threadId="thr_main"
           timelineRows={rows}
           threadRuntimeDisplayStatus={active ? "active" : "idle"}
-
           threadIsActive={false}
         />
       </QueryClientProvider>
@@ -270,3 +268,95 @@ it("keeps the reading row in place through eased growth frames", () => {
   });
   disconnect();
 });
+
+it.each([false, true])(
+  "corrects above-anchor width reflow before the resize callback returns (attached=%s)",
+  (attached) => {
+    vi.stubGlobal("ResizeObserver", ResizeObserverStub);
+    let area: HTMLDivElement | null = null;
+    let wrapper: HTMLElement | null = null;
+    let readingRow: HTMLElement | null = null;
+    let width = 960;
+    let intrinsicHeight = 5686;
+    let rowOffset = 4805;
+    const keeper = new ScrollPositionKeeper({
+      bottomThresholdPx: 4,
+      deferWritesWhileScrolling: false,
+      getContentElement: () => wrapper,
+      getFloorElement: () => null,
+      getFooterElement: () => null,
+      getScrollElement: () => area,
+      getTopLevelRows: () => (readingRow === null ? [] : [readingRow]),
+      initiallyAttached: attached,
+    });
+    const context: BottomAnchorContextValue = {
+      getScrollElement: () => area,
+      isAtBottom: attached,
+      scrollToBottom: () => keeper.scrollToBottom(),
+      scrollElementIntoView: () => undefined,
+      captureScrollAnchor: () => undefined,
+      holdContentPosition: () => undefined,
+      positionKeeper: keeper,
+    };
+    vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(
+      () => intrinsicHeight,
+    );
+    const view = render(
+      <BottomAnchorContext.Provider value={context}>
+        <div data-testid="resize-viewport">
+          <AutoHeightContainer>
+            <div data-timeline-row-id="user-seed:1229">Reading row</div>
+          </AutoHeightContainer>
+        </div>
+      </BottomAnchorContext.Provider>,
+    );
+    area = view.getByTestId("resize-viewport") as HTMLDivElement;
+    wrapper = area.firstElementChild as HTMLElement;
+    const inner = wrapper.firstElementChild as HTMLElement;
+    readingRow = view.getByText("Reading row");
+    Object.defineProperties(area, {
+      clientWidth: { configurable: true, get: () => width },
+      clientHeight: { configurable: true, value: 752 },
+      scrollHeight: {
+        configurable: true,
+        get: () =>
+          wrapper?.style.height === "auto"
+            ? intrinsicHeight
+            : Number.parseFloat(wrapper?.style.height ?? "0"),
+      },
+    });
+    area.getBoundingClientRect = () => new DOMRect(320, 48, width, 752);
+    readingRow.getBoundingClientRect = () =>
+      new DOMRect(320, 48 + rowOffset - (area?.scrollTop ?? 0), width, 200);
+    area.scrollTop = 4934;
+    const disconnect = keeper.connect(area);
+    if (!attached) keeper.hold(readingRow, "top");
+    const beforeTop = readingRow.getBoundingClientRect().top;
+    const deliverInnerResize = () => {
+      const entry = {
+        target: inner,
+        contentRect: new DOMRect(0, 0, width, intrinsicHeight),
+        borderBoxSize: [{ inlineSize: width, blockSize: intrinsicHeight }],
+        contentBoxSize: [{ inlineSize: width, blockSize: intrinsicHeight }],
+        devicePixelContentBoxSize: [],
+      } as ResizeObserverEntry;
+      for (const observer of ResizeObserverStub.instances) {
+        if (observer.targets.has(inner)) observer.callback([entry], observer);
+      }
+    };
+    act(deliverInnerResize);
+    width = 480;
+    intrinsicHeight += 49;
+    rowOffset += 24;
+    act(() => {
+      keeper.remeasure();
+      deliverInnerResize();
+    });
+    expect(wrapper.style.height).toBe("auto");
+    expect(area.scrollTop).toBe(4934 + (attached ? 49 : 24));
+    if (!attached)
+      expect(readingRow.getBoundingClientRect().top).toBe(beforeTop);
+    expect(keeper.isAttached()).toBe(attached);
+    disconnect();
+  },
+);

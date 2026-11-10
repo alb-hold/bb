@@ -1,3 +1,5 @@
+import { getThreadDetailActivityIndicator } from "@/lib/thread-activity-label";
+import { useTerminalMountGate } from "@/hooks/useTerminalMountGate";
 import { AppPanelTabsPublisher } from "@/lib/app-panel-tabs";
 import {
   getThreadFixedTabOwnerId,
@@ -276,13 +278,19 @@ function ThreadDetailNotFound() {
   );
 }
 
+queueSplitDownload("queued-messages-list");
+
+const THREAD_TAB_CONTEXT = { kind: "thread" } as const;
+
 function RoutedThreadDetailView() {
-  const { projectId, threadId } = useRouteState();
-
-  if (!projectId || !threadId) {
-    return <ThreadDetailNotFound />;
-  }
-
+  const route = useRouteState();
+  const { threadId } = route;
+  const { data: thread } = useThread(threadId ?? "", { enabled: false });
+  const projectId =
+    route.isProjectlessView && thread?.id === threadId
+      ? thread?.projectId
+      : route.projectId;
+  if (!projectId || !threadId) return <ThreadDetailNotFound />;
   return (
     <ThreadDetailViewInternal
       projectId={projectId}
@@ -292,14 +300,8 @@ function RoutedThreadDetailView() {
   );
 }
 
-queueSplitDownload("queued-messages-list");
-
-const THREAD_TAB_CONTEXT = { kind: "thread" } as const;
-
 export function ThreadDetailView(props: ThreadDetailViewProps) {
-  if (props.surface === "pane") {
-    return <ThreadDetailViewInternal {...props} />;
-  }
+  if (props.surface === "pane") return <ThreadDetailViewInternal {...props} />;
   return <RoutedThreadDetailView />;
 }
 
@@ -307,6 +309,7 @@ function ThreadDetailViewInternal(
   props: ThreadRoutePathArgs & { timelineEnabled: boolean },
 ) {
   const { projectId, threadId, timelineEnabled } = props;
+  useTerminalMountGate("terminal-thread-view-mount", threadId, true);
   const {
     isFocused,
     paneId,
@@ -327,6 +330,7 @@ function ThreadDetailViewInternal(
     threadId,
     enabled: timelineEnabled,
   });
+  const nativeTerminalThreadQuery = useNativeTerminalThread(threadId);
   const {
     hasThreadDetailBootstrapSettled,
     thread,
@@ -339,7 +343,12 @@ function ThreadDetailViewInternal(
     systemConfigQuery.data?.experiments.unreadDividerAtAnswer === true
       ? "turn-answer"
       : "first-unread-row",
-    { hasUnseenTimelineEvents: timeline.hasUnseenTimelineEvents, isFocused },
+    {
+      hasUnseenTimelineEvents: timeline.hasUnseenTimelineEvents,
+      isFocused,
+      nativeTerminalReady:
+        nativeTerminalThreadQuery.data?.terminal?.status === "running",
+    },
   );
   const environmentQuery = useEnvironment(thread?.environmentId, {
     enabled: hasThreadDetailBootstrapSettled,
@@ -435,6 +444,8 @@ function ThreadDetailViewInternal(
     retryKey: threadId,
   });
   const { data: parentThread } = useThread(thread?.parentThreadId ?? "");
+  const [nativeActivityTarget, setNativeActivityTarget] =
+    useState<HTMLDivElement | null>(null);
   const [shouldAutoFocusNewTab, setShouldAutoFocusNewTab] = useState(false);
   const handleNewTabAutoFocusHandled = useCallback(
     () => setShouldAutoFocusNewTab(false),
@@ -470,7 +481,12 @@ function ThreadDetailViewInternal(
     enabled: isSecondaryPanelOpen || terminalLayoutRequest !== null,
   });
   const refetchTerminalList = terminalsListQuery.refetch;
-  const nativeTerminalThreadQuery = useNativeTerminalThread(threadId);
+  useTerminalMountGate("terminal-thread-data", threadId, thread !== undefined);
+  useTerminalMountGate(
+    "terminal-native-data",
+    threadId,
+    !nativeTerminalThreadQuery.isPending,
+  );
   const nativeTerminalThread = nativeTerminalThreadQuery.data ?? null;
   const nativeTerminalId = nativeTerminalThread?.terminal?.id ?? null;
   const visibleTerminalSessions = useMemo(
@@ -1773,6 +1789,7 @@ function ThreadDetailViewInternal(
     <ThreadDetailHeader
       actionsMenu={({
         includeResponsiveActions,
+        terminalSearchActions,
         headerActions,
         requestRename,
         onCloseAutoFocus,
@@ -1792,6 +1809,7 @@ function ThreadDetailViewInternal(
                 HEADER_ICON_BUTTON_CLASS,
               )}
               aria-label="Thread actions"
+              data-compact-touch="header"
               onClick={(event) => {
                 triggerProps.onClick?.(event);
                 event.stopPropagation();
@@ -1803,8 +1821,9 @@ function ThreadDetailViewInternal(
               />
             </Button>
           )}
-          inline={
-            includeResponsiveActions
+          inline={[
+            ...terminalSearchActions,
+            ...(includeResponsiveActions
               ? [
                   ...responsiveWorkspaceActions,
                   ...headerActions.map(
@@ -1815,8 +1834,8 @@ function ThreadDetailViewInternal(
                     }),
                   ),
                 ]
-              : []
-          }
+              : []),
+          ]}
           requestRename={requestRename}
           onCloseAutoFocus={onCloseAutoFocus}
         />
@@ -1832,6 +1851,11 @@ function ThreadDetailViewInternal(
       }
       thread={threadActionTarget}
       threadTitle={threadTitle}
+      activityIndicator={getThreadDetailActivityIndicator(thread)}
+      needsInput={thread.nativeTerminal && thread.hasPendingInteraction}
+      hasNativeTerminal={nativeTerminalThread != null}
+      nativeActivityTargetRef={setNativeActivityTarget}
+      checkTerminal={nativeTerminalThread?.terminal?.attention != null}
       contextCardButton={<ThreadContextCardHeaderButton />}
       workspaceOpenButton={workspaceOpenButton}
     />
@@ -2046,6 +2070,7 @@ function ThreadDetailViewInternal(
               nativeTerminalMain={
                 nativeTerminalThread === null ? null : (
                   <NativeThreadTerminalMain
+                    activityTarget={nativeActivityTarget}
                     onOpenLink={handleOpenTimelineLink}
                     projectId={thread.projectId}
                     runtime={thread.runtime}

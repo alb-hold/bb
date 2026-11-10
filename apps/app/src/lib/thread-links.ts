@@ -5,10 +5,10 @@ import {
   PERSONAL_PROJECT_ID,
 } from "@bb/domain";
 import type { ExperimentalComposerThreadLinkTarget } from "@get-bb/plugin-sdk";
+import type { ResolveThreadMentionsResponse } from "@bb/server-contract";
 import {
   THREAD_MENTION_RESOLVE_MAX_IDS,
-  type ResolveThreadMentionsResponse,
-} from "@bb/server-contract";
+} from "@bb/server-contract/api/thread-client-constants";
 
 const threadPathPattern = new RegExp(
   `^/(?:projects/(proj_[${GENERATED_ID_ALPHABET}]{${GENERATED_ID_SUFFIX_LENGTH}})/)?threads/([^/]+)/?$`,

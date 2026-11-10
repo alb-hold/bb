@@ -89,6 +89,9 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
           "Add fixed tabs beside Browser and Terminal, and open terminals it started in any folder",
           "Show a live count or dot on its navigation entry",
         ],
+        reference: [
+          "Plugin destinations appear after More on phones and when first seen on desktop. Remembered desktop destinations keep their positions before More so late plugins do not move existing controls.",
+        ],
         apiSymbols: [
           "PluginNavPanelRegistration",
           "PluginNavPanelRegistration.experimental_sidebar",
@@ -154,19 +157,21 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
           "Replace the sidebar's thread list with one your plugin renders. With this, a plugin can:",
         bullets: [
           "Group, sort, and draw every row your own way",
-          "Read live threads, sections, projects, and run status",
+          "Read live threads, sections, projects, run status, and native terminal mode",
           "Use optimistic SDK writes and bb's actions to move, pin, rename, restore, archive, and split threads",
           "Keep bb's New thread button, search, and footer around it",
         ],
         apiSymbols: [
           "PluginThreadListRegistration",
           "PluginThreadListProps",
+          "PluginThreadListProps.experimental_isVisible",
           "experimental_useSidebarThreads",
           "PluginSidebarThreadsState.experimental_archived",
           "PluginSidebarThreadsState.experimental_hosts",
           "PluginSidebarThreadsState",
           "PluginSidebarThread",
           "PluginSidebarThread.experimental_rowState",
+          "PluginSidebarThread.experimental_nativeTerminal",
           "PluginSidebarThread.experimental_nativeActivity",
           "PluginSidebarThread.experimental_queuedFailedCount",
           "PluginSidebarSection",
@@ -213,8 +218,11 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
         bullets: [
           "Run an action, or open a small panel above the footer",
           "Show quick status, such as usage limits, without leaving the thread",
-          "Follow the user's order and visibility choices in Appearance",
+          "Follow visibility choices and saved order within host and plugin groups in Appearance",
           "Switch this device to another of its bb servers, in bb Desktop and the mobile app",
+        ],
+        reference: [
+          "The footer places host actions first, then More, then plugin items on every viewport. Saved order applies within each group, keeping host controls stable while plugins load. Saved plugin positions reserve empty slots until registration; newly discovered plugins append without moving existing icons.",
         ],
         apiSymbols: [
           "ExperimentalSidebarFooter",
@@ -637,12 +645,17 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
           "Place bb's model, mode and handoff controls where it wants them",
           "Keep other plugins' actions, popups and menu entries working inside it",
         ],
+        reference: [
+          "Accept startup input through ExperimentalComposerInput.experimental_startupHandoff: attach a synchronous callback after mounting the editor, restore its draft and text selection, and focus only when the snapshot owns focus",
+          "Report a blocked primary submission through ExperimentalComposerSubmission.experimental_onBlockedSubmit after IME, newline and suggestion handling. The host may retain the draft and submit once options resolve; this callback never bypasses submission checks.",
+        ],
         apiSymbols: [
           "ExperimentalComposerRegistration",
           "ExperimentalComposerProps",
           "experimental_useComposerRenderer",
           "ExperimentalComposerRendererApi",
           "ExperimentalComposerInput",
+          "ExperimentalComposerSubmission",
           "ExperimentalComposerView",
           "experimental_ComposerRoot",
           "ExperimentalComposerRootProps",
@@ -1578,6 +1591,8 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
           "PluginBbSdk.threads.experimental_listDescendants",
           "PluginBbSdk.terminals.experimental_attention",
           "PluginBbSdk.terminals.experimental_screen",
+          "PluginBbSdk.terminals.experimental_setDefaultColors",
+          "TerminalsArea.experimental_setDefaultColors",
           "PluginBbSdk.threads.experimental_listCascade",
           "PluginBbSdk.threads.experimental_regenerateTitle",
         ],

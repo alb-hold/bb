@@ -29,6 +29,7 @@ import {
   jsonValueSchema,
   pendingInteractionCreateSchema,
   pendingInteractionStatusSchema,
+  terminalDefaultColorsSchema,
   terminalColsSchema,
   terminalDataBase64Schema,
   terminalRowsSchema,
@@ -642,6 +643,7 @@ const hostDaemonTerminalOpenTargetSchema = z.discriminatedUnion("kind", [
 const hostDaemonTerminalOpenMessageSchema = z
   .object({
     type: z.literal("terminal.open"),
+    defaultColors: terminalDefaultColorsSchema.optional(),
     contributedEnv: z.array(hostDaemonContributedEnvEntrySchema).default([]),
     requestId: terminalRequestIdSchema,
     terminalId: terminalIdSchema,
@@ -768,6 +770,12 @@ export const hostDaemonServerWsMessageSchema = z.discriminatedUnion("type", [
   hostDaemonTerminalOpenMessageSchema,
   hostDaemonTerminalAttachMessageSchema,
   hostDaemonTerminalInputMessageSchema,
+  terminalDefaultColorsSchema
+    .extend({
+      type: z.literal("terminal.default-colors"),
+      terminalId: terminalIdSchema,
+    })
+    .strict(),
   hostDaemonTerminalResizeMessageSchema,
   hostDaemonTerminalCloseMessageSchema,
   hostDaemonTerminalFlowControlMessageSchema,

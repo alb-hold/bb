@@ -23,11 +23,13 @@ export function splitPrefetch(entries: Record<string, string>): Plugin {
           if (entry === undefined)
             throw new Error(`Missing prefetch split: ${id}`);
           const files = new Set<string>();
+          const seen = new Set<string>();
           const visit = (fileName: string) => {
-            if (files.has(fileName)) return;
-            files.add(fileName);
+            if (seen.has(fileName)) return;
+            seen.add(fileName);
             const chunk = bundle[fileName];
             if (chunk?.type === "chunk") chunk.imports.forEach(visit);
+            files.add(fileName);
           };
           visit(entry.fileName);
           return {

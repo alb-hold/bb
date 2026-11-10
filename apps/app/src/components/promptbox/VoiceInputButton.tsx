@@ -7,6 +7,8 @@ import { Popover, PopoverAnchor } from "@bb/shared-ui/popover";
 import { MicrophonePreferencesSplit } from "./MicrophonePreferencesSplit";
 import { MicrophonePreferencesPopoverContent } from "./MicrophonePreferencesPopoverContent";
 
+import { preloadPromptVoiceRuntime } from "./usePromptVoice";
+
 export function VoiceInputButton({
   warning,
   ...props
@@ -33,6 +35,15 @@ export function VoiceInputButton({
             <TooltipTrigger asChild>
               <Button
                 {...props}
+                data-compact-touch="voice"
+                onPointerEnter={(event) => {
+                  void preloadPromptVoiceRuntime().catch(() => undefined);
+                  props.onPointerEnter?.(event);
+                }}
+                onFocus={(event) => {
+                  void preloadPromptVoiceRuntime().catch(() => undefined);
+                  props.onFocus?.(event);
+                }}
                 ref={triggerRef}
                 className={cn("relative", props.className)}
                 aria-label={

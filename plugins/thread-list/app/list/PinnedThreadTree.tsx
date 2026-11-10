@@ -280,7 +280,7 @@ export const PinnedThreadTree = memo(function PinnedThreadTree({
       <div
         ref={setPinnedParentRef}
         data-sidebar-sticky-section=""
-        className="relative space-y-0.5"
+        className="relative space-y-0"
         onClickCapture={chronologicalDnd.onClickCapture}
       >
         <SortableContext
@@ -326,7 +326,7 @@ export const PinnedThreadTree = memo(function PinnedThreadTree({
   return (
     <div
       data-sidebar-sticky-section=""
-      className="relative space-y-0.5"
+      className="relative space-y-0"
       onClickCapture={onClickCapture}
     >
       {hasEnvironmentGroups ? (

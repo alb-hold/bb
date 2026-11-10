@@ -1,6 +1,5 @@
 .thread-turn-token-breakdown {
-  display: flex;
-  flex-wrap: wrap;
+  display: block;
   overflow: visible;
   white-space: normal;
 }
@@ -18,16 +17,29 @@
   }
 }
 
-.thread-turn-token-breakdown > [data-token-part] {
+.thread-turn-token-breakdown [data-token-clip] {
+  display: block;
+  overflow: hidden;
+}
+
+.thread-turn-token-breakdown [data-token-parts] {
+  display: flex;
+  flex-wrap: wrap;
+  column-gap: 0.75rem;
+}
+
+.thread-turn-token-breakdown [data-token-unit] {
+  position: relative;
   flex: 0 0 auto;
   white-space: nowrap;
 }
 
-.thread-turn-token-breakdown [data-token-trailing-group] {
-  display: inline-flex;
-  flex: 0 0 auto;
-  gap: 0.25rem;
-  white-space: nowrap;
+.thread-turn-token-breakdown [data-token-separator] {
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline-start: -0.75rem;
+  width: 0.75rem;
+  text-align: center;
 }
 
 [data-token-total-tight] {
@@ -39,24 +51,62 @@
     align-items: flex-start;
   }
 
-  [data-message-action-row] > button[aria-label="Message actions"] {
+  [data-message-action-row] > button[data-compact-touch="action-menu"] {
     order: 1;
-  }
-
-  [data-message-action-row] [data-thread-turn-tokens] {
-    order: 2;
-    flex: 0 0 100%;
-    width: 100%;
-    max-width: 100%;
   }
 }
 
 @container message-actions (max-width: 8rem) {
-  [data-thread-turn-tokens] [data-token-total-full] {
+  [data-thread-turn-tokens] [data-token-total-full],
+  [data-thread-turn-tokens] [data-token-cached-full] {
     display: none;
   }
 
   [data-thread-turn-tokens] [data-token-total-tight] {
     display: inline;
+  }
+}
+
+@media (pointer: coarse) {
+  [data-message-action-slot][data-message-action-slot] {
+    padding-block: 0px;
+    min-height: 0px;
+  }
+
+  [data-compact-touch-panel] > div:first-child {
+    padding-block: 0px;
+  }
+
+  button:is(
+    [data-compact-touch="action"],
+    [data-compact-touch="action-menu"],
+    [data-compact-touch="code"],
+    [data-compact-touch-summary]
+  ) {
+    min-height: 44px;
+  }
+
+  [data-touch-actions-visible="false"]:not(:focus-within)
+    [data-message-action-row] {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+
+  [data-touch-actions-visible="true"] [data-message-action-row] button {
+    opacity: 1;
+  }
+}
+
+@media (width < 48rem) and (pointer: coarse) {
+  .thread-turn-token-breakdown [data-token-unit]:not([data-token-unit="total"]) {
+    display: none;
+  }
+
+  .thread-turn-token-breakdown [data-token-parts] {
+    flex-wrap: nowrap;
   }
 }

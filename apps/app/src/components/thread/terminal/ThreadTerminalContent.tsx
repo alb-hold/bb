@@ -1,15 +1,21 @@
+import { useTerminalMountGate } from "@/hooks/useTerminalMountGate";
 import { Button } from "@bb/shared-ui/button";
 import type { MarkdownPreviewLinkHandler } from "@/components/ui/markdown-link";
 import {
   SHORT_LIVED_STATUS_DELAY_MS,
   useSustainedFlag,
 } from "@/hooks/useSustainedFlag";
+import {
+  RetainedTerminalViewSlot,
+  useRetainedTerminalPanelState,
+} from "./RetainedTerminalViews";
 import { ThreadTerminalView } from "./ThreadTerminalView";
 import type { ThreadTerminalController } from "./useThreadTerminalController";
 
 interface ThreadTerminalContentProps {
   autoFocus?: boolean;
   retainNativeOutput?: boolean;
+  attentionShownAsBanner?: boolean;
   controller: ThreadTerminalController;
   onAutoFocusHandled?: () => void;
   onCloseStart: () => void;
@@ -21,6 +27,7 @@ interface ThreadTerminalContentProps {
 export function ThreadTerminalContent({
   autoFocus = false,
   retainNativeOutput = false,
+  attentionShownAsBanner = false,
   controller,
   onAutoFocusHandled,
   onCloseStart,
@@ -28,6 +35,15 @@ export function ThreadTerminalContent({
   onRetryStart,
   onSelectionAddToChat,
 }: ThreadTerminalContentProps) {
+  useRetainedTerminalPanelState(
+    controller.activeSession?.id,
+    controller.isPanelOpen && controller.shouldMountTerminalView,
+  );
+  useTerminalMountGate(
+    "terminal-session-ready",
+    "active",
+    controller.shouldMountTerminalView && controller.activeSession !== null,
+  );
   if (!controller.shouldMountTerminalView) {
     return null;
   }
@@ -97,8 +113,10 @@ export function ThreadTerminalContent({
   }
 
   return (
-    <ThreadTerminalView
+    <RetainedTerminalViewSlot
+      View={ThreadTerminalView}
       retainNativeOutput={retainNativeOutput}
+      attentionShownAsBanner={attentionShownAsBanner}
       autoFocus={autoFocus}
       isPanelOpen={controller.isPanelOpen}
       onAutoFocusHandled={onAutoFocusHandled}

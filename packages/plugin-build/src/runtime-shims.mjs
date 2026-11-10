@@ -52,21 +52,17 @@ export const SHARED_UI_VOICE_INPUT_TEXTAREA_SPECIFIER =
  *    are shimmed so a phone does not parse a dozen copies of the same code.
  *    A plugin gets the host's installed version, so its declared range must
  *    stay within the host's major (tailwind-merge ^3, clsx ^2, cva ^0.7).
- *    Rule 2 has a cost on the host side: exposing a namespace on the
- *    runtime object stops the app's bundler from tree-shaking that library
- *    out of the boot chunk, so it only admits libraries whose slot leaves
- *    the boot budget (apps/app/bundle-budget.json) intact. zod does not —
- *    the app uses a fraction of its exports and slotting the namespace
- *    added +193 KB raw / +33 KB brotli to the payload every phone downloads
- *    before first paint — so zod stays bundled per plugin.
- *
- * Everything else (non-portal radix, lucide-react, zod, form/calendar/chart
- * libs, hugeicons imported directly) bundles from the plugin's own
- * node_modules. Adding a slot here requires the matching host slot in
- * apps/app/src/lib/plugin-frontend.ts (installPluginRuntime); the export
- * manifest and the scaffold's type-only devDependencies follow automatically.
  */
 export const RUNTIME_SLOT_BY_SPECIFIER = Object.freeze({
+  "@bb/shared-ui/dropdown-menu": "internal_DO_NOT_USE_dropdown_menu",
+  "@bb/shared-ui/dialog": "internal_DO_NOT_USE_dialog",
+  "@bb/shared-ui/context-menu": "internal_DO_NOT_USE_context_menu",
+  "@bb/shared-ui/responsive-overlay": "internal_DO_NOT_USE_responsive_overlay",
+  zod: "zod",
+  "zod/v4": "zod",
+  "@radix-ui/react-checkbox": "radixCheckbox",
+  "@radix-ui/react-slot": "radixSlot",
+  "@radix-ui/react-compose-refs": "radixComposeRefs",
   react: "react",
   "react-dom": "reactDom",
   "react-dom/client": "reactDomClient",
@@ -127,18 +123,11 @@ export const RUNTIME_SHIM_NPM_SPECIFIERS = Object.freeze(
   ),
 );
 
-/**
- * The npm packages a plugin must declare as type-only devDependencies (at the
- * host's version) for its shimmed imports to typecheck: every shimmed npm
- * package except React, whose declarations ship separately as `@types/react`
- * and `@types/react-dom` and which the scaffold pins on its own. `bb plugin
- * build` never bundles any of these, so none belongs in `dependencies`.
- */
 export const SHIMMED_TYPE_PACKAGES = Object.freeze(
   [
     ...new Set(
       RUNTIME_SHIM_NPM_SPECIFIERS.map(packageNameOf).filter(
-        (name) => name !== "react" && name !== "react-dom",
+        (name) => name !== "react" && name !== "react-dom" && name !== "zod",
       ),
     ),
   ].sort(),

@@ -2049,6 +2049,8 @@ const testPluginSdkApp = {
       };
     }, [composer, version]);
   },
+  internal_DO_NOT_USE_loadGitDiffParser: async () => null,
+  internal_DO_NOT_USE_loadComposerPasteParser: async () => null,
 } satisfies PluginSdkApp;
 
 interface PluginRuntimeHost {

@@ -35,7 +35,7 @@ export const COLLAPSIBLE_HEADER_COLLAPSED_TONE_CLASS = `text-muted-foreground ${
 const COLLAPSIBLE_HEADER_EXPANDED_TONE_CLASS = "text-foreground";
 export const COLLAPSIBLE_HEADER_STATIC_TONE_CLASS = "text-muted-foreground";
 export const COLLAPSIBLE_HEADER_BUTTON_BASE_CLASS =
-  "inline-flex max-w-full items-center gap-1 overflow-hidden py-0.5 text-left text-sm";
+  "inline-flex max-w-full items-center gap-1 overflow-visible py-0 text-left text-xs";
 const COLLAPSIBLE_HEADER_TEXT_CLASS = "min-w-0 truncate";
 
 function Chevron({ className }: ChevronProps) {
@@ -76,7 +76,7 @@ export function CollapsibleHeader({
   toneClassName,
   summaryClassName,
   className,
-  forceChevronVisible = false,
+  forceChevronVisible = true,
   isExpanded = false,
   onToggle,
 }: CollapsibleHeaderProps) {
@@ -99,6 +99,7 @@ export function CollapsibleHeader({
   return (
     <button
       type="button"
+      data-compact-touch-summary=""
       aria-expanded={isExpanded}
       onClick={onToggle}
       className={rootClassName}
@@ -106,7 +107,7 @@ export function CollapsibleHeader({
       <span className={summaryClass}>{summaryContent}</span>
       <Chevron
         className={cn(
-          "pointer-events-none size-3 shrink-0 origin-center text-subtle-foreground/60 transition-[opacity,rotate] duration-200 ease-out",
+          "pointer-events-none size-3 shrink-0 origin-center text-muted-foreground transition-[opacity,rotate] duration-200 ease-out",
           isExpanded
             ? "rotate-90"
             : forceChevronVisible
@@ -245,7 +246,7 @@ export function ExpandablePanel({
   headerToneClass,
   onToggle,
   collapsedContent,
-  forceHeaderChevronVisible = false,
+  forceHeaderChevronVisible = true,
   summaryContentClassName,
   children,
   renderBody,
@@ -328,11 +329,12 @@ export function ExpandablePanel({
 
   return (
     <div
+      data-compact-touch-panel=""
       className={cn("rounded-md text-muted-foreground", className)}
       {...intentHandlers}
     >
       {}
-      <div className="group/timeline-row">
+      <div data-timeline-disclosure-header="" className="group/timeline-row">
         <CollapsibleHeader
           isExpanded={isExpanded}
           forceChevronVisible={forceHeaderChevronVisible}

@@ -7,6 +7,7 @@ import {
   gt,
   inArray,
   isNull,
+  lte,
   notExists,
   or,
   type SQL,
@@ -85,6 +86,10 @@ export type TerminalSessionMutation =
       title: string;
     }
   | { cols: number; kind: "size"; rows: number }
+  | {
+      kind: "default-colors";
+      defaultColors: import("@bb/domain").TerminalDefaultColors;
+    }
   | { kind: "title"; title: string }
   | { kind: "holder-backed" }
   | { kind: "user-input" };
@@ -202,6 +207,8 @@ function mutationValues(
         title: update.title,
         updatedAt: now,
       };
+    case "default-colors":
+      return { defaultColors: update.defaultColors };
     case "size":
       return { cols: update.cols, rows: update.rows, updatedAt: now };
     case "title":
@@ -256,17 +263,30 @@ function markHolderBacked(
 ): void {
   if (terminalIds.length === 0) return;
   db.insert(forkTerminalHolderSessions)
-    .values(terminalIds.map((terminalSessionId) => ({
-      terminalSessionId,
-      confirmedAt,
-    })))
+    .values(
+      terminalIds.map((terminalSessionId) => ({
+        terminalSessionId,
+        confirmedAt,
+      })),
+    )
     .onConflictDoNothing()
     .run();
 }
 
-function mutationWhere(update: TerminalSessionMutation): SQL | undefined {
+export const TERMINAL_USER_INPUT_REFRESH_MS = 1_000;
+
+function mutationWhere(
+  update: TerminalSessionMutation,
+  now: number,
+): SQL | undefined {
   return update.kind === "user-input"
-    ? isNull(terminalSessions.lastUserInputAt)
+    ? or(
+        isNull(terminalSessions.lastUserInputAt),
+        lte(
+          terminalSessions.lastUserInputAt,
+          now - TERMINAL_USER_INPUT_REFRESH_MS,
+        ),
+      )
     : undefined;
 }
 
@@ -398,7 +418,7 @@ export function updateTerminalSession(
   const row = db
     .update(terminalSessions)
     .set(mutationValues(args.update, now))
-    .where(terminalScope(args.scope, mutationWhere(args.update)))
+    .where(terminalScope(args.scope, mutationWhere(args.update, now)))
     .returning()
     .get();
   if (row === undefined) return null;
@@ -421,16 +441,23 @@ export function updateTerminalSessions(
   const rows = db
     .update(terminalSessions)
     .set(mutationValues(args.update, now))
-    .where(terminalScope(args.scope, mutationWhere(args.update)))
+    .where(terminalScope(args.scope, mutationWhere(args.update, now)))
     .returning()
     .all();
   if (args.update.kind === "holder-backed") {
-    markHolderBacked(db, rows.map((row) => row.id), now);
+    markHolderBacked(
+      db,
+      rows.map((row) => row.id),
+      now,
+    );
   } else if (
     args.update.kind === "exit" ||
     (args.update.kind === "reconnect" && args.update.resetHolderBacked)
   ) {
-    clearHolderBacked(db, rows.map((row) => row.id));
+    clearHolderBacked(
+      db,
+      rows.map((row) => row.id),
+    );
   }
   return withHolderBacked(db, rows);
 }

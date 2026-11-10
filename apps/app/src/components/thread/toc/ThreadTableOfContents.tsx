@@ -539,6 +539,7 @@ export function ThreadTableOfContents({
       contextBoundarySeq,
     ),
   });
+  const [scrolling, setScrolling] = useState(false);
   const [activeUserId, setActiveUserId] = useState<string | null>(null);
   const [activeAgentId, setActiveAgentId] = useState<string | null>(null);
   const [pendingJumpId, setPendingJumpId] = useState<string | null>(null);
@@ -605,8 +606,18 @@ export function ThreadTableOfContents({
         updateActiveItems();
       }, TOC_ACTIVE_UPDATE_IDLE_MS);
     };
+    let scrollTimeout: number | null = null;
+    const onScroll = () => {
+      setScrolling(true);
+      if (scrollTimeout !== null) window.clearTimeout(scrollTimeout);
+      scrollTimeout = window.setTimeout(
+        () => setScrolling(false),
+        TOC_ACTIVE_UPDATE_IDLE_MS,
+      );
+      scheduleActiveItemsUpdate();
+    };
     scheduleActiveItemsUpdate();
-    scrollElement.addEventListener("scroll", scheduleActiveItemsUpdate, {
+    scrollElement.addEventListener("scroll", onScroll, {
       passive: true,
     });
     const resizeObserver =
@@ -616,7 +627,8 @@ export function ThreadTableOfContents({
     resizeObserver?.observe(scrollElement);
 
     return () => {
-      scrollElement.removeEventListener("scroll", scheduleActiveItemsUpdate);
+      scrollElement.removeEventListener("scroll", onScroll);
+      if (scrollTimeout !== null) window.clearTimeout(scrollTimeout);
       resizeObserver?.disconnect();
       if (updateTimeout !== null) {
         window.clearTimeout(updateTimeout);
@@ -734,10 +746,9 @@ export function ThreadTableOfContents({
               <span
                 key={item.id}
                 className={cn(
-                  "h-[3px] shrink-0 rounded-full transition-all duration-150",
-                  item.id === activeUserId
-                    ? "w-5 bg-foreground/30 group-hover/toc:bg-foreground/70"
-                    : "w-3 bg-foreground/5 group-hover/toc:bg-foreground/20",
+                  "h-[3px] shrink-0 rounded-full transition-colors duration-150 group-hover/toc:bg-foreground group-focus-within/toc:bg-foreground",
+                  scrolling ? "bg-foreground" : "bg-muted-foreground/70",
+                  item.id === activeUserId ? "w-5" : "w-3",
                 )}
               />
             ))}

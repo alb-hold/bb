@@ -119,7 +119,8 @@ export function resolveThreadStatus(
     indicatorKind !== "runtime" &&
     indicatorKind !== "unread-error" &&
     indicatorKind !== "waiting-for-input" &&
-    indicatorKind !== "needs-input";
+    indicatorKind !== "needs-input" &&
+    indicatorKind !== "check-terminal";
 
   return {
     accessibleLabel: rowStatusIsVisible
@@ -160,11 +161,12 @@ export function ThreadStatusGlyph({
       undefined);
 
   switch (kind) {
+    case "check-terminal":
     case "needs-input":
       return (
         <Icon
-          name="CircleQuestion"
-          className={cn("text-destructive-text", iconSizeClass)}
+          name={kind === "check-terminal" ? "BellDot" : "CircleQuestion"}
+          className={cn("text-attention", iconSizeClass)}
           aria-label={statusLabel}
           aria-hidden={hideAccessibleLabel}
         />
@@ -194,12 +196,14 @@ export function ThreadStatusGlyph({
       );
     case "done-unread":
       return (
+        <span title={statusLabel} className="inline-flex">
         <Icon
           name="Check"
           className={cn(SIDEBAR_SUCCESS_STATUS_COLOR_CLASS, iconSizeClass)}
           aria-label={statusLabel}
           aria-hidden={hideAccessibleLabel}
         />
+        </span>
       );
     case "archived":
       return (

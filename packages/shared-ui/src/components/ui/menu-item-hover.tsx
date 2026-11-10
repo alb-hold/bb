@@ -43,9 +43,8 @@ function sharedMenuHoverContext(): React.Context<MenuHoverContextValue> {
   return context;
 }
 
-const MenuHoverContext = sharedMenuHoverContext();
-
 export function MenuHoverProvider({ children }: { children: React.ReactNode }) {
+  const MenuHoverContext = sharedMenuHoverContext();
   const [lastHoveredId, setLastHoveredId] = React.useState<string | null>(null);
   const value = React.useMemo<MenuHoverContextValue>(
     () => ({
@@ -78,8 +77,9 @@ export function useMenuItemHover(handlers?: MenuItemHoverHandlers): {
   hoverProps: MenuItemHoverProps;
 } {
   const id = React.useId();
-  const { lastHoveredId, setLastHovered, clearLastHovered } =
-    React.useContext(MenuHoverContext);
+  const { lastHoveredId, setLastHovered, clearLastHovered } = React.useContext(
+    sharedMenuHoverContext(),
+  );
   const isLastHovered = lastHoveredId === id;
 
   const handlersRef = React.useRef(handlers);

@@ -1,3 +1,5 @@
+import { ThreadRowMetadata as ThreadContextMetadata } from "@/components/ui/thread-row-metadata";
+import { ThreadModeGlyph } from "@/components/ui/thread-mode-glyph";
 import {
   memo,
   createContext,
@@ -15,9 +17,11 @@ import {
   type ReactNode,
 } from "react";
 import { useComposedRefs } from "@radix-ui/react-compose-refs";
+import { useSidebarRowMetadataExperiment } from "../list/SidebarRowMetadataExperiment.js";
 import { useStickyRowStateReport } from "../ui/stickyOffset.js";
 import { useAtomValue } from "jotai";
 import { Icon } from "@/components/ui/icon";
+import { InfoRowTime } from "@/components/ui/info-list-row";
 import { useIsCompactViewport } from "@/components/ui/hooks/use-compact-viewport";
 import {
   Tooltip,
@@ -48,7 +52,6 @@ import {
   experimental_ThreadStatusGlyph as ThreadStatusGlyph,
   experimental_ThreadRowMetadata as ThreadRowMetadata,
   experimental_THREAD_ACTION_GROUPS,
-  experimental_useExperiment,
   experimental_useThreadActions,
   experimental_useSidebarThreadSplit,
   experimental_ProviderIcon as ProviderIcon,
@@ -78,7 +81,6 @@ import { useSidebarProjectName } from "../model/use-sidebar-data.js";
 import {
   sidebarShowProviderIconsAtom,
   sidebarShowRowMetadataAtom,
-  THREAD_ROW_METADATA_EXPERIMENT,
   threadRowActionsAtom,
 } from "../preferences/atoms.js";
 import { ShortcutPill } from "@/components/ui/shortcut-pill";
@@ -94,6 +96,7 @@ import type { ConsumeDragClickSuppression } from "@/components/ui/use-drag-click
 import { SidebarChildToggleChevron } from "./SidebarChildToggleChevron.js";
 import { useSidebarRename } from "./SidebarInlineRename.js";
 import { SidebarRowControls } from "./SidebarRowControls.js";
+import { DESKTOP_THREAD_ROW_HEIGHT_VARIABLE_CLASS } from "./thread-row-height.js";
 import {
   SIDEBAR_CONTROL_BUTTON_CLASS,
   SIDEBAR_ROW_BASE_CLASS,
@@ -127,6 +130,8 @@ import {
 import { useThreadSelectionMenu } from "../selection/useThreadSelectionMenu.js";
 import { useOpenThreadInSplit } from "./threadRowNavigation.js";
 import { Button } from "@/components/ui/button";
+import { useThreadListVisibilityGroup } from "../list/ThreadListVisibility.js";
+import { buildSidebarEntitySectionId } from "../model/sidebar-section-order.js";
 import { COARSE_POINTER_ICON_SIZE_CLASS } from "@/components/ui/coarse-pointer-sizing";
 import {
   useCustomizeThreadRowActions,
@@ -309,6 +314,7 @@ export function CollapsedThreadStatusGlyph({
   const hasUnsubmittedDraft = useThreadsHaveDraft(activity.threadIds);
   const statusProps: ThreadListIndicatorState = {
     hasPendingInteraction: activity.pending,
+    hasTerminalAttention: activity.terminalAttention,
     hasUnsubmittedDraft,
     hasUnreadError: activity.unreadError,
     hasUnreadSuccess: activity.unread,
@@ -369,8 +375,10 @@ function ThreadTrailingIndicator({
   }
 
   const statusText =
-    indicatorKind === "needs-input"
-      ? "Needs input"
+    indicatorKind === "check-terminal"
+      ? "Check terminal"
+      : indicatorKind === "needs-input"
+        ? "Needs input"
       : indicatorKind === "working"
         ? `Working${elapsedMinutes === null ? "" : ` ${elapsedMinutes}m`}`
         : indicatorKind === "woke"
@@ -384,6 +392,7 @@ function ThreadTrailingIndicator({
   const activityNoticeApplies =
     nativeActivityUnconfirmed &&
     indicatorKind !== "needs-input" &&
+    indicatorKind !== "check-terminal" &&
     indicatorKind !== "queued-failed";
   const hasGuidance =
     indicatorKind === "activity-unreported" && nativeActivityGuidance !== null;
@@ -396,7 +405,8 @@ function ThreadTrailingIndicator({
         "inline-flex h-5 shrink-0 items-center gap-1.5 rounded-full px-1.5 font-medium text-xs",
         statusText !== null && "justify-end gap-1 whitespace-nowrap px-0",
         statusText === null && "px-0",
-        indicatorKind === "needs-input" && "text-destructive-text",
+        (indicatorKind === "needs-input" || indicatorKind === "check-terminal") &&
+          "text-attention",
         indicatorKind === "working" && SIDEBAR_WORKING_STATUS_COLOR_CLASS,
         indicatorKind === "woke" && "text-warning",
         indicatorKind === "done-unread" && SIDEBAR_SUCCESS_STATUS_COLOR_CLASS,
@@ -481,6 +491,7 @@ function renderThreadActionsTrigger(props: PluginThreadActionsTriggerProps) {
         "rounded-md p-0",
         "data-[state=open]:bg-state-active data-[state=open]:text-foreground",
         SIDEBAR_CONTROL_BUTTON_CLASS,
+        "max-md:pointer-coarse:min-h-11 max-md:pointer-coarse:min-w-11",
       )}
       aria-label="Thread actions"
       data-thread-actions-trigger=""
@@ -589,9 +600,7 @@ function ThreadRowComponent({
   const multiSelection = useMultiSelectionContaining(thread.id);
   const selectionMenu = useThreadSelectionMenu(multiSelection);
   const showProviderIcons = useAtomValue(sidebarShowProviderIconsAtom);
-  const rowMetadataEnabled = experimental_useExperiment(
-    THREAD_ROW_METADATA_EXPERIMENT,
-  );
+  const rowMetadataEnabled = useSidebarRowMetadataExperiment();
   const showRowMetadata =
     useAtomValue(sidebarShowRowMetadataAtom) && rowMetadataEnabled;
   const providers = useContext(SidebarProvidersContext);
@@ -608,8 +617,12 @@ function ThreadRowComponent({
     thread,
     hasComposerDraft,
   );
+  const hasModeGlyph = thread.experimental_nativeTerminal || thread.environment?.isWorktree === true;
   const labelTitle = thread.displayTitle;
   const crossProjectName = useSidebarProjectName(crossProjectId);
+  const projectName = useSidebarProjectName(thread.projectId);
+  const visibilityGroup = useThreadListVisibilityGroup();
+  const showProjectName = visibilityGroup !== buildSidebarEntitySectionId("project", thread.projectId);
   const crossProjectLabel =
     crossProjectId === null
       ? null
@@ -703,6 +716,8 @@ function ThreadRowComponent({
     hasHiddenChildren ? childActivity.threadIds : NO_THREAD_IDS,
   );
   const trailingIndicatorState: ThreadListIndicatorState = {
+    hasTerminalAttention: threadStatus.hasTerminalAttention ||
+      (hasHiddenChildren && childActivity.terminalAttention),
     hasPendingInteraction:
       threadStatus.hasPendingInteraction ||
       (hasHiddenChildren && childActivity.pending),
@@ -745,6 +760,7 @@ function ThreadRowComponent({
     thread.archivedAt === null &&
     (automationStartedAt !== null ||
       trailingIndicatorKind === "needs-input" ||
+      trailingIndicatorKind === "check-terminal" ||
       trailingIndicatorKind === "working" ||
       trailingIndicatorKind === "woke" ||
       trailingIndicatorKind === "done-unread");
@@ -820,6 +836,10 @@ function ThreadRowComponent({
     SIDEBAR_HOVER_ACTIONS_ROW_CLASS,
     "group/thread-row cursor-pointer",
     SIDEBAR_ROW_BASE_CLASS,
+    "gap-1 md:py-0.5",
+    DESKTOP_THREAD_ROW_HEIGHT_VARIABLE_CLASS,
+    !hasRowState &&
+      "md:h-(--bb-sidebar-desktop-row-height) md:min-h-(--bb-sidebar-desktop-row-height)",
     LIST_HOVER_TRANSITION,
     parentOptions?.stickyLevel === undefined && "relative",
     hasRowState
@@ -827,9 +847,10 @@ function ThreadRowComponent({
       : options.isCompact
         ? COARSE_POINTER_COMPACT_ROW_HEIGHT_CLASS
         : COARSE_POINTER_ROW_HEIGHT_CLASS,
-    (showRowMetadata ||
-      (hasRowState && parentOptions?.stickyLevel !== undefined)) &&
+    hasRowState && parentOptions?.stickyLevel !== undefined &&
       "h-auto min-h-[var(--bb-sidebar-row-height)] max-md:pointer-coarse:h-auto max-md:pointer-coarse:min-h-[var(--bb-sidebar-row-height-coarse)]",
+    showRowMetadata && "has-[[data-reserve-line]]:h-auto has-[[data-reserve-line]]:md:h-auto has-[[data-reserve-line]]:min-h-[var(--bb-sidebar-row-height)] has-[[data-reserve-line]]:max-md:pointer-coarse:h-auto has-[[data-reserve-line]]:max-md:pointer-coarse:min-h-11",
+    "max-md:pointer-coarse:min-h-11",
     showActive
       ? SIDEBAR_ROW_SELECTED_STATE_CLASS
       : SIDEBAR_ROW_INTERACTIVE_STATE_CLASS,
@@ -904,11 +925,11 @@ function ThreadRowComponent({
       ) : null}
       <span
         className={cn(
-          "relative flex min-w-0 flex-1 items-center gap-1.5 self-stretch",
+          "relative flex min-w-0 flex-1 items-center gap-1.5 self-stretch md:pr-0!",
           hasRowState && rowFirstLineHeightClass,
           hasVisibleStatus && "gap-1",
           showRowMetadata &&
-            "flex-wrap content-center gap-y-0 py-1 has-[[data-thread-row-metadata][data-has-items]]:py-1.25 has-[[data-thread-row-metadata][data-has-items]]:[&_.bb-thread-title]:leading-4",
+            "group/row-metadata has-[[data-reserve-line]]:flex-wrap has-[[data-reserve-line]]:content-center has-[[data-reserve-line]]:gap-y-0 has-[[data-reserve-line]]:py-1.25 has-[[data-reserve-line]]:[&_.bb-thread-title]:leading-4",
           !isActionsOpen &&
             "group-data-[sidebar-touch-armed=true]/thread-row:hidden",
           !isEditing &&
@@ -963,89 +984,118 @@ function ThreadRowComponent({
         <span
           className={
             showRowMetadata
-              ? "flex min-w-0 basis-full items-center gap-1.5 self-stretch"
+              ? "contents group-has-[[data-reserve-line]]/row-metadata:flex group-has-[[data-reserve-line]]/row-metadata:min-w-0 group-has-[[data-reserve-line]]/row-metadata:basis-full group-has-[[data-reserve-line]]/row-metadata:items-center group-has-[[data-reserve-line]]/row-metadata:gap-1.5 group-has-[[data-reserve-line]]/row-metadata:self-stretch"
               : "contents"
           }
         >
-        <span
-          className={cn(
-            "pointer-events-none relative flex min-w-0 flex-1 items-center self-stretch",
-          )}
-        >
-          {provider ? (
+          <span
+            className={cn(
+              "pointer-events-none relative flex min-w-0 flex-1 items-center self-stretch",
+            )}
+          >
+            {provider || hasModeGlyph ? (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span
+                    data-sidebar-thread-provider={provider?.id}
+                    data-sidebar-thread-leading=""
+                    role={provider ? "img" : undefined}
+                    aria-label={provider?.displayName}
+                    className="pointer-events-auto relative z-[31] flex size-4 shrink-0 items-center justify-center mr-1 max-md:mr-1.5 md:self-start md:mt-0.5 text-muted-foreground [&_*]:text-inherit!"
+                    onClick={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      rowLinkRef.current?.click();
+                    }}
+                  >
+                    {hasModeGlyph ? <ThreadModeGlyph nativeTerminal={thread.experimental_nativeTerminal} isWorktree={thread.environment?.isWorktree === true} /> : provider ? <ProviderIcon providerKind="agent" provider={provider} className="size-4" /> : null}
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent side="top">
+                  {provider?.displayName ?? (thread.experimental_nativeTerminal ? "Native terminal" : "Worktree")}
+                </TooltipContent>
+              </Tooltip>
+            ) : null}
+            {isEditing ? (
+              <span className="pointer-events-auto relative z-10 min-w-0 flex-1 overflow-visible">
+                {editor}
+              </span>
+            ) : (
+              <span
+                className="min-w-0 flex-1 md:flex md:flex-col"
+                title={labelTitle}
+                onDoubleClick={startTitleEditing}
+              >
+                <span
+                  data-emphasized={
+                    showActive ||
+                    thread.isUnread ||
+                    trailingIndicatorKind === "needs-input" ||
+                    trailingIndicatorKind === "check-terminal" ||
+                    trailingIndicatorKind === "waiting-for-input"
+                  }
+                  className="bb-thread-title md:leading-5 md:items-center! flex min-w-0 flex-1 items-center gap-1 truncate font-normal md:data-[emphasized=true]:font-medium"
+                >
+                  <span className="min-w-0 truncate md:flex md:items-center md:leading-5 md:[&_span]:leading-5">
+                    <ThreadTitle threadId={thread.id} />
+                  </span>
+                </span>
+                <span
+                  data-sidebar-thread-context=""
+                  className={cn(
+                    "hidden min-w-0 items-center gap-1 truncate text-xs font-normal leading-4 text-muted-foreground md:text-sm md:leading-4 md:[&_span]:leading-4 md:[&_time]:leading-4 md:text-sidebar-metadata-foreground [&_time]:text-xs md:[&_time]:text-sm [&_time]:text-inherit md:flex",
+                    thread.experimental_nativeTerminal &&
+                      "[&>[role=img]]:text-foreground [&>[role=img]_svg]:stroke-[2]",
+                  )}
+                >
+                  <ThreadContextMetadata
+                    project={showProjectName ? projectName ?? null : null}
+                    age={<InfoRowTime timestamp={thread.updatedAt} />}
+                  />
+                </span>
+              </span>
+            )}
+          </span>
+          {crossProjectLabel !== null ? (
             <Tooltip>
               <TooltipTrigger asChild>
                 <span
-                  data-sidebar-thread-provider={provider.id}
+                  data-sidebar-thread-cross-project=""
                   role="img"
-                  aria-label={provider.displayName}
-                  className="pointer-events-auto relative z-[31] flex size-4 shrink-0 items-center justify-center mr-1.5 text-muted-foreground"
+                  aria-label={crossProjectLabel}
+                  className="relative z-[31] flex size-5 shrink-0 items-center justify-center text-muted-foreground md:self-start md:mt-0.5"
                   onClick={(event) => {
                     event.preventDefault();
                     event.stopPropagation();
                     rowLinkRef.current?.click();
                   }}
                 >
-                  <ProviderIcon
-                    providerKind="agent"
-                    provider={provider}
-                    className="size-4"
-                  />
+                  <Icon name="FolderExport" className="size-3.5" aria-hidden />
                 </span>
               </TooltipTrigger>
-              <TooltipContent side="top">{provider.displayName}</TooltipContent>
+              <TooltipContent side="top">{crossProjectLabel}</TooltipContent>
             </Tooltip>
           ) : null}
-          {isEditing ? (
-            <span className="pointer-events-auto relative z-10 min-w-0 flex-1 overflow-visible">
-              {editor}
-            </span>
-          ) : (
-            <span
-              className={cn("bb-thread-title", "min-w-0 flex-1 truncate")}
-              title={labelTitle}
-              onDoubleClick={startTitleEditing}
-            >
-              <ThreadTitle threadId={thread.id} />
-            </span>
-          )}
-        </span>
-        {crossProjectLabel !== null ? (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <span
-                data-sidebar-thread-cross-project=""
-                role="img"
-                aria-label={crossProjectLabel}
-                className="relative z-[31] flex size-5 shrink-0 items-center justify-center text-muted-foreground"
-                onClick={(event) => {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  rowLinkRef.current?.click();
-                }}
-              >
-                <Icon name="FolderExport" className="size-3.5" aria-hidden />
-              </span>
-            </TooltipTrigger>
-            <TooltipContent side="top">{crossProjectLabel}</TooltipContent>
-          </Tooltip>
-        ) : null}
-        {parentOptions && hasChildren ? (
-          <SidebarChildToggleChevron
-            disabled={isEditing}
-            className={cn(isEditing && "hidden", hasVisibleStatus && "size-4")}
-            isCollapsed={isParentCollapsed}
-            expandLabel={`Expand ${labelTitle} threads`}
-            collapseLabel={`Collapse ${labelTitle} threads`}
-            onToggle={() => parentOptions.onToggleCollapsed(thread.id)}
-            revealOnHover={!isParentCollapsed}
-          />
-        ) : null}
+          {parentOptions && hasChildren ? (
+            <SidebarChildToggleChevron
+              disabled={isEditing}
+              className={cn(
+                "md:self-start md:mt-0.5",
+                isEditing && "hidden",
+                hasVisibleStatus && "size-4",
+              )}
+              isCollapsed={isParentCollapsed}
+              expandLabel={`Expand ${labelTitle} threads`}
+              collapseLabel={`Collapse ${labelTitle} threads`}
+              onToggle={() => parentOptions.onToggleCollapsed(thread.id)}
+              revealOnHover={!isParentCollapsed}
+            />
+          ) : null}
         </span>
         {!showRowMetadata || isEditing || isCustomizingActions ? null : (
           <span
             className={cn(
-              "mt-px flex min-w-0 basis-full",
+              "mt-px hidden has-[[data-reserve-line]]:flex h-3.5 min-w-0 shrink-0 basis-full overflow-hidden",
               provider !== undefined && "pl-6",
             )}
           >
@@ -1063,7 +1113,7 @@ function ThreadRowComponent({
       <span
         data-sidebar-thread-trailing=""
         className={cn(
-          "flex min-w-0 shrink-0 items-center gap-0.5",
+          "flex min-w-0 shrink-0 items-center gap-0.5 md:self-end md:pr-2",
           !isActionsOpen &&
             "group-data-[sidebar-touch-armed=true]/thread-row:hidden",
           (isEditing || isCustomizingActions) && "hidden",
@@ -1074,7 +1124,7 @@ function ThreadRowComponent({
           data-sidebar-hover-actions-open={isActionsOpen ? "true" : undefined}
           className={cn(
             SIDEBAR_HOVER_ACTIONS_FADE_CLASS,
-            "flex min-w-0 shrink-0 items-center gap-0.5 [@media(hover:none)]:opacity-100!",
+            "flex min-w-0 shrink-0 items-center gap-0.5 md:opacity-100! [@media(hover:none)]:opacity-100!",
           )}
         >
           <SidebarThreadPullRequestChip thread={thread} />
@@ -1174,16 +1224,19 @@ function ThreadRowComponent({
               SIDEBAR_HOVER_ACTIONS_CLASS,
               "flex shrink-0 items-center justify-end gap-1",
               rowActionsOverlayClass,
+            "md:static! md:inset-auto! md:w-0 md:overflow-hidden md:group-hover/thread-row:w-auto md:group-has-[:focus-visible]/thread-row:w-auto md:data-[sidebar-hover-actions-open=true]:w-auto",
               isEditing && "invisible pointer-events-none",
             )}
           >
             <SidebarRowControls
               primaryAction={
-                <ThreadRowQuickActions
-                  entries={quickActions}
-                  className={SIDEBAR_CONTROL_BUTTON_CLASS}
-                  onMenuOpenChange={setIsDropdownActionsOpen}
-                />
+                isCompactViewport ? null : (
+                  <ThreadRowQuickActions
+                    entries={quickActions}
+                    className={SIDEBAR_CONTROL_BUTTON_CLASS}
+                    onMenuOpenChange={setIsDropdownActionsOpen}
+                  />
+                )
               }
             >
               <ThreadActionsMenu

@@ -3,7 +3,7 @@
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { Provider } from "jotai";
 import type { ReactNode } from "react";
-import { afterEach, beforeEach, expect, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryRouter, RouterProvider } from "react-router-dom";
 import { makeEnvironment } from "@bb/test-helpers/domain-fixtures";
@@ -38,6 +38,7 @@ import {
 } from "@/test/panel-controller-contract";
 import { DefaultPaneContextProvider } from "./PaneContext";
 import { ThreadDetailView } from "./ThreadDetailView";
+import { threadQueryKey } from "@/hooks/queries/query-keys";
 
 const appCommandHandlers = vi.hoisted(
   () => new Map<string, () => boolean | void>(),
@@ -57,6 +58,83 @@ const ENVIRONMENT = makeEnvironment({
   id: "env_contract",
   projectId: "proj_contract",
 });
+
+it.each([
+  ["page", "/threads/thr_contract", "proj_wrong", true, true],
+  [
+    "page",
+    "/projects/proj_wrong/threads/thr_contract",
+    "proj_wrong",
+    true,
+    false,
+  ],
+  ["pane", "/threads/thr_contract", "proj_wrong", true, false],
+  [
+    "pane",
+    "/projects/proj_wrong/threads/thr_contract",
+    "proj_wrong",
+    true,
+    false,
+  ],
+  ["page", "/threads/thr_contract", "proj_wrong", false, false],
+  ["pane", "/threads/thr_contract", "proj_wrong", false, false],
+  [
+    "pane",
+    "/projects/proj_contract/threads/thr_contract",
+    "proj_contract",
+    true,
+    true,
+  ],
+] as const)(
+  "resolves %s at %s with project %s before route canonicalization (record cached: %s, found: %s)",
+  (surface, path, projectId, cached, found) => {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    if (cached) client.setQueryData(threadQueryKey(THREAD.id), THREAD);
+    const router = createMemoryRouter(
+      [
+        {
+          path: "*",
+          element: (
+            <DefaultPaneContextProvider
+              paneId="main"
+              onRequestClose={null}
+              navigateInPane={() => {}}
+            >
+              <ThreadDetailView
+                {...(surface === "page"
+                  ? { surface }
+                  : {
+                      surface,
+                      projectId,
+                      threadId: THREAD.id,
+                      timelineEnabled: false,
+                    })}
+              />
+            </DefaultPaneContextProvider>
+          ),
+        },
+      ],
+      { initialEntries: [path] },
+    );
+    render(
+      <QueryClientProvider client={client}>
+        <Provider>
+          <RouterProvider router={router} />
+        </Provider>
+      </QueryClientProvider>,
+    );
+    if (found) {
+      expect(screen.queryByText("Not found")).toBeNull();
+      expect(document.querySelector("[data-thread-window]")).not.toBeNull();
+    } else {
+      expect(screen.getByText("Not found")).toBeDefined();
+      expect(document.querySelector("[data-thread-window]")).toBeNull();
+    }
+    expect(router.state.location.pathname).toBe(path);
+  },
+);
 
 vi.mock("@/components/commands/AppCommandProvider", async (importOriginal) => ({
   ...(await importOriginal<
@@ -92,12 +170,12 @@ vi.mock("./ThreadDetailSecondaryContent", async () => {
   };
 });
 vi.mock("./ThreadDetailHeader", () => ({ ThreadDetailHeader: () => null }));
-vi.mock("./ThreadDetailPromptArea", async () => {
+vi.mock("./DeferredThreadDetailPromptArea", async () => {
   const { PluginContext } = await import("@/components/plugin/plugin-context");
   const { ContractPanelProbe } =
     await import("@/test/panel-controller-contract");
   return {
-    ThreadDetailPromptArea: () => (
+    DeferredThreadDetailPromptArea: () => (
       <PluginContext.Provider value={CONTRACT_PLUGIN_ID}>
         <ContractPanelProbe probe={fixtures.probe} />
       </PluginContext.Provider>

@@ -41,6 +41,10 @@ import { PERMISSION_MODE_OPTIONS } from "@/lib/permission-mode-options";
 import { useRootComposeReuseEnvironment } from "@/lib/root-compose-selection";
 import { getProviderIconInfo } from "@/lib/provider-icon";
 import {
+  modelCatalogCacheKey,
+  readCachedModelCatalog,
+} from "@/lib/model-catalog-cache";
+import {
   DEFAULT_SERVICE_TIER,
   permissionModeRank,
   providerModelCatalogDependsOnWorkspace,
@@ -52,6 +56,7 @@ import { useProjectDefaultExecutionOptions } from "./queries/project-default-exe
 import {
   useKnownProviderModelCatalogScope,
   useSystemProviderStates,
+  useSystemProviders,
   useSystemConfig,
   useSystemExecutionOptions,
 } from "./queries/system-queries";
@@ -436,6 +441,8 @@ export function useThreadCreationOptions(
     selectedProviderCatalogScope === "workspace"
       ? catalogProjectId
       : undefined;
+  const isResolvingReadyProvider =
+    shouldResolveReadyProvider && providerStatesQuery.isPending;
   const executionOptionsQuery = useSystemExecutionOptions({
     enabled: executionOptionsQueryEnabled,
     ...executionOptionsRouting,
@@ -445,11 +452,6 @@ export function useThreadCreationOptions(
   const hostsQuery = useHosts();
   const systemConfig = useSystemConfig();
   const providers = executionOptionsQuery.data?.providers ?? EMPTY_PROVIDERS;
-  const isLoadingModels =
-    executionOptionsQueryEnabled &&
-    (executionOptionsQuery.isLoading ||
-      (executionOptionsQuery.isPlaceholderData &&
-        (executionOptionsQuery.data?.models.length ?? 0) === 0));
   const modelLoadError =
     executionOptionsQuery.data?.modelLoadError ?? NO_MODEL_LOAD_ERROR;
   const modelLoadFailed =
@@ -464,21 +466,29 @@ export function useThreadCreationOptions(
     executionOptionsQuery.isError ||
     (executionOptionsQuery.data !== undefined &&
       !executionOptionsQuery.isPlaceholderData);
-  const permissionModeIsVerified =
+  const catalogPermissionsAreVerified =
     executionOptionsQuery.data !== undefined &&
-    !executionOptionsQuery.isPlaceholderData &&
-    !executionOptionsQuery.isError;
+    !executionOptionsQuery.isPlaceholderData;
+  const providersQuery = useSystemProviders({
+    ...(executionOptionsRouting.environmentId !== undefined
+      ? { environmentId: executionOptionsRouting.environmentId }
+      : executionOptionsRouting.hostId !== undefined
+        ? { hostId: executionOptionsRouting.hostId }
+        : {}),
+    enabled: executionOptionsQueryEnabled && !catalogPermissionsAreVerified,
+  });
   const hasMultipleProviders = providers.length >= 2;
 
   const effectiveProviderId = useMemo(() => {
     if (
       rawSelectedProviderId &&
-      providers.some((provider) => provider.id === rawSelectedProviderId)
+      (!modelCatalogIsVerified ||
+        providers.some((provider) => provider.id === rawSelectedProviderId))
     ) {
       return rawSelectedProviderId;
     }
     return providers[0]?.id ?? "";
-  }, [providers, rawSelectedProviderId]);
+  }, [modelCatalogIsVerified, providers, rawSelectedProviderId]);
 
   const { setValue: setStoredSelectedModel, value: storedSelectedModel } =
     usePromptBoxModelPreference(effectiveProviderId);
@@ -507,19 +517,31 @@ export function useThreadCreationOptions(
   const effectiveProviderMatchesInitialProvider =
     effectiveProviderId.length > 0 &&
     effectiveProviderId === renderedThreadSelections.selectedProviderId;
+  const rememberedProviderDefaultsEnabled =
+    usesStoredCreateSelections &&
+    Boolean(preferenceProjectId) &&
+    effectiveProviderId.length > 0 &&
+    !effectiveProviderMatchesInitialProvider &&
+    !storedSelectedModel;
   const rememberedProviderDefaultsQuery = useProjectDefaultExecutionOptions(
     {
       projectId: preferenceProjectId ?? undefined,
       providerId: effectiveProviderId,
     },
     {
-      enabled:
-        usesStoredCreateSelections &&
-        effectiveProviderId.length > 0 &&
-        !effectiveProviderMatchesInitialProvider &&
-        !storedSelectedModel,
+      enabled: rememberedProviderDefaultsEnabled,
     },
   );
+  const isLoadingModels =
+    executionOptionsQueryEnabled &&
+    (isResolvingReadyProvider ||
+      executionOptionsQuery.isPending ||
+      (executionOptionsQuery.isPlaceholderData &&
+        (executionOptionsQuery.data?.models.length ?? 0) === 0) ||
+      (!modelLoadFailed &&
+        rememberedProviderDefaultsEnabled &&
+        (rememberedProviderDefaultsQuery.isPending ||
+          rememberedProviderDefaultsQuery.isPlaceholderData)));
   const rememberedProviderDefaults =
     rememberedProviderDefaultsQuery.data?.providerId === effectiveProviderId
       ? rememberedProviderDefaultsQuery.data
@@ -570,35 +592,49 @@ export function useThreadCreationOptions(
     [providers],
   );
 
-  const baseCatalogSelection = useMemo(
-    () =>
-      resolveModelCatalogSelection({
-        models: executionOptionsQuery.data?.models ?? [],
-        selectedOnlyModels:
-          executionOptionsQuery.data?.selectedOnlyModels ?? [],
-        selectedModel: rawSelectedModel,
-        preferredReasoningLevel,
-        sessionOptionSelections: requestedSessionOptionSelections,
-        provider: selectedProviderInfo,
-        catalogIsVerified: modelCatalogIsVerified,
-        formatModelLabel,
-      }),
-    [
-      executionOptionsQuery.data?.models,
-      executionOptionsQuery.data?.selectedOnlyModels,
-      modelCatalogIsVerified,
+  const baseCatalogSelection = useMemo(() => {
+    const routing = {
+      environmentId: executionOptionsRouting.environmentId ?? null,
+      hostId: executionOptionsRouting.hostId ?? null,
+      providerId: effectiveProviderId || null,
+    };
+    const cached =
+      executionOptionsQuery.data === undefined
+        ? (readCachedModelCatalog(
+            modelCatalogCacheKey({
+              ...routing,
+              projectId: executionOptionsProjectId,
+            }),
+          ) ?? readCachedModelCatalog(modelCatalogCacheKey(routing)))
+        : null;
+    return resolveModelCatalogSelection({
+      models: executionOptionsQuery.data?.models ?? cached?.models ?? [],
+      selectedOnlyModels:
+        executionOptionsQuery.data?.selectedOnlyModels ??
+        cached?.selectedOnlyModels ??
+        [],
+      selectedModel: rawSelectedModel,
       preferredReasoningLevel,
-      rawSelectedModel,
-      requestedSessionOptionSelections,
-      selectedProviderInfo,
-    ],
-  );
+      sessionOptionSelections: requestedSessionOptionSelections,
+      provider: selectedProviderInfo,
+      catalogIsVerified: modelCatalogIsVerified,
+      formatModelLabel,
+    });
+  }, [
+    executionOptionsRouting.environmentId,
+    executionOptionsRouting.hostId,
+    executionOptionsProjectId,
+    effectiveProviderId,
+    executionOptionsQuery.data,
+    modelCatalogIsVerified,
+    preferredReasoningLevel,
+    rawSelectedModel,
+    requestedSessionOptionSelections,
+    selectedProviderInfo,
+  ]);
 
   const resolveReasoningForModel = useCallback(
-    (
-      model: string,
-      preferred: ReasoningLevel,
-    ): ModelReasoningOptions => {
+    (model: string, preferred: ReasoningLevel): ModelReasoningOptions => {
       const selection = resolveModelCatalogSelection({
         models: executionOptionsQuery.data?.models ?? [],
         selectedOnlyModels:
@@ -650,8 +686,15 @@ export function useThreadCreationOptions(
   const supportsServiceTier =
     allowFastServiceTier &&
     (activeProviderCapabilities?.supportsServiceTier ?? false);
+  const permissionProvider =
+    selectedProviderInfo ??
+    (!providersQuery.isPlaceholderData && !providersQuery.isError
+      ? providersQuery.data?.find(
+          (provider) => provider.id === effectiveProviderId,
+        )
+      : undefined);
   const permissionModes: readonly PermissionMode[] =
-    activeProviderCapabilities?.permissionModes ??
+    permissionProvider?.capabilities.permissionModes ??
     DEFAULT_SUPPORTED_PERMISSION_MODES;
   const supportsPermissionModeSelection = permissionModes.length > 1;
   const routedHostCeiling = useMemo(() => {
@@ -675,6 +718,11 @@ export function useThreadCreationOptions(
     : executionOptionsQuery.data?.permissionCeiling;
   const permissionCeiling: PermissionMode =
     routedCeiling ?? routedHostCeiling ?? "full";
+  const permissionModeIsVerified =
+    permissionProvider !== undefined &&
+    (catalogPermissionsAreVerified ||
+      (executionOptionsRouting.environmentId === undefined &&
+        routedHostCeiling !== null));
   const allowedPermissionModes = useMemo(
     () =>
       permissionModes.filter(
@@ -792,13 +840,18 @@ export function useThreadCreationOptions(
     serviceTierOptions,
   ]);
 
-  const permissionMode = resolvePermissionModeSelection({
-    rawPermissionMode,
-    permissionModes:
-      allowedPermissionModes.length > 0
-        ? allowedPermissionModes
-        : permissionModes,
-  });
+  const permissionMode =
+    !permissionModeIsVerified &&
+    permissionModeRank(rawPermissionMode) <=
+      permissionModeRank(permissionCeiling)
+      ? rawPermissionMode
+      : resolvePermissionModeSelection({
+          rawPermissionMode,
+          permissionModes:
+            allowedPermissionModes.length > 0
+              ? allowedPermissionModes
+              : permissionModes,
+        });
   const environmentSelectionValue = rawEnvironmentSelectionValue;
   const touchedFieldsPendingReset =
     usesLocalThreadSelections && threadResetKeyRef.current !== resetKey;

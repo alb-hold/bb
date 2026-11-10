@@ -1,4 +1,4 @@
-import { type RefObject, useLayoutEffect } from "react";
+import { type RefObject, useLayoutEffect, useState } from "react";
 import { atom, useAtom, useAtomValue, useSetAtom } from "jotai";
 import {
   usePluginSlots,
@@ -35,8 +35,10 @@ export function useMeasureSidebarFooterCapacity(
         Math.max(0, Math.floor((width + gap) / (controlWidth + gap)) - 1),
       );
     };
-    measure();
-    if (typeof ResizeObserver === "undefined") return;
+    if (typeof ResizeObserver === "undefined") {
+      const frame = requestAnimationFrame(measure);
+      return () => cancelAnimationFrame(frame);
+    }
     const observer = new ResizeObserver(measure);
     observer.observe(row);
     observer.observe(more);
@@ -99,15 +101,66 @@ export function useSidebarFooterPreferences() {
     storedOrder: order,
     getId: (item) => item.key,
   });
-  const footer = ordered
-    .filter((item) => !hidden.includes(item.key))
-    .slice(0, capacity ?? undefined);
+  const [pluginOrder, setPluginOrder] = useState(() => ({
+    order,
+    keys: order.filter((key) => key.startsWith("plugin:")),
+  }));
+  const knownPluginKeys =
+    pluginOrder.order === order
+      ? pluginOrder.keys
+      : order.filter((key) => key.startsWith("plugin:"));
+  const allPluginKeys = [
+    ...new Set([
+      ...knownPluginKeys,
+      ...ordered
+        .filter((item) => item.kind === "plugin")
+        .map((item) => item.key),
+    ]),
+  ];
+  if (
+    pluginOrder.order !== order ||
+    allPluginKeys.length !== pluginOrder.keys.length
+  ) {
+    setPluginOrder({ order, keys: allPluginKeys });
+  }
+  const pluginKeys = allPluginKeys.filter((key) => !hidden.includes(key));
+  const isPrefixItem = (item: FooterItem) => item.kind === "builtin";
+  const prioritized = [
+    ...ordered.filter(isPrefixItem),
+    ...ordered
+      .filter((item) => !isPrefixItem(item))
+      .sort((a, b) => pluginKeys.indexOf(a.key) - pluginKeys.indexOf(b.key)),
+  ];
+  const eligible = prioritized.filter(
+    (item) =>
+      !hidden.includes(item.key) &&
+      (item.kind === "plugin" ||
+        item.key === "builtin:settings" ||
+        item.key === "builtin:report-bug" ||
+        order.length > 0 ||
+        hidden.length > 0),
+  );
+  const prefix = eligible.filter(isPrefixItem).slice(0, capacity ?? undefined);
+  const reservedPluginKeys = pluginKeys.slice(
+    0,
+    capacity === null ? undefined : Math.max(0, capacity - prefix.length),
+  );
+  const footer = [
+    ...prefix,
+    ...eligible.filter(
+      (item) => item.kind === "plugin" && reservedPluginKeys.includes(item.key),
+    ),
+  ];
   const more = ordered.filter((item) => !footer.includes(item));
-  const isFull = capacity !== null && footer.length >= capacity;
+  const isFull =
+    capacity !== null && prefix.length + reservedPluginKeys.length >= capacity;
   return {
     items: ordered,
     hidden,
     footer,
+    footerPrefix: footer.filter(isPrefixItem),
+    footerSuffix: footer.filter((item) => !isPrefixItem(item)),
+    pluginKeys: reservedPluginKeys,
     more,
     capacity,
     isFull,
@@ -125,7 +178,11 @@ export function useSidebarFooterPreferences() {
       const rest = normalizedOrder.filter((id) => id !== key);
       const index = last === undefined ? 0 : rest.indexOf(last) + 1;
       setOrder([...rest.slice(0, index), key, ...rest.slice(index)]);
-      setHidden((previous) => previous.filter((id) => id !== key));
+      setHidden((previous) =>
+        [...new Set([...previous, ...more.map((item) => item.key)])].filter(
+          (id) => id !== key,
+        ),
+      );
     },
     setFooterShown(shown: boolean) {
       setHidden((previous) => {

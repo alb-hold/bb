@@ -111,6 +111,64 @@ function createFetchQueue(
 }
 
 describe("@bb/sdk", () => {
+  it.each(["gpt-6.1-sol", null, undefined])(
+    "reads the native stored model (%s), defaulting only legacy missing fields to null",
+    async (model) => {
+      const view = {
+        threadId: "thr_native",
+        providerId: "codex",
+        displayName: "Codex",
+        nativeSessionId: "native-session",
+        canReturnToChat: false,
+        terminal: null,
+        ...(model === undefined ? {} : { model }),
+      };
+      const queue = createFetchQueue([{ body: view }]);
+      const sdk = createBbSdk({
+        transport: createHttpTransport({
+          baseUrl: "http://bb.test",
+          fetch: queue.fetch,
+          runtime: "node",
+        }),
+      });
+      await expect(sdk.nativeTerminals.get({ threadId: "thr_native" })).resolves.toEqual({ ...view, model: model ?? null });
+    },
+  );
+
+  it("sets terminal default colours through the typed per-session route", async () => {
+    const queue = createFetchQueue([{ body: makeTerminalSession() }]);
+    const sdk = createBbSdk({
+      transport: createHttpTransport({
+        baseUrl: "http://bb.test",
+        fetch: queue.fetch,
+        runtime: "node",
+      }),
+    });
+    await sdk.terminals.experimental_setDefaultColors({
+      terminalId: "term_test",
+      foreground: [12, 34, 56],
+      background: [234, 245, 255],
+      viewerToken: "abcdefghijklmnopqrstuv",
+    });
+    expect(queue.requests[0].url).toBe(
+      "http://bb.test/api/v1/terminals/term_test/default-colors",
+    );
+    expect(queue.requests[0].method).toBe("POST");
+    expect(JSON.parse(queue.requests[0].bodyText ?? "null")).toEqual({
+      foreground: [12, 34, 56],
+      background: [234, 245, 255],
+      viewerToken: "abcdefghijklmnopqrstuv",
+    });
+  });
+
+  it("preserves an absent native thread", async () => {
+    const queue = createFetchQueue([{ body: null }]);
+    const sdk = createBbSdk({
+      transport: createHttpTransport({ baseUrl: "http://bb.test", fetch: queue.fetch, runtime: "node" }),
+    });
+    await expect(sdk.nativeTerminals.get({ threadId: "thr_native" })).resolves.toBeNull();
+  });
+
   it("lists thread terminal surfaces with kind and stable IDs", async () => {
     const queue = createFetchQueue([
       { body: { archivedAt: null } },

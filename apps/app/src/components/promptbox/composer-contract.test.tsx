@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 
+import { cloneElement, isValidElement, type ComponentProps } from "react";
+
 import {
   act,
   cleanup,
@@ -342,6 +344,56 @@ const SURFACES: readonly Surface[] = [
     ),
   },
 ];
+
+const newThreadSurface = SURFACES.find(
+  (surface) => surface.name === "New thread composer",
+)!;
+
+it.each([
+  [
+    false,
+    "codex",
+    "Codex",
+    "Ask anything. @ to mention files, folders, or sections",
+  ],
+  [true, "codex", "Codex", "Start Codex CLI…"],
+  [true, "claude-code", "Claude Code", "Start Claude Code CLI…"],
+  [true, "custom-cli", "Custom", "Start Custom CLI…"],
+  [true, "codex", null, "Start CLI…"],
+  [true, "claude-code", null, "Start CLI…"],
+  [true, "custom-cli", null, "Start CLI…"],
+  [true, "custom-cli", "", "Start CLI…"],
+])(
+  "home composer mode %s names %s without hover",
+  async (enabled, selectedId, label, placeholder) => {
+    const surface: Surface = {
+      ...newThreadSurface,
+      render: (args) => {
+        const element = newThreadSurface.render(args);
+        if (
+          !isValidElement<ComponentProps<typeof NewThreadPromptBoxUI>>(element)
+        )
+          throw new Error("Expected composer element");
+        return cloneElement(element, {
+          execution: {
+            ...execution,
+            provider: {
+              selectedId,
+              options: label === null ? [] : [{ value: selectedId, label }],
+            },
+            nativeTerminal: { enabled, onChange: () => {} },
+          },
+        });
+      },
+    };
+    await registerComposerPlugin();
+    const { store } = renderSurface(surface);
+    act(() => store.setText("", []));
+    expect(
+      await screen.findByRole("textbox", { name: placeholder }),
+    ).toBeTruthy();
+  },
+);
 
 const COMPOSERS: readonly Composer[] = [
   {

@@ -1,10 +1,21 @@
-import { memo, useLayoutEffect, useRef, useSyncExternalStore } from "react";
+import {
+  memo,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useSyncExternalStore,
+} from "react";
 import type {
   ExperimentalThreadRowMetadataLineProps,
   PluginSidebarThread,
 } from "@get-bb/plugin-sdk";
 import { PluginSlotMount } from "@/components/plugin/PluginSlotMount";
 import { compareGroupedPlacement } from "@/lib/grouped-placement";
+import { usePluginFrontendsSettled } from "@/lib/plugin-frontend-boot-state";
+import {
+  readThreadRowMetadataChrome,
+  rememberThreadRowMetadataChrome,
+} from "@/lib/thread-row-metadata-chrome";
 import {
   collectedStore,
   slotKey,
@@ -31,12 +42,18 @@ function sortThreadRowMetadata(
     .map(({ slot }) => slot);
 }
 
-function recordItemContent(container: HTMLElement): void {
+function recordItemContent(
+  container: HTMLElement,
+  threadId: string,
+  resolved: boolean,
+): void {
   const roots = container.querySelectorAll(":scope > [data-bb-plugin-root]");
-  container.toggleAttribute(
-    "data-has-items",
-    [...roots].some((root) => root.hasChildNodes()),
-  );
+  const hasItems = [...roots].some((root) => root.hasChildNodes());
+  container.toggleAttribute("data-has-items", hasItems);
+  if (hasItems || resolved) {
+    container.toggleAttribute("data-reserve-line", hasItems);
+    rememberThreadRowMetadataChrome(threadId, hasItems);
+  }
 }
 
 function MountedThreadRowMetadata({
@@ -47,25 +64,42 @@ function MountedThreadRowMetadata({
   slots: readonly PluginThreadRowMetadataSlot[];
 }) {
   const anchor = useRef<HTMLSpanElement>(null);
+  const settled = usePluginFrontendsSettled();
+  const remembered = useMemo(
+    () => readThreadRowMetadataChrome(thread.id),
+    [thread.id],
+  );
   useRegisterLineThread(thread);
   const collected = useSyncExternalStore(
     collectedStore.subscribe,
     collectedStore.getSnapshot,
   );
+  const resolved =
+    slots.length === 0
+      ? settled
+      : slots.every(
+          (slot) =>
+            slot.useData === undefined ||
+            collected.get(slotKey(slot))?.data !== undefined,
+        );
   useLayoutEffect(() => {
-    if (anchor.current !== null) recordItemContent(anchor.current);
+    if (anchor.current !== null)
+      recordItemContent(anchor.current, thread.id, resolved);
   });
   useLayoutEffect(() => {
     const container = anchor.current;
     if (container === null) return;
-    const observer = new MutationObserver(() => recordItemContent(container));
+    const observer = new MutationObserver(() =>
+      recordItemContent(container, thread.id, resolved),
+    );
     observer.observe(container, { childList: true, subtree: true });
     return () => observer.disconnect();
-  }, []);
+  }, [thread.id, resolved]);
   return (
     <span
       ref={anchor}
       data-thread-row-metadata=""
+      data-reserve-line={remembered ? "" : undefined}
       className="pointer-events-auto relative z-[31] hidden min-w-0 flex-1 items-center gap-2 overflow-hidden data-[has-items]:flex"
     >
       {slots.map((slot) => {
@@ -93,9 +127,9 @@ export const ThreadRowMetadata = memo(function ThreadRowMetadata({
   thread,
 }: ExperimentalThreadRowMetadataLineProps) {
   const { threadRowMetadata } = usePluginSlots();
-  if (threadRowMetadata.length === 0) return null;
   return (
     <MountedThreadRowMetadata
+      key={thread.id}
       thread={thread}
       slots={sortThreadRowMetadata(threadRowMetadata)}
     />

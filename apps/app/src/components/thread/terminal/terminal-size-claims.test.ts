@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { TerminalWebSocketTransport } from "@bb/client-core";
+import { terminalClientMessageSchema } from "@bb/server-contract";
 import { NotificationHub } from "../../../../../server/src/ws/hub.js";
 import { listenForTerminalSizeClaims } from "./terminal-size-claims";
 
@@ -48,16 +50,38 @@ describe("terminal size claims", () => {
         phoneSize,
         Date.now(),
       );
+      const desktopTransport = new TerminalWebSocketTransport({
+        url: "ws://localhost/terminal",
+        shouldReconnect: () => false,
+        onMessage: () => {},
+        createSocket: () => ({
+          readyState: 1,
+          onopen: null,
+          onclose: null,
+          onmessage: null,
+          onerror: null,
+          close: () => {},
+          send: (payload) => {
+            const message = terminalClientMessageSchema.parse(
+              JSON.parse(payload),
+            );
+            if (message.type !== "resize") return;
+            hub.recordTerminalClientSize(
+              terminalId,
+              desktopSocket,
+              { cols: message.cols, rows: message.rows },
+              Date.now(),
+              message.claim === true,
+            );
+          },
+        }),
+      });
+      desktopTransport.start();
+      desktopTransport.markLayoutSettled();
+      desktopTransport.sendResize(desktopSize.cols, desktopSize.rows);
       const desktopClaims = listenForTerminalSizeClaims({
         ...desktop,
-        claim: () =>
-          hub.recordTerminalClientSize(
-            terminalId,
-            desktopSocket,
-            desktopSize,
-            Date.now(),
-            true,
-          ),
+        claim: (reclaim) => desktopTransport.claimSize(reclaim),
       });
       const phoneClaims = listenForTerminalSizeClaims({
         ...phone,
@@ -104,6 +128,7 @@ describe("terminal size claims", () => {
           backgroundSize,
         );
       } finally {
+        desktopTransport.dispose();
         desktopClaims.dispose();
         phoneClaims.dispose();
         hub.unregisterTerminalClient(terminalId, desktopSocket);
@@ -136,6 +161,7 @@ describe("terminal size claims", () => {
 
     textarea.dispatchEvent(new FocusEvent("focus"));
     expect(claim).toHaveBeenCalledTimes(5);
+    expect(claim).toHaveBeenLastCalledWith(true);
 
     claims.claimIfFocused();
     expect(claim).toHaveBeenCalledTimes(5);
@@ -143,6 +169,7 @@ describe("terminal size claims", () => {
     expect(claim).toHaveBeenCalledTimes(6);
     claims.claimIfFocused();
     expect(claim).toHaveBeenCalledTimes(7);
+    expect(claim).toHaveBeenLastCalledWith(false);
 
     size.width = 0;
     textarea.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true }));

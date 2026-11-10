@@ -33,6 +33,10 @@ const WEB_ONLY_TOKEN_PATTERNS: readonly { pattern: RegExp; reason: string }[] =
       pattern: /^diffs-/,
       reason: "@pierre/diffs bridge; defined per mode only",
     },
+    {
+      pattern: /^text-terminal$/,
+      reason: "xterm font-size probe; the web terminal sets its own line height",
+    },
   ];
 
 interface CssRule {
@@ -525,6 +529,7 @@ function readTypography(
   const styles: [string, NativeTextStyle][] = [];
   for (const [name, value] of declared) {
     if (name.includes("--")) continue;
+    if (webOnlyReason(name) !== null) continue;
     const size = name.slice("text-".length);
     const lineHeight = declared.get(`${name}--line-height`);
     if (lineHeight === undefined) {

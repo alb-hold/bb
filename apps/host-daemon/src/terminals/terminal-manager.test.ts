@@ -430,13 +430,17 @@ function shellQuote(value: string): string {
 async function openTerminal(
   harness: TerminalManagerHarness,
   contributedEnv: import("@bb/host-daemon-contract").HostDaemonContributedEnvEntry[] = [],
+  defaultColors?: import("@bb/domain").TerminalDefaultColors,
+  threadId: string | null = "thr-1",
 ): Promise<FakeTerminalPty> {
+  const spawnedBefore = harness.adapter.spawned.length;
   await harness.manager.handleMessage({
     type: "terminal.open",
     contributedEnv,
+    ...(defaultColors ? { defaultColors } : {}),
     requestId: "open-1",
     terminalId: "term-1",
-    threadId: "thr-1",
+    ...(threadId ? { threadId } : {}),
     target: {
       kind: "workspace",
       environmentId: "env-1",
@@ -448,7 +452,7 @@ async function openTerminal(
     rows: 30,
     start: DEFAULT_TERMINAL_START,
   });
-  const spawned = harness.adapter.spawned[0];
+  const spawned = harness.adapter.spawned[spawnedBefore];
   if (!spawned) {
     throw new Error("Expected terminal PTY to spawn");
   }
@@ -517,6 +521,56 @@ function textChunk(text: string, seq: number): TerminalOutputChunk {
 }
 
 describe("TerminalManager", () => {
+  it("answers bounded reads after twelve terminals stream for six minutes", async () => {
+    vi.useFakeTimers();
+    const harness = createHarness();
+    const terminals: FakeTerminalPty[] = [];
+    for (let index = 0; index < 12; index += 1) {
+      terminals.push(await openTerminalWithId(harness, `term-stream-${index}`));
+    }
+    expect(new Set(terminals).size).toBe(12);
+    for (let line = 1; line <= 6 * 60 * 40; line += 1) {
+      for (const terminal of terminals) terminal.emitData(`line ${line}\r\n`);
+      vi.advanceTimersByTime(25);
+      if (line % (60 * 40) !== 0) continue;
+      for (let index = 0; index < terminals.length; index += 1) {
+        const requestId = `read-${line}-${index}`;
+        await harness.manager.handleMessage({
+          type: "terminal.attach",
+          requestId,
+          terminalId: `term-stream-${index}`,
+          sinceSeq: 0,
+          tailBytes: 4096,
+        });
+        const replay = harness.messages.find(
+          (message) =>
+            message.type === "terminal.replay" &&
+            message.requestId === requestId,
+        );
+        if (replay?.type !== "terminal.replay")
+          throw new Error("Missing output replay");
+        const text = replay.chunks
+          .map((chunk) => Buffer.from(chunk.dataBase64, "base64").toString())
+          .join("");
+        expect(text).toContain(`line ${line}\r\n`);
+        expect(replay.nextSeq).toBeGreaterThan(line - 1);
+        const live = harness.messages
+          .filter(
+            (message) =>
+              message.type === "terminal.output" &&
+              message.terminalId === `term-stream-${index}`,
+          )
+          .pop();
+        if (live?.type !== "terminal.output") {
+          throw new Error("missing live output");
+        }
+        expect(
+          Buffer.from(live.chunk.dataBase64, "base64").toString(),
+        ).toContain(`line ${line}\r\n`);
+      }
+    }
+  });
+
   it("starts shell terminals through the terminal-id holder client when bb is available", async () => {
     const harness = createHarnessWithOptions({
       onSendMessage: () => undefined,
@@ -1853,6 +1907,136 @@ describe("TerminalManager", () => {
       }),
     );
   });
+
+  it("updates native OSC replies while preserving pending queries, input and replay", async () => {
+    const harness = createHarness();
+    const pty = await openTerminal(harness, [], {
+      foreground: [190, 128, 1],
+      background: [24, 32, 48],
+    });
+    pty.emitData("\x1b]11;?\x07before\x1b]10;?");
+    await harness.manager.handleMessage({
+      type: "terminal.default-colors",
+      terminalId: "term-1",
+      foreground: [10, 20, 30],
+      background: [250, 251, 252],
+    });
+    pty.emitData("\x07\x1b]11;?\x1b\\after");
+    await harness.manager.handleMessage({
+      type: "terminal.input",
+      terminalId: "term-1",
+      dataBase64: Buffer.from("input").toString("base64"),
+    });
+    await harness.manager.handleMessage({
+      type: "terminal.attach",
+      requestId: "updated-colors-replay",
+      terminalId: "term-1",
+      sinceSeq: 0,
+      tailBytes: 4096,
+    });
+    expect(pty.writeCalls).toEqual([
+      "\x1b]11;rgb:1818/2020/3030\x1b\\",
+      "\x1b]10;rgb:0a0a/1414/1e1e\x1b\\",
+      "\x1b]11;rgb:fafa/fbfb/fcfc\x1b\\",
+      Buffer.from("input"),
+    ]);
+    expect(collectTerminalOutput(harness.messages)).toBe("beforeafter");
+    const replay = harness.messages.find(
+      (message) =>
+        message.type === "terminal.replay" &&
+        message.requestId === "updated-colors-replay",
+    );
+    if (replay?.type !== "terminal.replay") throw new Error("Missing replay");
+    expect(
+      replay.chunks
+        .map((chunk) => Buffer.from(chunk.dataBase64, "base64").toString())
+        .join(""),
+    ).toBe("beforeafter");
+  });
+
+  it("answers live color queries once across multiple attaches and excludes them from replay", async () => {
+    const harness = createHarness();
+    const pty = await openTerminal(harness, [], {
+      foreground: [190, 128, 1],
+      background: [24, 32, 48],
+    });
+    pty.emitData("\x1b]11;?\x07");
+    expect(pty.writeCalls).toEqual(["\x1b]11;rgb:1818/2020/3030\x1b\\"]);
+    for (const [index, query] of [
+      "\x1b]10;?\x07",
+      "\x1b]11;?\x1b\\",
+    ].entries()) {
+      pty.emitData(`before${query.slice(0, 4)}`);
+      await harness.manager.handleMessage({
+        type: "terminal.attach",
+        requestId: `attach-${index}`,
+        terminalId: "term-1",
+        sinceSeq: 0,
+        tailBytes: 4096,
+      });
+      pty.emitData(`${query.slice(4)}after`);
+    }
+    await harness.manager.handleMessage({
+      type: "terminal.attach",
+      requestId: "replay-colors",
+      terminalId: "term-1",
+      sinceSeq: 0,
+      tailBytes: 4096,
+    });
+    expect(pty.writeCalls).toEqual([
+      "\x1b]11;rgb:1818/2020/3030\x1b\\",
+      "\x1b]10;rgb:bebe/8080/0101\x1b\\",
+      "\x1b]11;rgb:1818/2020/3030\x1b\\",
+    ]);
+    expect(collectTerminalOutput(harness.messages)).toBe(
+      "beforeafterbeforeafter",
+    );
+    const replay = harness.messages.find(
+      (message) =>
+        message.type === "terminal.replay" &&
+        message.requestId === "replay-colors",
+    );
+    if (replay?.type !== "terminal.replay") throw new Error("Missing replay");
+    expect(
+      replay.chunks
+        .map((chunk) => Buffer.from(chunk.dataBase64, "base64").toString())
+        .join(""),
+    ).toBe("beforeafterbeforeafter");
+    expect(pty.writeCalls).toHaveLength(3);
+  });
+
+  it.each(["generic", "native"])(
+    "leaves %s color queries unchanged without a palette on initial open and reopen",
+    async (kind) => {
+      const harness = createHarness();
+      const pty = await openTerminal(
+        harness,
+        [],
+        undefined,
+        kind === "native" ? "thr-1" : null,
+      );
+      const query = "\x1b]10;?\x07\x1b]11;?\x1b\\";
+      pty.emitData(query);
+      await harness.manager.handleMessage({
+        type: "terminal.attach",
+        requestId: "generic-colors",
+        terminalId: "term-1",
+        sinceSeq: 0,
+        tailBytes: 4096,
+      });
+      expect(pty.writeCalls).toEqual([]);
+      expect(collectTerminalOutput(harness.messages)).toBe(query);
+      pty.emitExit(0);
+      const reopened = await openTerminal(
+        harness,
+        [],
+        undefined,
+        kind === "native" ? "thr-1" : null,
+      );
+      reopened.emitData(query);
+      expect(reopened.writeCalls).toEqual([]);
+    },
+  );
 
   it("answers primary device attribute queries without replaying them", async () => {
     const harness = createHarness();

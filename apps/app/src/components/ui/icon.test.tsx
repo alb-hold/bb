@@ -41,6 +41,59 @@ describe("Icon core/extended split", () => {
     expect(registry.getExtendedIcons()).toBeNull();
   });
 
+  it("renders the home, chat and terminal controls without loading the extended registry", async () => {
+    const { icon, registry } = await freshIconModules();
+    const names = [
+      "FolderMinus",
+      "SecurityCheck",
+      "Plug02",
+      "ArrowUp",
+      "ArrowDown",
+      "Brain",
+      "Clock",
+      "Columns2",
+      "EyeOff",
+      "GitBranch",
+      "Keyboard",
+      "Mail",
+      "Mic",
+      "Minus",
+      "Paperclip",
+      "Pause",
+      "Pin",
+      "Play",
+      "Plus",
+      "Square",
+      "UserRound",
+      "ChevronUp",
+      "Terminal",
+      "PanelRight",
+      "Archive",
+      "Bot",
+      "FolderExport",
+      "Home",
+      "Info",
+      "Loading",
+      "MoreHorizontal",
+      "SlidersHorizontal",
+      "Unavailable",
+    ] as const;
+    const view = render(
+      <>
+        {names.map((name) => (
+          <icon.Icon key={name} name={name} />
+        ))}
+      </>,
+    );
+    expect(registry.getExtendedIcons()).toBeNull();
+    for (const name of names) {
+      const glyph = view.container.querySelector(`svg[data-icon="${name}"]`);
+      expect(glyph, name).not.toBeNull();
+      expect(glyph?.hasAttribute("data-icon-pending"), name).toBe(false);
+      expect(glyph?.childElementCount, name).toBeGreaterThan(0);
+    }
+  });
+
   it("renders an extended glyph as a same-size placeholder, then fills it in when the registry loads", async () => {
     const { icon, registry } = await freshIconModules();
 

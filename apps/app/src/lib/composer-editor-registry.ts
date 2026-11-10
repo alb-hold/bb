@@ -73,13 +73,16 @@ export function subscribeComposerEditorBridges(
   };
 }
 
-export function useComposerEditorBridge(
+export function useComposerEditorState(
   key: string,
-): ComposerEditorBridge | null {
+): void {
   const subscribe = useCallback(
     (listener: () => void) => subscribeComposerEditorBridge(key, listener),
     [key],
   );
-  const getSnapshot = useCallback(() => getComposerEditorBridge(key), [key]);
-  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+  const getSnapshot = useCallback(
+    () => JSON.stringify(getComposerEditorBridge(key)?.state ?? null),
+    [key],
+  );
+  useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 }

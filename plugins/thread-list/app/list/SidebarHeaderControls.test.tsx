@@ -153,7 +153,7 @@ describe("sidebar header controls", () => {
       expect(control?.classList.contains("hover:bg-sidebar-accent")).toBe(
         false,
       );
-      expect(control?.classList.contains("hover:text-foreground")).toBe(false);
+      expect(control?.classList.contains("hover:text-foreground")).toBe(true);
       expect(control?.classList.contains("focus-visible:ring-1")).toBe(true);
       expect(control?.classList.contains("focus-visible:ring-ring")).toBe(true);
       expect(control?.className).not.toMatch(/focus-visible:(bg-|ring-[02]\b)/);

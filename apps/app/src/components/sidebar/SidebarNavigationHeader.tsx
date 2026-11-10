@@ -6,7 +6,6 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { flushSync } from "react-dom";
 import type { ExperimentalSidebarHeaderProps } from "@get-bb/plugin-sdk";
 import { cn } from "@bb/shared-ui/lib/utils";
 import { appToast } from "@/components/ui/app-toast";
@@ -103,10 +102,9 @@ function PluginNavigationHeader({
           : { width, controlSize },
       );
     };
-    measure(Math.floor(element.clientWidth - paddingOf(element)));
     const observer = new ResizeObserver((entries) => {
       const entry = entries[entries.length - 1];
-      if (entry) flushSync(() => measure(Math.floor(entry.contentRect.width)));
+      if (entry) measure(Math.floor(entry.contentRect.width));
     });
     observer.observe(element);
     return () => observer.disconnect();
@@ -147,13 +145,5 @@ function PluginNavigationHeader({
         }}
       />
     </div>
-  );
-}
-
-function paddingOf(element: HTMLElement): number {
-  const style = getComputedStyle(element);
-  return (
-    (Number.parseFloat(style.paddingLeft) || 0) +
-    (Number.parseFloat(style.paddingRight) || 0)
   );
 }

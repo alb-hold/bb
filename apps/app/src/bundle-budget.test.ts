@@ -47,13 +47,32 @@ const chunks: BundleStatsChunkInput[] = [
   chunk("assets/route-only.js", {
     moduleIds: [
       "/repo/node_modules/.pnpm/@pierre+diffs@1/node_modules/@pierre/diffs/dist/index.js",
-      resolve(import.meta.dirname, "lib/x.ts").split(sep).join("/"),
+      resolve(import.meta.dirname, "lib/x.ts")
+        .split(sep)
+        .join("/"),
     ],
   }),
   chunk("assets/only-behind-dynamic-import.js", {
     moduleIds: ["/repo/node_modules/katex/dist/katex.js"],
   }),
 ];
+
+it("attributes rendered module bytes in descending order", () => {
+  const stats = computeBundleStats(
+    [
+      chunk("assets/index.js", {
+        isEntry: true,
+        modules: {
+          "/repo/small.ts": { renderedLength: 12 },
+          "/repo/large.ts": { renderedLength: 100 },
+        },
+      }),
+    ],
+    {},
+    vi.fn(),
+  );
+  expect(stats?.chunks[0]?.modules.map((m) => m.bytes)).toEqual([100, 12]);
+});
 
 describe("computeBundleStats", () => {
   it("records a route closure without the boot chunks or lazy-only chunks", () => {
@@ -358,6 +377,7 @@ function statsChunk(
     packages: spec.packages ?? [],
     imports: spec.imports ?? [],
     facade: spec.facade ?? null,
+    modules: [],
     appModules: [],
   };
 }
@@ -442,52 +462,144 @@ describe("check-bundle-budget on-demand packages", () => {
 });
 
 describe("split boundaries", () => {
-  it.each(["lazy", "boot", "route", "missing"])(
-    "checks an emitted %s gate even when byte budgets pass",
-    async (placement) => {
-      const gate = "assets/feature.js";
-      const source = "src/feature.tsx";
+  describe.each([
+    "src/feature.tsx",
+    "../../plugins/composer/src/mentions/pasted-thread-links.ts",
+  ])("%s", (source) => {
+    it.each(["lazy", "boot", "route", "missing"])(
+      "checks an emitted %s gate even when byte budgets pass",
+      async (placement) => {
+        const gate = "assets/feature.js";
+        const input = [
+          chunk("assets/index.js", {
+            isEntry: true,
+            imports: placement === "boot" ? [gate] : [],
+          }),
+          chunk("assets/route.js", {
+            facadeModuleId: "/repo/apps/app/src/views/SplitWorkspaceRoute.tsx",
+            imports: placement === "route" ? [gate] : [],
+          }),
+          ...(placement === "missing"
+            ? []
+            : [
+                chunk(gate, {
+                  moduleIds: [resolve(import.meta.dirname, "..", source)],
+                  modules: {
+                    [resolve(import.meta.dirname, "..", source)]: {
+                      renderedLength: 100,
+                    },
+                  },
+                }),
+              ]),
+        ];
+        const stats = computeBundleStats(
+          input,
+          { SplitWorkspaceRoute: ["/src/views/SplitWorkspaceRoute.tsx"] },
+          () => {},
+        );
+        if (stats === null) throw new Error("missing stats");
+        const result = await runCheck(
+          await writeFixture(
+            {
+              ...passingBudget,
+              splitBoundaries: { [source]: ["boot", "SplitWorkspaceRoute"] },
+            },
+            stats,
+            input.map((entry) => entry.fileName),
+          ),
+        );
+        expect(result.code).toBe(placement === "lazy" ? 0 : 1);
+        if (placement !== "lazy") expect(result.output).toContain(source);
+        if (placement === "boot")
+          expect(result.output).toContain("eager in boot");
+        if (placement === "route")
+          expect(result.output).toContain("eager in SplitWorkspaceRoute");
+        if (placement === "missing")
+          expect(result.output).toContain("absent from bundle module metadata");
+      },
+    );
+  });
+});
+
+describe("workspace module boot boundaries", () => {
+  it.each([true, false])(
+    "rejects a strict schema in boot: %s",
+    async (eager) => {
+      const module = "../../packages/server-contract/src/api/threads.ts";
       const input = [
         chunk("assets/index.js", {
           isEntry: true,
-          imports: placement === "boot" ? [gate] : [],
+          imports: eager ? ["assets/schema.js"] : [],
         }),
-        chunk("assets/route.js", {
-          facadeModuleId: "/repo/apps/app/src/views/SplitWorkspaceRoute.tsx",
-          imports: placement === "route" ? [gate] : [],
+        chunk("assets/schema.js", {
+          modules: {
+            [resolve(
+              import.meta.dirname,
+              "../../../packages/server-contract/src/api/threads.ts",
+            )]: { renderedLength: 100 },
+          },
         }),
-        ...(placement === "missing"
-          ? []
-          : [
-              chunk(gate, {
-                moduleIds: [resolve(import.meta.dirname, "feature.tsx")],
-              }),
-            ]),
       ];
-      const stats = computeBundleStats(
-        input,
-        { SplitWorkspaceRoute: ["/src/views/SplitWorkspaceRoute.tsx"] },
-        () => {},
-      );
+      const stats = computeBundleStats(input, {}, () => {});
       if (stats === null) throw new Error("missing stats");
       const result = await runCheck(
         await writeFixture(
           {
-            ...passingBudget,
-            splitBoundaries: { [source]: ["boot", "SplitWorkspaceRoute"] },
+            maxBootBytes: 10000,
+            maxBootBrotliBytes: 1000,
+            forbiddenBootPackages: [],
+            forbiddenBootModules: [module],
           },
           stats,
           input.map((entry) => entry.fileName),
         ),
       );
-      expect(result.code).toBe(placement === "lazy" ? 0 : 1);
-      if (placement !== "lazy") expect(result.output).toContain(source);
-      if (placement === "boot")
-        expect(result.output).toContain("eager in boot");
-      if (placement === "route")
-        expect(result.output).toContain("eager in SplitWorkspaceRoute");
-      if (placement === "missing")
-        expect(result.output).toContain("absent from bundle module metadata");
+      expect(result.code).toBe(eager ? 1 : 0);
+      if (eager) expect(result.output).toContain(`${module} is eager in boot`);
+    },
+  );
+});
+
+describe("boot vendor glyph boundary", () => {
+  it.each([true, false])(
+    "rejects glyphs promoted into boot-vendor: %s",
+    async (promoted) => {
+      const input = [
+        chunk("assets/index.js", {
+          isEntry: true,
+          imports: ["assets/boot-vendor.js", "assets/boot-icons.js"],
+        }),
+        chunk("assets/boot-vendor.js", {
+          moduleIds: promoted
+            ? ["/repo/node_modules/@hugeicons/core-free-icons/index.js"]
+            : ["/repo/node_modules/react/index.js"],
+        }),
+        chunk("assets/boot-icons.js", {
+          moduleIds: promoted
+            ? []
+            : ["/repo/node_modules/@hugeicons/core-free-icons/index.js"],
+        }),
+      ];
+      const stats = computeBundleStats(input, {}, () => {});
+      if (stats === null) throw new Error("missing stats");
+      const result = await runCheck(
+        await writeFixture(
+          {
+            ...passingBudget,
+            routeClosures: {},
+            forbiddenChunkPackages: {
+              "assets/boot-vendor": ["@hugeicons/core-free-icons"],
+            },
+          },
+          stats,
+          input.map((entry) => entry.fileName),
+        ),
+      );
+      expect(result.code).toBe(promoted ? 1 : 0);
+      if (promoted)
+        expect(result.output).toContain(
+          "@hugeicons/core-free-icons must stay outside assets/boot-vendor",
+        );
     },
   );
 });

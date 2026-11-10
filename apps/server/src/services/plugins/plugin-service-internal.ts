@@ -188,7 +188,9 @@ export interface PluginResolvedAgentConfiguration {
 }
 
 export interface PluginResolvedProviderEnv {
-  entries: HostDaemonContributedEnvEntry[];
+  entries: (HostDaemonContributedEnvEntry & {
+    internal_DO_NOT_USE_catalogIdentity?: string;
+  })[];
 }
 
 export interface PluginResolvedProviderEnvHealth {

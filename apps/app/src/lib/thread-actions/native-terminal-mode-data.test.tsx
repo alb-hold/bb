@@ -73,6 +73,27 @@ afterEach(() => {
   switchMode.mockReset();
 });
 
+it("does not fetch native mode for the visible sidebar row collection", async () => {
+  const threadIds = Array.from({ length: 30 }, (_, i) => `thr_visible_${i}`);
+  for (const threadId of threadIds) providerOf.set(threadId, "codex");
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+  );
+  const { result } = renderHook(
+    () => useNativeTerminalModeData({ threadIds }),
+    { wrapper },
+  );
+  await Promise.resolve();
+  expect(get).not.toHaveBeenCalled();
+  expect(threadIds.map(result.current.modeOf)).toEqual(
+    threadIds.map(() => "unknown"),
+  );
+  queryClient.clear();
+});
+
 describe("thread menu mode for threads the app has not loaded", () => {
   it("clears a saved composer draft after switching a thread to native terminal", async () => {
     const threadId = "thr_convert";
@@ -103,6 +124,11 @@ describe("thread menu mode for threads the app has not loaded", () => {
     });
     expect(window.localStorage.getItem(draft.storageKey)).not.toBeNull();
 
+    expect(get).not.toHaveBeenCalled();
+    await queryClient.fetchQuery({
+      queryKey: nativeTerminalThreadQueryKey(threadId),
+      queryFn: () => get({ threadId }),
+    });
     await waitFor(() => expect(result.current.modeOf(threadId)).toBe("chat"));
     await result.current.switchMode(threadId, "terminal", projectId);
 
@@ -160,6 +186,20 @@ describe("thread menu mode for threads the app has not loaded", () => {
         ]),
       );
 
+    expect(get).not.toHaveBeenCalled();
+    for (const threadId of [
+      "thr_chat",
+      "thr_terminal",
+      "thr_born",
+      "thr_failed",
+    ]) {
+      void queryClient
+        .fetchQuery({
+          queryKey: nativeTerminalThreadQueryKey(threadId),
+          queryFn: () => get({ threadId }),
+        })
+        .catch(() => undefined);
+    }
     await waitFor(() => expect(replies.size).toBe(3));
     expect(get.mock.calls.map(([args]) => args.threadId).sort()).toEqual([
       "thr_born",
@@ -216,12 +256,20 @@ describe("thread menu mode for threads the app has not loaded", () => {
         experimental_panel: {} as never,
         sdk: {} as never,
       })?.label ?? null;
+    await queryClient.fetchQuery({
+      queryKey: nativeTerminalThreadQueryKey("thr_terminal"),
+      queryFn: () => get({ threadId: "thr_terminal" }),
+    });
     await waitFor(() => expect(label()).toBe("Back to chat"));
 
     fail = true;
-    await queryClient.refetchQueries({
-      queryKey: nativeTerminalThreadQueryKey("thr_terminal"),
-    });
+    await queryClient
+      .fetchQuery({
+        queryKey: nativeTerminalThreadQueryKey("thr_terminal"),
+        queryFn: () => get({ threadId: "thr_terminal" }),
+        staleTime: 0,
+      })
+      .catch(() => undefined);
     await waitFor(() => expect(label()).toBeNull());
     expect(
       queryClient.getQueryData(nativeTerminalThreadQueryKey("thr_terminal")),

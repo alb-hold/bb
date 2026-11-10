@@ -1,19 +1,21 @@
-import { useMemo } from "react";
+import { useMemo, useRef } from "react";
+import { useIsCompactViewport } from "@bb/shared-ui/hooks/use-compact-viewport";
 import type { PermissionMode } from "@bb/domain";
 import { LIST_HOVER_TRANSITION } from "@bb/shared-ui/motion";
 import { cn } from "@bb/shared-ui/lib/utils";
+import { Icon } from "@bb/shared-ui/icon";
 import { OptionPicker, type PickerOption } from "./OptionPicker";
 
 type PermissionModeOption = PickerOption<PermissionMode>;
 
-function getPermissionModeCompactLabel(value: PermissionMode): string {
+export function getPermissionModeCompactLabel(value: PermissionMode): string {
   switch (value) {
     case "full":
-      return "Full";
+      return "Full Access";
     case "accept-edits":
       return "Edits";
     case "auto":
-      return "Auto";
+      return "Ask first";
   }
 }
 
@@ -22,12 +24,13 @@ function addPermissionModeCompactLabels(
 ): PermissionModeOption[] {
   return options.map((option) => ({
     ...option,
-    compactLabel:
-      option.compactLabel ?? getPermissionModeCompactLabel(option.value),
+    label: option.compactLabel ?? getPermissionModeCompactLabel(option.value),
+    compactLabel: undefined,
   }));
 }
 
 export interface PermissionModePickerProps {
+  pending?: boolean;
   value?: PermissionMode;
   options: readonly PickerOption<PermissionMode>[];
   onChange: (value: PermissionMode) => void;
@@ -49,6 +52,7 @@ export interface PermissionModePickerProps {
 }
 
 export function PermissionModePicker({
+  pending = false,
   value,
   options,
   onChange,
@@ -63,33 +67,86 @@ export function PermissionModePicker({
   showChevronWhenDisabled,
   showWhenSingleOption = false,
 }: PermissionModePickerProps) {
+  const isCompactViewport = useIsCompactViewport();
   const compactOptions = useMemo(
     () => addPermissionModeCompactLabels(options),
     [options],
   );
+  const lastValue = useRef<PermissionMode | undefined>(value);
+  if (!pending && value !== undefined) lastValue.current = value;
+  const displayValue = pending
+    ? lastValue.current
+    : (value ?? lastValue.current);
+  const modeLabel =
+    compactOptions.find((option) => option.value === displayValue)?.label ??
+    (displayValue === undefined
+      ? "Permissions"
+      : getPermissionModeCompactLabel(displayValue));
+  const compactLabel =
+    displayOverride?.compactLabel ?? displayOverride?.label ?? modeLabel;
+  const showFullAccessWarning = displayValue === "full" && !displayOverride;
+  const pickerDisabled = disabled || pending || options.length <= 1;
   if (
-    !supported ||
-    value === undefined ||
-    (!showWhenSingleOption && options.length <= 1)
+    !pending &&
+    (value === undefined ||
+      !supported ||
+      (!showWhenSingleOption && options.length <= 1))
   ) {
     return null;
   }
   return (
     <OptionPicker
-      label="Permission mode"
-      value={value}
+      iconOnly={isCompactViewport}
+      label="Permissions"
+      value={displayValue}
       options={compactOptions}
       onChange={onChange}
-      className={cn(LIST_HOVER_TRANSITION, className)}
-      caretClassName="text-subtle-foreground/75"
+      className={cn(
+        LIST_HOVER_TRANSITION,
+        "permission-mode-picker",
+        isCompactViewport
+          ? "h-8 w-auto min-w-0 shrink-0 justify-center px-1.5"
+          : "w-max min-w-0 shrink-0 justify-start",
+        pending &&
+          displayValue === undefined &&
+          !isCompactViewport &&
+          "[&>span]:invisible animate-pulse bg-state-hover",
+        showFullAccessWarning &&
+          "text-warning-text hover:text-warning-text data-[state=open]:text-warning-text",
+        className,
+      )}
+      leading={
+        <>
+          <Icon name="SecurityCheck" className="size-3.5 shrink-0" />
+          <span data-permission-label="">
+            {isCompactViewport ? compactLabel : "Permissions:"}
+          </span>
+        </>
+      }
+      caretClassName={cn(
+        "text-subtle-foreground/75",
+        !isCompactViewport &&
+          pickerDisabled &&
+          showChevronWhenDisabled === false &&
+          "invisible",
+      )}
       contentClassName="max-w-72"
       muted={muted}
       defaultOpen={defaultOpen}
       modal={modal}
       align={align}
-      displayOverride={displayOverride}
-      disabled={disabled || options.length <= 1}
-      showChevronWhenDisabled={showChevronWhenDisabled}
+      displayOverride={
+        displayOverride ??
+        (pending
+          ? {
+              label: modeLabel,
+            }
+          : undefined)
+      }
+      disabled={pickerDisabled}
+      showChevronWhenDisabled={
+        isCompactViewport ? (showChevronWhenDisabled ?? true) : true
+      }
     />
   );
 }

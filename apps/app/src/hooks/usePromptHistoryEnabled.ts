@@ -40,10 +40,14 @@ function getKeyboardSeenServerSnapshot(): boolean {
   return false;
 }
 
-function useKeyboardSeen(): boolean {
+function getFinePointerSnapshot(): boolean {
+  return true;
+}
+
+function useKeyboardSeen(isPointerCoarse: boolean): boolean {
   return useSyncExternalStore(
     subscribeKeyboardSeen,
-    getKeyboardSeenSnapshot,
+    isPointerCoarse ? getKeyboardSeenSnapshot : getFinePointerSnapshot,
     getKeyboardSeenServerSnapshot,
   );
 }
@@ -58,6 +62,5 @@ export function resetKeyboardSeenForTests(): void {
 
 export function usePromptHistoryEnabled(): boolean {
   const isPointerCoarse = usePointerCoarse();
-  const hasSeenKeyboard = useKeyboardSeen();
-  return !isPointerCoarse || hasSeenKeyboard;
+  return useKeyboardSeen(isPointerCoarse);
 }

@@ -226,6 +226,35 @@ describe("watchTerminalLayoutSettled", () => {
     expect(onSettled).toHaveBeenCalledTimes(1);
   });
 
+  it("settles a native fit after two equal measurements and restarts after an animation signal", async () => {
+    vi.useFakeTimers();
+    let signal = () => {};
+    let animating = false;
+    const onSettled = vi.fn();
+    watchTerminalLayoutSettled({
+      ...frameScheduler(),
+      graceFrames: 0,
+      stableFramesRequired: 1,
+      measure: () => (animating ? null : "800x600:125x36"),
+      ready: Promise.resolve(),
+      subscribe: (onSignal) => {
+        signal = onSignal;
+        return () => {};
+      },
+      onSettled,
+    });
+    await vi.advanceTimersByTimeAsync(FRAME_MS / 2);
+    animating = true;
+    signal();
+    await vi.advanceTimersByTimeAsync(FRAME_MS * 4);
+    expect(onSettled).not.toHaveBeenCalled();
+    animating = false;
+    await vi.advanceTimersByTimeAsync(FRAME_MS);
+    expect(onSettled).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(FRAME_MS);
+    expect(onSettled).toHaveBeenCalledOnce();
+  });
+
   it("does not report when cancelled before the fonts are ready", async () => {
     vi.useFakeTimers();
     const onSettled = vi.fn();
@@ -243,6 +272,70 @@ describe("watchTerminalLayoutSettled", () => {
 
     await vi.advanceTimersByTimeAsync(1000);
 
+    expect(onSettled).not.toHaveBeenCalled();
+  });
+
+  it.each(
+    [8, 72].flatMap((rendererAt) =>
+      ["stable", "changed", "hidden"].map((layout) => ({ rendererAt, layout })),
+    ),
+  )(
+    "samples layout during renderer loading and rechecks a $layout container at $rendererAt ms before claiming",
+    async ({ layout, rendererAt }) => {
+      vi.useFakeTimers();
+      const start = Date.now();
+      let size: string | null = "800x600";
+      let rendererReady = () => {};
+      const claims: { at: number; size: string | null }[] = [];
+      watchTerminalLayoutSettled({
+        ...frameScheduler(),
+        graceFrames: 0,
+        stableFramesRequired: 1,
+        measure: () => size,
+        ready: Promise.resolve(),
+        settleReady: new Promise<void>((resolve) => {
+          rendererReady = resolve;
+        }),
+        onSettled: () => claims.push({ at: Date.now() - start, size }),
+      });
+      await vi.advanceTimersByTimeAsync(rendererAt);
+      expect(claims).toEqual([]);
+      if (layout === "changed") size = "900x600";
+      if (layout === "hidden") size = null;
+      rendererReady();
+      await vi.advanceTimersByTimeAsync(0);
+      if (layout === "stable") {
+        expect(claims).toEqual([{ at: rendererAt, size: "800x600" }]);
+      } else {
+        expect(claims).toEqual([]);
+        if (layout === "hidden") {
+          await vi.advanceTimersByTimeAsync(16);
+          size = "900x600";
+        }
+        await vi.advanceTimersByTimeAsync(32);
+        expect(claims).toEqual([
+          { at: rendererAt + (layout === "hidden" ? 48 : 16), size: "900x600" },
+        ]);
+      }
+    },
+  );
+
+  it("cancels layout sampling while renderer selection is pending", async () => {
+    vi.useFakeTimers();
+    let rendererReady = () => {};
+    const onSettled = vi.fn();
+    const stop = watchTerminalLayoutSettled({
+      ...frameScheduler(),
+      measure: () => "800x600",
+      settleReady: new Promise<void>((resolve) => {
+        rendererReady = resolve;
+      }),
+      onSettled,
+    });
+    await vi.advanceTimersByTimeAsync(64);
+    stop();
+    rendererReady();
+    await vi.advanceTimersByTimeAsync(1000);
     expect(onSettled).not.toHaveBeenCalled();
   });
 });

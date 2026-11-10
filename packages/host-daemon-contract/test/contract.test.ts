@@ -1067,7 +1067,7 @@ describe("host-daemon command schemas", () => {
   });
 
   it("uses the current host-daemon protocol version", () => {
-    expect(HOST_DAEMON_PROTOCOL_VERSION).toBe(261);
+    expect(HOST_DAEMON_PROTOCOL_VERSION).toBe(263);
     expect(HOST_ARTIFACT_MAX_BYTES).toBe(256 * 1024 * 1024);
   });
 
@@ -1103,7 +1103,9 @@ describe("host-daemon command schemas", () => {
     expect(contract.isCompatibleHostDaemonProtocolVersion(258)).toBe(false);
     expect(contract.isCompatibleHostDaemonProtocolVersion(259)).toBe(false);
     expect(contract.isCompatibleHostDaemonProtocolVersion(260)).toBe(false);
-    expect(contract.isCompatibleHostDaemonProtocolVersion(261)).toBe(true);
+    expect(contract.isCompatibleHostDaemonProtocolVersion(261)).toBe(false);
+    expect(contract.isCompatibleHostDaemonProtocolVersion(262)).toBe(false);
+    expect(contract.isCompatibleHostDaemonProtocolVersion(263)).toBe(true);
     expect(contract.hostDaemonSupportsConnectNext(246)).toBe(false);
     expect(contract.hostDaemonSupportsConnectNext(247)).toBe(true);
     expect(contract.hostDaemonSupportsDesktopBrokerProof(247)).toBe(false);
@@ -3519,6 +3521,45 @@ describe("host-daemon session schemas", () => {
       expect(
         hostDaemonDaemonWsMessageSchema.safeParse(jsonRoundTripped).success,
         testCase.name,
+      ).toBe(false);
+    }
+  });
+
+  it("validates optional terminal launch sRGB colors", () => {
+    const message = {
+      type: "terminal.open",
+      requestId: "colors",
+      terminalId: "term-colors",
+      target: {
+        kind: "workspace",
+        environmentId: "env-colors",
+        workspaceContext: { workspacePath: "/tmp/colors" },
+      },
+      cols: 80,
+      rows: 24,
+      start: { mode: "shell" },
+    };
+    expect(hostDaemonServerWsMessageSchema.safeParse(message).success).toBe(
+      true,
+    );
+    expect(
+      hostDaemonServerWsMessageSchema.safeParse({
+        ...message,
+        defaultColors: { foreground: [255, 128, 0], background: [0, 0, 0] },
+      }).success,
+    ).toBe(true);
+    for (const foreground of [
+      [256, 0, 0],
+      [-1, 0, 0],
+      [0.5, 0, 0],
+      [0, 0],
+      "#ffffff",
+    ]) {
+      expect(
+        hostDaemonServerWsMessageSchema.safeParse({
+          ...message,
+          defaultColors: { foreground, background: [0, 0, 0] },
+        }).success,
       ).toBe(false);
     }
   });

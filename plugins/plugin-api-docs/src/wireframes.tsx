@@ -495,6 +495,7 @@ const FOOTER_ITEM_RENDERERS: Record<string, () => ReactNode> = {
     </span>
   ),
   "bug-report": () => <MiniIcon icon="Bug" className="size-4" />,
+  "footer-more": () => <MiniIcon icon="MoreHorizontal" className="size-4" />,
 };
 
 const RAIL_BUTTON_CLASS = "flex size-7 items-center justify-center rounded-md";
@@ -520,6 +521,10 @@ function SidebarRail() {
         <span className={RAIL_BUTTON_CLASS}>
           <MiniIcon icon="Zap" />
         </span>
+        <span className={RAIL_BUTTON_CLASS}>
+          <MiniIcon icon="MoreHorizontal" />
+          <span className="sr-only">More</span>
+        </span>
         <Mark
           id="nav-panel"
           label="Plugin nav panels, in the navigation rail"
@@ -529,9 +534,6 @@ function SidebarRail() {
           <PluginGlyph />
           <span className="sr-only">Your panel</span>
         </Mark>
-        <span className={RAIL_BUTTON_CLASS}>
-          <MiniIcon icon="MoreHorizontal" />
-        </span>
         <span className="flex-1" />
         <span className={RAIL_BUTTON_CLASS}>
           <MiniIcon icon="Settings" />
@@ -619,7 +621,7 @@ const SIDEBAR_SECTION_RENDERERS: Record<string, () => ReactNode> = {
   footer: () => (
     <Mark
       id="sidebar-footer"
-      label="Plugin footer items can run actions or reveal content"
+      label="Reserved plugin footer slots can run actions or reveal content"
       className="mx-1.5 mb-1.5 flex w-44 flex-col gap-1.5 p-1.5"
     >
       <span className="block w-full overflow-hidden rounded-md border border-border bg-surface-raised-solid">

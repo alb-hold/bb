@@ -97,11 +97,10 @@ function MessageActionIcon({
 }
 
 const DESKTOP_ACTION_WIDTH_PX = 20;
-const TOUCH_ACTION_WIDTH_PX = 28;
+const TOUCH_ACTION_WIDTH_PX = 44;
 const ACTION_ROW_GAP_PX = 8;
 const OVERFLOW_TRIGGER_GAP_PX = 4;
-const FOOTER_ADORNMENT_RESERVE_PX = 56;
-const OVERFLOW_TRIGGER_TIGHTEN_CLASS = "-ml-1";
+const OVERFLOW_TRIGGER_TIGHTEN_CLASS = "-ml-1 max-md:pointer-coarse:ml-0";
 
 interface MessageActionRowLayout {
   inlineCount: number;
@@ -189,7 +188,7 @@ const HOVER_REVEAL_CLASS = cn(
   HOVER_REVEAL_NO_HOVER_VISIBLE_CLASS,
 );
 const MOBILE_INLINE_ACTION_CLASS =
-  "max-md:pointer-coarse:size-7 max-md:pointer-coarse:[&_[data-icon-root]]:size-4";
+  "max-md:pointer-coarse:size-11 max-md:pointer-coarse:[&_[data-icon-root]]:size-4";
 const MOBILE_OVERFLOW_ACTION_CLASS = "max-md:pointer-coarse:hidden";
 const ACTION_TOOLTIP_SIDE = "bottom";
 const MENU_CONTENT_WIDTH_CLASS = "max-w-[min(16rem,calc(100vw-1rem))]";
@@ -226,6 +225,7 @@ function DesktopMessageAction({
       <TooltipTrigger asChild>
         {action.kind === "copy" ? (
           <CopyButton
+            data-compact-touch="action"
             text={action.copyText ?? ""}
             imageUrl={action.copyImageUrl}
             label={action.label}
@@ -233,6 +233,7 @@ function DesktopMessageAction({
           />
         ) : (
           <button
+            data-compact-touch="action"
             type="button"
             className={cn(ACTION_BUTTON_CLASS, className)}
             onClick={action.onSelect}
@@ -421,10 +422,7 @@ export function MessageActionBar({
   ];
   const layout = computeMessageActionRowLayout({
     actionCount: inlineCandidates.length,
-    availableWidth:
-      footerAdornment && availableWidth !== undefined
-        ? Math.max(0, availableWidth - FOOTER_ADORNMENT_RESERVE_PX)
-        : availableWidth,
+    availableWidth,
     actionWidth: isCompactTouch
       ? TOUCH_ACTION_WIDTH_PX
       : DESKTOP_ACTION_WIDTH_PX,
@@ -462,7 +460,7 @@ export function MessageActionBar({
         ref={slotRef}
         className={cn(
           slotClass,
-          "@container/message-actions min-h-5 max-md:pointer-coarse:min-h-7",
+          "@container/message-actions min-h-5",
         )}
         data-message-action-slot=""
       >
@@ -488,7 +486,6 @@ export function MessageActionBar({
               ))
           )}
           {alignment === "end" ? metadata : null}
-          {footerAdornment}
           <DropdownMenu onOpenChange={setIsMenuOpen}>
             <DropdownMenuTrigger asChild>
               <button
@@ -501,6 +498,7 @@ export function MessageActionBar({
                   "data-[state=open]:text-foreground data-[state=open]:opacity-100",
                 )}
                 aria-label="Message actions"
+                data-compact-touch="action-menu"
                 data-no-sidebar-swipe=""
               >
                 <Icon name="MoreHorizontal" className="size-3" />
@@ -517,6 +515,7 @@ export function MessageActionBar({
           </DropdownMenu>
           {alignment === "start" ? metadata : null}
         </div>
+        {footerAdornment}
       </div>
     </TooltipProvider>
   );
@@ -530,6 +529,7 @@ function MobileInlineActions({
   return actions.map((action) =>
     action.kind === "copy" ? (
       <CopyButton
+        data-compact-touch="action"
         key={action.key ?? action.label}
         text={action.copyText ?? ""}
         imageUrl={action.copyImageUrl}
@@ -538,6 +538,7 @@ function MobileInlineActions({
       />
     ) : (
       <button
+        data-compact-touch="action"
         key={action.key ?? action.label}
         type="button"
         className={cn(

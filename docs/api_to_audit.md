@@ -1,5 +1,33 @@
 # APIs To Audit
 
+## `ExperimentalComposerSubmission.experimental_onBlockedSubmit`
+
+A renderer reports a primary submission attempt that its readiness checks block.
+This callback does not submit or relax those checks. Core's plain and rich editors
+use it after their IME, newline and suggestion handling. The new-thread host queues
+an intent while model or options loading blocks submission, retains the visible
+draft, and sends once through its existing submit action when ready. Editing,
+Escape, a draft-scope change or model-load failure cancels the intent.
+
+The Plugin Guide documents this on the composer replacement surface. Stabilization
+requires auditing repeated Enter, loading failures, replacement renderers, and
+intents that span the plain-to-rich handoff.
+
+## `ExperimentalComposerInput.experimental_startupHandoff`
+
+The host can accept input before a composer renderer has downloaded. A renderer
+attaches its synchronous acceptance callback when its editor is mounted. The host
+calls it once with the latest canonical draft, text offsets for the selection's
+anchor and head, focus ownership, and scroll position. The host waits for IME
+composition to finish and reads the input at the actual handoff. Detaching removes
+only that callback. Renderers without this optional contract retain their ordinary
+mount behavior.
+
+Core's `ProgressiveComposer` and the built-in composer use this same path. The
+Plugin Guide's composer replacement surface documents it. Stabilization requires
+auditing IME, backward selections, focus, attachment drafts, and geometry across
+desktop and compact layouts, including replacement renderers.
+
 Every public plugin API member ships with an `experimental_` prefix and an
 entry here (see [AGENTS.md](../AGENTS.md), "CLI And Plugin API"). Each entry
 summarizes the API, names where its behavior is documented, and lists what
@@ -4838,3 +4866,65 @@ or names display Claude subscription. Without a provider name, missing
 subscriptions also display Claude subscription; other subscriptions are
 capitalized. Keep both
 helpers free of schema imports so app display does not eagerly load the parser.
+
+## Provider environment catalog identity
+
+`ExperimentalPluginProviderEnvEntry.internal_DO_NOT_USE_catalogIdentity` is server-only plumbing. Account Pooler is its only caller: it supplies a stable identity for catalog-only credentials that rotate on every resolution. Core hashes this identity instead of the credential value and strips the field before host-daemon RPCs. Routing endpoints and every unmarked environment value remain fingerprint inputs. Stabilization requires catalog identity invalidation and RPC stripping coverage; it is not a Plugin Guide surface.
+
+## Internal composer paste parser and shared UI runtime slots
+
+`internal_DO_NOT_USE_loadComposerPasteParser` is used only by bb--composer's
+thread-link paste extension. The host loads the same parser that owns the
+composer's Markdown-aware link conversion after paste, retaining its existing
+cancellation, timeout, cached lookup and literal-link behavior. The single-file
+plugin build must not inline remark/unified into its first-render payload.
+This is first-party plumbing, not a third-party plugin API.
+An older host without the loader leaves pasted text literal.
+
+`internal_DO_NOT_USE_dropdown_menu`, `internal_DO_NOT_USE_dialog`,
+`internal_DO_NOT_USE_context_menu` and `internal_DO_NOT_USE_responsive_overlay`
+are host runtime slots for the shared-ui implementations already used by core.
+Their only direct callers are the build-generated shared-ui runtime shims.
+Composer and thread-list consume the same components through those shims;
+relative shared-ui imports, package imports and the builtin UI alias share the
+same path. Stabilization requires a public component contract and an audit of
+portal, context, focus and deferred drawer behavior across core and plugins.
+
+## `PluginThreadListProps.experimental_isVisible`
+
+The host supplies its existing compact drawer or desktop open state to thread lists.
+The bundled thread-list uses this to mount pinned rows on the first visible commit
+and omit them while collapsed, without a geometry read or observer round trip.
+Older hosts omit the value, meaning visibility is unknown; the bundled list retains
+observer-driven visibility in that case. Custom thread-list plugins can use the same
+public state to avoid speculative mounting or delayed first paint.
+Stabilize after verifying first-paint and open/close behavior on both layouts.
+Core caller: `components/sidebar/PluginThreadList.tsx`.
+
+## `sdk.terminals.experimental_setDefaultColors`
+
+Sets validated foreground/background sRGB tuples for OSC 10/11 replies through
+the authorised terminal route. Requires the live controlling viewer token; rejects
+observers. Core terminal theme updates use this same SDK path. Stabilise after
+control handoff, custom themes, and daemon reconnect behaviour have shipped.
+The bb-app BBSdk delegates its terminals area directly to the SDK.
+
+## PluginSidebarThread.experimental_nativeTerminal
+
+Required boolean projected from the server thread summary's `nativeTerminal`,
+independent of live activity. The core Recent rows and thread-list sidebar use
+the same mode for their shared Terminal / FolderGit / Folder glyph. Sidebar
+bootstrap caching retains the source field; `bb thread get --json` exposes it
+as `nativeTerminal`. Stabilize after auditing all sidebar renderers and idle,
+active, and cached native terminal rows across desktop and phone.
+
+## Internal git diff parser loader
+
+`internal_DO_NOT_USE_loadGitDiffParser` is first-party plumbing for bb--git's
+file cards, through shared-ui's lazy parser bridge. It loads the same parsing
+module used by core PluginDiff and BbDiff on the first expanded, loaded patch.
+The opaque module namespace is checked for its parser function at the bridge;
+this keeps Pierre implementation types out of the SDK contract. The existing
+full `pierreDiffs` runtime slot and its synchronous exports remain unchanged for
+legacy and third-party plugins. Stabilization requires a public patch-metadata
+contract and parser failure/retry coverage. It is not a Plugin Guide surface.

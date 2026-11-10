@@ -1,3 +1,4 @@
+import { usePanelToggle } from "@/components/secondary-panel/usePanelToggle";
 import { AppPanelTabsPublisher } from "@/lib/app-panel-tabs";
 import { appendQuoteAndAttachmentsToDraft } from "@bb/client-core";
 import type { ComposerAttachment } from "@get-bb/plugin-sdk";
@@ -69,7 +70,7 @@ import {
 import { EmptyStatePanel } from "@bb/shared-ui/empty-state";
 import { Icon } from "@bb/shared-ui/icon";
 import { cn } from "@bb/shared-ui/lib/utils";
-import { PageShell } from "@/components/ui/page-shell.js";
+import { StaticPageShell as PageShell } from "@/components/ui/page-shell-static";
 import { Button } from "@bb/shared-ui/button";
 import { useIsCompactViewport } from "@bb/shared-ui/hooks/use-compact-viewport";
 import { usePointerCoarse } from "@bb/shared-ui/hooks/use-pointer-coarse";
@@ -131,6 +132,7 @@ import {
   RootComposeSecondaryContent,
   useRootComposePinnedPanelToggleBoxClassName,
 } from "./RootComposeSecondaryContent";
+import { RootComposePanelTabContent } from "./RootComposePanelTabContentSplit";
 import { RootComposeMobileRecents } from "./RootComposeMobileRecents";
 import {
   shouldLoadThreadStorageFileList,
@@ -173,9 +175,8 @@ import { usePluginDetailTabOpener } from "@/components/plugin/plugin-detail-navi
 import { RootComposePanelCommandHandlers } from "./RootComposePanelCommandHandlers";
 import {
   ROOT_COMPOSE_FIXED_PANEL_STATE_ID,
-  RootComposePanelTabContent,
   type RootComposeTerminalTarget,
-} from "./RootComposePanelTabContent";
+} from "./root-compose-panel-types";
 
 const ROOT_COMPOSE_SIDEBAR_ACTION_ALIGNED_TOP_PADDING_CLASS = "pt-14";
 
@@ -267,6 +268,10 @@ export function RootComposeRightPanelToggle({
   isOpen,
   onToggle,
 }: RootComposeRightPanelToggleProps) {
+  const warmPanel = () => {
+    preloadThreadSecondaryPanel();
+    void RootComposePanelTabContent.preload();
+  };
   const shortcut = useAppCommandShortcut("panel.toggle");
   const rightPanelLabel = isOpen ? "Hide right panel" : "Show right panel";
   const rightPanelIconName = RIGHT_PANEL_TOGGLE_ICON_NAME;
@@ -276,15 +281,19 @@ export function RootComposeRightPanelToggle({
       type="button"
       variant="ghost"
       size="icon"
-      className={cn(HEADER_ICON_BUTTON_CLASS, "relative")}
+      className={cn(
+        HEADER_ICON_BUTTON_CLASS,
+        "relative max-md:size-11 max-md:pointer-coarse:size-11",
+      )}
+      data-compact-touch="header"
       aria-label={
         shortcut ? `${rightPanelLabel} (${shortcut.label})` : rightPanelLabel
       }
       aria-keyshortcuts={shortcut?.ariaKeyshortcuts}
       aria-expanded={isOpen}
-      onPointerEnter={preloadThreadSecondaryPanel}
-      onFocus={preloadThreadSecondaryPanel}
-      onPointerDown={preloadThreadSecondaryPanel}
+      onPointerEnter={warmPanel}
+      onFocus={warmPanel}
+      onPointerDown={warmPanel}
       onClick={onToggle}
     >
       <Icon name={rightPanelIconName} />
@@ -1204,13 +1213,23 @@ function RootComposeSurface({
     }
     return true;
   });
-  const handleToggleSecondaryPanel = useCallback(() => {
-    if (isSecondaryPanelOpen) {
-      panel.close();
+  const revealSecondaryPanel = useCallback(() => {
+    if (isCompactViewport) {
+      openCompactDrawer();
       return;
     }
-    handleOpenNewTab();
-  }, [handleOpenNewTab, isSecondaryPanelOpen, panel]);
+    updateFixedPanelTabsState((state) => ({
+      ...state,
+      secondary: { ...state.secondary, isOpen: true },
+    }));
+  }, [isCompactViewport, openCompactDrawer, updateFixedPanelTabsState]);
+  const handleToggleSecondaryPanel = usePanelToggle({
+    isOpen: isSecondaryPanelOpen,
+    hasActiveTab: activeFixedSecondaryTab !== null,
+    close: panel.close,
+    openNewTab: handleOpenNewTab,
+    reveal: revealSecondaryPanel,
+  });
   const acceptsRootTerminal = useCallback(
     (session: TerminalSession) =>
       rootPanelTerminalTarget !== null &&
@@ -1540,6 +1559,7 @@ function RootComposeSurface({
                 isCompactHomeLayout={isCompactViewport}
                 compactScrollContent={
                   <RootComposeMobileRecents
+                    maxRows={isCompactViewport ? undefined : 3}
                     highlightedThreadId={lastCreatedThreadId}
                     projectNamesById={mobileRecentProjectNamesById}
                     providersById={mobileRecentProvidersById}

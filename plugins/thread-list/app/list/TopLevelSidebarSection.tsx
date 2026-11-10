@@ -1,5 +1,7 @@
 import {
   useCallback,
+  useLayoutEffect,
+  useRef,
   type CSSProperties,
   type KeyboardEventHandler,
   type MouseEvent,
@@ -11,10 +13,7 @@ import { cn } from "@/lib/utils";
 import { Icon } from "@/components/ui/icon";
 import { LIST_HOVER_TRANSITION } from "@/components/ui/motion";
 import { CHROME_SECTION_LABEL_CLASS } from "@/components/ui/chrome-style-tokens";
-import {
-  SidebarStickyGroup,
-  SidebarStickyTier,
-} from "../ui/sidebar.js";
+import { SidebarStickyGroup, SidebarStickyTier } from "../ui/sidebar.js";
 import {
   SIDEBAR_HOVER_ACTIONS_CLASS,
   SIDEBAR_HOVER_ACTIONS_FADE_CLASS,
@@ -26,7 +25,6 @@ import type { ConsumeDragClickSuppression } from "@/components/ui/use-drag-click
 import {
   SIDEBAR_STANDARD_ROW_PADDING_CLASS,
   SIDEBAR_CONTROL_STATE_CLASS,
-  SIDEBAR_GROUP_TEXT_CLASS,
 } from "@/components/ui/sidebar-row-classes";
 import {
   SectionDropTargetOverlay,
@@ -48,6 +46,13 @@ import { usePluginThreadRowStatusForThreads } from "./groupRollups.js";
 
 const EMPTY_SPLIT_INDICATOR_THREADS: readonly ThreadSplitIndicatorTarget[] = [];
 
+function updateContentScrollCue(element: HTMLDivElement) {
+  element.toggleAttribute(
+    "data-more-below",
+    element.scrollTop + element.clientHeight < element.scrollHeight - 1,
+  );
+}
+
 function stopActionsClick(event: MouseEvent<HTMLSpanElement>) {
   event.stopPropagation();
 }
@@ -65,6 +70,7 @@ export interface TopLevelSidebarSectionProps {
   dropParentKey?: string;
   sectionId?: string;
   stickyHeader?: boolean;
+  contentClassName?: string;
   status?: ReactNode;
   actions?: ReactNode;
   actionsAlwaysVisible?: boolean;
@@ -88,6 +94,7 @@ export function TopLevelSidebarSection({
   dropParentKey,
   sectionId,
   stickyHeader = true,
+  contentClassName,
   status,
   actions,
   actionsAlwaysVisible = false,
@@ -102,6 +109,26 @@ export function TopLevelSidebarSection({
   consumeClickSuppression,
   isDropTargetActive = false,
 }: TopLevelSidebarSectionProps) {
+  const contentRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const content = contentRef.current;
+    if (!content || !contentClassName) return;
+    const measure = () => updateContentScrollCue(content);
+    const frame =
+      typeof ResizeObserver === "undefined"
+        ? requestAnimationFrame(measure)
+        : null;
+    const observer =
+      typeof ResizeObserver === "undefined"
+        ? null
+        : new ResizeObserver(measure);
+    observer?.observe(content);
+    for (const child of content.children) observer?.observe(child);
+    return () => {
+      if (frame !== null) cancelAnimationFrame(frame);
+      observer?.disconnect();
+    };
+  }, [children, contentClassName, collapseControl?.isCollapsed]);
   const threadDropState = useSectionDropTargetState(dropParentKey);
   const collapsedSplitIndicator = useThreadGroupSplitIndicator(
     collapsedThreads,
@@ -182,7 +209,7 @@ export function TopLevelSidebarSection({
       data-sidebar-rename-row=""
       data-sidebar-sticky-header={stickyHeader ? undefined : "false"}
       className={cn(
-        "group/sidebar-section relative min-w-0 rounded-md transition-colors",
+        "group/sidebar-section relative min-w-0 md:pt-2 rounded-md transition-colors",
         isDropTargetActive && "bg-sidebar-accent/60",
       )}
       onClickCapture={handleClickCapture}
@@ -196,7 +223,7 @@ export function TopLevelSidebarSection({
         className={cn(
           SIDEBAR_HOVER_ACTIONS_ROW_CLASS,
           CHROME_SECTION_LABEL_CLASS,
-          SIDEBAR_GROUP_TEXT_CLASS,
+          "font-medium text-subtle-foreground",
           SIDEBAR_STANDARD_ROW_PADDING_CLASS,
           "rounded-md pr-0 transition-colors",
           !stickyHeader && "relative top-auto",
@@ -285,8 +312,7 @@ export function TopLevelSidebarSection({
                   "inline-flex shrink-0 items-center",
                   SIDEBAR_HOVER_ACTIONS_GAP_CLASS,
                   !actionsAlwaysVisible && SIDEBAR_HOVER_ACTIONS_CLASS,
-                  collapseControl?.isCollapsed &&
-                    "[@media(hover:none)]:hidden",
+                  collapseControl?.isCollapsed && "[@media(hover:none)]:hidden",
                 )}
               >
                 {actions}
@@ -296,7 +322,18 @@ export function TopLevelSidebarSection({
         ) : null}
       </SidebarStickyTier>
       {collapseControl?.isCollapsed || children == null ? null : (
-        <div className="mt-1">{children}</div>
+        <div
+          ref={contentRef}
+          data-sidebar-section-scroll={contentClassName ? "" : undefined}
+          className={cn("mt-1", contentClassName)}
+          onScroll={
+            contentClassName
+              ? (event) => updateContentScrollCue(event.currentTarget)
+              : undefined
+          }
+        >
+          {children}
+        </div>
       )}
     </SidebarStickyGroup>
   );

@@ -93,14 +93,19 @@ function props(
 function renderRail(
   items: readonly ExperimentalSidebarNavigationItem[],
   activeItemId: string | null = null,
+  isCompactViewport = false,
 ) {
-  return renderSlot(rail!, props("rail"), {
-    sidebarNavigation: {
-      items,
-      activeItemId,
-      isHomeActive: activeItemId === null,
+  return renderSlot(
+    rail!,
+    { ...props("rail"), isCompactViewport },
+    {
+      sidebarNavigation: {
+        items,
+        activeItemId,
+        isHomeActive: activeItemId === null,
+      },
     },
-  });
+  );
 }
 
 function renderTopList(
@@ -133,6 +138,37 @@ function withBadge(
 afterEach(cleanup);
 
 describe("Rail", () => {
+  it("preserves cached desktop slots and appends unseen destinations after More", () => {
+    const items = [NEW_THREAD, SEARCH, PLUGINS, { ...DOCS, isLoading: true }];
+    const view = renderRail(items);
+    expect(railLabels()).toEqual(["Home", "Plugins", "Docs", "More"]);
+    items[3] = DOCS;
+    items.push(ALERTS);
+    const RailComponent = rail!.component;
+    view.rerender(<RailComponent {...props("rail")} />);
+    expect(railLabels()).toEqual(["Home", "Plugins", "Docs", "More", "Alerts"]);
+    expect(screen.getByRole("button", { name: "Docs" }).getAttribute("aria-busy")).toBeNull();
+  });
+
+  it("keeps the phone host destinations and More fixed as plugin panels arrive", () => {
+    const prefix = ["Home", "Plugins", "More"];
+    renderRail([NEW_THREAD, SEARCH, PLUGINS], null, true);
+    expect(railLabels()).toEqual(prefix);
+    cleanup();
+    renderRail(
+      [NEW_THREAD, SEARCH, PLUGINS, { ...DOCS, isLoading: true }],
+      null,
+      true,
+    );
+    expect(railLabels()).toEqual([...prefix, "Docs"]);
+    cleanup();
+    renderRail([NEW_THREAD, SEARCH, PLUGINS, DOCS], null, true);
+    expect(railLabels()).toEqual([...prefix, "Docs"]);
+    expect(
+      screen.getByRole("button", { name: "Docs" }).getAttribute("aria-busy"),
+    ).toBeNull();
+  });
+
   it("draws Home and the visible destinations, leaving New thread to the header and hidden ones to More", () => {
     renderRail([NEW_THREAD, SEARCH, PLUGINS, DOCS]);
 

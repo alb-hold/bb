@@ -112,7 +112,7 @@ describe("NativeTerminalPromptBar with a pending microphone permission", () => {
       </Wrapper>,
     );
     const input = screen.getByLabelText(
-      "Message Native CLI",
+      "Send to Native CLI terminal",
     ) as HTMLTextAreaElement;
     fireEvent.change(input, { target: { value: "deploy the fix" } });
     const mic = screen.getByRole("button", {
@@ -164,7 +164,7 @@ describe("NativeTerminalPromptBar with a pending microphone permission", () => {
       </Wrapper>,
     );
     const input = screen.getByLabelText(
-      "Message Native CLI",
+      "Send to Native CLI terminal",
     ) as HTMLTextAreaElement;
     const mic = screen.getByRole("button", {
       name: "Dictate a message to Native CLI",

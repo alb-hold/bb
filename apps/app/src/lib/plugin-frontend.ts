@@ -1,3 +1,7 @@
+import * as internal_DO_NOT_USE_dropdown_menu from "@bb/shared-ui/dropdown-menu";
+import * as internal_DO_NOT_USE_dialog from "@bb/shared-ui/dialog";
+import * as internal_DO_NOT_USE_context_menu from "@bb/shared-ui/context-menu";
+import * as internal_DO_NOT_USE_responsive_overlay from "@bb/shared-ui/responsive-overlay";
 import * as questionFormHost from "@bb/shared-ui/question-form-host";
 import * as voiceInputTextarea from "@bb/shared-ui/voice-input-textarea";
 import * as react from "react";
@@ -5,18 +9,12 @@ import * as reactDom from "react-dom";
 import * as reactDomClient from "react-dom/client";
 import * as jsxRuntime from "react/jsx-runtime";
 import * as jsxDevRuntime from "react/jsx-dev-runtime";
-import * as radixAlertDialog from "@radix-ui/react-alert-dialog";
 import * as radixContextMenu from "@radix-ui/react-context-menu";
 import * as radixDialog from "@radix-ui/react-dialog";
 import * as radixDropdownMenu from "@radix-ui/react-dropdown-menu";
-import * as radixHoverCard from "@radix-ui/react-hover-card";
-import * as radixMenubar from "@radix-ui/react-menubar";
-import * as radixNavigationMenu from "@radix-ui/react-navigation-menu";
 import * as radixPopover from "@radix-ui/react-popover";
-import * as radixSelect from "@radix-ui/react-select";
 import * as radixTooltip from "@radix-ui/react-tooltip";
 import * as sonner from "sonner";
-import * as vaul from "vaul";
 import * as clsx from "clsx";
 import * as tailwindMerge from "tailwind-merge";
 import * as classVarianceAuthority from "class-variance-authority";
@@ -48,13 +46,15 @@ import {
 } from "./plugin-css";
 import { frontendPriorityPluginIds } from "./plugin-surface-providers";
 import { prefetchPluginModule } from "./plugin-module-preload";
+import { lazyRuntimeGroups } from "./plugin-lazy-runtime-groups";
 import {
   collectPluginAppRegistrations,
   isPluginAppDefinition,
 } from "./plugin-app-definition";
 import { setPluginAssetIcons } from "@bb/shared-ui/icon-registry";
 import { setPluginLogoUrls, type PluginLogoUrls } from "./plugin-logos";
-import { createRetryingModuleLoader } from "./plugin-frontend-lazy";
+import { whenHomeComposerReady } from "./plugin-frontend-boot-schedule";
+import { createDeferredPluginFrontendSchedule } from "./deferred-plugin-frontend-schedule";
 import {
   pluginSdkAppImplementation,
   retiredPluginSdkAppMembers,
@@ -141,6 +141,8 @@ interface PluginFrontendLoaderDeps {
   importModule: (url: string) => Promise<unknown>;
   prefetchModule: (url: string) => void;
   warn: (message: string) => void;
+  prepareDeferredRuntime?: (id: string) => Promise<void>;
+  runDeferredWork?: <T>(work: () => Promise<T>) => Promise<T | undefined>;
 }
 
 export async function loadPluginFrontend(
@@ -165,13 +167,24 @@ export async function loadPluginFrontend(
     if (runtimeGroups.length > 0) {
       const slotsProvided = Promise.all(
         runtimeGroups.map(async (group) => {
-          const slots = await group.load();
+          await deps.prepareDeferredRuntime?.(group.id);
+          const slots = deps.runDeferredWork
+            ? await deps.runDeferredWork<Partial<BbPluginRuntime>>(group.load)
+            : await group.load();
           Object.assign(installPluginRuntime(), slots);
         }),
       );
       deps.prefetchModule(bundle.jsUrl);
       await slotsProvided;
     }
+    const runtime = installPluginRuntime();
+    const missingSlot = bundle.runtimeSlots.find(
+      (slot) => Reflect.get(runtime, slot) == null,
+    );
+    if (missingSlot)
+      throw new Error(
+        `Update the BB host: missing shared runtime slot ${missingSlot}`,
+      );
     const mod = await deps.importModule(bundle.jsUrl);
     if (typeof mod !== "object" || mod === null) {
       throw new Error("bundle did not evaluate to a module namespace");
@@ -190,25 +203,34 @@ export async function loadPluginFrontend(
   }
 }
 
-interface BbPluginRuntime {
+export interface BbPluginRuntime {
+  internal_DO_NOT_USE_dropdown_menu: unknown;
+  internal_DO_NOT_USE_dialog: unknown;
+  internal_DO_NOT_USE_context_menu: unknown;
+  internal_DO_NOT_USE_responsive_overlay: unknown;
+
+  zod?: unknown;
+  radixCheckbox?: unknown;
+  radixSlot?: unknown;
+  radixComposeRefs?: unknown;
   react: unknown;
   reactDom: unknown;
   reactDomClient: unknown;
   jsxRuntime: unknown;
   jsxDevRuntime: unknown;
   pluginSdkApp: PluginSdkApp & typeof retiredPluginSdkAppMembers;
-  radixAlertDialog: unknown;
+  radixAlertDialog?: unknown;
   radixContextMenu: unknown;
   radixDialog: unknown;
   radixDropdownMenu: unknown;
-  radixHoverCard: unknown;
-  radixMenubar: unknown;
-  radixNavigationMenu: unknown;
+  radixHoverCard?: unknown;
+  radixMenubar?: unknown;
+  radixNavigationMenu?: unknown;
   radixPopover: unknown;
-  radixSelect: unknown;
+  radixSelect?: unknown;
   radixTooltip: unknown;
   sonner: unknown;
-  vaul: unknown;
+  vaul?: unknown;
   pierreDiffs?: unknown;
   pierreDiffsReact?: unknown;
   clsx: unknown;
@@ -224,6 +246,10 @@ type RuntimeHost = typeof globalThis & { __bbPluginRuntime?: BbPluginRuntime };
 export function installPluginRuntime(): BbPluginRuntime {
   const host = globalThis as RuntimeHost;
   host.__bbPluginRuntime ??= {
+    internal_DO_NOT_USE_dropdown_menu,
+    internal_DO_NOT_USE_dialog,
+    internal_DO_NOT_USE_context_menu,
+    internal_DO_NOT_USE_responsive_overlay,
     react,
     reactDom,
     reactDomClient,
@@ -233,18 +259,12 @@ export function installPluginRuntime(): BbPluginRuntime {
       ...pluginSdkAppImplementation,
       ...retiredPluginSdkAppMembers,
     },
-    radixAlertDialog,
     radixContextMenu,
     radixDialog,
     radixDropdownMenu,
-    radixHoverCard,
-    radixMenubar,
-    radixNavigationMenu,
     radixPopover,
-    radixSelect,
     radixTooltip,
     sonner: { ...sonner, toast: createPluginToast(sonner.toast) },
-    vaul,
     clsx,
     tailwindMerge,
     classVarianceAuthority,
@@ -254,19 +274,6 @@ export function installPluginRuntime(): BbPluginRuntime {
   };
   return host.__bbPluginRuntime;
 }
-
-const lazyRuntimeGroups = [
-  {
-    slots: ["pierreDiffs", "pierreDiffsReact"],
-    load: createRetryingModuleLoader(async () => {
-      const { pierreRuntimeSlots } = await import("./plugin-pierre-runtime");
-      return pierreRuntimeSlots;
-    }),
-  },
-] satisfies {
-  slots: (keyof BbPluginRuntime)[];
-  load: () => Promise<Partial<BbPluginRuntime>>;
-}[];
 
 async function fetchEnabledPluginList(queryClient: QueryClient) {
   for (;;) {
@@ -347,6 +354,7 @@ export function orderPluginFrontendCandidates(
   priorityPluginIds: readonly string[],
 ): PluginFrontendCandidate[] {
   const rank = (pluginId: string) => {
+    if (pluginId === "thread-list") return -1;
     const index = priorityPluginIds.indexOf(pluginId);
     return index === -1 ? priorityPluginIds.length : index;
   };
@@ -424,6 +432,13 @@ export interface PluginFrontendReconcileDeps {
   flushSlotBatch: () => void;
   warn: (message: string) => void;
   priorityPluginIds: () => readonly string[];
+  waitForDeferredLoad?: () => Promise<void>;
+  waitForComposerPaint?: () => Promise<void>;
+  yieldBetweenDeferredLoads?: () => Promise<void>;
+  downloadDeferredModule?: (url: string) => Promise<void>;
+  runDeferredWork?: <T>(work: () => Promise<T>) => Promise<T | undefined>;
+  prepareDeferredRuntime?: (id: string) => Promise<void>;
+  beforePublish?: () => Promise<void>;
   mountTimeoutMs?: number;
   cssReadyTimeoutMs?: number;
   diagnosticsChanged?: () => void;
@@ -753,6 +768,17 @@ async function reconcileCandidates(
     priorityPluginIds.includes(candidate.pluginId),
   ).length;
   let untaken = 0;
+  let releasePriority: () => void = () => {};
+  const priorityReady = new Promise<void>((resolve) => {
+    releasePriority = resolve;
+  });
+  const hasDeferredCandidates = ordered.some(
+    (candidate) => !priorityPluginIds.includes(candidate.pluginId),
+  );
+  const deferredReady =
+    deps.waitForDeferredLoad && hasDeferredCandidates
+      ? priorityReady.then(deps.waitForDeferredLoad)
+      : Promise.resolve();
   const prefetched = new Set<string>();
   const prefetchAhead = () => {
     if (pendingPriority > 0) return;
@@ -771,19 +797,62 @@ async function reconcileCandidates(
       deps.prefetchModule(candidate.bundle.jsUrl);
     }
   };
-  if (pendingPriority === 0) priorityLoaded();
+  if (pendingPriority === 0) {
+    priorityLoaded();
+    releasePriority();
+  }
+  let deferredLane = Promise.resolve();
   await runWithConcurrencyLimit(
     ordered,
     PLUGIN_FRONTEND_LOAD_CONCURRENCY,
     async (candidate, index) => {
+      if (!priorityPluginIds.includes(candidate.pluginId)) {
+        await deferredReady;
+        if (deps.yieldBetweenDeferredLoads) {
+          const previous = deferredLane;
+          let release = () => {};
+          deferredLane = new Promise<void>((resolve) => {
+            release = resolve;
+          });
+          await previous;
+          try {
+            if (state.tornDown) return;
+            if (!isCandidateApplied(candidate, state))
+              await deps.yieldBetweenDeferredLoads();
+            if (!state.tornDown)
+              await reconcileCandidate(candidate, state, {
+                ...deps,
+                prefetchModule: () => {},
+                beforePublish: deps.yieldBetweenDeferredLoads,
+                importModule: async (url) => {
+                  if (deps.downloadDeferredModule) {
+                    await deps.downloadDeferredModule(url);
+                    await deps.yieldBetweenDeferredLoads?.();
+                  }
+                  return deps.runDeferredWork
+                    ? deps.runDeferredWork(() => deps.importModule(url))
+                    : deps.importModule(url);
+                },
+              });
+          } finally {
+            release();
+          }
+          return;
+        }
+      }
       untaken = index + 1;
       prefetchAhead();
       try {
-        await reconcileCandidate(candidate, state, deps);
+        if (candidate.pluginId === "bb--composer" && deps.waitForComposerPaint)
+          await deps.waitForComposerPaint();
+        if (!state.tornDown) await reconcileCandidate(candidate, state, deps);
       } finally {
         if (priorityPluginIds.includes(candidate.pluginId)) {
           pendingPriority -= 1;
-          if (pendingPriority === 0) priorityLoaded();
+          if (pendingPriority === 0) {
+            priorityLoaded();
+            releasePriority();
+          }
         }
       }
     },
@@ -833,6 +902,12 @@ async function reconcileCandidate(
         importModule: deps.importModule,
         prefetchModule: deps.prefetchModule,
         warn: deps.warn,
+        ...(deps.beforePublish
+          ? {
+              prepareDeferredRuntime: deps.prepareDeferredRuntime,
+              runDeferredWork: deps.runDeferredWork,
+            }
+          : {}),
       },
     );
   if (candidate.bundle.cssUrl !== null)
@@ -911,6 +986,7 @@ async function reconcileCandidate(
   const generation = (state.generationByPluginId.get(pluginId) ?? 0) + 1;
   state.generationByPluginId.set(pluginId, generation);
   await applyCssBeforePublish(pluginId, candidate.bundle.cssUrl, deps);
+  await deps.beforePublish?.();
   const replacesActiveGeneration = state.activeGenerations.has(pluginId);
   const cssRelease =
     collected.contentScripts.length > 0 ? deps.retainCss(pluginId) : null;
@@ -1070,6 +1146,7 @@ function publishBrowserDiagnostics(): void {
 const PLUGIN_SLOT_BATCH_MAX_HOLD_MS = 150;
 
 const PLUGIN_FRONTEND_IMPORT_RETRY_DELAYS_MS = [500, 2_000];
+const deferredFrontendSchedule = createDeferredPluginFrontendSchedule();
 
 const browserReconcileDeps: PluginFrontendReconcileDeps = {
   fetchCandidates: fetchFrontendCandidates,
@@ -1080,6 +1157,18 @@ const browserReconcileDeps: PluginFrontendReconcileDeps = {
   prefetchModule: prefetchPluginModule,
   retainCss: retainPluginCss,
   priorityPluginIds: () => frontendPriorityPluginIds(window.location.pathname),
+  waitForComposerPaint: async () => {
+    if (window.location.pathname !== "/") return;
+    await whenHomeComposerReady();
+    await new Promise<void>((resolve) =>
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+    );
+  },
+  waitForDeferredLoad: deferredFrontendSchedule.waitForDeferredLoad,
+  yieldBetweenDeferredLoads: deferredFrontendSchedule.yieldBetweenDeferredLoads,
+  downloadDeferredModule: deferredFrontendSchedule.downloadDeferredModule,
+  runDeferredWork: deferredFrontendSchedule.runDeferredWork,
+  prepareDeferredRuntime: deferredFrontendSchedule.prepareDeferredRuntime,
   resetCrashedSlots: resetCrashedPluginSlots,
   setRegistrations: setPluginSlotRegistrations,
   removeRegistrations: removePluginSlotRegistrations,
@@ -1151,12 +1240,14 @@ export function bootPluginFrontends(): Promise<void> {
     installPluginFrontendPageLifecycle();
     await reconcilePluginFrontends(state, browserReconcileDeps);
     publishLoadFailed();
-  })().catch((error: unknown) => {
-    setPluginFrontendLoadFailed(true);
-    console.warn(
-      `plugin frontend boot failed: ${error instanceof Error ? error.message : String(error)}`,
-    );
-  });
+  })()
+    .catch((error: unknown) => {
+      setPluginFrontendLoadFailed(true);
+      console.warn(
+        `plugin frontend boot failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    })
+    .finally(deferredFrontendSchedule.dispose);
   return bootPromise;
 }
 
@@ -1180,6 +1271,7 @@ async function runLiveReconcile(): Promise<void> {
       `plugin frontend reconcile failed: ${error instanceof Error ? error.message : String(error)}`,
     );
   } finally {
+    deferredFrontendSchedule.dispose();
     setPluginFrontendReconcilePending(false);
   }
 }

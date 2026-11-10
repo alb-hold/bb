@@ -16,6 +16,10 @@ const TERMINAL_SCREEN_STATE_PARTIAL_SEQUENCE_LIMIT = 64 * 1024;
 const HYPERLINK_URI_LIMIT = 2048;
 const HYPERLINK_ID_LIMIT = 256;
 const require = createRequire(import.meta.url);
+type TerminalScreenSnapshot = TerminalScreenResponse & {
+  checkpointSeq: number;
+  dataBase64: string;
+};
 const Terminal = require("@xterm/headless")
   .Terminal as typeof import("@xterm/headless").Terminal;
 const { Unicode11Addon } =
@@ -265,21 +269,54 @@ function visibleSolidRows(terminal: HeadlessTerminal): string[] {
   return rows;
 }
 
-function serializeVisibleScreen(terminal: HeadlessTerminal): {
-  data: Buffer;
-  response: TerminalScreenResponse;
-} {
+function* serializeScreenRows(
+  terminal: HeadlessTerminal,
+  history = false,
+  maxBytes = Infinity,
+): Generator<
+  void,
+  { buffers: Buffer[]; bytes: number; response: TerminalScreenResponse } | null
+> {
   const buffer = terminal.buffer.active;
   const rows: string[] = [];
-  const parts = [`${ESC}[?6l${ESC}[?7l${ESC}[?25l${ESC}[2J`];
-  for (let row = 0; row < terminal.rows; row += 1) {
-    const line = buffer.getLine(buffer.baseY + row);
+  const parts = [
+    history ? `${ESC}c${ESC}[?25l` : `${ESC}[?6l${ESC}[?7l${ESC}[?25l${ESC}[2J`,
+  ];
+  const buffers: Buffer[] = [];
+  let bytes = 0;
+  const flush = () => {
+    const data = encodeUtf8(parts.join(""));
+    parts.length = 0;
+    buffers.push(data);
+    bytes += data.length;
+    return bytes < maxBytes;
+  };
+  const firstRow = history ? 0 : buffer.baseY;
+  const endRow = buffer.baseY + terminal.rows;
+  if (history && buffer.getLine(0)?.isWrapped)
+    parts.push(" ".repeat(terminal.cols));
+  const reusableCell = buffer.getNullCell();
+  for (let row = firstRow; row < endRow; row += 1) {
+    const line = buffer.getLine(row);
     let text = "";
     let previousSgr = "";
     let activeUrlId = 0;
-    parts.push(`${ESC}[${row + 1};1H`);
-    for (let col = 0; col < terminal.cols; col += 1) {
-      const cell = line?.getCell(col);
+    if (!history) parts.push(`${ESC}[${row - buffer.baseY + 1};1H`);
+    else if (row > 0 && !line?.isWrapped) parts.push("\r\n");
+    let width = terminal.cols;
+    if (!buffer.getLine(row + 1)?.isWrapped) {
+      while (width > 0) {
+        const cell = line?.getCell(width - 1, reusableCell);
+        if (
+          cell &&
+          (cell.getChars() !== "" || cell.isBgRGB() || cell.isBgPalette())
+        )
+          break;
+        width -= 1;
+      }
+    }
+    for (let col = 0; col < width; col += 1) {
+      const cell = line?.getCell(col, reusableCell);
       if (cell === undefined || cell.getWidth() === 0) continue;
       const chars = cell.getChars() || " ";
       text += chars;
@@ -296,10 +333,16 @@ function serializeVisibleScreen(terminal: HeadlessTerminal): {
         parts.push(sgr);
         previousSgr = sgr;
       }
-      parts.push(chars);
+      if (cell.getChars() === "" && !buffer.getLine(row + 1)?.isWrapped)
+        parts.push(`${ESC}[X${ESC}[C`);
+      else parts.push(chars);
     }
     if (activeUrlId !== 0) parts.push(HYPERLINK_CLOSE);
-    rows.push(text.trimEnd());
+    if (row >= buffer.baseY) rows.push(text.trimEnd());
+    if ((row - firstRow + 1) % 8 === 0) {
+      if (!flush()) return null;
+      yield;
+    }
   }
   const cursorCell = buffer
     .getLine(buffer.baseY + buffer.cursorY)
@@ -317,8 +360,10 @@ function serializeVisibleScreen(terminal: HeadlessTerminal): {
   }
   parts.push(restoreModes(terminal));
   parts.push(`${ESC}[${buffer.cursorY + 1};${buffer.cursorX + 1}H`);
+  if (!flush()) return null;
   return {
-    data: encodeUtf8(parts.join("")),
+    buffers,
+    bytes,
     response: {
       rows,
       cursor: { col: buffer.cursorX, row: buffer.cursorY },
@@ -330,12 +375,35 @@ function serializeVisibleScreen(terminal: HeadlessTerminal): {
   };
 }
 
+function serializeVisibleScreen(terminal: HeadlessTerminal) {
+  const rows = serializeScreenRows(terminal);
+  let result = rows.next();
+  while (!result.done) result = rows.next();
+  if (result.value === null)
+    throw new Error("Visible screen serialization exceeded its limit");
+  return {
+    data: Buffer.concat(result.value.buffers, result.value.bytes),
+    response: result.value.response,
+  };
+}
+
+async function serializeHistory(terminal: HeadlessTerminal, maxBytes: number) {
+  const rows = serializeScreenRows(terminal, true, maxBytes);
+  let result = rows.next();
+  while (!result.done) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    result = rows.next();
+  }
+  return result.value;
+}
+
 export class TerminalScreenState {
   private readonly terminal: HeadlessTerminal;
   private readonly pendingWork: Array<
     | { kind: "base64"; data: string }
     | { kind: "bytes"; data: Uint8Array }
     | { kind: "resize"; cols: number; rows: number }
+    | { kind: "read"; read: () => void }
   > = [];
   private pendingWorkBytes = 0;
   private cols: number;
@@ -348,18 +416,43 @@ export class TerminalScreenState {
   private readonly parserState = createTerminalReplayParserState();
   private partialSequence: Uint8Array = new Uint8Array(0);
   private partialSequenceOverflow = false;
+  private replayCompatible = true;
+  private readonly replayParser = createTerminalReplayParserState();
+  private replayOscCommand = "";
+  private replayPreviousByte = 0;
+  private readonly replayMetadata = new Map<number, string>();
+  private replayCursorStyle = "";
+  private replayBatchBytes = 8 * 1024;
 
-  constructor(cols: number, rows: number) {
+  constructor(
+    cols: number,
+    rows: number,
+    private readonly captureReplay = false,
+  ) {
     this.cols = cols;
     this.rows = rows;
     this.terminal = new Terminal({
       allowProposedApi: true,
       cols,
       rows,
-      scrollback: TERMINAL_SCREEN_STATE_SCROLLBACK,
+      scrollback: captureReplay ? 10_000 : TERMINAL_SCREEN_STATE_SCROLLBACK,
     });
     this.terminal.loadAddon(new Unicode11Addon());
     this.terminal.unicode.activeVersion = "11";
+    for (const identifier of captureReplay ? [0, 1, 2, 7, 9] : []) {
+      this.terminal.parser.registerOscHandler(identifier, (payload) => {
+        if (payload.length > TERMINAL_SCREEN_STATE_PARTIAL_SEQUENCE_LIMIT)
+          this.replayCompatible = false;
+        else if (identifier !== 9 || payload.startsWith("4;")) {
+          this.replayMetadata.delete(identifier);
+          this.replayMetadata.set(
+            identifier,
+            `${ESC}]${identifier};${payload}${ESC}\\`,
+          );
+        }
+        return false;
+      });
+    }
   }
 
   push(seq: number, data: Uint8Array): void {
@@ -383,6 +476,79 @@ export class TerminalScreenState {
   }
 
   private trackPartialSequence(data: Uint8Array): void {
+    if (this.captureReplay && this.replayCompatible) {
+      for (const byte of data) {
+        const state = this.replayParser;
+        if (
+          state.escape === "none" &&
+          state.controlString === null &&
+          state.utf8Remaining === 0 &&
+          byte >= 0x20 &&
+          byte <= 0x7e
+        ) {
+          this.replayPreviousByte = byte;
+          continue;
+        }
+        if (state.controlString === "osc") {
+          if (this.replayOscCommand !== ";") {
+            if (byte === 0x3b) {
+              if (
+                !["0", "1", "2", "7", "8", "9", "7791"].includes(
+                  this.replayOscCommand,
+                )
+              )
+                this.replayCompatible = false;
+              this.replayOscCommand = ";";
+            } else if (this.replayOscCommand.length < 8)
+              this.replayOscCommand += String.fromCharCode(byte);
+            else this.replayCompatible = false;
+          }
+          advanceTerminalReplayParserByte(state, byte);
+          if (!this.replayCompatible) break;
+          continue;
+        }
+        this.replayOscCommand = "";
+        const escapeSupported =
+          state.escape !== "escape" ||
+          [0x5b, 0x5d, 0x3d, 0x3e, 0x63, 0x4d, 0x44, 0x45].includes(byte);
+        const modeSupported =
+          (byte !== 0x68 && byte !== 0x6c) ||
+          /^\?(?:(?:1|6|7|25|45|1000|1002|1003|1004|2004|2026|9001);?)+$/u.test(
+            state.csiParameters,
+          ) ||
+          state.csiParameters === "4";
+        const cursorStyle =
+          state.escape === "csi" &&
+          byte === 0x71 &&
+          /^[0-6]? $/u.test(state.csiParameters);
+        if (cursorStyle)
+          this.replayCursorStyle = `${ESC}[${state.csiParameters}q`;
+        const csiSupported =
+          state.escape !== "csi" ||
+          byte < 0x40 ||
+          byte > 0x7e ||
+          cursorStyle ||
+          ("ABCDEFGHJKLMPSTXZ`acdefhlmnr".includes(String.fromCharCode(byte)) &&
+            modeSupported &&
+            /^[?0-9;:]*$/u.test(state.csiParameters));
+        if (
+          !escapeSupported ||
+          !csiSupported ||
+          state.escape === "csi-ignore" ||
+          byte === 0x0e ||
+          byte === 0x0f ||
+          byte === 0x0b ||
+          byte === 0x0c ||
+          (state.utf8Remaining === 0 && byte >= 0x80 && byte <= 0x9f) ||
+          (byte === 0x0a && this.replayPreviousByte !== 0x0d)
+        )
+          this.replayCompatible = false;
+        if (!this.replayCompatible) break;
+        this.replayPreviousByte = byte;
+        advanceTerminalReplayParserByte(state, byte);
+      }
+    }
+    if (this.captureReplay) return;
     const scan = { ...this.parserState };
     advanceTerminalReplayParserBytes(this.parserState, data);
     if (isTerminalReplaySafeBoundary(this.parserState)) {
@@ -411,6 +577,13 @@ export class TerminalScreenState {
 
   private invalidate(): void {
     this.valid = false;
+    this.clearPendingWork();
+  }
+
+  private clearPendingWork(): void {
+    for (const work of this.pendingWork) {
+      if (work.kind === "read") work.read();
+    }
     this.pendingWork.length = 0;
     this.pendingWorkBytes = 0;
   }
@@ -432,10 +605,11 @@ export class TerminalScreenState {
     work:
       | { kind: "base64"; data: string }
       | { kind: "bytes"; data: Uint8Array }
-      | { kind: "resize"; cols: number; rows: number },
+      | { kind: "resize"; cols: number; rows: number }
+      | { kind: "read"; read: () => void },
   ): void {
     const bytes =
-      work.kind === "resize"
+      work.kind === "resize" || work.kind === "read"
         ? 0
         : work.kind === "bytes"
           ? work.data.byteLength
@@ -458,30 +632,79 @@ export class TerminalScreenState {
             const drain = () => {
               const next = this.pendingWork.shift();
               if (this.disposed || !this.valid || next === undefined) {
-                this.pendingWork.length = 0;
-                this.pendingWorkBytes = 0;
+                if (next?.kind === "read") next.read();
+                this.clearPendingWork();
                 this.draining = false;
                 resolve();
                 return;
               }
-              if (next.kind !== "resize") {
+              if (next.kind !== "resize" && next.kind !== "read") {
                 this.pendingWorkBytes -=
                   next.kind === "bytes"
                     ? next.data.byteLength
                     : Buffer.byteLength(next.data, "utf8");
               }
               try {
+                if (next.kind === "read") {
+                  next.read();
+                  setImmediate(drain);
+                  return;
+                }
                 if (next.kind === "resize") {
                   this.terminal.resize(next.cols, next.rows);
                   setImmediate(drain);
                   return;
                 }
-                const data =
+                let data =
                   next.kind === "base64"
                     ? Buffer.from(next.data, "base64")
                     : next.data;
+                const batch = [data];
+                let bytes = data.byteLength;
+                while (this.pendingWork.length > 0) {
+                  const queued = this.pendingWork[0];
+                  if (
+                    !queued ||
+                    queued.kind === "resize" ||
+                    queued.kind === "read"
+                  )
+                    break;
+                  const size =
+                    queued.kind === "base64"
+                      ? Buffer.byteLength(queued.data, "base64")
+                      : queued.data.byteLength;
+                  if (bytes + size > this.replayBatchBytes) break;
+                  this.pendingWork.shift();
+                  this.pendingWorkBytes -=
+                    queued.kind === "base64"
+                      ? Buffer.byteLength(queued.data, "utf8")
+                      : size;
+                  batch.push(
+                    queued.kind === "base64"
+                      ? Buffer.from(queued.data, "base64")
+                      : queued.data,
+                  );
+                  bytes += size;
+                }
+                if (batch.length > 1) data = Buffer.concat(batch);
+                const started = performance.now();
                 this.trackPartialSequence(data);
+                if (this.captureReplay && !this.replayCompatible) {
+                  setImmediate(drain);
+                  return;
+                }
                 this.terminal.write(data, () => {
+                  const elapsed = performance.now() - started;
+                  if (elapsed > 8)
+                    this.replayBatchBytes = Math.max(
+                      8 * 1024,
+                      Math.floor(this.replayBatchBytes / 2),
+                    );
+                  else if (elapsed < 4)
+                    this.replayBatchBytes = Math.min(
+                      64 * 1024,
+                      this.replayBatchBytes + 8 * 1024,
+                    );
                   setImmediate(drain);
                 });
               } catch (error) {
@@ -498,17 +721,36 @@ export class TerminalScreenState {
       });
   }
 
-  async snapshot(): Promise<
-    | (TerminalScreenResponse & { checkpointSeq: number; dataBase64: string })
-    | null
-  > {
-    await this.pending;
+  snapshot(): Promise<TerminalScreenSnapshot | null> {
+    const checkpointSeq = this.nextSeq;
+    return this.readQueued(() => this.serializeSnapshot(checkpointSeq));
+  }
+
+  private readQueued<T>(read: () => T | null): Promise<T | null> {
+    if (this.disposed || !this.valid) return Promise.resolve(null);
+    return new Promise((resolve, reject) => {
+      this.enqueue({
+        kind: "read",
+        read: () => {
+          try {
+            resolve(this.disposed || !this.valid ? null : read());
+          } catch (error) {
+            reject(error);
+          }
+        },
+      });
+    });
+  }
+
+  private serializeSnapshot(
+    checkpointSeq: number,
+  ): TerminalScreenSnapshot | null {
     if (this.disposed || !this.valid) return null;
     if (this.partialSequenceOverflow) return null;
     const snapshot = serializeVisibleScreen(this.terminal);
     return {
       ...snapshot.response,
-      checkpointSeq: this.nextSeq,
+      checkpointSeq,
       dataBase64: (this.partialSequence.length === 0
         ? snapshot.data
         : Buffer.concat([snapshot.data, this.partialSequence])
@@ -516,27 +758,70 @@ export class TerminalScreenState {
     };
   }
 
-  async promptScreen(): Promise<{
-    cursor: { col: number; row: number };
-    rows: string[];
-    solidRows: string[];
+  async replaySnapshot(maxBytes = Infinity): Promise<{
+    checkpointSeq: number;
+    dataBase64: string;
   } | null> {
     await this.pending;
-    if (this.disposed || !this.valid) return null;
-    if (this.partialSequenceOverflow) return null;
-    const { response } = serializeVisibleScreen(this.terminal);
+    if (
+      !this.captureReplay ||
+      this.disposed ||
+      !this.valid ||
+      !this.replayCompatible ||
+      !isTerminalReplaySafeBoundary(this.replayParser) ||
+      this.terminal.buffer.active.type !== "normal" ||
+      (this.terminal.buffer.active.getLine(0)?.isWrapped &&
+        this.terminal.buffer.active.baseY !== 10_000) ||
+      this.terminal.buffer.active.cursorX >= this.terminal.cols
+    )
+      return null;
+    const internalBuffer = readObject(
+      readObject(readObject(this.terminal, "_core"), "_bufferService"),
+      "buffer",
+    );
+    const top = readObject(internalBuffer, "scrollTop");
+    const bottom = readObject(internalBuffer, "scrollBottom");
+    if (typeof top !== "number" || typeof bottom !== "number") return null;
+    const buffer = this.terminal.buffer.active;
+    const row = buffer.cursorY - (this.terminal.modes.originMode ? top : 0);
+    const history = await serializeHistory(this.terminal, maxBytes);
+    if (history === null) return null;
+    const trailer = encodeUtf8(
+      `${ESC}[?6l${ESC}[${top + 1};${bottom + 1}r${restoreModes(this.terminal)}${ESC}[${row + 1};${buffer.cursorX + 1}H${[...this.replayMetadata.values()].join("")}${this.replayCursorStyle}`,
+    );
+    if (history.bytes + trailer.length >= maxBytes) return null;
+    const encoded: string[] = [];
+    let carry: Buffer = Buffer.alloc(0);
+    for (const buffer of [...history.buffers, trailer]) {
+      const data = carry.length === 0 ? buffer : Buffer.concat([carry, buffer]);
+      const end = data.length - (data.length % 3);
+      encoded.push(data.subarray(0, end).toString("base64"));
+      carry = data.subarray(end);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    if (carry.length > 0) encoded.push(carry.toString("base64"));
     return {
-      cursor: response.cursor,
-      rows: response.rows,
-      solidRows: visibleSolidRows(this.terminal),
+      checkpointSeq: this.nextSeq,
+      dataBase64: encoded.join(""),
     };
+  }
+
+  promptScreen() {
+    return this.readQueued(() => {
+      if (this.partialSequenceOverflow) return null;
+      const { response } = serializeVisibleScreen(this.terminal);
+      return {
+        cursor: response.cursor,
+        rows: response.rows,
+        solidRows: visibleSolidRows(this.terminal),
+      };
+    });
   }
 
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
-    this.pendingWork.length = 0;
-    this.pendingWorkBytes = 0;
+    this.clearPendingWork();
     this.terminal.dispose();
   }
 }

@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useSyncExternalStore } from "react";
 import type { PromptTextMention } from "@bb/domain";
 import type { PromptDraftAttachment, PromptDraftState } from "@bb/client-core";
 import {
@@ -151,6 +151,8 @@ function ensurePromptDraftStorageObserver(): void {
     emitPromptDraftChange(event.key);
   });
   window.addEventListener("pagehide", flushPendingPromptDraftPersists);
+  window.addEventListener("blur", flushPendingPromptDraftPersists);
+  document.addEventListener("focusout", flushPendingPromptDraftPersists);
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "hidden") {
       flushPendingPromptDraftPersists();
@@ -332,6 +334,13 @@ export function usePromptDraftController(
   scope: PromptDraftScope,
 ): PromptDraftController {
   const storageKey = getPromptDraftStorageKey(scope);
+  useEffect(
+    () => () => {
+      if (pendingPromptDraftStorageKeys.has(storageKey))
+        persistPromptDraftCache(storageKey);
+    },
+    [storageKey],
+  );
   return useMemo(() => createPromptDraftController(storageKey), [storageKey]);
 }
 

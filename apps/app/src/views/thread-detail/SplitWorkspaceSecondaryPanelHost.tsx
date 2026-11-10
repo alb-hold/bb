@@ -232,6 +232,7 @@ export function SplitWorkspaceSecondaryPanelHost({
             variant="ghost"
             size="icon"
             className={HEADER_ICON_BUTTON_CLASS}
+            data-compact-touch="header"
             aria-label={
               shortcut ? `${toggleLabel} (${shortcut.label})` : toggleLabel
             }
@@ -268,10 +269,7 @@ export function SplitWorkspaceSecondaryPanelHost({
             minSize={minimumSize.min * 100}
             order={1}
             style={{ overflow: "clip" }}
-            className={cn(
-              "min-w-0 transition-[flex-grow,flex-basis]",
-              PANEL_COLLAPSE_TRANSITION_CLASS,
-            )}
+            className="min-w-0"
           >
             <div className="relative flex h-full min-h-0 min-w-0">
               {children}
@@ -287,7 +285,7 @@ export function SplitWorkspaceSecondaryPanelHost({
                   hitAreaMargins={{ coarse: 0, fine: 0 }}
                   tabIndex={-1}
                   className={cn(
-                    "relative shrink-0 overflow-visible transition-[width,opacity,background-color] hover:bg-ring/40 data-[dragging=true]:bg-ring/40",
+                    "relative shrink-0 overflow-visible transition-[opacity,background-color] hover:bg-ring/40 data-[dragging=true]:bg-ring/40",
                     isSidebarFramed ? "bg-border" : "bg-border-seam",
                     PANEL_RESIZE_HANDLE_LAYER_CLASS,
                     PANEL_COLLAPSE_TRANSITION_CLASS,
@@ -315,10 +313,7 @@ export function SplitWorkspaceSecondaryPanelHost({
                   onResize={handleEmptyPanelResize}
                   order={2}
                   style={{ overflow: "clip" }}
-                  className={cn(
-                    "min-w-0 transition-[flex-grow,flex-basis]",
-                    PANEL_COLLAPSE_TRANSITION_CLASS,
-                  )}
+                  className="min-w-0"
                 >
                   <div
                     data-testid="split-workspace-empty-panel-state"

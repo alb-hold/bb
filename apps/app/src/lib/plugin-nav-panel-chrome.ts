@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { z } from "zod";
 import { createLastKnownCache } from "@/lib/last-known-cache";
 import {
@@ -94,14 +94,13 @@ export function rememberPluginNavPanelChrome(
 export function usePluginNavPanelChrome(): PluginNavPanelChromeEntry[] {
   const settled = usePluginFrontendsSettled();
   const { navPanels } = usePluginSlots();
-  const remembered = useMemo(
+  const [remembered] = useState(
     () => readRememberedPluginNavPanelChrome(settled),
-    [settled],
   );
-  return useMemo(
-    () => mergePluginNavPanelChrome(remembered, navPanels),
-    [navPanels, remembered],
-  );
+  return useMemo(() => {
+    const entries = mergePluginNavPanelChrome(remembered, navPanels);
+    return settled ? entries.filter((entry) => entry.panel !== null) : entries;
+  }, [navPanels, remembered, settled]);
 }
 
 export function useRememberPluginNavPanelChrome(): void {

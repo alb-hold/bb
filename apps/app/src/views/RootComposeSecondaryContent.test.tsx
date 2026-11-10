@@ -170,7 +170,7 @@ function renderRootCompose(args: RenderRootComposeArgs) {
               renderArgs.isSecondaryPanelOpen,
             )}
           >
-            <div data-testid="root-compose-content" />
+            <div data-testid="root-compose-content" tabIndex={0} />
           </RootComposeSecondaryContent>
         </CompactViewportOverrideProvider>
       </Provider>,
@@ -194,7 +194,30 @@ afterEach(() => {
 });
 
 describe("RootComposeSecondaryContent desktop layout", () => {
-  it("mounts compact scroll content only while the compact home layout is active and keeps the composer mounted", () => {
+  it("realizes the first opened panel while preserving the composer node and focus", async () => {
+    const view = renderRootCompose({
+      isCompactViewport: false,
+      isSecondaryPanelOpen: false,
+    });
+    const composer = screen.getByTestId("root-compose-content");
+    composer.focus();
+    expect(screen.queryByTestId("inline-secondary-panel")).toBeNull();
+    view.rerenderWith({ isSecondaryPanelOpen: true });
+    expect(
+      (await screen.findByTestId("inline-secondary-panel")).getAttribute(
+        "data-open",
+      ),
+    ).toBe("true");
+    expect(screen.getByTestId("root-compose-content")).toBe(composer);
+    expect(document.activeElement).toBe(composer);
+    view.rerenderWith({ isSecondaryPanelOpen: false });
+    expect(
+      screen.getByTestId("inline-secondary-panel").getAttribute("data-open"),
+    ).toBe("false");
+    expect(screen.getByTestId("root-compose-content")).toBe(composer);
+  });
+
+  it("moves Recent between desktop and compact layouts while keeping the composer mounted", () => {
     const compactContent = (
       <ul data-testid="compact-recents">
         {Array.from({ length: 1000 }, (_, index) => (
@@ -211,14 +234,18 @@ describe("RootComposeSecondaryContent desktop layout", () => {
           onToggleSecondaryPanel={noop}
           secondaryPanel={createSecondaryPanel(false)}
         >
-          <div data-testid="root-compose-content" />
+          <div data-testid="root-compose-content" tabIndex={0} />
         </RootComposeSecondaryContent>
       </CompactViewportOverrideProvider>
     );
     const view = render(content(false));
     const composer = screen.getByTestId("root-compose-content");
 
-    expect(screen.queryByTestId("compact-recents")).toBeNull();
+    expect(
+      screen
+        .getByTestId("root-compose-desktop-recents")
+        .contains(screen.getByTestId("compact-recents")),
+    ).toBe(true);
     expect(screen.getByTestId("plugin-homepage-sections")).not.toBeNull();
 
     view.rerender(content(true));
@@ -229,7 +256,11 @@ describe("RootComposeSecondaryContent desktop layout", () => {
 
     view.rerender(content(false));
 
-    expect(screen.queryByTestId("compact-recents")).toBeNull();
+    expect(
+      screen
+        .getByTestId("root-compose-desktop-recents")
+        .contains(screen.getByTestId("compact-recents")),
+    ).toBe(true);
     expect(screen.getByTestId("root-compose-content")).toBe(composer);
     expect(screen.getByTestId("plugin-homepage-sections")).not.toBeNull();
   });

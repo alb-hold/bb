@@ -2,7 +2,7 @@ import type { SelectedLineRange, SelectionSide } from "@pierre/diffs";
 import {
   normalizeGitDiffPath,
   type ParsedGitDiffFile,
-} from "./git-diff-parsing";
+} from "./git-diff-metadata";
 
 type DiffPatchDisplayStyle = "unified" | "split";
 type DiffPatchLinePrefix = " " | "+" | "-";

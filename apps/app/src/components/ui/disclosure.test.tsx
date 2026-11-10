@@ -11,7 +11,7 @@ import { Provider, createStore } from "jotai";
 import { useState, type ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ExpandablePanel } from "./disclosure";
+import { CollapsibleHeader, ExpandablePanel } from "./disclosure";
 import { layoutAnimationInFlightCountAtom } from "./layoutAnimationAtoms.js";
 
 class ResizeObserverStub implements ResizeObserver {
@@ -282,3 +282,74 @@ describe("ExpandablePanel deferred body realization", () => {
     expect(screen.getByText("Expanded body")).toBe(body);
   });
 });
+
+it.each(["Ran 1 command", "Ran 1 tool"])(
+  "reserves an unclipped touch extension for %s between adjacent panels",
+  (summary) => {
+    vi.stubGlobal("ResizeObserver", ResizeObserverStub);
+    const { container } = render(
+      <div data-timeline-items="">
+        {[summary, "Next tool"].map((label) => (
+          <div data-timeline-row-id={label} key={label}>
+            <ExpandablePanel
+              isExpanded={false}
+              summaryContent={label}
+              headerToneClass="text-muted-foreground"
+              onToggle={vi.fn()}
+            >
+              Expanded body
+            </ExpandablePanel>
+          </div>
+        ))}
+      </div>,
+    );
+    const header = screen.getByRole("button", { name: summary });
+    expect(header.hasAttribute("data-compact-touch-summary")).toBe(true);
+    expect(header.classList.contains("overflow-visible")).toBe(true);
+    expect(
+      header.parentElement?.hasAttribute("data-timeline-disclosure-header"),
+    ).toBe(true);
+    for (
+      let node: HTMLElement | null = header;
+      node && node !== container;
+      node = node.parentElement
+    ) {
+      expect(node.className).not.toMatch(
+        /(?:^| )overflow-(?:hidden|clip)(?: |$)/,
+      );
+      expect(node.style.overflow).not.toMatch(/hidden|clip/);
+      expect(node.style.clipPath).toBe("");
+    }
+  },
+);
+
+it.each(["Ran 1 command", "Ran 1 tool", "Worked for 1s"])(
+  "shows a secondary-ink chevron at rest for %s and rotates it when opened",
+  (summary) => {
+    const onToggle = vi.fn();
+    const view = render(
+      <CollapsibleHeader
+        summaryContent={summary}
+        toneClassName="text-muted-foreground"
+        onToggle={onToggle}
+      />,
+    );
+    const header = screen.getByRole("button", { name: summary });
+    expect(header.hasAttribute("data-compact-touch-summary")).toBe(true);
+    const chevron = header.querySelector("svg");
+    expect(chevron?.classList.contains("opacity-100")).toBe(true);
+    expect(chevron?.classList.contains("text-muted-foreground")).toBe(true);
+    fireEvent.click(header);
+    expect(onToggle).toHaveBeenCalledOnce();
+    view.rerender(
+      <CollapsibleHeader
+        summaryContent={summary}
+        toneClassName="text-foreground"
+        onToggle={onToggle}
+        isExpanded
+      />,
+    );
+    expect(header.getAttribute("aria-expanded")).toBe("true");
+    expect(chevron?.classList.contains("rotate-90")).toBe(true);
+  },
+);

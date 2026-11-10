@@ -1,34 +1,82 @@
+import { preloadPluginModule } from "./plugin-module-preload";
+import { createSettledWorkSchedule } from "./input-idle-work";
+
 const requested = new Set<string>();
 
-async function downloadSplitAssets(id: string): Promise<void> {
+function splitAssets(id: string): string[] {
   const data = document.getElementById(`bb-prefetch-${id}`)?.textContent;
-  if (!data) return;
+  if (!data) return [];
   const urls: unknown = JSON.parse(data);
   if (!Array.isArray(urls) || !urls.every((url) => typeof url === "string"))
+    return [];
+  return urls;
+}
+
+async function downloadAsset(path: string): Promise<void> {
+  const url = new URL(path, document.baseURI).href;
+  if (requested.has(url) || performance.getEntriesByName(url).length > 0)
     return;
-  await Promise.all(
-    urls.map(async (path: string) => {
-      const url = new URL(path, document.baseURI).href;
-      if (requested.has(url) || performance.getEntriesByName(url).length > 0)
-        return;
-      requested.add(url);
-      try {
-        const response = await fetch(url, {
-          cache: "force-cache",
-          priority: "low",
-        });
-        if (!response.ok)
-          throw new Error(`Prefetch failed: ${response.status}`);
-        await response.arrayBuffer();
-      } catch {
-        requested.delete(url);
-      }
-    }),
-  );
+  requested.add(url);
+  try {
+    const response = await fetch(url, {
+      cache: "force-cache",
+      priority: "low",
+    });
+    if (!response.ok) throw new Error(`Prefetch failed: ${response.status}`);
+    await response.arrayBuffer();
+  } catch {
+    requested.delete(url);
+  }
+}
+
+async function downloadSplitAssets(id: string): Promise<void> {
+  await Promise.all(splitAssets(id).map(downloadAsset));
 }
 
 const importing = new Set<string>();
 const downloads = new Map<string, Promise<void>>();
+
+export async function downloadSplitInBackground(
+  id: string,
+  whenIdle: () => Promise<boolean>,
+  run = async (work: () => Promise<void>) => {
+    if (await whenIdle()) await work();
+  },
+): Promise<void> {
+  for (const path of splitAssets(id)) {
+    const url = new URL(path, document.baseURI).href;
+    if (importing.has(id)) return;
+    if (requested.has(url) || performance.getEntriesByName(url).length > 0)
+      continue;
+    await run(async () => {
+      if (!importing.has(id)) await downloadAsset(path);
+    });
+  }
+}
+
+export async function prepareBackgroundSplit(
+  id: string,
+  run: (work: () => Promise<void>) => Promise<void>,
+): Promise<void> {
+  for (const path of splitAssets(id)) {
+    const url = new URL(path, document.baseURI).href;
+    if (importing.has(id)) return;
+    if (!requested.has(url) && performance.getEntriesByName(url).length > 0)
+      continue;
+    await run(async () => {
+      if (!importing.has(id) && (await preloadPluginModule(url, "low")))
+        requested.add(url);
+    });
+  }
+  for (const path of splitAssets(id)) {
+    const url = new URL(path, document.baseURI).href;
+    if (importing.has(id)) return;
+    await run(async () => {
+      if (!importing.has(id) && requested.has(url))
+        await import(/* @vite-ignore */ url);
+    });
+  }
+}
 
 export function prepareSplitImport(id: string): Promise<void> {
   importing.add(id);
@@ -91,11 +139,21 @@ export function holdSplitPreloads(): () => void {
 }
 
 function drainPreloadQueue() {
-  drainScheduled = false;
-  if (pendingCriticalLoads > 0 || preloadHolds > 0) return;
-  const warmers = [...preloadQueue];
-  preloadQueue.clear();
-  for (const warm of warmers) void warm();
+  if (pendingCriticalLoads > 0 || preloadHolds > 0) {
+    drainScheduled = false;
+    return;
+  }
+  const schedule = createSettledWorkSchedule(() => true);
+  const warm = preloadQueue.values().next().value;
+  if (warm) preloadQueue.delete(warm);
+  void schedule
+    .run(warm ?? (() => Promise.resolve()))
+    .catch(() => undefined)
+    .finally(() => {
+      schedule.cancel();
+      drainScheduled = false;
+      scheduleDrain();
+    });
 }
 
 function scheduleDrain() {

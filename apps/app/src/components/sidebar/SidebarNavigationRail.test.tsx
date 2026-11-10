@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { SIDEBAR_RAIL_BUTTON_CLASS, SIDEBAR_FOOTER_ACTION_CLASS } from "@bb/shared-ui/sidebar-row-classes";
 import {
   act,
   cleanup,
@@ -356,6 +357,15 @@ afterEach(() => {
 });
 
 describe("Rail", () => {
+  it.each(["Home", "Plugins", "Skills", "Docs", "More", "Settings"])(
+    "gives %s a matching keyboard tooltip and accessible name", async (label) => {
+      renderRail(THREAD_PATH);
+      fireEvent.keyDown(document.body, { key: "Tab" });
+      act(() => railButton(label).focus());
+      expect((await screen.findByRole("tooltip")).textContent).toBe(label);
+    },
+  );
+
   it.each([{ metaKey: true }, { ctrlKey: true }])(
     "opens Settings in a browser tab with %j even when already active",
     (modifier) => {
@@ -429,7 +439,7 @@ describe("Rail", () => {
     expect(railButton("Automations")).toBeDefined();
   });
 
-  it("draws a remembered plugin panel before boot and keeps the same button when the plugin registers", async () => {
+  it("keeps remembered desktop slots as panels register and appends unseen panels after More", async () => {
     resetPluginSlotStoreForTest();
     resetPluginFrontendBootStateForTest();
     await registerNavigationPlugin();
@@ -441,9 +451,19 @@ describe("Rail", () => {
         title: "Demo board",
         icon: "columns",
       },
+      {
+        pluginId: "demo",
+        id: "notes",
+        path: "notes",
+        title: "Demo notes",
+        icon: "BookOpen",
+      },
     ]);
     renderRail(THREAD_PATH);
     const remembered = railButton("Demo board");
+    const initialLabels = railLabels();
+    expect(initialLabels.indexOf("Demo board")).toBeLessThan(initialLabels.indexOf("More"));
+    expect(initialLabels.indexOf("Demo notes")).toBeLessThan(initialLabels.indexOf("More"));
 
     act(() => {
       setPluginSlotRegistrations(
@@ -451,10 +471,24 @@ describe("Rail", () => {
         registrationSet({
           navPanels: [
             {
+              id: "notes",
+              title: "Demo notes",
+              icon: "BookOpen",
+              path: "notes",
+              component: () => null,
+            },
+            {
               id: "board",
               title: "Demo board",
               icon: "columns",
               path: "board",
+              component: () => null,
+            },
+            {
+              id: "archive",
+              title: "Demo archive",
+              icon: "Archive",
+              path: "archive",
               component: () => null,
             },
           ],
@@ -464,6 +498,8 @@ describe("Rail", () => {
     });
 
     expect(railButton("Demo board")).toBe(remembered);
+    expect(railLabels().filter((label) => label !== "Demo archive")).toEqual(initialLabels);
+    expect(railLabels().indexOf("Demo archive")).toBeGreaterThan(railLabels().indexOf("More"));
   });
 
   it("drops a remembered plugin panel that never registers once frontends have settled", async () => {
@@ -846,12 +882,16 @@ describe("Rail", () => {
     const list = within(editor).getByRole("list", {
       name: "Sidebar navigation",
     });
+    expect(within(list).getAllByRole("checkbox")).toHaveLength(4);
+    for (const label of ["Search threads", "Plugins", "Skills", "Docs"]) {
+      expect(within(list).getByRole("checkbox", { name: new RegExp(label, "u") })).toBeTruthy();
+    }
     fireEvent.click(within(list).getByRole("checkbox", { name: /Skills/u }));
     expect(railLabels()).toEqual([
       "Home",
       "Plugins",
-      "Docs",
       "More",
+      "Docs",
       "Settings",
     ]);
   });
@@ -1034,4 +1074,10 @@ describe("Rail", () => {
     ]);
     expect(screen.getByRole("button", { name: "New thread" })).toBeDefined();
   });
+});
+
+it("preserves the sidebar selected surface and normalizes footer glyphs", () => {
+  expect(SIDEBAR_RAIL_BUTTON_CLASS).toContain("aria-[current=page]:bg-state-active");
+  expect(SIDEBAR_RAIL_BUTTON_CLASS).toContain("text-sidebar-foreground");
+  expect(SIDEBAR_FOOTER_ACTION_CLASS).toContain("[&_[data-icon-root]]:size-(--bb-sidebar-control-icon-size)");
 });

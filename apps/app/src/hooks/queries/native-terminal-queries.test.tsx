@@ -2,6 +2,7 @@
 
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import type { NativeTerminalThread } from "@bb/server-contract";
+import { prefetchTerminalSocket } from "@/components/thread/terminal/terminal-socket-prefetch";
 import { sdk } from "@/lib/sdk";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -20,10 +21,19 @@ vi.mock("@/components/thread/terminal/terminal-modules", () => ({
   preloadTerminalModules: preloadModules,
 }));
 
+vi.mock("@/components/thread/terminal/terminal-socket-prefetch", () => ({
+  prefetchTerminalSocket: vi.fn(),
+  discardPrefetchedTerminalSocket: vi.fn(),
+}));
+vi.mock("@/lib/ws", () => ({
+  wsManager: { getDeviceHandoffClientToken: () => undefined },
+}));
+
 vi.mock("@/lib/sdk", () => ({
   sdk: {
     nativeTerminals: { get: vi.fn(), open: vi.fn() },
     threads: { send: vi.fn() },
+    terminals: { experimental_screen: vi.fn().mockResolvedValue(null) },
   },
 }));
 
@@ -32,8 +42,11 @@ const NATIVE_VIEW = {
   providerId: "codex",
   displayName: "Codex",
   nativeSessionId: null,
+  model: null,
   canReturnToChat: false,
-  terminal: null,
+  terminal: { id: "term-prefetch", status: "running" } as NonNullable<
+    NativeTerminalThread["terminal"]
+  >,
 } satisfies NativeTerminalThread;
 
 describe("useNativeTerminalThread terminal preload", () => {
@@ -64,7 +77,17 @@ describe("useNativeTerminalThread terminal preload", () => {
     });
 
     await waitFor(() => expect(result.current.data).toEqual(NATIVE_VIEW));
+    expect(prefetchTerminalSocket).toHaveBeenCalledOnce();
+    expect(prefetchTerminalSocket).toHaveBeenCalledWith(
+      expect.stringContaining("term-prefetch"),
+    );
     expect(preloadPanel).toHaveBeenCalledOnce();
     expect(preloadModules).toHaveBeenCalledOnce();
+    expect(sdk.terminals.experimental_screen).toHaveBeenCalledWith(
+      expect.objectContaining({
+        terminalId: "term-prefetch",
+        threadId: "thread-1",
+      }),
+    );
   });
 });

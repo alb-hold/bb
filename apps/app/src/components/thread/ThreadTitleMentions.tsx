@@ -19,11 +19,13 @@ import {
   type ThreadListEntry,
 } from "@bb/domain";
 import { QueryClientContext } from "@tanstack/react-query";
+import type { ThreadResponse } from "@bb/server-contract";
 import {
   THREAD_MENTION_RESOLVE_MAX_IDS,
-  type ThreadResponse,
-} from "@bb/server-contract";
-import { PromptMentionPill } from "@/components/thread/timeline/ConversationMessageMentions";
+} from "@bb/server-contract/api/thread-client-constants";
+import {
+  PromptMentionPill,
+} from "@/components/thread/timeline/ConversationMessageMentions";
 import { useThread } from "@/hooks/queries/thread-queries";
 import { threadQueryKey } from "@/hooks/queries/query-keys";
 import { sdk } from "@/lib/sdk";

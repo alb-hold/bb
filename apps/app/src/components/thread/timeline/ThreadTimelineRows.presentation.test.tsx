@@ -9,6 +9,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { PluginTimelineRendererProps } from "@get-bb/plugin-sdk";
 import {
   commandRow,
+  turnRow,
   ECHO_RECEIPT_PRESENTATION,
   extensionRow,
   planStepsRow,
@@ -60,6 +61,36 @@ afterEach(() => {
 });
 
 describe("presentation-driven timeline rows", () => {
+  it("keeps nested execution groups compact", () => {
+    const view = renderRows(
+      <ThreadTimelineRows
+        threadId="thr_main"
+        threadRuntimeDisplayStatus="idle"
+        timelineRows={[turnRow({ id: "group", status: "completed", children: [commandRow({ id: "nested_command", command: "pnpm test" })] })]}
+        initialExpanded={new Set(["group"])}
+        threadIsActive={false}
+      />,
+    );
+    const row = view.container.querySelector('[data-timeline-row-id="nested_command"]');
+    expect(row).not.toBeNull();
+    expect(row?.closest(".gap-1")).not.toBeNull();
+  });
+
+  it("keeps execution metadata readable with a muted tone", () => {
+    const view = renderRows(
+      <ThreadTimelineRows
+        threadId="thr_main"
+        threadRuntimeDisplayStatus="idle"
+        timelineRows={[commandRow({ command: "pnpm test" })]}
+        threadIsActive={false}
+      />,
+    );
+    const title = view.container.querySelector('[title*="pnpm test"]');
+    expect(title?.classList.contains("text-xs")).toBe(true);
+    expect(title?.closest("button")?.classList.contains("text-muted-foreground")).toBe(true);
+    expect(title?.classList.contains("text-sm")).toBe(false);
+  });
+
   it("renders an extension row from its declarative base: label, headline, glyph, tint, detail", () => {
     const row = extensionRow({
       presentation: { ...ECHO_RECEIPT_PRESENTATION, icon: { glyph: "Check" } },

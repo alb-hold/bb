@@ -1,10 +1,21 @@
+import { useTerminalSuspenseGate } from "./hooks/useTerminalMountGate";
+import {
+  traceTerminalGate,
+  markTerminalPerformance,
+} from "./lib/terminal-performance";
 import { appQueryClient } from "./lib/app-query-client";
 import { environmentProvidersQueryOptions } from "./hooks/queries/environment-provider-queries";
+import { systemProvidersQueryOptions } from "./hooks/queries/system-queries";
 import { machineProvidersQueryOptions } from "./hooks/queries/machine-provider-queries";
 import { PluginUpdateJobsHost } from "./components/plugin/PluginUpdateJobsHost";
 import { LazyThreadDetailView } from "./views/thread-detail/LazyThreadDetailView";
 import { LazyRootComposeView } from "./views/LazyRootComposeView";
+import { ProgressiveComposer } from "./components/promptbox/ProgressiveComposerSplit";
 import { useRouteState } from "./hooks/useRouteState";
+import {
+  useThreadOpenIntent,
+  prefetchThreadOpenOnIntent,
+} from "./hooks/useThreadOpenIntent";
 import { lazy, Suspense, useEffect } from "react";
 import {
   matchPath,
@@ -15,7 +26,6 @@ import {
   useParams,
 } from "react-router-dom";
 import { AppLayout } from "./components/layout/AppLayout";
-import { AuthCallbackView } from "./views/AuthCallbackView";
 import { QuickCreateProjectProvider } from "./hooks/useQuickCreateProject";
 import { RouteNavigationProvider } from "./components/ui/app-route-anchor";
 import { RouteNavigationIndicator } from "./components/ui/route-navigation-indicator";
@@ -90,6 +100,19 @@ import {
   whenCriticalLoadsSettled,
 } from "./lib/split-prefetch";
 
+const AuthCallbackView = lazy(() =>
+  import("./views/AuthCallbackView").then((m) => ({
+    default: m.AuthCallbackView,
+  })),
+);
+
+export function AuthCallbackRoute() {
+  return (
+    <Suspense fallback={null}>
+      <AuthCallbackView />
+    </Suspense>
+  );
+}
 const SettingsView = lazy(() =>
   import("./views/SettingsView").then((m) => ({
     default: m.SettingsView,
@@ -115,11 +138,14 @@ const MachineSettingsView = lazy(() =>
     default: m.MachineSettingsView,
   })),
 );
-const splitWorkspaceRouteModule = trackCriticalLoad(
-  import("./views/SplitWorkspaceRoute"),
+const SplitWorkspaceRoute = lazy(() =>
+  trackCriticalLoad(
+    traceTerminalGate(
+      "terminal-workspace-route-import",
+      () => import("./views/SplitWorkspaceRoute"),
+    ),
+  ),
 );
-splitWorkspaceRouteModule.catch(() => {});
-const SplitWorkspaceRoute = lazy(() => splitWorkspaceRouteModule);
 
 function NavigatePreservingLocation({ pathname }: { pathname: string }) {
   const location = useLocation();
@@ -315,16 +341,45 @@ export function HashNavigationScroll() {
   return null;
 }
 
+function WorkspaceRouteFallback({
+  rootCompose,
+  thread,
+}: {
+  rootCompose: boolean;
+  thread: boolean;
+}) {
+  useTerminalSuspenseGate("terminal-workspace-route-fallback");
+  return (
+    <RouteLoadingSkeleton
+      isBoundedPane={false}
+      variant={rootCompose ? "root-compose" : "default"}
+    >
+      {thread ? <ThreadTimelineLoadingSkeleton /> : null}
+    </RouteLoadingSkeleton>
+  );
+}
+
 export function AppRoutes() {
-  const { isThreadView } = useRouteState();
+  const { isThreadView, threadId } = useRouteState();
+  useThreadOpenIntent();
+  useEffect(() => {
+    if (threadId) {
+      markTerminalPerformance("terminal-route-navigation", {
+        detail: { threadId },
+      });
+      prefetchThreadOpenOnIntent(threadId);
+    }
+  }, [threadId]);
   const isRootComposeView = useLocation().pathname === APP_ROOT_ROUTE_PATH;
   useEffect(() => {
     if (isThreadView) void trackCriticalLoad(LazyThreadDetailView.preload());
   }, [isThreadView]);
   useEffect(() => {
     if (!isRootComposeView) return;
+    void appQueryClient.prefetchQuery(systemProvidersQueryOptions());
     void appQueryClient.prefetchQuery(environmentProvidersQueryOptions({}));
     void appQueryClient.prefetchQuery(machineProvidersQueryOptions());
+    void ProgressiveComposer.preload();
     void trackCriticalLoad(LazyRootComposeView.preload());
   }, [isRootComposeView]);
   return (
@@ -456,12 +511,10 @@ export function AppRoutes() {
             element={
               <Suspense
                 fallback={
-                  <RouteLoadingSkeleton
-                    isBoundedPane={false}
-                    variant={isRootComposeView ? "root-compose" : "default"}
-                  >
-                    {isThreadView ? <ThreadTimelineLoadingSkeleton /> : null}
-                  </RouteLoadingSkeleton>
+                  <WorkspaceRouteFallback
+                    rootCompose={isRootComposeView}
+                    thread={isThreadView}
+                  />
                 }
               >
                 <SplitWorkspaceRoute />
@@ -519,7 +572,7 @@ export function App() {
               <Routes>
                 <Route
                   path={AUTH_CALLBACK_ROUTE_PATH}
-                  element={<AuthCallbackView />}
+                  element={<AuthCallbackRoute />}
                 />
                 <Route
                   path="*"

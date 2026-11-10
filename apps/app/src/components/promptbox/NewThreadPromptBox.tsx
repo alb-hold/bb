@@ -5,6 +5,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type ReactNode,
   type RefObject,
 } from "react";
@@ -49,6 +50,7 @@ import {
 } from "@/components/promptbox/ComposerBox";
 import { usePromptModePermissionDisplay } from "@/components/promptbox/usePromptModePermissionDisplay";
 import { usePromptVoice } from "@/components/promptbox/usePromptVoice";
+import { PendingComposerSubmission } from "./PendingComposerSubmission";
 import {
   EnvironmentPickerUI,
   type EnvironmentPickerMachines,
@@ -74,6 +76,7 @@ import {
 import { useSystemConfig } from "@/hooks/queries/system-queries";
 import { useSystemMachineProviders } from "@/hooks/queries/machine-provider-queries";
 import { useHostDaemon } from "@/hooks/useHostDaemon";
+import type { PromptDraftController } from "@/hooks/usePromptDraftStorage";
 
 const NEW_THREAD_PROMPT_BOX_MIN_HEIGHT = 80;
 
@@ -125,6 +128,7 @@ export interface NewThreadModeConfig {
 }
 
 interface NewThreadPromptBoxUIProps {
+  draftSource?: Pick<PromptDraftController, "getCurrent" | "subscribe">;
   id?: string;
 
   value: string;
@@ -158,29 +162,10 @@ function getNewThreadPromptPlaceholder(isProjectless: boolean): string {
     : "Ask anything. @ to mention files, folders, or sections";
 }
 
-export const NewThreadPromptBoxUI = memo(function NewThreadPromptBoxUI({
-  id,
-  value,
-  mentionRanges,
-  onChange,
-  onSubmit,
-  focusRequest,
-  isSubmitting,
-  disabled,
-  disabledReason,
-  autoFocus,
-  pluginComposerHost,
-  textEffects,
-  placeholder: placeholderOverride,
-  history,
-  typeahead,
-  attachments,
-  promptActions,
-  mentionMenuPlacement,
-  modeConfig,
-  project,
-  execution,
-}: NewThreadPromptBoxUIProps) {
+export const NewThreadPromptBoxUI = memo(function NewThreadPromptBoxUI(
+  props: NewThreadPromptBoxUIProps,
+) {
+  const { focusRequest, pluginComposerHost, onSubmit } = props;
   const promptBoxRef = useRef<PromptBoxHandle>(null);
   useEffect(() => {
     if (focusRequest === undefined) return;
@@ -197,6 +182,41 @@ export const NewThreadPromptBoxUI = memo(function NewThreadPromptBoxUI({
       : undefined,
     pluginComposerHost ? composerScopeIdentity(pluginComposerHost.scope) : null,
   );
+  return (
+    <LiveNewThreadComposer
+      {...props}
+      promptBoxRef={promptBoxRef}
+      voice={voice}
+      focusDefault={focusDefault}
+    />
+  );
+});
+
+const subscribeToNoDraft = () => () => {};
+const getNoDraft = () => null;
+
+function LiveNewThreadComposer(
+  props: NewThreadPromptBoxUIProps & {
+    promptBoxRef: RefObject<PromptBoxHandle | null>;
+    voice: ReturnType<typeof usePromptVoice>;
+    focusDefault: () => boolean;
+  },
+) {
+  "use no memo";
+  const { draftSource, pluginComposerHost, execution, focusDefault } = props;
+  const draft = useSyncExternalStore(
+    draftSource?.subscribe ?? subscribeToNoDraft,
+    draftSource?.getCurrent ?? getNoDraft,
+    draftSource?.getCurrent ?? getNoDraft,
+  );
+  const value = draft?.text ?? props.value;
+  const mentionRanges = draft?.mentions ?? props.mentionRanges;
+  const history = draft
+    ? { ...props.history, currentDraft: draft }
+    : props.history;
+  const attachments = draft
+    ? { ...props.attachments, items: draft.attachments }
+    : props.attachments;
   const attachmentCount = attachments.items?.length ?? 0;
   const [composerLayout, setComposerLayout] =
     useState<ComposerView["layout"]>("expanded");
@@ -206,10 +226,10 @@ export const NewThreadPromptBoxUI = memo(function NewThreadPromptBoxUI({
     text: value,
     attachmentCount,
     isRunning: false,
-    isSubmitting,
+    isSubmitting: props.isSubmitting,
   });
   const controller = useComposerExtensionController({
-    host: pluginComposerHost ?? null,
+    host: execution.pending ? null : (pluginComposerHost ?? null),
     view: composerView,
     focusDefault,
   });
@@ -219,34 +239,18 @@ export const NewThreadPromptBoxUI = memo(function NewThreadPromptBoxUI({
       controller={controller}
       defaultRenderer={
         <DefaultNewThreadComposer
-          id={id}
+          {...props}
           value={value}
           mentionRanges={mentionRanges}
-          onChange={onChange}
-          onSubmit={onSubmit}
-          promptBoxRef={promptBoxRef}
-          isSubmitting={isSubmitting}
-          disabled={disabled}
-          disabledReason={disabledReason}
-          autoFocus={autoFocus}
-          textEffects={textEffects}
-          placeholder={placeholderOverride}
           history={history}
-          typeahead={typeahead}
           attachments={attachments}
-          promptActions={promptActions}
-          mentionMenuPlacement={mentionMenuPlacement}
-          modeConfig={modeConfig}
-          project={project}
-          execution={execution}
-          voice={voice}
           onComposerLayoutChange={setComposerLayout}
           onFocusCommand={controller.focus}
         />
       }
     />
   );
-});
+}
 
 interface DefaultNewThreadComposerProps extends Omit<
   NewThreadPromptBoxUIProps,
@@ -284,8 +288,16 @@ const DefaultNewThreadComposer = memo(function DefaultNewThreadComposer({
   onFocusCommand,
 }: DefaultNewThreadComposerProps) {
   const isProjectlessPrompt = project?.value === null;
+  const providerLabel = execution.provider.options?.find(
+    (option) => option.value === execution.provider.selectedId,
+  )?.label;
   const placeholder =
-    placeholderOverride ?? getNewThreadPromptPlaceholder(isProjectlessPrompt);
+    placeholderOverride ??
+    (execution.nativeTerminal?.enabled
+      ? providerLabel
+        ? `Start ${providerLabel} CLI…`
+        : "Start CLI…"
+      : getNewThreadPromptPlaceholder(isProjectlessPrompt));
   const { permissionDisplayOverride, permissionPickerDisabledByPlanMode } =
     usePromptModePermissionDisplay({
       execution,
@@ -304,6 +316,9 @@ const DefaultNewThreadComposer = memo(function DefaultNewThreadComposer({
       data-app-composer=""
       data-app-composer-role="primary"
       data-promptbox-shell=""
+      data-native-terminal={
+        execution.nativeTerminal?.enabled ? "true" : "false"
+      }
       className="w-full"
     >
       <div
@@ -313,39 +328,57 @@ const DefaultNewThreadComposer = memo(function DefaultNewThreadComposer({
           {modeConfig.banner}
         </ComposerBannersSlot>
       </div>
-      <ComposerBox
-        id={id}
-        promptBoxRef={promptBoxRef}
-        value={value}
-        mentionRanges={mentionRanges}
-        onChange={onChange}
+      <PendingComposerSubmission
+        text={value}
+        resetKey={history.resetKey}
+        loading={Boolean(execution.pending || execution.model.isLoading)}
+        disabled={disabled}
+        failed={execution.model.loadFailed}
+        isSubmitting={isSubmitting}
+        pendingUploads={Boolean(
+          attachments.pendingUploads?.length || attachments.isAttaching,
+        )}
+        disabledReason={disabledReason}
         onSubmit={onSubmit}
-        textEffects={textEffects}
-        onComposerLayoutChange={onComposerLayoutChange}
-        history={{
-          ...history,
-          promptHistorySearch: {
-            projectId: project?.value ?? PERSONAL_PROJECT_ID,
-          },
-        }}
-        typeahead={typeahead}
-        mentionMenuPlacement={mentionMenuPlacement}
-        attachments={attachments}
-        promptActions={promptActions}
-        voice={voice}
-        submission={{
-          isSubmitting,
-          disabled,
-          disabledReason,
-          title: submitTitle,
-        }}
-        autoFocus={autoFocus}
-        onFocusCommand={onFocusCommand}
-        surface="new-thread"
-        minHeight={NEW_THREAD_PROMPT_BOX_MIN_HEIGHT}
-        placeholder={placeholder}
-        executionControls={<ExecutionControls {...execution} />}
-      />
+      >
+        {(onBlockedSubmit) => (
+          <ComposerBox
+            suppressPluginComposerCustomizations={execution.pending}
+            id={id}
+            promptBoxRef={promptBoxRef}
+            value={value}
+            mentionRanges={mentionRanges}
+            onChange={onChange}
+            onSubmit={onSubmit}
+            textEffects={textEffects}
+            onComposerLayoutChange={onComposerLayoutChange}
+            history={{
+              ...history,
+              promptHistorySearch: {
+                projectId: project?.value ?? PERSONAL_PROJECT_ID,
+              },
+            }}
+            typeahead={typeahead}
+            mentionMenuPlacement={mentionMenuPlacement}
+            attachments={attachments}
+            promptActions={promptActions}
+            voice={voice}
+            submission={{
+              isSubmitting,
+              experimental_onBlockedSubmit: onBlockedSubmit,
+              disabled,
+              disabledReason,
+              title: submitTitle,
+            }}
+            autoFocus={autoFocus}
+            onFocusCommand={onFocusCommand}
+            surface="new-thread"
+            minHeight={NEW_THREAD_PROMPT_BOX_MIN_HEIGHT}
+            placeholder={placeholder}
+            executionControls={<ExecutionControls {...execution} />}
+          />
+        )}
+      </PendingComposerSubmission>
       <div
         data-new-thread-footer=""
         className="mt-1 flex select-none items-center justify-between gap-2 px-3.5 max-md:mt-0 max-md:gap-1 max-md:px-1"
@@ -377,6 +410,7 @@ const DefaultNewThreadComposer = memo(function DefaultNewThreadComposer({
         <div className="flex shrink-0 items-center gap-2">
           {modeConfig.sessionOptionsControl}
           <PermissionModePicker
+            pending={modeConfig.permission.pending}
             value={modeConfig.permission.value}
             options={modeConfig.permission.options}
             onChange={modeConfig.permission.onChange}

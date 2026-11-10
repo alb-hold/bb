@@ -33,6 +33,76 @@ function candidate(
 }
 
 describe("loadPluginFrontend", () => {
+  afterEach(() => {
+    delete (globalThis as typeof globalThis & { __bbPluginRuntime?: unknown })
+      .__bbPluginRuntime;
+  });
+
+  it("contains a Zod facade load failure before evaluating either plugin", async () => {
+    vi.resetModules();
+    vi.doMock(
+      "../../../../packages/plugin-build/src/generated/zod-runtime.generated",
+      () => ({
+        get zodRuntimeSlots() {
+          throw new Error("facade chunk unavailable");
+        },
+      }),
+    );
+    const importModule = vi.fn();
+    try {
+      const results = await Promise.all(
+        ["first", "second"].map((id) =>
+          loadPluginFrontend(candidate(id, { runtimeSlots: ["zod"] }), {
+            importModule,
+            prefetchModule: vi.fn(),
+            warn: vi.fn(),
+          }),
+        ),
+      );
+      for (const result of results)
+        expect(result).toMatchObject({
+          status: "failed",
+          error:
+            'Cannot load "zod": shared runtime chunk failed: facade chunk unavailable',
+        });
+      expect(importModule).not.toHaveBeenCalled();
+      expect(installPluginRuntime().zod).toBeUndefined();
+    } finally {
+      vi.doUnmock(
+        "../../../../packages/plugin-build/src/generated/zod-runtime.generated",
+      );
+      vi.resetModules();
+    }
+  });
+
+  it("awaits one generated Zod subset for concurrent plugins and preserves host schema and error identity", async () => {
+    const hostZod = await import("zod");
+    const runtime = installPluginRuntime();
+    expect(runtime.zod).toBeUndefined();
+    const importModule = vi.fn(async () => {
+      const subset = runtime.zod as { z: { string: typeof hostZod.z.string } };
+      const schema = subset.z.string();
+      expect(schema.constructor).toBe(hostZod.ZodString);
+      expect(() => schema.parse(42)).toThrow(hostZod.ZodError);
+      expect(schema.parse("value")).toBe("value");
+      return { default: {} };
+    });
+    const results = await Promise.all(
+      ["first", "second"].map((id) =>
+        loadPluginFrontend(candidate(id, { runtimeSlots: ["zod"] }), {
+          importModule,
+          prefetchModule: vi.fn(),
+          warn: vi.fn(),
+        }),
+      ),
+    );
+    expect(results.map((result) => result.status)).toEqual([
+      "loaded",
+      "loaded",
+    ]);
+    expect(importModule).toHaveBeenCalledTimes(2);
+  });
+
   it("contains an import failure to its own plugin", async () => {
     const good = { default: {} };
     const importModule = vi.fn().mockImplementation(async (url: string) => {
@@ -119,19 +189,18 @@ describe("installPluginRuntime", () => {
     expect(Object.keys(runtime).sort()).toEqual([
       "classVarianceAuthority",
       "clsx",
+      "internal_DO_NOT_USE_context_menu",
+      "internal_DO_NOT_USE_dialog",
+      "internal_DO_NOT_USE_dropdown_menu",
+      "internal_DO_NOT_USE_responsive_overlay",
       "jsxDevRuntime",
       "jsxRuntime",
       "pluginSdkApp",
       "questionFormHost",
-      "radixAlertDialog",
       "radixContextMenu",
       "radixDialog",
       "radixDropdownMenu",
-      "radixHoverCard",
-      "radixMenubar",
-      "radixNavigationMenu",
       "radixPopover",
-      "radixSelect",
       "radixTooltip",
       "react",
       "reactDom",
@@ -139,7 +208,6 @@ describe("installPluginRuntime", () => {
       "sharedUiIcon",
       "sonner",
       "tailwindMerge",
-      "vaul",
       "voiceInputTextarea",
     ]);
     expect((runtime.clsx as { default: unknown }).default).toBe(clsx);
@@ -161,10 +229,51 @@ describe("installPluginRuntime", () => {
     expect((globalThis as RuntimeHost).__bbPluginRuntime).toBe(runtime);
   });
 
+  it("awaits lazy Radix runtimes before evaluating a requesting plugin", async () => {
+    const runtime = installPluginRuntime();
+    expect(runtime.radixSlot).toBeUndefined();
+    const importModule = vi.fn(async () => {
+      expect(runtime.radixSlot).toBeDefined();
+      expect(runtime.radixCheckbox).toBeDefined();
+      return { default: {} };
+    });
+    const result = await loadPluginFrontend(
+      candidate("shared", { runtimeSlots: ["radixSlot"] }),
+      { importModule, prefetchModule: vi.fn(), warn: vi.fn() },
+    );
+    expect(result.status).toBe("loaded");
+    expect(importModule).toHaveBeenCalledOnce();
+  });
+
+  it("provides optional UI runtimes only for a bundle that requests them", async () => {
+    installPluginRuntime();
+    const runtime = (globalThis as RuntimeHost).__bbPluginRuntime as Record<
+      string,
+      unknown
+    >;
+    const importModule = vi.fn(async () => {
+      expect(runtime.radixMenubar).toBeDefined();
+      expect(runtime.radixSelect).toBeUndefined();
+      expect(runtime.vaul).toBeUndefined();
+      return { default: {} };
+    });
+    const prefetchModule = vi.fn();
+    expect(runtime.radixMenubar).toBeUndefined();
+    await loadPluginFrontend(
+      candidate("menubar", { runtimeSlots: ["radixMenubar"] }),
+      { importModule, prefetchModule, warn: vi.fn() },
+    );
+    expect(prefetchModule).toHaveBeenCalledOnce();
+    expect(importModule).toHaveBeenCalledOnce();
+  });
+
   it("provides @pierre/diffs only to bundles that import it, downloading the bundle meanwhile", async () => {
     const pierreSlots = () =>
       Object.keys(
-        (globalThis as RuntimeHost).__bbPluginRuntime as Record<string, unknown>,
+        (globalThis as RuntimeHost).__bbPluginRuntime as Record<
+          string,
+          unknown
+        >,
       ).filter((slot) => slot.startsWith("pierre"));
     const slotsAtImport: string[][] = [];
     const importModule = vi.fn(async () => {
@@ -243,3 +352,32 @@ describe("createPluginFrontendPageLifecycle", () => {
     expect(deps.restore).not.toHaveBeenCalled();
   });
 });
+
+it.each([
+  ["bb--composer", "internal_DO_NOT_USE_dropdown_menu"],
+  ["bb--composer", "internal_DO_NOT_USE_responsive_overlay"],
+  ["thread-list", "internal_DO_NOT_USE_context_menu"],
+  ["thread-list", "internal_DO_NOT_USE_dialog"],
+  ["thread-list", "internal_DO_NOT_USE_dropdown_menu"],
+])(
+  "contains missing %s slot %s before evaluation",
+  async (pluginId, slot) => {
+    Reflect.deleteProperty(installPluginRuntime(), slot);
+    const importModule = vi.fn();
+    const result = await loadPluginFrontend(
+      candidate(pluginId, { runtimeSlots: [slot] }),
+      {
+        importModule,
+        prefetchModule: vi.fn(),
+        warn: vi.fn(),
+      },
+    );
+    expect(result).toMatchObject({
+      status: "failed",
+      error: expect.stringContaining("Update the BB host"),
+    });
+    expect(importModule).not.toHaveBeenCalled();
+    delete (globalThis as typeof globalThis & { __bbPluginRuntime?: unknown })
+      .__bbPluginRuntime;
+  },
+);

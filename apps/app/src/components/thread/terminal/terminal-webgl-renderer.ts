@@ -10,16 +10,30 @@ interface TerminalWebglAddonModule {
 
 interface TerminalWebglRenderer extends IDisposable {
   readonly renderer: "webgl" | "dom";
+  readonly initialAttemptComplete: boolean;
   setVisible: (visible: boolean) => void;
 }
 
 interface TerminalWebglRendererOptions {
   root?: Pick<HTMLElement, "dataset">;
   visible?: boolean;
+  onRendererChange?: (renderer: "webgl" | "dom") => void;
 }
 
 type TerminalAddonLoader = Pick<Terminal, "loadAddon"> &
   Partial<Pick<Terminal, "element">>;
+
+export function disposeTerminalWithRenderer(
+  terminal: Pick<Terminal, "dispose"> | null,
+  renderer: IDisposable | null,
+): void {
+  try {
+    terminal?.dispose();
+  } finally {
+    renderer?.dispose();
+  }
+}
+
 const WEBGL_RECOVERY_LIMIT = 3;
 const WEBGL_RECOVERY_DELAY_MS = 100;
 const WEBGL_STABLE_PERIOD_MS = 10_000;
@@ -54,7 +68,7 @@ function captureWebglContextRelease(
 export function loadTerminalWebglRenderer(
   terminal: TerminalAddonLoader,
   createAddon: () => WebglRendererAddon,
-  { root, visible = true }: TerminalWebglRendererOptions = {},
+  { root, visible = true, onRendererChange }: TerminalWebglRendererOptions = {},
 ): TerminalWebglRenderer {
   let renderer: "webgl" | "dom" = "dom";
   let contextLossCount = 0;
@@ -73,6 +87,7 @@ export function loadTerminalWebglRenderer(
       root.dataset.terminalRenderer = renderer;
       root.dataset.terminalContextLossCount = String(contextLossCount);
     }
+    onRendererChange?.(renderer);
   };
   const cancelRecovery = () => {
     if (recoveryTimeout !== null) {
@@ -151,6 +166,7 @@ export function loadTerminalWebglRenderer(
       renderer = "webgl";
       reportRenderer();
     } catch {
+      if (!hasLoaded) disabled = true;
       release();
       if (hasLoaded) {
         recovering = true;
@@ -165,6 +181,9 @@ export function loadTerminalWebglRenderer(
   return {
     get renderer() {
       return renderer;
+    },
+    get initialAttemptComplete() {
+      return hasLoaded || disabled;
     },
     setVisible: (nextVisible) => {
       if (disposed || visible === nextVisible) {
@@ -232,48 +251,80 @@ export function observeTerminalWebglVisibility({
   root,
   renderer,
   isPanelOpen,
+  onVisible,
 }: {
   root: HTMLElement;
   renderer: TerminalWebglRenderer;
   isPanelOpen: () => boolean;
-}): IDisposable & { sync: () => void } {
+  onVisible?: () => void;
+}): IDisposable & { sync: () => boolean } {
   const document = root.ownerDocument;
   const window = document.defaultView;
   let disposed = false;
   const supportsIntersectionObserver =
     typeof IntersectionObserver !== "undefined";
-  let hasObserved = !supportsIntersectionObserver;
-  let intersects = !supportsIntersectionObserver;
-  const sync = () => {
-    if (disposed) {
-      return;
-    }
+  const isGeometricallyVisible = () => {
     const box = root.getBoundingClientRect();
     const style = window?.getComputedStyle(root);
-    renderer.setVisible(
-      isPanelOpen() &&
-        intersects &&
-        document.visibilityState === "visible" &&
-        box.width > 0 &&
-        box.height > 0 &&
-        box.bottom > 0 &&
-        box.right > 0 &&
-        box.top < (window?.innerHeight ?? 0) &&
-        box.left < (window?.innerWidth ?? 0) &&
-        intersectsClippingAncestors(root, box, window) &&
-        style?.visibility !== "hidden" &&
-        style?.visibility !== "collapse",
+    return (
+      document.visibilityState === "visible" &&
+      box.width > 0 &&
+      box.height > 0 &&
+      box.bottom > 0 &&
+      box.right > 0 &&
+      box.top < (window?.innerHeight ?? 0) &&
+      box.left < (window?.innerWidth ?? 0) &&
+      intersectsClippingAncestors(root, box, window) &&
+      style?.visibility !== "hidden" &&
+      style?.visibility !== "collapse"
+    );
+  };
+  let hasObserved = !supportsIntersectionObserver;
+  let intersects =
+    !supportsIntersectionObserver ||
+    (isPanelOpen() && isGeometricallyVisible());
+  let wasVisible = false;
+  let parents: HTMLElement[] = [];
+  const syncParents = () => {
+    let parent = root.parentElement;
+    let index = 0;
+    while (parent !== null && parents[index] === parent) {
+      parent = parent.parentElement;
+      index++;
+    }
+    if (parent === null && index === parents.length) return;
+    for (const previous of parents) resizeObserver.unobserve(previous);
+    parents = [];
+    for (
+      parent = root.parentElement;
+      parent !== null;
+      parent = parent.parentElement
+    ) {
+      parents.push(parent);
+    }
+    for (const current of parents) resizeObserver.observe(current);
+  };
+  const applyVisibility = (visible: boolean) => {
+    const becameVisible = visible && !wasVisible;
+    wasVisible = visible;
+    renderer.setVisible(visible);
+    if (becameVisible) onVisible?.();
+    return visible;
+  };
+  const sync = () => {
+    if (disposed) return false;
+    return applyVisibility(
+      isPanelOpen() && intersects && isGeometricallyVisible(),
     );
   };
   const syncGeometry = () => {
-    if (hasObserved) {
-      intersects = intersectsClippingAncestors(
-        root,
-        root.getBoundingClientRect(),
-        window,
-      );
-    }
-    sync();
+    if (disposed) return false;
+    syncParents();
+    if (!isPanelOpen() || document.visibilityState !== "visible")
+      return applyVisibility(false);
+    const visible = isGeometricallyVisible();
+    if (hasObserved) intersects = visible;
+    return applyVisibility(intersects && visible);
   };
   const resizeObserver = new ResizeObserver(syncGeometry);
   const intersectionObserver = !supportsIntersectionObserver
@@ -294,13 +345,7 @@ export function observeTerminalWebglVisibility({
       );
   resizeObserver.observe(root);
   intersectionObserver?.observe(root);
-  for (
-    let parent = root.parentElement;
-    parent !== null;
-    parent = parent.parentElement
-  ) {
-    resizeObserver.observe(parent);
-  }
+  syncParents();
   window?.addEventListener("scroll", syncGeometry, {
     capture: true,
     passive: true,
@@ -309,10 +354,11 @@ export function observeTerminalWebglVisibility({
   document.addEventListener("visibilitychange", sync);
   sync();
   return {
-    sync,
+    sync: syncGeometry,
     dispose: () => {
       disposed = true;
       resizeObserver.disconnect();
+      parents = [];
       intersectionObserver?.disconnect();
       window?.removeEventListener("scroll", syncGeometry, true);
       window?.removeEventListener("resize", syncGeometry);

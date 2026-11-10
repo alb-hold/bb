@@ -145,6 +145,7 @@ function makePendingInteraction(): PendingInteraction {
 }
 
 interface RenderPromptAreaOptions {
+  executionOptionsPending?: boolean;
   activePromptMode?: ThreadTimelineActivePromptMode | null;
   activeWorkflows?: TimelineWorkflowWorkRow[];
   childThreadsSection?: ComponentProps<
@@ -186,6 +187,7 @@ function buildPromptAreaElement({
   queuedMessageCount = 0,
   sentMessageEdit,
   sessionOptions = null,
+  executionOptionsPending = false,
   thread = makeThread(),
   gitSegment = null,
 }: RenderPromptAreaOptions = {}) {
@@ -205,6 +207,7 @@ function buildPromptAreaElement({
         environmentGoneStatus={environmentGoneStatus}
         goal={goal}
         providerCommands={null}
+        executionOptionsPending={executionOptionsPending}
         sessionOptions={sessionOptions}
         modelFallback={modelFallback}
         parentThreadSection={null}
@@ -401,7 +404,16 @@ beforeEach(() => {
   testQueryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
-  mocks.defaultExecutionOptions = null;
+  mocks.defaultExecutionOptions = {
+    model: "gpt-5",
+    permissionMode: "auto",
+    reasoningLevel: "medium",
+    serviceTier: "default",
+    source: "client/turn/requested",
+  };
+  mocks.modelCatalogIsSettled = true;
+  mocks.modelCatalogIsVerified = true;
+  mocks.permissionModeIsVerified = true;
   mocks.executionInputSources = {};
   mocks.unknownReasoning = false;
   mocks.pluginComposerHost = null;
@@ -1033,6 +1045,111 @@ describe("ThreadDetailPromptArea", () => {
         queuedMessageId: "qmsg_1",
       });
     });
+  });
+
+  it("does not expose the provider default before the thread options arrive", () => {
+    mocks.defaultExecutionOptions = undefined;
+    renderPromptArea();
+    expect(screen.getByTestId("selected-model").textContent).toBe(
+      "Loading execution options",
+    );
+  });
+
+  it("keeps loaded composer controls usable while live session selections refresh", () => {
+    const { rerender } = renderPromptArea();
+    expect(screen.getByTestId("selected-model").textContent).toBe("gpt-5");
+    rerender(buildPromptAreaElement({ executionOptionsPending: true }));
+    expect(screen.getByTestId("selected-model").textContent).toBe("gpt-5");
+    expect(screen.getByRole("button", { name: "Choose permission full" }).hasAttribute("disabled")).toBe(false);
+  });
+
+  it("enables loaded thread Permissions during a five-second cold model catalog request", () => {
+    vi.useFakeTimers();
+    try {
+      mocks.modelCatalogIsSettled = false;
+      mocks.modelCatalogIsVerified = false;
+      const { rerender } = renderPromptArea();
+      const assertPermissionsEnabled = () => {
+        expect(screen.getByTestId("permission-read-only").textContent).toBe(
+          "false",
+        );
+        expect(
+          screen
+            .getByRole("button", { name: "Choose permission full" })
+            .hasAttribute("disabled"),
+        ).toBe(false);
+        expect(screen.getByTestId("selected-permission").textContent).toBe(
+          "auto",
+        );
+      };
+      assertPermissionsEnabled();
+      act(() => vi.advanceTimersByTime(4999));
+      assertPermissionsEnabled();
+      mocks.modelCatalogIsSettled = true;
+      mocks.modelCatalogIsVerified = true;
+      rerender(buildPromptAreaElement());
+      assertPermissionsEnabled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps Permissions read-only until permission options and limits are verified", () => {
+    mocks.permissionModeIsVerified = false;
+    renderPromptArea();
+    expect(screen.getByTestId("permission-read-only").textContent).toBe("true");
+  });
+
+  it("keeps verified Permissions editable when a background model catalog becomes unverified", () => {
+    const { rerender } = renderPromptArea();
+    expect(screen.getByTestId("permission-read-only").textContent).toBe(
+      "false",
+    );
+    mocks.modelCatalogIsVerified = false;
+    rerender(buildPromptAreaElement({ executionOptionsPending: true }));
+    expect(screen.getByTestId("permission-read-only").textContent).toBe(
+      "false",
+    );
+    expect(
+      screen
+        .getByRole("button", { name: "Choose permission full" })
+        .hasAttribute("disabled"),
+    ).toBe(false);
+  });
+
+  it("shows stored execution when an offline, failed, or absent catalog settles unverified", () => {
+    mocks.modelCatalogIsVerified = false;
+    mocks.defaultExecutionOptions = { model: "thread-stored-model", permissionMode: "full", reasoningLevel: "high", serviceTier: "default", source: "client/turn/requested" };
+    renderPromptArea();
+    expect(screen.getByTestId("selected-model").textContent).toBe("thread-stored-model");
+    expect(screen.getByTestId("selected-permission").textContent).toBe("full");
+  });
+
+  it("keeps stored values if the catalog request never settles", () => {
+    vi.useFakeTimers();
+    try {
+      mocks.modelCatalogIsSettled = false;
+      mocks.modelCatalogIsVerified = false;
+      mocks.defaultExecutionOptions = { model: "thread-stored-model", permissionMode: "full", reasoningLevel: "high", serviceTier: "default", source: "client/turn/requested" };
+      renderPromptArea();
+      expect(screen.getByTestId("selected-model").textContent).toBe("thread-stored-model");
+      act(() => vi.advanceTimersByTime(5000));
+      expect(screen.getByTestId("selected-model").textContent).toBe("thread-stored-model");
+      expect(screen.getByTestId("selected-permission").textContent).toBe("full");
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("names the stored model when a verified catalog substitutes it", () => {
+    mocks.defaultExecutionOptions = { model: "gpt-5.2-codex", permissionMode: "full", reasoningLevel: "medium", serviceTier: "default", source: "client/turn/requested" };
+    renderPromptArea();
+    expect(screen.getByTestId("selected-model").textContent).toBe("gpt-5");
+    expect(screen.getByTestId("selected-model").dataset.unavailableModel).toBe("gpt-5.2-codex");
+  });
+
+  it("does not report substitution when the stored model remains selected", () => {
+    renderPromptArea();
+    expect(screen.getByTestId("selected-model").textContent).toBe("gpt-5");
+    expect(screen.getByTestId("selected-model").dataset.unavailableModel).toBeUndefined();
   });
 
   it("uses the real thread cache keys immediately", () => {

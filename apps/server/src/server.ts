@@ -21,7 +21,10 @@ import {
 } from "./install-machine-asset.js";
 import { getExperiments } from "@bb/db";
 import { createNodeWebSocket } from "@hono/node-ws";
-import { TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL } from "@bb/server-contract";
+import {
+  TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL,
+  TERMINAL_REPLAY_BATCH_WEBSOCKET_PROTOCOL,
+} from "@bb/server-contract";
 import {
   declineWebSocketCompression,
   WEB_SOCKET_COMPRESSION,
@@ -535,9 +538,11 @@ export function createApp(
     protocols: Set<string>,
     _request: IncomingMessage,
   ): string | false =>
-    protocols.has(TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL)
-      ? TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL
-      : (protocols.values().next().value ?? false);
+    protocols.has(TERMINAL_REPLAY_BATCH_WEBSOCKET_PROTOCOL)
+      ? TERMINAL_REPLAY_BATCH_WEBSOCKET_PROTOCOL
+      : protocols.has(TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL)
+        ? TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL
+        : (protocols.values().next().value ?? false);
   wss.options.perMessageDeflate = WEB_SOCKET_COMPRESSION;
   const tunnelIngressNow = options?.tunnelIngressNow ?? Date.now;
   const tunnelIngress = createTunnelIngressManager({
@@ -1106,11 +1111,13 @@ export function createApp(
       return {
         onOpen: (_event, socket) =>
           onTerminalSocketOpen(deps, {
+            rawReplay: context.req.header("origin") === undefined,
             outputAcks: query.data.outputAcks,
             handoffOwnerToken: query.data.handoffOwnerToken,
             resizeAcks: query.data.resizeAcks,
             resizeSeqEcho:
-              socket.protocol === TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL,
+              socket.protocol === TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL ||
+              socket.protocol === TERMINAL_REPLAY_BATCH_WEBSOCKET_PROTOCOL,
             socket,
             sinceSeq: query.data.sinceSeq,
             terminalId,

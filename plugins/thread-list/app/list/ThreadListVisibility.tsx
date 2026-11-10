@@ -59,6 +59,10 @@ interface ThreadListVisibilityState {
 const VisibilityContext = createContext<ThreadListVisibilityState | null>(null);
 const GroupContext = createContext<string | null>(null);
 
+export function useThreadListVisibilityGroup() {
+  return useContext(GroupContext);
+}
+
 export function ThreadListVisibility({
   groups,
   order,

@@ -1,3 +1,4 @@
+import { TerminalWebSocketTransport } from "@bb/client-core";
 import { createTerminalGridMarker, TERMINAL_DATA_MAX_BYTES } from "@bb/domain";
 import type {
   TerminalServerMessage,
@@ -659,7 +660,7 @@ describe("terminal viewport restore", () => {
     terminal.dispose();
   });
 
-  it("keeps the saved top line when the phone fit shrinks the replay grid", async () => {
+  it("keeps the saved top line at the accepted phone grid after replay", async () => {
     const terminal = new Terminal({ cols: 80, rows: 33, scrollback: 10_000 });
     const pipeline = createTerminalOutputPipeline(terminal);
     const tracker = createTerminalOutputLineAnchorTracker({
@@ -692,8 +693,7 @@ describe("terminal viewport restore", () => {
       applyTerminalGridBeforeViewportRestore({
         pipeline,
         cols: 80,
-        rows: 56,
-        fitGrid: { cols: 80, rows: 33 },
+        rows: 33,
         onGridApplied: () => {},
         restoreViewport: () => {
           terminal.scrollToLine(
@@ -706,13 +706,11 @@ describe("terminal viewport restore", () => {
             }),
           );
         },
-        afterRestore: () => {
-          if (terminal.rows !== 33) terminal.resize(80, 33);
-          resolve();
-        },
+        afterRestore: resolve,
       });
     });
 
+    expect(terminal.rows).toBe(33);
     expect(
       terminal.buffer.active
         .getLine(terminal.buffer.active.viewportY)
@@ -1705,9 +1703,9 @@ describe("terminal output encoding", () => {
         hiddenTerminal.buffer.active.getLine(index)?.translateToString(),
     );
     expect(replayedLines).toEqual(visibleLines);
-    expect(hiddenTerminal.buffer.active.getLine(0)?.getCell(7)?.getFgColor()).toBe(
-      1,
-    );
+    expect(
+      hiddenTerminal.buffer.active.getLine(0)?.getCell(7)?.getFgColor(),
+    ).toBe(1);
     visibleTerminal.dispose();
     hiddenTerminal.dispose();
   });
@@ -1756,9 +1754,7 @@ describe("terminal output encoding", () => {
     expect(terminal.buffer.active.getLine(0)?.translateToString()).toContain(
       "OK",
     );
-    expect(terminal.buffer.active.getLine(0)?.getCell(0)?.getFgColor()).toBe(
-      1,
-    );
+    expect(terminal.buffer.active.getLine(0)?.getCell(0)?.getFgColor()).toBe(1);
     expect(acknowledged).toEqual([1, 2]);
     terminal.dispose();
   });
@@ -1954,10 +1950,52 @@ describe("terminal output encoding", () => {
     terminal.dispose();
   });
 
+  it.each(["history", "preview"] as const)(
+    "queues marker-heavy %s before parser completion",
+    async (target) => {
+      const resize = vi.fn();
+      const parsed = vi.fn();
+      const written: string[] = [];
+      const writeCallbacks: Array<() => void> = [];
+      const pipeline = createTerminalOutputPipeline(
+        {
+          cols: 80,
+          rows: 24,
+          resize,
+          write: (bytes, callback) => {
+            written.push(new TextDecoder().decode(bytes));
+            writeCallbacks.push(callback);
+          },
+        },
+        undefined,
+        undefined,
+        { resizeMarkerGrids: target !== "preview" },
+      );
+      for (let sequence = 0; sequence < 3_700; sequence += 1) {
+        pipeline.push(
+          Buffer.from(
+            `${createTerminalGridMarker({ cols: 125, rows: 44 })}${sequence}\r\n`,
+          ),
+          parsed,
+          target !== "history",
+        );
+      }
+      await Promise.resolve();
+      expect(written.join("")).toContain("3699\r\n");
+      expect(parsed).not.toHaveBeenCalled();
+      writeCallbacks.forEach((callback) => callback());
+      await Promise.resolve();
+      expect(parsed).toHaveBeenCalledTimes(3_700);
+      expect(resize).not.toHaveBeenCalled();
+    },
+  );
+
   it("waits for prior writes before resizing at a grid marker", async () => {
     const writeCallbacks: Array<() => void> = [];
     const resize = vi.fn();
     const pipeline = createTerminalOutputPipeline({
+      cols: 80,
+      rows: 24,
       resize,
       write: (_data, callback) => writeCallbacks.push(callback),
     });
@@ -1990,6 +2028,8 @@ describe("terminal output encoding", () => {
     const writeCallbacks: Array<() => void> = [];
     const resize = vi.fn();
     const pipeline = createTerminalOutputPipeline({
+      cols: 80,
+      rows: 24,
       resize,
       write: (_data, callback) => writeCallbacks.push(callback),
     });
@@ -2111,9 +2151,11 @@ describe("terminal output encoding", () => {
     const pipeline = createTerminalOutputPipeline(terminal);
     let callbacks = 0;
     let writeCalls = 0;
+    const writeSizes: number[] = [];
     const originalWrite = terminal.write.bind(terminal);
     terminal.write = ((data: string | Uint8Array, callback?: () => void) => {
       writeCalls += 1;
+      writeSizes.push(data.length);
       originalWrite(data, () => {
         callbacks += 1;
         callback?.();
@@ -2130,15 +2172,18 @@ describe("terminal output encoding", () => {
       ),
     );
     expect(callbacks).toBe(0);
-    expect(writeCalls).toBe(32);
+    expect(writeCalls).toBe(128);
+    expect(writeSizes.every((size) => size <= 16384)).toBe(true);
     await settled;
-    expect(callbacks).toBe(32);
+    expect(callbacks).toBe(128);
     terminal.dispose();
   });
 
   it("registers the next sequence anchor in the preceding chunk parse callback", async () => {
     const writeCallbacks: Array<() => void> = [];
     const terminal = {
+      cols: 80,
+      rows: 24,
       resize: vi.fn(),
       write: vi.fn((_bytes: Uint8Array, callback: () => void) => {
         writeCallbacks.push(callback);
@@ -2519,6 +2564,42 @@ describe("terminal output encoding", () => {
     terminal.dispose();
   });
 
+  it.each(["primary", "preview"])(
+    "parses both replay screens concurrently and waits for %s",
+    (last) => {
+      const terminal = new Terminal({ cols: 40, rows: 5 });
+      let primaryParsed: (() => void) | undefined;
+      let previewParsed: (() => void) | undefined;
+      vi.spyOn(terminal, "write").mockImplementation((_data, callback) => {
+        primaryParsed = callback;
+      });
+      const previewPush = vi.fn((_bytes: Uint8Array, callback: () => void) => {
+        previewParsed = callback;
+      });
+      const onParsed = vi.fn();
+      const state = { suppressedWriteCount: 0 };
+      writeTerminalOutput({
+        data: "retained screen",
+        isReplay: true,
+        onParsed,
+        replayWriteState: state,
+        terminal,
+        replayPipeline: { push: previewPush },
+      });
+      expect(previewPush).toHaveBeenCalledOnce();
+      expect(state.suppressedWriteCount).toBe(1);
+      const firstParsed = last === "primary" ? previewParsed : primaryParsed;
+      const lastParsed = last === "primary" ? primaryParsed : previewParsed;
+      firstParsed?.();
+      expect(onParsed).not.toHaveBeenCalled();
+      expect(state.suppressedWriteCount).toBe(1);
+      lastParsed?.();
+      expect(onParsed).toHaveBeenCalledOnce();
+      expect(state.suppressedWriteCount).toBe(0);
+      terminal.dispose();
+    },
+  );
+
   it("feeds a checkpoint preview only from the checkpoint sequence onward", async () => {
     const terminal = new Terminal({ cols: 40, rows: 5 });
     const previewPush = vi.fn((bytes: Uint8Array, callback: () => void) =>
@@ -2552,6 +2633,53 @@ describe("terminal output encoding", () => {
     terminal.dispose();
   });
 
+  it("sends xterm CPR replies as non-user frames and leaves typed keys as user frames", async () => {
+    const terminal = new Terminal({ cols: 80, rows: 24 });
+    const frames: string[] = [];
+    const socket = {
+      readyState: 1,
+      bufferedAmount: 0,
+      protocol: "",
+      onopen: null,
+      onclose: null,
+      onerror: null,
+      onmessage: null,
+      close() {},
+      send: (data: string) => frames.push(data),
+    };
+    const transport = new TerminalWebSocketTransport({
+      url: "ws://localhost/ws/terminals/test",
+      createSocket: () => socket,
+      shouldReconnect: () => false,
+      onMessage() {},
+    });
+    transport.start();
+    const forwarding = attachTerminalInputForwarding({
+      terminal,
+      onData: (data, isUserInput) =>
+        forwardTerminalData({
+          data,
+          isUserInput,
+          onInput: (bytes, at, user) => transport.sendInput(bytes, at, user),
+          replayWriteState: { suppressedWriteCount: 0 },
+          sessionStatus: "running",
+        }),
+    });
+    await writeTerminal(terminal, "\x1b[6n");
+    terminal.input("x", true);
+    expect(frames.map((frame) => JSON.parse(frame))).toContainEqual({
+      type: "input",
+      dataBase64: Buffer.from("\x1b[1;1R").toString("base64"),
+      isUserInput: false,
+    });
+    expect(frames.map((frame) => JSON.parse(frame))).toContainEqual({
+      type: "input",
+      dataBase64: "eA==",
+    });
+    forwarding.dispose();
+    transport.dispose();
+    terminal.dispose();
+  });
   it("keeps keystrokes typed while replayed output is still parsing, and still drops the replay's protocol replies", async () => {
     const terminal = new Terminal({ cols: 80, rows: 24 });
     const sent: string[] = [];
@@ -2831,7 +2959,13 @@ describe("buildTerminalThemeFromCssColors", () => {
     const theme = buildTerminalThemeFromCssColors(get);
 
     expect(theme.background).toBe("--sidebar");
+    expect(theme.foreground).toBe("--ink");
+    expect(theme.cursor).toBe("--ink");
     expect(theme.cursorAccent).toBe("--sidebar");
+    expect(theme.scrollbarSliderBackground).toBe("--terminal-scrollbar");
+    expect(theme.scrollbarSliderHoverBackground).toBe(
+      "--terminal-scrollbar-hover",
+    );
   });
 });
 
@@ -3046,4 +3180,214 @@ describe("exited native retained output", () => {
       terminal.dispose();
     },
   );
+});
+
+describe("terminal output write barriers", () => {
+  function heldWriter() {
+    const callbacks: Array<() => void> = [];
+    const events: string[] = [];
+    const grid = { cols: 80, rows: 24 };
+    const pipeline = createTerminalOutputPipeline({
+      get cols() {
+        return grid.cols;
+      },
+      get rows() {
+        return grid.rows;
+      },
+      write: (bytes, callback) => {
+        events.push(`write:${new TextDecoder().decode(bytes)}`);
+        callbacks.push(callback);
+      },
+      resize: (cols, rows) => {
+        grid.cols = cols;
+        grid.rows = rows;
+        events.push(`resize:${cols}x${rows}`);
+      },
+    });
+    return { callbacks, events, pipeline };
+  }
+
+  it("acknowledges only completed prefixes across callback bursts", async () => {
+    const { callbacks, pipeline } = heldWriter();
+    const acknowledged: number[] = [];
+    for (let index = 0; index < 6; index += 1) {
+      pipeline.push(Buffer.from("x"), () => acknowledged.push(index));
+    }
+    expect(acknowledged).toEqual([]);
+    callbacks[0]!();
+    callbacks[1]!();
+    await vi.waitFor(() => expect(acknowledged).toEqual([0, 1]));
+    callbacks[2]!();
+    callbacks[3]!();
+    await vi.waitFor(() => expect(acknowledged).toEqual([0, 1, 2, 3]));
+    callbacks[4]!();
+    callbacks[5]!();
+    await vi.waitFor(() => expect(acknowledged).toEqual([0, 1, 2, 3, 4, 5]));
+  });
+
+  it("resizes after earlier writes and before later writes", async () => {
+    const { callbacks, events, pipeline } = heldWriter();
+    pipeline.push(Buffer.from("a"), () => events.push("ack:a"));
+    pipeline.push(Buffer.from("b"), () => events.push("ack:b"));
+    pipeline.setGrid(90, 30, () => events.push("grid"));
+    pipeline.push(Buffer.from("c"), () => events.push("ack:c"));
+    callbacks[0]!();
+    await vi.waitFor(() => expect(events).toContain("ack:a"));
+    expect(events).toEqual(["write:a", "write:b", "ack:a"]);
+    callbacks[1]!();
+    await vi.waitFor(() => expect(callbacks).toHaveLength(3));
+    expect(events).toEqual([
+      "write:a",
+      "write:b",
+      "ack:a",
+      "ack:b",
+      "resize:90x30",
+      "grid",
+      "write:c",
+    ]);
+    callbacks[2]!();
+    await vi.waitFor(() => expect(events.at(-1)).toBe("ack:c"));
+  });
+
+  it("preserves interleaved empty acknowledgements, markers and explicit grids", async () => {
+    const { callbacks, events, pipeline } = heldWriter();
+    pipeline.push(Buffer.from("a"), () => events.push("ack:a"));
+    pipeline.push(new Uint8Array(), () => events.push("ack:empty"));
+    pipeline.push(
+      Buffer.from(`${createTerminalGridMarker({ cols: 40, rows: 10 })}b`),
+      () => events.push("ack:b"),
+    );
+    pipeline.setGrid(80, 20, () => events.push("grid"));
+    pipeline.push(Buffer.from("c"), () => events.push("ack:c"));
+    callbacks[0]!();
+    await vi.waitFor(() => expect(callbacks).toHaveLength(2));
+    callbacks[1]!();
+    await vi.waitFor(() => expect(callbacks).toHaveLength(3));
+    callbacks[2]!();
+    await vi.waitFor(() => expect(events.at(-1)).toBe("ack:c"));
+    expect(events).toEqual([
+      "write:a",
+      "ack:a",
+      "ack:empty",
+      "resize:40x10",
+      "write:b",
+      "ack:b",
+      "resize:80x20",
+      "grid",
+      "write:c",
+      "ack:c",
+    ]);
+  });
+
+  it("bounds barrier work while 5000 held writes drain in FIFO order", async () => {
+    const callbacks: Array<() => void> = [];
+    const acknowledged: number[] = [];
+    const pipeline = createTerminalOutputPipeline({
+      cols: 80,
+      rows: 24,
+      write: (_bytes, callback) => callbacks.push(callback),
+      resize: () => undefined,
+    });
+    const all = vi.spyOn(Promise, "all");
+    let allCalls = 0;
+    let finish!: () => void;
+    const finished = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    try {
+      pipeline.push(Buffer.from("first"), () => acknowledged.push(0));
+      pipeline.setGrid(80, 24);
+      for (let index = 1; index < 5000; index += 1) {
+        pipeline.push(Buffer.from("x"), () => {
+          acknowledged.push(index);
+          if (index === 4999) finish();
+        });
+      }
+      callbacks[0]!();
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      for (let index = 1; index < callbacks.length; index += 1)
+        callbacks[index]!();
+      await finished;
+      allCalls = all.mock.calls.length;
+    } finally {
+      all.mockRestore();
+    }
+    expect(callbacks).toHaveLength(5000);
+    expect(acknowledged).toEqual(
+      Array.from({ length: 5000 }, (_, index) => index),
+    );
+    expect(allCalls).toBe(0);
+  });
+});
+
+describe("bounded replay writes", () => {
+  it("acks only after parsing a coalesced replay and orders a live write after it", async () => {
+    const { terminalReplayWrites } = await import("./terminal-replay-writes");
+    const terminal = new Terminal({ cols: 80, rows: 24, scrollback: 1000 });
+    const writes: number[] = [];
+    const originalWrite = terminal.write.bind(terminal);
+    vi.spyOn(terminal, "write").mockImplementation((data, callback) => {
+      writes.push(typeof data === "string" ? data.length : data.byteLength);
+      originalWrite(data, callback);
+    });
+    const pipeline = createTerminalOutputPipeline(terminal);
+    const acknowledgeOutput = vi.fn();
+    const onOutputParsed = vi.fn();
+    let replayNextSeq: number | null = 33;
+    const replayWriteState = { suppressedWriteCount: 0 };
+    let complete!: () => void;
+    const parsed = new Promise<void>((resolve) => {
+      complete = resolve;
+    });
+    const shared = {
+      acknowledgeOutput,
+      onOutputParsed,
+      pipeline,
+      terminal,
+      replayWriteState,
+      onReplayComplete: vi.fn(),
+      setReplayNextSeq: (next: number | null) => {
+        replayNextSeq = next;
+      },
+    };
+    const chunks = Array.from({ length: 33 }, (_, seq) => ({
+      seq,
+      dataBase64: Buffer.from("replay\r\n".repeat(128)).toString("base64"),
+    }));
+    for (const write of terminalReplayWrites(chunks)) {
+      handleTerminalServerMessage({
+        ...shared,
+        replayNextSeq,
+        message: { type: "output", chunk: write.chunk },
+        replayWrite: write,
+      });
+    }
+    handleTerminalServerMessage({
+      ...shared,
+      replayNextSeq,
+      message: {
+        type: "output",
+        chunk: { seq: 33, dataBase64: Buffer.from("LIVE").toString("base64") },
+      },
+      acknowledgeOutput: (next) => {
+        acknowledgeOutput(next);
+        complete();
+      },
+    });
+    expect(acknowledgeOutput).not.toHaveBeenCalled();
+    await parsed;
+    expect(writes.every((size) => size <= 16384)).toBe(true);
+    expect(writes.length).toBeLessThan(10);
+    expect(acknowledgeOutput.mock.calls.map((call) => call[0])).toEqual([
+      16, 32, 33, 34,
+    ]);
+    expect(onOutputParsed).toHaveBeenCalledTimes(4);
+    expect(shared.onReplayComplete).toHaveBeenCalledTimes(1);
+    expect(
+      terminal.buffer.active
+        .getLine(terminal.buffer.active.baseY + terminal.buffer.active.cursorY)
+        ?.translateToString(true),
+    ).toBe("LIVE");
+    terminal.dispose();
+  });
 });

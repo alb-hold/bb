@@ -168,9 +168,17 @@ function Handler() {
   return null;
 }
 
+const initialStyleSheetCount = document.styleSheets.length;
+
 afterEach(() => {
   vi.useRealTimers();
   cleanup();
+  for (const sheet of [...document.styleSheets]) {
+    const owner = sheet.ownerNode;
+    if (owner instanceof HTMLStyleElement && !owner.isConnected) {
+      owner.textContent = "";
+    }
+  }
   sessionStorage.removeItem("bb:terminal-viewport:term_mobile_paste");
   Reflect.set(wsManager, "deviceHandoffClientToken", null);
   vi.unstubAllGlobals();
@@ -191,6 +199,7 @@ afterEach(() => {
   testState.toastError.mockReset();
   testState.touchEnabled = false;
   testState.mediaQueryListeners.clear();
+  expect(document.styleSheets).toHaveLength(initialStyleSheetCount);
 });
 
 const originalClipboardDescriptor = Object.getOwnPropertyDescriptor(
@@ -225,9 +234,14 @@ function prepareMobileTerminal(): void {
       unobserve(): void {}
     },
   );
-  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
-    measureText: (text: string) => ({ width: text.length * 9 }),
-  } as unknown as CanvasRenderingContext2D);
+  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(
+    (kind) =>
+      kind === "2d"
+        ? ({
+            measureText: (text: string) => ({ width: text.length * 9 }),
+          } as unknown as CanvasRenderingContext2D)
+        : null,
+  );
   vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(
     function offsetWidth(this: HTMLElement) {
       return this.classList.contains("xterm-char-measure-element") ? 9 : 354;
@@ -255,7 +269,9 @@ function prepareMobileTerminal(): void {
   );
 }
 
-function renderMobileTerminal(): ReturnType<typeof makeTerminalSession> {
+function renderMobileTerminal(
+  native = false,
+): ReturnType<typeof makeTerminalSession> {
   const session = makeTerminalSession({
     id: "term_mobile_paste",
     status: "running",
@@ -265,7 +281,17 @@ function renderMobileTerminal(): ReturnType<typeof makeTerminalSession> {
   render(
     <MemoryRouter>
       <AppCommandProvider>
-        <ThreadTerminalView autoFocus={false} isPanelOpen session={session} />
+        {native ? (
+          <header>
+            <button aria-label="Search terminal output" />
+          </header>
+        ) : null}
+        <ThreadTerminalView
+          autoFocus={false}
+          isPanelOpen
+          session={session}
+          attentionShownAsBanner={native}
+        />
       </AppCommandProvider>
     </MemoryRouter>,
   );
@@ -280,6 +306,218 @@ function scrollTerminalAsUser(terminal: Terminal, line: number): void {
 }
 
 describe("ThreadTerminalView terminal viewport and focus", () => {
+  it.each(["starting", "disconnected", "exited"] as const)(
+    "keeps the ready mobile controls appropriate for a %s session",
+    async (status) => {
+      prepareMobileTerminal();
+      const session = makeTerminalSession({
+        id: "term_mobile_status",
+        status: "running",
+      });
+      const view = (current: typeof session) => (
+        <MemoryRouter>
+          <AppCommandProvider>
+            <ThreadTerminalView
+              autoFocus={false}
+              isPanelOpen
+              session={current}
+            />
+          </AppCommandProvider>
+        </MemoryRouter>
+      );
+      const { rerender } = render(view(session));
+      await waitForReadinessCondition(
+        () =>
+          expect(
+            screen.getByRole<HTMLButtonElement>("button", {
+              name: "More terminal keys",
+            }).disabled,
+          ).toBe(false),
+        "mobile status viewer was not ready",
+      );
+      rerender(view({ ...session, status }));
+      const controls = screen.getByRole("group", {
+        name: "Terminal keyboard controls",
+      });
+      expect(screen.queryByRole("button", { name: "Shift Tab" })).toBeNull();
+      expect(
+        screen.getByRole<HTMLButtonElement>("button", {
+          name: "Escape",
+        }).disabled,
+      ).toBe(true);
+      if (status === "exited") {
+        expect(controls.children).toHaveLength(4);
+        for (const name of [
+          "Previous prompt",
+          "Next prompt",
+          "Select terminal text",
+        ]) {
+          expect(
+            screen.getByRole<HTMLButtonElement>("button", { name }).disabled,
+          ).toBe(false);
+        }
+      } else {
+        expect(controls.children).toHaveLength(1);
+        for (const name of [
+          "Previous prompt",
+          "Next prompt",
+          "Select terminal text",
+        ]) {
+          expect(screen.queryByRole("button", { name })).toBeNull();
+        }
+      }
+    },
+  );
+
+  it("keeps the same collapsed row when switching to a reconnecting terminal", async () => {
+    prepareMobileTerminal();
+    const running = makeTerminalSession({
+      id: "term_mobile_running",
+      status: "running",
+    });
+    const reconnecting = makeTerminalSession({
+      id: "term_mobile_reconnecting",
+      status: "running",
+    });
+    const view = (
+      active: string,
+      status: typeof reconnecting.status = "running",
+    ) => (
+      <MemoryRouter>
+        <AppCommandProvider>
+          {[running, { ...reconnecting, status }].map((session) => (
+            <div key={session.id} hidden={active !== session.id}>
+              <ThreadTerminalView
+                autoFocus={false}
+                isPanelOpen={active === session.id}
+                session={session}
+              />
+            </div>
+          ))}
+        </AppCommandProvider>
+      </MemoryRouter>
+    );
+    const { rerender } = render(view(reconnecting.id));
+    const waitUntilReady = () =>
+      waitForReadinessCondition(
+        () =>
+          expect(
+            screen.getByRole<HTMLButtonElement>("button", {
+              name: "More terminal keys",
+            }).disabled,
+          ).toBe(false),
+        "switched mobile viewer was not ready",
+      );
+    await waitUntilReady();
+    rerender(view(running.id));
+    await waitUntilReady();
+    const runningControls = screen.getByRole("group", {
+      name: "Terminal keyboard controls",
+    });
+    expect(runningControls.children).toHaveLength(1);
+    const collapsedClass = runningControls.className;
+    for (const active of [reconnecting.id, running.id, reconnecting.id]) {
+      rerender(view(active, "disconnected"));
+      const controls = screen.getByRole("group", {
+        name: "Terminal keyboard controls",
+      });
+      expect(controls.className).toBe(collapsedClass);
+      expect(controls.children).toHaveLength(1);
+      expect(screen.queryByRole("button", { name: "Shift Tab" })).toBeNull();
+      expect(
+        screen.queryByRole("button", { name: "Select terminal text" }),
+      ).toBeNull();
+    }
+  });
+
+  it.each([true, false])(
+    "leaves one header search action in a native pane with touch=%s",
+    async (touch) => {
+      prepareMobileTerminal();
+      testState.touchEnabled = touch;
+      const loadAddon = vi.spyOn(Terminal.prototype, "loadAddon");
+      vi.spyOn(FitAddon.prototype, "proposeDimensions").mockReturnValue({
+        cols: 40,
+        rows: 12,
+      });
+      renderMobileTerminal(true);
+      await waitForReadinessCondition(
+        () =>
+          expect(
+            loadAddon.mock.calls.some(([addon]) => "findNext" in addon),
+          ).toBe(true),
+        "terminal search addon was not loaded within 5000 ms",
+      );
+      expect(
+        screen.getAllByRole("button", { name: "Search terminal output" }),
+      ).toHaveLength(1);
+      if (touch) {
+        expect(
+          screen
+            .getByRole("group", { name: "Terminal keyboard controls" })
+            .classList.contains("py-0"),
+        ).toBe(true);
+        expect(
+          screen
+            .getByRole("button", { name: "Escape" })
+            .classList.contains("h-11"),
+        ).toBe(true);
+      }
+    },
+  );
+  it.each([360, 390, 767, 768, 1440])(
+    "starts terminals with responsive typography at %s px",
+    async (width) => {
+      prepareMobileTerminal();
+      vi.stubGlobal("innerWidth", width);
+      vi.stubGlobal("matchMedia", (query: string) => ({
+        matches:
+          query === "(pointer: coarse)" ||
+          (query === "(max-width: 767px)" && width <= 767),
+        media: query,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        onchange: null,
+        dispatchEvent: vi.fn(),
+      }));
+      vi.spyOn(FitAddon.prototype, "proposeDimensions").mockReturnValue({
+        cols: 40,
+        rows: 12,
+      });
+      renderMobileTerminal();
+      await waitFor(() =>
+        expect(
+          document
+            .querySelector("[data-terminal-font-size]")
+            ?.getAttribute("data-terminal-font-size"),
+        ).toBe(width < 768 ? "15" : "14"),
+      );
+    },
+  );
+  it("uses the shared renderer cell line spacing when mounting the DOM terminal", async () => {
+    prepareMobileTerminal();
+    vi.spyOn(FitAddon.prototype, "proposeDimensions").mockReturnValue({
+      cols: 40,
+      rows: 12,
+    });
+    let terminal: Terminal | null = null;
+    const open = Terminal.prototype.open;
+    vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
+      this: Terminal,
+      element,
+    ) {
+      terminal = this;
+      open.call(this, element);
+    });
+    renderMobileTerminal();
+    await waitFor(() => expect(terminal?.options.lineHeight).toBe(1.22));
+    await waitFor(() => {
+      expect(terminal?.options.cursorInactiveStyle).toBe("outline");
+      expect(terminal?.options.cursorStyle).toBe("block");
+    });
+  });
   it("keeps a bottom-following client at the bottom after output and a shared resize", async () => {
     prepareMobileTerminal();
     let fitCols = 40;
@@ -760,98 +998,120 @@ describe("ThreadTerminalView terminal viewport and focus", () => {
     );
   });
 
-  it("keeps a restored scrolled-up content line through the component column reflow", async () => {
-    prepareMobileTerminal();
-    let fitCols = 40;
-    vi.spyOn(FitAddon.prototype, "proposeDimensions").mockImplementation(
-      () => ({ cols: fitCols, rows: 12 }),
-    );
-    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
-      queueMicrotask(() => callback(0));
-      return 1;
-    });
-    vi.stubGlobal("cancelAnimationFrame", vi.fn());
-    let mountedTerminal: Terminal | null = null;
-    const openTerminal = Terminal.prototype.open;
-    vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
-      this: Terminal,
-      element: HTMLElement,
-    ) {
-      mountedTerminal ??= this;
-      openTerminal.call(this, element);
-    });
-    const getTerminal = () => {
-      if (!mountedTerminal) throw new Error("terminal was not mounted");
-      return mountedTerminal;
-    };
-    sessionStorage.setItem(
-      "bb:terminal-viewport:term_mobile_paste",
-      JSON.stringify({
-        distanceFromTail: 388,
-        lineOffset: 100,
-        outputSequence: 0,
-      }),
-    );
-    const session = renderMobileTerminal();
-    await waitForReadinessCondition(
-      () => expect(testState.sockets).toHaveLength(1),
-      "terminal socket was not created within 5000 ms",
-    );
-    const socket = testState.sockets[0];
-    if (!socket) throw new Error("terminal socket was not created");
-    socket.receive({
-      type: "attached",
-      session,
-      replayStartSeq: 0,
-      nextSeq: 1,
-    });
-    const output = Array.from({ length: 500 }, (_, index) => {
-      const number = String(index + 1).padStart(5, "0");
-      return `line ${number} ${"0123456789".repeat(2)}01234567`;
-    }).join("\r\n");
-    socket.receive({
-      type: "output",
-      chunk: { seq: 0, dataBase64: btoa(output) },
-    });
-    await waitForReadinessCondition(
-      () => expect(getTerminal().buffer.active.baseY).toBeGreaterThan(0),
-      "terminal output was not parsed within 5000 ms",
-    );
-    await waitForReadinessCondition(
-      () =>
-        expect(
-          testState.socketMessages.map((message) => JSON.parse(message)),
-        ).toContainEqual({ type: "ack", nextSeq: 1 }),
-      "saved viewport replay was not acknowledged within 5000 ms",
-    );
-    const lineBefore = getTerminal()
-      .buffer.active.getLine(getTerminal().buffer.active.viewportY)
-      ?.translateToString(true);
-    expect(lineBefore).toMatch(/^line \d{5} /);
-    expect(lineBefore?.length).toBeGreaterThan(20);
-    expect(getTerminal().buffer.active.viewportY).toBeLessThan(
-      getTerminal().buffer.active.baseY,
-    );
-    fitCols = 20;
-    act(() => getTerminal().resize(20, 12));
-    await waitForReadinessCondition(
-      () => expect(getTerminal().cols).toBe(20),
-      "component column reflow was not applied within 5000 ms",
-    );
+  it.each(["legacy", "batch"])(
+    "keeps a saved anchor through %s replay and column reflow",
+    async (mode) => {
+      prepareMobileTerminal();
+      let fitCols = 40;
+      vi.spyOn(FitAddon.prototype, "proposeDimensions").mockImplementation(
+        () => ({ cols: fitCols, rows: 12 }),
+      );
+      vi.stubGlobal(
+        "requestAnimationFrame",
+        (callback: FrameRequestCallback) => {
+          queueMicrotask(() => callback(0));
+          return 1;
+        },
+      );
+      vi.stubGlobal("cancelAnimationFrame", vi.fn());
+      let mountedTerminal: Terminal | null = null;
+      const openTerminal = Terminal.prototype.open;
+      vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
+        this: Terminal,
+        element: HTMLElement,
+      ) {
+        mountedTerminal ??= this;
+        openTerminal.call(this, element);
+      });
+      const getTerminal = () => {
+        if (!mountedTerminal) throw new Error("terminal was not mounted");
+        return mountedTerminal;
+      };
+      sessionStorage.setItem(
+        "bb:terminal-viewport:term_mobile_paste",
+        JSON.stringify({
+          distanceFromTail: 388,
+          lineOffset: 100,
+          outputSequence: mode === "batch" ? 1 : 0,
+        }),
+      );
+      const session = renderMobileTerminal();
+      await waitForReadinessCondition(
+        () => expect(testState.sockets).toHaveLength(1),
+        "terminal socket was not created within 5000 ms",
+      );
+      const socket = testState.sockets[0];
+      if (!socket) throw new Error("terminal socket was not created");
+      if (mode === "batch")
+        Object.defineProperty(socket, "protocol", {
+          value: "bb.terminal.replay-batch.v1",
+        });
+      socket.receive({
+        type: "attached",
+        session,
+        replayStartSeq: 0,
+        nextSeq: mode === "batch" ? 3 : 1,
+      });
+      const output = Array.from({ length: 500 }, (_, index) => {
+        const number = String(index + 1).padStart(5, "0");
+        return `line ${number} ${"0123456789".repeat(2)}01234567`;
+      }).join("\r\n");
+      socket.receive(
+        mode === "batch"
+          ? {
+              type: "output-batch",
+              chunks: [
+                { seq: 0, dataBase64: btoa("before anchor\r\n") },
+                { seq: 1, dataBase64: btoa(output) },
+                { seq: 2, dataBase64: btoa("\r\nafter anchor") },
+              ],
+            }
+          : {
+              type: "output",
+              chunk: { seq: 0, dataBase64: btoa(output) },
+            },
+      );
+      await waitForReadinessCondition(
+        () => expect(getTerminal().buffer.active.baseY).toBeGreaterThan(0),
+        "terminal output was not parsed within 5000 ms",
+      );
+      await waitForReadinessCondition(
+        () =>
+          expect(
+            testState.socketMessages.map((message) => JSON.parse(message)),
+          ).toContainEqual({ type: "ack", nextSeq: mode === "batch" ? 3 : 1 }),
+        "saved viewport replay was not acknowledged within 5000 ms",
+      );
+      const lineBefore = getTerminal()
+        .buffer.active.getLine(getTerminal().buffer.active.viewportY)
+        ?.translateToString(true);
+      expect(lineBefore).toMatch(/^line \d{5} /);
+      expect(lineBefore?.length).toBeGreaterThan(20);
+      expect(getTerminal().buffer.active.viewportY).toBeLessThan(
+        getTerminal().buffer.active.baseY,
+      );
+      fitCols = 20;
+      act(() => getTerminal().resize(20, 12));
+      await waitForReadinessCondition(
+        () => expect(getTerminal().cols).toBe(20),
+        "component column reflow was not applied within 5000 ms",
+      );
 
-    await waitForReadinessCondition(
-      () =>
-        expect(
-          getTerminal()
-            .buffer.active.getLine(getTerminal().buffer.active.viewportY)
-            ?.translateToString(true)
-            ?.match(/^line (\d{5}) /)?.[1],
-        ).toBe(lineBefore?.match(/^line (\d{5}) /)?.[1]),
-      "component did not restore the scrolled line after shared column reflow",
-    );
-  });
+      await waitForReadinessCondition(
+        () =>
+          expect(
+            getTerminal()
+              .buffer.active.getLine(getTerminal().buffer.active.viewportY)
+              ?.translateToString(true)
+              ?.match(/^line (\d{5}) /)?.[1],
+          ).toBe(lineBefore?.match(/^line (\d{5}) /)?.[1]),
+        "component did not restore the scrolled line after shared column reflow",
+      );
+    },
+  );
 
   it("uses gesture-start scale for uneven multi-frame pinch gestures", async () => {
+    vi.stubGlobal("innerWidth", 390);
     vi.stubGlobal("WebSocket", TestTerminalSocket);
     vi.stubGlobal(
       "ResizeObserver",
@@ -882,9 +1142,14 @@ describe("ThreadTerminalView terminal viewport and focus", () => {
       onchange: null,
       dispatchEvent: vi.fn(),
     }));
-    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
-      measureText: (text: string) => ({ width: text.length * 7 }),
-    } as unknown as CanvasRenderingContext2D);
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(
+      (kind) =>
+        kind === "2d"
+          ? ({
+              measureText: (text: string) => ({ width: text.length * 7 }),
+            } as unknown as CanvasRenderingContext2D)
+          : null,
+    );
     vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(
       function offsetWidth(this: HTMLElement) {
         return this.classList.contains("xterm-char-measure-element") ? 7 : 354;
@@ -915,7 +1180,7 @@ describe("ThreadTerminalView terminal viewport and focus", () => {
         const fontSize = Number(
           document
             .querySelector("[data-terminal-renderer]")
-            ?.getAttribute("data-terminal-font-size") ?? 12,
+            ?.getAttribute("data-terminal-font-size") ?? 13,
         );
         return {
           cols: Math.round(612 / fontSize),
@@ -944,7 +1209,7 @@ describe("ThreadTerminalView terminal viewport and focus", () => {
     const pane = document.querySelector(".group\\/terminal-pane");
     const fontSizeNode = document.querySelector("[data-terminal-renderer]");
     expect(pane).not.toBeNull();
-    expect(fontSizeNode?.getAttribute("data-terminal-font-size")).toBe("12");
+    expect(fontSizeNode?.getAttribute("data-terminal-font-size")).toBe("15");
 
     const dispatchTouches = (
       type: "touchstart" | "touchmove" | "touchend",
@@ -980,7 +1245,8 @@ describe("ThreadTerminalView terminal viewport and focus", () => {
               type?: string;
             },
         )
-        .filter((message) => message.type === "resize" && message.claim !== true);
+        .filter((message) => message.type === "resize")
+        .map(({ type, cols, rows }) => ({ type, cols, rows }));
 
     await waitForReadinessCondition(
       () => expect(resizeMessages()).toHaveLength(1),
@@ -995,13 +1261,13 @@ describe("ThreadTerminalView terminal viewport and focus", () => {
     }
     dispatchTouches("touchend", 150, true);
     await waitFor(() =>
-      expect(fontSizeNode?.getAttribute("data-terminal-font-size")).toBe("18"),
+      expect(fontSizeNode?.getAttribute("data-terminal-font-size")).toBe("23"),
     );
     await waitFor(() => expect(resizeMessages()).toHaveLength(2));
     expect(resizeMessages().at(-1)).toEqual({
       type: "resize",
-      cols: 34,
-      rows: 31,
+      cols: 27,
+      rows: 25,
     });
 
     dispatchTouches("touchstart", 150);
@@ -1010,10 +1276,14 @@ describe("ThreadTerminalView terminal viewport and focus", () => {
     }
     dispatchTouches("touchend", 100, true);
     await waitFor(() =>
-      expect(fontSizeNode?.getAttribute("data-terminal-font-size")).toBe("12"),
+      expect(fontSizeNode?.getAttribute("data-terminal-font-size")).toBe("15"),
     );
     await waitFor(() => expect(resizeMessages()).toHaveLength(3));
     expect(resizeMessages().at(-1)).toEqual(originalGrid);
+    dispatchTouches("touchstart", 100);
+    dispatchTouches("touchmove", 50);
+    dispatchTouches("touchend", 50, true);
+    expect(fontSizeNode?.getAttribute("data-terminal-font-size")).toBe("12");
   });
 
   it("preserves the open terminal and its scrollback when pointer mode changes", async () => {
@@ -1192,9 +1462,14 @@ describe("ThreadTerminalView terminal viewport and focus", () => {
   });
 
   it("suppresses terminal-scoped shortcuts from the real xterm input", async () => {
-    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
-      measureText: (text: string) => ({ width: text.length * 9 }),
-    } as unknown as CanvasRenderingContext2D);
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(
+      (kind) =>
+        kind === "2d"
+          ? ({
+              measureText: (text: string) => ({ width: text.length * 9 }),
+            } as unknown as CanvasRenderingContext2D)
+          : null,
+    );
     vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(
       function offsetWidth(this: HTMLElement) {
         return this.classList.contains("xterm-char-measure-element")

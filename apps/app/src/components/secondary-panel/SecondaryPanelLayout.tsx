@@ -19,6 +19,7 @@ import { useIsCompactViewport } from "@bb/shared-ui/hooks/use-compact-viewport";
 import { useResponsiveDrawerRealization } from "@bb/shared-ui/responsive-overlay";
 import { cn } from "@bb/shared-ui/lib/utils";
 import { CompactSecondaryPanelShelf } from "./CompactSecondaryPanelShelf";
+import { usePanelContentLayoutTransition } from "./usePanelContentLayoutTransition";
 import type { PluginComposerHost } from "@/components/plugin/plugin-composer-host";
 import { dispatchBrowserViewBoundsSync } from "@/lib/browser-view-bounds-sync";
 import {
@@ -129,6 +130,10 @@ export function SecondaryPanelLayout({
   );
   const persistedSecondaryWidthPercent = useAtomValue(widthPercentAtom);
   const isMainCollapsed = open && !renderAsDrawer && collapse?.active === true;
+  const mainContentRef = usePanelContentLayoutTransition(
+    open,
+    !renderAsDrawer && !isMainCollapsed,
+  );
 
   const horizontalPanelGroupRef = useRef<ImperativePanelGroupHandle | null>(
     null,
@@ -315,6 +320,7 @@ export function SecondaryPanelLayout({
 
   const mainContent = (
     <div
+      ref={mainContentRef}
       data-split-pane-id={
         secondaryPanelHost === null ? paneContext?.paneId : undefined
       }
@@ -369,10 +375,7 @@ export function SecondaryPanelLayout({
             minSize={minimumSize.min * 100}
             order={1}
             style={{ overflow: "clip" }}
-            className={cn(
-              "min-w-0 transition-[flex-grow,flex-basis]",
-              PANEL_COLLAPSE_TRANSITION_CLASS,
-            )}
+            className="min-w-0"
           >
             {mainContent}
           </Panel>

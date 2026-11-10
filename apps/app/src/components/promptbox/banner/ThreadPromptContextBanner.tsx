@@ -35,11 +35,7 @@ import {
   type RefObject,
 } from "react";
 import { NavLink } from "react-router-dom";
-import type {
-  EnvironmentStatus,
-  PendingInteraction,
-  ThreadRuntimeDisplayStatus,
-} from "@bb/domain";
+import type { EnvironmentStatus, PendingInteraction } from "@bb/domain";
 import {
   PromptStackCard,
   PROMPT_STACK_CARD_HEADER_BUTTON_CLASS,
@@ -90,6 +86,7 @@ interface ThreadPromptChildThreadItem {
   title: string;
   href: string;
   hasPendingInteraction: boolean;
+  hasTerminalAttention?: boolean;
 }
 
 export interface ChildThreadQuestion {
@@ -116,14 +113,7 @@ export interface ThreadPromptEnvironmentGoneSection {
   restorePending?: boolean;
 }
 
-const THREAD_BANNER_ACTIVE_CHILD_RUNTIME_STATUSES: ReadonlySet<ThreadRuntimeDisplayStatus> =
-  new Set(["active", "provisioning", "starting", "waiting-for-host"]);
-
-export function isThreadDisplayStatusBannerActive(
-  status: ThreadRuntimeDisplayStatus,
-): boolean {
-  return THREAD_BANNER_ACTIVE_CHILD_RUNTIME_STATUSES.has(status);
-}
+export { isThreadDisplayStatusBannerActive } from "./thread-banner-active-status";
 
 export interface CoreThreadContext {
   parentThread: ThreadPromptParentThreadSection | null;
@@ -356,6 +346,12 @@ function ChildThreadsBody({
                 className="size-3.5 shrink-0 text-muted-foreground/75 no-underline"
                 aria-label="Needs input"
               />
+            ) : item.hasTerminalAttention ? (
+              <Icon
+                name="BellDot"
+                className="size-3.5 shrink-0 text-attention"
+                aria-label="Check terminal"
+              />
             ) : (
               <Icon
                 name="Loading"
@@ -374,7 +370,12 @@ function ChildThreadsBody({
                 })}
               />
             ) : (
-              <ThreadTitle title={item.title} tooltip className="flex-1" />
+              <>
+                <ThreadTitle title={item.title} tooltip className="flex-1" />
+                {item.hasTerminalAttention && !item.hasPendingInteraction ? (
+                  <span>Check terminal</span>
+                ) : null}
+              </>
             )}
           </>
         );
@@ -606,7 +607,7 @@ function useExpandForNewNeedsInput(
   onExpand: () => void,
 ) {
   const needsInputKey = items
-    .filter((item) => item.hasPendingInteraction)
+    .filter((item) => item.hasPendingInteraction || item.hasTerminalAttention)
     .map((item) => item.id)
     .join(" ");
   const seenNeedsInputKey = useRef("");

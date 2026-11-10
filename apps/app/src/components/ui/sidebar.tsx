@@ -1795,7 +1795,6 @@ const SidebarContent = React.forwardRef<
         `${element.offsetWidth - element.clientWidth}px`,
       );
     };
-    publishScrollbarLane();
     const observer = new ResizeObserver(publishScrollbarLane);
     observer.observe(element);
     return () => observer.disconnect();

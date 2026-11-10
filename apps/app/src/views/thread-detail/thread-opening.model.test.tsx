@@ -582,6 +582,47 @@ async function runSeed(seed: number): Promise<void> {
 }
 
 describe("thread opening model", () => {
+  it("opens a confirmed native thread while environment bootstrap is pending", async () => {
+    const nativeThread = makeThreadResponse({
+      id: THREAD_ID,
+      nativeTerminal: true,
+    });
+    vi.mocked(sdk.threads.get).mockImplementation((args) =>
+      args.include
+        ? new Promise(() => undefined)
+        : Promise.resolve(nativeThread),
+    );
+    function NativeThread() {
+      const { thread, hasThreadDetailBootstrapSettled } = useThreadDetailThread(
+        THREAD_ID,
+        false,
+        "first-unread-row",
+        {
+          hasUnseenTimelineEvents: false,
+          isFocused: true,
+          nativeTerminalReady: true,
+        },
+      );
+      return (
+        <div data-bootstrap-settled={hasThreadDetailBootstrapSettled}>
+          {thread?.id}
+        </div>
+      );
+    }
+    const { wrapper: Wrapper } = createQueryClientTestHarness();
+    const view = render(
+      <MemoryRouter>
+        <Wrapper>
+          <NativeThread />
+        </Wrapper>
+      </MemoryRouter>,
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(50);
+    });
+    expect(view.getByText(THREAD_ID).dataset.bootstrapSettled).toBe("false");
+  });
+
   it(
     `lands every opening where the read state says, across ${SEED_COUNT} random loading orders`,
     { timeout: SEED_COUNT * 2_000 },

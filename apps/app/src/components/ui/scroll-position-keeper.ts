@@ -44,6 +44,7 @@ interface ScrollPositionKeeperOptions {
 interface TopRow {
   key: string;
   element: HTMLElement;
+  offset: number;
 }
 
 interface PendingRestore {
@@ -826,6 +827,9 @@ export class ScrollPositionKeeper {
     }
     if (navigated) this.attachDetachedAtEnd(scrollElement);
     else this.scheduleAttachAtEnd(scrollElement);
+    if (this.topRow?.element.isConnected) {
+      this.topRow.offset = this.edgeTop(scrollElement, this.topRow.element, "top");
+    }
     if (notify) this.notifyLists(urgent);
   }
 
@@ -961,7 +965,7 @@ export class ScrollPositionKeeper {
     }
     const firstKey = first.getAttribute(ROW_ID_ATTRIBUTE);
     if (firstKey !== null) {
-      this.topRow = { key: firstKey, element: first };
+      this.topRow = { key: firstKey, element: first, offset: firstTop - viewportTop };
     }
     let chosen = first;
     if (firstTop < viewportTop - 0.5) {
@@ -1083,6 +1087,17 @@ export class ScrollPositionKeeper {
   private keepAnchorVisible(scrollElement: HTMLElement): void {
     if (this.position.kind !== "anchor" || this.position.edge !== "top") {
       return;
+    }
+    const first = this.topRow;
+    if (first?.element.isConnected && first.offset <= 0 && first.offset > -first.element.getBoundingClientRect().height) {
+      this.position = {
+        kind: "anchor",
+        key: first.key,
+        element: first.element,
+        edge: "top",
+        offset: first.offset,
+        neighbors: [],
+      };
     }
     this.position.offset = Math.min(
       this.position.offset,

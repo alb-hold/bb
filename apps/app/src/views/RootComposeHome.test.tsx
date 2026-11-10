@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
+import { readFileSync } from "node:fs";
 
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useContext, useLayoutEffect, useRef } from "react";
 import { RootComposeHome } from "./RootComposeHome";
@@ -40,13 +41,102 @@ function renderCompactHome() {
 }
 
 describe("RootComposeHome", () => {
-  it("keeps the composer above a scroll viewport that runs behind it", () => {
+  it.each([390, 360])(
+    "cues more recents below the scroll edge at %ipx and clears the cue at the end",
+    (width) => {
+      vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(
+        width,
+      );
+      vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(
+        function (this: HTMLElement) {
+          return this.dataset.testid === "root-compose-compact-composer"
+            ? 236
+            : 844;
+        },
+      );
+      vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(
+        552,
+      );
+      vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockReturnValue(
+        900,
+      );
+      renderCompactHome();
+      const viewport = screen.getByTestId(
+        "root-compose-compact-scroll-viewport",
+      );
+      expect(viewport.style.top).toBe("56px");
+      expect(viewport.style.bottom).toBe("236px");
+      expect(
+        screen.queryByTestId("root-compose-compact-leading-spacer"),
+      ).toBeNull();
+      expect(viewport.hasAttribute("data-more-below")).toBe(true);
+      expect(viewport.hasAttribute("data-more-above")).toBe(false);
+      viewport.scrollTop = 348;
+      fireEvent.scroll(viewport);
+      expect(viewport.hasAttribute("data-more-below")).toBe(false);
+      expect(viewport.hasAttribute("data-more-above")).toBe(true);
+      viewport.scrollTop = 0;
+      fireEvent.scroll(viewport);
+      expect(viewport.hasAttribute("data-more-below")).toBe(true);
+      expect(viewport.hasAttribute("data-more-above")).toBe(false);
+    },
+  );
+
+  it("leaves a short recents list unmasked", () => {
+    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(552);
+    vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockReturnValue(552);
+    renderCompactHome();
+    expect(
+      screen
+        .getByTestId("root-compose-compact-scroll-viewport")
+        .hasAttribute("data-more-below"),
+    ).toBe(false);
+  });
+
+  it("centres the desktop composer without pinning tall content offscreen", () => {
+    render(
+      <RootComposeHome
+        isCompact={false}
+        composer={<div />}
+        compactScrollContent={null}
+        homepageSections={null}
+      />,
+    );
+    const column = screen.getByTestId("root-compose-compact-home");
+    expect(screen.getByText("Start a new thread").className).toContain(
+      "text-xl font-medium text-foreground",
+    );
+    expect(column.className).toContain("row-start-2");
+    expect(column.parentElement?.className).toContain(
+      "grid-rows-[minmax(0,0.38fr)_auto_minmax(0,0.62fr)]",
+    );
+    expect(column.className).toContain("shrink-0");
+    expect(column.parentElement?.className).toContain("overflow-y-auto");
+  });
+  it("renders desktop Recent below the composer", () => {
+    render(
+      <RootComposeHome
+        isCompact={false}
+        composer={<div data-testid="composer" />}
+        compactScrollContent={<div data-testid="recents" />}
+        homepageSections={null}
+      />,
+    );
+    const group = screen.getByTestId("root-compose-desktop-recents");
+    expect(group.contains(screen.getByTestId("recents"))).toBe(true);
+    expect(group.previousElementSibling).toBe(
+      screen.getByTestId("root-compose-compact-composer"),
+    );
+  });
+
+  it("keeps mobile recents separate from the composer and desktop anchor", () => {
     renderCompactHome();
 
     const viewport = screen.getByTestId("root-compose-compact-scroll-viewport");
     const composer = screen.getByTestId("root-compose-compact-composer");
 
-    expect(viewport.className).toContain("bottom-0");
+    expect(screen.queryByText("Start a new thread")).toBeNull();
+    expect(viewport.style.bottom).toBe("0px");
     expect(viewport.className).toContain("overflow-y-auto");
     expect(composer.className).toContain("absolute");
     expect(composer.className).toContain("bottom-0");
@@ -68,14 +158,12 @@ describe("RootComposeHome", () => {
 
     renderCompactHome();
 
-    const leadingSpacer = screen.getByTestId(
-      "root-compose-compact-leading-spacer",
-    );
-    const bottomSpacer = screen.getByTestId(
-      "root-compose-compact-bottom-spacer",
-    );
-    expect(leadingSpacer.style.height).toBe("314px");
-    expect(bottomSpacer.style.height).toBe("188px");
+    expect(
+      screen.queryByTestId("root-compose-compact-leading-spacer"),
+    ).toBeNull();
+    expect(
+      screen.getByTestId("root-compose-compact-scroll-viewport").style.bottom,
+    ).toBe("188px");
   });
 
   it("caps the composer so a tall draft keeps it below the app chrome row", () => {
@@ -111,36 +199,50 @@ describe("RootComposeHome", () => {
     const content = screen.getByTestId("root-compose-compact-scroll-content");
     expect(viewport.style.top).toBe("56px");
     expect(content.firstElementChild).toBe(
-      screen.getByTestId("root-compose-compact-leading-spacer"),
+      screen.getByTestId("recents").parentElement,
     );
   });
 
-  it("rests a list that fits on the composer instead of the band top", () => {
+  it("starts even a short list under the header", () => {
     renderCompactHome();
 
     const content = screen.getByTestId("root-compose-compact-scroll-content");
     expect(content.className).toContain("min-h-full");
-    expect(content.className).toContain("justify-end");
-    expect(content.lastElementChild).toBe(
-      screen.getByTestId("root-compose-compact-bottom-spacer"),
-    );
+    expect(content.className).not.toContain("justify-end");
+    expect(
+      content.lastElementChild?.contains(screen.getByTestId("recents")),
+    ).toBe(true);
   });
+});
 
-  it("drops the composer fade when nothing scrolls behind it", () => {
-    vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockReturnValue(534);
-    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(534);
-
-    renderCompactHome();
-
-    expect(screen.getByTestId("root-compose-compact-fade").hidden).toBe(true);
-  });
-
-  it("keeps the composer fade while rows overflow behind it", () => {
-    vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockReturnValue(873);
-    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(534);
-
-    renderCompactHome();
-
-    expect(screen.getByTestId("root-compose-compact-fade").hidden).toBe(false);
-  });
+it("never fades the first Recent title before scrolling", () => {
+  render(
+    <RootComposeHome
+      isCompact
+      composer={<div />}
+      compactScrollContent={
+        <section data-root-compose-mobile-recents="">
+          <div data-overflow-fade="below" />
+        </section>
+      }
+      homepageSections={null}
+    />,
+  );
+  const fade = document.querySelector(
+    '[data-root-compose-mobile-recents] [data-overflow-fade="below"]',
+  );
+  const viewport = screen.getByTestId("root-compose-compact-scroll-viewport");
+  const css = readFileSync("src/app.css", "utf8");
+  const rule = css.match(
+    /([^{}]*\[data-root-compose-mobile-recents\][^{}]*)\{\s*visibility: hidden;\s*\}/,
+  );
+  expect(rule).not.toBeNull();
+  const selector = rule![1].trim();
+  expect(fade?.matches(selector)).toBe(true);
+  viewport.scrollTop = 30;
+  fireEvent.scroll(viewport);
+  expect(fade?.matches(selector)).toBe(false);
+  viewport.scrollTop = 0;
+  fireEvent.scroll(viewport);
+  expect(fade?.matches(selector)).toBe(true);
 });

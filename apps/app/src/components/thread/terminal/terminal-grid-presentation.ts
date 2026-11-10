@@ -19,7 +19,8 @@ export function terminalSurfaceScaleToWidth(
   const currentScale = readTerminalSurfaceScale(surface);
   const screen = surface.querySelector<HTMLElement>(".xterm-screen");
   const paintedWidth = screen?.getBoundingClientRect().width ?? 0;
-  const naturalWidth = currentScale > 0 ? paintedWidth / currentScale : paintedWidth;
+  const naturalWidth =
+    currentScale > 0 ? paintedWidth / currentScale : paintedWidth;
   const widthScale =
     naturalWidth > 0 && availableWidth > 0
       ? Math.min(1, availableWidth / naturalWidth)
@@ -61,8 +62,10 @@ export function applyTerminalSurfaceScale(
 ): void {
   const currentScale = readTerminalSurfaceScale(surface);
   const screenWidth =
-    surface.querySelector<HTMLElement>(".xterm-screen")?.getBoundingClientRect().width ?? 0;
-  const naturalWidth = currentScale > 0 ? screenWidth / currentScale : screenWidth;
+    surface.querySelector<HTMLElement>(".xterm-screen")?.getBoundingClientRect()
+      .width ?? 0;
+  const naturalWidth =
+    currentScale > 0 ? screenWidth / currentScale : screenWidth;
   surface.style.setProperty("--terminal-grid-scale", String(scale));
   if (naturalWidth > 0) {
     surface.style.setProperty("--terminal-natural-width", `${naturalWidth}px`);
@@ -137,5 +140,31 @@ export function attachTerminalScalePointerCoordinates(
       document.removeEventListener(type, handle, true);
     }
     dragging = false;
+  };
+}
+
+export function terminalSurfacePresentation({
+  grid,
+  fitGrid,
+  fontSize,
+  isOwner,
+  running,
+  minimumFontSize = 12,
+}: {
+  grid: TerminalGrid;
+  fitGrid: TerminalGrid | null;
+  fontSize: number;
+  isOwner: boolean;
+  running: boolean;
+  minimumFontSize?: number;
+}): { scale: number; panHorizontally: boolean; showFitControl: boolean } {
+  const fittedScale =
+    fitGrid === null ? 1 : terminalSurfaceScale(grid, fitGrid);
+  const scale = Math.max(fittedScale, Math.min(1, minimumFontSize / fontSize));
+  const panHorizontally = scale > fittedScale;
+  return {
+    scale,
+    panHorizontally,
+    showFitControl: running && !isOwner && panHorizontally,
   };
 }

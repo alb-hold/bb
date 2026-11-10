@@ -1,3 +1,4 @@
+import { takeInitialNativeTerminalResponse } from "./initial-native-terminal-request";
 import { createApiClient } from "@bb/server-contract";
 import { DEVICE_HANDOFF_CLIENT_TOKEN_HEADER } from "@bb/server-contract";
 import { fetchWithAppSurface } from "./app-surface";
@@ -36,6 +37,16 @@ export async function fetchWithDeviceHandoffSubmission(
       headers.set(DEVICE_HANDOFF_CLIENT_TOKEN_HEADER, storedToken);
     }
     init = { ...init, headers };
+  }
+  if (method === "GET") {
+    const initial = takeInitialNativeTerminalResponse(
+      url,
+      init?.signal ?? (input instanceof Request ? input.signal : undefined),
+    );
+    if (initial) {
+      const response = await initial;
+      if (response) return response;
+    }
   }
   return await fetchWithAppSurface(input, init);
 }

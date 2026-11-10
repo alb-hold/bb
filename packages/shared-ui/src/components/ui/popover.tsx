@@ -14,6 +14,7 @@ import {
 import {
   blurActiveKeyboardInputBeforeOverlayOpen,
   getOverlayTriggerClassName,
+  useOverlayTriggerModality,
   preventOverlayTriggerSelection,
 } from "./overlay-trigger.js";
 import { useCloseWhenAnchorDetaches } from "./overlay-anchor.js";
@@ -68,6 +69,7 @@ const PopoverTrigger = React.forwardRef<
   HTMLButtonElement,
   React.ComponentPropsWithoutRef<typeof PopoverPrimitive.Trigger>
 >(({ asChild, children, className, ...props }, ref) => {
+  useOverlayTriggerModality();
   const { isCompactViewport, open, onOpenChange } = useResponsivePopover();
   const anchorRef = useCloseWhenAnchorDetaches(
     ref,
@@ -169,10 +171,7 @@ const PopoverContent = React.forwardRef<
         >
           <div
             ref={ref}
-            className={cn(
-              "overflow-y-auto px-4 pt-2 pb-4",
-              className,
-            )}
+            className={cn("overflow-y-auto px-4 pt-2 pb-4", className)}
             {...domProps}
             style={{ ...style, ...COMPACT_SHEET_CONTENT_STYLE }}
           >

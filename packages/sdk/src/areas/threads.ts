@@ -13,12 +13,12 @@ import {
   type ThreadQueuedMessage,
   type ThreadStatus,
   validatePluginMetadata,
+  threadRowStateSchema,
 } from "@bb/domain";
 import {
   DEFAULT_TURN_RETRY_REASON,
-  threadTabsResponseSchema,
-  threadRowStateSchema,
-} from "@bb/server-contract";
+} from "@bb/server-contract/api/thread-client-constants";
+import { threadTabsResponseSchema } from "@bb/server-contract/api/thread-tabs";
 import type { ThreadExecutionProfileResponse } from "@bb/server-contract";
 import type {
   CreateQueuedMessageRequest,

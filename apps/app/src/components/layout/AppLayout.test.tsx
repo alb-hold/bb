@@ -19,8 +19,12 @@ import {
 } from "@/lib/plugin-slots";
 import { resetAllCrashedPluginSlotsForTest } from "@/components/plugin/PluginSlotMount";
 import { makePluginRegistrationSet } from "@/test/fixtures/plugins";
+import { makeThreadResponse } from "@/test/fixtures/thread-responses";
 import {
+  startTransition,
+  Suspense,
   useEffect,
+  useState,
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
 } from "react";
@@ -32,6 +36,14 @@ import { CompactViewportOverrideProvider } from "@bb/shared-ui/hooks/use-compact
 import { setCompactSecondaryPanelPresentation } from "@/components/ui/secondary-panel-shelf-visibility";
 
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
+import { usePanelTerminals } from "@/components/secondary-panel/usePanelTerminals";
+import {
+  resetFixedPanelTabsStateForTest,
+  useFixedPanelTabsState,
+} from "@/lib/fixed-panel-tabs";
+import { wsManager } from "@/lib/ws";
+import { sdk } from "@/lib/sdk";
+import type { ThreadOpenSignal } from "@bb/server-contract";
 
 function render(ui: ReactNode) {
   return renderReact(ui, { wrapper: createQueryClientTestHarness().wrapper });
@@ -51,6 +63,12 @@ const sidebarThreadsMock = vi.hoisted(() => {
   const threads: import("@bb/domain").ThreadListEntry[] = [];
   return { threads };
 });
+
+const useThreadMock = vi.hoisted(() =>
+  vi.fn((): { data: ReturnType<typeof makeThreadResponse> | undefined } => ({
+    data: undefined,
+  })),
+);
 
 const SIDEBAR_WIDTH_STORAGE_KEY = "bb.sidebar.width";
 const SIDEBAR_OPEN_STORAGE_KEY = "bb.sidebar.open";
@@ -193,7 +211,7 @@ vi.mock("@/hooks/queries/sidebar-navigation-query", () => ({
 vi.mock("@/hooks/queries/thread-queries", () => ({
   useArchivedThreads: () => ({ data: undefined }),
   didThreadDetailBootstrapRefreshAfterMount: () => true,
-  useThread: () => ({ data: undefined }),
+  useThread: useThreadMock,
   useThreadDetailBootstrap: useThreadDetailBootstrapMock,
   useThreadPendingInteractions: () => ({ data: undefined }),
 }));
@@ -246,6 +264,7 @@ function renderLayout(initialPath = "/", children: ReactNode = null) {
 
 beforeEach(() => {
   sidebarThreadsMock.threads = [];
+  useThreadMock.mockReturnValue({ data: undefined });
   window.localStorage.clear();
   window.sessionStorage.clear();
   useThreadDetailBootstrapMock.mockReset();
@@ -257,6 +276,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  resetFixedPanelTabsStateForTest();
   resetPluginSlotStoreForTest();
   resetAllCrashedPluginSlotsForTest();
   setCompactSecondaryPanelPresentation("closed");
@@ -266,7 +286,137 @@ afterEach(() => {
   window.sessionStorage.clear();
 });
 
+describe("terminal focus in the open thread", () => {
+  it("selects through the mounted controller before a pending transition without terminalAction navigation", async () => {
+    let receive: ((signal: ThreadOpenSignal) => void) | undefined;
+    vi.spyOn(wsManager, "onThreadOpen").mockImplementation((handler) => {
+      receive = handler;
+      return () => {
+        receive = undefined;
+      };
+    });
+    vi.spyOn(sdk.threads.tabs, "get").mockResolvedValue({
+      revision: 0,
+      tabs: [],
+    });
+    const pending = new Promise<void>(() => undefined);
+    function PendingContent({ blocked }: { blocked: boolean }) {
+      if (blocked) throw pending;
+      return <div>Current content</div>;
+    }
+    function OpenThread() {
+      const [blocked, setBlocked] = useState(false);
+      const location = useLocation();
+      const terminals = usePanelTerminals({
+        panelStateId: "thr_one",
+        syncThreadId: "thr_one",
+        createTarget: { kind: "thread", threadId: "thr_one" },
+        isFocused: true,
+        acceptsSession: (session) => session.threadId === "thr_one",
+        tabsCarryTarget: false,
+        reveal: () => undefined,
+      });
+      const state = useFixedPanelTabsState("thr_one", "thr_one");
+      const active = state.secondary.tabs.find(
+        (tab) => tab.id === state.secondary.activeTabId,
+      );
+      return (
+        <>
+          <button onClick={() => terminals.select("term_first")}>First</button>
+          <button onClick={() => terminals.select("term_second")}>
+            Second
+          </button>
+          <button onClick={() => startTransition(() => setBlocked(true))}>
+            Suspend update
+          </button>
+          <div data-testid="selected-terminal">
+            {active?.kind === "terminal" ? active.terminalId : "none"}
+          </div>
+          <div data-testid="terminal-navigation-state">
+            {JSON.stringify(location.state)}
+          </div>
+          <Suspense fallback={<div>Suspended update</div>}>
+            <PendingContent blocked={blocked} />
+          </Suspense>
+        </>
+      );
+    }
+    renderLayout("/projects/proj_one/threads/thr_one", <OpenThread />);
+    fireEvent.click(screen.getByRole("button", { name: "First" }));
+    fireEvent.click(screen.getByRole("button", { name: "Second" }));
+    fireEvent.click(screen.getByRole("button", { name: "First" }));
+    fireEvent.click(screen.getByRole("button", { name: "Suspend update" }));
+    const before = screen.getByTestId("terminal-navigation-state").textContent;
+    await act(async () => {
+      receive?.({
+        type: "thread-open",
+        projectId: "proj_one",
+        threadId: "thr_one",
+        split: "replace",
+        file: null,
+        terminalAction: { action: "focus", terminalId: "term_second" },
+      });
+    });
+    expect(screen.getByTestId("selected-terminal").textContent).toBe(
+      "term_second",
+    );
+    expect(screen.getByTestId("terminal-navigation-state").textContent).toBe(
+      before,
+    );
+    expect(screen.queryByText("Suspended update")).toBeNull();
+    expect(screen.getByText("Current content")).toBeDefined();
+  });
+});
+
+it("shows the compact home context and reuses new-thread navigation", async () => {
+  render(
+    <CompactViewportOverrideProvider isCompactViewport>
+      {layoutTree(
+        "/",
+        <Link to="/projects/proj_one/threads/thr_one">Open seeded thread</Link>,
+      )}
+    </CompactViewportOverrideProvider>,
+  );
+  expect(await screen.findByText("Home")).toBeDefined();
+  const action = screen.getByRole("button", {
+    name: /^New thread$/,
+  });
+  fireEvent.click(action);
+  await waitFor(() =>
+    expect(screen.getByTestId("location").textContent).toBe("/"),
+  );
+  fireEvent.click(screen.getByRole("link", { name: "Open seeded thread" }));
+  await waitFor(() =>
+    expect(screen.queryByRole("button", { name: /^New thread$/ })).toBeNull(),
+  );
+});
+
 describe("canonical thread routes", () => {
+  it("keeps an explicit mismatching project while a different project is cached", () => {
+    useThreadMock.mockReturnValue({
+      data: makeThreadResponse({ id: "thr_one", projectId: "proj_actual" }),
+    });
+
+    const route = "/projects/proj_wrong/threads/thr_one?panel=files#diff";
+    renderLayout(route);
+
+    expect(screen.getByTestId("location").textContent).toBe(route);
+  });
+
+  it("canonicalizes from a ready thread record while bootstrap is pending", async () => {
+    useThreadMock.mockReturnValue({
+      data: makeThreadResponse({ id: "thr_one", projectId: "proj_actual" }),
+    });
+
+    renderLayout("/threads/thr_one?message=12#event-12");
+
+    await waitFor(() =>
+      expect(screen.getByTestId("location").textContent).toBe(
+        "/projects/proj_actual/threads/thr_one?message=12#event-12",
+      ),
+    );
+  });
+
   it.each([
     [
       "/threads/thr_one?message=12#event-12",
@@ -274,9 +424,9 @@ describe("canonical thread routes", () => {
     ],
     [
       "/projects/proj_wrong/threads/thr_one?panel=files#diff",
-      "/projects/proj_actual/threads/thr_one?panel=files#diff",
+      "/projects/proj_wrong/threads/thr_one?panel=files#diff",
     ],
-  ])("redirects %s to the thread's project route", async (route, expected) => {
+  ])("canonicalizes only projectless routes: %s", async (route, expected) => {
     useThreadDetailBootstrapMock.mockReturnValue({
       data: { projectId: "proj_actual" },
       isError: false,

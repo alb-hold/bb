@@ -1319,6 +1319,33 @@ describe("thread action data input", () => {
 
   const settle = () => new Promise((resolve) => setTimeout(resolve, 150));
 
+  it("coalesces row subscription timers while preserving quiet and maximum wait deadlines", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+    try {
+      const { seen, Surface } = renderRecorder();
+      const timer = vi.spyOn(globalThis, "setTimeout");
+      const ids = Array.from({ length: 100 }, (_, index) => `thr_${index}`);
+      const view = render(<Surface ids={ids} />);
+      expect(timer).toHaveBeenCalledTimes(1);
+      expect(seen.at(-1)).toEqual([]);
+      await act(() => vi.advanceTimersByTimeAsync(31));
+      expect(seen.at(-1)).toEqual([]);
+      await act(() => vi.advanceTimersByTimeAsync(1));
+      expect(seen.at(-1)).toEqual([...ids].sort());
+      for (let index = 0; index < 5; index += 1) {
+        view.rerender(<Surface ids={[...ids, `thr_new_${index}`]} />);
+        await act(() => vi.advanceTimersByTimeAsync(20));
+      }
+      expect(seen.at(-1)).toEqual([...ids, "thr_new_4"].sort());
+      view.unmount();
+      await act(() => vi.advanceTimersByTimeAsync(32));
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+
   it("passes the union of subscribed thread ids and drops released ones", async () => {
     const { seen, Surface } = renderRecorder();
     const view = render(<Surface ids={["thr_b", "thr_a", "thr_c", "thr_a"]} />);

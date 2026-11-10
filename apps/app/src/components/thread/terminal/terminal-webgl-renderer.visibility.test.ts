@@ -15,6 +15,7 @@ afterEach(() => {
 function setupVisibility(
   intersectionSupported = true,
   initiallyIntersecting = true,
+  configure?: (root: HTMLDivElement) => void,
 ) {
   const root = document.createElement("div");
   document.body.append(root);
@@ -24,6 +25,7 @@ function setupVisibility(
   let resize = () => {};
   let intersect = (_visible: boolean, _bounds?: DOMRect) => {};
   const disconnectResize = vi.fn();
+  const observed = new Set<Element>();
   const disconnectIntersection = vi.fn();
   vi.spyOn(root, "getBoundingClientRect").mockImplementation(() => box);
   vi.spyOn(document, "visibilityState", "get").mockImplementation(() =>
@@ -35,7 +37,12 @@ function setupVisibility(
       constructor(callback: () => void) {
         resize = callback;
       }
-      observe() {}
+      observe(element: Element) {
+        observed.add(element);
+      }
+      unobserve(element: Element) {
+        observed.delete(element);
+      }
       disconnect = disconnectResize;
     },
   );
@@ -91,6 +98,7 @@ function setupVisibility(
         }
       : undefined,
   );
+  configure?.(root);
   const createAddon = vi.fn(() => ({
     activate: vi.fn(),
     dispose: vi.fn(),
@@ -116,6 +124,7 @@ function setupVisibility(
     observer,
     createAddon,
     disconnectResize,
+    observed,
     disconnectIntersection,
     intersect: (visible: boolean, bounds?: DOMRect) =>
       intersect(visible, bounds),
@@ -139,6 +148,49 @@ function setupVisibility(
 }
 
 describe("terminal visibility signals", () => {
+  it("does not measure parked terminals when their ancestors resize", () => {
+    const state = setupVisibility();
+    state.openPanel(false);
+    const measure = vi.mocked(state.root.getBoundingClientRect);
+    measure.mockClear();
+    state.resize(new DOMRect(10, 10, 300, 200));
+    state.move(new DOMRect(10, 10, 300, 200));
+    expect(measure).not.toHaveBeenCalled();
+    expect(state.root.dataset.terminalRenderer).toBe("dom");
+    state.observer.dispose();
+    state.renderer.dispose();
+  });
+
+  it("measures the adopted layout once before restoring its renderer", () => {
+    const state = setupVisibility();
+    state.openPanel(false);
+    const measure = vi.mocked(state.root.getBoundingClientRect);
+    measure.mockClear();
+    state.openPanel(true);
+    expect(measure).toHaveBeenCalledOnce();
+    expect(state.root.dataset.terminalRenderer).toBe("webgl");
+    const measureOrder = measure.mock.invocationCallOrder[0]!;
+    const restoreOrder = state.createAddon.mock.invocationCallOrder.at(-1)!;
+    expect(measureOrder).toBeLessThan(restoreOrder);
+    state.observer.dispose();
+    state.renderer.dispose();
+  });
+
+  it("drops obsolete route ancestors when its terminal moves to a parked host", () => {
+    const route = document.createElement("div");
+    const host = document.createElement("div");
+    document.body.append(route, host);
+    const state = setupVisibility(true, true, (root) => route.append(root));
+    expect(state.observed.has(route)).toBe(true);
+    host.append(state.root);
+    state.openPanel(false);
+    expect(state.observed.has(route)).toBe(false);
+    expect(state.observed.has(host)).toBe(true);
+    expect(state.root.dataset.terminalRenderer).toBe("dom");
+    route.remove();
+    state.observer.dispose();
+    state.renderer.dispose();
+  });
   it("releases and reacquires sub-threshold visible slivers on scroll", () => {
     const state = setupVisibility();
     const parent = document.createElement("div");
@@ -166,18 +218,49 @@ describe("terminal visibility signals", () => {
     state.renderer.dispose();
   });
 
-  it("waits for a visible-area observation before allocating a context", () => {
+  it("activates a visible open terminal before the first intersection callback", () => {
     const state = setupVisibility(true, false);
-    expect(state.root.dataset.terminalRenderer).toBe("dom");
-    expect(state.createAddon).not.toHaveBeenCalled();
-    state.intersect(true, new DOMRect(10, 10, 0, 200));
-    expect(state.createAddon).not.toHaveBeenCalled();
-    state.intersect(true);
     expect(state.root.dataset.terminalRenderer).toBe("webgl");
     expect(state.createAddon).toHaveBeenCalledOnce();
+    state.intersect(false);
+    expect(state.root.dataset.terminalRenderer).toBe("dom");
+    state.intersect(true);
+    expect(state.createAddon).toHaveBeenCalledTimes(2);
     state.observer.dispose();
     state.renderer.dispose();
   });
+
+  it.each(["hidden", "clipped"])(
+    "waits for the observer when the initial terminal is %s",
+    (kind) => {
+      const parent = document.createElement("div");
+      const state = setupVisibility(true, false, (root) => {
+        if (kind === "hidden") root.style.visibility = "hidden";
+        else {
+          parent.style.overflow = "hidden";
+          document.body.append(parent);
+          parent.append(root);
+          vi.spyOn(parent, "getBoundingClientRect").mockReturnValue(
+            new DOMRect(400, 10, 300, 200),
+          );
+          vi.spyOn(parent, "clientWidth", "get").mockReturnValue(300);
+          vi.spyOn(parent, "clientHeight", "get").mockReturnValue(200);
+        }
+      });
+      expect(state.createAddon).not.toHaveBeenCalled();
+      state.root.style.visibility = "visible";
+      parent.style.overflow = "visible";
+      state.observer.sync();
+      expect(state.createAddon).not.toHaveBeenCalled();
+      state.intersect(true, new DOMRect(10, 10, 0, 200));
+      expect(state.createAddon).not.toHaveBeenCalled();
+      state.intersect(true);
+      expect(state.root.dataset.terminalRenderer).toBe("webgl");
+      expect(state.createAddon).toHaveBeenCalledOnce();
+      state.observer.dispose();
+      state.renderer.dispose();
+    },
+  );
 
   it("releases contexts when an intersecting terminal has zero visible area", () => {
     const state = setupVisibility();

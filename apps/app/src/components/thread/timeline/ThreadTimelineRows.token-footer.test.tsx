@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -109,22 +109,27 @@ describe("ThreadTimelineRows token footer", () => {
     expect(
       container.querySelector('[data-token-part="cached"]')?.textContent,
     ).toContain("cached 466.2K");
-    expect(screen.getByText("Σ 466.6K")).toBeTruthy();
+    expect(screen.getByText("466.6K tokens")).toBeTruthy();
     expect(
       container.querySelector("[data-token-total-tight]")?.textContent,
-    ).toBe("467K");
+    ).toBe("467K tokens");
     const breakdown = container.querySelector("[data-thread-turn-tokens]");
-    expect(breakdown?.getAttribute("class")).toContain("flex-wrap");
+    expect(breakdown?.querySelector("[data-token-parts]")).toBeTruthy();
     expect(breakdown?.getAttribute("class")).toContain("whitespace-normal");
-    const trailingGroup = container.querySelector(
-      "[data-token-trailing-group]",
-    );
     expect(
-      trailingGroup?.querySelector('[data-token-part="cached"]'),
-    ).toBeTruthy();
+      [...breakdown!.querySelectorAll("[data-token-part]")].map((part) =>
+        part.getAttribute("data-token-part"),
+      ),
+    ).toEqual(["total", "input", "output", "cached"]);
+    expect(breakdown?.closest("[data-message-action-row]")).toBeNull();
     expect(
-      trailingGroup?.querySelector('[data-token-part="total"]'),
-    ).toBeTruthy();
+      breakdown?.parentElement?.hasAttribute("data-message-action-slot"),
+    ).toBe(true);
+    expect(
+      breakdown?.parentElement?.parentElement?.hasAttribute(
+        "data-message-column",
+      ),
+    ).toBe(true);
   });
 
   it("shows Codex spend on a collapsed turn row when the timeline also has its assistant row", () => {
@@ -169,6 +174,7 @@ describe("ThreadTimelineRows token footer", () => {
               threadId: row.threadId,
               turnId: row.turnId,
               status: "completed",
+              children: [],
             }),
             assistant,
           ]}
@@ -188,9 +194,19 @@ describe("ThreadTimelineRows token footer", () => {
         ?.closest("[data-timeline-row-id]")
         ?.getAttribute("data-timeline-row-id"),
     ).toBe(turnId);
+    expect(footer?.textContent).toBe("121.2K tokens");
+    expect(footer?.querySelector('[data-token-part="reasoning"]')).toBeNull();
+    expect(footer?.className).toContain("font-sans");
+    expect(footer?.className).toContain("text-xs");
+    expect(footer?.className).toContain("text-subtle-foreground");
+    fireEvent.click(
+      container.querySelector(
+        `[data-timeline-row-id="${turnId}"] button[aria-expanded]`,
+      )!,
+    );
     expect(
-      footer?.querySelector('[data-token-part="reasoning"]')?.textContent,
-    ).toBe("reason 567");
+      container.querySelector('[data-token-part="reasoning"]')?.textContent,
+    ).toBe("reasoning 567");
   });
 
   it("omits the token footer when every per-turn usage field is unavailable", () => {
@@ -296,6 +312,13 @@ describe("ThreadTimelineRows token footer", () => {
       /\[data-thread-turn-tokens\]\s*\[data-token-part="(?:reasoning|output|input|cached)"\]\s*\{\s*display:\s*none\s*;/,
     );
     expect(actionBarStyles).toContain("flex-wrap: wrap");
+    expect(actionBarStyles).toContain("column-gap: 0.75rem");
+    expect(actionBarStyles).toMatch(
+      /\[data-touch-actions-visible="false"\]:not\(:focus-within\)\s+\[data-message-action-row\]/,
+    );
+    expect(actionBarStyles).not.toMatch(
+      /\[data-touch-actions-visible="false"\]:not\(:focus-within\)\s+\[data-message-action-slot\]/,
+    );
   });
 
   it("renders captured reasoning tokens on a wide flat Claude response", () => {
@@ -345,7 +368,7 @@ describe("ThreadTimelineRows token footer", () => {
     ).toHaveLength(1);
     expect(
       container.querySelector('[data-token-part="reasoning"]')?.textContent,
-    ).toBe("reason 37");
+    ).toBe("reasoning 37");
   });
 
   it("keeps the footer on the last assistant message and hides the active turn", () => {
@@ -756,9 +779,7 @@ describe("ThreadTimelineRows token footer", () => {
         ?.closest("[data-timeline-row-id]")
         ?.getAttribute("data-timeline-row-id"),
     ).toBe(`turn-${first.turnId}`);
-    expect(
-      summaries[0]?.querySelector('[data-token-part="output"]')?.textContent,
-    ).toContain("out 435");
+    expect(summaries[0]?.textContent).toBe("466.6K tokens");
     expect(useThreadSpendSummary).toHaveBeenCalledWith(first.threadId);
 
     const idleRows = [...activeRows];
@@ -797,10 +818,7 @@ describe("ThreadTimelineRows token footer", () => {
         ?.closest("[data-timeline-row-id]")
         ?.getAttribute("data-timeline-row-id"),
     ).toBe(`turn-${second.turnId}`);
-    expect(
-      idleSummaries[1]?.querySelector('[data-token-part="output"]')
-        ?.textContent,
-    ).toContain("out 3.2K");
+    expect(idleSummaries[1]?.textContent).toBe("907.7K tokens");
   });
 
   it("keeps partial active-turn spend hidden while waiting for its host", () => {

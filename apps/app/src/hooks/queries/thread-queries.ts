@@ -1,3 +1,4 @@
+import { traceTerminalGate } from "@/lib/terminal-performance";
 import { useThreadDefaultExecutionOptions } from "./thread-default-execution-options-query";
 import { useThreadQueuedMessages } from "./thread-panel-queries";
 import {
@@ -677,10 +678,15 @@ export function threadQueryOptions(
   return queryOptions<ThreadResponse>({
     queryKey: threadQueryKey(id),
     queryFn: ({ signal }) =>
-      sdk.threads.get({
-        threadId: requireThreadId(id, "useThread"),
-        signal,
-      }),
+      traceTerminalGate(
+        "terminal-thread-record",
+        () =>
+          sdk.threads.get({
+            threadId: requireThreadId(id, "useThread"),
+            signal,
+          }),
+        { threadId: id },
+      ),
     enabled: (options?.enabled ?? true) && Boolean(id),
     staleTime: THREAD_DETAIL_STALE_TIME_MS,
     refetchOnMount: options?.refetchOnMount ?? true,
@@ -742,11 +748,16 @@ export function threadDetailBootstrapQueryOptions(
         });
       }
 
-      const thread = await sdk.threads.get({
-        include: "environment,host",
-        threadId,
-        signal,
-      });
+      const thread = await traceTerminalGate(
+        "terminal-thread-bootstrap",
+        () =>
+          sdk.threads.get({
+            include: "environment,host",
+            threadId,
+            signal,
+          }),
+        { threadId },
+      );
       ingestThreadDetailBootstrap({
         queryClient,
         thread,

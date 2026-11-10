@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { ThreadRowNavigationProvider } from "../rows/threadRowNavigation.js";
+import { makeSidebarThread } from "../model/fixtures.js";
 import { cleanup, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -25,6 +26,27 @@ function Slot({ children }: { children: ReactNode }) {
 }
 
 describe("ProjectThreadTree", () => {
+  it("keeps thread siblings on the same zero-gap pitch as pinned rows", () => {
+    const view = renderSlot({ component: Slot }, {
+      children: (
+        <ProjectThreadTree
+          threadListState={{
+            status: "ready",
+            threads: [
+              makeSidebarThread({ id: "thr_pitch_a" }),
+              makeSidebarThread({ id: "thr_pitch_b" }),
+            ],
+          }}
+          compareThreads={() => 0}
+          collapsedThreadIds={new Set()}
+          collapsedEnvironmentIds={new Set()}
+          onToggleThreadCollapsed={vi.fn()}
+          onToggleEnvironmentCollapsed={vi.fn()}
+        />
+      ),
+    });
+    expect(view.container.querySelector("[data-sidebar-sticky-section]")?.classList.contains("space-y-0")).toBe(true);
+  });
   afterEach(() => {
     cleanup();
     vi.clearAllMocks();

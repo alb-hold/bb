@@ -333,6 +333,7 @@ export function AutoHeightContainer({
         if (sync.useIntrinsicHeight) {
           finishHeightTransition();
           enterIntrinsicHeightMode(wrapper, resizeState, snapState);
+          positionKeeper?.remeasure();
           scheduleIntrinsicHeightRestore({
             inner,
             resizeState,
@@ -400,6 +401,7 @@ export function AutoHeightContainer({
     <AutoHeightSnapContext.Provider value={snapToContentHeight}>
       <div
         ref={wrapperRef}
+        data-compact-touch-height=""
         style={{
           overflowX: "visible",
           overflowY: "clip",

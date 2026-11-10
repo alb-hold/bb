@@ -84,24 +84,81 @@ function openDesktopMenu() {
 }
 
 describe("MessageActionBar", () => {
-  it("places the token summary in the message action row", () => {
+  it("keeps revealed phone action extensions unclipped and disjoint", () => {
+    mockMobileCoarsePointer();
     const { container } = render(
-      <MessageActionBar
-        timestamp={TIMESTAMP}
-        messageText="An answer."
-        alignment="start"
-        mobileActionDisplay="inline"
-        footerAdornment={<span data-thread-turn-tokens>Σ 2.8M</span>}
-      />,
+      <div data-touch-actions-visible="true">
+        <MessageActionBar
+          timestamp={TIMESTAMP}
+          messageText="An answer."
+          alignment="start"
+          mobileActionDisplay="inline"
+        />
+      </div>,
     );
-    const tokenSummary = container.querySelector("[data-thread-turn-tokens]");
-    const actionButton = screen.getByRole("button", {
-      name: "Message actions",
-    });
-
-    expect(tokenSummary).toBeTruthy();
-    expect(tokenSummary?.parentElement).toBe(actionButton.parentElement);
+    const trigger = screen.getByRole("button", { name: "Message actions" });
+    expect(trigger.getAttribute("data-compact-touch")).toBe("action-menu");
+    expect(trigger.classList.contains("max-md:pointer-coarse:ml-0")).toBe(true);
+    for (
+      let node: HTMLElement | null = trigger;
+      node && node !== container;
+      node = node.parentElement
+    ) {
+      expect(node.className).not.toMatch(
+        /(?:^| )overflow-(?:hidden|clip)(?: |$)/,
+      );
+      expect(node.style.overflow).not.toMatch(/hidden|clip/);
+      expect(node.style.clipPath).toBe("");
+    }
   });
+
+  it.each([
+    [360, "idle"],
+    [390, "touch"],
+    [390, "focus"],
+    [1280, "idle"],
+    [1280, "hover"],
+    [1280, "focus"],
+  ])(
+    "aligns the token summary with the message column at %s px with %s actions",
+    (width, state) => {
+      const { container } = render(
+        <div
+          style={{ width }}
+          data-touch-actions-visible={state === "touch" ? "true" : "false"}
+        >
+          <MessageActionBar
+            timestamp={TIMESTAMP}
+            messageText="An answer."
+            alignment="start"
+            mobileActionDisplay="inline"
+            footerAdornment={<span data-thread-turn-tokens>Σ 2.8M</span>}
+          />
+        </div>,
+      );
+      const tokenSummary = container.querySelector("[data-thread-turn-tokens]");
+      const actionButton = screen.getByRole("button", {
+        name: "Message actions",
+      });
+
+      if (state === "hover") fireEvent.mouseEnter(actionButton.parentElement!);
+      if (state === "focus") actionButton.focus();
+      expect(tokenSummary).toBeTruthy();
+      expect(tokenSummary?.parentElement).toBe(
+        container.querySelector("[data-message-action-slot]"),
+      );
+      expect(tokenSummary?.closest("[data-message-action-row]")).toBeNull();
+      expect(tokenSummary?.parentElement?.className).not.toMatch(/-m[ls]-/);
+      expect(actionButton.getAttribute("data-compact-touch")).toBe(
+        "action-menu",
+      );
+      expect(
+        screen
+          .getByRole("button", { name: "Copy message" })
+          .getAttribute("data-compact-touch"),
+      ).toBe("action");
+    },
+  );
 
   it("uses the nearest thread window as the tooltip collision boundary", () => {
     const threadWindow = document.createElement("div");
@@ -409,4 +466,22 @@ describe("MessageActionBar", () => {
     fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
     expect(row?.hasAttribute("data-menu-open")).toBe(false);
   });
+});
+
+it("packs phone actions using their full 44px minimum width", () => {
+  mockMobileCoarsePointer();
+  const observer = installControlledResizeObserver();
+  render(
+    <MessageActionBar
+      timestamp={TIMESTAMP}
+      messageText="Answer"
+      alignment="start"
+      mobileActionDisplay="inline"
+      onEdit={vi.fn()}
+    />,
+  );
+  observer.reportWidth(140);
+  expect(screen.getByRole("button", { name: "Copy message" })).toBeDefined();
+  expect(screen.queryByRole("button", { name: "Edit message" })).toBeNull();
+  expect(screen.getByRole("button", { name: "Message actions" })).toBeDefined();
 });

@@ -41,6 +41,23 @@ const RUNTIME_MODULE_IDS = RUNTIME_SHIM_NPM_SPECIFIERS;
  * export lists come from esbuild metadata like the SDK facade's.
  */
 const RUNTIME_SOURCE_MODULES = {
+  "@bb/shared-ui/dropdown-menu": path.join(
+    scriptDir,
+    "../../shared-ui/src/components/ui/dropdown-menu.tsx",
+  ),
+  "@bb/shared-ui/dialog": path.join(
+    scriptDir,
+    "../../shared-ui/src/components/ui/dialog.tsx",
+  ),
+  "@bb/shared-ui/context-menu": path.join(
+    scriptDir,
+    "../../shared-ui/src/components/ui/context-menu.tsx",
+  ),
+  "@bb/shared-ui/responsive-overlay": path.join(
+    scriptDir,
+    "../../shared-ui/src/components/ui/responsive-overlay.tsx",
+  ),
+
   "@bb/shared-ui/question-form-host": path.join(
     scriptDir,
     "..",
@@ -163,12 +180,39 @@ pushEntry(
   ),
 );
 for (const id of RUNTIME_MODULE_IDS) {
-  pushEntry(id, await namedExportsOf(id));
+  if (id === "zod" || id === "zod/v4") {
+    const names = JSON.parse(
+      await readFile(
+        path.join(scriptDir, "../src/generated/zod-admission.generated.json"),
+        "utf8",
+      ),
+    );
+    pushEntry(id, [...names, "z"]);
+  } else {
+    pushEntry(id, await namedExportsOf(id));
+  }
 }
 for (const [id, entryPoint] of Object.entries(RUNTIME_SOURCE_MODULES)) {
   pushEntry(id, await sourceModuleExports(entryPoint));
 }
 const entries = entryChunks.join("\n");
+const runtimeVersions = {};
+for (const id of RUNTIME_MODULE_IDS) {
+  const parts = id.split("/");
+  const name = id.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0];
+  const pkg = JSON.parse(
+    await readFile(
+      path.join(
+        scriptDir,
+        "../../../apps/app/node_modules",
+        name,
+        "package.json",
+      ),
+      "utf8",
+    ),
+  );
+  runtimeVersions[id] = pkg.version;
+}
 
 const output = `// GENERATED FILE — do not edit by hand.
 // Named exports of the plugin SDK app facade and shared runtime modules
@@ -184,6 +228,8 @@ const output = `// GENERATED FILE — do not edit by hand.
 export const RUNTIME_EXPORT_MANIFEST: Record<string, readonly string[]> = {
 ${entries}
 };
+
+export const RUNTIME_PACKAGE_VERSIONS: Readonly<Record<string, string>> = ${JSON.stringify(runtimeVersions, null, 2)};
 `;
 
 const outFlagIndex = process.argv.indexOf("--out");

@@ -1,3 +1,7 @@
+import {
+  TERMINAL_DEFAULT_COLORS,
+  type TerminalDefaultColors,
+} from "@bb/domain";
 import { emitPluginTerminalInput } from "../plugins/plugin-thread-events.js";
 import {
   mergeHostAndProviderEnvironment,
@@ -5,6 +9,7 @@ import {
 } from "../hosts/host-environment.js";
 import { randomUUID } from "node:crypto";
 import { Buffer } from "node:buffer";
+import { performance } from "node:perf_hooks";
 import { setImmediate as yieldToEventLoop } from "node:timers/promises";
 import { z } from "zod";
 import {
@@ -37,11 +42,14 @@ import {
   updateTerminalSessions,
   updateThread,
   TERMINAL_OUTPUT_RETENTION_MS,
+  TERMINAL_USER_INPUT_REFRESH_MS,
   type TerminalSessionMutation,
   type TerminalSessionRow,
   TERMINAL_RETAINED_OUTPUT_BYTES,
 } from "@bb/db";
 import {
+  NATIVE_TERMINAL_SETUP_DELAY_MS,
+  nativeTerminalMayNeedSetup,
   findLastTerminalGridMarker,
   TERMINAL_DATA_MAX_BYTES,
   TERMINAL_GRID_OSC_PREFIX,
@@ -68,6 +76,7 @@ import type {
   TerminalOutputResponse,
   TerminalScreenQuery,
   TerminalScreenResponse,
+  TerminalDefaultColorsRequest,
   TerminalResizeRequest,
   TerminalSession,
   TerminalServerMessage,
@@ -75,6 +84,7 @@ import type {
   UpdateTerminalRequest,
 } from "@bb/server-contract";
 import { ApiError } from "../../errors.js";
+import { TerminalBoundedReplay } from "./terminal-bounded-replay.js";
 import type { AppDeps, ServerLogger } from "../../types.js";
 import { assertUsableHostId } from "../hosts/primary-host.js";
 import {
@@ -128,6 +138,7 @@ const DEFAULT_TERMINAL_START: NonNullable<CreateTerminalRequest["start"]> = {
 const HOST_HOME_INITIAL_CWD = "~";
 const TERMINAL_SCROLLBACK_MAX_BYTES = 4 * 1024 * 1024;
 const TERMINAL_REPLAY_PREPARE_BYTES_PER_TICK = 64 * 1024;
+const TERMINAL_REPLAY_ACTIVE_MS_PER_TICK = 10;
 const TERMINAL_EXIT_RETENTION_MINUTES = Math.round(
   TERMINAL_OUTPUT_RETENTION_MS / 60_000,
 );
@@ -214,8 +225,15 @@ interface PendingTerminalCloseKey extends PendingRpcKey {
 }
 
 interface PendingTerminalAttachKey extends PendingTerminalRpcKey {
+  requestedAt: number;
   handoffOwnerToken?: string;
   socket: TerminalClientSocket;
+  sinceSeq: number;
+}
+
+interface ReplayLiveOutput {
+  chunks: TerminalOutputChunk[];
+  bytes: number;
 }
 
 interface RejectPendingOpenForTerminalArgs {
@@ -263,6 +281,7 @@ interface ResolvedTerminalLaunchTarget {
 }
 
 interface AttachBrowserTerminalArgs {
+  rawReplay?: boolean;
   handoffOwnerToken?: string;
   outputAcks: boolean;
   resizeAcks: boolean;
@@ -376,6 +395,7 @@ interface ListTerminalsArgs {
 }
 
 interface CreateTerminalArgs {
+  defaultColors?: TerminalDefaultColors;
   onTerminalStarted?: (terminalId: string) => void;
   payload: CreateTerminalRequest;
   extraContributedEnv?: HostDaemonContributedEnvEntry[];
@@ -395,6 +415,7 @@ interface TerminalCreatePayload {
 }
 
 interface CreateTerminalForTargetArgs {
+  defaultColors?: TerminalDefaultColors;
   extraContributedEnv: HostDaemonContributedEnvEntry[];
   onTerminalStarted?: (terminalId: string) => void;
   payload: TerminalCreatePayload;
@@ -830,6 +851,19 @@ function getTerminalById(
   return getTerminalSession(db, { kind: "terminal", terminalId });
 }
 
+function markTerminalUserInput(
+  db: AppDeps["db"],
+  current: TerminalSessionRow,
+): TerminalSessionRow | null {
+  if (
+    current.lastUserInputAt !== null &&
+    Date.now() - current.lastUserInputAt < TERMINAL_USER_INPUT_REFRESH_MS
+  ) {
+    return null;
+  }
+  return updateTerminalById(db, current.id, { kind: "user-input" });
+}
+
 function updateTerminalById(
   db: AppDeps["db"],
   terminalId: string,
@@ -889,6 +923,9 @@ export class TerminalSessionLifecycle {
   private readonly outputFlow: TerminalOutputFlowControl;
   private readonly outputSequenceRebase = new TerminalOutputSequenceRebase();
   private readonly terminalScreenStates = new TerminalScreenStateCache();
+  private readonly rawReplaySockets = new WeakSet<TerminalClientSocket>();
+  private readonly boundedReplay = new TerminalBoundedReplay();
+  private readonly replayLiveOutput = new Map<string, Set<ReplayLiveOutput>>();
   private readonly terminalScreenStateRebuilds = new Map<
     string,
     TerminalScreenStateRebuild
@@ -1331,10 +1368,6 @@ export class TerminalSessionLifecycle {
     if (!session || session.status !== "running") return null;
     const now = attention.at ?? Date.now();
     const source = attention.source;
-    const alreadyVisible = this.options.hub.hasVisibleTerminalClient(
-      attention.terminalId,
-      now,
-    );
     const daemonSeq = source === "daemon" ? attention.seq : null;
     const { deviceHandoff, terminalId, ...value } = attention;
     const previous = getTerminalAttention(this.options.db, terminalId);
@@ -1365,25 +1398,20 @@ export class TerminalSessionLifecycle {
       }
     });
     persistAttention();
-    if (alreadyVisible) {
-      clearTerminalAttention(this.options.db, terminalId, now);
-      if (deviceHandoff) {
-        deleteDeviceHandoffAttentionMarker(this.options.db, terminalId, seq);
-      }
-    }
     if (session.threadId !== null) {
-      if (!alreadyVisible) {
-        const previous = this.lastThreadAttentionAt.get(session.threadId) ?? 0;
-        if (now - previous >= TERMINAL_THREAD_ATTENTION_DEBOUNCE_MS) {
-          updateThread(this.options.db, this.options.hub, session.threadId, {
-            latestAttentionAt: now,
-          });
-          this.lastThreadAttentionAt.set(session.threadId, now);
-        }
+      const previous = this.lastThreadAttentionAt.get(session.threadId) ?? 0;
+      if (now - previous >= TERMINAL_THREAD_ATTENTION_DEBOUNCE_MS) {
+        updateThread(this.options.db, this.options.hub, session.threadId, {
+          latestAttentionAt: now,
+        });
+        this.lastThreadAttentionAt.set(session.threadId, now);
       }
-      this.options.hub.notifyThread(session.threadId, ["terminals-changed"]);
+      this.options.hub.notifyThread(session.threadId, [
+        "terminals-changed",
+        "status-changed",
+      ]);
     }
-    return alreadyVisible ? null : seq;
+    return seq;
   }
 
   private clearTerminalAttention(terminalId: string): void {
@@ -1399,7 +1427,10 @@ export class TerminalSessionLifecycle {
       });
     }
     if (session?.threadId !== null && session?.threadId !== undefined) {
-      this.options.hub.notifyThread(session.threadId, ["terminals-changed"]);
+      this.options.hub.notifyThread(session.threadId, [
+        "terminals-changed",
+        "status-changed",
+      ]);
     }
   }
 
@@ -1436,6 +1467,7 @@ export class TerminalSessionLifecycle {
         ? this.resolveThreadTerminalCreateTarget(target.threadId)
         : target;
     return this.createTerminalForTarget({
+      ...(args.defaultColors ? { defaultColors: args.defaultColors } : {}),
       extraContributedEnv: args.extraContributedEnv ?? [],
       ...(args.onTerminalStarted === undefined
         ? {}
@@ -1505,9 +1537,15 @@ export class TerminalSessionLifecycle {
       threadId: args.threadId,
       title: args.title,
     });
+    if (args.defaultColors)
+      updateTerminalById(this.options.db, startingSession.id, {
+        kind: "default-colors",
+        defaultColors: args.defaultColors,
+      });
     const requestId = randomUUID();
     const openMessage: HostDaemonServerWsMessage = {
       type: "terminal.open",
+      ...(args.defaultColors ? { defaultColors: args.defaultColors } : {}),
       contributedEnv: mergeHostAndProviderEnvironment(
         await resolveHostEnvironment(this.options, {
           hostId: launchTarget.hostId,
@@ -1983,12 +2021,7 @@ export class TerminalSessionLifecycle {
       );
     }
 
-    const markedInput =
-      current.lastUserInputAt === null
-        ? updateTerminalById(this.options.db, current.id, {
-            kind: "user-input",
-          })
-        : null;
+    const markedInput = markTerminalUserInput(this.options.db, current);
     const session = markedInput ?? current;
     if (markedInput) {
       this.notifyTerminalSessionChanged(markedInput);
@@ -2016,9 +2049,56 @@ export class TerminalSessionLifecycle {
         throw new ApiError(502, "host_disconnected", "Host is not connected");
       }
     }
-    if (args.payload.dataBase64.length > 0)
+    if (args.payload.dataBase64.length > 0) {
+      this.clearTerminalAttention(current.id);
       emitPluginTerminalInput(this.toTerminalSession(session));
+    }
     return this.toTerminalSession(session);
+  }
+
+  setTerminalDefaultColors(args: {
+    terminalId: string;
+    payload: TerminalDefaultColorsRequest;
+  }): TerminalSession {
+    const current = getTerminalById(this.options.db, args.terminalId);
+    if (!current)
+      throw new ApiError(
+        404,
+        "terminal_not_found",
+        "Terminal session not found",
+      );
+    if (
+      !this.options.hub.terminalViewerHasControl(
+        current.id,
+        args.payload.viewerToken,
+      )
+    )
+      throw new ApiError(
+        403,
+        "terminal_control_required",
+        "Only the controlling viewer may set terminal colours",
+      );
+    if (!isRunningBrowserTerminalSession(current))
+      throw new ApiError(
+        409,
+        "terminal_not_running",
+        "Terminal session is not running",
+      );
+    const colors = {
+      foreground: args.payload.foreground,
+      background: args.payload.background,
+    };
+    const sent = this.options.hub.sendDaemonSessionMessage(
+      current.daemonSessionId,
+      { type: "terminal.default-colors", terminalId: current.id, ...colors },
+    );
+    if (!sent)
+      throw new ApiError(502, "host_disconnected", "Host is not connected");
+    updateTerminalById(this.options.db, current.id, {
+      kind: "default-colors",
+      defaultColors: colors,
+    });
+    return this.toTerminalSession(current);
   }
 
   resizeTerminal(args: ResizeTerminalArgs): TerminalSession {
@@ -2545,7 +2625,10 @@ export class TerminalSessionLifecycle {
       clearTimeout(pending.timer);
     }
     this.pendingHolderOutput.clear();
+    for (const timer of this.setupCueTimers.values()) clearTimeout(timer);
+    this.setupCueTimers.clear();
     this.terminalScreenStates.dispose();
+    this.boundedReplay.clear();
   }
 
   flushAllRetainedOutput(): void {
@@ -2896,6 +2979,13 @@ export class TerminalSessionLifecycle {
         }
         const openMessage: HostDaemonServerWsMessage = {
           type: "terminal.open",
+          ...(reconnected.defaultColors
+            ? { defaultColors: reconnected.defaultColors }
+            : reconnected.threadId !== null &&
+                getNativeTerminalThread(this.options.db, reconnected.threadId)
+                  ?.terminalSessionId === reconnected.id
+              ? { defaultColors: TERMINAL_DEFAULT_COLORS.dark }
+              : {}),
           contributedEnv,
           requestId,
           terminalId: reconnected.id,
@@ -3137,12 +3227,7 @@ export class TerminalSessionLifecycle {
     if (current?.status !== "running") {
       return;
     }
-    const markedInput =
-      current.lastUserInputAt === null
-        ? updateTerminalById(this.options.db, current.id, {
-            kind: "user-input",
-          })
-        : null;
+    const markedInput = markTerminalUserInput(this.options.db, current);
     if (markedInput) {
       this.notifyTerminalSessionChanged(markedInput);
       this.options.hub.sendTerminalClientMessage(markedInput.id, {
@@ -3150,10 +3235,12 @@ export class TerminalSessionLifecycle {
         session: this.toTerminalSession(markedInput),
       });
     }
+    this.clearTerminalAttention(current.id);
     emitPluginTerminalInput(this.toTerminalSession(markedInput ?? current));
   }
 
   attachBrowserTerminal(args: AttachBrowserTerminalArgs): void {
+    if (args.rawReplay) this.rawReplaySockets.add(args.socket);
     if (args.outputAcks) {
       this.outputAckSocketVisibility.set(args.socket, true);
     }
@@ -3215,12 +3302,17 @@ export class TerminalSessionLifecycle {
 
     const requestId = randomUUID();
     const pendingAttach: PendingTerminalAttachKey = {
+      requestedAt: this.markReplayStage("daemon-requested", {
+        terminalId: current.id,
+        requestId,
+      }),
       handoffOwnerToken: args.handoffOwnerToken,
       daemonSessionId: current.daemonSessionId,
       requestId,
       rpcKey: terminalRpcKey(current.daemonSessionId, current.id, requestId),
       socket: args.socket,
       terminalId: current.id,
+      sinceSeq: args.sinceSeq,
     };
     void this.pendingAttaches
       .claim(pendingAttach)
@@ -3326,9 +3418,6 @@ export class TerminalSessionLifecycle {
         );
         return;
       case "visibility":
-        if (args.message.visible) {
-          this.clearTerminalAttention(args.terminalId);
-        }
         if (this.outputAckSocketVisibility.has(args.socket)) {
           this.outputAckSocketVisibility.set(args.socket, args.message.visible);
         }
@@ -3515,6 +3604,7 @@ export class TerminalSessionLifecycle {
   private async handleTerminalReplay(
     args: HandleDaemonTerminalMessageArgs & { message: TerminalReplayMessage },
   ): Promise<void> {
+    const receivedAt = this.markReplayStage("daemon-received", args.message);
     const sourceMessage = args.message;
     const replayOffset = this.outputSequenceRebase.baseFor(
       sourceMessage.terminalId,
@@ -3549,15 +3639,60 @@ export class TerminalSessionLifecycle {
         args,
         replaySession,
         replayOffset,
+        receivedAt,
       ).finally(() => this.finishTerminalReplay(current.id));
     }
-    return this.handleTerminalReplayWork(args, replaySession, replayOffset);
+    return this.handleTerminalReplayWork(
+      args,
+      replaySession,
+      replayOffset,
+      receivedAt,
+    );
   }
 
   private async handleTerminalReplayWork(
     args: HandleDaemonTerminalMessageArgs & { message: TerminalReplayMessage },
     replaySession: TerminalSessionRow | null,
     replayOffset: number,
+    receivedAt: number,
+  ): Promise<void> {
+    const earlyKey = terminalResponseRpcKey(args.sessionId, args.message);
+    const pendingAttach = this.pendingAttaches.keyFor(earlyKey);
+    const live: ReplayLiveOutput = { chunks: [], bytes: 0 };
+    const listeners =
+      replaySession && pendingAttach?.sinceSeq === 0
+        ? (this.replayLiveOutput.get(replaySession.id) ??
+          new Set<ReplayLiveOutput>())
+        : null;
+    if (listeners && replaySession) {
+      listeners.add(live);
+      this.replayLiveOutput.set(replaySession.id, listeners);
+    }
+    try {
+      await this.deliverTerminalReplay(
+        args,
+        replaySession,
+        replayOffset,
+        pendingAttach,
+        live,
+        receivedAt,
+      );
+    } finally {
+      if (listeners && replaySession) {
+        listeners.delete(live);
+        if (listeners.size === 0)
+          this.replayLiveOutput.delete(replaySession.id);
+      }
+    }
+  }
+
+  private async deliverTerminalReplay(
+    args: HandleDaemonTerminalMessageArgs & { message: TerminalReplayMessage },
+    replaySession: TerminalSessionRow | null,
+    replayOffset: number,
+    pendingAttach: PendingTerminalAttachKey | null,
+    live: ReplayLiveOutput,
+    receivedAt: number,
   ): Promise<void> {
     const sourceMessage = args.message;
     const attributionAlreadyRecorded = this.forgetAttributedAttachFailure(
@@ -3601,13 +3736,20 @@ export class TerminalSessionLifecycle {
         replayOwnershipChanged = true;
       return true;
     };
+    const scanStartedAt = this.markReplayStage(
+      "holder-scan-start",
+      sourceMessage,
+    );
     let sourceChunks = sourceMessage.chunks;
+    const holderScanTiming = { yieldMs: 0 };
     if (replaySession !== null) {
       sourceChunks = await this.stripPendingHolderMarkerFromReplay(
         replaySession,
         sourceChunks,
+        holderScanTiming,
       );
     }
+    const scanEndedAt = this.markReplayStage("holder-scan-end", sourceMessage);
     if (this.terminalOutputWritesStopped) return;
     if (!stillOwned()) replayOwnershipChanged = true;
     const replayHeader = this.outputSequenceRebase.replayToServer(
@@ -3669,11 +3811,10 @@ export class TerminalSessionLifecycle {
       }
     };
     let preparedBytes = 0;
-    let preparedChunks = 0;
+    let preparationStartedAt = performance.now();
     const prepareChunk = (chunk: TerminalOutputChunk): void => {
       retainTail(chunk);
       preparedBytes += Buffer.byteLength(chunk.dataBase64, "base64");
-      preparedChunks += 1;
     };
     const capturePendingChunks = (): void => {
       if (!current) return;
@@ -3698,13 +3839,14 @@ export class TerminalSessionLifecycle {
           persistedPendingChunks.get(batch.batch)?.add(chunk);
           if (
             preparedBytes >= TERMINAL_REPLAY_PREPARE_BYTES_PER_TICK ||
-            preparedChunks >= 256
+            performance.now() - preparationStartedAt >=
+              TERMINAL_REPLAY_ACTIVE_MS_PER_TICK
           ) {
             await yieldToEventLoop();
+            preparationStartedAt = performance.now();
             if (!checkReplayAfterYield()) return;
             capturePendingChunks();
             preparedBytes = 0;
-            preparedChunks = 0;
           }
         }
       }
@@ -3718,17 +3860,17 @@ export class TerminalSessionLifecycle {
         prepareChunk(toTerminalOutputChunk(rebased));
       } else {
         preparedBytes += chunkBytes;
-        preparedChunks += 1;
       }
       if (
         preparedBytes >= TERMINAL_REPLAY_PREPARE_BYTES_PER_TICK ||
-        preparedChunks >= 256
+        performance.now() - preparationStartedAt >=
+          TERMINAL_REPLAY_ACTIVE_MS_PER_TICK
       ) {
         await yieldToEventLoop();
+        preparationStartedAt = performance.now();
         if (!checkReplayAfterYield()) return;
         capturePendingChunks();
         preparedBytes = 0;
-        preparedChunks = 0;
       }
     }
 
@@ -3770,6 +3912,10 @@ export class TerminalSessionLifecycle {
       );
       return;
     }
+    const persistenceStartedAt = this.markReplayStage(
+      "persistence-start",
+      sourceMessage,
+    );
     const retainedAppendPerformed = current !== null && retainedTail.length > 0;
     if (retainedAppendPerformed && current) {
       runEventLoopWorkSync("ws:daemon terminal.replay append-retained", () => {
@@ -3795,6 +3941,10 @@ export class TerminalSessionLifecycle {
       else this.pendingRetainedOutput.delete(current.id);
     }
 
+    const persistenceEndedAt = this.markReplayStage(
+      "persistence-end",
+      sourceMessage,
+    );
     if (current && (current.status === "exited" || replayOwnershipChanged)) {
       if (latest?.status === "exited") {
         markRetainedTerminalOutputExited(
@@ -3805,8 +3955,57 @@ export class TerminalSessionLifecycle {
         );
       }
     }
+    let attachMessage = { ...replayHeader, chunks: rebasedChunks };
+    if (
+      pendingAttach?.sinceSeq === 0 &&
+      current !== null &&
+      !this.rawReplaySockets.has(pendingAttach.socket)
+    ) {
+      const replay = this.boundedReplay.forAttach({
+        ...attachMessage,
+        terminalId: current.id,
+        daemonSessionId: args.sessionId,
+        cols: current.cols,
+        rows: current.rows,
+      });
+      if (!checkReplayAfterYield()) return;
+      const latestGrid = getTerminalById(this.options.db, current.id);
+      if (
+        latestGrid === null ||
+        latestGrid.hostId !== current.hostId ||
+        (latestGrid.daemonSessionId !== null &&
+          latestGrid.daemonSessionId !== args.sessionId) ||
+        this.outputSequenceRebase.baseFor(sourceMessage.terminalId) !==
+          replayOffset
+      ) {
+        const error = new ApiError(
+          409,
+          "terminal_replaced",
+          "Terminal session was replaced while replaying output",
+        );
+        this.pendingAttaches.fail(rpcKey, error);
+        this.pendingOutputReads.fail(rpcKey, error);
+        this.pendingCatchUps.fail(rpcKey, error);
+        return;
+      }
+      if (
+        live.bytes <= TERMINAL_SCROLLBACK_MAX_BYTES &&
+        !replayOwnershipChanged &&
+        latestGrid?.cols === current.cols &&
+        latestGrid.rows === current.rows
+      )
+        attachMessage = { ...replayHeader, ...replay };
+      const suffix = (
+        live.bytes > TERMINAL_SCROLLBACK_MAX_BYTES ? [] : live.chunks
+      ).filter((chunk) => chunk.seq >= attachMessage.nextSeq);
+      if (suffix.length > 0)
+        attachMessage = {
+          ...attachMessage,
+          chunks: [...attachMessage.chunks, ...suffix],
+          nextSeq: suffix.at(-1)!.seq + 1,
+        };
+    }
     const message = { ...replayHeader, chunks: rebasedChunks };
-    const pendingAttach = this.pendingAttaches.keyFor(rpcKey);
     const path = pendingAttach
       ? this.directOutputSockets.has(pendingAttach.socket)
         ? "data-plane"
@@ -3816,17 +4015,39 @@ export class TerminalSessionLifecycle {
         : this.pendingCatchUps.keyFor(rpcKey)
           ? "catch-up"
           : "unmatched";
+    const dispatchStartedAt = this.markReplayStage(
+      "dispatch-start",
+      sourceMessage,
+    );
     const callers = [
-      this.pendingAttaches.settle(rpcKey, message) ? "terminal-attach" : null,
+      this.pendingAttaches.settle(rpcKey, attachMessage)
+        ? "terminal-attach"
+        : null,
       this.pendingOutputReads.settle(rpcKey, message) ? "output-read" : null,
       this.pendingCatchUps.settle(rpcKey, message) ? "catch-up" : null,
     ].filter((caller): caller is string => caller !== null);
+    const dispatchEndedAt = this.markReplayStage("dispatch-end", sourceMessage);
     if (
       attributionAlreadyRecorded ||
       this.forgetAttributedAttachFailure(rpcKey)
     )
       return;
     this.logReplayAttribution({
+      timings: {
+        daemonMs:
+          pendingAttach === null
+            ? null
+            : receivedAt - pendingAttach.requestedAt,
+        holderScanMs: scanEndedAt - scanStartedAt,
+        holderScanActiveMs: Math.max(
+          0,
+          scanEndedAt - scanStartedAt - holderScanTiming.yieldMs,
+        ),
+        holderScanYieldMs: holderScanTiming.yieldMs,
+        persistenceMs: persistenceEndedAt - persistenceStartedAt,
+        dispatchMs: dispatchEndedAt - dispatchStartedAt,
+        serverMs: dispatchEndedAt - receivedAt,
+      },
       path,
       callers: callers.length > 0 ? callers : ["unmatched"],
       daemonSessionId: args.sessionId,
@@ -4049,20 +4270,6 @@ export class TerminalSessionLifecycle {
       Date.now(),
     );
     this.applySharedTerminalSize(args);
-    const markedInput =
-      current.lastUserInputAt === null
-        ? updateTerminalById(this.options.db, current.id, {
-            kind: "user-input",
-          })
-        : null;
-    if (markedInput) {
-      const session = this.toTerminalSession(markedInput);
-      this.notifyTerminalSessionChanged(markedInput);
-      this.options.hub.sendTerminalClientMessage(markedInput.id, {
-        type: "session-updated",
-        session,
-      });
-    }
     const sent = this.options.hub.sendDaemonSessionMessage(
       current.daemonSessionId,
       {
@@ -4080,8 +4287,11 @@ export class TerminalSessionLifecycle {
       this.disconnectDaemonSessionTerminals({
         daemonSessionId: current.daemonSessionId,
       });
-    } else if (args.message.dataBase64.length > 0) {
-      emitPluginTerminalInput(this.toTerminalSession(markedInput ?? current));
+    } else if (
+      args.message.isUserInput !== false &&
+      args.message.dataBase64.length > 0
+    ) {
+      this.recordDirectTerminalInput(current.id);
     }
   }
 
@@ -4487,7 +4697,15 @@ export class TerminalSessionLifecycle {
   private async stripPendingHolderMarkerFromReplay(
     current: TerminalSessionRow,
     chunks: TerminalReplayMessage["chunks"],
+    timing: { yieldMs: number },
   ): Promise<TerminalReplayMessage["chunks"]> {
+    let activeStartedAt = performance.now();
+    const yieldScan = async () => {
+      const startedAt = performance.now();
+      await yieldToEventLoop();
+      timing.yieldMs += performance.now() - startedAt;
+      activeStartedAt = performance.now();
+    };
     const markerPending = this.pendingHolderMarkers.has(current.id);
     const marker = Buffer.from(
       `${TERMINAL_HOLDER_MARKER_PREFIX}${current.id}\u0007`,
@@ -4521,7 +4739,6 @@ export class TerminalSessionLifecycle {
         outputLengths[targetIndex] = targetOffset;
       }
     };
-    let rowsRead = 0;
     let bytesRead = 0;
     for (const chunk of chunks) {
       runEventLoopWorkSync(
@@ -4545,14 +4762,16 @@ export class TerminalSessionLifecycle {
             emit(scan.subarray(offset, markerOffset));
             offset = markerOffset + marker.length;
           }
-          rowsRead += 1;
           bytesRead += data.length;
         },
       );
-      if (rowsRead >= 8 || bytesRead >= 256 * 1024) {
-        rowsRead = 0;
+      if (
+        bytesRead >= TERMINAL_REPLAY_PREPARE_BYTES_PER_TICK ||
+        performance.now() - activeStartedAt >=
+          TERMINAL_REPLAY_ACTIVE_MS_PER_TICK
+      ) {
         bytesRead = 0;
-        await yieldToEventLoop();
+        await yieldScan();
       }
     }
     if (this.terminalOutputWritesStopped) return chunks;
@@ -4589,6 +4808,7 @@ export class TerminalSessionLifecycle {
     );
     const outputChunks: TerminalReplayMessage["chunks"] = [];
     let outputBytes = 0;
+    activeStartedAt = performance.now();
     for (const [index, chunk] of chunks.entries()) {
       runEventLoopWorkSync(
         "ws:daemon terminal.replay holder-marker-output",
@@ -4604,9 +4824,13 @@ export class TerminalSessionLifecycle {
           outputBytes += outputChunk.length;
         },
       );
-      if ((index + 1) % 8 === 0 || outputBytes >= 256 * 1024) {
+      if (
+        outputBytes >= TERMINAL_REPLAY_PREPARE_BYTES_PER_TICK ||
+        performance.now() - activeStartedAt >=
+          TERMINAL_REPLAY_ACTIVE_MS_PER_TICK
+      ) {
         outputBytes = 0;
-        await yieldToEventLoop();
+        await yieldScan();
       }
     }
     return outputChunks;
@@ -4681,6 +4905,11 @@ export class TerminalSessionLifecycle {
       return;
     }
     this.setForwardedNextSeq(terminalId, chunk.seq + 1);
+    for (const live of this.replayLiveOutput.get(terminalId) ?? []) {
+      live.bytes += Buffer.byteLength(chunk.dataBase64, "base64");
+      if (live.bytes <= TERMINAL_SCROLLBACK_MAX_BYTES)
+        live.chunks.push(toTerminalOutputChunk(chunk));
+    }
     this.options.hub.sendTerminalClientMessage(terminalId, {
       type: "output",
       chunk: toTerminalOutputChunk(chunk),
@@ -4732,12 +4961,10 @@ export class TerminalSessionLifecycle {
       replayStartSeq: message.replayStartSeq,
       nextSeq: message.nextSeq,
     });
-    for (const chunk of message.chunks) {
-      this.options.hub.sendTerminalSocketMessage(pending.socket, {
-        type: "output",
-        chunk: toTerminalOutputChunk(chunk),
-      });
-    }
+    this.options.hub.sendTerminalReplay(
+      pending.socket,
+      message.chunks.map(toTerminalOutputChunk),
+    );
     this.repaintReopenedNativeTerminal(current);
   }
 
@@ -4818,7 +5045,38 @@ export class TerminalSessionLifecycle {
     );
   }
 
+  private markReplayStage(
+    stage:
+      | "daemon-requested"
+      | "daemon-received"
+      | "holder-scan-start"
+      | "holder-scan-end"
+      | "persistence-start"
+      | "persistence-end"
+      | "dispatch-start"
+      | "dispatch-end",
+    detail: { terminalId: string; requestId?: string },
+  ): number {
+    const name = `terminal-replay-${stage}`;
+    const mark = performance.mark(name, {
+      detail: { terminalId: detail.terminalId, requestId: detail.requestId },
+    });
+    performance.clearMarks(name);
+    return mark.startTime;
+  }
+
   private logReplayAttribution(fields: {
+    failureCode?: string;
+    failureMessage?: string;
+    timings?: {
+      daemonMs: number | null;
+      holderScanMs: number;
+      holderScanActiveMs: number;
+      holderScanYieldMs: number;
+      persistenceMs: number;
+      dispatchMs: number;
+      serverMs: number;
+    };
     path: string;
     callers: string[];
     daemonSessionId: string | null;
@@ -4845,8 +5103,19 @@ export class TerminalSessionLifecycle {
     socket: TerminalClientSocket,
     outcome: string,
     requestId: string | null = null,
+    error?: Error,
   ): void {
     this.logReplayAttribution({
+      ...(error === undefined
+        ? {}
+        : {
+            failureCode:
+              error instanceof ApiError
+                ? error.body.code
+                : "terminal_attach_failed",
+            failureMessage:
+              error instanceof ApiError ? error.body.message : error.message,
+          }),
       path: `${this.directOutputSockets.has(socket) ? "data-plane" : "websocket"}/${outcome}`,
       callers: ["terminal-attach"],
       daemonSessionId: session.daemonSessionId,
@@ -4879,6 +5148,7 @@ export class TerminalSessionLifecycle {
   private attributeFailedAttach(
     pending: PendingTerminalAttachKey,
     outcome: string,
+    error?: Error,
   ): void {
     if (this.attributedAttachFailures.has(pending.rpcKey)) return;
     const session = getTerminalById(this.options.db, pending.terminalId);
@@ -4899,6 +5169,7 @@ export class TerminalSessionLifecycle {
       pending.socket,
       outcome,
       pending.requestId,
+      error,
     );
   }
 
@@ -4909,6 +5180,7 @@ export class TerminalSessionLifecycle {
     this.attributeFailedAttach(
       pending,
       error === TERMINAL_ATTACH_CANCELLED ? "cancelled" : "failed",
+      error,
     );
     if (error === TERMINAL_ATTACH_CANCELLED) {
       return;
@@ -4927,6 +5199,7 @@ export class TerminalSessionLifecycle {
         error instanceof ApiError ? error.body.code : "terminal_attach_failed",
       message: error instanceof ApiError ? error.body.message : error.message,
     });
+    pending.socket.close(1013, "attach-failed");
   }
 
   private sendTerminalSocketError(args: SendTerminalSocketErrorArgs): void {
@@ -4941,9 +5214,56 @@ export class TerminalSessionLifecycle {
     this.exitListeners.add(listener);
   }
 
+  private readonly setupCueTimers = new Map<
+    string,
+    ReturnType<typeof setTimeout>
+  >();
+
   private notifyTerminalSessionChanged(session: TerminalSessionRow): void {
+    const previous = this.setupCueTimers.get(session.id);
+    if (previous) clearTimeout(previous);
+    this.setupCueTimers.delete(session.id);
+    if (
+      session.status === "running" &&
+      session.threadId !== null &&
+      session.lastUserInputAt !== null
+    ) {
+      const threadId = session.threadId;
+      const native = getNativeTerminalThread(this.options.db, threadId);
+      if (
+        native?.terminalSessionId === session.id &&
+        native.nativeSessionId === null
+      ) {
+        const timer = setTimeout(
+          () => {
+            this.setupCueTimers.delete(session.id);
+            const current = getNativeTerminalThread(this.options.db, threadId);
+            if (current?.terminalSessionId !== session.id) return;
+            if (
+              nativeTerminalMayNeedSetup({
+                nativeSessionId: current.nativeSessionId,
+                terminal: getTerminalById(this.options.db, session.id),
+                now: Date.now(),
+              })
+            )
+              this.options.hub.notifyThread(threadId, ["terminals-changed"]);
+          },
+          Math.max(
+            0,
+            Math.max(session.createdAt, session.lastUserInputAt) +
+              NATIVE_TERMINAL_SETUP_DELAY_MS -
+              Date.now(),
+          ),
+        );
+        timer.unref();
+        this.setupCueTimers.set(session.id, timer);
+      }
+    }
     if (session.threadId !== null) {
-      this.options.hub.notifyThread(session.threadId, ["terminals-changed"]);
+      this.options.hub.notifyThread(session.threadId, [
+        "terminals-changed",
+        "status-changed",
+      ]);
     }
     if (session.status !== "running") {
       this.cancelTerminalScreenStateRebuild(session.id);
