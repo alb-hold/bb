@@ -1209,6 +1209,16 @@
   }
 }
 
+@container code-card (width < 40rem) {
+  @media (pointer: coarse) {
+    :where([data-code-card]) > :where([data-code-actions][data-code-unlabeled]) {
+      width: fit-content;
+      margin-left: auto;
+      background-color: transparent;
+    }
+  }
+}
+
 @media (max-width: 767px) and (pointer: coarse) {
   :where([data-timeline-disclosure-header]) > button[data-compact-touch-summary] {
     margin-block: -6px;
