@@ -1214,3 +1214,7 @@
     margin-block: -6px;
   }
 }
+
+[data-terminal-paint-pending="true"] {
+  opacity: 0;
+}

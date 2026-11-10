@@ -1297,6 +1297,9 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
         expect(terminal.cols).toBe(scenario === "background-resize" ? 60 : 40);
         expect(contexts).toBe(0);
         expect(
+          document.querySelector('[data-terminal-paint-pending="true"]'),
+        ).not.toBeNull();
+        expect(
           socket.sent
             .slice(beforePark)
             .map((raw) => JSON.parse(raw))
@@ -1320,6 +1323,13 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
           )
           .join("");
         expect(written).toContain("small-tail");
+        await waitForReadinessCondition(
+          () =>
+            expect(
+              document.querySelector('[data-terminal-paint-pending="true"]'),
+            ).toBeNull(),
+          "adopted viewer stayed hidden after its first render",
+        );
         expect(written).not.toContain("parked-line-");
         expect(write).toHaveBeenCalledTimes(1);
       } else {

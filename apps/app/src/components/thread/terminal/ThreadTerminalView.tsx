@@ -36,7 +36,16 @@ import {
 } from "react";
 import { flushSync } from "react-dom";
 import "@xterm/xterm/css/xterm.css";
-import type { IMarker, ITheme, Terminal as XTermTerminal } from "@xterm/xterm";
+import type {
+  IDisposable,
+  IMarker,
+  ITheme,
+  Terminal as XTermTerminal,
+} from "@xterm/xterm";
+import {
+  holdTerminalPaint,
+  revealTerminalAfterRender,
+} from "./terminal-paint-gate";
 import type { FitAddon } from "@xterm/addon-fit";
 import {
   ContextMenu,
@@ -2000,6 +2009,7 @@ export function ThreadTerminalView({
     let parkedOutputTimer: ReturnType<typeof setTimeout> | null = null;
     let parkedOutputDraining = false;
     let restoreParkedRendering: (() => void) | null = null;
+    let paintReveal: IDisposable | null = null;
     const reportDocumentVisibility = () => {
       if (
         document.visibilityState !== "visible" ||
@@ -3542,10 +3552,17 @@ export function ThreadTerminalView({
         }
         webglVisibilityRef.current?.sync();
         if (nextParked) {
+          paintReveal?.dispose();
+          paintReveal = null;
+          holdTerminalPaint(containerElement);
           restoreParkedRendering ??= releaseParkedTerminalRendering(activeTerminal);
           scheduleParkedOutput();
         } else {
-          activeTerminal.refresh(0, activeTerminal.rows - 1);
+          paintReveal?.dispose();
+          paintReveal = revealTerminalAfterRender(
+            activeTerminal,
+            containerElement,
+          );
         }
         if (!nextParked && parkedOutputTimer !== null) {
           clearTimeout(parkedOutputTimer);
@@ -3555,6 +3572,7 @@ export function ThreadTerminalView({
       };
       if (parkedRef.current) {
         activeTransport.setParked(true);
+        holdTerminalPaint(containerElement);
         scheduleParkedOutput();
       }
       flushHiddenOutput = () => {
@@ -3924,6 +3942,8 @@ export function ThreadTerminalView({
       disposed = true;
       if (parkedOutputTimer !== null) clearTimeout(parkedOutputTimer);
       restoreParkedRendering = null;
+      paintReveal?.dispose();
+      paintReveal = null;
       hiddenOutput.clear();
       flushHiddenOutput = () => {};
       clearScreenLoadingPreview();
