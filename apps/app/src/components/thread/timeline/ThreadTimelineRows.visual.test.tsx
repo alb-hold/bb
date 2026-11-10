@@ -100,7 +100,11 @@ it("tightens disclosure margins within a turn without changing user or turn boun
     expect(margin("spacing-command")).toBe("0.25rem");
     expect(margin("spacing-tool")).toBe("0.125rem");
     expect(margin("spacing-worked")).toBe("0.25rem");
-    expect(margin("spacing-next-user")).toBe("0.5rem");
+    expect(margin("spacing-next-user")).toBe("1rem");
+    const px = (value: string) => Number.parseFloat(value) * 16;
+    expect(px(margin("spacing-next-user"))).toBeGreaterThanOrEqual(
+      px(margin("spacing-command")) * 3,
+    );
     expect(margin("spacing-next-answer")).toBe("0.5rem");
   } finally {
     stylesheet.remove();

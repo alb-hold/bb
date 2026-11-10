@@ -36,6 +36,7 @@ import {
 } from "@/hooks/queries/query-keys";
 import {
   findActiveItemIds,
+  isTocRailWarranted,
   selectTocRailItems,
   ThreadTableOfContents,
   type TocItem,
@@ -388,6 +389,21 @@ describe("selectTocRailItems", () => {
   });
 });
 
+
+describe("isTocRailWarranted", () => {
+  it.each([
+    [1_000, 1_999, false],
+    [1_000, 2_000, false],
+    [1_000, 2_001, true],
+    [0, 0, true],
+  ])(
+    "for a %i px viewport and %i px of content returns %s",
+    (clientHeight, scrollHeight, expected) => {
+      expect(isTocRailWarranted({ clientHeight, scrollHeight })).toBe(expected);
+    },
+  );
+});
+
 describe("ThreadTableOfContents", () => {
   it("does not restore an outline cached before the current context boundary", async () => {
     setOutline(
@@ -587,6 +603,42 @@ describe("ThreadTableOfContents", () => {
     expect(rail.isConnected).toBe(true);
     expect(wrapper.classList.contains("hidden")).toBe(false);
     expect(wrapper.hasAttribute("inert")).toBe(false);
+  });
+
+
+  it("shows the outline rail only once the thread is taller than two viewports", () => {
+    const rows = [
+      userConversationRow(1),
+      userConversationRow(2),
+      userConversationRow(3),
+    ];
+    scrollElement = createScrollElement({
+      clientHeight: 1_000,
+      rows: [],
+      scrollHeight: 1_800,
+      scrollTop: 0,
+    });
+    const view = render(<TocHost hostWidth={1_200} timelineRows={rows} />);
+    const rail = screen.getByRole("button", {
+      name: "Thread table of contents",
+    });
+    const wrapper = rail.parentElement!;
+    expect(wrapper.classList.contains("hidden")).toBe(true);
+    expect(wrapper.hasAttribute("inert")).toBe(true);
+    view.unmount();
+
+    scrollElement = createScrollElement({
+      clientHeight: 1_000,
+      rows: [],
+      scrollHeight: 2_600,
+      scrollTop: 0,
+    });
+    render(<TocHost hostWidth={1_200} timelineRows={rows} />);
+    const tallWrapper = screen.getByRole("button", {
+      name: "Thread table of contents",
+    }).parentElement!;
+    expect(tallWrapper.classList.contains("hidden")).toBe(false);
+    expect(tallWrapper.hasAttribute("inert")).toBe(false);
   });
 
   it("shows after timeline rows arrive following an empty initial render", async () => {
