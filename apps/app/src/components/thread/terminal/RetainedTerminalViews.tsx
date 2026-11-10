@@ -1,14 +1,12 @@
 import {
-  createContext,
   useContext,
   useEffect,
   useLayoutEffect,
-  useMemo,
   useRef,
   useState,
   useSyncExternalStore,
   type ComponentType,
-  type ReactNode,
+  type ReactElement,
 } from "react";
 import { createPortal } from "react-dom";
 import type { TerminalSession } from "@bb/server-contract";
@@ -19,6 +17,12 @@ import {
 import { wsManager } from "@/lib/ws";
 import { useOptionalPaneContext } from "@/views/thread-detail/PaneContext";
 import type { ThreadTerminalViewProps } from "./ThreadTerminalView";
+import {
+  RetainedTerminalViewsContext,
+  type RetainedTerminalMount,
+} from "./RetainedTerminalViewsProvider";
+
+export { RetainedTerminalViewsProvider } from "./RetainedTerminalViewsProvider";
 
 import {
   SecondaryPanelActionsTargetProvider,
@@ -242,10 +246,24 @@ export function createRetainedTerminalViews() {
 }
 
 type Registry = ReturnType<typeof createRetainedTerminalViews>;
-const RetainedTerminalViewsContext = createContext<{
-  registry: Registry;
-  projectId: string | undefined;
-} | null>(null);
+
+const runtimes = new WeakMap<
+  RetainedTerminalMount,
+  { registry: Registry; host: ReactElement }
+>();
+
+function runtimeFor(mount: RetainedTerminalMount) {
+  let runtime = runtimes.get(mount);
+  if (runtime === undefined) {
+    const registry = createRetainedTerminalViews();
+    runtime = {
+      registry,
+      host: <RetainedTerminalViewsHost registry={registry} />,
+    };
+    runtimes.set(mount, runtime);
+  }
+  return runtime;
+}
 
 function RetainedView({
   entry,
@@ -288,18 +306,7 @@ function RetainedView({
   );
 }
 
-export function RetainedTerminalViewsProvider({
-  children,
-  projectId,
-}: {
-  children: ReactNode;
-  projectId?: string;
-}) {
-  const [registry] = useState(createRetainedTerminalViews);
-  const context = useMemo(
-    () => ({ registry, projectId }),
-    [registry, projectId],
-  );
+function RetainedTerminalViewsHost({ registry }: { registry: Registry }) {
   const entries = useSyncExternalStore(
     registry.subscribe,
     registry.getSnapshot,
@@ -369,27 +376,24 @@ export function RetainedTerminalViewsProvider({
     };
   }, [registry]);
   return (
-    <RetainedTerminalViewsContext.Provider value={context}>
-      {children}
-      <div
-        ref={registry.setHost}
-        aria-hidden="true"
-        inert
-        data-retained-terminal-host=""
-        style={{
-          position: "fixed",
-          left: -100_000,
-          top: 0,
-          visibility: "hidden",
-          pointerEvents: "none",
-          contain: "strict",
-        }}
-      >
-        {entries.map((entry) => (
-          <RetainedView key={entry.id} entry={entry} registry={registry} />
-        ))}
-      </div>
-    </RetainedTerminalViewsContext.Provider>
+    <div
+      ref={registry.setHost}
+      aria-hidden="true"
+      inert
+      data-retained-terminal-host=""
+      style={{
+        position: "fixed",
+        left: -100_000,
+        top: 0,
+        visibility: "hidden",
+        pointerEvents: "none",
+        contain: "strict",
+      }}
+    >
+      {entries.map((entry) => (
+        <RetainedView key={entry.id} entry={entry} registry={registry} />
+      ))}
+    </div>
   );
 }
 
@@ -397,7 +401,9 @@ export function useRetainedTerminalPanelState(
   sessionId: string | undefined,
   open: boolean,
 ) {
-  const registry = useContext(RetainedTerminalViewsContext)?.registry;
+  const mount = useContext(RetainedTerminalViewsContext)?.mount;
+  const registry =
+    mount === undefined ? undefined : runtimes.get(mount)?.registry;
   const paneId = useOptionalPaneContext()?.paneId ?? "page";
   const lastSessionId = useRef(sessionId);
   if (sessionId !== undefined) lastSessionId.current = sessionId;
@@ -423,8 +429,13 @@ export function RetainedTerminalViewSlot({
   const entry = useRef<Entry | null>(null);
   const current = useRef({ props, navigation, panelActions });
   current.current = { props, navigation, panelActions };
-  const registry = context?.registry;
+  const mount = context?.mount;
+  const runtime = mount === undefined ? undefined : runtimeFor(mount);
+  const registry = runtime?.registry;
   const projectId = context?.projectId;
+  useLayoutEffect(() => {
+    if (mount !== undefined && runtime !== undefined) mount.show(runtime.host);
+  }, [mount, runtime]);
   useLayoutEffect(() => {
     if (registry === undefined || slot.current === null) return;
     const native =

@@ -190,10 +190,24 @@
     "attributed commit by commit. The owner asked that day to ship the",
     "overhaul as it stands and keep polishing afterwards, so the caps move",
     "to 1,636,000 / 405,500: above the base, as a ceiling for the",
-    "follow-up that brings boot back under 1,610,000 / 394,500."
+    "follow-up that brings boot back under 1,610,000 / 394,500.",
+    "",
+    "On 2026-11-10 that follow-up moved code needed only after a user action",
+    "or a server event off the boot path: the app-update host, the server-move",
+    "overlay, the project actions menu, the sidebar customize popover, the",
+    "desktop zoom toolbar and the retained-terminal registry (created when",
+    "the first terminal mounts; the provider left in boot only renders its",
+    "host). Home recents and the skills registry stopped importing",
+    "info-list-row and resource-pagination for one helper and one constant.",
+    "Boot measured 1,585,839 raw and 393,933 Brotli bytes, down from",
+    "1,635,347 / 405,071. The raw cap drops to 1,590,000 and the Brotli cap",
+    "returns to the 394,500 base. The moved code grew the ThreadPage closure",
+    "by about 9.5 KB raw / 4.5 KB Brotli, NewThreadPage by 2.5 / 2.2 KB and",
+    "PluginFrontend by 6.6 / 2.7 KB, all within their existing limits.",
+    "The new splitBoundaries entries keep these modules from returning."
   ],
-  "maxBootBytes": 1636000,
-  "maxBootBrotliBytes": 405500,
+  "maxBootBytes": 1590000,
+  "maxBootBrotliBytes": 394500,
   "forbiddenBootPackages": [
     "@dnd-kit/accessibility",
     "@dnd-kit/core",
@@ -286,6 +300,30 @@
       "boot",
       "ThreadPage",
       "NewThreadPage"
+    ],
+    "src/components/app-update/AppUpdateHost.tsx": [
+      "boot"
+    ],
+    "src/components/machines/ServerMoveOverlay.tsx": [
+      "boot"
+    ],
+    "src/components/project/ProjectActionsMenu.tsx": [
+      "boot"
+    ],
+    "src/components/thread/terminal/RetainedTerminalViews.tsx": [
+      "boot"
+    ],
+    "../../packages/shared-ui/src/components/ui/info-list-row.tsx": [
+      "boot"
+    ],
+    "../../packages/shared-ui/src/components/ui/resource-pagination.tsx": [
+      "boot"
+    ],
+    "src/components/sidebar/SidebarNavigationCustomize.tsx": [
+      "boot"
+    ],
+    "src/components/layout/DesktopZoomIndicatorView.tsx": [
+      "boot"
     ],
     "src/components/sidebar/SidebarFooterCustomize.tsx": [
       "boot",

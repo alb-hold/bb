@@ -7,7 +7,7 @@ import {
   render,
   screen,
 } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { DesktopZoomIndicator } from "./DesktopZoomIndicator";
 
 describe("DesktopZoomIndicator", () => {
@@ -36,6 +36,15 @@ describe("DesktopZoomIndicator", () => {
       zoom,
     };
   }
+
+  beforeAll(async () => {
+    const { emitZoomChange } = setup();
+    act(() => emitZoomChange(1.1));
+    expect(await screen.findByRole("toolbar", { name: "Zoom" })).toBeTruthy();
+    expect(screen.getByText("110%")).toBeTruthy();
+    cleanup();
+    delete window.bbDesktop;
+  });
 
   it("stays unrendered until a zoom change", () => {
     setup();

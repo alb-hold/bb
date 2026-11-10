@@ -66,6 +66,9 @@ const dumpGraph = {
 
 await build({
   ...sharedViteConfig,
+  // The config is already loaded above. Without this Vite loads
+  // vite.config.ts a second time and every plugin runs twice.
+  configFile: false,
   root: appDir,
   logLevel: "error",
   plugins: [...sharedViteConfig.plugins, dumpGraph],
