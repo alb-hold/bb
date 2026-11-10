@@ -82,6 +82,14 @@ describe("RootComposeHome", () => {
     },
   );
 
+  it("leaves clearance below the last Recent row so it scrolls fully clear of the composer", () => {
+    renderCompactHome();
+    const column = screen.getByTestId("root-compose-compact-scroll-column");
+    expect(column.classList.contains("pb-[calc(1rem+env(safe-area-inset-bottom))]")).toBe(true);
+    expect(column.contains(screen.getByTestId("recents"))).toBe(true);
+    expect(column.contains(screen.getByTestId("composer"))).toBe(false);
+  });
+
   it("leaves a short recents list unmasked", () => {
     vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(552);
     vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockReturnValue(552);

@@ -7,6 +7,8 @@ import { composerRootWithin } from "@/lib/pane-composer-focus";
 const COMPACT_HOME_CHROME_OFFSET_PX = 56;
 const COMPACT_HOME_COLUMN_CLASS = `mx-auto w-full ${CONTENT_MEASURE_MAX_WIDTH_CLASS} px-4`;
 const ROOT_COMPOSE_MAX_WIDTH_CLASS = CONTENT_MEASURE_MAX_WIDTH_CLASS;
+const COMPACT_HOME_SCROLL_CLEARANCE_CLASS =
+  "pb-[calc(1rem+env(safe-area-inset-bottom))]";
 
 interface RootComposeHomeProps {
   isCompact: boolean;
@@ -135,7 +137,13 @@ export function RootComposeHome({
               data-testid="root-compose-compact-scroll-content"
               className="flex min-h-full flex-col"
             >
-              <div className={COMPACT_HOME_COLUMN_CLASS}>
+              <div
+                data-testid="root-compose-compact-scroll-column"
+                className={cn(
+                  COMPACT_HOME_COLUMN_CLASS,
+                  COMPACT_HOME_SCROLL_CLEARANCE_CLASS,
+                )}
+              >
                 {compactScrollContent}
                 {homepageSections}
               </div>
