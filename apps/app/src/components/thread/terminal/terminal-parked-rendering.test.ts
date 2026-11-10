@@ -50,6 +50,12 @@ it("releases parked DOM rows and restores the same buffer and grid without resiz
     const fontChanges = vi.spyOn(terminal.options, "fontFamily", "set");
     const scrollbars = Array.from(host.querySelectorAll<HTMLElement>(".xterm-scrollbar"));
     expect(scrollbars.length).toBeGreaterThan(0);
+    const domRendererStyles = () =>
+      Array.from(document.querySelectorAll("style")).filter((style) =>
+        (style.textContent ?? "").includes("xterm-dom-renderer-owner-"),
+      );
+    const styleCount = domRendererStyles().length;
+    expect(styleCount).toBeGreaterThan(0);
     const scrollbarPositions = scrollbars.map((scrollbar) => ({
       parent: scrollbar.parentNode,
       next: scrollbar.nextSibling,
@@ -59,6 +65,7 @@ it("releases parked DOM rows and restores the same buffer and grid without resiz
       transport.setParked(true);
       const restoreRendering = releaseParkedTerminalRendering(terminal);
       expect(scrollbars.every((scrollbar) => !scrollbar.isConnected)).toBe(true);
+      expect(domRendererStyles()).toHaveLength(0);
       expect(rendered()).toBe("");
       expect(terminal.buffer.active.getLine(0)?.translateToString(true)).toBe("retained output");
       expect([terminal.cols, terminal.rows]).toEqual([44, 12]);
@@ -68,6 +75,7 @@ it("releases parked DOM rows and restores the same buffer and grid without resiz
       expect(claims()).toHaveLength(1);
       host.style.display = "";
       restoreRendering();
+      expect(domRendererStyles()).toHaveLength(styleCount);
       expect(scrollbars.every((scrollbar) => scrollbar.isConnected)).toBe(true);
       expect(
         scrollbars.map((scrollbar) => ({
@@ -180,4 +188,61 @@ it("skips restoring scrollbars into a parent that xterm has disposed", () => {
   terminal.dispose();
   expect(() => restore()).not.toThrow();
   expect(scrollbars.every((scrollbar) => !scrollbar.isConnected)).toBe(true);
+});
+
+it("keeps the DOM renderer stylesheets out of the document while parked and restores them before the first render", async () => {
+  const { host, terminal } = openTerminal();
+  try {
+    const styles = () =>
+      Array.from(host.querySelectorAll<HTMLStyleElement>(".xterm-screen > style"));
+    const original = styles();
+    expect(original.length).toBeGreaterThan(0);
+    const positions = original.map((style) => ({
+      parent: style.parentNode,
+      next: style.nextSibling,
+    }));
+    const restore = releaseParkedTerminalRendering(terminal);
+    expect(styles()).toHaveLength(0);
+    expect(
+      Array.from(document.querySelectorAll("style")).filter((style) =>
+        (style.textContent ?? "").includes("xterm-dom-renderer-owner-"),
+      ),
+    ).toHaveLength(0);
+    restore();
+    expect(styles()).toEqual(original);
+    expect(
+      original.map((style) => ({
+        parent: style.parentNode,
+        next: style.nextSibling,
+      })),
+    ).toEqual(positions);
+    await new Promise<void>((resolve) => terminal.write("after restore", resolve));
+    terminal.refresh(0, terminal.rows - 1);
+    await vi.waitFor(() =>
+      expect(host.querySelector(".xterm-rows")?.textContent).toContain(
+        "after restore",
+      ),
+    );
+  } finally {
+    terminal.dispose();
+  }
+});
+
+it("does not re-insert a stale renderer stylesheet next to one xterm created while parked", () => {
+  const { host, terminal } = openTerminal();
+  try {
+    const screen = host.querySelector(".xterm-screen") as HTMLElement;
+    const stale = Array.from(screen.querySelectorAll(":scope > style"));
+    expect(stale.length).toBeGreaterThan(0);
+    const restore = releaseParkedTerminalRendering(terminal);
+    const fresh = document.createElement("style");
+    screen.appendChild(fresh);
+    restore();
+    expect(stale.every((style) => !style.isConnected)).toBe(true);
+    expect(Array.from(screen.querySelectorAll(":scope > style"))).toEqual([fresh]);
+    restore();
+    expect(Array.from(screen.querySelectorAll(":scope > style"))).toEqual([fresh]);
+  } finally {
+    terminal.dispose();
+  }
 });

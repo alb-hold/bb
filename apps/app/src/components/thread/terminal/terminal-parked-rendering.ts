@@ -1,41 +1,54 @@
 import type { Terminal } from "@xterm/xterm";
 
-interface DetachedScrollbar {
+const PARKED_DETACH_SELECTORS = [
+  ".xterm-scrollbar",
+  ".xterm-screen > style",
+] as const;
+
+interface DetachedNode {
   element: HTMLElement;
   parent: ParentNode;
   next: ChildNode | null;
+  selector: string;
 }
 
-function detachScrollbars(terminal: Terminal): DetachedScrollbar[] {
-  const detached: DetachedScrollbar[] = [];
-  for (const element of terminal.element?.querySelectorAll<HTMLElement>(
-    ".xterm-scrollbar",
-  ) ?? []) {
-    const parent = element.parentNode;
-    if (parent === null) continue;
-    detached.push({ element, parent, next: element.nextSibling });
+function detachParkedNodes(terminal: Terminal): DetachedNode[] {
+  const detached: DetachedNode[] = [];
+  for (const selector of PARKED_DETACH_SELECTORS) {
+    for (const element of terminal.element?.querySelectorAll<HTMLElement>(
+      selector,
+    ) ?? []) {
+      const parent = element.parentNode;
+      if (parent === null) continue;
+      detached.push({ element, parent, next: element.nextSibling, selector });
+    }
   }
   for (const { element } of detached) element.remove();
   return detached;
 }
 
-function restoreScrollbars(
+function restoreParkedNodes(
   terminal: Terminal,
-  detached: readonly DetachedScrollbar[],
+  detached: readonly DetachedNode[],
 ): void {
   const root = terminal.element;
   if (root === undefined) return;
-  const replaced = new Set<ParentNode>();
-  for (const { parent } of detached) {
+  const replaced = new Map<ParentNode, Set<string>>();
+  for (const { parent, selector } of detached) {
+    const scoped = selector.split(">").at(-1)?.trim() ?? selector;
     if (
-      root.contains(parent) &&
-      parent.querySelector(":scope > .xterm-scrollbar") !== null
+      !root.contains(parent) ||
+      parent.querySelector(`:scope > ${scoped}`) === null
     )
-      replaced.add(parent);
+      continue;
+    const selectors = replaced.get(parent) ?? new Set<string>();
+    selectors.add(selector);
+    replaced.set(parent, selectors);
   }
   for (let index = detached.length - 1; index >= 0; index--) {
-    const { element, parent, next } = detached[index];
-    if (!root.contains(parent) || replaced.has(parent)) continue;
+    const { element, parent, next, selector } = detached[index];
+    if (!root.contains(parent) || replaced.get(parent)?.has(selector) === true)
+      continue;
     if (next !== null && next.parentNode === parent)
       parent.insertBefore(element, next);
     else parent.appendChild(element);
@@ -43,7 +56,7 @@ function restoreScrollbars(
 }
 
 export function releaseParkedTerminalRendering(terminal: Terminal): () => void {
-  const detached = detachScrollbars(terminal);
+  const detached = detachParkedNodes(terminal);
   terminal.clearTextureAtlas();
   for (const row of terminal.element?.querySelectorAll(".xterm-rows > div") ?? []) {
     row.replaceChildren();
@@ -52,6 +65,6 @@ export function releaseParkedTerminalRendering(terminal: Terminal): () => void {
   return () => {
     if (restored) return;
     restored = true;
-    restoreScrollbars(terminal, detached);
+    restoreParkedNodes(terminal, detached);
   };
 }
