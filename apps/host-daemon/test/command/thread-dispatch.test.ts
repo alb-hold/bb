@@ -12,7 +12,7 @@ import {
   type PromptInput,
 } from "@bb/domain";
 import { makeTempDir } from "@bb/test-helpers";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { dispatchCommand } from "../../src/command-dispatch.js";
 import { CommandDispatchError } from "../../src/command-dispatch-support.js";
 import type { FetchProjectAttachment } from "../../src/project-attachments.js";
@@ -25,8 +25,11 @@ import {
   makeDispatchOptions,
   DISPATCH_TEST_BRIDGE_LAUNCH,
 } from "./dispatch-helpers.js";
+import { hostProc, useProcReaderForTests } from "@bb/process-utils";
 
 let nextClientRequestIdValue = 1;
+
+afterEach(() => useProcReaderForTests(null));
 
 type TextPromptInput = Extract<PromptInput, { type: "text" }>;
 
@@ -1466,6 +1469,11 @@ describe("thread command dispatch", () => {
   });
 
   it("stops the runtime and deletes only the requested thread storage", async () => {
+    useProcReaderForTests({
+      ...hostProc,
+      readdir: async (name) =>
+        name === "/proc" ? [String(process.pid)] : hostProc.readdir(name),
+    });
     const threadStorageRootPath = await makeTempDir(
       "bb-thread-storage-delete-",
     );

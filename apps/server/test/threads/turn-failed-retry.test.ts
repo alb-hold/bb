@@ -720,7 +720,7 @@ describe("retrying a failed turn", () => {
     });
   });
 
-  it("retries a legacy child turn on the child model and keeps its stored override", async () => {
+  it("retries a legacy child turn on its explicit model and keeps its stored override", async () => {
     await withTestHarness(async (harness) => {
       const { requestId, thread } = seedFailableThread(
         harness,
@@ -746,7 +746,7 @@ describe("retrying a failed turn", () => {
       const retryRequest = turnRequests(harness, thread.id)[1];
       if (retryRequest === undefined) throw new Error("expected a retry turn");
       expect(turnRequestData(retryRequest).execution.model).toBe(
-        "claude-sonnet-5-5",
+        "claude-opus-5-5",
       );
       expect(
         getThreadExecutionOverride(harness.db, thread.id)?.modelOverride,

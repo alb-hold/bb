@@ -409,8 +409,8 @@ function ThreadTrailingIndicator({
         "inline-flex h-5 shrink-0 items-center gap-1.5 rounded-full px-1.5 font-medium text-xs",
         statusText !== null && "justify-end gap-1 whitespace-nowrap px-0",
         statusText === null && "px-0",
-        (indicatorKind === "needs-input" || indicatorKind === "check-terminal") &&
-          "text-attention",
+        indicatorKind === "needs-input" && "text-destructive-text",
+        indicatorKind === "check-terminal" && "text-attention",
         indicatorKind === "working" && SIDEBAR_WORKING_STATUS_COLOR_CLASS,
         indicatorKind === "woke" && "text-warning",
         indicatorKind === "done-unread" && SIDEBAR_SUCCESS_STATUS_COLOR_CLASS,

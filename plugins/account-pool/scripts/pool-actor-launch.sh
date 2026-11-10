@@ -167,7 +167,9 @@ child=$!
 unset token hub_url env_names env_values env_name env_value
 
 status=0
-while kill -0 "$child" 2>/dev/null; do
+wait "$child"
+status=$?
+while [ "$status" -gt 128 ] && kill -0 "$child" 2>/dev/null; do
   wait "$child"
   status=$?
 done

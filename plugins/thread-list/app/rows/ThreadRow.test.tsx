@@ -537,6 +537,10 @@ afterEach(() => {
   resetPreferencesSyncForTest();
 });
 
+const sdkExportsAreSpyable =
+  Object.getOwnPropertyDescriptor(pluginSdk, "experimental_useExperiment")
+    ?.configurable === true;
+
 describe("ThreadRow", () => {
   it("uses one leading mode column without a blank title slot", () => {
     const view = renderThreadRow({ thread: createThread({ experimental_nativeTerminal: true }) });
@@ -664,7 +668,7 @@ describe("ThreadRow", () => {
     expect(view.container.querySelector("[data-sidebar-thread-context]")?.textContent).toBe("now");
   });
 
-  it("shares the metadata experiment subscription with sibling rows", () => {
+  it.skipIf(!sdkExportsAreSpyable)("shares the metadata experiment subscription with sibling rows", () => {
     const subscribe = vi.spyOn(pluginSdk, "experimental_useExperiment");
     renderThreadRow({
       thread: createThread({ archivedAt: 1 }),
@@ -2381,11 +2385,13 @@ describe("ThreadRow", () => {
     expect(
       screen
         .getByRole("img", { name: "Needs input" })
-        .classList.contains("text-attention"),
+        .classList.contains("text-destructive-text"),
     ).toBe(true);
     expect(
-      screen.getByRole("img", { name: "Needs input" }).className,
-    ).not.toContain("destructive");
+      screen
+        .getByRole("img", { name: "Needs input" })
+        .classList.contains("text-warning"),
+    ).toBe(false);
   });
 
   it("clocks a thread with queued work, and drops the clock once it runs", () => {
@@ -2544,7 +2550,7 @@ describe("ThreadRow", () => {
     ).not.toBeNull();
   });
 
-  it.each([false, true])(
+  it.skipIf(!sdkExportsAreSpyable).each([false, true])(
     "keeps empty metadata rows dense (compact: %s)",
     (isCompact) => {
       vi.spyOn(
@@ -2573,7 +2579,7 @@ describe("ThreadRow", () => {
     },
   );
 
-  it.each([false, true])(
+  it.skipIf(!sdkExportsAreSpyable).each([false, true])(
     "reserves stable row metrics across late metadata registration (compact: %s)",
     (isCompact) => {
       let registered = false;

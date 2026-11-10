@@ -247,6 +247,30 @@ describe("worktree resource operations", () => {
       path: null,
     });
   });
+
+  it("returns a retained removal result from the host", async () => {
+    const fixture = await setup((call) =>
+      call.method === "remove"
+        ? { status: "retained", message: "a holder scan was uncertain" }
+        : { status: "removed" },
+    );
+
+    await expect(
+      fixture.provider.remove({
+        environment: null,
+        hostId: HOST_ID,
+        path: WORKTREE_PATH,
+        pathKey: THREAD_ID,
+        resource: null,
+        attempt: 1,
+        report: fixture.report,
+        signal: fixture.signal,
+      }),
+    ).resolves.toEqual({
+      status: "retained",
+      message: "a holder scan was uncertain",
+    });
+  });
 });
 
 describe("adopting an existing worktree", () => {

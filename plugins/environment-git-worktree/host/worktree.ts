@@ -1,4 +1,11 @@
-import { experimental_killProcessesWithCwdUnder } from "@get-bb/plugin-sdk/host";
+import {
+  createBranchAtPinnedTip,
+  deleteCreatedBranch,
+  describeContinuity,
+  pinPreviousAttempt,
+  type PinnedPreviousAttempt,
+  type PreviousAttemptRequest,
+} from "./previous-attempt.js";
 import {
   findWorktreeEntry,
   parseWorktreeListPorcelain,
@@ -6,14 +13,40 @@ import {
   type GitWorktreeEntry,
 } from "./worktree-list.js";
 import fs from "node:fs/promises";
+import {
+  directoryTreeChangedSince,
+  removeDirectoryTree,
+  RetainedRecoveryError,
+} from "bb-environment-provider-host/remove-directory-tree";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
-import { removeDirectoryTree } from "./remove-directory-tree.js";
+import {
+  beginCopy,
+  fingerprintSource,
+  inspectCreatedBy,
+  describeRetainedCopies,
+  recordCopy,
+  retainCreatedCopies,
+  type CreatedBy,
+  type RetainedCopies,
+  type SourceFingerprint,
+} from "./created-by.js";
+import {
+  WORKTREE_PRESERVED_CODE,
+  findPreservationReasons,
+  identifyWorktree,
+  isWorktreePreservedError,
+  worktreePreservedError,
+  type WorktreeIdentity,
+} from "./worktree-preservation.js";
+import { markCreateFailure } from "./create-failure.js";
 import { setTimeout as delay } from "node:timers/promises";
 import {
   findWorktreeForBranch,
   getCurrentBranch,
   getGitCommonDir,
   hasRef,
+  readDefaultBranch,
   readGitRepositoryState,
   runGit,
   WorkspaceError,
@@ -50,7 +83,9 @@ interface CreateWorktreeArgs {
   targetPath: string;
   completionPath: string;
   ownWorktreesRoot: string;
+  retainedRoot: string;
   branchName: string;
+  previousAttempt?: PreviousAttemptRequest | undefined;
   baseBranch: ResolvedWorktreeBaseBranch | null;
   branchMode: BranchMode;
   onProgress?: ProgressCallback | undefined;
@@ -59,8 +94,82 @@ interface CreateWorktreeArgs {
 
 interface RemoveWorktreeArgs {
   path: string;
+  rootPath: string;
+  completionPath?: string | undefined;
+  createdBy?: CreatedBy | undefined;
+  branchName?: string | undefined;
+  retainedRoot?: string | undefined;
+  retention?: RetentionState | undefined;
   onProgress?: ProgressCallback | undefined;
   signal?: AbortSignal | undefined;
+  fetchTimeoutMs?: number | undefined;
+  testHooks?:
+    | {
+        afterFinalCheck?: (
+          worktreePath: string,
+          gitDir: string,
+        ) => Promise<void>;
+        afterDirectoryListed?: (
+          directory: string,
+          entries: readonly string[],
+        ) => Promise<void>;
+        beforeEntryRemoval?: (entry: string) => Promise<void>;
+        beforeEntryRename?: (entry: string) => Promise<void>;
+        afterEntryCheck?: (entry: string) => Promise<void>;
+        afterEntryQuarantined?: (
+          entry: string,
+          quarantined: string,
+        ) => Promise<void>;
+        beforeQuarantinePinLink?: (
+          source: string,
+          pin: string,
+        ) => Promise<void>;
+        recoveryLink?: (pin: string, destination: string) => Promise<void>;
+        recoveryWrite?: (
+          destination: Awaited<ReturnType<typeof fs.open>>,
+          buffer: Buffer,
+          offset: number,
+          length: number,
+          position: number,
+        ) => Promise<{ bytesWritten: number }>;
+        beforePinCleanup?: (pin: string, restoredPath: string) => Promise<void>;
+        createPinSuffix?: () => string;
+      }
+    | undefined;
+}
+
+interface RetentionState {
+  retained: RetainedCopies | null;
+}
+
+function appendToError(error: unknown, text: string): unknown {
+  const message = error instanceof Error ? error.message : String(error);
+  const combined = `${message}. ${text}`;
+  if (!(error instanceof Error)) return new Error(combined, { cause: error });
+  try {
+    Object.defineProperty(error, "message", {
+      value: combined,
+      configurable: true,
+      writable: true,
+    });
+    return error;
+  } catch {
+    return new Error(combined, { cause: error });
+  }
+}
+
+function annotateRetained(
+  error: unknown,
+  retained: RetainedCopies | null,
+): unknown {
+  if (retained === null) return error;
+  const message = error instanceof Error ? error.message : String(error);
+  if (message.includes(retained.directory)) return error;
+  return appendToError(error, describeRetainedCopies(retained));
+}
+
+export interface RemoveWorktreeResult {
+  retained: RetainedCopies | null;
 }
 
 const REMOTE_BASE_FETCH_TIMEOUT_MS = 60_000;
@@ -116,6 +225,27 @@ function classifyConcurrentRemoteRefUpdateError(
   return null;
 }
 
+function isFetchFailureWithFallback(error: unknown): boolean {
+  return (
+    error instanceof WorkspaceError &&
+    (error.code === "git_command_failed" ||
+      error.code === "git_command_timeout")
+  );
+}
+
+async function readShortCommit(
+  sourcePath: string,
+  ref: string,
+  signal: AbortSignal | undefined,
+): Promise<string | null> {
+  const result = await runGit(
+    ["rev-parse", "--verify", "--quiet", "--short", `${ref}^{commit}`],
+    { cwd: sourcePath, ...signalOptions(signal), allowFailure: true },
+  );
+  const commit = result.stdout.trim();
+  return result.exitCode === 0 && commit !== "" ? commit : null;
+}
+
 async function ensureExistingWorkspaceMatches(
   targetPath: string,
   branchName: string,
@@ -155,48 +285,19 @@ async function isPathInside(root: string, target: string): Promise<boolean> {
   );
 }
 
-async function removeAbandonedAttemptWorktree(args: {
+async function refuseAbandonedAttemptWorktree(args: {
   sourcePath: string;
   ownWorktreesRoot: string;
   branchName: string;
-  onProgress: ProgressCallback | undefined;
-  signal: AbortSignal | undefined;
 }): Promise<void> {
   const holder = await findWorktreeForBranch(args.sourcePath, args.branchName);
   if (holder === null || !(await isPathInside(args.ownWorktreesRoot, holder))) {
     return;
   }
-  throwIfProvisionAborted(args.signal);
-  const status = await runGit(["status", "--porcelain"], {
-    cwd: holder,
-    ...(args.signal !== undefined ? { signal: args.signal } : {}),
-  });
-  if (status.stdout.trim() !== "") {
-    throw new WorkspaceError(
-      "abandoned_worktree_dirty",
-      `Branch ${args.branchName} is still checked out at ${holder} by an earlier attempt, and that worktree has uncommitted changes, so it was left alone. Remove it to retry.`,
-    );
-  }
-  const startedAt = Date.now();
-  emitStep({
-    onProgress: args.onProgress,
-    key: "abandoned-worktree-started",
-    text: "Removing the worktree an earlier attempt left behind",
-    status: "started",
-    startedAt,
-  });
-  await removeWorktree({
-    path: holder,
-    ...(args.signal !== undefined ? { signal: args.signal } : {}),
-  });
-  emitStep({
-    onProgress: args.onProgress,
-    key: "abandoned-worktree-completed",
-    text: "Removed the worktree an earlier attempt left behind",
-    status: "completed",
-    startedAt,
-    metadata: { durationMs: Date.now() - startedAt },
-  });
+  throw new WorkspaceError(
+    "abandoned_worktree_preserved",
+    `Branch ${args.branchName} is still checked out at ${holder} by an earlier workspace, so it was left alone. bb removes a workspace only through its owner's cleanup; finish or remove ${holder} yourself, then retry.`,
+  );
 }
 
 async function ensureWorkspaceParentDirectory(
@@ -257,27 +358,6 @@ async function resolveRemoteBaseBranch(
     remote,
     branch: baseBranch.slice(remote.length + 1),
   };
-}
-
-function isFetchFailureWithFallback(error: unknown): boolean {
-  return (
-    error instanceof WorkspaceError &&
-    (error.code === "git_command_failed" ||
-      error.code === "git_command_timeout")
-  );
-}
-
-async function readShortCommit(
-  sourcePath: string,
-  ref: string,
-  signal: AbortSignal | undefined,
-): Promise<string | null> {
-  const result = await runGit(
-    ["rev-parse", "--verify", "--quiet", "--short", `${ref}^{commit}`],
-    { cwd: sourcePath, ...signalOptions(signal), allowFailure: true },
-  );
-  const commit = result.stdout.trim();
-  return result.exitCode === 0 && commit !== "" ? commit : null;
 }
 
 export async function fetchRemoteBaseBranch(args: {
@@ -402,9 +482,7 @@ export async function fetchRemoteBaseBranch(args: {
       remoteRef,
       args.signal,
     );
-    if (fallbackCommit === null) {
-      throw error;
-    }
+    if (fallbackCommit === null) throw error;
     emitOutput(
       args.onProgress,
       "git-fetch",
@@ -429,6 +507,7 @@ function summarizePaths(paths: readonly string[]): string {
 async function copyIncludedFiles(args: {
   sourcePath: string;
   targetPath: string;
+  createdBy: CreatedBy | undefined;
   onProgress: ProgressCallback | undefined;
   signal: AbortSignal | undefined;
 }): Promise<void> {
@@ -440,6 +519,20 @@ async function copyIncludedFiles(args: {
       sourcePath: args.sourcePath,
       targetPath: args.targetPath,
       signal: args.signal,
+      ...(args.createdBy !== undefined
+        ? {
+            ledger: {
+              expect: fingerprintSource,
+              begin: (relativePath: string) =>
+                beginCopy(args.createdBy!, relativePath),
+              record: (
+                relativePath: string,
+                file: string,
+                expected: SourceFingerprint | null,
+              ) => recordCopy(args.createdBy!, relativePath, file, expected),
+            },
+          }
+        : {}),
     });
   } catch (error) {
     if (isProvisionAbortError(error)) {
@@ -500,7 +593,10 @@ async function readCompletedBranch(
   }
 }
 
-async function finishWorktreeSetup(args: CreateWorktreeArgs): Promise<void> {
+async function finishWorktreeSetup(
+  args: CreateWorktreeArgs,
+  createdBy?: CreatedBy,
+): Promise<void> {
   emitCwd({
     onProgress: args.onProgress,
     keySuffix: "target",
@@ -509,18 +605,104 @@ async function finishWorktreeSetup(args: CreateWorktreeArgs): Promise<void> {
   await copyIncludedFiles({
     sourcePath: args.sourcePath,
     targetPath: args.targetPath,
+    createdBy,
     onProgress: args.onProgress,
     signal: args.signal,
   });
   await fs.writeFile(args.completionPath, `${args.branchName}\n`, "utf8");
 }
 
-async function removeCreateTarget(args: CreateWorktreeArgs): Promise<void> {
-  await fs.rm(args.completionPath, { force: true });
-  await removeWorktree({
+async function readCreatedBy(
+  args: CreateWorktreeArgs,
+): Promise<CreatedBy | undefined> {
+  const head = await runGit(["rev-parse", "HEAD"], {
+    cwd: args.targetPath,
+    allowFailure: true,
+    ...signalOptions(args.signal),
+  });
+  const sha = head.stdout.trim();
+  return head.exitCode === 0 && sha !== ""
+    ? { head: sha, copies: new Map() }
+    : undefined;
+}
+
+async function removeCreateTarget(
+  args: CreateWorktreeArgs,
+  retention: RetentionState = { retained: null },
+  createdBy?: CreatedBy,
+): Promise<RemoveWorktreeResult> {
+  return await removeWorktree({
     path: args.targetPath,
+    rootPath: args.ownWorktreesRoot,
+    completionPath: args.completionPath,
+    createdBy,
+    branchName: args.branchName,
+    retainedRoot: args.retainedRoot,
+    retention,
     ...(args.signal !== undefined ? { signal: args.signal } : {}),
   });
+}
+
+async function refuseExistingCreateTarget(
+  args: CreateWorktreeArgs,
+): Promise<void> {
+  try {
+    await fs.lstat(args.targetPath);
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      "code" in error &&
+      (error as NodeJS.ErrnoException).code === "ENOENT"
+    ) {
+      await fs.rm(args.completionPath, { force: true });
+      return;
+    }
+    throw error;
+  }
+  throw new WorkspaceError(
+    "target_exists_preserved",
+    `${args.targetPath} already exists and is not a workspace on branch ${args.branchName} that this create can reuse, so it was left alone. bb does not replace an existing workspace; finish or remove it yourself, then retry.`,
+  );
+}
+
+async function removeCreateTargetAfterFailure(
+  args: CreateWorktreeArgs,
+  failure: unknown,
+  createdBy?: CreatedBy,
+): Promise<never> {
+  const retention: RetentionState = { retained: null };
+  try {
+    await removeCreateTarget(args, retention, createdBy);
+  } catch (cleanupError) {
+    if (
+      retention.retained !== null &&
+      !isWorktreePreservedError(cleanupError)
+    ) {
+      throw markCreateFailure(
+        appendToError(
+          cleanupError,
+          `Create failed earlier: ${failure instanceof Error ? failure.message : String(failure)}`,
+        ),
+        "unknown",
+      );
+    }
+    if (isWorktreePreservedError(cleanupError)) {
+      throw new WorkspaceError(
+        WORKTREE_PRESERVED_CODE,
+        `${failure instanceof Error ? failure.message : String(failure)}. ${cleanupError.message}`,
+        { cause: failure },
+      );
+    }
+    throw markCreateFailure(cleanupError, "unknown");
+  }
+  if (retention.retained !== null) {
+    throw new WorkspaceError(
+      WORKTREE_PRESERVED_CODE,
+      `${failure instanceof Error ? failure.message : String(failure)}. ${describeRetainedCopies(retention.retained)}`,
+      { cause: failure },
+    );
+  }
+  throw markCreateFailure(failure, "nothing");
 }
 
 export async function createWorktree(
@@ -536,16 +718,11 @@ export async function createWorktree(
     if ((await readCompletedBranch(args.completionPath)) === args.branchName) {
       return { path: args.targetPath };
     }
-    try {
-      await finishWorktreeSetup(args);
-      return { path: args.targetPath };
-    } catch (error) {
-      await removeCreateTarget(args);
-      throw error;
-    }
+    await finishWorktreeSetup(args);
+    return { path: args.targetPath };
   }
 
-  await removeCreateTarget(args);
+  await refuseExistingCreateTarget(args);
 
   throwIfProvisionAborted(args.signal);
   switch (
@@ -566,16 +743,11 @@ export async function createWorktree(
   }
 
   throwIfProvisionAborted(args.signal);
-  await removeAbandonedAttemptWorktree({
+  await refuseAbandonedAttemptWorktree({
     sourcePath: args.sourcePath,
     ownWorktreesRoot: args.ownWorktreesRoot,
     branchName: args.branchName,
-    onProgress: args.onProgress,
-    signal: args.signal,
   });
-
-  throwIfProvisionAborted(args.signal);
-  await ensureWorkspaceParentDirectory(args.targetPath);
 
   throwIfProvisionAborted(args.signal);
   const reuseExistingBranch =
@@ -583,10 +755,41 @@ export async function createWorktree(
     (await hasRef(args.sourcePath, `refs/heads/${args.branchName}`));
 
   let gitArgs: string[];
+  let pinned: PinnedPreviousAttempt | null = null;
+  if (!reuseExistingBranch && args.previousAttempt !== undefined) {
+    pinned = await pinPreviousAttempt({
+      sourcePath: args.sourcePath,
+      request: args.previousAttempt,
+      signal: args.signal,
+    });
+  }
   if (reuseExistingBranch) {
     gitArgs = ["worktree", "add", args.targetPath, args.branchName];
+  } else if (pinned !== null) {
+    throwIfProvisionAborted(args.signal);
+    await createBranchAtPinnedTip({
+      sourcePath: args.sourcePath,
+      pinned,
+      newBranch: args.branchName,
+    });
+    gitArgs = ["worktree", "add", args.targetPath, args.branchName];
   } else {
-    const baseBranch = args.baseBranch;
+    if (args.previousAttempt !== undefined) {
+      emitOutput(
+        args.onProgress,
+        "worktree-continuity",
+        "No earlier attempt of this thread left a branch or a workspace folder, so this attempt starts from the base branch; nothing from an earlier attempt could be lost.",
+      );
+    }
+    if (await hasRef(args.sourcePath, `refs/heads/${args.branchName}`)) {
+      throw new WorkspaceError(
+        "branch_exists_preserved",
+        `Branch ${args.branchName} already exists, so it was not reset to the base branch and its work is kept. Remove or rename that branch yourself, or retry so the create continues on its own attempt branch.`,
+      );
+    }
+    const resolvedBaseBranch = args.baseBranch;
+    const baseBranch =
+      resolvedBaseBranch?.ref ?? (await readDefaultBranch(args.sourcePath));
     if (!baseBranch) {
       throw new WorkspaceError(
         "missing_default_branch",
@@ -596,8 +799,8 @@ export async function createWorktree(
     throwIfProvisionAborted(args.signal);
     await fetchRemoteBaseBranch({
       sourcePath: args.sourcePath,
-      baseBranch: baseBranch.ref,
-      fetchFailureFallback: baseBranch.fetchFailureFallback,
+      baseBranch,
+      fetchFailureFallback: resolvedBaseBranch?.fetchFailureFallback ?? false,
       onProgress: args.onProgress,
       signal: args.signal,
     });
@@ -605,10 +808,10 @@ export async function createWorktree(
       "worktree",
       "add",
       "--no-track",
-      "-B",
+      "-b",
       args.branchName,
       args.targetPath,
-      baseBranch.ref,
+      baseBranch,
     ];
   }
 
@@ -621,7 +824,10 @@ export async function createWorktree(
     startedAt: worktreeStartedAt,
   });
   let worktreeCreated = false;
+  let createdBy: CreatedBy | undefined;
   try {
+    throwIfProvisionAborted(args.signal);
+    await ensureWorkspaceParentDirectory(args.targetPath);
     const result = await runGitWithWorktreeMetadataLock(gitArgs, {
       cwd: args.sourcePath,
       ...(args.signal !== undefined ? { signal: args.signal } : {}),
@@ -636,9 +842,28 @@ export async function createWorktree(
       metadata: { durationMs: Date.now() - worktreeStartedAt },
     });
     worktreeCreated = true;
-    await finishWorktreeSetup(args);
+    if (pinned !== null) {
+      emitOutput(
+        args.onProgress,
+        "worktree-continuity",
+        await describeContinuity({
+          sourcePath: args.sourcePath,
+          pinned,
+          newBranch: args.branchName,
+        }),
+      );
+    }
+    createdBy = await readCreatedBy(args);
+    await finishWorktreeSetup(args, createdBy);
     return { path: args.targetPath };
   } catch (error) {
+    if (!worktreeCreated && pinned !== null) {
+      await deleteCreatedBranch({
+        sourcePath: args.sourcePath,
+        newBranch: args.branchName,
+        sha: pinned.sha,
+      });
+    }
     if (!worktreeCreated) {
       emitStep({
         onProgress: args.onProgress,
@@ -649,8 +874,7 @@ export async function createWorktree(
         metadata: { durationMs: Date.now() - worktreeStartedAt },
       });
     }
-    await removeCreateTarget(args);
-    throw error;
+    return await removeCreateTargetAfterFailure(args, error, createdBy);
   }
 }
 
@@ -671,61 +895,318 @@ async function removeDirectoryIfEmpty(pathToRemove: string): Promise<void> {
   }
 }
 
-export async function removeWorktree(args: RemoveWorktreeArgs): Promise<void> {
-  throwIfProvisionAborted(args.signal);
-  const workspacePath = path.resolve(args.path);
-  const parentPath = path.dirname(workspacePath);
-  try {
-    await fs.access(workspacePath);
-  } catch {
-    await removeDirectoryIfEmpty(parentPath);
-    return;
+async function assertWorktreeRemovable(
+  identity: WorktreeIdentity,
+  args: RemoveWorktreeArgs,
+  options: { fetchRemotes?: boolean; fetchTimeoutMs?: number } = {},
+): Promise<void> {
+  const reasons =
+    args.createdBy !== undefined
+      ? (await inspectCreatedBy(identity, args.createdBy, args.signal)).reasons
+      : await findPreservationReasons(identity, args.signal, options);
+  if (reasons.length > 0) {
+    throw worktreePreservedError(identity.path, reasons);
   }
+}
 
-  await experimental_killProcessesWithCwdUnder({
-    directories: [workspacePath],
-  });
-  throwIfProvisionAborted(args.signal);
-
-  const commonDirResult = await runGit(["rev-parse", "--git-common-dir"], {
-    cwd: workspacePath,
-    ...(args.signal !== undefined ? { signal: args.signal } : {}),
-    allowFailure: true,
-  });
-
-  if (commonDirResult.exitCode === 0) {
-    const commonDir = path.resolve(
-      workspacePath,
-      commonDirResult.stdout.trim(),
+async function removeRegisteredWorktree(
+  identity: WorktreeIdentity,
+  args: RemoveWorktreeArgs,
+  retention: RetentionState,
+): Promise<RemoveWorktreeResult> {
+  if (args.createdBy !== undefined) {
+    const kept = await retainCreatedCopies(
+      identity,
+      args.createdBy,
+      args.retainedRoot,
     );
-    await tryWithCheckoutMutationLock(
-      workspacePath,
-      () =>
-        withWorktreeMetadataLock(commonDir, () =>
-          runGit(
-            [
-              "--git-dir",
-              commonDir,
-              "worktree",
-              "remove",
-              workspacePath,
-              "--force",
-            ],
-            {
-              cwd: path.dirname(workspacePath),
-              ...(args.signal !== undefined ? { signal: args.signal } : {}),
-              allowFailure: true,
-            },
+    retention.retained = kept.retained;
+    const retained = retention.retained;
+    if (kept.reasons.length > 0) {
+      throw worktreePreservedError(identity.path, [
+        ...kept.reasons,
+        ...(retained !== null ? [describeRetainedCopies(retained)] : []),
+      ]);
+    }
+    if (retained !== null) {
+      try {
+        await assertWorktreeRemovable(identity, args);
+      } catch (error) {
+        throw isWorktreePreservedError(error)
+          ? new WorkspaceError(
+              WORKTREE_PRESERVED_CODE,
+              `${error.message} ${describeRetainedCopies(retained)}`,
+              { cause: error },
+            )
+          : error;
+      }
+    }
+  }
+  const parentPath = path.dirname(identity.path);
+  const retained = retention.retained;
+  const keptNote = retained !== null ? [describeRetainedCopies(retained)] : [];
+  return await withWorktreeMetadataLock(identity.commonDir, async () => {
+    const quarantinedPath = path.join(
+      parentPath,
+      `.${path.basename(identity.path)}.removing-${randomUUID()}`,
+    );
+    const severedGitDir = path.join(
+      path.dirname(identity.gitDir),
+      `.bb-removing-${randomUUID()}`,
+    );
+    const originalGitdir = await fs.readFile(
+      path.join(identity.gitDir, "gitdir"),
+      "utf8",
+    );
+    await fs.rename(identity.path, quarantinedPath);
+    let metadataSevered = false;
+    let workspaceRemoved = false;
+    try {
+      try {
+        await fs.rename(identity.gitDir, severedGitDir);
+        metadataSevered = true;
+        await fs.writeFile(
+          path.join(severedGitDir, "gitdir"),
+          `${path.join(quarantinedPath, ".git")}\n`,
+        );
+      } catch (error) {
+        throw worktreePreservedError(identity.path, [
+          `could not isolate its Git metadata for final inspection (${error instanceof Error ? error.message : String(error)})`,
+        ]);
+      }
+      const quarantineIdentity = {
+        ...identity,
+        path: quarantinedPath,
+        gitDir: severedGitDir,
+      };
+      const reasons = await findPreservationReasons(
+        quarantineIdentity,
+        args.signal,
+        { gitDir: severedGitDir, fetchRemotes: false },
+      );
+      if (reasons.length > 0) {
+        throw worktreePreservedError(identity.path, reasons);
+      }
+      const workspaceMetadataBaseline = await fs.lstat(quarantinedPath);
+      const finalCheckStartedAt = Date.now();
+      await args.testHooks?.afterFinalCheck?.(quarantinedPath, severedGitDir);
+      if (await directoryTreeChangedSince(severedGitDir, finalCheckStartedAt)) {
+        throw worktreePreservedError(identity.path, [
+          "new or changed Git metadata was found after its final inspection",
+          ...keptNote,
+        ]);
+      }
+      const removed = await removeDirectoryTree(quarantinedPath, {
+        startedAt: finalCheckStartedAt,
+        rootMetadataBaseline: {
+          ctimeMs: workspaceMetadataBaseline.ctimeMs,
+          mtimeMs: workspaceMetadataBaseline.mtimeMs,
+        },
+        afterDirectoryListed: args.testHooks?.afterDirectoryListed,
+        beforeEntryRemoval: args.testHooks?.beforeEntryRemoval,
+        beforeEntryRename: args.testHooks?.beforeEntryRename,
+        afterEntryCheck: args.testHooks?.afterEntryCheck,
+        afterEntryQuarantined: args.testHooks?.afterEntryQuarantined,
+        beforeQuarantinePinLink: args.testHooks?.beforeQuarantinePinLink,
+        recoveryLink: args.testHooks?.recoveryLink,
+        recoveryWrite: args.testHooks?.recoveryWrite,
+        beforePinCleanup: args.testHooks?.beforePinCleanup,
+        createPinSuffix: args.testHooks?.createPinSuffix,
+      });
+      if (removed.status === "retained") {
+        throw worktreePreservedError(identity.path, [
+          "new or changed data was found during directory removal; the directory may be partially removed",
+          ...removed.retainedPaths.map(
+            (retainedPath) =>
+              `preserved entry at ${path.join(identity.path, path.relative(quarantinedPath, retainedPath))}`,
           ),
-        ),
-      args.signal,
-      signalOptions(args.signal),
-    );
-  }
+          ...keptNote,
+        ]);
+      }
+      workspaceRemoved = true;
+      const gitRootInfo = await fs.stat(severedGitDir);
+      const removedGitDir = await removeDirectoryTree(severedGitDir, {
+        startedAt: finalCheckStartedAt,
+        allowQuarantinedRoot: true,
+        rootMetadataBaseline: {
+          ctimeMs: gitRootInfo.ctimeMs,
+          mtimeMs: gitRootInfo.mtimeMs,
+        },
+        afterDirectoryListed: args.testHooks?.afterDirectoryListed,
+        beforeEntryRemoval: args.testHooks?.beforeEntryRemoval,
+        beforeEntryRename: args.testHooks?.beforeEntryRename,
+        afterEntryCheck: args.testHooks?.afterEntryCheck,
+        afterEntryQuarantined: args.testHooks?.afterEntryQuarantined,
+      });
+      if (removedGitDir.status === "retained") {
+        throw worktreePreservedError(severedGitDir, [
+          "new or changed Git metadata was found during admin-directory removal",
+          ...removedGitDir.retainedPaths.map(
+            (entry) => `preserved entry at ${entry}`,
+          ),
+          ...keptNote,
+        ]);
+      }
+      return { retained };
+    } catch (error) {
+      if (!workspaceRemoved) {
+        if (metadataSevered) {
+          try {
+            await fs.writeFile(
+              path.join(severedGitDir, "gitdir"),
+              originalGitdir,
+            );
+            await fs.rename(severedGitDir, identity.gitDir);
+          } catch (restoreError) {
+            throw worktreePreservedError(identity.path, [
+              `could not restore its Git metadata at ${identity.gitDir} (${restoreError instanceof Error ? restoreError.message : String(restoreError)})`,
+              ...keptNote,
+            ]);
+          }
+        }
+        try {
+          await fs.rename(quarantinedPath, identity.path);
+        } catch (restoreError) {
+          throw worktreePreservedError(identity.path, [
+            `could not restore its quarantined directory at ${quarantinedPath} (${restoreError instanceof Error ? restoreError.message : String(restoreError)})`,
+            ...keptNote,
+          ]);
+        }
+      } else {
+        throw worktreePreservedError(severedGitDir, [
+          `the worktree directory was removed but its severed Git metadata could not be removed (${error instanceof Error ? error.message : String(error)})`,
+          ...keptNote,
+        ]);
+      }
+      if (error instanceof RetainedRecoveryError) {
+        const retainedPaths = error.retainedPaths.map((retainedPath) =>
+          retainedPath === quarantinedPath ||
+          retainedPath.startsWith(`${quarantinedPath}${path.sep}`)
+            ? `${identity.path}${retainedPath.slice(quarantinedPath.length)}`
+            : retainedPath,
+        );
+        throw worktreePreservedError(identity.path, retainedPaths);
+      }
+      throw error;
+    }
+  });
+}
 
-  throwIfProvisionAborted(args.signal);
-  await removeDirectoryTree(workspacePath);
-  await removeDirectoryIfEmpty(parentPath);
+async function findQuarantinedWorktree(
+  workspacePath: string,
+): Promise<string | null> {
+  const parent = path.dirname(workspacePath);
+  const prefix = `.${path.basename(workspacePath)}.removing-`;
+  try {
+    const entries = await fs.readdir(parent);
+    const match = entries.find((entry) => entry.startsWith(prefix));
+    return match === undefined ? null : path.join(parent, match);
+  } catch {
+    return null;
+  }
+}
+
+export async function inspectWorktreeRemoval(args: {
+  path: string;
+  rootPath: string;
+  signal?: AbortSignal | undefined;
+}): Promise<
+  { status: "removable" } | { status: "protected"; message: string }
+> {
+  const workspacePath = path.resolve(args.path);
+  const quarantine = await findQuarantinedWorktree(workspacePath);
+  if (quarantine !== null) {
+    return {
+      status: "protected",
+      message: worktreePreservedError(workspacePath, [
+        `a prior removal attempt left recoverable data at ${quarantine}`,
+      ]).message,
+    };
+  }
+  const identified = await identifyWorktree({
+    path: workspacePath,
+    rootPath: args.rootPath,
+    signal: args.signal,
+  });
+  if (identified.status === "missing") {
+    return { status: "removable" };
+  }
+  const reasons =
+    identified.status === "preserve"
+      ? identified.reasons
+      : await findPreservationReasons(identified.identity, args.signal);
+  return reasons.length === 0
+    ? { status: "removable" }
+    : {
+        status: "protected",
+        message: worktreePreservedError(workspacePath, reasons).message,
+      };
+}
+
+export async function removeWorktree(
+  args: RemoveWorktreeArgs,
+): Promise<RemoveWorktreeResult> {
+  const retention = args.retention ?? { retained: null };
+  try {
+    throwIfProvisionAborted(args.signal);
+    const workspacePath = path.resolve(args.path);
+    const parentPath = path.dirname(workspacePath);
+    const quarantine = await findQuarantinedWorktree(workspacePath);
+    if (quarantine !== null) {
+      throw worktreePreservedError(workspacePath, [
+        `a prior removal attempt left recoverable data at ${quarantine}`,
+      ]);
+    }
+    const identified = await identifyWorktree({
+      path: workspacePath,
+      rootPath: args.rootPath,
+      signal: args.signal,
+    });
+    if (identified.status === "preserve") {
+      throw worktreePreservedError(workspacePath, identified.reasons);
+    }
+    if (identified.status === "identified" && args.createdBy !== undefined) {
+      throw worktreePreservedError(workspacePath, [
+        `a failed create's workspace stays in place until its owner releases it and a durable retention record exists, and neither is available yet. ${args.branchName === undefined ? "Its branch is" : `Branch ${args.branchName} is`} left behind with it. Retrying this same create reuses the workspace where it is when it is still on that branch; bb does not start a second workspace or delete this one in the meantime`,
+      ]);
+    }
+    if (identified.status === "identified") {
+      const { identity } = identified;
+      const removed = await tryWithCheckoutMutationLock(
+        identity.path,
+        async () => {
+          await assertWorktreeRemovable(
+            identity,
+            args,
+            args.fetchTimeoutMs === undefined
+              ? {}
+              : { fetchTimeoutMs: args.fetchTimeoutMs },
+          );
+          throwIfProvisionAborted(args.signal);
+          throwIfProvisionAborted(args.signal);
+          await assertWorktreeRemovable(identity, args, {
+            fetchRemotes: false,
+          });
+          await removeRegisteredWorktree(identity, args, retention);
+          return true;
+        },
+        args.signal,
+        signalOptions(args.signal),
+      );
+      if (removed === null) {
+        throw worktreePreservedError(workspacePath, [
+          "its checkout lock could not be resolved",
+        ]);
+      }
+    }
+    if (args.completionPath !== undefined) {
+      await fs.rm(args.completionPath, { force: true });
+    }
+    await removeDirectoryIfEmpty(parentPath);
+    return { retained: retention.retained };
+  } catch (error) {
+    throw annotateRetained(error, retention.retained);
+  }
 }
 
 export async function listGitWorktrees(args: {

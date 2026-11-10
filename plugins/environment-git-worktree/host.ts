@@ -1,23 +1,95 @@
 import { experimental_defineHostEntry } from "@get-bb/plugin-sdk/host";
-import { readdir, rm } from "node:fs/promises";
+import { readdir } from "node:fs/promises";
 import { createHostProgress } from "bb-environment-provider-host/progress";
 import { worktreeHostContract, worktreeHostSignals } from "./contract.js";
-import { resolveWorktreeBaseBranch } from "./host/base-branch.js";
+import {
+  readDefaultBranchRefs,
+  WorkspaceError,
+} from "bb-environment-provider-host/git";
+import {
+  resolveDefaultWorktreeBaseBranch,
+  resolveWorktreeBaseBranch,
+} from "./host/base-branch.js";
 import {
   resolveWorktreeChildPath,
+  resolveRetainedRoot,
   resolveWorktreesRoot,
   resolveWorktreeAttemptRoot,
   resolveWorktreeTargetPath,
 } from "./host/paths.js";
 import {
   createWorktree,
+  inspectWorktreeRemoval,
   listAdoptableWorktrees,
   removeWorktree,
   resolveAdoptableWorktree,
 } from "./host/worktree.js";
+import { classifyCreateFailure } from "./host/create-failure.js";
+import {
+  isWorktreePreservedError,
+  worktreeHolderScopeNotice,
+} from "./host/worktree-preservation.js";
+
+export { setTestWorktreeHolderScan } from "./host/worktree-preservation.js";
 
 function completionPathForWorktree(worktreePath: string): string {
   return `${worktreePath}.completed`;
+}
+
+function describeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+interface RemovalOutcome {
+  removed: string[];
+  kept: string[];
+  unknown: string[];
+  untouched: string[];
+}
+
+function describeRemovalOutcome(outcome: RemovalOutcome): string {
+  const lines = ["Worktree removal stopped part-way."];
+  if (outcome.removed.length > 0) {
+    lines.push(`Removed: ${outcome.removed.join(", ")}.`);
+  }
+  if (outcome.kept.length > 0) {
+    lines.push(...outcome.kept);
+  }
+  if (outcome.unknown.length > 0) {
+    lines.push(`Unknown state after an error: ${outcome.unknown.join("; ")}.`);
+  }
+  if (outcome.untouched.length > 0) {
+    lines.push(`Not attempted: ${outcome.untouched.join(", ")}.`);
+  }
+  return lines.join("\n");
+}
+
+async function removalTargets(
+  dataDir: string,
+  input: { pathKey: string; path: string | null },
+): Promise<string[]> {
+  return input.path === null
+    ? await worktreePathsForPathKey({ dataDir, pathKey: input.pathKey })
+    : [input.path];
+}
+
+async function findProtectedTargets(
+  targets: readonly string[],
+  attemptRoot: string,
+  signal: AbortSignal,
+): Promise<string[]> {
+  const refusals: string[] = [];
+  for (const target of targets) {
+    const inspection = await inspectWorktreeRemoval({
+      path: target,
+      rootPath: attemptRoot,
+      signal,
+    });
+    if (inspection.status === "protected") {
+      refusals.push(inspection.message);
+    }
+  }
+  return refusals;
 }
 
 async function worktreePathsForPathKey(args: {
@@ -29,6 +101,7 @@ async function worktreePathsForPathKey(args: {
     const entries = await readdir(root, { withFileTypes: true });
     return entries
       .filter((entry) => entry.isDirectory())
+      .sort((left, right) => (left.name < right.name ? -1 : 1))
       .map((entry) =>
         resolveWorktreeChildPath({
           dataDir: args.dataDir,
@@ -50,10 +123,14 @@ export function createWorktreeHostEntry() {
     experimental_signals: worktreeHostSignals,
     handlers: {
       async defaultBaseBranch(input) {
-        const resolved = await resolveWorktreeBaseBranch(input.sourcePath, {
-          kind: "default",
-        });
-        return { branch: resolved?.ref ?? null };
+        const refs = await readDefaultBranchRefs(input.sourcePath);
+        return {
+          branch: resolveDefaultWorktreeBaseBranch({
+            defaultBranch: refs.defaultBranch ?? null,
+            originDefaultBranch: refs.originDefaultBranch ?? null,
+            defaultBranchRelation: refs.defaultBranchRelation ?? null,
+          }),
+        };
       },
       async listWorktrees(input, context) {
         const worktrees = await listAdoptableWorktrees({
@@ -94,9 +171,33 @@ export function createWorktreeHostEntry() {
             ownWorktreesRoot: resolveWorktreesRoot(
               context.experimental_paths.dataDir,
             ),
+            retainedRoot: resolveRetainedRoot(
+              context.experimental_paths.dataDir,
+            ),
             branchName: input.branchName,
             baseBranch,
             branchMode: input.branchMode,
+            ...(input.previousAttempt !== undefined
+              ? {
+                  previousAttempt: {
+                    ...input.previousAttempt,
+                    pathsForAttempt: (attempt: number) =>
+                      (attempt <= 1
+                        ? [
+                            input.previousAttempt!.threadId,
+                            `${input.previousAttempt!.threadId}-1`,
+                          ]
+                        : [`${input.previousAttempt!.threadId}-${attempt}`]
+                      ).map((pathKey) =>
+                        resolveWorktreeTargetPath({
+                          dataDir: context.experimental_paths.dataDir,
+                          pathKey,
+                          sourcePath: input.sourcePath,
+                        }),
+                      ),
+                  },
+                }
+              : {}),
             onProgress: createHostProgress({
               operationId: input.operationId,
               emit: (payload) =>
@@ -114,38 +215,84 @@ export function createWorktreeHostEntry() {
           return {
             status: "failed",
             message: error instanceof Error ? error.message : String(error),
+            kept: classifyCreateFailure(error, targetPath),
           } as const;
         }
       },
 
       async remove(input, context) {
         try {
-          const paths =
-            input.path === null
-              ? await worktreePathsForPathKey({
-                  dataDir: context.experimental_paths.dataDir,
-                  pathKey: input.pathKey,
-                })
-              : [input.path];
-          for (const path of paths) {
-            await rm(completionPathForWorktree(path), { force: true });
-            await removeWorktree({
-              path,
-              onProgress: createHostProgress({
-                operationId: input.operationId,
-                emit: (payload) =>
-                  context.experimental_emitSignal("progress", payload),
-              }),
-              signal: context.signal,
-            });
+          const dataDir = context.experimental_paths.dataDir;
+          const attemptRoot = resolveWorktreeAttemptRoot({
+            dataDir,
+            pathKey: input.pathKey,
+          });
+          const targets = await removalTargets(dataDir, input);
+          const refusals = await findProtectedTargets(
+            targets,
+            attemptRoot,
+            context.signal,
+          );
+          if (refusals.length > 0) {
+            return {
+              status: "retained",
+              message: refusals.join("\n"),
+            } as const;
           }
-          return { status: "removed" } as const;
-        } catch (error) {
-          if (context.signal.aborted) throw error;
+          const outcome: RemovalOutcome = {
+            removed: [],
+            kept: [],
+            unknown: [],
+            untouched: [],
+          };
+          const onProgress = createHostProgress({
+            operationId: input.operationId,
+            emit: (payload) =>
+              context.experimental_emitSignal("progress", payload),
+          });
+          for (const [index, target] of targets.entries()) {
+            try {
+              await removeWorktree({
+                path: target,
+                rootPath: attemptRoot,
+                completionPath: completionPathForWorktree(target),
+                onProgress,
+                signal: context.signal,
+              });
+              outcome.removed.push(target);
+            } catch (error) {
+              if (context.signal.aborted) throw error;
+              if (isWorktreePreservedError(error)) {
+                outcome.kept.push(error.message);
+                continue;
+              }
+              outcome.unknown.push(`${target} (${describeError(error)})`);
+              outcome.untouched.push(...targets.slice(index + 1));
+              break;
+            }
+          }
+          if (outcome.kept.length === 0 && outcome.unknown.length === 0) {
+            const notice = worktreeHolderScopeNotice();
+            return {
+              status: "removed",
+              ...(targets.length > 0 && notice !== null
+                ? { message: notice }
+                : {}),
+            } as const;
+          }
+          if (outcome.kept.length > 0 && outcome.unknown.length === 0) {
+            return {
+              status: "retained",
+              message: describeRemovalOutcome(outcome),
+            } as const;
+          }
           return {
             status: "failed",
-            message: error instanceof Error ? error.message : String(error),
+            message: describeRemovalOutcome(outcome),
           } as const;
+        } catch (error) {
+          if (context.signal.aborted) throw error;
+          return { status: "failed", message: describeError(error) } as const;
         }
       },
     },

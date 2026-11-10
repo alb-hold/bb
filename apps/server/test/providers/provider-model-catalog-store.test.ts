@@ -40,6 +40,7 @@ const SECOND = 1_000;
 const MINUTE = 60 * SECOND;
 const SETTLED = "Provider model catalog refresh settled";
 const CLAUDE_CODE_FALLBACK_MODEL_IDS = [
+  "claude-fable-5-2",
   "claude-fable-5-1",
   "claude-opus-5-5[1m]",
   "claude-opus-5[1m]",

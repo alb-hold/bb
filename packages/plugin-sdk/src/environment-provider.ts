@@ -106,7 +106,8 @@ export interface PluginEnvironmentProviderRemoveContext {
 }
 
 export type PluginEnvironmentProviderRemoveResult =
-  | { status: "removed" }
+  | { status: "removed"; message?: string }
+  | { status: "retained"; message: string }
   | { status: "failed"; message: string };
 
 /** Core normalizes omitted policy members once at registration. */

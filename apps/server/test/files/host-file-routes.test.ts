@@ -415,4 +415,41 @@ describe("host file routes", () => {
       expect(missingResponse.status).toBe(404);
     });
   });
+
+  it("surfaces every retained path from a daemon path-removal failure", async () => {
+    await withTestHarness(async (harness) => {
+      const { host, session } = seedHostSession(harness.deps);
+      const retainedPaths = [
+        "/home/me/notes/.bb-removing-original",
+        "/home/me/notes/.bb-recovered-original",
+      ];
+      registerHostRpcResponder(harness, {
+        hostId: host.id,
+        sessionId: session.id,
+        handle: (request) => {
+          if (request.command.type !== "host.remove_path") {
+            throw new Error(`Unexpected RPC command ${request.command.type}`);
+          }
+          return {
+            ok: false,
+            errorCode: "path_in_use",
+            errorMessage: `Refusing removal. Preserved entries: ${retainedPaths.join(", ")}.`,
+          };
+        },
+      });
+
+      const response = await harness.app.request(
+        ...postJson("/api/v1/files/remove", {
+          hostId: host.id,
+          path: "/home/me/notes",
+          recursive: true,
+        }),
+      );
+
+      expect(response.status).toBe(502);
+      const body = await response.text();
+      for (const retainedPath of retainedPaths)
+        expect(body).toContain(retainedPath);
+    });
+  });
 });

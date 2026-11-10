@@ -1,6 +1,10 @@
 import type { ExistingThreadExecutionInputSources } from "@bb/server-contract";
-import { getThread, getThreadSpawner } from "@bb/db";
-import type { DbQueryConnection } from "@bb/db";
+import {
+  getThread,
+  getThreadSpawner,
+  getThreadExecutionOverride,
+  type DbQueryConnection,
+} from "@bb/db";
 import { ApiError } from "../../errors.js";
 import type { ProviderRegistryService } from "../providers/provider-registry.js";
 
@@ -16,51 +20,65 @@ export function childThreadModel(args: ChildThreadModelArgs): string | null {
   return args.declaredChildModel ?? null;
 }
 
-export async function assertRequestedModelAllowed(
-  deps: Pick<{ providerRegistry: ProviderRegistryService }, "providerRegistry">,
-  args: {
-    childScope: "parent" | "spawner" | null;
-    model: string | null | undefined;
-    providerId: string;
-    sources: ExistingThreadExecutionInputSources | undefined;
-  },
-): Promise<void> {
-  await deps.providerRegistry.whenRegistrationsSettled();
+interface ChildModelDeps {
+  db: DbQueryConnection;
+  providerRegistry: ProviderRegistryService;
+}
+
+interface RequestedModelArgs {
+  threadId: string;
+  model: string | null | undefined;
+  providerId: string;
+  sources: ExistingThreadExecutionInputSources | undefined;
+}
+
+function assertChildModelAllowed(
+  deps: ChildModelDeps,
+  args: RequestedModelArgs & { childScope: "parent" | "spawner" | null },
+): void {
   if (args.childScope === null || args.model == null) return;
   const source = args.sources === undefined ? "explicit" : args.sources.model;
   if (source !== "explicit") return;
-  const requiredModel = childThreadModel({
-    parentThreadId: args.childScope === null ? null : "child",
-    declaredChildModel: deps.providerRegistry.get(args.providerId)
-      ?.childThreadModel,
-  });
-  if (requiredModel === null || args.model === requiredModel) return;
-  const reason = args.childScope === "parent" ? "parent" : "spawner";
+  const requiredModel =
+    deps.providerRegistry.get(args.providerId)?.childThreadModel ?? null;
+  const persistedModel =
+    getThreadExecutionOverride(deps.db, args.threadId)?.modelOverride ?? null;
+  if (
+    requiredModel === null ||
+    args.model === requiredModel ||
+    args.model === persistedModel
+  )
+    return;
+  const allowedModels =
+    persistedModel === null || persistedModel === requiredModel
+      ? requiredModel
+      : `${requiredModel} or the persisted model ${persistedModel}`;
   throw new ApiError(
     400,
     "child_model_conflict",
-    `Child threads for ${args.providerId} must use ${requiredModel}; omit the explicit model or request ${requiredModel}.`,
+    `Child threads for ${args.providerId} must use ${allowedModels}; omit the explicit model to keep the thread's selected model.`,
     {
       details: {
         providerId: args.providerId,
         requestedModel: args.model,
         childThreadModel: requiredModel,
-        reason,
+        reason: args.childScope,
       },
     },
   );
 }
 
+export async function assertRequestedModelAllowed(
+  deps: ChildModelDeps,
+  args: RequestedModelArgs & { childScope: "parent" | "spawner" | null },
+): Promise<void> {
+  await deps.providerRegistry.whenRegistrationsSettled();
+  assertChildModelAllowed(deps, args);
+}
+
 export function assertRequestedModelAllowedForCurrentScope(
-  deps: Pick<
-    { db: DbQueryConnection; providerRegistry: ProviderRegistryService },
-    "db" | "providerRegistry"
-  >,
-  args: {
-    threadId: string;
-    model: string | null | undefined;
-    providerId: string;
-    sources: ExistingThreadExecutionInputSources | undefined;
+  deps: ChildModelDeps,
+  args: RequestedModelArgs & {
     spawnerThreadId?: string | null;
     expectedParentThreadId?: string | null;
   },
@@ -80,29 +98,12 @@ export function assertRequestedModelAllowedForCurrentScope(
   const spawnerThreadId =
     args.spawnerThreadId ??
     ("$client" in deps.db ? getThreadSpawner(deps.db, thread.id) : null);
-  const childScope = thread.parentThreadId
-    ? "parent"
-    : spawnerThreadId === null
-      ? null
-      : "spawner";
-  if (childScope === null || args.model == null) return;
-  const source = args.sources === undefined ? "explicit" : args.sources.model;
-  if (source !== "explicit") return;
-  const requiredModel =
-    deps.providerRegistry.get(args.providerId)?.childThreadModel ?? null;
-  if (requiredModel === null || args.model === requiredModel) return;
-  const reason = childScope === "parent" ? "parent" : "spawner";
-  throw new ApiError(
-    400,
-    "child_model_conflict",
-    `Child threads for ${args.providerId} must use ${requiredModel}; omit the explicit model or request ${requiredModel}.`,
-    {
-      details: {
-        providerId: args.providerId,
-        requestedModel: args.model,
-        childThreadModel: requiredModel,
-        reason,
-      },
-    },
-  );
+  assertChildModelAllowed(deps, {
+    ...args,
+    childScope: thread.parentThreadId
+      ? "parent"
+      : spawnerThreadId === null
+        ? null
+        : "spawner",
+  });
 }

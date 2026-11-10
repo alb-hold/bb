@@ -81,6 +81,9 @@ const TEST_SERVER_HOST = "127.0.0.1";
 let loadedProjectEnvPath: string | null | undefined;
 
 type PublicApiClient = ReturnType<typeof createPublicApiClient>;
+type WorktreeHolderScan = NonNullable<
+  Parameters<typeof createHostDaemonApp>[0]["testWorktreeHolderScan"]
+>;
 
 const testLogger: ServerLogger = {
   debug(): void {},
@@ -123,6 +126,7 @@ interface CreateHarnessOptions {
   bindHost?: "127.0.0.1" | "0.0.0.0";
   staticDir?: string;
   builtinPlugins?: readonly string[];
+  testWorktreeHolderScan?: WorktreeHolderScan;
 }
 
 export type WithHarnessCallback<T> = (
@@ -380,6 +384,7 @@ async function startIntegrationServer(
 async function startHarnessDaemon(
   dataDir: string,
   server: RunningTestServer,
+  testWorktreeHolderScan?: WorktreeHolderScan,
 ): Promise<HarnessDaemonResources> {
   const releaseLock = await acquireDaemonLock(dataDir);
 
@@ -391,6 +396,9 @@ async function startHarnessDaemon(
     await persistHostId({ dataDir, hostId: identity.hostId });
     const daemonApp = await createHostDaemonApp({
       dataDir,
+      ...(testWorktreeHolderScan === undefined
+        ? {}
+        : { testWorktreeHolderScan }),
       hostKey,
       hostId: identity.hostId,
       hostName: identity.hostName,
@@ -468,7 +476,11 @@ export async function createIntegrationHarness(
       return;
     }
 
-    daemonResources = await startHarnessDaemon(daemonDataDir, server);
+    daemonResources = await startHarnessDaemon(
+      daemonDataDir,
+      server,
+      options.testWorktreeHolderScan,
+    );
     if (daemonResources.hostId !== harness.hostId) {
       const mismatchedResources = daemonResources;
       daemonResources = null;
@@ -538,7 +550,11 @@ export async function createIntegrationHarness(
     const api = createPublicApiClient(server.baseUrl, {
       fetch: createIntegrationFetch(),
     });
-    daemonResources = await startHarnessDaemon(daemonDataDir, server);
+    daemonResources = await startHarnessDaemon(
+      daemonDataDir,
+      server,
+      options.testWorktreeHolderScan,
+    );
     await waitForHostConnected(api);
     await persistHostId({
       dataDir: server.config.dataDir,

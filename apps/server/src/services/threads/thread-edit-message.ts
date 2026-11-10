@@ -496,6 +496,7 @@ export async function editThreadMessage(
     };
   }
   await assertRequestedModelAllowed(deps, {
+    threadId: args.thread.id,
     childScope: args.thread.parentThreadId
       ? "parent"
       : getThreadSpawner(deps.db, args.thread.id) === null

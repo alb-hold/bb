@@ -56,6 +56,13 @@ export const worktreeHostContract = defineRpcContract({
         branchName: z.string().min(1),
         baseBranch: worktreeBaseBranchSchema,
         branchMode: z.enum(["reset", "reuse-existing"]),
+        previousAttempt: z
+          .object({
+            threadId: z.string().min(1),
+            attempt: z.number().int().min(2),
+          })
+          .strict()
+          .optional(),
       })
       .strict(),
     output: z.discriminatedUnion("status", [
@@ -67,7 +74,15 @@ export const worktreeHostContract = defineRpcContract({
         })
         .strict(),
       z
-        .object({ status: z.literal("failed"), message: z.string().min(1) })
+        .object({
+          status: z.literal("failed"),
+          message: z.string().min(1),
+          kept: z.discriminatedUnion("kind", [
+            z.object({ kind: z.literal("kept"), path: z.string().min(1) }).strict(),
+            z.object({ kind: z.literal("nothing") }).strict(),
+            z.object({ kind: z.literal("unknown") }).strict(),
+          ]).optional(),
+        })
         .strict(),
     ]),
   },
@@ -80,7 +95,15 @@ export const worktreeHostContract = defineRpcContract({
       })
       .strict(),
     output: z.discriminatedUnion("status", [
-      z.object({ status: z.literal("removed") }).strict(),
+      z
+        .object({
+          status: z.literal("removed"),
+          message: z.string().min(1).optional(),
+        })
+        .strict(),
+      z
+        .object({ status: z.literal("retained"), message: z.string().min(1) })
+        .strict(),
       z
         .object({ status: z.literal("failed"), message: z.string().min(1) })
         .strict(),

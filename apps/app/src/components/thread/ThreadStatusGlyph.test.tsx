@@ -62,11 +62,11 @@ describe("ThreadStatusGlyph", () => {
       expect(
         screen
           .getByLabelText("Needs input")
-          .classList.contains("text-attention"),
+          .classList.contains("text-destructive-text"),
       ).toBe(true);
-      expect(screen.getByLabelText("Needs input").className).not.toContain(
-        "destructive",
-      );
+      expect(
+        screen.getByLabelText("Needs input").classList.contains("text-destructive"),
+      ).toBe(false);
       rerender(<ThreadStatusGlyph indicator="unread-error" size={size} />);
       expect(
         screen
@@ -76,7 +76,7 @@ describe("ThreadStatusGlyph", () => {
       expect(
         screen
           .getByLabelText("Unread thread failed")
-          .classList.contains("text-attention"),
+          .classList.contains("text-destructive-text"),
       ).toBe(false);
     },
   );
@@ -224,7 +224,7 @@ describe("ThreadStatusGlyph", () => {
   });
 
   it.each([
-    ["needs-input", "Needs input", "CircleQuestion", "text-attention"],
+    ["needs-input", "Needs input", "CircleQuestion", "text-destructive-text"],
     ["working", "Working", "Loading", SIDEBAR_WORKING_STATUS_COLOR_CLASS],
     ["done-unread", "Done", "Check", SIDEBAR_SUCCESS_STATUS_COLOR_CLASS],
   ] satisfies [PluginSidebarThreadIndicator, string, string, string][])(

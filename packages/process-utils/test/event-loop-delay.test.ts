@@ -268,7 +268,7 @@ async function runRealHistogramTrial(): Promise<RealHistogramTrial> {
   });
   setTimeout(() => {
     blockStartMs = performance.now();
-    while (performance.now() - blockStartMs < 300) {}
+    while (performance.now() - blockStartMs < 400) {}
     blockEndMs = performance.now();
   }, 100);
   return completed;

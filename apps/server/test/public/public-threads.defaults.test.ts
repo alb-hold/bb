@@ -1,3 +1,5 @@
+import { applyLoggedThreadLifecycleEvent } from "../../src/services/threads/lifecycle-outcome.js";
+import { createProviderRegistryService } from "../../src/services/providers/provider-registry.js";
 import { seedModelCatalog } from "../helpers/provider-model-catalogs.js";
 import {
   provisionHostMock,
@@ -25,9 +27,11 @@ import { sidebarBootstrapResponseSchema } from "@bb/server-contract";
 import {
   listQueuedThreadCommands,
   waitForQueuedCommand,
+  reportQueuedCommandSuccess,
 } from "../helpers/commands.js";
 import { availableModelFixture } from "../helpers/available-models.js";
 import {
+  EMPTY_WORKSPACE_AGENT_CONTEXT,
   registerHostRpcResponder,
   registerProviderHostRpcResponder,
   type HostRpcHandlerResult,
@@ -43,13 +47,158 @@ import {
 } from "../helpers/seed.js";
 import { type TestAppHarness, withTestHarness } from "../helpers/test-app.js";
 import { installFakeGitWorktreeProvider } from "../helpers/environment-provider.js";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 describe("public thread default routes", () => {
   beforeEach(() => {
     provisionHostMock.mockReset();
     resumeHostMock.mockReset();
   });
+
+  it.each(["provider registration", "bridge artifact"] as const)(
+    "waits for pending %s before accepting a valid Claude spawn",
+    async (pending) => {
+      await withTestHarness(async (harness) => {
+        const { host } = seedHostSession(harness.deps);
+        const { project } = seedProjectWithSource(harness.deps, {
+          hostId: host.id,
+        });
+        const environment = seedEnvironment(harness.deps, {
+          hostId: host.id,
+          projectId: project.id,
+        });
+        const registration = harness.deps.providerRegistry.get("claude-code");
+        if (registration === null)
+          throw new Error("Claude registration missing");
+        const artifact = harness.deps.pluginHostArtifacts.get(
+          registration.pluginId,
+        );
+        if (artifact === undefined) throw new Error("Claude artifact missing");
+        const registry = createProviderRegistryService({
+          deferRegistrationsSettled: true,
+        });
+        harness.deps.providerRegistry = registry;
+        if (pending === "bridge artifact") {
+          registry.register(registration);
+          harness.deps.pluginHostArtifacts.delete(registration.pluginId);
+        }
+        const whenSettled = registry.whenRegistrationsSettled.bind(registry);
+        const readinessReached = new Promise<void>((resolve) => {
+          vi.spyOn(registry, "whenRegistrationsSettled").mockImplementation(
+            async () => {
+              resolve();
+              await whenSettled();
+            },
+          );
+        });
+        const create = Promise.resolve(
+          harness.app.request("/api/v1/threads", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              origin: "cli",
+              projectId: project.id,
+              providerId: "claude-code",
+              model: "claude-opus-5-5",
+              input: [{ type: "text", text: "Start after registration" }],
+              environment: { type: "reuse", environmentId: environment.id },
+            }),
+          }),
+        );
+        try {
+          expect(
+            await Promise.race([
+              readinessReached.then(() => "waiting"),
+              create.then(() => "responded"),
+            ]),
+          ).toBe("waiting");
+          expect(
+            harness.db
+              .select()
+              .from(threads)
+              .where(eq(threads.projectId, project.id))
+              .all(),
+          ).toEqual([]);
+          expect(listQueuedThreadCommands(harness, "thread.start")).toEqual([]);
+          if (pending === "provider registration") {
+            registry.register(registration);
+          } else {
+            harness.deps.pluginHostArtifacts.set(
+              registration.pluginId,
+              artifact,
+            );
+          }
+        } finally {
+          registry.markRegistrationsSettled();
+        }
+        const response = await create;
+        expect(response.status).toBe(201);
+        const created = threadSchema.parse(await readJson(response));
+        expect(getThread(harness.db, created.id)?.providerId).toBe(
+          "claude-code",
+        );
+        const start = await waitForQueuedCommand(
+          harness,
+          ({ command }) =>
+            command.type === "thread.start" && command.threadId === created.id,
+        );
+        expect(start.command).toMatchObject({
+          options: { model: "claude-opus-5-5" },
+        });
+      });
+    },
+  );
+
+  it.each([
+    { providerId: "claude", status: 400, code: "invalid_provider" },
+    {
+      providerId: "claude-code",
+      status: 409,
+      code: "provider_bridge_unavailable",
+    },
+  ])(
+    "rejects unavailable provider $providerId before creating a thread",
+    async ({ providerId, status, code }) => {
+      await withTestHarness(async (harness) => {
+        const { host } = seedHostSession(harness.deps);
+        const { project } = seedProjectWithSource(harness.deps, {
+          hostId: host.id,
+        });
+        const environment = seedEnvironment(harness.deps, {
+          hostId: host.id,
+          projectId: project.id,
+        });
+        if (providerId === "claude-code")
+          vi.spyOn(harness.deps.pluginHostArtifacts, "get").mockReturnValue(
+            undefined,
+          );
+        const response = await harness.app.request("/api/v1/threads", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            origin: "cli",
+            projectId: project.id,
+            providerId,
+            model: "claude-opus-5-5",
+            input: [{ type: "text", text: "Start" }],
+            environment: { type: "reuse", environmentId: environment.id },
+          }),
+        });
+        expect(response.status).toBe(status);
+        const body = await readJson(response);
+        expect(body).toMatchObject({ code });
+        expect(JSON.stringify(body)).toContain("claude-code");
+        expect(
+          harness.db
+            .select()
+            .from(threads)
+            .where(eq(threads.projectId, project.id))
+            .all(),
+        ).toEqual([]);
+        expect(listQueuedThreadCommands(harness, "thread.start")).toEqual([]);
+      });
+    },
+  );
 
   it("remembers resolved execution options after thread creation", async () => {
     await withTestHarness(async (harness) => {
@@ -381,6 +530,26 @@ describe("public thread default routes", () => {
       expected: "claude-sonnet-5-5",
     },
     {
+      name: "child explicitly naming Opus",
+      parent: true,
+      model: "claude-opus-5-5",
+      expected: "claude-opus-5-5",
+    },
+    {
+      name: "spawned top-level thread explicitly naming Opus",
+      parent: false,
+      spawnedBy: "active",
+      model: "claude-opus-5-5",
+      expected: "claude-opus-5-5",
+    },
+    {
+      name: "spawned top-level thread without a model",
+      parent: false,
+      spawnedBy: "active",
+      model: undefined,
+      expected: "claude-sonnet-5-5",
+    },
+    {
       name: "child explicitly naming the provider child model",
       parent: true,
       model: "claude-sonnet-5-5",
@@ -482,13 +651,54 @@ describe("public thread default routes", () => {
         expect(queuedStart.command).toMatchObject({
           options: { model: expected, reasoningLevel: "high" },
         });
+        await reportQueuedCommandSuccess(harness, queuedStart, {
+          providerThreadId: `provider-${createdThread.id}`,
+        });
+        seedThreadRuntimeState(harness.deps, {
+          threadId: createdThread.id,
+          environmentId: environment.id,
+          providerThreadId: `provider-${createdThread.id}`,
+          sequenceStart: 1000,
+          model: expected,
+          reasoningLevel: "high",
+        });
+        applyLoggedThreadLifecycleEvent(harness.deps, {
+          threadId: createdThread.id,
+          event: { type: "run.succeeded" },
+        });
+        const followup = await harness.app.request(
+          `/api/v1/threads/${createdThread.id}/send`,
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              input: [{ type: "text", text: "Continue on the chosen model" }],
+              mode: "auto",
+            }),
+          },
+        );
+        expect(followup.status, await followup.text()).toBe(200);
+        const submit = await waitForQueuedCommand(
+          harness,
+          ({ command }) =>
+            command.type === "turn.submit" &&
+            command.threadId === createdThread.id,
+        );
+        expect(submit.command).toMatchObject({
+          options: { model: expected, reasoningLevel: "high" },
+        });
       });
     },
   );
 
-  it("rejects a conflicting child model before handling the standalone clear command", async () => {
+  it("accepts the persisted child model when handling the standalone clear command", async () => {
     await withTestHarness(async (harness) => {
-      const { host } = seedHostSession(harness.deps);
+      const { host, session } = seedHostSession(harness.deps);
+      registerHostRpcResponder(harness, {
+        hostId: host.id,
+        sessionId: session.id,
+        handle: () => ({ ok: true, result: { providerCheckpointId: null } }),
+      });
       const { project } = seedProjectWithSource(harness.deps, {
         hostId: host.id,
         path: "/tmp/thread-defaults-clear-conflict",
@@ -508,6 +718,11 @@ describe("public thread default routes", () => {
         providerId: "claude-code",
         parentThreadId: parent.id,
         status: "idle",
+      });
+      setThreadExecutionOverride(harness.db, {
+        threadId: child.id,
+        modelOverride: "claude-opus-5-5",
+        reasoningLevelOverride: null,
       });
       const input = [
         {
@@ -544,26 +759,14 @@ describe("public thread default routes", () => {
         },
       );
 
-      expect(response.status).toBe(400);
-      expect(await readJson(response)).toMatchObject({
-        code: "child_model_conflict",
-        details: {
-          providerId: "claude-code",
-          requestedModel: "claude-opus-5-5",
-          childThreadModel: "claude-sonnet-5-5",
-          reason: "parent",
-        },
-      });
-      expect(
-        listQueuedThreadCommands(harness, "thread.stop", child.id),
-      ).toEqual([]);
+      expect(response.status).toBe(200);
       expect(
         listQueuedThreadCommands(harness, "turn.submit", child.id),
       ).toEqual([]);
     });
   });
 
-  it("refuses an explicit child model that conflicts with provider policy", async () => {
+  it("accepts an explicit child model over the provider default", async () => {
     await withTestHarness(async (harness) => {
       const { host } = seedHostSession(harness.deps);
       const { project } = seedProjectWithSource(harness.deps, {
@@ -579,11 +782,6 @@ describe("public thread default routes", () => {
         environmentId: environment.id,
         projectId: project.id,
       });
-      const threadCountBefore = harness.db
-        .select()
-        .from(threads)
-        .where(eq(threads.projectId, project.id))
-        .all().length;
 
       const response = await harness.app.request("/api/v1/threads", {
         method: "POST",
@@ -599,24 +797,16 @@ describe("public thread default routes", () => {
         }),
       });
 
-      expect(response.status).toBe(400);
-      expect(await readJson(response)).toMatchObject({
-        code: "child_model_conflict",
-        details: {
-          providerId: "claude-code",
-          requestedModel: "claude-opus-5-5",
-          childThreadModel: "claude-sonnet-5-5",
-          reason: "parent",
-        },
+      expect(response.status).toBe(201);
+      const created = threadSchema.parse(await readJson(response));
+      const start = await waitForQueuedCommand(
+        harness,
+        ({ command }) =>
+          command.type === "thread.start" && command.threadId === created.id,
+      );
+      expect(start.command).toMatchObject({
+        options: { model: "claude-opus-5-5" },
       });
-      expect(
-        harness.db
-          .select()
-          .from(threads)
-          .where(eq(threads.projectId, project.id))
-          .all(),
-      ).toHaveLength(threadCountBefore);
-      expect(listQueuedThreadCommands(harness, "thread.start")).toEqual([]);
     });
   });
 
@@ -665,7 +855,7 @@ describe("public thread default routes", () => {
     });
   });
 
-  it("refuses an explicit model when an active thread spawner makes the new thread a child", async () => {
+  it("accepts an explicit model for an active thread spawner", async () => {
     await withTestHarness(async (harness) => {
       const { host } = seedHostSession(harness.deps);
       const { project } = seedProjectWithSource(harness.deps, {
@@ -682,11 +872,6 @@ describe("public thread default routes", () => {
         projectId: project.id,
         hostId: host.id,
       });
-      const threadCountBefore = harness.db
-        .select()
-        .from(threads)
-        .where(eq(threads.projectId, project.id))
-        .all().length;
 
       const response = await harness.app.request("/api/v1/threads", {
         method: "POST",
@@ -702,28 +887,20 @@ describe("public thread default routes", () => {
         }),
       });
 
-      expect(response.status).toBe(400);
-      expect(await readJson(response)).toMatchObject({
-        code: "child_model_conflict",
-        details: {
-          providerId: "claude-code",
-          requestedModel: "claude-opus-5-5",
-          childThreadModel: "claude-sonnet-5-5",
-          reason: "spawner",
-        },
+      expect(response.status).toBe(201);
+      const created = threadSchema.parse(await readJson(response));
+      const start = await waitForQueuedCommand(
+        harness,
+        ({ command }) =>
+          command.type === "thread.start" && command.threadId === created.id,
+      );
+      expect(start.command).toMatchObject({
+        options: { model: "claude-opus-5-5" },
       });
-      expect(
-        harness.db
-          .select()
-          .from(threads)
-          .where(eq(threads.projectId, project.id))
-          .all(),
-      ).toHaveLength(threadCountBefore);
-      expect(listQueuedThreadCommands(harness, "thread.start")).toEqual([]);
     });
   });
 
-  it("cleans up when a spawner becomes active between precheck and insert", async () => {
+  it("keeps the explicit model when a spawner becomes active between precheck and insert", async () => {
     await withTestHarness(async (harness) => {
       const { host } = seedHostSession(harness.deps);
       const { project } = seedProjectWithSource(harness.deps, {
@@ -756,11 +933,6 @@ describe("public thread default routes", () => {
             .run();
         }
       };
-      const threadCountBefore = harness.db
-        .select()
-        .from(threads)
-        .where(eq(threads.projectId, project.id))
-        .all().length;
 
       const response = await harness.app.request("/api/v1/threads", {
         method: "POST",
@@ -776,32 +948,27 @@ describe("public thread default routes", () => {
         }),
       });
 
-      expect(response.status).toBe(400);
-      expect(await readJson(response)).toMatchObject({
-        code: "child_model_conflict",
-        details: { reason: "spawner" },
+      expect(response.status).toBe(201);
+      const created = threadSchema.parse(await readJson(response));
+      const start = await waitForQueuedCommand(
+        harness,
+        ({ command }) =>
+          command.type === "thread.start" && command.threadId === created.id,
+      );
+      expect(start.command).toMatchObject({
+        options: { model: "claude-opus-5-5" },
       });
-      const threadsAfter = harness.db
-        .select()
-        .from(threads)
-        .where(eq(threads.projectId, project.id))
-        .all();
-      expect(threadsAfter).toHaveLength(threadCountBefore + 1);
-      expect(
-        threadsAfter.filter((thread) => thread.deletedAt !== null),
-      ).toHaveLength(1);
-      expect(listQueuedThreadCommands(harness, "thread.start")).toEqual([]);
     });
   });
 
   it.each([
-    { name: "child", parent: true, expected: "claude-sonnet-5-5" },
+    { name: "child", parent: true, expected: "claude-opus-5-5" },
     { name: "top-level thread", parent: false, expected: "claude-opus-5-5" },
     {
       name: "top-level thread another thread spawned",
       parent: false,
       spawned: true,
-      expected: "claude-sonnet-5-5",
+      expected: "claude-opus-5-5",
     },
   ] as Array<{
     name: string;
@@ -812,7 +979,29 @@ describe("public thread default routes", () => {
     "runs a Claude $name's follow-up naming Opus on $expected",
     async ({ parent, spawned, expected }) => {
       await withTestHarness(async (harness) => {
-        const { host } = seedHostSession(harness.deps);
+        const { host, session } = seedHostSession(harness.deps);
+        const responder = registerHostRpcResponder(harness, {
+          hostId: host.id,
+          sessionId: session.id,
+          handle: ({ command }) => {
+            if (command.type === "provider.list_models")
+              return {
+                ok: true,
+                result: {
+                  models: [
+                    availableModelFixture({
+                      model: "claude-opus-5-5",
+                      reasoningLevels: ["high"],
+                    }),
+                  ],
+                  selectedOnlyModels: [],
+                },
+              };
+            if (command.type === "host.read_workspace_agent_context")
+              return { ok: true, result: EMPTY_WORKSPACE_AGENT_CONTEXT };
+            return { ok: true, result: { trace: { spans: [] } } };
+          },
+        });
         const { project } = seedProjectWithSource(harness.deps, {
           hostId: host.id,
           path: "/tmp/thread-defaults-claude-followup",
@@ -847,52 +1036,10 @@ describe("public thread default routes", () => {
         if (parent || spawned) {
           setThreadExecutionOverride(harness.db, {
             threadId: thread.id,
-            modelOverride: "claude-sonnet-5-5",
+            modelOverride: "claude-opus-5-5",
             reasoningLevelOverride: null,
           });
         }
-        const eventsBefore = listEvents(harness.db, { threadId: thread.id });
-
-        if (parent || spawned) {
-          for (const requestOptions of [
-            { mode: "auto" as const },
-            { mode: "auto" as const, senderThreadId: parentThread.id },
-            { mode: "steer" as const },
-          ]) {
-            const response = await harness.app.request(
-              `/api/v1/threads/${thread.id}/send`,
-              {
-                method: "POST",
-                headers: { "content-type": "application/json" },
-                body: JSON.stringify({
-                  input: [{ type: "text", text: "Keep going", mentions: [] }],
-                  ...requestOptions,
-                  model: "claude-opus-5-5",
-                  permissionMode: "full",
-                  reasoningLevel: "high",
-                  serviceTier: "default",
-                }),
-              },
-            );
-
-            expect(response.status).toBe(400);
-            expect(await readJson(response)).toMatchObject({
-              code: "child_model_conflict",
-            });
-          }
-          expect(listEvents(harness.db, { threadId: thread.id })).toEqual(
-            eventsBefore,
-          );
-          expect(getThreadExecutionOverride(harness.db, thread.id)).toEqual({
-            modelOverride: "claude-sonnet-5-5",
-            reasoningLevelOverride: null,
-          });
-          expect(
-            listQueuedThreadCommands(harness, "turn.submit", thread.id),
-          ).toEqual([]);
-          return;
-        }
-
         const response = await harness.app.request(
           `/api/v1/threads/${thread.id}/send`,
           {
@@ -910,12 +1057,11 @@ describe("public thread default routes", () => {
         );
 
         expect(response.status).toBe(200);
-        const dispatched = await waitForQueuedCommand(
-          harness,
+        const dispatched = responder.requests.find(
           ({ command }) =>
             command.type === "turn.submit" && command.threadId === thread.id,
         );
-        expect(dispatched.command).toMatchObject({
+        expect(dispatched?.command).toMatchObject({
           options: { model: expected, reasoningLevel: "high" },
         });
       });

@@ -925,7 +925,7 @@ describe("the requested queue drain", () => {
       );
       expect(ordinaryResponse.status).toBe(201);
       const ordinary = await ordinaryResponse.json();
-      expect(ordinary.model).toBe("claude-sonnet-5-5");
+      expect(ordinary.model).toBe("claude-opus-5-5");
       expect(
         getThreadExecutionOverride(harness.db, thread.id)?.modelOverride,
       ).toBe("claude-opus-5-5");
@@ -944,7 +944,7 @@ describe("the requested queue drain", () => {
       const dispatched = turnRequestEventDataSchema.parse(
         JSON.parse(turnRequests(harness, thread.id).at(-1)!.data),
       );
-      expect(dispatched.execution.model).toBe("claude-sonnet-5-5");
+      expect(dispatched.execution.model).toBe("claude-opus-5-5");
       expect(dispatched.input).toEqual([
         expect.objectContaining({
           text: "ordinary queued tell",
@@ -957,7 +957,7 @@ describe("the requested queue drain", () => {
       );
       expect(queuedTurnSubmit?.command).toMatchObject({
         type: "turn.submit",
-        options: { model: "claude-sonnet-5-5" },
+        options: { model: "claude-opus-5-5" },
         input: [
           expect.objectContaining({
             text: "ordinary queued tell",
@@ -1009,7 +1009,7 @@ describe("the requested queue drain", () => {
           getThreadExecutionOverride(harness.db, thread.id)?.modelOverride,
         ).toBe(expectedOverride);
         const [queued] = listQueuedThreadMessages(harness.db, thread.id);
-        expect(queued?.model).toBe("claude-sonnet-5-5");
+        expect(queued?.model).toBe(expectedOverride);
         applyLoggedThreadLifecycleEvent(harness.deps, {
           event: { type: "run.succeeded" },
           threadId: thread.id,
@@ -1024,7 +1024,7 @@ describe("the requested queue drain", () => {
         const dispatched = turnRequestEventDataSchema.parse(
           JSON.parse(turnRequests(harness, thread.id).at(-1)!.data),
         );
-        expect(dispatched.execution.model).toBe("claude-sonnet-5-5");
+        expect(dispatched.execution.model).toBe(expectedOverride);
         expect(
           getThreadExecutionOverride(harness.db, thread.id)?.modelOverride,
         ).toBe(expectedOverride);
@@ -1095,7 +1095,7 @@ describe("the requested queue drain", () => {
     });
   });
 
-  it("drains a legacy conflicting model on the child model and preserves the override", async () => {
+  it("drains a legacy explicit child model and preserves the override", async () => {
     await withTestHarness(async (harness) => {
       const { thread } = seedRunnableThread(harness, {
         child: true,
@@ -1126,7 +1126,7 @@ describe("the requested queue drain", () => {
       const dispatched = turnRequestEventDataSchema.parse(
         JSON.parse(turnRequests(harness, thread.id)[1]!.data),
       );
-      expect(dispatched.execution.model).toBe("claude-sonnet-5-5");
+      expect(dispatched.execution.model).toBe("claude-opus-5-5");
       expect(
         getThreadExecutionOverride(harness.db, thread.id)?.modelOverride,
       ).toBe("claude-opus-5-5");
@@ -1136,13 +1136,14 @@ describe("the requested queue drain", () => {
 
   it("waits for provider registration before recovering and draining legacy child work", async () => {
     await withTestHarness(async (harness) => {
-      const { thread } = seedRunnableThread(harness, {
+      const { host, session, thread } = seedRunnableThread(harness, {
         child: true,
         hostId: "host-legacy-child-registration-wait",
         model: "claude-opus-5-5",
         providerId: "claude-code",
         status: "idle",
       });
+      registerQueueModelCatalog(harness, host.id, session.id);
       setThreadExecutionOverride(harness.db, {
         threadId: thread.id,
         modelOverride: "claude-sonnet-5-5",

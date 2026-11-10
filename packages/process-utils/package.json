@@ -12,6 +12,16 @@
       "source": "./src/host-process.ts",
       "types": "./src/host-process.ts",
       "default": "./src/host-process.ts"
+    },
+    "./session-agent-comms": {
+      "source": "./src/session-agent-comms.ts",
+      "types": "./src/session-agent-comms.ts",
+      "default": "./src/session-agent-comms.ts"
+    },
+    "./linux-path-access": {
+      "source": "./src/linux-path-access.ts",
+      "types": "./src/linux-path-access.ts",
+      "default": "./src/linux-path-access.ts"
     }
   },
   "types": "./src/index.ts",
