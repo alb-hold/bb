@@ -1316,6 +1316,18 @@ export function ThreadTerminalView({
     () => wsManager.onDeviceHandoffClientToken(setHandoffOwnerToken),
     [],
   );
+  const handoffOwnerTokenRef = useRef(handoffOwnerToken);
+  handoffOwnerTokenRef.current = handoffOwnerToken;
+  const activeTransportRef = useRef<TerminalWebSocketTransport | null>(null);
+  useEffect(() => {
+    activeTransportRef.current?.rebindUrl(
+      buildTerminalWebSocketUrl({
+        handoffOwnerToken:
+          wsManager.getDeviceHandoffClientToken() ?? handoffOwnerToken,
+        terminalId: session.id,
+      }),
+    );
+  }, [handoffOwnerToken, session.id]);
   const isTouchDevice = useMediaQuery("(pointer: coarse)");
   const isCompactViewport = useMediaQuery(COMPACT_VIEWPORT_QUERY);
   const attentionClearRequestRef = useRef<string | null>(null);
@@ -1782,7 +1794,8 @@ export function ThreadTerminalView({
 
     const earlySocketUrl = buildTerminalWebSocketUrl({
       handoffOwnerToken:
-        wsManager.getDeviceHandoffClientToken() ?? handoffOwnerToken,
+        wsManager.getDeviceHandoffClientToken() ??
+        handoffOwnerTokenRef.current,
       terminalId: session.id,
     });
     if (sessionStatusRef.current === "running")
@@ -3487,11 +3500,13 @@ export function ThreadTerminalView({
           !disposed && sessionStatusRef.current === "running",
         url: buildTerminalWebSocketUrl({
           handoffOwnerToken:
-            wsManager.getDeviceHandoffClientToken() ?? handoffOwnerToken,
+            wsManager.getDeviceHandoffClientToken() ??
+            handoffOwnerTokenRef.current,
           terminalId: session.id,
         }),
       });
       transport = activeTransport;
+      activeTransportRef.current = activeTransport;
       const drainParkedOutput = async () => {
         parkedOutputTimer = null;
         if (disposed || !parkedRef.current || !replayCompleted) return;
@@ -4006,6 +4021,7 @@ export function ThreadTerminalView({
         reportDocumentVisibility,
       );
       parkTransportRef.current = null;
+      activeTransportRef.current = null;
       transport?.dispose();
       discardPrefetchedTerminalSocket(earlySocketUrl);
       webglVisibilityRef.current?.dispose();
@@ -4032,7 +4048,6 @@ export function ThreadTerminalView({
     retainNativeOutput,
     session.id,
     session.threadId,
-    handoffOwnerToken,
     updateHoveredTerminalLink,
   ]);
 

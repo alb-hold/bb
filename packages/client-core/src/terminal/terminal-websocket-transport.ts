@@ -372,6 +372,12 @@ export class TerminalWebSocketTransport {
     if (visible) this.suppressVisibilityResize = false;
   }
 
+  rebindUrl(url: string): void {
+    if (this.options.url === url) return;
+    this.options.url = url;
+    this.replayOutputFrom(this.nextOutputSeq);
+  }
+
   replayOutputFrom(nextSeq: number): void {
     if (this.disposed || this.terminalEnded || nextSeq < 0) {
       return;

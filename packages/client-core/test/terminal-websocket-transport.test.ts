@@ -1929,4 +1929,34 @@ describe("negotiated replay delivery", () => {
     expect(events).toEqual(["attached", [0], ["gap", 1, 2], [2, 3], 4]);
     harness.transport.dispose();
   });
+  it("rebinds the socket URL once, resumes from the same sequence and re-claims the size", () => {
+    const harness = createHarness();
+    harness.transport.start();
+    harness.sockets[0]?.open();
+    harness.transport.sendResize(80, 24, true);
+    harness.sockets[0]?.receive({
+      type: "output",
+      chunk: { seq: 0, dataBase64: Buffer.from("first").toString("base64") },
+    });
+
+    harness.transport.rebindUrl(
+      "ws://example.test/ws/terminals/term-1?handoffOwnerToken=new-token",
+    );
+    harness.transport.rebindUrl(
+      "ws://example.test/ws/terminals/term-1?handoffOwnerToken=new-token",
+    );
+
+    expect(harness.urls).toHaveLength(2);
+    expect(harness.urls[1]).toContain("handoffOwnerToken=new-token");
+    expect(harness.urls[1]).toContain("sinceSeq=");
+    expect(harness.sockets[0]?.closeCalls).toHaveLength(1);
+    harness.sockets[1]?.open();
+    const claims = harness.sockets[1]?.sent
+      .map((raw) => JSON.parse(raw))
+      .filter((message) => message.type === "resize" && message.claim);
+    expect(claims).toEqual([
+      { type: "resize", cols: 80, rows: 24, claim: true },
+    ]);
+    harness.transport.dispose();
+  });
 });
