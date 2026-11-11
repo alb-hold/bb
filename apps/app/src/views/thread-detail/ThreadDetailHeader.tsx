@@ -59,6 +59,7 @@ import {
   CONTEXT_SELECTION_SURFACE_CLASS,
 } from "@bb/shared-ui/context-selection";
 import { usePaneContext } from "./PaneContext";
+import { ThreadIdentityLeadingMark } from "@/components/thread/ThreadIdentityLeadingMark";
 import { PaneMaximizeButton } from "./PaneMaximizeButton";
 
 const THREAD_HEADER_ACTION_BUTTON_CLASS = cn(
@@ -90,6 +91,10 @@ interface ThreadDetailHeaderProps {
   hasNativeTerminal?: boolean;
   nativeActivityTargetRef?: Ref<HTMLDivElement>;
   workspaceOpenButton?: ReactNode;
+  providerId?: string | null;
+  nativeTerminal?: boolean;
+  environmentIsWorktree?: boolean;
+  provider?: { displayName: string; id: string } | null;
 }
 
 export function ThreadDetailHeader({
@@ -107,6 +112,10 @@ export function ThreadDetailHeader({
   nativeActivityTargetRef,
   workspaceOpenButton,
   contextCardButton,
+  providerId = null,
+  nativeTerminal = false,
+  environmentIsWorktree = false,
+  provider = null,
 }: ThreadDetailHeaderProps) {
   const commandRunner = useAppCommandRunner();
   const findShortcut = useAppCommandShortcut("terminal.find");
@@ -246,13 +255,13 @@ export function ThreadDetailHeader({
             size="compact"
           />
         ) : null}
-        <div
-          className={cn(
-            "flex min-w-0 flex-1 flex-col",
-            hasNativeTerminal &&
-              "max-md:flex-row max-md:items-center max-md:gap-2",
-          )}
-        >
+        <ThreadIdentityLeadingMark
+          providerId={providerId}
+          provider={provider}
+          nativeTerminal={nativeTerminal}
+          isWorktree={environmentIsWorktree && !nativeTerminal}
+        />
+        <div className="flex min-w-0 flex-1 flex-col gap-0.5">
           <p
             data-thread-detail-header-title=""
             className={cn(

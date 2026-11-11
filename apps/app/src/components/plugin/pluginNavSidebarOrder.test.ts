@@ -168,7 +168,7 @@ describe("arrangePluginNavPanelPreferences", () => {
     ]);
   });
 
-  it("hides only the default-hidden keys before the user customizes", () => {
+  it("keeps search threads visible in the default rail icon set", () => {
     const newThread = panel("__bb__", "new-thread");
     const searchThreads = panel("__bb__", "search-threads");
     const extra = panel("calendar", "agenda");
@@ -183,13 +183,14 @@ describe("arrangePluginNavPanelPreferences", () => {
         "calendar/agenda",
       ],
       storedVisibleKeys: null,
-      defaultHiddenKeys: ["__bb__/search-threads"],
+      defaultHiddenKeys: [],
     });
 
     expect(result.visibleKeys).toEqual([
       "github/pulls",
       "__bb__/new-thread",
       "docs/vault",
+      "__bb__/search-threads",
       "tasks/board",
       "calendar/agenda",
     ]);

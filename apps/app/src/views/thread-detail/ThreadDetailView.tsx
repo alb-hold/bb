@@ -300,7 +300,8 @@ function RoutedThreadDetailView() {
   );
 }
 
-export function ThreadDetailView(props: ThreadDetailViewProps) {
+export function ThreadDetailView
+(props: ThreadDetailViewProps) {
   if (props.surface === "pane") return <ThreadDetailViewInternal {...props} />;
   return <RoutedThreadDetailView />;
 }
@@ -1854,6 +1855,10 @@ function ThreadDetailViewInternal(
       activityIndicator={getThreadDetailActivityIndicator(thread)}
       needsInput={thread.nativeTerminal && thread.hasPendingInteraction}
       hasNativeTerminal={nativeTerminalThread != null}
+      providerId={thread.providerId}
+      provider={threadProviderInfo ?? null}
+      nativeTerminal={thread.nativeTerminal === true}
+      environmentIsWorktree={environment?.isWorktree === true}
       nativeActivityTargetRef={setNativeActivityTarget}
       checkTerminal={nativeTerminalThread?.terminal?.attention != null}
       contextCardButton={<ThreadContextCardHeaderButton />}

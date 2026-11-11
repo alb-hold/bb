@@ -49,6 +49,7 @@ vi.mock("@/components/thread/ThreadActionsProvider", () => ({
   useThreadActions: () => ({
     renameThreadAsync: mocks.renameThreadAsync,
   }),
+  useSystemProviderInfo: () => null,
 }));
 
 vi.mock("@/components/layout/AppPageHeader", () => ({

@@ -63,7 +63,7 @@ export function ThreadLeadingMark({
         <span
           aria-hidden
           data-thread-mode-badge={nativeTerminal ? "native-terminal" : "worktree"}
-          className="absolute -bottom-0.5 -right-0.5 grid size-2 place-items-center rounded-full bg-background ring-1 ring-background"
+          className="absolute -bottom-0.5 -right-0.5 grid size-2.5 place-items-center rounded-full bg-background ring-1 ring-background"
         >
           <Icon
             name={nativeTerminal ? "Terminal" : "FolderGit"}
