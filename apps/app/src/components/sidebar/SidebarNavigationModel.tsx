@@ -31,7 +31,6 @@ import { appToast } from "@/components/ui/app-toast";
 import { useSidebar } from "@/components/ui/sidebar.js";
 import { invalidatePluginList } from "@/hooks/cache-owners/plugin-cache-owner";
 import { appQueryClient } from "@/lib/app-query-client";
-import { useRouteState } from "@/hooks/useRouteState";
 import { usePluginNavPanelChrome } from "@/lib/plugin-nav-panel-chrome";
 import {
   getPluginDetailRoutePath,
@@ -211,7 +210,6 @@ export function SidebarNavigationModelProvider({
     [rows],
   );
   const location = useLocation();
-  const { isThreadView } = useRouteState();
   const navigate = useNavigate();
   const commandRunner = useAppCommandRunner();
   const splitActions = usePaneContentSplitActions();
@@ -268,8 +266,7 @@ export function SidebarNavigationModelProvider({
   });
   const isHomeActive =
     !isSettingsPathname(location.pathname) &&
-    getPluginPanelRoutePluginId(location.pathname) === null &&
-    !isThreadView &&
+    getPluginPanelRoutePluginId(location.pathname) === null && !location.pathname.includes("/threads/") &&
     (activeItemId === null || activeItemId === NEW_THREAD_NAVIGATION_ITEM_ID);
   const currentRoutePath = `${location.pathname}${location.search}${location.hash}`;
   const homeRoutePathRef = useRef(

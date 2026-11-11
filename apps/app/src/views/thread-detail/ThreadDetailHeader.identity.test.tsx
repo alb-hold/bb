@@ -4,12 +4,6 @@ import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { ThreadDetailHeader } from "./ThreadDetailHeader";
 
-vi.mock("@/components/thread/ThreadIdentityLeadingMark", () => ({
-  ThreadIdentityLeadingMark: () => (
-    <span data-testid="thread-header-identity-mark" />
-  ),
-}));
-
 vi.mock("@/components/thread/ThreadUsageSummary", () => ({
   ThreadUsageAndAgents: () => null,
 }));
@@ -98,9 +92,7 @@ describe("ThreadDetailHeader identity", () => {
         }}
         threadTitle="Terminal session"
         hasNativeTerminal
-        providerId="codex"
-        nativeTerminal
-        environmentIsWorktree={false}
+        leadingMark={<span data-testid="thread-header-identity-mark" />}
       />,
     );
     expect(screen.getByTestId("thread-header-identity-mark")).toBeTruthy();

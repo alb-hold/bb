@@ -43,6 +43,19 @@ export function useSidebarNavigationArrangement<Row extends ArrangeableRow>(
       leadingOrderKeys.filter((key) => !seededPreferences.order.includes(key)),
     [leadingOrderKeys, seededPreferences.order],
   );
+  const newVisibleKeys = useMemo(
+    () =>
+      rows
+        .map(getPluginNavPanelKey)
+        .filter(
+          (key) =>
+            !seededPreferences.order.includes(key) &&
+            !DEFAULT_HIDDEN_SIDEBAR_NAVIGATION_KEYS.some(
+              (hiddenKey) => hiddenKey === key,
+            ),
+        ),
+    [rows, seededPreferences.order],
+  );
   const { ordered, normalizedOrder, normalizedVisibleKeys, visibleKeys } =
     useMemo(
       () =>
@@ -52,10 +65,14 @@ export function useSidebarNavigationArrangement<Row extends ArrangeableRow>(
             newLeadingKeys.length === 0
               ? seededPreferences.order
               : [...newLeadingKeys, ...seededPreferences.order],
-          storedVisibleKeys: seededPreferences.visibleKeys,
+          storedVisibleKeys:
+            seededPreferences.visibleKeys === null ||
+            newVisibleKeys.length === 0
+              ? seededPreferences.visibleKeys
+              : [...newVisibleKeys, ...seededPreferences.visibleKeys],
           defaultHiddenKeys: DEFAULT_HIDDEN_SIDEBAR_NAVIGATION_KEYS,
         }),
-      [newLeadingKeys, rows, seededPreferences],
+      [newLeadingKeys, newVisibleKeys, rows, seededPreferences],
     );
   const orderedKeys = useMemo(
     () => ordered.map(getPluginNavPanelKey),

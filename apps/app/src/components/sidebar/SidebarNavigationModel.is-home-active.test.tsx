@@ -30,14 +30,6 @@ vi.mock("@/lib/plugin-nav-panel-chrome", () => ({
   usePluginNavPanelChrome: () => [],
 }));
 
-vi.mock("@/hooks/useRouteState", () => ({
-  useRouteState: () => ({
-    isThreadView: true,
-    threadId: "thr_one",
-    projectId: "proj_one",
-  }),
-}));
-
 function HomeActiveProbe() {
   const { isHomeActive } = useNavigation();
   return (
