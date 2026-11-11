@@ -2617,6 +2617,33 @@ describe("useThreadCreationOptions", () => {
   });
 
 
+  it("picks a server-listed provider when provider states finish with none ready", async () => {
+    vi.mocked(sdk.system.providerStates).mockResolvedValue(
+      piUnauthenticatedProviderStates(),
+    );
+    vi.mocked(sdk.system.executionOptions).mockResolvedValue(
+      homeProvidersExecutionOptions(),
+    );
+    const { wrapper, queryClient } = createQueryClientTestHarness();
+    seedHomeReadyProviderDiscoveryHarness(queryClient);
+    const { result } = renderHook(
+      () =>
+        useThreadCreationOptions({
+          preferReadyProviderWhenUnset: true,
+          resolveProviderRouting: () => ({ hostId: "home-host" }),
+        }),
+      { wrapper },
+    );
+
+    await waitFor(() =>
+      expect(sdk.system.providerStates).toHaveBeenCalledTimes(1),
+    );
+    await waitFor(() => {
+      expect(result.current.selectedProviderId).toBe("codex");
+      expect(result.current.activeModel?.displayName).toBe("Codex Default");
+    });
+  });
+
   it("does not latch a null ready provider before a later ready discovery resolves", async () => {
     let providerStatesCallCount = 0;
     vi.mocked(sdk.system.providerStates).mockImplementation(async () => {
@@ -2642,7 +2669,9 @@ describe("useThreadCreationOptions", () => {
     await waitFor(() =>
       expect(sdk.system.providerStates).toHaveBeenCalledTimes(1),
     );
-    expect(result.current.selectedProviderId).toBe("");
+    await waitFor(() =>
+      expect(result.current.selectedProviderId).toBe("codex"),
+    );
 
     await act(async () => {
       await queryClient.invalidateQueries({

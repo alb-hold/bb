@@ -398,7 +398,10 @@ export function useThreadCreationOptions(
     preferReadyProviderWhenUnset &&
     selectedProviderIdBeforeReadyFallback.length === 0;
   const shouldResolveReadyProvider =
-    canResolveReadyProvider && initialReadyProvider.status === "unresolved";
+    canResolveReadyProvider &&
+    (initialReadyProvider.status === "unresolved" ||
+      (initialReadyProvider.status === "resolved" &&
+        initialReadyProvider.providerId === null));
   const providerStatesQuery = useSystemProviderStates({
     enabled: shouldResolveReadyProvider,
     ...executionOptionsRouting,
@@ -418,14 +421,11 @@ export function useThreadCreationOptions(
     if (!shouldResolveReadyProvider || providerStatesQuery.isPending) {
       return;
     }
-    if (queriedReadyProviderId === undefined) {
-      return;
-    }
+    const latchedProviderId = queriedReadyProviderId ?? null;
     setInitialReadyProvider((current) =>
-      current.status === "resolved" &&
-      current.providerId === queriedReadyProviderId
+      current.status === "resolved" && current.providerId === latchedProviderId
         ? current
-        : { status: "resolved", providerId: queriedReadyProviderId },
+        : { status: "resolved", providerId: latchedProviderId },
     );
   }, [
     providerStatesQuery.isPending,
@@ -496,10 +496,8 @@ export function useThreadCreationOptions(
     canResolveReadyProvider &&
     selectedProviderIdBeforeReadyFallback.length === 0 &&
     readyProviderId === undefined &&
-    (isResolvingReadyProvider ||
-      (providerStatesQuery.isFetched &&
-        queriedReadyProviderId === undefined &&
-        !providerStatesQuery.isError));
+    initialReadyProvider.status === "unresolved" &&
+    isResolvingReadyProvider;
   const effectiveProviderId = useMemo(() => {
     if (awaitingReadyProviderSelection) {
       return "";
