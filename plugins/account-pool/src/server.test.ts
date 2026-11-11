@@ -14170,6 +14170,7 @@ describe("Account Pool credential scoping", () => {
         lookupThresholdWaiters.push({ threshold, resolve });
       });
     };
+    const fakeMsBudget = { used: 0 };
     const pumpUntil = async (
       predicate: () => boolean | Promise<boolean>,
       maxSteps: number,
@@ -14177,7 +14178,11 @@ describe("Account Pool credential scoping", () => {
     ) => {
       for (let step = 0; step < maxSteps; step += 1) {
         if (await predicate()) return;
-        if (advanceMs > 0) await vi.advanceTimersByTimeAsync(advanceMs);
+        if (advanceMs > 0) {
+          expect(fakeMsBudget.used + advanceMs).toBeLessThanOrEqual(999);
+          await vi.advanceTimersByTimeAsync(advanceMs);
+          fakeMsBudget.used += advanceMs;
+        }
         await yieldToIo();
       }
       expect(await predicate()).toBe(true);
@@ -14188,12 +14193,21 @@ describe("Account Pool credential scoping", () => {
         60_000,
         0,
       );
+    const whenSetTimeoutDelayAfter = (delay: number, afterIndex: number) =>
+      pumpUntil(
+        () =>
+          timers.mock.calls
+            .slice(afterIndex)
+            .some(([, ms]) => ms === delay),
+        60_000,
+        0,
+      );
     const deferredLogs = () =>
       host.harness.inspection.logEntries.filter((entry) =>
         /failed 0, and deferred [1-9]\d*\./u.test(JSON.stringify(entry)),
       ).length;
     const whenDeferredLogsAtLeast = (count: number) =>
-      pumpUntil(() => deferredLogs() >= count, 120_000);
+      pumpUntil(() => deferredLogs() >= count, 60_000, 0);
     const completedSweeps = () =>
       host.harness.inspection.logEntries.filter((entry) =>
         JSON.stringify(entry).includes("failed 0, and deferred 0."),
@@ -14208,7 +14222,7 @@ describe("Account Pool credential scoping", () => {
         0,
       );
     const whenCompletedSweepsExceed = (before: number) =>
-      pumpUntil(() => completedSweeps() > before, 120_000);
+      pumpUntil(() => completedSweeps() > before, 60_000, 0);
     host.harness.sdk.stub(
       "threads.get",
       ({ threadId }: { threadId: string }) => {
@@ -14251,8 +14265,16 @@ describe("Account Pool credential scoping", () => {
       /checked \d+ threads, revoked \d+, failed 0, and deferred [1-9]\d*\./u,
     );
     const beforeCompletion = completedSweeps();
+    const retryTimersBeforeSecondDeferred = timers.mock.calls.length;
+    const fortyMsTimersBeforeSecondDeferred = timers.mock.calls.filter(
+      ([, ms]) => ms === 40,
+    ).length;
     await vi.advanceTimersByTimeAsync(30);
     await whenDeferredLogsAtLeast(2);
+    await whenSetTimeoutDelayAfter(40, retryTimersBeforeSecondDeferred);
+    expect(
+      timers.mock.calls.filter(([, ms]) => ms === 40).length,
+    ).toBeGreaterThan(fortyMsTimersBeforeSecondDeferred);
     hanging = false;
     await vi.advanceTimersByTimeAsync(40);
     await whenCompletedSweepsExceed(beforeCompletion);
