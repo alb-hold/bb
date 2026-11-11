@@ -1752,6 +1752,82 @@ describe("providers a thread can actually start on", () => {
     });
   }
 
+
+  it("omits unauthenticated and not_installed providers when one can start, and offers all when none can", async () => {
+    await withTestHarness({}, async (harness) => {
+      const { host, session } = seedHostSession(harness.deps, {
+        id: "host-omit-unauthenticated-and-not-installed",
+      });
+      const healthFor = (
+        providerId: string,
+      ): "ready" | "unauthenticated" | "not_installed" => {
+        if (providerId === "codex") return "unauthenticated";
+        if (providerId === "pi") return "not_installed";
+        if (providerId === "claude-code") return "ready";
+        return "not_installed";
+      };
+      registerHostRpcResponder(harness, {
+        hostId: host.id,
+        sessionId: session.id,
+        handle: (request) => {
+          if (request.command.type === "provider.health") {
+            return {
+              ok: true,
+              result: providerHealthStatus(
+                healthFor(request.command.providerId),
+              ),
+            };
+          }
+          if (request.command.type === "provider.list_models") {
+            return {
+              ok: true,
+              result: {
+                models: [availableModelFixture({ model: "test-model" })],
+                selectedOnlyModels: [],
+              },
+            };
+          }
+          throw new Error(`Unexpected RPC command ${request.command.type}`);
+        },
+      });
+      for (const registration of harness.deps.providerRegistry.list()) {
+        const providerId = registration.info.id;
+        harness.deps.providerRegistry.rememberProviderHealthStatus(
+          { hostId: host.id, providerId },
+          Promise.resolve(healthFor(providerId)),
+        );
+      }
+      await Promise.resolve();
+
+      const partial = await resolveSystemExecutionOptions(harness.deps, {
+        hostId: host.id,
+      });
+      const partialIds = partial.providers.map((provider) => provider.id);
+      expect(partialIds).toContain("claude-code");
+      expect(partialIds).not.toContain("codex");
+      expect(partialIds).not.toContain("pi");
+
+      for (const providerId of ["codex", "pi", "claude-code"] as const) {
+        const status =
+          providerId === "claude-code"
+            ? "unauthenticated"
+            : healthFor(providerId);
+        harness.deps.providerRegistry.rememberProviderHealthStatus(
+          { hostId: host.id, providerId },
+          Promise.resolve(status),
+        );
+      }
+      await Promise.resolve();
+
+      const full = await resolveSystemExecutionOptions(harness.deps, {
+        hostId: host.id,
+      });
+      expect(full.providers.map((provider) => provider.id)).toEqual(
+        expect.arrayContaining(["codex", "claude-code", "pi"]),
+      );
+    });
+  });
+
   it("omits a provider whose CLI is installed but not signed in", async () => {
     await withTestHarness({}, async (harness) => {
       const { host, session } = seedHostSession(harness.deps, {
