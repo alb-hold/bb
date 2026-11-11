@@ -14193,27 +14193,58 @@ describe("Account Pool credential scoping", () => {
         60_000,
         0,
       );
+    let lastSeenTimerCalls = timers.mock.calls.length;
+    const fortyMsRetryRegisteredAfter = (
+      afterIndex: number,
+      matchingCountBefore: number,
+    ) => {
+      const registered = () => {
+        const matchingCount = timers.mock.calls.filter(
+          ([, ms]) => ms === 40,
+        ).length;
+        return (
+          matchingCount > matchingCountBefore ||
+          timers.mock.calls
+            .slice(afterIndex)
+            .some(([, ms]) => ms === 40)
+        );
+      };
+      if (registered()) return Promise.resolve();
+      const wallDeadline = Date.now() + 15_000;
+      return new Promise<void>((resolve) => {
+        const step = () => {
+          const callsNow = timers.mock.calls.length;
+          if (callsNow !== lastSeenTimerCalls) lastSeenTimerCalls = callsNow;
+          if (registered()) {
+            resolve();
+            return;
+          }
+          if (Date.now() >= wallDeadline) {
+            resolve();
+            return;
+          }
+          setImmediate(step);
+        };
+        step();
+      }).then(async () => {
+        expect(await Promise.resolve(registered())).toBe(true);
+      });
+    };
     const whenSetTimeoutDelayAfter = (
       delay: number,
       afterIndex: number,
       matchingCountBefore?: number,
     ) =>
-      pumpUntil(
-        () => {
-          const matchingCount = timers.mock.calls.filter(
-            ([, ms]) => ms === delay,
-          ).length;
-          return (
-            (matchingCountBefore !== undefined &&
-              matchingCount > matchingCountBefore) ||
-            timers.mock.calls
-              .slice(afterIndex)
-              .some(([, ms]) => ms === delay)
+      delay === 40 && matchingCountBefore !== undefined
+        ? fortyMsRetryRegisteredAfter(afterIndex, matchingCountBefore)
+        : pumpUntil(
+            () =>
+              timers.mock.calls
+                .slice(afterIndex)
+                .some(([, ms]) => ms === delay),
+            60_000,
+            0,
           );
-        },
-        200_000,
-        0,
-      );
     const deferredLogs = () =>
       host.harness.inspection.logEntries.filter((entry) =>
         /failed 0, and deferred [1-9]\d*\./u.test(JSON.stringify(entry)),
@@ -14281,16 +14312,8 @@ describe("Account Pool credential scoping", () => {
     const fortyMsTimersBeforeSecondDeferred = timers.mock.calls.filter(
       ([, ms]) => ms === 40,
     ).length;
-    const yieldWallClock = (ms: number) =>
-      new Promise<void>((resolve) => {
-        const doneAt = Date.now() + ms;
-        const step = () =>
-          Date.now() >= doneAt ? resolve() : setImmediate(step);
-        step();
-      });
     await vi.advanceTimersByTimeAsync(30);
     await whenDeferredLogsAtLeast(2);
-    await yieldWallClock(650);
     await whenSetTimeoutDelayAfter(
       40,
       retryTimersBeforeSecondDeferred,
