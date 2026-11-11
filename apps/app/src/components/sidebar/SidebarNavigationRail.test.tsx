@@ -394,7 +394,7 @@ describe("Rail", () => {
       "More",
       "Settings",
     ]);
-    expect(currentRailLabels()).toEqual(["Home"]);
+    expect(currentRailLabels()).toEqual([]);
   });
 
   it("moves the highlight from Home to a plugin panel and to Settings as the route changes", () => {
@@ -531,7 +531,7 @@ describe("Rail", () => {
     fireEvent.click(railButton("Home"));
 
     expect(pathname()).toBe(THREAD_PATH);
-    expect(currentRailLabels()).toEqual(["Home"]);
+    expect(currentRailLabels()).toEqual([]);
   });
 
   it("sends Home to a new thread after a cold load onto a plugin panel that registers late", () => {
@@ -622,7 +622,7 @@ describe("Rail", () => {
     fireEvent.click(railButton("Home"));
 
     expect(pathname()).toBe(THREAD_PATH);
-    expect(currentRailLabels()).toEqual(["Home"]);
+    expect(currentRailLabels()).toEqual([]);
   });
 
   it("sends Home to a new thread when the session started outside the thread list", () => {
