@@ -1005,7 +1005,7 @@ function ThreadRowComponent({
                     data-sidebar-thread-leading=""
                     role={provider && !hasModeGlyph ? "img" : undefined}
                     aria-label={provider && !hasModeGlyph ? provider.displayName : undefined}
-                    className="pointer-events-auto relative z-[31] flex size-4 shrink-0 items-center justify-center mr-1 max-md:mr-1.5 md:self-start md:mt-0.5 text-muted-foreground [&_*]:text-inherit!"
+                    className="pointer-events-auto relative z-[31] flex size-4 shrink-0 items-center justify-center mr-1 max-md:mr-1.5 md:self-start md:mt-0.5 text-muted-foreground [&_*]:text-inherit! [&_[data-thread-mode-badge]]:text-foreground!"
                     onClick={(event) => {
                       event.preventDefault();
                       event.stopPropagation();
