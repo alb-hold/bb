@@ -41,65 +41,8 @@ describe("TerminalMobileControls", () => {
     "More terminal keys",
   ] as const;
 
-  function mockDomRect(
-    left: number,
-    width: number,
-    height = 44,
-  ): DOMRect {
-    const top = 0;
-    const right = left + width;
-    const bottom = top + height;
-    return {
-      left,
-      top,
-      right,
-      bottom,
-      width,
-      height,
-      x: left,
-      y: top,
-      toJSON: () => ({}),
-    } as DOMRect;
-  }
-
-  function layoutEqualFlexRow(row: HTMLElement, rowWidth: number) {
-    const keys = [...row.querySelectorAll("button")];
-    const gap = 4;
-    const slot = (rowWidth - gap * (keys.length - 1)) / keys.length;
-    let x = 0;
-    for (const key of keys) {
-      vi.spyOn(key, "getBoundingClientRect").mockReturnValue(
-        mockDomRect(x, slot),
-      );
-      x += slot + gap;
-    }
-    vi.spyOn(row, "getBoundingClientRect").mockReturnValue(
-      mockDomRect(0, rowWidth),
-    );
-  }
-
-  function assertRowKeyRects(row: HTMLElement) {
-    const rowRect = row.getBoundingClientRect();
-    const keys = [...row.querySelectorAll("button")];
-    for (let i = 0; i < keys.length; i++) {
-      const rect = keys[i]!.getBoundingClientRect();
-      expect(rect.left).toBeGreaterThanOrEqual(rowRect.left);
-      expect(rect.top).toBeGreaterThanOrEqual(rowRect.top);
-      expect(rect.right).toBeLessThanOrEqual(rowRect.right);
-      expect(rect.bottom).toBeLessThanOrEqual(rowRect.bottom);
-      if (i > 0) {
-        expect(rect.left).toBeGreaterThanOrEqual(
-          keys[i - 1]!.getBoundingClientRect().right - 0.01,
-        );
-      }
-    }
-    expect(keys.at(-1)!.getBoundingClientRect().right).toBeLessThanOrEqual(
-      rowRect.right + 0.01,
-    );
-  }
-
   it.each([288, 304, 320, 344, 359])(
-    "fits every compact primary key inside the row at %i px controls width",
+    "uses one equal-flex compact row below 375 px (test-change-reason: jsdom cannot lay out flex; WebKit key-rect proof lives in r36c13-key-measurements.json) at %i px controls width",
     (width) => {
       const clientWidth = vi
         .spyOn(HTMLElement.prototype, "clientWidth", "get")
@@ -111,21 +54,20 @@ describe("TerminalMobileControls", () => {
         for (const label of primaryRowLabels) {
           expect(screen.getByRole("button", { name: label })).toBeTruthy();
         }
-        const row = document.querySelector<HTMLElement>(
+        const scroller = document.querySelector<HTMLElement>(
           "[data-terminal-key-scroller]",
         )!;
-        layoutEqualFlexRow(row, width);
-        const rowKeys = primaryRowLabels.map((label) =>
-          screen.getByRole("button", { name: label }),
-        );
-        for (const key of rowKeys) {
+        expect(scroller.className.split(/\s+/u)).not.toContain("overflow-x-auto");
+        expect(scroller.querySelectorAll("button")).toHaveLength(7);
+        for (const label of primaryRowLabels) {
+          const key = screen.getByRole("button", { name: label });
+          expect(key.closest("[data-terminal-key-scroller]")).toBe(scroller);
           expect(key.classList.contains("flex-1")).toBe(true);
           expect(key.classList.contains("basis-0")).toBe(true);
           expect(key.classList.contains("min-w-0")).toBe(true);
           expect(key.classList.contains("text-2xs")).toBe(true);
           expect(key.classList.contains("w-11")).toBe(false);
         }
-        assertRowKeyRects(row);
       } finally {
         clientWidth.mockRestore();
       }
