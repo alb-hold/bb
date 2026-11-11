@@ -14193,13 +14193,25 @@ describe("Account Pool credential scoping", () => {
         60_000,
         0,
       );
-    const whenSetTimeoutDelayAfter = (delay: number, afterIndex: number) =>
+    const whenSetTimeoutDelayAfter = (
+      delay: number,
+      afterIndex: number,
+      matchingCountBefore?: number,
+    ) =>
       pumpUntil(
-        () =>
-          timers.mock.calls
-            .slice(afterIndex)
-            .some(([, ms]) => ms === delay),
-        60_000,
+        () => {
+          const matchingCount = timers.mock.calls.filter(
+            ([, ms]) => ms === delay,
+          ).length;
+          return (
+            (matchingCountBefore !== undefined &&
+              matchingCount > matchingCountBefore) ||
+            timers.mock.calls
+              .slice(afterIndex)
+              .some(([, ms]) => ms === delay)
+          );
+        },
+        200_000,
         0,
       );
     const deferredLogs = () =>
@@ -14269,9 +14281,21 @@ describe("Account Pool credential scoping", () => {
     const fortyMsTimersBeforeSecondDeferred = timers.mock.calls.filter(
       ([, ms]) => ms === 40,
     ).length;
+    const yieldWallClock = (ms: number) =>
+      new Promise<void>((resolve) => {
+        const doneAt = Date.now() + ms;
+        const step = () =>
+          Date.now() >= doneAt ? resolve() : setImmediate(step);
+        step();
+      });
     await vi.advanceTimersByTimeAsync(30);
     await whenDeferredLogsAtLeast(2);
-    await whenSetTimeoutDelayAfter(40, retryTimersBeforeSecondDeferred);
+    await yieldWallClock(650);
+    await whenSetTimeoutDelayAfter(
+      40,
+      retryTimersBeforeSecondDeferred,
+      fortyMsTimersBeforeSecondDeferred,
+    );
     expect(
       timers.mock.calls.filter(([, ms]) => ms === 40).length,
     ).toBeGreaterThan(fortyMsTimersBeforeSecondDeferred);
