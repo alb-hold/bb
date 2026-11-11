@@ -69,6 +69,7 @@ export function ThreadInfoRows({ core, ...props }: ThreadInfoSlotsProps) {
         slotId={id}
         instanceId={props.threadId}
         crashFallback={null}
+        retainStylesheet={false}
       >
         <Component {...props} />
       </PluginSlotMount>
@@ -102,6 +103,7 @@ export function ThreadInfoSections({ core, ...props }: ThreadInfoSlotsProps) {
           slotId={id}
           instanceId={props.threadId}
           crashFallback={null}
+          retainStylesheet={false}
         >
           <Component {...props} />
         </PluginSlotMount>

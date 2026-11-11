@@ -448,7 +448,8 @@ describe("reconcilePluginFrontends", () => {
     stylesheets.stop();
   });
 
-  it("retains CSS for a content script's whole generation, including cleanup", async () => {
+  it("loads CSS only while a content script is mounting, then releases it", async () => {
+    vi.useFakeTimers();
     const state = createPluginFrontendReconcileState();
     const stylesheets = autoLoadPluginStylesheets();
     const deps = makeDeps([candidate("shell-owner", "v1")]);
@@ -474,13 +475,16 @@ describe("reconcilePluginFrontends", () => {
 
     await reconcilePluginFrontends(state, deps);
     expect(events).toEqual(["mount:true"]);
-    expect(stylesheetIsActive()).toBe(true);
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(stylesheetIsActive()).toBe(false);
 
     deps.fetchCandidates.mockResolvedValue([]);
     await reconcilePluginFrontends(state, deps);
-    expect(events).toEqual(["mount:true", "dispose:true"]);
+    expect(events).toEqual(["mount:true", "dispose:false"]);
+    await vi.advanceTimersByTimeAsync(1_500);
     expect(stylesheetIsActive()).toBe(false);
     stylesheets.stop();
+    vi.useRealTimers();
   });
 
   it("keeps the previous generation and its sheet on screen until the replacement stylesheet settles", async () => {

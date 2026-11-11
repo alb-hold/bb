@@ -228,6 +228,38 @@ it("keeps the DOM renderer stylesheets out of the document while parked and rest
   }
 });
 
+function xtermDomRendererRuleCount(): number {
+  let total = 0;
+  for (const style of document.querySelectorAll("style")) {
+    const text = style.textContent ?? "";
+    if (!text.includes("xterm-dom-renderer-owner-")) continue;
+    total += text.split("}").length - 1;
+  }
+  return total;
+}
+
+it("does not grow DOM renderer rule count across park and unpark cycles", async () => {
+  const { host, terminal } = openTerminal();
+  try {
+    await new Promise<void>((resolve) => terminal.write("seed", resolve));
+    terminal.refresh(0, terminal.rows - 1);
+    await vi.waitFor(() =>
+      expect(host.querySelector(".xterm-rows")?.textContent).toContain("seed"),
+    );
+    const baseline = xtermDomRendererRuleCount();
+    expect(baseline).toBeGreaterThan(0);
+    for (let cycle = 0; cycle < 5; cycle++) {
+      const restore = releaseParkedTerminalRendering(terminal);
+      expect(xtermDomRendererRuleCount()).toBe(0);
+      restore();
+      terminal.refresh(0, terminal.rows - 1);
+    }
+    expect(xtermDomRendererRuleCount()).toBeLessThanOrEqual(baseline);
+  } finally {
+    terminal.dispose();
+  }
+});
+
 it("does not re-insert a stale renderer stylesheet next to one xterm created while parked", () => {
   const { host, terminal } = openTerminal();
   try {

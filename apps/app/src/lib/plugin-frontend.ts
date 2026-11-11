@@ -676,7 +676,6 @@ async function activateContentScripts(
   registrations: readonly PluginContentScriptRegistration[],
   controller: AbortController,
   statusOwner: symbol,
-  cssRelease: (() => void) | null,
   deps: PluginFrontendReconcileDeps,
 ): Promise<
   | { ok: true; activation: ActivePluginFrontendGeneration }
@@ -688,9 +687,11 @@ async function activateContentScripts(
     controller,
     statusOwner,
     scripts: [],
-    cssRelease,
+    cssRelease: null,
     disposed: false,
   };
+  const mountRetain =
+    registrations.length > 0 ? deps.retainCss(pluginId) : null;
   try {
     for (const registration of registrations) {
       const dispose = await mountWithTimeout(
@@ -717,6 +718,8 @@ async function activateContentScripts(
       ok: false,
       failure: { phase: "mount", message, scriptId },
     };
+  } finally {
+    mountRetain?.();
   }
 }
 
@@ -988,8 +991,6 @@ async function reconcileCandidate(
   await applyCssBeforePublish(pluginId, candidate.bundle.cssUrl, deps);
   await deps.beforePublish?.();
   const replacesActiveGeneration = state.activeGenerations.has(pluginId);
-  const cssRelease =
-    collected.contentScripts.length > 0 ? deps.retainCss(pluginId) : null;
   const disposeFailures = await deactivateCommittedGeneration(
     pluginId,
     state,
@@ -1009,7 +1010,6 @@ async function reconcileCandidate(
     collected.contentScripts,
     controller,
     statusOwner,
-    cssRelease,
     deps,
   );
   state.pendingControllers.delete(pluginId);

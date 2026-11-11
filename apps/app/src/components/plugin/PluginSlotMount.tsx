@@ -199,6 +199,7 @@ interface PluginSlotMountProps {
   crashResetKey?: string;
   instanceId?: string;
   wrapRoot?: boolean;
+  retainStylesheet?: boolean;
   onCrash?: (pluginId: string) => void;
 }
 
@@ -211,10 +212,11 @@ export function PluginSlotMount({
   crashResetKey,
   instanceId,
   wrapRoot = true,
+  retainStylesheet = true,
   onCrash,
 }: PluginSlotMountProps) {
   const onRouteAnchorClick = useRouteAnchorDelegate();
-  usePluginCss(pluginId);
+  usePluginCss(retainStylesheet ? pluginId : null);
   return (
     <PluginContext.Provider value={pluginId}>
       <PluginSlotBoundary
