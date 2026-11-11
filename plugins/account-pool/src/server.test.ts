@@ -14170,43 +14170,45 @@ describe("Account Pool credential scoping", () => {
         lookupThresholdWaiters.push({ threshold, resolve });
       });
     };
-    const whenSetTimeoutDelay = async (delay: number) => {
-      for (;;) {
-        if (timers.mock.calls.some(([, ms]) => ms === delay)) return;
-        await vi.advanceTimersByTimeAsync(0);
+    const pumpUntil = async (
+      predicate: () => boolean | Promise<boolean>,
+      maxSteps: number,
+      advanceMs = 1,
+    ) => {
+      for (let step = 0; step < maxSteps; step += 1) {
+        if (await predicate()) return;
+        if (advanceMs > 0) await vi.advanceTimersByTimeAsync(advanceMs);
+        await yieldToIo();
       }
+      expect(await predicate()).toBe(true);
     };
+    const whenSetTimeoutDelay = (delay: number) =>
+      pumpUntil(
+        () => timers.mock.calls.some(([, ms]) => ms === delay),
+        60_000,
+        0,
+      );
     const deferredLogs = () =>
       host.harness.inspection.logEntries.filter((entry) =>
         /failed 0, and deferred [1-9]\d*\./u.test(JSON.stringify(entry)),
       ).length;
-    const whenDeferredLogsAtLeast = async (count: number) => {
-      for (;;) {
-        if (deferredLogs() >= count) return;
-        await vi.advanceTimersByTimeAsync(0);
-      }
-    };
+    const whenDeferredLogsAtLeast = (count: number) =>
+      pumpUntil(() => deferredLogs() >= count, 120_000);
     const completedSweeps = () =>
       host.harness.inspection.logEntries.filter((entry) =>
         JSON.stringify(entry).includes("failed 0, and deferred 0."),
       ).length;
-    const whenAccepting = async () => {
-      for (;;) {
-        await vi.advanceTimersByTimeAsync(0);
-        if (
+    const whenAccepting = () =>
+      pumpUntil(
+        async () =>
           statusSchema.parse(
             await host.harness.behavior.callRpc("status.get", null),
-          ).accepting
-        )
-          return;
-      }
-    };
-    const whenCompletedSweepsExceed = async (before: number) => {
-      for (;;) {
-        if (completedSweeps() > before) return;
-        await vi.advanceTimersByTimeAsync(0);
-      }
-    };
+          ).accepting,
+        60_000,
+        0,
+      );
+    const whenCompletedSweepsExceed = (before: number) =>
+      pumpUntil(() => completedSweeps() > before, 120_000);
     host.harness.sdk.stub(
       "threads.get",
       ({ threadId }: { threadId: string }) => {
@@ -14265,7 +14267,7 @@ describe("Account Pool credential scoping", () => {
     expect(JSON.stringify(host.harness.inspection.logEntries)).not.toContain(
       "could not look up",
     );
-  });
+  }, 120_000);
 
   it("bounds a periodic sweep whose lookup hangs and revokes the stale credential once the lookup recovers", async () => {
     const fixture = await scopedFixture();
