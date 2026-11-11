@@ -14192,6 +14192,11 @@ describe("Account Pool credential scoping", () => {
     expect(lookups).toBe(startupLookups);
     await vi.advanceTimersByTimeAsync(1);
     await waitForSweep(() => expect(lookups).toBeGreaterThan(startupLookups));
+    const deferredLogs = () =>
+      host.harness.inspection.logEntries.filter((entry) =>
+        /failed 0, and deferred [1-9]\d*\./u.test(JSON.stringify(entry)),
+      ).length;
+    await waitForSweep(() => expect(deferredLogs()).toBe(1));
     expect(lookupTimes.length).toBeGreaterThan(1);
     for (let i = 1; i < lookupTimes.length; i += 1)
       expect(lookupTimes[i]! - lookupTimes[i - 1]!).toBeGreaterThanOrEqual(39);
@@ -14203,11 +14208,13 @@ describe("Account Pool credential scoping", () => {
         JSON.stringify(entry).includes("failed 0, and deferred 0."),
       ).length;
     const beforeCompletion = completedSweeps();
-    const retries = () =>
+    const scheduledRetry = () =>
       timers.mock.calls.filter(([, ms]) => ms === 40).length;
-    const beforeRetry = retries();
+    const beforeSchedule = scheduledRetry();
     await vi.advanceTimersByTimeAsync(30);
-    await waitForSweep(() => expect(retries()).toBeGreaterThan(beforeRetry));
+    for (let step = 0; scheduledRetry() <= beforeSchedule && step < 100; step += 1)
+      await vi.advanceTimersByTimeAsync(0);
+    expect(scheduledRetry()).toBeGreaterThan(beforeSchedule);
     hanging = false;
     await vi.advanceTimersByTimeAsync(40);
     await waitForSweep(() => {

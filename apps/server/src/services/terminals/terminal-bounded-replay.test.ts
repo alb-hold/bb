@@ -122,8 +122,7 @@ describe("bounded replay scheduling", () => {
     const replay = new TerminalBoundedReplay();
     const args = input();
     expect(replay.forAttach(args)).toBe(args);
-    await vi.waitFor(() => expect(replay.forAttach(args)).not.toBe(args));
-    const compact = replay.forAttach(args);
+    const compact = await replay.compact(args);
     expect(compact.chunks.length).toBeLessThan(args.chunks.length);
     expect(replay.forAttach(args)).toBe(compact);
     replay.clear();
