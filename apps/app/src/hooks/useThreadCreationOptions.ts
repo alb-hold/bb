@@ -89,6 +89,8 @@ import {
   resolveModelReasoningLevel,
 } from "./thread-creation-options/model-catalog-selection";
 
+import { resolveReadyProviderId } from "./thread-creation-options/ready-provider-selection";
+
 export { formatModelLabel };
 
 const EMPTY_PROVIDERS: ProviderInfo[] = [];
@@ -389,6 +391,7 @@ export function useThreadCreationOptions(
   const executionOptionsRouting = resolveProviderRouting
     ? resolveProviderRouting(rawEnvironmentSelectionValue)
     : defaultCatalogRouting;
+  const systemConfig = useSystemConfig();
   const canResolveReadyProvider =
     executionOptionsQueryEnabled &&
     scope === "new-thread" &&
@@ -402,9 +405,10 @@ export function useThreadCreationOptions(
     poll: false,
   });
   const queriedReadyProviderId = shouldResolveReadyProvider
-    ? providerStatesQuery.data?.providers.find(
-        (provider) => provider.status === "ready",
-      )?.providerId
+    ? resolveReadyProviderId(
+        providerStatesQuery.data?.providers ?? [],
+        systemConfig.data?.generalSettings?.defaultProviderId,
+      )
     : undefined;
   const readyProviderId =
     initialReadyProvider.status === "resolved"
@@ -414,13 +418,14 @@ export function useThreadCreationOptions(
     if (!shouldResolveReadyProvider || providerStatesQuery.isPending) {
       return;
     }
+    if (queriedReadyProviderId === undefined) {
+      return;
+    }
     setInitialReadyProvider((current) =>
-      current.status === "resolved"
+      current.status === "resolved" &&
+      current.providerId === queriedReadyProviderId
         ? current
-        : {
-            status: "resolved",
-            providerId: queriedReadyProviderId ?? null,
-          },
+        : { status: "resolved", providerId: queriedReadyProviderId },
     );
   }, [
     providerStatesQuery.isPending,
@@ -450,7 +455,6 @@ export function useThreadCreationOptions(
     projectId: executionOptionsProjectId,
   });
   const hostsQuery = useHosts();
-  const systemConfig = useSystemConfig();
   const providers = executionOptionsQuery.data?.providers ?? EMPTY_PROVIDERS;
   const modelLoadError =
     executionOptionsQuery.data?.modelLoadError ?? NO_MODEL_LOAD_ERROR;
@@ -479,16 +483,57 @@ export function useThreadCreationOptions(
   });
   const hasMultipleProviders = providers.length >= 2;
 
+  const preferredDefaultProviderId =
+    systemConfig.data?.generalSettings?.defaultProviderId ?? null;
+  const userChoseSelectedProvider =
+    touchedThreadFieldsRef.current.has("selectedProviderId") ||
+    (usesStoredCreateSelections && storedProviderId.length > 0);
+  const rejectCatalogLoadErrorSelection =
+    modelLoadError !== null &&
+    modelLoadError.providerId === rawSelectedProviderId &&
+    !userChoseSelectedProvider;
+  const awaitingReadyProviderSelection =
+    canResolveReadyProvider &&
+    selectedProviderIdBeforeReadyFallback.length === 0 &&
+    readyProviderId === undefined &&
+    (isResolvingReadyProvider ||
+      (providerStatesQuery.isFetched &&
+        queriedReadyProviderId === undefined &&
+        !providerStatesQuery.isError));
   const effectiveProviderId = useMemo(() => {
+    if (awaitingReadyProviderSelection) {
+      return "";
+    }
     if (
       rawSelectedProviderId &&
+      !rejectCatalogLoadErrorSelection &&
       (!modelCatalogIsVerified ||
         providers.some((provider) => provider.id === rawSelectedProviderId))
     ) {
       return rawSelectedProviderId;
     }
-    return providers[0]?.id ?? "";
-  }, [modelCatalogIsVerified, providers, rawSelectedProviderId]);
+    if (
+      readyProviderId &&
+      providers.some((provider) => provider.id === readyProviderId)
+    ) {
+      return readyProviderId;
+    }
+    if (
+      preferredDefaultProviderId &&
+      providers.some((provider) => provider.id === preferredDefaultProviderId)
+    ) {
+      return preferredDefaultProviderId;
+    }
+    return providers.find((provider) => provider.available)?.id ?? providers[0]?.id ?? "";
+  }, [
+    awaitingReadyProviderSelection,
+    modelCatalogIsVerified,
+    preferredDefaultProviderId,
+    providers,
+    rawSelectedProviderId,
+    readyProviderId,
+    rejectCatalogLoadErrorSelection,
+  ]);
 
   const { setValue: setStoredSelectedModel, value: storedSelectedModel } =
     usePromptBoxModelPreference(effectiveProviderId);

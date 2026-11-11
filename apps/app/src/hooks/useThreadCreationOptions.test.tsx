@@ -25,11 +25,13 @@ import type { QueryClient } from "@tanstack/react-query";
 import {
   hostsQueryKey,
   systemConfigQueryKey,
+  systemProviderStatesQueryKey,
   systemExecutionOptionsQueryKey,
   systemProvidersQueryKey,
 } from "./queries/query-keys";
 import { getProjectScopedStorageKey } from "@/lib/project-scoped-storage";
 import { buildAutoFollowUpRequest } from "@bb/client-core";
+import { CompactViewportOverrideProvider } from "@bb/shared-ui/hooks/use-compact-viewport";
 import { useThreadCreationOptions } from "./useThreadCreationOptions";
 import { createRealtimeCacheEffects } from "./realtime-cache-effects";
 import { invalidateSystemExecutionOptions } from "./cache-owners/system-cache-effects";
@@ -81,6 +83,57 @@ function readyProviderStates(providerId: string): SystemProviderStatesResponse {
       },
     ],
   };
+}
+
+function piUnauthenticatedProviderStates(): SystemProviderStatesResponse {
+  return {
+    providers: [
+      {
+        providerId: "pi",
+        displayName: "Pi",
+        status: "unauthenticated",
+        statusMessage: null,
+        planLabel: null,
+        accountEmail: null,
+        installedVersion: null,
+        minimumSupportedVersion: null,
+        canInstall: false,
+        canUpdate: false,
+        loginCommand: null,
+        localLoginCommand: null,
+      },
+    ],
+  };
+}
+
+function homeProvidersExecutionOptions(): SystemExecutionOptionsResponse {
+  return {
+    ...executionOptionsResponse(),
+    providers: rememberedProviders(),
+    models: [
+      {
+        id: "codex-default",
+        model: "codex-default",
+        displayName: "Codex Default",
+        description: "",
+        reasoningDiscovery: "known" as const,
+        supportedReasoningEfforts: [
+          { reasoningEffort: "medium", description: "" },
+        ],
+        defaultReasoningEffort: "medium",
+        isDefault: true,
+      },
+    ],
+  };
+}
+
+function seedHomeReadyProviderDiscoveryHarness(queryClient: QueryClient): void {
+  queryClient.setQueryData(systemConfigQueryKey(), {
+    generalSettings: { defaultProviderId: "codex" },
+  });
+  queryClient.setQueryData(hostsQueryKey(), [
+    makeHost({ id: "home-host", maxPermissionMode: "auto" }),
+  ]);
 }
 
 function seedDeclaredCatalogScope(
@@ -2562,6 +2615,106 @@ describe("useThreadCreationOptions", () => {
     expect(sdk.system.executionOptions).toHaveBeenCalledTimes(2);
     await act(async () => refresh.resolve(executionOptionsResponse()));
   });
+
+
+  it("does not latch a null ready provider before a later ready discovery resolves", async () => {
+    let providerStatesCallCount = 0;
+    vi.mocked(sdk.system.providerStates).mockImplementation(async () => {
+      providerStatesCallCount += 1;
+      return providerStatesCallCount === 1
+        ? piUnauthenticatedProviderStates()
+        : readyProviderStates("codex");
+    });
+    vi.mocked(sdk.system.executionOptions).mockResolvedValue(
+      homeProvidersExecutionOptions(),
+    );
+    const { wrapper, queryClient } = createQueryClientTestHarness();
+    seedHomeReadyProviderDiscoveryHarness(queryClient);
+    const { result } = renderHook(
+      () =>
+        useThreadCreationOptions({
+          preferReadyProviderWhenUnset: true,
+          resolveProviderRouting: () => ({ hostId: "home-host" }),
+        }),
+      { wrapper },
+    );
+
+    await waitFor(() =>
+      expect(sdk.system.providerStates).toHaveBeenCalledTimes(1),
+    );
+    expect(result.current.selectedProviderId).toBe("");
+
+    await act(async () => {
+      await queryClient.invalidateQueries({
+        queryKey: systemProviderStatesQueryKey({
+          environmentId: null,
+          hostId: "home-host",
+        }),
+      });
+    });
+
+    await waitFor(() =>
+      expect(sdk.system.providerStates).toHaveBeenCalledTimes(2),
+    );
+    await waitFor(() => expect(result.current.selectedProviderId).toBe("codex"));
+    await waitFor(() =>
+      expect(result.current.activeModel?.displayName).toBe("Codex Default"),
+    );
+  });
+
+  it.each([
+    { viewportWidth: 390, isCompactViewport: true },
+    { viewportWidth: 1280, isCompactViewport: false },
+  ])(
+    "matches the home default at phone and desktop widths",
+    async ({ isCompactViewport }) => {
+      vi.mocked(sdk.system.providerStates).mockResolvedValue(
+        readyProviderStates("codex"),
+      );
+      vi.mocked(sdk.system.executionOptions).mockResolvedValue(
+        homeProvidersExecutionOptions(),
+      );
+      const { wrapper, queryClient } = createQueryClientTestHarness();
+      seedHomeReadyProviderDiscoveryHarness(queryClient);
+      function ComposerControls() {
+        const options = useThreadCreationOptions({
+          preferReadyProviderWhenUnset: true,
+          resolveProviderRouting: () => ({ hostId: "home-host" }),
+        });
+        return (
+          <CompactViewportOverrideProvider isCompactViewport={isCompactViewport}>
+            <ExecutionControls
+              provider={{
+                selectedId: options.selectedProviderId,
+                options: options.providerOptions,
+              }}
+              model={{
+                active: options.activeModel,
+                selected: options.selectedModel,
+                options: options.modelOptions,
+                moreOptions: options.moreModelOptions,
+                isLoading: options.isLoadingModels,
+                loadFailed: options.modelLoadFailed,
+                onChange: options.setSelectedModel,
+              }}
+              reasoning={{
+                value: options.reasoningLevel,
+                options: options.reasoningOptions,
+                onChange: options.setReasoningLevel,
+              }}
+            />
+          </CompactViewportOverrideProvider>
+        );
+      }
+      render(<ComposerControls />, { wrapper });
+      await waitFor(() => {
+        const trigger = screen.getByRole("button", {
+          name: /^Provider, model and reasoning/,
+        });
+        expect(trigger.textContent).toContain("Codex Default");
+      });
+    },
+  );
 
   it("latches the initial ready provider instead of resolving it again after a machine switch", async () => {
     window.localStorage.setItem(
