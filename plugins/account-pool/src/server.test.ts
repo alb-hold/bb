@@ -14149,17 +14149,74 @@ describe("Account Pool credential scoping", () => {
     let lookups = 0;
     let hanging = true;
     const lookupTimes: number[] = [];
+    const clock = controlSweepClock();
+    const timers = clock.timers;
+    const lookupThresholdWaiters: Array<{
+      threshold: number;
+      resolve: () => void;
+    }> = [];
+    const notifyLookupWaiters = () => {
+      for (let i = lookupThresholdWaiters.length - 1; i >= 0; i -= 1) {
+        const waiter = lookupThresholdWaiters[i]!;
+        if (lookups >= waiter.threshold) {
+          waiter.resolve();
+          lookupThresholdWaiters.splice(i, 1);
+        }
+      }
+    };
+    const whenLookupsAtLeast = (threshold: number): Promise<void> => {
+      if (lookups >= threshold) return Promise.resolve();
+      return new Promise((resolve) => {
+        lookupThresholdWaiters.push({ threshold, resolve });
+      });
+    };
+    const whenSetTimeoutDelay = async (delay: number) => {
+      for (;;) {
+        if (timers.mock.calls.some(([, ms]) => ms === delay)) return;
+        await vi.advanceTimersByTimeAsync(0);
+      }
+    };
+    const deferredLogs = () =>
+      host.harness.inspection.logEntries.filter((entry) =>
+        /failed 0, and deferred [1-9]\d*\./u.test(JSON.stringify(entry)),
+      ).length;
+    const whenDeferredLogsAtLeast = async (count: number) => {
+      for (;;) {
+        if (deferredLogs() >= count) return;
+        await vi.advanceTimersByTimeAsync(0);
+      }
+    };
+    const completedSweeps = () =>
+      host.harness.inspection.logEntries.filter((entry) =>
+        JSON.stringify(entry).includes("failed 0, and deferred 0."),
+      ).length;
+    const whenAccepting = async () => {
+      for (;;) {
+        await vi.advanceTimersByTimeAsync(0);
+        if (
+          statusSchema.parse(
+            await host.harness.behavior.callRpc("status.get", null),
+          ).accepting
+        )
+          return;
+      }
+    };
+    const whenCompletedSweepsExceed = async (before: number) => {
+      for (;;) {
+        if (completedSweeps() > before) return;
+        await vi.advanceTimersByTimeAsync(0);
+      }
+    };
     host.harness.sdk.stub(
       "threads.get",
       ({ threadId }: { threadId: string }) => {
         lookups += 1;
         if (threadId === "thread-deferred") lookupTimes.push(clock.now());
+        notifyLookupWaiters();
         if (hanging) return new Promise(() => undefined);
         return makeThreadResponse({ id: "thread-deferred", archivedAt: null });
       },
     );
-    const clock = controlSweepClock();
-    const timers = clock.timers;
     const service = host.harness.behavior.runService("hub");
     cleanups.push(async () => {
       clock.restore();
@@ -14167,7 +14224,7 @@ describe("Account Pool credential scoping", () => {
       await service.done;
       await host.harness.lifecycle.dispose();
     });
-    await waitForSweep(() => expect(lookups).toBeGreaterThan(0));
+    await whenLookupsAtLeast(1);
     expect(clock.timeout.mock.calls).toContainEqual([30]);
     const startupLookups = lookups;
     await vi.advanceTimersByTimeAsync(29);
@@ -14177,54 +14234,34 @@ describe("Account Pool credential scoping", () => {
       ).accepting,
     ).toBe(false);
     await vi.advanceTimersByTimeAsync(1);
-    await waitForSweep(async () => {
-      expect(
-        statusSchema.parse(
-          await host.harness.behavior.callRpc("status.get", null),
-        ).accepting,
-      ).toBe(true);
-    });
+    await whenAccepting();
     expect(startupLookups).toBeGreaterThan(0);
-    await waitForSweep(() =>
-      expect(timers.mock.calls.some(([, ms]) => ms === 40)).toBe(true),
-    );
+    await whenSetTimeoutDelay(40);
     await vi.advanceTimersByTimeAsync(39);
     expect(lookups).toBe(startupLookups);
     await vi.advanceTimersByTimeAsync(1);
-    await waitForSweep(() => expect(lookups).toBeGreaterThan(startupLookups));
-    const deferredLogs = () =>
-      host.harness.inspection.logEntries.filter((entry) =>
-        /failed 0, and deferred [1-9]\d*\./u.test(JSON.stringify(entry)),
-      ).length;
-    await waitForSweep(() => expect(deferredLogs()).toBe(1));
+    await whenLookupsAtLeast(startupLookups + 1);
+    await whenDeferredLogsAtLeast(1);
     expect(lookupTimes.length).toBeGreaterThan(1);
     for (let i = 1; i < lookupTimes.length; i += 1)
       expect(lookupTimes[i]! - lookupTimes[i - 1]!).toBeGreaterThanOrEqual(39);
     expect(JSON.stringify(host.harness.inspection.logEntries)).toMatch(
       /checked \d+ threads, revoked \d+, failed 0, and deferred [1-9]\d*\./u,
     );
-    const completedSweeps = () =>
-      host.harness.inspection.logEntries.filter((entry) =>
-        JSON.stringify(entry).includes("failed 0, and deferred 0."),
-      ).length;
     const beforeCompletion = completedSweeps();
     await vi.advanceTimersByTimeAsync(30);
-    await waitForSweep(() => expect(deferredLogs()).toBe(2));
+    await whenDeferredLogsAtLeast(2);
     hanging = false;
     await vi.advanceTimersByTimeAsync(40);
-    await waitForSweep(() => {
-      expect(completedSweeps()).toBeGreaterThan(beforeCompletion);
-    });
-    await waitForSweep(() =>
-      expect(timers.mock.calls.some(([, ms]) => ms === 1_000)).toBe(true),
-    );
+    await whenCompletedSweepsExceed(beforeCompletion);
+    await whenSetTimeoutDelay(1_000);
     const completedLookups = lookups;
     await vi.advanceTimersByTimeAsync(180);
     expect(lookups).toBe(completedLookups);
     await vi.advanceTimersByTimeAsync(819);
     expect(lookups).toBe(completedLookups);
     await vi.advanceTimersByTimeAsync(1);
-    await waitForSweep(() => expect(lookups).toBeGreaterThan(completedLookups));
+    await whenLookupsAtLeast(completedLookups + 1);
     expect(JSON.stringify(host.harness.inspection.logEntries)).not.toContain(
       "could not look up",
     );
