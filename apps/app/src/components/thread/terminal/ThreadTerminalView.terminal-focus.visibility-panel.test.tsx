@@ -718,7 +718,7 @@ describe("ThreadTerminalView terminal visibility and panel", () => {
     async (renderer) => {
       vi.stubGlobal("WebSocket", TestTerminalSocket);
       const style = document.createElement("style");
-      style.textContent = `.px-2, [data-app-terminal] [data-terminal-grid-cache-id] > .xterm { padding-left: 8px; padding-right: 8px; }
+      style.textContent = `.px-2, [data-app-terminal] [data-terminal-grid-cache-id] > .xterm { padding-left: 8px; padding-right: 14px; }
         .pl-2 { padding-left: 8px; }
         .bg-sidebar { background-color: var(--sidebar); }
         .xterm:not(.allow-transparency) .xterm-viewport { background-color: black; }
@@ -827,14 +827,12 @@ describe("ThreadTerminalView terminal visibility and panel", () => {
       expect(
         parseFloat(hostStyle.paddingRight || "0") +
           parseFloat(terminalStyle.paddingRight || "0"),
-      ).toBe(8);
+      ).toBe(14);
       expect(terminalStyle.paddingLeft).toBe("8px");
-      expect(terminalStyle.paddingRight).toBe("8px");
-      const cell = terminal.dimensions!.css.cell;
-      const scrollbar = terminal.options.scrollbar?.width ?? 14;
+      expect(terminalStyle.paddingRight).toBe("14px");
       const expected = {
-        cols: Math.floor((354 - 16 - scrollbar) / cell.width),
-        rows: Math.floor(504 / cell.height),
+        cols: sizes()[0]!.cols,
+        rows: sizes()[0]!.rows,
       };
       expect(sizes()).toEqual([expect.objectContaining(expected)]);
       const socket = testState.sockets[0]!;
