@@ -4287,7 +4287,7 @@ describe("terminal first paint", () => {
     vi.stubGlobal("innerWidth", 390);
     const style = document.createElement("style");
     style.textContent = `
-      :root { --terminal-overlay-scrollbar-size: 14px; }
+      :root { --terminal-overlay-scrollbar-size: 6px; }
       .px-2 { padding-left: 8px; padding-right: 8px; }
       ${readFileSync(
         join(dirname(fileURLToPath(import.meta.url)), "../../../app.css"),
@@ -4298,9 +4298,9 @@ describe("terminal first paint", () => {
     `;
     document.head.append(style);
     const terminalPaddingRightPattern =
-      /^(22px|calc\(8px \+ var\(--terminal-overlay-scrollbar-size\)\))$/;
+      /^(14px|calc\(8px \+ var\(--terminal-overlay-scrollbar-size\)\))$/;
     const terminalInsetsPattern =
-      /^8px\/(22px|calc\(8px \+ var\(--terminal-overlay-scrollbar-size\)\))$/;
+      /^8px\/(14px|calc\(8px \+ var\(--terminal-overlay-scrollbar-size\)\))$/;
     const insets: string[] = [];
     const initialInsets: string[] = [];
     const paintFrames = new Map<

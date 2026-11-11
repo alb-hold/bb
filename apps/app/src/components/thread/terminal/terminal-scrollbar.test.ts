@@ -53,7 +53,7 @@ it("keeps the xterm custom track transparent and its thumb thin", () => {
   expect(css).toContain(
     "scrollbar-color: var(--terminal-scrollbar) transparent",
   );
-  expect(css).toContain("--terminal-overlay-scrollbar-size: 14px");
+  expect(css).toContain("--terminal-overlay-scrollbar-size: 6px");
   expect(css).toContain(
     "padding-right: calc(8px + var(--terminal-overlay-scrollbar-size))",
   );

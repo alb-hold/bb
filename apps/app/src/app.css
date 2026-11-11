@@ -785,7 +785,7 @@
 }
 
 :root {
-  --terminal-overlay-scrollbar-size: 14px;
+  --terminal-overlay-scrollbar-size: 6px;
   --terminal-scrollbar: color-mix(in oklab, var(--foreground) 20%, transparent);
   --terminal-scrollbar-hover: color-mix(
     in oklab,
