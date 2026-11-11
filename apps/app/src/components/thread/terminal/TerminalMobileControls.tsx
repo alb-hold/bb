@@ -86,14 +86,11 @@ export function TerminalMobileControls({
 }: TerminalMobileControlsProps) {
   const [expanded, setExpanded] = useState(false);
   const [secondaryKeysInline, setSecondaryKeysInline] = useState(false);
-  const [compactKeys, setCompactKeys] = useState(false);
   const controlsRef = useRef<HTMLDivElement>(null);
   const scrollerRef = useRef<HTMLDivElement>(null);
   const updateOverflow = useCallback(() => {
     const scroller = scrollerRef.current;
     if (!scroller) return;
-    const width = controlsRef.current?.clientWidth ?? 0;
-    setCompactKeys(width > 0 && width < 375);
     setSecondaryKeysInline(
       scroller.clientWidth >= (searchAvailable ? 9 : 8) * 48 - 4,
     );
@@ -156,7 +153,7 @@ export function TerminalMobileControls({
       data-terminal-mobile-controls=""
       ref={controlsRef}
       className={cn(
-        "shrink-0 border-t border-border/50 bg-sidebar px-2 py-1",
+        "shrink-0 border-t border-border/50 bg-sidebar px-2 pt-1.5 pb-1",
         className,
       )}
     >
@@ -312,7 +309,6 @@ export function TerminalMobileControls({
         <Key
           {...keyProps}
           label="Enter"
-          className={compactKeys ? "w-11 px-1.5 text-2xs" : undefined}
           onPress={() => onInput("\r")}
         >
           Enter
@@ -322,17 +318,13 @@ export function TerminalMobileControls({
           label="More terminal keys"
           toggle
           active={expanded}
-          className={compactKeys ? "w-11 px-1.5 text-2xs" : undefined}
           onPress={() => setExpanded(!expanded)}
         >
-          <Icon
-            name="MoreHorizontal"
-            className={compactKeys ? "hidden" : "size-4"}
-          />
+          <Icon name="MoreHorizontal" className="size-4" />
           Keys
           <Icon
             name={expanded ? "ChevronUp" : "ChevronDown"}
-            className={compactKeys ? "hidden" : "size-3"}
+            className="size-3"
           />
         </Key>
       </div>

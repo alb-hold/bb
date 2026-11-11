@@ -41,17 +41,22 @@ describe("TerminalMobileControls", () => {
         });
       try {
         renderControls();
+        const shell = screen.getByRole("group", {
+          name: "Terminal keyboard controls",
+        });
+        expect(shell.className.split(/\s+/u)).toContain("pt-1.5");
         const enter = screen.getByRole("button", { name: "Enter" });
         const more = screen.getByRole("button", { name: "More terminal keys" });
-        const compact = width === 360;
-        for (const key of [enter, more]) {
-          expect(key.classList.contains("w-11")).toBe(compact);
+        const interrupt = screen.getByRole("button", {
+          name: "Interrupt (Control C)",
+        });
+        for (const key of [enter, more, interrupt]) {
           expect(key.classList.contains("min-w-11")).toBe(true);
           expect(key.classList.contains("shrink-0")).toBe(true);
+          expect(key.classList.contains("text-xs")).toBe(true);
+          expect(key.classList.contains("text-2xs")).toBe(false);
         }
         expect(enter.textContent).toBe("Enter");
-        for (const key of [enter, more])
-          expect(key.classList.contains("px-1.5")).toBe(compact);
         expect(more.textContent).toBe("Keys");
 
         expect(

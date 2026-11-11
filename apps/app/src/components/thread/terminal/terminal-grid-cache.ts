@@ -6,7 +6,7 @@ import {
   TERMINAL_LINE_HEIGHT,
 } from "./terminal-font";
 
-const STORAGE_KEY = "bb.terminal.fit-grids.v4";
+const STORAGE_KEY = "bb.terminal.fit-grids.v5";
 const MAX_ENTRIES = 32;
 interface Entry {
   terminalId: string;
