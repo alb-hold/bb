@@ -37,6 +37,7 @@ import {
   pluginNavVisiblePanelKeysAtom,
 } from "@/components/plugin/pluginNavSidebarAtoms";
 import {
+  markPluginFrontendSettleFloorReached,
   markPluginFrontendsSettled,
   resetPluginFrontendBootStateForTest,
 } from "@/lib/plugin-frontend-boot-state";
@@ -516,6 +517,10 @@ describe("Rail", () => {
       },
     ]);
     renderRail(THREAD_PATH);
+    expect(railButton("Ghost board")).toBeDefined();
+
+    act(() => markPluginFrontendSettleFloorReached());
+
     expect(railButton("Ghost board")).toBeDefined();
 
     act(() => markPluginFrontendsSettled());
