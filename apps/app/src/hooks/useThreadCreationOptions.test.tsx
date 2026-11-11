@@ -40,7 +40,10 @@ import {
   writeCachedProviderList,
 } from "@/lib/provider-list-cache";
 import { createDeferredPromise } from "@bb/test-helpers";
+import { defaultAppSettings } from "@bb/domain";
 import { makeHost, makeProviderInfo } from "@bb/test-helpers/domain-fixtures";
+import { makeSystemConfig } from "@/test/fixtures/system-config";
+import type { SystemConfigResponse } from "@bb/server-contract";
 import {
   modelCatalogCacheKey,
   readCachedModelCatalog,
@@ -58,11 +61,33 @@ vi.mock("@/lib/sdk", () => ({
       defaultExecutionOptions: vi.fn(),
     },
     system: {
+      config: vi.fn(),
       executionOptions: vi.fn(),
       providerStates: vi.fn(),
     },
   },
 }));
+
+function multipleReadyProviderStates(
+  providerIds: readonly string[],
+): SystemProviderStatesResponse {
+  return {
+    providers: providerIds.map((providerId) => ({
+      providerId,
+      displayName: providerId,
+      status: "ready" as const,
+      statusMessage: null,
+      planLabel: null,
+      accountEmail: null,
+      installedVersion: null,
+      minimumSupportedVersion: null,
+      canInstall: false,
+      canUpdate: false,
+      loginCommand: null,
+      localLoginCommand: null,
+    })),
+  };
+}
 
 function readyProviderStates(providerId: string): SystemProviderStatesResponse {
   return {
@@ -123,6 +148,27 @@ function homeProvidersExecutionOptions(): SystemExecutionOptionsResponse {
         defaultReasoningEffort: "medium",
         isDefault: true,
       },
+    ],
+  };
+}
+
+
+function homeTwoReadyProvidersExecutionOptions(): SystemExecutionOptionsResponse {
+  const base = homeProvidersExecutionOptions();
+  const template = base.providers[0];
+  if (template === undefined) {
+    throw new Error("fixture has no provider to clone");
+  }
+  return {
+    ...base,
+    providers: [
+      {
+        ...template,
+        id: "claude-code",
+        displayName: "Claude Code",
+        available: true,
+      },
+      ...base.providers,
     ],
   };
 }
@@ -395,6 +441,9 @@ function setProjectScopedValue(baseKey: string, value: string): void {
 
 beforeEach(() => {
   window.sessionStorage.clear();
+  vi.mocked(sdk.system.config).mockResolvedValue(makeSystemConfig({
+    generalSettings: { ...defaultAppSettings, defaultProviderId: "codex" },
+  }));
   vi.mocked(sdk.system.executionOptions).mockResolvedValue(
     executionOptionsResponse(),
   );
@@ -2616,6 +2665,75 @@ describe("useThreadCreationOptions", () => {
     await act(async () => refresh.resolve(executionOptionsResponse()));
   });
 
+
+
+  it("waits for system config before latching a ready provider", async () => {
+    const configDeferred = createDeferredPromise<SystemConfigResponse>();
+    vi.mocked(sdk.system.config).mockReturnValue(configDeferred.promise);
+    vi.mocked(sdk.system.providerStates).mockResolvedValue(
+      multipleReadyProviderStates(["claude-code", "codex"]),
+    );
+    vi.mocked(sdk.system.executionOptions).mockResolvedValue(
+      homeTwoReadyProvidersExecutionOptions(),
+    );
+    const { wrapper, queryClient } = createQueryClientTestHarness();
+    queryClient.setQueryData(hostsQueryKey(), [
+      makeHost({ id: "home-host", maxPermissionMode: "auto" }),
+    ]);
+    const { result } = renderHook(
+      () =>
+        useThreadCreationOptions({
+          preferReadyProviderWhenUnset: true,
+          resolveProviderRouting: () => ({ hostId: "home-host" }),
+        }),
+      { wrapper },
+    );
+
+    await waitFor(() =>
+      expect(sdk.system.providerStates).toHaveBeenCalledTimes(1),
+    );
+    expect(result.current.selectedProviderId).toBe("");
+
+    await act(async () => {
+      configDeferred.resolve(makeSystemConfig({
+    generalSettings: { ...defaultAppSettings, defaultProviderId: "codex" },
+  }));
+    });
+
+    await waitFor(() => {
+      expect(result.current.selectedProviderId).toBe("codex");
+      expect(result.current.activeModel?.displayName).toBe("Codex Default");
+    });
+  });
+
+  it("still latches a ready provider when system config fails", async () => {
+    vi.mocked(sdk.system.config).mockRejectedValue(new Error("config failed"));
+    vi.mocked(sdk.system.providerStates).mockResolvedValue(
+      multipleReadyProviderStates(["claude-code", "codex"]),
+    );
+    vi.mocked(sdk.system.executionOptions).mockResolvedValue(
+      homeTwoReadyProvidersExecutionOptions(),
+    );
+    const { wrapper, queryClient } = createQueryClientTestHarness();
+    queryClient.setQueryData(hostsQueryKey(), [
+      makeHost({ id: "home-host", maxPermissionMode: "auto" }),
+    ]);
+    const { result } = renderHook(
+      () =>
+        useThreadCreationOptions({
+          preferReadyProviderWhenUnset: true,
+          resolveProviderRouting: () => ({ hostId: "home-host" }),
+        }),
+      { wrapper },
+    );
+
+    await waitFor(() =>
+      expect(sdk.system.providerStates).toHaveBeenCalledTimes(1),
+    );
+    await waitFor(() => {
+      expect(result.current.selectedProviderId).toBe("claude-code");
+    });
+  });
 
   it("picks a server-listed provider when provider states finish with none ready", async () => {
     vi.mocked(sdk.system.providerStates).mockResolvedValue(

@@ -402,23 +402,30 @@ export function useThreadCreationOptions(
     (initialReadyProvider.status === "unresolved" ||
       (initialReadyProvider.status === "resolved" &&
         initialReadyProvider.providerId === null));
+  const systemConfigSettled =
+    !systemConfig.isPending || systemConfig.isError;
   const providerStatesQuery = useSystemProviderStates({
     enabled: shouldResolveReadyProvider,
     ...executionOptionsRouting,
     poll: false,
   });
-  const queriedReadyProviderId = shouldResolveReadyProvider
-    ? resolveReadyProviderId(
-        providerStatesQuery.data?.providers ?? [],
-        systemConfig.data?.generalSettings?.defaultProviderId,
-      )
-    : undefined;
+  const queriedReadyProviderId =
+    shouldResolveReadyProvider && systemConfigSettled
+      ? resolveReadyProviderId(
+          providerStatesQuery.data?.providers ?? [],
+          systemConfig.data?.generalSettings?.defaultProviderId,
+        )
+      : undefined;
   const readyProviderId =
     initialReadyProvider.status === "resolved"
       ? (initialReadyProvider.providerId ?? undefined)
       : queriedReadyProviderId;
   useEffect(() => {
-    if (!shouldResolveReadyProvider || providerStatesQuery.isPending) {
+    if (
+      !shouldResolveReadyProvider ||
+      providerStatesQuery.isPending ||
+      !systemConfigSettled
+    ) {
       return;
     }
     const latchedProviderId = queriedReadyProviderId ?? null;
@@ -431,6 +438,7 @@ export function useThreadCreationOptions(
     providerStatesQuery.isPending,
     queriedReadyProviderId,
     shouldResolveReadyProvider,
+    systemConfigSettled,
   ]);
   const rawSelectedProviderId =
     selectedProviderIdBeforeReadyFallback || readyProviderId || "";
@@ -447,7 +455,8 @@ export function useThreadCreationOptions(
       ? catalogProjectId
       : undefined;
   const isResolvingReadyProvider =
-    shouldResolveReadyProvider && providerStatesQuery.isPending;
+    shouldResolveReadyProvider &&
+    (providerStatesQuery.isPending || !systemConfigSettled);
   const executionOptionsQuery = useSystemExecutionOptions({
     enabled: executionOptionsQueryEnabled,
     ...executionOptionsRouting,
