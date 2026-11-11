@@ -211,7 +211,7 @@ export function TerminalMobileControls({
       compactRow={compactKeys}
       onPress={() => onInput("\r")}
     >
-      Enter
+      {compactKeys ? "↵" : "Enter"}
     </Key>
   );
   const moreKey = (
