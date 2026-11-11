@@ -556,11 +556,13 @@ async function resolveExecutionOptions(
     await earlyModelResultPromise?.catch(() => undefined);
     throw error;
   }
-  providers = await omitProvidersThatCannotStartAThread(
-    deps,
-    hostId,
-    providers,
-  );
+  if (access.kind !== "picker") {
+    providers = await omitProvidersThatCannotStartAThread(
+      deps,
+      hostId,
+      providers,
+    );
+  }
   providers = includeRequestedRegisteredProvider(
     deps,
     providers,

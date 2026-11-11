@@ -2617,31 +2617,6 @@ describe("useThreadCreationOptions", () => {
   });
 
 
-  it("keeps the configured default provider when the home catalog temporarily lists only another provider", async () => {
-    vi.mocked(sdk.system.providerStates).mockResolvedValue(
-      piUnauthenticatedProviderStates(),
-    );
-    vi.mocked(sdk.system.executionOptions).mockResolvedValue({
-      ...homeProvidersExecutionOptions(),
-      providers: rememberedProviders().filter((provider) => provider.id === "pi"),
-      models: [],
-    });
-    const { wrapper, queryClient } = createQueryClientTestHarness();
-    seedHomeReadyProviderDiscoveryHarness(queryClient);
-    const { result } = renderHook(
-      () =>
-        useThreadCreationOptions({
-          preferReadyProviderWhenUnset: true,
-          resolveProviderRouting: () => ({ hostId: "home-host" }),
-        }),
-      { wrapper },
-    );
-
-    await waitFor(() =>
-      expect(result.current.selectedProviderId).toBe("codex"),
-    );
-  });
-
   it("picks a server-listed provider when provider states finish with none ready", async () => {
     vi.mocked(sdk.system.providerStates).mockResolvedValue(
       piUnauthenticatedProviderStates(),

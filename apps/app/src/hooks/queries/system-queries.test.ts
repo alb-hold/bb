@@ -691,49 +691,6 @@ describe("useSystemExecutionOptions", () => {
     expect(sameEnvironment.data?.models).toEqual([CODEX_MODEL]);
   });
 
-
-  it("does not replace the shared provider list cache with a provider-scoped response", async () => {
-    const { readCachedProviderList, writeCachedProviderList, providerListCacheKey } =
-      await import("@/lib/provider-list-cache");
-    const cacheKey = providerListCacheKey({
-      environmentId: null,
-      hostId: "host-a",
-    });
-    writeCachedProviderList(cacheKey, BUILT_IN_PROVIDERS);
-    vi.mocked(sdk.system.executionOptions).mockResolvedValue({
-      ...EXECUTION_OPTIONS_RESPONSE,
-      providers: [BUILT_IN_PROVIDERS.find((provider) => provider.id === "pi")!],
-      models: [],
-    });
-    await warmExecutionOptions({ hostId: "host-a", providerId: "pi" }, (data) =>
-      expect(data?.providers).toHaveLength(1),
-    );
-    expect(readCachedProviderList(cacheKey)).toEqual(BUILT_IN_PROVIDERS);
-  });
-
-  it("does not treat a provider-scoped warm catalog as placeholder data for the unscoped home catalog", async () => {
-    const piOnly: SystemExecutionOptionsResponse = {
-      ...EXECUTION_OPTIONS_RESPONSE,
-      providers: [BUILT_IN_PROVIDERS.find((provider) => provider.id === "pi")!],
-      models: [],
-    };
-    const { queryClient } = createQueryClientTestHarness();
-    vi.mocked(sdk.system.executionOptions).mockResolvedValue(piOnly);
-    await queryClient.fetchQuery(
-      liveSystemExecutionOptionsQueryOptions({
-        hostId: "host-a",
-        providerId: "pi",
-      }),
-    );
-    vi.mocked(sdk.system.executionOptions).mockImplementation(pendingForever);
-    const homeCatalog = reloadExecutionOptions(
-      { hostId: "host-a" },
-      queryClient,
-    );
-    expect(homeCatalog.isPlaceholderData).toBe(false);
-    expect(homeCatalog.data).toBeUndefined();
-  });
-
   it("never preloads a catalog for another provider or another host", async () => {
     vi.mocked(sdk.system.executionOptions).mockResolvedValue(CODEX_CATALOG);
     await warmExecutionOptions(

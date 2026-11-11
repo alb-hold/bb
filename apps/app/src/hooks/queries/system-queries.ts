@@ -99,15 +99,11 @@ function isSameExecutionOptionsRoute(
   previousQueryKey: QueryKey | undefined,
   environmentId: string | null,
   hostId: string | null,
-  providerId: string | null,
-  projectId: string | null,
 ): boolean {
   return (
     previousQueryKey?.[0] === SYSTEM_EXECUTION_OPTIONS_QUERY_KEY &&
     previousQueryKey[1] === environmentId &&
-    previousQueryKey[2] === hostId &&
-    (previousQueryKey[3] ?? null) === providerId &&
-    (previousQueryKey[4] ?? null) === projectId
+    previousQueryKey[2] === hostId
   );
 }
 
@@ -117,7 +113,6 @@ function resolveExecutionOptionsPlaceholder({
   environmentId,
   hostId,
   providerId,
-  projectId,
   catalogCacheKey,
   machineCatalogCacheKey,
   providersCacheKey,
@@ -127,7 +122,6 @@ function resolveExecutionOptionsPlaceholder({
   environmentId: string | null;
   hostId: string | null;
   providerId: string | null;
-  projectId: string | null;
   catalogCacheKey: string;
   machineCatalogCacheKey: string;
   providersCacheKey: string;
@@ -136,8 +130,6 @@ function resolveExecutionOptionsPlaceholder({
     previousQueryKey,
     environmentId,
     hostId,
-    providerId,
-    projectId,
   )
     ? previousData?.providers
     : undefined;
@@ -145,13 +137,9 @@ function resolveExecutionOptionsPlaceholder({
     readCachedModelCatalog(catalogCacheKey) ??
     readCachedModelCatalog(machineCatalogCacheKey);
   const remembered = readCachedProviderList(providersCacheKey);
-  const rememberedProviders =
-    remembered !== null && remembered.length > 0
-      ? providerId === null && remembered.length === 1
-        ? null
-        : remembered
-      : null;
-  const providers = previousProviders ?? rememberedProviders;
+  const providers =
+    previousProviders ??
+    (remembered !== null && remembered.length > 0 ? remembered : null);
   if (
     providers === null ||
     (providerId !== null &&
@@ -272,7 +260,7 @@ export function systemProvidersQueryOptions(
         queryClient?.getQueriesData<SystemExecutionOptionsResponse>({
           queryKey: allSystemExecutionOptionsQueryKeyPrefix(),
         }).find(([key, data]) =>
-          isSameExecutionOptionsRoute(key, environmentId, hostId, null, null) &&
+          isSameExecutionOptionsRoute(key, environmentId, hostId) &&
           data !== undefined && data.providers.length > 0,
         )?.[1]?.providers;
       if (remembered == null) return undefined;
@@ -390,7 +378,7 @@ function systemExecutionOptionsQueryOptions({
         });
       const modelsProviderId =
         loadedProviderId ?? response.providers[0]?.id ?? null;
-      if (writeLastKnown && providerId === null) {
+      if (writeLastKnown) {
         writeCachedProviderList(
           providerListCacheKey({ environmentId, hostId }),
           response.providers,
@@ -511,7 +499,6 @@ function executionOptionsWithPlaceholderQueryOptions(
         environmentId,
         hostId,
         providerId,
-        projectId,
         catalogCacheKey,
         machineCatalogCacheKey,
         providersCacheKey,

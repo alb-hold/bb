@@ -959,17 +959,15 @@ export function NewThreadComposer({
       seed?.reasoningLevel === undefined ||
       seed?.permissionMode === undefined);
   const creationOptions = useThreadCreationOptions({
-    enabled:
-      projectDefaultsState.status !== "pending" || preferReadyProviderWhenUnset,
+    enabled: projectDefaultsState.status !== "pending",
     scope: selectionScope,
     preferenceProjectId: projectId,
     catalogProjectId: isProjectless ? undefined : projectId,
     resetKey: `${projectId}\0${seedSignature}`,
     resolveProviderRouting,
-    initialProviderId:
-      seed?.providerId ??
-      (preferReadyProviderWhenUnset ? undefined : projectDefaults?.providerId),
-    preferReadyProviderWhenUnset,
+    initialProviderId: seed?.providerId ?? projectDefaults?.providerId,
+    preferReadyProviderWhenUnset:
+      preferReadyProviderWhenUnset && projectDefaults === null,
     initialModel: seed?.model ?? projectDefaults?.model,
     initialServiceTier: seed?.serviceTier ?? projectDefaults?.serviceTier,
     initialReasoningLevel:

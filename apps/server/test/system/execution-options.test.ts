@@ -9,6 +9,7 @@ import {
   appendCustomModels,
   listSystemProviderInfos,
   resolveSystemExecutionOptions,
+  resolveSystemExecutionOptionsForValidation,
   resolveSystemProviderModels,
 } from "../../src/services/system/execution-options.js";
 import { getProviderStates } from "../../src/services/system/provider-states.js";
@@ -409,7 +410,7 @@ describe("resolveSystemExecutionOptions", () => {
     });
   });
 
-  it("invalidates a cold picker when pending health settles signed out", async () => {
+  it("notifies when pending picker health settles signed out without shrinking the roster", async () => {
     await withTestHarness(async (harness) => {
       const { host, session } = seedHostSession(harness.deps, {
         id: "host-cold-health-picker",
@@ -452,7 +453,7 @@ describe("resolveSystemExecutionOptions", () => {
         const body = await second.json();
         expect(
           body.providers.map((provider: { id: string }) => provider.id),
-        ).not.toContain("codex");
+        ).toContain("codex");
         notify.mockClear();
         for (let index = 0; index < 3; index += 1) {
           expect((await harness.app.request(url)).status).toBe(200);
@@ -1759,9 +1760,13 @@ describe("providers a thread can actually start on", () => {
       });
       respondWithSignedOutCursor(harness, host.id, session.id);
 
-      const response = await resolveSystemExecutionOptions(harness.deps, {
-        hostId: host.id,
-      });
+      const response = await resolveSystemExecutionOptionsForValidation(
+        harness.deps,
+        {
+          hostId: host.id,
+        },
+        null,
+      );
 
       const offered = response.providers.map((provider) => provider.id);
       expect(offered).toContain("acp-opencode");
@@ -1796,9 +1801,13 @@ describe("providers a thread can actually start on", () => {
         },
       });
 
-      const before = await resolveSystemExecutionOptions(harness.deps, {
-        hostId: host.id,
-      });
+      const before = await resolveSystemExecutionOptionsForValidation(
+        harness.deps,
+        {
+          hostId: host.id,
+        },
+        null,
+      );
       expect(before.providers.map((provider) => provider.id)).not.toContain(
         "acp-cursor",
       );
@@ -1806,9 +1815,13 @@ describe("providers a thread can actually start on", () => {
       cursorStatus = "ready";
       await getProviderStates(harness.deps, { hostId: host.id });
 
-      const after = await resolveSystemExecutionOptions(harness.deps, {
-        hostId: host.id,
-      });
+      const after = await resolveSystemExecutionOptionsForValidation(
+        harness.deps,
+        {
+          hostId: host.id,
+        },
+        null,
+      );
       expect(after.providers.map((provider) => provider.id)).toContain(
         "acp-cursor",
       );

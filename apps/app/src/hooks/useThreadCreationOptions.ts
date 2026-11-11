@@ -522,44 +522,15 @@ export function useThreadCreationOptions(
     ) {
       return preferredDefaultProviderId;
     }
-    if (
-      canResolveReadyProvider &&
-      systemConfig.isPending &&
-      selectedProviderIdBeforeReadyFallback.length === 0
-    ) {
-      return "";
-    }
-    if (
-      canResolveReadyProvider &&
-      !userChoseSelectedProvider &&
-      preferredDefaultProviderId &&
-      selectedProviderIdBeforeReadyFallback.length === 0
-    ) {
-      return preferredDefaultProviderId;
-    }
-    if (
-      canResolveReadyProvider &&
-      !userChoseSelectedProvider &&
-      preferredDefaultProviderId &&
-      selectedProviderIdBeforeReadyFallback.length === 0 &&
-      providers.length > 0 &&
-      !providers.some((provider) => provider.id === preferredDefaultProviderId)
-    ) {
-      return preferredDefaultProviderId;
-    }
     return providers.find((provider) => provider.available)?.id ?? providers[0]?.id ?? "";
   }, [
     awaitingReadyProviderSelection,
-    canResolveReadyProvider,
     modelCatalogIsVerified,
     preferredDefaultProviderId,
     providers,
     rawSelectedProviderId,
     readyProviderId,
     rejectCatalogLoadErrorSelection,
-    selectedProviderIdBeforeReadyFallback,
-    systemConfig.isPending,
-    userChoseSelectedProvider,
   ]);
 
   const { setValue: setStoredSelectedModel, value: storedSelectedModel } =
