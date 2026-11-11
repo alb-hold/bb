@@ -474,7 +474,7 @@ export function RootComposeView() {
       onProjectChange={setRootComposeProjectId}
       draftStorage={{ kind: "new-thread" }}
       selectionScope="new-thread"
-      preferReadyProviderWhenUnset
+      preferReadyProviderWhenUnset={true}
       onSubmit={handleSubmit}
     >
       {(composer) => (
