@@ -8,12 +8,10 @@ import {
   setServerPluginsStarting,
   setPluginFrontendReconcilePending,
   usePluginFrontendBootComplete,
-  usePluginFrontendsSettled,
 } from "./plugin-frontend-boot-state";
 import {
   mergePluginNavPanelChrome,
   readLastKnownPluginNavPanelChrome,
-  readRememberedPluginNavPanelChrome,
   rememberPluginNavPanelChrome,
   writeLastKnownPluginNavPanelChrome,
 } from "./plugin-nav-panel-chrome";

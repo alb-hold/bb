@@ -98,6 +98,7 @@ vi.mock("@/hooks/queries/system-queries", () => ({
       ],
     },
   }),
+  useSystemProviderInfo: () => null,
 }));
 
 vi.mock("@bb/shared-ui/hooks/use-compact-viewport", () => ({

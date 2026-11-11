@@ -130,12 +130,6 @@ import {
 } from "@/lib/route-paths";
 import { THREAD_INFO_FIXED_TAB_REFERENCE } from "@/components/secondary-panel/thread-info-fixed-tab-navigation";
 import { ThreadDetailHeader } from "./ThreadDetailHeader";
-import { lazy, Suspense } from "react";
-const ThreadIdentityLeadingMark = lazy(() =>
-  import("@/components/thread/ThreadIdentityLeadingMark").then((module) => ({
-    default: module.ThreadIdentityLeadingMark,
-  })),
-);
 import {
   CORE_THREAD_CONTEXT_CARD_ROWS,
   CORE_THREAD_CONTEXT_CARD_SECTIONS,
@@ -1860,16 +1854,10 @@ function ThreadDetailViewInternal(
       activityIndicator={getThreadDetailActivityIndicator(thread)}
       needsInput={thread.nativeTerminal && thread.hasPendingInteraction}
       hasNativeTerminal={nativeTerminalThread != null}
-      leadingMark={
-        <Suspense fallback={null}>
-          <ThreadIdentityLeadingMark
-            providerId={thread.providerId}
-            provider={threadProviderInfo ?? null}
-            nativeTerminal={thread.nativeTerminal === true}
-            isWorktree={environment?.isWorktree === true && !thread.nativeTerminal}
-          />
-        </Suspense>
-      }
+      providerId={thread.providerId}
+      provider={threadProviderInfo ?? null}
+      nativeTerminal={thread.nativeTerminal === true}
+      environmentIsWorktree={environment?.isWorktree === true}
       nativeActivityTargetRef={setNativeActivityTarget}
       checkTerminal={nativeTerminalThread?.terminal?.attention != null}
       contextCardButton={<ThreadContextCardHeaderButton />}

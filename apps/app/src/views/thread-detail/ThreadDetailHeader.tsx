@@ -11,6 +11,9 @@ import {
   type ReactNode,
   type Ref,
 } from "react";
+import type { ProviderInfo } from "@bb/domain";
+import { getProviderIconInfo } from "@/lib/provider-icon";
+import { ThreadLeadingMark } from "@bb/shared-ui/thread-mode-glyph";
 import { Button } from "@bb/shared-ui/button";
 import { useAtomValue } from "jotai";
 import type {
@@ -90,7 +93,10 @@ interface ThreadDetailHeaderProps {
   hasNativeTerminal?: boolean;
   nativeActivityTargetRef?: Ref<HTMLDivElement>;
   workspaceOpenButton?: ReactNode;
-  leadingMark?: ReactNode;
+  providerId?: string | null;
+  provider?: ProviderInfo | null;
+  nativeTerminal?: boolean;
+  environmentIsWorktree?: boolean;
 }
 
 export function ThreadDetailHeader({
@@ -108,8 +114,25 @@ export function ThreadDetailHeader({
   nativeActivityTargetRef,
   workspaceOpenButton,
   contextCardButton,
-  leadingMark = null,
+  providerId = null,
+  provider = null,
+  nativeTerminal = false,
+  environmentIsWorktree = false,
 }: ThreadDetailHeaderProps) {
+  const isWorktree = environmentIsWorktree && !nativeTerminal;
+  const ProviderMark = getProviderIconInfo("agent", providerId ?? "", provider)?.icon;
+  const identityLeadingMark =
+    providerId === null && !nativeTerminal && !environmentIsWorktree ? null : (
+      <span className="inline-flex size-4 shrink-0 items-center justify-center text-muted-foreground">
+        <ThreadLeadingMark
+          nativeTerminal={nativeTerminal}
+          isWorktree={isWorktree}
+          providerName={provider?.displayName ?? null}
+        >
+          {ProviderMark ? <ProviderMark className="size-4" /> : null}
+        </ThreadLeadingMark>
+      </span>
+    );
   const commandRunner = useAppCommandRunner();
   const findShortcut = useAppCommandShortcut("terminal.find");
   const isCompactViewport = useIsCompactViewport();
@@ -248,7 +271,7 @@ export function ThreadDetailHeader({
             size="compact"
           />
         ) : null}
-        {leadingMark}
+        {identityLeadingMark}
         <div className="flex min-w-0 flex-1 flex-col gap-0.5">
           <p
             data-thread-detail-header-title=""

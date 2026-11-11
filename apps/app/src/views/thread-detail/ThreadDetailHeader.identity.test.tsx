@@ -71,8 +71,16 @@ vi.mock("jotai", async (importOriginal) => {
   return { ...actual, useAtomValue: () => false };
 });
 
+vi.mock("@/lib/provider-icon", () => ({
+  getProviderIconInfo: () => ({
+    icon: ({ className }: { className?: string }) => (
+      <span data-testid="provider-mark" className={className} />
+    ),
+  }),
+}));
+
 describe("ThreadDetailHeader identity", () => {
-  it("shows the shared provider leading mark before the title", () => {
+  it("shows the provider leading mark with native-terminal accessible name", () => {
     render(
       <ThreadDetailHeader
         actionsMenu={null}
@@ -92,9 +100,13 @@ describe("ThreadDetailHeader identity", () => {
         }}
         threadTitle="Terminal session"
         hasNativeTerminal
-        leadingMark={<span data-testid="thread-header-identity-mark" />}
+        providerId="codex"
+        provider={{ displayName: "Codex", id: "codex" } as never}
+        nativeTerminal
+        environmentIsWorktree={false}
       />,
     );
-    expect(screen.getByTestId("thread-header-identity-mark")).toBeTruthy();
+    expect(screen.getByTestId("provider-mark")).toBeTruthy();
+    expect(screen.getByRole("img", { name: "Codex, native terminal" })).toBeTruthy();
   });
 });
