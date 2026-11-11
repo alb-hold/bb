@@ -781,9 +781,15 @@ function ThreadRowComponent({
   const splitIndicatorLabel = trailingIndicatorResolution.accessibleLabel
     ? `${labelTitle} — open in split; ${trailingIndicatorResolution.accessibleLabel}`
     : `${labelTitle} — open in split`;
+  const phoneBranch = isCompactViewport
+    ? (thread.environment?.branchName ?? null)
+    : null;
+  const linkIdentity = isCompactViewport
+    ? [labelTitle, projectName, phoneBranch].filter(Boolean).join(" · ")
+    : labelTitle;
   const linkLabel = hasComposerDraft
-    ? `Open ${labelTitle} (unsubmitted draft)`
-    : `Open ${labelTitle}`;
+    ? `Open ${linkIdentity} (unsubmitted draft)`
+    : `Open ${linkIdentity}`;
   const rowDragBindings =
     isEditing || isCustomizingActions ? undefined : options.dragBindings;
   const nestTargetState = options.nestDrop?.state ?? null;
@@ -855,6 +861,7 @@ function ThreadRowComponent({
       "h-auto min-h-[var(--bb-sidebar-row-height)] max-md:pointer-coarse:h-auto max-md:pointer-coarse:min-h-[var(--bb-sidebar-row-height-coarse)]",
     showRowMetadata && "has-[[data-reserve-line]]:h-auto has-[[data-reserve-line]]:md:h-auto has-[[data-reserve-line]]:min-h-[var(--bb-sidebar-row-height)] has-[[data-reserve-line]]:max-md:pointer-coarse:h-auto has-[[data-reserve-line]]:max-md:pointer-coarse:min-h-11",
     "max-md:pointer-coarse:min-h-11",
+    "max-md:h-auto max-md:pointer-coarse:h-auto max-md:py-1.5",
     showActive
       ? SIDEBAR_ROW_SELECTED_STATE_CLASS
       : SIDEBAR_ROW_INTERACTIVE_STATE_CLASS,
@@ -1026,7 +1033,7 @@ function ThreadRowComponent({
               </span>
             ) : (
               <span
-                className="min-w-0 flex-1 md:flex md:flex-col"
+                className="flex min-w-0 flex-1 flex-col"
                 title={labelTitle}
                 onDoubleClick={startTitleEditing}
               >
@@ -1047,7 +1054,7 @@ function ThreadRowComponent({
                 <span
                   data-sidebar-thread-context=""
                   className={cn(
-                    "hidden min-w-0 items-center gap-1 truncate text-xs font-normal leading-4 text-muted-foreground md:text-sm md:leading-4 md:[&_span]:leading-4 md:[&_time]:leading-4 md:text-sidebar-metadata-foreground [&_time]:text-xs md:[&_time]:text-sm [&_time]:text-inherit md:flex",
+                    "flex min-w-0 flex-col items-start text-xs font-normal leading-4 text-muted-foreground md:flex-row md:items-center md:gap-1 md:truncate md:text-sm md:leading-4 md:[&_span]:leading-4 md:[&_time]:leading-4 md:text-sidebar-metadata-foreground [&_time]:text-xs md:[&_time]:text-sm [&_time]:text-inherit",
                     thread.experimental_nativeTerminal &&
                       "[&>[role=img]]:text-foreground [&>[role=img]_svg]:stroke-[2]",
                   )}
@@ -1056,6 +1063,14 @@ function ThreadRowComponent({
                     project={showProjectName ? projectName ?? null : null}
                     age={<InfoRowTime timestamp={thread.updatedAt} />}
                   />
+                  {phoneBranch !== null ? (
+                    <span
+                      data-sidebar-thread-phone-context=""
+                      className="min-w-0 max-w-full whitespace-normal break-all md:hidden"
+                    >
+                      {phoneBranch}
+                    </span>
+                  ) : null}
                 </span>
               </span>
             )}
