@@ -87,16 +87,11 @@ export function rememberPluginNavPanelChrome(
   navPanels: readonly PluginNavPanelSlot[],
 ): void {
   if (!bootComplete) return;
-  const live = navPanels.map(pluginNavPanelChromeOf);
-  const liveByKey = new Map(live.map((chrome) => [chromeKey(chrome), chrome]));
-  const ordered = readLastKnownPluginNavPanelChrome()
-    .map((chrome) => liveByKey.get(chromeKey(chrome)))
-    .filter((chrome): chrome is PluginNavPanelChrome => chrome !== undefined);
-  const rememberedKeys = new Set(ordered.map(chromeKey));
-  writeLastKnownPluginNavPanelChrome([
-    ...ordered,
-    ...live.filter((chrome) => !rememberedKeys.has(chromeKey(chrome))),
-  ]);
+  writeLastKnownPluginNavPanelChrome(
+    mergePluginNavPanelChrome(readLastKnownPluginNavPanelChrome(), navPanels)
+      .filter((entry) => entry.panel !== null)
+      .map((entry) => entry.chrome),
+  );
 }
 
 export function usePluginNavPanelChrome(): PluginNavPanelChromeEntry[] {

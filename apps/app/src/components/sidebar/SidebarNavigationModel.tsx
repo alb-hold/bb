@@ -264,16 +264,15 @@ export function SidebarNavigationModelProvider({
     rows,
     pathname: location.pathname,
   });
-  const isHomeActive =
-    !isSettingsPathname(location.pathname) &&
-    getPluginPanelRoutePluginId(location.pathname) === null &&
-    matchPath("/threads/:threadId/*", location.pathname) === null &&
-    matchPath("/projects/:projectId/threads/:threadId/*", location.pathname) === null &&
-    (activeItemId === null || activeItemId === NEW_THREAD_NAVIGATION_ITEM_ID);
-  const currentRoutePath = `${location.pathname}${location.search}${location.hash}`;
   const isThreadRoute =
     matchPath("/threads/:threadId/*", location.pathname) !== null ||
     matchPath("/projects/:projectId/threads/:threadId/*", location.pathname) !== null;
+  const isHomeActive =
+    !isSettingsPathname(location.pathname) &&
+    getPluginPanelRoutePluginId(location.pathname) === null &&
+    !isThreadRoute &&
+    (activeItemId === null || activeItemId === NEW_THREAD_NAVIGATION_ITEM_ID);
+  const currentRoutePath = `${location.pathname}${location.search}${location.hash}`;
   const homeRoutePathRef = useRef(
     isThreadRoute ? currentRoutePath : getRootComposeRoutePath(),
   );
