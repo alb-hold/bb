@@ -101,34 +101,29 @@ it("releases a pending thread wait when the user leaves the route", async () => 
   await mounted;
 });
 
-it("keeps the rich composer waiting until both the plain input and sidebar are visible", async () => {
+it("keeps the rich composer waiting until the plain input is visible", async () => {
   const ready = vi.fn();
   const mounted = whenHomeComposerReady().then(ready);
-  document.body.append(document.createElement("textarea"));
+  const input = document.createElement("textarea");
+  input.hidden = true;
+  input.checkVisibility = () => !input.hidden;
+  document.body.append(input);
   await new Promise<void>((resolve) => queueMicrotask(resolve));
   expect(ready).not.toHaveBeenCalled();
-  const row = document.createElement("div");
-  row.dataset.sidebarThreadId = "thr_one";
-  row.hidden = true;
-  row.checkVisibility = () => !row.hidden;
-  document.body.append(row);
-  await new Promise<void>((resolve) => queueMicrotask(resolve));
-  expect(ready).not.toHaveBeenCalled();
-  row.hidden = false;
+  input.hidden = false;
   await mounted;
   expect(ready).toHaveBeenCalledOnce();
 });
 
-it("releases rich composer loading for an empty sidebar after its bounded fallback", async () => {
+it("does not wait for sidebar rows that only a not-yet-booted plugin renders", async () => {
   vi.useFakeTimers();
   document.body.append(document.createElement("textarea"));
   const ready = vi.fn();
   const mounted = whenHomeComposerReady().then(ready);
-  await vi.advanceTimersByTimeAsync(PLUGIN_FRONTEND_BOOT_TIMEOUT_MS - 1);
-  expect(ready).not.toHaveBeenCalled();
-  await vi.advanceTimersByTimeAsync(1);
+  await vi.advanceTimersByTimeAsync(10);
   await mounted;
   expect(ready).toHaveBeenCalledOnce();
+  expect(document.querySelector("[data-sidebar-thread-id]")).toBeNull();
 });
 
 it("does not defer a rich composer on a thread route", async () => {

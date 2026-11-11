@@ -42,9 +42,7 @@ export function whenHomeComposerReady(): Promise<void> {
   if (pathname !== "/") return Promise.resolve();
   return whenSurfaceMounted(
     pathname,
-    () =>
-      hasMountedSurface(HOME_COMPOSER_SELECTOR) &&
-      hasMountedSurface("[data-sidebar-thread-id]"),
+    () => hasMountedSurface(HOME_COMPOSER_SELECTOR),
     PLUGIN_FRONTEND_BOOT_TIMEOUT_MS,
   );
 }
