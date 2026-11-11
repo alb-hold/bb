@@ -34,6 +34,7 @@ function Key({
   active = false,
   toggle = false,
   disabled,
+  compactRow = false,
   className,
 }: {
   label: string;
@@ -42,6 +43,7 @@ function Key({
   active?: boolean;
   toggle?: boolean;
   disabled: boolean;
+  compactRow?: boolean;
   className?: string;
 }) {
   return (
@@ -58,7 +60,10 @@ function Key({
         onPress();
       }}
       className={cn(
-        "flex h-11 w-max min-w-11 flex-none shrink-0 whitespace-nowrap touch-manipulation items-center justify-center gap-1 rounded-full bg-[image:var(--pill-surface)] px-1 font-mono text-xs font-medium text-muted-foreground transition-colors hover:bg-state-hover hover:text-foreground active:bg-none active:bg-state-active active:text-foreground focus-visible:outline-2 focus-visible:outline-ring disabled:opacity-40",
+        "flex h-11 touch-manipulation items-center justify-center gap-1 rounded-full bg-[image:var(--pill-surface)] font-mono font-medium text-muted-foreground transition-colors hover:bg-state-hover hover:text-foreground active:bg-none active:bg-state-active active:text-foreground focus-visible:outline-2 focus-visible:outline-ring disabled:opacity-40",
+        compactRow
+          ? "min-w-0 flex-1 basis-0 shrink overflow-hidden px-0.5 text-2xs whitespace-nowrap"
+          : "w-max min-w-11 flex-none shrink-0 whitespace-nowrap px-1 text-xs",
         active && "bg-none bg-state-active text-foreground",
         className,
       )}
@@ -124,7 +129,6 @@ export function TerminalMobileControls({
   const keyProps = { disabled };
   const readOnlyKeyProps = { disabled: readOnlyDisabled };
   const readOnlyExited = disabled && !readOnlyDisabled;
-  const compactKeyClass = compactKeys ? "w-11 min-w-11 px-1.5 text-2xs" : undefined;
   const secondaryKeys = (
     <>
       {searchAvailable ? (
@@ -160,7 +164,7 @@ export function TerminalMobileControls({
       <Key
         {...keyProps}
         label="Interrupt (Control C)"
-        className={compactKeyClass}
+        compactRow={compactKeys}
         onPress={() => onInput("\x03")}
       >
         ^C
@@ -168,7 +172,7 @@ export function TerminalMobileControls({
       <Key
         {...keyProps}
         label="Escape"
-        className={compactKeyClass}
+        compactRow={compactKeys}
         onPress={() => onInput("\x1b")}
       >
         Esc
@@ -176,7 +180,7 @@ export function TerminalMobileControls({
       <Key
         {...keyProps}
         label="Arrow up"
-        className={compactKeyClass}
+        compactRow={compactKeys}
         onPress={() => onArrow("up")}
       >
         {compactKeys ? "↑" : <Icon name="ArrowUp" className="size-4" />}
@@ -184,7 +188,7 @@ export function TerminalMobileControls({
       <Key
         {...keyProps}
         label="Arrow down"
-        className={compactKeyClass}
+        compactRow={compactKeys}
         onPress={() => onArrow("down")}
       >
         {compactKeys ? "↓" : <Icon name="ArrowDown" className="size-4" />}
@@ -192,7 +196,7 @@ export function TerminalMobileControls({
       <Key
         {...keyProps}
         label="Tab"
-        className={compactKeyClass}
+        compactRow={compactKeys}
         onPress={() => onInput("\t")}
       >
         Tab
@@ -204,7 +208,7 @@ export function TerminalMobileControls({
     <Key
       {...keyProps}
       label="Enter"
-      className={compactKeyClass}
+      compactRow={compactKeys}
       onPress={() => onInput("\r")}
     >
       Enter
@@ -216,7 +220,7 @@ export function TerminalMobileControls({
       label="More terminal keys"
       toggle
       active={expanded}
-      className={compactKeyClass}
+      compactRow={compactKeys}
       onPress={() => setExpanded(!expanded)}
     >
       {!compactKeys ? <Icon name="MoreHorizontal" className="size-4" /> : null}

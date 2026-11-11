@@ -41,47 +41,96 @@ describe("TerminalMobileControls", () => {
     "More terminal keys",
   ] as const;
 
-  it("keeps every primary key visible in one row at 360 px with uniform compact sizing", () => {
-    const clientWidth = vi
-      .spyOn(HTMLElement.prototype, "clientWidth", "get")
-      .mockImplementation(function (this: HTMLElement) {
-        return this.hasAttribute("data-terminal-mobile-controls") ? 360 : 0;
-      });
-    try {
-      renderControls();
-      for (const label of primaryRowLabels) {
-        expect(screen.getByRole("button", { name: label })).toBeTruthy();
-      }
-      const scroller = document.querySelector<HTMLElement>(
-        "[data-terminal-key-scroller]",
-      )!;
-      expect(scroller.classList.contains("overflow-x-hidden")).toBe(true);
-      expect(scroller.querySelectorAll("button")).toHaveLength(7);
-      const rowKeys = primaryRowLabels.map((label) =>
-        screen.getByRole("button", { name: label }),
+  function mockDomRect(
+    left: number,
+    width: number,
+    height = 44,
+  ): DOMRect {
+    const top = 0;
+    const right = left + width;
+    const bottom = top + height;
+    return {
+      left,
+      top,
+      right,
+      bottom,
+      width,
+      height,
+      x: left,
+      y: top,
+      toJSON: () => ({}),
+    } as DOMRect;
+  }
+
+  function layoutEqualFlexRow(row: HTMLElement, rowWidth: number) {
+    const keys = [...row.querySelectorAll("button")];
+    const gap = 4;
+    const slot = (rowWidth - gap * (keys.length - 1)) / keys.length;
+    let x = 0;
+    for (const key of keys) {
+      vi.spyOn(key, "getBoundingClientRect").mockReturnValue(
+        mockDomRect(x, slot),
       );
-      for (const key of rowKeys) {
-        expect(key.classList.contains("text-2xs")).toBe(true);
-        expect(key.classList.contains("w-11")).toBe(true);
-        expect(key.classList.contains("px-1.5")).toBe(true);
-      }
-      Object.defineProperty(scroller, "scrollWidth", {
-        configurable: true,
-        value: scroller.clientWidth,
-      });
-      expect(scroller.scrollWidth).toBeLessThanOrEqual(scroller.clientWidth);
-      expect(
-        screen.getByRole("button", { name: "More terminal keys" }).textContent,
-      ).toBe("Keys");
-      expect(
-        screen
-          .getByRole("button", { name: "Arrow up" })
-          .querySelector('[data-icon="ArrowUp"]'),
-      ).toBeNull();
-    } finally {
-      clientWidth.mockRestore();
+      x += slot + gap;
     }
-  });
+    vi.spyOn(row, "getBoundingClientRect").mockReturnValue(
+      mockDomRect(0, rowWidth),
+    );
+  }
+
+  function assertRowKeyRects(row: HTMLElement) {
+    const rowRect = row.getBoundingClientRect();
+    const keys = [...row.querySelectorAll("button")];
+    for (let i = 0; i < keys.length; i++) {
+      const rect = keys[i]!.getBoundingClientRect();
+      expect(rect.left).toBeGreaterThanOrEqual(rowRect.left);
+      expect(rect.top).toBeGreaterThanOrEqual(rowRect.top);
+      expect(rect.right).toBeLessThanOrEqual(rowRect.right);
+      expect(rect.bottom).toBeLessThanOrEqual(rowRect.bottom);
+      if (i > 0) {
+        expect(rect.left).toBeGreaterThanOrEqual(
+          keys[i - 1]!.getBoundingClientRect().right - 0.01,
+        );
+      }
+    }
+    expect(keys.at(-1)!.getBoundingClientRect().right).toBeLessThanOrEqual(
+      rowRect.right + 0.01,
+    );
+  }
+
+  it.each([288, 304, 320, 344, 359])(
+    "fits every compact primary key inside the row at %i px controls width",
+    (width) => {
+      const clientWidth = vi
+        .spyOn(HTMLElement.prototype, "clientWidth", "get")
+        .mockImplementation(function (this: HTMLElement) {
+          return this.hasAttribute("data-terminal-mobile-controls") ? width : 0;
+        });
+      try {
+        renderControls();
+        for (const label of primaryRowLabels) {
+          expect(screen.getByRole("button", { name: label })).toBeTruthy();
+        }
+        const row = document.querySelector<HTMLElement>(
+          "[data-terminal-key-scroller]",
+        )!;
+        layoutEqualFlexRow(row, width);
+        const rowKeys = primaryRowLabels.map((label) =>
+          screen.getByRole("button", { name: label }),
+        );
+        for (const key of rowKeys) {
+          expect(key.classList.contains("flex-1")).toBe(true);
+          expect(key.classList.contains("basis-0")).toBe(true);
+          expect(key.classList.contains("min-w-0")).toBe(true);
+          expect(key.classList.contains("text-2xs")).toBe(true);
+          expect(key.classList.contains("w-11")).toBe(false);
+        }
+        assertRowKeyRects(row);
+      } finally {
+        clientWidth.mockRestore();
+      }
+    },
+  );
 
   it("uses full-size keys at 390 px", () => {
     const clientWidth = vi
@@ -105,6 +154,12 @@ describe("TerminalMobileControls", () => {
           .getByRole("button", { name: "Enter" })
           .closest("[data-terminal-key-scroller]"),
       ).toBeNull();
+      fireEvent.click(more);
+      expect(more.getAttribute("aria-pressed")).toBe("true");
+      expect(
+        more.querySelector("[data-icon]")?.getAttribute("data-icon"),
+      ).toBe("MoreHorizontal");
+      expect(more.querySelector('[data-icon="ChevronUp"]')).not.toBeNull();
     } finally {
       clientWidth.mockRestore();
     }

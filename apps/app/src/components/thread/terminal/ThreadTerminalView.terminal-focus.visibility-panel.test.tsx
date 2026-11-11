@@ -830,9 +830,11 @@ describe("ThreadTerminalView terminal visibility and panel", () => {
       ).toBe(14);
       expect(terminalStyle.paddingLeft).toBe("8px");
       expect(terminalStyle.paddingRight).toBe("14px");
+      const cell = terminal.dimensions!.css.cell;
+      const scrollbar = terminal.options.scrollbar?.width ?? 14;
       const expected = {
-        cols: sizes()[0]!.cols,
-        rows: sizes()[0]!.rows,
+        cols: Math.floor((354 - 8 - 14 - scrollbar) / cell.width),
+        rows: Math.floor(504 / cell.height),
       };
       expect(sizes()).toEqual([expect.objectContaining(expected)]);
       const socket = testState.sockets[0]!;

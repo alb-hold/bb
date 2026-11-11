@@ -4297,10 +4297,9 @@ describe("terminal first paint", () => {
         ?.join("\n")}
     `;
     document.head.append(style);
-    const terminalPaddingRightPattern =
-      /^(14px|calc\(8px \+ var\(--terminal-overlay-scrollbar-size\)\))$/;
-    const terminalInsetsPattern =
-      /^8px\/(14px|calc\(8px \+ var\(--terminal-overlay-scrollbar-size\)\))$/;
+    const terminalPaddingRight =
+      "calc(8px + var(--terminal-overlay-scrollbar-size))";
+    const expectedInsets = `8px/${terminalPaddingRight}`;
     const insets: string[] = [];
     const initialInsets: string[] = [];
     const paintFrames = new Map<
@@ -4382,7 +4381,9 @@ describe("terminal first paint", () => {
         }, "terminal replay did not finish");
         const renderer = terminals[index]!.element!;
         expect(getComputedStyle(renderer).paddingLeft).toBe("8px");
-        expect(getComputedStyle(renderer).paddingRight).toMatch(terminalPaddingRightPattern);
+        expect(getComputedStyle(renderer).paddingRight).toBe(
+          terminalPaddingRight,
+        );
         await waitForReadinessCondition(
           () => expect(paintFrames.get(terminals[index]!)!).toHaveLength(2),
           "terminal did not paint two visible frames",
@@ -4391,16 +4392,12 @@ describe("terminal first paint", () => {
         const screen = renderer.querySelector<HTMLElement>(".xterm-screen")!;
         expect(parseFloat(frames[0]!.width)).toBeGreaterThan(0);
         expect(parseFloat(frames[0]!.height)).toBeGreaterThan(0);
-        expect(frames[0]).toMatchObject({
+        expect(frames[0]).toEqual({
           width: screen.style.width,
           height: screen.style.height,
+          insets: expectedInsets,
         });
-        expect(frames[0]!.insets).toMatch(terminalInsetsPattern);
-        expect(frames[1]).toMatchObject({
-          width: frames[0]!.width,
-          height: frames[0]!.height,
-        });
-        expect(frames[1]!.insets).toMatch(terminalInsetsPattern);
+        expect(frames[1]).toEqual(frames[0]);
         socket.receive({
           type: "session-updated",
           session: { ...session, cols: 51, rows: 47 },
@@ -4409,16 +4406,18 @@ describe("terminal first paint", () => {
           await writeReplay(terminals[index]!, "");
         });
         expect(getComputedStyle(renderer).paddingLeft).toBe("8px");
-        expect(getComputedStyle(renderer).paddingRight).toMatch(terminalPaddingRightPattern);
+        expect(getComputedStyle(renderer).paddingRight).toBe(
+          terminalPaddingRight,
+        );
         if (index === 0) {
           session = { ...session, id: "term_switch_inset" };
           rerenderMobileTerminal(session);
         }
       }
       expect(insets.length).toBeGreaterThan(2);
-      expect(insets.every((entry) => terminalInsetsPattern.test(entry))).toBe(true);
+      expect(new Set(insets)).toEqual(new Set([expectedInsets]));
       expect(initialInsets.length).toBeGreaterThan(0);
-      expect(initialInsets.every((entry) => terminalInsetsPattern.test(entry))).toBe(true);
+      expect(new Set(initialInsets)).toEqual(new Set([expectedInsets]));
     } finally {
       for (const handle of paintFrameHandles) cancelAnimationFrame(handle);
       style.remove();
