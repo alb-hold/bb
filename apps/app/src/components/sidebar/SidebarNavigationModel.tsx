@@ -266,7 +266,7 @@ export function SidebarNavigationModelProvider({
   });
   const isHomeActive =
     !isSettingsPathname(location.pathname) &&
-    getPluginPanelRoutePluginId(location.pathname) === null &&
+    getPluginPanelRoutePluginId(location.pathname) === null && !location.pathname.includes("/threads/") &&
     (activeItemId === null || activeItemId === NEW_THREAD_NAVIGATION_ITEM_ID);
   const currentRoutePath = `${location.pathname}${location.search}${location.hash}`;
   const homeRoutePathRef = useRef(

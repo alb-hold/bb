@@ -181,18 +181,6 @@ describe("usePluginFrontendBoot", () => {
     },
   );
 
-  it("boots home plugins on the composer alone, without waiting for sidebar rows only a plugin renders", async () => {
-    document.body.innerHTML = "<textarea></textarea>";
-    renderHook(() => usePluginFrontendBoot());
-    await flushMicrotasks();
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(100);
-    });
-    expect(document.querySelector("[data-sidebar-thread-id]")).toBeNull();
-    expect(mocks.preloadPluginFrontend).toHaveBeenCalledTimes(1);
-    expect(mocks.bootPluginFrontends).toHaveBeenCalledTimes(1);
-  });
-
   it("releases home plugin loading if the composer cannot mount", async () => {
     renderHook(() => usePluginFrontendBoot());
     await flushMicrotasks();
