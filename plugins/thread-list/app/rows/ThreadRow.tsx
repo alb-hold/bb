@@ -819,7 +819,9 @@ function ThreadRowComponent({
       return;
     }
     const report = () =>
-      reportRowStateHeight(element.getBoundingClientRect().height);
+      reportRowStateHeight(
+        Math.max(element.getBoundingClientRect().height, element.scrollHeight),
+      );
     report();
     const observer =
       typeof ResizeObserver === "undefined" ? null : new ResizeObserver(report);
