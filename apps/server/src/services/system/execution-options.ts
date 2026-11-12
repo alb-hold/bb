@@ -199,7 +199,9 @@ async function omitProvidersThatCannotStartAThread(
         providerId: provider.id,
       });
       notifyWhenHealthSettles(deps, hostId, provider.id, pending);
-      if (status !== "unauthenticated") return true;
+      if (status !== "unauthenticated" && status !== "not_installed") {
+        return true;
+      }
       const contributed = await resolvePluginProviderEnvHealth({
         providerId: provider.id,
         hostId,

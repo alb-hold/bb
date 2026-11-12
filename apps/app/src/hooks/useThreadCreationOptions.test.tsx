@@ -25,11 +25,13 @@ import type { QueryClient } from "@tanstack/react-query";
 import {
   hostsQueryKey,
   systemConfigQueryKey,
+  systemProviderStatesQueryKey,
   systemExecutionOptionsQueryKey,
   systemProvidersQueryKey,
 } from "./queries/query-keys";
 import { getProjectScopedStorageKey } from "@/lib/project-scoped-storage";
 import { buildAutoFollowUpRequest } from "@bb/client-core";
+import { CompactViewportOverrideProvider } from "@bb/shared-ui/hooks/use-compact-viewport";
 import { useThreadCreationOptions } from "./useThreadCreationOptions";
 import { createRealtimeCacheEffects } from "./realtime-cache-effects";
 import { invalidateSystemExecutionOptions } from "./cache-owners/system-cache-effects";
@@ -38,7 +40,10 @@ import {
   writeCachedProviderList,
 } from "@/lib/provider-list-cache";
 import { createDeferredPromise } from "@bb/test-helpers";
+import { defaultAppSettings } from "@bb/domain";
 import { makeHost, makeProviderInfo } from "@bb/test-helpers/domain-fixtures";
+import { makeSystemConfig } from "@/test/fixtures/system-config";
+import type { SystemConfigResponse } from "@bb/server-contract";
 import {
   modelCatalogCacheKey,
   readCachedModelCatalog,
@@ -56,11 +61,33 @@ vi.mock("@/lib/sdk", () => ({
       defaultExecutionOptions: vi.fn(),
     },
     system: {
+      config: vi.fn(),
       executionOptions: vi.fn(),
       providerStates: vi.fn(),
     },
   },
 }));
+
+function multipleReadyProviderStates(
+  providerIds: readonly string[],
+): SystemProviderStatesResponse {
+  return {
+    providers: providerIds.map((providerId) => ({
+      providerId,
+      displayName: providerId,
+      status: "ready" as const,
+      statusMessage: null,
+      planLabel: null,
+      accountEmail: null,
+      installedVersion: null,
+      minimumSupportedVersion: null,
+      canInstall: false,
+      canUpdate: false,
+      loginCommand: null,
+      localLoginCommand: null,
+    })),
+  };
+}
 
 function readyProviderStates(providerId: string): SystemProviderStatesResponse {
   return {
@@ -81,6 +108,78 @@ function readyProviderStates(providerId: string): SystemProviderStatesResponse {
       },
     ],
   };
+}
+
+function piUnauthenticatedProviderStates(): SystemProviderStatesResponse {
+  return {
+    providers: [
+      {
+        providerId: "pi",
+        displayName: "Pi",
+        status: "unauthenticated",
+        statusMessage: null,
+        planLabel: null,
+        accountEmail: null,
+        installedVersion: null,
+        minimumSupportedVersion: null,
+        canInstall: false,
+        canUpdate: false,
+        loginCommand: null,
+        localLoginCommand: null,
+      },
+    ],
+  };
+}
+
+function homeProvidersExecutionOptions(): SystemExecutionOptionsResponse {
+  return {
+    ...executionOptionsResponse(),
+    providers: rememberedProviders(),
+    models: [
+      {
+        id: "codex-default",
+        model: "codex-default",
+        displayName: "Codex Default",
+        description: "",
+        reasoningDiscovery: "known" as const,
+        supportedReasoningEfforts: [
+          { reasoningEffort: "medium", description: "" },
+        ],
+        defaultReasoningEffort: "medium",
+        isDefault: true,
+      },
+    ],
+  };
+}
+
+
+function homeTwoReadyProvidersExecutionOptions(): SystemExecutionOptionsResponse {
+  const base = homeProvidersExecutionOptions();
+  const template = base.providers[0];
+  if (template === undefined) {
+    throw new Error("fixture has no provider to clone");
+  }
+  return {
+    ...base,
+    providers: [
+      {
+        ...template,
+        id: "claude-code",
+        displayName: "Claude Code",
+        available: true,
+      },
+      ...base.providers,
+    ],
+  };
+}
+
+function seedHomeReadyProviderDiscoveryHarness(queryClient: QueryClient): void {
+  queryClient.setQueryData(systemConfigQueryKey(), {
+    generalSettings: { defaultProviderId: "codex" },
+  });
+  queryClient.setQueryData(hostsQueryKey(), [
+    makeHost({ id: "home-host", maxPermissionMode: "auto" }),
+  ]);
 }
 
 function seedDeclaredCatalogScope(
@@ -342,6 +441,9 @@ function setProjectScopedValue(baseKey: string, value: string): void {
 
 beforeEach(() => {
   window.sessionStorage.clear();
+  vi.mocked(sdk.system.config).mockResolvedValue(makeSystemConfig({
+    generalSettings: { ...defaultAppSettings, defaultProviderId: "codex" },
+  }));
   vi.mocked(sdk.system.executionOptions).mockResolvedValue(
     executionOptionsResponse(),
   );
@@ -2562,6 +2664,204 @@ describe("useThreadCreationOptions", () => {
     expect(sdk.system.executionOptions).toHaveBeenCalledTimes(2);
     await act(async () => refresh.resolve(executionOptionsResponse()));
   });
+
+
+
+  it("waits for system config before latching a ready provider", async () => {
+    const configDeferred = createDeferredPromise<SystemConfigResponse>();
+    vi.mocked(sdk.system.config).mockReturnValue(configDeferred.promise);
+    vi.mocked(sdk.system.providerStates).mockResolvedValue(
+      multipleReadyProviderStates(["claude-code", "codex"]),
+    );
+    vi.mocked(sdk.system.executionOptions).mockResolvedValue(
+      homeTwoReadyProvidersExecutionOptions(),
+    );
+    const { wrapper, queryClient } = createQueryClientTestHarness();
+    queryClient.setQueryData(hostsQueryKey(), [
+      makeHost({ id: "home-host", maxPermissionMode: "auto" }),
+    ]);
+    const { result } = renderHook(
+      () =>
+        useThreadCreationOptions({
+          preferReadyProviderWhenUnset: true,
+          resolveProviderRouting: () => ({ hostId: "home-host" }),
+        }),
+      { wrapper },
+    );
+
+    await waitFor(() =>
+      expect(sdk.system.providerStates).toHaveBeenCalledTimes(1),
+    );
+    expect(result.current.selectedProviderId).toBe("");
+
+    await act(async () => {
+      configDeferred.resolve(makeSystemConfig({
+    generalSettings: { ...defaultAppSettings, defaultProviderId: "codex" },
+  }));
+    });
+
+    await waitFor(() => {
+      expect(result.current.selectedProviderId).toBe("codex");
+      expect(result.current.activeModel?.displayName).toBe("Codex Default");
+    });
+  });
+
+  it("still latches a ready provider when system config fails", async () => {
+    vi.mocked(sdk.system.config).mockRejectedValue(new Error("config failed"));
+    vi.mocked(sdk.system.providerStates).mockResolvedValue(
+      multipleReadyProviderStates(["claude-code", "codex"]),
+    );
+    vi.mocked(sdk.system.executionOptions).mockResolvedValue(
+      homeTwoReadyProvidersExecutionOptions(),
+    );
+    const { wrapper, queryClient } = createQueryClientTestHarness();
+    queryClient.setQueryData(hostsQueryKey(), [
+      makeHost({ id: "home-host", maxPermissionMode: "auto" }),
+    ]);
+    const { result } = renderHook(
+      () =>
+        useThreadCreationOptions({
+          preferReadyProviderWhenUnset: true,
+          resolveProviderRouting: () => ({ hostId: "home-host" }),
+        }),
+      { wrapper },
+    );
+
+    await waitFor(() =>
+      expect(sdk.system.providerStates).toHaveBeenCalledTimes(1),
+    );
+    await waitFor(() => {
+      expect(result.current.selectedProviderId).toBe("claude-code");
+    });
+  });
+
+  it("picks a server-listed provider when provider states finish with none ready", async () => {
+    vi.mocked(sdk.system.providerStates).mockResolvedValue(
+      piUnauthenticatedProviderStates(),
+    );
+    vi.mocked(sdk.system.executionOptions).mockResolvedValue(
+      homeProvidersExecutionOptions(),
+    );
+    const { wrapper, queryClient } = createQueryClientTestHarness();
+    seedHomeReadyProviderDiscoveryHarness(queryClient);
+    const { result } = renderHook(
+      () =>
+        useThreadCreationOptions({
+          preferReadyProviderWhenUnset: true,
+          resolveProviderRouting: () => ({ hostId: "home-host" }),
+        }),
+      { wrapper },
+    );
+
+    await waitFor(() =>
+      expect(sdk.system.providerStates).toHaveBeenCalledTimes(1),
+    );
+    await waitFor(() => {
+      expect(result.current.selectedProviderId).toBe("codex");
+      expect(result.current.activeModel?.displayName).toBe("Codex Default");
+    });
+  });
+
+  it("does not latch a null ready provider before a later ready discovery resolves", async () => {
+    let providerStatesCallCount = 0;
+    vi.mocked(sdk.system.providerStates).mockImplementation(async () => {
+      providerStatesCallCount += 1;
+      return providerStatesCallCount === 1
+        ? piUnauthenticatedProviderStates()
+        : readyProviderStates("codex");
+    });
+    vi.mocked(sdk.system.executionOptions).mockResolvedValue(
+      homeProvidersExecutionOptions(),
+    );
+    const { wrapper, queryClient } = createQueryClientTestHarness();
+    seedHomeReadyProviderDiscoveryHarness(queryClient);
+    const { result } = renderHook(
+      () =>
+        useThreadCreationOptions({
+          preferReadyProviderWhenUnset: true,
+          resolveProviderRouting: () => ({ hostId: "home-host" }),
+        }),
+      { wrapper },
+    );
+
+    await waitFor(() =>
+      expect(sdk.system.providerStates).toHaveBeenCalledTimes(1),
+    );
+    await waitFor(() =>
+      expect(result.current.selectedProviderId).toBe("codex"),
+    );
+
+    await act(async () => {
+      await queryClient.invalidateQueries({
+        queryKey: systemProviderStatesQueryKey({
+          environmentId: null,
+          hostId: "home-host",
+        }),
+      });
+    });
+
+    await waitFor(() =>
+      expect(sdk.system.providerStates).toHaveBeenCalledTimes(2),
+    );
+    await waitFor(() => expect(result.current.selectedProviderId).toBe("codex"));
+    await waitFor(() =>
+      expect(result.current.activeModel?.displayName).toBe("Codex Default"),
+    );
+  });
+
+  it.each([
+    { viewportWidth: 390, isCompactViewport: true },
+    { viewportWidth: 1280, isCompactViewport: false },
+  ])(
+    "matches the home default at phone and desktop widths",
+    async ({ isCompactViewport }) => {
+      vi.mocked(sdk.system.providerStates).mockResolvedValue(
+        readyProviderStates("codex"),
+      );
+      vi.mocked(sdk.system.executionOptions).mockResolvedValue(
+        homeProvidersExecutionOptions(),
+      );
+      const { wrapper, queryClient } = createQueryClientTestHarness();
+      seedHomeReadyProviderDiscoveryHarness(queryClient);
+      function ComposerControls() {
+        const options = useThreadCreationOptions({
+          preferReadyProviderWhenUnset: true,
+          resolveProviderRouting: () => ({ hostId: "home-host" }),
+        });
+        return (
+          <CompactViewportOverrideProvider isCompactViewport={isCompactViewport}>
+            <ExecutionControls
+              provider={{
+                selectedId: options.selectedProviderId,
+                options: options.providerOptions,
+              }}
+              model={{
+                active: options.activeModel,
+                selected: options.selectedModel,
+                options: options.modelOptions,
+                moreOptions: options.moreModelOptions,
+                isLoading: options.isLoadingModels,
+                loadFailed: options.modelLoadFailed,
+                onChange: options.setSelectedModel,
+              }}
+              reasoning={{
+                value: options.reasoningLevel,
+                options: options.reasoningOptions,
+                onChange: options.setReasoningLevel,
+              }}
+            />
+          </CompactViewportOverrideProvider>
+        );
+      }
+      render(<ComposerControls />, { wrapper });
+      await waitFor(() => {
+        const trigger = screen.getByRole("button", {
+          name: /^Provider, model and reasoning/,
+        });
+        expect(trigger.textContent).toContain("Codex Default");
+      });
+    },
+  );
 
   it("latches the initial ready provider instead of resolving it again after a machine switch", async () => {
     window.localStorage.setItem(
