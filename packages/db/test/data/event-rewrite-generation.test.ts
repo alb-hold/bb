@@ -42,6 +42,7 @@ function setup() {
   });
   const createCodexThread = () =>
     createThread(db, noopNotifier, {
+      status: "idle",
       projectId: project.id,
       providerId: "codex",
     }).id;
@@ -148,9 +149,13 @@ function tokenUsage(threadId: string, sequence: number): InsertEventInput {
 }
 
 function rateLimits(threadId: string, sequence: number): InsertEventInput {
-  return row(threadId, sequence, "provider/rateLimits/updated", {
-    rateLimits: { providerId: "codex" },
-  });
+  return row(
+    threadId,
+    sequence,
+    "provider/rateLimits/updated",
+    { rateLimits: { providerId: "codex" } },
+    { scope: threadScope() },
+  );
 }
 
 function turnDiff(threadId: string, sequence: number): InsertEventInput {
@@ -241,14 +246,21 @@ describe("thread event rewrite generation", () => {
       rewrite: (db, threadId) => deleteSuffix(db, threadId, 2),
     },
     {
+      name: "a rate-limit snapshot prune",
+      conversationOutline: false,
+      seed: (threadId) => [rateLimits(threadId, 1)],
+      noop: (db) => pruneThreadEvents(db, "rate-limits"),
+      between: (threadId) =>
+        [2, 3, 4].map((sequence) => rateLimits(threadId, sequence)),
+      rewrite: (db) => pruneThreadEvents(db, "rate-limits"),
+    },
+    {
       name: "a usage prune",
       conversationOutline: false,
       seed: (threadId) => [tokenUsage(threadId, 1)],
       noop: (db) => pruneThreadEvents(db, "usage"),
       between: (threadId) =>
-        Array.from({ length: 303 }, (_, index) =>
-          tokenUsage(threadId, index + 2),
-        ),
+        Array.from({ length: 303 }, (_, index) => tokenUsage(threadId, index + 2)),
       rewrite: (db) => pruneThreadEvents(db, "usage"),
     },
     resolvedDeltaCase("a resolved delta prune", "chunk 1chunk 2chunk 3"),
@@ -302,6 +314,28 @@ describe("thread event rewrite generation", () => {
     );
     expect(getThreadEventRewriteGeneration(otherThreadId)).toBe(otherBefore);
   });
+
+  it.each([
+    {
+      name: "usage",
+      rows: (threadId: string) =>
+        [1, 2, 3, 4].map((sequence) => tokenUsage(threadId, sequence)),
+    },
+    {
+      name: "turn-diffs",
+      rows: (threadId: string) =>
+        [1, 2, 3, 4].map((sequence) => turnDiff(threadId, sequence)),
+    },
+  ] as const)(
+    "invalidates fork usage readers when a $name prune removes older rows",
+    ({ name, rows }) => {
+      const { db, threadId } = setup();
+      insertEvents(db, noopNotifier, [...rows(threadId), message(threadId, 305)]);
+      expectGenerationBump(threadId, true, () => {
+        expect(pruneThreadEvents(db, name)).toBeGreaterThan(0);
+      }, false);
+    },
+  );
 
   it("changes when a completed output is migrated and not when the scanned output fits", () => {
     const fits = setup();

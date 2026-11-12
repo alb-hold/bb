@@ -1,4 +1,5 @@
 import {
+  moveQueuedThreadMessageToFrontInTransaction,
   clearQueuedMessageDispatchRetry,
   clearQueuedThreadMessageWaitingOn,
   createQueuedThreadMessageInTransaction,
@@ -90,6 +91,7 @@ export interface QueuedDispatchMessage {
 export interface RecordQueuedMessageWaitArgs {
   thread: Thread;
   message: QueuedDispatchMessage;
+  placement: "back" | "front";
   waitingOn: QueuedMessageWaitingOn;
   sendAt: number | null;
   claimed: readonly ClaimedQueuedThreadMessageRow[] | null;
@@ -120,7 +122,7 @@ export function recordQueuedMessageWait(
           currentThread,
           args.message.overrideRecovery ?? null,
         );
-        return createQueuedThreadMessageInTransaction(tx, {
+        const created = createQueuedThreadMessageInTransaction(tx, {
           threadId: args.thread.id,
           content: args.message.input,
           senderThreadId: args.message.senderThreadId,
@@ -137,6 +139,9 @@ export function recordQueuedMessageWait(
           systemNotice: args.message.systemNotice,
           deliveryMode: args.message.deliveryMode,
         });
+        return args.placement === "front"
+          ? moveQueuedThreadMessageToFrontInTransaction(tx, created)
+          : created;
       },
       { behavior: "immediate" },
     );

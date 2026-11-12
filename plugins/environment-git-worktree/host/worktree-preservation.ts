@@ -33,6 +33,8 @@ const IN_PROGRESS_OPERATION_PATHS = [
   "rebase-apply",
   "CHERRY_PICK_HEAD",
   "REVERT_HEAD",
+  "REBASE_HEAD",
+  "sequencer",
   "BISECT_LOG",
   "BISECT_START",
 ];
@@ -293,7 +295,13 @@ export async function findStructuralReasons(
     }
   }
   const bisectRefs = await runGit(
-    ["for-each-ref", "--format=%(refname)", "refs/bisect"],
+    [
+      "for-each-ref",
+      "--format=%(refname)",
+      "refs/bisect/",
+      "refs/worktree/",
+      "refs/rewritten/",
+    ],
     {
       cwd: identity.path,
       env: gitEnvironment(identity.path, identity.gitDir, identity.commonDir),
@@ -305,7 +313,7 @@ export async function findStructuralReasons(
       `could not check for refs/bisect state${bisectRefs.stderr.trim() ? ` (${bisectRefs.stderr.trim()})` : ""}`,
     );
   } else if (bisectRefs.stdout.trim() !== "") {
-    reasons.push("has refs/bisect state");
+    reasons.push("has worktree-local Git refs");
   }
   return reasons;
 }

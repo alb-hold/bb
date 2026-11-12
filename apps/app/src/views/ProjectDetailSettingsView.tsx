@@ -612,7 +612,9 @@ export function ProjectDetailSettingsView() {
           deleteProject.mutate(id, {
             onSuccess: () => {
               setDeleteTarget(null);
-              navigate(getSettingsRoutePath("projects"), { replace: true });
+              void navigate(getSettingsRoutePath("projects"), {
+                replace: true,
+              });
             },
           })
         }

@@ -1,15 +1,24 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+
 import * as react from "react";
+
 import * as jsxRuntime from "react/jsx-runtime";
+
 import clsx from "clsx";
+
 import { Icon } from "@bb/shared-ui/icon";
+
+import { RUNTIME_SLOT_BY_SPECIFIER } from "@bb/plugin-build/runtime-shims";
+
 import {
   createPluginFrontendPageLifecycle,
   installPluginRuntime,
   loadPluginFrontend,
   type PluginFrontendCandidate,
 } from "./plugin-frontend";
+
 import { pluginSdkAppImplementation } from "./plugin-sdk-app-impl";
+
 import { useSidebarThreadPullRequest } from "./plugin-sidebar-hooks";
 
 function candidate(
@@ -174,6 +183,21 @@ describe("loadPluginFrontend", () => {
 });
 
 describe("installPluginRuntime", () => {
+  const LAZY_RUNTIME_SLOTS = new Set([
+    "pierreDiffs",
+    "pierreDiffsReact",
+    "zod",
+    "radixCheckbox",
+    "radixSlot",
+    "radixComposeRefs",
+    "radixAlertDialog",
+    "radixHoverCard",
+    "radixMenubar",
+    "radixNavigationMenu",
+    "radixSelect",
+    "vaul",
+  ]);
+
   type RuntimeHost = typeof globalThis & { __bbPluginRuntime?: unknown };
 
   afterEach(() => {
@@ -186,30 +210,11 @@ describe("installPluginRuntime", () => {
       string,
       unknown
     >;
-    expect(Object.keys(runtime).sort()).toEqual([
-      "classVarianceAuthority",
-      "clsx",
-      "internal_DO_NOT_USE_context_menu",
-      "internal_DO_NOT_USE_dialog",
-      "internal_DO_NOT_USE_dropdown_menu",
-      "internal_DO_NOT_USE_responsive_overlay",
-      "jsxDevRuntime",
-      "jsxRuntime",
-      "pluginSdkApp",
-      "questionFormHost",
-      "radixContextMenu",
-      "radixDialog",
-      "radixDropdownMenu",
-      "radixPopover",
-      "radixTooltip",
-      "react",
-      "reactDom",
-      "reactDomClient",
-      "sharedUiIcon",
-      "sonner",
-      "tailwindMerge",
-      "voiceInputTextarea",
-    ]);
+    expect(Object.keys(runtime).sort()).toEqual(
+      [...new Set(Object.values(RUNTIME_SLOT_BY_SPECIFIER))]
+        .filter((slot) => !LAZY_RUNTIME_SLOTS.has(slot))
+        .sort(),
+    );
     expect((runtime.clsx as { default: unknown }).default).toBe(clsx);
     expect((runtime.sharedUiIcon as { Icon: unknown }).Icon).toBe(Icon);
     expect((runtime.react as { useState: unknown }).useState).toBe(
@@ -359,25 +364,22 @@ it.each([
   ["thread-list", "internal_DO_NOT_USE_context_menu"],
   ["thread-list", "internal_DO_NOT_USE_dialog"],
   ["thread-list", "internal_DO_NOT_USE_dropdown_menu"],
-])(
-  "contains missing %s slot %s before evaluation",
-  async (pluginId, slot) => {
-    Reflect.deleteProperty(installPluginRuntime(), slot);
-    const importModule = vi.fn();
-    const result = await loadPluginFrontend(
-      candidate(pluginId, { runtimeSlots: [slot] }),
-      {
-        importModule,
-        prefetchModule: vi.fn(),
-        warn: vi.fn(),
-      },
-    );
-    expect(result).toMatchObject({
-      status: "failed",
-      error: expect.stringContaining("Update the BB host"),
-    });
-    expect(importModule).not.toHaveBeenCalled();
-    delete (globalThis as typeof globalThis & { __bbPluginRuntime?: unknown })
-      .__bbPluginRuntime;
-  },
-);
+])("contains missing %s slot %s before evaluation", async (pluginId, slot) => {
+  Reflect.deleteProperty(installPluginRuntime(), slot);
+  const importModule = vi.fn();
+  const result = await loadPluginFrontend(
+    candidate(pluginId, { runtimeSlots: [slot] }),
+    {
+      importModule,
+      prefetchModule: vi.fn(),
+      warn: vi.fn(),
+    },
+  );
+  expect(result).toMatchObject({
+    status: "failed",
+    error: expect.stringContaining("Update the BB host"),
+  });
+  expect(importModule).not.toHaveBeenCalled();
+  delete (globalThis as typeof globalThis & { __bbPluginRuntime?: unknown })
+    .__bbPluginRuntime;
+});

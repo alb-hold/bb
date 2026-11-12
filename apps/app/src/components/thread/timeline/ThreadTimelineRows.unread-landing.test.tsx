@@ -165,7 +165,6 @@ afterEach(() => {
 function UnseenThread() {
   const { placement, hasUnseenTimelineEvents } = useThreadUnreadDividerState({
     routeThreadId: THREAD_ID,
-    anchor: "first-unread-row",
     bootstrapQuery: {
       dataUpdatedAt: 0,
       isFetchedAfterMount: false,

@@ -45,7 +45,7 @@ const ARRANGEMENT_REGION_CLASS: Record<SplitSide, string> = {
   bottom: "inset-x-[3px] bottom-[3px] h-1.5",
 };
 
-export function resolvePaneArrangementLabel({
+function resolvePaneArrangementLabel({
   isDesktopApp,
   isFullScreen,
 }: {

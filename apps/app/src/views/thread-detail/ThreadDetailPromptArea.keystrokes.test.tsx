@@ -138,7 +138,6 @@ function buildPromptArea({
         permissionPolicy="editable"
         canRestoreEnvironment={false}
         environmentGoneStatus={null}
-        goal={null}
         providerCommands={null}
         sessionOptions={null}
         modelFallback={null}

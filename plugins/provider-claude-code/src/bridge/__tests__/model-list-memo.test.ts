@@ -1,9 +1,15 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+
 import { tmpdir } from "node:os";
+
 import { join } from "node:path";
+
 import type { ModelInfo } from "@anthropic-ai/claude-agent-sdk";
+
 import { afterEach, describe, expect, it, vi } from "vitest";
+
 import { buildClaudeCodeModels } from "../../model-list.js";
+
 import {
   type SharedClaudeCodeModelCatalog,
   type SharedClaudeCodeModelCatalogEntry,
@@ -11,6 +17,8 @@ import {
   createClaudeCodeBridgeModelListMemo,
   createSharedClaudeCodeModelCatalogFile,
 } from "../model-list.js";
+
+
 
 function discovered(resolvedModel: string): ModelInfo[] {
   return [
@@ -22,6 +30,7 @@ function discovered(resolvedModel: string): ModelInfo[] {
     },
   ];
 }
+
 
 function memoryCatalog(): SharedClaudeCodeModelCatalog & {
   entry: SharedClaudeCodeModelCatalogEntry | null;
@@ -37,7 +46,9 @@ function memoryCatalog(): SharedClaudeCodeModelCatalog & {
   return catalog;
 }
 
+
 const temporaryDirectories: string[] = [];
+
 
 afterEach(() => {
   for (const directory of temporaryDirectories.splice(0)) {
@@ -45,7 +56,50 @@ afterEach(() => {
   }
 });
 
+
 describe("createClaudeCodeBridgeModelListMemo", () => {
+  it("shares one probe per environment between concurrent asks and reuses it until the window ends", async () => {
+    let currentTime = 0;
+    const probes: Array<(value: ModelInfo[]) => void> = [];
+    const probe = vi.fn(
+      (_envVars: Readonly<Record<string, string>>) =>
+        new Promise<ModelInfo[]>((resolve) => {
+          probes.push(resolve);
+        }),
+    );
+    const listModels = createClaudeCodeBridgeModelListMemo({
+      probe,
+      shared: () => UNSHARED_CLAUDE_CODE_MODEL_CATALOG,
+      renewalDue: () => Promise.resolve(false),
+      now: () => currentTime,
+      ttlMs: 1_000,
+    });
+    const pooled = { ANTHROPIC_AUTH_TOKEN: "pool", ANTHROPIC_BASE_URL: "hub" };
+
+    const first = listModels(pooled);
+    const second = listModels({
+      ANTHROPIC_BASE_URL: "hub",
+      ANTHROPIC_AUTH_TOKEN: "pool",
+    });
+    const direct = listModels({});
+    await vi.waitFor(() => expect(probe.mock.calls).toEqual([[pooled], [{}]]));
+    probes[0]?.(discovered("fable"));
+    probes[1]?.(discovered("opus"));
+    await expect(first).resolves.toEqual(buildClaudeCodeModels(discovered("fable")));
+    await expect(second).resolves.toEqual(buildClaudeCodeModels(discovered("fable")));
+    await expect(direct).resolves.toEqual(buildClaudeCodeModels(discovered("opus")));
+
+    currentTime = 999;
+    await expect(listModels(pooled)).resolves.toEqual(buildClaudeCodeModels(discovered("fable")));
+    expect(probe).toHaveBeenCalledTimes(2);
+
+    currentTime = 1_000;
+    const refreshed = listModels(pooled);
+    await vi.waitFor(() => expect(probe).toHaveBeenCalledTimes(3));
+    probes[2]?.(discovered("sonnet"));
+    await expect(refreshed).resolves.toEqual(buildClaudeCodeModels(discovered("sonnet")));
+  });
+
   it("shares one probe between concurrent asks and reuses it until the window ends", async () => {
     let currentTime = 0;
     let resolveProbe: (value: ModelInfo[]) => void = () => {};
@@ -87,6 +141,8 @@ describe("createClaudeCodeBridgeModelListMemo", () => {
     );
   });
 
+
+
   it("does not keep a failed probe", async () => {
     const probe = vi
       .fn<() => Promise<ModelInfo[]>>()
@@ -106,6 +162,7 @@ describe("createClaudeCodeBridgeModelListMemo", () => {
     );
     expect(probe).toHaveBeenCalledTimes(2);
   });
+
 
   it("serves a catalog another bridge worker probed within the window instead of probing again", async () => {
     const shared = memoryCatalog();
@@ -137,6 +194,7 @@ describe("createClaudeCodeBridgeModelListMemo", () => {
     );
   });
 
+
   it("does not start a probe while the sign-in is due for renewal", async () => {
     const shared = memoryCatalog();
     shared.entry = {
@@ -158,6 +216,7 @@ describe("createClaudeCodeBridgeModelListMemo", () => {
     expect(probe).not.toHaveBeenCalled();
   });
 
+
   it("serves the built-in catalog without persisting it when renewal is due and nothing was probed", async () => {
     const shared = memoryCatalog();
     const probe = vi.fn(() => Promise.resolve(discovered("claude-opus-5[1m]")));
@@ -174,6 +233,7 @@ describe("createClaudeCodeBridgeModelListMemo", () => {
     expect(shared.entry).toBeNull();
   });
 });
+
 
 describe("createSharedClaudeCodeModelCatalogFile", () => {
   it("round-trips a probed catalog and ignores a malformed file", async () => {

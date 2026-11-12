@@ -1,7 +1,13 @@
-import type { QueuedMessagePayload, QueuedMessageWaitingOn } from "@bb/domain";
+import {
+  RESTART_RESUME_RETRY_REASON,
+  type QueuedMessagePayload,
+  type QueuedMessageWaitingOn,
+  type ThreadStatus,
+} from "@bb/domain";
 import type { IconName } from "@bb/shared-ui/icon";
 import { formatScheduledTime } from "@/lib/relative-time";
 
+const SUPERSEDED_WAIT_LINE = "Not sent · a newer message was sent after it";
 const MINUTE_MS = 60 * 1000;
 const HOUR_MS = 60 * MINUTE_MS;
 const DAY_MS = 24 * HOUR_MS;
@@ -36,6 +42,7 @@ export function isQueuedMessageSendNowAllowed(
     case "host-offline":
     case "interaction":
     case "turn-starting":
+    case "app-update":
       return false;
     case "stopping":
     case "workspace-busy":
@@ -43,6 +50,7 @@ export function isQueuedMessageSendNowAllowed(
     case "time":
     case "plugin":
     case "thread-busy":
+    case "superseded":
       return true;
   }
 }
@@ -64,6 +72,7 @@ export function queuedMessageWaitIcon(args: {
   waitingOn: QueuedMessageWaitingOn | null;
 }): IconName | null {
   if (args.failureReason !== null) return "AlertCircle";
+  if (args.waitingOn?.kind === "superseded") return "AlertCircle";
   if (args.payload.kind === "retry") return "RotateCcw";
   if (args.waitingOn === null) return null;
   switch (args.waitingOn.kind) {
@@ -80,6 +89,8 @@ export function queuedMessageWaitIcon(args: {
       return "CloudOff";
     case "interaction":
       return "CircleQuestion";
+    case "app-update":
+      return "Download";
     case "workspace-busy":
       return "Folder";
     case "plugin":
@@ -93,6 +104,7 @@ export interface DescribeQueuedMessageWaitArgs {
   payload: QueuedMessagePayload;
   pluginDisplayName: string | null;
   sendAt: number | null;
+  threadStatus: ThreadStatus;
   waitingOn: QueuedMessageWaitingOn | null;
 }
 
@@ -102,6 +114,9 @@ export function queuedMessageFallbackTitle(args: {
   payload: QueuedMessagePayload;
 }): string {
   if (args.payload.kind !== "retry") return "Queued message";
+  if (args.payload.reason === RESTART_RESUME_RETRY_REASON) {
+    return `Resume after ${RESTART_RESUME_RETRY_REASON}`;
+  }
   return `Retry failed turn from ${formatScheduledTime({
     now: args.now,
     timestamp: args.createdAt,
@@ -112,9 +127,11 @@ export function describeQueuedMessageWait(
   args: DescribeQueuedMessageWaitArgs,
 ): string | null {
   if (args.failureReason !== null) return args.failureReason;
+  if (args.waitingOn?.kind === "superseded") return SUPERSEDED_WAIT_LINE;
 
   if (args.payload.kind === "retry") {
-    const parts: string[] = [args.payload.reason];
+    const resume = args.payload.reason === RESTART_RESUME_RETRY_REASON;
+    const parts: string[] = resume ? [] : [args.payload.reason];
     if (args.waitingOn?.kind === "plugin") {
       parts.push(
         `held by ${args.pluginDisplayName ?? args.waitingOn.pluginId} · ${args.waitingOn.reason}`,
@@ -122,7 +139,7 @@ export function describeQueuedMessageWait(
     }
     if (args.sendAt !== null) {
       parts.push(
-        `retrying at ${formatScheduledTime({ now: args.now, timestamp: args.sendAt })}`,
+        `${resume ? "resuming" : "retrying"} at ${formatScheduledTime({ now: args.now, timestamp: args.sendAt })}`,
       );
     }
     parts.push(`attempt ${args.payload.attempt}`);
@@ -135,7 +152,9 @@ export function describeQueuedMessageWait(
     case "thread-busy":
       return null;
     case "turn-starting":
-      return "Waiting for turn to start";
+      return args.threadStatus === "error"
+        ? "Turn didn't start · sends on the next turn"
+        : "Waiting for turn to start";
     case "stopping":
       return "Sending when the thread stops";
     case "time":
@@ -148,6 +167,8 @@ export function describeQueuedMessageWait(
       return `Waiting for ${args.waitingOn.hostName} to be ready`;
     case "interaction":
       return "Waiting for your reply";
+    case "app-update":
+      return "Sending after bb restarts to update";
     case "workspace-busy":
       return "Waiting for the shared workspace";
     case "plugin":

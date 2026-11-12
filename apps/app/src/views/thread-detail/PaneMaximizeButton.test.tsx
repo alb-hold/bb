@@ -15,10 +15,7 @@ import { createBbDesktopApi } from "@/test/bb-desktop-test-utils";
 import { focusWithKeyboard } from "@/test/keyboard-focus";
 import { useIsBrowserDimmingModalOpen } from "@/hooks/useBrowserDimmingModal";
 import { PaneContext, type PaneContextValue } from "./PaneContext";
-import {
-  PaneMaximizeButton,
-  resolvePaneArrangementLabel,
-} from "./PaneMaximizeButton";
+import { PaneMaximizeButton } from "./PaneMaximizeButton";
 
 vi.mock("@/components/commands/AppCommandProvider", () => ({
   useAppCommandShortcut: () => ({
@@ -121,9 +118,13 @@ describe("PaneMaximizeButton", () => {
     });
 
     fireEvent.pointerEnter(button);
-    act(() => vi.advanceTimersByTime(399));
+    act(() => {
+      vi.advanceTimersByTime(399);
+    });
     expect(screen.queryByRole("menu", { name: "Pane arrangement" })).toBeNull();
-    act(() => vi.advanceTimersByTime(1));
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
     const menu = screen.getByRole("menu", { name: "Pane arrangement" });
     expect(menu.textContent).toContain("Maximize pane");
     expect(menu.textContent).toContain("Move");
@@ -157,11 +158,15 @@ describe("PaneMaximizeButton", () => {
 
     fireEvent.focus(button);
     const menu = screen.getByRole("menu", { name: "Pane arrangement" });
-    act(() => vi.advanceTimersByTime(150));
+    act(() => {
+      vi.advanceTimersByTime(150);
+    });
     expect(menu.isConnected).toBe(true);
 
     fireEvent.keyDown(button, { key: "ArrowDown" });
-    act(() => vi.advanceTimersByTime(0));
+    act(() => {
+      vi.advanceTimersByTime(0);
+    });
     expect(document.activeElement).toBe(
       screen.getByRole("menuitem", { name: /Maximize pane/ }),
     );
@@ -182,7 +187,9 @@ describe("PaneMaximizeButton", () => {
     fireEvent.pointerEnter(button);
     fireEvent.pointerLeave(button);
 
-    act(() => vi.advanceTimersByTime(500));
+    act(() => {
+      vi.advanceTimersByTime(500);
+    });
     expect(screen.queryByRole("menu", { name: "Pane arrangement" })).toBeNull();
   });
 
@@ -208,6 +215,12 @@ describe("PaneMaximizeButton", () => {
       screen.getByRole("menuitem", { name: /Full Screen/ }),
     ).not.toBeNull();
     expect(menu.textContent).not.toContain("Maximize pane");
+
+    cleanup();
+    renderButton(true);
+    expect(
+      screen.getByRole("button", { name: "Exit Full Screen (⌘⇧E)" }),
+    ).not.toBeNull();
   });
 
   it("hides the native desktop browser while the arrangement menu can cover it", () => {
@@ -231,7 +244,9 @@ describe("PaneMaximizeButton", () => {
       name: "Full Screen (⌘⇧E)",
     });
     fireEvent.pointerEnter(trigger);
-    act(() => vi.advanceTimersByTime(400));
+    act(() => {
+      vi.advanceTimersByTime(400);
+    });
     const menu = screen.getByRole("menu", {
       name: "Pane arrangement",
     });
@@ -242,11 +257,15 @@ describe("PaneMaximizeButton", () => {
     );
 
     fireEvent.pointerLeave(menu);
-    act(() => vi.advanceTimersByTime(99));
+    act(() => {
+      vi.advanceTimersByTime(99);
+    });
     expect(screen.getByTestId("browser-overlay-state").textContent).toBe(
       "hidden",
     );
-    act(() => vi.advanceTimersByTime(1));
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
     expect(screen.getByTestId("browser-overlay-state").textContent).toBe(
       "visible",
     );
@@ -274,20 +293,4 @@ describe("PaneMaximizeButton", () => {
     );
     expect(screen.queryByRole("button")).toBeNull();
   });
-});
-
-describe("resolvePaneArrangementLabel", () => {
-  it.each([
-    [false, false, "Maximize pane"],
-    [false, true, "Restore split"],
-    [true, false, "Full Screen"],
-    [true, true, "Exit Full Screen"],
-  ] as const)(
-    "resolves desktop=%s fullScreen=%s as %s",
-    (isDesktopApp, isFullScreen, expected) => {
-      expect(resolvePaneArrangementLabel({ isDesktopApp, isFullScreen })).toBe(
-        expected,
-      );
-    },
-  );
 });

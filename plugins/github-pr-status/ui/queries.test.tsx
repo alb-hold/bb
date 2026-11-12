@@ -146,27 +146,32 @@ async function bootRpcPlugin() {
     experimental_callHostRpc: (call) =>
       call.method === "upstream"
         ? { oid: null, branchName: "bb/pr" }
-        : (call.input as { reads: unknown[] }).reads.map(() => ({
-            outcome: "found",
-            pullRequest: {
-              number: 7,
-              title: "Ship it",
-              state: "OPEN",
-              url: "https://github.com/acme/bb/pull/7",
-              isDraft: false,
-              autoMerge: false,
-              inMergeQueue: false,
-              baseRefName: "main",
-              headRefName: "bb/pr",
-              headRefOid: null,
-              updatedAt: "2026-10-22T00:00:00Z",
-              checks: [],
-              reviewDecision: null,
-              reviewRequestCount: 0,
-              mergeStateStatus: "CLEAN",
-              mergeable: "MERGEABLE",
-            },
-          })),
+        : (call.input as { reads: unknown[] }).reads
+            .map(() => ({
+              outcome: "found",
+              pullRequest: {
+                number: 7,
+                title: "Ship it",
+                state: "OPEN",
+                url: "https://github.com/acme/bb/pull/7",
+                isDraft: false,
+                autoMerge: false,
+                inMergeQueue: false,
+                baseRefName: "main",
+                headRefName: "bb/pr",
+                headRefOid: null,
+                updatedAt: "2026-10-22T00:00:00Z",
+                checks: [],
+                reviewDecision: null,
+                reviewRequestCount: 0,
+                mergeStateStatus: "CLEAN",
+                mergeable: "MERGEABLE",
+              },
+            }))
+            .map((lookup) => ({
+              lookup,
+              refs: { oid: null, branchName: "bb/pr" },
+            })),
   });
   await githubPrStatusPlugin(fake.bb);
   return fake;
@@ -207,7 +212,7 @@ describe("useEnvironmentPullRequest refreshes", () => {
     });
     expect(
       fake.harness.experimental_hostRpcCalls.map((call) => call.method),
-    ).toEqual(["upstream", "views"]);
+    ).toEqual(["views"]);
     await fake.harness.dispose();
   });
 

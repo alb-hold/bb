@@ -9,12 +9,19 @@ import {
   waitFor,
   within,
 } from "@testing-library/react";
+
 import { MemoryRouter } from "react-router-dom";
+
 import { createStore, Provider } from "jotai";
+
 import { paletteThreadLifecyclesAtom } from "@/lib/command-palette/palette-preferences";
+
 import { splitLayoutAtom } from "@/lib/split-layout/atoms";
+
 import { MAX_PANES, type SplitLayout } from "@/lib/split-layout";
+
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+
 import {
   defaultAppSettings,
   type AppCommandId,
@@ -23,37 +30,53 @@ import {
   type AppKeybindingOverrides,
   type ThreadListEntry,
 } from "@bb/domain";
+
 import type { ThreadSearchResponse } from "@bb/server-contract";
+
 import type { ThreadArchiveFilter } from "@/lib/thread-lifecycle-filter";
+
 import { CompactViewportOverrideProvider } from "@bb/shared-ui/hooks/use-compact-viewport";
+
 import {
   AppCommandProvider,
   useAppCommandHandler,
   useAppCommandRunner,
 } from "./AppCommandProvider";
+
 import {
   removePluginSlotRegistrations,
   setPluginSlotRegistrations,
 } from "@/lib/plugin-slots";
+
 import {
   resetPluginLogoStoreForTest,
   setPluginLogoUrls,
 } from "@/lib/plugin-logos";
+
 import { CommandPalette } from "./CommandPalette";
+
 import { prefetchThreadViewOnIntent } from "@/hooks/useThreadOpenIntent";
+
 
 vi.mock("@/hooks/useThreadOpenIntent", () => ({
   prefetchThreadViewOnIntent: vi.fn(),
 }));
+
 import {
   resetPluginThreadRowStatusesForTest,
   setPluginThreadRowStatus,
 } from "@/lib/plugin-thread-row-status";
+
 import { makePluginRegistrationSet } from "@/test/fixtures/plugins";
+
 import { collectPluginAppRegistrations } from "@get-bb/plugin-sdk/internal/plugin-app-collector";
+
 import { installTestPluginRuntime } from "@get-bb/plugin-sdk/testing/app";
+
 import { LocationProbe } from "@/test/location-probe";
+
 import { SidebarNavigationMoreMenu } from "../../../../../plugins/navigation/app/ItemMenus";
+
 
 const navigationMocks = vi.hoisted(() => ({
   activate: null as
@@ -66,6 +89,7 @@ const navigationMocks = vi.hoisted(() => ({
       ) => void)
     | null,
 }));
+
 
 vi.mock("@get-bb/plugin-sdk/app", async (importOriginal) => {
   const actual =
@@ -82,11 +106,13 @@ vi.mock("@get-bb/plugin-sdk/app", async (importOriginal) => {
   };
 });
 
+
 beforeAll(async () => {
   installTestPluginRuntime();
   await import("./CommandPaletteBody");
   await import("./ThreadSearchPaletteMode");
 });
+
 
 const PALETTE_SHORTCUT = {
   key: "p",
@@ -97,7 +123,9 @@ const PALETTE_SHORTCUT = {
   shift: true,
 };
 
+
 const MAIN_SURFACE = { all: ["mainSurface" as const], none: [] };
+
 
 const PALETTE_BINDING: AppKeybinding = {
   command: "palette.open",
@@ -105,6 +133,7 @@ const PALETTE_BINDING: AppKeybinding = {
   shortcut: PALETTE_SHORTCUT,
   when: { all: ["mainSurface"], none: ["modalOpen"] },
 };
+
 
 const THREAD_NEW_BINDING: AppKeybinding = {
   command: "thread.new",
@@ -120,6 +149,7 @@ const THREAD_NEW_BINDING: AppKeybinding = {
   when: { all: ["mainSurface"], none: ["modalOpen"] },
 };
 
+
 const THREAD_SEARCH_BINDING: AppKeybinding = {
   command: "thread.search",
   desktopOnly: false,
@@ -134,6 +164,7 @@ const THREAD_SEARCH_BINDING: AppKeybinding = {
   when: { all: ["mainSurface"], none: ["modalOpen"] },
 };
 
+
 function defaults(...commands: AppCommandId[]): AppDefaultKeybinding[] {
   return commands.map((command) => ({
     command,
@@ -142,6 +173,7 @@ function defaults(...commands: AppCommandId[]): AppDefaultKeybinding[] {
     when: MAIN_SURFACE,
   }));
 }
+
 
 const testState = vi.hoisted(() => ({
   overrides: [] as AppKeybindingOverrides,
@@ -157,9 +189,11 @@ const testState = vi.hoisted(() => ({
     name: string | null;
   }>,
 }));
+
 const modeState = vi.hoisted(() => ({
   activeRecents: [] as ThreadListEntry[],
   archivedRecents: [] as ThreadListEntry[],
+  archivedRecentsEnabled: false,
   threadDraftIds: new Set<string>(),
   searchResponse: undefined as ThreadSearchResponse | undefined,
   recentLoading: false,
@@ -167,12 +201,16 @@ const modeState = vi.hoisted(() => ({
   searchLoading: false,
   searchError: false,
 }));
+
 const routeNavigateMock = vi.hoisted(() => vi.fn());
+
 const openThreadInSplitMock = vi.hoisted(() => vi.fn());
+
 
 vi.mock("@/lib/split-layout/openThreadInSplit", () => ({
   openThreadInSplit: openThreadInSplitMock,
 }));
+
 
 function expectClasses(
   element: Element | null | undefined,
@@ -184,6 +222,7 @@ function expectClasses(
   }
 }
 
+
 function expectNoClasses(
   element: Element | null | undefined,
   ...classNames: string[]
@@ -194,9 +233,11 @@ function expectNoClasses(
   }
 }
 
+
 function expectText(element: Element | null | undefined, text: string): void {
   expect(element?.textContent).toContain(text);
 }
+
 
 function expectAttribute(
   element: Element | null | undefined,
@@ -210,6 +251,7 @@ function expectAttribute(
     expect(element?.getAttribute(name)).toBe(value);
   }
 }
+
 
 vi.mock("@/hooks/queries/system-queries", () => ({
   useSystemConfig: () => ({
@@ -236,9 +278,11 @@ vi.mock("@/hooks/queries/system-queries", () => ({
   }),
 }));
 
+
 vi.mock("@/lib/bb-desktop", () => ({
   getBbDesktopInfo: () => null,
 }));
+
 
 vi.mock("@/hooks/useHostDaemon", () => ({
   useHostDaemon: () => ({ hasDaemon: false }),
@@ -249,21 +293,25 @@ vi.mock("@/hooks/useHostDaemon", () => ({
   }),
 }));
 
+
 vi.mock("@/lib/app-query-client", () => ({
   appQueryClient: {
     fetchQuery: () => Promise.resolve(testState.plugins),
   },
 }));
 
+
 vi.mock("@/components/ui/app-route-anchor", () => ({
   useRouteNavigate: () => routeNavigateMock,
 }));
+
 
 vi.mock("@/hooks/usePromptDraftStorage", () => ({
   usePromptDraftHasInput: (scope: { kind: string; threadId?: string }) =>
     scope.kind === "thread" &&
     modeState.threadDraftIds.has(scope.threadId ?? ""),
 }));
+
 
 vi.mock("@/hooks/queries/sidebar-navigation-query", () => ({
   useSidebarNavigation: () => ({
@@ -282,13 +330,18 @@ vi.mock("@/hooks/queries/sidebar-navigation-query", () => ({
   }),
 }));
 
+
 vi.mock("@/hooks/queries/palette-thread-queries", () => ({
-  usePaletteRecentArchivedThreads: () => ({
-    data: modeState.archivedRecents,
-    isLoading: false,
-    isError: false,
-  }),
+  usePaletteRecentArchivedThreads: ({ enabled }: { enabled: boolean }) => {
+    modeState.archivedRecentsEnabled = enabled;
+    return {
+      data: modeState.archivedRecents,
+      isLoading: false,
+      isError: false,
+    };
+  },
 }));
+
 
 vi.mock("@/hooks/queries/thread-queries", async (importOriginal) => {
   const actual =
@@ -307,6 +360,7 @@ vi.mock("@/hooks/queries/thread-queries", async (importOriginal) => {
   };
 });
 
+
 function Handler({ command }: { command: AppCommandId }) {
   useAppCommandHandler(command, ({ target }) => {
     testState.calls.push(command);
@@ -316,7 +370,9 @@ function Handler({ command }: { command: AppCommandId }) {
   return null;
 }
 
+
 const threadUpdatedAt = Date.now();
+
 
 function makeThread(
   id: string,
@@ -348,11 +404,11 @@ function makeThread(
     createdAt: 1,
     updatedAt: threadUpdatedAt,
     activity: {
+      activeGoalCount: 0,
       activeWorkflowCount: 0,
       activeBackgroundAgentCount: 0,
       activeBackgroundCommandCount: 0,
       activePlanModeCount: 0,
-      activeGoalCount: 0,
     },
     hasPendingInteraction: false,
     environmentHostId: null,
@@ -370,6 +426,7 @@ function makeThread(
     ...overrides,
   };
 }
+
 
 function renderPalette({
   compact = false,
@@ -413,6 +470,7 @@ function renderPalette({
   return { ...result, store, rerenderPalette: () => result.rerender(tree()) };
 }
 
+
 function ThreadSearchMoreLauncher() {
   const runner = useAppCommandRunner();
   navigationMocks.activate = (_itemId, options) =>
@@ -442,6 +500,7 @@ function ThreadSearchMoreLauncher() {
   );
 }
 
+
 function openPalette(): KeyboardEvent {
   const event = new KeyboardEvent("keydown", {
     key: "p",
@@ -454,6 +513,7 @@ function openPalette(): KeyboardEvent {
   return event;
 }
 
+
 function openThreadSearch(): KeyboardEvent {
   const event = new KeyboardEvent("keydown", {
     key: "k",
@@ -465,16 +525,22 @@ function openThreadSearch(): KeyboardEvent {
   return event;
 }
 
+
 const searchField = () => screen.getByRole("combobox");
+
 const commandList = () => screen.getByRole("listbox", { name: "Commands" });
+
 const bucketGroup = (name: string) =>
   within(commandList()).getByRole("group", { name });
+
 const optionTitles = () =>
   screen.getAllByRole("option").map((option) => option.textContent);
+
 const selectedOption = () =>
   screen
     .getAllByRole("option")
     .find((option) => option.getAttribute("aria-selected") === "true");
+
 
 afterEach(() => {
   testState.overrides = [];
@@ -491,6 +557,7 @@ afterEach(() => {
   testState.plugins.length = 0;
   modeState.activeRecents = [];
   modeState.archivedRecents = [];
+  modeState.archivedRecentsEnabled = false;
   modeState.threadDraftIds.clear();
   modeState.searchResponse = undefined;
   modeState.recentLoading = false;
@@ -502,6 +569,7 @@ afterEach(() => {
   openThreadInSplitMock.mockReset();
   window.localStorage.clear();
 });
+
 
 describe("CommandPalette", () => {
   it.each(["palette", "search"])(
@@ -516,6 +584,7 @@ describe("CommandPalette", () => {
       );
     },
   );
+
   it("closes direct thread search on Escape and restores terminal focus", async () => {
     const frames: FrameRequestCallback[] = [];
     vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
@@ -569,6 +638,7 @@ describe("CommandPalette", () => {
     unmount();
   });
 
+
   it("moves terminal focus into thread search and restores it after Escape", async () => {
     const { unmount } = renderPalette();
     const terminal = document.createElement("textarea");
@@ -611,6 +681,7 @@ describe("CommandPalette", () => {
     },
     focusedPaneId: "origin",
   };
+
 
   it.each(["click", "Control", "Meta"])(
     "opens only the selected result in a split with %s",
@@ -657,6 +728,7 @@ describe("CommandPalette", () => {
       expect(routeNavigateMock).not.toHaveBeenCalled();
     },
   );
+
 
   it.each(["compact", "no workspace", "already open", "pane limit"])(
     "hides the split action for %s",
@@ -705,6 +777,7 @@ describe("CommandPalette", () => {
     },
   );
 
+
   it("keeps the split column on every row when the highlighted thread is already open", async () => {
     modeState.activeRecents = [
       makeThread("origin"),
@@ -723,6 +796,7 @@ describe("CommandPalette", () => {
       screen.getAllByRole("button", { name: "Open in split" }),
     ).toHaveLength(1);
   });
+
 
   it("expands Show more on modifier Enter without opening a split, and hides the action for no matches", async () => {
     modeState.searchResponse = {
@@ -753,6 +827,7 @@ describe("CommandPalette", () => {
     await screen.findByText("No matching threads");
     expect(screen.queryByRole("button", { name: "Open in split" })).toBeNull();
   });
+
 
   it("preserves archived message anchors for split opening", async () => {
     modeState.searchResponse = {
@@ -789,6 +864,7 @@ describe("CommandPalette", () => {
     expect(routeNavigateMock).not.toHaveBeenCalled();
   });
 
+
   it.each(["commands", "threads"])(
     "runs an available shortcut from %s even with no matches, after closing and restoring focus",
     async (mode) => {
@@ -809,8 +885,18 @@ describe("CommandPalette", () => {
       expect(screen.queryByRole("combobox")).toBeNull();
       expect(testState.targets).toEqual([screen.getByTestId("origin")]);
       expect(document.activeElement).toBe(screen.getByTestId("origin"));
+
+      fireEvent.keyDown(screen.getByTestId("origin"), {
+        key: "o",
+        ctrlKey: true,
+        shiftKey: true,
+      });
+      await waitFor(() =>
+        expect(testState.calls).toEqual(["thread.new", "thread.new"]),
+      );
     },
   );
+
 
   it("switches modes by shortcut without losing the invocation target or intercepting editing, repeat, and composition events", async () => {
     renderPalette();
@@ -849,6 +935,7 @@ describe("CommandPalette", () => {
     expect(testState.targets).toEqual([screen.getByTestId("origin")]);
   });
 
+
   it.each([false, true])(
     "shows shortcut keycaps only on desktop, including filtered plugin results (compact: %s)",
     async (compact) => {
@@ -882,6 +969,7 @@ describe("CommandPalette", () => {
     },
   );
 
+
   it("opens on its chord and lists the commands that apply", async () => {
     renderPalette();
     const event = openPalette();
@@ -898,6 +986,7 @@ describe("CommandPalette", () => {
     );
     expect(titles.length).toBeGreaterThan(5);
   });
+
 
   it("groups resting commands, hides empty plugins, and distinguishes drill-in rows", async () => {
     renderPalette();
@@ -1009,6 +1098,8 @@ describe("CommandPalette", () => {
     expectClasses(searchThreadsRow, "bg-state-hover", "text-foreground");
   });
 
+
+
   it("enters thread mode from its existing command and closes it on Escape", async () => {
     modeState.activeRecents = [makeThread("selected")];
     renderPalette();
@@ -1048,6 +1139,7 @@ describe("CommandPalette", () => {
     expect(screen.queryByRole("combobox")).toBeNull();
   });
 
+
   it("returns to root commands when Escape exits thread search entered from root", async () => {
     renderPalette();
     openPalette();
@@ -1065,6 +1157,7 @@ describe("CommandPalette", () => {
     await screen.findByRole("combobox", { name: "Search commands" });
     expect(screen.getByTestId("command-palette")).toBeTruthy();
   });
+
 
   it("uses the shared tab-pill clear affordance without running the mode command", async () => {
     renderPalette();
@@ -1126,6 +1219,7 @@ describe("CommandPalette", () => {
     expect(optionTitles()).toEqual(commandsAfterExit);
   });
 
+
   it.each(["", "no match"])(
     "shares the thread-list empty style for query '%s' without a create action",
     async (query) => {
@@ -1164,6 +1258,7 @@ describe("CommandPalette", () => {
     },
   );
 
+
   it.each([
     ["loading", "Loading threads"],
     ["error", "Couldn’t load threads"],
@@ -1186,6 +1281,7 @@ describe("CommandPalette", () => {
     },
   );
 
+
   it("explains Escape at the mode exit control without adding a footer hint", async () => {
     renderPalette();
     openThreadSearch();
@@ -1198,6 +1294,7 @@ describe("CommandPalette", () => {
     fireEvent.keyDown(close, { key: "Escape" });
     await screen.findByRole("combobox", { name: "Search commands" });
   });
+
 
   it("returns from an empty thread query with Backspace", async () => {
     renderPalette();
@@ -1215,6 +1312,7 @@ describe("CommandPalette", () => {
     );
     expect(testState.calls).toEqual([]);
   });
+
 
   it("shows active recents in update order with project metadata and follow-up status", async () => {
     modeState.activeRecents = [
@@ -1263,6 +1361,7 @@ describe("CommandPalette", () => {
     }
   });
 
+
   it("keeps the highlighted thread across filter changes and clamps it when removed", async () => {
     modeState.activeRecents = [
       makeThread("first"),
@@ -1289,6 +1388,24 @@ describe("CommandPalette", () => {
       selectedOption()?.id,
     );
   });
+
+
+  it("loads archived recents only while Archived is selected and the query is empty", async () => {
+    const { store } = renderPalette();
+    openThreadSearch();
+    await screen.findByRole("combobox", { name: "Search threads" });
+    expect(modeState.archivedRecentsEnabled).toBe(false);
+
+    act(() => store.set(paletteThreadLifecyclesAtom, ["active", "archived"]));
+    expect(modeState.archivedRecentsEnabled).toBe(true);
+
+    fireEvent.change(searchField(), { target: { value: "match" } });
+    expect(modeState.archivedRecentsEnabled).toBe(false);
+
+    fireEvent.change(searchField(), { target: { value: "  " } });
+    expect(modeState.archivedRecentsEnabled).toBe(true);
+  });
+
 
   it("operates the lifecycle filter with the keyboard without selecting a result", async () => {
     modeState.activeRecents = [makeThread("active")];
@@ -1320,6 +1437,7 @@ describe("CommandPalette", () => {
       screen.getByRole("combobox", { name: "Search threads" }),
     ).toBeTruthy();
   });
+
 
   it.each(["", "match"])(
     "keeps saved messages with Active and caps Active at six and Archived at three for query '%s'",
@@ -1382,6 +1500,7 @@ describe("CommandPalette", () => {
       expect(document.querySelector("[data-palette-footer]")).toBeNull();
     },
   );
+
 
   it("groups lifecycle with headings while preserving highlights and attention status", async () => {
     const active = makeThread("active", {
@@ -1446,6 +1565,7 @@ describe("CommandPalette", () => {
       rows[1].querySelector("[data-palette-thread-details]")?.lastElementChild,
     ).toBe(within(rows[1]).getByRole("img", { name: "Done" }));
   });
+
 
   it("caps mixed matches, expands sections independently, and resets on query changes", async () => {
     const active = Array.from({ length: 8 }, (_, index) =>
@@ -1534,6 +1654,7 @@ describe("CommandPalette", () => {
     expect(screen.getByText("Show more")).toBeTruthy();
   });
 
+
   it("matches loaded titles on the first character and keeps the highlight when server rows merge in", async () => {
     const fixtureNow = Date.now();
     modeState.activeRecents = Array.from({ length: 6 }, (_, index) =>
@@ -1607,6 +1728,7 @@ describe("CommandPalette", () => {
     );
   });
 
+
   it("keeps a highlighted row in view when server rows push it down", async () => {
     const fixtureNow = Date.now();
     modeState.activeRecents = Array.from({ length: 6 }, (_, index) =>
@@ -1660,6 +1782,7 @@ describe("CommandPalette", () => {
       ),
     );
   });
+
 
   it("puts an exact title match first even when the server ranks message matches above it", async () => {
     const now = Date.now();
@@ -1786,6 +1909,7 @@ describe("CommandPalette", () => {
     );
   });
 
+
   it("keeps loaded matches when the server search fails", async () => {
     modeState.activeRecents = [makeThread("fix", { title: "Fix it" })];
     modeState.searchError = true;
@@ -1801,6 +1925,7 @@ describe("CommandPalette", () => {
     await screen.findByText("Couldn’t load threads");
   });
 
+
   it("highlights the project name for threads listed by project", async () => {
     modeState.activeRecents = [makeThread("other", { title: "Unrelated" })];
     renderPalette();
@@ -1814,6 +1939,7 @@ describe("CommandPalette", () => {
       .querySelector("[data-palette-thread-metadata]");
     expect(metadata?.querySelector("mark")?.textContent).toBe("Pal");
   });
+
 
   it.each([
     [["active"], "No matching threads"],
@@ -1832,6 +1958,7 @@ describe("CommandPalette", () => {
       expect(screen.queryByRole("option")).toBeNull();
     },
   );
+
 
   it.each(["active", "archived"] as const)(
     "shows six %s-only matches and opens a revealed result",
@@ -1872,6 +1999,7 @@ describe("CommandPalette", () => {
       expect(routeNavigateMock.mock.calls[0][0]).toContain(`${lifecycle}-6`);
     },
   );
+
 
   it("keeps active and archived search results and restores active recents on clear", async () => {
     modeState.activeRecents = [makeThread("recent-active")];
@@ -1928,6 +2056,7 @@ describe("CommandPalette", () => {
     expect(within(results).queryByText("Threads", { exact: true })).toBeNull();
     expect(within(results).queryByText("Archived")).toBeNull();
   });
+
 
   it.each(["", "match"])(
     "shows only meaningful status after left-aligned metadata for query '%s'",
@@ -2023,6 +2152,7 @@ describe("CommandPalette", () => {
     },
   );
 
+
   it("uses live plugin status with the sidebar's attention priority", async () => {
     modeState.activeRecents = [
       makeThread("plugin", { lastReadAt: Date.now() }),
@@ -2061,6 +2191,7 @@ describe("CommandPalette", () => {
     act(() => resetPluginThreadRowStatusesForTest());
     expect(within(row).queryByRole("img")).toBeNull();
   });
+
 
   it("opens an archived message match with its anchor", async () => {
     modeState.searchResponse = {
@@ -2124,6 +2255,7 @@ describe("CommandPalette", () => {
     );
   });
 
+
   it("filters as the user types and keeps the selection on a live row", async () => {
     renderPalette();
     openPalette();
@@ -2138,6 +2270,7 @@ describe("CommandPalette", () => {
     expect(selectedOption()?.textContent).not.toContain("Workspace");
     expect(within(commandList()).queryAllByRole("group")).toHaveLength(0);
   });
+
 
   it("keeps hidden categories searchable and browser targets visible", async () => {
     renderPalette();
@@ -2162,6 +2295,7 @@ describe("CommandPalette", () => {
     expect(selectedOption()?.textContent).toContain("Browser");
   });
 
+
   it("finds commands when the query starts with a space", async () => {
     renderPalette();
     openPalette();
@@ -2172,6 +2306,7 @@ describe("CommandPalette", () => {
     await waitFor(() => expect(optionTitles()).toHaveLength(1));
     expect(selectedOption()?.textContent).toContain("New thread");
   });
+
 
   it("wraps at both ends of the list", async () => {
     renderPalette();
@@ -2185,6 +2320,7 @@ describe("CommandPalette", () => {
     fireEvent.keyDown(searchField(), { key: "ArrowDown" });
     expect(selectedOption()?.textContent).toContain("New thread");
   });
+
 
   it.each(["Enter", "ArrowDown", "ArrowUp", "Home", "End"])(
     "leaves %s to an active IME composition",
@@ -2233,6 +2369,7 @@ describe("CommandPalette", () => {
     },
   );
 
+
   it("keeps composition confirmation separate from command activation", async () => {
     renderPalette();
     openPalette();
@@ -2269,6 +2406,7 @@ describe("CommandPalette", () => {
     expect(screen.queryByRole("combobox")).toBeNull();
   });
 
+
   it("keeps the default catalog unchanged after running a command", async () => {
     renderPalette();
     openPalette();
@@ -2286,37 +2424,8 @@ describe("CommandPalette", () => {
     expect(optionTitles()).toEqual(initialTitles);
   });
 
-  it("closes on Escape without running anything", async () => {
-    renderPalette();
-    openPalette();
-    await waitFor(() => expect(searchField()).toBeTruthy());
 
-    fireEvent.keyDown(searchField(), { key: "Escape" });
 
-    await waitFor(() => expect(screen.queryByRole("combobox")).toBeNull());
-    expect(testState.calls).toEqual([]);
-  });
-
-  it("keeps app shortcuts working after a shortcut closes the palette", async () => {
-    renderPalette();
-    const pressThreadNew = () =>
-      fireEvent.keyDown(document.activeElement ?? window, {
-        key: "o",
-        ctrlKey: true,
-        shiftKey: true,
-        bubbles: true,
-      });
-
-    openPalette();
-    await waitFor(() => expect(searchField()).toBeTruthy());
-    pressThreadNew();
-    await waitFor(() => expect(testState.calls).toEqual(["thread.new"]));
-    await waitFor(() => expect(screen.queryByRole("combobox")).toBeNull());
-    pressThreadNew();
-    await waitFor(() =>
-      expect(testState.calls).toEqual(["thread.new", "thread.new"]),
-    );
-  });
 
   it("scrolls the highlighted row into view when arrowing, but not on hover", async () => {
     const scrollIntoView = vi.spyOn(
@@ -2342,6 +2451,7 @@ describe("CommandPalette", () => {
 
     scrollIntoView.mockRestore();
   });
+
 
   it.each(["commands", "legacy"])(
     "lists a plugin's registered command and runs it",
@@ -2375,6 +2485,7 @@ describe("CommandPalette", () => {
       await waitFor(() => expect(testState.calls).toEqual(["plugin-ran"]));
     },
   );
+
 
   it("dispatches defaults and overrides, respects availability, and unregisters disabled commands", async () => {
     let available = true;
@@ -2443,6 +2554,7 @@ describe("CommandPalette", () => {
     testState.overrides = [];
   });
 
+
   it.each([false, true])(
     "opens Installed plugins in Settings (compact: %s)",
     async (compact) => {
@@ -2464,25 +2576,7 @@ describe("CommandPalette", () => {
     },
   );
 
-  it("opens a specific settings page", async () => {
-    renderPalette();
-    openPalette();
-    await waitFor(() => expect(searchField()).toBeTruthy());
 
-    fireEvent.change(searchField(), {
-      target: { value: "keyboard settings" },
-    });
-    await waitFor(() =>
-      expect(selectedOption()?.textContent).toContain("Keyboard settings"),
-    );
-    fireEvent.keyDown(searchField(), { key: "Enter" });
-
-    await waitFor(() =>
-      expect(screen.getByTestId("location").textContent).toBe(
-        "/settings/keyboard",
-      ),
-    );
-  });
 
   it("only includes Files settings when local helper access is available", async () => {
     renderPalette();
@@ -2509,6 +2603,7 @@ describe("CommandPalette", () => {
       expect(selectedOption()?.textContent).toContain("Files settings"),
     );
   });
+
 
   it("opens an installed plugin's settings page", async () => {
     testState.plugins.push({
@@ -2543,6 +2638,7 @@ describe("CommandPalette", () => {
       ),
     );
   });
+
 
   it("opens a plugin page", async () => {
     setPluginSlotRegistrations(
@@ -2582,6 +2678,7 @@ describe("CommandPalette", () => {
       ),
     );
   });
+
 
   it("lists a plugin's commandPaletteAction and runs it", async () => {
     setPluginLogoUrls(
@@ -2632,6 +2729,7 @@ describe("CommandPalette", () => {
 
     await waitFor(() => expect(testState.calls).toEqual(["plugin-ran"]));
   });
+
 
   it("says so when nothing matches", async () => {
     renderPalette();

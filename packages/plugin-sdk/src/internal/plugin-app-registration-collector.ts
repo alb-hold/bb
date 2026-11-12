@@ -4,6 +4,7 @@ import type {
   ExperimentalTabRegistration,
   ComposerCustomization,
   ExperimentalAppOverlayRegistration,
+  InternalDoNotUseSetupGuideSectionRegistration,
   ExperimentalCodeFenceRendererRegistration,
   ExperimentalSidebarFooter,
   ExperimentalSidebarFooterActionRegistration,
@@ -35,6 +36,8 @@ import type {
   ExperimentalThreadInfoRowRegistration,
   ExperimentalThreadRowMetadataRegistration,
   ExperimentalThreadInfoSectionRegistration,
+  ExperimentalThreadHeaderRowRegistration,
+  ExperimentalThreadHeaderTitleRegistration,
   ExperimentalThreadContextCardRowRegistration,
   ExperimentalThreadContextCardSectionRegistration,
   PluginThreadActionRegistration,
@@ -210,6 +213,8 @@ const NAV_PANEL_REGISTRATION_KEYS = {
   experimental_usePageTitle: true,
   experimental_sidebar: true,
   headerContent: true,
+  experimental_headerTitle: true,
+  experimental_hideFromNavigation: true,
 } satisfies Record<keyof PluginNavPanelRegistration | "fixedTabs", true>;
 
 const RENAMED_NAV_PANEL_KEYS: ReadonlyMap<string, string> = new Map([
@@ -307,6 +312,7 @@ export interface CollectedPluginAppRegistrations {
   homepageSections: PluginHomepageSectionRegistration[];
   settingsSections: PluginSettingsSectionRegistration[];
   appOverlays: ExperimentalAppOverlayRegistration[];
+  setupGuideSections: InternalDoNotUseSetupGuideSectionRegistration[];
   navPanels: LegacyNavPanelRegistration[];
   tabs: ExperimentalTabRegistration[];
   threadPanelActions: LegacyThreadPanelActionRegistration[];
@@ -322,6 +328,8 @@ export interface CollectedPluginAppRegistrations {
   threadInfoRows: ExperimentalThreadInfoRowRegistration[];
   threadRowMetadata: ExperimentalThreadRowMetadataRegistration<unknown>[];
   threadInfoSections: ExperimentalThreadInfoSectionRegistration[];
+  threadHeaderRows: ExperimentalThreadHeaderRowRegistration[];
+  threadHeaderTitles: ExperimentalThreadHeaderTitleRegistration[];
   threadContextCardRows: ExperimentalThreadContextCardRowRegistration[];
   threadContextCardSections: ExperimentalThreadContextCardSectionRegistration[];
   threadActions: PluginThreadActionRegistration<unknown>[];
@@ -441,6 +449,7 @@ export function collectPluginAppRegistrations(
     homepageSections: [],
     settingsSections: [],
     appOverlays: [],
+    setupGuideSections: [],
     navPanels: [],
     tabs: [],
     get threadPanelActions() {
@@ -465,6 +474,8 @@ export function collectPluginAppRegistrations(
     threadInfoRows: [],
     threadRowMetadata: [],
     threadInfoSections: [],
+    threadHeaderRows: [],
+    threadHeaderTitles: [],
     threadContextCardRows: [],
     threadContextCardSections: [],
     threadActions: [],
@@ -490,6 +501,7 @@ export function collectPluginAppRegistrations(
     homepageSection: new Set<string>(),
     settingsSection: new Set<string>(),
     appOverlay: new Set<string>(),
+    setupGuideSection: new Set<string>(),
     navPanel: new Set<string>(),
     tab: new Set<string>(),
     newThreadPanelAction: new Set<string>(),
@@ -505,6 +517,8 @@ export function collectPluginAppRegistrations(
     threadInfoRow: new Set<string>(),
     threadRowMetadata: new Set<string>(),
     threadInfoSection: new Set<string>(),
+    threadHeaderRow: new Set<string>(),
+    threadHeaderTitle: new Set<string>(),
     threadContextCardRow: new Set<string>(),
     threadContextCardSection: new Set<string>(),
     threadAction: new Set<string>(),
@@ -738,6 +752,15 @@ export function collectPluginAppRegistrations(
           component: requireComponent(kind, registration.component),
         });
       },
+      internal_DO_NOT_USE_setupGuideSection(registration) {
+        const kind = "slots.internal_DO_NOT_USE_setupGuideSection";
+        const id = requireSlotId(kind, registration?.id);
+        requireUniqueId(kind, seenIds.setupGuideSection, id);
+        collected.setupGuideSections.push({
+          id,
+          component: requireComponent(kind, registration.component),
+        });
+      },
       navPanel(registration) {
         const kind = "slots.navPanel";
         const id = requireSlotId(kind, registration?.id);
@@ -772,6 +795,22 @@ export function collectPluginAppRegistrations(
         ) {
           throw new Error(
             `${kind}: "experimental_sidebar" must be a React component function when set`,
+          );
+        }
+        if (
+          registration.experimental_headerTitle !== undefined &&
+          typeof registration.experimental_headerTitle !== "function"
+        ) {
+          throw new Error(
+            `${kind}: "experimental_headerTitle" must be a React component function when set`,
+          );
+        }
+        if (
+          registration.experimental_hideFromNavigation !== undefined &&
+          typeof registration.experimental_hideFromNavigation !== "boolean"
+        ) {
+          throw new Error(
+            `${kind}: "experimental_hideFromNavigation" must be a boolean when set`,
           );
         }
         if (
@@ -846,6 +885,14 @@ export function collectPluginAppRegistrations(
             : {}),
           ...(registration.headerContent !== undefined
             ? { headerContent: registration.headerContent }
+            : {}),
+          ...(registration.experimental_headerTitle !== undefined
+            ? {
+                experimental_headerTitle: registration.experimental_headerTitle,
+              }
+            : {}),
+          ...(registration.experimental_hideFromNavigation === true
+            ? { experimental_hideFromNavigation: true }
             : {}),
         });
       },
@@ -1003,6 +1050,25 @@ export function collectPluginAppRegistrations(
           component: requireComponent(kind, registration.component),
         });
       },
+      experimental_threadHeaderRow(registration) {
+        const kind = "slots.experimental_threadHeaderRow";
+        const id = requireSlotId(kind, registration?.id);
+        requireUniqueId(kind, seenIds.threadHeaderRow, id);
+        collected.threadHeaderRows.push({
+          id,
+          ...requireOptionalOrder(kind, registration.order),
+          component: requireComponent(kind, registration.component),
+        });
+      },
+      experimental_threadHeaderTitle(registration) {
+        const kind = "slots.experimental_threadHeaderTitle";
+        const id = requireSlotId(kind, registration?.id);
+        requireUniqueId(kind, seenIds.threadHeaderTitle, id);
+        collected.threadHeaderTitles.push({
+          id,
+          component: requireComponent(kind, registration.component),
+        });
+      },
       experimental_threadContextCardRow(registration) {
         const kind = "slots.experimental_threadContextCardRow";
         const id = requireSlotId(kind, registration?.id);
@@ -1089,9 +1155,9 @@ export function collectPluginAppRegistrations(
         const id = requireSlotId(kind, registration?.id);
         requireUniqueId(kind, seenIds.fileOpener, id);
         const rawExtensions = registration?.extensions;
-        if (!Array.isArray(rawExtensions) || rawExtensions.length === 0) {
+        if (!Array.isArray(rawExtensions)) {
           throw new Error(
-            `${kind}: "extensions" must be a non-empty array of lowercase extensions without the dot`,
+            `${kind}: "extensions" must be an array of lowercase extensions without the dot`,
           );
         }
         const extensions = rawExtensions.map((extension) => {

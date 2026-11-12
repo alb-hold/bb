@@ -12,24 +12,28 @@ import {
   inArray,
   isNotNull,
   isNull,
+  lte,
   notInArray,
   or,
   sql,
 } from "drizzle-orm";
 import {
   getLatestThreadSequence,
-  deleteThread,
+  requestThreadPurge,
   environments,
   events,
   getEnvironment,
   getHost,
+  getLatestSessionForHost,
   getLatestThreadInterruptedReason,
   getThread,
   listNativeTerminalThreadIds,
   hasStoredTerminalClientTurnRequestEvent,
+  hasStoredTurnRequestEventSince,
   listThreadIdsStoppedSinceLastTurnStart,
   listThreadIdsWithLatestHostDaemonRestartInterruption,
   listThreadTurnInterruptionEventStates,
+  liveThread,
   markThreadStorageDeleted,
   threads,
   type DbNotifier,
@@ -37,7 +41,12 @@ import {
   type DbTransaction,
 } from "@bb/db";
 import { assertNever } from "@bb/core-ui";
-import { COMPETING_TURN_ERROR_CODE } from "@bb/host-daemon-contract";
+import {
+  COMPETING_TURN_ERROR_CODE,
+  STALE_TURN_ERROR_CODE,
+  STEER_UNCONFIRMED_ERROR_CODE,
+  TURN_START_UNCONFIRMED_ERROR_CODE,
+} from "@bb/host-daemon-contract";
 import {
   type ProvisioningTranscriptEntry,
   type SystemThreadInterruptedReason,
@@ -104,9 +113,15 @@ import { isHostUnavailableApiError } from "../hosts/online-rpc.js";
 import {
   LIVE_DAEMON_COMMAND_TIMEOUT_MS,
   runLiveHostCommand,
+  startLiveHostCommand,
 } from "../hosts/live-command.js";
+import {
+  settleInFlightTurnRequest,
+  trackInFlightTurnRequest,
+} from "../../internal/turn-completed-events.js";
 import { createAsyncDeduper } from "../lib/async-deduper.js";
 import { requestQueuedMessageDispatch } from "./queued-message-dispatch.js";
+import { defineItemSweep, type ItemSweep } from "../system/item-sweep.js";
 import { throwThreadNotWritable } from "../lib/lifecycle-api-errors.js";
 import { NotificationBuffer } from "../lib/notification-buffer.js";
 import { queueChildThreadTurnNotificationBestEffort } from "./child-thread-notifications.js";
@@ -121,6 +136,12 @@ import { scheduleThreadProvisioningAdvance } from "./thread-provisioning.js";
 import { isPreStartThreadStatus } from "./thread-status.js";
 import { settleDanglingBackgroundTasksForStoppedThreadInTransaction } from "./background-task-reconciliation.js";
 import { abortPluginToolCallsForThreads } from "../plugins/plugin-tool-calls.js";
+import {
+  settleUnconfirmedSteerInTransaction,
+  settleUnconfirmedTurnStartInTransaction,
+} from "./unconfirmed-turn-requests.js";
+import { preservePathPluginsInside } from "../plugins/path-plugin-preservation.js";
+import { joinHostPathSegments } from "../lib/host-path.js";
 
 type ThreadStartCommand = Awaited<ReturnType<typeof buildThreadStartCommand>>;
 type ThreadStopCommand = ReturnType<typeof buildThreadStopCommand>;
@@ -227,6 +248,11 @@ class InFlightRpcGuard {
 
 const inFlightThreadRpcGuard = new InFlightRpcGuard();
 
+const stopsAwaitingDaemon = new Map<
+  string,
+  { hostId: string; sentAt: number }
+>();
+
 export function hasLiveThreadStartInFlight(threadId: string): boolean {
   return inFlightThreadRpcGuard.isHeld(threadId, "thread.start");
 }
@@ -307,6 +333,7 @@ interface InterruptActiveThreadArgs {
 interface InterruptActiveThreadsArgs {
   cause?: "host-connection-lost";
   reason: SystemThreadInterruptedReason;
+  resumingThreadIds: ReadonlySet<string>;
   threads: readonly InterruptActiveThreadArgs[];
 }
 
@@ -317,6 +344,7 @@ interface InterruptActiveThreadsForHostArgs {
   hostId: string;
   onlyThreadIds?: ReadonlySet<string>;
   reason: SystemThreadInterruptedReason;
+  resumingThreadIds: ReadonlySet<string>;
 }
 
 interface InterruptedActiveThreadResult {
@@ -790,6 +818,26 @@ function settleThreadCommandFailure(
   if (hasTerminalClientTurnRequestEvent(args.deps, args.command)) {
     return emptyCommandResultSideEffects();
   }
+  if (
+    args.command.type === "turn.submit" &&
+    args.report.errorCode === STEER_UNCONFIRMED_ERROR_CODE
+  ) {
+    settleUnconfirmedSteerInTransaction(args.deps.db, {
+      requestId: args.command.requestId,
+      threadId: thread.id,
+    });
+    return emptyCommandResultSideEffects();
+  }
+  if (
+    args.command.type === "turn.submit" &&
+    args.report.errorCode === TURN_START_UNCONFIRMED_ERROR_CODE
+  ) {
+    settleUnconfirmedTurnStartInTransaction(args.deps.db, {
+      requestId: args.command.requestId,
+      threadId: thread.id,
+    });
+    return emptyCommandResultSideEffects();
+  }
   const missingWorkspaceMessage = describeMissingWorkspace(args.deps.db, {
     environmentId: thread.environmentId,
     errorCode: args.report.errorCode,
@@ -926,9 +974,58 @@ export function settleThreadStartCommandResult(
   return { postCommitActions };
 }
 
+function redeliverStaleSteer(
+  args: SettleTurnSubmitCommandResultArgs,
+): CommandResultSideEffectsResult | null {
+  const { command } = args;
+  if (
+    args.report.ok ||
+    args.report.errorCode !== STALE_TURN_ERROR_CODE ||
+    command.target.mode === "start"
+  ) {
+    return null;
+  }
+  const thread = getThread(args.deps.db, command.threadId);
+  if (
+    thread?.status !== "active" ||
+    thread.deletedAt !== null ||
+    hasTerminalClientTurnRequestEvent(args.deps, command)
+  ) {
+    return null;
+  }
+  return {
+    postCommitActions: [
+      {
+        run: (deps) => {
+          trackInFlightTurnRequest(command.threadId);
+          startLiveHostCommand(deps, {
+            command: {
+              ...command,
+              target: { mode: "auto", expectedTurnId: null },
+            },
+            hostId: args.execution.hostId,
+            timeoutMs: LIVE_DAEMON_COMMAND_TIMEOUT_MS,
+            onError: ({ error }) => {
+              deps.logger.warn(
+                { err: error, threadId: command.threadId },
+                "Live turn submit command failed",
+              );
+            },
+            onSettled: () => settleInFlightTurnRequest(deps, command.threadId),
+          });
+        },
+      },
+    ],
+  };
+}
+
 export function settleTurnSubmitCommandResult(
   args: SettleTurnSubmitCommandResultArgs,
 ): CommandResultSideEffectsResult {
+  const redelivered = redeliverStaleSteer(args);
+  if (redelivered !== null) {
+    return redelivered;
+  }
   if (!args.report.ok) {
     return settleThreadCommandFailure({
       command: args.command,
@@ -995,6 +1092,9 @@ export async function prepareReadyThreadTurnCommand(
 export function settleThreadStopCommandResult(
   args: SettleThreadStopCommandResultArgs,
 ): CommandResultSideEffectsResult {
+  if (args.command.intent === "interrupt") {
+    rememberStopAwaitingDaemon(args);
+  }
   if (args.report.ok && args.report.result.activeTurnRetained !== true) {
     settleDanglingBackgroundTasksForStoppedThreadInTransaction(args.deps, {
       threadId: args.command.threadId,
@@ -1113,29 +1213,54 @@ export function requestThreadStorageDeletion(
   if (!inFlightThreadRpcGuard.claim(thread.id, "thread.storage.delete")) {
     return;
   }
-  void runLiveHostCommand(deps, {
-    command: buildThreadStorageDeleteCommand({
-      environmentId: environment.id,
-      threadId: thread.id,
-    }),
-    hostId: environment.hostId,
-    timeoutMs: LIVE_DAEMON_COMMAND_TIMEOUT_MS,
-  })
-    .catch((error) => {
-      deps.logger.warn(
-        { err: error, threadId: thread.id },
-        "Thread storage deletion command failed",
+  void deleteThreadStorageKeepingPlugins(deps, {
+    environment,
+    threadId: thread.id,
+  }).finally(() => {
+    inFlightThreadRpcGuard.release(thread.id, "thread.storage.delete");
+  });
+}
+
+async function deleteThreadStorageKeepingPlugins(
+  deps: CommandResultSideEffectsDeps,
+  args: { environment: { hostId: string; id: string }; threadId: string },
+): Promise<void> {
+  const session = getLatestSessionForHost(deps.db, {
+    hostId: args.environment.hostId,
+  });
+  try {
+    if (session !== null) {
+      await preservePathPluginsInside(
+        deps.db,
+        joinHostPathSegments(session.dataDir, "thread-storage", args.threadId),
       );
-      if (
-        error instanceof ApiError &&
-        error.body.code === "path_in_use" &&
-        thread.environmentId !== null
-      )
-        refreshProviderRetirement(deps, thread.environmentId);
-    })
-    .finally(() => {
-      inFlightThreadRpcGuard.release(thread.id, "thread.storage.delete");
-    });
+    }
+  } catch (error) {
+    deps.logger.warn(
+      { err: error, threadId: args.threadId },
+      "Thread storage deletion skipped: plugins installed from it could not be kept",
+    );
+    return;
+  }
+  await runLiveHostCommand(deps, {
+    command: buildThreadStorageDeleteCommand({
+      environmentId: args.environment.id,
+      threadId: args.threadId,
+    }),
+    hostId: args.environment.hostId,
+    timeoutMs: LIVE_DAEMON_COMMAND_TIMEOUT_MS,
+  }).catch((error) => {
+    deps.logger.warn(
+      { err: error, threadId: args.threadId },
+      "Thread storage deletion command failed",
+    );
+    if (
+      error instanceof ApiError &&
+      error.body.code === "path_in_use" &&
+      args.environment.id !== null
+    )
+      refreshProviderRetirement(deps, args.environment.id);
+  });
 }
 
 /**
@@ -1324,11 +1449,132 @@ function requestThreadStop(
       return;
     }
   }
-  if (!inFlightThreadRpcGuard.claim(args.threadId, "thread.stop")) {
-    return;
-  }
-
   dispatchThreadStopCommand(deps, args);
+}
+
+export const TURN_START_DEADLINE_MS = 5 * 60_000;
+export const TURN_START_DEADLINE_RECONNECT_GRACE_MS = 60_000;
+
+function isAwaitingTurnStartPastDeadline(deadline: number) {
+  return and(
+    eq(threads.status, "active"),
+    isNull(threads.deletedAt),
+    lte(threads.statusChangedAt, deadline),
+    sql`NOT EXISTS (
+      SELECT 1 FROM ${events}
+      WHERE ${events.threadId} = ${threads.id}
+        AND ${events.type} = 'turn/completed'
+        AND ${events.createdAt} > ${deadline}
+    )`,
+  );
+}
+
+interface TurnStartDeadlineCandidate {
+  environmentId: string;
+  hostId: string;
+  threadId: string;
+}
+
+function markTurnStartDeadlineStopInTransaction(
+  deps: ThreadLifecycleTransactionDeps,
+  args: { candidate: TurnStartDeadlineCandidate; deadline: number },
+): boolean {
+  const { candidate } = args;
+  const stillAwaiting = deps.db
+    .select({ id: threads.id })
+    .from(threads)
+    .where(
+      and(
+        eq(threads.id, candidate.threadId),
+        isAwaitingTurnStartPastDeadline(args.deadline),
+      ),
+    )
+    .get();
+  if (stillAwaiting === undefined) {
+    return false;
+  }
+  if (
+    !markThreadStoppingWithEventInTransaction(deps, {
+      reason: "provider-turn-idle",
+      threadId: candidate.threadId,
+    })
+  ) {
+    return false;
+  }
+  appendSystemErrorEventInTransaction(deps, {
+    threadId: candidate.threadId,
+    environmentId: candidate.environmentId,
+    code: "provider_turn_start_deadline",
+    message: `The provider did not start the turn within ${TURN_START_DEADLINE_MS / 60_000} minutes, so bb stopped it. Send a message to try again.`,
+    scope: threadScope(),
+  });
+  return true;
+}
+
+export function turnStartDeadlineSweep(
+  deps: CommandResultSideEffectsDeps,
+  now: number,
+): ItemSweep {
+  const deadline = now - TURN_START_DEADLINE_MS;
+  return defineItemSweep({
+    name: "turn-start-deadline",
+    concurrency: 1,
+    list: (): TurnStartDeadlineCandidate[] =>
+      deps.db
+        .select({
+          environmentId: environments.id,
+          hostId: environments.hostId,
+          threadId: threads.id,
+        })
+        .from(threads)
+        .innerJoin(environments, eq(threads.environmentId, environments.id))
+        .where(isAwaitingTurnStartPastDeadline(deadline))
+        .all(),
+    key: (candidate) => candidate.threadId,
+    process: (candidate) => {
+      const daemonConnectedAt = deps.hub.getDaemonConnectedAtForHost(
+        candidate.hostId,
+      );
+      if (
+        daemonConnectedAt === null ||
+        now - daemonConnectedAt < TURN_START_DEADLINE_RECONNECT_GRACE_MS
+      ) {
+        return;
+      }
+      if (getActiveTurnId(deps, candidate.threadId) !== null) return;
+      const notificationBuffer = new NotificationBuffer();
+      const stopping = deps.db.transaction(
+        (tx) =>
+          markTurnStartDeadlineStopInTransaction(
+            { ...deps, db: tx, hub: notificationBuffer },
+            { candidate, deadline },
+          ),
+        { behavior: "immediate" },
+      );
+      notificationBuffer.flushInto(deps.hub);
+      if (!stopping) return;
+      deps.logger.warn(
+        { threadId: candidate.threadId },
+        "Stopping a run whose turn never started",
+      );
+      dispatchThreadStopCommand(deps, {
+        environmentId: candidate.environmentId,
+        hostId: candidate.hostId,
+        interruptionReason: "provider-turn-idle",
+        threadId: candidate.threadId,
+      });
+      const thread = getThread(deps.db, candidate.threadId);
+      if (thread && isParentNotifiableChildThread(thread, "failed")) {
+        void queueChildThreadTurnNotificationBestEffort(deps, {
+          childThread: thread,
+          parentThreadId: thread.parentThreadId,
+          turnStatus: "failed",
+          turnId: null,
+          failureContext: `was stopped by bb because its provider did not start the turn within ${TURN_START_DEADLINE_MS / 60_000} minutes`,
+        });
+      }
+    },
+  });
 }
 
 function markThreadStopRequested(
@@ -1362,6 +1608,7 @@ function dispatchThreadStopCommand(
   deps: CommandResultSideEffectsDeps,
   args: RequestThreadStopArgs,
 ): void {
+  if (!inFlightThreadRpcGuard.claim(args.threadId, "thread.stop")) return;
   void runLiveHostCommand(deps, {
     command: buildThreadStopCommand({ ...args, intent: "interrupt" }),
     hostId: args.hostId,
@@ -1376,6 +1623,53 @@ function dispatchThreadStopCommand(
     .finally(() => {
       inFlightThreadRpcGuard.release(args.threadId, "thread.stop");
     });
+}
+
+function rememberStopAwaitingDaemon(
+  args: SettleThreadStopCommandResultArgs,
+): void {
+  const { hostId } = args.execution;
+  if (
+    !args.report.ok &&
+    args.report.errorCode === "host_unavailable" &&
+    getLatestSessionForHost(args.deps.db, { hostId })?.status === "active"
+  ) {
+    stopsAwaitingDaemon.set(args.command.threadId, {
+      hostId,
+      sentAt: args.execution.createdAt,
+    });
+    return;
+  }
+  stopsAwaitingDaemon.delete(args.command.threadId);
+}
+
+export function resendStopsAwaitingDaemon(
+  deps: CommandResultSideEffectsDeps,
+  hostId: string,
+): void {
+  for (const [threadId, awaiting] of stopsAwaitingDaemon) {
+    if (awaiting.hostId !== hostId) continue;
+    stopsAwaitingDaemon.delete(threadId);
+    const thread = getThread(deps.db, threadId);
+    if (
+      thread === null ||
+      thread.deletedAt !== null ||
+      thread.environmentId === null ||
+      (thread.status !== "idle" && thread.status !== "error") ||
+      hasStoredTurnRequestEventSince(deps.db, {
+        since: awaiting.sentAt,
+        threadId,
+      })
+    ) {
+      continue;
+    }
+    dispatchThreadStopCommand(deps, {
+      environmentId: thread.environmentId,
+      hostId,
+      interruptionReason: "manual-stop",
+      threadId,
+    });
+  }
 }
 
 function requestPreStartThreadStop(
@@ -1761,6 +2055,7 @@ function interruptActiveThreads(
         const state = stateByThreadId.get(thread.threadId);
         const activeTurnId = state?.activeTurnId ?? null;
         const providerThreadId = state?.latestProviderThreadId ?? null;
+        const resuming = args.resumingThreadIds.has(thread.threadId);
         const failureCopy =
           threadCommandFailureCopyForInterruption(effectiveReason);
 
@@ -1788,8 +2083,12 @@ function interruptActiveThreads(
               activeTurnId !== null ? turnScope(activeTurnId) : threadScope(),
             data: buildSystemErrorEventData({
               code: "thread_command_failed",
-              message: failureCopy.message,
-              detail: failureCopy.detail,
+              message: resuming
+                ? "Thread interrupted because bb restarted"
+                : failureCopy.message,
+              detail: resuming
+                ? "bb will resume the thread shortly."
+                : failureCopy.detail,
             }),
           });
         }
@@ -1867,6 +2166,7 @@ function interruptActiveThreads(
     );
     if (
       result.interruptedTurnId !== null &&
+      !args.resumingThreadIds.has(result.threadId) &&
       thread &&
       isParentNotifiableChildThread(thread, "interrupted")
     ) {
@@ -1916,6 +2216,7 @@ export function interruptActiveThreadsForHost(
         args.onlyThreadIds?.has(thread.threadId) !== false,
     ),
     reason: args.reason,
+    resumingThreadIds: args.resumingThreadIds,
     ...(args.cause ? { cause: args.cause } : {}),
   });
 }
@@ -2041,7 +2342,10 @@ export function finalizeStoppedThreadInTransaction(
     )
       return;
     if (providerEnvironmentHasPendingWork(deps.db, finalizedThread.id)) return;
-    deleteThread(deps.db, deps.hub, finalizedThread.id);
+    requestThreadPurge(deps.db, {
+      now: Date.now(),
+      threadId: finalizedThread.id,
+    });
     if (finalizedThread.environmentId !== null)
       refreshProviderRetirement(deps, finalizedThread.environmentId);
   }
@@ -2121,8 +2425,7 @@ export async function reconcileDaemonReportedThreads(
         and(
           eq(environments.hostId, args.hostId),
           eq(threads.status, "error"),
-          isNull(threads.deletedAt),
-          isNull(threads.archivedAt),
+          liveThread,
           inArray(threads.id, [...args.activeThreadIds]),
         ),
       )
@@ -2173,6 +2476,7 @@ export async function reconcileDaemonReportedThreads(
       })),
     reason: "host-daemon-restarted",
     cause: args.sameDaemonInstance ? "host-connection-lost" : undefined,
+    resumingThreadIds: new Set(),
   });
 
   if (args.activeThreadIds.length === 0) {
@@ -2187,8 +2491,7 @@ export async function reconcileDaemonReportedThreads(
       and(
         eq(environments.hostId, args.hostId),
         inArray(threads.status, ["starting", "idle"]),
-        isNull(threads.deletedAt),
-        isNull(threads.archivedAt),
+        liveThread,
         inArray(threads.id, [...args.activeThreadIds]),
       ),
     )
@@ -2211,14 +2514,12 @@ export async function reconcileDaemonReportedThreads(
       continue;
     }
     if (stoppedWhileAwayThreadIds.has(thread.id)) {
-      if (inFlightThreadRpcGuard.claim(thread.id, "thread.stop")) {
-        dispatchThreadStopCommand(deps, {
-          environmentId: thread.environmentId,
-          hostId: args.hostId,
-          interruptionReason: "manual-stop",
-          threadId: thread.id,
-        });
-      }
+      dispatchThreadStopCommand(deps, {
+        environmentId: thread.environmentId,
+        hostId: args.hostId,
+        interruptionReason: "manual-stop",
+        threadId: thread.id,
+      });
       continue;
     }
     applyLoggedThreadLifecycleEvent(deps, {

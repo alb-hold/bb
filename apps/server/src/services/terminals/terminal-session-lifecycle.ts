@@ -3272,7 +3272,7 @@ export class TerminalSessionLifecycle {
       this.holdBrowserTerminalForReattach({
         handoffOwnerToken: args.handoffOwnerToken,
         session,
-        sinceSeq: this.outputSequenceRebase.toDaemon(current.id, args.sinceSeq),
+        sinceSeq: args.sinceSeq,
         socket: args.socket,
       });
       return;
@@ -3354,25 +3354,38 @@ export class TerminalSessionLifecycle {
       args.session.id,
       args.socket,
     );
-    this.addOutputFlowClient(args.session.id, args.socket, args.sinceSeq);
+    this.flushRetainedOutput(args.session.id);
+    const chunks = (
+      getRetainedTerminalOutput(this.options.db, {
+        hostId: args.session.hostId,
+        terminalSessionId: args.session.id,
+        now: Date.now(),
+      }) ?? []
+    ).filter((chunk) => chunk.seq >= args.sinceSeq);
+    const nextSeq = Math.max(args.sinceSeq, (chunks.at(-1)?.seq ?? -1) + 1);
+    this.addOutputFlowClient(args.session.id, args.socket, nextSeq);
     this.setForwardedNextSeq(
       args.session.id,
       Math.max(
         this.forwardedNextSeqByTerminalId.get(args.session.id) ?? 0,
-        args.sinceSeq,
+        nextSeq,
       ),
     );
     this.options.hub.sendTerminalSocketMessage(args.socket, {
       type: "attached",
       session: args.session,
       replayStartSeq: args.sinceSeq,
-      nextSeq: args.sinceSeq,
+      nextSeq,
     });
+    this.options.hub.sendTerminalReplay(args.socket, chunks);
   }
 
   detachBrowserTerminal(args: DetachBrowserTerminalArgs): void {
     this.options.hub.unregisterTerminalClient(args.terminalId, args.socket);
     this.outputFlow.removeClient(args.terminalId, args.socket);
+    if (!this.options.hub.hasTerminalClients(args.terminalId)) {
+      this.forwardedNextSeqByTerminalId.delete(args.terminalId);
+    }
     this.pendingAttaches.failAllMatching(
       (pending) =>
         pending.terminalId === args.terminalId &&
@@ -3561,6 +3574,11 @@ export class TerminalSessionLifecycle {
         this.finalizeTerminalExit(args);
         return;
       case "terminal.output": {
+        this.outputFlow.recordOutput(
+          args.message.terminalId,
+          args.sessionId,
+          args.message.chunk.seq,
+        );
         const current = getTerminalById(
           this.options.db,
           args.message.terminalId,

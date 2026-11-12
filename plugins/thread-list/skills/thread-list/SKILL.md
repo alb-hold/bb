@@ -6,7 +6,7 @@ description: "Inspect or change the sidebar thread list's layout preferences: or
 # Thread list preferences
 
 The Thread list plugin owns the sidebar's layout state. Read it with
-`bb thread-list prefs list --json`; keys are `showProviderIcons`, `showRowMetadata`, `threadLifecycles`, `organizationMode`,
+`bb thread-list prefs list --json`; keys are `showProviderIcons`, `showRowMetadata`, `showEmptyProjects`, `threadLifecycles`, `organizationMode`,
 `environmentGrouping`, `groupByReadStatus`, `chronologicalSort`, `sortDirection`, `sectionOrder`,
 `manualSectionOrder`, `machineSectionOrder`, `hiddenGroups` (including the
 built-in `threads` group), `rowActions`,
@@ -33,7 +33,8 @@ On first load the plugin copies any non-default `sidebar.*` values from
 
 Collapsed groups stay collapsed when background threads appear or become
 unread. Their headers retain activity indicators. Opening a thread reveals
-its containing groups; background activity does not change collapse preferences.
+its containing groups in that window only; neither opening a thread nor
+background activity changes collapse preferences.
 
 `environmentGrouping` decides whether sibling threads sharing one worktree
 collapse into a single row: `"auto"` (default) groups them in every
@@ -60,6 +61,12 @@ remain selected. `bb thread-list prefs set threadLifecycles '["archived"]'`
 shows archived threads, and `'["active","archived"]'` shows both. The default
 is `'["active"]'`. Archived results load in pages; use Show more at the end
 of the list. The same preference is available through `setPreference` RPC.
+
+Organized by project, the Filter menu's Empty projects item toggles
+`showEmptyProjects` (default `true`). With
+`bb thread-list prefs set showEmptyProjects false`, project groups with no
+visible threads are left out; hidden threads and threads shown under Pinned
+do not count. A project reappears once it has a visible thread.
 
 Every write is broadcast on the plugin's `preferences` realtime channel as
 `{ key, value, origin }`. `setPreference` takes an optional `origin` string

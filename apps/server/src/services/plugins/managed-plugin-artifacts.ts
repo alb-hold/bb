@@ -293,6 +293,7 @@ export function createManagedPluginArtifacts(
             args.rootDir,
             deps.appVersion,
             await getPluginBuildToolchain(deps),
+            { minify: true, hostProvidedZod: true },
           );
         } catch (error) {
           throw new Error(
@@ -846,7 +847,7 @@ export function createManagedPluginArtifacts(
           },
           resetExisting: true,
         });
-        return registerInstalled({
+        return await registerInstalled({
           rootDir: stagedTargetRoot,
           source,
           ...stagedRegistrationIdentity,
@@ -997,7 +998,7 @@ export function createManagedPluginArtifacts(
             });
       const reusable = await reusableArtifact(existingArtifact, prefix);
       if (reusable !== undefined) {
-        return registerInstalled({
+        return await registerInstalled({
           rootDir,
           source,
           ...registrationIdentity,
@@ -1066,7 +1067,7 @@ export function createManagedPluginArtifacts(
           },
           resetExisting: true,
         });
-        return registerInstalled({
+        return await registerInstalled({
           rootDir,
           source,
           ...registrationIdentity,
@@ -1105,6 +1106,7 @@ export function createManagedPluginArtifacts(
     commit: string;
     promote: boolean;
     activationSelector?: PluginGitSelector;
+    activationSource?: string;
     artifactLocked?: boolean;
   }): Promise<
     | {
@@ -1184,7 +1186,7 @@ export function createManagedPluginArtifacts(
         row: args.row,
         rootDir: targetRoot,
         manifest,
-        source: args.row.source,
+        source: args.activationSource ?? args.row.source,
         sourceIntent: {
           kind: "git",
           url,
@@ -1302,7 +1304,7 @@ export function createManagedPluginArtifacts(
           row: args.row,
           rootDir: targetRoot,
           manifest,
-          source: args.row.source,
+          source: args.activationSource ?? args.row.source,
           sourceIntent: {
             kind: "git",
             url,

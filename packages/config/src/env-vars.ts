@@ -92,6 +92,21 @@ function parseAppSourceOriginEnvValue(args: EnvVarParseArgs): AppSourceOrigin {
   );
 }
 
+const setupGuideVariantSchema = z.enum(["control", "new"]);
+export type SetupGuideVariant = z.infer<typeof setupGuideVariantSchema>;
+
+function parseSetupGuideVariantEnvValue(
+  args: EnvVarParseArgs,
+): SetupGuideVariant {
+  const parsed = setupGuideVariantSchema.safeParse(args.value.trim());
+  if (parsed.success) {
+    return parsed.data;
+  }
+  throw new Error(
+    `${args.name} must be one of ${setupGuideVariantSchema.options.join(", ")}`,
+  );
+}
+
 function parseOptionalPortEnvValue(args: EnvVarParseArgs): number | undefined {
   if (args.value === "0") {
     return undefined;
@@ -296,11 +311,25 @@ export const BB_PERF_DIAGNOSTICS_ENV = defineEnvVar<boolean>({
   parse: parseBooleanEnvValue,
 });
 
+export const BB_QUERY_PLAN_AUDIT_ENV = defineEnvVar<boolean>({
+  description:
+    "Log a warning when the server runs a SQLite query whose plan walks a large table or uses a weaker index than one that exists. pnpm dev and pnpm start:worktree set it; the performanceDiagnostics experiment also turns it on. Requires restart.",
+  name: "BB_QUERY_PLAN_AUDIT",
+  parse: parseBooleanEnvValue,
+});
+
 export const BB_SKIP_ONBOARDING_ENV = defineEnvVar<boolean>({
   description:
     "Mark first-run setup as completed at server startup so the setup screen is skipped. Settings can still replay it.",
   name: "BB_SKIP_ONBOARDING",
   parse: parseBooleanEnvValue,
+});
+
+export const BB_SETUP_GUIDE_VARIANT_ENV = defineEnvVar<SetupGuideVariant>({
+  description:
+    "Forces the first-run setup guide variant (control or new) for QA, ignoring telemetry and the setup-guide-redesign experiment.",
+  name: "BB_SETUP_GUIDE_VARIANT",
+  parse: parseSetupGuideVariantEnvValue,
 });
 
 export const BB_TELEMETRY_ENV = defineEnvVar<boolean>({

@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
+import os from "node:os";
 import path from "node:path";
 import type { AgentRuntime, AgentRuntimeOptions } from "@bb/agent-runtime";
 import {
@@ -11,11 +12,19 @@ import {
 import {
   hostDaemonEventBatchRequestSchema,
   hostDaemonInteractiveInterruptRequestSchema,
+  type HostDaemonInteractiveRequestKey,
   type HostDaemonInteractiveRequestResponse,
   type HostDaemonContributedEnvEntry,
   type HostDaemonOnlineRpcCommand,
 } from "@bb/host-daemon-contract";
 import type { HostWatcher } from "@bb/host-watcher";
+import {
+  AGENT_WORKLOAD_NICE,
+  deprioritizeAgentWorkload,
+  readAgentCpuPriority,
+  setAgentWorkloadsLowered,
+  writeAgentCpuPriority,
+} from "@bb/process-utils";
 import { createDeferredPromise, makeTempDir } from "@bb/test-helpers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -57,7 +66,9 @@ interface CreateFetchRecorderArgs {
   interactiveRequestError?: Error;
   interactiveRequestResponse?: HostDaemonInteractiveRequestResponse;
   interruptResponses?: Array<() => Response>;
+  agentCpuPriority?: boolean;
   retiredEnvironmentIds?: string[];
+  endedInteractiveRequestsOnReconnect?: HostDaemonInteractiveRequestKey[];
   sessionIds?: string[];
 }
 
@@ -134,6 +145,7 @@ function createFetchRecorder(
         {
           sessionId,
           idleProviderSessionTimeoutMinutes: 30,
+          agentCpuPriority: args.agentCpuPriority ?? false,
           machineEnvironment: {
             revision: 0,
             entries: args.machineEnvironment ?? [],
@@ -141,6 +153,10 @@ function createFetchRecorder(
           heartbeatIntervalMs: 30000,
           leaseTimeoutMs: 90000,
           retiredEnvironmentIds: args.retiredEnvironmentIds ?? [],
+          endedInteractiveRequests:
+            sessionOpenCount > 1
+              ? (args.endedInteractiveRequestsOnReconnect ?? [])
+              : [],
         },
         { status: 201 },
       );
@@ -264,7 +280,9 @@ function createFakeRuntime(): AgentRuntime {
     async resumeThread() {
       return { providerThreadId: "provider-thread-app-test" };
     },
-    async runTurn() {},
+    async runTurn() {
+      return { status: "started" };
+    },
     async steerTurn() {
       return { status: "steered" };
     },
@@ -321,6 +339,9 @@ function createFakeRuntime(): AgentRuntime {
     },
     hasOpenBackgroundWork() {
       return false;
+    },
+    listOpenBackgroundWork() {
+      return [];
     },
     async shutdown() {},
     async detach() {},
@@ -392,9 +413,13 @@ async function createAppFixture(
     closeMachineAuthProxy?: () => Promise<void>;
     createWebSocket?: CreateReconnectingWebSocket;
     exitProcess?: (code: number) => void;
+    savedAgentCpuPriority?: boolean;
   } = {},
 ): Promise<HostDaemonAppFixture> {
   const dataDir = await makeTempDir("bb-host-daemon-app-test-");
+  if (options.savedAgentCpuPriority !== undefined) {
+    writeAgentCpuPriority(dataDir, options.savedAgentCpuPriority);
+  }
   const fetchRecorder = createFetchRecorder(args);
   const logger = createLogger();
   const runtimeOptions: RuntimeOptionsRef = { current: null };
@@ -544,6 +569,68 @@ describe("createHostDaemonApp", () => {
     } finally {
       await app.daemon.shutdown("test", 0);
       vi.unstubAllEnvs();
+    }
+  });
+
+  it("lowers agent workloads from the last saved value before the server answers", async () => {
+    const { app } = await createAppFixture({}, { savedAgentCpuPriority: true });
+    const child = spawn(process.execPath, [
+      "-e",
+      "setInterval(() => {}, 1000)",
+    ]);
+    try {
+      deprioritizeAgentWorkload(child.pid);
+      expect(os.getPriority(child.pid)).toBe(AGENT_WORKLOAD_NICE);
+    } finally {
+      child.kill("SIGKILL");
+      setAgentWorkloadsLowered(false);
+      await app.daemon.shutdown("test", 0);
+    }
+  });
+
+  it("lowers agent workloads and saves the agent CPU priority for its launcher while the server enables it", async () => {
+    let socket: ReconnectingWebSocketLike | undefined;
+    const { app, dataDir } = await createAppFixture(
+      { agentCpuPriority: true },
+      {
+        createWebSocket: createOpeningWebSocket((created) => {
+          socket = created;
+        }),
+      },
+    );
+    const inherited = os.getPriority();
+    const child = spawn(process.execPath, [
+      "-e",
+      "setInterval(() => {}, 1000)",
+    ]);
+    try {
+      await app.daemon.start();
+      expect(readAgentCpuPriority(dataDir)).toBe(true);
+      deprioritizeAgentWorkload(child.pid);
+      expect(os.getPriority(child.pid)).toBe(AGENT_WORKLOAD_NICE);
+      if (!socket) throw new Error("Expected daemon socket");
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: "provider-session-policy.replace",
+          idleProviderSessionTimeoutMinutes: 30,
+          agentCpuPriority: false,
+        }),
+      });
+      expect(readAgentCpuPriority(dataDir)).toBe(false);
+      const later = spawn(process.execPath, [
+        "-e",
+        "setInterval(() => {}, 1000)",
+      ]);
+      try {
+        deprioritizeAgentWorkload(later.pid);
+        expect(os.getPriority(later.pid)).toBe(inherited);
+      } finally {
+        later.kill("SIGKILL");
+      }
+    } finally {
+      child.kill("SIGKILL");
+      setAgentWorkloadsLowered(false);
+      await app.daemon.shutdown("test", 0);
     }
   });
 
@@ -1150,6 +1237,70 @@ describe("createHostDaemonApp", () => {
         },
         "Server reported inactive daemon session; reconnecting",
       );
+    } finally {
+      await app.daemon.shutdown("test", 0);
+    }
+  });
+
+  it("reports an open provider question on reconnect and ends it when the server closed it", async () => {
+    const request = createCommandApprovalRequest();
+    const key = {
+      threadId: request.threadId,
+      providerId: request.providerId,
+      providerThreadId: request.providerThreadId,
+      providerRequestId: request.providerRequestId,
+    };
+    const { app, fetchRecorder, runtimeOptions } = await createAppFixture({
+      inactiveSessionOnFirstEventPost: true,
+      sessionIds: ["session-app-test-1", "session-app-test-2"],
+      endedInteractiveRequestsOnReconnect: [key],
+    });
+    try {
+      await app.connection.start();
+      await app.runtimeManager.ensureEnvironment({
+        environmentId: "env-app-ended-question",
+        workspacePath: await makeTempDir("bb-host-daemon-app-ended-"),
+      });
+      const options = runtimeOptions.current;
+      if (!options?.onInteractiveRequest) {
+        throw new Error("Expected runtime callbacks to be captured");
+      }
+      const pending = options.onInteractiveRequest(request);
+      const rejection = expect(pending).rejects.toMatchObject({
+        code: "interactive_request_ended",
+      });
+      await vi.waitFor(() => {
+        expect(
+          fetchRecorder.requests.filter(
+            (record) =>
+              record.pathname === "/internal/session/interactive-request",
+          ),
+        ).toHaveLength(1);
+      });
+
+      app.eventSink.emit({
+        threadId: request.threadId,
+        event: {
+          type: "turn/started",
+          threadId: request.threadId,
+          providerThreadId: request.providerThreadId,
+          scope: turnScope(request.turnId),
+        },
+      });
+
+      await rejection;
+      const reopened = fetchRecorder.requests
+        .filter((record) => record.pathname === "/internal/session/open")
+        .map((record) => JSON.parse(record.body ?? "{}"));
+      expect(reopened[1]).toMatchObject({
+        openThreadWork: [
+          {
+            threadId: request.threadId,
+            backgroundItemIds: [],
+            interactiveRequests: [key],
+          },
+        ],
+      });
     } finally {
       await app.daemon.shutdown("test", 0);
     }

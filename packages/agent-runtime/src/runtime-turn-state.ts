@@ -30,6 +30,21 @@ export class RuntimeTurnState {
     this.resolveWaiters(threadId, null);
   }
 
+  clearStaleTurn(threadId: string, staleTurnId: string): void {
+    const activeTurnId = this.activeTurnIdByThreadId.get(threadId);
+    if (activeTurnId !== undefined && activeTurnId !== staleTurnId) {
+      return;
+    }
+    this.clearThread(threadId);
+  }
+
+  resolveWaitersWithoutTurn(threadId: string): void {
+    if (this.activeTurnIdByThreadId.has(threadId)) {
+      return;
+    }
+    this.resolveWaiters(threadId, null);
+  }
+
   getActiveTurnId(threadId: string): string | null {
     return this.activeTurnIdByThreadId.get(threadId) ?? null;
   }

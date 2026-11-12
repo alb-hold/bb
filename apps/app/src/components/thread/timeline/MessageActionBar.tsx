@@ -1,5 +1,10 @@
-import { createContext, useCallback, useRef, useState } from "react";
-import type { ReactNode } from "react";
+import {
+  useCallback,
+  useRef,
+  useState,
+  type ReactNode,
+  type RefObject,
+} from "react";
 import { CopyButton } from "../../ui/copy-button.js";
 import { Icon } from "@bb/shared-ui/icon";
 import { useIsCompactViewport } from "@bb/shared-ui/hooks/use-compact-viewport";
@@ -138,48 +143,57 @@ export function computeMessageActionRowLayout({
   return { inlineCount, overflowCount: actionCount - inlineCount };
 }
 
-export function useMeasuredWidth({
+function useMessageActionRowFit({
   enabled,
-  resolveTarget,
+  actionCount,
+  actionWidth,
 }: {
   enabled: boolean;
-  resolveTarget?: (node: HTMLElement) => Element | null;
+  actionCount: number;
+  actionWidth: number;
 }): {
-  measureRef: (node: HTMLElement | null) => void;
-  width: number | undefined;
+  slotRef: (node: HTMLElement | null) => void;
+  rowRef: RefObject<HTMLDivElement | null>;
+  inlineCount: number;
 } {
-  const [width, setWidth] = useState<number | undefined>(undefined);
+  const [measuredInlineCount, setMeasuredInlineCount] = useState<
+    number | null
+  >(null);
+  const rowRef = useRef<HTMLDivElement | null>(null);
   const observerRef = useRef<ResizeObserver | null>(null);
-  const measureRef = useCallback(
+  const slotRef = useCallback(
     (node: HTMLElement | null) => {
       observerRef.current?.disconnect();
       observerRef.current = null;
       if (!enabled || node === null || typeof ResizeObserver === "undefined") {
         return;
       }
-      const target = resolveTarget ? resolveTarget(node) : node;
-      if (target === null) {
-        return;
-      }
       const observer = new ResizeObserver(([entry]) => {
-        const inlineSize =
-          entry.contentBoxSize?.[0]?.inlineSize ?? entry.contentRect.width;
-        setWidth(Math.floor(inlineSize));
+        const availableWidth = Math.floor(
+          entry.contentBoxSize?.[0]?.inlineSize ?? entry.contentRect.width,
+        );
+        if (rowRef.current !== null) {
+          rowRef.current.style.maxWidth = `${availableWidth}px`;
+        }
+        setMeasuredInlineCount(
+          computeMessageActionRowLayout({
+            actionCount,
+            availableWidth,
+            actionWidth,
+          }).inlineCount,
+        );
       });
-      observer.observe(target);
+      observer.observe(node);
       observerRef.current = observer;
     },
-    [enabled, resolveTarget],
+    [enabled, actionCount, actionWidth],
   );
-  return { measureRef, width };
+  return {
+    slotRef,
+    rowRef,
+    inlineCount: Math.min(measuredInlineCount ?? actionCount, actionCount),
+  };
 }
-
-export interface SharedMessageColumnWidth {
-  width: number | undefined;
-}
-
-export const MessageColumnWidthContext =
-  createContext<SharedMessageColumnWidth | null>(null);
 
 const ACTION_BUTTON_CLASS =
   "inline-flex size-5 cursor-pointer items-center justify-center text-muted-foreground hover:text-foreground disabled:pointer-events-none disabled:opacity-40";
@@ -341,17 +355,7 @@ export function MessageActionBar({
     HTMLElement | undefined
   >();
   const isCompactTouch = isCompactViewport && isPointerCoarse;
-  const { measureRef, width: availableWidth } = useMeasuredWidth({
-    enabled: !(isCompactTouch && mobileActionDisplay === "overflow"),
-  });
   const [isMenuOpen, setIsMenuOpen] = useState(false);
-  const slotRef = useCallback(
-    (node: HTMLDivElement | null) => {
-      measureRef(node);
-      setCollisionBoundary(findMessageActionTooltipCollisionBoundary(node));
-    },
-    [measureRef],
-  );
   const mobileDirectActionClass =
     mobileActionDisplay === "inline"
       ? MOBILE_INLINE_ACTION_CLASS
@@ -420,17 +424,26 @@ export function MessageActionBar({
         ]
       : []),
   ];
-  const layout = computeMessageActionRowLayout({
+  const usesOverflowOnly = isCompactTouch && mobileActionDisplay === "overflow";
+  const {
+    slotRef: measureSlotRef,
+    rowRef,
+    inlineCount: fittedInlineCount,
+  } = useMessageActionRowFit({
+    enabled: !usesOverflowOnly,
     actionCount: inlineCandidates.length,
-    availableWidth,
     actionWidth: isCompactTouch
       ? TOUCH_ACTION_WIDTH_PX
       : DESKTOP_ACTION_WIDTH_PX,
   });
-  const inlineCount =
-    isCompactTouch && mobileActionDisplay === "overflow"
-      ? 0
-      : layout.inlineCount;
+  const slotRef = useCallback(
+    (node: HTMLDivElement | null) => {
+      measureSlotRef(node);
+      setCollisionBoundary(findMessageActionTooltipCollisionBoundary(node));
+    },
+    [measureSlotRef],
+  );
+  const inlineCount = usesOverflowOnly ? 0 : fittedInlineCount;
   const menuActions = [
     ...(onCopyLink
       ? [
@@ -469,50 +482,52 @@ export function MessageActionBar({
           data-menu-open={isMenuOpen ? "" : undefined}
           data-message-action-row=""
         >
-          {isCompactTouch ? (
-            <MobileInlineActions
-              actions={inlineCandidates.slice(0, inlineCount)}
-            />
-          ) : (
-            inlineCandidates
-              .slice(0, inlineCount)
-              .map((action) => (
-                <DesktopMessageAction
-                  key={action.key ?? action.label}
-                  action={action}
-                  className={cn(HOVER_REVEAL_CLASS, mobileDirectActionClass)}
-                  collisionBoundary={collisionBoundary}
-                />
-              ))
-          )}
           {alignment === "end" ? metadata : null}
-          <DropdownMenu onOpenChange={setIsMenuOpen}>
-            <DropdownMenuTrigger asChild>
-              <button
-                type="button"
-                className={cn(
-                  ACTION_BUTTON_CLASS,
-                  HOVER_REVEAL_CLASS,
-                  MOBILE_INLINE_ACTION_CLASS,
-                  inlineCount > 0 && OVERFLOW_TRIGGER_TIGHTEN_CLASS,
-                  "data-[state=open]:text-foreground data-[state=open]:opacity-100",
-                )}
-                aria-label="Message actions"
-                data-compact-touch="action-menu"
-                data-no-sidebar-swipe=""
+          <div ref={rowRef} className={ACTION_ROW_CLASS}>
+            {isCompactTouch ? (
+              <MobileInlineActions
+                actions={inlineCandidates.slice(0, inlineCount)}
+              />
+            ) : (
+              inlineCandidates
+                .slice(0, inlineCount)
+                .map((action) => (
+                  <DesktopMessageAction
+                    key={action.key ?? action.label}
+                    action={action}
+                    className={cn(HOVER_REVEAL_CLASS, mobileDirectActionClass)}
+                    collisionBoundary={collisionBoundary}
+                  />
+                ))
+            )}
+            <DropdownMenu onOpenChange={setIsMenuOpen}>
+              <DropdownMenuTrigger asChild>
+                <button
+                  type="button"
+                  className={cn(
+                    ACTION_BUTTON_CLASS,
+                    HOVER_REVEAL_CLASS,
+                    MOBILE_INLINE_ACTION_CLASS,
+                    inlineCount > 0 && OVERFLOW_TRIGGER_TIGHTEN_CLASS,
+                    "data-[state=open]:text-foreground data-[state=open]:opacity-100",
+                  )}
+                  aria-label="Message actions"
+                  data-compact-touch="action-menu"
+                  data-no-sidebar-swipe=""
+                >
+                  <Icon name="MoreHorizontal" className="size-3" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent
+                align={alignment === "end" ? "end" : "start"}
+                mobileTitle="Message actions"
+                className={MENU_CONTENT_WIDTH_CLASS}
               >
-                <Icon name="MoreHorizontal" className="size-3" />
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent
-              align={alignment === "end" ? "end" : "start"}
-              mobileTitle="Message actions"
-              className={MENU_CONTENT_WIDTH_CLASS}
-            >
               <MessageActionMenuItems actions={menuActions} />
               <MessageTimestampFooter timestamp={timestamp} />
             </DropdownMenuContent>
           </DropdownMenu>
+          </div>
           {alignment === "start" ? metadata : null}
         </div>
         {footerAdornment}

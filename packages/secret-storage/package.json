@@ -13,14 +13,15 @@
   "scripts": {
     "clean": "rm -rf dist tsconfig.tsbuildinfo",
     "typecheck": "tsrs --noEmit",
+    "lint:type-aware": "oxlint -c ../../.oxlintrc.type-aware.json",
     "test": "vitest run --config vitest.config.ts"
   },
   "devDependencies": {
     "@bb/test-helpers": "workspace:*",
     "@bb/tsconfig": "workspace:*",
-    "@types/node": "^22.0.0",
+    "@types/node": "^22.20.5",
     "tsrs": "0.18.0-ts7.1.0-dev.20260929",
     "typescript": "npm:@typescript/typescript6@^6.0.2",
-    "vitest": "^4.1.1"
+    "vitest": "^4.1.12"
   }
 }

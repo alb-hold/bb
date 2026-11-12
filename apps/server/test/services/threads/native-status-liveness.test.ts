@@ -168,6 +168,7 @@ function recordPluginThreadEvents(): string[] {
     calls.push(name);
   };
   setPluginThreadEventEmitter({
+    emitThreadRead: () => undefined,
     emitThreadEvents: record("emitThreadEvents"),
     emitTerminalInput: record("emitTerminalInput"),
     emitHostDeleted: record("emitHostDeleted"),
@@ -264,7 +265,7 @@ describe("native thread status liveness", () => {
         context,
       );
 
-      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
       try {
         await runPeriodicSweeps({
           ...harness.deps,
@@ -375,7 +376,7 @@ describe("native thread status liveness", () => {
         return displayStatus;
       };
 
-      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
       try {
         await listDisplayStatus();
         await vi.waitFor(async () =>
@@ -528,7 +529,7 @@ describe("native thread status liveness", () => {
         turnId: "native-child-turn",
       });
 
-      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
       try {
         await runPeriodicSweeps({
           ...harness.deps,

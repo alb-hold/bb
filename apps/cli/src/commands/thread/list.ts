@@ -31,6 +31,7 @@ interface ThreadListCommandOptions {
   parentThread?: string;
   thread: string[];
   archived?: boolean;
+  includeArchived?: boolean;
   all?: boolean;
   section?: string;
   unsectioned?: boolean;
@@ -64,6 +65,7 @@ export function registerListCommand(
     .option("--section <id>", "Filter by thread section ID")
     .option("--unsectioned", "Show only threads outside sections")
     .option("--archived", "Show only archived threads")
+    .option("--include-archived", "Include archived threads")
     .option("--all", "Include archived and non-archived threads")
     .option("--include-hidden", "Include hidden threads")
     .option("--json", "Print machine-readable JSON output")
@@ -102,6 +104,9 @@ export function registerListCommand(
                   serverUrl: getUrl(),
                   target: machineTarget,
                 });
+        if (opts.archived && opts.includeArchived) {
+          throw new Error("Cannot combine --archived with --include-archived.");
+        }
         if (opts.section && opts.unsectioned) {
           throw new Error("Cannot combine --section with --unsectioned.");
         }
@@ -109,17 +114,18 @@ export function registerListCommand(
           flagName: "--section",
           value: opts.section,
         });
+        const archived = opts.archived
+          ? true
+          : opts.all || opts.includeArchived || threadIds.length > 0
+            ? undefined
+            : false;
         const threads = await sdk.threads.list({
           ...(projectId ? { projectId } : {}),
           ...(environmentId ? { environmentId } : {}),
           ...(hostId ? { hostId } : {}),
           ...(parentThreadId ? { parentThreadId } : {}),
           ...(threadIds.length > 0 ? { threadIds } : {}),
-          ...(opts.archived
-            ? { archived: true }
-            : opts.all || threadIds.length > 0
-              ? {}
-              : { archived: false }),
+          ...(archived === undefined ? {} : { archived }),
           ...(sectionId ? { sectionId } : {}),
           ...(opts.unsectioned ? { unsectioned: true } : {}),
           ...(opts.includeHidden ? { includeHidden: true } : {}),

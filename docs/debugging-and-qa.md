@@ -301,6 +301,65 @@ inaccessible WAL files report a null size with a sample timestamp. WAL size
 can include space reused by earlier generations; it does not measure uncheckpointed backlog or identify
 checkpoint progress. Resource sampling is also disabled with the live gate.
 
+### Slow SQLite query plans
+
+With `BB_QUERY_PLAN_AUDIT=1` (the default for `pnpm dev`, `pnpm start:worktree`,
+and `pnpm desktop:worktree`) or the `performanceDiagnostics` experiment on, the
+server runs `EXPLAIN QUERY PLAN` once for each distinct statement and parameter
+shape it executes, after the statement returns, against a read-only connection
+to the same database. It logs a `Slow SQLite query plan` warning, once per
+process for each `rule`, `table`, and `caller`, when the plan:
+
+- walks `events`, `thread_search_segments`, `prompt_history_entries`, or
+  `terminal_sessions` through an index that matches fewer equality terms than
+  another index on that table (`weaker-index`);
+- scans one of those tables in full (`full-scan`); or
+- builds an automatic index (`automatic-index`).
+
+`caller` is the `src/` file and function that ran the query; in the built
+server, the file comes from the module comments esbuild writes into
+`apps/server/dist` bundles, so it needs an unminified bundle. Callers are read
+from POSIX stack paths, so the audit logs nothing on Windows. Findings listed in
+`packages/db/src/query-plan-allowlist.ts` are not logged. The tests apply the
+same rules and fail on findings missing from the allowlist; see
+`packages/db/src/query-plan-guard.ts`. On pull requests, the Linux test shards
+set `BB_QUERY_PLAN_EXECUTED`, so `@bb/db` and `@bb/server` record the query
+functions they run in `.query-plan/executed.jsonl` (a Turbo test output, so
+cached runs restore it). The `Query functions run in tests` job then fails when
+an exported query function in a `packages/db/src/data` file the PR changed never
+ran. The nightly `Query Plan Audit` workflow
+(`.github/workflows/query-plan-audit.yml`, also runnable by hand) checks main
+for allowlist entries no test reports and for exported query functions in
+`packages/db/src/data` that no `@bb/db` or `@bb/server` test runs; reproduce it
+with
+`BB_QUERY_PLAN_REPORT=<file> pnpm exec turbo run test --filter=@bb/db --filter=@bb/server`
+followed by `pnpm --filter @bb/db check:query-plan-report <file>`.
+
+The `agentCpuPriority` experiment (Settings → Experiments) keeps bb responsive
+when agents saturate the CPU:
+
+- While it is on, the host daemon sets nice 10 (the below-normal priority
+  class on Windows) on provider processes and environment lifecycle scripts as
+  they start, and the builds and tests they launch inherit it. The server
+  sends the value in the session handshake and in
+  `provider-session-policy.replace`, but a toggle takes effect only after
+  restarting bb: a running provider bridge worker keeps the priority it started
+  with while it serves new threads, and a lowered process cannot be raised
+  again. Terminals keep normal priority.
+- On macOS, where the scheduler ignores nice between processes, the launcher
+  spawns the server and daemon through `/usr/sbin/taskpolicy -a` (application
+  scheduling, not inherited by their children). The launcher reads the value
+  from `<data dir>/agent-cpu-priority.json` at each spawn, so this half takes
+  effect after restarting bb. The server and the daemon both rewrite that file
+  when the value changes; a missing or unreadable file means off. Check with
+  `ps -axo pid,ppid,pri,ni,command`: the server and daemon show `PRI` 46,
+  their children 31.
+
+A slow-DB record whose `cpuDurationMs` is a small fraction of `durationMs`
+with many `involuntaryContextSwitches` means the server thread was waiting for
+a CPU rather than working; on Linux check that agent processes show `NI` 10 in
+`ps -o pid,ni,command`.
+
 ## Pending Question Drafts
 
 Native provider questions and Ask User Question plugin forms save partial
@@ -441,6 +500,17 @@ background lifecycle cleanup. Sends report `workspace_busy` with “Workspace cl
 is pending. Try again shortly.” until removal completes. Provider cleanup is never
 awaited by this admission repair, and startup does not scan for abandoned claims.
 
+A thread create that finds the path claimed by another create whose thread is still
+starting or stopping waits for that create to settle instead of failing. A provisioning
+thread that hits the same claim while attaching stays `starting` and resumes its
+provisioning when the claim settles, without holding up the command result that drove
+it. Both wake on changes to the claiming thread or its environment and re-run admission.
+After 15 minutes (the setup hook bound, which matches the checkout provider's own wait
+for a claimed path) they fail with the usual `workspace_busy` "Cannot checkout branch
+while another thread is using this workspace". Explicit reuse requests, sends, thread
+commands and directory changes still fail immediately. A create that adopts a workspace
+whose setup is still running joins that setup instead of running it again.
+
 ## Local Dev QA
 
 Run `pnpm dev` from this checkout and keep it running in a terminal. It prints
@@ -478,13 +548,33 @@ pnpm bb:dev thread spawn --project proj_personal --provider codex --permission-m
 ## Local Cloud
 
 Run the Cloud dashboard, the Connect worker, and the AI gateway against one
-local D1 database:
+local Postgres database:
 
 ```bash
 pnpm cloud:dev
 ```
 
-The command applies migrations and prints the dashboard URL. Create a local
+Nothing needs to be installed first. The command opens a PGlite database in
+`connect-db-pglite` under the state directory (`.wrangler/cloud-dev`, or
+`BB_CLOUD_DEV_STATE_DIR`), applies the migrations, serves it over the Postgres
+wire protocol on a loopback port derived from the worktree's dev ports, and
+points the three workers' `HYPERDRIVE` binding at it. The startup log prints
+the connection string, so `psql` or a `pg` script can inspect the data while it
+runs. The PGlite server
+runs one statement batch at a time; a client's open transaction holds the
+database until it commits, rolls back, disconnects, or idles for 60 seconds.
+
+`BB_CLOUD_DEV_DATABASE_URL` uses another Postgres instead, for example a
+container:
+
+```bash
+docker run -d --name bb-connect-pg -p 5432:5432 \
+  -e POSTGRES_USER=bb -e POSTGRES_PASSWORD=bb -e POSTGRES_DB=bb_connect \
+  postgres:17
+BB_CLOUD_DEV_DATABASE_URL=postgresql://bb:bb@localhost:5432/bb_connect pnpm cloud:dev
+```
+
+The command prints the dashboard URL when it is ready. Create a local
 email/password account, claim a handle, create a pairing code, and run the
 displayed `bb account login --code` command against a bb started with
 `pnpm dev` (`bb connect --code` does the same and also turns remote access
@@ -508,7 +598,7 @@ For bb connect next, `pnpm cloud:dev` sets the Connect worker's and bb-web's
 `NEXT_BASE_DOMAIN` to `next.bb.localhost`. `BB_CLOUD_DEV_GATE_SECRET` sets the
 worker's `GATE_SECRET` (the account API answers 404 without it),
 `BB_CLOUD_DEV_GATE_PUBLIC_KEYS` sets bb-web's `GATE_PUBLIC_KEYS`, and
-`BB_CLOUD_DEV_STATE_DIR` moves the local D1 and Durable Object state away from
+`BB_CLOUD_DEV_STATE_DIR` moves the local Durable Object state away from
 `.wrangler/cloud-dev`. `apps/connect-next/scripts/e2e-local.sh` uses all three;
 see [connect-next.md](connect-next.md#local-end-to-end-run).
 
@@ -525,8 +615,10 @@ staging key with `wrangler secret put OPENROUTER_API_KEY --env staging` from
 `apps/ai-gateway`. Use a dedicated OpenRouter key with account-wide zero data
 retention and a daily credit limit.
 
-Ctrl-C stops the local services. Local D1 state is kept under
-`.wrangler/cloud-dev`.
+Ctrl-C stops the local services. Account data and Durable Object state are
+kept under `.wrangler/cloud-dev` (or `BB_CLOUD_DEV_STATE_DIR`); delete that
+directory to start over. With `BB_CLOUD_DEV_DATABASE_URL`, account data stays
+in that database.
 
 To test a source bb against the deployed staging Cloud instead, start it with
 `pnpm dev --staging`. bb account and Connect then sign in, redeem codes, open
@@ -919,10 +1011,13 @@ daemon. Leave it off for routine operation: profiling and extra logging add
 overhead.
 
 While on, the server logs database operations of at least 25 ms, API requests
-of at least 100 ms, and event-loop stalls of at least 100 ms. Every five
+of at least 100 ms, event-loop stalls of at least 100 ms, and
+[slow SQLite query plans](#slow-sqlite-query-plans). Every five
 seconds `Server performance sample` records process and main-thread CPU, loop
 utilization and delay, GC, and memory; CPU values are interval totals, not
-per-request attribution. A 1 ms V8 CPU profile is saved every 30 seconds to
+per-request attribution. Its `maxDelayMs` and `p99DelayMs` are gaps of the
+shared 50 ms event-loop timer (`delayResolutionMs`), so an idle loop reports
+about 50 ms. A V8 CPU profile sampled every 10 ms is saved every 30 seconds to
 `$BB_DATA_DIR/logs/performance/` (`Server CPU profile saved` logs its path,
 PID, and UTC window). Profiles are kept for up to 12 hours and 1 GB total,
 oldest first, so copy the ones you need. They use private permissions and
@@ -964,9 +1059,8 @@ While both gates are on, every ingested daemon event batch that carries agent
 message, reasoning, or plan text writes one `Stream trace` info line per thread.
 `streamTrace.receivedAt`, `committedAt`, and `notifiedAt` are epoch
 milliseconds; `events`, `textEvents`, and `textChars` size the batch;
-`served` is `push` when a thread view is subscribed to timeline pushes (the
-`timelinePush` experiment) and `refetch` otherwise, so comparing lines of the
-two kinds gives the A/B between delivery paths. The
+`served` is `push` when a thread view is subscribed to timeline pushes and
+`refetch` otherwise. The
 intervals between consecutive lines for a thread are the chunk cadence the
 server sees. The host daemon logs `Posted daemon event batch` at debug level
 (`BB_LOG_LEVEL=debug`) for every POST: `eventBatch.events`, `textChars`,
@@ -990,6 +1084,29 @@ applied chunk.
    `Thread timeline build blocked the event loop` and its stage timings.
    `inFlightWorkAtObservation` can name an unrelated long poll; compare
    `longestSynchronousWork` and its wall/CPU times with the profile instead.
+   Measured synchronous work includes daemon WebSocket messages, timeline
+   builds, sweep steps, every transaction on bb.db (`db:transaction <mode>:`
+   followed by the first write statement, or the first statement when it only
+   reads), single statements that take at least 1 ms (`db:all`, `db:get`,
+   `db:run`, `db:exec` with redacted SQL), and the synchronous part of each API
+   request, plugin RPC or HTTP handler, plugin event handler, plugin load, and
+   plugin background service before its first `await`
+   (`<label> (until first await)`). When a measured child took at least half
+   of its parent's time, `longestSynchronousWork` names the chain, for example
+   `ws:daemon heartbeat > db:transaction deferred: update "host_daemon_sessions" ...`.
+   `longestSynchronousWorkCaller` names the request, plugin invocation, sweep,
+   or plugin load or service that was running the work, including callbacks
+   and timers a plugin scheduled while it loaded. Code a plugin runs after an
+   `await` is not measured here; it is only named by plugin id in the sampled
+   records below. `longestSynchronousWorkCpuMs` is main-thread CPU, and
+   `longestSynchronousWorkVoluntaryContextSwitches` and
+   `longestSynchronousWorkInvoluntaryContextSwitches` are process-wide counts
+   for the same interval: CPU far below wall time with many involuntary
+   switches means the thread was waiting for a core, and with many voluntary
+   switches it was waiting on a lock, disk, or another thread.
+   `Thread timeline build blocked the event loop` carries the same split as
+   `cpuDurationMs`, `voluntaryContextSwitches`, and
+   `involuntaryContextSwitches`.
    The stall-bound off-cpu rule labels `stallCauseCandidate` as `off-cpu` only
    when raw whole-window main-thread CPU is less than 10% of raw `maxDelayMs`.
    Comparisons use unrounded values; log durations are rounded only for display.
@@ -1016,17 +1133,21 @@ applied chunk.
 2. With performance diagnostics enabled, look for `Event loop stall attribution`
    records for the same PID and UTC window. They are emitted at the next CPU
    profile rotation (normally within 30 seconds), or on diagnostics shutdown,
-   even if the profile file is discarded for exceeding its size limit. A
-   separate 20 ms timer records individual gaps of at least 100 ms; the
-   five-second histogram's observation time is not the stall's end time.
+   even if the profile file is discarded for exceeding its size limit. The
+   same 50 ms timer that feeds the stall monitor records individual gaps of at
+   least 100 ms, so every stall of 100 ms or more is caught; the five-second
+   histogram's observation time is not the stall's end time.
    `stacks` ranks the top five sampled leaf stacks in each gap, with up to 12
    caller frames, including GC, plugin functions, native writes, and database
-   callers. Frame coordinates are one-based; cached Node source maps are used
+   callers. `owners` totals the window's sampled time per plugin
+   (`plugin:<id>`), counting a sample when any frame on its stack belongs to
+   that plugin's server code, and each ranked stack carries the same `owner`
+   (or `null`). Frame coordinates are one-based; cached Node source maps are used
    in the profile worker when available, otherwise coordinates refer to the
    generated code. Profile scanning and stack formatting run in that worker;
    the main thread only collects and transfers bounded timing windows.
    `sampledMs` is elapsed sampling coverage, not CPU time; native frames can
-   include waiting. Each sample contributes at most 10 ms so a long sampling
+   include waiting. Each sample contributes at most 20 ms so a long sampling
    gap cannot be blamed on one frame. `unobservedMs` reports missing coverage,
    including profile boundaries. The window includes up to one timer interval
    of ordinary work; ranked stacks are evidence, not proof of a single cause.
@@ -1148,6 +1269,14 @@ query value matches the server's generated version. Missing or mismatched
 values receive the original CSS, so a tab retained across a server update
 keeps working with its old host styles. Compressed responses are cached
 separately for the original and stripped variants.
+
+The app also adds `css-scope=owned-root-v1`. When a plugin's `app.js` never sets
+`data-bb-plugin-root` without a nearby `data-bb-plugin`, both routes then
+drop the `[data-bb-plugin-root]:not([data-bb-plugin])` alternative from that
+plugin's utility selectors, so its rules cannot match outside its own roots and
+restyles of the rest of the page stay cheap. The server checks the bundle when
+it loads the plugin; any id-less root keeps that plugin on the original CSS, and
+`bb plugin build` warns about it. Authored CSS is never rewritten.
 
 To reproduce version skew, load the production main app in Chrome, restart
 the same isolated server on the branch without reloading the tab, and open

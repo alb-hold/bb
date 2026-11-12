@@ -156,7 +156,7 @@ export function validatePluginProviderEnvEntries(
 const PLUGIN_AGENT_STATIC_INSTRUCTIONS_MAX_CHARS = 4096;
 export const PLUGIN_AGENT_STATUS_LABEL_MAX_CHARS = 80;
 const PLUGIN_AGENT_SELECTION_MAX_IDS = 256;
-const PLUGIN_AGENT_DYNAMIC_INSTRUCTIONS_MAX_CHARS = 4096;
+export const PLUGIN_DYNAMIC_INSTRUCTIONS_MAX_CHARS = 32_768;
 const PLUGIN_AGENT_TOOL_PARAMETERS_MAX_BYTES = 128 * 1024;
 
 const MENTION_PROVIDER_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
@@ -1257,11 +1257,13 @@ export type NormalizedPluginProviderDeclaration = Omit<
   | "experimental_nativeSkillRoots"
   | "experimental_nativeCommandRoots"
   | "experimental_resolvesNativeRoots"
+  | "internal_DO_NOT_USE_guidedSignIn"
   | "experimental_nativeTerminal"
 > & {
   readonly experimental_nativeSkillRoots?: ProviderNativeRoots;
   readonly experimental_nativeCommandRoots?: ProviderNativeRoots;
   readonly experimental_resolvesNativeRoots: boolean;
+  readonly internal_DO_NOT_USE_guidedSignIn: boolean;
   readonly experimental_nativeTerminal?: ProviderNativeTerminal;
   readonly completedTurnDisplay: PluginProviderCompletedTurnDisplay;
   readonly maintenance: {
@@ -1579,6 +1581,12 @@ export function validatePluginProviderDeclaration(
       `provider "${id}" experimental_resolvesNativeRoots must be a boolean`,
     );
   }
+  const guidedSignIn = declaration.internal_DO_NOT_USE_guidedSignIn;
+  if (guidedSignIn !== undefined && typeof guidedSignIn !== "boolean") {
+    throw new Error(
+      `provider "${id}" internal_DO_NOT_USE_guidedSignIn must be a boolean`,
+    );
+  }
   const deriveProviderOptions = declaration.deriveProviderOptions;
   if (
     deriveProviderOptions !== undefined &&
@@ -1622,6 +1630,7 @@ export function validatePluginProviderDeclaration(
       ? {}
       : { experimental_nativeCommandRoots: nativeCommandRoots }),
     experimental_resolvesNativeRoots: resolvesNativeRoots ?? false,
+    internal_DO_NOT_USE_guidedSignIn: guidedSignIn ?? false,
     ...(nativeTerminal === undefined
       ? {}
       : { experimental_nativeTerminal: nativeTerminal }),
@@ -3522,10 +3531,7 @@ export function normalizePluginAgentConfiguration(args: {
   const instructions =
     typeof output.instructions === "string" &&
     output.instructions.trim().length > 0
-      ? output.instructions.slice(
-          0,
-          PLUGIN_AGENT_DYNAMIC_INSTRUCTIONS_MAX_CHARS,
-        )
+      ? output.instructions.slice(0, PLUGIN_DYNAMIC_INSTRUCTIONS_MAX_CHARS)
       : null;
   const toolSelections = normalizePluginAgentToolSelections({
     knownIds: args.knownToolIds,
@@ -3627,8 +3633,20 @@ export function normalizeRpcJsonResult(
   fail: (error: PluginRpcError) => never,
 ): JsonValue {
   const ancestors = new Set<object>();
+  const pathSegments: (number | string)[] = [];
 
-  function visit(current: unknown, path: string): JsonValue {
+  function failAt(problem: string): never {
+    let path = "$result";
+    for (const segment of pathSegments) {
+      path += typeof segment === "number" ? `[${segment}]` : `.${segment}`;
+    }
+    return fail({
+      code: "non_json_result",
+      message: `rpc result at ${path} ${problem}`,
+    });
+  }
+
+  function visit(current: unknown): JsonValue {
     if (
       current === null ||
       typeof current === "string" ||
@@ -3638,52 +3656,43 @@ export function normalizeRpcJsonResult(
     }
     if (typeof current === "number") {
       if (!Number.isFinite(current)) {
-        return fail({
-          code: "non_json_result",
-          message: `rpc result at ${path} contains a non-finite number`,
-        });
+        return failAt("contains a non-finite number");
       }
       return current;
     }
     if (typeof current !== "object") {
-      return fail({
-        code: "non_json_result",
-        message: `rpc result at ${path} is not a JSON value (${typeof current})`,
-      });
+      return failAt(`is not a JSON value (${typeof current})`);
     }
     if (ancestors.has(current)) {
-      return fail({
-        code: "non_json_result",
-        message: `rpc result at ${path} is cyclic`,
-      });
+      return failAt("is cyclic");
     }
     ancestors.add(current);
-    try {
-      if (Array.isArray(current)) {
-        return current.map((item, index) => visit(item, `${path}[${index}]`));
-      }
-      const prototype = Object.getPrototypeOf(current);
-      if (prototype !== Object.prototype && prototype !== null) {
-        return fail({
-          code: "non_json_result",
-          message: `rpc result at ${path} must be a plain JSON object`,
-        });
-      }
-      if (Reflect.ownKeys(current).some((key) => typeof key === "symbol")) {
-        return fail({
-          code: "non_json_result",
-          message: `rpc result at ${path} contains a symbol key`,
-        });
-      }
-      const normalized: Record<string, JsonValue> = {};
-      for (const [key, child] of Object.entries(current)) {
-        normalized[key] = visit(child, `${path}.${key}`);
-      }
-      return normalized;
-    } finally {
+    if (Array.isArray(current)) {
+      const normalized = current.map((item: unknown, index) => {
+        pathSegments.push(index);
+        const child = visit(item);
+        pathSegments.pop();
+        return child;
+      });
       ancestors.delete(current);
+      return normalized;
     }
+    const prototype = Object.getPrototypeOf(current);
+    if (prototype !== Object.prototype && prototype !== null) {
+      return failAt("must be a plain JSON object");
+    }
+    if (Object.getOwnPropertySymbols(current).length > 0) {
+      return failAt("contains a symbol key");
+    }
+    const normalized: Record<string, JsonValue> = {};
+    for (const key of Object.keys(current)) {
+      pathSegments.push(key);
+      normalized[key] = visit(Reflect.get(current, key));
+      pathSegments.pop();
+    }
+    ancestors.delete(current);
+    return normalized;
   }
 
-  return visit(value, "$result");
+  return visit(value);
 }

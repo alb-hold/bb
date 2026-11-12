@@ -1,9 +1,11 @@
 import { experimental_defineHostEntry } from "@get-bb/plugin-sdk/host";
 import { readdir } from "node:fs/promises";
 import { createHostProgress } from "bb-environment-provider-host/progress";
+import { emitOutput } from "bb-environment-provider-host/transcript";
 import { worktreeHostContract, worktreeHostSignals } from "./contract.js";
 import {
   readDefaultBranchRefs,
+  ensureGitRepo,
   WorkspaceError,
 } from "bb-environment-provider-host/git";
 import {
@@ -19,6 +21,7 @@ import {
 } from "./host/paths.js";
 import {
   createWorktree,
+  deleteOwnedBranch,
   inspectWorktreeRemoval,
   listAdoptableWorktrees,
   removeWorktree,
@@ -123,7 +126,9 @@ export function createWorktreeHostEntry() {
     experimental_signals: worktreeHostSignals,
     handlers: {
       async defaultBaseBranch(input) {
-        const refs = await readDefaultBranchRefs(input.sourcePath);
+        const refs = await readDefaultBranchRefs(
+          await ensureGitRepo(input.sourcePath),
+        );
         return {
           branch: resolveDefaultWorktreeBaseBranch({
             defaultBranch: refs.defaultBranch ?? null,
@@ -209,6 +214,7 @@ export function createWorktreeHostEntry() {
             status: "created",
             path: created.path,
             baseBranch: baseBranch?.ref ?? null,
+            ownsBranch: created.ownsBranch,
           } as const;
         } catch (error) {
           if (context.signal.aborted) throw error;
@@ -221,6 +227,11 @@ export function createWorktreeHostEntry() {
       },
 
       async remove(input, context) {
+        const onProgress = createHostProgress({
+          operationId: input.operationId,
+          emit: (payload) =>
+            context.experimental_emitSignal("progress", payload),
+        });
         try {
           const dataDir = context.experimental_paths.dataDir;
           const attemptRoot = resolveWorktreeAttemptRoot({
@@ -245,11 +256,6 @@ export function createWorktreeHostEntry() {
             unknown: [],
             untouched: [],
           };
-          const onProgress = createHostProgress({
-            operationId: input.operationId,
-            emit: (payload) =>
-              context.experimental_emitSignal("progress", payload),
-          });
           for (const [index, target] of targets.entries()) {
             try {
               await removeWorktree({
@@ -272,6 +278,27 @@ export function createWorktreeHostEntry() {
             }
           }
           if (outcome.kept.length === 0 && outcome.unknown.length === 0) {
+            if (input.ownedBranch !== null) {
+              try {
+                await deleteOwnedBranch({
+                  repositoryPath: input.ownedBranch.repositoryPath,
+                  branchName: input.ownedBranch.name,
+                  baseBranch: input.ownedBranch.baseBranch,
+                  onProgress,
+                  signal: context.signal,
+                });
+              } catch (error) {
+                if (context.signal.aborted) throw error;
+                emitOutput(
+                  onProgress,
+                  "branch-cleanup",
+                  `Kept branch ${input.ownedBranch.name}: ${
+                    error instanceof Error ? error.message : String(error)
+                  }`,
+                );
+              }
+            }
+
             const notice = worktreeHolderScopeNotice();
             return {
               status: "removed",

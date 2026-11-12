@@ -51,6 +51,7 @@ import {
   type ThreadListIndicatorState,
 } from "../model/thread-activity.js";
 import {
+  experimental_resolveThreadStatus,
   experimental_ThreadActionsContextMenu as ThreadActionsContextMenu,
   experimental_ThreadActionsMenu as ThreadActionsMenu,
   experimental_ThreadStatusGlyph as ThreadStatusGlyph,
@@ -73,13 +74,12 @@ import {
   type PluginSidebarThread,
   type PluginSidebarThreadRowStatus,
   type PluginProvidersState,
+  type PluginThreadStatus,
 } from "@get-bb/plugin-sdk/app";
 import type { SidebarThread } from "../model/sidebar-thread.js";
+import { useThreadsHaveDraft } from "../list/sidebarDraftPresence.js";
+import { NO_HIDDEN_THREADS } from "../list/groupRollups.js";
 import { useThreadListPullRequest } from "./pull-request-query.js";
-import {
-  NO_THREAD_IDS,
-  useThreadsHaveDraft,
-} from "../list/sidebarDraftPresence.js";
 import { useAutomationWokeAt } from "../model/automation-woke.js";
 import { useSidebarProjectName } from "../model/use-sidebar-data.js";
 import {
@@ -185,7 +185,7 @@ export type ThreadRowOptions =
       kind: "parent";
       isCollapsed: boolean;
       childCount: number;
-      childActivity: CollapsedChildActivity;
+      hiddenThreads: readonly SidebarThread[];
       stickyLevel?: number;
       onToggleCollapsed: (threadId: string) => void;
     });
@@ -306,43 +306,9 @@ function renderThreadRowContainer({
   );
 }
 
-interface CollapsedThreadStatusGlyphProps {
-  activity: CollapsedChildActivity;
-  pluginStatus?: PluginSidebarThreadRowStatus | null;
-}
-
-export function CollapsedThreadStatusGlyph({
-  activity,
-  pluginStatus = null,
-}: CollapsedThreadStatusGlyphProps) {
-  const hasUnsubmittedDraft = useThreadsHaveDraft(activity.threadIds);
-  const statusProps: ThreadListIndicatorState = {
-    hasPendingInteraction: activity.pending,
-    hasTerminalAttention: activity.terminalAttention,
-    hasUnsubmittedDraft,
-    hasUnreadError: activity.unreadError,
-    hasUnreadSuccess: activity.unread,
-    isAutomationWoken: false,
-    isBackgroundAgentActive: activity.backgroundAgent,
-    isBackgroundCommandActive: activity.backgroundCommand,
-    isGoalActive: activity.goal,
-    isActivityUnreported: false,
-    queuedFailedCount: 0,
-    queuedWork: "none",
-    isPlanModeActive: activity.planMode,
-    isRuntimeActive: activity.runtimeWorking,
-    isWorkflowActive: activity.workflow,
-  };
-  return (
-    <ThreadStatusGlyph
-      indicator={resolveThreadListIndicator(statusProps)}
-      rowStatus={pluginStatus}
-    />
-  );
-}
-
 function ThreadTrailingIndicator({
-  state,
+  status,
+  threadQueuedFailedCount,
   hideIdleDraftLabel,
   rowStatus,
   nativeActivityUnconfirmed,
@@ -351,7 +317,8 @@ function ThreadTrailingIndicator({
   automationStartedAt,
   elapsedMinutes,
 }: {
-  state: ThreadListIndicatorState;
+  status: PluginThreadStatus;
+  threadQueuedFailedCount: number;
   hideIdleDraftLabel: boolean;
   rowStatus: PluginSidebarThreadRowStatus | null;
   nativeActivityUnconfirmed: boolean;
@@ -361,14 +328,12 @@ function ThreadTrailingIndicator({
   elapsedMinutes: number | null;
 }) {
   const guidanceId = useId();
-  const resolvedState = {
-    ...state,
-    isAutomationWoken: automationStartedAt !== null,
-  };
-  const { indicatorKind, rowStatusIsVisible } = resolveThreadStatus(
-    resolvedState,
-    rowStatus,
-  );
+  const indicatorKind =
+    automationStartedAt !== null &&
+    !["needs-input", "check-terminal", "working"].includes(status.indicator)
+      ? "woke"
+      : status.indicator;
+  const rowStatusIsVisible = status.rowStatus !== null;
 
   if (
     indicatorKind === "none" &&
@@ -383,15 +348,15 @@ function ThreadTrailingIndicator({
       ? "Check terminal"
       : indicatorKind === "needs-input"
         ? "Needs input"
-      : indicatorKind === "working"
-        ? `Working${elapsedMinutes === null ? "" : ` ${elapsedMinutes}m`}`
-        : indicatorKind === "woke"
-          ? `Woke${elapsedMinutes === null ? "" : ` ${elapsedMinutes}m`}`
-          : indicatorKind === "done-unread"
-            ? "Done"
-            : indicatorKind === "activity-unreported"
-              ? nativeActivityNotice
-              : null;
+        : indicatorKind === "working"
+          ? `Working${elapsedMinutes === null ? "" : ` ${elapsedMinutes}m`}`
+          : indicatorKind === "woke"
+            ? `Woke${elapsedMinutes === null ? "" : ` ${elapsedMinutes}m`}`
+            : indicatorKind === "done-unread"
+              ? "Done"
+              : indicatorKind === "activity-unreported"
+                ? nativeActivityNotice
+                : null;
 
   const activityNoticeApplies =
     nativeActivityUnconfirmed &&
@@ -426,11 +391,11 @@ function ThreadTrailingIndicator({
       }
     >
       <ThreadStatusGlyph
-        indicator={indicatorKind}
-        rowStatus={rowStatus}
+        indicator={status.indicator}
+        rowStatus={status.rowStatus}
         hideIdleDraftLabel={hideIdleDraftLabel}
         hideAccessibleLabel={statusText !== null}
-        experimental_queuedFailedCount={state.queuedFailedCount}
+        experimental_queuedFailedCount={threadQueuedFailedCount}
       />
       {statusText === null ? null : (
         <span data-sidebar-status-full="" className="text-right">
@@ -621,12 +586,16 @@ function ThreadRowComponent({
     thread,
     hasComposerDraft,
   );
-  const hasModeGlyph = thread.experimental_nativeTerminal || thread.environment?.isWorktree === true;
+  const hasModeGlyph =
+    thread.experimental_nativeTerminal ||
+    thread.environment?.isWorktree === true;
   const labelTitle = thread.displayTitle;
   const crossProjectName = useSidebarProjectName(crossProjectId);
   const projectName = useSidebarProjectName(thread.projectId);
   const visibilityGroup = useThreadListVisibilityGroup();
-  const showProjectName = visibilityGroup !== buildSidebarEntitySectionId("project", thread.projectId);
+  const showProjectName =
+    visibilityGroup !==
+    buildSidebarEntitySectionId("project", thread.projectId);
   const crossProjectLabel =
     crossProjectId === null
       ? null
@@ -710,76 +679,41 @@ function ThreadRowComponent({
   const isParentRow = parentOptions !== null;
   const isParentCollapsed = parentOptions?.isCollapsed ?? false;
   const childCount = parentOptions?.childCount ?? 0;
-  const childActivity =
-    parentOptions?.childActivity ?? NO_COLLAPSED_CHILD_ACTIVITY;
   const hasChildren = childCount > 0;
   const reserveActionSpace =
     crossProjectLabel !== null || (isParentRow && hasChildren);
   const hasHiddenChildren = isParentRow && isParentCollapsed && hasChildren;
-  const hiddenChildrenHaveDraft = useThreadsHaveDraft(
-    hasHiddenChildren ? childActivity.threadIds : NO_THREAD_IDS,
-  );
-  const trailingIndicatorState: ThreadListIndicatorState = {
-    hasTerminalAttention: threadStatus.hasTerminalAttention ||
-      (hasHiddenChildren && childActivity.terminalAttention),
-    hasPendingInteraction:
-      threadStatus.hasPendingInteraction ||
-      (hasHiddenChildren && childActivity.pending),
-    hasUnsubmittedDraft:
-      threadStatus.hasUnsubmittedDraft || hiddenChildrenHaveDraft,
-    hasUnreadError:
-      threadStatus.hasUnreadError ||
-      (hasHiddenChildren && childActivity.unreadError),
-    hasUnreadSuccess:
-      threadStatus.hasUnreadSuccess ||
-      (hasHiddenChildren && childActivity.unread),
-    isAutomationWoken: false,
-    isBackgroundAgentActive:
-      threadStatus.isBackgroundAgentActive ||
-      (hasHiddenChildren && childActivity.backgroundAgent),
-    isBackgroundCommandActive:
-      threadStatus.isBackgroundCommandActive ||
-      (hasHiddenChildren && childActivity.backgroundCommand),
-    isGoalActive:
-      threadStatus.isGoalActive || (hasHiddenChildren && childActivity.goal),
-    queuedWork: threadStatus.queuedWork,
-    queuedFailedCount: threadStatus.queuedFailedCount,
-    isActivityUnreported: threadStatus.isActivityUnreported,
-    isPlanModeActive:
-      threadStatus.isPlanModeActive ||
-      (hasHiddenChildren && childActivity.planMode),
-    isRuntimeActive:
-      threadStatus.isRuntimeActive ||
-      (hasHiddenChildren && childActivity.runtimeWorking),
-    isWorkflowActive:
-      threadStatus.isWorkflowActive ||
-      (hasHiddenChildren && childActivity.workflow),
-  };
-  const trailingIndicatorResolution = resolveThreadStatus(
-    trailingIndicatorState,
-    pluginThreadRowStatus,
-  );
-  const trailingIndicatorKind = trailingIndicatorResolution.indicatorKind;
-  const hasFixedStatusSlot =
-    thread.archivedAt === null &&
-    (automationStartedAt !== null ||
-      trailingIndicatorKind === "needs-input" ||
-      trailingIndicatorKind === "check-terminal" ||
-      trailingIndicatorKind === "working" ||
-      trailingIndicatorKind === "woke" ||
-      trailingIndicatorKind === "done-unread");
+  const hiddenThreads =
+    hasHiddenChildren && parentOptions
+      ? parentOptions.hiddenThreads
+      : NO_HIDDEN_THREADS;
+  const hiddenChildrenHaveDraft = useThreadsHaveDraft(hiddenThreads);
+  const trailingStatus = experimental_resolveThreadStatus({
+    thread,
+    hiddenThreads,
+    hasUnsubmittedDraft: hasComposerDraft || hiddenChildrenHaveDraft,
+    rowStatus: pluginThreadRowStatus,
+  });
+  const trailingIndicatorKind = trailingStatus.indicator;
   const hasVisibleStatus =
-    trailingIndicatorKind !== "none" ||
-    trailingIndicatorResolution.rowStatusIsVisible ||
+    trailingStatus.indicator !== "none" ||
+    trailingStatus.rowStatus !== null ||
     isNativeActivityNotConfirmed(thread) ||
     miniMap !== null ||
     automationStartedAt !== null;
-  const splitIndicatorIsWorking = hasThreadListWorkingActivity(
-    trailingIndicatorState,
-    pluginThreadRowStatus?.tone === "running",
-  );
-  const splitIndicatorLabel = trailingIndicatorResolution.accessibleLabel
-    ? `${labelTitle} — open in split; ${trailingIndicatorResolution.accessibleLabel}`
+  const hasFixedStatusSlot =
+    thread.archivedAt === null &&
+    (automationStartedAt !== null ||
+      [
+        "needs-input",
+        "check-terminal",
+        "working",
+        "woke",
+        "done-unread",
+      ].includes(trailingStatus.indicator));
+  const splitIndicatorIsWorking = trailingStatus.isWorking;
+  const splitIndicatorLabel = trailingStatus.label
+    ? `${labelTitle} — open in split; ${trailingStatus.label}`
     : `${labelTitle} — open in split`;
   const linkLabel = hasComposerDraft
     ? `Open ${labelTitle} (unsubmitted draft)`
@@ -851,9 +785,11 @@ function ThreadRowComponent({
       : options.isCompact
         ? COARSE_POINTER_COMPACT_ROW_HEIGHT_CLASS
         : COARSE_POINTER_ROW_HEIGHT_CLASS,
-    hasRowState && parentOptions?.stickyLevel !== undefined &&
+    hasRowState &&
+      parentOptions?.stickyLevel !== undefined &&
       "h-auto min-h-[var(--bb-sidebar-row-height)] max-md:pointer-coarse:h-auto max-md:pointer-coarse:min-h-[var(--bb-sidebar-row-height-coarse)]",
-    showRowMetadata && "has-[[data-reserve-line]]:h-auto has-[[data-reserve-line]]:md:h-auto has-[[data-reserve-line]]:min-h-[var(--bb-sidebar-row-height)] has-[[data-reserve-line]]:max-md:pointer-coarse:h-auto has-[[data-reserve-line]]:max-md:pointer-coarse:min-h-11",
+    showRowMetadata &&
+      "has-[[data-reserve-line]]:h-auto has-[[data-reserve-line]]:md:h-auto has-[[data-reserve-line]]:min-h-[var(--bb-sidebar-row-height)] has-[[data-reserve-line]]:max-md:pointer-coarse:h-auto has-[[data-reserve-line]]:max-md:pointer-coarse:min-h-11",
     "max-md:pointer-coarse:min-h-11",
     showActive
       ? SIDEBAR_ROW_SELECTED_STATE_CLASS
@@ -1004,7 +940,11 @@ function ThreadRowComponent({
                     data-sidebar-thread-provider={provider?.id}
                     data-sidebar-thread-leading=""
                     role={provider && !hasModeGlyph ? "img" : undefined}
-                    aria-label={provider && !hasModeGlyph ? provider.displayName : undefined}
+                    aria-label={
+                      provider && !hasModeGlyph
+                        ? provider.displayName
+                        : undefined
+                    }
                     className="pointer-events-auto relative z-[31] flex size-4 shrink-0 items-center justify-center mr-1 max-md:mr-1.5 md:self-start md:mt-0.5 text-muted-foreground [&_*]:text-inherit!"
                     onClick={(event) => {
                       event.preventDefault();
@@ -1012,11 +952,49 @@ function ThreadRowComponent({
                       rowLinkRef.current?.click();
                     }}
                   >
-                    {provider ? (hasModeGlyph ? <ThreadLeadingMark nativeTerminal={thread.experimental_nativeTerminal === true} isWorktree={thread.environment?.isWorktree === true && thread.experimental_nativeTerminal !== true} providerName={provider.displayName}><ProviderIcon providerKind="agent" provider={provider} className="size-4" /></ThreadLeadingMark> : <ProviderIcon providerKind="agent" provider={provider} className="size-4" />) : <ThreadModeGlyph nativeTerminal={thread.experimental_nativeTerminal === true} isWorktree={thread.environment?.isWorktree === true} />}
+                    {provider ? (
+                      hasModeGlyph ? (
+                        <ThreadLeadingMark
+                          nativeTerminal={
+                            thread.experimental_nativeTerminal === true
+                          }
+                          isWorktree={
+                            thread.environment?.isWorktree === true &&
+                            thread.experimental_nativeTerminal !== true
+                          }
+                          providerName={provider.displayName}
+                        >
+                          <ProviderIcon
+                            providerKind="agent"
+                            provider={provider}
+                            className="size-4"
+                          />
+                        </ThreadLeadingMark>
+                      ) : (
+                        <ProviderIcon
+                          providerKind="agent"
+                          provider={provider}
+                          className="size-4"
+                        />
+                      )
+                    ) : (
+                      <ThreadModeGlyph
+                        nativeTerminal={
+                          thread.experimental_nativeTerminal === true
+                        }
+                        isWorktree={thread.environment?.isWorktree === true}
+                      />
+                    )}
                   </span>
                 </TooltipTrigger>
                 <TooltipContent side="top">
-                  {provider ? (hasModeGlyph ? `${provider.displayName}, ${(threadModeLabel({ nativeTerminal: thread.experimental_nativeTerminal === true, isWorktree: thread.environment?.isWorktree === true }) ?? "").toLowerCase()}` : provider.displayName) : (thread.experimental_nativeTerminal ? "Native terminal" : "Worktree")}
+                  {provider
+                    ? hasModeGlyph
+                      ? `${provider.displayName}, ${(threadModeLabel({ nativeTerminal: thread.experimental_nativeTerminal === true, isWorktree: thread.environment?.isWorktree === true }) ?? "").toLowerCase()}`
+                      : provider.displayName
+                    : thread.experimental_nativeTerminal
+                      ? "Native terminal"
+                      : "Worktree"}
                 </TooltipContent>
               </Tooltip>
             ) : null}
@@ -1053,7 +1031,7 @@ function ThreadRowComponent({
                   )}
                 >
                   <ThreadContextMetadata
-                    project={showProjectName ? projectName ?? null : null}
+                    project={showProjectName ? (projectName ?? null) : null}
                     age={<InfoRowTime timestamp={thread.updatedAt} />}
                   />
                 </span>
@@ -1157,7 +1135,10 @@ function ThreadRowComponent({
                 </span>
               ) : (
                 <ThreadTrailingIndicator
-                  state={trailingIndicatorState}
+                  status={trailingStatus}
+                  threadQueuedFailedCount={
+                    thread.experimental_queuedFailedCount
+                  }
                   nativeActivityUnconfirmed={isNativeActivityNotConfirmed(
                     thread,
                   )}
@@ -1228,7 +1209,7 @@ function ThreadRowComponent({
               SIDEBAR_HOVER_ACTIONS_CLASS,
               "flex shrink-0 items-center justify-end gap-1",
               rowActionsOverlayClass,
-            "md:static! md:inset-auto! md:w-0 md:overflow-hidden md:group-hover/thread-row:w-auto md:group-has-[:focus-visible]/thread-row:w-auto md:data-[sidebar-hover-actions-open=true]:w-auto",
+              "md:static! md:inset-auto! md:w-0 md:overflow-hidden md:group-hover/thread-row:w-auto md:group-has-[:focus-visible]/thread-row:w-auto md:data-[sidebar-hover-actions-open=true]:w-auto",
               isEditing && "invisible pointer-events-none",
             )}
           >

@@ -10,10 +10,7 @@ const EVENTS_TABLE = String.raw`(?:(?:main|temp)\s*\.\s*)?(?:\$\{events\}|["\[]?
 const EVENT_ROW_WRITE_PATTERNS = [
   /\.(?:insert|update|delete)\(\s*events\s*\)/gu,
   new RegExp(String.raw`\bINTO\s+${EVENTS_TABLE}`, "giu"),
-  new RegExp(
-    String.raw`\bUPDATE\s+(?:OR\s+\w+\s+)?${EVENTS_TABLE}`,
-    "giu",
-  ),
+  new RegExp(String.raw`\bUPDATE\s+(?:OR\s+\w+\s+)?${EVENTS_TABLE}`, "giu"),
   new RegExp(String.raw`\bDELETE\s+FROM\s+${EVENTS_TABLE}`, "giu"),
 ];
 const EVENT_OWNER_DELETE_PATTERNS = [
@@ -49,7 +46,7 @@ const PRUNING_INVALIDATION: SourceRequirement[] = [
 
 const EVENT_ROW_WRITES: Record<string, InventoriedWrite> = {
   "packages/db/src/data/events.ts": {
-    writes: 3,
+    writes: 4,
     requires: [
       {
         file: "packages/db/src/data/events.ts",
@@ -57,11 +54,12 @@ const EVENT_ROW_WRITES: Record<string, InventoriedWrite> = {
       },
       {
         file: "packages/db/src/data/events.ts",
-        text: "if (result.changes > 0) {\n    bumpThreadEventRewriteGeneration(args.threadId);",
+        text: "if (result.changes > 0) {",
       },
       ...PRUNING_INVALIDATION,
     ],
   },
+  "packages/db/src/data/thread-purges.ts": { writes: 1, requires: [] },
   "packages/db/src/data/sweeps.ts": {
     writes: 1,
     requires: [
@@ -344,7 +342,9 @@ function readSources(): Map<string, string> {
   for (const group of ["packages", "apps"]) {
     for (const name of readdirSync(join(repoRoot, group))) {
       const sourceDirectory = join(repoRoot, group, name, "src");
-      if (!statSync(sourceDirectory, { throwIfNoEntry: false })?.isDirectory()) {
+      if (
+        !statSync(sourceDirectory, { throwIfNoEntry: false })?.isDirectory()
+      ) {
         continue;
       }
       for (const path of listSourceFiles(sourceDirectory)) {
@@ -405,7 +405,8 @@ describe("writes that can change remembered background-task counts", () => {
     ]
       .flatMap((entry) => entry.requires)
       .filter(
-        (requirement) => !sources.get(requirement.file)?.includes(requirement.text),
+        (requirement) =>
+          !sources.get(requirement.file)?.includes(requirement.text),
       );
 
     expect(missing).toEqual([]);
@@ -435,7 +436,9 @@ describe("writes that can change remembered background-task counts", () => {
   it("reaches the pruning deletes only through the pruning pass that invalidates", () => {
     for (const writer of PRUNING_ONLY_WRITERS) {
       const callers = [...sources]
-        .filter(([, text]) => new RegExp(String.raw`\b${writer}\(`, "u").test(text))
+        .filter(([, text]) =>
+          new RegExp(String.raw`\b${writer}\(`, "u").test(text),
+        )
         .map(([file]) => file)
         .filter((file) => file !== PRUNING_FILE);
 

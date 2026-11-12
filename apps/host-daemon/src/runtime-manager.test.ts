@@ -28,9 +28,7 @@ type GetCurrentBranchArgs = Parameters<HostWorkspace["getCurrentBranch"]>;
 type GetLocalStateFingerprintResult = Awaited<
   ReturnType<HostWorkspace["getLocalStateSnapshot"]>
 >["fingerprint"];
-type GetSharedGitRefsFingerprintResult = Awaited<
-  ReturnType<HostWorkspace["getSharedGitRefsSnapshot"]>
->["fingerprint"];
+type GetSharedGitRefsFingerprintResult = string;
 type CommitArgs = Parameters<HostWorkspace["commit"]>;
 type ProvisionWorkspaceMockArgs = Parameters<
   (options: ProvisionWorkspaceArgs) => Promise<HostWorkspace>
@@ -124,6 +122,7 @@ function createFakeWorkspace(path: string, isGitRepo = true) {
     path,
     isGitRepo,
     isWorktree: false,
+    gitCommonDir: isGitRepo ? `${path}/.git` : null,
     getDefaultBranch: vi.fn(async () => "main"),
     getCurrentBranch: vi.fn(async (..._args: GetCurrentBranchArgs) => "main"),
     getHeadSha: vi.fn(async () => "commit-1"),
@@ -137,7 +136,11 @@ function createFakeWorkspace(path: string, isGitRepo = true) {
       if (sharedGitRefsFingerprintError) {
         throw sharedGitRefsFingerprintError;
       }
-      return { fingerprint: sharedGitRefsFingerprint, defaultBranch: "main" };
+      return {
+        defaultBranch: "main",
+        branchNamesFingerprint: "names-1",
+        fingerprintFor: () => sharedGitRefsFingerprint,
+      };
     }),
     getAdditionalWorkspaceWriteRoots: vi.fn(async () => []),
     commit: vi.fn(async (..._args: CommitArgs) => ({
@@ -191,7 +194,9 @@ function createFakeRuntime() {
     resumeThread: vi.fn(async (_args: ResumeThreadArgs) => ({
       providerThreadId: "provider-1",
     })),
-    runTurn: vi.fn(async (_args: RunTurnArgs) => undefined),
+    runTurn: vi.fn(async (_args: RunTurnArgs) => ({
+      status: "started" as const,
+    })),
     steerTurn: vi.fn(async (_args: SteerTurnArgs) => ({
       status: "steered" as const,
     })),
@@ -231,6 +236,7 @@ function createFakeRuntime() {
       ]),
     ],
     hasOpenBackgroundWork: () => openBackgroundWork,
+    listOpenBackgroundWork: () => [],
     shutdown: vi.fn(async () => undefined),
     detach: vi.fn(async () => undefined),
     adoptBridgeWorkers: vi.fn(() => []),

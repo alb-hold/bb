@@ -109,12 +109,14 @@ export function RecentThreadRowContent({
   environmentProviderLookup,
   indicatorKind,
   queuedFailedCount,
+  rowStatus = null,
 }: {
   thread: ThreadListEntry;
   projectName: string | null;
   environmentProviderLookup: EnvironmentDisplayProviderLookup;
   indicatorKind: ThreadListIndicatorKind;
   queuedFailedCount: number;
+  rowStatus?: import("@get-bb/plugin-sdk").PluginSidebarThreadRowStatus | null;
 }) {
   const metadata = getMobileRecentThreadMetadata({
     environmentProviderLookup,
@@ -150,9 +152,10 @@ export function RecentThreadRowContent({
         className="flex size-6 shrink-0 items-center justify-center"
         data-recent-status-slot=""
       >
-        {indicatorKind !== "none" ? (
+        {indicatorKind !== "none" || rowStatus !== null ? (
           <ThreadStatusGlyph
             indicator={indicatorKind}
+            rowStatus={rowStatus}
             experimental_queuedFailedCount={queuedFailedCount}
           />
         ) : null}

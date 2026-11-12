@@ -52,7 +52,7 @@ jobs:
       # Measured pinned to 4 CPUs, two rounds each: 96 s / 110 s at the
       # default vs 90 s / 58 s at four.
       - name: Build, typecheck, and lint
-        run: pnpm exec turbo run build typecheck lint --cache-dir=.turbo/cache --output-logs=new-only --concurrency=4
+        run: pnpm exec turbo run build typecheck lint lint:type-aware --cache-dir=.turbo/cache --output-logs=new-only --concurrency=4
 
       # Runs after build and typecheck, so the guard's own turbo build is a
       # cache hit and the package it packs is the one this commit really ships.
@@ -268,14 +268,7 @@ jobs:
           turbo-cache: ${{ matrix.turbo-cache }}
 
       - name: Smoke bb-app tarball
-        run: pnpm exec turbo run smoke:tarball --filter=bb-app --cache-dir=.turbo/cache --output-logs=new-only
-
-      - name: Install AppImage FUSE runtime
-        if: ${{ runner.os == 'Linux' }}
-        uses: ./.github/actions/install-appimage-fuse
-        timeout-minutes: 5
-        with:
-          package: libfuse2t64
+        run: pnpm exec turbo run smoke:boot smoke:tarball --filter=bb-app --cache-dir=.turbo/cache --output-logs=new-only --continue=dependencies-successful
 
       - name: Package Linux AppImage
         if: ${{ runner.os == 'Linux' }}

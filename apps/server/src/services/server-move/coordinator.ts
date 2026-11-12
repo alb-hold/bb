@@ -11,9 +11,10 @@ import {
   type ServerMoveStepId,
 } from "@bb/domain";
 import { writeServerMovedFile } from "@bb/server-archive";
-import type {
-  ServerMovedErrorDetails,
-  ServerMoveProgressMessage,
+import {
+  serverHealthUrl,
+  type ServerMovedErrorDetails,
+  type ServerMoveProgressMessage,
 } from "@bb/host-daemon-contract";
 import type {
   ServerMoveCheckItem,
@@ -220,10 +221,6 @@ export function serverMoveArchiveDownloadPath(moveId: string): string {
 
 export function serverMoveBbAppDownloadPath(moveId: string): string {
   return `/internal/server-move/${encodeURIComponent(moveId)}/bb-app.tgz`;
-}
-
-export function serverMoveDestinationStatusUrl(serverUrl: string): string {
-  return `${serverUrl.replace(/\/+$/u, "")}/health`;
 }
 
 function errorMessage(error: unknown): string {
@@ -1513,9 +1510,7 @@ export function createServerMoveCoordinator(
               targetHostName: targetHost.name,
               serverUrl,
               destinationStatusUrl:
-                mode.mode === "direct"
-                  ? serverMoveDestinationStatusUrl(serverUrl)
-                  : null,
+                mode.mode === "direct" ? serverHealthUrl(serverUrl) : null,
               startedAt: environment.now(),
               finishedAt: null,
               error: null,
@@ -1548,9 +1543,13 @@ export function createServerMoveCoordinator(
       current = move;
       notify();
       if (restored.kind === "ended") {
-        void abortTargetWhenReachable(move).finally(() =>
-          forgetRun(move).catch(() => undefined),
-        );
+        void (async () => {
+          try {
+            await abortTargetWhenReachable(move);
+          } finally {
+            await forgetRun(move).catch(() => undefined);
+          }
+        })();
         return;
       }
       move.frozen = true;

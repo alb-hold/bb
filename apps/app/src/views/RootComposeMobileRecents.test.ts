@@ -18,11 +18,11 @@ function makeThread(overrides: Partial<ThreadListEntry> = {}): ThreadListEntry {
     createdAt: 1,
     updatedAt: 2,
     activity: {
+      activeGoalCount: 0,
       activeWorkflowCount: 0,
       activeBackgroundAgentCount: 0,
       activeBackgroundCommandCount: 0,
       activePlanModeCount: 1,
-      activeGoalCount: 1,
     },
     runtime: {
       displayStatus: "active",

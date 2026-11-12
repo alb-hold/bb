@@ -12,6 +12,12 @@ import { invalidateHostProviderCliStatus } from "@/hooks/cache-owners/provider-c
 import { invalidateSystemExecutionOptions } from "@/hooks/cache-owners/system-cache-effects";
 import { asHttpError, getHttpErrorMessage } from "@/lib/http-error";
 import { sdk } from "@/lib/sdk";
+import type { OnboardingFailureDetail } from "@bb/server-contract";
+import { classifyProviderCliInstallFailure } from "@/components/provider-cli/provider-cli-install-failure";
+import {
+  operationFailureReason,
+  type OperationFailureReason,
+} from "@/components/onboarding/onboarding-model";
 import {
   recordTelemetryEvent,
   type OnboardingEntry,
@@ -34,6 +40,7 @@ interface ProviderCliInstallJob {
   hostId: string;
   issue: ProviderCliActionableIssue;
   onboardingEntry?: OnboardingEntry;
+  serverJobId?: string;
 }
 
 export type ProviderCliInstallFailureKind = "command" | "interrupted";
@@ -88,6 +95,7 @@ const INITIAL_SNAPSHOT: ProviderCliInstallSnapshot = {
 
 let snapshot: ProviderCliInstallSnapshot = INITIAL_SNAPSHOT;
 let queuedJobs: ProviderCliInstallJob[] = [];
+let trackedServerJobIds = new Set<string>();
 let queryClient: QueryClient | null = null;
 const listeners = new Set<() => void>();
 
@@ -164,7 +172,8 @@ function describeInstallRequestFailure(error: unknown): {
   const connectionLost =
     httpError === null
       ? error instanceof TypeError || error instanceof BbRequestTimeoutError
-      : CONNECTION_LOST_HTTP_STATUSES.has(httpError.status);
+      : CONNECTION_LOST_HTTP_STATUSES.has(httpError.status) ||
+        httpError.code === "provider_cli_install_job_not_found";
   if (connectionLost) {
     return {
       kind: "interrupted",
@@ -263,7 +272,14 @@ function runInstall(job: ProviderCliInstallJob): void {
   const { hostId, issue, onboardingEntry } = job;
   const { action, provider } = issue;
   const jobKey = providerCliJobKey(hostId, provider);
-  const recordOutcome = (outcome: "started" | "succeeded" | "failed") => {
+  const recordOutcome = (
+    outcome: "started" | "succeeded" | "failed",
+    failure?: {
+      reason: OperationFailureReason | "command_failed";
+      detail?: OnboardingFailureDetail;
+      exitCode?: number;
+    },
+  ) => {
     if (onboardingEntry === undefined) return;
     recordTelemetryEvent({
       name: "onboarding_operation",
@@ -273,6 +289,13 @@ function runInstall(job: ProviderCliInstallJob): void {
         operation: action.kind,
         outcome,
         resource_id: provider,
+        ...(failure === undefined ? {} : { failure_reason: failure.reason }),
+        ...(failure?.detail === undefined
+          ? {}
+          : { failure_detail: failure.detail }),
+        ...(failure?.exitCode === undefined
+          ? {}
+          : { exit_code: failure.exitCode }),
       },
     });
   };
@@ -286,8 +309,7 @@ function runInstall(job: ProviderCliInstallJob): void {
   let completedEvent: ProviderCliInstallCompletedEvent | null = null;
   let errorMessage: string | null = null;
 
-  void sdk.hosts
-    .installProviderCli({ hostId, provider, actionKind: action.kind })
+  void runServerInstall(job)
     .then((events) => {
       for (const event of events) {
         if (event.provider !== provider) {
@@ -312,14 +334,24 @@ function runInstall(job: ProviderCliInstallJob): void {
         }
       }
 
-      recordOutcome(completedEvent?.success ? "succeeded" : "failed");
       if (completedEvent?.success) {
+        recordOutcome("succeeded");
         if (queryClient !== null) {
           void invalidateHostProviderCliStatus({ queryClient, hostId });
           void invalidateSystemExecutionOptions({ queryClient, hostId });
         }
         return;
       }
+      const { detail, exitCode } = classifyProviderCliInstallFailure({
+        completed: completedEvent,
+        errorMessage,
+        output: installLogChunks.join(""),
+      });
+      recordOutcome("failed", {
+        reason: "command_failed",
+        detail,
+        ...(exitCode === undefined ? {} : { exitCode }),
+      });
 
       const failureMessage =
         errorMessage ??
@@ -336,7 +368,7 @@ function runInstall(job: ProviderCliInstallJob): void {
       });
     })
     .catch((error: unknown) => {
-      recordOutcome("failed");
+      recordOutcome("failed", { reason: operationFailureReason(error) });
       const message = error instanceof Error ? error.message : String(error);
       installLogChunks.push(`\n${message}\n`);
       showProviderCliInstallFailureToast({
@@ -355,6 +387,31 @@ function runInstall(job: ProviderCliInstallJob): void {
     });
 }
 
+async function runServerInstall(
+  job: ProviderCliInstallJob,
+): Promise<ProviderCliInstallEvent[]> {
+  const { hostId, issue } = job;
+  const jobId =
+    job.serverJobId ??
+    (
+      await sdk.hosts.experimental_startProviderCliInstall({
+        hostId,
+        provider: issue.provider,
+        actionKind: issue.action.kind,
+      })
+    ).id;
+  trackedServerJobIds.add(jobId);
+  const settled = await sdk.hosts.experimental_providerCliInstallJobs.wait({
+    hostId,
+    jobId,
+  });
+  if (settled.state === "running") {
+    throw new Error("Provider CLI install did not finish");
+  }
+  if (settled.state === "failed") throw new Error(settled.error);
+  return settled.events;
+}
+
 function processNextInstall(): void {
   if (snapshot.runningJobKey !== null) {
     return;
@@ -368,6 +425,16 @@ function processNextInstall(): void {
     false,
   );
   runInstall(nextJob);
+}
+
+export function adoptProviderCliInstall(args: {
+  hostId: string;
+  issue: ProviderCliActionableIssue;
+  serverJobId: string;
+}): void {
+  if (trackedServerJobIds.has(args.serverJobId)) return;
+  trackedServerJobIds.add(args.serverJobId);
+  startProviderCliInstall(args);
 }
 
 export function startProviderCliInstall(job: ProviderCliInstallJob): void {
@@ -395,6 +462,7 @@ export function startProviderCliInstall(job: ProviderCliInstallJob): void {
 export function resetProviderCliInstallStoreForTests(): void {
   snapshot = INITIAL_SNAPSHOT;
   queuedJobs = [];
+  trackedServerJobIds = new Set();
   queryClient = null;
   listeners.clear();
 }

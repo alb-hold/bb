@@ -49,6 +49,11 @@ vi.mock("@/components/code/BbSourceCode", async () => {
   return { default: () => <p>Source ready</p> };
 });
 
+await Promise.all([
+  vi.importActual("./PluginDiff"),
+  vi.importActual("./PluginSourceCode"),
+]);
+
 afterEach(() => {
   cleanup();
   resetPluginSlotStoreForTest();

@@ -1,17 +1,19 @@
 // @vitest-environment jsdom
 
 import { promptAreaMocks as mocks } from "@/test/thread-detail-prompt-area-harness";
+
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+
 
 import type {
   PendingInteraction,
   PromptTextMention,
   ThreadQueuedMessage,
   ThreadTimelineActivePromptMode,
-  ThreadTimelineGoal,
   ThreadTimelineModelFallback,
   ThreadWithRuntime,
 } from "@bb/domain";
+
 import {
   cleanup,
   fireEvent,
@@ -21,16 +23,21 @@ import {
   waitFor,
   within,
 } from "@testing-library/react";
+
 import type {
   TimelineWorkflowWorkRow,
   ThreadTimelineSessionOption,
 } from "@bb/server-contract";
+
 import { createDeferredPromise } from "@bb/test-helpers";
+
 import {
   makeThreadQueuedMessage as makeThreadQueuedMessageFixture,
   makeThreadWithRuntime as makeThreadWithRuntimeFixture,
 } from "@bb/test-helpers/domain-fixtures";
+
 import type { ComponentProps } from "react";
+
 import {
   afterEach,
   beforeAll,
@@ -40,34 +47,47 @@ import {
   it,
   vi,
 } from "vitest";
+
 import { LazyQueuedMessagesList } from "@/components/promptbox/banner/LazyQueuedMessagesList";
+
 import { workflowRow } from "@/test/fixtures/thread-timeline-rows";
+
 import type { PromptDraftAttachment } from "@bb/client-core";
+
 import {
   getPromptDraftAccessor,
   usePromptDraftStorage,
 } from "@/hooks/usePromptDraftStorage";
+
 import { BbHttpError } from "@/lib/sdk";
+
 import type { ExperimentalComposerSelection } from "@get-bb/plugin-sdk";
+
 import { setComposerTextEffect } from "@/lib/composer-text-effects";
+
 import {
   resetPluginSlotStoreForTest,
   setPluginSlotRegistrations,
 } from "@/lib/plugin-slots";
+
 import {
   ThreadDetailPromptArea,
   type ThreadDetailSentMessageEdit,
 } from "./ThreadDetailPromptArea";
+
 import { makePluginRegistrationSet } from "@/test/fixtures/plugins";
+
 import {
   GitSegmentFixtureProvider,
   type GitSegmentFixture,
 } from "@/test/fixtures/git-segment-plugin";
 
+
 vi.mock("@/hooks/usePromptDraftStorage", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/hooks/usePromptDraftStorage")>()),
   usePromptDraftStorage: vi.fn(),
 }));
+
 
 function makeQueuedMessage(
   overrides: Partial<ThreadQueuedMessage> = {},
@@ -83,6 +103,7 @@ function makeQueuedMessage(
   });
 }
 
+
 function makeThread(
   overrides: Partial<ThreadWithRuntime> = {},
 ): ThreadWithRuntime {
@@ -94,21 +115,14 @@ function makeThread(
   });
 }
 
+
 const activePlan = {
   mode: "plan",
   providerId: "codex",
   prompt: "Plan the work",
 } satisfies ThreadTimelineActivePromptMode;
 
-const activeGoal = {
-  sourceSeq: 1,
-  updatedAt: 100,
-  objective: "Finish the work",
-  status: "active",
-  tokenBudget: null,
-  tokensUsed: 100,
-  timeUsedSeconds: 10,
-} satisfies ThreadTimelineGoal;
+
 
 function makePendingInteraction(): PendingInteraction {
   return {
@@ -144,6 +158,7 @@ function makePendingInteraction(): PendingInteraction {
   };
 }
 
+
 interface RenderPromptAreaOptions {
   executionOptionsPending?: boolean;
   activePromptMode?: ThreadTimelineActivePromptMode | null;
@@ -151,7 +166,6 @@ interface RenderPromptAreaOptions {
   childThreadsSection?: ComponentProps<
     typeof ThreadDetailPromptArea
   >["childThreadsSection"];
-  goal?: ThreadTimelineGoal | null;
   modelFallback?: ThreadTimelineModelFallback | null;
   pendingInteractions?: readonly PendingInteraction[];
   pendingInteractionsInitialLoading?: boolean;
@@ -171,13 +185,14 @@ interface RenderPromptAreaOptions {
   gitSegment?: GitSegmentFixture | null;
 }
 
+
 let testQueryClient: QueryClient;
+
 
 function buildPromptAreaElement({
   activePromptMode = null,
   activeWorkflows = [],
   childThreadsSection = null,
-  goal = null,
   modelFallback = null,
   pendingInteractions = [],
   pendingInteractionsInitialLoading = false,
@@ -205,7 +220,6 @@ function buildPromptAreaElement({
         permissionPolicy={permissionPolicy}
         canRestoreEnvironment={false}
         environmentGoneStatus={environmentGoneStatus}
-        goal={goal}
         providerCommands={null}
         executionOptionsPending={executionOptionsPending}
         sessionOptions={sessionOptions}
@@ -232,11 +246,14 @@ function buildPromptAreaElement({
   );
 }
 
+
 function renderPromptArea(options: RenderPromptAreaOptions = {}) {
   return render(buildPromptAreaElement(options));
 }
 
+
 beforeAll(() => LazyQueuedMessagesList.preload());
+
 
 describe("shared draft submission ownership", () => {
   let nextId = 0;
@@ -394,6 +411,7 @@ describe("shared draft submission ownership", () => {
   });
 });
 
+
 beforeEach(() => {
   vi.mocked(usePromptDraftStorage).mockImplementation(() => ({
     ...mocks.promptDraft,
@@ -449,6 +467,7 @@ beforeEach(() => {
   mocks.useThreadQueuedMessages.mockClear();
 });
 
+
 afterEach(() => {
   cleanup();
   document
@@ -457,6 +476,7 @@ afterEach(() => {
   resetPluginSlotStoreForTest();
   vi.clearAllMocks();
 });
+
 
 it.each(["removed", "removing", "cleanup-failed"] as const)(
   "hides execution for a %s machine even when the environment still exists",
@@ -468,6 +488,7 @@ it.each(["removed", "removing", "cleanup-failed"] as const)(
     expect(screen.getByTestId("composer-hidden").textContent).toBe("true");
   },
 );
+
 
 describe("pending-interactions gate", () => {
   it("shows a status in place of the composer and queued messages while interactions are unknown", () => {
@@ -528,6 +549,7 @@ describe("pending-interactions gate", () => {
   });
 });
 
+
 describe("environment follow-up summary", () => {
   it("renders for a thread with an environment even when it has no environment label", () => {
     renderPromptArea({ thread: makeThread({ environmentId: "env_1" }) });
@@ -543,6 +565,7 @@ describe("environment follow-up summary", () => {
     expect(screen.queryByTestId("thread-environment-summary")).toBeNull();
   });
 });
+
 
 describe("agent session options", () => {
   const modeOption: ThreadTimelineSessionOption = {
@@ -647,6 +670,7 @@ describe("agent session options", () => {
   });
 });
 
+
 describe("ThreadDetailPromptArea", () => {
   it("persists model and reasoning changes for a live thread", () => {
     renderPromptArea({ thread: makeThread({ status: "active" }) });
@@ -692,6 +716,7 @@ describe("ThreadDetailPromptArea", () => {
     );
   });
 
+
   it("lets the server decide whether an Enter submitted while the thread looks busy queues", async () => {
     mocks.promptDraft.text = "Try again";
     renderPromptArea({
@@ -716,6 +741,7 @@ describe("ThreadDetailPromptArea", () => {
       }),
     );
   });
+
 
   it("steers with sendAt and plugin data from the modifier action", async () => {
     mocks.promptDraft.text = "Steer this later";
@@ -747,6 +773,7 @@ describe("ThreadDetailPromptArea", () => {
     );
   });
 
+
   it("refuses sendAt when the modifier action would steer the next queued message", async () => {
     mocks.queuedMessages = [makeQueuedMessage()];
     renderPromptArea({
@@ -764,6 +791,7 @@ describe("ThreadDetailPromptArea", () => {
     ).rejects.toThrow("There is no new message to schedule or attach data to.");
     expect(mocks.sendQueuedMessageMutateAsync).not.toHaveBeenCalled();
   });
+
 
   it("preserves the reasoning preference on follow-ups when the selected model's levels are unknown", async () => {
     mocks.unknownReasoning = true;
@@ -788,6 +816,7 @@ describe("ThreadDetailPromptArea", () => {
     expect(request.reasoningLevel).toBe("medium");
     expect(request.executionInputSources.reasoningLevel).toBe("explicit");
   });
+
 
   it("preserves plugin submission data through a follow-up composer", async () => {
     mocks.defaultExecutionOptions = {
@@ -820,6 +849,7 @@ describe("ThreadDetailPromptArea", () => {
     );
   });
 
+
   it("shows queued work while its message details are loading", () => {
     mocks.queuedMessages = undefined;
 
@@ -830,6 +860,7 @@ describe("ThreadDetailPromptArea", () => {
       "Queue1",
     );
   });
+
 
   it("keeps sent-message edit submission out of the normal send path", () => {
     mocks.defaultExecutionOptions = {
@@ -945,6 +976,7 @@ describe("ThreadDetailPromptArea", () => {
     expect(onCancel).toHaveBeenCalledTimes(2);
   });
 
+
   it("allows a staged sent-message edit while another message is queued", () => {
     mocks.defaultExecutionOptions = {
       model: "gpt-5",
@@ -979,6 +1011,7 @@ describe("ThreadDetailPromptArea", () => {
     expect(onSubmit).toHaveBeenCalledTimes(1);
   });
 
+
   it("keeps the queued drawer adjacent to the bottom composer", () => {
     mocks.queuedMessages = [makeQueuedMessage()];
 
@@ -990,6 +1023,7 @@ describe("ThreadDetailPromptArea", () => {
     expect(stack.lastElementChild).toBe(queue);
     expect(stack.nextElementSibling).toBe(composer);
   });
+
 
   it("sends the next queued message with the modifier shortcut after a stopped thread becomes idle", async () => {
     mocks.queuedMessages = [makeQueuedMessage()];
@@ -1014,6 +1048,7 @@ describe("ThreadDetailPromptArea", () => {
       });
     });
   });
+
 
   it("steers a queued row once a provisioning thread is ready", async () => {
     mocks.queuedMessages = [
@@ -1047,6 +1082,7 @@ describe("ThreadDetailPromptArea", () => {
     });
   });
 
+
   it("does not expose the provider default before the thread options arrive", () => {
     mocks.defaultExecutionOptions = undefined;
     renderPromptArea();
@@ -1055,6 +1091,7 @@ describe("ThreadDetailPromptArea", () => {
     );
   });
 
+
   it("keeps loaded composer controls usable while live session selections refresh", () => {
     const { rerender } = renderPromptArea();
     expect(screen.getByTestId("selected-model").textContent).toBe("gpt-5");
@@ -1062,6 +1099,7 @@ describe("ThreadDetailPromptArea", () => {
     expect(screen.getByTestId("selected-model").textContent).toBe("gpt-5");
     expect(screen.getByRole("button", { name: "Choose permission full" }).hasAttribute("disabled")).toBe(false);
   });
+
 
   it("enables loaded thread Permissions during a five-second cold model catalog request", () => {
     vi.useFakeTimers();
@@ -1094,11 +1132,13 @@ describe("ThreadDetailPromptArea", () => {
     }
   });
 
+
   it("keeps Permissions read-only until permission options and limits are verified", () => {
     mocks.permissionModeIsVerified = false;
     renderPromptArea();
     expect(screen.getByTestId("permission-read-only").textContent).toBe("true");
   });
+
 
   it("keeps verified Permissions editable when a background model catalog becomes unverified", () => {
     const { rerender } = renderPromptArea();
@@ -1117,6 +1157,7 @@ describe("ThreadDetailPromptArea", () => {
     ).toBe(false);
   });
 
+
   it("shows stored execution when an offline, failed, or absent catalog settles unverified", () => {
     mocks.modelCatalogIsVerified = false;
     mocks.defaultExecutionOptions = { model: "thread-stored-model", permissionMode: "full", reasoningLevel: "high", serviceTier: "default", source: "client/turn/requested" };
@@ -1124,6 +1165,7 @@ describe("ThreadDetailPromptArea", () => {
     expect(screen.getByTestId("selected-model").textContent).toBe("thread-stored-model");
     expect(screen.getByTestId("selected-permission").textContent).toBe("full");
   });
+
 
   it("keeps stored values if the catalog request never settles", () => {
     vi.useFakeTimers();
@@ -1139,6 +1181,7 @@ describe("ThreadDetailPromptArea", () => {
     } finally { vi.useRealTimers(); }
   });
 
+
   it("names the stored model when a verified catalog substitutes it", () => {
     mocks.defaultExecutionOptions = { model: "gpt-5.2-codex", permissionMode: "full", reasoningLevel: "medium", serviceTier: "default", source: "client/turn/requested" };
     renderPromptArea();
@@ -1146,11 +1189,13 @@ describe("ThreadDetailPromptArea", () => {
     expect(screen.getByTestId("selected-model").dataset.unavailableModel).toBe("gpt-5.2-codex");
   });
 
+
   it("does not report substitution when the stored model remains selected", () => {
     renderPromptArea();
     expect(screen.getByTestId("selected-model").textContent).toBe("gpt-5");
     expect(screen.getByTestId("selected-model").dataset.unavailableModel).toBeUndefined();
   });
+
 
   it("uses the real thread cache keys immediately", () => {
     mocks.queuedMessages = [makeQueuedMessage()];
@@ -1179,6 +1224,7 @@ describe("ThreadDetailPromptArea", () => {
     expect(screen.getByTestId("queued-message-count").textContent).toBe("1");
   });
 
+
   it("binds the normal plugin composer host to the rendered pane thread", () => {
     renderPromptArea({ thread: makeThread({ id: "thr_nonfocused" }) });
 
@@ -1192,6 +1238,7 @@ describe("ThreadDetailPromptArea", () => {
       expect.objectContaining({ text: "Plugin-enhanced queued message" }),
     );
   });
+
 
   it("updates an inline-edited queue item without touching the bottom draft", async () => {
     mocks.defaultExecutionOptions = {
@@ -1267,6 +1314,7 @@ describe("ThreadDetailPromptArea", () => {
     expect(screen.getByTestId("composer-location").textContent).toBe("bottom");
   });
 
+
   it("saves the inline editor's model and permission picks onto the queued message only", async () => {
     mocks.queuedMessages = [makeQueuedMessage()];
 
@@ -1310,6 +1358,7 @@ describe("ThreadDetailPromptArea", () => {
       });
     });
   });
+
 
   it("exposes the inline queued draft to plugins without dropping attachments", async () => {
     mocks.queuedMessages = [
@@ -1378,6 +1427,7 @@ describe("ThreadDetailPromptArea", () => {
     });
   });
 
+
   it("keeps back-to-back plugin updates in the active queued draft", () => {
     mocks.queuedMessages = [makeQueuedMessage()];
 
@@ -1402,6 +1452,7 @@ describe("ThreadDetailPromptArea", () => {
       ).value,
     ).toBe("First plugin update + second plugin update");
   });
+
 
   it("renders text effects only for the active queued edit session", () => {
     mocks.queuedMessages = [
@@ -1473,6 +1524,7 @@ describe("ThreadDetailPromptArea", () => {
     });
   });
 
+
   it("ignores a stale plugin write after the queued edit changes", () => {
     mocks.queuedMessages = [
       makeQueuedMessage({
@@ -1523,6 +1575,7 @@ describe("ThreadDetailPromptArea", () => {
       ).value,
     ).toBe("Second queued draft");
   });
+
 
   it("keeps queued execution and commands source-locked during a bottom handoff", () => {
     mocks.defaultExecutionOptions = {
@@ -1602,6 +1655,7 @@ describe("ThreadDetailPromptArea", () => {
     });
   });
 
+
   it("dismisses an inline edit when its thread changes or its live row disappears", async () => {
     mocks.promptDraft.text = "Untouched bottom draft";
     mocks.queuedMessages = [makeQueuedMessage()];
@@ -1640,6 +1694,7 @@ describe("ThreadDetailPromptArea", () => {
     );
     expect(mocks.promptDraft.setDraft).not.toHaveBeenCalled();
   });
+
 
   it("does not attach a delayed queued upload to a later edit or the bottom draft", async () => {
     const upload = createDeferredPromise<{
@@ -1680,6 +1735,7 @@ describe("ThreadDetailPromptArea", () => {
     expect(mocks.promptDraft.addAttachment).not.toHaveBeenCalled();
   });
 
+
   it("keeps a delayed bottom upload owned by the bottom draft", async () => {
     const upload = createDeferredPromise<{
       mimeType: string;
@@ -1714,6 +1770,7 @@ describe("ThreadDetailPromptArea", () => {
       ).textContent,
     ).toBe("0");
   });
+
 
   it("dismisses a missing queued message but keeps a stale edit recoverable", async () => {
     mocks.queuedMessages = [makeQueuedMessage()];
@@ -1766,6 +1823,7 @@ describe("ThreadDetailPromptArea", () => {
       ).toBeNull(),
     );
   });
+
 
   it("auto-collapses concurrently running workflows into a stack that expands to independently expandable cards", () => {
     renderPromptArea({
@@ -1822,6 +1880,7 @@ describe("ThreadDetailPromptArea", () => {
     );
   });
 
+
   it("re-collapses the workflow stack after the running count drops below two", () => {
     const first = workflowRow({
       id: "row-wf-a",
@@ -1855,6 +1914,7 @@ describe("ThreadDetailPromptArea", () => {
     ).toBeNull();
   });
 
+
   it("keeps the same child threads banner while the parent asks and answers its own question", () => {
     const childThreadsSection = {
       items: [
@@ -1883,6 +1943,7 @@ describe("ThreadDetailPromptArea", () => {
     expect(screen.queryByText("Pending interaction")).toBeNull();
     expect(screen.getByTestId("child-threads-banner")).toBe(banner);
   });
+
 
   it("keeps changed files expanded when a child newly needs input through prompt-area wiring", async () => {
     mocks.renderThreadContextBanner = true;
@@ -1960,6 +2021,7 @@ describe("ThreadDetailPromptArea", () => {
         .getAttribute("aria-expanded"),
     ).toBe("false");
   });
+
 
   it("keeps a newly waiting child collapsed in the pending-interaction prompt stack", () => {
     mocks.renderThreadContextBanner = true;
@@ -2043,18 +2105,7 @@ describe("ThreadDetailPromptArea", () => {
     ).toBe("false");
   });
 
-  it("keeps Goal above a pending interaction", () => {
-    renderPromptArea({
-      goal: activeGoal,
-      pendingInteractions: [makePendingInteraction()],
-    });
 
-    expect(
-      screen
-        .getAllByTestId("composer-stack-item")
-        .map((item) => item.textContent),
-    ).toEqual(["Goal banner", "Pending interaction"]);
-  });
 
   it("keeps plugin banners mounted while pending interaction suspends editor regions", () => {
     setPluginSlotRegistrations(
@@ -2104,6 +2155,7 @@ describe("ThreadDetailPromptArea", () => {
     expect(screen.queryByTestId("queued-message-list")).toBeNull();
   });
 
+
   it("wires the Plan exit action to the current thread", () => {
     renderPromptArea({
       activePromptMode: activePlan,
@@ -2112,26 +2164,13 @@ describe("ThreadDetailPromptArea", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Exit plan mode" }));
 
-    expect(mocks.cancelThreadPlanMutate).toHaveBeenCalledWith("thr_plan");
-    expect(mocks.clearThreadGoalMutate).not.toHaveBeenCalled();
+    expect(mocks.cancelThreadPlanMutateAsync).toHaveBeenCalledWith("thr_plan");
   });
 
-  it("wires the Goal clear action to the current thread", () => {
-    renderPromptArea({
-      goal: activeGoal,
-      thread: makeThread({ id: "thr_goal" }),
-    });
 
-    fireEvent.click(screen.getByRole("button", { name: "Clear active Goal" }));
-
-    expect(mocks.clearThreadGoalMutate).toHaveBeenCalledWith("thr_goal");
-    expect(mocks.cancelThreadPlanMutate).not.toHaveBeenCalled();
-  });
-
-  it("keeps independent Plan and Goal banners above a pending interaction", () => {
+  it("keeps the Plan banner above a pending interaction", () => {
     renderPromptArea({
       activePromptMode: activePlan,
-      goal: activeGoal,
       pendingInteractions: [makePendingInteraction()],
     });
 
@@ -2139,8 +2178,11 @@ describe("ThreadDetailPromptArea", () => {
       screen
         .getAllByTestId("composer-stack-item")
         .map((item) => item.textContent),
-    ).toEqual(["Plan banner", "Goal banner", "Pending interaction"]);
+    ).toEqual(["Plan banner", "Pending interaction"]);
   });
+
+
+
 
   it("selects the provider fallback model for the next turn", () => {
     mocks.defaultExecutionOptions = {
@@ -2171,6 +2213,7 @@ describe("ThreadDetailPromptArea", () => {
     expect(screen.getByText("Model fallback")).toBeTruthy();
   });
 
+
   async function settledSelection(
     promise: Promise<ExperimentalComposerSelection>,
   ): Promise<ExperimentalComposerSelection> {
@@ -2190,6 +2233,7 @@ describe("ThreadDetailPromptArea", () => {
     if (failure !== null) throw failure;
     return result as unknown as ExperimentalComposerSelection;
   }
+
 
   it("pins a snapshot-policy composer to the thread's permission mode", async () => {
     mocks.defaultExecutionOptions = {
@@ -2219,6 +2263,7 @@ describe("ThreadDetailPromptArea", () => {
       expect.objectContaining({ id: "thr_1", permissionMode: "full" }),
     );
   });
+
 
   it("starts a handoff when a plugin sets another provider, and drops the fields a thread has no picker for", async () => {
     mocks.promptDraft.text = "Keep going";
@@ -2273,6 +2318,7 @@ describe("ThreadDetailPromptArea", () => {
     expect(mocks.sendMessageMutateAsync).not.toHaveBeenCalled();
   });
 
+
   it("sets a same-provider model in place without starting a handoff", async () => {
     mocks.promptDraft.text = "Keep going";
     mocks.supportsServiceTier = true;
@@ -2307,6 +2353,7 @@ describe("ThreadDetailPromptArea", () => {
     expect(mocks.setPermissionMode).toHaveBeenCalledWith("full");
   });
 
+
   it("gives the queued-message editor no pickers to set", () => {
     mocks.queuedMessages = [makeQueuedMessage()];
     renderPromptArea();
@@ -2323,6 +2370,7 @@ describe("ThreadDetailPromptArea", () => {
     expect(mocks.pluginComposerHost?.scope.kind).toBe("queued-message");
     expect(mocks.pluginComposerHost?.setSelection).toBeUndefined();
   });
+
 
   it("creates a new thread with a changed model from the same provider", async () => {
     mocks.promptDraft.text = "Keep going";
@@ -2356,6 +2404,7 @@ describe("ThreadDetailPromptArea", () => {
     expect(mocks.sendMessageMutateAsync).not.toHaveBeenCalled();
   });
 
+
   it("creates a same-provider handoff with unchanged execution marked explicit", async () => {
     mocks.promptDraft.text = "Keep going";
     mocks.createThreadMutateAsync.mockResolvedValue({
@@ -2383,6 +2432,7 @@ describe("ThreadDetailPromptArea", () => {
     expect(mocks.sendMessageMutateAsync).not.toHaveBeenCalled();
   });
 
+
   it("marks a supported handoff service tier explicit", async () => {
     mocks.promptDraft.text = "Keep going";
     mocks.serviceTier = "fast";
@@ -2407,6 +2457,7 @@ describe("ThreadDetailPromptArea", () => {
     );
   });
 
+
   it("exits a same-provider handoff and preserves draft edits", () => {
     mocks.promptDraft.text = "Keep going";
     renderPromptArea();
@@ -2424,6 +2475,7 @@ describe("ThreadDetailPromptArea", () => {
       "codex:thread",
     );
   });
+
 
   it.each(["Switch provider", "Complete handoff flow"])(
     "%s prepares a handoff and restores the draft on return",
@@ -2465,6 +2517,7 @@ describe("ThreadDetailPromptArea", () => {
     },
   );
 
+
   it("shows destination permissions instead of the source active Plan mode", async () => {
     mocks.defaultExecutionOptions = {
       model: "gpt-5",
@@ -2498,6 +2551,7 @@ describe("ThreadDetailPromptArea", () => {
       "plan",
     );
   });
+
 
   it.each([false, true])(
     "keeps the destination model after a source fallback (scheduled: %s)",
@@ -2554,6 +2608,7 @@ describe("ThreadDetailPromptArea", () => {
       );
     },
   );
+
 
   it("creates a new thread from the draft as typed and navigates to it", async () => {
     mocks.promptDraft.text = "Refactor the tests";

@@ -18,6 +18,7 @@ Listing:
     --parent-thread <id>                   Filter by parent thread
     --thread <id>                          Only this thread, including archived; unknown or deleted IDs are left out (repeatable, up to 200)
     --archived                             Show only archived threads
+    --include-archived                     Include archived threads
     --all                                  Include archived and active threads
     --section <id>                         Filter by section
     --unsectioned                          Show only threads outside sections
@@ -76,13 +77,16 @@ Inspecting:
     --clear <option>                       Drop a choice that has not been applied yet (repeatable)
   bb thread show [id] [--usage]            Show details, token usage, child agents, and pull request status; --usage adds token weather and compaction estimates
     --self                                 Target current thread
-    --work-status                          Include git working-tree status
-    --git-diff                             Include git diff
-    --diff-target <type>                   Diff scope: uncommitted, branch_committed, all, commit
-    --diff-sha <sha>                       Commit SHA (for --diff-target commit)
-    --diff-merge-base <branch>             Override merge-base branch for diff
 
   Shows pull request status for the attached environment branch when available.
+  An archived thread's status line names the archive time, as in `Status: idle
+  (archived 11/6/2026, 4:18:02 PM)`; status alone is the run state, so check
+  `thread.archivedAt` in `--json`.
+  Read the thread's git status and diff with `bb git status|diff
+  <environment-id>`; `--json` prints the environment ID as `environment.id`.
+  The deprecated `--work-status`, `--git-diff`, `--diff-target`, `--diff-sha`
+  and `--diff-merge-base` flags still run and print the `bb git` command that
+  replaces them.
 
   `thread context` reads the latest stored context measurement without starting
   a provider request; `--json` prints `{ usage: ... }` (`null` when unavailable).
@@ -125,6 +129,15 @@ Inspecting:
     --event <type>                         Wait for this event type
     --timeout <duration>                   Seconds, or a duration with a unit: 90s, 20m, 4h (default: 1200s / 20 min)
     --poll-interval <duration>             Milliseconds, or a duration with a unit
+
+  Exit codes: 2 on timeout, 3 on invalid arguments, 4 when waiting for idle on
+  a thread in error with nothing queued to recover it. A failed thread whose
+  retry is queued to send by itself is still waited on.
+
+  To follow a child thread, block on `bb thread wait <id>` rather than polling.
+  `bb thread show`, `bb thread list --json`, `thread commands` and `thread
+  options` read stored state and do not build the thread's timeline, so they
+  stay cheap on long threads; `bb thread log` builds timeline pages.
 
 Opening threads and files in the app:
 

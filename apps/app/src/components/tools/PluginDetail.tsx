@@ -25,6 +25,7 @@ import { formatHomePathForDisplay } from "@bb/shared-ui/lib/utils";
 import { Icon } from "@bb/shared-ui/icon";
 import { useNavigate } from "react-router-dom";
 import { getPluginConfigurationRoutePath } from "@/lib/route-paths";
+import { reviewableRangeUpgrade } from "@/components/plugin/management/plugin-status";
 import {
   PluginDetailReleaseControl,
   PluginDetailReleaseStatus,
@@ -127,10 +128,12 @@ export function pluginRemovalDescription(plugin: PluginListItem): string {
 
 function PluginLocalSource({
   path,
+  notice,
   openDisabled,
   onOpen,
 }: {
   path: string;
+  notice: string | null;
   openDisabled: boolean;
   onOpen: () => void;
 }) {
@@ -180,6 +183,15 @@ function PluginLocalSource({
           />
         </div>
       </div>
+      {notice === null ? null : (
+        <p
+          className="mt-2 flex items-start gap-1.5 text-2xs leading-snug text-subtle-foreground"
+          data-testid="plugin-source-notice"
+        >
+          <Icon name="Info" className="mt-0.5 size-3 shrink-0" aria-hidden />
+          <span className="min-w-0 break-words">{notice}</span>
+        </p>
+      )}
     </ResourceDefinitionSection>
   );
 }
@@ -433,11 +445,14 @@ export function PluginDetail({
         ? "Loading…"
         : "Install date unavailable";
   const hasReleaseControl =
-    hasUpdateManagement && plugin.updateState.availableVersion !== null;
+    hasUpdateManagement &&
+    (plugin.updateState.availableVersion !== null ||
+      reviewableRangeUpgrade(plugin) !== null);
   const hasReleaseUpdate =
     hasUpdateManagement &&
     (plugin.updateState.availableVersion !== null ||
       plugin.updateState.blockedVersion !== null ||
+      plugin.updateState.rangeUpgrade !== null ||
       plugin.updateState.lastFailure !== null);
   const hasConfiguration =
     plugin.hasSettings ||
@@ -505,13 +520,15 @@ export function PluginDetail({
             label={`${pluginName} settings`}
             tooltipLabel="Settings"
             icon="Settings"
-            onClick={() =>
-              onConfigure
-                ? onConfigure()
-                : navigate(
-                    getPluginConfigurationRoutePath({ pluginId: plugin.id }),
-                  )
-            }
+            onClick={() => {
+              if (onConfigure) {
+                onConfigure();
+                return;
+              }
+              void navigate(
+                getPluginConfigurationRoutePath({ pluginId: plugin.id }),
+              );
+            }}
           />
         ) : undefined
       }
@@ -548,6 +565,7 @@ export function PluginDetail({
         {canEditSource ? (
           <PluginLocalSource
             path={plugin.rootDir}
+            notice={plugin.sourceNotice}
             openDisabled={pending || openSourceDisabled}
             onOpen={() => onOpenSource(plugin)}
           />

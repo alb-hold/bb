@@ -13,7 +13,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createStore, Provider } from "jotai";
 import { useSyncExternalStore, type ReactElement } from "react";
 import { MemoryRouter } from "react-router-dom";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   experimental_THREAD_ACTION_GROUPS,
   type PluginThreadActionEntry,
@@ -1317,7 +1317,12 @@ describe("thread action data input", () => {
     return { seen, Surface };
   }
 
-  const settle = () => new Promise((resolve) => setTimeout(resolve, 150));
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  const advance = (ms: number) => act(() => vi.advanceTimersByTimeAsync(ms));
+  const settle = () => advance(150);
 
   it("coalesces row subscription timers while preserving quiet and maximum wait deadlines", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
@@ -1349,11 +1354,11 @@ describe("thread action data input", () => {
   it("passes the union of subscribed thread ids and drops released ones", async () => {
     const { seen, Surface } = renderRecorder();
     const view = render(<Surface ids={["thr_b", "thr_a", "thr_c", "thr_a"]} />);
-    await waitFor(() =>
-      expect(seen.at(-1)).toEqual(["thr_a", "thr_b", "thr_c"]),
-    );
+    await settle();
+    expect(seen.at(-1)).toEqual(["thr_a", "thr_b", "thr_c"]);
     view.rerender(<Surface ids={["thr_b", "thr_a"]} />);
-    await waitFor(() => expect(seen.at(-1)).toEqual(["thr_a", "thr_b"]));
+    await settle();
+    expect(seen.at(-1)).toEqual(["thr_a", "thr_b"]);
     view.rerender(<Surface ids={["thr_a", "thr_b"]} />);
     await settle();
     expect(seen).toEqual([[], ["thr_a", "thr_b", "thr_c"], ["thr_a", "thr_b"]]);
@@ -1362,7 +1367,7 @@ describe("thread action data input", () => {
   it("coalesces rows that mount a moment apart into one change", async () => {
     const { seen, Surface } = renderRecorder();
     const view = render(<Surface ids={["thr_a", "thr_b"]} />);
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await advance(20);
     view.rerender(<Surface ids={["thr_a", "thr_b", "thr_c"]} />);
     await settle();
     expect(seen).toEqual([[], ["thr_a", "thr_b", "thr_c"]]);
@@ -1405,7 +1410,6 @@ describe("thread action data input", () => {
         </MemoryRouter>
       </QueryClientProvider>,
     );
-    await waitFor(() => expect(seen.at(-1)).toEqual(["thr_open"]));
     await settle();
     expect(seen).toEqual([[], ["thr_open"]]);
   });
@@ -1417,7 +1421,8 @@ describe("thread action data input", () => {
     await settle();
     expect(seen).toEqual([[]]);
     view.rerender(<Surface ids={ids.slice(0, 2)} visible />);
-    await waitFor(() => expect(seen.at(-1)).toEqual(["thr_0", "thr_1"]));
+    await settle();
+    expect(seen.at(-1)).toEqual(["thr_0", "thr_1"]);
   });
 });
 

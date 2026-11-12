@@ -23,7 +23,7 @@ function percentage(value: number | null): string {
 function label(account: AccountSummary): string {
   const usage =
     account.provider === "claude"
-      ? `5h ${percentage(account.fiveHourUtilization)} · weekly ${percentage(account.sevenDayUtilization)}`
+      ? `5h ${percentage(account.limitWindows.find((window) => window.windowMinutes === 300)?.utilization ?? null)} · weekly ${percentage(account.limitWindows.find((window) => window.windowMinutes === 10080)?.utilization ?? null)}`
       : account.limitWindows
           .map((window) => `${window.slot} ${percentage(window.utilization)}`)
           .join(" · ");

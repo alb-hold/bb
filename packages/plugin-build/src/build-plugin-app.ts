@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import {
   mkdir,
   mkdtemp,
@@ -7,7 +8,6 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
-import { existsSync } from "node:fs";
 import { dirname, extname, join, resolve } from "node:path";
 import { derivePluginId } from "@bb/domain";
 import type { BuildOptions, Metafile, Plugin } from "esbuild";
@@ -36,9 +36,11 @@ import {
   SHARED_UI_ICON_SPECIFIER,
   SHARED_UI_QUESTION_FORM_HOST_SPECIFIER,
   SHARED_UI_VOICE_INPUT_TEXTAREA_SPECIFIER,
+  VERSIONED_RUNTIME_SLOT_BY_SPECIFIER,
 } from "./runtime-shims.mjs";
 import { retiredSdkMemberWarnings } from "./retired-sdk-members.js";
 import {
+  findUnnamedPluginRoots,
   pluginScopeRoots,
   scopePluginUtilities,
 } from "./scope-plugin-utilities.js";
@@ -199,11 +201,48 @@ async function retiredPluginSdkAppImports(
   }
   return retired;
 }
-const SHIM_FILTER = new RegExp(
-  `^(${Object.keys(RUNTIME_SLOT_BY_SPECIFIER)
-    .map((specifier) => specifier.replace(/[/@.-]/g, "\\$&"))
-    .join("|")})$`,
+function exactSpecifierFilter(specifiers: readonly string[]): RegExp {
+  return new RegExp(
+    `^(${specifiers
+      .map((specifier) => specifier.replace(/[/@.-]/g, "\\$&"))
+      .join("|")})$`,
+  );
+}
+
+const SHIM_FILTER = exactSpecifierFilter(
+  Object.keys(RUNTIME_SLOT_BY_SPECIFIER),
 );
+const VERSIONED_SHIM_FILTER = exactSpecifierFilter(
+  Object.keys(VERSIONED_RUNTIME_SLOT_BY_SPECIFIER),
+);
+const VERSIONED_RESOLVE_MARK = "bb-plugin-versioned-runtime-resolve";
+
+function runtimeSlotOf(specifier: string): string | undefined {
+  return (
+    RUNTIME_SLOT_BY_SPECIFIER[specifier] ??
+    VERSIONED_RUNTIME_SLOT_BY_SPECIFIER[specifier]
+  );
+}
+
+function parseRelease(version: string): [number, number, number] | null {
+  const match = /^(\d+)\.(\d+)\.(\d+)$/u.exec(version);
+  if (match === null) return null;
+  return [Number(match[1]), Number(match[2]), Number(match[3])];
+}
+
+export function hostProvidesPackageVersion(
+  hostVersion: string,
+  pluginVersion: string,
+): boolean {
+  const host = parseRelease(hostVersion);
+  const plugin = parseRelease(pluginVersion);
+  if (host === null || plugin === null) return hostVersion === pluginVersion;
+  const [hostMajor, hostMinor, hostPatch] = host;
+  const [pluginMajor, pluginMinor, pluginPatch] = plugin;
+  if (pluginMajor !== hostMajor) return false;
+  if (pluginMinor !== hostMinor) return pluginMinor < hostMinor;
+  return pluginPatch <= hostPatch;
+}
 
 const VERSIONED_RUNTIME_SPECIFIERS = new Set([
   "zod",
@@ -253,8 +292,11 @@ async function installedPackageVersion(
 
 export function runtimeShimPlugin(
   pluginSdkAppModuleUrl?: string,
-  shareZod = false,
+  settings: boolean | { hostProvidedZod: boolean } = { hostProvidedZod: false },
 ): Plugin {
+  const hostProvidedZod =
+    typeof settings === "boolean" ? settings : settings.hostProvidedZod;
+  const shareZod = hostProvidedZod;
   return {
     name: "bb-plugin-runtime-shims",
     setup(build) {
@@ -305,8 +347,46 @@ export function runtimeShimPlugin(
           };
         },
       );
+      const versions = new Map<string, Promise<string | null>>();
+      build.onResolve({ filter: VERSIONED_SHIM_FILTER }, async (args) => {
+        if (
+          !hostProvidedZod ||
+          args.pluginData === VERSIONED_RESOLVE_MARK ||
+          args.pluginData?.bbRuntimeVersionResolution
+        ) {
+          return undefined;
+        }
+        const hostVersion = RUNTIME_PACKAGE_VERSIONS[args.path];
+        if (hostVersion === undefined) return undefined;
+        const resolved = await build.resolve(args.path, {
+          importer: args.importer,
+          kind: args.kind,
+          resolveDir: args.resolveDir,
+          pluginData: VERSIONED_RESOLVE_MARK,
+        });
+        if (resolved.errors.length > 0 || resolved.path === "") {
+          return undefined;
+        }
+        let version = versions.get(resolved.path);
+        if (version === undefined) {
+          version = installedPackageVersion(resolved.path, args.path);
+          versions.set(resolved.path, version);
+        }
+        const pluginVersion = await version;
+        if (
+          pluginVersion === null ||
+          !hostProvidesPackageVersion(hostVersion, pluginVersion)
+        ) {
+          return undefined;
+        }
+        return { path: args.path, namespace: SHIM_NAMESPACE };
+      });
       build.onResolve({ filter: SHIM_FILTER }, async (args) => {
-        if (args.pluginData?.bbRuntimeVersionResolution) return undefined;
+        if (
+          args.pluginData === VERSIONED_RESOLVE_MARK ||
+          args.pluginData?.bbRuntimeVersionResolution
+        )
+          return undefined;
         if ((args.path === "zod" || args.path === "zod/v4") && !shareZod)
           return undefined;
         if (VERSIONED_RUNTIME_SPECIFIERS.has(args.path)) {
@@ -379,7 +459,7 @@ export function runtimeShimPlugin(
         async (args) => ({
           contents: await shimModuleSource(
             args.path,
-            RUNTIME_SLOT_BY_SPECIFIER[args.path] ?? args.path,
+            runtimeSlotOf(args.path) ?? args.path,
             pluginSdkAppModuleUrl,
           ),
           loader: "js",
@@ -611,7 +691,8 @@ function bundledRuntimeSlots(metafile: Metafile): string[] {
   for (const input of Object.keys(metafile.inputs)) {
     if (!input.startsWith(prefix)) continue;
     const specifier = input.slice(prefix.length);
-    slots.add(RUNTIME_SLOT_BY_SPECIFIER[specifier]);
+    const slot = runtimeSlotOf(specifier);
+    if (slot !== undefined) slots.add(slot);
   }
   return [...slots].sort();
 }
@@ -625,13 +706,14 @@ interface PluginAppBuildResult {
 
 interface PluginAppBuildOptions {
   minify: boolean;
+  hostProvidedZod: boolean;
 }
 
 export async function buildPluginApp(
   rootDir: string,
   bbVersion: string,
   toolchain: PluginBuildToolchain,
-  options: PluginAppBuildOptions = { minify: true },
+  options: PluginAppBuildOptions = { minify: true, hostProvidedZod: false },
 ): Promise<PluginAppBuildResult> {
   const { appEntry, packageName, pluginVersion } =
     await readPluginAppConfig(rootDir);
@@ -684,13 +766,14 @@ export async function buildPluginApp(
           RUNTIME_PACKAGE_VERSIONS.zod,
         ),
     );
-    const bundle = admission.shared
+    const shareZod = options.hostProvidedZod && admission.shared;
+    const bundle = shareZod
       ? await esbuild.build({
           ...buildOptions,
           plugins: [zodLocaleStubPlugin(), runtimeShimPlugin(undefined, true)],
         })
       : preflight;
-    if (!admission.shared) {
+    if (!shareZod) {
       await Promise.all(
         preflight.outputFiles!.map((file) =>
           writeFile(file.path, file.contents),
@@ -705,6 +788,14 @@ export async function buildPluginApp(
           ? warning.text
           : `${warning.location.file}:${warning.location.line}: ${warning.text}`,
       );
+    const builtJs = await readFile(stagedJsPath, "utf8");
+    const unnamedRoots = findUnnamedPluginRoots(builtJs);
+    const [first] = unnamedRoots;
+    if (first !== undefined) {
+      migrationWarnings.push(
+        `app.js sets data-bb-plugin-root without data-bb-plugin ${unnamedRoots.length} time(s), so bb serves this plugin's utilities with the slower legacy scope. Refresh lib/portal-scope with "npx shadcn add @bb/portal-scope", or set data-bb-plugin="${pluginId}" next to data-bb-plugin-root. First match: ${builtJs.slice(Math.max(0, first - 40), first + 60)}`,
+      );
+    }
     if (admission.reason !== null)
       migrationWarnings.push(
         `Bundling Zod for ${packageName}: ${admission.reason}`,

@@ -1,13 +1,17 @@
 import { describe, expect, it, vi } from "vitest";
+
 import {
   setupCommandOutputTestEnvironment,
   collectLogLines,
   runCommand,
 } from "../helpers/command-output-harness.js";
+
 import { registerGuideCommand } from "../../commands/guide.js";
+
 
 describe("bb guide command output", () => {
   setupCommandOutputTestEnvironment();
+
 
   it("bb guide unknown chapter lists available chapters", async () => {
     await expect(
@@ -21,6 +25,7 @@ describe("bb guide command output", () => {
     );
   });
 
+
   it("bb guide accepts the singular and synonym names agents guess", async () => {
     await runCommand(["guide", "thread", "--json"], registerGuideCommand);
     await runCommand(["guide", "host", "--json"], registerGuideCommand);
@@ -31,18 +36,20 @@ describe("bb guide command output", () => {
     expect(chapters).toEqual(["threads", "machines"]);
   });
 
+
   it("bb guide commands <group> lists each command once with its options and aliases", async () => {
     await runCommand(["guide", "commands", "terminal"], registerGuideCommand);
 
     const output = collectLogLines(vi.mocked(console.log)).join("\n");
     expect(output).toContain(
-      "bb terminal output|read <terminalId>  [--since-seq <n>] [--tail-bytes <n>] [--limit-chunks <n>] [--lines <n>] [--json]\n    Print terminal output; retention survives server restarts and is capped at 64 KiB per terminal, 2 MiB and 128 terminals per machine for 30 minutes",
+      "bb terminal output|read <terminalId>  [--since-seq <n>] [--tail-bytes <n>] [--limit-chunks <n>] [--plain] [--lines <n>] [--json]\n    Print terminal output; retention survives server restarts and is capped at 64 KiB per terminal, 2 MiB and 128 terminals per machine for 30 minutes",
     );
     expect(output).toContain(
       "bb terminal pipe <terminalId>  [--follow] [--command <command>]\n    Stream terminal output until it exits or Ctrl-C",
     );
     expect(output).not.toContain("bb thread ");
   }, 30_000);
+
 
   it("bb guide commands without a group leaves options out and says how to get them", async () => {
     await runCommand(["guide", "commands"], registerGuideCommand);
@@ -51,6 +58,7 @@ describe("bb guide command output", () => {
     expect(output).toContain("bb thread tell|message|send <id> [message]\n");
     expect(output).toContain("bb guide commands <group>");
   }, 30_000);
+
 
   it("bb guide commands rejects a group that does not exist", async () => {
     await expect(
@@ -61,6 +69,7 @@ describe("bb guide command output", () => {
     expect(errorOutput).toContain("Unknown command group 'nope'.");
     expect(errorOutput).toContain("Command groups: device, browser, status");
   }, 30_000);
+
 
   it("bb guide terminals renders the terminals chapter", async () => {
     await runCommand(["guide", "terminals"], registerGuideCommand);

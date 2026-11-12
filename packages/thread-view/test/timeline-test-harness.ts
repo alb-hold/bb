@@ -208,6 +208,7 @@ interface CommandCompletedArgs extends ProviderTurnEventOptions {
   approvalStatus?: "waiting_for_approval" | "denied" | null;
   command: string;
   cwd?: string;
+  description?: string;
   exitCode?: number;
   itemId?: string;
   presentation?: ThreadEventItemPresentation;
@@ -743,6 +744,7 @@ export function createTimelineEventFactory(
             id: args.itemId ?? `command-${base.seq}`,
             command: args.command,
             cwd: args.cwd ?? "/repo",
+            ...(args.description ? { description: args.description } : {}),
             aggregatedOutput: args.aggregatedOutput,
             exitCode: args.exitCode,
             status: args.status ?? "completed",
@@ -777,6 +779,7 @@ export function createTimelineEventFactory(
             id: args.itemId ?? `command-${base.seq}`,
             command: args.command,
             cwd: args.cwd ?? "/repo",
+            ...(args.description ? { description: args.description } : {}),
             aggregatedOutput: args.aggregatedOutput,
             exitCode: args.exitCode,
             status: args.status ?? "pending",
@@ -1521,6 +1524,7 @@ export function renderTimelineFixture(
     options: {
       ...commonProjectionOptions,
       includeNestedRows,
+      omitSettledDelegationChildRows: false,
     },
   });
   const rows = timeline.rows;

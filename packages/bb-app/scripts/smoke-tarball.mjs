@@ -309,7 +309,7 @@ async function retryPortCollisions(label, run) {
 }
 
 async function waitForHttp({
-  acceptResponse = () => true,
+  acceptResponse = async () => true,
   label,
   portCollisionLogPaths = [],
   processRef,
@@ -1337,7 +1337,7 @@ try {
   const smokeStartedAt = performance.now();
   const tarballPath = await timed("npm pack", () => packTarball());
   let sdkDir;
-  if (process.platform === "win32" || process.platform === "linux") {
+  if (["win32", "linux", "darwin"].includes(process.platform)) {
     const [npxResult, sdkResult] = await Promise.allSettled([
       timed("npx entrypoint", () => smokeNpxEntrypoint(tarballPath)),
       timed("sdk package", () => smokeSdkPackage(tarballPath)),
@@ -1362,7 +1362,7 @@ try {
   await timed("plugin host worker bundle", () =>
     smokePluginHostWorkerBundle(installedPackageDir),
   );
-  if (process.platform === "linux") {
+  if (["linux", "darwin", "win32"].includes(process.platform)) {
     const results = await Promise.allSettled([
       timed("full stack", () => smokeFullStack(installedBinDir, sdkDir)),
       timed("daemon join", () => smokeDaemonJoin(installedBinDir)),

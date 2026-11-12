@@ -14,6 +14,7 @@ import {
   type AgentRuntimeProcessExitInfo,
   type BridgeLineDelivery,
   type ReapedIdleProviderSession,
+  type RuntimeOpenBackgroundWork,
 } from "@bb/agent-runtime";
 import type { Logger } from "@bb/logger";
 import { sliceUtf16Tail } from "@bb/text-utils";
@@ -569,6 +570,12 @@ export class RuntimeManager {
       }
     }
     return activeThreads;
+  }
+
+  listOpenBackgroundWork(): RuntimeOpenBackgroundWork[] {
+    return [...this.entries.values()].flatMap((entry) =>
+      entry.runtime.listOpenBackgroundWork(),
+    );
   }
 
   hasOpenBackgroundWork(): boolean {

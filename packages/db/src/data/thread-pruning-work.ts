@@ -1,6 +1,6 @@
 import { and, eq, sql } from "drizzle-orm";
-import type { DbQueryConnection } from "../connection.js";
 import { threadPruningWork } from "../schema.js";
+import type { DbQueryConnection } from "../connection.js";
 import type { ThreadPruningPolicy } from "./thread-pruning.js";
 
 export const THREAD_PRUNING_PENDING_POLICY = "pending";
@@ -63,3 +63,4 @@ export function drainPendingThreadPruningWork(
       WHERE policy = ${THREAD_PRUNING_PENDING_POLICY} AND thread_id = ${threadId}`);
   }
 }
+

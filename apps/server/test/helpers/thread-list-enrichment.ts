@@ -59,7 +59,9 @@ export function toThreadListEntryResponsesForTest(
         activeWorkflowCount: background?.activeWorkflowCount ?? 0,
       },
       queuedWork:
-        queued === undefined || queued.queuedMessageCount === 0
+        queued === undefined ||
+        (queued.userQueuedMessageCount === 0 &&
+          queued.failedQueuedMessageCount === 0)
           ? ("none" as const)
           : queued.failedQueuedMessageCount > 0
             ? ("failed" as const)

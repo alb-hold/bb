@@ -216,7 +216,7 @@ async function runDirectorySwitchTurn(
     ],
   });
   expect(response.status).toBe(200);
-  await flushChildThreadNotifications();
+  await flushChildThreadNotifications(harness);
   return fixture;
 }
 
@@ -517,151 +517,6 @@ describe("internal event and tool-call routes", () => {
     });
   });
 
-  it("stores a daemon-synthesized turn/started for a turn whose start was lost, then the turn's events", async () => {
-    await withTestHarness(async (harness) => {
-      const { session } = seedHostSession(harness.deps);
-      const { project } = seedProjectWithSource(harness.deps, {
-        hostId: session.hostId,
-      });
-      const environment = seedEnvironment(harness.deps, {
-        hostId: session.hostId,
-        projectId: project.id,
-      });
-      const thread = seedThread(harness.deps, {
-        projectId: project.id,
-        environmentId: environment.id,
-        status: "active",
-      });
-      const openTurnBeforeRestart = await postEventBatch({
-        harness,
-        sessionId: session.id,
-        events: [
-          {
-            threadId: thread.id,
-            event: {
-              type: "turn/started",
-              threadId: thread.id,
-              providerThreadId: "provider-thread",
-              scope: turnScope("turn-before-restart"),
-            },
-          },
-        ],
-      });
-      expect(openTurnBeforeRestart.status).toBe(200);
-      const lostTurnEvent = {
-        threadId: thread.id,
-        event: {
-          type: "item/agentMessage/delta" as const,
-          threadId: thread.id,
-          providerThreadId: "provider-thread",
-          itemId: "lost-turn-item",
-          delta: "still working",
-          scope: turnScope("turn-lost-start"),
-        },
-      };
-      const completedLostTurn = {
-        threadId: thread.id,
-        event: {
-          type: "turn/completed" as const,
-          threadId: thread.id,
-          providerThreadId: "provider-thread",
-          scope: turnScope("turn-lost-start"),
-          status: "completed" as const,
-        },
-      };
-
-      const rejected = await postEventBatch({
-        harness,
-        sessionId: session.id,
-        events: [lostTurnEvent],
-      });
-      expect(rejected.status).toBe(503);
-
-      const repaired = await postEventBatch({
-        harness,
-        sessionId: session.id,
-        events: [
-          {
-            threadId: thread.id,
-            event: {
-              type: "turn/started",
-              threadId: thread.id,
-              providerThreadId: "provider-thread",
-              scope: turnScope("turn-lost-start"),
-            },
-          },
-          lostTurnEvent,
-          completedLostTurn,
-        ],
-      });
-
-      expect(repaired.status).toBe(200);
-      expect(
-        harness.db
-          .select({ type: events.type, turnId: events.turnId })
-          .from(events)
-          .where(eq(events.threadId, thread.id))
-          .orderBy(events.sequence)
-          .all(),
-      ).toEqual([
-        { type: "turn/started", turnId: "turn-before-restart" },
-        { type: "turn/started", turnId: "turn-lost-start" },
-        { type: "item/agentMessage/delta", turnId: "turn-lost-start" },
-        { type: "turn/completed", turnId: "turn-lost-start" },
-      ]);
-    });
-  });
-
-  it("transitions active threads back to idle for a started/completed event batch", async () => {
-    await withTestHarness(async (harness) => {
-      const { session } = seedHostSession(harness.deps);
-      const { project } = seedProjectWithSource(harness.deps, {
-        hostId: session.hostId,
-      });
-      const environment = seedEnvironment(harness.deps, {
-        hostId: session.hostId,
-        projectId: project.id,
-      });
-      const thread = seedThread(harness.deps, {
-        projectId: project.id,
-        environmentId: environment.id,
-        status: "active",
-      });
-
-      const response = await postEventBatch({
-        harness,
-        sessionId: session.id,
-        events: [
-          {
-            threadId: thread.id,
-            event: {
-              type: "turn/started",
-              threadId: thread.id,
-              providerThreadId: "provider-thread",
-              scope: turnScope("turn-1"),
-            },
-          },
-          {
-            threadId: thread.id,
-            event: {
-              type: "turn/completed",
-              threadId: thread.id,
-              providerThreadId: "provider-thread",
-              scope: turnScope("turn-1"),
-              status: "completed",
-            },
-          },
-        ],
-      });
-
-      expect(response.status).toBe(200);
-      expect(
-        harness.db.select().from(threads).where(eq(threads.id, thread.id)).get()
-          ?.status,
-      ).toBe("idle");
-    });
-  });
-
   it("keeps active root turns queueable when a delegated child turn completes", async () => {
     await withTestHarness(async (harness) => {
       const { session } = seedHostSession(harness.deps);
@@ -901,7 +756,7 @@ describe("internal event and tool-call routes", () => {
       });
 
       expect(response.status).toBe(200);
-      await flushChildThreadNotifications();
+      await flushChildThreadNotifications(harness);
 
       expect(
         harness.db
@@ -979,7 +834,7 @@ describe("internal event and tool-call routes", () => {
       });
 
       expect(response.status).toBe(200);
-      await flushChildThreadNotifications();
+      await flushChildThreadNotifications(harness);
       expect(getThread(harness.db, childThread.id)?.status).toBe("idle");
       await vi.waitFor(() => {
         expect(
@@ -1049,7 +904,7 @@ describe("internal event and tool-call routes", () => {
       });
 
       expect(response.status).toBe(200);
-      await flushChildThreadNotifications();
+      await flushChildThreadNotifications(harness);
       expect(getThread(harness.db, childThread.id)?.status).toBe("idle");
       expect(
         listQueuedThreadCommands(harness, "turn.submit", parentThread.id),
@@ -1158,6 +1013,10 @@ describe("internal event and tool-call routes", () => {
         events: eventBatch,
       });
       expect(firstResponse.status).toBe(200);
+      expect(
+        harness.db.select().from(threads).where(eq(threads.id, thread.id)).get()
+          ?.status,
+      ).toBe("idle");
       const duplicateResponse = await postEventBatch({
         harness,
         sessionId: session.id,
@@ -1878,5 +1737,100 @@ describe("internal event and tool-call routes", () => {
           .all(),
       ).toHaveLength(0);
     });
+  });  it("stores a daemon-synthesized turn/started for a turn whose start was lost, then the turn's events", async () => {
+    await withTestHarness(async (harness) => {
+      const { session } = seedHostSession(harness.deps);
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: session.hostId,
+      });
+      const environment = seedEnvironment(harness.deps, {
+        hostId: session.hostId,
+        projectId: project.id,
+      });
+      const thread = seedThread(harness.deps, {
+        projectId: project.id,
+        environmentId: environment.id,
+        status: "active",
+      });
+      const openTurnBeforeRestart = await postEventBatch({
+        harness,
+        sessionId: session.id,
+        events: [
+          {
+            threadId: thread.id,
+            event: {
+              type: "turn/started",
+              threadId: thread.id,
+              providerThreadId: "provider-thread",
+              scope: turnScope("turn-before-restart"),
+            },
+          },
+        ],
+      });
+      expect(openTurnBeforeRestart.status).toBe(200);
+      const lostTurnEvent = {
+        threadId: thread.id,
+        event: {
+          type: "item/agentMessage/delta" as const,
+          threadId: thread.id,
+          providerThreadId: "provider-thread",
+          itemId: "lost-turn-item",
+          delta: "still working",
+          scope: turnScope("turn-lost-start"),
+        },
+      };
+      const completedLostTurn = {
+        threadId: thread.id,
+        event: {
+          type: "turn/completed" as const,
+          threadId: thread.id,
+          providerThreadId: "provider-thread",
+          scope: turnScope("turn-lost-start"),
+          status: "completed" as const,
+        },
+      };
+
+      const rejected = await postEventBatch({
+        harness,
+        sessionId: session.id,
+        events: [lostTurnEvent],
+      });
+      expect(rejected.status).toBe(503);
+
+      const repaired = await postEventBatch({
+        harness,
+        sessionId: session.id,
+        events: [
+          {
+            threadId: thread.id,
+            event: {
+              type: "turn/started",
+              threadId: thread.id,
+              providerThreadId: "provider-thread",
+              scope: turnScope("turn-lost-start"),
+            },
+          },
+          lostTurnEvent,
+          completedLostTurn,
+        ],
+      });
+
+      expect(repaired.status).toBe(200);
+      expect(
+        harness.db
+          .select({ type: events.type, turnId: events.turnId })
+          .from(events)
+          .where(eq(events.threadId, thread.id))
+          .orderBy(events.sequence)
+          .all(),
+      ).toEqual([
+        { type: "turn/started", turnId: "turn-before-restart" },
+        { type: "turn/started", turnId: "turn-lost-start" },
+        { type: "item/agentMessage/delta", turnId: "turn-lost-start" },
+        { type: "turn/completed", turnId: "turn-lost-start" },
+      ]);
+    });
   });
+
+
 });

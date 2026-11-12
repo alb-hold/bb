@@ -98,6 +98,7 @@ function serverProducedInterruptionRows(count: number): TimelineRow[] {
     options: {
       completedTurnDisplay: "collapse",
       includeNestedRows: true,
+      omitSettledDelegationChildRows: false,
       includeDiagnosticOperations: false,
       isLatestPage: true,
       summarizeShellCommands: true,

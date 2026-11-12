@@ -1,5 +1,8 @@
 // @vitest-environment jsdom
-import { SIDEBAR_RAIL_BUTTON_CLASS, SIDEBAR_FOOTER_ACTION_CLASS } from "@bb/shared-ui/sidebar-row-classes";
+import {
+  SIDEBAR_RAIL_BUTTON_CLASS,
+  SIDEBAR_FOOTER_ACTION_CLASS,
+} from "@bb/shared-ui/sidebar-row-classes";
 import {
   act,
   cleanup,
@@ -135,12 +138,34 @@ vi.mock("@/hooks/useUpdateInventory", () => ({
 }));
 vi.mock("@/hooks/queries/system-queries", () => ({
   useSystemProviders: () => ({ data: [] }),
+  useSystemConfig: () => ({ data: undefined }),
+}));
+vi.mock("@/hooks/useStartPluginUpdates", () => ({
+  useStartPluginUpdates: () => vi.fn(),
+}));
+vi.mock("@/hooks/queries/app-update-queries", () => ({
+  useAppUpdateStatus: () => ({ data: undefined }),
+}));
+vi.mock("@/hooks/mutations/app-update-mutations", () => ({
+  useApplyAppUpdate: () => ({ mutate: vi.fn(), isPending: false }),
+}));
+vi.mock("@/hooks/queries/plugin-update-job-queries", () => ({
+  usePluginUpdateJobs: () => ({ data: [] }),
+  startPluginUpdate: vi.fn(),
 }));
 vi.mock("@/hooks/useMachineAttention", () => ({
   useMachineAttention: () => ({ label: null }),
 }));
-vi.mock("@/components/provider-cli/provider-cli-install", () => ({
-  useProviderCliInstallRunner: () => ({ runningJobKey: null }),
+vi.mock("@/components/provider-cli/provider-cli-install", async (original) => ({
+  ...(await original<
+    typeof import("@/components/provider-cli/provider-cli-install")
+  >()),
+  useProviderCliInstallRunner: () => ({
+    runningJobKey: null,
+    queuedJobKeys: new Set(),
+    failuresByJobKey: new Map(),
+    startInstall: vi.fn(),
+  }),
 }));
 
 const THREAD_PATH = getThreadRoutePath({
@@ -358,7 +383,8 @@ afterEach(() => {
 
 describe("Rail", () => {
   it.each(["Home", "Plugins", "Skills", "Docs", "More", "Settings"])(
-    "gives %s a matching keyboard tooltip and accessible name", async (label) => {
+    "gives %s a matching keyboard tooltip and accessible name",
+    async (label) => {
       renderRail(THREAD_PATH);
       fireEvent.keyDown(document.body, { key: "Tab" });
       act(() => railButton(label).focus());
@@ -450,6 +476,7 @@ describe("Rail", () => {
         path: "board",
         title: "Demo board",
         icon: "columns",
+        hideFromNavigation: false,
       },
       {
         pluginId: "demo",
@@ -457,13 +484,18 @@ describe("Rail", () => {
         path: "notes",
         title: "Demo notes",
         icon: "BookOpen",
+        hideFromNavigation: false,
       },
     ]);
     renderRail(THREAD_PATH);
     const remembered = railButton("Demo board");
     const initialLabels = railLabels();
-    expect(initialLabels.indexOf("Demo board")).toBeLessThan(initialLabels.indexOf("More"));
-    expect(initialLabels.indexOf("Demo notes")).toBeLessThan(initialLabels.indexOf("More"));
+    expect(initialLabels.indexOf("Demo board")).toBeLessThan(
+      initialLabels.indexOf("More"),
+    );
+    expect(initialLabels.indexOf("Demo notes")).toBeLessThan(
+      initialLabels.indexOf("More"),
+    );
 
     act(() => {
       setPluginSlotRegistrations(
@@ -498,8 +530,12 @@ describe("Rail", () => {
     });
 
     expect(railButton("Demo board")).toBe(remembered);
-    expect(railLabels().filter((label) => label !== "Demo archive")).toEqual(initialLabels);
-    expect(railLabels().indexOf("Demo archive")).toBeGreaterThan(railLabels().indexOf("More"));
+    expect(railLabels().filter((label) => label !== "Demo archive")).toEqual(
+      initialLabels,
+    );
+    expect(railLabels().indexOf("Demo archive")).toBeGreaterThan(
+      railLabels().indexOf("More"),
+    );
   });
 
   it("drops a remembered plugin panel that never registers once frontends have settled", async () => {
@@ -513,6 +549,7 @@ describe("Rail", () => {
         path: "board",
         title: "Ghost board",
         icon: "columns",
+        hideFromNavigation: false,
       },
     ]);
     renderRail(THREAD_PATH);
@@ -611,14 +648,26 @@ describe("Rail", () => {
     vi.useFakeTimers();
     renderRail(THREAD_PATH, { isCompactViewport: true, useLayout: true });
     fireEvent.click(screen.getByRole("button", { name: "Toggle Sidebar" }));
-    act(() => vi.advanceTimersByTime(250));
+    act(() => {
+      vi.advanceTimersByTime(250);
+    });
 
-    fireEvent.click(screen.getByRole("link", { name: "bb update available" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "bb update available" }),
+    );
+    act(() => {
+      vi.advanceTimersByTime(250);
+    });
+    fireEvent.click(screen.getByRole("link", { name: "Details" }));
     expect(pathname()).toBe(`${SETTINGS_ROUTE_PATH}/updates`);
-    act(() => vi.advanceTimersByTime(250));
+    act(() => {
+      vi.advanceTimersByTime(250);
+    });
 
     fireEvent.click(screen.getByRole("button", { name: "Toggle Sidebar" }));
-    act(() => vi.advanceTimersByTime(250));
+    act(() => {
+      vi.advanceTimersByTime(250);
+    });
     fireEvent.click(railButton("Home"));
 
     expect(pathname()).toBe(THREAD_PATH);
@@ -785,6 +834,50 @@ describe("Rail", () => {
     expect(railLabels()).toEqual(["Home", "Plugins", "More", "Settings"]);
   });
 
+  it("leaves a panel hidden from navigation out of the rail, More, and the remembered chrome", async () => {
+    resetPluginSlotStoreForTest();
+    resetPluginFrontendBootStateForTest();
+    await registerNavigationPlugin();
+    writeLastKnownPluginNavPanelChrome([
+      {
+        pluginId: "drafts",
+        id: "new-chat",
+        path: "new-chat",
+        title: "New chat here",
+        icon: "Chat",
+        hideFromNavigation: true,
+      },
+    ]);
+    renderRail(THREAD_PATH);
+    expect(railLabels()).not.toContain("New chat here");
+
+    act(() => {
+      setPluginSlotRegistrations(
+        "drafts",
+        registrationSet({
+          navPanels: [
+            {
+              id: "new-chat",
+              title: "New chat here",
+              icon: "Chat",
+              path: "new-chat",
+              component: () => null,
+              experimental_hideFromNavigation: true,
+            },
+          ],
+        }),
+      );
+      markPluginFrontendsSettled();
+    });
+
+    expect(railLabels()).not.toContain("New chat here");
+    fireEvent.keyDown(railButton("More"), { key: "Enter" });
+    await screen.findByRole("menuitem", { name: "Search threads" });
+    expect(
+      screen.queryByRole("menuitem", { name: "New chat here" }),
+    ).toBeNull();
+  });
+
   it("keeps hidden destinations reachable from More", async () => {
     renderRail(THREAD_PATH);
 
@@ -884,7 +977,9 @@ describe("Rail", () => {
     });
     expect(within(list).getAllByRole("checkbox")).toHaveLength(4);
     for (const label of ["Search threads", "Plugins", "Skills", "Docs"]) {
-      expect(within(list).getByRole("checkbox", { name: new RegExp(label, "u") })).toBeTruthy();
+      expect(
+        within(list).getByRole("checkbox", { name: new RegExp(label, "u") }),
+      ).toBeTruthy();
     }
     fireEvent.click(within(list).getByRole("checkbox", { name: /Skills/u }));
     expect(railLabels()).toEqual([
@@ -1077,7 +1172,11 @@ describe("Rail", () => {
 });
 
 it("preserves the sidebar selected surface and normalizes footer glyphs", () => {
-  expect(SIDEBAR_RAIL_BUTTON_CLASS).toContain("aria-[current=page]:bg-state-active");
+  expect(SIDEBAR_RAIL_BUTTON_CLASS).toContain(
+    "aria-[current=page]:bg-state-active",
+  );
   expect(SIDEBAR_RAIL_BUTTON_CLASS).toContain("text-sidebar-foreground");
-  expect(SIDEBAR_FOOTER_ACTION_CLASS).toContain("[&_[data-icon-root]]:size-(--bb-sidebar-control-icon-size)");
+  expect(SIDEBAR_FOOTER_ACTION_CLASS).toContain(
+    "[&_[data-icon-root]]:size-(--bb-sidebar-control-icon-size)",
+  );
 });

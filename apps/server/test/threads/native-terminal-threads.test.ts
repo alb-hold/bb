@@ -631,6 +631,7 @@ describe("native terminal threads", () => {
           dataDir: "/tmp/server-restarted",
           localApiPort: null,
           protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
+          openThreadWork: [],
           activeThreads: [],
           undeliveredEventThreadIds: [],
         }),
@@ -2714,9 +2715,13 @@ describe("native terminal threads", () => {
       const record = getNativeTerminalThread(fixture.harness.db, thread.id);
       expect(record?.providerId).toBe("claude-code");
       expect(record?.model).toBe(model);
-      const nativeResponse = await fixture.harness.app.request(`/api/v1/threads/${thread.id}/native-terminal`);
+      const nativeResponse = await fixture.harness.app.request(
+        `/api/v1/threads/${thread.id}/native-terminal`,
+      );
       expect(nativeResponse.status).toBe(200);
-      expect(nativeTerminalThreadSchema.parse(await readJson(nativeResponse)).model).toBe(model);
+      expect(
+        nativeTerminalThreadSchema.parse(await readJson(nativeResponse)).model,
+      ).toBe(model);
       expect(
         resolvePendingThreadSessionOptions(fixture.harness.db, thread.id),
       ).toEqual({});
@@ -2946,6 +2951,7 @@ describe("native terminal threads", () => {
         dataDir: "/tmp/host-daemon-restart",
         localApiPort: null,
         protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
+        openThreadWork: [],
         activeThreads: [],
         undeliveredEventThreadIds: [],
       }),
@@ -3054,6 +3060,7 @@ describe("native terminal threads", () => {
             dataDir: "/tmp/host-daemon-restart",
             localApiPort: null,
             protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
+            openThreadWork: [],
             activeThreads: [],
             undeliveredEventThreadIds: [],
           }),
@@ -3180,6 +3187,7 @@ describe("native terminal threads", () => {
           dataDir: "/tmp/host-daemon-restart",
           localApiPort: null,
           protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
+          openThreadWork: [],
           activeThreads: [],
           undeliveredEventThreadIds: [],
         }),
@@ -3811,6 +3819,7 @@ describe("native terminal threads", () => {
           dataDir: "/tmp/host-daemon-restart",
           localApiPort: null,
           protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
+          openThreadWork: [],
           activeThreads: [],
           undeliveredEventThreadIds: [],
         }),

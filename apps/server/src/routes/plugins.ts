@@ -411,6 +411,9 @@ export function registerPluginRoutes(
   const upgradePluginWebSocket = upgradeWebSocket?.(async (context) => {
     declineWebSocketCompression(context);
     const id = context.req.param("id");
+    if (id === undefined) {
+      throw new ApiError(404, "unknown_plugin", "missing plugin id");
+    }
     const subPath = pluginHttpSubPath(context, id);
     const lookup = plugins.getWebSocketRoute(id, subPath);
     if (lookup.outcome === "unknown-plugin") {
@@ -604,14 +607,16 @@ export function registerPluginRoutes(
     const hostTailwind =
       spec.kind === "css" &&
       context.req.query("host-tailwind") === HOST_TAILWIND_VERSION;
+    const ownedRoot =
+      spec.kind === "css" && context.req.query("css-scope") === "owned-root-v1";
     let bytes: Buffer;
     try {
-      bytes = await asset.read(hostTailwind);
+      bytes = await asset.read({ hostTailwind, ownedRoot });
     } catch {
       return context.json({ ok: false, error: "bundle file missing" }, 404);
     }
     return appAssetResponse(context, bytes, {
-      assetKey: `${hash}:${spec.kind}:${hostTailwind}`,
+      assetKey: `${hash}:${spec.kind}:${hostTailwind}:${ownedRoot}`,
       cache: appAssetCompressionCache,
       contentType: spec.contentType,
       cacheControl: "public, max-age=31536000, immutable",
@@ -669,9 +674,11 @@ export function registerPluginRoutes(
     const hostTailwind =
       spec.kind === "css" &&
       context.req.query("host-tailwind") === HOST_TAILWIND_VERSION;
+    const ownedRoot =
+      spec.kind === "css" && context.req.query("css-scope") === "owned-root-v1";
     let bytes: Buffer;
     try {
-      bytes = await asset.read(hostTailwind);
+      bytes = await asset.read({ hostTailwind, ownedRoot });
     } catch {
       return context.json({ ok: false, error: "bundle file missing" }, 404);
     }
@@ -680,7 +687,7 @@ export function registerPluginRoutes(
       asset.hash,
     );
     return appAssetResponse(context, bytes, {
-      assetKey: `${context.req.param("id")}:${spec.kind}:${hostTailwind}`,
+      assetKey: `${context.req.param("id")}:${spec.kind}:${hostTailwind}:${ownedRoot}`,
       cache: appAssetCompressionCache,
       contentType: spec.contentType,
       cacheControl,
@@ -741,14 +748,17 @@ export function registerPluginRoutes(
     const json: unknown = await context.req.json().catch(() => null);
     const body = pluginApplyUpdateRequestSchema.safeParse(json);
     if (!body.success) {
-      return context.json({ error: "expected an empty JSON object" }, 400);
+      return context.json(
+        { error: 'expected { "range"?: string, "expectedVersion"?: string }' },
+        400,
+      );
     }
     const pluginId = context.req.param("id");
     const job = updateJobs.start({
       pluginId,
       displayName: plugins.getDisplayName(pluginId),
       run: async () => {
-        const outcome = await plugins.applyUpdate(pluginId);
+        const outcome = await plugins.applyUpdate(pluginId, body.data);
         if (!outcome.ok) throw new Error(outcome.error);
         return outcome.result;
       },

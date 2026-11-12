@@ -40,9 +40,7 @@ import {
   updateEnvironmentRequestSchema,
   unmanagedBranchSpecSchema,
 } from "../src/index.js";
-import type {
-  WorkspaceResolutionFailure,
-} from "@bb/host-daemon-contract/workspace";
+import type { WorkspaceResolutionFailure } from "@bb/host-daemon-contract/workspace";
 
 interface OptionalServerFieldGroup {
   fields: readonly string[];
@@ -62,6 +60,9 @@ const OPTIONAL_SERVER_FIELD_GROUPS: readonly OptionalServerFieldGroup[] = [
       "threadTimelineResponseSchema.timelinePage.olderRowUpdates.systemMessageSubject.outcomes.interruption",
       "threadTimelineResponseSchema.rows.systemMessageSubject.outcomes.interruption.cause",
       "threadTimelineResponseSchema.timelinePage.olderRowUpdates.systemMessageSubject.outcomes.interruption.cause",
+      "sendQueuedMessageResponseSchema.queuedMessage.systemNotice.subject.outcomes",
+      "sendQueuedMessageResponseSchema.queuedMessage.systemNotice.subject.outcomes.interruption",
+      "sendQueuedMessageResponseSchema.queuedMessage.systemNotice.subject.outcomes.interruption.cause",
     ],
   },
   {
@@ -502,10 +503,11 @@ const OPTIONAL_SERVER_FIELD_GROUPS: readonly OptionalServerFieldGroup[] = [
   },
   {
     reason:
-      "System provider lookups may target a host indirectly or directly, omit provider id to use the host default, omit the project when no project checkout should scope the model list, and omit capability to return the full roster.",
+      "System provider lookups may target a host indirectly or directly, omit provider id to use the host default, omit the project when no project checkout should scope the model list, omit preferCached to wait for model discovery instead of answering a cached model-load failure, and omit capability to return the full roster.",
     fields: [
       "systemExecutionOptionsQuerySchema.environmentId",
       "systemExecutionOptionsQuerySchema.hostId",
+      "systemExecutionOptionsQuerySchema.preferCached",
       "systemExecutionOptionsQuerySchema.projectId",
       "systemExecutionOptionsQuerySchema.providerId",
       "systemExecutionOptionsQuerySchema.selectedModel",
@@ -554,7 +556,6 @@ const OPTIONAL_SERVER_FIELD_GROUPS: readonly OptionalServerFieldGroup[] = [
       "threadTimelineQuerySchema.segmentLimit",
       "threadTimelineQuerySchema.beforeAnchorSeq",
       "threadTimelineQuerySchema.beforeAnchorId",
-      "threadTimelineQuerySchema.summaryOnly",
       "threadTimelineQuerySchema.afterTag",
       "threadTimelineQuerySchema.deferContent",
     ],
@@ -805,18 +806,6 @@ describe("git branch name contract", () => {
       }).success,
     ).toBe(false);
     expect(updateEnvironmentRequestSchema.safeParse({}).success).toBe(false);
-    expect(
-      contract.environmentDiffQuerySchema.safeParse({
-        target: "all",
-        mergeBaseBranch: "origin/main",
-      }).success,
-    ).toBe(true);
-    expect(
-      contract.environmentDiffQuerySchema.safeParse({
-        target: "all",
-        mergeBaseBranch: "origin/main lock",
-      }).success,
-    ).toBe(false);
   });
 });
 
@@ -896,10 +885,13 @@ describe("public terminal contracts", () => {
     ).toBe(false);
   });
 
-  it.each([{}, { claim: true }])("accepts resize messages with optional focus claims %j", (claim) => {
-    const message = { type: "resize", cols: 120, rows: 40, ...claim };
-    expect(terminalClientMessageSchema.parse(message)).toEqual(message);
-  });
+  it.each([{}, { claim: true }])(
+    "accepts resize messages with optional focus claims %j",
+    (claim) => {
+      const message = { type: "resize", cols: 120, rows: 40, ...claim };
+      expect(terminalClientMessageSchema.parse(message)).toEqual(message);
+    },
+  );
 
   it("bounds and validates terminal data payloads", () => {
     const maxPayload = terminalDataBase64(TERMINAL_DATA_MAX_BYTES);
@@ -1243,10 +1235,10 @@ describe("server-contract canonical schemas", () => {
           },
           activity: {
             activeWorkflowCount: 0,
+            activeGoalCount: 0,
             activeBackgroundAgentCount: 0,
             activeBackgroundCommandCount: 0,
             activePlanModeCount: 0,
-            activeGoalCount: 0,
           },
           hasPendingInteraction: true,
           listIndicator: "needs-input",

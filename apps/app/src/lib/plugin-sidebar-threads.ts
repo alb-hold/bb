@@ -1,13 +1,13 @@
-import { withEffectiveDisplayStatus, type ThreadListEntry } from "@bb/domain";
-import type { PluginSidebarThread } from "@get-bb/plugin-sdk";
-import {
-  getThreadListIndicatorLabel,
-  isNativeActivityUnconfirmed,
-  isThreadRead,
-  nativeActivityEvidenceKind,
-  resolveThreadListIndicator,
-  threadListIndicatorStateForThread,
-} from "@bb/client-core";
+import type { ThreadListEntry } from "@bb/domain";
+import type {
+  PluginSidebarThread,
+  PluginSidebarThreadActivity,
+  PluginThreadStatusThread,
+} from "@get-bb/plugin-sdk";
+import { experimental_resolveThreadStatus } from "@get-bb/plugin-sdk/internal/thread-status";
+import { isThreadRead } from "@bb/client-core";
+import { withEffectiveDisplayStatus } from "@bb/domain";
+import { isNativeActivityUnconfirmed, nativeActivityEvidenceKind } from "@bb/client-core";
 import {
   EMPTY_TITLE_MENTION_RESOURCES,
   resolveThreadTitleDisplayText,
@@ -15,6 +15,32 @@ import {
 } from "@/components/thread/ThreadTitleMentions";
 import { getThreadDisplayTitle } from "./thread-title";
 import { getThreadRoutePath } from "./route-paths";
+
+type PluginSidebarThreadActivityWithRetiredGoals = PluginSidebarThreadActivity;
+
+export function toThreadStatusThread(
+  entry: ThreadListEntry,
+): PluginThreadStatusThread {
+  const activity: PluginSidebarThreadActivityWithRetiredGoals = {
+    workflows: entry.activity.activeWorkflowCount,
+    backgroundAgents: entry.activity.activeBackgroundAgentCount,
+    backgroundCommands: entry.activity.activeBackgroundCommandCount,
+    planMode: entry.activity.activePlanModeCount,
+    goals: entry.activity.activeGoalCount,
+  };
+  return {
+    status: entry.status,
+    indicator: entry.listIndicator,
+    experimental_nativeActivity: entry.runtime.nativeActivity === undefined ? undefined : { ...entry.runtime.nativeActivity, confirmation: isNativeActivityUnconfirmed(entry.runtime) ? "unconfirmed" : "confirmed", evidenceKind: nativeActivityEvidenceKind(entry.runtime) },
+    experimental_queuedFailedCount: entry.queuedFailedCount,
+    runtimeStatus: entry.runtime.displayStatus,
+    queuedWork: entry.queuedWork,
+    hasPendingInteraction: entry.hasPendingInteraction,
+    activity,
+    isUnread: !isThreadRead(entry),
+    parentThreadId: entry.parentThreadId,
+  };
+}
 
 export function toPluginSidebarThread(
   entry: ThreadListEntry,
@@ -24,19 +50,17 @@ export function toPluginSidebarThread(
   nativeActivityUnconfirmed = isNativeActivityUnconfirmed(entry.runtime, now),
 ): PluginSidebarThread {
   entry = withEffectiveDisplayStatus(entry);
-  const indicatorState = threadListIndicatorStateForThread(
-    entry,
-    false,
-    now,
-    nativeActivityUnconfirmed,
-  );
-  const indicator = resolveThreadListIndicator({
-    ...indicatorState,
-    isAutomationWoken:
-      indicatorState.isAutomationWoken || entry.listIndicator === "woke",
+  const statusThread = toThreadStatusThread(entry);
+  const { indicator, label } = experimental_resolveThreadStatus({
+    thread: statusThread,
+    hiddenThreads: [],
+    hasUnsubmittedDraft: false,
+    rowStatus: null,
   });
 
   return {
+    ...statusThread,
+    experimental_queuedFailedCount: entry.queuedFailedCount,
     id: entry.id,
     projectId: entry.projectId,
     title: entry.title,
@@ -45,7 +69,6 @@ export function toPluginSidebarThread(
       getThreadDisplayTitle(entry),
       titleResources,
     ),
-    parentThreadId: entry.parentThreadId,
     parentNotifications: entry.parentNotifications,
     lifecycleOwnerThreadId: entry.lifecycleOwnerThreadId,
     sourceThreadId: entry.sourceThreadId,
@@ -72,22 +95,8 @@ export function toPluginSidebarThread(
             ),
           },
         }),
-    queuedWork: entry.queuedWork,
-    experimental_queuedFailedCount: entry.queuedFailedCount,
-    hasPendingInteraction: entry.hasPendingInteraction,
-    activity: {
-      workflows: entry.activity.activeWorkflowCount,
-      backgroundAgents: entry.activity.activeBackgroundAgentCount,
-      backgroundCommands: entry.activity.activeBackgroundCommandCount,
-      planMode: entry.activity.activePlanModeCount,
-      goals: entry.activity.activeGoalCount,
-    },
     indicator,
-    indicatorLabel: getThreadListIndicatorLabel(
-      indicator,
-      entry.queuedFailedCount,
-    ),
-    isUnread: !isThreadRead(entry),
+    indicatorLabel: label,
     isPinned: entry.pinnedAt !== null,
     pinnedAt: entry.pinnedAt,
     pinSortKey: entry.pinSortKey,

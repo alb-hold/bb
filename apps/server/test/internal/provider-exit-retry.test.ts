@@ -23,6 +23,7 @@ import {
   internalAuthHeaders,
   listQueuedThreadCommands,
   waitForQueuedCommand,
+  reportQueuedCommandSuccess,
 } from "../helpers/commands.js";
 import {
   seedEnvironment,
@@ -227,6 +228,7 @@ function captureTurnFailed(
 ): PluginTurnFailedEvent[] {
   const failures: PluginTurnFailedEvent[] = [];
   setPluginThreadEventEmitter({
+    emitThreadRead: () => undefined,
     emitThreadEvents: () => {},
     emitTerminalInput: () => {},
     emitHostDeleted: () => {},
@@ -319,7 +321,9 @@ describe("a provider process that exits under a running turn", () => {
         if (parentFailure.command.type !== "turn.submit") {
           throw new Error("expected a parent turn submission");
         }
-        const [input] = parentFailure.command.input;
+        const input = parentFailure.command.input.find(
+          (part) => part.type === "text" && part.text.includes("[bb system]"),
+        );
         expect(input?.type).toBe("text");
         if (input?.type !== "text") {
           throw new Error("expected a parent failure notification");
@@ -400,7 +404,11 @@ describe("a provider process that exits under a running turn", () => {
       if (distantNotice?.type !== "turn.submit") {
         throw new Error("expected a parent retry notice");
       }
-      const [distantInput] = distantNotice.input;
+      const distantInput = distantNotice.input.find(
+        (part) =>
+          part.type === "text" &&
+          part.text.includes("automatic retry is scheduled for"),
+      );
       expect(distantInput?.type).toBe("text");
       if (distantInput?.type !== "text") {
         throw new Error("expected retry schedule text");
@@ -632,7 +640,9 @@ describe("a provider process that exits under a running turn", () => {
           if (parentFailure.command.type !== "turn.submit") {
             throw new Error("expected a parent turn submission");
           }
-          const [input] = parentFailure.command.input;
+          const input = parentFailure.command.input.find(
+            (part) => part.type === "text" && part.text.includes("[bb system]"),
+          );
           expect(input?.type).toBe("text");
           if (input?.type !== "text") {
             throw new Error("expected a parent failure notification");
@@ -714,6 +724,15 @@ describe("a provider process that exits under a running turn", () => {
           threadId: scenario.child.id,
           turnId: RETRY_TURN_ID,
         });
+        const retrySubmit = await waitForQueuedCommand(
+          harness,
+          ({ command }) =>
+            command.type === "turn.submit" &&
+            command.threadId === scenario.child.id,
+        );
+        await reportQueuedCommandSuccess(harness, retrySubmit, {
+          trace: { spans: [] },
+        });
         const completion = await postEvents(harness, scenario.sessionId, [
           {
             threadId: scenario.child.id,
@@ -739,7 +758,9 @@ describe("a provider process that exits under a running turn", () => {
         if (parentCompletion.command.type !== "turn.submit") {
           throw new Error("expected a parent turn submission");
         }
-        const [input] = parentCompletion.command.input;
+        const input = parentCompletion.command.input.find(
+          (part) => part.type === "text" && part.text.includes("[bb system]"),
+        );
         expect(input?.type).toBe("text");
         if (input?.type !== "text") {
           throw new Error("expected a parent completion notification");

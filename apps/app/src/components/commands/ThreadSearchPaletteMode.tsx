@@ -15,21 +15,12 @@ import { useIsCompactViewport } from "@bb/shared-ui/hooks/use-compact-viewport";
 import { Icon } from "@bb/shared-ui/icon";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@bb/shared-ui/tooltip";
 import { cn } from "@bb/shared-ui/lib/utils";
-import {
-  resolveThreadListIndicator,
-  threadListIndicatorStateForThread,
-} from "@bb/client-core";
-import { usePromptDraftHasInput } from "@/hooks/usePromptDraftStorage";
-import { useNativeActivityUnconfirmed } from "@/hooks/useNativeActivityUnconfirmed";
+import { useThreadListEntryStatus } from "@/hooks/useThreadListEntryStatus";
 import {
   highlightedText,
   ThreadTitle,
 } from "@/components/thread/ThreadTitleMentions";
-import {
-  ThreadStatusGlyph,
-  resolveThreadStatus,
-} from "@/components/thread/ThreadStatusGlyph";
-import { usePluginThreadRowStatus } from "@/lib/plugin-thread-row-status";
+import { ThreadStatusGlyph } from "@/components/thread/ThreadStatusGlyph";
 import { THREAD_LIFECYCLE_OPTIONS } from "@/components/thread/ThreadLifecycleFilter";
 import {
   paletteThreadLifecyclesAtom,
@@ -660,29 +651,7 @@ function PaletteMatchText({
 }
 
 function ThreadSearchPaletteStatus({ row }: { row: PaletteThreadSearchRow }) {
-  const hasUnsubmittedDraft = usePromptDraftHasInput({
-    kind: "thread",
-    projectId: row.projectId,
-    threadId: row.threadId,
-  });
-  const nativeActivityUnconfirmed = useNativeActivityUnconfirmed(
-    row.thread.runtime,
-  );
-  const state = threadListIndicatorStateForThread(
-    row.thread,
-    hasUnsubmittedDraft,
-  );
-  const indicator = resolveThreadListIndicator({
-    ...state,
-    isRuntimeActive: state.isRuntimeActive && !nativeActivityUnconfirmed,
-  });
-  const rowStatus = usePluginThreadRowStatus(row.threadId);
-  const { accessibleLabel: label } = resolveThreadStatus(
-    indicator,
-    rowStatus,
-    false,
-    state.queuedFailedCount,
-  );
+  const { indicator, rowStatus, label } = useThreadListEntryStatus(row.thread);
   if (label === null) return null;
   return (
     <>
@@ -703,7 +672,7 @@ function ThreadSearchPaletteStatus({ row }: { row: PaletteThreadSearchRow }) {
           >
             <ThreadStatusGlyph
               indicator={indicator}
-              experimental_queuedFailedCount={state.queuedFailedCount}
+              experimental_queuedFailedCount={row.thread.queuedFailedCount}
               rowStatus={rowStatus}
               size="compact"
             />

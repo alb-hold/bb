@@ -19,6 +19,8 @@ import { retryFailedTurn } from "../../src/services/threads/turn-retry.js";
 import {
   internalAuthHeaders,
   listQueuedThreadCommands,
+  reportQueuedCommandSuccess,
+  waitForQueuedCommand,
 } from "../helpers/commands.js";
 import {
   seedEnvironment,
@@ -576,6 +578,16 @@ describe("a child whose turn fails with a non-retryable error and is retried by 
         providerThreadId: PROVIDER_THREAD_ID,
         threadId: scenario.child.id,
         turnId: RETRY_TURN_ID,
+      });
+
+      const retrySubmit = await waitForQueuedCommand(
+        harness,
+        ({ command }) =>
+          command.type === "turn.submit" &&
+          command.threadId === scenario.child.id,
+      );
+      await reportQueuedCommandSuccess(harness, retrySubmit, {
+        trace: { spans: [] },
       });
 
       const response = await postEvents(

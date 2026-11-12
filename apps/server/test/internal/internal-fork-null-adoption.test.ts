@@ -36,6 +36,7 @@ async function restartWithNullAdoption(
         dataDir: "/tmp/host-daemon-null-adoption",
         localApiPort: null,
         protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
+        openThreadWork: [],
         activeThreads: [],
         ...(report
           ? { adoptedThreads: [{ threadId: thread.id, activeTurnId: null }] }

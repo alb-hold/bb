@@ -1,36 +1,58 @@
 // @vitest-environment jsdom
 
 import { act, cleanup, render } from "@testing-library/react";
+
 import type { ReactNode } from "react";
+
 import { MemoryRouter } from "react-router-dom";
+
 import type {
   ThreadResponse,
   ThreadTimelineResponse,
   TimelineRow,
 } from "@bb/server-contract";
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
 import { BottomAnchoredScrollBody } from "@/components/ui/bottom-anchored-scroll-body";
+
 import { ThreadTimelineSurface } from "@/components/thread/timeline/ThreadTimelineSurface";
+
 import { useThreadTimelineController } from "@/components/thread/timeline/useThreadTimelineController";
+
 import { sdk } from "@/lib/sdk";
+
 import { makeThreadListEntry } from "@bb/test-helpers/domain-fixtures";
+
 import { threadListQueryKey, threadQueryKey } from "@/hooks/queries/query-keys";
+
 import { installFakeFlowLayout } from "@/test/fake-flow-layout";
+
 import {
   makeThreadResponse,
   makeThreadTimelineResponse,
 } from "@/test/fixtures/thread-responses";
+
 import { conversationRow } from "@/test/fixtures/thread-timeline-rows";
+
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
+
 import { useThreadDetailThread } from "./useThreadDetailThread";
 
+
 const SEED_COUNT = Number(process.env.OPENING_MODEL_SEEDS ?? 40);
+
 const THREAD_ID = "thr_opening";
+
 const DESKTOP_SEGMENT_LIMIT = 20;
+
 const COMPACT_SEGMENT_LIMIT = 8;
+
 const THRESHOLD_PX = 4;
 
+
 const viewport = vi.hoisted(() => ({ compact: false }));
+
 
 vi.mock("@/lib/sdk", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/sdk")>();
@@ -40,14 +62,17 @@ vi.mock("@/lib/sdk", async (importOriginal) => {
   };
 });
 
+
 vi.mock("@/hooks/useRealtimeSubscription", () => ({
   useThreadDetailRealtimeSubscription: vi.fn(),
   useThreadTimelineRealtimeSubscription: vi.fn(),
 }));
 
+
 vi.mock("@/hooks/useServerConnectionState", () => ({
   useServerConnectionState: () => "connected",
 }));
+
 
 vi.mock("@bb/shared-ui/hooks/use-compact-viewport", async (importOriginal) => {
   const actual =
@@ -57,7 +82,9 @@ vi.mock("@bb/shared-ui/hooks/use-compact-viewport", async (importOriginal) => {
   return { ...actual, useIsCompactViewport: () => viewport.compact };
 });
 
+
 vi.mock("@/lib/user-activity", () => ({ useUserActive: () => true }));
+
 
 vi.mock("@/components/ui/height-transition", async (importOriginal) => {
   const actual =
@@ -67,6 +94,7 @@ vi.mock("@/components/ui/height-transition", async (importOriginal) => {
     AutoHeightContainer: ({ children }: { children: ReactNode }) => children,
   };
 });
+
 
 function createRandom(seed: number) {
   let state = seed >>> 0;
@@ -84,6 +112,7 @@ function createRandom(seed: number) {
   };
 }
 
+
 interface HistoryRow {
   row: TimelineRow;
   height: number;
@@ -91,17 +120,18 @@ interface HistoryRow {
   authoredByReader: boolean;
 }
 
+
 interface Pending {
   label: string;
   release: () => void;
 }
+
 
 function OpenedThread() {
   const timeline = useThreadTimelineController({ threadId: THREAD_ID });
   const { unreadDividerState } = useThreadDetailThread(
     THREAD_ID,
     true,
-    "first-unread-row",
     {
       hasUnseenTimelineEvents: timeline.hasUnseenTimelineEvents,
       isFocused: true,
@@ -139,15 +169,30 @@ function OpenedThread() {
   );
 }
 
+
 function Host({ shown }: { shown: boolean }) {
   return shown ? <OpenedThread /> : <div data-testid="other-thread" />;
 }
 
+
 let restoreLayout: (() => void) | null = null;
 
+
 function getScrollElement() {
-  return document.querySelector<HTMLElement>("[data-page-scroll-viewport]");
+  const elements = document.createTreeWalker(document, NodeFilter.SHOW_ELEMENT);
+  let element = elements.nextNode();
+  while (element !== null) {
+    if (
+      element instanceof Element &&
+      element.hasAttribute("data-page-scroll-viewport")
+    ) {
+      return element as HTMLElement;
+    }
+    element = elements.nextNode();
+  }
+  return null;
 }
+
 
 function installOpeningLayout(
   viewportHeight: number,
@@ -169,6 +214,7 @@ function installOpeningLayout(
   return layout;
 }
 
+
 beforeEach(() => {
   vi.useFakeTimers({
     toFake: [
@@ -188,6 +234,7 @@ beforeEach(() => {
   });
 });
 
+
 afterEach(() => {
   cleanup();
   restoreLayout?.();
@@ -199,6 +246,7 @@ afterEach(() => {
   vi.restoreAllMocks();
   document.body.replaceChildren();
 });
+
 
 async function runSeed(seed: number): Promise<void> {
   const random = createRandom(seed);
@@ -581,6 +629,7 @@ async function runSeed(seed: number): Promise<void> {
   }
 }
 
+
 describe("thread opening model", () => {
   it("opens a confirmed native thread while environment bootstrap is pending", async () => {
     const nativeThread = makeThreadResponse({
@@ -596,8 +645,7 @@ describe("thread opening model", () => {
       const { thread, hasThreadDetailBootstrapSettled } = useThreadDetailThread(
         THREAD_ID,
         false,
-        "first-unread-row",
-        {
+            {
           hasUnseenTimelineEvents: false,
           isFocused: true,
           nativeTerminalReady: true,

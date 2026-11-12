@@ -59,6 +59,7 @@ function reconnect(
       dataDir: "/tmp/host-daemon-reconnect",
       localApiPort: null,
       protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
+      openThreadWork: [],
       activeThreads: args.activeThreadIds.map((threadId) => ({ threadId })),
       undeliveredEventThreadIds: [],
     }),

@@ -20,12 +20,13 @@
     "bb-plugin"
   ],
   "scripts": {
-    "typecheck": "tsrs --noEmit"
+    "typecheck": "tsrs --noEmit",
+    "lint:type-aware": "oxlint -c ../../../.oxlintrc.type-aware.json"
   },
   "devDependencies": {
     "@get-bb/plugin-sdk": "workspace:*",
-    "@types/react": "^19.0.0",
-    "react": "^19.0.0",
+    "@types/react": "^19.3.0",
+    "react": "^19.3.1",
     "tsrs": "0.18.0-ts7.1.0-dev.20260929",
     "typescript": "npm:@typescript/typescript6@^6.0.2"
   }

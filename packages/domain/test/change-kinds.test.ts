@@ -45,9 +45,9 @@ const maximalThreadMetadata: ThreadChangeMetadata = {
     activity: {
       activeBackgroundAgentCount: 1,
       activeBackgroundCommandCount: 1,
-      activeGoalCount: 1,
       activePlanModeCount: 1,
       activeWorkflowCount: 1,
+      activeGoalCount: 1,
     },
     latestAttentionAt: 1_000,
     updatedAt: 2_000,
@@ -135,7 +135,6 @@ describe("lenient changed-message schema parity", () => {
           activity: {
             activeBackgroundAgentCount: 0,
             activeBackgroundCommandCount: 0,
-            activeGoalCount: 0,
             activePlanModeCount: 0,
             activeWorkflowCount: 0,
           },

@@ -20,10 +20,10 @@ import {
   readTerminalOutputLines,
   type ActiveThinking,
   type CompletedTurnDisplay,
+  type JsonValue,
   type Thread,
   type ThreadEventItemPresentation,
   type ThreadTimelineActivePromptMode,
-  type ThreadTimelineGoal,
   type ThreadTimelineModelFallback,
   type ThreadTimelinePendingTodos,
 } from "@bb/domain";
@@ -45,6 +45,9 @@ import { getFileChangeDiffStats } from "./file-change-summary.js";
 import { getEventProjectionMessageScopeTurnId } from "./message-scope.js";
 import {
   buildEventProjection,
+  finishEventProjectionFold,
+  startEventProjectionFold,
+  type EventProjectionFold,
   buildEventProjectionEntries,
   type ThreadEventWithMeta,
 } from "./build-event-projection.js";
@@ -64,8 +67,8 @@ import {
   extractThreadTimelineActivePromptMode,
   type PlanCommand,
 } from "./active-prompt-mode-extraction.js";
-import { extractThreadTimelineGoal } from "./goal-snapshot-extraction.js";
 import {
+  extractThreadExtensionStates,
   extractThreadProviderCommands,
   extractThreadSessionOptions,
 } from "./provider-state-extraction.js";
@@ -80,6 +83,7 @@ interface ThreadTimelineFromEventsBaseOptions {
   providerId?: string;
   providerDisplayName?: string;
   planCommand?: PlanCommand | null;
+  extensionStateKinds?: readonly string[];
   summarizeShellCommands: boolean;
   threadStatus: Thread["status"];
   threadName: string;
@@ -88,14 +92,48 @@ interface ThreadTimelineFromEventsBaseOptions {
 
 interface ThreadTimelineFromEventsOptions extends ThreadTimelineFromEventsBaseOptions {
   includeNestedRows: boolean;
+  omitSettledDelegationChildRows: boolean;
 }
 
 interface BuildThreadTimelineFromEventsArgs {
   acceptedClientRequestContext: AcceptedClientRequestContext;
   contextWindowEvents: ThreadEventWithMeta[];
-  headStateEvents?: ThreadEventWithMeta[];
   events: ThreadEventWithMeta[];
+  fold?: EventProjectionFold;
   options: ThreadTimelineFromEventsOptions;
+}
+
+type ThreadTimelineProjectionOptions = Parameters<
+  typeof buildEventProjection
+>[1];
+
+function threadTimelineProjectionOptions(
+  acceptedClientRequestContext: AcceptedClientRequestContext,
+  options: ThreadTimelineFromEventsOptions,
+): ThreadTimelineProjectionOptions {
+  return {
+    acceptedClientRequestContext,
+    includeDiagnosticOperations: options.includeDiagnosticOperations,
+    providerDisplayName: options.providerDisplayName,
+    threadStatus: options.threadStatus,
+    threadName: options.threadName,
+    turnMessageDetail: "full",
+  };
+}
+
+export function startThreadTimelineProjectionFold(
+  args: Pick<
+    BuildThreadTimelineFromEventsArgs,
+    "acceptedClientRequestContext" | "events" | "options"
+  >,
+): EventProjectionFold {
+  return startEventProjectionFold(
+    args.events,
+    threadTimelineProjectionOptions(
+      args.acceptedClientRequestContext,
+      args.options,
+    ),
+  );
 }
 
 export interface ThreadTimelineFromEventsResult {
@@ -104,7 +142,7 @@ export interface ThreadTimelineFromEventsResult {
   activeWorkflows: TimelineWorkflowWorkRow[];
   activeBackgroundCommands: TimelineWorkflowWorkRow[];
   contextWindowUsage: ThreadContextWindowUsage | null;
-  goal: ThreadTimelineGoal | null;
+  extensionStates: Record<string, JsonValue>;
   modelFallback: ThreadTimelineModelFallback | null;
   pendingTodos: ThreadTimelinePendingTodos | null;
   providerCommands: ProviderCommand[] | null;
@@ -145,6 +183,7 @@ type ThreadTimelineTurnDetailsFromEventsResult =
 interface BuildTimelineRowsOptions {
   completedTurnDisplay: CompletedTurnDisplay;
   includeNestedRows: boolean;
+  omitSettledDelegationChildRows: boolean;
   rowIdPrefix: string;
   summarizeShellCommands: boolean;
   workspaceRoot: string | null;
@@ -532,6 +571,7 @@ function convertMessage(
           status: message.status,
           callId: message.callId,
           command: message.command,
+          description: message.description,
           cwd: message.cwd,
           source: message.source,
           output: message.output,
@@ -712,6 +752,18 @@ function convertMessage(
       ];
     case "delegation": {
       const base = buildTimelineRowBase(message, options.rowIdPrefix);
+      const childOptions: BuildTimelineRowsOptions = {
+        completedTurnDisplay: options.completedTurnDisplay,
+        includeNestedRows: true,
+        omitSettledDelegationChildRows: options.omitSettledDelegationChildRows,
+        rowIdPrefix: `${base.id}:child:`,
+        summarizeShellCommands: options.summarizeShellCommands,
+        workspaceRoot: options.workspaceRoot,
+      };
+      const omitChildRows =
+        options.omitSettledDelegationChildRows &&
+        base.turnId !== null &&
+        message.status !== "pending";
       return [
         {
           ...base,
@@ -726,15 +778,13 @@ function convertMessage(
           description: message.description ?? null,
           output: message.output,
           completedAt: message.completedAt,
-          childRows: filterDelegationChildRows(
-            buildTimelineRows(message.childProjection, {
-              completedTurnDisplay: options.completedTurnDisplay,
-              includeNestedRows: true,
-              rowIdPrefix: `${base.id}:child:`,
-              summarizeShellCommands: options.summarizeShellCommands,
-              workspaceRoot: options.workspaceRoot,
-            }),
-          ),
+          childRows: omitChildRows
+            ? hasDelegationChildRows(message.childProjection, childOptions)
+              ? null
+              : []
+            : filterDelegationChildRows(
+                buildTimelineRows(message.childProjection, childOptions),
+              ),
           ...rowPresentation(message),
         },
       ];
@@ -1172,6 +1222,27 @@ function materializeTimelinePlan(
   ];
 }
 
+function hasDelegationChildRows(
+  projection: EventProjection,
+  options: BuildTimelineRowsOptions,
+): boolean {
+  const rows: TimelineRow[] = [];
+  for (const entry of projection.entries) {
+    for (const item of planTimelineRows(
+      { ...projection, entries: [entry] },
+      options.completedTurnDisplay,
+      options.rowIdPrefix,
+    )) {
+      const from = Math.max(0, rows.length - 1);
+      appendRows(rows, materializeTimelinePlan(item, options));
+      for (let index = from; index < rows.length; index += 1) {
+        if (!isDelegationLifecycleChildRow(rows[index]!)) return true;
+      }
+    }
+  }
+  return false;
+}
+
 function buildTimelineRows(
   projection: EventProjection,
   options: BuildTimelineRowsOptions,
@@ -1191,26 +1262,45 @@ function buildTimelineRows(
   );
 }
 
+export function projectThreadTimelineEvents(
+  args: Pick<
+    BuildThreadTimelineFromEventsArgs,
+    "acceptedClientRequestContext" | "events" | "fold" | "options"
+  >,
+): EventProjection {
+  return args.fold === undefined
+    ? buildEventProjection(
+        args.events,
+        threadTimelineProjectionOptions(
+          args.acceptedClientRequestContext,
+          args.options,
+        ),
+      )
+    : finishEventProjectionFold(args.fold, args.events);
+}
+
 export function buildThreadTimelineFromEvents(
   args: BuildThreadTimelineFromEventsArgs,
 ): ThreadTimelineFromEventsResult {
-  const stateEvents = args.headStateEvents?.length
-    ? getOrderedThreadEvents([...args.events, ...args.headStateEvents])
-    : args.events;
-  const projectionOptions = {
-    acceptedClientRequestContext: args.acceptedClientRequestContext,
-    includeDiagnosticOperations: args.options.includeDiagnosticOperations,
-    providerDisplayName: args.options.providerDisplayName,
-    threadStatus: args.options.threadStatus,
-    threadName: args.options.threadName,
-    turnMessageDetail: "full",
-  } satisfies Parameters<typeof buildEventProjection>[1];
-  const projection = buildEventProjection(args.events, projectionOptions);
+  return buildThreadTimelineFromProjection({
+    ...args,
+    projection: projectThreadTimelineEvents(args),
+  });
+}
+
+export function buildThreadTimelineFromProjection(
+  args: Omit<BuildThreadTimelineFromEventsArgs, "fold"> & {
+    projection: EventProjection;
+  },
+): ThreadTimelineFromEventsResult {
+  const { projection } = args;
 
   const rows = placeRejectedSteerRows([
     ...buildTimelineRows(projection, {
       completedTurnDisplay: args.options.completedTurnDisplay,
       includeNestedRows: args.options.includeNestedRows,
+      omitSettledDelegationChildRows:
+        args.options.omitSettledDelegationChildRows,
       rowIdPrefix: ROOT_TIMELINE_ROW_ID_PREFIX,
       summarizeShellCommands: args.options.summarizeShellCommands,
       workspaceRoot: args.options.workspaceRoot,
@@ -1249,15 +1339,18 @@ export function buildThreadTimelineFromEvents(
     contextWindowUsage: extractThreadContextWindowUsage(
       args.contextWindowEvents,
     ),
-    goal: !args.options.isLatestPage
-      ? null
-      : extractThreadTimelineGoal(stateEvents),
+    extensionStates: !args.options.isLatestPage
+      ? {}
+      : extractThreadExtensionStates(
+          args.events,
+          args.options.extensionStateKinds ?? [],
+        ),
     providerCommands: !args.options.isLatestPage
       ? null
-      : extractThreadProviderCommands(stateEvents),
+      : extractThreadProviderCommands(args.events),
     sessionOptions: !args.options.isLatestPage
       ? null
-      : extractThreadSessionOptions(stateEvents),
+      : extractThreadSessionOptions(args.events),
     modelFallback: !args.options.isLatestPage
       ? null
       : extractThreadTimelineModelFallback(args.events),
@@ -1265,7 +1358,7 @@ export function buildThreadTimelineFromEvents(
       ? null
       : extractThreadTimelinePendingTodos(
           args.options.threadStatus,
-          stateEvents,
+          args.events,
         ),
     rows,
   };
@@ -1315,6 +1408,7 @@ export function buildThreadTimelineTurnDetailsFromEvents(
   const options: BuildTimelineRowsOptions = {
     completedTurnDisplay: args.options.completedTurnDisplay,
     includeNestedRows: true,
+    omitSettledDelegationChildRows: false,
     rowIdPrefix: ROOT_TIMELINE_ROW_ID_PREFIX,
     summarizeShellCommands: args.options.summarizeShellCommands,
     workspaceRoot: args.options.workspaceRoot,

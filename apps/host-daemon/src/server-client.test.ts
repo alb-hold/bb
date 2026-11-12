@@ -63,6 +63,8 @@ describe("createServerClient", () => {
       return Response.json(
         {
           sessionId: "session-1",
+          agentCpuPriority: false,
+          endedInteractiveRequests: [],
           machineEnvironment: { revision: 0, entries: [] },
           idleProviderSessionTimeoutMinutes: 30,
           heartbeatIntervalMs: 5_000,
@@ -86,6 +88,7 @@ describe("createServerClient", () => {
       instanceId: "instance-1",
       localApiPort: null,
       activeThreads: [],
+      openThreadWork: [],
       undeliveredEventThreadIds: [],
       loadedEnvironments: [],
       adoptedThreads: [],
@@ -120,6 +123,7 @@ describe("createServerClient", () => {
       instanceId: "instance-1",
       localApiPort: null,
       activeThreads: [],
+      openThreadWork: [],
       undeliveredEventThreadIds: [],
       loadedEnvironments: [],
       adoptedThreads: [],
@@ -227,6 +231,8 @@ describe("createServerClient", () => {
           instanceId: "instance-1",
           localApiPort: null,
           activeThreads: [],
+          openThreadWork: [],
+
           adoptedThreads: [],
           undeliveredEventThreadIds: [],
           loadedEnvironments: [],
@@ -257,10 +263,14 @@ describe("createServerClient", () => {
         return Response.json(
           {
             sessionId: "session-1",
+            agentCpuPriority: false,
+            endedInteractiveRequests: [],
             machineEnvironment: { revision: 0, entries: [] },
             idleProviderSessionTimeoutMinutes: 30,
+            agentCpuPriority: false,
             heartbeatIntervalMs: 5_000,
             leaseTimeoutMs: 30_000,
+            endedInteractiveRequests: [],
           },
           { status: 201 },
         );
@@ -281,6 +291,7 @@ describe("createServerClient", () => {
         instanceId: "instance-1",
         localApiPort: 38_888,
         activeThreads: [],
+        openThreadWork: [],
         undeliveredEventThreadIds: [],
         loadedEnvironments: [],
         adoptedThreads: [],
@@ -296,6 +307,8 @@ describe("createServerClient", () => {
       return Response.json(
         {
           sessionId: "session-1",
+          agentCpuPriority: false,
+          endedInteractiveRequests: [],
           heartbeatIntervalMs: 30_000,
           leaseTimeoutMs: 90_000,
           idleProviderSessionTimeoutMinutes: 30,
@@ -321,6 +334,7 @@ describe("createServerClient", () => {
         instanceId: "instance-1",
         localApiPort: null,
         activeThreads: [],
+        openThreadWork: [],
         loadedEnvironments: [],
         adoptedThreads,
         undeliveredEventThreadIds: [],
@@ -554,6 +568,8 @@ describe("createServerClient", () => {
       expect(String(input)).toContain("/internal/session/events");
       expect(JSON.parse(String(init?.body))).toEqual({
         sessionId: "session-1",
+        agentCpuPriority: false,
+        endedInteractiveRequests: [],
         eventGroups: [
           {
             threadId: "thr_123",

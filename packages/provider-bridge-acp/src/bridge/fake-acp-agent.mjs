@@ -114,10 +114,14 @@ import { appendFileSync, renameSync, writeFileSync } from "node:fs";
 const failLoad = process.env.FAKE_ACP_FAIL_LOAD === "1";
 const loadSession = process.env.FAKE_ACP_LOAD_SESSION === "1" || failLoad;
 const forkSession = process.env.FAKE_ACP_FORK_SESSION === "1";
+const closeSession = process.env.FAKE_ACP_CLOSE_SESSION === "1";
 const deleteSession = process.env.FAKE_ACP_DELETE_SESSION === "1";
 const additionalDirectories =
   process.env.FAKE_ACP_ADDITIONAL_DIRECTORIES === "1";
 const forkReuseSourceId = process.env.FAKE_ACP_FORK_REUSE_SOURCE_ID === "1";
+const forkIdOnly = process.env.FAKE_ACP_FORK_ID_ONLY === "1";
+const resumeIdOnly = process.env.FAKE_ACP_RESUME_ID_ONLY === "1";
+let forkSerial = 0;
 const usageOnLoad = process.env.FAKE_ACP_USAGE_ON_LOAD === "1";
 const usageSessionId = process.env.FAKE_ACP_USAGE_SESSION_ID;
 const modelConfig = process.env.FAKE_ACP_MODEL_CONFIG === "1";
@@ -138,6 +142,7 @@ const setConfigModelErrorValue =
   process.env.FAKE_ACP_SET_CONFIG_MODEL_ERROR_VALUE;
 const setConfigFastError = process.env.FAKE_ACP_SET_CONFIG_FAST_ERROR === "1";
 const emptyModelResult = process.env.FAKE_ACP_EMPTY_MODEL_RESULT === "1";
+const modelConfigReply = process.env.FAKE_ACP_MODEL_CONFIG_REPLY;
 const cursorParameterizedModels =
   process.env.FAKE_ACP_CURSOR_PARAMETERIZED_MODELS === "1";
 const requestLog = process.env.FAKE_ACP_REQUEST_LOG;
@@ -905,12 +910,14 @@ async function handleMessage(message) {
             promptCapabilities: { image: false },
             ...(forkSession ||
             resumeSession ||
+            closeSession ||
             deleteSession ||
             additionalDirectories
               ? {
                   sessionCapabilities: {
                     ...(forkSession ? { fork: {} } : {}),
                     ...(resumeSession ? { resume: {} } : {}),
+                    ...(closeSession ? { close: {} } : {}),
                     ...(deleteSession ? { delete: {} } : {}),
                     ...(additionalDirectories
                       ? { additionalDirectories: {} }
@@ -999,6 +1006,17 @@ async function handleMessage(message) {
         );
       }
       return;
+    case "session/close":
+      if (closeSession) {
+        send({ jsonrpc: "2.0", id: message.id, result: {} });
+      } else {
+        send({
+          jsonrpc: "2.0",
+          id: message.id,
+          error: { code: -32601, message: "Unknown method session/close" },
+        });
+      }
+      return;
     case "session/delete":
       if (deleteSession) {
         send({ jsonrpc: "2.0", id: message.id, result: {} });
@@ -1054,7 +1072,11 @@ async function handleMessage(message) {
       }
       captureMcpServers(message);
       activeSessionId = message.params?.sessionId;
-      send({ jsonrpc: "2.0", id: message.id, result: configState() });
+      send({
+        jsonrpc: "2.0",
+        id: message.id,
+        result: resumeIdOnly ? {} : configState(),
+      });
       return;
     case "session/fork":
       if (!requireAuthenticated(message)) {
@@ -1076,11 +1098,11 @@ async function handleMessage(message) {
       }
       activeSessionId = forkReuseSourceId
         ? message.params.sessionId
-        : `fake-fork-${process.pid}`;
+        : `fake-fork-${process.pid}-${++forkSerial}`;
       captureMcpServers(message);
       sendSessionResponse(message, {
         sessionId: activeSessionId,
-        ...configState(),
+        ...(forkIdOnly ? {} : configState()),
       });
       return;
     case "session/set_model": {
@@ -1141,11 +1163,36 @@ async function handleMessage(message) {
             Number(process.env.FAKE_ACP_MODEL_DELAY_MS ?? "0"),
           ),
         );
-        selectedModel = value;
+        const previousConfig = configState();
+        const previousModel = selectedModel;
+        if (value !== "fake/strong" || modelConfigReply !== "stale") {
+          selectedModel = value;
+        }
+        const result = emptyModelResult ? {} : configState();
+        if (value === "fake/strong") {
+          if (
+            modelConfigReply === "stale" ||
+            (modelConfigReply === "stale-once" && previousModel !== value)
+          ) {
+            send({ jsonrpc: "2.0", id: message.id, result: previousConfig });
+            return;
+          }
+          if (modelConfigReply === "missing-model") {
+            result.configOptions = result.configOptions?.filter(
+              (option) => option.category !== "model",
+            );
+          }
+          if (modelConfigReply === "missing-value") {
+            const modelOption = result.configOptions?.find(
+              (option) => option.category === "model",
+            );
+            if (modelOption) delete modelOption.currentValue;
+          }
+        }
         send({
           jsonrpc: "2.0",
           id: message.id,
-          result: emptyModelResult ? {} : configState(),
+          result,
         });
         return;
       }

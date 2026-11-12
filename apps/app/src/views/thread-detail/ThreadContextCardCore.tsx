@@ -4,10 +4,6 @@ import {
   experimental_THREAD_INFO_SECTION_GROUPS,
   type ExperimentalThreadContextCardProps,
 } from "@get-bb/plugin-sdk";
-import {
-  resolveThreadListIndicator,
-  threadListIndicatorStateForThread,
-} from "@bb/client-core";
 import { Icon } from "@bb/shared-ui/icon";
 import { InfoRowTime } from "@bb/shared-ui/info-list-row";
 import type { ThreadResponse } from "@bb/server-contract";
@@ -17,7 +13,7 @@ import type {
   CoreThreadContextCardSection,
 } from "@/components/plugin/PluginThreadContextCard";
 import { InfoList } from "@/components/secondary-panel/info/info-list";
-import { ThreadStatusGlyph } from "@/components/thread/ThreadStatusGlyph";
+import { ThreadListEntryStatusGlyph } from "@/components/thread/ThreadListEntryStatusGlyph";
 import { ThreadTitle } from "@/components/thread/ThreadTitleMentions";
 import { useChildThreads, useThread } from "@/hooks/queries/thread-queries";
 import { getThreadRoutePath } from "@/lib/route-paths";
@@ -38,7 +34,7 @@ function ParentThreadRow({ thread }: { thread: ThreadResponse }) {
       icon={parent.relationship === "fork" ? "Fork" : "UserRound"}
       label={`${parent.relationship === "fork" ? "Forked from" : "Parent"}: ${parent.parentThreadTitle}`}
       title={parent.parentThreadTitle}
-      onClick={() => navigate(parent.href)}
+      onClick={() => void navigate(parent.href)}
     />
   );
 }
@@ -60,24 +56,20 @@ function ChildThreadsSection({ threadId }: ExperimentalThreadContextCardProps) {
       limit={4}
       renderItem={(child) => {
         const title = getThreadDisplayTitle(child);
-        const indicator = resolveThreadListIndicator(
-          threadListIndicatorStateForThread(child, false),
-        );
         return (
           <li className="list-none">
             <ThreadContextCardRow
               leading={
-                indicator === "none" ? (
-                  <Icon name="ChildThread" aria-hidden />
-                ) : (
-                  <ThreadStatusGlyph indicator={indicator} size="compact" />
-                )
+                <ThreadListEntryStatusGlyph
+                  thread={child}
+                  idle={<Icon name="ChildThread" aria-hidden />}
+                />
               }
               label={<ThreadTitle title={title} />}
               title={title}
               trailing={<InfoRowTime timestamp={child.updatedAt} />}
               onClick={() =>
-                navigate(
+                void navigate(
                   getThreadRoutePath({
                     projectId: child.projectId,
                     threadId: child.id,

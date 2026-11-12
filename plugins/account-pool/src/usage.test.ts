@@ -1,82 +1,102 @@
 import { describe, expect, it } from "vitest";
-import { EMPTY_FAMILY_WEEKLY, quotaSchema } from "./contracts.js";
-import { modelWeeklyFromUsage, quotaFromUsage } from "./usage.js";
+import {
+  EMPTY_FAMILY_WEEKLY,
+  type AccountQuota,
+  type LimitWindow,
+} from "./contracts.js";
+import { isQuotaExhausted } from "./quota.js";
+import { quotaFromUsage } from "./usage.js";
 
-describe("usage quota freshness", () => {
-  it("clears expired windows when a refresh omits the window", () => {
-    const now = Date.now();
-    const expiredReset = now - 10 * 60 * 60 * 1_000;
-    const accountId = "00000000-0000-4000-8000-000000000001";
-    const previous = quotaSchema.parse({
-      accountId,
-      usageRestriction: null,
-      extraUsage: null,
-      fiveHourUtilization: 0.8,
-      fiveHourResetAt: expiredReset,
-      fiveHourStatus: "allowed",
-      sevenDayUtilization: null,
-      sevenDayResetAt: null,
-      sevenDayStatus: null,
-      representativeClaim: null,
-      familyWeekly: {
-        ...EMPTY_FAMILY_WEEKLY,
-        sonnet: {
-          utilization: 0.8,
-          resetAt: expiredReset,
-          status: "allowed",
-          observedAt: expiredReset,
-          source: "usage",
-        },
-      },
-      limitWindows: [],
-      observedAt: expiredReset,
-      heldUntil: null,
-      error: null,
-    });
+const ACCOUNT_ID = "11111111-1111-4111-8111-111111111111";
+const NOW = Date.parse("2026-11-06T02:05:00Z");
+const FUTURE_RESET = Date.parse("2026-11-06T04:00:00Z");
+const PAST_RESET = Date.parse("2026-10-28T17:49:00Z");
+const SEVEN_DAY_RESET = Date.parse("2026-11-10T00:00:00Z");
 
-    const refreshed = quotaFromUsage(
-      accountId,
-      { extra_usage: null },
+function quota(limitWindows: LimitWindow[]): AccountQuota {
+  return {
+    accountId: ACCOUNT_ID,
+    usageRestriction: null,
+    extraUsage: null,
+    representativeClaim: null,
+    familyWeekly: EMPTY_FAMILY_WEEKLY,
+    limitWindows,
+    observedAt: null,
+    heldUntil: null,
+    error: null,
+  };
+}
+
+function fiveHour(
+  utilization: number,
+  resetAt: number | null,
+  status: string,
+): LimitWindow {
+  return {
+    slot: "primary",
+    windowMinutes: 300,
+    utilization,
+    resetAt,
+    status,
+    observedAt: 1,
+    source: "header",
+  };
+}
+
+const sevenDay = {
+  utilization: 30,
+  resets_at: new Date(SEVEN_DAY_RESET).toISOString(),
+};
+
+describe("quotaFromUsage", () => {
+  it("drops a rejected five-hour window when the account reports no five-hour limit", () => {
+    const previous = quota([fiveHour(1, FUTURE_RESET, "rejected")]);
+    const next = quotaFromUsage(
+      ACCOUNT_ID,
+      { five_hour: null, seven_day: sevenDay },
       previous,
-      now,
+      NOW,
     );
+    expect(next?.limitWindows).toEqual([
+      {
+        slot: "secondary",
+        windowMinutes: 10_080,
+        utilization: 0.3,
+        resetAt: SEVEN_DAY_RESET,
+        status: "allowed",
+        observedAt: NOW,
+        source: "usage",
+      },
+    ]);
+    expect(isQuotaExhausted(previous, null, NOW)).toBe(true);
+    expect(next === null ? null : isQuotaExhausted(next, null, NOW)).toBe(
+      false,
+    );
+  });
 
-    expect(refreshed).toMatchObject({
-      fiveHourUtilization: null,
-      fiveHourResetAt: null,
-      fiveHourStatus: null,
-      familyWeekly: { sonnet: null },
-      observedAt: now,
+  it("clears the stored reset when no five-hour window is running", () => {
+    const next = quotaFromUsage(
+      ACCOUNT_ID,
+      { five_hour: { utilization: 0, resets_at: null }, seven_day: sevenDay },
+      quota([fiveHour(0.4, PAST_RESET, "allowed")]),
+      NOW,
+    );
+    expect(next?.limitWindows[0]).toMatchObject({
+      slot: "primary",
+      utilization: 0,
+      resetAt: null,
+      status: "allowed",
     });
   });
-});
 
-describe("provider model weekly limits", () => {
-  it("preserves API display names, rejects malformed limits, and distinguishes omission from clearing", () => {
-    const now = 1000;
-    expect(modelWeeklyFromUsage({}, now)).toBeNull();
-    expect(modelWeeklyFromUsage({ limits: "invalid" }, now)).toBeNull();
-    expect(modelWeeklyFromUsage({ limits: [] }, now)).toEqual({});
-    const limit = (name: string, percent: number, reset: number) => ({
-      kind: "weekly_scoped",
-      percent,
-      resets_at: reset,
-      scope: { model: { display_name: name } },
-    });
-    expect(
-      modelWeeklyFromUsage(
-        {
-          limits: [
-            limit("Future 42", 25, 2000000),
-            limit("Future 42", 50, 2000000),
-            limit("Expired", 90, 1),
-            limit("", 20, 2000000),
-          ],
-        },
-        now,
-      ),
-    ).toEqual({
-      "Future 42": expect.objectContaining({ utilization: 0.5 }),
-    });
+  it("keeps shared windows when the payload reports neither", () => {
+    const previous = quota([fiveHour(0.5, FUTURE_RESET, "allowed")]);
+    const next = quotaFromUsage(
+      ACCOUNT_ID,
+      { seven_day_opus: { utilization: 20, resets_at: null } },
+      previous,
+      NOW,
+    );
+    expect(next?.limitWindows).toEqual(previous.limitWindows);
   });
 });

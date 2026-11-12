@@ -18,6 +18,7 @@ import {
   type AcpDeltaTranslator,
 } from "./delta-translation.js";
 import { resolveAcpDialect } from "./dialect.js";
+import type { AcpDialect } from "./dialect.js";
 import { ACP_TOOL_PAYLOAD_MAX_CHARS } from "./tool-classification.js";
 import type { AcpToolCallUpdateEvent } from "./wire.js";
 
@@ -507,6 +508,83 @@ describe("acp delta translation (bridge-shared invariants)", () => {
 });
 
 describe("acp delta translation (moved from the legacy adapter suite)", () => {
+  it.each(
+    [
+      { method: "error", status: "failed" },
+      { method: ACP_TURN_STARTED_METHOD, status: "interrupted" },
+      { method: ACP_COMPACTION_STARTED_METHOD, status: "interrupted" },
+    ].flatMap((boundary) => [
+      {
+        ...boundary,
+        stream: "agent_message_chunk",
+        item: { type: "agentMessage", text: "Partial response" },
+      },
+      {
+        ...boundary,
+        stream: "agent_thought_chunk",
+        item: { type: "reasoning", content: ["Partial response"] },
+      },
+    ]),
+  )(
+    "settles open work before $method with $stream",
+    ({ method, status, stream, item }) => {
+      const harness = createHarness();
+      harness.translate(turnStartedEvent());
+      const turnId = harness.openTurnId();
+      const commandEvents = harness.translate(
+        updateEvent({
+          sessionUpdate: "tool_call",
+          toolCallId: "running-command",
+          title: "Long command",
+          kind: "execute",
+          status: "in_progress",
+          rawInput: { command: "sleep 30" },
+        }),
+      );
+      const textEvents = harness.translate(
+        updateEvent({
+          sessionUpdate: stream,
+          content: { type: "text", text: "Partial response" },
+        }),
+      );
+      const commandStarted = commandEvents.find(
+        (event) => event.type === "item/started",
+      );
+      const textStarted = textEvents.find(
+        (event) => event.type === "item/started",
+      );
+      expect(commandStarted).toBeDefined();
+      expect(textStarted).toBeDefined();
+
+      const events = harness.translate({
+        jsonrpc: "2.0",
+        method,
+        params: { threadId: THREAD_ID, message: "Connection lost" },
+      });
+
+      expect(events.slice(0, 2)).toMatchObject([
+        {
+          type: "item/completed",
+          scope: turnScope(turnId),
+          item: { ...item, id: textStarted?.item.id },
+        },
+        {
+          type: "item/completed",
+          scope: turnScope(turnId),
+          item: {
+            type: "commandExecution",
+            id: commandStarted?.item.id,
+            command: "sleep 30",
+            status,
+          },
+        },
+      ]);
+      expect(
+        completedItems(harness.translate(turnCompletedEvent("end_turn"))),
+      ).toEqual([]);
+    },
+  );
+
   function compactionStartedEvent(): ProviderRuntimeEvent {
     return {
       jsonrpc: "2.0",
@@ -1912,6 +1990,81 @@ describe("acp delta translation (raw payloads and real results)", () => {
     ).toBeUndefined();
   });
 
+  it.each([
+    { status: "in_progress", output: undefined },
+    { status: "in_progress", output: "building\n" },
+    { status: "pending", output: undefined },
+    { status: undefined, output: undefined },
+  ])(
+    "refreshes a command announced before its input (status=$status, output=$output)",
+    ({ status, output }) => {
+      const harness = startedHarness();
+      const opened = harness.translate(
+        updateEvent({
+          sessionUpdate: "tool_call",
+          toolCallId: "deferred-command",
+          title: "Terminal",
+          kind: "execute",
+          status: "pending",
+          rawInput: {},
+        }),
+      );
+      const initial = opened.find((event) => event.type === "item/started");
+      expect(initial?.item).toMatchObject({
+        type: "commandExecution",
+        command: "Terminal",
+      });
+
+      const update = {
+        sessionUpdate: "tool_call_update",
+        toolCallId: "deferred-command",
+        status,
+        rawInput: { command: "pnpm build" },
+        ...(output === undefined ? {} : { rawOutput: output }),
+      };
+      const refreshed = harness.translate(updateEvent(update));
+      expect(refreshed).toEqual([
+        expect.objectContaining({
+          type: "item/started",
+          item: expect.objectContaining({
+            id: initial?.item.id,
+            type: "commandExecution",
+            command: "pnpm build",
+            presentation: expect.objectContaining({ title: "pnpm build" }),
+          }),
+        }),
+        ...(output === undefined
+          ? []
+          : [
+              expect.objectContaining({
+                type: "item/commandExecution/outputDelta",
+                itemId: initial?.item.id,
+                delta: output.trim(),
+              }),
+            ]),
+      ]);
+      expect(harness.translate(updateEvent(update))).toEqual([]);
+
+      expect(
+        harness.translate(
+          updateEvent({
+            sessionUpdate: "tool_call_update",
+            toolCallId: "deferred-command",
+            status: "completed",
+          }),
+        ),
+      ).toContainEqual(
+        expect.objectContaining({
+          type: "item/completed",
+          item: expect.objectContaining({
+            id: initial?.item.id,
+            command: "pnpm build",
+          }),
+        }),
+      );
+    },
+  );
+
   it("streams nothing when a running command's envelope names no stream", () => {
     const harness = startedHarness();
     harness.translate(
@@ -2889,5 +3042,136 @@ describe("acp delta translation (bb-injected tools)", () => {
       "toolCall",
     ]);
     expect(settled[1]).toMatchObject({ tool: "ask_user_question" });
+  });
+});
+
+describe("acp dialect tool call event normalization", () => {
+  function dropArgumentEcho(
+    event: AcpToolCallUpdateEvent,
+    call: AcpToolCallUpdateEvent,
+  ): AcpToolCallUpdateEvent {
+    const text = event.content?.find((part) => part.type === "content");
+    if (text?.type !== "content" || text.content.type !== "text") {
+      return event;
+    }
+    if (
+      call.rawInput !== undefined &&
+      text.content.text !== JSON.stringify(call.rawInput)
+    ) {
+      return event;
+    }
+    const { content: _content, ...rest } = event;
+    return rest;
+  }
+
+  const argumentEchoDialect: AcpDialect = {
+    id: "argument-echo",
+    normalizeCommandEvent: dropArgumentEcho,
+    normalizeToolCallEvent: dropArgumentEcho,
+  };
+
+  function translateAll(updates: Record<string, unknown>[]) {
+    const translator = createAcpDeltaTranslator({
+      cwd: SESSION_CWD,
+      dialect: argumentEchoDialect,
+    });
+    return updates.flatMap((update) =>
+      translator.translateAcpEvent(updateEvent(update), {
+        threadId: THREAD_ID,
+      }),
+    );
+  }
+
+  function textUpdate(
+    toolCallId: string,
+    text: string,
+    fields: Record<string, unknown> = {},
+  ) {
+    return {
+      sessionUpdate: "tool_call_update",
+      toolCallId,
+      status: "in_progress",
+      content: [{ type: "content", content: { type: "text", text } }],
+      ...fields,
+    };
+  }
+
+  function visibleText(deltas: ReturnType<typeof translateAll>) {
+    return deltas.flatMap((delta) => {
+      switch (delta.kind) {
+        case "item.progress":
+          return [delta.message];
+        case "command.outputSnapshot":
+          return [delta.text];
+        case "item.close":
+          return delta.resultText === undefined ? [] : [delta.resultText];
+        default:
+          return [];
+      }
+    });
+  }
+
+  it("hides a subagent's argument snapshots and keeps its output once the call's rawInput is known", () => {
+    const rawInput = { prompt: "Compute 2+2", description: "Arithmetic" };
+    expect(
+      visibleText(
+        translateAll([
+          {
+            sessionUpdate: "tool_call",
+            toolCallId: "call-agent",
+            title: "Agent",
+            kind: "other",
+            status: "pending",
+          },
+          textUpdate("call-agent", '{"prompt": "Compute'),
+          textUpdate("call-agent", JSON.stringify(rawInput), { rawInput }),
+          textUpdate("call-agent", "Thinking about it"),
+          textUpdate("call-agent", "2", { status: "completed" }),
+        ]),
+      ),
+    ).toEqual(["Thinking about it", "2"]);
+  });
+
+  it("hides a command's argument snapshots and keeps JSON the command prints", () => {
+    const rawInput = { command: "br list --json" };
+    expect(
+      visibleText(
+        translateAll([
+          {
+            sessionUpdate: "tool_call",
+            toolCallId: "call-bash",
+            title: "Bash",
+            kind: "execute",
+            status: "pending",
+          },
+          textUpdate("call-bash", '{"command":"br list'),
+          textUpdate("call-bash", JSON.stringify(rawInput), { rawInput }),
+          textUpdate("call-bash", '{"issues":[]}'),
+        ]),
+      ),
+    ).toEqual(['{"issues":[]}']);
+  });
+
+  it("closes a call left open mid-arguments without its argument snapshot", () => {
+    const translator = createAcpDeltaTranslator({
+      cwd: SESSION_CWD,
+      dialect: argumentEchoDialect,
+    });
+    const deltas = [
+      updateEvent({
+        sessionUpdate: "tool_call",
+        toolCallId: "call-agent",
+        title: "Agent",
+        kind: "other",
+        status: "pending",
+      }),
+      updateEvent(textUpdate("call-agent", '{"prompt": "Compute')),
+      turnCompletedEvent("end_turn"),
+    ].flatMap((event) =>
+      translator.translateAcpEvent(event, { threadId: THREAD_ID }),
+    );
+    const close = deltas.find((delta) => delta.kind === "item.close");
+    expect(close).toMatchObject({ status: "completed" });
+    expect(close).not.toHaveProperty("resultText");
   });
 });

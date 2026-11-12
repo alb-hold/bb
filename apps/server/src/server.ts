@@ -19,7 +19,6 @@ import {
   INSTALL_MACHINE_SCRIPT_PATH,
   INSTALL_MACHINE_WINDOWS_SCRIPT_PATH,
 } from "./install-machine-asset.js";
-import { getExperiments } from "@bb/db";
 import { createNodeWebSocket } from "@hono/node-ws";
 import {
   TERMINAL_RESIZE_ECHO_WEBSOCKET_PROTOCOL,
@@ -71,6 +70,7 @@ import {
 } from "./services/plugins/plugin-service.js";
 import { setPluginAgentContributions } from "./services/plugins/plugin-agent-contributions.js";
 import { setPluginThreadEventEmitter } from "./services/plugins/plugin-thread-events.js";
+import { setPathPluginPreserver } from "./services/plugins/path-plugin-preservation.js";
 import { setPluginHookProvider } from "./services/plugins/plugin-hook-registry.js";
 import {
   setEnvironmentProviderRecheckHandler,
@@ -865,6 +865,7 @@ export function createApp(
     db: deps.db,
     hub: deps.hub,
     logger: deps.logger,
+    walCheckpointer: deps.walCheckpointer,
     telemetry: deps.telemetry,
     pendingInteractions: deps.pendingInteractions,
     dataDir: deps.config.dataDir,
@@ -912,6 +913,9 @@ export function createApp(
   );
   setTurnTelemetryDeps(deps);
   setPluginThreadEventEmitter(pluginService.events);
+  setPathPluginPreserver(deps.db, (directory) =>
+    pluginService.preservePathPluginsInside(directory),
+  );
   setPluginHookProvider(pluginService.hooks);
   setPluginEnvironmentProviderBridge(pluginService.environmentProviders);
   setEnvironmentProvisioningRecheckHandler((threadId) =>
@@ -930,7 +934,7 @@ export function createApp(
   setEnvironmentProviderRecheckHandler((pluginId) => {
     invalidateEnvironmentProviderMachineAvailability();
     deps.hub.notifySystem(["config-changed"]);
-    void recheckEnvironmentProviderCreations(deps, pluginId);
+    recheckEnvironmentProviderCreations(deps, pluginId);
   });
   setPluginAgentContributions(pluginService);
   const serverMove = createServerMoveCoordinator(
@@ -1074,9 +1078,6 @@ export function createApp(
     "/ws",
     upgradeWebSocket((context) => {
       assertBrowserWebSocketAllowed(context);
-      if (!getExperiments(deps.db).websocketCompression) {
-        declineWebSocketCompression(context);
-      }
       const origin = context.req.header("origin");
       const isAppClient = origin !== undefined;
       return {
@@ -1095,6 +1096,9 @@ export function createApp(
       assertBrowserWebSocketAllowed(context);
       declineWebSocketCompression(context);
       const terminalId = context.req.param("terminalId");
+      if (terminalId === undefined) {
+        throw new ApiError(404, "terminal_not_found", "missing terminal id");
+      }
       const query = terminalWebSocketQuerySchema.safeParse({
         outputAcks: context.req.query("outputAcks"),
         resizeAcks: context.req.query("resizeAcks"),

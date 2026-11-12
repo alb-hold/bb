@@ -1,3 +1,4 @@
+import { getLastExecutionOptions } from "./thread-events.js";
 import {
   type DbQueryConnection,
   getProjectExecutionDefaults,
@@ -19,7 +20,6 @@ import { ApiError } from "../../errors.js";
 import type { LoggedWorkSessionDeps } from "../../types.js";
 import type { ProviderRegistryService } from "../providers/provider-registry.js";
 import { resolveSystemExecutionOptionsForValidation } from "../system/execution-options.js";
-import { getLastExecutionOptions } from "./thread-events.js";
 import { getSupportedReasoningLevelsForProvider } from "./thread-reasoning-policy.js";
 import {
   assertRequestedModelAllowedForCurrentScope,

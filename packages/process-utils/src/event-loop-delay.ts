@@ -1,4 +1,8 @@
-import { monitorEventLoopDelay } from "node:perf_hooks";
+import { createHistogram } from "node:perf_hooks";
+import {
+  EVENT_LOOP_GAP_INTERVAL_MS,
+  observeEventLoopGaps,
+} from "./event-loop-gaps.js";
 
 interface EventLoopStall {
   intervalMs: number;
@@ -35,12 +39,42 @@ interface EventLoopDelaySampler {
 
 const EVENT_LOOP_STALL_THRESHOLD_MS = 500;
 const EVENT_LOOP_DELAY_SAMPLE_INTERVAL_MS = 5_000;
-const EVENT_LOOP_DELAY_RESOLUTION_MS = 20;
 const LIKELY_SYSTEM_SUSPENSION_MIN_DELAY_MS = 60_000;
 const NANOSECONDS_PER_MILLISECOND = 1_000_000;
 
 function nanosecondsToMilliseconds(durationNs: number): number {
   return durationNs / NANOSECONDS_PER_MILLISECOND;
+}
+
+export function createEventLoopDelayHistogram() {
+  const histogram = createHistogram();
+  let count = 0;
+  let totalMs = 0;
+  let maxMs = 0;
+  return {
+    record: (startedAt: number, endedAt: number) => {
+      const gapMs = endedAt - startedAt;
+      count += 1;
+      totalMs += gapMs;
+      maxMs = Math.max(maxMs, gapMs);
+      histogram.record(
+        Math.max(1, Math.round(gapMs * NANOSECONDS_PER_MILLISECOND)),
+      );
+    },
+    take: () => {
+      const summary = {
+        maxDelayMs: maxMs,
+        meanDelayMs: count === 0 ? 0 : totalMs / count,
+        p99DelayMs: nanosecondsToMilliseconds(histogram.percentile(99)),
+        resolutionMs: EVENT_LOOP_GAP_INTERVAL_MS,
+      };
+      histogram.reset();
+      count = 0;
+      totalMs = 0;
+      maxMs = 0;
+      return summary;
+    },
+  };
 }
 
 export function roundDurationMs(durationMs: number): number {
@@ -60,10 +94,10 @@ export function startEventLoopDelaySampler(
   const now = args.now ?? (() => performance.now());
   const intervalMs = args.intervalMs ?? EVENT_LOOP_DELAY_SAMPLE_INTERVAL_MS;
   const defer = args.defer ?? ((callback) => setImmediate(callback));
-  const histogram =
-    args.histogram ??
-    monitorEventLoopDelay({ resolution: EVENT_LOOP_DELAY_RESOLUTION_MS });
-  histogram.enable();
+  const gapHistogram = createEventLoopDelayHistogram();
+  const gaps = observeEventLoopGaps(gapHistogram.record);
+  const histogram = args.histogram;
+  histogram?.enable();
   let lastSampleAt = now();
   let stopped = false;
 
@@ -79,7 +113,9 @@ export function startEventLoopDelaySampler(
     const suspended = isLikelySystemSuspensionDelay({ gapMs, intervalMs });
     const readAndReport = () => {
       if (stopped) return;
-      const histogramMaxDelayMs = nanosecondsToMilliseconds(histogram.max);
+      gaps.flush();
+      const delay = gapHistogram.take();
+      const histogramMaxDelayMs = histogram === undefined ? delay.maxDelayMs : nanosecondsToMilliseconds(histogram.max);
       const maxDelayMs = Math.max(histogramMaxDelayMs, timerLagMs);
       const stalled = !suspended && maxDelayMs >= thresholdMs;
       args.onSample({
@@ -90,17 +126,17 @@ export function startEventLoopDelaySampler(
               rawMaxDelayMs: maxDelayMs,
               timerLagMs: roundDurationMs(timerLagMs),
               meanDelayMs: roundDurationMs(
-                nanosecondsToMilliseconds(histogram.mean),
+                histogram === undefined ? delay.meanDelayMs : nanosecondsToMilliseconds(histogram.mean),
               ),
               p99DelayMs: roundDurationMs(
-                nanosecondsToMilliseconds(histogram.percentile(99)),
+                histogram === undefined ? delay.p99DelayMs : nanosecondsToMilliseconds(histogram.percentile(99)),
               ),
-              resolutionMs: EVENT_LOOP_DELAY_RESOLUTION_MS,
+              resolutionMs: delay.resolutionMs,
               thresholdMs,
             }
           : null,
       });
-      histogram.reset();
+      histogram?.reset();
     };
     if (!suspended && timerLagMs >= thresholdMs) defer(readAndReport);
     else readAndReport();
@@ -111,7 +147,8 @@ export function startEventLoopDelaySampler(
     stop: () => {
       stopped = true;
       clearInterval(interval);
-      histogram.disable();
+      gaps.stop();
+      histogram?.disable();
     },
   };
 }

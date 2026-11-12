@@ -155,7 +155,10 @@ export async function startAccountApi(fixture: AccountFixture) {
           : null,
     };
   };
-  const server = http.createServer(async (request, response) => {
+  const handle = async (
+    request: http.IncomingMessage,
+    response: http.ServerResponse,
+  ) => {
     const reply = (
       status: number,
       body: unknown,
@@ -238,6 +241,9 @@ export async function startAccountApi(fixture: AccountFixture) {
       return reply(400, { error: "invalid_request" });
     }
     reply(200, answerFor(body));
+  };
+  const server = http.createServer((request, response) => {
+    handle(request, response).catch((error) => response.destroy(error));
   });
   const port = await listen(server);
   return {
@@ -294,9 +300,17 @@ export async function startOrigin(options: OriginOptions) {
       nowSeconds: Math.floor(Date.now() / 1000),
     });
   };
-  const server = http.createServer(async (request, response) => {
+  const handle = async (
+    request: http.IncomingMessage,
+    response: http.ServerResponse,
+  ) => {
     const chunks: Buffer[] = [];
-    for await (const chunk of request) chunks.push(chunk as Buffer);
+    try {
+      for await (const chunk of request) chunks.push(chunk as Buffer);
+    } catch (error) {
+      if (request.destroyed && !request.complete) return;
+      throw error;
+    }
     const assertion = await verify(request);
     const entry: SeenRequest = {
       method: request.method ?? "GET",
@@ -316,6 +330,14 @@ export async function startOrigin(options: OriginOptions) {
       return;
     }
     if (path === "/slow") return;
+    if (path === "/deadline-answer") {
+      const delay = Number(
+        new URL(request.url ?? "/", "http://origin.test").searchParams.get(
+          "wait",
+        ),
+      );
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
     if (path === "/refuse" || path === "/plain-401") {
       const body = JSON.stringify(
         path === "/refuse"
@@ -391,6 +413,9 @@ export async function startOrigin(options: OriginOptions) {
     }
     response.writeHead(200, { "content-type": "application/json" });
     response.end(JSON.stringify({ ok: true, url: request.url }));
+  };
+  const server = http.createServer((request, response) => {
+    handle(request, response).catch((error) => response.destroy(error));
   });
   const sockets = new WebSocketServer({
     noServer: true,

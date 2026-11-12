@@ -18,6 +18,14 @@ export const discoveredWorktreeSchema = z
   .strict();
 export type DiscoveredWorktree = z.infer<typeof discoveredWorktreeSchema>;
 
+export const ownedBranchSchema = z
+  .object({
+    name: z.string().min(1),
+    repositoryPath: z.string().min(1),
+    baseBranch: z.string().min(1).nullable(),
+  })
+  .strict();
+
 export const worktreeHostContract = defineRpcContract({
   defaultBaseBranch: {
     input: z.object({ sourcePath: z.string().min(1) }).strict(),
@@ -71,6 +79,7 @@ export const worktreeHostContract = defineRpcContract({
           status: z.literal("created"),
           path: z.string().min(1),
           baseBranch: z.string().min(1).nullable(),
+          ownsBranch: z.boolean(),
         })
         .strict(),
       z
@@ -92,6 +101,7 @@ export const worktreeHostContract = defineRpcContract({
         operationId: z.string().min(1),
         pathKey: z.string().min(1),
         path: z.string().min(1).nullable(),
+        ownedBranch: ownedBranchSchema.nullable(),
       })
       .strict(),
     output: z.discriminatedUnion("status", [

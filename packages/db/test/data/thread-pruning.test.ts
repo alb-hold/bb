@@ -2,7 +2,8 @@ import { markThreadPruningWork } from "../../src/data/thread-pruning-work.js";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { performance } from "node:perf_hooks";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { and, eq, sql } from "drizzle-orm";
 import { createConnection } from "../../src/connection.js";
 import { migrate } from "../../src/migrate.js";
@@ -22,7 +23,9 @@ import {
 } from "../../src/data/threads.js";
 import {
   advanceThreadPruning,
+  findUnprunableThreadEventSequence,
   getNextThreadPruningPolicy,
+  PRUNABLE_THREAD_EVENT_TYPES,
   THREAD_EVENT_KEEP_RECENT_BY_MODE,
   THREAD_PRUNING_POLICIES,
 } from "../../src/data/thread-pruning.js";
@@ -48,6 +51,7 @@ function setup() {
     source: { type: "local_path", hostId: host.id, path: "/tmp/pruning" },
   });
   const thread = createThread(db, noopNotifier, {
+    status: "idle",
     projectId: project.id,
     providerId: "codex",
   });
@@ -280,6 +284,7 @@ function driveLivePruning(f: Fixture, passBudget: LegacyPassBudget) {
       threadId: f.thread.id,
       kind: "background",
       limit: passLimit,
+      deadline: Number.POSITIVE_INFINITY,
     }).complete;
   expect(complete).toBe(true);
   return new Set(readProgressIds(f));
@@ -322,6 +327,14 @@ function expectLegacyParityCase(
 }
 
 describe("thread pruning", () => {
+  beforeEach(() => {
+    vi.spyOn(performance, "now").mockReturnValue(0);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("preserves the exact usage pruning deletion set and byte total", () => {
     const db = createConnection(":memory:");
     migrate(db);
@@ -331,6 +344,7 @@ describe("thread pruning", () => {
       source: { type: "local_path", hostId: host.id, path: "/tmp/pruning" },
     });
     const thread = createThread(db, noopNotifier, {
+      status: "idle",
       projectId: project.id,
       providerId: "codex",
     });
@@ -410,6 +424,7 @@ describe("thread pruning", () => {
     const f = setup();
     try {
       const child = createThread(f.db, noopNotifier, {
+        status: "idle",
         projectId: f.project.id,
         providerId: "codex",
         lifecycleOwnerThreadId: f.thread.id,
@@ -480,6 +495,7 @@ describe("thread pruning", () => {
     const f = setup();
     try {
       const other = createThread(f.db, noopNotifier, {
+        status: "idle",
         projectId: f.project.id,
         providerId: "codex",
       });
@@ -690,6 +706,7 @@ describe("thread pruning", () => {
       const other = {
         ...f,
         thread: createThread(f.db, noopNotifier, {
+          status: "idle",
           projectId: f.project.id,
           providerId: "codex",
         }),
@@ -710,15 +727,20 @@ describe("thread pruning", () => {
           .map((row) => row.scope)
           .sort(),
       ).toEqual([f.thread.id, other.thread.id].sort());
-      const hasLiveDeltaCursor = () =>
+      const hasUnfinishedLiveDeltaPass = () =>
         f.db
           .select()
           .from(threadPruningCursors)
           .all()
-          .some((row) => row.policy === "deltas" && row.scope === f.thread.id);
-      for (let i = 0; i < 1000 && hasLiveDeltaCursor(); i++)
+          .some(
+            (row) =>
+              row.policy === "deltas" &&
+              row.scope === f.thread.id &&
+              row.sequence < row.upperSequence,
+          );
+      for (let i = 0; i < 1000 && hasUnfinishedLiveDeltaPass(); i++)
         advanceThreadPruning(f.db, { threadId: f.thread.id });
-      expect(hasLiveDeltaCursor()).toBe(false);
+      expect(hasUnfinishedLiveDeltaPass()).toBe(false);
       const remaining = f.db.select().from(threadPruningCursors).all();
       expect(remaining.filter((row) => row.scope !== f.thread.id)).toEqual(
         before.filter((row) => row.scope !== f.thread.id),
@@ -921,6 +943,78 @@ describe("thread pruning", () => {
       f.db.$client.close();
     }
   }, 15_000);
+
+  it("deletes exactly the event types listed as prunable and never the rows a timeline window can start at", () => {
+    const f = setup();
+    try {
+      const seeded: { sequence: number; type: string }[] = [];
+      const add = (values: Partial<typeof events.$inferInsert>) => {
+        const sequence = seeded.length + 1;
+        seed(f, sequence, values);
+        seeded.push({ sequence, type: values.type ?? "provider/rateLimits/updated" });
+      };
+      f.db.transaction(() => {
+        for (let i = 0; i < 3; i++) add({ type: "provider/rateLimits/updated" });
+        for (const modelContextWindow of [200000, null, null])
+          add({
+            type: "thread/contextWindowUsage/updated",
+            data: JSON.stringify({ contextWindowUsage: { modelContextWindow } }),
+          });
+        for (let i = 0; i < 3; i++)
+          add({ type: "thread/tokenUsage/updated", data: "{}" });
+        for (let i = 0; i < 3; i++)
+          add({ type: "turn/diff/updated", data: '{"diff":"x"}' });
+        for (const [type, itemKind, output] of [
+          ["item/agentMessage/delta", "agentMessage", "{}"],
+          ["item/reasoning/textDelta", "reasoning", "{}"],
+          ["item/reasoning/summaryTextDelta", "reasoning", "{}"],
+          [
+            "item/commandExecution/outputDelta",
+            "commandExecution",
+            '{"aggregatedOutput":"x"}',
+          ],
+        ] as const) {
+          const itemId = `${type}-item`;
+          add({ type: "item/started", itemId, itemKind, data: "{}" });
+          for (let i = 0; i < 3; i++)
+            add({ type, itemId, data: '{"delta":"x"}' });
+          add({
+            type: "item/completed",
+            itemId,
+            itemKind,
+            data: `{"item":${output}}`,
+          });
+        }
+        for (let i = 0; i < 2; i++)
+          add({ type: "item/backgroundTask/progress", itemId: "task" });
+        add({ type: "turn/completed", data: "{}" });
+      });
+      seed(f, 1000, { type: "turn/completed", data: "{}" });
+      for (const policy of THREAD_PRUNING_POLICIES) cycle(f, policy);
+
+      const remaining = new Set(sequences(f));
+      const deletedTypes = new Set(
+        seeded
+          .filter((row) => !remaining.has(row.sequence))
+          .map((row) => row.type),
+      );
+      expect([...deletedTypes].sort()).toEqual(
+        [...PRUNABLE_THREAD_EVENT_TYPES].sort(),
+      );
+      const firstDelta = seeded.find(
+        (row) => row.type === "item/agentMessage/delta",
+      )!;
+      expect(
+        findUnprunableThreadEventSequence(f.db, {
+          beforeSequence: seeded.length + 1,
+          sequenceStart: 1,
+          threadId: f.thread.id,
+        }),
+      ).toBe(firstDelta.sequence - 1);
+    } finally {
+      f.db.$client.close();
+    }
+  });
 
   it("prunes task progress superseded by legacy rows with missing or mismatched item kinds", () => {
     const f = setup();
@@ -1240,6 +1334,7 @@ describe("thread pruning", () => {
       seed(f, 2);
       cycle(f, "rate-limits");
       const added = createThread(f.db, noopNotifier, {
+        status: "idle",
         projectId: f.project.id,
         providerId: "claude",
       });
@@ -1513,6 +1608,7 @@ describe("thread pruning", () => {
             threadId: f.thread.id,
             kind: "deltas",
             limit: 5,
+            deadline: Number.POSITIVE_INFINITY,
           }),
         );
         expect(batch.scanned).toBeLessThanOrEqual(5);
@@ -1855,6 +1951,61 @@ describe("thread pruning", () => {
       expect(results.reduce((sum, r) => sum + r.removed, 0)).toBe(1);
       expect(sequences(f)).toContain(1);
       expect(sequences(f)).not.toContain(2);
+    } finally {
+      f.db.$client.close();
+    }
+  });
+
+  it("enqueues every thread when a policy is new or its version changes", () => {
+    const f = setup();
+    try {
+      const other = createThread(f.db, noopNotifier, {
+        status: "idle",
+        projectId: f.project.id,
+        providerId: "codex",
+      });
+      const fixtures = [f, { ...f, thread: other }];
+      const insertUnqueuedDiffs = (from: number, through: number) => {
+        for (const fixture of fixtures)
+          for (let sequence = from; sequence <= through; sequence++)
+            fixture.db
+              .insert(events)
+              .values({
+                id: `${fixture.thread.id}-${sequence}`,
+                threadId: fixture.thread.id,
+                sequence,
+                scopeKind: "turn",
+                turnId: "turn",
+                type: "turn/diff/updated",
+                data: "{}",
+                createdAt: 1,
+              })
+              .run();
+      };
+      const others = new Set<string>([
+        "rate-limits",
+        "usage",
+        "resolved-items",
+      ]);
+      for (const fixture of fixtures) seed(fixture, 1000, { type: "turn/completed" });
+      f.db.delete(threadPruningWork).run();
+      insertUnqueuedDiffs(1, 3);
+      expect(f.db.select().from(threadPruningWork).all()).toEqual([]);
+      expect(getNextThreadPruningPolicy(f.db, others)).toBe("turn-diffs");
+      cycle(f, "turn-diffs");
+      expect(fixtures.map(sequences)).toEqual([[1000], [1000]]);
+
+      insertUnqueuedDiffs(4, 6);
+      expect(getNextThreadPruningPolicy(f.db, others)).toBeNull();
+      f.db
+        .update(threadPruningCursors)
+        .set({ version: 0 })
+        .where(eq(threadPruningCursors.policy, "turn-diffs"))
+        .run();
+      expect(getNextThreadPruningPolicy(f.db, others)).toBe("turn-diffs");
+      cycle(f, "turn-diffs");
+      expect(fixtures.map(sequences)).toEqual([[1000], [1000]]);
+      expect(getNextThreadPruningPolicy(f.db, others)).toBeNull();
     } finally {
       f.db.$client.close();
     }

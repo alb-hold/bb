@@ -550,9 +550,11 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
       controller,
       uncaughtError: undefined,
     };
-    const current = serviceContext.run(instance, async () => {
-      await service.record.start(controller.signal);
-    });
+    const current = serviceContext.run(instance, () =>
+      runEventLoopWork(`plugin:${id} service ${service.record.name}`, () =>
+        service.record.start(controller.signal),
+      ),
+    );
     service.current = current;
     current.then(
       () =>
@@ -572,6 +574,13 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
 
   const reportedStaleErrors = new WeakSet<PluginContextStaleError>();
   const pluginCodeLocations = new Map<string, string>();
+
+  function listPluginCodeOwners(): { location: string; owner: string }[] {
+    return [...pluginCodeLocations].map(([location, pluginId]) => ({
+      location,
+      owner: `plugin:${pluginId}`,
+    }));
+  }
 
   function pluginOwningStack(error: unknown): string | undefined {
     if (!(error instanceof Error) || typeof error.stack !== "string") {
@@ -1404,6 +1413,7 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
             row.rootDir,
             deps.appVersion,
             await getPluginBuildToolchain(deps),
+            { minify: true, hostProvidedZod: true },
           );
           logPluginBuildWarnings({
             dataDir: deps.dataDir,
@@ -1638,7 +1648,7 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
     return `service ${[...hung].join(", ")} did not stop`;
   }
 
-  function discardCandidate(candidate: LoadedPlugin): void {
+  async function discardCandidate(candidate: LoadedPlugin): Promise<void> {
     candidate.stopping.abort();
     try {
       deps.pendingInteractions?.interruptOwnedPluginInteractions(candidate);
@@ -1647,13 +1657,17 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
         `plugin ${candidate.pluginId} interaction cleanup failed: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
-    for (const database of candidate.handle.databaseHandles.splice(0)) {
-      try {
-        database.close();
-      } catch {}
-    }
+    const detached = candidate.handle.databaseHandles
+      .splice(0)
+      .map((database) => {
+        try {
+          database.close();
+        } catch {}
+        return deps.walCheckpointer?.detach(database) ?? Promise.resolve();
+      });
     candidate.released.abort();
     candidate.handle.invalidate();
+    await Promise.all(detached);
   }
 
   function setLoadHold(hold: PluginLoadHold | null): void {
@@ -1733,11 +1747,12 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
       return null;
     }
     const previous = loaded.get(row.id);
+    const isReload = previous !== undefined;
     function failBeforeFactory(
       status: PluginRuntimeStatus,
       detail: string,
     ): string {
-      if (previous !== undefined) {
+      if (isReload) {
         setStatus(row.id, "running", `reload failed: ${detail}`);
         logger.warn(
           `plugin ${row.id} reload failed (kept previous instance): ${detail}`,
@@ -1807,6 +1822,7 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
       logger: deps.logger,
       db: deps.db,
       dataDir: deps.dataDir,
+      walCheckpointer: deps.walCheckpointer ?? null,
       getSdk: () => boundSdk,
       getMachineEnrollments: () => {
         if (!context.machineEnrollments)
@@ -2059,13 +2075,15 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
           `server entry must default-export a factory (bb) => void, got ${typeof factory}`,
         );
       }
-      await runFactoryTimeBoxed(
-        factory as (api: BbPluginApi) => unknown,
-        handle.api,
+      await runEventLoopWork(`plugin:${row.id} load`, () =>
+        runFactoryTimeBoxed(
+          factory as (api: BbPluginApi) => unknown,
+          handle.api,
+        ),
       );
     } catch (error) {
       for (const rollback of rollbackGenerations.reverse()) rollback();
-      discardCandidate(plugin);
+      await discardCandidate(plugin);
       let message = error instanceof Error ? error.message : String(error);
       if (/ERR_DLOPEN_FAILED|\.node/.test(message)) {
         message += " (native dependencies are not supported in BB plugins)";
@@ -2096,7 +2114,7 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
           error instanceof Error ? error.message : String(error)
         }`;
       }
-      discardCandidate(plugin);
+      await discardCandidate(plugin);
       setStatus(row.id, "error", hostArtifactProblem);
       logger.warn(`plugin ${row.id} failed to load: ${hostArtifactProblem}`);
       return hostArtifactProblem;
@@ -2118,7 +2136,7 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
         for (const rollback of rollbackGenerations.reverse()) rollback();
         loaded.delete(row.id);
         deps.sharedPorts?.clearDeclarationsForOwner(row.id);
-        discardCandidate(plugin);
+        await discardCandidate(plugin);
         return hungServicesDetail(hungAfterDispose);
       }
       releaseMutableRoots(
@@ -2214,6 +2232,7 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
             `plugin ${id} database close failed: ${error instanceof Error ? error.message : String(error)}`,
           );
         }
+        await deps.walCheckpointer?.detach(database);
       }
     } finally {
       plugin.released.abort();
@@ -2308,6 +2327,7 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
     isBuiltinPluginId,
     isSafeModeExemptRow,
     isSuppressedBySafeMode,
+    listPluginCodeOwners,
     listPluginHooks,
     listPluginEnvironmentCompositions,
     listPluginEnvironmentProviders,

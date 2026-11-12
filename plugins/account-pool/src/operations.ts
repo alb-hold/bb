@@ -507,11 +507,12 @@ export class PoolOperations {
 
   async refreshUsage(id: string): Promise<AccountSummary | null> {
     if ((await this.accounts.get(id)) === null) return null;
+    const previousError = this.quotas.get(id).error;
     try {
       if (!(await this.hub.refreshUsage(id, true)))
         throw new Error("Could not refresh account usage. Try again.");
     } finally {
-      this.onAccountsChanged();
+      if (this.quotas.get(id).error === previousError) this.onAccountsChanged();
     }
     return (
       (await this.status()).accounts.find((account) => account.id === id) ??

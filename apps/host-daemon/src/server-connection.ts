@@ -402,6 +402,7 @@ export class ServerConnection {
         dataDir: this.options.dataDir,
         localApiPort: this.options.localApiPort,
         activeThreads: this.options.getActiveThreads?.() ?? [],
+        openThreadWork: this.options.getOpenThreadWork?.() ?? [],
         undeliveredEventThreadIds:
           this.options.getUndeliveredEventThreadIds?.() ?? [],
         loadedEnvironments: this.options.getLoadedEnvironments?.() ?? [],
@@ -413,6 +414,7 @@ export class ServerConnection {
       this.options.onIdleProviderSessionTimeout?.(
         session.idleProviderSessionTimeoutMinutes,
       );
+      this.options.onAgentCpuPriority?.(session.agentCpuPriority);
       return session;
     } catch (error) {
       if (
@@ -694,6 +696,14 @@ export class ServerConnection {
       return;
     }
 
+    if (message.data.type === "interactive-requests.end") {
+      this.options.onInteractiveRequestsEnded?.({
+        reason: message.data.reason,
+        requests: message.data.requests,
+      });
+      return;
+    }
+
     if (message.data.type === "machine.shutdown") {
       void Promise.resolve(this.options.onMachineShutdown?.()).catch(
         (error) => {
@@ -727,6 +737,7 @@ export class ServerConnection {
       this.options.onIdleProviderSessionTimeout?.(
         message.data.idleProviderSessionTimeoutMinutes,
       );
+      this.options.onAgentCpuPriority?.(message.data.agentCpuPriority);
       return;
     }
 

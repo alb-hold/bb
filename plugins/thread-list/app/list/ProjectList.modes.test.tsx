@@ -131,11 +131,11 @@ function makeThread(overrides: SidebarThreadOverrides = {}): SidebarThread {
     createdAt: 1,
     updatedAt: 2,
     activity: {
+      goals: 0,
       workflows: 0,
       backgroundAgents: 0,
       backgroundCommands: 0,
       planMode: 1,
-      goals: 0,
     },
     runtimeStatus: "active",
     ...overrides,

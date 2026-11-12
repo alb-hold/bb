@@ -65,6 +65,7 @@ import { handleDaemonSocketClosed } from "../../src/internal/session-owner-side-
 import { onDaemonSocketOpen } from "../../src/ws/daemon-protocol.js";
 import { HOST_DAEMON_PROTOCOL_VERSION } from "@bb/host-daemon-contract";
 import { advanceEnvironmentProvisioning } from "../../src/services/environments/environment-engine.js";
+import { runThreadPurges } from "../helpers/thread-purges.js";
 
 const THREAD_START_EXECUTION = {
   model: "gpt-5",
@@ -997,6 +998,7 @@ it("resumes workspace setup when the same daemon reconnects", async () => {
         localApiPort: null,
         protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
         activeThreads: [],
+        openThreadWork: [],
       }),
     });
     expect(response.status).toBe(201);
@@ -1216,6 +1218,7 @@ it.each(["startup", "periodic"] as const)(
             pluginSchedules: harness.pluginService,
             plugins: harness.pluginService,
           }));
+      await runThreadPurges(harness.deps);
       expect(getThread(harness.db, thread.id)).toBeNull();
       expect(getThread(harness.db, other.id)?.deletedAt).toBeNull();
     });

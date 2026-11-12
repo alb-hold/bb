@@ -72,7 +72,6 @@ import { ingestThreadDetailBootstrap } from "../cache-owners/thread-detail-cache
 import { THREAD_OPEN_CACHE_GC_MS } from "../cache-owners/thread-open-cache-owner";
 import { clearThreadTimelineUnseenEvents } from "../cache-owners/thread-timeline-unseen-events";
 import {
-  isCachedThreadTimelinePushEnabled,
   resolveThreadTimelineSegmentLimit,
   syncThreadTimelineSubscriptionTag,
 } from "../cache-owners/thread-timeline-push-owner";
@@ -859,9 +858,7 @@ export async function fetchThreadTimeline({
   const merged = await mergeThreadTimelineDelta(previous, response, () =>
     sdk.threads.timeline({ threadId, signal, ...pageArgs }),
   );
-  const pushed = isCachedThreadTimelinePushEnabled(queryClient)
-    ? queryClient.getQueryData<ThreadTimelineResponse>(queryKey)
-    : undefined;
+  const pushed = queryClient.getQueryData<ThreadTimelineResponse>(queryKey);
   const timeline =
     pushed !== undefined && pushed.maxSeq > merged.maxSeq ? pushed : merged;
   clearThreadTimelineUnseenEvents(queryClient, threadId, timeline.maxSeq);

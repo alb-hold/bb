@@ -165,7 +165,6 @@ function OpenThread({
   const { placement, hasUnseenTimelineEvents: openAtLatest } =
     useThreadUnreadDividerState({
       routeThreadId: THREAD_ID,
-      anchor: "first-unread-row",
       bootstrapQuery: {
         dataUpdatedAt: bootstrapUpdatedAt,
         isFetchedAfterMount: false,

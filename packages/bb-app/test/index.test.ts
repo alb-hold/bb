@@ -1980,8 +1980,7 @@ describe("bb-app launcher", () => {
       SERVER_SHUTDOWN_BOUND_MS + SERVER_SHUTDOWN_SAFETY_MARGIN_MS * 2,
     );
     expect(DAEMON_PROCESS_TERMINATION_TIMEOUT_MS).toBe(
-      DAEMON_DETACH_HEAD_START_MS +
-        SERVER_PROCESS_TERMINATION_TIMEOUT_MS,
+      DAEMON_DETACH_HEAD_START_MS + SERVER_PROCESS_TERMINATION_TIMEOUT_MS,
     );
     expect(LAUNCHER_MAX_SHUTDOWN_MS).toBeLessThan(
       DESKTOP_OWNED_RUNTIME_SHUTDOWN_GRACE_MS,
@@ -2025,7 +2024,11 @@ describe("bb-app launcher", () => {
         child.once("error", reject);
         child.once("exit", (code, signal) => {
           if (code !== null || signal !== null) {
-            reject(new Error(`child exited before ready: ${String(code)} ${String(signal)}`));
+            reject(
+              new Error(
+                `child exited before ready: ${String(code)} ${String(signal)}`,
+              ),
+            );
           }
         });
       });
@@ -2441,6 +2444,7 @@ describe("bb-app launcher", () => {
       try {
         const logDir = join(scratch, "logs");
         const child = spawnLoggedProcess({
+          appScheduling: false,
           command: process.execPath,
           args: [
             "-e",

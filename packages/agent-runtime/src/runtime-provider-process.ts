@@ -2,6 +2,8 @@ import type { ThreadEvent } from "@bb/domain";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import {
+  deprioritizeAgentWorkload,
+  preferOutOfMemoryKill,
   pathExists,
   sanitizeInheritedChildProcessEnv,
   spawnManagedProcess,
@@ -16,6 +18,7 @@ import {
   SocketBridgeWorker,
 } from "./bridge-worker-socket.js";
 import type { CreateBridgeAdapterOptions } from "./provider-adapter.js";
+import { bridgeLaunchProcessKey } from "./bridge-launch-process-key.js";
 import { createProviderForId } from "./provider-registry.js";
 import {
   ignoredJsonRpcResultSchema,
@@ -45,6 +48,7 @@ export class ProviderWorkspaceMissingError extends Error {
 
 export interface RuntimeProviderProcess {
   adapter: BridgeProtocolAdapter;
+  bridgeLaunchKey: string;
   child: BridgeWorkerProcess;
   stop: ManagedProcess["stop"];
   expectedShutdownExpectations: number;
@@ -133,6 +137,7 @@ interface TerminateProviderProcessArgs {
 
 interface AttachProviderProcessArgs {
   adapter: BridgeProtocolAdapter;
+  bridgeLaunchKey: string;
   child: BridgeWorkerProcess;
   managed?: ManagedProcess;
   processKey: string;
@@ -149,6 +154,7 @@ interface AdoptProviderProcessArgs {
 
 interface SpawnProviderArgs {
   adapter: BridgeProtocolAdapter;
+  bridgeLaunchKey: string;
   pluginId: string;
   processKey: string;
   providerId: string;
@@ -251,6 +257,7 @@ export class RuntimeProviderProcessManager {
       const adapter = this.getAdapter(args.providerId, args.bridgeLaunch);
       const providerProcess = this.spawnProvider({
         adapter,
+        bridgeLaunchKey: bridgeLaunchProcessKey(args.bridgeLaunch),
         pluginId: args.bridgeLaunch.pluginId,
         processKey: args.processKey,
         providerId: args.providerId,
@@ -333,11 +340,13 @@ export class RuntimeProviderProcessManager {
     args: EnsureRuntimeProviderArgs,
   ): Promise<void> {
     this.currentProcessKeyByProviderId.set(args.providerId, args.processKey);
+    const bridgeLaunchKey = bridgeLaunchProcessKey(args.bridgeLaunch);
     const staleKeys = [...this.processes.entries()]
       .filter(
         ([processKey, providerProcess]) =>
           processKey !== args.processKey &&
           providerProcess.providerId === args.providerId &&
+          providerProcess.bridgeLaunchKey !== bridgeLaunchKey &&
           providerProcess.identity.threadIds.size === 0,
       )
       .map(([processKey]) => processKey);
@@ -523,6 +532,7 @@ export class RuntimeProviderProcessManager {
     }
     return this.attachProviderProcess({
       adapter: args.adapter,
+      bridgeLaunchKey: args.bridgeLaunchKey,
       child,
       ...(managed !== undefined ? { managed } : {}),
       processKey: args.processKey,
@@ -536,6 +546,7 @@ export class RuntimeProviderProcessManager {
     const processKey = adoptedBridgeWorkerProcessKey(args.entry);
     return this.attachProviderProcess({
       adapter,
+      bridgeLaunchKey: bridgeLaunchProcessKey(args.bridgeLaunch),
       child: new SocketBridgeWorker({
         kind: "adopt",
         entry: { ...args.entry, processKey },
@@ -556,6 +567,8 @@ export class RuntimeProviderProcessManager {
     if (stop === undefined) {
       throw new Error("Provider process has no managed stop operation");
     }
+    deprioritizeAgentWorkload(child.pid);
+    preferOutOfMemoryKill(child.pid);
     let finalizeExit: () => void = () => undefined;
     const exitFinalized = new Promise<void>((resolve) => {
       finalizeExit = resolve;
@@ -565,6 +578,7 @@ export class RuntimeProviderProcessManager {
       child,
       stop,
       adapter: args.adapter,
+      bridgeLaunchKey: args.bridgeLaunchKey,
       expectedShutdownExpectations: 0,
       exitFinalized,
       interactiveRequestScope: randomUUID(),

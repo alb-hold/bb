@@ -65,11 +65,10 @@ async function waitForFileContents(
   contents: string,
 ): Promise<void> {
   await expect
-    .poll(
-      () =>
-        existsSync(path) && readFileSync(path, "utf8") === contents,
-      { timeout: 5_000, interval: 10 },
-    )
+    .poll(() => existsSync(path) && readFileSync(path, "utf8") === contents, {
+      timeout: 5_000,
+      interval: 10,
+    })
     .toBe(true);
 }
 
@@ -249,6 +248,7 @@ describe("spawnLoggedProcess", () => {
         `const fs = require("node:fs"); let count = 0; const timer = setInterval(() => { process.stdout.write(${JSON.stringify(label)} + "-" + (++count) + "\\n"); if (fs.existsSync(${JSON.stringify(stopPath)})) { clearInterval(timer); process.exit(0); } }, 10);`,
       ];
       const first = spawnLoggedProcess({
+        appScheduling: false,
         command: process.execPath,
         args: childArgs("no-endpoint-first", stopFirstPath),
         env: process.env,
@@ -281,6 +281,7 @@ describe("spawnLoggedProcess", () => {
         chmodSync(socketDir, 0o700);
 
         observer = spawnLoggedProcess({
+          appScheduling: false,
           command: process.execPath,
           args: childArgs("no-endpoint-observer", stopObserverPath),
           env: process.env,
@@ -367,6 +368,7 @@ describe("spawnLoggedProcess", () => {
       symlinkSync(targetDir, socketDir, "dir");
       scratchDirs.push(socketDir);
       const child = spawnLoggedProcess({
+        appScheduling: false,
         command: process.execPath,
         args: ["-e", 'process.stdout.write("symlink setup output\\n");'],
         env: process.env,
@@ -394,6 +396,7 @@ describe("spawnLoggedProcess", () => {
     async (logName) => {
       const logDir = join(scratchDir(), "logs");
       const child = spawnLoggedProcess({
+        appScheduling: false,
         command: process.execPath,
         args: [
           "-e",
@@ -420,10 +423,85 @@ describe("spawnLoggedProcess", () => {
     },
   );
 
+  it("keeps the spawned pid and IPC channel when the child runs under a scheduling wrapper", async () => {
+    const child = spawnLoggedProcess({
+      appScheduling: true,
+      command: process.execPath,
+      args: [
+        "-e",
+        `process.send({ pid: process.pid });
+         process.once("message", (message) => {
+           process.send({ echo: message });
+           process.disconnect();
+         });`,
+      ],
+      env: process.env,
+      ipc: true,
+      logDir: scratchDir(),
+      logName: "server",
+    });
+    const messages: unknown[] = [];
+    child.on("message", (message) => {
+      messages.push(message);
+      if (messages.length === 1) child.send("ping");
+    });
+
+    expect(await waitForExit(child)).toBe(0);
+    expect(messages).toEqual([{ pid: child.pid }, { echo: "ping" }]);
+  });
+
+  it.runIf(process.platform === "darwin")(
+    "wraps the resolved command in app scheduling only when requested",
+    async () => {
+      const launches = await Promise.all(
+        [true, false].map(async (appScheduling) => {
+          const child = spawnLoggedProcess({
+            appScheduling,
+            command: process.execPath,
+            args: ["-e", ""],
+            env: process.env,
+            logDir: scratchDir(),
+            logName: "server",
+          });
+          expect(await waitForExit(child)).toBe(0);
+          return { file: child.spawnfile, args: child.spawnargs };
+        }),
+      );
+      expect(launches[0]?.file).toBe("/usr/sbin/taskpolicy");
+      expect(launches[0]?.args.slice(1, 3)).toEqual(["-a", process.execPath]);
+      expect(launches[1]?.file).toBe(process.execPath);
+    },
+  );
+
+  it.runIf(process.platform === "darwin")(
+    "keeps the loopback proxy bypass for a proxied child under app scheduling",
+    async () => {
+      const logDir = scratchDir();
+      const child = spawnLoggedProcess({
+        appScheduling: true,
+        command: process.execPath,
+        args: ["--use-env-proxy", "-e", "console.log(process.env.NO_PROXY)"],
+        env: {
+          ...process.env,
+          HTTPS_PROXY: "http://proxy.invalid:3128",
+          NO_PROXY: "example.com",
+        },
+        logDir,
+        logName: "server",
+      });
+      expect(await waitForExit(child)).toBe(0);
+      expect(child.spawnfile).toBe("/usr/sbin/taskpolicy");
+      expect(
+        readFileSync(join(logDir, "server-stdio.log"), "utf8").split("\n")[0],
+      ).toBe("example.com,localhost,127.0.0.1,::1,[::1]");
+    },
+  );
+
   it("preserves output across child restarts, including early failures", async () => {
     const logDir = scratchDir();
     for (const message of ["first startup", "second startup"]) {
       const child = spawnLoggedProcess({
+        appScheduling: false,
         command: process.execPath,
         args: [
           "-e",
@@ -465,6 +543,7 @@ describe("spawnLoggedProcess", () => {
     truncateSync(logPath, 10 * 1024 * 1024 + 1);
 
     const child = spawnLoggedProcess({
+      appScheduling: false,
       command: process.execPath,
       args: ["-e", `console.error("fresh startup"); process.exit(1);`],
       env: process.env,
@@ -492,6 +571,7 @@ describe("spawnLoggedProcess", () => {
     const firstBytes = 9 * 1024 * 1024 + 64 * 1024;
     const secondBytes = 11 * 1024 * 1024;
     const first = spawnLoggedProcess({
+      appScheduling: false,
       command: process.execPath,
       args: ["-e", `process.stdout.write(Buffer.alloc(${firstBytes}, 65));`],
       env: process.env,
@@ -509,6 +589,7 @@ describe("spawnLoggedProcess", () => {
         .poll(() => existsSync(enteredPath), { timeout: 5_000, interval: 10 })
         .toBe(true);
       second = spawnLoggedProcess({
+        appScheduling: false,
         command: process.execPath,
         args: ["-e", `process.stdout.write(Buffer.alloc(${secondBytes}, 66));`],
         env: process.env,
@@ -622,6 +703,7 @@ describe("spawnLoggedProcess", () => {
     const lostOutput = "unique child payload 61d";
     writeFileSync(diagnosticPath, "");
     const child = spawnLoggedProcess({
+      appScheduling: false,
       command: process.execPath,
       args: [
         "-e",
@@ -695,6 +777,7 @@ describe("spawnLoggedProcess", () => {
     const releasePath = join(logDir, "release-survivor");
     const completionPath = join(logDir, "survivor-writer-finished");
     const first = spawnLoggedProcess({
+      appScheduling: false,
       command: process.execPath,
       args: [
         "-e",
@@ -724,6 +807,7 @@ describe("spawnLoggedProcess", () => {
       writerPid = Number(firstSegment!.match(/\.active-(\d+)-/)?.[1]);
       expect(Number.isInteger(writerPid)).toBe(true);
       survivor = spawnLoggedProcess({
+        appScheduling: false,
         command: process.execPath,
         args: ["-e", `process.stdout.write(Buffer.alloc(${secondBytes}, 66));`],
         env: process.env,
@@ -819,6 +903,7 @@ describe("spawnLoggedProcess", () => {
     const enteredPath = join(logDir, "killed-writer-finalizing");
     const releasePath = join(logDir, "release-killed-writer");
     const first = spawnLoggedProcess({
+      appScheduling: false,
       command: process.execPath,
       args: ["-e", 'process.stdout.write("before writer kill\\n");'],
       env: process.env,
@@ -852,6 +937,7 @@ describe("spawnLoggedProcess", () => {
       expect(writerIsGone).toBe(true);
 
       survivor = spawnLoggedProcess({
+        appScheduling: false,
         command: process.execPath,
         args: ["-e", 'process.stdout.write("later writer output\\n");'],
         env: process.env,
@@ -896,6 +982,7 @@ describe("spawnLoggedProcess", () => {
       `server-stdio.log.active-${process.pid}-${source}-0000000000000000-deadbeef-dead-beef-dead-beefdeadbeef`,
     );
     const survivor = spawnLoggedProcess({
+      appScheduling: false,
       command: process.execPath,
       args: [
         "-e",
@@ -967,6 +1054,7 @@ describe("spawnLoggedProcess", () => {
     writeFileSync(deadSegment, "dead Windows writer output\\n");
     writeFileSync(busySegment, "live busy Windows writer output\\n");
     const observer = spawnLoggedProcess({
+      appScheduling: false,
       command: process.execPath,
       args: ["-e", 'process.stdout.write("Windows recovery observer\\n");'],
       env: process.env,
@@ -1012,6 +1100,7 @@ describe("spawnLoggedProcess", () => {
     );
     writeFileSync(segment, "single ENOENT Windows writer output\\n");
     const observer = spawnLoggedProcess({
+      appScheduling: false,
       command: process.execPath,
       args: ["-e", 'process.stdout.write("single ENOENT observer\\n");'],
       env: process.env,
@@ -1038,6 +1127,7 @@ describe("spawnLoggedProcess", () => {
     const identity = currentProcessIdentity();
     const liveStopPath = join(logDir, "stop-same-identity-writer");
     const dead = spawnLoggedProcess({
+      appScheduling: false,
       command: process.execPath,
       args: [
         "-e",
@@ -1105,6 +1195,7 @@ describe("spawnLoggedProcess", () => {
         .toBe(true);
 
       live = spawnLoggedProcess({
+        appScheduling: false,
         command: process.execPath,
         args: [
           "-e",
@@ -1134,6 +1225,7 @@ describe("spawnLoggedProcess", () => {
           readFileSync(file, "utf8").includes("live same-identity output"),
       )!;
       observer = spawnLoggedProcess({
+        appScheduling: false,
         command: process.execPath,
         args: ["-e", 'process.stdout.write("socket observer\\n");'],
         env: process.env,
@@ -1184,6 +1276,7 @@ describe("spawnLoggedProcess", () => {
       const logDir = scratchDir();
       const identity = currentProcessIdentity();
       const dead = spawnLoggedProcess({
+        appScheduling: false,
         command: process.execPath,
         args: [
           "-e",
@@ -1227,6 +1320,7 @@ describe("spawnLoggedProcess", () => {
         expect(currentProcessIdentity()).toEqual(identity);
 
         observer = spawnLoggedProcess({
+          appScheduling: false,
           command: process.execPath,
           args: ["-e", 'process.stdout.write("fallback observer\\n");'],
           env: process.env,
@@ -1269,6 +1363,7 @@ describe("spawnLoggedProcess", () => {
         fingerprint: "0000000000000000",
       };
       const dead = spawnLoggedProcess({
+        appScheduling: false,
         command: process.execPath,
         args: [
           "-e",
@@ -1310,6 +1405,7 @@ describe("spawnLoggedProcess", () => {
         expect(() => process.kill(identity.pid, 0)).not.toThrow();
 
         observer = spawnLoggedProcess({
+          appScheduling: false,
           command: process.execPath,
           args: ["-e", 'process.stdout.write("source-zero observer\\n");'],
           env: process.env,
@@ -1351,6 +1447,7 @@ describe("spawnLoggedProcess", () => {
       const logDir = scratchDir();
       const stopPath = join(logDir, "stop-source-zero-live-writer");
       const owner = spawnLoggedProcess({
+        appScheduling: false,
         command: process.execPath,
         args: [
           "-e",
@@ -1382,15 +1479,14 @@ describe("spawnLoggedProcess", () => {
             file.includes(".active-") &&
             fileIncludes(file, "live source-zero output"),
         )!;
-        expect(liveSegment).toContain(
-          `.active-${owner.writerProcess.pid}-0-`,
-        );
+        expect(liveSegment).toContain(`.active-${owner.writerProcess.pid}-0-`);
         const ownerSocket = join(
           livenessDirectory(logDir, "server"),
           `s-${socketTokenFromActivePath(liveSegment)}`,
         );
         unlinkSync(ownerSocket);
         observer = spawnLoggedProcess({
+          appScheduling: false,
           command: process.execPath,
           args: ["-e", 'process.stdout.write("live source-zero observer\\n");'],
           env: process.env,
@@ -1443,6 +1539,7 @@ describe("spawnLoggedProcess", () => {
         fingerprint: "0000000000000000",
       };
       const dead = spawnLoggedProcess({
+        appScheduling: false,
         command: process.execPath,
         args: [
           "-e",
@@ -1482,6 +1579,7 @@ describe("spawnLoggedProcess", () => {
         unlinkSync(deadSocket);
 
         observer = spawnLoggedProcess({
+          appScheduling: false,
           command: process.execPath,
           args: ["-e", 'process.stdout.write("different device observer\\n");'],
           env: process.env,
@@ -1529,6 +1627,7 @@ describe("spawnLoggedProcess", () => {
         fingerprint: "0000000000000000",
       };
       const dead = spawnLoggedProcess({
+        appScheduling: false,
         command: process.execPath,
         args: [
           "-e",
@@ -1566,6 +1665,7 @@ describe("spawnLoggedProcess", () => {
         unlinkSync(deadSocket);
 
         observer = spawnLoggedProcess({
+          appScheduling: false,
           command: process.execPath,
           args: ["-e", 'process.stdout.write("omitted pid observer\\n");'],
           env: process.env,
@@ -1616,6 +1716,7 @@ describe("spawnLoggedProcess", () => {
     const ownerIdentity = { ...identity, fingerprint: differentFingerprint };
     const ownerStopPath = join(logDir, "stop-busy-endpoint-owner");
     const owner = spawnLoggedProcess({
+      appScheduling: false,
       command: process.execPath,
       args: [
         "-e",
@@ -1652,6 +1753,7 @@ describe("spawnLoggedProcess", () => {
         `s-${ownerToken}`,
       );
       observer = spawnLoggedProcess({
+        appScheduling: false,
         command: process.execPath,
         args: ["-e", 'process.stdout.write("busy endpoint observer\\n");'],
         env: process.env,
@@ -1691,6 +1793,7 @@ describe("spawnLoggedProcess", () => {
       const logDir = scratchDir();
       const ownerStopPath = join(logDir, "stop-full-backlog-owner");
       const owner = spawnLoggedProcess({
+        appScheduling: false,
         command: process.execPath,
         args: [
           "-e",
@@ -1759,6 +1862,7 @@ describe("spawnLoggedProcess", () => {
         expect(connectionResults.some(Boolean)).toBe(true);
         expect(refusedConnections).toBeGreaterThan(0);
         observer = spawnLoggedProcess({
+          appScheduling: false,
           command: process.execPath,
           args: ["-e", 'process.stdout.write("full backlog observer\\n");'],
           env: process.env,
@@ -1799,6 +1903,7 @@ describe("spawnLoggedProcess", () => {
       scratchDirs.push(socketDir);
       const stopPath = join(realLogDir, "stop-symlink-owner");
       const live = spawnLoggedProcess({
+        appScheduling: false,
         command: process.execPath,
         args: [
           "-e",
@@ -1831,6 +1936,7 @@ describe("spawnLoggedProcess", () => {
         expect(identity.pid).toBe(live.writerProcess.pid);
 
         observer = spawnLoggedProcess({
+          appScheduling: false,
           command: process.execPath,
           args: ["-e", 'process.stdout.write("symlink fallback observer\\n");'],
           env: process.env,
@@ -1868,6 +1974,7 @@ describe("spawnLoggedProcess", () => {
       scratchDirs.push(socketDir);
       const stopPath = join(logDir, "stop-renamed-owner");
       const live = spawnLoggedProcess({
+        appScheduling: false,
         command: process.execPath,
         args: [
           "-e",
@@ -1905,6 +2012,7 @@ describe("spawnLoggedProcess", () => {
         renameSync(originalSegment, renamedSegment);
 
         observer = spawnLoggedProcess({
+          appScheduling: false,
           command: process.execPath,
           args: ["-e", 'process.stdout.write("renamed fallback observer\\n");'],
           env: process.env,
@@ -1950,6 +2058,7 @@ describe("spawnLoggedProcess", () => {
       writeFileSync(deadSegment, "endpoint-dead-identity-mismatch\n");
       const stopPath = join(logDir, "stop-endpoint-dead-observer");
       const observer = spawnLoggedProcess({
+        appScheduling: false,
         command: process.execPath,
         args: [
           "-e",
@@ -2000,6 +2109,7 @@ describe("spawnLoggedProcess", () => {
       `const fs = require("node:fs"); process.stdout.write(${JSON.stringify(label)}); const timer = setInterval(() => { if (fs.existsSync(${JSON.stringify(stopPath)})) { clearInterval(timer); process.exit(0); } }, 10);`,
     ];
     const first = spawnLoggedProcess({
+      appScheduling: false,
       command: process.execPath,
       args: makeArgs("locale-writer-one", firstStopPath),
       env: { ...process.env, LC_ALL: "C", TZ: "UTC" },
@@ -2031,6 +2141,7 @@ describe("spawnLoggedProcess", () => {
           readFileSync(path, "utf8").includes("locale-writer-one"),
       )!;
       second = spawnLoggedProcess({
+        appScheduling: false,
         command: process.execPath,
         args: makeArgs("locale-writer-two", secondStopPath),
         env: { ...process.env, LC_ALL: "C.utf8", TZ: "Pacific/Honolulu" },
@@ -2102,6 +2213,7 @@ describe("spawnLoggedProcess", () => {
       `const fs = require("node:fs"); let count = 0; const timer = setInterval(() => { process.stdout.write(${JSON.stringify(label)} + (++count) + "\\n"); if (fs.existsSync(${JSON.stringify(stopPath)})) { clearInterval(timer); process.exit(0); } }, 10);`,
     ];
     const first = spawnLoggedProcess({
+      appScheduling: false,
       command: process.execPath,
       args: makeArgs("tmpdir-writer-one-", firstStopPath),
       env: process.env,
@@ -2135,6 +2247,7 @@ describe("spawnLoggedProcess", () => {
       const firstToken = socketTokenFromActivePath(firstActivePath);
       expect(readdirSync(firstSocketDir)).toContain(`s-${firstToken}`);
       second = spawnLoggedProcess({
+        appScheduling: false,
         command: process.execPath,
         args: makeArgs("tmpdir-writer-two-", secondStopPath),
         env: process.env,
@@ -2224,6 +2337,7 @@ describe("spawnLoggedProcess", () => {
       "unknown-endpoint-observer-finished",
     );
     const owner = spawnLoggedProcess({
+      appScheduling: false,
       command: process.execPath,
       args: [
         "-e",
@@ -2262,6 +2376,7 @@ describe("spawnLoggedProcess", () => {
       const ownerToken = socketTokenFromActivePath(ownerSegment!);
       utimesSync(ownerSegment!, new Date(0), new Date(0));
       observer = spawnLoggedProcess({
+        appScheduling: false,
         command: process.execPath,
         args: [
           "-e",
@@ -2329,6 +2444,7 @@ describe("spawnLoggedProcess", () => {
       const ownerStopPath = join(logDir, "stop-cross-source-owner");
       const observerStopPath = join(logDir, "stop-cross-source-observer");
       const owner = spawnLoggedProcess({
+        appScheduling: false,
         command: process.execPath,
         args: [
           "-e",
@@ -2365,6 +2481,7 @@ describe("spawnLoggedProcess", () => {
         expect(ownerSegment).toContain(`.active-${owner.writerProcess.pid}-1-`);
         const ownerToken = socketTokenFromActivePath(ownerSegment!);
         observer = spawnLoggedProcess({
+          appScheduling: false,
           command: process.execPath,
           args: [
             "-e",
@@ -2441,6 +2558,7 @@ describe("spawnLoggedProcess", () => {
       `server-stdio.log.active-${deadPid}-${identity.source}-${identity.fingerprint}-e-${token}`,
     );
     const observer = spawnLoggedProcess({
+      appScheduling: false,
       command: process.execPath,
       args: [
         "-e",
@@ -2499,6 +2617,7 @@ describe("spawnLoggedProcess", () => {
       "unreadable-identity-observer-finished",
     );
     const owner = spawnLoggedProcess({
+      appScheduling: false,
       command: process.execPath,
       args: [
         "-e",
@@ -2540,6 +2659,7 @@ describe("spawnLoggedProcess", () => {
       process.env.PATH = "";
       try {
         observer = spawnLoggedProcess({
+          appScheduling: false,
           command: process.execPath,
           args: [
             "-e",
@@ -2651,6 +2771,7 @@ fs.renameSync = function (source, destination) {
 `,
       );
       const owner = spawnLoggedProcess({
+        appScheduling: false,
         command: process.execPath,
         args: [
           "-e",
@@ -2699,6 +2820,7 @@ fs.renameSync = function (source, destination) {
           `-i-${initialSocketIdentity.dev}-${initialSocketIdentity.ino}`,
         );
         observer = spawnLoggedProcess({
+          appScheduling: false,
           command: process.execPath,
           args: [
             "-e",
@@ -2851,6 +2973,7 @@ fs.renameSync = function (source, destination) {
     const survivorStopPath = join(logDir, "stop-survivor");
     const completionPath = join(logDir, "survivor-writer-finished");
     const first = spawnLoggedProcess({
+      appScheduling: false,
       command: process.execPath,
       args: [
         "-e",
@@ -2890,6 +3013,7 @@ fs.renameSync = function (source, destination) {
         )
         .toBe(true);
       survivor = spawnLoggedProcess({
+        appScheduling: false,
         command: process.execPath,
         args: [
           "-e",
@@ -3010,6 +3134,7 @@ fs.renameSync = function (source, destination) {
       writeFileSync(`${logPath}.${index}`, `previous-${index}`);
     }
     const child = spawnLoggedProcess({
+      appScheduling: false,
       command: process.execPath,
       args: ["-e", `process.stdout.write("new active output\\n");`],
       env: process.env,
@@ -3063,6 +3188,7 @@ fs.renameSync = function (source, destination) {
       let child!: ReturnType<typeof spawnLoggedProcess>;
       try {
         child = spawnLoggedProcess({
+          appScheduling: false,
           command: previousExecPath,
           args: ["-e", `process.stdout.write("writer environment\\n");`],
           env: process.env,
@@ -3096,6 +3222,7 @@ fs.renameSync = function (source, destination) {
     const logDir = scratchDir();
     const writerFinishedPath = join(logDir, "writer-finished");
     const child = spawnLoggedProcess({
+      appScheduling: false,
       command: process.execPath,
       args: ["-e", `process.stdout.write("x".repeat(61 * 1024 * 1024));`],
       env: process.env,
@@ -3169,6 +3296,7 @@ fs.renameSync = function (source, destination) {
     }
     const startPruningWriter = (label: string, index: number) =>
       spawnLoggedProcess({
+        appScheduling: false,
         command: process.execPath,
         args: [
           "-e",
@@ -3181,7 +3309,9 @@ fs.renameSync = function (source, destination) {
       });
     const pruningWriters = [startPruningWriter("A", 0)];
     let pipeProbe: ReturnType<typeof spawnLoggedProcess> | undefined;
-    const writers: ReturnType<typeof spawnLoggedProcess>[] = [...pruningWriters];
+    const writers: ReturnType<typeof spawnLoggedProcess>[] = [
+      ...pruningWriters,
+    ];
 
     try {
       await waitForPaths([barriers[0].postRenameEnteredPath!], 10_000);
@@ -3190,7 +3320,10 @@ fs.renameSync = function (source, destination) {
       await waitForPaths([barriers[1].postRenameEnteredPath!], 10_000);
       expect(backupCount()).toBe(6);
       writeFileSync(postRenameReleasePath, "release");
-      await waitForPaths(barriers.map((barrier) => barrier.pruneSnapshotEnteredPath!), 10_000);
+      await waitForPaths(
+        barriers.map((barrier) => barrier.pruneSnapshotEnteredPath!),
+        10_000,
+      );
       expect(backupCount()).toBe(6);
       expect(
         barriers.map((barrier) =>
@@ -3198,6 +3331,7 @@ fs.renameSync = function (source, destination) {
         ),
       ).toEqual(["6", "6"]);
       pipeProbe = spawnLoggedProcess({
+        appScheduling: false,
         command: process.execPath,
         args: ["-e", pipeProbeScript],
         env: process.env,
@@ -3307,6 +3441,7 @@ fs.renameSync = function (source, destination) {
     const attemptPath = join(logDir, "unlink-attempt");
     const releasePath = join(logDir, "release-unlink");
     const writer = spawnLoggedProcess({
+      appScheduling: false,
       command: process.execPath,
       args: ["-e", `process.stdout.write(Buffer.alloc(10 * 1024 * 1024, 65));`],
       env: process.env,
@@ -3388,6 +3523,7 @@ fs.renameSync = function (source, destination) {
     const attemptPath = join(logDir, "unlink-attempt");
     const releasePath = join(logDir, "release-unlink");
     const writer = spawnLoggedProcess({
+      appScheduling: false,
       command: process.execPath,
       args: ["-e", `process.stdout.write(Buffer.alloc(10 * 1024 * 1024, 66));`],
       env: process.env,
@@ -3466,6 +3602,7 @@ fs.renameSync = function (source, destination) {
     const releasePath = join(logDir, "release-unlink");
     const completionPath = join(logDir, "writer-complete");
     const writer = spawnLoggedProcess({
+      appScheduling: false,
       command: process.execPath,
       args: ["-e", `process.stdout.write(Buffer.alloc(10 * 1024 * 1024, 67));`],
       env: process.env,
@@ -3542,6 +3679,7 @@ fs.renameSync = function (source, destination) {
       utimesSync(backupPath, timestamp, timestamp);
     }
     const writer = spawnLoggedProcess({
+      appScheduling: false,
       command: process.execPath,
       args: ["-e", `process.stdout.write(Buffer.alloc(10 * 1024 * 1024, 65));`],
       env: process.env,
@@ -3595,6 +3733,7 @@ fs.renameSync = function (source, destination) {
     writeFileSync(blockedPath, "occupied");
     expect(() =>
       spawnLoggedProcess({
+        appScheduling: false,
         command: process.execPath,
         args: ["-e", "process.exit(0)"],
         env: process.env,
@@ -3607,6 +3746,7 @@ fs.renameSync = function (source, destination) {
   it("reports executable spawn failures", async () => {
     const logDir = scratchDir();
     const child = spawnLoggedProcess({
+      appScheduling: false,
       command: join(logDir, "missing-executable"),
       args: [],
       env: process.env,
@@ -3630,6 +3770,7 @@ fs.renameSync = function (source, destination) {
     });
     try {
       child = spawnLoggedProcess({
+        appScheduling: false,
         command: String(originalExecPath.value),
         args: ["-e", "process.exit(0)"],
         env: process.env,

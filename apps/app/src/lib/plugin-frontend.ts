@@ -28,9 +28,11 @@ import { createPluginToast } from "@/lib/notifications/plugin-toast";
 import { appQueryClient } from "./app-query-client";
 import {
   setServerPluginsStarting,
+  isServerPluginsStarting,
   setPluginFrontendReconcilePending,
   setPluginFrontendLoadFailed,
 } from "./plugin-frontend-boot-state";
+import { createStartingPluginsRecheck } from "./plugin-frontend-starting-recheck";
 import type {
   PluginContentScriptDisposer,
   PluginContentScriptRegistration,
@@ -209,7 +211,6 @@ export interface BbPluginRuntime {
   internal_DO_NOT_USE_context_menu: unknown;
   internal_DO_NOT_USE_responsive_overlay: unknown;
 
-  zod?: unknown;
   radixCheckbox?: unknown;
   radixSlot?: unknown;
   radixComposeRefs?: unknown;
@@ -233,6 +234,7 @@ export interface BbPluginRuntime {
   vaul?: unknown;
   pierreDiffs?: unknown;
   pierreDiffsReact?: unknown;
+  zod?: unknown;
   clsx: unknown;
   tailwindMerge: unknown;
   classVarianceAuthority: unknown;
@@ -274,6 +276,8 @@ export function installPluginRuntime(): BbPluginRuntime {
   };
   return host.__bbPluginRuntime;
 }
+
+
 
 async function fetchEnabledPluginList(queryClient: QueryClient) {
   for (;;) {
@@ -545,7 +549,7 @@ async function deactivateCommittedGeneration(
   state.appliedHashes.delete(pluginId);
   if (removePublishedUi) {
     deps.removeRegistrations(pluginId);
-    deps.applyCss(pluginId, null);
+    void deps.applyCss(pluginId, null);
   }
   return failures;
 }
@@ -1019,12 +1023,12 @@ async function reconcileCandidate(
       await disposeGeneration(pluginId, activationResult.activation, deps);
     }
     deps.removeRegistrations(pluginId);
-    deps.applyCss(pluginId, null);
+    void deps.applyCss(pluginId, null);
     return;
   }
   if (!activationResult.ok) {
     deps.removeRegistrations(pluginId);
-    deps.applyCss(pluginId, null);
+    void deps.applyCss(pluginId, null);
     const failed: PluginFrontendRecord = {
       pluginId,
       status: "failed",
@@ -1084,7 +1088,7 @@ export async function disposePluginFrontends(
     }
     clearPluginThreadRowStatuses(pluginId);
     deps.removeRegistrations(pluginId);
-    deps.applyCss(pluginId, null);
+    void deps.applyCss(pluginId, null);
   }
   state.records.clear();
   state.appliedHashes.clear();
@@ -1147,6 +1151,12 @@ const PLUGIN_SLOT_BATCH_MAX_HOLD_MS = 150;
 
 const PLUGIN_FRONTEND_IMPORT_RETRY_DELAYS_MS = [500, 2_000];
 const deferredFrontendSchedule = createDeferredPluginFrontendSchedule();
+const startingPluginsRecheck = createStartingPluginsRecheck({
+  isServerPluginsStarting,
+  recheck: () => schedulePluginFrontendReconcile(),
+  setTimeout: (callback, ms) => window.setTimeout(callback, ms),
+  clearTimeout: (handle) => window.clearTimeout(handle as number),
+});
 
 const browserReconcileDeps: PluginFrontendReconcileDeps = {
   fetchCandidates: fetchFrontendCandidates,
@@ -1240,6 +1250,7 @@ export function bootPluginFrontends(): Promise<void> {
     installPluginFrontendPageLifecycle();
     await reconcilePluginFrontends(state, browserReconcileDeps);
     publishLoadFailed();
+    startingPluginsRecheck.afterReconcile();
   })()
     .catch((error: unknown) => {
       setPluginFrontendLoadFailed(true);
@@ -1266,10 +1277,12 @@ async function runLiveReconcile(): Promise<void> {
       setPluginFrontendReconcilePending(true),
     );
     publishLoadFailed();
+    startingPluginsRecheck.afterReconcile();
   } catch (error) {
     console.warn(
       `plugin frontend reconcile failed: ${error instanceof Error ? error.message : String(error)}`,
     );
+    startingPluginsRecheck.afterFailedReconcile();
   } finally {
     deferredFrontendSchedule.dispose();
     setPluginFrontendReconcilePending(false);

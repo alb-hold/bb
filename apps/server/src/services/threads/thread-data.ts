@@ -1,5 +1,6 @@
 import {
   canHydrateRetainedEventOutputRowsWithinDataByteLimit,
+  findLastRootStoredTurnStarted,
   findStoredEventRow as findStoredEventRowRecord,
   getLatestThreadErrorEventRow,
   getLatestThreadOutputEventRow,
@@ -216,6 +217,22 @@ export function getTurnFinalOutput(
     return eventRow.data.item.text;
   }
   return null;
+}
+
+export function getLatestTurnFinalOutput(
+  db: DbConnection,
+  threadId: string,
+): string | null {
+  const nativeReply = getNativeThreadReply(db, threadId);
+  if (nativeReply !== null) {
+    const row = getLatestThreadOutputEventRow(db, { threadId });
+    if (row === null || nativeReply.recordedAt >= row.createdAt)
+      return nativeReply.text;
+  }
+  const turn = findLastRootStoredTurnStarted(db, { threadId });
+  return turn
+    ? getTurnFinalOutput(db, { threadId, turnId: turn.turnId })
+    : null;
 }
 
 interface ListLatestTurnFinalAgentRepliesArgs {

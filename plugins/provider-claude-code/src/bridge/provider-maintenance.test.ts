@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
+
 import { __testing } from "./provider-maintenance.js";
+
 
 function missingInstallationStatus() {
   return {
@@ -22,13 +24,17 @@ function missingInstallationStatus() {
   };
 }
 
+
 describe("Claude Code provider maintenance", () => {
   it("normalizes aggregate and unique model-scoped usage windows", () => {
-    const credentials = {
-      accessToken: "token",
+    const account = {
+      accessToken: "fixture",
+      refreshToken: null,
       expiresAt: null,
-      subscriptionType: "pro",
-      rateLimitTier: "max_5x",
+      refreshTokenExpiresAt: null,
+      rateLimitTier: null,
+      subscriptionType: null,
+      apiProvider: "firstParty" as const,
     };
     expect(
       __testing.normalizeUsage(
@@ -50,7 +56,7 @@ describe("Claude Code provider maintenance", () => {
             },
           ],
         },
-        credentials,
+        account,
         "claude@example.com",
       ),
     ).toMatchObject({
@@ -64,6 +70,7 @@ describe("Claude Code provider maintenance", () => {
       ],
     });
   });
+
 
   it("keeps the native installer plan private behind the run method", () => {
     const run = __testing.buildProviderInstallationRun(

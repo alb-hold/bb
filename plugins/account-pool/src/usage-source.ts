@@ -22,6 +22,20 @@ export function usageWindowLabel(
     : `${minutes / 60} hour limit`;
 }
 
+export function usagePlan(
+  account: Pick<AccountSummary, "subscriptionType" | "rateLimitTier">,
+): { id: string; label: string } | null {
+  const tier = account.rateLimitTier ?? "";
+  if (/max_20x/u.test(tier)) return { id: "ultra", label: "Ultra" };
+  if (/max_\d+x/u.test(tier)) return { id: "max", label: "Max" };
+  const subscription = account.subscriptionType;
+  return subscription
+    ? {
+        id: subscription.toLowerCase(),
+        label: subscription.charAt(0).toUpperCase() + subscription.slice(1),
+      }
+    : null;
+}
 export { displayPlanLabel as usagePlanLabel } from "./display.js";
 import { displayPlanLabel, modelWeeklyRows } from "./display.js";
 
@@ -53,7 +67,7 @@ export function registerUsageSource(
         );
         const accounts = foldSubscriptions(
           routed
-            .filter(({ account, enabled }) => enabled && account.enabled)
+            .filter(({ account, enabled }) => enabled && account.enabled && account.kind === "oauth")
             .map(({ account }) => account)
             .sort((left, right) => left.priority - right.priority),
         );
@@ -90,7 +104,7 @@ export function registerUsageSource(
         const read = async () => {
           if (
             !(await hub.status(signal)).accounts.some(
-              (account) => account.id === resourceId,
+              (account) => account.kind === "oauth" && account.id === resourceId,
             )
           )
             throw new Error("Usage resource no longer exists.");
@@ -142,31 +156,8 @@ export function registerUsageSource(
                 cost: null,
               });
             };
-            if (account.limitWindows.length > 0) {
-              for (const window of account.limitWindows) {
-                add(
-                  window.slot,
-                  usageWindowLabel(window.windowMinutes, window.slot),
-                  window.utilization,
-                  window.resetAt,
-                  null,
-                );
-              }
-            } else {
-              add(
-                "five-hour",
-                "Five-hour limit",
-                account.fiveHourUtilization,
-                account.fiveHourResetAt,
-                null,
-              );
-              add(
-                "weekly",
-                "Weekly limit",
-                account.sevenDayUtilization,
-                account.sevenDayResetAt,
-                null,
-              );
+            for (const window of account.limitWindows) {
+              add(window.slot, usageWindowLabel(window.windowMinutes, window.slot), window.utilization, window.resetAt, null);
             }
             for (const { name, quota } of modelWeeklyRows(
               account,
@@ -236,7 +227,7 @@ export function registerUsageSource(
     {
       experimental_discoverable: true,
       experimental_description:
-        "Usage windows for Account Pooler's shared accounts, independent of routing settings and host-local credentials.",
+        "Usage windows for enabled signed-in subscription accounts with Account Pooler routing enabled. API-key accounts have no usage windows and are not listed.",
     },
   );
 }

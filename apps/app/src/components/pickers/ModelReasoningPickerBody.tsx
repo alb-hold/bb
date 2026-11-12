@@ -139,7 +139,9 @@ export function ModelReasoningPickerBody({
     initialPreviewProviderId,
   );
   const [showMoreModels, setShowMoreModels] = useState(false);
-  const [moreModelsOpen, setMoreModelsOpen] = useState(false);
+  const [moreModelsOpenedBy, setMoreModelsOpenedBy] = useState<
+    import("./ModelReasoningPicker").MoreModelsOpenedBy | null
+  >(null);
   const [trackedSelectedProviderId, setTrackedSelectedProviderId] =
     useState(selectedProviderId);
   const [browsingHandoff, setHandoffMode] = useState(false);
@@ -158,7 +160,7 @@ export function ModelReasoningPickerBody({
     setHandoffReasoningLevel(null);
     setPreviewProviderId(null);
     setShowMoreModels(false);
-    setMoreModelsOpen(false);
+    setMoreModelsOpenedBy(null);
     setSearchQuery("");
     setActiveIndex(-1);
   }
@@ -394,7 +396,7 @@ export function ModelReasoningPickerBody({
     setHandoffReasoningLevel(null);
     setPreviewProviderId(null);
     setShowMoreModels(false);
-    setMoreModelsOpen(false);
+    setMoreModelsOpenedBy(null);
     setSearchQuery("");
     setActiveIndex(-1);
   }, []);
@@ -423,11 +425,11 @@ export function ModelReasoningPickerBody({
             (isPreviewing ? previewSelection?.reasoningLevel : undefined) ??
             reasoningValue,
         });
-        setMoreModelsOpen(false);
+        setMoreModelsOpenedBy(null);
         return;
       }
       onModelChange(model);
-      setMoreModelsOpen(false);
+      setMoreModelsOpenedBy(null);
       setPreviewProviderId(null);
     },
     [
@@ -445,18 +447,17 @@ export function ModelReasoningPickerBody({
 
   const handleHandoffProviderSelect = useCallback(
     (providerId: string) => {
-      handoff?.onStart();
       setHandoffMode(true);
       setPreviewProviderId(
         providerId === selectedProviderId ? null : providerId,
       );
       setHandoffReasoningLevel(null);
       setShowMoreModels(false);
-      setMoreModelsOpen(false);
+      setMoreModelsOpenedBy(null);
       setSearchQuery("");
       setActiveIndex(-1);
     },
-    [handoff, selectedProviderId],
+    [selectedProviderId],
   );
   const handleProviderSelect = useCallback(
     (providerId: string) => {
@@ -485,8 +486,9 @@ export function ModelReasoningPickerBody({
     ],
   );
   const startHandoffMode = useCallback(() => {
+    handoff?.onStart();
     handleHandoffProviderSelect(selectedProviderId);
-  }, [handleHandoffProviderSelect, selectedProviderId]);
+  }, [handoff, handleHandoffProviderSelect, selectedProviderId]);
   const exitHandoffMode = useCallback(() => {
     setHandoffMode(false);
     setHandoffReasoningLevel(null);
@@ -510,7 +512,7 @@ export function ModelReasoningPickerBody({
       }
       onReasoningChange(level);
       setPreviewProviderId(null);
-      setMoreModelsOpen(false);
+      setMoreModelsOpenedBy(null);
     },
     [
       handoffMode,
@@ -714,16 +716,31 @@ export function ModelReasoningPickerBody({
         return;
       }
 
+      const row = highlightedIndex >= 0 ? navRows[highlightedIndex] : undefined;
+      if (!row) return;
+
+      if (
+        row.kind === "more-submenu" &&
+        event.key === "ArrowRight" &&
+        !event.altKey &&
+        !event.ctrlKey &&
+        !event.metaKey &&
+        !event.shiftKey
+      ) {
+        event.preventDefault();
+        setMoreModelsOpenedBy("activation");
+        return;
+      }
+
       if (event.key === "Enter") {
-        if (highlightedIndex < 0) return;
-        const row = navRows[highlightedIndex];
-        if (!row) return;
         event.preventDefault();
         if (row.kind === "model") {
           if (row.option.disabled === true) return;
           handleModelSelect(row.option.value);
-        } else {
+        } else if (row.kind === "more-toggle") {
           toggleShowMoreModels();
+        } else {
+          setMoreModelsOpenedBy("activation");
         }
       }
     },
@@ -849,8 +866,8 @@ export function ModelReasoningPickerBody({
         showMoreModels={showMoreModels}
         onToggleMoreModels={toggleShowMoreModels}
         moreModelOptions={filteredMoreModelOptions}
-        moreModelsOpen={moreModelsOpen}
-        onMoreModelsOpenChange={setMoreModelsOpen}
+        moreModelsOpenedBy={moreModelsOpenedBy}
+        onMoreModelsOpenedByChange={setMoreModelsOpenedBy}
         isPreviewing={isPreviewing}
         modelValue={modelValue}
         selectionBlocked={previewSelectionBlocked}

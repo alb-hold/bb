@@ -663,7 +663,6 @@ export function ThreadScreen({
       workspaceSharingThreadCount={thread.workspaceSharing?.threadCount ?? null}
       pendingTodos={timeline.pendingTodos}
       activePromptMode={timeline.activePromptMode}
-      goal={timeline.goal}
       providerCommands={timeline.providerCommands}
       executionOptionsPending={
         timeline.timelineLoading || Boolean(timeline.timelineError)

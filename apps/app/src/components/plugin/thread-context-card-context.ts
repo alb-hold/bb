@@ -45,5 +45,6 @@ export function useThreadContextCardPaneState(): ThreadContextCardPaneState | nu
 }
 
 export function useThreadContextKind(): ExperimentalThreadContextKind {
-  return useThreadContextCardPaneState() === null ? "banner" : "card";
+  const state = useThreadContextCardPaneState();
+  return state === null || state.layout === "banner" ? "banner" : "card";
 }

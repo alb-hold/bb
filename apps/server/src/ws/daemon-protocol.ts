@@ -30,6 +30,7 @@ import {
 import { HEARTBEAT_INTERVAL_MS, LEASE_TIMEOUT_MS } from "../constants.js";
 import {
   notifyDaemonEnvironmentChange,
+  notifyDaemonThreadStorageChange,
   recordDaemonEnvironmentMetadataChange,
 } from "../internal/environment-changes.js";
 import { requestQueuedMessageDispatch } from "../services/threads/queued-message-dispatch.js";
@@ -446,16 +447,6 @@ export function onDaemonSocketMessage(
   };
 
   try {
-    if (
-      message.type === "terminal.output" &&
-      !deps.hub.hasTerminalClients(message.terminalId)
-    ) {
-      getSessionForDispatch();
-      if (!args.acceptedAtArrival) {
-        deps.hub.recordDaemonActivity(args.sessionId);
-      }
-      return;
-    }
     const work = runEventLoopWorkSync(`ws:daemon ${message.type}`, () => {
       const session = getSessionForDispatch();
       if (!args.acceptedAtArrival) {
@@ -500,6 +491,13 @@ export function onDaemonSocketMessage(
           hostId: args.hostId,
           environmentId: message.environmentId,
           change: message.change,
+        });
+        return;
+      }
+      if (message.type === "thread-storage-change") {
+        notifyDaemonThreadStorageChange(deps, {
+          hostId: args.hostId,
+          threadId: message.threadId,
         });
         return;
       }

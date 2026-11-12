@@ -105,6 +105,7 @@ it.each([false, true])(
       dir,
       "0.9.0-test",
       await resolvePluginBuildToolchain(join(tmpdir(), "bb-toolchain-unused")),
+      { minify: true, hostProvidedZod: true },
     );
     const meta = JSON.parse(await readFile(output.metaPath, "utf8"));
     expect(meta.runtimeSlots.includes("zod")).toBe(!unsupported);

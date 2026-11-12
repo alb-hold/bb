@@ -9,8 +9,11 @@ import {
   rewindThreadPruningWork,
   dropMarketplaceSourceGitSubdirectoryColumn,
   dropThreadParentNotificationsColumn,
+  dropQueuedMessageDeliveryColumns,
+  dropPluginFailureLabelColumns,
+  dropThreadStatusChangedAtColumn,
+  restoreDiffViewedFilesTable,
   dropTerminalDefaultColorsColumn,
-  dropQueuedMessageDeliveryModeColumn,
   dropQueuedMessageEditHeldUntilColumn,
   rewindQueuedMessageStateMigration,
 } from "./helpers/rewind.js";
@@ -257,6 +260,20 @@ const latestMigrationWhen = Math.max(
   ).entries.map((entry) => entry.when),
 );
 
+const threadStatusChangedAtMigrationWhen = (
+  JSON.parse(
+    readFileSync(resolve(__dirname, "../drizzle/meta/_journal.json"), "utf-8"),
+  ) as { entries: { tag: string; when: number }[] }
+).entries.find((entry) => entry.tag === "0153_thread_status_changed_at")!.when;
+
+const projectSourcesDefaultIndexMigrationWhen = (
+  JSON.parse(
+    readFileSync(resolve(__dirname, "../drizzle/meta/_journal.json"), "utf-8"),
+  ) as { entries: { tag: string; when: number }[] }
+).entries.find(
+  (entry) => entry.tag === "0158_declare_project_sources_default_index",
+)!.when;
+
 function restoreWideExperimentsTable(db: DbConnection): void {
   const columns = db.$client
     .prepare<[], TableInfoRow>("PRAGMA table_info(system_experiments)")
@@ -489,6 +506,12 @@ const curatedMarketplaceRenameMigrationPath = resolve(
   "..",
   "drizzle",
   "0098_rename_curated_marketplace.sql",
+);
+const smallStorageCleanupsMigrationPath = resolve(
+  __dirname,
+  "..",
+  "drizzle",
+  "0155_small_storage_cleanups.sql",
 );
 const providerUsagePluginIdMigrationPath = resolve(
   __dirname,
@@ -736,8 +759,11 @@ function rewindEnvironmentProvisioningMigration(db: DbConnection): void {
   dropQueuedMessageEditHeldUntilColumn(db);
   dropMarketplaceSourceGitSubdirectoryColumn(db);
   dropThreadParentNotificationsColumn(db);
+  dropQueuedMessageDeliveryColumns(db);
+  dropThreadStatusChangedAtColumn(db);
+  dropPluginFailureLabelColumns(db);
   dropTerminalDefaultColorsColumn(db);
-  dropQueuedMessageDeliveryModeColumn(db);
+
   db.$client.exec("DROP TRIGGER IF EXISTS threads_lifecycle_owner_insert");
   db.$client.exec("DROP TRIGGER IF EXISTS threads_lifecycle_owner_immutable");
   db.$client.exec("DROP INDEX IF EXISTS threads_lifecycle_owner_idx");
@@ -785,8 +811,11 @@ function rewindEnvironmentProvisioningMigration(db: DbConnection): void {
 function dropQueuedMessageAttemptColumns(db: DbConnection): void {
   rewindQueuedMessageStateMigration(db);
   dropThreadParentNotificationsColumn(db);
+  dropQueuedMessageDeliveryColumns(db);
+  dropThreadStatusChangedAtColumn(db);
+  dropPluginFailureLabelColumns(db);
   dropTerminalDefaultColorsColumn(db);
-  dropQueuedMessageDeliveryModeColumn(db);
+
   const columns = db.$client
     .prepare<[], TableInfoRow>("PRAGMA table_info(queued_thread_messages)")
     .all();
@@ -866,8 +895,11 @@ function rewindMachineProvidersMigration(db: DbConnection): void {
   dropQueuedMessageEditHeldUntilColumn(db);
   dropMarketplaceSourceGitSubdirectoryColumn(db);
   dropThreadParentNotificationsColumn(db);
+  dropQueuedMessageDeliveryColumns(db);
+  dropThreadStatusChangedAtColumn(db);
+  dropPluginFailureLabelColumns(db);
   dropTerminalDefaultColorsColumn(db);
-  dropQueuedMessageDeliveryModeColumn(db);
+
   db.$client.exec("DROP TABLE IF EXISTS ui_preference_defaults");
   const queuedDispatchOrigin = db.$client
     .prepare<[], TableInfoRow>("PRAGMA table_info(queued_thread_messages)")
@@ -2590,6 +2622,54 @@ describe("migrate", () => {
     }
   });
 
+  it("backfills each thread's status change time from its last update", () => {
+    const db = createConnection(":memory:");
+
+    try {
+      migrate(db);
+      const host = upsertHost(db, noopNotifier, {
+        name: "status-changed-at-host",
+      });
+      const { project } = createProject(db, noopNotifier, {
+        name: "status-changed-at-project",
+        source: {
+          type: "local_path",
+          hostId: host.id,
+          path: "/tmp/status-changed-at",
+        },
+      });
+      const thread = createThread(db, noopNotifier, {
+        projectId: project.id,
+        providerId: "codex",
+      });
+      dropThreadStatusChangedAtColumn(db);
+      dropPluginFailureLabelColumns(db);
+      restoreDiffViewedFilesTable(db);
+      db.$client
+        .prepare<[number, string]>(
+          "UPDATE threads SET updated_at = ? WHERE id = ?",
+        )
+        .run(1_234, thread.id);
+      db.$client
+        .prepare<DeleteMigrationParameters>(
+          "DELETE FROM __drizzle_migrations WHERE created_at >= ?",
+        )
+        .run(threadStatusChangedAtMigrationWhen);
+
+      migrate(db);
+
+      expect(
+        db.$client
+          .prepare<[string], { statusChangedAt: number }>(
+            "SELECT status_changed_at AS statusChangedAt FROM threads WHERE id = ?",
+          )
+          .get(thread.id),
+      ).toEqual({ statusChangedAt: 1_234 });
+    } finally {
+      closeConnection(db);
+    }
+  });
+
   it("applies rowid thread search rebuild after the compatible thread search hash", () => {
     const db = createConnection(":memory:");
 
@@ -3397,8 +3477,11 @@ describe("migrate", () => {
       dropQueuedMessageEditHeldUntilColumn(db);
       dropMarketplaceSourceGitSubdirectoryColumn(db);
       dropThreadParentNotificationsColumn(db);
+      dropQueuedMessageDeliveryColumns(db);
+      dropThreadStatusChangedAtColumn(db);
+      dropPluginFailureLabelColumns(db);
       dropTerminalDefaultColorsColumn(db);
-      dropQueuedMessageDeliveryModeColumn(db);
+
       db.$client.prepare("DROP INDEX projects_deleted_idx").run();
       db.$client.prepare("ALTER TABLE projects DROP COLUMN deleted_at").run();
       db.$client.prepare("ALTER TABLE events ADD producer_event_id text").run();
@@ -3797,6 +3880,34 @@ describe("migrate", () => {
       expect(readLatestAppliedMigrationCreatedAt(db)).toBe(latestMigrationWhen);
       expect(readTableNames(db)).not.toContain("event_large_values");
       expectEventLargeValuesInline(db, values);
+    } finally {
+      closeConnection(db);
+    }
+  });
+
+  it("declares the default project source index on a database that already has it", () => {
+    const db = createConnection(":memory:");
+
+    try {
+      migrate(db);
+      db.$client
+        .prepare<DeleteMigrationParameters>(
+          `
+            DELETE FROM __drizzle_migrations
+            WHERE created_at >= ?
+          `,
+        )
+        .run(projectSourcesDefaultIndexMigrationWhen);
+      dropPluginFailureLabelColumns(db);
+
+      expect(() => migrate(db)).not.toThrow();
+      expect(
+        db.$client
+          .prepare<[], IndexNameRow>(
+            "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'project_sources_default_project_idx'",
+          )
+          .all(),
+      ).toEqual([{ name: "project_sources_default_project_idx" }]);
     } finally {
       closeConnection(db);
     }
@@ -4350,6 +4461,81 @@ describe("migrate", () => {
         },
         { name: "bb-community", etag: null, lastModified: null },
       ]);
+    } finally {
+      closeConnection(db);
+    }
+  });
+
+  it("drops archived threads' per-thread pruning cursors and the superseded truncation cursors", () => {
+    const db = createConnection(":memory:");
+    try {
+      migrate(db);
+      const host = upsertHost(db, noopNotifier, {
+        id: "host-small-storage-cleanups",
+        name: "Cleanup Host",
+      });
+      const { project } = createProject(db, noopNotifier, {
+        name: "Cleanup Project",
+        source: {
+          type: "local_path",
+          hostId: host.id,
+          path: "/tmp/small-storage-cleanups",
+        },
+      });
+      const live = createThread(db, noopNotifier, {
+        projectId: project.id,
+        providerId: "codex",
+      });
+      const archived = createThread(db, noopNotifier, {
+        projectId: project.id,
+        providerId: "codex",
+      });
+      db.$client
+        .prepare<[string]>("UPDATE threads SET archived_at = 1 WHERE id = ?")
+        .run(archived.id);
+      const insertCursor = db.$client.prepare<[string, string, string | null]>(
+        `INSERT INTO thread_pruning_cursors (policy, scope, thread_id, version, updated_at)
+          VALUES (?, ?, ?, 1, 1)`,
+      );
+      insertCursor.run("usage", "", null);
+      insertCursor.run("usage", live.id, live.id);
+      insertCursor.run("usage", archived.id, archived.id);
+      insertCursor.run("turn-diffs", archived.id, archived.id);
+      const insertScanCursor = db.$client.prepare<[string, string]>(
+        `INSERT INTO maintenance_scan_cursors (id, policy, version, item_kind, output_path, updated_at)
+          VALUES (?, ?, 1, 'commandExecution', 'aggregatedOutput', 1)`,
+      );
+      insertScanCursor.run(
+        "completed_event_output_truncation:v1:commandExecution:aggregatedOutput",
+        "completed_event_output_truncation",
+      );
+      insertScanCursor.run(
+        "legacy_completed_event_output_sidecar:v1:commandExecution:aggregatedOutput",
+        "legacy_completed_event_output_sidecar",
+      );
+
+      runMigrationFile({
+        db,
+        migrationPath: smallStorageCleanupsMigrationPath,
+      });
+
+      expect(
+        db.$client
+          .prepare<[], { policy: string; scope: string }>(
+            "SELECT policy, scope FROM thread_pruning_cursors ORDER BY scope",
+          )
+          .all(),
+      ).toEqual([
+        { policy: "usage", scope: "" },
+        { policy: "usage", scope: live.id },
+      ]);
+      expect(
+        db.$client
+          .prepare<[], { policy: string }>(
+            "SELECT policy FROM maintenance_scan_cursors",
+          )
+          .all(),
+      ).toEqual([{ policy: "legacy_completed_event_output_sidecar" }]);
     } finally {
       closeConnection(db);
     }

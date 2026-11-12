@@ -14,9 +14,41 @@ const GIT_READS_REPLACEMENT: Readonly<Record<string, string>> = {
     'bb.sdk.plugins.callRpc({ pluginId: "bb--git", method: "fileSide", input: { environmentId, query } })',
   diffBranches:
     'bb.sdk.plugins.callRpc({ pluginId: "bb--git", method: "branches", input: { environmentId, query, limit } })',
+  experimental_diffViewed:
+    'bb.sdk.plugins.callRpc({ pluginId: "bb--git", method: "viewed", input: { environmentId, target, paths } })',
+  experimental_markDiffViewed:
+    'bb.sdk.plugins.callRpc({ pluginId: "bb--git", method: "markViewed", input: { environmentId, target, path, revision } })',
+  experimental_clearDiffViewed:
+    'bb.sdk.plugins.callRpc({ pluginId: "bb--git", method: "clearViewed", input: { environmentId, target, path } })',
 };
 
-const RETIRED_NAMES = "status|diff|diffFiles|diffPatch|diffFile|diffBranches";
+const PULL_REQUEST_REPLACEMENT: Readonly<Record<string, string>> = {
+  pullRequest:
+    'bb.sdk.plugins.callRpc({ pluginId: "bb--github-pr-status", method: "pullRequests", input: { keys: [environmentId] } }), then read the row at [environmentId]',
+  markPullRequestReady:
+    'bb.sdk.plugins.callRpc({ pluginId: "bb--github-pr-status", method: "markReady", input: { environmentId } })',
+  markPullRequestDraft:
+    'bb.sdk.plugins.callRpc({ pluginId: "bb--github-pr-status", method: "markDraft", input: { environmentId } })',
+  mergePullRequest:
+    'bb.sdk.plugins.callRpc({ pluginId: "bb--github-pr-status", method: "merge", input: { environmentId, method } })',
+};
+
+const RETIRED_ENVIRONMENT_ADVICE: Readonly<Record<string, string>> = {
+  ...Object.fromEntries(
+    Object.entries(GIT_READS_REPLACEMENT).map(([name, call]) => [
+      name,
+      `Use the Git plugin instead: ${call}. See bb-plugin-authoring, git-reads.md.`,
+    ]),
+  ),
+  ...Object.fromEntries(
+    Object.entries(PULL_REQUEST_REPLACEMENT).map(([name, call]) => [
+      name,
+      `Use the GitHub PR Status plugin instead: ${call}. See the github-pr-status skill.`,
+    ]),
+  ),
+};
+
+const RETIRED_NAMES = Object.keys(RETIRED_ENVIRONMENT_ADVICE).join("|");
 
 const RETIRED_MEMBER_ACCESS = new RegExp(
   `\\benvironments\\s*\\??\\.\\s*(${RETIRED_NAMES})\\b`,
@@ -91,7 +123,7 @@ export function retiredSdkMemberWarnings(source: string): string[] {
   return [
     ...[...found].map(
       (name) =>
-        `environments.${name} is retired from the bb SDK typings and keeps working only for existing plugins. Read through the Git plugin instead: ${GIT_READS_REPLACEMENT[name]}. See bb-plugin-authoring, git-reads.md.`,
+        `environments.${name} is retired from the bb SDK typings and keeps working only for existing plugins. ${RETIRED_ENVIRONMENT_ADVICE[name]}`,
     ),
     ...retiredPanelMemberWarnings(source),
   ];

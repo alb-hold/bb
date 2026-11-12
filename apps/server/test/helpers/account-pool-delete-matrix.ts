@@ -633,6 +633,7 @@ type World = {
 function deliverDeletes(world: World): void {
   const ignore = () => {};
   setPluginThreadEventEmitter({
+    emitThreadRead: () => undefined,
     emitThreadEvents: ignore,
     emitTerminalInput: ignore,
     emitHostDeleted: ignore,

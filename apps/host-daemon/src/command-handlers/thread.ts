@@ -4,6 +4,9 @@ import type { AgentRuntimeBridgeLaunch } from "@bb/agent-runtime";
 import { flattenPromptInputGroups } from "@bb/domain";
 import {
   COMPETING_TURN_ERROR_CODE,
+  STALE_TURN_ERROR_CODE,
+  STEER_UNCONFIRMED_ERROR_CODE,
+  TURN_START_UNCONFIRMED_ERROR_CODE,
   type HostDaemonCommandResult,
 } from "@bb/host-daemon-contract";
 import { removeDirectoryAfterHolderRecheck } from "./remove-held-directory.js";
@@ -96,6 +99,14 @@ async function cleanupAfterPostStagingFailure(
   try {
     await cleanup();
   } catch {}
+}
+
+function isUnconfirmedSubmitError(error: unknown): boolean {
+  return (
+    error instanceof CommandDispatchError &&
+    (error.code === STEER_UNCONFIRMED_ERROR_CODE ||
+      error.code === TURN_START_UNCONFIRMED_ERROR_CODE)
+  );
 }
 
 async function requireSupportedProviderCliForThreadStart({
@@ -346,7 +357,7 @@ async function runSubmittedTurn(
   command: TurnSubmitCommand,
   entry: RuntimeEntry,
 ): Promise<void> {
-  await entry.runtime.runTurn({
+  const result = await entry.runtime.runTurn({
     threadId: command.threadId,
     input: command.input,
     clientRequestId: command.requestId,
@@ -354,6 +365,12 @@ async function runSubmittedTurn(
     contributedEnv: command.resumeContext.contributedEnv,
     instructions: command.resumeContext.instructions,
   });
+  if (result.status === "unconfirmed") {
+    throw new CommandDispatchError(
+      TURN_START_UNCONFIRMED_ERROR_CODE,
+      `The agent did not confirm the turn start for thread ${command.threadId} before the request timed out`,
+    );
+  }
 }
 
 async function steerSubmittedTurn(
@@ -377,6 +394,12 @@ async function steerSubmittedTurn(
     if (result.status === "steered") {
       return;
     }
+    if (result.status === "unconfirmed") {
+      throw new CommandDispatchError(
+        STEER_UNCONFIRMED_ERROR_CODE,
+        `The agent did not confirm the steer for turn ${targetTurnId} before the request timed out`,
+      );
+    }
     activeTurnId = result.activeTurnId;
     if (attempt === TURN_SUBMIT_STEER_ATTEMPTS - 1) {
       break;
@@ -392,7 +415,7 @@ async function steerSubmittedTurn(
   }
 
   throw new CommandDispatchError(
-    "stale_turn",
+    STALE_TURN_ERROR_CODE,
     `Expected active turn ${targetTurnId} for thread ${command.threadId}, but active turn is ${activeTurnId ?? "none"}`,
   );
 }
@@ -484,7 +507,9 @@ export async function submitTurn(
     });
     await deliverSubmittedTurn(stagedCommand, entry);
   } catch (error) {
-    await cleanupAfterPostStagingFailure(staged.cleanup);
+    if (!isUnconfirmedSubmitError(error)) {
+      await cleanupAfterPostStagingFailure(staged.cleanup);
+    }
     throw error;
   }
   markTurnSubmitTraceSpan("bridge.turnStarted");
