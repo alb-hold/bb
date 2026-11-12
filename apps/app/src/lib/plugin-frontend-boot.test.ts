@@ -38,3 +38,105 @@ it("reports a failed plugin frontend boot as failed until a retry succeeds", asy
   });
   expect(fetchMock).toHaveBeenCalledTimes(2);
 });
+
+function plugin(status: "starting" | "running") {
+  return {
+    id: "keep-awake",
+    source: "builtin:keep-awake",
+    rootDir: "/builtin-plugins/keep-awake",
+    version: "0.1.0",
+    provenance: "builtin",
+    publisherLabel: "BB Official",
+    isOrphanedBuiltin: false,
+    sourceDisplay: "builtin · keep-awake",
+    updateState: { outcome: "pinned", lastCheckAt: 1 },
+    enabled: true,
+    description: "Keeps hosts awake.",
+    name: "Keep Awake",
+    screenshots: [],
+    collections: [],
+    icon: "Coffee",
+    iconUrl: null,
+    status,
+    statusDetail: null,
+    handlerStats: { count: 0, totalMs: 0, maxMs: 0, errorCount: 0 },
+    services: [],
+    schedules: [],
+    cliCommand: null,
+    capabilities: [],
+    hasSettings: false,
+    app: { hasApp: false, bundle: null },
+    logoUrl: null,
+    logoDarkUrl: null,
+    providerIds: [],
+    icons: {},
+  };
+}
+
+it("re-checks the plugin list on its own while the server reports plugins starting", async () => {
+  const fetchMock = vi.fn(
+    async () =>
+      new Response(
+        JSON.stringify({
+          plugins: [
+            plugin(fetchMock.mock.calls.length === 1 ? "starting" : "running"),
+          ],
+        }),
+        { headers: { "content-type": "application/json" } },
+      ),
+  );
+  vi.stubGlobal("fetch", fetchMock);
+  vi.spyOn(console, "warn").mockImplementation(() => {});
+  vi.resetModules();
+  const { usePluginFrontendsSettled } =
+    await import("./plugin-frontend-boot-state");
+  const lazy = await import("./plugin-frontend-lazy");
+  const settled = renderHook(() => usePluginFrontendsSettled());
+
+  await lazy.bootPluginFrontends();
+  settled.rerender();
+  expect(settled.result.current).toBe(false);
+
+  await vi.waitFor(
+    () => {
+      settled.rerender();
+      expect(settled.result.current).toBe(true);
+    },
+    { timeout: 5_000, interval: 50 },
+  );
+  expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(2);
+}, 30_000);
+
+it("keeps re-checking after a failed plugin-list request until plugins run", async () => {
+  const responses = ["starting", "error", "starting", "running"] as const;
+  const fetchMock = vi.fn(async () => {
+    const step =
+      responses[
+        Math.min(fetchMock.mock.calls.length - 1, responses.length - 1)
+      ];
+    return step === "error"
+      ? new Response(JSON.stringify({ error: "unavailable" }), {
+          status: 503,
+          headers: { "content-type": "application/json" },
+        })
+      : new Response(JSON.stringify({ plugins: [plugin(step)] }), {
+          headers: { "content-type": "application/json" },
+        });
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  vi.spyOn(console, "warn").mockImplementation(() => {});
+  vi.resetModules();
+  const bootState = await import("./plugin-frontend-boot-state");
+  const lazy = await import("./plugin-frontend-lazy");
+
+  await lazy.bootPluginFrontends();
+  expect(bootState.isServerPluginsStarting()).toBe(true);
+
+  await vi.waitFor(
+    () => {
+      expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(4);
+      expect(bootState.isServerPluginsStarting()).toBe(false);
+    },
+    { timeout: 20_000, interval: 50 },
+  );
+}, 40_000);
