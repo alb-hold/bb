@@ -8,7 +8,7 @@ import type { TestProject } from "vitest/node";
 
 declare module "vitest" {
   export interface ProvidedContext {
-    terminalControlsChromiumPath: string | null;
+    appChromiumPath: string | null;
   }
 }
 
@@ -28,9 +28,9 @@ export default async function setup(project: TestProject) {
       (candidate): candidate is string =>
         candidate !== undefined && existsSync(candidate),
     ) ?? null;
-  project.provide("terminalControlsChromiumPath", chromiumPath);
+  project.provide("appChromiumPath", chromiumPath);
   if (chromiumPath === null) return;
-  const dir = await mkdtemp(join(tmpdir(), "bb-terminal-chromium-"));
+  const dir = await mkdtemp(join(tmpdir(), "bb-app-chromium-"));
   try {
     await execFileAsync(
       chromiumPath,

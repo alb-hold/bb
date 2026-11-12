@@ -14,7 +14,7 @@ import appCss from "../../../app.css?inline";
 import { TerminalMobileControls } from "./TerminalMobileControls";
 
 const execFileAsync = promisify(execFile);
-const chromiumPath = inject("terminalControlsChromiumPath");
+const chromiumPath = inject("appChromiumPath");
 const keySchema = z.object({
   label: z.string(),
   text: z.string(),
