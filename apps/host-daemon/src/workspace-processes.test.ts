@@ -17,6 +17,59 @@ vi.mock("node:fs/promises", () => ({
 
 afterEach(() => vi.resetAllMocks());
 
+it.each(["linux", "darwin"] as const)(
+  "does not inspect processes for an absent workspace on %s",
+  async (platform) => {
+    const platformSpy = vi
+      .spyOn(process, "platform", "get")
+      .mockReturnValue(platform);
+    try {
+      vi.mocked(stat).mockRejectedValue(
+        Object.assign(new Error("absent"), { code: "ENOENT" }),
+      );
+      expect(await inspectWorkspaceProcesses("/absent/workspace")).toEqual({
+        supported: true,
+        pids: [],
+        unreadablePids: [],
+      });
+      expect(readdir).not.toHaveBeenCalled();
+      expect(execHostFile).not.toHaveBeenCalled();
+    } finally {
+      platformSpy.mockRestore();
+    }
+  },
+);
+
+it.skipIf(process.platform !== "linux").each(["cwd", "root", "exe", "fd/3"])(
+  "keeps a Linux %s holder while excluding root cwd and unrelated paths",
+  async (heldLink) => {
+    const uid = process.getuid!();
+    vi.mocked(realpath).mockResolvedValue("/workspace");
+    vi.mocked(readdir).mockImplementation(
+      async (file) =>
+        (String(file) === "/proc" ? ["401", "402"] : ["3"]) as never,
+    );
+    vi.mocked(readFile).mockImplementation(async (file) =>
+      String(file).endsWith("/status")
+        ? `Name:\tworker\nState:\tS\nUid:\t${uid}\t${uid}\t${uid}\t${uid}\n`
+        : "",
+    );
+    vi.mocked(readlink).mockImplementation(async (file) =>
+      String(file) === `/proc/401/${heldLink}`
+        ? "/workspace/subdir"
+        : String(file).endsWith("/cwd")
+          ? "/"
+          : "/unrelated",
+    );
+    expect(await inspectWorkspaceProcesses("/workspace")).toEqual({
+      supported: true,
+      pids: [401],
+      unreadablePids: [],
+      processCommands: { "401": "worker" },
+    });
+  },
+);
+
 it.skipIf(process.platform !== "linux")(
   "finds same-user cwd and mapped paths without treating sibling paths or shared inodes as workspace use",
   async () => {
@@ -84,9 +137,11 @@ it.skipIf(process.platform !== "linux")(
         throw Object.assign(new Error("denied"), { code: "EACCES" });
       return "/elsewhere";
     });
-    vi.mocked(stat).mockRejectedValue(
-      Object.assign(new Error("gone"), { code: "ENOENT" }),
-    );
+    vi.mocked(stat).mockImplementation(async (file) => {
+      if (String(file) !== "/workspace")
+        throw Object.assign(new Error("gone"), { code: "ENOENT" });
+      return {} as Awaited<ReturnType<typeof stat>>;
+    });
     expect(await inspectWorkspaceProcesses("/workspace")).toEqual({
       supported: true,
       pids: [],
@@ -143,6 +198,13 @@ describe("darwin workspace process inspection", () => {
   });
 
   it.each([
+    {
+      name: "root cwd and unrelated files",
+      lsof: "p4539\ncSkyComputerUseService\nfcwd\ntDIR\nn/\nf3\ntREG\nn/tmp/unrelated\n",
+      workspace: "/ws/project",
+      paths: { "/": "/", "/tmp/unrelated": "/tmp/unrelated" },
+      expected: { supported: true, pids: [], unreadablePids: [] },
+    },
     {
       name: "cwd inside workspace",
       lsof: "p501\nccwd-holder\nfcwd\ntDIR\nn/ws/project\n",

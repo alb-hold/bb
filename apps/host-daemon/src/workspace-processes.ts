@@ -543,14 +543,33 @@ async function inspectLinuxWorkspaceProcesses(
       }
       if (!uids.slice(1).some((value) => Number(value) === uid)) continue;
       if (/^State:\s+[ZX]/m.test(status)) continue;
-      const cwd = await readlink(`${directory}/cwd`);
+      const links = ["cwd", "root", "exe"];
+      const descriptors = await readdir(`${directory}/fd`);
+      links.push(...descriptors.map((descriptor) => `fd/${descriptor}`));
+      let matched = false;
+      let unreadable = false;
+      for (const link of links) {
+        try {
+          if (underWorkspace(await readlink(`${directory}/${link}`), workspace))
+            matched = true;
+        } catch (error) {
+          if (!missing(error)) unreadable = true;
+        }
+      }
+      if (matched) {
+        pids.push(pid);
+        continue;
+      }
+      if (unreadable) {
+        unreadablePids.push(pid);
+        continue;
+      }
       const maps = await readFile(`${directory}/maps`, "utf8");
       const mappedPaths = maps.split("\n").flatMap((line) => {
         const match = line.match(/^\S+\s+\S+\s+\S+\s+\S+\s+\S+\s+(\/.*)$/);
         return match === null ? [] : [match[1]!];
       });
       if (
-        underWorkspace(cwd, workspace) ||
         mappedPaths.some((value) =>
           underWorkspace(value, workspace.replace(/\n/g, "\\012")),
         )
@@ -680,6 +699,13 @@ export async function inspectWorkspaceProcesses(
 }> {
   if (process.getuid === undefined)
     return { supported: false, pids: [], unreadablePids: [] };
+  try {
+    await stat(workspacePath);
+  } catch (error) {
+    if (missing(error))
+      return { supported: true, pids: [], unreadablePids: [] };
+    return { supported: false, pids: [], unreadablePids: [] };
+  }
   if (process.platform === "linux")
     return inspectLinuxWorkspaceProcesses(workspacePath);
   if (process.platform === "darwin")

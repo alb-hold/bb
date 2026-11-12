@@ -2926,6 +2926,58 @@ it.each([
   },
 );
 
+it("does not queue exhausted cleanup behind another workspace on the same host", async () => {
+  await withTestHarness(async (harness) => {
+    const remove = vi.fn(async () => ({ status: "removed" as const }));
+    const fixture = setup(harness, { remove });
+    const row = seedEnvironment(harness.deps, {
+      hostId: fixture.host.id,
+      projectId: fixture.context.project.id,
+      path: "/tmp/exhausted",
+      status: "error",
+      environmentProviderId: fixture.record.provider.id,
+      environmentProviderPluginId: fixture.record.pluginId,
+    });
+    harness.db
+      .update(environments)
+      .set({
+        teardownStatus: "failed",
+        teardownAttempt: 8815,
+        teardownMessage: "Needs recovery: interrupted",
+        retireAt: null,
+      })
+      .where(eq(environments.id, row.id))
+      .run();
+    let release!: () => void;
+    const held = withEnvironmentCleanupSlot(
+      harness.db,
+      fixture.host.id,
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+    );
+    await Promise.resolve();
+    const sweep = sweepProviderEnvironment(harness.deps, row.id);
+    try {
+      expect(
+        await Promise.race([
+          sweep.then(() => "settled"),
+          new Promise<string>((resolve) =>
+            setTimeout(() => resolve("queued"), 100),
+          ),
+        ]),
+      ).toBe("settled");
+      expect(getEnvironment(harness.db, row.id)?.teardownAttempt).toBe(8815);
+      expect(remove).not.toHaveBeenCalled();
+    } finally {
+      release();
+      await held;
+      await sweep;
+    }
+  });
+});
+
 it.each([false, true])(
   "recovers interrupted cleanup only after a clear process inspection (persisted hook=%s)",
   async (persisted) => {
