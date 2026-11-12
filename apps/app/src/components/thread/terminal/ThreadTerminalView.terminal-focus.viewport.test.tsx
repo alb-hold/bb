@@ -306,6 +306,79 @@ function scrollTerminalAsUser(terminal: Terminal, line: number): void {
 }
 
 describe("ThreadTerminalView terminal viewport and focus", () => {
+  it("shows a jump-to-latest control only while scrolled above the bottom", async () => {
+    prepareMobileTerminal();
+    let mountedTerminal: Terminal | null = null;
+    const openTerminal = Terminal.prototype.open;
+    vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
+      this: Terminal,
+      element: HTMLElement,
+    ) {
+      mountedTerminal ??= this;
+      openTerminal.call(this, element);
+    });
+    const getTerminal = () => {
+      if (!mountedTerminal) throw new Error("terminal was not mounted");
+      return mountedTerminal;
+    };
+    const session = renderMobileTerminal();
+    await waitForReadinessCondition(
+      () => expect(testState.sockets).toHaveLength(1),
+      "terminal socket was not created",
+    );
+    const socket = testState.sockets[0];
+    if (!socket) throw new Error("terminal socket was not created");
+    socket.receive({
+      type: "attached",
+      session,
+      replayStartSeq: 0,
+      nextSeq: 1,
+    });
+    socket.receive({
+      type: "output",
+      chunk: {
+        seq: 0,
+        dataBase64: btoa(
+          Array.from({ length: 300 }, (_, i) => `line ${i}`).join("\r\n"),
+        ),
+      },
+    });
+    await waitFor(() =>
+      expect(getTerminal().buffer.active.baseY).toBeGreaterThan(0),
+    );
+    expect(getTerminal().buffer.active.viewportY).toBe(
+      getTerminal().buffer.active.baseY,
+    );
+    expect(
+      screen.queryByRole("button", { name: "Jump to latest output" }),
+    ).toBeNull();
+    scrollTerminalAsUser(getTerminal(), getTerminal().buffer.active.baseY - 1);
+    const jump = await screen.findByRole("button", {
+      name: "Jump to latest output",
+    });
+    fireEvent.click(jump);
+    expect(document.activeElement).toBe(getTerminal().textarea);
+    await waitFor(() =>
+      expect(getTerminal().buffer.active.viewportY).toBe(
+        getTerminal().buffer.active.baseY,
+      ),
+    );
+    expect(
+      screen.queryByRole("button", { name: "Jump to latest output" }),
+    ).toBeNull();
+    socket.receive({
+      type: "output",
+      chunk: { seq: 1, dataBase64: btoa("\r\nlatest output") },
+    });
+    await waitFor(() =>
+      expect(
+        testState.socketMessages.map((message) => JSON.parse(message)),
+      ).toContainEqual({ type: "ack", nextSeq: 2 }),
+    );
+    expect(
+      screen.queryByRole("button", { name: "Jump to latest output" }),
+    ).toBeNull();
+  });
   it.each(["starting", "disconnected", "exited"] as const)(
     "keeps the ready mobile controls appropriate for a %s session",
     async (status) => {
