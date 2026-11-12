@@ -339,7 +339,7 @@ describe("ThreadTerminalView terminal viewport and focus", () => {
       chunk: {
         seq: 0,
         dataBase64: btoa(
-          Array.from({ length: 300 }, (_, i) => `line ${i}`).join("\r\n"),
+          Array.from({ length: 100 }, (_, i) => `line ${i}`).join("\r\n"),
         ),
       },
     });
@@ -356,7 +356,34 @@ describe("ThreadTerminalView terminal viewport and focus", () => {
     const jump = await screen.findByRole("button", {
       name: "Jump to latest output",
     });
-    fireEvent.click(jump);
+    socket.receive({
+      type: "output",
+      chunk: { seq: 1, dataBase64: btoa("\r\noutput while reviewing scrollback") },
+    });
+    await waitFor(() =>
+      expect(
+        testState.socketMessages.map((message) => JSON.parse(message)),
+      ).toContainEqual({ type: "ack", nextSeq: 2 }),
+    );
+    expect(getTerminal().buffer.active.viewportY).toBeLessThan(
+      getTerminal().buffer.active.baseY,
+    );
+    expect(
+      screen.getByRole("button", { name: "Jump to latest output" }),
+    ).toBe(jump);
+    scrollTerminalAsUser(getTerminal(), getTerminal().buffer.active.baseY);
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("button", { name: "Jump to latest output" }),
+      ).toBeNull(),
+    );
+    expect(getTerminal().buffer.active.viewportY).toBe(
+      getTerminal().buffer.active.baseY,
+    );
+    scrollTerminalAsUser(getTerminal(), getTerminal().buffer.active.baseY - 1);
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Jump to latest output" }),
+    );
     expect(document.activeElement).toBe(getTerminal().textarea);
     await waitFor(() =>
       expect(getTerminal().buffer.active.viewportY).toBe(
@@ -368,16 +395,45 @@ describe("ThreadTerminalView terminal viewport and focus", () => {
     ).toBeNull();
     socket.receive({
       type: "output",
-      chunk: { seq: 1, dataBase64: btoa("\r\nlatest output") },
+      chunk: { seq: 2, dataBase64: btoa("\r\nlatest output") },
     });
     await waitFor(() =>
       expect(
         testState.socketMessages.map((message) => JSON.parse(message)),
-      ).toContainEqual({ type: "ack", nextSeq: 2 }),
+      ).toContainEqual({ type: "ack", nextSeq: 3 }),
     );
     expect(
       screen.queryByRole("button", { name: "Jump to latest output" }),
     ).toBeNull();
+    scrollTerminalAsUser(getTerminal(), getTerminal().buffer.active.baseY - 1);
+    await screen.findByRole("button", { name: "Jump to latest output" });
+    const expandedGrid = {
+      cols: getTerminal().cols,
+      rows: getTerminal().buffer.active.length,
+    };
+    vi.spyOn(FitAddon.prototype, "proposeDimensions").mockReturnValue(expandedGrid);
+    socket.receive({
+      type: "session-updated",
+      session: { ...session, ...expandedGrid },
+    });
+    await waitFor(() => expect(getTerminal().rows).toBe(expandedGrid.rows));
+    expect(getTerminal().buffer.active.viewportY).toBe(
+      getTerminal().buffer.active.baseY,
+    );
+    socket.receive({
+      type: "output",
+      chunk: { seq: 3, dataBase64: btoa(" expanded") },
+    });
+    await waitFor(() =>
+      expect(
+        testState.socketMessages.map((message) => JSON.parse(message)),
+      ).toContainEqual({ type: "ack", nextSeq: 4 }),
+    );
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("button", { name: "Jump to latest output" }),
+      ).toBeNull(),
+    );
   });
   it.each(["starting", "disconnected", "exited"] as const)(
     "keeps the ready mobile controls appropriate for a %s session",
