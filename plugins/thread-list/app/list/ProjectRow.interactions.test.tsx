@@ -1262,12 +1262,7 @@ describe("nested sticky parents with row state", () => {
     vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
       function (this: HTMLElement) {
         const rect = realRect.call(this);
-        if (
-          !this.hasAttribute("data-sidebar-rename-row") ||
-          this.querySelector("[data-sidebar-thread-row-state]") === null
-        ) {
-          return rect;
-        }
+        if (!this.hasAttribute("data-sidebar-rename-row")) return rect;
         return new DOMRect(rect.x, rect.y, rect.width, growingRowHeight);
       },
     );
@@ -1368,7 +1363,9 @@ for (const section of document.querySelectorAll("section.snapshot")) {
   }
   results.push({
     tierCount: tiers.length,
-    rowHeight: growingRow ? growingRow.getBoundingClientRect().height : null,
+    rowHeight: growingRow
+      ? growingRow.getBoundingClientRect().height
+      : tiers[0].getBoundingClientRect().height,
     tier0: box(tiers[0]),
     tier1: tiers[1] ? box(tiers[1]) : null,
     tier1Visible,
@@ -1610,8 +1607,17 @@ describe.skipIf(
           oneCalibrationSnapshot,
           twoCalibrationSnapshot,
         ]);
+        const noneCalibration = renderTree(tree(none.node, viewport, false), {
+          threads: none.threads,
+          store,
+        });
+        const [noneCalibrated] = await measureNestedPins([
+          snapshot(noneCalibration.container),
+        ]);
+        cleanup();
         const oneHeight = oneCalibrated?.rowHeight ?? 0;
         const twoHeight = twoCalibrated?.rowHeight ?? 0;
+        const noneHeight = noneCalibrated?.rowHeight ?? 0;
         expect(oneHeight).toBeGreaterThan(40);
         expect(twoHeight).toBeGreaterThan(oneHeight);
 
@@ -1635,6 +1641,7 @@ describe.skipIf(
         const growthSnapshot = snapshot(rendered.container);
 
         rerenderTree(none.node, false);
+        layoutRowHeight = noneHeight;
         ResizeObserverStub.fireAll();
         const removalSnapshot = snapshot(rendered.container);
 
