@@ -33,7 +33,9 @@ it("allows the route to retry a rejected preload", async () => {
   });
   const { loadThreadDetailView } = await import("./thread-detail-loader");
   const early = loadThreadDetailView();
-  await expect(early).rejects.toThrow("route unavailable");
+  await expect(early).rejects.toMatchObject({
+    cause: { message: "route unavailable" },
+  });
   const View = () => null;
   vi.doMock("./ThreadDetailView", () => ({ ThreadDetailView: View }));
   const retry = loadThreadDetailView();
