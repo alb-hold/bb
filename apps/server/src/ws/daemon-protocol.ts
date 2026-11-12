@@ -447,6 +447,16 @@ export function onDaemonSocketMessage(
   };
 
   try {
+    if (
+      message.type === "terminal.output" &&
+      !deps.hub.hasTerminalClients(message.terminalId)
+    ) {
+      getSessionForDispatch();
+      if (!args.acceptedAtArrival) {
+        deps.hub.recordDaemonActivity(args.sessionId);
+      }
+      return;
+    }
     const work = runEventLoopWorkSync(`ws:daemon ${message.type}`, () => {
       const session = getSessionForDispatch();
       if (!args.acceptedAtArrival) {
