@@ -4439,7 +4439,7 @@ export function ThreadTerminalView({
                 size="icon"
                 variant="secondary"
                 aria-label="Jump to latest output"
-                className="absolute bottom-3 right-8 z-10 size-8 shadow-md"
+                className="absolute bottom-12 right-8 z-10 size-8 shadow-md pointer-coarse:size-11"
                 onClick={() => {
                   terminalRef.current?.scrollToBottom();
                   terminalRef.current?.focus();
