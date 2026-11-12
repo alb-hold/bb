@@ -1085,6 +1085,7 @@ describe("host-daemon command schemas", () => {
       active: false,
       pids: [],
       unreadablePids: [456, 457],
+      unrelatedUnreadablePids: [4539],
       processCommands: { "456": "python3" },
     };
     expectHostRpcResponseRoundTrip(
