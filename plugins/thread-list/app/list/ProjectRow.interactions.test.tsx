@@ -1635,6 +1635,7 @@ describe.skipIf(
         const growthSnapshot = snapshot(rendered.container);
 
         rerenderTree(none.node, false);
+        ResizeObserverStub.fireAll();
         const removalSnapshot = snapshot(rendered.container);
 
         rerenderTree(one.node, false);
