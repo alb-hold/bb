@@ -1492,12 +1492,7 @@ describe.skipIf(
         "getBoundingClientRect",
       ).mockImplementation(function (this: HTMLElement) {
         const rect = realRect.call(this);
-        if (
-          !this.hasAttribute("data-sidebar-rename-row") ||
-          this.querySelector("[data-sidebar-thread-row-state]") === null
-        ) {
-          return rect;
-        }
+        if (!this.hasAttribute("data-sidebar-rename-row")) return rect;
         return new DOMRect(rect.x, rect.y, rect.width, layoutRowHeight);
       });
     }

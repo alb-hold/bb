@@ -794,9 +794,13 @@ function ThreadRowComponent({
     isEditing || isCustomizingActions ? undefined : options.dragBindings;
   const nestTargetState = options.nestDrop?.state ?? null;
   const reorderPlacement = options.nestDrop?.reorderPlacement ?? null;
-  const rowElementRef = useRef<HTMLDivElement>(null);
+  const [rowElement, setRowElement] = useState<HTMLDivElement | null>(null);
+  const setRowElementRef = useCallback(
+    (element: HTMLDivElement | null) => setRowElement(element),
+    [],
+  );
   const containerRef = useComposedRefs<HTMLDivElement>(
-    rowElementRef,
+    setRowElementRef,
     rowDragBindings?.setActivatorNodeRef,
     options.nestDrop?.setNodeRef,
   );
@@ -812,25 +816,36 @@ function ThreadRowComponent({
     rowState !== null &&
     (Object.keys(rowState.statuses).length > 0 || rowProgress !== null);
   const reportRowStateHeight = useStickyRowStateReport();
-  const reportsRowState = parentOptions?.stickyLevel !== undefined;
+  const reportsRowState =
+    parentOptions?.stickyLevel === 0 ||
+    (hasRowState && parentOptions?.stickyLevel !== undefined);
+  const lastReportedHeight = useRef(0);
   useLayoutEffect(() => {
-    const element = rowElementRef.current;
+    const element = rowElement;
     if (!reportsRowState || element === null || reportRowStateHeight === null) {
       return;
     }
-    const report = () =>
-      reportRowStateHeight(
-        Math.max(element.getBoundingClientRect().height, element.scrollHeight),
+    const report = () => {
+      if (!element.isConnected) return;
+      const value = Math.max(
+        element.getBoundingClientRect().height,
+        element.scrollHeight,
       );
+      lastReportedHeight.current = value;
+      reportRowStateHeight(value);
+    };
     report();
     const observer =
       typeof ResizeObserver === "undefined" ? null : new ResizeObserver(report);
     observer?.observe(element);
     return () => {
       observer?.disconnect();
-      reportRowStateHeight(0);
+      if (lastReportedHeight.current > 0) {
+        lastReportedHeight.current = 0;
+        reportRowStateHeight(0);
+      }
     };
-  }, [reportsRowState, reportRowStateHeight]);
+  }, [rowElement, reportsRowState, reportRowStateHeight]);
   const rowFirstLineHeightClass = options.isCompact
     ? ROW_STATE_COMPACT_ROW_HEIGHT_CLASS
     : ROW_STATE_ROW_HEIGHT_CLASS;
@@ -1033,7 +1048,7 @@ function ThreadRowComponent({
               </span>
             ) : (
               <span
-                className="flex min-w-0 flex-1 flex-col"
+                className="min-w-0 flex-1 max-md:flex max-md:flex-col md:flex md:flex-col"
                 title={labelTitle}
                 onDoubleClick={startTitleEditing}
               >
@@ -1054,7 +1069,7 @@ function ThreadRowComponent({
                 <span
                   data-sidebar-thread-context=""
                   className={cn(
-                    "flex min-w-0 flex-col items-start text-xs font-normal leading-4 text-muted-foreground md:flex-row md:items-center md:gap-1 md:truncate md:text-sm md:leading-4 md:[&_span]:leading-4 md:[&_time]:leading-4 md:text-sidebar-metadata-foreground [&_time]:text-xs md:[&_time]:text-sm [&_time]:text-inherit",
+                    "hidden min-w-0 items-center gap-1 truncate text-xs font-normal leading-4 text-muted-foreground md:text-sm md:leading-4 md:[&_span]:leading-4 md:[&_time]:leading-4 md:text-sidebar-metadata-foreground [&_time]:text-xs md:[&_time]:text-sm [&_time]:text-inherit md:flex max-md:flex max-md:flex-col max-md:items-start",
                     thread.experimental_nativeTerminal &&
                       "[&>[role=img]]:text-foreground [&>[role=img]_svg]:stroke-[2]",
                   )}

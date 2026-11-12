@@ -559,6 +559,10 @@ describe("ThreadRow", () => {
         depth: 1,
         isCompact: false,
         stickyLevel: 0,
+        isCollapsed: false,
+        childCount: 0,
+        childActivity: NO_COLLAPSED_CHILD_ACTIVITY,
+        onToggleCollapsed: vi.fn(),
       },
       onStickyRowHeight: reportHeight,
     });
