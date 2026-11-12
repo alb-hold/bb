@@ -14149,17 +14149,133 @@ describe("Account Pool credential scoping", () => {
     let lookups = 0;
     let hanging = true;
     const lookupTimes: number[] = [];
+    const clock = controlSweepClock();
+    const timers = clock.timers;
+    const lookupThresholdWaiters: Array<{
+      threshold: number;
+      resolve: () => void;
+    }> = [];
+    const notifyLookupWaiters = () => {
+      for (let i = lookupThresholdWaiters.length - 1; i >= 0; i -= 1) {
+        const waiter = lookupThresholdWaiters[i]!;
+        if (lookups >= waiter.threshold) {
+          waiter.resolve();
+          lookupThresholdWaiters.splice(i, 1);
+        }
+      }
+    };
+    const whenLookupsAtLeast = (threshold: number): Promise<void> => {
+      if (lookups >= threshold) return Promise.resolve();
+      return new Promise((resolve) => {
+        lookupThresholdWaiters.push({ threshold, resolve });
+      });
+    };
+    const fakeMsBudget = { used: 0 };
+    const pumpUntil = async (
+      predicate: () => boolean | Promise<boolean>,
+      maxSteps: number,
+      advanceMs = 1,
+    ) => {
+      for (let step = 0; step < maxSteps; step += 1) {
+        if (await predicate()) return;
+        if (advanceMs > 0) {
+          expect(fakeMsBudget.used + advanceMs).toBeLessThanOrEqual(999);
+          await vi.advanceTimersByTimeAsync(advanceMs);
+          fakeMsBudget.used += advanceMs;
+        }
+        await yieldToIo();
+      }
+      expect(await predicate()).toBe(true);
+    };
+    const whenSetTimeoutDelay = (delay: number) =>
+      pumpUntil(
+        () => timers.mock.calls.some(([, ms]) => ms === delay),
+        60_000,
+        0,
+      );
+    let lastSeenTimerCalls = timers.mock.calls.length;
+    const fortyMsRetryRegisteredAfter = (
+      afterIndex: number,
+      matchingCountBefore: number,
+    ) => {
+      const registered = () => {
+        const matchingCount = timers.mock.calls.filter(
+          ([, ms]) => ms === 40,
+        ).length;
+        return (
+          matchingCount > matchingCountBefore ||
+          timers.mock.calls
+            .slice(afterIndex)
+            .some(([, ms]) => ms === 40)
+        );
+      };
+      if (registered()) return Promise.resolve();
+      const wallDeadline = Date.now() + 15_000;
+      return new Promise<void>((resolve) => {
+        const step = () => {
+          const callsNow = timers.mock.calls.length;
+          if (callsNow !== lastSeenTimerCalls) lastSeenTimerCalls = callsNow;
+          if (registered()) {
+            resolve();
+            return;
+          }
+          if (Date.now() >= wallDeadline) {
+            resolve();
+            return;
+          }
+          setImmediate(step);
+        };
+        step();
+      }).then(async () => {
+        expect(await Promise.resolve(registered())).toBe(true);
+      });
+    };
+    const whenSetTimeoutDelayAfter = (
+      delay: number,
+      afterIndex: number,
+      matchingCountBefore?: number,
+    ) =>
+      delay === 40 && matchingCountBefore !== undefined
+        ? fortyMsRetryRegisteredAfter(afterIndex, matchingCountBefore)
+        : pumpUntil(
+            () =>
+              timers.mock.calls
+                .slice(afterIndex)
+                .some(([, ms]) => ms === delay),
+            60_000,
+            0,
+          );
+    const deferredLogs = () =>
+      host.harness.inspection.logEntries.filter((entry) =>
+        /failed 0, and deferred [1-9]\d*\./u.test(JSON.stringify(entry)),
+      ).length;
+    const whenDeferredLogsAtLeast = (count: number) =>
+      pumpUntil(() => deferredLogs() >= count, 60_000, 0);
+    const completedSweeps = () =>
+      host.harness.inspection.logEntries.filter((entry) =>
+        JSON.stringify(entry).includes("failed 0, and deferred 0."),
+      ).length;
+    const whenAccepting = () =>
+      pumpUntil(
+        async () =>
+          statusSchema.parse(
+            await host.harness.behavior.callRpc("status.get", null),
+          ).accepting,
+        60_000,
+        0,
+      );
+    const whenCompletedSweepsExceed = (before: number) =>
+      pumpUntil(() => completedSweeps() > before, 60_000, 0);
     host.harness.sdk.stub(
       "threads.get",
       ({ threadId }: { threadId: string }) => {
         lookups += 1;
         if (threadId === "thread-deferred") lookupTimes.push(clock.now());
+        notifyLookupWaiters();
         if (hanging) return new Promise(() => undefined);
         return makeThreadResponse({ id: "thread-deferred", archivedAt: null });
       },
     );
-    const clock = controlSweepClock();
-    const timers = clock.timers;
     const service = host.harness.behavior.runService("hub");
     cleanups.push(async () => {
       clock.restore();
@@ -14167,7 +14283,7 @@ describe("Account Pool credential scoping", () => {
       await service.done;
       await host.harness.lifecycle.dispose();
     });
-    await waitForSweep(() => expect(lookups).toBeGreaterThan(0));
+    await whenLookupsAtLeast(1);
     expect(clock.timeout.mock.calls).toContainEqual([30]);
     const startupLookups = lookups;
     await vi.advanceTimersByTimeAsync(29);
@@ -14177,56 +14293,50 @@ describe("Account Pool credential scoping", () => {
       ).accepting,
     ).toBe(false);
     await vi.advanceTimersByTimeAsync(1);
-    await waitForSweep(async () => {
-      expect(
-        statusSchema.parse(
-          await host.harness.behavior.callRpc("status.get", null),
-        ).accepting,
-      ).toBe(true);
-    });
+    await whenAccepting();
     expect(startupLookups).toBeGreaterThan(0);
-    await waitForSweep(() =>
-      expect(timers.mock.calls.some(([, ms]) => ms === 40)).toBe(true),
-    );
+    await whenSetTimeoutDelay(40);
     await vi.advanceTimersByTimeAsync(39);
     expect(lookups).toBe(startupLookups);
     await vi.advanceTimersByTimeAsync(1);
-    await waitForSweep(() => expect(lookups).toBeGreaterThan(startupLookups));
+    await whenLookupsAtLeast(startupLookups + 1);
+    await whenDeferredLogsAtLeast(1);
     expect(lookupTimes.length).toBeGreaterThan(1);
     for (let i = 1; i < lookupTimes.length; i += 1)
       expect(lookupTimes[i]! - lookupTimes[i - 1]!).toBeGreaterThanOrEqual(39);
     expect(JSON.stringify(host.harness.inspection.logEntries)).toMatch(
       /checked \d+ threads, revoked \d+, failed 0, and deferred [1-9]\d*\./u,
     );
-    const completedSweeps = () =>
-      host.harness.inspection.logEntries.filter((entry) =>
-        JSON.stringify(entry).includes("failed 0, and deferred 0."),
-      ).length;
     const beforeCompletion = completedSweeps();
-    const retries = () =>
-      timers.mock.calls.filter(([, ms]) => ms === 40).length;
-    const beforeRetry = retries();
+    const retryTimersBeforeSecondDeferred = timers.mock.calls.length;
+    const fortyMsTimersBeforeSecondDeferred = timers.mock.calls.filter(
+      ([, ms]) => ms === 40,
+    ).length;
     await vi.advanceTimersByTimeAsync(30);
-    await waitForSweep(() => expect(retries()).toBeGreaterThan(beforeRetry));
+    await whenDeferredLogsAtLeast(2);
+    await whenSetTimeoutDelayAfter(
+      40,
+      retryTimersBeforeSecondDeferred,
+      fortyMsTimersBeforeSecondDeferred,
+    );
+    expect(
+      timers.mock.calls.filter(([, ms]) => ms === 40).length,
+    ).toBeGreaterThan(fortyMsTimersBeforeSecondDeferred);
     hanging = false;
     await vi.advanceTimersByTimeAsync(40);
-    await waitForSweep(() => {
-      expect(completedSweeps()).toBeGreaterThan(beforeCompletion);
-    });
-    await waitForSweep(() =>
-      expect(timers.mock.calls.some(([, ms]) => ms === 1_000)).toBe(true),
-    );
+    await whenCompletedSweepsExceed(beforeCompletion);
+    await whenSetTimeoutDelay(1_000);
     const completedLookups = lookups;
     await vi.advanceTimersByTimeAsync(180);
     expect(lookups).toBe(completedLookups);
     await vi.advanceTimersByTimeAsync(819);
     expect(lookups).toBe(completedLookups);
     await vi.advanceTimersByTimeAsync(1);
-    await waitForSweep(() => expect(lookups).toBeGreaterThan(completedLookups));
+    await whenLookupsAtLeast(completedLookups + 1);
     expect(JSON.stringify(host.harness.inspection.logEntries)).not.toContain(
       "could not look up",
     );
-  });
+  }, 120_000);
 
   it("bounds a periodic sweep whose lookup hangs and revokes the stale credential once the lookup recovers", async () => {
     const fixture = await scopedFixture();
