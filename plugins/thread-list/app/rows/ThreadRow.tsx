@@ -794,7 +794,9 @@ function ThreadRowComponent({
     isEditing || isCustomizingActions ? undefined : options.dragBindings;
   const nestTargetState = options.nestDrop?.state ?? null;
   const reorderPlacement = options.nestDrop?.reorderPlacement ?? null;
+  const rowElementRef = useRef<HTMLDivElement>(null);
   const containerRef = useComposedRefs<HTMLDivElement>(
+    rowElementRef,
     rowDragBindings?.setActivatorNodeRef,
     options.nestDrop?.setNodeRef,
   );
@@ -810,13 +812,9 @@ function ThreadRowComponent({
     rowState !== null &&
     (Object.keys(rowState.statuses).length > 0 || rowProgress !== null);
   const reportRowStateHeight = useStickyRowStateReport();
-  const rowStateRef = useRef<HTMLDivElement>(null);
-  const reportsRowState =
-    hasRowState && parentOptions?.stickyLevel !== undefined;
+  const reportsRowState = parentOptions?.stickyLevel !== undefined;
   useLayoutEffect(() => {
-    const element =
-      rowStateRef.current?.closest<HTMLElement>("[data-sidebar-rename-row]") ??
-      null;
+    const element = rowElementRef.current;
     if (!reportsRowState || element === null || reportRowStateHeight === null) {
       return;
     }
@@ -861,7 +859,7 @@ function ThreadRowComponent({
       "h-auto min-h-[var(--bb-sidebar-row-height)] max-md:pointer-coarse:h-auto max-md:pointer-coarse:min-h-[var(--bb-sidebar-row-height-coarse)]",
     showRowMetadata && "has-[[data-reserve-line]]:h-auto has-[[data-reserve-line]]:md:h-auto has-[[data-reserve-line]]:min-h-[var(--bb-sidebar-row-height)] has-[[data-reserve-line]]:max-md:pointer-coarse:h-auto has-[[data-reserve-line]]:max-md:pointer-coarse:min-h-11",
     "max-md:pointer-coarse:min-h-11",
-    "max-md:h-auto max-md:pointer-coarse:h-auto max-md:py-1.5",
+    "max-md:h-auto max-md:pointer-coarse:h-auto",
     showActive
       ? SIDEBAR_ROW_SELECTED_STATE_CLASS
       : SIDEBAR_ROW_INTERACTIVE_STATE_CLASS,
@@ -1275,7 +1273,6 @@ function ThreadRowComponent({
       </span>
       {rowState !== null && hasRowState ? (
         <div
-          ref={rowStateRef}
           data-sidebar-thread-row-state=""
           className="pointer-events-none relative z-[1] flex w-full min-w-0 basis-full flex-col gap-1 pl-6 pr-2 pb-1"
         >
