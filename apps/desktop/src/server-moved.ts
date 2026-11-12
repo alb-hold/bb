@@ -213,7 +213,9 @@ const defaultNoticeFs: ServerTargetFs = {
 };
 
 const scheduleWithTimer: ScheduleServerMovedCheck = (callback, delayMs) => {
-  const timer = setTimeout(callback, delayMs);
+  const timer = setTimeout(() => {
+    void callback();
+  }, delayMs);
   return () => {
     clearTimeout(timer);
   };

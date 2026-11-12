@@ -436,7 +436,7 @@ describe("createServerMovedWatcher", () => {
       }: { waitForCallbacks?: boolean } = {}) {
         const callbacks = [...pending];
         pending.clear();
-        const results = callbacks.map((callback) => callback());
+        const results = callbacks.map((callback) => Promise.resolve(callback()));
         const currentCallbacks = Promise.all(results).then(() => undefined);
         callbacksInFlight.add(currentCallbacks);
         currentCallbacks.then(
