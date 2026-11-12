@@ -34,7 +34,6 @@ function Key({
   active = false,
   toggle = false,
   disabled,
-  compactRow = false,
   className,
 }: {
   label: string;
@@ -43,7 +42,6 @@ function Key({
   active?: boolean;
   toggle?: boolean;
   disabled: boolean;
-  compactRow?: boolean;
   className?: string;
 }) {
   return (
@@ -52,7 +50,7 @@ function Key({
       aria-label={label}
       aria-pressed={toggle ? active : undefined}
       disabled={disabled}
-      onPointerDown={(event) => event.preventDefault()}
+      onMouseDown={(event) => event.preventDefault()}
       onClick={() => {
         const shell = getNativeShell();
         if (shell?.has("haptic"))
@@ -61,9 +59,7 @@ function Key({
       }}
       className={cn(
         "flex h-11 touch-manipulation items-center justify-center gap-1 rounded-full bg-[image:var(--pill-surface)] font-mono font-medium text-muted-foreground transition-colors hover:bg-state-hover hover:text-foreground active:bg-none active:bg-state-active active:text-foreground focus-visible:outline-2 focus-visible:outline-ring disabled:opacity-40",
-        compactRow
-          ? "min-w-0 flex-1 basis-0 shrink overflow-hidden px-0.5 text-2xs whitespace-nowrap"
-          : "w-max min-w-11 flex-none shrink-0 whitespace-nowrap px-1 text-xs",
+        "w-max min-w-11 flex-none shrink-0 whitespace-nowrap px-1 text-xs",
         active && "bg-none bg-state-active text-foreground",
         className,
       )}
@@ -91,31 +87,20 @@ export function TerminalMobileControls({
 }: TerminalMobileControlsProps) {
   const [expanded, setExpanded] = useState(false);
   const [secondaryKeysInline, setSecondaryKeysInline] = useState(false);
-  const [compactKeys, setCompactKeys] = useState(false);
+  const [primaryKeyCount, setPrimaryKeyCount] = useState(0);
   const controlsRef = useRef<HTMLDivElement>(null);
   const scrollerRef = useRef<HTMLDivElement>(null);
   const updateOverflow = useCallback(() => {
-    const scroller = scrollerRef.current;
-    if (!scroller) return;
     const width = controlsRef.current?.clientWidth ?? 0;
-    const compact = width > 0 && width < 375;
-    setCompactKeys(compact);
-    setSecondaryKeysInline(
-      !compact &&
-        scroller.clientWidth >= (searchAvailable ? 9 : 8) * 48 - 4,
-    );
-    if (compact) {
-      scroller.removeAttribute("data-more-left");
-      scroller.removeAttribute("data-more-right");
-      scroller.style.maskImage = "none";
-      return;
+    let remaining = width - 16 - 80;
+    let count = 0;
+    for (const keyWidth of [44, 44, 44, 56, 44, 44]) {
+      remaining -= keyWidth + 4;
+      if (remaining < 0) break;
+      count++;
     }
-    const left = scroller.scrollLeft > 1;
-    const right =
-      scroller.scrollWidth - scroller.clientWidth - scroller.scrollLeft > 1;
-    scroller.toggleAttribute("data-more-left", left);
-    scroller.toggleAttribute("data-more-right", right);
-    scroller.style.maskImage = "none";
+    setPrimaryKeyCount(count);
+    setSecondaryKeysInline(width >= (searchAvailable ? 588 : 540));
   }, [searchAvailable]);
   useLayoutEffect(() => {
     updateOverflow();
@@ -159,78 +144,77 @@ export function TerminalMobileControls({
       </div>
     </>
   );
-  const primaryScrollerKeys = (
-    <>
-      <Key
-        {...keyProps}
-        label="Interrupt (Control C)"
-        compactRow={compactKeys}
-        onPress={() => onInput("\x03")}
-      >
-        ^C
-      </Key>
-      <Key
-        {...keyProps}
-        label="Escape"
-        compactRow={compactKeys}
-        onPress={() => onInput("\x1b")}
-      >
-        Esc
-      </Key>
-      <Key
-        {...keyProps}
-        label="Arrow up"
-        compactRow={compactKeys}
-        onPress={() => onArrow("up")}
-      >
-        {compactKeys ? "↑" : <Icon name="ArrowUp" className="size-4" />}
-      </Key>
-      <Key
-        {...keyProps}
-        label="Arrow down"
-        compactRow={compactKeys}
-        onPress={() => onArrow("down")}
-      >
-        {compactKeys ? "↓" : <Icon name="ArrowDown" className="size-4" />}
-      </Key>
-      <Key
-        {...keyProps}
-        label="Tab"
-        compactRow={compactKeys}
-        onPress={() => onInput("\t")}
-      >
-        Tab
-      </Key>
-      {secondaryKeysInline ? secondaryKeys : null}
-    </>
-  );
-  const enterKey = (
+  const primaryKeys = [
     <Key
+      key="interrupt"
+      {...keyProps}
+      label="Interrupt (Control C)"
+      className="w-11"
+      onPress={() => onInput("\x03")}
+    >
+      ^C
+    </Key>,
+    <Key
+      key="escape"
+      {...keyProps}
+      label="Escape"
+      className="w-11"
+      onPress={() => onInput("\x1b")}
+    >
+      Esc
+    </Key>,
+    <Key
+      key="tab"
+      {...keyProps}
+      label="Tab"
+      className="w-11"
+      onPress={() => onInput("\t")}
+    >
+      Tab
+    </Key>,
+    <Key
+      key="enter"
       {...keyProps}
       label="Enter"
-      compactRow={compactKeys}
+      className="w-14"
       onPress={() => onInput("\r")}
     >
-      {compactKeys ? "↵" : "Enter"}
-    </Key>
-  );
+      Enter
+    </Key>,
+    <Key
+      key="up"
+      {...keyProps}
+      label="Arrow up"
+      className="w-11"
+      onPress={() => onArrow("up")}
+    >
+      <Icon name="ArrowUp" className="size-4" />
+    </Key>,
+    <Key
+      key="down"
+      {...keyProps}
+      label="Arrow down"
+      className="w-11"
+      onPress={() => onArrow("down")}
+    >
+      <Icon name="ArrowDown" className="size-4" />
+    </Key>,
+  ];
   const moreKey = (
     <Key
       {...keyProps}
       label="More terminal keys"
       toggle
       active={expanded}
-      compactRow={compactKeys}
+      className="w-20"
       onPress={() => setExpanded(!expanded)}
     >
-      {!compactKeys ? <Icon name="MoreHorizontal" className="size-4" /> : null}
+      <Icon name="MoreHorizontal" className="size-4 shrink-0" />
       Keys
-      {!compactKeys ? (
-        <Icon
-          name={expanded ? "ChevronUp" : "ChevronDown"}
-          className="size-3"
-        />
-      ) : null}
+      <Icon
+        name={expanded ? "ChevronUp" : "ChevronDown"}
+        className="size-3 shrink-0"
+      />
     </Key>
   );
   return (
@@ -240,7 +224,7 @@ export function TerminalMobileControls({
       data-terminal-mobile-controls=""
       ref={controlsRef}
       className={cn(
-        "shrink-0 border-t border-border/50 bg-sidebar px-2 pt-1.5 pb-1",
+        "shrink-0 border-t border-border/50 bg-sidebar px-2 pt-0 pb-1",
         className,
       )}
     >
@@ -249,7 +233,8 @@ export function TerminalMobileControls({
       ) : null}
       {expanded ? (
         <div className="mb-1 flex flex-wrap gap-1">
-          {!secondaryKeysInline ? secondaryKeys : null}
+          {primaryKeys.slice(primaryKeyCount)}
+          {!secondaryKeysInline && !readOnlyExited ? secondaryKeys : null}
           {onPreviousPrompt ? (
             <Key
               {...readOnlyKeyProps}
@@ -359,32 +344,15 @@ export function TerminalMobileControls({
           </Key>
         </div>
       ) : null}
-      {compactKeys ? (
-        <div
-          ref={scrollerRef}
-          data-terminal-key-scroller=""
-          className="flex min-w-0 flex-nowrap gap-1 overflow-x-hidden"
-        >
-          {primaryScrollerKeys}
-          {enterKey}
-          {moreKey}
-        </div>
-      ) : (
-        <div className="flex min-w-0 gap-1">
-          <div className="relative min-w-0 shrink">
-            <div
-              ref={scrollerRef}
-              onScroll={updateOverflow}
-              data-terminal-key-scroller=""
-              className="flex flex-nowrap gap-1 overflow-x-auto touch-pan-x"
-            >
-              {primaryScrollerKeys}
-            </div>
-          </div>
-          {enterKey}
-          {moreKey}
-        </div>
-      )}
+      <div
+        ref={scrollerRef}
+        data-terminal-key-scroller=""
+        className="flex min-w-0 flex-nowrap gap-1 pt-1.5"
+      >
+        {primaryKeys.slice(0, primaryKeyCount)}
+        {secondaryKeysInline ? secondaryKeys : null}
+        {moreKey}
+      </div>
     </div>
   );
 }

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TerminalMobileControls } from "./TerminalMobileControls";
 
 function buttonDisabled(label: string): boolean {
@@ -9,16 +9,23 @@ function buttonDisabled(label: string): boolean {
     .disabled;
 }
 
-afterEach(cleanup);
+beforeEach(() => {
+  vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(390);
+});
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
 
 function renderControls() {
   const onInput = vi.fn();
   const onSearch = vi.fn();
+  const onArrow = vi.fn();
   render(
     <TerminalMobileControls
       controlActive={false}
       disabled={false}
-      onArrow={vi.fn()}
+      onArrow={onArrow}
       onControlChange={vi.fn()}
       onInput={onInput}
       onKeyboardToggle={vi.fn()}
@@ -27,138 +34,92 @@ function renderControls() {
       onSelectText={vi.fn()}
     />,
   );
-  return { onInput, onSearch };
+  return { onInput, onSearch, onArrow };
 }
 
 describe("TerminalMobileControls", () => {
-  const primaryRowLabels = [
-    "Interrupt (Control C)",
-    "Escape",
-    "Arrow up",
-    "Arrow down",
-    "Tab",
-    "Enter",
-    "More terminal keys",
-  ] as const;
+  it("allows touch click synthesis while preventing mouse focus changes", () => {
+    const { onInput } = renderControls();
+    const tab = screen.getByRole("button", { name: "Tab" });
+    expect(fireEvent.pointerDown(tab, { pointerType: "touch" })).toBe(true);
+    expect(fireEvent.mouseDown(tab)).toBe(false);
+    fireEvent.click(tab);
+    expect(onInput).toHaveBeenCalledExactlyOnceWith("\t");
+  });
 
-  it.each([288, 304, 320, 344, 359])(
-    "uses one equal-flex compact row below 375 px (test-change-reason: jsdom cannot lay out flex; WebKit key-rect proof lives in r36c13-key-measurements.json) at %i px controls width",
-    (width) => {
-      const clientWidth = vi
-        .spyOn(HTMLElement.prototype, "clientWidth", "get")
-        .mockImplementation(function (this: HTMLElement) {
-          return this.hasAttribute("data-terminal-mobile-controls") ? width : 0;
-        });
-      try {
-        renderControls();
-        for (const label of primaryRowLabels) {
-          expect(screen.getByRole("button", { name: label })).toBeTruthy();
-        }
-        const scroller = document.querySelector<HTMLElement>(
-          "[data-terminal-key-scroller]",
-        )!;
-        expect(scroller.className.split(/\s+/u)).not.toContain("overflow-x-auto");
-        expect(scroller.querySelectorAll("button")).toHaveLength(7);
-        for (const label of primaryRowLabels) {
-          const key = screen.getByRole("button", { name: label });
-          expect(key.closest("[data-terminal-key-scroller]")).toBe(scroller);
-          expect(key.classList.contains("flex-1")).toBe(true);
-          expect(key.classList.contains("basis-0")).toBe(true);
-          expect(key.classList.contains("min-w-0")).toBe(true);
-          expect(key.classList.contains("text-2xs")).toBe(true);
-          expect(key.classList.contains("w-11")).toBe(false);
-        }
-      } finally {
-        clientWidth.mockRestore();
-      }
-    },
-  );
-
-  it("uses full-size keys at 390 px", () => {
-    const clientWidth = vi
-      .spyOn(HTMLElement.prototype, "clientWidth", "get")
-      .mockImplementation(function (this: HTMLElement) {
-        return this.hasAttribute("data-terminal-mobile-controls") ? 390 : 0;
-      });
-    try {
+  it.each([
+    [288, 3],
+    [320, 4],
+    [344, 4],
+    [360, 5],
+    [375, 5],
+    [390, 5],
+    [600, 6],
+  ])(
+    "keeps every key reachable with uniform targets at %i px",
+    (width, count) => {
+      vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(
+        width,
+      );
       renderControls();
-      const enter = screen.getByRole("button", { name: "Enter" });
-      const more = screen.getByRole("button", { name: "More terminal keys" });
-      expect(enter.classList.contains("text-2xs")).toBe(false);
-      expect(more.classList.contains("text-2xs")).toBe(false);
-      expect(more.querySelector('[data-icon="ChevronDown"]')).not.toBeNull();
-      const scroller = document.querySelector(
+      const row = document.querySelector<HTMLElement>(
         "[data-terminal-key-scroller]",
       )!;
-      expect(scroller.querySelectorAll("button")).toHaveLength(5);
-      expect(
-        screen
-          .getByRole("button", { name: "Enter" })
-          .closest("[data-terminal-key-scroller]"),
-      ).toBeNull();
+      const priority = [
+        "Interrupt (Control C)",
+        "Escape",
+        "Tab",
+        "Enter",
+        "Arrow up",
+        "Arrow down",
+      ];
+      const labels = () =>
+        Array.from(row.querySelectorAll("button"), (key) =>
+          key.getAttribute("aria-label"),
+        );
+      expect(labels().slice(0, count)).toEqual(priority.slice(0, count));
+      expect(labels().at(-1)).toBe("More terminal keys");
+      expect(row.classList.contains("pt-1.5")).toBe(true);
+      expect(row.classList.contains("overflow-x-auto")).toBe(false);
+      const more = screen.getByRole("button", { name: "More terminal keys" });
+      expect(more.querySelector('[data-icon="MoreHorizontal"]')).not.toBeNull();
+      expect(more.querySelector('[data-icon="ChevronDown"]')).not.toBeNull();
+      for (const label of priority.slice(count)) {
+        expect(screen.queryByRole("button", { name: label })).toBeNull();
+      }
       fireEvent.click(more);
-      expect(more.getAttribute("aria-pressed")).toBe("true");
-      expect(
-        more.querySelector("[data-icon]")?.getAttribute("data-icon"),
-      ).toBe("MoreHorizontal");
-      expect(more.querySelector('[data-icon="ChevronUp"]')).not.toBeNull();
-    } finally {
-      clientWidth.mockRestore();
-    }
-  });
-
-  it("keeps touch targets wide enough to press on a narrow phone", () => {
-    renderControls();
-
-    const controls = screen.getByRole("group", {
-      name: "Terminal keyboard controls",
-    });
-    expect(
-      screen.getByRole("button", { name: "More terminal keys" }).textContent,
-    ).toBe("Keys");
-    const more = screen.getByRole("button", { name: "More terminal keys" });
-    expect(more.querySelector('[data-icon="ChevronDown"]')).not.toBeNull();
-    fireEvent.click(more);
-    expect(more.getAttribute("aria-pressed")).toBe("true");
-    expect(more.querySelector('[data-icon="ChevronUp"]')).not.toBeNull();
-    fireEvent.click(more);
-    const buttons = Array.from(controls.querySelectorAll("button"));
-    expect(controls.querySelector(".bg-gradient-to-l")).toBeNull();
-
-    expect(
-      buttons.slice(0, 3).map((button) => button.getAttribute("aria-label")),
-    ).toEqual(["Interrupt (Control C)", "Escape", "Arrow up"]);
-    expect(buttons[0]?.parentElement?.className.split(/\s+/u)).toEqual(
-      expect.arrayContaining(["flex-nowrap", "overflow-x-auto"]),
-    );
-    expect(buttons[0]?.parentElement?.className.split(/\s+/u)).not.toContain(
-      "flex-wrap",
-    );
-    for (const label of ["Enter", "More terminal keys"]) {
-      expect(
-        screen
-          .getByRole("button", { name: label })
-          .closest("[data-terminal-key-scroller]"),
-      ).toBeNull();
-    }
-    expect(buttons[0]?.closest("[data-terminal-key-scroller]")).not.toBeNull();
-    for (const button of buttons) {
-      expect(button.className.split(/\s+/u)).toEqual(
-        expect.arrayContaining([
-          "h-11",
-          "w-max",
-          "shrink-0",
-          "whitespace-nowrap",
-          "rounded-full",
-          "bg-[image:var(--pill-surface)]",
-          "active:bg-none",
-          "active:bg-state-active",
-        ]),
-      );
-      expect(button.className.split(/\s+/u)).toContain("min-w-11");
-      expect(button.className.split(/\s+/u)).toContain("flex-none");
-    }
-  });
+      const allKeys = screen.getAllByRole("button");
+      const allLabels = allKeys.map((key) => key.getAttribute("aria-label"));
+      const fullSet = [
+        ...priority,
+        "More terminal keys",
+        "Search terminal output",
+        "Control for next key",
+        "Arrow left",
+        "Arrow right",
+        "Shift Tab",
+        "Function key F2",
+        "End of input (Control D)",
+        "Page up",
+        "Page down",
+        "Home",
+        "End",
+        "Paste",
+        "Select terminal text",
+        "Show or hide keyboard",
+      ];
+      expect(allLabels.sort()).toEqual(fullSet.sort());
+      for (const key of allKeys) {
+        expect(key.classList.contains("min-w-11")).toBe(true);
+        expect(key.classList.contains("h-11")).toBe(true);
+        expect(key.classList.contains("text-xs")).toBe(true);
+        expect(key.classList.contains("text-2xs")).toBe(false);
+        expect(key.classList.contains("shrink-0")).toBe(true);
+      }
+      fireEvent.click(more);
+      expect(labels().slice(0, count)).toEqual(priority.slice(0, count));
+    },
+  );
 
   it("labels Enter visibly and sends a carriage return", () => {
     const { onInput } = renderControls();
@@ -182,32 +143,6 @@ describe("TerminalMobileControls", () => {
     expect(
       screen.queryByRole("button", { name: "Function key F2" }),
     ).toBeNull();
-  });
-
-  it("shows an overflow cue only on edges with hidden keys", () => {
-    renderControls();
-    const scroller = document.querySelector<HTMLElement>(
-      "[data-terminal-key-scroller]",
-    )!;
-    Object.defineProperties(scroller, {
-      clientWidth: { configurable: true, value: 240 },
-      scrollWidth: { configurable: true, value: 380 },
-    });
-    fireEvent.scroll(scroller);
-    expect(scroller.dataset.moreRight).toBe("");
-    expect(scroller.dataset.moreLeft).toBeUndefined();
-    scroller.scrollLeft = 70;
-    fireEvent.scroll(scroller);
-    expect(scroller.dataset.moreLeft).toBe("");
-    expect(scroller.dataset.moreRight).toBe("");
-    scroller.scrollLeft = 140;
-    fireEvent.scroll(scroller);
-    expect(scroller.dataset.moreRight).toBeUndefined();
-    Object.defineProperty(scroller, "clientWidth", { value: 400 });
-    scroller.scrollLeft = 0;
-    fireEvent.scroll(scroller);
-    expect(scroller.dataset.moreLeft).toBeUndefined();
-    expect(scroller.dataset.moreRight).toBeUndefined();
   });
 
   it("hides the extra keys until the user expands them", () => {
@@ -280,15 +215,15 @@ describe("TerminalMobileControls", () => {
   });
 });
 
-it("keeps both vertical arrows together before the narrow row overflow", () => {
-  renderControls();
-  const up = screen.getByRole("button", { name: "Arrow up" });
-  const down = screen.getByRole("button", { name: "Arrow down" });
-  expect(up.nextElementSibling).toBe(down);
+it("keeps the overflowed vertical arrow reachable through Keys", () => {
+  const { onArrow } = renderControls();
+  expect(screen.queryByRole("button", { name: "Arrow down" })).toBeNull();
   expect(
     screen.queryByRole("button", { name: "Control for next key" }),
   ).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "More terminal keys" }));
+  fireEvent.click(screen.getByRole("button", { name: "Arrow down" }));
+  expect(onArrow).toHaveBeenCalledExactlyOnceWith("down");
   expect(
     screen.getByRole("button", { name: "Control for next key" }),
   ).toBeTruthy();
