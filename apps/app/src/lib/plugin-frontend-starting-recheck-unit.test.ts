@@ -1,7 +1,7 @@
 import { expect, it, vi } from "vitest";
 import { createStartingPluginsRecheck } from "./plugin-frontend-starting-recheck";
 
-function harness(starting: { value: boolean }, maxAttempts = 3) {
+function harness(starting: { value: boolean }) {
   const timers: { callback: () => void; ms: number }[] = [];
   const recheck = vi.fn();
   const clearTimeout = vi.fn();
@@ -14,7 +14,6 @@ function harness(starting: { value: boolean }, maxAttempts = 3) {
     },
     clearTimeout,
     delaysMs: [10, 20],
-    maxAttempts,
   });
   return { subject, timers, recheck, clearTimeout };
 }
@@ -39,13 +38,17 @@ it("backs off while plugins stay starting, holding one timer at a time", () => {
   expect(timers.map((timer) => timer.ms)).toEqual([10, 20, 20]);
 });
 
-it("stops after the attempt cap", () => {
-  const { subject, timers } = harness({ value: true }, 2);
-  for (let i = 0; i < 5; i += 1) {
+it("keeps re-checking at the last delay for as long as plugins stay starting", () => {
+  const { subject, timers, recheck } = harness({ value: true });
+  for (let i = 0; i < 200; i += 1) {
     subject.afterReconcile();
     timers.at(-1)?.callback();
   }
-  expect(timers).toHaveLength(2);
+  expect(timers).toHaveLength(200);
+  expect(recheck).toHaveBeenCalledTimes(200);
+  expect(new Set(timers.slice(1).map((timer) => timer.ms))).toEqual(
+    new Set([20]),
+  );
 });
 
 it("cancels a pending re-check and resets the backoff once plugins are running", () => {
