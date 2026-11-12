@@ -138,14 +138,27 @@ const MachineSettingsView = lazy(() =>
     default: m.MachineSettingsView,
   })),
 );
-const SplitWorkspaceRoute = lazy(() =>
-  trackCriticalLoad(
+function loadWorkspaceRoute() {
+  return trackCriticalLoad(
     traceTerminalGate(
       "terminal-workspace-route-import",
       () => import("./views/SplitWorkspaceRoute"),
     ),
-  ),
+  );
+}
+
+let initialWorkspaceRoute: ReturnType<typeof loadWorkspaceRoute> | undefined;
+const SplitWorkspaceRoute = lazy(
+  () => initialWorkspaceRoute ?? loadWorkspaceRoute(),
 );
+
+if (globalThis.__bbInitialNativeTerminalRequest) {
+  initialWorkspaceRoute = loadWorkspaceRoute();
+  void initialWorkspaceRoute.catch(() => {
+    initialWorkspaceRoute = undefined;
+  });
+  void trackCriticalLoad(LazyThreadDetailView.preload());
+}
 
 function NavigatePreservingLocation({ pathname }: { pathname: string }) {
   const location = useLocation();
