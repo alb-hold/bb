@@ -3301,7 +3301,10 @@ export function ThreadTerminalView({
             replayCompleted = false;
             replayPreviewExitApplied = false;
             setReplayNotice(paintedScreenKept ? "reconnecting" : null);
-            if (replayPreview === null || replayPreview.fallback) {
+            if (
+              !needsFittedGrid() &&
+              (replayPreview === null || replayPreview.fallback)
+            ) {
               replayPreview?.dispose();
               replayCheckpointSequence = null;
               const replayGrid = latestPtyGrid;
