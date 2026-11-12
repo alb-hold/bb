@@ -9,7 +9,6 @@ import { systemProvidersQueryOptions } from "./hooks/queries/system-queries";
 import { machineProvidersQueryOptions } from "./hooks/queries/machine-provider-queries";
 import { PluginUpdateJobsHost } from "./components/plugin/PluginUpdateJobsHost";
 import { LazyThreadDetailView } from "./views/thread-detail/LazyThreadDetailView";
-import { defineSplit } from "./lib/define-split";
 import { LazyRootComposeView } from "./views/LazyRootComposeView";
 import { ProgressiveComposer } from "./components/promptbox/ProgressiveComposerSplit";
 import { useRouteState } from "./hooks/useRouteState";
@@ -139,16 +138,14 @@ const MachineSettingsView = lazy(() =>
     default: m.MachineSettingsView,
   })),
 );
-const SplitWorkspaceRoute = defineSplit({
-  id: "workspace-route",
-  tier: "intent",
-  load: () =>
+const SplitWorkspaceRoute = lazy(() =>
+  trackCriticalLoad(
     traceTerminalGate(
       "terminal-workspace-route-import",
       () => import("./views/SplitWorkspaceRoute"),
-    ).then((module) => module.default),
-  loading: WorkspaceRouteFallback,
-});
+    ),
+  ),
+);
 
 function NavigatePreservingLocation({ pathname }: { pathname: string }) {
   const location = useLocation();
@@ -512,10 +509,16 @@ export function AppRoutes() {
           <Route
             path="*"
             element={
-              <SplitWorkspaceRoute
-                rootCompose={isRootComposeView}
-                thread={isThreadView}
-              />
+              <Suspense
+                fallback={
+                  <WorkspaceRouteFallback
+                    rootCompose={isRootComposeView}
+                    thread={isThreadView}
+                  />
+                }
+              >
+                <SplitWorkspaceRoute />
+              </Suspense>
             }
           />
         </Routes>

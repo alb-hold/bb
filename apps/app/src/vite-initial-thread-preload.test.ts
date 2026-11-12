@@ -67,6 +67,8 @@ function bootstrap(pathname: string, view: unknown, ok = true) {
   });
   const document = {
     readyState: "loading",
+    getElementById: () => null,
+    documentElement: {},
     addEventListener: vi.fn(),
     createElement: () => ({}),
     head: {
@@ -77,6 +79,10 @@ function bootstrap(pathname: string, view: unknown, ok = true) {
     },
   };
   runInNewContext(tags[0]!.children, {
+    MutationObserver: class {
+      observe() {}
+      disconnect() {}
+    },
     document,
     location: { pathname },
     fetch,
@@ -213,31 +219,40 @@ it("starts only terminal runtimes at low priority after 50ms and deduplicates on
   expect(state.links.at(-1)?.fetchPriority).toBe("auto");
 });
 
-it("evaluates the concrete route and panel entries after HTML parsing without a React import wrapper", () => {
-  const state = bootstrap("/threads/thr_abc", null);
-  const script = `
+it.each([false, true])(
+  "evaluates route and panel entries while DOMContentLoaded is blocked (root initially present: %s)",
+  (rootInitiallyPresent) => {
+    const state = bootstrap("/threads/thr_abc", null);
+    const script = `
     import { runInNewContext } from "node:vm";
-    const imports = [], listeners = [], marks = [];
-    const document = { readyState: "loading", addEventListener: (_name, fn) => listeners.push(fn), createElement: () => ({}), head: { append() {} } };
-    const context = { URL, document, location: { pathname: "/threads/thr_abc", href: "http://localhost/threads/thr_abc" }, performance: { now: () => 20, mark: (...args) => marks.push(args), getEntriesByName: () => [{ responseEnd: 10 }] }, fetch: async () => ({ ok: true, clone: () => ({ json: async () => ({ threadId: "thr_abc", providerId: "codex" }) }) }), setTimeout: () => 1, clearTimeout() {} };
+    const imports = [], listeners = [], marks = [], observers = [];
+    let rootExists = ${rootInitiallyPresent};
+    const document = { readyState: "loading", documentElement: {}, getElementById: () => rootExists ? {} : null, addEventListener: (_name, fn) => listeners.push(fn), createElement: () => ({}), head: { append() {} } };
+    class MutationObserver { constructor(callback) { observers.push(callback); } observe() {} disconnect() {} }
+    const context = { URL, document, MutationObserver, location: { pathname: "/threads/thr_abc", href: "http://localhost/threads/thr_abc" }, performance: { now: () => 20, mark: (...args) => marks.push(args), getEntriesByName: () => [{ responseEnd: 10 }] }, fetch: async () => ({ ok: true, clone: () => ({ json: async () => ({ threadId: "thr_abc", providerId: "codex" }) }) }), setTimeout: () => 1, clearTimeout() {} };
     runInNewContext(${JSON.stringify(state.tags[0]!.children)}, context, { importModuleDynamically: (path) => { imports.push(path); return import("node:path") } });
     await new Promise(setImmediate);
-    if (imports.length !== 0) throw new Error("Evaluated before root HTML existed");
-    document.readyState = "interactive";
-    listeners.forEach(fn => fn());
+    if (!rootExists && imports.length !== 0) throw new Error("Evaluated before root HTML existed");
+    rootExists = true;
+    observers.forEach(fn => fn());
     await new Promise(setImmediate);
     console.log(JSON.stringify({ imports, marks }));
   `;
-  const result = JSON.parse(
-    execFileSync(
-      process.execPath,
-      ["--experimental-vm-modules", "--input-type=module", "-"],
-      { input: script, encoding: "utf8" },
-    ),
-  );
-  expect(result.imports).toEqual(["/workspace.js", "/thread.js", "/panel.js"]);
-  expect(result.marks).toContainEqual([
-    "terminal-head-thread-import-end",
-    { detail: { elapsed: 0, lastResponseEnd: 10, resources: 3 } },
-  ]);
-});
+    const result = JSON.parse(
+      execFileSync(
+        process.execPath,
+        ["--experimental-vm-modules", "--input-type=module", "-"],
+        { input: script, encoding: "utf8" },
+      ),
+    );
+    expect(result.imports).toEqual([
+      "/workspace.js",
+      "/thread.js",
+      "/panel.js",
+    ]);
+    expect(result.marks).toContainEqual([
+      "terminal-head-thread-import-end",
+      { detail: { elapsed: 0, lastResponseEnd: 10, resources: 3 } },
+    ]);
+  },
+);
