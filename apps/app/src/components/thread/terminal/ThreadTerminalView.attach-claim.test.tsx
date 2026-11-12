@@ -541,7 +541,6 @@ describe("native terminal attach claim timing", () => {
           stages.get("terminal-first-fitted-grid-claimed")!,
         ).toBeLessThanOrEqual(stages.get("terminal-replay-revealed")!);
         expect(stages.has("terminal-replay-preview-open-start")).toBe(false);
-        expect(stages.has("terminal-replay-preview-create-start")).toBe(false);
       }
       const claims = socket.sent
         .map((raw) => JSON.parse(raw))
