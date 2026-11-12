@@ -212,6 +212,38 @@ export async function hydratePreferences(rpc: PreferencesRpc): Promise<void> {
   activeStore().set(state.readyAtom, true);
 }
 
+export const PREFERENCES_LOAD_RETRY_DELAYS_MS: readonly number[] = [
+  1_000, 2_000, 4_000, 5_000,
+];
+
+export function loadPreferencesUntilReady(
+  rpc: PreferencesRpc,
+  onError: (error: unknown) => void,
+): () => void {
+  let cancelled = false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const attempt = (index: number) => {
+    hydratePreferences(rpc).catch((error: unknown) => {
+      if (cancelled) return;
+      onError(error);
+      const delay =
+        PREFERENCES_LOAD_RETRY_DELAYS_MS[
+          Math.min(index, PREFERENCES_LOAD_RETRY_DELAYS_MS.length - 1)
+        ] ?? 5_000;
+      timer = setTimeout(() => {
+        timer = null;
+        if (!cancelled) attempt(index + 1);
+      }, delay);
+    });
+  };
+  attempt(0);
+  return () => {
+    cancelled = true;
+    if (timer !== null) clearTimeout(timer);
+    timer = null;
+  };
+}
+
 export function applyRemotePreferenceSignal(payload: unknown): void {
   const parsed = preferencesChangedSignalSchema.safeParse(payload);
   if (!parsed.success) return;
