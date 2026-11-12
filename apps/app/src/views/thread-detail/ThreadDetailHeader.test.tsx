@@ -49,6 +49,7 @@ vi.mock("@/components/thread/ThreadActionsProvider", () => ({
   useThreadActions: () => ({
     renameThreadAsync: mocks.renameThreadAsync,
   }),
+  useSystemProviderInfo: () => null,
 }));
 
 vi.mock("@/components/layout/AppPageHeader", () => ({
@@ -97,6 +98,7 @@ vi.mock("@/hooks/queries/system-queries", () => ({
       ],
     },
   }),
+  useSystemProviderInfo: () => null,
 }));
 
 vi.mock("@bb/shared-ui/hooks/use-compact-viewport", () => ({
