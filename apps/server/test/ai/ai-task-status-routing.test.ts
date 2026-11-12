@@ -1,14 +1,26 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { runTextAiTask } from "../../src/services/ai/ai-tasks.js";
 import { registerFakeAiService } from "../helpers/ai-services.js";
 import { withTestHarness } from "../helpers/test-app.js";
 
 const PROMPT = "Write a title for: fix the flaky login test";
+const realSetTimeout = globalThis.setTimeout;
+
+function blockEventLoopOnceAfter(delayMs: number, blockMs: number) {
+  realSetTimeout(() => {
+    const end = performance.now() + blockMs;
+    while (performance.now() < end) {}
+  }, delayMs);
+}
+
+afterEach(() => vi.useRealTimers());
 
 describe("existing AI task routing around a slow status check", () => {
   it.each(["thread-title", "commit-message"] as const)(
     "routes %s past a service whose status check outlasts 2 s, and keeps routing past it on a repeated call after the late Ready",
     async (task) => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+      blockEventLoopOnceAfter(1_900, 700);
       await withTestHarness({}, async (harness) => {
         const cloud = registerFakeAiService(harness.deps.aiServices, {
           id: "bb",
@@ -29,27 +41,26 @@ describe("existing AI task routing around a slow status check", () => {
           complete: async () => "Codex title",
         });
 
-        const startedAt = Date.now();
-        const first = await runTextAiTask(harness.deps, {
+        const firstPromise = runTextAiTask(harness.deps, {
           task,
           label: "test",
           prompt: PROMPT,
         });
-        const firstMs = Date.now() - startedAt;
+        await vi.advanceTimersByTimeAsync(1_999);
+        expect(codex.completeCalls).toEqual([]);
+        await vi.advanceTimersByTimeAsync(1);
+        const first = await firstPromise;
         expect(first).toMatchObject({ ok: true, value: "Codex title" });
-        expect(firstMs).toBeGreaterThanOrEqual(1_900);
-        expect(firstMs).toBeLessThan(2_400);
 
-        await new Promise((resolve) => setTimeout(resolve, 900));
-        const againAt = Date.now();
+        await vi.advanceTimersByTimeAsync(500);
+        expect(cloud.completeCalls).toEqual([]);
+        await vi.advanceTimersByTimeAsync(400);
         const again = await runTextAiTask(harness.deps, {
           task,
           label: "test",
           prompt: PROMPT,
         });
-        const againMs = Date.now() - againAt;
         expect(again).toMatchObject({ ok: true, value: "Codex title" });
-        expect(againMs).toBeLessThan(500);
         expect(cloud.completeCalls).toEqual([]);
         expect(codex.completeCalls).toHaveLength(2);
       });
