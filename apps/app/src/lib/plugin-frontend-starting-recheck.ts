@@ -12,6 +12,7 @@ export interface StartingPluginsRecheckDeps {
 
 export interface StartingPluginsRecheck {
   afterReconcile: () => void;
+  afterFailedReconcile: () => void;
   dispose: () => void;
 }
 
@@ -26,6 +27,15 @@ export function createStartingPluginsRecheck(
     deps.clearTimeout(timer);
     timer = null;
   };
+  const arm = () => {
+    if (timer !== null) return;
+    const delay = delaysMs[Math.min(attempts, delaysMs.length - 1)] ?? 5_000;
+    attempts += 1;
+    timer = deps.setTimeout(() => {
+      timer = null;
+      deps.recheck();
+    }, delay);
+  };
   return {
     afterReconcile() {
       if (!deps.isServerPluginsStarting()) {
@@ -33,13 +43,11 @@ export function createStartingPluginsRecheck(
         cancel();
         return;
       }
-      if (timer !== null) return;
-      const delay = delaysMs[Math.min(attempts, delaysMs.length - 1)] ?? 5_000;
-      attempts += 1;
-      timer = deps.setTimeout(() => {
-        timer = null;
-        deps.recheck();
-      }, delay);
+      arm();
+    },
+    afterFailedReconcile() {
+      if (attempts === 0) return;
+      arm();
     },
     dispose: cancel,
   };

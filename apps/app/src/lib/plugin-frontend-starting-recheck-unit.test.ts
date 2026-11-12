@@ -62,3 +62,15 @@ it("cancels a pending re-check and resets the backoff once plugins are running",
   subject.afterReconcile();
   expect(timers.map((timer) => timer.ms)).toEqual([10, 10]);
 });
+
+it("re-arms after a failed re-check while a re-check run is in progress", () => {
+  const starting = { value: true };
+  const { subject, timers } = harness(starting);
+  subject.afterFailedReconcile();
+  expect(timers).toHaveLength(0);
+  subject.afterReconcile();
+  timers[0]!.callback();
+  starting.value = false;
+  subject.afterFailedReconcile();
+  expect(timers.map((timer) => timer.ms)).toEqual([10, 20]);
+});

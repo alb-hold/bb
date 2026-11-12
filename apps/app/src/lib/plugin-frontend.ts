@@ -1280,6 +1280,7 @@ async function runLiveReconcile(): Promise<void> {
     console.warn(
       `plugin frontend reconcile failed: ${error instanceof Error ? error.message : String(error)}`,
     );
+    startingPluginsRecheck.afterFailedReconcile();
   } finally {
     deferredFrontendSchedule.dispose();
     setPluginFrontendReconcilePending(false);
