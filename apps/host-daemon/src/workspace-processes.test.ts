@@ -45,6 +45,32 @@ it.skipIf(process.platform !== "linux").each([
   expect(inspection.unrelatedUnreadablePids).toEqual(blocked ? undefined : [501]);
 });
 
+it.skipIf(process.platform !== "linux")(
+  "keeps readable workspace mappings when links and fd enumeration are denied",
+  async () => {
+    const uid = process.getuid!();
+    vi.mocked(realpath).mockResolvedValue("/workspace");
+    vi.mocked(readdir).mockImplementation(async (file) => {
+      if (String(file) === "/proc") return ["501"] as never;
+      throw Object.assign(new Error("denied"), { code: "EACCES" });
+    });
+    vi.mocked(readlink).mockRejectedValue(
+      Object.assign(new Error("denied"), { code: "EACCES" }),
+    );
+    vi.mocked(readFile).mockImplementation(async (file) => {
+      if (String(file).endsWith("/status"))
+        return `Name:\tworker\nState:\tS\nUid:\t${uid}\t${uid}\t${uid}\t${uid}\n`;
+      if (String(file).endsWith("/maps"))
+        return "1000-2000 r-xp 00000000 08:01 123 /workspace/lib.so\n";
+      return "/usr/bin/worker\0";
+    });
+    expect(await inspectWorkspaceProcesses("/workspace")).toEqual({
+      supported: true, pids: [501], unreadablePids: [],
+      processCommands: { "501": "worker" },
+    });
+  },
+);
+
 it.each(["linux", "darwin"] as const)(
   "does not inspect processes for an absent workspace on %s",
   async (platform) => {

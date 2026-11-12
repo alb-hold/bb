@@ -628,10 +628,6 @@ async function inspectLinuxWorkspaceProcesses(
         pids.push(pid);
         continue;
       }
-      if (unreadable) {
-        unreadablePids.push(pid);
-        continue;
-      }
       const maps = await readFile(`${directory}/maps`, "utf8");
       const mappedPaths = maps.split("\n").flatMap((line) => {
         const match = line.match(/^\S+\s+\S+\s+\S+\s+\S+\s+\S+\s+(\/.*)$/);
@@ -643,6 +639,7 @@ async function inspectLinuxWorkspaceProcesses(
         )
       )
         pids.push(pid);
+      else if (unreadable) unreadablePids.push(pid);
     } catch (error) {
       if (missing(error)) {
         try {
