@@ -182,22 +182,22 @@ cached. Conversations without a pin fail over at once. The cursor
 and session pins survive hub restarts. Session pins expire after 30 idle minutes,
 and the pool retains the 4,096 most recently used pins.
 
-The switch threshold is a preference, not a cutoff. New conversations go to
-accounts below it first, and existing conversations keep their account past it.
-When no account below it is available, accounts at or above it keep serving
-until the provider refuses them; refused accounts with extra usage or Codex
-credits come after those.
+Quota windows at or above the switch threshold are exhausted for automatic
+routing, conversation affinity, explicit selection, previews and status.
+Provider refusal is an additional exhaustion reason even below the threshold.
+When every account is exhausted and no eligible extra usage or Codex credits
+remain, the pool refuses the request instead of reusing an exhausted account.
 Where the provider reports a window status, `rejected` decides whether it
 refused the window; a window without a status counts as refused from 100
 percent utilization. The pool answers with its own HTTP 429 only when no
 account can serve. Its `Retry-After`, the time in its message, and
-`provider-retry.v1.availability` count only refused windows, and `account list`
-and `status` report `exhausted` only for an account the provider refused.
+`provider-retry.v1.availability` count both threshold-exhausted and refused
+windows, and `account list` and `status` use the same exhaustion policy.
 
 Claude accounts with an exhausted subscription window remain eligible as a
 fallback when Anthropic reports extra usage enabled with remaining allowance,
-or an allowed overage response header. Accounts the provider still accepts are
-preferred, including for conversations pinned to an extra-usage fallback; those
+or an allowed overage response header. Accounts with eligible subscription quota
+are preferred, including for conversations pinned to an extra-usage fallback; those
 conversations return to subscription quota when it recovers. Before using
 extra usage, the pool rechecks OAuth accounts at or above the switch threshold (at
 most every 30 seconds).

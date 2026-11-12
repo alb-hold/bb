@@ -886,7 +886,7 @@ function QuotaDetail({
           {quota?.resetAt === null || quota === null
             ? ""
             : ` · ${resetLabel(quota.resetAt)}`}{" "}
-          · other accounts preferred from {Math.round(threshold * 100)}%
+          · exhausted from {Math.round(threshold * 100)}%
         </div>
       </div>
     </div>
@@ -1904,7 +1904,7 @@ function AccountPoolSettings() {
               <ConfigFieldRow
                 label="Quota switch threshold"
                 control="field"
-                description="Prefer accounts below this quota fraction. Accounts above it still serve while the provider accepts them."
+                description="Quota windows at or above this fraction are exhausted. Provider refusal also exhausts a window below the threshold."
                 error={configErrors.switchThreshold}
               >
                 <Input

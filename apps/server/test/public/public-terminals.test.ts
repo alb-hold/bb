@@ -5674,7 +5674,7 @@ describe("public terminal routes", () => {
       expect(readDaemonOperationMessages(fixture.socket)).toEqual([]);
     });
   });
-  it("retains unwatched output with daemon session checks and resumes live delivery", async () => {
+  it("skips unwatched terminal lookups with daemon session checks and resumes live delivery", async () => {
     const fixture = await createTerminalRouteFixture();
     harnesses.push(fixture.harness);
     const stored = createTerminalSession(fixture.harness.db, {
@@ -5721,7 +5721,7 @@ describe("public terminal routes", () => {
     ).toBe(true);
     expect(
       preparedSources.some((source) => /\bterminal_sessions\b/u.test(source)),
-    ).toBe(true);
+    ).toBe(false);
     expect(fixture.socket.close).not.toHaveBeenCalled();
     preparedSources.length = 0;
 
@@ -5756,7 +5756,7 @@ describe("public terminal routes", () => {
       output.chunks
         .map((chunk) => Buffer.from(chunk.dataBase64, "base64").toString())
         .join(""),
-    ).toBe("chunk-0chunk-1chunk-2");
+    ).toBe("chunk-2");
   });
 
   it("evicts a closed daemon session from the hub when it sends output for an unwatched terminal", async () => {

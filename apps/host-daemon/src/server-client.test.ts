@@ -267,10 +267,8 @@ describe("createServerClient", () => {
             endedInteractiveRequests: [],
             machineEnvironment: { revision: 0, entries: [] },
             idleProviderSessionTimeoutMinutes: 30,
-            agentCpuPriority: false,
             heartbeatIntervalMs: 5_000,
             leaseTimeoutMs: 30_000,
-            endedInteractiveRequests: [],
           },
           { status: 201 },
         );
@@ -568,8 +566,6 @@ describe("createServerClient", () => {
       expect(String(input)).toContain("/internal/session/events");
       expect(JSON.parse(String(init?.body))).toEqual({
         sessionId: "session-1",
-        agentCpuPriority: false,
-        endedInteractiveRequests: [],
         eventGroups: [
           {
             threadId: "thr_123",
