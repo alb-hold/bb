@@ -2078,7 +2078,6 @@ export function ThreadTerminalView({
     ): Promise<void> {
       containerElement.style.opacity = "0";
       let paddingLeft = "0px";
-      let paddingRight = "0px";
       let horizontalPadding = 0;
       const needsFittedGrid = () =>
         holdForFittedGrid && sessionStatusRef.current !== "exited";
@@ -2443,7 +2442,6 @@ export function ThreadTerminalView({
         terminal.element ?? containerElement,
       );
       paddingLeft = rendererStyle.paddingLeft;
-      paddingRight = rendererStyle.paddingRight;
       horizontalPadding =
         (parseFloat(paddingLeft) || 0) +
         (parseFloat(rendererStyle.paddingRight) || 0);
@@ -3330,7 +3328,6 @@ export function ThreadTerminalView({
                     true,
                 liveTerminal: activeTerminal,
                 paddingLeft,
-                paddingRight,
                 readyToPaint: () =>
                   initialRendererSettled &&
                   document.fonts?.status !== "loading",
@@ -3826,7 +3823,6 @@ export function ThreadTerminalView({
                     true,
                 liveTerminal: activeTerminal,
                 paddingLeft,
-                paddingRight,
                 readyToPaint: () =>
                   initialRendererSettled &&
                   document.fonts?.status !== "loading",

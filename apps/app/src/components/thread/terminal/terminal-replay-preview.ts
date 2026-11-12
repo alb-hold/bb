@@ -177,7 +177,6 @@ export function mountTerminalReplayPreview({
   onHoldExpired,
   liveTerminal,
   paddingLeft = getComputedStyle(container).paddingLeft,
-  paddingRight = getComputedStyle(container).paddingRight,
   readyToPaint = () => true,
   terminal,
 }: {
@@ -188,7 +187,6 @@ export function mountTerminalReplayPreview({
   onHoldExpired?: () => void;
   liveTerminal?: XTermTerminal;
   paddingLeft?: string;
-  paddingRight?: string;
   readyToPaint?: () => boolean;
   terminal: XTermTerminal;
 }): {
@@ -225,19 +223,13 @@ export function mountTerminalReplayPreview({
     overflow: "hidden",
     overflowX: "hidden",
     paddingLeft,
-    paddingRight,
+    paddingRight: paddingLeft,
     pointerEvents: "none",
     zIndex: "5",
     containerType: "inline-size",
   });
   container.style.opacity = "0";
   parent.append(preview);
-  const positionPreview = () => {
-    preview.style.top = `${container.offsetTop}px`;
-    preview.style.left = `${container.offsetLeft}px`;
-    preview.style.width = `${container.clientWidth}px`;
-    preview.style.height = `${container.clientHeight}px`;
-  };
   terminal.options.disableStdin = true;
   if (liveTerminal) {
     terminal.options.fontFamily = liveTerminal.options.fontFamily;
@@ -251,7 +243,6 @@ export function mountTerminalReplayPreview({
     opened = true;
     const focusedElement = document.activeElement;
     markTerminalPerformance("terminal-replay-preview-open-start");
-    positionPreview();
     terminal.open(preview);
     const viewport =
       terminal.element?.querySelector<HTMLElement>(".xterm-viewport");
@@ -336,7 +327,10 @@ export function mountTerminalReplayPreview({
     }
   };
   const updateSurfaceLayout = () => {
-    positionPreview();
+    preview.style.top = `${container.offsetTop}px`;
+    preview.style.left = `${container.offsetLeft}px`;
+    preview.style.width = `${container.clientWidth}px`;
+    preview.style.height = `${container.clientHeight}px`;
     if (liveTerminal) {
       terminal.options.fontFamily = liveTerminal.options.fontFamily;
       terminal.options.fontSize = liveTerminal.options.fontSize;

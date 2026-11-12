@@ -111,45 +111,6 @@ function createExitHandler(
 }
 
 describe("terminal replay preview", () => {
-  it("opens its renderer inside the final container geometry and scrollbar lane", () => {
-    installPreviewCanvasContext();
-    const parent = document.createElement("div");
-    const container = document.createElement("div");
-    container.style.paddingLeft = "8px";
-    container.style.paddingRight = "0px";
-    Object.defineProperties(container, {
-      clientWidth: { value: 390 },
-      clientHeight: { value: 685 },
-    });
-    parent.append(container);
-    document.body.append(parent);
-    const terminal = new Terminal({ cols: 39, rows: 33 });
-    const originalOpen = terminal.open.bind(terminal);
-    const open = vi.spyOn(terminal, "open");
-    let openingGeometry: string[] = [];
-    open.mockImplementation((element) => {
-      openingGeometry = [
-        element.style.width,
-        element.style.height,
-        element.style.paddingRight,
-      ];
-      originalOpen(element);
-    });
-    const cover = mountTerminalReplayPreview({
-      container,
-      initialFitGrid: { cols: 39, rows: 33 },
-      paddingRight: "14px",
-      isOwner: () => false,
-      terminal,
-    });
-    try {
-      expect(openingGeometry).toEqual(["390px", "685px", "14px"]);
-    } finally {
-      cover.dispose();
-      parent.remove();
-    }
-  });
-
   it("follows a phone font change and matches fractional DOM cells to the live renderer before showing", async () => {
     installPreviewCanvasContext();
     const stylePrototype: CSSStyleDeclaration = Object.getPrototypeOf(
@@ -317,7 +278,6 @@ describe("terminal replay preview", () => {
       const parent = document.createElement("div");
       const container = document.createElement("div");
       container.style.paddingLeft = "8px";
-      container.style.paddingRight = "14px";
       Object.defineProperties(container, {
         offsetLeft: { value: 8 },
         offsetTop: { value: 8 },
@@ -359,7 +319,7 @@ describe("terminal replay preview", () => {
         )!;
         expect(element.style.visibility).toBe("hidden");
         expect(element.style.paddingLeft).toBe("8px");
-        expect(element.style.paddingRight).toBe("14px");
+        expect(element.style.paddingRight).toBe("8px");
         expect(
           preview.element!.querySelector<HTMLElement>(".xterm-viewport")!.style
             .backgroundColor,
