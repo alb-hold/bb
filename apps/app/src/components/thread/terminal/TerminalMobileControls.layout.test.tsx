@@ -107,13 +107,13 @@ describe.skipIf(chromiumPath === null && !process.env.CI)(
           );
           const file = join(dir, "index.html");
           const frame = (markup: string) =>
-            `<!doctype html><meta name="viewport" content="width=device-width"><style>${css}</style>${markup}`
+            `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><style>${css}</style>${markup}`
               .replaceAll("&", "&amp;")
               .replaceAll('"', "&quot;")
               .replaceAll("<", "&lt;");
           await writeFile(
             file,
-            `<!doctype html><style>body { margin:0 } iframe { display:block; border:0; width:${width}px; height:400px }</style><iframe id="closed" srcdoc="${frame(closed)}"></iframe><iframe id="expanded" srcdoc="${frame(expanded)}"></iframe><pre id="result"></pre><script>
+            `<!doctype html><meta charset="utf-8"><style>body { margin:0 } iframe { display:block; border:0; width:${width}px; height:400px }</style><iframe id="closed" srcdoc="${frame(closed)}"></iframe><iframe id="expanded" srcdoc="${frame(expanded)}"></iframe><pre id="result"></pre><script>
 const frames = [...document.querySelectorAll('iframe')];
 Promise.all(frames.map(async frame => {
   if (frame.contentDocument.readyState !== 'complete' || !frame.contentDocument.querySelector('[data-terminal-mobile-controls]')) await new Promise(resolve => frame.addEventListener('load', resolve, {once:true}));
