@@ -116,7 +116,7 @@ describe("terminal replay preview", () => {
     const parent = document.createElement("div");
     const container = document.createElement("div");
     container.style.paddingLeft = "8px";
-    container.style.paddingRight = "14px";
+    container.style.paddingRight = "0px";
     Object.defineProperties(container, {
       clientWidth: { value: 390 },
       clientHeight: { value: 685 },
@@ -138,6 +138,7 @@ describe("terminal replay preview", () => {
     const cover = mountTerminalReplayPreview({
       container,
       initialFitGrid: { cols: 39, rows: 33 },
+      paddingRight: "14px",
       isOwner: () => false,
       terminal,
     });

@@ -177,6 +177,7 @@ export function mountTerminalReplayPreview({
   onHoldExpired,
   liveTerminal,
   paddingLeft = getComputedStyle(container).paddingLeft,
+  paddingRight = getComputedStyle(container).paddingRight,
   readyToPaint = () => true,
   terminal,
 }: {
@@ -187,6 +188,7 @@ export function mountTerminalReplayPreview({
   onHoldExpired?: () => void;
   liveTerminal?: XTermTerminal;
   paddingLeft?: string;
+  paddingRight?: string;
   readyToPaint?: () => boolean;
   terminal: XTermTerminal;
 }): {
@@ -223,7 +225,7 @@ export function mountTerminalReplayPreview({
     overflow: "hidden",
     overflowX: "hidden",
     paddingLeft,
-    paddingRight: getComputedStyle(container).paddingRight,
+    paddingRight,
     pointerEvents: "none",
     zIndex: "5",
     containerType: "inline-size",
