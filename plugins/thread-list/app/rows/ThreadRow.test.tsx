@@ -668,6 +668,62 @@ describe("ThreadRow", () => {
     expect(view.container.querySelector("[data-sidebar-thread-context]")?.textContent).toBe("now");
   });
 
+  it.each([true, false])(
+    "identifies destinations for same-title phone worktrees (native: %s)",
+    (nativeTerminal) => {
+      const project = makePluginProject({ id: "proj_atlas", name: "Atlas" });
+      const threads = ["alpha", "beta"].map((branch) =>
+        createThread({
+          id: `thr_${branch}`,
+          projectId: project.id,
+          title: "Investigate timeout",
+          displayTitle: "Investigate timeout",
+          href: `/threads/thr_${branch}`,
+          experimental_nativeTerminal: nativeTerminal,
+          environment: makeSidebarEnvironment({
+            name: null,
+            branchName: `fix/phone-identical-prefix-timeout-${branch}`,
+            isWorktree: true,
+          }),
+        }),
+      );
+      renderThreadRow({
+        isCompactViewport: true,
+        projects: [project],
+        thread: threads[0]!,
+        siblings: [threads[1]!],
+      });
+      for (const branch of ["alpha", "beta"]) {
+        const link = screen.getByRole("link", {
+          name: `Open Investigate timeout · Atlas · fix/phone-identical-prefix-timeout-${branch}`,
+        });
+        expect(link.getAttribute("href")).toBe(`/threads/thr_${branch}`);
+      }
+    },
+  );
+
+  it("keeps grouped phone project context in its heading and omits absent branch identity", () => {
+    const view = renderThreadRow({
+      isCompactViewport: true,
+      visibilityGroup: "project:proj_atlas",
+      projects: [makePluginProject({ id: "proj_atlas", name: "Atlas" })],
+      thread: createThread({
+        projectId: "proj_atlas",
+        environment: null,
+        updatedAt: Date.now() - 120_000,
+      }),
+    });
+    expect(
+      view.container.querySelector("[data-sidebar-thread-context]")
+        ?.textContent,
+    ).toBe("2m");
+    expect(
+      screen
+        .getByRole("link", { name: "Open Thread · Atlas" })
+        .getAttribute("aria-label"),
+    ).not.toContain("null");
+  });
+
   it.skipIf(!sdkExportsAreSpyable)("shares the metadata experiment subscription with sibling rows", () => {
     const subscribe = vi.spyOn(pluginSdk, "experimental_useExperiment");
     renderThreadRow({
