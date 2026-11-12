@@ -5,7 +5,6 @@ import { RouteLoadingSkeleton } from "@/components/ui/route-loading-skeleton";
 import { ThreadTimelineLoadingSkeleton } from "@/components/thread/timeline/ThreadTimelineLoadingSkeleton";
 import { usePaneContext } from "./PaneContext";
 import type { ThreadDetailView } from "./ThreadDetailView";
-import { loadThreadDetailView } from "./thread-detail-loader";
 
 function ThreadDetailViewLoading() {
   useTerminalSuspenseGate("terminal-thread-view-fallback");
@@ -22,6 +21,7 @@ export const LazyThreadDetailView = defineSplit<
 >({
   id: "thread-detail",
   tier: "intent",
-  load: loadThreadDetailView,
+  load: () =>
+    import("./ThreadDetailView").then((module) => module.ThreadDetailView),
   loading: ThreadDetailViewLoading,
 });

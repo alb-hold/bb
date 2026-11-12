@@ -1,5 +1,3 @@
-import { loadThreadDetailView } from "@/views/thread-detail/thread-detail-loader";
-import { loadChunkWithRetries } from "./retryable-chunk-import";
 import { markTerminalPerformance } from "./terminal-performance";
 import { prefetchTerminalSocket } from "@/components/thread/terminal/terminal-socket-prefetch";
 import { buildTerminalWebSocketUrl } from "@/components/thread/terminal/terminal-websocket-url";
@@ -43,7 +41,6 @@ if (initial) {
           handoffOwnerToken: ensureDeviceHandoffId(),
         }),
       );
-      void loadChunkWithRetries(loadThreadDetailView).catch(() => undefined);
       void loadNativeTerminalPanel().catch(() => undefined);
       void import("@/views/thread-detail/LazyThreadDetailView")
         .then(({ LazyThreadDetailView }) => LazyThreadDetailView.preload())
