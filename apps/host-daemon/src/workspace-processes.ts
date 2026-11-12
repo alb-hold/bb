@@ -35,6 +35,48 @@ function underWorkspace(value: string, workspace: string): boolean {
   );
 }
 
+function referencesWorkspace(value: string, workspace: string): boolean {
+  let offset = value.indexOf(workspace);
+  while (offset >= 0) {
+    const before = value[offset - 1];
+    const after = value[offset + workspace.length];
+    if (
+      (before === undefined || /[\s\0="':]/.test(before)) &&
+      (after === undefined || /[\s\0/"']/.test(after))
+    )
+      return true;
+    offset = value.indexOf(workspace, offset + 1);
+  }
+  return false;
+}
+
+function separateUnreadableProcesses(
+  pids: number[],
+  unreadablePids: number[],
+  metadataTies: Set<number>,
+  parents: Map<number, number>,
+): { unreadablePids: number[]; unrelatedUnreadablePids?: number[] } {
+  const tied = new Set([
+    ...pids,
+    ...unreadablePids.filter((pid) => metadataTies.has(pid)),
+  ]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const [pid, parent] of parents) {
+      if (tied.has(parent) && !tied.has(pid)) {
+        tied.add(pid);
+        changed = true;
+      }
+    }
+  }
+  const unrelatedUnreadablePids = unreadablePids.filter((pid) => !tied.has(pid));
+  return {
+    unreadablePids: unreadablePids.filter((pid) => tied.has(pid)),
+    ...(unrelatedUnreadablePids.length > 0 ? { unrelatedUnreadablePids } : {}),
+  };
+}
+
 type AncestorResolve =
   | { ok: true; path: string }
   | { ok: false; reason: "missing" | "unreadable" };
@@ -408,12 +450,14 @@ function parseLsofOutput(output: string):
       paths: Array<{ pid: number; path: string; type?: string }>;
       unreadablePids: number[];
       cwdByPid: Map<number, string>;
+      parents: Map<number, number>;
       processCommands: Record<string, string>;
     }
   | { ok: false } {
   const paths: Array<{ pid: number; path: string; type?: string }> = [];
   const unreadablePids: number[] = [];
   const cwdByPid = new Map<number, string>();
+  const parents = new Map<number, number>();
   const processCommands: Record<string, string> = {};
   let pid: number | null = null;
   let sawName = false;
@@ -433,6 +477,11 @@ function parseLsofOutput(output: string):
       sawName = false;
       currentType = undefined;
       currentFd = undefined;
+    } else if (tag === "R") {
+      if (pid === null) return { ok: false };
+      const parent = Number(line.slice(1));
+      if (!Number.isInteger(parent) || parent < 0) return { ok: false };
+      parents.set(pid, parent);
     } else if (tag === "c") {
       if (pid === null) return { ok: false };
       const command = line.slice(1);
@@ -454,7 +503,7 @@ function parseLsofOutput(output: string):
     }
   }
   flush();
-  return { ok: true, paths, unreadablePids, cwdByPid, processCommands };
+  return { ok: true, paths, unreadablePids, cwdByPid, parents, processCommands };
 }
 
 type LsofRun = {
@@ -521,6 +570,7 @@ async function inspectLinuxWorkspaceProcesses(
   supported: boolean;
   pids: number[];
   unreadablePids: number[];
+  unrelatedUnreadablePids?: number[];
   processCommands?: Record<string, string>;
 }> {
   const workspace = await canonicalPath(path.resolve(workspacePath));
@@ -528,12 +578,26 @@ async function inspectLinuxWorkspaceProcesses(
   const processCommands: Record<string, string> = {};
   const pids: number[] = [];
   const unreadablePids: number[] = [];
+  const metadataTies = new Set<number>();
+  const parents = new Map<number, number>();
   for (const entry of await readdir("/proc")) {
     if (!/^\d+$/.test(entry)) continue;
     const pid = Number(entry);
     const directory = `/proc/${entry}`;
     try {
+      const cmdline = await readFile(`${directory}/cmdline`, "utf8");
+      if (
+        referencesWorkspace(cmdline, workspace) ||
+        referencesWorkspace(cmdline, path.resolve(workspacePath))
+      )
+        metadataTies.add(pid);
+    } catch {
+      undefined;
+    }
+    try {
       const status = await readFile(`${directory}/status`, "utf8");
+      const parent = status.match(/^PPid:\s+(\d+)$/m)?.[1];
+      if (parent !== undefined) parents.set(pid, Number(parent));
       const command = status.match(/^Name:\s+(.+)$/m)?.[1];
       if (command) processCommands[pid] = command;
       const uids = status.match(/^Uid:\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)/m);
@@ -544,10 +608,14 @@ async function inspectLinuxWorkspaceProcesses(
       if (!uids.slice(1).some((value) => Number(value) === uid)) continue;
       if (/^State:\s+[ZX]/m.test(status)) continue;
       const links = ["cwd", "root", "exe"];
-      const descriptors = await readdir(`${directory}/fd`);
-      links.push(...descriptors.map((descriptor) => `fd/${descriptor}`));
-      let matched = false;
       let unreadable = false;
+      try {
+        const descriptors = await readdir(`${directory}/fd`);
+        links.push(...descriptors.map((descriptor) => `fd/${descriptor}`));
+      } catch (error) {
+        if (!missing(error)) unreadable = true;
+      }
+      let matched = false;
       for (const link of links) {
         try {
           if (underWorkspace(await readlink(`${directory}/${link}`), workspace))
@@ -586,15 +654,21 @@ async function inspectLinuxWorkspaceProcesses(
       unreadablePids.push(pid);
     }
   }
+  const separated = separateUnreadableProcesses(
+    pids,
+    unreadablePids,
+    metadataTies,
+    parents,
+  );
   const blockingCommands = Object.fromEntries(
-    [...pids, ...unreadablePids].flatMap((pid) =>
+    [...pids, ...separated.unreadablePids].flatMap((pid) =>
       processCommands[pid] ? [[pid, processCommands[pid]!]] : [],
     ),
   );
   return {
     supported: true,
     pids,
-    unreadablePids,
+    ...separated,
     ...(Object.keys(blockingCommands).length > 0
       ? { processCommands: blockingCommands }
       : {}),
@@ -607,6 +681,7 @@ async function inspectDarwinWorkspaceProcesses(
   supported: boolean;
   pids: number[];
   unreadablePids: number[];
+  unrelatedUnreadablePids?: number[];
   processCommands?: Record<string, string>;
 }> {
   resetInspectSocketFindDiagnostics();
@@ -614,7 +689,7 @@ async function inspectDarwinWorkspaceProcesses(
   const workspace = await canonicalPath(workspaceArg);
   const socketIndex = new WorkspaceSocketIndex();
   const uid = String(process.getuid!());
-  const lsofFlags = ["-n", "-Fpcnt"] as const;
+  const lsofFlags = ["-n", "-R", "-FpcntR"] as const;
   const cwdRun = await execLsof([
     "-a",
     "-u",
@@ -642,6 +717,25 @@ async function inspectDarwinWorkspaceProcesses(
   }
   const pids = new Set<number>();
   const unreadablePids = new Set<number>();
+  const metadataTies = new Set<number>();
+  for (const entry of parsed.paths) {
+    if (
+      pathLexicallyCouldBeInWorkspace(
+        entry.path,
+        workspace,
+        workspaceArg,
+        entry.type,
+      )
+    )
+      metadataTies.add(entry.pid);
+  }
+  for (const [pid, command] of Object.entries(parsed.processCommands)) {
+    if (
+      referencesWorkspace(command, workspace) ||
+      referencesWorkspace(command, workspaceArg)
+    )
+      metadataTies.add(Number(pid));
+  }
   for (const pid of parsed.unreadablePids) {
     if (pid !== process.pid) unreadablePids.add(pid);
   }
@@ -674,15 +768,22 @@ async function inspectDarwinWorkspaceProcesses(
       if (matched) pids.add(pid);
     }),
   );
+  const separated = separateUnreadableProcesses(
+    [...pids],
+    [...unreadablePids],
+    metadataTies,
+    parsed.parents,
+  );
   const blockingCommands = Object.fromEntries(
-    [...pids, ...unreadablePids].flatMap((pid) =>
+    [...pids, ...separated.unreadablePids].flatMap((pid) =>
       parsed.processCommands[pid] ? [[pid, parsed.processCommands[pid]!]] : [],
     ),
   );
   return {
     supported: true,
     pids: [...pids].sort((left, right) => left - right),
-    unreadablePids: [...unreadablePids].sort((left, right) => left - right),
+    ...separated,
+    unreadablePids: separated.unreadablePids.sort((left, right) => left - right),
     ...(Object.keys(blockingCommands).length > 0
       ? { processCommands: blockingCommands }
       : {}),
@@ -695,6 +796,7 @@ export async function inspectWorkspaceProcesses(
   supported: boolean;
   pids: number[];
   unreadablePids: number[];
+  unrelatedUnreadablePids?: number[];
   processCommands?: Record<string, string>;
 }> {
   if (process.getuid === undefined)

@@ -17,6 +17,34 @@ vi.mock("node:fs/promises", () => ({
 
 afterEach(() => vi.resetAllMocks());
 
+it.skipIf(process.platform !== "linux").each([
+  { name: "unrelated", command: "/usr/bin/sshd\0", parent: false, blocked: false },
+  { name: "sibling path", command: "/usr/bin/agent\0/workspace-other\0", parent: false, blocked: false },
+  { name: "workspace command", command: "/usr/bin/agent\0--cwd=/workspace\0", parent: false, blocked: true },
+  { name: "workspace holder child", command: "/usr/bin/sshd\0", parent: true, blocked: true },
+])("bounds unreadable Linux processes by readable evidence: $name", async ({ command, parent, blocked }) => {
+  const uid = process.getuid!();
+  vi.mocked(realpath).mockResolvedValue("/workspace");
+  vi.mocked(readdir).mockImplementation(async (file) => {
+    if (String(file) === "/proc") return ["500", "501"] as never;
+    if (String(file).includes("/501/")) throw Object.assign(new Error("denied"), { code: "EACCES" });
+    return [] as never;
+  });
+  vi.mocked(readFile).mockImplementation(async (file) => {
+    if (String(file).endsWith("/cmdline")) return String(file).includes("/501/") ? command : "/usr/bin/agent\0";
+    if (String(file).endsWith("/status")) return `Name:\tworker\nState:\tS\nPPid:\t${String(file).includes("/501/") && parent ? 500 : 1}\nUid:\t${uid}\t${uid}\t${uid}\t${uid}\n`;
+    return "";
+  });
+  vi.mocked(readlink).mockImplementation(async (file) => {
+    if (String(file).includes("/501/")) throw Object.assign(new Error("denied"), { code: "EACCES" });
+    return parent && String(file).endsWith("/cwd") ? "/workspace/subdir" : "/";
+  });
+  const inspection = await inspectWorkspaceProcesses("/workspace");
+  expect(inspection.pids).toEqual(parent ? [500] : []);
+  expect(inspection.unreadablePids).toEqual(blocked ? [501] : []);
+  expect(inspection.unrelatedUnreadablePids).toEqual(blocked ? undefined : [501]);
+});
+
 it.each(["linux", "darwin"] as const)(
   "does not inspect processes for an absent workspace on %s",
   async (platform) => {
@@ -40,22 +68,23 @@ it.each(["linux", "darwin"] as const)(
   },
 );
 
-it.skipIf(process.platform !== "linux").each(["cwd", "root", "exe", "fd/3"])(
+it.skipIf(process.platform !== "linux").each(["cwd", "root", "exe", "fd/3", "cwd with unreadable fd"])(
   "keeps a Linux %s holder while excluding root cwd and unrelated paths",
   async (heldLink) => {
     const uid = process.getuid!();
     vi.mocked(realpath).mockResolvedValue("/workspace");
-    vi.mocked(readdir).mockImplementation(
-      async (file) =>
-        (String(file) === "/proc" ? ["401", "402"] : ["3"]) as never,
-    );
+    vi.mocked(readdir).mockImplementation(async (file) => {
+      if (heldLink === "cwd with unreadable fd" && String(file) === "/proc/401/fd")
+        throw Object.assign(new Error("denied"), { code: "EACCES" });
+      return (String(file) === "/proc" ? ["401", "402"] : ["3"]) as never;
+    });
     vi.mocked(readFile).mockImplementation(async (file) =>
       String(file).endsWith("/status")
         ? `Name:\tworker\nState:\tS\nUid:\t${uid}\t${uid}\t${uid}\t${uid}\n`
         : "",
     );
     vi.mocked(readlink).mockImplementation(async (file) =>
-      String(file) === `/proc/401/${heldLink}`
+      String(file) === `/proc/401/${heldLink === "cwd with unreadable fd" ? "cwd" : heldLink}`
         ? "/workspace/subdir"
         : String(file).endsWith("/cwd")
           ? "/"
@@ -120,7 +149,7 @@ it.skipIf(process.platform !== "linux")(
 );
 
 it.skipIf(process.platform !== "linux")(
-  "refuses unreadable same-user processes but tolerates an exited process",
+  "diagnoses unrelated unreadable same-user processes and tolerates an exited process",
   async () => {
     const uid = process.getuid!();
     vi.mocked(realpath).mockResolvedValue("/workspace");
@@ -145,7 +174,8 @@ it.skipIf(process.platform !== "linux")(
     expect(await inspectWorkspaceProcesses("/workspace")).toEqual({
       supported: true,
       pids: [],
-      unreadablePids: [201, 202],
+      unreadablePids: [],
+      unrelatedUnreadablePids: [201, 202],
     });
   },
 );
@@ -195,6 +225,21 @@ describe("darwin workspace process inspection", () => {
 
   afterEach(() => {
     platform.mockRestore();
+  });
+
+  it("retains unreadable Darwin descendants of a cwd holder", async () => {
+    vi.mocked(realpath).mockImplementation(async (value) => String(value));
+    vi.mocked(execHostFile).mockResolvedValue({ stdout: "p501\nR1\ncparent\nfcwd\ntDIR\nn/workspace/subdir\np502\nR501\ncchild\n", stderr: "" } as never);
+    expect(await inspectWorkspaceProcesses("/workspace")).toEqual({ supported: true, pids: [501], unreadablePids: [502], processCommands: { "501": "parent", "502": "child" } });
+  });
+
+  it("does not refuse a present workspace for unrelated Sky and Docker relative socket records", async () => {
+    vi.mocked(realpath).mockImplementation(async (value) => String(value));
+    vi.mocked(execHostFile).mockImplementation((async (command: string) => {
+      if (command === "find") throw new Error("socket search unavailable");
+      return { stdout: "p4539\ncSkyComputerUseService\nfcwd\ntDIR\nn/\nf9\ntunix\nncomputeruse.sock\np91639\nccom.docker.build\nfcwd\ntDIR\nn/Users/example/Library/Containers/com.docker.docker/Data\nf32\ntunix\nndocker-desktop-build.sock\n", stderr: "" };
+    }) as never);
+    expect(await inspectWorkspaceProcesses("/workspace")).toEqual({ supported: true, pids: [], unreadablePids: [], unrelatedUnreadablePids: [4539, 91639] });
   });
 
   it.each([
@@ -495,7 +540,8 @@ describe("darwin workspace process inspection", () => {
     expect(await inspectWorkspaceProcesses("/tmp/ws")).toEqual({
       supported: true,
       pids: [],
-      unreadablePids: [520],
+      unreadablePids: [],
+      unrelatedUnreadablePids: [520],
     });
   });
 
@@ -576,7 +622,7 @@ describe("darwin workspace process inspection", () => {
     });
   });
 
-  it("treats a pid-only lsof record as unreadable for recovery refusal", async () => {
+  it("treats a pid-only lsof record as an unrelated unreadable diagnostic", async () => {
     vi.mocked(execHostFile).mockImplementation((async () => ({
       stdout: "p501\n",
       stderr: "",
@@ -585,11 +631,12 @@ describe("darwin workspace process inspection", () => {
     expect(await inspectWorkspaceProcesses("/ws/project")).toEqual({
       supported: true,
       pids: [],
-      unreadablePids: [501],
+      unreadablePids: [],
+      unrelatedUnreadablePids: [501],
     });
   });
 
-  it("treats an earlier pid without path lines as unreadable", async () => {
+  it("treats an earlier pid without path lines as an unrelated unreadable diagnostic", async () => {
     vi.mocked(execHostFile).mockImplementation((async () => ({
       stdout: "p501\np502\nn/ws/project\n",
       stderr: "",
@@ -602,7 +649,8 @@ describe("darwin workspace process inspection", () => {
     expect(await inspectWorkspaceProcesses("/ws/project")).toEqual({
       supported: true,
       pids: [502],
-      unreadablePids: [501],
+      unreadablePids: [],
+      unrelatedUnreadablePids: [501],
     });
   });
 

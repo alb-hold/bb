@@ -3101,7 +3101,13 @@ it.each([false, true])(
           },
           { supported: true, active: true, pids: [], unreadablePids: [] },
           { supported: false, active: false, pids: [], unreadablePids: [] },
-          { supported: true, active: false, pids: [], unreadablePids: [] },
+          {
+            supported: true,
+            active: false,
+            pids: [],
+            unreadablePids: [],
+            unrelatedUnreadablePids: [317, 338, 4539, 91639],
+          },
         ];
       for (const inspection of inspections) {
         let teardownRan = false;
