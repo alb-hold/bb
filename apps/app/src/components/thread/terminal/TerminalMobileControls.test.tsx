@@ -31,8 +31,18 @@ function renderControls() {
 }
 
 describe("TerminalMobileControls", () => {
-  it.each([360, 390])(
-    "preserves key names and reserves room for five scroller keys at %s px",
+  const primaryRowLabels = [
+    "Interrupt (Control C)",
+    "Escape",
+    "Arrow up",
+    "Arrow down",
+    "Tab",
+    "Enter",
+    "More terminal keys",
+  ] as const;
+
+  it.each([288, 304, 320, 344, 359])(
+    "uses one equal-flex compact row below 375 px (test-change-reason: jsdom cannot lay out flex; WebKit key-rect proof lives in r36c13-key-measurements.json) at %i px controls width",
     (width) => {
       const clientWidth = vi
         .spyOn(HTMLElement.prototype, "clientWidth", "get")
@@ -41,39 +51,61 @@ describe("TerminalMobileControls", () => {
         });
       try {
         renderControls();
-        const enter = screen.getByRole("button", { name: "Enter" });
-        const more = screen.getByRole("button", { name: "More terminal keys" });
-        const compact = width === 360;
-        for (const key of [enter, more]) {
-          expect(key.classList.contains("w-11")).toBe(compact);
-          expect(key.classList.contains("min-w-11")).toBe(true);
-          expect(key.classList.contains("shrink-0")).toBe(true);
+        for (const label of primaryRowLabels) {
+          expect(screen.getByRole("button", { name: label })).toBeTruthy();
         }
-        expect(enter.textContent).toBe("Enter");
-        for (const key of [enter, more])
-          expect(key.classList.contains("px-1.5")).toBe(compact);
-        expect(more.textContent).toBe("Keys");
-
-        expect(
-          more.querySelector("[data-icon]")?.getAttribute("data-icon"),
-        ).toBe("MoreHorizontal");
-        expect(more.querySelector('[data-icon="ChevronDown"]')).not.toBeNull();
-        const scroller = document.querySelector(
+        const scroller = document.querySelector<HTMLElement>(
           "[data-terminal-key-scroller]",
         )!;
-        expect(scroller.querySelectorAll("button")).toHaveLength(5);
-        expect(scroller.classList.contains("flex-nowrap")).toBe(true);
-        fireEvent.click(more);
-        expect(more.getAttribute("aria-pressed")).toBe("true");
-        expect(
-          more.querySelector("[data-icon]")?.getAttribute("data-icon"),
-        ).toBe("MoreHorizontal");
-        expect(more.querySelector('[data-icon="ChevronUp"]')).not.toBeNull();
+        expect(scroller.className.split(/\s+/u)).not.toContain("overflow-x-auto");
+        expect(scroller.querySelectorAll("button")).toHaveLength(7);
+        for (const label of primaryRowLabels) {
+          const key = screen.getByRole("button", { name: label });
+          expect(key.closest("[data-terminal-key-scroller]")).toBe(scroller);
+          expect(key.classList.contains("flex-1")).toBe(true);
+          expect(key.classList.contains("basis-0")).toBe(true);
+          expect(key.classList.contains("min-w-0")).toBe(true);
+          expect(key.classList.contains("text-2xs")).toBe(true);
+          expect(key.classList.contains("w-11")).toBe(false);
+        }
       } finally {
         clientWidth.mockRestore();
       }
     },
   );
+
+  it("uses full-size keys at 390 px", () => {
+    const clientWidth = vi
+      .spyOn(HTMLElement.prototype, "clientWidth", "get")
+      .mockImplementation(function (this: HTMLElement) {
+        return this.hasAttribute("data-terminal-mobile-controls") ? 390 : 0;
+      });
+    try {
+      renderControls();
+      const enter = screen.getByRole("button", { name: "Enter" });
+      const more = screen.getByRole("button", { name: "More terminal keys" });
+      expect(enter.classList.contains("text-2xs")).toBe(false);
+      expect(more.classList.contains("text-2xs")).toBe(false);
+      expect(more.querySelector('[data-icon="ChevronDown"]')).not.toBeNull();
+      const scroller = document.querySelector(
+        "[data-terminal-key-scroller]",
+      )!;
+      expect(scroller.querySelectorAll("button")).toHaveLength(5);
+      expect(
+        screen
+          .getByRole("button", { name: "Enter" })
+          .closest("[data-terminal-key-scroller]"),
+      ).toBeNull();
+      fireEvent.click(more);
+      expect(more.getAttribute("aria-pressed")).toBe("true");
+      expect(
+        more.querySelector("[data-icon]")?.getAttribute("data-icon"),
+      ).toBe("MoreHorizontal");
+      expect(more.querySelector('[data-icon="ChevronUp"]')).not.toBeNull();
+    } finally {
+      clientWidth.mockRestore();
+    }
+  });
 
   it("keeps touch targets wide enough to press on a narrow phone", () => {
     renderControls();
