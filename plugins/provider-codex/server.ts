@@ -8,6 +8,7 @@ import {
   CODEX_NATIVE_ACTIVITY,
   CODEX_NATIVE_SESSION,
 } from "./src/native-session.js";
+import { CODEX_NATIVE_LAUNCH_ARGS } from "./src/native-launch.js";
 import { CODEX_POOL_LAUNCH_ENV_ARGS } from "./src/pool-launch.js";
 
 export default function plugin(bb: BbPluginApi) {
@@ -91,11 +92,7 @@ export default function plugin(bb: BbPluginApi) {
     composerActions: ["plan", "goal"],
     experimental_nativeTerminal: {
       executable: "codex",
-      launchArgs: [
-        "--no-daemon",
-        "--dangerously-bypass-approvals-and-sandbox",
-        "--no-alt-screen",
-      ],
+      launchArgs: [...CODEX_NATIVE_LAUNCH_ARGS],
       modelArgs: ["-c", 'model="{model}"'],
       experimental_launchEnvArgs: CODEX_POOL_LAUNCH_ENV_ARGS,
       mcp: [
