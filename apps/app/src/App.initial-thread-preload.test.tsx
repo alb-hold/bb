@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { createDeferredPromise } from "@bb/test-helpers";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
@@ -101,4 +101,27 @@ it("retries a rejected preload when the workspace is first rendered", async () =
   expect(
     trace.mock.calls.filter(([name]) => name === "terminal-workspace-route-import"),
   ).toHaveLength(2);
+});
+
+it("recovers when the mounted route's pending preload rejects", async () => {
+  const download = createDeferredPromise<void>();
+  preload.workspace.mockImplementationOnce(() => download.promise);
+  initialThreadHint();
+  const { AppRoutes } = await import("./App");
+  await vi.waitFor(() => expect(preload.workspace).toHaveBeenCalledOnce());
+  render(
+    <MemoryRouter initialEntries={["/threads/thr_initial"]}>
+      <AppRoutes />
+    </MemoryRouter>,
+  );
+  expect(screen.queryByText("Workspace ready")).toBeNull();
+  await act(async () => download.reject(new Error("download interrupted")));
+  const retry = await screen.findByRole("button", { name: "Try again" });
+  vi.doMock("./views/SplitWorkspaceRoute", () => {
+    preload.workspace();
+    return { default: () => <p>Workspace recovered</p> };
+  });
+  fireEvent.click(retry);
+  expect(await screen.findByText("Workspace recovered")).toBeTruthy();
+  expect(preload.workspace).toHaveBeenCalledTimes(2);
 });
