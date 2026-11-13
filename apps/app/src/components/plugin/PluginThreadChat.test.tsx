@@ -19,6 +19,7 @@ import { ThreadTimelineNavigationProvider } from "@/components/thread/timeline/T
 import type { ThreadTimelineLocalFileLinkHandler } from "@/components/thread/timeline/types";
 import { AppNavigationHostProvider } from "@/lib/app-navigation-host";
 import { PluginSlotMount } from "./PluginSlotMount";
+import { makeThreadResponse } from "@/test/fixtures/thread-responses";
 
 beforeAll(() => LazyPluginThreadChat.preload());
 
@@ -124,6 +125,26 @@ beforeEach(() => {
 });
 
 describe("PluginThreadChat", () => {
+  it("renders the timeline when chat is opened for a native terminal thread", async () => {
+    const nativeThread = makeThreadResponse({
+      id: "thr_demo",
+      projectId: "proj_demo",
+      nativeTerminal: true,
+    });
+    vi.mocked(sdk.threads.get).mockResolvedValue(nativeThread);
+    const { wrapper: Wrapper } = createQueryClientTestHarness();
+    render(
+      <Wrapper>
+        <MemoryRouter>
+          <DemoPluginPage threadId={nativeThread.id} />
+        </MemoryRouter>
+      </Wrapper>,
+    );
+    expect(await screen.findByTestId("thread-screen")).toBeDefined();
+    expect(mocks.threadScreenProps.at(-1)!.thread).toEqual(nativeThread);
+    expect(mocks.threadScreenProps.at(-1)!.timeline).toEqual({ timelineRows: [] });
+  });
+
   it("gives a plugin page a working query client and sdk-backed thread context", async () => {
     const { wrapper: Wrapper } = createQueryClientTestHarness();
     render(

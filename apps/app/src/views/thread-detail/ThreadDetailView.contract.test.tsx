@@ -87,7 +87,7 @@ it.each([
   ],
 ] as const)(
   "resolves %s at %s with project %s before route canonicalization (record cached: %s, found: %s)",
-  (surface, path, projectId, cached, found) => {
+  async (surface, path, projectId, cached, found) => {
     const client = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
@@ -127,7 +127,9 @@ it.each([
     );
     if (found) {
       expect(screen.queryByText("Not found")).toBeNull();
-      expect(document.querySelector("[data-thread-window]")).not.toBeNull();
+      await waitFor(() =>
+        expect(document.querySelector("[data-thread-window]")).not.toBeNull(),
+      );
     } else {
       expect(screen.getByText("Not found")).toBeDefined();
       expect(document.querySelector("[data-thread-window]")).toBeNull();
@@ -261,6 +263,7 @@ describePanelControllerContract(
         ]),
       ),
     );
+    await waitFor(() => expect(probe.current).not.toBeNull());
     return {
       panel: () => readContractPanel(probe),
       snapshot: () => snapshotFromState(sink),

@@ -36,6 +36,7 @@ export const sharedViteConfig = {
       "plugin-vaul-runtime": "vaul/dist/index.mjs",
       "plugin-pierre-runtime": "src/lib/plugin-pierre-runtime.tsx",
       "thread-detail": "src/views/thread-detail/ThreadDetailView.tsx",
+      "thread-screen": "src/views/thread-detail/ThreadScreen.tsx",
       "root-compose-panel-tab-content":
         "src/views/RootComposePanelTabContent.tsx",
       "thread-action-menu-items": "src/components/thread/ThreadMenuItems.tsx",
