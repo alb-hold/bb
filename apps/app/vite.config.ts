@@ -14,7 +14,7 @@ import { pluginZodRuntime } from "./vite-plugin-zod-runtime.js";
 
 const appDir = dirname(fileURLToPath(import.meta.url));
 
-export const sharedViteConfig: UserConfig & {
+export const sharedViteConfig: Omit<UserConfig, "plugins"> & {
   plugins: Exclude<PluginOption, false | null | undefined>[];
 } = {
   define: {
