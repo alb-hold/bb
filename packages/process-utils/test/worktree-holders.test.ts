@@ -490,6 +490,61 @@ describe("mappings made while threads are scanned", () => {
   );
 });
 
+describe("exited thread group leaders", () => {
+  it.each(
+    [1000, 107473].flatMap((uid) =>
+      [
+        ["a live thread holding a worktree fd", "held"],
+        ["only zombie threads", "clear"],
+        ["no other threads", "clear"],
+        ["an unreadable thread list", "uncertain"],
+      ].map(([kind, expected]) => [uid, kind!, expected!] as const),
+    ),
+  )("checks uid %s zombie leader with %s", async (uid, kind, expected) => {
+    const proc = mountAliasProc("/work/tree", "outside", uid);
+    const task = "/proc/101/task/102";
+    const gone = (): never => {
+      throw Object.assign(new Error("gone"), { code: "ENOENT" });
+    };
+    const status = (state: string) =>
+      `State:\t${state}\nPPid:\t1\nUid:\t${uid}\t${uid}\t${uid}\t${uid}\nGid:\t1000\t1000\t1000\t1000\n`;
+    const reader: ProcReader = {
+      ...proc,
+      readdir: async (target) => {
+        if (target === "/proc/101/task") {
+          if (kind === "an unreadable thread list")
+            throw Object.assign(new Error("denied"), { code: "EACCES" });
+          return kind === "no other threads" ? ["101"] : ["101", "102"];
+        }
+        if (target === task + "/fd") return ["3"];
+        return proc.readdir(target);
+      },
+      readlink: async (target) => {
+        if (
+          ["/proc/101/cwd", "/proc/101/exe", "/proc/101/root"].includes(
+            target,
+          ) ||
+          target === "/proc/101/ns/mnt"
+        )
+          return gone();
+        if (target === task + "/fd/3") return "/work/tree/file";
+        return proc.readlink(target);
+      },
+      readFile: async (target) => {
+        if (target === "/proc/101/status") return status("Z (zombie)");
+        if (target === task + "/status")
+          return status(
+            kind === "only zombie threads" ? "Z (zombie)" : "S (sleeping)",
+          );
+        return proc.readFile(target);
+      },
+    };
+    expect(await scanLinux("/work/tree", reader, 4242)).toMatchObject({
+      status: expected,
+    });
+  });
+});
+
 describe("non-absolute fd links", () => {
   it.each([
     ["(unreachable)/x", "held"],
