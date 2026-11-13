@@ -1850,6 +1850,7 @@ describe("synchronous proc reads", () => {
     ["/proc/1/task/2/fd/3", true],
     ["/proc/1/cwd", true],
     ["/proc/1/root", true],
+    ["/proc/1/exe", false],
     ["/proc/1/map_files", false],
     ["/proc/1/map_files/1000-2000", false],
     ["/proc/1/root/home", false],
@@ -1860,6 +1861,42 @@ describe("synchronous proc reads", () => {
   ] as const)("reads %s synchronously: %s", (target, expected) => {
     expect(procReadIsSynchronous(target)).toBe(expected);
   });
+});
+
+describe("mappings made while threads are scanned", () => {
+  it.each([1000, 107473])(
+    "keeps uid %s when a thread maps a worktree file and closes its fd during the scan",
+    async (uid) => {
+      const proc = mountAliasProc("/work/tree", "outside", uid);
+      const task = "/proc/101/task/102";
+      let mapped = false;
+      const maps = () =>
+        `1000-2000 r-xp 00000000 08:30 11 /usr/lib/libc.so\n${mapped ? "3000-4000 r--p 00000000 08:30 12 /work/tree/file\n" : ""}`;
+      const reader: ProcReader = {
+        ...proc,
+        readdir: async (target) => {
+          if (target === "/proc/101/task") return ["101", "102"];
+          if (target === task + "/fd") {
+            mapped = true;
+            return ["3"];
+          }
+          return proc.readdir(target);
+        },
+        readlink: async (target) => {
+          if (target === task + "/fd/3")
+            throw Object.assign(new Error("closed"), { code: "ENOENT" });
+          return proc.readlink(target);
+        },
+        readFile: async (target) =>
+          target === "/proc/101/maps" || target === task + "/maps"
+            ? maps()
+            : proc.readFile(target),
+      };
+      expect(await scanLinux("/work/tree", reader, 4242)).toMatchObject({
+        status: "held",
+      });
+    },
+  );
 });
 
 describe("non-absolute fd links", () => {
