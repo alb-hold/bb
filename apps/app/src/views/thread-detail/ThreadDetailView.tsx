@@ -31,6 +31,7 @@ import {
   useRef,
   useState,
   type ReactNode,
+  type ComponentProps,
 } from "react";
 import {
   useSystemProviderInfo,
@@ -44,9 +45,9 @@ import {
   type ThreadTimelineForkMessageHandler,
   type ThreadTimelineLinkHandler,
   type ThreadTimelineLocalFileLink,
-  type TimelineTitleActionResolver,
-  useThreadTimelineController,
-} from "@/components/thread/timeline";
+} from "@/components/thread/timeline/types";
+import type { TimelineTitleActionResolver } from "@/components/thread/timeline/TimelineTitleView";
+import { useThreadTimelineController } from "@/components/thread/timeline/useThreadTimelineController";
 import { ThreadProviderContext } from "@/components/thread/thread-provider-context";
 import { type ThreadListEntry } from "@bb/domain";
 import type { TerminalSession } from "@bb/server-contract";
@@ -138,7 +139,9 @@ import {
   ThreadContextCardHeaderButton,
   ThreadContextCardProvider,
 } from "@/components/plugin/PluginThreadContextCard";
-import { ThreadScreen, useThreadComposerAddToChat } from "./ThreadScreen";
+import { useThreadComposerAddToChat } from "./useThreadComposerAddToChat";
+import { defineSplit } from "@/lib/define-split";
+import type { ThreadScreen as ThreadScreenComponent } from "./ThreadScreen";
 import { ThreadDetailSecondaryContent } from "./ThreadDetailSecondaryContent";
 import {
   useThreadSecondaryPanelDrawerVisibility,
@@ -243,6 +246,15 @@ import {
 import { useRouteState } from "@/hooks/useRouteState";
 import { usePaneContext } from "./PaneContext";
 import { PaneThreadActionCommandHandler } from "./PaneThreadActionCommandHandler";
+
+const LazyThreadScreen = defineSplit<
+  ComponentProps<typeof ThreadScreenComponent>
+>({
+  id: "thread-screen",
+  load: () => import("./ThreadScreen").then((module) => module.ThreadScreen),
+  loading: () => <ThreadTimelineLoadingSkeleton />,
+  tier: "intent",
+});
 
 const EMPTY_PARENT_THREADS: readonly ThreadListEntry[] = [];
 const EMPTY_PROJECT_THREAD_SUBSET_FILTERS =
@@ -350,6 +362,15 @@ function ThreadDetailViewInternal(
         nativeTerminalThreadQuery.data?.terminal?.status === "running",
     },
   );
+  const threadScreenMode = !thread
+    ? "pending"
+    : thread.nativeTerminal
+      ? "native"
+      : "chat";
+  useEffect(() => {
+    if (threadScreenMode === "chat") void LazyThreadScreen.preload();
+    else if (threadScreenMode === "native") queueSplitDownload("thread-screen");
+  }, [threadScreenMode]);
   const environmentQuery = useEnvironment(thread?.environmentId, {
     enabled: hasThreadDetailBootstrapSettled,
     staleTime: 5_000,
@@ -1865,7 +1886,7 @@ function ThreadDetailViewInternal(
     />
   );
   const threadScreen = (
-    <ThreadScreen
+    <LazyThreadScreen
       composer={{
         environmentCheckout: threadCheckoutDisplay,
         environmentChrome: composerEnvironmentChrome,

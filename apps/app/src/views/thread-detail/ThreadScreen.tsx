@@ -1,3 +1,4 @@
+import { useThreadComposerAddToChat } from "./useThreadComposerAddToChat";
 import {
   useCallback,
   useEffect,
@@ -10,20 +11,16 @@ import { nanoid } from "nanoid";
 import { defaultAppSettings, type Environment } from "@bb/domain";
 import type { ThreadResponse, TimelineRow } from "@bb/server-contract";
 import {
-  appendQuoteAndAttachmentsToDraft,
   isNativeActivityUnconfirmed,
   promptInputToDraft,
-  type PromptDraftAttachment,
   type PromptDraftState,
   type PromptMentionLinkResolver,
 } from "@bb/client-core";
 import { cn } from "@bb/shared-ui/lib/utils";
 import { OverflowFade } from "@bb/shared-ui/overflow-fade";
-import { useIsCompactViewport } from "@bb/shared-ui/hooks/use-compact-viewport";
 import {
   isRunningThreadRuntimeDisplayStatus,
   ThreadTimelineSurface,
-  type ThreadTimelineAddToChatHandler,
   type ThreadTimelineConsumerMessageAction,
   type ThreadTimelineEditMessageHandler,
   type ThreadTimelineEditMessageTarget,
@@ -51,11 +48,7 @@ import { isThreadDisplayStatusBannerActive } from "@/components/promptbox/banner
 import type { EnvironmentSummaryChrome } from "@/lib/environment-workspace-display";
 import type { MachineRemovalStatus } from "@/lib/machine-removal-display";
 import type { WorkspaceCheckoutDisplay } from "@bb/shared-ui/lib/workspace-checkout-display";
-import { createCoreComposerActions } from "@/lib/plugin-composer-handle";
-import {
-  requestComposerFocus,
-  subscribeComposerFocusRequests,
-} from "@/lib/composer-focus-requests";
+import { subscribeComposerFocusRequests } from "@/lib/composer-focus-requests";
 import { getThreadDisplayTitle } from "@/lib/thread-title";
 import { useParentThreadSection } from "./useParentThreadSection";
 import { getThreadRoutePath } from "@/lib/route-paths";
@@ -169,38 +162,6 @@ function resolveEnvironmentGoneStatus(
   if (environment === null) return null;
   if (environment.hostLifecycle !== "active") return environment.hostLifecycle;
   return environment.status === "destroyed" ? "destroyed" : null;
-}
-
-export function useThreadComposerAddToChat(thread: {
-  id: string;
-  projectId: string;
-}): ThreadTimelineAddToChatHandler {
-  const isCompactViewport = useIsCompactViewport();
-  const promptDraft = useMemo(
-    () =>
-      getPromptDraftAccessor({
-        kind: "thread",
-        projectId: thread.projectId,
-        threadId: thread.id,
-      }),
-    [thread.id, thread.projectId],
-  );
-  return useCallback(
-    (text: string, attachments?: readonly PromptDraftAttachment[]) => {
-      if (isCompactViewport && document.activeElement instanceof HTMLElement) {
-        document.activeElement.blur();
-      }
-      const composerActions = createCoreComposerActions({
-        ...promptDraft,
-        focus: () => requestComposerFocus(promptDraft.storageKey),
-      });
-      composerActions.replace((current) =>
-        appendQuoteAndAttachmentsToDraft(current, text, attachments ?? []),
-      );
-      composerActions.focus();
-    },
-    [isCompactViewport, promptDraft],
-  );
 }
 
 function useChildThreadsSection(
