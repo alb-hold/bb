@@ -11,6 +11,7 @@ import {
   getThread,
   getThreadSpawner,
   holdQueuedThreadMessageForEdit,
+  isNativeTerminalThread,
   isOrdinaryTurnEndQueuedMessage,
   isThreadQueueAutoSendPaused,
   releaseQueuedMessageClaim,
@@ -46,6 +47,7 @@ import type {
 import { ApiError } from "../../errors.js";
 import { isCommandTimeoutError } from "../lib/error-log-fields.js";
 import { assertNotNativeTerminalThread } from "./native-terminal-guard.js";
+import { dispatchClaimedNativeTerminalMessages } from "./native-terminal-admission.js";
 import {
   parseStoredQueuedThreadMessageWaitingOn,
   storedQueuedThreadMessageRequestedBy,
@@ -602,6 +604,14 @@ async function sendClaimedQueuedMessageForThread(
   const notice = await sendClaimedSystemNotice(deps, args);
   if (notice) {
     return notice;
+  }
+  if (isNativeTerminalThread(deps.db, args.thread.id)) {
+    await dispatchClaimedNativeTerminalMessages(deps, {
+      thread: args.thread,
+      claimed: args.queuedMessages,
+      sendNow: args.sendNow,
+    });
+    return toThreadQueuedMessage(args.queuedMessages[0]!);
   }
   const queuedMessages = args.queuedMessages.map(toThreadQueuedMessage);
   const queuedMessage = queuedMessages[0]!;
