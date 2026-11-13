@@ -4,7 +4,24 @@ const NATIVE_TERMINAL_DELIVERIES_TABLE = "fork_native_terminal_deliveries_v2";
 const NATIVE_TERMINAL_DELIVERY_WARNINGS_TABLE =
   "fork_native_terminal_delivery_warnings_v2";
 
+const LEGACY_NATIVE_TERMINAL_DELIVERY_TABLES = [
+  "fork_native_terminal_deliveries",
+  "fork_native_terminal_delivery_warnings",
+] as const;
+
 const deliveriesTableReady = new WeakSet<object>();
+
+export function listLegacyNativeTerminalDeliveryTables(
+  db: DbConnection,
+): string[] {
+  return db.$client
+    .prepare<[string, string], { name: string }>(
+      `SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (?, ?)
+        ORDER BY name`,
+    )
+    .all(...LEGACY_NATIVE_TERMINAL_DELIVERY_TABLES)
+    .map((row) => row.name);
+}
 
 function ensureNativeTerminalDeliveriesTables(db: DbConnection): void {
   if (deliveriesTableReady.has(db.$client)) {

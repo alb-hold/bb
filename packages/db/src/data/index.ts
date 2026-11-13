@@ -115,6 +115,7 @@ export {
   deleteNativeTerminalDeliveryWarning,
   insertNativeTerminalDeliveryWarning,
   listNativeTerminalDeliveryMarks,
+  listLegacyNativeTerminalDeliveryTables,
   listNativeTerminalDeliveryWarnings,
   listUnsettledNativeTerminalDeliveryMarks,
   markNativeTerminalDeliveriesSubmitting,

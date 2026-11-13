@@ -6,6 +6,7 @@ import {
   getThread,
   insertNativeTerminalDeliveryWarning,
   isNativeTerminalThread,
+  listLegacyNativeTerminalDeliveryTables,
   listNativeTerminalDeliveryWarnings,
   listUnsettledNativeTerminalDeliveryMarks,
   markNativeTerminalDeliveryUncertain,
@@ -97,6 +98,17 @@ export async function settleUncertainNativeTerminalDeliveries(
   }
   await sendNativeTerminalDeliveryWarnings(deps);
   return failed;
+}
+
+export function warnAboutLegacyNativeTerminalDeliveryTables(
+  deps: LoggedPendingInteractionWorkSessionDeps,
+): void {
+  const tables = listLegacyNativeTerminalDeliveryTables(deps.db);
+  if (tables.length === 0) return;
+  deps.logger.warn(
+    { tables },
+    "Found a native delivery table from an earlier build of this branch; leaving it untouched",
+  );
 }
 
 export async function recoverNativeTerminalDeliveries(
