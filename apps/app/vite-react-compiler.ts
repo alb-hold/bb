@@ -154,6 +154,15 @@ export async function cachedReactCompiler(cacheDirectory?: string): Promise<
     };
   };
   transform.handler = async function (code, id, options) {
+    const environment = "environment" in this ? this.environment : null;
+    if (
+      environment === null ||
+      typeof environment !== "object" ||
+      !("name" in environment) ||
+      typeof environment.name !== "string"
+    ) {
+      return handler.call(this, code, id, options);
+    }
     const key =
       cache &&
       compilerTransformKey(
@@ -162,7 +171,7 @@ export async function cachedReactCompiler(cacheDirectory?: string): Promise<
         id,
         code,
         options?.moduleType ?? "js",
-        this.environment.name,
+        environment.name,
       );
     if (!cache || !key) return handler.call(this, code, id, options);
     try {

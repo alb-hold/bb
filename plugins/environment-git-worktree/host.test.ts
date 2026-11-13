@@ -1,8 +1,12 @@
 import { execFile, spawn } from "node:child_process";
+
 import { createHash } from "node:crypto";
+
 import { existsSync, writeFileSync } from "node:fs";
+
 import {
   appendFile,
+  cp,
   lstat,
   mkdir,
   mkdtemp,
@@ -13,25 +17,75 @@ import {
   symlink,
   writeFile,
 } from "node:fs/promises";
+
 import { tmpdir } from "node:os";
+
 import { basename, dirname, join, resolve } from "node:path";
+
 import { promisify } from "node:util";
+
 import { experimental_createHostEntryHarness } from "@get-bb/plugin-sdk/testing/host";
-import { afterEach, describe, expect, it } from "vitest";
+
+import {
+  beforeAll,
+  afterEach,
+  afterAll,
+  describe,
+  expect,
+  it,
+  type TestContext,
+} from "vitest";
+
 import { createWorktreeHostEntry } from "./host.js";
+
 import { worktreeHostContract } from "./contract.js";
+
 import {
   beginCopy,
   fingerprintSource,
   recordCopy,
   type CreatedBy,
 } from "./host/created-by.js";
+
 import { copyWorktreeIncludeFiles } from "./host/worktree-include.js";
+
 import { removeWorktree } from "./host/worktree.js";
+
 import { worktreeHolderScopeNotice } from "./host/worktree-preservation.js";
 
 const execFileAsync = promisify(execFile);
+
+let repositoryTemplate: string;
+let clonedRepositoryTemplate: string;
+
+beforeAll(async () => {
+  repositoryTemplate = await mkdtemp(join(tmpdir(), "bb-worktree-template-"));
+  await git(repositoryTemplate, "init", "--initial-branch=main");
+  await writeFile(join(repositoryTemplate, "README.md"), "hello\n");
+  await git(repositoryTemplate, "add", ".");
+  await git(repositoryTemplate, "commit", "-m", "initial");
+  clonedRepositoryTemplate = await mkdtemp(
+    join(tmpdir(), "bb-worktree-clone-template-"),
+  );
+  const sourcePath = join(clonedRepositoryTemplate, "repo");
+  const clone = join(clonedRepositoryTemplate, "clone");
+  await cp(repositoryTemplate, sourcePath, { recursive: true });
+  await git(sourcePath, "branch", "release");
+  await git(clonedRepositoryTemplate, "clone", sourcePath, clone);
+  await git(clone, "remote", "set-url", "origin", "../repo");
+});
+
+afterAll(async () => {
+  if (clonedRepositoryTemplate) {
+    await rm(clonedRepositoryTemplate, { recursive: true, force: true });
+  }
+  if (repositoryTemplate) {
+    await rm(repositoryTemplate, { recursive: true, force: true });
+  }
+});
+
 const temporaryRoots: string[] = [];
+
 const expectedRemoved = () => {
   const notice = worktreeHolderScopeNotice();
   return { status: "removed", ...(notice === null ? {} : { message: notice }) };
@@ -66,13 +120,18 @@ async function git(cwd: string, ...args: string[]): Promise<string> {
   return result.stdout;
 }
 
-async function createSourceRepository(repositoryName = "repo"): Promise<{
+async function createSourceRepository(
+  onFinishedOrName?: TestContext["onTestFinished"] | string,
+  name = "repo",
+): Promise<{
   root: string;
   sourcePath: string;
   dataDir: string;
 }> {
   const root = await mkdtemp(join(tmpdir(), "bb-worktree-plugin-"));
   temporaryRoots.push(root);
+  const repositoryName =
+    typeof onFinishedOrName === "string" ? onFinishedOrName : name;
   const sourcePath = join(root, repositoryName);
   const dataDir = join(root, "plugin-data");
   await mkdir(sourcePath, { recursive: true });
@@ -82,6 +141,34 @@ async function createSourceRepository(repositoryName = "repo"): Promise<{
   await git(sourcePath, "add", ".");
   await git(sourcePath, "commit", "-m", "initial");
   return { root, sourcePath, dataDir };
+}
+
+async function createClonedRepository(
+  onTestFinished: TestContext["onTestFinished"],
+): Promise<{
+  root: string;
+  sourcePath: string;
+  clone: string;
+  dataDir: string;
+}> {
+  const root = await mkdtemp(join(tmpdir(), "bb-worktree-plugin-clone-"));
+  onTestFinished(() => rm(root, { recursive: true, force: true }));
+  await cp(clonedRepositoryTemplate, root, { recursive: true });
+  await git(
+    join(root, "clone"),
+    "remote",
+    "set-url",
+    "origin",
+    join(root, "repo"),
+  );
+  const dataDir = join(root, "plugin-data");
+  await mkdir(dataDir, { recursive: true });
+  return {
+    root,
+    sourcePath: join(root, "repo"),
+    clone: join(root, "clone"),
+    dataDir,
+  };
 }
 
 async function publishToBareRemote(
@@ -106,12 +193,8 @@ async function createDetachedSingleBranchRepository(): Promise<{
   const originPath = join(root, "origin");
   const sourcePath = join(root, "repo");
   const dataDir = join(root, "plugin-data");
-  await mkdir(originPath, { recursive: true });
+  await cp(repositoryTemplate, originPath, { recursive: true });
   await mkdir(dataDir, { recursive: true });
-  await git(originPath, "init", "--initial-branch=main");
-  await writeFile(join(originPath, "README.md"), "hello\n");
-  await git(originPath, "add", ".");
-  await git(originPath, "commit", "-m", "initial");
   await git(originPath, "tag", "v1.0");
   await git(
     root,
@@ -144,6 +227,26 @@ function createInput(args: {
   };
 }
 
+async function branchExists(cwd: string, branch: string): Promise<boolean> {
+  return (await git(cwd, "branch", "--list", branch)).trim() !== "";
+}
+
+async function branchConfig(cwd: string, branch: string): Promise<string> {
+  const result = await execFileAsync(
+    "git",
+    ["config", "--get-regexp", `^branch\\.${branch.replaceAll("/", "\\/")}\\.`],
+    { cwd },
+  ).catch(() => ({ stdout: "" }));
+  return result.stdout;
+}
+
+async function commitIn(cwd: string, file: string): Promise<string> {
+  await writeFile(join(cwd, file), `${file}\n`);
+  await git(cwd, "add", ".");
+  await git(cwd, "commit", "-m", file);
+  return (await git(cwd, "rev-parse", "HEAD")).trim();
+}
+
 function progressText(harness: ReturnType<typeof createHarness>): string {
   return harness
     .experimental_getSignals()
@@ -151,7 +254,7 @@ function progressText(harness: ReturnType<typeof createHarness>): string {
     .join("\n");
 }
 
-afterEach(async () => {
+afterAll(async () => {
   await Promise.all(
     temporaryRoots
       .splice(0)
@@ -159,7 +262,104 @@ afterEach(async () => {
   );
 });
 
-describe("worktree host entry", () => {
+describe.concurrent("worktree host entry", () => {
+  it.for([
+    "refs/worktree/saved",
+    "refs/bisect/saved",
+    "refs/rewritten/saved",
+    "MERGE_HEAD",
+  ])(
+    "keeps clean worktrees with local Git state: %s",
+    async (state, { onTestFinished }) => {
+      const { root, sourcePath, dataDir } =
+        await createSourceRepository(onTestFinished);
+      await publishToBareRemote(root, sourcePath);
+      const harness = createHarness(dataDir);
+      onTestFinished(() => harness.experimental_dispose());
+      const created = await harness.experimental_call(
+        "create",
+        createInput({
+          operationId: "create-state",
+          sourcePath,
+          pathKey: "saved-state",
+          branchName: "bb/saved-state",
+        }),
+      );
+      if (created.status !== "created") throw new Error(created.message);
+      const savedCommit = (
+        await git(
+          created.path,
+          "commit-tree",
+          "HEAD^{tree}",
+          "-p",
+          "HEAD",
+          "-m",
+          "saved",
+        )
+      ).trim();
+      await git(
+        created.path,
+        "push",
+        "origin",
+        `${savedCommit}:refs/heads/recovery-state`,
+      );
+      if (state === "MERGE_HEAD") {
+        await git(created.path, "merge", "--no-ff", "--no-commit", savedCommit);
+      } else {
+        await git(created.path, "update-ref", state, savedCommit);
+      }
+      const gitDir = (
+        await git(created.path, "rev-parse", "--absolute-git-dir")
+      ).trim();
+      expect(await git(created.path, "status", "--porcelain")).toBe("");
+      expect((await git(created.path, "rev-parse", state)).trim()).toBe(
+        savedCommit,
+      );
+      expect(
+        (await git(sourcePath, "rev-parse", "bb/saved-state")).trim(),
+      ).toBe((await git(created.path, "rev-parse", "HEAD")).trim());
+      const ownedBranch = {
+        name: "bb/saved-state",
+        repositoryPath: sourcePath,
+        baseBranch: created.baseBranch,
+      };
+      const result = await harness.experimental_call("remove", {
+        operationId: "remove-state",
+        pathKey: "saved-state",
+        path: created.path,
+        ownedBranch,
+      });
+      expect({
+        status: result.status,
+        worktreeExists: existsSync(created.path),
+        metadataExists: existsSync(gitDir),
+      }).toEqual({
+        status: "retained",
+        worktreeExists: true,
+        metadataExists: true,
+      });
+      expect((await git(created.path, "rev-parse", state)).trim()).toBe(
+        savedCommit,
+      );
+      expect(await branchExists(sourcePath, "bb/saved-state")).toBe(true);
+      if (state === "MERGE_HEAD") {
+        await git(created.path, "merge", "--abort");
+      } else {
+        await git(created.path, "update-ref", "-d", state);
+      }
+      expect(
+        await harness.experimental_call("remove", {
+          operationId: "remove-resolved-state",
+          pathKey: "saved-state",
+          path: created.path,
+          ownedBranch,
+        }),
+      ).toEqual(expectedRemoved());
+      expect(existsSync(created.path)).toBe(false);
+      expect(await branchExists(sourcePath, "bb/saved-state")).toBe(false);
+    },
+  );
+
   it.each([
     { existingBranch: false, branchMode: "reset" },
     { existingBranch: false, branchMode: "reuse-existing" },
@@ -305,7 +505,9 @@ describe("worktree host entry", () => {
         "uncommitted\n",
       );
       expect((await git(first.path, "rev-parse", "HEAD")).trim()).toBe(tip);
-      expect(progressText(harness)).toContain("Continuing on bb/work-thr_ret.r2");
+      expect(progressText(harness)).toContain(
+        "Continuing on bb/work-thr_ret.r2",
+      );
       expect(progressText(harness)).not.toContain("uncommitted\n");
     } finally {
       await harness.experimental_dispose();
@@ -313,34 +515,44 @@ describe("worktree host entry", () => {
   });
 
   it.each([
-    ["two branches could belong to the earlier attempt", ["bb/a-thr_amb", "bb/b-thr_amb"]],
-  ] as const)("refuses a retry and creates nothing when %s", async (_label, branches) => {
-    const { sourcePath, dataDir } = await createSourceRepository();
-    for (const branch of branches) await git(sourcePath, "branch", branch);
-    const harness = createHarness(dataDir);
-    try {
-      const result = await harness.experimental_call("create", {
-        ...createInput({
-          operationId: "retry",
-          sourcePath,
-          pathKey: "thr_amb-2",
-          branchName: "bb/work-thr_amb.r2",
-        }),
-        previousAttempt: { threadId: "thr_amb", attempt: 2 },
-      });
+    [
+      "two branches could belong to the earlier attempt",
+      ["bb/a-thr_amb", "bb/b-thr_amb"],
+    ],
+  ] as const)(
+    "refuses a retry and creates nothing when %s",
+    async (_label, branches) => {
+      const { sourcePath, dataDir } = await createSourceRepository();
+      for (const branch of branches) await git(sourcePath, "branch", branch);
+      const harness = createHarness(dataDir);
+      try {
+        const result = await harness.experimental_call("create", {
+          ...createInput({
+            operationId: "retry",
+            sourcePath,
+            pathKey: "thr_amb-2",
+            branchName: "bb/work-thr_amb.r2",
+          }),
+          previousAttempt: { threadId: "thr_amb", attempt: 2 },
+        });
 
-      expect(result).toMatchObject({
-        status: "failed",
-        message: expect.stringMatching(/Cannot continue from (the|an) earlier attempt/),
-      });
-      expect(
-        (await git(sourcePath, "branch", "--list", "bb/work-thr_amb.r2")).trim(),
-      ).toBe("");
-      expect(existsSync(join(dataDir, "worktrees", "thr_amb-2"))).toBe(false);
-    } finally {
-      await harness.experimental_dispose();
-    }
-  });
+        expect(result).toMatchObject({
+          status: "failed",
+          message: expect.stringMatching(
+            /Cannot continue from (the|an) earlier attempt/,
+          ),
+        });
+        expect(
+          (
+            await git(sourcePath, "branch", "--list", "bb/work-thr_amb.r2")
+          ).trim(),
+        ).toBe("");
+        expect(existsSync(join(dataDir, "worktrees", "thr_amb-2"))).toBe(false);
+      } finally {
+        await harness.experimental_dispose();
+      }
+    },
+  );
 
   it("walks back to the latest earlier attempt branch that exists and does not mistake a slug ending in r2 for an attempt branch", async () => {
     const { sourcePath, dataDir } = await createSourceRepository();
@@ -371,9 +583,7 @@ describe("worktree host entry", () => {
       expect(third.status).toBe("created");
       if (third.status !== "created") throw new Error(third.message);
       expect((await git(third.path, "rev-parse", "HEAD")).trim()).toBe(tip);
-      expect(progressText(harness)).toContain(
-        "from bb/fix-r2-thr_wb at",
-      );
+      expect(progressText(harness)).toContain("from bb/fix-r2-thr_wb at");
     } finally {
       await harness.experimental_dispose();
     }
@@ -438,7 +648,9 @@ describe("worktree host entry", () => {
       });
 
       expect(result.status).toBe("created");
-      expect(progressText(harness)).toContain("nothing from an earlier attempt could be lost");
+      expect(progressText(harness)).toContain(
+        "nothing from an earlier attempt could be lost",
+      );
     } finally {
       await harness.experimental_dispose();
     }
@@ -454,32 +666,37 @@ describe("worktree host entry", () => {
         return "the workspace at";
       },
     ],
-  ] as const)("refuses a branchless retry and names the blocker when %s remains", async (_label, leave) => {
-    const { sourcePath, dataDir } = await createSourceRepository();
-    const blocker = await leave(sourcePath, dataDir);
-    const harness = createHarness(dataDir);
-    try {
-      const result = await harness.experimental_call("create", {
-        ...createInput({
-          operationId: "blocked-retry",
-          sourcePath,
-          pathKey: "thr_left-2",
-          branchName: "bb/work-thr_left.r2",
-        }),
-        previousAttempt: { threadId: "thr_left", attempt: 2 },
-      });
+  ] as const)(
+    "refuses a branchless retry and names the blocker when %s remains",
+    async (_label, leave) => {
+      const { sourcePath, dataDir } = await createSourceRepository();
+      const blocker = await leave(sourcePath, dataDir);
+      const harness = createHarness(dataDir);
+      try {
+        const result = await harness.experimental_call("create", {
+          ...createInput({
+            operationId: "blocked-retry",
+            sourcePath,
+            pathKey: "thr_left-2",
+            branchName: "bb/work-thr_left.r2",
+          }),
+          previousAttempt: { threadId: "thr_left", attempt: 2 },
+        });
 
-      expect(result).toMatchObject({
-        status: "failed",
-        message: expect.stringContaining(blocker),
-      });
-      expect(
-        (await git(sourcePath, "branch", "--list", "bb/work-thr_left.r2")).trim(),
-      ).toBe("");
-    } finally {
-      await harness.experimental_dispose();
-    }
-  });
+        expect(result).toMatchObject({
+          status: "failed",
+          message: expect.stringContaining(blocker),
+        });
+        expect(
+          (
+            await git(sourcePath, "branch", "--list", "bb/work-thr_left.r2")
+          ).trim(),
+        ).toBe("");
+      } finally {
+        await harness.experimental_dispose();
+      }
+    },
+  );
 
   it("refuses to replace a target path that already exists", async () => {
     const { sourcePath, dataDir } = await createSourceRepository();
@@ -635,6 +852,7 @@ describe("worktree host entry", () => {
       expect(existsSync(join(result.path, "README.md"))).toBe(true);
       expect(
         await harness.experimental_call("remove", {
+          ownedBranch: null,
           operationId: "remove-special",
           pathKey,
           path: null,
@@ -984,6 +1202,329 @@ describe("worktree host entry", () => {
     await harness.experimental_dispose();
   });
 
+  describe("owned branch cleanup", () => {
+    async function createOwned(
+      sourcePath: string,
+      dataDir: string,
+      branchName: string,
+    ) {
+      const harness = createHarness(dataDir);
+      const created = await harness.experimental_call(
+        "create",
+        createInput({
+          operationId: "create",
+          sourcePath,
+          pathKey: branchName.replaceAll("/", "-"),
+          branchName,
+        }),
+      );
+      if (created.status !== "created") throw new Error(created.message);
+      expect(created.ownsBranch).toBe(true);
+      const remove = () =>
+        harness.experimental_call("remove", {
+          operationId: "remove",
+          pathKey: branchName.replaceAll("/", "-"),
+          path: created.path,
+          ownedBranch: {
+            name: branchName,
+            repositoryPath: sourcePath,
+            baseBranch: created.baseBranch,
+          },
+        });
+      return { harness, path: created.path, remove };
+    }
+
+    it("deletes the branch it created and its config when nothing else would be lost", async ({
+      onTestFinished,
+    }) => {
+      const { root, sourcePath, dataDir } =
+        await createSourceRepository(onTestFinished);
+      await publishToBareRemote(root, sourcePath);
+      const owned = await createOwned(sourcePath, dataDir, "bb/clean-thr_1");
+      await git(
+        sourcePath,
+        "config",
+        "branch.bb/clean-thr_1.merge",
+        "refs/heads/main",
+      );
+      expect(await owned.remove()).toEqual(expectedRemoved());
+      expect(existsSync(owned.path)).toBe(false);
+      expect(await branchExists(sourcePath, "bb/clean-thr_1")).toBe(false);
+      expect(await branchConfig(sourcePath, "bb/clean-thr_1")).toBe("");
+      expect(progressText(owned.harness)).toContain(
+        "Deleted branch bb/clean-thr_1",
+      );
+      await owned.harness.experimental_dispose();
+    });
+
+    it("deletes a branch whose commits are already on a remote", async ({
+      onTestFinished,
+    }) => {
+      const { clone, dataDir } = await createClonedRepository(onTestFinished);
+      const owned = await createOwned(clone, dataDir, "bb/pushed-thr_2");
+      await commitIn(owned.path, "pushed.txt");
+      await git(clone, "push", "origin", "bb/pushed-thr_2");
+      expect(await owned.remove()).toEqual(expectedRemoved());
+      expect(await branchExists(clone, "bb/pushed-thr_2")).toBe(false);
+      await owned.harness.experimental_dispose();
+    });
+
+    it("keeps a branch with commits that exist nowhere else and reports why", async ({
+      onTestFinished,
+    }) => {
+      const { clone, dataDir } = await createClonedRepository(onTestFinished);
+      const owned = await createOwned(clone, dataDir, "bb/unpushed-thr_3");
+      const head = await commitIn(owned.path, "local-only.txt");
+      expect(await owned.remove()).toMatchObject({
+        status: "retained",
+        message: expect.stringContaining("unpublished commits"),
+      });
+      expect(existsSync(owned.path)).toBe(true);
+      expect(
+        (await git(clone, "rev-parse", "refs/heads/bb/unpushed-thr_3")).trim(),
+      ).toBe(head);
+      expect(progressText(owned.harness)).not.toContain(
+        "Deleted branch bb/unpushed-thr_3",
+      );
+      await owned.harness.experimental_dispose();
+    });
+
+    it("keeps a branch whose commits survive only on another local branch", async ({
+      onTestFinished,
+    }) => {
+      const { clone, dataDir } = await createClonedRepository(onTestFinished);
+      const owned = await createOwned(clone, dataDir, "bb/copied-thr_9");
+      const head = await commitIn(owned.path, "copied.txt");
+      await git(clone, "branch", "my-copy", head);
+      expect(await owned.remove()).toMatchObject({
+        status: "retained",
+        message: expect.stringContaining("unpublished commits"),
+      });
+      expect(
+        (await git(clone, "rev-parse", "refs/heads/bb/copied-thr_9")).trim(),
+      ).toBe(head);
+      await owned.harness.experimental_dispose();
+    });
+
+    it("keeps the branch and workspace when a post-checkout hook fails the create", async ({
+      onTestFinished,
+    }) => {
+      const { sourcePath, dataDir } =
+        await createSourceRepository(onTestFinished);
+      await writeFile(
+        join(sourcePath, ".git", "hooks", "post-checkout"),
+        "#!/bin/sh\nexit 1\n",
+        { mode: 0o755 },
+      );
+      const harness = createHarness(dataDir);
+      onTestFinished(() => harness.experimental_dispose());
+      const created = await harness.experimental_call(
+        "create",
+        createInput({
+          operationId: "create",
+          sourcePath,
+          pathKey: "thr_10",
+          branchName: "bb/failed-thr_10",
+        }),
+      );
+      expect(created).toMatchObject({ status: "failed" });
+      expect(
+        await git(sourcePath, "worktree", "list", "--porcelain"),
+      ).toContain("bb/failed-thr_10");
+      expect(await branchExists(sourcePath, "bb/failed-thr_10")).toBe(true);
+      expect(created).toMatchObject({
+        message: expect.stringContaining(
+          "starts from work that was never published",
+        ),
+      });
+      expect(progressText(harness)).not.toContain(
+        "Deleted branch bb/failed-thr_10",
+      );
+    });
+
+    it.for([
+      ["keeps", "squash-merged", false],
+      ["keeps", "squash-merged then extended", false],
+      ["keeps", "partly squash-merged", false],
+    ] as const)(
+      "%s a branch that was %s into its base",
+      async ([, scenario, deleted], { onTestFinished }) => {
+        const { sourcePath, clone, dataDir } =
+          await createClonedRepository(onTestFinished);
+        const branch = "bb/squash-thr_9";
+        const owned = await createOwned(clone, dataDir, branch);
+        await commitIn(owned.path, "one.txt");
+        await commitIn(owned.path, "two.txt");
+        await git(clone, "push", "origin", branch);
+        await commitIn(sourcePath, "unrelated.txt");
+        if (scenario === "partly squash-merged") {
+          await git(sourcePath, "checkout", `${branch}~1`, "--", "one.txt");
+        } else {
+          await git(sourcePath, "merge", "--squash", branch);
+        }
+        await git(sourcePath, "commit", "-m", "Squash (#1)");
+        await git(sourcePath, "branch", "-D", branch);
+        await git(clone, "fetch", "--prune", "origin");
+        if (scenario === "squash-merged then extended") {
+          await commitIn(owned.path, "three.txt");
+        }
+        expect(await owned.remove()).toMatchObject({
+          status: deleted ? "removed" : "retained",
+        });
+        expect(await branchExists(clone, branch)).toBe(!deleted);
+        await owned.harness.experimental_dispose();
+      },
+    );
+
+    it("keeps its branch when another checkout has it and never touches the user's branch", async ({
+      onTestFinished,
+    }) => {
+      const { root, sourcePath, dataDir } =
+        await createSourceRepository(onTestFinished);
+      await publishToBareRemote(root, sourcePath);
+      const owned = await createOwned(sourcePath, dataDir, "bb/shared-thr_4");
+      await git(owned.path, "switch", "-c", "my-feature");
+      await git(sourcePath, "switch", "bb/shared-thr_4");
+      expect(await owned.remove()).toEqual(expectedRemoved());
+      expect(await branchExists(sourcePath, "bb/shared-thr_4")).toBe(true);
+      expect(await branchExists(sourcePath, "my-feature")).toBe(true);
+      expect(progressText(owned.harness)).toContain(
+        "Kept branch bb/shared-thr_4 because another worktree has it checked out",
+      );
+      await owned.harness.experimental_dispose();
+    });
+
+    it("leaves branches alone when removal carries no owned branch", async ({
+      onTestFinished,
+    }) => {
+      const { root, sourcePath, dataDir } =
+        await createSourceRepository(onTestFinished);
+      await publishToBareRemote(root, sourcePath);
+      const harness = createHarness(dataDir);
+      const created = await harness.experimental_call(
+        "create",
+        createInput({
+          operationId: "create",
+          sourcePath,
+          pathKey: "legacy",
+          branchName: "bb/legacy-thr_5",
+        }),
+      );
+      if (created.status !== "created") throw new Error(created.message);
+      expect(
+        await harness.experimental_call("remove", {
+          operationId: "remove",
+          pathKey: "legacy",
+          path: created.path,
+          ownedBranch: null,
+        }),
+      ).toEqual(expectedRemoved());
+      expect(await branchExists(sourcePath, "bb/legacy-thr_5")).toBe(true);
+      await harness.experimental_dispose();
+    });
+
+    it("still reports removal when the repository has moved away", async ({
+      onTestFinished,
+    }) => {
+      const { root, sourcePath, dataDir } =
+        await createSourceRepository(onTestFinished);
+      const harness = createHarness(dataDir);
+      expect(
+        await harness.experimental_call("remove", {
+          operationId: "remove",
+          pathKey: "gone",
+          path: join(dataDir, "worktrees", "gone", "repo"),
+          ownedBranch: {
+            name: "bb/gone-thr_6",
+            repositoryPath: join(root, "moved"),
+            baseBranch: "main",
+          },
+        }),
+      ).toEqual(expectedRemoved());
+      expect(await branchExists(sourcePath, "main")).toBe(true);
+      await harness.experimental_dispose();
+    });
+
+    it("restores a deleted pushed branch from its remote and owns it again", async ({
+      onTestFinished,
+    }) => {
+      const { clone, dataDir } = await createClonedRepository(onTestFinished);
+      const owned = await createOwned(clone, dataDir, "bb/restore-thr_7");
+      const pushedHead = await commitIn(owned.path, "restored.txt");
+      await git(clone, "push", "origin", "bb/restore-thr_7");
+      await owned.remove();
+      expect(await branchExists(clone, "bb/restore-thr_7")).toBe(false);
+      const restored = await owned.harness.experimental_call("create", {
+        ...createInput({
+          operationId: "restore",
+          sourcePath: clone,
+          pathKey: "restore-2",
+          branchName: "bb/restore-thr_7",
+        }),
+        branchMode: "reuse-existing",
+      });
+      if (restored.status !== "created") throw new Error(restored.message);
+      expect(restored.ownsBranch).toBe(true);
+      expect((await git(restored.path, "rev-parse", "HEAD")).trim()).toBe(
+        pushedHead,
+      );
+      expect(
+        (
+          await git(restored.path, "rev-parse", "--abbrev-ref", "@{upstream}")
+        ).trim(),
+      ).toBe("origin/bb/restore-thr_7");
+      await owned.harness.experimental_dispose();
+    });
+
+    it("reuses its retained owned branch without deleting its worktree", async ({
+      onTestFinished,
+    }) => {
+      const { clone, dataDir } = await createClonedRepository(onTestFinished);
+      const owned = await createOwned(clone, dataDir, "bb/kept-thr_8");
+      const head = await commitIn(owned.path, "kept.txt");
+      await owned.remove();
+      expect(
+        (
+          await git(clone, "config", "--get", "branch.bb/kept-thr_8.bbOwned")
+        ).trim(),
+      ).toBe("true");
+      const restored = await owned.harness.experimental_call("create", {
+        ...createInput({
+          operationId: "restore",
+          sourcePath: clone,
+          pathKey: "bb-kept-thr_8",
+          branchName: "bb/kept-thr_8",
+        }),
+        branchMode: "reuse-existing",
+      });
+      if (restored.status !== "created") throw new Error(restored.message);
+      expect(restored.ownsBranch).toBe(true);
+      expect((await git(restored.path, "rev-parse", "HEAD")).trim()).toBe(head);
+      await owned.harness.experimental_dispose();
+    });
+
+    it("does not claim a branch it never kept when a restore reuses it", async ({
+      onTestFinished,
+    }) => {
+      const { sourcePath, dataDir } =
+        await createSourceRepository(onTestFinished);
+      await git(sourcePath, "branch", "my-feature");
+      const harness = createHarness(dataDir);
+      const restored = await harness.experimental_call("create", {
+        ...createInput({
+          operationId: "restore",
+          sourcePath,
+          pathKey: "user-branch",
+          branchName: "my-feature",
+        }),
+        branchMode: "reuse-existing",
+      });
+      if (restored.status !== "created") throw new Error(restored.message);
+      expect(restored.ownsBranch).toBe(false);
+      await harness.experimental_dispose();
+    });
+  });
+
   it("leaves teardown to core, defers while a program runs in the workspace without signalling it, and prunes the path-key parent", async ({
     skip,
   }) => {
@@ -1021,6 +1562,7 @@ describe("worktree host entry", () => {
     );
     lingering.unref();
     const deferred = await harness.experimental_call("remove", {
+      ownedBranch: null,
       operationId: "remove-deferred",
       pathKey: "thr_6",
       path: created.path,
@@ -1031,6 +1573,7 @@ describe("worktree host entry", () => {
       .poll(() => isPidAlive(lingering.pid ?? 0), { timeout: 10_000 })
       .toBe(false);
     const removed = await harness.experimental_call("remove", {
+      ownedBranch: null,
       operationId: "remove",
       pathKey: "thr_6",
       path: created.path,
@@ -1217,6 +1760,7 @@ function removeFrom(
   path: string | null = worktree.path,
 ) {
   return worktree.harness.experimental_call("remove", {
+    ownedBranch: null,
     operationId: "remove",
     pathKey: worktree.pathKey,
     path,
@@ -1679,6 +2223,7 @@ describe.skipIf(process.platform === "win32")(
         });
         await symlink(target.path, linkPath);
         const result = await target.harness.experimental_call("remove", {
+          ownedBranch: null,
           operationId: "remove-link",
           pathKey: "thr_link",
           path: linkPath,
@@ -1704,6 +2249,7 @@ describe.skipIf(process.platform === "win32")(
       });
       await writeFile(join(outside, "precious.txt"), "keep\n");
       const result = await harness.experimental_call("remove", {
+        ownedBranch: null,
         operationId: "remove-outside",
         pathKey: "thr_outside",
         path: outside,

@@ -82,28 +82,20 @@ export function accountBalance(
   now: number,
 ): AccountBalance {
   const windows = [
-    makeWindow({
-      kind: "five-hour",
-      key: "five-hour",
-      family: null,
-      utilization: quota.fiveHourUtilization,
-      status: quota.fiveHourStatus,
-      resetAt: quota.fiveHourResetAt,
-      now,
-    }),
-    makeWindow({
-      kind: "weekly",
-      key: "weekly",
-      family: null,
-      utilization: quota.sevenDayUtilization,
-      status: quota.sevenDayStatus,
-      resetAt: quota.sevenDayResetAt,
-      now,
-    }),
     ...quota.limitWindows.map((window) =>
       makeWindow({
-        kind: "limit",
-        key: `${window.slot}:${window.windowMinutes ?? "custom"}`,
+        kind:
+          window.windowMinutes === 300
+            ? "five-hour"
+            : window.windowMinutes === 10080
+              ? "weekly"
+              : "limit",
+        key:
+          window.windowMinutes === 300
+            ? "five-hour"
+            : window.windowMinutes === 10080
+              ? "weekly"
+              : `${window.slot}:${window.windowMinutes ?? "custom"}`,
         family: null,
         utilization: window.utilization,
         status: window.status,

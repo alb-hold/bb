@@ -85,6 +85,13 @@ function parentItemId(event: ThreadEventWithMeta["event"]): string | null {
   return "parentToolCallId" in event ? (event.parentToolCallId ?? null) : null;
 }
 
+function backgroundItemId(event: ThreadEventWithMeta["event"]): string | null {
+  return "item" in event &&
+    (event.item.type === "backgroundTask" || event.item.type === "delegation")
+    ? event.item.id
+    : null;
+}
+
 function backgroundTaskItemId(
   event: ThreadEventWithMeta["event"],
 ): string | null {
@@ -112,7 +119,11 @@ function mergeBackgroundTaskSpans(
   return merged;
 }
 
-function isOutsideSpans(spans: readonly SequenceSpan[], boundary: number) {
+function completedSpanBoundary(
+  spans: readonly SequenceSpan[],
+  boundary: number,
+  beforeSequence: number,
+): number | null {
   let low = 0;
   let high = spans.length;
   while (low < high) {
@@ -121,7 +132,8 @@ function isOutsideSpans(spans: readonly SequenceSpan[], boundary: number) {
     else high = middle;
   }
   const span = spans[low];
-  return span === undefined || boundary <= span.start;
+  if (span === undefined || boundary <= span.start) return boundary;
+  return span.end < beforeSequence ? span.end + 1 : null;
 }
 
 function isThreadError(event: ThreadEventWithMeta["event"]): boolean {
@@ -140,10 +152,10 @@ function canReuse(
   let hasTailTurn = false;
   return events.every(({ event }) => {
     if (event.type === "turn/started") hasTailTurn = true;
-    const backgroundItemId = backgroundTaskItemId(event);
+    const backgroundTaskId = backgroundTaskItemId(event);
     if (
-      backgroundItemId !== null &&
-      checkpoint.backgroundItemIds.has(backgroundItemId)
+      backgroundTaskId !== null &&
+      checkpoint.backgroundItemIds.has(backgroundTaskId)
     )
       return false;
     const parentId = parentItemId(event);
@@ -151,7 +163,7 @@ function canReuse(
       return false;
     if (
       "item" in event &&
-      event.item.type === "toolCall" &&
+      (event.item.type === "toolCall" || backgroundItemId(event) !== null) &&
       checkpoint.parentItemIds.has(event.item.id)
     )
       return false;
@@ -184,7 +196,9 @@ function nextCheckpoint(
   const pendingRequests = new Set<string>();
   let completedBoundary = previous.sequenceStart;
   let boundary = previous.sequenceStart;
-  for (const { event, meta } of projection.events) {
+  for (const { event, meta } of [...projection.events].sort(
+    (left, right) => left.meta.seq - right.meta.seq,
+  )) {
     if (isThreadError(event)) {
       completedBoundary = boundary;
     }
@@ -198,13 +212,23 @@ function nextCheckpoint(
       pendingRequests.delete(event.clientRequestId);
     if (event.type === "client/turn/rejected")
       pendingRequests.delete(event.requestId);
-    if (event.scope.kind !== "turn") continue;
-    if (event.type === "turn/started") {
+    if (event.scope.kind !== "turn") {
       if (
+        event.type === "item/backgroundTask/completed" &&
         activeTurns.size === 0 &&
-        isOutsideSpans(backgroundTaskSpans, completedBoundary)
+        pendingRequests.size === 0 &&
+        completedBoundary > previous.sequenceStart
       )
-        boundary = completedBoundary;
+        completedBoundary = meta.seq + 1;
+      continue;
+    }
+    if (event.type === "turn/started") {
+      const candidate = completedSpanBoundary(
+        backgroundTaskSpans,
+        completedBoundary,
+        meta.seq,
+      );
+      if (activeTurns.size === 0 && candidate !== null) boundary = candidate;
       activeTurns.add(event.scope.turnId);
     }
     if (event.type === "turn/completed") {
@@ -221,11 +245,14 @@ function nextCheckpoint(
   for (const { event, meta } of projection.events) {
     if (meta.seq >= boundary) continue;
     if (event.scope.kind === "turn") turnIds.add(event.scope.turnId);
-    const backgroundItemId = backgroundTaskItemId(event);
-    if (backgroundItemId !== null) backgroundItemIds.add(backgroundItemId);
+    const backgroundTaskId = backgroundTaskItemId(event);
+    if (backgroundTaskId !== null) backgroundItemIds.add(backgroundTaskId);
     const parentId = parentItemId(event);
     if (parentId !== null) parentItemIds.add(parentId);
-    if ("item" in event && event.item.type === "toolCall")
+    if (
+      "item" in event &&
+      (event.item.type === "toolCall" || backgroundItemId(event) !== null)
+    )
       parentItemIds.add(event.item.id);
     const requestId = referencedRequestId(event);
     if (requestId !== null) requestIds.add(requestId);

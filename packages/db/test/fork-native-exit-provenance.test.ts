@@ -15,7 +15,6 @@ import {
   migrate,
   upsertHost,
   createProject,
-  createThread,
   noopNotifier,
 } from "../src/index.js";
 import { ensureNativeTerminalThreadsTable } from "../src/fork-native-terminal-threads.js";
@@ -80,10 +79,12 @@ describe("native clean exit schema", () => {
           path: "/tmp/native-migration",
         },
       });
-      const thread = createThread(db, noopNotifier, {
-        projectId: project.id,
-        providerId: "codex",
-      });
+      const thread = { id: "migration-native-thread" };
+      db.$client
+        .prepare(
+          "INSERT INTO threads (id, project_id, provider_id, status, latest_attention_at, created_at, updated_at) VALUES (?, ?, 'codex', 'idle', 101, 101, 202)",
+        )
+        .run(thread.id, project.id);
       db.$client
         .prepare(
           "INSERT INTO fork_native_terminal_threads (thread_id, provider_id, native_session_id, initial_prompt, model, created_at, updated_at, initial_images) VALUES (?, 'codex', 'retained-session', 'retained prompt', 'retained model', 101, 202, '[]')",

@@ -97,7 +97,7 @@ const broker = await startDesktopBrowserBroker({
   logger: console,
   serverUrl: server.baseUrl,
   onChanged(event) {
-    onDaemonSocketMessage(server.deps, {
+    void onDaemonSocketMessage(server.deps, {
       hostId: seeded.host.id,
       sessionId: seeded.session.id,
       raw: JSON.stringify(event),

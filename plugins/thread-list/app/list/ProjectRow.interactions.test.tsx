@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { ThreadRowNavigationProvider } from "../rows/threadRowNavigation.js";
+
 import {
   act,
   cleanup,
@@ -9,28 +10,46 @@ import {
   waitFor,
   within,
 } from "@testing-library/react";
+
 import { execFile } from "node:child_process";
+
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+
 import { tmpdir } from "node:os";
+
 import { join } from "node:path";
+
 import { promisify } from "node:util";
+
 import type { ReactNode } from "react";
+
 import type { SidebarThread } from "../model/sidebar-thread.js";
+
 import { afterEach, describe, expect, inject, it, vi } from "vitest";
+
 import { CompactViewportOverrideProvider } from "@/components/ui/hooks/use-compact-viewport";
+
 import { TooltipProvider } from "@/components/ui/tooltip";
+
 import { SidebarRenameProvider } from "../rows/SidebarInlineRename.js";
+
 import { Provider, createStore } from "jotai";
+
 import {
   installTestPluginRuntime,
   renderSlot,
   type PluginSdkTestFakes,
   type RenderedSlot,
 } from "@get-bb/plugin-sdk/testing/app";
+
 import type { SectionThreadDndState } from "../dnd/useSectionThreadDnd.js";
+
 import type { ProjectThreadListState } from "./ProjectRow.js";
+
 import { buildPinnedSidebarState } from "../model/pinned-sidebar-threads.js";
+
 import { buildSidebarEntitySectionId } from "../model/sidebar-section-order.js";
+
 import {
   makeSidebarEnvironment,
   makeSidebarProject,
@@ -38,27 +57,36 @@ import {
   sdkResult,
   type SidebarThreadOverrides,
 } from "../model/fixtures.js";
+
 import {
   sidebarHiddenGroupsAtom,
   sidebarManualSectionOrderAtom,
   sidebarOrganizationModeAtom,
 } from "../preferences/atoms.js";
 
+
 installTestPluginRuntime();
+
 const {
   ChronologicalSectionThreadSections,
   ProjectRow,
   PinnedEnvironmentThreadGroupRow,
   ThreadTreeNodeRow,
 } = await import("./ProjectRow.js");
+
 const { ThreadCreationPlacementScope } =
   await import("./ThreadCreationPlacement.js");
+
 const { useSidebarModeSectionOrder } =
   await import("./useSidebarModeSectionOrder.js");
+
 const { SidebarHeaderControls } = await import("./SidebarHeaderControls.js");
+
 const { SidebarDraftPresenceSync } = await import("./sidebarDraftPresence.js");
+
 const { ThreadListVisibilityMenuItems } =
   await import("./ThreadListVisibility.js");
+
 
 function makeThread(overrides: SidebarThreadOverrides = {}): SidebarThread {
   return makeSidebarThread({
@@ -72,6 +100,7 @@ function makeThread(overrides: SidebarThreadOverrides = {}): SidebarThread {
     ...overrides,
   });
 }
+
 
 function makeSectionDnd(
   overrides: Partial<SectionThreadDndState> = {},
@@ -99,10 +128,12 @@ function makeSectionDnd(
   };
 }
 
+
 interface HarnessProps {
   children: ReactNode;
   store: ReturnType<typeof createStore>;
 }
+
 
 function Harness({ children, store }: HarnessProps) {
   return (
@@ -117,12 +148,14 @@ function Harness({ children, store }: HarnessProps) {
   );
 }
 
+
 interface RenderTreeOptions {
   threads?: readonly SidebarThread[];
   draftThreadIds?: readonly string[];
   sdk?: PluginSdkTestFakes;
   store?: ReturnType<typeof createStore>;
 }
+
 
 function renderTree(
   children: ReactNode,
@@ -141,6 +174,7 @@ function renderTree(
     },
   );
 }
+
 
 function renderPinnedParentWithChild({
   isCollapsed,
@@ -181,6 +215,7 @@ function renderPinnedParentWithChild({
   return container;
 }
 
+
 function renderProjectRow(
   onToggleProjectCollapsed = vi.fn(),
   threadListState: ProjectThreadListState = { status: "ready", threads: [] },
@@ -215,12 +250,14 @@ function renderProjectRow(
   return { ...result, onToggleEnvironmentCollapsed, onToggleProjectCollapsed };
 }
 
+
 function renderedIndicators(): Array<string | null> {
   return Array.from(
     document.querySelectorAll("[data-thread-status-glyph]"),
     (glyph) => glyph.getAttribute("data-thread-status-glyph"),
   );
 }
+
 
 function expectCollapsedActivityAtSidebarEdge(indicator: string) {
   const edgeSlot = Array.from(
@@ -233,6 +270,7 @@ function expectCollapsedActivityAtSidebarEdge(indicator: string) {
 
   expect(edgeSlot).toBeInstanceOf(HTMLElement);
 }
+
 
 function CustomSectionsVisibilityProbe({
   threads,
@@ -283,6 +321,7 @@ function CustomSectionsVisibilityProbe({
   );
 }
 
+
 function renderCollapsedSection(
   sectionId: string,
   name: string,
@@ -318,6 +357,7 @@ function renderCollapsedSection(
   );
 }
 
+
 const ENVIRONMENT_THREADS = [
   makeThread({
     id: "thr_worktree_a",
@@ -343,11 +383,13 @@ const ENVIRONMENT_THREADS = [
   }),
 ];
 
+
 describe("ProjectRow interactions", () => {
   afterEach(() => {
     cleanup();
     vi.clearAllMocks();
   });
+
 
   it("previews the dragged thread as a child of a valid nest target", () => {
     const container = renderPinnedParentWithChild({
@@ -370,6 +412,7 @@ describe("ProjectRow interactions", () => {
     ).toEqual(["thr_parent", "Dragged", "thr_child"]);
   });
 
+
   it("previews the dragged thread after the last child when it sorts last", () => {
     const container = renderPinnedParentWithChild({
       isCollapsed: false,
@@ -391,6 +434,7 @@ describe("ProjectRow interactions", () => {
     ).toEqual(["thr_parent", "thr_child", "Dragged"]);
   });
 
+
   it("leaves a blocked nest target without a child preview", () => {
     const container = renderPinnedParentWithChild({
       isCollapsed: false,
@@ -404,6 +448,7 @@ describe("ProjectRow interactions", () => {
       container.querySelector("[data-sidebar-nest-drop-preview]"),
     ).toBeNull();
   });
+
 
   it("anchors a pinned insert line below the subtree, not between parent and child", () => {
     const container = renderPinnedParentWithChild({
@@ -424,6 +469,7 @@ describe("ProjectRow interactions", () => {
     expect(group?.contains(screen.getByText("Child"))).toBe(true);
   });
 
+
   it("anchors a pinned insert line on the row when the subtree is collapsed", () => {
     const container = renderPinnedParentWithChild({
       isCollapsed: true,
@@ -439,6 +485,7 @@ describe("ProjectRow interactions", () => {
         ?.getAttribute("data-sidebar-reorder-placement"),
     ).toBe("after");
   });
+
 
   it("keeps project header controls touch-accessible when their menu opens and closes", async () => {
     renderProjectRow();
@@ -467,6 +514,7 @@ describe("ProjectRow interactions", () => {
     );
     expect(actions?.getAttribute("data-sidebar-hover-actions-open")).toBeNull();
   });
+
 
   it("renames a project from its menu without collapsing its threads", async () => {
     const update = vi.fn(sdkResult({ ok: true }));
@@ -500,6 +548,7 @@ describe("ProjectRow interactions", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
+
   it("links project settings and confirms removal through the SDK", async () => {
     const remove = vi.fn(sdkResult({ ok: true }));
     const { sdkCalls } = renderProjectRow(
@@ -532,6 +581,7 @@ describe("ProjectRow interactions", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
 
+
   it("places the project disclosure after its label and keeps root threads flush", () => {
     const result = renderProjectRow(vi.fn(), {
       status: "ready",
@@ -562,6 +612,7 @@ describe("ProjectRow interactions", () => {
     );
     expect(projectGroup?.hasAttribute("data-sidebar-section-id")).toBe(false);
   });
+
 
   it("indents a nested environment group one level below its parent", () => {
     const environment = makeSidebarEnvironment({
@@ -611,6 +662,7 @@ describe("ProjectRow interactions", () => {
     ).toBe("36px");
   });
 
+
   it("shows generic runtime activity before a named workflow rollup", () => {
     renderProjectRow(
       vi.fn(),
@@ -629,11 +681,11 @@ describe("ProjectRow interactions", () => {
             }),
             queuedWork: "none",
             activity: {
+      goals: 0,
               workflows: 1,
               backgroundAgents: 0,
               backgroundCommands: 0,
               planMode: 0,
-              goals: 0,
             },
             runtimeStatus: "active",
           }),
@@ -661,6 +713,7 @@ describe("ProjectRow interactions", () => {
     ).not.toBeNull();
     expect(renderedIndicators()).toEqual(["working"]);
   });
+
 
   it.each([
     { isCollapsed: true, expectedHoverReveal: false },
@@ -696,6 +749,7 @@ describe("ProjectRow interactions", () => {
     },
   );
 
+
   it("shows a working draft before named work for a collapsed environment", () => {
     renderProjectRow(
       vi.fn(),
@@ -712,11 +766,11 @@ describe("ProjectRow interactions", () => {
             }),
             queuedWork: "none",
             activity: {
+      goals: 0,
               workflows: 0,
               backgroundAgents: 0,
               backgroundCommands: 0,
               planMode: 1,
-              goals: 0,
             },
           }),
           makeThread({
@@ -740,6 +794,7 @@ describe("ProjectRow interactions", () => {
     expect(renderedIndicators()).toEqual(["working"]);
   });
 
+
   it("uses shared runtime precedence when a top-level section is collapsed", () => {
     const sectionId = "sec_active";
     renderCollapsedSection(
@@ -751,11 +806,11 @@ describe("ProjectRow interactions", () => {
         status: "active",
         runtimeStatus: "active",
         activity: {
+      goals: 0,
           workflows: 0,
           backgroundAgents: 0,
           backgroundCommands: 0,
           planMode: 1,
-          goals: 1,
         },
       }),
     );
@@ -772,6 +827,7 @@ describe("ProjectRow interactions", () => {
     expectCollapsedActivityAtSidebarEdge("working");
   });
 
+
   it("shows a working draft before Plan for a collapsed section", () => {
     const sectionId = "sec_draft";
     renderCollapsedSection(
@@ -781,11 +837,11 @@ describe("ProjectRow interactions", () => {
         id: "thr_section_draft",
         sectionId,
         activity: {
+      goals: 0,
           workflows: 0,
           backgroundAgents: 0,
           backgroundCommands: 0,
           planMode: 1,
-          goals: 1,
         },
       }),
       ["thr_section_draft"],
@@ -793,6 +849,7 @@ describe("ProjectRow interactions", () => {
 
     expect(renderedIndicators()).toEqual(["working"]);
   });
+
 
   it("hides loose Threads in More and restores them", async () => {
     const store = createStore();
@@ -851,6 +908,7 @@ describe("ProjectRow interactions", () => {
     expect(store.get(sidebarHiddenGroupsAtom)).toEqual([]);
     expect(store.get(sidebarManualSectionOrderAtom)).toEqual(savedOrder);
   });
+
 
   it("hides a section with inherited descendants and restores its saved position", async () => {
     const store = createStore();
@@ -952,6 +1010,7 @@ describe("ProjectRow interactions", () => {
     ).toEqual(["section:sec_review", "section:sec_building", "threads"]);
   });
 
+
   it("surfaces named activity when the project is collapsed", () => {
     renderProjectRow(
       vi.fn(),
@@ -960,11 +1019,11 @@ describe("ProjectRow interactions", () => {
         threads: [
           makeThread({
             activity: {
+      goals: 0,
               workflows: 0,
               backgroundAgents: 0,
               backgroundCommands: 0,
-              planMode: 0,
-              goals: 1,
+              planMode: 1,
             },
           }),
         ],
@@ -978,6 +1037,7 @@ describe("ProjectRow interactions", () => {
     expect(renderedIndicators()).toEqual(["working"]);
     expectCollapsedActivityAtSidebarEdge("working");
   });
+
 
   it("shows unread success before an idle draft for a collapsed project", () => {
     renderProjectRow(
@@ -1001,6 +1061,7 @@ describe("ProjectRow interactions", () => {
     expect(renderedIndicators()).toEqual(["done-unread"]);
   });
 
+
   it("excludes hidden side-chat activity from a collapsed project", () => {
     renderProjectRow(
       vi.fn(),
@@ -1011,11 +1072,11 @@ describe("ProjectRow interactions", () => {
             id: "thr_side_chat",
             isHidden: true,
             activity: {
+      goals: 0,
               workflows: 0,
               backgroundAgents: 0,
               backgroundCommands: 0,
               planMode: 1,
-              goals: 0,
             },
           }),
         ],
@@ -1028,6 +1089,7 @@ describe("ProjectRow interactions", () => {
 
     expect(renderedIndicators()).toEqual([]);
   });
+
 
   it.each([false, true])(
     "keeps environment actions touch-accessible when collapsed=%s",
@@ -1098,6 +1160,7 @@ describe("ProjectRow interactions", () => {
     },
   );
 
+
   it("leaves threads sharing the project checkout ungrouped", () => {
     renderProjectRow(vi.fn(), {
       status: "ready",
@@ -1127,6 +1190,7 @@ describe("ProjectRow interactions", () => {
       screen.queryByRole("button", { name: "Collapse main threads" }),
     ).toBeNull();
   });
+
 
   it("archives and renames an environment group from any provider", async () => {
     const archiveThreads = vi.fn(
@@ -1192,6 +1256,7 @@ describe("ProjectRow interactions", () => {
   });
 });
 
+
 describe("environment creation placement", () => {
   afterEach(cleanup);
   it.each([
@@ -1249,6 +1314,7 @@ describe("environment creation placement", () => {
     },
   );
 });
+
 
 describe("nested sticky parents with row state", () => {
   afterEach(() => {
@@ -1322,11 +1388,17 @@ describe("nested sticky parents with row state", () => {
   });
 });
 
+
 const execFileAsync = promisify(execFile);
+
 const chromiumPath = inject("threadListChromiumPath");
+
 const pluginCss = inject("threadListPluginCss");
+
 const CHROMIUM_LAUNCH_TIMEOUT_MS = 60_000;
+
 const NESTED_PIN_TEST_TIMEOUT_MS = 120_000;
+
 
 interface NestedPinMeasurement {
   tierCount: number;
@@ -1338,10 +1410,12 @@ interface NestedPinMeasurement {
   tier1Visible: boolean;
 }
 
+
 interface NestedPinSnapshot {
   html: string;
   width: number;
 }
+
 
 const NESTED_PIN_MEASURE_SCRIPT = `
 const results = [];
@@ -1380,6 +1454,7 @@ for (const section of document.querySelectorAll("section.snapshot")) {
 }
 document.getElementById("layout").textContent = JSON.stringify(results);
 `;
+
 
 async function measureNestedPins(
   snapshots: readonly NestedPinSnapshot[],
@@ -1445,6 +1520,7 @@ ${sections}
   }
 }
 
+
 class ResizeObserverStub {
   static live = new Set<ResizeObserverStub>();
   constructor(private readonly callback: () => void) {}
@@ -1463,6 +1539,7 @@ class ResizeObserverStub {
     });
   }
 }
+
 
 describe.skipIf(
   pluginCss === null || (chromiumPath === null && !process.env.CI),

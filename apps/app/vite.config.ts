@@ -1,7 +1,7 @@
 import { xtermFaintContrast } from "./vite-xterm-faint.js";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { defineConfig, type UserConfig } from "vite";
+import { defineConfig, type PluginOption, type UserConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { bundleStats } from "./vite-bundle-stats.js";
@@ -10,11 +10,19 @@ import { initialThreadPreload } from "./vite-initial-thread-preload.js";
 import { fontPreload } from "./vite-font-preload.js";
 import { sharedUiEnvSeam } from "./vite-shared-ui-seam.js";
 import { cachedReactCompiler } from "./vite-react-compiler.js";
+import { pluginZodRuntime } from "./vite-plugin-zod-runtime.js";
 
 const appDir = dirname(fileURLToPath(import.meta.url));
 
-export const sharedViteConfig = {
+export const sharedViteConfig: Omit<UserConfig, "plugins"> & {
+  plugins: Exclude<PluginOption, false | null | undefined>[];
+} = {
+  define: {
+    __BB_DEV_WS_BROWSER_HOST_PORT__: "undefined",
+    __BB_DEV_APP_BROWSER_HOST_PORT__: "undefined",
+  },
   plugins: [
+    pluginZodRuntime(),
     xtermFaintContrast(),
     sharedUiEnvSeam(),
     react(),
@@ -81,7 +89,9 @@ export const sharedViteConfig = {
             },
             {
               name: "boot-vendor",
-              test: /node_modules/,
+              test: (id) =>
+                id.includes("node_modules") &&
+                !/[\\/](?:jotai|partysocket)[\\/]/.test(id),
               tags: ["$initial"],
               priority: 2,
               minSize: 12 * 1024,

@@ -1,3 +1,4 @@
+import { defineSplit } from "@/lib/define-split";
 import {
   useState,
   type MouseEvent as ReactMouseEvent,
@@ -18,7 +19,12 @@ import {
   shouldUseMacosDesktopChrome,
 } from "@/lib/bb-desktop";
 import { useDesktopWindowState } from "@/hooks/useDesktopWindowState";
-import { SidebarHistoryNavigationControls } from "./SidebarHistoryNavigationControls";
+const SidebarHistoryNavigationControls = defineSplit({
+   id: "sidebar-history-navigation-controls",
+   tier: "intent",
+   load: () => import("./SidebarHistoryNavigationControls").then((module) => module.SidebarHistoryNavigationControls),
+   loading: () => null,
+ });
 import { useSidebarNavigationPlacement } from "./sidebarNavigationProvider";
 
 const FRAMED_CARD_TOP_BORDER_OFFSET_CLASS = "-mt-px";

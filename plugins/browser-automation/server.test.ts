@@ -137,6 +137,41 @@ async function setup() {
   return { ...host, worker, open, setTabs, closedTabIds, tabChangeListeners };
 }
 
+it.each([
+  ["/workspace", "script.js", "/workspace/script.js"],
+  [
+    "//server/share/workspace",
+    "script.js",
+    "\\\\server\\share\\workspace\\script.js",
+  ],
+  ["C:", "script.js", "C:\\script.js"],
+  ["C:\\workspace", "\\script.js", null],
+])("reads CLI scripts on their host: %s + %s", async (cwd, file, expected) => {
+  const h = await setup();
+  try {
+    const session = await h.open();
+    h.harness.sdk.stub("files.read", async () => ({
+      content: "return 1",
+      contentEncoding: "utf8",
+    }));
+    const result = await h.harness.behavior.runCli(
+      ["run", session.id, "--script-file", file, "--script-host", "local-host"],
+      { threadId: "thread-test", cwd },
+    );
+    if (expected === null) {
+      expect(result.exitCode).toBe(1);
+      expect(h.harness.sdk.callsTo("files.read")).toEqual([]);
+    } else {
+      expect(result.exitCode).toBe(0);
+      expect(h.harness.sdk.callsTo("files.read")).toEqual([
+        [expect.objectContaining({ hostId: "local-host", path: expected })],
+      ]);
+    }
+  } finally {
+    await h.harness.lifecycle.dispose();
+  }
+});
+
 describe("server session ownership", () => {
   it.each([
     ["local", "Lab workstation", "local-host"],
@@ -517,6 +552,46 @@ describe("server session cleanup", () => {
   }
   const hostCalls = (h: Awaited<ReturnType<typeof setup>>, method: string) =>
     h.worker.mock.calls.filter(([call]) => call.method === method);
+
+  it.each(["before", "after", "both"] as const)(
+    "keeps a session usable when renewal persistence fails %s execution",
+    async (failureAt) => {
+      const h = await setup();
+      const persist = vi.spyOn(h.bb.storage.kv, "set");
+      try {
+        const session = await openLocal(h);
+        const storageError = new Error("renewal write unavailable");
+        if (failureAt === "before") persist.mockRejectedValueOnce(storageError);
+        if (failureAt === "both") persist.mockRejectedValue(storageError);
+        if (failureAt === "after")
+          h.worker.mockImplementationOnce(async () => {
+            persist.mockRejectedValueOnce(storageError);
+            return { text: "done", images: [], exitCode: 0 };
+          });
+        const input = { ...ownedBy(session.id), script: "1" };
+        const outcome = await h.harness.behavior.callRpc("run", input).then(
+          (result) => ({ result }),
+          (error: unknown) => ({ error: String(error) }),
+        );
+        expect({ outcome, closes: hostCalls(h, "close").length }).toEqual({
+          outcome: { result: { text: "done", images: [], exitCode: 0 } },
+          closes: 0,
+        });
+        persist.mockRestore();
+        await expect(h.harness.behavior.callRpc("run", input)).resolves.toEqual(
+          {
+            text: "done",
+            images: [],
+            exitCode: 0,
+          },
+        );
+        expect((await listed(h, session.id))?.state).toBe("ready");
+      } finally {
+        persist.mockRestore();
+        await h.harness.lifecycle.dispose();
+      }
+    },
+  );
 
   it("renews real operations beyond 30 minutes and closes after 30 minutes idle", async () => {
     vi.useFakeTimers();

@@ -174,7 +174,7 @@ function fixture(harness: TestAppHarness) {
   ) {
     const target = { ...scope, ...overrides };
     const socket = { close: vi.fn(), send: vi.fn() };
-    onDaemonSocketMessage(harness.deps, {
+    void onDaemonSocketMessage(harness.deps, {
       hostId: target.hostId,
       sessionId,
       socket,

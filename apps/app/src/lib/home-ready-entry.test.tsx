@@ -71,7 +71,7 @@ vi.mock("./settled-split-downloads", async (original) => ({
 const stackTraceLimit = Error.stackTraceLimit;
 afterEach(async () => {
   for (const result of vi.mocked(createRoot).mock.results) {
-    if (result.type === "return") await act(() => result.value.unmount());
+    if (result.type === "return") await act(async () => result.value.unmount());
   }
   Error.stackTraceLimit = stackTraceLimit;
   document.body.replaceChildren();

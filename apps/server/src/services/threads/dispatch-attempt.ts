@@ -6,6 +6,9 @@ import {
 import {
   deleteClaimedQueuedThreadMessageBatchInTransaction,
   getEnvironment,
+  getExperiments,
+  hasLiveQueuedRetry,
+  isAppUpdateSendHoldSet,
   type EnvironmentRow,
   getThread,
   getThreadSpawner,
@@ -21,6 +24,7 @@ import {
   type PromptInput,
   type QueuedMessagePayload,
   type QueuedMessageDeliveryMode,
+  type QueuedMessageSystemNotice,
   type QueuedMessageWaitingOn,
   type ResolvedThreadExecutionOptions,
   startedOnBehalfOfSchema,
@@ -30,7 +34,10 @@ import {
   type ThreadQueuedMessage,
 } from "@bb/domain";
 import type { SendMessageRequest } from "@bb/server-contract";
-import type { PluginDispatchEnvironmentIntent } from "@get-bb/plugin-sdk";
+import type {
+  MessageDispatchHookContext,
+  PluginDispatchEnvironmentIntent,
+} from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { ApiError } from "../../errors.js";
 import type { LoggedPendingInteractionWorkSessionDeps } from "../../types.js";
@@ -72,6 +79,7 @@ import {
   scheduleThreadProvisioningAdvance,
 } from "./thread-provisioning.js";
 import {
+  FORK_HISTORY_COPY_MARK,
   threadForkDescriptorSchema,
   threadProvisionEnvironmentIntentSchema,
 } from "./thread-startup-store.js";
@@ -117,6 +125,7 @@ import {
 export const pendingThreadStartContextSchema = z.object({
   environmentIntent: threadProvisionEnvironmentIntentSchema,
   fork: threadForkDescriptorSchema.nullable(),
+  historyCopy: z.literal(FORK_HISTORY_COPY_MARK).optional(),
   providerInput: z.array(promptInputSchema).optional(),
   startedOnBehalfOf: startedOnBehalfOfSchema.nullable(),
   titleProvided: z.boolean(),
@@ -236,7 +245,8 @@ export interface DispatchAttemptArgs {
   source: DispatchAttemptSource;
   startContext?: PendingThreadStartContext;
   queuePayload: QueuedMessagePayload;
-  pluginSubmission: import("@get-bb/plugin-sdk").MessageDispatchHookContext["experimental_submission"];
+  pluginSubmission: MessageDispatchHookContext["experimental_submission"];
+  systemNotice: QueuedMessageSystemNotice | null;
   retryOf?: TurnRequestRetryMarker;
   origin: ThreadCreateOrigin | null;
   originPluginId: string | null;
@@ -321,6 +331,16 @@ async function runDispatchAttempt(
   // recover from, rather than the 409 that used to make a stop a dead end for
   // everything the user lined up behind it.
   ensureThreadIsWritable(thread, true);
+  if (
+    thread.status === "pending" &&
+    readPendingThreadStartContext(deps, thread.id)?.historyCopy !== undefined
+  ) {
+    throw new ApiError(
+      409,
+      "fork_history_copying",
+      "This fork is still copying its history; send the message again once it finishes",
+    );
+  }
   assertThreadHostAcceptsWork(deps.db, thread);
   const initialCurrentThread = getThread(deps.db, thread.id);
   if (initialCurrentThread?.parentThreadId !== thread.parentThreadId) {
@@ -389,13 +409,16 @@ async function runDispatchAttempt(
     targetThread: thread,
   });
 
+  const systemNotice = args.systemNotice;
   const interruptedStartupRequest =
+    systemNotice === null &&
     (thread.status === "error" || thread.status === "idle") &&
     thread.environmentId === null
       ? await restoreInterruptedThreadStartupRequest(deps, thread.id)
       : null;
   const firstDispatch =
-    thread.status === "pending" || interruptedStartupRequest !== null;
+    systemNotice === null &&
+    (thread.status === "pending" || interruptedStartupRequest !== null);
   const retryStartContext: PendingThreadStartContext | null =
     interruptedStartupRequest === null
       ? null
@@ -407,6 +430,7 @@ async function runDispatchAttempt(
         };
   const author = resolveDispatchAuthor({
     retrying: args.retryOf !== undefined,
+    systemNotice: systemNotice !== null,
     senderThreadId,
     startedOnBehalfOf: args.startedOnBehalfOf,
   });
@@ -445,7 +469,7 @@ async function runDispatchAttempt(
     originPluginId: args.originPluginId,
     requestedBy: args.startedOnBehalfOf,
     payload: args.queuePayload,
-    systemNotice: null,
+    systemNotice,
     deliveryMode: run.deliveryMode,
     requestedModel: payload.model,
     executionInputSources: payload.executionInputSources,
@@ -482,6 +506,7 @@ async function runDispatchAttempt(
     }
   };
 
+  const retriesGoFirst = getExperiments(deps.db).resumeThreadsAfterRestart;
   const waitOn = async (
     waitingOn: QueuedMessageWaitingOn,
     sendAt: number | null,
@@ -490,6 +515,8 @@ async function runDispatchAttempt(
     const entry = recordQueuedMessageWait(deps, {
       thread,
       message: queuedMessage,
+      placement:
+        retriesGoFirst && args.queuePayload.kind === "retry" ? "front" : "back",
       waitingOn,
       sendAt,
       claimed,
@@ -520,6 +547,22 @@ async function runDispatchAttempt(
       return;
     }
 
+    if (isAppUpdateSendHoldSet(deps.db)) {
+      continued.outcome = await waitOn({ kind: "app-update" }, null);
+      return;
+    }
+
+    if (
+      claimed !== null &&
+      !sendNow &&
+      args.queuePayload.kind !== "retry" &&
+      retriesGoFirst &&
+      hasLiveQueuedRetry(deps.db, thread.id)
+    ) {
+      continued.outcome = await waitOn({ kind: "thread-busy" }, null);
+      return;
+    }
+
     if (thread.status === "stopping") {
       continued.outcome = await waitOn({ kind: "stopping" }, null);
       return;
@@ -531,11 +574,17 @@ async function runDispatchAttempt(
     }
     if (
       currentThread.status !== thread.status ||
+      currentThread.environmentId !== thread.environmentId ||
       currentThread.archivedAt !== thread.archivedAt ||
       currentThread.deletedAt !== thread.deletedAt
     ) {
       continued.reattemptThread = currentThread;
       continued.scopeChanged = false;
+      return;
+    }
+
+    if (systemNotice !== null && thread.environmentId === null) {
+      continued.outcome = await waitOn({ kind: "provisioning" }, null);
       return;
     }
 
@@ -680,6 +729,7 @@ async function runDispatchAttempt(
                 }),
               },
         respectManualStopPause,
+        retryOf: args.retryOf,
         startContext: args.startContext ?? retryStartContext,
         thread,
       });
@@ -763,80 +813,83 @@ async function runDispatchAttempt(
     );
   }
 
+  let reattempt: Promise<DispatchAttemptOutcome>;
   try {
     if (firstDispatch) {
       const admission = admitted.value;
       if (admission === null) {
         const current = getThread(deps.db, thread.id);
-        return reattemptDispatchForThreadChange(
+        reattempt = reattemptDispatchForThreadChange(
           deps,
           args,
           current,
           run,
           false,
         );
+      } else {
+        args.onTurnRequestCreated?.(admission.turnRequestId);
+        await launchAdmittedThread(deps, admission);
+        return { kind: "dispatched", turnRequestId: admission.turnRequestId };
       }
-      args.onTurnRequestCreated?.(admission.turnRequestId);
-      await launchAdmittedThread(deps, admission);
-      return { kind: "dispatched", turnRequestId: admission.turnRequestId };
-    }
-
-    markTurnTraceSpan("dispatch.checkpoint.done");
-    const environment = await requireThreadCommandEnvironment(deps, { thread });
-    const sent = await sendThreadMessage(deps, {
-      environment,
-      originPluginId: args.originPluginId,
-      payload: resolvedPayload,
-      thread,
-      trigger: args.trigger,
-      onTurnRequestCreated: args.onTurnRequestCreated,
-      ...(args.retryOf !== undefined ? { retryOf: args.retryOf } : {}),
-      beforeAppendInTransaction: ({ tx }) => {
-        const current = getThread(tx, thread.id);
-        if (current === null || current.status !== thread.status) {
-          throw new DispatchThreadStatusChangedError();
-        }
-        if (
-          current.parentThreadId !== thread.parentThreadId &&
-          !isStandaloneBuiltinClearCommand(resolvedPayload.input)
-        ) {
+    } else {
+      markTurnTraceSpan("dispatch.checkpoint.done");
+      const environment = await requireThreadCommandEnvironment(deps, { thread });
+      const sent = await sendThreadMessage(deps, {
+        environment,
+        originPluginId: args.originPluginId,
+        payload: resolvedPayload,
+        thread,
+        trigger: args.trigger,
+        ...(systemNotice !== null ? { systemNotice } : {}),
+        onTurnRequestCreated: args.onTurnRequestCreated,
+        ...(args.retryOf !== undefined ? { retryOf: args.retryOf } : {}),
+        beforeAppendInTransaction: ({ tx }) => {
+          const current = getThread(tx, thread.id);
+          if (current === null || current.status !== thread.status) {
+            throw new DispatchThreadStatusChangedError();
+          }
           if (
-            args.source.kind === "inline" &&
-            args.trigger === "user" &&
-            args.retryOf === undefined
+            current.parentThreadId !== thread.parentThreadId &&
+            !isStandaloneBuiltinClearCommand(resolvedPayload.input)
           ) {
-            assertRequestedModelAllowedForCurrentScope(deps, {
-              threadId: thread.id,
-              model: payload.model,
-              providerId: thread.providerId,
-              sources: payload.executionInputSources,
-              spawnerThreadId: getThreadSpawner(deps.db, thread.id),
-            });
+            if (
+              args.source.kind === "inline" &&
+              args.trigger === "user" &&
+              args.retryOf === undefined
+            ) {
+              assertRequestedModelAllowedForCurrentScope(deps, {
+                threadId: thread.id,
+                model: payload.model,
+                providerId: thread.providerId,
+                sources: payload.executionInputSources,
+                spawnerThreadId: getThreadSpawner(deps.db, thread.id),
+              });
+            }
+            if (claimed !== null && !hasMessageDispatchHooks()) {
+              throw createQueuedMessageClaimLostError();
+            }
+            throw new DispatchThreadScopeChangedError();
           }
-          if (claimed !== null && !hasMessageDispatchHooks()) {
-            throw createQueuedMessageClaimLostError();
+          if (claimed !== null) {
+            consumeClaimedRows(
+              claimed,
+              thread.id,
+              respectManualStopPause,
+            )({ tx });
           }
-          throw new DispatchThreadScopeChangedError();
-        }
-        if (claimed !== null) {
-          consumeClaimedRows(
-            claimed,
-            thread.id,
-            respectManualStopPause,
-          )({ tx });
-        }
-      },
-    });
-    if (claimed !== null) {
-      settleQueueRowDispatched({ row: claimed[0]! });
+        },
+      });
+      if (claimed !== null) {
+        settleQueueRowDispatched({ row: claimed[0]! });
+      }
+      return {
+        kind: "dispatched",
+        refusal: sent.refusal,
+        ...(sent.requestId !== undefined
+          ? { turnRequestId: sent.requestId }
+          : {}),
+      };
     }
-    return {
-      kind: "dispatched",
-      refusal: sent.refusal,
-      ...(sent.requestId !== undefined
-        ? { turnRequestId: sent.requestId }
-        : {}),
-    };
   } catch (error) {
     releaseWorkspaceForThread(deps, thread);
     if (
@@ -853,6 +906,8 @@ async function runDispatchAttempt(
     }
     throw error;
   }
+
+  return reattempt;
 }
 
 class DispatchThreadStatusChangedError extends Error {}
@@ -910,6 +965,7 @@ interface AdmitPendingThreadArgs {
   execution: ResolvedThreadExecutionOptions;
   payload: SendMessageRequest & { inputGroups?: PromptInput[][] };
   respectManualStopPause: boolean;
+  retryOf: TurnRequestRetryMarker | undefined;
   startContext: PendingThreadStartContext | null;
   thread: Thread;
 }
@@ -990,6 +1046,7 @@ async function admitPendingThread(
           ...(startContext.providerInput === undefined
             ? {}
             : { providerInput: startContext.providerInput }),
+          ...(args.retryOf !== undefined ? { retryOf: args.retryOf } : {}),
           startedOnBehalfOf: startContext.startedOnBehalfOf,
           titleProvided: startContext.titleProvided,
         });
@@ -1081,6 +1138,7 @@ export async function compactThreadContext(
     source: { kind: "operation", environment },
     queuePayload: { kind: "inline" },
     pluginSubmission: null,
+    systemNotice: null,
     origin: null,
     originPluginId: null,
     startedOnBehalfOf: null,

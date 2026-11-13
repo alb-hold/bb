@@ -5,7 +5,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { ImageLightbox } from "@/components/ui/image-lightbox";
+import { ImageLightbox } from "@/lib/plugin-sdk-lazy-components";
 import { InlineImageGalleryContext } from "@/components/ui/inline-image-gallery-context";
 
 interface GalleryImage {

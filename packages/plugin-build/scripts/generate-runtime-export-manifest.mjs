@@ -12,7 +12,10 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { build } from "esbuild";
-import { RUNTIME_SHIM_NPM_SPECIFIERS } from "../src/runtime-shims.mjs";
+import {
+  RUNTIME_SHIM_NPM_SPECIFIERS,
+  VERSIONED_RUNTIME_SLOT_BY_SPECIFIER,
+} from "../src/runtime-shims.mjs";
 
 // Node 20 does not expose the browser-compatible Navigator global added in
 // later Node releases. Some shared browser runtimes (currently @pierre/diffs)
@@ -34,7 +37,7 @@ const appRequire = createRequire(
 
 // The shimmed npm modules, from the same list `bb plugin build` shims
 // (src/runtime-shims.mjs) so the manifest can never miss a slot.
-const RUNTIME_MODULE_IDS = RUNTIME_SHIM_NPM_SPECIFIERS;
+const RUNTIME_MODULE_IDS = [...new Set([...RUNTIME_SHIM_NPM_SPECIFIERS, ...Object.keys(VERSIONED_RUNTIME_SLOT_BY_SPECIFIER)])];
 
 /**
  * Workspace TypeScript modules exposed as slots. Not requireable, so their

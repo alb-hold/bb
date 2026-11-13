@@ -1,30 +1,43 @@
 import { describe, expect, it } from "vitest";
+
 import { experimental_REASONING_PRESENTATION as REASONING_PRESENTATION } from "@get-bb/plugin-sdk/provider-bridge";
+
 import { experimental_createDeltaAssembler as createDeltaAssembler } from "@get-bb/plugin-sdk/provider-bridge/testing";
+
 import type {
   DeltaAssembler,
   ThreadEvent,
 } from "@get-bb/plugin-sdk/provider-bridge/testing";
+
 import type { ServerNotification as CodexServerNotification } from "./generated/codex-app-server/schema/ServerNotification.js";
+
 import type { RateLimitSnapshot } from "./generated/codex-app-server/schema/v2/RateLimitSnapshot.js";
+
 import type { Turn } from "./generated/codex-app-server/schema/v2/Turn.js";
+
 import {
   AGENT_MESSAGE_PRESENTATION,
   PLAN_PRESENTATION,
 } from "./presentation.js";
+
 import {
   applyCodexRateLimitUpdate,
   createCodexEventTranslationState,
 } from "./delta-translation.js";
+
 import {
   createCodexEventTranslator,
   type CodexEventTranslator,
 } from "./translator.js";
+
 import { codexRateLimitReadResponseSchema } from "./schemas.js";
+
 import { threadScope, turnScope } from "./event-scope.test-support.js";
 
 const THREAD_ID = "t-codex-translation";
+
 const ENTROPY = "cx-test";
+
 const ITEM_ID_PATTERN = /^cx-test-i\d+$/;
 
 const IMAGE_PRESENTATION = {
@@ -1872,6 +1885,72 @@ describe("codex error and warning translation", () => {
       }),
     ]);
   });
+
+  it.each([
+    ["sessionBudgetExceeded", "budget-exceeded", "sessionBudgetExceeded"],
+    ["misalignmentPolicyViolation", "policy", "misalignmentPolicyViolation"],
+    ["modelNotFound", "bad-request", "modelNotFound"],
+    ["rateLimitExceeded", "rate-limit", "rateLimitExceeded"],
+    ["flexUnavailable", "overloaded", "flexUnavailable"],
+    ["someFutureCode", "unknown", "someFutureCode"],
+    [{ someFutureVariant: { detail: 1 } }, "unknown", "someFutureVariant"],
+  ] as const)(
+    "normalizes %j errors and failed turn completion",
+    (codexErrorInfo, category, providerCode) => {
+      const harness = createHarness();
+
+      expect(
+        harness.translate(
+          codexEvent("error", {
+            threadId: "t1",
+            turnId: "turn-1",
+            error: {
+              message: "terminal failure",
+              codexErrorInfo,
+              additionalDetails: null,
+              misalignment: null,
+            },
+            willRetry: false,
+          }),
+        ),
+      ).toEqual([
+        expect.objectContaining({
+          type: "provider/error",
+          scope: turnScope(harness.turnId("turn-1")),
+          errorInfo: {
+            category,
+            providerCode,
+            httpStatusCode: null,
+          },
+        }),
+      ]);
+
+      expect(
+        harness.translate(
+          codexEvent("turn/completed", {
+            threadId: "t1",
+            turn: codexTurn({
+              id: "turn-1",
+              status: "failed",
+              error: {
+                message: "terminal failure",
+                codexErrorInfo,
+                additionalDetails: null,
+                misalignment: null,
+              },
+            }),
+          }),
+        ),
+      ).toEqual([
+        expect.objectContaining({
+          type: "turn/completed",
+          scope: turnScope(harness.turnId("turn-1")),
+          status: "failed",
+          error: { message: "terminal failure" },
+        }),
+      ]);
+    },
+  );
 
   it("maps codexErrorInfo to provider error info", () => {
     const harness = createHarness();

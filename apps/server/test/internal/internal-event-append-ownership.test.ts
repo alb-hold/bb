@@ -747,7 +747,9 @@ describe("internal event append ownership", () => {
           `Expected parent turn command, got ${parentTurnCommand.command.type}`,
         );
       }
-      const [input] = parentTurnCommand.command.input;
+      const input = parentTurnCommand.command.input.find(
+        (part) => part.type === "text" && part.text.includes("[bb system]"),
+      );
       if (!input || input.type !== "text") {
         throw new Error("Expected parent notification text input");
       }

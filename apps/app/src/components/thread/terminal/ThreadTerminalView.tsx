@@ -161,6 +161,7 @@ import {
   encodeTerminalArrow,
   suppressDuplicateTerminalCompositionInput,
 } from "./terminal-mobile-input";
+import { forwardLateImeInput } from "./terminal-late-ime-input";
 import {
   createTerminalOsc8LinkHandler,
   isTerminalLinkActivation,
@@ -1824,6 +1825,7 @@ export function ThreadTerminalView({
     > | null = null;
     let resizeObserver: ResizeObserver | null = null;
     let selectionChangeDisposable: { dispose: () => void } | null = null;
+    let lateImeInputDisposable: { dispose: () => void } | null = null;
     let terminalRenderSubscription: { dispose: () => void } | null = null;
     let terminalResizeSubscription: { dispose: () => void } | null = null;
     let viewportLineAnchor: ReturnType<
@@ -2440,6 +2442,7 @@ export function ThreadTerminalView({
       terminal.unicode.activeVersion = TERMINAL_UNICODE_VERSION;
       markTerminalPerformance("terminal-xterm-open-start");
       terminal.open(containerElement);
+      lateImeInputDisposable = forwardLateImeInput(terminal);
       terminal.element?.classList.add("bg-sidebar");
       const rendererStyle = getComputedStyle(
         terminal.element ?? containerElement,
@@ -3142,10 +3145,10 @@ export function ThreadTerminalView({
           );
           if (nextSize !== null) {
             sharedSize = nextSize;
-            replayPreview?.resize(nextSize.cols, nextSize.rows);
+            void replayPreview?.resize(nextSize.cols, nextSize.rows);
             scheduleFit();
           } else {
-            replayPreview?.resize(cols, rows);
+            void replayPreview?.resize(cols, rows);
           }
           if (message.session.status === "exited") {
             handleReplayPreviewExit();
@@ -4013,6 +4016,7 @@ export function ThreadTerminalView({
       detachGridVisibilityListeners?.();
       detachGridVisibilityListeners = null;
       selectionChangeDisposable?.dispose();
+      lateImeInputDisposable?.dispose();
       terminalKeyDisposable?.dispose();
       terminalKeyDisposable = null;
       terminalInputForwarding?.dispose();

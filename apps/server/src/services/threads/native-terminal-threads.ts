@@ -717,6 +717,7 @@ function interruptThreadWhoseHolderIsGone(
     includeStopping: false,
     onlyThreadIds: new Set([args.threadId]),
     reason: "host-daemon-restarted",
+    resumingThreadIds: new Set(),
   });
 }
 

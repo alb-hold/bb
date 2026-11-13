@@ -98,27 +98,28 @@ describe.each<OrganizationMode>(["chronological", "project"])(
   (organizationMode) => {
     it("redraws only the previously and newly selected rows", async () => {
       setPreferencesMirrorStorageForTest(null);
-      const slot = renderSlot(registration, props("thr_a"), {
-        sidebarThreads: {
-          projects: [
-            makePluginProject({
-              id: PERSONAL_PROJECT_ID,
-              name: "Personal",
-              isPersonal: true,
+      const slot = await act(async () =>
+        renderSlot(registration, props("thr_a"), {
+          sidebarThreads: {
+            projects: [
+              makePluginProject({
+                id: PERSONAL_PROJECT_ID,
+                name: "Personal",
+                isPersonal: true,
+              }),
+            ],
+            sections: [],
+            threads: THREADS,
+          },
+          rpc: {
+            listPreferences: () => ({
+              preferences: { ...defaultPreferences(), organizationMode },
             }),
-          ],
-          sections: [],
-          threads: THREADS,
-        },
-        rpc: {
-          listPreferences: () => ({
-            preferences: { ...defaultPreferences(), organizationMode },
-          }),
-          setPreference: (input: unknown) => input,
-        },
-      });
-      await screen.findByText("Thread e");
-      await act(async () => undefined);
+            setPreference: (input: unknown) => input,
+          },
+        }),
+      );
+      screen.getByText("Thread e");
       const Component = registration.component;
 
       for (const [from, to] of [
@@ -127,7 +128,9 @@ describe.each<OrganizationMode>(["chronological", "project"])(
         ["thr_pinned_b", "thr_pinned_a"],
       ]) {
         rowCommits.clear();
-        act(() => slot.lifecycle.rerender(<Component {...props(to)} />));
+        act(() => {
+          slot.lifecycle.rerender(<Component {...props(to)} />);
+        });
         expect([...rowCommits.keys()].sort()).toEqual([from, to].sort());
       }
     });

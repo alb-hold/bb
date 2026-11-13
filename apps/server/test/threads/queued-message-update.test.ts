@@ -1,5 +1,6 @@
 import {
   claimQueuedThreadMessageGroup,
+  createQueuedThreadMessage,
   getQueuedThreadMessage,
   getThread,
   listEvents,
@@ -83,6 +84,7 @@ function recordQueuedAnnouncements(): ThreadQueuedMessage[] {
     emitThreadFailed: () => {},
     emitThreadArchived: () => {},
     emitThreadDeleted: () => {},
+    emitThreadRead: () => {},
     emitInteractionPending: () => {},
     emitMessageQueued: (entry) => announced.push(entry),
     emitMessageDispatched: () => {},
@@ -327,6 +329,56 @@ describe("changing when a queued message sends", () => {
       });
       expect(getQueuedThreadMessage(harness.db, row.id)?.sendAt).toBe(
         sendAt + 60_000,
+      );
+    });
+  });
+});
+
+describe("a queued bb notice", () => {
+  it("reports its notice, is not editable, and refuses a rewrite", async () => {
+    await withTestHarness(async (harness) => {
+      const thread = seedIdleThread(harness, "host-notice-not-editable");
+      const notice = {
+        kind: "child-outcome-batch" as const,
+        subject: { kind: "thread-batch" as const, count: 2 },
+      };
+      const row = createQueuedThreadMessage(harness.db, harness.hub, {
+        threadId: thread.id,
+        content: textInput("[bb system]\n\nChild thread updates:"),
+        senderThreadId: null,
+        model: "gpt-5",
+        reasoningLevel: "medium",
+        permissionMode: "auto",
+        serviceTier: "default",
+        waitingOn: { kind: "plugin", pluginId: "gate", reason: "Held" },
+        sendAt: null,
+        payload: { kind: "inline" },
+        systemNotice: notice,
+      });
+
+      const listed = await harness.app.request(
+        `/api/v1/threads/${thread.id}/queued-messages`,
+      );
+      const [entry] = threadQueuedMessageSchema
+        .array()
+        .parse(await readJson(listed));
+      expect(entry).toMatchObject({
+        id: row.id,
+        initiator: "system",
+        systemNotice: notice,
+        editable: false,
+      });
+
+      const rewrite = await updateQueuedMessage(harness, row, {
+        expectedUpdatedAt: row.updatedAt,
+        input: textInput("Edited by hand"),
+      });
+      expect(rewrite.status).toBe(409);
+      await expect(readJson(rewrite)).resolves.toMatchObject({
+        message: "bb system notices cannot be edited",
+      });
+      expect(getQueuedThreadMessage(harness.db, row.id)?.content).toBe(
+        row.content,
       );
     });
   });

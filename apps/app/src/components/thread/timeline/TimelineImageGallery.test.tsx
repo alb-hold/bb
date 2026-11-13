@@ -46,7 +46,7 @@ function lightboxImage() {
   return within(screen.getByRole("dialog")).getByRole("img");
 }
 
-it("stops at each end of the loaded page without fetching older history, preserving duplicate URLs", () => {
+it("stops at each end of the loaded page without fetching older history, preserving duplicate URLs", async () => {
   const history = vi.spyOn(sdk.threads, "timeline");
   renderTimeline(
     <>
@@ -72,6 +72,7 @@ it("stops at each end of the loaded page without fetching older history, preserv
     </>,
   );
   fireEvent.click(screen.getByRole("img", { name: "Table" }));
+  await screen.findByRole("dialog");
   expect(screen.getByRole("status").textContent).toBe("3 / 3");
   expect(
     screen.getByRole("button", { name: "Next image" }).hasAttribute("disabled"),
@@ -98,7 +99,7 @@ it("stops at each end of the loaded page without fetching older history, preserv
   expect(history).not.toHaveBeenCalled();
 });
 
-it("uses rendered footnote order and excludes unused definitions", () => {
+it("uses rendered footnote order and excludes unused definitions", async () => {
   render(
     <TimelineImageGallery>
       <MarkdownPreview
@@ -109,6 +110,7 @@ it("uses rendered footnote order and excludes unused definitions", () => {
     </TimelineImageGallery>,
   );
   fireEvent.click(screen.getByRole("img", { name: "Inline" }));
+  await screen.findByRole("dialog");
   expect(screen.getByRole("status").textContent).toBe("1 / 2");
   fireEvent.click(screen.getByRole("button", { name: "Next image" }));
   expect(lightboxImage().getAttribute("alt")).toBe("Footnote");
@@ -129,6 +131,7 @@ it("preserves occurrence identity as streaming images settle into cached blocks"
     />,
   );
   fireEvent.click(screen.getByRole("img", { name: "B" }));
+  await screen.findByRole("dialog");
   expect(screen.getByRole("status").textContent).toBe("2 / 2");
   rerender(
     <ThreadTimelineRows
@@ -178,6 +181,7 @@ it("preserves identical inline and footnote occurrences when normalized streamin
   );
   const { rerender } = renderTimeline(timeline("active"));
   fireEvent.click(screen.getAllByRole("img", { name: "Same" })[1]!);
+  await screen.findByRole("dialog");
   expect(screen.getByRole("status").textContent).toBe("2 / 2");
   rerender(timeline("idle"));
   await waitFor(() => {
@@ -235,6 +239,7 @@ it("includes lazy turn details only while expanded, including during the collaps
   }
   if (toggle.getAttribute("aria-expanded") === "true") fireEvent.click(toggle);
   fireEvent.click(screen.getByRole("img", { name: "Final" }));
+  await screen.findByRole("dialog");
   expect(screen.queryByRole("button", { name: "Next image" })).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "Close image preview" }));
   fireEvent.click(toggle);
@@ -245,13 +250,14 @@ it("includes lazy turn details only while expanded, including during the collaps
   fireEvent.click(screen.getByRole("button", { name: "Close image preview" }));
   fireEvent.click(toggle);
   fireEvent.click(screen.getByRole("img", { name: "Final" }));
+  await screen.findByRole("dialog");
   expect(screen.queryByRole("button", { name: "Next image" })).toBeNull();
   await waitFor(() =>
     expect(screen.queryByRole("img", { name: "Nested" })).toBeNull(),
   );
 });
 
-it("never includes images suppressed in ordinary worker messages", () => {
+it("never includes images suppressed in ordinary worker messages", async () => {
   renderTimeline(
     <ThreadTimelineRows
       threadId="thread-1"
@@ -276,6 +282,7 @@ it("never includes images suppressed in ordinary worker messages", () => {
   );
   expect(screen.queryByRole("img", { name: "Suppressed" })).toBeNull();
   fireEvent.click(screen.getByRole("img", { name: "Visible" }));
+  await screen.findByRole("dialog");
   expect(lightboxImage().getAttribute("alt")).toBe("Visible");
   expect(screen.queryByRole("button", { name: "Next image" })).toBeNull();
 });
@@ -306,6 +313,7 @@ function galleryContent({ hidden = false, removed = false, extra = false }) {
 it("retains only the displayed image after hiding and removing its source", async () => {
   const { rerender } = render(galleryContent({}));
   fireEvent.click(screen.getByRole("img", { name: "Selected" }));
+  await screen.findByRole("dialog");
   rerender(galleryContent({ hidden: true }));
   await waitFor(() =>
     expect(screen.getByRole("status").textContent).toBe("1 / 2"),
@@ -320,6 +328,7 @@ it("retains only the displayed image after hiding and removing its source", asyn
   expect(screen.queryByRole("button", { name: "Previous image" })).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "Close image preview" }));
   fireEvent.click(screen.getByRole("img", { name: "Later" }));
+  await screen.findByRole("dialog");
   expect(screen.queryByRole("button", { name: "Next image" })).toBeNull();
 });
 
@@ -330,6 +339,7 @@ it("keeps the selected image source until close even when no eligible images rem
     </TimelineImageGallery>,
   );
   fireEvent.click(screen.getByRole("img", { name: "Selected" }));
+  await screen.findByRole("dialog");
   rerender(
     <TimelineImageGallery>
       <div hidden>
@@ -351,6 +361,7 @@ it("keeps the selected image source until close even when no eligible images rem
 it("enables navigation when a second image arrives without reopening", async () => {
   const { rerender } = render(galleryContent({ hidden: true, removed: true }));
   fireEvent.click(screen.getByRole("img", { name: "Later" }));
+  await screen.findByRole("dialog");
   expect(screen.queryByRole("button", { name: "Next image" })).toBeNull();
   rerender(galleryContent({ hidden: true, removed: true, extra: true }));
   fireEvent.click(await screen.findByRole("button", { name: "Next image" }));
@@ -358,7 +369,7 @@ it("enables navigation when a second image arrives without reopening", async () 
   expect(screen.getByRole("status").textContent).toBe("2 / 2");
 });
 
-it("excludes clipped user-message images until expanded", () => {
+it("excludes clipped user-message images until expanded", async () => {
   vi.stubGlobal("ResizeObserver", undefined);
   vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockReturnValue(500);
   vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(200);
@@ -392,15 +403,18 @@ it("excludes clipped user-message images until expanded", () => {
     />,
   );
   fireEvent.click(screen.getByRole("img", { name: "Visible" }));
+  await screen.findByRole("dialog");
   expect(screen.queryByRole("button", { name: "Next image" })).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "Close image preview" }));
   fireEvent.click(screen.getByRole("button", { name: "Show more" }));
   fireEvent.click(screen.getByRole("img", { name: "Visible" }));
+  await screen.findByRole("dialog");
   expect(screen.getByRole("status").textContent).toBe("2 / 2");
   fireEvent.click(screen.getByRole("button", { name: "Previous image" }));
   expect(lightboxImage().getAttribute("alt")).toBe("Clipped");
   fireEvent.click(screen.getByRole("button", { name: "Close image preview" }));
   fireEvent.click(screen.getByRole("button", { name: "Show less" }));
   fireEvent.click(screen.getByRole("img", { name: "Visible" }));
+  await screen.findByRole("dialog");
   expect(screen.queryByRole("button", { name: "Next image" })).toBeNull();
 });

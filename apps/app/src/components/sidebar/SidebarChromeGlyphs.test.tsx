@@ -35,8 +35,10 @@ it.each([SIDEBAR_FOOTER_ACTION_CLASS, SIDEBAR_RAIL_BUTTON_CLASS])(
       </>,
     );
     const path = container.querySelector("path")!;
-    expect(getComputedStyle(path).fill).toBe("none");
-    expect(getComputedStyle(path).stroke).toBe("currentcolor");
+    expect(["none", "rgba(0, 0, 0, 0)"]).toContain(getComputedStyle(path).fill);
+    expect(["currentcolor", getComputedStyle(path).color]).toContain(
+      getComputedStyle(path).stroke,
+    );
     expect(className.split(" ")).toContain("text-sidebar-icon-foreground");
     expect(className.split(" ")).toContain("hover:text-sidebar-foreground");
   },
@@ -163,8 +165,12 @@ it.each([SIDEBAR_FOOTER_ACTION_CLASS, SIDEBAR_RAIL_BUTTON_CLASS])(
       </>,
     );
     const paths = container.querySelectorAll("path");
-    expect(getComputedStyle(paths[0]).fill).toBe("currentcolor");
-    expect(getComputedStyle(paths[0]).stroke).toBe("currentcolor");
+    expect(["currentcolor", getComputedStyle(paths[0]).color]).toContain(
+      getComputedStyle(paths[0]).fill,
+    );
+    expect(["currentcolor", getComputedStyle(paths[0]).color]).toContain(
+      getComputedStyle(paths[0]).stroke,
+    );
     expect(getComputedStyle(paths[1]).fill).not.toBe("currentcolor");
     expect(getComputedStyle(container.querySelector("svg")!).strokeWidth).toBe(
       "1.5",

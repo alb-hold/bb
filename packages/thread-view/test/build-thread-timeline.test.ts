@@ -738,6 +738,7 @@ function buildContextWindowUsage(
     options: {
       completedTurnDisplay: "collapse",
       includeNestedRows: false,
+      omitSettledDelegationChildRows: false,
       includeDiagnosticOperations: false,
       summarizeShellCommands: true,
       isLatestPage: true,
@@ -761,6 +762,7 @@ function buildTimelineRows(
     options: {
       completedTurnDisplay: "collapse",
       includeNestedRows: true,
+      omitSettledDelegationChildRows: false,
       includeDiagnosticOperations: false,
       summarizeShellCommands: true,
       isLatestPage: true,
@@ -964,6 +966,7 @@ describe("buildThreadTimelineFromEvents", () => {
           completedTurnDisplay: "collapse",
           includeDiagnosticOperations: true,
           includeNestedRows: true,
+          omitSettledDelegationChildRows: false,
           isLatestPage: true,
           summarizeShellCommands: true,
           threadName: "",
@@ -997,6 +1000,7 @@ describe("buildThreadTimelineFromEvents", () => {
             completedTurnDisplay: "collapse",
             includeDiagnosticOperations: false,
             includeNestedRows: true,
+            omitSettledDelegationChildRows: false,
             isLatestPage: true,
             summarizeShellCommands,
             threadName: "",
@@ -1154,6 +1158,7 @@ describe("buildThreadTimelineFromEvents", () => {
         options: {
           completedTurnDisplay: "collapse",
           includeNestedRows: true,
+          omitSettledDelegationChildRows: false,
           includeDiagnosticOperations: false,
           summarizeShellCommands: true,
           isLatestPage: true,
@@ -1191,6 +1196,7 @@ describe("buildThreadTimelineFromEvents", () => {
       options: {
         completedTurnDisplay: "collapse",
         includeNestedRows: true,
+        omitSettledDelegationChildRows: false,
         includeDiagnosticOperations: false,
         summarizeShellCommands: true,
         isLatestPage: true,
@@ -1225,6 +1231,7 @@ describe("buildThreadTimelineFromEvents", () => {
       options: {
         completedTurnDisplay: "collapse",
         includeNestedRows: true,
+        omitSettledDelegationChildRows: false,
         includeDiagnosticOperations: false,
         summarizeShellCommands: true,
         isLatestPage: true,
@@ -1542,6 +1549,7 @@ describe("buildThreadTimelineFromEvents", () => {
       options: {
         completedTurnDisplay: "collapse",
         includeNestedRows: true,
+        omitSettledDelegationChildRows: false,
         includeDiagnosticOperations: false,
         summarizeShellCommands: true,
         isLatestPage: true,
@@ -1923,6 +1931,43 @@ describe("buildThreadTimelineFromEvents", () => {
     expect(
       rows.filter((row) => row.kind === "conversation" && row.role === "user"),
     ).toHaveLength(0);
+  });
+
+  it("renders a steer the provider accepted after bb marked it unconfirmed as accepted only", () => {
+    const event = createTimelineEventFactory({ threadId: "thread-1" });
+    const steerRequest = event.clientTurnRequested({
+      target: { kind: "steer", expectedTurnId: "turn-1" },
+      text: "Late confirmed steer",
+    });
+
+    const rows = buildTimelineRows(
+      fromRows([
+        event.turnStarted({ turnId: "turn-1" }),
+        steerRequest,
+        event.turnCompleted({ turnId: "turn-1" }),
+        event.clientTurnRejected({
+          requestId: steerRequest.data.requestId,
+          reason: "steer_unconfirmed",
+          message: "The turn ended before the agent confirmed this steer",
+        }),
+        event.turnStarted({ turnId: "turn-2" }),
+        event.inputAccepted({
+          clientRequestId: steerRequest.data.requestId,
+          turnId: "turn-2",
+        }),
+        event.turnCompleted({ turnId: "turn-2" }),
+      ]),
+      "idle",
+    );
+
+    const userRows = rows.filter(
+      (row) => row.kind === "conversation" && row.role === "user",
+    );
+    expect(userRows).toHaveLength(1);
+    expect(userRows[0]).toMatchObject({ text: "Late confirmed steer" });
+    expect(userRows[0]).not.toMatchObject({
+      turnRequest: { status: "rejected" },
+    });
   });
 
   it("uses rejected context to render a failed steer across a page boundary", () => {
@@ -3360,6 +3405,7 @@ it("keeps a canonical disclosure ID when completed reasoning gains a delegation 
     options: {
       completedTurnDisplay: "collapse",
       includeNestedRows: true,
+      omitSettledDelegationChildRows: false,
       includeDiagnosticOperations: false,
       summarizeShellCommands: true,
       isLatestPage: true,

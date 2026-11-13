@@ -23,10 +23,7 @@ import { Panel, PanelResizeHandle } from "react-resizable-panels";
 import { Button } from "@bb/shared-ui/button";
 import { HEADER_PANE_ACTION_ICON_BUTTON_CLASS } from "@/components/layout/AppPageHeader";
 import { CHROME_SUBTLE_ICON_BUTTON_FOREGROUND_CLASS } from "@bb/shared-ui/chrome-style-tokens";
-import {
-  COARSE_POINTER_COMPACT_ICON_BUTTON_CLASS,
-  COARSE_POINTER_HEADER_ICON_BUTTON_CLASS,
-} from "@bb/shared-ui/coarse-pointer-sizing";
+import { COARSE_POINTER_COMPACT_ICON_BUTTON_CLASS } from "@bb/shared-ui/coarse-pointer-sizing";
 import { cn } from "@bb/shared-ui/lib/utils";
 import {
   PANEL_COLLAPSE_TRANSITION_CLASS,
@@ -43,6 +40,7 @@ import {
   useSecondaryPanelMinimum,
 } from "./secondaryPanelSizing";
 import {
+  RIGHT_PANEL_TOGGLE_BUTTON_CLASS,
   RIGHT_PANEL_TOGGLE_ICON_NAME,
   RIGHT_PANEL_TOGGLE_SHORTCUT_HINT_CLASS,
   resolveConversationCollapseControl,
@@ -124,7 +122,6 @@ const SECONDARY_RESIZABLE_PANEL_STYLE: CSSProperties = {
   pointerEvents: "auto",
 };
 const SECONDARY_PANEL_CHROME_ICON_BUTTON_CLASS = `${COARSE_POINTER_COMPACT_ICON_BUTTON_CLASS} shrink-0 ${CHROME_SUBTLE_ICON_BUTTON_FOREGROUND_CLASS}`;
-const SECONDARY_PANEL_HIDE_ICON_BUTTON_CLASS = `${COARSE_POINTER_HEADER_ICON_BUTTON_CLASS} shrink-0 ${CHROME_SUBTLE_ICON_BUTTON_FOREGROUND_CLASS}`;
 type FilePreviewScrollPositions = Map<string, { scrollTop: number }>;
 const scopedFilePreviewScrollPositions = new Map<
   string,
@@ -141,12 +138,9 @@ function getScopedFilePreviewScrollPositions(
   return positions;
 }
 
-export function getSecondaryPanelChromeStackClassName(
-  hasGitDiffToolbar: boolean,
-): string {
+export function getSecondaryPanelChromeStackClassName(): string {
   return cn(
     "shrink-0 select-none",
-    hasGitDiffToolbar && "flex flex-col",
     SECONDARY_PANEL_TOP_CHROME_BACKGROUND_CLASS,
   );
 }
@@ -474,11 +468,8 @@ function ThreadSecondaryPanelContent({
       variant="ghost"
       size="icon"
       className={cn(
-        renderAsDrawer
-          ? PANEL_TAB_CONTROL_CLASS
-          : SECONDARY_PANEL_HIDE_ICON_BUTTON_CLASS,
-        CHROME_SUBTLE_ICON_BUTTON_FOREGROUND_CLASS,
-        "relative",
+        RIGHT_PANEL_TOGGLE_BUTTON_CLASS,
+        "relative shrink-0",
         usesDesktopChrome && MACOS_WINDOW_NO_DRAG_CLASS,
         isPanelInFrame && MACOS_TITLE_BAR_TRAILING_TOGGLE_CLASS,
       )}
@@ -759,7 +750,7 @@ function ThreadSecondaryPanelContent({
       >
         <div
           className={cn(
-            getSecondaryPanelChromeStackClassName(false),
+            getSecondaryPanelChromeStackClassName(),
             isPanelInFrame && "bg-transparent",
           )}
         >

@@ -4,6 +4,7 @@ import {
   eq,
   gt,
   inArray,
+  lt,
   lte,
   notExists,
   notInArray,
@@ -39,6 +40,7 @@ export interface PluginStateSnapshotRow {
     | "restored"
     | "failed";
   rollbackCandidateVersion: string | null;
+  rollbackCandidateLabel: string | null;
   rollbackSourceFingerprint: string | null;
   rollbackBbVersion: string | null;
   rollbackSdkVersion: string | null;
@@ -97,6 +99,7 @@ export function setPluginStateSnapshotRollbackPending(
   id: string,
   rollback: {
     candidateVersion: string;
+    candidateLabel: string;
     sourceFingerprint: string;
     bbVersion: string;
     sdkVersion: string;
@@ -110,6 +113,7 @@ export function setPluginStateSnapshotRollbackPending(
       .set({
         status: "rollback-pending",
         rollbackCandidateVersion: rollback.candidateVersion,
+        rollbackCandidateLabel: rollback.candidateLabel,
         rollbackSourceFingerprint: rollback.sourceFingerprint,
         rollbackBbVersion: rollback.bbVersion,
         rollbackSdkVersion: rollback.sdkVersion,
@@ -141,16 +145,24 @@ export function setPluginStateSnapshotStatus(
   );
 }
 
-export function listExpiredPluginStateSnapshots(
+export interface ListDiscardablePluginStateSnapshotsArgs {
+  createdBefore: number;
+  now: number;
+}
+
+export function listDiscardablePluginStateSnapshots(
   db: DbConnection,
-  now: number,
+  args: ListDiscardablePluginStateSnapshotsArgs,
 ): PluginStateSnapshotRow[] {
   return db
     .select()
     .from(pluginStateSnapshots)
     .where(
       and(
-        lte(pluginStateSnapshots.retainedUntil, now),
+        or(
+          lte(pluginStateSnapshots.retainedUntil, args.now),
+          lt(pluginStateSnapshots.createdAt, args.createdBefore),
+        ),
         notInArray(pluginStateSnapshots.status, [
           "rollback-pending",
           "restoring",

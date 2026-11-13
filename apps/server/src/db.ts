@@ -2,10 +2,13 @@ import { createConnection, ensurePersonalProject, migrate } from "@bb/db";
 import type {
   DbConnection,
   MigrationWarningLogger,
+  QueryPlanExecutionObserver,
   SlowDbQueryLogger,
 } from "@bb/db";
 import type { Logger } from "@bb/logger";
 import {
+  recordCompletedEventLoopWork,
+  runEventLoopWorkSync,
   getCurrentEventLoopWorkLabel,
   getCurrentThreadListSlowQueryFields,
 } from "./services/system/event-loop-work.js";
@@ -22,6 +25,7 @@ interface InitDbOptions {
   dataDir?: string;
   slowQueryThresholdMs?: number | (() => number);
   slowQueryDiagnosticsEnabled?: () => boolean;
+  queryPlanObserver?: () => QueryPlanExecutionObserver | null;
   logger?: InitDbLogger;
 }
 
@@ -50,6 +54,11 @@ export function initDb(
     slowQueryThresholdMs: options.slowQueryThresholdMs,
     slowQueryWorkLabel: getCurrentEventLoopWorkLabel,
     slowQueryDiagnosticsEnabled: options.slowQueryDiagnosticsEnabled,
+    queryPlanObserver: options.queryPlanObserver,
+    synchronousWorkTracker: {
+      run: runEventLoopWorkSync,
+      record: recordCompletedEventLoopWork,
+    },
   });
   try {
     if (options.dataDir !== undefined && options.logger !== undefined) {

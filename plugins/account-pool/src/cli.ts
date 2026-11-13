@@ -38,16 +38,14 @@ import {
   type PoolStatusReport,
 } from "./contracts.js";
 import type { PoolOperations } from "./operations.js";
-import {
-  ActorRouteError,
-  type ActorRouteIssuer,
-} from "./actor-routes.js";
+import { ActorRouteError, type ActorRouteIssuer } from "./actor-routes.js";
 import type { ClaudeOAuthLogin } from "./oauth-login.js";
 import type { CodexDeviceLogin } from "./codex-device-login.js";
 
 const DESCRIPTION = [
   "Automatic routing prefers the account with the most remaining headroom across its binding quota windows. Equal headroom prefers the account whose used quota resets faster, then lower priority. A 10-point headroom hysteresis keeps new conversations on the active account until another leads by at least 10 points.",
   "Conversation affinity stays on its account until that account becomes ineligible; explicit thread selections remain pinned.",
+  "A quota window at or above switchThreshold is exhausted for automatic routing, conversation affinity and explicit selection. A provider-refused window is also exhausted below the threshold. Status and retry availability use the same exhaustion policy.",
   "When this bb server runs inside another bb server's thread, parent proxy routes its pooled traffic through that parent; isolate neutralises the inherited routing.",
   "Reorder changes account priority, which breaks ties after quota headroom and reset recovery; existing conversations stay pinned.",
 ].join("\n");
@@ -150,10 +148,6 @@ function formatAccounts(
       "Sign-in",
       "Active",
       "Priority",
-      "5h",
-      "5h reset",
-      "7d",
-      "7d reset",
       "Windows",
       "Binding window",
       "Headroom",
@@ -175,10 +169,6 @@ function formatAccounts(
         account.signInExpired ? "expired" : "ok",
         String(account.active),
         String(account.priority),
-        formatUtilization(account.fiveHourUtilization),
-        formatReset(account.fiveHourResetAt),
-        formatUtilization(account.sevenDayUtilization),
-        formatReset(account.sevenDayResetAt),
         formatLimitWindows(account.limitWindows),
         account.balance.bindingWindow ?? "-",
         formatUtilization(account.balance.bindingHeadroom),
@@ -998,7 +988,7 @@ export function registerPoolCli(
             {
               name: "value",
               description:
-                "HTTP(S) URL for the upstream keys, a number above 0 and at most 1 for switchThreshold, proxy or isolate for parentMode",
+                "HTTP(S) URL for the upstream keys, a number above 0 and at most 1 for switchThreshold (the quota fraction at which a window is exhausted), proxy or isolate for parentMode",
               required: true,
             },
           ],

@@ -3,7 +3,7 @@ import { ThreadActivityLabel } from "../ThreadActivityLabel";
 import { useEffect, useState } from "react";
 import { Icon } from "@bb/shared-ui/icon";
 import { cn } from "@bb/shared-ui/lib/utils";
-import { WaveformVisualizer } from "@/components/promptbox/WaveformVisualizer";
+import { WaveformVisualizer } from "@/lib/plugin-sdk-lazy-components";
 import { formatElapsed } from "./composer-text-ops";
 import type {
   RecentCorrections,

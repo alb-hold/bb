@@ -51,9 +51,13 @@ describe("usePromptDraftStorage", () => {
 
     expect(result.current.text).toBe("large pending draft");
     expect(window.localStorage.getItem(result.current.storageKey)).toBeNull();
-    act(() => vi.advanceTimersByTime(249));
+    act(() => {
+      vi.advanceTimersByTime(249);
+    });
     expect(window.localStorage.getItem(result.current.storageKey)).toBeNull();
-    act(() => vi.advanceTimersByTime(1));
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
     expect(window.localStorage.getItem(result.current.storageKey)).toBe(
       storedDraft("large pending draft"),
     );
@@ -76,7 +80,9 @@ describe("usePromptDraftStorage", () => {
     expect(window.localStorage.getItem(result.current.storageKey)).toBe(
       storedDraft("immediate replacement"),
     );
-    act(() => vi.advanceTimersByTime(250));
+    act(() => {
+      vi.advanceTimersByTime(250);
+    });
     expect(window.localStorage.getItem(result.current.storageKey)).toBe(
       storedDraft("immediate replacement"),
     );
@@ -421,11 +427,11 @@ describe("home composer replacement persistence", () => {
     });
     expect(actions.draft.text).toBe("latest text");
     expect(window.localStorage.getItem(result.current.storageKey)).toBeNull();
-    act(() => window.dispatchEvent(new Event("pagehide")));
+    act(() => void window.dispatchEvent(new Event("pagehide")));
     expect(window.localStorage.getItem(result.current.storageKey)).toBe(
       storedDraft("latest text"),
     );
-    act(() => vi.advanceTimersByTime(250));
+    act(() => void vi.advanceTimersByTime(250));
     expect(window.localStorage.getItem(result.current.storageKey)).toBe(
       storedDraft("latest text"),
     );
@@ -455,7 +461,7 @@ describe("pending composer text lifecycle", () => {
     expect(window.localStorage.getItem(secondKey)).toBe(
       storedDraft("second thread latest"),
     );
-    act(() => vi.advanceTimersByTime(250));
+    act(() => void vi.advanceTimersByTime(250));
     expect(window.localStorage.getItem(firstKey)).toBe(
       storedDraft("first thread latest"),
     );
@@ -466,7 +472,7 @@ describe("pending composer text lifecycle", () => {
     const scope = uniqueScope();
     const { result } = renderHook(() => usePromptDraftStorage(scope));
     act(() => result.current.setTextAndMentions("latest before blur", []));
-    act(() =>
+    act(() => void
       (event === "blur" ? window : document).dispatchEvent(new Event(event)),
     );
     expect(window.localStorage.getItem(result.current.storageKey)).toBe(

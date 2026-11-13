@@ -113,7 +113,7 @@ it("keeps the previous file list and its target while another target loads", asy
   const output = () => screen.getByRole("status", { name: "files" });
   await initialRequested;
   await act(async () => {
-    resolveInitial(await filesFor("uncommitted.ts"));
+    resolveInitial(await Promise.resolve(filesFor("uncommitted.ts")));
   });
   await initialShown;
   expect(output().textContent).toBe("uncommitted:uncommitted.ts");
@@ -124,7 +124,8 @@ it("keeps the previous file list and its target while another target loads", asy
 
   await nextRequested;
   await act(async () => {
-    for (const resolve of pending) resolve(await filesFor("all.ts"));
+    for (const resolve of pending)
+      resolve(await Promise.resolve(filesFor("all.ts")));
   });
   await allShown;
   expect(output().textContent).toBe("all:all.ts");

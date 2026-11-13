@@ -565,6 +565,7 @@ describe("reopenNativeTerminalsAfterDaemonReconnect", () => {
         pluginCalls.push(name);
       };
       setPluginThreadEventEmitter({
+        emitThreadRead: () => undefined,
         emitThreadEvents: record("emitThreadEvents"),
         emitTerminalInput: record("emitTerminalInput"),
         emitHostDeleted: record("emitHostDeleted"),

@@ -532,10 +532,9 @@ export function getSpendCoverage(
                    AND partial.history_complete = 0
                ) THEN cursor.thread_id END) AS historyComplete
         FROM ${sql.raw(CURSOR_TABLE)} cursor
-        WHERE EXISTS (
-          SELECT 1 FROM ${sql.raw(DAILY_TABLE)} rollup
-          WHERE rollup.thread_id = cursor.thread_id
-            AND ${sql.join(windowConditions, sql``)}
+        WHERE cursor.thread_id IN (
+          SELECT rollup.thread_id FROM ${sql.raw(DAILY_TABLE)} rollup
+          WHERE ${sql.join(windowConditions, sql``)}
         )`,
   );
   const threads = row?.threads ?? 0;

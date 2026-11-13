@@ -63,6 +63,8 @@ import type {
   AccountPoolConfigSetInput,
   FamilyQuota,
   LimitWindow,
+  LimitWindowSlot,
+  LoginTarget,
   LocalLogin,
   PoolAvailability,
   PoolProvider,
@@ -77,6 +79,7 @@ import type { CodexDeviceLoginStart } from "./src/codex-device-login.js";
 import {
   CLAUDE_OAUTH_REDIRECT_URI,
   DEFAULT_ACCOUNT_POOL_CONFIG,
+  limitWindowSlotSchema,
   statusSchema,
 } from "./src/contracts.js";
 import { blockingResetAt } from "./src/quota.js";
@@ -239,8 +242,8 @@ function untilLabel(timestamp: number): string {
 
 function subscriptionState(
   account: AccountSummary,
-  threshold: number,
   nextAccountId: string | null | undefined,
+  threshold: number,
 ): SubscriptionState {
   if (account.signInExpired)
     return {
@@ -355,6 +358,29 @@ function SettingsBadge({ children }: { children: ReactNode }) {
       {children}
     </span>
   );
+}
+
+function displayWindows(
+  account: AccountSummary,
+): { key: string; long: string; quota: FamilyQuota | null }[] {
+  if (account.provider === "codex")
+    return account.limitWindows.map((window) => ({
+      key: window.slot,
+      long: windowLongLabel(window),
+      quota: window,
+    }));
+  const observed =
+    account.limitWindows.length === 0
+      ? limitWindowSlotSchema.options.map((slot) => ({ slot, quota: null }))
+      : account.limitWindows.map((window) => ({
+          slot: window.slot,
+          quota: window,
+        }));
+  return observed.map(({ slot, quota }) => ({
+    key: slot,
+    long: slot === "primary" ? "5 hour" : "7 day",
+    quota,
+  }));
 }
 
 function providerTitle(provider: PoolProvider): string {
@@ -860,7 +886,7 @@ function QuotaDetail({
           {quota?.resetAt === null || quota === null
             ? ""
             : ` · ${resetLabel(quota.resetAt)}`}{" "}
-          · will be skipped at {Math.round(threshold * 100)}%
+          · exhausted from {Math.round(threshold * 100)}%
         </div>
       </div>
     </div>
@@ -1225,12 +1251,12 @@ function AccountPoolSettings() {
         } else if (result.status === "error") {
           setCodexStep(null);
           setError(result.message);
-        } else timer = setTimeout(poll, codexStep.intervalMs);
+        } else timer = setTimeout(() => void poll(), codexStep.intervalMs);
       } catch (pollError) {
         if (!cancelled) setError(errorText(pollError));
       }
     };
-    timer = setTimeout(poll, codexStep.intervalMs);
+    timer = setTimeout(() => void poll(), codexStep.intervalMs);
     return () => {
       cancelled = true;
       if (timer !== null) clearTimeout(timer);
@@ -1720,10 +1746,10 @@ function AccountPoolSettings() {
                             displayName={display.plans[account.id] ?? null}
                             state={subscriptionState(
                               account,
-                              threshold,
                               status?.routing.claude === false
                                 ? null
                                 : nextSubscriptionId,
+                              threshold,
                             )}
                             pending={pending.size > 0}
                             refreshing={
@@ -1878,7 +1904,7 @@ function AccountPoolSettings() {
               <ConfigFieldRow
                 label="Quota switch threshold"
                 control="field"
-                description="Stop selecting an account at this quota fraction."
+                description="Quota windows at or above this fraction are exhausted. Provider refusal also exhausts a window below the threshold."
                 error={configErrors.switchThreshold}
               >
                 <Input
@@ -2173,17 +2199,7 @@ function AccountDialog({
   threshold: number;
   act: (action: "toggle" | "refresh" | "remove") => void;
 }) {
-  const shared = (
-    utilization: number | null,
-    resetAt: number | null,
-    status: string | null,
-  ): FamilyQuota => ({
-    utilization,
-    resetAt,
-    status,
-    observedAt: account.observedAt ?? 0,
-    source: "header",
-  });
+  const windows = displayWindows(account);
   const providerId =
     account.provider === "claude"
       ? account.accountUuid
@@ -2215,58 +2231,35 @@ function AccountDialog({
     >
       <div className="flex items-center gap-2">
         {plan === null ? null : <SettingsBadge>{plan}</SettingsBadge>}
-        <StateWord state={subscriptionState(account, threshold, null)} />
+        <StateWord state={subscriptionState(account, null, threshold)} />
       </div>
       <div className="space-y-4">
-        {account.provider === "codex" ? (
-          account.limitWindows.length === 0 ? (
-            <div className="text-sm text-muted-foreground">
-              No usage limits observed yet.
-            </div>
-          ) : (
-            account.limitWindows.map((window) => (
-              <QuotaDetail
-                key={window.slot}
-                label={windowLongLabel(window)}
-                quota={window}
-                threshold={threshold}
-              />
-            ))
-          )
+        {windows.length === 0 ? (
+          <div className="text-sm text-muted-foreground">
+            No usage limits observed yet.
+          </div>
         ) : (
-          <>
+          windows.map((window) => (
             <QuotaDetail
-              label="5 hour"
-              quota={shared(
-                account.fiveHourUtilization,
-                account.fiveHourResetAt,
-                account.fiveHourStatus,
-              )}
+              key={window.key}
+              label={window.long}
+              quota={window.quota}
               threshold={threshold}
             />
-            <QuotaDetail
-              label="7 day"
-              quota={shared(
-                account.sevenDayUtilization,
-                account.sevenDayResetAt,
-                account.sevenDayStatus,
-              )}
-              threshold={threshold}
-            />
-            {modelWeeklyRows(account, weekly).map(({ name, quota }) => (
-              <QuotaDetail
-                key={name}
-                label={
-                  weekly === undefined
-                    ? `${name.charAt(0).toUpperCase() + name.slice(1)} 7 day`
-                    : `7d · ${name}`
-                }
-                quota={quota}
-                threshold={threshold}
-              />
-            ))}
-          </>
+          ))
         )}
+        {modelWeeklyRows(account, weekly).map(({ name, quota }) => (
+          <QuotaDetail
+            key={name}
+            label={
+              weekly === undefined
+                ? `${name.charAt(0).toUpperCase() + name.slice(1)} 7 day`
+                : `7d · ${name}`
+            }
+            quota={quota}
+            threshold={threshold}
+          />
+        ))}
       </div>
       <dl className="grid grid-cols-[7rem_1fr] gap-x-3 gap-y-2 border-t border-border pt-4 text-sm">
         {account.email === null ? null : (

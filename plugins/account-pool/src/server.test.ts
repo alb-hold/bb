@@ -1,31 +1,44 @@
 import { createAccountPoolTestHost } from "./test-host.js";
+
 import { createHash } from "node:crypto";
 import {
   retryAvailabilityMethod,
   type RetryAvailability,
 } from "./retry-contract.js";
+
 import {
   usageMeasurementSchema,
   usageResourceListSchema,
   usageListMethod,
   usageFetchMethod,
 } from "./usage-contract.js";
+
 import fs from "node:fs/promises";
+
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
+
 import { spawn } from "node:child_process";
+
 import net from "node:net";
+
 import path from "node:path";
+
 import { mkdtemp } from "node:fs/promises";
+
 import { tmpdir } from "node:os";
+
 import {
   setImmediate as yieldToIo,
   setTimeout as waitForIo,
 } from "node:timers/promises";
+
 import {
   makeThreadResponse,
   type ExperimentalFakeHostRpcCall,
 } from "@get-bb/plugin-sdk/testing";
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
 import {
   accountSchema,
   accountSecretSchema,
@@ -42,20 +55,27 @@ import {
   type AccountQuota,
   type AccountSummary,
 } from "./contracts.js";
+
 import { z } from "zod";
+
 import type {
   ImportedClaudeCredentials,
   ImportedCodexCredentials,
 } from "./credentials.js";
+
 import { PARENT_TOKEN_ENV, PARENT_URL_ENV } from "./parent-pool.js";
+
 import {
   AccountStore,
   HubTokenStore,
   PoolAffinityStore,
   QuotaStore,
 } from "./store.js";
+
 import { createHostProxy } from "./host-proxy.js";
+
 import { createClaudeAdapter } from "./claude-adapter.js";
+
 import {
   createAccountPoolPlugin,
   helloResponse,
@@ -85,10 +105,16 @@ interface Fixture {
 }
 
 const CHILD_PROCESS_START_TIMEOUT_MS = 15_000;
+
 const CHILD_PROCESS_TEST_TIMEOUT_MS = CHILD_PROCESS_START_TIMEOUT_MS + 15_000;
 
-async function waitForChildProcessStart(assertStarted: () => void): Promise<void> {
-  await vi.waitFor(assertStarted, { timeout: CHILD_PROCESS_START_TIMEOUT_MS, interval: 25 });
+async function waitForChildProcessStart(
+  assertStarted: () => void | Promise<void>,
+): Promise<void> {
+  await vi.waitFor(assertStarted, {
+    timeout: CHILD_PROCESS_START_TIMEOUT_MS,
+    interval: 25,
+  });
 }
 
 async function waitForAccepting(read: () => Promise<boolean>): Promise<void> {
@@ -99,7 +125,9 @@ async function waitForAccepting(read: () => Promise<boolean>): Promise<void> {
 }
 
 const cleanups: Array<() => Promise<void>> = [];
+
 const sweepClockCleanups: Array<() => void> = [];
+
 const bbThreadStates = new Map<string, "archived" | "deleted">();
 
 function bbThread(threadId: string) {
@@ -321,8 +349,17 @@ describe("Explicit subscription routing", () => {
         const quotas = new QuotaStore(fixture.host.bb.storage.database());
         quotas.put({
           ...quotas.get(second.id),
-          sevenDayUtilization: 0.98,
-          sevenDayResetAt: Date.now() + 3_600_000,
+          limitWindows: [
+            {
+              slot: "secondary",
+              windowMinutes: 10080,
+              utilization: 0.98,
+              resetAt: Date.now() + 3_600_000,
+              status: null,
+              observedAt: 0,
+              source: "usage",
+            },
+          ],
         });
       } else {
         await fixture.host.harness.behavior.callRpc(
@@ -695,24 +732,25 @@ async function createFixture(args: {
   const runService = host.harness.behavior.runService.bind(
     host.harness.behavior,
   );
-  const service = args.hubStartupDelayMs === undefined
-    ? runService("hub")
-    : (() => {
-        const controller = new AbortController();
-        let active: ReturnType<typeof runService> | null = null;
-        const done = (async () => {
-          await waitForIo(args.hubStartupDelayMs);
-          if (controller.signal.aborted) return;
-          active = runService("hub");
-          controller.signal.addEventListener(
-            "abort",
-            () => active?.controller.abort(controller.signal.reason),
-            { once: true },
-          );
-          await active.done;
+  const service =
+    args.hubStartupDelayMs === undefined
+      ? runService("hub")
+      : (() => {
+          const controller = new AbortController();
+          let active: ReturnType<typeof runService> | null = null;
+          const done = (async () => {
+            await waitForIo(args.hubStartupDelayMs);
+            if (controller.signal.aborted) return;
+            active = runService("hub");
+            controller.signal.addEventListener(
+              "abort",
+              () => active?.controller.abort(controller.signal.reason),
+              { once: true },
+            );
+            await active.done;
+          })();
+          return { controller, done } as ReturnType<typeof runService>;
         })();
-        return { controller, done } as ReturnType<typeof runService>;
-      })();
   cleanups.push(async () => {
     service.controller.abort();
     await service.done;
@@ -849,7 +887,9 @@ async function movePoolToOtherAccount(
 }
 
 const EMPTY_USAGE_URL = "data:application/json,{}";
+
 const UNUSED_PROFILE_URL = "data:application/json,null";
+
 const CODEX_USAGE_STUB_URL = "https://usage.example/wham/usage";
 
 async function waitForSweep(assertion: () => void | Promise<void>) {
@@ -941,10 +981,11 @@ describe("Account Pool plugin", () => {
       upstreamUrl: "http://127.0.0.1:9001",
       hubStartupDelayMs: 1_200,
     });
-    await waitForAccepting(async () =>
-      statusSchema.parse(
-        await fixture.host.harness.behavior.callRpc("status.get", null),
-      ).accepting,
+    await waitForAccepting(
+      async () =>
+        statusSchema.parse(
+          await fixture.host.harness.behavior.callRpc("status.get", null),
+        ).accepting,
     );
   });
 
@@ -1448,8 +1489,6 @@ describe("Account Pool plugin", () => {
     expect(firstCodex).toMatchObject({
       provider: "codex",
       status: "exhausted",
-      fiveHourUtilization: null,
-      sevenDayUtilization: null,
       familyWeekly: { other: null },
       limitWindows: [
         {
@@ -2377,9 +2416,17 @@ describe("Account Pool plugin", () => {
           "Claude Code limits Opus to a 200k context window behind a custom base URL; the hub forwards to Anthropic's API",
       },
       {
+        name: "BB_CLAUDE_MODELS_URL",
+        value: {
+          serverPath: "/api/v1/plugins/account-pool/http/claude/v1/models",
+        },
+        reason:
+          "Claude Code lists only its cached models behind a custom base URL; bb lists the pooled accounts' models from the hub",
+      },
+      {
         name: "BB_CLAUDE_SETTINGS_ENV_PIN",
         value:
-          "ANTHROPIC_BASE_URL,ANTHROPIC_AUTH_TOKEN,CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST,ENABLE_TOOL_SEARCH,_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL",
+          "ANTHROPIC_BASE_URL,ANTHROPIC_AUTH_TOKEN,CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST,ENABLE_TOOL_SEARCH,_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL,BB_CLAUDE_MODELS_URL",
         reason: expect.stringContaining("settings layer"),
       },
       {
@@ -2469,6 +2516,59 @@ describe("Account Pool plugin", () => {
     ]);
     expect(off.exitCode).toBe(0);
     expect(await resolveToken(fixture.host)).toBe(fixture.key);
+  });
+
+  it("lists Claude models through the hub with a pooled account's credentials", async () => {
+    const seen: Array<{
+      url: string | undefined;
+      authorization: string | undefined;
+    }> = [];
+    const upstream = await startUpstream(async (request, response) => {
+      await readRequestBody(request);
+      seen.push({
+        url: request.url,
+        authorization: request.headers.authorization,
+      });
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end('{"data":[],"has_more":false,"last_id":null}');
+    });
+    cleanups.push(upstream.close);
+    const fixture = await createFixture({
+      upstreamUrl: upstream.url,
+      source: "import",
+      options: { importCredentials: async () => importedCredentials() },
+    });
+    const entries = await fixture.host.harness.behavior.resolveProviderEnv(
+      "claude-code",
+      { threadId: null, projectId: null, hostId: "host-one" },
+    );
+    const modelsUrl = entries.find(
+      (entry) => entry.name === "BB_CLAUDE_MODELS_URL",
+    )?.value;
+    expect(modelsUrl).toEqual({
+      serverPath: "/api/v1/plugins/account-pool/http/claude/v1/models",
+    });
+
+    const response = await fixture.host.harness.behavior.fetchHttp(
+      "GET",
+      "/claude/v1/models?limit=1000",
+      {
+        headers: {
+          authorization: `Bearer ${fixture.key}`,
+          "anthropic-version": "2023-06-01",
+        },
+      },
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      data: [],
+      has_more: false,
+      last_id: null,
+    });
+    expect(seen).toEqual([
+      { url: "/v1/models?limit=1000", authorization: "Bearer oauth-access" },
+    ]);
   });
 
   it("routes thread-less Codex model listing through the hub without recording a thread route", async () => {
@@ -3080,10 +3180,22 @@ describe("Account Pool plugin", () => {
       .array(accountSummarySchema)
       .parse(await fixture.host.harness.behavior.callRpc("account.list", null));
     expect(accounts[0]).toMatchObject({
-      fiveHourUtilization: 0.25,
-      sevenDayUtilization: 0.5,
-      fiveHourStatus: "allowed",
-      sevenDayStatus: "allowed",
+      limitWindows: [
+        {
+          slot: "primary",
+          windowMinutes: 300,
+          utilization: 0.25,
+          status: "allowed",
+          source: "header",
+        },
+        {
+          slot: "secondary",
+          windowMinutes: 10_080,
+          utilization: 0.5,
+          status: "allowed",
+          source: "header",
+        },
+      ],
       representativeClaim: "claim-a",
       familyWeekly: {
         fable: {
@@ -4461,9 +4573,12 @@ describe("Account Pool plugin", () => {
       restarted.controller.abort();
       await restarted.done;
     });
-    await waitForAccepting(async () => statusSchema.parse(
-        await fixture.host.harness.behavior.callRpc("status.get", null),
-       ).accepting);
+    await waitForAccepting(
+      async () =>
+        statusSchema.parse(
+          await fixture.host.harness.behavior.callRpc("status.get", null),
+        ).accepting,
+    );
     const response = await fixture.host.harness.behavior.fetchHttp(
       "POST",
       "/v1/messages",
@@ -4599,6 +4714,7 @@ describe("Account Pool plugin", () => {
 
   describe("session affinity", () => {
     const sessionId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+
     const claudeBody = (id: string, model = "claude-fable-5") =>
       JSON.stringify({
         model,
@@ -4611,6 +4727,7 @@ describe("Account Pool plugin", () => {
           }),
         },
       });
+
     const openStream = () =>
       new Response(
         new ReadableStream({
@@ -4663,6 +4780,13 @@ describe("Account Pool plugin", () => {
       return fixture;
     }
 
+    const upstreamKey = (init: RequestInit | undefined) => {
+      const headers = new Headers(init?.headers);
+      return (
+        headers.get("x-api-key") ?? headers.get("authorization")?.slice(7) ?? ""
+      );
+    };
+
     it.each(["claude", "codex"] as const)(
       "keeps %s sessions and the pool cursor on the third account after two failures",
       async (provider) => {
@@ -4671,16 +4795,14 @@ describe("Account Pool plugin", () => {
         const fixture = await affinityFixture(
           provider,
           async (_input, init) => {
-            const headers = new Headers(init?.headers);
-            const key =
-              headers.get("x-api-key") ??
-              headers.get("authorization")?.slice(7) ??
-              "";
+            const key = upstreamKey(init);
             attempts.push(key);
-            return Response.json(
-              {},
-              { status: outage && key !== "sk-third" ? 503 : 200 },
-            );
+            return outage && key !== "sk-third"
+              ? Response.json(
+                  {},
+                  { status: 503, headers: { "retry-after": "0" } },
+                )
+              : Response.json({});
           },
         );
         await nextClockTick();
@@ -4715,6 +4837,8 @@ describe("Account Pool plugin", () => {
         expect(attempts).toEqual([
           "sk-first",
           "sk-first",
+          "sk-first",
+          "sk-first",
           "sk-second",
           "sk-third",
           "sk-third",
@@ -4724,6 +4848,81 @@ describe("Account Pool plugin", () => {
         ]);
       },
     );
+
+    it.each(["claude", "codex"] as const)(
+      "retries a pinned %s session on its account after a transport error",
+      async (provider) => {
+        let failures = 0;
+        const attempts: Array<{ key: string; at: number }> = [];
+        const fixture = await affinityFixture(
+          provider,
+          async (_input, init) => {
+            const key = upstreamKey(init);
+            attempts.push({ key, at: Date.now() });
+            if (key === "sk-first" && failures > 0) {
+              failures--;
+              throw new TypeError("fetch failed");
+            }
+            return Response.json({});
+          },
+        );
+        const send = async (id: string) => {
+          const response = await fixture.host.harness.behavior.fetchHttp(
+            "POST",
+            provider === "claude" ? "/v1/messages" : "/v1/responses",
+            {
+              headers: { ...authHeaders(fixture.key), "session-id": id },
+              body: provider === "claude" ? claudeBody(id) : "{}",
+            },
+          );
+          expect(response.status).toBe(200);
+          await response.text();
+        };
+        await send("warm");
+        failures = 1;
+        await send("warm");
+        expect(attempts.map(({ key }) => key)).toEqual([
+          "sk-first",
+          "sk-first",
+          "sk-first",
+        ]);
+        expect(
+          (attempts[2]?.at ?? 0) - (attempts[1]?.at ?? 0),
+        ).toBeGreaterThanOrEqual(990);
+      },
+    );
+
+    it("fails a pinned session over at once when a transient failure asks for a long wait", async () => {
+      let overloaded = false;
+      const attempts: string[] = [];
+      const fixture = await affinityFixture("claude", async (_input, init) => {
+        const key = upstreamKey(init);
+        attempts.push(key);
+        return overloaded && key === "sk-first"
+          ? Response.json({}, { status: 529, headers: { "retry-after": "60" } })
+          : Response.json({});
+      });
+      const send = async (id: string) => {
+        const response = await fixture.host.harness.behavior.fetchHttp(
+          "POST",
+          "/v1/messages",
+          { headers: authHeaders(fixture.key), body: claudeBody(id) },
+        );
+        expect(response.status).toBe(200);
+        await response.text();
+      };
+      await send("warm");
+      overloaded = true;
+      await send("warm");
+      overloaded = false;
+      await send("warm");
+      expect(attempts).toEqual([
+        "sk-first",
+        "sk-first",
+        "sk-second",
+        "sk-second",
+      ]);
+    });
 
     it.each(["claude", "codex"] as const)(
       "routes %s conversations around long holds according to provider affinity",
@@ -4873,9 +5072,12 @@ describe("Account Pool plugin", () => {
           await service.done;
           await host.harness.lifecycle.dispose();
         });
-        await waitForAccepting(async () => statusSchema.parse(
-            await host.harness.behavior.callRpc("status.get", null),
-           ).accepting);
+        await waitForAccepting(
+          async () =>
+            statusSchema.parse(
+              await host.harness.behavior.callRpc("status.get", null),
+            ).accepting,
+        );
         await send("fresh-after-restart");
         await send("original");
         await send("fallback");
@@ -4926,9 +5128,12 @@ describe("Account Pool plugin", () => {
         await service.done;
         await host.harness.lifecycle.dispose();
       });
-      await waitForAccepting(async () => statusSchema.parse(
-          await host.harness.behavior.callRpc("status.get", null),
-         ).accepting);
+      await waitForAccepting(
+        async () =>
+          statusSchema.parse(
+            await host.harness.behavior.callRpc("status.get", null),
+          ).accepting,
+      );
       const newToken = await resolveToken(host);
       expect(newToken).not.toBe(oldToken);
       const send = async (token: string) => {
@@ -5004,9 +5209,12 @@ describe("Account Pool plugin", () => {
             await service.done;
             await host.harness.lifecycle.dispose();
           });
-          await waitForAccepting(async () => statusSchema.parse(
-              await host.harness.behavior.callRpc("status.get", null),
-             ).accepting);
+          await waitForAccepting(
+            async () =>
+              statusSchema.parse(
+                await host.harness.behavior.callRpc("status.get", null),
+              ).accepting,
+          );
         }
         expect(await send("original")).toBe("sk-first");
         expect(await send("fresh")).toBe("sk-second");
@@ -5393,6 +5601,7 @@ describe("Account Pool plugin", () => {
         | "codex-parent-header"
         | "codex-parent-body"
         | "codex-spawn";
+
       function forkRequest(
         wire: Wire,
         own: string,
@@ -5569,7 +5778,7 @@ describe("Account Pool plugin", () => {
           const route =
             provider === "claude" ? "/v1/messages" : "/v1/responses";
           const seen: Array<{ key: string | null; body: string }> = [];
-          let rejectNext = false;
+          let rejections = 0;
           const fixture = await affinityFixture(
             provider,
             async (_input, init) => {
@@ -5586,9 +5795,12 @@ describe("Account Pool plugin", () => {
                 ),
               });
               if (seen.length === 1) return openStream();
-              if (rejectNext) {
-                rejectNext = false;
-                return Response.json({}, { status: 503 });
+              if (rejections > 0) {
+                rejections--;
+                return Response.json(
+                  {},
+                  { status: 503, headers: { "retry-after": "0" } },
+                );
               }
               return Response.json({});
             },
@@ -5609,7 +5821,7 @@ describe("Account Pool plugin", () => {
             expect(seen[1]?.body).toBe(
               forkRequest(wire, "child-session", "parent-session").body,
             );
-            rejectNext = true;
+            rejections = 3;
             const failover = await send("child-session", "parent-session");
             expect(failover.status).toBe(200);
             await failover.text();
@@ -5618,6 +5830,8 @@ describe("Account Pool plugin", () => {
             const repeatedChild = await send("child-session", "parent-session");
             await repeatedChild.text();
             expect(seen.map(({ key }) => key)).toEqual([
+              "sk-first",
+              "sk-first",
               "sk-first",
               "sk-first",
               "sk-first",
@@ -6008,13 +6222,15 @@ describe("Account Pool plugin", () => {
           const afterCompletion = await send("claude-opus-4-1");
           await afterCompletion.text();
           expect(attempts).toEqual(
-            reason === "auth error" || reason === "network error"
+            reason === "auth error"
               ? ["sk-first", "sk-first", "sk-second", "sk-second"]
-              : [
-                  "sk-first",
-                  "sk-second",
-                  reason === "family quota" ? "sk-first" : "sk-second",
-                ],
+              : reason === "network error"
+                ? ["sk-first", "sk-first", "sk-first", "sk-first"]
+                : [
+                    "sk-first",
+                    "sk-second",
+                    reason === "family quota" ? "sk-first" : "sk-second",
+                  ],
           );
         } finally {
           finishOld();
@@ -6345,9 +6561,12 @@ describe("Account Pool plugin", () => {
           restarted.controller.abort();
           await restarted.done;
         });
-        await waitForAccepting(async () => statusSchema.parse(
-            await fixture.host.harness.behavior.callRpc("status.get", null),
-           ).accepting);
+        await waitForAccepting(
+          async () =>
+            statusSchema.parse(
+              await fixture.host.harness.behavior.callRpc("status.get", null),
+            ).accepting,
+        );
         await (await sendClaude()).text();
         await (await sendCodex()).text();
         const claudeAccount = attempts[0];
@@ -6642,10 +6861,10 @@ describe("Account Pool plugin", () => {
         expectedStatus: 503,
       },
       {
-        name: "keeps invalid_grant accounts excluded despite a valid access token",
+        name: "keeps serving a valid access token after invalid_grant without replaying the refresh token",
         elapsedMinutes: 6,
         failureStatus: 400,
-        expectedStatus: 429,
+        expectedStatus: 200,
       },
     ])("$name", async ({ elapsedMinutes, failureStatus, expectedStatus }) => {
       let now = 1_800_000_000_000;
@@ -6724,11 +6943,7 @@ describe("Account Pool plugin", () => {
         .parse(
           await fixture.host.harness.behavior.callRpc("account.list", null),
         );
-      expect(accounts[0]?.error).toEqual(
-        failureStatus === 400
-          ? expect.stringContaining("OAuth refresh failed")
-          : null,
-      );
+      expect(accounts[0]?.error).toBeNull();
       expect(authorizations).toEqual(
         expectedStatus === 200
           ? [`Bearer ${oldToken}`, `Bearer ${oldToken}`]
@@ -6742,17 +6957,17 @@ describe("Account Pool plugin", () => {
         { headers: authHeaders(fixture.key), body: "{}" },
       );
       await recovered.text();
-      expect(recovered.status).toBe(failureStatus === 400 ? 429 : 200);
+      expect(recovered.status).toBe(200);
       expect(refreshCalls).toBe(failureStatus === 400 ? 1 : 2);
-      if (failureStatus !== 400) {
-        expect(authorizations.at(-1)).toBe(`Bearer ${newToken}`);
-        const recoveredAccounts = z
-          .array(accountSummarySchema)
-          .parse(
-            await fixture.host.harness.behavior.callRpc("account.list", null),
-          );
-        expect(recoveredAccounts[0]?.error).toBeNull();
-      }
+      expect(authorizations.at(-1)).toBe(
+        `Bearer ${failureStatus === 400 ? oldToken : newToken}`,
+      );
+      const recoveredAccounts = z
+        .array(accountSummarySchema)
+        .parse(
+          await fixture.host.harness.behavior.callRpc("account.list", null),
+        );
+      expect(recoveredAccounts[0]?.error).toBeNull();
     });
   });
 
@@ -7056,7 +7271,9 @@ describe("Account Pool plugin", () => {
       const cached = await accountState();
       const quota = (account: typeof cached) =>
         provider === "claude"
-          ? account?.sevenDayUtilization
+          ? account?.limitWindows.find(
+              (window) => window.windowMinutes === 10080,
+            )?.utilization
           : account?.limitWindows[0]?.utilization;
       expect(quota(cached)).toBe(0.2);
       for (const mode of ["network", "http", "payload"] as const) {
@@ -7361,17 +7578,18 @@ describe("Account Pool plugin", () => {
         current.controller.abort();
         await current.done;
         current = fixture.host.harness.behavior.runService("hub");
-        await waitForAccepting(async () =>
-          statusReportSchema.parse(
-            JSON.parse(
-              (
-                await fixture.host.harness.behavior.runCli([
-                  "status",
-                  "--json",
-                ])
-              ).stdout,
-            ),
-          ).accepting,
+        await waitForAccepting(
+          async () =>
+            statusReportSchema.parse(
+              JSON.parse(
+                (
+                  await fixture.host.harness.behavior.runCli([
+                    "status",
+                    "--json",
+                  ])
+                ).stdout,
+              ),
+            ).accepting,
         );
         if (cycle === 0)
           await vi.waitFor(() => expect(calls).toBeGreaterThan(1));
@@ -9554,12 +9772,30 @@ describe("Account Pool plugin", () => {
     it("chooses 2% weekly usage over an account at 100%", async () => {
       const pool = await fixtureWithAccounts();
       setQuota(pool.fixture, pool.fixture.account.id, {
-        sevenDayUtilization: 1,
-        sevenDayResetAt: now + 7 * 24 * 60 * 60 * 1_000,
+        limitWindows: [
+          {
+            slot: "secondary",
+            windowMinutes: 10080,
+            utilization: 1,
+            resetAt: now + 7 * 24 * 60 * 60 * 1_000,
+            status: null,
+            observedAt: 0,
+            source: "usage",
+          },
+        ],
       });
       setQuota(pool.fixture, pool.second.id, {
-        sevenDayUtilization: 0.02,
-        sevenDayResetAt: now + 7 * 24 * 60 * 60 * 1_000,
+        limitWindows: [
+          {
+            slot: "secondary",
+            windowMinutes: 10080,
+            utilization: 0.02,
+            resetAt: now + 7 * 24 * 60 * 60 * 1_000,
+            status: null,
+            observedAt: 0,
+            source: "usage",
+          },
+        ],
       });
 
       await pool.send("thread-weekly", "session-weekly");
@@ -9592,12 +9828,30 @@ describe("Account Pool plugin", () => {
     it("clears weekly utilization when its reset time has passed", async () => {
       const pool = await fixtureWithAccounts();
       setQuota(pool.fixture, pool.fixture.account.id, {
-        sevenDayUtilization: 0.97,
-        sevenDayResetAt: now - 60 * 60 * 1_000,
+        limitWindows: [
+          {
+            slot: "secondary",
+            windowMinutes: 10080,
+            utilization: 0.97,
+            resetAt: now - 60 * 60 * 1_000,
+            status: null,
+            observedAt: 0,
+            source: "usage",
+          },
+        ],
       });
       setQuota(pool.fixture, pool.second.id, {
-        sevenDayUtilization: 0.9,
-        sevenDayResetAt: now + 7 * 24 * 60 * 60 * 1_000,
+        limitWindows: [
+          {
+            slot: "secondary",
+            windowMinutes: 10080,
+            utilization: 0.9,
+            resetAt: now + 7 * 24 * 60 * 60 * 1_000,
+            status: null,
+            observedAt: 0,
+            source: "usage",
+          },
+        ],
       });
 
       await pool.send("thread-expired-week", "session-expired-week");
@@ -9608,14 +9862,30 @@ describe("Account Pool plugin", () => {
     it("clears rejected utilization when its reset time has passed", async () => {
       const pool = await fixtureWithAccounts();
       setQuota(pool.fixture, pool.fixture.account.id, {
-        fiveHourUtilization: 1,
-        fiveHourStatus: "rejected",
-        fiveHourResetAt: now - 60 * 1_000,
+        limitWindows: [
+          {
+            slot: "primary",
+            windowMinutes: 300,
+            utilization: 1,
+            resetAt: now - 60 * 1_000,
+            status: "rejected",
+            observedAt: 0,
+            source: "usage",
+          },
+        ],
       });
       setQuota(pool.fixture, pool.second.id, {
-        fiveHourUtilization: 0.95,
-        fiveHourStatus: "allowed",
-        fiveHourResetAt: now + 5 * 60 * 60 * 1_000,
+        limitWindows: [
+          {
+            slot: "primary",
+            windowMinutes: 300,
+            utilization: 0.95,
+            resetAt: now + 5 * 60 * 60 * 1_000,
+            status: "allowed",
+            observedAt: 0,
+            source: "usage",
+          },
+        ],
       });
 
       await pool.send("thread-rejected-window", "session-rejected-window");
@@ -9626,19 +9896,51 @@ describe("Account Pool plugin", () => {
     it("ranks known headroom before unknown headroom but keeps unknown as a fallback", async () => {
       const pool = await fixtureWithAccounts();
       setQuota(pool.fixture, pool.fixture.account.id, {
-        fiveHourUtilization: 0.2,
-        fiveHourResetAt: now + 5 * 60 * 60 * 1_000,
-        sevenDayUtilization: 0.2,
-        sevenDayResetAt: now + 7 * 24 * 60 * 60 * 1_000,
+        limitWindows: [
+          {
+            slot: "primary",
+            windowMinutes: 300,
+            utilization: 0.2,
+            resetAt: now + 5 * 60 * 60 * 1_000,
+            status: null,
+            observedAt: 0,
+            source: "usage",
+          },
+          {
+            slot: "secondary",
+            windowMinutes: 10080,
+            utilization: 0.2,
+            resetAt: now + 7 * 24 * 60 * 60 * 1_000,
+            status: null,
+            observedAt: 0,
+            source: "usage",
+          },
+        ],
       });
 
       await pool.send("thread-known-quota", "session-known-quota");
 
       setQuota(pool.fixture, pool.fixture.account.id, {
-        fiveHourUtilization: 0.98,
-        fiveHourResetAt: now + 5 * 60 * 60 * 1_000,
-        sevenDayUtilization: 0.2,
-        sevenDayResetAt: now + 7 * 24 * 60 * 60 * 1_000,
+        limitWindows: [
+          {
+            slot: "primary",
+            windowMinutes: 300,
+            utilization: 0.98,
+            resetAt: now + 5 * 60 * 60 * 1_000,
+            status: null,
+            observedAt: 0,
+            source: "usage",
+          },
+          {
+            slot: "secondary",
+            windowMinutes: 10080,
+            utilization: 0.2,
+            resetAt: now + 7 * 24 * 60 * 60 * 1_000,
+            status: null,
+            observedAt: 0,
+            source: "usage",
+          },
+        ],
       });
       await pool.send("thread-unknown-fallback", "session-unknown-fallback");
 
@@ -9648,16 +9950,48 @@ describe("Account Pool plugin", () => {
     it("chooses the account with more binding headroom when weekly usage is low", async () => {
       const pool = await fixtureWithAccounts();
       setQuota(pool.fixture, pool.fixture.account.id, {
-        fiveHourUtilization: 0.95,
-        fiveHourResetAt: now + 5 * 60 * 60 * 1_000,
-        sevenDayUtilization: 0.02,
-        sevenDayResetAt: now + 7 * 24 * 60 * 60 * 1_000,
+        limitWindows: [
+          {
+            slot: "primary",
+            windowMinutes: 300,
+            utilization: 0.95,
+            resetAt: now + 5 * 60 * 60 * 1_000,
+            status: null,
+            observedAt: 0,
+            source: "usage",
+          },
+          {
+            slot: "secondary",
+            windowMinutes: 10080,
+            utilization: 0.02,
+            resetAt: now + 7 * 24 * 60 * 60 * 1_000,
+            status: null,
+            observedAt: 0,
+            source: "usage",
+          },
+        ],
       });
       setQuota(pool.fixture, pool.second.id, {
-        fiveHourUtilization: 0.12,
-        fiveHourResetAt: now + 5 * 60 * 60 * 1_000,
-        sevenDayUtilization: 0.02,
-        sevenDayResetAt: now + 7 * 24 * 60 * 60 * 1_000,
+        limitWindows: [
+          {
+            slot: "primary",
+            windowMinutes: 300,
+            utilization: 0.12,
+            resetAt: now + 5 * 60 * 60 * 1_000,
+            status: null,
+            observedAt: 0,
+            source: "usage",
+          },
+          {
+            slot: "secondary",
+            windowMinutes: 10080,
+            utilization: 0.02,
+            resetAt: now + 7 * 24 * 60 * 60 * 1_000,
+            status: null,
+            observedAt: 0,
+            source: "usage",
+          },
+        ],
       });
 
       await pool.send("thread-five-hour", "session-five-hour");
@@ -9673,10 +10007,26 @@ describe("Account Pool plugin", () => {
       });
       for (const accountId of [pool.fixture.account.id, pool.second.id])
         setQuota(pool.fixture, accountId, {
-          fiveHourUtilization: 0.2,
-          fiveHourResetAt: now + 5 * 60 * 60 * 1_000,
-          sevenDayUtilization: 0.2,
-          sevenDayResetAt: now + 7 * 24 * 60 * 60 * 1_000,
+          limitWindows: [
+            {
+              slot: "primary",
+              windowMinutes: 300,
+              utilization: 0.2,
+              resetAt: now + 5 * 60 * 60 * 1_000,
+              status: null,
+              observedAt: 0,
+              source: "usage",
+            },
+            {
+              slot: "secondary",
+              windowMinutes: 10080,
+              utilization: 0.2,
+              resetAt: now + 7 * 24 * 60 * 60 * 1_000,
+              status: null,
+              observedAt: 0,
+              source: "usage",
+            },
+          ],
         });
 
       await pool.send("thread-priority", "session-priority");
@@ -9687,12 +10037,30 @@ describe("Account Pool plugin", () => {
     it("uses reset recovery to break equal-headroom ties", async () => {
       const pool = await fixtureWithAccounts();
       setQuota(pool.fixture, pool.fixture.account.id, {
-        sevenDayUtilization: 0.2,
-        sevenDayResetAt: now + 7 * 24 * 60 * 60 * 1_000,
+        limitWindows: [
+          {
+            slot: "secondary",
+            windowMinutes: 10080,
+            utilization: 0.2,
+            resetAt: now + 7 * 24 * 60 * 60 * 1_000,
+            status: null,
+            observedAt: 0,
+            source: "usage",
+          },
+        ],
       });
       setQuota(pool.fixture, pool.second.id, {
-        sevenDayUtilization: 0.2,
-        sevenDayResetAt: now + 60 * 60 * 1_000,
+        limitWindows: [
+          {
+            slot: "secondary",
+            windowMinutes: 10080,
+            utilization: 0.2,
+            resetAt: now + 60 * 60 * 1_000,
+            status: null,
+            observedAt: 0,
+            source: "usage",
+          },
+        ],
       });
 
       await pool.send("thread-reset-tie", "session-reset-tie");
@@ -9707,8 +10075,6 @@ describe("Account Pool plugin", () => {
           pool.fixture.host.bb.storage.database(),
         ).get(accountId);
         setQuota(pool.fixture, accountId, {
-          sevenDayUtilization: 0.1,
-          sevenDayResetAt: now + 7 * 24 * 60 * 60 * 1_000,
           familyWeekly: {
             ...quota.familyWeekly,
             fable: {
@@ -9719,6 +10085,17 @@ describe("Account Pool plugin", () => {
               source: "usage",
             },
           },
+          limitWindows: [
+            {
+              slot: "secondary",
+              windowMinutes: 10080,
+              utilization: 0.1,
+              resetAt: now + 7 * 24 * 60 * 60 * 1_000,
+              status: null,
+              observedAt: 0,
+              source: "usage",
+            },
+          ],
         });
       }
 
@@ -9730,23 +10107,59 @@ describe("Account Pool plugin", () => {
     it("keeps an affinity until its account crosses a quota threshold and reports a different next pick", async () => {
       const pool = await fixtureWithAccounts();
       setQuota(pool.fixture, pool.fixture.account.id, {
-        sevenDayUtilization: 0.2,
-        sevenDayResetAt: now + 7 * 24 * 60 * 60 * 1_000,
+        limitWindows: [
+          {
+            slot: "secondary",
+            windowMinutes: 10080,
+            utilization: 0.2,
+            resetAt: now + 7 * 24 * 60 * 60 * 1_000,
+            status: null,
+            observedAt: 0,
+            source: "usage",
+          },
+        ],
       });
       setQuota(pool.fixture, pool.second.id, {
-        sevenDayUtilization: 0.4,
-        sevenDayResetAt: now + 7 * 24 * 60 * 60 * 1_000,
+        limitWindows: [
+          {
+            slot: "secondary",
+            windowMinutes: 10080,
+            utilization: 0.4,
+            resetAt: now + 7 * 24 * 60 * 60 * 1_000,
+            status: null,
+            observedAt: 0,
+            source: "usage",
+          },
+        ],
       });
       await pool.send("thr_balancer_affinity", "session-affinity");
       expect(pool.seen).toEqual(["sk-first"]);
 
       setQuota(pool.fixture, pool.fixture.account.id, {
-        sevenDayUtilization: 0.6,
-        sevenDayResetAt: now + 7 * 24 * 60 * 60 * 1_000,
+        limitWindows: [
+          {
+            slot: "secondary",
+            windowMinutes: 10080,
+            utilization: 0.6,
+            resetAt: now + 7 * 24 * 60 * 60 * 1_000,
+            status: null,
+            observedAt: 0,
+            source: "usage",
+          },
+        ],
       });
       setQuota(pool.fixture, pool.second.id, {
-        sevenDayUtilization: 0.1,
-        sevenDayResetAt: now + 7 * 24 * 60 * 60 * 1_000,
+        limitWindows: [
+          {
+            slot: "secondary",
+            windowMinutes: 10080,
+            utilization: 0.1,
+            resetAt: now + 7 * 24 * 60 * 60 * 1_000,
+            status: null,
+            observedAt: 0,
+            source: "usage",
+          },
+        ],
       });
       const binding = await pool.fixture.host.harness.behavior.callRpc(
         "routing.binding.get",
@@ -9761,8 +10174,17 @@ describe("Account Pool plugin", () => {
       expect(pool.seen).toEqual(["sk-first", "sk-first"]);
 
       setQuota(pool.fixture, pool.fixture.account.id, {
-        sevenDayUtilization: 0.98,
-        sevenDayResetAt: now + 7 * 24 * 60 * 60 * 1_000,
+        limitWindows: [
+          {
+            slot: "secondary",
+            windowMinutes: 10080,
+            utilization: 0.98,
+            resetAt: now + 7 * 24 * 60 * 60 * 1_000,
+            status: null,
+            observedAt: 0,
+            source: "usage",
+          },
+        ],
       });
       await pool.send("thr_balancer_affinity", "session-affinity");
       expect(pool.seen).toEqual(["sk-first", "sk-first", "sk-second"]);
@@ -9771,22 +10193,58 @@ describe("Account Pool plugin", () => {
     it("returns the binding for the requested thread when another thread was used later", async () => {
       const pool = await fixtureWithAccounts();
       setQuota(pool.fixture, pool.fixture.account.id, {
-        sevenDayUtilization: 0.2,
-        sevenDayResetAt: now + 7 * 24 * 60 * 60 * 1_000,
+        limitWindows: [
+          {
+            slot: "secondary",
+            windowMinutes: 10080,
+            utilization: 0.2,
+            resetAt: now + 7 * 24 * 60 * 60 * 1_000,
+            status: null,
+            observedAt: 0,
+            source: "usage",
+          },
+        ],
       });
       setQuota(pool.fixture, pool.second.id, {
-        sevenDayUtilization: 0.4,
-        sevenDayResetAt: now + 7 * 24 * 60 * 60 * 1_000,
+        limitWindows: [
+          {
+            slot: "secondary",
+            windowMinutes: 10080,
+            utilization: 0.4,
+            resetAt: now + 7 * 24 * 60 * 60 * 1_000,
+            status: null,
+            observedAt: 0,
+            source: "usage",
+          },
+        ],
       });
       await pool.send("thr_balancerthreadone", "session-thread-one");
 
       setQuota(pool.fixture, pool.fixture.account.id, {
-        sevenDayUtilization: 0.6,
-        sevenDayResetAt: now + 7 * 24 * 60 * 60 * 1_000,
+        limitWindows: [
+          {
+            slot: "secondary",
+            windowMinutes: 10080,
+            utilization: 0.6,
+            resetAt: now + 7 * 24 * 60 * 60 * 1_000,
+            status: null,
+            observedAt: 0,
+            source: "usage",
+          },
+        ],
       });
       setQuota(pool.fixture, pool.second.id, {
-        sevenDayUtilization: 0.1,
-        sevenDayResetAt: now + 7 * 24 * 60 * 60 * 1_000,
+        limitWindows: [
+          {
+            slot: "secondary",
+            windowMinutes: 10080,
+            utilization: 0.1,
+            resetAt: now + 7 * 24 * 60 * 60 * 1_000,
+            status: null,
+            observedAt: 0,
+            source: "usage",
+          },
+        ],
       });
       await pool.send("thr_balancerthreadtwo", "session-thread-two");
 
@@ -9807,10 +10265,26 @@ describe("Account Pool plugin", () => {
       const pool = await fixtureWithAccounts();
       for (const accountId of [pool.fixture.account.id, pool.second.id])
         setQuota(pool.fixture, accountId, {
-          fiveHourUtilization: 0.98,
-          fiveHourResetAt: now + 5 * 60 * 60 * 1_000,
-          sevenDayUtilization: 0.98,
-          sevenDayResetAt: now + 7 * 24 * 60 * 60 * 1_000,
+          limitWindows: [
+            {
+              slot: "primary",
+              windowMinutes: 300,
+              utilization: 0.98,
+              resetAt: now + 5 * 60 * 60 * 1_000,
+              status: null,
+              observedAt: 0,
+              source: "usage",
+            },
+            {
+              slot: "secondary",
+              windowMinutes: 10080,
+              utilization: 0.98,
+              resetAt: now + 7 * 24 * 60 * 60 * 1_000,
+              status: null,
+              observedAt: 0,
+              source: "usage",
+            },
+          ],
         });
 
       const binding = await pool.fixture.host.harness.behavior.callRpc(
@@ -9831,13 +10305,31 @@ describe("Account Pool plugin", () => {
     it("excludes held accounts from the binding preview", async () => {
       const pool = await fixtureWithAccounts();
       setQuota(pool.fixture, pool.fixture.account.id, {
-        sevenDayUtilization: 0.1,
-        sevenDayResetAt: now + 7 * 24 * 60 * 60 * 1_000,
         heldUntil: now + 60 * 1_000,
+        limitWindows: [
+          {
+            slot: "secondary",
+            windowMinutes: 10080,
+            utilization: 0.1,
+            resetAt: now + 7 * 24 * 60 * 60 * 1_000,
+            status: null,
+            observedAt: 0,
+            source: "usage",
+          },
+        ],
       });
       setQuota(pool.fixture, pool.second.id, {
-        sevenDayUtilization: 0.3,
-        sevenDayResetAt: now + 7 * 24 * 60 * 60 * 1_000,
+        limitWindows: [
+          {
+            slot: "secondary",
+            windowMinutes: 10080,
+            utilization: 0.3,
+            resetAt: now + 7 * 24 * 60 * 60 * 1_000,
+            status: null,
+            observedAt: 0,
+            source: "usage",
+          },
+        ],
       });
 
       const next = await pool.fixture.host.harness.behavior.callRpc(
@@ -9851,19 +10343,46 @@ describe("Account Pool plugin", () => {
     it("keeps a held account bound while previewing another account for new work", async () => {
       const pool = await fixtureWithAccounts();
       setQuota(pool.fixture, pool.fixture.account.id, {
-        sevenDayUtilization: 0.2,
-        sevenDayResetAt: now + 7 * 24 * 60 * 60 * 1_000,
+        limitWindows: [
+          {
+            slot: "secondary",
+            windowMinutes: 10080,
+            utilization: 0.2,
+            resetAt: now + 7 * 24 * 60 * 60 * 1_000,
+            status: null,
+            observedAt: 0,
+            source: "usage",
+          },
+        ],
       });
       setQuota(pool.fixture, pool.second.id, {
-        sevenDayUtilization: 0.4,
-        sevenDayResetAt: now + 7 * 24 * 60 * 60 * 1_000,
+        limitWindows: [
+          {
+            slot: "secondary",
+            windowMinutes: 10080,
+            utilization: 0.4,
+            resetAt: now + 7 * 24 * 60 * 60 * 1_000,
+            status: null,
+            observedAt: 0,
+            source: "usage",
+          },
+        ],
       });
       await pool.send("thr_heldbindingpreview", "session-heldbindingpreview");
 
       setQuota(pool.fixture, pool.fixture.account.id, {
-        sevenDayUtilization: 0.2,
-        sevenDayResetAt: now + 7 * 24 * 60 * 60 * 1_000,
         heldUntil: now + 60 * 1_000,
+        limitWindows: [
+          {
+            slot: "secondary",
+            windowMinutes: 10080,
+            utilization: 0.2,
+            resetAt: now + 7 * 24 * 60 * 60 * 1_000,
+            status: null,
+            observedAt: 0,
+            source: "usage",
+          },
+        ],
       });
 
       const binding = await pool.fixture.host.harness.behavior.callRpc(
@@ -9884,15 +10403,33 @@ describe("Account Pool plugin", () => {
     it("keeps an Automatic conversation bound through a hold and returns to it afterward", async () => {
       const pool = await fixtureWithAccounts();
       setQuota(pool.fixture, pool.fixture.account.id, {
-        sevenDayUtilization: 0.2,
-        sevenDayResetAt: now + 7 * 24 * 60 * 60 * 1_000,
+        limitWindows: [
+          {
+            slot: "secondary",
+            windowMinutes: 10080,
+            utilization: 0.2,
+            resetAt: now + 7 * 24 * 60 * 60 * 1_000,
+            status: null,
+            observedAt: 0,
+            source: "usage",
+          },
+        ],
       });
       await pool.send("thr_longholdrebalance", "session-longholdrebalance");
 
       setQuota(pool.fixture, pool.fixture.account.id, {
-        sevenDayUtilization: 0.2,
-        sevenDayResetAt: now + 7 * 24 * 60 * 60 * 1_000,
         heldUntil: now + 60 * 1_000,
+        limitWindows: [
+          {
+            slot: "secondary",
+            windowMinutes: 10080,
+            utilization: 0.2,
+            resetAt: now + 7 * 24 * 60 * 60 * 1_000,
+            status: null,
+            observedAt: 0,
+            source: "usage",
+          },
+        ],
       });
       const before = await pool.fixture.host.harness.behavior.callRpc(
         "routing.binding.get",
@@ -9920,9 +10457,18 @@ describe("Account Pool plugin", () => {
       });
 
       setQuota(pool.fixture, pool.fixture.account.id, {
-        sevenDayUtilization: 0.2,
-        sevenDayResetAt: now + 7 * 24 * 60 * 60 * 1_000,
         heldUntil: null,
+        limitWindows: [
+          {
+            slot: "secondary",
+            windowMinutes: 10080,
+            utilization: 0.2,
+            resetAt: now + 7 * 24 * 60 * 60 * 1_000,
+            status: null,
+            observedAt: 0,
+            source: "usage",
+          },
+        ],
       });
       await pool.send("thr_longholdrebalance", "session-longholdrebalance");
       await pool.send("thr_longholdrebalance", "session-longholdrebalance");
@@ -9957,9 +10503,18 @@ describe("Account Pool plugin", () => {
         },
       );
       setQuota(pool.fixture, pool.fixture.account.id, {
-        sevenDayUtilization: 0.2,
-        sevenDayResetAt: now + 7 * 24 * 60 * 60 * 1_000,
         heldUntil: now + 60 * 1_000,
+        limitWindows: [
+          {
+            slot: "secondary",
+            windowMinutes: 10080,
+            utilization: 0.2,
+            resetAt: now + 7 * 24 * 60 * 60 * 1_000,
+            status: null,
+            observedAt: 0,
+            source: "usage",
+          },
+        ],
       });
 
       const token = await resolveToken(
@@ -9988,23 +10543,59 @@ describe("Account Pool plugin", () => {
     it("keeps an extra-usage eligible bound account in the binding preview", async () => {
       const pool = await fixtureWithAccounts();
       setQuota(pool.fixture, pool.fixture.account.id, {
-        sevenDayUtilization: 0.2,
-        sevenDayResetAt: now + 7 * 24 * 60 * 60 * 1_000,
+        limitWindows: [
+          {
+            slot: "secondary",
+            windowMinutes: 10080,
+            utilization: 0.2,
+            resetAt: now + 7 * 24 * 60 * 60 * 1_000,
+            status: null,
+            observedAt: 0,
+            source: "usage",
+          },
+        ],
       });
       setQuota(pool.fixture, pool.second.id, {
-        sevenDayUtilization: 0.4,
-        sevenDayResetAt: now + 7 * 24 * 60 * 60 * 1_000,
+        limitWindows: [
+          {
+            slot: "secondary",
+            windowMinutes: 10080,
+            utilization: 0.4,
+            resetAt: now + 7 * 24 * 60 * 60 * 1_000,
+            status: null,
+            observedAt: 0,
+            source: "usage",
+          },
+        ],
       });
       await pool.send("thr_extrausagepreview", "session-extrausagepreview");
 
       setQuota(pool.fixture, pool.fixture.account.id, {
-        sevenDayUtilization: 0.98,
-        sevenDayResetAt: now + 7 * 24 * 60 * 60 * 1_000,
         extraUsage: { status: "allowed", observedAt: now, source: "usage" },
+        limitWindows: [
+          {
+            slot: "secondary",
+            windowMinutes: 10080,
+            utilization: 0.98,
+            resetAt: now + 7 * 24 * 60 * 60 * 1_000,
+            status: null,
+            observedAt: 0,
+            source: "usage",
+          },
+        ],
       });
       setQuota(pool.fixture, pool.second.id, {
-        sevenDayUtilization: 0.98,
-        sevenDayResetAt: now + 7 * 24 * 60 * 60 * 1_000,
+        limitWindows: [
+          {
+            slot: "secondary",
+            windowMinutes: 10080,
+            utilization: 0.98,
+            resetAt: now + 7 * 24 * 60 * 60 * 1_000,
+            status: null,
+            observedAt: 0,
+            source: "usage",
+          },
+        ],
       });
 
       const binding = await pool.fixture.host.harness.behavior.callRpc(
@@ -10025,23 +10616,59 @@ describe("Account Pool plugin", () => {
     it("does not report an extra-usage bound account when routing narrows below threshold", async () => {
       const pool = await fixtureWithAccounts();
       setQuota(pool.fixture, pool.fixture.account.id, {
-        sevenDayUtilization: 0.2,
-        sevenDayResetAt: now + 7 * 24 * 60 * 60 * 1_000,
+        limitWindows: [
+          {
+            slot: "secondary",
+            windowMinutes: 10080,
+            utilization: 0.2,
+            resetAt: now + 7 * 24 * 60 * 60 * 1_000,
+            status: null,
+            observedAt: 0,
+            source: "usage",
+          },
+        ],
       });
       setQuota(pool.fixture, pool.second.id, {
-        sevenDayUtilization: 0.4,
-        sevenDayResetAt: now + 7 * 24 * 60 * 60 * 1_000,
+        limitWindows: [
+          {
+            slot: "secondary",
+            windowMinutes: 10080,
+            utilization: 0.4,
+            resetAt: now + 7 * 24 * 60 * 60 * 1_000,
+            status: null,
+            observedAt: 0,
+            source: "usage",
+          },
+        ],
       });
       await pool.send("thr_extrausagerebalance", "session-extrausagerebalance");
 
       setQuota(pool.fixture, pool.fixture.account.id, {
-        sevenDayUtilization: 0.98,
-        sevenDayResetAt: now + 7 * 24 * 60 * 60 * 1_000,
         extraUsage: { status: "allowed", observedAt: now, source: "usage" },
+        limitWindows: [
+          {
+            slot: "secondary",
+            windowMinutes: 10080,
+            utilization: 0.98,
+            resetAt: now + 7 * 24 * 60 * 60 * 1_000,
+            status: null,
+            observedAt: 0,
+            source: "usage",
+          },
+        ],
       });
       setQuota(pool.fixture, pool.second.id, {
-        sevenDayUtilization: 0.5,
-        sevenDayResetAt: now + 7 * 24 * 60 * 60 * 1_000,
+        limitWindows: [
+          {
+            slot: "secondary",
+            windowMinutes: 10080,
+            utilization: 0.5,
+            resetAt: now + 7 * 24 * 60 * 60 * 1_000,
+            status: null,
+            observedAt: 0,
+            source: "usage",
+          },
+        ],
       });
 
       const binding = await pool.fixture.host.harness.behavior.callRpc(
@@ -10065,29 +10692,74 @@ describe("Account Pool plugin", () => {
     it("uses hysteresis for new conversations and switches after a 10-point lead", async () => {
       const pool = await fixtureWithAccounts();
       setQuota(pool.fixture, pool.fixture.account.id, {
-        sevenDayUtilization: 0.3,
-        sevenDayResetAt: now + 7 * 24 * 60 * 60 * 1_000,
+        limitWindows: [
+          {
+            slot: "secondary",
+            windowMinutes: 10080,
+            utilization: 0.3,
+            resetAt: now + 7 * 24 * 60 * 60 * 1_000,
+            status: null,
+            observedAt: 0,
+            source: "usage",
+          },
+        ],
       });
       setQuota(pool.fixture, pool.second.id, {
-        sevenDayUtilization: 0.35,
-        sevenDayResetAt: now + 7 * 24 * 60 * 60 * 1_000,
+        limitWindows: [
+          {
+            slot: "secondary",
+            windowMinutes: 10080,
+            utilization: 0.35,
+            resetAt: now + 7 * 24 * 60 * 60 * 1_000,
+            status: null,
+            observedAt: 0,
+            source: "usage",
+          },
+        ],
       });
       await pool.send("thread-hysteresis-1", "session-hysteresis-1");
 
       setQuota(pool.fixture, pool.fixture.account.id, {
-        sevenDayUtilization: 0.5,
-        sevenDayResetAt: now + 7 * 24 * 60 * 60 * 1_000,
+        limitWindows: [
+          {
+            slot: "secondary",
+            windowMinutes: 10080,
+            utilization: 0.5,
+            resetAt: now + 7 * 24 * 60 * 60 * 1_000,
+            status: null,
+            observedAt: 0,
+            source: "usage",
+          },
+        ],
       });
       setQuota(pool.fixture, pool.second.id, {
-        sevenDayUtilization: 0.45,
-        sevenDayResetAt: now + 7 * 24 * 60 * 60 * 1_000,
+        limitWindows: [
+          {
+            slot: "secondary",
+            windowMinutes: 10080,
+            utilization: 0.45,
+            resetAt: now + 7 * 24 * 60 * 60 * 1_000,
+            status: null,
+            observedAt: 0,
+            source: "usage",
+          },
+        ],
       });
       await pool.send("thread-hysteresis-2", "session-hysteresis-2");
       expect(pool.seen).toEqual(["sk-first", "sk-first"]);
 
       setQuota(pool.fixture, pool.fixture.account.id, {
-        sevenDayUtilization: 0.65,
-        sevenDayResetAt: now + 7 * 24 * 60 * 60 * 1_000,
+        limitWindows: [
+          {
+            slot: "secondary",
+            windowMinutes: 10080,
+            utilization: 0.65,
+            resetAt: now + 7 * 24 * 60 * 60 * 1_000,
+            status: null,
+            observedAt: 0,
+            source: "usage",
+          },
+        ],
       });
       await pool.send("thread-hysteresis-3", "session-hysteresis-3");
       expect(pool.seen).toEqual(["sk-first", "sk-first", "sk-second"]);
@@ -10096,12 +10768,30 @@ describe("Account Pool plugin", () => {
     it("keeps explicit thread pins independent from automatic headroom", async () => {
       const pool = await fixtureWithAccounts();
       setQuota(pool.fixture, pool.fixture.account.id, {
-        sevenDayUtilization: 0.02,
-        sevenDayResetAt: now + 7 * 24 * 60 * 60 * 1_000,
+        limitWindows: [
+          {
+            slot: "secondary",
+            windowMinutes: 10080,
+            utilization: 0.02,
+            resetAt: now + 7 * 24 * 60 * 60 * 1_000,
+            status: null,
+            observedAt: 0,
+            source: "usage",
+          },
+        ],
       });
       setQuota(pool.fixture, pool.second.id, {
-        sevenDayUtilization: 0.9,
-        sevenDayResetAt: now + 7 * 24 * 60 * 60 * 1_000,
+        limitWindows: [
+          {
+            slot: "secondary",
+            windowMinutes: 10080,
+            utilization: 0.9,
+            resetAt: now + 7 * 24 * 60 * 60 * 1_000,
+            status: null,
+            observedAt: 0,
+            source: "usage",
+          },
+        ],
       });
       const configure =
         pool.fixture.host.harness.registrations.hooks[
@@ -10127,8 +10817,17 @@ describe("Account Pool plugin", () => {
         [third.id, 0.1],
       ] as const)
         setQuota(pool.fixture, accountId, {
-          sevenDayUtilization: utilization,
-          sevenDayResetAt: now + 7 * 24 * 60 * 60 * 1_000,
+          limitWindows: [
+            {
+              slot: "secondary",
+              windowMinutes: 10080,
+              utilization: utilization,
+              resetAt: now + 7 * 24 * 60 * 60 * 1_000,
+              status: null,
+              observedAt: 0,
+              source: "usage",
+            },
+          ],
         });
 
       await pool.send("thread-three", "session-three");
@@ -10139,12 +10838,30 @@ describe("Account Pool plugin", () => {
     it("strictly validates binding RPC inputs and exposes the pool-wide marker", async () => {
       const pool = await fixtureWithAccounts();
       setQuota(pool.fixture, pool.fixture.account.id, {
-        sevenDayUtilization: 0.4,
-        sevenDayResetAt: now + 7 * 24 * 60 * 60 * 1_000,
+        limitWindows: [
+          {
+            slot: "secondary",
+            windowMinutes: 10080,
+            utilization: 0.4,
+            resetAt: now + 7 * 24 * 60 * 60 * 1_000,
+            status: null,
+            observedAt: 0,
+            source: "usage",
+          },
+        ],
       });
       setQuota(pool.fixture, pool.second.id, {
-        sevenDayUtilization: 0.1,
-        sevenDayResetAt: now + 7 * 24 * 60 * 60 * 1_000,
+        limitWindows: [
+          {
+            slot: "secondary",
+            windowMinutes: 10080,
+            utilization: 0.1,
+            resetAt: now + 7 * 24 * 60 * 60 * 1_000,
+            status: null,
+            observedAt: 0,
+            source: "usage",
+          },
+        ],
       });
 
       await expect(
@@ -10269,12 +10986,30 @@ describe("Account Pool plugin", () => {
         const pool = await recordingPool();
         await pool.send("thr_cont_auto");
         setQuota(pool.fixture, pool.fixture.account.id, {
-          sevenDayUtilization: 1,
-          sevenDayResetAt: now + 7 * 24 * 60 * 60 * 1_000,
+          limitWindows: [
+            {
+              slot: "secondary",
+              windowMinutes: 10080,
+              utilization: 1,
+              resetAt: now + 7 * 24 * 60 * 60 * 1_000,
+              status: null,
+              observedAt: 0,
+              source: "usage",
+            },
+          ],
         });
         setQuota(pool.fixture, pool.second.id, {
-          sevenDayUtilization: 0.1,
-          sevenDayResetAt: now + 7 * 24 * 60 * 60 * 1_000,
+          limitWindows: [
+            {
+              slot: "secondary",
+              windowMinutes: 10080,
+              utilization: 0.1,
+              resetAt: now + 7 * 24 * 60 * 60 * 1_000,
+              status: null,
+              observedAt: 0,
+              source: "usage",
+            },
+          ],
         });
         await pool.send("thr_cont_auto");
 
@@ -10290,18 +11025,45 @@ describe("Account Pool plugin", () => {
       it("makes a newly added account eligible for the next new conversation without a reload", async () => {
         const pool = await recordingPool();
         setQuota(pool.fixture, pool.fixture.account.id, {
-          sevenDayUtilization: 0.9,
-          sevenDayResetAt: now + 7 * 24 * 60 * 60 * 1_000,
+          limitWindows: [
+            {
+              slot: "secondary",
+              windowMinutes: 10080,
+              utilization: 0.9,
+              resetAt: now + 7 * 24 * 60 * 60 * 1_000,
+              status: null,
+              observedAt: 0,
+              source: "usage",
+            },
+          ],
         });
         setQuota(pool.fixture, pool.second.id, {
-          sevenDayUtilization: 0.95,
-          sevenDayResetAt: now + 7 * 24 * 60 * 60 * 1_000,
+          limitWindows: [
+            {
+              slot: "secondary",
+              windowMinutes: 10080,
+              utilization: 0.95,
+              resetAt: now + 7 * 24 * 60 * 60 * 1_000,
+              status: null,
+              observedAt: 0,
+              source: "usage",
+            },
+          ],
         });
         await pool.send("thr_before_add");
         const added = await addApiAccount(pool.fixture, "sk-new", 300);
         setQuota(pool.fixture, added.id, {
-          sevenDayUtilization: 0.05,
-          sevenDayResetAt: now + 7 * 24 * 60 * 60 * 1_000,
+          limitWindows: [
+            {
+              slot: "secondary",
+              windowMinutes: 10080,
+              utilization: 0.05,
+              resetAt: now + 7 * 24 * 60 * 60 * 1_000,
+              status: null,
+              observedAt: 0,
+              source: "usage",
+            },
+          ],
         });
         await pool.send("thr_after_add");
 
@@ -10516,7 +11278,12 @@ describe("sequential pool recovery", () => {
       options: {
         fetch: async (_input, init) => {
           attempts.push(new Headers(init?.headers).get("x-api-key"));
-          return Response.json({}, { status: outage ? 503 : 200 });
+          return outage
+            ? Response.json(
+                {},
+                { status: 503, headers: { "retry-after": "0" } },
+              )
+            : Response.json({});
         },
       },
     });
@@ -10533,7 +11300,331 @@ describe("sequential pool recovery", () => {
     await failed.text();
     outage = false;
     await (await send()).text();
-    expect(attempts).toEqual(["sk-first", "sk-first", "sk-second", "sk-first"]);
+    expect(attempts).toEqual([
+      "sk-first",
+      "sk-first",
+      "sk-first",
+      "sk-first",
+      "sk-second",
+      "sk-first",
+    ]);
+  });
+
+  it("excludes new conversations at the switch threshold and resumes when a fresh account is added", async () => {
+    const now = 1_800_000_000_000;
+    const resetAt = String((now + 60 * 60 * 1_000) / 1_000);
+    const attempts: Array<string | null> = [];
+    const refused = new Set<string>();
+    const utilization: Record<string, string> = {
+      "sk-first": "0.99",
+      "sk-second": "1",
+    };
+    const fixture = await createFixture({
+      upstreamUrl: "https://upstream.example",
+      apiKey: "sk-first",
+      options: {
+        now: () => now,
+        fetch: async (_input, init) => {
+          const key = new Headers(init?.headers).get("x-api-key") ?? "";
+          attempts.push(key);
+          if (refused.has(key))
+            return Response.json(
+              {},
+              {
+                status: 429,
+                headers: {
+                  "anthropic-ratelimit-unified-5h-status": "rejected",
+                  "anthropic-ratelimit-unified-5h-reset": resetAt,
+                },
+              },
+            );
+          return Response.json(
+            {},
+            {
+              headers:
+                key in utilization
+                  ? {
+                      "anthropic-ratelimit-unified-5h-utilization":
+                        utilization[key] ?? "",
+                      "anthropic-ratelimit-unified-5h-status": "allowed",
+                      "anthropic-ratelimit-unified-5h-reset": resetAt,
+                    }
+                  : {},
+            },
+          );
+        },
+      },
+    });
+    await addApiAccount(fixture, "sk-second");
+    const send = async () => {
+      const response = await fixture.host.harness.behavior.fetchHttp(
+        "POST",
+        "/v1/messages",
+        { headers: authHeaders(fixture.key), body: "{}" },
+      );
+      await response.text();
+      return response.status;
+    };
+
+    expect(await send()).toBe(200);
+    expect(await send()).toBe(200);
+    expect(await send()).toBe(429);
+    expect(attempts).toEqual(["sk-first", "sk-second"]);
+
+    refused.add("sk-second");
+    expect(await send()).toBe(429);
+    expect(attempts).toEqual(["sk-first", "sk-second"]);
+
+    await addApiAccount(fixture, "sk-third");
+    expect(await send()).toBe(200);
+    expect(attempts.at(-1)).toBe("sk-third");
+  });
+
+  it("switches a conversation once its account reaches the switch threshold", async () => {
+    const attempts: Array<string | null> = [];
+    let refused = false;
+    const fixture = await createFixture({
+      upstreamUrl: "https://upstream.example",
+      apiKey: "sk-first",
+      options: {
+        now: () => 1_800_000_000_000,
+        fetch: async (_input, init) => {
+          const key = new Headers(init?.headers).get("x-api-key");
+          attempts.push(key);
+          const rejected = refused && key === "sk-first";
+          return Response.json(
+            {},
+            {
+              status: rejected ? 429 : 200,
+              headers:
+                key === "sk-first"
+                  ? {
+                      "anthropic-ratelimit-unified-5h-utilization": "0.99",
+                      "anthropic-ratelimit-unified-5h-status": rejected
+                        ? "rejected"
+                        : "allowed",
+                      "anthropic-ratelimit-unified-5h-reset": "1800003600",
+                    }
+                  : {},
+            },
+          );
+        },
+      },
+    });
+    await addApiAccount(fixture, "sk-second");
+    const send = async (session: string) => {
+      const response = await fixture.host.harness.behavior.fetchHttp(
+        "POST",
+        "/v1/messages",
+        {
+          headers: authHeaders(fixture.key),
+          body: JSON.stringify({
+            model: "claude-opus-4-1",
+            metadata: { user_id: JSON.stringify({ session_id: session }) },
+          }),
+        },
+      );
+      expect(response.status).toBe(200);
+      await response.text();
+    };
+
+    await send("pinned");
+    await send("pinned");
+    await send("new");
+    await send("pinned");
+    refused = true;
+    await send("pinned");
+    await send("pinned");
+
+    expect(attempts).toEqual([
+      "sk-first",
+      "sk-second",
+      "sk-second",
+      "sk-second",
+      "sk-second",
+      "sk-second",
+    ]);
+  });
+
+  it("prefers eligible extra usage over an account past the switch threshold", async () => {
+    const attempts: Array<string | null> = [];
+    const fixture = await createFixture({
+      upstreamUrl: "https://upstream.example",
+      apiKey: "sk-first",
+      options: {
+        now: () => 1_800_000_000_000,
+        fetch: async (_input, init) => {
+          const key = new Headers(init?.headers).get("x-api-key");
+          attempts.push(key);
+          return Response.json(
+            {},
+            {
+              headers:
+                key === "sk-first"
+                  ? {
+                      "anthropic-ratelimit-unified-5h-utilization": "0.99",
+                      "anthropic-ratelimit-unified-5h-status": "allowed",
+                      "anthropic-ratelimit-unified-5h-reset": "1800003600",
+                    }
+                  : {
+                      "anthropic-ratelimit-unified-5h-utilization": "1",
+                      "anthropic-ratelimit-unified-5h-status": "rejected",
+                      "anthropic-ratelimit-unified-5h-reset": "1800003600",
+                      "anthropic-ratelimit-unified-overage-status": "allowed",
+                    },
+            },
+          );
+        },
+      },
+    });
+    await addApiAccount(fixture, "sk-second");
+    const send = async (requestBody: string) => {
+      const response = await fixture.host.harness.behavior.fetchHttp(
+        "POST",
+        "/v1/messages",
+        { headers: authHeaders(fixture.key), body: requestBody },
+      );
+      expect(response.status).toBe(200);
+      await response.text();
+    };
+
+    await send("{}");
+    await send(body);
+    await send("{}");
+    await send(body);
+
+    expect(attempts).toEqual([
+      "sk-first",
+      "sk-second",
+      "sk-second",
+      "sk-second",
+    ]);
+  });
+
+  it("reports threshold exhaustion and also provider refusal below the threshold", async () => {
+    let refused = false;
+    const fixture = await createFixture({
+      upstreamUrl: "https://upstream.example",
+      options: {
+        now: () => 1_800_000_000_000,
+        fetch: async () =>
+          Response.json(
+            {},
+            {
+              status: refused ? 429 : 200,
+              headers: {
+                "anthropic-ratelimit-unified-7d-utilization": refused
+                  ? "0.5"
+                  : "0.99",
+                "anthropic-ratelimit-unified-7d-status": refused
+                  ? "rejected"
+                  : "allowed",
+                "anthropic-ratelimit-unified-7d-reset": "1800086400",
+              },
+            },
+          ),
+      },
+    });
+    const status = async () => {
+      await (
+        await fixture.host.harness.behavior.fetchHttp("POST", "/v1/messages", {
+          headers: authHeaders(fixture.key),
+          body,
+        })
+      ).text();
+      const result = await fixture.host.harness.behavior.runCli([
+        "status",
+        "--json",
+      ]);
+      return statusReportSchema.parse(JSON.parse(result.stdout)).accounts[0]
+        ?.status;
+    };
+
+    expect(await status()).toBe("exhausted");
+    setQuota(fixture, fixture.account.id, {
+      observedAt: 1_800_000_000_000,
+      limitWindows: [
+        {
+          slot: "secondary",
+          windowMinutes: 10080,
+          utilization: 0.5,
+          resetAt: 1_800_086_400_000,
+          status: "allowed",
+          observedAt: 1_800_000_000_000,
+          source: "usage",
+        },
+      ],
+    });
+    refused = true;
+    expect(await status()).toBe("exhausted");
+  });
+
+  it("waits for both threshold-exhausted and provider-refused windows before retrying", async () => {
+    const now = 1_800_000_000_000;
+    const seconds = (milliseconds: number) =>
+      String((now + milliseconds) / 1_000);
+    const hour = 60 * 60 * 1_000;
+    const day = 24 * hour;
+    const attempts: Array<string | null> = [];
+    const fixture = await createFixture({
+      upstreamUrl: "https://upstream.example",
+      apiKey: "sk-first",
+      options: {
+        now: () => now,
+        fetch: async (_input, init) => {
+          const key = new Headers(init?.headers).get("x-api-key");
+          attempts.push(key);
+          return key === "sk-first"
+            ? Response.json(
+                {},
+                {
+                  headers: {
+                    "anthropic-ratelimit-unified-5h-utilization": "1",
+                    "anthropic-ratelimit-unified-5h-reset": seconds(2 * hour),
+                    "anthropic-ratelimit-unified-7d-utilization": "0.99",
+                    "anthropic-ratelimit-unified-7d-status": "allowed",
+                    "anthropic-ratelimit-unified-7d-reset": seconds(6 * day),
+                  },
+                },
+              )
+            : Response.json(
+                {},
+                {
+                  status: 429,
+                  headers: {
+                    "anthropic-ratelimit-unified-5h-status": "rejected",
+                    "anthropic-ratelimit-unified-5h-reset": seconds(hour),
+                    "anthropic-ratelimit-unified-7d-utilization": "0.99",
+                    "anthropic-ratelimit-unified-7d-status": "allowed",
+                    "anthropic-ratelimit-unified-7d-reset": seconds(5 * day),
+                  },
+                },
+              );
+        },
+      },
+    });
+    await addApiAccount(fixture, "sk-second");
+    const send = () =>
+      fixture.host.harness.behavior.fetchHttp("POST", "/v1/messages", {
+        headers: authHeaders(fixture.key),
+        body,
+      });
+    await (await send()).text();
+
+    const refused = await send();
+
+    expect(attempts).toEqual(["sk-first", "sk-second"]);
+    expect(refused.status).toBe(429);
+    expect(refused.headers.get("retry-after")).toBe(String((5 * day) / 1000));
+    expect(await refused.text()).toContain(
+      new Date(now + 5 * day).toISOString(),
+    );
+    expect(
+      await fixture.host.harness.behavior.callRpc(retryAvailabilityMethod, {
+        threadId: "thread-one",
+        requestId: "creq_aaaaaaaaaa",
+      }),
+    ).toEqual({ kind: "blocked", retryAt: now + 5 * day });
   });
 
   it("keeps Codex over-limit accounts ineligible until reset when utilization is omitted", async () => {
@@ -11359,12 +12450,20 @@ it("drains a streamed response before disposing the owned transport", async () =
   }
 });
 
-it("publishes pooled usage without a display plugin and does not invent unobserved utilization", async () => {
+it("publishes pooled subscription usage without a display plugin and does not invent unobserved utilization", async () => {
   const upstream = await startUpstream((_request, response) => {
     response.end();
   });
   cleanups.push(upstream.close);
-  const fixture = await createFixture({ upstreamUrl: upstream.url });
+  const fixture = await createFixture({
+    upstreamUrl: upstream.url,
+    source: "import",
+    options: {
+      usageUrl: `${upstream.url}/usage`,
+      importCredentials: async () => importedCredentials(),
+    },
+  });
+  const apiKeyAccount = await addApiAccount(fixture, "sk-pay-as-you-go");
   const inventory = usageResourceListSchema.parse(
     await fixture.host.harness.behavior.callRpc(usageListMethod, {}),
   );
@@ -11374,14 +12473,6 @@ it("publishes pooled usage without a display plugin and does not invent unobserv
       id: fixture.account.id,
       providerId: "claude-code",
       scope: { kind: "shared" },
-      accountPool: {
-        active: false,
-        enabled: true,
-        status: "ready",
-        heldUntil: null,
-        error: null,
-        extraUsage: null,
-      },
     }),
   ]);
   const result = usageMeasurementSchema.parse(
@@ -11397,18 +12488,17 @@ it("publishes pooled usage without a display plugin and does not invent unobserv
       message: "Usage has not been observed for this account.",
     },
   });
+  await expect(
+    fixture.host.harness.behavior.callRpc(usageFetchMethod, {
+      resourceId: apiKeyAccount.id,
+      refresh: false,
+    }),
+  ).rejects.toThrow("no longer exists");
   expect(
     fixture.host.harness.registrations.experimental_publishedRpcMethods.map(
       (entry) => entry.method,
     ),
-  ).toEqual([
-    retryAvailabilityMethod,
-    usageListMethod,
-    usageFetchMethod,
-    "bypass.get",
-    "routing.binding.get",
-    "routing.binding.next",
-  ]);
+  ).toEqual(expect.arrayContaining([usageListMethod, usageFetchMethod]));
 });
 
 it("publishes an empty shared usage group before any accounts or settings are configured", async () => {
@@ -11449,11 +12539,25 @@ it("lists every routed pool account and hides them from provider usage when rout
     response.end();
   });
   cleanups.push(upstream.close);
-  const fixture = await createFixture({ upstreamUrl: upstream.url });
+  let imported = 0;
+  const fixture = await createFixture({
+    upstreamUrl: upstream.url,
+    source: "import",
+    options: {
+      importCredentials: async () =>
+        importedCredentials({
+          email: `pool-${imported}@example.com`,
+          accountUuid:
+            imported++ === 0
+              ? "11111111-1111-4111-8111-111111111111"
+              : "22222222-2222-4222-8222-222222222222",
+        }),
+    },
+  });
   const second = accountSchema.parse(
     await fixture.host.harness.behavior.callRpc("account.add", {
       provider: "claude",
-      source: { kind: "api-key", apiKey: "sk-second" },
+      source: { kind: "import" },
       label: "Second",
       priority: 2,
     }),
@@ -11514,13 +12618,25 @@ it("does not publish expired quota windows as current usage", async () => {
     response.end();
   });
   cleanups.push(upstream.close);
-  const fixture = await createFixture({ upstreamUrl: upstream.url });
+  const fixture = await createFixture({
+    upstreamUrl: upstream.url,
+    source: "import",
+    options: { importCredentials: async () => importedCredentials() },
+  });
   const now = Date.now();
   setQuota(fixture, fixture.account.id, {
-    fiveHourUtilization: 0.8,
-    fiveHourResetAt: now - 10 * 60 * 60 * 1_000,
-    fiveHourStatus: "allowed",
     observedAt: now - 10 * 60 * 60 * 1_000,
+    limitWindows: [
+      {
+        slot: "primary",
+        windowMinutes: 300,
+        utilization: 0.8,
+        resetAt: now - 10 * 60 * 60 * 1_000,
+        status: "allowed",
+        observedAt: 0,
+        source: "usage",
+      },
+    ],
   });
   await fixture.host.harness.behavior.callRpc("routing.set", {
     provider: "claude",
@@ -11679,6 +12795,7 @@ describe("Account Pool nested proxy", () => {
       "ANTHROPIC_AUTH_TOKEN",
       "CLAUDE_CODE_OAUTH_TOKEN",
       "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST",
+      "BB_CLAUDE_MODELS_URL",
       "HTTPS_PROXY",
       "NO_PROXY",
       "NODE_EXTRA_CA_CERTS",
@@ -11758,6 +12875,7 @@ describe("Account Pool nested proxy", () => {
       "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST",
       "ENABLE_TOOL_SEARCH",
       "_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL",
+      "BB_CLAUDE_MODELS_URL",
       "ENABLE_PROMPT_CACHING_1H",
       "CLAUDE_CODE_OAUTH_TOKEN",
       "HTTPS_PROXY",
@@ -13380,7 +14498,7 @@ describe("Account Pool credential scoping", () => {
         if (!armed || threadId !== "thread-stale-answer")
           return bbThread(threadId);
         armed = false;
-        const captured = await bbThread(threadId);
+        const captured = bbThread(threadId);
         reach();
         await gate;
         return captured;
@@ -13422,7 +14540,7 @@ describe("Account Pool credential scoping", () => {
         if (!armed || threadId !== "thread-deleted-live")
           return bbThread(threadId);
         armed = false;
-        const captured = await bbThread(threadId);
+        const captured = bbThread(threadId);
         reach();
         await gate;
         return captured;
@@ -13482,9 +14600,12 @@ describe("Account Pool credential scoping", () => {
       await service.done;
       await reloaded.harness.lifecycle.dispose();
     });
-    await waitForAccepting(async () => statusSchema.parse(
-        await reloaded.harness.behavior.callRpc("status.get", null),
-       ).accepting);
+    await waitForAccepting(
+      async () =>
+        statusSchema.parse(
+          await reloaded.harness.behavior.callRpc("status.get", null),
+        ).accepting,
+    );
     expect(await statusOf(reloaded, claude, "/v1/messages")).toBe(401);
     expect(await statusOf(reloaded, nested, "/availability")).toBe(401);
     expect(await routedTokens(reloaded)).toEqual([]);
@@ -13601,9 +14722,12 @@ describe("Account Pool credential scoping", () => {
         await service.done;
         await reloaded.harness.lifecycle.dispose();
       });
-      await waitForAccepting(async () => statusSchema.parse(
-          await reloaded.harness.behavior.callRpc("status.get", null),
-         ).accepting);
+      await waitForAccepting(
+        async () =>
+          statusSchema.parse(
+            await reloaded.harness.behavior.callRpc("status.get", null),
+          ).accepting,
+      );
       expect(
         (
           await reloaded.harness.behavior.resolveProviderEnv("claude-code", {
@@ -13707,9 +14831,12 @@ describe("Account Pool credential scoping", () => {
       await service.done;
       await host.harness.lifecycle.dispose();
     });
-    await waitForAccepting(async () => statusSchema.parse(
-        await host.harness.behavior.callRpc("status.get", null),
-       ).accepting);
+    await waitForAccepting(
+      async () =>
+        statusSchema.parse(
+          await host.harness.behavior.callRpc("status.get", null),
+        ).accepting,
+    );
     expect(await statusOf(host, claude, "/v1/messages")).toBe(200);
     expect(await statusOf(host, nested, "/availability")).toBe(200);
     expect(await statusOf(host, revoked, "/v1/messages")).toBe(401);
@@ -13878,9 +15005,12 @@ describe("Account Pool credential scoping", () => {
       await service.done;
       await host.harness.lifecycle.dispose();
     });
-    await waitForAccepting(async () => statusSchema.parse(
-        await host.harness.behavior.callRpc("status.get", null),
-       ).accepting);
+    await waitForAccepting(
+      async () =>
+        statusSchema.parse(
+          await host.harness.behavior.callRpc("status.get", null),
+        ).accepting,
+    );
     return host;
   }
 
@@ -14809,6 +15939,7 @@ describe("Account Pool credential scoping", () => {
       ["ANTHROPIC_AUTH_TOKEN", ""],
       ["CLAUDE_CODE_OAUTH_TOKEN", ""],
       ["CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST", ""],
+      ["BB_CLAUDE_MODELS_URL", ""],
       ["HTTPS_PROXY", ""],
       ["NO_PROXY", ""],
       ["NODE_EXTRA_CA_CERTS", ""],
@@ -14903,6 +16034,7 @@ describe("Account Pool credential scoping", () => {
           ["ANTHROPIC_AUTH_TOKEN", ""],
           ["CLAUDE_CODE_OAUTH_TOKEN", ""],
           ["CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST", ""],
+          ["BB_CLAUDE_MODELS_URL", ""],
           ["HTTPS_PROXY", ""],
           ["NO_PROXY", ""],
           ["NODE_EXTRA_CA_CERTS", ""],
@@ -14935,6 +16067,7 @@ describe("Account Pool credential scoping", () => {
           ["ANTHROPIC_AUTH_TOKEN", ""],
           ["CLAUDE_CODE_OAUTH_TOKEN", ""],
           ["CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST", ""],
+          ["BB_CLAUDE_MODELS_URL", ""],
           ["HTTPS_PROXY", ""],
           ["NO_PROXY", ""],
           ["NODE_EXTRA_CA_CERTS", ""],
@@ -15019,9 +16152,12 @@ describe("Account Pool credential scoping", () => {
       await child.harness.lifecycle.dispose();
       await fs.rm(dataDir, { recursive: true, force: true });
     });
-    await waitForAccepting(async () => statusSchema.parse(
-        await child.harness.behavior.callRpc("status.get", null),
-       ).accepting);
+    await waitForAccepting(
+      async () =>
+        statusSchema.parse(
+          await child.harness.behavior.callRpc("status.get", null),
+        ).accepting,
+    );
     return { host: child, dataDir };
   }
 
@@ -15051,6 +16187,7 @@ describe("Account Pool credential scoping", () => {
       ["ANTHROPIC_AUTH_TOKEN", ""],
       ["CLAUDE_CODE_OAUTH_TOKEN", ""],
       ["CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST", ""],
+      ["BB_CLAUDE_MODELS_URL", ""],
       ["HTTPS_PROXY", ""],
       ["NO_PROXY", ""],
       ["NODE_EXTRA_CA_CERTS", ""],
@@ -15074,7 +16211,13 @@ describe("Actor route issuer", () => {
     },
   });
 
-  async function actorFixture(extra: { loopbackBaseUrl?: string; options?: AccountPoolPluginOptions; source?: "import" } = {}) {
+  async function actorFixture(
+    extra: {
+      loopbackBaseUrl?: string;
+      options?: AccountPoolPluginOptions;
+      source?: "import";
+    } = {},
+  ) {
     const seen: string[] = [];
     const upstream = await startUpstream((request, response) => {
       seen.push(String(request.headers["x-api-key"]));
@@ -15089,27 +16232,34 @@ describe("Actor route issuer", () => {
     });
     const archived = new Set<string>();
     const environments = new Map<string, string | null>();
-    const hooks: { onRecheck: (() => Promise<void>) | null } = { onRecheck: null };
+    const hooks: { onRecheck: (() => Promise<void>) | null } = {
+      onRecheck: null,
+    };
     let environmentReads = 0;
-    fixture.host.harness.sdk.stub("threads.get", async ({ threadId, include }) => {
-      if (include === "environment") {
-        environmentReads += 1;
-        if (environmentReads === 2) await hooks.onRecheck?.();
-      }
-      const hostId = environments.has(threadId)
-        ? environments.get(threadId)
-        : "host-one";
-      return {
-        ...makeThreadResponse({
-          id: threadId,
-          providerId: "claude-code",
-          archivedAt: archived.has(threadId) ? 1_000 : null,
-        }),
-        environment: hostId === null ? null : { hostId },
-      } as never;
-    });
+    fixture.host.harness.sdk.stub(
+      "threads.get",
+      async ({ threadId, include }) => {
+        if (include === "environment") {
+          environmentReads += 1;
+          if (environmentReads === 2) await hooks.onRecheck?.();
+        }
+        const hostId = environments.has(threadId)
+          ? environments.get(threadId)
+          : "host-one";
+        return {
+          ...makeThreadResponse({
+            id: threadId,
+            providerId: "claude-code",
+            archivedAt: archived.has(threadId) ? 1_000 : null,
+          }),
+          environment: hostId === null ? null : { hostId },
+        } as never;
+      },
+    );
     const proofFor = async (thread: string) => {
-      const hostId = environments.has(thread) ? environments.get(thread) : "host-one";
+      const hostId = environments.has(thread)
+        ? environments.get(thread)
+        : "host-one";
       if (hostId === null || hostId === undefined) return "";
       return resolveToken(fixture.host, hostId, thread).catch(() => "");
     };
@@ -15143,7 +16293,19 @@ describe("Actor route issuer", () => {
           .all() as Array<{ affinity_key: string }>
       ).map((row) => JSON.parse(row.affinity_key) as string[]);
     const tokenOf = (result: { stdout: string }) => result.stdout.trim();
-    return { fixture, seen, archived, environments, hooks, issue, send, affinityKeys, tokenOf, cli, proofFor };
+    return {
+      fixture,
+      seen,
+      archived,
+      environments,
+      hooks,
+      issue,
+      send,
+      affinityKeys,
+      tokenOf,
+      cli,
+      proofFor,
+    };
   }
 
   const policyNames = [
@@ -15152,8 +16314,14 @@ describe("Actor route issuer", () => {
     "ENABLE_PROMPT_CACHING_1H",
   ];
   const launchEnvOf = async (result: { stdout: string }) =>
-    (JSON.parse(result.stdout) as { launchEnv: Array<{ name: string; value: string }> }).launchEnv;
-  const canonicalPolicyEnv = async (fixture: Awaited<ReturnType<typeof actorFixture>>["fixture"]) =>
+    (
+      JSON.parse(result.stdout) as {
+        launchEnv: Array<{ name: string; value: string }>;
+      }
+    ).launchEnv;
+  const canonicalPolicyEnv = async (
+    fixture: Awaited<ReturnType<typeof actorFixture>>["fixture"],
+  ) =>
     (
       await fixture.host.harness.behavior.resolveProviderEnv("claude-code", {
         threadId: "thread-x",
@@ -15175,7 +16343,9 @@ describe("Actor route issuer", () => {
     ]);
     const parsed = JSON.parse(result.stdout) as { token: string };
     expect(JSON.stringify(launchEnv)).not.toContain(parsed.token);
-    expect(JSON.stringify(launchEnv)).not.toMatch(/ANTHROPIC_(BASE_URL|AUTH_TOKEN)/u);
+    expect(JSON.stringify(launchEnv)).not.toMatch(
+      /ANTHROPIC_(BASE_URL|AUTH_TOKEN)/u,
+    );
   });
 
   it("returns the 1-hour cache variable for a subscription pool, matching the canonical contributor", async () => {
@@ -15183,16 +16353,46 @@ describe("Actor route issuer", () => {
       source: "import",
       options: { importCredentials: async () => importedCredentials() },
     });
-    const launchEnv = await launchEnvOf(await issue("thread-x", "actor-a", ["--json"]));
+    const launchEnv = await launchEnvOf(
+      await issue("thread-x", "actor-a", ["--json"]),
+    );
     expect(launchEnv).toEqual(await canonicalPolicyEnv(fixture));
-    expect(launchEnv).toContainEqual({ name: "ENABLE_PROMPT_CACHING_1H", value: "1" });
+    expect(launchEnv).toContainEqual({
+      name: "ENABLE_PROMPT_CACHING_1H",
+      value: "1",
+    });
   });
 
   it.each([
-    ["is archived", async (a: { archived: Set<string> }) => void a.archived.add("thread-x")],
-    ["moves to another machine", async (a: { environments: Map<string, string | null> }) => void a.environments.set("thread-x", "host-two")],
-    ["is bypassed", async (a: { fixture: Awaited<ReturnType<typeof actorFixture>>["fixture"] }) => void (await a.fixture.host.harness.behavior.callRpc("bypass.set", { threadId: "thread-x", bypassed: true }))],
-    ["loses its provider", async (a: { fixture: Awaited<ReturnType<typeof actorFixture>>["fixture"] }) => void (await a.fixture.host.harness.behavior.callRpc("routing.set", { provider: "claude", enabled: false }))],
+    [
+      "is archived",
+      async (a: { archived: Set<string> }) => void a.archived.add("thread-x"),
+    ],
+    [
+      "moves to another machine",
+      async (a: { environments: Map<string, string | null> }) =>
+        void a.environments.set("thread-x", "host-two"),
+    ],
+    [
+      "is bypassed",
+      async (a: {
+        fixture: Awaited<ReturnType<typeof actorFixture>>["fixture"];
+      }) =>
+        void (await a.fixture.host.harness.behavior.callRpc("bypass.set", {
+          threadId: "thread-x",
+          bypassed: true,
+        })),
+    ],
+    [
+      "loses its provider",
+      async (a: {
+        fixture: Awaited<ReturnType<typeof actorFixture>>["fixture"];
+      }) =>
+        void (await a.fixture.host.harness.behavior.callRpc("routing.set", {
+          provider: "claude",
+          enabled: false,
+        })),
+    ],
   ] as const)(
     "revokes the minted route and refuses when the thread %s between minting and the re-check",
     async (_name, mutate) => {
@@ -15201,24 +16401,59 @@ describe("Actor route issuer", () => {
       const result = await actors.issue("thread-x", "actor-a");
       expect(result.exitCode).not.toBe(0);
       expect(result.stdout).toBe("");
-      expect(JSON.parse((await actors.cli(["route", "list", "--json"])).stdout)).toEqual({ ok: true, routes: [] });
+      expect(
+        JSON.parse((await actors.cli(["route", "list", "--json"])).stdout),
+      ).toEqual({ ok: true, routes: [] });
     },
   );
 
   it("revokes only a matching generation and keeps a newer route", async () => {
     const { issue, send, cli } = await actorFixture();
-    const first = JSON.parse((await issue("thread-x", "actor-a", ["--json"])).stdout) as { token: string; generation: string };
-    const second = JSON.parse((await issue("thread-x", "actor-a", ["--rotate", "--json"])).stdout) as { token: string; generation: string };
+    const first = JSON.parse(
+      (await issue("thread-x", "actor-a", ["--json"])).stdout,
+    ) as { token: string; generation: string };
+    const second = JSON.parse(
+      (await issue("thread-x", "actor-a", ["--rotate", "--json"])).stdout,
+    ) as { token: string; generation: string };
     expect(second.generation).not.toBe(first.generation);
-    const stale = await cli(["route", "revoke", "--actor", "actor-a", "--thread", "thread-x", "--generation", first.generation, "--json"]);
+    const stale = await cli([
+      "route",
+      "revoke",
+      "--actor",
+      "actor-a",
+      "--thread",
+      "thread-x",
+      "--generation",
+      first.generation,
+      "--json",
+    ]);
     expect(JSON.parse(stale.stdout)).toEqual({ ok: true, revoked: 0 });
     expect(await send(second.token)).toBe(200);
-    const listed = JSON.parse((await cli(["route", "list", "--json"])).stdout) as { routes: Array<{ generation: string }> };
-    expect(listed.routes.map((route) => route.generation)).toEqual([second.generation]);
-    const current = await cli(["route", "revoke", "--actor", "actor-a", "--generation", second.generation, "--json"]);
+    const listed = JSON.parse(
+      (await cli(["route", "list", "--json"])).stdout,
+    ) as { routes: Array<{ generation: string }> };
+    expect(listed.routes.map((route) => route.generation)).toEqual([
+      second.generation,
+    ]);
+    const current = await cli([
+      "route",
+      "revoke",
+      "--actor",
+      "actor-a",
+      "--generation",
+      second.generation,
+      "--json",
+    ]);
     expect(JSON.parse(current.stdout)).toEqual({ ok: true, revoked: 1 });
     expect(await send(second.token)).toBe(401);
-    const malformed = await cli(["route", "revoke", "--actor", "actor-a", "--generation", "zz"]);
+    const malformed = await cli([
+      "route",
+      "revoke",
+      "--actor",
+      "actor-a",
+      "--generation",
+      "zz",
+    ]);
     expect(malformed.exitCode).not.toBe(0);
   });
 
@@ -15243,7 +16478,11 @@ describe("Actor route issuer", () => {
       token: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/u),
       generation: expect.stringMatching(/^[a-f0-9]{16}$/u),
       hubUrl: expect.stringContaining("/api/v1/plugins/account-pool/http"),
-      route: { threadId: "thread-x", actorId: "elyra:term_1", provider: "claude" },
+      route: {
+        threadId: "thread-x",
+        actorId: "elyra:term_1",
+        provider: "claude",
+      },
       launchEnv: expect.any(Array),
     });
     expect(json.token).not.toBe(token);
@@ -15251,11 +16490,16 @@ describe("Actor route issuer", () => {
   });
 
   it("gives two actors on one thread distinct tokens and distinct conversation affinity", async () => {
-    const { fixture, issue, send, affinityKeys, tokenOf } = await actorFixture();
+    const { fixture, issue, send, affinityKeys, tokenOf } =
+      await actorFixture();
     const a = tokenOf(await issue("thread-x", "actor-a"));
     const b = tokenOf(await issue("thread-x", "actor-b"));
     expect(a).not.toBe(b);
-    const threadToken = await resolveToken(fixture.host, "host-one", "thread-x");
+    const threadToken = await resolveToken(
+      fixture.host,
+      "host-one",
+      "thread-x",
+    );
     expect(await send(a)).toBe(200);
     expect(await send(b)).toBe(200);
     expect(await send(threadToken)).toBe(200);
@@ -15264,7 +16508,8 @@ describe("Actor route issuer", () => {
     expect(keys.filter((key) => key[3] === "actor-a")).toHaveLength(1);
     expect(keys.filter((key) => key[3] === "actor-b")).toHaveLength(1);
     expect(new Set(keys.map((key) => JSON.stringify(key))).size).toBe(3);
-    for (const key of keys) expect(key.slice(0, 3)).toEqual(["claude", "host-one", "thread-x"]);
+    for (const key of keys)
+      expect(key.slice(0, 3)).toEqual(["claude", "host-one", "thread-x"]);
   });
 
   it("follows the thread's explicit subscription and routing switches", async () => {
@@ -15315,7 +16560,15 @@ describe("Actor route issuer", () => {
     const b = tokenOf(await issue("thread-x", "actor-b"));
     const onOtherThread = tokenOf(await issue("thread-y", "actor-a"));
     expect(await send(a)).toBe(200);
-    const revoked = await cli(["route", "revoke", "--actor", "actor-a", "--thread", "thread-x", "--json"]);
+    const revoked = await cli([
+      "route",
+      "revoke",
+      "--actor",
+      "actor-a",
+      "--thread",
+      "thread-x",
+      "--json",
+    ]);
     expect(JSON.parse(revoked.stdout)).toEqual({ ok: true, revoked: 1 });
     expect(await send(a)).toBe(401);
     expect(await send(b)).toBe(200);
@@ -15329,38 +16582,87 @@ describe("Actor route issuer", () => {
     });
     expect(await send(rotated)).toBe(401);
     expect(await send(onOtherThread)).toBe(200);
-    await cli(["route", "revoke", "--actor", "actor-a", "--thread", "thread-y"]);
+    await cli([
+      "route",
+      "revoke",
+      "--actor",
+      "actor-a",
+      "--thread",
+      "thread-y",
+    ]);
     expect(await send(onOtherThread)).toBe(401);
   });
 
   it("issues and revokes only for the thread the caller proves, never from caller-selected metadata", async () => {
-    const { fixture, issue, send, tokenOf, cli, proofFor } = await actorFixture();
+    const { fixture, issue, send, tokenOf, cli, proofFor } =
+      await actorFixture();
     const proofA = await proofFor("thread-a");
     const refusal = "No proof for thread thread-b";
-    const crossMint = await cli(["route", "issue", "--thread", "thread-b", "--actor", "actor-x", "--json"], proofA);
+    const crossMint = await cli(
+      [
+        "route",
+        "issue",
+        "--thread",
+        "thread-b",
+        "--actor",
+        "actor-x",
+        "--json",
+      ],
+      proofA,
+    );
     expect(crossMint.exitCode).not.toBe(0);
     expect(crossMint.stdout).not.toMatch(/"token"/u);
     expect(crossMint.stdout + crossMint.stderr).toContain(refusal);
     for (const proof of ["", "x".repeat(43), "thread-b"]) {
-      const refused = await cli(["route", "issue", "--thread", "thread-b", "--actor", "actor-x"], proof);
+      const refused = await cli(
+        ["route", "issue", "--thread", "thread-b", "--actor", "actor-x"],
+        proof,
+      );
       expect(refused.exitCode).not.toBe(0);
       expect(refused.stdout).toBe("");
     }
     const actorB = tokenOf(await issue("thread-b", "actor-b"));
-    const chained = await cli(["route", "issue", "--thread", "thread-b", "--actor", "actor-y"], actorB);
+    const chained = await cli(
+      ["route", "issue", "--thread", "thread-b", "--actor", "actor-y"],
+      actorB,
+    );
     expect(chained.exitCode).not.toBe(0);
     expect(chained.stdout).toBe("");
-    const crossRevoke = await cli(["route", "revoke", "--actor", "actor-b", "--thread", "thread-b", "--json"], proofA);
+    const crossRevoke = await cli(
+      [
+        "route",
+        "revoke",
+        "--actor",
+        "actor-b",
+        "--thread",
+        "thread-b",
+        "--json",
+      ],
+      proofA,
+    );
     expect(crossRevoke.exitCode).not.toBe(0);
-    const scoped = await cli(["route", "revoke", "--actor", "actor-b", "--json"], proofA);
+    const scoped = await cli(
+      ["route", "revoke", "--actor", "actor-b", "--json"],
+      proofA,
+    );
     expect(JSON.parse(scoped.stdout)).toEqual({ ok: true, revoked: 0 });
     expect(await send(actorB)).toBe(200);
     const argvProof = await fixture.host.harness.behavior.runCli([
-      "route", "issue", "--thread", "thread-a", "--actor", "actor-z", "--proof", proofA,
+      "route",
+      "issue",
+      "--thread",
+      "thread-a",
+      "--actor",
+      "actor-z",
+      "--proof",
+      proofA,
     ]);
     expect(argvProof.exitCode).not.toBe(0);
     expect(argvProof.stdout).toBe("");
-    const own = await cli(["route", "issue", "--thread", "thread-a", "--actor", "actor-z"], proofA);
+    const own = await cli(
+      ["route", "issue", "--thread", "thread-a", "--actor", "actor-z"],
+      proofA,
+    );
     expect(own.exitCode).toBe(0);
     expect(await send(tokenOf(own))).toBe(200);
   });
@@ -15408,7 +16710,12 @@ describe("Actor route issuer", () => {
     const { fixture } = await actorFixture();
     fixture.host.harness.sdk.stub("threads.get", unknown as never);
     const missing = await fixture.host.harness.behavior.runCli([
-      "route", "issue", "--thread", "thread-missing", "--actor", "actor-a",
+      "route",
+      "issue",
+      "--thread",
+      "thread-missing",
+      "--actor",
+      "actor-a",
     ]);
     expect(missing.exitCode).not.toBe(0);
     expect(missing.stdout).toBe("");
@@ -15427,12 +16734,20 @@ describe("Actor route issuer", () => {
     const table = await cli(["route", "list"]);
     const listed = await cli(["route", "list", "--json"]);
     const revoked = await cli(["route", "revoke", "--actor", "actor-a"]);
-    const everything = [table.stdout, table.stderr ?? "", listed.stdout, revoked.stdout, revoked.stderr ?? ""].join("\n");
+    const everything = [
+      table.stdout,
+      table.stderr ?? "",
+      listed.stdout,
+      revoked.stdout,
+      revoked.stderr ?? "",
+    ].join("\n");
     const resolved = await fixture.host.harness.behavior.resolveProviderEnv(
       "claude-code",
       { threadId: "thread-x", projectId: "project-one", hostId: "host-one" },
     );
-    const threadToken = resolved.find((entry) => entry.name === "ANTHROPIC_AUTH_TOKEN")?.value;
+    const threadToken = resolved.find(
+      (entry) => entry.name === "ANTHROPIC_AUTH_TOKEN",
+    )?.value;
     for (const token of [a, b, c]) expect(everything).not.toContain(token);
     expect(JSON.parse(listed.stdout)).toMatchObject({
       ok: true,
@@ -15443,41 +16758,70 @@ describe("Actor route issuer", () => {
       ],
     });
     expect(table.stdout.trim().split("\n")).toHaveLength(3);
-    const logs = fixture.host.harness.logEntries.map((entry) => entry.message).join("\n");
+    const logs = fixture.host.harness.logEntries
+      .map((entry) => entry.message)
+      .join("\n");
     expect(logs).toContain("actor actor-a");
-    for (const token of [a, b, c, fixture.key, ...(typeof threadToken === "string" ? [threadToken] : [])])
+    for (const token of [
+      a,
+      b,
+      c,
+      fixture.key,
+      ...(typeof threadToken === "string" ? [threadToken] : []),
+    ])
       expect(logs).not.toContain(token);
   });
 
-  it("refuses reuse of a live actor id by default, rotates only on request, and records last-routed evidence", async () => {
-    const { fixture, issue, send, tokenOf, cli } = await actorFixture();
-    const first = tokenOf(await issue("thread-x", "actor-a"));
-    const reuse = await issue("thread-x", "actor-a");
-    expect(reuse.exitCode).not.toBe(0);
-    expect(reuse.stdout).toBe("");
-    expect(await send(first)).toBe(200);
-    const unknownFlag = await issue("thread-x", "actor-b", ["--exclusive"]);
-    expect(unknownFlag.exitCode).not.toBe(0);
-    expect(unknownFlag.stdout).toBe("");
-    const rotated = tokenOf(await issue("thread-x", "actor-a", ["--rotate"]));
-    expect(rotated).not.toBe(first);
-    expect(await send(first)).toBe(401);
-    expect(await send(rotated)).toBe(200);
-    await waitForChildProcessStart(async () => {
-      const listed = JSON.parse((await cli(["route", "list", "--json"])).stdout) as {
-        routes: Array<{ lastRoutedAt: number | null }>;
-      };
-      expect(listed.routes[0]?.lastRoutedAt).toEqual(expect.any(Number));
-    });
-    const attribution = await fixture.host.bb.storage.kv.list("actor-routed:");
-    expect(attribution).toEqual(["actor-routed:thread-x:actor-a:claude"]);
-    const firstRevoke = await cli(["route", "revoke", "--actor", "actor-a", "--json"]);
-    const secondRevoke = await cli(["route", "revoke", "--actor", "actor-a", "--json"]);
-    expect(JSON.parse(firstRevoke.stdout)).toEqual({ ok: true, revoked: 1 });
-    expect(JSON.parse(secondRevoke.stdout)).toEqual({ ok: true, revoked: 0 });
-    expect(await fixture.host.bb.storage.kv.list("actor-routed:")).toEqual([]);
-    expect(await send(rotated)).toBe(401);
-  }, CHILD_PROCESS_TEST_TIMEOUT_MS);
+  it(
+    "refuses reuse of a live actor id by default, rotates only on request, and records last-routed evidence",
+    async () => {
+      const { fixture, issue, send, tokenOf, cli } = await actorFixture();
+      const first = tokenOf(await issue("thread-x", "actor-a"));
+      const reuse = await issue("thread-x", "actor-a");
+      expect(reuse.exitCode).not.toBe(0);
+      expect(reuse.stdout).toBe("");
+      expect(await send(first)).toBe(200);
+      const unknownFlag = await issue("thread-x", "actor-b", ["--exclusive"]);
+      expect(unknownFlag.exitCode).not.toBe(0);
+      expect(unknownFlag.stdout).toBe("");
+      const rotated = tokenOf(await issue("thread-x", "actor-a", ["--rotate"]));
+      expect(rotated).not.toBe(first);
+      expect(await send(first)).toBe(401);
+      expect(await send(rotated)).toBe(200);
+      await waitForChildProcessStart(async () => {
+        const listed = JSON.parse(
+          (await cli(["route", "list", "--json"])).stdout,
+        ) as {
+          routes: Array<{ lastRoutedAt: number | null }>;
+        };
+        expect(listed.routes[0]?.lastRoutedAt).toEqual(expect.any(Number));
+      });
+      const attribution =
+        await fixture.host.bb.storage.kv.list("actor-routed:");
+      expect(attribution).toEqual(["actor-routed:thread-x:actor-a:claude"]);
+      const firstRevoke = await cli([
+        "route",
+        "revoke",
+        "--actor",
+        "actor-a",
+        "--json",
+      ]);
+      const secondRevoke = await cli([
+        "route",
+        "revoke",
+        "--actor",
+        "actor-a",
+        "--json",
+      ]);
+      expect(JSON.parse(firstRevoke.stdout)).toEqual({ ok: true, revoked: 1 });
+      expect(JSON.parse(secondRevoke.stdout)).toEqual({ ok: true, revoked: 0 });
+      expect(await fixture.host.bb.storage.kv.list("actor-routed:")).toEqual(
+        [],
+      );
+      expect(await send(rotated)).toBe(401);
+    },
+    CHILD_PROCESS_TEST_TIMEOUT_MS,
+  );
 
   it("rejects a token minted before a machine token rotation once the grace period ends, and routes the new one", async () => {
     let clock = 1_800_000_000_000;
@@ -15485,7 +16829,9 @@ describe("Actor route issuer", () => {
       options: { now: () => clock },
     });
     const before = tokenOf(await issue("thread-x", "actor-a"));
-    expect((await cli(["token", "rotate", "--machine", "host-one"])).exitCode).toBe(0);
+    expect(
+      (await cli(["token", "rotate", "--machine", "host-one"])).exitCode,
+    ).toBe(0);
     expect(await send(before)).toBe(200);
     const after = tokenOf(await issue("thread-x", "actor-a", ["--rotate"]));
     expect(after).not.toBe(before);
@@ -15502,7 +16848,9 @@ describe("Actor route issuer", () => {
     environments.set("thread-foreign", "host-unknown");
     const two = tokenOf(await issue("thread-two", "actor-a"));
     expect(await send(two)).toBe(200);
-    const listed = JSON.parse((await cli(["route", "list", "--json"])).stdout) as {
+    const listed = JSON.parse(
+      (await cli(["route", "list", "--json"])).stdout,
+    ) as {
       routes: Array<{ hostId: string }>;
     };
     expect(listed.routes.map((route) => route.hostId)).toEqual(["host-two"]);
@@ -15514,9 +16862,15 @@ describe("Actor route issuer", () => {
   it("refuses issue and 409s requests for an automatic route when the thread is bypassed or the provider is disabled", async () => {
     const { fixture, seen, issue, send, tokenOf } = await actorFixture();
     const routingSet = (enabled: boolean) =>
-      fixture.host.harness.behavior.callRpc("routing.set", { provider: "claude", enabled });
+      fixture.host.harness.behavior.callRpc("routing.set", {
+        provider: "claude",
+        enabled,
+      });
     const bypass = (bypassed: boolean) =>
-      fixture.host.harness.behavior.callRpc("bypass.set", { threadId: "thread-x", bypassed });
+      fixture.host.harness.behavior.callRpc("bypass.set", {
+        threadId: "thread-x",
+        bypassed,
+      });
     const token = tokenOf(await issue("thread-x", "actor-a"));
     expect(await send(token)).toBe(200);
     expect(seen).toHaveLength(1);
@@ -15555,7 +16909,9 @@ describe("Actor route issuer", () => {
       const result = await cli(argv);
       streams.push(result.stdout, result.stderr ?? "");
     }
-    streams.push(...fixture.host.harness.logEntries.map((entry) => entry.message));
+    streams.push(
+      ...fixture.host.harness.logEntries.map((entry) => entry.message),
+    );
     expect(streams.length).toBeGreaterThan(10);
     for (const stream of streams) expect(stream).not.toContain(token);
   });
@@ -15571,7 +16927,10 @@ describe("Actor launcher end to end", () => {
     args: { hubBase?: (base: string) => string; subscription?: boolean } = {},
   ) {
     let target: ReturnType<typeof createAccountPoolTestHost> | null = null;
-    const cliRequests: Array<{ argv: string[]; stdinInputs: Record<string, string> }> = [];
+    const cliRequests: Array<{
+      argv: string[];
+      stdinInputs: Record<string, string>;
+    }> = [];
     const server = http.createServer((request, response) => {
       const chunks: Buffer[] = [];
       request.on("data", (chunk: Buffer) => chunks.push(chunk));
@@ -15591,7 +16950,9 @@ describe("Actor launcher end to end", () => {
             };
             const result = await target.harness.behavior.runCli(
               argv,
-              stdin === undefined ? undefined : { experimental_stdinInputs: stdin },
+              stdin === undefined
+                ? undefined
+                : { experimental_stdinInputs: stdin },
             );
             response.setHeader("content-type", "application/json");
             response.end(JSON.stringify(result));
@@ -15599,24 +16960,41 @@ describe("Actor launcher end to end", () => {
           }
           if (url === "/api/v1/plugins/contributions") {
             response.setHeader("content-type", "application/json");
-            response.end(JSON.stringify({
-              cliCommands: [{ pluginId: "account-pool", name: "pool", summary: "Account Pooler", commands: [] }],
-              mentionProviders: [],
-            }));
+            response.end(
+              JSON.stringify({
+                cliCommands: [
+                  {
+                    pluginId: "account-pool",
+                    name: "pool",
+                    summary: "Account Pooler",
+                    commands: [],
+                  },
+                ],
+                mentionProviders: [],
+              }),
+            );
             return;
           }
-          if (url === "/api/v1/plugins/account-pool/cli" && request.method === "POST") {
+          if (
+            url === "/api/v1/plugins/account-pool/cli" &&
+            request.method === "POST"
+          ) {
             const sent = JSON.parse(body) as {
               argv: string[];
               experimental_stdinInputs?: Record<string, string>;
               threadId?: string;
             };
-            cliRequests.push({ argv: sent.argv, stdinInputs: sent.experimental_stdinInputs ?? {} });
+            cliRequests.push({
+              argv: sent.argv,
+              stdinInputs: sent.experimental_stdinInputs ?? {},
+            });
             const result = await target.harness.behavior.runCli(sent.argv, {
               ...(sent.experimental_stdinInputs === undefined
                 ? {}
                 : { experimental_stdinInputs: sent.experimental_stdinInputs }),
-              ...(sent.threadId === undefined ? {} : { threadId: sent.threadId }),
+              ...(sent.threadId === undefined
+                ? {}
+                : { threadId: sent.threadId }),
             });
             response.setHeader("content-type", "application/json");
             response.end(JSON.stringify(result));
@@ -15645,12 +17023,15 @@ describe("Actor launcher end to end", () => {
         });
       });
     });
-    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    await new Promise<void>((resolve) =>
+      server.listen(0, "127.0.0.1", resolve),
+    );
     cleanups.push(
       () => new Promise<void>((resolve) => server.close(() => resolve())),
     );
     const address = server.address();
-    if (address === null || typeof address === "string") throw new Error("no port");
+    if (address === null || typeof address === "string")
+      throw new Error("no port");
     const base = `http://127.0.0.1:${address.port}`;
     const seen: Array<{ key: string }> = [];
     const upstream = await startUpstream((request, response) => {
@@ -15661,14 +17042,56 @@ describe("Actor launcher end to end", () => {
         if (Buffer.concat(chunks).toString("utf8").includes('"stream":true')) {
           response.setHeader("content-type", "text/event-stream");
           const frames: Array<[string, unknown]> = [
-            ["message_start", { type: "message_start", message: { id: "msg_1", type: "message", role: "assistant", model: "stub", content: [], stop_reason: null, usage: { input_tokens: 1, output_tokens: 1 } } }],
-            ["content_block_start", { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }],
-            ["content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "pooled-stub-reply" } }],
+            [
+              "message_start",
+              {
+                type: "message_start",
+                message: {
+                  id: "msg_1",
+                  type: "message",
+                  role: "assistant",
+                  model: "stub",
+                  content: [],
+                  stop_reason: null,
+                  usage: { input_tokens: 1, output_tokens: 1 },
+                },
+              },
+            ],
+            [
+              "content_block_start",
+              {
+                type: "content_block_start",
+                index: 0,
+                content_block: { type: "text", text: "" },
+              },
+            ],
+            [
+              "content_block_delta",
+              {
+                type: "content_block_delta",
+                index: 0,
+                delta: { type: "text_delta", text: "pooled-stub-reply" },
+              },
+            ],
             ["content_block_stop", { type: "content_block_stop", index: 0 }],
-            ["message_delta", { type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 1 } }],
+            [
+              "message_delta",
+              {
+                type: "message_delta",
+                delta: { stop_reason: "end_turn" },
+                usage: { output_tokens: 1 },
+              },
+            ],
             ["message_stop", { type: "message_stop" }],
           ];
-          response.end(frames.map(([event, data]) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`).join(""));
+          response.end(
+            frames
+              .map(
+                ([event, data]) =>
+                  `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`,
+              )
+              .join(""),
+          );
           return;
         }
         response.setHeader("content-type", "application/json");
@@ -15697,7 +17120,11 @@ describe("Actor launcher end to end", () => {
       } as never;
     });
     target = fixture.host;
-    const threadProof = await resolveToken(fixture.host, "host-one", "thread-e2e");
+    const threadProof = await resolveToken(
+      fixture.host,
+      "host-one",
+      "thread-e2e",
+    );
     const work = await mkdtemp(path.join(tmpdir(), "bb-launcher-e2e-"));
     cleanups.push(() => fs.rm(work, { recursive: true, force: true }));
     const shimDir = path.join(work, "shim");
@@ -15775,31 +17202,65 @@ else {
       let stderr = "";
       child.stdout.on("data", (chunk: Buffer) => (stdout += chunk.toString()));
       child.stderr.on("data", (chunk: Buffer) => (stderr += chunk.toString()));
-      const done = new Promise<{ code: number | null; stdout: string; stderr: string }>(
-        (resolve) =>
-          child.on("close", (code) => resolve({ code, stdout, stderr })),
+      const done = new Promise<{
+        code: number | null;
+        stdout: string;
+        stderr: string;
+      }>((resolve) =>
+        child.on("close", (code) => resolve({ code, stdout, stderr })),
       );
       return { child, done, output: () => stdout };
     };
     const hubSend = async (token: string) => {
-      const response = await fetch(`${base}/api/v1/plugins/account-pool/http/v1/messages`, {
-        method: "POST",
-        headers: authHeaders(token),
-        body: JSON.stringify({ model: "claude-fable-5", messages: [], max_tokens: 1 }),
-      });
+      const response = await fetch(
+        `${base}/api/v1/plugins/account-pool/http/v1/messages`,
+        {
+          method: "POST",
+          headers: authHeaders(token),
+          body: JSON.stringify({
+            model: "claude-fable-5",
+            messages: [],
+            max_tokens: 1,
+          }),
+        },
+      );
       await response.text();
       return response.status;
     };
     const readToken = () => fs.readFile(tokenFile, "utf8");
     const listRoutes = async () =>
-      (JSON.parse((await fixture.host.harness.behavior.runCli(["route", "list", "--json"])).stdout) as {
-        routes: unknown[];
-      }).routes;
+      (
+        JSON.parse(
+          (
+            await fixture.host.harness.behavior.runCli([
+              "route",
+              "list",
+              "--json",
+            ])
+          ).stdout,
+        ) as {
+          routes: unknown[];
+        }
+      ).routes;
     const threadCli = (argv: string[]) =>
       fixture.host.harness.behavior.runCli([...argv, "--proof-stdin"], {
         experimental_stdinInputs: { proof: threadProof },
       });
-    return { base, seen, fixture, run, hubSend, readToken, listRoutes, marker, tokenFile, work, threadProof, threadCli, cliRequests };
+    return {
+      base,
+      seen,
+      fixture,
+      run,
+      hubSend,
+      readToken,
+      listRoutes,
+      marker,
+      tokenFile,
+      work,
+      threadProof,
+      threadCli,
+      cliRequests,
+    };
   }
 
   it("runs the real launcher against the real issuer and revokes the route when the child exits", async () => {
@@ -15813,7 +17274,9 @@ else {
     const token = await readToken();
     expect(token).toMatch(/^[A-Za-z0-9_-]{43}$/u);
     expect(result.stdout + result.stderr).not.toContain(token);
-    expect(result.stdout + result.stderr).not.toContain("direct-credential-must-not-leak");
+    expect(result.stdout + result.stderr).not.toContain(
+      "direct-credential-must-not-leak",
+    );
     expect(await hubSend(token)).toBe(401);
     expect(await listRoutes()).toEqual([]);
   });
@@ -15836,7 +17299,11 @@ else {
 
   it("drops an inherited cache variable for an API-key-only pool", async () => {
     const { run, threadProof } = await harness();
-    const result = await run(["--proof-env", "THREAD_POOL_PROOF"], { THREAD_POOL_PROOF: threadProof, ENABLE_PROMPT_CACHING_1H: "1", ANTHROPIC_AUTH_TOKEN: "inherited-auth-must-not-win" }).done;
+    const result = await run(["--proof-env", "THREAD_POOL_PROOF"], {
+      THREAD_POOL_PROOF: threadProof,
+      ENABLE_PROMPT_CACHING_1H: "1",
+      ANTHROPIC_AUTH_TOKEN: "inherited-auth-must-not-win",
+    }).done;
     expect(result.code).toBe(0);
     expect(result.stdout).toContain("cache1h=undefined");
   });
@@ -15847,42 +17314,67 @@ else {
     ["foreign http host", (_base: string) => "http://192.0.2.10:8080"],
     ["no port", (_base: string) => "http://localhost"],
     ["wrong prefix on loopback", (base: string) => `${base}/elsewhere`],
-  ])("rejects a %s hub URL before starting the command and revokes the route it just obtained", async (_name, hubBase) => {
-    const { run, marker, tokenFile, listRoutes } = await harness({ hubBase });
-    const result = await run([]).done;
-    expect(result.code).toBe(1);
-    expect(result.stderr).toContain("refusing the issuer response (hub-url)");
-    await expect(fs.stat(marker)).rejects.toThrow();
-    await expect(fs.stat(tokenFile)).rejects.toThrow();
-    expect(await listRoutes()).toEqual([]);
-  });
+  ])(
+    "rejects a %s hub URL before starting the command and revokes the route it just obtained",
+    async (_name, hubBase) => {
+      const { run, marker, tokenFile, listRoutes } = await harness({ hubBase });
+      const result = await run([]).done;
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain("refusing the issuer response (hub-url)");
+      await expect(fs.stat(marker)).rejects.toThrow();
+      await expect(fs.stat(tokenFile)).rejects.toThrow();
+      expect(await listRoutes()).toEqual([]);
+    },
+  );
 
-  it("does not revoke a newer route that another launch rotated in when the first launch exits", async () => {
-    const { run, hubSend, listRoutes, work, threadCli } = await harness();
-    const release = path.join(work, "release-a");
-    const waitForFile =
-      "const f=process.argv[1];console.log('child-ready');setInterval(()=>{if(require('node:fs').existsSync(f))process.exit(0)},50)";
-    const launchA = run(["--actor", "shared-actor"], {}, [process.execPath, "-e", waitForFile, release]);
-    await waitForChildProcessStart(() => expect(launchA.output()).toContain("child-ready"));
-    const rotated = JSON.parse(
-      (
-        await threadCli([
-          "route", "issue", "--thread", "thread-e2e", "--actor", "shared-actor", "--rotate", "--json",
-        ])
-      ).stdout,
-    ) as { token: string; generation: string };
-    await fs.writeFile(release, "go");
-    const ended = await launchA.done;
-    expect(ended.code).toBe(0);
-    expect(ended.stderr).not.toContain("FAILED");
-    expect(await hubSend(rotated.token)).toBe(200);
-    const routes = (await listRoutes()) as Array<{ generation: string }>;
-    expect(routes.map((route) => route.generation)).toEqual([rotated.generation]);
-  }, CHILD_PROCESS_TEST_TIMEOUT_MS);
+  it(
+    "does not revoke a newer route that another launch rotated in when the first launch exits",
+    async () => {
+      const { run, hubSend, listRoutes, work, threadCli } = await harness();
+      const release = path.join(work, "release-a");
+      const waitForFile =
+        "const f=process.argv[1];console.log('child-ready');setInterval(()=>{if(require('node:fs').existsSync(f))process.exit(0)},50)";
+      const launchA = run(["--actor", "shared-actor"], {}, [
+        process.execPath,
+        "-e",
+        waitForFile,
+        release,
+      ]);
+      await waitForChildProcessStart(() =>
+        expect(launchA.output()).toContain("child-ready"),
+      );
+      const rotated = JSON.parse(
+        (
+          await threadCli([
+            "route",
+            "issue",
+            "--thread",
+            "thread-e2e",
+            "--actor",
+            "shared-actor",
+            "--rotate",
+            "--json",
+          ])
+        ).stdout,
+      ) as { token: string; generation: string };
+      await fs.writeFile(release, "go");
+      const ended = await launchA.done;
+      expect(ended.code).toBe(0);
+      expect(ended.stderr).not.toContain("FAILED");
+      expect(await hubSend(rotated.token)).toBe(200);
+      const routes = (await listRoutes()) as Array<{ generation: string }>;
+      expect(routes.map((route) => route.generation)).toEqual([
+        rotated.generation,
+      ]);
+    },
+    CHILD_PROCESS_TEST_TIMEOUT_MS,
+  );
 
   it("revokes when the command cannot be launched", async () => {
     const { run, listRoutes } = await harness();
-    const result = await run([], {}, ["definitely-not-a-command-for-pool-launch"]).done;
+    const result = await run([], {}, [
+      "definitely-not-a-command-for-pool-launch",
+    ]).done;
     expect(result.code).toBe(127);
     expect(await listRoutes()).toEqual([]);
   });
@@ -15896,39 +17388,50 @@ else {
       `printf sourced > ${sourced}\nkill() { if [ "$1" = "-0" ]; then return 1; fi; command kill "$@"; }\n`,
     );
 
-    const result = await run(
-      [],
-      { BASH_ENV: bashEnv },
-      ["definitely-not-a-command-for-pool-launch"],
-    ).done;
+    const result = await run([], { BASH_ENV: bashEnv }, [
+      "definitely-not-a-command-for-pool-launch",
+    ]).done;
 
     expect(await fs.readFile(sourced, "utf8")).toBe("sourced");
     expect(result.code).toBe(127);
     expect(await listRoutes()).toEqual([]);
   });
 
-  it("signals only its own child and never matches processes by name", async () => {
-    const { run, listRoutes } = await harness();
-    const script = "console.log('child-ready');setInterval(()=>{},1000)";
-    const decoy = spawn(process.execPath, ["-e", script], { stdio: "ignore" });
-    try {
-      const hanging = run([], {}, [process.execPath, "-e", script]);
-      await waitForChildProcessStart(() => expect(hanging.output()).toContain("child-ready"));
-      hanging.child.kill("SIGTERM");
-      expect((await hanging.done).code).toBe(143);
-      expect(decoy.exitCode).toBeNull();
-      expect(decoy.signalCode).toBeNull();
-      expect(await listRoutes()).toEqual([]);
-    } finally {
-      decoy.kill("SIGKILL");
-    }
-    const source = await fs.readFile(launcher, "utf8");
-    expect(source).not.toMatch(/\b(pkill|pgrep|killall)\b/u);
-  }, CHILD_PROCESS_TEST_TIMEOUT_MS);
+  it(
+    "signals only its own child and never matches processes by name",
+    async () => {
+      const { run, listRoutes } = await harness();
+      const script = "console.log('child-ready');setInterval(()=>{},1000)";
+      const decoy = spawn(process.execPath, ["-e", script], {
+        stdio: "ignore",
+      });
+      try {
+        const hanging = run([], {}, [process.execPath, "-e", script]);
+        await waitForChildProcessStart(() =>
+          expect(hanging.output()).toContain("child-ready"),
+        );
+        hanging.child.kill("SIGTERM");
+        expect((await hanging.done).code).toBe(143);
+        expect(decoy.exitCode).toBeNull();
+        expect(decoy.signalCode).toBeNull();
+        expect(await listRoutes()).toEqual([]);
+      } finally {
+        decoy.kill("SIGKILL");
+      }
+      const source = await fs.readFile(launcher, "utf8");
+      expect(source).not.toMatch(/\b(pkill|pgrep|killall)\b/u);
+    },
+    CHILD_PROCESS_TEST_TIMEOUT_MS,
+  );
 
   it("returns the child's own status code", async () => {
     const { run, hubSend, readToken, listRoutes } = await harness();
-    const result = await run([], {}, [process.execPath, "--input-type=module", "-e", "process.exit(5)"]).done;
+    const result = await run([], {}, [
+      process.execPath,
+      "--input-type=module",
+      "-e",
+      "process.exit(5)",
+    ]).done;
     expect(result.code).toBe(5);
     expect(await listRoutes()).toEqual([]);
     expect(readToken).toBeDefined();
@@ -15943,23 +17446,42 @@ else {
     expect(await listRoutes()).toHaveLength(1);
   });
 
-  it("revokes when the launcher is terminated and forwards the signal to the child", async () => {
-    const { run, hubSend, readToken, listRoutes } = await harness();
-    const hanging = run([], {}, [process.execPath, "-e", "console.log('child-ready');setInterval(()=>{},1000)"]);
-    await waitForChildProcessStart(() => expect(hanging.output()).toContain("child-ready"));
-    expect(await listRoutes()).toHaveLength(1);
-    hanging.child.kill("SIGTERM");
-    const ended = await hanging.done;
-    expect(ended.code).toBe(143);
-    expect(await listRoutes()).toEqual([]);
-    expect(readToken).toBeDefined();
-    expect(hubSend).toBeDefined();
-  }, CHILD_PROCESS_TEST_TIMEOUT_MS);
+  it(
+    "revokes when the launcher is terminated and forwards the signal to the child",
+    async () => {
+      const { run, hubSend, readToken, listRoutes } = await harness();
+      const hanging = run([], {}, [
+        process.execPath,
+        "-e",
+        "console.log('child-ready');setInterval(()=>{},1000)",
+      ]);
+      await waitForChildProcessStart(() =>
+        expect(hanging.output()).toContain("child-ready"),
+      );
+      expect(await listRoutes()).toHaveLength(1);
+      hanging.child.kill("SIGTERM");
+      const ended = await hanging.done;
+      expect(ended.code).toBe(143);
+      expect(await listRoutes()).toEqual([]);
+      expect(readToken).toBeDefined();
+      expect(hubSend).toBeDefined();
+    },
+    CHILD_PROCESS_TEST_TIMEOUT_MS,
+  );
 
   it.skipIf(process.env.POOL_E2E_BB_CLI === undefined)(
     "drives the real bb CLI: the proof travels on stdin, never in argv or the child env",
     async () => {
-      const { base, run, hubSend, readToken, listRoutes, work, threadProof, cliRequests } = await harness();
+      const {
+        base,
+        run,
+        hubSend,
+        readToken,
+        listRoutes,
+        work,
+        threadProof,
+        cliRequests,
+      } = await harness();
       const cliEnvDump = path.join(work, "cli-env.jsonl");
       const realCli = path.join(work, "bb-recorded");
       await fs.writeFile(
@@ -16001,10 +17523,16 @@ else {
       expect(recorded).toHaveLength(2);
       const carriers = (env: Record<string, string>, secret: string) =>
         Object.entries(env)
-          .filter(([name, value]) => name.includes(secret) || value.includes(secret))
+          .filter(
+            ([name, value]) => name.includes(secret) || value.includes(secret),
+          )
           .map(([name]) => name);
-      for (const env of recorded) expect(carriers(env, threadProof)).toEqual([]);
-      const childEnv = JSON.parse(await fs.readFile(envDump, "utf8")) as Record<string, string>;
+      for (const env of recorded)
+        expect(carriers(env, threadProof)).toEqual([]);
+      const childEnv = JSON.parse(await fs.readFile(envDump, "utf8")) as Record<
+        string,
+        string
+      >;
       expect(carriers(childEnv, threadProof)).toEqual([]);
       const actorToken = childEnv.ANTHROPIC_AUTH_TOKEN ?? "";
       expect(actorToken).toMatch(/^.{43}$/u);
@@ -16029,7 +17557,8 @@ else {
   it.skipIf(process.env.POOL_E2E_CLAUDE !== "1")(
     "drives a real claude -p through the hub with network denied outside loopback",
     async () => {
-      const { seen, run, hubSend, readToken, listRoutes, work } = await harness();
+      const { seen, run, hubSend, readToken, listRoutes, work } =
+        await harness();
       const profile =
         '(version 1)(allow default)(deny network*)(allow network* (remote ip "localhost:*"))(allow network* (local ip "localhost:*"))';
       const config = path.join(work, "claude-config");
@@ -16043,12 +17572,23 @@ else {
           DISABLE_TELEMETRY: "1",
           CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
         },
-        ["sandbox-exec", "-p", profile, "claude", "-p", "say hi", "--model", "claude-fable-5"],
+        [
+          "sandbox-exec",
+          "-p",
+          profile,
+          "claude",
+          "-p",
+          "say hi",
+          "--model",
+          "claude-fable-5",
+        ],
       ).done;
       expect(result.code).toBe(0);
       expect(result.stdout).toContain("pooled-stub-reply");
       expect(seen.length).toBeGreaterThan(0);
-      expect(seen.every((entry) => entry.key === "sk-pooled-account")).toBe(true);
+      expect(seen.every((entry) => entry.key === "sk-pooled-account")).toBe(
+        true,
+      );
       expect(await listRoutes()).toEqual([]);
       expect(hubSend).toBeDefined();
       expect(readToken).toBeDefined();
@@ -16069,7 +17609,12 @@ else {
     const { run, readToken, hubSend, threadCli } = await harness();
     const existing = (
       await threadCli([
-        "route", "issue", "--thread", "thread-e2e", "--actor", "shared-actor",
+        "route",
+        "issue",
+        "--thread",
+        "thread-e2e",
+        "--actor",
+        "shared-actor",
       ])
     ).stdout.trim();
     const refused = await run(["--actor", "shared-actor"]).done;
@@ -16317,6 +17862,7 @@ describe("Account Pool Artifact proxy", () => {
       "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST",
       "ENABLE_TOOL_SEARCH",
       "_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL",
+      "BB_CLAUDE_MODELS_URL",
       "ENABLE_PROMPT_CACHING_1H",
       "HTTPS_PROXY",
       "NO_PROXY",
@@ -16351,6 +17897,7 @@ describe("Account Pool Artifact proxy", () => {
       "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST",
       "ENABLE_TOOL_SEARCH",
       "_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL",
+      "BB_CLAUDE_MODELS_URL",
       "BB_CLAUDE_SETTINGS_ENV_PIN",
       "BB_CLAUDE_SETTINGS_ENV_PIN_PROVIDER",
       "BB_ACCOUNT_POOL_PARENT_URL",
@@ -16360,7 +17907,7 @@ describe("Account Pool Artifact proxy", () => {
       entries.find((entry) => entry.name === "BB_CLAUDE_SETTINGS_ENV_PIN")
         ?.value,
     ).toBe(
-      "ANTHROPIC_BASE_URL,ANTHROPIC_AUTH_TOKEN,CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST,ENABLE_TOOL_SEARCH,_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL",
+      "ANTHROPIC_BASE_URL,ANTHROPIC_AUTH_TOKEN,CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST,ENABLE_TOOL_SEARCH,_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL,BB_CLAUDE_MODELS_URL",
     );
     expect(calls).toEqual([]);
   });

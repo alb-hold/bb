@@ -65,10 +65,11 @@ function ImageTabGalleryHarness({
 }
 
 describe("ImageTabLightboxProvider", () => {
-  it("shows loading instead of retaining the previous tab image", () => {
+  it("shows loading instead of retaining the previous tab image", async () => {
     render(<ImageTabGalleryHarness deferSecondSelection />);
 
     fireEvent.click(screen.getByRole("button", { name: /Open one\.png/u }));
+    await screen.findByRole("dialog");
     fireEvent.click(screen.getByRole("button", { name: "Next image" }));
 
     expect(
@@ -82,10 +83,11 @@ describe("ImageTabLightboxProvider", () => {
     expect(screen.getByRole("dialog")).not.toBeNull();
   });
 
-  it("keeps the lightbox open while cycling image file tabs", () => {
+  it("keeps the lightbox open while cycling image file tabs", async () => {
     render(<ImageTabGalleryHarness />);
 
     fireEvent.click(screen.getByRole("button", { name: /Open one\.png/u }));
+    await screen.findByRole("dialog");
 
     expect(screen.queryByText("1 of 2")).toBeNull();
     expect(screen.queryByLabelText("Images in this gallery")).toBeNull();

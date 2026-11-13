@@ -13,6 +13,9 @@ import {
   resetActiveThreadEventPruningState,
 } from "../services/system/event-pruning.js";
 import { applyLoggedThreadLifecycleEvent } from "../services/threads/lifecycle-outcome.js";
+import { getActiveTurnId } from "../services/threads/thread-events.js";
+import { rejectUnconfirmedSteersAfterTurnCompleted } from "../services/threads/unconfirmed-turn-requests.js";
+
 import { z } from "zod";
 
 const terminalProviderErrorDataSchema = z.object({
@@ -74,15 +77,41 @@ function isArchivedCredentialRevocation(
   );
 }
 
-interface ApplyTurnCompletedEventResult {
+type TurnCompletedEvent = Extract<ThreadEvent, { type: "turn/completed" }>;
+
+type TurnCompletionDeps = Pick<
+  AppDeps,
+  "db" | "hub" | "logger" | "providerRegistry"
+>;
+
+interface ReadTurnCompletionResult {
   isRootTurnCompletion: boolean;
   suppressFailureNotice: boolean;
-  nextStatus: ThreadStatus | null;
   thread: ReturnType<typeof getThread>;
 }
 
+export type TurnCompletedTransition =
+  | { kind: "deferred" }
+  | { kind: "settled"; nextStatus: ThreadStatus | null };
+
+interface ApplyTurnCompletedEventArgs {
+  afterIdle: (() => Promise<void>) | null;
+  payload: TurnCompletedEvent;
+}
+
+interface DeferredTurnCompletion {
+  afterIdle: (() => Promise<void>) | null;
+  lifecycleEvent: ThreadLifecycleEvent;
+}
+
+const inFlightTurnRequestCountByThreadId = new Map<string, number>();
+const deferredTurnCompletionByThreadId = new Map<
+  string,
+  DeferredTurnCompletion
+>();
+
 function lifecycleEventForTurnCompletion(
-  status: Extract<ThreadEvent, { type: "turn/completed" }>["status"],
+  status: TurnCompletedEvent["status"],
 ): ThreadLifecycleEvent {
   if (status === "failed") {
     return { type: "run.failed" };
@@ -93,64 +122,111 @@ function lifecycleEventForTurnCompletion(
   return { type: "run.succeeded" };
 }
 
-export function applyTurnCompletedEvent(
-  deps: Pick<AppDeps, "db" | "hub" | "logger" | "providerRegistry">,
-  payload: Extract<ThreadEvent, { type: "turn/completed" }>,
-): ApplyTurnCompletedEventResult {
+export function readTurnCompletion(
+  deps: Pick<AppDeps, "db">,
+  payload: TurnCompletedEvent,
+): ReadTurnCompletionResult {
   const thread = getThread(deps.db, payload.threadId);
   if (!thread) {
     return {
       isRootTurnCompletion: false,
       suppressFailureNotice: false,
-      nextStatus: null,
       thread: null,
     };
   }
-
   const turnId = requireThreadEventScopeTurnId({
     type: payload.type,
     scope: payload.scope,
   });
-  const isRootTurnCompletion = hasRootStoredTurnStarted(deps.db, {
-    threadId: payload.threadId,
-    turnId,
-  });
-  if (!isRootTurnCompletion) {
-    return {
-      isRootTurnCompletion,
-      suppressFailureNotice: false,
-      nextStatus: null,
-      thread,
-    };
-  }
-
-  const suppressFailureNotice =
-    payload.status === "failed" &&
-    thread.archivedAt !== null &&
-    isArchivedCredentialRevocation(
-      deps.db,
-      thread.id,
+  return {
+    isRootTurnCompletion: hasRootStoredTurnStarted(deps.db, {
+      threadId: payload.threadId,
       turnId,
-      thread.archivedAt,
-    );
+    }),
+    suppressFailureNotice:
+      payload.status === "failed" &&
+      thread.archivedAt !== null &&
+      isArchivedCredentialRevocation(
+        deps.db,
+        thread.id,
+        turnId,
+        thread.archivedAt,
+      ),
+    thread,
+  };
+}
+
+function applyTurnCompletion(
+  deps: TurnCompletionDeps,
+  threadId: string,
+  lifecycleEvent: ThreadLifecycleEvent,
+): ThreadStatus | null {
   const outcome = applyLoggedThreadLifecycleEvent(deps, {
-    event: suppressFailureNotice
-      ? { type: "run.succeeded" }
-      : lifecycleEventForTurnCompletion(payload.status),
-    threadId: payload.threadId,
+    event: lifecycleEvent,
+    threadId,
   });
   const nextStatus = outcome.applied ? outcome.thread.status : null;
-
   if (nextStatus) {
-    resetActiveThreadEventPruningState(deps, payload.threadId);
+    resetActiveThreadEventPruningState(deps, threadId);
   }
-
   if (nextStatus === "idle") {
-    pruneThreadEventHistoryBestEffort(deps, {
-      mode: "idle",
-      threadId: payload.threadId,
-    });
+    pruneThreadEventHistoryBestEffort(deps, { mode: "idle", threadId });
   }
+  return nextStatus;
+}
 
-  return { isRootTurnCompletion, suppressFailureNotice, nextStatus, thread };
+export function applyTurnCompletedEvent(
+  deps: TurnCompletionDeps,
+  { afterIdle, payload }: ApplyTurnCompletedEventArgs,
+): TurnCompletedTransition {
+  rejectUnconfirmedSteersAfterTurnCompleted(deps, payload.threadId);
+  const lifecycleEvent = readTurnCompletion(deps, payload).suppressFailureNotice
+    ? { type: "run.succeeded" as const }
+    : lifecycleEventForTurnCompletion(payload.status);
+  if (inFlightTurnRequestCountByThreadId.has(payload.threadId)) {
+    deferredTurnCompletionByThreadId.set(payload.threadId, {
+      afterIdle,
+      lifecycleEvent,
+    });
+    return { kind: "deferred" };
+  }
+  return {
+    kind: "settled",
+    nextStatus: applyTurnCompletion(deps, payload.threadId, lifecycleEvent),
+  };
+}
+
+export function trackInFlightTurnRequest(threadId: string): void {
+  inFlightTurnRequestCountByThreadId.set(
+    threadId,
+    (inFlightTurnRequestCountByThreadId.get(threadId) ?? 0) + 1,
+  );
+}
+
+export async function settleInFlightTurnRequest(
+  deps: TurnCompletionDeps,
+  threadId: string,
+): Promise<void> {
+  const count = inFlightTurnRequestCountByThreadId.get(threadId) ?? 0;
+  if (count > 1) {
+    inFlightTurnRequestCountByThreadId.set(threadId, count - 1);
+    return;
+  }
+  inFlightTurnRequestCountByThreadId.delete(threadId);
+  const completion = deferredTurnCompletionByThreadId.get(threadId);
+  if (completion === undefined) {
+    return;
+  }
+  deferredTurnCompletionByThreadId.delete(threadId);
+  if (getActiveTurnId(deps, threadId) !== null) {
+    return;
+  }
+  const nextStatus = applyTurnCompletion(
+    deps,
+    threadId,
+    completion.lifecycleEvent,
+  );
+  if (nextStatus === "idle") {
+    await completion.afterIdle?.();
+  }
 }

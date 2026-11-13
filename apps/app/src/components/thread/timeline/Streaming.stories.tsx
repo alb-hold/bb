@@ -192,6 +192,7 @@ function RunningCommandStreaming({ restartKey }: { restartKey: number }) {
     status: completed ? "completed" : "pending",
     callId: "streaming-command",
     command: "pnpm exec turbo run test --filter=@bb/server",
+    description: null,
     cwd: null,
     source: null,
     output,

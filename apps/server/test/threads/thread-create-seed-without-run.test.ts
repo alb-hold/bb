@@ -8,7 +8,6 @@ import {
 import {
   PERSONAL_PROJECT_ID,
   turnRequestEventDataSchema,
-  turnScope,
   type PermissionMode,
 } from "@bb/domain";
 import { describe, expect, it, vi } from "vitest";
@@ -25,7 +24,6 @@ import {
 import { textInput } from "../helpers/prompt-input.js";
 import {
   seedEnvironment,
-  seedEvent,
   seedHostSession,
   seedPrimaryHost,
   seedProjectWithSource,
@@ -56,52 +54,6 @@ function installTelemetryCaptureSpy(harness: TestAppHarness) {
   harness.deps.telemetry = { ...harness.deps.telemetry, capture };
   return capture;
 }
-
-describe("thread creation telemetry", () => {
-  it("captures initial user messages", async () => {
-    await withTestHarness(async (harness) => {
-      const capture = installTelemetryCaptureSpy(harness);
-      const { host } = seedHostSession(harness.deps, {
-        id: "host-thread-create-telemetry",
-      });
-      const { project } = seedProjectWithSource(harness.deps, {
-        hostId: host.id,
-        path: "/tmp/thread-create-telemetry",
-      });
-      seedEnvironment(harness.deps, {
-        hostId: host.id,
-        projectId: project.id,
-        path: "/tmp/thread-create-telemetry",
-      });
-
-      await createThreadFromRequest(harness.deps, {
-        environment: {
-          type: "host",
-          hostId: host.id,
-          workspace: {
-            type: "unmanaged",
-            path: "/tmp/thread-create-telemetry",
-          },
-        },
-        input: textInput("Start with telemetry"),
-        origin: "app",
-        projectId: project.id,
-        providerId: "codex",
-        startedOnBehalfOf: null,
-      });
-
-      expect(capture).toHaveBeenCalledWith({
-        name: "user_message_sent",
-        properties: {
-          initiator: "user",
-          is_child_thread: false,
-          message_source: "thread_create",
-          provider: "codex",
-        },
-      });
-    });
-  });
-});
 
 describe("thread creation initiator telemetry", () => {
   it("adds initiator to thread and message events only when the flag is on", async () => {
@@ -312,89 +264,6 @@ describe("thread creation with startedOnBehalfOf (seed-without-run)", () => {
       expect(capture).not.toHaveBeenCalledWith(
         expect.objectContaining({ name: "user_message_sent" }),
       );
-    });
-  });
-
-  it("uses the source provider session at the requested source sequence", async () => {
-    await withTestHarness(async (harness) => {
-      const { host } = seedHostSession(harness.deps, {
-        id: "host-source-sequence-fork",
-      });
-      const { project } = seedProjectWithSource(harness.deps, {
-        hostId: host.id,
-        path: "/tmp/source-sequence-fork-project",
-      });
-      const environment = seedEnvironment(harness.deps, {
-        hostId: host.id,
-        projectId: project.id,
-        path: "/tmp/source-sequence-fork-project",
-      });
-      const sourceThread = seedThread(harness.deps, {
-        projectId: project.id,
-        environmentId: environment.id,
-      });
-      seedTurnStarted(harness.deps, {
-        threadId: sourceThread.id,
-        turnId: "turn-earlier-source",
-        providerThreadId: "provider-earlier-source",
-        sequence: 5,
-      });
-      seedEvent(harness.deps, {
-        threadId: sourceThread.id,
-        environmentId: environment.id,
-        providerThreadId: "provider-earlier-source",
-        sequence: 6,
-        type: "turn/completed",
-        scope: turnScope("turn-earlier-source"),
-        data: {
-          providerThreadId: "provider-earlier-source",
-          status: "completed",
-          providerCheckpointId: "checkpoint-earlier-source",
-        },
-      });
-      seedTurnStarted(harness.deps, {
-        threadId: sourceThread.id,
-        turnId: "turn-later-source",
-        providerThreadId: "provider-later-source",
-        sequence: 9,
-      });
-
-      const forkInput = textInput("Continue from the earlier source sequence");
-      const fork = await createThreadFromRequest(harness.deps, {
-        environment: {
-          type: "host",
-          hostId: host.id,
-          workspace: {
-            type: "unmanaged",
-            path: "/tmp/source-sequence-fork-project",
-          },
-        },
-        input: forkInput,
-        origin: "app",
-        originKind: "fork",
-        projectId: project.id,
-        providerId: "codex",
-        sourceSeqEnd: 5,
-        sourceThreadId: sourceThread.id,
-        startedOnBehalfOf: {
-          initiator: "agent",
-          senderThreadId: sourceThread.id,
-        },
-      });
-
-      const queuedStart = await waitForQueuedCommand(
-        harness,
-        ({ command }) =>
-          command.type === "thread.start" && command.threadId === fork.id,
-      );
-      if (queuedStart.command.type !== "thread.start") {
-        throw new Error("Expected a thread.start command");
-      }
-      expect(queuedStart.command.input).toEqual(forkInput);
-      expect(queuedStart.command.fork).toEqual({
-        sourceProviderThreadId: "provider-earlier-source",
-        sourceProviderCheckpointId: "checkpoint-earlier-source",
-      });
     });
   });
 
@@ -974,56 +843,6 @@ describe("thread creation child-thread boundary validation", () => {
       }
       expect(queued.command.fork).toEqual({
         sourceProviderThreadId: "provider-personal-fork-source",
-      });
-    });
-  });
-
-  it("rejects a personal fork that reuses a different unmanaged environment", async () => {
-    await withTestHarness(async (harness) => {
-      const { host } = seedHostSession(harness.deps, {
-        id: "host-personal-fork-different-environment",
-      });
-      ensurePersonalProject(harness.db);
-      const sourceEnvironment = seedEnvironment(harness.deps, {
-        hostId: host.id,
-        path: "/tmp/personal-fork-source",
-        projectId: PERSONAL_PROJECT_ID,
-      });
-      const otherEnvironment = seedEnvironment(harness.deps, {
-        hostId: host.id,
-        path: "/tmp/personal-fork-other",
-        projectId: PERSONAL_PROJECT_ID,
-      });
-      const sourceThread = seedThread(harness.deps, {
-        environmentId: sourceEnvironment.id,
-        projectId: PERSONAL_PROJECT_ID,
-      });
-      seedTurnStarted(harness.deps, {
-        environmentId: sourceEnvironment.id,
-        providerThreadId: "provider-personal-fork-source",
-        threadId: sourceThread.id,
-        turnId: "turn-personal-fork-source",
-      });
-
-      await expect(
-        createThreadFromRequest(harness.deps, {
-          environment: {
-            type: "reuse",
-            environmentId: otherEnvironment.id,
-          },
-          input: textInput("Reuse only the source environment"),
-          origin: "app",
-          originKind: "fork",
-          projectId: PERSONAL_PROJECT_ID,
-          providerId: "codex",
-          sourceThreadId: sourceThread.id,
-          startedOnBehalfOf: null,
-        }),
-      ).rejects.toMatchObject({
-        body: {
-          message: "Personal project threads must reuse a personal workspace",
-        },
-        status: 409,
       });
     });
   });

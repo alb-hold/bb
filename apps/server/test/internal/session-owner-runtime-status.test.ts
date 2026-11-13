@@ -214,7 +214,7 @@ describe("host thread runtime status notifications", () => {
       ).toBe("waiting-for-host");
 
       const reconnected = seedSession(harness.deps, fixture.hostId);
-      onDaemonSocketOpen(harness.deps, {
+      void onDaemonSocketOpen(harness.deps, {
         hostId: fixture.hostId,
         sessionId: reconnected.id,
         socket: createMockHubSocket(),

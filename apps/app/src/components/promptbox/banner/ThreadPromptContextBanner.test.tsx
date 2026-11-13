@@ -20,7 +20,7 @@ import {
   GitSegmentFixtureProvider,
   type GitSegmentFixture,
 } from "@/test/fixtures/git-segment-plugin";
-import type { WorkspaceChangedFilesSection } from "@bb/shared-ui/workspace-change-summary";
+import type { WorkspaceChangedFilesSection } from "../../../../../../plugins/git/ui/workspace-change-summary";
 
 const noop = () => {};
 const CHILD_THREADS = "child-threads";
@@ -461,7 +461,7 @@ describe("ThreadPromptContextBanner", () => {
   });
 
   it("summarizes child threads with a header and total count", () => {
-    const markup = renderToMarkup(
+    const { container } = render(
       <MemoryRouter>
         <Banner
           gitSection={null}
@@ -478,6 +478,7 @@ describe("ThreadPromptContextBanner", () => {
         />
       </MemoryRouter>,
     );
+    const markup = container.innerHTML;
 
     expect(markup).toContain('aria-label="Child threads"');
     expect(markup).toContain('aria-label="1 active child thread"');
@@ -485,7 +486,10 @@ describe("ThreadPromptContextBanner", () => {
     expect(markup).toContain(">1<");
     expect(markup).toContain('data-icon="ChildThread"');
     expect(markup).toContain("animate-shine-icon");
-    expect(markup).toMatch(/animate-shine[^"]*font-normal/);
+    const label = screen.getByText("Active child threads").classList;
+    expect(label.contains("animate-shine")).toBe(true);
+    expect(label.contains("font-normal")).toBe(true);
+    expect(label.contains("font-medium")).toBe(false);
   });
 
   it("lists child threads with needs-input and working glyphs when expanded", () => {

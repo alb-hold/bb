@@ -13,7 +13,7 @@ describe("owned runtime recovery", () => {
     const mainSource = readFileSync(join(process.cwd(), "src/main.ts"), "utf8");
     const exitWatcherStart = mainSource.indexOf("void watchOwnedRuntimeExit({");
     const exitWatcherEnd = mainSource.indexOf(
-      "return { bbProcess, runtime }",
+      "async function waitForWindowsInstallerToFinish",
       exitWatcherStart,
     );
     const recoveryStart = mainSource.indexOf(

@@ -84,7 +84,7 @@ describe("work while a server move is frozen", () => {
       setServerMoveFrozen(harness.db, true);
       try {
         const session = seedSession(harness.deps, host.id);
-        onDaemonSocketOpen(harness.deps, {
+        void onDaemonSocketOpen(harness.deps, {
           hostId: host.id,
           sessionId: session.id,
           socket: registerTestHostRpcCapture(harness.deps, {

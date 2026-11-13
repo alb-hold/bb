@@ -18,6 +18,7 @@ import {
 import { StoryCard, StoryRow } from "../../../.ladle/story-card";
 import { ReleaseNotesPanel } from "./ReleaseNotesPanel";
 import {
+  AutoAppUpdateSetting,
   BbAppUpdateRows,
   BbUpdatesCard,
   MachineUpdateRow,
@@ -39,6 +40,17 @@ function storyReleaseNotes(version: string, expanded = false) {
     onToggle: noop,
   };
 }
+const SOURCE_FROM_COMMIT = "916d684a1b2c3d4e5f60718293a4b5c6d7e8f901";
+const SOURCE_INCOMING_SUBJECTS = [
+  "Wait for a moved server's ready state on desktop, with one shared health probe (#6757)",
+  "Use launcher resolution for the desktop local server URL (#6758)",
+  "Show all changes in the thread context card's diff stats (#6848)",
+  "Cancel dnd-kit drags released before the drag-start render (#6847)",
+  "Add @neoromantic to allow list",
+  "Let queued messages change their send time and execution options (#6750)",
+];
+
+const SOURCE_TO_COMMIT = "1555ccfc15a1b2c3d4e5f60718293a4b5c6d7e8f";
 const NO_JOBS: ReadonlySet<string> = new Set();
 const NO_FAILURES: ReadonlyMap<string, ProviderCliInstallFailure> = new Map();
 const STORY_NOW = 1_800_000_000_000;
@@ -57,6 +69,7 @@ const NPM_VERSION = {
 const IN_APP_UPDATE: SystemAppUpdateStatus = {
   activity: { phase: "idle" },
   available: {
+    behindSince: null,
     channel: "latest",
     commit: null,
     commitCount: null,
@@ -66,7 +79,10 @@ const IN_APP_UPDATE: SystemAppUpdateStatus = {
   blocked: null,
   current: { commit: null, version: "0.38.0" },
   lastResult: null,
+  autoUpdate: false,
+  availableSkipped: false,
   runningThreadCount: 0,
+  scheduled: null,
   support: { kind: "supported", mode: "npm" },
 };
 
@@ -382,6 +398,7 @@ export function RowVariations() {
               <ReleaseNotesPanel
                 id="story-release-notes-0.48.0"
                 version="0.48.0"
+                sourceUpdate={null}
               />
             </BbUpdatesCard>
           </div>
@@ -429,6 +446,120 @@ export function RowVariations() {
                 desktopInfo={null}
                 isDesktop={false}
                 onApplyAppUpdate={noop}
+                onRelaunchDesktop={null}
+                onRetryDesktop={null}
+                onShowAppUpdateResult={noop}
+              />
+            </BbUpdatesCard>
+          </div>
+        </StoryRow>
+
+        <StoryRow
+          label="In-app update while threads run"
+          hint="Update asks before interrupting running threads. With automatic updates on, the update waits for them instead."
+        >
+          <div className="w-full">
+            <BbUpdatesCard>
+              <BbAppUpdateRows
+                systemVersion={NPM_VERSION}
+                appUpdate={{ ...IN_APP_UPDATE, runningThreadCount: 2 }}
+                desktopInfo={null}
+                isDesktop={false}
+                onApplyAppUpdate={noop}
+                onRelaunchDesktop={null}
+                onRetryDesktop={null}
+                onShowAppUpdateResult={noop}
+              />
+            </BbUpdatesCard>
+          </div>
+        </StoryRow>
+
+        <StoryRow
+          label="In-app update waiting for threads"
+          hint="Automatic updates found this version; the server starts it once no thread has run for 15 minutes. Skip this version keeps it from installing until a newer one appears."
+        >
+          <div className="w-full">
+            <BbUpdatesCard>
+              <BbAppUpdateRows
+                systemVersion={NPM_VERSION}
+                appUpdate={{
+                  ...IN_APP_UPDATE,
+                  runningThreadCount: 2,
+                  scheduled: {
+                    requestedAt: "2026-10-23T00:00:00.000Z",
+                    requiredIdleMs: 15 * 60_000,
+                  },
+                }}
+                desktopInfo={null}
+                isDesktop={false}
+                onApplyAppUpdate={noop}
+                onCancelScheduledAppUpdate={noop}
+                onRelaunchDesktop={null}
+                onRetryDesktop={null}
+                onShowAppUpdateResult={noop}
+              />
+              <AutoAppUpdateSetting
+                label="Restart and update bb automatically"
+                checked
+                onCheckedChange={noop}
+              />
+            </BbUpdatesCard>
+          </div>
+        </StoryRow>
+
+        <StoryRow
+          label="In-app update waiting for idle time"
+          hint="Every thread has finished; the automatic update still waits until no thread has run for 15 minutes, so bb does not restart between turns."
+        >
+          <div className="w-full">
+            <BbUpdatesCard>
+              <BbAppUpdateRows
+                systemVersion={NPM_VERSION}
+                appUpdate={{
+                  ...IN_APP_UPDATE,
+                  runningThreadCount: 0,
+                  scheduled: {
+                    requestedAt: "2026-10-23T00:00:00.000Z",
+                    requiredIdleMs: 15 * 60_000,
+                  },
+                }}
+                desktopInfo={null}
+                isDesktop={false}
+                onApplyAppUpdate={noop}
+                onCancelScheduledAppUpdate={noop}
+                onRelaunchDesktop={null}
+                onRetryDesktop={null}
+                onShowAppUpdateResult={noop}
+              />
+              <AutoAppUpdateSetting
+                label="Restart and update bb automatically"
+                checked
+                onCheckedChange={noop}
+              />
+            </BbUpdatesCard>
+          </div>
+        </StoryRow>
+
+        <StoryRow
+          label="Requested update waiting for threads"
+          hint="bb updates app apply --when-idle asked for this update; the server starts it a few seconds after the running threads finish."
+        >
+          <div className="w-full">
+            <BbUpdatesCard>
+              <BbAppUpdateRows
+                systemVersion={NPM_VERSION}
+                appUpdate={{
+                  ...IN_APP_UPDATE,
+                  runningThreadCount: 2,
+                  scheduled: {
+                    requestedAt: "2026-10-23T00:00:00.000Z",
+                    requiredIdleMs: 5_000,
+                  },
+                }}
+                desktopInfo={null}
+                isDesktop={false}
+                onApplyAppUpdate={noop}
+                onCancelScheduledAppUpdate={noop}
                 onRelaunchDesktop={null}
                 onRetryDesktop={null}
                 onShowAppUpdateResult={noop}
@@ -644,6 +775,7 @@ export function RowVariations() {
                 appUpdate={{
                   ...IN_APP_UPDATE,
                   available: {
+                    behindSince: "2026-11-02T12:00:00.000Z",
                     channel: "main",
                     commit: "76a1ebcaf5c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5",
                     commitCount: 54,
@@ -668,6 +800,55 @@ export function RowVariations() {
         </StoryRow>
 
         <StoryRow
+          label="Source checkout — changelog"
+          hint="Changelog lists the incoming commits on main and compares the range on GitHub."
+        >
+          <div className="w-full">
+            <BbUpdatesCard>
+              <BbAppUpdateRows
+                systemVersion={{
+                  ...NPM_VERSION,
+                  currentVersion: "0.48.0",
+                  currentCommit: SOURCE_FROM_COMMIT,
+                  installKind: "source",
+                  latestVersion: null,
+                }}
+                appUpdate={{
+                  ...IN_APP_UPDATE,
+                  available: {
+                    behindSince: "2026-11-02T12:00:00.000Z",
+                    channel: "main",
+                    commit: SOURCE_TO_COMMIT,
+                    commitCount: 41,
+                    subjects: SOURCE_INCOMING_SUBJECTS,
+                    version: "0.48.0",
+                  },
+                  current: { commit: SOURCE_FROM_COMMIT, version: "0.48.0" },
+                  support: { kind: "supported", mode: "source" },
+                }}
+                desktopInfo={null}
+                isDesktop={false}
+                onApplyAppUpdate={noop}
+                onRelaunchDesktop={null}
+                onRetryDesktop={null}
+                onShowAppUpdateResult={noop}
+                releaseNotes={storyReleaseNotes("0.48.0", true)}
+              />
+              <ReleaseNotesPanel
+                id="story-release-notes-source"
+                version="0.48.0"
+                sourceUpdate={{
+                  from: SOURCE_FROM_COMMIT,
+                  to: SOURCE_TO_COMMIT,
+                  commitCount: 41,
+                  subjects: SOURCE_INCOMING_SUBJECTS,
+                }}
+              />
+            </BbUpdatesCard>
+          </div>
+        </StoryRow>
+
+        <StoryRow
           label="Source checkout — checking update"
           hint="The launcher rechecks origin/main before accepting the update target. The spinner and step replace the Update button."
         >
@@ -683,6 +864,7 @@ export function RowVariations() {
                 appUpdate={{
                   ...IN_APP_UPDATE,
                   available: {
+                    behindSince: "2026-11-02T12:00:00.000Z",
                     channel: "main",
                     commit: "b".repeat(40),
                     commitCount: 54,
@@ -725,6 +907,7 @@ export function RowVariations() {
                 appUpdate={{
                   ...IN_APP_UPDATE,
                   available: {
+                    behindSince: "2026-11-02T12:00:00.000Z",
                     channel: "main",
                     commit: "b".repeat(40),
                     commitCount: 54,
@@ -767,6 +950,7 @@ export function RowVariations() {
                 appUpdate={{
                   ...IN_APP_UPDATE,
                   available: {
+                    behindSince: "2026-11-02T12:00:00.000Z",
                     channel: "main",
                     commit: "b".repeat(40),
                     commitCount: 54,
@@ -807,6 +991,7 @@ export function RowVariations() {
                 appUpdate={{
                   ...IN_APP_UPDATE,
                   available: {
+                    behindSince: "2026-11-02T12:00:00.000Z",
                     channel: "main",
                     commit: "4f1c2e9a7b0d3c5e8f1a2b3c4d5e6f7a8b9c0d1e",
                     commitCount: 12,

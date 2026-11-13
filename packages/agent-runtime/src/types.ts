@@ -28,6 +28,7 @@ import type {
   ProviderUsageResult,
   SkillsConfigureRoot,
 } from "@bb/provider-bridge-protocol";
+import type { RuntimeOpenBackgroundWork } from "./runtime-background-work-state.js";
 
 export type AgentRuntimeShellEnvironment = Record<string, string>;
 
@@ -190,7 +191,7 @@ export interface ResumeThreadArgs {
   environmentId: string;
   threadId: string;
   projectId?: string;
-  providerThreadId?: string;
+  providerThreadId: string;
   providerId: string;
   contributedEnv?: readonly AgentRuntimeContributedEnvEntry[];
   options: AgentRuntimeExecutionOptions;
@@ -212,6 +213,8 @@ export interface RunTurnArgs {
   instructions?: string;
 }
 
+export type RunTurnResult = { status: "started" } | { status: "unconfirmed" };
+
 export interface SteerTurnArgs {
   threadId: string;
   expectedTurnId: string;
@@ -231,7 +234,14 @@ interface SteerTurnStaleResult {
   activeTurnId: string | null;
 }
 
-export type SteerTurnResult = SteerTurnAppliedResult | SteerTurnStaleResult;
+interface SteerTurnUnconfirmedResult {
+  status: "unconfirmed";
+}
+
+export type SteerTurnResult =
+  | SteerTurnAppliedResult
+  | SteerTurnStaleResult
+  | SteerTurnUnconfirmedResult;
 
 export interface StopThreadArgs {
   threadId: string;
@@ -331,7 +341,7 @@ export interface AgentRuntime {
 
   resumeThread(args: ResumeThreadArgs): Promise<ResumeThreadResult>;
 
-  runTurn(args: RunTurnArgs): Promise<void>;
+  runTurn(args: RunTurnArgs): Promise<RunTurnResult>;
 
   steerTurn(args: SteerTurnArgs): Promise<SteerTurnResult>;
 
@@ -384,6 +394,8 @@ export interface AgentRuntime {
   getLiveThreadIds(): string[];
 
   hasOpenBackgroundWork(): boolean;
+
+  listOpenBackgroundWork(): RuntimeOpenBackgroundWork[];
 
   shutdown(): Promise<void>;
 

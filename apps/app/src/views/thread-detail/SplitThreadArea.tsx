@@ -92,10 +92,6 @@ import { Button } from "@bb/shared-ui/button";
 import { Icon } from "@bb/shared-ui/icon";
 import { CHROME_SUBTLE_ICON_BUTTON_FOREGROUND_CLASS } from "@bb/shared-ui/chrome-style-tokens";
 import { usePluginNavPanelChrome } from "@/lib/plugin-nav-panel-chrome";
-import {
-  PluginPanelHeaderActions,
-  PluginPanelHeaderCenter,
-} from "@/components/plugin/PluginPanelHeader";
 import { getAdjacentPaneId, getDirectionalPaneId } from "./splitPaneCommands";
 import {
   applyThreadPaneActionToLayout,
@@ -123,6 +119,26 @@ import { useImmediateRouteNavigate } from "@/components/ui/app-route-anchor";
 import { PluginDetailOpenerBoundary } from "@/components/plugin/plugin-detail-opener";
 import { defineSplit } from "@/lib/define-split";
 import { LazyPluginDetailPaneView } from "@/views/ToolsViewSplits";
+
+const PluginPanelHeaderActions = defineSplit({
+  id: "split-plugin-panel-header-actions",
+  tier: "intent",
+  load: () =>
+    import("@/components/plugin/PluginPanelHeader").then(
+      (module) => module.PluginPanelHeaderActions,
+    ),
+  loading: () => null,
+});
+
+const PluginPanelHeaderCenter = defineSplit({
+  id: "split-plugin-panel-header-center",
+  tier: "intent",
+  load: () =>
+    import("@/components/plugin/PluginPanelHeader").then(
+      (module) => module.PluginPanelHeaderCenter,
+    ),
+  loading: () => null,
+});
 
 const LazyPluginPanelRightPanelHost = defineSplit<
   ComponentProps<
@@ -1252,7 +1268,13 @@ function StandalonePaneContent({
         {panelChrome ? (
           <div className="flex h-full min-h-0 flex-col">
             <AppPageHeader
-              center={<PluginPanelHeaderCenter chrome={panelChrome} />}
+              center={
+                <PluginPanelHeaderCenter
+                  chrome={panelChrome}
+                  panel={panel}
+                  subPath={content.subPath}
+                />
+              }
               actions={
                 panel ? (
                   <PluginPanelHeaderActions
@@ -1402,7 +1424,13 @@ function NonThreadPaneContent({
               onPointerDown={beginPaneDrag ? handlePointerDown : undefined}
             >
               {panelChrome ? (
-                <PluginPanelHeaderCenter chrome={panelChrome} />
+                <PluginPanelHeaderCenter
+                  chrome={panelChrome}
+                  panel={panel}
+                  subPath={
+                    content.kind === "plugin-panel" ? content.subPath : ""
+                  }
+                />
               ) : (
                 <p
                   className={cn(

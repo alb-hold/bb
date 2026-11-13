@@ -15,7 +15,6 @@ import {
   isNotNull,
   isNull,
   lt,
-  ne,
   or,
   placeholder,
   sql,
@@ -75,8 +74,18 @@ function nonDeletedThreads(...where: ThreadWhere[]): ThreadWhere {
   return and(...where, isNull(threads.deletedAt));
 }
 
+export const liveThread = and(
+  isNull(threads.archivedAt),
+  isNull(threads.deletedAt),
+);
+
+export const threadHoldsEnvironment = or(
+  liveThread,
+  inArray(threads.status, ["stopping", "active"]),
+);
+
 function liveThreads(...where: ThreadWhere[]): ThreadWhere {
-  return nonDeletedThreads(...where, isNull(threads.archivedAt));
+  return and(...where, liveThread);
 }
 
 function countThreadsWhere(
@@ -243,6 +252,50 @@ export function upsertThreadSearchSegments(
   }
 }
 
+export function upsertThreadSearchSegmentBatch(
+  db: ThreadWriteConnection,
+  args: { segments: readonly UpsertThreadSearchSegmentInput[]; updatedAt: number },
+): void {
+  const segments = args.segments.flatMap((segment) => {
+    const text = segment.text.trim();
+    return text.length === 0
+      ? []
+      : [
+          {
+            id: buildThreadSearchSegmentId(segment),
+            sourceKey: segment.sourceKey,
+            sourceKind: segment.sourceKind,
+            sourceSeq: segment.sourceSeq,
+            text,
+            threadId: segment.threadId,
+          },
+        ];
+  });
+  if (segments.length === 0) {
+    return;
+  }
+  db.run(sql`INSERT INTO thread_search_segments
+    (id, thread_id, source_kind, source_key, source_seq, text, created_at, updated_at)
+    SELECT
+      segment.value ->> '$.id',
+      segment.value ->> '$.threadId',
+      segment.value ->> '$.sourceKind',
+      segment.value ->> '$.sourceKey',
+      segment.value ->> '$.sourceSeq',
+      segment.value ->> '$.text',
+      ${args.updatedAt},
+      ${args.updatedAt}
+    FROM json_each(${JSON.stringify(segments)}) AS segment
+    WHERE true
+    ORDER BY segment.key
+    ON CONFLICT (id) DO UPDATE SET
+      source_kind = excluded.source_kind,
+      source_key = excluded.source_key,
+      source_seq = excluded.source_seq,
+      text = excluded.text,
+      updated_at = excluded.updated_at`);
+}
+
 function upsertThreadTitleSearchSegments(
   db: ThreadWriteConnection,
   args: UpsertThreadTitleSearchSegmentsArgs,
@@ -314,8 +367,7 @@ export function createThread(
           .where(
             and(
               eq(threads.id, input.lifecycleOwnerThreadId),
-              isNull(threads.archivedAt),
-              isNull(threads.deletedAt),
+              liveThread,
               isNull(projects.deletedAt),
             ),
           )
@@ -342,6 +394,7 @@ export function createThread(
               })
             : null,
           status: input.status ?? "starting",
+          statusChangedAt: now,
           startupContext: input.startupContext ?? null,
           parentThreadId:
             originKind === null ? (input.parentThreadId ?? null) : null,
@@ -645,11 +698,6 @@ interface ThreadWithPendingInteractionStateRow extends ThreadRow {
   hasPendingInteraction: number;
 }
 
-export interface CountLiveThreadsInEnvironmentArgs {
-  environmentId: string;
-  excludeThreadId?: string;
-}
-
 export interface ListLiveThreadsInEnvironmentArgs {
   environmentId: string;
 }
@@ -826,6 +874,7 @@ export function buildPinnedRootThreadListEnrichmentScope(
     .where(liveThreads(pinnedThreadWhere()));
   return { kind: "query", ids: sql`${query}` };
 }
+
 
 function buildActiveProjectThreadOrderBy() {
   return [
@@ -1591,24 +1640,16 @@ export function listThreadsWithPendingInteractionStateForProjects(
   }
 
   const rows = threadWithPendingInteractionBaseQuery(db)
-    .where(and(...buildListThreadsForProjectsFilters(options)))
+    .where(
+      and(
+        inArray(threads.projectId, [...options.projectIds]),
+        ...buildListThreadsFilters(options),
+      ),
+    )
     .orderBy(...buildListThreadsOrderBy(options))
     .all();
 
   return rows.map(toThreadWithPendingInteractionState);
-}
-
-export function countLiveThreadsInEnvironment(
-  db: ThreadWriteConnection,
-  args: CountLiveThreadsInEnvironmentArgs,
-): number {
-  return countThreadsWhere(
-    db,
-    liveThreads(
-      eq(threads.environmentId, args.environmentId),
-      args.excludeThreadId ? ne(threads.id, args.excludeThreadId) : undefined,
-    ),
-  );
 }
 
 export function listLiveThreadsInEnvironment(
@@ -2322,8 +2363,7 @@ export function archiveThread(
       .where(
         and(
           inArray(threads.id, lifecycleThreadTreeIdsForThread(id)),
-          isNull(threads.archivedAt),
-          isNull(threads.deletedAt),
+          liveThread,
         ),
       )
       .returning()
@@ -2459,6 +2499,7 @@ export function applyThreadLifecycleEventInTransaction(
   const now = Date.now();
   const set: Partial<typeof threads.$inferInsert> = {
     status: evaluation.to,
+    statusChangedAt: now,
     updatedAt: now,
   };
   if (evaluation.to === "idle" && thread.environmentId !== null) {

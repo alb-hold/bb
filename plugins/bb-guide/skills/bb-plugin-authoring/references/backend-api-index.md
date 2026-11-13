@@ -3,9 +3,10 @@
 Use this index to check backend, host, AI-service, and test imports. Read the detailed backend references for behavior, fields, and examples. Read the installed declarations for exact current signatures.
 
 ## `@get-bb/plugin-sdk`
-- `PLUGIN_CLI_OUTPUT_MAX_BYTES`
-- `defineRpcContract`
+- `PLUGIN_CLI_OUTPUT_MAX_BYTES`, `defineRpcContract`
 - `experimental_defineHostEntry`
+- `experimental_joinHostPath`, `experimental_getHostPathDirname`, `experimental_getHostPathBasename`, `experimental_getRelativeHostPath`, `experimental_getHostPathComparisonKey`
+- `experimental_normalizeHostPath`, `experimental_resolveHostPath`, `experimental_isHostPathWithin`
 - `defineCli`
 - `cliCommand`
 - `PluginCliError`
@@ -194,7 +195,6 @@ Use this index to check backend, host, AI-service, and test imports. Read the de
 - `ExperimentalComposerSubmitOptions`, `ExperimentalComposerThreadLink`
 - `ExperimentalComposerThreadLinks`
 - `ExperimentalComposerThreadRelation`
-- `ExperimentalComposerView`
 - `ExperimentalComposerVoice`
 - `ExperimentalDroppedThreadMention`
 - `ExperimentalFailedVoiceRecording`
@@ -334,8 +334,9 @@ Use this index to check backend, host, AI-service, and test imports. Read the de
 - `PluginThreadEventName`
 - `PluginThreadEventPayloads`
 - `ExperimentalThreadInfoProps`
-- `ExperimentalThreadInfoRowRegistration`
-- `ExperimentalThreadInfoSectionRegistration`
+- `ExperimentalThreadInfoRowRegistration`, `ExperimentalThreadInfoSectionRegistration`
+- `ExperimentalThreadHeaderRowRegistration`, `ExperimentalThreadHeaderRowProps`,
+  `ExperimentalThreadHeaderTitleRegistration`, `ExperimentalThreadHeaderTitleProps`
 - `ExperimentalThreadContextCardRowRegistration`
 - `ExperimentalThreadContextCardSectionRegistration`
 - `ExperimentalThreadContextCardProps`
@@ -496,5 +497,4 @@ Use this index to check backend, host, AI-service, and test imports. Read the de
 - `ExperimentalRpcKeyedMethod`, `ExperimentalRpcKeyedValue`
 - `experimental_PluginRpcCallError`
 
-The keyed method and row types are inferred from the `contract` option.
-Read-state and error behavior is documented in [Frontend hooks and UI](frontend-hooks-and-ui.md).
+The keyed method and row types are inferred from the `contract` option. Read-state and error behavior is documented in [Frontend hooks and UI](frontend-hooks-and-ui.md).

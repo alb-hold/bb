@@ -13,6 +13,8 @@ import {
 } from "./helpers/tmp-root-processes.js";
 import { setupBuiltinHostBuildRecords } from "./helpers/builtin-plugin-fixture.js";
 
+import { setupTestGitRepoTemplate } from "./helpers/seed.js";
+
 const STALE_TMP_ROOT_AGE_MS = 60 * 60_000;
 
 async function cleanupTmpRoot(tmpRoot: string): Promise<void> {
@@ -54,7 +56,9 @@ async function sweepIntegrationTmpRoots(minAgeMs: number): Promise<void> {
 export default async function globalSetup(): Promise<() => Promise<void>> {
   await sweepIntegrationTmpRoots(STALE_TMP_ROOT_AGE_MS);
   const cleanupDatabaseTemplate = setupMigratedConnectionTemplate();
+  let cleanupRepoTemplate: (() => Promise<void>) | undefined;
   try {
+    cleanupRepoTemplate = await setupTestGitRepoTemplate();
     const cleanupBuiltinRecords = await setupBuiltinHostBuildRecords();
     return async () => {
       try {
@@ -62,13 +66,15 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
       } finally {
         try {
           cleanupDatabaseTemplate();
-        } finally {
           await cleanupBuiltinRecords();
+        } finally {
+          await cleanupRepoTemplate?.();
         }
       }
     };
   } catch (error) {
     cleanupDatabaseTemplate();
+    await cleanupRepoTemplate?.();
     throw error;
   }
 }

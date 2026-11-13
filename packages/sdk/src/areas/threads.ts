@@ -61,6 +61,7 @@ import type {
   ThreadTimelineReadResponse,
   ThreadTimelineResponse,
   ThreadContextResponse,
+  ThreadHeadStateResponse,
   ThreadWithIncludesResponse,
   TimelineTurnSummaryDetailsResponse,
   ThreadOpenFile,
@@ -178,6 +179,7 @@ export type ThreadInteractionCancelResult = PendingInteraction;
 export type ThreadEventsListResult = ThreadEventRow[];
 export type ThreadEventWaitResult = ThreadEventRow | null;
 export type ThreadContextResult = ThreadContextResponse;
+export type ThreadHeadStateResult = ThreadHeadStateResponse;
 export type ThreadTimelineResult = ThreadTimelineResponse;
 export type ThreadTimelineReadResult = ThreadTimelineReadResponse;
 export type ThreadArchiveResult = ThreadArchiveAllResponse;
@@ -485,7 +487,11 @@ export class ThreadWaitTimeoutError extends Error {
   readonly target: ThreadWaitTarget;
   readonly threadId: string;
 
-  constructor(args: { target: ThreadWaitTarget; threadId: string }) {
+  constructor(args: {
+    pendingRetry: ThreadQueuedMessage | null;
+    target: ThreadWaitTarget;
+    threadId: string;
+  }) {
     super(formatThreadWaitTimeoutMessage(args));
     this.name = "ThreadWaitTimeoutError";
     this.target = args.target;
@@ -702,6 +708,17 @@ export interface ThreadsArea {
     args: ThreadStatusArgs & UpdateThreadRowStateRequest,
   ): Promise<ThreadRowState>;
   context(args: ThreadStatusArgs): Promise<ThreadContextResult>;
+  /**
+   * The thread's head state: to-dos, provider slash commands, session options,
+   * extension states, plan prompt mode, model fallback, and context usage, as
+   * of its latest event. Read from the latest stored state events without
+   * building a timeline window; the latest timeline page embeds the same
+   * values. `pendingTodos` and `activePromptMode` are null unless the thread
+   * is active. Experimental: see docs/api_to_audit.md.
+   */
+  experimental_headState(
+    args: ThreadStatusArgs,
+  ): Promise<ThreadHeadStateResult>;
   timeline(
     args: ThreadTimelineArgs & { afterTag?: undefined },
   ): Promise<ThreadTimelineResult>;
@@ -884,9 +901,6 @@ function timelineQuery(args: ThreadTimelineArgs): ThreadTimelineQuery {
     ...(args.includeNestedRows !== undefined
       ? { includeNestedRows: args.includeNestedRows }
       : {}),
-    ...(args.summaryOnly !== undefined
-      ? { summaryOnly: args.summaryOnly }
-      : {}),
     ...(args.segmentLimit !== undefined
       ? { segmentLimit: args.segmentLimit }
       : {}),
@@ -942,13 +956,33 @@ function validateThreadWaitArgs(args: ThreadWaitArgs): {
 }
 
 function formatThreadWaitTimeoutMessage(args: {
+  pendingRetry: ThreadQueuedMessage | null;
   target: ThreadWaitTarget;
   threadId: string;
 }): string {
-  if (args.target.kind === "status") {
-    return `Timed out waiting for thread ${args.threadId} to reach status ${args.target.status}.`;
+  if (args.target.kind !== "status") {
+    return `Timed out waiting for thread ${args.threadId} event ${args.target.eventType}.`;
   }
-  return `Timed out waiting for thread ${args.threadId} event ${args.target.eventType}.`;
+  const timedOut = `Timed out waiting for thread ${args.threadId} to reach status ${args.target.status}.`;
+  if (args.pendingRetry === null) return timedOut;
+  const retryAt =
+    args.pendingRetry.sendAt === null
+      ? "a retry is waiting to send"
+      : `a retry is scheduled for ${new Date(args.pendingRetry.sendAt).toISOString()}`;
+  return `${timedOut} It failed and ${retryAt}; wait again to follow it.`;
+}
+
+function findPendingRetry(
+  queuedMessages: readonly ThreadQueuedMessage[],
+): ThreadQueuedMessage | null {
+  return (
+    queuedMessages.find(
+      (row) =>
+        row.payload.kind === "retry" &&
+        row.state !== "failed_exhausted" &&
+        row.waitingOn?.kind !== "superseded",
+    ) ?? null
+  );
 }
 
 function isThreadWaitTargetUnreachable(
@@ -1668,6 +1702,14 @@ export function createThreadsArea(args: CreateSdkAreaArgs): ThreadsArea {
         ),
       );
     },
+    async experimental_headState(input) {
+      return transport.readJson(
+        transport.api.v1.threads[":id"]["head-state"].$get(
+          { param: { id: input.threadId } },
+          ...signalRequestArgs(input.signal),
+        ),
+      );
+    },
     timeline,
     async timelineTurnSummaryDetails(input) {
       return transport.readJson(
@@ -1773,7 +1815,19 @@ export function createThreadsArea(args: CreateSdkAreaArgs): ThreadsArea {
               threadId: input.threadId,
             };
           }
-          if (isThreadWaitTargetUnreachable(thread.status, target)) {
+          const unreachable = isThreadWaitTargetUnreachable(
+            thread.status,
+            target,
+          );
+          const pendingRetry = unreachable
+            ? findPendingRetry(
+                await queuedMessages.list({
+                  signal: input.signal,
+                  threadId: input.threadId,
+                }),
+              )
+            : null;
+          if (unreachable && pendingRetry === null) {
             throw new ThreadWaitUnreachableError({
               currentStatus: thread.status,
               target,
@@ -1782,6 +1836,7 @@ export function createThreadsArea(args: CreateSdkAreaArgs): ThreadsArea {
           }
           if (Date.now() >= deadline) {
             throw new ThreadWaitTimeoutError({
+              pendingRetry,
               target,
               threadId: input.threadId,
             });
@@ -1808,6 +1863,7 @@ export function createThreadsArea(args: CreateSdkAreaArgs): ThreadsArea {
         }
         if (Date.now() >= deadline) {
           throw new ThreadWaitTimeoutError({
+            pendingRetry: null,
             target,
             threadId: input.threadId,
           });

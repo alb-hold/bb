@@ -217,8 +217,11 @@ export function partitionTestFiles(
   return { shared, isolated: [...isolated].sort() };
 }
 
-type TestProjects = NonNullable<
-  NonNullable<ViteUserConfig["test"]>["projects"]
+type TestProjects = Array<
+  Exclude<
+    NonNullable<NonNullable<ViteUserConfig["test"]>["projects"]>[number],
+    string | PromiseLike<unknown>
+  >
 >;
 
 export interface SharedWorkerProjectsArgs {

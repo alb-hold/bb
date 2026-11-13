@@ -1,6 +1,7 @@
 import type { ThreadListEntry } from "@bb/domain";
 import {
   buildChronologicalThreadList,
+  getProjectThreadItemDescendants,
   type CollapsedChildActivity,
   type ProjectThreadItem,
 } from "@bb/client-core";
@@ -36,6 +37,8 @@ export interface MobileRecentThreadRow {
   depth: number;
   childActivity: CollapsedChildActivity;
   hasUnsubmittedDraft: boolean;
+  hiddenThreads: readonly ThreadListEntry[];
+  hiddenThreadsHaveDraft: boolean;
   hasChildren: boolean;
   isCollapsed: boolean;
 }
@@ -58,6 +61,14 @@ function flattenMobileRecentNodes({
       thread: node.thread,
       depth: node.depth,
       childActivity: node.stats.childActivity,
+      hiddenThreads: isCollapsed
+        ? getProjectThreadItemDescendants(node.children)
+        : [],
+      hiddenThreadsHaveDraft:
+        isCollapsed &&
+        getProjectThreadItemDescendants(node.children).some((thread) =>
+          draftThreadIds.has(thread.id),
+        ),
       hasUnsubmittedDraft: draftThreadIds.has(node.thread.id),
       hasChildren,
       isCollapsed,

@@ -49,6 +49,7 @@ const TASKS = {
   path: "tasks",
   title: "Tasks",
   icon: "ListTodo",
+  hideFromNavigation: false,
 };
 const DOCS = {
   pluginId: "docs",
@@ -56,6 +57,7 @@ const DOCS = {
   path: "docs",
   title: "Docs",
   icon: "Book",
+  hideFromNavigation: false,
 };
 
 function registerTasks() {
@@ -155,6 +157,52 @@ describe("plugin nav panel chrome entries", () => {
       "Tasks",
       "Docs",
     ]);
+  });
+});
+
+describe("hidden plugin nav panels", () => {
+  it("remembers that a panel is hidden so it never flashes into navigation before boot", () => {
+    setPluginSlotRegistrations(
+      "drafts",
+      registrations([
+        {
+          id: "new-chat",
+          path: "new-chat",
+          title: "New chat",
+          icon: "Chat",
+          component: Body,
+          experimental_hideFromNavigation: true,
+        },
+      ]),
+    );
+    markPluginFrontendsSettled();
+    remember();
+    expect(readLastKnownPluginNavPanelChrome()).toEqual([
+      {
+        pluginId: "drafts",
+        id: "new-chat",
+        path: "new-chat",
+        title: "New chat",
+        icon: "Chat",
+        hideFromNavigation: true,
+      },
+    ]);
+  });
+
+  it("ignores chrome remembered by the previous cache version", () => {
+    localStorage.setItem(
+      "bb.plugin-nav-panels.1.all",
+      JSON.stringify([
+        {
+          pluginId: "drafts",
+          id: "new-chat",
+          path: "new-chat",
+          title: "New chat",
+          icon: "Chat",
+        },
+      ]),
+    );
+    expect(readLastKnownPluginNavPanelChrome()).toEqual([]);
   });
 });
 

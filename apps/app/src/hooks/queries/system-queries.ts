@@ -37,6 +37,7 @@ import {
   allSystemProvidersQueryKeyPrefix,
   hostProviderCliStatusQueryKey,
   systemCliCommandQueryKey,
+  systemSetupGuideQueryKey,
   systemCliSkillsQueryKey,
   systemAiServicesQueryKey,
   systemConfigQueryKey,
@@ -333,6 +334,7 @@ async function requestOfferedProviderExecutionOptions({
       projectId: projectId ?? undefined,
       selectedModel:
         requestedProviderId === providerId ? selectedModel : undefined,
+      preferCached: true,
       signal,
     });
   const response = await request(providerId);
@@ -592,6 +594,19 @@ export function useCliSkillsStatus(options?: QueryOptions) {
     queryFn: ({ signal }) => sdk.system.cliSkillsStatus({ signal }),
     enabled: options?.enabled ?? true,
     staleTime: 30_000,
+  });
+}
+
+export function useSetupGuideAssignment(options?: QueryOptions) {
+  return useQuery({
+    queryKey: systemSetupGuideQueryKey(),
+    queryFn: async ({ signal }) => {
+      const { fetchSetupGuideAssignment } = await import("./setup-guide-requests");
+      return fetchSetupGuideAssignment(signal);
+    },
+    enabled: options?.enabled ?? true,
+    staleTime: Infinity,
+    retry: false,
   });
 }
 

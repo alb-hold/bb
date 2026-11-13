@@ -12,7 +12,7 @@ export function listUncompletedTurnItemRows(
 ): UncompletedTurnItemRow[] {
   return db.all<UncompletedTurnItemRow>(
     sql`SELECT started.data AS data, started.provider_thread_id AS providerThreadId
-        FROM events started
+        FROM events started INDEXED BY events_thread_turn_type_item_sequence_idx
         WHERE started.thread_id = ${args.threadId}
           AND started.turn_id = ${args.turnId}
           AND started.type = 'item/started'

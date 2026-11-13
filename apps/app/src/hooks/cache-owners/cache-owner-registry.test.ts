@@ -133,7 +133,6 @@ const CACHE_OWNER_QUERY_KEY_IMPORTS: CacheOwnerQueryKeyImportRegistry = {
     "allThreadStorageFilesQueryKeyPrefix",
     "allThreadStorageLocationsQueryKeyPrefix",
     "allThreadStoragePathsQueryKeyPrefix",
-    "allThreadQueryKeyPrefix",
     "allTerminalsQueryKeyPrefix",
     "environmentFilePreviewQueryKeyPrefix",
     "hostsQueryKey",
@@ -158,6 +157,11 @@ const CACHE_OWNER_QUERY_KEY_IMPORTS: CacheOwnerQueryKeyImportRegistry = {
     "threadsQueryKey",
     "uiPreferencesQueryKey",
     "writingAssistanceQueryKey",
+
+    "allHostProviderCliInstallJobsQueryKeyPrefix",
+    "allHostProviderCliStatusQueryKeyPrefix",
+    "hostProviderCliInstallJobsQueryKey",
+    "hostProviderCliStatusQueryKey",
   ],
   "hooks/cache-owners/skills-cache-effects.ts": ["projectSkillsQueryKey"],
   "hooks/cache-owners/system-cache-effects.ts": [
@@ -195,6 +199,7 @@ const CACHE_OWNER_QUERY_KEY_IMPORTS: CacheOwnerQueryKeyImportRegistry = {
     "threadSearchQueryKeyPrefix",
     "threadsQueryKey",
     "uiPreferencesQueryKey",
+    "systemProviderStatesQueryKey",
   ],
   "hooks/cache-owners/app-update-cache-owner.ts": ["systemAppUpdateQueryKey"],
   "hooks/cache-owners/server-move-cache-owner.ts": ["serverMoveStatusQueryKey"],
@@ -242,7 +247,6 @@ const CACHE_OWNER_QUERY_KEY_IMPORTS: CacheOwnerQueryKeyImportRegistry = {
   ],
   "hooks/cache-owners/thread-tabs-cache-owner.ts": ["threadTabsQueryKey"],
   "hooks/cache-owners/thread-timeline-push-owner.ts": [
-    "systemConfigQueryKey",
     "threadTimelineQueryKey",
   ],
   "hooks/cache-owners/thread-timeline-unseen-events.ts": [
@@ -296,6 +300,7 @@ function toAppRelativePath(filePath: string): string {
 
 function isTestOrStoryFile(relativePath: string): boolean {
   return (
+    relativePath.startsWith("test/") ||
     relativePath.includes(".test.") ||
     relativePath.includes(".stories.") ||
     relativePath.endsWith(".d.ts")

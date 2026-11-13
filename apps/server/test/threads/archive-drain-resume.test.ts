@@ -21,7 +21,7 @@ import {
   threadTimelineResponseSchema,
   type TimelineRow,
 } from "@bb/server-contract";
-import { runThreadPruningSweep } from "../../src/services/system/thread-pruning-sweep.js";
+import { threadPruningSweep } from "../../src/services/system/thread-pruning-sweep.js";
 import { sendThreadMessage } from "../../src/services/threads/thread-send.js";
 import { waitForQueuedCommand } from "../helpers/commands.js";
 import { readJson } from "../helpers/json.js";
@@ -264,7 +264,10 @@ async function postThread(
 
 async function drainArchivedThread(harness: TestAppHarness, threadId: string) {
   for (let sweeps = 0; sweeps < 20; sweeps += 1) {
-    await runThreadPruningSweep(harness.deps, SWEEP_LIMITS);
+    await threadPruningSweep(harness.deps, SWEEP_LIMITS).run(
+      harness.deps,
+      Date.now(),
+    );
     const pending = harness.db
       .select()
       .from(threadPruningWork)
@@ -491,7 +494,7 @@ async function waitForTerminalOpen(
 }
 
 function acknowledgeOpen(fixture: Fixture, open: TerminalOpenMessage): void {
-  fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+  void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
     hostId: fixture.hostId,
     sessionId: fixture.sessionId,
     message: {
@@ -558,7 +561,7 @@ function startComposerCli(fixture: Fixture, terminalId: string) {
         message.type === "terminal.attach" &&
         message.terminalId === terminalId
       )
-        fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+        void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
           hostId: fixture.hostId,
           sessionId: fixture.sessionId,
           message: {

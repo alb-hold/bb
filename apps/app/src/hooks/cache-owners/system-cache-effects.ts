@@ -36,6 +36,7 @@ import {
   sidebarNavigationQueryKey,
   systemConfigQueryKey,
   systemProviderCatalogQueryKey,
+  systemProviderStatesQueryKey,
   threadPromptHistoryQueryKeyPrefix,
   threadSearchQueryKeyPrefix,
   threadsQueryKey,
@@ -94,7 +95,7 @@ export function invalidateRealtimeQueriesFetchedBeforeInitialConnect({
   queryClient,
 }: InitialConnectInvalidationArgs): void {
   for (const queryKey of getServerReconnectInvalidationQueryKeys()) {
-    queryClient.invalidateQueries({
+    void queryClient.invalidateQueries({
       queryKey,
       predicate: (query) =>
         query.state.dataUpdatedAt !== 0 &&
@@ -158,6 +159,15 @@ export function invalidateSystemProviders({
 }: QueryClientArg): Promise<void> {
   return queryClient.invalidateQueries({
     queryKey: allSystemProvidersQueryKeyPrefix(),
+  });
+}
+
+export function restartSystemProviderStatesLoad({
+  queryClient,
+  hostId,
+}: QueryClientArg & { hostId: string | null }): Promise<void> {
+  return queryClient.resetQueries({
+    queryKey: systemProviderStatesQueryKey({ environmentId: null, hostId }),
   });
 }
 

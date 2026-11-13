@@ -1,4 +1,3 @@
-import { experimental_execHostFile } from "@get-bb/plugin-sdk/process";
 import fs from "node:fs/promises";
 import { createHash } from "node:crypto";
 import os from "node:os";
@@ -27,6 +26,7 @@ import {
   experimental_versionFrom as versionFrom,
 } from "@get-bb/plugin-sdk/provider-bridge";
 import { z } from "zod";
+import { experimental_execHostFile } from "@get-bb/plugin-sdk/process";
 
 const execFileAsync = experimental_execHostFile;
 const USAGE_FETCH_TIMEOUT_MS = 15_000;
@@ -64,7 +64,10 @@ type ClaudeCredentials = z.infer<
 
 const claudeAccountSchema = z.object({
   oauthAccount: z
-    .object({ emailAddress: z.string().email().nullish() })
+    .object({
+      emailAddress: z.string().email().nullish(),
+      accountUuid: z.string().uuid().nullish(),
+    })
     .nullish(),
 });
 
@@ -379,7 +382,10 @@ async function readCredentials(): Promise<CredentialsRead> {
   try {
     parsed = parseCredentials(
       await fs.readFile(
-        path.join(os.homedir(), ".claude", ".credentials.json"),
+        path.join(
+          process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude"),
+          ".credentials.json",
+        ),
         "utf8",
       ),
     );
@@ -400,19 +406,37 @@ export async function isClaudeSignInRenewalDue(
   return expiresAt != null && Date.now() + windowMs >= expiresAt;
 }
 
-async function readAccountEmail(): Promise<string | null> {
+async function readAccount(): Promise<{
+  email: string | null;
+  uuid: string | null;
+}> {
   try {
     const parsed = claudeAccountSchema.safeParse(
       JSON.parse(
-        await fs.readFile(path.join(os.homedir(), ".claude.json"), "utf8"),
+        await fs.readFile(
+          path.join(
+            process.env.CLAUDE_CONFIG_DIR || os.homedir(),
+            ".claude.json",
+          ),
+          "utf8",
+        ),
       ),
     );
-    return parsed.success
-      ? (parsed.data.oauthAccount?.emailAddress ?? null)
-      : null;
+    return {
+      email: parsed.success
+        ? (parsed.data.oauthAccount?.emailAddress ?? null)
+        : null,
+      uuid: parsed.success
+        ? (parsed.data.oauthAccount?.accountUuid ?? null)
+        : null,
+    };
   } catch {
-    return null;
+    return { email: null, uuid: null };
   }
+}
+
+async function readAccountEmail(): Promise<string | null> {
+  return (await readAccount()).email;
 }
 
 function planLabel(credentials: ClaudeCredentials): string {
@@ -599,9 +623,11 @@ function resetIso(value: string | null | undefined): string | null {
 function usageWindow(
   value: z.infer<typeof claudeUsageWindowSchema> | null | undefined,
   label: string,
+  kind: "five-hour" | "weekly",
 ): ProviderUsageWindow | null {
   if (!value || value.utilization == null) return null;
   return {
+    kind,
     label,
     usedPercent: clampPercent(value.utilization),
     resetsAt: resetIso(value.resets_at),
@@ -629,6 +655,8 @@ function scopedWindows(
     }
     seen.add(label.toLowerCase());
     windows.push({
+      kind: "weekly",
+      model: label.toLowerCase(),
       label,
       usedPercent: clampPercent(limit.percent),
       resetsAt: resetIso(limit.resets_at),
@@ -653,14 +681,15 @@ function normalizeUsage(
     };
   }
   const windows = [
-    usageWindow(parsed.data.five_hour, "Current session"),
-    usageWindow(parsed.data.seven_day, "Weekly limit"),
+    usageWindow(parsed.data.five_hour, "Current session", "five-hour"),
+    usageWindow(parsed.data.seven_day, "Weekly limit", "weekly"),
     ...scopedWindows(parsed.data.limits),
   ].filter((window): window is ProviderUsageWindow => window !== null);
   return {
     status: "ok",
     accountEmail: email,
     planLabel: label,
+    plan: { id: label.toLowerCase().split(" ")[0], multiplier: null },
     windows,
   };
 }
@@ -670,10 +699,8 @@ export async function getClaudeProviderUsage(): Promise<ProviderUsageResult> {
   if ((await resolveExecutablePath(command)) === null) {
     return { supported: true, usage: { status: "not_installed" } };
   }
-  const [read, email] = await Promise.all([
-    readCredentials(),
-    readAccountEmail(),
-  ]);
+  const [read, account] = await Promise.all([readCredentials(), readAccount()]);
+  const email = account.email;
   if (read.kind === "unreadable") {
     return {
       supported: true,
@@ -736,12 +763,15 @@ export async function getClaudeProviderUsage(): Promise<ProviderUsageResult> {
     }
     return {
       supported: true,
-      usage: normalizeUsage(
-        await response.json(),
-        credentials,
-        email,
-        known.planLabel,
-      ),
+      usage: {
+        ...normalizeUsage(
+          await response.json(),
+          credentials,
+          email,
+          known.planLabel,
+        ),
+        accountKey: account.uuid ? `anthropic:account:${account.uuid}` : null,
+      },
     };
   } catch (error) {
     return {

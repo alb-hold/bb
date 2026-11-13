@@ -1,5 +1,8 @@
 import {
   query,
+  type AccountInfo,
+  type Query,
+  type SDKControlGetUsageResponse,
   type SDKControlInitializeResponse,
   type SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
@@ -7,6 +10,11 @@ import { translateMissingClaudeCliCatalogError } from "./missing-cli-error.js";
 import { afterClaudeRenewalSettles } from "./claude-refresh-lock.js";
 import { applyPinnedSettings } from "./pinned-settings.js";
 import { resolveClaudeCodeExecutable } from "./session-options.js";
+
+interface ClaudeProbeArgs {
+  env: NodeJS.ProcessEnv;
+  cwd: string;
+}
 
 async function* promptWithoutMessages(
   signal: AbortSignal,
@@ -19,10 +27,13 @@ async function* promptWithoutMessages(
   });
 }
 
-export async function probeClaudeInitialization(args: {
-  env: NodeJS.ProcessEnv;
-  cwd: string;
-}): Promise<SDKControlInitializeResponse> {
+async function withInitializedClaude<T>(
+  args: ClaudeProbeArgs,
+  read: (
+    session: Query,
+    initialization: SDKControlInitializeResponse,
+  ) => Promise<T>,
+): Promise<T> {
   const pathToClaudeCodeExecutable = resolveClaudeCodeExecutable({
     env: args.env,
   });
@@ -34,7 +45,7 @@ export async function probeClaudeInitialization(args: {
     settingSources: ["user", "project", "local"],
     ...(pathToClaudeCodeExecutable ? { pathToClaudeCodeExecutable } : {}),
   });
-  let session: ReturnType<typeof query>;
+  let session: Query;
   try {
     session = query({
       prompt: promptWithoutMessages(promptEnd.signal),
@@ -47,7 +58,7 @@ export async function probeClaudeInitialization(args: {
   }
 
   try {
-    return await session.initializationResult();
+    return await read(session, await session.initializationResult());
   } catch (error) {
     throw translateMissingClaudeCliCatalogError(error);
   } finally {
@@ -56,4 +67,25 @@ export async function probeClaudeInitialization(args: {
     session.close();
     pinned.release();
   }
+}
+
+export function probeClaudeInitialization(
+  args: ClaudeProbeArgs,
+): Promise<SDKControlInitializeResponse> {
+  return withInitializedClaude(args, (_session, initialization) =>
+    Promise.resolve(initialization),
+  );
+}
+
+export function probeClaudeUsage(args: ClaudeProbeArgs): Promise<{
+  account: AccountInfo;
+  usage: SDKControlGetUsageResponse;
+}> {
+  return withInitializedClaude(args, async (session, initialization) => ({
+    account: initialization.account,
+    usage:
+      await session.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET({
+        skipBehaviors: true,
+      }),
+  }));
 }

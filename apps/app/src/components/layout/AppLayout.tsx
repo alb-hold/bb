@@ -77,10 +77,6 @@ import {
 
 import { ProjectActionsMenu } from "@/components/project/ProjectActionsMenu";
 import { ProjectActionsProvider } from "@/components/project/ProjectActionsProvider";
-import {
-  PluginPanelHeaderActions,
-  PluginPanelHeaderCenter,
-} from "@/components/plugin/PluginPanelHeader";
 import { PluginAppOverlays } from "@/components/plugin/PluginAppOverlays";
 import { ThreadRowMetadataCollectors } from "@/components/plugin/ThreadRowMetadataCollectors";
 import { ThreadActionsProvider } from "@/components/thread/ThreadActionsProvider";
@@ -121,6 +117,7 @@ import { useQuickCreateProjectController } from "@/hooks/useQuickCreateProject";
 import { IframeDragGuardOverlay } from "@/lib/iframe-drag-guard";
 import { dispatchBrowserViewBoundsSync } from "@/lib/browser-view-bounds-sync";
 import { useFaviconBadge } from "@/lib/favicon-color-preference";
+import { shellSetBadge } from "@/lib/native-shell";
 import {
   desktopAttentionThreads,
   shouldShowFaviconAttentionDot,
@@ -129,7 +126,12 @@ import { AppLayoutSidebar } from "./AppLayoutSidebar";
 import { resolveRouteSidebar } from "./routeSidebar";
 import { NAV_RAIL_COLLAPSED_SIDEBAR_WIDTH } from "@/components/sidebar/navRailWidth";
 import { useSidebarNavigationPlacement } from "@/components/sidebar/sidebarNavigationProvider";
-import { SidebarHistoryNavigationControls } from "@/components/sidebar/SidebarHistoryNavigationControls";
+const SidebarHistoryNavigationControls = defineSplit({
+   id: "sidebar-history-navigation-controls",
+   tier: "intent",
+   load: () => import("@/components/sidebar/SidebarHistoryNavigationControls").then((module) => module.SidebarHistoryNavigationControls),
+   loading: () => null,
+ });
 import {
   useAppCommandHandler,
   useAppCommandShortcut,
@@ -149,6 +151,26 @@ import { useSetRootComposeProjectId } from "@/lib/root-compose-selection";
 import { BackToAppCommandHandler } from "./BackToAppCommandHandler";
 import { HistoryCommandHandlers } from "./HistoryCommandHandlers";
 import { TerminalAttentionCommandHandler } from "./TerminalAttentionCommandHandler";
+
+const PluginPanelHeaderActions = defineSplit({
+  id: "plugin-panel-header-actions",
+  tier: "intent",
+  load: () =>
+    import("@/components/plugin/PluginPanelHeader").then(
+      (module) => module.PluginPanelHeaderActions,
+    ),
+  loading: () => null,
+});
+
+const PluginPanelHeaderCenter = defineSplit({
+  id: "plugin-panel-header-center",
+  tier: "intent",
+  load: () =>
+    import("@/components/plugin/PluginPanelHeader").then(
+      (module) => module.PluginPanelHeaderCenter,
+    ),
+  loading: () => null,
+});
 
 const DeviceHandoffSheet = defineSplit<
   Parameters<
@@ -454,7 +476,11 @@ function AppHeader({
       />
     </div>
   ) : pluginPanelChrome ? (
-    <PluginPanelHeaderCenter chrome={pluginPanelChrome} />
+    <PluginPanelHeaderCenter
+      chrome={pluginPanelChrome}
+      panel={pluginPanel}
+      subPath={pluginPanelSubPath ?? ""}
+    />
   ) : hasCenterContent ? (
     <div className="min-w-0 flex-1">
       {headerTitle ? (
@@ -815,11 +841,17 @@ function AppLayoutContent({ children }: AppLayoutProps) {
     ? "unread"
     : "none";
   useFaviconBadge(faviconBadge);
+  const attentionThreads = useMemo(
+    () => desktopAttentionThreads(sidebarThreads),
+    [sidebarThreads],
+  );
+  const pendingThreadCount = attentionThreads.pendingThreadIds.length;
   useEffect(() => {
-    window.bbDesktop?.setAttentionThreads?.(
-      desktopAttentionThreads(sidebarThreads),
-    );
-  }, [sidebarThreads]);
+    window.bbDesktop?.setAttentionThreads?.(attentionThreads);
+  }, [attentionThreads]);
+  useEffect(() => {
+    shellSetBadge(pendingThreadCount);
+  }, [pendingThreadCount]);
   useEffect(
     () => () =>
       window.bbDesktop?.setAttentionThreads?.({

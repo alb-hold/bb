@@ -10,6 +10,7 @@ import type { DbConnection, DbTransaction, EnvironmentRow } from "@bb/db";
 import type {
   ClientTurnRequestId,
   PromptInput,
+  QueuedMessageSystemNotice,
   ResolvedThreadExecutionOptions,
   Thread,
   ThreadTurnInitiator,
@@ -74,6 +75,10 @@ import { resolvePluginMentionContextInputs } from "../plugins/plugin-mentions.js
 import { clearThreadContext } from "./thread-context-clear.js";
 import { withThreadSendGuard } from "./thread-context-mutation-guard.js";
 import {
+  settleInFlightTurnRequest,
+  trackInFlightTurnRequest,
+} from "../../internal/turn-completed-events.js";
+import {
   prependDeferredFirstTurnContext,
   requireDeferredFirstTurnContextCurrent,
   resolveDeferredFirstTurnContext,
@@ -109,6 +114,7 @@ interface SendThreadMessageArgs {
   };
   originPluginId: string | null;
   payload: SendThreadMessagePayload;
+  systemNotice?: QueuedMessageSystemNotice;
   thread: Thread;
   trigger: SendThreadMessageTrigger;
 }
@@ -235,6 +241,7 @@ interface AppendAndQueueSendThreadMessageArgs {
   queueInTransaction: SendThreadMessageQueueRequest;
   requestId: ClientTurnRequestId;
   senderThreadId: string | null;
+  systemNotice: QueuedMessageSystemNotice | undefined;
   target: TurnRequestTarget;
   thread: Thread;
 }
@@ -490,6 +497,7 @@ function appendAndQueueSendThreadMessageInTransaction({
   queueInTransaction,
   requestId,
   senderThreadId,
+  systemNotice,
   target,
   thread,
 }: AppendAndQueueSendThreadMessageArgs): AppendAndQueueSendThreadMessageResult {
@@ -512,6 +520,12 @@ function appendAndQueueSendThreadMessageInTransaction({
             initiator,
             originPluginId,
             senderThreadId,
+            ...(systemNotice !== undefined
+              ? {
+                  systemMessageKind: systemNotice.kind,
+                  systemMessageSubject: systemNotice.subject,
+                }
+              : {}),
             requestMethod: "turn/start",
             source: "tell",
             target,
@@ -616,10 +630,10 @@ async function sendThreadMessageWithoutContextClear(
     input,
     ...(inputGroups !== undefined ? { inputGroups } : {}),
   }));
-  const deferredFirstTurnContext = resolveDeferredFirstTurnContext(
-    deps.db,
-    thread.id,
-  );
+  const deferredFirstTurnContext =
+    args.retryOf === undefined
+      ? resolveDeferredFirstTurnContext(deps.db, thread.id)
+      : null;
   ({ input, inputGroups } = prependDeferredFirstTurnContext(
     { input, ...(inputGroups !== undefined ? { inputGroups } : {}) },
     deferredFirstTurnContext,
@@ -656,6 +670,7 @@ async function sendThreadMessageWithoutContextClear(
   // however many times the provider happened to be rate limited.
   const { initiator } = resolveDispatchAuthor({
     retrying: args.retryOf !== undefined,
+    systemNotice: args.systemNotice !== undefined,
     senderThreadId,
     startedOnBehalfOf: null,
   });
@@ -680,6 +695,7 @@ async function sendThreadMessageWithoutContextClear(
     isManagedChild &&
     deps.providerRegistry.get(thread.providerId)?.childThreadModel != null;
   if (
+    initiator === "user" &&
     senderThreadId === null &&
     args.retryOf === undefined &&
     (!usesChildModelPolicy || args.trigger === "user")
@@ -714,7 +730,14 @@ async function sendThreadMessageWithoutContextClear(
       input,
       inputGroups,
       originPluginId: args.originPluginId,
+      ...(args.retryOf !== undefined ? { retryOf: args.retryOf } : {}),
       senderThreadId,
+      ...(args.systemNotice !== undefined
+        ? {
+            systemMessageKind: args.systemNotice.kind,
+            systemMessageSubject: args.systemNotice.subject,
+          }
+        : {}),
       thread,
     })
   ) {
@@ -817,9 +840,11 @@ async function sendThreadMessageWithoutContextClear(
       },
       requestId,
       senderThreadId,
+      systemNotice: args.systemNotice,
       target,
       thread,
     });
+    trackInFlightTurnRequest(thread.id);
     deps.hub.notifyThread(
       thread.id,
       queuedRequest.request.notificationChanges,
@@ -835,19 +860,20 @@ async function sendThreadMessageWithoutContextClear(
       command.mode === "turn.submit"
         ? watchTurnAcceptance(deps.config.turnAcceptanceGraceMs)
         : null;
-    const onCommandSettled = args.historyReplacement?.onCommandSettled;
+    const onHistoryReplacementSettled =
+      args.historyReplacement?.onCommandSettled;
     startLiveHostCommand(deps, {
       command: command.command,
       hostId: readyEnvironment.hostId,
       timeoutMs: LIVE_DAEMON_COMMAND_TIMEOUT_MS,
-      ...(acceptance !== null || onCommandSettled !== undefined
-        ? {
-            onSettled: async () => {
-              acceptance?.settle();
-              await onCommandSettled?.();
-            },
-          }
-        : {}),
+      onSettled: async () => {
+        acceptance?.settle();
+        try {
+          await onHistoryReplacementSettled?.();
+        } finally {
+          await settleInFlightTurnRequest(deps, thread.id);
+        }
+      },
       onError: ({ error }) => {
         deps.logger.warn(
           { err: error, threadId: thread.id },
@@ -924,9 +950,11 @@ async function sendThreadMessageWithoutContextClear(
     },
     requestId,
     senderThreadId,
+    systemNotice: args.systemNotice,
     target,
     thread,
   });
+  trackInFlightTurnRequest(thread.id);
   deps.hub.notifyThread(
     thread.id,
     queuedRequest.request.notificationChanges,
@@ -943,7 +971,10 @@ async function sendThreadMessageWithoutContextClear(
     command,
     hostId: readyEnvironment.hostId,
     timeoutMs: LIVE_DAEMON_COMMAND_TIMEOUT_MS,
-    onSettled: () => acceptance.settle(),
+    onSettled: () => {
+      acceptance.settle();
+      return settleInFlightTurnRequest(deps, thread.id);
+    },
     onError: ({ error }) => {
       deps.logger.warn(
         { err: error, threadId: thread.id },

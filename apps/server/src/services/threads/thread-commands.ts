@@ -1,9 +1,14 @@
-import { environments, hasStoredSpawnAgentToolCall, threads } from "@bb/db";
-import { and, eq, isNull } from "drizzle-orm";
+import type { ProjectExecutionDefaults } from "@bb/domain";
+import {
+  environments,
+  hasStoredSpawnAgentToolCall,
+  liveThread,
+  threads,
+} from "@bb/db";
+import { and, eq } from "drizzle-orm";
 import {
   PromptInput,
   PromptMode,
-  ProjectExecutionDefaults,
   PermissionEscalation,
   ResolvedThreadExecutionOptions,
   RuntimeThreadExecutionOptions,
@@ -139,6 +144,7 @@ interface RuntimeExecutionOptionsArgs {
 }
 
 interface BuildExecutionOptionsArgs {
+  defaultModel?: string;
   hostId?: string | null;
   inheritParentExecution?: boolean;
   projectDefaults?: ProjectExecutionDefaults | null;
@@ -227,18 +233,19 @@ function toRuntimeExecutionOptions(
     args.projectId,
     args.hostId,
   );
-  const model = args.deps.lifecycleDedupers.providerModelCatalogs.getCachedModel(
-    args.deps,
-    {
-      hostId: args.hostId,
-      providerId: args.providerId,
-      workspacePaths:
-        checkoutPath === undefined
-          ? [args.workspacePath]
-          : [args.workspacePath, checkoutPath],
-      model: args.execution.model,
-    },
-  );
+  const model =
+    args.deps.lifecycleDedupers.providerModelCatalogs.getCachedModel(
+      args.deps,
+      {
+        hostId: args.hostId,
+        providerId: args.providerId,
+        workspacePaths:
+          checkoutPath === undefined
+            ? [args.workspacePath]
+            : [args.workspacePath, checkoutPath],
+        model: args.execution.model,
+      },
+    );
   const reasoningLevel =
     model === null ||
     model.supportedReasoningEfforts.some(
@@ -287,8 +294,8 @@ export async function buildExecutionOptions(
   args: BuildExecutionOptionsArgs,
 ): Promise<ResolvedThreadExecutionOptions> {
   const plan = await resolveExistingThreadExecutionPlan(deps, {
-    ...(args.projectDefaults !== undefined
-      ? { projectDefaults: args.projectDefaults }
+    ...(args.defaultModel !== undefined
+      ? { defaultModel: args.defaultModel }
       : {}),
     ...(args.hostId !== undefined ? { hostId: args.hostId } : {}),
     ...(args.inheritParentExecution === true
@@ -449,13 +456,7 @@ function threadHasLiveChildren(
   const row = deps.db
     .select({ id: threads.id })
     .from(threads)
-    .where(
-      and(
-        eq(threads.parentThreadId, threadId),
-        isNull(threads.archivedAt),
-        isNull(threads.deletedAt),
-      ),
-    )
+    .where(and(eq(threads.parentThreadId, threadId), liveThread))
     .limit(1)
     .get();
   return row !== undefined;

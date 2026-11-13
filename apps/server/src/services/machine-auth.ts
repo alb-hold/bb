@@ -151,6 +151,7 @@ export async function createMachineAuthService(
       provider: "sqlite",
       schema: machineAuthSchema,
     }),
+    advanced: { database: { validateSchema: false } },
     plugins: [
       apiKey([
         {
@@ -193,7 +194,7 @@ export async function createMachineAuthService(
 
   async function ensureSystemUser(): Promise<void> {
     const now = new Date();
-    await args.db
+    args.db
       .insert(authUsers)
       .values({
         id: MACHINE_AUTH_SYSTEM_USER_ID,
@@ -283,7 +284,7 @@ export async function createMachineAuthService(
   ): Promise<void> {
     await ensureReady();
     if (configId === DAEMON_HOST_CONFIG_ID) invalidateDaemonHostKeys(hostId);
-    await args.db
+    args.db
       .update(authApiKeys)
       .set({
         enabled: false,
@@ -304,7 +305,7 @@ export async function createMachineAuthService(
 
   async function pruneExpiredKeys(): Promise<void> {
     await ensureReady();
-    await args.db
+    args.db
       .delete(authApiKeys)
       .where(
         and(

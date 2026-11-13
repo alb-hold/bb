@@ -21,10 +21,8 @@ const deviceHandoffIdentity = createDeviceHandoffIdentityManager({
     }
     const bytes = new Uint8Array(16);
     window.crypto.getRandomValues(bytes);
-    let binary = "";
-    for (const byte of bytes) binary += String.fromCharCode(byte);
     return window
-      .btoa(binary)
+      .btoa(String.fromCharCode(...bytes))
       .replace(/\+/gu, "-")
       .replace(/\//gu, "_")
       .replace(/=+$/u, "");

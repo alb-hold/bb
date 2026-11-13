@@ -1,6 +1,6 @@
-import { spawnHostProcess as spawn } from "@bb/process-utils";
+import { hostToolchain, spawnHostProcess as spawn } from "@bb/process-utils";
 import type { ChildProcess } from "node:child_process";
-import { appendFileSync, mkdirSync } from "node:fs";
+import { accessSync, constants, appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 
 const stdioLogWriter = `
@@ -1131,7 +1131,10 @@ recoveryTimer = setInterval(() => {
 recoveryTimer.unref();
 `;
 
+const MACOS_TASKPOLICY_PATH = "/usr/sbin/taskpolicy";
+
 interface SpawnLoggedProcessArgs {
+  appScheduling: boolean;
   args: string[];
   command: string;
   env: NodeJS.ProcessEnv;
@@ -1144,6 +1147,44 @@ interface SpawnLoggedProcessArgs {
 export interface LoggedChildProcess extends ChildProcess {
   readonly writerProcess: ChildProcess;
   readonly writerExit: Promise<void>;
+}
+
+interface ProcessLaunch {
+  args: string[];
+  command: string;
+  env: NodeJS.ProcessEnv;
+}
+
+function isExecutable(path: string): boolean {
+  try {
+    accessSync(path, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function resolveLoggedProcessLaunch(
+  args: SpawnLoggedProcessArgs,
+): ProcessLaunch {
+  const direct = { command: args.command, args: args.args, env: args.env };
+  if (
+    !args.appScheduling ||
+    process.platform !== "darwin" ||
+    !isExecutable(MACOS_TASKPOLICY_PATH)
+  ) {
+    return direct;
+  }
+  const launch = hostToolchain.command(args.command, args.args, {
+    cwd: process.cwd(),
+    env: args.env,
+  });
+  if (!isExecutable(launch.command)) return direct;
+  return {
+    command: MACOS_TASKPOLICY_PATH,
+    args: ["-a", launch.command, ...launch.args],
+    env: launch.env,
+  };
 }
 
 export interface StdioLogWriterTestBarrier {
@@ -1228,9 +1269,10 @@ export function spawnLoggedProcess(
     });
   });
   logWriter.unref();
-  const child = spawn(args.command, args.args, {
+  const launch = resolveLoggedProcessLaunch(args);
+  const child = spawn(launch.command, launch.args, {
     cwd: process.cwd(),
-    env: args.env,
+    env: launch.env,
     stdio:
       args.ipc === true
         ? ["ignore", logWriter.stdin, logWriter.stdin, "ipc"]

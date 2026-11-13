@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import { useQueries } from "@tanstack/react-query";
 import type { Host } from "@bb/domain";
 import type { ProviderCliStatusResponse } from "@bb/host-daemon-contract";
@@ -7,8 +7,10 @@ import type {
   SystemVersionResponse,
 } from "@bb/server-contract";
 import type { BbDesktopInfo } from "@bb/desktop-contract";
+import { adoptProviderCliInstall } from "@/components/provider-cli/provider-cli-install-store";
 import {
   buildProviderCliIssue,
+  hasProviderCliAction,
   isProviderCliIssue,
   isProviderCliUpdateIssue,
   providerCliEntries,
@@ -24,13 +26,17 @@ import {
 } from "@/hooks/queries/plugin-settings-queries";
 import { pluginsNeedingAttention } from "@/hooks/usePluginAttention";
 import { selectPrimaryHost, useHosts } from "@/hooks/queries/host-queries";
-import { hostProviderCliStatusQueryKey } from "@/hooks/queries/query-keys";
+import {
+  hostProviderCliInstallJobsQueryKey,
+  hostProviderCliStatusQueryKey,
+} from "@/hooks/queries/query-keys";
 import { SESSION_STATIC_QUERY_POLICY } from "@/hooks/queries/query-policies";
 import {
   useSystemConfig,
   useSystemVersion,
 } from "@/hooks/queries/system-queries";
 import { hostCanRetryUpdate } from "@/lib/host-update-status";
+import { useTimeReached } from "@/hooks/useTimeReached";
 import { sdk } from "@/lib/sdk";
 
 export interface UpdateInventoryMachine {
@@ -129,6 +135,30 @@ export function resolveAppUpdateAvailable(args: {
   );
 }
 
+const SOURCE_UPDATE_BADGE_COMMIT_COUNT = 30;
+const SOURCE_UPDATE_BADGE_AGE_MS = 6 * 60 * 60 * 1000;
+
+export function sourceUpdateBadgeDueAt(
+  appUpdate: SystemAppUpdateStatus | undefined,
+): number | null {
+  if (
+    appUpdate?.support.kind !== "supported" ||
+    appUpdate.support.mode !== "source" ||
+    appUpdate.available?.behindSince == null ||
+    appUpdate.blocked !== null
+  ) {
+    return null;
+  }
+  if (
+    (appUpdate.available.commitCount ?? 0) > SOURCE_UPDATE_BADGE_COMMIT_COUNT
+  ) {
+    return 0;
+  }
+  return (
+    Date.parse(appUpdate.available.behindSince) + SOURCE_UPDATE_BADGE_AGE_MS
+  );
+}
+
 export function updateInventoryHosts(hosts: readonly Host[]): Host[] {
   return hosts.filter((host) => host.type !== "ephemeral");
 }
@@ -185,6 +215,35 @@ export function useUpdateInventory(
     }
   });
 
+  const installJobQueries = useQueries({
+    queries: connectedHosts.map((host) => ({
+      queryKey: hostProviderCliInstallJobsQueryKey(host.id),
+      queryFn: ({ signal }: { signal: AbortSignal }) =>
+        sdk.hosts.experimental_providerCliInstallJobs.list({
+          hostId: host.id,
+          signal,
+        }),
+      enabled,
+      ...SESSION_STATIC_QUERY_POLICY,
+    })),
+  });
+  const runningInstalls = connectedHosts.flatMap((host, index) => {
+    const providerStatus = providerStatusByHostId.get(host.id)?.data;
+    const jobs = installJobQueries[index]?.data ?? [];
+    if (providerStatus === undefined) return [];
+    return jobs.flatMap((job) => {
+      const status = providerStatus[job.provider];
+      if (job.state !== "running" || status === undefined) return [];
+      const issue = buildProviderCliIssue({ provider: job.provider, status });
+      return issue !== null && hasProviderCliAction(issue)
+        ? [{ hostId: host.id, issue, serverJobId: job.id }]
+        : [];
+    });
+  });
+  useEffect(() => {
+    for (const install of runningInstalls) adoptProviderCliInstall(install);
+  }, [runningInstalls]);
+
   const machines: UpdateInventoryMachine[] = updateHosts.map((host) => {
     const statusQuery = providerStatusByHostId.get(host.id);
     const providerStatus = statusQuery?.data ?? null;
@@ -205,11 +264,16 @@ export function useUpdateInventory(
   });
 
   const systemVersion = systemVersionQuery.data;
-  const appUpdateAvailable = resolveAppUpdateAvailable({
-    appUpdate: appUpdateStatusQuery.data,
-    isDesktop,
-    systemVersion,
-  });
+  const sourceUpdateDue = useTimeReached(
+    sourceUpdateBadgeDueAt(appUpdateStatusQuery.data),
+  );
+  const appUpdateAvailable =
+    sourceUpdateDue ||
+    resolveAppUpdateAvailable({
+      appUpdate: appUpdateStatusQuery.data,
+      isDesktop,
+      systemVersion,
+    });
   const desktopUpdateReady = desktopInfo?.updateDownloaded === true;
   const actionableCount =
     machines.reduce(

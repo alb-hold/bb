@@ -582,7 +582,8 @@ export function createAcpDeltaTranslator(
     Extract<ThreadDelta, { kind: "item.close" }>,
     "aggregatedOutput" | "exitCode" | "resultText"
   > {
-    const normalizedEvent = dialect.normalizeCommandEvent?.(event) ?? event;
+    const normalizedEvent =
+      dialect.normalizeCommandEvent?.(event, event) ?? event;
     const result =
       dialect.commandResult?.(normalizedEvent) ??
       extractAcpCommandResult(normalizedEvent);
@@ -598,7 +599,9 @@ export function createAcpDeltaTranslator(
   function genericCloseFields(
     event: AcpToolCallUpdateEvent,
   ): Pick<Extract<ThreadDelta, { kind: "item.close" }>, "resultText"> {
-    const outputText = extractAcpToolCallOutputText(event);
+    const normalizedEvent =
+      dialect.normalizeToolCallEvent?.(event, event) ?? event;
+    const outputText = extractAcpToolCallOutputText(normalizedEvent);
     return outputText === undefined ? {} : { resultText: outputText };
   }
 
@@ -748,7 +751,25 @@ export function createAcpDeltaTranslator(
             }),
           ];
         }
-        const mergedType = classifyCall(context, merged).item.type;
+        const classified = classifyCall(context, merged);
+        const mergedType = classified.item.type;
+        const previous =
+          open === undefined ? undefined : classifyCall(context, open.event);
+        const refreshed: ThreadDelta[] = [];
+        if (
+          previous?.item.type === "command" &&
+          classified.item.type === "command" &&
+          (previous.item.command !== classified.item.command ||
+            previous.presentation.title !== classified.presentation.title)
+        ) {
+          refreshed.push({
+            kind: "item.open",
+            key: { providerItemId: event.toolCallId },
+            item: classified.item,
+            presentation: classified.presentation,
+            noTurnFallback: noTurnFallbackFor(rawEvent),
+          });
+        }
         mergedToolCalls.set(key, {
           event: merged,
           openedType: open?.openedType ?? mergedType,
@@ -768,21 +789,29 @@ export function createAcpDeltaTranslator(
           open?.openedType === "command"
         ) {
           const normalizedEvent =
-            dialect.normalizeCommandEvent?.(event) ?? event;
+            dialect.normalizeCommandEvent?.(event, merged) ?? event;
           const streamed = extractAcpStreamedCommandOutput(normalizedEvent);
-          return streamed === undefined
-            ? suppressedUnhandled(rawEvent)
-            : [
-                {
-                  kind: "command.outputSnapshot",
-                  key: { providerItemId: event.toolCallId },
-                  text: streamed,
-                },
-              ];
+          if (streamed === undefined) {
+            return refreshed.length === 0
+              ? suppressedUnhandled(rawEvent)
+              : refreshed;
+          }
+          return [
+            ...refreshed,
+            {
+              kind: "command.outputSnapshot",
+              key: { providerItemId: event.toolCallId },
+              text: streamed,
+            },
+          ];
         }
-        const progressText = extractAcpToolCallOutputText(event);
+        const progressEvent =
+          dialect.normalizeToolCallEvent?.(event, merged) ?? event;
+        const progressText = extractAcpToolCallOutputText(progressEvent);
         if (progressText === undefined) {
-          return suppressedUnhandled(rawEvent);
+          return refreshed.length === 0
+            ? suppressedUnhandled(rawEvent)
+            : refreshed;
         }
         if (mergedType !== "command" && mergedType !== "fileChange") {
           return [
@@ -796,7 +825,9 @@ export function createAcpDeltaTranslator(
             },
           ];
         }
-        return suppressedUnhandled(rawEvent);
+        return refreshed.length === 0
+          ? suppressedUnhandled(rawEvent)
+          : refreshed;
       }
 
       case "plan": {
@@ -938,8 +969,10 @@ export function createAcpDeltaTranslator(
   ): ThreadDelta[] {
     const errorEnvelope = errorEnvelopeSchema.safeParse(event);
     if (errorEnvelope.success) {
+      const closed = flushOpenTurnWork(context, "failed");
       clearThreadCalls(context);
       return [
+        ...closed,
         {
           kind: "provider.error",
           message: "Provider error",
@@ -962,9 +995,10 @@ export function createAcpDeltaTranslator(
         if (!params.success) {
           return [];
         }
+        const closed = flushOpenTurnWork(context, "interrupted");
         clearThreadCalls(context);
         filesAddedThisTurn.clear();
-        return [{ kind: "turn.open" }];
+        return [...closed, { kind: "turn.open" }];
       }
 
       case ACP_PROMPT_INTERRUPTED_METHOD: {
@@ -994,8 +1028,10 @@ export function createAcpDeltaTranslator(
         if (!params.success) {
           return [];
         }
+        const closed = flushOpenTurnWork(context, "interrupted");
         clearThreadCalls(context);
         return [
+          ...closed,
           { kind: "turn.open" },
           {
             kind: "item.open",

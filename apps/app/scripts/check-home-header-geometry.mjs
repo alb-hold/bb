@@ -5,7 +5,7 @@ import { test } from "node:test";
 const captures = JSON.parse(readFileSync(process.argv[2], "utf8"));
 
 for (const width of [360, 390]) {
-  test(`home actions align without overlapping at ${width}px`, () => {
+  await test(`home actions align without overlapping at ${width}px`, () => {
     const capture = captures.metrics.find((entry) => entry.width === width && Array.isArray(entry.header) && Array.isArray(entry.panelButtons));
     assert.ok(capture, `Missing ${width}px capture`);
     const newThread = capture.header.find((entry) => entry.box.width > 0)?.box;

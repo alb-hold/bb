@@ -39,7 +39,8 @@ export interface ModelReasoningPickerHandoff {
 
 export type ModelNavRow =
   | { kind: "model"; option: ModelPickerOption }
-  | { kind: "more-toggle" };
+  | { kind: "more-toggle" }
+  | { kind: "more-submenu" };
 
 export function buildModelNavRows({
   modelOptions,
@@ -65,6 +66,10 @@ export function buildModelNavRows({
     return rows;
   }
 
+  if (!isCompactViewport) {
+    rows.push({ kind: "more-submenu" });
+    return rows;
+  }
   if (isCompactViewport) {
     rows.push({ kind: "more-toggle" });
     if (showMoreModels) {

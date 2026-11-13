@@ -259,7 +259,7 @@ async function postNativeThread(
 }
 
 function acknowledgeOpen(fixture: Fixture, open: TerminalOpenMessage): void {
-  fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+  void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
     hostId: fixture.hostId,
     sessionId: fixture.sessionId,
     message: {
@@ -367,7 +367,7 @@ function startFakeCli(
       if (message.type === "terminal.attach") {
         if (message.terminalId !== terminalId) continue;
         if (redraw !== null) draw(redraw);
-        fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+        void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
           hostId: fixture.hostId,
           sessionId: fixture.sessionId,
           message: {
@@ -474,7 +474,7 @@ function startRecordedCli(
   let handled = 0;
   const emit = (chunk: RecordedChunk) => {
     output.push(chunk);
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.hostId,
       sessionId: fixture.sessionId,
       message: { type: "terminal.output", terminalId, chunk },
@@ -506,7 +506,7 @@ function startRecordedCli(
         message.type === "terminal.attach" &&
         message.terminalId === terminalId
       ) {
-        fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+        void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
           hostId: fixture.hostId,
           sessionId: fixture.sessionId,
           message: {
@@ -576,7 +576,7 @@ describe("native terminal threads", () => {
       },
     });
     const open = await waitForTerminalOpen(fixture.socket);
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.hostId,
       sessionId: fixture.sessionId,
       message: {
@@ -591,7 +591,7 @@ describe("native terminal threads", () => {
       },
     });
     expect((await creating).status).toBe(201);
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.hostId,
       sessionId: fixture.sessionId,
       message: {
@@ -631,6 +631,7 @@ describe("native terminal threads", () => {
           dataDir: "/tmp/server-restarted",
           localApiPort: null,
           protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
+          openThreadWork: [],
           activeThreads: [],
           undeliveredEventThreadIds: [],
         }),
@@ -862,7 +863,7 @@ describe("native terminal threads", () => {
         "Expected second terminal.attach after browser reconnect",
       );
     }
-    restarted.deps.terminalSessions.handleDaemonTerminalMessage({
+    void restarted.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.hostId,
       sessionId: fixture.sessionId,
       message: {
@@ -1181,7 +1182,7 @@ describe("native terminal threads", () => {
     expect(accidentalOpen).toBeUndefined();
     fixture.socket.sentMessages.length = 0;
     fixture.harness.hub.unregisterDaemon(fixture.sessionId);
-    onDaemonSocketOpen(fixture.harness.deps, {
+    void onDaemonSocketOpen(fixture.harness.deps, {
       hostId: fixture.hostId,
       sessionId: fixture.sessionId,
       socket: fixture.socket,
@@ -1227,7 +1228,7 @@ describe("native terminal threads", () => {
       ),
     ).toContain(thread.id);
     fixture.harness.hub.unregisterDaemon(fixture.sessionId);
-    onDaemonSocketOpen(fixture.harness.deps, {
+    void onDaemonSocketOpen(fixture.harness.deps, {
       hostId: fixture.hostId,
       sessionId: fixture.sessionId,
       socket: fixture.socket,
@@ -1386,7 +1387,7 @@ describe("native terminal threads", () => {
       ),
     );
     expect(launch.nativeSessionId).toBe(record.nativeSessionId);
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.hostId,
       sessionId: fixture.sessionId,
       message: {
@@ -1457,7 +1458,7 @@ describe("native terminal threads", () => {
       nativeSessionId: record.nativeSessionId,
       terminalSessionId: reopen.terminalId,
     });
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.hostId,
       sessionId: fixture.sessionId,
       message: {
@@ -1557,7 +1558,7 @@ describe("native terminal threads", () => {
       ),
     );
     for (const open of opens) {
-      fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
         hostId: fixture.hostId,
         sessionId: fixture.sessionId,
         message: {
@@ -2714,9 +2715,13 @@ describe("native terminal threads", () => {
       const record = getNativeTerminalThread(fixture.harness.db, thread.id);
       expect(record?.providerId).toBe("claude-code");
       expect(record?.model).toBe(model);
-      const nativeResponse = await fixture.harness.app.request(`/api/v1/threads/${thread.id}/native-terminal`);
+      const nativeResponse = await fixture.harness.app.request(
+        `/api/v1/threads/${thread.id}/native-terminal`,
+      );
       expect(nativeResponse.status).toBe(200);
-      expect(nativeTerminalThreadSchema.parse(await readJson(nativeResponse)).model).toBe(model);
+      expect(
+        nativeTerminalThreadSchema.parse(await readJson(nativeResponse)).model,
+      ).toBe(model);
       expect(
         resolvePendingThreadSessionOptions(fixture.harness.db, thread.id),
       ).toEqual({});
@@ -2799,7 +2804,7 @@ describe("native terminal threads", () => {
     );
     expect(again.terminal?.id).toBe(open.terminalId);
 
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.hostId,
       sessionId: fixture.sessionId,
       message: {
@@ -2831,7 +2836,7 @@ describe("native terminal threads", () => {
     const finishedOpen = await waitForTerminalOpen(fixture.socket, 1);
     acknowledgeOpen(fixture, finishedOpen);
     await waitForThreadStatus(fixture, finished.id, "idle");
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.hostId,
       sessionId: fixture.sessionId,
       message: {
@@ -2849,7 +2854,7 @@ describe("native terminal threads", () => {
       instanceId: "instance-2",
     });
     const socket = createFakeDaemonSocket();
-    onDaemonSocketOpen(fixture.harness.deps, {
+    void onDaemonSocketOpen(fixture.harness.deps, {
       hostId: fixture.hostId,
       sessionId: restarted.id,
       socket,
@@ -2863,7 +2868,7 @@ describe("native terminal threads", () => {
     expect(
       lost.open.start.mode === "command" && lost.open.start.command,
     ).not.toContain("--reattach");
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.hostId,
       sessionId: restarted.id,
       message: {
@@ -2946,6 +2951,7 @@ describe("native terminal threads", () => {
         dataDir: "/tmp/host-daemon-restart",
         localApiPort: null,
         protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
+        openThreadWork: [],
         activeThreads: [],
         undeliveredEventThreadIds: [],
       }),
@@ -2956,7 +2962,7 @@ describe("native terminal threads", () => {
       fixture.harness.deps.providerRegistry = lateProviders;
     }
     const socket = createFakeDaemonSocket();
-    onDaemonSocketOpen(fixture.harness.deps, {
+    void onDaemonSocketOpen(fixture.harness.deps, {
       hostId: fixture.hostId,
       sessionId,
       socket,
@@ -2979,7 +2985,7 @@ describe("native terminal threads", () => {
       "--reattach",
     );
     expect(interruptionReasons(fixture, running.thread.id)).toEqual([]);
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.hostId,
       sessionId,
       message: {
@@ -3020,7 +3026,7 @@ describe("native terminal threads", () => {
         },
       });
       const initialOpen = await waitForTerminalOpen(fixture.socket);
-      fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
         hostId: fixture.hostId,
         sessionId: fixture.sessionId,
         message: {
@@ -3054,6 +3060,7 @@ describe("native terminal threads", () => {
             dataDir: "/tmp/host-daemon-restart",
             localApiPort: null,
             protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
+            openThreadWork: [],
             activeThreads: [],
             undeliveredEventThreadIds: [],
           }),
@@ -3098,7 +3105,7 @@ describe("native terminal threads", () => {
         },
       });
       const open = await waitForTerminalOpen(fixture.socket, skip);
-      fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
         hostId: fixture.hostId,
         sessionId: fixture.sessionId,
         message: {
@@ -3135,7 +3142,7 @@ describe("native terminal threads", () => {
       fixture.harness.deps.hub,
       "sendTerminalClientMessage",
     );
-    output(
+    void output(
       0,
       `\u001b]7717;bb-holder;${active.terminalId}\u0007BEFORE:${pid}\n`,
     );
@@ -3180,6 +3187,7 @@ describe("native terminal threads", () => {
           dataDir: "/tmp/host-daemon-restart",
           localApiPort: null,
           protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
+          openThreadWork: [],
           activeThreads: [],
           undeliveredEventThreadIds: [],
         }),
@@ -3226,7 +3234,7 @@ describe("native terminal threads", () => {
         .filter((message) => message.type === "terminal.open")
         .map((message) => message.terminalId),
     ).not.toContain(closed.terminalId);
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.hostId,
       sessionId,
       message: {
@@ -3240,7 +3248,7 @@ describe("native terminal threads", () => {
         rows: reopened.rows,
       },
     });
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.hostId,
       sessionId,
       message: {
@@ -3276,7 +3284,7 @@ describe("native terminal threads", () => {
     }
     expect(attach).toBeDefined();
     if (attach === undefined) throw new Error("Missing terminal.attach");
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.hostId,
       sessionId,
       message: {
@@ -3315,7 +3323,7 @@ describe("native terminal threads", () => {
         )
         .join(""),
     ).toBe(`BEFORE:${pid}\nAFTER:${pid}\n`);
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.hostId,
       sessionId,
       message: {
@@ -3358,7 +3366,7 @@ describe("native terminal threads", () => {
       },
     });
     const open = await waitForTerminalOpen(fixture.socket);
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.hostId,
       sessionId: fixture.sessionId,
       message: {
@@ -3373,7 +3381,7 @@ describe("native terminal threads", () => {
       },
     });
     expect((await creating).status).toBe(201);
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.hostId,
       sessionId: fixture.sessionId,
       message: {
@@ -3396,7 +3404,7 @@ describe("native terminal threads", () => {
       "sendTerminalClientMessage",
     );
     try {
-      fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
         hostId: fixture.hostId,
         sessionId: fixture.sessionId,
         message: {
@@ -3431,7 +3439,7 @@ describe("native terminal threads", () => {
         },
       });
       const open = await waitForTerminalOpen(fixture.socket, openedCount++);
-      fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
         hostId: fixture.hostId,
         sessionId: fixture.sessionId,
         message: {
@@ -3554,8 +3562,8 @@ describe("native terminal threads", () => {
       const marker = Buffer.from(`\u001b]7717;bb-holder;${terminalId}\u0007`);
       expect(marker.length).toBe(firstSplitMarker.length);
       const suffix = `SPLIT-${offset}\n`;
-      send(terminalId, 0, marker.subarray(0, offset));
-      send(
+      void send(terminalId, 0, marker.subarray(0, offset));
+      void send(
         terminalId,
         1,
         Buffer.concat([marker.subarray(offset), Buffer.from(suffix)]),
@@ -3574,9 +3582,9 @@ describe("native terminal threads", () => {
       `\u001b]7717;bb-holder;${bytewiseTerminalId}\u0007`,
     );
     for (const [seq, byte] of bytewiseMarker.entries()) {
-      send(bytewiseTerminalId, seq, Buffer.from([byte]));
+      void send(bytewiseTerminalId, seq, Buffer.from([byte]));
     }
-    send(bytewiseTerminalId, bytewiseMarker.length, Buffer.from("BYTEWISE\n"));
+    void send(bytewiseTerminalId, bytewiseMarker.length, Buffer.from("BYTEWISE\n"));
     expect(
       getTerminalSession(fixture.harness.db, {
         kind: "terminal",
@@ -3589,7 +3597,7 @@ describe("native terminal threads", () => {
     const nonMarker = Buffer.from(
       "\u001b]7717;bb-holder;!not-a-holder\u0007VISIBLE\n",
     );
-    send(nonMarkerTerminalId, 0, nonMarker);
+    void send(nonMarkerTerminalId, 0, nonMarker);
     expect(
       getTerminalSession(fixture.harness.db, {
         kind: "terminal",
@@ -3605,7 +3613,7 @@ describe("native terminal threads", () => {
       Buffer.from(`\u001b]7717;bb-holder;${incompleteTerminalId}`),
       Buffer.alloc(160, 0x61),
     ]);
-    send(incompleteTerminalId, 0, incomplete);
+    void send(incompleteTerminalId, 0, incomplete);
     expect(
       getTerminalSession(fixture.harness.db, {
         kind: "terminal",
@@ -3646,7 +3654,7 @@ describe("native terminal threads", () => {
         `\u001b]7717;bb-holder;${delayedTerminalId}\u0007`,
       );
       const first = Buffer.concat([grid, marker.subarray(0, splitAt)]);
-      send(delayedTerminalId, 0, first);
+      void send(delayedTerminalId, 0, first);
       await vi.advanceTimersByTimeAsync(250);
       const beforeRemainder = await retainedText(delayedTerminalId);
       if (splitAt <= 3) {
@@ -3662,7 +3670,7 @@ describe("native terminal threads", () => {
           terminalId: delayedTerminalId,
         }),
       ).toMatchObject({ holderBacked: false });
-      send(
+      void send(
         delayedTerminalId,
         1,
         Buffer.concat([marker.subarray(splitAt), Buffer.from("AFTER\n")]),
@@ -3695,12 +3703,12 @@ describe("native terminal threads", () => {
       if (terminalId === undefined) throw new Error("Missing grid terminal");
       const holder = Buffer.from(`\u001b]7717;bb-holder;${terminalId}\u0007`);
       const suffix = Buffer.from("AFTER\n");
-      send(terminalId, 0, grid.subarray(0, scenario.splitAt));
+      void send(terminalId, 0, grid.subarray(0, scenario.splitAt));
       await vi.advanceTimersByTimeAsync(scenario.delayMs);
       expect(await retainedText(terminalId)).toBe("");
       const gridRemainder = grid.subarray(scenario.splitAt);
       const sameChunk = scenario.markerPlacement === "same-chunk";
-      send(
+      void send(
         terminalId,
         1,
         Buffer.concat([
@@ -3711,7 +3719,7 @@ describe("native terminal threads", () => {
       );
       if (!sameChunk) {
         await vi.advanceTimersByTimeAsync(scenario.delayMs);
-        send(terminalId, 2, Buffer.concat([holder, suffix]));
+        void send(terminalId, 2, Buffer.concat([holder, suffix]));
       }
       expect(
         getTerminalSession(fixture.harness.db, {
@@ -3738,7 +3746,7 @@ describe("native terminal threads", () => {
     }
 
     const timedOutPrefix = Buffer.from("\u001b]7;");
-    send(timedOutTerminalId, 0, timedOutPrefix);
+    void send(timedOutTerminalId, 0, timedOutPrefix);
     await vi.advanceTimersByTimeAsync(250);
     expect(
       getTerminalSession(fixture.harness.db, {
@@ -3763,7 +3771,7 @@ describe("native terminal threads", () => {
       },
     });
     const open = await waitForTerminalOpen(fixture.socket);
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.hostId,
       sessionId: fixture.sessionId,
       message: {
@@ -3778,7 +3786,7 @@ describe("native terminal threads", () => {
       },
     });
     expect((await creating).status).toBe(201);
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.hostId,
       sessionId: fixture.sessionId,
       message: {
@@ -3811,6 +3819,7 @@ describe("native terminal threads", () => {
           dataDir: "/tmp/host-daemon-restart",
           localApiPort: null,
           protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
+          openThreadWork: [],
           activeThreads: [],
           undeliveredEventThreadIds: [],
         }),
@@ -3861,7 +3870,7 @@ describe("native terminal threads", () => {
     const { fixture, running, sessionId, socket } =
       await restartDaemonWithRunningNativeThread("instance-restarted");
     const reopen = await waitForTerminalOpen(socket);
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.hostId,
       sessionId,
       message: {
@@ -3875,7 +3884,7 @@ describe("native terminal threads", () => {
         rows: reopen.rows,
       },
     });
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.hostId,
       sessionId,
       message: {
@@ -3924,7 +3933,7 @@ describe("native terminal threads", () => {
     expect(reopen.start.mode === "command" && reopen.start.command).toContain(
       `native-run ${running.thread.id} --reattach`,
     );
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.hostId,
       sessionId,
       message: {
@@ -4003,7 +4012,7 @@ describe("native terminal threads", () => {
       });
       const reopen = await waitForTerminalOpen(socket);
       expect(reopen.threadId).toBe(running.thread.id);
-      fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
         hostId: fixture.hostId,
         sessionId,
         message: {
@@ -4119,7 +4128,7 @@ describe("native terminal threads", () => {
         );
       }
       if (opening === undefined) throw new Error("reconnect never opened");
-      fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
         hostId: fixture.hostId,
         sessionId,
         message: {
@@ -4238,7 +4247,7 @@ describe("native terminal threads", () => {
         );
       }
       if (explicit === undefined) throw new Error("explicit open never sent");
-      fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
         hostId: fixture.hostId,
         sessionId,
         message: {
@@ -4369,7 +4378,7 @@ describe("native terminal threads", () => {
         );
       }
       if (reopen === undefined) throw new Error("retry never reopened");
-      fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
         hostId: fixture.hostId,
         sessionId,
         message: {
@@ -4433,7 +4442,7 @@ describe("native terminal threads", () => {
       }
       if (reopen === undefined) throw new Error("reattach never opened");
       const terminals = fixture.harness.deps.terminalSessions;
-      terminals.handleDaemonTerminalMessage({
+      void terminals.handleDaemonTerminalMessage({
         hostId: fixture.hostId,
         sessionId,
         message: {
@@ -4447,7 +4456,7 @@ describe("native terminal threads", () => {
           rows: reopen.rows,
         },
       });
-      terminals.handleDaemonTerminalMessage({
+      void terminals.handleDaemonTerminalMessage({
         hostId: fixture.hostId,
         sessionId,
         message: {
@@ -4489,7 +4498,7 @@ describe("native terminal threads", () => {
       }
       if (reopen === undefined) throw new Error("reattach never opened");
       const terminals = fixture.harness.deps.terminalSessions;
-      terminals.handleDaemonTerminalMessage({
+      void terminals.handleDaemonTerminalMessage({
         hostId: fixture.hostId,
         sessionId,
         message: {
@@ -4504,7 +4513,7 @@ describe("native terminal threads", () => {
         },
       });
       await vi.advanceTimersByTimeAsync(100);
-      terminals.handleDaemonTerminalMessage({
+      void terminals.handleDaemonTerminalMessage({
         hostId: fixture.hostId,
         sessionId,
         message: {
@@ -4602,7 +4611,7 @@ describe("native terminal threads", () => {
         );
       }
       if (late === undefined) throw new Error("held attempt never opened");
-      fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
         hostId: fixture.hostId,
         sessionId,
         message: {
@@ -4672,7 +4681,7 @@ describe("native terminal threads", () => {
       }
       if (opening === undefined) throw new Error("reattach never opened");
       now = 45_001;
-      fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
         hostId: fixture.hostId,
         sessionId,
         message: {
@@ -4782,7 +4791,7 @@ describe("native terminal threads", () => {
       );
       now = 45_001;
 
-      fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
         hostId: fixture.hostId,
         sessionId,
         message: {
@@ -4945,7 +4954,7 @@ describe("native terminal threads", () => {
       instanceId: "instance-2",
     });
     const socket = createFakeDaemonSocket();
-    onDaemonSocketOpen(fixture.harness.deps, {
+    void onDaemonSocketOpen(fixture.harness.deps, {
       hostId: fixture.hostId,
       sessionId: restarted.id,
       socket,
@@ -4976,7 +4985,7 @@ describe("native terminal threads", () => {
       {},
     );
     await new Promise((resolve) => setTimeout(resolve, 20));
-    acknowledge(reattach);
+    void acknowledge(reattach);
     const launch = await waitForTerminalOpen(socket, 1);
     expect(launch.start.mode === "command" && launch.start.command).toContain(
       `"$BB_CLI" thread native-run ${lost.thread.id}`,
@@ -4984,7 +4993,7 @@ describe("native terminal threads", () => {
     expect(
       launch.start.mode === "command" && launch.start.command,
     ).not.toContain("--reattach");
-    acknowledge(launch);
+    void acknowledge(launch);
 
     const opened = nativeTerminalThreadSchema.parse(
       await readJson(await explicit),
@@ -5006,7 +5015,7 @@ describe("native terminal threads", () => {
     });
     const reconnected = seedSession(fixture.harness.deps, fixture.hostId);
     const socket = createFakeDaemonSocket();
-    onDaemonSocketOpen(fixture.harness.deps, {
+    void onDaemonSocketOpen(fixture.harness.deps, {
       hostId: fixture.hostId,
       sessionId: reconnected.id,
       socket,

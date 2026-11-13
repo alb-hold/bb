@@ -208,7 +208,9 @@ describe("BottomAnchoredScrollBody", () => {
     const { layout, view } = setup("thread-a", rowKeys("thread-a", 60));
     expect(layout.scrollTop).toBe(layout.maxScrollTop());
 
-    act(() => vi.advanceTimersByTime(1_500));
+    act(() => {
+      vi.advanceTimersByTime(1_500);
+    });
     act(() => layout.flushResizeObservers());
     act(() =>
       view.rerender(
@@ -351,7 +353,9 @@ describe("BottomAnchoredScrollBody", () => {
         keys,
       );
       act(() => layout.userScrollTo(layout.maxScrollTop() - 1_500));
-      act(() => vi.advanceTimersByTime(500));
+      act(() => {
+        vi.advanceTimersByTime(500);
+      });
       const fromEnd = layout.maxScrollTop() - layout.scrollTop + 300;
 
       layout.bounceTo(layout.scrollTop - 300);
@@ -395,7 +399,9 @@ describe("BottomAnchoredScrollBody", () => {
     expect(layout.scrollTop).toBe(layout.maxScrollTop());
 
     act(() => layout.userScrollTo(layout.maxScrollTop() - 1_500));
-    act(() => vi.advanceTimersByTime(500));
+    act(() => {
+      vi.advanceTimersByTime(500);
+    });
     const reader = firstVisible();
     const before = topOf(reader);
     const above = document.querySelector(
@@ -550,7 +556,7 @@ describe("BottomAnchoredScrollBody", () => {
         });
       });
     }
-    act(() => vi.advanceTimersByTime(200));
+    act(() => void vi.advanceTimersByTime(200));
     const before = topOf(reader);
 
     act(() =>
@@ -577,7 +583,7 @@ describe("BottomAnchoredScrollBody", () => {
     const keys = rowKeys("thread-a", 120);
     const first = setup("thread-a", keys);
     act(() => first.layout.userScrollTo(first.layout.maxScrollTop() - 2_500));
-    act(() => vi.advanceTimersByTime(300));
+    act(() => void vi.advanceTimersByTime(300));
     const reader = first.firstVisible();
     const before = first.topOf(reader);
     first.view.unmount();
@@ -742,7 +748,7 @@ describe("BottomAnchoredScrollBody", () => {
     });
     const { layout } = setup("thread-a", rowKeys("thread-a", 60));
 
-    act(() => vi.advanceTimersByTime(10_000));
+    act(() => void vi.advanceTimersByTime(10_000));
     act(() => layout.flushResizeObservers());
 
     expect(layout.scrollTop).toBe(layout.maxScrollTop());

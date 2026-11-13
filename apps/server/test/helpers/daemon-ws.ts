@@ -18,7 +18,7 @@ interface FeedRawDaemonWebSocketMessageArgs {
 export function feedRawDaemonWebSocketMessage(
   args: FeedRawDaemonWebSocketMessageArgs,
 ): void {
-  onDaemonSocketMessage(args.harness.deps, {
+  void onDaemonSocketMessage(args.harness.deps, {
     hostId: args.hostId,
     raw: JSON.stringify(args.rawMessage),
     sessionId: args.sessionId,

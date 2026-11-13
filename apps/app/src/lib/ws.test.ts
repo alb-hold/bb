@@ -613,8 +613,10 @@ describe("WebSocketManager thread-open signals", () => {
     const { manager } = createConnectedManager();
     const changed = vi.fn();
     const threadOpen = vi.fn();
+    const pluginSignals = vi.fn();
     manager.onChanged(changed);
     manager.onThreadOpen(threadOpen);
+    manager.onPluginSignal(pluginSignals);
 
     dispatchRaw({
       type: "changed",
@@ -625,6 +627,7 @@ describe("WebSocketManager thread-open signals", () => {
 
     expect(changed).toHaveBeenCalledTimes(1);
     expect(threadOpen).not.toHaveBeenCalled();
+    expect(pluginSignals).not.toHaveBeenCalled();
   });
 
   it("delivers known layout actions and ignores unrelated future fields", () => {

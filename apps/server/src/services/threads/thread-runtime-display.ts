@@ -14,17 +14,18 @@ import {
   listOpenTurnInputAcceptedRowsByThreadIds,
   listOpenTurnInputAcceptedRowsByScope,
   listStoredClientTurnRequestRowsByKeys,
+  type ThreadClientTurnRequestKey,
   type DbConnection,
   type HostDaemonSessionRow,
   type NativeTerminalThreadRecord,
   type StoredEventRow,
-  type ThreadClientTurnRequestKey,
   type ThreadWithPendingInteractionState,
   type ThreadListEnrichmentScope,
 } from "@bb/db";
 import {
   withEffectiveDisplayStatus,
   LEGACY_CODEX_GOAL_EXTENSION_KIND,
+  threadTimelineGoalStatusSchema,
   NATIVE_TERMINAL_ACTIVITY_FRESH_FOR_MS,
 } from "@bb/domain";
 import type {
@@ -35,7 +36,6 @@ import type {
   ThreadQueuedWork,
   ThreadRuntimeState,
   ThreadStatus,
-  ThreadTimelineGoal,
   ThreadWithRuntime,
 } from "@bb/domain";
 import {
@@ -44,7 +44,6 @@ import {
 } from "@bb/client-core";
 import {
   extractThreadTimelineActivePlanTurn,
-  extractThreadTimelineGoal,
   type ThreadEventWithMeta,
 } from "@bb/thread-view";
 import type { ThreadResponse } from "@bb/server-contract";
@@ -623,10 +622,19 @@ function getThreadPromptBannerActivityState(
     providerId: thread.providerId,
     threadStatus: thread.status,
   });
-  const goal = extractThreadTimelineGoal(events);
-
   return {
-    activeGoalCount: goal?.status === "active" ? 1 : 0,
+    activeGoalCount: events.some(
+      ({ event }) =>
+        event.type === "thread/extensionState/updated" &&
+        event.kind === LEGACY_CODEX_GOAL_EXTENSION_KIND &&
+        event.payload !== null &&
+        typeof event.payload === "object" &&
+        "status" in event.payload &&
+        threadTimelineGoalStatusSchema.safeParse(event.payload.status).data ===
+          "active",
+    )
+      ? 1
+      : 0,
     activePlanModeCount: activePlanTurn === null ? 0 : 1,
     activePlanTurnId: activePlanTurn?.turnId ?? null,
   };
@@ -661,10 +669,7 @@ function listPromptBannerActivityCandidateRows(
     .filter((thread) => canThreadShowActivePlanMode(deps, thread))
     .map((thread) => thread.id);
   const openAcceptedRows = scope
-    ? listOpenTurnInputAcceptedRowsByScope(deps.db, {
-        kind: "ids",
-        ids: eligibleThreadIds,
-      })
+    ? listOpenTurnInputAcceptedRowsByScope(deps.db, scope)
     : listOpenTurnInputAcceptedRowsByThreadIds(deps.db, {
         threadIds: eligibleThreadIds,
       });
@@ -717,16 +722,21 @@ function buildThreadPromptBannerActivityByThreadId(
   return result;
 }
 
-export function getThreadTimelineGoal(
+export function threadHasGoal(
   deps: ThreadPromptBannerDeps,
   thread: Thread,
-): ThreadTimelineGoal | null {
-  return extractThreadTimelineGoal(
-    listLatestThreadStateEventRowsByThreadIds(deps.db, {
-      threadIds: [thread.id],
-      kind: LEGACY_CODEX_GOAL_EXTENSION_KIND,
-    }).map(toThreadEventWithMeta),
-  );
+): boolean {
+  return listLatestThreadStateEventRowsByThreadIds(deps.db, {
+    threadIds: [thread.id],
+    kind: LEGACY_CODEX_GOAL_EXTENSION_KIND,
+  })
+    .map(toThreadEventWithMeta)
+    .some(
+      ({ event }) =>
+        event.type === "thread/extensionState/updated" &&
+        event.kind === LEGACY_CODEX_GOAL_EXTENSION_KIND &&
+        event.payload !== null,
+    );
 }
 
 export function getThreadPromptBannerActivity(
@@ -773,9 +783,7 @@ function buildThreadActivityStateByThreadId(
       activeBackgroundCommandCount:
         backgroundActivity?.activeBackgroundCommandCount ??
         EMPTY_THREAD_ACTIVITY.activeBackgroundCommandCount,
-      activeGoalCount:
-        promptBannerActivity?.activeGoalCount ??
-        EMPTY_THREAD_ACTIVITY.activeGoalCount,
+      activeGoalCount: promptBannerActivity?.activeGoalCount ?? 0,
       activePlanModeCount:
         promptBannerActivity?.activePlanModeCount ??
         EMPTY_THREAD_ACTIVITY.activePlanModeCount,
@@ -803,7 +811,11 @@ function buildThreadQueuedWorkByThreadId(
     : listQueuedThreadMessageCountsByThreadIds(deps.db, {
         threadIds: threads.map((thread) => thread.id),
       })) {
-    if (counts.queuedMessageCount === 0) continue;
+    if (
+      counts.userQueuedMessageCount === 0 &&
+      counts.failedQueuedMessageCount === 0
+    )
+      continue;
     result.set(counts.threadId, {
       queuedFailedCount: counts.failedQueuedMessageCount,
       queuedWork: counts.failedQueuedMessageCount > 0 ? "failed" : "waiting",

@@ -87,6 +87,7 @@ describe("a real daemon restart", () => {
           dataDir: "/tmp/host-daemon-restart-controls",
           localApiPort: null,
           protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
+          openThreadWork: [],
           activeThreads: [],
           adoptedThreads: [
             { threadId: adopted.id, activeTurnId: "turn-adopted" },

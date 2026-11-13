@@ -449,6 +449,7 @@ describe("daemon session connect shares", () => {
           localApiPort: null,
           protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
           activeThreads: [],
+          openThreadWork: [],
         }),
       });
 
@@ -482,6 +483,7 @@ describe("daemon session connect shares", () => {
           localApiPort: null,
           protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
           activeThreads: [],
+          openThreadWork: [],
         }),
       });
       const session = hostDaemonSessionOpenResponseSchema.parse(
@@ -495,7 +497,7 @@ describe("daemon session connect shares", () => {
         ports: [4173],
       });
       const daemonSocket = createMockHubSocket();
-      onDaemonSocketOpen(harness.deps, {
+      void onDaemonSocketOpen(harness.deps, {
         hostId: "host-1",
         sessionId: session.sessionId,
         socket: daemonSocket,
@@ -509,7 +511,7 @@ describe("daemon session connect shares", () => {
         ports: [4173],
       });
 
-      onDaemonSocketMessage(harness.deps, {
+      void onDaemonSocketMessage(harness.deps, {
         hostId: "host-1",
         sessionId: session.sessionId,
         socket: daemonSocket,
@@ -548,6 +550,7 @@ describe("daemon session connect shares", () => {
           localApiPort: null,
           protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
           activeThreads: [],
+          openThreadWork: [],
         }),
       });
       expect(response.status).toBe(201);
@@ -555,7 +558,7 @@ describe("daemon session connect shares", () => {
         await response.json(),
       );
       const daemonSocket = createMockHubSocket();
-      onDaemonSocketOpen(harness.deps, {
+      void onDaemonSocketOpen(harness.deps, {
         hostId: "host-1",
         sessionId: session.sessionId,
         socket: daemonSocket,
@@ -605,6 +608,7 @@ function openDaemonSession(harness: TestAppHarness, protocolVersion: number) {
       localApiPort: null,
       protocolVersion,
       activeThreads: [],
+      openThreadWork: [],
     }),
   });
 }
@@ -717,12 +721,12 @@ describe("connect next machine tunnels", () => {
         config: NEXT_CONFIG,
       });
       const daemonSocket = createMockHubSocket();
-      onDaemonSocketOpen(harness.deps, {
+      void onDaemonSocketOpen(harness.deps, {
         hostId: "host-1",
         sessionId: session.sessionId,
         socket: daemonSocket,
       });
-      onDaemonSocketMessage(harness.deps, {
+      void onDaemonSocketMessage(harness.deps, {
         hostId: "host-1",
         sessionId: session.sessionId,
         socket: daemonSocket,

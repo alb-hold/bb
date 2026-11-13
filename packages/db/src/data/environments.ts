@@ -14,6 +14,7 @@ import type { DbNotifier } from "../notifier.js";
 import { environments, threads } from "../schema.js";
 import { createEnvironmentId } from "../ids.js";
 import { hostPathContains, hostPathEquals } from "./host-path-sql.js";
+import { threadHoldsEnvironment } from "./threads.js";
 
 type EnvironmentReadConnection = DbConnection | DbTransaction;
 type EnvironmentWriteConnection = DbConnection | DbTransaction;
@@ -347,7 +348,6 @@ export interface UpdateEnvironmentMetadataInput {
 
 export interface RecordEnvironmentCurrentBranchInput {
   branchName: string | null;
-  defaultBranch?: string | null;
 }
 
 export interface ListRetiredLoadedEnvironmentIdsOnHostArgs {
@@ -468,9 +468,6 @@ export function recordEnvironmentCurrentBranch(
 ) {
   return updateEnvironmentMetadataRecord(db, notifier, id, {
     branchName: input.branchName,
-    ...(input.defaultBranch !== undefined
-      ? { defaultBranch: input.defaultBranch }
-      : {}),
   });
 }
 
@@ -554,39 +551,15 @@ export function applyEnvironmentLifecycleEventInTransaction(
     set.path = null;
   }
 
-  const conditions = [
-    eq(environments.id, args.environmentId),
-    eq(environments.status, environment.status),
-  ];
-  if (args.event.type === "destroy.recorded") {
-    conditions.push(
-      sql`(
-        EXISTS (
-          SELECT 1 FROM hosts
-          WHERE hosts.id = ${environments.hostId}
-          AND hosts.phase = 'removing'
-        )
-        OR (
-          NOT EXISTS (
-            SELECT 1 FROM threads
-            WHERE threads.environment_id = ${environments.id}
-            AND threads.archived_at IS NULL
-            AND threads.deleted_at IS NULL
-          )
-          AND NOT EXISTS (
-            SELECT 1 FROM threads
-            WHERE threads.environment_id = ${environments.id}
-            AND threads.status = 'stopping'
-          )
-        )
-      )`,
-    );
-  }
-
   const updated = db
     .update(environments)
     .set(set)
-    .where(and(...conditions))
+    .where(
+      and(
+        eq(environments.id, args.environmentId),
+        eq(environments.status, environment.status),
+      ),
+    )
     .returning()
     .get();
   if (!updated) {
@@ -646,18 +619,9 @@ export function listProviderLifecycleEnvironments(
     .from(environments)
     .where(
       and(
-        providerId === null
-          ? isNull(environments.environmentProviderId)
-          : eq(environments.environmentProviderId, providerId),
-        providerId === null
-          ? undefined
-          : or(
-              isNull(environments.ownerThreadId),
-              sql`${environments.teardownStatus} is not null`,
-            ),
-        blocked === undefined
-          ? undefined
-          : sql`not (${environments.ownerThreadId} is null and ${environments.teardownStatus} is 'failed' and ${environments.teardownMessage} is ${blocked.teardownMessage} and ${environments.environmentProviderPluginId} is not ${blocked.pluginId})`,
+        providerId === null ? isNull(environments.environmentProviderId) : eq(environments.environmentProviderId, providerId),
+        providerId === null ? undefined : or(isNull(environments.ownerThreadId), sql`${environments.teardownStatus} is not null`),
+        blocked === undefined ? undefined : sql`not (${environments.ownerThreadId} is null and ${environments.teardownStatus} is 'failed' and ${environments.teardownMessage} is ${blocked.teardownMessage} and ${environments.environmentProviderPluginId} is not ${blocked.pluginId})`,
         sql`(${environments.retireAt} is not null or ${environments.teardownStatus} is not null or not exists (select 1 from ${threads} where ${threads.environmentId} = ${environments.id} and ${threads.archivedAt} is null and ${threads.deletedAt} is null))`,
         sql`(${environments.status} <> 'destroyed' OR ${environments.teardownStatus} IS NOT 'removed')`,
       ),
@@ -666,7 +630,7 @@ export function listProviderLifecycleEnvironments(
 }
 
 export function environmentHasLiveThreads(db: EnvironmentWriteConnection, environmentId: string): boolean {
-  return db.select({ id: threads.id }).from(threads).where(and(eq(threads.environmentId, environmentId), or(and(isNull(threads.archivedAt), isNull(threads.deletedAt)), eq(threads.status, "stopping"), eq(threads.status, "active")))).limit(1).get() !== undefined;
+  return db.select({ id: threads.id }).from(threads).where(and(eq(threads.environmentId, environmentId), threadHoldsEnvironment)).limit(1).get() !== undefined;
 }
 
 export function releaseFinishedEnvironmentPreparationOwners(db: EnvironmentWriteConnection): void {
@@ -701,6 +665,6 @@ export function bindEnvironmentPath(db: DbConnection, provisioning: EnvironmentR
     if (existing.teardownStatus !== null || (existing.status !== "ready" && existing.status !== "provisioning")) throw new Error("Workspace is not ready or cleanup is still pending");
     if (existing.ownerThreadId !== null) throw new Error("Workspace is still being prepared by another thread");
     tx.update(environments).set({ ownerThreadId: null, status: "destroyed", teardownStatus: "removed", claimPath: null, resource: null, path: null }).where(eq(environments.id, current.id)).run();
-    return tx.update(environments).set({ ownerThreadId: current.ownerThreadId, attempt: current.attempt, status: existing.status === "ready" ? "ready" : current.status, teardownStatus: current.teardownStatus, retireAt: current.retireAt, statusMessage: current.statusMessage, pendingLog: current.pendingLog, claimPath: current.claimPath, environmentProviderId: existing.environmentProviderId ?? current.environmentProviderId, environmentProviderPluginId: existing.environmentProviderId === null ? current.environmentProviderPluginId : existing.environmentProviderPluginId, environmentProviderSelection: existing.environmentProviderId === null ? current.environmentProviderSelection : existing.environmentProviderSelection, environmentProviderInstanceKey: existing.environmentProviderId === null ? current.environmentProviderInstanceKey : existing.environmentProviderInstanceKey }).where(eq(environments.id, existing.id)).returning().get()!;
+    return tx.update(environments).set({ ownerThreadId: current.ownerThreadId, attempt: current.attempt, status: existing.status, teardownStatus: current.teardownStatus, retireAt: current.retireAt, statusMessage: existing.status === "provisioning" ? existing.statusMessage : current.statusMessage, pendingLog: existing.status === "provisioning" ? existing.pendingLog : current.pendingLog, claimPath: current.claimPath, environmentProviderId: existing.environmentProviderId ?? current.environmentProviderId, environmentProviderPluginId: existing.environmentProviderId === null ? current.environmentProviderPluginId : existing.environmentProviderPluginId, environmentProviderSelection: existing.environmentProviderId === null ? current.environmentProviderSelection : existing.environmentProviderSelection, environmentProviderInstanceKey: existing.environmentProviderId === null ? current.environmentProviderInstanceKey : existing.environmentProviderInstanceKey }).where(eq(environments.id, existing.id)).returning().get()!;
   }, { behavior: "immediate" });
 }

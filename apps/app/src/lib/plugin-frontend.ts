@@ -211,7 +211,6 @@ export interface BbPluginRuntime {
   internal_DO_NOT_USE_context_menu: unknown;
   internal_DO_NOT_USE_responsive_overlay: unknown;
 
-  zod?: unknown;
   radixCheckbox?: unknown;
   radixSlot?: unknown;
   radixComposeRefs?: unknown;
@@ -235,6 +234,7 @@ export interface BbPluginRuntime {
   vaul?: unknown;
   pierreDiffs?: unknown;
   pierreDiffsReact?: unknown;
+  zod?: unknown;
   clsx: unknown;
   tailwindMerge: unknown;
   classVarianceAuthority: unknown;
@@ -276,6 +276,8 @@ export function installPluginRuntime(): BbPluginRuntime {
   };
   return host.__bbPluginRuntime;
 }
+
+
 
 async function fetchEnabledPluginList(queryClient: QueryClient) {
   for (;;) {
@@ -547,7 +549,7 @@ async function deactivateCommittedGeneration(
   state.appliedHashes.delete(pluginId);
   if (removePublishedUi) {
     deps.removeRegistrations(pluginId);
-    deps.applyCss(pluginId, null);
+    void deps.applyCss(pluginId, null);
   }
   return failures;
 }
@@ -1021,12 +1023,12 @@ async function reconcileCandidate(
       await disposeGeneration(pluginId, activationResult.activation, deps);
     }
     deps.removeRegistrations(pluginId);
-    deps.applyCss(pluginId, null);
+    void deps.applyCss(pluginId, null);
     return;
   }
   if (!activationResult.ok) {
     deps.removeRegistrations(pluginId);
-    deps.applyCss(pluginId, null);
+    void deps.applyCss(pluginId, null);
     const failed: PluginFrontendRecord = {
       pluginId,
       status: "failed",
@@ -1086,7 +1088,7 @@ export async function disposePluginFrontends(
     }
     clearPluginThreadRowStatuses(pluginId);
     deps.removeRegistrations(pluginId);
-    deps.applyCss(pluginId, null);
+    void deps.applyCss(pluginId, null);
   }
   state.records.clear();
   state.appliedHashes.clear();

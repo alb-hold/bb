@@ -192,7 +192,7 @@ describe("assistant streaming Markdown rendering", () => {
     ).toBe(`/projects/${mentionedThread.projectId}/threads/thr_mentioned`);
   });
 
-  it("settled code block DOM survives boundary advances", () => {
+  it("settled code block DOM survives boundary advances", async () => {
     const source = "Intro.\n\n```ts\nconst a = 1;\n```\n\nA.\n\nB";
     const view = render(assistant(source));
     const markdownPreviewParagraphs = () =>
@@ -202,6 +202,7 @@ describe("assistant streaming Markdown rendering", () => {
           Array.from(preview.querySelectorAll("p"), (p) => p.textContent),
       );
     expect(markdownPreviewParagraphs()).toEqual([["Intro."], ["A.", "B"]]);
+    await waitFor(() => expect(view.container.querySelector("pre code span.sh__line")).not.toBeNull());
     const line = view.container.querySelector("pre code span.sh__line");
     const code = line?.closest("code");
     if (!line || !code) {

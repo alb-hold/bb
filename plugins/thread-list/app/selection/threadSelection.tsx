@@ -24,8 +24,6 @@ const THREAD_ROW_TARGET_SELECTOR = "a[data-sidebar-thread-id]";
 const SELECTION_KEEPING_SELECTOR =
   '[data-sidebar-rename-row], [data-radix-popper-content-wrapper], [role="menu"]';
 
-export const SIDEBAR_MULTI_SELECT_EXPERIMENT = "sidebarMultiSelect";
-
 export interface ThreadSelectionModifiers {
   metaKey: boolean;
   ctrlKey: boolean;
@@ -37,7 +35,6 @@ export class ThreadSelectionStore {
   private selectedSet: ReadonlySet<string> = new Set();
   private anchor: string | null = null;
   private activeThreadId: string | null = null;
-  private enabled = true;
   private readonly listeners = new Set<() => void>();
 
   subscribe = (listener: () => void): (() => void) => {
@@ -55,11 +52,6 @@ export class ThreadSelectionStore {
 
   setActiveThreadId(threadId: string | null): void {
     this.activeThreadId = threadId;
-  }
-
-  setEnabled(enabled: boolean): void {
-    this.enabled = enabled;
-    if (!enabled) this.clear();
   }
 
   clear(): void {
@@ -94,7 +86,6 @@ export class ThreadSelectionStore {
     modifiers: ThreadSelectionModifiers,
     origin: Element,
   ): boolean {
-    if (!this.enabled) return false;
     if (!modifiers.shiftKey) {
       this.anchor = threadId;
       if (this.selected.length > 0) this.replace(NO_THREAD_IDS);
@@ -210,13 +201,9 @@ export function ThreadSelectionProvider({
   children: ReactNode;
 }) {
   const [store] = useState(() => new ThreadSelectionStore());
-  const enabled = experimental_useExperiment(SIDEBAR_MULTI_SELECT_EXPERIMENT);
   useLayoutEffect(() => {
     store.setActiveThreadId(activeThreadId);
   }, [activeThreadId, store]);
-  useLayoutEffect(() => {
-    store.setEnabled(enabled);
-  }, [enabled, store]);
   const { projects } = useSidebarData();
   const listedThreadIds = useMemo(
     () =>

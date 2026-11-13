@@ -27,7 +27,10 @@ import {
 } from "@bb/server-contract";
 import { DEVICE_HANDOFF_CLIENT_TOKEN_HEADER } from "@bb/server-contract";
 import type { Hono } from "hono";
-import { type ThreadQueuedMessage } from "@bb/domain";
+import {
+  getRelativeHostPathSegments,
+  type ThreadQueuedMessage,
+} from "@bb/domain";
 import type { AppDeps } from "../../types.js";
 import { ApiError } from "../../errors.js";
 import {
@@ -43,7 +46,6 @@ import {
   requireConnectedHostSession,
   requirePublicThread,
 } from "../../services/lib/entity-lookup.js";
-import { parseSafeRelativeRoutePath } from "../relative-route-path.js";
 import { resolvePromptAttachmentReferences } from "../../services/projects/attachments.js";
 import {
   compactThreadContext,
@@ -77,7 +79,7 @@ import { interruptNativeTerminalTurn } from "../../services/threads/native-termi
 import {
   buildThreadStatusChangeMetadata,
   getThreadPromptBannerActivity,
-  getThreadTimelineGoal,
+  threadHasGoal,
   toThreadListEntryResponses,
   toThreadResponseFromThread,
 } from "../../services/threads/thread-runtime-display.js";
@@ -90,6 +92,10 @@ import {
   scheduleThreadProvisioningAdvance,
 } from "../../services/threads/thread-provisioning.js";
 import { archiveThreadAndChildren } from "../../services/threads/thread-archive.js";
+import {
+  resolveRequestSource,
+  type ResolvePluginRpcCaller,
+} from "../../request-context.js";
 import {
   requireThreadCommandEnvironment,
   requireThreadHostCommandEnvironment,
@@ -211,7 +217,11 @@ function assertPinnedThreadOrderResult(
   }
 }
 
-export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
+export function registerThreadActionRoutes(
+  app: Hono,
+  deps: AppDeps,
+  plugins: { resolveRpcCaller: ResolvePluginRpcCaller },
+): void {
   const { post, patch, del } = typedRoutes<PublicApiSchema>(app, {
     onValidationError: (msg) => new ApiError(400, "invalid_request", msg),
   });
@@ -342,6 +352,21 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
         400,
         "invalid_request",
         "sendAt must be in the future; pass null to clear the send time",
+      );
+    }
+    const existingQueuedMessage = getQueuedThreadMessage(
+      deps.db,
+      context.req.param("queuedMessageId"),
+    );
+    if (
+      payload.input !== undefined &&
+      existingQueuedMessage !== null &&
+      existingQueuedMessage.systemNotice !== null
+    ) {
+      throw new ApiError(
+        409,
+        "invalid_request",
+        "bb system notices cannot be edited",
       );
     }
     const content =
@@ -520,7 +545,7 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
 
   post(routes.clearGoal, async (context) => {
     const thread = requirePublicThread(deps.db, context.req.param("id"));
-    if (getThreadTimelineGoal(deps, thread) === null) {
+    if (!threadHasGoal(deps, thread)) {
       throw new ApiError(409, "invalid_request", "No Goal to clear");
     }
     const environment = await requireThreadCommandEnvironment(deps, {
@@ -553,7 +578,7 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
       timeoutMs: LIVE_DAEMON_COMMAND_TIMEOUT_MS,
     });
     const updatedThread = requirePublicThread(deps.db, thread.id);
-    if (getThreadTimelineGoal(deps, updatedThread) !== null) {
+    if (threadHasGoal(deps, updatedThread)) {
       throw new ApiError(
         409,
         "invalid_request",
@@ -623,8 +648,11 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
         );
       }
     }
-    if (payload.file !== null) {
-      parseSafeRelativeRoutePath(payload.file.path);
+    if (
+      payload.file !== null &&
+      getRelativeHostPathSegments(payload.file.path) === null
+    ) {
+      throw new ApiError(400, "invalid_path", "Invalid file path");
     }
     const openTarget = {
       projectId: publicThread.projectId,
@@ -731,6 +759,17 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
     const archivedThreadIds = archiveThreadAndChildren(deps, {
       parentThread: thread,
     });
+    deps.logger.info(
+      {
+        threadId: thread.id,
+        alreadyArchivedAt: thread.archivedAt,
+        archivedThreadIds,
+        source: resolveRequestSource(context, plugins.resolveRpcCaller),
+      },
+      thread.archivedAt === null
+        ? "Thread archived"
+        : "Archive requested for an already-archived thread",
+    );
     return context.json({
       ok: true,
       archivedThreadIds,
@@ -750,6 +789,14 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
         "Lifecycle owner must be unarchived first",
       );
     }
+    deps.logger.info(
+      {
+        threadId: thread.id,
+        archivedAt: thread.archivedAt,
+        source: resolveRequestSource(context, plugins.resolveRpcCaller),
+      },
+      "Thread unarchived",
+    );
     const unarchivedThread = getThread(deps.db, thread.id);
     if (unarchivedThread !== null) {
       if (unarchivedThread.environmentId !== null)

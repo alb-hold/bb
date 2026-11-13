@@ -10,7 +10,7 @@ describe("internal plugin host events", () => {
       const handleHostWorkerExit = vi.fn();
       const socket = { close: vi.fn(), send: vi.fn() };
 
-      onDaemonSocketMessage(
+      void onDaemonSocketMessage(
         harness.deps,
         {
           hostId: host.id,
@@ -40,7 +40,7 @@ describe("internal plugin host events", () => {
       const handleHostSignal = vi.fn();
       const socket = { close: vi.fn(), send: vi.fn() };
 
-      onDaemonSocketMessage(
+      void onDaemonSocketMessage(
         harness.deps,
         {
           hostId: host.id,

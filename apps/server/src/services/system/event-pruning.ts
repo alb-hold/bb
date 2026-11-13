@@ -3,7 +3,6 @@ import {
   advanceThreadPruning,
   advanceThreadPruningStep,
   getThread,
-  getThreadEventRewriteGeneration,
   THREAD_EVENT_KEEP_RECENT_BY_MODE,
   THREAD_PRUNING_POLICIES,
 } from "@bb/db";
@@ -147,7 +146,6 @@ function pruneThreadEventHistoryBestEffortWithAdvance(
   prune: typeof pruneThreadEventHistory,
 ): ThreadEventPruningResult | null {
   const startedAt = performance.now();
-  const generation = getThreadEventRewriteGeneration(args.threadId);
   try {
     const result = prune(deps, args);
 
@@ -176,10 +174,6 @@ function pruneThreadEventHistoryBestEffortWithAdvance(
       "Failed to prune thread event history",
     );
     return null;
-  } finally {
-    if (getThreadEventRewriteGeneration(args.threadId) !== generation) {
-      deps.hub.notifyThread(args.threadId, ["history-compacted"]);
-    }
   }
 }
 

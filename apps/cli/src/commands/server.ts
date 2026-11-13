@@ -153,7 +153,11 @@ async function writeExportFile(args: {
   try {
     const output = file.createWriteStream();
     destination = output;
-    await pipeline(chunks, output).finally(() => whenClosed(output));
+    try {
+      await pipeline(chunks, output);
+    } finally {
+      await whenClosed(output);
+    }
     if (hash.digest("hex") !== args.expectedSha256) {
       throw new Error(
         `The downloaded export does not match the SHA-256 digest the server sent, so ${outPath} was not written. Try the export again.`,

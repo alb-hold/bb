@@ -1,16 +1,22 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
+
 import {
   createFakePluginHost,
   makeHostResponse,
   makeThreadResponse,
   type ExperimentalFakeHostRpcCall,
 } from "@get-bb/plugin-sdk/testing";
+
 import { afterEach, describe, expect, it, vi } from "vitest";
+
 import { z } from "zod";
+
 import {
   environmentPullRequestSchema,
   type GitHubPullRequestView,
+  type HostPullRequestLookup,
 } from "./contract.js";
+
 import plugin, { environmentChangeEffect } from "./server.js";
 
 type Environment = Awaited<
@@ -21,6 +27,7 @@ type EnvironmentChangedSubscribeArgs = Extract<
   Parameters<BbPluginApi["sdk"]["subscribe"]>[0],
   { event: "environment:changed" }
 >;
+
 type EnvironmentChangedEvent = Parameters<
   EnvironmentChangedSubscribeArgs["callback"]
 >[0];
@@ -95,10 +102,31 @@ function view(
   };
 }
 
+type ViewRead = {
+  path: string;
+  known: { url: string; branchName: string | null } | null;
+  refresh: boolean;
+};
+
+function viewResults(
+  call: ExperimentalFakeHostRpcCall,
+  lookup: (read: ViewRead) => HostPullRequestLookup = () => ({
+    outcome: "found",
+    pullRequest: view(),
+  }),
+  oid: string | null = null,
+) {
+  return (call.input as { reads: ViewRead[] }).reads.map((read) => ({
+    lookup: lookup(read),
+    refs: { oid, branchName: "bb/pr" },
+  }));
+}
+
 async function setup(options: {
   environments?: Record<string, Environment>;
   host?: Parameters<typeof makeHostResponse>[0];
   callHost?: (call: ExperimentalFakeHostRpcCall) => unknown;
+  subscribe?: BbPluginApi["sdk"]["subscribe"];
   listThreadEvents?: BbPluginApi["sdk"]["threads"]["events"]["list"];
   getEnvironment?: (environmentId: string) => Promise<Environment>;
   debug?: (message: string) => void;
@@ -142,22 +170,29 @@ async function setup(options: {
           return makeHostResponse(options.host);
         },
       },
+      ...(options.subscribe === undefined
+        ? {}
+        : { subscribe: options.subscribe }),
     },
-    experimental_callHostRpc:
-      options.callHost ??
-      ((call) =>
-        call.method === "upstream"
-          ? { oid: null, branchName: "bb/pr" }
-          : call.method === "views"
-            ? (call.input as { reads: unknown[] }).reads.map(() => ({
-                outcome: "found",
-                pullRequest: view(),
-              }))
-            : { ok: true }),
+    experimental_callHostRpc: async (call) => {
+      const result = await (
+        options.callHost ??
+        ((request) =>
+          request.method === "views" ? viewResults(request) : { ok: true })
+      )(call);
+      if (call.method !== "views" || !Array.isArray(result)) return result;
+      return result.map((row: unknown) =>
+        typeof row === "object" && row !== null && "outcome" in row
+          ? { lookup: row, refs: { oid: null, branchName: "bb/pr" } }
+          : row,
+      );
+    },
   });
+  const registerWatch = fake.bb.rpc.experimental_whileWatched.bind(fake.bb.rpc);
   vi.spyOn(fake.bb.rpc, "experimental_whileWatched").mockImplementation(
     (method, handler) => {
       whileWatchedHandlers.set(method, handler);
+      registerWatch(method, handler);
     },
   );
   const loadPlugin = (bb: BbPluginApi) =>
@@ -166,7 +201,7 @@ async function setup(options: {
         ? bb
         : { ...bb, log: { ...bb.log, debug: options.debug } },
     );
-  await loadPlugin(fake.bb);
+  loadPlugin(fake.bb);
   return Object.assign(fake, {
     sdkCalls,
     emitEnvironmentChanged(event: EnvironmentChangedEvent) {
@@ -380,14 +415,10 @@ describe("GitHub PR Status server", () => {
     let branchPullRequest = merged;
     const fake = await setup({
       callHost: (call) =>
-        call.method === "upstream"
-          ? { oid: null, branchName: "bb/pr" }
-          : (call.input as { reads: { url: string | null }[] }).reads.map(
-              (read) => ({
-                outcome: "found",
-                pullRequest: read.url === null ? branchPullRequest : merged,
-              }),
-            ),
+        viewResults(call, (read) => ({
+          outcome: "found",
+          pullRequest: read.known === null ? branchPullRequest : merged,
+        })),
     });
     await fake.harness.runCli(["show", "env-1"]);
     branchPullRequest = view({ number: 8 });
@@ -403,8 +434,66 @@ describe("GitHub PR Status server", () => {
         .filter((call) => call.method === "views")
         .map((call) => call.input),
     ).toEqual([
-      { reads: [{ path: "/work/env-1", url: null, refresh: false }] },
-      { reads: [{ path: "/work/env-1", url: null, refresh: false }] },
+      { reads: [{ path: "/work/env-1", known: null, refresh: false }] },
+      { reads: [{ path: "/work/env-1", known: null, refresh: false }] },
+    ]);
+  });
+
+  it("re-reads a known PR in one host call and reloads on a ref event only when the upstream moved", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    let changed: ((event: { id: string; changes: string[] }) => void) | null =
+      null;
+    let upstream = "oid-1";
+    const fake = await setup({
+      subscribe: (({ callback }: { callback: typeof changed }) => {
+        changed = callback;
+        return () => {};
+      }) as never,
+      callHost: (call) =>
+        call.method === "upstream"
+          ? { oid: upstream, branchName: "bb/pr" }
+          : viewResults(call, undefined, "oid-1"),
+    });
+    const methods = () =>
+      fake.harness.experimental_hostRpcCalls.map((call) => call.method);
+    const stop = fake.harness.experimental_watchRpc("pullRequests", {
+      key: "env-1",
+    });
+    await vi.waitFor(() => expect(methods()).toEqual(["views"]));
+    vi.setSystemTime(Date.now() + 11_000);
+    await fake.harness.runCli(["show", "env-1"]);
+
+    changed!({ id: "env-1", changes: ["git-refs-changed"] });
+    await vi.waitFor(() => expect(methods()).toHaveLength(3));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(methods()).toHaveLength(3);
+    upstream = "oid-2";
+    changed!({ id: "env-1", changes: ["git-refs-changed"] });
+    await vi.waitFor(() => expect(methods()).toHaveLength(5));
+    stop();
+
+    expect(methods()).toEqual([
+      "views",
+      "views",
+      "upstream",
+      "upstream",
+      "views",
+    ]);
+    expect(
+      fake.harness.experimental_hostRpcCalls
+        .filter((call) => call.method === "views")
+        .map((call) => call.input),
+    ).toEqual([
+      { reads: [{ path: "/work/env-1", known: null, refresh: false }] },
+      ...Array.from({ length: 2 }, () => ({
+        reads: [
+          {
+            path: "/work/env-1",
+            known: { url: view().url, branchName: "bb/pr" },
+            refresh: false,
+          },
+        ],
+      })),
     ]);
   });
 
@@ -435,12 +524,7 @@ describe("GitHub PR Status server", () => {
       },
       callHost: (call) => {
         if (call.hostId === "host-2") throw new Error("Host is suspended");
-        if (call.method === "upstream")
-          return { oid: null, branchName: "bb/pr" };
-        return (call.input as { reads: unknown[] }).reads.map(() => ({
-          outcome: "found",
-          pullRequest: view(),
-        }));
+        return viewResults(call);
       },
     });
 
@@ -474,11 +558,18 @@ describe("GitHub PR Status server", () => {
         method: "views",
         input: {
           reads: [
-            { path: "/work/env-1", url: null, refresh: false },
-            { path: "/work/env-2", url: null, refresh: false },
+            { path: "/work/env-1", known: null, refresh: false },
+            { path: "/work/env-2", known: null, refresh: false },
           ],
         },
         hostId: "host-1",
+      },
+      {
+        method: "views",
+        input: {
+          reads: [{ path: "/work/env-1", known: null, refresh: false }],
+        },
+        hostId: "host-2",
       },
     ]);
   });
@@ -503,8 +594,8 @@ describe("GitHub PR Status server", () => {
     ).toEqual([
       {
         reads: [
-          { path: "/work/env-1", url: null, refresh: false },
-          { path: "/work/env-2", url: null, refresh: false },
+          { path: "/work/env-1", known: null, refresh: false },
+          { path: "/work/env-2", known: null, refresh: false },
         ],
       },
     ]);
@@ -777,6 +868,7 @@ describe("GitHub PR Status server", () => {
       {
         input: {
           path: "/work/env-1",
+          url: "https://github.com/acme/bb/pull/7",
           action: {
             operation: "merge",
             method: "rebase",
@@ -788,19 +880,137 @@ describe("GitHub PR Status server", () => {
     ]);
   });
 
+  it("prechecks a known pull request by its URL and acts on that URL", async () => {
+    const fake = await setup({});
+    await fake.harness.callRpc("pullRequests", { keys: ["env-1"] });
+
+    await fake.harness.callRpc("merge", {
+      environmentId: "env-1",
+      method: "squash",
+      ...DISPLAYED_IDENTITY,
+    });
+
+    const calls = fake.harness.experimental_hostRpcCalls;
+    expect(
+      calls.filter((call) => call.method === "views").map((call) => call.input),
+    ).toEqual([
+      { reads: [{ path: "/work/env-1", known: null, refresh: false }] },
+      {
+        reads: [
+          {
+            path: "/work/env-1",
+            known: {
+              url: "https://github.com/acme/bb/pull/7",
+              branchName: "bb/pr",
+            },
+            refresh: true,
+          },
+        ],
+      },
+    ]);
+    expect(calls.find((call) => call.method === "act")?.input).toEqual({
+      path: "/work/env-1",
+      url: "https://github.com/acme/bb/pull/7",
+      action: { operation: "merge", method: "squash", ...DISPLAYED_IDENTITY },
+    });
+  });
+
+  function workspaceHost(workspace: {
+    branchName: string;
+    byUrl: Record<string, GitHubPullRequestView>;
+    byBranch: Record<string, GitHubPullRequestView>;
+  }) {
+    return (call: ExperimentalFakeHostRpcCall) =>
+      call.method === "views"
+        ? (call.input as { reads: ViewRead[] }).reads.map((read) => ({
+            lookup: {
+              outcome: "found",
+              pullRequest:
+                read.known !== null &&
+                read.known.branchName === workspace.branchName
+                  ? workspace.byUrl[read.known.url]
+                  : workspace.byBranch[workspace.branchName],
+            },
+            refs: { oid: null, branchName: workspace.branchName },
+          }))
+        : call.method === "upstream"
+          ? { oid: null, branchName: workspace.branchName }
+          : { ok: true };
+  }
+
+  it("rediscovers the branch when the known pull request has closed, and acts on the newer one", async () => {
+    const closedUrl = "https://github.com/acme/bb/pull/6";
+    const workspace = {
+      branchName: "bb/pr",
+      byUrl: {
+        [closedUrl]: view({ number: 6, url: closedUrl, state: "CLOSED" }),
+      },
+      byBranch: { "bb/pr": view({ number: 6, url: closedUrl }) },
+    };
+    const fake = await setup({ callHost: workspaceHost(workspace) });
+    await fake.harness.callRpc("pullRequests", { keys: ["env-1"] });
+    workspace.byBranch["bb/pr"] = view({
+      number: 8,
+      url: "https://github.com/acme/bb/pull/8",
+    });
+
+    await fake.harness.callRpc("merge", {
+      environmentId: "env-1",
+      method: "squash",
+      ...DISPLAYED_IDENTITY,
+    });
+
+    expect(
+      fake.harness.experimental_hostRpcCalls.find(
+        (call) => call.method === "act",
+      )?.input,
+    ).toMatchObject({ url: "https://github.com/acme/bb/pull/8" });
+  });
+
+  it("acts on the current branch's pull request when the known one belongs to another branch", async () => {
+    const oldUrl = "https://github.com/acme/bb/pull/6";
+    const oldPullRequest = view({
+      number: 6,
+      url: oldUrl,
+      headRefName: "bb/old",
+    });
+    const workspace = {
+      branchName: "bb/old",
+      byUrl: { [oldUrl]: oldPullRequest },
+      byBranch: { "bb/old": oldPullRequest, "bb/pr": view() },
+    };
+    const fake = await setup({ callHost: workspaceHost(workspace) });
+    await fake.harness.callRpc("pullRequests", { keys: ["env-1"] });
+    workspace.branchName = "bb/pr";
+    await expect(
+      fake.harness.callRpc("markReady", {
+        environmentId: "env-1",
+        ...DISPLAYED_IDENTITY,
+      }),
+    ).rejects.toMatchObject({ message: "Pull request is not a draft" });
+
+    await fake.harness.callRpc("merge", {
+      environmentId: "env-1",
+      method: "squash",
+      ...DISPLAYED_IDENTITY,
+    });
+
+    expect(
+      fake.harness.experimental_hostRpcCalls.find(
+        (call) => call.method === "act",
+      )?.input,
+    ).toMatchObject({ url: "https://github.com/acme/bb/pull/7" });
+  });
+
   it("returns the gh failure as a refusal and the CLI prints it", async () => {
     const fake = await setup({
       callHost: (call) =>
-        call.method === "upstream"
-          ? { oid: null, branchName: "bb/pr" }
-          : call.method === "upstream"
-            ? { oid: null, branchName: "bb/pr" }
-            : call.method === "views"
-              ? (call.input as { reads: unknown[] }).reads.map(() => ({
-                  outcome: "found",
-                  pullRequest: view({ isDraft: true }),
-                }))
-              : { ok: false, message: "gh pr ready failed: HTTP 403" },
+        call.method === "views"
+          ? viewResults(call, () => ({
+              outcome: "found",
+              pullRequest: view({ isDraft: true }),
+            }))
+          : { ok: false, message: "gh pr ready failed: HTTP 403" },
     });
 
     await expect(
@@ -975,8 +1185,8 @@ describe("GitHub PR Status server", () => {
     [["metadata-changed"], "branch"],
     [["git-refs-changed", "metadata-changed"], "branch"],
     [["git-refs-changed"], "invalidate"],
+    [["git-branches-changed"], null],
     [["work-status-changed"], null],
-    [["thread-storage-changed", "diff-viewed-changed"], null],
   ] as const)(
     "maps environment changes %j to %s, re-checking only where main did",
     (changes, effect) => {

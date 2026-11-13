@@ -1,23 +1,49 @@
-export { afterCommit, createConnection } from "./connection.js";
-export type {
-  DbConnection,
-  DbQueryConnection,
-  DbTransaction,
-  SlowDbQueryLogger,
-  SlowDbQueryLogFields,
-  ThreadListClientKind,
-  ThreadListRequestShape,
+export {
+  afterCommit,
+  createConnection,
+  type DbConnection,
+  type DbQueryConnection,
+  type DbTransaction,
+  type QueryPlanExecutionObserver,
+  type SlowDbQueryLogger,
+  type SlowDbQueryLogFields,
+  type ThreadListClientKind,
+  type ThreadListRequestShape,
 } from "./connection.js";
-
-export * from "./schema.js";
+export {
+  createQueryPlanAuditor,
+  openQueryPlanAuditDatabase,
+  type QueryPlanAuditor,
+  type QueryPlanFindingReport,
+} from "./query-plan-guard.js";
+export {
+  startWalCheckpointer,
+  type WalCheckpointer,
+  type WalCheckpointLogger,
+} from "./wal-checkpointer.js";
 export {
   createQueuedThreadMessageId,
   createEventId,
   createHostId,
   createThreadProvisioningId,
 } from "./ids.js";
-
-export { countAppliedMigrations, migrate } from "./migrate.js";
+export {
+  countAppliedMigrations,
+  migrate,
+  type MigrationWarningLogger,
+} from "./migrate.js";
+export {
+  isSqliteBusyError,
+  isSqliteForeignKeyConstraint,
+  isSqliteUniqueConstraintOnColumns,
+} from "./sqlite-errors.js";
+export {
+  deriveStoredEventItemFields,
+} from "./stored-event-item-fields.js";
+export {
+  noopNotifier,
+  type DbNotifier,
+} from "./notifier.js";
 export {
   deleteNativeParentNotices,
   getNativeParentNoticeDeliveredAt,
@@ -50,7 +76,9 @@ export {
   listThreadTerminalLatestOutputSeqs,
   noteForwardedTerminalOutputSeq,
 } from "./fork-thread-terminal-output-seqs.js";
-export type { ThreadListEnrichmentScope } from "./thread-list-enrichment-scope.js";
+export {
+  type ThreadListEnrichmentScope,
+} from "./thread-list-enrichment-scope.js";
 export {
   clearTerminalAttention,
   clearPersistedDeviceHandoffAttention,
@@ -118,13 +146,5 @@ export {
   upsertNativeThreadReply,
   type NativeThreadReply,
 } from "./fork-native-thread-replies.js";
-export {
-  isSqliteForeignKeyConstraint,
-  isSqliteUniqueConstraintOnColumns,
-} from "./sqlite-errors.js";
-export type { MigrationWarningLogger } from "./migrate.js";
-export { deriveStoredEventItemFields } from "./stored-event-item-fields.js";
-export { noopNotifier } from "./notifier.js";
-export type { DbNotifier } from "./notifier.js";
-
+export * from "./schema.js";
 export * from "./data/index.js";

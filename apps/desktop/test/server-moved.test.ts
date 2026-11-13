@@ -436,7 +436,7 @@ describe("createServerMovedWatcher", () => {
       }: { waitForCallbacks?: boolean } = {}) {
         const callbacks = [...pending];
         pending.clear();
-        const results = callbacks.map((callback) => callback());
+        const results = callbacks.map((callback) => Promise.resolve(callback()));
         const currentCallbacks = Promise.all(results).then(() => undefined);
         callbacksInFlight.add(currentCallbacks);
         currentCallbacks.then(
@@ -1161,7 +1161,7 @@ describe("waitForServerMoveDestination", () => {
     };
   }
 
-  it("waits until the new server answers outside pending mode", async () => {
+  it("waits until the new server reports this move ready", async () => {
     const clock = createClock();
     const fetchImpl = vi
       .fn<(input: string) => Promise<Response>>()
@@ -1172,23 +1172,42 @@ describe("waitForServerMoveDestination", () => {
           serverMove: { moveId: "m", state: "pending" },
         }),
       )
+      .mockResolvedValueOnce(
+        Response.json({
+          ok: true,
+          serverMove: { moveId: "m", state: "activating" },
+        }),
+      )
       .mockResolvedValueOnce(Response.json({ ok: false }, { status: 503 }))
-      .mockResolvedValueOnce(Response.json({ ok: true }));
+      .mockResolvedValueOnce(Response.json({ ok: true }))
+      .mockResolvedValueOnce(
+        Response.json({
+          ok: true,
+          serverMove: { moveId: "other", state: "ready" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        Response.json({
+          ok: true,
+          serverMove: { moveId: "m", state: "ready" },
+        }),
+      );
 
     await expect(
       waitForServerMoveDestination({
         fetchImpl,
         intervalMs: 1_000,
         isCancelled: () => false,
+        moveId: "m",
         now: clock.now,
-        serverUrl: "https://studio.tailnet.ts.net:38886",
+        serverUrl: "https://studio.example/bb/",
         sleep: clock.sleep,
         timeoutMs: 60_000,
       }),
     ).resolves.toBe(true);
-    expect(fetchImpl).toHaveBeenCalledTimes(4);
+    expect(fetchImpl).toHaveBeenCalledTimes(7);
     expect(fetchImpl.mock.calls[0]?.[0]).toBe(
-      "https://studio.tailnet.ts.net:38886/health",
+      "https://studio.example/bb/health",
     );
   });
 
@@ -1203,6 +1222,7 @@ describe("waitForServerMoveDestination", () => {
         fetchImpl,
         intervalMs: 1_000,
         isCancelled: () => false,
+        moveId: "m",
         now: clock.now,
         serverUrl: "https://studio.tailnet.ts.net:38886",
         sleep: clock.sleep,
@@ -1225,6 +1245,7 @@ describe("waitForServerMoveDestination", () => {
         fetchImpl,
         intervalMs: 1_000,
         isCancelled: () => cancelled,
+        moveId: "m",
         now: clock.now,
         serverUrl: "https://studio.tailnet.ts.net:38886",
         sleep: clock.sleep,

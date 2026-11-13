@@ -30,6 +30,7 @@ import {
 import { HEARTBEAT_INTERVAL_MS, LEASE_TIMEOUT_MS } from "../constants.js";
 import {
   notifyDaemonEnvironmentChange,
+  notifyDaemonThreadStorageChange,
   recordDaemonEnvironmentMetadataChange,
 } from "../internal/environment-changes.js";
 import { requestQueuedMessageDispatch } from "../services/threads/queued-message-dispatch.js";
@@ -315,7 +316,7 @@ export async function onDaemonSocketOpen(
   if (isServerMoveFrozen(deps.db)) {
     return;
   }
-  reopenNativeTerminalsAfterDaemonReconnect(deps, {
+  void reopenNativeTerminalsAfterDaemonReconnect(deps, {
     hostId: args.hostId,
     threadIds: nativeThreadIds,
   });
@@ -500,6 +501,13 @@ export function onDaemonSocketMessage(
           hostId: args.hostId,
           environmentId: message.environmentId,
           change: message.change,
+        });
+        return;
+      }
+      if (message.type === "thread-storage-change") {
+        notifyDaemonThreadStorageChange(deps, {
+          hostId: args.hostId,
+          threadId: message.threadId,
         });
         return;
       }

@@ -1,3 +1,5 @@
+import { createElement, useMemo, type ComponentPropsWithoutRef } from "react";
+import { cn } from "@bb/shared-ui/lib/utils";
 import { highlight, type LanguageName } from "sugar-high";
 import { lang } from "sugar-high/lang";
 
@@ -72,4 +74,26 @@ export function highlightMarkdownCode(args: HighlightMarkdownCodeArgs): string {
     highlightCacheChars -= oldestKey.length + oldestHtml.length;
   }
   return html;
+}
+
+export interface MarkdownHighlightedCodeProps {
+  codeProps: ComponentPropsWithoutRef<"code">;
+  code: string;
+  language: string | null;
+}
+
+export function MarkdownHighlightedCode({
+  codeProps,
+  code,
+  language,
+}: MarkdownHighlightedCodeProps) {
+  const html = useMemo(
+    () => ({ __html: highlightMarkdownCode({ code, language }) }),
+    [code, language],
+  );
+  return createElement("code", {
+    className: cn("font-mono text-xs", language ? `language-${language}` : ""),
+    dangerouslySetInnerHTML: html,
+    ...codeProps,
+  });
 }

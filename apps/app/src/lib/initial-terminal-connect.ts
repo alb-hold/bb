@@ -23,21 +23,25 @@ if (initial) {
         typeof view.threadId !== "string" ||
         !match ||
         decodeURIComponent(match[1]!) !== view.threadId ||
-        !("terminal" in view) ||
-        typeof view.terminal !== "object" ||
-        view.terminal === null ||
-        !("status" in view.terminal) ||
-        view.terminal.status !== "running" ||
-        !("id" in view.terminal) ||
-        typeof view.terminal.id !== "string" ||
-        view.terminal.id.length === 0 ||
-        view.terminal.id.length > 256
+        !("terminal" in view)
+      )
+        return;
+      const terminal = view.terminal;
+      if (
+        typeof terminal !== "object" ||
+        terminal === null ||
+        !("status" in terminal) ||
+        terminal.status !== "running" ||
+        !("id" in terminal) ||
+        typeof terminal.id !== "string" ||
+        terminal.id.length === 0 ||
+        terminal.id.length > 256
       )
         return;
       preloadTerminalModules();
       prefetchTerminalSocket(
         buildTerminalWebSocketUrl({
-          terminalId: view.terminal.id,
+          terminalId: terminal.id,
           handoffOwnerToken: ensureDeviceHandoffId(),
         }),
       );

@@ -586,7 +586,7 @@ describe("socket bridge workers", () => {
       expect(received.filter((wseq) => wseq === 1)).toHaveLength(2);
     } finally {
       worker.release();
-      await server.close();
+      server.close();
       if (standIn.pid !== undefined && isPidAlive(standIn.pid)) {
         process.kill(standIn.pid, "SIGKILL");
       }

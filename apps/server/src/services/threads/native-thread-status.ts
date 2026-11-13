@@ -77,6 +77,7 @@ function settleThreadWithDeadTerminal(
     includeStopping: false,
     onlyThreadIds: new Set([threadId]),
     reason: "host-daemon-restarted",
+    resumingThreadIds: new Set(),
   });
 }
 

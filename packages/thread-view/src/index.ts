@@ -45,19 +45,25 @@ export {
 export { formatShellCommandForDisplay } from "./shell-command-display.js";
 export {
   getFileChangeAction,
-  isPatchMetadataLine,
+  getFileChangeDiffLines,
+  isPlainFileContentDiff,
 } from "./file-change-summary.js";
 export type { FileChangeAction } from "./file-change-summary.js";
 export {
   buildThreadTimelineFromEvents,
+  buildThreadTimelineFromProjection,
+  projectThreadTimelineEvents,
+  startThreadTimelineProjectionFold,
   buildThreadTimelineTurnDetailsFromEvents,
 } from "./build-thread-timeline.js";
 export { extractThreadTimelineActivePlanTurn } from "./active-prompt-mode-extraction.js";
-export { extractThreadTimelineGoal } from "./goal-snapshot-extraction.js";
 export {
+  extractThreadExtensionStates,
   extractThreadProviderCommands,
   extractThreadSessionOptions,
 } from "./provider-state-extraction.js";
+export { extractThreadTimelineModelFallback } from "./model-fallback-extraction.js";
+export { extractThreadTimelinePendingTodos } from "./todo-snapshot-extraction.js";
 export type { AcceptedClientRequestContext } from "./accepted-client-request-context.js";
 export {
   buildTimelineViewRows,
@@ -78,6 +84,11 @@ export {
   MIN_AGENT_MESSAGE_DELTAS_FOR_SUMMARY_COMPACTION,
 } from "./summary-event-compaction.js";
 export type { ThreadEventWithMeta } from "./group-event-projection-turns.js";
+export {
+  resumeEventProjectionFold,
+  type EventProjectionFold,
+} from "./build-event-projection.js";
+export type { EventProjection } from "./event-projection.js";
 
 export { extractThreadContextWindowUsage } from "./thread-context-window-usage.js";
 export {

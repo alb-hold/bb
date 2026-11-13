@@ -149,6 +149,7 @@ describe("worktree removal when its machinery fails", () => {
     lockBehavior.unresolvable = "locked-out";
 
     const result = await fixture.harness.experimental_call("remove", {
+      ownedBranch: null,
       operationId: "remove",
       pathKey: "thr_fail",
       path: target.path,
@@ -175,6 +176,7 @@ describe("worktree removal when its machinery fails", () => {
     lockBehavior.failing = "b-second";
 
     const result = await fixture.harness.experimental_call("remove", {
+      ownedBranch: null,
       operationId: "remove",
       pathKey: "thr_fail",
       path: null,

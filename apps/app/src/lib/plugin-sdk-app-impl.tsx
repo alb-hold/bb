@@ -2,6 +2,9 @@ import {
   PluginBranchPicker,
   PluginNewThreadComposer,
   ImageLightbox,
+  ExperimentalFilePreview,
+  CollapsibleStackCard,
+  VoiceRecordingBar,
   PluginProviderModelPicker,
   PluginPermissionModePicker,
 } from "./plugin-sdk-lazy-components";
@@ -33,7 +36,7 @@ import {
   useComposerMentionSearch,
 } from "@/components/promptbox/composer-search";
 import { VoiceInputButton } from "@/components/promptbox/VoiceInputButton";
-import { VoiceRecordingBar } from "@/components/promptbox/VoiceRecordingBar";
+import { ThreadActionsMenu, ThreadActionsContextMenu } from "@/components/thread/ThreadActionsMenu";
 import { FailedVoiceRecordings } from "@/components/promptbox/FailedVoiceRecordings";
 import { AppCommandShortcutHint } from "@/components/commands/AppCommandShortcutHint";
 import { ComposerMentionIcon } from "@/components/promptbox/mentions/PromptMentionIcon";
@@ -54,6 +57,7 @@ import { ThreadStatusGlyph } from "@/components/thread/ThreadStatusGlyph";
 import { PluginUrlLink } from "@/components/plugin/PluginUrlLink";
 import { ExperimentalFileLink } from "@/components/plugin/ExperimentalFileLink";
 import { usePluginId } from "@/components/plugin/plugin-context";
+import { usePluginThreadExtensionState } from "@/components/plugin/usePluginThreadExtensionState";
 import { useQuestionFormHost } from "@bb/shared-ui/question-form-host";
 import { definePluginApp } from "./plugin-app-definition";
 import {
@@ -102,10 +106,7 @@ import {
   experimental_THREAD_INFO_ROW_GROUPS,
   experimental_THREAD_INFO_SECTION_GROUPS,
 } from "@get-bb/plugin-sdk";
-import {
-  ThreadActionsContextMenu,
-  ThreadActionsMenu,
-} from "@/components/thread/ThreadActionsMenu";
+import { experimental_resolveThreadStatus } from "@get-bb/plugin-sdk/internal/thread-status";
 import { useThreadActions } from "@/components/thread/ThreadActionsProvider";
 import {
   useThreadActionEntries,
@@ -216,8 +217,10 @@ export const pluginSdkAppImplementation = {
   experimental_useBranches: usePluginBranches,
   experimental_useCheckoutState: usePluginCheckoutState,
   experimental_SourceCode: LazyPluginSourceCode,
+  experimental_FilePreview: ExperimentalFilePreview,
   experimental_Diff: LazyPluginDiff,
   experimental_InfoSection: InfoSection,
+  experimental_CollapsibleStackCard: CollapsibleStackCard,
   experimental_ThreadRowMetadata: ThreadRowMetadata,
   experimental_DetailRow: DetailRow,
   experimental_ThreadContextCardRow: ThreadContextCardRow,
@@ -239,6 +242,7 @@ export const pluginSdkAppImplementation = {
   experimental_useSidebarThreadSplit: useSidebarThreadSplit,
   experimental_useExperiment: useExperiment,
   experimental_useThreadContextKind: useThreadContextKind,
+  experimental_useThreadExtensionState: usePluginThreadExtensionState,
   experimental_useSidebarNavigation: useSidebarNavigation,
   experimental_useSidebarNavigationSplit: useSidebarNavigationSplit,
   experimental_SidebarNavigationIcon: SidebarNavigationIcon,
@@ -250,6 +254,7 @@ export const pluginSdkAppImplementation = {
   useSidebarThreadShortcut,
   ThreadTitle: PluginThreadTitle,
   experimental_ThreadStatusGlyph: ThreadStatusGlyph,
+  experimental_resolveThreadStatus,
   useEnvironmentProviders,
   useSdk,
   experimental_useProviders: useProviders,

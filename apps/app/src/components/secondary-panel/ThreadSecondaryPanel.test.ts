@@ -1,15 +1,17 @@
 import { describe, expect, it } from "vitest";
+
 import {
   canRenderSidebarSplits,
   isSecondaryPanelLayoutTransition,
-  getSecondaryPanelChromeStackClassName,
   resolveCollapsedPanelTrafficLightReserveClassName,
 } from "./ThreadSecondaryPanel";
+
+
 import {
-  CHROME_ROW_HEIGHT_CLASS,
   MACOS_COLLAPSED_TOP_LEFT_RESERVE_CLASS,
   MACOS_TITLE_BAR_COLLAPSED_SIDEBAR_RESERVE_CLASS,
 } from "@/lib/bb-desktop";
+
 
 describe("secondary panel native browser bounds settling", () => {
   it("recognizes the flex transitions that move the panel back to its restored position", () => {
@@ -19,6 +21,7 @@ describe("secondary panel native browser bounds settling", () => {
   });
 });
 
+
 describe("compact terminal layout behavior", () => {
   it("does not mount split panes in the compact drawer", () => {
     expect(canRenderSidebarSplits(true, "thread-1")).toBe(false);
@@ -27,16 +30,7 @@ describe("compact terminal layout behavior", () => {
   });
 });
 
-describe("getSecondaryPanelChromeStackClassName", () => {
-  it("reserves the combined navigation and active Diff toolbar height", () => {
-    const className = getSecondaryPanelChromeStackClassName(true);
 
-    expect(className).toContain("flex");
-    expect(className).toContain("flex-col");
-    expect(className).toContain("shrink-0");
-    expect(className).not.toContain(CHROME_ROW_HEIGHT_CLASS);
-  });
-});
 
 describe("resolveCollapsedPanelTrafficLightReserveClassName", () => {
   const base = {

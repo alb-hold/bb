@@ -32,7 +32,6 @@ import {
   threadSearchSourceKindSchema,
   threadStatusSchema,
   threadTimelineActivePromptModeSchema,
-  threadTimelineGoalSchema,
   threadTimelineModelFallbackSchema,
   threadTimelinePendingTodosSchema,
   threadExecutionReportSchema,
@@ -1152,7 +1151,6 @@ export const threadTimelineQuerySchema = z
     segmentLimit: z.string().regex(/^\d+$/),
     beforeAnchorSeq: z.string().regex(/^(0|[1-9]\d*)$/),
     beforeAnchorId: z.string().min(1),
-    summaryOnly: z.enum(["true", "false"]),
     afterTag: z.string().min(1),
     deferContent: z.enum(["true", "false"]),
   })
@@ -1318,7 +1316,7 @@ const threadTimelineWindowFieldsShape = {
   activeWorkflows: z.array(timelineWorkflowWorkRowSchema),
   activeBackgroundCommands: z.array(timelineWorkflowWorkRowSchema),
   pendingTodos: threadTimelinePendingTodosSchema.nullable(),
-  goal: threadTimelineGoalSchema.nullable(),
+  extensionStates: z.record(z.string(), jsonValueSchema),
   providerCommands: z
     .array(providerCommandSchema.omit({ pluginId: true }))
     .nullable(),
@@ -1328,6 +1326,7 @@ const threadTimelineWindowFieldsShape = {
 };
 
 export { THREAD_TIMELINE_WINDOW_FIELD_KEYS } from "./thread-timeline-fields.js";
+
 
 const threadTimelineTagSchema = z.string().min(1);
 
@@ -1389,6 +1388,19 @@ export const threadTimelineReadResponseSchema = z.union([
 ]);
 export type ThreadTimelineReadResponse = z.infer<
   typeof threadTimelineReadResponseSchema
+>;
+
+export const threadHeadStateResponseSchema = z.object({
+  activePromptMode: threadTimelineWindowFieldsShape.activePromptMode,
+  contextWindowUsage: threadContextWindowUsageSchema.nullable(),
+  extensionStates: threadTimelineWindowFieldsShape.extensionStates,
+  modelFallback: threadTimelineWindowFieldsShape.modelFallback,
+  pendingTodos: threadTimelineWindowFieldsShape.pendingTodos,
+  providerCommands: threadTimelineWindowFieldsShape.providerCommands,
+  sessionOptions: threadTimelineWindowFieldsShape.sessionOptions,
+});
+export type ThreadHeadStateResponse = z.infer<
+  typeof threadHeadStateResponseSchema
 >;
 
 export const threadTimelineSignalSchema = z

@@ -4,6 +4,11 @@ import {
 } from "@bb/db";
 import { sweepProviderMachine } from "../machines/provider-orchestration.js";
 import { cancelProviderEnvironmentCreation } from "../environments/environment-engine.js";
+import {
+  PATH_CLAIM_SETTLE_TIMEOUT_MS,
+  settlingPathClaim,
+  watchPathClaimChanges,
+} from "../environments/path-admission.js";
 import { getPreparingEnvironment } from "@bb/db";
 import { getThread, type DbTransaction, type EnvironmentRow } from "@bb/db";
 import {
@@ -26,6 +31,7 @@ import {
   appendThreadProvisioningEventInTransaction,
   buildCwdBranchEntries,
   createClientTurnRequestId,
+  type TurnRequestRetryMarker,
 } from "./thread-events.js";
 import {
   hasLiveThreadStartInFlight,
@@ -64,6 +70,7 @@ interface RequestThreadProvisionArgs {
   input: PromptInput[];
   originPluginId: string | null;
   providerInput?: PromptInput[];
+  retryOf?: TurnRequestRetryMarker;
   startedOnBehalfOf: StartedOnBehalfOf | null;
   thread: Thread;
   titleProvided: boolean;
@@ -77,6 +84,7 @@ interface RequestThreadTargetReprovisionArgs {
   inputGroups?: PromptInput[][];
   initiator: ThreadTurnInitiator;
   originPluginId: string | null;
+  retryOf?: TurnRequestRetryMarker;
   senderThreadId: string | null;
   systemMessageKind?: SystemMessageKind;
   systemMessageSubject?: SystemMessageSubject | null;
@@ -304,6 +312,7 @@ export function requestThreadProvision(
       threadId: args.thread.id,
       environmentId: args.thread.environmentId,
       type: "client/turn/requested",
+      ...(args.retryOf !== undefined ? { retryOf: args.retryOf } : {}),
       input: args.input,
       execution: args.execution,
       initiator,
@@ -448,6 +457,7 @@ function appendReprovisionTurnRequest(
             threadId: args.thread.id,
             environmentId: args.environment.id,
             type: "client/turn/requested",
+            ...(args.retryOf !== undefined ? { retryOf: args.retryOf } : {}),
             input: args.input,
             ...(args.inputGroups !== undefined
               ? { inputGroups: args.inputGroups }
@@ -486,20 +496,32 @@ function appendReprovisionTurnRequest(
   return request;
 }
 
+const pathClaimDeadlines = new Map<
+  string,
+  { provisioningId: string; deadline: number }
+>();
+
+function pathClaimDeadline(threadId: string, provisioningId: string): number {
+  const existing = pathClaimDeadlines.get(threadId);
+  if (existing?.provisioningId === provisioningId) return existing.deadline;
+  const deadline = Date.now() + PATH_CLAIM_SETTLE_TIMEOUT_MS;
+  pathClaimDeadlines.set(threadId, { provisioningId, deadline });
+  return deadline;
+}
+
 async function advanceThreadProvisioningOnce(
   deps: ThreadProvisioningDeps,
   args: AdvanceThreadProvisioningArgs,
 ): Promise<void> {
   const thread = getThread(deps.db, args.threadId);
-  if (
-    !thread ||
-    thread.deletedAt !== null ||
-    hasLiveThreadStartInFlight(thread.id)
-  ) {
+  if (!thread || thread.deletedAt !== null) {
+    pathClaimDeadlines.delete(args.threadId);
     return;
   }
+  if (hasLiveThreadStartInFlight(thread.id)) return;
   if (thread.status !== "starting") {
     clearThreadProvisionSchedule(thread.id);
+    pathClaimDeadlines.delete(thread.id);
     return;
   }
   let context = getThreadProvisionContext(deps.db, thread.id);
@@ -515,6 +537,8 @@ async function advanceThreadProvisioningOnce(
     return;
   }
 
+  const claimChanges = watchPathClaimChanges(deps.hub);
+  let waitingOnClaim = false;
   try {
     const ready = await ensureThreadProvisionEnvironmentReady(deps, {
       context,
@@ -529,7 +553,22 @@ async function advanceThreadProvisioningOnce(
       environment: ready.environment,
       thread: ready.thread,
     });
+    pathClaimDeadlines.delete(thread.id);
   } catch (error) {
+    const claim = settlingPathClaim(error);
+    const deadline =
+      claim === null
+        ? 0
+        : pathClaimDeadline(thread.id, context.state.provisioningId);
+    if (claim !== null && Date.now() < deadline) {
+      waitingOnClaim = true;
+      void claimChanges.settled(claim, deadline).then(() => {
+        claimChanges.stop();
+        scheduleThreadProvisioningAdvance(deps, thread.id);
+      });
+      return;
+    }
+    pathClaimDeadlines.delete(thread.id);
     const failureThread = getCurrentProvisioningFailureThread(deps, {
       context,
       threadId: thread.id,
@@ -543,6 +582,8 @@ async function advanceThreadProvisioningOnce(
       environmentId: context.state.environmentId ?? failureThread.environmentId,
       detail,
     });
+  } finally {
+    if (!waitingOnClaim) claimChanges.stop();
   }
 }
 

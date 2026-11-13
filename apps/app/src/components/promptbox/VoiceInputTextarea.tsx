@@ -6,7 +6,7 @@ import { cn } from "@bb/shared-ui/lib/utils";
 import type { VoiceInputTextareaProps } from "@bb/shared-ui/voice-input-textarea";
 import { usePromptVoice } from "./usePromptVoice";
 import type { PromptBoxHandle } from "./ComposerBox";
-import { WaveformVisualizer } from "./WaveformVisualizer";
+import { WaveformVisualizer } from "@/lib/plugin-sdk-lazy-components";
 import { VoiceInputButton } from "./VoiceInputButton";
 import { FailedVoiceRecordings } from "./FailedVoiceRecordings";
 

@@ -1,5 +1,25 @@
 import { defineSplit } from "./define-split";
 
+export const WaveformVisualizer = defineSplit({
+  id: "voice-waveform",
+  tier: "intent",
+  load: () =>
+    import("@/components/promptbox/WaveformVisualizer").then(
+      (module) => module.WaveformVisualizer,
+    ),
+  loading: () => null,
+});
+
+export const VoiceRecordingBar = defineSplit({
+  id: "sdk-VoiceRecordingBar",
+  tier: "intent",
+  load: () =>
+    import("@/components/promptbox/VoiceRecordingBar").then(
+      (module) => module.VoiceRecordingBar,
+    ),
+  loading: () => null,
+});
+
 export const PluginBranchPicker = defineSplit({
   id: "sdk-PluginBranchPicker",
   tier: "intent",
@@ -48,6 +68,26 @@ export const PluginPermissionModePicker = defineSplit({
   load: () =>
     import("@/components/plugin/PluginPermissionModePicker").then(
       (module) => module.PluginPermissionModePicker,
+    ),
+  loading: () => null,
+});
+
+export const ExperimentalFilePreview = defineSplit({
+  id: "sdk-ExperimentalFilePreview",
+  tier: "intent",
+  load: () =>
+    import("@/components/plugin/ExperimentalFilePreview").then(
+      (module) => module.ExperimentalFilePreview,
+    ),
+  loading: () => null,
+});
+
+export const CollapsibleStackCard = defineSplit({
+  id: "sdk-CollapsibleStackCard",
+  tier: "intent",
+  load: () =>
+    import("@/components/promptbox/banner/CollapsibleStackCard").then(
+      (module) => module.CollapsibleStackCard,
     ),
   loading: () => null,
 });

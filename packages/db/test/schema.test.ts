@@ -1,5 +1,6 @@
 import { createMigratedConnection } from "../src/testing.js";
 import { eq } from "drizzle-orm";
+import { getTableConfig, SQLiteTable } from "drizzle-orm/sqlite-core";
 import { describe, expect, it } from "vitest";
 import {
   createEnvironmentId,
@@ -24,6 +25,7 @@ import {
   threadDynamicContextFileStates,
   threads,
 } from "../src/index.js";
+import * as schema from "../src/schema.js";
 
 interface ColumnNameRow {
   name: string;
@@ -39,7 +41,51 @@ interface TableColumnRow {
   name: string;
 }
 
+interface IndexNameRow {
+  name: string;
+}
+
+function declaredIndexNames(): string[] {
+  return Object.values(schema)
+    .filter((value) => value instanceof SQLiteTable)
+    .flatMap((table) =>
+      getTableConfig(table).indexes.map((index) => index.config.name),
+    )
+    .sort();
+}
+
 describe("db rebuild schema", () => {
+  it("declares every index a migrated database has", () => {
+    const db = createMigratedConnection();
+
+    const migratedIndexNames = db.$client
+      .prepare<[], IndexNameRow>(
+        "SELECT name FROM sqlite_master WHERE type = 'index' AND sql IS NOT NULL ORDER BY name",
+      )
+      .all()
+      .map((index) => index.name);
+
+    expect(migratedIndexNames).toEqual(
+      [
+        ...declaredIndexNames(),
+        "fork_detached_threads_host",
+        "fork_events_file_change_truncation_idx",
+        "fork_events_item_completion_lookup_idx",
+        "fork_native_parent_notices_parent_idx",
+        "fork_queued_message_dispatch_retries_due_idx",
+        "fork_terminal_pending_daemon_closes_host_idx",
+        "fork_thread_spend_daily_day_idx",
+        "fork_thread_turn_spend_thread_idx",
+        "fork_worker_event_keys_created_at",
+        "fork_workspace_collisions_retention",
+        "fork_workspace_file_observations_retention",
+        "fork_workspace_write_claims_thread",
+      ].sort(),
+    );
+
+    closeConnection(db);
+  });
+
   it("does not retain the derived host daemon heartbeat column", () => {
     const db = createMigratedConnection();
 

@@ -87,6 +87,7 @@ it("reports a worktree retained when a holder appears during quarantined removal
   });
 
   const removed = await fixture.harness.experimental_call("remove", {
+    ownedBranch: null,
     operationId: "remove-after-quarantine-holder",
     pathKey: "thr_unreadable",
     path: fixture.path,
@@ -118,6 +119,7 @@ it("reports the Linux non-root holder scan limit after removing a worktree", asy
   });
   try {
     const removed = await fixture.harness.experimental_call("remove", {
+      ownedBranch: null,
       operationId: "remove-non-root-holder-limit",
       pathKey: "thr_unreadable",
       path: fixture.path,
@@ -216,6 +218,7 @@ async function expectKept(
   holderPid: number,
 ) {
   const input = {
+    ownedBranch: null,
     operationId: "remove",
     pathKey: "thr_unreadable",
     path: fixture.path,
@@ -233,9 +236,7 @@ async function expectKept(
   const retried = await fixture.harness.experimental_call("remove", input);
   expect(retried).toMatchObject({
     status: "retained",
-    message: expect.stringContaining(
-      `process ${holderPid}`,
-    ),
+    message: expect.stringContaining(`process ${holderPid}`),
   });
   expect(isPidAlive(holderPid)).toBe(true);
 }
@@ -254,7 +255,7 @@ describe("a program whose /proc entries cannot be read", () => {
   });
 
   it.skipIf(!realUnreadableApplies)(
-      "retains it when a live non-dumpable same-user process has cwd inside the worktree",
+    "retains it when a live non-dumpable same-user process has cwd inside the worktree",
     async () => {
       const fixture = await createFixture();
       const holder = spawn("python3", ["-c", NON_DUMPABLE], {
@@ -278,6 +279,7 @@ describe("a program whose /proc entries cannot be read", () => {
     startOrdinaryProcess(fixture.dataDir);
 
     const removed = await fixture.harness.experimental_call("remove", {
+      ownedBranch: null,
       operationId: "remove",
       pathKey: "thr_unreadable",
       path: fixture.path,

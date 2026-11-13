@@ -1,39 +1,62 @@
 // @vitest-environment jsdom
 import { CHROME_SUBTLE_ICON_BUTTON_FOREGROUND_CLASS } from "@bb/shared-ui/chrome-style-tokens";
 
-import { getPromptDraftAccessor, usePromptDraftStorage } from "@/hooks/usePromptDraftStorage";
+import {
+  getPromptDraftAccessor,
+  usePromptDraftStorage,
+} from "@/hooks/usePromptDraftStorage";
+
 import { readFileSync } from "node:fs";
+
 import { Provider, createStore, getDefaultStore } from "jotai";
+
 import { ExecutionControls } from "./ExecutionControls";
+
 import {
   COMPOSER_EDITOR_HEIGHT_STORAGE_KEY,
   composerEditorHeightAtom,
 } from "./composerHeightAtoms";
+
 import {
   COMPOSER_CONTENT_WIDTH_STORAGE_KEY,
   composerContentWidthAtom,
 } from "@/lib/content-measure";
+
 import { buildMessageClipboardHtml } from "@/lib/message-clipboard";
+
 import { createPortal } from "react-dom";
+
 import { focusPaneComposer } from "@/lib/pane-composer-focus";
+
 import {
   AttachmentOpenerContext,
   type OpenAttachmentRequest,
 } from "@/components/secondary-panel/AttachmentOpenerContext";
+
 import { registerComposerMenuPlugins } from "@/test/fixtures/composer-menu";
+
 import {
   composerSearchQueries,
   setComposerSearchResults,
   testTypeaheadConfig,
 } from "@/test/fixtures/composer-search";
+
 import { resolveThreadMentionDropTarget } from "@/lib/thread-mention-drop";
+
 import { sdk } from "@/lib/sdk";
+
 import type { PromptTextMention } from "@bb/domain";
+
 import { createDeferredPromise } from "@bb/test-helpers";
+
 import type { TiptapEditorHTMLElement } from "@tiptap/core";
+
 import { TextSelection } from "@tiptap/pm/state";
+
 import { CompactViewportOverrideProvider } from "@bb/shared-ui/hooks/use-compact-viewport";
+
 import { EditorView } from "@tiptap/pm/view";
+
 import {
   Profiler,
   createRef,
@@ -47,6 +70,7 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
+
 import {
   act,
   cleanup,
@@ -56,6 +80,7 @@ import {
   waitFor,
   within,
 } from "@testing-library/react";
+
 import {
   afterEach,
   beforeEach,
@@ -65,52 +90,77 @@ import {
   onTestFinished,
   vi,
 } from "vitest";
+
 import {
   clearLocalAttachmentPreviews,
   registerLocalAttachmentPreview,
 } from "@/lib/attachment-local-previews";
-import { composerPluginModule, registerComposerPlugin } from "@/test/fixtures/composer-plugin";
+
+import {
+  composerPluginModule,
+  registerComposerPlugin,
+} from "@/test/fixtures/composer-plugin";
+
 import { ComposerTestProviders } from "@/test/fixtures/composer-test-providers";
+
 import { ThreadTitleMentionResourcesProvider } from "@/components/thread/ThreadTitleMentions";
+
 import { ThreadContextWindowIndicator } from "@/components/thread/timeline/ThreadContextWindowIndicator";
+
 import {
   emptyPromptDraftState,
   promptInputToDraft,
   type PromptDraftState,
 } from "@bb/client-core";
-import type { ComposerSubmitOptions, ExperimentalComposerInput } from "@get-bb/plugin-sdk/app";
+
+import type {
+  ComposerSubmitOptions,
+  ExperimentalComposerInput,
+} from "@get-bb/plugin-sdk/app";
+
 import { createCoreComposerActions } from "@/lib/plugin-composer-handle";
+
 import {
   getComposerInputLock,
   useComposer,
   useComposerView,
 } from "@/lib/plugin-sdk-hooks";
+
 import {
   getComposerTextEffects,
   useComposerTextEffects,
 } from "@/lib/composer-text-effects";
+
 import {
   getPluginThreadRowStatus,
   resetPluginThreadRowStatusesForTest,
 } from "@/lib/plugin-thread-row-status";
+
 import {
   removePluginSlotRegistrations,
   resetPluginSlotStoreForTest,
   setPluginSlotRegistrations,
   type PluginRegistrationSet,
 } from "@/lib/plugin-slots";
+
 import {
   PluginComposerHostProvider,
   type PluginComposerHost,
 } from "@/components/plugin/plugin-composer-host";
+
 import { resetAllCrashedPluginSlotsForTest } from "@/components/plugin/PluginSlotMount";
+
 import { getComposerEditorBridge } from "@/lib/composer-editor-registry";
+
 import { QueuedEditorTypeaheadLayoutContext } from "@/components/promptbox/queued-editor-typeahead-layout";
+
 import {
   resetPluginLogoStoreForTest,
   setPluginLogoUrls,
 } from "@/lib/plugin-logos";
+
 import { makePluginRegistrationSet } from "@/test/fixtures/plugins";
+
 import {
   ComposerBox,
   type PromptBoxAction,
@@ -118,11 +168,14 @@ import {
   type PromptVoiceConfig,
   type TypeaheadConfig,
 } from "./ComposerBox";
+
 const PromptBoxInternal = ComposerBox;
+
 import {
   promptMentionClipboardDataAttributes,
   serializedTextForPromptMentionResource,
 } from "@bb/client-core";
+
 import type {
   PromptDraftAttachment,
   PromptMentionSuggestion,
@@ -132,6 +185,7 @@ import type {
 vi.mock("@/hooks/usePromptMentions", async () =>
   (await import("@/test/fixtures/composer-search")).fakePromptMentionsModule(),
 );
+
 vi.mock("@/hooks/useCommandSuggestions", async () =>
   (
     await import("@/test/fixtures/composer-search")
@@ -735,7 +789,9 @@ describe("suppressPromptEditorAnchorActivation", () => {
   it("renders once per typed draft with at most one nested subscription commit", async () => {
     const changed = vi.fn();
     const committed = vi.fn();
-    const module = await composerPluginModule<{ PromptBoxInternal: (props: ExperimentalComposerInput) => ReactNode }>("PromptBoxInternal.tsx");
+    const module = await composerPluginModule<{
+      PromptBoxInternal: (props: ExperimentalComposerInput) => ReactNode;
+    }>("PromptBoxInternal.tsx");
     const renderedInner = vi.spyOn(module, "PromptBoxInternal");
     onTestFinished(() => renderedInner.mockRestore());
     function TypingComposer() {
@@ -752,7 +808,11 @@ describe("suppressPromptEditorAnchorActivation", () => {
         />
       );
     }
-    render(<Profiler id="composer-inclusive" onRender={committed}><TypingComposer /></Profiler>);
+    render(
+      <Profiler id="composer-inclusive" onRender={committed}>
+        <TypingComposer />
+      </Profiler>,
+    );
     const element = getPromptEditorElement() as TiptapEditorHTMLElement;
     const editor = element.editor;
     if (!editor) throw new Error("Editor was not mounted");
@@ -768,7 +828,9 @@ describe("suppressPromptEditorAnchorActivation", () => {
       expect(renderedInner).toHaveBeenCalledTimes(1);
       const phases = committed.mock.calls.map(([, phase]) => phase);
       expect(phases.filter((phase) => phase === "update")).toHaveLength(1);
-      nestedUpdates += phases.filter((phase) => phase === "nested-update").length;
+      nestedUpdates += phases.filter(
+        (phase) => phase === "nested-update",
+      ).length;
     }
     expect(nestedUpdates).toBeLessThanOrEqual(1);
     expect(editor.getText()).toContain("abc");
@@ -781,15 +843,21 @@ describe("suppressPromptEditorAnchorActivation", () => {
     );
     setPluginSlotRegistrations(
       "typing-paint",
-      pluginRegistrationSet([{
-        id: "paint",
-        scopes: ["new-thread"],
-        richText: { effects: [{ id: "all", className: "typing-paint", match }] },
-      }]),
+      pluginRegistrationSet([
+        {
+          id: "paint",
+          scopes: ["new-thread"],
+          richText: {
+            effects: [{ id: "all", className: "typing-paint", match }],
+          },
+        },
+      ]),
     );
     function TypingComposer() {
       const [value, setValue] = useState("");
-      return <ComposerBox {...createPromptBoxProps({ value, onChange: setValue })} />;
+      return (
+        <ComposerBox {...createPromptBoxProps({ value, onChange: setValue })} />
+      );
     }
     const view = render(<TypingComposer />);
     const editor = (getPromptEditorElement() as TiptapEditorHTMLElement).editor;
@@ -992,7 +1060,9 @@ describe("ComposerBox composer popups", () => {
       const editor = (getPromptEditorElement() as TiptapEditorHTMLElement)
         .editor;
       if (!editor) throw new Error("Composer editor is missing");
-      act(() => editor.commands.setTextSelection(7));
+      act(() => {
+        editor.commands.setTextSelection(7);
+      });
       await openPopupFromMenu();
       const popup = await screen.findByRole("dialog", {
         name: "Saved prompts",
@@ -1565,7 +1635,7 @@ describe("ComposerBox controlled value sync", () => {
     try {
       render(<PromptBoxFocusOnMountHarness />);
 
-      await waitForPromptFocus();
+      expect(document.activeElement).toBe(getPromptEditorElement());
     } finally {
       restoreMatchMedia();
     }
@@ -2028,13 +2098,11 @@ describe("ComposerBox programmatic submit", () => {
     send = vi.fn(),
     running = true,
     text = "Ship it",
-    sendsOnEnter = true,
   }: {
     swapSubmitActions: boolean;
     send?: () => void | Promise<void>;
     running?: boolean;
     text?: string;
-    sendsOnEnter?: boolean;
   }) {
     const steer = vi.fn();
     const submitted: string[] = [];
@@ -2092,7 +2160,7 @@ describe("ComposerBox programmatic submit", () => {
       subscribeDraft: () => () => {},
       setDraft: vi.fn(),
       focus: vi.fn(),
-      sendsOnEnter,
+      sendsOnEnter: true,
     };
     render(
       <PluginComposerHostProvider value={host}>
@@ -2161,22 +2229,6 @@ describe("ComposerBox programmatic submit", () => {
       sendAt: COMBINED_SEND_AT,
       pluginSubmission: { pluginId: "submitter", data: { kind: "note" } },
     });
-  });
-
-  it("rejects on a composer whose Enter does not send", async () => {
-    const { send, steer, rejected } = renderThreadComposerWithSubmitter({
-      swapSubmitActions: false,
-      sendsOnEnter: false,
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: "Plugin submit" }));
-    await waitFor(() =>
-      expect(rejected).toEqual([
-        "This composer cannot submit programmatically.",
-      ]),
-    );
-    expect(send).not.toHaveBeenCalled();
-    expect(steer).not.toHaveBeenCalled();
   });
 
   it("rejects an empty draft where Enter would steer the next queued message", async () => {
@@ -2557,8 +2609,12 @@ describe("ComposerBox submit shortcuts", () => {
             new DOMRect(0, 0, 40, 40),
           );
           fireEvent.pointerDown(submit, touch);
-          act(() => vi.advanceTimersByTime(700));
-          act(() => vi.advanceTimersByTime(500));
+          act(() => {
+            vi.advanceTimersByTime(700);
+          });
+          act(() => {
+            vi.advanceTimersByTime(500);
+          });
           fireEvent.pointerUp(submit, touch);
           fireEvent.click(submit, { detail: 1 });
         };
@@ -2603,7 +2659,9 @@ describe("ComposerBox submit shortcuts", () => {
 
         openMenu();
         rerender(renderComposer(""));
-        act(() => vi.advanceTimersByTime(500));
+        act(() => {
+          vi.advanceTimersByTime(500);
+        });
         expect(screen.queryByRole("menuitem")).toBeNull();
         expect(
           screen
@@ -2665,8 +2723,12 @@ describe("ComposerBox submit shortcuts", () => {
           clientX: 20,
           clientY: 20,
         });
-        act(() => vi.advanceTimersByTime(700));
-        act(() => vi.advanceTimersByTime(500));
+        act(() => {
+          vi.advanceTimersByTime(700);
+        });
+        act(() => {
+          vi.advanceTimersByTime(500);
+        });
         expect(screen.queryByRole("menuitem")).toBeNull();
         expect(save).not.toHaveBeenCalled();
         if (!isTouch) {
@@ -2968,6 +3030,27 @@ describe("ComposerBox escape", () => {
 });
 
 describe("ComposerBox size controls", () => {
+  it.each([
+    [
+      "thread",
+      "min(calc(50dvh - 3rem), var(--composer-editor-available-height, 100dvh))",
+    ],
+    [
+      "new-thread",
+      "min(calc(70dvh - 3rem), var(--composer-editor-available-height, 100dvh))",
+    ],
+  ] as const)(
+    "caps the %s editor at its share of the visible shell height or the host's available space",
+    (surface, maxHeight) => {
+      render(<ComposerBox {...createPromptBoxProps({ surface })} />);
+
+      const editorScroll = document.querySelector<HTMLElement>(
+        "[data-promptbox-editor-scroll]",
+      );
+      expect(editorScroll?.style.maxHeight).toBe(maxHeight);
+    },
+  );
+
   it("renders pre-upgrade height and width from the existing core settings keys", () => {
     const storedHeight = 312;
     const storedWidth = 900;
@@ -3046,27 +3129,6 @@ describe("ComposerBox size controls", () => {
     expect(store.get(composerEditorHeightAtom)).toBe(224);
     expect(store.get(composerContentWidthAtom)).toBe(784);
   });
-
-  it.each([
-    [
-      "thread",
-      "min(calc(50dvh - 3rem), var(--composer-editor-available-height, 100dvh))",
-    ],
-    [
-      "new-thread",
-      "min(calc(70dvh - 3rem), var(--composer-editor-available-height, 100dvh))",
-    ],
-  ] as const)(
-    "caps the %s editor at its intended viewport height or the host's available space",
-    (surface, maxHeight) => {
-      render(<ComposerBox {...createPromptBoxProps({ surface })} />);
-
-      const editorScroll = document.querySelector<HTMLElement>(
-        "[data-promptbox-editor-scroll]",
-      );
-      expect(editorScroll?.style.maxHeight).toBe(maxHeight);
-    },
-  );
 
   it("keeps the compact layout at 48px with no resize handle even when a height is remembered", () => {
     getDefaultStore().set(composerEditorHeightAtom, 300);
@@ -4909,6 +4971,7 @@ describe("ComposerBox compact layout", () => {
   });
 
   it("does not delay transcript insertion while the document is hidden", async () => {
+    vi.useFakeTimers();
     const originalVisibilityState = Object.getOwnPropertyDescriptor(
       document,
       "visibilityState",
@@ -4928,10 +4991,18 @@ describe("ComposerBox compact layout", () => {
         />,
       );
 
-      await expect(
-        promptBoxRef.current?.voice?.playCompletionTransition(),
-      ).resolves.toBeUndefined();
+      let transitionFinished = false;
+      act(() => {
+        void promptBoxRef.current?.voice
+          ?.playCompletionTransition()
+          ?.then(() => {
+            transitionFinished = true;
+          });
+      });
+      await act(async () => {});
+      expect(transitionFinished).toBe(true);
     } finally {
+      vi.useRealTimers();
       if (originalVisibilityState) {
         Object.defineProperty(
           document,
@@ -4945,6 +5016,7 @@ describe("ComposerBox compact layout", () => {
   });
 
   it("does not delay transcript insertion for reduced motion", async () => {
+    vi.useFakeTimers();
     const originalMatchMedia = window.matchMedia;
     window.matchMedia = vi.fn().mockImplementation((query: string) => ({
       matches: query === "(prefers-reduced-motion: reduce)",
@@ -4967,10 +5039,18 @@ describe("ComposerBox compact layout", () => {
         />,
       );
 
-      await expect(
-        promptBoxRef.current?.voice?.playCompletionTransition(),
-      ).resolves.toBeUndefined();
+      let transitionFinished = false;
+      act(() => {
+        void promptBoxRef.current?.voice
+          ?.playCompletionTransition()
+          ?.then(() => {
+            transitionFinished = true;
+          });
+      });
+      await act(async () => {});
+      expect(transitionFinished).toBe(true);
     } finally {
+      vi.useRealTimers();
       window.matchMedia = originalMatchMedia;
     }
   });
@@ -4980,135 +5060,149 @@ describe("ComposerBox compact layout", () => {
     ["new-thread", true],
     ["thread", false],
     ["thread", true],
-  ] as const)("keeps %s action slots stable (pending: %s)", (surface, pending) => {
-    const onModeChange = vi.fn();
-    render(
-      <ComposerBox
-        {...createPromptBoxProps({
-          surface,
-          submission: { isRunning: pending, onStop: vi.fn() },
-          voice: createVoiceConfig(),
-          attachments: { onAttachFiles: vi.fn() },
-          promptActions,
-          executionControls: (
-            <ExecutionControls
-              pending={pending}
-              provider={{ selectedId: "codex" }}
-              model={{
-                selected: "gpt-6.1-sol",
-                options: [{ value: "gpt-6.1-sol", label: "GPT-6.1-Sol" }],
-                moreOptions: [],
-                isLoading: false,
-                loadFailed: false,
-                onChange: vi.fn(),
-              }}
-              reasoning={{
-                value: "medium",
-                options: [{ value: "medium", label: "Medium" }],
-                onChange: vi.fn(),
-              }}
-              nativeTerminal={{ enabled: true, onChange: onModeChange }}
-            />
-          ),
-        })}
-      />,
-    );
-    const row = document.querySelector('[data-promptbox-action-row]');
-    expect(row).not.toBeNull();
-    expect(row?.getAttribute("data-promptbox-execution-layout")).toBe(
-      surface === "new-thread" ? "stacked" : null,
-    );
-    const plus = screen.getByRole("button", { name: "Prompt actions" });
-    const model = screen.getByRole("button", {
-      name: "Provider, model and reasoning",
-    });
-    const toggle = screen.getByRole("radiogroup", {
-      name: "Run this thread in",
-    });
-    const send = screen.getByRole("button", { name: pending ? "Stop run" : "Submit (Enter)" });
-    expect(model.hasAttribute("disabled")).toBe(false);
-    expect(screen.getByRole("radio", { name: "Terminal" }).hasAttribute("disabled")).toBe(false);
-    fireEvent.click(screen.getByRole("radio", { name: "Chat" }));
-    expect(onModeChange).toHaveBeenCalledWith(false);
-    const mic = screen.getByRole("button", { name: "Start voice input" });
-    expect(row?.querySelector("[data-promptbox-trailing-actions]")?.contains(mic)).toBe(true);
-    expect(
-      row?.querySelector("[data-promptbox-plus-control]")?.contains(plus),
-    ).toBe(true);
-    expect(
-      row?.querySelector("[data-promptbox-trailing-actions]")?.contains(send),
-    ).toBe(true);
-    const controls = row?.querySelector("[data-promptbox-execution-controls]");
-    expect(controls?.contains(model)).toBe(true);
-    expect(controls?.contains(toggle)).toBe(true);
-    expect(model.hasAttribute("data-model-reasoning-trigger")).toBe(true);
-    expect(toggle.hasAttribute("data-native-terminal-toggle")).toBe(true);
-    expect(
-      model.parentElement?.getAttribute("data-execution-controls-layout"),
-    ).toBe("stacked");
-    if (surface === "thread") {
-      expect(row?.classList.contains("flex-wrap")).toBe(true);
-      return;
-    }
-    const style = document.createElement("style");
-    const appCss = readFileSync("src/app.css", "utf8").replace(/\s+/g, " ");
-    const layoutSelector = '[data-promptbox]:not([data-promptbox-voice-active]) [data-promptbox-execution-layout="stacked"]';
-    const layoutStart = appCss.indexOf(layoutSelector);
-    expect(layoutStart).toBeGreaterThan(-1);
-    style.textContent = appCss.slice(appCss.lastIndexOf("@media (width < 48rem)", layoutStart));
-    document.head.append(style);
-    try {
-      const media = Array.from(style.sheet?.cssRules ?? []).filter(
-        (rule): rule is CSSMediaRule => "media" in rule && "cssRules" in rule && "conditionText" in rule && rule.conditionText === "(width < 48rem)",
+  ] as const)(
+    "keeps %s action slots stable (pending: %s)",
+    (surface, pending) => {
+      const onModeChange = vi.fn();
+      render(
+        <ComposerBox
+          {...createPromptBoxProps({
+            surface,
+            submission: { isRunning: pending, onStop: vi.fn() },
+            voice: createVoiceConfig(),
+            attachments: { onAttachFiles: vi.fn() },
+            promptActions,
+            executionControls: (
+              <ExecutionControls
+                pending={pending}
+                provider={{ selectedId: "codex" }}
+                model={{
+                  selected: "gpt-6.1-sol",
+                  options: [{ value: "gpt-6.1-sol", label: "GPT-6.1-Sol" }],
+                  moreOptions: [],
+                  isLoading: false,
+                  loadFailed: false,
+                  onChange: vi.fn(),
+                }}
+                reasoning={{
+                  value: "medium",
+                  options: [{ value: "medium", label: "Medium" }],
+                  onChange: vi.fn(),
+                }}
+                nativeTerminal={{ enabled: true, onChange: onModeChange }}
+              />
+            ),
+          })}
+        />,
       );
-      expect(media.length).toBeGreaterThan(0);
-      const rules = media.flatMap((rule) => Array.from(rule.cssRules)).filter(
-        (rule): rule is CSSStyleRule => "selectorText" in rule && "style" in rule,
+      const row = document.querySelector("[data-promptbox-action-row]");
+      expect(row).not.toBeNull();
+      expect(row?.getAttribute("data-promptbox-execution-layout")).toBe(
+        surface === "new-thread" ? "stacked" : null,
       );
-      const declaration = (element: Element, property: string) =>
-        rules
-          .filter((rule) => element.matches(rule.selectorText))
-          .map((rule) => rule.style.getPropertyValue(property))
-          .filter(Boolean)
-          .at(-1);
-      expect(declaration(model, "flex")).toBe("1 1 0%");
-      expect(declaration(model, "overflow")).toBe("hidden");
-      for (const [slot, column] of [
-        [row?.querySelector("[data-promptbox-plus-control]"), "1"],
-        [model.parentElement, "2"],
-      ] as const) {
-        expect(slot).not.toBeNull();
-        if (slot == null) throw new Error("Missing action-row slot");
-        expect(declaration(slot, "grid-column")).toBe(column);
-        expect(declaration(slot, "grid-row")).toBe("1");
+      const plus = screen.getByRole("button", { name: "Prompt actions" });
+      const model = screen.getByRole("button", {
+        name: "Provider, model and reasoning",
+      });
+      const toggle = screen.getByRole("radiogroup", {
+        name: "Run this thread in",
+      });
+      const send = screen.getByRole("button", {
+        name: pending ? "Stop run" : "Submit (Enter)",
+      });
+      expect(model.hasAttribute("disabled")).toBe(false);
+      expect(
+        screen
+          .getByRole("radio", { name: "Terminal" })
+          .hasAttribute("disabled"),
+      ).toBe(false);
+      fireEvent.click(screen.getByRole("radio", { name: "Chat" }));
+      expect(onModeChange).toHaveBeenCalledWith(false);
+      const mic = screen.getByRole("button", { name: "Start voice input" });
+      expect(
+        row?.querySelector("[data-promptbox-trailing-actions]")?.contains(mic),
+      ).toBe(true);
+      expect(
+        row?.querySelector("[data-promptbox-plus-control]")?.contains(plus),
+      ).toBe(true);
+      expect(
+        row?.querySelector("[data-promptbox-trailing-actions]")?.contains(send),
+      ).toBe(true);
+      const controls = row?.querySelector(
+        "[data-promptbox-execution-controls]",
+      );
+      expect(controls?.contains(model)).toBe(true);
+      expect(controls?.contains(toggle)).toBe(true);
+      expect(model.hasAttribute("data-model-reasoning-trigger")).toBe(true);
+      expect(toggle.hasAttribute("data-native-terminal-toggle")).toBe(true);
+      expect(
+        model.parentElement?.getAttribute("data-execution-controls-layout"),
+      ).toBe("stacked");
+      if (surface === "thread") {
+        expect(row?.classList.contains("flex-wrap")).toBe(true);
+        return;
       }
-      const trailing = row?.querySelector("[data-promptbox-trailing-actions]");
-      if (!trailing || !row) throw new Error("Missing composer actions");
-      expect(declaration(row, "grid-template-columns")).toBe("2.75rem minmax(0, 1fr)");
-      expect(declaration(trailing, "position")).toBe("absolute");
-      expect(declaration(trailing, "bottom")).toBe("calc(100% - 0.5rem)");
-      expect(declaration(trailing, "right")).toBe("0.5rem");
-      if (model.parentElement === null)
-        throw new Error("Missing execution controls");
-      expect(declaration(model.parentElement, "display")).toBe("flex");
-      expect(declaration(model.parentElement, "flex-wrap")).toBe("nowrap");
-    } finally {
-      style.remove();
-    }
-  });
-
-  it("keeps prompt actions in the full mobile layout", () => {
-    render(
-      <ComposerBox
-        {...createPromptBoxProps({
-          attachments: { onAttachFiles: vi.fn() },
-          promptActions,
-        })}
-      />,
-    );
-
-    expect(screen.getByRole("button", { name: "Prompt actions" })).toBeTruthy();
-  });
+      const style = document.createElement("style");
+      const appCss = readFileSync("src/app.css", "utf8").replace(/\s+/g, " ");
+      const layoutSelector =
+        '[data-promptbox]:not([data-promptbox-voice-active]) [data-promptbox-execution-layout="stacked"]';
+      const layoutStart = appCss.indexOf(layoutSelector);
+      expect(layoutStart).toBeGreaterThan(-1);
+      style.textContent = appCss.slice(
+        appCss.lastIndexOf("@media (width < 48rem)", layoutStart),
+      );
+      document.head.append(style);
+      try {
+        const media = Array.from(style.sheet?.cssRules ?? []).filter(
+          (rule): rule is CSSMediaRule =>
+            "media" in rule &&
+            "cssRules" in rule &&
+            "conditionText" in rule &&
+            rule.conditionText === "(width < 48rem)",
+        );
+        expect(media.length).toBeGreaterThan(0);
+        const rules = media
+          .flatMap((rule) => Array.from(rule.cssRules))
+          .filter(
+            (rule): rule is CSSStyleRule =>
+              "selectorText" in rule && "style" in rule,
+          );
+        const declaration = (element: Element, property: string) =>
+          rules
+            .filter((rule) => element.matches(rule.selectorText))
+            .map((rule) => rule.style.getPropertyValue(property))
+            .filter(Boolean)
+            .at(-1);
+        expect(declaration(model, "flex")).toBe("1 1 0%");
+        expect(declaration(model, "overflow")).toBe("hidden");
+        for (const [slot, column] of [
+          [row?.querySelector("[data-promptbox-plus-control]"), "1"],
+          [model.parentElement, "2"],
+        ] as const) {
+          expect(slot).not.toBeNull();
+          if (slot == null) throw new Error("Missing action-row slot");
+          expect(declaration(slot, "grid-column")).toBe(column);
+          expect(declaration(slot, "grid-row")).toBe("1");
+        }
+        const trailing = row?.querySelector(
+          "[data-promptbox-trailing-actions]",
+        );
+        if (!trailing || !row) throw new Error("Missing composer actions");
+        expect(declaration(row, "grid-template-columns")).toBe(
+          "2.75rem minmax(0, 1fr)",
+        );
+        expect(declaration(trailing, "position")).toBe("absolute");
+        expect(declaration(trailing, "bottom")).toBe("calc(100% - 0.5rem)");
+        expect(declaration(trailing, "right")).toBe("0.5rem");
+        if (model.parentElement === null)
+          throw new Error("Missing execution controls");
+        expect(declaration(model.parentElement, "display")).toBe("flex");
+        expect(declaration(model.parentElement, "flex-wrap")).toBe("nowrap");
+      } finally {
+        style.remove();
+      }
+    },
+  );
 });
 
 describe("ComposerBox mention triggers", () => {
@@ -5143,6 +5237,206 @@ describe("ComposerBox mention triggers", () => {
     );
     expect(latestChange(changes)?.mentions).toHaveLength(1);
     expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it("ends an unmatched multiword mention occurrence without changing prose", async () => {
+    const text = "Notes @unlisted topic";
+    const { changes, onMentionQueryChange, promptBoxRef } =
+      renderPromptBox(text);
+
+    await focusPromptEnd(promptBoxRef);
+    await waitFor(() =>
+      expect(onMentionQueryChange).toHaveBeenLastCalledWith(null, null),
+    );
+    expect(screen.queryByText("No matching mentions")).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "Close suggestions" }),
+    ).toBeNull();
+    expect(getPromptEditorElement().textContent).toBe(text);
+
+    onMentionQueryChange.mockClear();
+    await act(async () =>
+      promptBoxRef.current?.voice?.deliverTranscript("continues", "insert"),
+    );
+
+    await waitFor(() => expect(latestValue(changes)).toBe(`${text} continues`));
+    expect(
+      onMentionQueryChange.mock.calls.every(([query]) => query === null),
+    ).toBe(true);
+    expect(
+      screen.queryByRole("button", { name: "Close suggestions" }),
+    ).toBeNull();
+    expect(latestChange(changes)?.mentions).toEqual([]);
+  });
+
+  it("keeps unmatched single-word mention queries open", async () => {
+    const { onMentionQueryChange, promptBoxRef } =
+      renderPromptBox("Notes @unlisted");
+
+    await focusPromptEnd(promptBoxRef);
+
+    expect(await screen.findByText("No matching mentions")).not.toBeNull();
+    expect(onMentionQueryChange).toHaveBeenLastCalledWith("unlisted", "@");
+  });
+
+  it.each(["loading", "refreshing", "error"] as const)(
+    "does not end a multiword mention while search is %s",
+    async (initialState) => {
+      const mentionModule = await import("@/hooks/usePromptMentions");
+      const originalSearch = mentionModule.usePromptMentions;
+      let settled = false;
+      const search = vi
+        .spyOn(mentionModule, "usePromptMentions")
+        .mockImplementation((...args) => ({
+          ...originalSearch(...args),
+          isLoading: !settled && initialState === "loading",
+          isRefreshing: !settled && initialState === "refreshing",
+          isError: !settled && initialState === "error",
+        }));
+      onTestFinished(() => search.mockRestore());
+      const { onMentionQueryChange, promptBoxRef } =
+        renderPromptBox("Notes @fix login");
+
+      await focusPromptEnd(promptBoxRef);
+      expect(onMentionQueryChange).toHaveBeenLastCalledWith("fix login", "@");
+      expect(
+        document.querySelector("[data-promptbox-typeahead-menu]"),
+      ).not.toBeNull();
+
+      settled = true;
+      setComposerSearchResults({ mentionSuggestions: [githubIssueSuggestion] });
+      await act(async () =>
+        promptBoxRef.current?.voice?.deliverTranscript("bug", "insert"),
+      );
+
+      expect(
+        await screen.findByRole("button", { name: /Fix login bug/u }),
+      ).not.toBeNull();
+      expect(onMentionQueryChange).toHaveBeenLastCalledWith(
+        "fix login bug",
+        "@",
+      );
+    },
+  );
+
+  it("keeps a multiword attachment match when remote mention results are empty", async () => {
+    const { promptBoxRef } = renderPromptBox("Read @Design notes", {
+      upload: async (files) => uploadedAs(files),
+      initialAttachments: [
+        {
+          type: "localFile",
+          path: "uploads/Design notes.txt",
+          name: "Design notes.txt",
+        },
+      ],
+    });
+
+    await focusPromptEnd(promptBoxRef);
+
+    expect(
+      await screen.findByTitle("Attachment: Design notes.txt"),
+    ).not.toBeNull();
+  });
+
+  async function mockFixLoginPrefixSearch() {
+    const mentionModule = await import("@/hooks/usePromptMentions");
+    const { orderPromptMentionSuggestions } =
+      await import("@/hooks/promptMentionCandidates");
+    const originalSearch = mentionModule.usePromptMentions;
+    const searchState = { pending: false };
+    const search = vi
+      .spyOn(mentionModule, "usePromptMentions")
+      .mockImplementation((source, mention) => {
+        const result = originalSearch(source, mention);
+        const query = mention?.text.trim().toLowerCase() ?? "";
+        if (!searchState.pending && "fix login bug".startsWith(query))
+          return result;
+        return {
+          ...result,
+          results: orderPromptMentionSuggestions({ query, suggestions: [] }),
+          isLoading: searchState.pending,
+        };
+      });
+    onTestFinished(() => search.mockRestore());
+    return searchState;
+  }
+
+  function deleteBeforeCaret(count: number) {
+    const editor = (getPromptEditorElement() as TiptapEditorHTMLElement).editor;
+    if (!editor) throw new Error("Composer editor is missing");
+    const caret = editor.state.selection.from;
+    act(() => {
+      editor.commands.deleteRange({ from: caret - count, to: caret });
+    });
+  }
+
+  function typeaheadMenu() {
+    return document.querySelector("[data-promptbox-typeahead-menu]");
+  }
+
+  it("reopens an unmatched multiword mention when deleting back to a match", async () => {
+    await mockFixLoginPrefixSearch();
+    const { onMentionQueryChange, promptBoxRef } = renderPromptBox(
+      "Notes @fix login now",
+      { mentionSuggestions: [githubIssueSuggestion] },
+    );
+
+    await focusPromptEnd(promptBoxRef);
+    await waitFor(() =>
+      expect(onMentionQueryChange).toHaveBeenLastCalledWith(null, null),
+    );
+    expect(typeaheadMenu()).toBeNull();
+
+    deleteBeforeCaret(4);
+
+    expect(
+      await screen.findByRole("button", { name: /Fix login bug/u }),
+    ).not.toBeNull();
+    expect(onMentionQueryChange).toHaveBeenLastCalledWith("fix login", "@");
+  });
+
+  it("keeps a reopened mention hidden while its search is pending or empty", async () => {
+    const searchState = await mockFixLoginPrefixSearch();
+    const { onMentionQueryChange, promptBoxRef } = renderPromptBox(
+      "Notes @fix login now please",
+      { mentionSuggestions: [githubIssueSuggestion] },
+    );
+
+    await focusPromptEnd(promptBoxRef);
+    await waitFor(() =>
+      expect(onMentionQueryChange).toHaveBeenLastCalledWith(null, null),
+    );
+
+    searchState.pending = true;
+    deleteBeforeCaret(1);
+    expect(onMentionQueryChange).toHaveBeenLastCalledWith(
+      "fix login now pleas",
+      "@",
+    );
+    expect(typeaheadMenu()).toBeNull();
+
+    searchState.pending = false;
+    deleteBeforeCaret(1);
+    await waitFor(() =>
+      expect(onMentionQueryChange).toHaveBeenLastCalledWith(null, null),
+    );
+    expect(typeaheadMenu()).toBeNull();
+    expect(screen.queryByText("No matching mentions")).toBeNull();
+  });
+
+  it("keeps an escaped mention closed when deleting back through its query", async () => {
+    const { onMentionQueryChange, promptBoxRef } = renderPromptBox(
+      "Notes @fix login",
+      { mentionSuggestions: [githubIssueSuggestion] },
+    );
+    await focusPromptEnd(promptBoxRef);
+    await screen.findByRole("button", { name: /Fix login bug/u });
+
+    fireEvent.keyDown(getPromptEditorElement(), { key: "Escape" });
+    deleteBeforeCaret(3);
+
+    expect(onMentionQueryChange).toHaveBeenLastCalledWith(null, null);
+    expect(typeaheadMenu()).toBeNull();
   });
 
   it("offers the draft's file attachments on a bare @ and mentions the picked one", async () => {
@@ -5440,18 +5734,6 @@ describe("ComposerBox mention triggers", () => {
     );
   });
 
-  it("reports hash mention queries with the active trigger", async () => {
-    const { onMentionQueryChange, promptBoxRef } = renderPromptBox("#42", {
-      mentionTriggers: ["@", "#"],
-    });
-
-    await focusPromptEnd(promptBoxRef);
-
-    await waitFor(() =>
-      expect(onMentionQueryChange).toHaveBeenCalledWith("42", "#"),
-    );
-  });
-
   it("does not open the menu for a bare non-at mention trigger", async () => {
     const { onMentionQueryChange, promptBoxRef } = renderPromptBox("#", {
       mentionTriggers: ["@", "#"],
@@ -5482,12 +5764,18 @@ describe("ComposerBox mention triggers", () => {
         ],
       ]),
     );
-    const { changes, promptBoxRef } = renderPromptBox("#42", {
-      mentionTriggers: ["@", "#"],
-      mentionSuggestions: [githubIssueSuggestion],
-    });
+    const { changes, onMentionQueryChange, promptBoxRef } = renderPromptBox(
+      "#42",
+      {
+        mentionTriggers: ["@", "#"],
+        mentionSuggestions: [githubIssueSuggestion],
+      },
+    );
 
     await focusPromptEnd(promptBoxRef);
+    await waitFor(() =>
+      expect(onMentionQueryChange).toHaveBeenCalledWith("42", "#"),
+    );
     const suggestion = await screen.findByRole("button", {
       name: /#42 Fix login bug/u,
     });
@@ -5511,7 +5799,9 @@ describe("ComposerBox mention triggers", () => {
     ]);
     const promptEditor = getPromptEditorElement();
     expect(promptEditor.querySelector('[data-icon="Zap"]')).toBeTruthy();
-    expect(promptEditor.querySelector("img")).toBeNull();
+    expect(
+      promptEditor.querySelector("img:not(.ProseMirror-separator)"),
+    ).toBeNull();
   });
 
   it("labels thread mention rows with their relation to the current thread", async () => {

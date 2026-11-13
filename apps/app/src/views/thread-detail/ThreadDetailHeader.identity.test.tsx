@@ -84,6 +84,7 @@ describe("ThreadDetailHeader identity", () => {
     render(
       <ThreadDetailHeader
         actionsMenu={null}
+        environmentId={null}
         isSecondaryPanelOpen={false}
         onToggleSecondaryPanel={vi.fn()}
         thread={{

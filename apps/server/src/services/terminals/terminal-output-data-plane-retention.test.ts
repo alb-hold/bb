@@ -317,14 +317,14 @@ it.each(["redraw", "scrollback", "early-live", "overflow", "cli"])(
     if (kind === "early-live")
       replayYieldControl.intercept = async () => {
         replayYieldControl.intercept = null;
-        emitDuring();
+        void emitDuring();
       };
     const warmedAttach = TerminalBoundedReplay.prototype.forAttach;
     const warmedCompact = TerminalBoundedReplay.prototype.compact;
     const injectLive = () => {
       if (kind === "overflow") {
         for (let i = 0; i < 129; i += 1) {
-          fixture.terminalSessions.handleDaemonTerminalMessage({
+          void fixture.terminalSessions.handleDaemonTerminalMessage({
             hostId: fixture.host.id,
             sessionId: fixture.session.id,
             message: {
@@ -337,7 +337,7 @@ it.each(["redraw", "scrollback", "early-live", "overflow", "cli"])(
             },
           });
         }
-      } else if (kind !== "early-live") emitDuring();
+      } else if (kind !== "early-live") void emitDuring();
     };
     const compactSpy =
       typeof Reflect.get(TerminalBoundedReplay.prototype, "forAttach") ===
@@ -397,7 +397,7 @@ it.each(["redraw", "scrollback", "early-live", "overflow", "cli"])(
         outputAcks: false,
         resizeAcks: false,
       });
-      await replayWork;
+      await Promise.resolve(replayWork);
       const frames = socket.sent.map((frame) => JSON.parse(frame));
       if (kind === "cli") {
         expect(frames[0]).toMatchObject({
@@ -440,7 +440,7 @@ it.each(["redraw", "scrollback", "early-live", "overflow", "cli"])(
       process.stdout.write(
         `${JSON.stringify({ kind, rawBytes: chunks.reduce((n, chunk) => n + Buffer.byteLength(chunk.dataBase64, "base64"), 0), replayBytes: Buffer.byteLength(textFrom(output)), replayChunks: output.length })}\n`,
       );
-      fixture.terminalSessions.handleDaemonTerminalMessage({
+      void fixture.terminalSessions.handleDaemonTerminalMessage({
         hostId: fixture.host.id,
         sessionId: fixture.session.id,
         message: {
@@ -604,7 +604,7 @@ describe("terminal output retained from the data plane", () => {
     replayYieldControl.intercept = async () => {
       yields += 1;
       if (yields !== 1) return;
-      fixture.terminalSessions.handleDaemonTerminalMessage({
+      void fixture.terminalSessions.handleDaemonTerminalMessage({
         hostId: fixture.host.id,
         sessionId: fixture.session.id,
         message: {
@@ -765,7 +765,7 @@ describe("terminal output retained from the data plane", () => {
         seq: chunks.length,
         dataBase64: Buffer.from("line 10000\r\n").toString("base64"),
       };
-      fixture.terminalSessions.handleDaemonTerminalMessage({
+      void fixture.terminalSessions.handleDaemonTerminalMessage({
         hostId: fixture.host.id,
         sessionId: fixture.session.id,
         message: {
@@ -1387,7 +1387,7 @@ describe("terminal output retained from the data plane", () => {
       .spyOn(fixture.hub, "sendDaemonSessionMessage")
       .mockImplementation((sessionId, message) => {
         if (message.type === "terminal.open") {
-          fixture.terminalSessions.handleDaemonTerminalMessage({
+          void fixture.terminalSessions.handleDaemonTerminalMessage({
             hostId: fixture.host.id,
             sessionId,
             message: {
@@ -1721,7 +1721,7 @@ describe("terminal output retained from the data plane", () => {
           terminalId: string;
         };
         timeline.push(`frame-parsed:${Date.now()}`);
-        fixture.terminalSessions.handleDaemonTerminalMessage({
+        void fixture.terminalSessions.handleDaemonTerminalMessage({
           hostId: fixture.host.id,
           sessionId: fixture.session.id,
           message: {
@@ -2220,7 +2220,7 @@ describe("terminal output retained from the data plane", () => {
     await assertRemoved((fixture) => {
       const controller = new AbortController();
       controller.abort("failed");
-      fixture.terminalSessions.flushRetainedOutputBeforeClose(
+      void fixture.terminalSessions.flushRetainedOutputBeforeClose(
         controller.signal,
       );
     });
@@ -3636,7 +3636,7 @@ describe("terminal output retained from the data plane", () => {
     expect(firstRetainedText).not.toContain(
       createTerminalGridMarker({ cols: 80, rows: 24 }),
     );
-    fixture.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.host.id,
       sessionId: fixture.session.id,
       message: {
@@ -3793,7 +3793,7 @@ describe("terminal output retained from the data plane", () => {
       }
       return transaction(run);
     }) as typeof client.transaction);
-    fixture.terminalSessions.flushRetainedOutputBeforeClose();
+    void fixture.terminalSessions.flushRetainedOutputBeforeClose();
     vi.restoreAllMocks();
     expect(failures).toBe(0);
     expect(
@@ -3938,7 +3938,7 @@ describe("terminal output retained from the data plane", () => {
       });
     }
     await new Promise((resolve) => setTimeout(resolve, 50));
-    fixture.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.host.id,
       sessionId: fixture.session.id,
       message: {
@@ -4011,7 +4011,7 @@ describe("terminal output retained from the data plane", () => {
       }),
     ).toEqual(outputChunks());
 
-    fixture.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.host.id,
       sessionId: fixture.session.id,
       message: {
@@ -4061,7 +4061,7 @@ describe("terminal output retained from the data plane", () => {
         if (message.type !== "terminal.attach") {
           return;
         }
-        fixture.terminalSessions.handleDaemonTerminalMessage({
+        void fixture.terminalSessions.handleDaemonTerminalMessage({
           hostId: fixture.host.id,
           sessionId: fixture.session.id,
           message: {
@@ -4076,7 +4076,7 @@ describe("terminal output retained from the data plane", () => {
       },
     });
 
-    fixture.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.host.id,
       sessionId: fixture.session.id,
       message: {
@@ -4127,7 +4127,7 @@ describe("terminal output retained from the data plane", () => {
         if (message.type !== "terminal.attach") {
           return;
         }
-        fixture.terminalSessions.handleDaemonTerminalMessage({
+        void fixture.terminalSessions.handleDaemonTerminalMessage({
           hostId: fixture.host.id,
           sessionId: fixture.session.id,
           message: {
@@ -4160,7 +4160,7 @@ describe("terminal output retained from the data plane", () => {
       outputChunks(),
     );
 
-    fixture.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.host.id,
       sessionId: fixture.session.id,
       message: {

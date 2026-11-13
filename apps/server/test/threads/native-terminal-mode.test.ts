@@ -318,7 +318,7 @@ function acknowledgeOpen(
   fixture: Fixture,
   open: DaemonMessage<"terminal.open">,
 ): void {
-  fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+  void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
     hostId: fixture.hostId,
     sessionId: fixture.sessionId,
     message: {
@@ -386,7 +386,7 @@ describe("archiving an exited native Codex thread", () => {
       expect(getThread(fixture.harness.db, thread.id)?.status).toBe(
         outcome === "failed" ? "error" : "idle",
       );
-      fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
         hostId: fixture.hostId,
         sessionId: fixture.sessionId,
         message: {
@@ -517,7 +517,7 @@ describe("switching a chat thread to its native terminal", () => {
     const close = await waitForDaemonMessage(fixture, "terminal.close");
     expect(close.terminalId).toBe(open.terminalId);
     expect(isNativeTerminalThread(fixture.harness.db, thread.id)).toBe(true);
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.hostId,
       sessionId: fixture.sessionId,
       message: {
@@ -543,7 +543,7 @@ describe("switching a chat thread to its native terminal", () => {
       providerThreadId: SESSION_ID,
     });
     const { open } = await enterTerminal(fixture, thread.id);
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.hostId,
       sessionId: fixture.sessionId,
       message: {
@@ -569,7 +569,7 @@ describe("switching a chat thread to its native terminal", () => {
 
     const close = await waitForDaemonMessage(fixture, "terminal.close");
     expect(close.terminalId).toBe(reopen.terminalId);
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.hostId,
       sessionId: fixture.sessionId,
       message: {
@@ -748,7 +748,7 @@ describe("native terminal activity", () => {
       ).toBe(1_000_000);
       expect(receiptMetadataAt(1_000_000)).toHaveLength(1);
 
-      fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
         hostId: fixture.hostId,
         sessionId: fixture.sessionId,
         message: {
@@ -1673,7 +1673,7 @@ describe("native terminal activity", () => {
 
     const leaving = switchMode(fixture, thread.id, "chat");
     await waitForDaemonMessage(fixture, "terminal.close");
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.hostId,
       sessionId: fixture.sessionId,
       message: {
@@ -1848,7 +1848,7 @@ describe("native terminal questions", () => {
     });
     const leaving = switchMode(fixture, thread.id, "chat");
     await waitForDaemonMessage(fixture, "terminal.close");
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.hostId,
       sessionId: fixture.sessionId,
       message: {
@@ -1868,7 +1868,7 @@ describe("native terminal questions", () => {
     terminalId: string,
     closeReason: "daemon-disconnect" | "process-exit" | "user",
   ) {
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.hostId,
       sessionId: fixture.sessionId,
       message: {
@@ -1931,7 +1931,7 @@ describe("native terminal activity evidence across a swap", () => {
     threadId: string,
     previous: DaemonMessage<"terminal.open">,
   ) {
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.hostId,
       sessionId: fixture.sessionId,
       message: {
@@ -2383,7 +2383,7 @@ describe("native terminal activity evidence across a swap", () => {
   it("does not stamp once the terminal has exited", async () => {
     const fixture = await createFixture();
     const { credential, open, thread } = await startNativeThread(fixture);
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.hostId,
       sessionId: fixture.sessionId,
       message: {
@@ -2489,7 +2489,7 @@ describe("native terminal activity evidence across a swap", () => {
     const opens = countDaemonMessages(fixture, "terminal.open");
     let finish: Promise<unknown>;
     if (oldTerminal === "exited") {
-      fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
         hostId: fixture.hostId,
         sessionId: fixture.sessionId,
         message: {
@@ -2579,7 +2579,7 @@ describe("native terminal activity evidence across a swap", () => {
       return { authorization: `Bearer ${started.credential}`, thread };
     }
     if (credentialCase.startsWith("g")) {
-      fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
         hostId: fixture.hostId,
         sessionId: fixture.sessionId,
         message: {
@@ -2725,7 +2725,7 @@ describe("native terminal activity evidence across a swap", () => {
         )
       ).status,
     ).toBe(200);
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.hostId,
       sessionId: fixture.sessionId,
       message: {
@@ -2788,7 +2788,7 @@ describe("native terminal activity evidence across a swap", () => {
           })?.status,
         ).toBe("disconnected");
       } else {
-        fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+        void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
           hostId: fixture.hostId,
           sessionId: fixture.sessionId,
           message: {
@@ -2815,7 +2815,7 @@ describe("native terminal activity evidence across a swap", () => {
     const started = await startNativeThread(fixture);
     const { thread } = started;
     await report(fixture, thread.id, `Bearer ${started.credential}`);
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.hostId,
       sessionId: fixture.sessionId,
       message: {
@@ -2918,7 +2918,7 @@ describe("native terminal activity evidence across a swap", () => {
     const started = await startNativeThread(fixture);
     const { thread } = started;
     await report(fixture, thread.id, `Bearer ${started.credential}`);
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.hostId,
       sessionId: fixture.sessionId,
       message: {
@@ -3054,7 +3054,7 @@ describe("native terminal activity evidence across a swap", () => {
       const fixture = await createFixture();
       const started = await startNativeThread(fixture);
       const { thread } = started;
-      fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
         hostId: fixture.hostId,
         sessionId: fixture.sessionId,
         message: {
@@ -3121,7 +3121,7 @@ describe("native terminal activity evidence across a swap", () => {
       expect(claimed.status).toBe(409);
       expect(await readApiErrorCode(claimed)).toBe("native_session_claimed");
 
-      fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
         hostId: fixture.hostId,
         sessionId: fixture.sessionId,
         message: {
@@ -3783,7 +3783,7 @@ describe("a native activity report that does not confirm activity", () => {
     try {
       const thread = await answeredQuestion(fixture, clock);
       const oldCredential = terminalCredential(thread.open);
-      fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
         hostId: fixture.hostId,
         sessionId: fixture.sessionId,
         message: {
@@ -3840,7 +3840,7 @@ describe("a native activity report that does not confirm activity", () => {
       fixture: Fixture,
       thread: { id: string; open: DaemonMessage<"terminal.open"> },
     ) => {
-      fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
         hostId: fixture.hostId,
         sessionId: fixture.sessionId,
         message: {
@@ -4129,7 +4129,7 @@ describe("a native activity report that does not confirm activity", () => {
           closes: [first.id],
           state: "working",
         });
-        fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+        void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
           hostId: fixture.hostId,
           sessionId: fixture.sessionId,
           message: {
@@ -4191,7 +4191,7 @@ describe("a native activity report that does not confirm activity", () => {
         expect(refusals()).toBe(1);
         await send(fixture, thread.id, { questions: [old], state: "waiting" });
         expect(refusals()).toBe(1);
-        fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+        void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
           hostId: fixture.hostId,
           sessionId: fixture.sessionId,
           message: {
@@ -4227,7 +4227,7 @@ describe("a native activity report that does not confirm activity", () => {
     const clock = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
     try {
       const thread = await answeredQuestion(fixture, clock);
-      fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
         hostId: fixture.hostId,
         sessionId: fixture.sessionId,
         message: {
@@ -4347,7 +4347,7 @@ describe("a native holder that still reports with a credential bb has since repl
     });
     const { open } = await enterTerminal(fixture, thread.id);
     const stale = terminalCredential(open);
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.hostId,
       sessionId: fixture.sessionId,
       message: {

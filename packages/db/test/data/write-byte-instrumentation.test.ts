@@ -78,6 +78,7 @@ describe("database write byte instrumentation", () => {
     const thread = createThread(db, noopNotifier, {
       projectId: project.id,
       providerId: "claude-code",
+      status: "idle",
     });
     const output = "o".repeat(
       getCompletedEventOutputTruncationLimits("commandExecution")

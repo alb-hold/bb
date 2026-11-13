@@ -62,7 +62,6 @@ async function processDueAutomation(
     automation: AutomationRow;
     now: number;
     agentHostsAvailable: boolean;
-    serverUrl: string;
     resolveWorkingDirectory: ScriptWorkingDirectoryResolver;
     scriptRuns: ScriptRunScope;
   },
@@ -121,7 +120,6 @@ async function processDueAutomation(
       run: claim.run,
       execution,
       onFailure,
-      serverUrl: args.serverUrl,
       resolveWorkingDirectory: args.resolveWorkingDirectory,
       scriptRuns: args.scriptRuns,
     }).catch((error: unknown) => {
@@ -154,7 +152,6 @@ export async function sweepDueAutomations(
   db: Db,
   args: {
     pluginDataDir: string;
-    serverUrl: string;
     serverHostId: string | null;
     scriptRuns: ScriptRunScope;
     now?: number;
@@ -176,7 +173,6 @@ export async function sweepDueAutomations(
         automation,
         now,
         agentHostsAvailable,
-        serverUrl: args.serverUrl,
         resolveWorkingDirectory,
         scriptRuns: args.scriptRuns,
       });

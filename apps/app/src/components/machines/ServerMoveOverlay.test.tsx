@@ -9,28 +9,49 @@ import {
   waitFor,
   within,
 } from "@testing-library/react";
+
 import {
   SERVER_MOVE_STEP_IDS,
   type LastServerMove,
   type ServerMoveStepId,
 } from "@bb/domain";
+
 import { BbHttpError } from "@bb/sdk/browser";
+
 import type {
   ServerMoveStatus,
   ServerMoveStep,
   ServerMoveStepStatus,
 } from "@bb/server-contract";
+
 import { MemoryRouter, useLocation } from "react-router-dom";
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
 import { appToast } from "@/components/ui/app-toast";
+
 import { serverMoveStatusQueryKey } from "@/hooks/queries/query-keys";
+
 import { sdk } from "@/lib/sdk";
+
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
+
 import { ServerMoveOverlay } from "./ServerMoveOverlay";
-import { fetchServerMoveDestinationHealth } from "./server-move-destination";
+
+import { fetchServerHealth } from "@bb/host-daemon-contract";
+
+
+vi.mock("@bb/host-daemon-contract", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@bb/host-daemon-contract")>()),
+  fetchServerHealth: vi.fn(async () => null),
+}));
+
+
 import { startSplitPreloading } from "@/lib/split-prefetch";
 
+
 const viewImports = vi.hoisted(() => vi.fn());
+
 const viewDownload = vi.hoisted(() => {
   let finish = () => {};
   const completed = new Promise<void>((resolve) => {
@@ -38,6 +59,7 @@ const viewDownload = vi.hoisted(() => {
   });
   return { completed, finish };
 });
+
 vi.mock("./ServerMoveOverlayView", async (original) => {
   viewImports();
   const view = await original();
@@ -45,9 +67,7 @@ vi.mock("./ServerMoveOverlayView", async (original) => {
   return view;
 });
 
-vi.mock("./server-move-destination", () => ({
-  fetchServerMoveDestinationHealth: vi.fn(async () => null),
-}));
+
 
 vi.mock("@/lib/sdk", () => ({
   sdk: {
@@ -58,9 +78,11 @@ vi.mock("@/lib/sdk", () => ({
   },
 }));
 
+
 const realtime = vi.hoisted(() => ({
   state: "connected" as "connecting" | "connected" | "reconnecting",
 }));
+
 
 vi.mock("@/lib/ws", () => ({
   wsManager: {
@@ -71,9 +93,11 @@ vi.mock("@/lib/ws", () => ({
   },
 }));
 
+
 vi.mock("@/components/ui/app-toast", () => ({
   appToast: { success: vi.fn(), error: vi.fn() },
 }));
+
 
 function steps(
   statuses: Partial<Record<ServerMoveStepId, ServerMoveStepStatus>> = {},
@@ -85,6 +109,7 @@ function steps(
   }));
 }
 
+
 const ALL_DONE = steps({
   "stop-work": "done",
   "update-target": "done",
@@ -94,6 +119,7 @@ const ALL_DONE = steps({
   "verify-address": "skipped",
   switch: "done",
 });
+
 
 function move(overrides: Partial<ServerMoveStatus> = {}): ServerMoveStatus {
   return {
@@ -113,6 +139,7 @@ function move(overrides: Partial<ServerMoveStatus> = {}): ServerMoveStatus {
   };
 }
 
+
 function lastMove(overrides: Partial<LastServerMove> = {}): LastServerMove {
   return {
     moveId: "move_1",
@@ -126,12 +153,14 @@ function lastMove(overrides: Partial<LastServerMove> = {}): LastServerMove {
   };
 }
 
+
 function LocationDisplay() {
   const location = useLocation();
   return (
     <output data-testid="location">{`${location.pathname}${location.search}${location.hash}`}</output>
   );
 }
+
 
 function renderOverlay(path = "/") {
   const navigateTo = vi.fn();
@@ -146,6 +175,7 @@ function renderOverlay(path = "/") {
   return { navigateTo, queryClient };
 }
 
+
 function stepStatus(container: HTMLElement, label: string): string | null {
   return (
     within(container)
@@ -155,14 +185,17 @@ function stepStatus(container: HTMLElement, label: string): string | null {
   );
 }
 
+
 beforeEach(() => {
   realtime.state = "connected";
 });
+
 
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
 });
+
 
 describe("ServerMoveOverlay", () => {
   it("renders nothing when no move is running", async () => {
@@ -185,6 +218,7 @@ describe("ServerMoveOverlay", () => {
     });
     expect(viewImports).toHaveBeenCalledOnce();
   });
+
 
   it("blocks the app with the step list and offers Cancel only while the move is cancellable", async () => {
     const cancelled = move({
@@ -247,6 +281,7 @@ describe("ServerMoveOverlay", () => {
       expect(screen.queryByRole("dialog")).toBeNull();
     });
   });
+
 
   it("names the recovery exits and asks before abandoning a move that needs recovery", async () => {
     const recovering = move({
@@ -349,6 +384,7 @@ describe("ServerMoveOverlay", () => {
     ).toBeDefined();
   });
 
+
   it("hides Cancel once the move is switching machines over", async () => {
     vi.mocked(sdk.experimental_server.moveStatus).mockResolvedValue({
       move: move({
@@ -375,6 +411,7 @@ describe("ServerMoveOverlay", () => {
     expect(within(overlay).queryByRole("button")).toBeNull();
   });
 
+
   it("waits for a direct-address move's new server to be ready, then opens it at the current path", async () => {
     vi.mocked(sdk.experimental_server.moveStatus)
       .mockResolvedValueOnce({
@@ -390,10 +427,20 @@ describe("ServerMoveOverlay", () => {
         lastMove: null,
       })
       .mockRejectedValue(new TypeError("Failed to fetch"));
-    vi.mocked(fetchServerMoveDestinationHealth)
+    vi.mocked(fetchServerHealth)
       .mockResolvedValueOnce(null)
-      .mockResolvedValueOnce({ moveId: "move_1", state: "pending" })
-      .mockResolvedValue({ moveId: "move_1", state: "ready" });
+      .mockResolvedValueOnce({
+        ok: true,
+        serverMove: { moveId: "move_1", state: "pending" },
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        serverMove: { moveId: "move_1", state: "activating" },
+      })
+      .mockResolvedValue({
+        ok: true,
+        serverMove: { moveId: "move_1", state: "ready" },
+      });
     const { navigateTo } = renderOverlay(
       "/projects/proj_1/threads/thr_1?panel=diff#turn-3",
     );
@@ -411,12 +458,16 @@ describe("ServerMoveOverlay", () => {
       expect(navigateTo).toHaveBeenCalledWith(destination);
     });
     expect(
-      vi.mocked(fetchServerMoveDestinationHealth).mock.calls.length,
-    ).toBeGreaterThanOrEqual(3);
-    expect(vi.mocked(fetchServerMoveDestinationHealth)).toHaveBeenCalledWith(
-      "https://desk.example.com/health",
-      expect.any(AbortSignal),
-    );
+      vi.mocked(fetchServerHealth).mock.calls.length,
+    ).toBeGreaterThanOrEqual(4);
+    expect(vi.mocked(fetchServerHealth)).toHaveBeenCalledWith({
+      url: "https://desk.example.com/health",
+      init: {
+        cache: "no-store",
+        credentials: "omit",
+        signal: expect.any(AbortSignal),
+      },
+    });
     const overlay = screen.getByRole("dialog", {
       name: "Server moved to desk",
     });
@@ -427,6 +478,7 @@ describe("ServerMoveOverlay", () => {
     ).toBe(destination);
     expect(navigateTo).toHaveBeenCalledTimes(1);
   });
+
 
   it("waits for a bb connect move to answer on the same address, then dismisses with a toast", async () => {
     vi.mocked(sdk.experimental_server.moveStatus)
@@ -461,6 +513,7 @@ describe("ServerMoveOverlay", () => {
     expect(navigateTo).not.toHaveBeenCalled();
     expect(vi.mocked(appToast.success)).toHaveBeenCalledTimes(1);
   });
+
 
   it("shows why a followed move failed and stays dismissed after Close", async () => {
     vi.mocked(sdk.experimental_server.moveStatus)
@@ -511,6 +564,7 @@ describe("ServerMoveOverlay", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
+
   it("does not block the app for a failure that finished before this app was open", async () => {
     vi.mocked(sdk.experimental_server.moveStatus).mockResolvedValue({
       move: move({
@@ -531,6 +585,7 @@ describe("ServerMoveOverlay", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
+
   it("explains a move the server forgot by restarting", async () => {
     vi.mocked(sdk.experimental_server.moveStatus)
       .mockResolvedValueOnce({ move: move(), lastMove: null })
@@ -548,6 +603,7 @@ describe("ServerMoveOverlay", () => {
       expect(screen.queryByRole("dialog")).toBeNull();
     });
   });
+
 
   it("follows the old address's server_moved answer to the new server", async () => {
     vi.mocked(sdk.experimental_server.moveStatus)
@@ -584,6 +640,7 @@ describe("ServerMoveOverlay", () => {
       );
     });
   });
+
 
   it("announces the arrival on the new origin and drops the move id from the address", async () => {
     vi.mocked(sdk.experimental_server.moveStatus).mockResolvedValue({

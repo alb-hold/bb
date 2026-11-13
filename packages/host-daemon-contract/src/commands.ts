@@ -34,6 +34,7 @@ import {
   BRANCH_LIST_QUERY_MAX_LENGTH,
   gitBranchNameSchema,
   gitBranchOptionsSchema,
+  gitCheckoutRefSchema,
   gitSourceInspectionSchema,
 } from "@bb/domain";
 import { z } from "zod";
@@ -926,6 +927,17 @@ const hostInspectGitSourceCommandSchema = z
   })
   .strict();
 
+const hostInspectGitCheckoutCommandSchema = z
+  .object({
+    type: z.literal("host.inspect_git_checkout"),
+    path: z.string().min(1),
+  })
+  .strict();
+
+const gitCheckoutInspectionSchema = z.object({
+  checkout: gitCheckoutRefSchema,
+});
+
 const hostListBranchOptionsCommandSchema = z
   .object({
     type: z.literal("host.list_branch_options"),
@@ -1169,6 +1181,10 @@ const threadStartResultSchema = z.object({
   providerThreadId: z.string().min(1),
 });
 export const COMPETING_TURN_ERROR_CODE = "competing_turn" as const;
+export const STALE_TURN_ERROR_CODE = "stale_turn" as const;
+export const STEER_UNCONFIRMED_ERROR_CODE = "steer_unconfirmed" as const;
+export const TURN_START_UNCONFIRMED_ERROR_CODE =
+  "turn_start_unconfirmed" as const;
 
 const threadStopResultSchema = z
   .object({
@@ -1257,6 +1273,7 @@ export const discoverReposResultSchema = z
   .object({
     repos: z.array(discoveredRepoSchema),
     truncated: z.boolean(),
+    unreadableCount: z.number().int().nonnegative(),
   })
   .strict();
 export type DiscoverReposResult = z.infer<typeof discoverReposResultSchema>;
@@ -1813,6 +1830,15 @@ export const hostDaemonCommandRegistry = {
     type: "host.inspect_git_source",
     schema: hostInspectGitSourceCommandSchema,
     resultSchema: gitSourceInspectionSchema,
+    transport: "onlineRpc",
+    retryable: true,
+    flushEventsBeforeResult: false,
+    envLane: null,
+  }),
+  "host.inspect_git_checkout": defineHostDaemonCommandDescriptor({
+    type: "host.inspect_git_checkout",
+    schema: hostInspectGitCheckoutCommandSchema,
+    resultSchema: gitCheckoutInspectionSchema,
     transport: "onlineRpc",
     retryable: true,
     flushEventsBeforeResult: false,

@@ -60,6 +60,7 @@ function openRestartedSession(
       dataDir: "/tmp/host-daemon-adopted-threads",
       localApiPort: null,
       protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
+      openThreadWork: [],
       activeThreads: [],
       ...extra,
     }),
@@ -308,9 +309,7 @@ describe("a restarted daemon that adopted threads", () => {
 
       vi.useFakeTimers({ now: Date.now() });
       handleDaemonSocketClosed(harness.deps, { sessionId: session.id });
-      await vi.advanceTimersByTimeAsync(
-        HOST_RECONNECT_GRACE_MS + 1,
-      );
+      await vi.advanceTimersByTimeAsync(HOST_RECONNECT_GRACE_MS + 1);
       expect(settled()).toBe(false);
 
       await vi.advanceTimersByTimeAsync(DETACHED_THREAD_ADOPTION_WINDOW_MS);
@@ -359,9 +358,7 @@ describe("a restarted daemon that adopted threads", () => {
 
       vi.useFakeTimers({ now: Date.now() });
       handleDaemonSocketClosed(harness.deps, { sessionId: session.id });
-      await vi.advanceTimersByTimeAsync(
-        HOST_RECONNECT_GRACE_MS + 1,
-      );
+      await vi.advanceTimersByTimeAsync(HOST_RECONNECT_GRACE_MS + 1);
 
       await vi.advanceTimersByTimeAsync(DETACHED_THREAD_ADOPTION_WINDOW_MS);
       expect(getThread(harness.deps.db, other.id)?.status).toBe("active");

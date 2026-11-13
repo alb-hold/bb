@@ -133,6 +133,7 @@ function interruptAdoptedThreadWithoutTurn(
     includeStopping: false,
     onlyThreadIds: new Set([args.threadId]),
     reason: "host-daemon-restarted",
+    resumingThreadIds: new Set(),
   });
 }
 
@@ -195,7 +196,9 @@ export function closeItemsOrphanedByAdoption(
   }
 }
 
-const storedItemDataSchema = z.object({ item: z.record(z.string(), z.unknown()) });
+const storedItemDataSchema = z.object({
+  item: z.record(z.string(), z.unknown()),
+});
 
 function storedItem(data: string): Record<string, unknown> {
   try {

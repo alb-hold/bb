@@ -34,7 +34,8 @@ bb pull-request merge <environment-id> --expected-head-oid <oid> --expected-host
   `expectedRepository`, `expectedNumber`, and `expectedBaseRef`. Every identity
   value is required and compared with the fresh host read before `gh` starts.
 - bb never wakes a machine for PR work. When the environment's machine is
-  suspended or offline, `show` reports `unavailable` and the actions fail
+  suspended or offline, `show` reports the last pull request bb saw for
+  the environment, or `unavailable` when it has none, and the actions fail
   with a message naming the machine.
 - `gh` must be installed and logged in on that machine.
 

@@ -14,7 +14,7 @@ vi.mock("@bb/shared-ui/icon", () => ({
 afterEach(cleanup);
 
 describe("VoiceRecordingBar", () => {
-  it("offers separate add-to-draft and send actions", () => {
+  it("offers separate add-to-draft and send actions", async () => {
     const onConfirm = vi.fn();
     const onSend = vi.fn();
     render(
@@ -33,7 +33,7 @@ describe("VoiceRecordingBar", () => {
     const cancel = screen.getByRole("button", { name: "Cancel recording" });
     const stop = screen.getByRole("button", { name: "Stop and add to draft" });
     const send = screen.getByRole("button", { name: "Send voice input" });
-    expect(screen.getByTestId("waveform")).toBeTruthy();
+    expect(await screen.findByTestId("waveform")).toBeTruthy();
     expect(
       cancel.compareDocumentPosition(stop) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();

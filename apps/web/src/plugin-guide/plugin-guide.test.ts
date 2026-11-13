@@ -29,7 +29,9 @@ function guideSource(): string {
 
 function definedTokens(namespace: string): Set<string> {
   const pattern = new RegExp(`--${namespace}-([a-z0-9-]+):`, "gu");
-  return new Set(Array.from(webTheme.matchAll(pattern), (match) => match[1] ?? ""));
+  return new Set(
+    Array.from(webTheme.matchAll(pattern), (match) => match[1] ?? ""),
+  );
 }
 
 function utilitySuffixes(source: string, prefixes: string): Set<string> {
@@ -37,7 +39,9 @@ function utilitySuffixes(source: string, prefixes: string): Set<string> {
     `(?<![\\w-])(?:[a-z0-9@&_\\[\\]-]+:)*(?:${prefixes})-([a-z0-9][a-z0-9-]*)(?:/[\\d.]+)?(?![\\w-])`,
     "gu",
   );
-  return new Set(Array.from(source.matchAll(pattern), (match) => match[1] ?? ""));
+  return new Set(
+    Array.from(source.matchAll(pattern), (match) => match[1] ?? ""),
+  );
 }
 
 describe("Plugin Guide on the web", () => {
@@ -77,7 +81,7 @@ describe("Plugin Guide on the web", () => {
 
   it("links every Used by name to exactly one plugin", () => {
     const names = readdirSync(pluginsDir, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory())
+      .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
       .map((entry) => new URL(`${entry.name}/package.json`, pluginsDir))
       .filter((manifestUrl) => existsSync(manifestUrl))
       .flatMap((manifestUrl) => {
@@ -86,7 +90,9 @@ describe("Plugin Guide on the web", () => {
         };
         return manifest.bb?.name ? [manifest.bb.name] : [];
       });
-    const duplicates = names.filter((name, index) => names.indexOf(name) !== index);
+    const duplicates = names.filter(
+      (name, index) => names.indexOf(name) !== index,
+    );
     expect(duplicates).toEqual([]);
 
     const unlinked = SURFACE_GROUPS.flatMap((group) => group.surfaces)

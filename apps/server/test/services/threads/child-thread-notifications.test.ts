@@ -26,7 +26,7 @@ async function nativeChildFixture(harness: TestAppHarness, policy: "auto" | "off
     if (thread.id === parent.id) continue;
     const terminal = createTerminalSession(harness.db, { cols: 80, rows: 24, environmentId: environment.id, hostId: host.id, daemonSessionId: session.id, initialCwd: "/tmp", status: "running", threadId: thread.id, title: "Native" });
     setNativeTerminalThreadTerminal(harness.db, { threadId: thread.id, terminalSessionId: terminal.id });
-    harness.deps.terminalSessions.handleDaemonTerminalMessage({ hostId: host.id, sessionId: session.id, message: { type: "terminal.output", terminalId: terminal.id, chunk: { seq: 0, dataBase64: Buffer.from("\u001b[2J").toString("base64") } } });
+    void harness.deps.terminalSessions.handleDaemonTerminalMessage({ hostId: host.id, sessionId: session.id, message: { type: "terminal.output", terminalId: terminal.id, chunk: { seq: 0, dataBase64: Buffer.from("\u001b[2J").toString("base64") } } });
     await harness.deps.terminalSessions.readTerminalScreen({ terminalId: terminal.id, query: {} });
   }
   return { parent, child, host, session };
@@ -84,7 +84,7 @@ describe("native child turn notifications", () => {
       const terminalId = getNativeTerminalThread(harness.db, child.id)?.terminalSessionId;
       if (!terminalId) throw new Error("Missing child terminal");
       recordNativeTerminalActivity(harness.deps, { threadId: child.id, confirms: true, state: "working" });
-      harness.deps.terminalSessions.handleDaemonTerminalMessage({ hostId: host.id, sessionId: session.id, message: { type: "terminal.output", terminalId, chunk: { seq: 1, dataBase64: Buffer.from("Old output\r\n1\r\n2\r\n3\r\n4\r\n5\r\nNeed target selection\r\n").toString("base64") } } });
+      void harness.deps.terminalSessions.handleDaemonTerminalMessage({ hostId: host.id, sessionId: session.id, message: { type: "terminal.output", terminalId, chunk: { seq: 1, dataBase64: Buffer.from("Old output\r\n1\r\n2\r\n3\r\n4\r\n5\r\nNeed target selection\r\n").toString("base64") } } });
       await harness.deps.terminalSessions.readTerminalScreen({ terminalId, query: {} });
       vi.useFakeTimers();
       recordNativeTerminalActivity(harness.deps, { threadId: child.id, confirms: true, state: "idle" });
@@ -105,12 +105,12 @@ describe("native child turn notifications", () => {
       vi.useFakeTimers();
       recordNativeTerminalActivity(harness.deps, { threadId: child.id, confirms: true, state: "working" });
       const exit = () => harness.deps.terminalSessions.handleDaemonTerminalMessage({ hostId: host.id, sessionId: session.id, message: { type: "terminal.exited", terminalId, exitCode: 0, closeReason: "process-exit" } });
-      exit();
+      void exit();
       await vi.advanceTimersByTimeAsync(3_100);
       expect(listNativeParentNotices(harness.db, parent.id)).toHaveLength(1);
       expect(listNativeParentNotices(harness.db, parent.id)[0]?.text).toContain("ALPHA\nBRAVO\nCHARLIE");
       expect(listNativeParentNotices(harness.db, parent.id)[0]?.text).not.toContain("Resume");
-      exit();
+      void exit();
       await vi.advanceTimersByTimeAsync(3_100);
       expect(listNativeParentNotices(harness.db, parent.id)).toHaveLength(1);
       expect(getThread(harness.db, child.id)?.status).toBe("idle");

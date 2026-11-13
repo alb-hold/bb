@@ -149,6 +149,7 @@ describe("Account Pooler after bb's real delete route", () => {
       const deliveries: Promise<{ errors: unknown[] }>[] = [];
       const ignore = () => {};
       setPluginThreadEventEmitter({
+        emitThreadRead: () => undefined,
         emitThreadEvents: ignore,
         emitTerminalInput: ignore,
         emitHostDeleted: ignore,
