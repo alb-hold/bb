@@ -9,6 +9,7 @@ import {
   type HostDaemonServerWsMessage,
 } from "@bb/host-daemon-contract";
 import {
+  apiErrorSchema,
   nativeTerminalLaunchSpecSchema,
   sendMessageResponseSchema,
   threadResponseSchema,
@@ -424,6 +425,17 @@ describe("the concurrency cap on native terminal threads", () => {
     await settle();
     expect(terminalOpens(fixture.socket)).toEqual([]);
     expect(getThread(fixture.harness.db, created.id)?.status).toBe("pending");
+
+    const tellWhileHeld = await postJson(
+      fixture,
+      `/threads/${created.id}/send`,
+      { input: textInput("also check the lint"), mode: "auto" },
+    );
+    expect(tellWhileHeld.status).toBe(409);
+    expect(apiErrorSchema.parse(await readJson(tellWhileHeld)).code).toBe(
+      "native_terminal_not_running",
+    );
+    expect(queuedRows(fixture, created.id)).toHaveLength(1);
 
     decision = { action: "proceed" };
     await runQueuedMessageDispatch(fixture.harness.deps, {

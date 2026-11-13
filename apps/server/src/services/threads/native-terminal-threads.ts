@@ -1335,7 +1335,7 @@ export function sendNativeTerminalMessage(
   return sending;
 }
 
-function nativeTerminalNotRunning(): ApiError {
+export function nativeTerminalNotRunning(): ApiError {
   return new ApiError(
     409,
     "native_terminal_not_running",

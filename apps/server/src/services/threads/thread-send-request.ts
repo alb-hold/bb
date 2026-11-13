@@ -11,6 +11,7 @@ import {
   resolveNativeTerminalSendInput,
 } from "./native-terminal-admission.js";
 import { resolveMessageSenderThreadId } from "./thread-send.js";
+import { nativeTerminalNotRunning } from "./native-terminal-threads.js";
 import type {
   SendMessageRequest,
   SendMessageResponse,
@@ -40,6 +41,9 @@ export async function acceptThreadSendRequest(
         "invalid_request",
         "sendAt is not supported for native terminal threads",
       );
+    }
+    if (args.thread.status === "pending") {
+      throw nativeTerminalNotRunning();
     }
     const input = await resolveNativeTerminalSendInput(deps, {
       thread: args.thread,
