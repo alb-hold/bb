@@ -11,7 +11,7 @@ import {
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import { MemoryRouter } from "react-router-dom";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, inject, it, vi } from "vitest";
 import { waitForReadinessCondition } from "./ThreadTerminalView.terminal-focus-test-utils";
 import { decodeBase64Bytes } from "@/lib/base64-bytes";
 import { makeTerminalSession } from "@/test/fixtures/terminal-sessions";
@@ -21,6 +21,19 @@ import {
   useAppCommandHandler,
 } from "@/components/commands/AppCommandProvider";
 import { ThreadTerminalView } from "./ThreadTerminalView";
+import { execFile } from "node:child_process";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+import { promisify } from "node:util";
+import { z } from "zod";
+import type {} from "../../../../vitest.global-setup";
+import appCss from "../../../app.css?inline";
+import xtermCss from "@xterm/xterm/css/xterm.css?inline";
+
+const chromiumPath = inject("appChromiumPath");
+const execFileAsync = promisify(execFile);
 
 const testState = vi.hoisted(() => ({
   calls: [] as string[],
@@ -306,6 +319,140 @@ function scrollTerminalAsUser(terminal: Terminal, line: number): void {
 }
 
 describe("ThreadTerminalView terminal viewport and focus", () => {
+  it("shows a jump-to-latest control only while scrolled above the bottom", async () => {
+    prepareMobileTerminal();
+    let mountedTerminal: Terminal | null = null;
+    const openTerminal = Terminal.prototype.open;
+    vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
+      this: Terminal,
+      element: HTMLElement,
+    ) {
+      mountedTerminal ??= this;
+      openTerminal.call(this, element);
+    });
+    const getTerminal = () => {
+      if (!mountedTerminal) throw new Error("terminal was not mounted");
+      return mountedTerminal;
+    };
+    const session = renderMobileTerminal();
+    await waitForReadinessCondition(
+      () => expect(testState.sockets).toHaveLength(1),
+      "terminal socket was not created",
+    );
+    const socket = testState.sockets[0];
+    if (!socket) throw new Error("terminal socket was not created");
+    socket.receive({
+      type: "attached",
+      session,
+      replayStartSeq: 0,
+      nextSeq: 1,
+    });
+    socket.receive({
+      type: "output",
+      chunk: {
+        seq: 0,
+        dataBase64: btoa(
+          Array.from({ length: 100 }, (_, i) => `line ${i}`).join("\r\n"),
+        ),
+      },
+    });
+    await waitFor(() =>
+      expect(getTerminal().buffer.active.baseY).toBeGreaterThan(0),
+    );
+    expect(getTerminal().buffer.active.viewportY).toBe(
+      getTerminal().buffer.active.baseY,
+    );
+    expect(
+      screen.queryByRole("button", { name: "Jump to latest output" }),
+    ).toBeNull();
+    scrollTerminalAsUser(getTerminal(), getTerminal().buffer.active.baseY - 1);
+    const jump = await screen.findByRole("button", {
+      name: "Jump to latest output",
+    });
+    socket.receive({
+      type: "output",
+      chunk: {
+        seq: 1,
+        dataBase64: btoa("\r\noutput while reviewing scrollback"),
+      },
+    });
+    await waitFor(() =>
+      expect(
+        testState.socketMessages.map((message) => JSON.parse(message)),
+      ).toContainEqual({ type: "ack", nextSeq: 2 }),
+    );
+    expect(getTerminal().buffer.active.viewportY).toBeLessThan(
+      getTerminal().buffer.active.baseY,
+    );
+    expect(screen.getByRole("button", { name: "Jump to latest output" })).toBe(
+      jump,
+    );
+    scrollTerminalAsUser(getTerminal(), getTerminal().buffer.active.baseY);
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("button", { name: "Jump to latest output" }),
+      ).toBeNull(),
+    );
+    expect(getTerminal().buffer.active.viewportY).toBe(
+      getTerminal().buffer.active.baseY,
+    );
+    scrollTerminalAsUser(getTerminal(), getTerminal().buffer.active.baseY - 1);
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Jump to latest output" }),
+    );
+    expect(document.activeElement).toBe(getTerminal().textarea);
+    await waitFor(() =>
+      expect(getTerminal().buffer.active.viewportY).toBe(
+        getTerminal().buffer.active.baseY,
+      ),
+    );
+    expect(
+      screen.queryByRole("button", { name: "Jump to latest output" }),
+    ).toBeNull();
+    socket.receive({
+      type: "output",
+      chunk: { seq: 2, dataBase64: btoa("\r\nlatest output") },
+    });
+    await waitFor(() =>
+      expect(
+        testState.socketMessages.map((message) => JSON.parse(message)),
+      ).toContainEqual({ type: "ack", nextSeq: 3 }),
+    );
+    expect(
+      screen.queryByRole("button", { name: "Jump to latest output" }),
+    ).toBeNull();
+    scrollTerminalAsUser(getTerminal(), getTerminal().buffer.active.baseY - 1);
+    await screen.findByRole("button", { name: "Jump to latest output" });
+    const expandedGrid = {
+      cols: getTerminal().cols,
+      rows: getTerminal().buffer.active.length,
+    };
+    vi.spyOn(FitAddon.prototype, "proposeDimensions").mockReturnValue(
+      expandedGrid,
+    );
+    socket.receive({
+      type: "session-updated",
+      session: { ...session, ...expandedGrid },
+    });
+    await waitFor(() => expect(getTerminal().rows).toBe(expandedGrid.rows));
+    expect(getTerminal().buffer.active.viewportY).toBe(
+      getTerminal().buffer.active.baseY,
+    );
+    socket.receive({
+      type: "output",
+      chunk: { seq: 3, dataBase64: btoa(" expanded") },
+    });
+    await waitFor(() =>
+      expect(
+        testState.socketMessages.map((message) => JSON.parse(message)),
+      ).toContainEqual({ type: "ack", nextSeq: 4 }),
+    );
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("button", { name: "Jump to latest output" }),
+      ).toBeNull(),
+    );
+  });
   it.each(["starting", "disconnected", "exited"] as const)(
     "keeps the ready mobile controls appropriate for a %s session",
     async (status) => {
@@ -504,13 +651,12 @@ describe("ThreadTerminalView terminal viewport and focus", () => {
     });
     let terminal: Terminal | null = null;
     const open = Terminal.prototype.open;
-    vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
-      this: Terminal,
-      element,
-    ) {
-      terminal = this;
-      open.call(this, element);
-    });
+    vi.spyOn(Terminal.prototype, "open").mockImplementation(
+      function (this: Terminal, element) {
+        terminal = this;
+        open.call(this, element);
+      },
+    );
     renderMobileTerminal();
     await waitFor(() => expect(terminal?.options.lineHeight).toBe(1.22));
     await waitFor(() => {
@@ -1536,3 +1682,231 @@ describe("ThreadTerminalView terminal viewport and focus", () => {
     expect(testState.calls).toEqual([]);
   });
 });
+
+describe.skipIf(chromiumPath === null && !process.env.CI)(
+  "jump-to-latest geometry in real Chromium",
+  () => {
+    it.each([360, 390, 1280])(
+      "keeps the control clear of the last row and composer at %i px",
+      async (width) => {
+        expect(chromiumPath).not.toBeNull();
+        prepareMobileTerminal();
+        for (const metric of ["offsetWidth", "clientWidth"] as const) {
+          vi.spyOn(HTMLElement.prototype, metric, "get").mockImplementation(
+            function (this: HTMLElement) {
+              return this.classList.contains("xterm-char-measure-element")
+                ? Math.max(1, this.textContent?.length ?? 1) * 9
+                : width - 24;
+            },
+          );
+        }
+        testState.touchEnabled = width < 768;
+        let terminal: Terminal | null = null;
+        const open = Terminal.prototype.open;
+        vi.spyOn(Terminal.prototype, "open").mockImplementation(function (
+          this: Terminal,
+          element: HTMLElement,
+        ) {
+          terminal ??= this;
+          open.call(this, element);
+        });
+        const session = makeTerminalSession({
+          id: `term_jump_layout_${width}`,
+          status: "running",
+          cols: Math.floor((width - 24) / 9),
+          rows: 12,
+        });
+        vi.spyOn(FitAddon.prototype, "proposeDimensions").mockReturnValue({
+          cols: session.cols,
+          rows: session.rows,
+        });
+        render(
+          <MemoryRouter>
+            <AppCommandProvider>
+              <ThreadTerminalView
+                autoFocus={false}
+                isPanelOpen
+                session={session}
+              />
+            </AppCommandProvider>
+          </MemoryRouter>,
+        );
+        await waitFor(() => expect(testState.sockets).toHaveLength(1));
+        const socket = testState.sockets[0];
+        if (!socket) throw new Error("terminal socket was not created");
+        socket.receive({
+          type: "attached",
+          session,
+          replayStartSeq: 0,
+          nextSeq: 1,
+        });
+        socket.receive({
+          type: "output",
+          chunk: {
+            seq: 0,
+            dataBase64: btoa(
+              Array.from({ length: 100 }, (_, i) => `line ${i}`).join("\r\n"),
+            ),
+          },
+        });
+        const currentTerminal = () => {
+          if (!terminal) throw new Error("terminal was not mounted");
+          return terminal;
+        };
+        await waitFor(() =>
+          expect(currentTerminal().buffer.active.baseY).toBeGreaterThan(0),
+        );
+        scrollTerminalAsUser(
+          currentTerminal(),
+          currentTerminal().buffer.active.baseY - 1,
+        );
+        await screen.findByRole("button", { name: "Jump to latest output" });
+        await waitFor(() =>
+          expect(
+            currentTerminal().element?.querySelector(
+              ".xterm-rows > div:last-child",
+            )?.textContent,
+          ).toContain("line"),
+        );
+        currentTerminal().element?.setAttribute(
+          "data-layout-live-terminal",
+          "",
+        );
+        const root = document.querySelector("[data-app-terminal]");
+        if (!root) throw new Error("terminal view was not mounted");
+        const rendererCss = [...document.querySelectorAll("style")]
+          .map((style) => style.textContent)
+          .join("\n");
+        const css = `${appCss}\n${xtermCss}\n${rendererCss}`.replace(
+          /url\((["']?)(\/[^)"']+)\1\)/g,
+          (_match, _quote: string, asset: string) =>
+            `url("${pathToFileURL(asset.startsWith("/@fs/") ? asset.slice(4) : resolve(process.cwd(), `.${asset}`))}")`,
+        );
+        const dir = await mkdtemp(join(tmpdir(), "bb-jump-layout-"));
+        try {
+          const file = join(dir, "index.html");
+          const frame =
+            `<!doctype html><meta name="viewport" content="width=device-width"><style>${css}</style>${root.outerHTML}<textarea aria-label="Message composer" class="block h-12 w-full"></textarea>`
+              .replaceAll("&", "&amp;")
+              .replaceAll('"', "&quot;")
+              .replaceAll("<", "&lt;");
+          await writeFile(
+            file,
+            `<!doctype html><style>body{margin:0}iframe{display:block;border:0;width:${width}px;height:600px}</style><iframe srcdoc="${frame}"></iframe><pre id="result"></pre><script>
+const frame=document.querySelector('iframe');
+frame.addEventListener('load',async()=>{
+  const doc=frame.contentDocument, win=frame.contentWindow;
+  await doc.fonts.ready;
+  const root=doc.querySelector('[data-app-terminal]');
+  const pane=doc.querySelector('[data-terminal-renderer]').parentElement;
+  const controls=doc.querySelector('[data-terminal-mobile-controls]');
+  const screen=doc.querySelector('[data-layout-live-terminal] .xterm-screen');
+  root.style.height=(screen.getBoundingClientRect().height+parseFloat(win.getComputedStyle(pane).paddingTop)+parseFloat(win.getComputedStyle(pane).paddingBottom)+[...root.children].filter(el=>el!==pane&&!['absolute','fixed'].includes(win.getComputedStyle(el).position)).reduce((sum,el)=>sum+el.getBoundingClientRect().height,0))+'px';
+  const box=el=>{const r=el.getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height}};
+  const button=doc.querySelector('[aria-label="Jump to latest output"]');
+  const rows=[...doc.querySelectorAll('[data-layout-live-terminal] .xterm-rows > div')];
+  const screenBox=screen.getBoundingClientRect();
+  const last=rows.filter(el=>{const r=el.getBoundingClientRect();return r.y<screenBox.bottom&&r.bottom>screenBox.y}).at(-1);
+  const range=doc.createRange();range.selectNodeContents(last);
+  const text=range.getBoundingClientRect();
+  const lastBox=last.getBoundingClientRect();
+  const lastRow={x:lastBox.x,y:Math.max(lastBox.y,screenBox.y),width:lastBox.width,height:Math.min(lastBox.bottom,screenBox.bottom)-Math.max(lastBox.y,screenBox.y)};
+  const cell=screenBox.width/${currentTerminal().cols};
+  document.querySelector('#result').textContent=JSON.stringify({coarse:win.matchMedia('(pointer: coarse)').matches,viewportWidth:win.innerWidth,viewportHeight:win.innerHeight,button:box(button),pane:box(pane),lastRow,lastColumn:{x:screenBox.right-cell,y:screenBox.y,width:cell,height:screenBox.height},composer:box(doc.querySelector('textarea[aria-label="Message composer"]')),controls:controls?box(controls):null,fontSizes:[...new Set([button,...button.querySelectorAll('*')].map(el=>win.getComputedStyle(el).fontSize))],rowTextWidth:text.width});
+});
+</script>`,
+          );
+          const { stdout } = await execFileAsync(
+            chromiumPath!,
+            [
+              "--headless",
+              `--user-data-dir=${join(dir, "profile")}`,
+              "--no-sandbox",
+              "--disable-gpu",
+              "--disable-dev-shm-usage",
+              "--disable-extensions",
+              "--disable-background-networking",
+              "--no-first-run",
+              ...(width < 768
+                ? [
+                    "--blink-settings=primaryPointerType=2,availablePointerTypes=2",
+                  ]
+                : []),
+              "--virtual-time-budget=5000",
+              "--dump-dom",
+              pathToFileURL(file).href,
+            ],
+            { timeout: 30_000, maxBuffer: 8 * 1024 * 1024 },
+          );
+          const raw = /<pre id="result">([^<]+)<\/pre>/.exec(stdout)?.[1];
+          expect(raw).toBeDefined();
+          const box = z.object({
+            x: z.number(),
+            y: z.number(),
+            width: z.number(),
+            height: z.number(),
+          });
+          const result = z
+            .object({
+              coarse: z.boolean(),
+              viewportWidth: z.number(),
+              viewportHeight: z.number(),
+              button: box,
+              pane: box,
+              lastRow: box,
+              lastColumn: box,
+              composer: box,
+              controls: box.nullable(),
+              fontSizes: z.array(z.string()),
+              rowTextWidth: z.number(),
+            })
+            .parse(
+              JSON.parse(
+                raw!.replaceAll("&quot;", '"').replaceAll("&amp;", "&"),
+              ),
+            );
+          console.log("C21_LAYOUT " + JSON.stringify({ width, ...result }));
+          const overlaps = (a: z.infer<typeof box>, b: z.infer<typeof box>) =>
+            a.x < b.x + b.width &&
+            a.x + a.width > b.x &&
+            a.y < b.y + b.height &&
+            a.y + a.height > b.y;
+          expect(result.viewportWidth).toBe(width);
+          expect(result.coarse).toBe(width < 768);
+          expect(result.lastRow.height).toBeGreaterThan(0);
+          expect(result.rowTextWidth).toBeGreaterThan(0);
+          expect(result.lastColumn.width).toBeGreaterThan(5);
+          expect(result.lastRow.y + result.lastRow.height).toBeLessThanOrEqual(
+            result.pane.y + result.pane.height + 1,
+          );
+          expect(result.fontSizes).toHaveLength(1);
+          expect(result.button.width).toBeGreaterThanOrEqual(
+            width < 768 ? 44 : 32,
+          );
+          expect(result.button.height).toBeGreaterThanOrEqual(
+            width < 768 ? 44 : 32,
+          );
+          expect(result.button.x).toBeGreaterThanOrEqual(0);
+          expect(result.button.y).toBeGreaterThanOrEqual(result.pane.y);
+          expect(result.button.x + result.button.width).toBeLessThanOrEqual(
+            result.viewportWidth,
+          );
+          expect(result.button.y + result.button.height).toBeLessThanOrEqual(
+            result.pane.y + result.pane.height,
+          );
+          expect(result.button.y + result.button.height).toBeLessThanOrEqual(
+            result.viewportHeight,
+          );
+          expect(overlaps(result.button, result.lastRow)).toBe(false);
+          expect(overlaps(result.button, result.lastColumn)).toBe(false);
+          expect(overlaps(result.button, result.composer)).toBe(false);
+          if (result.controls)
+            expect(overlaps(result.button, result.controls)).toBe(false);
+        } finally {
+          await rm(dir, { recursive: true, force: true });
+        }
+      },
+      40_000,
+    );
+  },
+);
