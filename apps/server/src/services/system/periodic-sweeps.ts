@@ -74,10 +74,7 @@ import {
   runQueuedMessageDispatch,
   type QueueWaitPluginDirectory,
 } from "../threads/queued-message-dispatch.js";
-import {
-  recoverNativeTerminalDeliveries,
-  sendPendingNativeTerminalDeliveryWarnings,
-} from "../threads/native-terminal-delivery-marks.js";
+import { recoverNativeTerminalDeliveries } from "../threads/native-terminal-delivery-marks.js";
 import { releaseOrphanedQueuedMessageDispatchClaims } from "../threads/queued-messages.js";
 import { deliverLegacyDeferredThreadMessages } from "../threads/legacy-deferred-messages.js";
 import { sweepNativeParentNotices } from "../threads/native-parent-notices.js";
@@ -560,8 +557,10 @@ const PERIODIC_SWEEP_JOBS: PeriodicSweepJob[] = [
   {
     cadenceMs: 0,
     category: "durable-intent-retry",
-    name: "native-terminal-delivery-warnings",
-    run: sendPendingNativeTerminalDeliveryWarnings,
+    name: "native-terminal-delivery-recovery",
+    run: async (deps) => {
+      await recoverNativeTerminalDeliveries(deps);
+    },
   },
   {
     cadenceMs: 0,

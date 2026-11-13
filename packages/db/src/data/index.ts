@@ -112,15 +112,16 @@ export type {
 } from "./fork-queued-message-retries.js";
 export {
   clearNativeTerminalDeliveryMarks,
-  clearNativeTerminalDeliveryWarning,
+  deleteNativeTerminalDeliveryWarning,
+  insertNativeTerminalDeliveryWarning,
   listNativeTerminalDeliveryMarks,
-  listPendingNativeTerminalDeliveryWarnings,
+  listNativeTerminalDeliveryWarnings,
   listUnsettledNativeTerminalDeliveryMarks,
   markNativeTerminalDeliveriesSubmitting,
-  markNativeTerminalDeliveriesUncertain,
-  pruneOrphanedNativeTerminalDeliveryMarks,
+  markNativeTerminalDeliveryUncertain,
+  pruneSettledOrphanedNativeTerminalDeliveryMarks,
   type NativeTerminalDeliveryMark,
-  type PendingNativeTerminalDeliveryWarning,
+  type NativeTerminalDeliveryWarning,
 } from "./fork-native-terminal-deliveries.js";
 export {
   listStoredDaemonReplayKeys,
