@@ -26,7 +26,10 @@ import {
   setPluginHookProvider,
   type PluginHookRegistration,
 } from "../../src/services/plugins/plugin-hook-registry.js";
-import { runStartupRecoverySweep } from "../../src/services/system/periodic-sweeps.js";
+import {
+  runPeriodicSweeps,
+  runStartupRecoverySweep,
+} from "../../src/services/system/periodic-sweeps.js";
 import { recordNativeTerminalActivity } from "../../src/services/threads/native-terminal-activity.js";
 import { runQueuedMessageDispatch } from "../../src/services/threads/queued-message-dispatch.js";
 import { toThreadQueuedMessage } from "../../src/services/threads/thread-queued-messages.js";
@@ -903,6 +906,151 @@ describe("native terminal delivery across a crash", () => {
         "\r",
       ]);
       expect(queuedRows(after, thread.id)).toEqual([]);
+    } finally {
+      cli.stop();
+    }
+  }, 30_000);
+
+  function failNoticeWrites(fixture: Fixture): () => void {
+    fixture.harness.db.$client.exec(`
+      CREATE TRIGGER fault_notice_insert BEFORE INSERT ON fork_native_parent_notices
+        BEGIN SELECT RAISE(ABORT, 'simulated crash before the warning was written'); END;
+    `);
+    return () =>
+      fixture.harness.db.$client.exec("DROP TRIGGER fault_notice_insert;");
+  }
+
+  function runSweeps(fixture: Fixture): Promise<void> {
+    return runPeriodicSweeps({
+      ...fixture.harness.deps,
+      pluginSchedules: fixture.harness.pluginService,
+      plugins: fixture.harness.pluginService,
+    });
+  }
+
+  async function openBusySender(fixture: Fixture) {
+    const sender = await openRunningNativeThread(fixture, {
+      providerId: "codex",
+    });
+    recordNativeTerminalActivity(fixture.harness.deps, {
+      confirms: false,
+      state: "working",
+      threadId: sender.thread.id,
+    });
+    return sender;
+  }
+
+  it("tells the sender exactly once when the restart that held the message could not write the warning", async () => {
+    const before = await createFixture();
+    const sender = await openBusySender(before);
+    const { open, thread } = await openRunningNativeThread(before, {
+      providerId: "codex",
+    });
+    const cli = startFakeCli(before, open.terminalId);
+    let decision: HookDecision = { action: "wait", reason: AT_LIMIT_REASON };
+    installDispatchHook(() => decision);
+    try {
+      await sendToThread(before, thread.id, "run the tests", sender.thread.id);
+      const restore = failWritesToClaimedQueueRows(before);
+      decision = { action: "proceed" };
+      await runQueuedMessageDispatch(before.harness.deps, {
+        kind: "plugin-recheck",
+      });
+      await settle();
+      restore();
+      expect(cli.inputs()).toEqual([
+        "\u001b[200~run the tests\u001b[201~",
+        "\r",
+      ]);
+    } finally {
+      cli.stop();
+    }
+
+    const first = await restartServer(before);
+    const firstCli = startFakeCli(first, open.terminalId);
+    try {
+      const restore = failNoticeWrites(first);
+      try {
+        await runStartupRecoverySweep(first.harness.deps);
+      } finally {
+        restore();
+      }
+      expect(
+        listNativeParentNotices(first.harness.db, sender.thread.id),
+      ).toEqual([]);
+      expect(firstCli.inputs()).toEqual([]);
+    } finally {
+      firstCli.stop();
+    }
+
+    const second = await restartServer(first);
+    const secondCli = startFakeCli(second, open.terminalId);
+    try {
+      await runStartupRecoverySweep(second.harness.deps);
+      await drainEverything(second);
+      await runStartupRecoverySweep(second.harness.deps);
+      await runSweeps(second);
+      await drainEverything(second);
+
+      const notices = listNativeParentNotices(
+        second.harness.db,
+        sender.thread.id,
+      );
+      expect(notices).toHaveLength(1);
+      expect(notices[0]?.text).toContain("may not have been delivered");
+      expect(secondCli.inputs()).toEqual([]);
+      expect(queuedRows(second, thread.id)[0]).toMatchObject({
+        state: "failed_exhausted",
+        failureReason: UNCERTAIN_REASON,
+      });
+    } finally {
+      secondCli.stop();
+    }
+  }, 30_000);
+
+  it("retries a sender warning whose write failed once and sends it exactly once", async () => {
+    const fixture = await createFixture();
+    const sender = await openBusySender(fixture);
+    const { open, thread } = await openRunningNativeThread(fixture, {
+      providerId: "codex",
+    });
+    const cli = startFakeCli(fixture, open.terminalId);
+    let decision: HookDecision = { action: "wait", reason: AT_LIMIT_REASON };
+    installDispatchHook(() => decision);
+    try {
+      await sendToThread(fixture, thread.id, "run the tests", sender.thread.id);
+      const restoreDeletes = failDeletesOfClaimedQueueRows(fixture);
+      decision = { action: "proceed" };
+      await runQueuedMessageDispatch(fixture.harness.deps, {
+        kind: "plugin-recheck",
+      });
+      await settle();
+      restoreDeletes();
+
+      const restoreNotices = failNoticeWrites(fixture);
+      try {
+        await drainEverything(fixture);
+      } finally {
+        restoreNotices();
+      }
+      expect(
+        listNativeParentNotices(fixture.harness.db, sender.thread.id),
+      ).toEqual([]);
+
+      await runSweeps(fixture);
+      await runSweeps(fixture);
+      await drainEverything(fixture);
+
+      const notices = listNativeParentNotices(
+        fixture.harness.db,
+        sender.thread.id,
+      );
+      expect(notices).toHaveLength(1);
+      expect(notices[0]?.text).toContain("may not have been delivered");
+      expect(cli.inputs()).toEqual([
+        "\u001b[200~run the tests\u001b[201~",
+        "\r",
+      ]);
     } finally {
       cli.stop();
     }
