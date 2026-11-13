@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, screen, waitFor } from "@testing-library/react";
-import { useSyncExternalStore } from "react";
+import { act, cleanup, screen } from "@testing-library/react";
+import { useEffect, useSyncExternalStore } from "react";
 import { afterEach, expect, it } from "vitest";
 import {
   renderSlot,
@@ -12,10 +12,16 @@ import type { GitFilesResult, WorkspaceDiffTarget } from "../../contract.js";
 import { useDiffFiles } from "./diff-data.js";
 import { makeDiffFileEntry } from "./diff-file-fixtures.js";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  reportInitialShown = undefined;
+  reportAllShown = undefined;
+});
 
 let target: WorkspaceDiffTarget = { type: "uncommitted" };
 const listeners = new Set<() => void>();
+let reportInitialShown: (() => void) | undefined;
+let reportAllShown: (() => void) | undefined;
 
 function selectTarget(next: WorkspaceDiffTarget) {
   target = next;
@@ -36,6 +42,10 @@ function Files() {
     ignoreWhitespace: false,
     enabled: true,
   });
+  useEffect(() => {
+    if (files.shown?.target.type === "uncommitted") reportInitialShown?.();
+    if (files.shown?.target.type === "all") reportAllShown?.();
+  }, [files.shown]);
   const result = files.shown?.result;
   return (
     <output aria-label="files" data-loading={files.isLoading}>
@@ -60,11 +70,34 @@ function filesFor(path: string): GitFilesResult {
 
 it("keeps the previous file list and its target while another target loads", async () => {
   const pending: ((value: GitFilesResult) => void)[] = [];
+  let resolveInitial!: (value: GitFilesResult) => void;
+  let resolveInitialRequested!: () => void;
+  let resolveNextRequested!: () => void;
+  let resolveInitialShown!: () => void;
+  let resolveAllShown!: () => void;
+  const initialRequested = new Promise<void>((resolve) => {
+    resolveInitialRequested = resolve;
+  });
+  const nextRequested = new Promise<void>((resolve) => {
+    resolveNextRequested = resolve;
+  });
+  const initialShown = new Promise<void>((resolve) => {
+    resolveInitialShown = resolve;
+  });
+  const allShown = new Promise<void>((resolve) => {
+    resolveAllShown = resolve;
+  });
+  reportInitialShown = resolveInitialShown;
+  reportAllShown = resolveAllShown;
+  const initialResponse = new Promise<GitFilesResult>((resolve) => {
+    resolveInitial = resolve;
+  });
   const rpc: Partial<PluginRpcTestHandlers<typeof gitRpcContract>> = {
     files: ({ target: requested }) =>
       requested.type === "uncommitted"
-        ? filesFor("uncommitted.ts")
+        ? (resolveInitialRequested(), initialResponse)
         : new Promise<GitFilesResult>((resolve) => {
+            resolveNextRequested();
             pending.push(resolve);
           }),
   };
@@ -78,17 +111,21 @@ it("keeps the previous file list and its target while another target loads", asy
     },
   );
   const output = () => screen.getByRole("status", { name: "files" });
-  await waitFor(() =>
-    expect(output().textContent).toBe("uncommitted:uncommitted.ts"),
-  );
+  await initialRequested;
+  await act(async () => {
+    resolveInitial(await filesFor("uncommitted.ts"));
+  });
+  await initialShown;
+  expect(output().textContent).toBe("uncommitted:uncommitted.ts");
 
   act(() => selectTarget({ type: "all", mergeBaseBranch: "main" }));
   expect(output().textContent).toBe("uncommitted:uncommitted.ts");
   expect(output().getAttribute("data-loading")).toBe("false");
 
-  await waitFor(() => expect(pending.length).toBeGreaterThan(0));
-  act(() => {
-    for (const resolve of pending) resolve(filesFor("all.ts"));
+  await nextRequested;
+  await act(async () => {
+    for (const resolve of pending) resolve(await filesFor("all.ts"));
   });
-  await waitFor(() => expect(output().textContent).toBe("all:all.ts"));
+  await allShown;
+  expect(output().textContent).toBe("all:all.ts");
 });
