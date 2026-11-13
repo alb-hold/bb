@@ -201,7 +201,7 @@ async function setup(options: {
         ? bb
         : { ...bb, log: { ...bb.log, debug: options.debug } },
     );
-  await loadPlugin(fake.bb);
+  loadPlugin(fake.bb);
   return Object.assign(fake, {
     sdkCalls,
     emitEnvironmentChanged(event: EnvironmentChangedEvent) {

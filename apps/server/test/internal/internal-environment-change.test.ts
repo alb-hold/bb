@@ -36,7 +36,7 @@ describe("internal environment change websocket hints", () => {
         .where(eq(hostDaemonSessions.id, session.id))
         .run();
 
-      onDaemonSocketMessage(harness.deps, {
+      void onDaemonSocketMessage(harness.deps, {
         hostId: host.id,
         sessionId: session.id,
         socket,
@@ -89,7 +89,7 @@ describe("internal environment change websocket hints", () => {
       });
       const socket = createTestDaemonSocket();
 
-      onDaemonSocketMessage(harness.deps, {
+      void onDaemonSocketMessage(harness.deps, {
         hostId: hostB.host.id,
         sessionId: hostB.session.id,
         socket,
@@ -106,7 +106,7 @@ describe("internal environment change websocket hints", () => {
       expect(resolved).toBe(false);
       expect(socket.close).not.toHaveBeenCalled();
 
-      onDaemonSocketMessage(harness.deps, {
+      void onDaemonSocketMessage(harness.deps, {
         hostId: hostA.host.id,
         sessionId: hostA.session.id,
         socket,
@@ -164,10 +164,10 @@ describe("internal environment change websocket hints", () => {
           }),
         });
 
-      send(other.host.id, other.session.id);
+      void send(other.host.id, other.session.id);
       expect(notifyThreadSpy).not.toHaveBeenCalled();
 
-      send(host.id, session.id);
+      void send(host.id, session.id);
       expect(notifyThreadSpy).toHaveBeenCalledTimes(1);
       expect(notifyThreadSpy).toHaveBeenCalledWith(thread.id, [
         "storage-changed",
@@ -200,7 +200,7 @@ describe("internal environment change websocket hints", () => {
         const notifyEnvironmentSpy = vi.spyOn(harness.hub, "notifyEnvironment");
         const socket = createTestDaemonSocket();
 
-        onDaemonSocketMessage(harness.deps, {
+        void onDaemonSocketMessage(harness.deps, {
           hostId: host.id,
           sessionId: session.id,
           socket,
@@ -242,7 +242,7 @@ describe("internal environment change websocket hints", () => {
       const notifyEnvironmentSpy = vi.spyOn(harness.hub, "notifyEnvironment");
       const socket = createTestDaemonSocket();
 
-      onDaemonSocketMessage(harness.deps, {
+      void onDaemonSocketMessage(harness.deps, {
         hostId: host.id,
         sessionId: session.id,
         socket,
@@ -271,7 +271,7 @@ describe("internal environment change websocket hints", () => {
       ]);
 
       for (const branchName of ["feature/checkout", null]) {
-        onDaemonSocketMessage(harness.deps, {
+        void onDaemonSocketMessage(harness.deps, {
           hostId: host.id,
           sessionId: session.id,
           socket,
@@ -323,7 +323,7 @@ describe("internal environment change websocket hints", () => {
       const notifyEnvironmentSpy = vi.spyOn(harness.hub, "notifyEnvironment");
       const socket = createTestDaemonSocket();
 
-      onDaemonSocketMessage(harness.deps, {
+      void onDaemonSocketMessage(harness.deps, {
         hostId: hostA.host.id,
         sessionId: hostA.session.id,
         socket,
@@ -357,7 +357,7 @@ describe("internal environment change websocket hints", () => {
       const socket = createTestDaemonSocket();
 
       for (const environmentId of ["env-missing", destroyedEnvironment.id]) {
-        onDaemonSocketMessage(harness.deps, {
+        void onDaemonSocketMessage(harness.deps, {
           hostId: host.id,
           sessionId: session.id,
           socket,
@@ -382,7 +382,7 @@ describe("internal environment change websocket hints", () => {
       const notifyEnvironmentSpy = vi.spyOn(harness.hub, "notifyEnvironment");
       const socket = createTestDaemonSocket();
 
-      onDaemonSocketMessage(harness.deps, {
+      void onDaemonSocketMessage(harness.deps, {
         hostId: host.id,
         sessionId: session.id,
         socket,

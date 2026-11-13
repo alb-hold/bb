@@ -753,7 +753,7 @@ describe("RootComposeMobileRecents", () => {
     const click = new MouseEvent("click", { bubbles: true, cancelable: true });
     fireEvent(link, click);
     expect(click.defaultPrevented).toBe(true);
-    act(() => vi.advanceTimersByTime(500));
+    act(() => void vi.advanceTimersByTime(500));
     vi.useRealTimers();
     const pin = await screen.findByRole("menuitem", { name: "Pin" });
     fireEvent.pointerDown(pin, { pointerType: "touch" });
@@ -814,9 +814,9 @@ describe("RootComposeMobileRecents", () => {
     );
 
     expect(screen.getByLabelText("Working")).not.toBeNull();
-    act(() => vi.advanceTimersByTime(90_000));
+    act(() => void vi.advanceTimersByTime(90_000));
     expect(screen.getByLabelText("Working")).not.toBeNull();
-    act(() => vi.advanceTimersByTime(1_000));
+    act(() => void vi.advanceTimersByTime(1_000));
     expect(screen.queryByLabelText("Working")).toBeNull();
   });
 

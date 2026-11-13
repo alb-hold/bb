@@ -1188,7 +1188,7 @@ describe("PluginNewThreadComposer seeding", () => {
     await act(async () => {
       editor.commands.insertContent(" latest");
       editor.commands.setTextSelection(6);
-      deliver("voice", "insert");
+      await deliver("voice", "insert");
     });
     expect(editor.getText()).toBe("first voice latest");
     expect(
@@ -3877,11 +3877,11 @@ describe("NewThreadComposer setSelection", () => {
       ),
     );
     const renders = mocks.rootCompositionRenders;
-    act(() => latestPromptBoxProps().onChange("a", []));
+    act(() => void latestPromptBoxProps().onChange("a", []));
     expect(latestPromptBoxProps().value).toBe("a");
     expect(latestPromptBoxProps().disabled).toBe(false);
     expect(mocks.rootCompositionRenders).toBe(renders);
-    act(() => latestPromptBoxProps().onChange("", []));
+    act(() => void latestPromptBoxProps().onChange("", []));
     expect(latestPromptBoxProps().disabled).toBe(true);
     expect(mocks.rootCompositionRenders).toBe(renders);
   });

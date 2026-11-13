@@ -204,7 +204,7 @@ function openDaemonSocket(
   harness: TestAppHarness,
   args: { hostId: string; sessionId: string },
 ): void {
-  onDaemonSocketOpen(harness.deps, {
+  void onDaemonSocketOpen(harness.deps, {
     ...args,
     socket: registerTestHostRpcCapture(harness, args),
   });

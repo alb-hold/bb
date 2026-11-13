@@ -173,7 +173,7 @@ async function bootRpcPlugin() {
               refs: { oid: null, branchName: "bb/pr" },
             })),
   });
-  await githubPrStatusPlugin(fake.bb);
+  githubPrStatusPlugin(fake.bb);
   return fake;
 }
 

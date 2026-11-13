@@ -316,7 +316,7 @@ export async function onDaemonSocketOpen(
   if (isServerMoveFrozen(deps.db)) {
     return;
   }
-  reopenNativeTerminalsAfterDaemonReconnect(deps, {
+  void reopenNativeTerminalsAfterDaemonReconnect(deps, {
     hostId: args.hostId,
     threadIds: nativeThreadIds,
   });

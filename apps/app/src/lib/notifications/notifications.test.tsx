@@ -102,7 +102,7 @@ describe("toast history", () => {
     render(<AppToasterView />);
     const toast = createPluginToast(sonnerToast);
 
-    act(() => toast.error("Timer cleanup probe"));
+    act(() => void toast.error("Timer cleanup probe"));
 
     expect(vi.getTimerCount()).toBeGreaterThan(0);
   });

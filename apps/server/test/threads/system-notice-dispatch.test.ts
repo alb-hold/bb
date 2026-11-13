@@ -749,7 +749,7 @@ describe("notices to a parent mid-turn", () => {
       ]);
 
       const reconnect = seedSession(harness.deps, host.id);
-      onDaemonSocketOpen(harness.deps, {
+      void onDaemonSocketOpen(harness.deps, {
         hostId: host.id,
         sessionId: reconnect.id,
         socket: registerTestHostRpcCapture(harness.deps, {

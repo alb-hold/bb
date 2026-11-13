@@ -297,7 +297,7 @@ describe("opening an unseen timeline", () => {
     const { area } = renderThread();
     resize();
     expect(area.scrollTop).toBe(2700);
-    act(() => vi.advanceTimersByTime(1));
+    act(() => void vi.advanceTimersByTime(1));
     expect(area.scrollTop).toBe(2700);
     height += 600;
     resize();
@@ -314,7 +314,7 @@ describe("opening an unseen timeline", () => {
     area.scrollTop = 20_500;
     fireEvent.scroll(area);
     flushFrames();
-    act(() => vi.advanceTimersByTime(25_000));
+    act(() => void vi.advanceTimersByTime(25_000));
     expect(area.scrollTop).toBe(399_300);
   });
 
@@ -325,7 +325,7 @@ describe("opening an unseen timeline", () => {
     expect(area.scrollTop).toBe(399_200);
     area.scrollTop = 20_500;
     fireEvent.scroll(area);
-    act(() => vi.advanceTimersByTime(25_000));
+    act(() => void vi.advanceTimersByTime(25_000));
     expect(area.scrollTop).toBe(399_200);
   });
 
@@ -338,7 +338,7 @@ describe("opening an unseen timeline", () => {
     act(() => control.focus());
     area.scrollTop = 200;
     fireEvent.scroll(area);
-    act(() => vi.advanceTimersByTime(25_000));
+    act(() => void vi.advanceTimersByTime(25_000));
     expect(area.scrollTop).toBe(200);
   });
 
@@ -351,7 +351,7 @@ describe("opening an unseen timeline", () => {
     const { area, blurThread, receiveUnseenAttentionWhileHidden, focusThread } =
       renderThread(350);
     resize();
-    act(() => vi.advanceTimersByTime(1));
+    act(() => void vi.advanceTimersByTime(1));
     height += 600;
     resize();
     flushFrames();
@@ -409,7 +409,7 @@ describe("opening an unseen timeline", () => {
       fireEvent.scroll(area);
       if (input === "pointer") fireEvent.pointerUp(window);
       if (input === "touch") fireEvent.touchEnd(area);
-      act(() => vi.advanceTimersByTime(1));
+      act(() => void vi.advanceTimersByTime(1));
       height += 600;
       resize();
       flushFrames();
@@ -425,7 +425,7 @@ describe("opening an unseen timeline", () => {
     });
     const { area } = renderThread();
     resize();
-    act(() => vi.advanceTimersByTime(1));
+    act(() => void vi.advanceTimersByTime(1));
     flushFrames();
     expect(area.scrollTop).toBe(2700);
   });
@@ -438,7 +438,7 @@ describe("opening an unseen timeline", () => {
     });
     const { area } = renderThread(350);
     resize();
-    act(() => vi.advanceTimersByTime(1));
+    act(() => void vi.advanceTimersByTime(1));
     height += 600;
     resize();
     flushFrames();
@@ -467,7 +467,7 @@ describe("opening an unseen timeline", () => {
     });
     const { area, receiveAttention } = renderThread(350);
     resize();
-    act(() => vi.advanceTimersByTime(1));
+    act(() => void vi.advanceTimersByTime(1));
     flushFrames();
     resize();
     expect(area.scrollTop).toBe(200);
@@ -486,7 +486,7 @@ describe("opening an unseen timeline", () => {
     });
     const { area, finishOpeningWithAttention } = renderThread(350, false, true);
     resize();
-    act(() => vi.advanceTimersByTime(1));
+    act(() => void vi.advanceTimersByTime(1));
     flushFrames();
     resize();
     expect(area.scrollTop).toBe(200);
@@ -510,11 +510,11 @@ describe("opening an unseen timeline", () => {
       Date.now(),
     );
     resize();
-    act(() => vi.advanceTimersByTime(1));
+    act(() => void vi.advanceTimersByTime(1));
     flushFrames();
     resize();
     expect(area.scrollTop).toBe(200);
-    act(() => vi.advanceTimersByTime(6000));
+    act(() => void vi.advanceTimersByTime(6000));
     changeOpening(true);
     receiveOpeningAttention();
     height += 600;
@@ -535,7 +535,7 @@ describe("opening an unseen timeline", () => {
       true,
     );
     resize();
-    act(() => vi.advanceTimersByTime(1));
+    act(() => void vi.advanceTimersByTime(1));
     flushFrames();
     resize();
     changeOpening(false);
@@ -558,7 +558,7 @@ describe("opening an unseen timeline", () => {
       true,
     );
     resize();
-    act(() => vi.advanceTimersByTime(1));
+    act(() => void vi.advanceTimersByTime(1));
     flushFrames();
     resize();
     failOpening();
@@ -579,7 +579,7 @@ describe("opening an unseen timeline", () => {
       });
       const { area, catchUp } = renderThread(350);
       resize();
-      act(() => vi.advanceTimersByTime(1));
+      act(() => void vi.advanceTimersByTime(1));
       flushFrames();
       resize();
       expect(area.scrollTop).toBe(200);
@@ -608,7 +608,7 @@ describe("opening an unseen timeline", () => {
       true,
     );
     resize();
-    act(() => vi.advanceTimersByTime(1));
+    act(() => void vi.advanceTimersByTime(1));
     flushFrames();
     resize();
     changeOpening(false);
@@ -623,7 +623,7 @@ describe("opening an unseen timeline", () => {
   it("opens at newest when unseen catch-up arrives after 25 seconds of opening", () => {
     const { area, catchUp } = renderThread(150, false, true);
     resize();
-    act(() => vi.advanceTimersByTime(25_000));
+    act(() => void vi.advanceTimersByTime(25_000));
     catchUp();
     height += 600;
     resize();
@@ -651,7 +651,7 @@ describe("opening an unseen timeline", () => {
     );
     resize();
     receiveOpeningAttention();
-    act(() => vi.advanceTimersByTime(25_000));
+    act(() => void vi.advanceTimersByTime(25_000));
     catchUp();
     height += 600;
     resize();
@@ -667,7 +667,7 @@ describe("opening an unseen timeline", () => {
     });
     const { area, blurThread, focusWithoutNewAttention } = renderThread(350);
     resize();
-    act(() => vi.advanceTimersByTime(1));
+    act(() => void vi.advanceTimersByTime(1));
     flushFrames();
     resize();
     expect(area.scrollTop).toBe(200);
@@ -694,7 +694,7 @@ describe("opening an unseen timeline", () => {
       true,
     );
     resize();
-    act(() => vi.advanceTimersByTime(1));
+    act(() => void vi.advanceTimersByTime(1));
     flushFrames();
     resize();
     expect(area.scrollTop).toBe(200);

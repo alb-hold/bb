@@ -287,7 +287,7 @@ async function connectLinkedTerminalAttachment(
   });
   const attached = nextSocketMessage(socket, "attached");
   const attach = await daemonAttach;
-  server.deps.terminalSessions.handleDaemonTerminalMessage({
+  void server.deps.terminalSessions.handleDaemonTerminalMessage({
     hostId: args.hostId,
     sessionId: args.sessionId,
     message: {
@@ -423,7 +423,7 @@ describe("device handoff pending attention", () => {
         clearedAt: null,
       });
 
-      harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      void harness.deps.terminalSessions.handleDaemonTerminalMessage({
         hostId: host.id,
         sessionId: session.id,
         message: {
@@ -534,7 +534,7 @@ describe("device handoff pending attention", () => {
         attentionSeq: 1,
       });
 
-      harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      void harness.deps.terminalSessions.handleDaemonTerminalMessage({
         hostId: host.id,
         sessionId: session.id,
         message: {
@@ -1226,7 +1226,7 @@ describe("device handoff websocket acknowledgement", () => {
       expect(response.status).toBe(200);
       expect(await response.json()).toEqual({ delivered: 0 });
 
-      server.deps.terminalSessions.handleDaemonTerminalMessage({
+      void server.deps.terminalSessions.handleDaemonTerminalMessage({
         hostId: host.id,
         sessionId: session.id,
         message: {
@@ -1558,7 +1558,7 @@ describe("device handoff websocket acknowledgement", () => {
         terminalId: terminal.id,
         sinceSeq: 0,
       });
-      server.deps.terminalSessions.handleDaemonTerminalMessage({
+      void server.deps.terminalSessions.handleDaemonTerminalMessage({
         hostId: host.id,
         sessionId: session.id,
         message: {
@@ -2326,7 +2326,7 @@ describe("device handoff websocket acknowledgement", () => {
       const attached = nextSocketMessage(terminalReader, "attached");
       const attach = await daemonAttach;
       expect(attach).not.toHaveProperty("handoffOwnerToken");
-      server.deps.terminalSessions.handleDaemonTerminalMessage({
+      void server.deps.terminalSessions.handleDaemonTerminalMessage({
         hostId: host.id,
         sessionId: session.id,
         message: {

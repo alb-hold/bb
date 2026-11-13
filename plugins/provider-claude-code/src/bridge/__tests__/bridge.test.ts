@@ -23,6 +23,7 @@ import type {
   CanUseTool,
   McpServerConfig,
   OnElicitation,
+  Query,
   SDKMessage,
   SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
@@ -131,21 +132,21 @@ interface CanUseToolPolicyCase {
 }
 
 interface ControlledClaudeQuery {
-  mcpServerStatus: ReturnType<typeof vi.fn>;
-  getContextUsage: ReturnType<typeof vi.fn>;
-  applyFlagSettings: ReturnType<typeof vi.fn>;
+  mcpServerStatus: ReturnType<typeof vi.fn<Query["mcpServerStatus"]>>;
+  getContextUsage: ReturnType<typeof vi.fn<Query["getContextUsage"]>>;
+  applyFlagSettings: ReturnType<typeof vi.fn<Query["applyFlagSettings"]>>;
   close: ReturnType<typeof vi.fn>;
   emit(message: SDKMessage): void;
   fail(error: Error): void;
   finish(): void;
-  initializationResult: ReturnType<typeof vi.fn>;
-  interrupt: ReturnType<typeof vi.fn>;
-  setModel: ReturnType<typeof vi.fn>;
-  setPermissionMode: ReturnType<typeof vi.fn>;
-  setMcpServers: ReturnType<typeof vi.fn>;
-  reconnectMcpServer: ReturnType<typeof vi.fn>;
-  toggleMcpServer: ReturnType<typeof vi.fn>;
-  supportedCommands: ReturnType<typeof vi.fn>;
+  initializationResult: ReturnType<typeof vi.fn<Query["initializationResult"]>>;
+  interrupt: ReturnType<typeof vi.fn<Query["interrupt"]>>;
+  setModel: ReturnType<typeof vi.fn<Query["setModel"]>>;
+  setPermissionMode: ReturnType<typeof vi.fn<Query["setPermissionMode"]>>;
+  setMcpServers: ReturnType<typeof vi.fn<Query["setMcpServers"]>>;
+  reconnectMcpServer: ReturnType<typeof vi.fn<Query["reconnectMcpServer"]>>;
+  toggleMcpServer: ReturnType<typeof vi.fn<Query["toggleMcpServer"]>>;
+  supportedCommands: ReturnType<typeof vi.fn<Query["supportedCommands"]>>;
   [Symbol.asyncIterator](): AsyncIterator<SDKMessage>;
 }
 
@@ -1222,7 +1223,10 @@ describe("bridge", () => {
     process.env.CLAUDE_CONFIG_DIR = join(home, ".claude-config");
     const mcpConfig = join(cwd, ".mcp.json");
     const settingsPath = join(cwd, ".claude", "settings.local.json");
-    const serverConfig = { type: "stdio", command: "fixture-mcp" };
+    const serverConfig = {
+      type: "stdio",
+      command: "fixture-mcp",
+    } satisfies McpServerConfig;
     writeFileSync(
       mcpConfig,
       JSON.stringify({ mcpServers: { fixture: serverConfig } }),
@@ -1325,7 +1329,10 @@ describe("bridge", () => {
     process.env.CLAUDE_CONFIG_DIR = join(home, ".claude-config");
     const mcpConfig = join(cwd, ".mcp.json");
     const settingsPath = join(cwd, ".claude", "settings.local.json");
-    const serverConfig = { type: "stdio", command: "fixture-mcp" };
+    const serverConfig = {
+      type: "stdio",
+      command: "fixture-mcp",
+    } satisfies McpServerConfig;
     writeFileSync(
       mcpConfig,
       JSON.stringify({ mcpServers: { fixture: serverConfig } }),
@@ -1425,7 +1432,10 @@ describe("bridge", () => {
     process.env.CLAUDE_CONFIG_DIR = join(home, ".claude-config");
     const mcpConfig = join(cwd, ".mcp.json");
     const settingsPath = join(cwd, ".claude", "settings.local.json");
-    const serverConfig = { type: "stdio", command: "fixture-mcp" };
+    const serverConfig = {
+      type: "stdio",
+      command: "fixture-mcp",
+    } satisfies McpServerConfig;
     writeFileSync(
       mcpConfig,
       JSON.stringify({ mcpServers: { fixture: serverConfig } }),
@@ -1522,7 +1532,10 @@ describe("bridge", () => {
     process.env.CLAUDE_CONFIG_DIR = join(home, ".claude-config");
     const mcpConfig = join(cwd, ".mcp.json");
     const settingsPath = join(cwd, ".claude", "settings.local.json");
-    const serverConfig = { type: "stdio", command: "fixture-mcp" };
+    const serverConfig = {
+      type: "stdio",
+      command: "fixture-mcp",
+    } satisfies McpServerConfig;
     writeFileSync(mcpConfig, JSON.stringify({ mcpServers: {} }));
     writeFileSync(
       settingsPath,
@@ -1603,7 +1616,10 @@ describe("bridge", () => {
     process.env.CLAUDE_CONFIG_DIR = join(home, ".claude-config");
     const mcpConfig = join(cwd, ".mcp.json");
     const settingsPath = join(cwd, ".claude", "settings.local.json");
-    const serverConfig = { type: "stdio", command: "fixture-mcp" };
+    const serverConfig = {
+      type: "stdio",
+      command: "fixture-mcp",
+    } satisfies McpServerConfig;
     const needsAuth = {
       name: "authServer",
       status: "needs-auth",
@@ -1678,7 +1694,10 @@ describe("bridge", () => {
     mkdirSync(cwd, { recursive: true });
     process.env.HOME = home;
     process.env.CLAUDE_CONFIG_DIR = join(home, ".claude");
-    const config = { type: "http", url: "https://fixture.invalid/mcp" };
+    const config = {
+      type: "http",
+      url: "https://fixture.invalid/mcp",
+    } satisfies McpServerConfig;
     const userConfig = join(home, ".claude.json");
     writeFileSync(userConfig, JSON.stringify({ mcpServers: {} }));
     const bridge = createBridgeJsonRpcTestHarness(handleLine);
@@ -1754,7 +1773,10 @@ describe("bridge", () => {
     mkdirSync(cwd, { recursive: true });
     process.env.HOME = home;
     process.env.CLAUDE_CONFIG_DIR = join(home, ".claude");
-    const config = { type: "http", url: "https://fixture.invalid/mcp" };
+    const config = {
+      type: "http",
+      url: "https://fixture.invalid/mcp",
+    } satisfies McpServerConfig;
     writeFileSync(
       join(home, ".claude.json"),
       JSON.stringify({ mcpServers: { fixture: config } }),
@@ -1812,7 +1834,10 @@ describe("bridge", () => {
     process.env.CLAUDE_CONFIG_DIR = join(home, ".claude-config");
     const mcpConfig = join(cwd, ".mcp.json");
     const settingsPath = join(cwd, ".claude", "settings.local.json");
-    const serverConfig = { type: "stdio", command: "fixture-mcp" };
+    const serverConfig = {
+      type: "stdio",
+      command: "fixture-mcp",
+    } satisfies McpServerConfig;
     const needsAuth = {
       name: "fixture",
       status: "needs-auth",
@@ -2166,7 +2191,7 @@ describe("bridge", () => {
     const initialServerConfig = {
       type: "stdio",
       command: "fixture-mcp",
-    };
+    } satisfies McpServerConfig;
     const bridge = createBridgeJsonRpcTestHarness(handleLine);
     const query = createControlledClaudeQuery();
     query.mcpServerStatus.mockResolvedValue([
@@ -2246,7 +2271,10 @@ describe("bridge", () => {
       mcpConfig,
       JSON.stringify({ mcpServers: { fixture: { command: "fixture-mcp" } } }),
     );
-    const serverConfig = { type: "stdio", command: "fixture-mcp" };
+    const serverConfig = {
+      type: "stdio",
+      command: "fixture-mcp",
+    } satisfies McpServerConfig;
     let serverEnabled = true;
     const bridge = createBridgeJsonRpcTestHarness(handleLine);
     const query = createControlledClaudeQuery();
@@ -2319,7 +2347,10 @@ describe("bridge", () => {
     process.env.HOME = home;
     process.env.CLAUDE_CONFIG_DIR = join(home, ".claude");
     const userConfig = join(home, ".claude.json");
-    const serverConfig = { type: "stdio", command: "fixture-mcp" };
+    const serverConfig = {
+      type: "stdio",
+      command: "fixture-mcp",
+    } satisfies McpServerConfig;
     const writeProjectConfig = (args: {
       includeServer: boolean;
       disabled?: boolean;
@@ -3451,7 +3482,7 @@ describe("bridge", () => {
         config,
       })),
     );
-    query.setMcpServers.mockImplementation(async (servers) => {
+    query.setMcpServers.mockImplementation(async (servers): ReturnType<Query["setMcpServers"]> => {
       if (failNextUpdate) {
         failNextUpdate = false;
         dynamicServers = {};
@@ -3722,7 +3753,10 @@ describe("bridge", () => {
     process.env.HOME = home;
     process.env.CLAUDE_CONFIG_DIR = join(home, ".claude");
     const userConfig = join(home, ".claude.json");
-    const serverConfig = { type: "stdio", command: "fixture-mcp" };
+    const serverConfig = {
+      type: "stdio",
+      command: "fixture-mcp",
+    } satisfies McpServerConfig;
     const writeUserConfig = (includeServer: boolean) => {
       writeFileSync(
         userConfig,

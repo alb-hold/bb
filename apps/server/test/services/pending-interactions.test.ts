@@ -1219,7 +1219,7 @@ describe("pending interaction lifecycle", () => {
         socketWait.mockRestore();
         expect(readStatus(harness, interaction.id)).toBe("resolving");
 
-        onDaemonSocketOpen(harness.deps, {
+        void onDaemonSocketOpen(harness.deps, {
           hostId: host.id,
           sessionId: opened.id,
           socket: registerTestHostRpcCapture(harness.deps, {

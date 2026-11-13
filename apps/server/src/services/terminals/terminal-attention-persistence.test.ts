@@ -484,7 +484,7 @@ describe("terminal attention persistence", () => {
       message: { type: "visibility", visible: true },
     });
 
-    harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId,
       sessionId: daemonSessionId,
       message: {
@@ -601,7 +601,7 @@ describe("terminal attention persistence", () => {
       message: { type: "visibility", visible: false },
     });
 
-    harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId,
       sessionId: daemonSessionId,
       message: {
@@ -640,7 +640,7 @@ describe("terminal attention persistence", () => {
         },
       });
 
-    daemonAttention(7);
+    void daemonAttention(7);
     expect(getTerminalAttention(harness.db, terminalId)).toMatchObject({
       seq: 7,
       title: "daemon-7",
@@ -670,17 +670,17 @@ describe("terminal attention persistence", () => {
       title: "api-3",
     });
 
-    daemonAttention(8);
+    void daemonAttention(8);
     expect(getTerminalAttention(harness.db, terminalId)).toMatchObject({
       seq: 11,
       title: "daemon-8",
     });
-    daemonAttention(8);
+    void daemonAttention(8);
     expect(getTerminalAttention(harness.db, terminalId)).toMatchObject({
       seq: 11,
       title: "daemon-8",
     });
-    daemonAttention(9);
+    void daemonAttention(9);
     expect(getTerminalAttention(harness.db, terminalId)).toMatchObject({
       seq: 12,
       title: "daemon-9",
@@ -693,7 +693,7 @@ describe("terminal attention persistence", () => {
     const { daemonSessionId, hostId, terminalId, threadId } =
       createAttentionTerminal(original);
 
-    original.deps.terminalSessions.handleDaemonTerminalMessage({
+    void original.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId,
       sessionId: daemonSessionId,
       message: {
@@ -848,7 +848,7 @@ describe("terminal attention persistence", () => {
       attentionSeq: 1,
     });
 
-    harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId,
       sessionId: daemonSessionId,
       message: {

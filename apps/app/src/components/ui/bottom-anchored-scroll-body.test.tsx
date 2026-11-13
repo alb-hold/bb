@@ -556,7 +556,7 @@ describe("BottomAnchoredScrollBody", () => {
         });
       });
     }
-    act(() => vi.advanceTimersByTime(200));
+    act(() => void vi.advanceTimersByTime(200));
     const before = topOf(reader);
 
     act(() =>
@@ -583,7 +583,7 @@ describe("BottomAnchoredScrollBody", () => {
     const keys = rowKeys("thread-a", 120);
     const first = setup("thread-a", keys);
     act(() => first.layout.userScrollTo(first.layout.maxScrollTop() - 2_500));
-    act(() => vi.advanceTimersByTime(300));
+    act(() => void vi.advanceTimersByTime(300));
     const reader = first.firstVisible();
     const before = first.topOf(reader);
     first.view.unmount();
@@ -748,7 +748,7 @@ describe("BottomAnchoredScrollBody", () => {
     });
     const { layout } = setup("thread-a", rowKeys("thread-a", 60));
 
-    act(() => vi.advanceTimersByTime(10_000));
+    act(() => void vi.advanceTimersByTime(10_000));
     act(() => layout.flushResizeObservers());
 
     expect(layout.scrollTop).toBe(layout.maxScrollTop());

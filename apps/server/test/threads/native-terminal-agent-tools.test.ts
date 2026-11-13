@@ -185,7 +185,7 @@ async function createNativeThread(fixture: Fixture): Promise<string> {
   const open = fixture.terminalOpens[opensBefore];
   if (open === undefined) throw new Error("terminal never opened");
   const terminalId = open.terminalId;
-  fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+  void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
     hostId: fixture.hostId,
     sessionId: fixture.sessionId,
     message: {
@@ -732,7 +732,7 @@ describe("native terminal agent tools", () => {
       try {
         await callTool(fixture, threadId, authHeaders(fixture, threadId));
         expect(record(fixture, threadId)?.lastToolCallAt).toBe(7_000_000);
-        fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+        void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
           hostId: fixture.hostId,
           sessionId: fixture.sessionId,
           message: {
@@ -810,7 +810,7 @@ describe("native terminal agent tools", () => {
     );
     expect((await post(first, oldCredential)).status).toBe(200);
 
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.hostId,
       sessionId: fixture.sessionId,
       message: {
@@ -836,7 +836,7 @@ describe("native terminal agent tools", () => {
     if (reopen === undefined || reopen.credential === null) {
       throw new Error("terminal never reopened with a credential");
     }
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.hostId,
       sessionId: fixture.sessionId,
       message: {
@@ -875,7 +875,7 @@ describe("native terminal agent tools", () => {
       .set({ archivedAt: Date.now() })
       .where(eq(threads.id, archived))
       .run();
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.hostId,
       sessionId: fixture.sessionId,
       message: {

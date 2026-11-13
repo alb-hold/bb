@@ -1167,7 +1167,7 @@ export function createApp(
             ...websocketContext,
             socket,
           });
-          return daemonOpen.then(
+          void daemonOpen.then(
             () => daemonMessageQueue.release(),
             (error: unknown) => {
               deps.logger.error(

@@ -1010,7 +1010,7 @@ it("resumes workspace setup when the same daemon reconnects", async () => {
       hostId: host.id,
       sessionId: reconnectedSession!.id,
     });
-    onDaemonSocketOpen(harness.deps, {
+    void onDaemonSocketOpen(harness.deps, {
       hostId: host.id,
       sessionId: reconnectedSession!.id,
       socket,

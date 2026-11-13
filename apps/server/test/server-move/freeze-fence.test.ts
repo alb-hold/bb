@@ -201,7 +201,7 @@ function seedDaemonChanges(harness: TestAppHarness, hostId: string) {
           closeReason: "process-exit",
         },
       ]) {
-        onDaemonSocketMessage(
+        void onDaemonSocketMessage(
           harness.deps,
           {
             hostId: host.id,
@@ -276,7 +276,7 @@ function seedDisconnectedTerminal(harness: TestAppHarness, hostId: string) {
         terminalId: terminal.id,
       }),
     reconnect() {
-      onDaemonSocketOpen(harness.deps, {
+      void onDaemonSocketOpen(harness.deps, {
         hostId: host.id,
         sessionId: session.id,
         socket: registerTestHostRpcCapture(harness.deps, {
@@ -501,7 +501,7 @@ describe("writes while a server move is frozen", () => {
           },
         });
         const request = await waitForSentMessage(socket, "host-rpc.request");
-        feed({
+        void feed({
           type: "host-rpc.response",
           requestId: request.requestId,
           commandType: "server_move.probe",
@@ -514,13 +514,13 @@ describe("writes while a server move is frozen", () => {
           state: "pending",
         });
 
-        feed({ type: "heartbeat" });
-        feed({
+        void feed({ type: "heartbeat" });
+        void feed({
           type: "environment-change",
           environmentId: environment.id,
           change: "git-refs-changed",
         });
-        feed({
+        void feed({
           type: "server_move.progress",
           moveId: "move-frozen",
           step: "transfer",
@@ -559,7 +559,7 @@ describe("writes while a server move is frozen", () => {
 
       setSnapshotFence(harness.db, true);
       try {
-        onDaemonSocketMessage(harness.deps, {
+        void onDaemonSocketMessage(harness.deps, {
           hostId: host.id,
           sessionId: session.id,
           socket,
@@ -613,7 +613,7 @@ describe("writes while a server move is frozen", () => {
 
       setSnapshotFence(harness.db, true);
       try {
-        onDaemonSocketMessage(harness.deps, {
+        void onDaemonSocketMessage(harness.deps, {
           hostId: host.id,
           sessionId: session.id,
           socket,

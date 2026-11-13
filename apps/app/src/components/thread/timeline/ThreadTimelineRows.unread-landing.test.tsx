@@ -231,7 +231,7 @@ function openUnseenThread() {
     act(() => {
       for (const observer of ResizeObserverMock.instances) observer.trigger();
     });
-    act(() => vi.advanceTimersByTime(50));
+    act(() => void vi.advanceTimersByTime(50));
   };
   return { area, container, settle };
 }

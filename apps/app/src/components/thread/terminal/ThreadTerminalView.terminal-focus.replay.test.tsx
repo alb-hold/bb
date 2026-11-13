@@ -1714,7 +1714,7 @@ describe("ThreadTerminalView terminal replay and reconnect", () => {
     );
     const initialColorReads = context.getImageData.mock.calls.length;
     const createElement = vi.spyOn(document, "createElement");
-    act(() =>
+    act(() => void
       textarea.dispatchEvent(new FocusEvent("focusin", { bubbles: true })),
     );
     await act(async () => {

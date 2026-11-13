@@ -1121,7 +1121,7 @@ describe("ThreadDetailPromptArea", () => {
         );
       };
       assertPermissionsEnabled();
-      act(() => vi.advanceTimersByTime(4999));
+      act(() => void vi.advanceTimersByTime(4999));
       assertPermissionsEnabled();
       mocks.modelCatalogIsSettled = true;
       mocks.modelCatalogIsVerified = true;
@@ -1175,7 +1175,7 @@ describe("ThreadDetailPromptArea", () => {
       mocks.defaultExecutionOptions = { model: "thread-stored-model", permissionMode: "full", reasoningLevel: "high", serviceTier: "default", source: "client/turn/requested" };
       renderPromptArea();
       expect(screen.getByTestId("selected-model").textContent).toBe("thread-stored-model");
-      act(() => vi.advanceTimersByTime(5000));
+      act(() => void vi.advanceTimersByTime(5000));
       expect(screen.getByTestId("selected-model").textContent).toBe("thread-stored-model");
       expect(screen.getByTestId("selected-permission").textContent).toBe("full");
     } finally { vi.useRealTimers(); }

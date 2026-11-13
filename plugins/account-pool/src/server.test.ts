@@ -109,7 +109,7 @@ const CHILD_PROCESS_START_TIMEOUT_MS = 15_000;
 const CHILD_PROCESS_TEST_TIMEOUT_MS = CHILD_PROCESS_START_TIMEOUT_MS + 15_000;
 
 async function waitForChildProcessStart(
-  assertStarted: () => void,
+  assertStarted: () => void | Promise<void>,
 ): Promise<void> {
   await vi.waitFor(assertStarted, {
     timeout: CHILD_PROCESS_START_TIMEOUT_MS,
@@ -14498,7 +14498,7 @@ describe("Account Pool credential scoping", () => {
         if (!armed || threadId !== "thread-stale-answer")
           return bbThread(threadId);
         armed = false;
-        const captured = await bbThread(threadId);
+        const captured = bbThread(threadId);
         reach();
         await gate;
         return captured;
@@ -14540,7 +14540,7 @@ describe("Account Pool credential scoping", () => {
         if (!armed || threadId !== "thread-deleted-live")
           return bbThread(threadId);
         armed = false;
-        const captured = await bbThread(threadId);
+        const captured = bbThread(threadId);
         reach();
         await gate;
         return captured;

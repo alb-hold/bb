@@ -241,7 +241,7 @@ it("keeps the reading row in place through eased growth frames", () => {
 
   const disconnect = positionKeeper.connect(area);
   positionKeeper.hold(row, "top");
-  act(() => vi.advanceTimersByTime(300));
+  act(() => void vi.advanceTimersByTime(300));
   scrollTopWrites.length = 0;
   const readingRowTop = row.getBoundingClientRect().top;
   const initialScrollTop = area.scrollTop;

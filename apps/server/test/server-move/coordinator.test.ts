@@ -993,7 +993,7 @@ describe("server move coordinator", () => {
       await expect
         .poll(() => events.includes(`${NEW}:server_move.prepare`))
         .toBe(true);
-      onDaemonSocketMessage(
+      void onDaemonSocketMessage(
         harness.deps,
         {
           hostId: NEW,

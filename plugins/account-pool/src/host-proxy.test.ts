@@ -42,7 +42,10 @@ async function startHub(
   respond: (call: HubCall) => { status: number; body: string },
 ): Promise<{ url: string; calls: HubCall[] }> {
   const calls: HubCall[] = [];
-  const server = http.createServer(async (request, response) => {
+  const handle = async (
+    request: http.IncomingMessage,
+    response: http.ServerResponse,
+  ): Promise<void> => {
     const chunks: Buffer[] = [];
     for await (const chunk of request) chunks.push(Buffer.from(chunk));
     const call = {
@@ -55,6 +58,9 @@ async function startHub(
     const reply = respond(call);
     response.writeHead(reply.status, { "content-type": "application/json" });
     response.end(reply.body);
+  };
+  const server = http.createServer((request, response) => {
+    void handle(request, response);
   });
   const port = await listen(server);
   cleanups.push(() => server.closeAllConnections());

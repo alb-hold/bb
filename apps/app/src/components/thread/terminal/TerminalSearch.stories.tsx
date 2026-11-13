@@ -18,7 +18,7 @@ function SearchableTerminal({ touch = false }: { touch?: boolean }) {
   useEffect(() => {
     let active = true;
     let mountedTerminal: Terminal | null = null;
-    Promise.all([
+    void Promise.all([
       import("@xterm/xterm"),
       import("@xterm/addon-fit"),
       import("@xterm/addon-search"),

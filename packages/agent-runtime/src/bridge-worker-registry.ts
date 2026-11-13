@@ -258,7 +258,9 @@ export async function reapDeadBridgeWorkers(
   }
   const live: BridgeWorkerRegistryEntry[] = [];
   const reaped: BridgeWorkerRegistryEntry[] = [];
-  const alive = await Promise.all(entries.map(isAlive));
+  const alive = await Promise.all(
+    entries.map((entry) => Promise.resolve(isAlive(entry))),
+  );
   for (const [index, entry] of entries.entries()) {
     if (alive[index] === true) {
       live.push(entry);

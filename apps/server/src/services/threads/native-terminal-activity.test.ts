@@ -64,7 +64,7 @@ describe("native terminal row state", () => {
         progress: { value: 0.4 },
       });
 
-      harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      void harness.deps.terminalSessions.handleDaemonTerminalMessage({
         hostId: host.id,
         sessionId: session.id,
         message: {
@@ -121,7 +121,7 @@ describe("native terminal row state", () => {
     };
     putThreadRowState(harness.db, thread.id, rowState);
 
-    harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: host.id,
       sessionId: session.id,
       message: {

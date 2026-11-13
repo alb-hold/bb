@@ -582,7 +582,9 @@ describe("runtime installer", () => {
       }
     } finally {
       if (!reapReleased) unblockReap();
-      await Promise.all([bHeld?.(), cHeld?.()].filter(Boolean));
+      await Promise.all(
+        [bHeld?.(), cHeld?.()].map((released) => Promise.resolve(released)),
+      );
       lockRace.path = null;
       lockRace.onUnlink = null;
       lockRace.onReapLink = null;

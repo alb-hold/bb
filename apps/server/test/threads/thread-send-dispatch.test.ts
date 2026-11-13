@@ -2151,7 +2151,7 @@ describe("concurrent idle dispatch regression", () => {
         [true, "thread_scope_changed"],
       ] as const) {
         try {
-          reattemptDispatchForThreadChange(
+          void reattemptDispatchForThreadChange(
             harness.deps,
             {} as never,
             thread,

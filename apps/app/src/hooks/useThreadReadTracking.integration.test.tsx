@@ -193,7 +193,7 @@ it("keeps a manual unread made during a read after that read fails", async () =>
     await new Promise((resolve) => setTimeout(resolve, 50));
   });
   await act(async () => requests[0]?.reject());
-  act(() => window.dispatchEvent(new Event("pageshow")));
+  act(() => void window.dispatchEvent(new Event("pageshow")));
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
   });
@@ -216,7 +216,7 @@ it("keeps a manual unread that lands in the same render as the read failure", as
     requests[0]?.reject();
     await unread;
   });
-  act(() => window.dispatchEvent(new Event("pageshow")));
+  act(() => void window.dispatchEvent(new Event("pageshow")));
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
   });
@@ -252,7 +252,7 @@ it("retries a failed read after reopening when an older manual unread has the sa
     });
     expect(requests).toHaveLength(3);
 
-    act(() => window.dispatchEvent(new Event("pageshow")));
+    act(() => void window.dispatchEvent(new Event("pageshow")));
     await waitFor(() => expect(requests).toHaveLength(4));
     expect(requests[3]?.threadId).toBe("A");
   } finally {
@@ -264,7 +264,7 @@ it("keeps a manual unread made after a failed read was retried", async () => {
   const { requests, result, queryClient } = setup(true);
   await waitFor(() => expect(requests).toHaveLength(1));
   await act(async () => requests[0]?.reject());
-  act(() => window.dispatchEvent(new Event("pageshow")));
+  act(() => void window.dispatchEvent(new Event("pageshow")));
   await waitFor(() => expect(requests).toHaveLength(2));
   await act(async () => requests[1]?.resolve());
   vi.mocked(sdk.threads.markUnread).mockResolvedValue(
@@ -273,7 +273,7 @@ it("keeps a manual unread made after a failed read was retried", async () => {
   await act(async () => {
     await result.current.mutateAsync({ threadId: "A" });
   });
-  act(() => window.dispatchEvent(new Event("pageshow")));
+  act(() => void window.dispatchEvent(new Event("pageshow")));
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
   });
@@ -299,7 +299,7 @@ it("keeps a manual unread after a cancelled read is retried", async () => {
   await act(async () => {
     await result.current.mutateAsync({ threadId: "A" });
   });
-  act(() => window.dispatchEvent(new Event("pageshow")));
+  act(() => void window.dispatchEvent(new Event("pageshow")));
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
   });
@@ -349,7 +349,7 @@ it("does not retry a failed read until the page is shown again", async () => {
   });
   expect(requests).toHaveLength(failedAttempts);
 
-  act(() => window.dispatchEvent(new Event("pageshow")));
+  act(() => void window.dispatchEvent(new Event("pageshow")));
   await waitFor(() => expect(requests).toHaveLength(failedAttempts + 1));
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 50));

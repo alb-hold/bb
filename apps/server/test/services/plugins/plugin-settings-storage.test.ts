@@ -571,7 +571,7 @@ describe("plugin settings + storage", () => {
         expect(compiler).toHaveBeenCalledWith(
           expect.objectContaining({ pluginId: "sqler" }),
         );
-        await expect(compiler).toHaveResolvedWith(
+        expect(compiler).toHaveResolvedWith(
           expect.objectContaining({ path: entryPath }),
         );
 

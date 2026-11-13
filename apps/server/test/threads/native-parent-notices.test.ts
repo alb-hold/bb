@@ -162,7 +162,7 @@ async function openRunningClaudeParent(fixture: Fixture) {
   expect(response.status).toBe(201);
   const thread = threadResponseSchema.parse(await readJson(response));
   const open = await waitForTerminalOpen(fixture.socket);
-  fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+  void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
     hostId: fixture.hostId,
     sessionId: fixture.sessionId,
     message: {
@@ -201,7 +201,7 @@ function startFakeClaudeTui(
       dataBase64: Buffer.from(text, "utf8").toString("base64"),
     };
     output.push(chunk);
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.hostId,
       sessionId: fixture.sessionId,
       message: { type: "terminal.output", terminalId, chunk },
@@ -216,7 +216,7 @@ function startFakeClaudeTui(
         message.type === "terminal.attach" &&
         message.terminalId === terminalId
       ) {
-        fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+        void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
           hostId: fixture.hostId,
           sessionId: fixture.sessionId,
           message: {

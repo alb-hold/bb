@@ -818,7 +818,7 @@ async function runDispatchAttempt(
       const admission = admitted.value;
       if (admission === null) {
         const current = getThread(deps.db, thread.id);
-        return reattemptDispatchForThreadChange(
+        return await reattemptDispatchForThreadChange(
           deps,
           args,
           current,

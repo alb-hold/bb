@@ -98,7 +98,7 @@ describe("usePromptVoice", () => {
       result.current.send();
     });
     expect(voiceInput.stop).toHaveBeenCalledTimes(2);
-    act(() => options?.onTranscript("first transcript", "send"));
+    act(() => void options?.onTranscript("first transcript", "send"));
     expect(deliverTranscript).toHaveBeenCalledExactlyOnceWith(
       "first transcript",
       "send",
@@ -106,7 +106,7 @@ describe("usePromptVoice", () => {
     act(() => {
       result.current.send();
       result.current.cancel();
-      options?.onTranscript("cancelled transcript", "insert");
+      void options?.onTranscript("cancelled transcript", "insert");
     });
     expect(deliverTranscript).toHaveBeenCalledTimes(2);
     expect(deliverTranscript).toHaveBeenLastCalledWith(
@@ -115,7 +115,7 @@ describe("usePromptVoice", () => {
     );
     act(() => {
       result.current.stop();
-      options?.onTranscript("draft transcript", "insert");
+      void options?.onTranscript("draft transcript", "insert");
     });
     expect(deliverTranscript).toHaveBeenLastCalledWith(
       "draft transcript",
@@ -143,7 +143,7 @@ describe("usePromptVoice", () => {
     rerender();
     state = "recording";
     rerender();
-    act(() => options?.onTranscript("later transcript", "insert"));
+    act(() => void options?.onTranscript("later transcript", "insert"));
     expect(deliverTranscript).toHaveBeenCalledExactlyOnceWith(
       "later transcript",
       "insert",
@@ -165,7 +165,7 @@ describe("usePromptVoice", () => {
     const options = vi.mocked(useVoiceInput).mock.calls[0]?.[0];
     act(() => result.current.send());
     unmount();
-    options?.onTranscript("late transcript", "send");
+    void options?.onTranscript("late transcript", "send");
     expect(deliverTranscript).not.toHaveBeenCalled();
   });
   it.each(["send", "stop"] as const)(
@@ -233,7 +233,7 @@ describe("usePromptVoice", () => {
     );
     const options = vi.mocked(useVoiceInput).mock.calls[0]?.[0];
     draft = { ...draft, text: "Existing and later edits" };
-    options?.onTranscript("new words", "insert");
+    void options?.onTranscript("new words", "insert");
     expect(draft).toEqual({
       text: "Existing and later edits new words",
       mentions: [],

@@ -494,7 +494,7 @@ async function waitForTerminalOpen(
 }
 
 function acknowledgeOpen(fixture: Fixture, open: TerminalOpenMessage): void {
-  fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+  void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
     hostId: fixture.hostId,
     sessionId: fixture.sessionId,
     message: {
@@ -561,7 +561,7 @@ function startComposerCli(fixture: Fixture, terminalId: string) {
         message.type === "terminal.attach" &&
         message.terminalId === terminalId
       )
-        fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+        void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
           hostId: fixture.hostId,
           sessionId: fixture.sessionId,
           message: {

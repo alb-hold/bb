@@ -174,7 +174,7 @@ describe("offline host follow-ups", () => {
         hostId: host.id,
         sessionId: reconnectSession.id,
       });
-      onDaemonSocketOpen(harness.deps, {
+      void onDaemonSocketOpen(harness.deps, {
         hostId: host.id,
         sessionId: reconnectSession.id,
         socket: reconnectSocket,

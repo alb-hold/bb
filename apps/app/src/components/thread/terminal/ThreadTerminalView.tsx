@@ -3131,10 +3131,10 @@ export function ThreadTerminalView({
           );
           if (nextSize !== null) {
             sharedSize = nextSize;
-            replayPreview?.resize(nextSize.cols, nextSize.rows);
+            void replayPreview?.resize(nextSize.cols, nextSize.rows);
             scheduleFit();
           } else {
-            replayPreview?.resize(cols, rows);
+            void replayPreview?.resize(cols, rows);
           }
           if (message.session.status === "exited") {
             handleReplayPreviewExit();

@@ -1626,7 +1626,7 @@ describe("useThreadFileTabs file opener diversion", () => {
       }),
     );
 
-    act(() => result.current.openTab({ kind: "new-tab" }));
+    act(() => void result.current.openTab({ kind: "new-tab" }));
     act(() =>
       result.current.selectFileSearchResult({
         source: "workspace",
@@ -1655,7 +1655,7 @@ describe("useThreadFileTabs file opener diversion", () => {
       }),
     );
 
-    act(() => result.current.openTab({ kind: "new-tab" }));
+    act(() => void result.current.openTab({ kind: "new-tab" }));
     act(() =>
       result.current.selectFileSearchResult({
         source: "workspace",

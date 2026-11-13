@@ -480,7 +480,7 @@ function acknowledgeTerminalOpen(
   openMessage: TerminalOpenMessage,
   initialCwd = "/tmp/terminal-workspace",
 ): void {
-  fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+  void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
     hostId: fixture.host.id,
     sessionId: fixture.session.id,
     message: {
@@ -695,7 +695,7 @@ describe("public terminal routes", () => {
         threadId: fixture.thread.id,
         title: "Long retained output",
       });
-      fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
         hostId: fixture.host.id,
         sessionId: fixture.session.id,
         message: {
@@ -709,7 +709,7 @@ describe("public terminal routes", () => {
           },
         },
       });
-      fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
         hostId: fixture.host.id,
         sessionId: fixture.session.id,
         message: {
@@ -778,7 +778,7 @@ describe("public terminal routes", () => {
       threadId: fixture.thread.id,
       title: "Terminal attention",
     });
-    onDaemonSocketMessage(fixture.harness.deps, {
+    void onDaemonSocketMessage(fixture.harness.deps, {
       hostId: fixture.host.id,
       raw: JSON.stringify({
         type: "terminal.attention",
@@ -1086,7 +1086,7 @@ describe("public terminal routes", () => {
       ).mockImplementation((sessionId, message) => {
         if (message.type === "terminal.open") {
           messages.push(message);
-          fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+          void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
             hostId: fixture.host.id,
             sessionId,
             message: {
@@ -1584,7 +1584,7 @@ describe("public terminal routes", () => {
       },
     });
 
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.host.id,
       sessionId: fixture.session.id,
       message: {
@@ -1630,7 +1630,7 @@ describe("public terminal routes", () => {
     }
     expect(openMessage.terminalId).toBe(terminalId);
 
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.host.id,
       sessionId: fixture.session.id,
       message: {
@@ -1659,7 +1659,7 @@ describe("public terminal routes", () => {
       await startPendingTerminalOpen(fixture);
 
     acknowledgeTerminalOpen(fixture, openMessage);
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.host.id,
       sessionId: fixture.session.id,
       message: {
@@ -2119,7 +2119,7 @@ describe("public terminal routes", () => {
       threadId: fixture.thread.id,
       title: "Terminal 1",
     });
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.host.id,
       sessionId: fixture.session.id,
       message: {
@@ -2134,7 +2134,7 @@ describe("public terminal routes", () => {
         },
       },
     });
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.host.id,
       sessionId: fixture.session.id,
       message: {
@@ -2225,7 +2225,7 @@ describe("public terminal routes", () => {
       title: "Queue capacity",
     });
     const retainedOutput = `${"screen line for queue capacity\n".repeat(300)}`;
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.host.id,
       sessionId: fixture.session.id,
       message: {
@@ -2237,7 +2237,7 @@ describe("public terminal routes", () => {
         },
       },
     });
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.host.id,
       sessionId: fixture.session.id,
       message: {
@@ -2257,7 +2257,9 @@ describe("public terminal routes", () => {
       `/api/v1/terminals/${session.id}/screen`,
     );
     const overflowBody = apiErrorSchema.parse(await readJson(overflow));
-    const responses = await Promise.all(reads);
+    const responses = await Promise.all(
+      reads.map((response) => Promise.resolve(response)),
+    );
 
     expect(overflow.status).toBe(503);
     expect(overflowBody).toMatchObject({
@@ -2290,7 +2292,7 @@ describe("public terminal routes", () => {
       threadId: fixture.thread.id,
       title: "SDK queue capacity",
     });
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.host.id,
       sessionId: fixture.session.id,
       message: {
@@ -2304,7 +2306,7 @@ describe("public terminal routes", () => {
         },
       },
     });
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.host.id,
       sessionId: fixture.session.id,
       message: {
@@ -2367,7 +2369,7 @@ describe("public terminal routes", () => {
       threadId: foreignThread.id,
       title: "Foreign project terminal",
     });
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.host.id,
       sessionId: fixture.session.id,
       message: {
@@ -2379,7 +2381,7 @@ describe("public terminal routes", () => {
         },
       },
     });
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.host.id,
       sessionId: fixture.session.id,
       message: {
@@ -2429,7 +2431,7 @@ describe("public terminal routes", () => {
       threadId: fixture.thread.id,
       title: "Terminal restart retention",
     });
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.host.id,
       sessionId: fixture.session.id,
       message: {
@@ -2441,7 +2443,7 @@ describe("public terminal routes", () => {
         },
       },
     });
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.host.id,
       sessionId: fixture.session.id,
       message: {
@@ -2945,7 +2947,7 @@ describe("public terminal routes", () => {
       dataBase64: Buffer.from("owner replay\n").toString("base64"),
     };
 
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.host.id,
       sessionId: fixture.session.id,
       message: {
@@ -2954,7 +2956,7 @@ describe("public terminal routes", () => {
         chunk: trustedChunk,
       },
     });
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: foreignHost.host.id,
       sessionId: fixture.session.id,
       message: {
@@ -2984,7 +2986,7 @@ describe("public terminal routes", () => {
       closeReason: null,
     });
 
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.host.id,
       sessionId: fixture.session.id,
       message: {
@@ -2993,7 +2995,7 @@ describe("public terminal routes", () => {
         chunk: trustedChunk,
       },
     });
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: foreignHost.host.id,
       sessionId: fixture.session.id,
       message: {
@@ -3031,7 +3033,7 @@ describe("public terminal routes", () => {
         .get(exitedTerminal.id),
     ).toEqual({ expiresAt: null });
 
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: foreignHost.host.id,
       sessionId: fixture.session.id,
       message: {
@@ -3054,7 +3056,7 @@ describe("public terminal routes", () => {
         },
       ),
     ).toEqual([trustedChunk]);
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.host.id,
       sessionId: fixture.session.id,
       message: {
@@ -3072,7 +3074,7 @@ describe("public terminal routes", () => {
         .chunks,
     ).toEqual([trustedChunk]);
 
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: foreignHost.host.id,
       sessionId: fixture.session.id,
       message: {
@@ -3154,13 +3156,13 @@ describe("public terminal routes", () => {
         dataBase64: bytes.toString("base64"),
       }));
       for (const chunk of outputChunks) {
-        fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+        void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
           hostId: fixture.host.id,
           sessionId: fixture.session.id,
           message: { type: "terminal.output", terminalId: session.id, chunk },
         });
       }
-      fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
         hostId: fixture.host.id,
         sessionId: fixture.session.id,
         message: {
@@ -3207,7 +3209,7 @@ describe("public terminal routes", () => {
     for (const session of sessions) {
       const chunkCount = session === sessions.at(-1) ? 1 : 4;
       for (let seq = 0; seq < chunkCount; seq += 1) {
-        fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+        void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
           hostId: fixture.host.id,
           sessionId: fixture.session.id,
           message: {
@@ -3217,7 +3219,7 @@ describe("public terminal routes", () => {
           },
         });
       }
-      fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
         hostId: fixture.host.id,
         sessionId: fixture.session.id,
         message: {
@@ -3255,7 +3257,7 @@ describe("public terminal routes", () => {
       }),
     );
     for (const session of sessions) {
-      fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
         hostId: fixture.host.id,
         sessionId: fixture.session.id,
         message: {
@@ -3267,7 +3269,7 @@ describe("public terminal routes", () => {
           },
         },
       });
-      fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
         hostId: fixture.host.id,
         sessionId: fixture.session.id,
         message: {
@@ -3306,7 +3308,7 @@ describe("public terminal routes", () => {
     });
     const dataBase64 = Buffer.alloc(16 * 1024, 65).toString("base64");
     for (let seq = 0; seq < 5; seq += 1) {
-      fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
         hostId: fixture.host.id,
         sessionId: fixture.session.id,
         message: {
@@ -3316,7 +3318,7 @@ describe("public terminal routes", () => {
         },
       });
     }
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.host.id,
       sessionId: fixture.session.id,
       message: {
@@ -3359,7 +3361,7 @@ describe("public terminal routes", () => {
     });
     vi.useFakeTimers();
     try {
-      fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
         hostId: fixture.host.id,
         sessionId: fixture.session.id,
         message: {
@@ -3371,7 +3373,7 @@ describe("public terminal routes", () => {
           },
         },
       });
-      fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+      void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
         hostId: fixture.host.id,
         sessionId: fixture.session.id,
         message: {
@@ -3413,7 +3415,7 @@ describe("public terminal routes", () => {
       `/api/v1/terminals/${session.id}/output`,
     );
     await waitForDaemonMessage(fixture.socket);
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.host.id,
       sessionId: fixture.session.id,
       message: {
@@ -3425,7 +3427,7 @@ describe("public terminal routes", () => {
         },
       },
     });
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.host.id,
       sessionId: fixture.session.id,
       message: {
@@ -3663,7 +3665,7 @@ describe("public terminal routes", () => {
         message.type === "output" ? [message.chunk.seq] : [],
       );
 
-    sendOutput(fixture.session.id, 0);
+    void sendOutput(fixture.session.id, 0);
     handleDaemonSocketClosed(fixture.harness.deps, {
       sessionId: fixture.session.id,
     });
@@ -3672,7 +3674,7 @@ describe("public terminal routes", () => {
       fixture.host.id,
     );
     const replacementSocket = createFakeDaemonSocket();
-    onDaemonSocketOpen(fixture.harness.deps, {
+    void onDaemonSocketOpen(fixture.harness.deps, {
       hostId: fixture.host.id,
       sessionId: replacementSession.id,
       socket: replacementSocket,
@@ -3708,7 +3710,7 @@ describe("public terminal routes", () => {
       ),
     ).toBe(false);
 
-    sendOutput(replacementSession.id, 3);
+    void sendOutput(replacementSession.id, 3);
     expect(browserOutputSeqs()).toEqual([0]);
 
     await fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
@@ -3723,7 +3725,7 @@ describe("public terminal routes", () => {
         nextSeq: 4,
       },
     });
-    sendOutput(replacementSession.id, 4);
+    void sendOutput(replacementSession.id, 4);
 
     expect(browserOutputSeqs()).toEqual([0, 1, 2, 3, 4]);
   });
@@ -3790,7 +3792,7 @@ describe("public terminal routes", () => {
         fixture.host.id,
       );
       const replacementSocket = createFakeDaemonSocket();
-      onDaemonSocketOpen(fixture.harness.deps, {
+      void onDaemonSocketOpen(fixture.harness.deps, {
         hostId: fixture.host.id,
         sessionId: replacementSession.id,
         socket: replacementSocket,
@@ -3898,7 +3900,7 @@ describe("public terminal routes", () => {
         fixture.host.id,
       );
       const replacementSocket = createFakeDaemonSocket();
-      onDaemonSocketOpen(fixture.harness.deps, {
+      void onDaemonSocketOpen(fixture.harness.deps, {
         hostId: fixture.host.id,
         sessionId: replacementSession.id,
         socket: replacementSocket,
@@ -3958,7 +3960,7 @@ describe("public terminal routes", () => {
       }),
     };
     const replacementSocket = createFakeDaemonSocket();
-    onDaemonSocketOpen(fixture.harness.deps, {
+    void onDaemonSocketOpen(fixture.harness.deps, {
       hostId: fixture.host.id,
       sessionId: replacement.session.id,
       socket: replacementSocket,
@@ -4040,7 +4042,7 @@ describe("public terminal routes", () => {
     ]);
 
     const replacementSocket = createFakeDaemonSocket();
-    onDaemonSocketOpen(fixture.harness.deps, {
+    void onDaemonSocketOpen(fixture.harness.deps, {
       hostId: fixture.host.id,
       sessionId: replacementSession.id,
       socket: replacementSocket,
@@ -4364,7 +4366,7 @@ describe("public terminal routes", () => {
       terminalId: stored.id,
       reason: "user",
     });
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.host.id,
       sessionId: fixture.session.id,
       message: {
@@ -4422,7 +4424,7 @@ describe("public terminal routes", () => {
     if (openMessage.type !== "terminal.open") {
       throw new Error(`Expected terminal.open, received ${openMessage.type}`);
     }
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.host.id,
       sessionId: fixture.session.id,
       message: {
@@ -4479,7 +4481,7 @@ describe("public terminal routes", () => {
       terminalId: stored.id,
       reason: "user",
     });
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.host.id,
       sessionId: fixture.session.id,
       message: {
@@ -4609,7 +4611,7 @@ describe("public terminal routes", () => {
       terminalId: terminal.id,
       reason: "user",
     });
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.host.id,
       sessionId: fixture.session.id,
       message: {
@@ -4732,7 +4734,7 @@ describe("public terminal routes", () => {
       { instanceId: "instance-restarted" },
     );
     const replacementSocket = createFakeDaemonSocket();
-    onDaemonSocketOpen(fixture.harness.deps, {
+    void onDaemonSocketOpen(fixture.harness.deps, {
       hostId: fixture.host.id,
       sessionId: replacementSession.id,
       socket: replacementSocket,
@@ -4816,7 +4818,7 @@ describe("public terminal routes", () => {
       terminalId: stored.id,
       reason: "user",
     });
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.host.id,
       sessionId: fixture.session.id,
       message: {
@@ -4867,7 +4869,7 @@ describe("public terminal routes", () => {
     if (firstAttach.type !== "terminal.attach") {
       throw new Error(`Expected terminal.attach, received ${firstAttach.type}`);
     }
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.host.id,
       sessionId: fixture.session.id,
       message: {
@@ -4893,7 +4895,7 @@ describe("public terminal routes", () => {
         `Expected terminal.attach, received ${secondAttach.type}`,
       );
     }
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.host.id,
       sessionId: fixture.session.id,
       message: {
@@ -4967,7 +4969,7 @@ describe("public terminal routes", () => {
       if (request.type !== "terminal.attach") {
         throw new Error(`Expected terminal.attach, received ${request.type}`);
       }
-      terminals.handleDaemonTerminalMessage({
+      void terminals.handleDaemonTerminalMessage({
         hostId: fixture.host.id,
         sessionId: fixture.session.id,
         message: {
@@ -5089,7 +5091,7 @@ describe("public terminal routes", () => {
       if (request.type !== "terminal.attach") {
         throw new Error(`Expected terminal.attach, received ${request.type}`);
       }
-      terminals.handleDaemonTerminalMessage({
+      void terminals.handleDaemonTerminalMessage({
         hostId: fixture.host.id,
         sessionId: fixture.session.id,
         message: {
@@ -5217,9 +5219,9 @@ describe("public terminal routes", () => {
       },
     });
 
-    sendOutput(0);
-    sendOutput(1);
-    sendOutput(2);
+    void sendOutput(0);
+    void sendOutput(1);
+    void sendOutput(2);
     fixture.harness.deps.terminalSessions.handleBrowserTerminalMessage({
       terminalId: stored.id,
       socket: browserSocket,
@@ -5276,7 +5278,7 @@ describe("public terminal routes", () => {
       seq: 0,
       dataBase64: Buffer.from("hello\n", "utf8").toString("base64"),
     };
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.host.id,
       sessionId: fixture.session.id,
       message: {
@@ -5313,7 +5315,7 @@ describe("public terminal routes", () => {
       seq: 1,
       dataBase64: Buffer.from("world\n", "utf8").toString("base64"),
     };
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.host.id,
       sessionId: fixture.session.id,
       message: {
@@ -5403,7 +5405,7 @@ describe("public terminal routes", () => {
       seq: 2,
       dataBase64: Buffer.from("final output\n", "utf8").toString("base64"),
     };
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.host.id,
       sessionId: fixture.session.id,
       message: {
@@ -5412,7 +5414,7 @@ describe("public terminal routes", () => {
         chunk: finalChunk,
       },
     });
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.host.id,
       sessionId: fixture.session.id,
       message: {
@@ -5460,7 +5462,7 @@ describe("public terminal routes", () => {
       expect.objectContaining({ id: stored.id, status: "exited" }),
     );
 
-    fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
+    void fixture.harness.deps.terminalSessions.handleDaemonTerminalMessage({
       hostId: fixture.host.id,
       sessionId: fixture.session.id,
       message: {
@@ -5514,7 +5516,7 @@ describe("public terminal routes", () => {
             `Expected terminal.attach, received ${attachMessage.type}`,
           );
         }
-        terminalSessions.handleDaemonTerminalMessage({
+        void terminalSessions.handleDaemonTerminalMessage({
           hostId: fixture.host.id,
           sessionId: fixture.session.id,
           message: {
@@ -5550,8 +5552,8 @@ describe("public terminal routes", () => {
         await createRunningTerminal();
       const browserSocket = createFakeBrowserSocket();
       await attach(browserSocket, { nextSeq: 0, outputAcks: true });
-      sendOutput(0);
-      sendOutput(1);
+      void sendOutput(0);
+      void sendOutput(1);
       expect(readBrowserMessages(browserSocket)).toEqual([
         expect.objectContaining({ type: "attached", nextSeq: 0 }),
         expect.objectContaining({ type: "output" }),
@@ -5638,7 +5640,7 @@ describe("public terminal routes", () => {
 
       const backOnServer = createFakeBrowserSocket();
       await attach(backOnServer, { nextSeq: 0, outputAcks: false });
-      sendOutput(0);
+      void sendOutput(0);
       expect(backOnServer.close).not.toHaveBeenCalled();
       expect(readBrowserMessages(backOnServer)).toEqual([
         expect.objectContaining({ type: "attached", nextSeq: 0 }),
@@ -5712,8 +5714,8 @@ describe("public terminal routes", () => {
         socket: fixture.socket,
       });
 
-    sendOutput(0);
-    sendOutput(1);
+    void sendOutput(0);
+    void sendOutput(1);
     expect(
       preparedSources.some((source) =>
         /\bhost_daemon_sessions\b/u.test(source),
@@ -5727,7 +5729,7 @@ describe("public terminal routes", () => {
 
     const browserSocket = createFakeBrowserSocket();
     fixture.harness.hub.registerTerminalClient(stored.id, browserSocket);
-    sendOutput(2);
+    void sendOutput(2);
 
     expect(prepared).toHaveBeenCalled();
     expect(
@@ -5804,7 +5806,7 @@ describe("public terminal routes", () => {
       preparedSources.push(source);
       return prepare(source);
     });
-    onDaemonSocketMessage(fixture.harness.deps, {
+    void onDaemonSocketMessage(fixture.harness.deps, {
       hostId: fixture.host.id,
       raw: JSON.stringify({
         type: "terminal.output",
@@ -5858,7 +5860,7 @@ describe("public terminal routes", () => {
         dataBase64: Buffer.from(text).toString("base64"),
       };
       scrollback.push(chunk);
-      onDaemonSocketMessage(fixture.harness.deps, {
+      void onDaemonSocketMessage(fixture.harness.deps, {
         hostId: fixture.host.id,
         raw: JSON.stringify({
           type: "terminal.output",

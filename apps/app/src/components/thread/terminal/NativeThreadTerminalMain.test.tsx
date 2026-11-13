@@ -362,7 +362,7 @@ describe("NativeThreadTerminalMain", () => {
     };
     const { rerender } = render(<NativeThreadTerminalMain {...props} />);
     expect(screen.queryByText(/hasn't started a session yet/)).toBeNull();
-    act(() => vi.advanceTimersByTime(12000));
+    act(() => void vi.advanceTimersByTime(12000));
     expect(
       screen.getByText("Claude Code hasn't started a session yet"),
     ).toBeTruthy();
@@ -372,9 +372,9 @@ describe("NativeThreadTerminalMain", () => {
     terminal.lastUserInputAt = Date.now();
     rerender(<NativeThreadTerminalMain {...props} />);
     expect(screen.queryByText(/hasn't started a session yet/)).toBeNull();
-    act(() => vi.advanceTimersByTime(11999));
+    act(() => void vi.advanceTimersByTime(11999));
     expect(screen.queryByText(/hasn't started a session yet/)).toBeNull();
-    act(() => vi.advanceTimersByTime(1));
+    act(() => void vi.advanceTimersByTime(1));
     expect(screen.queryByText(/hasn't started a session yet/)).toBeTruthy();
     rerender(
       <NativeThreadTerminalMain
@@ -382,7 +382,7 @@ describe("NativeThreadTerminalMain", () => {
         view={{ ...props.view, nativeSessionId: "bound" }}
       />,
     );
-    act(() => vi.advanceTimersByTime(12000));
+    act(() => void vi.advanceTimersByTime(12000));
     expect(screen.queryByText(/hasn't started a session yet/)).toBeNull();
   });
 
