@@ -32,9 +32,7 @@ export function expectedSurfaceProviderId(
   const remembered = surfaceProviderCache.read(
     surfaceProviderCache.key(surface),
   );
-  return remembered === null
-    ? DEFAULT_SURFACE_PROVIDERS[surface]
-    : remembered.pluginId;
+  return remembered?.pluginId ?? DEFAULT_SURFACE_PROVIDERS[surface];
 }
 
 export function expectedSurfaceProviderIds(): string[] {
@@ -62,9 +60,10 @@ export function useRememberSurfaceProvider(
   const bootComplete = usePluginFrontendBootComplete();
   useEffect(() => {
     if (pluginId === null && !bootComplete) return;
+    const remembered = pluginId ?? DEFAULT_SURFACE_PROVIDERS[surface];
     const key = surfaceProviderCache.key(surface);
-    if (surfaceProviderCache.read(key)?.pluginId !== pluginId) {
-      surfaceProviderCache.write(key, { pluginId });
+    if (surfaceProviderCache.read(key)?.pluginId !== remembered) {
+      surfaceProviderCache.write(key, { pluginId: remembered });
     }
   }, [bootComplete, pluginId, surface]);
 }
