@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { POINTER_COARSE_QUERY } from "@bb/shared-ui/hooks/use-pointer-coarse";
@@ -202,15 +202,30 @@ describe("DiffFileCard context expansion", () => {
   it("offers a retry when the context fetch fails", async () => {
     stubPointer("coarse");
     let shouldFail = true;
+    const requests: Promise<DiffFileContentsResult | null>[] = [];
+    let resolveFirstPair!: () => void;
+    let resolveRetryPair!: () => void;
+    const firstPairStarted = new Promise<void>((resolve) => {
+      resolveFirstPair = resolve;
+    });
+    const retryPairStarted = new Promise<void>((resolve) => {
+      resolveRetryPair = resolve;
+    });
     const onRequestFileContents = vi.fn<RequestDiffFileContents>(
-      async (path, side) => {
-        if (shouldFail) {
-          throw new Error("offline");
-        }
-        return textResult(
-          side === "old" ? OLD_FILE_CONTENTS : NEW_FILE_CONTENTS,
-          path,
-        );
+      (path, side) => {
+        const request = (async () => {
+          if (shouldFail) {
+            throw new Error("offline");
+          }
+          return textResult(
+            side === "old" ? OLD_FILE_CONTENTS : NEW_FILE_CONTENTS,
+            path,
+          );
+        })();
+        requests.push(request);
+        if (requests.length === 2) resolveFirstPair();
+        if (requests.length === 4) resolveRetryPair();
+        return request;
       },
     );
 
@@ -219,18 +234,22 @@ describe("DiffFileCard context expansion", () => {
     fireEvent.click(
       await screen.findByRole("button", { name: "Expand context" }),
     );
-    const retryButton = await screen.findByRole("button", { name: "Retry" });
+    await firstPairStarted;
+    await act(async () => {
+      await Promise.allSettled(requests.slice(0, 2));
+    });
+    const retryButton = screen.getByRole("button", { name: "Retry" });
     expect(onRequestFileContents).toHaveBeenCalledTimes(2);
 
     shouldFail = false;
     fireEvent.click(retryButton);
 
-    await waitFor(() => {
-      expect(onRequestFileContents).toHaveBeenCalledTimes(4);
+    await retryPairStarted;
+    await act(async () => {
+      await Promise.allSettled(requests.slice(2, 4));
     });
-    await waitFor(() => {
-      expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
-    });
+    expect(onRequestFileContents).toHaveBeenCalledTimes(4);
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
   });
 
   it("never fetches contents for an added file, whose patch already carries every line", async () => {
