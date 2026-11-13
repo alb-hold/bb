@@ -40,13 +40,13 @@ import { useImmediateRouteNavigate } from "@/components/ui/app-route-anchor";
 import { useLocation } from "react-router-dom";
 import { useAtom } from "jotai";
 import { useDesktopBrowserReveal } from "@/lib/use-desktop-browser-reveal";
-import {
-  type ThreadTimelineForkMessageHandler,
-  type ThreadTimelineLinkHandler,
-  type ThreadTimelineLocalFileLink,
-  type TimelineTitleActionResolver,
-  useThreadTimelineController,
-} from "@/components/thread/timeline";
+import type {
+  ThreadTimelineForkMessageHandler,
+  ThreadTimelineLinkHandler,
+  ThreadTimelineLocalFileLink,
+} from "@/components/thread/timeline/types";
+import type { TimelineTitleActionResolver } from "@/components/thread/timeline/TimelineTitleView";
+import { useThreadTimelineController } from "@/components/thread/timeline/useThreadTimelineController";
 import { ThreadProviderContext } from "@/components/thread/thread-provider-context";
 import { type ThreadListEntry } from "@bb/domain";
 import type { TerminalSession } from "@bb/server-contract";
