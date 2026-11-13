@@ -4,6 +4,8 @@ import {
   getEnvironment,
   getNativeTerminalThread,
   getThread,
+  listQueuedThreadMessages,
+  recordNativeParentNoticeDelivery,
   type ClaimedQueuedThreadMessageRow,
   type DbTransaction,
 } from "@bb/db";
@@ -11,6 +13,8 @@ import {
   flattenPromptInputGroups,
   projectAttachmentPaths,
   type PromptInput,
+  type QueuedMessageSystemNotice,
+  type QueuedMessageWaitingOn,
   type ResolvedThreadExecutionOptions,
   type StartedOnBehalfOf,
   type Thread,
@@ -47,6 +51,7 @@ import {
 import { buildProviderThreadExecutionDefaults } from "./thread-default-policy.js";
 import { assertThreadHostAcceptsWork } from "./thread-host-admission.js";
 import {
+  parseStoredQueuedThreadMessageWaitingOn,
   storedQueuedThreadMessageRequestedBy,
   toThreadQueuedMessage,
 } from "./thread-queued-messages.js";
@@ -69,7 +74,33 @@ export interface NativeTerminalAdmissionArgs {
   origin: ThreadCreateOrigin | null;
   originPluginId: string | null;
   startedOnBehalfOf: StartedOnBehalfOf | null;
+  systemNotice: QueuedMessageSystemNotice | null;
   admitted: NativeTerminalAdmittedWork;
+}
+
+export const NATIVE_TERMINAL_PARENT_NOTICE: QueuedMessageSystemNotice = {
+  kind: "unlabeled",
+  subject: null,
+};
+
+export function nativeTerminalStartTicketInput(): PromptInput[] {
+  return [
+    {
+      type: "text",
+      text: "Start the terminal session",
+      mentions: [],
+      visibility: "agent-only",
+    },
+  ];
+}
+
+function isNativeTerminalStartTicket(input: readonly PromptInput[]): boolean {
+  return (
+    input.length > 0 &&
+    input.every(
+      (entry) => entry.type === "text" && entry.visibility === "agent-only",
+    )
+  );
 }
 
 function holdsCapacity(thread: Thread): boolean {
@@ -116,7 +147,7 @@ export async function admitNativeTerminalDispatch(
   }
   assertThreadHostAcceptsWork(deps.db, args.thread);
   const author = resolveDispatchAuthor({
-    retrying: false,
+    retrying: args.systemNotice !== null,
     senderThreadId: args.senderThreadId,
     startedOnBehalfOf: args.startedOnBehalfOf,
   });
@@ -167,6 +198,25 @@ export async function admitNativeTerminalDispatch(
   if (args.claimed !== null) {
     noteDispatchRequeued(args.thread.id);
   }
+  return recordNativeTerminalWait(deps, {
+    ...args,
+    waitingOn: {
+      kind: "plugin",
+      pluginId: outcome.waiter.pluginId,
+      reason: dispatchWaitReasonForPass(outcome),
+    },
+    sendAt: outcome.waiter.sendAt,
+  });
+}
+
+function recordNativeTerminalWait(
+  deps: LoggedPendingInteractionWorkSessionDeps,
+  args: Omit<NativeTerminalAdmissionArgs, "admitted" | "sendNow"> & {
+    waitingOn: QueuedMessageWaitingOn;
+    sendAt: number | null;
+  },
+): NativeTerminalAdmissionOutcome {
+  const model = getNativeTerminalThread(deps.db, args.thread.id)?.model ?? null;
   const entry = recordQueuedMessageWait(deps, {
     thread: args.thread,
     message: {
@@ -177,18 +227,40 @@ export async function admitNativeTerminalDispatch(
       originPluginId: args.originPluginId,
       requestedBy: args.startedOnBehalfOf,
       payload: { kind: "inline" },
-      systemNotice: null,
+      systemNotice: args.systemNotice,
       deliveryMode: "queue",
     },
-    waitingOn: {
-      kind: "plugin",
-      pluginId: outcome.waiter.pluginId,
-      reason: dispatchWaitReasonForPass(outcome),
-    },
-    sendAt: outcome.waiter.sendAt,
+    waitingOn: args.waitingOn,
+    sendAt: args.sendAt,
     claimed: args.claimed,
   });
   return entry === null ? { kind: "dispatched" } : { kind: "queued", entry };
+}
+
+export function hasHeldNativeTerminalStart(
+  deps: LoggedPendingInteractionWorkSessionDeps,
+  thread: Thread,
+): boolean {
+  return (
+    thread.status === "pending" &&
+    listQueuedThreadMessages(deps.db, thread.id).length > 0
+  );
+}
+
+export function queueBehindHeldNativeTerminalStart(
+  deps: LoggedPendingInteractionWorkSessionDeps,
+  args: Omit<
+    NativeTerminalAdmissionArgs,
+    "admitted" | "sendNow" | "claimed" | "systemNotice"
+  >,
+): NativeTerminalAdmissionOutcome {
+  return recordNativeTerminalWait(deps, {
+    ...args,
+    claimed: null,
+    systemNotice: null,
+    waitingOn: { kind: "provisioning" },
+    sendAt: null,
+  });
 }
 
 function nativeTerminalHostId(
@@ -235,7 +307,11 @@ function nativeTerminalPastes(
 
 export async function deliverNativeTerminalPrompt(
   deps: LoggedPendingInteractionWorkSessionDeps,
-  args: { thread: Thread; input: readonly PromptInput[] },
+  args: {
+    thread: Thread;
+    input: readonly PromptInput[];
+    requireEmptyInputBox?: boolean;
+  },
 ): Promise<void> {
   const requestText = args.input.every((entry) => entry.type === "text")
     ? args.input
@@ -244,6 +320,9 @@ export async function deliverNativeTerminalPrompt(
     : undefined;
   await sendNativeTerminalMessage(deps, {
     ...(requestText === undefined ? {} : { requestText }),
+    ...(args.requireEmptyInputBox === true
+      ? { requireEmptyInputBox: true }
+      : {}),
     threadId: args.thread.id,
     pastes: nativeTerminalPastes(deps, args),
   });
@@ -274,15 +353,31 @@ export async function dispatchClaimedNativeTerminalMessages(
     settleQueueRowDispatched({ row: lead });
     deps.hub.notifyThread(args.thread.id, ["queue-changed"]);
   };
-  return admitNativeTerminalDispatch(deps, {
+  const systemNotice =
+    lead.systemNotice === null ? null : NATIVE_TERMINAL_PARENT_NOTICE;
+  const message = {
     thread: args.thread,
     input,
     claimed: args.claimed,
-    sendNow: args.sendNow,
     senderThreadId: lead.senderThreadId,
     origin: lead.origin,
     originPluginId: lead.originPluginId,
     startedOnBehalfOf: storedQueuedThreadMessageRequestedBy(lead),
+    systemNotice,
+  };
+  if (
+    args.thread.status === "pending" &&
+    parseStoredQueuedThreadMessageWaitingOn(lead)?.kind === "provisioning"
+  ) {
+    return recordNativeTerminalWait(deps, {
+      ...message,
+      waitingOn: { kind: "provisioning" },
+      sendAt: null,
+    });
+  }
+  return admitNativeTerminalDispatch(deps, {
+    ...message,
+    sendNow: args.sendNow,
     admitted:
       args.thread.status === "pending"
         ? {
@@ -305,7 +400,7 @@ export async function dispatchClaimedNativeTerminalMessages(
               }
               beginNativeTerminalThreadProvisioning(deps, {
                 environmentIntent: startContext.environmentIntent,
-                input,
+                input: isNativeTerminalStartTicket(input) ? [] : input,
                 thread: row,
                 titleProvided: startContext.titleProvided,
                 beforeStartInTransaction: consumeClaimedRows,
@@ -316,10 +411,19 @@ export async function dispatchClaimedNativeTerminalMessages(
         : {
             when: "after-decision",
             run: async () => {
-              await deliverNativeTerminalPrompt(deps, {
-                thread: args.thread,
-                input,
-              });
+              if (!isNativeTerminalStartTicket(input)) {
+                await deliverNativeTerminalPrompt(deps, {
+                  thread: args.thread,
+                  input,
+                  requireEmptyInputBox: systemNotice !== null,
+                });
+              }
+              if (systemNotice !== null) {
+                recordNativeParentNoticeDelivery(deps.db, {
+                  deliveredAt: Date.now(),
+                  parentThreadId: args.thread.id,
+                });
+              }
               deps.db.transaction(consumeClaimedRows, {
                 behavior: "immediate",
               });

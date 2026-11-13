@@ -601,17 +601,18 @@ async function sendClaimedQueuedMessageForThread(
   deps: LoggedPendingInteractionWorkSessionDeps,
   args: SendClaimedQueuedMessageForThreadArgs,
 ): Promise<ThreadQueuedMessage> {
-  const notice = await sendClaimedSystemNotice(deps, args);
-  if (notice) {
-    return notice;
-  }
   if (isNativeTerminalThread(deps.db, args.thread.id)) {
-    await dispatchClaimedNativeTerminalMessages(deps, {
+    const outcome = await dispatchClaimedNativeTerminalMessages(deps, {
       thread: args.thread,
       claimed: args.queuedMessages,
       sendNow: args.sendNow,
     });
+    assertSendNowDispatched(args, outcome);
     return toThreadQueuedMessage(args.queuedMessages[0]!);
+  }
+  const notice = await sendClaimedSystemNotice(deps, args);
+  if (notice) {
+    return notice;
   }
   const queuedMessages = args.queuedMessages.map(toThreadQueuedMessage);
   const queuedMessage = queuedMessages[0]!;
@@ -654,6 +655,16 @@ async function sendClaimedQueuedMessageForThread(
     onTurnRequestCreated: args.onTurnRequestCreated,
     trigger: "auto-dispatch",
   });
+  assertSendNowDispatched(args, outcome);
+  return queuedMessage;
+}
+
+function assertSendNowDispatched(
+  args: SendClaimedQueuedMessageForThreadArgs,
+  outcome:
+    | { kind: "dispatched" }
+    | { kind: "queued"; entry: ThreadQueuedMessage },
+): void {
   if (
     args.sendNow &&
     args.mode !== "steer" &&
@@ -666,7 +677,6 @@ async function sendClaimedQueuedMessageForThread(
       `This message cannot be sent yet: ${describeCoreWait(outcome.entry.waitingOn)}.`,
     );
   }
-  return queuedMessage;
 }
 
 function describeCoreWait(waitingOn: QueuedMessageWaitingOn | null): string {

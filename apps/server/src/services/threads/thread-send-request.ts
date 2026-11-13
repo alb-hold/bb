@@ -8,10 +8,11 @@ import { ApiError } from "../../errors.js";
 import {
   admitNativeTerminalDispatch,
   deliverNativeTerminalPrompt,
+  hasHeldNativeTerminalStart,
+  queueBehindHeldNativeTerminalStart,
   resolveNativeTerminalSendInput,
 } from "./native-terminal-admission.js";
 import { resolveMessageSenderThreadId } from "./thread-send.js";
-import { nativeTerminalNotRunning } from "./native-terminal-threads.js";
 import type {
   SendMessageRequest,
   SendMessageResponse,
@@ -42,18 +43,13 @@ export async function acceptThreadSendRequest(
         "sendAt is not supported for native terminal threads",
       );
     }
-    if (args.thread.status === "pending") {
-      throw nativeTerminalNotRunning();
-    }
     const input = await resolveNativeTerminalSendInput(deps, {
       thread: args.thread,
       input: args.payload.input,
     });
-    const outcome = await admitNativeTerminalDispatch(deps, {
+    const message = {
       thread: args.thread,
       input,
-      claimed: null,
-      sendNow: false,
       senderThreadId: resolveMessageSenderThreadId(deps, {
         ...(args.payload.senderThreadId !== undefined
           ? { senderThreadId: args.payload.senderThreadId }
@@ -63,6 +59,22 @@ export async function acceptThreadSendRequest(
       origin: args.payload.originPluginId === undefined ? null : "plugin",
       originPluginId: args.payload.originPluginId ?? null,
       startedOnBehalfOf: null,
+    } as const;
+    if (args.thread.status === "pending") {
+      if (hasHeldNativeTerminalStart(deps, args.thread)) {
+        const held = queueBehindHeldNativeTerminalStart(deps, message);
+        return held.kind === "queued"
+          ? { ok: true, delivery: "queued", queuedMessage: held.entry }
+          : { ok: true, delivery: "sent" };
+      }
+      await deliverNativeTerminalPrompt(deps, { thread: args.thread, input });
+      return { ok: true, delivery: "sent" };
+    }
+    const outcome = await admitNativeTerminalDispatch(deps, {
+      ...message,
+      claimed: null,
+      sendNow: false,
+      systemNotice: null,
       admitted: {
         when: "after-decision",
         run: () =>

@@ -87,7 +87,10 @@ import {
   requireNativeTerminalProvider,
   type NativeTerminalProvider,
 } from "./native-terminal-threads.js";
-import { admitNativeTerminalDispatch } from "./native-terminal-admission.js";
+import {
+  admitNativeTerminalDispatch,
+  nativeTerminalStartTicketInput,
+} from "./native-terminal-admission.js";
 import { resolveSystemProviderModels } from "../system/execution-options.js";
 import {
   getEnvironmentProvider,
@@ -512,19 +515,29 @@ async function createPendingThreadAndAttemptFirstDispatch(
           thread,
           titleProvided: Boolean(args.request.title),
         });
-      if (args.request.input.length === 0) {
+      const bbOriginated =
+        args.request.parentThreadId !== undefined ||
+        args.request.senderThreadId !== undefined ||
+        args.request.originPluginId !== undefined ||
+        args.request.startedOnBehalfOf !== null ||
+        (args.request.origin !== "app" && args.request.origin !== "cli");
+      if (args.request.input.length === 0 && !bbOriginated) {
         beginProvisioning();
         return thread;
       }
       await admitNativeTerminalDispatch(deps, {
         thread,
-        input: args.request.input,
+        input:
+          args.request.input.length === 0
+            ? nativeTerminalStartTicketInput()
+            : args.request.input,
         claimed: null,
         sendNow: false,
-        senderThreadId: null,
+        senderThreadId: args.request.senderThreadId ?? null,
         origin: args.request.origin,
         originPluginId: args.request.originPluginId ?? null,
         startedOnBehalfOf: args.request.startedOnBehalfOf,
+        systemNotice: null,
         admitted: { when: "within-decision", run: beginProvisioning },
       });
       return thread;

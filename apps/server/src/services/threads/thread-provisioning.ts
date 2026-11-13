@@ -260,6 +260,10 @@ async function startThreadIfEnvironmentReady(
       threadId: args.thread.id,
     });
     await openNativeTerminalAfterProvisioning(deps, args.thread.id);
+    requestQueuedMessageDispatch(deps, {
+      kind: "workspace-ready",
+      threadId: args.thread.id,
+    });
     return;
   }
 
