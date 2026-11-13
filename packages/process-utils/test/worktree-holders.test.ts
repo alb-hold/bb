@@ -4,12 +4,50 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { scanWorktreeHolders } from "../src/worktree-holders.js";
+import {
+  mapLsofError,
+  scanWorktreeHolders,
+} from "../src/worktree-holders.js";
 
 const roots: string[] = [];
 const children: ReturnType<typeof spawn>[] = [];
 const originalNodeEnv = process.env.NODE_ENV;
 const originalHolderScan = process.env.BB_TEST_WORKTREE_HOLDER_SCAN;
+
+describe("mapLsofError", () => {
+  it.each([
+    [
+      Object.assign(new Error("timed out"), {
+        killed: true,
+        signal: "SIGTERM",
+      }),
+      { failure: "timeout", signal: "SIGTERM" },
+    ],
+    [
+      Object.assign(new Error("buffer exceeded"), {
+        code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER",
+      }),
+      { failure: "maxBuffer", signal: null },
+    ],
+    [
+      Object.assign(new Error("spawn failed"), { code: "ENOENT" }),
+      { failure: "spawn", signal: null },
+    ],
+    [
+      Object.assign(new Error("terminated"), { code: null, signal: "SIGTERM" }),
+      { failure: "signal", signal: "SIGTERM" },
+    ],
+  ] as const)("classifies %s correctly", (error, expected) => {
+    expect(mapLsofError(error, "stdout", "first stderr line\nsecond line"))
+      .toMatchObject({
+        ...expected,
+        code: null,
+        stdout: "stdout",
+        stderr: "first stderr line\nsecond line",
+        spawnFailed: true,
+      });
+  });
+});
 
 afterEach(async () => {
   for (const child of children.splice(0)) {

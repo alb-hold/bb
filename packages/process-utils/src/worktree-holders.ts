@@ -19,9 +19,46 @@ export type LsofResult = {
   stdout: string;
   stderr: string;
   spawnFailed: boolean;
-  failure?: "timeout" | "maxBuffer" | "spawn";
+  failure?: "timeout" | "maxBuffer" | "spawn" | "signal";
   signal?: string | null;
 };
+
+export function mapLsofError(
+  error: unknown,
+  stdout: string,
+  stderr: string,
+): LsofResult {
+  const value =
+    typeof error === "object" && error !== null
+      ? (error as {
+          code?: unknown;
+          killed?: unknown;
+          signal?: unknown;
+        })
+      : null;
+  const errorCode = value?.code;
+  const code = typeof errorCode === "number" ? errorCode : null;
+  const signal =
+    typeof value?.signal === "string" ? value.signal : null;
+  const failure =
+    errorCode === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER"
+      ? "maxBuffer"
+      : value?.killed === true
+        ? "timeout"
+        : code === null
+          ? signal === null
+            ? "spawn"
+            : "signal"
+          : undefined;
+  return {
+    code,
+    stdout,
+    stderr,
+    spawnFailed: failure !== undefined,
+    ...(failure === undefined ? {} : { failure }),
+    signal,
+  };
+}
 
 export interface WorktreeHolder {
   pid: number;
@@ -977,24 +1014,13 @@ function runLsof(directory: string): Promise<LsofResult> {
           resolve({ code: 0, stdout, stderr, spawnFailed: false });
           return;
         }
-        const code = (error as NodeJS.ErrnoException).code;
-        resolve({
-          code: typeof code === "number" ? code : null,
-          stdout: typeof stdout === "string" ? stdout : "",
-          stderr: typeof stderr === "string" ? stderr : "",
-          signal:
-            typeof error === "object" && error !== null && "signal" in error
-              ? (error.signal as string | null)
-              : null,
-          spawnFailed: typeof code !== "number",
-          ...(code === "ETIMEDOUT"
-            ? { failure: "timeout" as const }
-            : code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER"
-              ? { failure: "maxBuffer" as const }
-              : typeof code !== "number"
-                ? { failure: "spawn" as const }
-                : {}),
-        });
+        resolve(
+          mapLsofError(
+            error,
+            typeof stdout === "string" ? stdout : "",
+            typeof stderr === "string" ? stderr : "",
+          ),
+        );
       },
     );
   });
@@ -1018,7 +1044,9 @@ async function scanWithLsof(directory: string): Promise<WorktreeHolderScan> {
         ? `lsof timed out after ${LSOF_TIMEOUT_MS / 1000}s (${args})`
         : result.failure === "maxBuffer"
           ? `lsof exceeded its output limit (${args})`
-          : `lsof failed to start (${args})`;
+          : result.failure === "signal"
+            ? `lsof terminated by signal (${args})`
+            : `lsof failed to start (${args})`;
     const exit =
       result.code === null
         ? result.signal

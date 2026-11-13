@@ -18,9 +18,9 @@ import {
   describeHolderScan,
   hostProc,
   linuxVisibilityProblem,
+  mapLsofError,
   scanLinux,
   scanWorktreeHolders,
-  useLsofRunnerForTests,
   type ProcReader,
 } from "./holders.js";
 
@@ -55,20 +55,36 @@ function hold(script: string, cwd: string, args: string[] = []) {
 
 describe("scanWorktreeHolders", () => {
   it.each([
-    [{ failure: "timeout", code: null, stderr: "" }, "timed out after 30s"],
-    [{ failure: "maxBuffer", code: null, stderr: "" }, "output limit"],
-    [{ failure: "spawn", code: null, stderr: "ENOENT" }, "failed to start"],
-  ] as const)("describes lsof failures accurately", async (failure, expected) => {
-    useLsofRunnerForTests(async () => ({ stdout: "", spawnFailed: true, ...failure }));
-    try {
-      Object.defineProperty(process, "platform", { value: "darwin" });
-      await expect(scanWorktreeHolders("/work/tree")).resolves.toMatchObject({
-        status: "unknown",
-        reason: expect.stringContaining(expected),
+    [
+      Object.assign(new Error("timed out"), {
+        killed: true,
+        signal: "SIGTERM",
+      }),
+      { failure: "timeout", signal: "SIGTERM" },
+    ],
+    [
+      Object.assign(new Error("buffer exceeded"), {
+        code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER",
+      }),
+      { failure: "maxBuffer", signal: null },
+    ],
+    [
+      Object.assign(new Error("spawn failed"), { code: "ENOENT" }),
+      { failure: "spawn", signal: null },
+    ],
+    [
+      Object.assign(new Error("terminated"), { code: null, signal: "SIGTERM" }),
+      { failure: "signal", signal: "SIGTERM" },
+    ],
+  ] as const)("maps the execFile %s error shape", (error, expected) => {
+    expect(mapLsofError(error, "stdout", "first stderr line\nsecond line"))
+      .toMatchObject({
+        ...expected,
+        code: null,
+        stdout: "stdout",
+        stderr: "first stderr line\nsecond line",
+        spawnFailed: true,
       });
-    } finally {
-      useLsofRunnerForTests(null);
-    }
   });
 
   it("ignores an unrelated foreign process with an unreadable cwd", async () => {
