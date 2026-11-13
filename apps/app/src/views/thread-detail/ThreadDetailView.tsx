@@ -1849,6 +1849,10 @@ function ThreadDetailViewInternal(
       activityIndicator={getThreadDetailActivityIndicator(thread)}
       needsInput={thread.nativeTerminal && thread.hasPendingInteraction}
       hasNativeTerminal={nativeTerminalThread != null}
+      providerId={thread.providerId}
+      provider={threadProviderInfo ?? null}
+      nativeTerminal={thread.nativeTerminal === true}
+      environmentIsWorktree={environment?.isWorktree === true}
       nativeActivityTargetRef={setNativeActivityTarget}
       checkTerminal={nativeTerminalThread?.terminal?.attention != null}
       contextCardButton={<ThreadContextCardHeaderButton />}

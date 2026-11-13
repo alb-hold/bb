@@ -8,12 +8,10 @@ import {
   setServerPluginsStarting,
   setPluginFrontendReconcilePending,
   usePluginFrontendBootComplete,
-  usePluginFrontendsSettled,
 } from "./plugin-frontend-boot-state";
 import {
   mergePluginNavPanelChrome,
   readLastKnownPluginNavPanelChrome,
-  readRememberedPluginNavPanelChrome,
   rememberPluginNavPanelChrome,
   writeLastKnownPluginNavPanelChrome,
 } from "./plugin-nav-panel-chrome";
@@ -78,12 +76,15 @@ function registerTasks() {
 }
 
 function chromeEntries() {
-  return mergePluginNavPanelChrome(
-    readRememberedPluginNavPanelChrome(
-      renderHookStatically(usePluginFrontendsSettled),
-    ),
+  const bootComplete = renderHookStatically(usePluginFrontendBootComplete);
+  const remembered = bootComplete ? [] : readLastKnownPluginNavPanelChrome();
+  const entries = mergePluginNavPanelChrome(
+    remembered,
     getPluginSlotSnapshot().navPanels,
   );
+  return bootComplete
+    ? entries.filter((entry) => entry.panel !== null)
+    : entries;
 }
 
 function remember() {
@@ -117,6 +118,15 @@ describe("plugin nav panel chrome entries", () => {
     ]);
     expect(afterTasks[0]!.panel).not.toBeNull();
     expect(afterTasks[1]!.panel).toBeNull();
+  });
+
+  it("keeps remembered panels across the settle floor before frontend boot completes", () => {
+    writeLastKnownPluginNavPanelChrome([TASKS, DOCS]);
+    markPluginFrontendSettleFloorReached();
+    expect(chromeEntries().map((entry) => entry.chrome.title)).toEqual([
+      "Tasks",
+      "Docs",
+    ]);
   });
 
   it("forgets remembered panels that never registered once frontends settle", () => {

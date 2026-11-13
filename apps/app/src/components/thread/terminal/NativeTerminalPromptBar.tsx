@@ -652,7 +652,7 @@ export function NativeTerminalPromptBar({
               : recording
                 ? "Listening…"
                 : isCompactViewport
-                  ? `To ${compactDestination} prompt…`
+                  ? `Send to ${compactDestination}…`
                   : `Send to ${providerLabel} prompt above…`
           }
           onChange={(event) => {

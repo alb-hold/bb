@@ -37,6 +37,7 @@ describe("ProviderCliBanner", () => {
       "Update Example Agent before starting a thread. Installed 0.135.0; version 0.136.0 or newer is required.",
     );
     expect(button.textContent).toBe("Update Example Agent");
+    expect(button.className).toContain("pointer-coarse:min-h-11");
     expect(button.hasAttribute("disabled")).toBe(false);
   });
 

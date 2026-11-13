@@ -89,6 +89,8 @@ import {
   resolveModelReasoningLevel,
 } from "./thread-creation-options/model-catalog-selection";
 
+import { resolveReadyProviderId } from "./thread-creation-options/ready-provider-selection";
+
 export { formatModelLabel };
 
 const EMPTY_PROVIDERS: ProviderInfo[] = [];
@@ -389,43 +391,54 @@ export function useThreadCreationOptions(
   const executionOptionsRouting = resolveProviderRouting
     ? resolveProviderRouting(rawEnvironmentSelectionValue)
     : defaultCatalogRouting;
+  const systemConfig = useSystemConfig();
   const canResolveReadyProvider =
     executionOptionsQueryEnabled &&
     scope === "new-thread" &&
     preferReadyProviderWhenUnset &&
     selectedProviderIdBeforeReadyFallback.length === 0;
   const shouldResolveReadyProvider =
-    canResolveReadyProvider && initialReadyProvider.status === "unresolved";
+    canResolveReadyProvider &&
+    (initialReadyProvider.status === "unresolved" ||
+      (initialReadyProvider.status === "resolved" &&
+        initialReadyProvider.providerId === null));
+  const systemConfigSettled =
+    !systemConfig.isPending || systemConfig.isError;
   const providerStatesQuery = useSystemProviderStates({
     enabled: shouldResolveReadyProvider,
     ...executionOptionsRouting,
     poll: false,
   });
-  const queriedReadyProviderId = shouldResolveReadyProvider
-    ? providerStatesQuery.data?.providers.find(
-        (provider) => provider.status === "ready",
-      )?.providerId
-    : undefined;
+  const queriedReadyProviderId =
+    shouldResolveReadyProvider && systemConfigSettled
+      ? resolveReadyProviderId(
+          providerStatesQuery.data?.providers ?? [],
+          systemConfig.data?.generalSettings?.defaultProviderId,
+        )
+      : undefined;
   const readyProviderId =
     initialReadyProvider.status === "resolved"
       ? (initialReadyProvider.providerId ?? undefined)
       : queriedReadyProviderId;
   useEffect(() => {
-    if (!shouldResolveReadyProvider || providerStatesQuery.isPending) {
+    if (
+      !shouldResolveReadyProvider ||
+      providerStatesQuery.isPending ||
+      !systemConfigSettled
+    ) {
       return;
     }
+    const latchedProviderId = queriedReadyProviderId ?? null;
     setInitialReadyProvider((current) =>
-      current.status === "resolved"
+      current.status === "resolved" && current.providerId === latchedProviderId
         ? current
-        : {
-            status: "resolved",
-            providerId: queriedReadyProviderId ?? null,
-          },
+        : { status: "resolved", providerId: latchedProviderId },
     );
   }, [
     providerStatesQuery.isPending,
     queriedReadyProviderId,
     shouldResolveReadyProvider,
+    systemConfigSettled,
   ]);
   const rawSelectedProviderId =
     selectedProviderIdBeforeReadyFallback || readyProviderId || "";
@@ -442,7 +455,8 @@ export function useThreadCreationOptions(
       ? catalogProjectId
       : undefined;
   const isResolvingReadyProvider =
-    shouldResolveReadyProvider && providerStatesQuery.isPending;
+    shouldResolveReadyProvider &&
+    (providerStatesQuery.isPending || !systemConfigSettled);
   const executionOptionsQuery = useSystemExecutionOptions({
     enabled: executionOptionsQueryEnabled,
     ...executionOptionsRouting,
@@ -450,7 +464,6 @@ export function useThreadCreationOptions(
     projectId: executionOptionsProjectId,
   });
   const hostsQuery = useHosts();
-  const systemConfig = useSystemConfig();
   const providers = executionOptionsQuery.data?.providers ?? EMPTY_PROVIDERS;
   const modelLoadError =
     executionOptionsQuery.data?.modelLoadError ?? NO_MODEL_LOAD_ERROR;
@@ -479,16 +492,55 @@ export function useThreadCreationOptions(
   });
   const hasMultipleProviders = providers.length >= 2;
 
+  const preferredDefaultProviderId =
+    systemConfig.data?.generalSettings?.defaultProviderId ?? null;
+  const userChoseSelectedProvider =
+    touchedThreadFieldsRef.current.has("selectedProviderId") ||
+    (usesStoredCreateSelections && storedProviderId.length > 0);
+  const rejectCatalogLoadErrorSelection =
+    modelLoadError !== null &&
+    modelLoadError.providerId === rawSelectedProviderId &&
+    !userChoseSelectedProvider;
+  const awaitingReadyProviderSelection =
+    canResolveReadyProvider &&
+    selectedProviderIdBeforeReadyFallback.length === 0 &&
+    readyProviderId === undefined &&
+    initialReadyProvider.status === "unresolved" &&
+    isResolvingReadyProvider;
   const effectiveProviderId = useMemo(() => {
+    if (awaitingReadyProviderSelection) {
+      return "";
+    }
     if (
       rawSelectedProviderId &&
+      !rejectCatalogLoadErrorSelection &&
       (!modelCatalogIsVerified ||
         providers.some((provider) => provider.id === rawSelectedProviderId))
     ) {
       return rawSelectedProviderId;
     }
-    return providers[0]?.id ?? "";
-  }, [modelCatalogIsVerified, providers, rawSelectedProviderId]);
+    if (
+      readyProviderId &&
+      providers.some((provider) => provider.id === readyProviderId)
+    ) {
+      return readyProviderId;
+    }
+    if (
+      preferredDefaultProviderId &&
+      providers.some((provider) => provider.id === preferredDefaultProviderId)
+    ) {
+      return preferredDefaultProviderId;
+    }
+    return providers.find((provider) => provider.available)?.id ?? providers[0]?.id ?? "";
+  }, [
+    awaitingReadyProviderSelection,
+    modelCatalogIsVerified,
+    preferredDefaultProviderId,
+    providers,
+    rawSelectedProviderId,
+    readyProviderId,
+    rejectCatalogLoadErrorSelection,
+  ]);
 
   const { setValue: setStoredSelectedModel, value: storedSelectedModel } =
     usePromptBoxModelPreference(effectiveProviderId);

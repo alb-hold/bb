@@ -89,6 +89,10 @@ import {
 } from "../preferences/atoms.js";
 
 import { SidebarProjectsContext } from "../model/use-sidebar-data.js";
+import {
+  StickyRowStateReportProvider,
+  type StickyRowStateReporter,
+} from "../ui/stickyOffset.js";
 
 import type { ThreadRowOptions } from "./ThreadRow.js";
 
@@ -197,6 +201,8 @@ interface HarnessProps {
   onCustomizeRowActions?: (threadId: string) => void;
   onFinishCustomizingRowActions?: (restoreFocus: boolean) => void;
   siblings?: PluginSidebarThread[];
+  onStickyRowHeight?: (height: number) => void;
+  stickyRowReporter?: StickyRowStateReporter;
 }
 
 
@@ -213,6 +219,8 @@ function ThreadRowHarness({
   onRowEvent,
   onCustomizeRowActions,
   onFinishCustomizingRowActions,
+  onStickyRowHeight,
+  stickyRowReporter,
 }: HarnessProps) {
   const threadRow = (
       <ThreadRow
@@ -273,11 +281,22 @@ function ThreadRowHarness({
       </SidebarProjectsContext.Provider>
     </SidebarRowMetadataExperiment>
   );
-  return isCompactViewport === undefined ? (
-    content
-  ) : (
-    <CompactViewportOverrideProvider isCompactViewport={isCompactViewport}>
+  const rowStateReporter =
+    stickyRowReporter ??
+    (onStickyRowHeight === undefined
+      ? null
+      : {
+          report: (_id: string, height: number) => onStickyRowHeight(height),
+          remove: () => undefined,
+        });
+  const reportedContent = rowStateReporter ? (
+    <StickyRowStateReportProvider value={rowStateReporter}>
       {content}
+    </StickyRowStateReportProvider>
+  ) : content;
+  return isCompactViewport === undefined ? reportedContent : (
+    <CompactViewportOverrideProvider isCompactViewport={isCompactViewport}>
+      {reportedContent}
     </CompactViewportOverrideProvider>
   );
 }
@@ -600,6 +619,50 @@ const sdkExportsAreSpyable =
 
 
 describe("ThreadRow", () => {
+  it("reports the actual height of a sticky parent without row state", () => {
+    const reportHeight = vi.fn();
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(
+      new DOMRect(0, 0, 280, 34),
+    );
+    renderThreadRow({
+      options: {
+        kind: "parent",
+        depth: 1,
+        isCompact: false,
+        stickyLevel: 0,
+        isCollapsed: false,
+        childCount: 0,
+        childActivity: NO_COLLAPSED_CHILD_ACTIVITY,
+        onToggleCollapsed: vi.fn(),
+      },
+      onStickyRowHeight: reportHeight,
+    });
+
+    expect(reportHeight).toHaveBeenCalledWith(34);
+  });
+
+  it("removes its own sticky height report on unmount", () => {
+    const report = vi.fn();
+    const remove = vi.fn();
+    const rendered = renderThreadRow({
+      options: {
+        kind: "parent",
+        depth: 1,
+        isCompact: false,
+        stickyLevel: 0,
+        isCollapsed: false,
+        childCount: 0,
+        childActivity: NO_COLLAPSED_CHILD_ACTIVITY,
+        onToggleCollapsed: vi.fn(),
+      },
+      stickyRowReporter: { report, remove },
+    });
+
+    expect(report).toHaveBeenCalledWith(expect.any(String), expect.any(Number));
+    rendered.unmount();
+    expect(remove).toHaveBeenCalledWith(report.mock.calls[0]?.[0]);
+  });
+
   it("uses one leading mode column without a blank title slot", () => {
     const view = renderThreadRow({ thread: createThread({ experimental_nativeTerminal: true }) });
     expect(view.container.querySelectorAll('[data-icon="Terminal"]')).toHaveLength(1);
@@ -731,6 +794,62 @@ describe("ThreadRow", () => {
   it("keeps age context when the project is unavailable", () => {
     const view = renderThreadRow({ thread: createThread({ updatedAt: Date.now(), archivedAt: 1 }) });
     expect(view.container.querySelector("[data-sidebar-thread-context]")?.textContent).toBe("now");
+  });
+
+  it.each([true, false])(
+    "identifies destinations for same-title phone worktrees (native: %s)",
+    (nativeTerminal) => {
+      const project = makePluginProject({ id: "proj_atlas", name: "Atlas" });
+      const threads = ["alpha", "beta"].map((branch) =>
+        createThread({
+          id: `thr_${branch}`,
+          projectId: project.id,
+          title: "Investigate timeout",
+          displayTitle: "Investigate timeout",
+          href: `/threads/thr_${branch}`,
+          experimental_nativeTerminal: nativeTerminal,
+          environment: makeSidebarEnvironment({
+            name: null,
+            branchName: `fix/phone-identical-prefix-timeout-${branch}`,
+            isWorktree: true,
+          }),
+        }),
+      );
+      renderThreadRow({
+        isCompactViewport: true,
+        projects: [project],
+        thread: threads[0]!,
+        siblings: [threads[1]!],
+      });
+      for (const branch of ["alpha", "beta"]) {
+        const link = screen.getByRole("link", {
+          name: `Open Investigate timeout · Atlas · fix/phone-identical-prefix-timeout-${branch}`,
+        });
+        expect(link.getAttribute("href")).toBe(`/threads/thr_${branch}`);
+      }
+    },
+  );
+
+  it("keeps grouped phone project context in its heading and omits absent branch identity", () => {
+    const view = renderThreadRow({
+      isCompactViewport: true,
+      visibilityGroup: "project:proj_atlas",
+      projects: [makePluginProject({ id: "proj_atlas", name: "Atlas" })],
+      thread: createThread({
+        projectId: "proj_atlas",
+        environment: null,
+        updatedAt: Date.now() - 120_000,
+      }),
+    });
+    expect(
+      view.container.querySelector("[data-sidebar-thread-context]")
+        ?.textContent,
+    ).toBe("2m");
+    expect(
+      screen
+        .getByRole("link", { name: "Open Thread · Atlas" })
+        .getAttribute("aria-label"),
+    ).not.toContain("null");
   });
 
 

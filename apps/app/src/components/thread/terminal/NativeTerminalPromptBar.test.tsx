@@ -1449,7 +1449,7 @@ it.each(["Codex", "Claude Code", "Native CLI"])(
   (provider) => {
     const { input } = renderBar(undefined, undefined, provider, true);
     expect(input.placeholder).toBe(
-      `To ${provider.length <= 5 ? provider : "CLI"} prompt…`,
+      `Send to ${provider.length <= 5 ? provider : "CLI"}…`,
     );
     expect(screen.getByLabelText(`Send to ${provider} terminal`)).toBe(input);
   },
@@ -1480,7 +1480,7 @@ it.each(
       const { input } = renderBar(undefined, undefined, provider, width < 768);
       expect(input.placeholder).toBe(
         width < 768
-          ? `To ${provider.length <= 5 ? provider : "CLI"} prompt…`
+          ? `Send to ${provider.length <= 5 ? provider : "CLI"}…`
           : `Send to ${provider} prompt above…`,
       );
       expect(screen.getByLabelText(`Send to ${provider} terminal`)).toBe(input);

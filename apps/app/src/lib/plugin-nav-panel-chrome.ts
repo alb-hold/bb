@@ -1,9 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo } from "react";
 import { z } from "zod";
 import { createLastKnownCache } from "@/lib/last-known-cache";
 import {
   usePluginFrontendBootComplete,
-  usePluginFrontendsSettled,
 } from "@/lib/plugin-frontend-boot-state";
 import { usePluginSlots, type PluginNavPanelSlot } from "@/lib/plugin-slots";
 
@@ -90,19 +89,23 @@ export function rememberPluginNavPanelChrome(
   navPanels: readonly PluginNavPanelSlot[],
 ): void {
   if (!bootComplete) return;
-  writeLastKnownPluginNavPanelChrome(navPanels.map(pluginNavPanelChromeOf));
+  writeLastKnownPluginNavPanelChrome(
+    mergePluginNavPanelChrome(readLastKnownPluginNavPanelChrome(), navPanels)
+      .filter((entry) => entry.panel !== null)
+      .map((entry) => entry.chrome),
+  );
 }
 
 export function usePluginNavPanelChrome(): PluginNavPanelChromeEntry[] {
-  const settled = usePluginFrontendsSettled();
+  const bootComplete = usePluginFrontendBootComplete();
   const { navPanels } = usePluginSlots();
-  const [remembered] = useState(
-    () => readRememberedPluginNavPanelChrome(settled),
-  );
   return useMemo(() => {
+    const remembered = readLastKnownPluginNavPanelChrome();
     const entries = mergePluginNavPanelChrome(remembered, navPanels);
-    return settled ? entries.filter((entry) => entry.panel !== null) : entries;
-  }, [navPanels, remembered, settled]);
+    return bootComplete
+      ? entries.filter((entry) => entry.panel !== null)
+      : entries;
+  }, [navPanels, bootComplete]);
 }
 
 export function useRememberPluginNavPanelChrome(): void {

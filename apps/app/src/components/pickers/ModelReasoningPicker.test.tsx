@@ -201,7 +201,9 @@ function renderPicker({
   providerRouting,
   selectedProviderId = "codex",
   modelIsLoading = false,
+  modelLoadFailed = false,
   modelLoadError = null,
+  hasMultipleProviders = true,
   compact = false,
   compactIconOnly = false,
   splitPane = false,
@@ -228,7 +230,9 @@ function renderPicker({
   providerRouting?: SystemProvidersQuery;
   selectedProviderId?: string;
   modelIsLoading?: boolean;
+  modelLoadFailed?: boolean;
   modelLoadError?: SystemExecutionOptionsModelLoadError | null;
+  hasMultipleProviders?: boolean;
   compact?: boolean;
   compactIconOnly?: boolean;
   splitPane?: boolean;
@@ -264,11 +268,12 @@ function renderPicker({
         providerRouting={providerRouting}
         selectedProviderId={selectedProviderId}
         onSelectedProviderChange={onSelectedProviderChange ?? undefined}
-        hasMultipleProviders
+        hasMultipleProviders={hasMultipleProviders}
         modelValue={modelValue}
         modelOptions={modelOptions}
         moreModelOptions={moreModelOptions}
         modelIsLoading={modelIsLoading}
+        modelLoadFailed={modelLoadFailed}
         modelLoadError={modelLoadError}
         onModelChange={onModelChange}
         reasoningValue={reasoningValue}
@@ -735,6 +740,24 @@ describe("ModelReasoningPicker", () => {
       { key: "ArrowRight" },
     );
     expect(onReasoningChange).not.toHaveBeenCalled();
+  });
+
+
+  it("shows the provider name on the compact trigger when catalog load failed", () => {
+    renderPicker({
+      compact: true,
+      modelOptions: [],
+      modelValue: "",
+      modelLoadFailed: true,
+      hasMultipleProviders: false,
+      onSelectedProviderChange: null,
+      pickerProviderOptions: [{ value: "codex", label: "Codex", brandPrefix: "GPT-" }],
+    });
+    const trigger = screen.getByRole("button", {
+      name: /^Provider, model and reasoning/,
+    });
+    expect(trigger.textContent).toContain("Codex");
+    expect(trigger.textContent).not.toContain("Failed to load");
   });
 
   it("keeps a failed provider tab visible with its provider-plugin error", () => {

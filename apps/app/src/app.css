@@ -785,6 +785,7 @@
 }
 
 :root {
+  --terminal-overlay-scrollbar-size: 6px;
   --terminal-scrollbar: color-mix(in oklab, var(--foreground) 20%, transparent);
   --terminal-scrollbar-hover: color-mix(
     in oklab,
@@ -813,7 +814,7 @@
 
 :where([data-app-terminal] [data-terminal-grid-cache-id]) > .xterm {
   padding-left: 8px;
-  padding-right: 8px;
+  padding-right: calc(8px + var(--terminal-overlay-scrollbar-size));
 }
 
 :where([data-app-terminal] .xterm) .xterm-scrollable-element {

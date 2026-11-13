@@ -160,14 +160,17 @@ export function ModelReasoningPicker(props: ModelReasoningPickerProps) {
       : selectedModelLoadFailed
         ? hasAlternateSelectionPath
           ? "Select model"
-          : FAILED_TO_LOAD_MODELS_LABEL
+          : !hasSelectedModel
+            ? selectedProviderLabel
+            : FAILED_TO_LOAD_MODELS_LABEL
         : modelOptions.length === 0
           ? canSwitchProviders
             ? "Select model"
             : "No models available"
           : "Select model";
   const triggerModelValueIsDestructive =
-    triggerModelLabel === FAILED_TO_LOAD_MODELS_LABEL;
+    triggerModelLabel === FAILED_TO_LOAD_MODELS_LABEL ||
+    (selectedModelLoadFailed && !hasAlternateSelectionPath);
   const compactModelLabel =
     isCompactViewport && hasSelectedModel
       ? triggerModelLabel.replace(/^GPT-/i, "")

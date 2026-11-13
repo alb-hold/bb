@@ -40,6 +40,7 @@ import {
   pluginNavVisiblePanelKeysAtom,
 } from "@/components/plugin/pluginNavSidebarAtoms";
 import {
+  markPluginFrontendSettleFloorReached,
   markPluginFrontendsSettled,
   resetPluginFrontendBootStateForTest,
 } from "@/lib/plugin-frontend-boot-state";
@@ -420,7 +421,7 @@ describe("Rail", () => {
       "More",
       "Settings",
     ]);
-    expect(currentRailLabels()).toEqual(["Home"]);
+    expect(currentRailLabels()).toEqual([]);
   });
 
   it("moves the highlight from Home to a plugin panel and to Settings as the route changes", () => {
@@ -555,6 +556,10 @@ describe("Rail", () => {
     renderRail(THREAD_PATH);
     expect(railButton("Ghost board")).toBeDefined();
 
+    act(() => markPluginFrontendSettleFloorReached());
+
+    expect(railButton("Ghost board")).toBeDefined();
+
     act(() => markPluginFrontendsSettled());
 
     expect(railLabels()).not.toContain("Ghost board");
@@ -568,7 +573,7 @@ describe("Rail", () => {
     fireEvent.click(railButton("Home"));
 
     expect(pathname()).toBe(THREAD_PATH);
-    expect(currentRailLabels()).toEqual(["Home"]);
+    expect(currentRailLabels()).toEqual([]);
   });
 
   it("sends Home to a new thread after a cold load onto a plugin panel that registers late", () => {
@@ -671,7 +676,7 @@ describe("Rail", () => {
     fireEvent.click(railButton("Home"));
 
     expect(pathname()).toBe(THREAD_PATH);
-    expect(currentRailLabels()).toEqual(["Home"]);
+    expect(currentRailLabels()).toEqual([]);
   });
 
   it("sends Home to a new thread when the session started outside the thread list", () => {

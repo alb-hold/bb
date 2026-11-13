@@ -70,7 +70,7 @@ export function ProviderCliBanner({
           <Button
             type="button"
             size="sm"
-            className="h-8 shrink-0 px-3"
+            className="h-8 shrink-0 px-3 pointer-coarse:min-h-11"
             disabled={actionRunning}
             onClick={onAction}
           >
