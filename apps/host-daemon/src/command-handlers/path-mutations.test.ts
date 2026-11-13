@@ -267,30 +267,33 @@ describe("confined host path mutations", () => {
       const target = path.join(root, "fchdir-race");
       await fs.mkdir(target);
       await fs.writeFile(path.join(target, "before.txt"), "before");
-      const worker = spawn(
-        "python3",
-        [
-          "-c",
-          "import os,sys; print('ready', flush=True); target=sys.stdin.readline().strip(); fd=os.open(target, os.O_RDONLY); os.fchdir(fd); open('late.txt','w').write('late'); print('written', flush=True); sys.stdin.readline()",
-        ],
-        { stdio: ["pipe", "pipe", "ignore"] },
-      );
-      if (worker.pid !== undefined) trackedPids.add(worker.pid);
+      let worker: ReturnType<typeof spawn> | undefined;
+      const startWorker = () =>
+        spawn(
+          "python3",
+          [
+            "-c",
+            "import os,sys; print('ready', flush=True); target=sys.stdin.readline().strip(); fd=os.open(target, os.O_RDONLY); os.fchdir(fd); open('late.txt','w').write('late'); print('written', flush=True); sys.stdin.readline()",
+          ],
+          { stdio: ["pipe", "pipe", "ignore"] },
+        );
       let output = "";
-      worker.stdout?.on("data", (chunk) => {
-        output += chunk.toString();
-      });
       const waitFor = async (value: string) => {
-        while (!output.includes(value)) await once(worker.stdout!, "data");
+        while (!output.includes(value)) await once(worker!.stdout!, "data");
       };
       try {
-        await waitFor("ready");
         await expect(
           removeDirectoryAfterHolderRecheck({
             directory: target,
             action: "remove worktree",
             recursive: true,
             afterHolderScan: async (quarantine) => {
+              worker = startWorker();
+              if (worker.pid !== undefined) trackedPids.add(worker.pid);
+              worker.stdout?.on("data", (chunk) => {
+                output += chunk.toString();
+              });
+              await waitFor("ready");
               worker.stdin?.write(`${quarantine}\n`);
               await waitFor("written");
               worker.stdin?.write("done\n");
@@ -301,7 +304,15 @@ describe("confined host path mutations", () => {
           fs.readFile(path.join(target, "late.txt"), "utf8"),
         ).resolves.toBe("late");
       } finally {
-        worker.kill("SIGKILL");
+        if (
+          worker !== undefined &&
+          worker.exitCode === null &&
+          worker.signalCode === null
+        ) {
+          const closed = once(worker, "close");
+          worker.kill("SIGKILL");
+          await closed;
+        }
       }
     },
   );
