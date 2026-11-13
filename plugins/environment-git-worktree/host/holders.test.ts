@@ -2046,3 +2046,179 @@ describe("task-private namespace doubt", () => {
     },
   );
 });
+
+const procChurnSource =
+  '\n#define _GNU_SOURCE\n#include <pthread.h>\n#include <stdatomic.h>\n#include <fcntl.h>\n#include <stdio.h>\n#include <unistd.h>\nstatic atomic_ulong opens;\nstatic atomic_ulong threads;\nstatic char filename[4096];\nstatic void *files(void *arg) {\n  for (;;) {\n    int fd = open(filename, O_RDONLY);\n    if (fd < 0) _exit(2);\n    close(fd);\n    atomic_fetch_add(&opens, 1);\n  }\n}\nstatic void *short_task(void *arg) { usleep(100); return NULL; }\nstatic void *tasks(void *arg) {\n  for (;;) {\n    pthread_t thread;\n    if (pthread_create(&thread, NULL, short_task, NULL)) _exit(3);\n    pthread_join(thread, NULL);\n    atomic_fetch_add(&threads, 1);\n  }\n}\nint main(void) {\n  if (!fgets(filename, sizeof(filename), stdin)) return 4;\n  for (char *p=filename; *p; p++) if (*p==\'\\n\') *p=0;\n  pthread_t a,b;\n  if (pthread_create(&a,NULL,files,NULL) || pthread_create(&b,NULL,tasks,NULL)) return 5;\n  while (!atomic_load(&opens) || !atomic_load(&threads)) usleep(100);\n  printf("ready %lu %lu\\n",atomic_load(&opens),atomic_load(&threads)); fflush(stdout);\n  char input[16];\n  while (fgets(input,sizeof(input),stdin)) {\n    printf("stats %lu %lu\\n",atomic_load(&opens),atomic_load(&threads)); fflush(stdout);\n  }\n  return 0;\n}\n';
+
+describe("vanished proc entries", () => {
+  it.each(
+    ["ENOENT", "ESRCH", "ENOTDIR"].flatMap((code) =>
+      [
+        "fd readlink",
+        "fd stat",
+        "task cwd",
+        "task cwd stat",
+        "task fd",
+        "task maps",
+        "task namespace",
+        "process namespace",
+        "process fd",
+        "process maps",
+        "process tasks",
+      ].map((kind) => [code, kind] as const),
+    ),
+  )("skips %s at %s", async (code, kind) => {
+    const proc = mountAliasProc("/work/tree", "outside", 107473);
+    const task = "/proc/101/task/102";
+    const gone = (): never => {
+      throw Object.assign(new Error(code), { code });
+    };
+    const reader: ProcReader = {
+      ...proc,
+      readdir: async (target) => {
+        if (target === "/proc/101/task")
+          return kind === "process tasks" ? gone() : ["101", "102"];
+        if (target === "/proc/101/fd")
+          return kind === "process fd"
+            ? gone()
+            : kind.startsWith("fd ")
+              ? ["3"]
+              : [];
+        if (target === task + "/fd" && kind === "task fd") return gone();
+        return proc.readdir(target);
+      },
+      readlink: async (target) => {
+        if (
+          (target === "/proc/101/fd/3" && kind === "fd readlink") ||
+          (target === task + "/cwd" && kind === "task cwd") ||
+          (target === task + "/ns/mnt" && kind === "task namespace") ||
+          (target === "/proc/101/ns/mnt" && kind === "process namespace")
+        )
+          return gone();
+        if (target === "/proc/101/fd/3") return "/outside/file";
+        return proc.readlink(target);
+      },
+      statId: async (target) =>
+        (target === "/proc/101/fd/3" && kind === "fd stat") ||
+        (target === task + "/cwd" && kind === "task cwd stat")
+          ? gone()
+          : proc.statId(target),
+      readFile: async (target) =>
+        (target === task + "/maps" && kind === "task maps") ||
+        (target === "/proc/101/maps" && kind === "process maps")
+          ? gone()
+          : proc.readFile(target),
+    };
+    expect(await scanLinux("/work/tree", reader, 4242)).toMatchObject({
+      status: "clear",
+    });
+  });
+  it.each(["EACCES", "EPERM", "EIO"])(
+    "retains real fd read failure %s",
+    async (code) => {
+      const proc = mountAliasProc("/work/tree", "outside", 107473);
+      const reader: ProcReader = {
+        ...proc,
+        readdir: async (target) =>
+          target === "/proc/101/fd" ? ["3"] : proc.readdir(target),
+        readlink: async (target) => {
+          if (target === "/proc/101/fd/3")
+            throw Object.assign(new Error(code), { code });
+          return proc.readlink(target);
+        },
+      };
+      expect(await scanLinux("/work/tree", reader, 4242)).toMatchObject({
+        status: "uncertain",
+      });
+    },
+  );
+  it("skips a process that exits after an earlier denied read", async () => {
+    const proc = mountAliasProc("/work/tree", "outside", 107473);
+    let statuses = 0;
+    const reader: ProcReader = {
+      ...proc,
+      readlink: async (target) => {
+        if (target === "/proc/101/cwd")
+          throw Object.assign(new Error("denied"), { code: "EACCES" });
+        return proc.readlink(target);
+      },
+      readFile: async (target) => {
+        if (target === "/proc/101/status" && ++statuses > 1)
+          throw Object.assign(new Error("gone"), { code: "ENOENT" });
+        return proc.readFile(target);
+      },
+    };
+    expect(await scanLinux("/work/tree", reader, 4242)).toMatchObject({
+      status: "clear",
+    });
+  });
+});
+
+it.skipIf(process.platform !== "linux")(
+  "clears an idle worktree in 20 real fd and thread churn scans",
+  async () => {
+    const fs = await import("node:fs/promises");
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const root = await fs.realpath(
+      await fs.mkdtemp(path.join(os.tmpdir(), "bb-proc-churn-")),
+    );
+    const directory = path.join(root, "worktree");
+    await fs.mkdir(directory);
+    const filename = path.join(root, "outside.txt");
+    await fs.writeFile(filename, "outside\n");
+    const source = path.join(root, "helper.c");
+    const executable = path.join(root, "helper");
+    await fs.writeFile(source, procChurnSource);
+    expect(spawnSync("cc", ["-pthread", source, "-o", executable]).status).toBe(
+      0,
+    );
+    const child = spawn(executable, [], {
+      cwd: root,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    try {
+      const first = Promise.race([
+        once(child.stdout!, "data"),
+        once(child, "exit").then(() => {
+          throw new Error("churn helper exited");
+        }),
+      ]);
+      child.stdin!.write(filename + "\n");
+      const [ready] = await first;
+      const before = /ready (\d+) (\d+)/u.exec(String(ready));
+      expect(before).not.toBeNull();
+      const proc: ProcReader = {
+        ...hostProc,
+        readdir: async (target) =>
+          target === "/proc" ? [String(child.pid)] : hostProc.readdir(target),
+      };
+      const scans = [];
+      for (let i = 0; i < 20; i++) scans.push(await scanLinux(directory, proc));
+      const next = Promise.race([
+        once(child.stdout!, "data"),
+        once(child, "exit").then(() => {
+          throw new Error("churn helper exited");
+        }),
+      ]);
+      child.stdin!.write("stats\n");
+      const [stats] = await next;
+      const after = /stats (\d+) (\d+)/u.exec(String(stats));
+      expect(after).not.toBeNull();
+      expect(Number(after![1])).toBeGreaterThan(Number(before![1]));
+      expect(Number(after![2])).toBeGreaterThan(Number(before![2]));
+      expect(
+        scans.map((scan) => scan.status),
+        JSON.stringify(scans),
+      ).toEqual(Array.from({ length: 20 }, () => "clear"));
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) {
+        const closed = once(child, "close");
+        child.kill();
+        await closed;
+      }
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  },
+  20_000,
+);

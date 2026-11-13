@@ -458,9 +458,10 @@ async function scanMountAliases(
   const identity = async (
     link: string,
     through: WorktreeHolder["through"],
-  ): Promise<WorktreeHolder | null> => {
+  ): Promise<WorktreeHolder | { gone: true } | null> => {
     const id = await readOptional(() => proc.statId(link));
-    if (!("value" in id)) identityDoubt = `${link} identity could not be read`;
+    if ("gone" in id) return id;
+    if ("failed" in id) identityDoubt = `${link} identity could not be read`;
     else if ("ids" in ids && ids.ids.has(id.value)) return holder(through);
     return null;
   };
@@ -468,33 +469,41 @@ async function scanMountAliases(
     target: string,
     through: WorktreeHolder["through"],
     stat: boolean,
-  ): Promise<WorktreeHolder | null> => {
+  ): Promise<WorktreeHolder | { gone: true } | null> => {
     const value = await readOptional(() => proc.readlink(target));
     if ("value" in value && matches(value.value)) return holder(through);
-    if (!("value" in value)) doubt = `${target} could not be read`;
-    return stat ? identity(target, through) : null;
+    if ("gone" in value) return value;
+    const found = stat ? await identity(target, through) : null;
+    if (found !== null && "gone" in found) return found;
+    if ("failed" in value) doubt = `${target} could not be read`;
+    return found;
   };
   for (const [leaf, through, stat] of [
     ["cwd", "working folder", true],
     ["exe", "open file", false],
   ] as const) {
     const found = await link(`${base}/${leaf}`, through, stat);
-    if (found !== null) return found;
+    if (found !== null && !("gone" in found)) return found;
   }
   const files = async (
     fileBase: string,
-  ): Promise<WorktreeHolder | { uncertain: string } | null> => {
+  ): Promise<
+    WorktreeHolder | { uncertain: string } | { gone: true } | null
+  > => {
     let fileDoubt: string | null = null;
     const entries = await readOptional(() => proc.readdir(`${fileBase}/fd`));
-    if (!("value" in entries)) fileDoubt = `${fileBase}/fd could not be read`;
+    if ("gone" in entries) return entries;
+    if ("failed" in entries) fileDoubt = `${fileBase}/fd could not be read`;
     if ("value" in entries)
       for (const entry of entries.value) {
         const target = `${fileBase}/fd/${entry}`;
         const value = await readOptional(() => proc.readlink(target));
         if ("value" in value && matches(value.value))
           return holder("open file");
-        if (!("value" in value)) fileDoubt = `${target} could not be read`;
+        if ("gone" in value) continue;
         const found = await identity(target, "open file");
+        if (found !== null && "gone" in found) continue;
+        if ("failed" in value) fileDoubt = `${target} could not be read`;
         if (found !== null) return found;
       }
     const mappedEntries = await readOptional(() =>
@@ -509,33 +518,52 @@ async function scanMountAliases(
           return holder("mapped file");
       }
     const maps = await readOptional(() => proc.readFile(`${fileBase}/maps`));
-    if (!("value" in maps)) fileDoubt = `${fileBase}/maps could not be read`;
+    if ("gone" in maps) return maps;
+    if ("failed" in maps) fileDoubt = `${fileBase}/maps could not be read`;
     if ("value" in maps)
       for (const line of maps.value.split("\n"))
         if (matches(mappedPath(line))) return holder("mapped file");
     return fileDoubt === null ? null : { uncertain: fileDoubt };
   };
+  const beforeLeaderFiles = identityDoubt;
   const leaderFiles = await files(base);
   if (leaderFiles !== null) {
     if ("pid" in leaderFiles) return leaderFiles;
-    doubt = leaderFiles.uncertain;
+    if ("gone" in leaderFiles) identityDoubt = beforeLeaderFiles;
+    else doubt = leaderFiles.uncertain;
   }
   const namespace = await readOptional(() => proc.readlink(`${base}/ns/mnt`));
-  if (!("value" in namespace))
+  if ("failed" in namespace)
     doubt = `${base} mount namespace could not be read`;
   const tasks = await readOptional(() => proc.readdir(`${base}/task`));
-  if (!("value" in tasks)) identityDoubt = `${base}/task could not be read`;
+  if ("failed" in tasks) identityDoubt = `${base}/task could not be read`;
   if ("value" in tasks)
     for (const task of tasks.value) {
       const taskBase = `${base}/task/${task}`;
+      const beforeTask = { doubt, identityDoubt };
       const found = await link(`${taskBase}/cwd`, "working folder", true);
-      if (found !== null) return found;
+      if (found !== null) {
+        if ("gone" in found) continue;
+        return found;
+      }
       const taskFiles = await files(taskBase);
-      if (taskFiles !== null && "pid" in taskFiles) return taskFiles;
+      if (taskFiles !== null) {
+        if ("pid" in taskFiles) return taskFiles;
+        if ("gone" in taskFiles) {
+          doubt = beforeTask.doubt;
+          identityDoubt = beforeTask.identityDoubt;
+          continue;
+        }
+      }
       const taskNamespace = await readOptional(() =>
         proc.readlink(`${taskBase}/ns/mnt`),
       );
-      if (!("value" in taskNamespace))
+      if ("gone" in taskNamespace) {
+        doubt = beforeTask.doubt;
+        identityDoubt = beforeTask.identityDoubt;
+        continue;
+      }
+      if ("failed" in taskNamespace)
         identityDoubt = `${taskBase} mount namespace could not be read`;
       if (
         taskFiles !== null &&
@@ -574,10 +602,10 @@ async function scanMountAliases(
       return { isolated: true };
     doubt = `process ${pid} runs in another mount namespace without proven mount isolation`;
   }
+  const current = await readOptional(() => proc.readFile(`${base}/status`));
+  if ("gone" in current) return current;
   const reason = identityDoubt ?? doubt;
   if (reason !== null) {
-    const current = await readOptional(() => proc.readFile(`${base}/status`));
-    if ("gone" in current) return { gone: true };
     return { uncertain: `process ${pid}: ${reason}` };
   }
   return null;
