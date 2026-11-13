@@ -20,6 +20,7 @@ import {
   rebindNativeTerminalThreadSessionId,
   clearNativeTerminalThreadEvidence,
   setNativeTerminalThreadTerminal,
+  type DbTransaction,
   type NativeTerminalThreadRecord,
 } from "@bb/db";
 import {
@@ -286,6 +287,7 @@ export function beginNativeTerminalThreadProvisioning(
     input: PromptInput[];
     thread: ThreadRow;
     titleProvided: boolean;
+    beforeStartInTransaction?: (tx: DbTransaction) => void;
   },
 ): void {
   const started = deps.db.transaction(
@@ -295,6 +297,7 @@ export function beginNativeTerminalThreadProvisioning(
         { event: { type: "run.preparing" }, threadId: args.thread.id },
       );
       if (!prepared.applied) return false;
+      args.beforeStartInTransaction?.(tx);
       saveThreadProvisionContext({
         replace: true,
         db: tx,

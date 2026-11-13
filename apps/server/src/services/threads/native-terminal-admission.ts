@@ -3,6 +3,7 @@ import {
   deleteClaimedQueuedThreadMessageBatchInTransaction,
   getEnvironment,
   getNativeTerminalThread,
+  getThread,
   type ClaimedQueuedThreadMessageRow,
   type DbTransaction,
 } from "@bb/db";
@@ -23,6 +24,7 @@ import { resolvePromptAttachmentReferences } from "../projects/attachments.js";
 import {
   intendedThreadEnvironmentIntent,
   intendedThreadHostId,
+  readPendingThreadStartContext,
 } from "./dispatch-attempt.js";
 import { resolveDispatchAuthor } from "./dispatch-author.js";
 import {
@@ -33,6 +35,7 @@ import {
   runMessageDispatchHookPass,
 } from "./dispatch-hooks.js";
 import {
+  beginNativeTerminalThreadProvisioning,
   nativeTerminalPromptParts,
   sendNativeTerminalMessage,
 } from "./native-terminal-threads.js";
@@ -103,7 +106,11 @@ export async function admitNativeTerminalDispatch(
   deps: LoggedPendingInteractionWorkSessionDeps,
   args: NativeTerminalAdmissionArgs,
 ): Promise<NativeTerminalAdmissionOutcome> {
-  if (args.sendNow || holdsCapacity(args.thread) || !hasMessageDispatchHooks()) {
+  if (
+    args.sendNow ||
+    holdsCapacity(args.thread) ||
+    !hasMessageDispatchHooks()
+  ) {
     await runAdmittedWork(args.admitted);
     return { kind: "dispatched" };
   }
@@ -114,7 +121,8 @@ export async function admitNativeTerminalDispatch(
     startedOnBehalfOf: args.startedOnBehalfOf,
   });
   const model = getNativeTerminalThread(deps.db, args.thread.id)?.model ?? null;
-  const admittedWithinDecision = args.admitted;
+  const admitted = args.admitted;
+  let admittedWithinDecision = false;
   const outcome = await runMessageDispatchHookPass(deps, {
     thread: args.thread,
     threadResponse: toThreadResponseFromThread(deps, { thread: args.thread }),
@@ -143,12 +151,17 @@ export async function admitNativeTerminalDispatch(
     parentThreadId: args.thread.parentThreadId,
     queuedMessages: args.claimed?.map(toThreadQueuedMessage) ?? [],
     pluginSubmission: null,
-    ...(admittedWithinDecision.when === "within-decision"
-      ? { continueAfterHooks: async () => admittedWithinDecision.run() }
+    ...(admitted.when === "within-decision"
+      ? {
+          continueAfterHooks: async () => {
+            admittedWithinDecision = true;
+            admitted.run();
+          },
+        }
       : {}),
   });
   if (outcome.kind === "proceed") {
-    if (args.admitted.when === "after-decision") await args.admitted.run();
+    if (!admittedWithinDecision) await runAdmittedWork(admitted);
     return { kind: "dispatched" };
   }
   if (args.claimed !== null) {
@@ -270,13 +283,48 @@ export async function dispatchClaimedNativeTerminalMessages(
     origin: lead.origin,
     originPluginId: lead.originPluginId,
     startedOnBehalfOf: storedQueuedThreadMessageRequestedBy(lead),
-    admitted: {
-      when: "after-decision",
-      run: async () => {
-        await deliverNativeTerminalPrompt(deps, { thread: args.thread, input });
-        deps.db.transaction(consumeClaimedRows, { behavior: "immediate" });
-        settleClaimedRows();
-      },
-    },
+    admitted:
+      args.thread.status === "pending"
+        ? {
+            when: "within-decision",
+            run: () => {
+              const row = getThread(deps.db, args.thread.id);
+              if (row === null) {
+                throw new ApiError(404, "thread_not_found", "Thread not found");
+              }
+              const startContext = readPendingThreadStartContext(
+                deps,
+                args.thread.id,
+              );
+              if (startContext === null) {
+                throw new ApiError(
+                  500,
+                  "internal_error",
+                  `Native terminal thread ${args.thread.id} is pending but has no start context`,
+                );
+              }
+              beginNativeTerminalThreadProvisioning(deps, {
+                environmentIntent: startContext.environmentIntent,
+                input,
+                thread: row,
+                titleProvided: startContext.titleProvided,
+                beforeStartInTransaction: consumeClaimedRows,
+              });
+              settleClaimedRows();
+            },
+          }
+        : {
+            when: "after-decision",
+            run: async () => {
+              await deliverNativeTerminalPrompt(deps, {
+                thread: args.thread,
+                input,
+              });
+              deps.db.transaction(consumeClaimedRows, {
+                behavior: "immediate",
+              });
+              settleClaimedRows();
+            },
+          },
   });
 }
