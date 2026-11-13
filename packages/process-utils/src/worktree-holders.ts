@@ -38,8 +38,7 @@ export function mapLsofError(
       : null;
   const errorCode = value?.code;
   const code = typeof errorCode === "number" ? errorCode : null;
-  const signal =
-    typeof value?.signal === "string" ? value.signal : null;
+  const signal = typeof value?.signal === "string" ? value.signal : null;
   const failure =
     errorCode === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER"
       ? "maxBuffer"
@@ -96,6 +95,72 @@ function isUnder(candidate: string, directory: string): boolean {
     : candidate;
   return (
     normalized === directory || normalized.startsWith(`${directory}${path.sep}`)
+  );
+}
+
+type Mount = { device: string; root: string; point: string };
+
+function parseMountinfo(text: string): Mount[] | null {
+  const mounts: Mount[] = [];
+  for (const line of text.trim().split("\n")) {
+    const fields = line.split(" ");
+    const separator = fields.indexOf("-");
+    if (
+      separator < 6 ||
+      fields.length < separator + 4 ||
+      !/^\d+:\d+$/u.test(fields[2] ?? "")
+    )
+      return null;
+    const decode = (value: string | undefined): string | null => {
+      if (value === undefined || !value.startsWith("/")) return null;
+      const decoded = value.replace(
+        /\\(040|011|012|134)/gu,
+        (_match, octal: string) =>
+          String.fromCharCode(Number.parseInt(octal, 8)),
+      );
+      if (/\\(?![\\])/u.test(decoded)) return null;
+      return path.posix.normalize(decoded);
+    };
+    const mountRoot = decode(fields[3]);
+    const point = decode(fields[4]);
+    if (mountRoot === null || point === null) return null;
+    mounts.push({ device: fields[2]!, root: mountRoot, point });
+  }
+  return mounts.length === 0 ? null : mounts;
+}
+
+function mountContains(candidate: string, ancestor: string): boolean {
+  return ancestor === "/" || isUnder(candidate, ancestor);
+}
+
+async function foreignMountsExcludeWorktree(
+  proc: ProcReader,
+  base: string,
+  directory: string,
+  mountNamespace: string,
+): Promise<boolean> {
+  const namespace = await readOptional(() => proc.readlink(`${base}/ns/mnt`));
+  if (!("value" in namespace) || namespace.value === mountNamespace)
+    return false;
+  const own = await readOptional(() => proc.readFile("/proc/self/mountinfo"));
+  const foreign = await readOptional(() => proc.readFile(`${base}/mountinfo`));
+  if (!("value" in own) || !("value" in foreign)) return false;
+  const ownMounts = parseMountinfo(own.value);
+  const foreignMounts = parseMountinfo(foreign.value);
+  if (ownMounts === null || foreignMounts === null) return false;
+  const mount = ownMounts
+    .filter((entry) => mountContains(directory, entry.point))
+    .sort((a, b) => b.point.length - a.point.length)[0];
+  if (mount === undefined) return false;
+  const filesystemPath = path.posix.join(
+    mount.root,
+    path.posix.relative(mount.point, directory),
+  );
+  return !foreignMounts.some(
+    (entry) =>
+      entry.device === mount.device &&
+      (mountContains(filesystemPath, entry.root) ||
+        mountContains(entry.root, filesystemPath)),
   );
 }
 
@@ -323,84 +388,113 @@ async function scanLinuxProcess(
     if (foreignUid === undefined || (foreignUid < 1000 && self.uid !== 0))
       return { otherUser: true };
     if (self.uid !== 0) {
-      const foreignCwd = await readOptional(() => proc.readlink(`${base}/cwd`));
-      if ("value" in foreignCwd) {
-        if (isUnder(foreignCwd.value, directory))
-          return { pid, command: null, through: "working folder" };
-      } else if ("failed" in foreignCwd) {
-        const command = await readOptional(() =>
-          proc.readFile(`${base}/cmdline`),
+      let uninspectable = false;
+      for (const [leaf, through] of [
+        ["cwd", "working folder"],
+        ["exe", "open file"],
+      ] as const) {
+        const target = await readOptional(() =>
+          proc.readlink(`${base}/${leaf}`),
         );
-        const references = (value: string) => {
-          let offset = value.indexOf(directory);
-          while (offset >= 0) {
-            const before = value[offset - 1];
-            const after = value[offset + directory.length];
-            if (
-              (before === undefined || /[\s\0="':]/u.test(before)) &&
-              (after === undefined || /[\s\0/']/u.test(after))
-            )
-              return true;
-            offset = value.indexOf(directory, offset + 1);
-          }
-          return false;
-        };
-        if ("value" in command && references(command.value))
-          return {
-            uncertain: `process ${pid} foreign uid ${foreignUid} command references the worktree`,
-          };
-        let parent = parseStatusNumbers(status.value, "PPid")?.[0];
-        for (
-          let depth = 0;
-          parent !== undefined && parent > 1 && depth < 64;
-          depth++
-        ) {
-          const parentBase = `/proc/${parent}`;
-          const parentCommand = await readOptional(() =>
-            proc.readFile(`${parentBase}/cmdline`),
-          );
-          if ("value" in parentCommand && references(parentCommand.value))
-            return {
-              uncertain: `process ${pid} descends from a worktree process`,
-            };
-          const parentCwd = await readOptional(() =>
-            proc.readlink(`${parentBase}/cwd`),
-          );
-          if ("value" in parentCwd && isUnder(parentCwd.value, directory))
-            return {
-              uncertain: `process ${pid} descends from a worktree process`,
-            };
-          const parentExe = await readOptional(() =>
-            proc.readlink(`${parentBase}/exe`),
-          );
-          if ("value" in parentExe && isUnder(parentExe.value, directory))
-            return {
-              uncertain: `process ${pid} descends from a worktree process`,
-            };
-          const parentFds = await readOptional(() =>
-            proc.readdir(`${parentBase}/fd`),
-          );
-          if ("value" in parentFds) {
-            for (const fd of parentFds.value) {
-              const target = await readOptional(() =>
-                proc.readlink(`${parentBase}/fd/${fd}`),
-              );
-              if ("value" in target && isUnder(target.value, directory))
-                return {
-                  uncertain: `process ${pid} descends from a worktree process`,
-                };
-            }
-          }
-          const parentStatus = await readOptional(() =>
-            proc.readFile(`${parentBase}/status`),
-          );
-          if (!("value" in parentStatus)) break;
-          parent = parseStatusNumbers(parentStatus.value, "PPid")?.[0];
-        }
-        return null;
-      } else {
-        return null;
+        if ("value" in target && isUnder(target.value, directory))
+          return { pid, command: null, through };
+        if ("failed" in target) uninspectable = true;
       }
+      const fds = await readOptional(() => proc.readdir(`${base}/fd`));
+      if ("failed" in fds) uninspectable = true;
+      if ("value" in fds) {
+        for (const fd of fds.value) {
+          const target = await readOptional(() =>
+            proc.readlink(`${base}/fd/${fd}`),
+          );
+          if ("value" in target && isUnder(target.value, directory))
+            return { pid, command: null, through: "open file" };
+          if ("failed" in target) uninspectable = true;
+        }
+      }
+      const command = await readOptional(() =>
+        proc.readFile(`${base}/cmdline`),
+      );
+      const references = (value: string) => {
+        let offset = value.indexOf(directory);
+        while (offset >= 0) {
+          const before = value[offset - 1];
+          const after = value[offset + directory.length];
+          if (
+            (before === undefined || /[\s\0="':]/u.test(before)) &&
+            (after === undefined || /[\s\0/']/u.test(after))
+          )
+            return true;
+          offset = value.indexOf(directory, offset + 1);
+        }
+        return false;
+      };
+      if ("value" in command && references(command.value))
+        return {
+          uncertain: `process ${pid} foreign uid ${foreignUid} command references the worktree`,
+        };
+      let parent = parseStatusNumbers(status.value, "PPid")?.[0];
+      for (
+        let depth = 0;
+        parent !== undefined && parent > 1 && depth < 64;
+        depth++
+      ) {
+        const parentBase = `/proc/${parent}`;
+        const parentCommand = await readOptional(() =>
+          proc.readFile(`${parentBase}/cmdline`),
+        );
+        if ("value" in parentCommand && references(parentCommand.value))
+          return {
+            uncertain: `process ${pid} descends from a worktree process`,
+          };
+        const parentCwd = await readOptional(() =>
+          proc.readlink(`${parentBase}/cwd`),
+        );
+        if ("value" in parentCwd && isUnder(parentCwd.value, directory))
+          return {
+            uncertain: `process ${pid} descends from a worktree process`,
+          };
+        const parentExe = await readOptional(() =>
+          proc.readlink(`${parentBase}/exe`),
+        );
+        if ("value" in parentExe && isUnder(parentExe.value, directory))
+          return {
+            uncertain: `process ${pid} descends from a worktree process`,
+          };
+        const parentFds = await readOptional(() =>
+          proc.readdir(`${parentBase}/fd`),
+        );
+        if ("value" in parentFds) {
+          for (const fd of parentFds.value) {
+            const target = await readOptional(() =>
+              proc.readlink(`${parentBase}/fd/${fd}`),
+            );
+            if ("value" in target && isUnder(target.value, directory))
+              return {
+                uncertain: `process ${pid} descends from a worktree process`,
+              };
+          }
+        }
+        const parentStatus = await readOptional(() =>
+          proc.readFile(`${parentBase}/status`),
+        );
+        if (!("value" in parentStatus)) break;
+        parent = parseStatusNumbers(parentStatus.value, "PPid")?.[0];
+      }
+
+      if (!uninspectable) return null;
+      if (
+        await foreignMountsExcludeWorktree(
+          proc,
+          base,
+          directory,
+          mountNamespace,
+        )
+      )
+        return null;
+      return {
+        uncertain: `process ${pid} foreign uid ${foreignUid} could not be inspected or proven unrelated`,
+      };
     }
     const cwd = await readOptional(() => proc.readlink(`${base}/cwd`));
     if ("value" in cwd) {

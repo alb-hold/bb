@@ -5,6 +5,9 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  hostProc,
+  scanLinux,
+  type ProcReader,
   mapLsofError,
   scanWorktreeHolders,
 } from "../src/worktree-holders.js";
@@ -38,14 +41,15 @@ describe("mapLsofError", () => {
       { failure: "signal", signal: "SIGTERM" },
     ],
   ] as const)("classifies %s correctly", (error, expected) => {
-    expect(mapLsofError(error, "stdout", "first stderr line\nsecond line"))
-      .toMatchObject({
-        ...expected,
-        code: null,
-        stdout: "stdout",
-        stderr: "first stderr line\nsecond line",
-        spawnFailed: true,
-      });
+    expect(
+      mapLsofError(error, "stdout", "first stderr line\nsecond line"),
+    ).toMatchObject({
+      ...expected,
+      code: null,
+      stdout: "stdout",
+      stderr: "first stderr line\nsecond line",
+      spawnFailed: true,
+    });
   });
 });
 
@@ -89,6 +93,80 @@ describe("scanWorktreeHolders", () => {
       expect(scan).toMatchObject({
         status: "held",
         holders: [expect.objectContaining({ pid: child.pid })],
+      });
+    },
+  );
+});
+
+describe("foreign process mount evidence", () => {
+  it.each([
+    ["bind mount root", "/work/tree", "8:48", "mnt:[2]", "uncertain"],
+    [
+      "nested bind mount root",
+      "/work/tree/sub",
+      "8:48",
+      "mnt:[2]",
+      "uncertain",
+    ],
+    ["filesystem root mount", "/", "8:48", "mnt:[2]", "uncertain"],
+    [
+      "escaped mount root",
+      "/work/tree\\040space/sub",
+      "8:48",
+      "mnt:[2]",
+      "uncertain",
+      "/work/tree space",
+    ],
+    ["unreadable container mounts", null, null, "mnt:[2]", "uncertain"],
+    [
+      "unrelated readable container mounts",
+      "/data",
+      "8:48",
+      "mnt:[2]",
+      "clear",
+    ],
+    ["path prefix sibling", "/work/tree-other", "8:48", "mnt:[2]", "clear"],
+    ["same namespace unreadable mounts", null, null, "mnt:[1]", "uncertain"],
+    ["ancestor mount", "/work", "8:48", "mnt:[2]", "uncertain"],
+    ["different filesystem", "/", "0:95", "mnt:[2]", "clear"],
+    ["malformed mountinfo", "malformed", "8:48", "mnt:[2]", "uncertain"],
+  ] as const)(
+    "classifies %s",
+    async (
+      _name,
+      mountRoot,
+      source,
+      namespace,
+      expected,
+      directory: string = "/work/tree",
+    ) => {
+      const denied = () => {
+        throw Object.assign(new Error("Permission denied"), { code: "EACCES" });
+      };
+      const proc: ProcReader = {
+        ...hostProc,
+        readdir: async () => ["101"],
+        readlink: async (target) => {
+          if (target === "/proc/self/ns/mnt") return "mnt:[1]";
+          if (target === "/proc/self/root") return "/";
+          if (target === "/proc/101/ns/mnt") return namespace;
+          return denied();
+        },
+        readFile: async (target) => {
+          if (target === "/proc/self/status")
+            return "NSpid:\t4242\nUid:\t1000\t1000\t1000\t1000\nGid:\t1000\t1000\t1000\t1000\n";
+          if (target === "/proc/self/mountinfo")
+            return "25 1 8:48 / / rw - ext4 /dev/sda rw\n26 20 0:5 / /proc rw - proc proc rw\n";
+          if (target === "/proc/101/status")
+            return "State:\tS (sleeping)\nPPid:\t1\nUid:\t107473\t107473\t107473\t107473\nGid:\t107473\t107473\t107473\t107473\n";
+          if (target === "/proc/101/cmdline") return "java\0neo4j\0";
+          if (target === "/proc/101/mountinfo" && mountRoot !== null)
+            return `30 20 ${source} ${mountRoot} /container/work rw - ext4 /dev/sda rw\n`;
+          return denied();
+        },
+      };
+      expect(await scanLinux(directory, proc, 4242)).toMatchObject({
+        status: expected,
       });
     },
   );

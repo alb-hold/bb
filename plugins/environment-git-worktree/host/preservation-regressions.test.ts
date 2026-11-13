@@ -404,15 +404,27 @@ describe("real worktree teardown preservation", () => {
     },
   );
 
-  it("keeps ignored local data when force removal is requested", async () => {
-    const worktree = await makeWorktree();
-    const ignoredFile = path.join(worktree.path, ".env.local");
-    const exclude = await git(worktree.path, "rev-parse", "--git-path", "info/exclude");
-    await writeFile(path.resolve(worktree.path, exclude), ".env.local\n");
-    await writeFile(ignoredFile, "local secret\n");
-    await remove(worktree).catch(() => undefined);
-    await expect(readFile(ignoredFile, "utf8")).resolves.toBe("local secret\n");
-  });
+  it.each([".env", ".env.local"])(
+    "keeps ignored local data %s when force removal is requested",
+    async (filename) => {
+      const worktree = await makeWorktree();
+      const ignoredFile = path.join(worktree.path, filename);
+      if (filename === ".env.local") {
+        const exclude = await git(
+          worktree.path,
+          "rev-parse",
+          "--git-path",
+          "info/exclude",
+        );
+        await writeFile(path.resolve(worktree.path, exclude), ".env.local\n");
+      }
+      await writeFile(ignoredFile, "local secret\n");
+      await remove(worktree).catch(() => undefined);
+      await expect(readFile(ignoredFile, "utf8")).resolves.toBe(
+        "local secret\n",
+      );
+    },
+  );
 
   it("removes a worktree with only regenerable ignored build output", async () => {
     const worktree = await makeWorktree(
@@ -421,14 +433,98 @@ describe("real worktree teardown preservation", () => {
     );
     await mkdir(path.join(worktree.path, "node_modules"));
     await mkdir(path.join(worktree.path, ".turbo"));
-    await mkdir(path.join(worktree.path, "src", "generated"), { recursive: true });
     await writeFile(path.join(worktree.path, "node_modules", "x"), "x");
     await writeFile(path.join(worktree.path, ".turbo", "x"), "x");
-    await writeFile(path.join(worktree.path, "src", "generated", "x.ts"), "x");
     useProcReaderForTests(descendantsOnly(hostProc, -1));
     await remove(worktree);
     await expect(access(worktree.path)).rejects.toThrow();
   });
+
+  it.each([
+    [
+      "declared package dist",
+      "packages/x/dist/output.js",
+      true,
+      false,
+      "remove",
+    ],
+    ["authored dist", "notes/dist/handwritten.md", true, false, "keep"],
+    ["authored root dist", "dist/handwritten.md", true, false, "keep"],
+    [
+      "package-local output",
+      "packages/x/dist/output.js",
+      true,
+      false,
+      "remove",
+    ],
+    ["overridden output", "packages/x/dist/output.js", true, false, "keep"],
+    ["undeclared generated", "src/generated/authored.ts", true, false, "keep"],
+    ["no Turbo config", "packages/x/dist/output.js", false, false, "keep"],
+    ["malformed Turbo config", "packages/x/dist/output.js", true, true, "keep"],
+  ] as const)(
+    "uses Turbo output ownership for %s",
+    async (_name, filename, turbo, malformed, expected) => {
+      const worktree = await makeWorktree(undefined, "dist/\nsrc/generated/\n");
+      await mkdir(path.join(worktree.path, "packages/x"), { recursive: true });
+      await writeFile(
+        path.join(worktree.path, "package.json"),
+        JSON.stringify({ name: "root", private: true }),
+      );
+      await writeFile(
+        path.join(worktree.path, "packages/x/package.json"),
+        JSON.stringify({ name: "x", scripts: { build: "echo build" } }),
+      );
+      if (turbo)
+        await writeFile(
+          path.join(worktree.path, "turbo.json"),
+          malformed
+            ? "{ broken"
+            : JSON.stringify({
+                tasks: { "x#build": { outputs: ["dist/**"] } },
+              }),
+        );
+      if (_name === "package-local output" || _name === "overridden output") {
+        if (_name === "package-local output")
+          await writeFile(
+            path.join(worktree.path, "turbo.json"),
+            JSON.stringify({ tasks: {} }),
+          );
+        await writeFile(
+          path.join(worktree.path, "packages/x/turbo.json"),
+          JSON.stringify({
+            extends: ["//"],
+            tasks: {
+              build: {
+                outputs: _name === "package-local output" ? ["dist/**"] : [],
+              },
+            },
+          }),
+        );
+      }
+      await git(worktree.path, "add", ".");
+      await git(worktree.path, "commit", "-m", "build declarations");
+      await git(worktree.path, "push");
+      await mkdir(path.dirname(path.join(worktree.path, filename)), {
+        recursive: true,
+      });
+      await writeFile(
+        path.join(worktree.path, filename),
+        "authored or generated content\n",
+      );
+      useProcReaderForTests(descendantsOnly(hostProc, -1));
+      if (expected === "remove") {
+        await remove(worktree);
+        await expect(access(worktree.path)).rejects.toThrow();
+      } else {
+        await expect(remove(worktree)).rejects.toMatchObject({
+          code: "worktree_preserved",
+        });
+        await expect(
+          readFile(path.join(worktree.path, filename), "utf8"),
+        ).resolves.toBe("authored or generated content\n");
+      }
+    },
+  );
 
   it("keeps data written as the worktree is quarantined for forced removal", async () => {
     const worktree = await makeWorktree();
@@ -2174,7 +2270,7 @@ describe("real worktree teardown preservation", () => {
     ["CAP_DAC_OVERRIDE", "0000000000000002"],
     ["CAP_DAC_READ_SEARCH", "0000000000000004"],
   ])(
-    "does not keep a worktree for an unreadable foreign process without an approved tie (%s)",
+    "retains a worktree for a foreign uid with a readable worktree fd (%s)",
     async (_capability, capEff) => {
       const root = await mkdtemp(path.join("/tmp", "bb-preserve-worktree-"));
       const worktree = await makeWorktree(root);
@@ -2192,15 +2288,18 @@ describe("real worktree teardown preservation", () => {
       } catch (error) {
         removalError = error;
       }
-      expect(scan.status).toBe("clear");
-      expect(removalError).toBeUndefined();
+      expect(scan.status).toBe("held");
+      expect(removalError).toMatchObject({ code: "worktree_preserved" });
       expect(signal).not.toHaveBeenCalled();
-      await expect(access(worktree.path)).rejects.toThrow();
+      await expect(access(worktree.path)).resolves.toBeUndefined();
+      await expect(
+        readFile(path.join(worktree.path, "README.md"), "utf8"),
+      ).resolves.toBe("published\n");
     },
   );
 
   it.skipIf(process.platform !== "linux")(
-    "removes the worktree for an unreadable foreign process with no worktree evidence",
+    "keeps an uncertain foreign-user holder without signalling any process",
     async () => {
       const root = await mkdtemp(path.join("/tmp", "bb-preserve-worktree-"));
       const worktree = await makeWorktree(root);
@@ -2222,11 +2321,14 @@ describe("real worktree teardown preservation", () => {
       useProcReaderForTests(foreignUnreadableCwdProc(worker.pid ?? -1));
       const signal = vi.spyOn(process, "kill");
 
-      await remove(worktree);
+      await expect(remove(worktree)).rejects.toMatchObject({
+        code: "worktree_preserved",
+      });
 
       expect(signal).not.toHaveBeenCalled();
       expect(() => process.kill(worker.pid!, 0)).not.toThrow();
-      await expect(access(worktree.path)).rejects.toThrow();
+      await expect(access(worktree.path)).resolves.toBeUndefined();
+      expect(await git(worktree.path, "status", "--porcelain")).toBe("");
     },
   );
 
@@ -2234,7 +2336,7 @@ describe("real worktree teardown preservation", () => {
     process.platform !== "linux" ||
       (typeof process.getuid === "function" && process.getuid() === 0),
   )(
-    "removes the worktree when unreadable foreign cwd has no readable worktree evidence",
+    "retains the worktree without signalling when an unreadable foreign cwd can traverse a group-execute-only ancestor",
     async () => {
       const root = await mkdtemp(
         path.join("/tmp", "bb-preserve-worktree-group-"),
@@ -2267,13 +2369,20 @@ describe("real worktree teardown preservation", () => {
       const signal = vi.spyOn(process, "kill");
 
       const scan = await scanWorktreeHolders(worktree.path);
-      expect(scan).toMatchObject({ status: "clear" });
+      expect(scan).toMatchObject({
+        status: "uncertain",
+      });
 
-      await remove(worktree);
+      await expect(remove(worktree)).rejects.toMatchObject({
+        code: "worktree_preserved",
+      });
 
       expect(signal).not.toHaveBeenCalled();
       expect(() => process.kill(worker.pid!, 0)).not.toThrow();
-      await expect(access(worktree.path)).rejects.toThrow();
+      await expect(access(worktree.path)).resolves.toBeUndefined();
+      expect(
+        await readFile(path.join(worktree.path, "README.md"), "utf8"),
+      ).toBe("published\n");
     },
   );
 
@@ -2700,7 +2809,7 @@ describe("real worktree teardown preservation", () => {
     process.platform !== "linux" ||
       (typeof process.getuid === "function" && process.getuid() === 0),
   )(
-    "removes a worktree for an unrelated unreadable foreign process",
+    "retains a worktree for a foreign unreadable process even when it cannot traverse group-only access",
     async () => {
       const root = await mkdtemp(
         path.join("/tmp", "bb-preserve-worktree-foreign-group-"),
@@ -2737,11 +2846,18 @@ describe("real worktree teardown preservation", () => {
       useProcReaderForTests(proc);
       const signal = vi.spyOn(process, "kill");
 
-      expect(await scanWorktreeHolders(worktree.path)).toMatchObject({ status: "clear" });
-      await remove(worktree);
+      expect(await scanWorktreeHolders(worktree.path)).toMatchObject({
+        status: "uncertain",
+      });
+      await expect(remove(worktree)).rejects.toMatchObject({
+        code: "worktree_preserved",
+      });
       expect(signal).not.toHaveBeenCalled();
       expect(() => process.kill(worker.pid!, 0)).not.toThrow();
-      await expect(access(worktree.path)).rejects.toThrow();
+      await expect(access(worktree.path)).resolves.toBeUndefined();
+      expect(
+        await readFile(path.join(worktree.path, "README.md"), "utf8"),
+      ).toBe("published\n");
     },
   );
 });

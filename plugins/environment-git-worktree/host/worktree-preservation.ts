@@ -1,3 +1,4 @@
+import { hasPreservableStatus } from "./regenerable-output.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { runGit, WorkspaceError } from "bb-environment-provider-host/git";
@@ -372,18 +373,6 @@ export function nonInteractiveFetchEnvironment(
   };
 }
 const STASH_SUBJECT = /^(?:WIP on|On) ([^:]+): /;
-const REGENERABLE_IGNORED_PATH =
-  /(^|\/)(?:node_modules|\.turbo|dist|\.next|coverage|test-results|playwright-report)(?:\/|$)|(^|\/)src\/generated(?:\/|$)|\.tsbuildinfo$/u;
-
-function hasPreservableStatus(stdout: string): boolean {
-  return stdout.split("\0").some((entry) => {
-    if (entry === "") return false;
-    const status = entry.slice(0, 2);
-    const entryPath = entry.slice(3);
-    return status !== "!!" || !REGENERABLE_IGNORED_PATH.test(entryPath);
-  });
-}
-
 function stashBranch(subject: string): string | null {
   return STASH_SUBJECT.exec(subject)?.[1] ?? null;
 }
@@ -453,7 +442,7 @@ export async function findPreservationReasons(
     reasons.push(
       `could not read its Git status${status.stderr.trim() ? ` (${status.stderr.trim()})` : ""}`,
     );
-  } else if (hasPreservableStatus(status.stdout)) {
+  } else if (await hasPreservableStatus(status.stdout, identity.path)) {
     reasons.push("has uncommitted changes or untracked files");
   }
 

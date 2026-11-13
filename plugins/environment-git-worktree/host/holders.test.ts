@@ -77,23 +77,24 @@ describe("scanWorktreeHolders", () => {
       { failure: "signal", signal: "SIGTERM" },
     ],
   ] as const)("maps the execFile %s error shape", (error, expected) => {
-    expect(mapLsofError(error, "stdout", "first stderr line\nsecond line"))
-      .toMatchObject({
-        ...expected,
-        code: null,
-        stdout: "stdout",
-        stderr: "first stderr line\nsecond line",
-        spawnFailed: true,
-      });
+    expect(
+      mapLsofError(error, "stdout", "first stderr line\nsecond line"),
+    ).toMatchObject({
+      ...expected,
+      code: null,
+      stdout: "stdout",
+      stderr: "first stderr line\nsecond line",
+      spawnFailed: true,
+    });
   });
 
-  it("ignores an unrelated foreign process with an unreadable cwd", async () => {
+  it("keeps an unreadable foreign process without mount proof", async () => {
     const proc = fakeProc({
       self: { uid: 1000 },
       processes: { 101: { uid: 1001, cwdDenied: true, argv0: "java" } },
     });
     await expect(scanLinux("/work/tree", proc, 4242)).resolves.toMatchObject({
-      status: "clear",
+      status: "uncertain",
     });
   });
 
@@ -200,7 +201,7 @@ describe("scanWorktreeHolders", () => {
     ["CAP_DAC_OVERRIDE", "0000000000000002"],
     ["CAP_DAC_READ_SEARCH", "0000000000000004"],
   ])(
-    "ignores an unrelated foreign process with a readable outside cwd even when the worktree is not traversable (%s)",
+    "holds a foreign process with a readable worktree fd even when its cwd is outside (%s)",
     async (_capability, capEff) => {
       const proc = fakeProc({
         self: { uid: 2000 },
@@ -216,7 +217,7 @@ describe("scanWorktreeHolders", () => {
         },
       });
       await expect(scanLinux("/work/tree", proc, 4242)).resolves.toMatchObject({
-        status: "clear",
+        status: "held",
       });
     },
   );
@@ -288,7 +289,7 @@ describe("real Linux POSIX ACL access checks", () => {
         hasExtendedAcl: linuxPathHasExtendedAcl,
       };
       await expect(scanLinux(aclDirectory, proc)).resolves.toMatchObject({
-        status: "clear",
+        status: "uncertain",
       });
     },
   );
@@ -597,7 +598,7 @@ describe("the Linux process-list visibility rule", () => {
     });
   });
 
-  it("ignores an unreadable foreign regular-user cwd without worktree evidence", async () => {
+  it("keeps an unreadable foreign regular-user cwd without mount proof", async () => {
     const proc = fakeProc({
       self: { uid: 1000 },
       processes: {
@@ -610,7 +611,7 @@ describe("the Linux process-list visibility rule", () => {
       },
     });
     expect(await scanLinux("/work/tree", proc, 4242)).toMatchObject({
-      status: "clear",
+      status: "uncertain",
     });
   });
 
@@ -681,7 +682,7 @@ describe("the Linux process-list visibility rule", () => {
       [2000],
     ],
   ])(
-    "ignores an unrelated foreign UID in the directory %s with group-execute-only access",
+    "keeps an unreadable foreign UID in the directory %s without mount proof",
     async (_name, gidValues, groups) => {
       const proc = fakeProc({
         worktreeMode: 0o710,
@@ -691,7 +692,7 @@ describe("the Linux process-list visibility rule", () => {
         },
       });
       expect(await scanLinux("/work/tree", proc, 4242)).toMatchObject({
-        status: "clear",
+        status: "uncertain",
       });
     },
   );
@@ -1500,4 +1501,78 @@ time.sleep(120)`,
       reason: expect.stringContaining("renamed-helper"),
     });
   });
+});
+
+describe("foreign process mount evidence", () => {
+  it.each([
+    ["bind mount root", "/work/tree", "8:48", "mnt:[2]", "uncertain"],
+    [
+      "nested bind mount root",
+      "/work/tree/sub",
+      "8:48",
+      "mnt:[2]",
+      "uncertain",
+    ],
+    ["filesystem root mount", "/", "8:48", "mnt:[2]", "uncertain"],
+    [
+      "escaped mount root",
+      "/work/tree\\040space/sub",
+      "8:48",
+      "mnt:[2]",
+      "uncertain",
+      "/work/tree space",
+    ],
+    ["unreadable container mounts", null, null, "mnt:[2]", "uncertain"],
+    [
+      "unrelated readable container mounts",
+      "/data",
+      "8:48",
+      "mnt:[2]",
+      "clear",
+    ],
+    ["path prefix sibling", "/work/tree-other", "8:48", "mnt:[2]", "clear"],
+    ["same namespace unreadable mounts", null, null, "mnt:[1]", "uncertain"],
+    ["ancestor mount", "/work", "8:48", "mnt:[2]", "uncertain"],
+    ["different filesystem", "/", "0:95", "mnt:[2]", "clear"],
+    ["malformed mountinfo", "malformed", "8:48", "mnt:[2]", "uncertain"],
+  ] as const)(
+    "classifies %s",
+    async (
+      _name,
+      mountRoot,
+      source,
+      namespace,
+      expected,
+      directory: string = "/work/tree",
+    ) => {
+      const denied = () => {
+        throw Object.assign(new Error("Permission denied"), { code: "EACCES" });
+      };
+      const proc: ProcReader = {
+        ...hostProc,
+        readdir: async () => ["101"],
+        readlink: async (target) => {
+          if (target === "/proc/self/ns/mnt") return "mnt:[1]";
+          if (target === "/proc/self/root") return "/";
+          if (target === "/proc/101/ns/mnt") return namespace;
+          return denied();
+        },
+        readFile: async (target) => {
+          if (target === "/proc/self/status")
+            return "NSpid:\t4242\nUid:\t1000\t1000\t1000\t1000\nGid:\t1000\t1000\t1000\t1000\n";
+          if (target === "/proc/self/mountinfo")
+            return "25 1 8:48 / / rw - ext4 /dev/sda rw\n26 20 0:5 / /proc rw - proc proc rw\n";
+          if (target === "/proc/101/status")
+            return "State:\tS (sleeping)\nPPid:\t1\nUid:\t107473\t107473\t107473\t107473\nGid:\t107473\t107473\t107473\t107473\n";
+          if (target === "/proc/101/cmdline") return "java\0neo4j\0";
+          if (target === "/proc/101/mountinfo" && mountRoot !== null)
+            return `30 20 ${source} ${mountRoot} /container/work rw - ext4 /dev/sda rw\n`;
+          return denied();
+        },
+      };
+      expect(await scanLinux(directory, proc, 4242)).toMatchObject({
+        status: expected,
+      });
+    },
+  );
 });
