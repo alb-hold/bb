@@ -1,5 +1,8 @@
 import {
   claimQueuedThreadMessageGroup,
+  deleteQueuedThreadMessage,
+  deleteThread,
+  getQueuedThreadMessage,
   getNativeTerminalThread,
   getThread,
   listNativeParentNotices,
@@ -19,6 +22,7 @@ import type {
   MessageDispatchHookContext,
   PluginHookName,
 } from "@get-bb/plugin-sdk";
+import { encodeClientTurnRequestIdNumber, threadScope } from "@bb/domain";
 import { eq } from "drizzle-orm";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -40,6 +44,9 @@ import {
   seedEnvironment,
   seedHostSession,
   seedProjectWithSource,
+  seedEvent,
+  seedThread,
+  seedThreadRuntimeState,
 } from "../helpers/seed.js";
 import {
   createTestAppHarness,
@@ -1051,6 +1058,349 @@ describe("native terminal delivery across a crash", () => {
         "\u001b[200~run the tests\u001b[201~",
         "\r",
       ]);
+    } finally {
+      cli.stop();
+    }
+  }, 30_000);
+
+  function failQueueInsertsFor(fixture: Fixture, threadId: string): () => void {
+    fixture.harness.db.$client.exec(`
+      CREATE TRIGGER fault_queue_insert BEFORE INSERT ON queued_thread_messages
+        WHEN NEW.thread_id = '${threadId}'
+        BEGIN SELECT RAISE(ABORT, 'simulated failure writing the warning'); END;
+    `);
+    return () =>
+      fixture.harness.db.$client.exec("DROP TRIGGER fault_queue_insert;");
+  }
+
+  async function crashAfterPaste(
+    before: Fixture,
+    senderThreadId: string,
+  ): Promise<{
+    pastes: string[];
+    queuedMessageId: string;
+    terminalId: string;
+    threadId: string;
+  }> {
+    const { open, thread } = await openRunningNativeThread(before, {
+      providerId: "codex",
+    });
+    const cli = startFakeCli(before, open.terminalId);
+    let decision: HookDecision = { action: "wait", reason: AT_LIMIT_REASON };
+    installDispatchHook(() => decision);
+    try {
+      await sendToThread(before, thread.id, "run the tests", senderThreadId);
+      const [held] = listQueuedThreadMessages(before.harness.db, thread.id);
+      expect(held).toBeDefined();
+      const restore = failWritesToClaimedQueueRows(before);
+      decision = { action: "proceed" };
+      await runQueuedMessageDispatch(before.harness.deps, {
+        kind: "plugin-recheck",
+      });
+      await settle();
+      restore();
+      return {
+        pastes: cli.inputs(),
+        queuedMessageId: held!.id,
+        terminalId: open.terminalId,
+        threadId: thread.id,
+      };
+    } finally {
+      cli.stop();
+    }
+  }
+
+  async function sweepEverything(fixture: Fixture): Promise<void> {
+    await runStartupRecoverySweep(fixture.harness.deps);
+    await drainEverything(fixture);
+    await runSweeps(fixture);
+    await drainEverything(fixture);
+    await runSweeps(fixture);
+  }
+
+  function senderWarnings(fixture: Fixture, senderThreadId: string) {
+    return listNativeParentNotices(fixture.harness.db, senderThreadId).filter(
+      (notice) => notice.text.includes("may not have been delivered"),
+    );
+  }
+
+  const PASTED_ONCE = ["\u001b[200~run the tests\u001b[201~", "\r"];
+
+  it("still warns the sender once when the warning write failed and the held message was then deleted", async () => {
+    const before = await createFixture();
+    const sender = await openBusySender(before);
+    const crashed = await crashAfterPaste(before, sender.thread.id);
+    expect(crashed.pastes).toEqual(PASTED_ONCE);
+
+    const first = await restartServer(before);
+    const firstCli = startFakeCli(first, crashed.terminalId);
+    const second = await (async () => {
+      try {
+        const restore = failNoticeWrites(first);
+        try {
+          await runStartupRecoverySweep(first.harness.deps);
+        } finally {
+          restore();
+        }
+        expect(senderWarnings(first, sender.thread.id)).toEqual([]);
+        const [held] = listQueuedThreadMessages(
+          first.harness.db,
+          crashed.threadId,
+        );
+        expect(held).toBeDefined();
+        expect(
+          deleteQueuedThreadMessage(
+            first.harness.db,
+            first.harness.hub,
+            held!.id,
+          ),
+        ).toBe(true);
+        return await restartServer(first);
+      } finally {
+        firstCli.stop();
+      }
+    })();
+    const secondCli = startFakeCli(second, crashed.terminalId);
+    try {
+      await sweepEverything(second);
+      await sweepEverything(second);
+      expect(senderWarnings(second, sender.thread.id)).toHaveLength(1);
+      expect(firstCli.inputs()).toEqual([]);
+      expect(secondCli.inputs()).toEqual([]);
+    } finally {
+      secondCli.stop();
+    }
+  }, 30_000);
+
+  it("warns the sender once when the row could not be deleted after the paste and the owner then deleted it", async () => {
+    const fixture = await createFixture();
+    const sender = await openBusySender(fixture);
+    const { open, thread } = await openRunningNativeThread(fixture, {
+      providerId: "codex",
+    });
+    const cli = startFakeCli(fixture, open.terminalId);
+    let decision: HookDecision = { action: "wait", reason: AT_LIMIT_REASON };
+    installDispatchHook(() => decision);
+    try {
+      await sendToThread(fixture, thread.id, "run the tests", sender.thread.id);
+      const restore = failDeletesOfClaimedQueueRows(fixture);
+      decision = { action: "proceed" };
+      await runQueuedMessageDispatch(fixture.harness.deps, {
+        kind: "plugin-recheck",
+      });
+      await settle();
+      restore();
+      const [held] = listQueuedThreadMessages(fixture.harness.db, thread.id);
+      expect(held).toBeDefined();
+      expect(
+        deleteQueuedThreadMessage(
+          fixture.harness.db,
+          fixture.harness.hub,
+          held!.id,
+        ),
+      ).toBe(true);
+
+      await runSweeps(fixture);
+      await drainEverything(fixture);
+      await runSweeps(fixture);
+
+      expect(senderWarnings(fixture, sender.thread.id)).toHaveLength(1);
+      expect(cli.inputs()).toEqual(PASTED_ONCE);
+    } finally {
+      cli.stop();
+    }
+  }, 30_000);
+
+  it("warns the sender once when the owner deleted the stuck message after a restart, before the startup sweep", async () => {
+    const before = await createFixture();
+    const sender = await openBusySender(before);
+    const crashed = await crashAfterPaste(before, sender.thread.id);
+    expect(crashed.pastes).toEqual(PASTED_ONCE);
+
+    const after = await restartServer(before);
+    const cli = startFakeCli(after, crashed.terminalId);
+    try {
+      expect(
+        getQueuedThreadMessage(after.harness.db, crashed.queuedMessageId)
+          ?.state,
+      ).toBe("claimed");
+      expect(
+        deleteQueuedThreadMessage(
+          after.harness.db,
+          after.harness.hub,
+          crashed.queuedMessageId,
+        ),
+      ).toBe(true);
+      await sweepEverything(after);
+      await sweepEverything(after);
+      expect(senderWarnings(after, sender.thread.id)).toHaveLength(1);
+      expect(cli.inputs()).toEqual([]);
+    } finally {
+      cli.stop();
+    }
+  }, 30_000);
+
+  it("warns the sender once when the target thread is deleted while its message is stuck mid-delivery", async () => {
+    const before = await createFixture();
+    const sender = await openBusySender(before);
+    const crashed = await crashAfterPaste(before, sender.thread.id);
+    expect(crashed.pastes).toEqual(PASTED_ONCE);
+
+    const after = await restartServer(before);
+    expect(
+      deleteThread(after.harness.db, after.harness.hub, crashed.threadId),
+    ).toBe(true);
+    expect(
+      listQueuedThreadMessages(after.harness.db, crashed.threadId),
+    ).toEqual([]);
+    await sweepEverything(after);
+    await sweepEverything(after);
+    expect(senderWarnings(after, sender.thread.id)).toHaveLength(1);
+  }, 30_000);
+
+  it("warns the sender once when the target thread is deleted while the warning is still pending", async () => {
+    const before = await createFixture();
+    const sender = await openBusySender(before);
+    const crashed = await crashAfterPaste(before, sender.thread.id);
+
+    const first = await restartServer(before);
+    const restore = failNoticeWrites(first);
+    try {
+      await runStartupRecoverySweep(first.harness.deps);
+    } finally {
+      restore();
+    }
+    expect(senderWarnings(first, sender.thread.id)).toEqual([]);
+    expect(
+      deleteThread(first.harness.db, first.harness.hub, crashed.threadId),
+    ).toBe(true);
+
+    const second = await restartServer(first);
+    await sweepEverything(second);
+    await sweepEverything(second);
+    expect(senderWarnings(second, sender.thread.id)).toHaveLength(1);
+  }, 30_000);
+
+  it("queues exactly one warning on a chat sender whose first warning write failed, once the periodic sweep retries", async () => {
+    const before = await createFixture();
+    const chatSender = seedThread(before.harness.deps, {
+      projectId: before.projectId,
+      environmentId: before.environment.id,
+      providerId: "claude-code",
+      status: "active",
+      title: "Chat sender",
+    });
+    seedThreadRuntimeState(before.harness.deps, {
+      environmentId: before.environment.id,
+      inputText: "Coordinate the run",
+      providerThreadId: "chat-sender-session",
+      threadId: chatSender.id,
+    });
+    seedEvent(before.harness.deps, {
+      environmentId: before.environment.id,
+      providerThreadId: "chat-sender-session",
+      sequence: 3,
+      threadId: chatSender.id,
+      type: "client/turn/requested",
+      scope: threadScope(),
+      data: {
+        direction: "outbound",
+        requestId: encodeClientTurnRequestIdNumber({ value: 1 }),
+        source: "tell",
+        initiator: "system",
+        senderThreadId: null,
+        input: [{ type: "text", text: "Coordinate the run" }],
+        target: { kind: "new-turn" },
+        request: { method: "turn/start", params: {} },
+        execution: {
+          model: "claude-sonnet-5-5",
+          serviceTier: "default",
+          reasoningLevel: "medium",
+          permissionMode: "full",
+          source: "client/turn/requested",
+        },
+      },
+    });
+    const crashed = await crashAfterPaste(before, chatSender.id);
+    expect(crashed.pastes).toEqual(PASTED_ONCE);
+
+    const after = await restartServer(before);
+    const cli = startFakeCli(after, crashed.terminalId);
+    const warnings = () =>
+      listQueuedThreadMessages(after.harness.db, chatSender.id).filter(
+        (row) =>
+          row.systemNotice !== null &&
+          row.content.includes("may not have been delivered"),
+      );
+    try {
+      const restore = failQueueInsertsFor(after, chatSender.id);
+      try {
+        await runStartupRecoverySweep(after.harness.deps);
+      } finally {
+        restore();
+      }
+      expect(warnings()).toEqual([]);
+
+      await runSweeps(after);
+      await drainEverything(after);
+      await runSweeps(after);
+      await runStartupRecoverySweep(after.harness.deps);
+
+      expect(warnings()).toHaveLength(1);
+      expect(cli.inputs()).toEqual([]);
+      expect(queuedRows(after, crashed.threadId)[0]).toMatchObject({
+        state: "failed_exhausted",
+        failureReason: UNCERTAIN_REASON,
+      });
+    } finally {
+      cli.stop();
+    }
+  }, 30_000);
+
+  it("drops the warning without delivering it when the sender thread is deleted while it is pending", async () => {
+    const before = await createFixture();
+    const sender = await openBusySender(before);
+    const crashed = await crashAfterPaste(before, sender.thread.id);
+
+    const first = await restartServer(before);
+    const restore = failNoticeWrites(first);
+    try {
+      await runStartupRecoverySweep(first.harness.deps);
+    } finally {
+      restore();
+    }
+    first.harness.db
+      .update(threads)
+      .set({ deletedAt: Date.now() })
+      .where(eq(threads.id, sender.thread.id))
+      .run();
+
+    const second = await restartServer(first);
+    const cli = startFakeCli(second, crashed.terminalId);
+    try {
+      await sweepEverything(second);
+      expect(senderWarnings(second, sender.thread.id)).toEqual([]);
+      expect(cli.inputs()).toEqual([]);
+    } finally {
+      cli.stop();
+    }
+  }, 30_000);
+
+  it("keeps exactly one warning when the server restarts after the warning was written", async () => {
+    const before = await createFixture();
+    const sender = await openBusySender(before);
+    const crashed = await crashAfterPaste(before, sender.thread.id);
+
+    const first = await restartServer(before);
+    await runStartupRecoverySweep(first.harness.deps);
+    expect(senderWarnings(first, sender.thread.id)).toHaveLength(1);
+
+    const second = await restartServer(first);
+    const cli = startFakeCli(second, crashed.terminalId);
+    try {
+      await sweepEverything(second);
+      expect(senderWarnings(second, sender.thread.id)).toHaveLength(1);
+      expect(cli.inputs()).toEqual([]);
     } finally {
       cli.stop();
     }
