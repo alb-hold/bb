@@ -12,10 +12,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { experimental_createHostEntryHarness } from "@get-bb/plugin-sdk/testing/host";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createWorktreeHostEntry } from "./host.js";
-import { descendantsOnly } from "./host/descendants-only.js";
-import { hostProc, useProcReaderForTests } from "./host/holders.js";
 
 const lockBehavior: {
   unresolvable: string | null;
@@ -55,10 +53,6 @@ const execFileAsync = promisify(execFile);
 const temporaryRoots: string[] = [];
 const lingering: ReturnType<typeof spawn>[] = [];
 
-beforeEach(() => {
-  useProcReaderForTests(descendantsOnly(hostProc, -1));
-});
-
 function isPidAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -83,7 +77,6 @@ async function git(cwd: string, ...args: string[]): Promise<string> {
 }
 
 afterEach(async () => {
-  useProcReaderForTests(descendantsOnly(hostProc, process.pid));
   lockBehavior.unresolvable = null;
   lockBehavior.failing = null;
   for (const child of lingering.splice(0)) child.kill("SIGKILL");

@@ -600,12 +600,17 @@ describe("real worktree teardown preservation", () => {
           return hostProc.readFile(target);
         },
       });
-      await expect(remove(worktree)).rejects.toMatchObject({
-        code: "worktree_preserved",
-      });
-      await expect(
-        readFile(path.join(worktree.path, "README.md"), "utf8"),
-      ).resolves.toBe("published\n");
+      if (kind === "outside maps") {
+        await remove(worktree);
+        await expect(access(worktree.path)).rejects.toThrow();
+      } else {
+        await expect(remove(worktree)).rejects.toMatchObject({
+          code: "worktree_preserved",
+        });
+        await expect(
+          readFile(path.join(worktree.path, "README.md"), "utf8"),
+        ).resolves.toBe("published\n");
+      }
       expect(() => process.kill(pid, 0)).not.toThrow();
     },
   );

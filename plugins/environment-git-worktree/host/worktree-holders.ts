@@ -481,19 +481,26 @@ async function scanMountAliases(
     const found = await link(`${base}/${leaf}`, through, stat);
     if (found !== null) return found;
   }
-  for (const leaf of ["fd", "map_files"] as const) {
+  for (const leaf of ["fd"] as const) {
     const entries = await readOptional(() => proc.readdir(`${base}/${leaf}`));
     if (!("value" in entries)) doubt = `${base}/${leaf} could not be read`;
     if ("value" in entries)
       for (const entry of entries.value) {
-        const found = await link(
-          `${base}/${leaf}/${entry}`,
-          leaf === "fd" ? "open file" : "mapped file",
-          true,
-        );
+        const found = await link(`${base}/${leaf}/${entry}`, "open file", true);
         if (found !== null) return found;
       }
   }
+  const mappedEntries = await readOptional(() =>
+    proc.readdir(`${base}/map_files`),
+  );
+  if ("value" in mappedEntries)
+    for (const entry of mappedEntries.value) {
+      const id = await readOptional(() =>
+        proc.statId(`${base}/map_files/${entry}`),
+      );
+      if ("value" in id && "ids" in ids && ids.ids.has(id.value))
+        return holder("mapped file");
+    }
   const maps = await readOptional(() => proc.readFile(`${base}/maps`));
   if (!("value" in maps)) doubt = `${base}/maps could not be read`;
   if ("value" in maps)

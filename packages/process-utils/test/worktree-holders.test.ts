@@ -376,7 +376,7 @@ describe("mount aliases and directory identities", () => {
         ["map identity", "held"],
         ["cwd stat failure", "uncertain"],
         ["fd stat failure", "uncertain"],
-        ["map stat failure", "uncertain"],
+        ["map stat failure", "clear"],
         ["tree unreadable", "uncertain"],
         ["tree too large", "uncertain"],
       ].map(([kind, expected]) => [uid, kind!, expected!] as const),
@@ -391,3 +391,91 @@ describe("mount aliases and directory identities", () => {
     expect(result).toMatchObject({ status: expected });
   });
 });
+
+describe("opportunistic map_files identities", () => {
+  it.each(["EPERM", "EACCES", "ENOENT", "EIO"])(
+    "ignores %s with readable maps outside",
+    async (code) => {
+      const proc = mountAliasProc("/work/tree", "map stat failure", 1000);
+      const reader: ProcReader = {
+        ...proc,
+        statId: async (target) => {
+          if (target.includes("/map_files/"))
+            throw Object.assign(new Error(code), { code });
+          return proc.statId(target);
+        },
+      };
+      expect(await scanLinux("/work/tree", reader, 4242)).toMatchObject({
+        status: "clear",
+      });
+    },
+  );
+  it("keeps a readable mapped worktree path despite map_files EPERM", async () => {
+    const proc = mountAliasProc("/work/tree", "map stat failure", 1000);
+    const reader: ProcReader = {
+      ...proc,
+      statId: async (target) => {
+        if (target.includes("/map_files/"))
+          throw Object.assign(new Error("EPERM"), { code: "EPERM" });
+        return proc.statId(target);
+      },
+      readFile: async (target) =>
+        target === "/proc/101/maps"
+          ? "1000-2000 r--p 00000000 08:30 12 /work/tree/file\n"
+          : proc.readFile(target),
+    };
+    expect(await scanLinux("/work/tree", reader, 4242)).toMatchObject({
+      status: "held",
+    });
+  });
+});
+
+describe.skipIf(process.platform !== "linux")(
+  "real own-uid mapping processes",
+  () => {
+    it.each(
+      ["sleep", "node"].flatMap((command) =>
+        [false, true].map((inside) => [command, inside] as const),
+      ),
+    )("checks real %s with inside cwd=%s", async (command, inside) => {
+      const fs = await import("node:fs/promises");
+      const os = await import("node:os");
+      const path = await import("node:path");
+      const root = await fs.realpath(
+        await fs.mkdtemp(path.join(os.tmpdir(), "bb-real-map-")),
+      );
+      const directory = path.join(root, "worktree");
+      await fs.mkdir(directory);
+      const child = spawn(
+        command === "node" ? process.execPath : "sleep",
+        command === "node"
+          ? ["-e", "setInterval(()=>{},1e3);process.send('ready')"]
+          : ["30"],
+        {
+          cwd: inside ? directory : root,
+          stdio:
+            command === "node"
+              ? ["ignore", "ignore", "ignore", "ipc"]
+              : "ignore",
+        },
+      );
+      try {
+        await once(child, command === "node" ? "message" : "spawn");
+        const proc: ProcReader = {
+          ...hostProc,
+          readdir: async (target) =>
+            target === "/proc" ? [String(child.pid)] : hostProc.readdir(target),
+        };
+        const scan = await scanLinux(directory, proc);
+        expect(scan).toMatchObject({ status: inside ? "held" : "clear" });
+      } finally {
+        if (child.exitCode === null && child.signalCode === null) {
+          const closed = once(child, "close");
+          child.kill();
+          await closed;
+        }
+        await fs.rm(root, { recursive: true, force: true });
+      }
+    });
+  },
+);
