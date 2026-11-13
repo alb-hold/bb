@@ -7,7 +7,7 @@ import { promisify } from "node:util";
 import babel from "@rolldown/plugin-babel";
 import { reactCompilerPreset } from "@vitejs/plugin-react";
 import * as cacache from "cacache";
-import type { ResolvedConfig } from "vite";
+import type { Plugin, ResolvedConfig } from "vite";
 import { z } from "zod";
 
 const transformResult = z
@@ -74,7 +74,7 @@ export function compilerCacheNamespace(identity: {
 }
 
 export async function cachedReactCompiler(cacheDirectory?: string): Promise<
-  Awaited<ReturnType<typeof babel>> & {
+  Plugin & {
     api: {
       compilerCache: { hits: number; misses: number };
     };
