@@ -1641,20 +1641,55 @@ describe("automations server plugin harness", () => {
         ),
       );
       primaryHostId = "host_fake";
-      await vi.advanceTimersByTimeAsync(60_000);
-      await vi.waitFor(async () => {
+      type AutomationRun = ReturnType<
+        typeof automationRunListResponseSchema.parse
+      >["runs"][number];
+      let resolveRunCompleted!: (run: AutomationRun) => void;
+      let rejectRunCompleted!: (error: unknown) => void;
+      const runCompleted = new Promise<AutomationRun>((resolve, reject) => {
+        resolveRunCompleted = resolve;
+        rejectRunCompleted = reject;
+      });
+      const readCompletedRun = async () => {
         const { runs } = automationRunListResponseSchema.parse(
           await harness.callRpc("automations_runs", {
             projectId: PROJECT_ID,
             automationId: automation.id,
           }),
         );
-        expect(runs[0]).toMatchObject({
-          status: "succeeded",
-          output: expect.stringMatching(/(?:^|\n)late enrollment OK$/),
-          exitCode: 0,
-          error: null,
+        const run = runs[0];
+        if (run && run.status !== "running") resolveRunCompleted(run);
+      };
+      const originalPublish = host.bb.realtime.publish.bind(host.bb.realtime);
+      const publishSpy = vi
+        .spyOn(host.bb.realtime, "publish")
+        .mockImplementation((channel, payload) => {
+          originalPublish(channel, payload);
+          if (
+            channel === "automations" &&
+            typeof payload === "object" &&
+            payload !== null &&
+            "kind" in payload &&
+            payload.kind === "automation-runs-changed"
+          ) {
+            void Promise.resolve()
+              .then(readCompletedRun)
+              .catch(rejectRunCompleted);
+          }
         });
+      let completedRun: AutomationRun;
+      try {
+        await vi.advanceTimersByTimeAsync(60_000);
+        await readCompletedRun();
+        completedRun = await runCompleted;
+      } finally {
+        publishSpy.mockRestore();
+      }
+      expect(completedRun).toMatchObject({
+        status: "succeeded",
+        output: expect.stringMatching(/(?:^|\n)late enrollment OK$/),
+        exitCode: 0,
+        error: null,
       });
       const calls = harness.sdk.callsTo("system.config").length;
       await vi.advanceTimersByTimeAsync(20_000);
