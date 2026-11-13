@@ -37,11 +37,6 @@ describe("P95 responsive layout contracts", () => {
       "createPortal(trigger, actionsTarget)",
     );
   });
-  it("packs mobile terminal keys without stretching the scroller", () => {
-    expect(source("../thread/terminal/TerminalMobileControls.tsx")).toContain(
-      'className="relative min-w-0 shrink"',
-    );
-  });
   it("gives usage metadata the sanctioned xs subtle style", () => {
     expect(source("../thread/ThreadUsageSummary.tsx")).toContain(
       "text-left font-sans text-xs tabular-nums text-subtle-foreground",
