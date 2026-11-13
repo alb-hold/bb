@@ -137,10 +137,31 @@ function nativeTerminalQueuedExecution(
   };
 }
 
+function holdForOpenInteraction(
+  deps: LoggedPendingInteractionWorkSessionDeps,
+  args: NativeTerminalAdmissionArgs,
+): NativeTerminalAdmissionOutcome | null {
+  if (
+    args.sendNow ||
+    !deps.pendingInteractions.hasTurnBoundPendingThreadInteraction(
+      args.thread.id,
+    )
+  ) {
+    return null;
+  }
+  return recordNativeTerminalWait(deps, {
+    ...args,
+    waitingOn: { kind: "interaction" },
+    sendAt: null,
+  });
+}
+
 export async function admitNativeTerminalDispatch(
   deps: LoggedPendingInteractionWorkSessionDeps,
   args: NativeTerminalAdmissionArgs,
 ): Promise<NativeTerminalAdmissionOutcome> {
+  const heldBeforeDecision = holdForOpenInteraction(deps, args);
+  if (heldBeforeDecision !== null) return heldBeforeDecision;
   if (
     args.sendNow ||
     holdsCapacity(args.thread) ||
@@ -196,7 +217,11 @@ export async function admitNativeTerminalDispatch(
       : {}),
   });
   if (outcome.kind === "proceed") {
-    if (!admittedWithinDecision) await runAdmittedWork(admitted);
+    if (!admittedWithinDecision) {
+      const heldAfterDecision = holdForOpenInteraction(deps, args);
+      if (heldAfterDecision !== null) return heldAfterDecision;
+      await runAdmittedWork(admitted);
+    }
     return { kind: "dispatched" };
   }
   if (args.claimed !== null) {
