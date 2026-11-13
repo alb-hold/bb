@@ -20,6 +20,7 @@ import {
   linuxVisibilityProblem,
   scanLinux,
   scanWorktreeHolders,
+  useLsofRunnerForTests,
   type ProcReader,
 } from "./holders.js";
 
@@ -53,6 +54,59 @@ function hold(script: string, cwd: string, args: string[] = []) {
 }
 
 describe("scanWorktreeHolders", () => {
+  it.each([
+    [{ failure: "timeout", code: null, stderr: "" }, "timed out after 30s"],
+    [{ failure: "maxBuffer", code: null, stderr: "" }, "output limit"],
+    [{ failure: "spawn", code: null, stderr: "ENOENT" }, "failed to start"],
+  ] as const)("describes lsof failures accurately", async (failure, expected) => {
+    useLsofRunnerForTests(async () => ({ stdout: "", spawnFailed: true, ...failure }));
+    try {
+      Object.defineProperty(process, "platform", { value: "darwin" });
+      await expect(scanWorktreeHolders("/work/tree")).resolves.toMatchObject({
+        status: "unknown",
+        reason: expect.stringContaining(expected),
+      });
+    } finally {
+      useLsofRunnerForTests(null);
+    }
+  });
+
+  it("ignores an unrelated foreign process with an unreadable cwd", async () => {
+    const proc = fakeProc({
+      self: { uid: 1000 },
+      processes: { 101: { uid: 1001, cwdDenied: true, argv0: "java" } },
+    });
+    await expect(scanLinux("/work/tree", proc, 4242)).resolves.toMatchObject({
+      status: "clear",
+    });
+  });
+
+  it("marks an unreadable foreign process uncertain when its command references the worktree", async () => {
+    const proc = fakeProc({
+      self: { uid: 1000 },
+      processes: {
+        101: { uid: 1001, cwdDenied: true, argv0: "/work/tree/job" },
+      },
+    });
+    await expect(scanLinux("/work/tree", proc, 4242)).resolves.toMatchObject({
+      status: "uncertain",
+      reason: expect.stringContaining("command references the worktree"),
+    });
+  });
+
+  it("marks an unreadable foreign child uncertain when its parent cwd is in the worktree", async () => {
+    const proc = fakeProc({
+      self: { uid: 1000 },
+      processes: {
+        101: { uid: 1000, cwd: "/work/tree" },
+        102: { uid: 1001, cwdDenied: true, argv0: "java", parentPid: 101 },
+      },
+    });
+    await expect(scanLinux("/work/tree", proc, 4242)).resolves.toMatchObject({
+      status: "held",
+    });
+  });
+
   it("never reports an unused folder as held, and is clear only when every process could be inspected", async () => {
     const directory = await makeDirectory();
     const scan = await scanWorktreeHolders(directory);
@@ -130,7 +184,7 @@ describe("scanWorktreeHolders", () => {
     ["CAP_DAC_OVERRIDE", "0000000000000002"],
     ["CAP_DAC_READ_SEARCH", "0000000000000004"],
   ])(
-    "treats a non-root foreign process with a readable outside cwd as uncertain when the worktree is not traversable (%s)",
+    "ignores an unrelated foreign process with a readable outside cwd even when the worktree is not traversable (%s)",
     async (_capability, capEff) => {
       const proc = fakeProc({
         self: { uid: 2000 },
@@ -146,7 +200,7 @@ describe("scanWorktreeHolders", () => {
         },
       });
       await expect(scanLinux("/work/tree", proc, 4242)).resolves.toMatchObject({
-        status: "uncertain",
+        status: "clear",
       });
     },
   );
@@ -218,7 +272,7 @@ describe("real Linux POSIX ACL access checks", () => {
         hasExtendedAcl: linuxPathHasExtendedAcl,
       };
       await expect(scanLinux(aclDirectory, proc)).resolves.toMatchObject({
-        status: "uncertain",
+        status: "clear",
       });
     },
   );
@@ -281,6 +335,7 @@ interface FakeProcess {
   argv0?: string | null;
   startTicks?: number;
   capEff?: string;
+  parentPid?: number;
 }
 
 const TREE_DIRECTORIES: Record<string, string> = {
@@ -353,7 +408,7 @@ function fakeProc(options: {
     const base = `/proc/${key}`;
     files.set(
       `${base}/status`,
-      `Name:\t${process.name ?? "x"}\nState:\t${process.state ?? "S (sleeping)"}\nUid:\t${(process.uidValues ?? [process.uid ?? 1000, process.uid ?? 1000, process.uid ?? 1000, process.uid ?? 1000]).join("\t")}\nGid:\t${(process.gidValues ?? [1000, 1000, 1000, 1000]).join("\t")}\nGroups:\t${(process.groups ?? []).join(" ")}\nCapEff:\t${process.capEff ?? "0000000000000000"}\n`,
+      `Name:\t${process.name ?? "x"}\nState:\t${process.state ?? "S (sleeping)"}\nPPid:\t${process.parentPid ?? 1}\nUid:\t${(process.uidValues ?? [process.uid ?? 1000, process.uid ?? 1000, process.uid ?? 1000, process.uid ?? 1000]).join("\t")}\nGid:\t${(process.gidValues ?? [1000, 1000, 1000, 1000]).join("\t")}\nGroups:\t${(process.groups ?? []).join(" ")}\nCapEff:\t${process.capEff ?? "0000000000000000"}\n`,
     );
     files.set(`${base}/comm`, `${process.comm ?? "node"}\n`);
     files.set(
@@ -526,7 +581,7 @@ describe("the Linux process-list visibility rule", () => {
     });
   });
 
-  it("is uncertain for an unreadable foreign regular-user cwd when it can reach the worktree", async () => {
+  it("ignores an unreadable foreign regular-user cwd without worktree evidence", async () => {
     const proc = fakeProc({
       self: { uid: 1000 },
       processes: {
@@ -539,8 +594,7 @@ describe("the Linux process-list visibility rule", () => {
       },
     });
     expect(await scanLinux("/work/tree", proc, 4242)).toMatchObject({
-      status: "uncertain",
-      reason: expect.stringContaining("foreign uid 1004"),
+      status: "clear",
     });
   });
 
@@ -611,7 +665,7 @@ describe("the Linux process-list visibility rule", () => {
       [2000],
     ],
   ])(
-    "is uncertain for a foreign UID in the directory %s with group-execute-only access",
+    "ignores an unrelated foreign UID in the directory %s with group-execute-only access",
     async (_name, gidValues, groups) => {
       const proc = fakeProc({
         worktreeMode: 0o710,
@@ -621,8 +675,7 @@ describe("the Linux process-list visibility rule", () => {
         },
       });
       expect(await scanLinux("/work/tree", proc, 4242)).toMatchObject({
-        status: "uncertain",
-        reason: expect.stringContaining("foreign uid 1001"),
+        status: "clear",
       });
     },
   );

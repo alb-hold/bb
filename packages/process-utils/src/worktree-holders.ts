@@ -19,6 +19,8 @@ export type LsofResult = {
   stdout: string;
   stderr: string;
   spawnFailed: boolean;
+  failure?: "timeout" | "maxBuffer" | "spawn";
+  signal?: string | null;
 };
 
 export interface WorktreeHolder {
@@ -284,9 +286,84 @@ async function scanLinuxProcess(
     if (foreignUid === undefined || (foreignUid < 1000 && self.uid !== 0))
       return { otherUser: true };
     if (self.uid !== 0) {
-      return {
-        uncertain: `process ${pid} foreign uid ${foreignUid} could not be inspected by a non-root daemon`,
-      };
+      const foreignCwd = await readOptional(() => proc.readlink(`${base}/cwd`));
+      if ("value" in foreignCwd) {
+        if (isUnder(foreignCwd.value, directory))
+          return { pid, command: null, through: "working folder" };
+      } else if ("failed" in foreignCwd) {
+        const command = await readOptional(() =>
+          proc.readFile(`${base}/cmdline`),
+        );
+        const references = (value: string) => {
+          let offset = value.indexOf(directory);
+          while (offset >= 0) {
+            const before = value[offset - 1];
+            const after = value[offset + directory.length];
+            if (
+              (before === undefined || /[\s\0="':]/u.test(before)) &&
+              (after === undefined || /[\s\0/']/u.test(after))
+            )
+              return true;
+            offset = value.indexOf(directory, offset + 1);
+          }
+          return false;
+        };
+        if ("value" in command && references(command.value))
+          return {
+            uncertain: `process ${pid} foreign uid ${foreignUid} command references the worktree`,
+          };
+        let parent = parseStatusNumbers(status.value, "PPid")?.[0];
+        for (
+          let depth = 0;
+          parent !== undefined && parent > 1 && depth < 64;
+          depth++
+        ) {
+          const parentBase = `/proc/${parent}`;
+          const parentCommand = await readOptional(() =>
+            proc.readFile(`${parentBase}/cmdline`),
+          );
+          if ("value" in parentCommand && references(parentCommand.value))
+            return {
+              uncertain: `process ${pid} descends from a worktree process`,
+            };
+          const parentCwd = await readOptional(() =>
+            proc.readlink(`${parentBase}/cwd`),
+          );
+          if ("value" in parentCwd && isUnder(parentCwd.value, directory))
+            return {
+              uncertain: `process ${pid} descends from a worktree process`,
+            };
+          const parentExe = await readOptional(() =>
+            proc.readlink(`${parentBase}/exe`),
+          );
+          if ("value" in parentExe && isUnder(parentExe.value, directory))
+            return {
+              uncertain: `process ${pid} descends from a worktree process`,
+            };
+          const parentFds = await readOptional(() =>
+            proc.readdir(`${parentBase}/fd`),
+          );
+          if ("value" in parentFds) {
+            for (const fd of parentFds.value) {
+              const target = await readOptional(() =>
+                proc.readlink(`${parentBase}/fd/${fd}`),
+              );
+              if ("value" in target && isUnder(target.value, directory))
+                return {
+                  uncertain: `process ${pid} descends from a worktree process`,
+                };
+            }
+          }
+          const parentStatus = await readOptional(() =>
+            proc.readFile(`${parentBase}/status`),
+          );
+          if (!("value" in parentStatus)) break;
+          parent = parseStatusNumbers(parentStatus.value, "PPid")?.[0];
+        }
+        return null;
+      } else {
+        return null;
+      }
     }
     const cwd = await readOptional(() => proc.readlink(`${base}/cwd`));
     if ("value" in cwd) {
@@ -905,7 +982,18 @@ function runLsof(directory: string): Promise<LsofResult> {
           code: typeof code === "number" ? code : null,
           stdout: typeof stdout === "string" ? stdout : "",
           stderr: typeof stderr === "string" ? stderr : "",
+          signal:
+            typeof error === "object" && error !== null && "signal" in error
+              ? (error.signal as string | null)
+              : null,
           spawnFailed: typeof code !== "number",
+          ...(code === "ETIMEDOUT"
+            ? { failure: "timeout" as const }
+            : code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER"
+              ? { failure: "maxBuffer" as const }
+              : typeof code !== "number"
+                ? { failure: "spawn" as const }
+                : {}),
         });
       },
     );
@@ -923,7 +1011,24 @@ export function useLsofRunnerForTests(
 async function scanWithLsof(directory: string): Promise<WorktreeHolderScan> {
   const result = await activeLsof(directory);
   if (result.spawnFailed) {
-    return { status: "unknown", reason: "lsof could not be run" };
+    const args = `-n -F pcn +D ${directory}`;
+    const detail = result.stderr.split("\n", 1)[0];
+    const reason =
+      result.failure === "timeout"
+        ? `lsof timed out after ${LSOF_TIMEOUT_MS / 1000}s (${args})`
+        : result.failure === "maxBuffer"
+          ? `lsof exceeded its output limit (${args})`
+          : `lsof failed to start (${args})`;
+    const exit =
+      result.code === null
+        ? result.signal
+          ? `; signal ${result.signal}`
+          : ""
+        : `; exit ${result.code}`;
+    return {
+      status: "unknown",
+      reason: `${reason}${exit}${detail ? `; ${detail}` : ""}`,
+    };
   }
   const holders = new Map<number, WorktreeHolder>();
   let pid: number | null = null;

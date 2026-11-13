@@ -372,14 +372,15 @@ export function nonInteractiveFetchEnvironment(
   };
 }
 const STASH_SUBJECT = /^(?:WIP on|On) ([^:]+): /;
-const GENERATED_DEPENDENCY_PATH = /(^|\/)node_modules(?:\/|$)/u;
+const REGENERABLE_IGNORED_PATH =
+  /(^|\/)(?:node_modules|\.turbo|dist|\.next|coverage|test-results|playwright-report)(?:\/|$)|(^|\/)src\/generated(?:\/|$)|\.tsbuildinfo$/u;
 
 function hasPreservableStatus(stdout: string): boolean {
   return stdout.split("\0").some((entry) => {
     if (entry === "") return false;
     const status = entry.slice(0, 2);
     const entryPath = entry.slice(3);
-    return status !== "!!" || !GENERATED_DEPENDENCY_PATH.test(entryPath);
+    return status !== "!!" || !REGENERABLE_IGNORED_PATH.test(entryPath);
   });
 }
 

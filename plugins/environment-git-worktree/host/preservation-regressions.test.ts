@@ -233,6 +233,7 @@ async function git(cwd: string, ...args: string[]): Promise<string> {
 
 async function makeWorktree(
   existingRoot?: string,
+  extraIgnore = "",
 ): Promise<{ path: string; root: string }> {
   const root =
     existingRoot ??
@@ -248,7 +249,7 @@ async function makeWorktree(
   await git(source, "config", "user.name", "Worktree Test");
   await git(source, "config", "user.email", "worktree-test@example.invalid");
   await writeFile(path.join(source, "README.md"), "published\n");
-  await writeFile(path.join(source, ".gitignore"), ".env\n");
+  await writeFile(path.join(source, ".gitignore"), `.env\n${extraIgnore}`);
   await git(source, "add", "README.md");
   await git(source, "add", ".gitignore");
   await git(source, "commit", "-m", "published");
@@ -405,10 +406,28 @@ describe("real worktree teardown preservation", () => {
 
   it("keeps ignored local data when force removal is requested", async () => {
     const worktree = await makeWorktree();
-    const ignoredFile = path.join(worktree.path, ".env");
+    const ignoredFile = path.join(worktree.path, ".env.local");
+    const exclude = await git(worktree.path, "rev-parse", "--git-path", "info/exclude");
+    await writeFile(path.resolve(worktree.path, exclude), ".env.local\n");
     await writeFile(ignoredFile, "local secret\n");
     await remove(worktree).catch(() => undefined);
     await expect(readFile(ignoredFile, "utf8")).resolves.toBe("local secret\n");
+  });
+
+  it("removes a worktree with only regenerable ignored build output", async () => {
+    const worktree = await makeWorktree(
+      undefined,
+      "node_modules/\n.turbo/\ndist/\n.next/\ncoverage/\ntest-results/\nplaywright-report/\n*.tsbuildinfo\nsrc/generated/\n",
+    );
+    await mkdir(path.join(worktree.path, "node_modules"));
+    await mkdir(path.join(worktree.path, ".turbo"));
+    await mkdir(path.join(worktree.path, "src", "generated"), { recursive: true });
+    await writeFile(path.join(worktree.path, "node_modules", "x"), "x");
+    await writeFile(path.join(worktree.path, ".turbo", "x"), "x");
+    await writeFile(path.join(worktree.path, "src", "generated", "x.ts"), "x");
+    useProcReaderForTests(descendantsOnly(hostProc, -1));
+    await remove(worktree);
+    await expect(access(worktree.path)).rejects.toThrow();
   });
 
   it("keeps data written as the worktree is quarantined for forced removal", async () => {
@@ -2155,7 +2174,7 @@ describe("real worktree teardown preservation", () => {
     ["CAP_DAC_OVERRIDE", "0000000000000002"],
     ["CAP_DAC_READ_SEARCH", "0000000000000004"],
   ])(
-    "retains a non-traversable worktree for a foreign uid with a readable outside cwd and an earlier fd (%s)",
+    "does not keep a worktree for an unreadable foreign process without an approved tie (%s)",
     async (_capability, capEff) => {
       const root = await mkdtemp(path.join("/tmp", "bb-preserve-worktree-"));
       const worktree = await makeWorktree(root);
@@ -2173,21 +2192,15 @@ describe("real worktree teardown preservation", () => {
       } catch (error) {
         removalError = error;
       }
-      expect(scan.status).toBe("uncertain");
-      expect(scan.status === "uncertain" ? scan.reason : "").toContain(
-        "foreign-user processes could not be inspected",
-      );
-      expect(removalError).toMatchObject({ code: "worktree_preserved" });
+      expect(scan.status).toBe("clear");
+      expect(removalError).toBeUndefined();
       expect(signal).not.toHaveBeenCalled();
-      await expect(access(worktree.path)).resolves.toBeUndefined();
-      await expect(
-        readFile(path.join(worktree.path, "README.md"), "utf8"),
-      ).resolves.toBe("published\n");
+      await expect(access(worktree.path)).rejects.toThrow();
     },
   );
 
   it.skipIf(process.platform !== "linux")(
-    "keeps an uncertain foreign-user holder without signalling any process",
+    "removes the worktree for an unreadable foreign process with no worktree evidence",
     async () => {
       const root = await mkdtemp(path.join("/tmp", "bb-preserve-worktree-"));
       const worktree = await makeWorktree(root);
@@ -2209,14 +2222,11 @@ describe("real worktree teardown preservation", () => {
       useProcReaderForTests(foreignUnreadableCwdProc(worker.pid ?? -1));
       const signal = vi.spyOn(process, "kill");
 
-      await expect(remove(worktree)).rejects.toMatchObject({
-        code: "worktree_preserved",
-      });
+      await remove(worktree);
 
       expect(signal).not.toHaveBeenCalled();
       expect(() => process.kill(worker.pid!, 0)).not.toThrow();
-      await expect(access(worktree.path)).resolves.toBeUndefined();
-      expect(await git(worktree.path, "status", "--porcelain")).toBe("");
+      await expect(access(worktree.path)).rejects.toThrow();
     },
   );
 
@@ -2224,7 +2234,7 @@ describe("real worktree teardown preservation", () => {
     process.platform !== "linux" ||
       (typeof process.getuid === "function" && process.getuid() === 0),
   )(
-    "retains the worktree without signalling when an unreadable foreign cwd can traverse a group-execute-only ancestor",
+    "removes the worktree when unreadable foreign cwd has no readable worktree evidence",
     async () => {
       const root = await mkdtemp(
         path.join("/tmp", "bb-preserve-worktree-group-"),
@@ -2257,20 +2267,13 @@ describe("real worktree teardown preservation", () => {
       const signal = vi.spyOn(process, "kill");
 
       const scan = await scanWorktreeHolders(worktree.path);
-      expect(scan).toMatchObject({
-        status: "uncertain",
-      });
+      expect(scan).toMatchObject({ status: "clear" });
 
-      await expect(remove(worktree)).rejects.toMatchObject({
-        code: "worktree_preserved",
-      });
+      await remove(worktree);
 
       expect(signal).not.toHaveBeenCalled();
       expect(() => process.kill(worker.pid!, 0)).not.toThrow();
-      await expect(access(worktree.path)).resolves.toBeUndefined();
-      expect(
-        await readFile(path.join(worktree.path, "README.md"), "utf8"),
-      ).toBe("published\n");
+      await expect(access(worktree.path)).rejects.toThrow();
     },
   );
 
@@ -2697,7 +2700,7 @@ describe("real worktree teardown preservation", () => {
     process.platform !== "linux" ||
       (typeof process.getuid === "function" && process.getuid() === 0),
   )(
-    "retains a worktree for a foreign unreadable process even when it cannot traverse group-only access",
+    "removes a worktree for an unrelated unreadable foreign process",
     async () => {
       const root = await mkdtemp(
         path.join("/tmp", "bb-preserve-worktree-foreign-group-"),
@@ -2734,18 +2737,11 @@ describe("real worktree teardown preservation", () => {
       useProcReaderForTests(proc);
       const signal = vi.spyOn(process, "kill");
 
-      expect(await scanWorktreeHolders(worktree.path)).toMatchObject({
-        status: "uncertain",
-      });
-      await expect(remove(worktree)).rejects.toMatchObject({
-        code: "worktree_preserved",
-      });
+      expect(await scanWorktreeHolders(worktree.path)).toMatchObject({ status: "clear" });
+      await remove(worktree);
       expect(signal).not.toHaveBeenCalled();
       expect(() => process.kill(worker.pid!, 0)).not.toThrow();
-      await expect(access(worktree.path)).resolves.toBeUndefined();
-      expect(
-        await readFile(path.join(worktree.path, "README.md"), "utf8"),
-      ).toBe("published\n");
+      await expect(access(worktree.path)).rejects.toThrow();
     },
   );
 });
