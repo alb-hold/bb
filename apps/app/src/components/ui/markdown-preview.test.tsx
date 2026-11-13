@@ -147,7 +147,7 @@ function requireElement(container: ParentNode, selector: string): Element {
 
 
 describe("MarkdownPreview", () => {
-  it("keeps the first two code lines at the same minimum height and reserves a separate controls lane", () => {
+  it("keeps the first two code lines at the same minimum height and reserves a separate controls lane", async () => {
     const stylesheet = document.createElement("style");
     stylesheet.textContent = readFileSync(
       resolve("src/components/ui/markdown-code-highlight.css"),
@@ -161,6 +161,7 @@ describe("MarkdownPreview", () => {
           content={"```sh\nPASS src/http/routes.test.ts\nsecond line\n```"}
         />,
       );
+      await waitFor(() => expect(container.querySelectorAll(".sh__line")).toHaveLength(2));
       const lines = container.querySelectorAll(".sh__line");
       expect(lines).toHaveLength(2);
       expect(getComputedStyle(lines[0]!).minHeight).toBe(

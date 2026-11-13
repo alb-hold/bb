@@ -2275,7 +2275,7 @@ describe("SplitThreadArea", () => {
     ).toBe(true);
     expect(docsPanelContent.closest(".isolate")).not.toBeNull();
     expect(
-      screen.getByRole("button", { name: "Collapse notes sidebar" }),
+      await screen.findByRole("button", { name: "Collapse notes sidebar" }),
     ).toBeTruthy();
     expect(screen.getByTestId("split-workspace-panel-toggle")).toBeTruthy();
     expect(

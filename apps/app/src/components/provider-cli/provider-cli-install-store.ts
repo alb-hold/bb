@@ -17,14 +17,16 @@ import {
   type OperationFailureReason,
 } from "@/lib/http-error";
 import { createRetryableChunkImport } from "@/lib/retryable-chunk-import";
+import { sdk } from "@/lib/sdk";
 import type { OnboardingFailureDetail } from "@bb/server-contract";
-const loadInstallRunner = createRetryableChunkImport(
-  () => import("./provider-cli-install-runner"),
-);
 import {
   recordTelemetryEvent,
   type OnboardingEntry,
 } from "@/components/onboarding/onboarding-telemetry";
+
+const loadInstallRunner = createRetryableChunkImport(
+  () => import("./provider-cli-install-runner"),
+);
 
 type ProviderCliInstallCompletedEvent = Extract<
   ProviderCliInstallEvent,
@@ -39,7 +41,7 @@ export const PROVIDER_CLI_FAILURE_MAX_ENTRIES = 32;
 const PROVIDER_CLI_FAILURE_LOG_TRUNCATION_MARKER =
   "\n\n… provider update output truncated …\n\n";
 
-export interface ProviderCliInstallJob {
+interface ProviderCliInstallJob {
   hostId: string;
   issue: ProviderCliActionableIssue;
   onboardingEntry?: OnboardingEntry;
@@ -312,12 +314,7 @@ function runInstall(job: ProviderCliInstallJob): void {
   let completedEvent: ProviderCliInstallCompletedEvent | null = null;
   let errorMessage: string | null = null;
 
-  void loadInstallRunner()
-    .then((runner) =>
-      runner
-        .runServerInstall(job, trackedServerJobIds)
-        .then((events) => ({ runner, events })),
-    )
+  void runServerInstall(job)
     .then(({ runner, events }) => {
       for (const event of events) {
         if (event.provider !== provider) {
@@ -393,6 +390,23 @@ function runInstall(job: ProviderCliInstallJob): void {
       }
       processNextInstall();
     });
+}
+
+async function runServerInstall(job: ProviderCliInstallJob) {
+  const { hostId, issue } = job;
+  const jobId =
+    job.serverJobId ??
+    (
+      await sdk.hosts.experimental_startProviderCliInstall({
+        hostId,
+        provider: issue.provider,
+        actionKind: issue.action.kind,
+      })
+    ).id;
+  trackedServerJobIds.add(jobId);
+  const runner = await loadInstallRunner();
+  const events = await runner.waitForInstall({ hostId, jobId });
+  return { runner, events };
 }
 
 function processNextInstall(): void {

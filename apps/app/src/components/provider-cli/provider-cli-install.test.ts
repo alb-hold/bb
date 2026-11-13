@@ -106,8 +106,9 @@ function issueForProvider(
   };
 }
 
-function settle(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 0));
+async function settle(): Promise<void> {
+  await vi.dynamicImportSettled();
+  await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 function completeInstall(

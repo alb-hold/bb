@@ -58,7 +58,7 @@ function renderMarkdownFilePreview({
 }
 
 describe("Markdown file preview image routing", () => {
-  it("cycles images rendered in a Markdown table", () => {
+  it("cycles images rendered in a Markdown table", async () => {
     render(
       <FilePreview
         headerMode="none"
@@ -82,7 +82,7 @@ describe("Markdown file preview image routing", () => {
       value: "https://app.example/one.png",
     });
     fireEvent.click(firstImage);
-    fireEvent.click(screen.getByRole("button", { name: "Next image" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Next image" }));
 
     expect(
       screen.getByRole("img", { name: "Expanded image" }).getAttribute("src"),

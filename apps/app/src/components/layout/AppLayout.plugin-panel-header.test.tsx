@@ -313,10 +313,11 @@ describe("AppLayout plugin panel header", () => {
 
   it.each(["rail", "list"] as const)(
     "keeps the macOS trigger and history controls in the window title bar with %s navigation",
-    (placement) => {
+    async (placement) => {
       viewportState.navigationPlacement = placement;
       viewportState.macosChrome = true;
       renderPluginPanelRoute();
+      await screen.findByRole("button", { name: "Go back" });
 
       const titleBar = screen.getByTestId("app-window-title-bar");
       expect(screen.getByTestId("app-layout-root").dataset.framed).toBe("");

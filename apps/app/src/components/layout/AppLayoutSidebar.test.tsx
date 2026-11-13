@@ -536,12 +536,13 @@ describe("navigation panel sidebar composition", () => {
     });
     expect(onResizeMouseDown).toHaveBeenCalledOnce();
   });
-  it("keeps native header/history controls and navigates back and forward", () => {
+  it("keeps native header/history controls and navigates back and forward", async () => {
     render(
       panelSidebarTree({
         target: panelSidebar("inbox", NavigatingHomeNavigation),
       }),
     );
+    await screen.findByRole("button", { name: "Go back" });
     expect(screen.getByTestId("plugin-sidebar-top-reserve-row")).toBeTruthy();
     expect(
       screen

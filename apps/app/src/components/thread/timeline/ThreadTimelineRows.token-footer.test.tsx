@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -74,7 +74,7 @@ describe("ThreadTimelineRows token footer", () => {
     });
   });
 
-  it("joins captured spend to an assistant response in a flat live timeline", () => {
+  it("joins captured spend to an assistant response in a flat live timeline", async () => {
     const row = liveCapture.sample.timelineRow;
     const assistant = conversationRow({
       id: row.id,
@@ -99,6 +99,7 @@ describe("ThreadTimelineRows token footer", () => {
         />
       </Providers>,
     );
+    await act(() => vi.dynamicImportSettled());
 
     expect(
       container.querySelector('[data-token-part="input"]')?.textContent,
@@ -132,7 +133,7 @@ describe("ThreadTimelineRows token footer", () => {
     ).toBe(true);
   });
 
-  it("shows Codex spend on a collapsed turn row when the timeline also has its assistant row", () => {
+  it("shows Codex spend on a collapsed turn row when the timeline also has its assistant row", async () => {
     const row = liveCapture.sample.timelineRow;
     useThreadSpendSummary.mockReturnValue({
       data: {
@@ -184,6 +185,7 @@ describe("ThreadTimelineRows token footer", () => {
         />
       </Providers>,
     );
+    await act(() => vi.dynamicImportSettled());
 
     const footer = container.querySelector("[data-thread-turn-tokens]");
     expect(
@@ -209,7 +211,7 @@ describe("ThreadTimelineRows token footer", () => {
     ).toBe("reasoning 567");
   });
 
-  it("omits the token footer when every per-turn usage field is unavailable", () => {
+  it("omits the token footer when every per-turn usage field is unavailable", async () => {
     const row = liveCapture.sample.timelineRow;
     useThreadSpendSummary.mockReturnValue({
       data: {
@@ -247,11 +249,12 @@ describe("ThreadTimelineRows token footer", () => {
         />
       </Providers>,
     );
+    await act(() => vi.dynamicImportSettled());
 
     expect(container.querySelector("[data-thread-turn-tokens]")).toBeNull();
   });
 
-  it("omits unavailable and zero token parts when a turn has partial usage", () => {
+  it("omits unavailable and zero token parts when a turn has partial usage", async () => {
     const row = liveCapture.sample.timelineRow;
     useThreadSpendSummary.mockReturnValue({
       data: {
@@ -289,6 +292,7 @@ describe("ThreadTimelineRows token footer", () => {
         />
       </Providers>,
     );
+    await act(() => vi.dynamicImportSettled());
 
     const footer = container.querySelector("[data-thread-turn-tokens]");
     expect(footer).not.toBeNull();
@@ -321,7 +325,7 @@ describe("ThreadTimelineRows token footer", () => {
     );
   });
 
-  it("renders captured reasoning tokens on a wide flat Claude response", () => {
+  it("renders captured reasoning tokens on a wide flat Claude response", async () => {
     const row = liveCapture.sample.timelineRow;
     useThreadSpendSummary.mockReturnValueOnce({
       data: {
@@ -362,6 +366,7 @@ describe("ThreadTimelineRows token footer", () => {
         </div>
       </Providers>,
     );
+    await act(() => vi.dynamicImportSettled());
 
     expect(
       container.querySelectorAll("[data-thread-turn-tokens]"),
@@ -371,7 +376,7 @@ describe("ThreadTimelineRows token footer", () => {
     ).toBe("reasoning 37");
   });
 
-  it("keeps the footer on the last assistant message and hides the active turn", () => {
+  it("keeps the footer on the last assistant message and hides the active turn", async () => {
     const row = liveCapture.sample.timelineRow;
     const earlierAssistant = conversationRow({
       id: "earlier-assistant-in-live-turn",
@@ -405,6 +410,7 @@ describe("ThreadTimelineRows token footer", () => {
         />
       </Providers>,
     );
+    await act(() => vi.dynamicImportSettled());
 
     expect(
       container.querySelectorAll("[data-thread-turn-tokens]"),
@@ -427,11 +433,12 @@ describe("ThreadTimelineRows token footer", () => {
         />
       </Providers>,
     );
+    await act(() => vi.dynamicImportSettled());
 
     expect(container.querySelector("[data-thread-turn-tokens]")).toBeNull();
   });
 
-  it("hides the newest flat turn while active when the streaming row lacks an ID", () => {
+  it("hides the newest flat turn while active when the streaming row lacks an ID", async () => {
     const row = liveCapture.sample.timelineRow;
     const completedAssistant = conversationRow({
       id: row.id,
@@ -465,11 +472,12 @@ describe("ThreadTimelineRows token footer", () => {
         />
       </Providers>,
     );
+    await act(() => vi.dynamicImportSettled());
 
     expect(container.querySelector("[data-thread-turn-tokens]")).toBeNull();
   });
 
-  it("excludes an active flat turn after a completed response and pending command", () => {
+  it("excludes an active flat turn after a completed response and pending command", async () => {
     const { firstTurn, rows } = flatRowsWithCapturedTurns("pending");
     const { container } = render(
       <Providers>
@@ -482,6 +490,7 @@ describe("ThreadTimelineRows token footer", () => {
         />
       </Providers>,
     );
+    await act(() => vi.dynamicImportSettled());
 
     const summaries = container.querySelectorAll("[data-thread-turn-tokens]");
     expect(summaries).toHaveLength(1);
@@ -492,7 +501,7 @@ describe("ThreadTimelineRows token footer", () => {
     ).toBe(firstTurn.id);
   });
 
-  it("excludes the active flat turn between steps with no pending work", () => {
+  it("excludes the active flat turn between steps with no pending work", async () => {
     const { firstTurn, rows } = flatRowsWithCapturedTurns("completed");
     const { container } = render(
       <Providers>
@@ -505,6 +514,7 @@ describe("ThreadTimelineRows token footer", () => {
         />
       </Providers>,
     );
+    await act(() => vi.dynamicImportSettled());
 
     const summaries = container.querySelectorAll("[data-thread-turn-tokens]");
     expect(summaries).toHaveLength(1);
@@ -515,7 +525,7 @@ describe("ThreadTimelineRows token footer", () => {
     ).toBe(firstTurn.id);
   });
 
-  it("restores all flat turn footers when the thread returns to idle", () => {
+  it("restores all flat turn footers when the thread returns to idle", async () => {
     const { firstTurn, rows } = flatRowsWithCapturedTurns("completed");
     const { container, rerender } = render(
       <Providers>
@@ -528,6 +538,7 @@ describe("ThreadTimelineRows token footer", () => {
         />
       </Providers>,
     );
+    await act(() => vi.dynamicImportSettled());
 
     expect(
       container.querySelectorAll("[data-thread-turn-tokens]"),
@@ -544,13 +555,14 @@ describe("ThreadTimelineRows token footer", () => {
         />
       </Providers>,
     );
+    await act(() => vi.dynamicImportSettled());
 
     expect(
       container.querySelectorAll("[data-thread-turn-tokens]"),
     ).toHaveLength(2);
   });
 
-  it("joins each captured response to its own turn when history is incomplete", () => {
+  it("joins each captured response to its own turn when history is incomplete", async () => {
     const sample = liveCapture.sample;
     const firstTurn = sample.timelineRow;
     const secondTurn = sample.secondTimelineRow;
@@ -579,6 +591,7 @@ describe("ThreadTimelineRows token footer", () => {
         />
       </Providers>,
     );
+    await act(() => vi.dynamicImportSettled());
 
     expect(sample.spendSummary.historyComplete).toBe(false);
     expect(useThreadSpendSummary).toHaveBeenCalledWith(firstTurn.threadId);
@@ -611,7 +624,7 @@ describe("ThreadTimelineRows token footer", () => {
     { eventStatus: "interrupted", timelineStatus: "interrupted" },
   ] as const)(
     "shows the $eventStatus terminal turn footer in flat and grouped idle timelines",
-    ({ timelineStatus }) => {
+    async ({ timelineStatus }) => {
       const row = liveCapture.sample.timelineRow;
       const assistant = conversationRow({
         id: row.id,
@@ -634,6 +647,7 @@ describe("ThreadTimelineRows token footer", () => {
           />
         </Providers>,
       );
+      await act(() => vi.dynamicImportSettled());
       expect(
         flat.container.querySelectorAll("[data-thread-turn-tokens]"),
       ).toHaveLength(1);
@@ -660,6 +674,7 @@ describe("ThreadTimelineRows token footer", () => {
           />
         </Providers>,
       );
+      await act(() => vi.dynamicImportSettled());
       expect(
         grouped.container.querySelectorAll("[data-thread-turn-tokens]"),
       ).toHaveLength(1);
@@ -671,7 +686,7 @@ describe("ThreadTimelineRows token footer", () => {
     { eventStatus: "interrupted", timelineStatus: "interrupted" },
   ] as const)(
     "shows the $eventStatus footer inside its grouped response row",
-    ({ timelineStatus }) => {
+    async ({ timelineStatus }) => {
       const row = liveCapture.sample.timelineRow;
       const assistant = conversationRow({
         id: row.id,
@@ -704,6 +719,7 @@ describe("ThreadTimelineRows token footer", () => {
           />
         </Providers>,
       );
+      await act(() => vi.dynamicImportSettled());
 
       expect(
         container.querySelectorAll("[data-thread-turn-tokens]"),
@@ -717,7 +733,7 @@ describe("ThreadTimelineRows token footer", () => {
     },
   );
 
-  it("shows every completed grouped response while excluding the active turn", () => {
+  it("shows every completed grouped response while excluding the active turn", async () => {
     const sample = liveCapture.sample;
     const first = sample.timelineRow;
     const second = sample.secondTimelineRow;
@@ -771,6 +787,7 @@ describe("ThreadTimelineRows token footer", () => {
         />
       </Providers>,
     );
+    await act(() => vi.dynamicImportSettled());
 
     const summaries = container.querySelectorAll("[data-thread-turn-tokens]");
     expect(summaries).toHaveLength(1);
@@ -802,6 +819,7 @@ describe("ThreadTimelineRows token footer", () => {
         />
       </Providers>,
     );
+    await act(() => vi.dynamicImportSettled());
     expect(
       container.querySelectorAll("[data-thread-turn-tokens]"),
     ).toHaveLength(2);
@@ -821,7 +839,7 @@ describe("ThreadTimelineRows token footer", () => {
     expect(idleSummaries[1]?.textContent).toBe("907.7K tokens");
   });
 
-  it("keeps partial active-turn spend hidden while waiting for its host", () => {
+  it("keeps partial active-turn spend hidden while waiting for its host", async () => {
     const { firstTurn, rows } = flatRowsWithCapturedTurns("pending");
     const { container } = render(
       <Providers>
@@ -833,6 +851,7 @@ describe("ThreadTimelineRows token footer", () => {
         />
       </Providers>,
     );
+    await act(() => vi.dynamicImportSettled());
 
     const summaries = container.querySelectorAll("[data-thread-turn-tokens]");
     expect(summaries).toHaveLength(1);
