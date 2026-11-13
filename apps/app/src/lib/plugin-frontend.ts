@@ -434,7 +434,9 @@ export interface PluginFrontendReconcileDeps {
   flushSlotBatch: () => void;
   warn: (message: string) => void;
   priorityPluginIds: () => readonly string[];
-  waitForDeferredLoad?: () => Promise<void>;
+  waitForDeferredLoad?: (
+    candidatePluginIds: ReadonlySet<string>,
+  ) => Promise<void>;
   waitForComposerPaint?: () => Promise<void>;
   yieldBetweenDeferredLoads?: () => Promise<void>;
   downloadDeferredModule?: (url: string) => Promise<void>;
@@ -779,7 +781,11 @@ async function reconcileCandidates(
   );
   const deferredReady =
     deps.waitForDeferredLoad && hasDeferredCandidates
-      ? priorityReady.then(deps.waitForDeferredLoad)
+      ? priorityReady.then(() =>
+          deps.waitForDeferredLoad?.(
+            new Set(ordered.map((candidate) => candidate.pluginId)),
+          ),
+        )
       : Promise.resolve();
   const prefetched = new Set<string>();
   const prefetchAhead = () => {
