@@ -123,6 +123,8 @@ import { TerminalSearch } from "./TerminalSearch";
 import type { TerminalSearchAddonInstance } from "./terminal-search-addon";
 import { loadOptionalTerminalSearchAddon } from "./terminal-search-addon";
 import { TerminalTextSelectSheet } from "./TerminalTextSelectSheet";
+import { Button } from "@bb/shared-ui/button";
+import { Icon } from "@bb/shared-ui/icon";
 import {
   terminalTextSnapshot,
   terminalTextSnapshotLineIndex,
@@ -1357,6 +1359,7 @@ export function ThreadTerminalView({
   const claimSizeRef = useRef<(() => void) | null>(null);
   const [showFitControl, setShowFitControl] = useState(false);
   const [terminalReady, setTerminalReady] = useState(false);
+  const [scrolledAboveBottom, setScrolledAboveBottom] = useState(false);
   const [promptTrackerState, setPromptTrackerState] = useState(
     EMPTY_TERMINAL_PROMPT_TRACKER,
   );
@@ -2665,9 +2668,20 @@ export function ThreadTerminalView({
           noteManualScrollIntent();
           if (event.type === "touchmove") touchViewportSaveScheduler.schedule();
         });
-      const viewportScrollDisposable = terminal.onScroll(saveViewportAnchor);
+      const updateScrollPosition = () => {
+        if (terminal === null) return;
+        setScrolledAboveBottom(
+          terminal.buffer.active.viewportY < terminal.buffer.active.baseY,
+        );
+      };
+      const viewportScrollDisposable = terminal.onScroll(() => {
+        updateScrollPosition();
+        saveViewportAnchor();
+      });
+      const parsedWriteDisposable = terminal.onWriteParsed(updateScrollPosition);
       detachViewportListeners = () => {
         viewportScrollDisposable.dispose();
+        parsedWriteDisposable.dispose();
         touchViewportSaveScheduler.dispose();
         detachManualScrollIntentListeners();
         window.removeEventListener("pagehide", flushViewportOnPageHide);
@@ -3971,6 +3985,7 @@ export function ThreadTerminalView({
       controlActiveRef.current = false;
       setControlActive(false);
       setTerminalReady(false);
+      setScrolledAboveBottom(false);
       setTerminalSearchAddon(null);
       setTerminalSearchOpen(false);
       stopObservingFonts?.();
@@ -4422,6 +4437,21 @@ export function ThreadTerminalView({
               rows={session.rows}
               viewportLine={promptTrackerState.viewportLine}
             />
+            {scrolledAboveBottom ? (
+              <Button
+                type="button"
+                size="icon"
+                variant="secondary"
+                aria-label="Jump to latest output"
+                className="absolute bottom-12 right-8 z-10 size-8 shadow-md pointer-coarse:size-11"
+                onClick={() => {
+                  terminalRef.current?.scrollToBottom();
+                  terminalRef.current?.focus();
+                }}
+              >
+                <Icon name="ArrowDown" className="size-4" />
+              </Button>
+            ) : null}
 
           </TerminalAttentionPane>
         </ContextMenuTrigger>

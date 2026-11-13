@@ -43,6 +43,8 @@ export default defineWorkspaceTestConfig({
     silent: "passed-only",
     sequence: { sequencer: AppTestSequencer },
     environment: "node",
+    globalSetup: ["./vitest.global-setup.ts"],
+    css: { include: [/app\.css/] },
     setupFiles: ["src/test/setup.ts"],
     testTimeout: 15_000,
     projects: sharedWorkerProjects({
