@@ -6,6 +6,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   hostProc,
+  procReadIsSynchronous,
   scanLinux,
   type ProcReader,
   mapLsofError,
@@ -429,6 +430,42 @@ describe("opportunistic map_files identities", () => {
     };
     expect(await scanLinux("/work/tree", reader, 4242)).toMatchObject({
       status: "held",
+    });
+  });
+});
+
+describe("synchronous proc reads", () => {
+  it.each([
+    ["/proc", true],
+    ["/proc/1/fd", true],
+    ["/proc/1/task/2/fd/3", true],
+    ["/proc/1/cwd", true],
+    ["/proc/1/root", true],
+    ["/proc/1/map_files", false],
+    ["/proc/1/map_files/1000-2000", false],
+    ["/proc/1/root/home", false],
+    ["/proc/1/cwd/sub", false],
+    ["/proc/1/fd/3/sub", false],
+    ["/proc/../home", false],
+    ["/home/user", false],
+  ] as const)("reads %s synchronously: %s", (target, expected) => {
+    expect(procReadIsSynchronous(target)).toBe(expected);
+  });
+});
+
+describe("non-absolute fd links", () => {
+  it.each([
+    ["(unreachable)/x", "held"],
+    ["socket:[12345]", "clear"],
+  ] as const)("checks the identity of fd link %s", async (link, expected) => {
+    const proc = mountAliasProc("/work/tree", "fd identity", 1000);
+    const reader: ProcReader = {
+      ...proc,
+      readlink: async (target) =>
+        target === "/proc/101/fd/3" ? link : proc.readlink(target),
+    };
+    expect(await scanLinux("/work/tree", reader, 4242)).toMatchObject({
+      status: expected,
     });
   });
 });

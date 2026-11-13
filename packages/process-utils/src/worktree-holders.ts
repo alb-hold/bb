@@ -237,22 +237,25 @@ export interface ProcReader {
 }
 
 const LEAVES_PROC =
-  /\/(?:root|cwd|exe)\/|\/(?:fd|map_files)\/[^/]+\/|\/\.\.?(?:\/|$)/u;
+  /\/(?:root|cwd|exe)\/|\/fd\/[^/]+\/|\/map_files(?:\/|$)|\/\.\.?(?:\/|$)/u;
 
-function insideProc(target: string): boolean {
+export function procReadIsSynchronous(target: string): boolean {
   return (
     (target === "/proc" || target.startsWith("/proc/")) &&
     !LEAVES_PROC.test(target)
   );
 }
 
+const PSEUDO_FILE_LINK =
+  /^(?:pipe|socket|anon_inode|net|mnt|cgroup|pidfd|user|uts|ipc|time|pid):/u;
+
 export const hostProc: ProcReader = {
   realpath: (path) => fs.realpath(path),
   readlink: async (path) =>
-    insideProc(path) ? readlinkSync(path) : fs.readlink(path),
+    procReadIsSynchronous(path) ? readlinkSync(path) : fs.readlink(path),
   readFile: (path) => fs.readFile(path, "utf8"),
   readdir: async (path) =>
-    insideProc(path) ? readdirSync(path) : fs.readdir(path),
+    procReadIsSynchronous(path) ? readdirSync(path) : fs.readdir(path),
   lstatId: async (path) => {
     const info = await fs.lstat(path, { bigint: true });
     return `${info.dev}:${info.ino}`;
@@ -539,7 +542,7 @@ async function scanMountAliases(
       const value = await readOptional(() => proc.readlink(target));
       if ("value" in value && matches(value.value)) return holder("open file");
       if ("gone" in value) return value;
-      if ("value" in value && !value.value.startsWith("/")) return null;
+      if ("value" in value && PSEUDO_FILE_LINK.test(value.value)) return null;
       const found = await identity(target, "open file");
       if (found !== null && "gone" in found) return null;
       if ("failed" in value) fileDoubt = `${target} could not be read`;

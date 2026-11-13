@@ -476,7 +476,7 @@ describe("real worktree teardown preservation", () => {
         if (
           target.startsWith(`/proc/${pid}/`) &&
           /\/fd\/\d+$/u.test(target) &&
-          !value.startsWith("/")
+          /^(?:pipe|socket|anon_inode):/u.test(value)
         )
           pseudoFds.add(target);
         return value;
