@@ -236,8 +236,14 @@ export interface ProcReader {
   subdirectories(path: string): Promise<string[]>;
 }
 
+const LEAVES_PROC =
+  /\/(?:root|cwd|exe)\/|\/(?:fd|map_files)\/[^/]+\/|\/\.\.?(?:\/|$)/u;
+
 function insideProc(target: string): boolean {
-  return target === "/proc" || target.startsWith("/proc/");
+  return (
+    (target === "/proc" || target.startsWith("/proc/")) &&
+    !LEAVES_PROC.test(target)
+  );
 }
 
 export const hostProc: ProcReader = {
