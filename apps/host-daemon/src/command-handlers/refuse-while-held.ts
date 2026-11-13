@@ -8,9 +8,11 @@ export async function refuseWhileHeld(args: {
   directory: string;
   action: string;
   testWorktreeHolderScan?: WorktreeHolderScan;
+  final?: boolean;
 }): Promise<void> {
   const scan =
-    args.testWorktreeHolderScan ?? (await scanWorktreeHolders(args.directory));
+    args.testWorktreeHolderScan ??
+    (await scanWorktreeHolders(args.directory, { final: args.final === true }));
   if (scan.status === "clear") return;
   if (scan.status === "unknown" || scan.status === "uncertain") {
     throw new CommandDispatchError(

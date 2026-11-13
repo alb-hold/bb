@@ -416,6 +416,7 @@ export async function findPreservationReasons(
     fetchTimeoutMs?: number;
     fetchMemoMs?: number;
     gitDir?: string;
+    final?: boolean;
   } = {},
 ): Promise<string[]> {
   const reasons = await findStructuralReasons(identity);
@@ -634,7 +635,10 @@ export async function findPreservationReasons(
     }
   }
   const holderReason = describeHolderScan(
-    testWorktreeHolderScan ?? (await scanWorktreeHolders(identity.path)),
+    testWorktreeHolderScan ??
+      (await scanWorktreeHolders(identity.path, {
+        final: options.final === true,
+      })),
   );
   if (holderReason !== null) reasons.push(holderReason);
   return reasons;

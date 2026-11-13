@@ -280,6 +280,7 @@ type TreeIds = { ids: Set<string> } | { tooLarge: number } | { failed: string };
 type TreeIdsReader = () => Promise<TreeIds>;
 
 interface ScanContext {
+  final: boolean;
   tree: TreeIdsReader;
   aliases: () => Promise<string[] | null>;
   acls: Map<string, Promise<boolean | null>>;
@@ -494,17 +495,23 @@ async function scanMountAliases(
     const entries = await readOptional(() => proc.readdir(`${fileBase}/fd`));
     if ("gone" in entries) return entries;
     if ("failed" in entries) fileDoubt = `${fileBase}/fd could not be read`;
+    const inspectFd = async (entry: string) => {
+      const target = `${fileBase}/fd/${entry}`;
+      const value = await readOptional(() => proc.readlink(target));
+      if ("value" in value && matches(value.value)) return holder("open file");
+      if ("gone" in value) return value;
+      const found = await identity(target, "open file");
+      if (found !== null && "gone" in found) return null;
+      if ("failed" in value) fileDoubt = `${target} could not be read`;
+      return found;
+    };
+    const pending = new Set<string>();
     if ("value" in entries)
       for (const entry of entries.value) {
-        const target = `${fileBase}/fd/${entry}`;
-        const value = await readOptional(() => proc.readlink(target));
-        if ("value" in value && matches(value.value))
-          return holder("open file");
-        if ("gone" in value) continue;
-        const found = await identity(target, "open file");
-        if (found !== null && "gone" in found) continue;
-        if ("failed" in value) fileDoubt = `${target} could not be read`;
-        if (found !== null) return found;
+        const found = await inspectFd(entry);
+        if (found !== null && "gone" in found) {
+          if (context.final) pending.add(entry);
+        } else if (found !== null) return found;
       }
     const mappedEntries = await readOptional(() =>
       proc.readdir(`${fileBase}/map_files`),
@@ -523,6 +530,25 @@ async function scanMountAliases(
     if ("value" in maps)
       for (const line of maps.value.split("\n"))
         if (matches(mappedPath(line))) return holder("mapped file");
+    for (let pass = 0; pass < 3 && pending.size > 0; pass++) {
+      const current = await readOptional(() => proc.readdir(`${fileBase}/fd`));
+      if ("gone" in current) return current;
+      if ("failed" in current)
+        return { uncertain: `${fileBase}/fd could not be re-listed` };
+      const remaining = new Set(current.value);
+      for (const entry of pending) {
+        if (!remaining.has(entry)) {
+          pending.delete(entry);
+          continue;
+        }
+        const found = await inspectFd(entry);
+        if (found !== null && "gone" in found) continue;
+        pending.delete(entry);
+        if (found !== null) return found;
+      }
+    }
+    if (pending.size > 0)
+      fileDoubt = `${fileBase}/fd is still changing after 3 rechecks`;
     return fileDoubt === null ? null : { uncertain: fileDoubt };
   };
   const beforeLeaderFiles = identityDoubt;
@@ -1303,7 +1329,9 @@ export async function scanLinux(
   directory: string,
   proc: ProcReader = hostProc,
   ownPid: number = process.pid,
-  limits: { maxDirectories: number } = { maxDirectories: MAX_TREE_DIRECTORIES },
+  limits: { maxDirectories: number; final?: boolean } = {
+    maxDirectories: MAX_TREE_DIRECTORIES,
+  },
 ): Promise<WorktreeHolderScan> {
   const visibility = await linuxVisibilityProblem(proc);
   if (visibility.problem !== null) {
@@ -1334,6 +1362,7 @@ export async function scanLinux(
   };
   let aliases: Promise<string[] | null> | null = null;
   const context: ScanContext = {
+    final: limits.final === true,
     tree,
     aliases: () => {
       aliases ??= worktreeAliases(proc, directory);
@@ -1482,8 +1511,13 @@ async function scanWithLsof(directory: string): Promise<WorktreeHolderScan> {
 
 export async function scanWorktreeHolders(
   directory: string,
+  options: { final?: boolean } = {},
 ): Promise<WorktreeHolderScan> {
-  if (process.platform === "linux") return scanLinux(directory, activeProc);
+  if (process.platform === "linux")
+    return scanLinux(directory, activeProc, process.pid, {
+      maxDirectories: MAX_TREE_DIRECTORIES,
+      final: options.final === true,
+    });
   if (process.platform === "win32") {
     return {
       status: "unknown",

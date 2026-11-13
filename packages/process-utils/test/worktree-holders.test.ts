@@ -813,3 +813,72 @@ it.skipIf(process.platform !== "linux")(
   },
   20_000,
 );
+
+describe("final scan fd replacement", () => {
+  it.each(["worktree", "outside", "churning"])(
+    "rechecks a gone task fd replaced by %s",
+    async (kind) => {
+      const proc = mountAliasProc("/work/tree", "outside", 107473);
+      const task = "/proc/101/task/102";
+      let links = 0;
+      let lists = 0;
+      const reader: ProcReader = {
+        ...proc,
+        readdir: async (target) => {
+          if (target === "/proc/101/task") return ["101", "102"];
+          if (target === task + "/fd") {
+            lists++;
+            return ["79"];
+          }
+          return proc.readdir(target);
+        },
+        readlink: async (target) => {
+          if (target !== task + "/fd/79") return proc.readlink(target);
+          links++;
+          if (links === 1 || kind === "churning")
+            throw Object.assign(new Error("closed"), { code: "ENOENT" });
+          return kind === "worktree" ? "/work/tree/README.md" : "/outside/file";
+        },
+      };
+      expect(
+        await scanLinux("/work/tree", reader, 4242, {
+          maxDirectories: 500_000,
+          final: true,
+        }),
+      ).toMatchObject({
+        status:
+          kind === "worktree"
+            ? "held"
+            : kind === "churning"
+              ? "uncertain"
+              : "clear",
+      });
+      expect(lists).toBe(kind === "churning" ? 4 : 2);
+      expect(links).toBe(kind === "churning" ? 4 : 2);
+    },
+  );
+  it("does not recheck a gone task fd on an earlier scan", async () => {
+    const proc = mountAliasProc("/work/tree", "outside", 107473);
+    const task = "/proc/101/task/102";
+    let links = 0;
+    const reader: ProcReader = {
+      ...proc,
+      readdir: async (target) =>
+        target === "/proc/101/task"
+          ? ["101", "102"]
+          : target === task + "/fd"
+            ? ["79"]
+            : proc.readdir(target),
+      readlink: async (target) => {
+        if (target !== task + "/fd/79") return proc.readlink(target);
+        if (++links === 1)
+          throw Object.assign(new Error("closed"), { code: "ENOENT" });
+        return "/work/tree/README.md";
+      },
+    };
+    expect(await scanLinux("/work/tree", reader, 4242)).toMatchObject({
+      status: "clear",
+    });
+    expect(links).toBe(1);
+  });
+});

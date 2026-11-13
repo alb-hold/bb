@@ -3189,3 +3189,92 @@ it.skipIf(process.platform !== "linux")(
     expect(() => process.kill(worker!.pid!, 0)).not.toThrow();
   },
 );
+
+const fdReplacementSource =
+  '\n#define _GNU_SOURCE\n#include <pthread.h>\n#include <sched.h>\n#include <stdatomic.h>\n#include <sys/syscall.h>\n#include <fcntl.h>\n#include <stdio.h>\n#include <string.h>\n#include <unistd.h>\nstatic atomic_int command;\nstatic char filename[4096];\nstatic void *worker(void *arg) {\n  if (unshare(CLONE_FILES)) _exit(2);\n  int fd=open("/dev/null",O_RDONLY);\n  if (fd<0 || dup2(fd,79)<0) _exit(3);\n  if (fd!=79) close(fd);\n  printf("ready %ld\\n",syscall(SYS_gettid));fflush(stdout);\n  for (;;) {\n    int next=atomic_exchange(&command,0);\n    if (next==1) { close(79);puts("closed");fflush(stdout); }\n    if (next==2) {\n      fd=open(filename,O_RDONLY);\n      if (fd<0 || dup2(fd,79)<0) _exit(4);\n      if (fd!=79) close(fd);\n      puts("opened");fflush(stdout);\n    }\n    usleep(100);\n  }\n}\nint main(void) {\n  pthread_t thread;\n  if (pthread_create(&thread,NULL,worker,NULL)) return 5;\n  char input[4096];\n  while (fgets(input,sizeof(input),stdin)) {\n    if (!strcmp(input,"close\\n")) atomic_store(&command,1);\n    else {\n      input[strcspn(input,"\\n")]=0;\n      strcpy(filename,input);\n      atomic_store(&command,2);\n    }\n  }\n  return 0;\n}\n';
+
+it.skipIf(process.platform !== "linux")(
+  "final scan catches live dup2 replacement at a gone task fd and preserves exact bytes",
+  async () => {
+    const worktree = await makeWorktree();
+    const outside = path.join(path.dirname(worktree.root), "fd-replacement");
+    await mkdir(outside);
+    const source = path.join(outside, "helper.c");
+    const executable = path.join(outside, "helper");
+    await writeFile(source, fdReplacementSource);
+    expect(spawnSync("cc", ["-pthread", source, "-o", executable]).status).toBe(
+      0,
+    );
+    const worker = spawn(executable, [], {
+      cwd: outside,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    workers.push(worker);
+    const response = () =>
+      new Promise<string>((resolve, reject) => {
+        const exited = () => {
+          worker.stdout!.off("data", data);
+          reject(new Error("dup2 helper exited"));
+        };
+        const data = (chunk: Buffer) => {
+          worker.off("exit", exited);
+          resolve(String(chunk).trim());
+        };
+        worker.stdout!.once("data", data);
+        worker.once("exit", exited);
+      });
+    const ready = await response();
+    const tid = /^ready (\d+)$/u.exec(ready)?.[1];
+    expect(tid).toBeDefined();
+    const target = `/proc/${worker.pid}/task/${tid}/fd/79`;
+    let quarantine = "";
+    let replaced = false;
+    const rename = fs.rename.bind(fs);
+    vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
+      await rename(from, to);
+      if (String(from) === worktree.path) quarantine = String(to);
+    });
+    useProcReaderForTests({
+      ...hostProc,
+      readdir: async (value) =>
+        value === "/proc" ? [String(worker.pid)] : hostProc.readdir(value),
+      readlink: async (value) => {
+        if (value !== target || !quarantine || replaced)
+          return hostProc.readlink(value);
+        replaced = true;
+        let next = response();
+        worker.stdin!.write("close\n");
+        expect(await next).toBe("closed");
+        let closed: unknown;
+        try {
+          await hostProc.readlink(value);
+        } catch (error) {
+          closed = error;
+        }
+        expect(closed).toMatchObject({ code: "ENOENT" });
+        next = response();
+        worker.stdin!.write(path.join(quarantine, "README.md") + "\n");
+        expect(await next).toBe("opened");
+        expect(await hostProc.readlink(value)).toBe(
+          path.join(quarantine, "README.md"),
+        );
+        throw closed;
+      },
+    });
+    const finalCheck = vi.fn(async () => {});
+    await expect(
+      remove(worktree, { afterFinalCheck: finalCheck }),
+    ).rejects.toMatchObject({
+      code: "worktree_preserved",
+      message: expect.stringContaining(`pid ${worker.pid}, open file`),
+    });
+    expect(replaced).toBe(true);
+    expect(finalCheck).not.toHaveBeenCalled();
+    await expect(
+      readFile(path.join(worktree.path, "README.md"), "utf8"),
+    ).resolves.toBe("published\n");
+    await expect(readFile(target, "utf8")).resolves.toBe("published\n");
+    expect(() => process.kill(worker.pid!, 0)).not.toThrow();
+  },
+  20_000,
+);
