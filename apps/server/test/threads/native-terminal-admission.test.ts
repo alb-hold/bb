@@ -9,7 +9,6 @@ import {
   type HostDaemonServerWsMessage,
 } from "@bb/host-daemon-contract";
 import {
-  apiErrorSchema,
   nativeTerminalLaunchSpecSchema,
   sendMessageResponseSchema,
   threadResponseSchema,
@@ -190,12 +189,12 @@ async function postJson(
 
 async function createNativeThread(
   fixture: Fixture,
-  args: { providerId: string; prompt?: string },
+  args: { providerId: string; prompt?: string; origin?: "app" | "cli" | "sdk" },
 ) {
   const response = await postJson(fixture, "/threads", {
     projectId: fixture.projectId,
     providerId: args.providerId,
-    origin: "cli",
+    origin: args.origin ?? "cli",
     input: args.prompt === undefined ? [] : textInput(args.prompt),
     environment: { type: "reuse", environmentId: fixture.environment.id },
     nativeTerminal: true,
@@ -426,17 +425,6 @@ describe("the concurrency cap on native terminal threads", () => {
     expect(terminalOpens(fixture.socket)).toEqual([]);
     expect(getThread(fixture.harness.db, created.id)?.status).toBe("pending");
 
-    const tellWhileHeld = await postJson(
-      fixture,
-      `/threads/${created.id}/send`,
-      { input: textInput("also check the lint"), mode: "auto" },
-    );
-    expect(tellWhileHeld.status).toBe(409);
-    expect(apiErrorSchema.parse(await readJson(tellWhileHeld)).code).toBe(
-      "native_terminal_not_running",
-    );
-    expect(queuedRows(fixture, created.id)).toHaveLength(1);
-
     decision = { action: "proceed" };
     await runQueuedMessageDispatch(fixture.harness.deps, {
       kind: "plugin-recheck",
@@ -458,6 +446,121 @@ describe("the concurrency cap on native terminal threads", () => {
     const second = await launchSpec(fixture, created.id);
     expect(first.initialPrompt).toBe("Fix the flaky test");
     expect(second.initialPrompt).toBeNull();
+  });
+
+
+  it("holds an empty native spawn from bb at the limit without starting its runtime, then starts it once", async () => {
+    const fixture = await createFixture();
+    let decision: HookDecision = { action: "wait", reason: AT_LIMIT_REASON };
+    const seen = installDispatchHook(() => decision);
+
+    const created = await createNativeThread(fixture, {
+      providerId: "claude-code",
+      origin: "sdk",
+    });
+
+    expect(getThread(fixture.harness.db, created.id)?.status).toBe("pending");
+    expect(readThreadProvisionContext(fixture.harness.db, created.id)).toBe(
+      null,
+    );
+    expect(seen.map((context) => context.thread.id)).toEqual([created.id]);
+    const rows = queuedRows(fixture, created.id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.waitingOn).toMatchObject({
+      kind: "plugin",
+      reason: AT_LIMIT_REASON,
+    });
+    await settle();
+    expect(terminalOpens(fixture.socket)).toEqual([]);
+
+    decision = { action: "proceed" };
+    await runQueuedMessageDispatch(fixture.harness.deps, {
+      kind: "plugin-recheck",
+    });
+
+    const open = await waitForTerminalOpen(fixture.socket);
+    expect(open.threadId).toBe(created.id);
+    acknowledgeOpen(fixture, open);
+    await waitForThreadStatus(fixture, created.id, "idle");
+    expect(queuedRows(fixture, created.id)).toEqual([]);
+    await runQueuedMessageDispatch(fixture.harness.deps, {
+      kind: "plugin-recheck",
+    });
+    await settle();
+    expect(terminalOpens(fixture.socket)).toHaveLength(1);
+    expect(terminalInputs(fixture.socket)).toEqual([]);
+    expect((await launchSpec(fixture, created.id)).initialPrompt).toBeNull();
+  });
+
+  it("starts an empty native session the owner opens at once, even at the limit", async () => {
+    const fixture = await createFixture();
+    const seen = installDispatchHook(() => ({
+      action: "wait",
+      reason: AT_LIMIT_REASON,
+    }));
+
+    const created = await createNativeThread(fixture, {
+      providerId: "claude-code",
+      origin: "app",
+    });
+
+    const open = await waitForTerminalOpen(fixture.socket);
+    expect(open.threadId).toBe(created.id);
+    acknowledgeOpen(fixture, open);
+    await waitForThreadStatus(fixture, created.id, "idle");
+    expect(seen).toEqual([]);
+    expect(queuedRows(fixture, created.id)).toEqual([]);
+  });
+
+  it("queues a send behind a held native start and delivers both once, the initial prompt first", async () => {
+    const fixture = await createFixture();
+    let decision: HookDecision = { action: "wait", reason: AT_LIMIT_REASON };
+    installDispatchHook(() => decision);
+
+    const created = await createNativeThread(fixture, {
+      providerId: "codex",
+      prompt: "Fix the flaky test",
+    });
+    const followUp = await sendToThread(fixture, created.id, "then run lint");
+
+    expect(followUp.delivery).toBe("queued");
+    expect(getThread(fixture.harness.db, created.id)?.status).toBe("pending");
+    expect(
+      queuedRows(fixture, created.id).map((row) => row.content),
+    ).toEqual([textInput("Fix the flaky test"), textInput("then run lint")]);
+
+    decision = { action: "proceed" };
+    await runQueuedMessageDispatch(fixture.harness.deps, {
+      kind: "plugin-recheck",
+    });
+
+    const open = await waitForTerminalOpen(fixture.socket);
+    const cli = startFakeCli(fixture, open.terminalId);
+    try {
+      acknowledgeOpen(fixture, open);
+      await waitForThreadStatus(fixture, created.id, "idle");
+      for (let attempt = 0; attempt < 600; attempt += 1) {
+        if (cli.inputs().length >= 2) break;
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      await settle();
+      expect(cli.inputs()).toEqual([
+        "\u001b[200~then run lint\u001b[201~",
+        "\r",
+      ]);
+      expect(queuedRows(fixture, created.id)).toEqual([]);
+      expect((await launchSpec(fixture, created.id)).initialPrompt).toBe(
+        "Fix the flaky test",
+      );
+      await runQueuedMessageDispatch(fixture.harness.deps, {
+        kind: "plugin-recheck",
+      });
+      await settle();
+      expect(cli.inputs()).toHaveLength(2);
+      expect(terminalOpens(fixture.socket)).toHaveLength(1);
+    } finally {
+      cli.stop();
+    }
   });
 
   it("lets a native send and a native create through at once below the limit", async () => {
