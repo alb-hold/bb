@@ -84,10 +84,15 @@ describe("TerminalMobileControls", () => {
       const more = screen.getByRole("button", { name: "More terminal keys" });
       expect(more.querySelector('[data-icon="MoreHorizontal"]')).not.toBeNull();
       expect(more.querySelector('[data-icon="ChevronDown"]')).not.toBeNull();
+      expect(more.getAttribute("aria-pressed")).toBe("false");
+      expect(more.querySelector('[data-icon="ChevronUp"]')).toBeNull();
       for (const label of priority.slice(count)) {
         expect(screen.queryByRole("button", { name: label })).toBeNull();
       }
       fireEvent.click(more);
+      expect(more.getAttribute("aria-pressed")).toBe("true");
+      expect(more.querySelector('[data-icon="ChevronUp"]')).not.toBeNull();
+      expect(more.querySelector('[data-icon="ChevronDown"]')).toBeNull();
       const allKeys = screen.getAllByRole("button");
       const allLabels = allKeys.map((key) => key.getAttribute("aria-label"));
       const fullSet = [
@@ -117,6 +122,9 @@ describe("TerminalMobileControls", () => {
         expect(key.classList.contains("shrink-0")).toBe(true);
       }
       fireEvent.click(more);
+      expect(more.getAttribute("aria-pressed")).toBe("false");
+      expect(more.querySelector('[data-icon="ChevronDown"]')).not.toBeNull();
+      expect(more.querySelector('[data-icon="ChevronUp"]')).toBeNull();
       expect(labels().slice(0, count)).toEqual(priority.slice(0, count));
     },
   );
