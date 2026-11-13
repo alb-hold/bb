@@ -10,8 +10,8 @@ import { PREFERENCES_CHANGED_CHANNEL } from "../../shared/preferences.js";
 import {
   applyRemotePreferenceSignal,
   attachPreferencesStore,
-  hydratePreferences,
   hydratePreferencesFromMirror,
+  loadPreferencesUntilReady,
   preferencesReadyAtom,
 } from "./preferences-sync.js";
 
@@ -20,6 +20,7 @@ export function usePreferencesReady(): boolean {
 }
 
 let syncOwnerCount = 0;
+let cancelPreferencesLoad: (() => void) | null = null;
 
 export function usePreferencesSync(): void {
   const rpc = useRpc<typeof threadListRpcContract>();
@@ -30,9 +31,10 @@ export function usePreferencesSync(): void {
     syncOwnerCount += 1;
     if (syncOwnerCount === 1) {
       hydratePreferencesFromMirror();
-      void hydratePreferences(rpc).catch((error: unknown) => {
+      cancelPreferencesLoad?.();
+      cancelPreferencesLoad = loadPreferencesUntilReady(rpc, (error) => {
         console.warn(
-          `${pluginId}: loading preferences failed: ${
+          `${pluginId}: loading preferences failed, retrying: ${
             error instanceof Error ? error.message : String(error)
           }`,
         );
@@ -40,6 +42,10 @@ export function usePreferencesSync(): void {
     }
     return () => {
       syncOwnerCount -= 1;
+      if (syncOwnerCount === 0) {
+        cancelPreferencesLoad?.();
+        cancelPreferencesLoad = null;
+      }
     };
   }, [pluginId, rpc, store]);
   useRealtime(PREFERENCES_CHANGED_CHANNEL, applyRemotePreferenceSignal);

@@ -37,6 +37,10 @@ export function setServerPluginsStarting(starting: boolean): void {
   notify();
 }
 
+export function isServerPluginsStarting(): boolean {
+  return serverPluginsStarting;
+}
+
 export function setPluginFrontendReconcilePending(pending: boolean): void {
   if (reconcilePending === pending) return;
   reconcilePending = pending;

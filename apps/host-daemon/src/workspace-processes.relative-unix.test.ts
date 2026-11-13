@@ -38,13 +38,13 @@ describe("resolveRelativeUnixBindSuffix", () => {
     });
   });
 
-  it("treats embedded newlines in relative names as unreadable", () => {
+  it("treats embedded newlines in relative names as an unrelated unreadable diagnostic", () => {
     expect(resolveRelativeUnixBindSuffix("c\n.sock")).toEqual({
       kind: "unreadable",
     });
   });
 
-  it("treats dot-dot segments as unreadable", () => {
+  it("treats dot-dot segments as an unrelated unreadable diagnostic", () => {
     expect(resolveRelativeUnixBindSuffix("sub/../c.sock")).toEqual({
       kind: "unreadable",
     });
@@ -140,7 +140,7 @@ describe("relative unix bind suffix search", () => {
     }
   });
 
-  it("treats workspace c.sock with trailing space as unreadable when cwd is outside", async () => {
+  it("treats workspace c.sock with trailing space as an unrelated unreadable diagnostic when cwd is outside", async () => {
     const ws = await mkdtemp(join(tmpdir(), "bb-r14-ws-trail-"));
     const sockPath = join(ws, "c.sock ");
     const stop = await listenUnix(sockPath);
@@ -152,7 +152,8 @@ describe("relative unix bind suffix search", () => {
       expect(await inspectWorkspaceProcesses(ws)).toEqual({
         supported: true,
         pids: [],
-        unreadablePids: [536],
+        unreadablePids: [],
+        unrelatedUnreadablePids: [536],
       });
     } finally {
       await stop();
@@ -160,7 +161,7 @@ describe("relative unix bind suffix search", () => {
     }
   });
 
-  it("suffix collision marks both binders unreadable when workspace holds matching socket", async () => {
+  it("suffix collision marks both binders as unrelated unreadable diagnostics when workspace holds matching socket", async () => {
     const ws = await mkdtemp(join(tmpdir(), "bb-r15-collision-"));
     const sockPath = join(ws, "c.sock ");
     const stop = await listenUnix(sockPath);
@@ -182,7 +183,8 @@ describe("relative unix bind suffix search", () => {
       expect(await inspectWorkspaceProcesses(ws)).toEqual({
         supported: true,
         pids: [],
-        unreadablePids: [55057, 55064],
+        unreadablePids: [],
+        unrelatedUnreadablePids: [55057, 55064],
       });
     } finally {
       await stop();
@@ -218,7 +220,7 @@ describe("relative unix bind suffix search", () => {
     }
   });
 
-  it("treats sub/../c.sock bind as unreadable when cwd is outside the workspace", async () => {
+  it("treats sub/../c.sock bind as an unrelated unreadable diagnostic when cwd is outside the workspace", async () => {
     const ws = await mkdtemp(join(tmpdir(), "bb-r12-dotdot-"));
     let findCalls = 0;
     vi.mocked(execHostFile).mockImplementation((async (
@@ -238,7 +240,8 @@ describe("relative unix bind suffix search", () => {
       expect(await inspectWorkspaceProcesses(ws)).toEqual({
         supported: true,
         pids: [],
-        unreadablePids: [533],
+        unreadablePids: [],
+        unrelatedUnreadablePids: [533],
       });
       expect(findCalls).toBe(0);
     } finally {
@@ -259,7 +262,8 @@ describe("relative unix bind suffix search", () => {
       expect(await inspectWorkspaceProcesses(ws)).toEqual({
         supported: true,
         pids: [],
-        unreadablePids: [534],
+        unreadablePids: [],
+        unrelatedUnreadablePids: [534],
       });
     } finally {
       await stop();
@@ -284,7 +288,7 @@ describe("relative unix bind suffix search", () => {
     }
   });
 
-  it.each([null, "python3"])("keeps bare c.sock unreadable with command %s", async (command) => {
+  it.each([null, "python3"])("keeps bare c.sock in diagnostics with command %s", async (command) => {
     const ws = await mkdtemp(join(tmpdir(), "bb-r10b-unr-"));
     const sockPath = join(ws, "c.sock");
     const stop = await listenUnix(sockPath);
@@ -296,8 +300,8 @@ describe("relative unix bind suffix search", () => {
       expect(await inspectWorkspaceProcesses(ws)).toEqual({
         supported: true,
         pids: [],
-        unreadablePids: [521],
-        ...(command === null ? {} : { processCommands: { "521": command } }),
+        unreadablePids: [],
+        unrelatedUnreadablePids: [521],
       });
     } finally {
       await stop();
@@ -305,7 +309,7 @@ describe("relative unix bind suffix search", () => {
     }
   });
 
-  it("treats sub/c.sock as unreadable when workspace holds that socket suffix", async () => {
+  it("treats sub/c.sock as an unrelated unreadable diagnostic when workspace holds that socket suffix", async () => {
     const ws = await mkdtemp(join(tmpdir(), "bb-r10b-unr-sub-"));
     await mkdir(join(ws, "sub"), { recursive: true });
     const sockPath = join(ws, "sub", "c.sock");
@@ -318,7 +322,8 @@ describe("relative unix bind suffix search", () => {
       expect(await inspectWorkspaceProcesses(ws)).toEqual({
         supported: true,
         pids: [],
-        unreadablePids: [522],
+        unreadablePids: [],
+        unrelatedUnreadablePids: [522],
       });
     } finally {
       await stop();
@@ -326,7 +331,7 @@ describe("relative unix bind suffix search", () => {
     }
   });
 
-  it("never treats deep workspace socket suffix as outside when bind cwd is /", async () => {
+  it("reports deep socket suffix uncertainty separately when bind cwd is /", async () => {
     const ws = await mkdtemp(join(tmpdir(), "bb-r11-deep-"));
     const segments = Array.from({ length: 13 }, (_, index) => `d${index}`);
     const deepDir = join(ws, ...segments);
@@ -351,14 +356,15 @@ describe("relative unix bind suffix search", () => {
       expect(result).toEqual({
         supported: true,
         pids: [],
-        unreadablePids: [532],
+        unreadablePids: [],
+        unrelatedUnreadablePids: [532],
       });
     } finally {
       await rm(ws, { recursive: true, force: true });
     }
   });
 
-  it("treats relative unix as unreadable when workspace socket search times out", async () => {
+  it("treats relative unix as an unrelated unreadable diagnostic when workspace socket search times out", async () => {
     const ws = await mkdtemp(join(tmpdir(), "bb-r10b-timeout-"));
     const prior = process.env.BB_WS_SOCKET_FIND_TIMEOUT_MS;
     process.env.BB_WS_SOCKET_FIND_TIMEOUT_MS = "100";
@@ -379,7 +385,8 @@ describe("relative unix bind suffix search", () => {
       expect(await inspectWorkspaceProcesses(ws)).toEqual({
         supported: true,
         pids: [],
-        unreadablePids: [531],
+        unreadablePids: [],
+        unrelatedUnreadablePids: [531],
       });
     } finally {
       if (prior === undefined) delete process.env.BB_WS_SOCKET_FIND_TIMEOUT_MS;

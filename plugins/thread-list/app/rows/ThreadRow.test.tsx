@@ -65,6 +65,10 @@ import {
   THREAD_ROW_METADATA_EXPERIMENT,
 } from "../preferences/atoms.js";
 import { SidebarProjectsContext } from "../model/use-sidebar-data.js";
+import {
+  StickyRowStateReportProvider,
+  type StickyRowStateReporter,
+} from "../ui/stickyOffset.js";
 import type { ThreadRowOptions } from "./ThreadRow.js";
 import {
   preferenceValueAtom,
@@ -159,6 +163,8 @@ interface HarnessProps {
   onCustomizeRowActions?: (threadId: string) => void;
   onFinishCustomizingRowActions?: (restoreFocus: boolean) => void;
   siblings?: PluginSidebarThread[];
+  onStickyRowHeight?: (height: number) => void;
+  stickyRowReporter?: StickyRowStateReporter;
 }
 
 function ThreadRowHarness({
@@ -174,6 +180,8 @@ function ThreadRowHarness({
   onRowEvent,
   onCustomizeRowActions,
   onFinishCustomizingRowActions,
+  onStickyRowHeight,
+  stickyRowReporter,
 }: HarnessProps) {
   const threadRow = (
       <ThreadRow
@@ -234,11 +242,22 @@ function ThreadRowHarness({
       </SidebarProjectsContext.Provider>
     </SidebarRowMetadataExperiment>
   );
-  return isCompactViewport === undefined ? (
-    content
-  ) : (
-    <CompactViewportOverrideProvider isCompactViewport={isCompactViewport}>
+  const rowStateReporter =
+    stickyRowReporter ??
+    (onStickyRowHeight === undefined
+      ? null
+      : {
+          report: (_id: string, height: number) => onStickyRowHeight(height),
+          remove: () => undefined,
+        });
+  const reportedContent = rowStateReporter ? (
+    <StickyRowStateReportProvider value={rowStateReporter}>
       {content}
+    </StickyRowStateReportProvider>
+  ) : content;
+  return isCompactViewport === undefined ? reportedContent : (
+    <CompactViewportOverrideProvider isCompactViewport={isCompactViewport}>
+      {reportedContent}
     </CompactViewportOverrideProvider>
   );
 }
@@ -542,6 +561,50 @@ const sdkExportsAreSpyable =
     ?.configurable === true;
 
 describe("ThreadRow", () => {
+  it("reports the actual height of a sticky parent without row state", () => {
+    const reportHeight = vi.fn();
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(
+      new DOMRect(0, 0, 280, 34),
+    );
+    renderThreadRow({
+      options: {
+        kind: "parent",
+        depth: 1,
+        isCompact: false,
+        stickyLevel: 0,
+        isCollapsed: false,
+        childCount: 0,
+        childActivity: NO_COLLAPSED_CHILD_ACTIVITY,
+        onToggleCollapsed: vi.fn(),
+      },
+      onStickyRowHeight: reportHeight,
+    });
+
+    expect(reportHeight).toHaveBeenCalledWith(34);
+  });
+
+  it("removes its own sticky height report on unmount", () => {
+    const report = vi.fn();
+    const remove = vi.fn();
+    const rendered = renderThreadRow({
+      options: {
+        kind: "parent",
+        depth: 1,
+        isCompact: false,
+        stickyLevel: 0,
+        isCollapsed: false,
+        childCount: 0,
+        childActivity: NO_COLLAPSED_CHILD_ACTIVITY,
+        onToggleCollapsed: vi.fn(),
+      },
+      stickyRowReporter: { report, remove },
+    });
+
+    expect(report).toHaveBeenCalledWith(expect.any(String), expect.any(Number));
+    rendered.unmount();
+    expect(remove).toHaveBeenCalledWith(report.mock.calls[0]?.[0]);
+  });
+
   it("uses one leading mode column without a blank title slot", () => {
     const view = renderThreadRow({ thread: createThread({ experimental_nativeTerminal: true }) });
     expect(view.container.querySelectorAll('[data-icon="Terminal"]')).toHaveLength(1);
