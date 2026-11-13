@@ -139,6 +139,8 @@ async function foreignMountsExcludeWorktree(
   directory: string,
   mountNamespace: string,
 ): Promise<boolean> {
+  const canonical = await readOptional(() => proc.realpath(directory));
+  if (!("value" in canonical) || canonical.value !== directory) return false;
   const namespace = await readOptional(() => proc.readlink(`${base}/ns/mnt`));
   if (!("value" in namespace) || namespace.value === mountNamespace)
     return false;
@@ -180,6 +182,7 @@ async function readOptional<T>(read: () => Promise<T>): Promise<Read<T>> {
 }
 
 export interface ProcReader {
+  realpath(path: string): Promise<string>;
   readlink(path: string): Promise<string>;
   readFile(path: string): Promise<string>;
   readdir(path: string): Promise<string[]>;
@@ -192,6 +195,7 @@ export interface ProcReader {
 }
 
 export const hostProc: ProcReader = {
+  realpath: (path) => fs.realpath(path),
   readlink: (path) => fs.readlink(path),
   readFile: (path) => fs.readFile(path, "utf8"),
   readdir: (path) => fs.readdir(path),

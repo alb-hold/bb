@@ -7,6 +7,7 @@ function table(parents: Record<string, number>): ProcReader {
     throw new Error("unused");
   };
   return {
+    realpath: reject,
     readlink: reject,
     readFile: async (path) => {
       const pid = path.split("/")[2] ?? "";

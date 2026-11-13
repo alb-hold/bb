@@ -483,6 +483,7 @@ function fakeProc(options: {
     });
   };
   return {
+    realpath: async (path) => path,
     readlink: async (path) => links.get(path) ?? fail(path),
     readFile: async (path) => files.get(path) ?? fail(path),
     readdir: async (path) => dirs.get(path) ?? fail(path),
@@ -1530,6 +1531,24 @@ describe("foreign process mount evidence", () => {
       "mnt:[2]",
       "clear",
     ],
+    [
+      "non-canonical unrelated container",
+      "/data",
+      "8:48",
+      "mnt:[2]",
+      "uncertain",
+      "/work/tree",
+      "different",
+    ],
+    [
+      "unresolvable unrelated container",
+      "/data",
+      "8:48",
+      "mnt:[2]",
+      "uncertain",
+      "/work/tree",
+      "throws",
+    ],
     ["path prefix sibling", "/work/tree-other", "8:48", "mnt:[2]", "clear"],
     ["same namespace unreadable mounts", null, null, "mnt:[1]", "uncertain"],
     ["ancestor mount", "/work", "8:48", "mnt:[2]", "uncertain"],
@@ -1544,12 +1563,17 @@ describe("foreign process mount evidence", () => {
       namespace,
       expected,
       directory: string = "/work/tree",
+      resolution: string = "equal",
     ) => {
       const denied = () => {
         throw Object.assign(new Error("Permission denied"), { code: "EACCES" });
       };
       const proc: ProcReader = {
         ...hostProc,
+        realpath: async () => {
+          if (resolution === "throws") return denied();
+          return resolution === "different" ? "/data/tree" : directory;
+        },
         readdir: async () => ["101"],
         readlink: async (target) => {
           if (target === "/proc/self/ns/mnt") return "mnt:[1]";
