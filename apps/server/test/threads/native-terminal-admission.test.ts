@@ -1485,6 +1485,51 @@ describe("native terminal delivery across a crash", () => {
     30_000,
   );
 
+  it("logs one warning at startup for a delivery table left by an earlier build, leaves its row alone, pastes nothing and still recovers current marks", async () => {
+    const before = await createFixture();
+    const sender = await openBusySender(before);
+    const crashed = await crashAfterPaste(before, sender.thread.id);
+    expect(crashed.pastes).toEqual(PASTED_ONCE);
+    before.harness.db.$client.exec(ROUND_4_DELIVERIES_TABLE);
+    before.harness.db.$client
+      .prepare(
+        `INSERT INTO fork_native_terminal_deliveries
+          (queued_message_id, thread_id, submitting_at, uncertain_since, warning_sender_thread_id)
+          VALUES (?, ?, 1, NULL, ?)`,
+      )
+      .run(crashed.queuedMessageId, crashed.threadId, sender.thread.id);
+    const legacyRows = () =>
+      before.harness.db.$client
+        .prepare("SELECT * FROM fork_native_terminal_deliveries")
+        .all();
+    const legacyBefore = legacyRows();
+
+    const after = await restartServer(before);
+    const warn = vi.spyOn(after.harness.deps.logger, "warn");
+    const cli = startFakeCli(after, crashed.terminalId, { firstSeq: 100 });
+    try {
+      await sweepEverything(after);
+      await runSweeps(after);
+
+      const legacyWarnings = warn.mock.calls.filter((call) =>
+        call.some(
+          (part) =>
+            typeof part === "string" &&
+            part.includes("delivery table from an earlier build"),
+        ),
+      );
+      expect(legacyWarnings).toHaveLength(1);
+      expect(legacyRows()).toEqual(legacyBefore);
+      expect(cli.inputs()).toEqual([]);
+      expect(queuedRows(after, crashed.threadId)).toMatchObject([
+        { state: "failed_exhausted", failureReason: UNCERTAIN_REASON },
+      ]);
+      expect(senderWarnings(after, sender.thread.id)).toHaveLength(1);
+    } finally {
+      cli.stop();
+    }
+  }, 30_000);
+
   function turnRequests(fixture: Fixture, threadId: string) {
     return fixture.harness.db
       .select()
