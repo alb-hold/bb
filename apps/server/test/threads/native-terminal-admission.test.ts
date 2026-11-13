@@ -1,6 +1,8 @@
 import {
+  claimQueuedThreadMessageGroup,
   getNativeTerminalThread,
   getThread,
+  listNativeParentNotices,
   listQueuedThreadMessages,
   threads,
 } from "@bb/db";
@@ -24,6 +26,8 @@ import {
   setPluginHookProvider,
   type PluginHookRegistration,
 } from "../../src/services/plugins/plugin-hook-registry.js";
+import { runStartupRecoverySweep } from "../../src/services/system/periodic-sweeps.js";
+import { recordNativeTerminalActivity } from "../../src/services/threads/native-terminal-activity.js";
 import { runQueuedMessageDispatch } from "../../src/services/threads/queued-message-dispatch.js";
 import { toThreadQueuedMessage } from "../../src/services/threads/thread-queued-messages.js";
 import { readThreadProvisionContext } from "../../src/services/threads/thread-startup-store.js";
@@ -249,8 +253,9 @@ async function openRunningNativeThread(
   fixture: Fixture,
   args: { providerId: string; prompt?: string },
 ) {
+  const opened = terminalOpens(fixture.socket).length;
   const thread = await createNativeThread(fixture, args);
-  const open = await waitForTerminalOpen(fixture.socket);
+  const open = await waitForTerminalOpen(fixture.socket, opened);
   acknowledgeOpen(fixture, open);
   await waitForThreadStatus(fixture, thread.id, "idle");
   await waitForBoundTerminal(fixture, thread.id, open.terminalId);
@@ -267,10 +272,15 @@ function composerScreen(pasted: string): string {
   return `\u001b[2K\u001b[1G› ${words.join("\u001b[1C")}\u001b[0m`;
 }
 
-function startFakeCli(fixture: Fixture, terminalId: string): FakeCli {
+function startFakeCli(
+  fixture: Fixture,
+  terminalId: string,
+  options: { ignoredPastes?: number } = {},
+): FakeCli {
   const output: { seq: number; dataBase64: string }[] = [];
   let nextSeq = 7;
   let handled = 0;
+  let ignoredPastes = options.ignoredPastes ?? 0;
   const draw = (text: string) => {
     output.push({
       seq: nextSeq,
@@ -285,7 +295,13 @@ function startFakeCli(fixture: Fixture, terminalId: string): FakeCli {
         if (message.terminalId !== terminalId) continue;
         const text = Buffer.from(message.dataBase64, "base64").toString("utf8");
         const pasted = /^\u001b\[200~([\s\S]*)\u001b\[201~$/u.exec(text);
-        if (pasted !== null) draw(composerScreen(pasted[1] ?? ""));
+        if (pasted !== null && ignoredPastes > 0) {
+          ignoredPastes -= 1;
+        } else if (pasted !== null) {
+          draw(composerScreen(pasted[1] ?? ""));
+        } else if (text === "\r") {
+          draw("\u001b[2K\u001b[1G› \u001b[0m");
+        }
       }
       if (message.type === "terminal.attach") {
         if (message.terminalId !== terminalId) continue;
@@ -322,10 +338,16 @@ function queuedRows(fixture: Fixture, threadId: string) {
   );
 }
 
-async function sendToThread(fixture: Fixture, threadId: string, text: string) {
+async function sendToThread(
+  fixture: Fixture,
+  threadId: string,
+  text: string,
+  senderThreadId?: string,
+) {
   const response = await postJson(fixture, `/threads/${threadId}/send`, {
     input: textInput(text),
     mode: "auto",
+    ...(senderThreadId === undefined ? {} : { senderThreadId }),
   });
   expect(response.status).toBe(200);
   return sendMessageResponseSchema.parse(await readJson(response));
@@ -641,4 +663,246 @@ describe("the concurrency cap on native terminal threads", () => {
     expect(seen).toEqual([]);
     expect(queuedRows(fixture, thread.id)).toEqual([]);
   });
+});
+
+describe("native terminal delivery across a crash", () => {
+  const UNCERTAIN_REASON =
+    "Delivery uncertain after a restart: send again or delete";
+
+  function failWritesToClaimedQueueRows(fixture: Fixture): () => void {
+    fixture.harness.db.$client.exec(`
+      CREATE TRIGGER fault_claimed_queue_delete BEFORE DELETE ON queued_thread_messages
+        WHEN OLD.state = 'claimed'
+        BEGIN SELECT RAISE(ABORT, 'simulated crash after the paste'); END;
+      CREATE TRIGGER fault_claimed_queue_update BEFORE UPDATE ON queued_thread_messages
+        WHEN OLD.state = 'claimed'
+        BEGIN SELECT RAISE(ABORT, 'simulated crash after the paste'); END;
+    `);
+    return () =>
+      fixture.harness.db.$client.exec(`
+        DROP TRIGGER fault_claimed_queue_delete;
+        DROP TRIGGER fault_claimed_queue_update;
+      `);
+  }
+
+  function failDeletesOfClaimedQueueRows(fixture: Fixture): () => void {
+    fixture.harness.db.$client.exec(`
+      CREATE TRIGGER fault_claimed_queue_delete BEFORE DELETE ON queued_thread_messages
+        WHEN OLD.state = 'claimed'
+        BEGIN SELECT RAISE(ABORT, 'simulated failure after the paste'); END;
+    `);
+    return () =>
+      fixture.harness.db.$client.exec(
+        "DROP TRIGGER fault_claimed_queue_delete;",
+      );
+  }
+
+  async function restartServer(fixture: Fixture): Promise<Fixture> {
+    const harness = await createTestAppHarness({ db: fixture.harness.db });
+    harnesses.push(harness);
+    const socket = createFakeDaemonSocket();
+    harness.hub.registerDaemon(fixture.sessionId, fixture.hostId, socket);
+    return { ...fixture, harness, socket };
+  }
+
+  async function drainEverything(fixture: Fixture): Promise<void> {
+    const later = Date.now() + 60 * 60 * 1000;
+    await runQueuedMessageDispatch(fixture.harness.deps, {
+      kind: "plugin-recheck",
+    });
+    await runQueuedMessageDispatch(fixture.harness.deps, {
+      kind: "retry-due",
+      now: later,
+    });
+    await runQueuedMessageDispatch(fixture.harness.deps, {
+      kind: "idle-recovery",
+      now: later,
+    });
+    await settle();
+  }
+
+  it("never re-sends a held send that a crashed server pasted before deleting its row, and tells the sender", async () => {
+    const before = await createFixture();
+    const sender = await openRunningNativeThread(before, { providerId: "codex" });
+    recordNativeTerminalActivity(before.harness.deps, {
+      confirms: false,
+      state: "working",
+      threadId: sender.thread.id,
+    });
+    const { open, thread } = await openRunningNativeThread(before, {
+      providerId: "codex",
+    });
+    const cli = startFakeCli(before, open.terminalId);
+    let decision: HookDecision = { action: "wait", reason: AT_LIMIT_REASON };
+    installDispatchHook(() => decision);
+    try {
+      const held = await sendToThread(
+        before,
+        thread.id,
+        "run the tests",
+        sender.thread.id,
+      );
+      expect(held.delivery).toBe("queued");
+
+      const restore = failWritesToClaimedQueueRows(before);
+      decision = { action: "proceed" };
+      await runQueuedMessageDispatch(before.harness.deps, {
+        kind: "plugin-recheck",
+      });
+      await settle();
+      restore();
+      expect(cli.inputs()).toEqual([
+        "\u001b[200~run the tests\u001b[201~",
+        "\r",
+      ]);
+    } finally {
+      cli.stop();
+    }
+
+    const after = await restartServer(before);
+    const afterCli = startFakeCli(after, open.terminalId);
+    try {
+      await runStartupRecoverySweep(after.harness.deps);
+      await drainEverything(after);
+      await new Promise((resolve) => setTimeout(resolve, 1_100));
+      await drainEverything(after);
+
+      expect(afterCli.inputs()).toEqual([]);
+      const rows = queuedRows(after, thread.id);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        state: "failed_exhausted",
+        failureReason: UNCERTAIN_REASON,
+      });
+      expect(rows[0]?.content).toEqual(textInput("run the tests"));
+      const senderNotices = listNativeParentNotices(
+        after.harness.db,
+        sender.thread.id,
+      );
+      expect(senderNotices).toHaveLength(1);
+      expect(senderNotices[0]?.text).toContain("may not have been delivered");
+      expect(senderNotices[0]?.text).toContain(thread.id);
+      const [mark] = after.harness.db.$client
+        .prepare(
+          "SELECT submitting_at AS submittingAt FROM fork_native_terminal_deliveries WHERE queued_message_id = ?",
+        )
+        .all(rows[0]?.id) as { submittingAt: number }[];
+      expect(typeof mark?.submittingAt).toBe("number");
+
+      await runStartupRecoverySweep(after.harness.deps);
+      await drainEverything(after);
+      expect(afterCli.inputs()).toEqual([]);
+      expect(
+        listNativeParentNotices(after.harness.db, sender.thread.id),
+      ).toHaveLength(1);
+    } finally {
+      afterCli.stop();
+    }
+  }, 30_000);
+
+  it("never re-sends a held send whose row could not be deleted after the paste", async () => {
+    const fixture = await createFixture();
+    const { open, thread } = await openRunningNativeThread(fixture, {
+      providerId: "codex",
+    });
+    const cli = startFakeCli(fixture, open.terminalId);
+    let decision: HookDecision = { action: "wait", reason: AT_LIMIT_REASON };
+    installDispatchHook(() => decision);
+    try {
+      await sendToThread(fixture, thread.id, "run the tests");
+      const restore = failDeletesOfClaimedQueueRows(fixture);
+      decision = { action: "proceed" };
+      await runQueuedMessageDispatch(fixture.harness.deps, {
+        kind: "plugin-recheck",
+      });
+      await settle();
+      restore();
+
+      await drainEverything(fixture);
+      await drainEverything(fixture);
+
+      expect(cli.inputs()).toEqual([
+        "\u001b[200~run the tests\u001b[201~",
+        "\r",
+      ]);
+      const rows = queuedRows(fixture, thread.id);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        state: "failed_exhausted",
+        failureReason: UNCERTAIN_REASON,
+      });
+    } finally {
+      cli.stop();
+    }
+  }, 30_000);
+
+  it("puts a held send back when its paste fails and delivers it once on a later drain", async () => {
+    const fixture = await createFixture();
+    const { open, thread } = await openRunningNativeThread(fixture, {
+      providerId: "codex",
+    });
+    const cli = startFakeCli(fixture, open.terminalId, { ignoredPastes: 1 });
+    let decision: HookDecision = { action: "wait", reason: AT_LIMIT_REASON };
+    installDispatchHook(() => decision);
+    try {
+      await sendToThread(fixture, thread.id, "run the tests");
+      decision = { action: "proceed" };
+      await runQueuedMessageDispatch(fixture.harness.deps, {
+        kind: "plugin-recheck",
+      });
+
+      expect(cli.inputs()).toEqual(["\u001b[200~run the tests\u001b[201~"]);
+      const failed = queuedRows(fixture, thread.id);
+      expect(failed).toHaveLength(1);
+      expect(failed[0]?.state).not.toBe("claimed");
+      expect(failed[0]?.state).not.toBe("failed_exhausted");
+
+      await drainEverything(fixture);
+      await drainEverything(fixture);
+
+      expect(cli.inputs()).toEqual([
+        "\u001b[200~run the tests\u001b[201~",
+        "\u001b[200~run the tests\u001b[201~",
+        "\r",
+      ]);
+      expect(queuedRows(fixture, thread.id)).toEqual([]);
+    } finally {
+      cli.stop();
+    }
+  }, 30_000);
+
+  it("delivers a held send once when the server crashed after claiming it but before marking it", async () => {
+    const before = await createFixture();
+    const { open, thread } = await openRunningNativeThread(before, {
+      providerId: "codex",
+    });
+    installDispatchHook(() => ({ action: "wait", reason: AT_LIMIT_REASON }));
+    await sendToThread(before, thread.id, "run the tests");
+    const [row] = listQueuedThreadMessages(before.harness.db, thread.id);
+    expect(row).toBeDefined();
+    const claimed = claimQueuedThreadMessageGroup(
+      before.harness.db,
+      before.harness.hub,
+      row!.id,
+      { kind: "explicit-send" },
+    );
+    expect(claimed).toHaveLength(1);
+
+    const after = await restartServer(before);
+    const cli = startFakeCli(after, open.terminalId);
+    installDispatchHook(() => ({ action: "proceed" }));
+    try {
+      await runStartupRecoverySweep(after.harness.deps);
+      await drainEverything(after);
+      await drainEverything(after);
+
+      expect(cli.inputs()).toEqual([
+        "\u001b[200~run the tests\u001b[201~",
+        "\r",
+      ]);
+      expect(queuedRows(after, thread.id)).toEqual([]);
+    } finally {
+      cli.stop();
+    }
+  }, 30_000);
 });

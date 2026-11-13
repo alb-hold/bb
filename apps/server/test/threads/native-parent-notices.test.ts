@@ -29,7 +29,10 @@ import {
   type PluginHookRegistration,
 } from "../../src/services/plugins/plugin-hook-registry.js";
 import { runQueuedMessageDispatch } from "../../src/services/threads/queued-message-dispatch.js";
-import { runPeriodicSweeps } from "../../src/services/system/periodic-sweeps.js";
+import {
+  runPeriodicSweeps,
+  runStartupRecoverySweep,
+} from "../../src/services/system/periodic-sweeps.js";
 import { enqueueNativeParentNotice } from "../../src/services/threads/native-parent-notices.js";
 import { recordNativeTerminalActivity } from "../../src/services/threads/native-terminal-activity.js";
 import { internalAuthHeaders } from "../helpers/commands.js";
@@ -891,6 +894,78 @@ describe("child notices survive a server restart", () => {
       );
     } finally {
       tui.stop();
+    }
+  }, 60_000);
+
+  it("never re-sends a held notice that a crashed server pasted before deleting its row", async () => {
+    const before = await createFixture();
+    const { open, thread } = await openRunningClaudeParent(before);
+    const tui = startFakeClaudeTui(before, open.terminalId, EMPTY_PROMPT_SCREEN);
+    let decision: HookDecision = { action: "wait", reason: AT_LIMIT_REASON };
+    installDispatchHook(() => decision);
+    try {
+      enqueueNativeParentNotice(before.harness.deps, {
+        input: [{ type: "text", text: "Child 3 finished", mentions: [] }],
+        parentThreadId: thread.id,
+      });
+      await waitFor(
+        () => listQueuedThreadMessages(before.harness.db, thread.id).length > 0,
+        10_000,
+      );
+      before.harness.db.$client.exec(`
+        CREATE TRIGGER fault_claimed_queue_delete BEFORE DELETE ON queued_thread_messages
+          WHEN OLD.state = 'claimed'
+          BEGIN SELECT RAISE(ABORT, 'simulated crash after the paste'); END;
+        CREATE TRIGGER fault_claimed_queue_update BEFORE UPDATE ON queued_thread_messages
+          WHEN OLD.state = 'claimed'
+          BEGIN SELECT RAISE(ABORT, 'simulated crash after the paste'); END;
+      `);
+      decision = { action: "proceed" };
+      await runQueuedMessageDispatch(before.harness.deps, {
+        kind: "plugin-recheck",
+      });
+      await sleep(300);
+      before.harness.db.$client.exec(`
+        DROP TRIGGER fault_claimed_queue_delete;
+        DROP TRIGGER fault_claimed_queue_update;
+      `);
+      expect(tui.pastes()).toHaveLength(1);
+      expect(tui.pastes()[0]).toContain("Child 3 finished");
+      expect(tui.inputs().filter((input) => input === "\r")).toHaveLength(1);
+    } finally {
+      tui.stop();
+    }
+
+    const after = await restartServer(before);
+    const afterTui = startFakeClaudeTui(
+      after,
+      open.terminalId,
+      EMPTY_PROMPT_SCREEN,
+    );
+    try {
+      await runStartupRecoverySweep(after.harness.deps);
+      await runQueuedMessageDispatch(after.harness.deps, {
+        kind: "plugin-recheck",
+      });
+      await runSweeps(after);
+      await sleep(1_500);
+      await runQueuedMessageDispatch(after.harness.deps, {
+        kind: "plugin-recheck",
+      });
+      await runSweeps(after);
+      await sleep(500);
+
+      expect(afterTui.inputs()).toEqual([]);
+      const rows = listQueuedThreadMessages(after.harness.db, thread.id);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        state: "failed_exhausted",
+        failureReason:
+          "Delivery uncertain after a restart: send again or delete",
+      });
+      expect(listNativeParentNotices(after.harness.db, thread.id)).toEqual([]);
+    } finally {
+      afterTui.stop();
     }
   }, 60_000);
 
