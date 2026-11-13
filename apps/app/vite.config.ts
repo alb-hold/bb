@@ -1,7 +1,7 @@
 import { xtermFaintContrast } from "./vite-xterm-faint.js";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { defineConfig, type UserConfig } from "vite";
+import { defineConfig, type PluginOption, type UserConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { bundleStats } from "./vite-bundle-stats.js";
@@ -14,7 +14,9 @@ import { pluginZodRuntime } from "./vite-plugin-zod-runtime.js";
 
 const appDir = dirname(fileURLToPath(import.meta.url));
 
-export const sharedViteConfig = {
+export const sharedViteConfig: UserConfig & {
+  plugins: Exclude<PluginOption, false | null | undefined>[];
+} = {
   define: {
     __BB_DEV_WS_BROWSER_HOST_PORT__: "undefined",
     __BB_DEV_APP_BROWSER_HOST_PORT__: "undefined",
