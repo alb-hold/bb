@@ -851,7 +851,7 @@ describe("the Linux process-list visibility rule", () => {
       status: "clear",
     });
     const zombie = fakeProc({
-      processes: { 102: { uid: 1000, state: "Z (zombie)", denied: true } },
+      processes: { 102: { uid: 1000, state: "Z (zombie)" } },
     });
     expect(await scanLinux("/work/tree", zombie, 4242)).toEqual({
       status: "clear",
