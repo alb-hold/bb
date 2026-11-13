@@ -14,7 +14,8 @@ function ensureNativeTerminalDeliveriesTable(db: DbConnection): void {
         REFERENCES queued_thread_messages(id) ON DELETE CASCADE,
       thread_id TEXT NOT NULL,
       submitting_at INTEGER NOT NULL,
-      uncertain_since INTEGER
+      uncertain_since INTEGER,
+      warning_sender_thread_id TEXT
     )
   `);
   deliveriesTableReady.add(db.$client);
@@ -105,14 +106,60 @@ export function listUnsettledNativeTerminalDeliveryMarks(
 
 export function markNativeTerminalDeliveriesUncertain(
   db: DbConnection,
-  args: { now: number; queuedMessageIds: readonly string[] },
+  args: {
+    deliveries: readonly {
+      queuedMessageId: string;
+      warnSenderThreadId: string | null;
+    }[];
+    now: number;
+  },
 ): void {
   ensureNativeTerminalDeliveriesTable(db);
-  const update = db.$client.prepare<[number, string]>(
-    `UPDATE ${NATIVE_TERMINAL_DELIVERIES_TABLE} SET uncertain_since = ?
+  const update = db.$client.prepare<[number, string | null, string]>(
+    `UPDATE ${NATIVE_TERMINAL_DELIVERIES_TABLE}
+      SET uncertain_since = ?, warning_sender_thread_id = ?
       WHERE queued_message_id = ?`,
   );
-  for (const id of args.queuedMessageIds) update.run(args.now, id);
+  for (const delivery of args.deliveries) {
+    update.run(args.now, delivery.warnSenderThreadId, delivery.queuedMessageId);
+  }
+}
+
+export interface PendingNativeTerminalDeliveryWarning {
+  queuedMessageId: string;
+  senderThreadId: string;
+  threadId: string;
+}
+
+export function listPendingNativeTerminalDeliveryWarnings(
+  db: DbConnection,
+): PendingNativeTerminalDeliveryWarning[] {
+  ensureNativeTerminalDeliveriesTable(db);
+  return db.$client
+    .prepare<[], PendingNativeTerminalDeliveryWarning>(
+      `SELECT queued_message_id AS queuedMessageId, thread_id AS threadId,
+          warning_sender_thread_id AS senderThreadId
+        FROM ${NATIVE_TERMINAL_DELIVERIES_TABLE}
+        WHERE warning_sender_thread_id IS NOT NULL
+        ORDER BY uncertain_since, queued_message_id`,
+    )
+    .all();
+}
+
+export function clearNativeTerminalDeliveryWarning(
+  db: DbConnection,
+  queuedMessageId: string,
+): boolean {
+  ensureNativeTerminalDeliveriesTable(db);
+  return (
+    db.$client
+      .prepare<[string]>(
+        `UPDATE ${NATIVE_TERMINAL_DELIVERIES_TABLE}
+          SET warning_sender_thread_id = NULL
+          WHERE queued_message_id = ? AND warning_sender_thread_id IS NOT NULL`,
+      )
+      .run(queuedMessageId).changes > 0
+  );
 }
 
 export function clearNativeTerminalDeliveryMarks(

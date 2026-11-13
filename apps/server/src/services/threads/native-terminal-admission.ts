@@ -375,7 +375,10 @@ export async function dispatchClaimedNativeTerminalMessages(
       args.claimed.map((row) => row.id),
     );
     if (marks.length > 0) {
-      const [failed] = settleUncertainNativeTerminalDeliveries(deps, marks);
+      const [failed] = await settleUncertainNativeTerminalDeliveries(
+        deps,
+        marks,
+      );
       return {
         kind: "queued",
         entry: toThreadQueuedMessage(failed ?? lead),

@@ -1990,12 +1990,13 @@ export function failQueuedThreadMessagesWithoutRetry(
   args: {
     failureReason: string;
     now: number;
+    onFailedInTransaction: (failed: QueuedThreadMessageRow[]) => void;
     rows: readonly { claimToken: string | null; id: string }[];
   },
 ): QueuedThreadMessageRow[] {
   const failed = db.transaction(
-    (tx): QueuedThreadMessageRow[] =>
-      args.rows.flatMap((target) => {
+    (tx): QueuedThreadMessageRow[] => {
+      const rows = args.rows.flatMap((target) => {
         const existing = getQueuedThreadMessage(tx, target.id);
         if (!existing || existing.claimToken !== target.claimToken) return [];
         const released = isQueuedThreadMessageClaimed(existing)
@@ -2016,7 +2017,10 @@ export function failQueuedThreadMessagesWithoutRetry(
           },
         });
         return updated === null ? [] : [updated];
-      }),
+      });
+      args.onFailedInTransaction(rows);
+      return rows;
+    },
     { behavior: "immediate" },
   );
   for (const threadId of new Set(failed.map((row) => row.threadId))) {
