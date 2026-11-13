@@ -265,11 +265,10 @@ export function SidebarNavigationModelProvider({
     pathname: location.pathname,
   });
   const isThreadRoute =
-    matchPath("/threads/:threadId/*", location.pathname) !== null ||
-    matchPath("/projects/:projectId/threads/:threadId/*", location.pathname) !== null;
+    /^\/(projects\/[^/]+\/)?threads\/[^/]/i.test(location.pathname);
   const isHomeActive =
     !isSettingsPathname(location.pathname) &&
-    getPluginPanelRoutePluginId(location.pathname) === null &&
+    !getPluginPanelRoutePluginId(location.pathname) &&
     !isThreadRoute &&
     (activeItemId === null || activeItemId === NEW_THREAD_NAVIGATION_ITEM_ID);
   const currentRoutePath = `${location.pathname}${location.search}${location.hash}`;
