@@ -14,15 +14,19 @@ import {
   type NativeTerminalDeliveryWarning,
   type QueuedThreadMessageRow,
 } from "@bb/db";
-import type { PromptInput } from "@bb/domain";
+import type { PromptInput, Thread } from "@bb/domain";
 import type { LoggedPendingInteractionWorkSessionDeps } from "../../types.js";
 import { isQueuedMessageClaimActive } from "./queued-messages.js";
 import { requestQueuedMessageDispatch } from "./queued-message-dispatch.js";
 import { enqueueNativeParentNotice } from "./native-parent-notices.js";
-import { buildExecutionOptions } from "./thread-commands.js";
+import { buildProviderThreadExecutionDefaults } from "./thread-default-policy.js";
+import { tryResolveExistingThreadExecutionPlan } from "./thread-execution-plan.js";
 
 export const NATIVE_TERMINAL_DELIVERY_UNCERTAIN_REASON =
   "Delivery uncertain after a restart: send again or delete";
+
+const DELIVERY_WARNINGS_PAGE_SIZE = 100;
+const DELIVERY_WARNINGS_SWEEP_BUDGET_MS = 5_000;
 
 export async function settleUncertainNativeTerminalDeliveries(
   deps: LoggedPendingInteractionWorkSessionDeps,
@@ -124,21 +128,52 @@ export async function recoverNativeTerminalDeliveries(
 export async function sendNativeTerminalDeliveryWarnings(
   deps: LoggedPendingInteractionWorkSessionDeps,
 ): Promise<void> {
-  for (const warning of listNativeTerminalDeliveryWarnings(deps.db)) {
-    try {
-      await sendDeliveryWarning(deps, warning);
-    } catch (error) {
-      deps.logger.warn(
-        {
-          err: error,
-          queuedMessageId: warning.queuedMessageId,
-          senderThreadId: warning.senderThreadId,
-          threadId: warning.targetThreadId,
-        },
-        "Could not tell the sender that a native terminal message may not have been delivered; will retry",
-      );
+  const deadline = Date.now() + DELIVERY_WARNINGS_SWEEP_BUDGET_MS;
+  let afterId = 0;
+  while (Date.now() < deadline) {
+    const page = listNativeTerminalDeliveryWarnings(deps.db, {
+      afterId,
+      limit: DELIVERY_WARNINGS_PAGE_SIZE,
+    });
+    for (const warning of page) {
+      try {
+        await sendDeliveryWarning(deps, warning);
+      } catch (error) {
+        deps.logger.warn(
+          {
+            err: error,
+            queuedMessageId: warning.queuedMessageId,
+            senderThreadId: warning.senderThreadId,
+            threadId: warning.targetThreadId,
+          },
+          "Could not tell the sender that a native terminal message may not have been delivered; will retry",
+        );
+      }
     }
+    const last = page.at(-1);
+    if (page.length < DELIVERY_WARNINGS_PAGE_SIZE || last === undefined) {
+      return;
+    }
+    afterId = last.id;
   }
+}
+
+async function noticeRowExecution(
+  deps: LoggedPendingInteractionWorkSessionDeps,
+  sender: Thread,
+) {
+  const plan = await tryResolveExistingThreadExecutionPlan(deps, {
+    executionSource: "client/turn/requested",
+    input: {},
+    threadId: sender.id,
+  });
+  return (
+    plan?.resolvedExecution ??
+    buildProviderThreadExecutionDefaults(deps.providerRegistry, {
+      model: sender.providerId,
+      providerId: sender.providerId,
+    })
+  );
 }
 
 function deliveryWarningText(
@@ -191,11 +226,7 @@ async function sendDeliveryWarning(
     );
     return;
   }
-  const execution = await buildExecutionOptions(
-    deps,
-    {},
-    { threadId: sender.id },
-  );
+  const execution = await noticeRowExecution(deps, sender);
   const queued = deps.db.transaction(
     (tx) => {
       if (!deleteNativeTerminalDeliveryWarning(deps.db, warning.id)) {

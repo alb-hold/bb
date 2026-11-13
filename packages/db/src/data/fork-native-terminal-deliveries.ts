@@ -1,8 +1,8 @@
 import type { DbConnection } from "../connection.js";
 
-const NATIVE_TERMINAL_DELIVERIES_TABLE = "fork_native_terminal_deliveries";
+const NATIVE_TERMINAL_DELIVERIES_TABLE = "fork_native_terminal_deliveries_v2";
 const NATIVE_TERMINAL_DELIVERY_WARNINGS_TABLE =
-  "fork_native_terminal_delivery_warnings";
+  "fork_native_terminal_delivery_warnings_v2";
 
 const deliveriesTableReady = new WeakSet<object>();
 
@@ -203,17 +203,20 @@ export function insertNativeTerminalDeliveryWarning(
 
 export function listNativeTerminalDeliveryWarnings(
   db: DbConnection,
+  page: { afterId: number; limit: number },
 ): NativeTerminalDeliveryWarning[] {
   ensureNativeTerminalDeliveriesTables(db);
   return db.$client
-    .prepare<[], NativeTerminalDeliveryWarning>(
+    .prepare<[number, number], NativeTerminalDeliveryWarning>(
       `SELECT id, queued_message_id AS queuedMessageId,
           target_thread_id AS targetThreadId,
           sender_thread_id AS senderThreadId, text
         FROM ${NATIVE_TERMINAL_DELIVERY_WARNINGS_TABLE}
-        ORDER BY id`,
+        WHERE id > ?
+        ORDER BY id
+        LIMIT ?`,
     )
-    .all();
+    .all(page.afterId, page.limit);
 }
 
 export function deleteNativeTerminalDeliveryWarning(
