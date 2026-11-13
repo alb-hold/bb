@@ -489,6 +489,17 @@ function fakeProc(options: {
       if (!ids.has(`${base}/fd/${index + 3}`))
         ids.set(`${base}/fd/${index + 3}`, TREE_DIRECTORIES[target] ?? "9:901");
     });
+    const taskBase = `${base}/task/${key}`;
+    files.set(`${taskBase}/maps`, files.get(`${base}/maps`)!);
+    dirs.set(`${taskBase}/fd`, dirs.get(`${base}/fd`)!);
+    dirs.set(`${taskBase}/map_files`, []);
+    fdTargets.forEach((target, index) => {
+      links.set(`${taskBase}/fd/${index + 3}`, target);
+      ids.set(
+        `${taskBase}/fd/${index + 3}`,
+        ids.get(`${base}/fd/${index + 3}`)!,
+      );
+    });
   }
   const fail = (path: string): never => {
     throw Object.assign(new Error(path), {
@@ -1744,7 +1755,10 @@ function mountAliasProc(
       }
       if (value === base + "/mountinfo")
         return `40 1 8:48 ${kind === "different isolated" ? "/unrelated" : encode(directory)} /app rw - ext4 /dev/sda rw\n`;
-      if (value === base + "/maps")
+      if (
+        value === base + "/maps" ||
+        /^\/proc\/101\/task\/\d+\/maps$/u.test(value)
+      )
         return mapped
           ? `1000-2000 r--p 00000000 08:30 12 ${kind === "map alias" ? "/alias/file" : "/outside/file"}\n`
           : "";
@@ -1877,3 +1891,158 @@ describe.skipIf(process.platform !== "linux")(
     });
   },
 );
+
+const taskPrivateFdSource =
+  '\n#define _GNU_SOURCE\n#include <sched.h>\n#include <pthread.h>\n#include <stdio.h>\n#include <stdlib.h>\n#include <fcntl.h>\n#include <unistd.h>\nstatic void *hold(void *arg) {\n  if (unshare(CLONE_FILES) != 0) { perror("unshare"); _exit(2); }\n  int fd = open(arg, O_RDONLY);\n  if (fd < 0) { perror("open"); _exit(3); }\n  printf("ready\\n"); fflush(stdout);\n  for (;;) pause();\n}\nint main(void) {\n  char filename[4096];\n  if (!fgets(filename, sizeof(filename), stdin)) return 4;\n  for (char *p = filename; *p; p++) if (*p == \'\\n\') *p = 0;\n  pthread_t thread;\n  if (pthread_create(&thread, NULL, hold, filename)) return 5;\n  for (;;) pause();\n}\n';
+
+describe("task-private file tables", () => {
+  it.each(
+    [1000, 107473].flatMap((uid) =>
+      [
+        ["fd path", "held"],
+        ["fd alias", "held"],
+        ["fd identity", "held"],
+        ["unreadable fd", "uncertain"],
+        ["maps path", "held"],
+        ["maps alias", "held"],
+        ["unreadable maps", "uncertain"],
+        ["outside", "clear"],
+      ].map(([kind, expected]) => [uid, kind!, expected!] as const),
+    ),
+  )("checks task-private %s %s", async (uid, kind, expected) => {
+    const proc = mountAliasProc("/work/tree", "outside", uid);
+    const task = "/proc/101/task/102";
+    const denied = (): never => {
+      throw Object.assign(new Error("denied"), { code: "EACCES" });
+    };
+    const reader: ProcReader = {
+      ...proc,
+      readdir: async (target) => {
+        if (target === "/proc/101/task") return ["101", "102"];
+        if (target === task + "/fd")
+          return kind === "unreadable fd"
+            ? denied()
+            : kind.startsWith("fd ")
+              ? ["3"]
+              : [];
+        return proc.readdir(target);
+      },
+      readlink: async (target) =>
+        target === task + "/fd/3"
+          ? kind === "fd path"
+            ? "/work/tree/file"
+            : kind === "fd alias"
+              ? "/alias/file"
+              : "/outside/file"
+          : proc.readlink(target),
+      statId: async (target) =>
+        target === task + "/fd/3" && kind === "fd identity"
+          ? "1:101"
+          : proc.statId(target),
+      readFile: async (target) => {
+        if (target === task + "/maps") {
+          if (kind === "unreadable maps") return denied();
+          return kind.startsWith("maps ")
+            ? `1000-2000 r--p 00000000 08:30 12 ${kind === "maps alias" ? "/alias/file" : "/work/tree/file"}\n`
+            : "";
+        }
+        return proc.readFile(target);
+      },
+    };
+    expect(await scanLinux("/work/tree", reader, 4242)).toMatchObject({
+      status: expected,
+    });
+  });
+});
+
+it.skipIf(process.platform !== "linux")(
+  "holds a real task-private fd after unshare(CLONE_FILES)",
+  async () => {
+    const fs = await import("node:fs/promises");
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const root = await fs.realpath(
+      await fs.mkdtemp(path.join(os.tmpdir(), "bb-task-private-fd-")),
+    );
+    const directory = path.join(root, "worktree");
+    await fs.mkdir(directory);
+    const filename = path.join(directory, "held.txt");
+    await fs.writeFile(filename, "private fd bytes\n");
+    const source = path.join(root, "helper.c");
+    const executable = path.join(root, "helper");
+    await fs.writeFile(source, taskPrivateFdSource);
+    expect(spawnSync("cc", ["-pthread", source, "-o", executable]).status).toBe(
+      0,
+    );
+    const child = spawn(executable, [], {
+      cwd: root,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    try {
+      const ready = Promise.race([
+        once(child.stdout!, "data"),
+        once(child, "exit").then(() => {
+          throw new Error("private-fd helper exited");
+        }),
+      ]);
+      child.stdin!.end(filename + "\n");
+      await ready;
+      const base = `/proc/${child.pid}`;
+      expect(await hostProc.readlink(base + "/cwd")).toBe(root);
+      expect(await hostProc.readlink(base + "/exe")).toBe(executable);
+      for (const fd of await hostProc.readdir(base + "/fd"))
+        expect(await hostProc.readlink(base + "/fd/" + fd)).not.toContain(
+          directory,
+        );
+      expect(await hostProc.readFile(base + "/maps")).not.toContain(directory);
+      const proc: ProcReader = {
+        ...hostProc,
+        readdir: async (target) =>
+          target === "/proc" ? [String(child.pid)] : hostProc.readdir(target),
+      };
+      expect(await scanLinux(directory, proc)).toMatchObject({
+        status: "held",
+        holders: [{ pid: child.pid, through: "open file" }],
+      });
+      expect(await fs.readFile(filename, "utf8")).toBe("private fd bytes\n");
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) {
+        const closed = once(child, "close");
+        child.kill();
+        await closed;
+      }
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  },
+);
+
+describe("task-private namespace doubt", () => {
+  it.each(["fd", "maps"])(
+    "does not use leader isolation for unreadable task %s in our namespace",
+    async (leaf) => {
+      const proc = mountAliasProc("/work/tree", "different isolated", 107473);
+      const task = "/proc/101/task/102";
+      const denied = (): never => {
+        throw Object.assign(new Error("denied"), { code: "EACCES" });
+      };
+      const reader: ProcReader = {
+        ...proc,
+        readdir: async (target) =>
+          target === "/proc/101/task"
+            ? ["101", "102"]
+            : target === task + "/fd" && leaf === "fd"
+              ? denied()
+              : proc.readdir(target),
+        readFile: async (target) =>
+          target === task + "/maps" && leaf === "maps"
+            ? denied()
+            : proc.readFile(target),
+        readlink: async (target) =>
+          target === task + "/ns/mnt" ? "mnt:[1]" : proc.readlink(target),
+      };
+      expect(await scanLinux("/work/tree", reader, 4242)).toMatchObject({
+        status: "uncertain",
+      });
+    },
+  );
+});

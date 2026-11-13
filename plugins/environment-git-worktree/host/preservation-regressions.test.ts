@@ -3042,7 +3042,10 @@ function mountAliasProc(
       }
       if (value === base + "/mountinfo")
         return `40 1 8:48 ${kind === "different isolated" ? "/unrelated" : encode(directory)} /app rw - ext4 /dev/sda rw\n`;
-      if (value === base + "/maps")
+      if (
+        value === base + "/maps" ||
+        /^\/proc\/101\/task\/\d+\/maps$/u.test(value)
+      )
         return mapped
           ? `1000-2000 r--p 00000000 08:30 12 ${kind === "map alias" ? "/alias/file" : "/outside/file"}\n`
           : "";
@@ -3052,3 +3055,137 @@ function mountAliasProc(
     },
   };
 }
+
+const taskPrivateFdSource =
+  '\n#define _GNU_SOURCE\n#include <sched.h>\n#include <pthread.h>\n#include <stdio.h>\n#include <stdlib.h>\n#include <fcntl.h>\n#include <unistd.h>\nstatic void *hold(void *arg) {\n  if (unshare(CLONE_FILES) != 0) { perror("unshare"); _exit(2); }\n  int fd = open(arg, O_RDONLY);\n  if (fd < 0) { perror("open"); _exit(3); }\n  printf("ready\\n"); fflush(stdout);\n  for (;;) pause();\n}\nint main(void) {\n  char filename[4096];\n  if (!fgets(filename, sizeof(filename), stdin)) return 4;\n  for (char *p = filename; *p; p++) if (*p == \'\\n\') *p = 0;\n  pthread_t thread;\n  if (pthread_create(&thread, NULL, hold, filename)) return 5;\n  for (;;) pause();\n}\n';
+
+it.skipIf(process.platform !== "linux")(
+  "preserves teardown for a real task-private fd after unshare(CLONE_FILES)",
+  async () => {
+    const worktree = await makeWorktree();
+    const outside = path.dirname(worktree.root);
+    const source = path.join(outside, "private-fd.c");
+    const executable = path.join(outside, "private-fd");
+    await writeFile(source, taskPrivateFdSource);
+    expect(spawnSync("cc", ["-pthread", source, "-o", executable]).status).toBe(
+      0,
+    );
+    const worker = spawn(executable, [], {
+      cwd: outside,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    workers.push(worker);
+    const ready = new Promise<void>((resolve, reject) => {
+      worker.stdout!.once("data", () => resolve());
+      worker.once("error", reject);
+      worker.once("exit", () => reject(new Error("private-fd helper exited")));
+    });
+    worker.stdin!.end(path.join(worktree.path, "README.md") + "\n");
+    await ready;
+    useProcReaderForTests({
+      ...hostProc,
+      readdir: async (target) =>
+        target === "/proc" ? [String(worker.pid)] : hostProc.readdir(target),
+    });
+    await expect(remove(worktree)).rejects.toMatchObject({
+      code: "worktree_preserved",
+    });
+    expect(await scanWorktreeHolders(worktree.path)).toMatchObject({
+      status: "held",
+      holders: [{ pid: worker.pid, through: "open file" }],
+    });
+    await expect(
+      readFile(path.join(worktree.path, "README.md"), "utf8"),
+    ).resolves.toBe("published\n");
+    expect(() => process.kill(worker.pid!, 0)).not.toThrow();
+  },
+);
+
+it.skipIf(process.platform !== "linux")(
+  "quarantine order rejects opens by the old path after rename and before removal",
+  async () => {
+    const worktree = await makeWorktree();
+    useProcReaderForTests(descendantsOnly(hostProc, -1));
+    let checked = false;
+    await remove(worktree, {
+      afterFinalCheck: async (target) => {
+        expect(target).not.toBe(worktree.path);
+        await expect(
+          fs.open(path.join(worktree.path, "README.md"), "r"),
+        ).rejects.toMatchObject({ code: "ENOENT" });
+        await expect(
+          readFile(path.join(target, "README.md"), "utf8"),
+        ).resolves.toBe("published\n");
+        checked = true;
+      },
+    });
+    expect(checked).toBe(true);
+    await expect(access(worktree.path)).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  },
+);
+
+it.skipIf(process.platform !== "linux")(
+  "quarantine order catches a holder started after rename before the final check",
+  async () => {
+    const worktree = await makeWorktree();
+    let worker: ReturnType<typeof spawn> | undefined;
+    const finalCheck = vi.fn(async () => {});
+    useProcReaderForTests({
+      ...hostProc,
+      readdir: async (target) =>
+        target === "/proc"
+          ? worker?.pid
+            ? [String(worker.pid)]
+            : []
+          : hostProc.readdir(target),
+    });
+    const originalRename = fs.rename.bind(fs);
+    vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
+      await originalRename(from, to);
+      if (String(from) !== worktree.path) return;
+      await expect(
+        fs.open(path.join(worktree.path, "README.md"), "r"),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+      worker = spawn(
+        process.execPath,
+        [
+          "-e",
+          "const fs=require('fs');let p='';process.stdin.on('data',d=>p+=d);process.stdin.on('end',()=>{fs.openSync(p.trim(),'r');console.log('ready');setInterval(()=>{},1000)});",
+        ],
+        { cwd: path.dirname(worktree.root), stdio: ["pipe", "pipe", "pipe"] },
+      );
+      workers.push(worker);
+      const ready = new Promise<void>((resolve, reject) => {
+        worker!.stdout!.once("data", () => resolve());
+        worker!.once("error", reject);
+        worker!.once("exit", () =>
+          reject(new Error("quarantine holder exited")),
+        );
+      });
+      worker.stdin!.end(path.join(String(to), "README.md") + "\n");
+      await ready;
+    });
+    let removalError: unknown;
+    try {
+      await remove(worktree, { afterFinalCheck: finalCheck });
+    } catch (error) {
+      removalError = error;
+    }
+    expect(worker?.pid).toBeDefined();
+    expect(removalError).toMatchObject({
+      code: "worktree_preserved",
+      message: expect.stringContaining(`pid ${worker!.pid}, open file`),
+    });
+    expect(await scanWorktreeHolders(worktree.path)).toMatchObject({
+      status: "held",
+      holders: [{ pid: worker!.pid, through: "open file" }],
+    });
+    expect(finalCheck).not.toHaveBeenCalled();
+    await expect(
+      readFile(path.join(worktree.path, "README.md"), "utf8"),
+    ).resolves.toBe("published\n");
+    expect(() => process.kill(worker!.pid!, 0)).not.toThrow();
+  },
+);

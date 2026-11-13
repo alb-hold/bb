@@ -481,31 +481,45 @@ async function scanMountAliases(
     const found = await link(`${base}/${leaf}`, through, stat);
     if (found !== null) return found;
   }
-  for (const leaf of ["fd"] as const) {
-    const entries = await readOptional(() => proc.readdir(`${base}/${leaf}`));
-    if (!("value" in entries)) doubt = `${base}/${leaf} could not be read`;
+  const files = async (
+    fileBase: string,
+  ): Promise<WorktreeHolder | { uncertain: string } | null> => {
+    let fileDoubt: string | null = null;
+    const entries = await readOptional(() => proc.readdir(`${fileBase}/fd`));
+    if (!("value" in entries)) fileDoubt = `${fileBase}/fd could not be read`;
     if ("value" in entries)
       for (const entry of entries.value) {
-        const found = await link(`${base}/${leaf}/${entry}`, "open file", true);
+        const target = `${fileBase}/fd/${entry}`;
+        const value = await readOptional(() => proc.readlink(target));
+        if ("value" in value && matches(value.value))
+          return holder("open file");
+        if (!("value" in value)) fileDoubt = `${target} could not be read`;
+        const found = await identity(target, "open file");
         if (found !== null) return found;
       }
+    const mappedEntries = await readOptional(() =>
+      proc.readdir(`${fileBase}/map_files`),
+    );
+    if ("value" in mappedEntries)
+      for (const entry of mappedEntries.value) {
+        const id = await readOptional(() =>
+          proc.statId(`${fileBase}/map_files/${entry}`),
+        );
+        if ("value" in id && "ids" in ids && ids.ids.has(id.value))
+          return holder("mapped file");
+      }
+    const maps = await readOptional(() => proc.readFile(`${fileBase}/maps`));
+    if (!("value" in maps)) fileDoubt = `${fileBase}/maps could not be read`;
+    if ("value" in maps)
+      for (const line of maps.value.split("\n"))
+        if (matches(mappedPath(line))) return holder("mapped file");
+    return fileDoubt === null ? null : { uncertain: fileDoubt };
+  };
+  const leaderFiles = await files(base);
+  if (leaderFiles !== null) {
+    if ("pid" in leaderFiles) return leaderFiles;
+    doubt = leaderFiles.uncertain;
   }
-  const mappedEntries = await readOptional(() =>
-    proc.readdir(`${base}/map_files`),
-  );
-  if ("value" in mappedEntries)
-    for (const entry of mappedEntries.value) {
-      const id = await readOptional(() =>
-        proc.statId(`${base}/map_files/${entry}`),
-      );
-      if ("value" in id && "ids" in ids && ids.ids.has(id.value))
-        return holder("mapped file");
-    }
-  const maps = await readOptional(() => proc.readFile(`${base}/maps`));
-  if (!("value" in maps)) doubt = `${base}/maps could not be read`;
-  if ("value" in maps)
-    for (const line of maps.value.split("\n"))
-      if (matches(mappedPath(line))) return holder("mapped file");
   const namespace = await readOptional(() => proc.readlink(`${base}/ns/mnt`));
   if (!("value" in namespace))
     doubt = `${base} mount namespace could not be read`;
@@ -516,11 +530,26 @@ async function scanMountAliases(
       const taskBase = `${base}/task/${task}`;
       const found = await link(`${taskBase}/cwd`, "working folder", true);
       if (found !== null) return found;
+      const taskFiles = await files(taskBase);
+      if (taskFiles !== null && "pid" in taskFiles) return taskFiles;
       const taskNamespace = await readOptional(() =>
         proc.readlink(`${taskBase}/ns/mnt`),
       );
       if (!("value" in taskNamespace))
         identityDoubt = `${taskBase} mount namespace could not be read`;
+      if (
+        taskFiles !== null &&
+        "uncertain" in taskFiles &&
+        "value" in taskNamespace
+      ) {
+        if (taskNamespace.value === mountNamespace)
+          identityDoubt = taskFiles.uncertain;
+        else if (
+          "value" in namespace &&
+          taskNamespace.value === namespace.value
+        )
+          doubt = taskFiles.uncertain;
+      }
       if (
         "value" in taskNamespace &&
         taskNamespace.value !== mountNamespace &&
