@@ -2022,6 +2022,99 @@ describe("an open question in a native terminal", () => {
     await settle();
   }
 
+  function openQuestionBeforeTheWrite(
+    fixture: Fixture,
+    threadId: string,
+  ): void {
+    const terminalSessions = fixture.harness.deps.terminalSessions;
+    const readTerminalOutput =
+      terminalSessions.readTerminalOutput.bind(terminalSessions);
+    vi.spyOn(terminalSessions, "readTerminalOutput").mockImplementationOnce(
+      async (...args) => {
+        openQuestion(fixture, threadId);
+        return readTerminalOutput(...args);
+      },
+    );
+  }
+
+  it.each(["active", "idle"] as const)(
+    "holds a tell to an %s thread when a question opens after admission but before the paste, and delivers it once after the question closes",
+    async (status) => {
+      const fixture = await createFixture();
+      const { open, thread } = await openRunningNativeThread(fixture, {
+        providerId: "codex",
+      });
+      const cli = startFakeCli(fixture, open.terminalId);
+      try {
+        if (status === "active") {
+          recordNativeTerminalActivity(fixture.harness.deps, {
+            confirms: false,
+            state: "working",
+            threadId: thread.id,
+          });
+        }
+        openQuestionBeforeTheWrite(fixture, thread.id);
+
+        const sent = await sendToThread(
+          fixture,
+          thread.id,
+          "use the staging host",
+        );
+        await drainQueue(fixture);
+
+        expect(typed(cli)).toEqual([]);
+        expect(sent.delivery).toBe("queued");
+        expect(openQuestions(fixture, thread.id)).toHaveLength(1);
+
+        await closeQuestion.dismissed(fixture, thread.id);
+        await drainQueue(fixture);
+        await new Promise((resolve) => setTimeout(resolve, 1_100));
+        await drainQueue(fixture);
+
+        expect(typed(cli)).toEqual([PASTE, "\r"]);
+        expect(queuedRows(fixture, thread.id)).toEqual([]);
+      } finally {
+        cli.stop();
+      }
+    },
+    30_000,
+  );
+
+  it("holds a drained send when a question opens after admission but before the paste, and delivers it once after the question closes", async () => {
+    const fixture = await createFixture();
+    const { open, thread } = await openRunningNativeThread(fixture, {
+      providerId: "codex",
+    });
+    const cli = startFakeCli(fixture, open.terminalId);
+    let decision: HookDecision = { action: "wait", reason: AT_LIMIT_REASON };
+    installDispatchHook(() => decision);
+    try {
+      const held = await sendToThread(
+        fixture,
+        thread.id,
+        "use the staging host",
+      );
+      expect(held.delivery).toBe("queued");
+      openQuestionBeforeTheWrite(fixture, thread.id);
+      decision = { action: "proceed" };
+      await drainQueue(fixture);
+
+      expect(typed(cli)).toEqual([]);
+      expect(openQuestions(fixture, thread.id)).toHaveLength(1);
+      expect(queuedRows(fixture, thread.id)).toHaveLength(1);
+
+      await closeQuestion.dismissed(fixture, thread.id);
+      await drainQueue(fixture);
+      await new Promise((resolve) => setTimeout(resolve, 1_100));
+      await drainQueue(fixture);
+
+      expect(typed(cli)).toEqual([PASTE, "\r"]);
+      expect(queuedRows(fixture, thread.id)).toEqual([]);
+    } finally {
+      cli.stop();
+    }
+  }, 30_000);
+
   it.each(["answered", "dismissed", "interrupted"] as const)(
     "holds a tell while a question is open, leaves the question pending, and delivers the tell once after it is %s",
     async (how) => {
