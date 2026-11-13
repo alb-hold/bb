@@ -4287,6 +4287,7 @@ describe("terminal first paint", () => {
     vi.stubGlobal("innerWidth", 390);
     const style = document.createElement("style");
     style.textContent = `
+      :root { --terminal-overlay-scrollbar-size: 6px; }
       .px-2 { padding-left: 8px; padding-right: 8px; }
       ${readFileSync(
         join(dirname(fileURLToPath(import.meta.url)), "../../../app.css"),
@@ -4296,6 +4297,9 @@ describe("terminal first paint", () => {
         ?.join("\n")}
     `;
     document.head.append(style);
+    const terminalPaddingRight =
+      "calc(8px + var(--terminal-overlay-scrollbar-size))";
+    const expectedInsets = `8px/${terminalPaddingRight}`;
     const insets: string[] = [];
     const initialInsets: string[] = [];
     const paintFrames = new Map<
@@ -4377,7 +4381,9 @@ describe("terminal first paint", () => {
         }, "terminal replay did not finish");
         const renderer = terminals[index]!.element!;
         expect(getComputedStyle(renderer).paddingLeft).toBe("8px");
-        expect(getComputedStyle(renderer).paddingRight).toBe("8px");
+        expect(getComputedStyle(renderer).paddingRight).toBe(
+          terminalPaddingRight,
+        );
         await waitForReadinessCondition(
           () => expect(paintFrames.get(terminals[index]!)!).toHaveLength(2),
           "terminal did not paint two visible frames",
@@ -4389,7 +4395,7 @@ describe("terminal first paint", () => {
         expect(frames[0]).toEqual({
           width: screen.style.width,
           height: screen.style.height,
-          insets: "8px/8px",
+          insets: expectedInsets,
         });
         expect(frames[1]).toEqual(frames[0]);
         socket.receive({
@@ -4400,16 +4406,18 @@ describe("terminal first paint", () => {
           await writeReplay(terminals[index]!, "");
         });
         expect(getComputedStyle(renderer).paddingLeft).toBe("8px");
-        expect(getComputedStyle(renderer).paddingRight).toBe("8px");
+        expect(getComputedStyle(renderer).paddingRight).toBe(
+          terminalPaddingRight,
+        );
         if (index === 0) {
           session = { ...session, id: "term_switch_inset" };
           rerenderMobileTerminal(session);
         }
       }
       expect(insets.length).toBeGreaterThan(2);
-      expect(new Set(insets)).toEqual(new Set(["8px/8px"]));
+      expect(new Set(insets)).toEqual(new Set([expectedInsets]));
       expect(initialInsets.length).toBeGreaterThan(0);
-      expect(new Set(initialInsets)).toEqual(new Set(["8px/8px"]));
+      expect(new Set(initialInsets)).toEqual(new Set([expectedInsets]));
     } finally {
       for (const handle of paintFrameHandles) cancelAnimationFrame(handle);
       style.remove();

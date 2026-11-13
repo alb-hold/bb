@@ -121,9 +121,10 @@ describe("bounded replay scheduling", () => {
   it("serves a cold attach immediately while warming the replay for the next attach", async () => {
     const replay = new TerminalBoundedReplay();
     const args = input();
+    const warm = vi.spyOn(replay, "compact");
     expect(replay.forAttach(args)).toBe(args);
-    await vi.waitFor(() => expect(replay.forAttach(args)).not.toBe(args));
-    const compact = replay.forAttach(args);
+    expect(warm).toHaveBeenCalledTimes(1);
+    const compact = await warm.mock.results[0]!.value;
     expect(compact.chunks.length).toBeLessThan(args.chunks.length);
     expect(replay.forAttach(args)).toBe(compact);
     replay.clear();
