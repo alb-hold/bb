@@ -91,4 +91,31 @@ describe("expectedSurfaceProviderIds", () => {
       "navigation",
     ]);
   });
+
+  it("rewrites an empty provider remembered by an earlier build once boot settles", () => {
+    const surfaces = ["composer", "thread-list", "sidebar-navigation"] as const;
+    for (const surface of surfaces) {
+      window.localStorage.setItem(
+        `bb.plugin-surface-provider.2.${surface}`,
+        JSON.stringify({ pluginId: null }),
+      );
+    }
+    markPluginFrontendBootStarted();
+    act(() => markPluginFrontendsSettled());
+    for (const surface of surfaces) renderProvider(surface, null);
+
+    expect(
+      surfaces.map((surface) =>
+        JSON.parse(
+          window.localStorage.getItem(
+            `bb.plugin-surface-provider.2.${surface}`,
+          ) ?? "null",
+        ),
+      ),
+    ).toEqual([
+      { pluginId: "bb--composer" },
+      { pluginId: "thread-list" },
+      { pluginId: "navigation" },
+    ]);
+  });
 });
