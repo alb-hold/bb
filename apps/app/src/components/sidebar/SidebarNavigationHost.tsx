@@ -15,8 +15,24 @@ import { appToast } from "@/components/ui/app-toast";
 import { schedulePluginFrontendReconcile } from "@/lib/plugin-frontend-lazy";
 import { useSidebar } from "@/components/ui/sidebar.js";
 import type { ExperimentalSidebarNavigationSlot } from "@/lib/plugin-slots";
-import { SidebarNavigationCustomizePopoverContent } from "./SidebarNavigationCustomize";
+import { defineSplit } from "@/lib/define-split";
 import type { ResolvedSidebarNavigation } from "./sidebarNavigationProvider";
+
+const SidebarNavigationCustomizePopoverContent = defineSplit<
+  Parameters<
+    typeof import("./SidebarNavigationCustomize").SidebarNavigationCustomizePopoverContent
+  >[0] & { open: boolean }
+>({
+  id: "sidebar-navigation-customize",
+  load: () =>
+    import("./SidebarNavigationCustomize").then(
+      (module) => module.SidebarNavigationCustomizePopoverContent,
+    ),
+  loading: () => null,
+  tier: "intent",
+  mountWhen: ({ open }) => open,
+  keepMounted: true,
+});
 
 const SIDEBAR_NAVIGATION_SLOT_KIND = "sidebarNavigation";
 const BUILTIN_NAVIGATION_PLUGIN_ID = "navigation";
@@ -235,6 +251,7 @@ export function SidebarNavigationRegion({
         </nav>
       </PopoverAnchor>
       <SidebarNavigationCustomizePopoverContent
+        open={customize.isCustomizing}
         testId={isRail ? "nav-rail-customize" : "sidebar-navigation-customize"}
         placement={placement}
         focusReturnRef={customize.focusReturnRef}

@@ -6,12 +6,11 @@ import type {
   RegistrySkillDetail,
   RegistrySkillsPage,
 } from "@bb/server-contract";
-import { RESOURCE_GRID_PAGE_SIZE } from "@bb/shared-ui/resource-pagination";
 import { sdk } from "@/lib/sdk";
 
 export type { RegistryRanking, RegistrySkill, RegistrySkillDetail };
 
-export const REGISTRY_PAGE_SIZE = RESOURCE_GRID_PAGE_SIZE;
+export const REGISTRY_PAGE_SIZE = 12;
 
 export async function fetchRegistrySkills(args: {
   query: string;

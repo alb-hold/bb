@@ -12,7 +12,7 @@ import { cn } from "@bb/shared-ui/lib/utils";
 import { CHROME_SECTION_LABEL_CLASS } from "@bb/shared-ui/chrome-style-tokens";
 import { COARSE_POINTER_TEXT_BASE_CLASS } from "@bb/shared-ui/coarse-pointer-sizing";
 import { Icon } from "@bb/shared-ui/icon";
-import { formatCompactRelativeTime } from "@bb/shared-ui/info-list-row";
+import { formatCompactRelativeTime } from "@/lib/relative-time";
 import { getThreadDisplayTitle } from "@/lib/thread-title";
 import { ThreadTitle } from "@/components/thread/ThreadTitleMentions";
 import { ThreadLeadingMark } from "@bb/shared-ui/thread-mode-glyph";
