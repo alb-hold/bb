@@ -278,3 +278,28 @@ it("does not wait for sidebar rows when no thread-list provider is chosen", asyn
     window.localStorage.clear();
   }
 });
+
+it("still holds deferred loads behind a quiet second of composer input while thread-list is starting", async () => {
+  const h = await start({}, [], ["git", "usage"]);
+  expect(h.imports).not.toHaveBeenCalled();
+  document
+    .querySelector("textarea")!
+    .dispatchEvent(new Event("input", { bubbles: true }));
+  await vi.advanceTimersByTimeAsync(999);
+  expect(h.imports).not.toHaveBeenCalled();
+  await vi.advanceTimersByTimeAsync(200);
+  await h.done;
+  expect(h.imports).toHaveBeenCalledTimes(2);
+});
+
+it("still holds deferred loads until the home composer mounts while thread-list is starting", async () => {
+  document.body.replaceChildren();
+  const h = await start({}, [], ["git", "usage"]);
+  await vi.advanceTimersByTimeAsync(500);
+  expect(h.imports).not.toHaveBeenCalled();
+  document.body.innerHTML =
+    "<div data-app-composer><textarea></textarea></div>";
+  await vi.advanceTimersByTimeAsync(100);
+  await h.done;
+  expect(h.imports).toHaveBeenCalledTimes(2);
+});
