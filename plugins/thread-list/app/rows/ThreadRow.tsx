@@ -816,10 +816,10 @@ function ThreadRowComponent({
     rowState !== null &&
     (Object.keys(rowState.statuses).length > 0 || rowProgress !== null);
   const reportRowStateHeight = useStickyRowStateReport();
+  const stickyRowReporterId = useId();
   const reportsRowState =
     parentOptions?.stickyLevel === 0 ||
     (hasRowState && parentOptions?.stickyLevel !== undefined);
-  const lastReportedHeight = useRef(0);
   useLayoutEffect(() => {
     const element = rowElement;
     if (!reportsRowState || element === null || reportRowStateHeight === null) {
@@ -831,8 +831,7 @@ function ThreadRowComponent({
         element.getBoundingClientRect().height,
         element.scrollHeight,
       );
-      lastReportedHeight.current = value;
-      reportRowStateHeight(value);
+      reportRowStateHeight.report(stickyRowReporterId, value);
     };
     report();
     const observer =
@@ -840,12 +839,9 @@ function ThreadRowComponent({
     observer?.observe(element);
     return () => {
       observer?.disconnect();
-      if (lastReportedHeight.current > 0) {
-        lastReportedHeight.current = 0;
-        reportRowStateHeight(0);
-      }
+      reportRowStateHeight.remove(stickyRowReporterId);
     };
-  }, [rowElement, reportsRowState, reportRowStateHeight]);
+  }, [rowElement, reportsRowState, reportRowStateHeight, stickyRowReporterId]);
   const rowFirstLineHeightClass = options.isCompact
     ? ROW_STATE_COMPACT_ROW_HEIGHT_CLASS
     : ROW_STATE_ROW_HEIGHT_CLASS;

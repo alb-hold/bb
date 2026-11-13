@@ -65,7 +65,10 @@ import {
   THREAD_ROW_METADATA_EXPERIMENT,
 } from "../preferences/atoms.js";
 import { SidebarProjectsContext } from "../model/use-sidebar-data.js";
-import { StickyRowStateReportProvider } from "../ui/stickyOffset.js";
+import {
+  StickyRowStateReportProvider,
+  type StickyRowStateReporter,
+} from "../ui/stickyOffset.js";
 import type { ThreadRowOptions } from "./ThreadRow.js";
 import {
   preferenceValueAtom,
@@ -161,6 +164,7 @@ interface HarnessProps {
   onFinishCustomizingRowActions?: (restoreFocus: boolean) => void;
   siblings?: PluginSidebarThread[];
   onStickyRowHeight?: (height: number) => void;
+  stickyRowReporter?: StickyRowStateReporter;
 }
 
 function ThreadRowHarness({
@@ -177,6 +181,7 @@ function ThreadRowHarness({
   onCustomizeRowActions,
   onFinishCustomizingRowActions,
   onStickyRowHeight,
+  stickyRowReporter,
 }: HarnessProps) {
   const threadRow = (
       <ThreadRow
@@ -237,8 +242,16 @@ function ThreadRowHarness({
       </SidebarProjectsContext.Provider>
     </SidebarRowMetadataExperiment>
   );
-  const reportedContent = onStickyRowHeight ? (
-    <StickyRowStateReportProvider value={onStickyRowHeight}>
+  const rowStateReporter =
+    stickyRowReporter ??
+    (onStickyRowHeight === undefined
+      ? null
+      : {
+          report: (_id: string, height: number) => onStickyRowHeight(height),
+          remove: () => undefined,
+        });
+  const reportedContent = rowStateReporter ? (
+    <StickyRowStateReportProvider value={rowStateReporter}>
       {content}
     </StickyRowStateReportProvider>
   ) : content;
@@ -568,6 +581,28 @@ describe("ThreadRow", () => {
     });
 
     expect(reportHeight).toHaveBeenCalledWith(34);
+  });
+
+  it("removes its own sticky height report on unmount", () => {
+    const report = vi.fn();
+    const remove = vi.fn();
+    const rendered = renderThreadRow({
+      options: {
+        kind: "parent",
+        depth: 1,
+        isCompact: false,
+        stickyLevel: 0,
+        isCollapsed: false,
+        childCount: 0,
+        childActivity: NO_COLLAPSED_CHILD_ACTIVITY,
+        onToggleCollapsed: vi.fn(),
+      },
+      stickyRowReporter: { report, remove },
+    });
+
+    expect(report).toHaveBeenCalledWith(expect.any(String), expect.any(Number));
+    rendered.unmount();
+    expect(remove).toHaveBeenCalledWith(report.mock.calls[0]?.[0]);
   });
 
   it("uses one leading mode column without a blank title slot", () => {

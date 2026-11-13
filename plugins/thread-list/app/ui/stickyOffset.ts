@@ -12,9 +12,13 @@ const NO_STICKY_OFFSET: StickyOffset = {
 
 const StickyOffsetContext = createContext<StickyOffset>(NO_STICKY_OFFSET);
 
-const StickyRowStateReportContext = createContext<
-  ((rowHeightPx: number) => void) | null
->(null);
+export interface StickyRowStateReporter {
+  report(id: string, rowHeightPx: number): void;
+  remove(id: string): void;
+}
+
+const StickyRowStateReportContext =
+  createContext<StickyRowStateReporter | null>(null);
 
 export const StickyOffsetProvider = StickyOffsetContext.Provider;
 
@@ -25,10 +29,25 @@ export function useStickyOffset(): StickyOffset {
   return useContext(StickyOffsetContext);
 }
 
-export function useStickyRowStateReport():
-  | ((rowHeightPx: number) => void)
-  | null {
+export function useStickyRowStateReport(): StickyRowStateReporter | null {
   return useContext(StickyRowStateReportContext);
+}
+
+export function createStickyRowStateReporter(
+  rowHeights: Map<string, number>,
+  setHeight: (rowHeightPx: number) => void,
+): StickyRowStateReporter {
+  return {
+    report(id, rowHeightPx) {
+      if (rowHeightPx > 0) rowHeights.set(id, rowHeightPx);
+      else rowHeights.delete(id);
+      setHeight(Math.max(0, ...rowHeights.values()));
+    },
+    remove(id) {
+      rowHeights.delete(id);
+      setHeight(Math.max(0, ...rowHeights.values()));
+    },
+  };
 }
 
 export function addGrowingRow(
