@@ -81,10 +81,12 @@ afterEach(() => {
 
 describe("usePluginFrontendBoot", () => {
   it.each(["/", "/threads/thr_one"])(
-    "downloads shell bundles after the home composer paints, or immediately on %s",
+    "downloads shell bundles after the route surface paints on %s",
     async (pathname) => {
       window.history.replaceState(null, "", pathname);
       const deferredComposer = pathname === "/";
+      if (!deferredComposer)
+        document.body.innerHTML = '<div class="xterm-screen"></div>';
       const bundleSuffix = deferredComposer ? "home" : "thread";
       const runtimeRequests: { slots: string[]; precedingBundles: string[] }[] =
         [];
@@ -141,6 +143,11 @@ describe("usePluginFrontendBoot", () => {
         document.body.innerHTML =
           '<textarea></textarea><div data-sidebar-thread-id="recent"></div>';
         await flushMicrotasks();
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(40);
+        });
+      }
+      if (!deferredComposer) {
         await act(async () => {
           await vi.advanceTimersByTimeAsync(40);
         });
@@ -224,6 +231,7 @@ describe("usePluginFrontendBoot", () => {
 
   it("downloads runtime and plugin list before config, but gates activation", async () => {
     window.history.replaceState(null, "", "/threads/thr_one");
+    document.body.innerHTML = '<div class="xterm-screen"></div>';
     mocks.systemConfigData = undefined;
     const fetchList = vi.spyOn(appQueryClient, "fetchQuery");
     const { rerender } = renderHook(() => usePluginFrontendBoot());
@@ -236,7 +244,9 @@ describe("usePluginFrontendBoot", () => {
     expect(fetchList).toHaveBeenCalledTimes(1);
     mocks.systemConfigData = {};
     rerender();
-    await flushMicrotasks();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(40);
+    });
     expect(mocks.bootPluginFrontends).toHaveBeenCalledTimes(1);
     expect(fetchList).toHaveBeenCalledTimes(1);
     fetchList.mockRestore();
@@ -299,4 +309,55 @@ describe("usePluginFrontendBoot", () => {
     await act(async () => finishBoot());
     expect(mocks.releaseSplitPreloads).toHaveBeenCalled();
   });
+});
+
+it("keeps priority plugin work behind the fitted native terminal's visible frame", async () => {
+  window.history.replaceState(null, "", "/threads/thr_native");
+  const container = document.createElement("div");
+  container.style.opacity = "0";
+  const terminal = document.createElement("div");
+  terminal.className = "xterm-screen";
+  terminal.checkVisibility = (options) =>
+    !options?.checkOpacity || container.style.opacity !== "0";
+  container.append(terminal);
+  document.body.append(container);
+  renderHook(() => usePluginFrontendBoot());
+  await flushMicrotasks();
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(200);
+  });
+  expect(mocks.preloadPluginFrontend).not.toHaveBeenCalled();
+  expect(mocks.bootPluginFrontends).not.toHaveBeenCalled();
+  container.style.opacity = "1";
+  await flushMicrotasks();
+  expect(mocks.bootPluginFrontends).not.toHaveBeenCalled();
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(40);
+  });
+  expect(mocks.preloadPluginFrontend).toHaveBeenCalledOnce();
+  expect(mocks.bootPluginFrontends).toHaveBeenCalledOnce();
+});
+
+it("releases priority plugins when a thread never presents content", async () => {
+  window.history.replaceState(null, "", "/threads/thr_missing");
+  renderHook(() => usePluginFrontendBoot());
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1_000);
+  });
+  expect(mocks.bootPluginFrontends).not.toHaveBeenCalled();
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(9_050);
+  });
+  expect(mocks.bootPluginFrontends).toHaveBeenCalledOnce();
+});
+
+it("cancels priority thread plugin work when unmounted while terminal fitting is pending", async () => {
+  window.history.replaceState(null, "", "/threads/thr_unmounted");
+  const { unmount } = renderHook(() => usePluginFrontendBoot());
+  unmount();
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(10_050);
+  });
+  expect(mocks.preloadPluginFrontend).not.toHaveBeenCalled();
+  expect(mocks.bootPluginFrontends).not.toHaveBeenCalled();
 });

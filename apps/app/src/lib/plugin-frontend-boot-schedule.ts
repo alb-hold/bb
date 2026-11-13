@@ -15,7 +15,7 @@ function hasMountedSurface(selector: string): boolean {
   return [...document.querySelectorAll<HTMLElement>(selector)].some(
     (element) =>
       typeof element.checkVisibility !== "function" ||
-      element.checkVisibility(),
+      element.checkVisibility({ checkOpacity: true }),
   );
 }
 
