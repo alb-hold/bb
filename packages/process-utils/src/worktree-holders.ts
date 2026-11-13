@@ -237,7 +237,7 @@ export interface ProcReader {
 }
 
 const LEAVES_PROC =
-  /\/(?:root|cwd|exe)\/|\/fd\/[^/]+\/|\/map_files(?:\/|$)|\/\.\.?(?:\/|$)/u;
+  /\/(?:root|cwd)\/|\/exe(?:\/|$)|\/fd\/[^/]+\/|\/map_files(?:\/|$)|\/\.\.?(?:\/|$)/u;
 
 export function procReadIsSynchronous(target: string): boolean {
   return (
@@ -505,12 +505,13 @@ async function scanMountAliases(
   let sharedMaps = false;
   const mappings = async (
     fileBase: string,
+    identities: boolean,
   ): Promise<
     WorktreeHolder | { gone: true } | { failed: string } | { shared: boolean }
   > => {
-    const mappedEntries = await readOptional(() =>
-      proc.readdir(`${fileBase}/map_files`),
-    );
+    const mappedEntries = identities
+      ? await readOptional(() => proc.readdir(`${fileBase}/map_files`))
+      : { gone: true as const };
     if ("value" in mappedEntries)
       for (const entry of mappedEntries.value) {
         const id = await readOptional(() =>
@@ -556,7 +557,7 @@ async function scanMountAliases(
           if (context.final) pending.add(entry);
         } else if (found !== null) return found;
       }
-    const memory = sharedMaps ? null : await mappings(fileBase);
+    const memory = sharedMaps ? null : await mappings(fileBase, true);
     if (memory !== null && ("gone" in memory || "pid" in memory))
       return memory;
     if (memory !== null && "failed" in memory) fileDoubt = memory.failed;
@@ -650,6 +651,16 @@ async function scanMountAliases(
       )
         identityDoubt = `${taskBase} mount isolation could not be proven`;
     }
+  if (sharedMaps) {
+    const late = await mappings(base, false);
+    if ("pid" in late) return late;
+    if (!("shared" in late) || !late.shared)
+      for (const task of "value" in tasks ? tasks.value : []) {
+        const taskMaps = await mappings(`${base}/task/${task}`, true);
+        if ("pid" in taskMaps) return taskMaps;
+        if ("failed" in taskMaps) identityDoubt = taskMaps.failed;
+      }
+  }
   if (
     identityDoubt === null &&
     "value" in namespace &&
