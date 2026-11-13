@@ -29,6 +29,8 @@ export function attachTerminalPromptTracker(args: {
     promptLines: [],
     viewportLine: args.terminal.buffer.active.viewportY,
   };
+  let disposed = false;
+  let scrollPublishPending = false;
   const publish = () =>
     args.onChange({
       ...state,
@@ -84,12 +86,18 @@ export function attachTerminalPromptTracker(args: {
   );
   const scrollDisposable = args.terminal.onScroll((viewportLine) => {
     state.viewportLine = viewportLine;
-    publish();
+    if (scrollPublishPending) return;
+    scrollPublishPending = true;
+    queueMicrotask(() => {
+      scrollPublishPending = false;
+      if (!disposed) publish();
+    });
   });
   const renderDisposable = args.terminal.onRender(measureLineHeight);
   measureLineHeight();
   return {
     dispose: () => {
+      disposed = true;
       oscDisposable.dispose();
       scrollDisposable.dispose();
       renderDisposable.dispose();
