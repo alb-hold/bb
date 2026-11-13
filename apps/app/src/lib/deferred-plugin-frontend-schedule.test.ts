@@ -252,10 +252,6 @@ it("keeps deferred runtime-slot bundles out of eager modulepreload compilation",
 });
 
 it("does not wait for sidebar rows while the thread-list plugin is still starting", async () => {
-  // Cold start: the server still reports thread-list as starting, so the
-  // boot reconcile has no thread-list candidate and no sidebar rows can
-  // render. Waiting for the home-ready mark here held boot open forever, and
-  // the reconcile that would load thread-list waits for boot.
   const h = await start({}, [], ["git", "usage"]);
   await vi.advanceTimersByTimeAsync(100);
   await h.done;

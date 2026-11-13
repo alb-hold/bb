@@ -20,11 +20,6 @@ export function createDeferredPluginFrontendSchedule() {
     await whenRouteSurfaceMounted();
     return ensure().run(work);
   };
-  // The home-ready mark needs sidebar thread rows, which only the
-  // thread-list surface provider renders. When that provider is not in this
-  // reconcile (still starting on the server, or none chosen), the mark can
-  // never arrive, and waiting for it would hold this reconcile open, and with
-  // it every later reconcile that could load the provider.
   const waitForDeferredLoad = async (
     candidatePluginIds?: ReadonlySet<string>,
   ) => {
