@@ -448,7 +448,6 @@ describe("the concurrency cap on native terminal threads", () => {
     expect(second.initialPrompt).toBeNull();
   });
 
-
   it("holds an empty native spawn from bb at the limit without starting its runtime, then starts it once", async () => {
     const fixture = await createFixture();
     let decision: HookDecision = { action: "wait", reason: AT_LIMIT_REASON };
@@ -525,9 +524,10 @@ describe("the concurrency cap on native terminal threads", () => {
 
     expect(followUp.delivery).toBe("queued");
     expect(getThread(fixture.harness.db, created.id)?.status).toBe("pending");
-    expect(
-      queuedRows(fixture, created.id).map((row) => row.content),
-    ).toEqual([textInput("Fix the flaky test"), textInput("then run lint")]);
+    expect(queuedRows(fixture, created.id).map((row) => row.content)).toEqual([
+      textInput("Fix the flaky test"),
+      textInput("then run lint"),
+    ]);
 
     decision = { action: "proceed" };
     await runQueuedMessageDispatch(fixture.harness.deps, {

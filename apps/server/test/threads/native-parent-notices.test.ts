@@ -803,9 +803,9 @@ describe("child notices for a native terminal parent", () => {
         [],
       );
       expect(tui.inputs()).toEqual([]);
-      expect(listNativeParentNotices(fixture.harness.db, thread.id)).toHaveLength(
-        1,
-      );
+      expect(
+        listNativeParentNotices(fixture.harness.db, thread.id),
+      ).toHaveLength(1);
     } finally {
       tui.stop();
     }
