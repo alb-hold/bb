@@ -84,7 +84,9 @@ function notifySenderOfUncertainDelivery(
   const senderThreadId = mark.senderThreadId;
   if (senderThreadId === null || senderThreadId === mark.threadId) return;
   const target = getThread(deps.db, mark.threadId);
-  const label = target?.title ? `"${target.title}" (${mark.threadId})` : mark.threadId;
+  const label = target?.title
+    ? `"${target.title}" (${mark.threadId})`
+    : mark.threadId;
   const input: PromptInput[] = [
     {
       type: "text",

@@ -900,7 +900,11 @@ describe("child notices survive a server restart", () => {
   it("never re-sends a held notice that a crashed server pasted before deleting its row", async () => {
     const before = await createFixture();
     const { open, thread } = await openRunningClaudeParent(before);
-    const tui = startFakeClaudeTui(before, open.terminalId, EMPTY_PROMPT_SCREEN);
+    const tui = startFakeClaudeTui(
+      before,
+      open.terminalId,
+      EMPTY_PROMPT_SCREEN,
+    );
     let decision: HookDecision = { action: "wait", reason: AT_LIMIT_REASON };
     installDispatchHook(() => decision);
     try {

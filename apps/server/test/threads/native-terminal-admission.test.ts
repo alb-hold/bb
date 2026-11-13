@@ -723,7 +723,9 @@ describe("native terminal delivery across a crash", () => {
 
   it("never re-sends a held send that a crashed server pasted before deleting its row, and tells the sender", async () => {
     const before = await createFixture();
-    const sender = await openRunningNativeThread(before, { providerId: "codex" });
+    const sender = await openRunningNativeThread(before, {
+      providerId: "codex",
+    });
     recordNativeTerminalActivity(before.harness.deps, {
       confirms: false,
       state: "working",
