@@ -545,6 +545,90 @@ describe("exited thread group leaders", () => {
   });
 });
 
+const exitedLeaderSource = `
+#include <pthread.h>
+#include <stdio.h>
+#include <fcntl.h>
+#include <unistd.h>
+static char filename[4096];
+static void *hold(void *arg) {
+  int fd = open(filename, O_RDONLY);
+  if (fd < 0) _exit(3);
+  printf("ready\\n");
+  fflush(stdout);
+  for (;;) pause();
+}
+int main(void) {
+  if (!fgets(filename, sizeof(filename), stdin)) return 4;
+  for (char *p = filename; *p; p++) if (*p == '\\n') *p = 0;
+  pthread_t thread;
+  if (pthread_create(&thread, NULL, hold, NULL)) return 5;
+  pthread_exit(NULL);
+}
+`;
+
+it.skipIf(process.platform !== "linux")(
+  "holds a real worktree fd of a thread whose leader called pthread_exit",
+  async () => {
+    const fs = await import("node:fs/promises");
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const root = await fs.realpath(
+      await fs.mkdtemp(path.join(os.tmpdir(), "bb-exited-leader-")),
+    );
+    const directory = path.join(root, "worktree");
+    await fs.mkdir(directory);
+    const filename = path.join(directory, "held.txt");
+    await fs.writeFile(filename, "held by a thread\n");
+    const source = path.join(root, "helper.c");
+    const executable = path.join(root, "helper");
+    await fs.writeFile(source, exitedLeaderSource);
+    expect(spawnSync("cc", ["-pthread", source, "-o", executable]).status).toBe(
+      0,
+    );
+    const child = spawn(executable, [], {
+      cwd: root,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    try {
+      const ready = Promise.race([
+        once(child.stdout!, "data"),
+        once(child, "exit").then(() => {
+          throw new Error("exited-leader helper exited");
+        }),
+      ]);
+      child.stdin!.end(filename + "\n");
+      await ready;
+      const base = `/proc/${child.pid}`;
+      let state = "";
+      for (let attempt = 0; attempt < 100; attempt++) {
+        state = /^State:\s+(\S)/mu.exec(
+          await hostProc.readFile(base + "/status"),
+        )![1]!;
+        if (state === "Z") break;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(state).toBe("Z");
+      const proc: ProcReader = {
+        ...hostProc,
+        readdir: async (target) =>
+          target === "/proc" ? [String(child.pid)] : hostProc.readdir(target),
+      };
+      expect(await scanLinux(directory, proc)).toMatchObject({
+        status: "held",
+        holders: [{ pid: child.pid, through: "open file" }],
+      });
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) {
+        const closed = once(child, "close");
+        child.kill();
+        await closed;
+      }
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  },
+);
+
 describe("non-absolute fd links", () => {
   it.each([
     ["(unreachable)/x", "held"],
