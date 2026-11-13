@@ -28,9 +28,11 @@ import { createPluginToast } from "@/lib/notifications/plugin-toast";
 import { appQueryClient } from "./app-query-client";
 import {
   setServerPluginsStarting,
+  isServerPluginsStarting,
   setPluginFrontendReconcilePending,
   setPluginFrontendLoadFailed,
 } from "./plugin-frontend-boot-state";
+import { createStartingPluginsRecheck } from "./plugin-frontend-starting-recheck";
 import type {
   PluginContentScriptDisposer,
   PluginContentScriptRegistration,
@@ -1147,6 +1149,12 @@ const PLUGIN_SLOT_BATCH_MAX_HOLD_MS = 150;
 
 const PLUGIN_FRONTEND_IMPORT_RETRY_DELAYS_MS = [500, 2_000];
 const deferredFrontendSchedule = createDeferredPluginFrontendSchedule();
+const startingPluginsRecheck = createStartingPluginsRecheck({
+  isServerPluginsStarting,
+  recheck: () => schedulePluginFrontendReconcile(),
+  setTimeout: (callback, ms) => window.setTimeout(callback, ms),
+  clearTimeout: (handle) => window.clearTimeout(handle as number),
+});
 
 const browserReconcileDeps: PluginFrontendReconcileDeps = {
   fetchCandidates: fetchFrontendCandidates,
@@ -1240,6 +1248,7 @@ export function bootPluginFrontends(): Promise<void> {
     installPluginFrontendPageLifecycle();
     await reconcilePluginFrontends(state, browserReconcileDeps);
     publishLoadFailed();
+    startingPluginsRecheck.afterReconcile();
   })()
     .catch((error: unknown) => {
       setPluginFrontendLoadFailed(true);
@@ -1266,10 +1275,12 @@ async function runLiveReconcile(): Promise<void> {
       setPluginFrontendReconcilePending(true),
     );
     publishLoadFailed();
+    startingPluginsRecheck.afterReconcile();
   } catch (error) {
     console.warn(
       `plugin frontend reconcile failed: ${error instanceof Error ? error.message : String(error)}`,
     );
+    startingPluginsRecheck.afterFailedReconcile();
   } finally {
     deferredFrontendSchedule.dispose();
     setPluginFrontendReconcilePending(false);

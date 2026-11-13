@@ -6,6 +6,7 @@ import {
   flushPreferenceWritesForTest,
   hydratePreferences,
   hydratePreferencesFromMirror,
+  loadPreferencesUntilReady,
   preferencesMirrorStorageKey,
   preferencesReadyAtom,
   resetPreferencesSyncForTest,
@@ -285,5 +286,63 @@ describe("preferences sync with a provided store", () => {
     expect(custom.get(preferencesReadyAtom())).toBe(true);
     expect(custom.get(modeAtom)).toBe("machine");
     expect(getDefaultStore().get(preferencesReadyAtom())).toBe(false);
+  });
+});
+
+function flakyRpc(failures: number): PreferencesRpc & { loads: () => number } {
+  let loads = 0;
+  return {
+    loads: () => loads,
+    async call(method: string, input: unknown) {
+      if (method !== "listPreferences") return input;
+      loads += 1;
+      if (loads <= failures) {
+        throw new Error(
+          'plugin "thread-list" is not running (status: starting)',
+        );
+      }
+      return { preferences: defaultPreferences() };
+    },
+  };
+}
+
+describe("loading preferences at startup", () => {
+  it("retries a failed load until the server answers, then marks ready", async () => {
+    const store = getDefaultStore();
+    const rpc = flakyRpc(2);
+    const onError = vi.fn();
+    loadPreferencesUntilReady(rpc, onError);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(rpc.loads()).toBe(1);
+    expect(store.get(preferencesReadyAtom())).toBe(false);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(rpc.loads()).toBe(2);
+    expect(store.get(preferencesReadyAtom())).toBe(false);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(rpc.loads()).toBe(3);
+    expect(store.get(preferencesReadyAtom())).toBe(true);
+    expect(onError).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(rpc.loads()).toBe(3);
+  });
+
+  it("keeps retrying at the last delay while the load keeps failing", async () => {
+    const rpc = flakyRpc(Number.POSITIVE_INFINITY);
+    loadPreferencesUntilReady(rpc, () => {});
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(1_000 + 2_000 + 4_000);
+    expect(rpc.loads()).toBe(4);
+    await vi.advanceTimersByTimeAsync(5_000 * 10);
+    expect(rpc.loads()).toBe(14);
+    expect(getDefaultStore().get(preferencesReadyAtom())).toBe(false);
+  });
+
+  it("stops retrying once cancelled", async () => {
+    const rpc = flakyRpc(Number.POSITIVE_INFINITY);
+    const cancel = loadPreferencesUntilReady(rpc, () => {});
+    await vi.advanceTimersByTimeAsync(0);
+    cancel();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(rpc.loads()).toBe(1);
   });
 });

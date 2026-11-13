@@ -794,7 +794,13 @@ function ThreadRowComponent({
     isEditing || isCustomizingActions ? undefined : options.dragBindings;
   const nestTargetState = options.nestDrop?.state ?? null;
   const reorderPlacement = options.nestDrop?.reorderPlacement ?? null;
+  const [rowElement, setRowElement] = useState<HTMLDivElement | null>(null);
+  const setRowElementRef = useCallback(
+    (element: HTMLDivElement | null) => setRowElement(element),
+    [],
+  );
   const containerRef = useComposedRefs<HTMLDivElement>(
+    setRowElementRef,
     rowDragBindings?.setActivatorNodeRef,
     options.nestDrop?.setNodeRef,
   );
@@ -810,27 +816,32 @@ function ThreadRowComponent({
     rowState !== null &&
     (Object.keys(rowState.statuses).length > 0 || rowProgress !== null);
   const reportRowStateHeight = useStickyRowStateReport();
-  const rowStateRef = useRef<HTMLDivElement>(null);
+  const stickyRowReporterId = useId();
   const reportsRowState =
-    hasRowState && parentOptions?.stickyLevel !== undefined;
+    parentOptions?.stickyLevel === 0 ||
+    (hasRowState && parentOptions?.stickyLevel !== undefined);
   useLayoutEffect(() => {
-    const element =
-      rowStateRef.current?.closest<HTMLElement>("[data-sidebar-rename-row]") ??
-      null;
+    const element = rowElement;
     if (!reportsRowState || element === null || reportRowStateHeight === null) {
       return;
     }
-    const report = () =>
-      reportRowStateHeight(element.getBoundingClientRect().height);
+    const report = () => {
+      if (!element.isConnected) return;
+      const value = Math.max(
+        element.getBoundingClientRect().height,
+        element.scrollHeight,
+      );
+      reportRowStateHeight.report(stickyRowReporterId, value);
+    };
     report();
     const observer =
       typeof ResizeObserver === "undefined" ? null : new ResizeObserver(report);
     observer?.observe(element);
     return () => {
       observer?.disconnect();
-      reportRowStateHeight(0);
+      reportRowStateHeight.remove(stickyRowReporterId);
     };
-  }, [reportsRowState, reportRowStateHeight]);
+  }, [rowElement, reportsRowState, reportRowStateHeight, stickyRowReporterId]);
   const rowFirstLineHeightClass = options.isCompact
     ? ROW_STATE_COMPACT_ROW_HEIGHT_CLASS
     : ROW_STATE_ROW_HEIGHT_CLASS;
@@ -861,7 +872,7 @@ function ThreadRowComponent({
       "h-auto min-h-[var(--bb-sidebar-row-height)] max-md:pointer-coarse:h-auto max-md:pointer-coarse:min-h-[var(--bb-sidebar-row-height-coarse)]",
     showRowMetadata && "has-[[data-reserve-line]]:h-auto has-[[data-reserve-line]]:md:h-auto has-[[data-reserve-line]]:min-h-[var(--bb-sidebar-row-height)] has-[[data-reserve-line]]:max-md:pointer-coarse:h-auto has-[[data-reserve-line]]:max-md:pointer-coarse:min-h-11",
     "max-md:pointer-coarse:min-h-11",
-    "max-md:h-auto max-md:pointer-coarse:h-auto max-md:py-1.5",
+    "max-md:h-auto max-md:pointer-coarse:h-auto",
     showActive
       ? SIDEBAR_ROW_SELECTED_STATE_CLASS
       : SIDEBAR_ROW_INTERACTIVE_STATE_CLASS,
@@ -1033,7 +1044,7 @@ function ThreadRowComponent({
               </span>
             ) : (
               <span
-                className="flex min-w-0 flex-1 flex-col"
+                className="min-w-0 flex-1 max-md:flex max-md:flex-col md:flex md:flex-col"
                 title={labelTitle}
                 onDoubleClick={startTitleEditing}
               >
@@ -1054,7 +1065,7 @@ function ThreadRowComponent({
                 <span
                   data-sidebar-thread-context=""
                   className={cn(
-                    "flex min-w-0 flex-col items-start text-xs font-normal leading-4 text-muted-foreground md:flex-row md:items-center md:gap-1 md:truncate md:text-sm md:leading-4 md:[&_span]:leading-4 md:[&_time]:leading-4 md:text-sidebar-metadata-foreground [&_time]:text-xs md:[&_time]:text-sm [&_time]:text-inherit",
+                    "hidden min-w-0 items-center gap-1 truncate text-xs font-normal leading-4 text-muted-foreground md:text-sm md:leading-4 md:[&_span]:leading-4 md:[&_time]:leading-4 md:text-sidebar-metadata-foreground [&_time]:text-xs md:[&_time]:text-sm [&_time]:text-inherit md:flex max-md:flex max-md:flex-col max-md:items-start",
                     thread.experimental_nativeTerminal &&
                       "[&>[role=img]]:text-foreground [&>[role=img]_svg]:stroke-[2]",
                   )}
@@ -1275,7 +1286,6 @@ function ThreadRowComponent({
       </span>
       {rowState !== null && hasRowState ? (
         <div
-          ref={rowStateRef}
           data-sidebar-thread-row-state=""
           className="pointer-events-none relative z-[1] flex w-full min-w-0 basis-full flex-col gap-1 pl-6 pr-2 pb-1"
         >

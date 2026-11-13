@@ -8,6 +8,7 @@ import {
   CODEX_NATIVE_ACTIVITY,
   CODEX_NATIVE_SESSION,
 } from "./src/native-session.js";
+import { CODEX_NATIVE_UPDATE_PROMPT_ARGS } from "./src/native-launch.js";
 import { CODEX_POOL_LAUNCH_ENV_ARGS } from "./src/pool-launch.js";
 
 export default function plugin(bb: BbPluginApi) {
@@ -95,6 +96,7 @@ export default function plugin(bb: BbPluginApi) {
         "--no-daemon",
         "--dangerously-bypass-approvals-and-sandbox",
         "--no-alt-screen",
+        ...CODEX_NATIVE_UPDATE_PROMPT_ARGS,
       ],
       modelArgs: ["-c", 'model="{model}"'],
       experimental_launchEnvArgs: CODEX_POOL_LAUNCH_ENV_ARGS,
