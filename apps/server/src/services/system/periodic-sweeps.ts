@@ -74,6 +74,7 @@ import {
   runQueuedMessageDispatch,
   type QueueWaitPluginDirectory,
 } from "../threads/queued-message-dispatch.js";
+import { recoverNativeTerminalDeliveries } from "../threads/native-terminal-delivery-marks.js";
 import { releaseOrphanedQueuedMessageDispatchClaims } from "../threads/queued-messages.js";
 import { deliverLegacyDeferredThreadMessages } from "../threads/legacy-deferred-messages.js";
 import { sweepNativeParentNotices } from "../threads/native-parent-notices.js";
@@ -706,6 +707,20 @@ const PERIODIC_SWEEP_JOBS: PeriodicSweepJob[] = [
 export async function runStartupRecoverySweep(
   deps: LoggedPendingInteractionWorkSessionDeps,
 ): Promise<void> {
+  try {
+    const uncertainDeliveries = recoverNativeTerminalDeliveries(deps);
+    if (uncertainDeliveries > 0) {
+      deps.logger.warn(
+        { uncertainDeliveries },
+        "Held native terminal messages a previous server may have delivered",
+      );
+    }
+  } catch (error) {
+    deps.logger.error(
+      { err: error },
+      "Could not recover native terminal messages left mid-delivery",
+    );
+  }
   const releasedClaims = releaseOrphanedQueuedMessageDispatchClaims(deps);
   if (releasedClaims > 0) {
     deps.logger.info(

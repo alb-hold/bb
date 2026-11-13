@@ -1984,6 +1984,47 @@ export function setQueuedThreadMessageFailureReason(
   return updated;
 }
 
+export function failQueuedThreadMessagesWithoutRetry(
+  db: DbConnection,
+  notifier: DbNotifier,
+  args: {
+    failureReason: string;
+    now: number;
+    rows: readonly { claimToken: string | null; id: string }[];
+  },
+): QueuedThreadMessageRow[] {
+  const failed = db.transaction(
+    (tx): QueuedThreadMessageRow[] =>
+      args.rows.flatMap((target) => {
+        const existing = getQueuedThreadMessage(tx, target.id);
+        if (!existing || existing.claimToken !== target.claimToken) return [];
+        const released = isQueuedThreadMessageClaimed(existing)
+          ? transitionQueuedMessage(tx, {
+              now: args.now,
+              row: existing,
+              transition: { event: "claim.released" },
+            })
+          : existing;
+        if (released === null) return [];
+        const updated = transitionQueuedMessage(tx, {
+          now: args.now,
+          row: released,
+          transition: {
+            event: "drain.failed",
+            failureReason: args.failureReason,
+            retryDelaysMs: [],
+          },
+        });
+        return updated === null ? [] : [updated];
+      }),
+    { behavior: "immediate" },
+  );
+  for (const threadId of new Set(failed.map((row) => row.threadId))) {
+    notifier.notifyThread(threadId, ["queue-changed"]);
+  }
+  return failed;
+}
+
 /**
  * Every live row whose booked retry has come due, oldest first.
  *

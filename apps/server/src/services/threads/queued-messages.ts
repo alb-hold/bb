@@ -429,6 +429,10 @@ const STALE_QUEUED_MESSAGE_CLAIM_MS = 5 * 60 * 1000;
 const QUEUED_MESSAGE_EDIT_HOLD_LEASE_MS = 2 * 60 * 1000;
 const activeQueuedMessageClaimTokens = new Set<string>();
 
+export function isQueuedMessageClaimActive(claimToken: string): boolean {
+  return activeQueuedMessageClaimTokens.has(claimToken);
+}
+
 function respectsManualStopPause(
   args: SendClaimedQueuedMessageForThreadArgs,
 ): boolean {

@@ -1,10 +1,13 @@
 import {
   acquireProjectAttachmentOwnership,
+  clearNativeTerminalDeliveryMarks,
   deleteClaimedQueuedThreadMessageBatchInTransaction,
   getEnvironment,
   getNativeTerminalThread,
   getThread,
+  listNativeTerminalDeliveryMarks,
   listQueuedThreadMessages,
+  markNativeTerminalDeliveriesSubmitting,
   recordNativeParentNoticeDelivery,
   type ClaimedQueuedThreadMessageRow,
   type DbTransaction,
@@ -38,6 +41,7 @@ import {
   noteDispatchRequeued,
   runMessageDispatchHookPass,
 } from "./dispatch-hooks.js";
+import { settleUncertainNativeTerminalDeliveries } from "./native-terminal-delivery-marks.js";
 import {
   beginNativeTerminalThreadProvisioning,
   nativeTerminalPromptParts,
@@ -365,6 +369,19 @@ export async function dispatchClaimedNativeTerminalMessages(
     startedOnBehalfOf: storedQueuedThreadMessageRequestedBy(lead),
     systemNotice,
   };
+  if (!args.sendNow) {
+    const marks = listNativeTerminalDeliveryMarks(
+      deps.db,
+      args.claimed.map((row) => row.id),
+    );
+    if (marks.length > 0) {
+      const [failed] = settleUncertainNativeTerminalDeliveries(deps, marks);
+      return {
+        kind: "queued",
+        entry: toThreadQueuedMessage(failed ?? lead),
+      };
+    }
+  }
   if (
     args.thread.status === "pending" &&
     parseStoredQueuedThreadMessageWaitingOn(lead)?.kind === "provisioning"
@@ -411,12 +428,27 @@ export async function dispatchClaimedNativeTerminalMessages(
         : {
             when: "after-decision",
             run: async () => {
+              const ids = args.claimed.map((row) => row.id);
               if (!isNativeTerminalStartTicket(input)) {
-                await deliverNativeTerminalPrompt(deps, {
-                  thread: args.thread,
-                  input,
-                  requireEmptyInputBox: systemNotice !== null,
-                });
+                if (
+                  !markNativeTerminalDeliveriesSubmitting(deps.db, {
+                    claimToken: lead.claimToken,
+                    now: Date.now(),
+                    queuedMessageIds: ids,
+                  })
+                ) {
+                  throw createQueuedMessageClaimLostError();
+                }
+                try {
+                  await deliverNativeTerminalPrompt(deps, {
+                    thread: args.thread,
+                    input,
+                    requireEmptyInputBox: systemNotice !== null,
+                  });
+                } catch (error) {
+                  clearNativeTerminalDeliveryMarks(deps.db, ids);
+                  throw error;
+                }
               }
               if (systemNotice !== null) {
                 recordNativeParentNoticeDelivery(deps.db, {
@@ -424,9 +456,13 @@ export async function dispatchClaimedNativeTerminalMessages(
                   parentThreadId: args.thread.id,
                 });
               }
-              deps.db.transaction(consumeClaimedRows, {
-                behavior: "immediate",
-              });
+              deps.db.transaction(
+                (tx) => {
+                  consumeClaimedRows(tx);
+                  clearNativeTerminalDeliveryMarks(deps.db, ids);
+                },
+                { behavior: "immediate" },
+              );
               settleClaimedRows();
             },
           },
