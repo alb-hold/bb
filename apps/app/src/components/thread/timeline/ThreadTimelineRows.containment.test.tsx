@@ -113,11 +113,11 @@ describe("ThreadTimelineRows row containment", () => {
       "content-visibility",
     );
 
-    await act(nextAnimationFrame);
+    await act(async () => nextAnimationFrame());
     expect(rowWrapper(view.container, "assistant_1").className).toBe(
       TOP_LEVEL_TIMELINE_ROW_INTRINSIC_SIZE_CLASS_NAME,
     );
-    await act(nextAnimationFrame);
+    await act(async () => nextAnimationFrame());
     const armedClassNames = [
       "max-md:[content-visibility:auto]",
       TOP_LEVEL_TIMELINE_ROW_INTRINSIC_SIZE_CLASS_NAME,
@@ -195,9 +195,9 @@ describe("ThreadTimelineRows row containment", () => {
         </QueryClientProvider>
       </MemoryRouter>,
     );
-    await act(nextAnimationFrame);
-    await act(nextAnimationFrame);
-    await act(nextAnimationFrame);
+    await act(async () => nextAnimationFrame());
+    await act(async () => nextAnimationFrame());
+    await act(async () => nextAnimationFrame());
     for (const rowId of ["user_1", "assistant_1"]) {
       const classes = Array.from(rowWrapper(view.container, rowId).classList);
       expect(classes).toContain(
