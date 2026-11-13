@@ -233,9 +233,7 @@ async function expectKept(
   const retried = await fixture.harness.experimental_call("remove", input);
   expect(retried).toMatchObject({
     status: "retained",
-    message: expect.stringContaining(
-      `process ${holderPid}`,
-    ),
+    message: expect.stringContaining(`process ${holderPid}`),
   });
   expect(isPidAlive(holderPid)).toBe(true);
 }
@@ -254,7 +252,7 @@ describe("a program whose /proc entries cannot be read", () => {
   });
 
   it.skipIf(!realUnreadableApplies)(
-      "retains it when a live non-dumpable same-user process has cwd inside the worktree",
+    "retains it when a live non-dumpable same-user process has cwd inside the worktree",
     async () => {
       const fixture = await createFixture();
       const holder = spawn("python3", ["-c", NON_DUMPABLE], {
@@ -273,9 +271,12 @@ describe("a program whose /proc entries cannot be read", () => {
     },
   );
 
-  it("removes the same worktree when nothing is unreadable, so only the unreadable program is what keeps it", async () => {
+  it("removes the same worktree after the uninspectable program exits", async () => {
     const fixture = await createFixture();
-    startOrdinaryProcess(fixture.dataDir);
+    const child = startOrdinaryProcess(fixture.dataDir);
+    const closed = once(child, "close");
+    child.kill("SIGKILL");
+    await closed;
 
     const removed = await fixture.harness.experimental_call("remove", {
       operationId: "remove",
