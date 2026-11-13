@@ -34,6 +34,18 @@ import { descendantsOnly } from "./descendants-only.js";
 import { removeWorktree } from "./worktree.js";
 
 const execFile = promisify(execFileCallback);
+const THREADED_HELPER = `
+const fs = require("node:fs");
+const path = require("node:path");
+const { Worker } = require("node:worker_threads");
+for (let i = 0; i < 24; i++) fs.openSync(path.join(process.argv[1], "f" + i), "w");
+let online = 0;
+for (let i = 0; i < 6; i++)
+  new Worker("setInterval(() => {}, 1000)", { eval: true }).once("online", () => {
+    if (++online === 6) process.send("ready");
+  });
+setInterval(() => {}, 1000);
+`;
 const roots: string[] = [];
 const workers: ReturnType<typeof spawn>[] = [];
 const hasRemoveDirectoryTree = existsSync(
@@ -425,6 +437,82 @@ describe("real worktree teardown preservation", () => {
       );
     },
   );
+
+  it("scans a threaded process without rereading its shared state during forced removal", async () => {
+    const worktree = await makeWorktree();
+    await writeFile(path.join(worktree.path, "README.md"), "edited\n");
+    const outside = await mkdtemp(path.join(os.tmpdir(), "bb-holder-cost-"));
+    roots.push(outside);
+    const helper = spawn(process.execPath, ["-e", THREADED_HELPER, outside], {
+      cwd: outside,
+      stdio: ["ignore", "ignore", "ignore", "ipc"],
+    });
+    workers.push(helper);
+    await new Promise<void>((resolve, reject) => {
+      helper.once("message", () => resolve());
+      helper.once("exit", () => reject(new Error("threaded helper exited")));
+    });
+    const pid = String(helper.pid);
+    const tasks = await hostProc.readdir(`/proc/${pid}/task`);
+    expect(tasks.length).toBeGreaterThan(8);
+    const counts = {
+      scans: 0,
+      taskMaps: 0,
+      leaderTaskFds: 0,
+      pseudoFdStats: 0,
+      deniedMapFiles: 0,
+    };
+    const pseudoFds = new Set<string>();
+    const taskMaps = new RegExp(`^/proc/${pid}/task/\\d+/maps$`, "u");
+    useProcReaderForTests({
+      ...hostProc,
+      readdir: async (target) => {
+        if (target === "/proc") counts.scans++;
+        if (target === `/proc/${pid}/task/${pid}/fd`) counts.leaderTaskFds++;
+        return hostProc.readdir(target);
+      },
+      readlink: async (target) => {
+        const value = await hostProc.readlink(target);
+        if (
+          target.startsWith(`/proc/${pid}/`) &&
+          /\/fd\/\d+$/u.test(target) &&
+          /^(?:pipe|socket|anon_inode):/u.test(value)
+        )
+          pseudoFds.add(target);
+        return value;
+      },
+      readFile: async (target) => {
+        if (taskMaps.test(target)) counts.taskMaps++;
+        return hostProc.readFile(target);
+      },
+      statId: async (target) => {
+        if (pseudoFds.has(target)) counts.pseudoFdStats++;
+        try {
+          return await hostProc.statId(target);
+        } catch (error) {
+          if (
+            target.startsWith(`/proc/${pid}/map_files/`) &&
+            (error as NodeJS.ErrnoException).code === "EPERM"
+          )
+            counts.deniedMapFiles++;
+          throw error;
+        }
+      },
+    });
+    const started = performance.now();
+    await remove(worktree).catch(() => undefined);
+    const elapsed = performance.now() - started;
+    await expect(access(worktree.path)).resolves.toBeUndefined();
+    expect(counts.scans).toBeGreaterThan(0);
+    expect(pseudoFds.size).toBeGreaterThan(0);
+    expect(counts).toMatchObject({
+      taskMaps: 0,
+      leaderTaskFds: 0,
+      pseudoFdStats: 0,
+    });
+    expect(counts.deniedMapFiles).toBeLessThanOrEqual(counts.scans);
+    expect(elapsed).toBeLessThan(30_000);
+  }, 120_000);
 
   it("removes a worktree with only ignored node_modules", async () => {
     const worktree = await makeWorktree(

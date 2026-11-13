@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { readdirSync, readlinkSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { UNREADABLE_SESSION_AGENT_COMMS } from "./session-agent-comms.js";
@@ -235,11 +236,26 @@ export interface ProcReader {
   subdirectories(path: string): Promise<string[]>;
 }
 
+const LEAVES_PROC =
+  /\/(?:root|cwd)\/|\/exe(?:\/|$)|\/fd\/[^/]+\/|\/map_files(?:\/|$)|\/\.\.?(?:\/|$)/u;
+
+export function procReadIsSynchronous(target: string): boolean {
+  return (
+    (target === "/proc" || target.startsWith("/proc/")) &&
+    !LEAVES_PROC.test(target)
+  );
+}
+
+const PSEUDO_FILE_LINK =
+  /^(?:pipe|socket|anon_inode|net|mnt|cgroup|pidfd|user|uts|ipc|time|pid):/u;
+
 export const hostProc: ProcReader = {
   realpath: (path) => fs.realpath(path),
-  readlink: (path) => fs.readlink(path),
+  readlink: async (path) =>
+    procReadIsSynchronous(path) ? readlinkSync(path) : fs.readlink(path),
   readFile: (path) => fs.readFile(path, "utf8"),
-  readdir: (path) => fs.readdir(path),
+  readdir: async (path) =>
+    procReadIsSynchronous(path) ? readdirSync(path) : fs.readdir(path),
   lstatId: async (path) => {
     const info = await fs.lstat(path, { bigint: true });
     return `${info.dev}:${info.ino}`;
@@ -486,6 +502,33 @@ async function scanMountAliases(
     const found = await link(`${base}/${leaf}`, through, stat);
     if (found !== null && !("gone" in found)) return found;
   }
+  let sharedMaps = false;
+  const mappings = async (
+    fileBase: string,
+    identities: boolean,
+  ): Promise<
+    WorktreeHolder | { gone: true } | { failed: string } | { shared: boolean }
+  > => {
+    const mappedEntries = identities
+      ? await readOptional(() => proc.readdir(`${fileBase}/map_files`))
+      : { gone: true as const };
+    if ("value" in mappedEntries)
+      for (const entry of mappedEntries.value) {
+        const id = await readOptional(() =>
+          proc.statId(`${fileBase}/map_files/${entry}`),
+        );
+        if ("value" in id && "ids" in ids && ids.ids.has(id.value))
+          return holder("mapped file");
+        if ("failed" in id && id.failed === "EPERM") break;
+      }
+    const maps = await readOptional(() => proc.readFile(`${fileBase}/maps`));
+    if ("gone" in maps) return maps;
+    if ("failed" in maps)
+      return { failed: `${fileBase}/maps could not be read` };
+    for (const line of maps.value.split("\n"))
+      if (matches(mappedPath(line))) return holder("mapped file");
+    return { shared: maps.value.trim() !== "" };
+  };
   const files = async (
     fileBase: string,
   ): Promise<
@@ -500,6 +543,7 @@ async function scanMountAliases(
       const value = await readOptional(() => proc.readlink(target));
       if ("value" in value && matches(value.value)) return holder("open file");
       if ("gone" in value) return value;
+      if ("value" in value && PSEUDO_FILE_LINK.test(value.value)) return null;
       const found = await identity(target, "open file");
       if (found !== null && "gone" in found) return null;
       if ("failed" in value) fileDoubt = `${target} could not be read`;
@@ -513,23 +557,12 @@ async function scanMountAliases(
           if (context.final) pending.add(entry);
         } else if (found !== null) return found;
       }
-    const mappedEntries = await readOptional(() =>
-      proc.readdir(`${fileBase}/map_files`),
-    );
-    if ("value" in mappedEntries)
-      for (const entry of mappedEntries.value) {
-        const id = await readOptional(() =>
-          proc.statId(`${fileBase}/map_files/${entry}`),
-        );
-        if ("value" in id && "ids" in ids && ids.ids.has(id.value))
-          return holder("mapped file");
-      }
-    const maps = await readOptional(() => proc.readFile(`${fileBase}/maps`));
-    if ("gone" in maps) return maps;
-    if ("failed" in maps) fileDoubt = `${fileBase}/maps could not be read`;
-    if ("value" in maps)
-      for (const line of maps.value.split("\n"))
-        if (matches(mappedPath(line))) return holder("mapped file");
+    const memory = sharedMaps ? null : await mappings(fileBase, true);
+    if (memory !== null && ("gone" in memory || "pid" in memory))
+      return memory;
+    if (memory !== null && "failed" in memory) fileDoubt = memory.failed;
+    if (fileBase === base && memory !== null && "shared" in memory)
+      sharedMaps = memory.shared;
     for (let pass = 0; pass < 3 && pending.size > 0; pass++) {
       const current = await readOptional(() => proc.readdir(`${fileBase}/fd`));
       if ("gone" in current) return current;
@@ -565,6 +598,7 @@ async function scanMountAliases(
   if ("failed" in tasks) identityDoubt = `${base}/task could not be read`;
   if ("value" in tasks)
     for (const task of tasks.value) {
+      if (task === String(pid)) continue;
       const taskBase = `${base}/task/${task}`;
       const beforeTask = { doubt, identityDoubt };
       const found = await link(`${taskBase}/cwd`, "working folder", true);
@@ -617,6 +651,16 @@ async function scanMountAliases(
       )
         identityDoubt = `${taskBase} mount isolation could not be proven`;
     }
+  if (sharedMaps) {
+    const late = await mappings(base, false);
+    if ("pid" in late) return late;
+    if (!("shared" in late) || !late.shared)
+      for (const task of "value" in tasks ? tasks.value : []) {
+        const taskMaps = await mappings(`${base}/task/${task}`, true);
+        if ("pid" in taskMaps) return taskMaps;
+        if ("failed" in taskMaps) identityDoubt = taskMaps.failed;
+      }
+  }
   if (
     identityDoubt === null &&
     "value" in namespace &&
@@ -1371,6 +1415,7 @@ export async function scanLinux(
     acls: new Map(),
   };
   for (let offset = 0; offset < pids.length; offset += LINUX_SCAN_CONCURRENCY) {
+    if (offset > 0) await new Promise((resolve) => setImmediate(resolve));
     const batch = pids.slice(offset, offset + LINUX_SCAN_CONCURRENCY);
     const results = await Promise.all(
       batch.map((pid) =>
