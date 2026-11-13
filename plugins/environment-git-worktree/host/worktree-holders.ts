@@ -140,6 +140,40 @@ function mountContains(candidate: string, ancestor: string): boolean {
   return ancestor === "/" || isUnder(candidate, ancestor);
 }
 
+async function worktreeAliases(
+  proc: ProcReader,
+  directory: string,
+): Promise<string[] | null> {
+  const canonical = await readOptional(() => proc.realpath(directory));
+  if (!("value" in canonical) || canonical.value !== directory) return null;
+  const own = await readOptional(() => proc.readFile("/proc/self/mountinfo"));
+  if (!("value" in own)) return null;
+  const mounts = parseMountinfo(own.value);
+  if (mounts === null) return null;
+  const mount = mounts
+    .filter((entry) => mountContains(directory, entry.point))
+    .sort((a, b) => b.point.length - a.point.length)[0];
+  if (mount === undefined) return null;
+  const filesystemPath = path.posix.join(
+    mount.root,
+    path.posix.relative(mount.point, directory),
+  );
+  const aliases = new Set([directory]);
+  for (const entry of mounts) {
+    if (entry.device !== mount.device) continue;
+    if (mountContains(filesystemPath, entry.root))
+      aliases.add(
+        path.posix.join(
+          entry.point,
+          path.posix.relative(entry.root, filesystemPath),
+        ),
+      );
+    else if (mountContains(entry.root, filesystemPath))
+      aliases.add(entry.point);
+  }
+  return [...aliases];
+}
+
 async function foreignMountsExcludeWorktree(
   proc: ProcReader,
   base: string,
@@ -247,6 +281,7 @@ type TreeIdsReader = () => Promise<TreeIds>;
 
 interface ScanContext {
   tree: TreeIdsReader;
+  aliases: () => Promise<string[] | null>;
   acls: Map<string, Promise<boolean | null>>;
 }
 
@@ -373,7 +408,181 @@ function parseStatusNumbers(status: string, key: string): number[] | null {
   return null;
 }
 
+async function scanMountAliases(
+  proc: ProcReader,
+  pid: number,
+  directory: string,
+  mountNamespace: string,
+  context: ScanContext,
+): Promise<
+  | WorktreeHolder
+  | { uncertain: string }
+  | { isolated: true }
+  | { gone: true }
+  | null
+> {
+  const base = `/proc/${pid}`;
+  const status = await readOptional(() => proc.readFile(`${base}/status`));
+  if (
+    "gone" in status ||
+    ("value" in status && /^State:\s+Z/mu.test(status.value))
+  )
+    return { gone: true };
+  const aliases = await context.aliases();
+  let doubt: string | null =
+    aliases === null ? "worktree mount aliases could not be established" : null;
+  const matches = (value: string) =>
+    value.startsWith("/") &&
+    (aliases ?? [directory]).some((alias) =>
+      mountContains(
+        value.endsWith(" (deleted)")
+          ? value.slice(0, -" (deleted)".length)
+          : value,
+        alias,
+      ),
+    );
+  const ids = await context.tree();
+  let identityDoubt: string | null = null;
+  if (!("ids" in ids))
+    identityDoubt =
+      "tooLarge" in ids
+        ? "worktree is too large to scan for directory identities"
+        : `worktree directory identities could not be listed (${ids.failed})`;
+  else if (ids.ids.size === 0)
+    identityDoubt = "worktree directory identities could not be listed";
+  const holder = (through: WorktreeHolder["through"]): WorktreeHolder => ({
+    pid,
+    command: null,
+    through,
+  });
+  const identity = async (
+    link: string,
+    through: WorktreeHolder["through"],
+  ): Promise<WorktreeHolder | null> => {
+    const id = await readOptional(() => proc.statId(link));
+    if (!("value" in id)) identityDoubt = `${link} identity could not be read`;
+    else if ("ids" in ids && ids.ids.has(id.value)) return holder(through);
+    return null;
+  };
+  const link = async (
+    target: string,
+    through: WorktreeHolder["through"],
+    stat: boolean,
+  ): Promise<WorktreeHolder | null> => {
+    const value = await readOptional(() => proc.readlink(target));
+    if ("value" in value && matches(value.value)) return holder(through);
+    if (!("value" in value)) doubt = `${target} could not be read`;
+    return stat ? identity(target, through) : null;
+  };
+  for (const [leaf, through, stat] of [
+    ["cwd", "working folder", true],
+    ["exe", "open file", false],
+  ] as const) {
+    const found = await link(`${base}/${leaf}`, through, stat);
+    if (found !== null) return found;
+  }
+  for (const leaf of ["fd", "map_files"] as const) {
+    const entries = await readOptional(() => proc.readdir(`${base}/${leaf}`));
+    if (!("value" in entries)) doubt = `${base}/${leaf} could not be read`;
+    if ("value" in entries)
+      for (const entry of entries.value) {
+        const found = await link(
+          `${base}/${leaf}/${entry}`,
+          leaf === "fd" ? "open file" : "mapped file",
+          true,
+        );
+        if (found !== null) return found;
+      }
+  }
+  const maps = await readOptional(() => proc.readFile(`${base}/maps`));
+  if (!("value" in maps)) doubt = `${base}/maps could not be read`;
+  if ("value" in maps)
+    for (const line of maps.value.split("\n"))
+      if (matches(mappedPath(line))) return holder("mapped file");
+  const namespace = await readOptional(() => proc.readlink(`${base}/ns/mnt`));
+  if (!("value" in namespace))
+    doubt = `${base} mount namespace could not be read`;
+  const tasks = await readOptional(() => proc.readdir(`${base}/task`));
+  if (!("value" in tasks)) identityDoubt = `${base}/task could not be read`;
+  if ("value" in tasks)
+    for (const task of tasks.value) {
+      const taskBase = `${base}/task/${task}`;
+      const found = await link(`${taskBase}/cwd`, "working folder", true);
+      if (found !== null) return found;
+      const taskNamespace = await readOptional(() =>
+        proc.readlink(`${taskBase}/ns/mnt`),
+      );
+      if (!("value" in taskNamespace))
+        identityDoubt = `${taskBase} mount namespace could not be read`;
+      if (
+        "value" in taskNamespace &&
+        taskNamespace.value !== mountNamespace &&
+        (!("value" in namespace) || taskNamespace.value !== namespace.value) &&
+        !(await foreignMountsExcludeWorktree(
+          proc,
+          taskBase,
+          directory,
+          mountNamespace,
+        ))
+      )
+        identityDoubt = `${taskBase} mount isolation could not be proven`;
+    }
+  if (
+    identityDoubt === null &&
+    "value" in namespace &&
+    namespace.value !== mountNamespace
+  ) {
+    if (
+      await foreignMountsExcludeWorktree(proc, base, directory, mountNamespace)
+    )
+      return { isolated: true };
+    doubt = `process ${pid} runs in another mount namespace without proven mount isolation`;
+  }
+  const reason = identityDoubt ?? doubt;
+  if (reason !== null) {
+    const current = await readOptional(() => proc.readFile(`${base}/status`));
+    if ("gone" in current) return { gone: true };
+    return { uncertain: `process ${pid}: ${reason}` };
+  }
+  return null;
+}
+
 async function scanLinuxProcess(
+  proc: ProcReader,
+  pid: number,
+  directory: string,
+  mountNamespace: string,
+  self: LinuxProcessIdentity,
+  context: ScanContext,
+): Promise<ProcessResult> {
+  const result = await scanLinuxPaths(
+    proc,
+    pid,
+    directory,
+    mountNamespace,
+    self,
+    context,
+  );
+  if (result !== null && ("pid" in result || "otherUser" in result))
+    return result;
+  const safety = await scanMountAliases(
+    proc,
+    pid,
+    directory,
+    mountNamespace,
+    context,
+  );
+  if (safety !== null && "gone" in safety) return null;
+  if (safety !== null && "pid" in safety) return safety;
+  if (result !== null && "uncertain" in result) return result;
+  if (safety !== null && "uncertain" in safety)
+    return result !== null && "unknown" in result ? result : safety;
+  if (safety !== null && "isolated" in safety)
+    return result !== null && "cleared" in result ? result : null;
+  return result;
+}
+
+async function scanLinuxPaths(
   proc: ProcReader,
   pid: number,
   directory: string,
@@ -1003,7 +1212,7 @@ export async function linuxVisibilityProblem(
   );
   if (!("value" in mounts)) {
     return {
-      problem: "the process list settings are unreadable",
+      problem: "the process mount information is unreadable",
       mountNamespace: ownMount.value,
       self,
     };
@@ -1034,7 +1243,13 @@ export async function scanLinux(
 ): Promise<WorktreeHolderScan> {
   const visibility = await linuxVisibilityProblem(proc);
   if (visibility.problem !== null) {
-    return { status: "unknown", reason: visibility.problem };
+    return {
+      status:
+        visibility.problem === "the process mount information is unreadable"
+          ? "uncertain"
+          : "unknown",
+      reason: visibility.problem,
+    };
   }
   const listing = await readOptional(() => proc.readdir("/proc"));
   if (!("value" in listing)) {
@@ -1053,7 +1268,15 @@ export async function scanLinux(
     listed ??= listTreeIds(proc, directory, limits.maxDirectories);
     return listed;
   };
-  const context: ScanContext = { tree, acls: new Map() };
+  let aliases: Promise<string[] | null> | null = null;
+  const context: ScanContext = {
+    tree,
+    aliases: () => {
+      aliases ??= worktreeAliases(proc, directory);
+      return aliases;
+    },
+    acls: new Map(),
+  };
   for (let offset = 0; offset < pids.length; offset += LINUX_SCAN_CONCURRENCY) {
     const batch = pids.slice(offset, offset + LINUX_SCAN_CONCURRENCY);
     const results = await Promise.all(
@@ -1090,7 +1313,7 @@ export async function scanLinux(
   if (uncertain.length > 0) {
     return {
       status: "uncertain",
-      reason: `${uncertain.length} foreign-user processes could not be inspected, such as ${uncertain[0]}`,
+      reason: `${uncertain.length} processes could not be inspected or proven unrelated, such as ${uncertain[0]}`,
     };
   }
   if (unknown.length > 0) {

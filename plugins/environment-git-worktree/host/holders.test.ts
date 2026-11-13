@@ -415,7 +415,7 @@ function fakeProc(options: {
   files.set(
     "/proc/self/mountinfo",
     options.mountinfo ??
-      "26 20 0:5 / /proc rw,nosuid,nodev,noexec,relatime - proc proc rw\n",
+      "25 1 8:48 / / rw - ext4 /dev/sda rw\n26 20 0:5 / /proc rw,nosuid,nodev,noexec,relatime - proc proc rw\n",
   );
   denied.add("/proc/1/ns/pid");
   denied.add("/proc/1/ns/mnt");
@@ -451,6 +451,16 @@ function fakeProc(options: {
     );
     links.set(`${base}/task/${key}/cwd`, process.cwd ?? "/home/other");
     links.set(`${base}/exe`, process.exe ?? "/usr/bin/node");
+    if (process.cwdDenied !== true)
+      ids.set(
+        `${base}/cwd`,
+        TREE_DIRECTORIES[process.cwd ?? "/home/other"] ?? "9:900",
+      );
+    ids.set(
+      `${base}/task/${key}/cwd`,
+      TREE_DIRECTORIES[process.cwd ?? "/home/other"] ?? "9:900",
+    );
+    dirs.set(`${base}/map_files`, []);
     for (const [magicPath, id] of Object.entries(process.magic ?? {}))
       ids.set(magicPath, id);
     for (const [containerPath, id] of Object.entries(
@@ -473,9 +483,11 @@ function fakeProc(options: {
       `${base}/fd`,
       fdTargets.map((_, index) => String(index + 3)),
     );
-    fdTargets.forEach((target, index) =>
-      links.set(`${base}/fd/${index + 3}`, target),
-    );
+    fdTargets.forEach((target, index) => {
+      links.set(`${base}/fd/${index + 3}`, target);
+      if (!ids.has(`${base}/fd/${index + 3}`))
+        ids.set(`${base}/fd/${index + 3}`, TREE_DIRECTORIES[target] ?? "9:901");
+    });
   }
   const fail = (path: string): never => {
     throw Object.assign(new Error(path), {
@@ -797,7 +809,7 @@ describe("the Linux process-list visibility rule", () => {
     expect(sharedPathCalls).toBe(1);
   });
 
-  it("is uncertain when a foreign cwd is unreadable even if it cannot traverse the worktree, and skips root and system UIDs", async () => {
+  it("holds a foreign process with a readable worktree fd despite unreadable cwd, and skips root and system UIDs", async () => {
     const inaccessible = fakeProc({
       self: { uid: 0 },
       worktreeUid: 0,
@@ -812,8 +824,8 @@ describe("the Linux process-list visibility rule", () => {
       },
     });
     expect(await scanLinux("/work/tree", inaccessible, 4242)).toMatchObject({
-      status: "uncertain",
-      reason: expect.stringContaining("cwd is unreadable for foreign uid 1001"),
+      status: "held",
+      holders: [expect.objectContaining({ pid: 101, through: "open file" })],
     });
     const root = fakeProc({ processes: { 100: { uid: 0, cwdDenied: true } } });
     expect(await scanLinux("/work/tree", root, 4242)).toEqual({
@@ -833,12 +845,12 @@ describe("the Linux process-list visibility rule", () => {
     });
   });
 
-  it("clears only unreadable same-user processes with an exact session-agent name", async () => {
+  it("keeps unreadable session agents when directory identity cannot be checked", async () => {
     const helper = fakeProc({
       processes: { 300: { uid: 1000, denied: true, comm: "sshd-session" } },
     });
     expect(await scanLinux("/work/tree", helper, 4242)).toMatchObject({
-      status: "clear",
+      status: "uncertain",
     });
     const stranger = fakeProc({
       processes: { 300: { uid: 1000, denied: true, comm: "node" } },
@@ -849,7 +861,7 @@ describe("the Linux process-list visibility rule", () => {
     });
   });
 
-  it("leaves out a same-user process in another mount namespace when nothing it holds is in the worktree, even on the worktree's device", async () => {
+  it("keeps a readable same-user process in another mount namespace without isolation proof", async () => {
     const proc = fakeProc({
       processes: {
         300: {
@@ -861,8 +873,8 @@ describe("the Linux process-list visibility rule", () => {
         },
       },
     });
-    expect(await scanLinux("/work/tree", proc, 4242)).toEqual({
-      status: "clear",
+    expect(await scanLinux("/work/tree", proc, 4242)).toMatchObject({
+      status: "uncertain",
     });
   });
 
@@ -999,20 +1011,10 @@ describe("the Linux process-list visibility rule", () => {
         },
       });
 
-    it("leaves the process out when the same path in this view is the same file and lies outside the worktree, and records why", async () => {
+    it("keeps an outside identity clearance without mount isolation proof", async () => {
       expect(
         await scanLinux("/work/tree", exeProcess("2:77", "2:77"), 4242),
-      ).toEqual({
-        status: "clear",
-        clearances: [
-          {
-            pid: 300,
-            link: "/proc/300/exe",
-            path: "/opt/tool/runner",
-            identity: "2:77",
-          },
-        ],
-      });
+      ).toMatchObject({ status: "uncertain" });
     });
 
     it("reports the process when the same file lies in a directory of the worktree", async () => {
@@ -1078,15 +1080,7 @@ describe("the Linux process-list visibility rule", () => {
         },
       });
       expect(await scanLinux("/work/tree", proc, 4242)).toMatchObject({
-        status: "clear",
-        clearances: [
-          {
-            pid: 300,
-            link: "/proc/300/maps:7f0000000000-7f0000001000",
-            path: "/opt/lib/x.so",
-            identity: "2049:12",
-          },
-        ],
+        status: "uncertain",
       });
       const other = fakeProc({
         ourView: { ...view, "/opt/lib/x.so": "2049:13" },
@@ -1116,10 +1110,7 @@ describe("the Linux process-list visibility rule", () => {
       expect(
         await scanLinux("/work/tree", mapped("1115042"), 4242),
       ).toMatchObject({
-        status: "clear",
-        clearances: [
-          { pid: 300, path: "/opt/lib/x.so", identity: "1115042:12" },
-        ],
+        status: "uncertain",
       });
     });
 
@@ -1216,7 +1207,7 @@ describe("the Linux process-list visibility rule", () => {
       });
     });
 
-    it("never overrides a path that resolves inside the process's own root", async () => {
+    it("keeps a different-namespace lexical worktree path even when its root view differs", async () => {
       const proc = fakeProc({
         ourView: {
           "/work/tree/sub/tool": "1:300",
@@ -1237,8 +1228,8 @@ describe("the Linux process-list visibility rule", () => {
           },
         },
       });
-      expect(await scanLinux("/work/tree", proc, 4242)).toEqual({
-        status: "clear",
+      expect(await scanLinux("/work/tree", proc, 4242)).toMatchObject({
+        status: "held",
       });
     });
   });
@@ -1275,7 +1266,7 @@ describe("the Linux process-list visibility rule", () => {
     const none = fakeProc({ processes: { 300: { uid: 1000 } } });
     expect(
       await scanLinux("/work/tree", none, 4242, { maxDirectories: 3 }),
-    ).toEqual({ status: "clear" });
+    ).toMatchObject({ status: "uncertain" });
   });
 
   it("inspects every user's processes when it runs as root", async () => {
@@ -1370,7 +1361,7 @@ describe("a same-user process that cannot be read because it is non-dumpable", (
     ["gnome-keyring-d", "/usr/bin/gnome-keyring-daemon"],
     ["keepassxc-proxy", "/usr/bin/keepassxc-proxy"],
   ])(
-    "does not block on an unreadable unrelated same-user process named %s",
+    "keeps an unreadable same-user process named %s without identity proof",
     async (name, argv0) => {
       const proc = fakeProc({
         createdMs: 1_000_060_000,
@@ -1386,7 +1377,7 @@ describe("a same-user process that cannot be read because it is non-dumpable", (
         },
       });
       expect(await scanLinux("/work/tree", proc, 4242)).toMatchObject({
-        status: "clear",
+        status: "uncertain",
       });
     },
   );
@@ -1471,7 +1462,7 @@ time.sleep(120)`,
     });
   });
 
-  it("clears an unreadable same-user process with an exact allowlisted comm", async ({
+  it("keeps an unreadable same-user process despite an exact allowlisted comm", async ({
     skip,
   }) => {
     skip(python.status !== 0, "python3 is not available");
@@ -1482,7 +1473,7 @@ time.sleep(120)`,
       "the kernel lets this user read it",
     );
     const scan = await scanOnly(dir, child.pid ?? 0);
-    expect(scan).toMatchObject({ status: "clear" });
+    expect(scan).toMatchObject({ status: "uncertain" });
   });
 
   it("does not clear a near-miss unreadable same-user comm", async ({
@@ -1529,7 +1520,7 @@ describe("foreign process mount evidence", () => {
       "/data",
       "8:48",
       "mnt:[2]",
-      "clear",
+      "uncertain",
     ],
     [
       "non-canonical unrelated container",
@@ -1549,10 +1540,10 @@ describe("foreign process mount evidence", () => {
       "/work/tree",
       "throws",
     ],
-    ["path prefix sibling", "/work/tree-other", "8:48", "mnt:[2]", "clear"],
+    ["path prefix sibling", "/work/tree-other", "8:48", "mnt:[2]", "uncertain"],
     ["same namespace unreadable mounts", null, null, "mnt:[1]", "uncertain"],
     ["ancestor mount", "/work", "8:48", "mnt:[2]", "uncertain"],
-    ["different filesystem", "/", "0:95", "mnt:[2]", "clear"],
+    ["different filesystem", "/", "0:95", "mnt:[2]", "uncertain"],
     ["malformed mountinfo", "malformed", "8:48", "mnt:[2]", "uncertain"],
   ] as const)(
     "classifies %s",
@@ -1618,6 +1609,9 @@ describe("mapped files without open descriptors", () => {
     };
     const proc: ProcReader = {
       ...hostProc,
+      subdirectories: async () => [],
+      lstatId: async () => "1:100",
+      statId: async () => "9:200",
       realpath: async (directory) => directory,
       readdir: async (target) =>
         target === "/proc" || target.endsWith("/task") ? ["101"] : [],
@@ -1655,5 +1649,142 @@ describe("mapped files without open descriptors", () => {
       ),
       String(mapped),
     ).toMatchObject({ status: expected });
+  });
+});
+
+function mountAliasProc(
+  directory: string,
+  kind: string,
+  uid: number,
+): ProcReader {
+  const base = "/proc/101";
+  const different = kind.startsWith("different") || kind === "cwd identity";
+  const namespace = different ? "mnt:[2]" : "mnt:[1]";
+  const cwd =
+    kind === "cwd alias" || kind === "subdirectory alias"
+      ? "/alias/child"
+      : kind === "ancestor alias"
+        ? `/alias/${directory.split("/").at(-1)}/child`
+        : different
+          ? "/app"
+          : "/outside";
+  const denied = (): never => {
+    throw Object.assign(new Error("denied"), { code: "EACCES" });
+  };
+  const encode = (value: string) =>
+    value.replaceAll("\\", "\\134").replaceAll(" ", "\\040");
+  const aliasRoot =
+    kind === "subdirectory alias"
+      ? directory + "/sub"
+      : kind === "ancestor alias"
+        ? directory.slice(0, directory.lastIndexOf("/")) || "/"
+        : directory;
+  const fd = kind.startsWith("fd ");
+  const mapped = kind.startsWith("map ");
+  return {
+    ...hostProc,
+    realpath: async (value) => value,
+    subdirectories: async (value) => {
+      if (kind === "tree unreadable") return denied();
+      return value === directory ? ["sub"] : [];
+    },
+    lstatId: async (value) => {
+      if (value === directory + "/sub") return "1:101";
+      if (
+        !value.startsWith("/proc/") &&
+        value.startsWith(directory.slice(0, directory.lastIndexOf("/")) + "/")
+      )
+        return "1:100";
+      return "9:200";
+    },
+    statId: async (value) => {
+      if (
+        (kind === "cwd stat failure" && value === base + "/cwd") ||
+        (kind === "fd stat failure" && value === base + "/fd/3") ||
+        (kind === "map stat failure" && value === base + "/map_files/1000-2000")
+      )
+        return denied();
+      if (
+        (kind === "cwd identity" && value === base + "/cwd") ||
+        (kind === "fd identity" && value === base + "/fd/3") ||
+        (kind === "map identity" && value === base + "/map_files/1000-2000")
+      )
+        return "1:101";
+      return value === directory ? "1:100" : "9:200";
+    },
+    readdir: async (value) => {
+      if (value === "/proc" || value === base + "/task") return ["101"];
+      if (value === base + "/fd") return fd ? ["3"] : [];
+      if (value === base + "/map_files") return mapped ? ["1000-2000"] : [];
+      return [];
+    },
+    readlink: async (value) => {
+      if (value === "/proc/self/ns/mnt") return "mnt:[1]";
+      if (value.endsWith("/ns/mnt")) return namespace;
+      if (value.endsWith("/root")) return "/";
+      if (value.endsWith("/cwd")) return cwd;
+      if (value.endsWith("/exe"))
+        return kind === "exe alias" ? "/alias/program" : "/usr/bin/java";
+      if (value === base + "/fd/3")
+        return kind === "fd alias" ? "/alias/file" : "/outside/file";
+      if (value.includes("/map_files/"))
+        return kind === "map alias" ? "/alias/file" : "/outside/file";
+      return denied();
+    },
+    readFile: async (value) => {
+      if (value === "/proc/self/status")
+        return "NSpid:\t4242\nUid:\t1000\t1000\t1000\t1000\nGid:\t1000\t1000\t1000\t1000\n";
+      if (value === base + "/status")
+        return `State:\tS\nPPid:\t1\nUid:\t${uid}\t${uid}\t${uid}\t${uid}\nGid:\t1000\t1000\t1000\t1000\n`;
+      if (value === "/proc/self/mountinfo") {
+        if (kind === "own mounts unreadable") return denied();
+        if (kind === "own mounts malformed") return "broken";
+        return `25 1 8:48 / / rw - ext4 /dev/sda rw\n26 25 0:5 / /proc rw - proc proc rw\n30 25 8:48 ${encode(aliasRoot)} /alias rw - ext4 /dev/sda rw\n`;
+      }
+      if (value === base + "/mountinfo")
+        return `40 1 8:48 ${kind === "different isolated" ? "/unrelated" : encode(directory)} /app rw - ext4 /dev/sda rw\n`;
+      if (value === base + "/maps")
+        return mapped
+          ? `1000-2000 r--p 00000000 08:30 12 ${kind === "map alias" ? "/alias/file" : "/outside/file"}\n`
+          : "";
+      if (value.endsWith("/comm")) return "java\n";
+      if (value.endsWith("/cmdline")) return "java\0";
+      return denied();
+    },
+  };
+}
+
+describe("mount aliases and directory identities", () => {
+  it.each(
+    [1000, 107473].flatMap((uid) =>
+      [
+        ["cwd alias", "held"],
+        ["fd alias", "held"],
+        ["exe alias", "held"],
+        ["map alias", "held"],
+        ["subdirectory alias", "held"],
+        ["ancestor alias", "held"],
+        ["different exposing", "uncertain"],
+        ["different isolated", "clear"],
+        ["own mounts unreadable", "uncertain"],
+        ["own mounts malformed", "uncertain"],
+        ["cwd identity", "held"],
+        ["fd identity", "held"],
+        ["map identity", "held"],
+        ["cwd stat failure", "uncertain"],
+        ["fd stat failure", "uncertain"],
+        ["map stat failure", "uncertain"],
+        ["tree unreadable", "uncertain"],
+        ["tree too large", "uncertain"],
+      ].map(([kind, expected]) => [uid, kind!, expected!] as const),
+    ),
+  )("checks uid %s with %s", async (uid, kind, expected) => {
+    const result = await scanLinux(
+      "/work/tree",
+      mountAliasProc("/work/tree", kind, uid),
+      4242,
+      { maxDirectories: kind === "tree too large" ? 1 : 100 },
+    );
+    expect(result).toMatchObject({ status: expected });
   });
 });

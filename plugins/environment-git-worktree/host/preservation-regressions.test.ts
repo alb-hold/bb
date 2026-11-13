@@ -426,18 +426,67 @@ describe("real worktree teardown preservation", () => {
     },
   );
 
-  it("removes a worktree with only regenerable ignored build output", async () => {
+  it("removes a worktree with only ignored node_modules", async () => {
     const worktree = await makeWorktree(
       undefined,
       "node_modules/\n.turbo/\ndist/\n.next/\ncoverage/\ntest-results/\nplaywright-report/\n*.tsbuildinfo\nsrc/generated/\n",
     );
     await mkdir(path.join(worktree.path, "node_modules"));
-    await mkdir(path.join(worktree.path, ".turbo"));
     await writeFile(path.join(worktree.path, "node_modules", "x"), "x");
-    await writeFile(path.join(worktree.path, ".turbo", "x"), "x");
     useProcReaderForTests(descendantsOnly(hostProc, -1));
     await remove(worktree);
     await expect(access(worktree.path)).rejects.toThrow();
+  });
+
+  it.each([".turbo/notes.txt", "foo.tsbuildinfo"])(
+    "preserves handwritten ignored %s",
+    async (filename) => {
+      const worktree = await makeWorktree(
+        undefined,
+        ".turbo/\n*.tsbuildinfo\n",
+      );
+      await mkdir(path.dirname(path.join(worktree.path, filename)), {
+        recursive: true,
+      });
+      await writeFile(
+        path.join(worktree.path, filename),
+        "handwritten notes\n",
+      );
+      useProcReaderForTests(descendantsOnly(hostProc, -1));
+      await expect(remove(worktree)).rejects.toMatchObject({
+        code: "worktree_preserved",
+      });
+      await expect(
+        readFile(path.join(worktree.path, filename), "utf8"),
+      ).resolves.toBe("handwritten notes\n");
+    },
+  );
+
+  it.each(
+    [1000, 107473].flatMap((uid) =>
+      [
+        "cwd alias",
+        "fd alias",
+        "different exposing",
+        "different isolated",
+        "own mounts unreadable",
+        "cwd identity",
+      ].map((kind) => [uid, kind] as const),
+    ),
+  )("protects alias teardown uid %s with %s", async (uid, kind) => {
+    const worktree = await makeWorktree();
+    useProcReaderForTests(mountAliasProc(worktree.path, kind, uid));
+    if (kind === "different isolated") {
+      await remove(worktree);
+      await expect(access(worktree.path)).rejects.toThrow();
+    } else {
+      await expect(remove(worktree)).rejects.toMatchObject({
+        code: "worktree_preserved",
+      });
+      await expect(
+        readFile(path.join(worktree.path, "README.md"), "utf8"),
+      ).resolves.toBe("published\n");
+    }
   });
 
   it.each([
@@ -551,17 +600,12 @@ describe("real worktree teardown preservation", () => {
           return hostProc.readFile(target);
         },
       });
-      if (kind === "outside maps") {
-        await remove(worktree);
-        await expect(access(worktree.path)).rejects.toThrow();
-      } else {
-        await expect(remove(worktree)).rejects.toMatchObject({
-          code: "worktree_preserved",
-        });
-        await expect(
-          readFile(path.join(worktree.path, "README.md"), "utf8"),
-        ).resolves.toBe("published\n");
-      }
+      await expect(remove(worktree)).rejects.toMatchObject({
+        code: "worktree_preserved",
+      });
+      await expect(
+        readFile(path.join(worktree.path, "README.md"), "utf8"),
+      ).resolves.toBe("published\n");
       expect(() => process.kill(pid, 0)).not.toThrow();
     },
   );
@@ -2410,7 +2454,7 @@ describe("real worktree teardown preservation", () => {
 
       const scan = await scanWorktreeHolders(worktree.path);
       expect(scan).toMatchObject({
-        status: "uncertain",
+        status: "held",
       });
 
       await expect(remove(worktree)).rejects.toMatchObject({
@@ -2887,7 +2931,7 @@ describe("real worktree teardown preservation", () => {
       const signal = vi.spyOn(process, "kill");
 
       expect(await scanWorktreeHolders(worktree.path)).toMatchObject({
-        status: "uncertain",
+        status: "held",
       });
       await expect(remove(worktree)).rejects.toMatchObject({
         code: "worktree_preserved",
@@ -2901,3 +2945,105 @@ describe("real worktree teardown preservation", () => {
     },
   );
 });
+
+function mountAliasProc(
+  directory: string,
+  kind: string,
+  uid: number,
+): ProcReader {
+  const base = "/proc/101";
+  const different = kind.startsWith("different") || kind === "cwd identity";
+  const namespace = different ? "mnt:[2]" : "mnt:[1]";
+  const cwd =
+    kind === "cwd alias" || kind === "subdirectory alias"
+      ? "/alias/child"
+      : kind === "ancestor alias"
+        ? `/alias/${directory.split("/").at(-1)}/child`
+        : different
+          ? "/app"
+          : "/outside";
+  const denied = (): never => {
+    throw Object.assign(new Error("denied"), { code: "EACCES" });
+  };
+  const encode = (value: string) =>
+    value.replaceAll("\\", "\\134").replaceAll(" ", "\\040");
+  const aliasRoot =
+    kind === "subdirectory alias"
+      ? directory + "/sub"
+      : kind === "ancestor alias"
+        ? directory.slice(0, directory.lastIndexOf("/")) || "/"
+        : directory;
+  const fd = kind.startsWith("fd ");
+  const mapped = kind.startsWith("map ");
+  return {
+    ...hostProc,
+    realpath: async (value) => value,
+    subdirectories: async (value) => {
+      if (kind === "tree unreadable") return denied();
+      return value === directory ? ["sub"] : [];
+    },
+    lstatId: async (value) => {
+      if (value === directory + "/sub") return "1:101";
+      if (
+        !value.startsWith("/proc/") &&
+        value.startsWith(directory.slice(0, directory.lastIndexOf("/")) + "/")
+      )
+        return "1:100";
+      return "9:200";
+    },
+    statId: async (value) => {
+      if (
+        (kind === "cwd stat failure" && value === base + "/cwd") ||
+        (kind === "fd stat failure" && value === base + "/fd/3") ||
+        (kind === "map stat failure" && value === base + "/map_files/1000-2000")
+      )
+        return denied();
+      if (
+        (kind === "cwd identity" && value === base + "/cwd") ||
+        (kind === "fd identity" && value === base + "/fd/3") ||
+        (kind === "map identity" && value === base + "/map_files/1000-2000")
+      )
+        return "1:101";
+      return value === directory ? "1:100" : "9:200";
+    },
+    readdir: async (value) => {
+      if (value === "/proc" || value === base + "/task") return ["101"];
+      if (value === base + "/fd") return fd ? ["3"] : [];
+      if (value === base + "/map_files") return mapped ? ["1000-2000"] : [];
+      return [];
+    },
+    readlink: async (value) => {
+      if (value === "/proc/self/ns/mnt") return "mnt:[1]";
+      if (value.endsWith("/ns/mnt")) return namespace;
+      if (value.endsWith("/root")) return "/";
+      if (value.endsWith("/cwd")) return cwd;
+      if (value.endsWith("/exe"))
+        return kind === "exe alias" ? "/alias/program" : "/usr/bin/java";
+      if (value === base + "/fd/3")
+        return kind === "fd alias" ? "/alias/file" : "/outside/file";
+      if (value.includes("/map_files/"))
+        return kind === "map alias" ? "/alias/file" : "/outside/file";
+      return denied();
+    },
+    readFile: async (value) => {
+      if (value === "/proc/self/status")
+        return "NSpid:\t4242\nUid:\t1000\t1000\t1000\t1000\nGid:\t1000\t1000\t1000\t1000\n";
+      if (value === base + "/status")
+        return `State:\tS\nPPid:\t1\nUid:\t${uid}\t${uid}\t${uid}\t${uid}\nGid:\t1000\t1000\t1000\t1000\n`;
+      if (value === "/proc/self/mountinfo") {
+        if (kind === "own mounts unreadable") return denied();
+        if (kind === "own mounts malformed") return "broken";
+        return `25 1 8:48 / / rw - ext4 /dev/sda rw\n26 25 0:5 / /proc rw - proc proc rw\n30 25 8:48 ${encode(aliasRoot)} /alias rw - ext4 /dev/sda rw\n`;
+      }
+      if (value === base + "/mountinfo")
+        return `40 1 8:48 ${kind === "different isolated" ? "/unrelated" : encode(directory)} /app rw - ext4 /dev/sda rw\n`;
+      if (value === base + "/maps")
+        return mapped
+          ? `1000-2000 r--p 00000000 08:30 12 ${kind === "map alias" ? "/alias/file" : "/outside/file"}\n`
+          : "";
+      if (value.endsWith("/comm")) return "java\n";
+      if (value.endsWith("/cmdline")) return "java\0";
+      return denied();
+    },
+  };
+}

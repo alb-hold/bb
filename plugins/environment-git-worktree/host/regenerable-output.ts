@@ -1,4 +1,4 @@
-const ALWAYS_OUTPUT = /(^|\/)(?:node_modules|\.turbo)(?:\/|$)|\.tsbuildinfo$/u;
+const ALWAYS_OUTPUT = /(^|\/)node_modules(?:\/|$)/u;
 
 export function hasPreservableStatus(stdout: string): boolean {
   return stdout.split("\0").some((entry) => {

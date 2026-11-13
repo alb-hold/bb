@@ -123,7 +123,7 @@ describe("foreign process mount evidence", () => {
       "/data",
       "8:48",
       "mnt:[2]",
-      "clear",
+      "uncertain",
     ],
     [
       "non-canonical unrelated container",
@@ -143,10 +143,10 @@ describe("foreign process mount evidence", () => {
       "/work/tree",
       "throws",
     ],
-    ["path prefix sibling", "/work/tree-other", "8:48", "mnt:[2]", "clear"],
+    ["path prefix sibling", "/work/tree-other", "8:48", "mnt:[2]", "uncertain"],
     ["same namespace unreadable mounts", null, null, "mnt:[1]", "uncertain"],
     ["ancestor mount", "/work", "8:48", "mnt:[2]", "uncertain"],
-    ["different filesystem", "/", "0:95", "mnt:[2]", "clear"],
+    ["different filesystem", "/", "0:95", "mnt:[2]", "uncertain"],
     ["malformed mountinfo", "malformed", "8:48", "mnt:[2]", "uncertain"],
   ] as const)(
     "classifies %s",
@@ -212,6 +212,9 @@ describe("mapped files without open descriptors", () => {
     };
     const proc: ProcReader = {
       ...hostProc,
+      subdirectories: async () => [],
+      lstatId: async () => "1:100",
+      statId: async () => "9:200",
       realpath: async (directory) => directory,
       readdir: async (target) =>
         target === "/proc" || target.endsWith("/task") ? ["101"] : [],
@@ -249,5 +252,142 @@ describe("mapped files without open descriptors", () => {
       ),
       String(mapped),
     ).toMatchObject({ status: expected });
+  });
+});
+
+function mountAliasProc(
+  directory: string,
+  kind: string,
+  uid: number,
+): ProcReader {
+  const base = "/proc/101";
+  const different = kind.startsWith("different") || kind === "cwd identity";
+  const namespace = different ? "mnt:[2]" : "mnt:[1]";
+  const cwd =
+    kind === "cwd alias" || kind === "subdirectory alias"
+      ? "/alias/child"
+      : kind === "ancestor alias"
+        ? `/alias/${directory.split("/").at(-1)}/child`
+        : different
+          ? "/app"
+          : "/outside";
+  const denied = (): never => {
+    throw Object.assign(new Error("denied"), { code: "EACCES" });
+  };
+  const encode = (value: string) =>
+    value.replaceAll("\\", "\\134").replaceAll(" ", "\\040");
+  const aliasRoot =
+    kind === "subdirectory alias"
+      ? directory + "/sub"
+      : kind === "ancestor alias"
+        ? directory.slice(0, directory.lastIndexOf("/")) || "/"
+        : directory;
+  const fd = kind.startsWith("fd ");
+  const mapped = kind.startsWith("map ");
+  return {
+    ...hostProc,
+    realpath: async (value) => value,
+    subdirectories: async (value) => {
+      if (kind === "tree unreadable") return denied();
+      return value === directory ? ["sub"] : [];
+    },
+    lstatId: async (value) => {
+      if (value === directory + "/sub") return "1:101";
+      if (
+        !value.startsWith("/proc/") &&
+        value.startsWith(directory.slice(0, directory.lastIndexOf("/")) + "/")
+      )
+        return "1:100";
+      return "9:200";
+    },
+    statId: async (value) => {
+      if (
+        (kind === "cwd stat failure" && value === base + "/cwd") ||
+        (kind === "fd stat failure" && value === base + "/fd/3") ||
+        (kind === "map stat failure" && value === base + "/map_files/1000-2000")
+      )
+        return denied();
+      if (
+        (kind === "cwd identity" && value === base + "/cwd") ||
+        (kind === "fd identity" && value === base + "/fd/3") ||
+        (kind === "map identity" && value === base + "/map_files/1000-2000")
+      )
+        return "1:101";
+      return value === directory ? "1:100" : "9:200";
+    },
+    readdir: async (value) => {
+      if (value === "/proc" || value === base + "/task") return ["101"];
+      if (value === base + "/fd") return fd ? ["3"] : [];
+      if (value === base + "/map_files") return mapped ? ["1000-2000"] : [];
+      return [];
+    },
+    readlink: async (value) => {
+      if (value === "/proc/self/ns/mnt") return "mnt:[1]";
+      if (value.endsWith("/ns/mnt")) return namespace;
+      if (value.endsWith("/root")) return "/";
+      if (value.endsWith("/cwd")) return cwd;
+      if (value.endsWith("/exe"))
+        return kind === "exe alias" ? "/alias/program" : "/usr/bin/java";
+      if (value === base + "/fd/3")
+        return kind === "fd alias" ? "/alias/file" : "/outside/file";
+      if (value.includes("/map_files/"))
+        return kind === "map alias" ? "/alias/file" : "/outside/file";
+      return denied();
+    },
+    readFile: async (value) => {
+      if (value === "/proc/self/status")
+        return "NSpid:\t4242\nUid:\t1000\t1000\t1000\t1000\nGid:\t1000\t1000\t1000\t1000\n";
+      if (value === base + "/status")
+        return `State:\tS\nPPid:\t1\nUid:\t${uid}\t${uid}\t${uid}\t${uid}\nGid:\t1000\t1000\t1000\t1000\n`;
+      if (value === "/proc/self/mountinfo") {
+        if (kind === "own mounts unreadable") return denied();
+        if (kind === "own mounts malformed") return "broken";
+        return `25 1 8:48 / / rw - ext4 /dev/sda rw\n26 25 0:5 / /proc rw - proc proc rw\n30 25 8:48 ${encode(aliasRoot)} /alias rw - ext4 /dev/sda rw\n`;
+      }
+      if (value === base + "/mountinfo")
+        return `40 1 8:48 ${kind === "different isolated" ? "/unrelated" : encode(directory)} /app rw - ext4 /dev/sda rw\n`;
+      if (value === base + "/maps")
+        return mapped
+          ? `1000-2000 r--p 00000000 08:30 12 ${kind === "map alias" ? "/alias/file" : "/outside/file"}\n`
+          : "";
+      if (value.endsWith("/comm")) return "java\n";
+      if (value.endsWith("/cmdline")) return "java\0";
+      return denied();
+    },
+  };
+}
+
+describe("mount aliases and directory identities", () => {
+  it.each(
+    [1000, 107473].flatMap((uid) =>
+      [
+        ["cwd alias", "held"],
+        ["fd alias", "held"],
+        ["exe alias", "held"],
+        ["map alias", "held"],
+        ["subdirectory alias", "held"],
+        ["ancestor alias", "held"],
+        ["different exposing", "uncertain"],
+        ["different isolated", "clear"],
+        ["own mounts unreadable", "uncertain"],
+        ["own mounts malformed", "uncertain"],
+        ["cwd identity", "held"],
+        ["fd identity", "held"],
+        ["map identity", "held"],
+        ["cwd stat failure", "uncertain"],
+        ["fd stat failure", "uncertain"],
+        ["map stat failure", "uncertain"],
+        ["tree unreadable", "uncertain"],
+        ["tree too large", "uncertain"],
+      ].map(([kind, expected]) => [uid, kind!, expected!] as const),
+    ),
+  )("checks uid %s with %s", async (uid, kind, expected) => {
+    const result = await scanLinux(
+      "/work/tree",
+      mountAliasProc("/work/tree", kind, uid),
+      4242,
+      { maxDirectories: kind === "tree too large" ? 1 : 100 },
+    );
+    expect(result).toMatchObject({ status: expected });
   });
 });
