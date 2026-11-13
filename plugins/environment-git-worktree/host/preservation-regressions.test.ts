@@ -442,28 +442,21 @@ describe("real worktree teardown preservation", () => {
 
   it.each([
     [
-      "declared package dist",
+      "handwritten file in declared package dist",
       "packages/x/dist/output.js",
       true,
       false,
-      "remove",
     ],
-    ["authored dist", "notes/dist/handwritten.md", true, false, "keep"],
-    ["authored root dist", "dist/handwritten.md", true, false, "keep"],
-    [
-      "package-local output",
-      "packages/x/dist/output.js",
-      true,
-      false,
-      "remove",
-    ],
-    ["overridden output", "packages/x/dist/output.js", true, false, "keep"],
-    ["undeclared generated", "src/generated/authored.ts", true, false, "keep"],
-    ["no Turbo config", "packages/x/dist/output.js", false, false, "keep"],
-    ["malformed Turbo config", "packages/x/dist/output.js", true, true, "keep"],
+    ["authored dist", "notes/dist/handwritten.md", true, false],
+    ["authored root dist", "dist/handwritten.md", true, false],
+    ["package-local output", "packages/x/dist/output.js", true, false],
+    ["overridden output", "packages/x/dist/output.js", true, false],
+    ["undeclared generated", "src/generated/authored.ts", true, false],
+    ["no Turbo config", "packages/x/dist/output.js", false, false],
+    ["malformed Turbo config", "packages/x/dist/output.js", true, true],
   ] as const)(
-    "uses Turbo output ownership for %s",
-    async (_name, filename, turbo, malformed, expected) => {
+    "preserves unproven output for %s",
+    async (_name, filename, turbo, malformed) => {
       const worktree = await makeWorktree(undefined, "dist/\nsrc/generated/\n");
       await mkdir(path.join(worktree.path, "packages/x"), { recursive: true });
       await writeFile(
@@ -512,7 +505,53 @@ describe("real worktree teardown preservation", () => {
         "authored or generated content\n",
       );
       useProcReaderForTests(descendantsOnly(hostProc, -1));
-      if (expected === "remove") {
+      await expect(remove(worktree)).rejects.toMatchObject({
+        code: "worktree_preserved",
+      });
+      await expect(
+        readFile(path.join(worktree.path, filename), "utf8"),
+      ).resolves.toBe("authored or generated content\n");
+    },
+  );
+
+  it.each(["mapped", "unreadable maps", "outside maps"])(
+    "protects teardown with foreign %s and closed fd",
+    async (kind) => {
+      const worktree = await makeWorktree();
+      const filename =
+        kind === "outside maps"
+          ? path.join(path.dirname(worktree.root), "outside-map")
+          : path.join(worktree.path, "README.md");
+      if (kind === "outside maps") await writeFile(filename, "outside\n");
+      const worker = spawn(
+        "python3",
+        [
+          "-c",
+          'import ctypes,os,sys,time; f=open(sys.stdin.readline().strip(),"rb"); libc=ctypes.CDLL(None); libc.mmap.restype=ctypes.c_void_p; m=libc.mmap(None,os.fstat(f.fileno()).st_size,1,2,f.fileno(),0); f.close(); print("mapped",flush=True); time.sleep(60)',
+        ],
+        { cwd: path.dirname(worktree.root), stdio: ["pipe", "pipe", "ignore"] },
+      );
+      workers.push(worker);
+      worker.stdin!.end(filename + "\n");
+      await new Promise<void>((resolve, reject) => {
+        worker.stdout!.once("data", () => resolve());
+        worker.once("error", reject);
+        worker.once("exit", () => reject(new Error("mapper exited")));
+      });
+      const pid = worker.pid!;
+      useProcReaderForTests({
+        ...hostProc,
+        readdir: async (target) =>
+          target === "/proc" ? [String(pid)] : hostProc.readdir(target),
+        readFile: async (target) => {
+          if (target === `/proc/${pid}/status`)
+            return `State:\tS\nPPid:\t1\nUid:\t107473\t107473\t107473\t107473\nGid:\t1000\t1000\t1000\t1000\n`;
+          if (kind === "unreadable maps" && target === `/proc/${pid}/maps`)
+            throw Object.assign(new Error("denied"), { code: "EACCES" });
+          return hostProc.readFile(target);
+        },
+      });
+      if (kind === "outside maps") {
         await remove(worktree);
         await expect(access(worktree.path)).rejects.toThrow();
       } else {
@@ -520,9 +559,10 @@ describe("real worktree teardown preservation", () => {
           code: "worktree_preserved",
         });
         await expect(
-          readFile(path.join(worktree.path, filename), "utf8"),
-        ).resolves.toBe("authored or generated content\n");
+          readFile(path.join(worktree.path, "README.md"), "utf8"),
+        ).resolves.toBe("published\n");
       }
+      expect(() => process.kill(pid, 0)).not.toThrow();
     },
   );
 

@@ -194,3 +194,60 @@ describe("foreign process mount evidence", () => {
     },
   );
 });
+
+describe("mapped files without open descriptors", () => {
+  it.each(
+    [1000, 107473].flatMap((uid) =>
+      [
+        ["/work/tree  space/file", "held"],
+        ["/work/tree/file (deleted)", "held"],
+        ["/work/tree\\040space/file", "held"],
+        ["/outside/file", "clear"],
+        [null, uid === 1000 ? "unknown" : "uncertain"],
+      ].map(([mapped, expected]) => [uid, mapped, expected] as const),
+    ),
+  )("checks uid %s mapping %s", async (uid, mapped, expected) => {
+    const denied = (): never => {
+      throw Object.assign(new Error("denied"), { code: "EACCES" });
+    };
+    const proc: ProcReader = {
+      ...hostProc,
+      realpath: async (directory) => directory,
+      readdir: async (target) =>
+        target === "/proc" || target.endsWith("/task") ? ["101"] : [],
+      readlink: async (target) =>
+        target.endsWith("/ns/mnt")
+          ? "mnt:[1]"
+          : target.endsWith("/root")
+            ? "/"
+            : "/outside/file",
+      readFile: async (target) => {
+        if (target === "/proc/self/status")
+          return "NSpid:\t4242\nUid:\t1000\t1000\t1000\t1000\nGid:\t1000\t1000\t1000\t1000\n";
+        if (target.endsWith("/status"))
+          return `State:\tS\nPPid:\t1\nUid:\t${uid}\t${uid}\t${uid}\t${uid}\nGid:\t1000\t1000\t1000\t1000\n`;
+        if (target.endsWith("/mountinfo"))
+          return "25 1 8:48 / / rw - ext4 /dev/sda rw\n";
+        if (target.endsWith("/maps"))
+          return mapped === null
+            ? denied()
+            : `1000-2000 r--p 00000000 08:30 12 ${mapped}\n`;
+        if (target.endsWith("/comm")) return "java\n";
+        if (target.endsWith("/cmdline")) return "java\0";
+        return denied();
+      },
+    };
+    expect(
+      await scanLinux(
+        mapped?.includes("040space")
+          ? "/work/tree space"
+          : mapped?.includes("  space")
+            ? "/work/tree  space"
+            : "/work/tree",
+        proc,
+        4242,
+      ),
+      String(mapped),
+    ).toMatchObject({ status: expected });
+  });
+});

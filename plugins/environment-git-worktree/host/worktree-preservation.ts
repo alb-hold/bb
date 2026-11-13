@@ -442,7 +442,7 @@ export async function findPreservationReasons(
     reasons.push(
       `could not read its Git status${status.stderr.trim() ? ` (${status.stderr.trim()})` : ""}`,
     );
-  } else if (await hasPreservableStatus(status.stdout, identity.path)) {
+  } else if (hasPreservableStatus(status.stdout)) {
     reasons.push("has uncommitted changes or untracked files");
   }
 

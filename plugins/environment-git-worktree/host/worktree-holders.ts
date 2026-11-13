@@ -98,6 +98,13 @@ function isUnder(candidate: string, directory: string): boolean {
   );
 }
 
+function mappedPath(line: string): string {
+  return (line.match(/^(?:\S+[ \t]+){5}(.*)$/u)?.[1] ?? "").replace(
+    /\\(040|011|012|134)/gu,
+    (_match, octal: string) => String.fromCharCode(Number.parseInt(octal, 8)),
+  );
+}
+
 type Mount = { device: string; root: string; point: string };
 
 function parseMountinfo(text: string): Mount[] | null {
@@ -415,6 +422,13 @@ async function scanLinuxProcess(
             return { pid, command: null, through: "open file" };
           if ("failed" in target) uninspectable = true;
         }
+      }
+      const maps = await readOptional(() => proc.readFile(`${base}/maps`));
+      if ("failed" in maps) uninspectable = true;
+      if ("value" in maps) {
+        for (const line of maps.value.split("\n"))
+          if (isUnder(mappedPath(line), directory))
+            return { pid, command: null, through: "mapped file" };
       }
       const command = await readOptional(() =>
         proc.readFile(`${base}/cmdline`),
@@ -919,15 +933,7 @@ async function scanOwnProcess(
   if ("failed" in maps)
     return unreadable(`process ${pid} memory maps`, maps.failed);
   for (const line of maps.value.split("\n")) {
-    const fields = line.split(/\s+/u);
-    const permissions = fields[1] ?? "";
-    const mapped = fields.slice(5).join(" ");
-    if (
-      permissions[1] === "w" &&
-      permissions[3] === "s" &&
-      mapped !== "" &&
-      isUnder(mapped, directory)
-    ) {
+    if (isUnder(mappedPath(line), directory)) {
       return { pid, command, through: "mapped file" };
     }
   }
