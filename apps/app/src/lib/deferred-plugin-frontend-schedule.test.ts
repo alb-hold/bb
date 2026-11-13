@@ -261,7 +261,7 @@ it("does not wait for sidebar rows while the thread-list plugin is still startin
   ]);
 });
 
-it("does not wait for sidebar rows when no thread-list provider is chosen", async () => {
+it("does not wait for sidebar rows when an earlier build remembered no thread-list provider", async () => {
   window.localStorage.setItem(
     "bb.plugin-surface-provider.2.thread-list",
     JSON.stringify({ pluginId: null }),
@@ -269,7 +269,7 @@ it("does not wait for sidebar rows when no thread-list provider is chosen", asyn
   try {
     const { expectedSurfaceProviderId } =
       await import("./plugin-surface-providers");
-    expect(expectedSurfaceProviderId("thread-list")).toBeNull();
+    expect(expectedSurfaceProviderId("thread-list")).toBe("thread-list");
     const h = await start({}, [], ["git", "usage"]);
     await vi.advanceTimersByTimeAsync(100);
     await h.done;
