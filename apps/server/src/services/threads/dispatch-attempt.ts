@@ -813,81 +813,83 @@ async function runDispatchAttempt(
     );
   }
 
+  let reattempt: Promise<DispatchAttemptOutcome>;
   try {
     if (firstDispatch) {
       const admission = admitted.value;
       if (admission === null) {
         const current = getThread(deps.db, thread.id);
-        return await reattemptDispatchForThreadChange(
+        reattempt = reattemptDispatchForThreadChange(
           deps,
           args,
           current,
           run,
           false,
         );
+      } else {
+        args.onTurnRequestCreated?.(admission.turnRequestId);
+        await launchAdmittedThread(deps, admission);
+        return { kind: "dispatched", turnRequestId: admission.turnRequestId };
       }
-      args.onTurnRequestCreated?.(admission.turnRequestId);
-      await launchAdmittedThread(deps, admission);
-      return { kind: "dispatched", turnRequestId: admission.turnRequestId };
-    }
-
-    markTurnTraceSpan("dispatch.checkpoint.done");
-    const environment = await requireThreadCommandEnvironment(deps, { thread });
-    const sent = await sendThreadMessage(deps, {
-      environment,
-      originPluginId: args.originPluginId,
-      payload: resolvedPayload,
-      thread,
-      trigger: args.trigger,
-      ...(systemNotice !== null ? { systemNotice } : {}),
-      onTurnRequestCreated: args.onTurnRequestCreated,
-      ...(args.retryOf !== undefined ? { retryOf: args.retryOf } : {}),
-      beforeAppendInTransaction: ({ tx }) => {
-        const current = getThread(tx, thread.id);
-        if (current === null || current.status !== thread.status) {
-          throw new DispatchThreadStatusChangedError();
-        }
-        if (
-          current.parentThreadId !== thread.parentThreadId &&
-          !isStandaloneBuiltinClearCommand(resolvedPayload.input)
-        ) {
+    } else {
+      markTurnTraceSpan("dispatch.checkpoint.done");
+      const environment = await requireThreadCommandEnvironment(deps, { thread });
+      const sent = await sendThreadMessage(deps, {
+        environment,
+        originPluginId: args.originPluginId,
+        payload: resolvedPayload,
+        thread,
+        trigger: args.trigger,
+        ...(systemNotice !== null ? { systemNotice } : {}),
+        onTurnRequestCreated: args.onTurnRequestCreated,
+        ...(args.retryOf !== undefined ? { retryOf: args.retryOf } : {}),
+        beforeAppendInTransaction: ({ tx }) => {
+          const current = getThread(tx, thread.id);
+          if (current === null || current.status !== thread.status) {
+            throw new DispatchThreadStatusChangedError();
+          }
           if (
-            args.source.kind === "inline" &&
-            args.trigger === "user" &&
-            args.retryOf === undefined
+            current.parentThreadId !== thread.parentThreadId &&
+            !isStandaloneBuiltinClearCommand(resolvedPayload.input)
           ) {
-            assertRequestedModelAllowedForCurrentScope(deps, {
-              threadId: thread.id,
-              model: payload.model,
-              providerId: thread.providerId,
-              sources: payload.executionInputSources,
-              spawnerThreadId: getThreadSpawner(deps.db, thread.id),
-            });
+            if (
+              args.source.kind === "inline" &&
+              args.trigger === "user" &&
+              args.retryOf === undefined
+            ) {
+              assertRequestedModelAllowedForCurrentScope(deps, {
+                threadId: thread.id,
+                model: payload.model,
+                providerId: thread.providerId,
+                sources: payload.executionInputSources,
+                spawnerThreadId: getThreadSpawner(deps.db, thread.id),
+              });
+            }
+            if (claimed !== null && !hasMessageDispatchHooks()) {
+              throw createQueuedMessageClaimLostError();
+            }
+            throw new DispatchThreadScopeChangedError();
           }
-          if (claimed !== null && !hasMessageDispatchHooks()) {
-            throw createQueuedMessageClaimLostError();
+          if (claimed !== null) {
+            consumeClaimedRows(
+              claimed,
+              thread.id,
+              respectManualStopPause,
+            )({ tx });
           }
-          throw new DispatchThreadScopeChangedError();
-        }
-        if (claimed !== null) {
-          consumeClaimedRows(
-            claimed,
-            thread.id,
-            respectManualStopPause,
-          )({ tx });
-        }
-      },
-    });
-    if (claimed !== null) {
-      settleQueueRowDispatched({ row: claimed[0]! });
+        },
+      });
+      if (claimed !== null) {
+        settleQueueRowDispatched({ row: claimed[0]! });
+      }
+      return {
+        kind: "dispatched",
+        refusal: sent.refusal,
+        ...(sent.requestId !== undefined
+          ? { turnRequestId: sent.requestId }
+          : {}),
+      };
     }
-    return {
-      kind: "dispatched",
-      refusal: sent.refusal,
-      ...(sent.requestId !== undefined
-        ? { turnRequestId: sent.requestId }
-        : {}),
-    };
   } catch (error) {
     releaseWorkspaceForThread(deps, thread);
     if (
@@ -904,6 +906,8 @@ async function runDispatchAttempt(
     }
     throw error;
   }
+
+  return reattempt;
 }
 
 class DispatchThreadStatusChangedError extends Error {}
