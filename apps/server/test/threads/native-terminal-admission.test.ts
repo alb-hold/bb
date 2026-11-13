@@ -1954,3 +1954,183 @@ describe("native terminal delivery across a crash", () => {
     expect(senderWarnings(fixture, sender.thread.id)).toHaveLength(1);
   }, 30_000);
 });
+
+describe("an open question in a native terminal", () => {
+  const QUESTION_ID = "install-now";
+  const PASTE = "\u001b[200~use the staging host\u001b[201~";
+
+  function openQuestion(fixture: Fixture, threadId: string): void {
+    recordNativeTerminalActivity(fixture.harness.deps, {
+      confirms: true,
+      questions: [{ id: QUESTION_ID, prompt: "Install now?" }],
+      state: "waiting",
+      threadId,
+    });
+  }
+
+  function openQuestions(fixture: Fixture, threadId: string) {
+    return fixture.harness.deps.pendingInteractions.listPendingThreadInteractions(
+      threadId,
+    );
+  }
+
+  function typed(cli: FakeCli): string[] {
+    return cli.inputs().filter((input) => input !== "\u001b");
+  }
+
+  const closeQuestion = {
+    answered: async (fixture: Fixture, threadId: string) => {
+      recordNativeTerminalActivity(fixture.harness.deps, {
+        closes: [QUESTION_ID],
+        confirms: true,
+        state: "working",
+        threadId,
+      });
+    },
+    dismissed: async (fixture: Fixture, threadId: string) => {
+      recordNativeTerminalActivity(fixture.harness.deps, {
+        confirms: true,
+        state: "idle",
+        threadId,
+      });
+    },
+    interrupted: async (fixture: Fixture, threadId: string) => {
+      const stopped = await postJson(fixture, `/threads/${threadId}/stop`, {});
+      expect(stopped.status).toBe(200);
+      recordNativeTerminalActivity(fixture.harness.deps, {
+        confirms: true,
+        state: "idle",
+        threadId,
+      });
+    },
+  } as const;
+
+  async function drainQueue(fixture: Fixture): Promise<void> {
+    const later = Date.now() + 60 * 60 * 1000;
+    await settle();
+    await runQueuedMessageDispatch(fixture.harness.deps, {
+      kind: "plugin-recheck",
+    });
+    await runQueuedMessageDispatch(fixture.harness.deps, {
+      kind: "retry-due",
+      now: later,
+    });
+    await runQueuedMessageDispatch(fixture.harness.deps, {
+      kind: "idle-recovery",
+      now: later,
+    });
+    await settle();
+  }
+
+  it.each(["answered", "dismissed", "interrupted"] as const)(
+    "holds a tell while a question is open, leaves the question pending, and delivers the tell once after it is %s",
+    async (how) => {
+      const fixture = await createFixture();
+      const { open, thread } = await openRunningNativeThread(fixture, {
+        providerId: "codex",
+      });
+      const cli = startFakeCli(fixture, open.terminalId);
+      try {
+        openQuestion(fixture, thread.id);
+        expect(openQuestions(fixture, thread.id)).toHaveLength(1);
+
+        const sent = await sendToThread(
+          fixture,
+          thread.id,
+          "use the staging host",
+        );
+        await drainQueue(fixture);
+
+        expect(typed(cli)).toEqual([]);
+        expect(sent.delivery).toBe("queued");
+        expect(
+          sent.delivery === "queued" ? sent.queuedMessage.waitingOn : null,
+        ).toEqual({ kind: "interaction" });
+        expect(openQuestions(fixture, thread.id)).toHaveLength(1);
+
+        await closeQuestion[how](fixture, thread.id);
+        await drainQueue(fixture);
+        await new Promise((resolve) => setTimeout(resolve, 1_100));
+        await drainQueue(fixture);
+
+        expect(typed(cli)).toEqual([PASTE, "\r"]);
+        expect(queuedRows(fixture, thread.id)).toEqual([]);
+      } finally {
+        cli.stop();
+      }
+    },
+    30_000,
+  );
+
+  it("keeps a held send from pasting when a question opened while it waited, then delivers it once after the question closes", async () => {
+    const fixture = await createFixture();
+    const { open, thread } = await openRunningNativeThread(fixture, {
+      providerId: "codex",
+    });
+    const cli = startFakeCli(fixture, open.terminalId);
+    let decision: HookDecision = { action: "wait", reason: AT_LIMIT_REASON };
+    installDispatchHook(() => decision);
+    try {
+      const held = await sendToThread(
+        fixture,
+        thread.id,
+        "use the staging host",
+      );
+      expect(held.delivery).toBe("queued");
+      openQuestion(fixture, thread.id);
+
+      decision = { action: "proceed" };
+      await drainQueue(fixture);
+
+      expect(typed(cli)).toEqual([]);
+      expect(openQuestions(fixture, thread.id)).toHaveLength(1);
+      expect(queuedRows(fixture, thread.id)).toHaveLength(1);
+
+      await closeQuestion.dismissed(fixture, thread.id);
+      await drainQueue(fixture);
+      await new Promise((resolve) => setTimeout(resolve, 1_100));
+      await drainQueue(fixture);
+
+      expect(typed(cli)).toEqual([PASTE, "\r"]);
+      expect(queuedRows(fixture, thread.id)).toEqual([]);
+    } finally {
+      cli.stop();
+    }
+  }, 30_000);
+
+  it("refuses an explicit send-now while a question is open and keeps the message queued", async () => {
+    const fixture = await createFixture();
+    const { open, thread } = await openRunningNativeThread(fixture, {
+      providerId: "codex",
+    });
+    const cli = startFakeCli(fixture, open.terminalId);
+    let decision: HookDecision = { action: "wait", reason: AT_LIMIT_REASON };
+    installDispatchHook(() => decision);
+    try {
+      const held = await sendToThread(
+        fixture,
+        thread.id,
+        "use the staging host",
+      );
+      expect(held.delivery).toBe("queued");
+      const queuedMessageId =
+        held.delivery === "queued" ? held.queuedMessage.id : "";
+      openQuestion(fixture, thread.id);
+      decision = { action: "proceed" };
+
+      const sendNow = await postJson(
+        fixture,
+        `/threads/${thread.id}/queued-messages/${queuedMessageId}/send`,
+        { mode: "auto" },
+      );
+      await settle();
+
+      expect(sendNow.status).toBe(409);
+      expect(typed(cli)).toEqual([]);
+      expect(openQuestions(fixture, thread.id)).toHaveLength(1);
+      expect(queuedRows(fixture, thread.id)).toHaveLength(1);
+    } finally {
+      cli.stop();
+    }
+  }, 30_000);
+});
