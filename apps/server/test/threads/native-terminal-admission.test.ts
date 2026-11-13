@@ -2,10 +2,14 @@ import {
   claimQueuedThreadMessageGroup,
   deleteQueuedThreadMessage,
   deleteThread,
+  events,
   getQueuedThreadMessage,
   getNativeTerminalThread,
   getThread,
+  insertNativeTerminalDeliveryWarning,
   listNativeParentNotices,
+  listNativeTerminalDeliveryMarks,
+  listNativeTerminalDeliveryWarnings,
   listQueuedThreadMessages,
   threads,
 } from "@bb/db";
@@ -38,6 +42,7 @@ import { recordNativeTerminalActivity } from "../../src/services/threads/native-
 import { runQueuedMessageDispatch } from "../../src/services/threads/queued-message-dispatch.js";
 import { toThreadQueuedMessage } from "../../src/services/threads/thread-queued-messages.js";
 import { readThreadProvisionContext } from "../../src/services/threads/thread-startup-store.js";
+import { registerTestHostRpcCapture } from "../helpers/commands.js";
 import { readJson } from "../helpers/json.js";
 import { textInput } from "../helpers/prompt-input.js";
 import {
@@ -285,10 +290,10 @@ function composerScreen(pasted: string): string {
 function startFakeCli(
   fixture: Fixture,
   terminalId: string,
-  options: { ignoredPastes?: number } = {},
+  options: { firstSeq?: number; ignoredPastes?: number } = {},
 ): FakeCli {
   const output: { seq: number; dataBase64: string }[] = [];
-  let nextSeq = 7;
+  let nextSeq = options.firstSeq ?? 7;
   let handled = 0;
   let ignoredPastes = options.ignoredPastes ?? 0;
   const draw = (text: string) => {
@@ -794,11 +799,9 @@ describe("native terminal delivery across a crash", () => {
       expect(senderNotices).toHaveLength(1);
       expect(senderNotices[0]?.text).toContain("may not have been delivered");
       expect(senderNotices[0]?.text).toContain(thread.id);
-      const [mark] = after.harness.db.$client
-        .prepare(
-          "SELECT submitting_at AS submittingAt FROM fork_native_terminal_deliveries WHERE queued_message_id = ?",
-        )
-        .all(rows[0]?.id) as { submittingAt: number }[];
+      const [mark] = listNativeTerminalDeliveryMarks(after.harness.db, [
+        rows[0]!.id,
+      ]);
       expect(typeof mark?.submittingAt).toBe("number");
 
       await runStartupRecoverySweep(after.harness.deps);
@@ -1404,5 +1407,232 @@ describe("native terminal delivery across a crash", () => {
     } finally {
       cli.stop();
     }
+  }, 30_000);
+
+  const ROUND_3_DELIVERIES_TABLE = `
+    CREATE TABLE fork_native_terminal_deliveries (
+      queued_message_id TEXT PRIMARY KEY NOT NULL
+        REFERENCES queued_thread_messages(id) ON DELETE CASCADE,
+      thread_id TEXT NOT NULL,
+      submitting_at INTEGER NOT NULL,
+      uncertain_since INTEGER
+    )
+  `;
+  const ROUND_4_DELIVERIES_TABLE = `
+    CREATE TABLE fork_native_terminal_deliveries (
+      queued_message_id TEXT PRIMARY KEY NOT NULL
+        REFERENCES queued_thread_messages(id) ON DELETE CASCADE,
+      thread_id TEXT NOT NULL,
+      submitting_at INTEGER NOT NULL,
+      uncertain_since INTEGER,
+      warning_sender_thread_id TEXT
+    )
+  `;
+
+  it.each([
+    ["round 3", ROUND_3_DELIVERIES_TABLE],
+    ["round 4", ROUND_4_DELIVERIES_TABLE],
+  ])(
+    "holds a pasted send, warns once and delivers a new send once on a database left with the %s delivery table",
+    async (_round, oldTable) => {
+      const before = await createFixture();
+      before.harness.db.$client.exec(oldTable);
+      const sender = await openBusySender(before);
+      const crashed = await crashAfterPaste(before, sender.thread.id);
+      expect(crashed.pastes).toEqual(PASTED_ONCE);
+
+      const after = await restartServer(before);
+      const cli = startFakeCli(after, crashed.terminalId, { firstSeq: 100 });
+      try {
+        await sweepEverything(after);
+        expect(cli.inputs()).toEqual([]);
+        expect(queuedRows(after, crashed.threadId)).toMatchObject([
+          { state: "failed_exhausted", failureReason: UNCERTAIN_REASON },
+        ]);
+        expect(senderWarnings(after, sender.thread.id)).toHaveLength(1);
+
+        let decision: HookDecision = {
+          action: "wait",
+          reason: AT_LIMIT_REASON,
+        };
+        installDispatchHook(() => decision);
+        const held = await sendToThread(
+          after,
+          crashed.threadId,
+          "check the build",
+          sender.thread.id,
+        );
+        expect(held.delivery).toBe("queued");
+        decision = { action: "proceed" };
+        await runQueuedMessageDispatch(after.harness.deps, {
+          kind: "plugin-recheck",
+        });
+        await settle();
+        await sweepEverything(after);
+
+        expect(cli.inputs()).toEqual([
+          "\u001b[200~check the build\u001b[201~",
+          "\r",
+        ]);
+        expect(queuedRows(after, crashed.threadId)).toMatchObject([
+          { state: "failed_exhausted", failureReason: UNCERTAIN_REASON },
+        ]);
+        expect(senderWarnings(after, sender.thread.id)).toHaveLength(1);
+      } finally {
+        cli.stop();
+      }
+    },
+    30_000,
+  );
+
+  function turnRequests(fixture: Fixture, threadId: string) {
+    return fixture.harness.db
+      .select()
+      .from(events)
+      .where(eq(events.threadId, threadId))
+      .all()
+      .filter((row) => row.type === "client/turn/requested");
+  }
+
+  function chatWarnings(fixture: Fixture, threadId: string) {
+    return listQueuedThreadMessages(fixture.harness.db, threadId).filter(
+      (row) =>
+        row.systemNotice !== null &&
+        row.content.includes("may not have been delivered"),
+    );
+  }
+
+  it("writes exactly one warning notice on a chat sender that has never run a turn, keeps it pending, and delivers it once with the sender's own execution after its first turn", async () => {
+    const before = await createFixture();
+    const chatSender = seedThread(before.harness.deps, {
+      projectId: before.projectId,
+      environmentId: before.environment.id,
+      providerId: "claude-code",
+      status: "idle",
+      title: "Chat sender with no turn",
+    });
+    const crashed = await crashAfterPaste(before, chatSender.id);
+    expect(crashed.pastes).toEqual(PASTED_ONCE);
+
+    const after = await restartServer(before);
+    const cli = startFakeCli(after, crashed.terminalId);
+    try {
+      await sweepEverything(after);
+      await sweepEverything(after);
+
+      expect(
+        listNativeTerminalDeliveryWarnings(after.harness.db, {
+          afterId: 0,
+          limit: 10,
+        }),
+      ).toEqual([]);
+      const notices = chatWarnings(after, chatSender.id);
+      expect(notices).toHaveLength(1);
+      expect(notices[0]?.state).not.toMatch(/^failed/);
+      expect(notices[0]?.failureReason).toBeNull();
+      expect(turnRequests(after, chatSender.id)).toEqual([]);
+      expect(cli.inputs()).toEqual([]);
+      cli.stop();
+
+      registerTestHostRpcCapture(after.harness, {
+        hostId: after.hostId,
+        sessionId: after.sessionId,
+      });
+      seedThreadRuntimeState(after.harness.deps, {
+        environmentId: after.environment.id,
+        inputText: "Plan the release",
+        model: "claude-sonnet-5-5",
+        providerThreadId: "no-turn-sender-session",
+        reasoningLevel: "high",
+        threadId: chatSender.id,
+      });
+      await runQueuedMessageDispatch(after.harness.deps, {
+        kind: "retry-due",
+        now: Date.now() + 3 * 60 * 60 * 1000,
+      });
+      await settle();
+      await sweepEverything(after);
+
+      expect(chatWarnings(after, chatSender.id)).toEqual([]);
+      const delivered = turnRequests(after, chatSender.id)
+        .map(
+          (row) =>
+            JSON.parse(row.data) as {
+              execution: { model: string; reasoningLevel: string };
+              input: { text?: string }[];
+            },
+        )
+        .filter((data) =>
+          data.input.some((part) =>
+            part.text?.includes("may not have been delivered"),
+          ),
+        );
+      expect(delivered).toHaveLength(1);
+      expect(delivered[0]?.execution).toMatchObject({
+        model: "claude-sonnet-5-5",
+        reasoningLevel: "high",
+      });
+    } finally {
+      cli.stop();
+    }
+  }, 30_000);
+
+  function seedPendingWarnings(
+    fixture: Fixture,
+    senderThreadId: string,
+    count: number,
+  ): void {
+    for (let index = 0; index < count; index += 1) {
+      insertNativeTerminalDeliveryWarning(fixture.harness.db, {
+        now: Date.now(),
+        queuedMessageId: `${senderThreadId}-held-${index}`,
+        senderThreadId,
+        targetThreadId: "thread-target",
+        text: `A message you sent may not have been delivered (${senderThreadId} ${index})`,
+      });
+    }
+  }
+
+  it("delivers every pending warning exactly once when more are pending than one pass reads", async () => {
+    const fixture = await createFixture();
+    const sender = await openBusySender(fixture);
+    seedPendingWarnings(fixture, sender.thread.id, 250);
+
+    await runSweeps(fixture);
+    await runSweeps(fixture);
+
+    const texts = senderWarnings(fixture, sender.thread.id).map(
+      (notice) => notice.text,
+    );
+    expect(texts).toHaveLength(250);
+    expect(new Set(texts).size).toBe(250);
+  }, 30_000);
+
+  it("delivers a newer warning in the same sweep while older ones keep failing, then the older ones once", async () => {
+    const fixture = await createFixture();
+    const stuck = seedThread(fixture.harness.deps, {
+      projectId: fixture.projectId,
+      environmentId: fixture.environment.id,
+      providerId: "claude-code",
+      status: "active",
+      title: "Chat sender whose queue rejects writes",
+    });
+    const sender = await openBusySender(fixture);
+    seedPendingWarnings(fixture, stuck.id, 150);
+    seedPendingWarnings(fixture, sender.thread.id, 1);
+
+    const restore = failQueueInsertsFor(fixture, stuck.id);
+    try {
+      await runSweeps(fixture);
+    } finally {
+      restore();
+    }
+    expect(senderWarnings(fixture, sender.thread.id)).toHaveLength(1);
+    expect(chatWarnings(fixture, stuck.id)).toEqual([]);
+
+    await runSweeps(fixture);
+    await runSweeps(fixture);
+    expect(chatWarnings(fixture, stuck.id)).toHaveLength(150);
+    expect(senderWarnings(fixture, sender.thread.id)).toHaveLength(1);
   }, 30_000);
 });
