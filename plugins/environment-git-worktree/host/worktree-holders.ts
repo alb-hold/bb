@@ -19,7 +19,45 @@ export type LsofResult = {
   stdout: string;
   stderr: string;
   spawnFailed: boolean;
+  failure?: "timeout" | "maxBuffer" | "spawn" | "signal";
+  signal?: string | null;
 };
+
+export function mapLsofError(
+  error: unknown,
+  stdout: string,
+  stderr: string,
+): LsofResult {
+  const value =
+    typeof error === "object" && error !== null
+      ? (error as {
+          code?: unknown;
+          killed?: unknown;
+          signal?: unknown;
+        })
+      : null;
+  const errorCode = value?.code;
+  const code = typeof errorCode === "number" ? errorCode : null;
+  const signal = typeof value?.signal === "string" ? value.signal : null;
+  const failure =
+    errorCode === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER"
+      ? "maxBuffer"
+      : value?.killed === true
+        ? "timeout"
+        : code === null
+          ? signal === null
+            ? "spawn"
+            : "signal"
+          : undefined;
+  return {
+    code,
+    stdout,
+    stderr,
+    spawnFailed: failure !== undefined,
+    ...(failure === undefined ? {} : { failure }),
+    signal,
+  };
+}
 
 export interface WorktreeHolder {
   pid: number;
@@ -60,6 +98,115 @@ function isUnder(candidate: string, directory: string): boolean {
   );
 }
 
+function mappedPath(line: string): string {
+  return (line.match(/^(?:\S+[ \t]+){5}(.*)$/u)?.[1] ?? "").replace(
+    /\\(040|011|012|134)/gu,
+    (_match, octal: string) => String.fromCharCode(Number.parseInt(octal, 8)),
+  );
+}
+
+type Mount = { device: string; root: string; point: string };
+
+function parseMountinfo(text: string): Mount[] | null {
+  const mounts: Mount[] = [];
+  for (const line of text.trim().split("\n")) {
+    const fields = line.split(" ");
+    const separator = fields.indexOf("-");
+    if (
+      separator < 6 ||
+      fields.length < separator + 4 ||
+      !/^\d+:\d+$/u.test(fields[2] ?? "")
+    )
+      return null;
+    const decode = (value: string | undefined): string | null => {
+      if (value === undefined || !value.startsWith("/")) return null;
+      const decoded = value.replace(
+        /\\(040|011|012|134)/gu,
+        (_match, octal: string) =>
+          String.fromCharCode(Number.parseInt(octal, 8)),
+      );
+      if (/\\(?![\\])/u.test(decoded)) return null;
+      return path.posix.normalize(decoded);
+    };
+    const mountRoot = decode(fields[3]);
+    const point = decode(fields[4]);
+    if (mountRoot === null || point === null) return null;
+    mounts.push({ device: fields[2]!, root: mountRoot, point });
+  }
+  return mounts.length === 0 ? null : mounts;
+}
+
+function mountContains(candidate: string, ancestor: string): boolean {
+  return ancestor === "/" || isUnder(candidate, ancestor);
+}
+
+async function worktreeAliases(
+  proc: ProcReader,
+  directory: string,
+): Promise<string[] | null> {
+  const canonical = await readOptional(() => proc.realpath(directory));
+  if (!("value" in canonical) || canonical.value !== directory) return null;
+  const own = await readOptional(() => proc.readFile("/proc/self/mountinfo"));
+  if (!("value" in own)) return null;
+  const mounts = parseMountinfo(own.value);
+  if (mounts === null) return null;
+  const mount = mounts
+    .filter((entry) => mountContains(directory, entry.point))
+    .sort((a, b) => b.point.length - a.point.length)[0];
+  if (mount === undefined) return null;
+  const filesystemPath = path.posix.join(
+    mount.root,
+    path.posix.relative(mount.point, directory),
+  );
+  const aliases = new Set([directory]);
+  for (const entry of mounts) {
+    if (entry.device !== mount.device) continue;
+    if (mountContains(filesystemPath, entry.root))
+      aliases.add(
+        path.posix.join(
+          entry.point,
+          path.posix.relative(entry.root, filesystemPath),
+        ),
+      );
+    else if (mountContains(entry.root, filesystemPath))
+      aliases.add(entry.point);
+  }
+  return [...aliases];
+}
+
+async function foreignMountsExcludeWorktree(
+  proc: ProcReader,
+  base: string,
+  directory: string,
+  mountNamespace: string,
+): Promise<boolean> {
+  const canonical = await readOptional(() => proc.realpath(directory));
+  if (!("value" in canonical) || canonical.value !== directory) return false;
+  const namespace = await readOptional(() => proc.readlink(`${base}/ns/mnt`));
+  if (!("value" in namespace) || namespace.value === mountNamespace)
+    return false;
+  const own = await readOptional(() => proc.readFile("/proc/self/mountinfo"));
+  const foreign = await readOptional(() => proc.readFile(`${base}/mountinfo`));
+  if (!("value" in own) || !("value" in foreign)) return false;
+  const ownMounts = parseMountinfo(own.value);
+  const foreignMounts = parseMountinfo(foreign.value);
+  if (ownMounts === null || foreignMounts === null) return false;
+  const mount = ownMounts
+    .filter((entry) => mountContains(directory, entry.point))
+    .sort((a, b) => b.point.length - a.point.length)[0];
+  if (mount === undefined) return false;
+  const filesystemPath = path.posix.join(
+    mount.root,
+    path.posix.relative(mount.point, directory),
+  );
+  return !foreignMounts.some(
+    (entry) =>
+      entry.device === mount.device &&
+      (mountContains(filesystemPath, entry.root) ||
+        mountContains(entry.root, filesystemPath)),
+  );
+}
+
 const GONE_CODES = new Set(["ENOENT", "ESRCH", "ENOTDIR"]);
 
 type Read<T> = { value: T } | { gone: true } | { failed: string };
@@ -76,6 +223,7 @@ async function readOptional<T>(read: () => Promise<T>): Promise<Read<T>> {
 }
 
 export interface ProcReader {
+  realpath(path: string): Promise<string>;
   readlink(path: string): Promise<string>;
   readFile(path: string): Promise<string>;
   readdir(path: string): Promise<string[]>;
@@ -88,6 +236,7 @@ export interface ProcReader {
 }
 
 export const hostProc: ProcReader = {
+  realpath: (path) => fs.realpath(path),
   readlink: (path) => fs.readlink(path),
   readFile: (path) => fs.readFile(path, "utf8"),
   readdir: (path) => fs.readdir(path),
@@ -131,7 +280,9 @@ type TreeIds = { ids: Set<string> } | { tooLarge: number } | { failed: string };
 type TreeIdsReader = () => Promise<TreeIds>;
 
 interface ScanContext {
+  final: boolean;
   tree: TreeIdsReader;
+  aliases: () => Promise<string[] | null>;
   acls: Map<string, Promise<boolean | null>>;
 }
 
@@ -258,7 +409,270 @@ function parseStatusNumbers(status: string, key: string): number[] | null {
   return null;
 }
 
+async function scanMountAliases(
+  proc: ProcReader,
+  pid: number,
+  directory: string,
+  mountNamespace: string,
+  context: ScanContext,
+): Promise<
+  | WorktreeHolder
+  | { uncertain: string }
+  | { isolated: true }
+  | { gone: true }
+  | null
+> {
+  const base = `/proc/${pid}`;
+  const status = await readOptional(() => proc.readFile(`${base}/status`));
+  if (
+    "gone" in status ||
+    ("value" in status && /^State:\s+Z/mu.test(status.value))
+  )
+    return { gone: true };
+  const aliases = await context.aliases();
+  let doubt: string | null =
+    aliases === null ? "worktree mount aliases could not be established" : null;
+  const matches = (value: string) =>
+    value.startsWith("/") &&
+    (aliases ?? [directory]).some((alias) =>
+      mountContains(
+        value.endsWith(" (deleted)")
+          ? value.slice(0, -" (deleted)".length)
+          : value,
+        alias,
+      ),
+    );
+  const ids = await context.tree();
+  let identityDoubt: string | null = null;
+  if (!("ids" in ids))
+    identityDoubt =
+      "tooLarge" in ids
+        ? "worktree is too large to scan for directory identities"
+        : `worktree directory identities could not be listed (${ids.failed})`;
+  else if (ids.ids.size === 0)
+    identityDoubt = "worktree directory identities could not be listed";
+  const holder = (through: WorktreeHolder["through"]): WorktreeHolder => ({
+    pid,
+    command: null,
+    through,
+  });
+  const identity = async (
+    link: string,
+    through: WorktreeHolder["through"],
+  ): Promise<WorktreeHolder | { gone: true } | null> => {
+    const id = await readOptional(() => proc.statId(link));
+    if ("gone" in id) return id;
+    if ("failed" in id) identityDoubt = `${link} identity could not be read`;
+    else if ("ids" in ids && ids.ids.has(id.value)) return holder(through);
+    return null;
+  };
+  const link = async (
+    target: string,
+    through: WorktreeHolder["through"],
+    stat: boolean,
+  ): Promise<WorktreeHolder | { gone: true } | null> => {
+    const value = await readOptional(() => proc.readlink(target));
+    if ("value" in value && matches(value.value)) return holder(through);
+    if ("gone" in value) return value;
+    const found = stat ? await identity(target, through) : null;
+    if (found !== null && "gone" in found) return found;
+    if ("failed" in value) doubt = `${target} could not be read`;
+    return found;
+  };
+  for (const [leaf, through, stat] of [
+    ["cwd", "working folder", true],
+    ["exe", "open file", false],
+  ] as const) {
+    const found = await link(`${base}/${leaf}`, through, stat);
+    if (found !== null && !("gone" in found)) return found;
+  }
+  const files = async (
+    fileBase: string,
+  ): Promise<
+    WorktreeHolder | { uncertain: string } | { gone: true } | null
+  > => {
+    let fileDoubt: string | null = null;
+    const entries = await readOptional(() => proc.readdir(`${fileBase}/fd`));
+    if ("gone" in entries) return entries;
+    if ("failed" in entries) fileDoubt = `${fileBase}/fd could not be read`;
+    const inspectFd = async (entry: string) => {
+      const target = `${fileBase}/fd/${entry}`;
+      const value = await readOptional(() => proc.readlink(target));
+      if ("value" in value && matches(value.value)) return holder("open file");
+      if ("gone" in value) return value;
+      const found = await identity(target, "open file");
+      if (found !== null && "gone" in found) return null;
+      if ("failed" in value) fileDoubt = `${target} could not be read`;
+      return found;
+    };
+    const pending = new Set<string>();
+    if ("value" in entries)
+      for (const entry of entries.value) {
+        const found = await inspectFd(entry);
+        if (found !== null && "gone" in found) {
+          if (context.final) pending.add(entry);
+        } else if (found !== null) return found;
+      }
+    const mappedEntries = await readOptional(() =>
+      proc.readdir(`${fileBase}/map_files`),
+    );
+    if ("value" in mappedEntries)
+      for (const entry of mappedEntries.value) {
+        const id = await readOptional(() =>
+          proc.statId(`${fileBase}/map_files/${entry}`),
+        );
+        if ("value" in id && "ids" in ids && ids.ids.has(id.value))
+          return holder("mapped file");
+      }
+    const maps = await readOptional(() => proc.readFile(`${fileBase}/maps`));
+    if ("gone" in maps) return maps;
+    if ("failed" in maps) fileDoubt = `${fileBase}/maps could not be read`;
+    if ("value" in maps)
+      for (const line of maps.value.split("\n"))
+        if (matches(mappedPath(line))) return holder("mapped file");
+    for (let pass = 0; pass < 3 && pending.size > 0; pass++) {
+      const current = await readOptional(() => proc.readdir(`${fileBase}/fd`));
+      if ("gone" in current) return current;
+      if ("failed" in current)
+        return { uncertain: `${fileBase}/fd could not be re-listed` };
+      const remaining = new Set(current.value);
+      for (const entry of pending) {
+        if (!remaining.has(entry)) {
+          pending.delete(entry);
+          continue;
+        }
+        const found = await inspectFd(entry);
+        if (found !== null && "gone" in found) continue;
+        pending.delete(entry);
+        if (found !== null) return found;
+      }
+    }
+    if (pending.size > 0)
+      fileDoubt = `${fileBase}/fd is still changing after 3 rechecks`;
+    return fileDoubt === null ? null : { uncertain: fileDoubt };
+  };
+  const beforeLeaderFiles = identityDoubt;
+  const leaderFiles = await files(base);
+  if (leaderFiles !== null) {
+    if ("pid" in leaderFiles) return leaderFiles;
+    if ("gone" in leaderFiles) identityDoubt = beforeLeaderFiles;
+    else doubt = leaderFiles.uncertain;
+  }
+  const namespace = await readOptional(() => proc.readlink(`${base}/ns/mnt`));
+  if ("failed" in namespace)
+    doubt = `${base} mount namespace could not be read`;
+  const tasks = await readOptional(() => proc.readdir(`${base}/task`));
+  if ("failed" in tasks) identityDoubt = `${base}/task could not be read`;
+  if ("value" in tasks)
+    for (const task of tasks.value) {
+      const taskBase = `${base}/task/${task}`;
+      const beforeTask = { doubt, identityDoubt };
+      const found = await link(`${taskBase}/cwd`, "working folder", true);
+      if (found !== null) {
+        if ("gone" in found) continue;
+        return found;
+      }
+      const taskFiles = await files(taskBase);
+      if (taskFiles !== null) {
+        if ("pid" in taskFiles) return taskFiles;
+        if ("gone" in taskFiles) {
+          doubt = beforeTask.doubt;
+          identityDoubt = beforeTask.identityDoubt;
+          continue;
+        }
+      }
+      const taskNamespace = await readOptional(() =>
+        proc.readlink(`${taskBase}/ns/mnt`),
+      );
+      if ("gone" in taskNamespace) {
+        doubt = beforeTask.doubt;
+        identityDoubt = beforeTask.identityDoubt;
+        continue;
+      }
+      if ("failed" in taskNamespace)
+        identityDoubt = `${taskBase} mount namespace could not be read`;
+      if (
+        taskFiles !== null &&
+        "uncertain" in taskFiles &&
+        "value" in taskNamespace
+      ) {
+        if (taskNamespace.value === mountNamespace)
+          identityDoubt = taskFiles.uncertain;
+        else if (
+          "value" in namespace &&
+          taskNamespace.value === namespace.value
+        )
+          doubt = taskFiles.uncertain;
+      }
+      if (
+        "value" in taskNamespace &&
+        taskNamespace.value !== mountNamespace &&
+        (!("value" in namespace) || taskNamespace.value !== namespace.value) &&
+        !(await foreignMountsExcludeWorktree(
+          proc,
+          taskBase,
+          directory,
+          mountNamespace,
+        ))
+      )
+        identityDoubt = `${taskBase} mount isolation could not be proven`;
+    }
+  if (
+    identityDoubt === null &&
+    "value" in namespace &&
+    namespace.value !== mountNamespace
+  ) {
+    if (
+      await foreignMountsExcludeWorktree(proc, base, directory, mountNamespace)
+    )
+      return { isolated: true };
+    doubt = `process ${pid} runs in another mount namespace without proven mount isolation`;
+  }
+  const current = await readOptional(() => proc.readFile(`${base}/status`));
+  if ("gone" in current) return current;
+  const reason = identityDoubt ?? doubt;
+  if (reason !== null) {
+    return { uncertain: `process ${pid}: ${reason}` };
+  }
+  return null;
+}
+
 async function scanLinuxProcess(
+  proc: ProcReader,
+  pid: number,
+  directory: string,
+  mountNamespace: string,
+  self: LinuxProcessIdentity,
+  context: ScanContext,
+): Promise<ProcessResult> {
+  const result = await scanLinuxPaths(
+    proc,
+    pid,
+    directory,
+    mountNamespace,
+    self,
+    context,
+  );
+  if (result !== null && ("pid" in result || "otherUser" in result))
+    return result;
+  const safety = await scanMountAliases(
+    proc,
+    pid,
+    directory,
+    mountNamespace,
+    context,
+  );
+  if (safety !== null && "gone" in safety) return null;
+  if (safety !== null && "pid" in safety) return safety;
+  if (result !== null && "uncertain" in result) return result;
+  if (safety !== null && "uncertain" in safety)
+    return result !== null && "unknown" in result ? result : safety;
+  if (safety !== null && "isolated" in safety)
+    return result !== null && "cleared" in result ? result : null;
+  return result;
+}
+
+async function scanLinuxPaths(
   proc: ProcReader,
   pid: number,
   directory: string,
@@ -284,8 +698,119 @@ async function scanLinuxProcess(
     if (foreignUid === undefined || (foreignUid < 1000 && self.uid !== 0))
       return { otherUser: true };
     if (self.uid !== 0) {
+      let uninspectable = false;
+      for (const [leaf, through] of [
+        ["cwd", "working folder"],
+        ["exe", "open file"],
+      ] as const) {
+        const target = await readOptional(() =>
+          proc.readlink(`${base}/${leaf}`),
+        );
+        if ("value" in target && isUnder(target.value, directory))
+          return { pid, command: null, through };
+        if ("failed" in target) uninspectable = true;
+      }
+      const fds = await readOptional(() => proc.readdir(`${base}/fd`));
+      if ("failed" in fds) uninspectable = true;
+      if ("value" in fds) {
+        for (const fd of fds.value) {
+          const target = await readOptional(() =>
+            proc.readlink(`${base}/fd/${fd}`),
+          );
+          if ("value" in target && isUnder(target.value, directory))
+            return { pid, command: null, through: "open file" };
+          if ("failed" in target) uninspectable = true;
+        }
+      }
+      const maps = await readOptional(() => proc.readFile(`${base}/maps`));
+      if ("failed" in maps) uninspectable = true;
+      if ("value" in maps) {
+        for (const line of maps.value.split("\n"))
+          if (isUnder(mappedPath(line), directory))
+            return { pid, command: null, through: "mapped file" };
+      }
+      const command = await readOptional(() =>
+        proc.readFile(`${base}/cmdline`),
+      );
+      const references = (value: string) => {
+        let offset = value.indexOf(directory);
+        while (offset >= 0) {
+          const before = value[offset - 1];
+          const after = value[offset + directory.length];
+          if (
+            (before === undefined || /[\s\0="':]/u.test(before)) &&
+            (after === undefined || /[\s\0/']/u.test(after))
+          )
+            return true;
+          offset = value.indexOf(directory, offset + 1);
+        }
+        return false;
+      };
+      if ("value" in command && references(command.value))
+        return {
+          uncertain: `process ${pid} foreign uid ${foreignUid} command references the worktree`,
+        };
+      let parent = parseStatusNumbers(status.value, "PPid")?.[0];
+      for (
+        let depth = 0;
+        parent !== undefined && parent > 1 && depth < 64;
+        depth++
+      ) {
+        const parentBase = `/proc/${parent}`;
+        const parentCommand = await readOptional(() =>
+          proc.readFile(`${parentBase}/cmdline`),
+        );
+        if ("value" in parentCommand && references(parentCommand.value))
+          return {
+            uncertain: `process ${pid} descends from a worktree process`,
+          };
+        const parentCwd = await readOptional(() =>
+          proc.readlink(`${parentBase}/cwd`),
+        );
+        if ("value" in parentCwd && isUnder(parentCwd.value, directory))
+          return {
+            uncertain: `process ${pid} descends from a worktree process`,
+          };
+        const parentExe = await readOptional(() =>
+          proc.readlink(`${parentBase}/exe`),
+        );
+        if ("value" in parentExe && isUnder(parentExe.value, directory))
+          return {
+            uncertain: `process ${pid} descends from a worktree process`,
+          };
+        const parentFds = await readOptional(() =>
+          proc.readdir(`${parentBase}/fd`),
+        );
+        if ("value" in parentFds) {
+          for (const fd of parentFds.value) {
+            const target = await readOptional(() =>
+              proc.readlink(`${parentBase}/fd/${fd}`),
+            );
+            if ("value" in target && isUnder(target.value, directory))
+              return {
+                uncertain: `process ${pid} descends from a worktree process`,
+              };
+          }
+        }
+        const parentStatus = await readOptional(() =>
+          proc.readFile(`${parentBase}/status`),
+        );
+        if (!("value" in parentStatus)) break;
+        parent = parseStatusNumbers(parentStatus.value, "PPid")?.[0];
+      }
+
+      if (!uninspectable) return null;
+      if (
+        await foreignMountsExcludeWorktree(
+          proc,
+          base,
+          directory,
+          mountNamespace,
+        )
+      )
+        return null;
       return {
-        uncertain: `process ${pid} foreign uid ${foreignUid} could not be inspected by a non-root daemon`,
+        uncertain: `process ${pid} foreign uid ${foreignUid} could not be inspected or proven unrelated`,
       };
     }
     const cwd = await readOptional(() => proc.readlink(`${base}/cwd`));
@@ -707,15 +1232,7 @@ async function scanOwnProcess(
   if ("failed" in maps)
     return unreadable(`process ${pid} memory maps`, maps.failed);
   for (const line of maps.value.split("\n")) {
-    const fields = line.split(/\s+/u);
-    const permissions = fields[1] ?? "";
-    const mapped = fields.slice(5).join(" ");
-    if (
-      permissions[1] === "w" &&
-      permissions[3] === "s" &&
-      mapped !== "" &&
-      isUnder(mapped, directory)
-    ) {
+    if (isUnder(mappedPath(line), directory)) {
       return { pid, command, through: "mapped file" };
     }
   }
@@ -785,7 +1302,7 @@ export async function linuxVisibilityProblem(
   );
   if (!("value" in mounts)) {
     return {
-      problem: "the process list settings are unreadable",
+      problem: "the process mount information is unreadable",
       mountNamespace: ownMount.value,
       self,
     };
@@ -812,11 +1329,19 @@ export async function scanLinux(
   directory: string,
   proc: ProcReader = hostProc,
   ownPid: number = process.pid,
-  limits: { maxDirectories: number } = { maxDirectories: MAX_TREE_DIRECTORIES },
+  limits: { maxDirectories: number; final?: boolean } = {
+    maxDirectories: MAX_TREE_DIRECTORIES,
+  },
 ): Promise<WorktreeHolderScan> {
   const visibility = await linuxVisibilityProblem(proc);
   if (visibility.problem !== null) {
-    return { status: "unknown", reason: visibility.problem };
+    return {
+      status:
+        visibility.problem === "the process mount information is unreadable"
+          ? "uncertain"
+          : "unknown",
+      reason: visibility.problem,
+    };
   }
   const listing = await readOptional(() => proc.readdir("/proc"));
   if (!("value" in listing)) {
@@ -835,7 +1360,16 @@ export async function scanLinux(
     listed ??= listTreeIds(proc, directory, limits.maxDirectories);
     return listed;
   };
-  const context: ScanContext = { tree, acls: new Map() };
+  let aliases: Promise<string[] | null> | null = null;
+  const context: ScanContext = {
+    final: limits.final === true,
+    tree,
+    aliases: () => {
+      aliases ??= worktreeAliases(proc, directory);
+      return aliases;
+    },
+    acls: new Map(),
+  };
   for (let offset = 0; offset < pids.length; offset += LINUX_SCAN_CONCURRENCY) {
     const batch = pids.slice(offset, offset + LINUX_SCAN_CONCURRENCY);
     const results = await Promise.all(
@@ -872,7 +1406,7 @@ export async function scanLinux(
   if (uncertain.length > 0) {
     return {
       status: "uncertain",
-      reason: `${uncertain.length} foreign-user processes could not be inspected, such as ${uncertain[0]}`,
+      reason: `${uncertain.length} processes could not be inspected or proven unrelated, such as ${uncertain[0]}`,
     };
   }
   if (unknown.length > 0) {
@@ -900,13 +1434,13 @@ function runLsof(directory: string): Promise<LsofResult> {
           resolve({ code: 0, stdout, stderr, spawnFailed: false });
           return;
         }
-        const code = (error as NodeJS.ErrnoException).code;
-        resolve({
-          code: typeof code === "number" ? code : null,
-          stdout: typeof stdout === "string" ? stdout : "",
-          stderr: typeof stderr === "string" ? stderr : "",
-          spawnFailed: typeof code !== "number",
-        });
+        resolve(
+          mapLsofError(
+            error,
+            typeof stdout === "string" ? stdout : "",
+            typeof stderr === "string" ? stderr : "",
+          ),
+        );
       },
     );
   });
@@ -923,7 +1457,26 @@ export function useLsofRunnerForTests(
 async function scanWithLsof(directory: string): Promise<WorktreeHolderScan> {
   const result = await activeLsof(directory);
   if (result.spawnFailed) {
-    return { status: "unknown", reason: "lsof could not be run" };
+    const args = `-n -F pcn +D ${directory}`;
+    const detail = result.stderr.split("\n", 1)[0];
+    const reason =
+      result.failure === "timeout"
+        ? `lsof timed out after ${LSOF_TIMEOUT_MS / 1000}s (${args})`
+        : result.failure === "maxBuffer"
+          ? `lsof exceeded its output limit (${args})`
+          : result.failure === "signal"
+            ? `lsof terminated by signal (${args})`
+            : `lsof failed to start (${args})`;
+    const exit =
+      result.code === null
+        ? result.signal
+          ? `; signal ${result.signal}`
+          : ""
+        : `; exit ${result.code}`;
+    return {
+      status: "unknown",
+      reason: `${reason}${exit}${detail ? `; ${detail}` : ""}`,
+    };
   }
   const holders = new Map<number, WorktreeHolder>();
   let pid: number | null = null;
@@ -958,8 +1511,13 @@ async function scanWithLsof(directory: string): Promise<WorktreeHolderScan> {
 
 export async function scanWorktreeHolders(
   directory: string,
+  options: { final?: boolean } = {},
 ): Promise<WorktreeHolderScan> {
-  if (process.platform === "linux") return scanLinux(directory, activeProc);
+  if (process.platform === "linux")
+    return scanLinux(directory, activeProc, process.pid, {
+      maxDirectories: MAX_TREE_DIRECTORIES,
+      final: options.final === true,
+    });
   if (process.platform === "win32") {
     return {
       status: "unknown",

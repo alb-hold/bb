@@ -49,6 +49,7 @@ export async function removeDirectoryAfterHolderRecheck(args: {
     await refuseWhileHeld({
       directory: quarantine,
       action: args.action,
+      final: true,
       ...(args.testWorktreeHolderScan === undefined
         ? {}
         : { testWorktreeHolderScan: args.testWorktreeHolderScan }),

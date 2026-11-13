@@ -233,6 +233,7 @@ async function git(cwd: string, ...args: string[]): Promise<string> {
 
 async function makeWorktree(
   existingRoot?: string,
+  extraIgnore = "",
 ): Promise<{ path: string; root: string }> {
   const root =
     existingRoot ??
@@ -248,7 +249,7 @@ async function makeWorktree(
   await git(source, "config", "user.name", "Worktree Test");
   await git(source, "config", "user.email", "worktree-test@example.invalid");
   await writeFile(path.join(source, "README.md"), "published\n");
-  await writeFile(path.join(source, ".gitignore"), ".env\n");
+  await writeFile(path.join(source, ".gitignore"), `.env\n${extraIgnore}`);
   await git(source, "add", "README.md");
   await git(source, "add", ".gitignore");
   await git(source, "commit", "-m", "published");
@@ -403,13 +404,216 @@ describe("real worktree teardown preservation", () => {
     },
   );
 
-  it("keeps ignored local data when force removal is requested", async () => {
-    const worktree = await makeWorktree();
-    const ignoredFile = path.join(worktree.path, ".env");
-    await writeFile(ignoredFile, "local secret\n");
-    await remove(worktree).catch(() => undefined);
-    await expect(readFile(ignoredFile, "utf8")).resolves.toBe("local secret\n");
+  it.each([".env", ".env.local"])(
+    "keeps ignored local data %s when force removal is requested",
+    async (filename) => {
+      const worktree = await makeWorktree();
+      const ignoredFile = path.join(worktree.path, filename);
+      if (filename === ".env.local") {
+        const exclude = await git(
+          worktree.path,
+          "rev-parse",
+          "--git-path",
+          "info/exclude",
+        );
+        await writeFile(path.resolve(worktree.path, exclude), ".env.local\n");
+      }
+      await writeFile(ignoredFile, "local secret\n");
+      await remove(worktree).catch(() => undefined);
+      await expect(readFile(ignoredFile, "utf8")).resolves.toBe(
+        "local secret\n",
+      );
+    },
+  );
+
+  it("removes a worktree with only ignored node_modules", async () => {
+    const worktree = await makeWorktree(
+      undefined,
+      "node_modules/\n.turbo/\ndist/\n.next/\ncoverage/\ntest-results/\nplaywright-report/\n*.tsbuildinfo\nsrc/generated/\n",
+    );
+    await mkdir(path.join(worktree.path, "node_modules"));
+    await writeFile(path.join(worktree.path, "node_modules", "x"), "x");
+    useProcReaderForTests(descendantsOnly(hostProc, -1));
+    await remove(worktree);
+    await expect(access(worktree.path)).rejects.toThrow();
   });
+
+  it.each([".turbo/notes.txt", "foo.tsbuildinfo"])(
+    "preserves handwritten ignored %s",
+    async (filename) => {
+      const worktree = await makeWorktree(
+        undefined,
+        ".turbo/\n*.tsbuildinfo\n",
+      );
+      await mkdir(path.dirname(path.join(worktree.path, filename)), {
+        recursive: true,
+      });
+      await writeFile(
+        path.join(worktree.path, filename),
+        "handwritten notes\n",
+      );
+      useProcReaderForTests(descendantsOnly(hostProc, -1));
+      await expect(remove(worktree)).rejects.toMatchObject({
+        code: "worktree_preserved",
+      });
+      await expect(
+        readFile(path.join(worktree.path, filename), "utf8"),
+      ).resolves.toBe("handwritten notes\n");
+    },
+  );
+
+  it.each(
+    [1000, 107473].flatMap((uid) =>
+      [
+        "cwd alias",
+        "fd alias",
+        "different exposing",
+        "different isolated",
+        "own mounts unreadable",
+        "cwd identity",
+      ].map((kind) => [uid, kind] as const),
+    ),
+  )("protects alias teardown uid %s with %s", async (uid, kind) => {
+    const worktree = await makeWorktree();
+    useProcReaderForTests(mountAliasProc(worktree.path, kind, uid));
+    if (kind === "different isolated") {
+      await remove(worktree);
+      await expect(access(worktree.path)).rejects.toThrow();
+    } else {
+      await expect(remove(worktree)).rejects.toMatchObject({
+        code: "worktree_preserved",
+      });
+      await expect(
+        readFile(path.join(worktree.path, "README.md"), "utf8"),
+      ).resolves.toBe("published\n");
+    }
+  });
+
+  it.each([
+    [
+      "handwritten file in declared package dist",
+      "packages/x/dist/output.js",
+      true,
+      false,
+    ],
+    ["authored dist", "notes/dist/handwritten.md", true, false],
+    ["authored root dist", "dist/handwritten.md", true, false],
+    ["package-local output", "packages/x/dist/output.js", true, false],
+    ["overridden output", "packages/x/dist/output.js", true, false],
+    ["undeclared generated", "src/generated/authored.ts", true, false],
+    ["no Turbo config", "packages/x/dist/output.js", false, false],
+    ["malformed Turbo config", "packages/x/dist/output.js", true, true],
+  ] as const)(
+    "preserves unproven output for %s",
+    async (_name, filename, turbo, malformed) => {
+      const worktree = await makeWorktree(undefined, "dist/\nsrc/generated/\n");
+      await mkdir(path.join(worktree.path, "packages/x"), { recursive: true });
+      await writeFile(
+        path.join(worktree.path, "package.json"),
+        JSON.stringify({ name: "root", private: true }),
+      );
+      await writeFile(
+        path.join(worktree.path, "packages/x/package.json"),
+        JSON.stringify({ name: "x", scripts: { build: "echo build" } }),
+      );
+      if (turbo)
+        await writeFile(
+          path.join(worktree.path, "turbo.json"),
+          malformed
+            ? "{ broken"
+            : JSON.stringify({
+                tasks: { "x#build": { outputs: ["dist/**"] } },
+              }),
+        );
+      if (_name === "package-local output" || _name === "overridden output") {
+        if (_name === "package-local output")
+          await writeFile(
+            path.join(worktree.path, "turbo.json"),
+            JSON.stringify({ tasks: {} }),
+          );
+        await writeFile(
+          path.join(worktree.path, "packages/x/turbo.json"),
+          JSON.stringify({
+            extends: ["//"],
+            tasks: {
+              build: {
+                outputs: _name === "package-local output" ? ["dist/**"] : [],
+              },
+            },
+          }),
+        );
+      }
+      await git(worktree.path, "add", ".");
+      await git(worktree.path, "commit", "-m", "build declarations");
+      await git(worktree.path, "push");
+      await mkdir(path.dirname(path.join(worktree.path, filename)), {
+        recursive: true,
+      });
+      await writeFile(
+        path.join(worktree.path, filename),
+        "authored or generated content\n",
+      );
+      useProcReaderForTests(descendantsOnly(hostProc, -1));
+      await expect(remove(worktree)).rejects.toMatchObject({
+        code: "worktree_preserved",
+      });
+      await expect(
+        readFile(path.join(worktree.path, filename), "utf8"),
+      ).resolves.toBe("authored or generated content\n");
+    },
+  );
+
+  it.each(["mapped", "unreadable maps", "outside maps"])(
+    "protects teardown with foreign %s and closed fd",
+    async (kind) => {
+      const worktree = await makeWorktree();
+      const filename =
+        kind === "outside maps"
+          ? path.join(path.dirname(worktree.root), "outside-map")
+          : path.join(worktree.path, "README.md");
+      if (kind === "outside maps") await writeFile(filename, "outside\n");
+      const worker = spawn(
+        "python3",
+        [
+          "-c",
+          'import ctypes,os,sys,time; f=open(sys.stdin.readline().strip(),"rb"); libc=ctypes.CDLL(None); libc.mmap.restype=ctypes.c_void_p; m=libc.mmap(None,os.fstat(f.fileno()).st_size,1,2,f.fileno(),0); f.close(); print("mapped",flush=True); time.sleep(60)',
+        ],
+        { cwd: path.dirname(worktree.root), stdio: ["pipe", "pipe", "ignore"] },
+      );
+      workers.push(worker);
+      worker.stdin!.end(filename + "\n");
+      await new Promise<void>((resolve, reject) => {
+        worker.stdout!.once("data", () => resolve());
+        worker.once("error", reject);
+        worker.once("exit", () => reject(new Error("mapper exited")));
+      });
+      const pid = worker.pid!;
+      useProcReaderForTests({
+        ...hostProc,
+        readdir: async (target) =>
+          target === "/proc" ? [String(pid)] : hostProc.readdir(target),
+        readFile: async (target) => {
+          if (target === `/proc/${pid}/status`)
+            return `State:\tS\nPPid:\t1\nUid:\t107473\t107473\t107473\t107473\nGid:\t1000\t1000\t1000\t1000\n`;
+          if (kind === "unreadable maps" && target === `/proc/${pid}/maps`)
+            throw Object.assign(new Error("denied"), { code: "EACCES" });
+          return hostProc.readFile(target);
+        },
+      });
+      if (kind === "outside maps") {
+        await remove(worktree);
+        await expect(access(worktree.path)).rejects.toThrow();
+      } else {
+        await expect(remove(worktree)).rejects.toMatchObject({
+          code: "worktree_preserved",
+        });
+        await expect(
+          readFile(path.join(worktree.path, "README.md"), "utf8"),
+        ).resolves.toBe("published\n");
+      }
+      expect(() => process.kill(pid, 0)).not.toThrow();
+    },
+  );
 
   it("keeps data written as the worktree is quarantined for forced removal", async () => {
     const worktree = await makeWorktree();
@@ -2155,7 +2359,7 @@ describe("real worktree teardown preservation", () => {
     ["CAP_DAC_OVERRIDE", "0000000000000002"],
     ["CAP_DAC_READ_SEARCH", "0000000000000004"],
   ])(
-    "retains a non-traversable worktree for a foreign uid with a readable outside cwd and an earlier fd (%s)",
+    "retains a worktree for a foreign uid with a readable worktree fd (%s)",
     async (_capability, capEff) => {
       const root = await mkdtemp(path.join("/tmp", "bb-preserve-worktree-"));
       const worktree = await makeWorktree(root);
@@ -2173,10 +2377,7 @@ describe("real worktree teardown preservation", () => {
       } catch (error) {
         removalError = error;
       }
-      expect(scan.status).toBe("uncertain");
-      expect(scan.status === "uncertain" ? scan.reason : "").toContain(
-        "foreign-user processes could not be inspected",
-      );
+      expect(scan.status).toBe("held");
       expect(removalError).toMatchObject({ code: "worktree_preserved" });
       expect(signal).not.toHaveBeenCalled();
       await expect(access(worktree.path)).resolves.toBeUndefined();
@@ -2258,7 +2459,7 @@ describe("real worktree teardown preservation", () => {
 
       const scan = await scanWorktreeHolders(worktree.path);
       expect(scan).toMatchObject({
-        status: "uncertain",
+        status: "held",
       });
 
       await expect(remove(worktree)).rejects.toMatchObject({
@@ -2735,7 +2936,7 @@ describe("real worktree teardown preservation", () => {
       const signal = vi.spyOn(process, "kill");
 
       expect(await scanWorktreeHolders(worktree.path)).toMatchObject({
-        status: "uncertain",
+        status: "held",
       });
       await expect(remove(worktree)).rejects.toMatchObject({
         code: "worktree_preserved",
@@ -2749,3 +2950,331 @@ describe("real worktree teardown preservation", () => {
     },
   );
 });
+
+function mountAliasProc(
+  directory: string,
+  kind: string,
+  uid: number,
+): ProcReader {
+  const base = "/proc/101";
+  const different = kind.startsWith("different") || kind === "cwd identity";
+  const namespace = different ? "mnt:[2]" : "mnt:[1]";
+  const cwd =
+    kind === "cwd alias" || kind === "subdirectory alias"
+      ? "/alias/child"
+      : kind === "ancestor alias"
+        ? `/alias/${directory.split("/").at(-1)}/child`
+        : different
+          ? "/app"
+          : "/outside";
+  const denied = (): never => {
+    throw Object.assign(new Error("denied"), { code: "EACCES" });
+  };
+  const encode = (value: string) =>
+    value.replaceAll("\\", "\\134").replaceAll(" ", "\\040");
+  const aliasRoot =
+    kind === "subdirectory alias"
+      ? directory + "/sub"
+      : kind === "ancestor alias"
+        ? directory.slice(0, directory.lastIndexOf("/")) || "/"
+        : directory;
+  const fd = kind.startsWith("fd ");
+  const mapped = kind.startsWith("map ");
+  return {
+    ...hostProc,
+    realpath: async (value) => value,
+    subdirectories: async (value) => {
+      if (kind === "tree unreadable") return denied();
+      return value === directory ? ["sub"] : [];
+    },
+    lstatId: async (value) => {
+      if (value === directory + "/sub") return "1:101";
+      if (
+        !value.startsWith("/proc/") &&
+        value.startsWith(directory.slice(0, directory.lastIndexOf("/")) + "/")
+      )
+        return "1:100";
+      return "9:200";
+    },
+    statId: async (value) => {
+      if (
+        (kind === "cwd stat failure" && value === base + "/cwd") ||
+        (kind === "fd stat failure" && value === base + "/fd/3") ||
+        (kind === "map stat failure" && value === base + "/map_files/1000-2000")
+      )
+        return denied();
+      if (
+        (kind === "cwd identity" && value === base + "/cwd") ||
+        (kind === "fd identity" && value === base + "/fd/3") ||
+        (kind === "map identity" && value === base + "/map_files/1000-2000")
+      )
+        return "1:101";
+      return value === directory ? "1:100" : "9:200";
+    },
+    readdir: async (value) => {
+      if (value === "/proc" || value === base + "/task") return ["101"];
+      if (value === base + "/fd") return fd ? ["3"] : [];
+      if (value === base + "/map_files") return mapped ? ["1000-2000"] : [];
+      return [];
+    },
+    readlink: async (value) => {
+      if (value === "/proc/self/ns/mnt") return "mnt:[1]";
+      if (value.endsWith("/ns/mnt")) return namespace;
+      if (value.endsWith("/root")) return "/";
+      if (value.endsWith("/cwd")) return cwd;
+      if (value.endsWith("/exe"))
+        return kind === "exe alias" ? "/alias/program" : "/usr/bin/java";
+      if (value === base + "/fd/3")
+        return kind === "fd alias" ? "/alias/file" : "/outside/file";
+      if (value.includes("/map_files/"))
+        return kind === "map alias" ? "/alias/file" : "/outside/file";
+      return denied();
+    },
+    readFile: async (value) => {
+      if (value === "/proc/self/status")
+        return "NSpid:\t4242\nUid:\t1000\t1000\t1000\t1000\nGid:\t1000\t1000\t1000\t1000\n";
+      if (value === base + "/status")
+        return `State:\tS\nPPid:\t1\nUid:\t${uid}\t${uid}\t${uid}\t${uid}\nGid:\t1000\t1000\t1000\t1000\n`;
+      if (value === "/proc/self/mountinfo") {
+        if (kind === "own mounts unreadable") return denied();
+        if (kind === "own mounts malformed") return "broken";
+        return `25 1 8:48 / / rw - ext4 /dev/sda rw\n26 25 0:5 / /proc rw - proc proc rw\n30 25 8:48 ${encode(aliasRoot)} /alias rw - ext4 /dev/sda rw\n`;
+      }
+      if (value === base + "/mountinfo")
+        return `40 1 8:48 ${kind === "different isolated" ? "/unrelated" : encode(directory)} /app rw - ext4 /dev/sda rw\n`;
+      if (
+        value === base + "/maps" ||
+        /^\/proc\/101\/task\/\d+\/maps$/u.test(value)
+      )
+        return mapped
+          ? `1000-2000 r--p 00000000 08:30 12 ${kind === "map alias" ? "/alias/file" : "/outside/file"}\n`
+          : "";
+      if (value.endsWith("/comm")) return "java\n";
+      if (value.endsWith("/cmdline")) return "java\0";
+      return denied();
+    },
+  };
+}
+
+const taskPrivateFdSource =
+  '\n#define _GNU_SOURCE\n#include <sched.h>\n#include <pthread.h>\n#include <stdio.h>\n#include <stdlib.h>\n#include <fcntl.h>\n#include <unistd.h>\nstatic void *hold(void *arg) {\n  if (unshare(CLONE_FILES) != 0) { perror("unshare"); _exit(2); }\n  int fd = open(arg, O_RDONLY);\n  if (fd < 0) { perror("open"); _exit(3); }\n  printf("ready\\n"); fflush(stdout);\n  for (;;) pause();\n}\nint main(void) {\n  char filename[4096];\n  if (!fgets(filename, sizeof(filename), stdin)) return 4;\n  for (char *p = filename; *p; p++) if (*p == \'\\n\') *p = 0;\n  pthread_t thread;\n  if (pthread_create(&thread, NULL, hold, filename)) return 5;\n  for (;;) pause();\n}\n';
+
+it.skipIf(process.platform !== "linux")(
+  "preserves teardown for a real task-private fd after unshare(CLONE_FILES)",
+  async () => {
+    const worktree = await makeWorktree();
+    const outside = path.dirname(worktree.root);
+    const source = path.join(outside, "private-fd.c");
+    const executable = path.join(outside, "private-fd");
+    await writeFile(source, taskPrivateFdSource);
+    expect(spawnSync("cc", ["-pthread", source, "-o", executable]).status).toBe(
+      0,
+    );
+    const worker = spawn(executable, [], {
+      cwd: outside,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    workers.push(worker);
+    const ready = new Promise<void>((resolve, reject) => {
+      worker.stdout!.once("data", () => resolve());
+      worker.once("error", reject);
+      worker.once("exit", () => reject(new Error("private-fd helper exited")));
+    });
+    worker.stdin!.end(path.join(worktree.path, "README.md") + "\n");
+    await ready;
+    useProcReaderForTests({
+      ...hostProc,
+      readdir: async (target) =>
+        target === "/proc" ? [String(worker.pid)] : hostProc.readdir(target),
+    });
+    await expect(remove(worktree)).rejects.toMatchObject({
+      code: "worktree_preserved",
+    });
+    expect(await scanWorktreeHolders(worktree.path)).toMatchObject({
+      status: "held",
+      holders: [{ pid: worker.pid, through: "open file" }],
+    });
+    await expect(
+      readFile(path.join(worktree.path, "README.md"), "utf8"),
+    ).resolves.toBe("published\n");
+    expect(() => process.kill(worker.pid!, 0)).not.toThrow();
+  },
+);
+
+it.skipIf(process.platform !== "linux")(
+  "quarantine order rejects opens by the old path after rename and before removal",
+  async () => {
+    const worktree = await makeWorktree();
+    useProcReaderForTests(descendantsOnly(hostProc, -1));
+    let checked = false;
+    await remove(worktree, {
+      afterFinalCheck: async (target) => {
+        expect(target).not.toBe(worktree.path);
+        await expect(
+          fs.open(path.join(worktree.path, "README.md"), "r"),
+        ).rejects.toMatchObject({ code: "ENOENT" });
+        await expect(
+          readFile(path.join(target, "README.md"), "utf8"),
+        ).resolves.toBe("published\n");
+        checked = true;
+      },
+    });
+    expect(checked).toBe(true);
+    await expect(access(worktree.path)).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  },
+);
+
+it.skipIf(process.platform !== "linux")(
+  "quarantine order catches a holder started after rename before the final check",
+  async () => {
+    const worktree = await makeWorktree();
+    let worker: ReturnType<typeof spawn> | undefined;
+    const finalCheck = vi.fn(async () => {});
+    useProcReaderForTests({
+      ...hostProc,
+      readdir: async (target) =>
+        target === "/proc"
+          ? worker?.pid
+            ? [String(worker.pid)]
+            : []
+          : hostProc.readdir(target),
+    });
+    const originalRename = fs.rename.bind(fs);
+    vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
+      await originalRename(from, to);
+      if (String(from) !== worktree.path) return;
+      await expect(
+        fs.open(path.join(worktree.path, "README.md"), "r"),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+      worker = spawn(
+        process.execPath,
+        [
+          "-e",
+          "const fs=require('fs');let p='';process.stdin.on('data',d=>p+=d);process.stdin.on('end',()=>{fs.openSync(p.trim(),'r');console.log('ready');setInterval(()=>{},1000)});",
+        ],
+        { cwd: path.dirname(worktree.root), stdio: ["pipe", "pipe", "pipe"] },
+      );
+      workers.push(worker);
+      const ready = new Promise<void>((resolve, reject) => {
+        worker!.stdout!.once("data", () => resolve());
+        worker!.once("error", reject);
+        worker!.once("exit", () =>
+          reject(new Error("quarantine holder exited")),
+        );
+      });
+      worker.stdin!.end(path.join(String(to), "README.md") + "\n");
+      await ready;
+    });
+    let removalError: unknown;
+    try {
+      await remove(worktree, { afterFinalCheck: finalCheck });
+    } catch (error) {
+      removalError = error;
+    }
+    expect(worker?.pid).toBeDefined();
+    expect(removalError).toMatchObject({
+      code: "worktree_preserved",
+      message: expect.stringContaining(`pid ${worker!.pid}, open file`),
+    });
+    expect(await scanWorktreeHolders(worktree.path)).toMatchObject({
+      status: "held",
+      holders: [{ pid: worker!.pid, through: "open file" }],
+    });
+    expect(finalCheck).not.toHaveBeenCalled();
+    await expect(
+      readFile(path.join(worktree.path, "README.md"), "utf8"),
+    ).resolves.toBe("published\n");
+    expect(() => process.kill(worker!.pid!, 0)).not.toThrow();
+  },
+);
+
+const fdReplacementSource =
+  '\n#define _GNU_SOURCE\n#include <pthread.h>\n#include <sched.h>\n#include <stdatomic.h>\n#include <sys/syscall.h>\n#include <fcntl.h>\n#include <stdio.h>\n#include <string.h>\n#include <unistd.h>\nstatic atomic_int command;\nstatic char filename[4096];\nstatic void *worker(void *arg) {\n  if (unshare(CLONE_FILES)) _exit(2);\n  int fd=open("/dev/null",O_RDONLY);\n  if (fd<0 || dup2(fd,79)<0) _exit(3);\n  if (fd!=79) close(fd);\n  printf("ready %ld\\n",syscall(SYS_gettid));fflush(stdout);\n  for (;;) {\n    int next=atomic_exchange(&command,0);\n    if (next==1) { close(79);puts("closed");fflush(stdout); }\n    if (next==2) {\n      fd=open(filename,O_RDONLY);\n      if (fd<0 || dup2(fd,79)<0) _exit(4);\n      if (fd!=79) close(fd);\n      puts("opened");fflush(stdout);\n    }\n    usleep(100);\n  }\n}\nint main(void) {\n  pthread_t thread;\n  if (pthread_create(&thread,NULL,worker,NULL)) return 5;\n  char input[4096];\n  while (fgets(input,sizeof(input),stdin)) {\n    if (!strcmp(input,"close\\n")) atomic_store(&command,1);\n    else {\n      input[strcspn(input,"\\n")]=0;\n      strcpy(filename,input);\n      atomic_store(&command,2);\n    }\n  }\n  return 0;\n}\n';
+
+it.skipIf(process.platform !== "linux")(
+  "final scan catches live dup2 replacement at a gone task fd and preserves exact bytes",
+  async () => {
+    const worktree = await makeWorktree();
+    const outside = path.join(path.dirname(worktree.root), "fd-replacement");
+    await mkdir(outside);
+    const source = path.join(outside, "helper.c");
+    const executable = path.join(outside, "helper");
+    await writeFile(source, fdReplacementSource);
+    expect(spawnSync("cc", ["-pthread", source, "-o", executable]).status).toBe(
+      0,
+    );
+    const worker = spawn(executable, [], {
+      cwd: outside,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    workers.push(worker);
+    const response = () =>
+      new Promise<string>((resolve, reject) => {
+        const exited = () => {
+          worker.stdout!.off("data", data);
+          reject(new Error("dup2 helper exited"));
+        };
+        const data = (chunk: Buffer) => {
+          worker.off("exit", exited);
+          resolve(String(chunk).trim());
+        };
+        worker.stdout!.once("data", data);
+        worker.once("exit", exited);
+      });
+    const ready = await response();
+    const tid = /^ready (\d+)$/u.exec(ready)?.[1];
+    expect(tid).toBeDefined();
+    const target = `/proc/${worker.pid}/task/${tid}/fd/79`;
+    let quarantine = "";
+    let replaced = false;
+    const rename = fs.rename.bind(fs);
+    vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
+      await rename(from, to);
+      if (String(from) === worktree.path) quarantine = String(to);
+    });
+    useProcReaderForTests({
+      ...hostProc,
+      readdir: async (value) =>
+        value === "/proc" ? [String(worker.pid)] : hostProc.readdir(value),
+      readlink: async (value) => {
+        if (value !== target || !quarantine || replaced)
+          return hostProc.readlink(value);
+        replaced = true;
+        let next = response();
+        worker.stdin!.write("close\n");
+        expect(await next).toBe("closed");
+        let closed: unknown;
+        try {
+          await hostProc.readlink(value);
+        } catch (error) {
+          closed = error;
+        }
+        expect(closed).toMatchObject({ code: "ENOENT" });
+        next = response();
+        worker.stdin!.write(path.join(quarantine, "README.md") + "\n");
+        expect(await next).toBe("opened");
+        expect(await hostProc.readlink(value)).toBe(
+          path.join(quarantine, "README.md"),
+        );
+        throw closed;
+      },
+    });
+    const finalCheck = vi.fn(async () => {});
+    await expect(
+      remove(worktree, { afterFinalCheck: finalCheck }),
+    ).rejects.toMatchObject({
+      code: "worktree_preserved",
+      message: expect.stringContaining(`pid ${worker.pid}, open file`),
+    });
+    expect(replaced).toBe(true);
+    expect(finalCheck).not.toHaveBeenCalled();
+    await expect(
+      readFile(path.join(worktree.path, "README.md"), "utf8"),
+    ).resolves.toBe("published\n");
+    await expect(readFile(target, "utf8")).resolves.toBe("published\n");
+    expect(() => process.kill(worker.pid!, 0)).not.toThrow();
+  },
+  20_000,
+);

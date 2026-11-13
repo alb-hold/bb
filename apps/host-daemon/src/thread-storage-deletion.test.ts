@@ -13,7 +13,7 @@ import { RuntimeManager } from "./runtime-manager.js";
 import { hostProc, useProcReaderForTests } from "@bb/process-utils";
 
 it.for(["thread deletion", "orphan removal"] as const)(
-  "%s refuses while a process works in nested thread storage, names it, stops nothing, and removes the folder once nothing works there",
+  "%s refuses live holders and uninspectable neighbors, stops nothing, and removes the folder after they exit",
   async (cleanup, { skip }) => {
     skip(
       process.platform === "win32",
@@ -60,6 +60,13 @@ it.for(["thread deletion", "orphan removal"] as const)(
                 ...(sibling.pid === undefined ? [] : [String(sibling.pid)]),
               ]
             : hostProc.readdir(name),
+        statId: async (name) => {
+          if (name === `/proc/${sibling.pid}/cwd`)
+            throw Object.assign(new Error("unreadable neighbor identity"), {
+              code: "EACCES",
+            });
+          return hostProc.statId(name);
+        },
       });
       const options = makeDispatchOptions({
         runtimeManager: new RuntimeManager(),
@@ -85,7 +92,9 @@ it.for(["thread deletion", "orphan removal"] as const)(
               options,
               new AbortController().signal,
             );
-      await expect(run()).rejects.toThrow(/still working inside|still using it/);
+      await expect(run()).rejects.toThrow(
+        /still working inside|still using it/,
+      );
       await expect(fs.stat(checkout)).resolves.toMatchObject({});
       expect(child.exitCode).toBeNull();
       expect(child.signalCode).toBeNull();
@@ -94,12 +103,23 @@ it.for(["thread deletion", "orphan removal"] as const)(
       const exited = once(child, "exit");
       child.kill("SIGKILL");
       await exited;
+      if (process.platform === "linux") {
+        await expect(run()).rejects.toThrow(/could not be established/);
+        await expect(fs.stat(checkout)).resolves.toMatchObject({});
+        expect(sibling.exitCode).toBeNull();
+        expect(sibling.signalCode).toBeNull();
+        const siblingExited = once(sibling, "exit");
+        sibling.kill("SIGKILL");
+        await siblingExited;
+      }
       await run();
       await expect(fs.stat(storagePath)).rejects.toMatchObject({
         code: "ENOENT",
       });
-      expect(sibling.exitCode).toBeNull();
-      expect(sibling.signalCode).toBeNull();
+      if (process.platform !== "linux") {
+        expect(sibling.exitCode).toBeNull();
+        expect(sibling.signalCode).toBeNull();
+      }
       await expect(fs.stat(neighbor)).resolves.toMatchObject({});
     } finally {
       useProcReaderForTests(null);

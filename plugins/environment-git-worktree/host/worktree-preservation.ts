@@ -1,3 +1,4 @@
+import { hasPreservableStatus } from "./regenerable-output.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { runGit, WorkspaceError } from "bb-environment-provider-host/git";
@@ -372,17 +373,6 @@ export function nonInteractiveFetchEnvironment(
   };
 }
 const STASH_SUBJECT = /^(?:WIP on|On) ([^:]+): /;
-const GENERATED_DEPENDENCY_PATH = /(^|\/)node_modules(?:\/|$)/u;
-
-function hasPreservableStatus(stdout: string): boolean {
-  return stdout.split("\0").some((entry) => {
-    if (entry === "") return false;
-    const status = entry.slice(0, 2);
-    const entryPath = entry.slice(3);
-    return status !== "!!" || !GENERATED_DEPENDENCY_PATH.test(entryPath);
-  });
-}
-
 function stashBranch(subject: string): string | null {
   return STASH_SUBJECT.exec(subject)?.[1] ?? null;
 }
@@ -426,6 +416,7 @@ export async function findPreservationReasons(
     fetchTimeoutMs?: number;
     fetchMemoMs?: number;
     gitDir?: string;
+    final?: boolean;
   } = {},
 ): Promise<string[]> {
   const reasons = await findStructuralReasons(identity);
@@ -644,7 +635,10 @@ export async function findPreservationReasons(
     }
   }
   const holderReason = describeHolderScan(
-    testWorktreeHolderScan ?? (await scanWorktreeHolders(identity.path)),
+    testWorktreeHolderScan ??
+      (await scanWorktreeHolders(identity.path, {
+        final: options.final === true,
+      })),
   );
   if (holderReason !== null) reasons.push(holderReason);
   return reasons;

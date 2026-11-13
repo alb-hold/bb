@@ -982,7 +982,7 @@ async function removeRegisteredWorktree(
       const reasons = await findPreservationReasons(
         quarantineIdentity,
         args.signal,
-        { gitDir: severedGitDir, fetchRemotes: false },
+        { gitDir: severedGitDir, fetchRemotes: false, final: true },
       );
       if (reasons.length > 0) {
         throw worktreePreservedError(identity.path, reasons);

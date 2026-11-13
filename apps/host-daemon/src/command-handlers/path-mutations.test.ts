@@ -110,7 +110,7 @@ describe("confined host path mutations", () => {
     ["CAP_DAC_OVERRIDE", "0000000000000002"],
     ["CAP_DAC_READ_SEARCH", "0000000000000004"],
   ])(
-    "refuses daemon removal for a non-root daemon and foreign uid with an earlier fd despite %s",
+    "refuses daemon removal for a non-root daemon and foreign uid with a readable worktree fd despite %s",
     async (_capability, capEff) => {
       const root = await fs.mkdtemp(
         path.join("/tmp", "bb-path-mutations-nonroot-"),
@@ -121,66 +121,69 @@ describe("confined host path mutations", () => {
       await fs.mkdir(target);
       await fs.chmod(target, 0o700);
       await fs.writeFile(path.join(target, "data.txt"), "keep");
-      const signal = vi.spyOn(process, "kill");
-      const pid = 410104;
-      const base = `/proc/${pid}`;
-      const selfUid: number = 2000;
-      const selfGid = 2000;
-      const foreignUid = selfUid === 60_000 ? 60_001 : 60_000;
-      const proc: ProcReader = {
-        ...hostProc,
-        readFile: async (name) => {
-          if (name === "/proc/self/status")
-            return `Name:\tnode\nState:\tR (running)\nNSpid:\t${process.pid}\nUid:\t${selfUid}\t${selfUid}\t${selfUid}\t${selfUid}\nGid:\t${selfGid}\t${selfGid}\t${selfGid}\t${selfGid}\nGroups:\t${selfGid}\n`;
-          if (name === `${base}/status`)
-            return `Name:\tforeign\nState:\tS (sleeping)\nUid:\t${foreignUid}\t${foreignUid}\t${foreignUid}\t${foreignUid}\nGid:\t60001\t60001\t60001\t60001\nGroups:\t60001\nCapEff:\t${capEff}\n`;
-          return hostProc.readFile(name);
-        },
-        readdir: async (name) => {
-          if (name === "/proc") return [String(process.pid), String(pid)];
-          if (name === `${base}/task`) return [String(pid)];
-          if (name === `${base}/fd`) return ["3"];
-          return hostProc.readdir(name);
-        },
-        readlink: async (name) => {
-          if (name === `${base}/cwd` || name === `${base}/task/${pid}/cwd`)
-            return "/tmp/outside";
-          if (name === `${base}/fd/3`) return path.join(target, "data.txt");
-          return hostProc.readlink(name);
-        },
-      };
-      useProcReaderForTests(proc);
-      useCwdScanIoForTests({
-        ...hostCwdScanIo,
-        listProcessIds: async () => [String(process.pid)],
-      });
+      const file = await fs.open(path.join(target, "data.txt"), "r");
+      try {
+        const signal = vi.spyOn(process, "kill");
+        const pid = 410104;
+        const base = `/proc/${pid}`;
+        const selfUid: number = 2000;
+        const selfGid = 2000;
+        const foreignUid = selfUid === 60_000 ? 60_001 : 60_000;
+        const proc: ProcReader = {
+          ...hostProc,
+          readFile: async (name) => {
+            if (name === "/proc/self/status")
+              return `Name:\tnode\nState:\tR (running)\nNSpid:\t${process.pid}\nUid:\t${selfUid}\t${selfUid}\t${selfUid}\t${selfUid}\nGid:\t${selfGid}\t${selfGid}\t${selfGid}\t${selfGid}\nGroups:\t${selfGid}\n`;
+            if (name === `${base}/status`)
+              return `Name:\tforeign\nState:\tS (sleeping)\nUid:\t${foreignUid}\t${foreignUid}\t${foreignUid}\t${foreignUid}\nGid:\t60001\t60001\t60001\t60001\nGroups:\t60001\nCapEff:\t${capEff}\n`;
+            return hostProc.readFile(name);
+          },
+          readdir: async (name) => {
+            if (name === "/proc") return [String(process.pid), String(pid)];
+            if (name === `${base}/task`) return [String(pid)];
+            if (name === `${base}/fd`) return ["3"];
+            return hostProc.readdir(name);
+          },
+          readlink: async (name) => {
+            if (name === `${base}/cwd` || name === `${base}/task/${pid}/cwd`)
+              return "/tmp/outside";
+            if (name === `${base}/fd/3`)
+              return hostProc.readlink(`/proc/self/fd/${file.fd}`);
+            return hostProc.readlink(name);
+          },
+        };
+        useProcReaderForTests(proc);
+        useCwdScanIoForTests({
+          ...hostCwdScanIo,
+          listProcessIds: async () => [String(process.pid)],
+        });
 
-      await expect(linuxVisibilityProblem(proc)).resolves.toMatchObject({
-        problem: null,
-        self: { uid: selfUid },
-      });
-      expect((await fs.stat(target)).mode & 0o777).toBe(0o700);
-      const scan = await scanLinux(target, proc);
-      expect(scan).toMatchObject({ status: "uncertain" });
-      expect(scan.status === "uncertain" ? scan.reason : "").toContain(
-        "foreign-user processes could not be inspected",
-      );
-      await expect(scanWorktreeHolders(target)).resolves.toMatchObject({
-        status: "uncertain",
-      });
+        await expect(linuxVisibilityProblem(proc)).resolves.toMatchObject({
+          problem: null,
+          self: { uid: selfUid },
+        });
+        expect((await fs.stat(target)).mode & 0o777).toBe(0o700);
+        const scan = await scanLinux(target, proc);
+        expect(scan).toMatchObject({ status: "held" });
+        await expect(scanWorktreeHolders(target)).resolves.toMatchObject({
+          status: "held",
+        });
 
-      await expect(
-        removeDirectoryAfterHolderRecheck({
-          directory: target,
-          action: "remove",
-          recursive: true,
-        }),
-      ).rejects.toMatchObject({ code: "path_in_use" });
+        await expect(
+          removeDirectoryAfterHolderRecheck({
+            directory: target,
+            action: "remove",
+            recursive: true,
+          }),
+        ).rejects.toMatchObject({ code: "path_in_use" });
 
-      expect(signal).not.toHaveBeenCalled();
-      await expect(
-        fs.readFile(path.join(target, "data.txt"), "utf8"),
-      ).resolves.toBe("keep");
+        expect(signal).not.toHaveBeenCalled();
+        await expect(
+          fs.readFile(path.join(target, "data.txt"), "utf8"),
+        ).resolves.toBe("keep");
+      } finally {
+        await file.close();
+      }
     },
   );
 
@@ -264,30 +267,33 @@ describe("confined host path mutations", () => {
       const target = path.join(root, "fchdir-race");
       await fs.mkdir(target);
       await fs.writeFile(path.join(target, "before.txt"), "before");
-      const worker = spawn(
-        "python3",
-        [
-          "-c",
-          "import os,sys; print('ready', flush=True); target=sys.stdin.readline().strip(); fd=os.open(target, os.O_RDONLY); os.fchdir(fd); open('late.txt','w').write('late'); print('written', flush=True); sys.stdin.readline()",
-        ],
-        { stdio: ["pipe", "pipe", "ignore"] },
-      );
-      if (worker.pid !== undefined) trackedPids.add(worker.pid);
+      let worker: ReturnType<typeof spawn> | undefined;
+      const startWorker = () =>
+        spawn(
+          "python3",
+          [
+            "-c",
+            "import os,sys; print('ready', flush=True); target=sys.stdin.readline().strip(); fd=os.open(target, os.O_RDONLY); os.fchdir(fd); open('late.txt','w').write('late'); print('written', flush=True); sys.stdin.readline()",
+          ],
+          { stdio: ["pipe", "pipe", "ignore"] },
+        );
       let output = "";
-      worker.stdout?.on("data", (chunk) => {
-        output += chunk.toString();
-      });
       const waitFor = async (value: string) => {
-        while (!output.includes(value)) await once(worker.stdout!, "data");
+        while (!output.includes(value)) await once(worker!.stdout!, "data");
       };
       try {
-        await waitFor("ready");
         await expect(
           removeDirectoryAfterHolderRecheck({
             directory: target,
             action: "remove worktree",
             recursive: true,
             afterHolderScan: async (quarantine) => {
+              worker = startWorker();
+              if (worker.pid !== undefined) trackedPids.add(worker.pid);
+              worker.stdout?.on("data", (chunk) => {
+                output += chunk.toString();
+              });
+              await waitFor("ready");
               worker.stdin?.write(`${quarantine}\n`);
               await waitFor("written");
               worker.stdin?.write("done\n");
@@ -298,7 +304,15 @@ describe("confined host path mutations", () => {
           fs.readFile(path.join(target, "late.txt"), "utf8"),
         ).resolves.toBe("late");
       } finally {
-        worker.kill("SIGKILL");
+        if (
+          worker !== undefined &&
+          worker.exitCode === null &&
+          worker.signalCode === null
+        ) {
+          const closed = once(worker, "close");
+          worker.kill("SIGKILL");
+          await closed;
+        }
       }
     },
   );
