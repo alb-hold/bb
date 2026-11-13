@@ -11,7 +11,7 @@ import { useInitialPromptDraft } from "./mentions/initial-prompt-draft";
 import { ProviderRequirementBanner } from "./banner/ProviderRequirementBanner";
 import { Button } from "@bb/shared-ui/button";
 import { recordTelemetryEvent } from "@/components/onboarding/onboarding-telemetry";
-import { operationFailureReason } from "@/components/onboarding/onboarding-model";
+import { operationFailureReason } from "@/lib/http-error";
 import {
   getComposerCreateData,
   clearSubmittedComposerCreateData,

@@ -10,15 +10,26 @@ import {
 } from "react";
 import type { ExperimentalSidebarNavigationPlacement } from "@get-bb/plugin-sdk";
 import { Button } from "@bb/shared-ui/button";
-import { Popover, PopoverAnchor } from "@bb/shared-ui/popover";
+import { useCloseWhenAnchorDetaches } from "@bb/shared-ui/overlay-anchor";
+import { defineSplit } from "@/lib/define-split";
 import { appToast } from "@/components/ui/app-toast";
 import { schedulePluginFrontendReconcile } from "@/lib/plugin-frontend-lazy";
 import { useSidebar } from "@/components/ui/sidebar.js";
 import type { ExperimentalSidebarNavigationSlot } from "@/lib/plugin-slots";
-import { SidebarNavigationCustomizePopoverContent } from "./SidebarNavigationCustomize";
 import type { ResolvedSidebarNavigation } from "./sidebarNavigationProvider";
 
 const SIDEBAR_NAVIGATION_SLOT_KIND = "sidebarNavigation";
+const SidebarNavigationCustomizePopover = defineSplit({
+  id: "sidebar-navigation-customize-popover",
+  tier: "intent",
+  load: () =>
+    import("./SidebarNavigationCustomize").then(
+      (module) => module.SidebarNavigationCustomizePopover,
+    ),
+  loading: () => null,
+  mountWhen: (props) => props.customize.isCustomizing,
+  keepMounted: true,
+});
 const BUILTIN_NAVIGATION_PLUGIN_ID = "navigation";
 const LazyPluginReplacementSlot = lazy(async () => {
   const module = await import("@/components/plugin/PluginReplacementSlot");
@@ -216,30 +227,30 @@ export function SidebarNavigationRegion({
   children: ReactNode;
 }) {
   const isRail = placement === "rail";
+  const { isCompactViewport } = useSidebar();
+  const anchorRef = useCloseWhenAnchorDetaches(
+    customize.containerRef,
+    customize.isCustomizing && !isCompactViewport,
+    customize.setCustomizing,
+  );
   return (
-    <Popover
-      open={customize.isCustomizing}
-      onOpenChange={customize.setCustomizing}
-    >
-      <PopoverAnchor asChild>
-        <nav
-          ref={customize.containerRef}
-          aria-label="Sidebar navigation"
-          data-testid={
-            isRail ? "sidebar-navigation-rail" : "sidebar-navigation-region"
-          }
-          data-sidebar-navigation-placement={placement}
-          className={className}
-        >
-          {children}
-        </nav>
-      </PopoverAnchor>
-      <SidebarNavigationCustomizePopoverContent
+    <>
+      <nav
+        ref={anchorRef}
+        aria-label="Sidebar navigation"
+        data-testid={
+          isRail ? "sidebar-navigation-rail" : "sidebar-navigation-region"
+        }
+        data-sidebar-navigation-placement={placement}
+        className={className}
+      >
+        {children}
+      </nav>
+      <SidebarNavigationCustomizePopover
         testId={isRail ? "nav-rail-customize" : "sidebar-navigation-customize"}
         placement={placement}
-        focusReturnRef={customize.focusReturnRef}
-        onClose={() => customize.setCustomizing(false)}
+        customize={customize}
       />
-    </Popover>
+    </>
   );
 }

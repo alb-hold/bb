@@ -6,7 +6,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { ImageLightbox } from "@/components/ui/image-lightbox";
+import { ImageLightbox } from "@/lib/plugin-sdk-lazy-components";
 import { getWrappedImageIndex } from "@bb/shared-ui/lib/image-preview";
 import type { SecondaryPanelRenderableTab } from "./secondaryPanelTab";
 

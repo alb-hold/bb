@@ -10,14 +10,17 @@ import { BbRequestTimeoutError } from "@bb/sdk/browser";
 import { appToast } from "@/components/ui/app-toast";
 import { invalidateHostProviderCliStatus } from "@/hooks/cache-owners/provider-cli-status-cache-owner";
 import { invalidateSystemExecutionOptions } from "@/hooks/cache-owners/system-cache-effects";
-import { asHttpError, getHttpErrorMessage } from "@/lib/http-error";
-import { sdk } from "@/lib/sdk";
-import type { OnboardingFailureDetail } from "@bb/server-contract";
-import { classifyProviderCliInstallFailure } from "@/components/provider-cli/provider-cli-install-failure";
 import {
+  asHttpError,
+  getHttpErrorMessage,
   operationFailureReason,
   type OperationFailureReason,
-} from "@/components/onboarding/onboarding-model";
+} from "@/lib/http-error";
+import { createRetryableChunkImport } from "@/lib/retryable-chunk-import";
+import type { OnboardingFailureDetail } from "@bb/server-contract";
+const loadInstallRunner = createRetryableChunkImport(
+  () => import("./provider-cli-install-runner"),
+);
 import {
   recordTelemetryEvent,
   type OnboardingEntry,
@@ -36,7 +39,7 @@ export const PROVIDER_CLI_FAILURE_MAX_ENTRIES = 32;
 const PROVIDER_CLI_FAILURE_LOG_TRUNCATION_MARKER =
   "\n\n… provider update output truncated …\n\n";
 
-interface ProviderCliInstallJob {
+export interface ProviderCliInstallJob {
   hostId: string;
   issue: ProviderCliActionableIssue;
   onboardingEntry?: OnboardingEntry;
@@ -309,8 +312,13 @@ function runInstall(job: ProviderCliInstallJob): void {
   let completedEvent: ProviderCliInstallCompletedEvent | null = null;
   let errorMessage: string | null = null;
 
-  void runServerInstall(job)
-    .then((events) => {
+  void loadInstallRunner()
+    .then((runner) =>
+      runner
+        .runServerInstall(job, trackedServerJobIds)
+        .then((events) => ({ runner, events })),
+    )
+    .then(({ runner, events }) => {
       for (const event of events) {
         if (event.provider !== provider) {
           continue;
@@ -342,7 +350,7 @@ function runInstall(job: ProviderCliInstallJob): void {
         }
         return;
       }
-      const { detail, exitCode } = classifyProviderCliInstallFailure({
+      const { detail, exitCode } = runner.classifyProviderCliInstallFailure({
         completed: completedEvent,
         errorMessage,
         output: installLogChunks.join(""),
@@ -385,31 +393,6 @@ function runInstall(job: ProviderCliInstallJob): void {
       }
       processNextInstall();
     });
-}
-
-async function runServerInstall(
-  job: ProviderCliInstallJob,
-): Promise<ProviderCliInstallEvent[]> {
-  const { hostId, issue } = job;
-  const jobId =
-    job.serverJobId ??
-    (
-      await sdk.hosts.experimental_startProviderCliInstall({
-        hostId,
-        provider: issue.provider,
-        actionKind: issue.action.kind,
-      })
-    ).id;
-  trackedServerJobIds.add(jobId);
-  const settled = await sdk.hosts.experimental_providerCliInstallJobs.wait({
-    hostId,
-    jobId,
-  });
-  if (settled.state === "running") {
-    throw new Error("Provider CLI install did not finish");
-  }
-  if (settled.state === "failed") throw new Error(settled.error);
-  return settled.events;
 }
 
 function processNextInstall(): void {

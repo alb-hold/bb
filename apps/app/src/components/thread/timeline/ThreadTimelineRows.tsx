@@ -74,7 +74,7 @@ import type {
   UserAttachmentImageSrcResolver,
 } from "./types.js";
 import { ConversationMessageContent } from "./ConversationMessageContent.js";
-import { TimelineSelectionMenu } from "./TimelineSelectionMenu.js";
+import { defineSplit } from "@/lib/define-split";
 import type { MessageProseSelection } from "./SelectableMessageProse.js";
 import { TimelineReasoningDetail } from "./TimelineReasoningDetail.js";
 import { ExpandableTimelineRow } from "./ExpandableTimelineRow.js";
@@ -161,7 +161,6 @@ import {
   type PluginComposerHost,
 } from "@/components/plugin/plugin-composer-host";
 import { isPluginSideChatSenderThread } from "@/lib/side-chat-plugin.js";
-import { ThreadTurnTokenSummary } from "@/components/thread/ThreadUsageSummary.js";
 import {
   buildMessageDirectiveRegistry,
   MessageDirectiveRegistryProvider,
@@ -176,6 +175,27 @@ import {
   TimelineWindowingScrollRootContext,
   type TimelineWindowedItemRenderState,
 } from "./TimelineWindowedItems.js";
+
+const ThreadTurnTokenSummary = defineSplit({
+  id: "thread-turn-token-summary",
+  tier: "intent",
+  load: () =>
+    import("@/components/thread/ThreadUsageSummary.js").then(
+      (module) => module.ThreadTurnTokenSummary,
+    ),
+  loading: () => null,
+});
+
+const TimelineSelectionMenu = defineSplit({
+  id: "timeline-selection-menu",
+  load: () =>
+    import("./TimelineSelectionMenu.js").then(
+      (module) => module.TimelineSelectionMenu,
+    ),
+  loading: () => null,
+  tier: "intent",
+  mountWhen: (props) => props.selection !== null,
+});
 
 export interface ThreadTimelineRowsProps {
   initialExpanded?: ReadonlySet<string>;

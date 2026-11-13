@@ -2,6 +2,9 @@ import {
   PluginBranchPicker,
   PluginNewThreadComposer,
   ImageLightbox,
+  ExperimentalFilePreview,
+  CollapsibleStackCard,
+  VoiceRecordingBar,
   PluginProviderModelPicker,
   PluginPermissionModePicker,
 } from "./plugin-sdk-lazy-components";
@@ -33,7 +36,7 @@ import {
   useComposerMentionSearch,
 } from "@/components/promptbox/composer-search";
 import { VoiceInputButton } from "@/components/promptbox/VoiceInputButton";
-import { VoiceRecordingBar } from "@/components/promptbox/VoiceRecordingBar";
+import { ThreadActionsMenu, ThreadActionsContextMenu } from "@/components/thread/ThreadActionsMenu";
 import { FailedVoiceRecordings } from "@/components/promptbox/FailedVoiceRecordings";
 import { AppCommandShortcutHint } from "@/components/commands/AppCommandShortcutHint";
 import { ComposerMentionIcon } from "@/components/promptbox/mentions/PromptMentionIcon";
@@ -53,9 +56,7 @@ import { PluginThreadTitle } from "@/components/plugin/PluginThreadTitle";
 import { ThreadStatusGlyph } from "@/components/thread/ThreadStatusGlyph";
 import { PluginUrlLink } from "@/components/plugin/PluginUrlLink";
 import { ExperimentalFileLink } from "@/components/plugin/ExperimentalFileLink";
-import { ExperimentalFilePreview } from "@/components/plugin/ExperimentalFilePreview";
 import { usePluginId } from "@/components/plugin/plugin-context";
-import { CollapsibleStackCard } from "@/components/promptbox/banner/CollapsibleStackCard";
 import { usePluginThreadExtensionState } from "@/components/plugin/usePluginThreadExtensionState";
 import { useQuestionFormHost } from "@bb/shared-ui/question-form-host";
 import { definePluginApp } from "./plugin-app-definition";
@@ -106,10 +107,6 @@ import {
   experimental_THREAD_INFO_SECTION_GROUPS,
 } from "@get-bb/plugin-sdk";
 import { experimental_resolveThreadStatus } from "@get-bb/plugin-sdk/internal/thread-status";
-import {
-  ThreadActionsContextMenu,
-  ThreadActionsMenu,
-} from "@/components/thread/ThreadActionsMenu";
 import { useThreadActions } from "@/components/thread/ThreadActionsProvider";
 import {
   useThreadActionEntries,

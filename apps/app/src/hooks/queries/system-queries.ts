@@ -50,7 +50,6 @@ import {
   uiPreferencesQueryKey,
 } from "./query-keys";
 import { requireEnabledQueryArg, type QueryOptions } from "./query-helpers";
-import { fetchSetupGuideAssignment } from "./setup-guide-requests";
 import {
   SERVER_SESSION_QUERY_POLICY,
   SESSION_STATIC_QUERY_POLICY,
@@ -601,7 +600,10 @@ export function useCliSkillsStatus(options?: QueryOptions) {
 export function useSetupGuideAssignment(options?: QueryOptions) {
   return useQuery({
     queryKey: systemSetupGuideQueryKey(),
-    queryFn: ({ signal }) => fetchSetupGuideAssignment(signal),
+    queryFn: async ({ signal }) => {
+      const { fetchSetupGuideAssignment } = await import("./setup-guide-requests");
+      return fetchSetupGuideAssignment(signal);
+    },
     enabled: options?.enabled ?? true,
     staleTime: Infinity,
     retry: false,

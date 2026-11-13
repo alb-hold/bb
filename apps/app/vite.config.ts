@@ -10,12 +10,15 @@ import { initialThreadPreload } from "./vite-initial-thread-preload.js";
 import { fontPreload } from "./vite-font-preload.js";
 import { sharedUiEnvSeam } from "./vite-shared-ui-seam.js";
 import { cachedReactCompiler } from "./vite-react-compiler.js";
-import { journeyChunkGroups } from "./vite-journey-chunks.js";
 import { pluginZodRuntime } from "./vite-plugin-zod-runtime.js";
 
 const appDir = dirname(fileURLToPath(import.meta.url));
 
 export const sharedViteConfig = {
+  define: {
+    __BB_DEV_WS_BROWSER_HOST_PORT__: "undefined",
+    __BB_DEV_APP_BROWSER_HOST_PORT__: "undefined",
+  },
   plugins: [
     pluginZodRuntime(),
     xtermFaintContrast(),
@@ -84,7 +87,9 @@ export const sharedViteConfig = {
             },
             {
               name: "boot-vendor",
-              test: /node_modules/,
+              test: (id) =>
+                id.includes("node_modules") &&
+                !/[\\/](?:jotai|partysocket)[\\/]/.test(id),
               tags: ["$initial"],
               priority: 2,
               minSize: 12 * 1024,
@@ -95,31 +100,6 @@ export const sharedViteConfig = {
               priority: 1,
               minSize: 12 * 1024,
             },
-            ...journeyChunkGroups(appDir, [
-              {
-                name: "workspace-route",
-                entries: ["src/views/SplitWorkspaceRoute.tsx"],
-              },
-              {
-                name: "plugin-frontend",
-                entries: ["src/lib/plugin-frontend.ts"],
-              },
-              {
-                name: "thread-and-compose",
-                entries: [
-                  "src/views/thread-detail/ThreadDetailView.tsx",
-                  "src/views/RootComposeView.tsx",
-                ],
-              },
-              {
-                name: "thread-detail",
-                entries: ["src/views/thread-detail/ThreadDetailView.tsx"],
-              },
-              {
-                name: "root-compose",
-                entries: ["src/views/RootComposeView.tsx"],
-              },
-            ]),
           ],
         },
       },

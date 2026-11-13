@@ -77,10 +77,6 @@ import {
 
 import { ProjectActionsMenu } from "@/components/project/ProjectActionsMenu";
 import { ProjectActionsProvider } from "@/components/project/ProjectActionsProvider";
-import {
-  PluginPanelHeaderActions,
-  PluginPanelHeaderCenter,
-} from "@/components/plugin/PluginPanelHeader";
 import { PluginAppOverlays } from "@/components/plugin/PluginAppOverlays";
 import { ThreadRowMetadataCollectors } from "@/components/plugin/ThreadRowMetadataCollectors";
 import { ThreadActionsProvider } from "@/components/thread/ThreadActionsProvider";
@@ -130,7 +126,12 @@ import { AppLayoutSidebar } from "./AppLayoutSidebar";
 import { resolveRouteSidebar } from "./routeSidebar";
 import { NAV_RAIL_COLLAPSED_SIDEBAR_WIDTH } from "@/components/sidebar/navRailWidth";
 import { useSidebarNavigationPlacement } from "@/components/sidebar/sidebarNavigationProvider";
-import { SidebarHistoryNavigationControls } from "@/components/sidebar/SidebarHistoryNavigationControls";
+const SidebarHistoryNavigationControls = defineSplit({
+   id: "sidebar-history-navigation-controls",
+   tier: "intent",
+   load: () => import("@/components/sidebar/SidebarHistoryNavigationControls").then((module) => module.SidebarHistoryNavigationControls),
+   loading: () => null,
+ });
 import {
   useAppCommandHandler,
   useAppCommandShortcut,
@@ -150,6 +151,26 @@ import { useSetRootComposeProjectId } from "@/lib/root-compose-selection";
 import { BackToAppCommandHandler } from "./BackToAppCommandHandler";
 import { HistoryCommandHandlers } from "./HistoryCommandHandlers";
 import { TerminalAttentionCommandHandler } from "./TerminalAttentionCommandHandler";
+
+const PluginPanelHeaderActions = defineSplit({
+  id: "plugin-panel-header-actions",
+  tier: "intent",
+  load: () =>
+    import("@/components/plugin/PluginPanelHeader").then(
+      (module) => module.PluginPanelHeaderActions,
+    ),
+  loading: () => null,
+});
+
+const PluginPanelHeaderCenter = defineSplit({
+  id: "plugin-panel-header-center",
+  tier: "intent",
+  load: () =>
+    import("@/components/plugin/PluginPanelHeader").then(
+      (module) => module.PluginPanelHeaderCenter,
+    ),
+  loading: () => null,
+});
 
 const DeviceHandoffSheet = defineSplit<
   Parameters<

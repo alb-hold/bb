@@ -7,7 +7,6 @@ import { appQueryClient } from "./lib/app-query-client";
 import { environmentProvidersQueryOptions } from "./hooks/queries/environment-provider-queries";
 import { systemProvidersQueryOptions } from "./hooks/queries/system-queries";
 import { machineProvidersQueryOptions } from "./hooks/queries/machine-provider-queries";
-import { PluginUpdateJobsHost } from "./components/plugin/PluginUpdateJobsHost";
 import { LazyThreadDetailView } from "./views/thread-detail/LazyThreadDetailView";
 import { LazyRootComposeView } from "./views/LazyRootComposeView";
 import { ProgressiveComposer } from "./components/promptbox/ProgressiveComposerSplit";
@@ -88,17 +87,55 @@ import { AppCommandProvider } from "./components/commands/AppCommandProvider";
 import { WindowFindHost } from "./components/layout/WindowFindHost";
 import { DesktopZoomIndicator } from "./components/layout/DesktopZoomIndicator";
 import { ProviderCliInstallLogDialogHost } from "./components/provider-cli/provider-cli-install";
-import { ServerMoveOverlay } from "./components/machines/ServerMoveOverlay";
 import { OnboardingGate } from "./components/onboarding/OnboardingGate";
-import { AppUpdateHost } from "./components/app-update/AppUpdateHost";
-import { PluginInstallJobsHost } from "./components/plugin/PluginInstallJobsHost";
 import { RouteLoadingSkeleton } from "./components/ui/route-loading-skeleton";
+import { defineSplit } from "./lib/define-split";
 import { ThreadTimelineLoadingSkeleton } from "./components/thread/timeline/ThreadTimelineLoadingSkeleton";
 import {
   startSplitPreloading,
   trackCriticalLoad,
   whenCriticalLoadsSettled,
 } from "./lib/split-prefetch";
+
+const PluginUpdateJobsHost = defineSplit({
+  id: "plugin-update-jobs-host",
+  tier: "intent",
+  load: () =>
+    import("./components/plugin/PluginUpdateJobsHost").then(
+      (module) => module.PluginUpdateJobsHost,
+    ),
+  loading: () => null,
+});
+
+const PluginInstallJobsHost = defineSplit({
+  id: "plugin-install-jobs-host",
+  tier: "intent",
+  load: () =>
+    import("./components/plugin/PluginInstallJobsHost").then(
+      (module) => module.PluginInstallJobsHost,
+    ),
+  loading: () => null,
+});
+
+const ServerMoveOverlay = defineSplit({
+  id: "server-move-overlay",
+  load: () =>
+    import("./components/machines/ServerMoveOverlay").then(
+      (module) => module.ServerMoveOverlay,
+    ),
+  loading: () => null,
+  tier: "intent",
+});
+
+const AppUpdateHost = defineSplit({
+  id: "app-update-host",
+  load: () =>
+    import("./components/app-update/AppUpdateHost").then(
+      (module) => module.AppUpdateHost,
+    ),
+  loading: () => null,
+  tier: "intent",
+});
 
 const AuthCallbackView = lazy(() =>
   import("./views/AuthCallbackView").then((m) => ({

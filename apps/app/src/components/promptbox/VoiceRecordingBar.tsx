@@ -8,7 +8,7 @@ import {
   TooltipTrigger,
 } from "@bb/shared-ui/tooltip";
 import type { VoiceDelivery } from "@/lib/voice-recording-store";
-import { WaveformVisualizer } from "./WaveformVisualizer.js";
+import { WaveformVisualizer } from "@/lib/plugin-sdk-lazy-components";
 
 interface VoiceRecordingBarProps {
   isCompact: boolean;

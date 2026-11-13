@@ -111,7 +111,7 @@ it("tightens disclosure margins within a turn without changing user or turn boun
   }
 });
 
-it("shows turn spend on the collapsed Worked for row in secondary status ink", () => {
+it("shows turn spend on the collapsed Worked for row in secondary status ink", async () => {
   render(
     <QueryClientProvider client={new QueryClient()}>
       <MemoryRouter>
@@ -131,7 +131,7 @@ it("shows turn spend on the collapsed Worked for row in secondary status ink", (
     </QueryClientProvider>,
   );
   expect(
-    screen.getByText("Token breakdown fixture").closest("[aria-hidden=true]"),
+    (await screen.findByText("Token breakdown fixture")).closest("[aria-hidden=true]"),
   ).toBeNull();
   const label = screen.getByText("Worked for");
   expect(
@@ -146,7 +146,7 @@ it("shows turn spend on the collapsed Worked for row in secondary status ink", (
   expect(chevron?.classList.contains("text-muted-foreground")).toBe(true);
 });
 
-it("separates the worked duration and token count visually and for assistive readers", () => {
+it("separates the worked duration and token count visually and for assistive readers", async () => {
   render(
     <QueryClientProvider client={new QueryClient()}>
       <MemoryRouter>
@@ -170,6 +170,7 @@ it("separates the worked duration and token count visually and for assistive rea
   expect(
     button.querySelector("[data-token-separator]")?.getAttribute("aria-hidden"),
   ).toBe("true");
+  await screen.findByText("Token breakdown fixture");
   expect(button.textContent).toMatch(/1s · Token breakdown fixture/);
   expect(
     screen.getByRole("button", { name: /1s Token breakdown fixture/ }),

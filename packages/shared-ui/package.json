@@ -4,6 +4,11 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./overlay-anchor": {
+      "source": "./src/components/ui/overlay-anchor.ts",
+      "types": "./src/components/ui/overlay-anchor.ts",
+      "default": "./src/components/ui/overlay-anchor.ts"
+    },
     "./expandable-text": {
       "source": "./src/components/ui/expandable-text.tsx",
       "types": "./src/components/ui/expandable-text.tsx",

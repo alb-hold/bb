@@ -40,7 +40,7 @@ import { LazyMarkdownHtml } from "./lazy-markdown-html";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
-import { ImageLightbox } from "./image-lightbox.js";
+import { ImageLightbox } from "@/lib/plugin-sdk-lazy-components";
 import { getWrappedImageIndex } from "@bb/shared-ui/lib/image-preview";
 import { InlineImageGalleryContext } from "./inline-image-gallery-context.js";
 import { remarkInlineDollarMath } from "./markdown-inline-dollar-math.js";
@@ -66,7 +66,17 @@ import {
   getMarkdownCodeLanguage,
   isMarkdownCodeBlock,
 } from "./markdown-code-block.js";
-import { highlightMarkdownCode } from "./markdown-code-highlight.js";
+import { defineSplit } from "@/lib/define-split";
+import type { MarkdownHighlightedCodeProps } from "./markdown-code-highlight.js";
+
+const MarkdownHighlightedCode = defineSplit<MarkdownHighlightedCodeProps>({
+  id: "markdown-code-highlight",
+  tier: "intent",
+  load: () => import("./markdown-code-highlight.js").then((module) => module.MarkdownHighlightedCode),
+  loading: ({ codeProps, code, language }) => (
+    <code className={cn("font-mono text-xs", language ? `language-${language}` : "")} {...codeProps}>{code}</code>
+  ),
+});
 import "./markdown-code-highlight.css";
 import { normalizeLocalFileMarkdownLinks } from "./markdown-local-file-link-normalize.js";
 import {
@@ -746,14 +756,6 @@ function MarkdownCodeBlock({
   preferredTheme: Theme;
 }) {
   const [softWrap, setSoftWrap] = useState(false);
-  const highlightedHtml = useMemo(
-    () => highlightMarkdownCode({ code: codeText, language }),
-    [language, codeText],
-  );
-  const highlightedMarkup = useMemo(
-    () => ({ __html: highlightedHtml }),
-    [highlightedHtml],
-  );
   if (language === "mermaid" && imagePolicy === "render") {
     return (
       <MarkdownMermaidDiagram
@@ -819,14 +821,7 @@ function MarkdownCodeBlock({
             : "overflow-x-auto",
         )}
       >
-        <code
-          className={cn(
-            "font-mono text-xs",
-            language ? `language-${language}` : "",
-          )}
-          dangerouslySetInnerHTML={highlightedMarkup}
-          {...codeProps}
-        />
+        <MarkdownHighlightedCode codeProps={codeProps} code={codeText} language={language} />
       </pre>
     </div>
   );

@@ -65,6 +65,7 @@ const dumpGraph = {
 };
 
 await build({
+  configFile: false,
   ...sharedViteConfig,
   root: appDir,
   logLevel: "error",

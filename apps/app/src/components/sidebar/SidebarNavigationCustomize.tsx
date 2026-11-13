@@ -1,6 +1,7 @@
 import { useMemo, type RefObject } from "react";
 import type { ExperimentalSidebarNavigationPlacement } from "@get-bb/plugin-sdk";
-import { PopoverContent } from "@bb/shared-ui/popover";
+import { Popover, PopoverAnchor, PopoverContent } from "@bb/shared-ui/popover";
+import type { SidebarNavigationCustomize as CustomizeState } from "./SidebarNavigationHost";
 import type { SidebarVisibilityItem } from "@bb/shared-ui/sidebar-visibility-customize";
 import { SidebarVisibilityCustomize } from "./SidebarVisibilityControls";
 import {
@@ -9,6 +10,28 @@ import {
 } from "./SidebarNavigationModel";
 
 const CUSTOMIZE_SIDE_OFFSET = 12;
+
+export function SidebarNavigationCustomizePopover({
+  customize,
+  placement,
+  testId,
+}: {
+  customize: CustomizeState;
+  placement: ExperimentalSidebarNavigationPlacement;
+  testId: string;
+}) {
+  return (
+    <Popover open={customize.isCustomizing} onOpenChange={customize.setCustomizing}>
+      <PopoverAnchor virtualRef={customize.containerRef} />
+      <SidebarNavigationCustomizePopoverContent
+        testId={testId}
+        placement={placement}
+        focusReturnRef={customize.focusReturnRef}
+        onClose={() => customize.setCustomizing(false)}
+      />
+    </Popover>
+  );
+}
 
 export function SidebarNavigationCustomize({
   title,

@@ -37,7 +37,7 @@ import { useAppCommandShortcut } from "@/components/commands/AppCommandProvider"
 import { AppCommandShortcutHint } from "@/components/commands/AppCommandShortcutHint";
 import type { MarkdownLinkRouting } from "@/components/ui/markdown-link-routing.js";
 import { MarkdownPreview } from "@/components/ui/markdown-preview.js";
-import { ImageLightbox } from "@/components/ui/image-lightbox.js";
+import { ImageLightbox } from "@/lib/plugin-sdk-lazy-components";
 import {
   Tooltip,
   TooltipContent,

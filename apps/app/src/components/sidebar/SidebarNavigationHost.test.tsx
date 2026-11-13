@@ -555,9 +555,19 @@ describe("sidebar navigation providers", () => {
     );
     renderHost();
 
-    fireEvent.click(screen.getByRole("button", { name: "Arrange" }));
+    const navigation = region();
+    const arrange = screen.getByRole("button", { name: "Arrange" });
+    arrange.focus();
+    fireEvent.click(arrange);
 
     expect(await screen.findByTestId("nav-rail-customize")).toBeDefined();
+    expect(region()).toBe(navigation);
+    fireEvent.click(screen.getByRole("button", { name: "Done" }));
+    await waitFor(() => {
+      expect(screen.queryByTestId("nav-rail-customize")).toBeNull();
+      expect(document.activeElement).toBe(arrange);
+    });
+    expect(region()).toBe(navigation);
   });
 
   it("replaces a crashing plugin provider with the bundled provider for the same placement", () => {

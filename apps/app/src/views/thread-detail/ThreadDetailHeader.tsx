@@ -47,7 +47,7 @@ import {
   usePluginThreadHeaderTitleSlot,
 } from "@/components/plugin/PluginThreadHeaderTitle";
 import { ThreadStatusGlyph } from "@/components/thread/ThreadStatusGlyph";
-import { ThreadUsageAndAgents } from "@/components/thread/ThreadUsageSummary";
+import { defineSplit } from "@/lib/define-split";
 import { useThreadHeaderActionEntries } from "@/lib/thread-actions/thread-action-registry";
 import { SecondaryPanelHostLayoutContext } from "@/components/secondary-panel/SecondaryPanelHostLayoutContext";
 import {
@@ -65,6 +65,16 @@ import {
 } from "@bb/shared-ui/context-selection";
 import { usePaneContext } from "./PaneContext";
 import { PaneMaximizeButton } from "./PaneMaximizeButton";
+
+const ThreadUsageAndAgents = defineSplit({
+  id: "thread-usage-and-agents",
+  tier: "intent",
+  load: () =>
+    import("@/components/thread/ThreadUsageSummary").then(
+      (module) => module.ThreadUsageAndAgents,
+    ),
+  loading: () => null,
+});
 
 const THREAD_HEADER_ACTION_BUTTON_CLASS = cn(
   COARSE_POINTER_TOOLBAR_ACTION_BUTTON_CLASS,

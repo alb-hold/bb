@@ -1,12 +1,7 @@
+import { defineSplit } from "@/lib/define-split";
 import { Icon } from "@bb/shared-ui/icon";
-import {
-  ActionMenuItem,
-  ActionMenuSeparator,
-} from "@bb/shared-ui/action-menu-items";
-import { findLocalPathProjectSourceForHost } from "@bb/domain";
 import type { ProjectResponse } from "@bb/server-contract";
 import type { MouseEvent, ReactNode } from "react";
-import { useNavigate } from "react-router-dom";
 import { Button } from "@bb/shared-ui/button";
 
 import { COARSE_POINTER_ICON_SIZE_CLASS } from "@bb/shared-ui/coarse-pointer-sizing";
@@ -15,10 +10,7 @@ import {
   DropdownMenuContent,
   DropdownMenuTrigger,
 } from "@bb/shared-ui/dropdown-menu";
-import { usePathPickerHost } from "@/hooks/useLocalPathPicker";
-import { getSettingsProjectRoutePath } from "@/lib/route-paths";
 import { cn } from "@bb/shared-ui/lib/utils";
-import { useProjectActions } from "./ProjectActionsProvider";
 
 interface ProjectActionsMenuBaseProps {
   project: ProjectResponse;
@@ -33,7 +25,7 @@ interface ProjectActionsMenuProps extends ProjectActionsMenuBaseProps {
 
 type ProjectActionsMenuSurface = "context" | "dropdown";
 
-interface ProjectActionsMenuItemsProps extends ProjectActionsMenuBaseProps {
+export interface ProjectActionsMenuItemsProps extends ProjectActionsMenuBaseProps {
   surface: ProjectActionsMenuSurface;
 }
 
@@ -41,67 +33,15 @@ function stopProjectActionsMenuClickPropagation(event: MouseEvent) {
   event.stopPropagation();
 }
 
-export function ProjectActionsMenuItems({
-  project,
-  surface,
-  onRename,
-  extraActions,
-}: ProjectActionsMenuItemsProps) {
-  const navigate = useNavigate();
-  const { hostId: pickerHostId } = usePathPickerHost();
-  const { requestRename, requestDelete, requestAddLocalPath } =
-    useProjectActions();
-  const showAddLocalPath =
-    pickerHostId != null &&
-    !findLocalPathProjectSourceForHost(project.sources, pickerHostId);
-
-  return (
-    <>
-      <ActionMenuItem
-        surface={surface}
-        icon="Settings"
-        onSelect={() => {
-          void navigate(getSettingsProjectRoutePath(project.id));
-        }}
-      >
-        Project settings
-      </ActionMenuItem>
-      <ActionMenuItem
-        surface={surface}
-        icon="Edit"
-        onSelect={() => {
-          if (onRename) onRename();
-          else requestRename(project);
-        }}
-      >
-        Rename
-      </ActionMenuItem>
-      {showAddLocalPath ? (
-        <ActionMenuItem
-          surface={surface}
-          icon="FolderPlus"
-          onSelect={() => {
-            requestAddLocalPath(project);
-          }}
-        >
-          Add local path
-        </ActionMenuItem>
-      ) : null}
-      {extraActions?.(surface)}
-      <ActionMenuSeparator surface={surface} />
-      <ActionMenuItem
-        surface={surface}
-        icon="Trash2"
-        variant="destructive"
-        onSelect={() => {
-          requestDelete(project);
-        }}
-      >
-        Remove
-      </ActionMenuItem>
-    </>
-  );
-}
+const ProjectActionsMenuItems = defineSplit<ProjectActionsMenuItemsProps>({
+  id: "project-actions-menu-items",
+  tier: "intent",
+  load: () =>
+    import("./ProjectActionsMenuItems").then(
+      (module) => module.ProjectActionsMenuItems,
+    ),
+  loading: () => null,
+});
 
 export function ProjectActionsMenu({
   project,
@@ -122,6 +62,7 @@ export function ProjectActionsMenu({
             triggerClassName,
             "data-[state=open]:bg-state-active data-[state=open]:text-foreground",
           )}
+          {...ProjectActionsMenuItems.intentProps}
           aria-label={`${project.name} actions`}
           onClick={(event) => {
             event.stopPropagation();

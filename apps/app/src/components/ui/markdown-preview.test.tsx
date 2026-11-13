@@ -502,9 +502,10 @@ describe("MarkdownPreview", () => {
     expect(container.textContent).toContain("<script>alert(1)</script>");
   });
 
-  it("keeps highlighted code DOM until the code text changes", () => {
+  it("keeps highlighted code DOM until the code text changes", async () => {
     const fence = "```ts\nconst a = 1;\n```";
     const view = render(<MarkdownPreview content={`${fence}\n\nPara one.`} />);
+    await waitFor(() => expect(view.container.querySelector("span.sh__line")).not.toBeNull());
     const code = requireElement(view.container, "pre code");
     const line = requireElement(code, "span.sh__line");
     const observer = new MutationObserver(() => {});
