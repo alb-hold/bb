@@ -26,15 +26,20 @@ const surfaceProviderCache = createLastKnownCache({
   schema: z.object({ pluginId: z.string().min(1).nullable() }),
 });
 
+export function expectedSurfaceProviderId(
+  surface: PluginSurface,
+): string | null {
+  const remembered = surfaceProviderCache.read(
+    surfaceProviderCache.key(surface),
+  );
+  return remembered === null
+    ? DEFAULT_SURFACE_PROVIDERS[surface]
+    : remembered.pluginId;
+}
+
 export function expectedSurfaceProviderIds(): string[] {
   const ids = PLUGIN_SURFACES.flatMap((surface) => {
-    const remembered = surfaceProviderCache.read(
-      surfaceProviderCache.key(surface),
-    );
-    const pluginId =
-      remembered === null
-        ? DEFAULT_SURFACE_PROVIDERS[surface]
-        : remembered.pluginId;
+    const pluginId = expectedSurfaceProviderId(surface);
     return pluginId === null ? [] : [pluginId];
   });
   return [...new Set(ids)];
