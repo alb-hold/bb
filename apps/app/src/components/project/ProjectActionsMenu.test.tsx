@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -37,7 +38,7 @@ describe("ProjectActionsMenu", () => {
     mockPathPickerHost.value = { hostId: null, hostName: null };
   });
 
-  it("closes after selecting an action", async () => {
+  it.each(["keyboard", "pointer"] as const)("closes after selecting an action opened by %s", async (input) => {
     const project = makeProjectResponse();
 
     render(
@@ -46,10 +47,23 @@ describe("ProjectActionsMenu", () => {
       </MemoryRouter>,
     );
 
-    fireEvent.pointerDown(
-      screen.getByRole("button", { name: "Test project actions" }),
-      { button: 0 },
-    );
+    const trigger = screen.getByRole("button", { name: "Test project actions" });
+    if (input === "keyboard") {
+      fireEvent.keyDown(trigger, { key: "ArrowDown" });
+      await act(() => vi.dynamicImportSettled());
+      await waitFor(() => {
+        expect(document.activeElement).toBe(
+          screen.getByRole("menuitem", { name: "Project settings" }),
+        );
+      });
+    } else {
+      fireEvent.pointerDown(trigger, { button: 0 });
+      await act(() => vi.dynamicImportSettled());
+      await screen.findByRole("menuitem", { name: "Project settings" });
+      expect(document.activeElement).not.toBe(
+        screen.getByRole("menuitem", { name: "Project settings" }),
+      );
+    }
     fireEvent.click(await screen.findByRole("menuitem", { name: "Rename" }));
 
     await waitFor(() => {

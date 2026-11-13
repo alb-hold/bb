@@ -4,6 +4,8 @@ import {
 } from "@bb/shared-ui/action-menu-items";
 import { findLocalPathProjectSourceForHost } from "@bb/domain";
 import { useNavigate } from "react-router-dom";
+import { useEffect } from "react";
+import { isLastInputKeyboard } from "@bb/shared-ui/dropdown-menu";
 import { usePathPickerHost } from "@/hooks/useLocalPathPicker";
 import { getSettingsProjectRoutePath } from "@/lib/route-paths";
 import { useProjectActions } from "./ProjectActionsProvider";
@@ -14,6 +16,7 @@ export function ProjectActionsMenuItems({
   surface,
   onRename,
   extraActions,
+  contentRef,
 }: ProjectActionsMenuItemsProps) {
   const navigate = useNavigate();
   const { hostId: pickerHostId } = usePathPickerHost();
@@ -22,6 +25,20 @@ export function ProjectActionsMenuItems({
   const showAddLocalPath =
     pickerHostId != null &&
     !findLocalPathProjectSourceForHost(project.sources, pickerHostId);
+
+  useEffect(() => {
+    const content = contentRef?.current;
+    if (
+      !content ||
+      document.activeElement !== content ||
+      !isLastInputKeyboard()
+    ) {
+      return;
+    }
+    content
+      .querySelector<HTMLElement>('[role="menuitem"]:not([data-disabled])')
+      ?.focus();
+  }, [contentRef]);
 
   return (
     <>

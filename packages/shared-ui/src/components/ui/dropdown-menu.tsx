@@ -675,6 +675,7 @@ const DropdownMenuShortcut = ({
 DropdownMenuShortcut.displayName = "DropdownMenuShortcut";
 
 export {
+  isLastInputKeyboard,
   DropdownMenu,
   DropdownMenuTrigger,
   DropdownMenuContent,

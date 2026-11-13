@@ -1,7 +1,7 @@
 import { defineSplit } from "@/lib/define-split";
 import { Icon } from "@bb/shared-ui/icon";
 import type { ProjectResponse } from "@bb/server-contract";
-import type { MouseEvent, ReactNode } from "react";
+import { useRef, type MouseEvent, type ReactNode, type RefObject } from "react";
 import { Button } from "@bb/shared-ui/button";
 
 import { COARSE_POINTER_ICON_SIZE_CLASS } from "@bb/shared-ui/coarse-pointer-sizing";
@@ -27,6 +27,7 @@ type ProjectActionsMenuSurface = "context" | "dropdown";
 
 export interface ProjectActionsMenuItemsProps extends ProjectActionsMenuBaseProps {
   surface: ProjectActionsMenuSurface;
+  contentRef?: RefObject<HTMLDivElement | null>;
 }
 
 function stopProjectActionsMenuClickPropagation(event: MouseEvent) {
@@ -50,6 +51,7 @@ export function ProjectActionsMenu({
   onCloseAutoFocus,
   extraActions,
 }: ProjectActionsMenuProps) {
+  const contentRef = useRef<HTMLDivElement>(null);
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -75,11 +77,13 @@ export function ProjectActionsMenu({
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent
+        ref={contentRef}
         align="end"
         onCloseAutoFocus={onCloseAutoFocus}
         onClick={stopProjectActionsMenuClickPropagation}
       >
         <ProjectActionsMenuItems
+          contentRef={contentRef}
           project={project}
           surface="dropdown"
           onRename={onRename}

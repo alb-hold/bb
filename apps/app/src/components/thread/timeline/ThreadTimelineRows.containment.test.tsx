@@ -22,11 +22,24 @@ function stubScrollAnchoring(supported: boolean): void {
   });
 }
 
+const frames = new Map<number, FrameRequestCallback>();
+let nextFrame = 0;
+
 beforeEach(() => {
   stubScrollAnchoring(true);
+  frames.clear();
+  nextFrame = 0;
+  vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+    frames.set(++nextFrame, callback);
+    return nextFrame;
+  });
+  vi.stubGlobal("cancelAnimationFrame", (id: number) => {
+    frames.delete(id);
+  });
 });
 
-afterEach(() => {
+afterEach(async () => {
+  await act(() => vi.dynamicImportSettled());
   cleanup();
   vi.unstubAllGlobals();
 });
@@ -41,10 +54,11 @@ function rowWrapper(container: HTMLElement, rowId: string): HTMLElement {
   return element;
 }
 
-function nextAnimationFrame(): Promise<void> {
-  return new Promise((resolve) => {
-    window.requestAnimationFrame(() => resolve());
-  });
+function nextAnimationFrame(): void {
+  const pending = [...frames.entries()];
+  for (const [id, callback] of pending) {
+    if (frames.delete(id)) callback(performance.now());
+  }
 }
 
 describe("ThreadTimelineRows row containment", () => {
