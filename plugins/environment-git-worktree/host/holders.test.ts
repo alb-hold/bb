@@ -856,6 +856,13 @@ describe("the Linux process-list visibility rule", () => {
     expect(await scanLinux("/work/tree", zombie, 4242)).toEqual({
       status: "clear",
     });
+    const deniedZombie = fakeProc({
+      processes: { 102: { uid: 1000, state: "Z (zombie)", denied: true } },
+    });
+    expect(await scanLinux("/work/tree", deniedZombie, 4242)).toMatchObject({
+      status: "uncertain",
+      reason: expect.stringContaining("threads could not be listed"),
+    });
   });
 
   it("keeps unreadable session agents when directory identity cannot be checked", async () => {
