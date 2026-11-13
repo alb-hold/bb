@@ -138,7 +138,8 @@ import {
   ThreadContextCardHeaderButton,
   ThreadContextCardProvider,
 } from "@/components/plugin/PluginThreadContextCard";
-import { ThreadScreen, useThreadComposerAddToChat } from "./ThreadScreen";
+import { useThreadComposerAddToChat } from "./useThreadComposerAddToChat";
+import { defineSplit } from "@/lib/define-split";
 import { ThreadDetailSecondaryContent } from "./ThreadDetailSecondaryContent";
 import {
   useThreadSecondaryPanelDrawerVisibility,
@@ -250,6 +251,12 @@ const EMPTY_PROJECT_THREAD_SUBSET_FILTERS =
 const EMPTY_TERMINAL_SESSIONS: readonly TerminalSession[] = [];
 const THREAD_HEADER_ACTIONS_GROUP = "0_header";
 const THREAD_DETAIL_SCREEN_PRESENTATION = { kind: "page" } as const;
+const ThreadScreen = defineSplit({
+  id: "thread-screen",
+  tier: "intent",
+  load: () => import("./ThreadScreen").then((module) => module.ThreadScreen),
+  loading: ThreadTimelineLoadingSkeleton,
+});
 
 type OpenFilePreviewHandler = (relativePath: string) => void;
 
