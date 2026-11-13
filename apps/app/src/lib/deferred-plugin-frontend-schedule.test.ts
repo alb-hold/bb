@@ -267,9 +267,8 @@ it("does not wait for sidebar rows when no thread-list provider is chosen", asyn
     JSON.stringify({ pluginId: null }),
   );
   try {
-    const { expectedSurfaceProviderId } = await import(
-      "./plugin-surface-providers"
-    );
+    const { expectedSurfaceProviderId } =
+      await import("./plugin-surface-providers");
     expect(expectedSurfaceProviderId("thread-list")).toBeNull();
     const h = await start({}, [], ["git", "usage"]);
     await vi.advanceTimersByTimeAsync(100);

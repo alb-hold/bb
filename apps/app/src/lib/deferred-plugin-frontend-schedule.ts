@@ -28,7 +28,8 @@ export function createDeferredPluginFrontendSchedule() {
     const threadListProvider = expectedSurfaceProviderId("thread-list");
     if (
       candidatePluginIds === undefined ||
-      (threadListProvider !== null && candidatePluginIds.has(threadListProvider))
+      (threadListProvider !== null &&
+        candidatePluginIds.has(threadListProvider))
     ) {
       await whenHomeBackgroundWorkMayStart();
     }
