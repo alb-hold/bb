@@ -2134,6 +2134,8 @@ describe("native terminal threads", () => {
       "--no-daemon",
       "--dangerously-bypass-approvals-and-sandbox",
       "--no-alt-screen",
+      "-c",
+      "check_for_update_on_startup=false",
     ]);
     expect(spec.cli.activity?.transcript?.prompt).toContainEqual({
       match: {

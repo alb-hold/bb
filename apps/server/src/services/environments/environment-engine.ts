@@ -855,6 +855,25 @@ async function removeEnvironment(
     await active.done;
     if (active.kind === "remove") return;
   }
+  const row = getEnvironment(deps.db, environmentId);
+  if (
+    row?.teardownStatus === "failed" &&
+    !environmentHasLiveThreads(deps.db, environmentId)
+  ) {
+    if (row.teardownAttempt >= MAX_REMOVE_ATTEMPTS) {
+      if (
+        row.retireAt !== null ||
+        !row.teardownMessage?.startsWith("Needs recovery:")
+      )
+        writeEnvironmentTeardownFailure(
+          deps,
+          environmentId,
+          row.teardownMessage ?? "Cleanup did not complete.",
+        );
+      return;
+    }
+    if (row.retireAt !== null && row.retireAt > Date.now()) return;
+  }
   const operation = runTrackedOperation({
     kind: "remove",
     map,

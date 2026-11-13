@@ -142,8 +142,11 @@ function useStableItems(
 }
 
 function isSettingsPathname(pathname: string): boolean {
-  return matchPath(`${SETTINGS_ROUTE_PATH}/*`, pathname) !== null;
+  return !!matchPath(`${SETTINGS_ROUTE_PATH}/*`, pathname);
 }
+
+export const isThreadRoutePathname = (pathname: string): boolean =>
+  /^\/(projects\/[^/]+\/)?threads\/[^/]/i.test(pathname);
 
 export function SidebarNavigationModelProvider({
   children,
@@ -158,14 +161,14 @@ export function SidebarNavigationModelProvider({
       if (
         !isCompactViewport ||
         !(event.target instanceof Element) ||
-        event.target.closest('[data-sidebar="trigger"]') === null
+        !event.target.closest('[data-sidebar="trigger"]')
       ) {
         return;
       }
       const active = document.activeElement;
       if (
         active instanceof HTMLElement &&
-        active.closest("[data-app-terminal]") !== null
+        active.closest("[data-app-terminal]")
       ) {
         blurredTerminalTargetRef.current = active;
       }
@@ -178,8 +181,7 @@ export function SidebarNavigationModelProvider({
     if (isCompactViewport && openMobile) {
       const active = document.activeElement;
       drawerTerminalTargetRef.current =
-        active instanceof HTMLElement &&
-        active.closest("[data-app-terminal]") !== null
+        active instanceof HTMLElement && active.closest("[data-app-terminal]")
           ? active
           : blurredTerminalTargetRef.current;
       return;
@@ -264,13 +266,13 @@ export function SidebarNavigationModelProvider({
     rows,
     pathname: location.pathname,
   });
-  const isThreadRoute =
-    matchPath("/threads/:threadId/*", location.pathname) !== null ||
-    matchPath("/projects/:projectId/threads/:threadId/*", location.pathname) !== null;
+  const isThreadRoute = isThreadRoutePathname(location.pathname);
   const isHomeActive =
-    !isSettingsPathname(location.pathname) &&
-    getPluginPanelRoutePluginId(location.pathname) === null &&
-    !isThreadRoute &&
+    !(
+      isSettingsPathname(location.pathname) ||
+      getPluginPanelRoutePluginId(location.pathname) ||
+      isThreadRoute
+    ) &&
     (activeItemId === null || activeItemId === NEW_THREAD_NAVIGATION_ITEM_ID);
   const currentRoutePath = `${location.pathname}${location.search}${location.hash}`;
   const homeRoutePathRef = useRef(

@@ -27,6 +27,7 @@ import {
   memo,
   useCallback,
   useMemo,
+  useRef,
   useState,
   type CSSProperties,
   type MouseEventHandler,
@@ -80,6 +81,7 @@ import {
 } from "../ui/sidebar.js";
 import {
   addGrowingRow,
+  createStickyRowStateReporter,
   StickyOffsetProvider,
   StickyRowStateReportProvider,
   useStickyOffset,
@@ -1476,7 +1478,16 @@ export const ThreadTreeNodeRow = memo(function ThreadTreeNodeRow({
   const hasChildren = node.children.length > 0;
   const isParent = hasChildren;
   const inheritedStickyOffset = useStickyOffset();
-  const [growingRowHeight, setGrowingRowHeight] = useState(0);
+  const [growingRowHeight, setGrowingRowHeightPx] = useState(0);
+  const growingRowHeights = useRef(new Map<string, number>());
+  const stickyRowStateReporter = useMemo(
+    () =>
+      createStickyRowStateReporter(
+        growingRowHeights.current,
+        setGrowingRowHeightPx,
+      ),
+    [setGrowingRowHeightPx],
+  );
   const nestDropEnabled = Boolean(sectionDnd);
   const { setNodeRef: setNestDropNodeRef } = useDroppable({
     id: getSidebarThreadRowDroppableId(node.thread.id),
@@ -1587,7 +1598,7 @@ export const ThreadTreeNodeRow = memo(function ThreadTreeNodeRow({
         afterSubtree && REORDER_PLACEMENT_CLASS.after,
       )}
     >
-      <StickyRowStateReportProvider value={setGrowingRowHeight}>
+      <StickyRowStateReportProvider value={stickyRowStateReporter}>
         {row}
       </StickyRowStateReportProvider>
       {showChildren || nestPreviewThread !== null ? (

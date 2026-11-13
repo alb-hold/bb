@@ -56,8 +56,9 @@ function renderExecutionControls(props: ExecutionControlsProps) {
 
 beforeAll(() => ModelReasoningMenu.preload());
 
-afterEach(() => {
+afterEach(async () => {
   cleanup();
+  await new Promise((resolve) => setTimeout(resolve, 0));
   vi.clearAllMocks();
 });
 

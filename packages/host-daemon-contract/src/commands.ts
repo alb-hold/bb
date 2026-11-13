@@ -1690,6 +1690,7 @@ export const hostDaemonCommandRegistry = {
         active: z.boolean(),
         pids: z.array(z.number().int().positive()),
         unreadablePids: z.array(z.number().int().positive()),
+        unrelatedUnreadablePids: z.array(z.number().int().positive()).optional(),
         processCommands: z.record(z.string(), z.string()).optional(),
       })
       .strict(),
