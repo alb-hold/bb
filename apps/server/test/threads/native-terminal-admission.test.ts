@@ -12,6 +12,7 @@ import {
   listNativeTerminalDeliveryWarnings,
   listQueuedThreadMessages,
   threads,
+  updateTerminalSessions,
 } from "@bb/db";
 import {
   hostDaemonServerWsMessageSchema,
@@ -932,6 +933,113 @@ describe("native terminal delivery across a crash", () => {
 
       expect(cli.inputs()).toEqual([
         "\u001b[200~run the tests\u001b[201~",
+        "\u001b[200~run the tests\u001b[201~",
+        "\r",
+      ]);
+      expect(queuedRows(fixture, thread.id)).toEqual([]);
+    } finally {
+      cli.stop();
+    }
+  }, 30_000);
+
+  function dropTerminalInputFrame(fixture: Fixture, frame: number): void {
+    const hub = fixture.harness.hub;
+    const send = hub.sendDaemonSessionMessage.bind(hub);
+    let inputFrames = 0;
+    vi.spyOn(hub, "sendDaemonSessionMessage").mockImplementation(
+      (sessionId, message) => {
+        if (message.type === "terminal.input") {
+          inputFrames += 1;
+          if (inputFrames === frame) return false;
+        }
+        return send(sessionId, message);
+      },
+    );
+  }
+
+  function reconnectTerminal(fixture: Fixture, terminalId: string): void {
+    updateTerminalSessions(fixture.harness.db, {
+      scope: { kind: "terminal", terminalId },
+      update: { kind: "reconnect", daemonSessionId: fixture.sessionId },
+    });
+  }
+
+  it("never re-sends a held send whose paste was cut off after part of it reached the terminal, and tells the sender", async () => {
+    const fixture = await createFixture();
+    const sender = await openBusySender(fixture);
+    const { open, thread } = await openRunningNativeThread(fixture, {
+      providerId: "codex",
+    });
+    const cli = startFakeCli(fixture, open.terminalId);
+    let decision: HookDecision = { action: "wait", reason: AT_LIMIT_REASON };
+    installDispatchHook(() => decision);
+    const text = "run the tests ".repeat(5_000);
+    try {
+      const held = await sendToThread(
+        fixture,
+        thread.id,
+        text,
+        sender.thread.id,
+      );
+      expect(held.delivery).toBe("queued");
+      dropTerminalInputFrame(fixture, 2);
+      decision = { action: "proceed" };
+      await runQueuedMessageDispatch(fixture.harness.deps, {
+        kind: "plugin-recheck",
+      });
+      await settle();
+      reconnectTerminal(fixture, open.terminalId);
+
+      await drainEverything(fixture);
+      await new Promise((resolve) => setTimeout(resolve, 1_100));
+      await runSweeps(fixture);
+      await drainEverything(fixture);
+
+      expect(
+        cli.inputs().filter((input) => input.startsWith("\u001b[200~")),
+      ).toHaveLength(1);
+      expect(cli.inputs()).not.toContain("\r");
+      const rows = queuedRows(fixture, thread.id);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        state: "failed_exhausted",
+        failureReason: UNCERTAIN_REASON,
+      });
+      const senderNotices = listNativeParentNotices(
+        fixture.harness.db,
+        sender.thread.id,
+      );
+      expect(senderNotices).toHaveLength(1);
+      expect(senderNotices[0]?.text).toContain("may not have been delivered");
+    } finally {
+      cli.stop();
+    }
+  }, 30_000);
+
+  it("retries a held send whose first input frame never left the server, and delivers it once", async () => {
+    const fixture = await createFixture();
+    const { open, thread } = await openRunningNativeThread(fixture, {
+      providerId: "codex",
+    });
+    const cli = startFakeCli(fixture, open.terminalId);
+    let decision: HookDecision = { action: "wait", reason: AT_LIMIT_REASON };
+    installDispatchHook(() => decision);
+    try {
+      await sendToThread(fixture, thread.id, "run the tests");
+      dropTerminalInputFrame(fixture, 1);
+      decision = { action: "proceed" };
+      await runQueuedMessageDispatch(fixture.harness.deps, {
+        kind: "plugin-recheck",
+      });
+      await settle();
+      expect(cli.inputs()).toEqual([]);
+      reconnectTerminal(fixture, open.terminalId);
+
+      await drainEverything(fixture);
+      await new Promise((resolve) => setTimeout(resolve, 1_100));
+      await drainEverything(fixture);
+
+      expect(cli.inputs()).toEqual([
         "\u001b[200~run the tests\u001b[201~",
         "\r",
       ]);
