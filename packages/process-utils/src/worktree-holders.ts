@@ -106,7 +106,13 @@ function mappedPath(line: string): string {
   );
 }
 
-type Mount = { device: string; root: string; point: string };
+type Mount = {
+  id: string;
+  parent: string;
+  device: string;
+  root: string;
+  point: string;
+};
 
 function parseMountinfo(text: string): Mount[] | null {
   const mounts: Mount[] = [];
@@ -132,7 +138,13 @@ function parseMountinfo(text: string): Mount[] | null {
     const mountRoot = decode(fields[3]);
     const point = decode(fields[4]);
     if (mountRoot === null || point === null) return null;
-    mounts.push({ device: fields[2]!, root: mountRoot, point });
+    mounts.push({
+      id: fields[0]!,
+      parent: fields[1]!,
+      device: fields[2]!,
+      root: mountRoot,
+      point,
+    });
   }
   return mounts.length === 0 ? null : mounts;
 }
@@ -206,6 +218,62 @@ async function foreignMountsExcludeWorktree(
       (mountContains(filesystemPath, entry.root) ||
         mountContains(entry.root, filesystemPath)),
   );
+}
+
+function visibleMounts(mounts: Mount[], target: string): Mount[] {
+  const covering = mounts.filter((entry) => mountContains(target, entry.point));
+  const depth = Math.max(...covering.map((entry) => entry.point.length));
+  const stacked = covering.filter((entry) => entry.point.length === depth);
+  return stacked.filter(
+    (entry) => !stacked.some((other) => other.parent === entry.id),
+  );
+}
+
+async function systemViewExposure(
+  proc: ProcReader,
+  base: string,
+  directory: string,
+): Promise<string | null> {
+  const own = await readOptional(() => proc.readFile("/proc/self/mountinfo"));
+  const foreign = await readOptional(() => proc.readFile(`${base}/mountinfo`));
+  if (!("value" in own) || !("value" in foreign)) return null;
+  const ownMounts = parseMountinfo(own.value);
+  const foreignMounts = parseMountinfo(foreign.value);
+  if (ownMounts === null || foreignMounts === null) return null;
+  const ownIds = new Set(ownMounts.map((entry) => entry.id));
+  if (foreignMounts.every((entry) => ownIds.has(entry.id))) return null;
+  const mount = ownMounts
+    .filter((entry) => mountContains(directory, entry.point))
+    .sort((a, b) => b.point.length - a.point.length)[0];
+  if (mount === undefined) return null;
+  const filesystemPath = path.posix.join(
+    mount.root,
+    path.posix.relative(mount.point, directory),
+  );
+  for (const entry of foreignMounts) {
+    if (entry.device !== mount.device) continue;
+    const alias = mountContains(filesystemPath, entry.root)
+      ? path.posix.join(
+          entry.point,
+          path.posix.relative(entry.root, filesystemPath),
+        )
+      : mountContains(entry.root, filesystemPath)
+        ? entry.point
+        : null;
+    if (alias === null || !visibleMounts(foreignMounts, alias).includes(entry))
+      continue;
+    if (
+      ownMounts.some(
+        (candidate) =>
+          candidate.device === entry.device &&
+          candidate.root === entry.root &&
+          candidate.point === entry.point,
+      )
+    )
+      continue;
+    return alias;
+  }
+  return null;
 }
 
 const GONE_CODES = new Set(["ENOENT", "ESRCH", "ENOTDIR"]);
@@ -765,8 +833,14 @@ async function scanLinuxPaths(
   }
   if (uids[3] !== self.uid) {
     const foreignUid = uids[3];
-    if (foreignUid === undefined || (foreignUid < 1000 && self.uid !== 0))
-      return { otherUser: true };
+    if (foreignUid === undefined) return { otherUser: true };
+    if (foreignUid < 1000 && self.uid !== 0) {
+      const alias = await systemViewExposure(proc, base, directory);
+      if (alias === null) return { otherUser: true };
+      return {
+        uncertain: `process ${pid} system uid ${foreignUid} sees the worktree at ${alias} through another mount namespace`,
+      };
+    }
     if (self.uid !== 0) {
       let uninspectable = false;
       for (const [leaf, through] of [
