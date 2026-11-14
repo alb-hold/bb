@@ -53,6 +53,12 @@ export class ApiError extends HTTPException {
   }
 }
 
+export class TerminalInputInterruptedError extends ApiError {
+  constructor() {
+    super(502, "host_disconnected", "Host is not connected");
+  }
+}
+
 function normalizeApiErrorOptions(
   options: boolean | ApiErrorOptions | undefined,
 ): ApiErrorOptions {

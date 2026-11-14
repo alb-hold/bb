@@ -83,7 +83,7 @@ import type {
   TerminalNotifyRequest,
   UpdateTerminalRequest,
 } from "@bb/server-contract";
-import { ApiError } from "../../errors.js";
+import { ApiError, TerminalInputInterruptedError } from "../../errors.js";
 import { TerminalBoundedReplay } from "./terminal-bounded-replay.js";
 import type { AppDeps, ServerLogger } from "../../types.js";
 import { assertUsableHostId } from "../hosts/primary-host.js";
@@ -2031,9 +2031,9 @@ export class TerminalSessionLifecycle {
       });
     }
 
-    for (const dataBase64 of splitTerminalInputFrames(
+    for (const [frame, dataBase64] of splitTerminalInputFrames(
       args.payload.dataBase64,
-    )) {
+    ).entries()) {
       const sent = this.options.hub.sendDaemonSessionMessage(
         current.daemonSessionId,
         {
@@ -2046,6 +2046,7 @@ export class TerminalSessionLifecycle {
         this.disconnectDaemonSessionTerminals({
           daemonSessionId: current.daemonSessionId,
         });
+        if (frame > 0) throw new TerminalInputInterruptedError();
         throw new ApiError(502, "host_disconnected", "Host is not connected");
       }
     }

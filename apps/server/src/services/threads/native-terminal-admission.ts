@@ -24,7 +24,7 @@ import {
   type ThreadCreateOrigin,
   type ThreadQueuedMessage,
 } from "@bb/domain";
-import { ApiError } from "../../errors.js";
+import { ApiError, TerminalInputInterruptedError } from "../../errors.js";
 import type { LoggedPendingInteractionWorkSessionDeps } from "../../types.js";
 import { requirePublicProject } from "../lib/entity-lookup.js";
 import { resolvePromptAttachmentReferences } from "../projects/attachments.js";
@@ -449,7 +449,9 @@ export async function dispatchClaimedNativeTerminalMessages(
                     requireEmptyInputBox: systemNotice !== null,
                   });
                 } catch (error) {
-                  clearNativeTerminalDeliveryMarks(deps.db, ids);
+                  if (!(error instanceof TerminalInputInterruptedError)) {
+                    clearNativeTerminalDeliveryMarks(deps.db, ids);
+                  }
                   throw error;
                 }
               }
