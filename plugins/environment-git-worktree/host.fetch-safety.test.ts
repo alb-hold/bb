@@ -196,10 +196,93 @@ describe("the fetch that checks whether commits are published", () => {
     );
   });
 
-  it("does not run a credential helper, so a keychain cannot open a dialog", async () => {
-    const server = http.createServer((_request, response) => {
-      response.writeHead(401, { "www-authenticate": 'Basic realm="x"' });
-      response.end();
+  it.each([
+    ["an osxkeychain helper", "git-credential-osxkeychain", ""],
+    ["a Git Credential Manager helper", "git-credential-manager", ""],
+    [
+      "a shell helper that calls the keychain",
+      "git-credential-osxkeychain",
+      "!",
+    ],
+  ])(
+    "does not run %s, so a keychain cannot open a dialog, and says authentication failed",
+    async (_kind, helperName, prefix) => {
+      const server = http.createServer((_request, response) => {
+        response.writeHead(401, { "www-authenticate": 'Basic realm="x"' });
+        response.end();
+      });
+      servers.push(server);
+      await new Promise<void>((resolve) =>
+        server.listen(0, "127.0.0.1", resolve),
+      );
+      const address = server.address();
+      const port =
+        typeof address === "object" && address !== null ? address.port : 0;
+      const fixture = await createFixture(`http://127.0.0.1:${port}/repo.git`);
+      const marker = join(fixture.root, "helper-called");
+      const helper = await writeScript(
+        fixture.root,
+        helperName,
+        `echo called >> ${JSON.stringify(marker)}`,
+      );
+      await git(
+        fixture.sourcePath,
+        "config",
+        "credential.helper",
+        `${prefix}${helper}`,
+      );
+      await execFileAsync("git", ["fetch", "backup"], {
+        cwd: fixture.sourcePath,
+        env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+      }).catch(() => undefined);
+      expect(existsSync(marker)).toBe(true);
+      await rm(marker, { force: true });
+
+      const reasons = await findPreservationReasons(
+        await identityOf(fixture),
+        undefined,
+        { fetchTimeoutMs: 20_000 },
+      );
+
+      expect(existsSync(marker)).toBe(false);
+      expect(reasons.join("\n")).toContain(
+        "could not verify remotes: authentication failed for backup",
+      );
+    },
+  );
+
+  it("fetches through the helper the repository configures for that remote when the helper cannot open a dialog, honouring an earlier reset", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bb-worktree-auth-"));
+    roots.push(root);
+    const served = join(root, "served.git");
+    await git(root, "init", "--bare", "--initial-branch=main", served);
+    const seed = join(root, "seed");
+    await mkdir(seed, { recursive: true });
+    await git(seed, "init", "--initial-branch=main");
+    await writeFile(join(seed, "a.txt"), "a\n");
+    await git(seed, "add", ".");
+    await git(seed, "commit", "-m", "first");
+    await git(seed, "push", served, "main");
+    await git(served, "update-server-info");
+    const published = (await git(seed, "rev-parse", "HEAD")).trim();
+    const expected = `Basic ${Buffer.from("bb:token-1").toString("base64")}`;
+    const server = http.createServer((request, response) => {
+      if (request.headers.authorization !== expected) {
+        response.writeHead(401, { "www-authenticate": 'Basic realm="x"' });
+        response.end();
+        return;
+      }
+      const requested = new URL(request.url ?? "/", "http://served").pathname;
+      readFile(join(served, requested.replace(/^\/served\.git/u, ""))).then(
+        (body) => {
+          response.writeHead(200);
+          response.end(body);
+        },
+        () => {
+          response.writeHead(404);
+          response.end();
+        },
+      );
     });
     servers.push(server);
     await new Promise<void>((resolve) =>
@@ -208,20 +291,21 @@ describe("the fetch that checks whether commits are published", () => {
     const address = server.address();
     const port =
       typeof address === "object" && address !== null ? address.port : 0;
-    const fixture = await createFixture(`http://127.0.0.1:${port}/repo.git`);
-    const marker = join(fixture.root, "helper-called");
+    const fixture = await createFixture(`http://127.0.0.1:${port}/served.git`);
+    const resetMarker = join(root, "reset-helper-called");
     await git(
       fixture.sourcePath,
       "config",
       "credential.helper",
-      `!f() { echo called >> ${marker}; }; f`,
+      `!f() { echo called >> ${JSON.stringify(resetMarker)}; }; f`,
     );
-    await execFileAsync("git", ["fetch", "backup"], {
-      cwd: fixture.sourcePath,
-      env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
-    }).catch(() => undefined);
-    expect(existsSync(marker)).toBe(true);
-    await rm(marker, { force: true });
+    await git(fixture.sourcePath, "config", "--add", "credential.helper", "");
+    await git(
+      fixture.sourcePath,
+      "config",
+      `credential.http://127.0.0.1:${port}.helper`,
+      '!f() { test "$1" = get || exit 0; echo username=bb; echo password=token-1; }; f',
+    );
 
     const reasons = await findPreservationReasons(
       await identityOf(fixture),
@@ -229,8 +313,15 @@ describe("the fetch that checks whether commits are published", () => {
       { fetchTimeoutMs: 20_000 },
     );
 
-    expect(existsSync(marker)).toBe(false);
-    expect(reasons.join("\n")).toContain("could not fetch its remotes");
+    expect(reasons.join("\n")).not.toMatch(
+      /could not fetch|could not verify remotes/u,
+    );
+    expect(
+      (
+        await git(fixture.sourcePath, "rev-parse", "refs/remotes/backup/main")
+      ).trim(),
+    ).toBe(published);
+    expect(existsSync(resetMarker)).toBe(false);
   });
 
   it("still fetches from a remote that works: a local remote and an ssh remote reached through the user's own wrapper", async () => {
