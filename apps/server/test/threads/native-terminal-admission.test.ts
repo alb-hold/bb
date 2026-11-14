@@ -2119,6 +2119,77 @@ describe("an open question in a native terminal", () => {
     }
   }, 30_000);
 
+  it("never re-sends a drained send when a question opens after its paste reached the terminal but before the Enter, and tells the sender", async () => {
+    const fixture = await createFixture();
+    const sender = await openRunningNativeThread(fixture, {
+      providerId: "codex",
+    });
+    recordNativeTerminalActivity(fixture.harness.deps, {
+      confirms: false,
+      state: "working",
+      threadId: sender.thread.id,
+    });
+    const { open, thread } = await openRunningNativeThread(fixture, {
+      providerId: "codex",
+    });
+    const cli = startFakeCli(fixture, open.terminalId, {
+      pastePlaceholders: true,
+    });
+    let decision: HookDecision = { action: "wait", reason: AT_LIMIT_REASON };
+    installDispatchHook(() => decision);
+    try {
+      const held = await sendToThread(
+        fixture,
+        thread.id,
+        "use the staging host",
+        sender.thread.id,
+      );
+      expect(held.delivery).toBe("queued");
+      const hub = fixture.harness.hub;
+      const send = hub.sendDaemonSessionMessage.bind(hub);
+      let questionOpened = false;
+      vi.spyOn(hub, "sendDaemonSessionMessage").mockImplementation(
+        (sessionId, message) => {
+          const sent = send(sessionId, message);
+          if (
+            !questionOpened &&
+            message.type === "terminal.input" &&
+            message.terminalId === open.terminalId
+          ) {
+            questionOpened = true;
+            openQuestion(fixture, thread.id);
+          }
+          return sent;
+        },
+      );
+      decision = { action: "proceed" };
+      await drainQueue(fixture);
+
+      expect(typed(cli)).toEqual([PASTE]);
+
+      await closeQuestion.dismissed(fixture, thread.id);
+      await drainQueue(fixture);
+      await new Promise((resolve) => setTimeout(resolve, 1_100));
+      await drainQueue(fixture);
+
+      expect(typed(cli)).toEqual([PASTE]);
+      const rows = queuedRows(fixture, thread.id);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        state: "failed_exhausted",
+        failureReason: expect.stringContaining("Delivery uncertain"),
+      });
+      const senderNotices = listNativeParentNotices(
+        fixture.harness.db,
+        sender.thread.id,
+      );
+      expect(senderNotices).toHaveLength(1);
+      expect(senderNotices[0]?.text).toContain("may not have been delivered");
+    } finally {
+      cli.stop();
+    }
+  }, 30_000);
+
   function openQuestionOnPendingThread(fixture: Fixture, threadId: string) {
     const providerId = getThread(fixture.harness.db, threadId)?.providerId;
     expect(providerId).toBeDefined();
