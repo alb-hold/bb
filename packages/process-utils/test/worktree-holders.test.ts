@@ -490,6 +490,87 @@ describe("mappings made while threads are scanned", () => {
   );
 });
 
+describe("system processes in another mount namespace", () => {
+  const containerRoot = "40 39 0:77 / / rw - overlay overlay rw\n";
+  const mirror =
+    "50 1 8:48 / / rw - ext4 /dev/sda rw\n51 50 0:5 / /proc rw - proc proc rw\n";
+  const bind = (root: string, point: string) =>
+    `41 40 8:48 ${root} ${point} rw - ext4 /dev/sda rw\n`;
+  it.each(
+    [0, 999].flatMap((uid) =>
+      (
+        [
+          [
+            "a bind mount of the worktree",
+            containerRoot + bind("/work/tree", "/app"),
+            "uncertain",
+          ],
+          [
+            "a bind mount of a worktree subfolder",
+            containerRoot + bind("/work/tree/sub", "/app"),
+            "uncertain",
+          ],
+          [
+            "a bind mount of a worktree ancestor",
+            containerRoot + bind("/work", "/data"),
+            "uncertain",
+          ],
+          ["a mirror of our mounts", mirror, "clear"],
+          [
+            "a mirror whose worktree is hidden by a tmpfs",
+            mirror + "52 50 0:60 / /work rw - tmpfs tmpfs rw\n",
+            "clear",
+          ],
+          [
+            "a bind mount hidden by a mount stacked on it",
+            containerRoot +
+              bind("/work/tree", "/app") +
+              "42 41 0:61 / /app rw - tmpfs tmpfs rw\n",
+            "clear",
+          ],
+          [
+            "only another device",
+            containerRoot + "41 40 8:99 / /app rw - ext4 /dev/sdb rw\n",
+            "clear",
+          ],
+          [
+            "a mirror of our mounts and of our alias bind",
+            mirror + "53 50 8:48 /work/tree /alias rw - ext4 /dev/sda rw\n",
+            "clear",
+          ],
+          ["our own mount namespace", null, "clear"],
+          ["an unreadable mount table", "denied", "clear"],
+        ] as const
+      ).map(
+        ([kind, mountinfo, expected]) =>
+          [uid, kind, mountinfo, expected] as const,
+      ),
+    ),
+  )(
+    "checks a uid %s process that sees %s",
+    async (uid, _kind, mountinfo, expected) => {
+      const proc = mountAliasProc("/work/tree", "outside", uid);
+      const reader: ProcReader = {
+        ...proc,
+        readFile: async (target) => {
+          if (target !== "/proc/101/mountinfo") return proc.readFile(target);
+          if (mountinfo === "denied")
+            throw Object.assign(new Error("denied"), { code: "EACCES" });
+          return mountinfo ?? proc.readFile("/proc/self/mountinfo");
+        },
+      };
+      expect(await scanLinux("/work/tree", reader, 4242)).toMatchObject(
+        expected === "uncertain"
+          ? {
+              status: "uncertain",
+              reason: expect.stringContaining(`process 101 system uid ${uid}`),
+            }
+          : { status: "clear" },
+      );
+    },
+  );
+});
+
 describe("exited thread group leaders", () => {
   it.each(
     [1000, 107473].flatMap((uid) =>
