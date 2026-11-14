@@ -14,6 +14,7 @@ import {
   threads,
   updateTerminalSessions,
 } from "@bb/db";
+import { ApiError } from "../../src/errors.js";
 import {
   hostDaemonServerWsMessageSchema,
   type HostDaemonServerWsMessage,
@@ -1103,6 +1104,19 @@ describe("native terminal delivery across a crash", () => {
   it("never re-sends a held send whose Enter was refused after its paste reached the terminal, and tells the sender", async () => {
     await expectHeldSendSettledUncertainAfterOnePaste({
       interrupt: (fixture) => dropTerminalInputFrame(fixture, 2),
+    });
+  }, 30_000);
+
+  it("never re-sends a held send when a disconnect is thrown after its paste's last frame was written, and tells the sender", async () => {
+    await expectHeldSendSettledUncertainAfterOnePaste({
+      interrupt: (fixture) => {
+        vi.spyOn(
+          fixture.harness.pluginService.events,
+          "emitTerminalInput",
+        ).mockImplementationOnce(() => {
+          throw new ApiError(502, "host_disconnected", "Host is not connected");
+        });
+      },
     });
   }, 30_000);
 
