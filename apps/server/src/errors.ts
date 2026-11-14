@@ -54,8 +54,17 @@ export class ApiError extends HTTPException {
 }
 
 export class TerminalInputInterruptedError extends ApiError {
-  constructor(interrupted: ApiError) {
-    super(interrupted.status, interrupted.body.code, interrupted.body.message);
+  constructor(interrupted: unknown) {
+    if (interrupted instanceof ApiError) {
+      super(
+        interrupted.status,
+        interrupted.body.code,
+        interrupted.body.message,
+      );
+    } else {
+      super(500, "internal_error", "Internal server error");
+    }
+    this.cause = interrupted;
   }
 }
 
