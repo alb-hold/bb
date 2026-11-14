@@ -106,7 +106,12 @@ function mappedPath(line: string): string {
   );
 }
 
-type Mount = { device: string; root: string; point: string };
+type Mount = {
+  id: string;
+  device: string;
+  root: string;
+  point: string;
+};
 
 function parseMountinfo(text: string): Mount[] | null {
   const mounts: Mount[] = [];
@@ -132,7 +137,12 @@ function parseMountinfo(text: string): Mount[] | null {
     const mountRoot = decode(fields[3]);
     const point = decode(fields[4]);
     if (mountRoot === null || point === null) return null;
-    mounts.push({ device: fields[2]!, root: mountRoot, point });
+    mounts.push({
+      id: fields[0]!,
+      device: fields[2]!,
+      root: mountRoot,
+      point,
+    });
   }
   return mounts.length === 0 ? null : mounts;
 }
@@ -206,6 +216,66 @@ async function foreignMountsExcludeWorktree(
       (mountContains(filesystemPath, entry.root) ||
         mountContains(entry.root, filesystemPath)),
   );
+}
+
+type OwnMounts = { ok: true; mounts: Mount[] } | { ok: false; error: string };
+
+async function readOwnMounts(proc: ProcReader): Promise<OwnMounts> {
+  const own = await readOptional(() => proc.readFile("/proc/self/mountinfo"));
+  if (!("value" in own))
+    return { ok: false, error: "failed" in own ? own.failed : "ENOENT" };
+  const mounts = parseMountinfo(own.value);
+  return mounts === null
+    ? { ok: false, error: "unparsable" }
+    : { ok: true, mounts };
+}
+
+async function systemViewExposure(
+  proc: ProcReader,
+  base: string,
+  directory: string,
+  context: ScanContext,
+): Promise<{ alias: string } | { ownUnreadable: string } | null> {
+  const own = await context.ownMounts();
+  if (!own.ok) return { ownUnreadable: own.error };
+  const ownMounts = own.mounts;
+  const foreign = await readOptional(() => proc.readFile(`${base}/mountinfo`));
+  if (!("value" in foreign)) return null;
+  const foreignMounts = parseMountinfo(foreign.value);
+  if (foreignMounts === null) return null;
+  const ownIds = new Set(ownMounts.map((entry) => entry.id));
+  if (foreignMounts.every((entry) => ownIds.has(entry.id))) return null;
+  const mount = ownMounts
+    .filter((entry) => mountContains(directory, entry.point))
+    .sort((a, b) => b.point.length - a.point.length)[0];
+  if (mount === undefined) return null;
+  const filesystemPath = path.posix.join(
+    mount.root,
+    path.posix.relative(mount.point, directory),
+  );
+  for (const entry of foreignMounts) {
+    if (entry.device !== mount.device) continue;
+    const alias = mountContains(filesystemPath, entry.root)
+      ? path.posix.join(
+          entry.point,
+          path.posix.relative(entry.root, filesystemPath),
+        )
+      : mountContains(entry.root, filesystemPath)
+        ? entry.point
+        : null;
+    if (alias === null) continue;
+    if (
+      ownMounts.some(
+        (candidate) =>
+          candidate.device === entry.device &&
+          candidate.root === entry.root &&
+          candidate.point === entry.point,
+      )
+    )
+      continue;
+    return { alias };
+  }
+  return null;
 }
 
 const GONE_CODES = new Set(["ENOENT", "ESRCH", "ENOTDIR"]);
@@ -299,6 +369,7 @@ interface ScanContext {
   final: boolean;
   tree: TreeIdsReader;
   aliases: () => Promise<string[] | null>;
+  ownMounts: () => Promise<OwnMounts>;
   acls: Map<string, Promise<boolean | null>>;
 }
 
@@ -765,8 +836,18 @@ async function scanLinuxPaths(
   }
   if (uids[3] !== self.uid) {
     const foreignUid = uids[3];
-    if (foreignUid === undefined || (foreignUid < 1000 && self.uid !== 0))
-      return { otherUser: true };
+    if (foreignUid === undefined) return { otherUser: true };
+    if (foreignUid < 1000 && self.uid !== 0) {
+      const view = await systemViewExposure(proc, base, directory, context);
+      if (view === null) return { otherUser: true };
+      if ("ownUnreadable" in view)
+        return {
+          uncertain: `process ${pid} system uid ${foreignUid} could not be checked because our own mountinfo is unreadable (${view.ownUnreadable})`,
+        };
+      return {
+        uncertain: `process ${pid} system uid ${foreignUid} sees the worktree at ${view.alias} through another mount namespace`,
+      };
+    }
     if (self.uid !== 0) {
       let uninspectable = false;
       for (const [leaf, through] of [
@@ -1431,12 +1512,17 @@ export async function scanLinux(
     return listed;
   };
   let aliases: Promise<string[] | null> | null = null;
+  let ownMounts: Promise<OwnMounts> | null = null;
   const context: ScanContext = {
     final: limits.final === true,
     tree,
     aliases: () => {
       aliases ??= worktreeAliases(proc, directory);
       return aliases;
+    },
+    ownMounts: () => {
+      ownMounts ??= readOwnMounts(proc);
+      return ownMounts;
     },
     acls: new Map(),
   };
