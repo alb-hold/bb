@@ -22,7 +22,6 @@ import {
   isWorktreePreservedError,
   nonInteractiveFetchEnvironment,
   replayedCredentialHelpers,
-  systemConfigIgnored,
 } from "./host/worktree-preservation.js";
 import { removeWorktree } from "./host/worktree.js";
 
@@ -224,7 +223,11 @@ describe("the credential helpers the fetch replays", () => {
   const configured = (
     entries: [string, string][],
     origin = "file:/home/user/.gitconfig",
-  ) => entries.map(([key, value]) => `${origin}\0${key}\n${value}\0`).join("");
+    scope = "global",
+  ) =>
+    entries
+      .map(([key, value]) => `${scope}\0${origin}\0${key}\n${value}\0`)
+      .join("");
 
   it("replays shell, store and cache helpers and resets in config order, with their URL scope", () => {
     expect(
@@ -256,12 +259,20 @@ describe("the credential helpers the fetch replays", () => {
     });
   });
 
-  it("replays helpers read from a config file only, never one from the command line, a blob or standard input", () => {
+  it("replays system and global helpers read from a config file only, never one from the repository, its worktree, the command line, a blob or standard input", () => {
     const helper: [string, string][] = [["credential.helper", "!echo h"]];
 
     expect(
-      replayedCredentialHelpers(configured(helper, "file:/etc/gitconfig")).env,
+      replayedCredentialHelpers(
+        configured(helper, "file:/etc/gitconfig", "system"),
+      ).env,
     ).toEqual({ BB_FETCH_CREDENTIAL_HELPER_0: "!echo h" });
+    for (const scope of ["local", "worktree", "command"])
+      expect(
+        replayedCredentialHelpers(
+          configured(helper, "file:/repo/.git/config", scope),
+        ),
+      ).toEqual({ args: [], env: {} });
     for (const origin of ["command line:", "blob:0123abcd", "standard input:"])
       expect(replayedCredentialHelpers(configured(helper, origin))).toEqual({
         args: [],
@@ -307,39 +318,10 @@ describe("the credential helpers the fetch replays", () => {
         configured([
           ["credential.usehttppath", "!echo no"],
           ["credential.https://a.example/?x=1.helper", "!echo no"],
-        ]) + "file:/home/user/.gitconfig\0credential.helper\0",
+        ]) + "global\0file:/home/user/.gitconfig\0credential.helper\0",
       ),
     ).toEqual({ args: [], env: {} });
     expect(replayedCredentialHelpers("")).toEqual({ args: [], env: {} });
-  });
-});
-
-describe("whether GIT_CONFIG_NOSYSTEM makes git skip the system file", () => {
-  it.each([
-    "1",
-    "2",
-    "-1",
-    "1k",
-    " 1",
-    "true",
-    "TRUE",
-    "Yes",
-    "on",
-    "maybe",
-    "1 ",
-  ])("skips it for %j, as git does or by dying", (value) => {
-    expect(systemConfigIgnored(value)).toBe(true);
-  });
-
-  it.each(["", "0", "00", "0x0", "0k", "false", "FALSE", "no", "off"])(
-    "reads it for %j, as git does",
-    (value) => {
-      expect(systemConfigIgnored(value)).toBe(false);
-    },
-  );
-
-  it("reads it when the variable is not set", () => {
-    expect(systemConfigIgnored(undefined)).toBe(false);
   });
 });
 

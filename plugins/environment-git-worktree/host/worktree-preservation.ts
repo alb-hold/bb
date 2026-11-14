@@ -373,14 +373,8 @@ export function nonInteractiveFetchEnvironment(
   };
 }
 const CREDENTIAL_HELPER_KEYS = "^credential\\..*helper$";
-const SYSTEM_CONFIG_FILE = "--system";
-const GLOBAL_CONFIG_FILE = "--global";
+const TRUSTED_SCOPES = new Set(["system", "global"]);
 const FILE_ORIGIN = "file:";
-const GIT_FALSE = /^(?:|false|no|off|\s*[+-]?(?:0x)?0+[kmg]?)$/iu;
-
-export function systemConfigIgnored(value: string | undefined): boolean {
-  return value !== undefined && !GIT_FALSE.test(value);
-}
 const NON_INTERACTIVE_HELPER = /^(?:!|(?:store|cache)(?:\s|$))/u;
 const DIALOG_HELPER =
   /osxkeychain|credential-manager|manager-core|wincred|libsecret|(?:^|[\s!/])manager(?:\s|$)/u;
@@ -400,10 +394,13 @@ export function replayedCredentialHelpers(configured: string): {
   const args: string[] = [];
   const env: Record<string, string> = {};
   const fields = configured.split("\0");
-  for (let index = 0; index + 1 < fields.length; index += 2) {
-    const origin = fields[index];
-    const entry = fields[index + 1];
-    if (origin === undefined || entry === undefined) continue;
+  for (let index = 0; index + 2 < fields.length; index += 3) {
+    const scope = fields[index];
+    const origin = fields[index + 1];
+    const entry = fields[index + 2];
+    if (scope === undefined || origin === undefined || entry === undefined)
+      continue;
+    if (!TRUSTED_SCOPES.has(scope)) continue;
     if (!origin.startsWith(FILE_ORIGIN)) continue;
     const newline = entry.indexOf("\n");
     if (newline === -1) continue;
@@ -581,28 +578,22 @@ export async function findPreservationReasons(
             ["--no-optional-locks", "config", "--get", "core.sshCommand"],
             gitOptions,
           );
-          const trusted: string[] = [];
-          const effective = { ...process.env, ...gitOptions.env };
-          const files = systemConfigIgnored(effective.GIT_CONFIG_NOSYSTEM)
-            ? [GLOBAL_CONFIG_FILE]
-            : [SYSTEM_CONFIG_FILE, GLOBAL_CONFIG_FILE];
-          for (const file of files) {
-            const helpers = await runGit(
-              [
-                "--no-optional-locks",
-                "config",
-                "--null",
-                file,
-                "--no-includes",
-                "--show-origin",
-                "--get-regexp",
-                CREDENTIAL_HELPER_KEYS,
-              ],
-              gitOptions,
-            );
-            if (helpers.exitCode === 0) trusted.push(helpers.stdout);
-          }
-          const replayed = replayedCredentialHelpers(trusted.join(""));
+          const helpers = await runGit(
+            [
+              "--no-optional-locks",
+              "config",
+              "--null",
+              "--no-includes",
+              "--show-scope",
+              "--show-origin",
+              "--get-regexp",
+              CREDENTIAL_HELPER_KEYS,
+            ],
+            gitOptions,
+          );
+          const replayed = replayedCredentialHelpers(
+            helpers.exitCode === 0 ? helpers.stdout : "",
+          );
           const fetched = await runGit(
             [
               "-c",
