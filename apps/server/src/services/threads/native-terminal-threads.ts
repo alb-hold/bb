@@ -1458,6 +1458,15 @@ const NATIVE_TERMINAL_DISCONNECT_CODES: ReadonlySet<string> = new Set([
 ]);
 
 function interruptedAfterInput(error: unknown): unknown {
+  if (isNativeTerminalInteractionOpenError(error)) {
+    return new TerminalInputInterruptedError(
+      new ApiError(
+        409,
+        "native_terminal_input_interrupted",
+        "A question or approval opened in the native session after part of the message was typed into it, so it was not submitted. Answer it in the terminal and check the input box before sending again.",
+      ),
+    );
+  }
   if (
     !(error instanceof ApiError) ||
     error instanceof TerminalInputInterruptedError ||
