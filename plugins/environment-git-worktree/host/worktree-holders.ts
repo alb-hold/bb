@@ -172,6 +172,7 @@ function parseMountinfo(text: string): Mount[] | null {
       !/^\d+:\d+$/u.test(fields[2] ?? "")
     )
       return null;
+    if (fields[separator + 1] === "nsfs") continue;
     const decode = (value: string | undefined): string | null => {
       if (value === undefined || !value.startsWith("/")) return null;
       const decoded = value.replace(
@@ -233,37 +234,84 @@ async function worktreeAliases(
   return [...aliases];
 }
 
+type WorktreeView = "unknown" | "hidden" | "mirrored" | { alias: string };
+
+async function foreignWorktreeView(
+  proc: ProcReader,
+  base: string,
+  directory: string,
+  mountNamespace: string,
+): Promise<WorktreeView> {
+  const canonical = await readOptional(() => proc.realpath(directory));
+  if (!("value" in canonical) || canonical.value !== directory)
+    return "unknown";
+  const namespace = await readOptional(() => proc.readlink(`${base}/ns/mnt`));
+  if (!("value" in namespace) || namespace.value === mountNamespace)
+    return "unknown";
+  const own = await readOptional(() => proc.readFile("/proc/self/mountinfo"));
+  const foreign = await readOptional(() => proc.readFile(`${base}/mountinfo`));
+  if (!("value" in own) || !("value" in foreign)) return "unknown";
+  const ownMounts = parseMountinfo(own.value);
+  const foreignMounts = parseMountinfo(foreign.value);
+  if (ownMounts === null || foreignMounts === null) return "unknown";
+  return worktreeExposure(ownMounts, foreignMounts, directory);
+}
+
+function viewKeepsPaths(view: WorktreeView): boolean {
+  return view === "hidden" || view === "mirrored";
+}
+
 async function foreignMountsExcludeWorktree(
   proc: ProcReader,
   base: string,
   directory: string,
   mountNamespace: string,
 ): Promise<boolean> {
-  const canonical = await readOptional(() => proc.realpath(directory));
-  if (!("value" in canonical) || canonical.value !== directory) return false;
-  const namespace = await readOptional(() => proc.readlink(`${base}/ns/mnt`));
-  if (!("value" in namespace) || namespace.value === mountNamespace)
-    return false;
-  const own = await readOptional(() => proc.readFile("/proc/self/mountinfo"));
-  const foreign = await readOptional(() => proc.readFile(`${base}/mountinfo`));
-  if (!("value" in own) || !("value" in foreign)) return false;
-  const ownMounts = parseMountinfo(own.value);
-  const foreignMounts = parseMountinfo(foreign.value);
-  if (ownMounts === null || foreignMounts === null) return false;
+  return (
+    (await foreignWorktreeView(proc, base, directory, mountNamespace)) ===
+    "hidden"
+  );
+}
+
+function worktreeExposure(
+  ownMounts: Mount[],
+  foreignMounts: Mount[],
+  directory: string,
+): WorktreeView {
   const mount = ownMounts
     .filter((entry) => mountContains(directory, entry.point))
     .sort((a, b) => b.point.length - a.point.length)[0];
-  if (mount === undefined) return false;
+  if (mount === undefined) return "unknown";
   const filesystemPath = path.posix.join(
     mount.root,
     path.posix.relative(mount.point, directory),
   );
-  return !foreignMounts.some(
-    (entry) =>
-      entry.device === mount.device &&
-      (mountContains(filesystemPath, entry.root) ||
-        mountContains(entry.root, filesystemPath)),
-  );
+  let mirrored = false;
+  for (const entry of foreignMounts) {
+    if (entry.device !== mount.device) continue;
+    const alias = mountContains(filesystemPath, entry.root)
+      ? path.posix.join(
+          entry.point,
+          path.posix.relative(entry.root, filesystemPath),
+        )
+      : mountContains(entry.root, filesystemPath)
+        ? entry.point
+        : null;
+    if (alias === null) continue;
+    if (
+      ownMounts.some(
+        (candidate) =>
+          candidate.device === entry.device &&
+          candidate.root === entry.root &&
+          candidate.point === entry.point,
+      )
+    ) {
+      mirrored = true;
+      continue;
+    }
+    return { alias };
+  }
+  return mirrored ? "mirrored" : "hidden";
 }
 
 type OwnMounts = { ok: true; mounts: Mount[] } | { ok: false; error: string };
@@ -328,37 +376,8 @@ async function systemViewExposure(
   if (foreignMounts === null) return null;
   const ownIds = new Set(ownMounts.map((entry) => entry.id));
   if (foreignMounts.every((entry) => ownIds.has(entry.id))) return null;
-  const mount = ownMounts
-    .filter((entry) => mountContains(directory, entry.point))
-    .sort((a, b) => b.point.length - a.point.length)[0];
-  if (mount === undefined) return null;
-  const filesystemPath = path.posix.join(
-    mount.root,
-    path.posix.relative(mount.point, directory),
-  );
-  for (const entry of foreignMounts) {
-    if (entry.device !== mount.device) continue;
-    const alias = mountContains(filesystemPath, entry.root)
-      ? path.posix.join(
-          entry.point,
-          path.posix.relative(entry.root, filesystemPath),
-        )
-      : mountContains(entry.root, filesystemPath)
-        ? entry.point
-        : null;
-    if (alias === null) continue;
-    if (
-      ownMounts.some(
-        (candidate) =>
-          candidate.device === entry.device &&
-          candidate.root === entry.root &&
-          candidate.point === entry.point,
-      )
-    )
-      continue;
-    return { alias };
-  }
-  return null;
+  const exposure = worktreeExposure(ownMounts, foreignMounts, directory);
+  return typeof exposure === "string" ? null : exposure;
 }
 
 const GONE_CODES = new Set(["ENOENT", "ESRCH", "ENOTDIR"]);
@@ -842,12 +861,9 @@ async function scanMountAliases(
         "value" in taskNamespace &&
         taskNamespace.value !== mountNamespace &&
         (!("value" in namespace) || taskNamespace.value !== namespace.value) &&
-        !(await foreignMountsExcludeWorktree(
-          proc,
-          taskBase,
-          directory,
-          mountNamespace,
-        ))
+        !viewKeepsPaths(
+          await foreignWorktreeView(proc, taskBase, directory, mountNamespace),
+        )
       )
         identityDoubt = `${taskBase} mount isolation could not be proven`;
     }
@@ -866,11 +882,15 @@ async function scanMountAliases(
     "value" in namespace &&
     namespace.value !== mountNamespace
   ) {
-    if (
-      await foreignMountsExcludeWorktree(proc, base, directory, mountNamespace)
-    )
-      return { isolated: true };
-    doubt = `process ${pid} runs in another mount namespace without proven mount isolation`;
+    const view = await foreignWorktreeView(
+      proc,
+      base,
+      directory,
+      mountNamespace,
+    );
+    if (view === "hidden") return { isolated: true };
+    if (view !== "mirrored")
+      doubt = `process ${pid} runs in another mount namespace without proven mount isolation`;
   }
   const current = await readOptional(() => proc.readFile(`${base}/status`));
   if ("gone" in current) return current;
