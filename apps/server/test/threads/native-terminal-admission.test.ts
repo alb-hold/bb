@@ -2233,6 +2233,60 @@ describe("an open question in a native terminal", () => {
     });
   }, 30_000);
 
+  it("holds a tell to a pending thread with a running terminal when a question opens before the paste, and delivers it once after the question closes", async () => {
+    const fixture = await createFixture();
+    const { open, thread } = await openRunningNativeThread(fixture, {
+      providerId: "codex",
+    });
+    const cli = startFakeCli(fixture, open.terminalId);
+    const setStatus = (status: "pending" | "idle") =>
+      fixture.harness.db
+        .update(threads)
+        .set({ status })
+        .where(eq(threads.id, thread.id))
+        .run();
+    try {
+      setStatus("pending");
+      let interactionId = "";
+      const terminalSessions = fixture.harness.deps.terminalSessions;
+      const readTerminalOutput =
+        terminalSessions.readTerminalOutput.bind(terminalSessions);
+      vi.spyOn(terminalSessions, "readTerminalOutput").mockImplementationOnce(
+        async (...args) => {
+          interactionId = openQuestionOnPendingThread(fixture, thread.id);
+          return readTerminalOutput(...args);
+        },
+      );
+
+      const sent = await sendToThread(
+        fixture,
+        thread.id,
+        "use the staging host",
+      );
+      await settle();
+
+      expect(typed(cli)).toEqual([]);
+      expect(sent.delivery).toBe("queued");
+      const rows = queuedRows(fixture, thread.id);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.waitingOn).toEqual({ kind: "interaction" });
+
+      setStatus("idle");
+      fixture.harness.deps.pendingInteractions.interruptPendingInteraction({
+        interactionId,
+        reason: "Dismissed",
+      });
+      await drainQueue(fixture);
+      await new Promise((resolve) => setTimeout(resolve, 1_100));
+      await drainQueue(fixture);
+
+      expect(typed(cli)).toEqual([PASTE, "\r"]);
+      expect(queuedRows(fixture, thread.id)).toEqual([]);
+    } finally {
+      cli.stop();
+    }
+  }, 30_000);
+
   it.each(["answered", "dismissed", "interrupted"] as const)(
     "holds a tell while a question is open, leaves the question pending, and delivers the tell once after it is %s",
     async (how) => {
