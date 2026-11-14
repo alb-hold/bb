@@ -1,5 +1,5 @@
 import { setTimeout as sleep } from "node:timers/promises";
-import { markThreadDeleted, projects } from "@bb/db";
+import { getThread, markThreadDeleted, projects } from "@bb/db";
 import { eq } from "drizzle-orm";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -10,6 +10,7 @@ import { requestThreadStorageDeletion } from "../../src/services/threads/thread-
 import {
   listQueuedCommands,
   reportQueuedCommandError,
+  reportQueuedCommandSuccess,
   waitForQueuedCommand,
   type QueuedCommand,
 } from "../helpers/commands.js";
@@ -61,13 +62,12 @@ function seedDeletedThreads(
   });
   const threadIds: string[] = [];
   for (let index = 0; index < count; index += 1) {
-    const thread = seedThread(harness.deps, {
-      environmentId: environment.id,
-      projectId: project.id,
-      status: "idle",
-    });
-    markThreadDeleted(harness.db, harness.hub, { threadId: thread.id });
-    threadIds.push(thread.id);
+    threadIds.push(
+      seedDeletedThreadIn(harness, {
+        environmentId: environment.id,
+        projectId: project.id,
+      }),
+    );
   }
   return {
     environment: { hostId: host.id, id: environment.id },
@@ -76,9 +76,23 @@ function seedDeletedThreads(
   };
 }
 
+function seedDeletedThreadIn(
+  harness: TestAppHarness,
+  args: { environmentId: string; projectId: string },
+): string {
+  const thread = seedThread(harness.deps, {
+    environmentId: args.environmentId,
+    projectId: args.projectId,
+    status: "idle",
+  });
+  markThreadDeleted(harness.db, harness.hub, { threadId: thread.id });
+  return thread.id;
+}
+
 async function refuseQueuedStorageDeletes(
   harness: TestAppHarness,
   atMs: number,
+  releasedThreadIds: ReadonlySet<string> = new Set(),
 ): Promise<StorageDeleteRequest[]> {
   await sleep(5);
   const queued: QueuedCommand[] = [];
@@ -92,6 +106,12 @@ async function refuseQueuedStorageDeletes(
   for (const entry of queued) {
     if (entry.command.type !== "thread.storage.delete") continue;
     requests.push({ atMs, threadId: entry.command.threadId });
+    if (releasedThreadIds.has(entry.command.threadId)) {
+      await reportQueuedCommandSuccess(harness, entry, {
+        providerCheckpointId: null,
+      });
+      continue;
+    }
     await reportQueuedCommandError(harness, entry, {
       errorCode: "path_in_use",
       errorMessage:
@@ -128,6 +148,8 @@ function maxRequestsInAnyMinute(requests: StorageDeleteRequest[]): number {
 describe("refused thread storage deletes", () => {
   it("backs off one refused thread instead of rescanning it on every tick", async () => {
     await withTestHarness(async (harness) => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(START_MS);
       const { projectId, threadIds } = seedDeletedThreads(harness, 1);
       harness.db
         .update(projects)
@@ -139,7 +161,6 @@ describe("refused thread storage deletes", () => {
         pluginSchedules: harness.pluginService,
         plugins: harness.pluginService,
       };
-      vi.useFakeTimers({ toFake: ["Date"] });
       const requests: StorageDeleteRequest[] = [];
       for (let offset = 0; offset < HOUR_MS; offset += TICK_MS) {
         vi.setSystemTime(START_MS + offset);
@@ -165,8 +186,9 @@ describe("refused thread storage deletes", () => {
     },
     async () => {
       await withTestHarness(async (harness) => {
-        const { threadIds } = seedDeletedThreads(harness, 1_000);
         vi.useFakeTimers({ toFake: ["Date"] });
+        vi.setSystemTime(START_MS);
+        const { threadIds } = seedDeletedThreads(harness, 1_000);
         const requests: StorageDeleteRequest[] = [];
         for (let offset = 0; offset < HOUR_MS; offset += CAP_TICK_MS) {
           vi.setSystemTime(START_MS + offset);
@@ -190,13 +212,13 @@ describe("refused thread storage deletes", () => {
   );
 
   it(
-    "keeps one host's refused backlog from delaying another host's delete",
+    "requests another host's due delete on the first tick while one host has a thousand due",
     { timeout: 120_000 },
     async () => {
       await withTestHarness(async (harness) => {
-        const backlog = seedDeletedThreads(harness, 1_000, "host-backlog");
         vi.useFakeTimers({ toFake: ["Date"] });
         vi.setSystemTime(START_MS);
+        const backlog = seedDeletedThreads(harness, 1_000, "host-backlog");
         for (const threadId of backlog.threadIds) {
           requestThreadStorageDeletion(
             harness.deps,
@@ -223,4 +245,47 @@ describe("refused thread storage deletes", () => {
       });
     },
   );
+
+  it("retries a refused thread within one slot of its retry time while fresh deletes keep arriving", async () => {
+    await withTestHarness(async (harness) => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(START_MS);
+      const seeded = seedDeletedThreads(harness, 1);
+      const refusedThreadId = seeded.threadIds[0] ?? "";
+      const holderReleasedAtMs = 30_000;
+      const refusedThreadRetryAtMs = 60_000;
+      const released = new Set<string>();
+      const refusedThreadRequests: number[] = [];
+      for (let offset = 0; offset < 30 * 60_000; offset += TICK_MS) {
+        vi.setSystemTime(START_MS + offset);
+        if (offset % 60_000 === 50_000) {
+          seedDeletedThreadIn(harness, {
+            environmentId: seeded.environment.id,
+            projectId: seeded.projectId,
+          });
+        }
+        if (offset >= holderReleasedAtMs) released.add(refusedThreadId);
+        await runThreadLifecycleSweep(harness.deps);
+        const requests = await refuseQueuedStorageDeletes(
+          harness,
+          offset,
+          released,
+        );
+        for (const request of requests) {
+          if (request.threadId === refusedThreadId) {
+            refusedThreadRequests.push(request.atMs);
+          }
+        }
+        if (refusedThreadRequests.length > 1) break;
+      }
+      await runThreadLifecycleSweep(harness.deps);
+      vi.useRealTimers();
+
+      expect(refusedThreadRequests[0]).toBe(0);
+      expect(refusedThreadRequests[1]).toBeLessThanOrEqual(
+        refusedThreadRetryAtMs + 60_000,
+      );
+      expect(getThread(harness.db, refusedThreadId)).toBeNull();
+    });
+  });
 });

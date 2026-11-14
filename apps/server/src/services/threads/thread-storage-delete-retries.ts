@@ -12,7 +12,6 @@ interface RefusedThreadStorageDelete {
 
 interface ThreadStorageDeleteRetryState {
   gatedDispatchTimesByHost: Map<string, number[]>;
-  lastAttemptAt: Map<string, number>;
   refused: Map<string, RefusedThreadStorageDelete>;
 }
 
@@ -23,7 +22,6 @@ function retryState(db: object): ThreadStorageDeleteRetryState {
   if (existing) return existing;
   const created: ThreadStorageDeleteRetryState = {
     gatedDispatchTimesByHost: new Map(),
-    lastAttemptAt: new Map(),
     refused: new Map(),
   };
   retryStateByDb.set(db, created);
@@ -53,11 +51,8 @@ export function admitThreadStorageDelete(
     threadId: string;
   },
 ): boolean {
+  if (args.gate === "none") return true;
   const state = retryState(db);
-  if (args.gate === "none") {
-    state.lastAttemptAt.set(args.threadId, args.now);
-    return true;
-  }
   if (args.gate === "backoff-and-cap") {
     const refused = state.refused.get(args.threadId);
     if (refused && args.now < refused.retryAt) return false;
@@ -67,7 +62,6 @@ export function admitThreadStorageDelete(
     return false;
   }
   hostDispatches.push(args.now);
-  state.lastAttemptAt.set(args.threadId, args.now);
   return true;
 }
 
@@ -90,26 +84,22 @@ export function forgetThreadStorageDelete(db: object, threadId: string): void {
   const state = retryStateByDb.get(db);
   if (!state) return;
   state.refused.delete(threadId);
-  state.lastAttemptAt.delete(threadId);
 }
 
-export function orderThreadStorageDeleteRetries<T extends { id: string }>(
-  db: object,
-  pendingThreads: readonly T[],
-): T[] {
+export function orderThreadStorageDeleteRetries<
+  T extends { deletedAt: number; id: string },
+>(db: object, pendingThreads: readonly T[]): T[] {
   const state = retryState(db);
   const pendingIds = new Set(pendingThreads.map((thread) => thread.id));
-  for (const threadId of state.lastAttemptAt.keys()) {
-    if (!pendingIds.has(threadId)) state.lastAttemptAt.delete(threadId);
-  }
   for (const threadId of state.refused.keys()) {
     if (!pendingIds.has(threadId)) state.refused.delete(threadId);
   }
-  const attemptedAt = (thread: T) =>
-    state.lastAttemptAt.get(thread.id) ?? Number.NEGATIVE_INFINITY;
+  const dueAt = (thread: T) =>
+    state.refused.get(thread.id)?.retryAt ?? thread.deletedAt;
   return [...pendingThreads].sort((left, right) => {
-    const leftAt = attemptedAt(left);
-    const rightAt = attemptedAt(right);
-    return leftAt < rightAt ? -1 : leftAt > rightAt ? 1 : 0;
+    const leftDueAt = dueAt(left);
+    const rightDueAt = dueAt(right);
+    if (leftDueAt !== rightDueAt) return leftDueAt - rightDueAt;
+    return left.id < right.id ? -1 : left.id > right.id ? 1 : 0;
   });
 }

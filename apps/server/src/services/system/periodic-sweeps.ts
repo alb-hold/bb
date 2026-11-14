@@ -395,6 +395,7 @@ async function runThreadProvisioningOrphanCleanupSweep(
   }
   const deletedThreads = deps.db
     .select({
+      deletedAt: threads.deletedAt,
       environmentId: threads.environmentId,
       id: threads.id,
       storageDeletedAt: threads.storageDeletedAt,
@@ -402,7 +403,11 @@ async function runThreadProvisioningOrphanCleanupSweep(
     .from(threads)
     .where(isNotNull(threads.deletedAt))
     .all();
-  const pendingStorageDeletion: typeof deletedThreads = [];
+  const pendingStorageDeletion: {
+    deletedAt: number;
+    environmentId: string | null;
+    id: string;
+  }[] = [];
   for (const thread of deletedThreads) {
     deps.terminalSessions.closeDeletedThreadTerminals({ threadId: thread.id });
     if (thread.storageDeletedAt !== null) {
@@ -410,7 +415,12 @@ async function runThreadProvisioningOrphanCleanupSweep(
       finalizeStoppedThread(deps, { threadId: thread.id });
       continue;
     }
-    pendingStorageDeletion.push(thread);
+    if (thread.deletedAt === null) continue;
+    pendingStorageDeletion.push({
+      deletedAt: thread.deletedAt,
+      environmentId: thread.environmentId,
+      id: thread.id,
+    });
   }
   for (const thread of orderThreadStorageDeleteRetries(
     deps.db,
