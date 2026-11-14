@@ -108,7 +108,6 @@ function mappedPath(line: string): string {
 
 type Mount = {
   id: string;
-  parent: string;
   device: string;
   root: string;
   point: string;
@@ -140,7 +139,6 @@ function parseMountinfo(text: string): Mount[] | null {
     if (mountRoot === null || point === null) return null;
     mounts.push({
       id: fields[0]!,
-      parent: fields[1]!,
       device: fields[2]!,
       root: mountRoot,
       point,
@@ -220,15 +218,6 @@ async function foreignMountsExcludeWorktree(
   );
 }
 
-function visibleMounts(mounts: Mount[], target: string): Mount[] {
-  const covering = mounts.filter((entry) => mountContains(target, entry.point));
-  const depth = Math.max(...covering.map((entry) => entry.point.length));
-  const stacked = covering.filter((entry) => entry.point.length === depth);
-  return stacked.filter(
-    (entry) => !stacked.some((other) => other.parent === entry.id),
-  );
-}
-
 async function systemViewExposure(
   proc: ProcReader,
   base: string,
@@ -260,8 +249,7 @@ async function systemViewExposure(
       : mountContains(entry.root, filesystemPath)
         ? entry.point
         : null;
-    if (alias === null || !visibleMounts(foreignMounts, alias).includes(entry))
-      continue;
+    if (alias === null) continue;
     if (
       ownMounts.some(
         (candidate) =>
