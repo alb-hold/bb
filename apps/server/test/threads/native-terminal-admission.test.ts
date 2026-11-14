@@ -28,7 +28,11 @@ import type {
   MessageDispatchHookContext,
   PluginHookName,
 } from "@get-bb/plugin-sdk";
-import { encodeClientTurnRequestIdNumber, threadScope } from "@bb/domain";
+import {
+  NATIVE_TERMINAL_QUESTION_REQUEST_PREFIX,
+  encodeClientTurnRequestIdNumber,
+  threadScope,
+} from "@bb/domain";
 import { eq } from "drizzle-orm";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -2125,7 +2129,7 @@ describe("an open question in a native terminal", () => {
           turnId: "native-terminal-turn",
           providerId: providerId!,
           providerThreadId: threadId,
-          providerRequestId: `question:${QUESTION_ID}`,
+          providerRequestId: `${NATIVE_TERMINAL_QUESTION_REQUEST_PREFIX}${QUESTION_ID}`,
           payload: {
             kind: "user_question",
             questions: [
