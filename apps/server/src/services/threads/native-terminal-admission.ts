@@ -113,14 +113,6 @@ function holdsCapacity(thread: Thread): boolean {
   return thread.status === "active" || thread.status === "starting";
 }
 
-async function runAdmittedWork(work: NativeTerminalAdmittedWork) {
-  if (work.when === "within-decision") {
-    work.run();
-    return;
-  }
-  await work.run();
-}
-
 function holdUntilInteractionSettles(
   deps: LoggedPendingInteractionWorkSessionDeps,
   args: NativeTerminalAdmissionArgs,
@@ -147,8 +139,10 @@ async function runAdmittedWorkOrHold(
   deps: LoggedPendingInteractionWorkSessionDeps,
   args: NativeTerminalAdmissionArgs,
 ): Promise<NativeTerminalAdmissionOutcome> {
+  const held = holdForOpenInteraction(deps, args);
+  if (held !== null) return held;
   try {
-    await runAdmittedWork(args.admitted);
+    await args.admitted.run();
     return { kind: "dispatched" };
   } catch (error) {
     if (!isNativeTerminalInteractionOpenError(error)) throw error;
@@ -209,8 +203,9 @@ export async function admitNativeTerminalDispatch(
     startedOnBehalfOf: args.startedOnBehalfOf,
   });
   const model = getNativeTerminalThread(deps.db, args.thread.id)?.model ?? null;
-  const admitted = args.admitted;
-  let admittedWithinDecision = false;
+  const withinDecision: { outcome: NativeTerminalAdmissionOutcome | null } = {
+    outcome: null,
+  };
   const outcome = await runMessageDispatchHookPass(deps, {
     thread: args.thread,
     threadResponse: toThreadResponseFromThread(deps, { thread: args.thread }),
@@ -239,22 +234,16 @@ export async function admitNativeTerminalDispatch(
     parentThreadId: args.thread.parentThreadId,
     queuedMessages: args.claimed?.map(toThreadQueuedMessage) ?? [],
     pluginSubmission: null,
-    ...(admitted.when === "within-decision"
+    ...(args.admitted.when === "within-decision"
       ? {
           continueAfterHooks: async () => {
-            admittedWithinDecision = true;
-            admitted.run();
+            withinDecision.outcome = await runAdmittedWorkOrHold(deps, args);
           },
         }
       : {}),
   });
   if (outcome.kind === "proceed") {
-    if (!admittedWithinDecision) {
-      const heldAfterDecision = holdForOpenInteraction(deps, args);
-      if (heldAfterDecision !== null) return heldAfterDecision;
-      return runAdmittedWorkOrHold(deps, args);
-    }
-    return { kind: "dispatched" };
+    return withinDecision.outcome ?? runAdmittedWorkOrHold(deps, args);
   }
   if (args.claimed !== null) {
     noteDispatchRequeued(args.thread.id);
