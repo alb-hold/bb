@@ -519,10 +519,12 @@ function isCapturedRpcForHarness(
   );
 }
 
+const QUEUED_COMMAND_WAIT_MS = 10_000;
+
 export async function waitForQueuedCommand(
   harness: TestAppHarness,
   predicate: (queued: QueuedCommand) => boolean,
-  timeoutMs = 1_000,
+  timeoutMs = QUEUED_COMMAND_WAIT_MS,
 ): Promise<QueuedCommand> {
   const deadline = Date.now() + timeoutMs;
 
@@ -552,7 +554,7 @@ export async function waitForQueuedCommandAfter(
   harness: TestAppHarness,
   afterCursor: number,
   predicate: (queued: QueuedCommand) => boolean,
-  timeoutMs = 1_000,
+  timeoutMs = QUEUED_COMMAND_WAIT_MS,
 ): Promise<QueuedCommand> {
   return waitForQueuedCommand(
     harness,

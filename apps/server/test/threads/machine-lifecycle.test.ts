@@ -153,7 +153,6 @@ describe("composed machine thread lifecycle", () => {
         const defaultPath = await waitForQueuedCommand(
           harness,
           ({ command }) => command.type === "project.clone_default_path",
-          5_000,
         );
         const hostId = defaultPath.row.hostId;
         expect(getHost(harness.db, hostId)).toMatchObject({
