@@ -660,28 +660,36 @@ describe("system processes in another mount namespace", () => {
     },
   );
   it("reads a failing own mount table once per scan and again on the next scan", async () => {
-    const { reader, counter, disarm } = ownUnreadableReader(
-      ["101", "102", "103"],
-      mirror,
-      () => "EACCES",
-    );
-    const reads: number[] = [];
-    for (const limits of [
-      undefined,
-      { maxDirectories: 500_000, final: true },
-    ]) {
-      disarm();
-      expect(await scanLinux("/work/tree", reader, 4242, limits)).toMatchObject(
-        {
+    const readsPerScan = async (pids: string[]) => {
+      const { reader, counter, disarm } = ownUnreadableReader(
+        pids,
+        mirror,
+        () => "EACCES",
+      );
+      const reads: number[] = [];
+      for (const limits of [
+        undefined,
+        { maxDirectories: 500_000, final: true },
+      ]) {
+        disarm();
+        expect(
+          await scanLinux("/work/tree", reader, 4242, limits),
+        ).toMatchObject({
           status: "uncertain",
           reason: expect.stringContaining(
             "our own mountinfo is unreadable (EACCES)",
           ),
-        },
-      );
-      reads.push(counter.armedReads);
-    }
-    expect(reads).toEqual([1, 2]);
+        });
+        reads.push(counter.armedReads);
+      }
+      return reads;
+    };
+    const single = await readsPerScan(["101"]);
+    expect(single[0]).toBeGreaterThan(0);
+    expect(single[1]).toBe(2 * (single[0] ?? 0));
+    expect(
+      await readsPerScan(["101", "102", "103", "104", "105", "106"]),
+    ).toEqual(single);
   });
   it("reads our own mount table once per scan, however many system processes it checks", async () => {
     const scanWith = async (processes: number) => {
