@@ -496,62 +496,77 @@ describe("system processes in another mount namespace", () => {
     "50 1 8:48 / / rw - ext4 /dev/sda rw\n51 50 0:5 / /proc rw - proc proc rw\n";
   const bind = (root: string, point: string) =>
     `41 40 8:48 ${root} ${point} rw - ext4 /dev/sda rw\n`;
+  const cases = [
+    [
+      "a bind mount of the worktree",
+      containerRoot + bind("/work/tree", "/app"),
+      "uncertain",
+    ],
+    [
+      "a bind mount of a worktree subfolder",
+      containerRoot + bind("/work/tree/sub", "/app"),
+      "uncertain",
+    ],
+    [
+      "a bind mount of a worktree ancestor",
+      containerRoot + bind("/work", "/data"),
+      "uncertain",
+    ],
+    [
+      "a bind mount holding an fd under a mount stacked on it",
+      containerRoot +
+        bind("/work/tree", "/app") +
+        "42 41 0:61 / /app rw - tmpfs tmpfs rw\n",
+      "uncertain",
+    ],
+    [
+      "a bind mount of a worktree subfolder hidden by a tmpfs on its parent",
+      containerRoot +
+        "41 40 8:48 /work/tree/sub /srv/app rw - ext4 /dev/sda rw\n42 40 0:61 / /srv rw - tmpfs tmpfs rw\n",
+      "uncertain",
+    ],
+    ["a mirror of our mounts", mirror, "clear"],
+    [
+      "a mirror whose worktree is hidden by a tmpfs",
+      mirror + "52 50 0:60 / /work rw - tmpfs tmpfs rw\n",
+      "clear",
+    ],
+    [
+      "a mirror of our mounts and of our alias bind",
+      mirror + "53 50 8:48 /work/tree /alias rw - ext4 /dev/sda rw\n",
+      "clear",
+    ],
+    [
+      "only another device",
+      containerRoot + "41 40 8:99 / /app rw - ext4 /dev/sdb rw\n",
+      "clear",
+    ],
+    ["our own mount namespace", null, "clear"],
+    ["an unreadable mount table", "denied", "clear"],
+  ] as const;
   it.each(
-    [0, 999].flatMap((uid) =>
-      (
-        [
-          [
-            "a bind mount of the worktree",
-            containerRoot + bind("/work/tree", "/app"),
-            "uncertain",
-          ],
-          [
-            "a bind mount of a worktree subfolder",
-            containerRoot + bind("/work/tree/sub", "/app"),
-            "uncertain",
-          ],
-          [
-            "a bind mount of a worktree ancestor",
-            containerRoot + bind("/work", "/data"),
-            "uncertain",
-          ],
-          ["a mirror of our mounts", mirror, "clear"],
-          [
-            "a mirror whose worktree is hidden by a tmpfs",
-            mirror + "52 50 0:60 / /work rw - tmpfs tmpfs rw\n",
-            "clear",
-          ],
-          [
-            "a bind mount hidden by a mount stacked on it",
-            containerRoot +
-              bind("/work/tree", "/app") +
-              "42 41 0:61 / /app rw - tmpfs tmpfs rw\n",
-            "clear",
-          ],
-          [
-            "only another device",
-            containerRoot + "41 40 8:99 / /app rw - ext4 /dev/sdb rw\n",
-            "clear",
-          ],
-          [
-            "a mirror of our mounts and of our alias bind",
-            mirror + "53 50 8:48 /work/tree /alias rw - ext4 /dev/sda rw\n",
-            "clear",
-          ],
-          ["our own mount namespace", null, "clear"],
-          ["an unreadable mount table", "denied", "clear"],
-        ] as const
-      ).map(
-        ([kind, mountinfo, expected]) =>
-          [uid, kind, mountinfo, expected] as const,
+    ["earlier", "final"].flatMap((scan) =>
+      [0, 999].flatMap((uid) =>
+        cases.map(
+          ([kind, mountinfo, expected]) =>
+            [scan, uid, kind, mountinfo, expected] as const,
+        ),
       ),
     ),
   )(
-    "checks a uid %s process that sees %s",
-    async (uid, _kind, mountinfo, expected) => {
+    "checks on the %s scan a uid %s process that sees %s",
+    async (scan, uid, kind, mountinfo, expected) => {
       const proc = mountAliasProc("/work/tree", "outside", uid);
+      const holdsFd = kind.includes("holding an fd");
       const reader: ProcReader = {
         ...proc,
+        readdir: async (target) =>
+          holdsFd && target === "/proc/101/fd" ? ["3"] : proc.readdir(target),
+        readlink: async (target) => {
+          if (holdsFd && target === "/proc/101/fd/3")
+            throw Object.assign(new Error("denied"), { code: "EACCES" });
+          return proc.readlink(target);
+        },
         readFile: async (target) => {
           if (target !== "/proc/101/mountinfo") return proc.readFile(target);
           if (mountinfo === "denied")
@@ -559,7 +574,16 @@ describe("system processes in another mount namespace", () => {
           return mountinfo ?? proc.readFile("/proc/self/mountinfo");
         },
       };
-      expect(await scanLinux("/work/tree", reader, 4242)).toMatchObject(
+      expect(
+        await scanLinux(
+          "/work/tree",
+          reader,
+          4242,
+          scan === "final"
+            ? { maxDirectories: 500_000, final: true }
+            : undefined,
+        ),
+      ).toMatchObject(
         expected === "uncertain"
           ? {
               status: "uncertain",
