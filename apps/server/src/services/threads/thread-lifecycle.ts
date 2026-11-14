@@ -1,3 +1,4 @@
+import { setImmediate as yieldToEventLoop } from "node:timers/promises";
 import { advanceEnvironmentProvisioning } from "../environments/environment-engine.js";
 import { assertNotNativeTerminalThread } from "./native-terminal-guard.js";
 import { revokeThreadDesktopBrowserControl } from "../desktop-browsers.js";
@@ -19,6 +20,8 @@ import {
 import {
   getLatestThreadSequence,
   deleteThread,
+  hasThreadPurgeBacklog,
+  purgeThreadRows,
   environments,
   events,
   getEnvironment,
@@ -1920,6 +1923,33 @@ export function interruptActiveThreadsForHost(
   });
 }
 
+const threadPurgesInFlight = new Set<string>();
+
+export async function purgeDeletedThreadRows(
+  deps: Pick<LoggedPendingInteractionWorkSessionDeps, "db" | "logger">,
+  threadId: string,
+): Promise<void> {
+  if (threadPurgesInFlight.has(threadId)) return;
+  const thread = getThread(deps.db, threadId);
+  if (
+    thread === null ||
+    thread.deletedAt === null ||
+    (thread.environmentId !== null && thread.storageDeletedAt === null) ||
+    providerEnvironmentHasPendingWork(deps.db, threadId) ||
+    !hasThreadPurgeBacklog(deps.db, threadId)
+  )
+    return;
+  threadPurgesInFlight.add(threadId);
+  try {
+    const deleted = await purgeThreadRows(deps.db, threadId, {
+      yieldToEventLoop,
+    });
+    deps.logger.info({ deleted, threadId }, "Purged deleted thread rows");
+  } finally {
+    threadPurgesInFlight.delete(threadId);
+  }
+}
+
 export function finalizeStoppedThread(
   deps: LoggedPendingInteractionWorkSessionDeps,
   args: FinalizeStoppedThreadArgs,
@@ -2041,6 +2071,7 @@ export function finalizeStoppedThreadInTransaction(
     )
       return;
     if (providerEnvironmentHasPendingWork(deps.db, finalizedThread.id)) return;
+    if (hasThreadPurgeBacklog(deps.db, finalizedThread.id)) return;
     deleteThread(deps.db, deps.hub, finalizedThread.id);
     if (finalizedThread.environmentId !== null)
       refreshProviderRetirement(deps, finalizedThread.environmentId);

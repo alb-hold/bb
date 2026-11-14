@@ -62,6 +62,7 @@ import {
 import {
   finalizeStoppedThread,
   hasLiveThreadStartInFlight,
+  purgeDeletedThreadRows,
   requestThreadStopForCurrentState,
   requestThreadStorageDeletion,
 } from "../threads/thread-lifecycle.js";
@@ -403,6 +404,7 @@ async function runThreadProvisioningOrphanCleanupSweep(
   for (const thread of deletedThreads) {
     deps.terminalSessions.closeDeletedThreadTerminals({ threadId: thread.id });
     if (thread.storageDeletedAt !== null) {
+      await purgeDeletedThreadRows(deps, thread.id);
       finalizeStoppedThread(deps, { threadId: thread.id });
       continue;
     }
