@@ -111,6 +111,20 @@ export type {
   QueuedMessageDispatchRetryRef,
 } from "./fork-queued-message-retries.js";
 export {
+  clearNativeTerminalDeliveryMarks,
+  deleteNativeTerminalDeliveryWarning,
+  insertNativeTerminalDeliveryWarning,
+  listNativeTerminalDeliveryMarks,
+  listLegacyNativeTerminalDeliveryTables,
+  listNativeTerminalDeliveryWarnings,
+  listUnsettledNativeTerminalDeliveryMarks,
+  markNativeTerminalDeliveriesSubmitting,
+  markNativeTerminalDeliveryUncertain,
+  pruneSettledOrphanedNativeTerminalDeliveryMarks,
+  type NativeTerminalDeliveryMark,
+  type NativeTerminalDeliveryWarning,
+} from "./fork-native-terminal-deliveries.js";
+export {
   listStoredDaemonReplayKeys,
   recordDaemonReplayKeys,
 } from "./fork-daemon-event-replay-keys.js";
@@ -611,6 +625,7 @@ export {
   releaseQueuedThreadMessageEditHold,
   requeueClaimedQueuedThreadMessages,
   setQueuedThreadMessageFailureReason,
+  failQueuedThreadMessagesWithoutRetry,
   setQueuedThreadMessageWaitingOn,
   releaseStaleQueuedMessageClaims,
   reorderQueuedThreadMessage,

@@ -20,6 +20,7 @@ import {
   rebindNativeTerminalThreadSessionId,
   clearNativeTerminalThreadEvidence,
   setNativeTerminalThreadTerminal,
+  type DbTransaction,
   type NativeTerminalThreadRecord,
 } from "@bb/db";
 import {
@@ -35,7 +36,7 @@ import type {
   OpenNativeTerminalRequest,
   TerminalSession,
 } from "@bb/server-contract";
-import { ApiError } from "../../errors.js";
+import { ApiError, TerminalInputInterruptedError } from "../../errors.js";
 import type {
   AppDeps,
   LoggedPendingInteractionWorkSessionDeps,
@@ -286,6 +287,7 @@ export function beginNativeTerminalThreadProvisioning(
     input: PromptInput[];
     thread: ThreadRow;
     titleProvided: boolean;
+    beforeStartInTransaction?: (tx: DbTransaction) => void;
   },
 ): void {
   const started = deps.db.transaction(
@@ -295,6 +297,7 @@ export function beginNativeTerminalThreadProvisioning(
         { event: { type: "run.preparing" }, threadId: args.thread.id },
       );
       if (!prepared.applied) return false;
+      args.beforeStartInTransaction?.(tx);
       saveThreadProvisionContext({
         replace: true,
         db: tx,
@@ -1416,33 +1419,85 @@ async function deliverNativeTerminalMessage(
     ) {
       throw nativeTerminalInputAmbiguous(provider, 0);
     }
-    return submitNativeTerminalInput(deps, terminalId);
+    return submitNativeTerminalInput(deps, { inputSent: false }, terminalId);
   }
-  for (const [pastedBefore, text] of args.pastes.entries()) {
-    await pasteIntoNativeTerminal(deps, {
-      pastedBefore,
-      provider,
-      screenRows: view.terminal.rows,
-      terminalId,
-      text,
-    });
+  const delivery: NativeTerminalDelivery = { inputSent: false };
+  try {
+    for (const [pastedBefore, text] of args.pastes.entries()) {
+      await pasteIntoNativeTerminal(deps, {
+        delivery,
+        pastedBefore,
+        provider,
+        screenRows: view.terminal.rows,
+        terminalId,
+        text,
+      });
+    }
+    return submitNativeTerminalInput(deps, delivery, terminalId);
+  } catch (error) {
+    throw delivery.inputSent ? interruptedAfterInput(error) : error;
   }
-  return submitNativeTerminalInput(deps, terminalId);
+}
+
+const NATIVE_TERMINAL_DISCONNECT_CODES: ReadonlySet<string> = new Set([
+  "host_disconnected",
+  "native_terminal_not_running",
+  "terminal_not_running",
+  "terminal_output_unavailable",
+]);
+
+function interruptedAfterInput(error: unknown): unknown {
+  if (
+    !(error instanceof ApiError) ||
+    error instanceof TerminalInputInterruptedError ||
+    !NATIVE_TERMINAL_DISCONNECT_CODES.has(error.body.code)
+  ) {
+    return error;
+  }
+  return new TerminalInputInterruptedError(error);
 }
 
 function submitNativeTerminalInput(
   deps: NativeTerminalDeps,
+  delivery: NativeTerminalDelivery,
   terminalId: string,
 ): TerminalSession {
-  return deps.terminalSessions.sendTerminalInput({
+  return writeNativeTerminalDeliveryInput(deps, delivery, {
+    data: "\r",
     terminalId,
-    payload: { dataBase64: Buffer.from("\r", "utf8").toString("base64") },
   });
+}
+
+interface NativeTerminalDelivery {
+  inputSent: boolean;
+}
+
+function writeNativeTerminalDeliveryInput(
+  deps: NativeTerminalDeps,
+  delivery: NativeTerminalDelivery,
+  args: { data: string; terminalId: string },
+): TerminalSession {
+  let written = false;
+  try {
+    return deps.terminalSessions.sendTerminalInput({
+      onInputWritten: () => {
+        written = true;
+        delivery.inputSent = true;
+      },
+      payload: {
+        dataBase64: Buffer.from(args.data, "utf8").toString("base64"),
+      },
+      terminalId: args.terminalId,
+    });
+  } catch (error) {
+    throw written ? new TerminalInputInterruptedError(error) : error;
+  }
 }
 
 async function pasteIntoNativeTerminal(
   deps: NativeTerminalDeps,
   args: {
+    delivery: NativeTerminalDelivery;
     pastedBefore: number;
     provider: NativeTerminalProvider;
     screenRows: number;
@@ -1472,10 +1527,9 @@ async function pasteIntoNativeTerminal(
   })
     ? terminalOutputShowsPasteAgain
     : terminalOutputShowsPaste;
-  const bracketed = `\u001b[200~${args.text}\u001b[201~`;
-  deps.terminalSessions.sendTerminalInput({
+  writeNativeTerminalDeliveryInput(deps, args.delivery, {
+    data: `\u001b[200~${args.text}\u001b[201~`,
     terminalId,
-    payload: { dataBase64: Buffer.from(bracketed, "utf8").toString("base64") },
   });
   const deadline = Date.now() + NATIVE_TERMINAL_ECHO_TIMEOUT_MS;
   for (;;) {

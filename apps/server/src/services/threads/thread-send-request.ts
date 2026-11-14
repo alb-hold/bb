@@ -1,21 +1,18 @@
 import {
   isStandaloneBuiltinClearCommand,
   isStandaloneBuiltinCompactCommand,
-  projectAttachmentPaths,
   type Thread,
 } from "@bb/domain";
-import {
-  acquireProjectAttachmentOwnership,
-  getEnvironment,
-  getThreadSpawner,
-  isNativeTerminalThread,
-} from "@bb/db";
+import { getThreadSpawner, isNativeTerminalThread } from "@bb/db";
 import { ApiError } from "../../errors.js";
-import { resolvePromptAttachmentReferences } from "../projects/attachments.js";
 import {
-  nativeTerminalPromptParts,
-  sendNativeTerminalMessage,
-} from "./native-terminal-threads.js";
+  admitNativeTerminalDispatch,
+  deliverNativeTerminalPrompt,
+  hasHeldNativeTerminalStart,
+  queueBehindHeldNativeTerminalStart,
+  resolveNativeTerminalSendInput,
+} from "./native-terminal-admission.js";
+import { resolveMessageSenderThreadId } from "./thread-send.js";
 import type {
   SendMessageRequest,
   SendMessageResponse,
@@ -46,41 +43,47 @@ export async function acceptThreadSendRequest(
         "sendAt is not supported for native terminal threads",
       );
     }
-    const hostId =
-      args.thread.environmentId === null
-        ? null
-        : (getEnvironment(deps.db, args.thread.environmentId)?.hostId ?? null);
-    const input = await resolvePromptAttachmentReferences({
-      db: deps.db,
-      dataDir: deps.config.dataDir,
+    const input = await resolveNativeTerminalSendInput(deps, {
+      thread: args.thread,
       input: args.payload.input,
-      projectId: args.thread.projectId,
-      hostId,
     });
-    const pastes = nativeTerminalPromptParts(deps, {
-      hostId,
+    const message = {
+      thread: args.thread,
       input,
-      projectId: args.thread.projectId,
-    });
-    const requestText = input.every((entry) => entry.type === "text")
-      ? input
-          .flatMap((entry) => (entry.type === "text" ? [entry.text] : []))
-          .join("\n\n")
-      : undefined;
-    acquireProjectAttachmentOwnership(
-      deps.db,
-      args.thread.id,
-      projectAttachmentPaths(input),
-    );
-    if (pastes.length === 0) {
-      throw new ApiError(400, "invalid_request", "Message text is empty");
+      senderThreadId: resolveMessageSenderThreadId(deps, {
+        ...(args.payload.senderThreadId !== undefined
+          ? { senderThreadId: args.payload.senderThreadId }
+          : {}),
+        targetThread: args.thread,
+      }),
+      origin: args.payload.originPluginId === undefined ? null : "plugin",
+      originPluginId: args.payload.originPluginId ?? null,
+      startedOnBehalfOf: null,
+    } as const;
+    if (args.thread.status === "pending") {
+      if (hasHeldNativeTerminalStart(deps, args.thread)) {
+        const held = queueBehindHeldNativeTerminalStart(deps, message);
+        return held.kind === "queued"
+          ? { ok: true, delivery: "queued", queuedMessage: held.entry }
+          : { ok: true, delivery: "sent" };
+      }
+      await deliverNativeTerminalPrompt(deps, { thread: args.thread, input });
+      return { ok: true, delivery: "sent" };
     }
-    await sendNativeTerminalMessage(deps, {
-      ...(requestText === undefined ? {} : { requestText }),
-      threadId: args.thread.id,
-      pastes,
+    const outcome = await admitNativeTerminalDispatch(deps, {
+      ...message,
+      claimed: null,
+      sendNow: false,
+      systemNotice: null,
+      admitted: {
+        when: "after-decision",
+        run: () =>
+          deliverNativeTerminalPrompt(deps, { thread: args.thread, input }),
+      },
     });
-    return { ok: true, delivery: "sent" };
+    return outcome.kind === "queued"
+      ? { ok: true, delivery: "queued", queuedMessage: outcome.entry }
+      : { ok: true, delivery: "sent" };
   }
   await assertRequestedModelAllowed(deps, {
     threadId: args.thread.id,

@@ -303,6 +303,7 @@ interface HandleBrowserTerminalMessageArgs {
 }
 
 interface SendTerminalInputArgs {
+  onInputWritten?: () => void;
   payload: TerminalInputRequest;
   terminalId: string;
 }
@@ -2031,9 +2032,9 @@ export class TerminalSessionLifecycle {
       });
     }
 
-    for (const dataBase64 of splitTerminalInputFrames(
+    for (const [frame, dataBase64] of splitTerminalInputFrames(
       args.payload.dataBase64,
-    )) {
+    ).entries()) {
       const sent = this.options.hub.sendDaemonSessionMessage(
         current.daemonSessionId,
         {
@@ -2048,6 +2049,7 @@ export class TerminalSessionLifecycle {
         });
         throw new ApiError(502, "host_disconnected", "Host is not connected");
       }
+      if (frame === 0) args.onInputWritten?.();
     }
     if (args.payload.dataBase64.length > 0) {
       this.clearTerminalAttention(current.id);
