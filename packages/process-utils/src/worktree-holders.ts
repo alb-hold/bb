@@ -218,9 +218,16 @@ async function foreignMountsExcludeWorktree(
   );
 }
 
-async function readOwnMounts(proc: ProcReader): Promise<Mount[] | null> {
+type OwnMounts = { ok: true; mounts: Mount[] } | { ok: false; error: string };
+
+async function readOwnMounts(proc: ProcReader): Promise<OwnMounts> {
   const own = await readOptional(() => proc.readFile("/proc/self/mountinfo"));
-  return "value" in own ? parseMountinfo(own.value) : null;
+  if (!("value" in own))
+    return { ok: false, error: "failed" in own ? own.failed : "ENOENT" };
+  const mounts = parseMountinfo(own.value);
+  return mounts === null
+    ? { ok: false, error: "unparsable" }
+    : { ok: true, mounts };
 }
 
 async function systemViewExposure(
@@ -228,9 +235,10 @@ async function systemViewExposure(
   base: string,
   directory: string,
   context: ScanContext,
-): Promise<string | null> {
-  const ownMounts = await context.ownMounts();
-  if (ownMounts === null) return null;
+): Promise<{ alias: string } | { ownUnreadable: string } | null> {
+  const own = await context.ownMounts();
+  if (!own.ok) return { ownUnreadable: own.error };
+  const ownMounts = own.mounts;
   const foreign = await readOptional(() => proc.readFile(`${base}/mountinfo`));
   if (!("value" in foreign)) return null;
   const foreignMounts = parseMountinfo(foreign.value);
@@ -265,7 +273,7 @@ async function systemViewExposure(
       )
     )
       continue;
-    return alias;
+    return { alias };
   }
   return null;
 }
@@ -361,7 +369,7 @@ interface ScanContext {
   final: boolean;
   tree: TreeIdsReader;
   aliases: () => Promise<string[] | null>;
-  ownMounts: () => Promise<Mount[] | null>;
+  ownMounts: () => Promise<OwnMounts>;
   acls: Map<string, Promise<boolean | null>>;
 }
 
@@ -830,10 +838,14 @@ async function scanLinuxPaths(
     const foreignUid = uids[3];
     if (foreignUid === undefined) return { otherUser: true };
     if (foreignUid < 1000 && self.uid !== 0) {
-      const alias = await systemViewExposure(proc, base, directory, context);
-      if (alias === null) return { otherUser: true };
+      const view = await systemViewExposure(proc, base, directory, context);
+      if (view === null) return { otherUser: true };
+      if ("ownUnreadable" in view)
+        return {
+          uncertain: `process ${pid} system uid ${foreignUid} could not be checked because our own mountinfo is unreadable (${view.ownUnreadable})`,
+        };
       return {
-        uncertain: `process ${pid} system uid ${foreignUid} sees the worktree at ${alias} through another mount namespace`,
+        uncertain: `process ${pid} system uid ${foreignUid} sees the worktree at ${view.alias} through another mount namespace`,
       };
     }
     if (self.uid !== 0) {
@@ -1500,7 +1512,7 @@ export async function scanLinux(
     return listed;
   };
   let aliases: Promise<string[] | null> | null = null;
-  let ownMounts: Promise<Mount[] | null> | null = null;
+  let ownMounts: Promise<OwnMounts> | null = null;
   const context: ScanContext = {
     final: limits.final === true,
     tree,
