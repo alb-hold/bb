@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  describeHolderScan,
   hostProc,
   procReadIsSynchronous,
   scanLinux,
@@ -593,6 +594,95 @@ describe("system processes in another mount namespace", () => {
       );
     },
   );
+  const ownUnreadableReader = (
+    pids: string[],
+    foreign: string,
+    ownRead: (armedRead: number) => "EACCES" | "unparsable" | null,
+  ) => {
+    const proc = mountAliasProc("/work/tree", "outside", 0);
+    const local = (target: string) =>
+      target.replace(/^\/proc\/1\d\d(?=\/|$)/u, "/proc/101");
+    const counter = { armedReads: 0 };
+    let armed = false;
+    const reader: ProcReader = {
+      ...proc,
+      readdir: async (target) => {
+        if (target !== "/proc") return proc.readdir(local(target));
+        armed = true;
+        return pids;
+      },
+      readlink: async (target) => proc.readlink(local(target)),
+      readFile: async (target) => {
+        if (target === "/proc/self/mountinfo" && armed) {
+          counter.armedReads++;
+          const outcome = ownRead(counter.armedReads);
+          if (outcome === "EACCES")
+            throw Object.assign(new Error("denied"), { code: "EACCES" });
+          if (outcome === "unparsable") return "not a mount table\n";
+        }
+        if (/^\/proc\/\d+\/mountinfo$/u.test(target)) return foreign;
+        return proc.readFile(local(target));
+      },
+    };
+    const disarm = () => {
+      armed = false;
+    };
+    return { reader, counter, disarm };
+  };
+  it.each(
+    ["earlier", "final"].flatMap((scan) =>
+      (["EACCES", "unparsable"] as const).map(
+        (outcome) => [scan, outcome] as const,
+      ),
+    ),
+  )(
+    "keeps the worktree on the %s scan when our first own mount table read after listing processes is %s and a later read would show exposure",
+    async (scan, outcome) => {
+      const { reader, counter } = ownUnreadableReader(
+        ["101", "102"],
+        containerRoot + bind("/work/tree", "/app"),
+        (read) => (read === 1 ? outcome : null),
+      );
+      const result = await scanLinux(
+        "/work/tree",
+        reader,
+        4242,
+        scan === "final" ? { maxDirectories: 500_000, final: true } : undefined,
+      );
+      expect(counter.armedReads).toBeGreaterThan(0);
+      expect(result).toMatchObject({
+        status: "uncertain",
+        reason: expect.stringContaining(
+          `our own mountinfo is unreadable (${outcome})`,
+        ),
+      });
+      expect(describeHolderScan(result)).toContain("so it was kept");
+    },
+  );
+  it("reads a failing own mount table once per scan and again on the next scan", async () => {
+    const { reader, counter, disarm } = ownUnreadableReader(
+      ["101", "102", "103"],
+      mirror,
+      () => "EACCES",
+    );
+    const reads: number[] = [];
+    for (const limits of [
+      undefined,
+      { maxDirectories: 500_000, final: true },
+    ]) {
+      disarm();
+      expect(await scanLinux("/work/tree", reader, 4242, limits)).toMatchObject(
+        {
+          status: "uncertain",
+          reason: expect.stringContaining(
+            "our own mountinfo is unreadable (EACCES)",
+          ),
+        },
+      );
+      reads.push(counter.armedReads);
+    }
+    expect(reads).toEqual([1, 2]);
+  });
   it("reads our own mount table once per scan, however many system processes it checks", async () => {
     const scanWith = async (processes: number) => {
       const proc = mountAliasProc("/work/tree", "outside", 0);
