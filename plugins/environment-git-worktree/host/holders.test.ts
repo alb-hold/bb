@@ -2009,6 +2009,38 @@ describe("system processes in another mount namespace", () => {
       );
     },
   );
+  it("reads our own mount table once per scan, however many system processes it checks", async () => {
+    const scanWith = async (processes: number) => {
+      const proc = mountAliasProc("/work/tree", "outside", 0);
+      const pids = Array.from({ length: processes }, (_, index) =>
+        String(101 + index),
+      );
+      const local = (target: string) =>
+        target.replace(/^\/proc\/1\d\d(?=\/|$)/u, "/proc/101");
+      let ownReads = 0;
+      const foreignReads = new Map<string, number>();
+      const reader: ProcReader = {
+        ...proc,
+        readdir: async (target) =>
+          target === "/proc" ? pids : proc.readdir(local(target)),
+        readlink: async (target) => proc.readlink(local(target)),
+        readFile: async (target) => {
+          if (target === "/proc/self/mountinfo") ownReads++;
+          if (/^\/proc\/\d+\/mountinfo$/u.test(target)) {
+            foreignReads.set(target, (foreignReads.get(target) ?? 0) + 1);
+            return mirror;
+          }
+          return proc.readFile(local(target));
+        },
+      };
+      expect(await scanLinux("/work/tree", reader, 4242)).toEqual({
+        status: "clear",
+      });
+      expect([...foreignReads.values()]).toEqual(pids.map(() => 1));
+      return ownReads;
+    };
+    expect(await scanWith(6)).toBe(await scanWith(1));
+  });
 });
 
 describe("exited thread group leaders", () => {
