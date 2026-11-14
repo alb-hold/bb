@@ -2115,6 +2115,124 @@ describe("an open question in a native terminal", () => {
     }
   }, 30_000);
 
+  function openQuestionOnPendingThread(fixture: Fixture, threadId: string) {
+    const providerId = getThread(fixture.harness.db, threadId)?.providerId;
+    expect(providerId).toBeDefined();
+    const registered =
+      fixture.harness.deps.pendingInteractions.registerPendingInteraction({
+        interaction: {
+          threadId,
+          turnId: "native-terminal-turn",
+          providerId: providerId!,
+          providerThreadId: threadId,
+          providerRequestId: `question:${QUESTION_ID}`,
+          payload: {
+            kind: "user_question",
+            questions: [
+              {
+                id: QUESTION_ID,
+                prompt: "Install now?",
+                multiSelect: false,
+                allowFreeText: true,
+                required: true,
+              },
+            ],
+          },
+        },
+      });
+    expect(registered.outcome).toBe("created");
+    return registered.outcome === "created" ? registered.interaction.id : "";
+  }
+
+  async function expectHeldStartLaunchesOnceAfterQuestion(
+    fixture: Fixture,
+    args: { interactionId: () => string; threadId: string },
+  ): Promise<void> {
+    await settle();
+    expect(terminalOpens(fixture.socket)).toEqual([]);
+    expect(getThread(fixture.harness.db, args.threadId)?.status).toBe(
+      "pending",
+    );
+    expect(readThreadProvisionContext(fixture.harness.db, args.threadId)).toBe(
+      null,
+    );
+    const rows = queuedRows(fixture, args.threadId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.waitingOn).toEqual({ kind: "interaction" });
+    expect(rows[0]?.content).toEqual(textInput("Fix the flaky test"));
+    expect(openQuestions(fixture, args.threadId)).toHaveLength(1);
+
+    fixture.harness.deps.pendingInteractions.interruptPendingInteraction({
+      interactionId: args.interactionId(),
+      reason: "Dismissed",
+    });
+    await drainQueue(fixture);
+
+    const open = await waitForTerminalOpen(fixture.socket);
+    expect(open.threadId).toBe(args.threadId);
+    acknowledgeOpen(fixture, open);
+    await waitForThreadStatus(fixture, args.threadId, "idle");
+    expect(queuedRows(fixture, args.threadId)).toEqual([]);
+    await drainQueue(fixture);
+    expect(terminalOpens(fixture.socket)).toHaveLength(1);
+    expect(terminalInputs(fixture.socket)).toEqual([]);
+    const first = await launchSpec(fixture, args.threadId);
+    const second = await launchSpec(fixture, args.threadId);
+    expect(first.initialPrompt).toBe("Fix the flaky test");
+    expect(second.initialPrompt).toBeNull();
+  }
+
+  it("holds a native create when a question opens during the limit decision that admits it, and launches it once after the question closes", async () => {
+    const fixture = await createFixture();
+    let interactionId = "";
+    installDispatchHook((context) => {
+      if (interactionId === "") {
+        interactionId = openQuestionOnPendingThread(fixture, context.thread.id);
+      }
+      return { action: "proceed" };
+    });
+
+    const created = await createNativeThread(fixture, {
+      providerId: "claude-code",
+      prompt: "Fix the flaky test",
+    });
+
+    await expectHeldStartLaunchesOnceAfterQuestion(fixture, {
+      interactionId: () => interactionId,
+      threadId: created.id,
+    });
+  }, 30_000);
+
+  it("holds a held native start when a question opens during the limit decision that releases it, and launches it once after the question closes", async () => {
+    const fixture = await createFixture();
+    let decision: HookDecision = { action: "wait", reason: AT_LIMIT_REASON };
+    let interactionId = "";
+    installDispatchHook((context) => {
+      if (decision.action === "proceed" && interactionId === "") {
+        interactionId = openQuestionOnPendingThread(fixture, context.thread.id);
+      }
+      return decision;
+    });
+
+    const created = await createNativeThread(fixture, {
+      providerId: "claude-code",
+      prompt: "Fix the flaky test",
+    });
+    expect(queuedRows(fixture, created.id)[0]?.waitingOn).toMatchObject({
+      kind: "plugin",
+    });
+
+    decision = { action: "proceed" };
+    await runQueuedMessageDispatch(fixture.harness.deps, {
+      kind: "plugin-recheck",
+    });
+
+    await expectHeldStartLaunchesOnceAfterQuestion(fixture, {
+      interactionId: () => interactionId,
+      threadId: created.id,
+    });
+  }, 30_000);
+
   it.each(["answered", "dismissed", "interrupted"] as const)(
     "holds a tell while a question is open, leaves the question pending, and delivers the tell once after it is %s",
     async (how) => {
