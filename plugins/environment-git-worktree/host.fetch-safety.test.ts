@@ -30,6 +30,8 @@ const roots: string[] = [];
 const servers: http.Server[] = [];
 const inheritedSshCommand = process.env.GIT_SSH_COMMAND;
 const inheritedGlobalConfig = process.env.GIT_CONFIG_GLOBAL;
+const inheritedSystemConfig = process.env.GIT_CONFIG_SYSTEM;
+const inheritedNoSystem = process.env.GIT_CONFIG_NOSYSTEM;
 const inheritedPath = process.env.PATH;
 
 async function git(cwd: string, ...args: string[]): Promise<string> {
@@ -63,6 +65,10 @@ afterEach(async () => {
   else process.env.GIT_SSH_COMMAND = inheritedSshCommand;
   if (inheritedGlobalConfig === undefined) delete process.env.GIT_CONFIG_GLOBAL;
   else process.env.GIT_CONFIG_GLOBAL = inheritedGlobalConfig;
+  if (inheritedSystemConfig === undefined) delete process.env.GIT_CONFIG_SYSTEM;
+  else process.env.GIT_CONFIG_SYSTEM = inheritedSystemConfig;
+  if (inheritedNoSystem === undefined) delete process.env.GIT_CONFIG_NOSYSTEM;
+  else process.env.GIT_CONFIG_NOSYSTEM = inheritedNoSystem;
   process.env.PATH = inheritedPath;
   await Promise.all(
     servers
@@ -518,6 +524,121 @@ describe("the fetch that checks whether commits are published", () => {
     expect(reasons.join("\n")).toContain(
       "could not verify remotes: authentication failed for backup",
     );
+  });
+
+  it("never runs a helper from a file the global config includes, even through includeIf into the worktree, while a helper in the global config itself still answers", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bb-worktree-auth-"));
+    roots.push(root);
+    const remote = await servedWithBasicAuth(root);
+    const fixture = await createFixture(remote.url);
+    const globalFile = await useGlobalConfig(root);
+    const included = join(fixture.path, "evil.config");
+    const conditional = join(fixture.path, "evil2.config");
+    const includedMarker = join(root, "included-helper-called");
+    const conditionalMarker = join(root, "conditional-helper-called");
+    const trustedMarker = join(root, "trusted-helper-called");
+    await setGlobalConfig(
+      included,
+      `credential.${remote.origin}.helper`,
+      `!f() { echo called >> ${JSON.stringify(includedMarker)}; }; f`,
+    );
+    await setGlobalConfig(
+      conditional,
+      `credential.${remote.origin}.helper`,
+      `!f() { echo called >> ${JSON.stringify(conditionalMarker)}; }; f`,
+    );
+    await setGlobalConfig(globalFile, "include.path", included);
+    await setGlobalConfig(
+      globalFile,
+      `includeIf.gitdir:${fixture.root}/**.path`,
+      conditional,
+    );
+    await setGlobalConfig(
+      globalFile,
+      `credential.${remote.origin}.helper`,
+      answeringHelper(trustedMarker),
+    );
+    await git(fixture.sourcePath, "ls-remote", "backup");
+    expect(existsSync(includedMarker)).toBe(true);
+    expect(existsSync(conditionalMarker)).toBe(true);
+    await Promise.all(
+      [includedMarker, conditionalMarker, trustedMarker].map((marker) =>
+        rm(marker, { force: true }),
+      ),
+    );
+
+    const reasons = await findPreservationReasons(
+      await identityOf(fixture),
+      undefined,
+      { fetchTimeoutMs: 20_000 },
+    );
+
+    expect(existsSync(includedMarker)).toBe(false);
+    expect(existsSync(conditionalMarker)).toBe(false);
+    expect(reasons.join("\n")).not.toMatch(
+      /could not fetch|could not verify remotes/u,
+    );
+    expect(existsSync(trustedMarker)).toBe(true);
+  });
+
+  it("never runs a helper from a file the global config includes outside any worktree, and says authentication failed", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bb-worktree-auth-"));
+    roots.push(root);
+    const remote = await servedWithBasicAuth(root);
+    const fixture = await createFixture(remote.url);
+    const globalFile = await useGlobalConfig(root);
+    const shared = join(root, "shared");
+    await mkdir(shared, { recursive: true });
+    const included = join(shared, "helpers.config");
+    const marker = join(root, "included-helper-called");
+    await setGlobalConfig(
+      included,
+      `credential.${remote.origin}.helper`,
+      answeringHelper(marker),
+    );
+    await setGlobalConfig(globalFile, "include.path", included);
+    await git(fixture.sourcePath, "ls-remote", "backup");
+    expect(existsSync(marker)).toBe(true);
+    await rm(marker, { force: true });
+
+    const reasons = await findPreservationReasons(
+      await identityOf(fixture),
+      undefined,
+      { fetchTimeoutMs: 20_000 },
+    );
+
+    expect(existsSync(marker)).toBe(false);
+    expect(reasons.join("\n")).toContain(
+      "could not verify remotes: authentication failed for backup",
+    );
+  });
+
+  it("fetches through a helper in the system config file GIT_CONFIG_SYSTEM names", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bb-worktree-auth-"));
+    roots.push(root);
+    const remote = await servedWithBasicAuth(root);
+    const fixture = await createFixture(remote.url);
+    await useGlobalConfig(root);
+    const systemFile = join(root, "system.gitconfig");
+    const marker = join(root, "system-helper-called");
+    await setGlobalConfig(
+      systemFile,
+      `credential.${remote.origin}.helper`,
+      answeringHelper(marker),
+    );
+    process.env.GIT_CONFIG_SYSTEM = systemFile;
+    delete process.env.GIT_CONFIG_NOSYSTEM;
+
+    const reasons = await findPreservationReasons(
+      await identityOf(fixture),
+      undefined,
+      { fetchTimeoutMs: 20_000 },
+    );
+
+    expect(reasons.join("\n")).not.toMatch(
+      /could not fetch|could not verify remotes/u,
+    );
+    expect(existsSync(marker)).toBe(true);
   });
 
   it("keeps the worktree when git is too old for --config-env, and never removes it", async () => {
