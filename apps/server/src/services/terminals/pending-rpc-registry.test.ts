@@ -1,8 +1,18 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { PendingRpcRegistry } from "./pending-rpc-registry.js";
 
+async function stallEventLoop(blockedMs: number): Promise<void> {
+  vi.setSystemTime(Date.now() + blockedMs);
+  await vi.advanceTimersByTimeAsync(0);
+}
+
 describe("PendingRpcRegistry", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("settles replay delivered after two late timeout firings", async () => {
+    vi.useFakeTimers();
     const registry = new PendingRpcRegistry<
       { rpcKey: string },
       { value: string }
@@ -11,19 +21,21 @@ describe("PendingRpcRegistry", () => {
       timeoutError: () => new Error("timeout"),
       timeoutMs: 100,
     });
+    const startedAt = Date.now();
     const pending = registry.claim({ rpcKey: "attach" });
-    const stall = async () => {
-      await new Promise((resolve) => setTimeout(resolve, 70));
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 40);
-    };
-    await stall();
-    await new Promise<void>((resolve) => setTimeout(resolve, 0));
-    await stall();
-    await new Promise<void>((resolve) => setTimeout(resolve, 0));
-    const settled = new Promise<boolean>((resolve) => {
-      setImmediate(() => resolve(registry.settle("attach", { value: "replayed" })));
+    let rejected = false;
+    pending.promise.catch(() => {
+      rejected = true;
     });
-    expect(await settled).toBe(true);
+    await vi.advanceTimersByTimeAsync(70);
+    await stallEventLoop(40);
+    await vi.advanceTimersByTimeAsync(30);
+    await vi.advanceTimersByTimeAsync(70);
+    await stallEventLoop(40);
+    await vi.advanceTimersByTimeAsync(30);
+    expect(Date.now() - startedAt).toBe(280);
+    expect(rejected).toBe(false);
+    expect(registry.settle("attach", { value: "replayed" })).toBe(true);
     await expect(pending.promise).resolves.toEqual({ value: "replayed" });
   });
 
@@ -57,6 +69,7 @@ describe("PendingRpcRegistry", () => {
   });
 
   it("expires after a late firing followed by an on-time firing", async () => {
+    vi.useFakeTimers();
     const registry = new PendingRpcRegistry<{ rpcKey: string }, string>({
       lateTimeoutRetryMs: 5,
       timeoutError: () => new Error("timeout"),
@@ -64,12 +77,18 @@ describe("PendingRpcRegistry", () => {
     });
     const startedAt = Date.now();
     const pending = registry.claim({ rpcKey: "attach" });
+    let rejectedAfterMs: number | null = null;
     const result = expect(pending.promise).rejects.toThrow("timeout");
-    await new Promise((resolve) => setTimeout(resolve, 70));
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 40);
+    pending.promise.catch(() => {
+      rejectedAfterMs = Date.now() - startedAt;
+    });
+    await vi.advanceTimersByTimeAsync(70);
+    await stallEventLoop(40);
+    await vi.advanceTimersByTimeAsync(30);
+    await vi.advanceTimersByTimeAsync(99);
+    expect(rejectedAfterMs).toBeNull();
+    await vi.advanceTimersByTimeAsync(1);
     await result;
-    const elapsedMs = Date.now() - startedAt;
-    expect(elapsedMs).toBeGreaterThanOrEqual(190);
-    expect(elapsedMs).toBeLessThan(300);
+    expect(rejectedAfterMs).toBe(240);
   });
 });
