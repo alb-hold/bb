@@ -291,12 +291,17 @@ function composerScreen(pasted: string): string {
 function startFakeCli(
   fixture: Fixture,
   terminalId: string,
-  options: { firstSeq?: number; ignoredPastes?: number } = {},
+  options: {
+    firstSeq?: number;
+    ignoredPastes?: number;
+    pastePlaceholders?: boolean;
+  } = {},
 ): FakeCli {
   const output: { seq: number; dataBase64: string }[] = [];
   let nextSeq = options.firstSeq ?? 7;
   let handled = 0;
   let ignoredPastes = options.ignoredPastes ?? 0;
+  let inputBox: string[] = [];
   const draw = (text: string) => {
     output.push({
       seq: nextSeq,
@@ -313,9 +318,13 @@ function startFakeCli(
         const pasted = /^\u001b\[200~([\s\S]*)\u001b\[201~$/u.exec(text);
         if (pasted !== null && ignoredPastes > 0) {
           ignoredPastes -= 1;
+        } else if (pasted !== null && options.pastePlaceholders === true) {
+          inputBox.push(`[Pasted Content ${(pasted[1] ?? "").length} chars]`);
+          draw(composerScreen(inputBox.join(" ")));
         } else if (pasted !== null) {
           draw(composerScreen(pasted[1] ?? ""));
         } else if (text === "\r") {
+          inputBox = [];
           draw("\u001b[2K\u001b[1G› \u001b[0m");
         }
       }
@@ -1014,6 +1023,93 @@ describe("native terminal delivery across a crash", () => {
     } finally {
       cli.stop();
     }
+  }, 30_000);
+
+  function closeHostAfterTerminalInputFrame(
+    fixture: Fixture,
+    frame: number,
+  ): void {
+    const hub = fixture.harness.hub;
+    const send = hub.sendDaemonSessionMessage.bind(hub);
+    let inputFrames = 0;
+    vi.spyOn(hub, "sendDaemonSessionMessage").mockImplementation(
+      (sessionId, message) => {
+        const sent = send(sessionId, message);
+        if (message.type === "terminal.input") {
+          inputFrames += 1;
+          if (inputFrames === frame) {
+            fixture.harness.deps.terminalSessions.handleDaemonSessionClosed({
+              sessionId: fixture.sessionId,
+            });
+          }
+        }
+        return sent;
+      },
+    );
+  }
+
+  async function expectHeldSendSettledUncertainAfterOnePaste(args: {
+    interrupt: (fixture: Fixture) => void;
+  }): Promise<void> {
+    const fixture = await createFixture();
+    const sender = await openBusySender(fixture);
+    const { open, thread } = await openRunningNativeThread(fixture, {
+      providerId: "codex",
+    });
+    const cli = startFakeCli(fixture, open.terminalId, {
+      pastePlaceholders: true,
+    });
+    let decision: HookDecision = { action: "wait", reason: AT_LIMIT_REASON };
+    installDispatchHook(() => decision);
+    try {
+      const held = await sendToThread(
+        fixture,
+        thread.id,
+        "run the tests",
+        sender.thread.id,
+      );
+      expect(held.delivery).toBe("queued");
+      args.interrupt(fixture);
+      decision = { action: "proceed" };
+      await runQueuedMessageDispatch(fixture.harness.deps, {
+        kind: "plugin-recheck",
+      });
+      await settle();
+      reconnectTerminal(fixture, open.terminalId);
+
+      await drainEverything(fixture);
+      await new Promise((resolve) => setTimeout(resolve, 1_100));
+      await runSweeps(fixture);
+      await drainEverything(fixture);
+
+      expect(cli.inputs()).toEqual(["\u001b[200~run the tests\u001b[201~"]);
+      const rows = queuedRows(fixture, thread.id);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        state: "failed_exhausted",
+        failureReason: UNCERTAIN_REASON,
+      });
+      const senderNotices = listNativeParentNotices(
+        fixture.harness.db,
+        sender.thread.id,
+      );
+      expect(senderNotices).toHaveLength(1);
+      expect(senderNotices[0]?.text).toContain("may not have been delivered");
+    } finally {
+      cli.stop();
+    }
+  }
+
+  it("never re-sends a held send whose Enter was refused after its paste reached the terminal, and tells the sender", async () => {
+    await expectHeldSendSettledUncertainAfterOnePaste({
+      interrupt: (fixture) => dropTerminalInputFrame(fixture, 2),
+    });
+  }, 30_000);
+
+  it("never re-sends a held send when the host disconnects after its paste reached the terminal, and tells the sender", async () => {
+    await expectHeldSendSettledUncertainAfterOnePaste({
+      interrupt: (fixture) => closeHostAfterTerminalInputFrame(fixture, 1),
+    });
   }, 30_000);
 
   it("retries a held send whose first input frame never left the server, and delivers it once", async () => {
