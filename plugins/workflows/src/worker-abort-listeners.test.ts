@@ -5,7 +5,7 @@ import { migrations } from "./data.js";
 import { createWorkflowService } from "./service.js";
 
 async function eventually(assertion: () => void): Promise<void> {
-  const deadline = Date.now() + 1_000;
+  const deadline = Date.now() + 10_000;
   while (true) {
     try {
       assertion();

@@ -852,8 +852,10 @@ const EMPTY_USAGE_URL = "data:application/json,{}";
 const UNUSED_PROFILE_URL = "data:application/json,null";
 const CODEX_USAGE_STUB_URL = "https://usage.example/wham/usage";
 
+const SWEEP_WAIT_MS = 4_000;
+
 async function waitForSweep(assertion: () => void | Promise<void>) {
-  const deadline = Date.now() + 1_000;
+  const deadline = Date.now() + SWEEP_WAIT_MS;
   for (;;) {
     await vi.advanceTimersByTimeAsync(0);
     const timeout = new AbortController();

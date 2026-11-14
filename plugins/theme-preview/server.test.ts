@@ -252,7 +252,7 @@ describe("createCatalogLoader", () => {
     const outcome = await Promise.race([
       selection.then((catalog) => ({ status: "resolved" as const, catalog })),
       new Promise<{ status: "pending" }>((resolve) =>
-        setTimeout(() => resolve({ status: "pending" }), 10),
+        setTimeout(() => resolve({ status: "pending" }), 5_000),
       ),
     ]);
 

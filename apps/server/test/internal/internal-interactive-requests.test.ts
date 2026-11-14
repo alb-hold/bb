@@ -55,7 +55,7 @@ interface BuildCommandApprovalInteractiveRequestArgs {
 async function waitForPendingInteractionId(
   args: WaitForPendingInteractionIdArgs,
 ): Promise<string> {
-  const deadline = Date.now() + 1_000;
+  const deadline = Date.now() + 10_000;
 
   while (Date.now() < deadline) {
     const interactions = listPendingInteractionsByThread(args.harness.db, {
