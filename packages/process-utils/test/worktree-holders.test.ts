@@ -756,6 +756,15 @@ describe("system processes in another mount namespace", () => {
       "uncertain",
     ],
     [
+      "a worktree path that is not a directory",
+      rootLine + workLine,
+      async (): Promise<string> => {
+        throw Object.assign(new Error("not a directory"), { code: "ENOTDIR" });
+      },
+      "70 1 8:1 / / rw - ext4 /dev/sdb rw\n71 70 8:48 / /work rw - ext4 /dev/sda rw\n",
+      "uncertain",
+    ],
+    [
       "a worktree directory we cannot open",
       rootLine + workLine,
       async (): Promise<string> => {
@@ -790,6 +799,47 @@ describe("system processes in another mount namespace", () => {
         reason: expect.stringContaining("our own mountinfo is unreadable ("),
       });
       expect(describeHolderScan(result)).toContain("so it was kept");
+    },
+  );
+  const absent = async (): Promise<string> => {
+    throw Object.assign(new Error("absent"), { code: "ENOENT" });
+  };
+  const absentCases = [
+    [
+      "only mirrors",
+      "70 1 8:1 / / rw - ext4 /dev/sdb rw\n71 70 8:48 / /work rw - ext4 /dev/sda rw\n",
+      null,
+    ],
+    [
+      "a bind mount of the worktree",
+      "70 1 8:1 / / rw - ext4 /dev/sdb rw\n71 70 8:48 /tree /app rw - ext4 /dev/sda rw\n",
+      "sees the worktree at /app",
+    ],
+  ] as const;
+  it.each(
+    ["earlier", "final"].flatMap((scan) =>
+      absentCases.map(
+        ([kind, foreign, uncertain]) =>
+          [scan, kind, foreign, uncertain] as const,
+      ),
+    ),
+  )(
+    "scans a worktree path that no longer exists on the %s scan as before when a system process sees %s",
+    async (scan, _kind, foreign, uncertain) => {
+      expect(
+        await scanLinux(
+          "/work/tree",
+          ownTableReader(rootLine + workLine, absent, foreign),
+          4242,
+          scan === "final"
+            ? { maxDirectories: 500_000, final: true }
+            : undefined,
+        ),
+      ).toMatchObject(
+        uncertain === null
+          ? { status: "clear" }
+          : { status: "uncertain", reason: expect.stringContaining(uncertain) },
+      );
     },
   );
   it("reads our own mount table once per scan, however many system processes it checks", async () => {
