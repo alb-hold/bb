@@ -23,7 +23,10 @@ import type {
 } from "../../types.js";
 import { deleteProjectAttachments } from "./attachments.js";
 import { deferAfterResponse } from "../lib/response-deferral.js";
-import { requestThreadStorageDeletion } from "../threads/thread-lifecycle.js";
+import {
+  requestThreadStorageDeletion,
+  retryThreadStorageDeletion,
+} from "../threads/thread-lifecycle.js";
 import { NotificationBuffer } from "../lib/notification-buffer.js";
 import { emitPluginThreadDeleted } from "../plugins/plugin-thread-events.js";
 
@@ -186,7 +189,7 @@ export async function advanceProjectDeletion(
     }
     cancelAbandonedProviderCreations(deps, thread.id);
     deps.terminalSessions.closeDeletedThreadTerminals({ threadId: thread.id });
-    requestThreadStorageDeletion(deps, thread, environment);
+    retryThreadStorageDeletion(deps, thread, environment, Date.now());
   }
 
   if (hasRemainingProjectThreads(deps, args.projectId)) {
