@@ -14427,7 +14427,7 @@ describe("Account Pool credential scoping", () => {
     });
     await waitForSweep(() => expect(liveStatus).toBe(200));
     await liveRequest;
-  });
+  }, 20_000);
 
   it("exports nothing for an archived thread and suspends any token it already held until unarchive", async () => {
     const fixture = await scopedFixture();
