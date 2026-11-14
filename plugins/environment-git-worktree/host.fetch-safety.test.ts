@@ -208,8 +208,10 @@ const answeringHelper = (marker: string) =>
   `!f() { echo called >> ${JSON.stringify(marker)}; test "$1" = get || exit 0; echo username=bb; echo password=token-1; }; f`;
 
 describe("the credential helpers the fetch replays", () => {
-  const configured = (entries: [string, string][], scope = "global") =>
-    entries.map(([key, value]) => `${scope}\0${key}\n${value}\0`).join("");
+  const configured = (
+    entries: [string, string][],
+    origin = "file:/home/user/.gitconfig",
+  ) => entries.map(([key, value]) => `${origin}\0${key}\n${value}\0`).join("");
 
   it("replays shell, store and cache helpers and resets in config order, with their URL scope", () => {
     expect(
@@ -241,14 +243,14 @@ describe("the credential helpers the fetch replays", () => {
     });
   });
 
-  it("replays system and global helpers only, never one from the repository, its worktree or the command line", () => {
+  it("replays helpers read from a config file only, never one from the command line, a blob or standard input", () => {
     const helper: [string, string][] = [["credential.helper", "!echo h"]];
 
-    expect(replayedCredentialHelpers(configured(helper, "system")).env).toEqual(
-      { BB_FETCH_CREDENTIAL_HELPER_0: "!echo h" },
-    );
-    for (const scope of ["local", "worktree", "command"])
-      expect(replayedCredentialHelpers(configured(helper, scope))).toEqual({
+    expect(
+      replayedCredentialHelpers(configured(helper, "file:/etc/gitconfig")).env,
+    ).toEqual({ BB_FETCH_CREDENTIAL_HELPER_0: "!echo h" });
+    for (const origin of ["command line:", "blob:0123abcd", "standard input:"])
+      expect(replayedCredentialHelpers(configured(helper, origin))).toEqual({
         args: [],
         env: {},
       });
@@ -292,7 +294,7 @@ describe("the credential helpers the fetch replays", () => {
         configured([
           ["credential.usehttppath", "!echo no"],
           ["credential.https://a.example/?x=1.helper", "!echo no"],
-        ]) + "global\0credential.helper\0",
+        ]) + "file:/home/user/.gitconfig\0credential.helper\0",
       ),
     ).toEqual({ args: [], env: {} });
     expect(replayedCredentialHelpers("")).toEqual({ args: [], env: {} });
