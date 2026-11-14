@@ -11,6 +11,7 @@ import {
   hasHeldNativeTerminalStart,
   queueBehindHeldNativeTerminalStart,
   resolveNativeTerminalSendInput,
+  runNativeTerminalAdmittedWork,
 } from "./native-terminal-admission.js";
 import { resolveMessageSenderThreadId } from "./thread-send.js";
 import type {
@@ -67,8 +68,20 @@ export async function acceptThreadSendRequest(
           ? { ok: true, delivery: "queued", queuedMessage: held.entry }
           : { ok: true, delivery: "sent" };
       }
-      await deliverNativeTerminalPrompt(deps, { thread: args.thread, input });
-      return { ok: true, delivery: "sent" };
+      const delivered = await runNativeTerminalAdmittedWork(deps, {
+        ...message,
+        claimed: null,
+        sendNow: false,
+        systemNotice: null,
+        admitted: {
+          when: "after-decision",
+          run: () =>
+            deliverNativeTerminalPrompt(deps, { thread: args.thread, input }),
+        },
+      });
+      return delivered.kind === "queued"
+        ? { ok: true, delivery: "queued", queuedMessage: delivered.entry }
+        : { ok: true, delivery: "sent" };
     }
     const outcome = await admitNativeTerminalDispatch(deps, {
       ...message,

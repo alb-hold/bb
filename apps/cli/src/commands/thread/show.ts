@@ -826,6 +826,9 @@ function printThreadStatus(
   console.log(
     `  Status: ${thread.hasPendingInteraction ? "needs-input" : thread.status}`,
   );
+  if (thread.queuedMessageCount > 0) {
+    console.log(`  Queued messages: ${thread.queuedMessageCount}`);
+  }
   if (payload.lastError != null) {
     console.log(`  Error: ${payload.lastError}`);
   }

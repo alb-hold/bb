@@ -44,9 +44,11 @@ import {
 import { settleUncertainNativeTerminalDeliveries } from "./native-terminal-delivery-marks.js";
 import {
   beginNativeTerminalThreadProvisioning,
+  isNativeTerminalInteractionOpenError,
   nativeTerminalPromptParts,
   sendNativeTerminalMessage,
 } from "./native-terminal-threads.js";
+import { requestQueuedMessageDispatch } from "./queued-message-dispatch.js";
 import {
   createQueuedMessageClaimLostError,
   recordQueuedMessageWait,
@@ -111,12 +113,41 @@ function holdsCapacity(thread: Thread): boolean {
   return thread.status === "active" || thread.status === "starting";
 }
 
-async function runAdmittedWork(work: NativeTerminalAdmittedWork) {
-  if (work.when === "within-decision") {
-    work.run();
-    return;
+function holdUntilInteractionSettles(
+  deps: LoggedPendingInteractionWorkSessionDeps,
+  args: NativeTerminalAdmissionArgs,
+): NativeTerminalAdmissionOutcome {
+  const held = recordNativeTerminalWait(deps, {
+    ...args,
+    waitingOn: { kind: "interaction" },
+    sendAt: null,
+  });
+  if (
+    !deps.pendingInteractions.hasTurnBoundPendingThreadInteraction(
+      args.thread.id,
+    )
+  ) {
+    requestQueuedMessageDispatch(deps, {
+      kind: "interaction-settled",
+      threadId: args.thread.id,
+    });
   }
-  await work.run();
+  return held;
+}
+
+export async function runNativeTerminalAdmittedWork(
+  deps: LoggedPendingInteractionWorkSessionDeps,
+  args: NativeTerminalAdmissionArgs,
+): Promise<NativeTerminalAdmissionOutcome> {
+  const held = holdForOpenInteraction(deps, args);
+  if (held !== null) return held;
+  try {
+    await args.admitted.run();
+    return { kind: "dispatched" };
+  } catch (error) {
+    if (!isNativeTerminalInteractionOpenError(error)) throw error;
+    return holdUntilInteractionSettles(deps, args);
+  }
 }
 
 function nativeTerminalQueuedExecution(
@@ -137,17 +168,33 @@ function nativeTerminalQueuedExecution(
   };
 }
 
+function holdForOpenInteraction(
+  deps: LoggedPendingInteractionWorkSessionDeps,
+  args: NativeTerminalAdmissionArgs,
+): NativeTerminalAdmissionOutcome | null {
+  if (
+    args.sendNow ||
+    !deps.pendingInteractions.hasTurnBoundPendingThreadInteraction(
+      args.thread.id,
+    )
+  ) {
+    return null;
+  }
+  return holdUntilInteractionSettles(deps, args);
+}
+
 export async function admitNativeTerminalDispatch(
   deps: LoggedPendingInteractionWorkSessionDeps,
   args: NativeTerminalAdmissionArgs,
 ): Promise<NativeTerminalAdmissionOutcome> {
+  const heldBeforeDecision = holdForOpenInteraction(deps, args);
+  if (heldBeforeDecision !== null) return heldBeforeDecision;
   if (
     args.sendNow ||
     holdsCapacity(args.thread) ||
     !hasMessageDispatchHooks()
   ) {
-    await runAdmittedWork(args.admitted);
-    return { kind: "dispatched" };
+    return runNativeTerminalAdmittedWork(deps, args);
   }
   assertThreadHostAcceptsWork(deps.db, args.thread);
   const author = resolveDispatchAuthor({
@@ -156,8 +203,9 @@ export async function admitNativeTerminalDispatch(
     startedOnBehalfOf: args.startedOnBehalfOf,
   });
   const model = getNativeTerminalThread(deps.db, args.thread.id)?.model ?? null;
-  const admitted = args.admitted;
-  let admittedWithinDecision = false;
+  const withinDecision: { outcome: NativeTerminalAdmissionOutcome | null } = {
+    outcome: null,
+  };
   const outcome = await runMessageDispatchHookPass(deps, {
     thread: args.thread,
     threadResponse: toThreadResponseFromThread(deps, { thread: args.thread }),
@@ -186,18 +234,19 @@ export async function admitNativeTerminalDispatch(
     parentThreadId: args.thread.parentThreadId,
     queuedMessages: args.claimed?.map(toThreadQueuedMessage) ?? [],
     pluginSubmission: null,
-    ...(admitted.when === "within-decision"
+    ...(args.admitted.when === "within-decision"
       ? {
           continueAfterHooks: async () => {
-            admittedWithinDecision = true;
-            admitted.run();
+            withinDecision.outcome = await runNativeTerminalAdmittedWork(
+              deps,
+              args,
+            );
           },
         }
       : {}),
   });
   if (outcome.kind === "proceed") {
-    if (!admittedWithinDecision) await runAdmittedWork(admitted);
-    return { kind: "dispatched" };
+    return withinDecision.outcome ?? runNativeTerminalAdmittedWork(deps, args);
   }
   if (args.claimed !== null) {
     noteDispatchRequeued(args.thread.id);

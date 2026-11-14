@@ -5,7 +5,9 @@ import {
   getThread,
   listNativeParentNotices,
   listQueuedThreadMessages,
+  threads,
 } from "@bb/db";
+import { eq } from "drizzle-orm";
 import {
   encodeClientTurnRequestIdNumber,
   threadScope,
@@ -727,6 +729,105 @@ describe("child notices for a native terminal parent", () => {
       ),
     ).toEqual([]);
   }, 30_000);
+
+  it("holds a notice while the parent has a question open, even when the parent reads idle, and delivers it once after the question closes", async () => {
+    const fixture = await createFixture();
+    const { open, thread } = await openRunningClaudeParent(fixture);
+    const tui = startFakeClaudeTui(
+      fixture,
+      open.terminalId,
+      EMPTY_PROMPT_SCREEN,
+    );
+    try {
+      recordNativeTerminalActivity(fixture.harness.deps, {
+        confirms: true,
+        questions: [{ id: "install-now", prompt: "Install now?" }],
+        state: "waiting",
+        threadId: thread.id,
+      });
+      fixture.harness.db
+        .update(threads)
+        .set({ status: "idle" })
+        .where(eq(threads.id, thread.id))
+        .run();
+      enqueueNativeParentNotice(fixture.harness.deps, {
+        input: [{ type: "text", text: "Child 1 finished", mentions: [] }],
+        parentThreadId: thread.id,
+      });
+      await sleep(5_500);
+      expect(tui.inputs()).toEqual([]);
+      expect(
+        fixture.harness.deps.pendingInteractions.listPendingThreadInteractions(
+          thread.id,
+        ),
+      ).toHaveLength(1);
+
+      recordNativeTerminalActivity(fixture.harness.deps, {
+        confirms: true,
+        state: "idle",
+        threadId: thread.id,
+      });
+      await waitFor(() => tui.pastes().length > 0, 20_000);
+      await sleep(1_000);
+      const [notice, ...rest] = tui.pastes();
+      expect(rest).toEqual([]);
+      expect(notice).toContain("Child 1 finished");
+      expect(tui.inputs().filter((input) => input === "\r")).toHaveLength(1);
+    } finally {
+      tui.stop();
+    }
+  }, 40_000);
+
+  it("holds a notice when a question opens after admission but before the paste, and delivers it once after the question closes", async () => {
+    const fixture = await createFixture();
+    const { open, thread } = await openRunningClaudeParent(fixture);
+    const tui = startFakeClaudeTui(
+      fixture,
+      open.terminalId,
+      EMPTY_PROMPT_SCREEN,
+    );
+    const terminalSessions = fixture.harness.deps.terminalSessions;
+    const readTerminalOutput =
+      terminalSessions.readTerminalOutput.bind(terminalSessions);
+    vi.spyOn(terminalSessions, "readTerminalOutput").mockImplementationOnce(
+      async (...args) => {
+        recordNativeTerminalActivity(fixture.harness.deps, {
+          confirms: true,
+          questions: [{ id: "install-now", prompt: "Install now?" }],
+          state: "waiting",
+          threadId: thread.id,
+        });
+        return readTerminalOutput(...args);
+      },
+    );
+    try {
+      enqueueNativeParentNotice(fixture.harness.deps, {
+        input: [{ type: "text", text: "Child 1 finished", mentions: [] }],
+        parentThreadId: thread.id,
+      });
+      await sleep(5_500);
+      expect(tui.inputs()).toEqual([]);
+      expect(
+        fixture.harness.deps.pendingInteractions.listPendingThreadInteractions(
+          thread.id,
+        ),
+      ).toHaveLength(1);
+
+      recordNativeTerminalActivity(fixture.harness.deps, {
+        confirms: true,
+        state: "idle",
+        threadId: thread.id,
+      });
+      await waitFor(() => tui.pastes().length > 0, 20_000);
+      await sleep(1_000);
+      const [notice, ...rest] = tui.pastes();
+      expect(rest).toEqual([]);
+      expect(notice).toContain("Child 1 finished");
+      expect(tui.inputs().filter((input) => input === "\r")).toHaveLength(1);
+    } finally {
+      tui.stop();
+    }
+  }, 40_000);
 
   it("holds a notice to an idle parent at the concurrency limit, then delivers it once", async () => {
     const fixture = await createFixture();
