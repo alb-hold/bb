@@ -262,16 +262,21 @@ async function readOwnMounts(
     return { ok: false, error: "failed" in own ? own.failed : "ENOENT" };
   const mounts = parseMountinfo(own.value);
   if (mounts === null) return { ok: false, error: "unparsable" };
-  const mountId = await readOptional(() => proc.mountId(directory));
-  if (!("value" in mountId))
+  let mountId: string;
+  try {
+    mountId = await proc.mountId(directory);
+  } catch (error) {
+    const code = errorCode(error);
+    if (code === "ENOENT") return { ok: true, mounts };
     return {
       ok: false,
-      error: `worktree mount ID ${"failed" in mountId ? mountId.failed : "ENOENT"}`,
+      error: `worktree mount ID ${code ?? "unreadable"}`,
     };
+  }
   const mount = mounts
     .filter((entry) => mountContains(directory, entry.point))
     .sort((a, b) => b.point.length - a.point.length)[0];
-  return mount?.id === mountId.value
+  return mount?.id === mountId
     ? { ok: true, mounts }
     : { ok: false, error: "incomplete" };
 }
@@ -387,7 +392,13 @@ export const hostProc: ProcReader = {
       constants.O_RDONLY | constants.O_DIRECTORY,
     );
     try {
-      const info = await fs.readFile(`/proc/self/fdinfo/${handle.fd}`, "utf8");
+      const info = await fs
+        .readFile(`/proc/self/fdinfo/${handle.fd}`, "utf8")
+        .catch((error: unknown) => {
+          throw Object.assign(new Error("fdinfo is unreadable"), {
+            code: `fdinfo ${errorCode(error) ?? "unreadable"}`,
+          });
+        });
       const id = /^mnt_id:\s*(\d+)$/mu.exec(info)?.[1];
       if (id === undefined)
         throw Object.assign(new Error("fdinfo has no mnt_id"), {
