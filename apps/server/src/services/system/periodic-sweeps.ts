@@ -425,6 +425,7 @@ async function runThreadProvisioningOrphanCleanupSweep(
   for (const thread of orderThreadStorageDeleteRetries(
     deps.db,
     pendingStorageDeletion,
+    now,
   )) {
     const environment = thread.environmentId
       ? getEnvironment(deps.db, thread.environmentId)

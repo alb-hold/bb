@@ -288,4 +288,51 @@ describe("refused thread storage deletes", () => {
       expect(getThread(harness.db, refusedThreadId)).toBeNull();
     });
   });
+
+  it("retries a refused thread within N+1 slots when the clock steps back before every slot", async () => {
+    await withTestHarness(async (harness) => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(START_MS);
+      const seeded = seedDeletedThreads(harness, 1);
+      const refusedThreadId = seeded.threadIds[0] ?? "";
+      await runThreadLifecycleSweep(harness.deps);
+      expect(await refuseQueuedStorageDeletes(harness, 0)).toEqual([
+        { atMs: 0, threadId: refusedThreadId },
+      ]);
+      const refusedThreadRetryAtMs = 60_000;
+      const earlierStampMs = refusedThreadRetryAtMs - 10_000;
+      const threadsDueAheadOfRefusedThread = 1;
+      const released = new Set([refusedThreadId]);
+      const refusedThreadRequests: number[] = [];
+      for (let slot = 1; slot <= 30; slot += 1) {
+        vi.setSystemTime(START_MS + earlierStampMs);
+        seedDeletedThreadIn(harness, {
+          environmentId: seeded.environment.id,
+          projectId: seeded.projectId,
+        });
+        const slotMs = slot * 60_000;
+        vi.setSystemTime(START_MS + slotMs);
+        await runThreadLifecycleSweep(harness.deps);
+        const requests = await refuseQueuedStorageDeletes(
+          harness,
+          slotMs,
+          released,
+        );
+        for (const request of requests) {
+          if (request.threadId === refusedThreadId) {
+            refusedThreadRequests.push(request.atMs);
+          }
+        }
+        if (refusedThreadRequests.length > 0) break;
+      }
+      await runThreadLifecycleSweep(harness.deps);
+      vi.useRealTimers();
+
+      expect(refusedThreadRequests).toHaveLength(1);
+      expect(refusedThreadRequests[0]).toBeLessThanOrEqual(
+        refusedThreadRetryAtMs + threadsDueAheadOfRefusedThread * 60_000,
+      );
+      expect(getThread(harness.db, refusedThreadId)).toBeNull();
+    });
+  });
 });
