@@ -36,7 +36,7 @@ import type {
   OpenNativeTerminalRequest,
   TerminalSession,
 } from "@bb/server-contract";
-import { ApiError } from "../../errors.js";
+import { ApiError, TerminalInputInterruptedError } from "../../errors.js";
 import type {
   AppDeps,
   LoggedPendingInteractionWorkSessionDeps,
@@ -1421,16 +1421,40 @@ async function deliverNativeTerminalMessage(
     }
     return submitNativeTerminalInput(deps, terminalId);
   }
-  for (const [pastedBefore, text] of args.pastes.entries()) {
-    await pasteIntoNativeTerminal(deps, {
-      pastedBefore,
-      provider,
-      screenRows: view.terminal.rows,
-      terminalId,
-      text,
-    });
+  const delivery = { inputSent: false };
+  try {
+    for (const [pastedBefore, text] of args.pastes.entries()) {
+      await pasteIntoNativeTerminal(deps, {
+        delivery,
+        pastedBefore,
+        provider,
+        screenRows: view.terminal.rows,
+        terminalId,
+        text,
+      });
+    }
+    return submitNativeTerminalInput(deps, terminalId);
+  } catch (error) {
+    throw delivery.inputSent ? interruptedAfterInput(error) : error;
   }
-  return submitNativeTerminalInput(deps, terminalId);
+}
+
+const NATIVE_TERMINAL_DISCONNECT_CODES: ReadonlySet<string> = new Set([
+  "host_disconnected",
+  "native_terminal_not_running",
+  "terminal_not_running",
+  "terminal_output_unavailable",
+]);
+
+function interruptedAfterInput(error: unknown): unknown {
+  if (
+    !(error instanceof ApiError) ||
+    error instanceof TerminalInputInterruptedError ||
+    !NATIVE_TERMINAL_DISCONNECT_CODES.has(error.body.code)
+  ) {
+    return error;
+  }
+  return new TerminalInputInterruptedError(error);
 }
 
 function submitNativeTerminalInput(
@@ -1446,6 +1470,7 @@ function submitNativeTerminalInput(
 async function pasteIntoNativeTerminal(
   deps: NativeTerminalDeps,
   args: {
+    delivery: { inputSent: boolean };
     pastedBefore: number;
     provider: NativeTerminalProvider;
     screenRows: number;
@@ -1480,6 +1505,7 @@ async function pasteIntoNativeTerminal(
     terminalId,
     payload: { dataBase64: Buffer.from(bracketed, "utf8").toString("base64") },
   });
+  args.delivery.inputSent = true;
   const deadline = Date.now() + NATIVE_TERMINAL_ECHO_TIMEOUT_MS;
   for (;;) {
     await new Promise((resolve) =>

@@ -54,8 +54,8 @@ export class ApiError extends HTTPException {
 }
 
 export class TerminalInputInterruptedError extends ApiError {
-  constructor() {
-    super(502, "host_disconnected", "Host is not connected");
+  constructor(interrupted: ApiError) {
+    super(interrupted.status, interrupted.body.code, interrupted.body.message);
   }
 }
 

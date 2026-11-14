@@ -2046,8 +2046,14 @@ export class TerminalSessionLifecycle {
         this.disconnectDaemonSessionTerminals({
           daemonSessionId: current.daemonSessionId,
         });
-        if (frame > 0) throw new TerminalInputInterruptedError();
-        throw new ApiError(502, "host_disconnected", "Host is not connected");
+        const disconnected = new ApiError(
+          502,
+          "host_disconnected",
+          "Host is not connected",
+        );
+        throw frame > 0
+          ? new TerminalInputInterruptedError(disconnected)
+          : disconnected;
       }
     }
     if (args.payload.dataBase64.length > 0) {
