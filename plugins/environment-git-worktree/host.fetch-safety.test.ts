@@ -29,6 +29,7 @@ const execFileAsync = promisify(execFile);
 const roots: string[] = [];
 const servers: http.Server[] = [];
 const inheritedSshCommand = process.env.GIT_SSH_COMMAND;
+const inheritedGlobalConfig = process.env.GIT_CONFIG_GLOBAL;
 
 async function git(cwd: string, ...args: string[]): Promise<string> {
   const result = await execFileAsync("git", args, {
@@ -59,6 +60,8 @@ afterEach(async () => {
   clearFetchMemo();
   if (inheritedSshCommand === undefined) delete process.env.GIT_SSH_COMMAND;
   else process.env.GIT_SSH_COMMAND = inheritedSshCommand;
+  if (inheritedGlobalConfig === undefined) delete process.env.GIT_CONFIG_GLOBAL;
+  else process.env.GIT_CONFIG_GLOBAL = inheritedGlobalConfig;
   await Promise.all(
     servers
       .splice(0)
@@ -138,6 +141,63 @@ async function recordingSsh(root: string) {
   );
   return { log, script };
 }
+
+async function useGlobalConfig(root: string): Promise<string> {
+  const file = join(root, "global.gitconfig");
+  await writeFile(file, "");
+  process.env.GIT_CONFIG_GLOBAL = file;
+  return file;
+}
+
+async function setGlobalConfig(file: string, ...args: string[]) {
+  await execFileAsync("git", ["config", "--file", file, ...args]);
+}
+
+async function servedWithBasicAuth(root: string) {
+  const served = join(root, "served.git");
+  await git(root, "init", "--bare", "--initial-branch=main", served);
+  const seed = join(root, "seed");
+  await mkdir(seed, { recursive: true });
+  await git(seed, "init", "--initial-branch=main");
+  await writeFile(join(seed, "a.txt"), "a\n");
+  await git(seed, "add", ".");
+  await git(seed, "commit", "-m", "first");
+  await git(seed, "push", served, "main");
+  await git(served, "update-server-info");
+  const published = (await git(seed, "rev-parse", "HEAD")).trim();
+  const expected = `Basic ${Buffer.from("bb:token-1").toString("base64")}`;
+  const server = http.createServer((request, response) => {
+    if (request.headers.authorization !== expected) {
+      response.writeHead(401, { "www-authenticate": 'Basic realm="x"' });
+      response.end();
+      return;
+    }
+    const requested = new URL(request.url ?? "/", "http://served").pathname;
+    readFile(join(served, requested.replace(/^\/served\.git/u, ""))).then(
+      (body) => {
+        response.writeHead(200);
+        response.end(body);
+      },
+      () => {
+        response.writeHead(404);
+        response.end();
+      },
+    );
+  });
+  servers.push(server);
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  const port =
+    typeof address === "object" && address !== null ? address.port : 0;
+  return {
+    origin: `http://127.0.0.1:${port}`,
+    url: `http://127.0.0.1:${port}/served.git`,
+    published,
+  };
+}
+
+const answeringHelper = (marker: string) =>
+  `!f() { echo called >> ${JSON.stringify(marker)}; test "$1" = get || exit 0; echo username=bb; echo password=token-1; }; f`;
 
 describe("the credential helpers the fetch replays", () => {
   const configured = (entries: [string, string][]) =>
@@ -346,15 +406,15 @@ describe("the fetch that checks whether commits are published", () => {
       const port =
         typeof address === "object" && address !== null ? address.port : 0;
       const fixture = await createFixture(`http://127.0.0.1:${port}/repo.git`);
+      const globalFile = await useGlobalConfig(fixture.root);
       const marker = join(fixture.root, "helper-called");
       const helper = await writeScript(
         fixture.root,
         helperName,
         `echo called >> ${JSON.stringify(marker)}`,
       );
-      await git(
-        fixture.sourcePath,
-        "config",
+      await setGlobalConfig(
+        globalFile,
         "credential.helper",
         `${prefix}${helper}`,
       );
@@ -378,60 +438,24 @@ describe("the fetch that checks whether commits are published", () => {
     },
   );
 
-  it("fetches through the helper the repository configures for that remote when the helper cannot open a dialog, honouring an earlier reset", async () => {
+  it("fetches through a helper from the user's global config for that remote when the helper cannot open a dialog, honouring an earlier reset", async () => {
     const root = await mkdtemp(join(tmpdir(), "bb-worktree-auth-"));
     roots.push(root);
-    const served = join(root, "served.git");
-    await git(root, "init", "--bare", "--initial-branch=main", served);
-    const seed = join(root, "seed");
-    await mkdir(seed, { recursive: true });
-    await git(seed, "init", "--initial-branch=main");
-    await writeFile(join(seed, "a.txt"), "a\n");
-    await git(seed, "add", ".");
-    await git(seed, "commit", "-m", "first");
-    await git(seed, "push", served, "main");
-    await git(served, "update-server-info");
-    const published = (await git(seed, "rev-parse", "HEAD")).trim();
-    const expected = `Basic ${Buffer.from("bb:token-1").toString("base64")}`;
-    const server = http.createServer((request, response) => {
-      if (request.headers.authorization !== expected) {
-        response.writeHead(401, { "www-authenticate": 'Basic realm="x"' });
-        response.end();
-        return;
-      }
-      const requested = new URL(request.url ?? "/", "http://served").pathname;
-      readFile(join(served, requested.replace(/^\/served\.git/u, ""))).then(
-        (body) => {
-          response.writeHead(200);
-          response.end(body);
-        },
-        () => {
-          response.writeHead(404);
-          response.end();
-        },
-      );
-    });
-    servers.push(server);
-    await new Promise<void>((resolve) =>
-      server.listen(0, "127.0.0.1", resolve),
-    );
-    const address = server.address();
-    const port =
-      typeof address === "object" && address !== null ? address.port : 0;
-    const fixture = await createFixture(`http://127.0.0.1:${port}/served.git`);
+    const remote = await servedWithBasicAuth(root);
+    const fixture = await createFixture(remote.url);
+    const globalFile = await useGlobalConfig(root);
     const resetMarker = join(root, "reset-helper-called");
-    await git(
-      fixture.sourcePath,
-      "config",
+    const helperMarker = join(root, "helper-called");
+    await setGlobalConfig(
+      globalFile,
       "credential.helper",
       `!f() { echo called >> ${JSON.stringify(resetMarker)}; }; f`,
     );
-    await git(fixture.sourcePath, "config", "--add", "credential.helper", "");
-    await git(
-      fixture.sourcePath,
-      "config",
-      `credential.http://127.0.0.1:${port}.helper`,
-      '!f() { test "$1" = get || exit 0; echo username=bb; echo password=token-1; }; f',
+    await setGlobalConfig(globalFile, "--add", "credential.helper", "");
+    await setGlobalConfig(
+      globalFile,
+      `credential.${remote.origin}.helper`,
+      answeringHelper(helperMarker),
     );
 
     const reasons = await findPreservationReasons(
@@ -447,8 +471,38 @@ describe("the fetch that checks whether commits are published", () => {
       (
         await git(fixture.sourcePath, "rev-parse", "refs/remotes/backup/main")
       ).trim(),
-    ).toBe(published);
+    ).toBe(remote.published);
+    expect(existsSync(helperMarker)).toBe(true);
     expect(existsSync(resetMarker)).toBe(false);
+  });
+
+  it("does not run a helper from the repository's own config, which a thread can write, and says authentication failed", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bb-worktree-auth-"));
+    roots.push(root);
+    const remote = await servedWithBasicAuth(root);
+    const fixture = await createFixture(remote.url);
+    await useGlobalConfig(root);
+    const marker = join(root, "local-helper-called");
+    await git(
+      fixture.sourcePath,
+      "config",
+      `credential.${remote.origin}.helper`,
+      answeringHelper(marker),
+    );
+    await git(fixture.sourcePath, "ls-remote", "backup");
+    expect(existsSync(marker)).toBe(true);
+    await rm(marker, { force: true });
+
+    const reasons = await findPreservationReasons(
+      await identityOf(fixture),
+      undefined,
+      { fetchTimeoutMs: 20_000 },
+    );
+
+    expect(existsSync(marker)).toBe(false);
+    expect(reasons.join("\n")).toContain(
+      "could not verify remotes: authentication failed for backup",
+    );
   });
 
   it("still fetches from a remote that works: a local remote and an ssh remote reached through the user's own wrapper", async () => {
