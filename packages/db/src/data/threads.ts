@@ -2095,6 +2095,56 @@ export function getThreadStartupContext(
   );
 }
 
+export const THREAD_PURGE_BATCH_SIZE = 2000;
+
+const THREAD_PURGE_TABLES = ["events", "thread_search_segments"] as const;
+
+export function hasThreadPurgeBacklog(
+  db: DbQueryConnection,
+  threadId: string,
+  batchSize: number = THREAD_PURGE_BATCH_SIZE,
+): boolean {
+  for (const table of THREAD_PURGE_TABLES) {
+    const row = db.get<{ count: number }>(
+      sql`SELECT count(*) AS count FROM (SELECT 1 FROM ${sql.identifier(table)} WHERE thread_id = ${threadId} LIMIT ${batchSize + 1})`,
+    );
+    if ((row?.count ?? 0) > batchSize) return true;
+  }
+  return false;
+}
+
+export function purgeThreadRowsBatch(
+  db: ThreadWriteConnection,
+  threadId: string,
+  batchSize: number = THREAD_PURGE_BATCH_SIZE,
+): number {
+  for (const table of THREAD_PURGE_TABLES) {
+    const result = db.run(
+      sql`DELETE FROM ${sql.identifier(table)} WHERE id IN (SELECT id FROM ${sql.identifier(table)} WHERE thread_id = ${threadId} LIMIT ${batchSize})`,
+    );
+    if (result.changes > 0) return result.changes;
+  }
+  return 0;
+}
+
+export async function purgeThreadRows(
+  db: ThreadWriteConnection,
+  threadId: string,
+  options: {
+    batchSize?: number;
+    yieldToEventLoop: () => Promise<void>;
+  },
+): Promise<number> {
+  const batchSize = options.batchSize ?? THREAD_PURGE_BATCH_SIZE;
+  let total = 0;
+  for (;;) {
+    const deleted = purgeThreadRowsBatch(db, threadId, batchSize);
+    if (deleted === 0) return total;
+    total += deleted;
+    await options.yieldToEventLoop();
+  }
+}
+
 export function deleteThread(
   db: ThreadWriteConnection,
   notifier: DbNotifier,
