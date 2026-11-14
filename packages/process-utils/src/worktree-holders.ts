@@ -218,17 +218,23 @@ async function foreignMountsExcludeWorktree(
   );
 }
 
+async function readOwnMounts(proc: ProcReader): Promise<Mount[] | null> {
+  const own = await readOptional(() => proc.readFile("/proc/self/mountinfo"));
+  return "value" in own ? parseMountinfo(own.value) : null;
+}
+
 async function systemViewExposure(
   proc: ProcReader,
   base: string,
   directory: string,
+  context: ScanContext,
 ): Promise<string | null> {
-  const own = await readOptional(() => proc.readFile("/proc/self/mountinfo"));
+  const ownMounts = await context.ownMounts();
+  if (ownMounts === null) return null;
   const foreign = await readOptional(() => proc.readFile(`${base}/mountinfo`));
-  if (!("value" in own) || !("value" in foreign)) return null;
-  const ownMounts = parseMountinfo(own.value);
+  if (!("value" in foreign)) return null;
   const foreignMounts = parseMountinfo(foreign.value);
-  if (ownMounts === null || foreignMounts === null) return null;
+  if (foreignMounts === null) return null;
   const ownIds = new Set(ownMounts.map((entry) => entry.id));
   if (foreignMounts.every((entry) => ownIds.has(entry.id))) return null;
   const mount = ownMounts
@@ -355,6 +361,7 @@ interface ScanContext {
   final: boolean;
   tree: TreeIdsReader;
   aliases: () => Promise<string[] | null>;
+  ownMounts: () => Promise<Mount[] | null>;
   acls: Map<string, Promise<boolean | null>>;
 }
 
@@ -823,7 +830,7 @@ async function scanLinuxPaths(
     const foreignUid = uids[3];
     if (foreignUid === undefined) return { otherUser: true };
     if (foreignUid < 1000 && self.uid !== 0) {
-      const alias = await systemViewExposure(proc, base, directory);
+      const alias = await systemViewExposure(proc, base, directory, context);
       if (alias === null) return { otherUser: true };
       return {
         uncertain: `process ${pid} system uid ${foreignUid} sees the worktree at ${alias} through another mount namespace`,
@@ -1493,12 +1500,17 @@ export async function scanLinux(
     return listed;
   };
   let aliases: Promise<string[] | null> | null = null;
+  let ownMounts: Promise<Mount[] | null> | null = null;
   const context: ScanContext = {
     final: limits.final === true,
     tree,
     aliases: () => {
       aliases ??= worktreeAliases(proc, directory);
       return aliases;
+    },
+    ownMounts: () => {
+      ownMounts ??= readOwnMounts(proc);
+      return ownMounts;
     },
     acls: new Map(),
   };
