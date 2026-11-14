@@ -425,6 +425,29 @@ function parseStatusNumbers(status: string, key: string): number[] | null {
   return null;
 }
 
+async function exitedLeaderGroup(
+  proc: ProcReader,
+  pid: number,
+): Promise<"live" | { gone: true } | { uncertain: string }> {
+  const base = `/proc/${pid}`;
+  const tasks = await readOptional(() => proc.readdir(`${base}/task`));
+  if ("gone" in tasks) return tasks;
+  if ("failed" in tasks)
+    return {
+      uncertain: `process ${pid} has an exited leader and its threads could not be listed (${tasks.failed})`,
+    };
+  for (const task of tasks.value) {
+    if (task === String(pid)) continue;
+    const status = await readOptional(() =>
+      proc.readFile(`${base}/task/${task}/status`),
+    );
+    if ("gone" in status) continue;
+    if (!("value" in status) || !/^State:\s+Z/mu.test(status.value))
+      return "live";
+  }
+  return { gone: true };
+}
+
 async function scanMountAliases(
   proc: ProcReader,
   pid: number,
@@ -440,11 +463,11 @@ async function scanMountAliases(
 > {
   const base = `/proc/${pid}`;
   const status = await readOptional(() => proc.readFile(`${base}/status`));
-  if (
-    "gone" in status ||
-    ("value" in status && /^State:\s+Z/mu.test(status.value))
-  )
-    return { gone: true };
+  if ("gone" in status) return status;
+  if ("value" in status && /^State:\s+Z/mu.test(status.value)) {
+    const group = await exitedLeaderGroup(proc, pid);
+    if (group !== "live") return group;
+  }
   const aliases = await context.aliases();
   let doubt: string | null =
     aliases === null ? "worktree mount aliases could not be established" : null;
@@ -736,7 +759,10 @@ async function scanLinuxPaths(
     return notVouchable(`process ${pid} owner could not be read`);
   if (gids === null || gids[3] === undefined)
     return notVouchable(`process ${pid} group owner could not be read`);
-  if (/^State:\s+Z/mu.test(status.value)) return null;
+  if (/^State:\s+Z/mu.test(status.value)) {
+    const group = await exitedLeaderGroup(proc, pid);
+    if (group !== "live") return "gone" in group ? null : group;
+  }
   if (uids[3] !== self.uid) {
     const foreignUid = uids[3];
     if (foreignUid === undefined || (foreignUid < 1000 && self.uid !== 0))
