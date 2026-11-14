@@ -30,6 +30,7 @@ const roots: string[] = [];
 const servers: http.Server[] = [];
 const inheritedSshCommand = process.env.GIT_SSH_COMMAND;
 const inheritedGlobalConfig = process.env.GIT_CONFIG_GLOBAL;
+const inheritedPath = process.env.PATH;
 
 async function git(cwd: string, ...args: string[]): Promise<string> {
   const result = await execFileAsync("git", args, {
@@ -62,6 +63,7 @@ afterEach(async () => {
   else process.env.GIT_SSH_COMMAND = inheritedSshCommand;
   if (inheritedGlobalConfig === undefined) delete process.env.GIT_CONFIG_GLOBAL;
   else process.env.GIT_CONFIG_GLOBAL = inheritedGlobalConfig;
+  process.env.PATH = inheritedPath;
   await Promise.all(
     servers
       .splice(0)
@@ -516,6 +518,51 @@ describe("the fetch that checks whether commits are published", () => {
     expect(reasons.join("\n")).toContain(
       "could not verify remotes: authentication failed for backup",
     );
+  });
+
+  it("keeps the worktree when git is too old for --config-env, and never removes it", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bb-worktree-auth-"));
+    roots.push(root);
+    const remote = await servedWithBasicAuth(root);
+    const fixture = await createFixture(remote.url);
+    const globalFile = await useGlobalConfig(root);
+    const marker = join(root, "helper-called");
+    await setGlobalConfig(
+      globalFile,
+      `credential.${remote.origin}.helper`,
+      answeringHelper(marker),
+    );
+    const realGit = (
+      await execFileAsync("sh", ["-c", "command -v git"])
+    ).stdout.trim();
+    const bin = join(root, "old-git-bin");
+    await mkdir(bin, { recursive: true });
+    await writeScript(
+      bin,
+      "git",
+      [
+        'for a in "$@"; do case "$a" in --config-env=*) echo "unknown option: $a" >&2; exit 129 ;; esac; done',
+        `exec ${JSON.stringify(realGit)} "$@"`,
+      ].join("\n"),
+    );
+    process.env.PATH = `${bin}:${inheritedPath ?? ""}`;
+
+    const outcome = await removeWorktree({
+      path: fixture.path,
+      rootPath: fixture.attemptRoot,
+      fetchTimeoutMs: 20_000,
+    }).then(
+      (result) => ({ result, error: null }),
+      (error: unknown) => ({ result: null, error }),
+    );
+
+    expect(outcome.result).toBeNull();
+    expect(isWorktreePreservedError(outcome.error)).toBe(true);
+    expect((outcome.error as Error).message).toMatch(
+      /could not fetch its remotes to verify its commits are published \(unknown option: --config-env=/u,
+    );
+    expect(existsSync(join(fixture.path, "README.md"))).toBe(true);
+    expect(existsSync(marker)).toBe(false);
   });
 
   it("still fetches from a remote that works: a local remote and an ssh remote reached through the user's own wrapper", async () => {
