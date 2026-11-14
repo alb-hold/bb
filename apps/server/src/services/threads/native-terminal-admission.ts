@@ -135,7 +135,7 @@ function holdUntilInteractionSettles(
   return held;
 }
 
-async function runAdmittedWorkOrHold(
+export async function runNativeTerminalAdmittedWork(
   deps: LoggedPendingInteractionWorkSessionDeps,
   args: NativeTerminalAdmissionArgs,
 ): Promise<NativeTerminalAdmissionOutcome> {
@@ -194,7 +194,7 @@ export async function admitNativeTerminalDispatch(
     holdsCapacity(args.thread) ||
     !hasMessageDispatchHooks()
   ) {
-    return runAdmittedWorkOrHold(deps, args);
+    return runNativeTerminalAdmittedWork(deps, args);
   }
   assertThreadHostAcceptsWork(deps.db, args.thread);
   const author = resolveDispatchAuthor({
@@ -237,13 +237,16 @@ export async function admitNativeTerminalDispatch(
     ...(args.admitted.when === "within-decision"
       ? {
           continueAfterHooks: async () => {
-            withinDecision.outcome = await runAdmittedWorkOrHold(deps, args);
+            withinDecision.outcome = await runNativeTerminalAdmittedWork(
+              deps,
+              args,
+            );
           },
         }
       : {}),
   });
   if (outcome.kind === "proceed") {
-    return withinDecision.outcome ?? runAdmittedWorkOrHold(deps, args);
+    return withinDecision.outcome ?? runNativeTerminalAdmittedWork(deps, args);
   }
   if (args.claimed !== null) {
     noteDispatchRequeued(args.thread.id);
