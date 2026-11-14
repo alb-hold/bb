@@ -815,6 +815,61 @@ describe("native terminal delivery across a crash", () => {
     }
   }, 30_000);
 
+  it("never re-sends a message a crashed server left mid-delivery when periodic ticks reach it before recovery, and delivers the newer message behind it once", async () => {
+    const before = await createFixture();
+    const { open, thread } = await openRunningNativeThread(before, {
+      providerId: "codex",
+    });
+    const cli = startFakeCli(before, open.terminalId);
+    let decision: HookDecision = { action: "wait", reason: AT_LIMIT_REASON };
+    installDispatchHook(() => decision);
+    try {
+      await sendToThread(before, thread.id, "run the tests");
+      const restore = failWritesToClaimedQueueRows(before);
+      decision = { action: "proceed" };
+      await runQueuedMessageDispatch(before.harness.deps, {
+        kind: "plugin-recheck",
+      });
+      await settle();
+      restore();
+      expect(cli.inputs()).toEqual([
+        "\u001b[200~run the tests\u001b[201~",
+        "\r",
+      ]);
+    } finally {
+      cli.stop();
+    }
+
+    const after = await restartServer(before);
+    const afterCli = startFakeCli(after, open.terminalId, { firstSeq: 100 });
+    decision = { action: "wait", reason: AT_LIMIT_REASON };
+    installDispatchHook(() => decision);
+    try {
+      const newer = await sendToThread(after, thread.id, "then run lint");
+      expect(newer.delivery).toBe("queued");
+      decision = { action: "proceed" };
+      await runSweeps(after);
+      await settle();
+      await new Promise((resolve) => setTimeout(resolve, 1_100));
+      await runSweeps(after);
+      await drainEverything(after);
+
+      expect(afterCli.inputs()).toEqual([
+        "\u001b[200~then run lint\u001b[201~",
+        "\r",
+      ]);
+      const rows = queuedRows(after, thread.id);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        state: "failed_exhausted",
+        failureReason: UNCERTAIN_REASON,
+      });
+      expect(rows[0]?.content).toEqual(textInput("run the tests"));
+    } finally {
+      afterCli.stop();
+    }
+  }, 30_000);
+
   it("never re-sends a held send whose row could not be deleted after the paste", async () => {
     const fixture = await createFixture();
     const { open, thread } = await openRunningNativeThread(fixture, {
