@@ -33,6 +33,15 @@ const inheritedSshCommand = process.env.GIT_SSH_COMMAND;
 const inheritedGlobalConfig = process.env.GIT_CONFIG_GLOBAL;
 const inheritedSystemConfig = process.env.GIT_CONFIG_SYSTEM;
 const inheritedNoSystem = process.env.GIT_CONFIG_NOSYSTEM;
+const commandConfigVariables = [
+  "GIT_CONFIG_COUNT",
+  "GIT_CONFIG_KEY_0",
+  "GIT_CONFIG_VALUE_0",
+  "GIT_CONFIG_PARAMETERS",
+] as const;
+const inheritedCommandConfig = commandConfigVariables.map(
+  (name) => [name, process.env[name]] as const,
+);
 const inheritedPath = process.env.PATH;
 
 async function git(cwd: string, ...args: string[]): Promise<string> {
@@ -70,6 +79,9 @@ afterEach(async () => {
   else process.env.GIT_CONFIG_SYSTEM = inheritedSystemConfig;
   if (inheritedNoSystem === undefined) delete process.env.GIT_CONFIG_NOSYSTEM;
   else process.env.GIT_CONFIG_NOSYSTEM = inheritedNoSystem;
+  for (const [name, value] of inheritedCommandConfig)
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
   process.env.PATH = inheritedPath;
   await Promise.all(
     servers
@@ -674,13 +686,24 @@ describe("the fetch that checks whether commits are published", () => {
   });
 
   it.each([
-    ["1", false],
-    ["yes", false],
-    ["", true],
-    ["0", true],
+    "1",
+    "yes",
+    "",
+    "0",
+    "+0",
+    "-0",
+    "00",
+    "0x0",
+    " 0",
+    "0b0",
+    "0B0",
+    "+0b0",
+    "0b1",
+    "maybe",
+    "0 ",
   ])(
-    "with GIT_CONFIG_NOSYSTEM=%j in the daemon's environment, runs the system file's helper only when git itself would read that file (%s)",
-    async (value, answers) => {
+    "with GIT_CONFIG_NOSYSTEM=%j in the daemon's environment, runs the system file's helper exactly when this host's git reads that file",
+    async (value) => {
       const root = await mkdtemp(join(tmpdir(), "bb-worktree-auth-"));
       roots.push(root);
       const remote = await servedWithBasicAuth(root);
@@ -695,6 +718,14 @@ describe("the fetch that checks whether commits are published", () => {
       );
       process.env.GIT_CONFIG_SYSTEM = systemFile;
       process.env.GIT_CONFIG_NOSYSTEM = value;
+      const gitReadsSystem = await execFileAsync("git", ["config", "--list"], {
+        cwd: root,
+      }).then(
+        ({ stdout }) => stdout.includes(marker),
+        () => false,
+      );
+      if (value === "1" || value === "yes") expect(gitReadsSystem).toBe(false);
+      if (value === "" || value === "0") expect(gitReadsSystem).toBe(true);
 
       const reasons = await findPreservationReasons(
         await identityOf(fixture),
@@ -702,17 +733,101 @@ describe("the fetch that checks whether commits are published", () => {
         { fetchTimeoutMs: 20_000 },
       );
 
-      expect(existsSync(marker)).toBe(answers);
-      if (answers)
+      expect(existsSync(marker)).toBe(gitReadsSystem);
+      if (gitReadsSystem)
         expect(reasons.join("\n")).not.toMatch(
           /could not fetch|could not verify remotes/u,
         );
       else
-        expect(reasons.join("\n")).toContain(
-          "could not verify remotes: authentication failed for backup",
+        expect(reasons.join("\n")).toMatch(
+          /could not verify remotes: authentication failed for backup|could not fetch its remotes to verify its commits are published \(fatal: bad boolean environment value/u,
         );
     },
   );
+
+  it.each([
+    [
+      "GIT_CONFIG_COUNT",
+      (key: string, value: string) => ({
+        GIT_CONFIG_COUNT: "1",
+        GIT_CONFIG_KEY_0: key,
+        GIT_CONFIG_VALUE_0: value,
+      }),
+    ],
+    [
+      "GIT_CONFIG_PARAMETERS",
+      (key: string, value: string) => ({
+        GIT_CONFIG_PARAMETERS: `'${key}'='${value}'`,
+      }),
+    ],
+  ])(
+    "does not replay a helper the daemon's environment passes through %s, which git labels command scope",
+    async (_name, variables) => {
+      const root = await mkdtemp(join(tmpdir(), "bb-worktree-auth-"));
+      roots.push(root);
+      const remote = await servedWithBasicAuth(root);
+      const fixture = await createFixture(remote.url);
+      await useGlobalConfig(root);
+      const marker = join(root, "command-helper-called");
+      Object.assign(
+        process.env,
+        variables(
+          `credential.${remote.origin}.helper`,
+          answeringHelper(marker),
+        ),
+      );
+      await git(fixture.sourcePath, "ls-remote", "backup");
+      expect(existsSync(marker)).toBe(true);
+      await rm(marker, { force: true });
+
+      const reasons = await findPreservationReasons(
+        await identityOf(fixture),
+        undefined,
+        { fetchTimeoutMs: 20_000 },
+      );
+
+      expect(existsSync(marker)).toBe(false);
+      expect(reasons.join("\n")).toContain(
+        "could not verify remotes: authentication failed for backup",
+      );
+    },
+  );
+
+  it("does not run a helper from the worktree's own config, which git labels worktree scope", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bb-worktree-auth-"));
+    roots.push(root);
+    const remote = await servedWithBasicAuth(root);
+    const fixture = await createFixture(remote.url);
+    await useGlobalConfig(root);
+    const marker = join(root, "worktree-helper-called");
+    await git(
+      fixture.sourcePath,
+      "config",
+      "extensions.worktreeConfig",
+      "true",
+    );
+    await git(
+      fixture.path,
+      "config",
+      "--worktree",
+      `credential.${remote.origin}.helper`,
+      answeringHelper(marker),
+    );
+    await git(fixture.path, "ls-remote", "backup");
+    expect(existsSync(marker)).toBe(true);
+    await rm(marker, { force: true });
+
+    const reasons = await findPreservationReasons(
+      await identityOf(fixture),
+      undefined,
+      { fetchTimeoutMs: 20_000 },
+    );
+
+    expect(existsSync(marker)).toBe(false);
+    expect(reasons.join("\n")).toContain(
+      "could not verify remotes: authentication failed for backup",
+    );
+  });
 
   it("keeps the worktree when git is too old for --config-env, and never removes it", async () => {
     const root = await mkdtemp(join(tmpdir(), "bb-worktree-auth-"));
