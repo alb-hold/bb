@@ -64,8 +64,9 @@ import {
   hasLiveThreadStartInFlight,
   purgeDeletedThreadRows,
   requestThreadStopForCurrentState,
-  requestThreadStorageDeletion,
+  retryThreadStorageDeletion,
 } from "../threads/thread-lifecycle.js";
+import { orderThreadStorageDeleteRetries } from "../threads/thread-storage-delete-retries.js";
 import {
   archiveUndoGraceKeepsTerminals,
   archiveUndoGraceKeepsTurnRunning,
@@ -401,6 +402,7 @@ async function runThreadProvisioningOrphanCleanupSweep(
     .from(threads)
     .where(isNotNull(threads.deletedAt))
     .all();
+  const pendingStorageDeletion: typeof deletedThreads = [];
   for (const thread of deletedThreads) {
     deps.terminalSessions.closeDeletedThreadTerminals({ threadId: thread.id });
     if (thread.storageDeletedAt !== null) {
@@ -408,10 +410,16 @@ async function runThreadProvisioningOrphanCleanupSweep(
       finalizeStoppedThread(deps, { threadId: thread.id });
       continue;
     }
+    pendingStorageDeletion.push(thread);
+  }
+  for (const thread of orderThreadStorageDeleteRetries(
+    deps.db,
+    pendingStorageDeletion,
+  )) {
     const environment = thread.environmentId
       ? getEnvironment(deps.db, thread.environmentId)
       : null;
-    requestThreadStorageDeletion(deps, thread, environment);
+    retryThreadStorageDeletion(deps, thread, environment, now);
   }
 }
 
