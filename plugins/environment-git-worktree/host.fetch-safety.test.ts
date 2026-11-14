@@ -16,10 +16,12 @@ import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   clearFetchMemo,
+  fetchFailureReason,
   findPreservationReasons,
   identifyWorktree,
   isWorktreePreservedError,
   nonInteractiveFetchEnvironment,
+  replayedCredentialHelpers,
 } from "./host/worktree-preservation.js";
 import { removeWorktree } from "./host/worktree.js";
 
@@ -136,6 +138,131 @@ async function recordingSsh(root: string) {
   );
   return { log, script };
 }
+
+describe("the credential helpers the fetch replays", () => {
+  const configured = (entries: [string, string][]) =>
+    entries.map(([key, value]) => `${key}\n${value}\0`).join("");
+
+  it("replays shell, store and cache helpers and resets in config order, with their URL scope", () => {
+    expect(
+      replayedCredentialHelpers(
+        configured([
+          ["credential.helper", "osxkeychain"],
+          ["credential.https://github.com.helper", ""],
+          ["credential.https://github.com.helper", "!gh auth git-credential"],
+          ["credential.helper", "store --file /tmp/creds"],
+          ["credential.https://example.com.helper", "cache --timeout=60"],
+          ["credential.helper", "cache"],
+        ]),
+      ),
+    ).toEqual({
+      args: [
+        "-c",
+        "credential.https://github.com.helper=",
+        "--config-env=credential.https://github.com.helper=BB_FETCH_CREDENTIAL_HELPER_0",
+        "--config-env=credential.helper=BB_FETCH_CREDENTIAL_HELPER_1",
+        "--config-env=credential.https://example.com.helper=BB_FETCH_CREDENTIAL_HELPER_2",
+        "--config-env=credential.helper=BB_FETCH_CREDENTIAL_HELPER_3",
+      ],
+      env: {
+        BB_FETCH_CREDENTIAL_HELPER_0: "!gh auth git-credential",
+        BB_FETCH_CREDENTIAL_HELPER_1: "store --file /tmp/creds",
+        BB_FETCH_CREDENTIAL_HELPER_2: "cache --timeout=60",
+        BB_FETCH_CREDENTIAL_HELPER_3: "cache",
+      },
+    });
+  });
+
+  it("keeps a helper's value out of git's command line, which other users can read", () => {
+    const replayed = replayedCredentialHelpers(
+      configured([["credential.helper", "!echo password=s3cret"]]),
+    );
+
+    expect(replayed.args.join(" ")).not.toContain("s3cret");
+    expect(Object.values(replayed.env)).toEqual(["!echo password=s3cret"]);
+  });
+
+  it.each([
+    "osxkeychain",
+    "manager",
+    "manager-core",
+    "wincred",
+    "libsecret",
+    "/usr/lib/git-core/git-credential-libsecret",
+    "/opt/homebrew/bin/git-credential-osxkeychain",
+    "!/opt/homebrew/bin/git-credential-osxkeychain",
+    "!git-credential-manager",
+    "!git credential-manager-core",
+    "!manager",
+    "storekeeper",
+    "gh-route",
+  ])(
+    "drops %s, which can open a dialog or is not known to be non-interactive",
+    (helper) => {
+      expect(
+        replayedCredentialHelpers(configured([["credential.helper", helper]])),
+      ).toEqual({ args: [], env: {} });
+    },
+  );
+
+  it("drops keys that are not a credential helper, keys git cannot carry on its command line, and entries without a value", () => {
+    expect(
+      replayedCredentialHelpers(
+        configured([
+          ["credential.usehttppath", "!echo no"],
+          ["credential.https://a.example/?x=1.helper", "!echo no"],
+        ]) + "credential.helper\0",
+      ),
+    ).toEqual({ args: [], env: {} });
+    expect(replayedCredentialHelpers("")).toEqual({ args: [], env: {} });
+  });
+});
+
+describe("the reason a failed fetch gives", () => {
+  it("names each remote whose fetch failed on authentication and keeps git's message without credentials", () => {
+    const reason = fetchFailureReason(
+      [
+        "fatal: Authentication failed for 'https://x-access-token:secret@github.com/a/b.git/'",
+        "error: could not fetch upstream",
+        "fatal: '/no/such/repo' does not appear to be a git repository",
+        "error: could not fetch mirror",
+        "git@github.com: Permission denied (publickey).",
+        "error: could not fetch origin",
+      ].join("\n"),
+    );
+
+    expect(reason).toMatch(
+      /^could not verify remotes: authentication failed for upstream, origin \(/u,
+    );
+    expect(reason).toContain(
+      "Authentication failed for 'https://github.com/a/b.git/'",
+    );
+    expect(reason).not.toContain("secret");
+  });
+
+  it("names the URL when a single remote failed on authentication", () => {
+    expect(
+      fetchFailureReason(
+        "fatal: could not read Username for 'https://github.com': terminal prompts disabled",
+      ),
+    ).toMatch(
+      /^could not verify remotes: authentication failed for https:\/\/github\.com \(/u,
+    );
+  });
+
+  it("keeps the general reason for a failure that is not about authentication", () => {
+    expect(
+      fetchFailureReason(
+        "remote: Repository not found.\nfatal: repository 'https://github.com/a/b.git/' not found",
+      ),
+    ).toMatch(
+      /^could not fetch its remotes to verify its commits are published \(remote: Repository not found/u,
+    );
+    expect(fetchFailureReason("")).toBe(
+      "could not fetch its remotes to verify its commits are published",
+    );
+  });
+});
 
 describe("the fetch that checks whether commits are published", () => {
   it("never prompts: batch mode is added to the user's own ssh command and nothing can ask for a password", async () => {
