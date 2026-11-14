@@ -3047,6 +3047,92 @@ describe("system processes in another mount namespace", () => {
   });
 });
 
+describe("same-user processes in another mount namespace", () => {
+  const mirror =
+    "50 1 8:48 / / rw - ext4 /dev/sda rw\n51 50 0:5 / /proc rw - proc proc rw\n";
+  const nsfs =
+    "52 50 0:4 net:[4026532364] /run/docker/netns/682a4718e917 rw - nsfs nsfs rw\n";
+  const cases = [
+    ["only mirrors and an nsfs bind", mirror + nsfs, {}, "clear"],
+    ["only mirrors", mirror, {}, "clear"],
+    [
+      "a mirror hidden by a tmpfs",
+      mirror + "53 50 0:60 / /work rw - tmpfs tmpfs rw\n",
+      {},
+      "clear",
+    ],
+    [
+      "mirrors and a cwd inside the worktree",
+      mirror + nsfs,
+      { cwd: "/work/tree/sub" },
+      "held",
+    ],
+    [
+      "a hidden mirror and an fd inside the worktree",
+      mirror + "53 50 0:60 / /work rw - tmpfs tmpfs rw\n",
+      { fd: "/work/tree/file" },
+      "held",
+    ],
+    [
+      "a mount root that is neither a path nor nsfs",
+      mirror + "54 50 0:99 weird:[1] /x rw - proc proc rw\n",
+      {},
+      "uncertain",
+    ],
+    [
+      "a bind mount that remaps the worktree",
+      mirror + "41 50 8:48 /work/tree /app rw - ext4 /dev/sda rw\n",
+      {},
+      "uncertain",
+    ],
+    ["an unreadable mount table", "denied", {}, "uncertain"],
+  ] as const;
+  it.each(
+    ["earlier", "final"].flatMap((scan) =>
+      cases.map(
+        ([kind, mountinfo, links, expected]) =>
+          [scan, kind, mountinfo, links, expected] as const,
+      ),
+    ),
+  )(
+    "checks on the %s scan a same-user process that sees %s",
+    async (scan, _kind, mountinfo, links, expected) => {
+      const proc = mountAliasProc("/work/tree", "different isolated", 1000);
+      const extra: { cwd?: string; fd?: string } = links;
+      const reader: ProcReader = {
+        ...proc,
+        readdir: async (target) =>
+          extra.fd !== undefined && target === "/proc/101/fd"
+            ? ["3"]
+            : proc.readdir(target),
+        readlink: async (target) => {
+          if (extra.cwd !== undefined && target === "/proc/101/cwd")
+            return extra.cwd;
+          if (extra.fd !== undefined && target === "/proc/101/fd/3")
+            return extra.fd;
+          return proc.readlink(target);
+        },
+        readFile: async (target) => {
+          if (target !== "/proc/101/mountinfo") return proc.readFile(target);
+          if (mountinfo === "denied")
+            throw Object.assign(new Error("denied"), { code: "EACCES" });
+          return mountinfo;
+        },
+      };
+      expect(
+        await scanLinux(
+          "/work/tree",
+          reader,
+          4242,
+          scan === "final"
+            ? { maxDirectories: 500_000, final: true }
+            : undefined,
+        ),
+      ).toMatchObject({ status: expected });
+    },
+  );
+});
+
 describe("exited thread group leaders", () => {
   it.each(
     ["earlier", "final"].flatMap((scan) =>
