@@ -560,14 +560,6 @@ const PERIODIC_SWEEP_JOBS: PeriodicSweepJob[] = [
   {
     cadenceMs: 0,
     category: "durable-intent-retry",
-    name: "native-terminal-delivery-recovery",
-    run: async (deps) => {
-      await recoverNativeTerminalDeliveries(deps);
-    },
-  },
-  {
-    cadenceMs: 0,
-    category: "durable-intent-retry",
     name: "environment-provider-lifecycle",
     run: sweepProviderLifecycles,
   },
@@ -658,6 +650,14 @@ const PERIODIC_SWEEP_JOBS: PeriodicSweepJob[] = [
         kind: "orphaned-plugin-recovery",
         plugins: deps.plugins,
       }),
+  },
+  {
+    cadenceMs: 0,
+    category: "durable-intent-retry",
+    name: "native-terminal-delivery-recovery",
+    run: async (deps) => {
+      await recoverNativeTerminalDeliveries(deps);
+    },
   },
   {
     cadenceMs: 0,
