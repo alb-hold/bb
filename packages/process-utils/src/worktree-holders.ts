@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { readdirSync, readlinkSync } from "node:fs";
+import { constants, readdirSync, readlinkSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import {
@@ -253,14 +253,27 @@ async function foreignMountsExcludeWorktree(
 
 type OwnMounts = { ok: true; mounts: Mount[] } | { ok: false; error: string };
 
-async function readOwnMounts(proc: ProcReader): Promise<OwnMounts> {
+async function readOwnMounts(
+  proc: ProcReader,
+  directory: string,
+): Promise<OwnMounts> {
   const own = await readOptional(() => proc.readFile("/proc/self/mountinfo"));
   if (!("value" in own))
     return { ok: false, error: "failed" in own ? own.failed : "ENOENT" };
   const mounts = parseMountinfo(own.value);
-  return mounts === null
-    ? { ok: false, error: "unparsable" }
-    : { ok: true, mounts };
+  if (mounts === null) return { ok: false, error: "unparsable" };
+  const mountId = await readOptional(() => proc.mountId(directory));
+  if (!("value" in mountId))
+    return {
+      ok: false,
+      error: `worktree mount ID ${"failed" in mountId ? mountId.failed : "ENOENT"}`,
+    };
+  const mount = mounts
+    .filter((entry) => mountContains(directory, entry.point))
+    .sort((a, b) => b.point.length - a.point.length)[0];
+  return mount?.id === mountId.value
+    ? { ok: true, mounts }
+    : { ok: false, error: "incomplete" };
 }
 
 async function systemViewExposure(
@@ -333,6 +346,7 @@ export interface ProcReader {
   readdir(path: string): Promise<string[]>;
   lstatId(path: string): Promise<string>;
   statId(path: string): Promise<string>;
+  mountId(directory: string): Promise<string>;
   statAccess(path: string): Promise<{ uid: number; gid: number; mode: number }>;
   hasExtendedAcl(path: string): Promise<boolean | null>;
   creationMs(directory: string): Promise<number | null>;
@@ -366,6 +380,23 @@ export const hostProc: ProcReader = {
   statId: async (path) => {
     const info = await fs.stat(path, { bigint: true });
     return `${info.dev}:${info.ino}`;
+  },
+  mountId: async (directory) => {
+    const handle = await fs.open(
+      directory,
+      constants.O_RDONLY | constants.O_DIRECTORY,
+    );
+    try {
+      const info = await fs.readFile(`/proc/self/fdinfo/${handle.fd}`, "utf8");
+      const id = /^mnt_id:\s*(\d+)$/mu.exec(info)?.[1];
+      if (id === undefined)
+        throw Object.assign(new Error("fdinfo has no mnt_id"), {
+          code: "ENODATA",
+        });
+      return id;
+    } finally {
+      await handle.close();
+    }
   },
   statAccess: async (path) => {
     const info = await fs.stat(path);
@@ -1636,7 +1667,7 @@ export async function scanLinux(
       return aliases;
     },
     ownMounts: () => {
-      ownMounts ??= readOwnMounts(proc);
+      ownMounts ??= readOwnMounts(proc, directory);
       return ownMounts;
     },
     acls: new Map(),
