@@ -130,6 +130,9 @@ Native terminal threads:
   When the screen already shows the same text (a short reply such as 1 or y,
   or a repeated message), nothing is sent and tell fails with
   native_terminal_input_ambiguous; type it in the terminal or reword it.
+  When a question or approval opens after part of the message was typed,
+  nothing more is sent and tell fails with native_terminal_input_interrupted;
+  answer it, then check the input box in the terminal before sending again.
   Read the screen with bb terminal read <terminal-id>.
 
   A native thread shows Working while its CLI runs a turn and Done when the
