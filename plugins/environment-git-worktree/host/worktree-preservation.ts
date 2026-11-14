@@ -373,8 +373,14 @@ export function nonInteractiveFetchEnvironment(
   };
 }
 const CREDENTIAL_HELPER_KEYS = "^credential\\..*helper$";
-const TRUSTED_CONFIG_FILES = ["--system", "--global"];
+const SYSTEM_CONFIG_FILE = "--system";
+const GLOBAL_CONFIG_FILE = "--global";
 const FILE_ORIGIN = "file:";
+const GIT_FALSE = /^(?:|false|no|off|\s*[+-]?(?:0x)?0+[kmg]?)$/iu;
+
+export function systemConfigIgnored(value: string | undefined): boolean {
+  return value !== undefined && !GIT_FALSE.test(value);
+}
 const NON_INTERACTIVE_HELPER = /^(?:!|(?:store|cache)(?:\s|$))/u;
 const DIALOG_HELPER =
   /osxkeychain|credential-manager|manager-core|wincred|libsecret|(?:^|[\s!/])manager(?:\s|$)/u;
@@ -576,7 +582,11 @@ export async function findPreservationReasons(
             gitOptions,
           );
           const trusted: string[] = [];
-          for (const file of TRUSTED_CONFIG_FILES) {
+          const effective = { ...process.env, ...gitOptions.env };
+          const files = systemConfigIgnored(effective.GIT_CONFIG_NOSYSTEM)
+            ? [GLOBAL_CONFIG_FILE]
+            : [SYSTEM_CONFIG_FILE, GLOBAL_CONFIG_FILE];
+          for (const file of files) {
             const helpers = await runGit(
               [
                 "--no-optional-locks",

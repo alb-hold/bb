@@ -22,6 +22,7 @@ import {
   isWorktreePreservedError,
   nonInteractiveFetchEnvironment,
   replayedCredentialHelpers,
+  systemConfigIgnored,
 } from "./host/worktree-preservation.js";
 import { removeWorktree } from "./host/worktree.js";
 
@@ -298,6 +299,35 @@ describe("the credential helpers the fetch replays", () => {
       ),
     ).toEqual({ args: [], env: {} });
     expect(replayedCredentialHelpers("")).toEqual({ args: [], env: {} });
+  });
+});
+
+describe("whether GIT_CONFIG_NOSYSTEM makes git skip the system file", () => {
+  it.each([
+    "1",
+    "2",
+    "-1",
+    "1k",
+    " 1",
+    "true",
+    "TRUE",
+    "Yes",
+    "on",
+    "maybe",
+    "1 ",
+  ])("skips it for %j, as git does or by dying", (value) => {
+    expect(systemConfigIgnored(value)).toBe(true);
+  });
+
+  it.each(["", "0", "00", "0x0", "0k", "false", "FALSE", "no", "off"])(
+    "reads it for %j, as git does",
+    (value) => {
+      expect(systemConfigIgnored(value)).toBe(false);
+    },
+  );
+
+  it("reads it when the variable is not set", () => {
+    expect(systemConfigIgnored(undefined)).toBe(false);
   });
 });
 
