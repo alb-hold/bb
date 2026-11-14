@@ -6,6 +6,7 @@ import {
   runPeriodicSweeps,
   runThreadLifecycleSweep,
 } from "../../src/services/system/periodic-sweeps.js";
+import { requestThreadStorageDeletion } from "../../src/services/threads/thread-lifecycle.js";
 import {
   listQueuedCommands,
   reportQueuedCommandError,
@@ -41,16 +42,21 @@ afterEach(() => {
 function seedDeletedThreads(
   harness: TestAppHarness,
   count: number,
-): { projectId: string; threadIds: string[] } {
-  const { host } = seedHostSession(harness.deps, { id: "host-refusing" });
+  hostId = "host-refusing",
+): {
+  environment: { hostId: string; id: string };
+  projectId: string;
+  threadIds: string[];
+} {
+  const { host } = seedHostSession(harness.deps, { id: hostId });
   const { project } = seedProjectWithSource(harness.deps, {
     hostId: host.id,
-    path: "/tmp/refused-storage-delete",
+    path: `/tmp/refused-storage-delete-${hostId}`,
   });
   const environment = seedEnvironment(harness.deps, {
     hostId: host.id,
     projectId: project.id,
-    path: "/tmp/refused-storage-delete",
+    path: `/tmp/refused-storage-delete-${hostId}`,
     status: "ready",
   });
   const threadIds: string[] = [];
@@ -63,7 +69,11 @@ function seedDeletedThreads(
     markThreadDeleted(harness.db, harness.hub, { threadId: thread.id });
     threadIds.push(thread.id);
   }
-  return { projectId: project.id, threadIds };
+  return {
+    environment: { hostId: host.id, id: environment.id },
+    projectId: project.id,
+    threadIds,
+  };
 }
 
 async function refuseQueuedStorageDeletes(
@@ -175,6 +185,41 @@ describe("refused thread storage deletes", () => {
         for (const threadId of attempted) {
           expect(threadIds).toContain(threadId);
         }
+      });
+    },
+  );
+
+  it(
+    "keeps one host's refused backlog from delaying another host's delete",
+    { timeout: 120_000 },
+    async () => {
+      await withTestHarness(async (harness) => {
+        const backlog = seedDeletedThreads(harness, 1_000, "host-backlog");
+        vi.useFakeTimers({ toFake: ["Date"] });
+        vi.setSystemTime(START_MS);
+        for (const threadId of backlog.threadIds) {
+          requestThreadStorageDeletion(
+            harness.deps,
+            { environmentId: backlog.environment.id, id: threadId },
+            backlog.environment,
+          );
+        }
+        const refused = await refuseQueuedStorageDeletes(harness, 0);
+        expect(refused).toHaveLength(backlog.threadIds.length);
+
+        vi.setSystemTime(START_MS + 60_000);
+        const other = seedDeletedThreads(harness, 1, "host-other");
+        await runThreadLifecycleSweep(harness.deps);
+        const firstTick = await refuseQueuedStorageDeletes(harness, 60_000);
+        vi.useRealTimers();
+
+        const backlogIds = new Set(backlog.threadIds);
+        expect(
+          firstTick.filter((request) => backlogIds.has(request.threadId)),
+        ).toHaveLength(GLOBAL_CAP_PER_MINUTE);
+        expect(
+          firstTick.filter((request) => !backlogIds.has(request.threadId)),
+        ).toEqual([{ atMs: 60_000, threadId: other.threadIds[0] }]);
       });
     },
   );
