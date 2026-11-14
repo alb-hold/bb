@@ -514,6 +514,21 @@ function fakeProc(options: {
     readdir: async (path) => dirs.get(path) ?? fail(path),
     lstatId: async (path) => ids.get(path) ?? fail(path),
     statId: async (path) => ids.get(path) ?? fail(path),
+    mountId: async (path) => {
+      const table = files.get("/proc/self/mountinfo") ?? fail(path);
+      const mount = table
+        .trim()
+        .split("\n")
+        .map((line) => line.split(" "))
+        .filter(
+          (fields) =>
+            fields[4] !== undefined &&
+            (path === fields[4] ||
+              path.startsWith(fields[4] === "/" ? "/" : `${fields[4]}/`)),
+        )
+        .sort((a, b) => (b[4]?.length ?? 0) - (a[4]?.length ?? 0))[0];
+      return mount?.[0] ?? fail(path);
+    },
     statAccess: async (path) => ({
       uid: path === "/work/tree" ? (options.worktreeUid ?? 0) : 0,
       gid: path === "/work/tree" ? (options.worktreeGid ?? 0) : 0,
@@ -1816,6 +1831,7 @@ function mountAliasProc(
   return {
     ...hostProc,
     realpath: async (value) => value,
+    mountId: async (value) => (value === directory ? "25" : denied()),
     subdirectories: async (value) => {
       if (kind === "tree unreadable") return denied();
       return value === directory ? ["sub"] : [];
@@ -2218,6 +2234,106 @@ describe("system processes in another mount namespace", () => {
       await readsPerScan(["101", "102", "103", "104", "105", "106"]),
     ).toEqual(single);
   });
+  const ownTableReader = (
+    own: string,
+    mountId: () => Promise<string>,
+    foreign: string,
+  ) => {
+    const proc = mountAliasProc("/work/tree", "outside", 0);
+    const local = (target: string) =>
+      target.replace(/^\/proc\/1\d\d(?=\/|$)/u, "/proc/101");
+    const reader: ProcReader = {
+      ...proc,
+      mountId: async (target) =>
+        target === "/work/tree" ? mountId() : proc.mountId(target),
+      readdir: async (target) =>
+        target === "/proc" ? ["101", "102"] : proc.readdir(local(target)),
+      readlink: async (target) => proc.readlink(local(target)),
+      readFile: async (target) => {
+        if (target === "/proc/self/mountinfo") return own;
+        if (/^\/proc\/\d+\/mountinfo$/u.test(target)) return foreign;
+        return proc.readFile(local(target));
+      },
+    };
+    return reader;
+  };
+  const rootLine = "25 1 8:1 / / rw - ext4 /dev/sdb rw\n";
+  const workLine = "60 25 8:48 / /work rw - ext4 /dev/sda rw\n";
+  const ownTableCases = [
+    [
+      "a prefix of our table without the worktree mount, its ancestor on another device",
+      rootLine,
+      async () => "60",
+      "70 1 8:1 / / rw - ext4 /dev/sdb rw\n71 70 8:48 /tree /app rw - ext4 /dev/sda rw\n",
+      "uncertain",
+    ],
+    [
+      "a complete table whose worktree mount ID matches",
+      rootLine + workLine,
+      async () => "60",
+      "70 1 8:1 / / rw - ext4 /dev/sdb rw\n71 70 8:48 / /work rw - ext4 /dev/sda rw\n",
+      "clear",
+    ],
+    [
+      "a btrfs subvolume root whose stat device differs but whose mount ID matches",
+      "25 1 0:34 /@ / rw - btrfs /dev/sdc rw\n",
+      async () => "25",
+      "70 1 0:34 /@ / rw - btrfs /dev/sdc rw\n",
+      "clear",
+    ],
+    [
+      "a nested btrfs subvolume whose stat device differs but whose mount ID matches",
+      "25 1 0:34 /@ / rw - btrfs /dev/sdc rw\n61 25 0:34 /@work /work rw - btrfs /dev/sdc rw\n",
+      async () => "61",
+      "70 1 0:34 /@ / rw - btrfs /dev/sdc rw\n71 70 0:34 /@work /work rw - btrfs /dev/sdc rw\n",
+      "clear",
+    ],
+    [
+      "fdinfo without a mount ID",
+      rootLine + workLine,
+      async (): Promise<string> => {
+        throw Object.assign(new Error("no mnt_id"), { code: "ENODATA" });
+      },
+      "70 1 8:1 / / rw - ext4 /dev/sdb rw\n71 70 8:48 / /work rw - ext4 /dev/sda rw\n",
+      "uncertain",
+    ],
+    [
+      "a worktree directory we cannot open",
+      rootLine + workLine,
+      async (): Promise<string> => {
+        throw Object.assign(new Error("denied"), { code: "EACCES" });
+      },
+      "70 1 8:1 / / rw - ext4 /dev/sdb rw\n71 70 8:48 / /work rw - ext4 /dev/sda rw\n",
+      "uncertain",
+    ],
+  ] as const;
+  it.each(
+    ["earlier", "final"].flatMap((scan) =>
+      ownTableCases.map(
+        ([kind, own, mountId, foreign, expected]) =>
+          [scan, kind, own, mountId, foreign, expected] as const,
+      ),
+    ),
+  )(
+    "checks our own mount table on the %s scan against the worktree mount ID with %s",
+    async (scan, _kind, own, mountId, foreign, expected) => {
+      const result = await scanLinux(
+        "/work/tree",
+        ownTableReader(own, mountId, foreign),
+        4242,
+        scan === "final" ? { maxDirectories: 500_000, final: true } : undefined,
+      );
+      if (expected === "clear") {
+        expect(result).toEqual({ status: "clear" });
+        return;
+      }
+      expect(result).toMatchObject({
+        status: "uncertain",
+        reason: expect.stringContaining("our own mountinfo is unreadable ("),
+      });
+      expect(describeHolderScan(result)).toContain("so it was kept");
+    },
+  );
   it("reads our own mount table once per scan, however many system processes it checks", async () => {
     const scanWith = async (processes: number) => {
       const proc = mountAliasProc("/work/tree", "outside", 0);
