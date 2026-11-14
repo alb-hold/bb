@@ -1150,6 +1150,7 @@ function dispatchThreadStorageDeletion(
   if (
     !admitThreadStorageDelete(deps.db, {
       gate: args.gate,
+      hostId: environment.hostId,
       now: args.now,
       threadId: thread.id,
     })
