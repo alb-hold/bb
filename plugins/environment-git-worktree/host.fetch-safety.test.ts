@@ -643,6 +643,47 @@ describe("the fetch that checks whether commits are published", () => {
     expect(existsSync(marker)).toBe(true);
   });
 
+  it.each([
+    ["1", false],
+    ["yes", false],
+    ["", true],
+    ["0", true],
+  ])(
+    "with GIT_CONFIG_NOSYSTEM=%j in the daemon's environment, runs the system file's helper only when git itself would read that file (%s)",
+    async (value, answers) => {
+      const root = await mkdtemp(join(tmpdir(), "bb-worktree-auth-"));
+      roots.push(root);
+      const remote = await servedWithBasicAuth(root);
+      const fixture = await createFixture(remote.url);
+      await useGlobalConfig(root);
+      const systemFile = join(root, "system.gitconfig");
+      const marker = join(root, "system-helper-called");
+      await setGlobalConfig(
+        systemFile,
+        `credential.${remote.origin}.helper`,
+        answeringHelper(marker),
+      );
+      process.env.GIT_CONFIG_SYSTEM = systemFile;
+      process.env.GIT_CONFIG_NOSYSTEM = value;
+
+      const reasons = await findPreservationReasons(
+        await identityOf(fixture),
+        undefined,
+        { fetchTimeoutMs: 20_000 },
+      );
+
+      expect(existsSync(marker)).toBe(answers);
+      if (answers)
+        expect(reasons.join("\n")).not.toMatch(
+          /could not fetch|could not verify remotes/u,
+        );
+      else
+        expect(reasons.join("\n")).toContain(
+          "could not verify remotes: authentication failed for backup",
+        );
+    },
+  );
+
   it("keeps the worktree when git is too old for --config-env, and never removes it", async () => {
     const root = await mkdtemp(join(tmpdir(), "bb-worktree-auth-"));
     roots.push(root);
