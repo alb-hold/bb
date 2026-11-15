@@ -10,6 +10,7 @@ import {
   noopNotifier,
   type DbConnection,
 } from "../src/index.js";
+import { dropThreadStorageDeleteSeqColumn } from "./helpers/rewind.js";
 
 const STORAGE_DELETE_SEQ_MIGRATION_TIMESTAMP = 1794760510189;
 
@@ -31,10 +32,10 @@ function seedRowidOrderUnlikeIdOrder(db: DbConnection): string[] {
 }
 
 function rewindStorageDeleteSeq(db: DbConnection): void {
-  db.$client.exec(`
-    ALTER TABLE threads DROP COLUMN storage_delete_seq;
-    DELETE FROM __drizzle_migrations WHERE created_at >= ${STORAGE_DELETE_SEQ_MIGRATION_TIMESTAMP};
-  `);
+  dropThreadStorageDeleteSeqColumn(db);
+  db.$client
+    .prepare("DELETE FROM __drizzle_migrations WHERE created_at >= ?")
+    .run(STORAGE_DELETE_SEQ_MIGRATION_TIMESTAMP);
 }
 
 function storedSeqs(db: DbConnection): Map<string, number | null> {

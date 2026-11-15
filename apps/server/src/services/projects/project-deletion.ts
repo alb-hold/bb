@@ -177,11 +177,6 @@ export async function advanceProjectDeletion(
     projectId: args.projectId,
   });
   for (const thread of projectThreads) {
-    const environment = thread.environmentId
-      ? (environmentsById.get(thread.environmentId) ??
-        getEnvironment(deps.db, thread.environmentId))
-      : null;
-
     if (thread.deletedAt === null) {
       const deletedThread = markThreadDeleted(deps.db, deps.hub, {
         threadId: thread.id,

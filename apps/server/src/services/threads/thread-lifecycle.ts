@@ -2143,7 +2143,6 @@ export async function reconcileDaemonReportedThreads(
 
   const pendingThreads = deps.db
     .select({
-      deletedAt: threads.deletedAt,
       environmentId: environments.id,
       id: threads.id,
       status: threads.status,
@@ -2153,6 +2152,7 @@ export async function reconcileDaemonReportedThreads(
     .where(
       and(
         eq(environments.hostId, args.hostId),
+        isNull(threads.deletedAt),
         inArray(threads.status, [
           "active",
           "idle",
@@ -2161,7 +2161,6 @@ export async function reconcileDaemonReportedThreads(
           "stopping",
         ]),
         or(
-          isNotNull(threads.deletedAt),
           eq(threads.status, "stopping"),
           and(
             isNotNull(threads.archivedAt),
@@ -2177,12 +2176,7 @@ export async function reconcileDaemonReportedThreads(
     )
     .all();
 
-  const deletedThreadIds = new Set<string>();
   for (const thread of pendingThreads) {
-    if (thread.deletedAt !== null) {
-      deletedThreadIds.add(thread.id);
-      continue;
-    }
     if (activeThreadIdSet.has(thread.id)) {
       requestThreadStop(deps, {
         environmentId: thread.environmentId,
@@ -2197,19 +2191,16 @@ export async function reconcileDaemonReportedThreads(
       threadId: thread.id,
     });
   }
-  if (deletedThreadIds.size > 0) {
-    for (const thread of listPendingThreadStorageDeletions(deps.db, {
-      hostId: args.hostId,
-    })) {
-      if (!deletedThreadIds.has(thread.id) || thread.environmentId === null)
-        continue;
-      dispatchThreadStorageDeletion(
-        deps,
-        thread,
-        { hostId: args.hostId, id: thread.environmentId },
-        { gate: "cap", now: Date.now() },
-      );
-    }
+  for (const thread of listPendingThreadStorageDeletions(deps.db, {
+    hostId: args.hostId,
+  })) {
+    if (thread.environmentId === null) continue;
+    dispatchThreadStorageDeletion(
+      deps,
+      thread,
+      { hostId: args.hostId, id: thread.environmentId },
+      { gate: "cap", now: Date.now() },
+    );
   }
 
   if (args.activeThreadIds.length > 0) {
