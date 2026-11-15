@@ -553,6 +553,7 @@ describe("real worktree teardown preservation", () => {
     await mkdir(path.join(worktree.path, "node_modules"));
     await writeFile(path.join(worktree.path, "node_modules", "x"), "x");
     useProcReaderForTests(descendantsOnly(hostProc, -1));
+    await delay(FILE_TIMESTAMP_LAG_MS + 50);
     await remove(worktree);
     await expect(access(worktree.path)).rejects.toThrow();
   });
@@ -595,6 +596,7 @@ describe("real worktree teardown preservation", () => {
   )("protects alias teardown uid %s with %s", async (uid, kind) => {
     const worktree = await makeWorktree();
     useProcReaderForTests(mountAliasProc(worktree.path, kind, uid));
+    await delay(FILE_TIMESTAMP_LAG_MS + 50);
     if (kind === "different isolated") {
       await remove(worktree);
       await expect(access(worktree.path)).rejects.toThrow();
@@ -719,6 +721,7 @@ describe("real worktree teardown preservation", () => {
           return hostProc.readFile(target);
         },
       });
+      await delay(FILE_TIMESTAMP_LAG_MS + 50);
       if (kind === "outside maps") {
         await remove(worktree);
         await expect(access(worktree.path)).rejects.toThrow();
@@ -1030,6 +1033,35 @@ describe("real worktree teardown preservation", () => {
     },
   );
 
+  it("keeps a worktree whose Git metadata changed inside the margin, then removes it on a retry after the margin", async () => {
+    const worktree = await makeWorktree();
+    const gitDir = (
+      await git(worktree.path, "rev-parse", "--absolute-git-dir")
+    ).trim();
+    const late = path.join(gitDir, "inside-margin");
+    useProcReaderForTests(descendantsOnly(hostProc, -1));
+    const first = remove(worktree, {
+      now: () => {
+        writeFileSync(late, "inside\n");
+        return Date.now();
+      },
+    });
+    await expect(first).rejects.toMatchObject({ code: "worktree_preserved" });
+    await expect(first).rejects.toThrow(
+      "new or changed Git metadata was found after its final inspection",
+    );
+    await expect(
+      readFile(path.join(worktree.path, "README.md"), "utf8"),
+    ).resolves.toBe("published\n");
+    await expect(readFile(late, "utf8")).resolves.toBe("inside\n");
+    await delay(FILE_TIMESTAMP_LAG_MS + 50);
+    await remove(worktree);
+    await expect(access(worktree.path)).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    await expect(access(gitDir)).rejects.toThrow();
+  });
+
   it.runIf(process.platform === "linux" && existsSync("/dev/shm"))(
     "removes a clean worktree on a real Linux tmpfs, whose file timestamps removal trusts",
     async () => {
@@ -1040,6 +1072,7 @@ describe("real worktree teardown preservation", () => {
         await git(worktree.path, "rev-parse", "--absolute-git-dir")
       ).trim();
       useProcReaderForTests(descendantsOnly(hostProc, -1));
+      await delay(FILE_TIMESTAMP_LAG_MS + 50);
       await remove(worktree);
       await expect(access(worktree.path)).rejects.toMatchObject({
         code: "ENOENT",
@@ -1054,6 +1087,7 @@ describe("real worktree teardown preservation", () => {
       await git(worktree.path, "rev-parse", "--absolute-git-dir")
     ).trim();
     useProcReaderForTests(descendantsOnly(hostProc, -1));
+    await delay(FILE_TIMESTAMP_LAG_MS + 50);
     await remove(worktree);
     await expect(access(worktree.path)).rejects.toThrow();
     await expect(access(gitDir)).rejects.toThrow();
@@ -1073,6 +1107,7 @@ describe("real worktree teardown preservation", () => {
       await mkdir(path.join(worktree.path, "node_modules"));
       await writeFile(path.join(worktree.path, "node_modules", "x"), "x");
       useProcReaderForTests(descendantsOnly(hostProc, -1));
+      await delay(FILE_TIMESTAMP_LAG_MS + 50);
       let removalError: unknown;
       try {
         await remove(worktree, {
@@ -1142,6 +1177,7 @@ describe("real worktree teardown preservation", () => {
   it("removes a worktree whose renamed directories carry sub-second timestamps", async () => {
     const worktree = await makeWorktree();
     useProcReaderForTests(descendantsOnly(hostProc, -1));
+    await delay(FILE_TIMESTAMP_LAG_MS + 50);
     await remove(worktree, {
       renamedCtimeNs: () => 1_763_000_000_732_434_237n,
     });
@@ -1158,6 +1194,7 @@ describe("real worktree teardown preservation", () => {
     let gitdirFile = "";
     let written = "";
     let removalError: unknown;
+    await delay(FILE_TIMESTAMP_LAG_MS + 50);
     try {
       await remove(worktree, {
         afterFinalInspection: async (_target, severed) => {
@@ -1197,6 +1234,7 @@ describe("real worktree teardown preservation", () => {
     let gitdirFile = "";
     let created = false;
     let removalError: unknown;
+    await delay(FILE_TIMESTAMP_LAG_MS + 50);
     try {
       await remove(worktree, {
         afterFinalInspection: async (_target, severed) => {
@@ -1347,6 +1385,7 @@ describe("real worktree teardown preservation", () => {
     await git(worktree.path, "push", "origin", "feature");
     let injected = false;
     let removalError: unknown;
+    await delay(FILE_TIMESTAMP_LAG_MS + 50);
     try {
       await remove(worktree, {
         afterDirectoryListed: async (directory, entries) => {
@@ -1381,6 +1420,7 @@ describe("real worktree teardown preservation", () => {
     useProcReaderForTests(descendantsOnly(hostProc, -1));
     const entryPath = path.join(worktree.path, ".gitignore");
     const originalStat = await fs.stat(entryPath);
+    await delay(FILE_TIMESTAMP_LAG_MS + 50);
     await expect(
       remove(worktree, {
         beforeEntryRename: async (entry) => {
@@ -1530,6 +1570,7 @@ describe("real worktree teardown preservation", () => {
       originalTimes?: { atimeMs: number; mtimeMs: number; mode: number };
     } = {};
     let outcome: PromiseSettledResult<void>;
+    await delay(FILE_TIMESTAMP_LAG_MS + 50);
     try {
       outcome = await Promise.allSettled([
         remove(worktree, {
@@ -1582,6 +1623,7 @@ describe("real worktree teardown preservation", () => {
     let originalTimes: { atimeMs: number; mtimeMs: number } | undefined;
     let injected = false;
     const checkedEntries: string[] = [];
+    await delay(FILE_TIMESTAMP_LAG_MS + 50);
 
     await expect(
       remove(worktree, {
@@ -1664,6 +1706,7 @@ describe("real worktree teardown preservation", () => {
     await git(worktree.path, "commit", "-m", "published replacement directory");
     await git(worktree.path, "push", "origin", "feature");
     let replaced = false;
+    await delay(FILE_TIMESTAMP_LAG_MS + 50);
     await expect(
       remove(worktree, {
         afterEntryCheck: async (entry) => {
@@ -1719,6 +1762,7 @@ describe("real worktree teardown preservation", () => {
     );
     await git(worktree.path, "push", "origin", "feature");
     let injected = false;
+    await delay(FILE_TIMESTAMP_LAG_MS + 50);
     await expect(
       remove(worktree, {
         afterDirectoryListed: async (directory) => {
@@ -2654,6 +2698,7 @@ describe("real worktree teardown preservation", () => {
       stderr: "",
       spawnFailed: false,
     }));
+    await delay(FILE_TIMESTAMP_LAG_MS + 50);
     try {
       await remove(worktree, {
         timestampFilesystem: { statfs: async () => ({ type: 0x1a }) },
@@ -2794,6 +2839,7 @@ describe("real worktree teardown preservation", () => {
     let injected = false;
     let severedGitDir: string | null = null;
     let removalError: unknown;
+    await delay(FILE_TIMESTAMP_LAG_MS + 50);
     try {
       await remove(worktree, {
         afterFinalCheck: async (_target, gitDir) => {
@@ -3633,6 +3679,7 @@ it.skipIf(process.platform !== "linux")(
     const worktree = await makeWorktree();
     useProcReaderForTests(descendantsOnly(hostProc, -1));
     let checked = false;
+    await delay(FILE_TIMESTAMP_LAG_MS + 50);
     await remove(worktree, {
       afterFinalCheck: async (target) => {
         expect(target).not.toBe(worktree.path);

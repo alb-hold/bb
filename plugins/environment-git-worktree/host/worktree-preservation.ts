@@ -600,6 +600,7 @@ export async function findPreservationReasons(
               "credential.helper=",
               ...replayed.args,
               "fetch",
+              "--no-write-fetch-head",
               "--all",
               "--quiet",
               "--no-tags",
