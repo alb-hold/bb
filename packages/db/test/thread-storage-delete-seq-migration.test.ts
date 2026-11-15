@@ -12,7 +12,7 @@ import {
 } from "../src/index.js";
 import { dropThreadStorageDeleteSeqColumn } from "./helpers/rewind.js";
 
-const STORAGE_DELETE_SEQ_MIGRATION_TIMESTAMP = 1794760510189;
+const STORAGE_DELETE_SEQ_MIGRATION_TIMESTAMP = 1794762191729;
 
 function seedThreadId(db: DbConnection): string {
   return createThread(db, noopNotifier, {
@@ -88,6 +88,28 @@ it("backfills null storage delete seqs of pre-migration rows in rowid order", ()
     expect(
       listPendingThreadStorageDeletions(db).map((row) => row.storageDeleteSeq),
     ).toEqual([1, 2]);
+  } finally {
+    db.$client.close();
+  }
+});
+
+it("finds the next storage delete seq through its index instead of scanning threads", () => {
+  const db = createConnection(":memory:");
+  try {
+    migrate(db);
+    const plan = db.$client
+      .prepare<[], { detail: string }>(
+        "EXPLAIN QUERY PLAN UPDATE threads SET storage_delete_seq = (SELECT coalesce(max(storage_delete_seq), 0) + 1 FROM threads) WHERE id = 'thr_a'",
+      )
+      .all()
+      .map((row) => row.detail);
+
+    expect(plan).toContain(
+      "SEARCH threads USING COVERING INDEX threads_storage_delete_seq_idx",
+    );
+    expect(plan.some((detail) => detail.startsWith("SCAN threads"))).toBe(
+      false,
+    );
   } finally {
     db.$client.close();
   }

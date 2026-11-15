@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "11960054-1a3b-4ce7-b9f2-d0c82c950870",
+  "id": "93bedecc-81c2-4717-a9da-3808447efbb4",
   "prevId": "a2b5133b-8d60-4a4e-82bd-3e94e2957051",
   "tables": {
     "app_settings": {
@@ -5571,6 +5571,13 @@
           ],
           "isUnique": false,
           "where": "\"threads\".\"deleted_at\" IS NULL"
+        },
+        "threads_storage_delete_seq_idx": {
+          "name": "threads_storage_delete_seq_idx",
+          "columns": [
+            "storage_delete_seq"
+          ],
+          "isUnique": false
         }
       },
       "foreignKeys": {

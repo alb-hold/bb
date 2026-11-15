@@ -696,6 +696,7 @@ export const threads = sqliteTable(
     index("threads_active_maintenance_idx")
       .on(table.status)
       .where(sql`${table.deletedAt} IS NULL`),
+    index("threads_storage_delete_seq_idx").on(table.storageDeleteSeq),
   ],
 );
 
