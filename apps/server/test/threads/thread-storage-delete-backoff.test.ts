@@ -425,23 +425,39 @@ describe("refused thread storage deletes", () => {
     },
   );
 
-  it.each(["sweep", "reconnect"] as const)(
-    "keeps a refused row whose re-queue write fails at the back of the rows pending when it failed, so rows re-queued after it never pass it (%s)",
-    async (path) => {
+  it.each([
+    { path: "sweep", withArrival: false },
+    { path: "reconnect", withArrival: false },
+    { path: "sweep", withArrival: true },
+    { path: "reconnect", withArrival: true },
+  ] as const)(
+    "keeps a refused row whose re-queue write fails at the back of the rows pending when it failed, so rows queued after it never pass it ($path, delete arriving after the failure: $withArrival)",
+    async ({ path, withArrival }) => {
       await withTestHarness(async (harness) => {
         vi.useFakeTimers({ toFake: ["Date"] });
         vi.setSystemTime(START_MS);
         const seeded = seedDeletedThreads(
           harness,
-          4,
-          `host-requeue-starve-${path}`,
+          0,
+          `host-requeue-starve-${path}-${withArrival}`,
         );
-        const byId = [...seeded.threadIds].sort();
-        const failing = byId[3] ?? "";
-        const firstRequeuedAfter = byId[0] ?? "";
-        const queueOrder = [failing, firstRequeuedAfter, byId[1], byId[2]].map(
+        const byId = Array.from(
+          { length: 5 },
+          () =>
+            seedThread(harness.deps, {
+              environmentId: seeded.environment.id,
+              projectId: seeded.projectId,
+              status: "idle",
+            }).id,
+        ).sort();
+        const failing = byId[4] ?? "";
+        const arrival = byId[0] ?? "";
+        const queueOrder = [failing, byId[1], byId[2], byId[3]].map(
           (threadId) => threadId ?? "",
         );
+        for (const threadId of queueOrder) {
+          markThreadDeleted(harness.db, harness.hub, { threadId });
+        }
         listPendingThreadStorageDeletions(harness.db);
         queueOrder.forEach((threadId, index) => {
           harness.db
@@ -458,11 +474,11 @@ describe("refused thread storage deletes", () => {
         `);
         const warn = vi.spyOn(harness.deps.logger, "warn");
         const cycles = 3;
+        const cycleLength = queueOrder.length + (withArrival ? 1 : 0);
         const sentBySlot: string[][] = [];
-        let arrival = "";
         for (
           let slot = 0;
-          slot < cycles * (queueOrder.length + 1) - 1;
+          slot < cycles * cycleLength - (withArrival ? 1 : 0);
           slot += 1
         ) {
           const slotMs = slot * THREAD_STORAGE_DELETE_RETRY_MAX_MS;
@@ -482,18 +498,15 @@ describe("refused thread storage deletes", () => {
               (request) => request.threadId,
             ),
           );
-          if (slot === 0) {
-            arrival = seedDeletedThreadIn(harness, {
-              environmentId: seeded.environment.id,
-              projectId: seeded.projectId,
-            });
+          if (slot === 0 && withArrival) {
+            markThreadDeleted(harness.db, harness.hub, { threadId: arrival });
           }
         }
         harness.db.$client.exec("DROP TRIGGER fail_storage_delete_requeue");
         vi.useRealTimers();
 
         const pendingAtLastSeq = queueOrder[queueOrder.length - 1];
-        expect(firstRequeuedAfter < failing).toBe(true);
+        expect(byId.every((threadId) => threadId <= failing)).toBe(true);
         expect(
           sentBySlot.findIndex((threadIds) =>
             threadIds.includes(pendingAtLastSeq ?? ""),
@@ -508,7 +521,7 @@ describe("refused thread storage deletes", () => {
           ...queueOrder.map((threadId) => [threadId]),
           ...Array.from({ length: cycles - 1 }, () => [
             [failing],
-            [arrival],
+            ...(withArrival ? [[arrival]] : []),
             ...pendingBehindFailing.map((threadId) => [threadId]),
           ]).flat(),
         ]);
