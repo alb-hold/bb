@@ -916,6 +916,14 @@ export async function removeDirectoryTree(
         activePins.delete(recoveryPin);
         recoveryPin = null;
       };
+      const reportQuarantinedIfPresent = async (): Promise<void> => {
+        try {
+          await lstat(quarantined);
+        } catch (error) {
+          if (errorCode(error) === "ENOENT") return;
+        }
+        reportRetainedPath(quarantined);
+      };
       const recoverFromPin = async (): Promise<boolean> => {
         if (recoveryPin === null)
           throw await pinFailure("No verified recovery pin is available");
@@ -941,7 +949,7 @@ export async function removeDirectoryTree(
           reportRetainedPath(recoveredPath);
           await cleanupPin(recoveredPath);
           reportRetainedPath(entry);
-          reportRetainedPath(quarantined);
+          await reportQuarantinedIfPresent();
           return false;
         } catch (error) {
           if (error instanceof RetainedRecoveryError) throw error;
@@ -995,7 +1003,7 @@ export async function removeDirectoryTree(
           else if ((await readlink(anchoredEntry)) !== symbolicLinkTarget)
             return await recoverFromPin();
           reportRetainedPath(anchoredEntry);
-          reportRetainedPath(quarantined);
+          await reportQuarantinedIfPresent();
           await cleanupPin(anchoredEntry);
           return true;
         } catch (error) {
@@ -1168,6 +1176,16 @@ export async function removeDirectoryTree(
         }
         await hooks.afterParentVerified?.(entry, quarantined);
         await unlink(quarantined);
+        if (fileHandle !== null) {
+          const unlinkedInfo = await fileHandle.stat({ bigint: true });
+          if (
+            unlinkedInfo.size !== checkedPreciseInfo.size ||
+            unlinkedInfo.mtimeNs !== checkedPreciseInfo.mtimeNs
+          ) {
+            await restoreQuarantine();
+            return retainedEntry();
+          }
+        }
         await cleanupPin(quarantined);
         return "removed";
       } catch (error) {
