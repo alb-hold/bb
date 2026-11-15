@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import {
   processCredentialsFromStatus,
   processStartFromStat,
-  type ProcessIdentity,
+  type HolderProcessIdentity,
   type WorktreeHolderScan,
 } from "@bb/process-utils";
 
@@ -18,7 +18,7 @@ type DoubtfulScan = Extract<
 export interface HolderRefusal {
   identity: string;
   reason: string;
-  blockers: Map<number, ProcessIdentity>;
+  blockers: Map<number, HolderProcessIdentity>;
   attempts: number;
   firstRefusedAt: number;
   nextScanAt: number;
@@ -90,7 +90,7 @@ async function fdListingSucceeds(pid: number): Promise<boolean> {
 
 async function blockerUnchanged(
   pid: number,
-  blocker: ProcessIdentity,
+  blocker: HolderProcessIdentity,
 ): Promise<boolean> {
   if (await fdListingSucceeds(pid)) return false;
   if ((await startReader(pid)) !== blocker.start) return false;
@@ -122,7 +122,7 @@ export async function recordHolderRefusal(
   identity: string,
   scan: DoubtfulScan,
 ): Promise<void> {
-  const blockers = new Map<number, ProcessIdentity>();
+  const blockers = new Map<number, HolderProcessIdentity>();
   for (const { pid, identity: seen } of scan.blockingProcesses ?? []) {
     if (seen === null) {
       refusals.delete(directory);
