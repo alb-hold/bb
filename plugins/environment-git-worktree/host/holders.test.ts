@@ -1375,7 +1375,7 @@ describe("the Linux process-list visibility rule", () => {
 });
 
 describe("a refusal that names the processes it could not inspect", () => {
-  it("names every such process with its command and why it could not be read", async () => {
+  it("names every such process by its comm and why it could not be read", async () => {
     const base = fakeProc({
       processes: {
         300: {
@@ -1418,13 +1418,44 @@ describe("a refusal that names the processes it could not inspect", () => {
     expect(reason).toContain(
       "process 300 (systemd) has an unreadable holder path",
     );
-    expect(reason).toContain(
-      "(/usr/lib/systemd/systemd --x; its capabilities exceed the daemon's)",
-    );
+    expect(reason).toContain("(systemd; its capabilities exceed the daemon's)");
     expect(reason).toContain(
       "process 301 ((sd-pam)) has an unreadable holder path",
     );
-    expect(reason).toContain("((sd-pam) --x; it is non-dumpable)");
+    expect(reason).toContain("((sd-pam); it is non-dumpable)");
+    expect(reason).not.toContain("/usr/lib/systemd/systemd");
+    expect(reason).not.toContain("--x");
+  });
+
+  it("never puts a process's arguments in the reason", async () => {
+    const secretArgv = "worker --token=SECRETVALUE postgres://u:SECRET@h/db";
+    const base = fakeProc({
+      processes: {
+        300: {
+          uid: 1000,
+          denied: true,
+          comm: "worker",
+          argv0: secretArgv,
+        },
+      },
+    });
+    const proc: ProcReader = {
+      ...base,
+      statAccess: async (target) =>
+        target === "/proc/300/fd"
+          ? { uid: 0, gid: 0, mode: 0o40500 }
+          : base.statAccess(target),
+    };
+    expect(await proc.readFile("/proc/300/cmdline")).toContain("SECRETVALUE");
+    const scan = await scanLinux("/work/tree", proc, 4242);
+    expect(scan).toMatchObject({ status: "unknown", blockingProcesses: [300] });
+    const reason = "reason" in scan ? scan.reason : "";
+    expect(reason).toContain(
+      "process 300 (worker) has an unreadable holder path",
+    );
+    expect(reason).toContain("(worker; it is non-dumpable)");
+    expect(JSON.stringify(scan)).not.toContain("SECRET");
+    expect(JSON.stringify(scan)).not.toContain("postgres://");
   });
 });
 

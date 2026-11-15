@@ -10,10 +10,15 @@ type DoubtfulScan = Extract<
   { status: "uncertain" | "unknown" }
 >;
 
+export interface HolderRefusalBlocker {
+  start: string;
+  credentials: string;
+}
+
 export interface HolderRefusal {
   identity: string;
   reason: string;
-  blockers: Map<number, string>;
+  blockers: Map<number, HolderRefusalBlocker>;
   attempts: number;
   firstRefusedAt: number;
   nextScanAt: number;
@@ -21,6 +26,8 @@ export interface HolderRefusal {
 
 let clock: () => number = Date.now;
 let startReader: (pid: number) => Promise<string | null> = readProcessStart;
+let credentialsReader: (pid: number) => Promise<string | null> =
+  readProcessCredentials;
 const refusals = new Map<string, HolderRefusal>();
 
 export function useHolderRefusalClockForTests(next: (() => number) | null) {
@@ -31,6 +38,12 @@ export function useProcessStartReaderForTests(
   next: ((pid: number) => Promise<string | null>) | null,
 ) {
   startReader = next ?? readProcessStart;
+}
+
+export function useProcessCredentialsReaderForTests(
+  next: ((pid: number) => Promise<string | null>) | null,
+) {
+  credentialsReader = next ?? readProcessCredentials;
 }
 
 export function resetHolderRefusalsForTests() {
@@ -62,6 +75,36 @@ async function readProcessStart(pid: number): Promise<string | null> {
   }
 }
 
+async function readProcessCredentials(pid: number): Promise<string | null> {
+  try {
+    const status = await fs.readFile(`/proc/${pid}/status`, "utf8");
+    const uid = /^Uid:\s+(.+)$/mu.exec(status)?.[1];
+    const capabilities = /^CapPrm:\s+([0-9a-f]+)$/mu.exec(status)?.[1];
+    if (uid === undefined || capabilities === undefined) return null;
+    return `${uid.trim().split(/\s+/u).join(",")} ${capabilities}`;
+  } catch {
+    return null;
+  }
+}
+
+async function fdListingSucceeds(pid: number): Promise<boolean> {
+  try {
+    await fs.readdir(`/proc/${pid}/fd`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function blockerUnchanged(
+  pid: number,
+  blocker: HolderRefusalBlocker,
+): Promise<boolean> {
+  if (await fdListingSucceeds(pid)) return false;
+  if ((await startReader(pid)) !== blocker.start) return false;
+  return (await credentialsReader(pid)) === blocker.credentials;
+}
+
 export async function unchangedHolderRefusal(
   directory: string,
   identity: string,
@@ -73,8 +116,8 @@ export async function unchangedHolderRefusal(
     return null;
   }
   if (clock() >= refusal.nextScanAt) return null;
-  for (const [pid, start] of refusal.blockers) {
-    if ((await startReader(pid)) !== start) {
+  for (const [pid, blocker] of refusal.blockers) {
+    if (!(await blockerUnchanged(pid, blocker))) {
       refusals.delete(directory);
       return null;
     }
@@ -88,14 +131,15 @@ export async function recordHolderRefusal(
   scan: DoubtfulScan,
 ): Promise<void> {
   const pids = scan.blockingProcesses ?? [];
-  const blockers = new Map<number, string>();
+  const blockers = new Map<number, HolderRefusalBlocker>();
   for (const pid of pids) {
     const start = await startReader(pid);
-    if (start === null) {
+    const credentials = await credentialsReader(pid);
+    if (start === null || credentials === null) {
       refusals.delete(directory);
       return;
     }
-    blockers.set(pid, start);
+    blockers.set(pid, { start, credentials });
   }
   if (blockers.size === 0) {
     refusals.delete(directory);
@@ -106,7 +150,13 @@ export async function recordHolderRefusal(
     previous !== undefined &&
     previous.identity === identity &&
     previous.blockers.size === blockers.size &&
-    [...blockers].every(([pid, start]) => previous.blockers.get(pid) === start);
+    [...blockers].every(([pid, blocker]) => {
+      const before = previous.blockers.get(pid);
+      return (
+        before?.start === blocker.start &&
+        before.credentials === blocker.credentials
+      );
+    });
   const now = clock();
   const attempts = sameSet ? previous.attempts + 1 : 1;
   const delay = Math.min(

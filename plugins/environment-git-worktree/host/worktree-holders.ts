@@ -1516,15 +1516,14 @@ async function unreadableCause(
   return null;
 }
 
-async function processCommand(proc: ProcReader, pid: number): Promise<string> {
-  const cmdline = await readOptional(() =>
-    proc.readFile(`/proc/${pid}/cmdline`),
-  );
-  const args =
-    "value" in cmdline ? cmdline.value.replaceAll(/[\s\0]+/gu, " ").trim() : "";
-  if (args !== "") return args.length > 80 ? `${args.slice(0, 80)}…` : args;
+async function processName(proc: ProcReader, pid: number): Promise<string> {
   const comm = await readOptional(() => proc.readFile(`/proc/${pid}/comm`));
-  return "value" in comm ? comm.value.trim() || "unknown" : "unknown";
+  if (!("value" in comm)) return "unknown";
+  const name = comm.value
+    .replace(/\n$/u, "")
+    .replaceAll(/[\u0000-\u001f\u007f]/gu, "?")
+    .slice(0, 15);
+  return name === "" ? "unknown" : name;
 }
 
 async function describeProcessDoubts(
@@ -1536,7 +1535,7 @@ async function describeProcessDoubts(
     "value" in own ? permittedCapabilities(own.value) : null;
   return Promise.all(
     doubts.map(async ({ pid, detail }) => {
-      const command = await processCommand(proc, pid);
+      const command = await processName(proc, pid);
       const cause = await unreadableCause(proc, pid, ownCapabilities);
       return `${detail} (${cause === null ? command : `${command}; ${cause}`})`;
     }),
