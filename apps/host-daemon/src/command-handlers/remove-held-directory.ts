@@ -5,7 +5,7 @@ import type { WorktreeHolderScan } from "@bb/process-utils";
 import {
   FILE_TIMESTAMP_LAG_MS,
   removeDirectoryTree,
-  UNANCHORED_DIRECTORY_REASON,
+  keptTreeReasons,
 } from "bb-environment-provider-host/remove-directory-tree";
 import { refuseWhileHeld } from "./refuse-while-held.js";
 import { CommandDispatchError } from "../command-dispatch-support.js";
@@ -73,16 +73,15 @@ export async function removeDirectoryAfterHolderRecheck(args: {
       if (removal.status !== "removed") {
         const shown = (entry: string) =>
           path.join(args.directory, path.relative(quarantine, entry));
-        if (removal.unanchoredPaths.length > 0) {
-          throw new CommandDispatchError(
-            "path_in_use",
-            `Refusing to ${args.action} ${args.directory}: ${UNANCHORED_DIRECTORY_REASON} (${removal.unanchoredPaths.map(shown).join(", ")}); the directory may be partially removed. Nothing was stopped.`,
-          );
-        }
+        const reasons = keptTreeReasons(
+          removal,
+          shown,
+          "new or changed data was found during removal",
+        );
         const preservedPaths = removal.retainedPaths.map(shown);
         throw new CommandDispatchError(
           "path_in_use",
-          `Refusing to ${args.action} ${args.directory}: new or changed data was found during removal; the directory may be partially removed.${preservedPaths.length > 0 ? ` Preserved entries: ${preservedPaths.join(", ")}.` : ""} Nothing was stopped.`,
+          `Refusing to ${args.action} ${args.directory}: ${reasons.join("; ")}.${preservedPaths.length > 0 ? ` Preserved entries: ${preservedPaths.join(", ")}.` : ""} Nothing was stopped.`,
         );
       }
     } else {

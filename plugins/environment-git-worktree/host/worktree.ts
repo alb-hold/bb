@@ -20,7 +20,7 @@ import {
   recordOwnWrite,
   removeDirectoryTree,
   RetainedRecoveryError,
-  UNANCHORED_DIRECTORY_REASON,
+  keptTreeReasons,
   untrustedTimestampFilesystem,
   type TimestampFilesystemProbe,
 } from "bb-environment-provider-host/remove-directory-tree";
@@ -1075,15 +1075,12 @@ async function removeRegisteredWorktree(
       });
       if (removed.status === "retained") {
         throw worktreePreservedError(identity.path, [
-          ...removed.unanchoredPaths.map(
-            (unanchoredPath) =>
-              `${UNANCHORED_DIRECTORY_REASON}: ${path.join(identity.path, path.relative(quarantinedPath, unanchoredPath))}`,
+          ...keptTreeReasons(
+            removed,
+            (entry) =>
+              path.join(identity.path, path.relative(quarantinedPath, entry)),
+            "new or changed data was found during directory removal",
           ),
-          ...removed.mountedPaths.map(
-            (mountedPath) =>
-              `a different filesystem is mounted here: ${path.join(identity.path, path.relative(quarantinedPath, mountedPath))}`,
-          ),
-          "new or changed data was found during directory removal; the directory may be partially removed",
           ...removed.retainedPaths.map(
             (retainedPath) =>
               `preserved entry at ${path.join(identity.path, path.relative(quarantinedPath, retainedPath))}`,
@@ -1109,15 +1106,11 @@ async function removeRegisteredWorktree(
       });
       if (removedGitDir.status === "retained") {
         throw worktreePreservedError(severedGitDir, [
-          ...removedGitDir.unanchoredPaths.map(
-            (unanchoredPath) =>
-              `${UNANCHORED_DIRECTORY_REASON}: ${unanchoredPath}`,
+          ...keptTreeReasons(
+            removedGitDir,
+            (entry) => entry,
+            "new or changed Git metadata was found during admin-directory removal",
           ),
-          ...removedGitDir.mountedPaths.map(
-            (mountedPath) =>
-              `a different filesystem is mounted here: ${mountedPath}`,
-          ),
-          "new or changed Git metadata was found during admin-directory removal",
           ...removedGitDir.retainedPaths.map(
             (entry) => `preserved entry at ${entry}`,
           ),

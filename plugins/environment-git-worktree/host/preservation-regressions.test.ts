@@ -89,6 +89,7 @@ async function removeDirectoryTree(
       retainedPaths: [],
       mountedPaths: [],
       unanchoredPaths: [],
+      removalStarted: result === "removed",
     };
   return result as RemoveDirectoryTreeResult;
 }
@@ -1778,7 +1779,9 @@ describe("real worktree teardown preservation", () => {
       }),
     ).rejects.toMatchObject({
       code: "worktree_preserved",
-      message: expect.stringContaining("may be partially removed"),
+      message: expect.stringMatching(
+        /new or changed data was found during directory removal(?!; the directory may be partially removed)/u,
+      ),
     });
     expect(injected).toBe(true);
     await expect(

@@ -73,10 +73,47 @@ export interface RemoveDirectoryTreeResult {
   retainedPaths: string[];
   mountedPaths: string[];
   unanchoredPaths: string[];
+  removalStarted: boolean;
 }
 
 export const UNANCHORED_DIRECTORY_REASON =
   "could not anchor directory on this filesystem";
+
+export const PARTIALLY_REMOVED_REASON =
+  "the directory may be partially removed";
+
+function explainedBy(retainedPath: string, cause: string): boolean {
+  return (
+    retainedPath === cause ||
+    retainedPath.startsWith(`${cause}${path.sep}`) ||
+    cause.startsWith(`${retainedPath}${path.sep}`)
+  );
+}
+
+export function keptForChangedData(result: RemoveDirectoryTreeResult): boolean {
+  const causes = [...result.unanchoredPaths, ...result.mountedPaths];
+  if (causes.length === 0) return true;
+  return result.retainedPaths.some(
+    (retainedPath) => !causes.some((cause) => explainedBy(retainedPath, cause)),
+  );
+}
+
+export function keptTreeReasons(
+  result: RemoveDirectoryTreeResult,
+  shown: (entry: string) => string,
+  changedDataReason: string,
+): string[] {
+  return [
+    ...result.unanchoredPaths.map(
+      (entry) => `${UNANCHORED_DIRECTORY_REASON}: ${shown(entry)}`,
+    ),
+    ...result.mountedPaths.map(
+      (entry) => `a different filesystem is mounted here: ${shown(entry)}`,
+    ),
+    ...(keptForChangedData(result) ? [changedDataReason] : []),
+    ...(result.removalStarted ? [PARTIALLY_REMOVED_REASON] : []),
+  ];
+}
 
 interface DescriptorStat {
   dev: number;
@@ -632,6 +669,7 @@ export async function removeDirectoryTree(
   const retainedPaths = new Set<string>();
   const mountedPaths = new Set<string>();
   const unanchoredPaths = new Set<string>();
+  let removalStarted = false;
   const statDescriptor = hooks.statDescriptor ?? stat;
   const activePins = new Set<string>();
   const displayPathMappings = new Map<string, string>();
@@ -659,6 +697,7 @@ export async function removeDirectoryTree(
       retainedPaths: [...retainedPaths],
       mountedPaths: [...mountedPaths],
       unanchoredPaths: [...unanchoredPaths],
+      removalStarted,
     };
   };
   const anchorDirectory = async (
@@ -1162,6 +1201,7 @@ export async function removeDirectoryTree(
             fileHandle = null;
             return retainedEntry();
           }
+          removalStarted = true;
           await fileHandle.chmod(Number(strippedMode));
           modeChanged = strippedMode !== originalMode;
         } else if (!checkedPreciseInfo.isSymbolicLink()) {
@@ -1198,6 +1238,7 @@ export async function removeDirectoryTree(
           await restoreQuarantine();
           return retainedEntry();
         }
+        removalStarted = true;
         await rename(anchoredEntry, quarantined);
         const pinResult = unpinnedSymbolicLink
           ? null
@@ -1724,6 +1765,7 @@ export async function removeDirectoryTree(
           (beforeRenameDirectoryInfo.mode & 0o7777n) !== strippedDirectoryMode
         )
           return await retain();
+        removalStarted = true;
         await rename(anchoredEntry, quarantined);
         rootQuarantined = true;
         await hooks.afterEntryQuarantined?.(entry, quarantined);
@@ -1810,6 +1852,7 @@ export async function removeDirectoryTree(
           }
           gitMarkerPinName = path.basename(pinResult.pin);
           activePins.add(pinResult.pin);
+          removalStarted = true;
           await rename(rootGitMarker, heldGitMarker);
           gitMarkerHeld = true;
           const movedMarkerInfo = await lstat(heldGitMarker, {

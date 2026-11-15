@@ -156,6 +156,7 @@ it("removes a tree whose own write is untouched", async () => {
     status: "removed",
     mountedPaths: [],
     unanchoredPaths: [],
+    removalStarted: true,
   });
   await expect(fs.access(tree.root)).rejects.toThrow();
 });

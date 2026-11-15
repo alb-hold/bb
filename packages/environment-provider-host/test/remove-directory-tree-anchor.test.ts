@@ -6,6 +6,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   FILE_TIMESTAMP_LAG_MS,
+  keptTreeReasons,
   removeDirectoryTree,
 } from "../src/remove-directory-tree.js";
 
@@ -99,6 +100,7 @@ describe.runIf(anchoring)("removing a tree anchored by its descriptors", () => {
       retainedPaths: [],
       mountedPaths: [],
       unanchoredPaths: [],
+      removalStarted: true,
     });
     await expect(fs.lstat(root)).rejects.toMatchObject({ code: "ENOENT" });
   });
@@ -197,6 +199,30 @@ describe.runIf(process.platform === "darwin")(
       expect(probed.length).toBeGreaterThan(0);
       expect(probed.every((kind) => kind === "/dev/fd")).toBe(true);
       expect(result.unanchoredPaths).toEqual([]);
+    });
+
+    it("keeps a child with a different device as mounted when its parent anchors through /.vol", async () => {
+      const { root } = await settledTree();
+      const nested = path.join(root, "nested");
+      const probed: string[] = [];
+      const result = await removeDirectoryTree(root, {
+        startedAt: Date.now(),
+        statDescriptor: async (candidate) => {
+          probed.push(descriptorKind(candidate));
+          return fs.stat(candidate);
+        },
+        entryDevice: (entry, device) =>
+          path.resolve(entry) === nested ? device + 1 : device,
+      });
+      expect(probed).toContain("/.vol");
+      expect(result.status).toBe("retained");
+      expect(result.mountedPaths).toEqual([nested]);
+      expect(result.unanchoredPaths).toEqual([]);
+      expect(result.removalStarted).toBe(false);
+      expect(keptTreeReasons(result, (entry) => entry, "changed")).toEqual([
+        `a different filesystem is mounted here: ${nested}`,
+      ]);
+      expect(await contents(root)).toHaveLength(5);
     });
 
     it("keeps the tree when /.vol resolves to a different directory", async () => {
