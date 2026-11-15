@@ -650,7 +650,8 @@ function outputLines(stdout: string): string[] {
 }
 
 const FETCH_CONFIG_FILE = "bb-fetch.gitconfig";
-const FETCH_CONFIG_KEYS = "^(core\\.sshcommand|url\\..*\\.insteadof)$";
+const FETCH_CONFIG_KEYS =
+  "^(core\\.sshcommand|url\\..*\\.insteadof|credential\\.(.*\\.)?usehttppath)$";
 const REMOTE_HELPER_PREFIX = /^[a-z][a-z0-9+.-]*::/iu;
 const DOS_DRIVE_PREFIX = /^[a-z]:/iu;
 
@@ -790,6 +791,10 @@ async function trustedFetchConfig(
       }
       if (key === "core.sshcommand") {
         config.sshCommand = value.trim() === "" ? null : value;
+        continue;
+      }
+      if (key.startsWith("credential.")) {
+        config.entries.push({ key, value });
         continue;
       }
       const target = key.slice("url.".length, -".insteadof".length);
