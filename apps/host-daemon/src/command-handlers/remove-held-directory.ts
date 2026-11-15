@@ -12,6 +12,8 @@ export async function removeDirectoryAfterHolderRecheck(args: {
   force?: boolean;
   recursive?: boolean;
   afterHolderScan?: (quarantine: string) => Promise<void>;
+  now?: () => number;
+  afterBaseline?: (directory: string) => Promise<void>;
   testWorktreeHolderScan?: WorktreeHolderScan;
 }): Promise<void> {
   const previousQuarantine = await findPreviousQuarantine(args.directory);
@@ -25,7 +27,8 @@ export async function removeDirectoryAfterHolderRecheck(args: {
     path.dirname(args.directory),
     `.${path.basename(args.directory)}.removing-${randomUUID()}`,
   );
-  const startedAt = Date.now();
+  const startedAt = (args.now ?? Date.now)();
+  await args.afterBaseline?.(args.directory);
   try {
     await fs.rename(args.directory, quarantine);
   } catch (error) {
