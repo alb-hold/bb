@@ -618,12 +618,6 @@ describe("refused thread storage deletes", () => {
               fields.queuedAtSeq === Number.POSITIVE_INFINITY,
           ),
         ).toHaveLength(1);
-        expect(
-          info.mock.calls.filter(
-            ([, message]) =>
-              message === "Thread storage deletion queue position recovered",
-          ),
-        ).toHaveLength(1);
         const nextSendOfFailing = sentBySlot.findIndex(
           (threadIds, slot) => slot > 0 && threadIds.includes(failing),
         );
@@ -635,15 +629,21 @@ describe("refused thread storage deletes", () => {
             [queueOrder[1]],
             [failing],
           ]);
-          return;
-        }
-        expect(sentBySlot).toEqual([
-          [failing],
-          ...Array.from({ length: 3 }, () => [
-            ...queueOrder.slice(1).map((threadId) => [threadId]),
+        } else {
+          expect(sentBySlot).toEqual([
             [failing],
-          ]).flat(),
-        ]);
+            ...Array.from({ length: 3 }, () => [
+              ...queueOrder.slice(1).map((threadId) => [threadId]),
+              [failing],
+            ]).flat(),
+          ]);
+        }
+        expect(
+          info.mock.calls.filter(
+            ([, message]) =>
+              message === "Thread storage deletion queue position recovered",
+          ),
+        ).toHaveLength(1);
       });
     },
   );
