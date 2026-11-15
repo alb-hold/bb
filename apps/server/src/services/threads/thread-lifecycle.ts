@@ -126,9 +126,15 @@ import { scheduleThreadProvisioningAdvance } from "./thread-provisioning.js";
 import { isPreStartThreadStatus } from "./thread-status.js";
 import {
   admitThreadStorageDelete,
+  claimThreadStorageDelete,
   forgetThreadStorageDelete,
   isFirstThreadStorageDeleteSendFailure,
+  isThreadStorageDeleteInFlight,
+  orderThreadStorageDeletesForDispatch,
   recordThreadStorageDeleteRefused,
+  recordThreadStorageDeleteRequeueFailed,
+  recordThreadStorageDeleteRequeued,
+  releaseThreadStorageDelete,
   returnThreadStorageDeleteSlot,
   type ThreadStorageDeleteGate,
 } from "./thread-storage-delete-retries.js";
@@ -199,7 +205,6 @@ type InFlightThreadRpcKind =
   | "thread.start"
   | "thread.start.title-sync"
   | "thread.stop"
-  | "thread.storage.delete"
   | "thread.stop.release";
 
 class InFlightRpcGuard {
@@ -1148,7 +1153,7 @@ function dispatchThreadStorageDeletion(
     );
     return;
   }
-  if (inFlightThreadRpcGuard.isHeld(thread.id, "thread.storage.delete")) {
+  if (isThreadStorageDeleteInFlight(deps.db, thread.id)) {
     return;
   }
   if (
@@ -1161,10 +1166,9 @@ function dispatchThreadStorageDeletion(
   ) {
     return;
   }
-  inFlightThreadRpcGuard.claim(thread.id, "thread.storage.delete");
+  claimThreadStorageDelete(deps.db, thread.id);
   let sent: ReturnType<typeof runLiveHostCommand>;
   try {
-    requeueThreadStorageDeletion(deps.db, { threadId: thread.id });
     sent = runLiveHostCommand(deps, {
       command: buildThreadStorageDeleteCommand({
         environmentId: environment.id,
@@ -1174,7 +1178,7 @@ function dispatchThreadStorageDeletion(
       timeoutMs: LIVE_DAEMON_COMMAND_TIMEOUT_MS,
     });
   } catch (error) {
-    inFlightThreadRpcGuard.release(thread.id, "thread.storage.delete");
+    releaseThreadStorageDelete(deps.db, thread.id);
     returnThreadStorageDeleteSlot(deps.db, {
       gate: args.gate,
       hostId: environment.hostId,
@@ -1196,6 +1200,7 @@ function dispatchThreadStorageDeletion(
         now: Date.now(),
         threadId: thread.id,
       });
+      requeueUnsuccessfulThreadStorageDeletion(deps, thread.id);
       deps.logger.warn(
         {
           err: error,
@@ -1213,8 +1218,24 @@ function dispatchThreadStorageDeletion(
         refreshProviderRetirement(deps, thread.environmentId);
     })
     .finally(() => {
-      inFlightThreadRpcGuard.release(thread.id, "thread.storage.delete");
+      releaseThreadStorageDelete(deps.db, thread.id);
     });
+}
+
+function requeueUnsuccessfulThreadStorageDeletion(
+  deps: CommandResultSideEffectsDeps,
+  threadId: string,
+): void {
+  try {
+    requeueThreadStorageDeletion(deps.db, { threadId });
+    recordThreadStorageDeleteRequeued(deps.db, threadId);
+  } catch (error) {
+    if (recordThreadStorageDeleteRequeueFailed(deps.db, threadId))
+      deps.logger.warn(
+        { err: error, threadId },
+        "Thread storage deletion could not be re-queued",
+      );
+  }
 }
 
 /**
@@ -2210,9 +2231,10 @@ export async function reconcileDaemonReportedThreads(
       threadId: thread.id,
     });
   }
-  for (const thread of listPendingThreadStorageDeletions(deps.db, {
-    hostId: args.hostId,
-  })) {
+  for (const thread of orderThreadStorageDeletesForDispatch(
+    deps.db,
+    listPendingThreadStorageDeletions(deps.db, { hostId: args.hostId }),
+  )) {
     if (thread.environmentId === null) continue;
     dispatchThreadStorageDeletion(
       deps,

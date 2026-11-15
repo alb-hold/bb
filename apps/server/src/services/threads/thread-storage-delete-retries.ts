@@ -12,7 +12,9 @@ interface RefusedThreadStorageDelete {
 
 interface ThreadStorageDeleteRetryState {
   gatedDispatchTimesByHost: Map<string, number[]>;
+  inFlight: Set<string>;
   refused: Map<string, RefusedThreadStorageDelete>;
+  requeueFailed: Set<string>;
   sendFailuresReported: Set<string>;
 }
 
@@ -23,7 +25,9 @@ function retryState(db: object): ThreadStorageDeleteRetryState {
   if (existing) return existing;
   const created: ThreadStorageDeleteRetryState = {
     gatedDispatchTimesByHost: new Map(),
+    inFlight: new Set(),
     refused: new Map(),
+    requeueFailed: new Set(),
     sendFailuresReported: new Set(),
   };
   retryStateByDb.set(db, created);
@@ -42,6 +46,21 @@ function gatedDispatchesInWindow(
   );
   state.gatedDispatchTimesByHost.set(args.hostId, inWindow);
   return inWindow;
+}
+
+export function isThreadStorageDeleteInFlight(
+  db: object,
+  threadId: string,
+): boolean {
+  return retryStateByDb.get(db)?.inFlight.has(threadId) ?? false;
+}
+
+export function claimThreadStorageDelete(db: object, threadId: string): void {
+  retryState(db).inFlight.add(threadId);
+}
+
+export function releaseThreadStorageDelete(db: object, threadId: string): void {
+  retryStateByDb.get(db)?.inFlight.delete(threadId);
 }
 
 export function admitThreadStorageDelete(
@@ -105,9 +124,41 @@ export function recordThreadStorageDeleteRefused(
   return refused;
 }
 
+export function recordThreadStorageDeleteRequeueFailed(
+  db: object,
+  threadId: string,
+): boolean {
+  const requeueFailed = retryState(db).requeueFailed;
+  if (requeueFailed.has(threadId)) return false;
+  requeueFailed.add(threadId);
+  return true;
+}
+
+export function recordThreadStorageDeleteRequeued(
+  db: object,
+  threadId: string,
+): void {
+  retryStateByDb.get(db)?.requeueFailed.delete(threadId);
+}
+
+export function orderThreadStorageDeletesForDispatch<T extends { id: string }>(
+  db: object,
+  pendingInQueueOrder: readonly T[],
+): T[] {
+  const requeueFailed = retryStateByDb.get(db)?.requeueFailed;
+  if (!requeueFailed || requeueFailed.size === 0) {
+    return [...pendingInQueueOrder];
+  }
+  return [
+    ...pendingInQueueOrder.filter((thread) => !requeueFailed.has(thread.id)),
+    ...pendingInQueueOrder.filter((thread) => requeueFailed.has(thread.id)),
+  ];
+}
+
 export function forgetThreadStorageDelete(db: object, threadId: string): void {
   const state = retryStateByDb.get(db);
   state?.refused.delete(threadId);
+  state?.requeueFailed.delete(threadId);
   state?.sendFailuresReported.delete(threadId);
 }
 
@@ -120,9 +171,10 @@ export function forgetThreadStorageDeleteRetriesExcept(
   for (const threadId of state.refused.keys()) {
     if (!pendingThreadIds.has(threadId)) state.refused.delete(threadId);
   }
-  for (const threadId of state.sendFailuresReported) {
-    if (!pendingThreadIds.has(threadId))
-      state.sendFailuresReported.delete(threadId);
+  for (const tracked of [state.requeueFailed, state.sendFailuresReported]) {
+    for (const threadId of tracked) {
+      if (!pendingThreadIds.has(threadId)) tracked.delete(threadId);
+    }
   }
 }
 
