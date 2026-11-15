@@ -2,7 +2,10 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { WorktreeHolderScan } from "@bb/process-utils";
-import { removeDirectoryTree } from "bb-environment-provider-host/remove-directory-tree";
+import {
+  FILE_TIMESTAMP_LAG_MS,
+  removeDirectoryTree,
+} from "bb-environment-provider-host/remove-directory-tree";
 import {
   directoryIdentity,
   forgetHolderRefusal,
@@ -18,6 +21,8 @@ export async function removeDirectoryAfterHolderRecheck(args: {
   force?: boolean;
   recursive?: boolean;
   afterHolderScan?: (quarantine: string) => Promise<void>;
+  now?: () => number;
+  afterBaseline?: (directory: string) => Promise<void>;
   testWorktreeHolderScan?: WorktreeHolderScan;
 }): Promise<void> {
   const previousQuarantine = await findPreviousQuarantine(args.directory);
@@ -43,7 +48,8 @@ export async function removeDirectoryAfterHolderRecheck(args: {
     path.dirname(args.directory),
     `.${path.basename(args.directory)}.removing-${randomUUID()}`,
   );
-  const startedAt = Date.now();
+  const startedAt = (args.now ?? Date.now)() - FILE_TIMESTAMP_LAG_MS;
+  await args.afterBaseline?.(args.directory);
   try {
     await fs.rename(args.directory, quarantine);
   } catch (error) {
