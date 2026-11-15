@@ -1,5 +1,10 @@
 import fs from "node:fs/promises";
-import type { WorktreeHolderScan } from "@bb/process-utils";
+import {
+  processCredentialsFromStatus,
+  processStartFromStat,
+  type ProcessIdentity,
+  type WorktreeHolderScan,
+} from "@bb/process-utils";
 
 export const HOLDER_REFUSAL_FIRST_DELAY_MS = 15_000;
 export const HOLDER_REFUSAL_MAX_DELAY_MS = 600_000;
@@ -10,15 +15,10 @@ type DoubtfulScan = Extract<
   { status: "uncertain" | "unknown" }
 >;
 
-export interface HolderRefusalBlocker {
-  start: string;
-  credentials: string;
-}
-
 export interface HolderRefusal {
   identity: string;
   reason: string;
-  blockers: Map<number, HolderRefusalBlocker>;
+  blockers: Map<number, ProcessIdentity>;
   attempts: number;
   firstRefusedAt: number;
   nextScanAt: number;
@@ -63,13 +63,7 @@ export async function directoryIdentity(
 
 async function readProcessStart(pid: number): Promise<string | null> {
   try {
-    const stat = await fs.readFile(`/proc/${pid}/stat`, "utf8");
-    const fields = stat
-      .slice(stat.lastIndexOf(")") + 1)
-      .trim()
-      .split(/\s+/u);
-    const start = fields[19];
-    return start !== undefined && /^\d+$/u.test(start) ? start : null;
+    return processStartFromStat(await fs.readFile(`/proc/${pid}/stat`, "utf8"));
   } catch {
     return null;
   }
@@ -77,11 +71,9 @@ async function readProcessStart(pid: number): Promise<string | null> {
 
 async function readProcessCredentials(pid: number): Promise<string | null> {
   try {
-    const status = await fs.readFile(`/proc/${pid}/status`, "utf8");
-    const uid = /^Uid:\s+(.+)$/mu.exec(status)?.[1];
-    const capabilities = /^CapPrm:\s+([0-9a-f]+)$/mu.exec(status)?.[1];
-    if (uid === undefined || capabilities === undefined) return null;
-    return `${uid.trim().split(/\s+/u).join(",")} ${capabilities}`;
+    return processCredentialsFromStatus(
+      await fs.readFile(`/proc/${pid}/status`, "utf8"),
+    );
   } catch {
     return null;
   }
@@ -98,7 +90,7 @@ async function fdListingSucceeds(pid: number): Promise<boolean> {
 
 async function blockerUnchanged(
   pid: number,
-  blocker: HolderRefusalBlocker,
+  blocker: ProcessIdentity,
 ): Promise<boolean> {
   if (await fdListingSucceeds(pid)) return false;
   if ((await startReader(pid)) !== blocker.start) return false;
@@ -130,16 +122,13 @@ export async function recordHolderRefusal(
   identity: string,
   scan: DoubtfulScan,
 ): Promise<void> {
-  const pids = scan.blockingProcesses ?? [];
-  const blockers = new Map<number, HolderRefusalBlocker>();
-  for (const pid of pids) {
-    const start = await startReader(pid);
-    const credentials = await credentialsReader(pid);
-    if (start === null || credentials === null) {
+  const blockers = new Map<number, ProcessIdentity>();
+  for (const { pid, identity: seen } of scan.blockingProcesses ?? []) {
+    if (seen === null) {
       refusals.delete(directory);
       return;
     }
-    blockers.set(pid, { start, credentials });
+    blockers.set(pid, seen);
   }
   if (blockers.size === 0) {
     refusals.delete(directory);
