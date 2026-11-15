@@ -37,6 +37,17 @@ const restoredVariables = [
   "GIT_SSH",
   "GIT_SSH_COMMAND",
   "GIT_TEMPLATE_DIR",
+  "GIT_CONFIG_COUNT",
+  "GIT_CONFIG_KEY_0",
+  "GIT_CONFIG_VALUE_0",
+  "GIT_CONFIG_KEY_1",
+  "GIT_CONFIG_VALUE_1",
+  "GIT_CONFIG_KEY_2",
+  "GIT_CONFIG_VALUE_2",
+  "GIT_CONFIG_PARAMETERS",
+  "SSH_AUTH_SOCK",
+  "LANG",
+  "TEARDOWN_UNLISTED_PROBE",
   "TMPDIR",
 ] as const;
 const inherited = restoredVariables.map(
@@ -1193,6 +1204,88 @@ describe("teardown's fetch reads the user's config only from files outside every
 
     expect(await markerText(fixture)).toBe("");
     expect(reasons.join("\n")).toContain("could not fetch its remotes");
+  });
+});
+
+describe("teardown's git commands see only an allowlisted environment", () => {
+  it.each([
+    [
+      "GIT_CONFIG_COUNT",
+      {
+        GIT_CONFIG_COUNT: "1",
+        GIT_CONFIG_KEY_0: "protocol.ext.allow",
+        GIT_CONFIG_VALUE_0: "always",
+      },
+    ],
+    [
+      "GIT_CONFIG_PARAMETERS",
+      { GIT_CONFIG_PARAMETERS: "'protocol.ext.allow'='always'" },
+    ],
+    [
+      "a GIT_CONFIG_COUNT of 2 with three keys",
+      {
+        GIT_CONFIG_COUNT: "2",
+        GIT_CONFIG_KEY_0: "protocol.ext.allow",
+        GIT_CONFIG_VALUE_0: "always",
+        GIT_CONFIG_KEY_1: "core.abbrev",
+        GIT_CONFIG_VALUE_1: "12",
+        GIT_CONFIG_KEY_2: "protocol.allow",
+        GIT_CONFIG_VALUE_2: "always",
+      },
+    ],
+  ] as const)(
+    "does not run an ext:: remote that %s in teardown's own environment allows",
+    async (_name, variables) => {
+      const fixture = await createFixture();
+      await addRemote(fixture, "payload", `ext::${fixture.mark} payload`);
+      Object.assign(process.env, variables);
+
+      const reasons = await reasonsFor(fixture);
+
+      expect(await markerText(fixture)).toBe("");
+      expect(reasons.join("\n")).toContain("could not fetch its remotes");
+    },
+  );
+
+  it("passes the owner's ssh agent and locale to ssh, and drops a variable that is not on the allowlist", async () => {
+    const fixture = await createFixture();
+    const log = join(fixture.root, "ssh-env.log");
+    const recorder = await script(
+      fixture.root,
+      "recording-ssh.sh",
+      `echo "SSH_AUTH_SOCK=$SSH_AUTH_SOCK LANG=$LANG PROBE=\${TEARDOWN_UNLISTED_PROBE-unset}" >> ${JSON.stringify(log)}\nexit 255`,
+    );
+    await setGlobal(fixture.globalConfig, "core.sshCommand", recorder);
+    await addRemote(fixture, "upstream", "ssh://fetch.invalid/repo.git");
+    process.env.SSH_AUTH_SOCK = join(fixture.root, "agent.sock");
+    process.env.LANG = "C.UTF-8";
+    process.env.TEARDOWN_UNLISTED_PROBE = "leaked";
+
+    await reasonsFor(fixture);
+
+    expect(await readFile(log, "utf8")).toContain(
+      `SSH_AUTH_SOCK=${join(fixture.root, "agent.sock")} LANG=C.UTF-8 PROBE=unset`,
+    );
+  });
+
+  it("still fetches the owner's remotes with the agent socket and a benign GIT_CONFIG_COUNT in its environment", async () => {
+    const fixture = await createFixture();
+    process.env.SSH_AUTH_SOCK = join(fixture.root, "agent.sock");
+    process.env.GIT_CONFIG_COUNT = "1";
+    process.env.GIT_CONFIG_KEY_0 = "core.abbrev";
+    process.env.GIT_CONFIG_VALUE_0 = "12";
+    await git(
+      fixture.root,
+      "--git-dir",
+      fixture.originPath,
+      "update-ref",
+      "refs/heads/later",
+      "refs/heads/main",
+    );
+
+    const reasons = await reasonsFor(fixture);
+
+    expect(reasons.join("\n")).not.toContain("could not fetch its remotes");
   });
 });
 

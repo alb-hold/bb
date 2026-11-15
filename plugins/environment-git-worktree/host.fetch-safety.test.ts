@@ -397,38 +397,39 @@ describe("the fetch that checks whether commits are published", () => {
     expect(reasons.join("\n")).toContain("could not fetch its remotes");
   });
 
-  it("keeps the user's GIT_SSH_COMMAND, which wins over core.sshCommand, and appends batch mode to it", async () => {
-    const fixture = await createFixture("ssh://fetch.invalid/repo.git");
-    const { log, script } = await recordingSsh(fixture.root);
-    await setGlobalConfig(
-      await useGlobalConfig(fixture.root),
-      "core.sshCommand",
-      "false",
+  it.each(["GIT_SSH_COMMAND", "GIT_SSH"] as const)(
+    "never runs %s from teardown's own environment, and the owner's core.sshCommand still applies",
+    async (variable) => {
+      const fixture = await createFixture("ssh://fetch.invalid/repo.git");
+      const { log, script } = await recordingSsh(fixture.root);
+      await setGlobalConfig(
+        await useGlobalConfig(fixture.root),
+        "core.sshCommand",
+        `${script} --from-config`,
+      );
+      process.env[variable] =
+        variable === "GIT_SSH" ? script : `${script} --from-env`;
+
+      try {
+        await findPreservationReasons(await identityOf(fixture), undefined, {
+          fetchTimeoutMs: 20_000,
+        });
+      } finally {
+        delete process.env.GIT_SSH;
+      }
+
+      const recorded = await readFile(log, "utf8");
+      expect(recorded).toMatch(/ARGV: --from-config -o BatchMode=yes /u);
+      expect(recorded).not.toContain("--from-env");
+      expect(recorded).not.toMatch(/^ARGV: (?!--from-config)/mu);
+    },
+  );
+
+  it("builds the ssh command from the configured one or plain ssh", () => {
+    expect(nonInteractiveFetchEnvironment({}, "cfg -F x").GIT_SSH_COMMAND).toBe(
+      "cfg -F x -o BatchMode=yes",
     );
-    process.env.GIT_SSH_COMMAND = `${script} --from-env`;
-
-    await findPreservationReasons(await identityOf(fixture), undefined, {
-      fetchTimeoutMs: 20_000,
-    });
-
-    expect(await readFile(log, "utf8")).toMatch(
-      /ARGV: --from-env -o BatchMode=yes /u,
-    );
-  });
-
-  it("builds the environment from the user's command, the configured one, GIT_SSH or plain ssh, in that order", () => {
-    expect(
-      nonInteractiveFetchEnvironment({}, { GIT_SSH_COMMAND: "env-ssh" }, "cfg")
-        .GIT_SSH_COMMAND,
-    ).toBe("env-ssh -o BatchMode=yes");
-    expect(
-      nonInteractiveFetchEnvironment({}, {}, "cfg -F x").GIT_SSH_COMMAND,
-    ).toBe("cfg -F x -o BatchMode=yes");
-    expect(
-      nonInteractiveFetchEnvironment({}, { GIT_SSH: "/opt/my ssh" }, null)
-        .GIT_SSH_COMMAND,
-    ).toBe("'/opt/my ssh' -o BatchMode=yes");
-    expect(nonInteractiveFetchEnvironment({}, {}, null).GIT_SSH_COMMAND).toBe(
+    expect(nonInteractiveFetchEnvironment({}, null).GIT_SSH_COMMAND).toBe(
       "ssh -o BatchMode=yes",
     );
   });
