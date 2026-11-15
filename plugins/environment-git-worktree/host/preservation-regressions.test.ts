@@ -284,6 +284,10 @@ async function remove(
   worktree: { path: string; root: string },
   testHooks?: {
     now?: () => number;
+    timestampFilesystem?: {
+      statfs?: (target: string) => Promise<{ type: number }>;
+    };
+    renamedCtimeNs?: (renamed: string, actual: bigint) => bigint;
     afterFinalBaseline?: (
       worktreePath: string,
       gitDir: string,
@@ -955,6 +959,82 @@ describe("real worktree teardown preservation", () => {
       name.startsWith(".bb-removing-"),
     );
     expect(leftovers).toEqual([]);
+  });
+
+  it("retains a file written just after the final baseline when file timestamps lag the clock by most of the margin", async () => {
+    const worktree = await makeWorktree();
+    useProcReaderForTests(descendantsOnly(hostProc, -1));
+    let injected = false;
+    let removalError: unknown;
+    try {
+      await remove(worktree, {
+        now: () => Date.now() + 16,
+        afterFinalBaseline: async (target) => {
+          await writeFile(path.join(target, "near-margin.txt"), "near\n");
+          injected = true;
+        },
+      });
+    } catch (error) {
+      removalError = error;
+    }
+    expect(removalError).toMatchObject({ code: "worktree_preserved" });
+    expect(injected, String(removalError)).toBe(true);
+    await expect(
+      readFile(path.join(worktree.path, "near-margin.txt"), "utf8"),
+    ).resolves.toBe("near\n");
+  });
+
+  it("keeps a worktree on a filesystem whose timestamps removal does not trust", async () => {
+    const worktree = await makeWorktree();
+    useProcReaderForTests(descendantsOnly(hostProc, -1));
+    let removalError: unknown;
+    try {
+      await remove(worktree, {
+        timestampFilesystem: {
+          statfs: async (target) => ({
+            type: target === "/" ? 0x1a : 0x01021997,
+          }),
+        },
+      });
+    } catch (error) {
+      removalError = error;
+    }
+    expect(removalError).toMatchObject({ code: "worktree_preserved" });
+    expect(String(removalError)).toContain("type 0x1021997");
+    await expect(
+      readFile(path.join(worktree.path, "README.md"), "utf8"),
+    ).resolves.toBeDefined();
+  });
+
+  it("keeps a worktree whose filesystem records whole-second timestamps", async () => {
+    const worktree = await makeWorktree();
+    const gitDir = (
+      await git(worktree.path, "rev-parse", "--absolute-git-dir")
+    ).trim();
+    useProcReaderForTests(descendantsOnly(hostProc, -1));
+    let removalError: unknown;
+    try {
+      await remove(worktree, {
+        renamedCtimeNs: () => 1_763_000_000_000_000_000n,
+      });
+    } catch (error) {
+      removalError = error;
+    }
+    expect(removalError).toMatchObject({ code: "worktree_preserved" });
+    expect(String(removalError)).toContain("whole-second timestamps");
+    await expect(
+      readFile(path.join(worktree.path, "README.md"), "utf8"),
+    ).resolves.toBeDefined();
+    await expect(access(path.join(gitDir, "gitdir"))).resolves.toBeUndefined();
+  });
+
+  it("removes a worktree whose renamed directories carry sub-second timestamps", async () => {
+    const worktree = await makeWorktree();
+    useProcReaderForTests(descendantsOnly(hostProc, -1));
+    await remove(worktree, {
+      renamedCtimeNs: () => 1_763_000_000_732_434_237n,
+    });
+    await expect(access(worktree.path)).rejects.toThrow();
   });
 
   it("keeps a write through a descriptor held on teardown's gitdir file", async () => {
