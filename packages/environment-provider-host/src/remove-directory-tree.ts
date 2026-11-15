@@ -393,9 +393,42 @@ async function recoverSymlink(
   );
 }
 
+export interface EntryIdentity {
+  ino: number;
+  size: number;
+  ctimeMs: number;
+  mtimeMs: number;
+}
+
+export function entryIdentity(info: EntryIdentity): EntryIdentity {
+  return {
+    ino: info.ino,
+    size: info.size,
+    ctimeMs: info.ctimeMs,
+    mtimeMs: info.mtimeMs,
+  };
+}
+
+export function sameEntryIdentity(
+  info: EntryIdentity & { isDirectory(): boolean },
+  expected: EntryIdentity,
+): boolean {
+  return (
+    !info.isDirectory() &&
+    info.ino === expected.ino &&
+    info.size === expected.size &&
+    info.ctimeMs === expected.ctimeMs &&
+    info.mtimeMs === expected.mtimeMs
+  );
+}
+
 export async function directoryTreeChangedSince(
   root: string,
   startedAt: number,
+  baseline: {
+    rootMetadata?: { ctimeMs: number; mtimeMs: number };
+    unchangedEntries?: ReadonlyMap<string, EntryIdentity>;
+  } = {},
 ): Promise<boolean> {
   const inspect = async (entry: string): Promise<boolean> => {
     let info;
@@ -404,7 +437,16 @@ export async function directoryTreeChangedSince(
     } catch {
       return true;
     }
-    if (changedSince(info, startedAt)) return true;
+    const expected = baseline.unchangedEntries?.get(entry);
+    if (expected !== undefined) return !sameEntryIdentity(info, expected);
+    const rootMetadata = entry === root ? baseline.rootMetadata : undefined;
+    if (
+      rootMetadata === undefined
+        ? changedSince(info, startedAt)
+        : info.ctimeMs > rootMetadata.ctimeMs ||
+          info.mtimeMs > rootMetadata.mtimeMs
+    )
+      return true;
     if (!info.isDirectory()) return false;
     let listed: string[];
     try {

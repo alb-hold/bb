@@ -15,8 +15,10 @@ import {
 import fs from "node:fs/promises";
 import {
   directoryTreeChangedSince,
+  entryIdentity,
   removeDirectoryTree,
   RetainedRecoveryError,
+  sameEntryIdentity,
 } from "bb-environment-provider-host/remove-directory-tree";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
@@ -185,6 +187,7 @@ const REMOTE_BASE_FETCH_TIMEOUT_MS = 60_000;
 const REMOTE_REF_LOCK_RETRY_INTERVAL_MS = 200;
 const REMOTE_REF_LOCK_RETRY_TIMEOUT_MS = 2_000;
 const WORKTREE_INCLUDE_TRANSCRIPT_PATH_LIMIT = 20;
+const FILE_TIMESTAMP_LAG_MS = 20;
 
 type ConcurrentRemoteRefUpdateErrorKind = "stale-value" | "lock-file-exists";
 
@@ -967,6 +970,10 @@ async function removeRegisteredWorktree(
       path.join(identity.gitDir, "gitdir"),
       "utf8",
     );
+    const severedGitdirFile = path.join(severedGitDir, "gitdir");
+    const finalCheckStartedAt =
+      (args.testHooks?.now ?? Date.now)() - FILE_TIMESTAMP_LAG_MS;
+    await args.testHooks?.afterFinalBaseline?.(identity.path, identity.gitDir);
     await fs.rename(identity.path, quarantinedPath);
     let metadataSevered = false;
     let workspaceRemoved = false;
@@ -975,7 +982,7 @@ async function removeRegisteredWorktree(
         await fs.rename(identity.gitDir, severedGitDir);
         metadataSevered = true;
         await fs.writeFile(
-          path.join(severedGitDir, "gitdir"),
+          severedGitdirFile,
           `${path.join(quarantinedPath, ".git")}\n`,
         );
       } catch (error) {
@@ -983,6 +990,11 @@ async function removeRegisteredWorktree(
           `could not isolate its Git metadata for final inspection (${error instanceof Error ? error.message : String(error)})`,
         ]);
       }
+      const gitdirFileIdentity = entryIdentity(
+        await fs.lstat(severedGitdirFile),
+      );
+      const severedMetadataBaseline = await fs.lstat(severedGitDir);
+      const workspaceMetadataBaseline = await fs.lstat(quarantinedPath);
       const quarantineIdentity = {
         ...identity,
         path: quarantinedPath,
@@ -1000,14 +1012,13 @@ async function removeRegisteredWorktree(
         quarantinedPath,
         severedGitDir,
       );
-      const workspaceMetadataBaseline = await fs.lstat(quarantinedPath);
-      const finalCheckStartedAt = (args.testHooks?.now ?? Date.now)();
-      await args.testHooks?.afterFinalBaseline?.(
-        quarantinedPath,
-        severedGitDir,
-      );
       await args.testHooks?.afterFinalCheck?.(quarantinedPath, severedGitDir);
-      if (await directoryTreeChangedSince(severedGitDir, finalCheckStartedAt)) {
+      if (
+        await directoryTreeChangedSince(severedGitDir, finalCheckStartedAt, {
+          rootMetadata: severedMetadataBaseline,
+          unchangedEntries: new Map([[severedGitdirFile, gitdirFileIdentity]]),
+        })
+      ) {
         throw worktreePreservedError(identity.path, [
           "new or changed Git metadata was found after its final inspection",
           ...keptNote,
@@ -1041,6 +1052,19 @@ async function removeRegisteredWorktree(
         ]);
       }
       workspaceRemoved = true;
+      if (
+        !sameEntryIdentity(
+          await fs.lstat(severedGitdirFile),
+          gitdirFileIdentity,
+        )
+      ) {
+        throw worktreePreservedError(severedGitDir, [
+          "new or changed Git metadata was found during admin-directory removal",
+          `preserved entry at ${severedGitdirFile}`,
+          ...keptNote,
+        ]);
+      }
+      await fs.unlink(severedGitdirFile);
       const gitRootInfo = await fs.stat(severedGitDir);
       const removedGitDir = await removeDirectoryTree(severedGitDir, {
         startedAt: finalCheckStartedAt,
