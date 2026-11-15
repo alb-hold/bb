@@ -1,4 +1,5 @@
 import path from "node:path";
+import { withPlatformParcelBackend } from "../parcel-backend-choice.js";
 import type {
   ParcelAsyncSubscription,
   ParcelWatcherBackend,
@@ -89,7 +90,7 @@ export function createParcelChildHandler(args: {
             events: serializeEvents(events),
           });
         },
-        message.opts,
+        withPlatformParcelBackend(message.opts),
       )
       .then(async (subscription) => {
         if (cancelledBeforeReady.delete(message.id)) {
