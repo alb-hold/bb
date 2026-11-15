@@ -58,9 +58,12 @@ function projectConfigIn(directory) {
 async function expandProjects(configPath, patterns) {
   const directory = dirname(configPath);
   const included = new Set();
-  for (const pattern of patterns.filter((entry) => !entry.startsWith("!")))
-    for (const match of globSync(pattern, { cwd: directory }))
-      included.add(resolve(directory, match));
+  const unmatched = [];
+  for (const pattern of patterns.filter((entry) => !entry.startsWith("!"))) {
+    const matches = globSync(pattern, { cwd: directory });
+    if (matches.length === 0) unmatched.push(pattern);
+    for (const match of matches) included.add(resolve(directory, match));
+  }
   for (const pattern of patterns.filter((entry) => entry.startsWith("!")))
     for (const match of globSync(pattern.slice(1), { cwd: directory }))
       included.delete(resolve(directory, match));
@@ -80,7 +83,7 @@ async function expandProjects(configPath, patterns) {
         : { path, config: null },
     );
   }
-  return matched;
+  return { matched, unmatched };
 }
 
 async function resolvedTimeouts(path, config, expand = expandProjects) {
@@ -93,8 +96,10 @@ async function resolvedTimeouts(path, config, expand = expandProjects) {
   const resolved = [];
   const patterns = projects.filter((project) => typeof project === "string");
   if (patterns.length > 0) {
-    const matched = await expand(path, patterns);
-    if (matched.length === 0)
+    const { matched, unmatched } = await expand(path, patterns);
+    for (const pattern of unmatched)
+      resolved.push({ name: `${name} ${pattern}`, ...UNRESOLVED });
+    if (matched.length === 0 && unmatched.length === 0)
       resolved.push({ name: `${name} ${patterns.join(" ")}`, ...UNRESOLVED });
     for (const project of matched)
       resolved.push(
@@ -257,6 +262,55 @@ describe("plugin test timeouts", () => {
       join(root, "packages/notes.md"),
       join(root, "packages/short-hooks/vitest.config.mjs"),
     ]);
+  });
+
+  it("fails each project pattern that matches nothing, even when another pattern matches", async () => {
+    const root = mkdtempSync(join(tmpdir(), "plugin-timeouts-"));
+    fixtures.push(root);
+    const config = writeConfig(join(root, "vitest.config.mjs"), {
+      test: { projects: ["packages/*", "missing/*"] },
+    });
+    writeConfig(join(root, "packages/a/vitest.config.mjs"), {
+      test: { testTimeout: 20_000, hookTimeout: 20_000 },
+    });
+
+    expect(
+      belowMinimum(await resolvedTimeouts(config, await loadConfig(config))),
+    ).toEqual([{ name: `${config} missing/*`, ...UNRESOLVED }]);
+  });
+
+  it("passes when every project pattern matches, and a negation that excludes nothing is not an error", async () => {
+    const root = mkdtempSync(join(tmpdir(), "plugin-timeouts-"));
+    fixtures.push(root);
+    const good = { test: { testTimeout: 20_000, hookTimeout: 20_000 } };
+    const config = writeConfig(join(root, "vitest.config.mjs"), {
+      test: { projects: ["packages/*", "tools/*", "!packages/none"] },
+    });
+    writeConfig(join(root, "packages/a/vitest.config.mjs"), good);
+    writeConfig(join(root, "tools/b/vitest.config.mjs"), good);
+
+    const resolved = await resolvedTimeouts(config, await loadConfig(config));
+
+    expect(resolved.map(({ name }) => name)).toEqual([
+      join(root, "packages/a/vitest.config.mjs"),
+      join(root, "tools/b/vitest.config.mjs"),
+    ]);
+    expect(belowMinimum(resolved)).toEqual([]);
+  });
+
+  it("fails project patterns whose negations exclude every match", async () => {
+    const root = mkdtempSync(join(tmpdir(), "plugin-timeouts-"));
+    fixtures.push(root);
+    const config = writeConfig(join(root, "vitest.config.mjs"), {
+      test: { projects: ["packages/*", "!packages/*"] },
+    });
+    writeConfig(join(root, "packages/a/vitest.config.mjs"), {
+      test: { testTimeout: 20_000, hookTimeout: 20_000 },
+    });
+
+    expect(
+      belowMinimum(await resolvedTimeouts(config, await loadConfig(config))),
+    ).toEqual([{ name: `${config} packages/* !packages/*`, ...UNRESOLVED }]);
   });
 
   it("fails a project pattern that matches nothing, and an entry it cannot read", async () => {
