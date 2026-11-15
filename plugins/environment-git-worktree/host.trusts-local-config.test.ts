@@ -102,6 +102,19 @@ async function script(root: string, name: string, body: string) {
   return target;
 }
 
+async function realSshOnPath(fixture: Fixture, name: string) {
+  const ssh = (
+    await execFileAsync("sh", ["-c", "command -v ssh"])
+  ).stdout.trim();
+  expect(ssh).not.toBe("");
+  const bin = join(fixture.root, "bin");
+  await mkdir(bin, { recursive: true });
+  const log = join(fixture.root, `${name}.log`);
+  await script(bin, name, `echo "$*" >> ${JSON.stringify(log)}\nexit 1`);
+  process.env.PATH = `${bin}:${process.env.PATH}`;
+  return { ssh, log };
+}
+
 async function commitFiles(repository: string, files: Record<string, string>) {
   for (const [name, content] of Object.entries(files)) {
     await mkdir(join(repository, name, ".."), { recursive: true });
@@ -258,6 +271,33 @@ describe("teardown's fetch never runs a program from the repository's own config
     expect(await readFile(log, "utf8")).toContain("BatchMode=yes");
     expect(reasons.join("\n")).toContain("could not fetch its remotes");
   });
+
+  it.each([
+    ["an ssh:// URL", "ssh://-oProxyCommand=bbmark/x"],
+    ["an scp-style URL", "-oProxyCommand=bbmark:x"],
+  ])(
+    "does not let %s in the repository's own config pass an option to the real ssh client",
+    async (_form, url) => {
+      const fixture = await createFixture();
+      await setGlobal(fixture.globalConfig, "--unset", "core.sshCommand");
+      const { ssh, log } = await realSshOnPath(fixture, "bbmark");
+      await execFileAsync(ssh, [
+        "-o",
+        "BatchMode=yes",
+        "-oProxyCommand=bbmark control %h",
+        "control-host",
+        "true",
+      ]).catch(() => undefined);
+      expect(await readFile(log, "utf8")).toBe("control control-host\n");
+      await writeFile(log, "");
+      await git(fixture.sourcePath, "config", "--", "remote.backup.url", url);
+
+      const reasons = await reasonsFor(fixture);
+
+      expect(await readFile(log, "utf8")).toBe("");
+      expect(reasons.join("\n")).toContain("could not fetch its remotes");
+    },
+  );
 
   it("does not run a local core.sshCommand set in a file the local config includes", async () => {
     const fixture = await createFixture();
@@ -887,6 +927,28 @@ async function unauthorisedServer(): Promise<number> {
 }
 
 describe("teardown's fetch reads the user's config only from files outside every repository and workspace", () => {
+  it("fetches an ssh remote through a host alias in the owner's own ssh config", async () => {
+    const fixture = await createFixture();
+    const { ssh, log } = await realSshOnPath(fixture, "bbproxy");
+    const sshConfig = join(fixture.root, "owner-ssh-config");
+    await writeFile(
+      sshConfig,
+      "Host owner-alias\n  HostName 192.0.2.77\n  Port 2299\n  ProxyCommand bbproxy alias %h %p\n",
+    );
+    await chmod(sshConfig, 0o600);
+    await setGlobal(
+      fixture.globalConfig,
+      "core.sshCommand",
+      `${ssh} -F ${sshConfig}`,
+    );
+    await addRemote(fixture, "backup", "owner-alias:org/r.git");
+
+    const reasons = await reasonsFor(fixture);
+
+    expect(await readFile(log, "utf8")).toBe("alias 192.0.2.77 2299\n");
+    expect(reasons.join("\n")).toContain("could not fetch its remotes");
+  });
+
   it.each([
     ["include.path", false],
     ['includeIf "gitdir:"', true],
