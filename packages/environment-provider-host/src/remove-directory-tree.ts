@@ -29,6 +29,8 @@ export interface RemoveDirectoryTreeHooks {
   afterEntryCheck?: (entry: string) => Promise<void>;
   afterEntryQuarantined?: (entry: string, quarantined: string) => Promise<void>;
   afterParentVerified?: (entry: string, quarantined: string) => Promise<void>;
+  readSymbolicLink?: (entry: string) => Promise<string>;
+  beforeEntryUnlink?: (quarantined: string) => Promise<void>;
   afterRestoreNameCheck?: (
     source: string,
     destination: string,
@@ -92,6 +94,10 @@ export class RetainedRecoveryError extends Error {
     this.name = "RetainedRecoveryError";
     this.retainedPaths = retainedPaths;
   }
+}
+
+function pinsSymbolicLinks(): boolean {
+  return process.platform !== "darwin";
 }
 
 function anchorsDirectories(): boolean {
@@ -1013,7 +1019,69 @@ export async function removeDirectoryTree(
           );
         }
       };
+      const unpinnedSymbolicLink =
+        symbolicLinkTarget !== null && !pinsSymbolicLinks();
+      const readSymbolicLink = hooks.readSymbolicLink ?? readlink;
+      const quarantinedSymbolicLinkIsOurs = async (): Promise<
+        "ours" | "absent" | "other"
+      > => {
+        let current;
+        try {
+          current = await lstat(quarantined, { bigint: true });
+        } catch (error) {
+          return errorCode(error) === "ENOENT" ? "absent" : "other";
+        }
+        if (
+          !current.isSymbolicLink() ||
+          current.dev !== checkedPreciseInfo.dev ||
+          current.ino !== checkedPreciseInfo.ino
+        )
+          return "other";
+        try {
+          return (await readSymbolicLink(quarantined)) === symbolicLinkTarget
+            ? "ours"
+            : "other";
+        } catch {
+          return "other";
+        }
+      };
+      const restoreUnpinnedSymbolicLink = async (): Promise<boolean> => {
+        try {
+          const moved = await quarantinedSymbolicLinkIsOurs();
+          if (moved === "absent") return false;
+          if (moved === "other") {
+            reportRetainedPath(quarantined);
+            return false;
+          }
+          await hooks.afterRestoreNameCheck?.(
+            quarantined,
+            anchoredEntry,
+            false,
+          );
+          await hooks.beforeQuarantineRestoreLink?.(quarantined, anchoredEntry);
+          try {
+            await symlink(symbolicLinkTarget ?? "", anchoredEntry);
+          } catch (error) {
+            if (errorCode(error) !== "EEXIST") throw error;
+            reportRetainedPath(quarantined);
+            return false;
+          }
+          if ((await readlink(anchoredEntry)) !== symbolicLinkTarget)
+            reportRetainedPath(anchoredEntry);
+          if ((await quarantinedSymbolicLinkIsOurs()) !== "ours") {
+            await reportQuarantinedIfPresent();
+            return false;
+          }
+          await unlink(quarantined);
+          return true;
+        } catch (error) {
+          throw await pinFailure(
+            `Could not restore the symbolic link: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      };
       const restoreQuarantine = async (): Promise<boolean> => {
+        if (unpinnedSymbolicLink) return restoreUnpinnedSymbolicLink();
         if (modeChanged && fileHandle !== null) {
           try {
             await fileHandle.chmod(Number(originalMode));
@@ -1131,17 +1199,19 @@ export async function removeDirectoryTree(
           return retainedEntry();
         }
         await rename(anchoredEntry, quarantined);
-        const pinResult = await createPinFromPath(
-          parentDirectory,
-          quarantined,
-          {
-            dev: checkedPreciseInfo.dev,
-            ino: checkedPreciseInfo.ino,
-          },
-          fileHandle,
-          hooks,
-        );
-        if (pinResult.pin === null) {
+        const pinResult = unpinnedSymbolicLink
+          ? null
+          : await createPinFromPath(
+              parentDirectory,
+              quarantined,
+              {
+                dev: checkedPreciseInfo.dev,
+                ino: checkedPreciseInfo.ino,
+              },
+              fileHandle,
+              hooks,
+            );
+        if (pinResult !== null && pinResult.pin === null) {
           let recoveredPath: string;
           try {
             recoveredPath =
@@ -1178,8 +1248,10 @@ export async function removeDirectoryTree(
             [displayPath(recoveredPath), displayPath(quarantined)],
           );
         }
-        recoveryPin = pinResult.pin;
-        activePins.add(recoveryPin);
+        if (pinResult !== null && pinResult.pin !== null) {
+          recoveryPin = pinResult.pin;
+          activePins.add(pinResult.pin);
+        }
         let quarantinedCtimeNs: bigint | null = null;
         const verifyMovedEntry = async (
           expectedCtimeNs: bigint | null = null,
@@ -1230,6 +1302,14 @@ export async function removeDirectoryTree(
           return retainedEntry();
         }
         await hooks.afterParentVerified?.(entry, quarantined);
+        if (
+          unpinnedSymbolicLink &&
+          (await quarantinedSymbolicLinkIsOurs()) !== "ours"
+        ) {
+          await restoreQuarantine();
+          return retainedEntry();
+        }
+        await hooks.beforeEntryUnlink?.(quarantined);
         await unlink(quarantined);
         if (fileHandle !== null) {
           const unlinkedInfo = await fileHandle.stat({ bigint: true });
