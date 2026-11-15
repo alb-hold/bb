@@ -26,6 +26,7 @@ import {
 } from "./host/worktree.js";
 import { classifyCreateFailure } from "./host/create-failure.js";
 import {
+  clearFetchMemoWhenAborted,
   isWorktreePreservedError,
   worktreeHolderScopeNotice,
 } from "./host/worktree-preservation.js";
@@ -221,6 +222,7 @@ export function createWorktreeHostEntry() {
       },
 
       async remove(input, context) {
+        clearFetchMemoWhenAborted(context.lifecycle.signal);
         try {
           const dataDir = context.experimental_paths.dataDir;
           const attemptRoot = resolveWorktreeAttemptRoot({
