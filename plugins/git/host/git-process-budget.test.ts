@@ -7,7 +7,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { initRepo, makeTempDir } from "@bb/test-helpers";
 import { runGit } from "bb-environment-provider-host/workspace-git";
 import type { GitReadFreshness } from "../contract.js";
-import { FINE_RACY_SIGNATURE_WINDOW_MS, WorkspaceReads } from "./workspace-reads.js";
+import {
+  FINE_RACY_SIGNATURE_WINDOW_MS,
+  WorkspaceReads,
+} from "./workspace-reads.js";
 
 const STATUS_BUDGET = {
   maxFiles: 200,
@@ -89,68 +92,80 @@ describe("git processes per workspace change", () => {
     vi.unstubAllEnvs();
   });
 
-  it.skipIf(process.platform === "win32")("keeps an edit with Diff open to its status, one diff, untracked stats and the patches", async () => {
-    const repo = await initPullRequestRepo();
-    const reads = new WorkspaceReads(repo, tmpdir());
-    await readLikeTheDiffTab(reads, { work: "w1", refs: "r1" }, ["app.ts"]);
-    await takeCalls();
+  it.skipIf(process.platform === "win32")(
+    "keeps an edit with Diff open to its status, one diff, untracked stats and the patches",
+    async () => {
+      const repo = await initPullRequestRepo();
+      const reads = new WorkspaceReads(repo, tmpdir());
+      await readLikeTheDiffTab(reads, { work: "w1", refs: "r1" }, ["app.ts"]);
+      await takeCalls();
 
-    await fs.appendFile(path.join(repo, "README.md"), "edit 1\n");
-    await fs.writeFile(path.join(repo, "new-1.txt"), "new 1\n");
-    await new Promise((resolve) => setTimeout(resolve, FINE_RACY_SIGNATURE_WINDOW_MS + 10));
-    await readLikeTheDiffTab(reads, { work: "w2", refs: "r1" }, [
-      "README.md",
-      "new-1.txt",
-    ]);
-    expect(await takeCalls()).toEqual(
-      [
-        "status --porcelain=v2",
-        "diff --numstat",
-        "add --sparse",
-        "diff --no-ext-diff",
-        "diff --no-ext-diff",
-        "hash-object --stdin-paths",
-        "diff --no-ext-diff",
-        "diff --no-ext-diff",
-      ].sort(),
-    );
+      await fs.appendFile(path.join(repo, "README.md"), "edit 1\n");
+      await fs.writeFile(path.join(repo, "new-1.txt"), "new 1\n");
+      await new Promise((resolve) =>
+        setTimeout(resolve, FINE_RACY_SIGNATURE_WINDOW_MS + 10),
+      );
+      await readLikeTheDiffTab(reads, { work: "w2", refs: "r1" }, [
+        "README.md",
+        "new-1.txt",
+      ]);
+      expect(await takeCalls()).toEqual(
+        [
+          "status --porcelain=v2",
+          "diff --numstat",
+          "add --sparse",
+          "diff --no-ext-diff",
+          "diff --no-ext-diff",
+          "hash-object --stdin-paths",
+          "diff --no-ext-diff",
+          "diff --no-ext-diff",
+        ].sort(),
+      );
 
-    await fs.appendFile(path.join(repo, "README.md"), "edit 2\n");
-    await new Promise((resolve) => setTimeout(resolve, FINE_RACY_SIGNATURE_WINDOW_MS + 10));
-    await readLikeTheDiffTab(reads, { work: "w3", refs: "r1" }, ["README.md"]);
-    expect(await takeCalls()).toEqual(
-      [
-        "status --porcelain=v2",
-        "diff --numstat",
-        "diff --no-ext-diff",
-        "hash-object --stdin-paths",
-        "diff --no-ext-diff",
-      ].sort(),
-    );
-    await reads.dispose();
-  });
+      await fs.appendFile(path.join(repo, "README.md"), "edit 2\n");
+      await new Promise((resolve) =>
+        setTimeout(resolve, FINE_RACY_SIGNATURE_WINDOW_MS + 10),
+      );
+      await readLikeTheDiffTab(reads, { work: "w3", refs: "r1" }, [
+        "README.md",
+      ]);
+      expect(await takeCalls()).toEqual(
+        [
+          "status --porcelain=v2",
+          "diff --numstat",
+          "diff --no-ext-diff",
+          "hash-object --stdin-paths",
+          "diff --no-ext-diff",
+        ].sort(),
+      );
+      await reads.dispose();
+    },
+  );
 
-  it.skipIf(process.platform === "win32")("reads only status and its numstat for a tracked edit with Diff closed", async () => {
-    const repo = await initPullRequestRepo();
-    const reads = new WorkspaceReads(repo, tmpdir());
-    await reads.getStatus({
-      freshness: { work: "w1", refs: "r1" },
-      mergeBaseBranch: "main",
-      ...STATUS_BUDGET,
-    });
-    await takeCalls();
+  it.skipIf(process.platform === "win32")(
+    "reads only status and its numstat for a tracked edit with Diff closed",
+    async () => {
+      const repo = await initPullRequestRepo();
+      const reads = new WorkspaceReads(repo, tmpdir());
+      await reads.getStatus({
+        freshness: { work: "w1", refs: "r1" },
+        mergeBaseBranch: "main",
+        ...STATUS_BUDGET,
+      });
+      await takeCalls();
 
-    await fs.appendFile(path.join(repo, "README.md"), "edit\n");
-    await reads.getStatus({
-      freshness: { work: "w2", refs: "r1" },
-      mergeBaseBranch: "main",
-      ...STATUS_BUDGET,
-    });
-    expect(await takeCalls()).toEqual(
-      ["diff --numstat", "status --porcelain=v2"].sort(),
-    );
-    await reads.dispose();
-  });
+      await fs.appendFile(path.join(repo, "README.md"), "edit\n");
+      await reads.getStatus({
+        freshness: { work: "w2", refs: "r1" },
+        mergeBaseBranch: "main",
+        ...STATUS_BUDGET,
+      });
+      expect(await takeCalls()).toEqual(
+        ["diff --numstat", "status --porcelain=v2"].sort(),
+      );
+      await reads.dispose();
+    },
+  );
 
   it("leaves the repository index untouched while reading", async () => {
     const repo = await initPullRequestRepo();

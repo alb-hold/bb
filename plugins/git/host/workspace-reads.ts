@@ -65,7 +65,6 @@ export interface StatusOptions {
 
 export type DiffResult = ThreadGitDiffResponse;
 
-
 export interface DiffFilesArgs {
   freshness: ReadFreshness;
   target: WorkspaceDiffTarget;
@@ -94,19 +93,10 @@ export interface DiffPatchEntry {
   truncated: boolean;
 }
 
-
-
-
-
-
-
-
-
 type TruncatedOutput = {
   value: string;
   truncated: boolean;
 };
-
 
 type BoundedDiffStatArtifacts = {
   trackedEntries: RawDiffEntry[];
@@ -135,7 +125,6 @@ type ResolvedTrackedDiffRange = {
   usesUncommittedHead: boolean;
   mergeBaseRef: string | null;
 };
-
 
 type SquashMergeCheck = { merged: boolean | null; timedOut: boolean };
 type MergeBaseStatusComputation = {
@@ -411,7 +400,6 @@ function resolveWorkspaceState(args: {
   return "committed_unmerged";
 }
 
-
 function formatShortstat(args: {
   changedFiles: number;
   deletions: number;
@@ -574,10 +562,7 @@ export class WorkspaceReads {
     Promise<string | undefined>
   >();
   private readonly commitReads = new Map<string, Promise<string | null>>();
-  private readonly mergeBaseReads = new Map<
-    string,
-    Promise<string>
-  >();
+  private readonly mergeBaseReads = new Map<string, Promise<string>>();
   private readonly trackedEntriesByDiff = new Map<
     string,
     Promise<RawDiffEntry[]>
@@ -657,9 +642,12 @@ export class WorkspaceReads {
 
   private async requireStatusSnapshot(
     work: string,
-  ): Promise<StatusSnapshot & { parsed: NonNullable<StatusSnapshot["parsed"]> }> {
+  ): Promise<
+    StatusSnapshot & { parsed: NonNullable<StatusSnapshot["parsed"]> }
+  > {
     const snapshot = await this.statusSnapshot(work);
-    if (snapshot.parsed === null) throw statusFailure(snapshot.result, this.path);
+    if (snapshot.parsed === null)
+      throw statusFailure(snapshot.result, this.path);
     return { ...snapshot, parsed: snapshot.parsed };
   }
 
@@ -681,8 +669,7 @@ export class WorkspaceReads {
     mergeBaseBranch: string,
   ): Promise<string> {
     const snapshot = await this.requireStatusSnapshot(freshness.work);
-    const read = () =>
-      readMergeBaseRef(this.path, mergeBaseBranch, {});
+    const read = () => readMergeBaseRef(this.path, mergeBaseBranch, {});
     const headOid = snapshot.parsed.headOid;
     return headOid === null
       ? read()
@@ -717,7 +704,11 @@ export class WorkspaceReads {
               : FINE_RACY_SIGNATURE_WINDOW_MS),
       };
     } catch (error) {
-      if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+      if (
+        error instanceof Error &&
+        "code" in error &&
+        error.code === "ENOENT"
+      ) {
         return null;
       }
       throw error;
@@ -777,7 +768,14 @@ export class WorkspaceReads {
             return new Map<string, UntrackedFileStat>();
           }
           const result = await this.runGit(
-            ["diff", "--no-ext-diff", "--raw", "--numstat", "--no-abbrev", "-z"],
+            [
+              "diff",
+              "--no-ext-diff",
+              "--raw",
+              "--numstat",
+              "--no-abbrev",
+              "-z",
+            ],
             {
               cwd: this.path,
               env,
@@ -790,7 +788,9 @@ export class WorkspaceReads {
           );
           const { raw, numstat } = splitRawNumstatZ(result.stdout);
           const rawByPath = new Map(
-            parseRawDiffEntriesZ(raw).map((entry) => [entry.path, entry] as const),
+            parseRawDiffEntriesZ(raw).map(
+              (entry) => [entry.path, entry] as const,
+            ),
           );
           const numstatByPath = new Map(
             parseNumstatEntriesZ(numstat).map(
@@ -826,7 +826,10 @@ export class WorkspaceReads {
   private async withRetainedUntrackedIndex<T>(
     work: string,
     relativePaths: readonly string[],
-    read: (env: NodeJS.ProcessEnv, indexedPaths: readonly string[]) => Promise<T>,
+    read: (
+      env: NodeJS.ProcessEnv,
+      indexedPaths: readonly string[],
+    ) => Promise<T>,
     options: { signal?: AbortSignal; timeoutMs?: number } = {},
   ): Promise<T> {
     return this.withTemporaryUntrackedIndex(
@@ -855,7 +858,10 @@ export class WorkspaceReads {
   private async readFromRetainedUntrackedIndex<T>(
     work: string,
     relativePaths: readonly string[],
-    read: (env: NodeJS.ProcessEnv, indexedPaths: readonly string[]) => Promise<T>,
+    read: (
+      env: NodeJS.ProcessEnv,
+      indexedPaths: readonly string[],
+    ) => Promise<T>,
   ): Promise<{ value: T } | null> {
     const retained = this.retainedIndex;
     if (
@@ -906,7 +912,7 @@ export class WorkspaceReads {
         args,
         {
           ...options,
-            env: { ...READ_ONLY_GIT_ENV, ...indexEnv, ...options.env },
+          env: { ...READ_ONLY_GIT_ENV, ...indexEnv, ...options.env },
         },
         recordFormat,
         maxRecords,
@@ -955,9 +961,12 @@ export class WorkspaceReads {
       throw error;
     });
     if (stats === null) return null;
-    const signature = [stats.size, stats.mtimeMs, stats.ctimeMs, stats.ino].join(
-      ":",
-    );
+    const signature = [
+      stats.size,
+      stats.mtimeMs,
+      stats.ctimeMs,
+      stats.ino,
+    ].join(":");
     let copy = this.indexCopy;
     if (copy?.signature !== signature) {
       if (copy !== null) {
@@ -1334,7 +1343,9 @@ export class WorkspaceReads {
       ? new Set(
           (
             await this.requireStatusSnapshot(args.freshness.work)
-          ).untrackedPaths.filter((relativePath) => requested.has(relativePath)),
+          ).untrackedPaths.filter((relativePath) =>
+            requested.has(relativePath),
+          ),
         )
       : new Set<string>();
 
@@ -1376,7 +1387,6 @@ export class WorkspaceReads {
     }
     return entries;
   }
-
 
   private async readMergeBaseStatus(
     mergeBaseBranch: string,
@@ -1877,8 +1887,7 @@ export class WorkspaceReads {
       TRACKED_ENTRIES_LIMIT,
     );
     const trackedTruncated =
-      combined.recordLimitReached ||
-      enumeratedTrackedEntries.length > maxFiles;
+      combined.recordLimitReached || enumeratedTrackedEntries.length > maxFiles;
     const trackedEntries = enumeratedTrackedEntries.slice(0, maxFiles);
 
     const remainingFileSlots = maxFiles - trackedEntries.length;
@@ -1941,9 +1950,8 @@ export class WorkspaceReads {
       );
     }
 
-    const emptyTreeSha = await readEmptyTreeSha(
-      this.path,
-      (gitArgs, options) => this.runGit(gitArgs, options),
+    const emptyTreeSha = await readEmptyTreeSha(this.path, (gitArgs, options) =>
+      this.runGit(gitArgs, options),
     );
     return this.runGitWithNullRecordLimit(
       buildArgs([emptyTreeSha]),
@@ -2036,7 +2044,14 @@ export class WorkspaceReads {
       const [onlyPath] = indexedPaths;
       if (indexedPaths.length === 1 && onlyPath !== undefined) {
         const result = await this.runGit(
-          ["diff", "--no-ext-diff", "--binary", ...whitespaceArgs, "--", ...pathspec],
+          [
+            "diff",
+            "--no-ext-diff",
+            "--binary",
+            ...whitespaceArgs,
+            "--",
+            ...pathspec,
+          ],
           {
             ...buildDiffOutputGitOptions(this.path, args.maxBytesPerFile),
             env,
@@ -2058,11 +2073,21 @@ export class WorkspaceReads {
           { cwd: this.path, env },
         ),
         this.runGit(
-          ["diff", "--no-ext-diff", "--binary", ...whitespaceArgs, "--", ...pathspec],
+          [
+            "diff",
+            "--no-ext-diff",
+            "--binary",
+            ...whitespaceArgs,
+            "--",
+            ...pathspec,
+          ],
           {
             ...buildDiffOutputGitOptions(
               this.path,
-              combinedPageBufferBudget(indexedPaths.length, args.maxBytesPerFile),
+              combinedPageBufferBudget(
+                indexedPaths.length,
+                args.maxBytesPerFile,
+              ),
             ),
             env,
           },
@@ -2294,12 +2319,6 @@ export class WorkspaceReads {
     }
   }
 
-
-
-
-
-
-
   private async withTemporaryUntrackedIndex<T>(
     relativePaths: readonly string[],
     work: (
@@ -2396,11 +2415,7 @@ export class WorkspaceReads {
     );
     return existing.filter((value): value is string => value !== null);
   }
-
-
-
 }
-
 
 function joinDiffArtifactLines(parts: string[]): string {
   return parts
