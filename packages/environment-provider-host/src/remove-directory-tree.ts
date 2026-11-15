@@ -58,6 +58,7 @@ export interface RemoveDirectoryTreeHooks {
   onRetainedPath?: (retainedPath: string) => void;
   afterRootMarkerDetached?: (root: string) => Promise<void>;
   allowQuarantinedRoot?: true;
+  ownWrites?: ReadonlyMap<string, OwnWrite>;
 }
 
 export interface RemoveDirectoryTreeResult {
@@ -395,32 +396,48 @@ async function recoverSymlink(
 
 export const FILE_TIMESTAMP_LAG_MS = 20;
 
-export interface EntryIdentity {
-  ino: number;
-  size: number;
-  ctimeMs: number;
-  mtimeMs: number;
+export interface OwnWrite {
+  dev: bigint;
+  ino: bigint;
+  size: bigint;
+  ctimeNs: bigint;
+  mtimeNs: bigint;
+  sha256: string;
 }
 
-export function entryIdentity(info: EntryIdentity): EntryIdentity {
+export async function recordOwnWrite(
+  file: string,
+  contents: string,
+): Promise<OwnWrite> {
+  const info = await lstat(file, { bigint: true });
   return {
+    dev: info.dev,
     ino: info.ino,
     size: info.size,
-    ctimeMs: info.ctimeMs,
-    mtimeMs: info.mtimeMs,
+    ctimeNs: info.ctimeNs,
+    mtimeNs: info.mtimeNs,
+    sha256: createHash("sha256").update(contents).digest("hex"),
   };
 }
 
-export function sameEntryIdentity(
-  info: EntryIdentity & { isDirectory(): boolean },
-  expected: EntryIdentity,
+function matchesOwnWrite(
+  info: {
+    isFile(): boolean;
+    dev: bigint;
+    ino: bigint;
+    size: bigint;
+    ctimeNs: bigint;
+    mtimeNs: bigint;
+  },
+  expected: OwnWrite,
 ): boolean {
   return (
-    !info.isDirectory() &&
+    info.isFile() &&
+    info.dev === expected.dev &&
     info.ino === expected.ino &&
     info.size === expected.size &&
-    info.ctimeMs === expected.ctimeMs &&
-    info.mtimeMs === expected.mtimeMs
+    info.ctimeNs === expected.ctimeNs &&
+    info.mtimeNs === expected.mtimeNs
   );
 }
 
@@ -429,18 +446,24 @@ export async function directoryTreeChangedSince(
   startedAt: number,
   baseline: {
     rootMetadata?: { ctimeMs: number; mtimeMs: number };
-    unchangedEntries?: ReadonlyMap<string, EntryIdentity>;
+    ownWrites?: ReadonlyMap<string, OwnWrite>;
   } = {},
 ): Promise<boolean> {
   const inspect = async (entry: string): Promise<boolean> => {
+    const ownWrite = baseline.ownWrites?.get(entry);
+    if (ownWrite !== undefined) {
+      try {
+        return !matchesOwnWrite(await lstat(entry, { bigint: true }), ownWrite);
+      } catch {
+        return true;
+      }
+    }
     let info;
     try {
       info = await lstat(entry);
     } catch {
       return true;
     }
-    const expected = baseline.unchangedEntries?.get(entry);
-    if (expected !== undefined) return !sameEntryIdentity(info, expected);
     const rootMetadata = entry === root ? baseline.rootMetadata : undefined;
     if (
       rootMetadata === undefined
@@ -559,6 +582,17 @@ export async function removeDirectoryTree(
     directory: string,
     rootEntry = false,
   ): Promise<boolean> => {
+    const ownWrite = rootEntry ? undefined : hooks.ownWrites?.get(directory);
+    if (ownWrite !== undefined) {
+      try {
+        return matchesOwnWrite(
+          await lstat(directory, { bigint: true }),
+          ownWrite,
+        );
+      } catch {
+        return false;
+      }
+    }
     let info;
     try {
       info = await lstat(directory);
@@ -647,6 +681,7 @@ export async function removeDirectoryTree(
       return "retained";
     };
     const anchoredEntry = path.join(parentDirectory, name);
+    const ownWrite = rootEntry ? undefined : hooks.ownWrites?.get(entry);
     let info;
     try {
       info = await lstat(anchoredEntry);
@@ -663,7 +698,9 @@ export async function removeDirectoryTree(
         ? (hooks.rootMetadataBaseline === undefined &&
             changedSince(info, startedAt)) ||
           rootChangedSinceBaseline
-        : changedSince(info, startedAt)
+        : ownWrite === undefined
+          ? changedSince(info, startedAt)
+          : !info.isFile()
     ) {
       return retainedEntry();
     }
@@ -690,7 +727,7 @@ export async function removeDirectoryTree(
       if (
         beforeRemovalInfo.dev !== info.dev ||
         beforeRemovalInfo.ino !== info.ino ||
-        changedSince(beforeRemovalInfo, startedAt)
+        (ownWrite === undefined && changedSince(beforeRemovalInfo, startedAt))
       ) {
         return retainedEntry();
       }
@@ -714,13 +751,15 @@ export async function removeDirectoryTree(
       if (
         Number(checkedPreciseInfo.dev) !== info.dev ||
         Number(checkedPreciseInfo.ino) !== info.ino ||
-        changedSince(
-          {
-            ctimeMs: Number(checkedPreciseInfo.ctimeNs) / 1_000_000,
-            mtimeMs: Number(checkedPreciseInfo.mtimeNs) / 1_000_000,
-          },
-          startedAt,
-        )
+        (ownWrite === undefined
+          ? changedSince(
+              {
+                ctimeMs: Number(checkedPreciseInfo.ctimeNs) / 1_000_000,
+                mtimeMs: Number(checkedPreciseInfo.mtimeNs) / 1_000_000,
+              },
+              startedAt,
+            )
+          : !matchesOwnWrite(checkedPreciseInfo, ownWrite))
       ) {
         return retainedEntry();
       }
@@ -909,6 +948,15 @@ export async function removeDirectoryTree(
             openedInfo.mtimeNs !== checkedPreciseInfo.mtimeNs ||
             openedInfo.ctimeNs !== checkedPreciseInfo.ctimeNs ||
             openedInfo.mode !== checkedPreciseInfo.mode
+          ) {
+            await fileHandle.close();
+            fileHandle = null;
+            return retainedEntry();
+          }
+          if (
+            ownWrite !== undefined &&
+            (await hashFileHandle(fileHandle, openedInfo.size)) !==
+              ownWrite.sha256
           ) {
             await fileHandle.close();
             fileHandle = null;
