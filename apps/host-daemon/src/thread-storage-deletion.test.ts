@@ -3,6 +3,7 @@ import { once } from "node:events";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { expect, it } from "vitest";
 import { makeDispatchOptions } from "../test/command/dispatch-helpers.js";
 import {
@@ -11,6 +12,7 @@ import {
 } from "./command-dispatch.js";
 import { RuntimeManager } from "./runtime-manager.js";
 import { hostProc, useProcReaderForTests } from "@bb/process-utils";
+import { FILE_TIMESTAMP_LAG_MS } from "bb-environment-provider-host/remove-directory-tree";
 
 it.for(["thread deletion", "orphan removal"] as const)(
   "%s refuses live holders and uninspectable neighbors, stops nothing, and removes the folder after they exit",
@@ -112,6 +114,7 @@ it.for(["thread deletion", "orphan removal"] as const)(
         sibling.kill("SIGKILL");
         await siblingExited;
       }
+      await delay(FILE_TIMESTAMP_LAG_MS + 50);
       await run();
       await expect(fs.stat(storagePath)).rejects.toMatchObject({
         code: "ENOENT",

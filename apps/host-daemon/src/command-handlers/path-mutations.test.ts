@@ -5,6 +5,8 @@ import { existsSync } from "node:fs";
 
 import os from "node:os";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
+import { FILE_TIMESTAMP_LAG_MS } from "bb-environment-provider-host/remove-directory-tree";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   mkdirHostPath,
@@ -489,6 +491,94 @@ describe("confined host path mutations", () => {
   );
 
   it.skipIf(!hasHeldDirectoryRemoval)(
+    "refuses a recursive removal when a write lands as it starts and file timestamps lag the clock",
+    async () => {
+      const root = await makeRoot();
+      const target = path.join(root, "lagging-clock");
+      await fs.mkdir(target);
+      await fs.writeFile(path.join(target, "old.txt"), "old");
+      await delay(FILE_TIMESTAMP_LAG_MS + 50);
+      let injected = false;
+      await expect(
+        removeDirectoryAfterHolderRecheck({
+          directory: target,
+          action: "remove",
+          recursive: true,
+          now: () => Date.now() + 3,
+          afterBaseline: async (directory) => {
+            await fs.writeFile(path.join(directory, "late.txt"), "keep");
+            injected = true;
+          },
+        }),
+      ).rejects.toMatchObject({ code: "path_in_use" });
+      expect(injected).toBe(true);
+      await expect(
+        fs.readFile(path.join(target, "late.txt"), "utf8"),
+      ).resolves.toBe("keep");
+    },
+  );
+
+  it.skipIf(!hasHeldDirectoryRemoval)(
+    "puts every file back at the original path and leaves no quarantine when it refuses after the rename",
+    async () => {
+      const root = await makeRoot();
+      const target = path.join(root, "refused-after-rename");
+      await fs.mkdir(path.join(target, "nested"), { recursive: true });
+      await fs.writeFile(path.join(target, "old.txt"), "old");
+      await fs.writeFile(path.join(target, "nested", "deep.txt"), "deep");
+      await delay(FILE_TIMESTAMP_LAG_MS + 50);
+      let quarantined: string | undefined;
+      await expect(
+        removeDirectoryAfterHolderRecheck({
+          directory: target,
+          action: "remove",
+          recursive: true,
+          afterHolderScan: async (quarantine) => {
+            quarantined = quarantine;
+            await fs.writeFile(path.join(quarantine, "late.txt"), "late");
+          },
+        }),
+      ).rejects.toMatchObject({ code: "path_in_use" });
+      expect(quarantined).toBeDefined();
+      await expect(fs.stat(quarantined!)).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+      expect(
+        (await fs.readdir(root)).filter((name) => name.includes(".removing-")),
+      ).toEqual([]);
+      const contents = await Promise.all(
+        ["old.txt", "nested/deep.txt", "late.txt"].map((name) =>
+          fs.readFile(path.join(target, name), "utf8"),
+        ),
+      );
+      expect(contents).toEqual(["old", "deep", "late"]);
+    },
+  );
+
+  it.skipIf(!hasHeldDirectoryRemoval)(
+    "removes a recursive directory whose last write is older than the timestamp margin",
+    async () => {
+      const root = await makeRoot();
+      const target = path.join(root, "settled");
+      await fs.mkdir(path.join(target, "nested"), { recursive: true });
+      await fs.writeFile(path.join(target, "a.txt"), "a");
+      await fs.writeFile(path.join(target, "nested", "b.txt"), "b");
+      await delay(FILE_TIMESTAMP_LAG_MS + 50);
+      await expect(
+        removeDirectoryAfterHolderRecheck({
+          directory: target,
+          action: "remove",
+          recursive: true,
+        }),
+      ).resolves.toBeUndefined();
+      await expect(fs.stat(target)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(
+        (await fs.readdir(root)).filter((name) => name.includes(".removing-")),
+      ).toEqual([]);
+    },
+  );
+
+  it.skipIf(!hasHeldDirectoryRemoval)(
     "does not replace a directory created at the original path before restore",
     async () => {
       const root = await makeRoot();
@@ -584,6 +674,7 @@ describe("confined host path mutations", () => {
       }),
     ).rejects.toThrow();
     await expect(fs.stat(nonEmpty)).resolves.toMatchObject({});
+    await delay(FILE_TIMESTAMP_LAG_MS + 50);
     await expect(
       removeHostPath({
         type: "host.remove_path",
