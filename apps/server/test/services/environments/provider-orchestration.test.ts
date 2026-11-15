@@ -1573,6 +1573,58 @@ describe("core environment orchestration", () => {
       expect(getThread(harness.db, fixture.thread.id)?.status).toBe("active");
     }));
 
+  it("schedules a backed-off retry when provider removal retains its path, and removes it on that retry", async () =>
+    withTestHarness(async (harness) => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      let attempts = 0;
+      const remove = vi.fn(async () =>
+        attempts++ === 0
+          ? {
+              status: "retained" as const,
+              message:
+                "new or changed Git metadata was found after its final inspection",
+            }
+          : { status: "removed" as const },
+      );
+      const fixture = setup(harness, { policy: { retireGraceMs: 0 }, remove });
+      fixture.ask();
+      await fixture.settled();
+      const environmentId = fixture.attach();
+      harness.db
+        .update(environments)
+        .set({ status: "ready", retireAt: Date.now() })
+        .where(eq(environments.id, environmentId))
+        .run();
+      harness.db
+        .update(threads)
+        .set({ status: "idle", archivedAt: Date.now() })
+        .where(eq(threads.id, fixture.thread.id))
+        .run();
+
+      await sweepProviderEnvironment(harness.deps, environmentId);
+
+      expect(remove).toHaveBeenCalledOnce();
+      const retained = getEnvironment(harness.db, environmentId);
+      expect(retained).toMatchObject({
+        teardownStatus: "failed",
+        teardownAttempt: 1,
+        teardownMessage:
+          "new or changed Git metadata was found after its final inspection",
+        retireAt: Date.now() + 60_000,
+      });
+      await sweepProviderLifecycles(harness.deps);
+      expect(remove).toHaveBeenCalledOnce();
+
+      vi.setSystemTime(retained!.retireAt!);
+      await sweepProviderLifecycles(harness.deps);
+
+      expect(remove).toHaveBeenCalledTimes(2);
+      expect(getEnvironment(harness.db, environmentId)).toMatchObject({
+        teardownStatus: "removed",
+        retireAt: null,
+      });
+    }));
+
   it("rejects cleanup of an unmanaged checkout", async () =>
     withTestHarness(async (harness) => {
       const fixture = setup(harness);
