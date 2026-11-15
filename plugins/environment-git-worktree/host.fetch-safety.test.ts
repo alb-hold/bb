@@ -375,9 +375,8 @@ describe("the fetch that checks whether commits are published", () => {
   it("never prompts: batch mode is added to the user's own ssh command and nothing can ask for a password", async () => {
     const fixture = await createFixture("ssh://fetch.invalid/repo.git");
     const { log, script } = await recordingSsh(fixture.root);
-    await git(
-      fixture.sourcePath,
-      "config",
+    await setGlobalConfig(
+      await useGlobalConfig(fixture.root),
       "core.sshCommand",
       `${script} --from-config`,
     );
@@ -401,7 +400,11 @@ describe("the fetch that checks whether commits are published", () => {
   it("keeps the user's GIT_SSH_COMMAND, which wins over core.sshCommand, and appends batch mode to it", async () => {
     const fixture = await createFixture("ssh://fetch.invalid/repo.git");
     const { log, script } = await recordingSsh(fixture.root);
-    await git(fixture.sourcePath, "config", "core.sshCommand", "false");
+    await setGlobalConfig(
+      await useGlobalConfig(fixture.root),
+      "core.sshCommand",
+      "false",
+    );
     process.env.GIT_SSH_COMMAND = `${script} --from-env`;
 
     await findPreservationReasons(await identityOf(fixture), undefined, {
@@ -514,11 +517,6 @@ describe("the fetch that checks whether commits are published", () => {
     expect(reasons.join("\n")).not.toMatch(
       /could not fetch|could not verify remotes/u,
     );
-    expect(
-      (
-        await git(fixture.sourcePath, "rev-parse", "refs/remotes/backup/main")
-      ).trim(),
-    ).toBe(remote.published);
     expect(existsSync(helperMarker)).toBe(true);
     expect(existsSync(resetMarker)).toBe(false);
   });
@@ -888,12 +886,14 @@ describe("the fetch that checks whether commits are published", () => {
       ].join("\n"),
     );
     const fixture = await createFixture(`ssh://fetch.invalid${served}`);
-    await git(
-      fixture.sourcePath,
-      "config",
+    await setGlobalConfig(
+      await useGlobalConfig(root),
       "core.sshCommand",
       `${wrapper} --from-config`,
     );
+    const originBefore = (
+      await git(fixture.sourcePath, "rev-parse", "refs/remotes/origin/main")
+    ).trim();
     await writeFile(join(seed, "b.txt"), "b\n");
     await git(seed, "add", ".");
     await git(seed, "commit", "-m", "second");
@@ -906,17 +906,21 @@ describe("the fetch that checks whether commits are published", () => {
       { fetchTimeoutMs: 20_000 },
     );
 
-    expect(reasons.join("\n")).not.toContain("could not fetch");
+    expect(reasons).toEqual([]);
+    expect(published).toMatch(/^[0-9a-f]{40}$/u);
     expect(
-      (
-        await git(fixture.sourcePath, "rev-parse", "refs/remotes/backup/main")
-      ).trim(),
-    ).toBe(published);
+      await git(
+        fixture.sourcePath,
+        "for-each-ref",
+        "--format=%(refname)",
+        "refs/remotes/backup",
+      ),
+    ).toBe("");
     expect(
       (
         await git(fixture.sourcePath, "rev-parse", "refs/remotes/origin/main")
       ).trim(),
-    ).toMatch(/^[0-9a-f]{40}$/u);
+    ).toBe(originBefore);
     expect(await readFile(log, "utf8")).toMatch(
       /--from-config -o BatchMode=yes .*git-upload-pack/u,
     );
@@ -925,7 +929,11 @@ describe("the fetch that checks whether commits are published", () => {
   it("fetches once per source repository per pass, however many of its worktrees are checked", async () => {
     const fixture = await createFixture("ssh://fetch.invalid/repo.git");
     const { log, script } = await recordingSsh(fixture.root);
-    await git(fixture.sourcePath, "config", "core.sshCommand", script);
+    await setGlobalConfig(
+      await useGlobalConfig(fixture.root),
+      "core.sshCommand",
+      script,
+    );
     const first = await identityOf(fixture);
     const second = await addWorktree(fixture, "second");
     const third = await addWorktree(fixture, "third");
@@ -966,12 +974,16 @@ describe("the fetch that checks whether commits are published", () => {
     const two = await createFixture("ssh://fetch.invalid/two.git");
     const logOne = await recordingSsh(one.root);
     const logTwo = await recordingSsh(two.root);
-    await git(one.sourcePath, "config", "core.sshCommand", logOne.script);
-    await git(two.sourcePath, "config", "core.sshCommand", logTwo.script);
+    const globalOne = await useGlobalConfig(one.root);
+    await setGlobalConfig(globalOne, "core.sshCommand", logOne.script);
+    const globalTwo = await useGlobalConfig(two.root);
+    await setGlobalConfig(globalTwo, "core.sshCommand", logTwo.script);
 
+    process.env.GIT_CONFIG_GLOBAL = globalOne;
     await findPreservationReasons(await identityOf(one), undefined, {
       fetchTimeoutMs: 20_000,
     });
+    process.env.GIT_CONFIG_GLOBAL = globalTwo;
     await findPreservationReasons(await identityOf(two), undefined, {
       fetchTimeoutMs: 20_000,
     });
@@ -993,7 +1005,10 @@ describe("the fetch that checks whether commits are published", () => {
         "hanging-ssh.sh",
         `echo $$ >> ${JSON.stringify(pidFile)}\ntrap '' TERM\nwhile true; do sleep 1; done`,
       );
-      await git(fixture.sourcePath, "config", "core.sshCommand", script);
+      const globalFile = join(fixture.root, "global.gitconfig");
+      await writeFile(globalFile, "");
+      process.env.GIT_CONFIG_GLOBAL = globalFile;
+      await setGlobalConfig(globalFile, "core.sshCommand", script);
       return { ...fixture, pidFile };
     }
 
@@ -1042,8 +1057,9 @@ describe("the fetch that checks whether commits are published", () => {
 
       for (const reasons of outcomes)
         expect(reasons.join("\n")).toContain("could not fetch its remotes");
-      expect((await readFile(fixture.pidFile, "utf8")).trim().split("\n"))
-        .toHaveLength(1);
+      expect(
+        (await readFile(fixture.pidFile, "utf8")).trim().split("\n"),
+      ).toHaveLength(1);
 
       const again = await findPreservationReasons(identities[0]!, undefined, {
         fetchTimeoutMs: 1_500,
