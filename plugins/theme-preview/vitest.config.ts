@@ -5,6 +5,7 @@ export default defineConfig({
   test: {
     name: "bb-plugin-theme-preview",
     testTimeout: 20_000,
+    hookTimeout: 20_000,
     include: ["**/*.test.{ts,tsx}"],
     exclude: ["node_modules/**"],
   },
