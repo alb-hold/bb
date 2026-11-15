@@ -1,7 +1,13 @@
 import { hasPreservableStatus } from "./regenerable-output.js";
+import { rmSync } from "node:fs";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
-import { runGit, WorkspaceError } from "bb-environment-provider-host/git";
+import {
+  runGit,
+  WorkspaceError,
+  type GitCommandResult,
+} from "bb-environment-provider-host/git";
 import {
   describeHolderScan,
   scanWorktreeHolders,
@@ -106,17 +112,63 @@ export async function entryExists(target: string): Promise<boolean | null> {
   }
 }
 
+const INHERITED_ENVIRONMENT: ReadonlySet<string> = new Set([
+  "PATH",
+  "HOME",
+  "USER",
+  "LOGNAME",
+  "LANG",
+  "TMPDIR",
+  "TZ",
+  "SSH_AUTH_SOCK",
+  "GH_TOKEN",
+  "GITHUB_TOKEN",
+  "GH_ENTERPRISE_TOKEN",
+  "GITHUB_ENTERPRISE_TOKEN",
+  "GH_HOST",
+  "GH_CONFIG_DIR",
+  "XDG_CONFIG_HOME",
+  "XDG_STATE_HOME",
+  "XDG_DATA_HOME",
+  "XDG_CACHE_HOME",
+  "http_proxy",
+  "HTTP_PROXY",
+  "https_proxy",
+  "HTTPS_PROXY",
+  "all_proxy",
+  "ALL_PROXY",
+  "no_proxy",
+  "NO_PROXY",
+  "SSL_CERT_FILE",
+  "SSL_CERT_DIR",
+  "GIT_CONFIG_GLOBAL",
+  "GIT_CONFIG_SYSTEM",
+  "GIT_CONFIG_NOSYSTEM",
+]);
+
+export function allowlistedEnvironment(
+  own: NodeJS.ProcessEnv,
+  inherited: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  const environment: NodeJS.ProcessEnv = {};
+  for (const name of Object.keys(inherited))
+    if (!INHERITED_ENVIRONMENT.has(name) && !name.startsWith("LC_"))
+      environment[name] = undefined;
+  return { ...environment, ...own };
+}
+
 export function gitEnvironment(
   worktreePath: string,
   gitDir?: string,
   commonDir?: string,
 ): NodeJS.ProcessEnv {
-  return {
+  return allowlistedEnvironment({
     GIT_CEILING_DIRECTORIES: path.dirname(worktreePath),
+    GIT_NO_LAZY_FETCH: "1",
     ...(gitDir !== undefined ? { GIT_DIR: gitDir } : {}),
     ...(commonDir !== undefined ? { GIT_COMMON_DIR: commonDir } : {}),
     ...(gitDir !== undefined ? { GIT_WORK_TREE: worktreePath } : {}),
-  };
+  });
 }
 
 export async function identifyWorktree(args: {
@@ -313,35 +365,650 @@ export async function findStructuralReasons(
 
 const FETCH_TIMEOUT_MS = 60_000;
 const FETCH_MEMO_MS = 30_000;
-const fetchMemo = new Map<
-  string,
-  { settledAt: number | null; outcome: Promise<string | null> }
->();
+const EVIDENCE_REPOSITORY_PREFIX = "bb-teardown-fetch-";
+const ABANDONED_EVIDENCE_AGE_MS = 60 * 60_000;
+const FETCH_FAILED =
+  "could not fetch its remotes to verify its commits are published";
 
-export function clearFetchMemo(): void {
-  fetchMemo.clear();
+export interface RemoteEvidence {
+  readonly reason: string | null;
+  readonly repository: string | null;
+  readonly published: readonly string[];
+  readonly bytes: number | null;
+  readonly ignoredConfig: readonly string[];
 }
 
-function fetchRemotesOncePerRepository(
+export interface RemoteEvidenceLease {
+  readonly evidence: RemoteEvidence;
+  release(): Promise<void>;
+}
+
+interface EvidenceEntry {
+  settledAt: number | null;
+  outcome: Promise<RemoteEvidence>;
+  holders: number;
+  retired: boolean;
+  timer: NodeJS.Timeout | null;
+}
+
+const NO_REMOTE_EVIDENCE: RemoteEvidence = {
+  reason: null,
+  repository: null,
+  published: [],
+  bytes: null,
+  ignoredConfig: [],
+};
+const fetchMemo = new Map<string, EvidenceEntry>();
+const liveEvidenceRepositories = new Set<string>();
+const watchedLifecycles = new WeakSet<AbortSignal>();
+let exitCleanupRegistered = false;
+let abandonedEvidenceSweep: Promise<void> | null = null;
+
+function failedEvidence(reason: string): RemoteEvidence {
+  return { ...NO_REMOTE_EVIDENCE, reason };
+}
+
+async function removeEvidenceRepository(repository: string): Promise<void> {
+  try {
+    await fs.rm(repository, { recursive: true, force: true });
+    liveEvidenceRepositories.delete(repository);
+  } catch {
+    return;
+  }
+}
+
+async function discardEvidence(entry: EvidenceEntry): Promise<void> {
+  if (!entry.retired || entry.holders > 0) return;
+  const { repository } = await entry.outcome;
+  if (repository !== null) await removeEvidenceRepository(repository);
+}
+
+async function retireEvidence(
   commonDir: string,
-  memoMs: number,
-  run: () => Promise<string | null>,
-): Promise<string | null> {
-  const known = fetchMemo.get(commonDir);
+  entry: EvidenceEntry,
+): Promise<void> {
+  entry.retired = true;
+  if (entry.timer !== null) {
+    clearTimeout(entry.timer);
+    entry.timer = null;
+  }
+  if (fetchMemo.get(commonDir) === entry) fetchMemo.delete(commonDir);
+  await discardEvidence(entry);
+}
+
+export async function clearFetchMemo(): Promise<void> {
+  const entries = [...fetchMemo.entries()];
+  fetchMemo.clear();
+  await Promise.all(
+    entries.map(([commonDir, entry]) => retireEvidence(commonDir, entry)),
+  );
+}
+
+export function clearFetchMemoWhenAborted(signal: AbortSignal): void {
+  if (watchedLifecycles.has(signal)) return;
+  watchedLifecycles.add(signal);
+  if (signal.aborted) {
+    void clearFetchMemo();
+    return;
+  }
+  signal.addEventListener("abort", () => void clearFetchMemo(), {
+    once: true,
+  });
+}
+
+function registerExitCleanup(): void {
+  if (exitCleanupRegistered) return;
+  exitCleanupRegistered = true;
+  process.once("exit", () => {
+    for (const repository of liveEvidenceRepositories) {
+      try {
+        rmSync(repository, { recursive: true, force: true });
+      } catch {
+        continue;
+      }
+    }
+  });
+}
+
+async function sweepAbandonedEvidence(): Promise<void> {
+  const root = os.tmpdir();
+  let names: string[];
+  try {
+    names = await fs.readdir(root);
+  } catch {
+    return;
+  }
+  const uid = process.getuid?.();
+  await Promise.all(
+    names
+      .filter((name) => name.startsWith(EVIDENCE_REPOSITORY_PREFIX))
+      .map(async (name) => {
+        const target = path.join(root, name);
+        if (liveEvidenceRepositories.has(target)) return;
+        try {
+          const info = await fs.lstat(target);
+          if (!info.isDirectory()) return;
+          if (uid !== undefined && info.uid !== uid) return;
+          if (Date.now() - info.mtimeMs < ABANDONED_EVIDENCE_AGE_MS) return;
+          await fs.rm(target, { recursive: true, force: true });
+        } catch {
+          return;
+        }
+      }),
+  );
+}
+
+export async function acquireRemoteEvidence(
+  identity: WorktreeIdentity,
+  signal: AbortSignal | undefined,
+  options: {
+    fetchTimeoutMs?: number;
+    fetchMemoMs?: number;
+    untrustedRoots?: readonly string[];
+  } = {},
+): Promise<RemoteEvidenceLease> {
+  abandonedEvidenceSweep ??= sweepAbandonedEvidence();
+  const memoMs = options.fetchMemoMs ?? FETCH_MEMO_MS;
+  const known = fetchMemo.get(identity.commonDir);
   if (
     known !== undefined &&
-    (known.settledAt === null || Date.now() - known.settledAt < memoMs)
+    known.settledAt !== null &&
+    Date.now() - known.settledAt >= memoMs
   )
-    return known.outcome;
-  const entry = {
-    settledAt: null as number | null,
-    outcome: run().finally(() => {
-      entry.settledAt = Date.now();
-    }),
+    await retireEvidence(identity.commonDir, known);
+  let entry = fetchMemo.get(identity.commonDir);
+  if (entry === undefined) {
+    const created: EvidenceEntry = {
+      settledAt: null,
+      outcome: Promise.resolve(NO_REMOTE_EVIDENCE),
+      holders: 0,
+      retired: false,
+      timer: null,
+    };
+    created.outcome = gatherRemoteEvidence(
+      identity,
+      signal,
+      options.fetchTimeoutMs ?? FETCH_TIMEOUT_MS,
+      options.untrustedRoots ?? [],
+    ).finally(() => {
+      created.settledAt = Date.now();
+      if (created.retired) return;
+      created.timer = setTimeout(
+        () => void retireEvidence(identity.commonDir, created),
+        memoMs,
+      );
+      created.timer.unref();
+    });
+    fetchMemo.set(identity.commonDir, created);
+    entry = created;
+  }
+  const held = entry;
+  held.holders += 1;
+  let released = false;
+  const release = async () => {
+    if (released) return;
+    released = true;
+    held.holders -= 1;
+    await discardEvidence(held);
   };
-  fetchMemo.set(commonDir, entry);
-  return entry.outcome;
+  try {
+    return { evidence: await held.outcome, release };
+  } catch (error) {
+    await release();
+    throw error;
+  }
 }
+
+function isolatedGitEnvironment(repository: string): NodeJS.ProcessEnv {
+  return allowlistedEnvironment({
+    GIT_CONFIG_GLOBAL: path.join(repository, FETCH_CONFIG_FILE),
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_CONFIG_SYSTEM: undefined,
+    GIT_CEILING_DIRECTORIES: path.dirname(repository),
+  });
+}
+
+function isolatedGitOptions(
+  repository: string,
+  signal: AbortSignal | undefined,
+) {
+  return {
+    cwd: repository,
+    env: isolatedGitEnvironment(repository),
+    allowFailure: true,
+    ...signalOptions(signal),
+  };
+}
+
+function isEmptyConfigMatch(result: GitCommandResult): boolean {
+  return result.exitCode === 1 && result.stderr.trim() === "";
+}
+
+function withDetail(text: string, detail: string): string {
+  const trimmed = detail.trim();
+  return trimmed === "" ? text : `${text} (${trimmed})`;
+}
+
+interface ConfiguredRemote {
+  name: string;
+  url: string | null;
+}
+
+function resolveRemoteUrl(url: string, worktreePath: string): string {
+  if (/^[a-z][a-z0-9+.-]*:\/\//iu.test(url)) return url;
+  const colon = url.indexOf(":");
+  const slash = url.indexOf("/");
+  if (colon !== -1 && (slash === -1 || colon < slash)) return url;
+  return path.resolve(worktreePath, url);
+}
+
+function configEntries(
+  stdout: string,
+): Array<{ key: string; value: string | null }> {
+  return stdout
+    .split("\0")
+    .filter((entry) => entry !== "")
+    .map((entry) => {
+      const newline = entry.indexOf("\n");
+      return newline === -1
+        ? { key: entry, value: null }
+        : { key: entry.slice(0, newline), value: entry.slice(newline + 1) };
+    });
+}
+
+function remoteNameOf(key: string): string {
+  return key.slice("remote.".length, key.lastIndexOf("."));
+}
+
+async function configuredRemotes(
+  worktreePath: string,
+  gitOptions: Parameters<typeof runGit>[1],
+): Promise<ConfiguredRemote[] | string> {
+  const listed = await runGit(
+    [
+      "--no-optional-locks",
+      "config",
+      "--null",
+      "--get-regexp",
+      "^remote\\..+\\.(url|pushurl|fetch)$",
+    ],
+    gitOptions,
+  );
+  if (listed.exitCode !== 0 && !isEmptyConfigMatch(listed))
+    return withDetail(FETCH_FAILED, listed.stderr);
+  const skipped = await runGit(
+    [
+      "--no-optional-locks",
+      "config",
+      "--null",
+      "--type=bool",
+      "--get-regexp",
+      "^remote\\..+\\.skipfetchall$",
+    ],
+    gitOptions,
+  );
+  if (skipped.exitCode !== 0 && !isEmptyConfigMatch(skipped))
+    return withDetail(FETCH_FAILED, skipped.stderr);
+  const urls = new Map<string, string | null>();
+  for (const { key, value } of configEntries(listed.stdout)) {
+    const name = remoteNameOf(key);
+    if (!urls.has(name)) urls.set(name, null);
+    if (key.endsWith(".url") && urls.get(name) === null && value)
+      urls.set(name, resolveRemoteUrl(value, worktreePath));
+  }
+  for (const { key, value } of configEntries(skipped.stdout))
+    if (value === "true") urls.delete(remoteNameOf(key));
+  return [...urls].map(([name, url]) => ({ name, url }));
+}
+
+async function copyShallowBoundary(
+  commonDir: string,
+  repository: string,
+): Promise<void> {
+  let boundary: string;
+  try {
+    boundary = await fs.readFile(path.join(commonDir, "shallow"), "utf8");
+  } catch (error) {
+    if (errorCode(error) === "ENOENT") return;
+    throw error;
+  }
+  await fs.writeFile(path.join(repository, "shallow"), boundary);
+}
+
+async function directoryBytes(directory: string): Promise<number> {
+  let total = 0;
+  for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
+    const target = path.join(directory, entry.name);
+    if (entry.isDirectory()) total += await directoryBytes(target);
+    else if (entry.isFile()) total += (await fs.lstat(target)).size;
+  }
+  return total;
+}
+
+function outputLines(stdout: string): string[] {
+  return stdout.split("\n").filter((line) => line !== "");
+}
+
+const FETCH_CONFIG_FILE = "bb-fetch.gitconfig";
+const FETCH_CONFIG_KEYS =
+  "^(core\\.sshcommand|url\\..*\\.insteadof|credential\\.(.*\\.)?usehttppath)$";
+const REMOTE_HELPER_PREFIX = /^[a-z][a-z0-9+.-]*::/iu;
+const DOS_DRIVE_PREFIX = /^[a-z]:/iu;
+
+function isEnabledFlag(value: string | undefined): boolean {
+  return value !== undefined && /^(?:true|yes|on|[1-9]\d*)$/iu.test(value);
+}
+
+function hostIsSafe(hostPart: string): boolean {
+  const host = hostPart.slice(hostPart.lastIndexOf("@") + 1);
+  return host !== "" && !host.startsWith("-") && !hostPart.startsWith("-");
+}
+
+export function isAcceptedRewriteTarget(target: string): boolean {
+  const scheme = /^(ssh|https):\/\/([^/]*)/iu.exec(target);
+  if (scheme !== null)
+    return scheme[1]?.toLowerCase() === "https" || hostIsSafe(scheme[2] ?? "");
+  if (target.includes("://") || REMOTE_HELPER_PREFIX.test(target)) return false;
+  const colon = target.indexOf(":");
+  if (colon === -1) return false;
+  const slash = target.indexOf("/");
+  if (slash !== -1 && slash < colon) return false;
+  if (DOS_DRIVE_PREFIX.test(target)) return false;
+  return hostIsSafe(target.slice(0, colon));
+}
+
+async function realOrResolved(target: string): Promise<string> {
+  try {
+    return await fs.realpath(target);
+  } catch {
+    return path.resolve(target);
+  }
+}
+
+function isWithin(root: string, target: string): boolean {
+  const relative = path.relative(root, target);
+  return (
+    relative === "" ||
+    (relative !== ".." &&
+      !relative.startsWith(`..${path.sep}`) &&
+      !path.isAbsolute(relative))
+  );
+}
+
+async function untrustedConfigRoots(
+  identity: WorktreeIdentity,
+  extra: readonly string[],
+): Promise<string[]> {
+  const roots = [
+    identity.path,
+    identity.commonDir,
+    path.basename(identity.commonDir) === ".git"
+      ? path.dirname(identity.commonDir)
+      : identity.commonDir,
+    path.join(os.homedir(), ".bb"),
+    ...extra,
+  ];
+  const registered = path.join(identity.commonDir, "worktrees");
+  for (const name of await fs.readdir(registered).catch(() => [])) {
+    const gitdir = await fs
+      .readFile(path.join(registered, name, "gitdir"), "utf8")
+      .catch(() => null);
+    if (gitdir !== null && gitdir.trim() !== "")
+      roots.push(path.dirname(gitdir.trim()));
+  }
+  return await Promise.all(roots.map(realOrResolved));
+}
+
+interface FetchConfig {
+  entries: Array<{ key: string; value: string }>;
+  sshCommand: string | null;
+  ignored: string[];
+}
+
+async function trustedFetchConfig(
+  identity: WorktreeIdentity,
+  signal: AbortSignal | undefined,
+  extraRoots: readonly string[],
+): Promise<FetchConfig | string> {
+  const untrusted = await untrustedConfigRoots(identity, extraRoots);
+  const scopes = isEnabledFlag(process.env.GIT_CONFIG_NOSYSTEM)
+    ? ["--global"]
+    : ["--system", "--global"];
+  const config: FetchConfig = { entries: [], sshCommand: null, ignored: [] };
+  for (const scope of scopes) {
+    const read = await runGit(
+      [
+        "--no-optional-locks",
+        "config",
+        scope,
+        "--includes",
+        "--show-origin",
+        "--null",
+        "--get-regexp",
+        FETCH_CONFIG_KEYS,
+      ],
+      {
+        cwd: identity.commonDir,
+        env: allowlistedEnvironment({ GIT_DIR: identity.commonDir }),
+        allowFailure: true,
+        ...signalOptions(signal),
+      },
+    );
+    if (read.exitCode !== 0 && !isEmptyConfigMatch(read))
+      return withDetail(FETCH_FAILED, read.stderr);
+    const fields = read.stdout.split("\0");
+    for (let index = 0; index + 1 < fields.length; index += 2) {
+      const origin = fields[index] ?? "";
+      const entry = fields[index + 1] ?? "";
+      const newline = entry.indexOf("\n");
+      if (newline === -1) continue;
+      const key = entry.slice(0, newline);
+      const value = entry.slice(newline + 1);
+      const file = origin.startsWith(FILE_ORIGIN)
+        ? origin.slice(FILE_ORIGIN.length)
+        : null;
+      const ignore = (why: string) =>
+        config.ignored.push(`${key} from ${origin} (${why})`);
+      if (file === null || !path.isAbsolute(file)) {
+        ignore("not read from a config file");
+        continue;
+      }
+      const real = await fs.realpath(file).catch(() => null);
+      const info = real === null ? null : await fs.stat(real).catch(() => null);
+      if (real === null || info === null || !info.isFile()) {
+        ignore("its file could not be resolved");
+        continue;
+      }
+      if (untrusted.some((root) => isWithin(root, real))) {
+        ignore("its file is inside a repository or workspace");
+        continue;
+      }
+      if (key === "core.sshcommand") {
+        config.sshCommand = value.trim() === "" ? null : value;
+        continue;
+      }
+      if (key.startsWith("credential.")) {
+        config.entries.push({ key, value });
+        continue;
+      }
+      const target = key.slice("url.".length, -".insteadof".length);
+      if (!isAcceptedRewriteTarget(target)) {
+        ignore("its target is not an ssh or https URL");
+        continue;
+      }
+      config.entries.push({ key, value });
+    }
+  }
+  return config;
+}
+
+async function gatherRemoteEvidence(
+  identity: WorktreeIdentity,
+  signal: AbortSignal | undefined,
+  timeoutMs: number,
+  untrustedRoots: readonly string[],
+): Promise<RemoteEvidence> {
+  const deadline = Date.now() + timeoutMs;
+  const gitOptions = {
+    cwd: identity.path,
+    env: gitEnvironment(identity.path, undefined, identity.commonDir),
+    allowFailure: true,
+    ...signalOptions(signal),
+  };
+  let repository: string | null = null;
+  let usable = false;
+  try {
+    const remotes = await configuredRemotes(identity.path, gitOptions);
+    if (typeof remotes === "string") return failedEvidence(remotes);
+    if (remotes.length === 0) return NO_REMOTE_EVIDENCE;
+    const format = await runGit(
+      ["--no-optional-locks", "rev-parse", "--show-object-format"],
+      gitOptions,
+    );
+    const objectFormat = format.stdout.trim();
+    if (format.exitCode !== 0 || objectFormat === "")
+      return failedEvidence(withDetail(FETCH_FAILED, format.stderr));
+    const fetchConfig = await trustedFetchConfig(
+      identity,
+      signal,
+      untrustedRoots,
+    );
+    if (typeof fetchConfig === "string") return failedEvidence(fetchConfig);
+    repository = await fs.mkdtemp(
+      path.join(os.tmpdir(), EVIDENCE_REPOSITORY_PREFIX),
+    );
+    liveEvidenceRepositories.add(repository);
+    registerExitCleanup();
+    const isolated = isolatedGitOptions(repository, signal);
+    const configFile = path.join(repository, FETCH_CONFIG_FILE);
+    await fs.writeFile(configFile, "", { mode: 0o600 });
+    const ignoredConfig = [...fetchConfig.ignored];
+    for (const { key, value } of fetchConfig.entries) {
+      const written = await runGit(
+        ["config", "--file", configFile, "--add", key, value],
+        isolated,
+      );
+      if (written.exitCode !== 0)
+        ignoredConfig.push(`${key} (${written.stderr.trim()})`);
+    }
+    const init = await runGit(
+      [
+        "init",
+        "--bare",
+        "--quiet",
+        "--template=",
+        `--object-format=${objectFormat}`,
+        repository,
+      ],
+      isolated,
+    );
+    if (init.exitCode !== 0)
+      return failedEvidence(withDetail(FETCH_FAILED, init.stderr));
+    await fs.mkdir(path.join(repository, "objects", "info"), {
+      recursive: true,
+    });
+    await fs.writeFile(
+      path.join(repository, "objects", "info", "alternates"),
+      `${path.join(identity.commonDir, "objects")}\n`,
+    );
+    await copyShallowBoundary(identity.commonDir, repository);
+    const helpers = await runGit(
+      [
+        "--no-optional-locks",
+        "config",
+        "--null",
+        "--no-includes",
+        "--show-scope",
+        "--show-origin",
+        "--get-regexp",
+        CREDENTIAL_HELPER_KEYS,
+      ],
+      gitOptions,
+    );
+    const replayed = replayedCredentialHelpers(
+      helpers.exitCode === 0 ? helpers.stdout : "",
+    );
+    const environment = {
+      ...nonInteractiveFetchEnvironment(
+        isolatedGitEnvironment(repository),
+        fetchConfig.sshCommand,
+      ),
+      ...replayed.env,
+    };
+    const failures: string[] = [];
+    for (const [index, remote] of remotes.entries()) {
+      if (remote.url === null) {
+        failures.push(
+          `remote ${remote.name} has no URL\nerror: could not fetch ${remote.name}`,
+        );
+        continue;
+      }
+      const timedOut = `${FETCH_FAILED} (git fetch ${remote.name} timed out after ${timeoutMs}ms)`;
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) return failedEvidence(timedOut);
+      let fetched: GitCommandResult;
+      try {
+        fetched = await runGit(
+          [
+            `--git-dir=${repository}`,
+            "-c",
+            "credential.helper=",
+            ...replayed.args,
+            "-c",
+            "gc.auto=0",
+            "-c",
+            "maintenance.auto=false",
+            "fetch",
+            "--no-tags",
+            "--quiet",
+            "--no-recurse-submodules",
+            "--upload-pack=git-upload-pack",
+            "--end-of-options",
+            remote.url,
+            `+refs/heads/*:refs/remotes/${index}/*`,
+          ],
+          { ...isolated, env: environment, timeoutMs: remaining },
+        );
+      } catch (error) {
+        if (errorCode(error) === "git_command_timeout")
+          return failedEvidence(timedOut);
+        throw error;
+      }
+      if (fetched.exitCode !== 0)
+        failures.push(
+          `${fetched.stderr.trimEnd()}\nerror: could not fetch ${remote.name}`,
+        );
+    }
+    const tips = await runGit(
+      [
+        `--git-dir=${repository}`,
+        "for-each-ref",
+        "--format=%(objectname)",
+        "refs/remotes",
+      ],
+      isolated,
+    );
+    if (tips.exitCode !== 0)
+      return failedEvidence(withDetail(FETCH_FAILED, tips.stderr));
+    usable = true;
+    return {
+      reason:
+        failures.length > 0 ? fetchFailureReason(failures.join("\n")) : null,
+      repository,
+      published: outputLines(tips.stdout),
+      bytes: await directoryBytes(repository).catch(() => null),
+      ignoredConfig,
+    };
+  } catch (error) {
+    return failedEvidence(
+      `${FETCH_FAILED} (${redactUrlCredentials(describeError(error))})`,
+    );
+  } finally {
+    if (!usable && repository !== null)
+      await removeEvidenceRepository(repository);
+  }
+}
+
 const BATCH_MODE_OPTION = "-o BatchMode=yes";
 const NON_INTERACTIVE_FETCH_ENVIRONMENT: NodeJS.ProcessEnv = {
   GIT_TERMINAL_PROMPT: "0",
@@ -351,21 +1018,11 @@ const NON_INTERACTIVE_FETCH_ENVIRONMENT: NodeJS.ProcessEnv = {
   GCM_INTERACTIVE: "never",
 };
 
-function shellQuote(value: string): string {
-  return "'" + value.replaceAll("'", "'\\''") + "'";
-}
-
 export function nonInteractiveFetchEnvironment(
   environment: NodeJS.ProcessEnv,
-  inherited: NodeJS.ProcessEnv,
   configuredSshCommand: string | null,
 ): NodeJS.ProcessEnv {
-  const sshCommand =
-    inherited.GIT_SSH_COMMAND ??
-    configuredSshCommand ??
-    (inherited.GIT_SSH !== undefined && inherited.GIT_SSH !== ""
-      ? shellQuote(inherited.GIT_SSH)
-      : "ssh");
+  const sshCommand = configuredSshCommand ?? "ssh";
   return {
     ...environment,
     ...NON_INTERACTIVE_FETCH_ENVIRONMENT,
@@ -387,12 +1044,10 @@ function isCredentialHelperKey(key: string): boolean {
   );
 }
 
-export function replayedCredentialHelpers(configured: string): {
-  args: string[];
-  env: Record<string, string>;
-} {
-  const args: string[] = [];
-  const env: Record<string, string> = {};
+function trustedConfigEntries(
+  configured: string,
+): Array<{ key: string; value: string }> {
+  const entries: Array<{ key: string; value: string }> = [];
   const fields = configured.split("\0");
   for (let index = 0; index + 2 < fields.length; index += 3) {
     const scope = fields[index];
@@ -404,8 +1059,21 @@ export function replayedCredentialHelpers(configured: string): {
     if (!origin.startsWith(FILE_ORIGIN)) continue;
     const newline = entry.indexOf("\n");
     if (newline === -1) continue;
-    const key = entry.slice(0, newline);
-    const value = entry.slice(newline + 1);
+    entries.push({
+      key: entry.slice(0, newline),
+      value: entry.slice(newline + 1),
+    });
+  }
+  return entries;
+}
+
+export function replayedCredentialHelpers(configured: string): {
+  args: string[];
+  env: Record<string, string>;
+} {
+  const args: string[] = [];
+  const env: Record<string, string> = {};
+  for (const { key, value } of trustedConfigEntries(configured)) {
     if (!isCredentialHelperKey(key)) continue;
     if (value === "") {
       args.push("-c", `${key}=`);
@@ -472,6 +1140,8 @@ async function findZeroCommitBase(
   const reflog = await runGit(
     [
       "--no-optional-locks",
+      "-c",
+      "log.showSignature=false",
       "reflog",
       "show",
       "--format=%H%x09%gs",
@@ -489,6 +1159,139 @@ async function findZeroCommitBase(
   return sha === head.stdout.trim() ? sha : null;
 }
 
+const FILTER_DRIVER_KEYS = "^filter\\..*\\.(clean|smudge|process|required)$";
+const FILTER_COMMANDS = ["clean", "smudge", "process"] as const;
+const SUBMODULE_MODE = "160000 ";
+
+async function neutralisedFilterDrivers(
+  gitOptions: Parameters<typeof runGit>[1],
+  signal: AbortSignal | undefined,
+): Promise<
+  { args: string[]; env: Record<string, string> } | { failure: string }
+> {
+  const names = new Set<string>();
+  const defined = new Set<string>();
+  const visited = new Set<string>();
+  const pending = [gitOptions];
+  for (
+    let current = pending.pop();
+    current !== undefined;
+    current = pending.pop()
+  ) {
+    const listed = await runGit(
+      [
+        "--no-optional-locks",
+        "config",
+        "--null",
+        "--name-only",
+        "--get-regexp",
+        FILTER_DRIVER_KEYS,
+      ],
+      current,
+    );
+    if (listed.exitCode !== 0 && !isEmptyConfigMatch(listed))
+      return { failure: listed.stderr.trim() };
+    for (const key of listed.stdout.split("\0")) {
+      const name = key.slice("filter.".length, key.lastIndexOf("."));
+      if (name.includes("="))
+        return {
+          failure: `filter driver ${name} cannot be overridden on Git's command line`,
+        };
+      if (name === "") continue;
+      names.add(name);
+      defined.add(key);
+    }
+    const staged = await runGit(
+      [
+        "--no-optional-locks",
+        "-c",
+        "core.fsmonitor=false",
+        "ls-files",
+        "--stage",
+        "-z",
+      ],
+      current,
+    );
+    if (staged.exitCode !== 0) return { failure: staged.stderr.trim() };
+    for (const entry of staged.stdout.split("\0")) {
+      const tab = entry.indexOf("\t");
+      if (!entry.startsWith(SUBMODULE_MODE) || tab === -1) continue;
+      const submodule = path.join(current.cwd, entry.slice(tab + 1));
+      if (visited.has(submodule)) continue;
+      visited.add(submodule);
+      const checkedOut = await entryExists(path.join(submodule, ".git"));
+      if (checkedOut === null)
+        return { failure: `could not inspect submodule ${submodule}` };
+      if (checkedOut)
+        pending.push({
+          cwd: submodule,
+          env: gitEnvironment(submodule),
+          allowFailure: true,
+          ...signalOptions(signal),
+        });
+    }
+  }
+  if (names.size === 0) return { args: [], env: {} };
+  const trusted = await runGit(
+    [
+      "--no-optional-locks",
+      "config",
+      "--null",
+      "--no-includes",
+      "--show-scope",
+      "--show-origin",
+      "--get-regexp",
+      "^filter\\.",
+    ],
+    gitOptions,
+  );
+  const values = new Map<string, string>();
+  for (const { key, value } of trustedConfigEntries(
+    trusted.exitCode === 0 ? trusted.stdout : "",
+  ))
+    values.set(key, value);
+  const args: string[] = [];
+  const env: Record<string, string> = {};
+  for (const name of names) {
+    for (const command of FILTER_COMMANDS) {
+      const key = `filter.${name}.${command}`;
+      const value = values.get(key);
+      if (value !== undefined && value !== "") {
+        const variable = `BB_FILTER_DRIVER_${Object.keys(env).length}`;
+        env[variable] = value;
+        args.push(`--config-env=${key}=${variable}`);
+        continue;
+      }
+      if (defined.has(key)) args.push("-c", `${key}=`);
+    }
+    args.push("-c", `filter.${name}.required=false`);
+  }
+  return { args, env };
+}
+
+async function firstUnpublishedCommit(
+  commit: string,
+  published: readonly string[] | null,
+  evidence: RemoteEvidence,
+  gitOptions: Parameters<typeof runGit>[1],
+  signal: AbortSignal | undefined,
+): Promise<GitCommandResult> {
+  if (published === null)
+    return {
+      exitCode: 1,
+      stdout: "",
+      stderr: "could not list its remote-tracking branches",
+    };
+  const input = [commit, ...published.map((tip) => `^${tip}`), ""].join("\n");
+  const args = ["--no-optional-locks", "rev-list", "--max-count=1", "--stdin"];
+  return evidence.repository === null
+    ? await runGit(args, { ...gitOptions, input })
+    : await runGit([`--git-dir=${evidence.repository}`, ...args], {
+        ...isolatedGitOptions(evidence.repository, signal),
+        input,
+      });
+}
+
 export async function findPreservationReasons(
   identity: WorktreeIdentity,
   signal: AbortSignal | undefined,
@@ -498,6 +1301,8 @@ export async function findPreservationReasons(
     fetchMemoMs?: number;
     gitDir?: string;
     final?: boolean;
+    remotes?: RemoteEvidence;
+    untrustedRoots?: readonly string[];
   } = {},
 ): Promise<string[]> {
   const reasons = await findStructuralReasons(identity);
@@ -508,28 +1313,41 @@ export async function findPreservationReasons(
     ...signalOptions(signal),
   };
 
-  const status = await runGit(
-    [
-      "--no-optional-locks",
-      "status",
-      "--porcelain=v1",
-      "-z",
-      "--untracked-files=all",
-      "--ignored=matching",
-      "--ignore-submodules=none",
-    ],
-    gitOptions,
-  );
-  if (status.exitCode !== 0) {
-    reasons.push(
-      `could not read its Git status${status.stderr.trim() ? ` (${status.stderr.trim()})` : ""}`,
+  const filters = await neutralisedFilterDrivers(gitOptions, signal);
+  if ("failure" in filters) {
+    reasons.push(withDetail("could not read its Git status", filters.failure));
+  } else {
+    const status = await runGit(
+      [
+        "--no-optional-locks",
+        "-c",
+        "core.fsmonitor=false",
+        ...filters.args,
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "--untracked-files=all",
+        "--ignored=matching",
+        "--ignore-submodules=none",
+      ],
+      { ...gitOptions, env: { ...gitOptions.env, ...filters.env } },
     );
-  } else if (hasPreservableStatus(status.stdout)) {
-    reasons.push("has uncommitted changes or untracked files");
+    if (status.exitCode !== 0) {
+      reasons.push(withDetail("could not read its Git status", status.stderr));
+    } else if (hasPreservableStatus(status.stdout)) {
+      reasons.push("has uncommitted changes or untracked files");
+    }
   }
 
   const flaggedFiles = await runGit(
-    ["--no-optional-locks", "ls-files", "-v", "-z"],
+    [
+      "--no-optional-locks",
+      "-c",
+      "core.fsmonitor=false",
+      "ls-files",
+      "-v",
+      "-z",
+    ],
     gitOptions,
   );
   if (flaggedFiles.exitCode !== 0) {
@@ -568,173 +1386,144 @@ export async function findPreservationReasons(
     }
   }
 
-  if (options.fetchRemotes !== false) {
-    const fetchReason = await fetchRemotesOncePerRepository(
-      identity.commonDir,
-      options.fetchMemoMs ?? FETCH_MEMO_MS,
-      async () => {
-        try {
-          const configured = await runGit(
-            ["--no-optional-locks", "config", "--get", "core.sshCommand"],
-            gitOptions,
-          );
-          const helpers = await runGit(
-            [
-              "--no-optional-locks",
-              "config",
-              "--null",
-              "--no-includes",
-              "--show-scope",
-              "--show-origin",
-              "--get-regexp",
-              CREDENTIAL_HELPER_KEYS,
-            ],
-            gitOptions,
-          );
-          const replayed = replayedCredentialHelpers(
-            helpers.exitCode === 0 ? helpers.stdout : "",
-          );
-          const fetched = await runGit(
-            [
-              "-c",
-              "credential.helper=",
-              ...replayed.args,
-              "fetch",
-              "--no-write-fetch-head",
-              "--all",
-              "--quiet",
-              "--no-tags",
-            ],
-            {
-              ...gitOptions,
-              env: {
-                ...nonInteractiveFetchEnvironment(
-                  gitOptions.env,
-                  process.env,
-                  configured.exitCode === 0 && configured.stdout.trim() !== ""
-                    ? configured.stdout.trim()
-                    : null,
-                ),
-                ...replayed.env,
-              },
-              timeoutMs: options.fetchTimeoutMs ?? FETCH_TIMEOUT_MS,
-            },
-          );
-          return fetched.exitCode === 0
-            ? null
-            : fetchFailureReason(fetched.stderr);
-        } catch (error) {
-          return `could not fetch its remotes to verify its commits are published (${describeError(error)})`;
-        }
-      },
-    );
-    if (fetchReason !== null) reasons.push(fetchReason);
-  }
+  let lease: RemoteEvidenceLease | null = null;
+  try {
+    let evidence = options.remotes ?? NO_REMOTE_EVIDENCE;
+    if (options.remotes === undefined && options.fetchRemotes !== false) {
+      lease = await acquireRemoteEvidence(identity, signal, {
+        ...(options.fetchTimeoutMs !== undefined
+          ? { fetchTimeoutMs: options.fetchTimeoutMs }
+          : {}),
+        ...(options.fetchMemoMs !== undefined
+          ? { fetchMemoMs: options.fetchMemoMs }
+          : {}),
+        ...(options.untrustedRoots !== undefined
+          ? { untrustedRoots: options.untrustedRoots }
+          : {}),
+      });
+      evidence = lease.evidence;
+    }
+    if (evidence.reason !== null) reasons.push(evidence.reason);
 
-  const zeroCommitBase =
-    branchName === null
-      ? null
-      : await findZeroCommitBase(branchName, gitOptions);
-  if (zeroCommitBase !== null) {
-    const baseUnpublished = await runGit(
+    const sourceTips = await runGit(
       [
         "--no-optional-locks",
-        "rev-list",
-        "--max-count=1",
-        zeroCommitBase,
-        "--not",
-        "--remotes",
+        "for-each-ref",
+        "--format=%(objectname)",
+        "refs/remotes",
       ],
       gitOptions,
     );
-    if (baseUnpublished.exitCode !== 0) {
-      reasons.push(
-        `could not verify its base commit ${zeroCommitBase} is published${baseUnpublished.stderr.trim() ? ` (${baseUnpublished.stderr.trim()})` : ""}`,
-      );
-    } else if (baseUnpublished.stdout.trim() !== "") {
-      reasons.push(
-        `its base commit ${zeroCommitBase} is not reachable from any remote-tracking branch, so the branch holds no commit of its own but starts from work that was never published`,
-      );
-    }
-  } else {
-    const unpublished = await runGit(
-      [
-        "--no-optional-locks",
-        "rev-list",
-        "--max-count=1",
-        "HEAD",
-        "--not",
-        "--remotes",
-      ],
-      gitOptions,
-    );
-    if (unpublished.exitCode !== 0) {
-      reasons.push(
-        `could not verify its commits are published${unpublished.stderr.trim() ? ` (${unpublished.stderr.trim()})` : ""}`,
-      );
-    } else if (unpublished.stdout.trim() !== "") {
-      const upstream =
-        branchName === null
-          ? null
-          : await runGit(
-              [
-                "--no-optional-locks",
-                "rev-parse",
-                "--abbrev-ref",
-                "--symbolic-full-name",
-                `${branchName}@{upstream}`,
-              ],
-              gitOptions,
-            );
-      reasons.push(
-        branchName !== null && upstream !== null && upstream.exitCode !== 0
-          ? `its branch ${branchName} has no upstream and has commits that are not reachable from any remote-tracking branch`
-          : "has commits that are not reachable from any remote-tracking branch",
-      );
-    }
-  }
-  const worktreeRefs = await runGit(
-    [
-      "--no-optional-locks",
-      "for-each-ref",
-      "--format=%(objectname)",
-      "refs/worktree",
-      "refs/bisect",
-    ],
-    gitOptions,
-  );
-  const reflogHead = await runGit(
-    ["--no-optional-locks", "reflog", "show", "--format=%H", "HEAD"],
-    gitOptions,
-  );
-  if (worktreeRefs.exitCode !== 0 || reflogHead.exitCode !== 0) {
-    reasons.push(
-      "could not verify commits held by this worktree's refs or reflog",
-    );
-  } else {
-    const localCommits = [
-      ...worktreeRefs.stdout.split("\n"),
-      ...reflogHead.stdout.split("\n"),
-    ].filter((commit) => commit !== "");
-    for (const commit of localCommits) {
-      const retained = await runGit(
-        [
-          "--no-optional-locks",
-          "rev-list",
-          "--max-count=1",
-          commit,
-          "--not",
-          "--remotes",
-        ],
+    const published =
+      sourceTips.exitCode === 0
+        ? [
+            ...new Set([
+              ...evidence.published,
+              ...outputLines(sourceTips.stdout),
+            ]),
+          ]
+        : null;
+    const unpublishedFrom = (commit: string) =>
+      firstUnpublishedCommit(commit, published, evidence, gitOptions, signal);
+
+    const zeroCommitBase =
+      branchName === null
+        ? null
+        : await findZeroCommitBase(branchName, gitOptions);
+    if (zeroCommitBase !== null) {
+      const baseUnpublished = await unpublishedFrom(zeroCommitBase);
+      if (baseUnpublished.exitCode !== 0) {
+        reasons.push(
+          withDetail(
+            `could not verify its base commit ${zeroCommitBase} is published`,
+            baseUnpublished.stderr,
+          ),
+        );
+      } else if (baseUnpublished.stdout.trim() !== "") {
+        reasons.push(
+          `its base commit ${zeroCommitBase} is not reachable from any remote-tracking branch, so the branch holds no commit of its own but starts from work that was never published`,
+        );
+      }
+    } else {
+      const headCommit = await runGit(
+        ["--no-optional-locks", "rev-parse", "--verify", "HEAD^{commit}"],
         gitOptions,
       );
-      if (retained.exitCode !== 0 || retained.stdout.trim() !== "") {
+      const unpublished =
+        headCommit.exitCode !== 0
+          ? headCommit
+          : await unpublishedFrom(headCommit.stdout.trim());
+      if (unpublished.exitCode !== 0) {
         reasons.push(
-          "has unpublished commits held only by this worktree's refs or reflog",
+          withDetail(
+            "could not verify its commits are published",
+            unpublished.stderr,
+          ),
         );
-        break;
+      } else if (unpublished.stdout.trim() !== "") {
+        const upstream =
+          branchName === null
+            ? null
+            : await runGit(
+                [
+                  "--no-optional-locks",
+                  "rev-parse",
+                  "--abbrev-ref",
+                  "--symbolic-full-name",
+                  `${branchName}@{upstream}`,
+                ],
+                gitOptions,
+              );
+        reasons.push(
+          branchName !== null && upstream !== null && upstream.exitCode !== 0
+            ? `its branch ${branchName} has no upstream and has commits that are not reachable from any remote-tracking branch`
+            : "has commits that are not reachable from any remote-tracking branch",
+        );
       }
     }
+    const worktreeRefs = await runGit(
+      [
+        "--no-optional-locks",
+        "for-each-ref",
+        "--format=%(objectname)",
+        "refs/worktree",
+        "refs/bisect",
+      ],
+      gitOptions,
+    );
+    const reflogHead = await runGit(
+      [
+        "--no-optional-locks",
+        "-c",
+        "log.showSignature=false",
+        "reflog",
+        "show",
+        "--format=%H",
+        "HEAD",
+      ],
+      gitOptions,
+    );
+    if (worktreeRefs.exitCode !== 0 || reflogHead.exitCode !== 0) {
+      reasons.push(
+        "could not verify commits held by this worktree's refs or reflog",
+      );
+    } else {
+      const localCommits = [
+        ...outputLines(worktreeRefs.stdout),
+        ...outputLines(reflogHead.stdout),
+      ];
+      for (const commit of localCommits) {
+        const retained = await unpublishedFrom(commit);
+        if (retained.exitCode !== 0 || retained.stdout.trim() !== "") {
+          reasons.push(
+            "has unpublished commits held only by this worktree's refs or reflog",
+          );
+          break;
+        }
+      }
+    }
+  } finally {
+    await lease?.release();
   }
   const holderReason = describeHolderScan(
     testWorktreeHolderScan ??

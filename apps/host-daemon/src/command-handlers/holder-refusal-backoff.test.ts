@@ -3,6 +3,8 @@ import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
+import { FILE_TIMESTAMP_LAG_MS } from "bb-environment-provider-host/remove-directory-tree";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   hostProc,
@@ -44,6 +46,7 @@ async function target() {
   const directory = path.join(root, "target");
   await fs.mkdir(directory);
   await fs.writeFile(path.join(directory, "held.txt"), "precious\n");
+  await delay(FILE_TIMESTAMP_LAG_MS + 50);
   return directory;
 }
 
