@@ -28,7 +28,11 @@ import type {
   MessageDispatchHookContext,
   PluginHookName,
 } from "@get-bb/plugin-sdk";
-import { encodeClientTurnRequestIdNumber, threadScope } from "@bb/domain";
+import {
+  NATIVE_TERMINAL_QUESTION_REQUEST_PREFIX,
+  encodeClientTurnRequestIdNumber,
+  threadScope,
+} from "@bb/domain";
 import { eq } from "drizzle-orm";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -1952,5 +1956,521 @@ describe("native terminal delivery across a crash", () => {
     await runSweeps(fixture);
     expect(chatWarnings(fixture, stuck.id)).toHaveLength(150);
     expect(senderWarnings(fixture, sender.thread.id)).toHaveLength(1);
+  }, 30_000);
+});
+
+describe("an open question in a native terminal", () => {
+  const QUESTION_ID = "install-now";
+  const PASTE = "\u001b[200~use the staging host\u001b[201~";
+
+  function openQuestion(fixture: Fixture, threadId: string): void {
+    recordNativeTerminalActivity(fixture.harness.deps, {
+      confirms: true,
+      questions: [{ id: QUESTION_ID, prompt: "Install now?" }],
+      state: "waiting",
+      threadId,
+    });
+  }
+
+  function openQuestions(fixture: Fixture, threadId: string) {
+    return fixture.harness.deps.pendingInteractions.listPendingThreadInteractions(
+      threadId,
+    );
+  }
+
+  function typed(cli: FakeCli): string[] {
+    return cli.inputs().filter((input) => input !== "\u001b");
+  }
+
+  const closeQuestion = {
+    answered: async (fixture: Fixture, threadId: string) => {
+      recordNativeTerminalActivity(fixture.harness.deps, {
+        closes: [QUESTION_ID],
+        confirms: true,
+        state: "working",
+        threadId,
+      });
+    },
+    dismissed: async (fixture: Fixture, threadId: string) => {
+      recordNativeTerminalActivity(fixture.harness.deps, {
+        confirms: true,
+        state: "idle",
+        threadId,
+      });
+    },
+    interrupted: async (fixture: Fixture, threadId: string) => {
+      const stopped = await postJson(fixture, `/threads/${threadId}/stop`, {});
+      expect(stopped.status).toBe(200);
+      recordNativeTerminalActivity(fixture.harness.deps, {
+        confirms: true,
+        state: "idle",
+        threadId,
+      });
+    },
+  } as const;
+
+  async function drainQueue(fixture: Fixture): Promise<void> {
+    const later = Date.now() + 60 * 60 * 1000;
+    await settle();
+    await runQueuedMessageDispatch(fixture.harness.deps, {
+      kind: "plugin-recheck",
+    });
+    await runQueuedMessageDispatch(fixture.harness.deps, {
+      kind: "retry-due",
+      now: later,
+    });
+    await runQueuedMessageDispatch(fixture.harness.deps, {
+      kind: "idle-recovery",
+      now: later,
+    });
+    await settle();
+  }
+
+  function openQuestionBeforeTheWrite(
+    fixture: Fixture,
+    threadId: string,
+  ): void {
+    const terminalSessions = fixture.harness.deps.terminalSessions;
+    const readTerminalOutput =
+      terminalSessions.readTerminalOutput.bind(terminalSessions);
+    vi.spyOn(terminalSessions, "readTerminalOutput").mockImplementationOnce(
+      async (...args) => {
+        openQuestion(fixture, threadId);
+        return readTerminalOutput(...args);
+      },
+    );
+  }
+
+  it.each(["active", "idle"] as const)(
+    "holds a tell to an %s thread when a question opens after admission but before the paste, and delivers it once after the question closes",
+    async (status) => {
+      const fixture = await createFixture();
+      const { open, thread } = await openRunningNativeThread(fixture, {
+        providerId: "codex",
+      });
+      const cli = startFakeCli(fixture, open.terminalId);
+      try {
+        if (status === "active") {
+          recordNativeTerminalActivity(fixture.harness.deps, {
+            confirms: false,
+            state: "working",
+            threadId: thread.id,
+          });
+        }
+        openQuestionBeforeTheWrite(fixture, thread.id);
+
+        const sent = await sendToThread(
+          fixture,
+          thread.id,
+          "use the staging host",
+        );
+        await drainQueue(fixture);
+
+        expect(typed(cli)).toEqual([]);
+        expect(sent.delivery).toBe("queued");
+        expect(openQuestions(fixture, thread.id)).toHaveLength(1);
+
+        await closeQuestion.dismissed(fixture, thread.id);
+        await drainQueue(fixture);
+        await new Promise((resolve) => setTimeout(resolve, 1_100));
+        await drainQueue(fixture);
+
+        expect(typed(cli)).toEqual([PASTE, "\r"]);
+        expect(queuedRows(fixture, thread.id)).toEqual([]);
+      } finally {
+        cli.stop();
+      }
+    },
+    30_000,
+  );
+
+  it("holds a drained send when a question opens after admission but before the paste, and delivers it once after the question closes", async () => {
+    const fixture = await createFixture();
+    const { open, thread } = await openRunningNativeThread(fixture, {
+      providerId: "codex",
+    });
+    const cli = startFakeCli(fixture, open.terminalId);
+    let decision: HookDecision = { action: "wait", reason: AT_LIMIT_REASON };
+    installDispatchHook(() => decision);
+    try {
+      const held = await sendToThread(
+        fixture,
+        thread.id,
+        "use the staging host",
+      );
+      expect(held.delivery).toBe("queued");
+      openQuestionBeforeTheWrite(fixture, thread.id);
+      decision = { action: "proceed" };
+      await drainQueue(fixture);
+
+      expect(typed(cli)).toEqual([]);
+      expect(openQuestions(fixture, thread.id)).toHaveLength(1);
+      expect(queuedRows(fixture, thread.id)).toHaveLength(1);
+
+      await closeQuestion.dismissed(fixture, thread.id);
+      await drainQueue(fixture);
+      await new Promise((resolve) => setTimeout(resolve, 1_100));
+      await drainQueue(fixture);
+
+      expect(typed(cli)).toEqual([PASTE, "\r"]);
+      expect(queuedRows(fixture, thread.id)).toEqual([]);
+    } finally {
+      cli.stop();
+    }
+  }, 30_000);
+
+  it("never re-sends a drained send when a question opens after its paste reached the terminal but before the Enter, and tells the sender", async () => {
+    const fixture = await createFixture();
+    const sender = await openRunningNativeThread(fixture, {
+      providerId: "codex",
+    });
+    recordNativeTerminalActivity(fixture.harness.deps, {
+      confirms: false,
+      state: "working",
+      threadId: sender.thread.id,
+    });
+    const { open, thread } = await openRunningNativeThread(fixture, {
+      providerId: "codex",
+    });
+    const cli = startFakeCli(fixture, open.terminalId, {
+      pastePlaceholders: true,
+    });
+    let decision: HookDecision = { action: "wait", reason: AT_LIMIT_REASON };
+    installDispatchHook(() => decision);
+    try {
+      const held = await sendToThread(
+        fixture,
+        thread.id,
+        "use the staging host",
+        sender.thread.id,
+      );
+      expect(held.delivery).toBe("queued");
+      const hub = fixture.harness.hub;
+      const send = hub.sendDaemonSessionMessage.bind(hub);
+      let questionOpened = false;
+      vi.spyOn(hub, "sendDaemonSessionMessage").mockImplementation(
+        (sessionId, message) => {
+          const sent = send(sessionId, message);
+          if (
+            !questionOpened &&
+            message.type === "terminal.input" &&
+            message.terminalId === open.terminalId
+          ) {
+            questionOpened = true;
+            openQuestion(fixture, thread.id);
+          }
+          return sent;
+        },
+      );
+      decision = { action: "proceed" };
+      await drainQueue(fixture);
+
+      expect(typed(cli)).toEqual([PASTE]);
+
+      await closeQuestion.dismissed(fixture, thread.id);
+      await drainQueue(fixture);
+      await new Promise((resolve) => setTimeout(resolve, 1_100));
+      await drainQueue(fixture);
+
+      expect(typed(cli)).toEqual([PASTE]);
+      const rows = queuedRows(fixture, thread.id);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        state: "failed_exhausted",
+        failureReason: expect.stringContaining("Delivery uncertain"),
+      });
+      const senderNotices = listNativeParentNotices(
+        fixture.harness.db,
+        sender.thread.id,
+      );
+      expect(senderNotices).toHaveLength(1);
+      expect(senderNotices[0]?.text).toContain("may not have been delivered");
+    } finally {
+      cli.stop();
+    }
+  }, 30_000);
+
+  function openQuestionOnPendingThread(fixture: Fixture, threadId: string) {
+    const providerId = getThread(fixture.harness.db, threadId)?.providerId;
+    expect(providerId).toBeDefined();
+    const registered =
+      fixture.harness.deps.pendingInteractions.registerPendingInteraction({
+        interaction: {
+          threadId,
+          turnId: "native-terminal-turn",
+          providerId: providerId!,
+          providerThreadId: threadId,
+          providerRequestId: `${NATIVE_TERMINAL_QUESTION_REQUEST_PREFIX}${QUESTION_ID}`,
+          payload: {
+            kind: "user_question",
+            questions: [
+              {
+                id: QUESTION_ID,
+                prompt: "Install now?",
+                multiSelect: false,
+                allowFreeText: true,
+                required: true,
+              },
+            ],
+          },
+        },
+      });
+    expect(registered.outcome).toBe("created");
+    return registered.outcome === "created" ? registered.interaction.id : "";
+  }
+
+  async function expectHeldStartLaunchesOnceAfterQuestion(
+    fixture: Fixture,
+    args: { interactionId: () => string; threadId: string },
+  ): Promise<void> {
+    await settle();
+    expect(terminalOpens(fixture.socket)).toEqual([]);
+    expect(getThread(fixture.harness.db, args.threadId)?.status).toBe(
+      "pending",
+    );
+    expect(readThreadProvisionContext(fixture.harness.db, args.threadId)).toBe(
+      null,
+    );
+    const rows = queuedRows(fixture, args.threadId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.waitingOn).toEqual({ kind: "interaction" });
+    expect(rows[0]?.content).toEqual(textInput("Fix the flaky test"));
+    expect(openQuestions(fixture, args.threadId)).toHaveLength(1);
+
+    fixture.harness.deps.pendingInteractions.interruptPendingInteraction({
+      interactionId: args.interactionId(),
+      reason: "Dismissed",
+    });
+    await drainQueue(fixture);
+
+    const open = await waitForTerminalOpen(fixture.socket);
+    expect(open.threadId).toBe(args.threadId);
+    acknowledgeOpen(fixture, open);
+    await waitForThreadStatus(fixture, args.threadId, "idle");
+    expect(queuedRows(fixture, args.threadId)).toEqual([]);
+    await drainQueue(fixture);
+    expect(terminalOpens(fixture.socket)).toHaveLength(1);
+    expect(terminalInputs(fixture.socket)).toEqual([]);
+    const first = await launchSpec(fixture, args.threadId);
+    const second = await launchSpec(fixture, args.threadId);
+    expect(first.initialPrompt).toBe("Fix the flaky test");
+    expect(second.initialPrompt).toBeNull();
+  }
+
+  it("holds a native create when a question opens during the limit decision that admits it, and launches it once after the question closes", async () => {
+    const fixture = await createFixture();
+    let interactionId = "";
+    installDispatchHook((context) => {
+      if (interactionId === "") {
+        interactionId = openQuestionOnPendingThread(fixture, context.thread.id);
+      }
+      return { action: "proceed" };
+    });
+
+    const created = await createNativeThread(fixture, {
+      providerId: "claude-code",
+      prompt: "Fix the flaky test",
+    });
+
+    await expectHeldStartLaunchesOnceAfterQuestion(fixture, {
+      interactionId: () => interactionId,
+      threadId: created.id,
+    });
+  }, 30_000);
+
+  it("holds a held native start when a question opens during the limit decision that releases it, and launches it once after the question closes", async () => {
+    const fixture = await createFixture();
+    let decision: HookDecision = { action: "wait", reason: AT_LIMIT_REASON };
+    let interactionId = "";
+    installDispatchHook((context) => {
+      if (decision.action === "proceed" && interactionId === "") {
+        interactionId = openQuestionOnPendingThread(fixture, context.thread.id);
+      }
+      return decision;
+    });
+
+    const created = await createNativeThread(fixture, {
+      providerId: "claude-code",
+      prompt: "Fix the flaky test",
+    });
+    expect(queuedRows(fixture, created.id)[0]?.waitingOn).toMatchObject({
+      kind: "plugin",
+    });
+
+    decision = { action: "proceed" };
+    await runQueuedMessageDispatch(fixture.harness.deps, {
+      kind: "plugin-recheck",
+    });
+
+    await expectHeldStartLaunchesOnceAfterQuestion(fixture, {
+      interactionId: () => interactionId,
+      threadId: created.id,
+    });
+  }, 30_000);
+
+  it("holds a tell to a pending thread with a running terminal when a question opens before the paste, and delivers it once after the question closes", async () => {
+    const fixture = await createFixture();
+    const { open, thread } = await openRunningNativeThread(fixture, {
+      providerId: "codex",
+    });
+    const cli = startFakeCli(fixture, open.terminalId);
+    const setStatus = (status: "pending" | "idle") =>
+      fixture.harness.db
+        .update(threads)
+        .set({ status })
+        .where(eq(threads.id, thread.id))
+        .run();
+    try {
+      setStatus("pending");
+      let interactionId = "";
+      const terminalSessions = fixture.harness.deps.terminalSessions;
+      const readTerminalOutput =
+        terminalSessions.readTerminalOutput.bind(terminalSessions);
+      vi.spyOn(terminalSessions, "readTerminalOutput").mockImplementationOnce(
+        async (...args) => {
+          interactionId = openQuestionOnPendingThread(fixture, thread.id);
+          return readTerminalOutput(...args);
+        },
+      );
+
+      const sent = await sendToThread(
+        fixture,
+        thread.id,
+        "use the staging host",
+      );
+      await settle();
+
+      expect(typed(cli)).toEqual([]);
+      expect(sent.delivery).toBe("queued");
+      const rows = queuedRows(fixture, thread.id);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.waitingOn).toEqual({ kind: "interaction" });
+
+      setStatus("idle");
+      fixture.harness.deps.pendingInteractions.interruptPendingInteraction({
+        interactionId,
+        reason: "Dismissed",
+      });
+      await drainQueue(fixture);
+      await new Promise((resolve) => setTimeout(resolve, 1_100));
+      await drainQueue(fixture);
+
+      expect(typed(cli)).toEqual([PASTE, "\r"]);
+      expect(queuedRows(fixture, thread.id)).toEqual([]);
+    } finally {
+      cli.stop();
+    }
+  }, 30_000);
+
+  it.each(["answered", "dismissed", "interrupted"] as const)(
+    "holds a tell while a question is open, leaves the question pending, and delivers the tell once after it is %s",
+    async (how) => {
+      const fixture = await createFixture();
+      const { open, thread } = await openRunningNativeThread(fixture, {
+        providerId: "codex",
+      });
+      const cli = startFakeCli(fixture, open.terminalId);
+      try {
+        openQuestion(fixture, thread.id);
+        expect(openQuestions(fixture, thread.id)).toHaveLength(1);
+
+        const sent = await sendToThread(
+          fixture,
+          thread.id,
+          "use the staging host",
+        );
+        await drainQueue(fixture);
+
+        expect(typed(cli)).toEqual([]);
+        expect(sent.delivery).toBe("queued");
+        expect(
+          sent.delivery === "queued" ? sent.queuedMessage.waitingOn : null,
+        ).toEqual({ kind: "interaction" });
+        expect(openQuestions(fixture, thread.id)).toHaveLength(1);
+
+        await closeQuestion[how](fixture, thread.id);
+        await drainQueue(fixture);
+        await new Promise((resolve) => setTimeout(resolve, 1_100));
+        await drainQueue(fixture);
+
+        expect(typed(cli)).toEqual([PASTE, "\r"]);
+        expect(queuedRows(fixture, thread.id)).toEqual([]);
+      } finally {
+        cli.stop();
+      }
+    },
+    30_000,
+  );
+
+  it("keeps a held send from pasting when a question opened while it waited, then delivers it once after the question closes", async () => {
+    const fixture = await createFixture();
+    const { open, thread } = await openRunningNativeThread(fixture, {
+      providerId: "codex",
+    });
+    const cli = startFakeCli(fixture, open.terminalId);
+    let decision: HookDecision = { action: "wait", reason: AT_LIMIT_REASON };
+    installDispatchHook(() => decision);
+    try {
+      const held = await sendToThread(
+        fixture,
+        thread.id,
+        "use the staging host",
+      );
+      expect(held.delivery).toBe("queued");
+      openQuestion(fixture, thread.id);
+
+      decision = { action: "proceed" };
+      await drainQueue(fixture);
+
+      expect(typed(cli)).toEqual([]);
+      expect(openQuestions(fixture, thread.id)).toHaveLength(1);
+      expect(queuedRows(fixture, thread.id)).toHaveLength(1);
+
+      await closeQuestion.dismissed(fixture, thread.id);
+      await drainQueue(fixture);
+      await new Promise((resolve) => setTimeout(resolve, 1_100));
+      await drainQueue(fixture);
+
+      expect(typed(cli)).toEqual([PASTE, "\r"]);
+      expect(queuedRows(fixture, thread.id)).toEqual([]);
+    } finally {
+      cli.stop();
+    }
+  }, 30_000);
+
+  it("refuses an explicit send-now while a question is open and keeps the message queued", async () => {
+    const fixture = await createFixture();
+    const { open, thread } = await openRunningNativeThread(fixture, {
+      providerId: "codex",
+    });
+    const cli = startFakeCli(fixture, open.terminalId);
+    let decision: HookDecision = { action: "wait", reason: AT_LIMIT_REASON };
+    installDispatchHook(() => decision);
+    try {
+      const held = await sendToThread(
+        fixture,
+        thread.id,
+        "use the staging host",
+      );
+      expect(held.delivery).toBe("queued");
+      const queuedMessageId =
+        held.delivery === "queued" ? held.queuedMessage.id : "";
+      openQuestion(fixture, thread.id);
+      decision = { action: "proceed" };
+
+      const sendNow = await postJson(
+        fixture,
+        `/threads/${thread.id}/queued-messages/${queuedMessageId}/send`,
+        { mode: "auto" },
+      );
+      await settle();
+
+      expect(sendNow.status).toBe(409);
+      expect(typed(cli)).toEqual([]);
+      expect(openQuestions(fixture, thread.id)).toHaveLength(1);
+      expect(queuedRows(fixture, thread.id)).toHaveLength(1);
+    } finally {
+      cli.stop();
+    }
   }, 30_000);
 });
