@@ -57,12 +57,12 @@ describe("bb thread show command output", () => {
     ),
   )("shows pending input=$pending in json=$json", async ({ pending, json }) => {
     const thread = {
-        ...fixtures.makeThread({
-          id: "thr-question",
-          projectId: "project-question",
-          providerId: "codex",
-          status: "active",
-        }),
+      ...fixtures.makeThread({
+        id: "thr-question",
+        projectId: "project-question",
+        providerId: "codex",
+        status: "active",
+      }),
       hasPendingInteraction: pending,
       runtime: { displayStatus: "active" },
     };
@@ -80,6 +80,32 @@ describe("bb thread show command output", () => {
     else
       expect(output).toContain(`Status: ${pending ? "needs-input" : "active"}`);
   });
+
+  it.each([0, 2])(
+    "shows %i queued messages waiting behind an open question",
+    async (queuedMessageCount) => {
+      const thread = {
+        ...fixtures.makeThread({
+          id: "thr-held",
+          projectId: "project-held",
+          providerId: "claude-code",
+          status: "active",
+        }),
+        hasPendingInteraction: true,
+        queuedMessageCount,
+        runtime: { displayStatus: "active" },
+      };
+      stubThreadApi({
+        "v1.threads.:id.$get": async () => thread,
+        "v1.threads.:id.timeline.$get": fixtures.makeEmptyTimelineGetMock(),
+      });
+      await runCommand(["thread", "show", thread.id], register);
+      const lines = collectLogLines(vi.mocked(console.log));
+      expect(lines.filter((line) => line.includes("Queued messages:"))).toEqual(
+        queuedMessageCount === 0 ? [] : ["  Queued messages: 2"],
+      );
+    },
+  );
 
   it.each(
     [false, true].flatMap((clean) =>
