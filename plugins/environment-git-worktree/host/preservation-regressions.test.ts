@@ -2595,6 +2595,43 @@ describe("real worktree teardown preservation", () => {
     },
   );
 
+  it("retains bytes written through a held descriptor after the last quarantine check", async () => {
+    const worktree = await makeWorktree();
+    useProcReaderForTests(descendantsOnly(hostProc, -1));
+    const heldDirectory = path.join(worktree.path, "held-dir");
+    await mkdir(heldDirectory);
+    const target = path.join(heldDirectory, "held.txt");
+    await writeFile(target, "original\n");
+    const lateBytes = "late data written after the last check\n";
+    const handle = await fs.open(target, "r+");
+    let injected = false;
+    let result: RemoveDirectoryTreeResult | undefined;
+    try {
+      result = await removeDirectoryTree(worktree.path, {
+        startedAt: Number.MAX_SAFE_INTEGER,
+        afterParentVerified: async (entry) => {
+          if (entry !== target || injected) return;
+          injected = true;
+          await handle.truncate(0);
+          await handle.write(lateBytes, 0);
+        },
+      });
+    } finally {
+      await handle.close();
+    }
+    expect(injected).toBe(true);
+    expect(result?.status).toBe("retained");
+    await expect(readFile(target, "utf8")).resolves.toBe(lateBytes);
+    expect(result?.retainedPaths).toContain(target);
+    for (const retainedPath of result?.retainedPaths ?? [])
+      expect(existsSync(retainedPath), retainedPath).toBe(true);
+    expect(
+      (await fs.readdir(heldDirectory)).filter((name) =>
+        name.startsWith(".bb-pin-"),
+      ),
+    ).toEqual([]);
+  });
+
   it("retains a directory child when a late sibling appears during its removal", async () => {
     const worktree = await makeWorktree();
     useProcReaderForTests(descendantsOnly(hostProc, -1));
