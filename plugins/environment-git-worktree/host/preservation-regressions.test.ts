@@ -955,7 +955,7 @@ describe("real worktree teardown preservation", () => {
 
   it.each([
     ["the system clock runs ahead of file timestamps", 10],
-    ["file timestamps lag the clock by most of the margin", 16],
+    ["file timestamps lag the clock by most of the margin", 30],
   ] as const)(
     "retains Git metadata written just after the final baseline when %s",
     async (_case, ahead) => {
