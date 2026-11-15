@@ -33,10 +33,12 @@ import {
 } from "./created-by.js";
 import {
   WORKTREE_PRESERVED_CODE,
+  acquireRemoteEvidence,
   findPreservationReasons,
   identifyWorktree,
   isWorktreePreservedError,
   worktreePreservedError,
+  type RemoteEvidence,
   type WorktreeIdentity,
 } from "./worktree-preservation.js";
 import { markCreateFailure } from "./create-failure.js";
@@ -898,7 +900,7 @@ async function removeDirectoryIfEmpty(pathToRemove: string): Promise<void> {
 async function assertWorktreeRemovable(
   identity: WorktreeIdentity,
   args: RemoveWorktreeArgs,
-  options: { fetchRemotes?: boolean; fetchTimeoutMs?: number } = {},
+  options: { fetchRemotes?: boolean; remotes?: RemoteEvidence } = {},
 ): Promise<void> {
   const reasons =
     args.createdBy !== undefined
@@ -913,6 +915,7 @@ async function removeRegisteredWorktree(
   identity: WorktreeIdentity,
   args: RemoveWorktreeArgs,
   retention: RetentionState,
+  remotes: RemoteEvidence,
 ): Promise<RemoveWorktreeResult> {
   if (args.createdBy !== undefined) {
     const kept = await retainCreatedCopies(
@@ -930,7 +933,7 @@ async function removeRegisteredWorktree(
     }
     if (retained !== null) {
       try {
-        await assertWorktreeRemovable(identity, args);
+        await assertWorktreeRemovable(identity, args, { remotes });
       } catch (error) {
         throw isWorktreePreservedError(error)
           ? new WorkspaceError(
@@ -982,7 +985,7 @@ async function removeRegisteredWorktree(
       const reasons = await findPreservationReasons(
         quarantineIdentity,
         args.signal,
-        { gitDir: severedGitDir, fetchRemotes: false, final: true },
+        { gitDir: severedGitDir, fetchRemotes: false, final: true, remotes },
       );
       if (reasons.length > 0) {
         throw worktreePreservedError(identity.path, reasons);
@@ -1175,20 +1178,39 @@ export async function removeWorktree(
       const removed = await tryWithCheckoutMutationLock(
         identity.path,
         async () => {
-          await assertWorktreeRemovable(
+          const lease = await acquireRemoteEvidence(
             identity,
-            args,
+            args.signal,
             args.fetchTimeoutMs === undefined
               ? {}
               : { fetchTimeoutMs: args.fetchTimeoutMs },
           );
-          throwIfProvisionAborted(args.signal);
-          throwIfProvisionAborted(args.signal);
-          await assertWorktreeRemovable(identity, args, {
-            fetchRemotes: false,
-          });
-          await removeRegisteredWorktree(identity, args, retention);
-          return true;
+          try {
+            if (lease.evidence.bytes !== null)
+              emitOutput(
+                args.onProgress,
+                "git-fetch",
+                `Fetched its remotes into a temporary repository of ${Math.ceil(lease.evidence.bytes / 1024)} KiB, removed after the check`,
+              );
+            await assertWorktreeRemovable(identity, args, {
+              remotes: lease.evidence,
+            });
+            throwIfProvisionAborted(args.signal);
+            throwIfProvisionAborted(args.signal);
+            await assertWorktreeRemovable(identity, args, {
+              fetchRemotes: false,
+              remotes: lease.evidence,
+            });
+            await removeRegisteredWorktree(
+              identity,
+              args,
+              retention,
+              lease.evidence,
+            );
+            return true;
+          } finally {
+            await lease.release();
+          }
         },
         args.signal,
         signalOptions(args.signal),
