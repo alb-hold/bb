@@ -902,6 +902,31 @@ describe("teardown's fetch reads the user's config only from files outside every
     expect(reasons.join("\n")).toContain("could not");
   });
 
+  it.each([true, false])(
+    "carries the user's useHttpPath to the fetch's credential helper (scoped to the URL: %s)",
+    async (scoped) => {
+      const fixture = await createFixture();
+      const port = await unauthorisedServer();
+      const origin = `http://127.0.0.1:${port}`;
+      const log = join(fixture.root, "helper-input.log");
+      await setGlobal(
+        fixture.globalConfig,
+        `credential.${origin}.helper`,
+        `!f() { test "$1" = get && cat >> ${JSON.stringify(log)}; exit 0; }; f`,
+      );
+      await setGlobal(
+        fixture.globalConfig,
+        scoped ? `credential.${origin}.useHttpPath` : "credential.useHttpPath",
+        "true",
+      );
+      await addRemote(fixture, "served", `${origin}/repo.git`);
+
+      await reasonsFor(fixture);
+
+      expect(await readFile(log, "utf8")).toContain("path=repo.git");
+    },
+  );
+
   it("refuses an included file reached through a symlink outside the worktree whose target is inside it, and reports what it ignored", async () => {
     const fixture = await createFixture();
     const planted = await plantInWorktree(
