@@ -1200,3 +1200,37 @@ describe("teardown's reflog reads never run a program from the repository's own 
     );
   });
 });
+
+describe("teardown's commands in the source never fetch a missing object", () => {
+  it("does not lazy-fetch through a local promisor remote when status needs a missing blob, and keeps the worktree", async () => {
+    const lines = Array.from({ length: 200 }, (_, index) => `line ${index}`);
+    const fixture = await createFixture({
+      files: { "a.txt": `${lines.join("\n")}\n` },
+    });
+    const blob = (await git(fixture.path, "rev-parse", "HEAD:a.txt")).trim();
+    await git(fixture.path, "mv", "a.txt", "b.txt");
+    await writeFile(
+      join(fixture.path, "b.txt"),
+      `${lines.join("\n")}\nextra\n`,
+    );
+    await git(fixture.path, "add", "b.txt");
+    await git(fixture.sourcePath, "config", "protocol.ext.allow", "always");
+    await addRemote(fixture, "lazy", `ext::${fixture.mark} lazy`);
+    await git(fixture.sourcePath, "config", "remote.lazy.promisor", "true");
+    await git(fixture.sourcePath, "config", "extensions.partialClone", "lazy");
+    await rm(
+      join(
+        fixture.sourcePath,
+        ".git",
+        "objects",
+        blob.slice(0, 2),
+        blob.slice(2),
+      ),
+    );
+
+    const reasons = await reasonsFor(fixture);
+
+    expect(await markerText(fixture)).toBe("");
+    expect(reasons.join("\n")).toContain("could not read its Git status");
+  });
+});
