@@ -105,6 +105,15 @@ interface RemoveWorktreeArgs {
   fetchTimeoutMs?: number | undefined;
   testHooks?:
     | {
+        now?: () => number;
+        afterFinalBaseline?: (
+          worktreePath: string,
+          gitDir: string,
+        ) => Promise<void>;
+        afterFinalInspection?: (
+          worktreePath: string,
+          gitDir: string,
+        ) => Promise<void>;
         afterFinalCheck?: (
           worktreePath: string,
           gitDir: string,
@@ -987,8 +996,16 @@ async function removeRegisteredWorktree(
       if (reasons.length > 0) {
         throw worktreePreservedError(identity.path, reasons);
       }
+      await args.testHooks?.afterFinalInspection?.(
+        quarantinedPath,
+        severedGitDir,
+      );
       const workspaceMetadataBaseline = await fs.lstat(quarantinedPath);
-      const finalCheckStartedAt = Date.now();
+      const finalCheckStartedAt = (args.testHooks?.now ?? Date.now)();
+      await args.testHooks?.afterFinalBaseline?.(
+        quarantinedPath,
+        severedGitDir,
+      );
       await args.testHooks?.afterFinalCheck?.(quarantinedPath, severedGitDir);
       if (await directoryTreeChangedSince(severedGitDir, finalCheckStartedAt)) {
         throw worktreePreservedError(identity.path, [

@@ -283,6 +283,15 @@ async function makeWorktree(
 async function remove(
   worktree: { path: string; root: string },
   testHooks?: {
+    now?: () => number;
+    afterFinalBaseline?: (
+      worktreePath: string,
+      gitDir: string,
+    ) => Promise<void>;
+    afterFinalInspection?: (
+      worktreePath: string,
+      gitDir: string,
+    ) => Promise<void>;
     afterFinalCheck?: (worktreePath: string, gitDir: string) => Promise<void>;
     afterDirectoryListed?: (
       directory: string,
@@ -819,6 +828,117 @@ describe("real worktree teardown preservation", () => {
     await expect(
       readFile(path.join(worktree.path, "late-untracked.txt"), "utf8"),
     ).resolves.toBe("late\n");
+  });
+
+  it("retains an untracked file written while the final check runs", async () => {
+    const worktree = await makeWorktree();
+    useProcReaderForTests(descendantsOnly(hostProc, -1));
+    let injected = false;
+    let removalError: unknown;
+    try {
+      await remove(worktree, {
+        afterFinalInspection: async (target) => {
+          await writeFile(path.join(target, "during-check.txt"), "during\n");
+          injected = true;
+        },
+      });
+    } catch (error) {
+      removalError = error;
+    }
+    expect(removalError).toMatchObject({ code: "worktree_preserved" });
+    expect(injected, String(removalError)).toBe(true);
+    await expect(
+      readFile(path.join(worktree.path, "during-check.txt"), "utf8"),
+    ).resolves.toBe("during\n");
+  });
+
+  it("retains a change to a tracked file made while the final check runs", async () => {
+    const worktree = await makeWorktree();
+    useProcReaderForTests(descendantsOnly(hostProc, -1));
+    let injected = false;
+    let removalError: unknown;
+    try {
+      await remove(worktree, {
+        afterFinalInspection: async (target) => {
+          await writeFile(path.join(target, "README.md"), "edited\n");
+          injected = true;
+        },
+      });
+    } catch (error) {
+      removalError = error;
+    }
+    expect(removalError).toMatchObject({ code: "worktree_preserved" });
+    expect(injected, String(removalError)).toBe(true);
+    await expect(
+      readFile(path.join(worktree.path, "README.md"), "utf8"),
+    ).resolves.toBe("edited\n");
+  });
+
+  it("retains Git metadata written while the final check runs", async () => {
+    const worktree = await makeWorktree();
+    const gitDir = (
+      await git(worktree.path, "rev-parse", "--absolute-git-dir")
+    ).trim();
+    useProcReaderForTests(descendantsOnly(hostProc, -1));
+    let injected = false;
+    let removalError: unknown;
+    try {
+      await remove(worktree, {
+        afterFinalInspection: async (_target, severed) => {
+          await writeFile(path.join(severed, "late-metadata"), "late\n");
+          injected = true;
+        },
+      });
+    } catch (error) {
+      removalError = error;
+    }
+    expect(removalError).toMatchObject({ code: "worktree_preserved" });
+    expect(String(removalError)).toContain(
+      "new or changed Git metadata was found after its final inspection",
+    );
+    expect(injected, String(removalError)).toBe(true);
+    await expect(
+      readFile(path.join(gitDir, "late-metadata"), "utf8"),
+    ).resolves.toBe("late\n");
+    await expect(access(worktree.path)).resolves.toBeUndefined();
+  });
+
+  it("retains a file written just after the final baseline when the system clock runs ahead of file timestamps", async () => {
+    const worktree = await makeWorktree();
+    useProcReaderForTests(descendantsOnly(hostProc, -1));
+    let injected = false;
+    let removalError: unknown;
+    try {
+      await remove(worktree, {
+        now: () => Date.now() + 10,
+        afterFinalBaseline: async (target) => {
+          await writeFile(path.join(target, "at-baseline.txt"), "baseline\n");
+          injected = true;
+        },
+      });
+    } catch (error) {
+      removalError = error;
+    }
+    expect(removalError).toMatchObject({ code: "worktree_preserved" });
+    expect(injected, String(removalError)).toBe(true);
+    await expect(
+      readFile(path.join(worktree.path, "at-baseline.txt"), "utf8"),
+    ).resolves.toBe("baseline\n");
+  });
+
+  it("removes a clean worktree and its Git metadata despite teardown's own renames and gitdir rewrite", async () => {
+    const worktree = await makeWorktree();
+    const gitDir = (
+      await git(worktree.path, "rev-parse", "--absolute-git-dir")
+    ).trim();
+    useProcReaderForTests(descendantsOnly(hostProc, -1));
+    await remove(worktree);
+    await expect(access(worktree.path)).rejects.toThrow();
+    await expect(access(gitDir)).rejects.toThrow();
+    const leftovers = (await fs.readdir(path.dirname(gitDir))).filter((name) =>
+      name.startsWith(".bb-removing-"),
+    );
+    expect(leftovers).toEqual([]);
   });
 
   it("retains a detached commit created after the final check", async () => {
