@@ -345,6 +345,74 @@ describe("refused thread storage deletes", () => {
     });
   });
 
+  it.each(["sweep", "reconnect"] as const)(
+    "gives the slot back when the head row's re-queue write fails on every attempt, so each later delete is sent in its first slot across restarts (%s)",
+    async (path) => {
+      await withTestHarness(async (harness) => {
+        vi.useFakeTimers({ toFake: ["Date"] });
+        vi.setSystemTime(START_MS);
+        const seeded = seedDeletedThreads(harness, 1, `host-failing-${path}`);
+        const failingHead = seeded.threadIds[0] ?? "";
+        const seedArrival = () =>
+          seedDeletedThreadIn(harness, {
+            environmentId: seeded.environment.id,
+            projectId: seeded.projectId,
+          });
+        listPendingThreadStorageDeletions(harness.db);
+        harness.db.$client.exec(`
+          CREATE TEMP TRIGGER fail_head_storage_delete_requeue
+          BEFORE UPDATE OF storage_delete_seq ON threads
+          WHEN OLD.id = '${failingHead}'
+          BEGIN SELECT RAISE(ABORT, 'database or disk is full'); END;
+        `);
+        const warn = vi.spyOn(harness.deps.logger, "warn");
+        const slotCount = 3;
+        const arrivals: string[] = [];
+        const requestsBySlot: string[][] = [];
+        for (let slot = 0; slot < slotCount; slot += 1) {
+          const slotMs = slot * 60_000;
+          vi.setSystemTime(START_MS + slotMs);
+          if (slot > 0) clearThreadStorageDeleteRetryMemory(harness.db);
+          const arrival = seedArrival();
+          arrivals.push(arrival);
+          if (path === "sweep") {
+            await runThreadLifecycleSweep(harness.deps);
+          } else {
+            await reconcileDaemonReportedThreads(harness.deps, {
+              activeThreadIds: [],
+              hostId: seeded.environment.hostId,
+              sameDaemonInstance: false,
+              undeliveredEventThreadIds: [],
+            });
+          }
+          const requests = await refuseQueuedStorageDeletes(
+            harness,
+            slotMs,
+            new Set([arrival]),
+          );
+          requestsBySlot.push(requests.map((request) => request.threadId));
+        }
+        await runThreadLifecycleSweep(harness.deps);
+        vi.useRealTimers();
+        harness.db.$client.exec(
+          "DROP TRIGGER fail_head_storage_delete_requeue",
+        );
+
+        expect(requestsBySlot).toEqual(arrivals.map((arrival) => [arrival]));
+        for (const arrival of arrivals) {
+          expect(getThread(harness.db, arrival)).toBeNull();
+        }
+        expect(getThread(harness.db, failingHead)).not.toBeNull();
+        expect(
+          warn.mock.calls.filter(
+            ([, message]) =>
+              message === "Thread storage deletion could not be sent",
+          ),
+        ).toHaveLength(slotCount);
+      });
+    },
+  );
+
   it("releases the in-flight claim when the re-queue write fails, so the next slot deletes and purges the thread", async () => {
     await withTestHarness(async (harness) => {
       vi.useFakeTimers({ toFake: ["Date"] });

@@ -13,6 +13,7 @@ interface RefusedThreadStorageDelete {
 interface ThreadStorageDeleteRetryState {
   gatedDispatchTimesByHost: Map<string, number[]>;
   refused: Map<string, RefusedThreadStorageDelete>;
+  sendFailuresReported: Set<string>;
 }
 
 const retryStateByDb = new WeakMap<object, ThreadStorageDeleteRetryState>();
@@ -23,6 +24,7 @@ function retryState(db: object): ThreadStorageDeleteRetryState {
   const created: ThreadStorageDeleteRetryState = {
     gatedDispatchTimesByHost: new Map(),
     refused: new Map(),
+    sendFailuresReported: new Set(),
   };
   retryStateByDb.set(db, created);
   return created;
@@ -65,6 +67,29 @@ export function admitThreadStorageDelete(
   return true;
 }
 
+export function returnThreadStorageDeleteSlot(
+  db: object,
+  args: { gate: ThreadStorageDeleteGate; hostId: string; now: number },
+): void {
+  if (args.gate === "none") return;
+  const hostDispatches = retryStateByDb
+    .get(db)
+    ?.gatedDispatchTimesByHost.get(args.hostId);
+  if (!hostDispatches) return;
+  const index = hostDispatches.lastIndexOf(args.now);
+  if (index >= 0) hostDispatches.splice(index, 1);
+}
+
+export function isFirstThreadStorageDeleteSendFailure(
+  db: object,
+  threadId: string,
+): boolean {
+  const reported = retryState(db).sendFailuresReported;
+  if (reported.has(threadId)) return false;
+  reported.add(threadId);
+  return true;
+}
+
 export function recordThreadStorageDeleteRefused(
   db: object,
   args: { now: number; threadId: string },
@@ -81,7 +106,9 @@ export function recordThreadStorageDeleteRefused(
 }
 
 export function forgetThreadStorageDelete(db: object, threadId: string): void {
-  retryStateByDb.get(db)?.refused.delete(threadId);
+  const state = retryStateByDb.get(db);
+  state?.refused.delete(threadId);
+  state?.sendFailuresReported.delete(threadId);
 }
 
 export function forgetThreadStorageDeleteRetriesExcept(
@@ -92,6 +119,10 @@ export function forgetThreadStorageDeleteRetriesExcept(
   if (!state) return;
   for (const threadId of state.refused.keys()) {
     if (!pendingThreadIds.has(threadId)) state.refused.delete(threadId);
+  }
+  for (const threadId of state.sendFailuresReported) {
+    if (!pendingThreadIds.has(threadId))
+      state.sendFailuresReported.delete(threadId);
   }
 }
 

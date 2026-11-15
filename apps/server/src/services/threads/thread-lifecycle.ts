@@ -127,7 +127,9 @@ import { isPreStartThreadStatus } from "./thread-status.js";
 import {
   admitThreadStorageDelete,
   forgetThreadStorageDelete,
+  isFirstThreadStorageDeleteSendFailure,
   recordThreadStorageDeleteRefused,
+  returnThreadStorageDeleteSlot,
   type ThreadStorageDeleteGate,
 } from "./thread-storage-delete-retries.js";
 import { settleDanglingBackgroundTasksForStoppedThreadInTransaction } from "./background-task-reconciliation.js";
@@ -1173,10 +1175,16 @@ function dispatchThreadStorageDeletion(
     });
   } catch (error) {
     inFlightThreadRpcGuard.release(thread.id, "thread.storage.delete");
-    deps.logger.warn(
-      { err: error, threadId: thread.id },
-      "Thread storage deletion could not be sent",
-    );
+    returnThreadStorageDeleteSlot(deps.db, {
+      gate: args.gate,
+      hostId: environment.hostId,
+      now: args.now,
+    });
+    if (isFirstThreadStorageDeleteSendFailure(deps.db, thread.id))
+      deps.logger.warn(
+        { err: error, threadId: thread.id },
+        "Thread storage deletion could not be sent",
+      );
     return;
   }
   void sent
