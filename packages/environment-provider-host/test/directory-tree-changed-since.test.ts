@@ -53,6 +53,30 @@ async function renamedTree() {
   };
 }
 
+it.each([
+  ["a microsecond after the baseline", -0.001, true],
+  ["exactly at the baseline", 0, true],
+  ["a microsecond before the baseline", 0.001, false],
+] as const)(
+  "judges an entry stamped %s as changed: %s",
+  async (_case, offset, changed) => {
+    const root = await fs.mkdtemp(path.join(tmpdir(), "bb-changed-since-"));
+    roots.push(root);
+    const entry = path.join(root, "late");
+    await fs.writeFile(entry, "late\n");
+    const rootMetadata = await fs.lstat(root);
+    const stamp = await fs.lstat(entry);
+
+    await expect(
+      directoryTreeChangedSince(
+        root,
+        Math.max(stamp.ctimeMs, stamp.mtimeMs) + offset,
+        { rootMetadata },
+      ),
+    ).resolves.toBe(changed);
+  },
+);
+
 it("treats the renamed root and the rewritten gitdir as unchanged", async () => {
   const tree = await renamedTree();
 

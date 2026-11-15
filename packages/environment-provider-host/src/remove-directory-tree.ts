@@ -397,7 +397,7 @@ async function recoverSymlink(
   );
 }
 
-export const FILE_TIMESTAMP_LAG_MS = 20;
+export const FILE_TIMESTAMP_LAG_MS = 50;
 
 const LINUX_TIMESTAMP_FILESYSTEMS: ReadonlyMap<number, string> = new Map([
   [0xef53, "ext4"],

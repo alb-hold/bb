@@ -3,7 +3,7 @@ import {
   spawn,
   spawnSync,
 } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, lstatSync, writeFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import {
   access,
@@ -20,9 +20,10 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type {
-  RemoveDirectoryTreeHooks,
-  RemoveDirectoryTreeResult,
+import {
+  FILE_TIMESTAMP_LAG_MS,
+  type RemoveDirectoryTreeHooks,
+  type RemoveDirectoryTreeResult,
 } from "bb-environment-provider-host/remove-directory-tree";
 import {
   hostProc,
@@ -954,7 +955,7 @@ describe("real worktree teardown preservation", () => {
 
   it.each([
     ["the system clock runs ahead of file timestamps", 10],
-    ["file timestamps lag the clock by most of the margin", 16],
+    ["file timestamps lag the clock by most of the margin", 30],
   ] as const)(
     "retains Git metadata written just after the final baseline when %s",
     async (_case, ahead) => {
@@ -984,6 +985,66 @@ describe("real worktree teardown preservation", () => {
       await expect(
         readFile(path.join(gitDir, "at-baseline"), "utf8"),
       ).resolves.toBe("baseline\n");
+    },
+  );
+
+  it.each([
+    ["a microsecond after", -0.001, true],
+    ["a microsecond before", 0.001, false],
+  ] as const)(
+    "judges Git metadata stamped %s the final baseline by that edge",
+    async (_case, offset, kept) => {
+      const worktree = await makeWorktree();
+      const gitDir = (
+        await git(worktree.path, "rev-parse", "--absolute-git-dir")
+      ).trim();
+      const late = path.join(gitDir, "at-edge");
+      useProcReaderForTests(descendantsOnly(hostProc, -1));
+      let removalError: unknown;
+      try {
+        await remove(worktree, {
+          now: () => {
+            writeFileSync(late, "edge\n");
+            const stamp = lstatSync(late);
+            return (
+              Math.max(stamp.ctimeMs, stamp.mtimeMs) +
+              FILE_TIMESTAMP_LAG_MS +
+              offset
+            );
+          },
+        });
+      } catch (error) {
+        removalError = error;
+      }
+      if (kept) {
+        expect(removalError).toMatchObject({ code: "worktree_preserved" });
+        expect(String(removalError)).toContain(
+          "new or changed Git metadata was found after its final inspection",
+        );
+        await expect(readFile(late, "utf8")).resolves.toBe("edge\n");
+      } else {
+        expect(removalError).toBeUndefined();
+        await expect(access(worktree.path)).rejects.toThrow();
+        await expect(access(gitDir)).rejects.toThrow();
+      }
+    },
+  );
+
+  it.runIf(process.platform === "linux" && existsSync("/dev/shm"))(
+    "removes a clean worktree on a real Linux tmpfs, whose file timestamps removal trusts",
+    async () => {
+      const root = await mkdtemp("/dev/shm/bb-preserve-worktree-");
+      expect((await fs.statfs(root)).type).toBe(0x01021994);
+      const worktree = await makeWorktree(root);
+      const gitDir = (
+        await git(worktree.path, "rev-parse", "--absolute-git-dir")
+      ).trim();
+      useProcReaderForTests(descendantsOnly(hostProc, -1));
+      await remove(worktree);
+      await expect(access(worktree.path)).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+      await expect(access(gitDir)).rejects.toThrow();
     },
   );
 
@@ -2594,10 +2655,48 @@ describe("real worktree teardown preservation", () => {
       spawnFailed: false,
     }));
     try {
-      await remove(worktree);
+      await remove(worktree, {
+        timestampFilesystem: { statfs: async () => ({ type: 0x1a }) },
+      });
       await expect(access(worktree.path)).rejects.toMatchObject({
         code: "ENOENT",
       });
+    } finally {
+      if (platform !== undefined)
+        Object.defineProperty(process, "platform", platform);
+    }
+  });
+
+  it("keeps a clean worktree on macOS whose filesystem type differs from the system volume's", async () => {
+    const worktree = await makeWorktree();
+    const platform = Object.getOwnPropertyDescriptor(process, "platform");
+    Object.defineProperty(process, "platform", {
+      configurable: true,
+      value: "darwin",
+    });
+    const holders = await import("./holders.js");
+    holders.useLsofRunnerForTests?.(async () => ({
+      code: 1,
+      stdout: "",
+      stderr: "",
+      spawnFailed: false,
+    }));
+    try {
+      await expect(
+        remove(worktree, {
+          timestampFilesystem: {
+            statfs: async (target) => ({ type: target === "/" ? 0x1a : 0x11 }),
+          },
+        }),
+      ).rejects.toMatchObject({
+        code: "worktree_preserved",
+        message: expect.stringContaining(
+          "its filesystem (type 0x11) is not the system volume's (type 0x1a)",
+        ),
+      });
+      await expect(
+        readFile(path.join(worktree.path, "README.md"), "utf8"),
+      ).resolves.toBe("published\n");
     } finally {
       if (platform !== undefined)
         Object.defineProperty(process, "platform", platform);
