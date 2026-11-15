@@ -15,10 +15,13 @@ import {
 import fs from "node:fs/promises";
 import {
   directoryTreeChangedSince,
+  coarseFileTimestamp,
   FILE_TIMESTAMP_LAG_MS,
   recordOwnWrite,
   removeDirectoryTree,
   RetainedRecoveryError,
+  untrustedTimestampFilesystem,
+  type TimestampFilesystemProbe,
 } from "bb-environment-provider-host/remove-directory-tree";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
@@ -108,6 +111,8 @@ interface RemoveWorktreeArgs {
   testHooks?:
     | {
         now?: () => number;
+        timestampFilesystem?: TimestampFilesystemProbe;
+        renamedCtimeNs?: (renamed: string, actual: bigint) => bigint;
         afterFinalBaseline?: (
           worktreePath: string,
           gitDir: string,
@@ -971,6 +976,17 @@ async function removeRegisteredWorktree(
     );
     const severedGitdirFile = path.join(severedGitDir, "gitdir");
     const severedGitdirContents = `${path.join(quarantinedPath, ".git")}\n`;
+    for (const tree of [identity.path, identity.gitDir]) {
+      const untrusted = await untrustedTimestampFilesystem(
+        tree,
+        args.testHooks?.timestampFilesystem,
+      );
+      if (untrusted !== null)
+        throw worktreePreservedError(identity.path, [
+          `could not check ${tree} for late changes: ${untrusted}`,
+          ...keptNote,
+        ]);
+    }
     const finalCheckStartedAt =
       (args.testHooks?.now ?? Date.now)() - FILE_TIMESTAMP_LAG_MS;
     await args.testHooks?.afterFinalBaseline?.(identity.path, identity.gitDir);
@@ -995,6 +1011,16 @@ async function removeRegisteredWorktree(
       ]);
       const severedMetadataBaseline = await fs.lstat(severedGitDir);
       const workspaceMetadataBaseline = await fs.lstat(quarantinedPath);
+      for (const renamed of [quarantinedPath, severedGitDir]) {
+        const actual = (await fs.lstat(renamed, { bigint: true })).ctimeNs;
+        const ctimeNs =
+          args.testHooks?.renamedCtimeNs?.(renamed, actual) ?? actual;
+        if (coarseFileTimestamp(ctimeNs))
+          throw worktreePreservedError(identity.path, [
+            `could not check ${renamed} for late changes: its filesystem records whole-second timestamps`,
+            ...keptNote,
+          ]);
+      }
       const quarantineIdentity = {
         ...identity,
         path: quarantinedPath,

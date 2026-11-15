@@ -9,6 +9,7 @@ import {
   rename,
   rmdir,
   stat,
+  statfs,
   symlink,
   unlink,
 } from "node:fs/promises";
@@ -395,6 +396,50 @@ async function recoverSymlink(
 }
 
 export const FILE_TIMESTAMP_LAG_MS = 20;
+
+const LINUX_TIMESTAMP_FILESYSTEMS: ReadonlyMap<number, string> = new Map([
+  [0xef53, "ext4"],
+  [0x58465342, "xfs"],
+  [0x9123683e, "btrfs"],
+  [0x01021994, "tmpfs"],
+]);
+
+export interface TimestampFilesystemProbe {
+  platform?: NodeJS.Platform;
+  statfs?: (target: string) => Promise<{ type: number }>;
+}
+
+function filesystemType(type: number): string {
+  return `0x${type.toString(16)}`;
+}
+
+export async function untrustedTimestampFilesystem(
+  target: string,
+  probe: TimestampFilesystemProbe = {},
+): Promise<string | null> {
+  const platform = probe.platform ?? process.platform;
+  const readType = probe.statfs ?? ((candidate: string) => statfs(candidate));
+  try {
+    const type = (await readType(target)).type;
+    if (platform === "linux")
+      return LINUX_TIMESTAMP_FILESYSTEMS.has(type)
+        ? null
+        : `its filesystem (type ${filesystemType(type)}) is not one whose file timestamps removal can trust (ext4, xfs, btrfs or tmpfs)`;
+    if (platform === "darwin") {
+      const systemType = (await readType("/")).type;
+      return type === systemType
+        ? null
+        : `its filesystem (type ${filesystemType(type)}) is not the system volume's (type ${filesystemType(systemType)}), so its file timestamps may be too coarse for removal to trust`;
+    }
+    return `removal does not trust file timestamps on ${platform}`;
+  } catch (error) {
+    return `its filesystem could not be identified (${error instanceof Error ? error.message : String(error)})`;
+  }
+}
+
+export function coarseFileTimestamp(ctimeNs: bigint): boolean {
+  return ctimeNs % 1_000_000_000n === 0n;
+}
 
 export interface OwnWrite {
   dev: bigint;
