@@ -56,6 +56,18 @@ export function dropMarketplaceSourceGitSubdirectoryColumn(
   }
 }
 
+export function dropThreadStorageDeleteSeqColumn(db: DbConnection): void {
+  const columns = db.$client
+    .prepare<[], { name: string }>("PRAGMA table_info(threads)")
+    .all();
+  if (columns.some((column) => column.name === "storage_delete_seq")) {
+    db.$client.exec(`
+      DROP INDEX IF EXISTS threads_storage_delete_seq_idx;
+      ALTER TABLE threads DROP COLUMN storage_delete_seq;
+    `);
+  }
+}
+
 export function dropThreadParentNotificationsColumn(db: DbConnection): void {
   const columns = db.$client
     .prepare<[], { name: string }>("PRAGMA table_info(threads)")

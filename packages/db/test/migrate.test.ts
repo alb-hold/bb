@@ -9,6 +9,7 @@ import {
   rewindThreadPruningWork,
   dropMarketplaceSourceGitSubdirectoryColumn,
   dropThreadParentNotificationsColumn,
+  dropThreadStorageDeleteSeqColumn,
   dropTerminalDefaultColorsColumn,
   dropQueuedMessageDeliveryModeColumn,
   dropQueuedMessageEditHeldUntilColumn,
@@ -736,6 +737,7 @@ function rewindEnvironmentProvisioningMigration(db: DbConnection): void {
   dropQueuedMessageEditHeldUntilColumn(db);
   dropMarketplaceSourceGitSubdirectoryColumn(db);
   dropThreadParentNotificationsColumn(db);
+  dropThreadStorageDeleteSeqColumn(db);
   dropTerminalDefaultColorsColumn(db);
   dropQueuedMessageDeliveryModeColumn(db);
   db.$client.exec("DROP TRIGGER IF EXISTS threads_lifecycle_owner_insert");
@@ -785,6 +787,7 @@ function rewindEnvironmentProvisioningMigration(db: DbConnection): void {
 function dropQueuedMessageAttemptColumns(db: DbConnection): void {
   rewindQueuedMessageStateMigration(db);
   dropThreadParentNotificationsColumn(db);
+  dropThreadStorageDeleteSeqColumn(db);
   dropTerminalDefaultColorsColumn(db);
   dropQueuedMessageDeliveryModeColumn(db);
   const columns = db.$client
@@ -866,6 +869,7 @@ function rewindMachineProvidersMigration(db: DbConnection): void {
   dropQueuedMessageEditHeldUntilColumn(db);
   dropMarketplaceSourceGitSubdirectoryColumn(db);
   dropThreadParentNotificationsColumn(db);
+  dropThreadStorageDeleteSeqColumn(db);
   dropTerminalDefaultColorsColumn(db);
   dropQueuedMessageDeliveryModeColumn(db);
   db.$client.exec("DROP TABLE IF EXISTS ui_preference_defaults");
@@ -3397,6 +3401,7 @@ describe("migrate", () => {
       dropQueuedMessageEditHeldUntilColumn(db);
       dropMarketplaceSourceGitSubdirectoryColumn(db);
       dropThreadParentNotificationsColumn(db);
+      dropThreadStorageDeleteSeqColumn(db);
       dropTerminalDefaultColorsColumn(db);
       dropQueuedMessageDeliveryModeColumn(db);
       db.$client.prepare("DROP INDEX projects_deleted_idx").run();

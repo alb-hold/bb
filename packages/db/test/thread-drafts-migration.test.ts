@@ -15,6 +15,7 @@ import {
   rewindThreadPruningWork,
   dropMarketplaceSourceGitSubdirectoryColumn,
   dropThreadParentNotificationsColumn,
+  dropThreadStorageDeleteSeqColumn,
   dropTerminalDefaultColorsColumn,
   dropQueuedMessageDeliveryModeColumn,
   dropQueuedMessageEditHeldUntilColumn,
@@ -120,6 +121,7 @@ it.each([false, true])(
       dropQueuedMessageEditHeldUntilColumn(db);
       dropMarketplaceSourceGitSubdirectoryColumn(db);
       dropThreadParentNotificationsColumn(db);
+      dropThreadStorageDeleteSeqColumn(db);
       dropTerminalDefaultColorsColumn(db);
       dropQueuedMessageDeliveryModeColumn(db);
       migrate(db);

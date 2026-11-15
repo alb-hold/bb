@@ -12,6 +12,7 @@ import {
   rewindThreadPruningWork,
   dropMarketplaceSourceGitSubdirectoryColumn,
   dropThreadParentNotificationsColumn,
+  dropThreadStorageDeleteSeqColumn,
   dropTerminalDefaultColorsColumn,
   dropQueuedMessageDeliveryModeColumn,
   dropQueuedMessageEditHeldUntilColumn,
@@ -56,6 +57,7 @@ function upgradeDatabase(overrides: AppKeybindingOverrides | undefined) {
   dropQueuedMessageEditHeldUntilColumn(db);
   dropMarketplaceSourceGitSubdirectoryColumn(db);
   dropThreadParentNotificationsColumn(db);
+  dropThreadStorageDeleteSeqColumn(db);
   dropTerminalDefaultColorsColumn(db);
   dropQueuedMessageDeliveryModeColumn(db);
   db.$client
