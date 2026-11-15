@@ -322,6 +322,22 @@ async function remove(
   ]);
 }
 
+async function filesContaining(
+  directory: string,
+  contents: string,
+): Promise<string[]> {
+  const found: string[] = [];
+  for (const entry of await fs.readdir(directory, {
+    recursive: true,
+    withFileTypes: true,
+  })) {
+    if (!entry.isFile()) continue;
+    const candidate = path.join(entry.parentPath, entry.name);
+    if ((await readFile(candidate, "utf8")) === contents) found.push(candidate);
+  }
+  return found;
+}
+
 async function gitAt(
   worktreePath: string,
   gitDir: string,
@@ -939,6 +955,79 @@ describe("real worktree teardown preservation", () => {
       name.startsWith(".bb-removing-"),
     );
     expect(leftovers).toEqual([]);
+  });
+
+  it("keeps a write through a descriptor held on teardown's gitdir file", async () => {
+    const worktree = await makeWorktree();
+    const gitDir = (
+      await git(worktree.path, "rev-parse", "--absolute-git-dir")
+    ).trim();
+    useProcReaderForTests(descendantsOnly(hostProc, -1));
+    let held: Awaited<ReturnType<typeof fs.open>> | undefined;
+    let gitdirFile = "";
+    let written = "";
+    let removalError: unknown;
+    try {
+      await remove(worktree, {
+        afterFinalInspection: async (_target, severed) => {
+          gitdirFile = path.join(severed, "gitdir");
+          held = await fs.open(gitdirFile, "r+");
+        },
+        beforeEntryRemoval: async (entry) => {
+          if (entry !== gitdirFile || held === undefined || written !== "")
+            return;
+          const original = await readFile(gitdirFile, "utf8");
+          written = original.replace(/.$/su, "X");
+          await delay(20);
+          await held.write(written, 0);
+        },
+      });
+    } catch (error) {
+      removalError = error;
+    } finally {
+      await held?.close();
+    }
+    expect(written, String(removalError)).not.toBe("");
+    expect(removalError).toMatchObject({ code: "worktree_preserved" });
+    expect(String(removalError)).toContain(
+      "new or changed Git metadata was found during admin-directory removal",
+    );
+    await expect(
+      filesContaining(path.dirname(gitDir), written),
+    ).resolves.not.toEqual([]);
+  });
+
+  it("keeps a file created in the Git metadata while teardown removes its gitdir file", async () => {
+    const worktree = await makeWorktree();
+    const gitDir = (
+      await git(worktree.path, "rev-parse", "--absolute-git-dir")
+    ).trim();
+    useProcReaderForTests(descendantsOnly(hostProc, -1));
+    let gitdirFile = "";
+    let created = false;
+    let removalError: unknown;
+    try {
+      await remove(worktree, {
+        afterFinalInspection: async (_target, severed) => {
+          gitdirFile = path.join(severed, "gitdir");
+        },
+        afterEntryCheck: async (entry) => {
+          if (entry !== gitdirFile || created) return;
+          await writeFile(
+            path.join(path.dirname(gitdirFile), "ORIG_HEAD"),
+            "late-ref\n",
+          );
+          created = true;
+        },
+      });
+    } catch (error) {
+      removalError = error;
+    }
+    expect(created, String(removalError)).toBe(true);
+    expect(removalError).toMatchObject({ code: "worktree_preserved" });
+    await expect(
+      filesContaining(path.dirname(gitDir), "late-ref\n"),
+    ).resolves.not.toEqual([]);
   });
 
   it("retains a detached commit created after the final check", async () => {
