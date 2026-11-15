@@ -113,6 +113,7 @@ interface RemoveWorktreeArgs {
         now?: () => number;
         timestampFilesystem?: TimestampFilesystemProbe;
         renamedCtimeNs?: (renamed: string, actual: bigint) => bigint;
+        entryDevice?: (entry: string, device: number) => number;
         afterFinalBaseline?: (
           worktreePath: string,
           gitDir: string,
@@ -1066,9 +1067,14 @@ async function removeRegisteredWorktree(
         recoveryWrite: args.testHooks?.recoveryWrite,
         beforePinCleanup: args.testHooks?.beforePinCleanup,
         createPinSuffix: args.testHooks?.createPinSuffix,
+        entryDevice: args.testHooks?.entryDevice,
       });
       if (removed.status === "retained") {
         throw worktreePreservedError(identity.path, [
+          ...removed.mountedPaths.map(
+            (mountedPath) =>
+              `a different filesystem is mounted here: ${path.join(identity.path, path.relative(quarantinedPath, mountedPath))}`,
+          ),
           "new or changed data was found during directory removal; the directory may be partially removed",
           ...removed.retainedPaths.map(
             (retainedPath) =>
@@ -1091,9 +1097,14 @@ async function removeRegisteredWorktree(
         beforeEntryRename: args.testHooks?.beforeEntryRename,
         afterEntryCheck: args.testHooks?.afterEntryCheck,
         afterEntryQuarantined: args.testHooks?.afterEntryQuarantined,
+        entryDevice: args.testHooks?.entryDevice,
       });
       if (removedGitDir.status === "retained") {
         throw worktreePreservedError(severedGitDir, [
+          ...removedGitDir.mountedPaths.map(
+            (mountedPath) =>
+              `a different filesystem is mounted here: ${mountedPath}`,
+          ),
           "new or changed Git metadata was found during admin-directory removal",
           ...removedGitDir.retainedPaths.map(
             (entry) => `preserved entry at ${entry}`,

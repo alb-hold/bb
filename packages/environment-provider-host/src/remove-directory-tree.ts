@@ -60,11 +60,13 @@ export interface RemoveDirectoryTreeHooks {
   afterRootMarkerDetached?: (root: string) => Promise<void>;
   allowQuarantinedRoot?: true;
   ownWrites?: ReadonlyMap<string, OwnWrite>;
+  entryDevice?: (entry: string, device: number) => number;
 }
 
 export interface RemoveDirectoryTreeResult {
   status: "removed" | "retained";
   retainedPaths: string[];
+  mountedPaths: string[];
 }
 
 type RemoveEntryResult = RemoveDirectoryTreeResult["status"];
@@ -582,6 +584,7 @@ export async function removeDirectoryTree(
   const startedAt = hooks.startedAt ?? Date.now();
   const readDirectoryNames = hooks.readDirectoryNames ?? readdir;
   const retainedPaths = new Set<string>();
+  const mountedPaths = new Set<string>();
   const activePins = new Set<string>();
   const displayPathMappings = new Map<string, string>();
   const displayPath = (candidate: string): string => {
@@ -603,7 +606,11 @@ export async function removeDirectoryTree(
   const result = (status: RemoveEntryResult): RemoveDirectoryTreeResult => {
     if (status === "retained" && retainedPaths.size === 0)
       reportRetainedPath(root);
-    return { status, retainedPaths: [...retainedPaths] };
+    return {
+      status,
+      retainedPaths: [...retainedPaths],
+      mountedPaths: [...mountedPaths],
+    };
   };
   await hooks.afterStart?.(startedAt);
   if (
@@ -623,6 +630,20 @@ export async function removeDirectoryTree(
     return result("retained");
   }
   displayPathMappings.set(parentPath, path.dirname(path.resolve(root)));
+  let rootDevice: number;
+  try {
+    rootDevice = (await lstat(root)).dev;
+  } catch {
+    await parent.close();
+    return result("retained");
+  }
+  const crossesDevice = (entry: string, device: number): boolean => {
+    if ((hooks.entryDevice?.(entry, device) ?? device) === rootDevice)
+      return false;
+    mountedPaths.add(displayPath(entry));
+    reportRetainedPath(entry);
+    return true;
+  };
   const inspectBeforeRemoval = async (
     directory: string,
     rootEntry = false,
@@ -630,9 +651,10 @@ export async function removeDirectoryTree(
     const ownWrite = rootEntry ? undefined : hooks.ownWrites?.get(directory);
     if (ownWrite !== undefined) {
       try {
-        return matchesOwnWrite(
-          await lstat(directory, { bigint: true }),
-          ownWrite,
+        const precise = await lstat(directory, { bigint: true });
+        return (
+          !crossesDevice(directory, Number(precise.dev)) &&
+          matchesOwnWrite(precise, ownWrite)
         );
       } catch {
         return false;
@@ -644,6 +666,7 @@ export async function removeDirectoryTree(
     } catch {
       return false;
     }
+    if (crossesDevice(directory, info.dev)) return false;
     const rootChangedSinceBaseline =
       rootEntry &&
       hooks.rootMetadataBaseline !== undefined &&
@@ -733,6 +756,7 @@ export async function removeDirectoryTree(
     } catch (error) {
       return errorCode(error) === "ENOENT" ? "removed" : retainedEntry();
     }
+    if (crossesDevice(entry, info.dev)) return "retained";
     const rootChangedSinceBaseline =
       rootEntry &&
       hooks.rootMetadataBaseline !== undefined &&

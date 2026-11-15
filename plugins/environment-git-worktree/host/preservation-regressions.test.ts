@@ -83,7 +83,7 @@ async function removeDirectoryTree(
     await import(moduleUrl)
   ).removeDirectoryTree(root, hooks);
   if (result === "removed" || result === "retained")
-    return { status: result, retainedPaths: [] };
+    return { status: result, retainedPaths: [], mountedPaths: [] };
   return result as RemoveDirectoryTreeResult;
 }
 
@@ -288,6 +288,7 @@ async function remove(
       statfs?: (target: string) => Promise<{ type: number }>;
     };
     renamedCtimeNs?: (renamed: string, actual: bigint) => bigint;
+    entryDevice?: (entry: string, device: number) => number;
     afterFinalBaseline?: (
       worktreePath: string,
       gitDir: string,
@@ -972,6 +973,38 @@ describe("real worktree teardown preservation", () => {
     );
     expect(leftovers).toEqual([]);
   });
+
+  it.each([
+    ["a directory", "node_modules", "node_modules/x", "x"],
+    ["a file", "README.md", "README.md", "published\n"],
+  ] as const)(
+    "keeps a worktree when %s inside it is on another filesystem",
+    async (_kind, mounted, kept, contents) => {
+      const worktree = await makeWorktree(undefined, "node_modules/\n");
+      await mkdir(path.join(worktree.path, "node_modules"));
+      await writeFile(path.join(worktree.path, "node_modules", "x"), "x");
+      useProcReaderForTests(descendantsOnly(hostProc, -1));
+      let removalError: unknown;
+      try {
+        await remove(worktree, {
+          entryDevice: (entry, device) =>
+            path.basename(entry) === mounted &&
+            path.basename(path.dirname(entry)).includes(".removing-")
+              ? device + 1
+              : device,
+        });
+      } catch (error) {
+        removalError = error;
+      }
+      expect(removalError).toMatchObject({ code: "worktree_preserved" });
+      expect(String(removalError)).toContain(
+        `a different filesystem is mounted here: ${path.join(worktree.path, mounted)}`,
+      );
+      await expect(
+        readFile(path.join(worktree.path, kept), "utf8"),
+      ).resolves.toBe(contents);
+    },
+  );
 
   it("keeps a worktree on a filesystem whose timestamps removal does not trust", async () => {
     const worktree = await makeWorktree();

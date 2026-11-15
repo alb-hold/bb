@@ -30,8 +30,9 @@ async function renamedTree() {
   await fs.mkdir(path.join(original, "logs"), { recursive: true });
   await fs.writeFile(path.join(original, "HEAD"), "ref: refs/heads/main\n");
   await fs.writeFile(path.join(original, "gitdir"), "/old/.git\n");
+  await fs.writeFile(path.join(original, "logs", "HEAD"), "old log\n");
   const old = new Date("2001-01-01T00:00:00Z");
-  for (const entry of ["logs", "HEAD", "gitdir", ""])
+  for (const entry of ["logs/HEAD", "logs", "HEAD", "gitdir", ""])
     await fs.utimes(path.join(original, entry), old, old);
   await delay(100);
   const startedAt = Date.now() - 20;
@@ -129,6 +130,7 @@ it("removes a tree whose own write is untouched", async () => {
 
   await expect(removeTree(tree)).resolves.toMatchObject({
     status: "removed",
+    mountedPaths: [],
   });
   await expect(fs.access(tree.root)).rejects.toThrow();
 });
@@ -212,4 +214,47 @@ it("keeps a file created in the tree while the own write is being removed", asyn
   expect(created).toBe(true);
   expect(result.status).toBe("retained");
   await expect(fs.readFile(late, "utf8")).resolves.toBe("late\n");
+});
+
+it.each([
+  ["a directory", "logs"],
+  ["a file", "HEAD"],
+] as const)(
+  "keeps the whole tree when %s in it is on another device",
+  async (_kind, mounted) => {
+    const tree = await renamedTree();
+    const mountPoint = path.join(tree.root, mounted);
+
+    const result = await removeTree(tree, {
+      entryDevice: (entry, device) =>
+        entry === mountPoint ? device + 1 : device,
+    });
+
+    expect(result.status).toBe("retained");
+    expect(result.mountedPaths).toEqual([mountPoint]);
+    await expect(
+      fs.readFile(path.join(tree.root, "logs", "HEAD"), "utf8"),
+    ).resolves.toBe("old log\n");
+    await expect(
+      fs.readFile(path.join(tree.root, "HEAD"), "utf8"),
+    ).resolves.toBe("ref: refs/heads/main\n");
+  },
+);
+
+it("keeps an entry that another filesystem is mounted on after inspection", async () => {
+  const tree = await renamedTree();
+  const mountPoint = path.join(tree.root, "logs");
+  let checks = 0;
+
+  const result = await removeTree(tree, {
+    entryDevice: (entry, device) =>
+      entry === mountPoint && ++checks > 1 ? device + 1 : device,
+  });
+
+  expect(checks).toBe(2);
+  expect(result.status).toBe("retained");
+  expect(result.mountedPaths).toEqual([mountPoint]);
+  await expect(
+    fs.readFile(path.join(tree.root, "logs", "HEAD"), "utf8"),
+  ).resolves.toBe("old log\n");
 });
