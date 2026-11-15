@@ -1030,6 +1030,35 @@ describe("real worktree teardown preservation", () => {
     },
   );
 
+  it("keeps a worktree whose Git metadata changed inside the margin, then removes it on a retry after the margin", async () => {
+    const worktree = await makeWorktree();
+    const gitDir = (
+      await git(worktree.path, "rev-parse", "--absolute-git-dir")
+    ).trim();
+    const late = path.join(gitDir, "inside-margin");
+    useProcReaderForTests(descendantsOnly(hostProc, -1));
+    const first = remove(worktree, {
+      now: () => {
+        writeFileSync(late, "inside\n");
+        return Date.now();
+      },
+    });
+    await expect(first).rejects.toMatchObject({ code: "worktree_preserved" });
+    await expect(first).rejects.toThrow(
+      "new or changed Git metadata was found after its final inspection",
+    );
+    await expect(
+      readFile(path.join(worktree.path, "README.md"), "utf8"),
+    ).resolves.toBe("published\n");
+    await expect(readFile(late, "utf8")).resolves.toBe("inside\n");
+    await delay(FILE_TIMESTAMP_LAG_MS + 50);
+    await remove(worktree);
+    await expect(access(worktree.path)).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    await expect(access(gitDir)).rejects.toThrow();
+  });
+
   it.runIf(process.platform === "linux" && existsSync("/dev/shm"))(
     "removes a clean worktree on a real Linux tmpfs, whose file timestamps removal trusts",
     async () => {
