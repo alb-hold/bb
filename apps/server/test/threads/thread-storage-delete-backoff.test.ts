@@ -365,19 +365,21 @@ describe("refused thread storage deletes", () => {
             status: "idle",
           }).id,
       );
-      const seedDeleted = () =>
-        seedDeletedThreadIn(harness, {
+      const seedDeleted = (minutesBeforeStart: number) => {
+        vi.setSystemTime(START_MS - minutesBeforeStart * 60_000);
+        return seedDeletedThreadIn(harness, {
           environmentId: environment.id,
           projectId: project.id,
         });
-      const alwaysRefusedThreadId = seedDeleted();
+      };
+      const alwaysRefusedThreadId = seedDeleted(4);
       const dueRowsAheadOfA = [
         alwaysRefusedThreadId,
-        seedDeleted(),
-        seedDeleted(),
-        seedDeleted(),
+        seedDeleted(3),
+        seedDeleted(2),
+        seedDeleted(1),
       ];
-      const threadA = seedDeleted();
+      const threadA = seedDeleted(0);
       const released = new Set([threadA]);
       const requestsBySlot: string[][] = [];
       for (let slot = 0; slot < slotCount; slot += 1) {
