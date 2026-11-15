@@ -6,6 +6,7 @@ import { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { FILE_TIMESTAMP_LAG_MS } from "bb-environment-provider-host/remove-directory-tree";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   mkdirHostPath,
@@ -496,7 +497,7 @@ describe("confined host path mutations", () => {
       const target = path.join(root, "lagging-clock");
       await fs.mkdir(target);
       await fs.writeFile(path.join(target, "old.txt"), "old");
-      await delay(50);
+      await delay(FILE_TIMESTAMP_LAG_MS + 50);
       let injected = false;
       await expect(
         removeDirectoryAfterHolderRecheck({
@@ -525,7 +526,7 @@ describe("confined host path mutations", () => {
       await fs.mkdir(path.join(target, "nested"), { recursive: true });
       await fs.writeFile(path.join(target, "old.txt"), "old");
       await fs.writeFile(path.join(target, "nested", "deep.txt"), "deep");
-      await delay(50);
+      await delay(FILE_TIMESTAMP_LAG_MS + 50);
       let quarantined: string | undefined;
       await expect(
         removeDirectoryAfterHolderRecheck({
@@ -562,7 +563,7 @@ describe("confined host path mutations", () => {
       await fs.mkdir(path.join(target, "nested"), { recursive: true });
       await fs.writeFile(path.join(target, "a.txt"), "a");
       await fs.writeFile(path.join(target, "nested", "b.txt"), "b");
-      await delay(50);
+      await delay(FILE_TIMESTAMP_LAG_MS + 50);
       await expect(
         removeDirectoryAfterHolderRecheck({
           directory: target,
@@ -673,7 +674,7 @@ describe("confined host path mutations", () => {
       }),
     ).rejects.toThrow();
     await expect(fs.stat(nonEmpty)).resolves.toMatchObject({});
-    await delay(50);
+    await delay(FILE_TIMESTAMP_LAG_MS + 50);
     await expect(
       removeHostPath({
         type: "host.remove_path",
