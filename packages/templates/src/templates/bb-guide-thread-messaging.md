@@ -33,8 +33,11 @@ Messaging:
   `waitingOn: turn-starting`; `turn/started` wakes it and steers it into that
   turn. A target that is awaiting user interaction (an open question or
   approval) cannot take a prompt; tell then adds the message to the thread's
-  queue and dispatches it once the interaction settles. That outcome is not a
-  failure, so do not resend. `--json` reports `delivery` as `sent` or `queued`,
+  queue and dispatches it once the interaction settles. That includes a native
+  terminal thread with an open question or permission prompt: nothing is typed
+  into its terminal until the question is answered, dismissed or interrupted,
+  and `bb thread show` prints `Queued messages: N` meanwhile. That outcome is
+  not a failure, so do not resend. `--json` reports `delivery` as `sent` or `queued`,
   and a queued answer carries the complete row as `queuedMessage`, including
   its `id`, `waitingOn`, and `sendAt`. A deferred message waits for a thread
   that failed while it was deferred, and delivers when the thread is retried.

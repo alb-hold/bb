@@ -10,8 +10,10 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { experimental_createHostEntryHarness } from "@get-bb/plugin-sdk/testing/host";
+import { FILE_TIMESTAMP_LAG_MS } from "bb-environment-provider-host/remove-directory-tree";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createWorktreeHostEntry } from "./host.js";
 
@@ -173,6 +175,7 @@ describe("worktree removal when its machinery fails", () => {
     const second = await addWorktree(fixture, "b-second");
     const third = await addWorktree(fixture, "c-third");
     lockBehavior.failing = "b-second";
+    await delay(FILE_TIMESTAMP_LAG_MS + 50);
 
     const result = await fixture.harness.experimental_call("remove", {
       operationId: "remove",

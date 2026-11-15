@@ -9,6 +9,7 @@ import {
   rename,
   rmdir,
   stat,
+  statfs,
   symlink,
   unlink,
 } from "node:fs/promises";
@@ -58,11 +59,14 @@ export interface RemoveDirectoryTreeHooks {
   onRetainedPath?: (retainedPath: string) => void;
   afterRootMarkerDetached?: (root: string) => Promise<void>;
   allowQuarantinedRoot?: true;
+  ownWrites?: ReadonlyMap<string, OwnWrite>;
+  entryDevice?: (entry: string, device: number) => number;
 }
 
 export interface RemoveDirectoryTreeResult {
   status: "removed" | "retained";
   retainedPaths: string[];
+  mountedPaths: string[];
 }
 
 type RemoveEntryResult = RemoveDirectoryTreeResult["status"];
@@ -393,18 +397,128 @@ async function recoverSymlink(
   );
 }
 
+export const FILE_TIMESTAMP_LAG_MS = 50;
+
+const LINUX_TIMESTAMP_FILESYSTEMS: ReadonlyMap<number, string> = new Map([
+  [0xef53, "ext4"],
+  [0x58465342, "xfs"],
+  [0x9123683e, "btrfs"],
+  [0x01021994, "tmpfs"],
+]);
+
+export interface TimestampFilesystemProbe {
+  platform?: NodeJS.Platform;
+  statfs?: (target: string) => Promise<{ type: number }>;
+}
+
+function filesystemType(type: number): string {
+  return `0x${type.toString(16)}`;
+}
+
+export async function untrustedTimestampFilesystem(
+  target: string,
+  probe: TimestampFilesystemProbe = {},
+): Promise<string | null> {
+  const platform = probe.platform ?? process.platform;
+  const readType = probe.statfs ?? ((candidate: string) => statfs(candidate));
+  try {
+    const type = (await readType(target)).type;
+    if (platform === "linux")
+      return LINUX_TIMESTAMP_FILESYSTEMS.has(type)
+        ? null
+        : `its filesystem (type ${filesystemType(type)}) is not one whose file timestamps removal can trust (ext4, xfs, btrfs or tmpfs)`;
+    if (platform === "darwin") {
+      const systemType = (await readType("/")).type;
+      return type === systemType
+        ? null
+        : `its filesystem (type ${filesystemType(type)}) is not the system volume's (type ${filesystemType(systemType)}), so its file timestamps may be too coarse for removal to trust`;
+    }
+    return `removal does not trust file timestamps on ${platform}`;
+  } catch (error) {
+    return `its filesystem could not be identified (${error instanceof Error ? error.message : String(error)})`;
+  }
+}
+
+export function coarseFileTimestamp(ctimeNs: bigint): boolean {
+  return ctimeNs % 1_000_000_000n === 0n;
+}
+
+export interface OwnWrite {
+  dev: bigint;
+  ino: bigint;
+  size: bigint;
+  ctimeNs: bigint;
+  mtimeNs: bigint;
+  sha256: string;
+}
+
+export async function recordOwnWrite(
+  file: string,
+  contents: string,
+): Promise<OwnWrite> {
+  const info = await lstat(file, { bigint: true });
+  return {
+    dev: info.dev,
+    ino: info.ino,
+    size: info.size,
+    ctimeNs: info.ctimeNs,
+    mtimeNs: info.mtimeNs,
+    sha256: createHash("sha256").update(contents).digest("hex"),
+  };
+}
+
+function matchesOwnWrite(
+  info: {
+    isFile(): boolean;
+    dev: bigint;
+    ino: bigint;
+    size: bigint;
+    ctimeNs: bigint;
+    mtimeNs: bigint;
+  },
+  expected: OwnWrite,
+): boolean {
+  return (
+    info.isFile() &&
+    info.dev === expected.dev &&
+    info.ino === expected.ino &&
+    info.size === expected.size &&
+    info.ctimeNs === expected.ctimeNs &&
+    info.mtimeNs === expected.mtimeNs
+  );
+}
+
 export async function directoryTreeChangedSince(
   root: string,
   startedAt: number,
+  baseline: {
+    rootMetadata?: { ctimeMs: number; mtimeMs: number };
+    ownWrites?: ReadonlyMap<string, OwnWrite>;
+  } = {},
 ): Promise<boolean> {
   const inspect = async (entry: string): Promise<boolean> => {
+    const ownWrite = baseline.ownWrites?.get(entry);
+    if (ownWrite !== undefined) {
+      try {
+        return !matchesOwnWrite(await lstat(entry, { bigint: true }), ownWrite);
+      } catch {
+        return true;
+      }
+    }
     let info;
     try {
       info = await lstat(entry);
     } catch {
       return true;
     }
-    if (changedSince(info, startedAt)) return true;
+    const rootMetadata = entry === root ? baseline.rootMetadata : undefined;
+    if (
+      rootMetadata === undefined
+        ? changedSince(info, startedAt)
+        : info.ctimeMs > rootMetadata.ctimeMs ||
+          info.mtimeMs > rootMetadata.mtimeMs
+    )
+      return true;
     if (!info.isDirectory()) return false;
     let listed: string[];
     try {
@@ -470,6 +584,7 @@ export async function removeDirectoryTree(
   const startedAt = hooks.startedAt ?? Date.now();
   const readDirectoryNames = hooks.readDirectoryNames ?? readdir;
   const retainedPaths = new Set<string>();
+  const mountedPaths = new Set<string>();
   const activePins = new Set<string>();
   const displayPathMappings = new Map<string, string>();
   const displayPath = (candidate: string): string => {
@@ -491,7 +606,11 @@ export async function removeDirectoryTree(
   const result = (status: RemoveEntryResult): RemoveDirectoryTreeResult => {
     if (status === "retained" && retainedPaths.size === 0)
       reportRetainedPath(root);
-    return { status, retainedPaths: [...retainedPaths] };
+    return {
+      status,
+      retainedPaths: [...retainedPaths],
+      mountedPaths: [...mountedPaths],
+    };
   };
   await hooks.afterStart?.(startedAt);
   if (
@@ -511,16 +630,43 @@ export async function removeDirectoryTree(
     return result("retained");
   }
   displayPathMappings.set(parentPath, path.dirname(path.resolve(root)));
+  let rootDevice: number;
+  try {
+    rootDevice = (await lstat(root)).dev;
+  } catch {
+    await parent.close();
+    return result("retained");
+  }
+  const crossesDevice = (entry: string, device: number): boolean => {
+    if ((hooks.entryDevice?.(entry, device) ?? device) === rootDevice)
+      return false;
+    mountedPaths.add(displayPath(entry));
+    reportRetainedPath(entry);
+    return true;
+  };
   const inspectBeforeRemoval = async (
     directory: string,
     rootEntry = false,
   ): Promise<boolean> => {
+    const ownWrite = rootEntry ? undefined : hooks.ownWrites?.get(directory);
+    if (ownWrite !== undefined) {
+      try {
+        const precise = await lstat(directory, { bigint: true });
+        return (
+          !crossesDevice(directory, Number(precise.dev)) &&
+          matchesOwnWrite(precise, ownWrite)
+        );
+      } catch {
+        return false;
+      }
+    }
     let info;
     try {
       info = await lstat(directory);
     } catch {
       return false;
     }
+    if (crossesDevice(directory, info.dev)) return false;
     const rootChangedSinceBaseline =
       rootEntry &&
       hooks.rootMetadataBaseline !== undefined &&
@@ -603,12 +749,14 @@ export async function removeDirectoryTree(
       return "retained";
     };
     const anchoredEntry = path.join(parentDirectory, name);
+    const ownWrite = rootEntry ? undefined : hooks.ownWrites?.get(entry);
     let info;
     try {
       info = await lstat(anchoredEntry);
     } catch (error) {
       return errorCode(error) === "ENOENT" ? "removed" : retainedEntry();
     }
+    if (crossesDevice(entry, info.dev)) return "retained";
     const rootChangedSinceBaseline =
       rootEntry &&
       hooks.rootMetadataBaseline !== undefined &&
@@ -619,7 +767,9 @@ export async function removeDirectoryTree(
         ? (hooks.rootMetadataBaseline === undefined &&
             changedSince(info, startedAt)) ||
           rootChangedSinceBaseline
-        : changedSince(info, startedAt)
+        : ownWrite === undefined
+          ? changedSince(info, startedAt)
+          : !info.isFile()
     ) {
       return retainedEntry();
     }
@@ -646,7 +796,7 @@ export async function removeDirectoryTree(
       if (
         beforeRemovalInfo.dev !== info.dev ||
         beforeRemovalInfo.ino !== info.ino ||
-        changedSince(beforeRemovalInfo, startedAt)
+        (ownWrite === undefined && changedSince(beforeRemovalInfo, startedAt))
       ) {
         return retainedEntry();
       }
@@ -670,13 +820,15 @@ export async function removeDirectoryTree(
       if (
         Number(checkedPreciseInfo.dev) !== info.dev ||
         Number(checkedPreciseInfo.ino) !== info.ino ||
-        changedSince(
-          {
-            ctimeMs: Number(checkedPreciseInfo.ctimeNs) / 1_000_000,
-            mtimeMs: Number(checkedPreciseInfo.mtimeNs) / 1_000_000,
-          },
-          startedAt,
-        )
+        (ownWrite === undefined
+          ? changedSince(
+              {
+                ctimeMs: Number(checkedPreciseInfo.ctimeNs) / 1_000_000,
+                mtimeMs: Number(checkedPreciseInfo.mtimeNs) / 1_000_000,
+              },
+              startedAt,
+            )
+          : !matchesOwnWrite(checkedPreciseInfo, ownWrite))
       ) {
         return retainedEntry();
       }
@@ -865,6 +1017,15 @@ export async function removeDirectoryTree(
             openedInfo.mtimeNs !== checkedPreciseInfo.mtimeNs ||
             openedInfo.ctimeNs !== checkedPreciseInfo.ctimeNs ||
             openedInfo.mode !== checkedPreciseInfo.mode
+          ) {
+            await fileHandle.close();
+            fileHandle = null;
+            return retainedEntry();
+          }
+          if (
+            ownWrite !== undefined &&
+            (await hashFileHandle(fileHandle, openedInfo.size)) !==
+              ownWrite.sha256
           ) {
             await fileHandle.close();
             fileHandle = null;

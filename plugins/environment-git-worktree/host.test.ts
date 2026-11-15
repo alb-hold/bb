@@ -15,8 +15,10 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { experimental_createHostEntryHarness } from "@get-bb/plugin-sdk/testing/host";
+import { FILE_TIMESTAMP_LAG_MS } from "bb-environment-provider-host/remove-directory-tree";
 import { afterEach, describe, expect, it } from "vitest";
 import { createWorktreeHostEntry } from "./host.js";
 import { worktreeHostContract } from "./contract.js";
@@ -305,7 +307,9 @@ describe("worktree host entry", () => {
         "uncommitted\n",
       );
       expect((await git(first.path, "rev-parse", "HEAD")).trim()).toBe(tip);
-      expect(progressText(harness)).toContain("Continuing on bb/work-thr_ret.r2");
+      expect(progressText(harness)).toContain(
+        "Continuing on bb/work-thr_ret.r2",
+      );
       expect(progressText(harness)).not.toContain("uncommitted\n");
     } finally {
       await harness.experimental_dispose();
@@ -313,34 +317,44 @@ describe("worktree host entry", () => {
   });
 
   it.each([
-    ["two branches could belong to the earlier attempt", ["bb/a-thr_amb", "bb/b-thr_amb"]],
-  ] as const)("refuses a retry and creates nothing when %s", async (_label, branches) => {
-    const { sourcePath, dataDir } = await createSourceRepository();
-    for (const branch of branches) await git(sourcePath, "branch", branch);
-    const harness = createHarness(dataDir);
-    try {
-      const result = await harness.experimental_call("create", {
-        ...createInput({
-          operationId: "retry",
-          sourcePath,
-          pathKey: "thr_amb-2",
-          branchName: "bb/work-thr_amb.r2",
-        }),
-        previousAttempt: { threadId: "thr_amb", attempt: 2 },
-      });
+    [
+      "two branches could belong to the earlier attempt",
+      ["bb/a-thr_amb", "bb/b-thr_amb"],
+    ],
+  ] as const)(
+    "refuses a retry and creates nothing when %s",
+    async (_label, branches) => {
+      const { sourcePath, dataDir } = await createSourceRepository();
+      for (const branch of branches) await git(sourcePath, "branch", branch);
+      const harness = createHarness(dataDir);
+      try {
+        const result = await harness.experimental_call("create", {
+          ...createInput({
+            operationId: "retry",
+            sourcePath,
+            pathKey: "thr_amb-2",
+            branchName: "bb/work-thr_amb.r2",
+          }),
+          previousAttempt: { threadId: "thr_amb", attempt: 2 },
+        });
 
-      expect(result).toMatchObject({
-        status: "failed",
-        message: expect.stringMatching(/Cannot continue from (the|an) earlier attempt/),
-      });
-      expect(
-        (await git(sourcePath, "branch", "--list", "bb/work-thr_amb.r2")).trim(),
-      ).toBe("");
-      expect(existsSync(join(dataDir, "worktrees", "thr_amb-2"))).toBe(false);
-    } finally {
-      await harness.experimental_dispose();
-    }
-  });
+        expect(result).toMatchObject({
+          status: "failed",
+          message: expect.stringMatching(
+            /Cannot continue from (the|an) earlier attempt/,
+          ),
+        });
+        expect(
+          (
+            await git(sourcePath, "branch", "--list", "bb/work-thr_amb.r2")
+          ).trim(),
+        ).toBe("");
+        expect(existsSync(join(dataDir, "worktrees", "thr_amb-2"))).toBe(false);
+      } finally {
+        await harness.experimental_dispose();
+      }
+    },
+  );
 
   it("walks back to the latest earlier attempt branch that exists and does not mistake a slug ending in r2 for an attempt branch", async () => {
     const { sourcePath, dataDir } = await createSourceRepository();
@@ -371,9 +385,7 @@ describe("worktree host entry", () => {
       expect(third.status).toBe("created");
       if (third.status !== "created") throw new Error(third.message);
       expect((await git(third.path, "rev-parse", "HEAD")).trim()).toBe(tip);
-      expect(progressText(harness)).toContain(
-        "from bb/fix-r2-thr_wb at",
-      );
+      expect(progressText(harness)).toContain("from bb/fix-r2-thr_wb at");
     } finally {
       await harness.experimental_dispose();
     }
@@ -438,7 +450,9 @@ describe("worktree host entry", () => {
       });
 
       expect(result.status).toBe("created");
-      expect(progressText(harness)).toContain("nothing from an earlier attempt could be lost");
+      expect(progressText(harness)).toContain(
+        "nothing from an earlier attempt could be lost",
+      );
     } finally {
       await harness.experimental_dispose();
     }
@@ -454,32 +468,37 @@ describe("worktree host entry", () => {
         return "the workspace at";
       },
     ],
-  ] as const)("refuses a branchless retry and names the blocker when %s remains", async (_label, leave) => {
-    const { sourcePath, dataDir } = await createSourceRepository();
-    const blocker = await leave(sourcePath, dataDir);
-    const harness = createHarness(dataDir);
-    try {
-      const result = await harness.experimental_call("create", {
-        ...createInput({
-          operationId: "blocked-retry",
-          sourcePath,
-          pathKey: "thr_left-2",
-          branchName: "bb/work-thr_left.r2",
-        }),
-        previousAttempt: { threadId: "thr_left", attempt: 2 },
-      });
+  ] as const)(
+    "refuses a branchless retry and names the blocker when %s remains",
+    async (_label, leave) => {
+      const { sourcePath, dataDir } = await createSourceRepository();
+      const blocker = await leave(sourcePath, dataDir);
+      const harness = createHarness(dataDir);
+      try {
+        const result = await harness.experimental_call("create", {
+          ...createInput({
+            operationId: "blocked-retry",
+            sourcePath,
+            pathKey: "thr_left-2",
+            branchName: "bb/work-thr_left.r2",
+          }),
+          previousAttempt: { threadId: "thr_left", attempt: 2 },
+        });
 
-      expect(result).toMatchObject({
-        status: "failed",
-        message: expect.stringContaining(blocker),
-      });
-      expect(
-        (await git(sourcePath, "branch", "--list", "bb/work-thr_left.r2")).trim(),
-      ).toBe("");
-    } finally {
-      await harness.experimental_dispose();
-    }
-  });
+        expect(result).toMatchObject({
+          status: "failed",
+          message: expect.stringContaining(blocker),
+        });
+        expect(
+          (
+            await git(sourcePath, "branch", "--list", "bb/work-thr_left.r2")
+          ).trim(),
+        ).toBe("");
+      } finally {
+        await harness.experimental_dispose();
+      }
+    },
+  );
 
   it("refuses to replace a target path that already exists", async () => {
     const { sourcePath, dataDir } = await createSourceRepository();
@@ -633,6 +652,7 @@ describe("worktree host entry", () => {
       });
       if (result.status !== "created") throw new Error(result.message);
       expect(existsSync(join(result.path, "README.md"))).toBe(true);
+      await delay(FILE_TIMESTAMP_LAG_MS + 50);
       expect(
         await harness.experimental_call("remove", {
           operationId: "remove-special",
@@ -1030,6 +1050,7 @@ describe("worktree host entry", () => {
     await expect
       .poll(() => isPidAlive(lingering.pid ?? 0), { timeout: 10_000 })
       .toBe(false);
+    await delay(FILE_TIMESTAMP_LAG_MS + 50);
     const removed = await harness.experimental_call("remove", {
       operationId: "remove",
       pathKey: "thr_6",
@@ -1521,6 +1542,7 @@ describe.skipIf(process.platform === "win32")(
           ).trim(),
         ).toBe("0");
         await stopLingering(worktree);
+        await delay(FILE_TIMESTAMP_LAG_MS + 50);
         expect(await removeFrom(worktree)).toEqual(expectedRemoved());
         await expectWorktreeRemoved(worktree);
       } finally {
@@ -1573,6 +1595,7 @@ describe.skipIf(process.platform === "win32")(
           await git(worktree.path, "branch", "-r", "--contains", sha),
         ).toBe("");
         await stopLingering(worktree);
+        await delay(FILE_TIMESTAMP_LAG_MS + 50);
         expect(await removeFrom(worktree)).toEqual(expectedRemoved());
         await expectWorktreeRemoved(worktree);
       } finally {
@@ -1607,6 +1630,7 @@ describe.skipIf(process.platform === "win32")(
         await writeFile(join(worktree.sourcePath, "README.md"), "other\n");
         await git(worktree.sourcePath, "stash", "push");
         await stopLingering(worktree);
+        await delay(FILE_TIMESTAMP_LAG_MS + 50);
         expect(await removeFrom(worktree)).toEqual(expectedRemoved());
         await expectWorktreeRemoved(worktree);
       } finally {
@@ -1628,6 +1652,7 @@ describe.skipIf(process.platform === "win32")(
         });
         await writeFile(join(worktree.path, "node_modules", "pkg", "i.js"), "");
         await stopLingering(worktree);
+        await delay(FILE_TIMESTAMP_LAG_MS + 50);
         expect(await removeFrom(worktree)).toEqual(expectedRemoved());
         await expectWorktreeRemoved(worktree);
       } finally {
@@ -1651,6 +1676,7 @@ describe.skipIf(process.platform === "win32")(
           ).trim(),
         ).toBe("");
         await stopLingering(worktree);
+        await delay(FILE_TIMESTAMP_LAG_MS + 50);
         expect(await removeFrom(worktree)).toEqual(expectedRemoved());
         await expectWorktreeRemoved(worktree);
       } finally {
@@ -1663,6 +1689,7 @@ describe.skipIf(process.platform === "win32")(
       try {
         await git(worktree.path, "checkout", "--detach", "origin/main");
         await stopLingering(worktree);
+        await delay(FILE_TIMESTAMP_LAG_MS + 50);
         expect(await removeFrom(worktree)).toEqual(expectedRemoved());
         await expectWorktreeRemoved(worktree);
       } finally {
