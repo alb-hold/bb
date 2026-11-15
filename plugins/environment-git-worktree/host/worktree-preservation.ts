@@ -112,18 +112,63 @@ export async function entryExists(target: string): Promise<boolean | null> {
   }
 }
 
+const INHERITED_ENVIRONMENT: ReadonlySet<string> = new Set([
+  "PATH",
+  "HOME",
+  "USER",
+  "LOGNAME",
+  "LANG",
+  "TMPDIR",
+  "TZ",
+  "SSH_AUTH_SOCK",
+  "GH_TOKEN",
+  "GITHUB_TOKEN",
+  "GH_ENTERPRISE_TOKEN",
+  "GITHUB_ENTERPRISE_TOKEN",
+  "GH_HOST",
+  "GH_CONFIG_DIR",
+  "XDG_CONFIG_HOME",
+  "XDG_STATE_HOME",
+  "XDG_DATA_HOME",
+  "XDG_CACHE_HOME",
+  "http_proxy",
+  "HTTP_PROXY",
+  "https_proxy",
+  "HTTPS_PROXY",
+  "all_proxy",
+  "ALL_PROXY",
+  "no_proxy",
+  "NO_PROXY",
+  "SSL_CERT_FILE",
+  "SSL_CERT_DIR",
+  "GIT_CONFIG_GLOBAL",
+  "GIT_CONFIG_SYSTEM",
+  "GIT_CONFIG_NOSYSTEM",
+]);
+
+export function allowlistedEnvironment(
+  own: NodeJS.ProcessEnv,
+  inherited: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  const environment: NodeJS.ProcessEnv = {};
+  for (const name of Object.keys(inherited))
+    if (!INHERITED_ENVIRONMENT.has(name) && !name.startsWith("LC_"))
+      environment[name] = undefined;
+  return { ...environment, ...own };
+}
+
 export function gitEnvironment(
   worktreePath: string,
   gitDir?: string,
   commonDir?: string,
 ): NodeJS.ProcessEnv {
-  return {
+  return allowlistedEnvironment({
     GIT_CEILING_DIRECTORIES: path.dirname(worktreePath),
     GIT_NO_LAZY_FETCH: "1",
     ...(gitDir !== undefined ? { GIT_DIR: gitDir } : {}),
     ...(commonDir !== undefined ? { GIT_COMMON_DIR: commonDir } : {}),
     ...(gitDir !== undefined ? { GIT_WORK_TREE: worktreePath } : {}),
-  };
+  });
 }
 
 export async function identifyWorktree(args: {
@@ -515,18 +560,12 @@ export async function acquireRemoteEvidence(
 }
 
 function isolatedGitEnvironment(repository: string): NodeJS.ProcessEnv {
-  return {
+  return allowlistedEnvironment({
     GIT_CONFIG_GLOBAL: path.join(repository, FETCH_CONFIG_FILE),
     GIT_CONFIG_NOSYSTEM: "1",
+    GIT_CONFIG_SYSTEM: undefined,
     GIT_CEILING_DIRECTORIES: path.dirname(repository),
-    GIT_DIR: undefined,
-    GIT_COMMON_DIR: undefined,
-    GIT_WORK_TREE: undefined,
-    GIT_INDEX_FILE: undefined,
-    GIT_OBJECT_DIRECTORY: undefined,
-    GIT_ALTERNATE_OBJECT_DIRECTORIES: undefined,
-    GIT_NAMESPACE: undefined,
-  };
+  });
 }
 
 function isolatedGitOptions(
@@ -750,13 +789,7 @@ async function trustedFetchConfig(
       ],
       {
         cwd: identity.commonDir,
-        env: {
-          GIT_DIR: identity.commonDir,
-          GIT_COMMON_DIR: undefined,
-          GIT_WORK_TREE: undefined,
-          GIT_INDEX_FILE: undefined,
-          GIT_NAMESPACE: undefined,
-        },
+        env: allowlistedEnvironment({ GIT_DIR: identity.commonDir }),
         allowFailure: true,
         ...signalOptions(signal),
       },
@@ -898,7 +931,6 @@ async function gatherRemoteEvidence(
     const environment = {
       ...nonInteractiveFetchEnvironment(
         isolatedGitEnvironment(repository),
-        process.env,
         fetchConfig.sshCommand,
       ),
       ...replayed.env,
@@ -986,21 +1018,11 @@ const NON_INTERACTIVE_FETCH_ENVIRONMENT: NodeJS.ProcessEnv = {
   GCM_INTERACTIVE: "never",
 };
 
-function shellQuote(value: string): string {
-  return "'" + value.replaceAll("'", "'\\''") + "'";
-}
-
 export function nonInteractiveFetchEnvironment(
   environment: NodeJS.ProcessEnv,
-  inherited: NodeJS.ProcessEnv,
   configuredSshCommand: string | null,
 ): NodeJS.ProcessEnv {
-  const sshCommand =
-    inherited.GIT_SSH_COMMAND ??
-    configuredSshCommand ??
-    (inherited.GIT_SSH !== undefined && inherited.GIT_SSH !== ""
-      ? shellQuote(inherited.GIT_SSH)
-      : "ssh");
+  const sshCommand = configuredSshCommand ?? "ssh";
   return {
     ...environment,
     ...NON_INTERACTIVE_FETCH_ENVIRONMENT,
