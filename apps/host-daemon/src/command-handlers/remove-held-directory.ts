@@ -3,6 +3,12 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { WorktreeHolderScan } from "@bb/process-utils";
 import { removeDirectoryTree } from "bb-environment-provider-host/remove-directory-tree";
+import {
+  directoryIdentity,
+  forgetHolderRefusal,
+  recordHolderRefusal,
+  unchangedHolderRefusal,
+} from "./holder-refusal-backoff.js";
 import { refuseWhileHeld } from "./refuse-while-held.js";
 import { CommandDispatchError } from "../command-dispatch-support.js";
 
@@ -21,6 +27,18 @@ export async function removeDirectoryAfterHolderRecheck(args: {
       `Refusing to ${args.action} ${args.directory}: a prior removal attempt left recoverable data at ${previousQuarantine}.`,
     );
   }
+  const identity = await directoryIdentity(args.directory);
+  const unchanged =
+    identity === null
+      ? null
+      : await unchangedHolderRefusal(args.directory, identity);
+  if (unchanged !== null) {
+    throw new CommandDispatchError(
+      "path_in_use",
+      `Refusing to ${args.action} ${args.directory}: whether a process is still using it could not be established (${unchanged.reason}). Nothing was stopped and nothing was removed. The same processes have blocked it since ${new Date(unchanged.firstRefusedAt).toISOString()}; it is checked again after ${new Date(unchanged.nextScanAt).toISOString()} or as soon as one of them exits.`,
+    );
+  }
+  let doubted = false;
   const quarantine = path.join(
     path.dirname(args.directory),
     `.${path.basename(args.directory)}.removing-${randomUUID()}`,
@@ -50,6 +68,11 @@ export async function removeDirectoryAfterHolderRecheck(args: {
       directory: quarantine,
       action: args.action,
       final: true,
+      onDoubt: async (scan) => {
+        doubted = true;
+        if (identity !== null)
+          await recordHolderRefusal(args.directory, identity, scan);
+      },
       ...(args.testWorktreeHolderScan === undefined
         ? {}
         : { testWorktreeHolderScan: args.testWorktreeHolderScan }),
@@ -75,7 +98,9 @@ export async function removeDirectoryAfterHolderRecheck(args: {
     } else {
       await fs.rmdir(quarantine);
     }
+    forgetHolderRefusal(args.directory);
   } catch (error) {
+    if (!doubted) forgetHolderRefusal(args.directory);
     try {
       await fs.mkdir(args.directory);
       await fs.rename(quarantine, args.directory);
