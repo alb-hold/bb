@@ -481,7 +481,17 @@ describe("refused thread storage deletes", () => {
         harness.db.$client.exec("DROP TRIGGER fail_storage_delete_requeue");
         vi.useRealTimers();
 
+        const pendingAtLastSeq = queueOrder[queueOrder.length - 1];
         expect(firstRequeuedAfter < failing).toBe(true);
+        expect(
+          sentBySlot.findIndex((threadIds) =>
+            threadIds.includes(pendingAtLastSeq ?? ""),
+          ),
+        ).toBeLessThan(
+          sentBySlot.findIndex(
+            (threadIds, slot) => slot > 0 && threadIds.includes(failing),
+          ),
+        );
         expect(sentBySlot).toEqual(
           Array.from({ length: cycles }, () =>
             queueOrder.map((threadId) => [threadId]),
