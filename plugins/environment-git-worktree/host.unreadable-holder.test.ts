@@ -236,9 +236,7 @@ async function expectKept(
   const retried = await fixture.harness.experimental_call("remove", input);
   expect(retried).toMatchObject({
     status: "retained",
-    message: expect.stringContaining(
-      `process ${holderPid}`,
-    ),
+    message: expect.stringContaining(`process ${holderPid}`),
   });
   expect(isPidAlive(holderPid)).toBe(true);
 }
@@ -257,7 +255,7 @@ describe("a program whose /proc entries cannot be read", () => {
   });
 
   it.skipIf(!realUnreadableApplies)(
-      "retains it when a live non-dumpable same-user process has cwd inside the worktree",
+    "retains it when a live non-dumpable same-user process has cwd inside the worktree",
     async () => {
       const fixture = await createFixture();
       const holder = spawn("python3", ["-c", NON_DUMPABLE], {
