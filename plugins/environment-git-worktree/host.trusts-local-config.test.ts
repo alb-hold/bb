@@ -51,6 +51,7 @@ const restoredVariables = [
   "TMPDIR",
   "HOME",
   "XDG_CONFIG_HOME",
+  "PATH",
 ] as const;
 const inherited = restoredVariables.map(
   (name) => [name, process.env[name]] as const,
@@ -1297,6 +1298,43 @@ describe("teardown's git commands see only an allowlisted environment", () => {
 
     expect(await markerText(fixture)).toBe("");
     expect(reasons.join("\n")).toContain("could not fetch its remotes");
+  });
+
+  it("runs every git command in its temporary repository without the system config, and creates it with an empty template", async () => {
+    const fixture = await createFixture();
+    const bin = join(fixture.root, "bin");
+    await mkdir(bin);
+    const log = join(fixture.root, "git-calls.log");
+    const realGit = (
+      await execFileAsync("sh", ["-c", "command -v git"])
+    ).stdout.trim();
+    await script(
+      bin,
+      "git",
+      `printf 'cwd=%s nosystem=%s system=%s args=%s\\n' "$(pwd)" "\${GIT_CONFIG_NOSYSTEM-unset}" "\${GIT_CONFIG_SYSTEM-unset}" "$*" >> ${JSON.stringify(log)}\nexec ${JSON.stringify(realGit)} "$@"`,
+    );
+    const system = join(fixture.root, "owner-system.gitconfig");
+    await writeFile(system, "");
+    delete process.env.GIT_CONFIG_NOSYSTEM;
+    process.env.GIT_CONFIG_SYSTEM = system;
+    process.env.PATH = `${bin}:${process.env.PATH}`;
+
+    await reasonsFor(fixture);
+
+    const calls = (await readFile(log, "utf8"))
+      .split("\n")
+      .filter(
+        (line) =>
+          line.startsWith(`cwd=${tmpdir()}`) && line.includes(EVIDENCE_PREFIX),
+      );
+    const inits = calls.filter((line) => line.includes(" args=init "));
+    expect(inits).toHaveLength(1);
+    expect(inits[0]).toMatch(
+      / args=init --bare --quiet --template= --object-format=/u,
+    );
+    expect(calls.some((line) => line.includes(" fetch "))).toBe(true);
+    for (const call of calls)
+      expect(call).toContain(" nosystem=1 system=unset ");
   });
 
   it("still fetches the owner's remotes with the agent socket and a benign GIT_CONFIG_COUNT in its environment", async () => {
