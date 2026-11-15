@@ -89,14 +89,14 @@ export type WorktreeHolderScan =
       blockingProcesses?: BlockingProcess[];
     };
 
-export interface ProcessIdentity {
+export interface HolderProcessIdentity {
   start: string;
   credentials: string;
 }
 
 export interface BlockingProcess {
   pid: number;
-  identity: ProcessIdentity | null;
+  identity: HolderProcessIdentity | null;
 }
 
 export function processStartFromStat(stat: string): string | null {
@@ -1516,13 +1516,13 @@ export async function linuxVisibilityProblem(
 interface ProcessDoubt {
   pid: number;
   detail: string;
-  identity: ProcessIdentity | null;
+  identity: HolderProcessIdentity | null;
 }
 
 async function readProcessIdentity(
   proc: ProcReader,
   pid: number,
-): Promise<ProcessIdentity | null> {
+): Promise<HolderProcessIdentity | null> {
   const [stat, status] = await Promise.all([
     readOptional(() => proc.readFile(`/proc/${pid}/stat`)),
     readOptional(() => proc.readFile(`/proc/${pid}/status`)),
