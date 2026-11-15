@@ -8,7 +8,7 @@ import {
   FILE_TIMESTAMP_LAG_MS,
   type RemoveDirectoryTreeHooks,
 } from "bb-environment-provider-host/remove-directory-tree";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { descendantsOnly } from "./descendants-only.js";
 import { hostProc, useProcReaderForTests } from "./holders.js";
 import { removeWorktree } from "./worktree.js";
@@ -87,8 +87,6 @@ async function worktree(): Promise<{ path: string; root: string }> {
     );
   }
   await delay(FILE_TIMESTAMP_LAG_MS + 50);
-  if (process.platform === "linux")
-    useProcReaderForTests(descendantsOnly(hostProc, -1));
   return { path: workspace, root: managed };
 }
 
@@ -124,6 +122,11 @@ async function keptMessage(target: {
 describe.runIf(process.platform === "linux" || process.platform === "darwin")(
   "the reasons a worktree removal gives when a directory cannot be anchored",
   () => {
+    beforeEach(() => {
+      if (process.platform === "linux")
+        useProcReaderForTests(descendantsOnly(hostProc, -1));
+    });
+
     it("names only the anchor failure when it fails before anything is removed", async () => {
       const target = await worktree();
       injected.hooks = () => failingAnchors(() => true);
