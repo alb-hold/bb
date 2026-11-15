@@ -924,6 +924,34 @@ describe("real worktree teardown preservation", () => {
     await expect(access(worktree.path)).resolves.toBeUndefined();
   });
 
+  it("keeps the worktree when its rewritten gitdir file is written again with the same bytes during the final check", async () => {
+    const worktree = await makeWorktree();
+    useProcReaderForTests(descendantsOnly(hostProc, -1));
+    let rewritten = false;
+    let removalError: unknown;
+    try {
+      await remove(worktree, {
+        afterFinalInspection: async (_target, severed) => {
+          const gitdirFile = path.join(severed, "gitdir");
+          const contents = await readFile(gitdirFile);
+          await new Promise((resolve) => setTimeout(resolve, 10));
+          await writeFile(gitdirFile, contents);
+          rewritten = true;
+        },
+      });
+    } catch (error) {
+      removalError = error;
+    }
+    expect(rewritten, String(removalError)).toBe(true);
+    expect(removalError).toMatchObject({ code: "worktree_preserved" });
+    expect(String(removalError)).toContain(
+      "new or changed Git metadata was found after its final inspection",
+    );
+    await expect(
+      readFile(path.join(worktree.path, "README.md"), "utf8"),
+    ).resolves.toBe("published\n");
+  });
+
   it.each([
     ["the system clock runs ahead of file timestamps", 10],
     ["file timestamps lag the clock by most of the margin", 16],
