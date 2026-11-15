@@ -11,9 +11,7 @@ interface RefusedThreadStorageDelete {
 }
 
 interface ThreadStorageDeleteRetryState {
-  dueSequence: Map<string, number>;
   gatedDispatchTimesByHost: Map<string, number[]>;
-  nextDueSequence: number;
   refused: Map<string, RefusedThreadStorageDelete>;
 }
 
@@ -23,9 +21,7 @@ function retryState(db: object): ThreadStorageDeleteRetryState {
   const existing = retryStateByDb.get(db);
   if (existing) return existing;
   const created: ThreadStorageDeleteRetryState = {
-    dueSequence: new Map(),
     gatedDispatchTimesByHost: new Map(),
-    nextDueSequence: 0,
     refused: new Map(),
   };
   retryStateByDb.set(db, created);
@@ -81,56 +77,24 @@ export function recordThreadStorageDeleteRefused(
   );
   const refused = { refusals, retryAt: args.now + delayMs };
   state.refused.set(args.threadId, refused);
-  state.dueSequence.delete(args.threadId);
   return refused;
 }
 
 export function forgetThreadStorageDelete(db: object, threadId: string): void {
+  retryStateByDb.get(db)?.refused.delete(threadId);
+}
+
+export function forgetThreadStorageDeleteRetriesExcept(
+  db: object,
+  pendingThreadIds: ReadonlySet<string>,
+): void {
   const state = retryStateByDb.get(db);
   if (!state) return;
-  state.refused.delete(threadId);
-  state.dueSequence.delete(threadId);
-}
-
-function compareThreadIds(left: { id: string }, right: { id: string }) {
-  return left.id < right.id ? -1 : left.id > right.id ? 1 : 0;
-}
-
-export function orderThreadStorageDeleteRetries<
-  T extends { deletedAt: number; id: string },
->(db: object, pendingThreads: readonly T[], now: number): T[] {
-  const state = retryState(db);
-  const pendingIds = new Set(pendingThreads.map((thread) => thread.id));
   for (const threadId of state.refused.keys()) {
-    if (!pendingIds.has(threadId)) state.refused.delete(threadId);
+    if (!pendingThreadIds.has(threadId)) state.refused.delete(threadId);
   }
-  for (const threadId of state.dueSequence.keys()) {
-    if (!pendingIds.has(threadId)) state.dueSequence.delete(threadId);
-  }
-  const dueAt = (thread: T) =>
-    state.refused.get(thread.id)?.retryAt ?? thread.deletedAt;
-  const isDue = (thread: T) => {
-    const refused = state.refused.get(thread.id);
-    return refused === undefined || refused.retryAt <= now;
-  };
-  const newlyDue = pendingThreads
-    .filter((thread) => !state.dueSequence.has(thread.id) && isDue(thread))
-    .sort(
-      (left, right) =>
-        dueAt(left) - dueAt(right) || compareThreadIds(left, right),
-    );
-  for (const thread of newlyDue) {
-    state.dueSequence.set(thread.id, state.nextDueSequence);
-    state.nextDueSequence += 1;
-  }
-  const sequenceOf = (thread: T) =>
-    state.dueSequence.get(thread.id) ?? Number.POSITIVE_INFINITY;
-  return [...pendingThreads].sort((left, right) => {
-    const leftSequence = sequenceOf(left);
-    const rightSequence = sequenceOf(right);
-    if (leftSequence !== rightSequence) {
-      return leftSequence < rightSequence ? -1 : 1;
-    }
-    return compareThreadIds(left, right);
-  });
+}
+
+export function clearThreadStorageDeleteRetryMemory(db: object): void {
+  retryStateByDb.delete(db);
 }

@@ -33,7 +33,9 @@ import {
   listThreadIdsStoppedSinceLastTurnStart,
   listThreadIdsWithLatestHostDaemonRestartInterruption,
   listThreadTurnInterruptionEventStates,
+  listPendingThreadStorageDeletions,
   markThreadStorageDeleted,
+  requeueThreadStorageDeletion,
   threads,
   type DbNotifier,
   type DbQueryConnection,
@@ -1158,6 +1160,7 @@ function dispatchThreadStorageDeletion(
     return;
   }
   inFlightThreadRpcGuard.claim(thread.id, "thread.storage.delete");
+  requeueThreadStorageDeletion(deps.db, { threadId: thread.id });
   void runLiveHostCommand(deps, {
     command: buildThreadStorageDeleteCommand({
       environmentId: environment.id,
@@ -2174,14 +2177,10 @@ export async function reconcileDaemonReportedThreads(
     )
     .all();
 
+  const deletedThreadIds = new Set<string>();
   for (const thread of pendingThreads) {
     if (thread.deletedAt !== null) {
-      dispatchThreadStorageDeletion(
-        deps,
-        thread,
-        { hostId: args.hostId, id: thread.environmentId },
-        { gate: "cap", now: Date.now() },
-      );
+      deletedThreadIds.add(thread.id);
       continue;
     }
     if (activeThreadIdSet.has(thread.id)) {
@@ -2197,6 +2196,20 @@ export async function reconcileDaemonReportedThreads(
     finalizeStoppedThread(deps, {
       threadId: thread.id,
     });
+  }
+  if (deletedThreadIds.size > 0) {
+    for (const thread of listPendingThreadStorageDeletions(deps.db, {
+      hostId: args.hostId,
+    })) {
+      if (!deletedThreadIds.has(thread.id) || thread.environmentId === null)
+        continue;
+      dispatchThreadStorageDeletion(
+        deps,
+        thread,
+        { hostId: args.hostId, id: thread.environmentId },
+        { gate: "cap", now: Date.now() },
+      );
+    }
   }
 
   if (args.activeThreadIds.length > 0) {

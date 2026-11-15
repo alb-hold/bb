@@ -6,7 +6,11 @@ import {
   runPeriodicSweeps,
   runThreadLifecycleSweep,
 } from "../../src/services/system/periodic-sweeps.js";
-import { requestThreadStorageDeletion } from "../../src/services/threads/thread-lifecycle.js";
+import {
+  reconcileDaemonReportedThreads,
+  requestThreadStorageDeletion,
+} from "../../src/services/threads/thread-lifecycle.js";
+import { clearThreadStorageDeleteRetryMemory } from "../../src/services/threads/thread-storage-delete-retries.js";
 import {
   listQueuedCommands,
   reportQueuedCommandError,
@@ -333,6 +337,86 @@ describe("refused thread storage deletes", () => {
         refusedThreadRetryAtMs + threadsDueAheadOfRefusedThread * 60_000,
       );
       expect(getThread(harness.db, refusedThreadId)).toBeNull();
+    });
+  });
+
+  it("deletes and purges a refused thread within N+1 slots across restarts, clock rollbacks and older-rowid arrivals", async () => {
+    await withTestHarness(async (harness) => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(START_MS);
+      const { host } = seedHostSession(harness.deps, { id: "host-restarting" });
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+        path: "/tmp/refused-storage-delete-restarting",
+      });
+      const environment = seedEnvironment(harness.deps, {
+        hostId: host.id,
+        projectId: project.id,
+        path: "/tmp/refused-storage-delete-restarting",
+        status: "ready",
+      });
+      const slotCount = 20;
+      const olderRowidArrivals = Array.from(
+        { length: slotCount },
+        () =>
+          seedThread(harness.deps, {
+            environmentId: environment.id,
+            projectId: project.id,
+            status: "idle",
+          }).id,
+      );
+      const seedDeleted = () =>
+        seedDeletedThreadIn(harness, {
+          environmentId: environment.id,
+          projectId: project.id,
+        });
+      const alwaysRefusedThreadId = seedDeleted();
+      const dueRowsAheadOfA = [
+        alwaysRefusedThreadId,
+        seedDeleted(),
+        seedDeleted(),
+        seedDeleted(),
+      ];
+      const threadA = seedDeleted();
+      const released = new Set([threadA]);
+      const requestsBySlot: string[][] = [];
+      for (let slot = 0; slot < slotCount; slot += 1) {
+        const slotMs = -slot * 60_000;
+        vi.setSystemTime(START_MS + slotMs);
+        if (slot > 0) {
+          clearThreadStorageDeleteRetryMemory(harness.db);
+          markThreadDeleted(harness.db, harness.hub, {
+            threadId: olderRowidArrivals[slot - 1] ?? "",
+          });
+          await reconcileDaemonReportedThreads(harness.deps, {
+            activeThreadIds: [],
+            hostId: host.id,
+            sameDaemonInstance: false,
+            undeliveredEventThreadIds: [],
+          });
+        }
+        await runThreadLifecycleSweep(harness.deps);
+        const requests = await refuseQueuedStorageDeletes(
+          harness,
+          slotMs,
+          released,
+        );
+        requestsBySlot.push(requests.map((request) => request.threadId));
+        if (requests.some((request) => request.threadId === threadA)) break;
+      }
+      await runThreadLifecycleSweep(harness.deps);
+      vi.useRealTimers();
+
+      const slotServingA = requestsBySlot.findIndex((threadIds) =>
+        threadIds.includes(threadA),
+      );
+      expect(requestsBySlot.every((threadIds) => threadIds.length === 1)).toBe(
+        true,
+      );
+      expect(slotServingA).toBeGreaterThanOrEqual(0);
+      expect(slotServingA).toBeLessThanOrEqual(dueRowsAheadOfA.length);
+      expect(requestsBySlot.flat()).toContain(alwaysRefusedThreadId);
+      expect(getThread(harness.db, threadA)).toBeNull();
     });
   });
 });

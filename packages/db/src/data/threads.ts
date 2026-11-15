@@ -2345,6 +2345,85 @@ export function markThreadDeleted(
   );
 }
 
+export interface PendingThreadStorageDeletion {
+  environmentId: string | null;
+  id: string;
+  storageDeleteSeq: number;
+}
+
+export function listPendingThreadStorageDeletions(
+  db: ThreadWriteConnection,
+  args: { hostId?: string } = {},
+): PendingThreadStorageDeletion[] {
+  const pendingWhere = and(
+    isNotNull(threads.deletedAt),
+    isNull(threads.storageDeletedAt),
+  );
+  return db.transaction((tx) => {
+    const unqueued = tx
+      .select({ id: threads.id })
+      .from(threads)
+      .where(and(pendingWhere, isNull(threads.storageDeleteSeq)))
+      .orderBy(sql`${threads}.rowid`)
+      .all();
+    if (unqueued.length > 0) {
+      const maxSeq =
+        tx
+          .select({
+            maxSeq: sql<number>`coalesce(max(${threads.storageDeleteSeq}), 0)`,
+          })
+          .from(threads)
+          .get()?.maxSeq ?? 0;
+      unqueued.forEach((row, index) => {
+        tx.update(threads)
+          .set({ storageDeleteSeq: maxSeq + index + 1 })
+          .where(eq(threads.id, row.id))
+          .run();
+      });
+    }
+    const rows = tx
+      .select({
+        environmentId: threads.environmentId,
+        id: threads.id,
+        storageDeleteSeq: threads.storageDeleteSeq,
+      })
+      .from(threads)
+      .where(
+        args.hostId === undefined
+          ? pendingWhere
+          : and(
+              pendingWhere,
+              inArray(
+                threads.environmentId,
+                tx
+                  .select({ id: environments.id })
+                  .from(environments)
+                  .where(eq(environments.hostId, args.hostId)),
+              ),
+            ),
+      )
+      .orderBy(asc(threads.storageDeleteSeq), asc(threads.id))
+      .all();
+    return rows.map((row) => ({
+      environmentId: row.environmentId,
+      id: row.id,
+      storageDeleteSeq: row.storageDeleteSeq ?? 0,
+    }));
+  });
+}
+
+export function requeueThreadStorageDeletion(
+  db: ThreadWriteConnection,
+  args: { threadId: string },
+): void {
+  db.update(threads)
+    .set({
+      storageDeleteSeq: sql`(select coalesce(max(${threads.storageDeleteSeq}), 0) + 1 from ${threads})`,
+    })
+    .where(eq(threads.id, args.threadId))
+    .run();
+}
+
 export function markThreadStorageDeleted(
   db: ThreadWriteConnection,
   args: { threadId: string },

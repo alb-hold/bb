@@ -9,6 +9,7 @@ import {
   getProject,
   getEnvironment,
   deletionThreadTreeIdsForProject,
+  listPendingThreadStorageDeletions,
   listEnvironments,
   markProjectDeleted,
   markThreadDeleted,
@@ -189,6 +190,14 @@ export async function advanceProjectDeletion(
     }
     cancelAbandonedProviderCreations(deps, thread.id);
     deps.terminalSessions.closeDeletedThreadTerminals({ threadId: thread.id });
+  }
+  const projectThreadIds = new Set(projectThreads.map((thread) => thread.id));
+  for (const thread of listPendingThreadStorageDeletions(deps.db)) {
+    if (!projectThreadIds.has(thread.id)) continue;
+    const environment = thread.environmentId
+      ? (environmentsById.get(thread.environmentId) ??
+        getEnvironment(deps.db, thread.environmentId))
+      : null;
     retryThreadStorageDeletion(deps, thread, environment, Date.now());
   }
 
