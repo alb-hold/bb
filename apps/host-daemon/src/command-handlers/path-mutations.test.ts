@@ -518,6 +518,43 @@ describe("confined host path mutations", () => {
   );
 
   it.skipIf(!hasHeldDirectoryRemoval)(
+    "puts every file back at the original path and leaves no quarantine when it refuses after the rename",
+    async () => {
+      const root = await makeRoot();
+      const target = path.join(root, "refused-after-rename");
+      await fs.mkdir(path.join(target, "nested"), { recursive: true });
+      await fs.writeFile(path.join(target, "old.txt"), "old");
+      await fs.writeFile(path.join(target, "nested", "deep.txt"), "deep");
+      await delay(50);
+      let quarantined: string | undefined;
+      await expect(
+        removeDirectoryAfterHolderRecheck({
+          directory: target,
+          action: "remove",
+          recursive: true,
+          afterHolderScan: async (quarantine) => {
+            quarantined = quarantine;
+            await fs.writeFile(path.join(quarantine, "late.txt"), "late");
+          },
+        }),
+      ).rejects.toMatchObject({ code: "path_in_use" });
+      expect(quarantined).toBeDefined();
+      await expect(fs.stat(quarantined!)).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+      expect(
+        (await fs.readdir(root)).filter((name) => name.includes(".removing-")),
+      ).toEqual([]);
+      const contents = await Promise.all(
+        ["old.txt", "nested/deep.txt", "late.txt"].map((name) =>
+          fs.readFile(path.join(target, name), "utf8"),
+        ),
+      );
+      expect(contents).toEqual(["old", "deep", "late"]);
+    },
+  );
+
+  it.skipIf(!hasHeldDirectoryRemoval)(
     "removes a recursive directory whose last write is older than the timestamp margin",
     async () => {
       const root = await makeRoot();
