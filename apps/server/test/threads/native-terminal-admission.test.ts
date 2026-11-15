@@ -11,6 +11,7 @@ import {
   listNativeTerminalDeliveryMarks,
   listNativeTerminalDeliveryWarnings,
   listQueuedThreadMessages,
+  queuedThreadMessages,
   threads,
   updateTerminalSessions,
 } from "@bb/db";
@@ -972,6 +973,35 @@ describe("an owner's composer send at the limit", () => {
 
       expect(cli.inputs()).toEqual(PASTED);
       expect(queuedRows(fixture, thread.id)).toEqual([]);
+    } finally {
+      cli.stop();
+    }
+  }, 30_000);
+
+  it("still holds a drained composer row at the limit when its stored origin is missing", async () => {
+    const fixture = await createFixture();
+    const { open, thread } = await openRunningNativeThread(fixture, {
+      providerId: "codex",
+    });
+    disconnectTerminal(fixture, open.terminalId);
+    const cli = startFakeCli(fixture, open.terminalId);
+    try {
+      holdAtLimit();
+      const held = await sendFromComposer(fixture, thread.id, "run the tests");
+      expect(held.delivery).toBe("queued");
+      expect(queuedRows(fixture, thread.id)[0]?.origin).toBe("app");
+      fixture.harness.db
+        .update(queuedThreadMessages)
+        .set({ origin: null })
+        .where(eq(queuedThreadMessages.threadId, thread.id))
+        .run();
+      reconnectLiveTerminal(fixture, open.terminalId);
+
+      await drainLater(fixture);
+      await drainLater(fixture);
+
+      expect(cli.inputs()).toEqual([]);
+      expectHeldAtLimit(fixture, thread.id);
     } finally {
       cli.stop();
     }
