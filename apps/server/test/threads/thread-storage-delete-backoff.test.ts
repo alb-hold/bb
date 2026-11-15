@@ -93,6 +93,7 @@ async function refuseQueuedStorageDeletes(
   harness: TestAppHarness,
   atMs: number,
   releasedThreadIds: ReadonlySet<string> = new Set(),
+  refusalKey?: string,
 ): Promise<StorageDeleteRequest[]> {
   await sleep(5);
   const queued: QueuedCommand[] = [];
@@ -116,6 +117,7 @@ async function refuseQueuedStorageDeletes(
       errorCode: "path_in_use",
       errorMessage:
         "process 4242 runs in another mount namespace without proven mount isolation",
+      ...(refusalKey === undefined ? {} : { refusalKey }),
     });
   }
   await sleep(1);
@@ -245,6 +247,60 @@ describe("refused thread storage deletes", () => {
       });
     },
   );
+
+  it("warns once while the daemon sends the same refusal key, and again when the key changes", async () => {
+    await withTestHarness(async (harness) => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(START_MS);
+      const { projectId } = seedDeletedThreads(harness, 1, "host-keyed");
+      harness.db
+        .update(projects)
+        .set({ deletedAt: START_MS })
+        .where(eq(projects.id, projectId))
+        .run();
+      const deps = {
+        ...harness.deps,
+        pluginSchedules: harness.pluginService,
+        plugins: harness.pluginService,
+      };
+      const warn = vi.spyOn(harness.deps.logger, "warn");
+      const debug = vi.spyOn(harness.deps.logger, "debug");
+      const failed = (spy: typeof warn) =>
+        spy.mock.calls.filter(
+          ([, message]) => message === "Thread storage deletion command failed",
+        );
+      const identity = "64769:90731";
+      let refusalKey = `${identity}|holders:4242:5150`;
+      const requests: StorageDeleteRequest[] = [];
+      for (let offset = 0; offset < HOUR_MS; offset += TICK_MS) {
+        vi.setSystemTime(START_MS + offset);
+        if (requests.length === 4)
+          refusalKey = `${identity}|holders:4242:5150,4243:5151`;
+        await runPeriodicSweeps(deps);
+        requests.push(
+          ...(await refuseQueuedStorageDeletes(
+            harness,
+            offset,
+            new Set(),
+            refusalKey,
+          )),
+        );
+        if (requests.length === 6) break;
+      }
+      vi.useRealTimers();
+
+      expect(requests).toHaveLength(6);
+      expect(
+        failed(warn).map(
+          ([fields]) => (fields as { refusalKey?: string }).refusalKey,
+        ),
+      ).toEqual([
+        `${identity}|holders:4242:5150`,
+        `${identity}|holders:4242:5150,4243:5151`,
+      ]);
+      expect(failed(debug)).toHaveLength(4);
+    });
+  });
 
   it("retries a refused thread within one slot of its retry time while fresh deletes keep arriving", async () => {
     await withTestHarness(async (harness) => {

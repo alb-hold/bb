@@ -624,7 +624,7 @@ export async function reportNextEnvironmentAttachSuccess(
 export async function reportQueuedCommandError(
   harness: TestAppHarness,
   queued: QueuedCommand,
-  args: { errorCode: string; errorMessage: string },
+  args: { errorCode: string; errorMessage: string; refusalKey?: string },
   auth: { hostId?: string } = {},
 ): Promise<Response> {
   const sessionId = queued.row.sessionId;
@@ -642,6 +642,7 @@ export async function reportQueuedCommandError(
       ok: false,
       errorCode: args.errorCode,
       errorMessage: args.errorMessage,
+      ...(args.refusalKey === undefined ? {} : { refusalKey: args.refusalKey }),
     },
     sessionId,
   });

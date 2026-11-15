@@ -9,11 +9,15 @@ import {
 import {
   directoryIdentity,
   forgetHolderRefusal,
+  holderRefusalKey,
   recordHolderRefusal,
   unchangedHolderRefusal,
 } from "./holder-refusal-backoff.js";
 import { refuseWhileHeld } from "./refuse-while-held.js";
-import { CommandDispatchError } from "../command-dispatch-support.js";
+import {
+  CommandDispatchError,
+  KeyedRefusalError,
+} from "../command-dispatch-support.js";
 
 export async function removeDirectoryAfterHolderRecheck(args: {
   directory: string;
@@ -27,20 +31,18 @@ export async function removeDirectoryAfterHolderRecheck(args: {
 }): Promise<void> {
   const previousQuarantine = await findPreviousQuarantine(args.directory);
   if (previousQuarantine !== null) {
-    throw new CommandDispatchError(
-      "path_in_use",
-      `Refusing to ${args.action} ${args.directory}: a prior removal attempt left recoverable data at ${previousQuarantine}.`,
-    );
+    throw await priorRemovalRefusal(args, previousQuarantine);
   }
   const identity = await directoryIdentity(args.directory);
   const unchanged =
     identity === null
       ? null
       : await unchangedHolderRefusal(args.directory, identity);
-  if (unchanged !== null) {
-    throw new CommandDispatchError(
+  if (identity !== null && unchanged !== null) {
+    throw new KeyedRefusalError(
       "path_in_use",
       `Refusing to ${args.action} ${args.directory}: whether a process is still using it could not be established (${unchanged.reason}). Nothing was stopped and nothing was removed. The same processes have blocked it since ${new Date(unchanged.firstRefusedAt).toISOString()}; it is checked again after ${new Date(unchanged.nextScanAt).toISOString()} or as soon as one of them exits.`,
+      holderRefusalKey(identity, unchanged.blockers),
     );
   }
   let doubted = false;
@@ -61,10 +63,7 @@ export async function removeDirectoryAfterHolderRecheck(args: {
     ) {
       const leftover = await findPreviousQuarantine(args.directory);
       if (leftover === null) return;
-      throw new CommandDispatchError(
-        "path_in_use",
-        `Refusing to ${args.action} ${args.directory}: a prior removal attempt left recoverable data at ${leftover}.`,
-      );
+      throw await priorRemovalRefusal(args, leftover);
     }
     throw error;
   }
@@ -76,8 +75,15 @@ export async function removeDirectoryAfterHolderRecheck(args: {
       final: true,
       onDoubt: async (scan) => {
         doubted = true;
-        if (identity !== null)
-          await recordHolderRefusal(args.directory, identity, scan);
+        if (identity === null) return null;
+        const refusal = await recordHolderRefusal(
+          args.directory,
+          identity,
+          scan,
+        );
+        return refusal === null
+          ? null
+          : holderRefusalKey(identity, refusal.blockers);
       },
       ...(args.testWorktreeHolderScan === undefined
         ? {}
@@ -96,10 +102,14 @@ export async function removeDirectoryAfterHolderRecheck(args: {
         const preservedPaths = removal.retainedPaths.map((retainedPath) =>
           path.join(args.directory, path.relative(quarantine, retainedPath)),
         );
-        throw new CommandDispatchError(
-          "path_in_use",
-          `Refusing to ${args.action} ${args.directory}: new or changed data was found during removal; the directory may be partially removed.${preservedPaths.length > 0 ? ` Preserved entries: ${preservedPaths.join(", ")}.` : ""} Nothing was stopped.`,
-        );
+        const message = `Refusing to ${args.action} ${args.directory}: new or changed data was found during removal; the directory may be partially removed.${preservedPaths.length > 0 ? ` Preserved entries: ${preservedPaths.join(", ")}.` : ""} Nothing was stopped.`;
+        throw identity === null
+          ? new CommandDispatchError("path_in_use", message)
+          : new KeyedRefusalError(
+              "path_in_use",
+              message,
+              `${identity}|changed-data`,
+            );
       }
     } else {
       await fs.rmdir(quarantine);
@@ -118,6 +128,23 @@ export async function removeDirectoryAfterHolderRecheck(args: {
     }
     throw error;
   }
+}
+
+async function priorRemovalRefusal(
+  args: { action: string; directory: string },
+  leftover: string,
+): Promise<CommandDispatchError> {
+  const message = `Refusing to ${args.action} ${args.directory}: a prior removal attempt left recoverable data at ${leftover}.`;
+  const identity =
+    (await directoryIdentity(args.directory)) ??
+    (await directoryIdentity(leftover));
+  return identity === null
+    ? new CommandDispatchError("path_in_use", message)
+    : new KeyedRefusalError(
+        "path_in_use",
+        message,
+        `${identity}|prior-removal`,
+      );
 }
 
 async function findPreviousQuarantine(

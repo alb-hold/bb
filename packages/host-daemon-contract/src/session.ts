@@ -598,6 +598,7 @@ const hostDaemonOnlineRpcResponseFailureSchema = z
     ok: z.literal(false),
     errorCode: z.string().min(1),
     errorMessage: z.string().min(1),
+    refusalKey: z.string().min(1).optional(),
   })
   .strict();
 

@@ -49,6 +49,7 @@ import {
   type ThreadEventType,
   type ThreadLifecycleEvent,
   type ThreadStatus,
+  createRefusalLogOnce,
   threadCommandFailureCopyForInterruption,
   threadScope,
   turnScope,
@@ -102,7 +103,7 @@ import {
   type ThreadStopCommandArgs,
 } from "./thread-commands.js";
 import { ensureHostSessionReadyForWork } from "../hosts/host-lifecycle.js";
-import { ApiError } from "../../errors.js";
+import { ApiError, apiErrorRefusalKey } from "../../errors.js";
 import { isHostUnavailableApiError } from "../hosts/online-rpc.js";
 import {
   LIVE_DAEMON_COMMAND_TIMEOUT_MS,
@@ -130,6 +131,8 @@ import {
 } from "./thread-storage-delete-retries.js";
 import { settleDanglingBackgroundTasksForStoppedThreadInTransaction } from "./background-task-reconciliation.js";
 import { abortPluginToolCallsForThreads } from "../plugins/plugin-tool-calls.js";
+
+const threadStorageRefusalLog = createRefusalLogOnce();
 
 type ThreadStartCommand = Awaited<ReturnType<typeof buildThreadStartCommand>>;
 type ThreadStopCommand = ReturnType<typeof buildThreadStopCommand>;
@@ -1174,12 +1177,19 @@ function dispatchThreadStorageDeletion(
         now: Date.now(),
         threadId: thread.id,
       });
-      deps.logger.warn(
+      const refusalKey = apiErrorRefusalKey(error);
+      const level =
+        refusalKey === undefined ||
+        threadStorageRefusalLog.isNewRefusal(refusalKey)
+          ? "warn"
+          : "debug";
+      deps.logger[level](
         {
           err: error,
           refusals: refused.refusals,
           retryAt: refused.retryAt,
           threadId: thread.id,
+          ...(refusalKey === undefined ? {} : { refusalKey }),
         },
         "Thread storage deletion command failed",
       );

@@ -1,4 +1,8 @@
-import { ProjectAttachmentError } from "@bb/domain";
+import {
+  createRefusalLogOnce,
+  ProjectAttachmentError,
+  type RefusalLogOnce,
+} from "@bb/domain";
 import type { ErrorHandler } from "hono";
 import { HTTPException } from "hono/http-exception";
 import type { ThreadEventScopeKind, ThreadEventType } from "@bb/domain";
@@ -96,9 +100,19 @@ interface FailedRequest {
   path: string;
 }
 
+export function apiErrorRefusalKey(error: unknown): string | undefined {
+  if (!(error instanceof ApiError) || error.body.code !== "path_in_use")
+    return undefined;
+  const details = error.body.details;
+  if (typeof details !== "object" || details === null) return undefined;
+  const refusalKey = (details as { refusalKey?: unknown }).refusalKey;
+  return typeof refusalKey === "string" ? refusalKey : undefined;
+}
+
 export function createServerErrorHandler(logger: ServerLogger): ErrorHandler {
+  const refusalLog = createRefusalLogOnce();
   return (error, context) =>
-    errorToResponse(error, logger, {
+    errorToResponse(error, logger, refusalLog, {
       method: context.req.method,
       path: context.req.path,
     });
@@ -107,6 +121,7 @@ export function createServerErrorHandler(logger: ServerLogger): ErrorHandler {
 function errorToResponse(
   error: unknown,
   logger: ServerLogger,
+  refusalLog: RefusalLogOnce,
   request: FailedRequest,
 ): Response {
   if (error instanceof ProjectAttachmentError) {
@@ -120,15 +135,20 @@ function errorToResponse(
     return error.toResponse();
   }
   if (error instanceof HTTPException && error.status >= 500) {
-    logger.error(
-      {
-        err: error,
-        ...request,
-        status: error.status,
-        ...(error instanceof ApiError ? { body: error.body } : {}),
-      },
-      "Server error response",
-    );
+    const fields = {
+      err: error,
+      ...request,
+      status: error.status,
+      ...(error instanceof ApiError ? { body: error.body } : {}),
+    };
+    const refusalKey = apiErrorRefusalKey(error);
+    if (refusalKey === undefined) {
+      logger.error(fields, "Server error response");
+    } else if (refusalLog.isNewRefusal(refusalKey)) {
+      logger.warn(fields, "Server error response");
+    } else {
+      logger.debug(fields, "Server error response");
+    }
   }
   if (error instanceof ApiError) {
     return error.toResponse();
