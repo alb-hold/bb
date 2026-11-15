@@ -7,6 +7,7 @@ import {
   createThread,
   deleteThread,
   hasThreadPurgeBacklog,
+  nextThreadPurgeBatchSize,
   purgeThreadRows,
 } from "../../src/data/threads.js";
 import { createMigratedConnection } from "../../src/testing.js";
@@ -102,6 +103,47 @@ describe("thread purge", () => {
     expect(order).toEqual(["other", "purge"]);
     expect(yields).toBe(3);
     expect(countRows(db, "events", thread.id)).toBe(0);
+  });
+
+  it("shrinks batches when they run slow and grows them when they run fast", async () => {
+    async function batchSizes(rows: number, batchMs: number) {
+      const { db, thread } = setup();
+      seedRows(db, thread.id, rows, 0);
+      let calls = 0;
+      let clock = 0;
+      const sizes: number[] = [];
+      let remaining = rows;
+      const deleted = await purgeThreadRows(db, thread.id, {
+        now: () => {
+          calls += 1;
+          if (calls % 2 === 0) clock += batchMs;
+          return clock;
+        },
+        yieldToEventLoop: async () => {
+          const left = countRows(db, "events", thread.id);
+          sizes.push(remaining - left);
+          remaining = left;
+        },
+      });
+      expect(deleted).toBe(rows);
+      expect(countRows(db, "events", thread.id)).toBe(0);
+      return sizes;
+    }
+
+    expect((await batchSizes(5000, 1)).slice(0, 5)).toEqual([
+      200, 400, 800, 1600, 2000,
+    ]);
+    expect((await batchSizes(700, 200)).slice(0, 5)).toEqual([
+      200, 100, 50, 50, 50,
+    ]);
+  });
+
+  it("keeps the batch size near the time target", () => {
+    expect(nextThreadPurgeBatchSize(400, 100, 50)).toBe(200);
+    expect(nextThreadPurgeBatchSize(400, 25, 50)).toBe(800);
+    expect(nextThreadPurgeBatchSize(400, 50, 50)).toBe(400);
+    expect(nextThreadPurgeBatchSize(60, 1000, 50)).toBe(50);
+    expect(nextThreadPurgeBatchSize(1500, 0, 50)).toBe(2000);
   });
 
   it("only reports a backlog above one batch", () => {

@@ -2096,13 +2096,16 @@ export function getThreadStartupContext(
 }
 
 export const THREAD_PURGE_BATCH_SIZE = 2000;
+export const THREAD_PURGE_MIN_BATCH_SIZE = 50;
+export const THREAD_PURGE_START_BATCH_SIZE = 200;
+export const THREAD_PURGE_TARGET_BATCH_MS = 50;
 
 const THREAD_PURGE_TABLES = ["events", "thread_search_segments"] as const;
 
 export function hasThreadPurgeBacklog(
   db: DbQueryConnection,
   threadId: string,
-  batchSize: number = THREAD_PURGE_BATCH_SIZE,
+  batchSize: number = THREAD_PURGE_MIN_BATCH_SIZE,
 ): boolean {
   for (const table of THREAD_PURGE_TABLES) {
     const row = db.get<{ count: number }>(
@@ -2127,20 +2130,46 @@ export function purgeThreadRowsBatch(
   return 0;
 }
 
+export function nextThreadPurgeBatchSize(
+  current: number,
+  elapsedMs: number,
+  targetMs: number = THREAD_PURGE_TARGET_BATCH_MS,
+): number {
+  const scaled =
+    elapsedMs <= 0 ? current * 2 : Math.round((current * targetMs) / elapsedMs);
+  const bounded = Math.min(Math.max(scaled, current / 2), current * 2);
+  return Math.min(
+    Math.max(Math.round(bounded), THREAD_PURGE_MIN_BATCH_SIZE),
+    THREAD_PURGE_BATCH_SIZE,
+  );
+}
+
 export async function purgeThreadRows(
   db: ThreadWriteConnection,
   threadId: string,
   options: {
     batchSize?: number;
+    now?: () => number;
+    targetBatchMs?: number;
     yieldToEventLoop: () => Promise<void>;
   },
 ): Promise<number> {
-  const batchSize = options.batchSize ?? THREAD_PURGE_BATCH_SIZE;
+  const fixedBatchSize = options.batchSize;
+  const now = options.now ?? (() => performance.now());
+  let batchSize = fixedBatchSize ?? THREAD_PURGE_START_BATCH_SIZE;
   let total = 0;
   for (;;) {
+    const startedAt = now();
     const deleted = purgeThreadRowsBatch(db, threadId, batchSize);
     if (deleted === 0) return total;
     total += deleted;
+    if (fixedBatchSize === undefined && deleted === batchSize) {
+      batchSize = nextThreadPurgeBatchSize(
+        batchSize,
+        now() - startedAt,
+        options.targetBatchMs,
+      );
+    }
     await options.yieldToEventLoop();
   }
 }
