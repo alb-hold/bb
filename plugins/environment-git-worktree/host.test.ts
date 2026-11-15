@@ -15,8 +15,10 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { experimental_createHostEntryHarness } from "@get-bb/plugin-sdk/testing/host";
+import { FILE_TIMESTAMP_LAG_MS } from "bb-environment-provider-host/remove-directory-tree";
 import { afterEach, describe, expect, it } from "vitest";
 import { createWorktreeHostEntry } from "./host.js";
 import { worktreeHostContract } from "./contract.js";
@@ -633,6 +635,7 @@ describe("worktree host entry", () => {
       });
       if (result.status !== "created") throw new Error(result.message);
       expect(existsSync(join(result.path, "README.md"))).toBe(true);
+      await delay(FILE_TIMESTAMP_LAG_MS + 50);
       expect(
         await harness.experimental_call("remove", {
           operationId: "remove-special",
@@ -1030,6 +1033,7 @@ describe("worktree host entry", () => {
     await expect
       .poll(() => isPidAlive(lingering.pid ?? 0), { timeout: 10_000 })
       .toBe(false);
+    await delay(FILE_TIMESTAMP_LAG_MS + 50);
     const removed = await harness.experimental_call("remove", {
       operationId: "remove",
       pathKey: "thr_6",
@@ -1521,6 +1525,7 @@ describe.skipIf(process.platform === "win32")(
           ).trim(),
         ).toBe("0");
         await stopLingering(worktree);
+        await delay(FILE_TIMESTAMP_LAG_MS + 50);
         expect(await removeFrom(worktree)).toEqual(expectedRemoved());
         await expectWorktreeRemoved(worktree);
       } finally {
@@ -1573,6 +1578,7 @@ describe.skipIf(process.platform === "win32")(
           await git(worktree.path, "branch", "-r", "--contains", sha),
         ).toBe("");
         await stopLingering(worktree);
+        await delay(FILE_TIMESTAMP_LAG_MS + 50);
         expect(await removeFrom(worktree)).toEqual(expectedRemoved());
         await expectWorktreeRemoved(worktree);
       } finally {
@@ -1607,6 +1613,7 @@ describe.skipIf(process.platform === "win32")(
         await writeFile(join(worktree.sourcePath, "README.md"), "other\n");
         await git(worktree.sourcePath, "stash", "push");
         await stopLingering(worktree);
+        await delay(FILE_TIMESTAMP_LAG_MS + 50);
         expect(await removeFrom(worktree)).toEqual(expectedRemoved());
         await expectWorktreeRemoved(worktree);
       } finally {
@@ -1628,6 +1635,7 @@ describe.skipIf(process.platform === "win32")(
         });
         await writeFile(join(worktree.path, "node_modules", "pkg", "i.js"), "");
         await stopLingering(worktree);
+        await delay(FILE_TIMESTAMP_LAG_MS + 50);
         expect(await removeFrom(worktree)).toEqual(expectedRemoved());
         await expectWorktreeRemoved(worktree);
       } finally {
@@ -1651,6 +1659,7 @@ describe.skipIf(process.platform === "win32")(
           ).trim(),
         ).toBe("");
         await stopLingering(worktree);
+        await delay(FILE_TIMESTAMP_LAG_MS + 50);
         expect(await removeFrom(worktree)).toEqual(expectedRemoved());
         await expectWorktreeRemoved(worktree);
       } finally {
@@ -1663,6 +1672,7 @@ describe.skipIf(process.platform === "win32")(
       try {
         await git(worktree.path, "checkout", "--detach", "origin/main");
         await stopLingering(worktree);
+        await delay(FILE_TIMESTAMP_LAG_MS + 50);
         expect(await removeFrom(worktree)).toEqual(expectedRemoved());
         await expectWorktreeRemoved(worktree);
       } finally {

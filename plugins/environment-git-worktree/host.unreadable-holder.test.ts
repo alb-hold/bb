@@ -5,8 +5,10 @@ import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { experimental_createHostEntryHarness } from "@get-bb/plugin-sdk/testing/host";
+import { FILE_TIMESTAMP_LAG_MS } from "bb-environment-provider-host/remove-directory-tree";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createWorktreeHostEntry } from "./host.js";
 import { descendantsOnly } from "./host/descendants-only.js";
@@ -117,6 +119,7 @@ it("reports the Linux non-root holder scan limit after removing a worktree", asy
       target === "/proc" ? [String(process.pid)] : hostProc.readdir(target),
   });
   try {
+    await delay(FILE_TIMESTAMP_LAG_MS + 50);
     const removed = await fixture.harness.experimental_call("remove", {
       operationId: "remove-non-root-holder-limit",
       pathKey: "thr_unreadable",
@@ -276,6 +279,7 @@ describe("a program whose /proc entries cannot be read", () => {
   it("removes the same worktree when nothing is unreadable, so only the unreadable program is what keeps it", async () => {
     const fixture = await createFixture();
     startOrdinaryProcess(fixture.dataDir);
+    await delay(FILE_TIMESTAMP_LAG_MS + 50);
 
     const removed = await fixture.harness.experimental_call("remove", {
       operationId: "remove",
