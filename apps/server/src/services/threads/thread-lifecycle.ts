@@ -35,6 +35,7 @@ import {
   listThreadTurnInterruptionEventStates,
   listPendingThreadStorageDeletions,
   markThreadStorageDeleted,
+  nextThreadStorageDeleteSeq,
   requeueThreadStorageDeletion,
   threads,
   type DbNotifier,
@@ -1230,11 +1231,22 @@ function requeueUnsuccessfulThreadStorageDeletion(
     requeueThreadStorageDeletion(deps.db, { threadId });
     recordThreadStorageDeleteRequeued(deps.db, threadId);
   } catch (error) {
-    if (recordThreadStorageDeleteRequeueFailed(deps.db, threadId))
+    const queuedAtSeq = nextSeqOrQueueTail(deps);
+    if (
+      recordThreadStorageDeleteRequeueFailed(deps.db, { queuedAtSeq, threadId })
+    )
       deps.logger.warn(
-        { err: error, threadId },
+        { err: error, queuedAtSeq, threadId },
         "Thread storage deletion could not be re-queued",
       );
+  }
+}
+
+function nextSeqOrQueueTail(deps: CommandResultSideEffectsDeps): number {
+  try {
+    return nextThreadStorageDeleteSeq(deps.db);
+  } catch {
+    return Number.POSITIVE_INFINITY;
   }
 }
 

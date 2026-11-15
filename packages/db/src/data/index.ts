@@ -216,6 +216,7 @@ export {
   markThreadDeleted,
   markThreadStorageDeleted,
   listPendingThreadStorageDeletions,
+  nextThreadStorageDeleteSeq,
   requeueThreadStorageDeletion,
   type PendingThreadStorageDeletion,
   unpinThread,

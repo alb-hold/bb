@@ -2418,6 +2418,16 @@ export function listPendingThreadStorageDeletions(
   });
 }
 
+export function nextThreadStorageDeleteSeq(db: ThreadWriteConnection): number {
+  const row = db
+    .select({
+      next: sql<number>`coalesce(max(${threads.storageDeleteSeq}), 0) + 1`,
+    })
+    .from(threads)
+    .get();
+  return row?.next ?? 1;
+}
+
 export function requeueThreadStorageDeletion(
   db: ThreadWriteConnection,
   args: { threadId: string },

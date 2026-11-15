@@ -4,6 +4,7 @@ import {
   listPendingThreadStorageDeletions,
   markThreadDeleted,
   projects,
+  threads,
 } from "@bb/db";
 import { eq } from "drizzle-orm";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -19,6 +20,7 @@ import {
   admitThreadStorageDelete,
   clearThreadStorageDeleteRetryMemory,
   returnThreadStorageDeleteSlot,
+  THREAD_STORAGE_DELETE_RETRY_MAX_MS,
 } from "../../src/services/threads/thread-storage-delete-retries.js";
 import {
   listQueuedCommands,
@@ -413,6 +415,78 @@ describe("refused thread storage deletes", () => {
         ]);
         expect(getThread(harness.db, behind)).toBeNull();
         expect(getThread(harness.db, failingHead)).toBeNull();
+        expect(
+          warn.mock.calls.filter(
+            ([, message]) =>
+              message === "Thread storage deletion could not be re-queued",
+          ),
+        ).toHaveLength(1);
+      });
+    },
+  );
+
+  it.each(["sweep", "reconnect"] as const)(
+    "keeps a refused row whose re-queue write fails at the back of the rows pending when it failed, so rows re-queued after it never pass it (%s)",
+    async (path) => {
+      await withTestHarness(async (harness) => {
+        vi.useFakeTimers({ toFake: ["Date"] });
+        vi.setSystemTime(START_MS);
+        const seeded = seedDeletedThreads(
+          harness,
+          4,
+          `host-requeue-starve-${path}`,
+        );
+        const byId = [...seeded.threadIds].sort();
+        const failing = byId[3] ?? "";
+        const firstRequeuedAfter = byId[0] ?? "";
+        const queueOrder = [failing, firstRequeuedAfter, byId[1], byId[2]].map(
+          (threadId) => threadId ?? "",
+        );
+        listPendingThreadStorageDeletions(harness.db);
+        queueOrder.forEach((threadId, index) => {
+          harness.db
+            .update(threads)
+            .set({ storageDeleteSeq: index + 1 })
+            .where(eq(threads.id, threadId))
+            .run();
+        });
+        harness.db.$client.exec(`
+          CREATE TEMP TRIGGER fail_storage_delete_requeue
+          BEFORE UPDATE OF storage_delete_seq ON threads
+          WHEN OLD.id = '${failing}'
+          BEGIN SELECT RAISE(ABORT, 'database or disk is full'); END;
+        `);
+        const warn = vi.spyOn(harness.deps.logger, "warn");
+        const cycles = 3;
+        const sentBySlot: string[][] = [];
+        for (let slot = 0; slot < cycles * queueOrder.length; slot += 1) {
+          const slotMs = slot * THREAD_STORAGE_DELETE_RETRY_MAX_MS;
+          vi.setSystemTime(START_MS + slotMs);
+          if (path === "sweep") {
+            await runThreadLifecycleSweep(harness.deps);
+          } else {
+            await reconcileDaemonReportedThreads(harness.deps, {
+              activeThreadIds: [],
+              hostId: seeded.environment.hostId,
+              sameDaemonInstance: false,
+              undeliveredEventThreadIds: [],
+            });
+          }
+          sentBySlot.push(
+            (await refuseQueuedStorageDeletes(harness, slotMs)).map(
+              (request) => request.threadId,
+            ),
+          );
+        }
+        harness.db.$client.exec("DROP TRIGGER fail_storage_delete_requeue");
+        vi.useRealTimers();
+
+        expect(firstRequeuedAfter < failing).toBe(true);
+        expect(sentBySlot).toEqual(
+          Array.from({ length: cycles }, () =>
+            queueOrder.map((threadId) => [threadId]),
+          ).flat(),
+        );
         expect(
           warn.mock.calls.filter(
             ([, message]) =>

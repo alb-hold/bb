@@ -14,7 +14,7 @@ interface ThreadStorageDeleteRetryState {
   gatedDispatchTimesByHost: Map<string, number[]>;
   inFlight: Set<string>;
   refused: Map<string, RefusedThreadStorageDelete>;
-  requeueFailed: Set<string>;
+  requeueFailed: Map<string, number>;
   sendFailuresReported: Set<string>;
 }
 
@@ -27,7 +27,7 @@ function retryState(db: object): ThreadStorageDeleteRetryState {
     gatedDispatchTimesByHost: new Map(),
     inFlight: new Set(),
     refused: new Map(),
-    requeueFailed: new Set(),
+    requeueFailed: new Map(),
     sendFailuresReported: new Set(),
   };
   retryStateByDb.set(db, created);
@@ -126,12 +126,12 @@ export function recordThreadStorageDeleteRefused(
 
 export function recordThreadStorageDeleteRequeueFailed(
   db: object,
-  threadId: string,
+  args: { queuedAtSeq: number; threadId: string },
 ): boolean {
   const requeueFailed = retryState(db).requeueFailed;
-  if (requeueFailed.has(threadId)) return false;
-  requeueFailed.add(threadId);
-  return true;
+  const first = !requeueFailed.has(args.threadId);
+  requeueFailed.set(args.threadId, args.queuedAtSeq);
+  return first;
 }
 
 export function recordThreadStorageDeleteRequeued(
@@ -141,18 +141,34 @@ export function recordThreadStorageDeleteRequeued(
   retryStateByDb.get(db)?.requeueFailed.delete(threadId);
 }
 
-export function orderThreadStorageDeletesForDispatch<T extends { id: string }>(
-  db: object,
-  pendingInQueueOrder: readonly T[],
-): T[] {
+export function orderThreadStorageDeletesForDispatch<
+  T extends { id: string; storageDeleteSeq: number | null },
+>(db: object, pendingInQueueOrder: readonly T[]): T[] {
   const requeueFailed = retryStateByDb.get(db)?.requeueFailed;
   if (!requeueFailed || requeueFailed.size === 0) {
     return [...pendingInQueueOrder];
   }
-  return [
-    ...pendingInQueueOrder.filter((thread) => !requeueFailed.has(thread.id)),
-    ...pendingInQueueOrder.filter((thread) => requeueFailed.has(thread.id)),
-  ];
+  const queuePosition = (thread: T) => {
+    const queuedAtSeq = requeueFailed.get(thread.id);
+    return queuedAtSeq === undefined
+      ? {
+          seq: thread.storageDeleteSeq ?? Number.POSITIVE_INFINITY,
+          unpersisted: 1,
+        }
+      : { seq: queuedAtSeq, unpersisted: 0 };
+  };
+  return [...pendingInQueueOrder].sort((left, right) => {
+    const leftPosition = queuePosition(left);
+    const rightPosition = queuePosition(right);
+    if (leftPosition.seq !== rightPosition.seq) {
+      return leftPosition.seq - rightPosition.seq;
+    }
+    if (leftPosition.unpersisted !== rightPosition.unpersisted) {
+      return leftPosition.unpersisted - rightPosition.unpersisted;
+    }
+    if (left.id === right.id) return 0;
+    return left.id < right.id ? -1 : 1;
+  });
 }
 
 export function forgetThreadStorageDelete(db: object, threadId: string): void {
@@ -171,9 +187,12 @@ export function forgetThreadStorageDeleteRetriesExcept(
   for (const threadId of state.refused.keys()) {
     if (!pendingThreadIds.has(threadId)) state.refused.delete(threadId);
   }
-  for (const tracked of [state.requeueFailed, state.sendFailuresReported]) {
-    for (const threadId of tracked) {
-      if (!pendingThreadIds.has(threadId)) tracked.delete(threadId);
+  for (const threadId of state.requeueFailed.keys()) {
+    if (!pendingThreadIds.has(threadId)) state.requeueFailed.delete(threadId);
+  }
+  for (const threadId of state.sendFailuresReported) {
+    if (!pendingThreadIds.has(threadId)) {
+      state.sendFailuresReported.delete(threadId);
     }
   }
 }
