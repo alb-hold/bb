@@ -141,6 +141,26 @@ export function recordThreadStorageDeleteRequeued(
   retryStateByDb.get(db)?.requeueFailed.delete(threadId);
 }
 
+export function resolveThreadStorageDeletesHeldAtTail(
+  db: object,
+  readNextSeq: () => number,
+): string[] {
+  const requeueFailed = retryStateByDb.get(db)?.requeueFailed;
+  if (!requeueFailed) return [];
+  const heldAtTail = [...requeueFailed].flatMap(([threadId, queuedAtSeq]) =>
+    queuedAtSeq === Number.POSITIVE_INFINITY ? [threadId] : [],
+  );
+  if (heldAtTail.length === 0) return [];
+  let nextSeq: number;
+  try {
+    nextSeq = readNextSeq();
+  } catch {
+    return [];
+  }
+  for (const threadId of heldAtTail) requeueFailed.set(threadId, nextSeq);
+  return heldAtTail;
+}
+
 export function orderThreadStorageDeletesForDispatch<
   T extends { id: string; storageDeleteSeq: number | null },
 >(db: object, pendingInQueueOrder: readonly T[]): T[] {

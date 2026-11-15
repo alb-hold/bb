@@ -132,6 +132,7 @@ import {
   isFirstThreadStorageDeleteSendFailure,
   isThreadStorageDeleteInFlight,
   orderThreadStorageDeletesForDispatch,
+  resolveThreadStorageDeletesHeldAtTail,
   recordThreadStorageDeleteRefused,
   recordThreadStorageDeleteRequeueFailed,
   recordThreadStorageDeleteRequeued,
@@ -1242,6 +1243,22 @@ function requeueUnsuccessfulThreadStorageDeletion(
   }
 }
 
+export function orderPendingThreadStorageDeletes<
+  T extends { id: string; storageDeleteSeq: number | null },
+>(
+  deps: Pick<CommandResultSideEffectsDeps, "db" | "logger">,
+  pendingInQueueOrder: readonly T[],
+): T[] {
+  for (const threadId of resolveThreadStorageDeletesHeldAtTail(deps.db, () =>
+    nextThreadStorageDeleteSeq(deps.db),
+  ))
+    deps.logger.info(
+      { threadId },
+      "Thread storage deletion queue position recovered",
+    );
+  return orderThreadStorageDeletesForDispatch(deps.db, pendingInQueueOrder);
+}
+
 function nextSeqOrQueueTail(deps: CommandResultSideEffectsDeps): number {
   try {
     return nextThreadStorageDeleteSeq(deps.db);
@@ -2243,8 +2260,8 @@ export async function reconcileDaemonReportedThreads(
       threadId: thread.id,
     });
   }
-  for (const thread of orderThreadStorageDeletesForDispatch(
-    deps.db,
+  for (const thread of orderPendingThreadStorageDeletes(
+    deps,
     listPendingThreadStorageDeletions(deps.db, { hostId: args.hostId }),
   )) {
     if (thread.environmentId === null) continue;

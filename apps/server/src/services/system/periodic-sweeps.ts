@@ -63,14 +63,12 @@ import {
 import {
   finalizeStoppedThread,
   hasLiveThreadStartInFlight,
+  orderPendingThreadStorageDeletes,
   purgeDeletedThreadRows,
   requestThreadStopForCurrentState,
   retryThreadStorageDeletion,
 } from "../threads/thread-lifecycle.js";
-import {
-  forgetThreadStorageDeleteRetriesExcept,
-  orderThreadStorageDeletesForDispatch,
-} from "../threads/thread-storage-delete-retries.js";
+import { forgetThreadStorageDeleteRetriesExcept } from "../threads/thread-storage-delete-retries.js";
 import {
   archiveUndoGraceKeepsTerminals,
   archiveUndoGraceKeepsTurnRunning,
@@ -421,8 +419,8 @@ async function runThreadProvisioningOrphanCleanupSweep(
     deps.db,
     new Set(pendingStorageDeletions.map((thread) => thread.id)),
   );
-  for (const thread of orderThreadStorageDeletesForDispatch(
-    deps.db,
+  for (const thread of orderPendingThreadStorageDeletes(
+    deps,
     pendingStorageDeletions,
   )) {
     const environment = thread.environmentId
