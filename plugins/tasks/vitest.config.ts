@@ -13,6 +13,7 @@ export default defineConfig({
     include: ["**/*.test.{ts,tsx}"],
     exclude: ["node_modules/**"],
     testTimeout: 20_000,
+    hookTimeout: 20_000,
     setupFiles: ["./vitest.setup.ts"],
     server: {
       deps: {

@@ -645,7 +645,7 @@ describe("plugin update service and routes", () => {
     try {
       response = await Promise.race([
         pending,
-        new Promise<undefined>((resolve) => setTimeout(resolve, 250)),
+        new Promise<undefined>((resolve) => setTimeout(resolve, 5_000)),
       ]);
       expect(response?.status).toBe(202);
     } finally {

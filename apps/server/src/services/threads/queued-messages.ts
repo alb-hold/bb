@@ -11,6 +11,7 @@ import {
   getThread,
   getThreadSpawner,
   holdQueuedThreadMessageForEdit,
+  isNativeTerminalThread,
   isOrdinaryTurnEndQueuedMessage,
   isThreadQueueAutoSendPaused,
   releaseQueuedMessageClaim,
@@ -46,6 +47,7 @@ import type {
 import { ApiError } from "../../errors.js";
 import { isCommandTimeoutError } from "../lib/error-log-fields.js";
 import { assertNotNativeTerminalThread } from "./native-terminal-guard.js";
+import { dispatchClaimedNativeTerminalMessages } from "./native-terminal-admission.js";
 import {
   parseStoredQueuedThreadMessageWaitingOn,
   storedQueuedThreadMessageRequestedBy,
@@ -427,6 +429,10 @@ const STALE_QUEUED_MESSAGE_CLAIM_MS = 5 * 60 * 1000;
 const QUEUED_MESSAGE_EDIT_HOLD_LEASE_MS = 2 * 60 * 1000;
 const activeQueuedMessageClaimTokens = new Set<string>();
 
+export function isQueuedMessageClaimActive(claimToken: string): boolean {
+  return activeQueuedMessageClaimTokens.has(claimToken);
+}
+
 function respectsManualStopPause(
   args: SendClaimedQueuedMessageForThreadArgs,
 ): boolean {
@@ -599,6 +605,15 @@ async function sendClaimedQueuedMessageForThread(
   deps: LoggedPendingInteractionWorkSessionDeps,
   args: SendClaimedQueuedMessageForThreadArgs,
 ): Promise<ThreadQueuedMessage> {
+  if (isNativeTerminalThread(deps.db, args.thread.id)) {
+    const outcome = await dispatchClaimedNativeTerminalMessages(deps, {
+      thread: args.thread,
+      claimed: args.queuedMessages,
+      sendNow: args.sendNow,
+    });
+    assertSendNowDispatched(args, outcome);
+    return toThreadQueuedMessage(args.queuedMessages[0]!);
+  }
   const notice = await sendClaimedSystemNotice(deps, args);
   if (notice) {
     return notice;
@@ -644,6 +659,16 @@ async function sendClaimedQueuedMessageForThread(
     onTurnRequestCreated: args.onTurnRequestCreated,
     trigger: "auto-dispatch",
   });
+  assertSendNowDispatched(args, outcome);
+  return queuedMessage;
+}
+
+function assertSendNowDispatched(
+  args: SendClaimedQueuedMessageForThreadArgs,
+  outcome:
+    | { kind: "dispatched" }
+    | { kind: "queued"; entry: ThreadQueuedMessage },
+): void {
   if (
     args.sendNow &&
     args.mode !== "steer" &&
@@ -656,7 +681,6 @@ async function sendClaimedQueuedMessageForThread(
       `This message cannot be sent yet: ${describeCoreWait(outcome.entry.waitingOn)}.`,
     );
   }
-  return queuedMessage;
 }
 
 function describeCoreWait(waitingOn: QueuedMessageWaitingOn | null): string {

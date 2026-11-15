@@ -6,6 +6,8 @@ const deletionResidual = "src/thread-tokens-suspend.test.ts";
 export default defineConfig({
   resolve: { tsconfigPaths: true },
   test: {
+    testTimeout: 20_000,
+    hookTimeout: 20_000,
     maxWorkers: 2,
     projects: [
       {

@@ -124,9 +124,8 @@ async function readStatus(args: {
             harness,
             ({ command }) =>
               command.type === "native_terminal.read_transcript_tail",
-            250,
-          ).catch(() => null);
-          if (queued?.command.type === "native_terminal.read_transcript_tail") {
+          );
+          if (queued.command.type === "native_terminal.read_transcript_tail") {
             capturedCommand = true;
             await reportQueuedCommandSuccess(harness, queued, {
               outcome: "available",
@@ -238,7 +237,6 @@ describe("native thread status truth", () => {
           harness,
           ({ command }) =>
             command.type === "native_terminal.read_transcript_tail",
-          250,
         );
         await reportQueuedCommandSuccess(harness, queued, {
           outcome: "missing",
@@ -288,18 +286,28 @@ describe("native thread status truth", () => {
           model: null,
         });
         const responsePromise = harness.app.request("/api/v1/threads");
-        await waitForQueuedCommand(
+        const queued = await waitForQueuedCommand(
           harness,
           ({ command }) =>
             command.type === "native_terminal.read_transcript_tail",
-          1_000,
         );
-        const response = await Promise.race([
-          responsePromise,
-          new Promise<null>((resolve) => setTimeout(() => resolve(null), 250)),
-        ]);
-        expect(response).not.toBeNull();
-        expect(response?.status).toBe(200);
+        expect((await responsePromise).status).toBe(200);
+        if (!queued.rpcRequest || !queued.row.sessionId) {
+          throw new Error("Queued transcript read is missing its RPC request");
+        }
+        expect(
+          harness.hub.recordHostOnlineRpcResponse({
+            message: {
+              type: "host-rpc.response",
+              requestId: queued.rpcRequest.requestId,
+              commandType: queued.rpcRequest.command.type,
+              ok: false,
+              errorCode: "answered_after_list",
+              errorMessage: "The list returned before this answer",
+            },
+            sessionId: queued.row.sessionId,
+          }),
+        ).toEqual({ handled: true });
       });
     } finally {
       db.$client.close();

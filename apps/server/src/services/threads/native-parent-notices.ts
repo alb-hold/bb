@@ -21,6 +21,10 @@ import {
   nativeTerminalPromptParts,
   sendNativeTerminalMessage,
 } from "./native-terminal-threads.js";
+import {
+  admitNativeTerminalDispatch,
+  NATIVE_TERMINAL_PARENT_NOTICE,
+} from "./native-terminal-admission.js";
 
 export const NATIVE_PARENT_NOTICE_MIN_INTERVAL_MS = 60_000;
 const NATIVE_PARENT_NOTICE_RETRY_MS = 3_000;
@@ -175,19 +179,35 @@ async function attempt(
       now: new Date(),
     });
     try {
-      await sendNativeTerminalMessage(deps, {
-        pastes: nativeTerminalPromptParts(deps, {
-          hostId: null,
-          input: [{ type: "text", text, mentions: [] }],
-          projectId: parent.projectId,
-        }),
-        requestText: text,
-        requireEmptyInputBox: true,
-        threadId: parentThreadId,
-      });
-      recordNativeParentNoticeDelivery(deps.db, {
-        deliveredAt: Date.now(),
-        parentThreadId,
+      await admitNativeTerminalDispatch(deps, {
+        thread: parent,
+        input: [{ type: "text", text, mentions: [] }],
+        claimed: null,
+        sendNow: false,
+        senderThreadId: null,
+        origin: null,
+        originPluginId: null,
+        startedOnBehalfOf: null,
+        systemNotice: NATIVE_TERMINAL_PARENT_NOTICE,
+        admitted: {
+          when: "after-decision",
+          run: async () => {
+            await sendNativeTerminalMessage(deps, {
+              pastes: nativeTerminalPromptParts(deps, {
+                hostId: null,
+                input: [{ type: "text", text, mentions: [] }],
+                projectId: parent.projectId,
+              }),
+              requestText: text,
+              requireEmptyInputBox: true,
+              threadId: parentThreadId,
+            });
+            recordNativeParentNoticeDelivery(deps.db, {
+              deliveredAt: Date.now(),
+              parentThreadId,
+            });
+          },
+        },
       });
       dropNotices(deps, snapshot);
     } catch (error) {

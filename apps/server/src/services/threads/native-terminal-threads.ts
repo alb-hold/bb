@@ -20,6 +20,7 @@ import {
   rebindNativeTerminalThreadSessionId,
   clearNativeTerminalThreadEvidence,
   setNativeTerminalThreadTerminal,
+  type DbTransaction,
   type NativeTerminalThreadRecord,
 } from "@bb/db";
 import {
@@ -35,7 +36,7 @@ import type {
   OpenNativeTerminalRequest,
   TerminalSession,
 } from "@bb/server-contract";
-import { ApiError } from "../../errors.js";
+import { ApiError, TerminalInputInterruptedError } from "../../errors.js";
 import type {
   AppDeps,
   LoggedPendingInteractionWorkSessionDeps,
@@ -286,6 +287,7 @@ export function beginNativeTerminalThreadProvisioning(
     input: PromptInput[];
     thread: ThreadRow;
     titleProvided: boolean;
+    beforeStartInTransaction?: (tx: DbTransaction) => void;
   },
 ): void {
   const started = deps.db.transaction(
@@ -295,6 +297,7 @@ export function beginNativeTerminalThreadProvisioning(
         { event: { type: "run.preparing" }, threadId: args.thread.id },
       );
       if (!prepared.applied) return false;
+      args.beforeStartInTransaction?.(tx);
       saveThreadProvisionContext({
         replace: true,
         db: tx,
@@ -1416,38 +1419,126 @@ async function deliverNativeTerminalMessage(
     ) {
       throw nativeTerminalInputAmbiguous(provider, 0);
     }
-    return submitNativeTerminalInput(deps, terminalId);
+    return submitNativeTerminalInput(
+      deps,
+      { inputSent: false },
+      {
+        terminalId,
+        threadId: args.threadId,
+      },
+    );
   }
-  for (const [pastedBefore, text] of args.pastes.entries()) {
-    await pasteIntoNativeTerminal(deps, {
-      pastedBefore,
-      provider,
-      screenRows: view.terminal.rows,
+  const delivery: NativeTerminalDelivery = { inputSent: false };
+  try {
+    for (const [pastedBefore, text] of args.pastes.entries()) {
+      await pasteIntoNativeTerminal(deps, {
+        delivery,
+        pastedBefore,
+        provider,
+        screenRows: view.terminal.rows,
+        terminalId,
+        text,
+        threadId: args.threadId,
+      });
+    }
+    return submitNativeTerminalInput(deps, delivery, {
       terminalId,
-      text,
+      threadId: args.threadId,
     });
+  } catch (error) {
+    throw delivery.inputSent ? interruptedAfterInput(error) : error;
   }
-  return submitNativeTerminalInput(deps, terminalId);
+}
+
+const NATIVE_TERMINAL_DISCONNECT_CODES: ReadonlySet<string> = new Set([
+  "host_disconnected",
+  "native_terminal_not_running",
+  "terminal_not_running",
+  "terminal_output_unavailable",
+]);
+
+function interruptedAfterInput(error: unknown): unknown {
+  if (isNativeTerminalInteractionOpenError(error)) {
+    return new TerminalInputInterruptedError(
+      new ApiError(
+        409,
+        "native_terminal_input_interrupted",
+        "A question or approval opened in the native session after part of the message was typed into it, so it was not submitted. Answer it in the terminal and check the input box before sending again.",
+      ),
+    );
+  }
+  if (
+    !(error instanceof ApiError) ||
+    error instanceof TerminalInputInterruptedError ||
+    !NATIVE_TERMINAL_DISCONNECT_CODES.has(error.body.code)
+  ) {
+    return error;
+  }
+  return new TerminalInputInterruptedError(error);
+}
+
+const NATIVE_TERMINAL_INTERACTION_OPEN = "native_terminal_interaction_open";
+
+export function isNativeTerminalInteractionOpenError(error: unknown): boolean {
+  return (
+    error instanceof ApiError &&
+    error.body.code === NATIVE_TERMINAL_INTERACTION_OPEN
+  );
 }
 
 function submitNativeTerminalInput(
   deps: NativeTerminalDeps,
-  terminalId: string,
+  delivery: NativeTerminalDelivery,
+  args: { terminalId: string; threadId: string },
 ): TerminalSession {
-  return deps.terminalSessions.sendTerminalInput({
-    terminalId,
-    payload: { dataBase64: Buffer.from("\r", "utf8").toString("base64") },
-  });
+  return writeNativeTerminalInput(deps, delivery, { ...args, data: "\r" });
+}
+
+interface NativeTerminalDelivery {
+  inputSent: boolean;
+}
+
+function writeNativeTerminalInput(
+  deps: NativeTerminalDeps,
+  delivery: NativeTerminalDelivery,
+  args: { data: string; terminalId: string; threadId: string },
+): TerminalSession {
+  if (
+    deps.pendingInteractions.hasTurnBoundPendingThreadInteraction(args.threadId)
+  ) {
+    throw new ApiError(
+      409,
+      NATIVE_TERMINAL_INTERACTION_OPEN,
+      "The native session has an open question or approval, so nothing was typed into it. The message is delivered once that is answered.",
+    );
+  }
+  let written = false;
+  try {
+    return deps.terminalSessions.sendTerminalInput({
+      onInputWritten: () => {
+        written = true;
+        delivery.inputSent = true;
+      },
+      payload: {
+        dataBase64: Buffer.from(args.data, "utf8").toString("base64"),
+      },
+      terminalId: args.terminalId,
+    });
+  } catch (error) {
+    throw written ? new TerminalInputInterruptedError(error) : error;
+  }
 }
 
 async function pasteIntoNativeTerminal(
   deps: NativeTerminalDeps,
   args: {
+    delivery: NativeTerminalDelivery;
     pastedBefore: number;
     provider: NativeTerminalProvider;
     screenRows: number;
     terminalId: string;
     text: string;
+    threadId: string;
   },
 ): Promise<void> {
   const { provider, terminalId } = args;
@@ -1472,10 +1563,10 @@ async function pasteIntoNativeTerminal(
   })
     ? terminalOutputShowsPasteAgain
     : terminalOutputShowsPaste;
-  const bracketed = `\u001b[200~${args.text}\u001b[201~`;
-  deps.terminalSessions.sendTerminalInput({
+  writeNativeTerminalInput(deps, args.delivery, {
+    data: `\u001b[200~${args.text}\u001b[201~`,
     terminalId,
-    payload: { dataBase64: Buffer.from(bracketed, "utf8").toString("base64") },
+    threadId: args.threadId,
   });
   const deadline = Date.now() + NATIVE_TERMINAL_ECHO_TIMEOUT_MS;
   for (;;) {

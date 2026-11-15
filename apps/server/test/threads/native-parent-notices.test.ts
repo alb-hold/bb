@@ -4,7 +4,10 @@ import {
   getNativeTerminalThread,
   getThread,
   listNativeParentNotices,
+  listQueuedThreadMessages,
+  threads,
 } from "@bb/db";
+import { eq } from "drizzle-orm";
 import {
   encodeClientTurnRequestIdNumber,
   threadScope,
@@ -17,8 +20,21 @@ import {
   type HostDaemonServerWsMessage,
 } from "@bb/host-daemon-contract";
 import { threadResponseSchema } from "@bb/server-contract";
+import type {
+  MessageDispatchHookContext,
+  PluginHookName,
+} from "@get-bb/plugin-sdk";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { runPeriodicSweeps } from "../../src/services/system/periodic-sweeps.js";
+import {
+  invokePluginInline,
+  setPluginHookProvider,
+  type PluginHookRegistration,
+} from "../../src/services/plugins/plugin-hook-registry.js";
+import { runQueuedMessageDispatch } from "../../src/services/threads/queued-message-dispatch.js";
+import {
+  runPeriodicSweeps,
+  runStartupRecoverySweep,
+} from "../../src/services/system/periodic-sweeps.js";
 import { enqueueNativeParentNotice } from "../../src/services/threads/native-parent-notices.js";
 import { recordNativeTerminalActivity } from "../../src/services/threads/native-terminal-activity.js";
 import { internalAuthHeaders } from "../helpers/commands.js";
@@ -74,8 +90,39 @@ const NOTICE_TAIL = /-- bb, \d\d:\d\d:\d\d$/u;
 const harnesses: TestAppHarness[] = [];
 
 afterEach(async () => {
+  setPluginHookProvider(undefined);
   for (const harness of harnesses.splice(0)) await harness.cleanup();
 });
+
+const AT_LIMIT_REASON = "12 of 12 running on host native-host";
+
+type HookDecision = { action: "proceed" } | { action: "wait"; reason: string };
+
+function installDispatchHook(
+  decide: () => HookDecision,
+): MessageDispatchHookContext[] {
+  const seen: MessageDispatchHookContext[] = [];
+  const registry: {
+    [K in PluginHookName]: PluginHookRegistration<K>[];
+  } = {
+    "experimental_thread.configure": [],
+    "message.dispatch": [
+      {
+        pluginId: "native-notice-admission-test",
+        handler: (context) => {
+          seen.push(context);
+          return decide();
+        },
+      },
+    ],
+  };
+  setPluginHookProvider({
+    listHooks: (hook) => registry[hook],
+    invokeHook: (_pluginId, _label, run) => invokePluginInline(run),
+    decisionTimeoutMs: 10_000,
+  });
+  return seen;
+}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -682,6 +729,191 @@ describe("child notices for a native terminal parent", () => {
       ),
     ).toEqual([]);
   }, 30_000);
+
+  it("holds a notice while the parent has a question open, even when the parent reads idle, and delivers it once after the question closes", async () => {
+    const fixture = await createFixture();
+    const { open, thread } = await openRunningClaudeParent(fixture);
+    const tui = startFakeClaudeTui(
+      fixture,
+      open.terminalId,
+      EMPTY_PROMPT_SCREEN,
+    );
+    try {
+      recordNativeTerminalActivity(fixture.harness.deps, {
+        confirms: true,
+        questions: [{ id: "install-now", prompt: "Install now?" }],
+        state: "waiting",
+        threadId: thread.id,
+      });
+      fixture.harness.db
+        .update(threads)
+        .set({ status: "idle" })
+        .where(eq(threads.id, thread.id))
+        .run();
+      enqueueNativeParentNotice(fixture.harness.deps, {
+        input: [{ type: "text", text: "Child 1 finished", mentions: [] }],
+        parentThreadId: thread.id,
+      });
+      await sleep(5_500);
+      expect(tui.inputs()).toEqual([]);
+      expect(
+        fixture.harness.deps.pendingInteractions.listPendingThreadInteractions(
+          thread.id,
+        ),
+      ).toHaveLength(1);
+
+      recordNativeTerminalActivity(fixture.harness.deps, {
+        confirms: true,
+        state: "idle",
+        threadId: thread.id,
+      });
+      await waitFor(() => tui.pastes().length > 0, 20_000);
+      await sleep(1_000);
+      const [notice, ...rest] = tui.pastes();
+      expect(rest).toEqual([]);
+      expect(notice).toContain("Child 1 finished");
+      expect(tui.inputs().filter((input) => input === "\r")).toHaveLength(1);
+    } finally {
+      tui.stop();
+    }
+  }, 40_000);
+
+  it("holds a notice when a question opens after admission but before the paste, and delivers it once after the question closes", async () => {
+    const fixture = await createFixture();
+    const { open, thread } = await openRunningClaudeParent(fixture);
+    const tui = startFakeClaudeTui(
+      fixture,
+      open.terminalId,
+      EMPTY_PROMPT_SCREEN,
+    );
+    const terminalSessions = fixture.harness.deps.terminalSessions;
+    const readTerminalOutput =
+      terminalSessions.readTerminalOutput.bind(terminalSessions);
+    vi.spyOn(terminalSessions, "readTerminalOutput").mockImplementationOnce(
+      async (...args) => {
+        recordNativeTerminalActivity(fixture.harness.deps, {
+          confirms: true,
+          questions: [{ id: "install-now", prompt: "Install now?" }],
+          state: "waiting",
+          threadId: thread.id,
+        });
+        return readTerminalOutput(...args);
+      },
+    );
+    try {
+      enqueueNativeParentNotice(fixture.harness.deps, {
+        input: [{ type: "text", text: "Child 1 finished", mentions: [] }],
+        parentThreadId: thread.id,
+      });
+      await sleep(5_500);
+      expect(tui.inputs()).toEqual([]);
+      expect(
+        fixture.harness.deps.pendingInteractions.listPendingThreadInteractions(
+          thread.id,
+        ),
+      ).toHaveLength(1);
+
+      recordNativeTerminalActivity(fixture.harness.deps, {
+        confirms: true,
+        state: "idle",
+        threadId: thread.id,
+      });
+      await waitFor(() => tui.pastes().length > 0, 20_000);
+      await sleep(1_000);
+      const [notice, ...rest] = tui.pastes();
+      expect(rest).toEqual([]);
+      expect(notice).toContain("Child 1 finished");
+      expect(tui.inputs().filter((input) => input === "\r")).toHaveLength(1);
+    } finally {
+      tui.stop();
+    }
+  }, 40_000);
+
+  it("holds a notice to an idle parent at the concurrency limit, then delivers it once", async () => {
+    const fixture = await createFixture();
+    const { open, thread } = await openRunningClaudeParent(fixture);
+    const tui = startFakeClaudeTui(
+      fixture,
+      open.terminalId,
+      EMPTY_PROMPT_SCREEN,
+    );
+    let decision: HookDecision = { action: "wait", reason: AT_LIMIT_REASON };
+    installDispatchHook(() => decision);
+    try {
+      enqueueNativeParentNotice(fixture.harness.deps, {
+        input: [{ type: "text", text: "Child 1 finished", mentions: [] }],
+        parentThreadId: thread.id,
+      });
+      await waitFor(
+        () =>
+          listQueuedThreadMessages(fixture.harness.db, thread.id).length > 0 ||
+          tui.pastes().length > 0,
+        10_000,
+      );
+      await sleep(500);
+      expect(tui.inputs()).toEqual([]);
+      const rows = listQueuedThreadMessages(fixture.harness.db, thread.id);
+      expect(rows).toHaveLength(1);
+      expect(JSON.stringify(rows[0]?.waitingOn)).toContain(AT_LIMIT_REASON);
+      expect(listNativeParentNotices(fixture.harness.db, thread.id)).toEqual(
+        [],
+      );
+
+      decision = { action: "proceed" };
+      await runQueuedMessageDispatch(fixture.harness.deps, {
+        kind: "plugin-recheck",
+      });
+      await waitFor(() => tui.pastes().length > 0, 10_000);
+      await sleep(500);
+      const [notice, ...rest] = tui.pastes();
+      expect(rest).toEqual([]);
+      expect(notice?.startsWith("[bb notice]")).toBe(true);
+      expect(notice).toContain("Child 1 finished");
+      expect(tui.inputs().filter((input) => input === "\r")).toHaveLength(1);
+      expect(listQueuedThreadMessages(fixture.harness.db, thread.id)).toEqual(
+        [],
+      );
+    } finally {
+      tui.stop();
+    }
+  }, 30_000);
+
+  it("leaves a notice to a busy parent outside the concurrency limit", async () => {
+    const fixture = await createFixture();
+    const { open, thread } = await openRunningClaudeParent(fixture);
+    const tui = startFakeClaudeTui(
+      fixture,
+      open.terminalId,
+      EMPTY_PROMPT_SCREEN,
+    );
+    const seen = installDispatchHook(() => ({
+      action: "wait",
+      reason: AT_LIMIT_REASON,
+    }));
+    try {
+      recordNativeTerminalActivity(fixture.harness.deps, {
+        confirms: false,
+        state: "working",
+        threadId: thread.id,
+      });
+      expect(getThread(fixture.harness.db, thread.id)?.status).toBe("active");
+      enqueueNativeParentNotice(fixture.harness.deps, {
+        input: [{ type: "text", text: "Child 2 finished", mentions: [] }],
+        parentThreadId: thread.id,
+      });
+      await sleep(1_000);
+      expect(seen).toEqual([]);
+      expect(listQueuedThreadMessages(fixture.harness.db, thread.id)).toEqual(
+        [],
+      );
+      expect(tui.inputs()).toEqual([]);
+      expect(
+        listNativeParentNotices(fixture.harness.db, thread.id),
+      ).toHaveLength(1);
+    } finally {
+      tui.stop();
+    }
+  }, 30_000);
 });
 
 describe("child notices survive a server restart", () => {
@@ -763,6 +995,82 @@ describe("child notices survive a server restart", () => {
       );
     } finally {
       tui.stop();
+    }
+  }, 60_000);
+
+  it("never re-sends a held notice that a crashed server pasted before deleting its row", async () => {
+    const before = await createFixture();
+    const { open, thread } = await openRunningClaudeParent(before);
+    const tui = startFakeClaudeTui(
+      before,
+      open.terminalId,
+      EMPTY_PROMPT_SCREEN,
+    );
+    let decision: HookDecision = { action: "wait", reason: AT_LIMIT_REASON };
+    installDispatchHook(() => decision);
+    try {
+      enqueueNativeParentNotice(before.harness.deps, {
+        input: [{ type: "text", text: "Child 3 finished", mentions: [] }],
+        parentThreadId: thread.id,
+      });
+      await waitFor(
+        () => listQueuedThreadMessages(before.harness.db, thread.id).length > 0,
+        10_000,
+      );
+      before.harness.db.$client.exec(`
+        CREATE TRIGGER fault_claimed_queue_delete BEFORE DELETE ON queued_thread_messages
+          WHEN OLD.state = 'claimed'
+          BEGIN SELECT RAISE(ABORT, 'simulated crash after the paste'); END;
+        CREATE TRIGGER fault_claimed_queue_update BEFORE UPDATE ON queued_thread_messages
+          WHEN OLD.state = 'claimed'
+          BEGIN SELECT RAISE(ABORT, 'simulated crash after the paste'); END;
+      `);
+      decision = { action: "proceed" };
+      await runQueuedMessageDispatch(before.harness.deps, {
+        kind: "plugin-recheck",
+      });
+      await sleep(300);
+      before.harness.db.$client.exec(`
+        DROP TRIGGER fault_claimed_queue_delete;
+        DROP TRIGGER fault_claimed_queue_update;
+      `);
+      expect(tui.pastes()).toHaveLength(1);
+      expect(tui.pastes()[0]).toContain("Child 3 finished");
+      expect(tui.inputs().filter((input) => input === "\r")).toHaveLength(1);
+    } finally {
+      tui.stop();
+    }
+
+    const after = await restartServer(before);
+    const afterTui = startFakeClaudeTui(
+      after,
+      open.terminalId,
+      EMPTY_PROMPT_SCREEN,
+    );
+    try {
+      await runStartupRecoverySweep(after.harness.deps);
+      await runQueuedMessageDispatch(after.harness.deps, {
+        kind: "plugin-recheck",
+      });
+      await runSweeps(after);
+      await sleep(1_500);
+      await runQueuedMessageDispatch(after.harness.deps, {
+        kind: "plugin-recheck",
+      });
+      await runSweeps(after);
+      await sleep(500);
+
+      expect(afterTui.inputs()).toEqual([]);
+      const rows = listQueuedThreadMessages(after.harness.db, thread.id);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        state: "failed_exhausted",
+        failureReason:
+          "Delivery uncertain after a restart: send again or delete",
+      });
+      expect(listNativeParentNotices(after.harness.db, thread.id)).toEqual([]);
+    } finally {
+      afterTui.stop();
     }
   }, 60_000);
 

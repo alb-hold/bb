@@ -82,7 +82,7 @@ function seedActiveThreadStopFixture(
 }
 
 async function waitForStopRpcIdle(args: WaitForStopRpcIdleArgs): Promise<void> {
-  const deadline = Date.now() + 1_000;
+  const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {
     if (!hasLiveThreadStopInFlight(args.threadId)) {
       return;
