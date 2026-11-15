@@ -14,6 +14,7 @@ import {
   rewindThreadPruningWork,
   dropMarketplaceSourceGitSubdirectoryColumn,
   dropThreadParentNotificationsColumn,
+  dropThreadStorageDeleteSeqColumn,
   dropTerminalDefaultColorsColumn,
   dropQueuedMessageDeliveryModeColumn,
   dropQueuedMessageEditHeldUntilColumn,
@@ -94,6 +95,7 @@ describe.each(["project", "thread", "preference"] as const)(
           dropQueuedMessageEditHeldUntilColumn(db);
           dropMarketplaceSourceGitSubdirectoryColumn(db);
           dropThreadParentNotificationsColumn(db);
+          dropThreadStorageDeleteSeqColumn(db);
           dropTerminalDefaultColorsColumn(db);
           dropQueuedMessageDeliveryModeColumn(db);
           db.$client
