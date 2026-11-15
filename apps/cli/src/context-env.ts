@@ -51,6 +51,14 @@ export function resolveContextThreadId(): string | undefined {
   return undefined;
 }
 
+const AUTOMATIONS_PLUGIN_ID = "automations";
+
+export function resolveContextAutomationOriginPluginId(): string | undefined {
+  return toOptionalString(process.env.BB_AUTOMATION_ID)
+    ? AUTOMATIONS_PLUGIN_ID
+    : undefined;
+}
+
 export function resolveExplicitIdFlag(
   args: ResolveExplicitIdFlagArgs,
 ): string | undefined {

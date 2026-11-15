@@ -439,6 +439,47 @@ describe("bb thread tell command output", () => {
     });
   });
 
+  it("bb thread tell from an automation script with no sender thread names the automations plugin as its origin", async () => {
+    vi.stubEnv("BB_AUTOMATION_ID", "aut_nightly");
+    const post = vi.fn(async () => ({ ok: true }));
+    stubServerApi({ "v1.threads.:id.send.$post": post });
+
+    await runCommand(
+      ["thread", "tell", "thread-receiver", "nightly report"],
+      register,
+    );
+
+    expect(post).toHaveBeenCalledWith({
+      param: { id: "thread-receiver" },
+      json: {
+        input: [{ type: "text", text: "nightly report", mentions: [] }],
+        mode: "steer-if-active",
+        originPluginId: "automations",
+      },
+    });
+  });
+
+  it("bb thread tell from an automation script inside another thread keeps the sender thread and no plugin origin", async () => {
+    vi.stubEnv("BB_AUTOMATION_ID", "aut_nightly");
+    vi.stubEnv("BB_THREAD_ID", "thread-sender");
+    const post = vi.fn(async () => ({ ok: true }));
+    stubServerApi({ "v1.threads.:id.send.$post": post });
+
+    await runCommand(
+      ["thread", "tell", "thread-receiver", "nightly report"],
+      register,
+    );
+
+    expect(post).toHaveBeenCalledWith({
+      param: { id: "thread-receiver" },
+      json: {
+        input: [{ type: "text", text: "nightly report", mentions: [] }],
+        mode: "steer-if-active",
+        senderThreadId: "thread-sender",
+      },
+    });
+  });
+
   it("bb thread tell omits sender metadata when targeting the current thread", async () => {
     vi.stubEnv("BB_THREAD_ID", "thread-self");
     const post = vi.fn(async () => ({ ok: true }));

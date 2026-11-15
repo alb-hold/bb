@@ -27,6 +27,7 @@ import {
   requireThreadIdOrSelf,
 } from "../helpers.js";
 import {
+  resolveContextAutomationOriginPluginId,
   resolveContextThreadId,
   resolveExplicitIdFlag,
 } from "../../context-env.js";
@@ -751,6 +752,10 @@ async function postThreadMessage(
       (await sdk.threads.get({ threadId: args.threadId })).projectId,
     sdk,
   });
+  const automationOriginPluginId =
+    args.senderThreadId === undefined
+      ? resolveContextAutomationOriginPluginId()
+      : undefined;
   let response: ThreadSendResult;
   try {
     response = await sdk.threads.send({
@@ -767,6 +772,9 @@ async function postThreadMessage(
       ...(args.reasoningLevel ? { reasoningLevel: args.reasoningLevel } : {}),
       ...(args.serviceTier ? { serviceTier: args.serviceTier } : {}),
       ...(args.senderThreadId ? { senderThreadId: args.senderThreadId } : {}),
+      ...(automationOriginPluginId
+        ? { originPluginId: automationOriginPluginId }
+        : {}),
       ...(args.sendAt === undefined ? {} : { sendAt: args.sendAt }),
       ...(args.compactFirst ? { compactFirst: true } : {}),
     });

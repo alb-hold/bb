@@ -73,6 +73,10 @@ BB_CLI                 The absolute BB CLI path, when available
 
 The plugin does not inject `BB_ENVIRONMENT_ID` or `BB_HOST_DAEMON_PORT`.
 
+A `bb thread tell` from a script without `BB_THREAD_ID` is sent with the
+`automations` plugin as its origin, so a host at its concurrency limit holds it
+like an agent automation's message instead of treating it as the owner's.
+
 The plugin resolves `bb` from `BB_CLI`, `BB_CLI_DIR`, `PATH`, and common macOS
 install paths. It adds the selected directory to `PATH`.
 

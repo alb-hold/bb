@@ -730,6 +730,20 @@ describe("an owner's composer send at the limit", () => {
     }));
   }
 
+  async function tellFromAutomationScript(
+    fixture: Fixture,
+    threadId: string,
+    text: string,
+  ) {
+    const response = await postJson(fixture, `/threads/${threadId}/send`, {
+      input: textInput(text),
+      mode: "steer-if-active",
+      originPluginId: "automations",
+    });
+    expect(response.status).toBe(200);
+    return sendMessageResponseSchema.parse(await readJson(response));
+  }
+
   function expectHeldAtLimit(fixture: Fixture, threadId: string): void {
     const rows = queuedRows(fixture, threadId);
     expect(rows).toHaveLength(1);
@@ -838,7 +852,33 @@ describe("an owner's composer send at the limit", () => {
     }
   });
 
-  it("still holds a drained group at the limit when an owner's row leads a plugin's row", async () => {
+  it("still holds a script automation's tell with no sender thread at the limit", async () => {
+    const fixture = await createFixture();
+    const { open, thread } = await openRunningNativeThread(fixture, {
+      providerId: "codex",
+    });
+    const cli = startFakeCli(fixture, open.terminalId);
+    try {
+      const seen = holdAtLimit();
+
+      const held = await tellFromAutomationScript(
+        fixture,
+        thread.id,
+        "run the tests",
+      );
+
+      expect(held.delivery).toBe("queued");
+      expect(cli.inputs()).toEqual([]);
+      expectHeldAtLimit(fixture, thread.id);
+      expect(
+        seen.map((context) => [context.initiator, context.originPluginId]),
+      ).toEqual([["user", "automations"]]);
+    } finally {
+      cli.stop();
+    }
+  });
+
+  it("still holds a drained group at the limit when an owner's row leads a script automation's tell", async () => {
     const fixture = await createFixture();
     const { open, thread } = await openRunningNativeThread(fixture, {
       providerId: "codex",
@@ -851,17 +891,15 @@ describe("an owner's composer send at the limit", () => {
     try {
       const seen = holdAtLimit();
       const owner = await sendToThread(fixture, thread.id, "run the tests");
-      const target = getThread(fixture.harness.db, thread.id);
-      expect(target).not.toBeNull();
-      const plugin = await acceptThreadSendRequest(fixture.harness.deps, {
-        payload: {
-          input: textInput("then run lint"),
-          mode: "auto",
-          originPluginId: "automation-plugin",
-        },
-        thread: target!,
-      });
-      expect([owner.delivery, plugin.delivery]).toEqual(["queued", "queued"]);
+      const automation = await tellFromAutomationScript(
+        fixture,
+        thread.id,
+        "then run lint",
+      );
+      expect([owner.delivery, automation.delivery]).toEqual([
+        "queued",
+        "queued",
+      ]);
       updateTerminalSessions(fixture.harness.db, {
         scope: { kind: "terminal", terminalId: open.terminalId },
         update: { kind: "reconnect", daemonSessionId: fixture.sessionId },
