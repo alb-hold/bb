@@ -56,6 +56,41 @@ async function contents(root: string): Promise<string[]> {
 }
 
 describe.runIf(anchoring)("removing a tree anchored by its descriptors", () => {
+  it("uses each anchored path only while the descriptor behind it is open", async () => {
+    const { root } = await settledTree();
+    const anchors = new Map<string, { fd: number; dev: number; ino: number }>();
+    const violations: string[] = [];
+    let probedFd = -1;
+    const result = await removeDirectoryTree(root, {
+      startedAt: Date.now(),
+      statDescriptor: async (candidate) => {
+        const numbered = /^\/(?:proc\/self|dev)\/fd\/(\d+)$/u.exec(candidate);
+        if (numbered !== null) probedFd = Number(numbered[1]);
+        const held = fstatSync(probedFd);
+        anchors.set(candidate, { fd: probedFd, dev: held.dev, ino: held.ino });
+        return fs.stat(candidate);
+      },
+      readDirectoryNames: async (directory) => {
+        const anchor = anchors.get(directory);
+        if (anchor !== undefined) {
+          try {
+            const held = fstatSync(anchor.fd);
+            if (held.dev !== anchor.dev || held.ino !== anchor.ino)
+              violations.push(
+                `${directory}: fd ${anchor.fd} now names another file`,
+              );
+          } catch (error) {
+            violations.push(`${directory}: fd ${anchor.fd} ${String(error)}`);
+          }
+        }
+        return fs.readdir(directory);
+      },
+    });
+    expect(violations).toEqual([]);
+    expect(anchors.size).toBeGreaterThan(0);
+    expect(result.status).toBe("removed");
+  });
+
   it("removes a settled tree", async () => {
     const { root } = await settledTree();
     const result = await removeDirectoryTree(root, { startedAt: Date.now() });
