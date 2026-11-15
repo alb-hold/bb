@@ -1,3 +1,4 @@
+import { fstatSync } from "node:fs";
 import fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -29,6 +30,24 @@ async function settledTree(): Promise<{ parent: string; root: string }> {
   await fs.writeFile(path.join(root, "nested", "deeper", "leaf.txt"), "leaf");
   await delay(FILE_TIMESTAMP_LAG_MS + 50);
   return { parent, root };
+}
+
+function descriptorKind(candidate: string): string {
+  return candidate
+    .split("/")
+    .slice(0, 3)
+    .join("/")
+    .replace(/^\/\.vol\/.*$/u, "/.vol");
+}
+
+function descriptorIdentity(candidate: string) {
+  const fd = Number(candidate.slice("/dev/fd/".length));
+  const info = fstatSync(fd);
+  return {
+    dev: info.dev,
+    ino: info.ino,
+    isDirectory: () => info.isDirectory(),
+  };
 }
 
 async function contents(root: string): Promise<string[]> {
@@ -96,16 +115,53 @@ describe.runIf(process.platform === "darwin")(
   () => {
     it("falls back from /dev/fd to /.vol when /dev/fd cannot list the directory", async () => {
       const { root } = await settledTree();
-      const used: string[] = [];
+      const probed: string[] = [];
       const result = await removeDirectoryTree(root, {
         startedAt: Date.now(),
         statDescriptor: async (candidate) => {
-          used.push(candidate.split("/").slice(0, 2).join("/"));
+          probed.push(descriptorKind(candidate));
+          if (candidate.startsWith("/dev/fd/"))
+            return descriptorIdentity(candidate);
           return fs.stat(candidate);
+        },
+        readDirectoryNames: async (directory) => {
+          if (directory.startsWith("/dev/fd/"))
+            throw Object.assign(new Error(`ENOTDIR: ${directory}`), {
+              code: "ENOTDIR",
+            });
+          return fs.readdir(directory);
         },
       });
       expect(result.status).toBe("removed");
-      expect(used).toContain("/.vol");
+      expect(
+        probed.filter((kind) => kind === "/dev/fd").length,
+      ).toBeGreaterThan(0);
+      expect(probed.filter((kind) => kind === "/.vol").length).toBeGreaterThan(
+        0,
+      );
+      await expect(fs.lstat(root)).rejects.toMatchObject({ code: "ENOENT" });
+    });
+
+    it("anchors through /dev/fd first and never probes /.vol when /dev/fd matches and lists", async () => {
+      const { root } = await settledTree();
+      const probed: string[] = [];
+      const result = await removeDirectoryTree(root, {
+        startedAt: Date.now(),
+        statDescriptor: async (candidate) => {
+          probed.push(descriptorKind(candidate));
+          if (candidate.startsWith("/dev/fd/"))
+            return descriptorIdentity(candidate);
+          return fs.stat(candidate);
+        },
+        readDirectoryNames: async (directory) => {
+          if (!directory.startsWith("/dev/fd/")) return fs.readdir(directory);
+          const identity = descriptorIdentity(directory);
+          return fs.readdir(`/.vol/${identity.dev}/${identity.ino}`);
+        },
+      });
+      expect(probed.length).toBeGreaterThan(0);
+      expect(probed.every((kind) => kind === "/dev/fd")).toBe(true);
+      expect(result.unanchoredPaths).toEqual([]);
     });
 
     it("keeps the tree when /.vol resolves to a different directory", async () => {
