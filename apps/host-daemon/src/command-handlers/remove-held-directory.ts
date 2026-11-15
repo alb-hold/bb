@@ -2,7 +2,10 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { WorktreeHolderScan } from "@bb/process-utils";
-import { removeDirectoryTree } from "bb-environment-provider-host/remove-directory-tree";
+import {
+  FILE_TIMESTAMP_LAG_MS,
+  removeDirectoryTree,
+} from "bb-environment-provider-host/remove-directory-tree";
 import { refuseWhileHeld } from "./refuse-while-held.js";
 import { CommandDispatchError } from "../command-dispatch-support.js";
 
@@ -27,7 +30,7 @@ export async function removeDirectoryAfterHolderRecheck(args: {
     path.dirname(args.directory),
     `.${path.basename(args.directory)}.removing-${randomUUID()}`,
   );
-  const startedAt = (args.now ?? Date.now)();
+  const startedAt = (args.now ?? Date.now)() - FILE_TIMESTAMP_LAG_MS;
   await args.afterBaseline?.(args.directory);
   try {
     await fs.rename(args.directory, quarantine);
