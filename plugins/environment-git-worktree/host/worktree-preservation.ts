@@ -119,6 +119,7 @@ export function gitEnvironment(
 ): NodeJS.ProcessEnv {
   return {
     GIT_CEILING_DIRECTORIES: path.dirname(worktreePath),
+    GIT_NO_LAZY_FETCH: "1",
     ...(gitDir !== undefined ? { GIT_DIR: gitDir } : {}),
     ...(commonDir !== undefined ? { GIT_COMMON_DIR: commonDir } : {}),
     ...(gitDir !== undefined ? { GIT_WORK_TREE: worktreePath } : {}),
