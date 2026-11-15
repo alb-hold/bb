@@ -6,27 +6,35 @@ import {
   mkdtemp,
   readdir,
   readFile,
+  realpath,
   rm,
   stat,
+  symlink,
   utimes,
   writeFile,
 } from "node:fs/promises";
+import http from "node:http";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  acquireRemoteEvidence,
   clearFetchMemo,
   findPreservationReasons,
   identifyWorktree,
+  isAcceptedRewriteTarget,
 } from "./host/worktree-preservation.js";
 import { removeWorktree } from "./host/worktree.js";
 
 const execFileAsync = promisify(execFile);
 const roots: string[] = [];
+const servers: http.Server[] = [];
 const restoredVariables = [
   "GIT_CONFIG_GLOBAL",
   "GIT_CONFIG_NOSYSTEM",
+  "GIT_CONFIG_SYSTEM",
+  "GIT_SSH",
   "GIT_SSH_COMMAND",
   "TMPDIR",
 ] as const;
@@ -37,10 +45,19 @@ const EVIDENCE_PREFIX = "bb-teardown-fetch-";
 
 beforeEach(() => {
   delete process.env.GIT_SSH_COMMAND;
+  delete process.env.GIT_SSH;
 });
 
 afterEach(async () => {
   await clearFetchMemo();
+  await Promise.all(
+    servers
+      .splice(0)
+      .map(
+        (server) =>
+          new Promise<void>((resolve) => server.close(() => resolve())),
+      ),
+  );
   for (const [name, value] of inherited)
     if (value === undefined) delete process.env[name];
     else process.env[name] = value;
@@ -84,9 +101,12 @@ async function createFixture(
     files?: Record<string, string>;
     objectFormat?: "sha1" | "sha256";
     beforeWorktree?: (sourcePath: string, root: string) => Promise<void>;
+    sourceDirectory?: string;
   } = {},
 ) {
-  const root = await mkdtemp(join(tmpdir(), "bb-trusts-local-"));
+  const root = await realpath(
+    await mkdtemp(join(tmpdir(), "bb-trusts-local-")),
+  );
   roots.push(root);
   const globalConfig = join(root, "global.gitconfig");
   await writeFile(globalConfig, "");
@@ -103,7 +123,7 @@ async function createFixture(
     format,
     originPath,
   );
-  const sourcePath = join(root, "repo");
+  const sourcePath = join(root, options.sourceDirectory ?? "repo");
   await mkdir(sourcePath, { recursive: true });
   await git(sourcePath, "init", "--initial-branch=main", format);
   await commitFiles(sourcePath, {
@@ -636,7 +656,7 @@ describe("the published check, run against fresh remote branches and the source'
     expect(reasons).toEqual([]);
   });
 
-  it("applies the user's global insteadOf to a remote's URL", async () => {
+  it("does not apply the user's global insteadOf whose target is a local path, so a remote reachable only through it keeps the worktree", async () => {
     const fixture = await createFixture();
     await setGlobal(
       fixture.globalConfig,
@@ -647,7 +667,7 @@ describe("the published check, run against fresh remote branches and the source'
 
     const reasons = await reasonsFor(fixture);
 
-    expect(reasons).toEqual([]);
+    expect(reasons.join("\n")).toContain("could not fetch its remotes");
   });
 
   it("does not apply a local insteadOf, so a remote reachable only through it keeps the worktree", async () => {
@@ -785,5 +805,373 @@ describe("the temporary repository teardown fetches into", () => {
 
     expect(reasons.join("\n")).toContain("could not fetch its remotes");
     expect(await evidenceRepositories(temporary)).toEqual([]);
+  });
+});
+
+async function plantInWorktree(
+  fixture: Fixture,
+  ...settings: Array<[string, string]>
+): Promise<string> {
+  const planted = join(fixture.path, "planted.gitconfig");
+  await writeFile(planted, "");
+  for (const [key, value] of settings)
+    await setGlobal(planted, "--add", key, value);
+  return planted;
+}
+
+async function addRemote(fixture: Fixture, name: string, url: string) {
+  await git(fixture.sourcePath, "remote", "add", name, url);
+}
+
+async function unauthorisedServer(): Promise<number> {
+  const server = http.createServer((_request, response) => {
+    response.writeHead(401, { "www-authenticate": 'Basic realm="x"' });
+    response.end();
+  });
+  servers.push(server);
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  return typeof address === "object" && address !== null ? address.port : 0;
+}
+
+describe("teardown's fetch reads the user's config only from files outside every repository and workspace", () => {
+  it.each([
+    ["include.path", false],
+    ['includeIf "gitdir:"', true],
+  ] as const)(
+    "does not run core.gitProxy or core.sshCommand from a worktree file the global config includes through %s",
+    async (_kind, conditional) => {
+      const fixture = await createFixture();
+      const planted = await plantInWorktree(
+        fixture,
+        ["core.gitProxy", fixture.mark],
+        ["core.sshCommand", fixture.mark],
+      );
+      await setGlobal(
+        fixture.globalConfig,
+        conditional
+          ? `includeIf.gitdir:${await realpath(tmpdir())}/.path`
+          : "include.path",
+        planted,
+      );
+      await addRemote(fixture, "proxied", "git://fetch.invalid/r.git");
+      await addRemote(fixture, "secure", "ssh://fetch.invalid/r.git");
+
+      const reasons = await reasonsFor(fixture);
+
+      expect(await markerText(fixture)).toBe("");
+      expect(reasons.join("\n")).toContain("could not fetch its remotes");
+    },
+  );
+
+  it("does not run an ext:: remote or an ext:: insteadOf that a worktree file the global config includes allows", async () => {
+    const fixture = await createFixture();
+    const planted = await plantInWorktree(
+      fixture,
+      ["protocol.ext.allow", "always"],
+      [
+        `url.ext::${fixture.mark} rewritten.insteadOf`,
+        "https://fetch.invalid/",
+      ],
+    );
+    await setGlobal(fixture.globalConfig, "include.path", planted);
+    await addRemote(fixture, "helper", `ext::${fixture.mark} direct`);
+    await addRemote(fixture, "rewritten", "https://fetch.invalid/r.git");
+
+    const reasons = await reasonsFor(fixture);
+
+    expect(await markerText(fixture)).toBe("");
+    expect(reasons.join("\n")).toContain("could not fetch its remotes");
+  });
+
+  it("does not run a credential helper defined only in a file the global config includes, even outside the worktree", async () => {
+    const fixture = await createFixture();
+    const port = await unauthorisedServer();
+    const included = join(fixture.root, "included.gitconfig");
+    await setGlobal(
+      included,
+      `credential.http://127.0.0.1:${port}.helper`,
+      `!f() { echo helper >> ${JSON.stringify(fixture.marker)}; }; f`,
+    );
+    await setGlobal(fixture.globalConfig, "include.path", included);
+    await addRemote(fixture, "served", `http://127.0.0.1:${port}/repo.git`);
+
+    const reasons = await reasonsFor(fixture);
+
+    expect(await markerText(fixture)).toBe("");
+    expect(reasons.join("\n")).toContain("could not");
+  });
+
+  it("refuses an included file reached through a symlink outside the worktree whose target is inside it, and reports what it ignored", async () => {
+    const fixture = await createFixture();
+    const planted = await plantInWorktree(
+      fixture,
+      ["core.gitProxy", fixture.mark],
+      ["core.sshCommand", fixture.mark],
+    );
+    const link = join(fixture.root, "linked.gitconfig");
+    await symlink(planted, link);
+    await setGlobal(fixture.globalConfig, "include.path", link);
+    await addRemote(fixture, "proxied", "git://fetch.invalid/r.git");
+    await addRemote(fixture, "secure", "ssh://fetch.invalid/r.git");
+
+    const lease = await acquireRemoteEvidence(
+      await identityOf(fixture),
+      undefined,
+      { fetchTimeoutMs: 20_000 },
+    );
+    const { ignoredConfig } = lease.evidence;
+    await lease.release();
+
+    expect(await markerText(fixture)).toBe("");
+    expect(ignoredConfig.join("\n")).toContain(
+      `core.sshcommand from file:${link} (its file is inside a repository or workspace)`,
+    );
+    expect(ignoredConfig.join("\n")).not.toContain(fixture.mark);
+  });
+
+  it("refuses a file the global config includes from bb's worktree root when removeWorktree checks a worktree", async () => {
+    const fixture = await createFixture();
+    const planted = join(fixture.root, "worktrees", "planted.gitconfig");
+    await setGlobal(planted, "core.gitProxy", fixture.mark);
+    await setGlobal(planted, "core.sshCommand", fixture.mark);
+    await setGlobal(fixture.globalConfig, "include.path", planted);
+    await addRemote(fixture, "proxied", "git://fetch.invalid/r.git");
+    await addRemote(fixture, "secure", "ssh://fetch.invalid/r.git");
+
+    await expect(
+      removeWorktree({
+        path: fixture.path,
+        rootPath: fixture.attemptRoot,
+        fetchTimeoutMs: 20_000,
+      }),
+    ).rejects.toThrow("could not fetch its remotes");
+
+    expect(await markerText(fixture)).toBe("");
+    expect(existsSync(fixture.path)).toBe(true);
+  });
+
+  it("does not read the system config, nor what it includes from the worktree, when the user has not disabled it", async () => {
+    const fixture = await createFixture();
+    const planted = await plantInWorktree(fixture, [
+      "core.gitProxy",
+      fixture.mark,
+    ]);
+    const system = join(fixture.root, "system.gitconfig");
+    await setGlobal(system, "include.path", planted);
+    delete process.env.GIT_CONFIG_NOSYSTEM;
+    process.env.GIT_CONFIG_SYSTEM = system;
+    await addRemote(fixture, "proxied", "git://fetch.invalid/r.git");
+
+    const reasons = await reasonsFor(fixture);
+
+    expect(await markerText(fixture)).toBe("");
+    expect(reasons.join("\n")).toContain("could not fetch its remotes");
+  });
+
+  it.each(["example-alias:org/", "git@example-alias:org/"])(
+    "fetches through the sshCommand and the %s insteadOf of an includeIf file outside the worktree that matches the source repository",
+    async (target) => {
+      const fixture = await createFixture({
+        sourceDirectory: join("projects", "pallium", "repo"),
+      });
+      const served = join(fixture.root, "ssh-served");
+      await mkdir(join(served, "org"), { recursive: true });
+      await git(
+        fixture.root,
+        "clone",
+        "--bare",
+        "--quiet",
+        fixture.originPath,
+        join(served, "org", "repo.git"),
+      );
+      const bin = join(fixture.root, "fake-bin");
+      await mkdir(bin);
+      const log = join(fixture.root, "ssh.log");
+      const ssh = await script(
+        bin,
+        "ssh",
+        `echo "$*" >> ${JSON.stringify(log)}\nfor last; do :; done\ncd ${JSON.stringify(served)} && eval "$last"`,
+      );
+      const pallium = join(fixture.root, "gitconfig-pallium");
+      await setGlobal(pallium, "core.sshCommand", ssh);
+      await setGlobal(
+        pallium,
+        `url.${target}.insteadOf`,
+        "git@example.invalid:org/",
+      );
+      await setGlobal(
+        fixture.globalConfig,
+        `includeIf.gitdir:${join(fixture.root, "projects", "pallium")}/.path`,
+        pallium,
+      );
+      await git(
+        fixture.sourcePath,
+        "remote",
+        "set-url",
+        "origin",
+        "git@example.invalid:org/repo.git",
+      );
+
+      const reasons = await reasonsFor(fixture);
+
+      expect(reasons).toEqual([]);
+      expect(await readFile(log, "utf8")).toContain(
+        `${target.slice(0, -"org/".length - 1)} git-upload-pack 'org/repo.git'`,
+      );
+    },
+  );
+
+  it.each([
+    "./x:y/",
+    "/a:b/",
+    "-oProxyCommand=x:y/",
+    "git@-oProxyCommand=x:y/",
+    "ssh://-oProxyCommand=x/y/",
+    "file:///nonexistent/",
+    "ext::sh -c x ",
+  ])(
+    "drops the user's global insteadOf to %s, so the remote's own URL is fetched",
+    async (target) => {
+      const fixture = await createFixture();
+      await setGlobal(
+        fixture.globalConfig,
+        `url.${target}.insteadOf`,
+        fixture.originPath,
+      );
+
+      const reasons = await reasonsFor(fixture);
+
+      expect(reasons).toEqual([]);
+    },
+  );
+
+  it("classifies insteadOf targets as git's url_is_local_not_ssh and transport helpers do", () => {
+    const accepted = [
+      "ssh://host/r",
+      "ssh://git@host:22/r",
+      "https://host/r",
+      "github.com-anluby:palliumai-com/",
+      "git@github.com:org/",
+      "git@github.com-anluby:",
+    ];
+    const dropped = [
+      "./x:y",
+      "/a:b",
+      "x/y:z",
+      "-oProxyCommand=x:y",
+      "git@-oProxyCommand=x:y",
+      "ssh://-oProxyCommand=x/y",
+      "ssh://git@-o/y",
+      "ext::sh -c x",
+      "fd::3",
+      "file:///x",
+      "http://host/r",
+      "git://host/r",
+      "C:/x",
+      "c:x",
+      "relative/path",
+      "nocolon",
+      ":path",
+    ];
+
+    expect(
+      accepted.filter((target) => !isAcceptedRewriteTarget(target)),
+    ).toEqual([]);
+    expect(dropped.filter((target) => isAcceptedRewriteTarget(target))).toEqual(
+      [],
+    );
+  });
+
+  it("fetches a local-path remote without running anything its own config names", async () => {
+    const fixture = await createFixture();
+    const mirror = join(fixture.root, "mirror.git");
+    await git(
+      fixture.root,
+      "clone",
+      "--bare",
+      "--quiet",
+      fixture.originPath,
+      mirror,
+    );
+    const hooks = join(fixture.root, "mirror-hooks");
+    await mkdir(hooks);
+    for (const hook of [
+      "pre-upload-pack",
+      "post-upload-pack",
+      "reference-transaction",
+      "pre-receive",
+    ])
+      await script(hooks, hook, `${fixture.mark} "$@"`);
+    for (const [key, value] of [
+      ["uploadpack.packObjectsHook", fixture.mark],
+      ["core.hooksPath", hooks],
+      ["core.alternateRefsCommand", fixture.mark],
+      ["core.fsmonitor", fixture.mark],
+    ] as const)
+      await git(mirror, "config", key, value);
+    await writeFile(
+      join(mirror, "objects", "info", "alternates"),
+      `${join(fixture.sourcePath, ".git", "objects")}\n`,
+    );
+    await git(fixture.sourcePath, "remote", "add", "mirror", mirror);
+
+    const reasons = await reasonsFor(fixture);
+
+    expect(await markerText(fixture)).toBe("");
+    expect(reasons).toEqual([]);
+  });
+
+  it("does not run an ext:: remote when no config allows ext", async () => {
+    const fixture = await createFixture();
+    await addRemote(fixture, "helper", `ext::${fixture.mark} direct`);
+
+    const reasons = await reasonsFor(fixture);
+
+    expect(await markerText(fixture)).toBe("");
+    expect(reasons.join("\n")).toContain("could not fetch its remotes");
+  });
+});
+
+describe("teardown's reflog reads never run a program from the repository's own config", () => {
+  it("does not verify signatures through a local log.showSignature and gpg.program", async () => {
+    const fixture = await createFixture();
+    await git(fixture.path, "checkout", "-q", "-b", "signed");
+    const tree = (await git(fixture.path, "rev-parse", "HEAD^{tree}")).trim();
+    const parent = (await git(fixture.path, "rev-parse", "HEAD")).trim();
+    const body = [
+      `tree ${tree}`,
+      `parent ${parent}`,
+      "author bb <bb@example.com> 1 +0000",
+      "committer bb <bb@example.com> 1 +0000",
+      "gpgsig -----BEGIN PGP SIGNATURE-----",
+      " ",
+      " -----END PGP SIGNATURE-----",
+      "",
+      "signed",
+      "",
+    ].join("\n");
+    const objectFile = join(fixture.root, "signed-commit");
+    await writeFile(objectFile, body);
+    const signed = (
+      await git(fixture.path, "hash-object", "-t", "commit", "-w", objectFile)
+    ).trim();
+    await git(
+      fixture.path,
+      "update-ref",
+      "-m",
+      "commit: signed",
+      "HEAD",
+      signed,
+    );
+    await git(fixture.sourcePath, "config", "log.showSignature", "true");
+    await git(fixture.sourcePath, "config", "gpg.program", fixture.mark);
+
+    const reasons = await reasonsFor(fixture);
+
+    expect(await markerText(fixture)).toBe("");
+    expect(reasons.join("\n")).toContain(
+      "not reachable from any remote-tracking branch",
+    );
   });
 });
