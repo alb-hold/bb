@@ -42,12 +42,10 @@ Messaging:
   its `id`, `waitingOn`, and `sendAt`. A deferred message waits for a thread
   that failed while it was deferred, and delivers when the thread is retried.
 
-  At the host's concurrency limit, the owner's own message to an idle native
-  terminal thread whose terminal is running is typed in at once: one from the
-  app composer, or a tell with neither BB_THREAD_ID nor BB_AUTOMATION_ID set.
-  A tell from another thread, a plugin, or an automation script (a script run
-  with BB_AUTOMATION_ID is sent as the `automations` plugin) stays queued until
-  a slot frees.
+  At the host's concurrency limit, a tell or SDK send to an idle native
+  terminal thread waits in the queue until a slot frees, the same as a send to
+  any other thread. Only a message typed in the app's composer (sent with
+  `origin: "app"`) goes straight into a running native terminal at the limit.
 
   --plan sends the same structured /plan command the composer's plan action
   sends, so the agent proposes a plan for approval before executing (Claude

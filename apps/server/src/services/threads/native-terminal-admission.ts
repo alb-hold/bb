@@ -131,10 +131,19 @@ function isOwnerComposerSend(
   args: NativeTerminalAdmissionArgs,
   author: DispatchAuthor,
 ): boolean {
-  if (author.initiator !== "user" || args.originPluginId !== null) return false;
+  if (
+    author.initiator !== "user" ||
+    args.origin !== "app" ||
+    args.originPluginId !== null
+  )
+    return false;
   return (args.claimed ?? []).every((row) => {
     const queued = toThreadQueuedMessage(row);
-    return queued.initiator === "user" && queued.originPluginId === null;
+    return (
+      queued.initiator === "user" &&
+      queued.origin === "app" &&
+      queued.originPluginId === null
+    );
   });
 }
 

@@ -110,7 +110,6 @@ export function setupCommandOutputTestEnvironment(): void {
 
     vi.stubEnv("BB_PROJECT_ID", undefined);
     vi.stubEnv("BB_THREAD_ID", undefined);
-    vi.stubEnv("BB_AUTOMATION_ID", undefined);
   });
 
   afterEach(() => {

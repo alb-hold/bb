@@ -2,6 +2,7 @@ import {
   isStandaloneBuiltinClearCommand,
   isStandaloneBuiltinCompactCommand,
   type Thread,
+  type ThreadCreateOrigin,
 } from "@bb/domain";
 import { getThreadSpawner, isNativeTerminalThread } from "@bb/db";
 import { ApiError } from "../../errors.js";
@@ -32,6 +33,13 @@ interface AcceptThreadSendRequestArgs {
   deviceHandoffClientToken?: string;
 }
 
+function sendRequestOrigin(
+  payload: SendMessageRequest,
+): ThreadCreateOrigin | null {
+  if (payload.originPluginId !== undefined) return "plugin";
+  return payload.origin ?? null;
+}
+
 export async function acceptThreadSendRequest(
   deps: LoggedPendingInteractionWorkSessionDeps,
   args: AcceptThreadSendRequestArgs,
@@ -57,7 +65,7 @@ export async function acceptThreadSendRequest(
           : {}),
         targetThread: args.thread,
       }),
-      origin: args.payload.originPluginId === undefined ? null : "plugin",
+      origin: sendRequestOrigin(args.payload),
       originPluginId: args.payload.originPluginId ?? null,
       startedOnBehalfOf: null,
     } as const;
@@ -159,7 +167,7 @@ export async function acceptThreadSendRequest(
         source: { kind: "inline" },
         queuePayload: { kind: "inline" },
         pluginSubmission: payload.pluginSubmission ?? null,
-        origin: payload.originPluginId === undefined ? null : "plugin",
+        origin: sendRequestOrigin(payload),
         originPluginId: payload.originPluginId ?? null,
         startedOnBehalfOf: null,
         onTurnRequestCreated: (turnRequestId, turnId) =>

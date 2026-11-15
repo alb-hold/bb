@@ -67,7 +67,7 @@ export function useSendNativeTerminalMessage() {
       lifecycleOperation: "send_message",
     },
     mutationFn: ({ input, threadId }: SendNativeTerminalMessageArgs) =>
-      sdk.threads.send({ threadId, input, mode: "auto" }),
+      sdk.threads.send({ threadId, input, mode: "auto", origin: "app" }),
   });
 }
 

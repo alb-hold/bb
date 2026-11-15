@@ -365,6 +365,24 @@ describe("thread runtime mutations", () => {
     );
   });
 
+  it("marks the thread composer's send with the app origin", async () => {
+    const queryClient = createTestQueryClient();
+    const mutation = new MutationObserver(
+      queryClient,
+      sendThreadMessageMutationOptions(queryClient),
+    );
+
+    await mutation.mutate({
+      id: "thread-1",
+      mode: "auto",
+      input: [{ type: "text", text: "Run this", mentions: [] }],
+    });
+
+    expect(sdk.threads.send).toHaveBeenCalledWith(
+      expect.objectContaining({ origin: "app", threadId: "thread-1" }),
+    );
+  });
+
   it("forwards compactFirst when sending a thread message", async () => {
     const queryClient = createTestQueryClient();
     const mutation = new MutationObserver(
