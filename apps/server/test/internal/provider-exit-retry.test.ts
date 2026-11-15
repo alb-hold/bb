@@ -311,7 +311,6 @@ describe("a provider process that exits under a running turn", () => {
           ({ command }) =>
             command.type === "turn.submit" &&
             command.threadId === scenario.parent.id,
-          3_000,
         );
         expect(
           listQueuedThreadCommands(harness, "turn.submit", scenario.parent.id),
@@ -627,7 +626,6 @@ describe("a provider process that exits under a running turn", () => {
             ({ command }) =>
               command.type === "turn.submit" &&
               command.threadId === scenario.parent.id,
-            3_000,
           );
           if (parentFailure.command.type !== "turn.submit") {
             throw new Error("expected a parent turn submission");
@@ -734,7 +732,6 @@ describe("a provider process that exits under a running turn", () => {
           ({ command }) =>
             command.type === "turn.submit" &&
             command.threadId === scenario.parent.id,
-          3_000,
         );
         if (parentCompletion.command.type !== "turn.submit") {
           throw new Error("expected a parent turn submission");

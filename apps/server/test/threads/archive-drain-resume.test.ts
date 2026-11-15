@@ -347,6 +347,7 @@ interface ChatResumeArgs {
   afterDrain?: (harness: TestAppHarness, threadId: string) => void;
   fixture: Fixture;
   threadId: string;
+  turnWaitMs?: number;
 }
 
 function seedChatThread(fixture: Fixture) {
@@ -403,6 +404,7 @@ async function archiveDrainUnarchiveAndSendToChatThread(args: ChatResumeArgs) {
     (candidate) =>
       candidate.command.type === "turn.submit" &&
       candidate.command.threadId === threadId,
+    args.turnWaitMs,
   );
   expect(queued.command).toMatchObject({
     type: "turn.submit",
@@ -446,6 +448,7 @@ describe("an archived chat thread after its pruning work has drained", () => {
           deleteStoredEvents(harness, threadId, "thread/identity"),
         fixture,
         threadId: thread.id,
+        turnWaitMs: 1_000,
       }),
     ).rejects.toThrow("Timed out waiting for queued command");
   });

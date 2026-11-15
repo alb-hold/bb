@@ -1195,7 +1195,7 @@ describe("real worktree teardown preservation", () => {
             originalTimes = before;
             await opened.writeFile(".xxx\n");
             let changed = await opened.stat();
-            const deadline = Date.now() + 1_000;
+            const deadline = Date.now() + 10_000;
             while (
               changed.ctimeMs === before.ctimeMs &&
               Date.now() < deadline

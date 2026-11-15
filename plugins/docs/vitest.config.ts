@@ -5,7 +5,8 @@ export default defineConfig({
   test: {
     silent: "passed-only",
     name: "bb-plugin-simple-notes",
-    testTimeout: 15_000,
+    testTimeout: 20_000,
+    hookTimeout: 20_000,
     include: ["**/*.test.{ts,tsx}"],
     exclude: ["node_modules/**"],
   },

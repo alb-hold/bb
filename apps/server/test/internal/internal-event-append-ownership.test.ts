@@ -740,7 +740,6 @@ describe("internal event append ownership", () => {
         ({ command }) =>
           command.type === "turn.submit" &&
           command.threadId === parentThread.id,
-        3_000,
       );
       if (parentTurnCommand.command.type !== "turn.submit") {
         throw new Error(

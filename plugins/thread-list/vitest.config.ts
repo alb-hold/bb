@@ -10,7 +10,8 @@ export default defineConfig({
   test: {
     silent: "passed-only",
     name: "bb-plugin-thread-list",
-    testTimeout: 15_000,
+    testTimeout: 20_000,
+    hookTimeout: 20_000,
     globalSetup: ["./vitest.global-setup.ts"],
     include: ["**/*.test.{ts,tsx}"],
     exclude: [

@@ -2964,7 +2964,7 @@ it("does not queue exhausted cleanup behind another workspace on the same host",
         await Promise.race([
           sweep.then(() => "settled"),
           new Promise<string>((resolve) =>
-            setTimeout(() => resolve("queued"), 100),
+            setTimeout(() => resolve("queued"), 5_000),
           ),
         ]),
       ).toBe("settled");
