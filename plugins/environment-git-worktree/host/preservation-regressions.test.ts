@@ -84,7 +84,12 @@ async function removeDirectoryTree(
     await import(moduleUrl)
   ).removeDirectoryTree(root, hooks);
   if (result === "removed" || result === "retained")
-    return { status: result, retainedPaths: [], mountedPaths: [] };
+    return {
+      status: result,
+      retainedPaths: [],
+      mountedPaths: [],
+      unanchoredPaths: [],
+    };
   return result as RemoveDirectoryTreeResult;
 }
 

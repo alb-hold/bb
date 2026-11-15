@@ -20,6 +20,7 @@ import {
   recordOwnWrite,
   removeDirectoryTree,
   RetainedRecoveryError,
+  UNANCHORED_DIRECTORY_REASON,
   untrustedTimestampFilesystem,
   type TimestampFilesystemProbe,
 } from "bb-environment-provider-host/remove-directory-tree";
@@ -1071,6 +1072,10 @@ async function removeRegisteredWorktree(
       });
       if (removed.status === "retained") {
         throw worktreePreservedError(identity.path, [
+          ...removed.unanchoredPaths.map(
+            (unanchoredPath) =>
+              `${UNANCHORED_DIRECTORY_REASON}: ${path.join(identity.path, path.relative(quarantinedPath, unanchoredPath))}`,
+          ),
           ...removed.mountedPaths.map(
             (mountedPath) =>
               `a different filesystem is mounted here: ${path.join(identity.path, path.relative(quarantinedPath, mountedPath))}`,
@@ -1101,6 +1106,10 @@ async function removeRegisteredWorktree(
       });
       if (removedGitDir.status === "retained") {
         throw worktreePreservedError(severedGitDir, [
+          ...removedGitDir.unanchoredPaths.map(
+            (unanchoredPath) =>
+              `${UNANCHORED_DIRECTORY_REASON}: ${unanchoredPath}`,
+          ),
           ...removedGitDir.mountedPaths.map(
             (mountedPath) =>
               `a different filesystem is mounted here: ${mountedPath}`,

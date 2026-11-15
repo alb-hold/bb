@@ -56,6 +56,9 @@ export interface RemoveDirectoryTreeHooks {
   createPinSuffix?: () => string;
   createRecoverySuffix?: () => string;
   readDirectoryNames?: (directory: string) => Promise<string[]>;
+  statDescriptor?: (
+    candidate: string,
+  ) => Promise<{ dev: number; ino: number; isDirectory(): boolean }>;
   onRetainedPath?: (retainedPath: string) => void;
   afterRootMarkerDetached?: (root: string) => Promise<void>;
   allowQuarantinedRoot?: true;
@@ -67,6 +70,16 @@ export interface RemoveDirectoryTreeResult {
   status: "removed" | "retained";
   retainedPaths: string[];
   mountedPaths: string[];
+  unanchoredPaths: string[];
+}
+
+export const UNANCHORED_DIRECTORY_REASON =
+  "could not anchor directory on this filesystem";
+
+interface DescriptorStat {
+  dev: number;
+  ino: number;
+  isDirectory(): boolean;
 }
 
 type RemoveEntryResult = RemoveDirectoryTreeResult["status"];
@@ -81,33 +94,60 @@ export class RetainedRecoveryError extends Error {
   }
 }
 
-function descriptorRoot(): string | null {
-  if (process.platform === "linux") return "/proc/self/fd";
-  if (process.platform === "darwin") return "/dev/fd";
-  return null;
+function anchorsDirectories(): boolean {
+  return process.platform === "linux" || process.platform === "darwin";
 }
 
-async function descriptorPath(directory: {
-  fd: number;
-  stat: () => Promise<{ dev: number; ino: number; isDirectory(): boolean }>;
-}): Promise<string | null> {
-  const root = descriptorRoot();
-  if (root === null) return null;
-  const descriptor = path.join(root, String(directory.fd));
+function descriptorCandidates(fd: number, opened: DescriptorStat): string[] {
+  if (process.platform === "linux") return [`/proc/self/fd/${fd}`];
+  if (process.platform === "darwin")
+    return [`/dev/fd/${fd}`, `/.vol/${opened.dev}/${opened.ino}`];
+  return [];
+}
+
+async function descriptorAnchors(
+  candidate: string,
+  opened: DescriptorStat,
+  statDescriptor: (candidate: string) => Promise<DescriptorStat>,
+  readDirectoryNames: (directory: string) => Promise<string[]>,
+): Promise<boolean> {
   try {
-    const [openedInfo, descriptorInfo] = await Promise.all([
-      directory.stat(),
-      stat(descriptor),
-    ]);
-    return sameDirectory(openedInfo, descriptorInfo) ? descriptor : null;
+    if (!sameDirectory(opened, await statDescriptor(candidate))) return false;
+    if (process.platform === "darwin") await readDirectoryNames(candidate);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function descriptorPath(
+  directory: { fd: number; stat: () => Promise<DescriptorStat> },
+  statDescriptor: (candidate: string) => Promise<DescriptorStat>,
+  readDirectoryNames: (directory: string) => Promise<string[]>,
+): Promise<string | null> {
+  let opened: DescriptorStat;
+  try {
+    opened = await directory.stat();
   } catch {
     return null;
   }
+  for (const candidate of descriptorCandidates(directory.fd, opened)) {
+    if (
+      await descriptorAnchors(
+        candidate,
+        opened,
+        statDescriptor,
+        readDirectoryNames,
+      )
+    )
+      return candidate;
+  }
+  return null;
 }
 
 async function openDirectory(directory: string) {
   if (
-    descriptorRoot() === null ||
+    !anchorsDirectories() ||
     constants.O_DIRECTORY === undefined ||
     constants.O_NOFOLLOW === undefined
   )
@@ -585,6 +625,8 @@ export async function removeDirectoryTree(
   const readDirectoryNames = hooks.readDirectoryNames ?? readdir;
   const retainedPaths = new Set<string>();
   const mountedPaths = new Set<string>();
+  const unanchoredPaths = new Set<string>();
+  const statDescriptor = hooks.statDescriptor ?? stat;
   const activePins = new Set<string>();
   const displayPathMappings = new Map<string, string>();
   const displayPath = (candidate: string): string => {
@@ -610,7 +652,20 @@ export async function removeDirectoryTree(
       status,
       retainedPaths: [...retainedPaths],
       mountedPaths: [...mountedPaths],
+      unanchoredPaths: [...unanchoredPaths],
     };
+  };
+  const anchorDirectory = async (
+    handle: { fd: number; stat: () => Promise<DescriptorStat> },
+    directory: string,
+  ): Promise<string | null> => {
+    const anchored = await descriptorPath(
+      handle,
+      statDescriptor,
+      readDirectoryNames,
+    );
+    if (anchored === null) unanchoredPaths.add(displayPath(directory));
+    return anchored;
   };
   await hooks.afterStart?.(startedAt);
   if (
@@ -624,7 +679,7 @@ export async function removeDirectoryTree(
     await parent?.close();
     return result("retained");
   }
-  const parentPath = await descriptorPath(parent);
+  const parentPath = await anchorDirectory(parent, path.dirname(root));
   if (parentPath === null) {
     await parent.close();
     return result("retained");
@@ -686,7 +741,7 @@ export async function removeDirectoryTree(
     try {
       const openedInfo = await handle.stat();
       if (!sameDirectory(info, openedInfo)) return false;
-      const openedPath = await descriptorPath(handle);
+      const openedPath = await anchorDirectory(handle, directory);
       if (openedPath === null) return false;
       displayPathMappings.set(openedPath, path.resolve(directory));
       const listed = await readDirectoryNames(openedPath);
@@ -1202,7 +1257,7 @@ export async function removeDirectoryTree(
     try {
       const openedInfo = await directory.stat();
       if (!sameDirectory(info, openedInfo)) return retainedEntry();
-      const directoryPath = await descriptorPath(directory);
+      const directoryPath = await anchorDirectory(directory, entry);
       if (directoryPath === null) return retainedEntry();
       displayPathMappings.set(directoryPath, path.resolve(entry));
       let currentInfo;
