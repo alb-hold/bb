@@ -345,6 +345,40 @@ describe("refused thread storage deletes", () => {
     });
   });
 
+  it("releases the in-flight claim when the re-queue write fails, so the next slot deletes and purges the thread", async () => {
+    await withTestHarness(async (harness) => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(START_MS);
+      const { threadIds } = seedDeletedThreads(harness, 1, "host-busy-db");
+      const threadId = threadIds[0] ?? "";
+      listPendingThreadStorageDeletions(harness.db);
+      harness.db.$client.exec(`
+        CREATE TEMP TRIGGER fail_storage_delete_requeue
+        BEFORE UPDATE OF storage_delete_seq ON threads
+        BEGIN SELECT RAISE(ABORT, 'database or disk is full'); END;
+      `);
+      await expect(
+        runThreadLifecycleSweep(harness.deps),
+      ).resolves.toBeUndefined();
+      const failedSlot = await refuseQueuedStorageDeletes(harness, 0);
+      harness.db.$client.exec("DROP TRIGGER fail_storage_delete_requeue");
+
+      vi.setSystemTime(START_MS + 60_000);
+      await runThreadLifecycleSweep(harness.deps);
+      const recoverySlot = await refuseQueuedStorageDeletes(
+        harness,
+        60_000,
+        new Set([threadId]),
+      );
+      await runThreadLifecycleSweep(harness.deps);
+      vi.useRealTimers();
+
+      expect(failedSlot).toEqual([]);
+      expect(recoverySlot).toEqual([{ atMs: 60_000, threadId }]);
+      expect(getThread(harness.db, threadId)).toBeNull();
+    });
+  });
+
   it("lists only the deleting project's pending storage deletes, in queue order", async () => {
     await withTestHarness(async (harness) => {
       const deleting = seedDeletedThreads(harness, 2, "host-deleting");

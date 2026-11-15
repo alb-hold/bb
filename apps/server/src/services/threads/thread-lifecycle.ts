@@ -1160,15 +1160,26 @@ function dispatchThreadStorageDeletion(
     return;
   }
   inFlightThreadRpcGuard.claim(thread.id, "thread.storage.delete");
-  requeueThreadStorageDeletion(deps.db, { threadId: thread.id });
-  void runLiveHostCommand(deps, {
-    command: buildThreadStorageDeleteCommand({
-      environmentId: environment.id,
-      threadId: thread.id,
-    }),
-    hostId: environment.hostId,
-    timeoutMs: LIVE_DAEMON_COMMAND_TIMEOUT_MS,
-  })
+  let sent: ReturnType<typeof runLiveHostCommand>;
+  try {
+    requeueThreadStorageDeletion(deps.db, { threadId: thread.id });
+    sent = runLiveHostCommand(deps, {
+      command: buildThreadStorageDeleteCommand({
+        environmentId: environment.id,
+        threadId: thread.id,
+      }),
+      hostId: environment.hostId,
+      timeoutMs: LIVE_DAEMON_COMMAND_TIMEOUT_MS,
+    });
+  } catch (error) {
+    inFlightThreadRpcGuard.release(thread.id, "thread.storage.delete");
+    deps.logger.warn(
+      { err: error, threadId: thread.id },
+      "Thread storage deletion could not be sent",
+    );
+    return;
+  }
+  void sent
     .then(() => {
       forgetThreadStorageDelete(deps.db, thread.id);
     })
