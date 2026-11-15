@@ -33,7 +33,10 @@ import {
   intendedThreadHostId,
   readPendingThreadStartContext,
 } from "./dispatch-attempt.js";
-import { resolveDispatchAuthor } from "./dispatch-author.js";
+import {
+  resolveDispatchAuthor,
+  type DispatchAuthor,
+} from "./dispatch-author.js";
 import {
   dispatchExecutionSources,
   dispatchWaitReasonForPass,
@@ -46,6 +49,7 @@ import {
   beginNativeTerminalThreadProvisioning,
   isNativeTerminalInteractionOpenError,
   nativeTerminalPromptParts,
+  readRecordTerminal,
   sendNativeTerminalMessage,
 } from "./native-terminal-threads.js";
 import { requestQueuedMessageDispatch } from "./queued-message-dispatch.js";
@@ -111,6 +115,27 @@ function isNativeTerminalStartTicket(input: readonly PromptInput[]): boolean {
 
 function holdsCapacity(thread: Thread): boolean {
   return thread.status === "active" || thread.status === "starting";
+}
+
+function hasRunningNativeTerminal(
+  deps: LoggedPendingInteractionWorkSessionDeps,
+  thread: Thread,
+): boolean {
+  const record = getNativeTerminalThread(deps.db, thread.id);
+  return (
+    record !== null && readRecordTerminal(deps, record)?.status === "running"
+  );
+}
+
+function isOwnerComposerSend(
+  args: NativeTerminalAdmissionArgs,
+  author: DispatchAuthor,
+): boolean {
+  if (author.initiator !== "user" || args.originPluginId !== null) return false;
+  return (args.claimed ?? []).every((row) => {
+    const queued = toThreadQueuedMessage(row);
+    return queued.initiator === "user" && queued.originPluginId === null;
+  });
 }
 
 function holdUntilInteractionSettles(
@@ -202,6 +227,12 @@ export async function admitNativeTerminalDispatch(
     senderThreadId: args.senderThreadId,
     startedOnBehalfOf: args.startedOnBehalfOf,
   });
+  if (
+    isOwnerComposerSend(args, author) &&
+    hasRunningNativeTerminal(deps, args.thread)
+  ) {
+    return runNativeTerminalAdmittedWork(deps, args);
+  }
   const model = getNativeTerminalThread(deps.db, args.thread.id)?.model ?? null;
   const withinDecision: { outcome: NativeTerminalAdmissionOutcome | null } = {
     outcome: null,
