@@ -698,6 +698,7 @@ describe("the fetch that checks whether commits are published", () => {
         `credential.${remote.origin}.helper`,
         answeringHelper(marker),
       );
+      const identity = await identityOf(fixture);
       process.env.GIT_CONFIG_SYSTEM = systemFile;
       process.env.GIT_CONFIG_NOSYSTEM = value;
       const gitReadsSystem = await execFileAsync("git", ["config", "--list"], {
@@ -709,11 +710,9 @@ describe("the fetch that checks whether commits are published", () => {
       if (value === "1" || value === "yes") expect(gitReadsSystem).toBe(false);
       if (value === "" || value === "0") expect(gitReadsSystem).toBe(true);
 
-      const reasons = await findPreservationReasons(
-        await identityOf(fixture),
-        undefined,
-        { fetchTimeoutMs: 20_000 },
-      );
+      const reasons = await findPreservationReasons(identity, undefined, {
+        fetchTimeoutMs: 20_000,
+      });
 
       expect(existsSync(marker)).toBe(gitReadsSystem);
       if (gitReadsSystem)
@@ -724,6 +723,15 @@ describe("the fetch that checks whether commits are published", () => {
         expect(reasons.join("\n")).toMatch(
           /could not verify remotes: authentication failed for backup|could not fetch its remotes to verify its commits are published \(fatal: bad boolean environment value/u,
         );
+      const reidentified = await identifyWorktree({
+        path: fixture.path,
+        rootPath: fixture.attemptRoot,
+      });
+      if (reidentified.status === "preserve")
+        expect(reidentified.reasons.join("\n")).toMatch(
+          /is not a Git worktree root \(fatal: bad boolean environment value/u,
+        );
+      else expect(reidentified.status).toBe("identified");
     },
   );
 
