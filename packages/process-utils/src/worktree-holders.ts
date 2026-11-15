@@ -2,7 +2,6 @@ import { execFile } from "node:child_process";
 import { readdirSync, readlinkSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { UNREADABLE_SESSION_AGENT_COMMS } from "@bb/process-utils/session-agent-comms";
 import {
   linuxDirectoryIsTraversable,
   linuxDirectoryModeAllowsTraversal,
@@ -79,8 +78,8 @@ export type WorktreeHolderScan =
       clearances?: FallbackClearance[];
     }
   | { status: "held"; holders: WorktreeHolder[] }
-  | { status: "uncertain"; reason: string }
-  | { status: "unknown"; reason: string };
+  | { status: "uncertain"; reason: string; blockingProcesses?: number[] }
+  | { status: "unknown"; reason: string; blockingProcesses?: number[] };
 
 function errorCode(error: unknown): string | null {
   return error instanceof Error &&
@@ -652,8 +651,7 @@ async function scanMountAliases(
         } else if (found !== null) return found;
       }
     const memory = sharedMaps ? null : await mappings(fileBase, true);
-    if (memory !== null && ("gone" in memory || "pid" in memory))
-      return memory;
+    if (memory !== null && ("gone" in memory || "pid" in memory)) return memory;
     if (memory !== null && "failed" in memory) fileDoubt = memory.failed;
     if (fileBase === base && memory !== null && "shared" in memory)
       sharedMaps = memory.shared;
@@ -802,9 +800,17 @@ async function scanLinuxProcess(
   );
   if (safety !== null && "gone" in safety) return null;
   if (safety !== null && "pid" in safety) return safety;
+  if (safety !== null && "uncertain" in safety) {
+    if (result !== null && "uncertain" in result)
+      return { uncertain: `${safety.uncertain}; ${result.uncertain}` };
+    if (result !== null && "unknown" in result)
+      return {
+        unknown: `${result.unknown}; ${safety.uncertain}`,
+        vouchable: false,
+      };
+    return safety;
+  }
   if (result !== null && "uncertain" in result) return result;
-  if (safety !== null && "uncertain" in safety)
-    return result !== null && "unknown" in result ? result : safety;
   if (safety !== null && "isolated" in safety)
     return result !== null && "cleared" in result ? result : null;
   return result;
@@ -1064,13 +1070,10 @@ async function scanLinuxPaths(
       vouchable: false,
     };
   }
-  if (!UNREADABLE_SESSION_AGENT_COMMS.has(command ?? "")) {
-    return {
-      unknown: `process ${pid} (${command ?? "unknown"}) has an unreadable holder path`,
-      vouchable: false,
-    };
-  }
-  return null;
+  return {
+    unknown: `process ${pid} (${command ?? "unknown"}) has an unreadable holder path`,
+    vouchable: false,
+  };
 }
 interface ForeignTarget {
   what: string;
@@ -1476,6 +1479,70 @@ export async function linuxVisibilityProblem(
   return { problem: null, mountNamespace: ownMount.value, self };
 }
 
+interface ProcessDoubt {
+  pid: number;
+  detail: string;
+}
+
+function permittedCapabilities(status: string): bigint | null {
+  const match = /^CapPrm:\s+([0-9a-f]+)$/mu.exec(status);
+  return match?.[1] === undefined ? null : BigInt(`0x${match[1]}`);
+}
+
+async function unreadableCause(
+  proc: ProcReader,
+  pid: number,
+  ownCapabilities: bigint | null,
+): Promise<string | null> {
+  const status = await readOptional(() => proc.readFile(`/proc/${pid}/status`));
+  if (!("value" in status)) return null;
+  const theirs = permittedCapabilities(status.value);
+  if (
+    theirs !== null &&
+    ownCapabilities !== null &&
+    (theirs & ~ownCapabilities) !== 0n
+  )
+    return "its capabilities exceed the daemon's";
+  const owner = parseStatusNumbers(status.value, "Uid")?.[3];
+  const descriptors = await readOptional(() =>
+    proc.statAccess(`/proc/${pid}/fd`),
+  );
+  if (
+    owner !== undefined &&
+    "value" in descriptors &&
+    descriptors.value.uid !== owner
+  )
+    return "it is non-dumpable";
+  return null;
+}
+
+async function processCommand(proc: ProcReader, pid: number): Promise<string> {
+  const cmdline = await readOptional(() =>
+    proc.readFile(`/proc/${pid}/cmdline`),
+  );
+  const args =
+    "value" in cmdline ? cmdline.value.replaceAll(/[\s\0]+/gu, " ").trim() : "";
+  if (args !== "") return args.length > 80 ? `${args.slice(0, 80)}…` : args;
+  const comm = await readOptional(() => proc.readFile(`/proc/${pid}/comm`));
+  return "value" in comm ? comm.value.trim() || "unknown" : "unknown";
+}
+
+async function describeProcessDoubts(
+  proc: ProcReader,
+  doubts: ProcessDoubt[],
+): Promise<string[]> {
+  const own = await readOptional(() => proc.readFile("/proc/self/status"));
+  const ownCapabilities =
+    "value" in own ? permittedCapabilities(own.value) : null;
+  return Promise.all(
+    doubts.map(async ({ pid, detail }) => {
+      const command = await processCommand(proc, pid);
+      const cause = await unreadableCause(proc, pid, ownCapabilities);
+      return `${detail} (${cause === null ? command : `${command}; ${cause}`})`;
+    }),
+  );
+}
+
 export async function scanLinux(
   directory: string,
   proc: ProcReader = hostProc,
@@ -1503,8 +1570,8 @@ export async function scanLinux(
     .map(Number)
     .filter((pid) => pid !== ownPid);
   const holders: WorktreeHolder[] = [];
-  const unknown: string[] = [];
-  const uncertain: string[] = [];
+  const unknown: ProcessDoubt[] = [];
+  const uncertain: ProcessDoubt[] = [];
   const clearances: FallbackClearance[] = [];
   let listed: Promise<TreeIds> | null = null;
   const tree: TreeIdsReader = () => {
@@ -1541,7 +1608,8 @@ export async function scanLinux(
         ),
       ),
     );
-    for (const result of results) {
+    for (const [index, result] of results.entries()) {
+      const pid = batch[index] ?? -1;
       if (result === null) continue;
       if ("cleared" in result) {
         clearances.push(...result.cleared);
@@ -1549,27 +1617,24 @@ export async function scanLinux(
       }
       if ("otherUser" in result) continue;
       if ("uncertain" in result) {
-        uncertain.push(result.uncertain);
+        uncertain.push({ pid, detail: result.uncertain });
         continue;
       }
       if ("unknown" in result) {
-        unknown.push(result.unknown);
+        unknown.push({ pid, detail: result.unknown });
         continue;
       }
       holders.push(result);
     }
   }
   if (holders.length > 0) return { status: "held", holders };
-  if (uncertain.length > 0) {
+  const doubts = [...uncertain, ...unknown];
+  if (doubts.length > 0) {
+    const described = await describeProcessDoubts(proc, doubts);
     return {
-      status: "uncertain",
-      reason: `${uncertain.length} processes could not be inspected or proven unrelated, such as ${uncertain[0]}`,
-    };
-  }
-  if (unknown.length > 0) {
-    return {
-      status: "unknown",
-      reason: `${unknown.length} processes could not be inspected, such as ${unknown[0]}`,
+      status: uncertain.length > 0 ? "uncertain" : "unknown",
+      reason: `${doubts.length} ${doubts.length === 1 ? "process" : "processes"} could not be inspected or proven unrelated: ${described.join("; ")}`,
+      blockingProcesses: doubts.map((doubt) => doubt.pid),
     };
   }
   return clearances.length > 0

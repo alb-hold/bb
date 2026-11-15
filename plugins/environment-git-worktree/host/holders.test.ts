@@ -870,7 +870,8 @@ describe("the Linux process-list visibility rule", () => {
       processes: { 300: { uid: 1000, denied: true, comm: "sshd-session" } },
     });
     expect(await scanLinux("/work/tree", helper, 4242)).toMatchObject({
-      status: "uncertain",
+      status: "unknown",
+      reason: expect.stringContaining("sshd-session"),
     });
     const stranger = fakeProc({
       processes: { 300: { uid: 1000, denied: true, comm: "node" } },
@@ -1373,6 +1374,60 @@ describe("the Linux process-list visibility rule", () => {
   );
 });
 
+describe("a refusal that names the processes it could not inspect", () => {
+  it("names every such process with its command and why it could not be read", async () => {
+    const base = fakeProc({
+      processes: {
+        300: {
+          uid: 1000,
+          denied: true,
+          comm: "systemd",
+          argv0: "/usr/lib/systemd/systemd",
+        },
+        301: { uid: 1000, denied: true, comm: "(sd-pam)", argv0: "(sd-pam)" },
+      },
+    });
+    const capabilities: Record<string, string> = {
+      "/proc/self/status": "0000000000000000",
+      "/proc/300/status": "0000000800000000",
+      "/proc/301/status": "0000000000000000",
+    };
+    const proc: ProcReader = {
+      ...base,
+      readFile: async (target) => {
+        const text = await base.readFile(target);
+        const permitted = capabilities[target];
+        return permitted === undefined
+          ? text
+          : `${text}CapPrm:\t${permitted}\n`;
+      },
+      statAccess: async (target) =>
+        target === "/proc/301/fd"
+          ? { uid: 0, gid: 0, mode: 0o40500 }
+          : base.statAccess(target),
+    };
+    const scan = await scanLinux("/work/tree", proc, 4242);
+    expect(scan).toMatchObject({
+      status: "unknown",
+      blockingProcesses: [300, 301],
+    });
+    const reason = "reason" in scan ? scan.reason : "";
+    expect(reason).toMatch(
+      /^2 processes could not be inspected or proven unrelated: /u,
+    );
+    expect(reason).toContain(
+      "process 300 (systemd) has an unreadable holder path",
+    );
+    expect(reason).toContain(
+      "(/usr/lib/systemd/systemd --x; its capabilities exceed the daemon's)",
+    );
+    expect(reason).toContain(
+      "process 301 ((sd-pam)) has an unreadable holder path",
+    );
+    expect(reason).toContain("((sd-pam) --x; it is non-dumpable)");
+  });
+});
+
 describe("a same-user process that cannot be read because it is non-dumpable", () => {
   it.each([
     ["sshd-session", "sshd-session"],
@@ -1397,7 +1452,10 @@ describe("a same-user process that cannot be read because it is non-dumpable", (
         },
       });
       expect(await scanLinux("/work/tree", proc, 4242)).toMatchObject({
-        status: "uncertain",
+        status: "unknown",
+        reason: expect.stringContaining(
+          `(${name}) has an unreadable holder path`,
+        ),
       });
     },
   );
@@ -1493,7 +1551,12 @@ time.sleep(120)`,
       "the kernel lets this user read it",
     );
     const scan = await scanOnly(dir, child.pid ?? 0);
-    expect(scan).toMatchObject({ status: "uncertain" });
+    expect(scan).toMatchObject({
+      status: "unknown",
+      reason: expect.stringContaining(
+        "(ssh-agent) has an unreadable holder path",
+      ),
+    });
   });
 
   it("does not clear a near-miss unreadable same-user comm", async ({

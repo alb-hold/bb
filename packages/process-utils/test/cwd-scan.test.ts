@@ -112,14 +112,17 @@ describe("scanProcessesWithCwdUnder", () => {
     "pipewire",
     "wireplumber",
   ])(
-    "does not block on an unreadable unrelated same-user process named %s",
+    "returns unknown for an unreadable same-user process even when it is named %s",
     async (comm) => {
       const base = await dir();
       const scan = await scanProcessesWithCwdUnder(
         { directories: [base] },
         fakeLinux({ 10: denied() }, {}, { 10: comm }),
       );
-      expect(scan.status).toBe("clear");
+      expect(scan).toMatchObject({
+        status: "unknown",
+        reason: expect.stringContaining(comm),
+      });
     },
   );
 
