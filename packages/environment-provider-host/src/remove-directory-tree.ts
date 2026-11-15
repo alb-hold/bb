@@ -393,6 +393,8 @@ async function recoverSymlink(
   );
 }
 
+export const FILE_TIMESTAMP_LAG_MS = 20;
+
 export interface EntryIdentity {
   ino: number;
   size: number;

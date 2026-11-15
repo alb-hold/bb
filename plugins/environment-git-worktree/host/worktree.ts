@@ -16,6 +16,7 @@ import fs from "node:fs/promises";
 import {
   directoryTreeChangedSince,
   entryIdentity,
+  FILE_TIMESTAMP_LAG_MS,
   removeDirectoryTree,
   RetainedRecoveryError,
   sameEntryIdentity,
@@ -187,7 +188,6 @@ const REMOTE_BASE_FETCH_TIMEOUT_MS = 60_000;
 const REMOTE_REF_LOCK_RETRY_INTERVAL_MS = 200;
 const REMOTE_REF_LOCK_RETRY_TIMEOUT_MS = 2_000;
 const WORKTREE_INCLUDE_TRANSCRIPT_PATH_LIMIT = 20;
-const FILE_TIMESTAMP_LAG_MS = 20;
 
 type ConcurrentRemoteRefUpdateErrorKind = "stale-value" | "lock-file-exists";
 
