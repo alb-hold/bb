@@ -7,6 +7,7 @@ import {
   directoryTreeChangedSince,
   recordOwnWrite,
   removeDirectoryTree,
+  RetainedRecoveryError,
   type RemoveDirectoryTreeHooks,
 } from "../src/remove-directory-tree.js";
 
@@ -178,9 +179,15 @@ it.each([
       };
       const hooks: RemoveDirectoryTreeHooks = {};
       hooks[hook] = write;
-      const result = await removeTree(tree, hooks);
+      const outcome = await removeTree(tree, hooks).then(
+        (result) => result.status,
+        (error: unknown) => {
+          if (error instanceof RetainedRecoveryError) return "retained";
+          throw error;
+        },
+      );
       expect(written).toBe(true);
-      expect(result.status).toBe("retained");
+      expect(outcome).toBe("retained");
       await expect(
         findFileWith(path.dirname(tree.root), SAME_LENGTH_REWRITE),
       ).resolves.not.toEqual([]);
