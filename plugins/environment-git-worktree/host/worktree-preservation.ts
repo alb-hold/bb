@@ -329,6 +329,7 @@ export interface RemoteEvidence {
   readonly repository: string | null;
   readonly published: readonly string[];
   readonly bytes: number | null;
+  readonly ignoredConfig: readonly string[];
 }
 
 export interface RemoteEvidenceLease {
@@ -349,6 +350,7 @@ const NO_REMOTE_EVIDENCE: RemoteEvidence = {
   repository: null,
   published: [],
   bytes: null,
+  ignoredConfig: [],
 };
 const fetchMemo = new Map<string, EvidenceEntry>();
 const liveEvidenceRepositories = new Set<string>();
@@ -453,7 +455,11 @@ async function sweepAbandonedEvidence(): Promise<void> {
 export async function acquireRemoteEvidence(
   identity: WorktreeIdentity,
   signal: AbortSignal | undefined,
-  options: { fetchTimeoutMs?: number; fetchMemoMs?: number } = {},
+  options: {
+    fetchTimeoutMs?: number;
+    fetchMemoMs?: number;
+    untrustedRoots?: readonly string[];
+  } = {},
 ): Promise<RemoteEvidenceLease> {
   abandonedEvidenceSweep ??= sweepAbandonedEvidence();
   const memoMs = options.fetchMemoMs ?? FETCH_MEMO_MS;
@@ -477,6 +483,7 @@ export async function acquireRemoteEvidence(
       identity,
       signal,
       options.fetchTimeoutMs ?? FETCH_TIMEOUT_MS,
+      options.untrustedRoots ?? [],
     ).finally(() => {
       created.settledAt = Date.now();
       if (created.retired) return;
@@ -508,6 +515,8 @@ export async function acquireRemoteEvidence(
 
 function isolatedGitEnvironment(repository: string): NodeJS.ProcessEnv {
   return {
+    GIT_CONFIG_GLOBAL: path.join(repository, FETCH_CONFIG_FILE),
+    GIT_CONFIG_NOSYSTEM: "1",
     GIT_CEILING_DIRECTORIES: path.dirname(repository),
     GIT_DIR: undefined,
     GIT_COMMON_DIR: undefined,
@@ -640,31 +649,165 @@ function outputLines(stdout: string): string[] {
   return stdout.split("\n").filter((line) => line !== "");
 }
 
-async function trustedSshCommand(
-  gitOptions: Parameters<typeof runGit>[1],
-): Promise<string | null> {
-  const read = await runGit(
-    [
-      "--no-optional-locks",
-      "config",
-      "--null",
-      "--no-includes",
-      "--show-scope",
-      "--show-origin",
-      "--get-regexp",
-      "^core\\.sshcommand$",
-    ],
-    gitOptions,
+const FETCH_CONFIG_FILE = "bb-fetch.gitconfig";
+const FETCH_CONFIG_KEYS = "^(core\\.sshcommand|url\\..*\\.insteadof)$";
+const REMOTE_HELPER_PREFIX = /^[a-z][a-z0-9+.-]*::/iu;
+const DOS_DRIVE_PREFIX = /^[a-z]:/iu;
+
+function isEnabledFlag(value: string | undefined): boolean {
+  return value !== undefined && /^(?:true|yes|on|[1-9]\d*)$/iu.test(value);
+}
+
+function hostIsSafe(hostPart: string): boolean {
+  const host = hostPart.slice(hostPart.lastIndexOf("@") + 1);
+  return host !== "" && !host.startsWith("-") && !hostPart.startsWith("-");
+}
+
+export function isAcceptedRewriteTarget(target: string): boolean {
+  const scheme = /^(ssh|https):\/\/([^/]*)/iu.exec(target);
+  if (scheme !== null)
+    return scheme[1]?.toLowerCase() === "https" || hostIsSafe(scheme[2] ?? "");
+  if (target.includes("://") || REMOTE_HELPER_PREFIX.test(target)) return false;
+  const colon = target.indexOf(":");
+  if (colon === -1) return false;
+  const slash = target.indexOf("/");
+  if (slash !== -1 && slash < colon) return false;
+  if (DOS_DRIVE_PREFIX.test(target)) return false;
+  return hostIsSafe(target.slice(0, colon));
+}
+
+async function realOrResolved(target: string): Promise<string> {
+  try {
+    return await fs.realpath(target);
+  } catch {
+    return path.resolve(target);
+  }
+}
+
+function isWithin(root: string, target: string): boolean {
+  const relative = path.relative(root, target);
+  return (
+    relative === "" ||
+    (relative !== ".." &&
+      !relative.startsWith(`..${path.sep}`) &&
+      !path.isAbsolute(relative))
   );
-  if (read.exitCode !== 0) return null;
-  const last = trustedConfigEntries(read.stdout).at(-1)?.value;
-  return last === undefined || last.trim() === "" ? null : last;
+}
+
+async function untrustedConfigRoots(
+  identity: WorktreeIdentity,
+  extra: readonly string[],
+): Promise<string[]> {
+  const roots = [
+    identity.path,
+    identity.commonDir,
+    path.basename(identity.commonDir) === ".git"
+      ? path.dirname(identity.commonDir)
+      : identity.commonDir,
+    path.join(os.homedir(), ".bb"),
+    ...extra,
+  ];
+  const registered = path.join(identity.commonDir, "worktrees");
+  for (const name of await fs.readdir(registered).catch(() => [])) {
+    const gitdir = await fs
+      .readFile(path.join(registered, name, "gitdir"), "utf8")
+      .catch(() => null);
+    if (gitdir !== null && gitdir.trim() !== "")
+      roots.push(path.dirname(gitdir.trim()));
+  }
+  return await Promise.all(roots.map(realOrResolved));
+}
+
+interface FetchConfig {
+  entries: Array<{ key: string; value: string }>;
+  sshCommand: string | null;
+  ignored: string[];
+}
+
+async function trustedFetchConfig(
+  identity: WorktreeIdentity,
+  signal: AbortSignal | undefined,
+  extraRoots: readonly string[],
+): Promise<FetchConfig | string> {
+  const untrusted = await untrustedConfigRoots(identity, extraRoots);
+  const scopes = isEnabledFlag(process.env.GIT_CONFIG_NOSYSTEM)
+    ? ["--global"]
+    : ["--system", "--global"];
+  const config: FetchConfig = { entries: [], sshCommand: null, ignored: [] };
+  for (const scope of scopes) {
+    const read = await runGit(
+      [
+        "--no-optional-locks",
+        "config",
+        scope,
+        "--includes",
+        "--show-origin",
+        "--null",
+        "--get-regexp",
+        FETCH_CONFIG_KEYS,
+      ],
+      {
+        cwd: identity.commonDir,
+        env: {
+          GIT_DIR: identity.commonDir,
+          GIT_COMMON_DIR: undefined,
+          GIT_WORK_TREE: undefined,
+          GIT_INDEX_FILE: undefined,
+          GIT_NAMESPACE: undefined,
+        },
+        allowFailure: true,
+        ...signalOptions(signal),
+      },
+    );
+    if (read.exitCode !== 0 && !isEmptyConfigMatch(read))
+      return withDetail(FETCH_FAILED, read.stderr);
+    const fields = read.stdout.split("\0");
+    for (let index = 0; index + 1 < fields.length; index += 2) {
+      const origin = fields[index] ?? "";
+      const entry = fields[index + 1] ?? "";
+      const newline = entry.indexOf("\n");
+      if (newline === -1) continue;
+      const key = entry.slice(0, newline);
+      const value = entry.slice(newline + 1);
+      const file = origin.startsWith(FILE_ORIGIN)
+        ? origin.slice(FILE_ORIGIN.length)
+        : null;
+      const ignore = (why: string) =>
+        config.ignored.push(`${key} from ${origin} (${why})`);
+      if (file === null || !path.isAbsolute(file)) {
+        ignore("not read from a config file");
+        continue;
+      }
+      const real = await fs.realpath(file).catch(() => null);
+      const info = real === null ? null : await fs.stat(real).catch(() => null);
+      if (real === null || info === null || !info.isFile()) {
+        ignore("its file could not be resolved");
+        continue;
+      }
+      if (untrusted.some((root) => isWithin(root, real))) {
+        ignore("its file is inside a repository or workspace");
+        continue;
+      }
+      if (key === "core.sshcommand") {
+        config.sshCommand = value.trim() === "" ? null : value;
+        continue;
+      }
+      const target = key.slice("url.".length, -".insteadof".length);
+      if (!isAcceptedRewriteTarget(target)) {
+        ignore("its target is not an ssh or https URL");
+        continue;
+      }
+      config.entries.push({ key, value });
+    }
+  }
+  return config;
 }
 
 async function gatherRemoteEvidence(
   identity: WorktreeIdentity,
   signal: AbortSignal | undefined,
   timeoutMs: number,
+  untrustedRoots: readonly string[],
 ): Promise<RemoteEvidence> {
   const deadline = Date.now() + timeoutMs;
   const gitOptions = {
@@ -686,12 +829,29 @@ async function gatherRemoteEvidence(
     const objectFormat = format.stdout.trim();
     if (format.exitCode !== 0 || objectFormat === "")
       return failedEvidence(withDetail(FETCH_FAILED, format.stderr));
+    const fetchConfig = await trustedFetchConfig(
+      identity,
+      signal,
+      untrustedRoots,
+    );
+    if (typeof fetchConfig === "string") return failedEvidence(fetchConfig);
     repository = await fs.mkdtemp(
       path.join(os.tmpdir(), EVIDENCE_REPOSITORY_PREFIX),
     );
     liveEvidenceRepositories.add(repository);
     registerExitCleanup();
     const isolated = isolatedGitOptions(repository, signal);
+    const configFile = path.join(repository, FETCH_CONFIG_FILE);
+    await fs.writeFile(configFile, "", { mode: 0o600 });
+    const ignoredConfig = [...fetchConfig.ignored];
+    for (const { key, value } of fetchConfig.entries) {
+      const written = await runGit(
+        ["config", "--file", configFile, "--add", key, value],
+        isolated,
+      );
+      if (written.exitCode !== 0)
+        ignoredConfig.push(`${key} (${written.stderr.trim()})`);
+    }
     const init = await runGit(
       [
         "init",
@@ -733,7 +893,7 @@ async function gatherRemoteEvidence(
       ...nonInteractiveFetchEnvironment(
         isolatedGitEnvironment(repository),
         process.env,
-        await trustedSshCommand(gitOptions),
+        fetchConfig.sshCommand,
       ),
       ...replayed.env,
     };
@@ -799,6 +959,7 @@ async function gatherRemoteEvidence(
       repository,
       published: outputLines(tips.stdout),
       bytes: await directoryBytes(repository).catch(() => null),
+      ignoredConfig,
     };
   } catch (error) {
     return failedEvidence(
@@ -951,6 +1112,8 @@ async function findZeroCommitBase(
   const reflog = await runGit(
     [
       "--no-optional-locks",
+      "-c",
+      "log.showSignature=false",
       "reflog",
       "show",
       "--format=%H%x09%gs",
@@ -1111,6 +1274,7 @@ export async function findPreservationReasons(
     gitDir?: string;
     final?: boolean;
     remotes?: RemoteEvidence;
+    untrustedRoots?: readonly string[];
   } = {},
 ): Promise<string[]> {
   const reasons = await findStructuralReasons(identity);
@@ -1205,6 +1369,9 @@ export async function findPreservationReasons(
         ...(options.fetchMemoMs !== undefined
           ? { fetchMemoMs: options.fetchMemoMs }
           : {}),
+        ...(options.untrustedRoots !== undefined
+          ? { untrustedRoots: options.untrustedRoots }
+          : {}),
       });
       evidence = lease.evidence;
     }
@@ -1297,7 +1464,15 @@ export async function findPreservationReasons(
       gitOptions,
     );
     const reflogHead = await runGit(
-      ["--no-optional-locks", "reflog", "show", "--format=%H", "HEAD"],
+      [
+        "--no-optional-locks",
+        "-c",
+        "log.showSignature=false",
+        "reflog",
+        "show",
+        "--format=%H",
+        "HEAD",
+      ],
       gitOptions,
     );
     if (worktreeRefs.exitCode !== 0 || reflogHead.exitCode !== 0) {

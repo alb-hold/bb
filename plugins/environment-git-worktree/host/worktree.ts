@@ -1137,7 +1137,9 @@ export async function inspectWorktreeRemoval(args: {
   const reasons =
     identified.status === "preserve"
       ? identified.reasons
-      : await findPreservationReasons(identified.identity, args.signal);
+      : await findPreservationReasons(identified.identity, args.signal, {
+          untrustedRoots: [path.dirname(path.resolve(args.rootPath))],
+        });
   return reasons.length === 0
     ? { status: "removable" }
     : {
@@ -1178,14 +1180,19 @@ export async function removeWorktree(
       const removed = await tryWithCheckoutMutationLock(
         identity.path,
         async () => {
-          const lease = await acquireRemoteEvidence(
-            identity,
-            args.signal,
-            args.fetchTimeoutMs === undefined
+          const lease = await acquireRemoteEvidence(identity, args.signal, {
+            untrustedRoots: [path.dirname(path.resolve(args.rootPath))],
+            ...(args.fetchTimeoutMs === undefined
               ? {}
-              : { fetchTimeoutMs: args.fetchTimeoutMs },
-          );
+              : { fetchTimeoutMs: args.fetchTimeoutMs }),
+          });
           try {
+            for (const ignored of lease.evidence.ignoredConfig)
+              emitOutput(
+                args.onProgress,
+                "git-fetch",
+                `Ignored ${ignored} for the fetch`,
+              );
             if (lease.evidence.bytes !== null)
               emitOutput(
                 args.onProgress,
